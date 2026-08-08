@@ -1,0 +1,984 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CGC 三魚模式產品 BP — Edge-Cloud Code Completion Engine</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #f8f7f4;
+    --surface2: #f1efe8;
+    --border: #e0ddd5;
+    --text: #1a1a1a;
+    --text2: #555550;
+    --text3: #888880;
+    --accent: #534AB7;
+    --teal: #0F6E56;
+    --amber: #854F0B;
+    --coral: #993C1D;
+    --blue: #185FA5;
+    --red: #A32D2D;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    font-size: 15px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .container { max-width: 860px; margin: 0 auto; padding: 0 24px; }
+
+  /* Cover */
+  .cover {
+    padding: 80px 0 60px;
+    text-align: center;
+    border-bottom: 1px solid var(--border);
+  }
+  .cover h1 {
+    font-size: 32px;
+    font-weight: 600;
+    letter-spacing: -0.5px;
+    margin-bottom: 12px;
+  }
+  .cover .subtitle {
+    font-size: 17px;
+    color: var(--text2);
+    margin-bottom: 8px;
+  }
+  .cover .meta {
+    font-size: 13px;
+    color: var(--text3);
+    margin-top: 16px;
+  }
+  .cover .badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 100px;
+    font-size: 12px;
+    font-weight: 500;
+    margin: 0 4px;
+  }
+  .badge-teal { background: #E1F5EE; color: var(--teal); }
+  .badge-amber { background: #FAEEDA; color: var(--amber); }
+  .badge-coral { background: #FAECE7; color: var(--coral); }
+
+  /* Section */
+  section {
+    padding: 48px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  section h2 {
+    font-size: 22px;
+    font-weight: 600;
+    margin-bottom: 20px;
+    letter-spacing: -0.3px;
+  }
+  section h3 {
+    font-size: 17px;
+    font-weight: 600;
+    margin: 24px 0 12px;
+    color: var(--text);
+  }
+  p { margin-bottom: 12px; color: var(--text); }
+  ul, ol { margin: 8px 0 16px 20px; }
+  li { margin-bottom: 6px; }
+
+  /* Cards */
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin: 20px 0;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+  }
+  .card.teal { border-left: 3px solid var(--teal); }
+  .card.amber { border-left: 3px solid var(--amber); }
+  .card.coral { border-left: 3px solid var(--coral); }
+  .card.blue { border-left: 3px solid var(--blue); }
+  .card.purple { border-left: 3px solid var(--accent); }
+  .card h4 {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+  .card p, .card li {
+    font-size: 13px;
+    color: var(--text2);
+  }
+  .card .number {
+    font-size: 28px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+
+  /* Table */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 13px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    font-weight: 600;
+    background: var(--surface);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text2);
+  }
+  td { color: var(--text); }
+  tr:hover { background: var(--surface); }
+
+  /* Highlight box */
+  .highlight {
+    background: var(--surface2);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin: 16px 0;
+  }
+  .highlight strong { color: var(--text); }
+
+  /* Metric row */
+  .metric-row {
+    display: flex;
+    gap: 24px;
+    margin: 20px 0;
+    flex-wrap: wrap;
+  }
+  .metric {
+    flex: 1;
+    min-width: 120px;
+    text-align: center;
+  }
+  .metric .value {
+    font-size: 32px;
+    font-weight: 600;
+    letter-spacing: -1px;
+  }
+  .metric .label {
+    font-size: 12px;
+    color: var(--text3);
+    margin-top: 4px;
+  }
+
+  /* Timeline */
+  .timeline {
+    position: relative;
+    padding-left: 24px;
+    margin: 20px 0;
+  }
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 6px;
+    top: 8px;
+    bottom: 8px;
+    width: 2px;
+    background: var(--border);
+  }
+  .timeline-item {
+    position: relative;
+    padding-bottom: 24px;
+  }
+  .timeline-item::before {
+    content: '';
+    position: absolute;
+    left: -22px;
+    top: 6px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--bg);
+  }
+  .timeline-item .phase {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .timeline-item h4 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 4px 0 6px;
+  }
+  .timeline-item p {
+    font-size: 13px;
+    color: var(--text2);
+    margin: 0;
+  }
+
+  /* Comparison */
+  .vs-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 16px 0;
+  }
+  .vs-box {
+    border-radius: 12px;
+    padding: 20px;
+    font-size: 13px;
+  }
+  .vs-box.negative {
+    background: #FCEBEB;
+    border: 1px solid #F7C1C1;
+  }
+  .vs-box.positive {
+    background: #E1F5EE;
+    border: 1px solid #9FE1CB;
+  }
+  .vs-box h4 {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+  .vs-box.negative h4 { color: var(--red); }
+  .vs-box.positive h4 { color: var(--teal); }
+
+  .footer {
+    padding: 40px 0;
+    text-align: center;
+    font-size: 12px;
+    color: var(--text3);
+  }
+  .tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    background: var(--surface2);
+    color: var(--text2);
+    margin: 0 2px;
+  }
+  .tag-verified { background: #E1F5EE; color: var(--teal); }
+  .tag-wip { background: #FAEEDA; color: var(--amber); }
+  .tag-new { background: #EEEDFE; color: var(--accent); }
+
+  @media (max-width: 640px) {
+    .card-grid { grid-template-columns: 1fr; }
+    .vs-grid { grid-template-columns: 1fr; }
+    .metric-row { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ============ COVER ============ -->
+<div class="container">
+  <div class="cover">
+    <h1>CGC 三魚模式產品 BP</h1>
+    <div class="subtitle">Edge-Cloud Collaborative Code Completion Engine</div>
+    <div class="subtitle" style="font-size:14px; color:var(--text3);">一套技術棧，三個產品價值：數據主權 · 推理加速 · 端側跑大模型</div>
+    <div style="margin-top:20px;">
+      <span class="badge badge-teal">魚一：數據主權</span>
+      <span class="badge badge-amber">魚二：推理加速</span>
+      <span class="badge badge-coral">魚三：端側跑大模型</span>
+    </div>
+    <div class="meta">
+      版本 V1.0 · 2026-07-31 · Compute Graph Compiler Project
+    </div>
+  </div>
+</div>
+
+<!-- ============ EXECUTIVE SUMMARY ============ -->
+<div class="container">
+  <section>
+    <h2>一、Executive Summary</h2>
+    <p>
+      CGC（Compute Graph Compiler）是一個端雲協同的 AI 代碼補全引擎。核心創新在於：
+      <strong>同一套技術棧（MTP Draft + Hermes 智能路由 + Edge Proxy），同時解決三個市場痛點</strong>——
+      企業的數據主權焦慮、開發者的補全延遲痛點、以及終端設備跑不了大模型的能力鴻溝。
+    </p>
+
+    <div class="highlight">
+      <p><strong>核心論點：</strong>現有 AI 代碼助手市場存在一個清晰的缺口——<strong>沒有任何產品同時做到「低延遲 + 數據主權 + 大模型能力」</strong>。</p>
+      <ul style="margin-top:8px;">
+        <li>Copilot/Cursor：低延遲但代碼上傳雲端，無數據主權</li>
+        <li>通義靈碼/Comate/CodeGeeX：有數據主權但延遲 150-300ms，無邊緣加速</li>
+        <li>所有雲端方案：Mac/筆記本用戶只能跑 2B 小模型，26B+ 大模型是雲端專屬</li>
+      </ul>
+      <p style="margin-top:12px;"><strong>CGC 是唯一能占據這個缺口的架構。</strong></p>
+    </div>
+
+    <div class="metric-row">
+      <div class="metric">
+        <div class="value" style="color:var(--teal);">0.3ms</div>
+        <div class="label">Cache HIT TTFT (實測)</div>
+      </div>
+      <div class="metric">
+        <div class="value" style="color:var(--blue);">13ms</div>
+        <div class="label">EP8 雲端 TTFT (實測)</div>
+      </div>
+      <div class="metric">
+        <div class="value" style="color:var(--accent);">186.8</div>
+        <div class="label">EP8 decode tok/s (實測)</div>
+      </div>
+      <div class="metric">
+        <div class="value" style="color:var(--amber);">2.4x</div>
+        <div class="label">Local MTP 加速比 (實測)</div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- ============ THREE FISH MODEL ============ -->
+<div class="container">
+  <section>
+    <h2>二、三魚模式</h2>
+    <p>
+      「一魚兩吃」升級為「三魚模式」。同一套 MTP Draft（llama.cpp 路徑）+ Hermes(SFT) 智能路由技術棧，
+      服務三個獨立的產品價值維度。
+    </p>
+
+    <div class="card-grid">
+      <div class="card teal">
+        <h4>魚一：數據主權</h4>
+        <div class="number" style="color:var(--teal);">~100%</div>
+        <p>代碼不出域覆蓋率</p>
+        <hr style="border:none; border-top:1px solid var(--border); margin:12px 0;">
+        <ul>
+          <li>Cache HIT (30%)：代碼不出設備</li>
+          <li>敏感代碼 MISS：端側 MTP 推理，不出域</li>
+          <li>非敏感 MISS：雲端 EP8，不出內網</li>
+          <li>Hermes(SFT)：語義級敏感度偵測（非 regex）</li>
+        </ul>
+      </div>
+      <div class="card amber">
+        <h4>魚二：推理加速</h4>
+        <div class="number" style="color:var(--amber);">128</div>
+        <p>Local MTP crossover tok/s</p>
+        <hr style="border:none; border-top:1px solid var(--border); margin:12px 0;">
+        <ul>
+          <li>Local verify 無 HTTP 開銷（vs Path B 45ms/round）</li>
+          <li>Crossover 128 tok/s（Path B 僅 42）</li>
+          <li>M4 base 30-80 tok/s 在 crossover 以下</li>
+          <li>預期加速 1.4-2.3x（BF16 batch=4）</li>
+        </ul>
+      </div>
+      <div class="card coral">
+        <h4>魚三：端側跑大模型</h4>
+        <div class="number" style="color:var(--coral);">26B</div>
+        <p>16GB Mac「感覺」能跑</p>
+        <hr style="border:none; border-top:1px solid var(--border); margin:12px 0;">
+        <ul>
+          <li>緩存命中 → 0.3ms（像本地）</li>
+          <li>敏感代碼 → 端側 2B+MTP（不出域）</li>
+          <li>非敏感 → 雲端 EP8 26B（13ms）</li>
+          <li>離線 → 降級 2B（不斷服）</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3>三魚的技術基礎是同一套</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>技術組件</th>
+          <th>魚一（主權）</th>
+          <th>魚二（加速）</th>
+          <th>魚三（跑大模型）</th>
+          <th>狀態</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>MTP Draft Head</strong></td>
+          <td>端側推理敏感代碼</td>
+          <td>投機 token 生成</td>
+          <td>端側 2B 補全增強</td>
+          <td><span class="tag tag-verified">3模型已訓練</span></td>
+        </tr>
+        <tr>
+          <td><strong>Hermes Router (SFT)</strong></td>
+          <td>語義級敏感度偵測</td>
+          <td>按複雜度選 MTP 參數</td>
+          <td>智能分流端/雲</td>
+          <td><span class="tag tag-wip">SFT數據已生成</span></td>
+        </tr>
+        <tr>
+          <td><strong>Edge First Proxy</strong></td>
+          <td>緩存命中不出域</td>
+          <td>0.3ms TTFT</td>
+          <td>用戶感覺大模型在本地</td>
+          <td><span class="tag tag-verified">已部署</span></td>
+        </tr>
+        <tr>
+          <td><strong>EP8 Cluster</strong></td>
+          <td>私有化不出內網</td>
+          <td>186.8 tok/s</td>
+          <td>雲端 26B 13ms 返回</td>
+          <td><span class="tag tag-verified">Host2已驗證</span></td>
+        </tr>
+        <tr>
+          <td><strong>Local MTP Verify Loop</strong></td>
+          <td>端側 verify 不出域</td>
+          <td>同進程無 HTTP 開銷</td>
+          <td>2B 模型加速 1.4-2.3x</td>
+          <td><span class="tag tag-new">待實作</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+</div>
+
+<!-- ============ MARKET OPPORTUNITY ============ -->
+<div class="container">
+  <section>
+    <h2>三、市場機會</h2>
+
+    <h3>市場規模</h3>
+    <div class="metric-row">
+      <div class="metric">
+        <div class="value">$10.3B</div>
+        <div class="label">2026 AI Code Assistants</div>
+      </div>
+      <div class="metric">
+        <div class="value">22.5%</div>
+        <div class="label">CAGR (2026-2033)</div>
+      </div>
+      <div class="metric">
+        <div class="value">25-33%</div>
+        <div class="label">私有化部署佔比</div>
+      </div>
+      <div class="metric">
+        <div class="value">$2.6-3.4B</div>
+        <div class="label">私有化市場規模</div>
+      </div>
+    </div>
+
+    <h3>催化劑：Claude Code 後門事件</h3>
+    <p>
+      2026 年 7 月，工信部警示 Claude Code 靜默回傳用戶地域、設備標識、研發代碼。阿里率先拉黑。
+      同時 Copilot 轉用量計費，重度用戶月費從 $39 飆到 $60-200。<strong>國產替代 + 私有化部署需求爆發。</strong>
+    </p>
+
+    <h3>競品定位矩陣</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>產品</th>
+          <th>TTFT</th>
+          <th>數據主權</th>
+          <th>大模型能力</th>
+          <th>私有化</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Copilot</td>
+          <td style="color:var(--amber);">163ms</td>
+          <td style="color:var(--red);">代碼上傳</td>
+          <td>有（雲端）</td>
+          <td style="color:var(--red);">不支持</td>
+        </tr>
+        <tr>
+          <td>Cursor</td>
+          <td style="color:var(--amber);">100-500ms</td>
+          <td style="color:var(--red);">代碼上傳</td>
+          <td>有（雲端）</td>
+          <td style="color:var(--red);">不支持</td>
+        </tr>
+        <tr>
+          <td>Claude Code</td>
+          <td style="color:var(--red);">~2000ms</td>
+          <td style="color:var(--red);">後門回傳</td>
+          <td>有（雲端）</td>
+          <td style="color:var(--red);">不支持</td>
+        </tr>
+        <tr>
+          <td>通義靈碼</td>
+          <td style="color:var(--red);">150-300ms</td>
+          <td style="color:var(--teal);">支持</td>
+          <td>受限</td>
+          <td style="color:var(--teal);">支持</td>
+        </tr>
+        <tr>
+          <td>Comate / CodeGeeX</td>
+          <td style="color:var(--red);">150-300ms</td>
+          <td style="color:var(--teal);">支持</td>
+          <td>受限</td>
+          <td style="color:var(--teal);">支持</td>
+        </tr>
+        <tr>
+          <td>Tabnine</td>
+          <td style="color:var(--red);">200-400ms</td>
+          <td style="color:var(--teal);">支持</td>
+          <td>受限</td>
+          <td style="color:var(--teal);">支持</td>
+        </tr>
+        <tr style="background: var(--surface2);">
+          <td><strong>CGC</strong></td>
+          <td style="color:var(--teal);"><strong>0.3-13ms</strong></td>
+          <td style="color:var(--teal);"><strong>支持（端側+私有雲）</strong></td>
+          <td style="color:var(--teal);"><strong>26B（端雲協同）</strong></td>
+          <td style="color:var(--teal);"><strong>支持</strong></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="highlight">
+      <p><strong>市場缺口：</strong>左上角（低延遲 + 數據主權 + 大模型）是空的。CGC 是唯一架構能同時滿足三個維度。</p>
+    </div>
+  </section>
+</div>
+
+<!-- ============ TARGET USERS ============ -->
+<div class="container">
+  <section>
+    <h2>四、目標客戶與使用場景</h2>
+
+    <div class="card-grid">
+      <div class="card blue">
+        <h4>B 端：軍工/金融/政企</h4>
+        <p><strong>痛點：</strong>代碼不能出內網，現有私有化方案延遲太高</p>
+        <p><strong>方案：</strong>CGC 私有化部署在企業 GPU 集群</p>
+        <ul>
+          <li>員工 Mac 上的 edge proxy 連接內網 EP8</li>
+          <li>緩存命中 30% → 0.3ms，零計算</li>
+          <li>敏感代碼端側推理，不出設備</li>
+          <li>非敏感走內網 EP8，13ms，不出內網</li>
+          <li>Hermes(SFT) 語義偵測，自動分流</li>
+        </ul>
+        <p style="margin-top:8px;"><strong>定價：</strong>~$15-25/人/月（vs Copilot $39-200）</p>
+      </div>
+      <div class="card purple">
+        <h4>C 端：個人開發者</h4>
+        <p><strong>痛點：</strong>Copilot 延遲打斷心流，訂閱貴，隱私焦慮</p>
+        <p><strong>方案：</strong>CGC SaaS + 本地 edge proxy</p>
+        <ul>
+          <li>Mac 上跑 2B + MTP draft（本地加速）</li>
+          <li>複雜補全走 CGC 雲端 26B（13ms）</li>
+          <li>用戶感覺 26B 就在本地</li>
+          <li>離線降級到 2B，不斷服</li>
+          <li>免費版（本地 2B）+ Pro 版（雲端 26B）</li>
+        </ul>
+        <p style="margin-top:8px;"><strong>定價：</strong>免費 / $8/月（vs Copilot $10-39）</p>
+      </div>
+      <div class="card teal">
+        <h4>離線/內網場景</h4>
+        <p><strong>痛點：</strong>飛機、安全環境、客戶現場無法用雲端 API</p>
+        <p><strong>方案：</strong>CGC 本地模式</p>
+        <ul>
+          <li>Mac 本地 2B + MTP（149.8 tok/s via llama.cpp）</li>
+          <li>緩存常用補全模式</li>
+          <li>離線時 Hermes 自動降級到 local_only</li>
+          <li>網路恢復後自動切回端雲協同</li>
+        </ul>
+        <p style="margin-top:8px;"><strong>價值：</strong>無網路也能有 AI 補全</p>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- ============ TECH ARCHITECTURE ============ -->
+<div class="container">
+  <section>
+    <h2>五、技術架構與實測數據</h2>
+
+    <h3>5.1 Edge First Proxy（已部署）</h3>
+    <table>
+      <thead>
+        <tr><th>指標</th><th>數值</th><th>說明</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Cache HIT TTFT</td><td><strong>0.3ms</strong></td><td>緩存命中直接返回</td></tr>
+        <tr><td>投機 HIT TTFT</td><td>0-1ms</td><td>首包投機命中</td></tr>
+        <tr><td>MISS penalty</td><td>≈0ms</td><td>Parallel preflight 等效 100%</td></tr>
+        <tr><td>Cache hit rate（實測）</td><td>78%（理想）/ 30%（保守）</td><td>temperature=0 確定性解碼</td></tr>
+        <tr><td>路由決策延遲</td><td>0.003ms</td><td>Hermes 簡化路由</td></tr>
+      </tbody>
+    </table>
+
+    <h3>5.2 EP8 Cluster（Host2 已驗證）</h3>
+    <table>
+      <thead>
+        <tr><th>配置</th><th>Base tok/s</th><th>TTFT</th><th>備註</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>DSV4 Flash EP8 Base</td><td><strong>186.8</strong></td><td><strong>13ms</strong></td><td>11.7x vs TP8，無需 MTP</td></tr>
+        <tr><td>DSV4 Flash TP8 + EAGLE MTP</td><td>~60</td><td>110ms</td><td>MTP 負優化（base 太快）</td></tr>
+        <tr><td>Gemma4 26B TP4 + NEXTN MTP</td><td>272.2</td><td>110ms</td><td>accept 76%</td></tr>
+        <tr><td>Qwen3-VL 2B TP1</td><td>281</td><td>10ms</td><td>端側可用</td></tr>
+        <tr><td>16×TP1 + FP8 雙機</td><td>19,099</td><td>—</td><td>並發 256，100% 成功率</td></tr>
+      </tbody>
+    </table>
+
+    <h3>5.3 Local MTP（MLX 實測，llama.cpp 路徑預期更快）</h3>
+    <table>
+      <thead>
+        <tr><th>指標</th><th>數值</th><th>說明</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>MTP forward（BF16, MLX）</td><td>8.0ms</td><td>llama.cpp C++ 預期更快</td></tr>
+        <tr><td>4-draft batch=4（BF16）</td><td>21.9ms</td><td>vs sequential 32.1ms</td></tr>
+        <tr><td>lm_head（151K vocab, BF16）</td><td>6.9ms</td><td>佔 66%，最大瓶頸</td></tr>
+        <tr><td>32K 限制詞表 forward</td><td>2.7ms</td><td>code completion 適用，3x 快</td></tr>
+        <tr><td>Local MTP crossover</td><td><strong>128 tok/s</strong></td><td>vs Cloud Path B 僅 42 tok/s</td></tr>
+        <tr><td>加速比（base 30 tok/s）</td><td><strong>2.29x</strong></td><td>悲觀場景</td></tr>
+        <tr><td>加速比（base 50 tok/s）</td><td><strong>1.81x</strong></td><td>保守場景</td></tr>
+        <tr><td>加速比（base 80 tok/s）</td><td><strong>1.38x</strong></td><td>樂觀場景</td></tr>
+      </tbody>
+    </table>
+
+    <div class="highlight">
+      <p><strong>關鍵發現：</strong>MTP head 走 llama.cpp C++ 路徑（M4 上 149.8 tok/s vs MLX 26.0 tok/s，5.8x 快），
+      不需要 PyTorch/MPS（已知崩潰），不需要 MLX port。llama.cpp 已有 hidden states 暴露接口。</p>
+    </div>
+
+    <h3>5.4 Hermes Router 增強路線</h3>
+    <table>
+      <thead>
+        <tr><th>維度</th><th>現狀</th><th>增強後</th><th>狀態</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>D1 網路</td><td>延遲/頻寬偵測</td><td>已完整</td><td><span class="tag tag-verified">完成</span></td></tr>
+        <tr><td>D2 硬體</td><td>PlatformBenchmark</td><td>llama.cpp vs MLX 偵測</td><td><span class="tag tag-verified">完成</span></td></tr>
+        <tr><td>D3 模型</td><td>per-model MTP 參數</td><td>三模型已配置</td><td><span class="tag tag-verified">完成</span></td></tr>
+        <tr><td>D4 路由</td><td>4 種路由模式</td><td>已完整</td><td><span class="tag tag-verified">完成</span></td></tr>
+        <tr><td><strong>D5 內容感知</strong></td><td>關鍵詞匹配（has_code）</td><td>SFT 語義級敏感度+複雜度</td><td><span class="tag tag-wip">SFT數據已生成</span></td></tr>
+        <tr><td><strong>D6 策略</strong></td><td>無</td><td>用戶/團隊級策略+審計</td><td><span class="tag tag-new">待實作</span></td></tr>
+      </tbody>
+    </table>
+
+    <h3>5.5 增強路由決策樹</h3>
+    <div class="vs-grid">
+      <div class="vs-box negative">
+        <h4>當前路由（無內容感知）</h4>
+        <pre style="font-size:12px; line-height:1.6; white-space:pre-wrap;">
+Cache HIT → 緩存返回 (0.3ms)
+Cache MISS → 雲端 (13ms)
+  問題：70% 請求代碼上傳雲端
+  數據主權：只有 30%</pre>
+      </div>
+      <div class="vs-box positive">
+        <h4>增強路由（D5+D6）</h4>
+        <pre style="font-size:12px; line-height:1.6; white-space:pre-wrap;">
+Cache HIT → 緩存返回 (0.3ms)
+Cache MISS:
+  ├─ 敏感+簡單 → Local MTP (680 tok/s)
+  ├─ 敏感+複雜 → 脫敏→雲端 or Local
+  └─ 非敏感 → 雲端 EP8 (13ms)
+數據主權：~100%</pre>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- ============ COMPETITIVE ADVANTAGE ============ -->
+<div class="container">
+  <section>
+    <h2>六、競爭優勢與防禦力</h2>
+
+    <h3>誠實的防禦力評估</h3>
+    <table>
+      <thead>
+        <tr><th>能力</th><th>技術門檻</th><th>競爭者複製時間</th><th>防禦力</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Edge proxy（緩存+投機+preflight）</td>
+          <td>低</td>
+          <td>1-2 週</td>
+          <td style="color:var(--red);">弱</td>
+        </tr>
+        <tr>
+          <td>NIXL VRAM→VRAM 傳輸</td>
+          <td>中（開源庫，需知道存在）</td>
+          <td>2-4 週</td>
+          <td style="color:var(--amber);">中弱</td>
+        </tr>
+        <tr>
+          <td>EP8 集群調優</td>
+          <td>中（運維經驗）</td>
+          <td>4-8 週</td>
+          <td style="color:var(--amber);">中弱</td>
+        </tr>
+        <tr>
+          <td>MTP Draft 訓練+部署</td>
+          <td>中高（三模型已訓練）</td>
+          <td>2-3 個月</td>
+          <td style="color:var(--teal);">中</td>
+        </tr>
+        <tr>
+          <td><strong>Hermes(SFT) 語義路由</strong></td>
+          <td><strong>中高（SFT 數據+訓練）</strong></td>
+          <td><strong>2-3 個月</strong></td>
+          <td style="color:var(--teal);"><strong>中</strong></td>
+        </tr>
+        <tr>
+          <td><strong>端雲整合完整系統</strong></td>
+          <td><strong>高（多組件協同）</strong></td>
+          <td><strong>3-4 個月</strong></td>
+          <td style="color:var(--teal);"><strong>中強</strong></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="highlight">
+      <p><strong>防禦力不在單一技術，在於「時間窗 + 整合 + 定位」：</strong></p>
+      <ol style="margin-top:8px;">
+        <li><strong>時間窗：</strong>Claude Code 後門事件 → 國產替代需求是現在，不是明年</li>
+        <li><strong>整合複雜度：</strong>edge proxy + mTLS + SGLang EP8 + 多模型 + Hermes 路由 + MTP draft，完整系統不是 1-2 週能抄的</li>
+        <li><strong>三魚定位：</strong>「低延遲 + 數據主權 + 大模型」三合一定位目前無競品，先占住</li>
+        <li><strong>EP8 調優經驗：</strong>CUDA_HOME/CCCL/flashinfer JIT 的坑是實測踩出來的，競爭者需要時間</li>
+      </ol>
+      <p style="margin-top:8px; color:var(--text2);">這些是「時間窗」護城河，不是「永久」護城河。關鍵是在窗口期內拿到標桿客戶。</p>
+    </div>
+  </section>
+</div>
+
+<!-- ============ BUSINESS MODEL ============ -->
+<div class="container">
+  <section>
+    <h2>七、商業模式</h2>
+
+    <div class="card-grid">
+      <div class="card purple">
+        <h4>A. 技術授權</h4>
+        <p><strong>客戶：</strong>已有 GPU 集群的企業（金融/科技/軍工）</p>
+        <p><strong>交付：</strong>CGC 全棧部署 + 技術支持</p>
+        <p><strong>定價：</strong>按 GPU 節點授權，~$2K/卡/年</p>
+        <p><strong>週期：</strong>2-3 個月落地</p>
+        <p style="color:var(--teal);"><strong>優勢：</strong>最快變現，企業自有 GPU</p>
+      </div>
+      <div class="card blue">
+        <h4>B. SaaS 服務</h4>
+        <p><strong>客戶：</strong>個人開發者 + 中小企業</p>
+        <p><strong>交付：</strong>CGC 雲端 26B + 本地 edge proxy</p>
+        <p><strong>定價：</strong>免費版（本地 2B）/ Pro $8/月（雲端 26B）</p>
+        <p><strong>週期：</strong>4-6 個月上線</p>
+        <p style="color:var(--teal);"><strong>優勢：</strong>規模化，用戶增長飛輪</p>
+      </div>
+      <div class="card teal">
+        <h4>C. 私有化部署</h4>
+        <p><strong>客戶：</strong>政企/國企/軍工（等保/信創要求）</p>
+        <p><strong>交付：</strong>CGC 私有化全套 + 合規審計 + 模型微調</p>
+        <p><strong>定價：</strong>~$15-25/人/月 × 席位數</p>
+        <p><strong>週期：</strong>3-4 個月落地</p>
+        <p style="color:var(--teal);"><strong>優勢：</strong>高利潤，合規門檻，客戶黏性強</p>
+      </div>
+    </div>
+
+    <h3>收入預估（保守）</h3>
+    <table>
+      <thead>
+        <tr><th>模式</th><th>Y1</th><th>Y2</th><th>Y3</th><th>備註</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>A. 技術授權</td><td>$200K</td><td>$800K</td><td>$2M</td><td>2-3 個標桿客戶/年</td></tr>
+        <tr><td>B. SaaS</td><td>$50K</td><td>$300K</td><td>$1.5M</td><td>5K-50K 付費用戶</td></tr>
+        <tr><td>C. 私有化</td><td>$150K</td><td>$600K</td><td>$2.5M</td><td>1-3 個大客戶/年</td></tr>
+        <tr style="background:var(--surface2);">
+          <td><strong>合計</strong></td>
+          <td><strong>$400K</strong></td>
+          <td><strong>$1.7M</strong></td>
+          <td><strong>$6M</strong></td>
+          <td></td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+</div>
+
+<!-- ============ ROADMAP ============ -->
+<div class="container">
+  <section>
+    <h2>八、產品路線圖</h2>
+
+    <div class="timeline">
+      <div class="timeline-item">
+        <div class="phase">Phase 1 · M1-M2</div>
+        <h4>Local MTP Verify Loop + Hermes D5</h4>
+        <p>
+          <strong>目標：</strong>端側 MTP verify loop 跑通（llama.cpp hidden states → MTP head → accept/reject），
+          Hermes D5 內容感知模組（SFT 微調），proxy 代碼過濾/脫敏。
+        </p>
+        <p>
+          <strong>交付：</strong>Mac M4 上 2B + MTP 端側推理可用，敏感代碼自動走端側。
+        </p>
+        <p>
+          <strong>風險：</strong>llama.cpp hidden states 接口需驗證；accept rate 需實測（離線 98.56%，端側未知）。
+        </p>
+      </div>
+      <div class="timeline-item">
+        <div class="phase">Phase 2 · M2-M3</div>
+        <h4>雙 EP8 LB + 企業級審計</h4>
+        <p>
+          <strong>目標：</strong>Host1+Host2 雙 EP8 + Global LB 部署，企業級審計日誌（結構化日誌 + 管理員 dashboard），
+          多租戶緩存隔離。
+        </p>
+        <p>
+          <strong>交付：</strong>可交付企業客戶的私有化版本（A 模式 + C 模式）。
+        </p>
+      </div>
+      <div class="timeline-item">
+        <div class="phase">Phase 3 · M3-M4</div>
+        <h4>標桿客戶落地 + SaaS Beta</h4>
+        <p>
+          <strong>目標：</strong>1-2 個 B 端標桿客戶（金融/政企）私有化部署，SaaS Beta 上線。
+        </p>
+        <p>
+          <strong>交付：</strong>客戶案例 + 性能報告 + SaaS 免費版開放。
+        </p>
+      </div>
+      <div class="timeline-item">
+        <div class="phase">Phase 4 · M4-M6</div>
+        <h4>企業模型微調 + 規模化</h4>
+        <p>
+          <strong>目標：</strong>企業代碼庫微調封裝（train_mtp.py → 一鍵微調流程），SaaS Pro 版上線。
+        </p>
+        <p>
+          <strong>交付：</strong>企業可客製化 draft model，SaaS 付費用戶 5K+。
+        </p>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- ============ RISKS ============ -->
+<div class="container">
+  <section>
+    <h2>九、風險評估</h2>
+
+    <table>
+      <thead>
+        <tr><th>風險</th><th>等級</th><th>影響</th><th>緩解措施</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>llama.cpp hidden states 接口不支持 MTP head</td>
+          <td style="color:var(--red);">高</td>
+          <td>Local MTP verify loop 無法實現</td>
+          <td>M1 早期驗證；備案：自建 C++ 擴展暴露 hidden states</td>
+        </tr>
+        <tr>
+          <td>端側 accept rate 低於預期</td>
+          <td style="color:var(--amber);">中</td>
+          <td>MTP 加速比下降，魚二價值減弱</td>
+          <td>離線 chain_acc 98.56% 是上界；限制詞表可提升 accept</td>
+        </tr>
+        <tr>
+          <td>Cache hit rate 現實低於 30%</td>
+          <td style="color:var(--amber);">中</td>
+          <td>魚三「感覺在本地」效果減弱</td>
+          <td>30% 是保守估計；可加 prefetch 提升命中率</td>
+        </tr>
+        <tr>
+          <td>競品快速跟進邊緣緩存</td>
+          <td style="color:var(--amber);">中</td>
+          <td>時間窗護城河被侵蝕</td>
+          <td>加速標桿客戶落地；三魚定位差異化足夠大</td>
+        </tr>
+        <tr>
+          <td>SFT 路由準確率不足</td>
+          <td style="color:var(--amber);">中</td>
+          <td>敏感代碼誤判 → 非敏感上雲</td>
+          <td>regex 兜底（API key/password pattern）；誤判傾向保守（寧可端側跑慢）</td>
+        </tr>
+        <tr>
+          <td>2B 模型補全質量不足</td>
+          <td style="color:var(--text2);">低</td>
+          <td>敏感場景補全質量差</td>
+          <td>MTP draft 增強；定位為「速度優先」場景</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+</div>
+
+<!-- ============ TECH ASSETS ============ -->
+<div class="container">
+  <section>
+    <h2>十、技術資產盤點</h2>
+
+    <h3>已完成（實測驗證）</h3>
+    <table>
+      <thead>
+        <tr><th>資產</th><th>狀態</th><th>關鍵數據</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Edge First Proxy</td><td><span class="tag tag-verified">已部署</span></td><td>0.3ms TTFT, miss penalty≈0</td></tr>
+        <tr><td>EP8 Cluster (Host2)</td><td><span class="tag tag-verified">已驗證</span></td><td>186.8 tok/s, 13ms TTFT</td></tr>
+        <tr><td>NIXL VRAM→VRAM 傳輸</td><td><span class="tag tag-verified">已驗證</span></td><td>byte-match 確認</td></tr>
+        <tr><td>mTLS 直連</td><td><span class="tag tag-verified">已部署</span></td><td>連接池 -56% TTFT</td></tr>
+        <tr><td>Gemma4 NEXTN MTP</td><td><span class="tag tag-verified">已部署</span></td><td>272 tok/s, accept 76%</td></tr>
+        <tr><td>MTP Draft 三模型訓練</td><td><span class="tag tag-verified">已完成</span></td><td>Gemma4/DSV4/Qwen3-VL</td></tr>
+        <tr><td>Hermes 4D 路由</td><td><span class="tag tag-verified">已完成</span></td><td>0.003ms 決策</td></tr>
+        <tr><td>SFT 數據生成管線</td><td><span class="tag tag-verified">已完成</span></td><td>hermes_route_sft.py</td></tr>
+        <tr><td>PlatformBenchmark</td><td><span class="tag tag-verified">已完成</span></td><td>llama.cpp 5.8x vs MLX</td></tr>
+        <tr><td>16 卡壓測</td><td><span class="tag tag-verified">已完成</span></td><td>19,099 tok/s @256 並發</td></tr>
+        <tr><td>Local MTP 性能基線</td><td><span class="tag tag-verified">已實測</span></td><td>crossover 128 tok/s</td></tr>
+      </tbody>
+    </table>
+
+    <h3>待完成</h3>
+    <table>
+      <thead>
+        <tr><th>項目</th><th>預估工作量</th><th>依賴</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Local MTP verify loop（llama.cpp 路徑）</td><td>2-3 週</td><td>llama.cpp hidden states 接口驗證</td></tr>
+        <tr><td>Hermes D5 內容感知 + SFT 微調</td><td>2 週</td><td>SFT 數據已有</td></tr>
+        <tr><td>Proxy 代碼過濾/脫敏</td><td>1-2 週</td><td>regex + Hermes D5</td></tr>
+        <tr><td>雙 EP8 + Global LB</td><td>1 週</td><td>Host1 CCCL 修復（進行中）</td></tr>
+        <tr><td>企業級審計日誌</td><td>1 週</td><td>proxy 日誌結構化</td></tr>
+        <tr><td>多租戶緩存隔離</td><td>2-3 週</td><td>proxy 緩存重構</td></tr>
+      </tbody>
+    </table>
+  </section>
+</div>
+
+<!-- ============ CONCLUSION ============ -->
+<div class="container">
+  <section>
+    <h2>十一、結論</h2>
+
+    <div class="highlight">
+      <p>
+        <strong>CGC 三魚模式的核心邏輯：</strong>
+        不試圖在單一技術上建立護城河（proxy 三件套門檻低，我們承認），
+        而是通過<strong>同一套技術棧服務三個獨立的產品價值</strong>，
+        在競品定位矩陣上占據一個目前無人占據的位置。
+      </p>
+      <ul style="margin-top:12px;">
+        <li><strong>魚一（數據主權）：</strong>解決 B 端 #1 痛點，Hermes(SFT) 讓 cache miss 也不破主權</li>
+        <li><strong>魚二（推理加速）：</strong>Local MTP crossover 128 tok/s，端側 2B 加速 1.4-2.3x</li>
+        <li><strong>魚三（跑大模型）：</strong>16GB Mac 用戶「感覺」26B 就在本地，三層疊加消除延遲感知</li>
+      </ul>
+      <p style="margin-top:12px;">
+        技術棧不變——MTP Draft（llama.cpp 路徑，149.8 tok/s）+ Hermes(SFT) + Edge Proxy + EP8——
+        但產品價值是三維的。<strong>這不是技術護城河，是「定位 × 時間窗 × 整合度」的組合護城河。</strong>
+      </p>
+      <p style="margin-top:12px; color:var(--text2);">
+        Claude Code 後門事件創造了國產替代的時間窗。CGC 需要在窗口期內完成 Phase 1-2，
+        拿到 1-2 個標桿客戶，占住「低延遲 + 數據主權 + 大模型」的三合一定位。
+      </p>
+    </div>
+  </section>
+</div>
+
+<div class="container">
+  <div class="footer">
+    <p>CGC (Compute Graph Compiler) · 三魚模式 BP V1.0 · 2026-07-31</p>
+    <p>所有性能數據均為實測值，標註來源。未實測項目標註為「預期」。</p>
+  </div>
+</div>
+
+</body>
+</html>

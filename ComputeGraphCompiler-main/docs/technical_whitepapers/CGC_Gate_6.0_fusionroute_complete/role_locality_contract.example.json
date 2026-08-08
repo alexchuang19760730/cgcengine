@@ -1,0 +1,18 @@
+{
+  "schema_version": "fusionroute.role_locality_contract.v1",
+  "contract_id": "fusionroute_role_locality_ui_tars",
+  "role": "UI-TARS",
+  "gate_domain": "agent_runtime",
+  "preferred_locality": "hybrid",
+  "allowed_localities": [
+    "edge",
+    "cloud",
+    "hybrid",
+    "auto"
+  ],
+  "runtime_endpoint": "edge://ui-tars-executor-primary",
+  "fallback_endpoint": "cloud://ui-tars-cloud-backstop",
+  "policy_source": "fusionroute_v2_static_contract",
+  "handoff_contract": "EdgeCloudLayerHandoff",
+  "notes": "Generated example for the FusionRoute role locality contract under Gate 6.0."
+}

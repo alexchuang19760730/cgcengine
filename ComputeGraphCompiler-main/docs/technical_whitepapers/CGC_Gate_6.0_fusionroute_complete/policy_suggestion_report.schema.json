@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cgc://gate6/fusionroute/policy_suggestion_report.schema.json",
+  "title": "Perception Matrix Policy Suggestion Report",
+  "description": "Schema for LLM-assisted policy suggestions produced by the Perception Matrix before contract projection.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_id",
+    "environment_type",
+    "task_type",
+    "recommended_gate_domain",
+    "recommended_primary_role",
+    "recommended_locality",
+    "recommended_topology_profile",
+    "reasoning",
+    "status"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "perception_matrix.policy_suggestion_report.v1"
+    },
+    "report_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "environment_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "recommended_gate_domain": {
+      "type": "string",
+      "enum": [
+        "agent_runtime",
+        "coding_runtime",
+        "embodied_capability",
+        "offline_synthesis"
+      ]
+    },
+    "recommended_primary_role": {
+      "type": "string",
+      "minLength": 1
+    },
+    "recommended_secondary_roles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "recommended_locality": {
+      "type": "string",
+      "enum": [
+        "cloud",
+        "edge",
+        "hybrid",
+        "auto"
+      ]
+    },
+    "recommended_topology_profile": {
+      "type": "string",
+      "minLength": 1
+    },
+    "recommended_bootstrap_profile": {
+      "type": "string"
+    },
+    "recommended_model_profile": {
+      "type": "string"
+    },
+    "reasoning": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "llm_model": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "PASS",
+        "FAIL",
+        "PENDING"
+      ]
+    }
+  }
+}

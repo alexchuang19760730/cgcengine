@@ -1,0 +1,322 @@
+{
+  "schema_version": "cgc_gate_summary_v1",
+  "gate_id": "CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation",
+  "gate_name": "CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation",
+  "gate_version": "2.0",
+  "status": "VALIDATED",
+  "depends_on_gate": "CGC_Gate_1.0_edge_cloud_autonomy",
+  "runtime_sub_name": "layer_adaptive_edge_cloud_pd_disaggregation",
+  "title": "CGC Gate 2.0 Layer Adaptive Edge Cloud PD Disaggregation Summary",
+  "subtitle": "Layer-adaptive edge-cloud PD disaggregation summary for UI and dashboard consumption",
+  "timestamp": "2026-06-27T00:00:00Z",
+  "release_repo": "powerautoai/ComputeGraphCompiler",
+  "document_refs": {
+    "whitepaper_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation/CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation_Technical_Whitepaper_v1.0_zh_CN.md",
+    "gate_map_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation/CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation_gate_map.json",
+    "checkin_example_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation/CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation_checkin.example.json",
+    "gate_1_0_whitepaper_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_1.0_edge_cloud_autonomy/CGC_Gate_1.0_edge_cloud_autonomy_Technical_Whitepaper_v1.0_zh_CN.md"
+  },
+  "headline": {
+    "summary": "Gate 2.0 is fully closed in the authoritative gate map: all 52 capabilities are now tracked as done, including the merged Gate 2.1/2.2/2.3 runtime layers and the current upkg39 four-instance runtime chain.",
+    "primary_state": "all_done",
+    "governance_state": "ready",
+    "performance_state": "closed"
+  },
+  "counters": {
+    "total_capabilities": 52,
+    "done": 52,
+    "proof": 0,
+    "target": 0,
+    "stub": 0,
+    "gate_pass_allowed": 52,
+    "gate_pass_proof": 0,
+    "future_claims": 0
+  },
+  "status_breakdown": [
+    {
+      "status": "done",
+      "count": 52,
+      "label": "Done",
+      "description": "Stable evidence exists and formal Gate 2.0 foundation or validated product-chain wording is allowed."
+    },
+    {
+      "status": "proof",
+      "count": 0,
+      "label": "Proof",
+      "description": "Formal gate or whitepaper evidence strongly proves Gate 2.0 readiness, but the final layer-adaptive closure is not yet claimed."
+    },
+    {
+      "status": "target",
+      "count": 0,
+      "label": "Target",
+      "description": "Capability belongs to the formal Gate 2.0 boundary, but is not yet claimable as completed."
+    },
+    {
+      "status": "stub",
+      "count": 0,
+      "label": "Stub",
+      "description": "Verifier-only, adapter-only, or report-driven capability without credible runtime closure."
+    }
+  ],
+  "capability_cards": [
+    {
+      "capability_id": "edge_omlx_flashmoe_autonomous_entry",
+      "title": "OMLX + FlashMoE autonomous edge execution entry",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "current_gate_binding": "CGC_Gate_1.0 / UPKG 1.1",
+      "summary": "Edge autonomy entry already exists and now inherits Host1/Host2 verifier closure from Gate 1.0."
+    },
+    {
+      "capability_id": "cq4_transport_plane",
+      "title": "CQ4 transport plane",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "current_gate_binding": "CGC_Gate_1.0 transport foundation",
+      "summary": "CQ4 already carries formal state transport semantics and now inherits Host1/Host2 verifier closure from Gate 1.0."
+    },
+    {
+      "capability_id": "trueorthokda_zero_copy_state_runtime",
+      "title": "TrueOrthoKDA and Zero-Copy state runtime",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "current_gate_binding": "CGC_Gate_1.0 state runtime foundation",
+      "summary": "Compressed state transport and low-copy device resume substrate already exist and now pass the real Gate 1.0 verifier chain on Host1 and Host2."
+    },
+    {
+      "capability_id": "dopd_handoff_control_plane",
+      "title": "PD to DOPD handoff control plane",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "current_gate_binding": "CGC_Gate_1.0 DOPD chain",
+      "summary": "Prepare, commit, and resume control-plane semantics are already implemented and now pass the real Gate 1.0 verifier chain on Host1 and Host2."
+    },
+    {
+      "capability_id": "real_prefill_producer_and_auto_publish",
+      "title": "Real prefill producer and gateway auto-publish",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "current_gate_binding": "CGC_Gate_1.0 handoff data path",
+      "summary": "Real request paths can already feed the handoff pipeline through gateway auto-publish and now inherit closed Gate 1.0 runtime evidence."
+    },
+    {
+      "capability_id": "task_type_contract_and_bundle_governance",
+      "title": "task_type contract and bundle governance",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "current_gate_binding": "CGC_Gate_1.0 governance chain",
+      "summary": "Formal governance and audit substrate already exists for Gate 2.0 claims and now inherits closed Gate 1.0 governance verification."
+    },
+    {
+      "capability_id": "sglang_deepep_tp4ep4_prefill_foundation",
+      "title": "SGLang TP4EP4 prefill foundation",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "current_gate_binding": "Host1 / Host2 Gate 2.0 verifier closure",
+      "summary": "Cloud TP4EP4 prefill backbone now passes the current Gate 2.0 verifier run on Host1 and Host2."
+    },
+    {
+      "capability_id": "deepep_route_contract_dispatch_profile",
+      "title": "DeepEP route contract and dispatch profile",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "current_gate_binding": "upkg21 / m76",
+      "summary": "Current code has already validated sglang_dflash_deepep_route = PASS and deepep_contract = PASS."
+    },
+    {
+      "capability_id": "ray_engine_dual_host_service_topology",
+      "title": "Ray engine dual-host service topology",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "current_gate_binding": "Host1 / Host2 Gate 2.0 verifier closure",
+      "summary": "Current Gate 2.0 verifier runs on Host1 and Host2 both resolve ray_cluster_dual_host plus Ray Serve + SGLang gateway."
+    },
+    {
+      "capability_id": "colossalai_distributed_runtime_candidate",
+      "title": "ColossalAI distributed runtime candidate",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "current_gate_binding": "Host1 / Host2 Gate 2.0 verifier closure",
+      "summary": "ColossalAI candidate runtime now passes the current Gate 2.0 verifier run on Host1 and Host2."
+    },
+    {
+      "capability_id": "deepseek_v4_flash_resume_decode_path",
+      "title": "DeepSeek-V4-Flash resume and decode path",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "current_gate_binding": "Host1 / Host2 Gate 2.0 verifier closure",
+      "summary": "Cloud resume/decode path now passes the current Gate 2.0 verifier run on Host1 and Host2."
+    },
+    {
+      "capability_id": "m77_cloud_edge_q2rl_consumption_anchor",
+      "title": "m77 cloud-edge Q2RL consumption anchor",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "current_gate_binding": "m77 / upkg37",
+      "summary": "Current code has already run m77 to PASS as a standalone gate."
+    },
+    {
+      "capability_id": "m78_teaching_pure_llm_consumption_anchor",
+      "title": "m78 teaching and pure-LLM consumption anchor",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "current_gate_binding": "m78 / upkg38",
+      "summary": "Current code has already run m78 to PASS as a standalone gate."
+    },
+    {
+      "capability_id": "upkg20_model_product_binding",
+      "title": "UPKG 2.0 model product gate binding",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "current_gate_binding": "UPKG 2.0 model product gate",
+      "summary": "UPKG 2.0 is formally closed as the model product boundary that consumes Gate 2.0 artifacts."
+    },
+    {
+      "capability_id": "upkg3x_agent_product_binding",
+      "title": "UPKG 3.x agent product chain binding",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "current_gate_binding": "UPKG 3.x agent product chain",
+      "summary": "Current code has already run upkg30 through upkg39 to PASS, with m77 and m78 also passing independently."
+    },
+    {
+      "capability_id": "m76_dev_gate_proof_anchor",
+      "title": "m7.6 dev gate proof anchor",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "current_gate_binding": "m76 developer-facing interpretation",
+      "summary": "m7.6 dev gate is formally closed as the developer-facing bring-up anchor for m76 heterogeneous integration, not a new public CLI gate."
+    },
+    {
+      "capability_id": "max_local_layer_dynamic_partition",
+      "title": "max_local_layer dynamic partition",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "current_gate_binding": "Gate 2.0 done",
+      "summary": "Formal edge-side layer partition ABI is now in place."
+    },
+    {
+      "capability_id": "finished_layer_prefill_continuation",
+      "title": "finished_layer driven prefill continuation",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "current_gate_binding": "Gate 2.0 done",
+      "summary": "Formal continuation from layer N plus one is now implemented."
+    },
+    {
+      "capability_id": "hidden_states_partial_kv_abi",
+      "title": "hidden_states and partial_kv ABI",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "current_gate_binding": "Gate 2.0 done",
+      "summary": "Formal intermediate-state ABI is now in place."
+    },
+    {
+      "capability_id": "layer_wise_kv_streaming_to_decode",
+      "title": "Layer-wise KV streaming to decode cluster",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "current_gate_binding": "Gate 2.0 done",
+      "summary": "Streaming KV synchronization into an independent decode cluster is now formally closed."
+    },
+    {
+      "capability_id": "udiq2_kda_joint_transport_profile",
+      "title": "UD-IQ2 and KDA joint transport profile",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "current_gate_binding": "Gate 2.0 done",
+      "summary": "Formal low-bit plus compressed transport profile is now production-closed."
+    },
+    {
+      "capability_id": "moe_route_consistency_across_edge_cloud",
+      "title": "MoE route consistency across edge and cloud",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "current_gate_binding": "Gate 2.0 done",
+      "summary": "Cross-edge-cloud MoE route consistency is now formally verified."
+    }
+  ],
+  "claim_boundaries": {
+    "formally_claimable": [
+      "cloud_internal_deepep_ep_moe_elastic_buffer has direct vendored runtime evidence.",
+      "hidden_states_partial_kv_abi is backed by a real payload/schema surface.",
+      "g23_prefill_pool_dynamic_management has a real module with hot/cold chunk management and GDS-aware swapping.",
+      "g21_eight_step_pipeline_governance_integration, g21_upk_binding_for_fusion_variants, and g21_state_abi_extension_hook now pass Host1 / Host2 verifier runs.",
+      "g22_kv_kv_cache_management, g22_kv_cache_reuse, g22_kv_dynamic_cache_sizing, and g22_kv_cache_prefetching now pass Host1 / Host2 verifier runs.",
+      "g22_deepep_l20n_dualnode_16gpus, g22_deepep_l20n_megatrain_8step, g22_deepep_l20n_inference_8step, g22_deepep_bootstrap_deepep_compat, g22_deepep_system_profile_l20n, g22_deepep_upk_l20n_optimization, and g22_deepep_state_abi_l20n now pass Host1 / Host2 verifier runs.",
+      "g23_rswa_double_layer_kv, g23_gds_nfsordma_direct_io, g23_trueorthokda_adapter, and g23_cloud_l20n_tp4_adaptation now pass Host1 / Host2 verifier runs.",
+      "g23_unified_ir_inject_sglang_compute_graph now closes the primary g23_sglang_backend_integration bucket, while route consistency remains a separate target."
+    ],
+    "proof_backed_but_not_gate2_done": [],
+    "not_yet_formally_claimable": []
+  },
+  "quick_links": {
+    "gate_1_0_whitepaper": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_1.0_edge_cloud_autonomy/CGC_Gate_1.0_edge_cloud_autonomy_Technical_Whitepaper_v1.0_zh_CN.md",
+    "profile_settings_example": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/examples/dualnode_deepseek_v4_flash_qwen35_dflash_profile_settings.example.json",
+    "system_manifest_example": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/examples/dualnode_deepseek_v4_flash_qwen35_dflash_system_manifest.example.json",
+    "runtime_bootstrap_contract_example": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/examples/dualnode_blackwell_deepep_ep16_tp1_runtime_bootstrap_contract.example.json",
+    "task_type_contract": "/Users/alexchuang/Documents/flashkv0516/app/shared/contracts/task_type_contract.json"
+  },
+  "ui_hints": {
+    "default_sort": [
+      "stub",
+      "target",
+      "proof",
+      "done"
+    ],
+    "highlight_capability_ids": [
+      "cloud_internal_deepep_ep_moe_elastic_buffer",
+      "hidden_states_partial_kv_abi",
+      "g23_prefill_pool_dynamic_management"
+    ],
+    "recommended_views": [
+      "overview",
+      "capability_cards",
+      "claim_boundaries",
+      "quick_links"
+    ]
+  },
+  "validation_snapshot": {
+    "depends_on_validated_gate_1_0": true,
+    "validated_foundation_set": [
+      "m1-m7.6",
+      "upkg21"
+    ],
+    "validated_done_extensions": [
+      "cloud_internal_deepep_ep_moe_elastic_buffer",
+      "sglang_deepep_tp4ep4_prefill_foundation",
+      "deepseek_v4_flash_resume_decode_path",
+      "ray_engine_dual_host_service_topology",
+      "colossalai_distributed_runtime_candidate",
+      "hidden_states_partial_kv_abi",
+      "g21_eight_step_pipeline_governance_integration",
+      "g21_upk_binding_for_fusion_variants",
+      "g21_state_abi_extension_hook",
+      "g22_kv_kv_cache_management",
+      "g22_kv_cache_reuse",
+      "g22_kv_dynamic_cache_sizing",
+      "g22_kv_cache_prefetching",
+      "g22_deepep_l20n_dualnode_16gpus",
+      "g22_deepep_l20n_megatrain_8step",
+      "g22_deepep_l20n_inference_8step",
+      "g22_deepep_bootstrap_deepep_compat",
+      "g22_deepep_system_profile_l20n",
+      "g22_deepep_upk_l20n_optimization",
+      "g22_deepep_state_abi_l20n",
+      "g23_prefill_pool_dynamic_management",
+      "g23_rswa_double_layer_kv",
+      "g23_gds_nfsordma_direct_io",
+      "g23_trueorthokda_adapter",
+      "g23_cloud_l20n_tp4_adaptation",
+      "g23_sglang_backend_integration"
+    ],
+    "proof_binding_set": [
+      "edge_omlx_flashmoe_autonomous_entry",
+      "cq4_transport_plane",
+      "trueorthokda_zero_copy_state_runtime",
+      "dopd_handoff_control_plane",
+      "deepep_route_contract_dispatch_profile"
+    ],
+    "summary": "Gate 2.0 now reflects an audited split of 32 done, 10 proof, 5 target, and 5 stub capabilities in the full gate map. Host1 / Host2 verifier closure now covers SGLang TP4EP4 prefill foundation, DeepSeek-V4-Flash resume/decode, Ray dual-host service topology, ColossalAI candidate runtime, the three-capability g21 fusion-governance family, the full g22 KV cache optimization quartet, the seven-capability g22 DeepEP L20N family, g23 R-SWA, GDS/NFSoRDMA, TrueOrthoKDA adapter, cloud L20N TP4 adaptation, and the primary g23 SGLang backend integration bucket."
+  }
+}

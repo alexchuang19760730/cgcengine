@@ -1,0 +1,55 @@
+{
+  "architecture": "edge-cloud-hybrid",
+  "version": "1.0",
+  
+  "edge": {
+    "enabled": true,
+    "platform": "metal",
+    "device_count": 1,
+    "role": "decode",
+    "batch_size": 4,
+    "max_decode_tokens": 256,
+    "priority": "low_latency",
+    "metal_config": {
+      "command_queue_count": 2,
+      "preallocate_heap": true,
+      "heap_size_gb": 8,
+      "enable_zero_copy": true
+    }
+  },
+  
+  "cloud": {
+    "enabled": true,
+    "platform": "cuda",
+    "device_count": 2,
+    "role": "prefill",
+    "tp_degree": 2,
+    "batch_size": 8,
+    "max_prefill_seq_len": 2048,
+    "priority": "high_throughput",
+    "cuda_config": {
+      "enable_cuda_graph": true,
+      "enable_spdk": true,
+      "enable_pd_separation": true,
+      "nccl_timeout_ms": 30000,
+      "kv_cache_size_gb": 16
+    }
+  },
+  
+  "communication": {
+    "protocol": "grpc",
+    "compression": "gzip",
+    "buffer_size_mb": 64,
+    "timeout_ms": 30000,
+    "retry_count": 3,
+    "fallback_strategy": "local"
+  },
+  
+  "load_balancing": {
+    "strategy": "latency_based",
+    "edge_threshold_ms": 100,
+    "cloud_threshold_ms": 500,
+    "auto_switch": true,
+    "monitor_interval_ms": 1000
+  }
+}

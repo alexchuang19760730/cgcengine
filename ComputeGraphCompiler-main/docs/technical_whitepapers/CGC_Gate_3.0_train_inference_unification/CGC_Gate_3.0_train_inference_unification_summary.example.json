@@ -1,0 +1,365 @@
+{
+  "schema_version": "cgc_gate_summary_v1",
+  "gate_id": "CGC_Gate_3.0_train_inference_unification",
+  "gate_name": "CGC_Gate_3.0_train_inference_unification",
+  "gate_version": "3.0",
+  "status": "VALIDATED",
+  "runtime_sub_name": "upkg_train_inference_unification_closure",
+  "historical_composite_alias": "upkg_train_inference_unification",
+  "title": "CGC Gate 3.0 Train-Inference Unification Summary",
+  "subtitle": "Train-inference unification capability closure and governance summary for UI/dashboard consumption",
+  "timestamp": "2026-07-07T11:43:01Z",
+  "release_repo": "powerautoai/ComputeGraphCompiler",
+  "document_refs": {
+    "whitepaper_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_3.0_train_inference_unification/CGC_Gate_3.0_train_inference_unification_Technical_Whitepaper_v1.0_zh_CN.md",
+    "gate_map_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_3.0_train_inference_unification/CGC_Gate_3.0_train_inference_unification_gate_map.json",
+    "checkin_example_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_3.0_train_inference_unification/CGC_Gate_3.0_train_inference_unification_checkin.example.json",
+    "self_harness_report_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/tools/scripts/run/self_harness_report_20260707_114301.json"
+  },
+  "headline": {
+    "summary": "All 27 train-inference unification capabilities are done; formal Gate 3.0 verify and self-harness both passed, and artifacts are synced to host1/host2.",
+    "primary_state": "done",
+    "governance_state": "ready",
+    "performance_state": "closed"
+  },
+  "counters": {
+    "total_capabilities": 27,
+    "done": 27,
+    "integrated": 0,
+    "target": 0,
+    "missing_formal_gate": 0,
+    "gate_pass_allowed": 27,
+    "gate_pass_partial": 0,
+    "gate_pass_blocked": 0
+  },
+  "status_breakdown": [
+    {
+      "status": "done",
+      "count": 27,
+      "label": "Done",
+      "description": "Stable evidence exists and formal gate wording is allowed."
+    },
+    {
+      "status": "integrated",
+      "count": 0,
+      "label": "Integrated",
+      "description": "Code is connected into the main path, but formal gate closure or runtime evidence is still pending."
+    },
+    {
+      "status": "target",
+      "count": 0,
+      "label": "Target",
+      "description": "Capability is defined but not yet implemented or not yet wired into the main path."
+    }
+  ],
+  "capability_cards": [
+    {
+      "capability_id": "megatrain_cuda_training_codegen",
+      "title": "MegatrainCGC CUDA training backend codegen",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "summary": "Code is fully landed in cgc_engine/agent/megatrain_cgc.py."
+    },
+    {
+      "capability_id": "mlx_tune_metal_lora_finetune",
+      "title": "MLXTuneCGC Apple Silicon Metal backend LoRA/QLoRA",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "D",
+      "summary": "Code is fully landed in cgc_engine/agent/mlx_tune_cgc.py."
+    },
+    {
+      "capability_id": "train_inference_graph_capture",
+      "title": "torch.compile full graph capture (Megatrain + MLX-Tune)",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "summary": "Both capture modules are landed."
+    },
+    {
+      "capability_id": "megatrain_vllm_weight_consistency_bridge",
+      "title": "MegatrainVLLMBridge train->inference weight consistency",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "A",
+      "summary": "Bridge code is fully landed."
+    },
+    {
+      "capability_id": "kda_orthobasis_preservation",
+      "title": "TrueOrthoKDA ortho_basis preservation across train->inference",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "B",
+      "summary": "Bridge preserves kda_ortho_basis field."
+    },
+    {
+      "capability_id": "cgc_simd_train_inference_instruction_set",
+      "title": "CGC SIMD shared train/inference instruction set",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "summary": "SIMD instruction set is implemented and shared."
+    },
+    {
+      "capability_id": "megatrain_single_layer_streaming_hook",
+      "title": "MegatrainHook single-layer streaming execution",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "summary": "Hook is landed."
+    },
+    {
+      "capability_id": "mlx_tune_lora_edge_cloud_collaboration",
+      "title": "MLX-Tune LoRA edge-cloud collaboration loop",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "D",
+      "summary": "D1-D4 all validated: LoRA adapter serialization, edge->cloud registration, QLoRA cross-side compatibility, LoRA config alignment."
+    },
+    {
+      "capability_id": "train_inference_unification_governance",
+      "title": "Train-inference unification governance extension",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "governance",
+      "summary": "task_type_contract train-inference branch fields defined and validated."
+    },
+    {
+      "capability_id": "distributed_topology_adaptive",
+      "title": "Distributed parallel topology adaptive derivation (TP/EP/PP/DP)",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "summary": "ParallelTopology dataclass validates tp*ep*pp*dp == world_size."
+    },
+    {
+      "capability_id": "colossalai_hardcode_fix",
+      "title": "ColossalAI path hardcode removal (dual-node TP4EP4+DP2 support)",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "summary": "All hardcoded values removed; uses compute_parallel_topology() for plugin config."
+    },
+    {
+      "capability_id": "nemo_automodel_thin_adapter",
+      "title": "NeMo Automodel thin adapter (dependency decoupled + auto/force/skip fallback)",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "summary": "use_nemo=auto/force/skip with _detect_nemo_available() and _decide_nemo_usage()."
+    },
+    {
+      "capability_id": "cpp_moe_engine_train_inference_shared",
+      "title": "Train-inference shared C++ MoE Engine (autograd binding + 12 ops)",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "summary": "Compiled on host1 (39.106.118.206): cgc_moe_engine.so (3.7MB, ELF 64-bit x86-64)."
+    },
+    {
+      "capability_id": "preference_alignment_dpo",
+      "title": "DPO direct preference optimization trainer",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "summary": "DPOTrainer landed in preference_trainers.py."
+    },
+    {
+      "capability_id": "preference_alignment_orpo",
+      "title": "ORPO SFT+preference unified trainer",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "summary": "ORPOTrainer landed."
+    },
+    {
+      "capability_id": "preference_alignment_grpo",
+      "title": "GRPO reasoning-enhanced alignment trainer (DeepSeek-R1)",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "summary": "GRPOTrainer landed."
+    },
+    {
+      "capability_id": "preference_alignment_kto",
+      "title": "KTO lightweight preference optimization trainer (prospect theory)",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "summary": "KTOTrainer landed."
+    },
+    {
+      "capability_id": "preference_alignment_simpo",
+      "title": "SimPO simple preference optimization trainer (length-normalized)",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "summary": "SimPOTrainer landed."
+    },
+    {
+      "capability_id": "slime_opd_online_policy_distillation",
+      "title": "Slime OPD online policy distillation (Token-level KL + dynamic teacher logit)",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "summary": "Slime framework integrated under Backend/CGC/vendored/slime/."
+    },
+    {
+      "capability_id": "slime_rl_grpo",
+      "title": "Slime RL GRPO reasoning-enhanced alignment",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "summary": "GRPO algorithm integrated in Slime RL stack."
+    },
+    {
+      "capability_id": "slime_rl_gspo",
+      "title": "Slime RL GSPO generalized policy optimization",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "summary": "GSPO algorithm integrated in Slime RL stack."
+    },
+    {
+      "capability_id": "slime_rl_ppo",
+      "title": "Slime RL standard PPO",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "summary": "Standard PPO algorithm integrated in Slime RL stack."
+    },
+    {
+      "capability_id": "slime_rl_dapo",
+      "title": "Slime RL DAPO math RL",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "summary": "DAPO math RL algorithm integrated in Slime RL stack."
+    },
+    {
+      "capability_id": "slime_moe_parallel_distillation",
+      "title": "Slime MoE multi-node parallel distillation",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "summary": "MoE multi-node parallel distillation validated."
+    },
+    {
+      "capability_id": "slime_speculative_decoding_integration",
+      "title": "Slime speculative decoding integration (JetSpec/DSpark/SGLang)",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "summary": "Seamless integration with JetSpec/DSpark/SGLang spec decoders."
+    },
+    {
+      "capability_id": "slime_rswa_long_context_cache",
+      "title": "Slime RSWA long-context cache",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "summary": "RSWA long-context cache integrated in Slime."
+    },
+    {
+      "capability_id": "slime_teacher_student_inference_backend",
+      "title": "Slime SGLang Actor+Teacher dual-model backend",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "summary": "SGLang dual-model (Actor + Teacher) backend integrated."
+    }
+  ],
+  "claim_boundaries": {
+    "formally_claimable": [
+      "MegatrainCGC CUDA training backend codegen is landed and formally gate-passed.",
+      "MLXTuneCGC Apple Silicon Metal LoRA/QLoRA backend is landed and formally gate-passed.",
+      "torch.compile full graph capture (Megatrain + MLX-Tune) is landed and formally gate-passed.",
+      "MegatrainVLLMBridge train->inference weight consistency (tolerance < 1e-5) is formally gate-passed.",
+      "TrueOrthoKDA ortho_basis preservation across train->inference is formally gate-passed.",
+      "CGC SIMD shared train/inference instruction set is formally gate-passed.",
+      "MegatrainHook single-layer streaming execution is formally gate-passed.",
+      "MLX-Tune LoRA edge-cloud collaboration loop (Dimension D) is closed and formally gate-passed.",
+      "Train-inference unification governance extension is defined and formally gate-passed.",
+      "Distributed topology adaptation, ColossalAI hardcode removal, NeMo thin adapter, and the shared C++ MoE engine are formally gate-passed.",
+      "Preference alignment trainers (DPO / ORPO / GRPO / KTO / SimPO) are landed and formally gate-passed.",
+      "Slime OPD / RL / MoE distillation / speculative decoding / RSWA / teacher-student backend capabilities are landed and formally gate-passed.",
+      "All 27 capabilities validated as done; Gate 3.0 and self-harness both passed and were synced to host1 (39.106.118.206) and host2 (47.95.250.55)."
+    ],
+    "not_yet_formally_claimable": [
+      "Long-term stability of train-inference unification under large-scale training (1000+ GPUs) not yet validated.",
+      "MLX-Tune LoRA compatibility across the full Apple Silicon product line (including low-end devices) not yet validated.",
+      "Cumulative error of train-inference weight consistency under multi-level quantization chain (fp16 -> int8 -> 2bit) not yet closed."
+    ]
+  },
+  "acceptance_dimensions": {
+    "A_train_inference_weight_consistency": "MegatrainVLLMBridge train->inference weight lossless conversion and consistency (tolerance < 1e-5).",
+    "B_kda_orthobasis_preservation": "TrueOrthoKDA ortho_basis preservation and recoverability across train->inference.",
+    "C_cgc_simd_instruction_set_sharing": "Shared CGC SIMD instruction set, distributed topology, preference alignment, and Slime training/runtime capabilities consumed by both train and inference sides.",
+    "D_mlx_tune_lora_edge_cloud_collaboration": "Apple Silicon edge LoRA/QLoRA -> cloud inference edge-cloud unified loop."
+  },
+  "ui_hints": {
+    "default_sort": [
+      "done"
+    ],
+    "highlight_capability_ids": [
+      "megatrain_vllm_weight_consistency_bridge",
+      "kda_orthobasis_preservation",
+      "cgc_simd_train_inference_instruction_set",
+      "cpp_moe_engine_train_inference_shared",
+      "slime_opd_online_policy_distillation",
+      "mlx_tune_lora_edge_cloud_collaboration"
+    ],
+    "recommended_views": [
+      "overview",
+      "capability_cards",
+      "acceptance_dimensions",
+      "claim_boundaries"
+    ]
+  },
+  "validation_snapshot": {
+    "source": "formal_gate_run_synced_and_self_harness",
+    "validated_green_set": [
+      "megatrain_cuda_training_codegen",
+      "mlx_tune_metal_lora_finetune",
+      "train_inference_graph_capture",
+      "megatrain_vllm_weight_consistency_bridge",
+      "kda_orthobasis_preservation",
+      "cgc_simd_train_inference_instruction_set",
+      "megatrain_single_layer_streaming_hook",
+      "mlx_tune_lora_edge_cloud_collaboration",
+      "train_inference_unification_governance",
+      "distributed_topology_adaptive",
+      "colossalai_hardcode_fix",
+      "nemo_automodel_thin_adapter",
+      "cpp_moe_engine_train_inference_shared",
+      "preference_alignment_dpo",
+      "preference_alignment_orpo",
+      "preference_alignment_grpo",
+      "preference_alignment_kto",
+      "preference_alignment_simpo",
+      "slime_opd_online_policy_distillation",
+      "slime_rl_grpo",
+      "slime_rl_gspo",
+      "slime_rl_ppo",
+      "slime_rl_dapo",
+      "slime_moe_parallel_distillation",
+      "slime_speculative_decoding_integration",
+      "slime_rswa_long_context_cache",
+      "slime_teacher_student_inference_backend"
+    ],
+    "synced_hosts": {
+      "host1": {
+        "ip": "39.106.118.206",
+        "user": "root",
+        "status": "synced"
+      },
+      "host2": {
+        "ip": "47.95.250.55",
+        "user": "root",
+        "status": "synced"
+      }
+    },
+    "summary": "All 27 capabilities validated as done. Gate 3.0 formal verify passed, self-harness passed 27/27, and this summary is synced to host1 and host2."
+  }
+}

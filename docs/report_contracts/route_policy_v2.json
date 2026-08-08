@@ -1,0 +1,29 @@
+{
+  "schema_version": "v1",
+  "feature_schema_version": "v2",
+  "policy_schema_version": "v2",
+  "feature_schema": {},
+  "transport_runtime": {},
+  "transport_route": {
+    "mode": "unknown",
+    "mode_hint": "unknown",
+    "desired_mode": "unknown",
+    "reason": "",
+    "mode_switch_reason": "",
+    "memory_pressure": "unknown",
+    "degrade_suggested": false,
+    "degrade_target_mode": "unknown",
+    "downgrade_chain": [],
+    "sticky_active": false,
+    "sticky_until_epoch_ms": 0,
+    "sticky_window_sec": 0.0,
+    "moe_candidate": false,
+    "moe_streaming_admissible": false,
+    "moe_streaming_required_bytes": 0,
+    "moe_streaming_headroom_bytes": 0,
+    "external_low_memory_detected": false
+  },
+  "hermes_policy": {},
+  "final_policy": {},
+  "guard_overrides": []
+}

@@ -1,0 +1,74 @@
+{
+  "backend": "llama.cpp",
+  "exec_mode": "native",
+  "require_cuda": false,
+  "python": {
+    "executable": "/opt/homebrew/opt/python@3.13/bin/python3.13",
+    "version": "3.13.3 (main, Apr  8 2025, 13:54:08) [Clang 17.0.0 (clang-1700.0.13.3)]",
+    "platform": "macOS-15.2-arm64-arm-64bit-Mach-O"
+  },
+  "env": {
+    "CGC_REQUIRE_CUDA": "",
+    "CGC_REQUIRE_MLX": "",
+    "CGC_VLLM_USE_VENDOR": "",
+    "CGC_VLLM_REQUIRE_KDA": "",
+    "CUDA_VISIBLE_DEVICES": ""
+  },
+  "packages": {
+    "torch": {
+      "name": "torch",
+      "spec_found": true,
+      "origin": "/opt/homebrew/lib/python3.13/site-packages/torch/__init__.py",
+      "import_ok": true,
+      "file": "/opt/homebrew/lib/python3.13/site-packages/torch/__init__.py",
+      "version": "2.10.0",
+      "cuda_available": false,
+      "cuda_version": "",
+      "mps_available": true,
+      "cuda_device_count": 0
+    },
+    "transformers": {
+      "name": "transformers",
+      "spec_found": true,
+      "origin": "/opt/homebrew/lib/python3.13/site-packages/transformers/__init__.py",
+      "import_ok": true,
+      "file": "/opt/homebrew/lib/python3.13/site-packages/transformers/__init__.py",
+      "version": "5.7.0"
+    },
+    "vllm": {
+      "name": "vllm",
+      "spec_found": true,
+      "origin": "/opt/homebrew/lib/python3.13/site-packages/vllm/__init__.py",
+      "import_ok": true,
+      "file": "/opt/homebrew/lib/python3.13/site-packages/vllm/__init__.py",
+      "version": "0.19.1"
+    },
+    "cgc_cpp": {
+      "name": "cgc_cpp",
+      "spec_found": true,
+      "origin": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cgc/cgc_cpp/build/cgc_cpp.so",
+      "import_ok": true,
+      "file": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cgc/cgc_cpp/build/cgc_cpp.so",
+      "version": ""
+    },
+    "gds": {
+      "import_ok": true,
+      "cufile_available": false,
+      "backend": "none",
+      "capabilities": {
+        "has_nvme": false,
+        "nfs_mounts": [],
+        "nfs_rdma_mounts": [],
+        "rdma_modules_present": false,
+        "rdma_devices": [],
+        "storage_path_eligible": false
+      }
+    }
+  },
+  "artifacts": {
+    "strategy_manifest.json": {
+      "path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/Output/cli_gate_m1/strategy_manifest.json",
+      "sha256": "fb774fdae11ea6351a9774ba2807cc64f9dab7da5fe69a36963ff9da68188174"
+    }
+  }
+}

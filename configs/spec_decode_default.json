@@ -1,0 +1,19 @@
+{
+  "backend": "mlx",
+  "mode": "chain",
+  "num_draft_tokens": 16,
+  "top_k": 4,
+  "tree_depth": 1,
+  "target_model": "Qwen3-VL-2B",
+  "draft_model": "Qwen2.5-0.5B-Instruct-4bit",
+  "mlx_target_path": "/Users/alexchuang/models/Qwen3-VL-2B-bf16",
+  "mlx_draft_model": "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
+  "pytorch_target_path": "/data2/models/Qwen3-VL-2B-Instruct",
+  "pytorch_draft_model": "Qwen/Qwen2.5-0.5B-Instruct",
+  "pytorch_device": "cuda:0",
+  "pytorch_dtype": "bfloat16",
+  "sglang_target_url": "http://47.95.250.55:30001",
+  "sglang_draft_url": "",
+  "sglang_api_key": "",
+  "baseline_tps": 26.8
+}

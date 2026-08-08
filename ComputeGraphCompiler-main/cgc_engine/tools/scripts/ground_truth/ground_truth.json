@@ -1,0 +1,30 @@
+{
+  "source": "llama.cpp + vLLM (预设最佳策略)",
+  "storage": {
+    "mem_align": 64,
+    "quant_block": 32,
+    "kv_layout": "BSHN",
+    "memory_pool": true,
+    "weight_layout": "row-major"
+  },
+  "device_io": {
+    "metal_buffer": true,
+    "zero_copy": true,
+    "sync_only_commit": true,
+    "upload_weights_once": true
+  },
+  "scheduler": {
+    "context_shift": true,
+    "single_batch": true,
+    "continuous_batching": true,
+    "prefix_cache": true,
+    "block_size": 16
+  },
+  "compute": {
+    "TILE_M": 32,
+    "TILE_N": 32,
+    "simd_width": 32,
+    "unroll_factor": 4,
+    "fuse_qkv_rope_attn": true
+  }
+}

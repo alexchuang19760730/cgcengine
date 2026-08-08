@@ -1,0 +1,27 @@
+{
+  "timestamp": "20260514_104603",
+  "model": "Qwen/Qwen2.5-7B-Instruct",
+  "context_sizes": [
+    256,
+    512,
+    1024,
+    2048,
+    4096
+  ],
+  "max_tokens": 50,
+  "backends": [
+    {
+      "name": "cgc",
+      "display": "CGC Compiler"
+    },
+    {
+      "name": "vllm",
+      "display": "Native vLLM"
+    },
+    {
+      "name": "torch",
+      "display": "PyTorch Native"
+    }
+  ],
+  "results": []
+}

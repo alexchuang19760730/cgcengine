@@ -1,0 +1,898 @@
+{
+  "schema_version": "cgc_gate_map_v1",
+  "gate_id": "CGC_Gate_3.0_train_inference_unification",
+  "gate_version": "3.0",
+  "status": "validated",
+  "document_type": "gate_map",
+  "title": "CGC_Gate_3.0_train_inference_unification gate map",
+  "whitepaper_ref": {
+    "path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_3.0_train_inference_unification/CGC_Gate_3.0_train_inference_unification_Technical_Whitepaper_v1.0_zh_CN.md",
+    "title": "CGC_Gate_3.0_train_inference_unification Technical Whitepaper v1.0"
+  },
+  "naming": {
+    "formal_gate_name": "CGC_Gate_3.0_train_inference_unification",
+    "runtime_sub_name": "upkg_train_inference_unification_closure",
+    "historical_composite_alias": "upkg_train_inference_unification"
+  },
+  "status_semantics": {
+    "done": "Capability is completed and has stable evidence for formal gate wording.",
+    "integrated": "Capability code is connected into the main path, but still lacks formal gate closure or runtime evidence.",
+    "target": "Capability is defined but not yet implemented or not yet wired into the main path.",
+    "missing-formal-gate": "Capability and evidence exist, but no formal composite gate has been assigned."
+  },
+  "consumer_targets": {
+    "cli_gate_summary": {
+      "enabled": true,
+      "primary_fields": [
+        "gate_id",
+        "gate_version",
+        "status_summary",
+        "capabilities"
+      ]
+    },
+    "bundle_audit": {
+      "enabled": true,
+      "primary_fields": [
+        "governance",
+        "artifact_refs",
+        "acceptance_dimensions"
+      ]
+    },
+    "release_checkin": {
+      "enabled": true,
+      "primary_fields": [
+        "gate_id",
+        "naming",
+        "status_summary",
+        "release_checkin_projection"
+      ]
+    },
+    "dashboard_report": {
+      "enabled": true,
+      "primary_fields": [
+        "status_summary",
+        "capabilities",
+        "artifact_refs",
+        "claim_boundaries"
+      ]
+    }
+  },
+  "status_summary": {
+    "total_capabilities": 27,
+    "done": 27,
+    "integrated": 0,
+    "target": 0,
+    "missing-formal-gate": 0
+  },
+  "capabilities": [
+    {
+      "capability_id": "megatrain_cuda_training_codegen",
+      "name": "MegatrainCGC CUDA training backend codegen",
+      "description": "CUDA training-side code generation: FSDP / mixed precision / gradient accumulation / Flash Attention & MLP & LayerNorm kernel generation / compare_with_native perf comparison.",
+      "current_gate_binding": [
+        "cgc_engine/agent/megatrain_cgc.py",
+        "m8 megatrain_8step.step7_compare"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "Code is fully landed in cgc_engine/agent/megatrain_cgc.py.",
+        "Formal gate PASS record validated and synced to host1/host2."
+      ],
+      "evidence_tags": [
+        "megatrain",
+        "cuda_codegen",
+        "fsdp",
+        "flash_attention"
+      ],
+      "cli_flag": "--megatrain"
+    },
+    {
+      "capability_id": "mlx_tune_metal_lora_finetune",
+      "name": "MLXTuneCGC Apple Silicon Metal backend LoRA/QLoRA",
+      "description": "Apple Silicon Metal backend for LoRA / QLoRA fine-tuning, Metal Shader generation, edge-cloud unified strategy.",
+      "current_gate_binding": [
+        "cgc_engine/agent/mlx_tune_cgc.py"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "D",
+      "notes": [
+        "Code is fully landed in cgc_engine/agent/mlx_tune_cgc.py.",
+        "Edge-cloud collaboration loop (Dimension D) validated and closed."
+      ],
+      "evidence_tags": [
+        "mlx_tune",
+        "metal",
+        "lora",
+        "qlora"
+      ],
+      "cli_flag": "--mlx-tune"
+    },
+    {
+      "capability_id": "train_inference_graph_capture",
+      "name": "torch.compile full graph capture (Megatrain + MLX-Tune)",
+      "description": "Full-graph capture for training: MegatrainGraphCapture (FSDP wrap, mixed precision) + MLXTuneGraphCapture (LoRA graph capture, QLoRA quantization, MPS backend).",
+      "current_gate_binding": [
+        "cgc_engine/agent/megatrain_graph_capture.py",
+        "cgc_engine/agent/mlx_tune_graph_capture.py"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "Both capture modules are landed.",
+        "Train vs inference graph consistency formally validated."
+      ],
+      "evidence_tags": [
+        "graph_capture",
+        "torch_compile",
+        "fsdp_wrap",
+        "mps"
+      ],
+      "cli_flag": "--graph-capture"
+    },
+    {
+      "capability_id": "megatrain_vllm_weight_consistency_bridge",
+      "name": "MegatrainVLLMBridge train->inference weight consistency",
+      "description": "Training weights -> vLLM/HF/GGUF format lossless conversion and consistency validation; PD service registration.",
+      "current_gate_binding": [
+        "cgc_engine/bridge/megatrain_vllm_bridge.py",
+        "cgc convert --type megatrain"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "A",
+      "notes": [
+        "Bridge code is fully landed.",
+        "Weight consistency numerical validation (tolerance < 1e-5) passed as formal gate."
+      ],
+      "evidence_tags": [
+        "weight_bridge",
+        "vllm",
+        "hf",
+        "gguf",
+        "pd_service_registration"
+      ],
+      "cli_flag": "--weight-bridge"
+    },
+    {
+      "capability_id": "kda_orthobasis_preservation",
+      "name": "TrueOrthoKDA ortho_basis preservation across train->inference",
+      "description": "Preservation and recoverability of the TrueOrthoKDA orthogonal basis along the training -> inference path.",
+      "current_gate_binding": [
+        "cgc_engine/bridge/megatrain_vllm_bridge.py",
+        "CGC_Gate_1.0 trueorthokda_kv_cq4_compression"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "B",
+      "notes": [
+        "Bridge preserves kda_ortho_basis field.",
+        "Cross-side orthogonality error tolerance validated as formal gate."
+      ],
+      "evidence_tags": [
+        "trueorthokda",
+        "ortho_basis",
+        "kda_preservation"
+      ],
+      "cli_flag": "--kda-orthobasis"
+    },
+    {
+      "capability_id": "cgc_simd_train_inference_instruction_set",
+      "name": "CGC SIMD shared train/inference instruction set",
+      "description": "MegatrainCGCIntegration exposes a shared CGC SIMD instruction set (MegatrainCGCAttention / MLP / LayerNorm / RoPE) consumed by both training and inference sides.",
+      "current_gate_binding": [
+        "cgc_engine/cgc/megatrain_integration.py"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "SIMD instruction set is implemented and shared.",
+        "Train vs inference forward numerical consistency (tolerance < 1e-5) passed as formal gate."
+      ],
+      "evidence_tags": [
+        "cgc_simd",
+        "instruction_set",
+        "train_inference_shared"
+      ],
+      "cli_flag": "--cgc-simd"
+    },
+    {
+      "capability_id": "megatrain_single_layer_streaming_hook",
+      "name": "MegatrainHook single-layer streaming execution",
+      "description": "Single-layer streaming execution hook and layer-level compute graph capture, triggering consistent graphs on both training and inference sides.",
+      "current_gate_binding": [
+        "cgc_engine/cgc/megatrain_hook.py"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "Hook is landed.",
+        "Train vs inference captured-graph consistency formally validated."
+      ],
+      "evidence_tags": [
+        "streaming_hook",
+        "layer_capture"
+      ],
+      "cli_flag": "--streaming-hook"
+    },
+    {
+      "capability_id": "mlx_tune_lora_edge_cloud_collaboration",
+      "name": "MLX-Tune LoRA edge-cloud collaboration loop",
+      "description": "Apple Silicon edge-side LoRA/QLoRA fine-tuning products consumed by cloud-side inference, forming an edge-cloud unified loop.",
+      "current_gate_binding": [
+        "cgc_engine/agent/mlx_tune_cgc.py",
+        "cgc_engine/bridge/megatrain_vllm_bridge.py"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "D",
+      "notes": [
+        "D1-D4 all validated: LoRA adapter serialization, edge->cloud registration, QLoRA cross-side compatibility, LoRA config alignment.",
+        "Edge-cloud collaboration loop closed end-to-end."
+      ],
+      "evidence_tags": [
+        "mlx_tune",
+        "lora",
+        "edge_cloud_collaboration"
+      ],
+      "cli_flag": "--edge-cloud-lora"
+    },
+    {
+      "capability_id": "train_inference_unification_governance",
+      "name": "Train-inference unification governance extension",
+      "description": "task_type contract train-inference branch (weight_contract_ref / kda_orthobasis_contract_ref / cgc_simd_instruction_set_version) plus four-stage bundle governance validation.",
+      "current_gate_binding": [
+        "app/shared/contracts/task_type_contract.json",
+        "cgc bundle review",
+        "cgc model verify",
+        "cgc model audit"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "governance",
+      "notes": [
+        "task_type_contract train-inference branch fields defined and validated.",
+        "Reuses Gate 1.0 four-stage bundle chain with train-inference branch extension."
+      ],
+      "evidence_tags": [
+        "task_type_contract",
+        "bundle_governance",
+        "train_inference_branch"
+      ],
+      "cli_flag": "--governance"
+    },
+    {
+      "capability_id": "distributed_topology_adaptive",
+      "name": "Distributed parallel topology adaptive derivation (TP/EP/PP/DP)",
+      "description": "compute_parallel_topology() + init_distributed_for_training(): adaptive TP/EP/PP/DP derivation from env vars + config, cross-node NCCL init, supports dual-node TP4EP4+DP2.",
+      "current_gate_binding": [
+        "cgc_engine/agent/distributed_topology.py"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "ParallelTopology dataclass validates tp*ep*pp*dp == world_size.",
+        "EP constrained intra-node (prefer_intra_node_ep=True) to avoid cross-node All-to-All.",
+        "Supports torchrun env vars (MASTER_ADDR/MASTER_PORT/RANK/WORLD_SIZE/LOCAL_RANK)."
+      ],
+      "evidence_tags": [
+        "distributed_topology",
+        "tp_ep_pp_dp",
+        "cross_node_nccl",
+        "dual_node"
+      ],
+      "cli_flag": "--distributed-topology"
+    },
+    {
+      "capability_id": "colossalai_hardcode_fix",
+      "name": "ColossalAI path hardcode removal (dual-node TP4EP4+DP2 support)",
+      "description": "Removed hardcoded MASTER_ADDR='localhost', tp=8, dp=1, MockMegaTrainModelWrapper from pipeline.py _maybe_wrap_colossalai(). Uses dynamic topology + HybridParallelPlugin with enable_alltoall.",
+      "current_gate_binding": [
+        "cgc_engine/pipeline.py"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "All hardcoded values removed; uses compute_parallel_topology() for plugin config.",
+        "MockMegaTrainModelWrapper completely removed from production path.",
+        "enable_alltoall=True when ep_size > 1 for MoE acceleration."
+      ],
+      "evidence_tags": [
+        "colossalai",
+        "hardcode_removal",
+        "hybrid_parallel_plugin",
+        "ep_alltoall"
+      ],
+      "cli_flag": "--colossalai-fix"
+    },
+    {
+      "capability_id": "nemo_automodel_thin_adapter",
+      "name": "NeMo Automodel thin adapter (dependency decoupled + auto/force/skip fallback)",
+      "description": "NemoAutomodelMoETrainer inherits MegatrainMoETrainer; decouples transformers v5/megatron-core/transformer_engine deps via config flags; auto/force/skip modes with automatic fallback.",
+      "current_gate_binding": [
+        "cgc_engine/agent/trainers/nemo_automodel_adapter.py"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "use_nemo=auto/force/skip with _detect_nemo_available() and _decide_nemo_usage().",
+        "Config flags: use_transformer_engine=False, use_deepep=False, use_deep_gemm=False.",
+        "Fallback to MegatrainMoETrainer preserves full interface compatibility."
+      ],
+      "evidence_tags": [
+        "nemo_automodel",
+        "thin_adapter",
+        "dependency_decoupled",
+        "fallback"
+      ],
+      "cli_flag": "--nemo-automodel"
+    },
+    {
+      "capability_id": "cpp_moe_engine_train_inference_shared",
+      "name": "Train-inference shared C++ MoE Engine (autograd binding + 12 ops)",
+      "description": "cgc_moe_engine C++ extension: inference ops wrapped as torch::autograd::Function for automatic backward. 12 ops (grouped_gemm_bf16/fp8, deepep_dispatch/combine, forward + autograd variants). Compiled on host1 with PyTorch C++ headers, DeepEP/DeepGEMM optional.",
+      "current_gate_binding": [
+        "cgc_engine/cpp/cgc_moe_engine/"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "Compiled on host1 (39.106.118.206): cgc_moe_engine.so (3.7MB, ELF 64-bit x86-64).",
+        "Autograd forward/backward verified: tokens.grad and expert_weights.grad both not None.",
+        "Train/inference forward consistency: max diff = 0.0.",
+        "Backend: cuda, deepep=off, deepgemm=off (optional deps)."
+      ],
+      "evidence_tags": [
+        "cpp_engine",
+        "moe",
+        "autograd",
+        "train_inference_shared",
+        "host1_compiled"
+      ],
+      "cli_flag": "--cpp-moe"
+    },
+    {
+      "capability_id": "preference_alignment_dpo",
+      "name": "DPO direct preference optimization trainer",
+      "description": "DPOTrainer: direct preference optimization, CUDA + Metal dual backend, requires reference model.",
+      "current_gate_binding": [
+        "cgc_engine/agent/trainers/preference_trainers.py:DPOTrainer"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "DPOTrainer landed in preference_trainers.py.",
+        "CUDA + Metal dual backend validated."
+      ],
+      "evidence_tags": [
+        "preference_alignment",
+        "dpo",
+        "cuda_metal"
+      ],
+      "cli_flag": "--dpo"
+    },
+    {
+      "capability_id": "preference_alignment_orpo",
+      "name": "ORPO SFT+preference unified trainer",
+      "description": "ORPOTrainer: SFT + preference loss unified optimization, no reference model required, CUDA + Metal.",
+      "current_gate_binding": [
+        "cgc_engine/agent/trainers/preference_trainers.py:ORPOTrainer"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "ORPOTrainer landed.",
+        "No reference model required."
+      ],
+      "evidence_tags": [
+        "preference_alignment",
+        "orpo",
+        "no_ref_model"
+      ],
+      "cli_flag": "--orpo"
+    },
+    {
+      "capability_id": "preference_alignment_grpo",
+      "name": "GRPO reasoning-enhanced alignment trainer (DeepSeek-R1)",
+      "description": "GRPOTrainer: reasoning-enhanced alignment from DeepSeek-R1, requires reference model, CUDA + Metal.",
+      "current_gate_binding": [
+        "cgc_engine/agent/trainers/preference_trainers.py:GRPOTrainer"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "GRPOTrainer landed.",
+        "DeepSeek-R1 reasoning-enhanced alignment algorithm."
+      ],
+      "evidence_tags": [
+        "preference_alignment",
+        "grpo",
+        "deepseek_r1"
+      ],
+      "cli_flag": "--grpo"
+    },
+    {
+      "capability_id": "preference_alignment_kto",
+      "name": "KTO lightweight preference optimization trainer (prospect theory)",
+      "description": "KTOTrainer: lightweight preference optimization based on prospect theory, reference model optional, CUDA + Metal.",
+      "current_gate_binding": [
+        "cgc_engine/agent/trainers/preference_trainers.py:KTOTrainer"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "KTOTrainer landed.",
+        "Prospect-theory-based lightweight optimization."
+      ],
+      "evidence_tags": [
+        "preference_alignment",
+        "kto",
+        "prospect_theory"
+      ],
+      "cli_flag": "--kto"
+    },
+    {
+      "capability_id": "preference_alignment_simpo",
+      "name": "SimPO simple preference optimization trainer (length-normalized)",
+      "description": "SimPOTrainer: simple preference optimization with length normalization, no reference model required, CUDA + Metal.",
+      "current_gate_binding": [
+        "cgc_engine/agent/trainers/preference_trainers.py:SimPOTrainer"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "SimPOTrainer landed.",
+        "Length-normalized, no reference model required."
+      ],
+      "evidence_tags": [
+        "preference_alignment",
+        "simpo",
+        "length_normalized"
+      ],
+      "cli_flag": "--simpo"
+    },
+    {
+      "capability_id": "slime_opd_online_policy_distillation",
+      "name": "Slime OPD online policy distillation (Token-level KL + dynamic teacher logit)",
+      "description": "Online policy distillation: real-time SGLang-launched Teacher model performs Token-level distillation on Actor sampled trajectories during training. Production-grade validated on Zhipu GLM-5.2 full OPD post-training pipeline (completed in 2 days).",
+      "current_gate_binding": [
+        "Backend/CGC/vendored/slime/",
+        "cgc slime train (CLI integrated)"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "Slime framework integrated under Backend/CGC/vendored/slime/.",
+        "CGC CLI integrated: cgc slime train/distill/rollout/evaluate/serve.",
+        "Zhipu GLM-5.2 full OPD post-training pipeline completed in 2 days."
+      ],
+      "evidence_tags": [
+        "slime",
+        "opd",
+        "online_distillation",
+        "glm52_validated"
+      ],
+      "cli_flag": "--slime-opd"
+    },
+    {
+      "capability_id": "slime_rl_grpo",
+      "name": "Slime RL GRPO reasoning-enhanced alignment",
+      "description": "GRPO reinforcement learning algorithm within Slime framework for reasoning-enhanced alignment.",
+      "current_gate_binding": [
+        "Backend/CGC/vendored/slime/"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "GRPO algorithm integrated in Slime RL stack."
+      ],
+      "evidence_tags": [
+        "slime",
+        "rl",
+        "grpo"
+      ],
+      "cli_flag": "--slime-grpo"
+    },
+    {
+      "capability_id": "slime_rl_gspo",
+      "name": "Slime RL GSPO generalized policy optimization",
+      "description": "GSPO generalized policy optimization algorithm within Slime RL stack.",
+      "current_gate_binding": [
+        "Backend/CGC/vendored/slime/"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "GSPO algorithm integrated in Slime RL stack."
+      ],
+      "evidence_tags": [
+        "slime",
+        "rl",
+        "gspo"
+      ],
+      "cli_flag": "--slime-gspo"
+    },
+    {
+      "capability_id": "slime_rl_ppo",
+      "name": "Slime RL standard PPO",
+      "description": "Standard PPO reinforcement learning algorithm within Slime framework.",
+      "current_gate_binding": [
+        "Backend/CGC/vendored/slime/"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "Standard PPO algorithm integrated in Slime RL stack."
+      ],
+      "evidence_tags": [
+        "slime",
+        "rl",
+        "ppo"
+      ],
+      "cli_flag": "--slime-ppo"
+    },
+    {
+      "capability_id": "slime_rl_dapo",
+      "name": "Slime RL DAPO math RL",
+      "description": "DAPO mathematical reinforcement learning algorithm within Slime framework, optimized for math reasoning tasks.",
+      "current_gate_binding": [
+        "Backend/CGC/vendored/slime/"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "DAPO math RL algorithm integrated in Slime RL stack."
+      ],
+      "evidence_tags": [
+        "slime",
+        "rl",
+        "dapo",
+        "math"
+      ],
+      "cli_flag": "--slime-dapo"
+    },
+    {
+      "capability_id": "slime_moe_parallel_distillation",
+      "name": "Slime MoE multi-node parallel distillation",
+      "description": "MoE multi-node parallel distillation within Slime framework, supports DeepSeek MoE, GLM, Qwen3 and other MoE architectures.",
+      "current_gate_binding": [
+        "Backend/CGC/vendored/slime/"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "MoE multi-node parallel distillation validated.",
+        "Supports DeepSeek MoE, GLM, Qwen3 MoE architectures."
+      ],
+      "evidence_tags": [
+        "slime",
+        "moe",
+        "parallel_distillation"
+      ],
+      "cli_flag": "--slime-moe-distillation"
+    },
+    {
+      "capability_id": "slime_speculative_decoding_integration",
+      "name": "Slime speculative decoding integration (JetSpec/DSpark/SGLang)",
+      "description": "Distillation and speculative decoding seamless integration: JetSpec / DSpark / SGLang native spec as Teacher draft acceleration.",
+      "current_gate_binding": [
+        "Backend/CGC/vendored/slime/",
+        "Backend/CGC/vendored/jetspec/",
+        "Backend/CGC/vendored/deepspec/"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "Seamless integration with JetSpec/DSpark/SGLang spec decoders.",
+        "Teacher model draft acceleration via speculative decoding."
+      ],
+      "evidence_tags": [
+        "slime",
+        "speculative",
+        "jetspec",
+        "dspark",
+        "sglang"
+      ],
+      "cli_flag": "--slime-speculative"
+    },
+    {
+      "capability_id": "slime_rswa_long_context_cache",
+      "name": "Slime RSWA long-context cache",
+      "description": "RSWA cache mechanism for long-context inference optimization within Slime framework.",
+      "current_gate_binding": [
+        "Backend/CGC/vendored/slime/"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "RSWA long-context cache integrated in Slime."
+      ],
+      "evidence_tags": [
+        "slime",
+        "rswa",
+        "long_context"
+      ],
+      "cli_flag": "--slime-rswa"
+    },
+    {
+      "capability_id": "slime_teacher_student_inference_backend",
+      "name": "Slime SGLang Actor+Teacher dual-model backend",
+      "description": "SGLang Actor + Teacher parallel inference backend, native support for simultaneous teacher-student model loading.",
+      "current_gate_binding": [
+        "Backend/CGC/vendored/slime/",
+        "Backend/CGC/cloud_sglang/"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.0_train_inference_unification"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "SGLang dual-model (Actor + Teacher) backend integrated.",
+        "Native simultaneous teacher-student loading supported."
+      ],
+      "evidence_tags": [
+        "slime",
+        "sglang",
+        "dual_model",
+        "teacher_student"
+      ],
+      "cli_flag": "--slime-teacher-student"
+    }
+  ],
+  "governance": {
+    "task_type_contract_artifact": "/Users/alexchuang/Documents/flashkv0516/app/shared/contracts/task_type_contract.json",
+    "bundle_chain": [
+      "profile_settings.task_type_contract_ref",
+      "system_manifest.profile_binding_ref.task_type_contract_ref",
+      "bootstrap_contract.task_type_contract_ref",
+      "runtime_bootstrap.task_type_contract_ref"
+    ],
+    "train_inference_branch_fields": [
+      "train_inference_weight_contract_ref",
+      "kda_orthobasis_contract_ref",
+      "cgc_simd_instruction_set_version"
+    ],
+    "validators": [
+      "profile_bundle_validator",
+      "cgc bundle review",
+      "cgc model verify",
+      "cgc model audit",
+      "gateway loader validation"
+    ]
+  },
+  "artifact_refs": {
+    "megatrain_cgc": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/agent/megatrain_cgc.py",
+    "mlx_tune_cgc": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/agent/mlx_tune_cgc.py",
+    "megatrain_graph_capture": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/agent/megatrain_graph_capture.py",
+    "mlx_tune_graph_capture": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/agent/mlx_tune_graph_capture.py",
+    "megatrain_integration": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cgc/megatrain_integration.py",
+    "megatrain_hook": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cgc/megatrain_hook.py",
+    "megatrain_vllm_bridge": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/bridge/megatrain_vllm_bridge.py",
+    "trainers_dir": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/agent/trainers",
+    "trainers_readme": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/agent/trainers/README.md",
+    "trainers_base": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/agent/trainers/base_trainer.py",
+    "trainers_megatrain": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/agent/trainers/megatrain_trainers.py",
+    "trainers_mlxtune": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/agent/trainers/mlxtune_trainers.py",
+    "trainers_preference": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/agent/trainers/preference_trainers.py",
+    "megatrain_whitepaper": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/archive/Megatrain_DeepSeekV4_Whitepaper_v1.0.md",
+    "test_suite": "/Users/alexchuang/Documents/flashkv0516/scripts/test/test/test_megatrain_mlx_magicompiler.py",
+    "remote_check_script": "/Users/alexchuang/Documents/flashkv0516/scripts/check/check_megatrain.sh",
+    "gate_1_whitepaper": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_1.0_edge_cloud_autonomy/CGC_Gate_1.0_edge_cloud_autonomy_Technical_Whitepaper_v1.0_zh_CN.md",
+    "gate_2_whitepaper": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation/CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation_Technical_Whitepaper_v1.0_zh_CN.md",
+    "task_type_contract": "/Users/alexchuang/Documents/flashkv0516/app/shared/contracts/task_type_contract.json",
+    "distributed_topology": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/agent/distributed_topology.py",
+    "nemo_automodel_adapter": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/agent/trainers/nemo_automodel_adapter.py",
+    "cpp_moe_engine_dir": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cpp/cgc_moe_engine/",
+    "cpp_moe_engine_header": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cpp/cgc_moe_engine/cgc_moe_engine.h",
+    "cpp_moe_engine_impl": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cpp/cgc_moe_engine/cgc_moe_engine.cpp",
+    "cpp_moe_engine_bindings": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cpp/cgc_moe_engine/bindings.cpp",
+    "cpp_moe_engine_cmake": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cpp/cgc_moe_engine/CMakeLists.txt",
+    "cpp_moe_engine_so_host1": "host1:/root/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cpp/cgc_moe_engine/build/cgc_moe_engine.so"
+  },
+  "acceptance_dimensions": {
+    "A_train_inference_weight_consistency": [
+      "MegatrainVLLMBridge.convert_weights produces vLLM-loadable weights under fsdp/ddp/data_parallel modes.",
+      "Train state_dict vs vLLM state_dict tensor shape/dtype/value tolerance < 1e-5.",
+      "convert --type megatrain supports HF/vLLM/GGUF exports with complete metadata.",
+      "PD service registration succeeds for converted weights."
+    ],
+    "B_kda_orthobasis_preservation": [
+      "MegatrainVLLMBridge preserves kda_ortho_basis field during weight conversion.",
+      "Inference-side resume can recover ortho_basis matching Gate 1.0 TrueOrthoKDA runtime contract.",
+      "KDA compression ratio / orthogonality error within tolerance on both sides."
+    ],
+    "C_cgc_simd_instruction_set_sharing": [
+      "MegatrainCGCIntegration Attention/MLP/LayerNorm/RoPE instructions invoked on both train and inference sides.",
+      "Train forward vs inference forward produce consistent outputs (tolerance < 1e-5).",
+      "SIMD instruction set version matches between train and inference bundles.",
+      "MegatrainHook captures consistent compute graphs on both sides."
+    ],
+    "D_mlx_tune_lora_edge_cloud_collaboration": [
+      "MLXTuneCGC produces serializable standard-format LoRA adapters.",
+      "Edge LoRA products register to cloud inference service via MegatrainVLLMBridge (or equivalent).",
+      "Edge QLoRA quantization path is compatible with cloud inference quantization path.",
+      "LoRA rank/alpha/target_modules config aligns across edge and cloud."
+    ]
+  },
+  "claim_boundaries": {
+    "formally_claimable": [
+      "MegatrainCGC CUDA training backend codegen is landed and formally gate-passed.",
+      "MLXTuneCGC Apple Silicon Metal LoRA/QLoRA backend is landed and formally gate-passed.",
+      "torch.compile full graph capture (Megatrain + MLX-Tune) is landed and formally gate-passed.",
+      "MegatrainVLLMBridge train->inference weight consistency (tolerance < 1e-5) is formally gate-passed.",
+      "TrueOrthoKDA ortho_basis preservation across train->inference is formally gate-passed.",
+      "CGC SIMD shared train/inference instruction set is formally gate-passed.",
+      "MegatrainHook single-layer streaming execution is formally gate-passed.",
+      "MLX-Tune LoRA edge-cloud collaboration loop (Dimension D) is closed and formally gate-passed.",
+      "Train-inference unification governance extension is defined and formally gate-passed.",
+      "Distributed topology adaptation, ColossalAI hardcode removal, NeMo thin adapter, and the shared C++ MoE engine are formally gate-passed.",
+      "Preference alignment trainers (DPO / ORPO / GRPO / KTO / SimPO) are landed and formally gate-passed.",
+      "Slime OPD / RL / MoE distillation / speculative decoding / RSWA / teacher-student backend capabilities are landed and formally gate-passed.",
+      "All 27 capabilities validated as done; Gate 3.0 and self-harness both passed and were synced to host1 (39.106.118.206) and host2 (47.95.250.55)."
+    ],
+    "not_yet_formally_claimable": [
+      "Long-term stability of train-inference unification under large-scale training (1000+ GPUs) not yet validated.",
+      "MLX-Tune LoRA compatibility across the full Apple Silicon product line (including low-end devices) not yet validated.",
+      "Cumulative error of train-inference weight consistency under multi-level quantization chain (fp16 -> int8 -> 2bit) not yet closed."
+    ]
+  },
+  "release_checkin_projection": {
+    "recommended_gate_name": "CGC_Gate_3.0_train_inference_unification",
+    "recommended_runtime_sub_name": "upkg_train_inference_unification_closure",
+    "recommended_historical_alias": "upkg_train_inference_unification",
+    "recommended_checkin_fields": [
+      "gate_id",
+      "gate_version",
+      "status_summary",
+      "claim_boundaries",
+      "artifact_refs"
+    ]
+  },
+  "validation_snapshot": {
+    "source": "formal_gate_run_synced",
+    "validated_green_set": [
+      "megatrain_cuda_training_codegen",
+      "mlx_tune_metal_lora_finetune",
+      "train_inference_graph_capture",
+      "megatrain_vllm_weight_consistency_bridge",
+      "kda_orthobasis_preservation",
+      "cgc_simd_train_inference_instruction_set",
+      "megatrain_single_layer_streaming_hook",
+      "mlx_tune_lora_edge_cloud_collaboration",
+      "train_inference_unification_governance",
+      "distributed_topology_adaptive",
+      "colossalai_hardcode_fix",
+      "nemo_automodel_thin_adapter",
+      "cpp_moe_engine_train_inference_shared",
+      "preference_alignment_dpo",
+      "preference_alignment_orpo",
+      "preference_alignment_grpo",
+      "preference_alignment_kto",
+      "preference_alignment_simpo",
+      "slime_opd_online_policy_distillation",
+      "slime_rl_grpo",
+      "slime_rl_gspo",
+      "slime_rl_ppo",
+      "slime_rl_dapo",
+      "slime_moe_parallel_distillation",
+      "slime_speculative_decoding_integration",
+      "slime_rswa_long_context_cache",
+      "slime_teacher_student_inference_backend"
+    ],
+    "synced_hosts": {
+      "host1": {
+        "ip": "39.106.118.206",
+        "user": "root",
+        "status": "synced"
+      },
+      "host2": {
+        "ip": "47.95.250.55",
+        "user": "root",
+        "status": "synced"
+      }
+    },
+    "summary": "All 27 capabilities validated as done. Gate 3.0 formal verify passed, self-harness passed 27/27, and artifacts were synced to host1 and host2."
+  }
+}

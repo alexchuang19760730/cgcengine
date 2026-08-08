@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cgc://gate/m75/trueorthokda-active-runtime-report/v1",
+  "title": "CGC M7.5 TrueOrthoKDA Active Runtime Report Schema v1.0",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "gate": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "runtime_protocol_contract": {
+      "type": "object"
+    },
+    "mandatory_protocol_gate": {
+      "type": "object"
+    },
+    "true_state_transport": {
+      "type": "object"
+    },
+    "edge_state_resume_decode": {
+      "type": "object"
+    },
+    "compression_effective": {
+      "type": "object"
+    },
+    "zero_copy_vram_real": {
+      "type": "object"
+    },
+    "cpu_copy_count": {},
+    "effective_collective_backend": {
+      "type": "object"
+    },
+    "effective_cuda_graph": {
+      "type": "object"
+    },
+    "effective_dispatch_backend": {
+      "type": "object"
+    },
+    "effective_distributed_runtime": {
+      "type": "object"
+    },
+    "effective_storage_backend": {
+      "type": "object"
+    },
+    "gds_effective": {
+      "type": "object"
+    },
+    "spdk_effective": {
+      "type": "object"
+    },
+    "colossalai_effective": {
+      "type": "object"
+    },
+    "artifacts": {
+      "type": "object"
+    },
+    "local_infer_summary": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "gate",
+    "status",
+    "runtime_protocol_contract",
+    "mandatory_protocol_gate",
+    "true_state_transport",
+    "edge_state_resume_decode",
+    "compression_effective",
+    "zero_copy_vram_real",
+    "cpu_copy_count",
+    "effective_collective_backend",
+    "effective_cuda_graph",
+    "effective_dispatch_backend",
+    "effective_distributed_runtime",
+    "effective_storage_backend",
+    "gds_effective",
+    "spdk_effective",
+    "colossalai_effective",
+    "artifacts"
+  ],
+  "additionalProperties": true
+}

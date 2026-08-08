@@ -1,0 +1,84 @@
+{
+  "schema_version": "gate5.formal_claim_closure.v1",
+  "generated_at": "2026-07-08T23:46:46.220937+00:00",
+  "overall_status": "PASS",
+  "checks": [
+    {
+      "claim_id": "osworld_webarena_formal_benchmark_claim",
+      "status": "PASS",
+      "reason": "formal_ready_artifact_confirms_no_fallback_runtime_and_claimable_benchmark_execution",
+      "metrics": {
+        "formal_benchmark_claimable": true,
+        "osworld_rate": 1.0,
+        "webarena_rate": 1.0,
+        "using_real_llm": true,
+        "no_fallback_runtime_ready": true,
+        "tmax_service_is_tmax": true,
+        "uitars_service_is_uitars": true,
+        "runtime_binding_claimable": true
+      },
+      "refs": {
+        "artifact_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/temp/gate50_formal_ready_clean_rerun_v4_20260707.json"
+      }
+    },
+    {
+      "claim_id": "simultaneous_tasks_1000_plus",
+      "status": "PASS",
+      "reason": "gate5_engine_completed_1024_parallel_task_audit_trace_snapshot_cycles",
+      "metrics": {
+        "submitted_tasks": 1024,
+        "max_workers": 128,
+        "completed_futures": 1024,
+        "tasks_created": 1024,
+        "tasks_completed": 1024,
+        "snapshot_count": 1024,
+        "trace_task_dirs": 1024,
+        "active_tasks_after_run": 0,
+        "elapsed_ms": 493.50500106811523
+      },
+      "refs": {
+        "gate5_engine_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/gate5/core/engine.py"
+      }
+    },
+    {
+      "claim_id": "cross_host_span_correlation",
+      "status": "PASS",
+      "reason": "host_tagged_parent_child_spans_export_with_cross_host_edges",
+      "metrics": {
+        "task_id": "1d52e334-5294-47da-a3c7-c6050894df40",
+        "span_count": 4,
+        "hosts": [
+          "host1",
+          "host2"
+        ],
+        "cross_host_edges": 2,
+        "snapshot_count": 1,
+        "trace_tree_root_count": 1
+      },
+      "refs": {
+        "gate5_engine_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/gate5/core/engine.py"
+      }
+    },
+    {
+      "claim_id": "snapshot_retention_over_30_days",
+      "status": "PASS",
+      "reason": "gate5_config_formally_sets_retention_days_above_30",
+      "metrics": {
+        "retention_days": 90,
+        "formalized": true
+      },
+      "refs": {
+        "gate5_config_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/gate5/config/gate5_config.json"
+      }
+    }
+  ],
+  "refs": {
+    "whitepaper_dir": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_5.0_audit_trace_replay_visualization",
+    "gate5_engine_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/gate5/core/engine.py",
+    "gate5_config_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/gate5/config/gate5_config.json"
+  },
+  "summary": {
+    "passed_checks": 4,
+    "total_checks": 4
+  }
+}

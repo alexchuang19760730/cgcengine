@@ -1,0 +1,70 @@
+{
+  "schema_version": "v1",
+  "production_target": {},
+  "hardware_profile": {},
+  "transport_runtime": {},
+  "transport_route": {
+    "mode": "unknown",
+    "mode_hint": "unknown",
+    "desired_mode": "unknown",
+    "reason": "",
+    "mode_switch_reason": "",
+    "memory_pressure": "unknown",
+    "degrade_suggested": false,
+    "degrade_target_mode": "unknown",
+    "downgrade_chain": [],
+    "sticky_active": false,
+    "sticky_until_epoch_ms": 0,
+    "sticky_window_sec": 0.0,
+    "moe_candidate": false,
+    "moe_streaming_admissible": false,
+    "moe_streaming_required_bytes": 0,
+    "moe_streaming_headroom_bytes": 0,
+    "external_low_memory_detected": false
+  },
+  "routing_summary": {
+    "routing_status": "UNKNOWN",
+    "admissible_degrade": false,
+    "transport_route_mode": "unknown",
+    "degrade_target_mode": "",
+    "mode_switch_reason": "",
+    "memory_pressure": "unknown"
+  },
+  "frontier_thread": {
+    "execution_success": false,
+    "content_success": false
+  },
+  "expert_data_plane": {},
+  "acceptance_summary": {
+    "cold_path": {},
+    "warm_hot_path": {},
+    "path_bottlenecks": {
+      "cold_path": {},
+      "warm_hot_path": {}
+    }
+  },
+  "production_gates": {
+    "cold_path": {},
+    "warm_hot_path": {},
+    "shared": {}
+  },
+  "production_readiness": {
+    "routing_status": "UNKNOWN",
+    "admissible_degrade": false,
+    "cold_path_failed_gates": [],
+    "cold_path_failed_gate_summaries": [],
+    "failed_gates": [],
+    "failed_gate_summaries": []
+  },
+  "candidates": [
+    {
+      "model": "",
+      "priority": "P0",
+      "status": "PARTIAL",
+      "ttft_ms": 0.0,
+      "decode_tps": 0.0,
+      "stable_rounds_passed": 0,
+      "notes": ""
+    }
+  ]
+}

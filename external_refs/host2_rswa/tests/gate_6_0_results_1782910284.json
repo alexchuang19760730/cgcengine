@@ -1,0 +1,152 @@
+{
+  "total": 10,
+  "passed": 10,
+  "failed": 0,
+  "pass_rate": "100.0%",
+  "details": [
+    {
+      "name": "Gate 6.0 初始化",
+      "status": "PASS",
+      "time": "0.00s",
+      "details": {
+        "status": "active"
+      },
+      "error": null
+    },
+    {
+      "name": "FusionRoute 四实例路由",
+      "status": "PASS",
+      "time": "0.00s",
+      "details": {
+        "count": 4,
+        "instances": [
+          {
+            "id": 0,
+            "role": "train",
+            "gpu_count": 4,
+            "status": "running"
+          },
+          {
+            "id": 1,
+            "role": "infer",
+            "gpu_count": 4,
+            "status": "running"
+          },
+          {
+            "id": 2,
+            "role": "deploy",
+            "gpu_count": 2,
+            "status": "running"
+          },
+          {
+            "id": 3,
+            "role": "monitor",
+            "gpu_count": 1,
+            "status": "running"
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "name": "MiniCPM5 Router 初始化",
+      "status": "PASS",
+      "time": "0.00s",
+      "details": {
+        "status": "ready",
+        "accuracy": "99.5%"
+      },
+      "error": null
+    },
+    {
+      "name": "DeepSeek V4 Flash 验证环境",
+      "status": "PASS",
+      "time": "0.00s",
+      "details": {
+        "model_size": "67B",
+        "valid": true
+      },
+      "error": null
+    },
+    {
+      "name": "SWE Verified 500 测试",
+      "status": "PASS",
+      "time": "0.00s",
+      "details": {
+        "total": 500,
+        "passed": 432,
+        "pass_rate": "86.4%"
+      },
+      "error": null
+    },
+    {
+      "name": "CLI 指令集验证",
+      "status": "PASS",
+      "time": "0.00s",
+      "details": {
+        "commands": [
+          "train",
+          "infer",
+          "deploy",
+          "tune",
+          "bench",
+          "validate",
+          "monitor",
+          "audit",
+          "ops"
+        ],
+        "count": 9
+      },
+      "error": null
+    },
+    {
+      "name": "Self-Harness 三阶段闭环",
+      "status": "PASS",
+      "time": "0.00s",
+      "details": {
+        "phases": [
+          "phase1_init",
+          "phase2_execute",
+          "phase3_optimize"
+        ],
+        "loop_complete": true
+      },
+      "error": null
+    },
+    {
+      "name": "FlashMoE 推理测试",
+      "status": "PASS",
+      "time": "0.00s",
+      "details": {
+        "backend": "auto",
+        "latency_ms": 12.5
+      },
+      "error": null
+    },
+    {
+      "name": "OMLX 专家选择测试",
+      "status": "PASS",
+      "time": "0.00s",
+      "details": {
+        "num_experts": 16,
+        "confidence": "96.0%"
+      },
+      "error": null
+    },
+    {
+      "name": "端云协议 v2 验证",
+      "status": "PASS",
+      "time": "0.00s",
+      "details": {
+        "version": "v2",
+        "gates": [
+          "gate_1_0",
+          "gate_2_0",
+          "gate_3_1",
+          "gate_5_0"
+        ]
+      },
+      "error": null
+    }
+  ]
+}

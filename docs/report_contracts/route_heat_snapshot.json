@@ -1,0 +1,35 @@
+{
+  "schema_version": "v1",
+  "expert_hit_rate_ema": 0.0,
+  "hot_expert_ratio": 0.0,
+  "warm_pin_gb": 0.0,
+  "predicted_bytes_to_read_mb": 0.0,
+  "predicted_cold_bytes_mb": 0.0,
+  "prefetch_hit_rate_ema": 0.0,
+  "transport_runtime": {},
+  "transport_route": {
+    "mode": "unknown",
+    "mode_hint": "unknown",
+    "desired_mode": "unknown",
+    "reason": "",
+    "mode_switch_reason": "",
+    "memory_pressure": "unknown",
+    "degrade_suggested": false,
+    "degrade_target_mode": "unknown",
+    "downgrade_chain": [],
+    "sticky_active": false,
+    "sticky_until_epoch_ms": 0,
+    "sticky_window_sec": 0.0,
+    "moe_candidate": false,
+    "moe_streaming_admissible": false,
+    "moe_streaming_required_bytes": 0,
+    "moe_streaming_headroom_bytes": 0,
+    "external_low_memory_detected": false
+  },
+  "frontier_thread": {
+    "execution_success": false,
+    "content_success": false
+  },
+  "expert_data_plane": {},
+  "storage_topology": {}
+}

@@ -1,0 +1,135 @@
+{
+  "schema_version": "cgc_gate_summary_v1",
+  "gate_id": "CGC_Gate_4.0_embodied",
+  "gate_name": "CGC_Gate_4.0_embodied",
+  "gate_version": "4.0",
+  "status": "VALIDATED",
+  "runtime_sub_name": "gate4_embodied_substrate",
+  "historical_composite_alias": "gate4_embodied",
+  "title": "CGC Gate 4.0 Embodied Summary",
+  "subtitle": "Embodied capability substrate summary and cross-gate FusionRoute projection reference for UI/dashboard consumption",
+  "timestamp": "2026-07-08T00:00:00Z",
+  "release_repo": "powerautoai/ComputeGraphCompiler",
+  "document_refs": {
+    "whitepaper_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_4.0_embodied/CGC_Gate_4.0_embodied_Technical_Whitepaper_v1.0_zh_CN.md",
+    "gate_map_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_4.0_embodied/CGC_Gate_4.0_embodied_gate_map.json",
+    "checkin_example_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_4.0_embodied/CGC_Gate_4.0_embodied_checkin.example.json",
+    "fusionroute_topology_matrix_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_FusionRoute_Final_Topology_Matrix_Technical_Whitepaper_v1.0_zh_CN.md",
+    "fusionroute_role_locality_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/CGC_Gate_6.0_FusionRoute_Role_Locality_Technical_Whitepaper_v1.0_zh_CN.md"
+  },
+  "headline": {
+    "summary": "Gate 4.0 remains the validated embodied capability substrate. In the FusionRoute final topology draft, Gate 4.0 is consumed by Gate 5.0 UI-TARS as the embodied capability plane rather than the primary agent runtime.",
+    "primary_state": "validated",
+    "governance_state": "draft_projection_attached",
+    "performance_state": "closed"
+  },
+  "counters": {
+    "total_capabilities": 6,
+    "done": 6,
+    "integrated": 0,
+    "target": 0,
+    "missing_formal_gate": 0
+  },
+  "status_breakdown": [
+    {
+      "status": "done",
+      "count": 6,
+      "label": "Done",
+      "description": "Embodied substrate capability is formally available in the current whitepaper boundary."
+    },
+    {
+      "status": "integrated",
+      "count": 0,
+      "label": "Integrated",
+      "description": "Connected into the main path but lacking full release-facing evidence."
+    },
+    {
+      "status": "target",
+      "count": 0,
+      "label": "Target",
+      "description": "Defined but not yet wired into the main path."
+    }
+  ],
+  "capability_cards": [
+    {
+      "capability_id": "embodied_cli_surface",
+      "title": "Embodied CLI surface",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "CLI",
+      "summary": "Unified embodied CLI surface covers train, infer, deploy, tune, bench, validate, monitor, audit, and ops."
+    },
+    {
+      "capability_id": "edge_cloud_fusion",
+      "title": "Embodied edge-cloud fusion",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "Fusion",
+      "summary": "Embodied edge/cloud state sync and decision collaboration remain within Gate 4.0 validated boundary."
+    },
+    {
+      "capability_id": "self_harness_inheritance",
+      "title": "Self-Harness inheritance",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "Harness",
+      "summary": "Three-phase closed loop remains inherited from Gate 3.x."
+    },
+    {
+      "capability_id": "robot_device_control",
+      "title": "Robot and device control substrate",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "Embodied",
+      "summary": "Robot, device, and peripheral control interfaces stay within the Gate 4.0 embodied substrate boundary."
+    },
+    {
+      "capability_id": "sensor_fusion",
+      "title": "Sensor fusion and scene understanding",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "Embodied",
+      "summary": "Sensor fusion, multimodal input, and environment understanding remain claimed inside Gate 4.0."
+    },
+    {
+      "capability_id": "fusionroute_projection_reference",
+      "title": "FusionRoute topology projection reference",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "Governance",
+      "summary": "Gate 4.0 truth source now references the independent FusionRoute topology matrix and the Gate 6.0 role locality draft without changing current validated counters."
+    }
+  ],
+  "claim_boundaries": {
+    "formally_claimable": [
+      "Gate 4.0 remains the embodied capability substrate with unified embodied CLI, edge-cloud fusion, Self-Harness inheritance, and robot/device interfaces.",
+      "Gate 4.0 truth source formally references the independent FusionRoute topology matrix and Gate 6.0 role locality draft as architecture projections."
+    ],
+    "not_yet_formally_claimable": [
+      "The new cross-gate topology matrix is an architecture projection and does not itself prove runtime closure.",
+      "Gate 6.0 role locality / placement has not yet been promoted to a formally validated capability in the current repo snapshot."
+    ]
+  },
+  "architecture_projection_refs": {
+    "fusionroute_topology_matrix": {
+      "path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_FusionRoute_Final_Topology_Matrix_Technical_Whitepaper_v1.0_zh_CN.md",
+      "projection_role": "Gate 4.0 is the Embodied Capability Plane callable by Gate 5.0 UI-TARS."
+    },
+    "fusionroute_role_locality": {
+      "path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/CGC_Gate_6.0_FusionRoute_Role_Locality_Technical_Whitepaper_v1.0_zh_CN.md",
+      "projection_role": "Role locality / placement stays under Gate 6.0 and may target Gate 4.0 endpoints."
+    }
+  },
+  "validation_snapshot": {
+    "source": "whitepaper_projection_bootstrap",
+    "validated_green_set": [
+      "embodied_cli_surface",
+      "edge_cloud_fusion",
+      "self_harness_inheritance",
+      "robot_device_control",
+      "sensor_fusion",
+      "fusionroute_projection_reference"
+    ],
+    "summary": "Gate 4.0 summary/checkin/gate_map skeleton is now available and references the new cross-gate FusionRoute topology artifacts."
+  }
+}

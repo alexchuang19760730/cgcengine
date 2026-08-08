@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CGC Inference Engine - Web GUI</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 0;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            background: linear-gradient(90deg, #00d4ff, #7b2ff7);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .header p {
+            color: #8892b0;
+            font-size: 1.1em;
+        }
+        .card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 20px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .card-title {
+            color: #64ffda;
+            font-size: 1.3em;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .card-title::before {
+            content: '';
+            width: 4px;
+            height: 24px;
+            background: linear-gradient(180deg, #00d4ff, #7b2ff7);
+            border-radius: 2px;
+        }
+        .model-selector {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        .model-item {
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 12px;
+            padding: 16px;
+            min-width: 280px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border: 2px solid transparent;
+        }
+        .model-item:hover {
+            background: rgba(255, 255, 255, 0.12);
+            transform: translateY(-2px);
+        }
+        .model-item.selected {
+            border-color: #00d4ff;
+            background: rgba(0, 212, 255, 0.1);
+        }
+        .model-name {
+            color: white;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+        .model-info {
+            display: flex;
+            gap: 15px;
+            color: #8892b0;
+            font-size: 0.9em;
+        }
+        .moe-badge {
+            background: linear-gradient(135deg, #7b2ff7, #ff0080);
+            color: white;
+            padding: 2px 8px;
+            border-radius: 20px;
+            font-size: 0.8em;
+            font-weight: 600;
+        }
+        .backend-selector {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .backend-btn {
+            padding: 12px 24px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            font-size: 1em;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+        .backend-btn.llama {
+            background: rgba(0, 212, 255, 0.2);
+            color: #00d4ff;
+        }
+        .backend-btn.vllm {
+            background: rgba(123, 47, 247, 0.2);
+            color: #7b2ff7;
+        }
+        .backend-btn.active {
+            background: linear-gradient(135deg, #00d4ff, #7b2ff7);
+            color: white;
+        }
+        .btn {
+            padding: 14px 32px;
+            border-radius: 10px;
+            border: none;
+            cursor: pointer;
+            font-size: 1.1em;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #00d4ff, #7b2ff7);
+            color: white;
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(0, 212, 255, 0.3);
+        }
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: 600;
+        }
+        .status-ready {
+            background: rgba(0, 255, 128, 0.15);
+            color: #00ff80;
+        }
+        .status-loading {
+            background: rgba(255, 200, 0, 0.15);
+            color: #ffc800;
+        }
+        .status-error {
+            background: rgba(255, 0, 80, 0.15);
+            color: #ff0050;
+        }
+        .status-idle {
+            background: rgba(136, 146, 176, 0.15);
+            color: #8892b0;
+        }
+        .chat-container {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .chat-messages {
+            height: 400px;
+            overflow-y: auto;
+            padding: 20px;
+        }
+        .chat-messages::-webkit-scrollbar {
+            width: 6px;
+        }
+        .chat-messages::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.05);
+        }
+        .chat-messages::-webkit-scrollbar-thumb {
+            background: rgba(0, 212, 255, 0.3);
+            border-radius: 3px;
+        }
+        .message {
+            margin-bottom: 20px;
+        }
+        .message-user {
+            background: linear-gradient(135deg, rgba(0, 212, 255, 0.15), rgba(123, 47, 247, 0.15));
+            padding: 16px 20px;
+            border-radius: 12px;
+            border-left: 4px solid #00d4ff;
+        }
+        .message-assistant {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 16px 20px;
+            border-radius: 12px;
+            border-left: 4px solid #7b2ff7;
+        }
+        .message-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 0.9em;
+        }
+        .message-user .message-header {
+            color: #00d4ff;
+        }
+        .message-assistant .message-header {
+            color: #7b2ff7;
+        }
+        .message-content {
+            color: #e6e6e6;
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+        .input-area {
+            display: flex;
+            gap: 10px;
+            padding: 20px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .input-area textarea {
+            flex: 1;
+            padding: 16px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(0, 0, 0, 0.2);
+            color: white;
+            font-size: 1em;
+            resize: none;
+            font-family: inherit;
+        }
+        .input-area textarea:focus {
+            outline: none;
+            border-color: #00d4ff;
+        }
+        .loading-spinner {
+            border: 3px solid rgba(0, 212, 255, 0.2);
+            border-top-color: #00d4ff;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 0.8s linear infinite;
+            display: inline-block;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .metrics {
+            display: flex;
+            gap: 20px;
+            margin-top: 10px;
+            font-size: 0.9em;
+            color: #8892b0;
+        }
+        .expert-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+            margin-top: 10px;
+        }
+        .expert-tag {
+            background: rgba(123, 47, 247, 0.2);
+            color: #b388ff;
+            padding: 4px 10px;
+            border-radius: 15px;
+            font-size: 0.8em;
+        }
+        .analyze-section {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+        }
+        .analyze-box {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            padding: 16px;
+        }
+        .analyze-box .label {
+            color: #8892b0;
+            font-size: 0.9em;
+            margin-bottom: 8px;
+        }
+        .analyze-box .value {
+            color: #64ffda;
+            font-size: 1.8em;
+            font-weight: 700;
+        }
+        .scan-btn {
+            padding: 8px 16px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 6px;
+            color: white;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: all 0.3s ease;
+        }
+        .scan-btn:hover {
+            background: rgba(255, 255, 255, 0.15);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🧠 CGC Inference Engine</h1>
+            <p>Unified Inference Engine - MoE & Dense Models</p>
+        </div>
+
+        <div class="card">
+            <div class="card-title">模型选择</div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <span style="color: #8892b0;">发现 {{ models.length }} 个模型</span>
+                <button class="scan-btn" onclick="scanModels()">🔄 重新扫描</button>
+            </div>
+            <div class="model-selector" id="modelList">
+                {% for model in models %}
+                <div class="model-item" data-path="{{ model.path }}" onclick="selectModel(this)">
+                    <div class="model-name">{{ model.name }} {% if model.is_moe %}<span class="moe-badge">MoE</span>{% endif %}</div>
+                    <div class="model-info">
+                        <span>{{ model.size_mb }} MB</span>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">后端选择</div>
+            <div class="backend-selector">
+                <button class="backend-btn llama {{ 'active' if current_backend == 'llama.cpp' else '' }}" onclick="selectBackend('llama.cpp')">
+                    llama.cpp
+                </button>
+                <button class="backend-btn vllm {{ 'active' if current_backend == 'vLLM' else '' }}" onclick="selectBackend('vLLM')">
+                    vLLM
+                </button>
+            </div>
+            <button class="btn btn-primary" id="loadBtn" onclick="loadModel()">
+                <span id="loadBtnText">🚀 加载模型</span>
+                <span id="loadSpinner" class="loading-spinner" style="display: none;"></span>
+            </button>
+            <div id="status" class="status-indicator status-idle">
+                {% if model_loaded %}
+                <span>✅ 已就绪</span>
+                {% else %}
+                <span>⏳ 等待加载</span>
+                {% endif %}
+            </div>
+            {% if current_model %}
+            <div style="margin-top: 10px; color: #8892b0;">当前模型: {{ current_model }}</div>
+            {% endif %}
+        </div>
+
+        <div class="card">
+            <div class="card-title">推理聊天</div>
+            <div class="chat-container">
+                <div class="chat-messages" id="chatMessages">
+                    <div class="message message-assistant">
+                        <div class="message-header">
+                            <span>Assistant</span>
+                            <span>CGC Engine</span>
+                        </div>
+                        <div class="message-content">您好！请先选择并加载一个模型，然后开始对话。</div>
+                    </div>
+                </div>
+                <div class="input-area">
+                    <textarea id="inputPrompt" rows="3" placeholder="输入您的问题..."></textarea>
+                    <button class="btn btn-primary" onclick="sendMessage()" id="sendBtn">发送</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">系统分析</div>
+            <button class="btn btn-primary" style="margin-bottom: 20px;" onclick="analyzeModel()">📊 分析模型</button>
+            <div id="analyzeResult" class="analyze-section"></div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">🔬 可视化与流量分析</div>
+            <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px;">
+                <button class="btn btn-primary" onclick="generateGraph()">📈 生成计算图</button>
+                <button class="btn btn-primary" onclick="showExpertHeatmap()">🔥 专家激活热力图</button>
+                <button class="btn btn-primary" onclick="showMemoryStats()">💾 内存统计</button>
+                <button class="btn btn-primary" onclick="analyzeFeatures()">🧠 模型特征分析</button>
+            </div>
+            <div id="visualResult" class="analyze-section"></div>
+            <div id="graphContainer" style="margin-top: 20px; display: none;">
+                <pre id="dotSource" style="background: rgba(0,0,0,0.3); padding: 15px; border-radius: 8px; overflow-x: auto; color: #64ffda; font-size: 12px;"></pre>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let selectedModel = null;
+        let selectedBackend = "{{ current_backend }}";
+        let modelLoaded = {{ 'true' if model_loaded else 'false' }};
+
+        function selectModel(element) {
+            document.querySelectorAll('.model-item').forEach(item => item.classList.remove('selected'));
+            element.classList.add('selected');
+            selectedModel = element.dataset.path;
+        }
+
+        function selectBackend(backend) {
+            document.querySelectorAll('.backend-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+            selectedBackend = backend;
+        }
+
+        async function loadModel() {
+            if (!selectedModel) {
+                alert('请先选择一个模型');
+                return;
+            }
+
+            const btn = document.getElementById('loadBtn');
+            const btnText = document.getElementById('loadBtnText');
+            const spinner = document.getElementById('loadSpinner');
+            const status = document.getElementById('status');
+
+            btn.disabled = true;
+            btnText.textContent = '加载中...';
+            spinner.style.display = 'inline-block';
+            status.className = 'status-indicator status-loading';
+            status.innerHTML = '<span class="loading-spinner" style="width:16px;height:16px;"></span> 正在加载模型...';
+
+            try {
+                const response = await fetch('/api/load_model', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model_path: selectedModel, backend: selectedBackend })
+                });
+                const data = await response.json();
+                console.log('Load response:', data);
+
+                // 轮询检查状态
+                const checkStatus = async () => {
+                    const resp = await fetch('/api/status');
+                    const statusData = await resp.json();
+                    if (statusData.model_loaded) {
+                        modelLoaded = true;
+                        status.className = 'status-indicator status-ready';
+                        status.innerHTML = '<span>✅ 已就绪</span>';
+                        btnText.textContent = '🚀 加载模型';
+                        spinner.style.display = 'none';
+                        btn.disabled = false;
+                        addMessage('assistant', `模型加载成功！\n当前模型: ${statusData.current_model}\n后端: ${statusData.current_backend}`, 'CGC Engine');
+                    } else {
+                        setTimeout(checkStatus, 1000);
+                    }
+                };
+                checkStatus();
+            } catch (error) {
+                status.className = 'status-indicator status-error';
+                status.textContent = '❌ 加载失败';
+                btnText.textContent = '🚀 加载模型';
+                spinner.style.display = 'none';
+                btn.disabled = false;
+                console.error('Load error:', error);
+            }
+        }
+
+        async function sendMessage() {
+            const prompt = document.getElementById('inputPrompt').value.trim();
+            if (!prompt) return;
+            if (!modelLoaded) {
+                alert('请先加载模型');
+                return;
+            }
+
+            const sendBtn = document.getElementById('sendBtn');
+            sendBtn.disabled = true;
+
+            addMessage('user', prompt, 'You');
+            document.getElementById('inputPrompt').value = '';
+
+            try {
+                const response = await fetch('/api/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        prompt: prompt,
+                        max_tokens: 200,
+                        temperature: 0.7
+                    })
+                });
+                const data = await response.json();
+                if (data.error) {
+                    addMessage('assistant', `错误: ${data.error}`, 'CGC Engine');
+                } else {
+                    addMessage('assistant', data.text, 'CGC Engine', data.latency_ms, data.expert_ids);
+                }
+            } catch (error) {
+                addMessage('assistant', `请求失败: ${error}`, 'CGC Engine');
+            } finally {
+                sendBtn.disabled = false;
+            }
+        }
+
+        function addMessage(role, content, name, latency_ms = null, expert_ids = null) {
+            const container = document.getElementById('chatMessages');
+            const message = document.createElement('div');
+            message.className = `message message-${role}`;
+
+            let header = `<div class="message-header"><span>${name}</span>`;
+            if (latency_ms) {
+                header += `<span>延迟: ${latency_ms}ms</span>`;
+            }
+            header += '</div>';
+
+            let expertTags = '';
+            if (expert_ids && expert_ids.length > 0) {
+                expertTags = '<div class="expert-tags">';
+                expert_ids.forEach(id => {
+                    expertTags += `<span class="expert-tag">专家 ${id}</span>`;
+                });
+                expertTags += '</div>';
+            }
+
+            message.innerHTML = `${header}<div class="message-content">${content}</div>${expertTags}`;
+            container.appendChild(message);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        async function scanModels() {
+            const response = await fetch('/api/scan_models');
+            const data = await response.json();
+            alert(`发现 ${data.count} 个模型，请刷新页面查看`);
+            location.reload();
+        }
+
+        async function analyzeModel() {
+            const response = await fetch('/api/analyze');
+            const data = await response.json();
+            const container = document.getElementById('analyzeResult');
+
+            if (data.error) {
+                container.innerHTML = `<div style="color: #ff0050;">${data.error}</div>`;
+                return;
+            }
+
+            container.innerHTML = `
+                <div class="analyze-box">
+                    <div class="label">总专家数</div>
+                    <div class="value">${data.total_experts || 'N/A'}</div>
+                </div>
+                <div class="analyze-box">
+                    <div class="label">专家维度</div>
+                    <div class="value">${data.expert_dim || 'N/A'}</div>
+                </div>
+                <div class="analyze-box">
+                    <div class="label">中间维度</div>
+                    <div class="value">${data.intermediate_dim || 'N/A'}</div>
+                </div>
+                <div class="analyze-box">
+                    <div class="label">Top-K</div>
+                    <div class="value">${data.top_k || 'N/A'}</div>
+                </div>
+            `;
+        }
+
+        // 回车发送
+        document.getElementById('inputPrompt').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        // 检查初始状态
+        setInterval(async () => {
+            const response = await fetch('/api/status');
+            const data = await response.json();
+            modelLoaded = data.model_loaded;
+            if (modelLoaded) {
+                document.getElementById('status').className = 'status-indicator status-ready';
+                document.getElementById('status').innerHTML = '<span>✅ 已就绪</span>';
+            }
+        }, 5000);
+
+        async function generateGraph() {
+            const container = document.getElementById('visualResult');
+            const graphContainer = document.getElementById('graphContainer');
+            container.innerHTML = '<div style="color: #64ffda;">⏳ 正在生成计算图...</div>';
+
+            try {
+                const response = await fetch('/api/visual/generate_dot', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ graph_type: 'joint' })
+                });
+                const data = await response.json();
+                if (data.error) {
+                    container.innerHTML = `<div style="color: #ff0050;">${data.error}</div>`;
+                    return;
+                }
+                graphContainer.style.display = 'block';
+                document.getElementById('dotSource').textContent = data.dot_source;
+                container.innerHTML = '<div style="color: #00ff80;">✅ 计算图 DOT 已生成！</div><p style="color: #8892b0; margin-top: 10px;">复制上方 DOT 代码到 <a href="https://dreampuf.github.io/GraphvizOnline/" target="_blank" style="color: #00d4ff;">Graphviz Online</a> 可视化</p>';
+            } catch (error) {
+                container.innerHTML = `<div style="color: #ff0050;">错误: ${error}</div>`;
+            }
+        }
+
+        async function showExpertHeatmap() {
+            const container = document.getElementById('visualResult');
+            container.innerHTML = '<div style="color: #64ffda;">⏳ 正在加载专家激活数据...</div>';
+
+            try {
+                const response = await fetch('/api/visual/expert_activation');
+                const data = await response.json();
+                if (data.error) {
+                    container.innerHTML = `<div style="color: #ff0050;">${data.error}</div>`;
+                    return;
+                }
+
+                const maxCount = Math.max(...Object.values(data));
+                let heatmapHTML = '<div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 15px;">';
+                for (const [expert, count] of Object.entries(data)) {
+                    const intensity = count / maxCount;
+                    const hue = 280 - (intensity * 280);
+                    const color = `hsl(${hue}, 80%, 60%)`;
+                    heatmapHTML += `
+                        <div style="background: ${color}; padding: 12px; border-radius: 8px; text-align: center;">
+                            <div style="font-weight: bold; color: white;">${expert.replace('expert_', 'E')}</div>
+                            <div style="font-size: 1.2em; color: white;">${count}</div>
+                        </div>
+                    `;
+                }
+                heatmapHTML += '</div>';
+                container.innerHTML = `<div style="color: #ff6b6b; font-weight: bold;">🔥 MoE 专家激活热力图</div>${heatmapHTML}`;
+            } catch (error) {
+                container.innerHTML = `<div style="color: #ff0050;">错误: ${error}</div>`;
+            }
+        }
+
+        async function showMemoryStats() {
+            const container = document.getElementById('visualResult');
+            container.innerHTML = '<div style="color: #64ffda;">⏳ 正在加载内存统计...</div>';
+
+            try {
+                const response = await fetch('/api/visual/memory_stats');
+                const data = await response.json();
+                if (data.error) {
+                    container.innerHTML = `<div style="color: #ff0050;">${data.error}</div>`;
+                    return;
+                }
+
+                container.innerHTML = `
+                    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin-top: 15px;">
+                        <div class="analyze-box">
+                            <div class="label">💾 CUDA 已分配</div>
+                            <div class="value">${data.cuda_allocated.toFixed(2)} GB</div>
+                        </div>
+                        <div class="analyze-box">
+                            <div class="label">📦 CUDA 预留</div>
+                            <div class="value">${data.cuda_reserved.toFixed(2)} GB</div>
+                        </div>
+                        <div class="analyze-box">
+                            <div class="label">🖥️ RAM 已使用</div>
+                            <div class="value">${data.ram_used.toFixed(2)} GB</div>
+                        </div>
+                        <div class="analyze-box">
+                            <div class="label">📊 RAM 总计</div>
+                            <div class="value">${data.ram_total.toFixed(2)} GB</div>
+                        </div>
+                    </div>
+                `;
+            } catch (error) {
+                container.innerHTML = `<div style="color: #ff0050;">错误: ${error}</div>`;
+            }
+        }
+
+        async function analyzeFeatures() {
+            const container = document.getElementById('visualResult');
+            if (!selectedModel) {
+                container.innerHTML = '<div style="color: #ffc800;">⚠️ 请先选择一个模型</div>';
+                return;
+            }
+            container.innerHTML = '<div style="color: #64ffda;">⏳ 正在分析模型特征...</div>';
+
+            try {
+                const response = await fetch('/api/visual/analyze_features', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model_path: selectedModel })
+                });
+                const data = await response.json();
+
+                const checkIcon = (val) => val ? '✅' : '❌';
+                container.innerHTML = `
+                    <div style="margin-top: 15px;">
+                        <div style="color: #64ffda; font-weight: bold; margin-bottom: 15px;">🧠 模型特征分析结果</div>
+                        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;">
+                            <div class="analyze-box">${checkIcon(data.attention)} <span style="color: #8892b0;">注意力机制</span></div>
+                            <div class="analyze-box">${checkIcon(data.flash_attention)} <span style="color: #8892b0;">Flash Attention</span></div>
+                            <div class="analyze-box">${checkIcon(data.moe)} <span style="color: #8892b0;">MoE 专家</span></div>
+                            <div class="analyze-box">${checkIcon(data.vlm)} <span style="color: #8892b0;">视觉语言</span></div>
+                            <div class="analyze-box">${checkIcon(data.tensor_parallel)} <span style="color: #8892b0;">张量并行</span></div>
+                            <div class="analyze-box">${checkIcon(data.pipeline_parallel)} <span style="color: #8892b0;">流水线并行</span></div>
+                        </div>
+                        <div style="margin-top: 20px; color: #8892b0;">
+                            <p>📐 层数: <span style="color: #64ffda; font-weight: bold;">${data.num_layers}</span></p>
+                            <p>🔍 隐藏维度: <span style="color: #64ffda; font-weight: bold;">${data.hidden_dim}</span></p>
+                            <p>👁️ 注意力头数: <span style="color: #64ffda; font-weight: bold;">${data.num_heads}</span></p>
+                        </div>
+                    </div>
+                `;
+            } catch (error) {
+                container.innerHTML = `<div style="color: #ff0050;">错误: ${error}</div>`;
+            }
+        }
+    </script>
+</body>
+</html>

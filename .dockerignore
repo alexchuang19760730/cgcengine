@@ -1,0 +1,34 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+env.bak/
+venv.bak/
+
+# 忽略本地編譯的二進位檔案與暫存
+cgc.build/
+cgc.dist/
+cgc.onefile-build/
+cgc.app/
+*.exe
+cgc
+releases/
+dist/
+build/
+
+# 忽略模型權重檔案，避免映像檔過大
+*.gguf
+*.safetensors
+*.mlx
+*.bin
+models/
+
+# 忽略日誌與開發工具檔案
+*.log
+.vscode/
+.github/
+.DS_Store

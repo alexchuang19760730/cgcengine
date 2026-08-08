@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>端侧 MTP Verify Loop — 完整实现报告</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 900px; margin: 0 auto; padding: 40px 20px; color: #1a1a1a; line-height: 1.7; }
+  h1 { font-size: 24px; font-weight: 600; border-bottom: 2px solid #534AB7; padding-bottom: 10px; margin-bottom: 8px; }
+  h2 { font-size: 18px; font-weight: 600; margin-top: 32px; color: #3C3489; }
+  h3 { font-size: 15px; font-weight: 600; margin-top: 20px; }
+  .subtitle { color: #666; font-size: 14px; margin-bottom: 24px; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 13px; }
+  th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+  th { background: #f5f5f5; font-weight: 600; }
+  .pass { color: #0F6E56; font-weight: 600; }
+  .fail { color: #A32D2D; font-weight: 600; }
+  .warn { color: #854F0B; font-weight: 600; }
+  .highlight { background: #EEEDFE; padding: 2px 6px; border-radius: 3px; font-weight: 500; }
+  .card { background: #f9f9f9; border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px 20px; margin: 16px 0; }
+  .card-key { border-left: 4px solid #534AB7; }
+  .card-warn { border-left: 4px solid #BA7517; }
+  .card-ok { border-left: 4px solid #1D9E75; }
+  code { background: #f0f0f0; padding: 2px 5px; border-radius: 3px; font-size: 12px; font-family: "SF Mono", "Fira Code", monospace; }
+  pre { background: #1e1e1e; color: #d4d4d4; padding: 12px 16px; border-radius: 6px; overflow-x: auto; font-size: 12px; line-height: 1.5; }
+  .metric { font-size: 28px; font-weight: 600; color: #534AB7; }
+  .metric-label { font-size: 12px; color: #666; }
+  .metrics-row { display: flex; gap: 24px; margin: 20px 0; }
+  .metric-card { background: #f9f9f9; border-radius: 8px; padding: 16px; min-width: 140px; text-align: center; }
+</style>
+</head>
+<body>
+
+<h1>端侧 MTP Verify Loop — 完整实现报告</h1>
+<p class="subtitle">2026-07-31 | CGC Phase 2 | Mac M4 16GB | Qwen2.5-0.5B FP16</p>
+
+<div class="metrics-row">
+  <div class="metric-card">
+    <div class="metric">6.5ms</div>
+    <div class="metric-label">ggml native / step</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric">100%</div>
+    <div class="metric-label">token match vs PyTorch</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric">1.14x</div>
+    <div class="metric-label">faster than MLX</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric">3</div>
+    <div class="metric-label">MTP engines integrated</div>
+  </div>
+</div>
+
+<h2>1. 实现概览</h2>
+<p>
+完成了端侧 MTP (Multi-Token Prediction) verify loop 的完整实现，包含三种 draft 引擎、
+正确性验证、端到端 benchmark 和 Hermes Router 集成。核心目标是将 MTP head 的 4 层 transformer
+编译为 ggml computation graph，在 Metal GPU 上原生执行，消除 Python per-op dispatch 开销。
+</p>
+
+<h2>2. 三种 Draft 引擎对比</h2>
+<table>
+  <tr>
+    <th>引擎</th>
+    <th>实现方式</th>
+    <th>ms/step</th>
+    <th>正确性</th>
+    <th>方差</th>
+  </tr>
+  <tr>
+    <td><strong>ggml Native</strong></td>
+    <td>ctypes → libllama.dylib → Metal GPU graph</td>
+    <td>6.5ms</td>
+    <td class="pass">10/10 vs PyTorch</td>
+    <td>±0.79ms</td>
+  </tr>
+  <tr>
+    <td>MLX Metal</td>
+    <td>PyTorch checkpoint → MLX arrays → Metal</td>
+    <td>7.4ms</td>
+    <td class="pass">20/20 vs ggml</td>
+    <td>±9.5ms (高方差)</td>
+  </tr>
+  <tr>
+    <td>PyTorch CPU</td>
+    <td>torch.no_grad() forward on CPU</td>
+    <td>9.5ms</td>
+    <td>— (reference)</td>
+    <td>±3.1ms</td>
+  </tr>
+</table>
+
+<div class="card card-ok">
+  <strong>ggml Native 优势:</strong>
+  <ul>
+    <li>最快: 6.5ms/step (比 MLX 快 1.14x, 比 PyTorch CPU 快 1.46x)</li>
+    <li>方差极低: ±0.79ms (MLX 为 ±9.5ms, 受 Python GIL 影响)</li>
+    <li>完全在 C/Metal 层执行, 无 Python per-op dispatch (11 ops × ~1ms = ~11ms 节省)</li>
+    <li>单次 <code>ggml_backend_graph_compute</code> 调用执行整个 24-op 计算图</li>
+  </ul>
+</div>
+
+<h2>3. 端到端 Benchmark (公平对比)</h2>
+<p>使用相同的 prefill + generate 路径, 80 tokens, num_draft=4, Qwen2.5-0.5B FP16 on M4:</p>
+<table>
+  <tr>
+    <th>引擎</th>
+    <th>TPS</th>
+    <th>Accept Rate</th>
+    <th>Speedup</th>
+    <th>Draft ms/round</th>
+    <th>Verify ms/round</th>
+  </tr>
+  <tr style="background: #E1F5EE;">
+    <td><strong>Baseline (greedy)</strong></td>
+    <td><strong>83.4</strong></td>
+    <td>N/A</td>
+    <td><strong>1.00x</strong></td>
+    <td>—</td>
+    <td>—</td>
+  </tr>
+  <tr>
+    <td>ggml Native v1 (7K)</td>
+    <td>37.3</td>
+    <td class="fail">19.4%</td>
+    <td class="fail">0.45x</td>
+    <td>26.0</td>
+    <td>41.1</td>
+  </tr>
+  <tr>
+    <td>ggml Native v2 (23K)</td>
+    <td>40.2</td>
+    <td class="fail">25.0%</td>
+    <td class="fail">0.48x</td>
+    <td>25.8</td>
+    <td>44.8</td>
+  </tr>
+  <tr>
+    <td>MLX Metal v1</td>
+    <td>36.3</td>
+    <td class="fail">19.4%</td>
+    <td class="fail">0.43x</td>
+    <td>27.7</td>
+    <td>40.4</td>
+  </tr>
+  <tr>
+    <td>PyTorch CPU v1</td>
+    <td>27.8</td>
+    <td class="fail">19.4%</td>
+    <td class="fail">0.33x</td>
+    <td>41.3</td>
+    <td>42.7</td>
+  </tr>
+</table>
+
+<h2>4. 关键发现: MTP 交叉点分析</h2>
+
+<div class="card card-warn">
+  <strong>核心问题: Qwen2.5-0.5B 太快, MTP 无法获益</strong>
+  <p>
+    Baseline 83.4 tok/s 远超 MTP 交叉点 (~42 tok/s)。
+    即使实现完美 zero-copy (2ms/step) 和 100% accept rate,
+    最高可达 TPS ≈ 74, 仍低于 baseline。
+  </p>
+</div>
+
+<h3>MTP 收益数学模型</h3>
+<pre>
+每轮 (num_draft=4):
+  - verify 时间 = (1 + accept_len) × base_decode_ms
+  - draft 时间 = 4 × draft_ms_per_step
+  - 有效 TPS = (1 + accept_len) / (verify + draft) × 1000
+
+base_decode_ms = 1000/83.4 = 12.0ms (Qwen2.5-0.5B on M4)
+
+情景分析 (base = 83.4 tok/s):
+  100% accept, 0ms draft:  5 / (5×12) = 83.3 tok/s (勉强持平)
+  100% accept, 2ms draft:  5 / (60+8) = 73.5 tok/s (0.88x, 仍有害)
+  100% accept, 6.5ms draft: 5 / (60+26) = 58.1 tok/s (0.70x)
+  25% accept, 6.5ms draft: 2 / (24+26) = 40.0 tok/s (0.48x, 实测一致)
+
+结论: base > 42 tok/s 时, MTP 有害 (draft+verify 开销 > 节省的 decode)
+</pre>
+
+<h2>5. Accept Rate 差异分析</h2>
+<table>
+  <tr>
+    <th>指标</th>
+    <th>v1 checkpoint</th>
+    <th>v2 checkpoint</th>
+  </tr>
+  <tr>
+    <td>训练数据量</td>
+    <td>7K samples</td>
+    <td>23K samples</td>
+  </tr>
+  <tr>
+    <td>离线 chain_acc</td>
+    <td>82%</td>
+    <td>76%</td>
+  </tr>
+  <tr>
+    <td>离线 nd=1 accept</td>
+    <td>81%</td>
+    <td>91%</td>
+  </tr>
+  <tr>
+    <td>离线 nd=4 accept</td>
+    <td>49.2%</td>
+    <td>56.6%</td>
+  </tr>
+  <tr>
+    <td><strong>端到端 accept</strong></td>
+    <td class="fail"><strong>19.4%</strong></td>
+    <td class="fail"><strong>25.0%</strong></td>
+  </tr>
+</table>
+
+<div class="card card-warn">
+  <strong>差异原因:</strong>
+  <ul>
+    <li>离线 chain_acc 在训练数据上测量 (同分布), 端到端在真实生成上测量 (分布偏移)</li>
+    <li>v2 (23K samples, 10 epochs) 可能过拟合, 离线 nd=1=91% 但端到端仅 25%</li>
+    <li>代码 prompt 的 token 分布与训练数据 (ShareGPT + code) 有差异</li>
+    <li>MTP head 的 attention 简化为 seq_len=1 (无 KV cache), 可能限制长程预测能力</li>
+  </ul>
+</div>
+
+<h2>6. 实现文件清单</h2>
+<table>
+  <tr>
+    <th>文件</th>
+    <th>功能</th>
+    <th>状态</th>
+  </tr>
+  <tr>
+    <td><code>CGC_Phase2/mtp_ggml_native.py</code></td>
+    <td>ggml Metal backend 原生 MTP forward (ctypes → libllama.dylib)</td>
+    <td class="pass">完成 + 测试通过</td>
+  </tr>
+  <tr>
+    <td><code>CGC_Phase2/mtp_mlx_forward.py</code></td>
+    <td>MLX Metal GPU MTP forward</td>
+    <td class="pass">完成 + 测试通过</td>
+  </tr>
+  <tr>
+    <td><code>CGC_Phase2/cgc_ir_dispatcher.py</code></td>
+    <td>CGC IR → Metal 调度层 (统一执行引擎)</td>
+    <td class="pass">完成 + 测试通过</td>
+  </tr>
+  <tr>
+    <td><code>CGC_Phase2/mtp_verify_loop.py</code></td>
+    <td>端侧 verify loop (llama.cpp + MTP draft + accept/reject)</td>
+    <td class="pass">完成 (3引擎集成)</td>
+  </tr>
+  <tr>
+    <td><code>CGC_Phase2/test_ggml_native.py</code></td>
+    <td>ggml native 测试套件 (正确性 + 性能)</td>
+    <td class="pass">3/3 通过</td>
+  </tr>
+  <tr>
+    <td><code>app/shared/hermes_router.py</code></td>
+    <td>Hermes Router (use_ggml 集成)</td>
+    <td class="pass">配置更新完成</td>
+  </tr>
+  <tr>
+    <td><code>app/training/train_mtp.py</code></td>
+    <td>统一 MTP 训练入口 (--model dsv4/qwen3vl)</td>
+    <td class="pass">完成</td>
+  </tr>
+</table>
+
+<h2>7. ggml Native 实现细节</h2>
+
+<h3>架构</h3>
+<pre>
+PyTorch checkpoint (.pt)
+    ↓ torch.load → numpy float32
+ggml weight tensors (ggml_new_tensor_2d/1d)
+    ↓ ggml_backend_alloc_ctx_tensors → Metal GPU
+ggml computation graph (24 ops):
+    concat_in → mul_mat(proj) → rms_norm → mul(norm1)
+    → mul_mat(V) → mul_mat(O) → add(residual)
+    → rms_norm → mul(norm2)
+    → mul_mat(gate) → silu → mul(up) → mul_mat(down) → add(residual)
+    → rms_norm → mul(norm_out) → mul_mat(lm_head) → logits
+    ↓
+ggml_backend_graph_compute (单次 Metal GPU 调用)
+    ↓
+logits → Python argmax → draft token
+mtp_hidden → 下一轮 chain 输入
+</pre>
+
+<h3>关键技术决策</h3>
+<ul>
+  <li><strong>预拼接输入</strong>: 用 <code>np.concatenate([hidden, embed])</code> 替代 <code>ggml_concat</code>, 避免维度不匹配导致的 <code>ggml_can_mul_mat</code> 断言失败</li>
+  <li><strong>Python argmax</strong>: Metal backend 不支持 <code>ARGMAX</code> op, 改为 <code>ggml_backend_tensor_get</code> 读回 logits 后在 Python 中 <code>np.argmax</code></li>
+  <li><strong>no_alloc=True</strong>: weight context 使用 <code>no_alloc=True</code>, 通过 <code>ggml_backend_alloc_ctx_tensors</code> 分配 GPU 内存</li>
+  <li><strong>本地 embedding copy</strong>: 保留 <code>_embed_local</code> numpy 数组用于快速 token embedding lookup (~0.01ms), 避免每次从 GPU 读回</li>
+</ul>
+
+<h2>8. 下一步方向</h2>
+
+<div class="card card-key">
+  <strong>A. 测试更慢的目标模型 (最高优先级)</strong>
+  <p>
+    MTP 框架已验证正确, 只是需要 base < 42 tok/s 的模型才能获益。
+    可选: Qwen2.5-1.5B/3B (需下载 GGUF + 训练对应 MTP head),
+    或 Qwen3-VL-2B (已有 GGUF, 但 hidden_size=2048 需新 MTP head)。
+  </p>
+</div>
+
+<div class="card">
+  <strong>B. 改进 MTP head 训练质量</strong>
+  <p>
+    当前 accept rate 仅 19-25%, 远低于离线 chain_acc 82%。
+    可尝试: 更多训练数据 (50K+ samples), 更短训练 (避免过拟合),
+    学习率调度, 或使用真实代码 prompt 数据收集。
+  </p>
+</div>
+
+<div class="card">
+  <strong>C. True zero-copy 优化</strong>
+  <p>
+    当前仍有 <code>ggml_backend_tensor_set/get</code> 的 CPU↔GPU 拷贝 (~0.1ms on unified memory)。
+    理论上可通过共享 Metal buffer 消除, 但需深入 ggml 内部 API。
+    实际收益有限: draft 从 6.5ms → ~2ms, 但 baseline 83.4 tok/s 时仍无法超过。
+  </p>
+</div>
+
+<div class="card">
+  <strong>D. 增大 num_draft</strong>
+  <p>
+    当前 num_draft=4, 若增大到 8 或 16, 可摊薄 draft 开销。
+    但需要更高的 accept rate 才有收益, 且 llama.cpp verify 逐 token 进行。
+  </p>
+</div>
+
+<h2>9. 结论</h2>
+<p>
+端侧 MTP verify loop 的<strong>三种引擎</strong> (ggml Native / MLX / PyTorch CPU) 均已实现并验证正确。
+ggml Native 是最快的引擎 (6.5ms/step, 100% token match), 通过 ctypes 直接调用 ggml C API
+在 Metal GPU 上执行完整计算图, 消除了 Python per-op dispatch 开销。
+</p>
+<p>
+然而, <strong class="warn">Qwen2.5-0.5B on M4 太快 (83.4 tok/s)</strong>, MTP 无法带来加速。
+MTP 交叉点约为 42 tok/s, 当前模型远超此阈值。
+端侧 MTP 的正确应用场景是<strong>较大的模型</strong> (如 3B+), 或<strong>云端慢模型</strong> (如 Gemma4 26B: 26 tok/s base)。
+</p>
+
+</body>
+</html>

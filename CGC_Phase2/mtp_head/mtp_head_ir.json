@@ -1,0 +1,148 @@
+{
+  "name": "mtp_head",
+  "version": "1.0",
+  "hidden_size": 2048,
+  "vocab_size": 151936,
+  "num_heads": 16,
+  "head_dim": 128,
+  "intermediate_size": 5632,
+  "rms_norm_eps": 1e-06,
+  "training": {
+    "lr": 0.0001,
+    "epochs": 3,
+    "batch_size": 32,
+    "optimizer": "adamw",
+    "loss": "cross_entropy",
+    "chained": false
+  },
+  "inference": {
+    "quantization": null,
+    "lm_head_shared": true,
+    "cache_mode": null
+  },
+  "layers": [
+    {
+      "name": "proj",
+      "layer_type": "linear",
+      "input_shape": [
+        1,
+        1,
+        4096
+      ],
+      "output_shape": [
+        1,
+        1,
+        2048
+      ],
+      "params": {
+        "in_features": 4096,
+        "out_features": 2048,
+        "bias": false
+      }
+    },
+    {
+      "name": "norm1",
+      "layer_type": "rms_norm",
+      "input_shape": [
+        1,
+        1,
+        2048
+      ],
+      "output_shape": [
+        1,
+        1,
+        2048
+      ],
+      "params": {
+        "dim": 2048,
+        "eps": 1e-06
+      }
+    },
+    {
+      "name": "attn",
+      "layer_type": "attention",
+      "input_shape": [
+        1,
+        1,
+        2048
+      ],
+      "output_shape": [
+        1,
+        1,
+        2048
+      ],
+      "params": {
+        "hidden_size": 2048,
+        "num_heads": 16,
+        "head_dim": 128
+      }
+    },
+    {
+      "name": "norm2",
+      "layer_type": "rms_norm",
+      "input_shape": [
+        1,
+        1,
+        2048
+      ],
+      "output_shape": [
+        1,
+        1,
+        2048
+      ],
+      "params": {
+        "dim": 2048,
+        "eps": 1e-06
+      }
+    },
+    {
+      "name": "mlp",
+      "layer_type": "mlp_silu",
+      "input_shape": [
+        1,
+        1,
+        2048
+      ],
+      "output_shape": [
+        1,
+        1,
+        2048
+      ],
+      "params": {
+        "hidden_size": 2048,
+        "intermediate_size": 5632
+      }
+    },
+    {
+      "name": "norm_out",
+      "layer_type": "rms_norm",
+      "input_shape": [
+        1,
+        1,
+        2048
+      ],
+      "output_shape": [
+        1,
+        1,
+        2048
+      ],
+      "params": {
+        "dim": 2048,
+        "eps": 1e-06
+      }
+    }
+  ],
+  "weight_map": {
+    "proj": "proj.weight",
+    "norm1": "norm1.weight",
+    "attn.q_proj": "attn.q_proj.weight",
+    "attn.k_proj": "attn.k_proj.weight",
+    "attn.v_proj": "attn.v_proj.weight",
+    "attn.o_proj": "attn.o_proj.weight",
+    "norm2": "norm2.weight",
+    "mlp.gate_proj": "mlp.gate_proj.weight",
+    "mlp.up_proj": "mlp.up_proj.weight",
+    "mlp.down_proj": "mlp.down_proj.weight",
+    "norm_out": "norm_out.weight"
+  }
+}

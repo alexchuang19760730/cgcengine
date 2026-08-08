@@ -1,0 +1,83 @@
+{
+  "system_id": "host2_fusionroute_ds4x2_minicpm5",
+  "system_role": "multi_component_runtime",
+  "export_root": "/tmp/cgc_system_manifest_examples/host2_fusionroute_ds4x2_minicpm5",
+  "routing_edges": [
+    {
+      "from_component_id": "fusionroute_gateway",
+      "to_component_id": "deepseek_inst1",
+      "edge_role": "primary_llm_route"
+    },
+    {
+      "from_component_id": "fusionroute_gateway",
+      "to_component_id": "deepseek_inst2",
+      "edge_role": "secondary_llm_route"
+    },
+    {
+      "from_component_id": "fusionroute_gateway",
+      "to_component_id": "minicpm5_router",
+      "edge_role": "router_sidecar_route"
+    }
+  ],
+  "components": [
+    {
+      "component_id": "fusionroute_gateway",
+      "component_role": "gateway_orchestrator",
+      "required": true,
+      "health_endpoint": "http://127.0.0.1:18080/health",
+      "task_domain": "agent",
+      "task_type": "inference",
+      "backend": "cuda",
+      "environment": "cloud_cluster",
+      "model_name": "fusionroute_gateway",
+      "runtime_profile": "cloud_cluster",
+      "export_subdir": "fusionroute_gateway"
+    },
+    {
+      "component_id": "deepseek_inst1",
+      "component_role": "llm_runtime",
+      "required": true,
+      "health_endpoint": "http://127.0.0.1:50053/health",
+      "task_domain": "models",
+      "task_type": "inference",
+      "backend": "cuda",
+      "environment": "cloud_cluster",
+      "model_name": "deepseek_v4_flash_pro",
+      "runtime_profile": "cloud_cluster",
+      "hf_model_path": "/data/models/DeepSeek-V4-Flash",
+      "parallel_tp_size": 4,
+      "enable_nccl": true,
+      "export_subdir": "deepseek_inst1"
+    },
+    {
+      "component_id": "deepseek_inst2",
+      "component_role": "llm_runtime",
+      "required": true,
+      "health_endpoint": "http://127.0.0.1:50063/health",
+      "task_domain": "models",
+      "task_type": "inference",
+      "backend": "cuda",
+      "environment": "cloud_cluster",
+      "model_name": "deepseek_v4_flash_pro",
+      "runtime_profile": "cloud_cluster",
+      "hf_model_path": "/data/models/DeepSeek-V4-Flash",
+      "parallel_tp_size": 4,
+      "enable_nccl": true,
+      "export_subdir": "deepseek_inst2"
+    },
+    {
+      "component_id": "minicpm5_router",
+      "component_role": "router_runtime",
+      "required": true,
+      "health_endpoint": "http://127.0.0.1:19090/health",
+      "task_domain": "agent",
+      "task_type": "inference",
+      "backend": "cuda",
+      "environment": "cloud_cluster",
+      "model_name": "minicpm5_router",
+      "runtime_profile": "cloud_cluster",
+      "hf_model_path": "/data/models/MiniCPM5-1B-GGUF/MiniCPM5-1B-Q4_K_M.gguf",
+      "export_subdir": "minicpm5_router"
+    }
+  ]
+}

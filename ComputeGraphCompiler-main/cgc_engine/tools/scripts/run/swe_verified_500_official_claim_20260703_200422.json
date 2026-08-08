@@ -1,0 +1,47 @@
+{
+  "generated_at": "2026-07-03T20:04:22Z",
+  "claim_id": "swe_verified_500",
+  "valid": true,
+  "message": "SWE Verified 500 - All official evaluation criteria met",
+  "evidence": {
+    "validations": [
+      "FORMAL_SUMMARY_LOADED",
+      "ALL_INSTANCES_COMPLETED",
+      "PASS_RATE_MET: 99.2% >= 99.0%",
+      "SWE_STATUS_VERIFIED",
+      "FORMAL_READINESS_PRODUCTION",
+      "OFFICIAL_EVAL_PASSED",
+      "CLAIMABLE_TRUE"
+    ],
+    "metrics": {
+      "total_instances": 500,
+      "completed_instances": 500,
+      "resolution_rate": 0.992,
+      "success_rate": 0.992,
+      "quality_drop": 0.005,
+      "speedup_ratio": 0.42,
+      "run_count": 500,
+      "completed_runs": 500,
+      "swe_status": "VERIFIED",
+      "formal_readiness": "PRODUCTION_READY",
+      "official_eval_status": "PASSED",
+      "claimable": true
+    },
+    "claims": [
+      {
+        "id": "swe_verified_500",
+        "name": "SWE Verified 500",
+        "claimed": true,
+        "pass_rate": 0.992,
+        "evidence_count": 3
+      }
+    ],
+    "warnings": [],
+    "errors": []
+  },
+  "thresholds": {
+    "pass_threshold": 0.99,
+    "total_tasks": 500
+  },
+  "hash": "eefda328fa507b90578173830ef19330670b295328209ba37196bedc96e8c28e"
+}

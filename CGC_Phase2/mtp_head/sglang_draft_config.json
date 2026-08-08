@@ -1,0 +1,29 @@
+{
+  "model_type": "mtp_head",
+  "architectures": [
+    "MTPHeadForSpeculativeDecoding"
+  ],
+  "hidden_size": 2048,
+  "vocab_size": 151936,
+  "num_heads": 16,
+  "head_dim": 128,
+  "intermediate_size": 5632,
+  "rms_norm_eps": 1e-06,
+  "speculative_algorithm": "EAGLE",
+  "speculative_num_steps": 4,
+  "speculative_num_draft_tokens": 4,
+  "weight_map": {
+    "proj": "proj.weight",
+    "norm1": "norm1.weight",
+    "attn.q_proj": "attn.q_proj.weight",
+    "attn.k_proj": "attn.k_proj.weight",
+    "attn.v_proj": "attn.v_proj.weight",
+    "attn.o_proj": "attn.o_proj.weight",
+    "norm2": "norm2.weight",
+    "mlp.gate_proj": "mlp.gate_proj.weight",
+    "mlp.up_proj": "mlp.up_proj.weight",
+    "mlp.down_proj": "mlp.down_proj.weight",
+    "norm_out": "norm_out.weight"
+  },
+  "ir_version": "1.0"
+}

@@ -1,0 +1,446 @@
+{
+  "timestamp": "2026-07-30 20:09:22",
+  "config": {
+    "cloud_model": "Gemma4 26B-A4B bf16 TP4",
+    "draft_model": "Gemma4AssistantForCausalLM (official MTP head, 4 layers)",
+    "mtp_config": "NEXTN, steps=5, draft_tokens=5, topk=1",
+    "cloud_url": "http://localhost:30001",
+    "hermes_version": "v4"
+  },
+  "phase0_platform_benchmark": {
+    "mlx_available": true,
+    "llamacpp_available": true,
+    "mlx_tps": 26.0,
+    "llamacpp_tps": 149.8,
+    "mlx_latency_ms": 192.0,
+    "llamacpp_latency_ms": 33.0,
+    "preferred_backend": "llamacpp",
+    "speedup": 5.761538461538462,
+    "test_model": "",
+    "error": "",
+    "system_profile_chip": "Apple M4"
+  },
+  "phase1_bootstrap": {
+    "system_profile": {
+      "os_name": "Darwin",
+      "os_version": "24.2.0",
+      "arch": "arm64",
+      "cpu_brand": "Apple M4",
+      "cpu_cores": 10,
+      "total_mem_gb": 17.179869184,
+      "avail_mem_gb": 6.871947673600001,
+      "disk_total_gb": 245.107195904,
+      "disk_available_gb": 12.206936064,
+      "gpu_type": "apple_metal",
+      "gpu_name": "Apple M4",
+      "gpu_vram_gb": 0,
+      "compute_tier": "medium",
+      "tflops": 38.0,
+      "recommended_engine": "mlx",
+      "preferred_edge_backend": "llamacpp",
+      "mlx_available": true,
+      "llamacpp_available": true,
+      "mlx_benchmark_tps": 26.0,
+      "llamacpp_benchmark_tps": 149.8,
+      "rtt_ms": 0.0,
+      "bandwidth_mbps": 0.0,
+      "online": true
+    },
+    "platform_benchmark": {
+      "mlx_available": true,
+      "llamacpp_available": true,
+      "mlx_tps": 26.0,
+      "llamacpp_tps": 149.8,
+      "mlx_latency_ms": 192.0,
+      "llamacpp_latency_ms": 33.0,
+      "preferred_backend": "llamacpp",
+      "speedup": 5.761538461538462,
+      "test_model": "",
+      "error": ""
+    },
+    "bootstrap_result": {
+      "success": true,
+      "elapsed_ms": 1182.2810173034668,
+      "cloud_reachable": true,
+      "state": "READY"
+    },
+    "bindings": {
+      "gemma4": {
+        "model_name": "gemma4",
+        "model_display_name": "Gemma4-26B-A4B",
+        "draft_model_path": "models/gemma-4-mtp-head",
+        "draft_model_size_gb": 0.84,
+        "draft_architecture": "Gemma4AssistantForCausalLM",
+        "draft_model_type": "gemma4_assistant",
+        "draft_num_layers": 4,
+        "draft_hidden_size": 1024,
+        "draft_vocab_size": 262144,
+        "draft_params_m": 183.1,
+        "can_run_on_edge": false,
+        "edge_backend": "none",
+        "reason": "架构 Gemma4AssistantForCausalLM 不被端侧 (MLX/llama.cpp) 支持 → 必须用云端 NEXTN MTP",
+        "estimated_edge_tps": 0.0,
+        "estimated_edge_ttft_ms": 0.0,
+        "estimated_memory_usage_gb": 0.0,
+        "cloud_compute_savings_pct": 0.0,
+        "estimated_cloud_mtp_tps": 273.0,
+        "estimated_cloud_mtp_accept_rate": 0.95
+      },
+      "dsv4": {
+        "model_name": "dsv4",
+        "model_display_name": "DeepSeek V4 Flash",
+        "draft_model_path": "",
+        "draft_model_size_gb": 0.9,
+        "draft_architecture": "DeepseekV4ForCausalLM",
+        "draft_model_type": "deepseek_v4",
+        "draft_num_layers": 4,
+        "draft_hidden_size": 4096,
+        "draft_vocab_size": 129280,
+        "draft_params_m": 188.8,
+        "can_run_on_edge": false,
+        "edge_backend": "none",
+        "reason": "架构 DeepseekV4ForCausalLM 不被端侧 (MLX/llama.cpp) 支持 → 必须用云端 NEXTN MTP",
+        "estimated_edge_tps": 0.0,
+        "estimated_edge_ttft_ms": 0.0,
+        "estimated_memory_usage_gb": 0.0,
+        "cloud_compute_savings_pct": 0.0,
+        "estimated_cloud_mtp_tps": 273.0,
+        "estimated_cloud_mtp_accept_rate": 0.85
+      },
+      "qwen3vl": {
+        "model_name": "qwen3vl",
+        "model_display_name": "Qwen3-VL-2B",
+        "draft_model_path": "",
+        "draft_model_size_gb": 0.3,
+        "draft_architecture": "MTPHead",
+        "draft_model_type": "mtphead",
+        "draft_num_layers": 4,
+        "draft_hidden_size": 2048,
+        "draft_vocab_size": 151936,
+        "draft_params_m": 59.8,
+        "can_run_on_edge": true,
+        "edge_backend": "llamacpp",
+        "reason": "架构 MTPHead 支持 + 0.3GB <= 4.1GB + 后端 llamacpp (150 tok/s)",
+        "estimated_edge_tps": 500.0,
+        "estimated_edge_ttft_ms": 35.980000000000004,
+        "estimated_memory_usage_gb": 0.36,
+        "cloud_compute_savings_pct": 0.29411764705882354,
+        "estimated_cloud_mtp_tps": 0.0,
+        "estimated_cloud_mtp_accept_rate": 0.0
+      }
+    }
+  },
+  "phase2_cloud_mtp": {
+    "results": [
+      {
+        "prompt": "def fibonacci(n):\n    if n <= 1:\n        return n\n",
+        "text": " n\n    return n\n    return n\n    return n\n    return n\n    r",
+        "latency_ms": 197.7,
+        "e2e_latency_ms": 114.1,
+        "completion_tokens": 30,
+        "cached_tokens": 19,
+        "tps": 151.8,
+        "decode_tps": 267.7,
+        "spec_accept_rate": 1.0,
+        "spec_accept_length": 5.0,
+        "spec_correct": 24,
+        "spec_proposed": 24
+      },
+      {
+        "prompt": "import numpy as np\n\narr = np.array([1, 2, 3",
+        "text": ", 4, 5, 6, 7, 8, 9, 10, 11, 12",
+        "latency_ms": 192.4,
+        "e2e_latency_ms": 128.5,
+        "completion_tokens": 30,
+        "cached_tokens": 16,
+        "tps": 156.0,
+        "decode_tps": 237.1,
+        "spec_accept_rate": 0.7857142857142857,
+        "spec_accept_length": 4.285714285714286,
+        "spec_correct": 22,
+        "spec_proposed": 28
+      },
+      {
+        "prompt": "class Solution:\n    def twoSum(self, nums, target)",
+        "text": "\n        def twoSum(self, nums, target):\n            def two",
+        "latency_ms": 195.9,
+        "e2e_latency_ms": 143.3,
+        "completion_tokens": 30,
+        "cached_tokens": 13,
+        "tps": 153.2,
+        "decode_tps": 212.3,
+        "spec_accept_rate": 0.78125,
+        "spec_accept_length": 3.75,
+        "spec_correct": 25,
+        "spec_proposed": 32
+      },
+      {
+        "prompt": "def quicksort(arr):\n    if len(arr) <= 1:\n        ",
+        "text": " x in arr[1:]]\n    pivot = arr[0]\n    left = [x for x in arr",
+        "latency_ms": 233.9,
+        "e2e_latency_ms": 158.8,
+        "completion_tokens": 30,
+        "cached_tokens": 41,
+        "tps": 128.2,
+        "decode_tps": 191.4,
+        "spec_accept_rate": 0.6388888888888888,
+        "spec_accept_length": 3.3333333333333335,
+        "spec_correct": 23,
+        "spec_proposed": 36
+      },
+      {
+        "prompt": "async def fetch_data(url):\n    async with aiohttp.",
+        "text": "async with a111111111111111111111111111",
+        "latency_ms": 272.1,
+        "e2e_latency_ms": 185.1,
+        "completion_tokens": 30,
+        "cached_tokens": 22,
+        "tps": 110.2,
+        "decode_tps": 163.8,
+        "spec_accept_rate": 0.4090909090909091,
+        "spec_accept_length": 2.727272727272727,
+        "spec_correct": 18,
+        "spec_proposed": 44
+      },
+      {
+        "prompt": "def merge_sort(arr):\n    if len(arr) <= 1:\n       ",
+        "text": "mid = len(arr) // 2\n    mid = len(arr) // 2\n    mid = len(ar",
+        "latency_ms": 872.4,
+        "e2e_latency_ms": 116.9,
+        "completion_tokens": 30,
+        "cached_tokens": 33,
+        "tps": 34.4,
+        "decode_tps": 261.2,
+        "spec_accept_rate": 1.0,
+        "spec_accept_length": 5.0,
+        "spec_correct": 24,
+        "spec_proposed": 24
+      },
+      {
+        "prompt": "def binary_search(nums, target):\n    lo, hi = 0, l",
+        "text": " target:\n            return True\n        elif nums[mid] < ta",
+        "latency_ms": 274.1,
+        "e2e_latency_ms": 175.9,
+        "completion_tokens": 30,
+        "cached_tokens": 50,
+        "tps": 109.5,
+        "decode_tps": 172.5,
+        "spec_accept_rate": 0.475,
+        "spec_accept_length": 3.0,
+        "spec_correct": 19,
+        "spec_proposed": 40
+      },
+      {
+        "prompt": "class LinkedList:\n    def __init__(self):\n        ",
+        "text": "self.head = None\n            self.head = None\n            se",
+        "latency_ms": 206.4,
+        "e2e_latency_ms": 144.7,
+        "completion_tokens": 30,
+        "cached_tokens": 45,
+        "tps": 145.4,
+        "decode_tps": 210.2,
+        "spec_accept_rate": 0.71875,
+        "spec_accept_length": 3.75,
+        "spec_correct": 23,
+        "spec_proposed": 32
+      }
+    ],
+    "avg_ttft_ms": 264.6,
+    "avg_latency_ms": 220.2,
+    "avg_tps": 136.8,
+    "avg_decode_tps": 211.2,
+    "base_decode_tps": 43.5,
+    "avg_accept_rate": 0.726,
+    "avg_accept_length": 3.86,
+    "ttfts": [
+      246.5,
+      240.6,
+      236.1,
+      239.4,
+      282.8,
+      486.9,
+      439.4,
+      302.3
+    ]
+  },
+  "phase3_routing": {
+    "gemma4": {
+      "display_name": "Gemma4 26B-A4B",
+      "binding": {
+        "model_name": "gemma4",
+        "model_display_name": "Gemma4-26B-A4B",
+        "draft_model_path": "models/gemma-4-mtp-head",
+        "draft_model_size_gb": 0.84,
+        "draft_architecture": "Gemma4AssistantForCausalLM",
+        "draft_model_type": "gemma4_assistant",
+        "draft_num_layers": 4,
+        "draft_hidden_size": 1024,
+        "draft_vocab_size": 262144,
+        "draft_params_m": 183.1,
+        "can_run_on_edge": false,
+        "edge_backend": "none",
+        "reason": "架构 Gemma4AssistantForCausalLM 不被端侧 (MLX/llama.cpp) 支持 → 必须用云端 NEXTN MTP",
+        "estimated_edge_tps": 0.0,
+        "estimated_edge_ttft_ms": 0.0,
+        "estimated_memory_usage_gb": 0.0,
+        "cloud_compute_savings_pct": 0.0,
+        "estimated_cloud_mtp_tps": 273.0,
+        "estimated_cloud_mtp_accept_rate": 0.95
+      },
+      "decision": {
+        "mode": "cloud_mtp",
+        "confidence": 0.9,
+        "reason": "云端 NEXTN MTP (accept=73%) — 端侧不支持: 架构 Gemma4AssistantForCausalLM 不被端侧 (MLX/llama.cpp) 支持 → 必须用云端 NEXTN MTP",
+        "expected_ttft_ms": 10.0,
+        "expected_decode_tps": 273.0,
+        "expected_accept_rate": 0.726,
+        "cloud_compute_savings_pct": 0,
+        "cloud_url": "http://localhost:30001",
+        "use_mtp": true
+      },
+      "actual": {
+        "actual_ttft_ms": 264.6,
+        "actual_decode_tps": 211.2,
+        "actual_accept_rate": 0.726,
+        "actual_accept_length": 3.86
+      }
+    },
+    "dsv4": {
+      "display_name": "DeepSeek V4 Flash",
+      "binding": {
+        "model_name": "dsv4",
+        "model_display_name": "DeepSeek V4 Flash",
+        "draft_model_path": "",
+        "draft_model_size_gb": 0.9,
+        "draft_architecture": "DeepseekV4ForCausalLM",
+        "draft_model_type": "deepseek_v4",
+        "draft_num_layers": 4,
+        "draft_hidden_size": 4096,
+        "draft_vocab_size": 129280,
+        "draft_params_m": 188.8,
+        "can_run_on_edge": false,
+        "edge_backend": "none",
+        "reason": "架构 DeepseekV4ForCausalLM 不被端侧 (MLX/llama.cpp) 支持 → 必须用云端 NEXTN MTP",
+        "estimated_edge_tps": 0.0,
+        "estimated_edge_ttft_ms": 0.0,
+        "estimated_memory_usage_gb": 0.0,
+        "cloud_compute_savings_pct": 0.0,
+        "estimated_cloud_mtp_tps": 273.0,
+        "estimated_cloud_mtp_accept_rate": 0.85
+      },
+      "decision": {
+        "mode": "cloud_mtp",
+        "confidence": 0.9,
+        "reason": "云端 NEXTN MTP (accept=85%) — 端侧不支持: 架构 DeepseekV4ForCausalLM 不被端侧 (MLX/llama.cpp) 支持 → 必须用云端 NEXTN MTP",
+        "expected_ttft_ms": 10.0,
+        "expected_decode_tps": 273.0,
+        "expected_accept_rate": 0.85,
+        "cloud_compute_savings_pct": 0,
+        "cloud_url": "http://localhost:30001",
+        "use_mtp": true
+      },
+      "actual": {
+        "note": "未实测 (云端未部署此模型)"
+      }
+    },
+    "qwen3vl": {
+      "display_name": "Qwen3-VL 2B",
+      "binding": {
+        "model_name": "qwen3vl",
+        "model_display_name": "Qwen3-VL-2B",
+        "draft_model_path": "",
+        "draft_model_size_gb": 0.3,
+        "draft_architecture": "MTPHead",
+        "draft_model_type": "mtphead",
+        "draft_num_layers": 4,
+        "draft_hidden_size": 2048,
+        "draft_vocab_size": 151936,
+        "draft_params_m": 59.8,
+        "can_run_on_edge": true,
+        "edge_backend": "llamacpp",
+        "reason": "架构 MTPHead 支持 + 0.3GB <= 4.1GB + 后端 llamacpp (150 tok/s)",
+        "estimated_edge_tps": 500.0,
+        "estimated_edge_ttft_ms": 35.980000000000004,
+        "estimated_memory_usage_gb": 0.36,
+        "cloud_compute_savings_pct": 0.29411764705882354,
+        "estimated_cloud_mtp_tps": 0.0,
+        "estimated_cloud_mtp_accept_rate": 0.0
+      },
+      "decision": {
+        "mode": "edge_draft",
+        "confidence": 0.92,
+        "reason": "Hermes 调动端侧 llamacpp draft decode (省云端 29% 算力) + 云端 verify — 架构 MTPHead 支持 + 0.3GB <= 4.1GB + 后端 llamacpp (150 tok/s)",
+        "expected_ttft_ms": 35.980000000000004,
+        "expected_decode_tps": 500.0,
+        "expected_accept_rate": 0.0,
+        "cloud_compute_savings_pct": 0.29411764705882354,
+        "cloud_url": "http://localhost:30001",
+        "use_mtp": true
+      },
+      "actual": {
+        "note": "未实测 (云端未部署此模型)"
+      }
+    }
+  },
+  "phase4_savings": {
+    "cloud_mtp_compute": {
+      "draft_passes": 5,
+      "verify_passes": 1,
+      "draft_layers": 4,
+      "main_layers": 48,
+      "total_layer_passes_cloud_mtp": 68,
+      "total_layer_passes_edge_draft": 48,
+      "savings_pct": 0.29411764705882354
+    },
+    "per_model": {
+      "gemma4": {
+        "display_name": "Gemma4 26B-A4B",
+        "route": "cloud_mtp",
+        "edge_backend": "none",
+        "can_run_on_edge": false,
+        "cloud_compute_savings_pct": 0,
+        "estimated_edge_tps": 0,
+        "cloud_tps": 211.2
+      },
+      "dsv4": {
+        "display_name": "DeepSeek V4 Flash",
+        "route": "cloud_mtp",
+        "edge_backend": "none",
+        "can_run_on_edge": false,
+        "cloud_compute_savings_pct": 0,
+        "estimated_edge_tps": 0,
+        "cloud_tps": 211.2
+      },
+      "qwen3vl": {
+        "display_name": "Qwen3-VL 2B",
+        "route": "edge_draft",
+        "edge_backend": "llamacpp",
+        "can_run_on_edge": true,
+        "cloud_compute_savings_pct": 0.29411764705882354,
+        "estimated_edge_tps": 500.0,
+        "cloud_tps": 43.5
+      }
+    },
+    "target_420_550": {
+      "cloud_mtp_tps": 211.2,
+      "target_met": false,
+      "gap": 208.8
+    }
+  },
+  "phase5_sft": {
+    "sft_path": "/Users/alexchuang/Documents/flashkv0516/data/hermes_sft_train_v4.jsonl",
+    "total_pairs": 100,
+    "mode_distribution": {
+      "cloud_mtp": 26,
+      "edge_draft": 43,
+      "cloud_only": 4,
+      "local_only": 9,
+      "cache_hit": 18
+    },
+    "backend_distribution": {
+      "none": 64,
+      "llamacpp": 27,
+      "mlx": 9
+    }
+  }
+}

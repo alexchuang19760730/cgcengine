@@ -1,0 +1,30 @@
+{
+  "task_type_contract_version": "task_type_contract_v1",
+  "task_type_header": "x-cgc-task-type",
+  "default_task_type": "prefill",
+  "known_task_types": [
+    "prefill",
+    "decode",
+    "inference",
+    "analysis",
+    "repo_debug",
+    "train"
+  ],
+  "task_type_aliases": {
+    "prefill_only": "prefill",
+    "edge_prefill": "prefill",
+    "cloud_prefill": "prefill",
+    "decode_only": "decode",
+    "edge_decode": "decode",
+    "cloud_decode": "decode",
+    "infer": "inference",
+    "serve": "inference",
+    "serving": "inference",
+    "completion": "inference",
+    "chat": "inference",
+    "chat_completion": "inference",
+    "repo_debugging": "repo_debug",
+    "repo-debug": "repo_debug",
+    "debug": "repo_debug"
+  }
+}

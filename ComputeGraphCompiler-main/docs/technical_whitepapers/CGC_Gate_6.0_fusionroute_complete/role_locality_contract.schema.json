@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cgc://gate6/fusionroute/role_locality_contract.schema.json",
+  "title": "FusionRoute Role Locality Contract",
+  "description": "Schema for machine-readable role locality contracts used by the Gate 6.0 FusionRoute role locality / placement draft projection.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_id",
+    "role",
+    "gate_domain",
+    "preferred_locality",
+    "allowed_localities",
+    "runtime_endpoint",
+    "policy_source",
+    "handoff_contract"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "fusionroute.role_locality_contract.v1"
+    },
+    "contract_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "role": {
+      "type": "string",
+      "enum": [
+        "Hermes",
+        "TMAX",
+        "UI-TARS",
+        "Coding Executor",
+        "CLI-Universe"
+      ]
+    },
+    "gate_domain": {
+      "type": "string",
+      "enum": [
+        "agent_runtime",
+        "coding_runtime",
+        "embodied_capability",
+        "offline_synthesis"
+      ]
+    },
+    "preferred_locality": {
+      "type": "string",
+      "enum": [
+        "cloud",
+        "edge",
+        "hybrid",
+        "auto"
+      ]
+    },
+    "allowed_localities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "enum": [
+          "cloud",
+          "edge",
+          "hybrid",
+          "auto"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "runtime_endpoint": {
+      "type": "string",
+      "minLength": 1
+    },
+    "fallback_endpoint": {
+      "type": "string"
+    },
+    "policy_source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "handoff_contract": {
+      "type": "string",
+      "minLength": 1
+    },
+    "notes": {
+      "type": "string"
+    }
+  }
+}

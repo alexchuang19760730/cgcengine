@@ -1,0 +1,11 @@
+{
+  "schema_version": "v1",
+  "draft_mode": "off",
+  "response_contract": "plain",
+  "accept_rate_ema": 0.0,
+  "grammar_accept_rate_ema": 0.0,
+  "json_success_rate": 0.0,
+  "recent_speculation_roi": 0.0,
+  "auto_disabled": false,
+  "disable_reason": ""
+}
