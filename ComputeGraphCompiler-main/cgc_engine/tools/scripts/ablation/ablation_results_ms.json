@@ -1,7 +1,0 @@
-[
-  {
-    "name": "Test",
-    "error": "Repo id must be in the form 'repo_name' or 'namespace/repo_name': '/home/gs01/models/Qwen-7B-Chat'. Use `repo_type` argument if needed.",
-    "success": false
-  }
-]
