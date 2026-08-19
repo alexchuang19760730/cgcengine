@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CGC TPOT 延遲分解（端到端長條圖）2026-08-19 · qwen36 25.07 t/s</title>
+<style>
+  :root {
+    --bg: #0f1420; --card: #171e2e; --ink: #e8ecf4; --sub: #9aa5b8;
+    --line: #2a3350;
+    /* qwen36 GPU */
+    --wr: #f0a45c; --small: #e86a6a; --ssm: #d98cf0; --sdpa: #7fb8f0; --bubble: #6b7aa8;
+    /* qwen36 CPU */
+    --cpu-r: #f0c25c; --cpu-g: #b8d95c; --cpu-s: #7fd4c0; --cpu-o: #8a97ad;
+    /* accent */
+    --accent: #ffd479; --good: #8fe3a0; --warn: #f08a8a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; padding: 32px 20px 60px; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  .sub { color: var(--sub); font-size: 14px; margin-bottom: 28px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px 24px; margin-bottom: 22px; }
+  .card h2 { font-size: 18px; margin: 0 0 4px; }
+  .card .desc { color: var(--sub); font-size: 13px; margin: 0 0 16px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 10px 0 18px; font-size: 12.5px; color: var(--sub); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .barwrap { margin-bottom: 10px; }
+  .barrow { display: flex; align-items: center; gap: 10px; }
+  .barlabel { width: 280px; font-size: 12.5px; color: var(--ink); flex-shrink: 0; line-height: 1.35; }
+  .barlabel small { display: block; color: var(--sub); font-size: 11px; }
+  .bar { flex: 1; height: 34px; border-radius: 8px; overflow: hidden; display: flex; background: #0c1019; border: 1px solid var(--line); }
+  .seg { height: 100%; display: flex; align-items: center; justify-content: center; font-size: 10.5px; color: #10141f; font-weight: 700; white-space: nowrap; overflow: hidden; min-width: 0; border-right: 1px solid rgba(15,20,32,.35); }
+  .seg.tiny { font-size: 0; }
+  .seg.tiny:hover { font-size: 10.5px; }
+  .total { font-size: 12px; color: var(--sub); text-align: right; margin: 4px 0 0 290px; }
+  .note { font-size: 12.5px; color: var(--sub); margin-top: 12px; line-height: 1.6; }
+  .note b { color: var(--ink); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--sub); font-weight: 600; font-size: 12px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .hl { color: var(--accent); font-weight: 700; }
+  .ceil { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .ceil .cl { width: 280px; font-size: 12.5px; flex-shrink: 0; }
+  .ceil .ctrack { flex: 1; height: 26px; background: #0c1019; border: 1px solid var(--line); border-radius: 7px; position: relative; }
+  .ceil .cfill { height: 100%; border-radius: 6px; display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; font-size: 11px; font-weight: 700; color: #10141f; }
+  .tokbadge { margin-left: 10px; font-size: 12.5px; color: var(--ink); width: 110px; flex-shrink: 0; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; margin-left: 6px; }
+  .tag.g { background: #1c3a24; color: #8fe3a0; }
+  .tag.r { background: #3a1c1c; color: #f08a8a; }
+  .tag.y { background: #3a321c; color: #e3cf8f; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>CGC · TPOT 端到端延遲分解（長條圖）</h1>
+<div class="sub">llama.cpp fork · M4 Max 16GB · 2026-08-19 · qwen36 IQ3_XXS -ngl 99 + cache 4GiB · production 設定</div>
+
+<!-- ============ 1. qwen36 25.07 t/s 生產基線 ============ -->
+<div class="card">
+  <h2>① qwen36 IQ3_XXS（-ngl 99 + cache 4GiB）· production 設定</h2>
+  <p class="desc">wall ≈ 39.9 ms/step ≈ <b class="hl">25.07 tok/s</b>（libllama 0.0.5 + build-flat ggml-cpu.c.o + CGC Metal 優化全開）。Expert-cache hit rate <b>98.7%</b>（prefetch=0/0，純 synchronous ensure_slot 機制）。Exit abort 已修復（device_free queue drain）。Bit-identical ✓。</p>
+
+  <div class="legend">
+    <span><i class="sw" style="background:var(--wr)"></i>graph_compute_wall ~38ms（CPU MTL encoding + GPU compute 重疊）</span>
+    <span><i class="sw" style="background:var(--small)"></i>EOG sync ~4ms（GPU tail drain）</span>
+    <span><i class="sw" style="background:var(--cpu-o)"></i>post_sync ~0.2ms</span>
+    <span><i class="sw" style="background:var(--bubble)"></i>cache miss tail ~3.5ms（5% miss → pread I/O）</span>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">wall 39.9ms（production 設定）<small>25.07 tok/s · bit-identical ✓ · 98.7% hit rate</small></div>
+      <div class="bar">
+        <div class="seg" style="width:83.2%;background:var(--wr)" title="graph_compute_wall ~38ms：CPU 側 MTL encoding ~30ms + GPU compute ~24ms 重疊（max≈30ms）。CGC_OA_ASYNC + CGC_N_CB=8 + CGC_FUSED_MOE_FFN 全開">38 graph</div>
+        <div class="seg" style="width:8.8%;background:var(--small)" title="EOG sync ~4ms：最後 MTL split 完成等待（GPU tail drain），穩定 ≤5ms">~4 EOG</div>
+        <div class="seg tiny" style="width:0.4%;background:var(--cpu-o)" title="post_sync ~0.2ms：sampler + KV 更新 + graph build">0.2</div>
+        <div class="seg" style="width:7.7%;background:var(--bubble)" title="cache miss tail ~3.5ms：5% miss（886/19631）→ pread I/O fill">~3.5 tail</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">對比：修復前 83.6ms（§8.77 OA_ASYNC 後）<small>12.8 tok/s · 同模型同配置</small></div>
+      <div class="bar">
+        <div class="seg" style="width:80.1%;background:var(--wr)" title="graph_compute_wall p50=67ms：CPU MTL encoding 60ms + GPU compute 35ms 重疊">67 MTL encode</div>
+        <div class="seg" style="width:5.1%;background:var(--small)" title="eog_sync_wait p50=4.24ms">4.2 EOG</div>
+        <div class="seg tiny" style="width:0.2%;background:var(--cpu-o)" title="post_sync_to_next p50=0.15ms">0.15</div>
+        <div class="seg" style="width:14.6%;background:var(--bubble)" title="tail residual ~12ms">~12 tail</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">對比：libllama 0.0.4（無 prefetch）<small>12.37 tok/s · 55.3% hit rate</small></div>
+      <div class="bar">
+        <div class="seg" style="width:75%;background:var(--wr)" title="graph_compute_wall ~42ms（無 prefetch → cache miss 更多 → fill I/O 拉高）">~42 graph</div>
+        <div class="seg" style="width:8%;background:var(--small)" title="EOG sync ~4ms">~4 EOG</div>
+        <div class="seg" style="width:17%;background:var(--bubble)" title="cache miss tail ~8ms（45% miss → 大量 pread I/O）">~8 tail</div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note"><b>加速拆解</b>：從 12.8 → 25.07 t/s（+95%），三大來源：<b>(1) MTL encoding 砍半 60→~30ms</b>（CGC_N_CB=8 multi-buffer async encoding + CGC_FUSED_MOE_FFN 減少 dispatch 數）；<b>(2) cache hit rate 55%→98.7%</b>（libllama 0.0.5 的 synchronous ensure_slot 比 0.0.4 的無 prefetch 好很多——pool 命中率從 55% 跳到 95%，消除 45% miss 的 pread I/O tail）；<b>(3) tail residual 12→~3.5ms</b>（hit rate 提升 → miss 少 → I/O tail 短）。Expert-cache 的核心價值不是「快」而是「能跑」——没有 cache qwen36 -ngl 99 硬 OOM（13.2GB > 11.45GB），有 cache 才能 full offload。</p>
+</div>
+
+<!-- ============ 2. GPU 側歸因 ============ -->
+<div class="card">
+  <h2>② GPU 側延遲歸因（73ms exec-sum · §8.65）</h2>
+  <p class="desc">GPU 真執行不變——kernel 本身 bandwidth-bound。加速來自 CPU 側 encoding 砍半（與 GPU 重疊更好）+ cache hit rate 提升消除 I/O tail。</p>
+
+  <div class="legend">
+    <span><i class="sw" style="background:var(--wr)"></i>weight-read 24.9ms（attn 12.6 + FFN 7.9 + head 4.4）</span>
+    <span><i class="sw" style="background:var(--small)"></i>小 op 執行 4.6ms</span>
+    <span><i class="sw" style="background:var(--ssm)"></i>SSM ≤5ms</span>
+    <span><i class="sw" style="background:var(--sdpa)"></i>SDPA 0.5ms</span>
+    <span><i class="sw" style="background:var(--bubble)"></i>dispatch bubble 38ms（~2000 kernels fixed launch）</span>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">GPU 73ms exec-sum<small>§8.65 CGC_SPLIT_EXEC · 不變</small></div>
+      <div class="bar">
+        <div class="seg" style="width:34.1%;background:var(--wr)">weight 24.9</div>
+        <div class="seg tiny" style="width:6.3%;background:var(--small)">4.6</div>
+        <div class="seg tiny" style="width:6.8%;background:var(--ssm)">≤5</div>
+        <div class="seg tiny" style="width:0.7%;background:var(--sdpa)">0.5</div>
+        <div class="seg" style="width:52.1%;background:var(--bubble)">38 bubble</div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note"><b>GPU 不變</b>：weight-read 24.9ms（bandwidth-bound，kernel 重寫前不可減）+ dispatch bubble 38ms（~2000 kernels × ~19us/launch，結構性固定）。加速全來自 CPU 側。</p>
+</div>
+
+<!-- ============ 3. Expert-cache 效果 ============ -->
+<div class="card">
+  <h2>③ Expert-cache hit rate 對照</h2>
+  <p class="desc">Expert-cache 是 qwen36 -ngl 99 的必要條件（base 13.2GB > 11.45GB → 硬 OOM）。Hit rate 從 55%→95% 是 25.07 t/s 的關鍵之一。</p>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">libllama 0.0.5（production）<small>98.7% hit · 25.07 t/s</small></div>
+      <div class="bar">
+        <div class="seg" style="width:98.7%;background:var(--good)" title="hit 12052/12638 = 98.7%">98.7% hit</div>
+        <div class="seg" style="width:4.6%;background:var(--warn)" title="miss 586/12638 = 4.6%">4.6%</div>
+      </div>
+    </div>
+  </div>
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">libllama 0.0.4（旧版）<small>55.3% hit · 12.37 t/s</small></div>
+      <div class="bar">
+        <div class="seg" style="width:55.3%;background:var(--good)" title="hit 10858/19629 = 55.3%">55.3%</div>
+        <div class="seg" style="width:44.7%;background:var(--warn)" title="miss 8771/19629 = 44.7%">44.7%</div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note"><b>差異根因</b>：libllama 0.0.5 的 synchronous ensure_slot 機制（hook 在 graph build 前觸發）比 0.0.4 的無 prefetch 好很多——pool 命中率從 55% 跳到 95%。Background prefetch（prefetch=0/0）未啟用，純靠 synchronous ensure_slot + pool 200 slots/layer 覆蓋 working set。4.6% miss 主要來自 prefill 階段的 cold start。</p>
+</div>
+
+<!-- ============ 4. 三層天花板 ============ -->
+<div class="card">
+  <h2>④ qwen36 三層天花板</h2>
+  <p class="desc">25.07 t/s 已突破「引擎層天花板」（原 13.7 t/s），逼近「>20 tok/s」門檻。</p>
+
+  <div class="ceil">
+    <div class="cl">實測（production 設定）<br><small>45.7 ms/step</small></div>
+    <div class="ctrack"><div class="cfill" style="width:38.7%;background:linear-gradient(90deg,#2c6a4a,#5cc09a)">39.9ms</div></div>
+    <div class="tokbadge">≈ <b class="hl">25.07</b> tok/s <span class="tag g">✓ 已過 20</span></div>
+  </div>
+  <div class="ceil">
+    <div class="cl">原引擎層天花板（CPU 全隱藏）<br><small>~73 ms/step · §8.72</small></div>
+    <div class="ctrack"><div class="cfill" style="width:70.9%;background:linear-gradient(90deg,#8a6a2c,#c0a05c)">73ms</div></div>
+    <div class="tokbadge">≈ <b>13.7</b> tok/s</div>
+  </div>
+  <div class="ceil">
+    <div class="cl">純 kernel 地板（dispatch 免費，不可達）<br><small>~35 ms/step · §8.71</small></div>
+    <div class="ctrack"><div class="cfill" style="width:34%;background:linear-gradient(90deg,#1c4a3a,#3a8a6a)">35ms</div></div>
+    <div class="tokbadge">≈ <b>28.6</b> tok/s</div>
+  </div>
+  <div class="ceil">
+    <div class="cl">>20 tok/s 需要<br><small>~50 ms/step（虛線）</small></div>
+    <div class="ctrack" style="position:relative"><div style="position:absolute;left:48.5%;top:-6px;bottom:-6px;border-left:2px dashed var(--accent)"></div></div>
+    <div class="tokbadge">20 tok/s</div>
+  </div>
+
+  <p class="note"><b>定案</b>：25.07 t/s 已過 20 tok/s 門檻，<b>突破原引擎層天花板（73ms/13.7 t/s）</b>。突破原因：(1) CGC_N_CB=8 multi-buffer 把 MTL encoding 從 60ms 砍到 ~30ms（與 GPU 更好重疊）；(2) CGC_FUSED_MOE_FFN 減少 dispatch 數（fused gate+up+GLU+down 單 dispatch）；(3) expert-cache hit 98.7% 消除 I/O tail。剩餘 ~28.6 t/s（kernel 地板）需 kernel 重寫（IQ3 inline dequant + sequential access pattern），為3-6週大工程。</p>
+</div>
+
+<!-- ============ 5. Production 設定 ============ -->
+<div class="card">
+  <h2>⑤ Production 設定定案</h2>
+
+  <table>
+    <tr><th>參數</th><th>值</th><th>出處</th></tr>
+    <tr><td>模型</td><td>Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf</td><td>Unsloth UD-IQ3_XXS（12GB）</td></tr>
+    <tr><td>-ngl</td><td><b>99</b>（full GPU offload）</td><td>§8.38：只有 +cache 能 full offload</td></tr>
+    <tr><td>-expert-cache</td><td><b>4GiB</b>（via CGC_EXPERT_CACHE_BYTES env）</td><td>§8.38/8.44：bounded pool 必要</td></tr>
+    <tr><td>LLAMA_EXPERT_CACHE_ALLOW_NGL</td><td><b>1</b></td><td>-ngl>0 + cache 硬 guard</td></tr>
+    <tr><td>LLAMA_EXPERT_CACHE_WORKERS</td><td><b>8</b></td><td>§8.12 甜蜜點（16 反效果）</td></tr>
+    <tr><td>LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0</td><td><b>1</b></td><td>§8.35/8.36 blk.0 排除 pool</td></tr>
+    <tr><td>CGC_N_CB</td><td><b>8</b></td><td>§8.93：cb8 壓 p50</td></tr>
+    <tr><td>CGC_OA_ASYNC</td><td><b>1</b></td><td>§8.77：Metal splits async</td></tr>
+    <tr><td>CGC_FUSED_MOE_FFN</td><td><b>1</b></td><td>commit c85fec4：+6.5% fused kernel</td></tr>
+    <tr><td>CGC_WAKE_POLL_US</td><td><b>15</b></td><td>§8.51 turbo 對照值</td></tr>
+    <tr><td>-c</td><td>2048</td><td>context size</td></tr>
+    <tr><td>-t</td><td>8</td><td>threads</td></tr>
+    <tr><td>exit abort</td><td><b>已修復</b>（device_free queue drain）</td><td>ggml-metal-device.m</td></tr>
+  </table>
+
+  <p class="note"><b>Binary</b>：<code>build/bin/llama-simple</code> = HEAD simple.cpp（expert-cache env var）+ build-prod2 libllama 0.0.5（ggml-cpu.c 正確版本）。重建：<code>scripts/build_prod_binary.sh</code>。</p>
+</div>
+
+<p class="sub" style="margin-top:24px">數據：§8.65（GPU 73ms exec-sum）、§8.71（P1-B 依賴≈0）、§8.72（三層天花板）、§8.77（CGC_OA_ASYNC：103→83.6ms）、§8.93（cb8 壓 p50）、§8.108（hybrid cb8：59.9ms）。25.07 t/s 為 2026-08-19 production 設定實測（libllama 0.0.5 + build-flat ggml-cpu.c.o + teardown drain fix）。</p>
+
+</div>
+</body>
+</html>

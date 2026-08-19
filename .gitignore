@@ -1,7 +1,7 @@
 # 嵌套的独立 Git 仓库 —— 各自有自己的 .git，不应被父仓库跟踪
-/turbo-fieldfare/
-/turbo-fieldfare-github-official/
-/turbo-fieldfare-upstream-clean/
+# turbo-fieldfare/
+# turbo-fieldfare-github-official/
+# turbo-fieldfare-upstream-clean/
 
 # 构建产物
 .build/
@@ -9,7 +9,7 @@
 *.swiftmodule
 
 # 模型权重（GB 级二进制，不入库）
-/models/
+# /models/
 *.gturbo/
 *.gguf
 *.safetensors
@@ -28,8 +28,8 @@ venv*/
 
 # 运行期产物
 *.log
-/temp/
-/Output/
+# /temp/
+# /Output/
 
 # 工具/代理状态目录（不入库）
 .freebuff/
@@ -372,3 +372,9 @@ wait_gateway5.py
 wait_step2.py
 wait_take26.py
 watch_traj.py
+
+# ---- 2026-08 整理: 大型未追蹤目錄 / scratch 工作區（不入庫）----
+/CGC-main/
+/moeexpert/
+/data/
+/tmp/
