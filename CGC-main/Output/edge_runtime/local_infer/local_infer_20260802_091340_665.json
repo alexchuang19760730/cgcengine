@@ -1,0 +1,26 @@
+{
+  "timestamp": "2026-08-02T09:13:38Z",
+  "status": "PASS",
+  "platform": {
+    "system": "Darwin",
+    "machine": "arm64"
+  },
+  "requested": {
+    "model": "models/test_moe_small",
+    "use_omlx": true,
+    "use_flashmoe": false,
+    "max_tokens": 30,
+    "prompt_preview": "The quick brown fox jumps over"
+  },
+  "executed_locally": true,
+  "backend": "omlx_flashmoe_streaming",
+  "model_ref": "/Users/alexchuang/Documents/flashkv0516/models/test_moe_small",
+  "stats": {
+    "prompt_tokens": 6,
+    "generation_tokens": 30,
+    "generation_tps": 174.71534139009825,
+    "peak_memory_gb": 0.718231764,
+    "finish_reason": "length"
+  },
+  "text_preview": "arianarianarianarianarianarianarianegralegralegralegralegralegralegralegralegralegralegralegralegralegralegralegralegralegralegralegralegralegralegral"
+}

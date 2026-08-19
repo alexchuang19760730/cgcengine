@@ -1,0 +1,67 @@
+{
+  "baseline_status": {
+    "baseline_ready": false,
+    "cold_path_status": "FAIL",
+    "production_readiness_status": "NO_GO"
+  },
+  "expert_data_plane": {
+    "catalog_source": "none",
+    "last_plan_enabled": true,
+    "last_plan_reason": "dense_layer_streaming_active"
+  },
+  "generated_at_epoch_sec": 1785644481,
+  "kind": "dense_local_baseline",
+  "max_tokens": 96,
+  "metrics": {
+    "cold_path": {
+      "completed_requests": 1,
+      "content_success_rate": 1.0,
+      "decode_tps_avg": 3.8,
+      "execution_success_rate": 1.0,
+      "failed_requests": 0,
+      "ttft_ms_avg": 3608.5
+    },
+    "overall": {
+      "completed_requests": 3,
+      "decode_tps_avg": 4.7,
+      "failed_requests": 0,
+      "ttft_ms_avg": 1466.9
+    },
+    "warm_hot_path": {
+      "completed_requests": 2,
+      "decode_tps_avg": 5.4,
+      "failed_requests": 0,
+      "not_evaluated_reason": "warm_hot_path ttft_ms_avg=396.1 <= 300.0 (completed_requests=2)",
+      "status": "FAIL",
+      "ttft_ms_avg": 396.1
+    }
+  },
+  "model": "gemma4",
+  "proxy_url": "http://127.0.0.1:30024",
+  "rounds": 3,
+  "routing": {
+    "admissible_degrade": false,
+    "allowed_routes": [
+      "local_full"
+    ],
+    "degrade_suggested": false,
+    "degrade_target_mode": "unknown",
+    "hardware_route_mode": "local_full",
+    "memory_pressure": "elevated",
+    "mode_switch_reason": "dense_layer_streaming_admissible",
+    "primary_route": "local_full",
+    "routing_status": "PASS",
+    "scenario": "normal",
+    "transport_route_mode": "local_full"
+  },
+  "runtime": {
+    "layer_split_model_path": "/Users/alexchuang/Documents/flashkv0516/models/gemma4_e4b_test/gemma-4-E4B-it.Q2_K.gguf",
+    "local_model_path": "/Users/alexchuang/Documents/flashkv0516/models/gemma4_e4b_test/gemma-4-E4B-it.Q2_K.gguf",
+    "local_num_layers": 42,
+    "memory_pressure": "elevated",
+    "moe_candidate": false,
+    "moe_streaming_admissible": false
+  },
+  "scenario": "normal",
+  "schema_version": "v1"
+}

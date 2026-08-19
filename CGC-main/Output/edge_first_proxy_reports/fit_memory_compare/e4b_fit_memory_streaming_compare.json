@@ -1,0 +1,91 @@
+{
+  "results": [
+    {
+      "name": "e4b_streaming_off",
+      "bench_exit_code": 4,
+      "health": {
+        "edge_model_loaded": true,
+        "local_verify_loop_ready": false
+      },
+      "route": {
+        "final_route_mode": "cloud_fallback",
+        "draft_mode": "mtp",
+        "mode_switch_reason": "latency_degraded",
+        "moe_candidate": false,
+        "memory_pressure": "elevated"
+      },
+      "metrics": {
+        "ttft_ms_avg": null,
+        "decode_tps_avg": null,
+        "cold_ttft_ms_avg": null,
+        "warm_hot_ttft_ms_avg": null,
+        "warm_hot_decode_tps_avg": null,
+        "warm_hot_status": null
+      },
+      "baseline_status": {},
+      "expert_data_plane": {},
+      "bench_stdout_tail": [
+        "[INFO] reset runtime stats on http://127.0.0.1:30026",
+        "[INFO] running 4 rounds on model=gemma4 scenario=normal primary_route=local_full allowed_routes=['local_full'] frontier_mode=reuse conversation_id=bench-normal-1785645074",
+        "[ERROR] round 1: route-test final_route_mode=cloud_fallback transport_route=cloud_fallback, allowed=['local_full']"
+      ],
+      "bench_stderr_tail": []
+    },
+    {
+      "name": "e4b_streaming_on_bypass",
+      "bench_exit_code": 1,
+      "health": {
+        "edge_model_loaded": true,
+        "local_verify_loop_ready": false
+      },
+      "route": {
+        "final_route_mode": "local_full",
+        "draft_mode": "off",
+        "mode_switch_reason": "dense_layer_streaming_admissible",
+        "moe_candidate": false,
+        "memory_pressure": "elevated"
+      },
+      "metrics": {
+        "ttft_ms_avg": null,
+        "decode_tps_avg": null,
+        "cold_ttft_ms_avg": 0.0,
+        "warm_hot_ttft_ms_avg": 0.0,
+        "warm_hot_decode_tps_avg": 0.0,
+        "warm_hot_status": "NOT_APPLICABLE"
+      },
+      "baseline_status": {
+        "baseline_ready": false,
+        "cold_path_status": "FAIL",
+        "production_readiness_status": "NO_GO"
+      },
+      "expert_data_plane": {
+        "catalog_source": "none",
+        "last_plan_enabled": false,
+        "last_plan_reason": "no_expert_catalog"
+      },
+      "bench_stdout_tail": [
+        "  \"degrade_target_mode\": \"unknown\",",
+        "  \"mode_switch_reason\": \"dense_layer_streaming_admissible\",",
+        "  \"production_readiness_status\": \"NO_GO\",",
+        "  \"routing_status\": \"PASS\",",
+        "  \"transport_route_mode\": \"local_full\"",
+        "}",
+        "[INFO] evidence chain:",
+        "{",
+        "  \"files\": [",
+        "    \"draft_mode_acceptance.live.json\",",
+        "    \"route_heat_snapshot.live.json\",",
+        "    \"route_policy_v2.live.json\",",
+        "    \"single_node_candidate_matrix.live.json\"",
+        "  ],",
+        "  \"report_dir\": \"/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/Output/edge_first_proxy_reports\"",
+        "}",
+        "[INFO] dense baseline written:",
+        "{",
+        "  \"path\": \"/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/Output/edge_first_proxy_reports/fit_memory_compare/e4b_streaming_on_bypass.baseline.json\"",
+        "}"
+      ],
+      "bench_stderr_tail": []
+    }
+  ]
+}

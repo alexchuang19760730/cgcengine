@@ -1,0 +1,110 @@
+{
+  "system_id": "dualnode_deepseek_v4_flash_qwen35_dflash_deepep",
+  "system_role": "multi_component_runtime",
+  "export_root": "/tmp/cgc_system_manifest_examples/dualnode_deepseek_v4_flash_qwen35_dflash_deepep",
+  "system_profile": {
+    "profile_id": "dualnode_deepseek_v4_flash_qwen35_dflash_deepep",
+    "profile_version": "v1",
+    "profile_label": "Dual-node DeepSeek-V4-Flash Qwen3.5-4B-DFlash DeepEP Runtime",
+    "deployment_mode": "cloud_cluster",
+    "component_families": {
+      "llm_component_family": "deepseek_v4_flash",
+      "llm_instance_count": 1,
+      "router_component_family": "qwen3_5_4b_dflash",
+      "gateway_component_family": "vendored_sglang_gateway",
+      "route_policy_family": "deepep_ep16_tp1_dualnode"
+    },
+    "required_components": [
+      "vendored_sglang_gateway",
+      "vendored_sglang_runtime"
+    ],
+    "routing_topology_profile": "single_runtime_dualnode_deepep",
+    "environment_bootstrap_ref": {
+      "environment": "cloud_cluster",
+      "runtime_profile": "dualnode_blackwell_sglang_deepep",
+      "requested_dispatch_backend": "deepep",
+      "requested_distributed_runtime": "nccl",
+      "requested_storage_backend": "nfs_shared",
+      "protocol_family": "sglang_http",
+      "state_kind": "kv_cache",
+      "state_codec": "fp8_e4m3"
+    },
+    "profile_binding_ref": {
+      "profile_settings_path": "dualnode_deepseek_v4_flash_qwen35_dflash_profile_settings.example.json",
+      "execution_profile_binding_key": "dualnode_dsv4_qwen_dflash_exec_v1",
+      "bootstrap_contract_binding_key": "dualnode_blackwell_deepep_ep16_tp1_runtime_v1",
+      "flow_parameter_contract_binding_key": "dualnode_dsv4_qwen_dflash_flow_v1",
+      "task_type_contract_ref": {
+        "task_type_contract_version": "task_type_contract_v1",
+        "task_type_contract_path": "/Users/alexchuang/Documents/flashkv0516/app/shared/contracts/task_type_contract.json",
+        "task_type_header": "x-cgc-task-type",
+        "known_task_types": [
+          "prefill",
+          "decode",
+          "inference",
+          "analysis",
+          "repo_debug",
+          "train"
+        ]
+      }
+    },
+    "model_contract_ref": {
+      "contract_id": "dualnode_deepseek_v4_flash_qwen35_dflash_deepep_ep16_tp1",
+      "contract_version": "v1",
+      "source": "model_setting_contract",
+      "source_path": "dualnode_deepseek_v4_flash_qwen35_dflash_model_contract.example.json"
+    },
+    "model_contract_summary": {
+      "primary_model_family": "deepseek_v4_flash",
+      "draft_model_family": "qwen3_5_4b_dflash",
+      "speculative_algorithm": "DFLASH",
+      "attention_contract_family": "deepseek_v4_mla_legacy_bridge",
+      "weight_mapping_contract_family": "deepseek_v4_wqkv_a_legacy_kv_legacy_o_proj",
+      "runtime_compare_mode": "vendored_dualnode_runtime"
+    },
+    "hardware_profile": {
+      "hardware_platform": "dualnode",
+      "hardware_topology": "2x8_blackwell_sm120",
+      "accelerator_family": "blackwell_sm120"
+    },
+    "notes": [
+      "This manifest formalizes the intended dual-node deployment for vendored SGLang plus DFLASH plus DeepEP ep16/tp1.",
+      "The current model-layer blocker is still the DeepSeek-V4 wqkv_a and legacy_kv compatibility path."
+    ]
+  },
+  "routing_edges": [
+    {
+      "from_component_id": "vendored_sglang_gateway",
+      "to_component_id": "vendored_sglang_runtime",
+      "edge_role": "primary_runtime_route"
+    }
+  ],
+  "components": [
+    {
+      "component_id": "vendored_sglang_gateway",
+      "component_role": "gateway_orchestrator",
+      "required": true,
+      "backend": "python",
+      "environment": "cloud_cluster",
+      "model_name": "sglang_gateway",
+      "runtime_profile": "dualnode_gateway_controller",
+      "export_subdir": "vendored_sglang_gateway"
+    },
+    {
+      "component_id": "vendored_sglang_runtime",
+      "component_role": "llm_runtime",
+      "required": true,
+      "backend": "cuda",
+      "environment": "cloud_cluster",
+      "model_name": "DeepSeek-V4-Flash",
+      "runtime_profile": "vendored_sglang_dflash_deepep",
+      "hf_model_path": "/data/models/DeepSeek-V4-Flash",
+      "draft_model_path": "/nfs/embodied/models/Qwen3.5-4B-DFlash",
+      "parallel_tp_size": 1,
+      "parallel_ep_size": 16,
+      "parallel_nnodes": 2,
+      "enable_nccl": true,
+      "export_subdir": "vendored_sglang_runtime"
+    }
+  ]
+}

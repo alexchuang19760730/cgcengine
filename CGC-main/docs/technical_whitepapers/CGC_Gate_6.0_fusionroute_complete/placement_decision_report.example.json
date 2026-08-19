@@ -1,0 +1,24 @@
+{
+  "schema_version": "fusionroute.placement_decision_report.v1",
+  "report_id": "fusionroute_placement_execution_ui_tars",
+  "task_type": "EXECUTION",
+  "gate_domain": "agent_runtime",
+  "primary_role": "UI-TARS",
+  "secondary_roles": [
+    "Hermes",
+    "TMAX"
+  ],
+  "selected_locality": "hybrid",
+  "runtime_endpoint": "edge://ui-tars-executor-primary",
+  "decision_reason": [
+    "task_type=EXECUTION",
+    "latency_budget_ms=80",
+    "privacy_level=high",
+    "device_availability=true",
+    "policy_source=fusionroute_v2_static_contract"
+  ],
+  "policy_source": "fusionroute_v2_static_contract",
+  "handoff_contract": "EdgeCloudLayerHandoff",
+  "status": "PASS",
+  "evidence_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/placement_decision_report.example.json"
+}

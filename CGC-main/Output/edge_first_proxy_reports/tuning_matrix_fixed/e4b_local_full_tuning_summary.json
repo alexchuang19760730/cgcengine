@@ -1,0 +1,111 @@
+{
+  "model": "gemma4_e4b_q2_k_local_full_off",
+  "generated_at": 1785648204.4070919,
+  "results": [
+    {
+      "config": {
+        "name": "b256_u96_flash1_t10",
+        "EDGE_LOCAL_N_BATCH": "256",
+        "EDGE_LOCAL_N_UBATCH": "96",
+        "EDGE_LOCAL_FLASH_ATTN": "1",
+        "EDGE_LOCAL_N_THREADS": "10",
+        "EDGE_LOCAL_N_THREADS_BATCH": "10"
+      },
+      "bench_exit_code": 0,
+      "cold_ttft_ms_avg": 170.7,
+      "cold_decode_tps_avg": 25.9,
+      "completed_requests": 6,
+      "execution_success_rate": 1.0,
+      "routing_status": "PASS",
+      "transport_route_mode": "local_full",
+      "mode_switch_reason": "local_llama_full_resident_loaded",
+      "production_readiness_status": "GO",
+      "bench_stdout_tail": "  \"degrade_target_mode\": \"unknown\",\n  \"mode_switch_reason\": \"local_llama_full_resident_loaded\",\n  \"production_readiness_status\": \"GO\",\n  \"routing_status\": \"PASS\",\n  \"transport_route_mode\": \"local_full\"\n}\n[INFO] evidence chain:\n{\n  \"files\": [\n    \"draft_mode_acceptance.live.json\",\n    \"route_heat_snapshot.live.json\",\n    \"route_policy_v2.live.json\",\n    \"single_node_candidate_matrix.live.json\"\n  ],\n  \"report_dir\": \"/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/Output/edge_first_proxy_reports\"\n}\n[INFO] dense baseline written:\n{\n  \"path\": \"/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/Output/edge_first_proxy_reports/tuning_matrix_fixed/b256_u96_flash1_t10.baseline.json\"\n}",
+      "bench_stderr_tail": ""
+    },
+    {
+      "config": {
+        "name": "b256_u128_flash1_t10",
+        "EDGE_LOCAL_N_BATCH": "256",
+        "EDGE_LOCAL_N_UBATCH": "128",
+        "EDGE_LOCAL_FLASH_ATTN": "1",
+        "EDGE_LOCAL_N_THREADS": "10",
+        "EDGE_LOCAL_N_THREADS_BATCH": "10"
+      },
+      "bench_exit_code": 0,
+      "cold_ttft_ms_avg": 170.9,
+      "cold_decode_tps_avg": 25.9,
+      "completed_requests": 6,
+      "execution_success_rate": 1.0,
+      "routing_status": "PASS",
+      "transport_route_mode": "local_full",
+      "mode_switch_reason": "local_llama_full_resident_loaded",
+      "production_readiness_status": "GO",
+      "bench_stdout_tail": "  \"degrade_target_mode\": \"unknown\",\n  \"mode_switch_reason\": \"local_llama_full_resident_loaded\",\n  \"production_readiness_status\": \"GO\",\n  \"routing_status\": \"PASS\",\n  \"transport_route_mode\": \"local_full\"\n}\n[INFO] evidence chain:\n{\n  \"files\": [\n    \"draft_mode_acceptance.live.json\",\n    \"route_heat_snapshot.live.json\",\n    \"route_policy_v2.live.json\",\n    \"single_node_candidate_matrix.live.json\"\n  ],\n  \"report_dir\": \"/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/Output/edge_first_proxy_reports\"\n}\n[INFO] dense baseline written:\n{\n  \"path\": \"/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/Output/edge_first_proxy_reports/tuning_matrix_fixed/b256_u128_flash1_t10.baseline.json\"\n}",
+      "bench_stderr_tail": ""
+    },
+    {
+      "config": {
+        "name": "b192_u96_flash1_t10",
+        "EDGE_LOCAL_N_BATCH": "192",
+        "EDGE_LOCAL_N_UBATCH": "96",
+        "EDGE_LOCAL_FLASH_ATTN": "1",
+        "EDGE_LOCAL_N_THREADS": "10",
+        "EDGE_LOCAL_N_THREADS_BATCH": "10"
+      },
+      "bench_exit_code": 0,
+      "cold_ttft_ms_avg": 176.1,
+      "cold_decode_tps_avg": 21.5,
+      "completed_requests": 6,
+      "execution_success_rate": 1.0,
+      "routing_status": "PASS",
+      "transport_route_mode": "local_full",
+      "mode_switch_reason": "local_llama_full_resident_loaded",
+      "production_readiness_status": "GO",
+      "bench_stdout_tail": "  \"degrade_target_mode\": \"unknown\",\n  \"mode_switch_reason\": \"local_llama_full_resident_loaded\",\n  \"production_readiness_status\": \"GO\",\n  \"routing_status\": \"PASS\",\n  \"transport_route_mode\": \"local_full\"\n}\n[INFO] evidence chain:\n{\n  \"files\": [\n    \"draft_mode_acceptance.live.json\",\n    \"route_heat_snapshot.live.json\",\n    \"route_policy_v2.live.json\",\n    \"single_node_candidate_matrix.live.json\"\n  ],\n  \"report_dir\": \"/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/Output/edge_first_proxy_reports\"\n}\n[INFO] dense baseline written:\n{\n  \"path\": \"/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/Output/edge_first_proxy_reports/tuning_matrix_fixed/b192_u96_flash1_t10.baseline.json\"\n}",
+      "bench_stderr_tail": ""
+    },
+    {
+      "config": {
+        "name": "b256_u128_flash0_t10",
+        "EDGE_LOCAL_N_BATCH": "256",
+        "EDGE_LOCAL_N_UBATCH": "128",
+        "EDGE_LOCAL_FLASH_ATTN": "0",
+        "EDGE_LOCAL_N_THREADS": "10",
+        "EDGE_LOCAL_N_THREADS_BATCH": "10"
+      },
+      "bench_exit_code": 0,
+      "cold_ttft_ms_avg": 214.1,
+      "cold_decode_tps_avg": 13.2,
+      "completed_requests": 6,
+      "execution_success_rate": 1.0,
+      "routing_status": "PASS",
+      "transport_route_mode": "local_full",
+      "mode_switch_reason": "local_llama_full_resident_loaded",
+      "production_readiness_status": "GO",
+      "bench_stdout_tail": "  \"degrade_target_mode\": \"unknown\",\n  \"mode_switch_reason\": \"local_llama_full_resident_loaded\",\n  \"production_readiness_status\": \"GO\",\n  \"routing_status\": \"PASS\",\n  \"transport_route_mode\": \"local_full\"\n}\n[INFO] evidence chain:\n{\n  \"files\": [\n    \"draft_mode_acceptance.live.json\",\n    \"route_heat_snapshot.live.json\",\n    \"route_policy_v2.live.json\",\n    \"single_node_candidate_matrix.live.json\"\n  ],\n  \"report_dir\": \"/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/Output/edge_first_proxy_reports\"\n}\n[INFO] dense baseline written:\n{\n  \"path\": \"/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/Output/edge_first_proxy_reports/tuning_matrix_fixed/b256_u128_flash0_t10.baseline.json\"\n}",
+      "bench_stderr_tail": ""
+    },
+    {
+      "config": {
+        "name": "b256_u128_flash1_t8",
+        "EDGE_LOCAL_N_BATCH": "256",
+        "EDGE_LOCAL_N_UBATCH": "128",
+        "EDGE_LOCAL_FLASH_ATTN": "1",
+        "EDGE_LOCAL_N_THREADS": "8",
+        "EDGE_LOCAL_N_THREADS_BATCH": "8"
+      },
+      "bench_exit_code": 0,
+      "cold_ttft_ms_avg": 245.7,
+      "cold_decode_tps_avg": 8.4,
+      "completed_requests": 6,
+      "execution_success_rate": 1.0,
+      "routing_status": "PASS",
+      "transport_route_mode": "local_full",
+      "mode_switch_reason": "local_llama_full_resident_loaded",
+      "production_readiness_status": "GO",
+      "bench_stdout_tail": "  \"degrade_target_mode\": \"unknown\",\n  \"mode_switch_reason\": \"local_llama_full_resident_loaded\",\n  \"production_readiness_status\": \"GO\",\n  \"routing_status\": \"PASS\",\n  \"transport_route_mode\": \"local_full\"\n}\n[INFO] evidence chain:\n{\n  \"files\": [\n    \"draft_mode_acceptance.live.json\",\n    \"route_heat_snapshot.live.json\",\n    \"route_policy_v2.live.json\",\n    \"single_node_candidate_matrix.live.json\"\n  ],\n  \"report_dir\": \"/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/Output/edge_first_proxy_reports\"\n}\n[INFO] dense baseline written:\n{\n  \"path\": \"/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/Output/edge_first_proxy_reports/tuning_matrix_fixed/b256_u128_flash1_t8.baseline.json\"\n}",
+      "bench_stderr_tail": ""
+    }
+  ]
+}

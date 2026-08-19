@@ -1,0 +1,341 @@
+{
+  "schema_version": "cgc_gate_map_v1",
+  "gate_id": "CGC_Gate_3.1_self_harness",
+  "gate_version": "3.1",
+  "status": "validated",
+  "document_type": "gate_map",
+  "title": "CGC_Gate_3.1_self_harness gate map",
+  "whitepaper_ref": {
+    "path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_3.1_self_harness/CGC_Gate_3.1_self_harness_Technical_Whitepaper_v1.0_zh_CN.md",
+    "title": "CGC_Gate_3.1_self_harness Technical Whitepaper v1.0"
+  },
+  "naming": {
+    "formal_gate_name": "CGC_Gate_3.1_self_harness",
+    "runtime_sub_name": "upkg_self_harness_adaptive",
+    "historical_composite_alias": "upkg_self_harness"
+  },
+  "status_semantics": {
+    "done": "Capability has direct runtime evidence and can be conservatively claimed as closed.",
+    "proof": "Capability code or entry exists, but current validation still depends on fallback, generic PASS, or indirect evidence.",
+    "target": "Capability belongs to the gate boundary, but is not yet claimable as completed.",
+    "stub": "Capability is mostly declarative, template-driven, or lacks credible runtime closure."
+  },
+  "consumer_targets": {
+    "cli_gate_summary": {
+      "enabled": true,
+      "primary_fields": [
+        "gate_id",
+        "gate_version",
+        "status_summary",
+        "capabilities"
+      ]
+    },
+    "bundle_audit": {
+      "enabled": true,
+      "primary_fields": [
+        "governance",
+        "artifact_refs",
+        "acceptance_dimensions"
+      ]
+    },
+    "release_checkin": {
+      "enabled": true,
+      "primary_fields": [
+        "gate_id",
+        "naming",
+        "status_summary",
+        "release_checkin_projection"
+      ]
+    },
+    "dashboard_report": {
+      "enabled": true,
+      "primary_fields": [
+        "status_summary",
+        "capabilities",
+        "artifact_refs",
+        "claim_boundaries"
+      ]
+    }
+  },
+  "status_summary": {
+    "total_capabilities": 7,
+    "done": 7,
+    "proof": 0,
+    "target": 0,
+    "stub": 0
+  },
+  "capabilities": [
+    {
+      "capability_id": "self_harness_three_stage_loop",
+      "name": "Self-Harness 三阶段闭环",
+      "description": "推理-分析-优化三阶段执行闭环：标准推理流程收集执行数据 -> RHO实时监控分析 -> 基于分析结果进行本地优化",
+      "current_gate_binding": [
+        "cgc_engine/tools/scripts/run/gate_test_framework.py::_run_gate_3_1_preflight",
+        "cgc_engine/tools/scripts/run/self_harness_validation_framework.py::Gate31Validator.validate_self_harness_2_0"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.1_self_harness"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "A",
+      "notes": [
+        "Historical artifact path pointed to a non-existent self_harness module directory.",
+        "Current gate binding is now re-anchored to the actual Gate 3.1 preflight and validation framework entrypoints."
+      ],
+      "evidence_tags": [
+        "self_harness",
+        "three_stage",
+        "inference_loop"
+      ]
+    },
+    {
+      "capability_id": "rho_runtime_health_observer",
+      "name": "RHO 运行时健康监测",
+      "description": "实时运行时健康监测系统：推理延迟监控、内存使用追踪、异常检测与预警",
+      "current_gate_binding": [
+        "cgc_engine/tools/scripts/run/gate_test_framework.py::_run_gate_3_1_preflight",
+        "cgc_engine/tools/scripts/run/self_harness_validation_framework.py::SelfHarnessValidator",
+        "cgc monitor --mode runtime"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.1_self_harness"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "B",
+      "notes": [
+        "Historical artifact path pointed to a non-existent self_harness module directory.",
+        "Current gate binding is now re-anchored to the actual Gate 3.1 preflight and validation framework entrypoints."
+      ],
+      "evidence_tags": [
+        "rho",
+        "runtime_monitor",
+        "health_observer"
+      ]
+    },
+    {
+      "capability_id": "edge_cloud_bridge_adaptive",
+      "name": "端云自适应桥接",
+      "description": "支持端侧（Apple Silicon）和云端（GPU）的无缝切换：模型格式自动转换、推理结果一致性保证、负载智能调度",
+      "current_gate_binding": [
+        "cgc_engine/tools/scripts/run/gate_test_framework.py::_run_gate_3_1_preflight",
+        "cgc_engine/tools/scripts/run/self_harness_validation_framework.py::EdgeCloudInferenceValidator",
+        "cgc bridge --mode auto"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.1_self_harness"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "C",
+      "notes": [
+        "Historical artifact path pointed to a non-existent self_harness module directory.",
+        "Current gate binding is now re-anchored to the actual Gate 3.1 preflight and validation framework entrypoints."
+      ],
+      "evidence_tags": [
+        "edge_cloud",
+        "bridge",
+        "adaptive",
+        "apple_silicon",
+        "gpu"
+      ]
+    },
+    {
+      "capability_id": "guardian_degeneration_prevention",
+      "name": "Guardian 防退化机制",
+      "description": "三重防护维度：性能退化检测与自动回退、结果异常输出质量监控与修正、安全边界输入输出范围约束",
+      "current_gate_binding": [
+        "cgc_engine/tools/scripts/run/gate_test_framework.py::_run_gate_3_1_preflight",
+        "cgc_engine/tools/scripts/run/self_harness_validation_framework.py::GuardianValidator.validate_guardian"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.1_self_harness"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "D",
+      "notes": [
+        "Historical artifact path pointed to a non-existent self_harness module directory.",
+        "Current gate binding is now re-anchored to the actual Gate 3.1 preflight and validation framework entrypoints."
+      ],
+      "evidence_tags": [
+        "guardian",
+        "degeneration_prevention",
+        "protection"
+      ]
+    },
+    {
+      "capability_id": "fixed_weight_execution",
+      "name": "固定权重执行",
+      "description": "推理过程中模型权重保持不变，确保执行结果的可重复性和稳定性",
+      "current_gate_binding": [
+        "cgc_engine/tools/scripts/run/gate_test_framework.py::_run_gate_3_1_preflight",
+        "cgc_engine/tools/scripts/run/self_harness_validation_framework.py::SelfHarnessValidator"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.1_self_harness"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "A",
+      "notes": [
+        "Historical artifact path pointed to a non-existent self_harness module directory.",
+        "Current gate binding is now re-anchored to the actual Gate 3.1 preflight and validation framework entrypoints."
+      ],
+      "evidence_tags": [
+        "fixed_weight",
+        "execution",
+        "reproducibility"
+      ]
+    },
+    {
+      "capability_id": "local_optimization_engine",
+      "name": "本地优化引擎",
+      "description": "无需外部依赖的本地优化能力：基于RHO分析结果进行轻量级本地优化",
+      "current_gate_binding": [
+        "cgc_engine/tools/scripts/run/gate_test_framework.py::_run_gate_3_1_preflight",
+        "cgc_engine/tools/scripts/run/self_harness_validation_framework.py::Gate31Validator.validate_dynamic_policy"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.1_self_harness"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "B",
+      "notes": [
+        "Historical artifact path pointed to a non-existent self_harness module directory.",
+        "Current gate binding is now re-anchored to the actual Gate 3.1 preflight and validation framework entrypoints."
+      ],
+      "evidence_tags": [
+        "local_optimization",
+        "optimizer",
+        "self_contained"
+      ]
+    },
+    {
+      "capability_id": "self_harness_cli",
+      "name": "Self-Harness CLI 工具",
+      "description": "命令行管理工具：self_harness状态查询、RHO监控配置、端云桥接模式切换、Guardian防护级别调整",
+      "current_gate_binding": [
+        "cgc_engine/cli.py::verify_parser",
+        "cgc_engine/cli.py::verify_parser.add_argument",
+        "cgc_engine/cli.py::model_verify_command"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_3.1_self_harness"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "governance",
+      "notes": [
+        "Historical same-name self_harness CLI wording did not match the real parser surface in the repo.",
+        "Current gate binding is re-anchored to the actual --self-harness verify entry in cgc_engine/cli.py."
+      ],
+      "evidence_tags": [
+        "cli",
+        "self_harness",
+        "management"
+      ]
+    }
+  ],
+  "governance": {
+    "task_type_contract_artifact": "/Users/alexchuang/Documents/flashkv0516/app/shared/contracts/task_type_contract.json",
+    "bundle_chain": [
+      "profile_settings.task_type_contract_ref",
+      "system_manifest.profile_binding_ref.task_type_contract_ref"
+    ],
+    "validators": [
+      "profile_bundle_validator",
+      "cgc bundle review",
+      "cgc model verify"
+    ]
+  },
+  "artifact_refs": {
+    "three_stage_loop": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/tools/scripts/run/gate_test_framework.py",
+    "rho_observer": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/tools/scripts/run/self_harness_validation_framework.py",
+    "edge_cloud_bridge": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/tools/scripts/run/self_harness_validation_framework.py",
+    "guardian_protector": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/tools/scripts/run/self_harness_validation_framework.py",
+    "fixed_weight_executor": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/tools/scripts/run/self_harness_validation_framework.py",
+    "local_optimizer": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/tools/scripts/run/self_harness_validation_framework.py",
+    "capability_cli_contract": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_3.1_self_harness/gate31_capability_cli_self_harness_contract.json",
+    "capability_cli_contract_report": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/validation_report_gate31_contract_extension_capability_cli_contract.json",
+    "host1_remote_self_harness_report": "/root/flashkv0516/ComputeGraphCompiler-main/validation_report_gate31_host1_truthsource_sync.json",
+    "host1_remote_capability_cli_contract_report": "/root/flashkv0516/ComputeGraphCompiler-main/validation_report_gate31_host1_truthsource_sync_capability_cli_contract.json",
+    "host1_remote_formal_preflight_report": "/root/flashkv0516/ComputeGraphCompiler-main/validation_report_gate31_host1_formal_preflight.json",
+    "host2_remote_self_harness_report": "/root/flashkv0516/ComputeGraphCompiler-main/validation_report_gate31_host2_truthsource_sync.json",
+    "host2_remote_capability_cli_contract_report": "/root/flashkv0516/ComputeGraphCompiler-main/validation_report_gate31_host2_truthsource_sync_capability_cli_contract.json",
+    "host2_remote_formal_preflight_report": "/root/flashkv0516/ComputeGraphCompiler-main/validation_report_gate31_host2_formal_preflight.json",
+    "gate_3_0_whitepaper": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_3.0_train_inference_unification/CGC_Gate_3.0_train_inference_unification_Technical_Whitepaper_v1.0_zh_CN.md",
+    "gate_5_0_whitepaper": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_5.0_audit_trace_replay_visualization/CGC_Gate_5.0_audit_trace_replay_visualization_Technical_Whitepaper_v1.0_zh_CN.md"
+  },
+  "acceptance_dimensions": {
+    "A_self_harness_core": [
+      "Three-stage loop (Inference -> Analysis -> Optimization) executes correctly.",
+      "Fixed weight execution ensures weight immutability during inference.",
+      "Local optimization engine operates without external dependencies."
+    ],
+    "B_rho_monitoring": [
+      "RHO monitors inference latency with configurable thresholds.",
+      "Memory usage tracking provides real-time insights.",
+      "Anomaly detection triggers appropriate warnings."
+    ],
+    "C_edge_cloud_bridge": [
+      "Apple Silicon / GPU seamless switching works correctly.",
+      "Model format auto-conversion preserves accuracy.",
+      "Load intelligent scheduling balances edge/cloud resources."
+    ],
+    "D_guardian_protection": [
+      "Performance degradation triggers automatic fallback.",
+      "Output quality monitoring detects and corrects anomalies.",
+      "Input/output range constraints enforce security boundaries."
+    ]
+  },
+  "claim_boundaries": {
+    "formally_claimable": [
+      "All 7 Gate 3.1 capabilities now have explicit self-harness verifiers and machine-checkable JSON evidence rows.",
+      "Gate 3.1 capability -> CLI -> self-harness contract can be regenerated from the repository and passes 7/7 locally.",
+      "Gate 3.1 host1 and host2 remote self-harness, capability contract, and formal preflight reports are all re-collected as 7/7 PASS."
+    ],
+    "not_yet_formally_claimable": [
+      "Long-term stability of self-optimization under continuous operation is not benchmarked here."
+    ]
+  },
+  "release_checkin_projection": {
+    "recommended_gate_name": "CGC_Gate_3.1_self_harness",
+    "recommended_runtime_sub_name": "upkg_self_harness_adaptive",
+    "recommended_historical_alias": "upkg_self_harness",
+    "recommended_checkin_fields": [
+      "gate_id",
+      "gate_version",
+      "status_summary",
+      "claim_boundaries",
+      "artifact_refs"
+    ]
+  },
+  "validation_snapshot": {
+    "source": "local_capability_cli_contract",
+    "validated_green_set": [
+      "self_harness_three_stage_loop",
+      "rho_runtime_health_observer",
+      "edge_cloud_bridge_adaptive",
+      "guardian_degeneration_prevention",
+      "fixed_weight_execution",
+      "local_optimization_engine",
+      "self_harness_cli"
+    ],
+    "synced_hosts": {
+      "host1": {
+        "ip": "39.106.118.206",
+        "user": "root",
+        "status": "validated_remote_7_of_7"
+      },
+      "host2": {
+        "ip": "47.95.250.55",
+        "user": "root",
+        "status": "validated_remote_7_of_7"
+      }
+    },
+    "summary": "Gate 3.1 now has 7/7 capability -> CLI -> self-harness contract rows passing locally, and host1 / host2 remote self-harness plus formal preflight are also 7/7 PASS, so the gate_map can conservatively mark all capabilities as done with dual-host evidence."
+  }
+}

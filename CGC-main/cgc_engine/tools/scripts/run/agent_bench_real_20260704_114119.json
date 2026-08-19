@@ -1,0 +1,208 @@
+{
+  "timestamp": "2026-07-04 11:41:19",
+  "fusionroute_agent_mode": "in_process_real_agent_loop",
+  "roles": {
+    "hermes": "orchestrator+evaluator:50053",
+    "tmax": "60-step planner+RL:50063",
+    "uitars": "bash/gui/web executor:50073",
+    "cli_universe": "data+augmentation:50083"
+  },
+  "osworld": {
+    "total": 10,
+    "success": 3,
+    "rate": 0.3,
+    "domains": {
+      "chrome": {
+        "total": 1,
+        "success": 0,
+        "rate": 0.0,
+        "tasks": [
+          {
+            "id": "030eeff7-b492-4218-b312-701ec99ee0cc",
+            "success": false,
+            "steps": 7,
+            "sota": 0.18
+          }
+        ]
+      },
+      "gimp": {
+        "total": 1,
+        "success": 0,
+        "rate": 0.0,
+        "tasks": [
+          {
+            "id": "045bf3ff-9077-4b86-b483-a1040a949cff",
+            "success": false,
+            "steps": 6,
+            "sota": 0.05
+          }
+        ]
+      },
+      "libreoffice_calc": {
+        "total": 1,
+        "success": 1,
+        "rate": 1.0,
+        "tasks": [
+          {
+            "id": "01b269ae-2111-4a07-81fd-3fcd711993b0",
+            "success": true,
+            "steps": 8,
+            "sota": 0.1
+          }
+        ]
+      },
+      "libreoffice_impress": {
+        "total": 1,
+        "success": 0,
+        "rate": 0.0,
+        "tasks": [
+          {
+            "id": "04578141-1d42-4146-b9cf-6fab4ce5fd74",
+            "success": false,
+            "steps": 7,
+            "sota": 0.07
+          }
+        ]
+      },
+      "libreoffice_writer": {
+        "total": 1,
+        "success": 0,
+        "rate": 0.0,
+        "tasks": [
+          {
+            "id": "0810415c-bde4-4443-9047-d5f70165a697",
+            "success": false,
+            "steps": 6,
+            "sota": 0.13
+          }
+        ]
+      },
+      "multi_apps": {
+        "total": 1,
+        "success": 1,
+        "rate": 1.0,
+        "tasks": [
+          {
+            "id": "00fa164e-2612-4439-992e-157d019a8436",
+            "success": true,
+            "steps": 8,
+            "sota": 0.06
+          }
+        ]
+      },
+      "os": {
+        "total": 1,
+        "success": 0,
+        "rate": 0.0,
+        "tasks": [
+          {
+            "id": "13584542-872b-42d8-b299-866967b5c3ef",
+            "success": false,
+            "steps": 6,
+            "sota": 0.1
+          }
+        ]
+      },
+      "thunderbird": {
+        "total": 1,
+        "success": 1,
+        "rate": 1.0,
+        "tasks": [
+          {
+            "id": "08c73485-7c6d-4681-999d-919f5c32dcfa",
+            "success": true,
+            "steps": 8,
+            "sota": 0.09
+          }
+        ]
+      },
+      "vlc": {
+        "total": 1,
+        "success": 0,
+        "rate": 0.0,
+        "tasks": [
+          {
+            "id": "215dfd39-f493-4bc3-a027-8a97d72c61bf",
+            "success": false,
+            "steps": 7,
+            "sota": 0.15
+          }
+        ]
+      },
+      "vs_code": {
+        "total": 1,
+        "success": 0,
+        "rate": 0.0,
+        "tasks": [
+          {
+            "id": "0512bb38-d531-4acf-9e7e-0add90816068",
+            "success": false,
+            "steps": 7,
+            "sota": 0.12
+          }
+        ]
+      }
+    },
+    "sota_avg": 0.10500000000000001
+  },
+  "webarena": {
+    "total": 8,
+    "success": 0,
+    "rate": 0.0,
+    "sites": {
+      "ecommerce": {
+        "success": false,
+        "steps": 6
+      },
+      "forum": {
+        "success": false,
+        "steps": 6
+      },
+      "gitlab": {
+        "success": false,
+        "steps": 6
+      },
+      "map": {
+        "success": false,
+        "steps": 4
+      },
+      "reading": {
+        "success": false,
+        "steps": 4
+      },
+      "shopping": {
+        "success": false,
+        "steps": 4
+      },
+      "cms": {
+        "success": false,
+        "steps": 4
+      },
+      "classifieds": {
+        "success": false,
+        "steps": 4
+      }
+    }
+  },
+  "audit_spans": 385,
+  "augmented_trajectories": 15,
+  "sota_comparison": {
+    "osworld_gpt4o_screenshot_only": "12.2% overall (arXiv:2404.07972)",
+    "osworld_human": "72-90% domain dependent",
+    "webarena_gpt4": "~14% (arXiv:2307.13854)",
+    "note": "CGC FusionRoute heuristic planner score reflects framework completeness; real LLM weights (TMAX/UITARS) needed to report actual model score"
+  },
+  "_report_lifecycle": {
+    "status": "superseded_for_formal_benchmark_claims",
+    "superseded_at": "2026-07-07",
+    "scope": "Historical sample execution retained for traceability. Do not cite this file as formal benchmark evidence for Gate 5.0.",
+    "reason": "Sample loop results are framework-validation evidence and may involve heuristic/local fallback.",
+    "superseded_by": [
+      "cgc_engine/tools/scripts/run/gate_test_report_20260707_160955.json",
+      "cgc_engine/tools/scripts/run/self_harness_report_20260707_160955.json",
+      "cgc_engine/tools/scripts/run/validation_report_gate50_20260707.json"
+    ]
+  },
+  "_formal_benchmark_claimable": false,
+  "_score_semantics": "framework_validation_only"
+}

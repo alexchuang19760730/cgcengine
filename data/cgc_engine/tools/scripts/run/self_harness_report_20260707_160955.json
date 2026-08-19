@@ -1,0 +1,103 @@
+{
+  "report_generated_at": "2026-07-07T16:09:55.304938",
+  "execution_mode": "self_harness_three_stage",
+  "total_gates": 1,
+  "total_capabilities": 12,
+  "total_passed": 12,
+  "gates": [
+    {
+      "gate_id": "CGC_Gate_5.0_audit_trace_replay_visualization",
+      "gate_version": "5.0",
+      "execution_mode": "self_harness_three_stage",
+      "passed": 12,
+      "total": 12,
+      "pass_rate": "100.0%",
+      "capabilities": [
+        {
+          "id": "audit_logging",
+          "name": "Audit Lifecycle Logging",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "trace_span",
+          "name": "TraceSpan Management",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "snapshot_replay",
+          "name": "Snapshot Replay",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "visualization",
+          "name": "Visualization Service",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "task_management",
+          "name": "Task Management (create/get/list/replay)",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "audit_query",
+          "name": "Audit Query (list/report)",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "trace_export",
+          "name": "Trace Export (get/export)",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "config_management",
+          "name": "Config Management (show/set)",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "self_harness_chain",
+          "name": "Self-Harness Three-Stage Loop",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "pipeline_kernel",
+          "name": "UPKG Pipeline Kernel",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "terminal_agent",
+          "name": "TMAX + UITARS Agent Framework Integration",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "orchestration_layer",
+          "name": "Hermes Orchestration Contract",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        }
+      ]
+    }
+  ]
+}

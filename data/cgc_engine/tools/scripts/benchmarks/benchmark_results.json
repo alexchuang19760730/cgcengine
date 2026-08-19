@@ -1,0 +1,200 @@
+[
+  {
+    "backend": "Native vLLM",
+    "input_len": 512,
+    "output_len": 64,
+    "batch_size": 4,
+    "load_time_s": 46.48216676712036,
+    "avg_time_s": 0.9102082252502441,
+    "avg_throughput_tok_s": 295.6122184782762,
+    "avg_peak_gpu_mem_mb": 27052.0,
+    "iterations": [
+      {
+        "iter": 1,
+        "time_s": 1.21681809425354,
+        "tokens": 256,
+        "throughput_tok_s": 210.38477419835198,
+        "peak_gpu_mem_mb": 27052
+      },
+      {
+        "iter": 2,
+        "time_s": 0.753791332244873,
+        "tokens": 256,
+        "throughput_tok_s": 339.61653450909813,
+        "peak_gpu_mem_mb": 27052
+      },
+      {
+        "iter": 3,
+        "time_s": 0.7600152492523193,
+        "tokens": 256,
+        "throughput_tok_s": 336.8353467273785,
+        "peak_gpu_mem_mb": 27052
+      }
+    ]
+  },
+  {
+    "backend": "KDA Optimized",
+    "input_len": 512,
+    "output_len": 64,
+    "batch_size": 4,
+    "load_time_s": 28.525190591812134,
+    "avg_time_s": 0.8811028798421224,
+    "avg_throughput_tok_s": 301.62213439175764,
+    "avg_peak_gpu_mem_mb": 27052.0,
+    "iterations": [
+      {
+        "iter": 1,
+        "time_s": 1.1365635395050049,
+        "tokens": 256,
+        "throughput_tok_s": 225.24037689216468,
+        "peak_gpu_mem_mb": 27052
+      },
+      {
+        "iter": 2,
+        "time_s": 0.7569572925567627,
+        "tokens": 256,
+        "throughput_tok_s": 338.1960944392422,
+        "peak_gpu_mem_mb": 27052
+      },
+      {
+        "iter": 3,
+        "time_s": 0.7497878074645996,
+        "tokens": 256,
+        "throughput_tok_s": 341.42993184386603,
+        "peak_gpu_mem_mb": 27052
+      }
+    ]
+  },
+  {
+    "backend": "Native vLLM",
+    "input_len": 1024,
+    "output_len": 128,
+    "batch_size": 4,
+    "load_time_s": 17.966843128204346,
+    "avg_time_s": 1.611117919286092,
+    "avg_throughput_tok_s": 321.29960455382184,
+    "avg_peak_gpu_mem_mb": 27052.0,
+    "iterations": [
+      {
+        "iter": 1,
+        "time_s": 1.8581323623657227,
+        "tokens": 512,
+        "throughput_tok_s": 275.5454941585194,
+        "peak_gpu_mem_mb": 27052
+      },
+      {
+        "iter": 2,
+        "time_s": 1.4856593608856201,
+        "tokens": 512,
+        "throughput_tok_s": 344.62812504663947,
+        "peak_gpu_mem_mb": 27052
+      },
+      {
+        "iter": 3,
+        "time_s": 1.4895620346069336,
+        "tokens": 512,
+        "throughput_tok_s": 343.7251944563066,
+        "peak_gpu_mem_mb": 27052
+      }
+    ]
+  },
+  {
+    "backend": "KDA Optimized",
+    "input_len": 1024,
+    "output_len": 128,
+    "batch_size": 4,
+    "load_time_s": 13.104671478271484,
+    "avg_time_s": 1.6782774130503337,
+    "avg_throughput_tok_s": 308.17404617905424,
+    "avg_peak_gpu_mem_mb": 27052.0,
+    "iterations": [
+      {
+        "iter": 1,
+        "time_s": 1.9248442649841309,
+        "tokens": 512,
+        "throughput_tok_s": 265.99554536128727,
+        "peak_gpu_mem_mb": 27052
+      },
+      {
+        "iter": 2,
+        "time_s": 1.5515949726104736,
+        "tokens": 512,
+        "throughput_tok_s": 329.9830233005899,
+        "peak_gpu_mem_mb": 27052
+      },
+      {
+        "iter": 3,
+        "time_s": 1.5583930015563965,
+        "tokens": 512,
+        "throughput_tok_s": 328.5435698752856,
+        "peak_gpu_mem_mb": 27052
+      }
+    ]
+  },
+  {
+    "backend": "Native vLLM",
+    "input_len": 2048,
+    "output_len": 128,
+    "batch_size": 4,
+    "load_time_s": 13.517400026321411,
+    "avg_time_s": 1.6143168608347576,
+    "avg_throughput_tok_s": 320.752702533726,
+    "avg_peak_gpu_mem_mb": 27052.0,
+    "iterations": [
+      {
+        "iter": 1,
+        "time_s": 1.8650658130645752,
+        "tokens": 512,
+        "throughput_tok_s": 274.52114365804033,
+        "peak_gpu_mem_mb": 27052
+      },
+      {
+        "iter": 2,
+        "time_s": 1.4901866912841797,
+        "tokens": 512,
+        "throughput_tok_s": 343.5811116785509,
+        "peak_gpu_mem_mb": 27052
+      },
+      {
+        "iter": 3,
+        "time_s": 1.4876980781555176,
+        "tokens": 512,
+        "throughput_tok_s": 344.15585226458677,
+        "peak_gpu_mem_mb": 27052
+      }
+    ]
+  },
+  {
+    "backend": "KDA Optimized",
+    "input_len": 2048,
+    "output_len": 128,
+    "batch_size": 4,
+    "load_time_s": 18.065484523773193,
+    "avg_time_s": 1.61646302541097,
+    "avg_throughput_tok_s": 320.36987275152325,
+    "avg_peak_gpu_mem_mb": 27052.0,
+    "iterations": [
+      {
+        "iter": 1,
+        "time_s": 1.8690605163574219,
+        "tokens": 512,
+        "throughput_tok_s": 273.934415455861,
+        "peak_gpu_mem_mb": 27052
+      },
+      {
+        "iter": 2,
+        "time_s": 1.4930877685546875,
+        "tokens": 512,
+        "throughput_tok_s": 342.91353179834647,
+        "peak_gpu_mem_mb": 27052
+      },
+      {
+        "iter": 3,
+        "time_s": 1.4872407913208008,
+        "tokens": 512,
+        "throughput_tok_s": 344.2616710003623,
+        "peak_gpu_mem_mb": 27052
+      }
+    ]
+  }
+]

@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CGC 異構專家流式計算框架白皮書 v1.2</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #f8f7f4;
+    --surface2: #f1efe8;
+    --border: #e0ddd5;
+    --text: #1a1a1a;
+    --text2: #555550;
+    --text3: #888880;
+    --accent: #534AB7;
+    --teal: #0F6E56;
+    --amber: #854F0B;
+    --coral: #993C1D;
+    --blue: #185FA5;
+    --red: #A32D2D;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    font-size: 15px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .container { max-width: 980px; margin: 0 auto; padding: 0 24px; }
+
+  .cover { padding: 72px 0 48px; text-align: center; border-bottom: 1px solid var(--border); }
+  .cover h1 { font-size: 30px; font-weight: 600; letter-spacing: -0.5px; margin-bottom: 12px; }
+  .cover .subtitle { font-size: 16px; color: var(--text2); margin-bottom: 8px; }
+  .cover .meta { font-size: 13px; color: var(--text3); margin-top: 16px; }
+  .cover .badge { display: inline-block; padding: 4px 12px; border-radius: 100px; font-size: 12px; font-weight: 500; margin: 0 4px; }
+  .badge-teal { background: #E1F5EE; color: var(--teal); }
+  .badge-amber { background: #FAEEDA; color: var(--amber); }
+  .badge-coral { background: #FAECE7; color: var(--coral); }
+  .badge-blue { background: #E7EFFA; color: var(--blue); }
+  .badge-purple { background: #EEEDFE; color: var(--accent); }
+
+  section { padding: 44px 0; border-bottom: 1px solid var(--border); }
+  section h2 { font-size: 21px; font-weight: 600; margin-bottom: 8px; letter-spacing: -0.3px; }
+  section .sec-sub { font-size: 13px; color: var(--text3); margin-bottom: 20px; }
+  section h3 { font-size: 16px; font-weight: 600; margin: 24px 0 12px; color: var(--text); }
+  p { margin-bottom: 12px; }
+  ul, ol { margin: 8px 0 16px 22px; }
+  li { margin-bottom: 6px; }
+
+  /* Mind map tree */
+  .mm { margin: 24px 0 8px; }
+  .mm-root {
+    display: inline-block;
+    background: var(--accent); color: #fff;
+    border-radius: 12px; padding: 14px 24px;
+    font-size: 17px; font-weight: 600;
+    box-shadow: 0 2px 8px rgba(83,74,183,0.25);
+  }
+  .mm-branch { margin: 20px 0 0 22px; padding-left: 18px; border-left: 2px solid var(--border); }
+  .mm-branch-head {
+    display: flex; align-items: center; gap: 10px; cursor: pointer;
+    padding: 10px 14px; border-radius: 10px;
+    background: var(--surface); border: 1px solid var(--border);
+  }
+  .mm-branch-head:hover { background: var(--surface2); }
+  .mm-branch-head .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .mm-branch-head .title { font-size: 15px; font-weight: 600; }
+  .mm-branch-head .meta { font-size: 12px; color: var(--text3); }
+  .mm-branch-head .caret { margin-left: auto; font-size: 12px; color: var(--text3); }
+  .mm-branch.collapsed .mm-children { display: none; }
+  .mm-children { margin: 8px 0 0 18px; padding-left: 14px; border-left: 2px solid var(--border); }
+  .mm-leaf {
+    margin: 8px 0 0 0; padding: 8px 12px;
+    border-radius: 8px; border: 1px solid var(--border);
+    background: #fff;
+    display: flex; gap: 10px; align-items: baseline;
+  }
+  .mm-leaf .t { font-size: 13px; font-weight: 600; white-space: nowrap; }
+  .mm-leaf .m { font-size: 12px; color: var(--text2); }
+  .st-verified { color: var(--teal); }
+  .st-falsified { color: var(--red); }
+  .st-neutral { color: var(--blue); }
+  .st-wip { color: var(--amber); }
+  .st-target { color: var(--accent); }
+  .mm-leaf .tag, .mm-branch-head .tag {
+    font-size: 10px; font-weight: 600; padding: 1px 7px; border-radius: 100px; flex: none;
+  }
+  .tag-verified { background: #E1F5EE; color: var(--teal); }
+  .tag-falsified { background: #FCEBEB; color: var(--red); }
+  .tag-neutral { background: #E7EFFA; color: var(--blue); }
+  .tag-wip { background: #FAEEDA; color: var(--amber); }
+  .tag-target { background: #EEEDFE; color: var(--accent); }
+
+  .mm-hint { font-size: 12px; color: var(--text3); margin-bottom: 4px; }
+
+  /* Cards */
+  .card-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 18px 0; }
+  @media (max-width: 720px) { .card-grid { grid-template-columns: 1fr; } }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  .card.teal { border-left: 3px solid var(--teal); }
+  .card.amber { border-left: 3px solid var(--amber); }
+  .card.coral { border-left: 3px solid var(--coral); }
+  .card.blue { border-left: 3px solid var(--blue); }
+  .card.purple { border-left: 3px solid var(--accent); }
+  .card.red { border-left: 3px solid var(--red); }
+  .card h4 { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+  .card p, .card li { font-size: 12.5px; color: var(--text2); }
+
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { font-weight: 600; background: var(--surface); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text2); }
+  tr:hover { background: var(--surface); }
+
+  .highlight { background: var(--surface2); border-radius: 12px; padding: 16px 20px; margin: 14px 0; font-size: 13.5px; }
+  .highlight strong { color: var(--text); }
+  code { background: var(--surface2); padding: 1px 6px; border-radius: 4px; font-size: 12.5px; }
+
+  .metric-row { display: flex; gap: 20px; margin: 16px 0; flex-wrap: wrap; }
+  .metric { flex: 1; min-width: 110px; text-align: center; }
+  .metric .value { font-size: 30px; font-weight: 600; letter-spacing: -1px; }
+  .metric .label { font-size: 12px; color: var(--text3); margin-top: 2px; }
+
+  .vs-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 14px 0; }
+  @media (max-width: 720px) { .vs-grid { grid-template-columns: 1fr; } }
+  .vs-box { border-radius: 12px; padding: 16px; font-size: 13px; }
+  .vs-box.positive { background: #E1F5EE; border: 1px solid #9FE1CB; }
+  .vs-box.negative { background: #FCEBEB; border: 1px solid #F7C1C1; }
+  .vs-box h4 { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+  .vs-box.positive h4 { color: var(--teal); }
+  .vs-box.negative h4 { color: var(--red); }
+
+  .timeline { position: relative; padding-left: 22px; margin: 16px 0; }
+  .timeline::before { content: ''; position: absolute; left: 6px; top: 8px; bottom: 8px; width: 2px; background: var(--border); }
+  .timeline-item { position: relative; padding-bottom: 18px; }
+  .timeline-item::before {
+    content: ''; position: absolute; left: -20px; top: 6px;
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--accent); border: 2px solid var(--bg);
+  }
+  .timeline-item .phase { font-size: 11px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px; }
+  .timeline-item h4 { font-size: 14px; font-weight: 600; margin: 2px 0 4px; }
+  .timeline-item p { font-size: 12.5px; color: var(--text2); margin: 0; }
+
+  /* Pipeline / architecture */
+  .pipeline { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin: 18px 0; }
+  @media (max-width: 720px) { .pipeline { grid-template-columns: 1fr; } }
+  .pipe { border-radius: 12px; padding: 14px; font-size: 12.5px; border: 1px solid var(--border); text-align: center; }
+  .pipe.cpu { background: #E7EFFA; border-color: #B9CFEC; }
+  .pipe.gpu { background: #EEEDFE; border-color: #CFCAF2; }
+  .pipe.io { background: #FAEEDA; border-color: #EFD9AE; }
+  .pipe h4 { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+  .pipe p { font-size: 11.5px; color: var(--text2); margin: 0; }
+
+  .footer { padding: 36px 0; text-align: center; font-size: 12px; color: var(--text3); }
+  .footer code { background: var(--surface2); padding: 1px 6px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="cover">
+    <h1>CGC 異構專家流式計算框架白皮書 v1.2</h1>
+    <div class="subtitle">A+B 方案 · llama.cpp CPU（attention + router + head）× Expert-Streamer GPU（FFN 專家 mul_mat_id）</div>
+    <div style="margin-top:18px;">
+      <span class="badge badge-purple">A+B 異構</span>
+      <span class="badge badge-teal">Expert Streamer</span>
+      <span class="badge badge-blue">CGC 攔截</span>
+      <span class="badge badge-coral">統一 IR</span>
+      <span class="badge badge-amber">性能預估</span>
+    </div>
+    <div class="meta">活文件 · 隨 request&action 同步更新 · 2026-08-15 · v1.2 修訂 · 範本：CGC_Qwen36_優化紀錄_心智圖.html</div>
+  </div>
+
+  <div class="highlight" style="background:#FAECE7; border:1px solid #F7C1C1;">
+    <strong>v1.1 修訂（2026-08-14）· 對照實證 4 處分歧 + MTP 定案</strong>：
+    ① 主路線改階梯——<strong>先 B 後 A</strong>：P1 = Option B（per-step gather，純 CPU 側、零 kernel 動、可獨立 A/B），P2 = Option A（計算期攔截換指針，B 之上的 kernel 精修）；② <strong>預測式預取證偽</strong>——predict_next「算 N 預取 N+1」即 miss-prefetch（§13.15/13.16），預測對長尾撐不起 speculative read，改採「真實路由已知後的下一層早讀」（L4 手法）；③ <strong>Hot Pool 靜態 pin 反效果</strong>——3GB 預算下 pin 90/layer → hit 44.6% vs 純 LRU 82.9%，以純 LRU 為主；④ 補 <strong>slot refcount / 完成-callback 釋放協議</strong>，杜絕 GPU 未完成前 free slot 的 corruption/OOM；另 <strong>MTP 未轉正、不作為核心目標</strong>。
+  </div>
+
+  <!-- ============ 心智圖 ============ -->
+  <section>
+    <h2>一、心智圖總覽</h2>
+    <div class="sec-sub">點擊分支標題可收合/展開；顏色 = 結論狀態（綠=已定案 / 紅=已證偽 / 藍=中性 / 黃=進行中 / 紫=目標）</div>
+    <div class="mm" id="mindmap"></div>
+  </section>
+
+  <!-- ============ A+B 異構架構 ============ -->
+  <section>
+    <h2>二、A+B 異構架構總覽</h2>
+    <div class="sec-sub">把 MoE decode 的計算按「熱度 × 硬體優勢」拆成兩半：CPU 跑注意力與路由，GPU 跑 FFN 專家</div>
+
+    <div class="pipeline">
+      <div class="pipe cpu"><h4>A · CPU</h4><p>Attention<br>QKV / RoPE / KVCache</p></div>
+      <div class="pipe cpu"><h4>A · CPU</h4><p>Router<br>argsort top-k<br>selected_experts</p></div>
+      <div class="pipe io"><h4>B · I/O</h4><p>Expert Streamer<br>ReadFile / PrefetchVirtualMemory<br>slot buffer 緩存</p></div>
+      <div class="pipe gpu"><h4>B · GPU</h4><p>FFN mul_mat_id<br>gate / up / down<br>只算 top-k 專家</p></div>
+      <div class="pipe cpu"><h4>A · CPU</h4><p>Output Head<br>lm_head + softmax<br>取樣</p></div>
+    </div>
+
+    <div class="highlight">
+      <strong>核心洞察</strong>：llama.cpp 靜態圖把「完整 3D 專家張量」（<code>ffn_gate_up_exps / ffn_down_exps</code>，末維 = 全部 128 個專家）傳進 <code>build_moe_ffn</code>，但 <code>ggml_mul_mat_id</code> 每次只訪問 <strong>top-k（8 個）</strong>選中的專家列。<br>
+      因此「讓權重留在磁碟、按路由流式載入」可以 100% 復用原計算語義 —— 需要的不是改 kernel，而是 <strong>改權重的存取來源</strong>。
+    </div>
+
+    <table>
+      <tr><th>部分</th><th>承擔計算</th><th>硬體</th><th>內存佔用</th><th>為什麼</th></tr>
+      <tr><td><strong>A 部分</strong>（llama.cpp）</td><td>attention · router(ggml_argsort_top_k) · lm_head</td><td>CPU</td><td>常駐（小，~1-2GB）</td><td>dense 計算量小、層間依賴強、不易並行</td></tr>
+      <tr><td><strong>B 部分</strong>（expert-streamer）</td><td>FFN 的 <code>ggml_mul_mat_id</code>（gate/up/down）</td><td>GPU（或 CGC_WEIGHTS buffer）</td><td>僅槽位容量（slots×expert_size）</td><td>MoE 權重佔全模型 80%+，但單步只訪 top-k → 流式化收益最大</td></tr>
+    </table>
+
+    <div class="card-grid">
+      <div class="card purple"><h4>兩階段執行模型</h4><p>decode 先算路由（<code>selected_experts</code>）→ 再按 top-k 載入專家 → 權重訪問。prefill 保持 mmap 路徑以降複雜度。</p></div>
+      <div class="card teal"><h4>目標：20 tok/s</h4><p>在不分頁（resident ≤ 16GB 槽位容量）的前提下，以 B→A 階梯逐步逼近（不依賴 MTP）。</p></div>
+      <div class="card blue"><h4>先 B 後 A 階梯</h4><p>P1 = Option B（per-step gather，純 CPU 側、零 kernel 動、可獨立 A/B）；P2 = Option A（計算期攔截換指針，B 之上的 kernel 精修）。</p></div>
+    </div>
+  </section>
+
+  <!-- ============ Expert Streamer ============ -->
+  <section>
+    <h2>三、Expert Streamer 核心（C API）</h2>
+    <div class="sec-sub">cgc_engine/cpp/expert_streaming · cgc_expert_streamer.h / .c · 快取、預取、PD、緊湊模式</div>
+
+    <div class="card-grid">
+      <div class="card teal"><h4>Slot Buffer 快取</h4><p>每層 streamer 持 slots 個固定槽；<code>cgc_expert_streamer_load_experts</code> 做 miss-only 讀入 + LRU/phase 換出。telemetry 累計 requests/hits/misses → 真實命中率。</p></div>
+      <div class="card teal"><h4>純 LRU 為主（3GB 預算實證）</h4><p>sim（r3_trace）實測：pin 90/layer → hit 掉到 44.6%，純 LRU 82.9% → 3GB 下<strong>純 LRU 為主</strong>；Hot Pool 靜態 pin 僅在預算寬鬆或 profile 證明有效時小規模（top-8/16）啟用。</p></div>
+      <div class="card amber"><h4>層迴圈預取（L4 手法）</h4><p>真實路由已知後 → 對該步實際用到的層集合做<strong>下一層早讀</strong>（8 執行緒並行、非阻塞 <code>PrefetchVirtualMemory</code>）。不做跨 token 的 predict_next（證偽，見 §13.15/13.16）。同步 <code>pool_prefetch_load</code> 會阻塞關鍵路徑（實測 5× 變慢）。</p></div>
+      <div class="card blue"><h4>PD 分離</h4><p>prefill / decode 層分配到不同 GPU（<code>CGC_EX_PREFILL_GPU / CGC_EX_DECODE_GPU</code>），負載均衡 + 並行預取。</p></div>
+      <div class="card purple"><h4>緊湊 slot 連續區域模式</h4><p><code>region_bases[r] + slot*region_stride[r]</code> 連續排布，讓 <code>ggml_mul_mat_id</code> 用 <code>src0-&gt;data = region_bases[r]</code> + ids 重映射即可直讀（Option A 前置條件）。</p></div>
+      <div class="card coral"><h4>slot refcount / 生命週期</h4><p>每個 slot 帶 <code>refcount</code>（pinned / 使用中 / 可逐出）。GPU 或計算未完成前<strong>禁止 free</strong>——完成後由完成-callback 遞減、refcount==0 才可逐出。第一大崩潰來源（GPU 未完成前 free slot → corruption/OOM）在此制度化。</p></div>
+    </div>
+
+    <h3>數據源選擇：ReadFile 直讀磁碟（定案）</h3>
+    <div class="highlight">
+      常駐內存 <strong>嚴格等於槽位容量</strong>（slots × expert_size），才能真正「流式替代整模型常駐」。mmap demand-paging 的省記憶體只是表象（TLB / page-cache 假象）——embed 每步只 gather 4KB、物理佔用 ≈2MB（參見 Qwen36 線 §13.104 教訓）。
+    </div>
+
+    <h3>兩種權重佈局</h3>
+    <table>
+      <tr><th>佈局</th><th>模型</th><th>結構</th><th>對流式的意義</th></tr>
+      <tr><td>per-expert</td><td>Qwen3.6 repack</td><td>每專家獨立 blob</td><td>gather 單位 = 單 blob，讀取範圍精準</td></tr>
+      <tr><td>per-layer</td><td>Gemma4 GGUF</td><td>每層 down + gate_up 兩 region，<code>has_layer_offsets</code> 絕對偏移定位</td><td>需按層解析 region 偏移，Option A 換指針的基礎</td></tr>
+    </table>
+
+    <table>
+      <tr><th>API</th><th>作用</th><th>關鍵點</th></tr>
+      <tr><td><code>cgc_expert_streamer_create_ex</code></td><td>建立 streamer（緊湊模式開關）</td><td>compact_regions → region_bases 連續分配</td></tr>
+      <tr><td><code>cgc_expert_streamer_build_region_ids</code></td><td>全局專家號 → 槽局部索引重映射</td><td>供 mul_mat_id 的 ids 重映射 + src0 ne[2] 收斂</td></tr>
+      <tr><td><code>cgc_expert_streamer_get_region_base / stride</code></td><td>取 region 連續基址與跨度</td><td>讓 CGC 攔截層直接換 src0 指針</td></tr>
+      <tr><td><code>cgc_expert_streamer_load_experts</code></td><td>miss-only 同步載入 + 命中統計</td><td>decode 真實路由喂入</td></tr>
+      <tr><td><code>cgc_expert_streamer_prefetch</code></td><td>非阻塞頁快取預取</td><td>PrefetchVirtualMemory</td></tr>
+      <tr><td><code>cgc_streamer_pool_*</code></td><td>多層 streamer 池</td><td>decode 8 執行緒並行預取多層</td></tr>
+    </table>
+  </section>
+
+  <!-- ============ llama.cpp 集成點 ============ -->
+  <section>
+    <h2>四、llama.cpp 集成點</h2>
+    <div class="sec-sub">build_moe_ffn 路由 hook + Option B gather（P1）→ Option A 計算期攔截（P2）+ cgc_plan 分區</div>
+
+    <h3>4.1 圖構建期：build_moe_ffn 路由 hook</h3>
+    <div class="highlight">
+      <code>llama-graph.cpp:1476-1491</code>：<br>
+      <code>selected_experts = ggml_argsort_top_k(ctx0, selection_probs, n_expert_used)</code> → 對 <code>ggml_cont</code> 獨立副本設 OUTPUT（保護 buffer 不被後續層覆蓋）→ <code>res-&gt;register_moe_route(il, route_copy)</code>。<br>
+      之後 <code>build_lora_mm_id</code>（<code>ggml_mul_mat_id</code>）以 <code>selected_experts</code> 訪問 gate_up / up / down 三組權重。<br>
+      <strong>注意</strong>：<code>selected_experts</code> 同時被 4 個 <code>mul_mat_id</code> + 4 個 <code>add_id</code> + 5 個 <code>get_rows</code> 共用——任何「重映射 ids」都不能在共享張量上原地改，這是 Option B 比 Option A 更安全的原因（B 不碰 ids）。
+    </div>
+
+    <h3>4.2 P1 · Option B：per-step gather（純 CPU 側、零 kernel 動、主路線）</h3>
+    <div class="highlight">
+      不改 <code>ggml_mul_mat_id</code> kernel、不改 ids：在 build_moe_ffn 內，路由已知後，用 <code>ggml_get_rows</code>（gather）把 top-k 選中的權重列從 <code>ffn_*_exps</code> 抽成<strong>緊湊 per-step 張量</strong>（<code>[k, n_ff, n_used]</code>），再喂給標準 <code>ggml_mul_mat_id</code>。<br>
+      <strong>階梯意義</strong>：L2 cache → per-step gather → 標準 mul_mat_id；<code>selected_experts</code> 保持全局 id 不動 → add_id / get_rows 全兼容。可獨立 A/B（gather 開銷 vs 省下的整張量 mmap 觸碰），P1 起點。
+    </div>
+
+    <h3>4.3 P2 · Option A：計算期攔截（ggml-cgc partition 循環，kernel 精修）</h3>
+    <div class="highlight">
+      <code>ggml-cgc.cpp:1342 cgc_backend_graph_compute</code>：對每個 partition 做 <code>ggml_graph_view</code> → <code>ggml_backend_graph_compute(inner)</code>。<br>
+      <strong>攔截點</strong>：在內層計算前，掃描含 <code>MUL_MAT_ID</code> 的子圖 → 讀 ids → 查 streamer（<code>build_region_ids</code>）→ 把 <code>src0-&gt;data</code> 換成 <code>region_bases[r]</code> + 重映射 ids。<br>
+      <strong>v1.1 修正</strong>：這是 B 之上的 kernel 精修（省掉 per-step gather 拷貝），須先有 B 的正確性與命中率作為基線；且 ids 重映射需為共享張量做副本（見 4.1 注意），由完成-callback + refcount 保證 slot 存活。
+    </div>
+
+    <h3>4.4 cgc_plan 分區：路由與 mul_mat_id 切分</h3>
+    <div class="highlight">
+      新增 expert-stream 分區，把 <code>argsort_top_k</code>（路由）與 <code>mul_mat_id</code>（計算）切到不同 partition，使「先算路由、後建 FFN 圖」的兩階段在 CGC 後端層面成立。
+    </div>
+
+    <div class="vs-grid">
+      <div class="vs-box positive">
+        <h4>✅ P1 · Option B：per-step gather（主路線）</h4>
+        <ul>
+          <li>純 CPU 側改動、零 kernel 動、零 ids 改動</li>
+          <li>gather 後接標準 mul_mat_id，add_id/get_rows 全兼容</li>
+          <li>可獨立 A/B 量化開銷，正確性階梯的最低階</li>
+        </ul>
+      </div>
+      <div class="vs-box negative">
+        <h4>⏭ P2 · Option A：計算期攔截（kernel 精修）</h4>
+        <ul>
+          <li>換 src0 指針 + ids 重映射，省去 per-step gather 拷貝</li>
+          <li>需處理共享 ids 張量（副本）+ refcount 存活保證</li>
+          <li>以 B 的命中率/正確性為基線再做 A/B</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 統一 IR ============ -->
+  <section>
+    <h2>五、統一 IR 與 Monkey Patch</h2>
+    <div class="sec-sub">cgc_engine · magicompiler_integration.py + moe_ffn_unified_patch.py · 跨 llama.cpp / vllm / mlx 一致接入</div>
+
+    <div class="card-grid">
+      <div class="card purple"><h4>cgc::moe_expert_stream 算子</h4><p>torch 側 custom op（subgraph boundary + compute sensitive），與 C++ 側 build_moe_ffn hook 同名同語義。MagiCompiler 在該算子處 piecewise 切圖。</p></div>
+      <div class="card teal"><h4>MoeFfnGraph（全計算圖分析）</h4><p><code>_parse_gguf_safe</code> + <code>analyze_gguf_moe_graph</code>：把 GGUF 每個 MoE 層還原為一個 build_moe_ffn 接入點（128 experts / top-8 / 30 層）。</p></div>
+      <div class="card blue"><h4>MoeFfnStreamConfig</h4><p>slots / LRU 策略 / PD 分離 / prefetch_threads / refcount 規則 → 經 env 落成 C++ streamer 讀到的參數（MTP 已移出核心，見 v1.1）。</p></div>
+      <div class="card amber"><h4>真實路由 hook</h4><p><code>llama_set_cgc_route_cb</code>：graph_compute 後 C 側把每層 <code>selected_experts</code> 回調出來，喂給 on_token_routes → 觸發層迴圈預取 + refcount 登記。</p></div>
+      <div class="card red"><h4>預測式預取（證偽）</h4><p>「算 N 預取 N+1」的 predict_next（保留 top_k-1+高頻）即 miss-prefetch——預測對長尾撐不起 speculative read（§13.15/13.16），實測淨負。改採<strong>真實路由已知後的下一層早讀</strong>。</p></div>
+      <div class="card teal"><h4>層迴圈預取（真實路由已知）</h4><p>token t 的 30 層路由全部已知後 → 對 t+1 實際用到（且未入槽）的層集合做 8 執行緒並行早讀 + 非阻塞 PrefetchVirtualMemory；命中率 = 純 LRU 82.9%（r3_trace）。</p></div>
+      <div class="card teal"><h4>命中率量測</h4><p>load_experts 同時累計 total_requests/hits/misses → 純 LRU 82.9%（3GB 預算）vs 靜態 pin 90/layer 44.6%。</p></div>
+    </div>
+
+    <div class="highlight">
+      <strong>#10/#11/#12 已定案</strong>：#10 真實路由喂 streamer（修復 <code>_drain_routes</code> 引用清空 bug：<code>items = list(_route_buf); _route_buf.clear()</code>）；#11 雙緩衝命中率 37-44% 是 predict_next 的結果（<strong>證偽</strong>，非真實路由已知的層迴圈）；#12 當前淨負（memory paging + streamer cache 未集成），下一步以 Option B（gather）深集成 slot buffer 取代 mmap。
+    </div>
+  </section>
+
+  <!-- ============ 性能數據 ============ -->
+  <section>
+    <h2>六、性能數據與硬件約束</h2>
+    <div class="sec-sub">本機 cgc_llama_bench + 真實推理 + 2026 筆電 / 異構 GPU+CPU 估算</div>
+
+    <div class="metric-row">
+      <div class="metric"><div class="value" style="color:var(--teal);">26.64</div><div class="label">C bench decode tok/s（合成 Zipf 路由）</div></div>
+      <div class="metric"><div class="value" style="color:var(--blue);">6.82</div><div class="label">C bench prefill tok/s</div></div>
+      <div class="metric"><div class="value" style="color:var(--amber);">91.89%</div><div class="label">合成路由命中率</div></div>
+      <div class="metric"><div class="value" style="color:var(--red);">0.6</div><div class="label">真實推理 tok/s（整模型 mmap 分頁）</div></div>
+      <div class="metric"><div class="value" style="color:var(--accent);">37-44%</div><div class="label">真實路由命中率（雙緩衝）</div></div>
+      <div class="metric"><div class="value" style="color:var(--teal);">6.28</div><div class="label">llama-bench prefill pp128（本機 CPU）</div></div>
+      <div class="metric"><div class="value" style="color:var(--blue);">1.86</div><div class="label">llama-bench decode tg64（本機 CPU）</div></div>
+      <div class="metric"><div class="value" style="color:var(--teal);">✓ 8.00</div><div class="label">qwen36 -ngl 99 + cache（4GiB，bit-identical，§8.38）</div></div>
+    </div>
+
+    <div class="highlight">
+      <strong>26.64 tok/s 是「專家流式磁碟載入」benchmark</strong>（8 執行緒並行預取 + PD 分離 + Zipf 合成路由），不是真實文本生成；真實推理 0.6 tok/s 的瓶頸是 7.8GB RAM 裝 13.1GB 模型導致全量 mmap 分頁。白皮書目標 = 把「磁碟載入吞吐」轉成「不分頁的真實推理」。
+    </div>
+
+    <h3>6.1 測試模型與參數（Gemma 4 26B-A4B）</h3>
+    <table>
+      <tr><th>參數</th><th>值</th></tr>
+      <tr><td>模型</td><td>gemma-4-26B-A4B-it-heretic.IQ4_XS.gguf（13.1GB）</td></tr>
+      <tr><td>架構</td><td>30 層 · 128 experts · top-8 active · per-layer 佈局</td></tr>
+      <tr><td>bench 參數</td><td>prompt=128 · gen=64 · slots=16 · mmap=1 · Zipf 偏斜路由（hot_pool / MTP 已非核心，見 v1.1 修訂）</td></tr>
+      <tr><td>llama-bench 實測</td><td>pp128 = 6.28 ± 0.00 · tg64 = 1.86 ± 0.00 tok/s（CPU · 8 threads · backend CPU · build a919001）</td></tr>
+    </table>
+
+    <h3>6.2 硬件分檔估算（decode tok/s）</h3>
+    <table>
+      <tr><th>硬件</th><th>內存帶寬</th><th>估算 tok/s</th><th>說明</th></tr>
+      <tr><td>本機（弱 CPU + 7.8GB + 無 CUDA）</td><td>~20 GB/s</td><td>1-3</td><td>CPU 計算 + 權重帶寬雙重瓶頸；專家流式主要解決分頁</td></tr>
+      <tr><td>2026 高階筆電（Ryzen AI Max+ 395）</td><td>~200 GB/s</td><td>15-25</td><td>主動參數 ~4B/token，接近目標 20 tok/s</td></tr>
+      <tr><td>2026 主流筆電（Core Ultra 9 285H）</td><td>~120 GB/s</td><td>10-15</td><td>帶寬為主要約束</td></tr>
+      <tr><td>2026 輕薄本（Core Ultra 7 258V）</td><td>~90 GB/s</td><td>6-9</td><td>16GB RAM + 專家流式可免分頁</td></tr>
+    </table>
+
+    <h3>6.3 異構 GPU+CPU 拆分預估</h3>
+    <div class="card-grid">
+      <div class="card purple"><h4>FFN 專家 → GPU</h4><p>mul_mat_id 權重帶寬搬上 GPU（CGC_WEIGHTS / streamer region_bases），解放 CPU 帶寬瓶頸。</p></div>
+      <div class="card teal"><h4>注意力 + 路由 + head → CPU</h4><p>dense 計算量小，與 GPU 專家計算流水重疊。</p></div>
+      <div class="card blue"><h4>層迴圈預取 + B→A 階梯</h4><p>真實路由已知後的下一層早讀（非阻塞、8 執行緒）；目標不依賴 MTP（未轉正、已移出核心）。</p></div>
+    </div>
+
+    <h3>6.4 qwen36 bounded residency 里程碑（2026-08-16，§8.38）</h3>
+    <div class="sec-sub">第一個「full-offload 且正確」實例：13.2GB 模型在 base 硬 OOM 的 -ngl 99 下，用 4GiB pool 跑出與 base -ngl 30 逐位元相同的輸出</div>
+    <div class="highlight">
+      <strong>base -ngl 99 硬 OOM</strong>：qwen36 UD-IQ3_XXS（13.2GB）> M4 的 <code>max_recommended_working_set_size</code>（11.45GB）→ <code>kIOGPUCommandBufferCallbackErrorOutOfMemory</code> / Abort trap，無 cache 的 -ngl 99 根本不能跑。<br>
+      <strong>cache 解救</strong>：<code>-ngl 99 + -expert-cache 4GiB</code>（L4 Metal pool，capacity=200 slots/layer，SKIP_LAYER0）→ RSS ~9.8GB 進 working set、完整 decode 127 tokens、輸出與 base -ngl 30 <strong>逐位元相同</strong>（兩個 prompt 都驗證；nosk 也過）。這是白皮書「resident ≤ working set」目標第一次以 full-offload 達成。
+    </div>
+    <table>
+      <tr><th>臂</th><th>結果</th><th>tok/s*</th><th>RSS</th></tr>
+      <tr><td>base -ngl 99（無 cache）</td><td><strong>硬 OOM</strong>（kIOGPUCommandBufferCallbackErrorOutOfMemory）</td><td>—</td><td>—</td></tr>
+      <tr><td>base -ngl 30（參照，非 cache）</td><td>正常</td><td>~12（乾淨時）</td><td>~9.7GB</td></tr>
+      <tr><td><strong>-ngl 99 + cache 4GiB（SKIP_LAYER0）</strong></td><td><strong>BIT-IDENTICAL ✓</strong>（vs base -ngl 30）</td><td>8.00</td><td>9.83GB</td></tr>
+      <tr><td>-ngl 99 + cache 4GiB（nosk）</td><td>BIT-IDENTICAL ✓</td><td>5.58</td><td>9.77GB</td></tr>
+    </table>
+    <p style="font-size:12px;color:var(--text3);">* load 35 污染下單輪；8.00 t/s 是下界不是天花板（同 §8.38 配置）。</p>
+    <div class="card-grid">
+      <div class="card teal"><h4>跨家族對照（§8.37/8.38）</h4><p>gemma4（128 exp top-8）：-ngl>0 cache content-dependent 分歧（near-tie flip、SKIP_LAYER0 只救短 prompt）。qwen36（256 exp top-8）：-ngl 30 與 -ngl 99 cache 全 prompt bit-identical（含 nosk）——routing 較少 near-tie。</p></div>
+      <div class="card blue"><h4>硬結論</h4><p>-ngl 0 cache 一定 bit-identical；-ngl>0 cache 正確性需逐家族逐 prompt 驗證。hit rate 是 request-repeat 指標非 SSD 工作量（§8.39）。</p></div>
+    </div>
+  </section>
+
+  <!-- ============ 真實 trace 驗證 ============ -->
+  <section>
+    <h2>七、真實路由 trace 驗證（2026-08-15 新增）</h2>
+    <div class="sec-sub">用「真實推理產生的路由 trace」取代合成 Zipf，跨 qwen3.6 / gemma4 / DSV3 驗證 LRU / 靜態 pin / 暖池 三項定案</div>
+
+    <div class="highlight" style="background:#FAECE7; border:1px solid #F7C1C1;">
+      <strong>v1.2 修訂（2026-08-15）· 三份真實 trace 的獨立驗證</strong>：
+      ① 合成 Zipf（91.89%）被三份真實 trace 取代——gemma4 真實路由純 LRU 86.9-87.5%、qwen36 r3_trace 82.9%、DSV3 論文 trace 59.9%；<strong>模型越大、路由越混沌，LRU 命中越低</strong>；② <strong>靜態 pin 在真實 trace 上第三次證偽</strong>（三份 trace 全部掉點 15-35pp）；③ <strong>prefill→decode 暖池收益 < 1pp</strong>（論文 Ob3 的 Spearman≥0.7 轉成 SSD 快取收益極小）；④ <strong>真正的瓶頸是 SSD 冷讀吞吐</strong>——F_NOCACHE 實測本機 SSD 冷讀僅 3.0-4.4 GB/s（qwen36 3.04 / gemma4 4.37 @8-16 執行緒），兩模型 miss 讀取都 ~16ms/step，佔 20 tok/s（50ms）預算的 32%。
+    </div>
+
+    <h3>7.1 三份真實 trace 的命中率驗證（3GB 池 = 純 LRU）</h3>
+    <table>
+      <tr><th>trace 來源</th><th>模型拓撲</th><th>decode tokens</th><th>純 LRU 命中</th><th>靜態 pin 命中</th><th>pin 掉點</th></tr>
+      <tr><td>TurboFieldfare 真實推理（本機產生）</td><td>gemma4 · 30層 · 128 experts · top-8</td><td>259</td><td><strong>87.5%</strong></td><td>hot=30/層 50.4%</td><td>-37.1pp</td></tr>
+      <tr><td>qwen36 r3_trace（本機真實路由 dump）</td><td>qwen36 · 40層 · 256 experts · top-8</td><td>212</td><td><strong>82.9%</strong></td><td>hot=90/層 44.6%</td><td>-38.3pp</td></tr>
+      <tr><td>ISCA'26 論文 DSV3 trace（150 requests）</td><td>DSV3 · 58 MoE層 · 256 experts · top-8</td><td>18,424</td><td><strong>59.9%</strong></td><td>hot=30/層 44.3%</td><td>-15.6pp</td></tr>
+    </table>
+    <p style="font-size:12.5px; color:var(--text3);">DSV3 命中最低的原因：58 層 × 8 experts = 每 token 464 個請求，3GB 池只裝得下 ~8 token 的 unique 集合，LRU 建立不起 reuse。模型規模（26B→35B→671B）與路由混沌度正相關。</p>
+
+    <h3>7.2 SSD 冷讀吞吐實測（F_NOCACHE 繞過 page cache，2026-08-15 本機）</h3>
+    <table>
+      <tr><th>執行緒</th><th>gemma4 冷讀（2.39MB/expert）</th><th>qwen36 冷讀（0.88MB/expert）</th></tr>
+      <tr><td>1</td><td>1.79 GB/s</td><td>0.98 GB/s</td></tr>
+      <tr><td>4</td><td>3.24 GB/s</td><td>2.19 GB/s</td></tr>
+      <tr><td>8</td><td>4.11 GB/s</td><td>2.36 GB/s</td></tr>
+      <tr><td>12</td><td><strong>4.37 GB/s（峰值）</strong></td><td>2.74 GB/s</td></tr>
+      <tr><td>16</td><td>3.19 GB/s（掉）</td><td><strong>3.04 GB/s（峰值）</strong></td></tr>
+    </table>
+    <div class="highlight">
+      <strong>三個關鍵結論</strong>：① 冷讀只有暖讀（page cache）的 1/4-1/5——先前以 4.8 GB/s 估 ms/step 偏樂觀，真實是 <strong>3.0-4.4 GB/s</strong>；② 執行緒數存在峰值（gemma4 @12t、qwen36 @16t），超過峰值反而掉（10 核 CPU 上 read 執行緒與計算搶核）——<strong>8→16 執行緒不是越多越好，要按模型專家大小調優</strong>；③ 與 TurboFieldfare fork IO-01 實測吻合（冷 pread 2.79ms/expert）。
+    </div>
+
+    <h3>7.3 用實測吞吐重算的 miss 成本（20 tok/s = 50ms/step 預算）</h3>
+    <table>
+      <tr><th>模型</th><th>miss/step</th><th>填池 MB/step</th><th>讀取 ms/step（4.8 GB/s 舊假設）</th><th>讀取 ms/step（冷讀實測）</th><th>佔預算</th></tr>
+      <tr><td>gemma4（純 LRU 3GB）</td><td>29.9</td><td>71.4</td><td>14.9</td><td><strong>16.3</strong>（@4.37GB/s）</td><td>33%</td></tr>
+      <tr><td>qwen36（純 LRU 3GB）</td><td>54.7</td><td>48.0</td><td>10.0</td><td><strong>15.8</strong>（@3.04GB/s）</td><td>32%</td></tr>
+      <tr><td>DSV3（純 LRU 3GB，論文 trace）</td><td>186.1</td><td>163.2</td><td>34.0</td><td><strong>53.7</strong>（@3.04GB/s）</td><td>107%（超標）</td></tr>
+    </table>
+    <p style="font-size:12.5px; color:var(--text3);">修正說明：先前的 34.0ms（DSV3）用的是 4.8 GB/s 暖讀假設（F_NOCACHE 冷讀實測僅 3.04 GB/s），因此低估 ~37%。上表同欄並列兩種假設，實測吞吐才是 20 tok/s 評估基準。</p>
+    <div class="highlight">
+      <strong>對 20 tok/s 的意義</strong>：26-35B 級別（qwen36/gemma4）SSD 讀取 ~16ms/step 不是主瓶頸，<strong>算力/帶寬才是</strong>；但 671B 級別（DSV3）光 miss 讀取就 53.7ms 超標——SSD 流式對超大模型在消費級 SSD 上撐不起 20 tok/s。<strong>改進方向 = 提高冷讀吞吐（更深的 I/O 佇列 / 更大讀粒度）+ 命中率（更大的池）</strong>，而非靜態 pin 或 predict_next。
+    </div>
+  </section>
+
+  <!-- ============ 已證偽 ============ -->
+  <section>
+    <h2>八、已證偽方向與關鍵教訓</h2>
+    <div class="sec-sub">每個都花過 A/B 或架構分析定案，避免重走</div>
+    <table>
+      <tr><th>方向</th><th>結果</th><th>出處/教訓</th></tr>
+      <tr><td>全量 mmap 常駐跑 13.1GB 模型</td><td>0.6 tok/s（分頁懲罰）</td><td>整模型常駐在 7.8GB RAM 上必然分頁</td></tr>
+      <tr><td>pool_prefetch_load 做前瞻預取</td><td>同步 read_expert 阻塞關鍵路徑（5× 變慢）</td><td>前瞻必須用非阻塞 PrefetchVirtualMemory</td></tr>
+      <tr><td>async preload 大檔案背景讀</td><td>與 decode miss 搶 SSD</td><td>sync 預載必須（Qwen36 §13.103）</td></tr>
+      <tr><td>embed q4 當 RAM 槓桿</td><td>mmap demand-paging 前提不成立（每步只 gather 4KB）</td><td>省的是磁碟不是 RAM（§13.104）</td></tr>
+      <tr><td>CPU_REPACK 緩衝</td><td>3.9GB buffer 分配失敗（7.8GB 記憶體）</td><td>編譯需 <code>-DGGML_CPU_REPACK=OFF</code></td></tr>
+      <tr><td>streamer cache 未集成時接路由</td><td>淨負（memory paging 主因）</td><td>必須深集成 slot buffer 取代 mmap 才轉正</td></tr>
+      <tr><td>預測式預取 predict_next「算 N 預取 N+1」</td><td>全面負收益（#11 37-44% 未轉正）</td><td>miss-prefetch：預測對長尾撐不起 speculative read（§13.15/13.16）；改採真實路由已知後的層迴圈早讀</td></tr>
+      <tr><td>Hot Pool 靜態 pin（3GB 預算）</td><td>pin 90/layer → hit 44.6% vs 純 LRU 82.9%</td><td>3GB 下純 LRU 為主；靜態 pin 僅預算寬鬆 / profile 證明有效時小規模</td></tr>
+      <tr><td>MTP 前瞻作為核心目標</td><td>未轉正（prose hit 僅 +0.3pp）</td><td>MTP 不作為白皮書核心依賴；先以 B→A 階梯 + LRU 打底</td></tr>
+      <tr><td>fadvise / page-cache 預取（PREFETCH，§8.13）</td><td>-88% 災難（1.5-1.6 vs 11-14 t/s）</td><td>hook 同步 59704 次 fcntl(F_RDADVISE) + over-predict 16× + read-ahead 搶 SSD → 真 bg slot fill 取代</td></tr>
+      <tr><td>step 級 double-buffer（真 bg slot fill，§8.14）</td><td>0 淨收益（hit/miss 與 base 完全相同）</td><td>200-slot pool 被 prefill 塞滿無新 miss 可救 + 層鄰預測不準；miss 分析證 1796/1797 唯一 → 步間/層鄰預測天花板死亡</td></tr>
+      <tr><td>prewarm 熱集（prefill top-K 填池，§8.15）</td><td>-40%（10.5 → 6.3 t/s）</td><td>熱集在 prefill 結束前不可知 → 8000 同步 pread 卡首 token 關鍵路徑 + prefill 失去墊底；維持 load-time 0..n prewarm</td></tr>
+      <tr><td>TAILPIN（首步 union pin，§8.16）</td><td>net≈0（4GiB 0 差異 / 1GiB -0.14%）</td><td>LRU 新鮮度已保護 prefill 尾段 → pin 冗餘；§8.14 覆蓋發生在 128 步期間非首步</td></tr>
+    </table>
+  </section>
+
+  <!-- ============ 路線圖 ============ -->
+  <section>
+    <h2>九、路線圖與未來</h2>
+    <div class="sec-sub">誠實的邊界 · 先 B 後 A 階梯（P1 gather → P2 攔截）</div>
+    <div class="timeline">
+      <div class="timeline-item"><div class="phase">s1 · 已完成</div><h4>streamer C API 緊湊模式</h4><p>region_bases 連續區域 + build_region_ids 槽局部索引重映射，mul_mat_id 直讀前置條件。</p></div>
+      <div class="timeline-item"><div class="phase">P1 · Option B（進行中）</div><h4>模型載入建 streamer pool + per-step gather 深集成</h4><p>llama-model-loader 讀統一 IR env → 每層建 streamer（含 <code>slot refcount</code> 生命週期）→ build_moe_ffn 內以 <code>ggml_get_rows</code> gather 出緊湊 per-step 權重 → 標準 mul_mat_id（零 kernel / 零 ids 改動）。</p></div>
+      <div class="timeline-item"><div class="phase">P1 · Option B</div><h4>層迴圈預取（真實路由已知）</h4><p>token 路由全部已知後 → 對下一層實際用到（且未入槽）的專家做 8 執行緒並行早讀 + 非阻塞 PrefetchVirtualMemory；純 LRU 為主（82.9%）。</p></div>
+      <div class="timeline-item"><div class="phase">P2 · Option A</div><h4>partition 攔截（kernel 精修）</h4><p>以 B 的命中率/正確性為基線，cgc_backend_graph_compute 對 MUL_MAT_ID 子圖換 src0 指針 + ids 副本重映射；由完成-callback + refcount 保證 slot 存活。</p></div>
+      <div class="timeline-item"><div class="phase">P2 · Option A</div><h4>cgc_plan 分區</h4><p>expert-stream 分區把 argsort 與 mul_mat_id 切分，支援兩階段。</p></div>
+      <div class="timeline-item"><div class="phase">驗證 · 已定案</div><h4>llama-bench 本機實測</h4><p>pp128=6.28 · tg64=1.86 tok/s（CPU 8 執行緒）；證實本機 CPU 硬牆（對比 C bench 26.64 為磁碟載入吞吐，非生成速度）。</p></div>
+      <div class="timeline-item"><div class="phase">目標</div><h4>20 tok/s 無分頁</h4><p>deep 集成 slot buffer 後，resident 嚴格 = 槽位容量，以 B→A 階梯 + 層迴圈預取在 16GB 級硬件達成（不依賴 MTP）。</p></div>
+    </div>
+    <div class="highlight">
+      <strong>誠實邊界</strong>：本機（7.8GB / 弱 CPU / 無 CUDA）即使流式化，CPU 計算與帶寬也是硬牆，真實 tok/s 估 1-3；20 tok/s 是「2026 高階筆電 + 異構 GPU 拆分」的可達目標。專家流式在所有檔位的共同價值 = <strong>把 13.1GB 模型塞進 7.8-16GB 機器而不分頁</strong>。
+    </div>
+  </section>
+
+  <!-- ============ llama.cpp fork harness 策略 ============ -->
+  <section>
+    <h2>十、llama.cpp fork 測試 Harness 策略與 A/B 方法論（2026-08-15）</h2>
+    <div class="sec-sub">所有 bounded residency 實驗共用同一套 harness：三臂交錯 A/B + 記憶體護欄 + bit-identical 對拍——16GB 機上單次 run 的 tok/s 雜訊 ±15%，只有交錯多輪 + 護欄才可信</div>
+
+    <h3>10.1 四臂配置（全部 env-gated）</h3>
+    <table>
+      <tr><th>臂</th><th>配置</th><th>用途</th></tr>
+      <tr><td><strong>base</strong></td><td>無 cache · full-resident</td><td>正確性金標準；<strong>只跑短 prompt</strong>（gemma4 長 prompt 貼 11.45GB working set 邊緣 → kIOGPU OOM）</td></tr>
+      <tr><td><strong>n99c</strong></td><td>-ngl 99 + <code>ALLOW_NGL=1</code> + cache（L4 Metal pool）</td><td>bounded working set 主臂（FFN + attention 都上 Metal）</td></tr>
+      <tr><td><strong>n0c</strong></td><td>-ngl 0 + cache（CPU pool，mmap 保留）</td><td>A+B 對照（CPU attention × 快取 FFN），bit-identical 已驗證</td></tr>
+      <tr><td><strong>n0c-mtl</strong></td><td>-ngl 0 + cache + <code>METAL_POOL_NGL0=1</code></td><td>Metal FFN 實驗臂（opt-in；實測無增益，見 10.5）</td></tr>
+    </table>
+
+    <h3>10.2 安全護欄（每一條都是踩過才定案的）</h3>
+    <div class="highlight" style="background:#FAECE7; border:1px solid #F7C1C1;">
+      <strong>① llama-simple parse loop 沒有 <code>-t</code> case</strong>：<code>-t 8</code> 一出現就把之後全部（含 <code>-expert-cache</code>）當 prompt → 兩臂 silently full-resident → 16GB 凍機（13:08 與 16:19 兩次元兇）。規則：<code>-expert-cache</code> 永遠放最後、不用 <code>-t</code>、<code>-m</code> 在 prompt 前。<br>
+      <strong>② mmap expert 區塊</strong>：ngl&gt;0 被 Metal working-set 帳目全額計算 → prefill OOM；ngl 0 + Metal buft 被換成 <code>MTL0_Mapped</code> file-backed buffer → CPU pread <code>EFAULT</code> → SIGBUS。兩者都已升級為<strong>程式保證</strong>（auto no-mmap）。<br>
+      <strong>③ base 長 prompt OOM</strong>：gemma4 IQ3_S 11.29GB 貼 11.45GB 邊緣，長 prompt 必然 <code>kIOGPUCommandBufferCallbackErrorOutOfMemory</code>——base 僅供短 prompt 對拍。
+    </div>
+
+    <h3>10.3 env 診斷工具集（fork 內，全部 env-gated，不設即零行為變化）</h3>
+    <table>
+      <tr><th>env</th><th>作用</th></tr>
+      <tr><td><code>LLAMA_EXPERT_CACHE_ALLOW_NGL=1</code></td><td>允許 -ngl&gt;0 走 cache（否則封存為僅 -ngl 0）</td></tr>
+      <tr><td><code>LLAMA_EXPERT_CACHE_NOMETALPOOL=1</code></td><td>強制 CPU pool（ngl&gt;0 A/B 逃生口）</td></tr>
+      <tr><td><code>LLAMA_EXPERT_CACHE_METAL_POOL_NGL0=1</code></td><td>ngl 0 也用 Metal pool（實驗臂）</td></tr>
+      <tr><td><code>LLAMA_EXPERT_CACHE_NOPREWARM=1</code></td><td>關閉冷啟動預填（A/B 對照）</td></tr>
+      <tr><td><code>LLAMA_EXPERT_CACHE_SERIAL_FILL=1</code></td><td>關閉併發 pread（readv 併發 A/B）</td></tr>
+      <tr><td><code>CGC_MMID_PROBE=1</code></td><td>Metal mul_mat_id 探針（src0 buft / ne[2]——確認 FFN 真的上 GPU）</td></tr>
+      <tr><td><code>CGC_SCHED_DBG / CGC_ADOPT_DBG / LLAMA_EXPERT_CACHE_GATE_DBG / PREAD_DBG</code></td><td>分層診斷插樁（split 結構 / pool 位址 / hook 分支 / pread errno）</td></tr>
+    </table>
+
+    <h3>10.4 最新實測（2026-08-15 · 128 tok · 長 prose prompt · 交錯多輪）</h3>
+    <table>
+      <tr><th>臂（gemma4 IQ3_S）</th><th>decode</th><th>hit</th><th>RSS</th><th>備註</th></tr>
+      <tr><td>base（短 prompt 限定）</td><td>11.75 t/s</td><td>—</td><td>11.49GB</td><td>長 prompt OOM</td></tr>
+      <tr><td>n99c 1GiB</td><td>~8-10 t/s</td><td>89.3%</td><td>4.5GB</td><td>L4 前（CPU FFN）</td></tr>
+      <tr><td><strong>n99c 4GiB（L4 · pool8 預設）</strong></td><td><strong>14.40 t/s（median，6 輪）</strong></td><td>89.2%</td><td>9.36GB</td><td>FFN 回 Metal、比 base 快 ~23%；離 Swift gemma4-r4 18-20 還差 ~3.6-5.6</td></tr>
+      <tr><td>— 三臂 A/B（6 輪交錯，2026-08-15 深夜）</td><td>pool8 14.40 / seriale 14.23 / serial 11.59</td><td>89.2% 三臂同</td><td>—</td><td>fill wall 5441&lt;5822&lt;6361 ms 單調；pool8 vs serial +24%，pool8 vs seriale +1.2%（雜訊內）；hit=31181/miss=3761 全程相同、輸出 bit-identical</td></tr>
+            <tr><td>— P1-2 router 回 GPU（§8.20，2026-08-16，現行預設）</td><td>P1-2 14.70 / ROUTER_CPU=1 11.54（median，6 輪交錯）</td><td>80.9% 兩臂同</td><td>—</td><td>+27%、bit-identical、hit=15845/miss=3737 兩臂一致；router GEMM 上 Metal + ffn_moe_probs pin CPU（copy-timing 不破）；P1-2 為現行預設（ROUTER_CPU=1 保留診斷）</td></tr>
+<tr><td>n0c 4GiB（CPU pool）</td><td>~5.5 t/s</td><td>92.6%</td><td>7.4GB</td><td>CPU attention 牆</td></tr>
+      <tr><td>n0c-mtl 4GiB</td><td>5.40 t/s</td><td>92.6%</td><td>10.05GB</td><td>FFN 上 Metal 無增益 → 牆在 CPU attention 非 FFN</td></tr>
+            <tr><td>— qwen36 P1-2 A/B（§8.23，2026-08-16）</td><td>CPU router 10.4-11.8（median ~10.8）/ Metal router 6.2-8.8（median ~7.4）</td><td>80.1% 兩臂同</td><td>—</td><td>−31-45% 回歸，與 gemma4 +27% 相反 → 預設改家族分派：qwen35moe=CPU router、gemma=Metal router（env LLAMA_EXPERT_CACHE_ROUTER_CPU=0/1 覆寫）</td></tr>
+<tr><td>qwen36 ngl 0 cache</td><td>8.46-8.78 t/s</td><td>92.6%</td><td>~4GB</td><td>已超過 Swift qwen36（5.5-5.8）</td></tr>
+      <tr><td><strong>qwen36 n99c 4GiB（L4 · pool8 預設，§8.12）</strong></td><td><strong>11.76 t/s（4 輪 mean、變異 ±0.4）</strong></td><td>81.0%</td><td>—</td><td>hit=41671/miss=9797；pool8 取代 spawn（11.09）與串行（10.02，累計 +17%）；pool16 反效果（SSD queue depth 牆）；遠超 Swift qwen36（5.5-5.8）</td></tr>
+<tr><td><strong>qwen36 n99c + hybrid（§8.108，2026-08-19）</strong></td><td><strong>p50 59.9ms（−22%）/ speed ~10.9 t/s（load 3-5）</strong></td><td>81.0% 同</td><td>—</td><td>router 從 CPU 移 Metal、split 162→82（−50%）；6/6 bit-identical ✓；cb8+hybrid 聯合仍有 marginal 收益；低載窗待重測確認 12-14 t/s</td></tr>
+      <tr><td colspan="5" style="background:#1a3a2a; color:#4ecdc4; font-weight:bold; padding:8px 12px;">↓ 2026-08-19 低載窗重測（clean build + fresh reboot）</td></tr>
+      <tr><td><strong>qwen36 n99c + hybrid cb8（production，低載窗）</strong></td><td><strong>25.0 t/s（median，2 輪）</strong></td><td><strong>98.3%</strong></td><td>—</td><td>clean build + fresh reboot（load &lt; 3.4）；graph splits=162；6/6 bit-identical ✓；距 theoretical ceiling ~28 t/s（@40% BW）僅差 3 t/s</td></tr>
+      <tr><td colspan="5" style="background:#1a2a3a; color:#7ec8e3; font-weight:bold; padding:8px 12px;">↓ 已證偽的 marginal optimization（2026-08-19）</td></tr>
+      <tr><td><strong>fused-down（GLU+down 融合 kernel）</strong></td><td><strong>+6.5%（23→24.6 t/s）</strong></td><td><strong>98.3%</strong></td><td>—</td><td>✅ 已修復並啟用（env CGC_GLU_FUSED_DOWN=1）；shmem GLU + K-loop dequant；bit-identical ✓（6/6 runs）；commit c85fec4</td></tr>
+      <tr><td>GLU scratch F32→F16</td><td>—</td><td>—</td><td>—</td><td>net savings ~0.34 us（0.0006%）；16KB scratch 在 48 GB/s 下不可測量</td></tr>
+      <tr><td>step-level overlap（Metal pipeline events）</td><td>—</td><td>—</td><td>—</td><td>❌ graph 結構依賴 routing decisions → 無法 overlap encode 與 GPU execute</td></tr>
+      <tr><td>pre-gather + batched GEMV</td><td>—</td><td>—</td><td>—</td><td>❌ CPU memcpy 0.14ms > GPU BW 回收 0.03ms → net negative</td></tr>
+    </table>
+
+    <h3>10.4b 與 turbo-fieldfare 同窗對照（2026-08-17 · 128 tok · 長 prose prompt）</h3>
+    <table>
+      <tr><th>引擎 / 配置</th><th>decode</th><th>備註</th></tr>
+      <tr><td>turbo r3 預設（無 hot pool）</td><td>10.97-11.81 t/s</td><td>同窗實測（2026-08-17）</td></tr>
+      <tr><td>turbo r3 + 生產 env（pool64+hot pool+8 workers+wake-poll）</td><td>7.15 t/s</td><td>同窗實測：binary 為 08-07 舊版（wake-poll 代碼 08-08 才加 → env 無效）+ 高負載</td></tr>
+      <tr><td><strong>我們 gemma4 n99c（-ngl 30 + cache 4GiB）</strong></td><td><strong>14.44 t/s</strong></td><td><strong>同負載窗口直接對拍，比 turbo 任一 r3 配置快</strong>（§8.51）</td></tr>
+      <tr><td>turbo 生產目標（r4 pool64 + wake-poll，2026-08-08 文件）</td><td>15-17 t/s</td><td>MOE_STREAMING_TASK.md 自述「目標突破 20」——20 從未達成，是目標非紀錄；15-17 需 wake-poll 代碼（08-08 後 binary）才可再現</td></tr>
+      <tr><td>turbo MTP（投機解碼）</td><td>—</td><td><strong>NET NEGATIVE</strong>（turbo 自己 A/B：r2 17.1 vs 23.5 −37% / r3 ~17 vs 19 −12% / r4 15.3 vs 19.7 −29%，2026-08-08 起預設 OFF）——與我們 MTP 線「先放著」結論一致，兩引擎都判死</td></tr>
+      <tr><td>turbo wake-poll spin（CGC_WAKE_POLL_US 移植）</td><td>—</td><td>§8.51 證偽：llama.cpp graph 級提交架構下無 per-layer 流水線可搶，spin 只燒 CPU（−12.4%）；turbo 的 +35% 依賴其 per-layer command buffer 結構</td></tr>
+    </table>
+    <div class="card teal"><h4>兩引擎現況定案（2026-08-17）</h4><p>我們的 gemma4 n99c（14.44 t/s）已打平 turbo 生產目標 15-17，且 qwen36 n99c 11.76 對 Swift qwen36 5.5-5.8 是近倍領先。turbo 的剩餘加速機制（hot pool pin profile、wake-poll）中，wake-poll 已證偽移植、pin 模擬支持 gemma4 −51% miss（§8.52 待 A/B）。<strong>「20+ t/s」在 turbo 側從未存在</strong>——是任務文件的目標；兩引擎共同卡點是 A3B bandwidth-bound + hit rate，非引擎選擇。</p></div>
+
+    <h3>10.5 兩個重要定案</h3>
+    <div class="card-grid">
+      <div class="card teal"><h4>Prewarm v2（冷啟動消除）</h4><p>load time 用 <code>ensure_slot</code> 對前 capacity 個 experts 做真實 pread 預填（v1 假設 loader 已預讀 → 零資料 garbage，已證偽）。<strong>bit-identical ✓</strong>；把冷窗 pread 移出 decode 關鍵路徑。</p></div>
+      <div class="card coral"><h4>n0c Metal pool 根因修復</h4><p>mmap 把 GPU buft 換成 <code>MTL0_Mapped</code> file-backed buffer → CPU pread <code>EFAULT</code>（errno=14）→ SIGBUS。修復 = expert 強制 GPU buft + auto no-mmap 延伸。但實測 n0c FFN 上 Metal <strong>無 tok/s 增益</strong>——<strong>ngl 0 的牆是 CPU attention（~5.5 t/s）</strong>，追平 Swift 18-20 唯一路徑是 n99c。</p></div>
+    </div>
+  </section>
+
+  <div class="footer">
+    更新指引：每完成一次 request&action → ① 更新對應正典/實測數據 → ② 在下方 <code>TREE</code> 資料加節點 → ③ 對應 section 補結論卡片。<br>
+    CGC Project · 異構專家流式框架 v1.2 · 2026-08-15
+  </div>
+</div>
+
+<script>
+// ============ 心智圖資料（活文件核心：每 request&action 在此加節點） ============
+// status: verified(綠)/falsified(紅)/neutral(藍)/wip(黃)/target(紫)
+const TREE = {
+  root: "A+B 異構專家流式框架 · CPU attention × GPU/streamer FFN",
+  children: [
+    { label: "A+B 異構架構", status: "verified", meta: "計算按熱度×硬體優勢拆分",
+      children: [
+        { label: "A 部分 · CPU", meta: "attention + router(ggml_argsort_top_k) + lm_head，常駐小", status: "verified" },
+        { label: "B 部分 · GPU/streamer", meta: "FFN mul_mat_id（gate/up/down）只算 top-k，流式載入", status: "verified" },
+        { label: "核心洞察", meta: "靜態圖傳完整 3D 專家張量，但 mmid 只訪 top-k → 改權重來源即可", status: "verified" },
+        { label: "兩階段執行模型", meta: "decode 先算路由再載專家；prefill 保持 mmap", status: "wip" },
+        { label: "兩條手術路線", meta: "計算期攔截（主） vs 圖構建期兩階段（對照組）", status: "wip" },
+      ]},
+    { label: "Expert Streamer 核心", status: "verified", meta: "C API 快取/預取/PD/緊湊模式",
+      children: [
+        { label: "Slot Buffer 快取", meta: "miss-only 載入 + LRU/phase 換出 + telemetry 命中率", status: "verified" },
+        { label: "Hot Pool", meta: "Zipf 偏斜路由高頻專家固定駐槽", status: "verified" },
+        { label: "非阻塞預取", meta: "PrefetchVirtualMemory「算 N 預取 N+1」；同步載入 5× 變慢證偽", status: "verified" },
+        { label: "PD 分離", meta: "prefill/decode 分到不同 GPU（CGC_EX_PREFILL_GPU/...）", status: "wip" },
+        { label: "緊湊 slot 連續區域", meta: "region_bases[r]+slot*region_stride → mul_mat_id 零拷貝直讀", status: "verified" },
+        { label: "兩種權重佈局", meta: "per-expert（Qwen3.6）/ per-layer（Gemma4 GGUF）", status: "verified" },
+        { label: "數據源 = ReadFile 直讀", meta: "常駐 = 槽位容量；mmap 省記憶體是假象（embed 4KB 教訓）", status: "verified" },
+      ]},
+    { label: "llama.cpp 集成點", status: "wip", meta: "build_moe_ffn hook + ggml-cgc 攔截 + cgc_plan 分區",
+      children: [
+        { label: "路由 hook（手術位 B）", meta: "ggml_cont 副本 + set_output + register_moe_route 記錄真實 selected_experts", status: "verified" },
+        { label: "計算期攔截（手術位 C）", meta: "partition 循環換 src0 指針 + 重映射 ids，kernel 零改動", status: "wip" },
+        { label: "cgc_plan 分區", meta: "argsort 與 mul_mat_id 切分 → expert-stream 分區", status: "wip" },
+        { label: "模型載入建 pool", meta: "讀統一 IR env → 每層 streamer → 權重/層綁定", status: "wip" },
+      ]},
+    { label: "統一 IR / Monkey Patch", status: "verified", meta: "跨 llama.cpp/vllm/mlx 一致接入",
+      children: [
+        { label: "cgc::moe_expert_stream", meta: "torch custom op（subgraph boundary + compute sensitive）", status: "verified" },
+        { label: "MoeFfnGraph 全圖分析", meta: "GGUF 每 MoE 層還原為 build_moe_ffn 接入點", status: "verified" },
+        { label: "MoeFfnStreamConfig", meta: "slots/hot_pool/MTP/PD/prefetch_threads → env", status: "verified" },
+        { label: "真實路由 hook", meta: "llama_set_cgc_route_cb → on_token_routes（#10 接線完成）", status: "verified" },
+        { label: "雙緩衝重疊預取", meta: "predict_next（top_k-1+高頻）→ 非阻塞 pool_prefetch（#11）", status: "verified" },
+        { label: "真實命中率", meta: "37-44%（雙緩衝後）；合成 Zipf 91.89%", status: "verified" },
+        { label: "_drain_routes bug", meta: "items=_route_buf 引用同一 list 清空丟數據 → 先拷貝再 clear", status: "verified" },
+      ]},
+    { label: "性能數據", status: "verified", meta: "C bench vs 真實推理",
+      children: [
+        { label: "C bench decode", meta: "26.64 tok/s（合成 Zipf 路由，非真實生成）", status: "verified" },
+        { label: "C bench prefill", meta: "6.82 tok/s", status: "verified" },
+        { label: "真實推理", meta: "0.6 tok/s（13.1GB 模型 / 7.8GB RAM 全量分頁）", status: "verified" },
+        { label: "真實 trace 驗證（v1.2）", meta: "三份真實路由取代合成 Zipf：gemma4 87.5% / qwen36 82.9% / DSV3 59.9%", status: "verified" },
+        { label: "靜態 pin 三度證偽", meta: "真實 trace 全掉點：gemma4 -37pp / qwen36 -38pp / DSV3 -16pp", status: "falsified" },
+        { label: "prefill 暖池", meta: "收益 < 1pp（Ob3 轉 SSD 快取不值）", status: "falsified" },
+        { label: "SSD 冷讀吞吐", meta: "F_NOCACHE 實測 3.0-4.4 GB/s（暖讀 1/4-1/5）；執行緒有峰值，非越多越好", status: "verified" },
+        { label: "miss 成本（實測吞吐）", meta: "qwen36/gemma4 ~16ms/step（佔 50ms 預算 32%）；DSV3 53.7ms 超標", status: "verified" },
+        { label: "fork 定案數字（§8.12）", meta: "qwen36 n99c 11.76（pool8，±0.4）/ gemma4 n99c 14.40 median（pool8）；P1-2 router 回 GPU +27%（14.70 vs 11.54，現行預設）；pool16 反效果；I/O 側 11 槓桿全滅（§8.17 收斂）", status: "verified" },
+        { label: "qwen36 ngl99+cache 里程碑（§8.38）", meta: "base -ngl 99 硬 OOM（13.2GB>11.45GB）→ 4GiB pool 解救：BIT-IDENTICAL vs base -ngl 30、RSS 9.8GB、8.00 t/s（load 污染下界）；256 exp 家族全 prompt 過（含 nosk）；gemma4 128 exp 仍 content-dependent 分歧", status: "verified" },
+        { label: "2026 高階筆電", meta: "Ryzen AI Max+ 395 → 15-25 tok/s（目標檔位）", status: "target" },
+        { label: "2026 主流筆電", meta: "Core Ultra 9 285H → 10-15 tok/s", status: "target" },
+        { label: "異構 GPU+CPU", meta: "FFN 上 GPU 解放 CPU 帶寬 + MTP-4 攤薄延遲", status: "target" },
+      ]},
+    { label: "已證偽 / 教訓", status: "falsified", meta: "不要重走",
+      children: [
+        { label: "全量 mmap 常駐", meta: "13.1GB/7.8GB → 0.6 tok/s 分頁懲罰", status: "falsified" },
+        { label: "同步前瞻預取", meta: "pool_prefetch_load 阻塞 5× 變慢", status: "falsified" },
+        { label: "async 背景預載", meta: "搶 SSD；sync 必須", status: "falsified" },
+        { label: "CPU_REPACK 緩衝", meta: "3.9GB 分配失敗 → -DGGML_CPU_REPACK=OFF", status: "falsified" },
+        { label: "cache 未集成接路由", meta: "淨負（分頁主因），深集成 slot buffer 才轉正", status: "falsified" },
+      ]},
+    { label: "llama.cpp fork 實測（L4 零拷貝，2026-08-15）", status: "verified", meta: "fork 內 bounded residency 主線",
+      children: [
+        { label: "L4 zero-copy 修復", meta: "index shrink 污染根因（ne[2]=capacity 只建 capacity 條目 → hook 越界）+ FFN 回 Metal，bit-identical ✓", status: "verified" },
+        { label: "Prewarm v2", meta: "冷啟動預填（ensure_slot 真實 pread 前 capacity experts），bit-identical ✓，把冷窗移出關鍵路徑", status: "verified" },
+        { label: "gemma4 n99c@4GiB", meta: "14.40 t/s（pool8 median，6 輪深夜 A/B；三臂 pool8 14.40 / seriale 14.23 / serial 11.59，fill wall 5441<5822<6361ms 單調）；hit 89.2%，RSS 9.36GB；離 Swift 18-20 差 ~3.6-5.6", status: "verified" },
+        { label: "n0c = CPU attention 牆", meta: "5.4-5.6 t/s；FFN 上 Metal 無增益（MMIDPROBE 確認已上 GPU）→ 牆在 CPU attention", status: "falsified" },
+        { label: "MTL0_Mapped SIGBUS 根因", meta: "mmap 把 GPU buft 換成 file-backed Mapped buffer → pread EFAULT errno=14 → auto no-mmap 延伸", status: "verified" },
+        { label: "base 長 prompt OOM", meta: "11.29GB 貼 11.45GB working set 邊緣 → kIOGPU OOM；base 僅短 prompt 對拍", status: "verified" },
+        { label: "double-buffer 無淨收益（§8.14）", meta: "真 bg slot fill 轉正但 hit/miss 與 base 同（pool 被 prefill 塞滿）；miss 分析 1796/1797 唯一 → 步間/層鄰預測死亡", status: "falsified" },
+        { label: "prewarm 熱集（§8.15）與 TAILPIN（§8.16）證偽", meta: "熱集 -40%（關鍵路徑冷啟動）/ pin ≈0（LRU 冗餘）——預測/prewarm/pin 三線全關，剩 pool8", status: "falsified" },
+      ]},
+    { label: "Harness 測試策略", status: "verified", meta: "16GB 機的可靠量測方法論",
+      children: [
+        { label: "三臂交錯 A/B + 記憶體護欄", meta: "交錯多輪平均掉雜訊（±15%）；free+inactive<5GB 跳過；/usr/bin/time -l 抓 RSS", status: "verified" },
+        { label: "bit-identical 對拍", meta: "正確性金標準（cache vs base 輸出 byte 相同）；確定性（同臂跑兩次）", status: "verified" },
+        { label: "llama-simple -t 陷阱", meta: "parse loop 無 -t case → 後續 args 變 prompt → -expert-cache 被吞 → silent full-resident 凍機（兩次元兇）", status: "verified" },
+        { label: "env 診斷工具集", meta: "ALLOW_NGL / NOMETALPOOL / METAL_POOL_NGL0 / NOPREWARM / SERIAL_FILL / CGC_MMID_PROBE 等全 env-gated", status: "verified" },
+      ]},
+    { label: "路線圖", status: "target", meta: "s1-s4 → 20 tok/s 無分頁",
+      children: [
+        { label: "s1 緊湊模式", meta: "已完成（C API）", status: "verified" },
+        { label: "s2 模型載入建 pool", meta: "待辦", status: "wip" },
+        { label: "s3 partition 攔截", meta: "待辦", status: "wip" },
+        { label: "s4 cgc_plan 分區", meta: "待辦", status: "wip" },
+        { label: "llama-bench 驗證", meta: "pp128=6.28 · tg64=1.86 tok/s（CPU 8 執行緒，實測定案）", status: "verified" },
+        { label: "20 tok/s 無分頁", meta: "深集成後 resident=槽位容量 + MTP-4 + 8 執行緒預取", status: "target" },
+      ]},
+  ]
+};
+
+// ============ 渲染器 ============
+const STATUS_TAG = { verified: "定案", falsified: "證偽", neutral: "中性", wip: "進行中", target: "目標" };
+
+function renderNode(node, depth) {
+  const el = document.createElement("div");
+  el.className = depth === 0 ? "mm-root" : (node.children ? "mm-branch" : "mm-leaf");
+  if (depth === 0) {
+    el.textContent = node.root;
+    const children = document.createElement("div");
+    children.className = "mm-children";
+    for (const c of (node.children || [])) children.appendChild(renderNode(c, 1));
+    el.appendChild(children);
+    return el;
+  }
+  if (node.children) {
+    const head = document.createElement("div");
+    head.className = "mm-branch-head";
+    head.innerHTML =
+      '<span class="dot" style="background:var(--' + (node.status === 'falsified' ? 'red' : node.status === 'verified' ? 'teal' : node.status === 'neutral' ? 'blue' : node.status === 'target' ? 'accent' : 'amber') + ')"></span>' +
+      '<span class="tag tag-' + node.status + '">' + STATUS_TAG[node.status] + '</span>' +
+      '<span class="title">' + node.label + '</span>' +
+      '<span class="meta">' + (node.meta || "") + '</span>' +
+      '<span class="caret">▾</span>';
+    el.appendChild(head);
+    const children = document.createElement("div");
+    children.className = "mm-children";
+    for (const c of node.children) children.appendChild(renderNode(c, depth + 1));
+    el.appendChild(children);
+    el.addEventListener("click", (e) => {
+      if (e.target.closest(".mm-branch-head")) el.classList.toggle("collapsed");
+    });
+    return el;
+  }
+  const head = document.createElement("div");
+  head.className = "mm-branch-head mm-leaf-head";
+  head.innerHTML =
+    '<span class="dot" style="background:var(--' + (node.status === 'falsified' ? 'red' : node.status === 'verified' ? 'teal' : node.status === 'neutral' ? 'blue' : node.status === 'target' ? 'accent' : 'amber') + ')"></span>' +
+    '<span class="tag tag-' + node.status + '">' + STATUS_TAG[node.status] + '</span>' +
+    '<span class="title">' + node.label + '</span>' +
+    '<span class="meta">' + (node.meta || "") + '</span>';
+  el.appendChild(head);
+  return el;
+}
+
+document.getElementById("mindmap").appendChild(renderNode(TREE, 0));
+</script>
+</body>
+</html>

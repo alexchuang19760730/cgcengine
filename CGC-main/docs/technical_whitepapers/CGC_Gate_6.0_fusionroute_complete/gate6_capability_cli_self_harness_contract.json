@@ -1,0 +1,242 @@
+{
+  "schema_version": "gate6.capability_cli_self_harness_contract.v1",
+  "gate_id": "CGC_Gate_6.0_fusionroute_complete",
+  "gate_version": "6.0",
+  "title": "Gate 6.0 Capability -> CLI -> Self-Harness Contract",
+  "description": "Static contract that covers every Gate 6.0 gate_map capability with a CLI command, a self-harness verifier, and a machine-checkable evidence row in the generated contract report.",
+  "generated_at": "2026-07-08T01:20:00Z",
+  "entries": [
+    {
+      "capability_id": "fusionroute_4instance",
+      "coverage_mode": "direct",
+      "cli_command": "python3 cgc_engine/tools/scripts/run/self_harness_validation_framework.py --gate 6.0 --output validation_report_gate60_contract.json",
+      "cli_help_command": "python3 cgc_engine/tools/scripts/run/self_harness_validation_framework.py --help",
+      "self_harness_verifier": "validate_fusion_route_4instance",
+      "notes": "四实例路由本体能力由 FusionRouteValidator 直接验证。"
+    },
+    {
+      "capability_id": "minicpm5_router",
+      "coverage_mode": "direct",
+      "cli_command": "python3 cgc_engine/cli.py model verify --gate 6.0",
+      "cli_help_command": "python3 cgc_engine/cli.py model verify --help",
+      "self_harness_verifier": "validate_minicpm5_router",
+      "notes": "MiniCPM5 路由能力通过 Gate 6.0 model verify 入口与专用 verifier 绑定。"
+    },
+    {
+      "capability_id": "deepep_moe",
+      "coverage_mode": "direct",
+      "cli_command": "python3 cgc_engine/cli.py model verify --gate 6.0 --deepep",
+      "cli_help_command": "python3 cgc_engine/cli.py model verify --help",
+      "self_harness_verifier": "validate_deepep_moe",
+      "notes": "DeepEP MoE 负载均衡能力由 Gate 6.0 DeePEP verifier 直接验真。"
+    },
+    {
+      "capability_id": "edge_cloud_co协同",
+      "coverage_mode": "subsystem",
+      "cli_command": "python3 cgc_engine/cli.py model --task-type swe --fusion-config swe --cloud-prefill-edge-decode --print-json",
+      "cli_help_command": "python3 cgc_engine/cli.py model --help",
+      "self_harness_verifier": "validate_cloud_prefill_edge_decode",
+      "notes": "端云协同能力通过 cloud_prefill_edge_decode 的 formal alias 与 self-harness verifier 覆盖。"
+    },
+    {
+      "capability_id": "self_harness",
+      "coverage_mode": "direct",
+      "cli_command": "python3 cgc_engine/tools/scripts/run/self_harness_validation_framework.py --gate 6.0 --output validation_report_gate60_contract.json",
+      "cli_help_command": "python3 cgc_engine/tools/scripts/run/self_harness_validation_framework.py --help",
+      "self_harness_verifier": "validate_self_harness_2_0",
+      "notes": "Gate 6.0 对 self-harness 的声明复用 Gate 3.1 的三阶段验证器。"
+    },
+    {
+      "capability_id": "guardian",
+      "coverage_mode": "direct",
+      "cli_command": "python3 cgc_engine/tools/scripts/run/self_harness_validation_framework.py --gate 6.0 --output validation_report_gate60_contract.json",
+      "cli_help_command": "python3 cgc_engine/tools/scripts/run/self_harness_validation_framework.py --help",
+      "self_harness_verifier": "validate_guardian",
+      "notes": "Guardian 防退化由专用 verifier 直接提供证据。"
+    },
+    {
+      "capability_id": "cgc_bundle",
+      "coverage_mode": "shared_cli",
+      "cli_command": "python3 cgc_engine/cli.py model verify --gate 6.0",
+      "cli_help_command": "python3 cgc_engine/cli.py model verify --help",
+      "self_harness_verifier": "_validate_bundle_governance",
+      "notes": "当前 repo 以 model verify 入口承接 bundle governance 语义。"
+    },
+    {
+      "capability_id": "cgc_model",
+      "coverage_mode": "direct",
+      "cli_command": "python3 cgc_engine/cli.py model verify --model swe_verified --gate 6.0",
+      "cli_help_command": "python3 cgc_engine/cli.py model verify --help",
+      "self_harness_verifier": "_validate_profile_bundle",
+      "notes": "model verify/audit/deploy 的治理语义收敛到 profile bundle validator。"
+    },
+    {
+      "capability_id": "cgc_gateway",
+      "coverage_mode": "subsystem",
+      "cli_command": "python3 cgc_engine/cli.py model deploy --model DeepSeek-V4-Flash-67B --gateway default",
+      "cli_help_command": "python3 cgc_engine/cli.py model deploy --help",
+      "self_harness_verifier": "validate_tp4_ep4_topology_contract",
+      "notes": "gateway 入口最终由 host1 inst2/inst4 gateway/backend 拓扑契约验真。"
+    },
+    {
+      "capability_id": "cgc_edge",
+      "coverage_mode": "direct",
+      "cli_command": "python3 cgc_engine/cli.py model --task-type swe --fusion-config swe --cloud-prefill-edge-decode --print-json",
+      "cli_help_command": "python3 cgc_engine/cli.py model --help",
+      "self_harness_verifier": "validate_state_transport",
+      "notes": "edge status/resume/handoff 语义通过 state transport + device resume 覆盖。"
+    },
+    {
+      "capability_id": "cgc_train",
+      "coverage_mode": "subsystem",
+      "cli_command": "python3 cgc_engine/cli.py cli-universe tmax-rl --base-model tmax-9b",
+      "cli_help_command": "python3 cgc_engine/cli.py cli-universe tmax-rl --help",
+      "self_harness_verifier": "validate_tmax_rl_training",
+      "notes": "当前 Gate 6.0 训练指令能力通过 CLI-Universe -> TMAX RL 训练链路提供运行证据。"
+    },
+    {
+      "capability_id": "cgc_infer",
+      "coverage_mode": "subsystem",
+      "cli_command": "python3 cgc_engine/cli.py embodied infer --endpoint http://127.0.0.1:50063 --action status",
+      "cli_help_command": "python3 cgc_engine/cli.py embodied infer --help",
+      "self_harness_verifier": "validate_cloud_prefill_edge_decode",
+      "notes": "Gate 6.0 推理命令语义由 cloud-prefill-edge-decode 运行链直接承接。"
+    },
+    {
+      "capability_id": "cgc_validate",
+      "coverage_mode": "direct",
+      "cli_command": "python3 cgc_engine/cli.py validate --capability swe_verified_500 --print-json",
+      "cli_help_command": "python3 cgc_engine/cli.py validate --help",
+      "self_harness_verifier": "validate_swe_verified_500",
+      "notes": "validate 入口当前以 swe_verified_500 formal alias 为稳定能力锚点。"
+    },
+    {
+      "capability_id": "cgc_bench",
+      "coverage_mode": "direct",
+      "cli_command": "python3 cgc_engine/cli.py benchmark --model DeepSeek-V4-Flash-67B --backend cgc --num-runs 1",
+      "cli_help_command": "python3 cgc_engine/cli.py benchmark --help",
+      "self_harness_verifier": "validate_swe_verified_500",
+      "notes": "当前 bench 口径以可落地 JSON artifact 的 SWE Verified formal chain 为 release-facing benchmark 锚点。"
+    },
+    {
+      "capability_id": "cgc_monitor",
+      "coverage_mode": "direct",
+      "cli_command": "python3 cgc_engine/cli.py embodied monitor --dashboard",
+      "cli_help_command": "python3 cgc_engine/cli.py embodied monitor --help",
+      "self_harness_verifier": "validate_distributed_monitor",
+      "notes": "monitor 能力复用 Gate 5.0 distributed monitor verifier。"
+    },
+    {
+      "capability_id": "cgc_audit",
+      "coverage_mode": "direct",
+      "cli_command": "python3 cgc_engine/cli.py embodied audit --logs",
+      "cli_help_command": "python3 cgc_engine/cli.py embodied audit --help",
+      "self_harness_verifier": "validate_full_trace_audit",
+      "notes": "audit 能力复用 Gate 5.0 full trace audit verifier。"
+    },
+    {
+      "capability_id": "cgc_ops",
+      "coverage_mode": "direct",
+      "cli_command": "python3 cgc_engine/cli.py embodied ops --backup",
+      "cli_help_command": "python3 cgc_engine/cli.py embodied ops --help",
+      "self_harness_verifier": "validate_automated_ops",
+      "notes": "ops 能力复用 Gate 5.0 automated ops verifier。"
+    },
+    {
+      "capability_id": "swe_verified_500",
+      "coverage_mode": "direct",
+      "cli_command": "python3 cgc_engine/cli.py validate --capability swe_verified_500 --print-json",
+      "cli_help_command": "python3 cgc_engine/cli.py validate --help",
+      "self_harness_verifier": "validate_swe_verified_500",
+      "notes": "该能力保持 PARTIAL/non-claimable 语义，但 formal chain 和 self-harness verifier 都可机读验真。"
+    },
+    {
+      "capability_id": "unified_ir",
+      "coverage_mode": "direct",
+      "cli_command": "python3 cgc_engine/cli.py ir compile --model DeepSeek-V4-Flash-67B --backend cuda --enable-passes",
+      "cli_help_command": "python3 cgc_engine/cli.py ir compile --help",
+      "self_harness_verifier": "validate_unified_ir",
+      "notes": "统一 IR 层能力通过 ir compile 子命令和专用 verifier 覆盖。"
+    },
+    {
+      "capability_id": "multi_backend",
+      "coverage_mode": "direct",
+      "cli_command": "python3 cgc_engine/cli.py ir backend list",
+      "cli_help_command": "python3 cgc_engine/cli.py ir backend list --help",
+      "self_harness_verifier": "validate_multi_backend",
+      "notes": "多后端能力通过 ir backend list 与多后端 verifier 验证。"
+    },
+    {
+      "capability_id": "health_check",
+      "coverage_mode": "direct",
+      "cli_command": "python3 cgc_engine/cli.py health check --interval 10",
+      "cli_help_command": "python3 cgc_engine/cli.py health check --help",
+      "self_harness_verifier": "validate_health_check",
+      "notes": "health check 与 failover 由 health 子命令和专用 verifier 直连。"
+    },
+    {
+      "capability_id": "tenant_management",
+      "coverage_mode": "direct",
+      "cli_command": "python3 cgc_engine/cli.py tenant create --tenant-id demo --gpu 1 --memory 16G --qps 100 --priority 50",
+      "cli_help_command": "python3 cgc_engine/cli.py tenant create --help",
+      "self_harness_verifier": "validate_tenant_management",
+      "notes": "tenant create 为多租户能力的稳定 CLI 锚点。"
+    },
+    {
+      "capability_id": "optimization_passes",
+      "coverage_mode": "direct",
+      "cli_command": "python3 cgc_engine/cli.py ir pass list",
+      "cli_help_command": "python3 cgc_engine/cli.py ir pass list --help",
+      "self_harness_verifier": "validate_optimization_passes",
+      "notes": "optimization pass 管理由 ir pass list 与专用 verifier 覆盖。"
+    },
+    {
+      "capability_id": "fusionroute_v2_tasktype_gate_domain_contract",
+      "coverage_mode": "fusionroute_cli",
+      "cli_command": "python3 cgc_engine/cli.py fusionroute plan --task-type CODEGEN --print-json",
+      "cli_help_command": "python3 cgc_engine/cli.py fusionroute plan --help",
+      "self_harness_verifier": "validate_fusionroute_v2_tasktype_gate_domain_contract",
+      "notes": "FusionRoute v2 静态矩阵已升级为 Gate 6.0 正式 capability row。"
+    },
+    {
+      "capability_id": "fusionroute_role_locality_contract",
+      "coverage_mode": "fusionroute_cli",
+      "cli_command": "python3 cgc_engine/cli.py fusionroute contract show --kind role-locality --role UI-TARS --print-json",
+      "cli_help_command": "python3 cgc_engine/cli.py fusionroute contract show --help",
+      "self_harness_verifier": "validate_fusionroute_role_locality_contract",
+      "notes": "Role locality contract 已升级为 Gate 6.0 正式 capability row。"
+    },
+    {
+      "capability_id": "fusionroute_placement_decision_report",
+      "coverage_mode": "fusionroute_cli",
+      "cli_command": "python3 cgc_engine/cli.py fusionroute placement verify --task-type EXECUTION --role UI-TARS --print-json",
+      "cli_help_command": "python3 cgc_engine/cli.py fusionroute placement verify --help",
+      "self_harness_verifier": "validate_fusionroute_placement_decision_report",
+      "notes": "Placement decision JSON evidence 已升级为 Gate 6.0 正式 capability row。"
+    },
+    {
+      "capability_id": "fusionroute_policy_suggestion_report",
+      "coverage_mode": "fusionroute_cli",
+      "cli_command": "python3 cgc_engine/cli.py fusionroute perception plan --task-type CODEGEN --environment-type repo --print-json",
+      "cli_help_command": "python3 cgc_engine/cli.py fusionroute perception plan --help",
+      "self_harness_verifier": "validate_fusionroute_policy_suggestion_report",
+      "notes": "Perception Matrix policy suggestion JSON evidence 已升级为 Gate 6.0 正式 capability row。"
+    },
+    {
+      "capability_id": "fusionroute_contract_projection_report",
+      "coverage_mode": "fusionroute_cli",
+      "cli_command": "python3 cgc_engine/cli.py fusionroute perception project --task-type CODEGEN --environment-type repo --print-json",
+      "cli_help_command": "python3 cgc_engine/cli.py fusionroute perception project --help",
+      "self_harness_verifier": "validate_fusionroute_contract_projection_report",
+      "notes": "Contract projection JSON evidence 已升级为 Gate 6.0 正式 capability row。"
+    },
+    {
+      "capability_id": "fusionroute_v2_contract_chain",
+      "coverage_mode": "fusionroute_cli",
+      "cli_command": "python3 cgc_engine/cli.py fusionroute verify --capability all --print-json",
+      "cli_help_command": "python3 cgc_engine/cli.py fusionroute verify --help",
+      "self_harness_verifier": "validate_fusionroute_v2_contract_chain",
+      "notes": "FusionRoute v2 / Role Locality / Perception Matrix 聚合链已升级为 Gate 6.0 正式 capability row。"
+    }
+  ]
+}

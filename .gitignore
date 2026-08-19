@@ -374,8 +374,15 @@ wait_take26.py
 watch_traj.py
 
 # ---- 2026-08 整理: 大型未追蹤目錄 / scratch 工作區（不入庫）----
-/CGC-main/
-/moeexpert/
-/data/
+# CGC: 用户要求除 /tmp 外全部追踪，CGC-main/moeexpert/data 改为入库
 /tmp/
 *.mmproj
+
+# ---- 2026-08-20: 第三方工具/构建产物不入库 ----
+*.exe
+LLVM-*.exe
+
+# ---- 2026-08-20: data/ CGC 引擎构建中间产物不入库 ----
+data/**/build/
+data/**/CMakeFiles/
+data/**/cmake-build/

@@ -1,0 +1,285 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cgc.dev/schemas/system_profile_v0.1.json",
+  "title": "CGC System Profile Schema v0.1",
+  "description": "定义 system_profile 作为统一正式系统变量，用于在 environment bootstrap、profile setting/binding 与 system topology 之间建立单一真源。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "profile_id",
+    "profile_version",
+    "deployment_mode",
+    "component_families",
+    "component_matrix"
+  ],
+  "properties": {
+    "profile_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+$",
+      "description": "系统画像的稳定标识，例如 deepseek_v4_flash_x4_minicpm5_fusionroute。"
+    },
+    "profile_version": {
+      "type": "string",
+      "pattern": "^v[0-9]+(\\.[0-9]+)?$",
+      "description": "system_profile 自身的版本号。"
+    },
+    "profile_label": {
+      "type": "string",
+      "description": "面向人类阅读的简短名称。"
+    },
+    "deployment_mode": {
+      "type": "string",
+      "enum": [
+        "edge_local",
+        "cloud_single",
+        "cloud_cluster",
+        "edge_cloud",
+        "cloud_prefill_edge_decode"
+      ],
+      "description": "系统部署方式；建议与端云协议中的 pd_mode / environment 协同但不互相替代。"
+    },
+    "component_families": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "llm_component_family",
+        "llm_instance_count"
+      ],
+      "properties": {
+        "llm_component_family": {
+          "type": "string",
+          "description": "LLM 主组件家族，例如 deepseek_v4_flash。"
+        },
+        "llm_instance_count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "LLM runtime 实例数，例如 4。"
+        },
+        "router_component_family": {
+          "type": "string",
+          "description": "Router 组件家族，例如 minicpm5。"
+        },
+        "gateway_component_family": {
+          "type": "string",
+          "description": "Gateway 组件家族，例如 fusionroute。"
+        },
+        "route_policy_family": {
+          "type": "string",
+          "description": "路由策略家族，例如 fusionroute。"
+        },
+        "llm_quant_family": {
+          "type": "string",
+          "description": "LLM 量化或格式家族，例如 gguf_q4_k_m、mlx_4bit。"
+        },
+        "router_quant_family": {
+          "type": "string",
+          "description": "Router 模型量化或格式家族。"
+        }
+      }
+    },
+    "component_matrix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "llm_runtime"
+      ],
+      "properties": {
+        "llm_runtime": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          },
+          "description": "承担 LLM runtime 的 component_id 列表。"
+        },
+        "router_runtime": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "承担 router_runtime 的 component_id 列表。"
+        },
+        "gateway_orchestrator": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "承担 gateway_orchestrator 的 component_id 列表。"
+        },
+        "agent_runtime": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "embodied_runtime": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "required_components": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "系统强制要求存在的 component_id。"
+    },
+    "optional_components": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "系统允许存在但非强制的 component_id。"
+    },
+    "routing_topology_profile": {
+      "type": "string",
+      "description": "系统级路由拓扑名称，例如 fusionroute_ds4x4_router_sidecar。"
+    },
+    "routing_edges": {
+      "type": "array",
+      "description": "系统拓扑级 routing edge 摘要，可与 system_execution_manifest.routing_edges 对齐。",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "from_component_id",
+          "to_component_id",
+          "edge_role"
+        ],
+        "properties": {
+          "from_component_id": {
+            "type": "string"
+          },
+          "to_component_id": {
+            "type": "string"
+          },
+          "edge_role": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "environment_bootstrap_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "environment": {
+          "type": "string"
+        },
+        "runtime_profile": {
+          "type": "string"
+        },
+        "requested_dispatch_backend": {
+          "type": "string"
+        },
+        "requested_distributed_runtime": {
+          "type": "string"
+        },
+        "requested_storage_backend": {
+          "type": "string"
+        },
+        "protocol_family": {
+          "type": "string"
+        },
+        "state_kind": {
+          "type": "string"
+        },
+        "state_codec": {
+          "type": "string"
+        }
+      },
+      "description": "对 environment bootstrap 的稳定引用摘要；不替代 runtime_protocol_contract。"
+    },
+    "profile_binding_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "profile_settings_path": {
+          "type": "string"
+        },
+        "execution_profile_binding_key": {
+          "type": "string"
+        },
+        "delivery_profile_binding_key": {
+          "type": "string"
+        },
+        "bootstrap_contract_binding_key": {
+          "type": "string"
+        },
+        "flow_parameter_contract_binding_key": {
+          "type": "string"
+        }
+      },
+      "description": "对 profile setting + binding 的稳定引用摘要；不替代 profile_settings.json。"
+    },
+    "model_contract_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "contract_id": {
+          "type": "string"
+        },
+        "contract_version": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "source_path": {
+          "type": "string"
+        }
+      },
+      "description": "对 model setting / model contract 的稳定引用摘要；不替代正式模型契约。"
+    },
+    "model_contract_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "primary_model_family": {
+          "type": "string"
+        },
+        "draft_model_family": {
+          "type": "string"
+        },
+        "speculative_algorithm": {
+          "type": "string"
+        },
+        "attention_contract_family": {
+          "type": "string"
+        },
+        "weight_mapping_contract_family": {
+          "type": "string"
+        },
+        "runtime_compare_mode": {
+          "type": "string"
+        }
+      },
+      "description": "模型契约摘要；用于让 runtime / manifest 消费稳定的模型层主变量。"
+    },
+    "hardware_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hardware_platform": {
+          "type": "string"
+        },
+        "hardware_topology": {
+          "type": "string"
+        },
+        "accelerator_family": {
+          "type": "string"
+        }
+      },
+      "description": "系统级硬件画像摘要。"
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

@@ -1,0 +1,305 @@
+{
+  "schema_version": "cgc_gate_summary_v1",
+  "gate_id": "CGC_Gate_6.0_fusionroute_complete",
+  "gate_name": "CGC_Gate_6.0_fusionroute_complete",
+  "gate_version": "6.0",
+  "status": "VALIDATED",
+  "runtime_sub_name": "fusionroute_complete_closure",
+  "historical_composite_alias": "gate6_fusionroute_complete",
+  "title": "CGC Gate 6.0 FusionRoute Complete Summary",
+  "subtitle": "FusionRoute complete capability closure, TP4/EP4 runtime attestation, and dual-host verification summary for UI/dashboard consumption",
+  "timestamp": "2026-07-08T22:31:01Z",
+  "release_repo": "powerautoai/ComputeGraphCompiler",
+  "document_refs": {
+    "whitepaper_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/CGC_Gate_6.0_fusionroute_complete_Technical_Whitepaper_v1.0_zh_CN.md",
+    "gate_map_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/gate_map.json",
+    "capability_cli_contract_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/gate6_capability_cli_self_harness_contract.json",
+    "capability_cli_contract_report_local": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/validation_report_gate60_20260708_formal_fusionroute_closure_capability_cli_contract.json",
+    "capability_cli_contract_report_host1": "/root/flashkv0516/ComputeGraphCompiler-main/validation_report_gate60_20260708_formal_fusionroute_closure_remote_host1_capability_cli_contract.json",
+    "capability_cli_contract_report_host2": "/root/flashkv0516/ComputeGraphCompiler-main/validation_report_gate60_20260708_formal_fusionroute_closure_remote_host2_capability_cli_contract.json",
+    "checkin_example_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/CGC_Gate_6.0_fusionroute_complete_checkin.example.json",
+    "readme_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/README.md",
+    "fusionroute_topology_matrix_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_FusionRoute_Final_Topology_Matrix_Technical_Whitepaper_v1.0_zh_CN.md",
+    "fusionroute_role_locality_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/CGC_Gate_6.0_FusionRoute_Role_Locality_Technical_Whitepaper_v1.0_zh_CN.md",
+    "fusionroute_v2_static_contract_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_FusionRoute_v2_Static_Contract_Technical_Whitepaper_v1.0_zh_CN.md",
+    "perception_matrix_whitepaper_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Perception_Matrix_LLM_Technical_Whitepaper_v1.0_zh_CN.md",
+    "role_locality_contract_schema_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/role_locality_contract.schema.json",
+    "placement_decision_report_schema_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/placement_decision_report.schema.json",
+    "role_locality_contract_example_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/role_locality_contract.example.json",
+    "placement_decision_report_example_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/placement_decision_report.example.json",
+    "policy_suggestion_report_schema_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/policy_suggestion_report.schema.json",
+    "contract_projection_report_schema_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/contract_projection_report.schema.json",
+    "policy_suggestion_report_example_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/policy_suggestion_report.example.json",
+    "contract_projection_report_example_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/contract_projection_report.example.json",
+    "fusionroute_v2_draft_contract_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/gate6_fusionroute_v2_draft_contract.json",
+    "fusionroute_v2_formal_contract_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/gate6_fusionroute_v2_formal_contract.json",
+    "fusionroute_v2_formal_report_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/fusionroute_v2_formal_contract_report.json"
+  },
+  "headline": {
+    "summary": "Gate 6.0 is formally validated: formal preflight is 8/8 PASS on local + host1 + host2, self-harness is 11/11 PASS on local + host1 + host2, capability->CLI->self-harness contract is 29/29 PASS on local + host1 + host2, and host1 inst2/inst4 TP4/EP4 runtime is formally attested.",
+    "primary_state": "validated",
+    "governance_state": "ready",
+    "performance_state": "closed"
+  },
+  "counters": {
+    "total_capabilities": 29,
+    "done": 28,
+    "integrated": 1,
+    "target": 0,
+    "missing_formal_gate": 0,
+    "gate_pass_allowed": 28,
+    "gate_pass_partial": 1,
+    "gate_pass_blocked": 0
+  },
+  "status_breakdown": [
+    {
+      "status": "done",
+      "count": 28,
+      "label": "Done",
+      "description": "Stable evidence exists and formal gate wording is allowed."
+    },
+    {
+      "status": "integrated",
+      "count": 1,
+      "label": "Integrated",
+      "description": "Code and formal chain are connected into the main path, but release-facing external claims remain intentionally scoped."
+    },
+    {
+      "status": "target",
+      "count": 0,
+      "label": "Target",
+      "description": "Capability is defined but not yet implemented or not yet wired into the main path."
+    }
+  ],
+  "capability_cards": [
+    {
+      "capability_id": "fusionroute_4instance",
+      "title": "FusionRoute four-instance routing",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "Routing",
+      "summary": "Formal preflight passes and host1 inst2/inst4 runtime is aligned to the formal topology."
+    },
+    {
+      "capability_id": "fusionroute_v2_contract_chain",
+      "title": "FusionRoute v2 formal contract chain",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "Contract",
+      "summary": "Task matrix, role locality, placement, policy suggestion, and contract projection are now closed as formal Gate 6.0 machine-checkable capabilities."
+    },
+    {
+      "capability_id": "deepep_moe",
+      "title": "DeepEP MoE load balancing",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "MoE",
+      "summary": "Inherited DeepEP load-balancing capability remains formally gate-passed."
+    },
+    {
+      "capability_id": "edge_cloud_co协同",
+      "title": "Cloud-prefill and edge-decode collaboration",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "EdgeCloud",
+      "summary": "CQ4-based cloud/edge collaboration stays formally validated under Gate 6.0."
+    },
+    {
+      "capability_id": "self_harness",
+      "title": "Self-Harness three-stage closure",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "Harness",
+      "summary": "Self-harness reaches 11/11 PASS on local, host1, and host2."
+    },
+    {
+      "capability_id": "guardian",
+      "title": "Guardian non-regression guardrail",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "Harness",
+      "summary": "Guardian stays inherited and formally accepted through the Gate 6.0 harness boundary."
+    },
+    {
+      "capability_id": "cgc_validate",
+      "title": "CGC validate command suite",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "CLI",
+      "summary": "Formal preflight, CLI entrypoints, and m76 validate chain are all green after document and artifact alignment."
+    },
+    {
+      "capability_id": "unified_ir",
+      "title": "Unified IR layer",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "Compiler",
+      "summary": "IR/backend/pass capabilities remain defined and formally included in Gate 6.0."
+    },
+    {
+      "capability_id": "health_check",
+      "title": "Health check and failover",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "Ops",
+      "summary": "Health-check and failover control surface remains formally part of the gate_map closure."
+    },
+    {
+      "capability_id": "optimization_passes",
+      "title": "Optimization pass framework",
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "Compiler",
+      "summary": "Fusion/layout/memory planning passes remain formally declared and claimable."
+    },
+    {
+      "capability_id": "swe_verified_500",
+      "title": "SWE Verified 500 formal-chain integration",
+      "status": "integrated",
+      "gate_pass_claim": "partial",
+      "acceptance_dimension": "Benchmark",
+      "summary": "Formal chain is PASS and wired into Gate 6.0 verify, but official eval remains SUBMITTED and external score claims stay non-claimable."
+    }
+  ],
+  "claim_boundaries": {
+    "formally_claimable": [
+      "Gate 6.0 formal preflight is 8/8 PASS on local, host1, and host2.",
+      "Gate 6.0 self-harness is 11/11 PASS on local, host1, and host2.",
+      "Gate 6.0 capability -> CLI -> self-harness static contract is 29/29 PASS on local, host1, and host2, and every gate_map capability has a machine-checkable CLI/verifier/evidence row.",
+      "Host1 inst2/inst4 runtime is aligned to the formal TP4/EP4 topology: 50063->30010, 50083->30030, 6389/6398, and visible_devices 4,5,6,7 / 0,1,2,3.",
+      "FusionRoute four-instance routing, MiniCPM5 routing, DeepEP MoE, and cloud-edge collaboration remain formally gate-passed.",
+      "FusionRoute v2 static matrix, role locality, placement decision, policy suggestion, contract projection, and aggregate contract chain are formally part of Gate 6.0 closure.",
+      "CLI entrypoints and m76 validation linkage are formally green after syncing documents, scripts, and required formal artifacts.",
+      "A total of 28 capabilities are formally claimable as done in the current Gate 6.0 repo snapshot."
+    ],
+    "not_yet_formally_claimable": [
+      "SWE Verified 500 official external benchmark score is not yet claimable; current status remains PARTIAL with official_eval_status=SUBMITTED and claimable=false.",
+      "Historical bootstrap evidence for inst4 remains incomplete in legacy ready_report snapshots even though current runtime attestation is green."
+    ]
+  },
+  "architecture_projection_refs": {
+    "fusionroute_topology_matrix": {
+      "path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_FusionRoute_Final_Topology_Matrix_Technical_Whitepaper_v1.0_zh_CN.md",
+      "projection_role": "Gate 6.0 is projected as the Coding Model Plane and the FusionRoute control-plane anchor."
+    },
+    "fusionroute_role_locality": {
+      "path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/CGC_Gate_6.0_FusionRoute_Role_Locality_Technical_Whitepaper_v1.0_zh_CN.md",
+      "projection_role": "Gate 6.0 formally owns role locality / placement policy and its JSON evidence chain."
+    },
+    "fusionroute_v2_static_contract": {
+      "path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_FusionRoute_v2_Static_Contract_Technical_Whitepaper_v1.0_zh_CN.md",
+      "projection_role": "Gate 6.0 now carries the formal static contract for TaskType -> GateDomain -> PrimaryRole -> SecondaryRole."
+    },
+    "perception_matrix": {
+      "path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Perception_Matrix_LLM_Technical_Whitepaper_v1.0_zh_CN.md",
+      "projection_role": "Perception Matrix + LLM is the formal upstream dynamic decision layer above FusionRoute v2, still constrained by profile, ABI, bootstrap, and topology contracts."
+    }
+  },
+  "planned_capability_naming": [
+    "fusionroute_role_locality_projection",
+    "role_placement_policy",
+    "role_runtime_binding_contract",
+    "role_edge_cloud_handoff",
+    "fusionroute_v2_draft_contract_chain",
+    "perception_matrix_policy",
+    "llm_policy_suggestion",
+    "environment_task_model_hardware_projection",
+    "perception_contract_projection"
+  ],
+  "formal_contract_refs": {
+    "static_contract_whitepaper": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_FusionRoute_v2_Static_Contract_Technical_Whitepaper_v1.0_zh_CN.md",
+    "perception_matrix_whitepaper": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Perception_Matrix_LLM_Technical_Whitepaper_v1.0_zh_CN.md",
+    "role_locality_schema": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/role_locality_contract.schema.json",
+    "placement_decision_schema": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/placement_decision_report.schema.json",
+    "role_locality_example": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/role_locality_contract.example.json",
+    "placement_decision_example": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/placement_decision_report.example.json",
+    "policy_suggestion_schema": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/policy_suggestion_report.schema.json",
+    "contract_projection_schema": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/contract_projection_report.schema.json",
+    "policy_suggestion_example": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/policy_suggestion_report.example.json",
+    "contract_projection_example": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/contract_projection_report.example.json",
+    "draft_contract_manifest": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/gate6_fusionroute_v2_draft_contract.json",
+    "formal_contract_manifest": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/gate6_fusionroute_v2_formal_contract.json",
+    "formal_contract_report": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/fusionroute_v2_formal_contract_report.json",
+    "draft_verifiers": [
+      "validate_fusionroute_v2_tasktype_gate_domain_contract",
+      "validate_fusionroute_role_locality_contract",
+      "validate_fusionroute_placement_decision_report",
+      "validate_fusionroute_policy_suggestion_report",
+      "validate_fusionroute_contract_projection_report",
+      "validate_fusionroute_v2_draft_contract"
+    ],
+    "formal_verifiers": [
+      "validate_fusionroute_v2_tasktype_gate_domain_contract",
+      "validate_fusionroute_role_locality_contract",
+      "validate_fusionroute_placement_decision_report",
+      "validate_fusionroute_policy_suggestion_report",
+      "validate_fusionroute_contract_projection_report",
+      "validate_fusionroute_v2_contract_chain"
+    ]
+  },
+  "acceptance_dimensions": {
+    "Routing_fusionroute": "FusionRoute four-instance routing, MiniCPM5 router, and TP4/EP4 runtime topology attestation.",
+    "Harness_guardian": "Self-Harness three-stage closure and Guardian non-regression inheritance.",
+    "CLI_governance": "cgc validate / model / bundle / gateway / edge and related Gate 6.0 CLI entrypoints.",
+    "Compiler_ops": "Unified IR, multi-backend support, optimization passes, health check, tenant management, and ops surfaces."
+  },
+  "ui_hints": {
+    "default_sort": [
+      "done",
+      "integrated"
+    ],
+    "highlight_capability_ids": [
+      "fusionroute_4instance",
+      "self_harness",
+      "cgc_validate",
+      "swe_verified_500"
+    ],
+    "recommended_views": [
+      "overview",
+      "capability_cards",
+      "acceptance_dimensions",
+      "claim_boundaries",
+      "validation_snapshot"
+    ]
+  },
+  "validation_snapshot": {
+    "source": "formal_gate_and_self_harness_dual_host_sync",
+    "formal_preflight": {
+      "local": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/tools/scripts/run/gate_test_report_20260708_004019.json",
+      "host1": "/Users/alexchuang/Documents/flashkv0516/temp/gate60_truthsource_closure_20260708/host1/gate_test_report_20260708_005349.json",
+      "host2": "/Users/alexchuang/Documents/flashkv0516/temp/gate60_truthsource_closure_20260708/host2/gate_test_report_20260708_005359.json"
+    },
+    "self_harness": {
+      "local": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/validation_report_gate60_20260708_formal_fusionroute_closure.json",
+      "host1": "/root/flashkv0516/ComputeGraphCompiler-main/validation_report_gate60_20260708_formal_fusionroute_closure_remote_host1.json",
+      "host2": "/root/flashkv0516/ComputeGraphCompiler-main/validation_report_gate60_20260708_formal_fusionroute_closure_remote_host2.json"
+    },
+    "capability_cli_contract": {
+      "manifest": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/gate6_capability_cli_self_harness_contract.json",
+      "local": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/validation_report_gate60_20260708_formal_fusionroute_closure_capability_cli_contract.json",
+      "host1": "/root/flashkv0516/ComputeGraphCompiler-main/validation_report_gate60_20260708_formal_fusionroute_closure_remote_host1_capability_cli_contract.json",
+      "host2": "/root/flashkv0516/ComputeGraphCompiler-main/validation_report_gate60_20260708_formal_fusionroute_closure_remote_host2_capability_cli_contract.json",
+      "passed": 29,
+      "failed": 0
+    },
+    "fusionroute_formal_contract": {
+      "manifest": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/gate6_fusionroute_v2_formal_contract.json",
+      "report": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/fusionroute_v2_formal_contract_report.json",
+      "passed": 6,
+      "failed": 0
+    },
+    "synced_hosts": {
+      "host1": {
+        "ip": "39.106.118.206",
+        "user": "root",
+        "status": "synced_and_verified"
+      },
+      "host2": {
+        "ip": "47.95.250.55",
+        "user": "root",
+        "status": "synced_and_verified"
+      }
+    },
+    "summary": "Gate 6.0 formal, self-harness, and capability->CLI->self-harness contract reports are green on local + dual-host environments; FusionRoute v2 / Perception Matrix formal contract chain is also 6/6 PASS in its dedicated formal report."
+  }
+}

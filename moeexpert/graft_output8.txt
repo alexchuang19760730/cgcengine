@@ -1,0 +1,72 @@
+=== Phase 1: load fraQtl blk.40 into memory ===
+  head : /Volumes/AlexZhuang/flashkv0516/models/gguf/fraQtl/qwen36-35b-a3b-hi-fi-mtp-runtime.gguf
+  head  tensors: 753
+  head  blk.40 tensors: 20
+  loaded blk.40 into memory: 458.4 MB
+  keeping fraQtl GGUF on external disk (no delete)
+
+=== Phase 2: build output ===
+  trunk: /Users/alexchuang/Documents/flashkv0516/models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS.gguf
+  trunk tensors: 753
+  trunk blk.40 tensors: 20
+  all 20 blk.40 tensors present + shape-matched
+
+=== building output: /Volumes/AlexZhuang/flashkv0516/models/gguf/Qwen3.6-35B-A3B-IQ3XXS-trunk_Q4K-blk40.gguf ===
+  copying metadata from trunk...
+Duplicated key name 'general.architecture', overwriting it with new value 'qwen35moe' of type STRING
+  copied 55 metadata fields (skipped 0)
+
+  tensor plan: 753 tensors
+    from trunk: 733
+    from mem  : 20
+
+  registering tensors + writing data...
+    [   1/753] output.weight                                       src=trunk  type=Q6_K      bytes=   417177600  total=397.9MB  elapsed=0.2s
+    [   2/753] output_norm.weight                                  src=trunk  type=F32       bytes=        8192  total=397.9MB  elapsed=0.2s
+    [   3/753] token_embd.weight                                   src=trunk  type=Q6_K      bytes=   417177600  total=795.7MB  elapsed=3.6s
+    [   4/753] blk.0.attn_gate.weight                              src=trunk  type=Q6_K      bytes=     6881280  total=802.3MB  elapsed=3.6s
+    [   5/753] blk.0.attn_norm.weight                              src=trunk  type=F32       bytes=        8192  total=802.3MB  elapsed=3.6s
+    [ 101/753] blk.5.ffn_gate_exps.weight                          src=trunk  type=IQ2_S     bytes=    85983232  total=2529.5MB  elapsed=67.8s
+    [ 201/753] blk.10.ssm_alpha.weight                             src=trunk  type=F32       bytes=      262144  total=4136.6MB  elapsed=131.4s
+    [ 301/753] blk.16.ffn_gate_exps.weight                         src=trunk  type=IQ2_S     bytes=    85983232  total=5871.8MB  elapsed=142.9s
+    [ 401/753] blk.21.ssm_alpha.weight                             src=trunk  type=F32       bytes=      262144  total=7479.0MB  elapsed=159.5s
+    [ 501/753] blk.27.attn_norm.weight                             src=trunk  type=F32       bytes=        8192  total=9008.0MB  elapsed=215.9s
+    [ 601/753] blk.32.ssm_alpha.weight                             src=trunk  type=F32       bytes=      262144  total=10821.3MB  elapsed=252.6s
+    [ 701/753] blk.38.attn_qkv.weight                              src=trunk  type=Q6_K      bytes=    13762560  total=12395.2MB  elapsed=343.7s
+    [ 734/753] blk.40.attn_k.weight                                src=mem  type=Q4_K      bytes=      589824  total=13096.2MB  elapsed=354.8s
+    [ 735/753] blk.40.attn_k_norm.weight                           src=mem  type=F32       bytes=        1024  total=13096.2MB  elapsed=354.8s
+    [ 736/753] blk.40.attn_norm.weight                             src=mem  type=F32       bytes=        8192  total=13096.3MB  elapsed=354.8s
+    [ 737/753] blk.40.attn_output.weight                           src=mem  type=Q4_K      bytes=     4718592  total=13100.8MB  elapsed=354.8s
+    [ 738/753] blk.40.attn_q.weight                                src=mem  type=Q4_K      bytes=     9437184  total=13109.8MB  elapsed=354.9s
+    [ 739/753] blk.40.attn_q_norm.weight                           src=mem  type=F32       bytes=        1024  total=13109.8MB  elapsed=354.9s
+    [ 740/753] blk.40.attn_v.weight                                src=mem  type=Q4_K      bytes=      589824  total=13110.3MB  elapsed=354.9s
+    [ 741/753] blk.40.ffn_down_exps.weight                         src=mem  type=Q4_K      bytes=   150994944  total=13254.3MB  elapsed=357.1s
+    [ 742/753] blk.40.ffn_down_shexp.weight                        src=mem  type=Q6_K      bytes=      860160  total=13255.1MB  elapsed=357.1s
+    [ 743/753] blk.40.ffn_gate_exps.weight                         src=mem  type=Q4_K      bytes=   150994944  total=13399.1MB  elapsed=358.7s
+    [ 744/753] blk.40.ffn_gate_inp.weight                          src=mem  type=BF16      bytes=     1048576  total=13400.1MB  elapsed=358.7s
+    [ 745/753] blk.40.ffn_gate_inp_shexp.weight                    src=mem  type=BF16      bytes=        4096  total=13400.1MB  elapsed=358.7s
+    [ 746/753] blk.40.ffn_gate_shexp.weight                        src=mem  type=Q5_K      bytes=      720896  total=13400.8MB  elapsed=358.7s
+    [ 747/753] blk.40.ffn_up_exps.weight                           src=mem  type=Q4_K      bytes=   150994944  total=13544.8MB  elapsed=361.4s
+    [ 748/753] blk.40.ffn_up_shexp.weight                          src=mem  type=Q5_K      bytes=      720896  total=13545.5MB  elapsed=361.4s
+    [ 749/753] blk.40.nextn.eh_proj.weight                         src=mem  type=Q8_0      bytes=     8912896  total=13554.0MB  elapsed=361.4s
+    [ 750/753] blk.40.nextn.enorm.weight                           src=mem  type=F32       bytes=        8192  total=13554.0MB  elapsed=361.4s
+    [ 751/753] blk.40.nextn.hnorm.weight                           src=mem  type=F32       bytes=        8192  total=13554.0MB  elapsed=361.4s
+    [ 752/753] blk.40.nextn.shared_head_norm.weight                src=mem  type=F32       bytes=        8192  total=13554.0MB  elapsed=361.4s
+    [ 753/753] blk.40.post_attention_norm.weight                   src=mem  type=F32       bytes=        8192  total=13554.0MB  elapsed=361.4s
+
+  total bytes written: 13.24 GB
+  total elapsed: 361.4s
+
+  writing GGUF (header + KV + tensor info + tensor data)...
+  GGUF write complete in 905.4s
+Traceback (most recent call last):
+  File "/Users/alexchuang/Documents/flashkv0516/moeexpert/graft_blk40_fraQtl_into_Nail.py", line 383, in <module>
+    main()
+    ~~~~^^
+  File "/Users/alexchuang/Documents/flashkv0516/moeexpert/graft_blk40_fraQtl_into_Nail.py", line 375, in main
+    sz = out_path.stat().st_size
+         ~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/pathlib/_local.py", line 515, in stat
+    return os.stat(self, follow_symlinks=follow_symlinks)
+           ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/Volumes/AlexZhuang/flashkv0516/models/gguf/Qwen3.6-35B-A3B-IQ3XXS-trunk_Q4K-blk40.gguf'

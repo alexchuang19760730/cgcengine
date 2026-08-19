@@ -1,0 +1,67 @@
+{
+  "baseline_status": {
+    "baseline_ready": true,
+    "cold_path_status": "PASS",
+    "production_readiness_status": "GO"
+  },
+  "expert_data_plane": {
+    "catalog_source": "none",
+    "last_plan_enabled": false,
+    "last_plan_reason": "no_expert_catalog"
+  },
+  "generated_at_epoch_sec": 1785647747,
+  "kind": "dense_local_baseline",
+  "max_tokens": 96,
+  "metrics": {
+    "cold_path": {
+      "completed_requests": 8,
+      "content_success_rate": 1.0,
+      "decode_tps_avg": 18.5,
+      "execution_success_rate": 1.0,
+      "failed_requests": 0,
+      "ttft_ms_avg": 64.3
+    },
+    "overall": {
+      "completed_requests": 8,
+      "decode_tps_avg": 18.5,
+      "failed_requests": 0,
+      "ttft_ms_avg": 64.3
+    },
+    "warm_hot_path": {
+      "completed_requests": 0,
+      "decode_tps_avg": 0.0,
+      "failed_requests": 0,
+      "not_evaluated_reason": "warm_hot_path not applicable for dense/non-expert baseline; expert catalog is intentionally absent",
+      "status": "NOT_APPLICABLE",
+      "ttft_ms_avg": 0.0
+    }
+  },
+  "model": "gemma4",
+  "proxy_url": "http://127.0.0.1:30027",
+  "rounds": 8,
+  "routing": {
+    "admissible_degrade": false,
+    "allowed_routes": [
+      "local_full"
+    ],
+    "degrade_suggested": false,
+    "degrade_target_mode": "unknown",
+    "hardware_route_mode": "local_full",
+    "memory_pressure": "normal",
+    "mode_switch_reason": "local_llama_full_resident_loaded",
+    "primary_route": "local_full",
+    "routing_status": "PASS",
+    "scenario": "normal",
+    "transport_route_mode": "local_full"
+  },
+  "runtime": {
+    "layer_split_model_path": "/Users/alexchuang/Documents/flashkv0516/models/gemma4_e4b_test/gemma-4-E4B-it.Q2_K.gguf",
+    "local_model_path": "/Users/alexchuang/Documents/flashkv0516/models/gemma4_e4b_test/gemma-4-E4B-it.Q2_K.gguf",
+    "local_num_layers": 42,
+    "memory_pressure": "normal",
+    "moe_candidate": false,
+    "moe_streaming_admissible": false
+  },
+  "scenario": "normal",
+  "schema_version": "v1"
+}

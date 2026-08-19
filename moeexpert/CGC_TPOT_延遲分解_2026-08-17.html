@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CGC TPOT 延遲分解（端到端長條圖）2026-08-17</title>
+<style>
+  :root {
+    --bg: #0f1420; --card: #171e2e; --ink: #e8ecf4; --sub: #9aa5b8;
+    --line: #2a3350;
+    /* qwen36 GPU */
+    --wr: #f0a45c; --small: #e86a6a; --ssm: #d98cf0; --sdpa: #7fb8f0; --bubble: #6b7aa8;
+    /* qwen36 CPU */
+    --cpu-r: #f0c25c; --cpu-g: #b8d95c; --cpu-s: #7fd4c0; --cpu-o: #8a97ad;
+    /* gemma4 家族 */
+    --moe: #f07a5c; --moe-d: #c95c44; --attn: #5c9ef0; --attn-d: #3c6ec0;
+    --shexp: #6cc060; --shexp-d: #4a9440; --head: #b05cf0; --head-d: #8a3cc0;
+    --misc: #8a97ad;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; padding: 32px 20px 60px; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  .sub { color: var(--sub); font-size: 14px; margin-bottom: 28px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px 24px; margin-bottom: 22px; }
+  .card h2 { font-size: 18px; margin: 0 0 4px; }
+  .card .desc { color: var(--sub); font-size: 13px; margin: 0 0 16px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 10px 0 18px; font-size: 12.5px; color: var(--sub); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  /* stacked bar */
+  .barwrap { margin-bottom: 10px; }
+  .barrow { display: flex; align-items: center; gap: 10px; }
+  .barlabel { width: 240px; font-size: 12.5px; color: var(--ink); flex-shrink: 0; line-height: 1.35; }
+  .barlabel small { display: block; color: var(--sub); font-size: 11px; }
+  .bar { flex: 1; height: 34px; border-radius: 8px; overflow: hidden; display: flex; background: #0c1019; border: 1px solid var(--line); }
+  .seg { height: 100%; display: flex; align-items: center; justify-content: center; font-size: 10.5px; color: #10141f; font-weight: 700; white-space: nowrap; overflow: hidden; min-width: 0; border-right: 1px solid rgba(15,20,32,.35); }
+  .seg.tiny { font-size: 0; }
+  .seg.tiny:hover { font-size: 10.5px; }
+  .total { font-size: 12px; color: var(--sub); text-align: right; margin: 4px 0 0 250px; }
+  .note { font-size: 12.5px; color: var(--sub); margin-top: 12px; line-height: 1.6; }
+  .note b { color: var(--ink); }
+  /* table */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--sub); font-weight: 600; font-size: 12px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .hl { color: #ffd479; font-weight: 700; }
+  /* ceiling bars */
+  .ceil { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .ceil .cl { width: 240px; font-size: 12.5px; flex-shrink: 0; }
+  .ceil .ctrack { flex: 1; height: 26px; background: #0c1019; border: 1px solid var(--line); border-radius: 7px; position: relative; }
+  .ceil .cfill { height: 100%; border-radius: 6px; display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; font-size: 11px; font-weight: 700; color: #10141f; }
+  .tokbadge { margin-left: 10px; font-size: 12.5px; color: var(--ink); width: 110px; flex-shrink: 0; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; margin-left: 6px; }
+  .tag.g { background: #1c3a24; color: #8fe3a0; }
+  .tag.r { background: #3a1c1c; color: #f08a8a; }
+  .tag.y { background: #3a321c; color: #e3cf8f; }
+  .tag.b { background: #1c2a3a; color: #8fb8e3; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>CGC · TPOT 端到端延遲分解（長條圖）</h1>
+<div class="sub">llama.cpp fork · M4 Max 16GB · 2026-08-19 · 數據來源：LLAMACPP_EXPERT_BOUNDED_RESIDENCY_FORK_方案.md §8.48 / 8.65 / 8.71 / 8.72 / 8.75 / 8.76 / 8.108</div>
+
+<!-- ============ 1. qwen36 ============ -->
+<div class="card">
+  <h2>① qwen36 IQ3_XXS（-ngl 99 + cache 4GiB）· 128 tok 真實文本</h2>
+  <p class="desc">wall ≈ 83.6 ms/step ≈ <b class="hl">~12.8 tok/s</b>（§8.77 CGC_OA_ASYNC 後，3 輪交錯 median；修復前 103ms / 9.5）。§8.79 四段拆解：graph_compute_wall p50=67ms（CPU MTL encoding 60ms + GPU compute 35ms 重疊）+ eog_sync_wait 4.24ms（GPU tail drain）+ post_sync_to_next 0.15ms（邊界序列化已近 0）+ dispatch_to_sync 0.01ms + ~12ms tail residual（cache miss 風暴拉高 mean）。原「~25ms 端點/邊界」不存在。§8.81：n_cb 掃描發現 fork 預設 1（per-op 計時安全值）一直沒吃到 multi-buffer async encoding——CGC_N_CB=4 把 >100ms 尖峰步數 14-21/48 降到 4/48、mean −20~25%（同窗 82-84ms/run）。</p>
+
+  <div class="legend">
+    <span><i class="sw" style="background:var(--wr)"></i>weight-read 24.9</span>
+    <span><i class="sw" style="background:var(--small)"></i>小 op 執行 4.6</span>
+    <span><i class="sw" style="background:var(--ssm)"></i>SSM ≤5</span>
+    <span><i class="sw" style="background:var(--sdpa)"></i>SDPA 0.5</span>
+    <span><i class="sw" style="background:var(--bubble)"></i>dispatch bubble 38（P1-B：非依賴，是 ~2000 顆 short kernel 固定 launch）</span>
+    <span><i class="sw" style="background:var(--cpu-r)"></i>CPU router 15.6（串行）</span>
+    <span><i class="sw" style="background:var(--cpu-g)"></i>CPU shared gate 2.4（串行）</span>
+    <span><i class="sw" style="background:var(--cpu-s)"></i>CPU SSM 小 op ~5（串行）</span>
+    <span><i class="sw" style="background:var(--cpu-o)"></i>CPU 其他 ~7（串行）</span>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">wall 103ms（修復前 §8.76 callback sync）<small>參考 · 9.5 tok/s</small></div>
+      <div class="bar">
+        <div class="seg" style="width:24.2%;background:var(--wr)" title="weight-read 24.9ms（attn 12.6 + FFN 7.9 + head 4.4）">24.9</div>
+        <div class="seg tiny" style="width:4.5%;background:var(--small)" title="小 op 執行 4.6ms（~2000 kernels isolated 地板）">4.6</div>
+        <div class="seg tiny" style="width:4.9%;background:var(--ssm)" title="SSM ≤5ms（GATED_DELTA_NET/SSM_CONV）">≤5</div>
+        <div class="seg tiny" style="width:0.5%;background:var(--sdpa)" title="SDPA 0.5ms">0.5</div>
+        <div class="seg" style="width:36.9%;background:var(--bubble)" title="dispatch bubble 38ms：~19us/kernel × ~2000 kernels（§8.71 證非依賴等待）">38 dispatch</div>
+        <div class="seg tiny" style="width:15.1%;background:var(--cpu-r)" title="CPU router 15.6ms — §8.74 證明在關鍵路徑（delay 斜率 ≈1）">15.6</div>
+        <div class="seg tiny" style="width:2.3%;background:var(--cpu-g)" title="CPU shared gate 2.4ms — 關鍵路徑">2.4</div>
+        <div class="seg tiny" style="width:4.9%;background:var(--cpu-s)" title="CPU SSM 小 op ~5ms — 關鍵路徑">~5</div>
+        <div class="seg tiny" style="width:6.8%;background:var(--cpu-o)" title="CPU 其他 ~7ms — 關鍵路徑">~7</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">wall 83.6ms（§8.77 CGC_OA_ASYNC 後）<small>3 輪交錯 median · 12.8 tok/s · bit-identical ✓ · §8.79 已拆解</small></div>
+      <div class="bar">
+        <div class="seg" style="width:80.1%;background:var(--wr)" title="graph_compute_wall p50=67ms：CPU 側 99 層 MTL encoding 60ms + GPU compute 35ms 重疊（max≈60ms）——§8.79 已驗，原「CPU 24 + GPU 35」實為此段內部">67 MTL encode</div>
+        <div class="seg" style="width:5.1%;background:var(--small)" title="eog_sync_wait p50=4.24ms / mean=4.82ms：最後 MTL split 完成等待（GPU tail drain），p99=15.76ms 對應 12.4% 步數 >5ms（cache miss 風暴）——§8.79 量測">4.2 EOG</div>
+        <div class="seg" style="width:0.2%;background:var(--cpu-o)" title="post_sync_to_next p50=0.15ms：sampler + KV 更新 + graph build + set_inputs（CPU↔GPU 邊界序列化已近 0）——§8.79 量測">0.15</div>
+        <div class="seg" style="width:0.01%;background:var(--cpu-g)" title="dispatch_to_sync p50=0.01ms：app-side pre-sync（set_inputs/output_reorder/build，可忽略）——§8.79 量測">0.01</div>
+        <div class="seg" style="width:14.6%;background:var(--bubble)" title="tail residual ~12ms：p90/p99 步數（cache miss 風暴/I/O 抖動）拉高 mean wall 至 79.77ms / step（對應 12.88 t/s）——§8.79 量測">~12 tail</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">wall 59.9ms（§8.108 hybrid cb8 後）<small>3 輪交錯 median · ~13-16 t/s（load 3-5）· bit-identical ✓ · p50 −22%</small></div>
+      <div class="bar">
+        <div class="seg" style="width:58.4%;background:var(--wr)" title="graph_compute_wall p50=59.9ms：router 移 Metal 後 split 162→82（−50%）、CPU copy 34.1ms→~0（shared memory）、CPU callback 25.0ms→~6.5ms（only ensure）——§8.108 實測">59.9 graph</div>
+        <div class="seg" style="width:7%;background:var(--small)" title="eog_sync_wait ~4ms（估）：最後 MTL split 完成等待，與 §8.77 相近">~4 EOG</div>
+        <div class="seg" style="width:5%;background:var(--bubble)" title="tail residual ~3ms：load 3-5 窗口，低載窗預估更低">~3 tail</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">GPU 側 73ms<small>exec-sum（§8.65 CGC_SPLIT_EXEC）</small></div>
+      <div class="bar">
+        <div class="seg" style="width:34.1%;background:var(--wr)">weight 24.9</div>
+        <div class="seg tiny" style="width:6.3%;background:var(--small)">4.6</div>
+        <div class="seg tiny" style="width:6.8%;background:var(--ssm)">≤5</div>
+        <div class="seg tiny" style="width:0.7%;background:var(--sdpa)">0.5</div>
+        <div class="seg" style="width:52.1%;background:var(--bubble)">38 bubble</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">CPU 側 30ms<small>exec-sum · §8.75 定案：cache 模式無 fire-and-forget（callback 每 topk 強制 sync），與 GPU 零重疊、全數串行</small></div>
+      <div class="bar">
+        <div class="seg" style="width:52%;background:var(--cpu-r)">router 15.6</div>
+        <div class="seg tiny" style="width:8%;background:var(--cpu-g)">2.4</div>
+        <div class="seg tiny" style="width:16.7%;background:var(--cpu-s)">~5</div>
+        <div class="seg tiny" style="width:23.3%;background:var(--cpu-o)">~7</div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note"><b>讀法</b>：§8.75 發現 cache 模式真重疊 = 0（callback 每 topk 強制 sync，GPU 從不積壓），103ms 全數邊緣序列化；§8.77 方案 (a)（CGC_OA_ASYNC：topk 只在 CPU split，Metal split 走 async、免 sync）把重疊找回（busy 0/81 → 80/81）、wall 103 → <b>83.6ms、9.5 → 12.8 tok/s（+12.6%）</b>。§8.108 hybrid D1（CGC_HYBRID_ROUTER_METAL=1：router 從 CPU 移 Metal + split 含 topk 走 callback）再砍 <b>83.6 → 59.9ms（−22%）</b>——split 162→82（−50%）、CPU copy 34ms→~0（shared memory）。GPU 真執行 35ms + dispatch bubble 38ms 是 §8.71 證不可減的結構下限，hybrid 後剩餘 ~25ms 全為 kernel 本身延遲，>16 t/s 需 kernel 重寫或引擎級重寫。</p>
+</div>
+
+<!-- ============ 2. gemma4 ============ -->
+<div class="card">
+  <h2>② gemma4 IQ3_S（-ngl 30 + cache 4GiB，日常生產配置）· decode step</h2>
+  <p class="desc">序列化 per-op 總和 50.97ms ≈ 真實 ~56ms（§8.49 證序列化 ×1 可信）。§8.78：CGC_OA_ASYNC 對 gemma4 也成立（ffn_moe_probs pin CPU 把 topk 留在 CPU split），busy 0/30 → 30/30、bit-identical、n30c 中位數 <b>14.66 → 17.88 t/s（+22%）</b>——17.88 t/s ≈ 55.9ms/step，與下方 per-op 總和 56ms 完全一致（無殘餘序列化）。</p>
+
+  <div class="legend">
+    <span><i class="sw" style="background:var(--moe)"></i>MoE FFN（gate_up 20.0% + down 12.5% = 32.5%）</span>
+    <span><i class="sw" style="background:var(--attn)"></i>attention（Q/K/V + attn_out + SDPA = 31.4%）</span>
+    <span><i class="sw" style="background:var(--shexp)"></i>shared FFN 15.0%</span>
+    <span><i class="sw" style="background:var(--head)"></i>head 12.2%</span>
+    <span><i class="sw" style="background:var(--misc)"></i>小 op（MUL/RMS/router/ADD/other 8.9%）</span>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">gemma4 56ms ≈ 50.97ms 序列化<small>per-op 成分（§8.48，19 steps 平均）</small></div>
+      <div class="bar">
+        <div class="seg" style="width:20.0%;background:var(--moe)" title="MoE gate_up 10.21ms · 8 experts × 164MB/128 · ~64GB/s">10.2</div>
+        <div class="seg" style="width:12.5%;background:var(--moe-d)" title="MoE down 6.39ms · ~36GB/s">6.4</div>
+        <div class="seg" style="width:10.6%;background:var(--attn)" title="Q_proj 5.39ms · 62GB/s">5.4</div>
+        <div class="seg tiny" style="width:4.3%;background:var(--attn-d)" title="K_proj 2.19ms">2.2</div>
+        <div class="seg tiny" style="width:3.9%;background:var(--attn-d)" title="V_proj 1.98ms">2.0</div>
+        <div class="seg" style="width:10.6%;background:var(--attn)" title="attn_out 5.42ms · 62GB/s">5.4</div>
+        <div class="seg tiny" style="width:2.0%;background:var(--attn-d)" title="SDPA 1.02ms（M=1 flash_attn 幾乎免費）">1.0</div>
+        <div class="seg" style="width:12.2%;background:var(--head)" title="head 6.20ms · 605.6MB · 98GB/s（已高效，§8.45 翻案後非靶）">6.2</div>
+        <div class="seg tiny" style="width:5.2%;background:var(--shexp)" title="shared ffn_down 2.64ms">2.6</div>
+        <div class="seg tiny" style="width:5.0%;background:var(--shexp)" title="shared ffn_up 2.54ms">2.5</div>
+        <div class="seg tiny" style="width:4.8%;background:var(--shexp-d)" title="shared ffn_gate 2.47ms">2.5</div>
+        <div class="seg tiny" style="width:3.2%;background:var(--misc)" title="MUL 1.65ms">1.7</div>
+        <div class="seg tiny" style="width:2.7%;background:var(--misc)" title="RMS_NORM 1.36ms">1.4</div>
+        <div class="seg tiny" style="width:1.5%;background:var(--misc)" title="router 0.76ms">0.8</div>
+        <div class="seg tiny" style="width:1.1%;background:var(--misc)" title="ADD 0.55ms">0.6</div>
+        <div class="seg tiny" style="width:0.4%;background:var(--misc)" title="other 0.21ms">0.2</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">§8.78 後 wall 55.9ms<small>實測 E2E · 17.88 t/s · bit-identical · 四段簡化（與 ① qwen36 83.6ms 並排）</small></div>
+      <div class="bar">
+        <div class="seg" style="width:32.5%;background:var(--moe)" title="MoE FFN 18.2ms（32.5%·gate_up 10.2 + down 6.4 + scale/SDPA 1.6）">MoE 18.2</div>
+        <div class="seg" style="width:31.4%;background:var(--attn)" title="attention 17.6ms（31.4%·Q/K/V/attn_out/SDPA）">attn 17.6</div>
+        <div class="seg" style="width:15.0%;background:var(--shexp)" title="shared FFN 8.4ms（15.0%·gate/up/down）">shared 8.4</div>
+        <div class="seg" style="width:21.1%;background:var(--head)" title="head 11.8ms（21.1%·head 6.2 + 小 op 5.6 = MUL/RMS/router/ADD）">head+op 11.8</div>
+      </div>
+    </div>
+  </div>
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">家族合併視角<small>四大家族佔比</small></div>
+      <div class="bar">
+        <div class="seg" style="width:32.5%;background:var(--moe)">MoE FFN 32.5%</div>
+        <div class="seg" style="width:31.4%;background:var(--attn)">attention 31.4%</div>
+        <div class="seg" style="width:15.0%;background:var(--shexp)">shared FFN 15.0%</div>
+        <div class="seg" style="width:12.2%;background:var(--head)">head 12.2%</div>
+        <div class="seg tiny" style="width:8.9%;background:var(--misc)">小 op 8.9%</div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note"><b>讀法</b>：gemma4 三大頭 = MoE FFN（bandwidth-bound，無 kernel 槓桿，§8.44）+ attention（31.4%，但 QKV 融合 A/B ≈0 已封存 §8.50）+ shared FFN（bandwidth-bound）。head 已 98GB/s 高效。與 qwen36 的結構差異：gemma4 attention 4 顆小 op（60-62GB/s vs head 98GB/s）是唯一 dispatch overhead 殘影，但 §8.50 證明端到端不可回收。<b>§8.78 後：n30c + OA_ASYNC 17.88 t/s（≈56ms/step，per-op 總和一致）</b>——sync 序列化已消除，剩餘 56ms 全是真執行（三大頭 bandwidth-bound）。</p>
+</div>
+
+<!-- ============ 3. qwen36 三層天花板 ============ -->
+<div class="card">
+  <h2>③ qwen36 三層天花板（§8.72）</h2>
+  <p class="desc">>20 tok/s 需要 <50ms/step——介於引擎層天花板與純 kernel 地板之間，兩側都已證偽。</p>
+
+  <div class="ceil">
+    <div class="cl">實測（§8.77 OA_ASYNC 後）<br><small>83.6 ms/step（修復前 103）</small></div>
+    <div class="ctrack"><div class="cfill" style="width:81.2%;background:linear-gradient(90deg,#8a3c3c,#b05c5c)">83.6ms</div></div>
+    <div class="tokbadge">≈ <b>12.8</b> tok/s</div>
+  </div>
+  <div class="ceil">
+    <div class="cl">引擎層天花板（CPU 全隱藏——§8.77 已部分達成：12.8/13.7）<br><small>~73 ms/step · §8.79 已驗：原「端點/邊界 ~25ms」實為 graph_compute_wall 67ms 內部（CPU MTL encoding 60ms + GPU 35ms 重疊），EOG sync 4.24ms 為 GPU tail drain（穩態 ≤5ms）</small></div>
+    <div class="ctrack"><div class="cfill" style="width:70.9%;background:linear-gradient(90deg,#8a6a2c,#c0a05c)">73ms</div></div>
+    <div class="tokbadge">≈ <b>13.7</b> tok/s</div>
+  </div>
+  <div class="ceil">
+    <div class="cl">純 kernel 地板（dispatch 免費，不可達）<br><small>~35 ms/step · §8.71 證明 dispatch 成本真實</small></div>
+    <div class="ctrack"><div class="cfill" style="width:34%;background:linear-gradient(90deg,#2c6a4a,#5cc09a)">35ms</div></div>
+    <div class="tokbadge">≈ <b>28.6</b> tok/s</div>
+  </div>
+  <div class="ceil">
+    <div class="cl">>20 tok/s 需要<br><small>~50 ms/step（虛線）</small></div>
+    <div class="ctrack" style="position:relative"><div style="position:absolute;left:48.5%;top:-6px;bottom:-6px;border-left:2px dashed #ffd479"></div></div>
+    <div class="tokbadge">20 tok/s</div>
+  </div>
+
+  <p class="note"><b>定案</b>：20+ tok/s 需要「CPU 全隱藏 + dispatch 砍半」同時成立。§8.77/8.78 已回收大部分 CPU 序列化（qwen36 9.5→12.8、gemma4 14.66→17.88）；§8.79 已驗證原「~25ms 端點/邊界」不存在——graph_compute_wall 67ms 內含 CPU MTL encoding 60ms + GPU compute 35ms 重疊，EOG sync 4.24ms 為 GPU tail drain（穩態 ≤5ms 閾值，不實作 step 級 double-buffer）。剩餘瓶頸為 60ms CPU-bound MTL encoding → fork 內無解，>20 標的移交 Swift/turbo 引擎線（turbo 15-17、Swift r4 18-20——gemma4 n30c 17.88 已貼近）。三個方向已修正：方向 1 從 kernel fusion 改為 CPU-side encoder overhead；方向 2 從多 command buffer 平行改為單一 uncommitted encoder；方向 3 從 PSO 預編譯改為 per-step dispatch plan 重用 / block-encode。</p>
+</div>
+
+<!-- ============ 4. tok/s 對照表 ============ -->
+<div class="card">
+  <h2>④ 兩家族日常配置 tok/s 對照（乾淨負載窗）</h2>
+  <p class="desc">理論帶寬上限：qwen36 1.275GB/token（純權重）→ ~94 tok/s；含 overhead 1.6GB/token → ~75 tok/s（M4 Max ~120GB/s 假設）。</p>
+  <table>
+    <tr><th>配置</th><th>gemma4 IQ3_S</th><th>qwen36 IQ3_XXS</th><th>備註</th></tr>
+    <tr><td>base（無 cache）</td><td class="num">-ngl 30 · <b>13.8–15.8</b>（§8.56/8.29）；§8.78 同窗 <span class="hl">20.86</span></td><td class="num">-ngl 30 · ~12（乾淨）；-ngl 99 <span class="tag r">硬 OOM</span>（13.2GB &gt; 11.45GB）</td><td>gemma4 日常；qwen36 只能 -ngl 30</td></tr>
+    <tr><td>+ cache 4GiB（n99c/n30c）</td><td class="num">-ngl 30 · <b>17.88</b>（§8.78 OA_ASYNC，3 輪 median）；修復前 14.4–15.5（§8.12）</td><td class="num">-ngl 99 · <b>12.8</b>（§8.77 OA_ASYNC）；修復前 8–9.5（§8.38/8.72）；乾淨窗 12–16（§8.40 上限）</td><td>qwen36 唯一能 full offload 的路徑（bit-identical ✓）</td></tr>
+    <tr><td>fork vs Swift（§8.79，同窗交錯）</td><td class="num">fork <b>10.98</b> vs Swift <b>14.90</b>（load 3+，IQ3_S vs r4 gturbo，+36%）</td><td class="num">—</td><td>fork = n30c+OA_ASYNC；Swift = r4 production binary（8-15 build），兩邊 gemma4-26B-A4B</td></tr>
+    <tr><td>理論帶寬上界</td><td class="num">~75–94（同權重公式）</td><td class="num">~75–94</td><td>1.6/1.275 GB/token</td></tr>
+    <tr><td>Swift / turbo 引擎</td><td class="num"><b>14.90</b>（§8.79 同窗 measured）；歷史 <b>18–20</b>（Swift r4 乾淨窗）/ <b>15–17</b>（turbo）</td><td class="num">5.5–5.8（Swift qwen36）</td><td>唯一實證 &gt;15–20 的路徑（§10.4）</td></tr>
+  </table>
+  <p class="note"><b>日常定案</b>：gemma4 = <b>-ngl 30 無 cache</b>（最快，13.8–15.8；n30c + OA_ASYNC 17.88 且 RSS 低，§8.78）；qwen36 = <b>-ngl 99 + cache 4GiB + CGC_OA_ASYNC</b>（唯一可跑 + bit-identical，12.8）。fork 的價值是「讓 qwen36 這顆 13.2GB 模型在 16GB M4 上可正確運行」，不是速度。</p>
+</div>
+
+<p class="sub" style="margin-top:24px">數據：LLAMACPP_EXPERT_BOUNDED_RESIDENCY_FORK_方案.md §8.12（pool8 15.46/gemma4）、§8.38（qwen36 n99c 8.00）、§8.40（qwen36 上限 12-16）、§8.45（head 6.3ms/78%）、§8.48（gemma4 成分表 50.97ms）、§8.49（序列化×1）、§8.56（負載閘門保序）、§8.65（GPU 73ms 歸因）、§8.71（P1-B 依賴≈0）、§8.72（三層天花板）、§8.75（busy 探針：真重疊=0）、§8.76（sync 等待 65-79ms/step = 73ms 主體）、§8.77（CGC_OA_ASYNC 落地：busy 回升、wall 103→83.6ms、12.8 tok/s、+12.6%）、§8.78（gemma4 翻案：busy 0/30→30/30、bit-identical、17.88 t/s、+22%）、§8.79（fork vs Swift 同窗交錯：fork 10.98 vs Swift 14.90，+36%）、§8.80（§8.79 獨立 64-step 重跑確認：eog_sync 4.6ms / post_sync 0.18ms，端點殘留 ~4.8ms 穩定）、§8.81（n_cb 掃描：CGC_N_CB=4 消掉串行 encode 尾部尖峰，mean 106-126→82-84ms/run −20~25%，四臂 BIT-IDENTICAL，生產 harness 已設 n_cb=4）。</p>
+
+</div>
+</body>
+</html>

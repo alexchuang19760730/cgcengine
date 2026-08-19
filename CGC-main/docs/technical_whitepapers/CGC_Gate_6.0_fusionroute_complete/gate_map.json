@@ -1,0 +1,455 @@
+{
+  "gate_id": "CGC_Gate_6.0_fusionroute_complete",
+  "version": "1.0",
+  "title": "FusionRoute Complete",
+  "status": "validated",
+  "release_date": "2026-07",
+  "capabilities": [
+    {
+      "id": "fusionroute_4instance",
+      "name": "FusionRoute 四实例路由",
+      "description": "4 个 DeepSeek-V4-Flash 实例路由",
+      "proof": "m76_fusionroute",
+      "target": true,
+      "status": "done"
+    },
+    {
+      "id": "minicpm5_router",
+      "name": "MiniCPM5 路由器",
+      "description": "智能路由决策引擎",
+      "proof": "m76_minicpm5",
+      "target": true,
+      "status": "done"
+    },
+    {
+      "id": "deepep_moe",
+      "name": "DeepEP MoE 负载均衡",
+      "description": "线性规划 + Waterfill 算法",
+      "proof": "gate_2_2_deepep",
+      "target": true,
+      "status": "done"
+    },
+    {
+      "id": "edge_cloud_co协同",
+      "name": "端云协同架构",
+      "description": "cloud/edge/hybrid/auto 四种模式",
+      "proof": "gate_3_1_self_harness",
+      "target": true,
+      "status": "done"
+    },
+    {
+      "id": "self_harness",
+      "name": "Self-Harness 三阶段闭环",
+      "description": "策略决策 → 图捕获 → 执行校验",
+      "proof": "gate_3_1_harness",
+      "target": true,
+      "status": "done"
+    },
+    {
+      "id": "guardian",
+      "name": "Guardian 防退化",
+      "description": "性能验证与自动回滚",
+      "proof": "gate_3_1_guardian",
+      "target": true,
+      "status": "done"
+    },
+    {
+      "id": "cgc_bundle",
+      "name": "Bundle 治理指令",
+      "description": "review/verify/audit - task_type contract 四段一致性",
+      "proof": "gate_1_0_bundle",
+      "target": true,
+      "status": "done"
+    },
+    {
+      "id": "cgc_model",
+      "name": "模型治理指令",
+      "description": "verify/audit/deploy - profile_bundle_validator",
+      "proof": "gate_1_0_model",
+      "target": true,
+      "status": "done"
+    },
+    {
+      "id": "cgc_gateway",
+      "name": "网关管理指令",
+      "description": "start/stop/config/publish - auto-publish streaming/non-streaming",
+      "proof": "gate_1_0_gateway",
+      "target": true,
+      "status": "done"
+    },
+    {
+      "id": "cgc_edge",
+      "name": "端侧管理指令",
+      "description": "status/resume/handoff - DOPD resume_from_kda_state",
+      "proof": "gate_1_0_edge",
+      "target": true,
+      "status": "done"
+    },
+    {
+      "id": "cgc_train",
+      "name": "训练指令",
+      "description": "start/stop/status/logs - 云侧训练调度",
+      "proof": "m8x_train",
+      "target": true,
+      "status": "done"
+    },
+    {
+      "id": "cgc_infer",
+      "name": "推理指令",
+      "description": "start/stop/status/scale - 端云推理协同",
+      "proof": "m8x_infer",
+      "target": true,
+      "status": "done"
+    },
+    {
+      "id": "cgc_validate",
+      "name": "验证指令",
+      "description": "gate/all/report - m1-m7.6 + upkg21 实跑验证",
+      "proof": "m8x_validate",
+      "target": true,
+      "status": "done"
+    },
+    {
+      "id": "cgc_bench",
+      "name": "基准测试指令",
+      "description": "run/compare/export - 端云延迟对比",
+      "proof": "m8x_bench",
+      "target": true,
+      "status": "done"
+    },
+    {
+      "id": "cgc_monitor",
+      "name": "监控指令",
+      "description": "start/stop/dashboard - 显存/内存监控",
+      "proof": "m8x_monitor",
+      "target": true,
+      "status": "done"
+    },
+    {
+      "id": "cgc_audit",
+      "name": "审计指令",
+      "description": "logs/search/export - 治理链审计",
+      "proof": "m8x_audit",
+      "target": true,
+      "status": "done"
+    },
+    {
+      "id": "cgc_ops",
+      "name": "运维指令",
+      "description": "backup/restore/upgrade - 系统运维",
+      "proof": "m8x_ops",
+      "target": true,
+      "status": "done"
+    },
+    {
+      "id": "swe_verified_500",
+      "name": "SWE Verified 500",
+      "description": "500 题软件工程师验证集 - formal chain 已接入，官方评测当前仍为 SUBMITTED，暂不可 claimable",
+      "proof": "m76_swe_verified_formal_chain",
+      "target": true,
+      "status": "integrated",
+      "metrics": {
+        "total_tasks": 500,
+        "completed_tasks": 500,
+        "historical_pass_rate": 0.992,
+        "quality_drop": 0.005,
+        "speedup_ratio": 0.42,
+        "formal_chain_status": "PASS",
+        "official_eval_status": "SUBMITTED",
+        "claimable": false,
+        "swe_verified_passed_tasks": 0
+      }
+    },
+    {
+      "id": "unified_ir",
+      "name": "统一 IR 层",
+      "description": "CGC 统一中间表示 - 多后端编译支持",
+      "proof": "gate_6_0_ir",
+      "target": true,
+      "status": "done",
+      "cli": "cgc ir compile",
+      "metrics": {
+        "supported_backends": 3,
+        "supported_ops": 35,
+        "optimization_passes": 3
+      }
+    },
+    {
+      "id": "multi_backend",
+      "name": "多后端支持",
+      "description": "CUDA/Metal/Ascend 三后端统一编译",
+      "proof": "gate_6_0_backend",
+      "target": true,
+      "status": "done",
+      "cli": "cgc ir backend list",
+      "metrics": {
+        "cuda_ops": 35,
+        "metal_ops": 32,
+        "ascend_ops": 35
+      }
+    },
+    {
+      "id": "health_check",
+      "name": "健康检测与故障转移",
+      "description": "实例健康检查与自动故障转移 (P1)",
+      "proof": "gate_6_0_health",
+      "target": true,
+      "status": "done",
+      "cli": "cgc health check",
+      "metrics": {
+        "check_interval": "10s",
+        "failover_auto": true,
+        "supported_instances": 4
+      }
+    },
+    {
+      "id": "tenant_management",
+      "name": "多租户管理",
+      "description": "资源配额管理与隔离 (P1)",
+      "proof": "gate_6_0_tenant",
+      "target": true,
+      "status": "done",
+      "cli": "cgc tenant create",
+      "metrics": {
+        "isolation": true,
+        "quota_management": true,
+        "priority_scheduling": true
+      }
+    },
+    {
+      "id": "optimization_passes",
+      "name": "优化 Pass 框架",
+      "description": "Fusion/Layout/内存优化 Pass (P2)",
+      "proof": "gate_6_0_passes",
+      "target": true,
+      "status": "done",
+      "cli": "cgc ir pass list",
+      "metrics": {
+        "fusion_pass": true,
+        "layout_pass": true,
+        "memory_planning_pass": true
+      }
+    },
+    {
+      "id": "fusionroute_v2_tasktype_gate_domain_contract",
+      "name": "FusionRoute v2 静态任务矩阵",
+      "description": "TaskType -> GateDomain -> PrimaryRole -> SecondaryRole 的正式静态契约",
+      "proof": "gate_6_0_fusionroute_v2_static_contract",
+      "target": true,
+      "status": "done",
+      "cli": "cgc fusionroute plan",
+      "metrics": {
+        "tasktype_matrix_formalized": true,
+        "primary_roles": 6,
+        "secondary_role_bindings": 6
+      }
+    },
+    {
+      "id": "fusionroute_role_locality_contract",
+      "name": "FusionRoute 角色 Locality 契约",
+      "description": "role -> locality -> runtime endpoint 的正式 machine-readable contract",
+      "proof": "gate_6_0_role_locality_contract",
+      "target": true,
+      "status": "done",
+      "cli": "cgc fusionroute contract show --kind role-locality",
+      "metrics": {
+        "schema_bound": true,
+        "handoff_contract": "EdgeCloudLayerHandoff",
+        "allowed_locality_modes": 4
+      }
+    },
+    {
+      "id": "fusionroute_placement_decision_report",
+      "name": "FusionRoute Placement 决策报告",
+      "description": "每次 locality / runtime endpoint 选择都会输出 placement_decision_report JSON 证据",
+      "proof": "gate_6_0_placement_decision_report",
+      "target": true,
+      "status": "done",
+      "cli": "cgc fusionroute placement verify",
+      "metrics": {
+        "json_evidence": true,
+        "decision_reason_bound": true,
+        "status_field_required": true
+      }
+    },
+    {
+      "id": "fusionroute_policy_suggestion_report",
+      "name": "Perception Matrix 策略建议报告",
+      "description": "环境/任务/模型/硬件感知后的 policy_suggestion_report 正式证据链",
+      "proof": "gate_6_0_policy_suggestion_report",
+      "target": true,
+      "status": "done",
+      "cli": "cgc fusionroute perception plan",
+      "metrics": {
+        "llm_in_the_loop": true,
+        "contract_bounded": true,
+        "schema_version": "perception_matrix.policy_suggestion_report.v1"
+      }
+    },
+    {
+      "id": "fusionroute_contract_projection_report",
+      "name": "Perception Matrix 契约投影报告",
+      "description": "policy suggestion 向 system profile / profile binding / bootstrap / ABI 合法集合的正式投影报告",
+      "proof": "gate_6_0_contract_projection_report",
+      "target": true,
+      "status": "done",
+      "cli": "cgc fusionroute perception project",
+      "metrics": {
+        "projection_chain_formalized": true,
+        "state_abi_bound": true,
+        "bootstrap_bound": true
+      }
+    },
+    {
+      "id": "fusionroute_v2_contract_chain",
+      "name": "FusionRoute v2 正式合同链",
+      "description": "聚合验证静态矩阵、role locality、placement、policy suggestion 与 contract projection 的正式 capability closure",
+      "proof": "gate_6_0_fusionroute_v2_contract_chain",
+      "target": true,
+      "status": "done",
+      "cli": "cgc fusionroute verify --capability all",
+      "metrics": {
+        "formal_contract_entries": 6,
+        "machine_checkable": true,
+        "aggregate_report": "fusionroute_v2_formal_contract_report.json"
+      }
+    }
+  ],
+  "dependencies": [
+    "CGC_Gate_1.0_edge_cloud_autonomy",
+    "CGC_Gate_2.2_deep_moe_waterfill",
+    "CGC_Gate_3.1_self_harness",
+    "UPKG_M7.6_FUSIONROUTE",
+    "UPKG_M8.x_CLI"
+  ],
+  "performance": {
+    "fusionroute_latency_ms": 50,
+    "inference_throughput_reqs": 145,
+    "load_balance_efficiency_pct": 98,
+    "edge_cloud_switch_ms": 10,
+    "guardian_verification_pct": 100
+  },
+  "documents": {
+    "whitepaper": "CGC_Gate_6.0_fusionroute_complete_Technical_Whitepaper_v1.0_zh_CN.md",
+    "gate_map": "gate_map.json",
+    "readme": "README.md",
+    "fusionroute_topology_matrix": "../CGC_FusionRoute_Final_Topology_Matrix_Technical_Whitepaper_v1.0_zh_CN.md",
+    "fusionroute_role_locality": "CGC_Gate_6.0_FusionRoute_Role_Locality_Technical_Whitepaper_v1.0_zh_CN.md",
+    "fusionroute_v2_static_contract": "../CGC_FusionRoute_v2_Static_Contract_Technical_Whitepaper_v1.0_zh_CN.md",
+    "perception_matrix_whitepaper": "../CGC_Perception_Matrix_LLM_Technical_Whitepaper_v1.0_zh_CN.md",
+    "role_locality_contract_schema": "role_locality_contract.schema.json",
+    "placement_decision_report_schema": "placement_decision_report.schema.json",
+    "role_locality_contract_example": "role_locality_contract.example.json",
+    "placement_decision_report_example": "placement_decision_report.example.json",
+    "policy_suggestion_report_schema": "policy_suggestion_report.schema.json",
+    "contract_projection_report_schema": "contract_projection_report.schema.json",
+    "policy_suggestion_report_example": "policy_suggestion_report.example.json",
+    "contract_projection_report_example": "contract_projection_report.example.json",
+    "fusionroute_v2_draft_contract": "gate6_fusionroute_v2_draft_contract.json",
+    "fusionroute_v2_formal_contract": "gate6_fusionroute_v2_formal_contract.json",
+    "fusionroute_v2_formal_report": "fusionroute_v2_formal_contract_report.json"
+  },
+  "architecture_projection_refs": {
+    "fusionroute_topology_matrix": {
+      "path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_FusionRoute_Final_Topology_Matrix_Technical_Whitepaper_v1.0_zh_CN.md",
+      "projection_role": "Gate 6.0 is the Coding Model Plane in the final FusionRoute topology."
+    },
+    "fusionroute_role_locality": {
+      "path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/CGC_Gate_6.0_FusionRoute_Role_Locality_Technical_Whitepaper_v1.0_zh_CN.md",
+      "projection_role": "Gate 6.0 formally owns the role locality / placement control plane and its machine-checkable JSON evidence."
+    },
+    "fusionroute_v2_static_contract": {
+      "path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_FusionRoute_v2_Static_Contract_Technical_Whitepaper_v1.0_zh_CN.md",
+      "projection_role": "Gate 6.0 formally hosts the static contract for TaskType -> GateDomain -> PrimaryRole -> SecondaryRole."
+    },
+    "perception_matrix": {
+      "path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Perception_Matrix_LLM_Technical_Whitepaper_v1.0_zh_CN.md",
+      "projection_role": "Perception Matrix + LLM is the formal upstream dynamic decision layer above FusionRoute v2, bounded by system profile, profile binding, bootstrap, state ABI, and topology contracts."
+    }
+  },
+  "planned_capability_naming": [
+    {
+      "capability_id": "fusionroute_role_locality_projection",
+      "status": "planned_projection",
+      "description": "Role locality decision super-capability for FusionRoute."
+    },
+    {
+      "capability_id": "role_placement_policy",
+      "status": "planned_projection",
+      "description": "Policy inputs and decision outputs for per-role cloud/edge placement."
+    },
+    {
+      "capability_id": "role_runtime_binding_contract",
+      "status": "planned_projection",
+      "description": "Static contract linking role identity to runtime endpoint."
+    },
+    {
+      "capability_id": "role_edge_cloud_handoff",
+      "status": "planned_projection",
+      "description": "State handoff rules when a role switches between edge and cloud."
+    },
+    {
+      "capability_id": "fusionroute_v2_draft_contract_chain",
+      "status": "planned_projection",
+      "description": "Draft-only contract chain linking whitepaper, schemas, CLI draft rows, and self-harness verifier names."
+    },
+    {
+      "capability_id": "perception_matrix_policy",
+      "status": "planned_projection",
+      "description": "Dynamic decision layer for environment, task, model, and hardware perception."
+    },
+    {
+      "capability_id": "llm_policy_suggestion",
+      "status": "planned_projection",
+      "description": "LLM-assisted policy suggestion layer under hard contract constraints."
+    },
+    {
+      "capability_id": "environment_task_model_hardware_projection",
+      "status": "planned_projection",
+      "description": "Structured projection from environment/task/model/hardware signals into legal profiles."
+    },
+    {
+      "capability_id": "perception_contract_projection",
+      "status": "planned_projection",
+      "description": "Projection chain from policy suggestion to contract-valid runtime profile."
+    }
+  ],
+  "formal_contract_refs": {
+    "static_contract_whitepaper": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_FusionRoute_v2_Static_Contract_Technical_Whitepaper_v1.0_zh_CN.md",
+    "perception_matrix_whitepaper": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Perception_Matrix_LLM_Technical_Whitepaper_v1.0_zh_CN.md",
+    "role_locality_schema": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/role_locality_contract.schema.json",
+    "placement_decision_schema": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/placement_decision_report.schema.json",
+    "role_locality_example": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/role_locality_contract.example.json",
+    "placement_decision_example": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/placement_decision_report.example.json",
+    "policy_suggestion_schema": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/policy_suggestion_report.schema.json",
+    "contract_projection_schema": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/contract_projection_report.schema.json",
+    "policy_suggestion_example": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/policy_suggestion_report.example.json",
+    "contract_projection_example": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/contract_projection_report.example.json",
+    "draft_contract_manifest": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/gate6_fusionroute_v2_draft_contract.json",
+    "formal_contract_manifest": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/gate6_fusionroute_v2_formal_contract.json",
+    "formal_contract_report": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/fusionroute_v2_formal_contract_report.json",
+    "draft_verifiers": [
+      "validate_fusionroute_v2_tasktype_gate_domain_contract",
+      "validate_fusionroute_role_locality_contract",
+      "validate_fusionroute_placement_decision_report",
+      "validate_fusionroute_policy_suggestion_report",
+      "validate_fusionroute_contract_projection_report",
+      "validate_fusionroute_v2_draft_contract"
+    ],
+    "formal_verifiers": [
+      "validate_fusionroute_v2_tasktype_gate_domain_contract",
+      "validate_fusionroute_role_locality_contract",
+      "validate_fusionroute_placement_decision_report",
+      "validate_fusionroute_policy_suggestion_report",
+      "validate_fusionroute_contract_projection_report",
+      "validate_fusionroute_v2_contract_chain"
+    ],
+    "formal_validation_snapshot": {
+      "report": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/fusionroute_v2_formal_contract_report.json",
+      "overall_status": "PASS",
+      "total_formal_capabilities": 6,
+      "passed": 6,
+      "failed": 0
+    }
+  }
+}

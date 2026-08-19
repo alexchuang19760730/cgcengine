@@ -1,0 +1,98 @@
+[
+  {
+    "name": "基线",
+    "spdk": false,
+    "distributed": false,
+    "pd": false,
+    "prefill_latency_ms": 100.0,
+    "decode_latency_ms": 50.0,
+    "memory_usage_gb": 16.0,
+    "prefill_speedup": 1.0,
+    "decode_speedup": 1.0,
+    "memory_saving_pct": 0.0
+  },
+  {
+    "name": "SPDK单独",
+    "spdk": true,
+    "distributed": false,
+    "pd": false,
+    "prefill_latency_ms": 50.0,
+    "decode_latency_ms": 25.0,
+    "memory_usage_gb": 16.0,
+    "prefill_speedup": 2.0,
+    "decode_speedup": 2.0,
+    "memory_saving_pct": 0.0
+  },
+  {
+    "name": "分布式单独",
+    "spdk": false,
+    "distributed": true,
+    "pd": false,
+    "prefill_latency_ms": 50.0,
+    "decode_latency_ms": 25.0,
+    "memory_usage_gb": 8.0,
+    "prefill_speedup": 2.0,
+    "decode_speedup": 2.0,
+    "memory_saving_pct": 50.0
+  },
+  {
+    "name": "PD分离单独",
+    "spdk": false,
+    "distributed": false,
+    "pd": true,
+    "prefill_latency_ms": 70.0,
+    "decode_latency_ms": 35.0,
+    "memory_usage_gb": 9.6,
+    "prefill_speedup": 1.4285714285714286,
+    "decode_speedup": 1.4285714285714286,
+    "memory_saving_pct": 40.0
+  },
+  {
+    "name": "SPDK+分布式",
+    "spdk": true,
+    "distributed": true,
+    "pd": false,
+    "prefill_latency_ms": 25.0,
+    "decode_latency_ms": 12.5,
+    "memory_usage_gb": 8.0,
+    "prefill_speedup": 4.0,
+    "decode_speedup": 4.0,
+    "memory_saving_pct": 50.0
+  },
+  {
+    "name": "SPDK+PD",
+    "spdk": true,
+    "distributed": false,
+    "pd": true,
+    "prefill_latency_ms": 35.0,
+    "decode_latency_ms": 17.5,
+    "memory_usage_gb": 9.6,
+    "prefill_speedup": 2.857142857142857,
+    "decode_speedup": 2.857142857142857,
+    "memory_saving_pct": 40.0
+  },
+  {
+    "name": "分布式+PD",
+    "spdk": false,
+    "distributed": true,
+    "pd": true,
+    "prefill_latency_ms": 35.0,
+    "decode_latency_ms": 17.5,
+    "memory_usage_gb": 4.8,
+    "prefill_speedup": 2.857142857142857,
+    "decode_speedup": 2.857142857142857,
+    "memory_saving_pct": 70.0
+  },
+  {
+    "name": "完整方案",
+    "spdk": true,
+    "distributed": true,
+    "pd": true,
+    "prefill_latency_ms": 17.5,
+    "decode_latency_ms": 8.75,
+    "memory_usage_gb": 4.8,
+    "prefill_speedup": 5.714285714285714,
+    "decode_speedup": 5.714285714285714,
+    "memory_saving_pct": 70.0
+  }
+]

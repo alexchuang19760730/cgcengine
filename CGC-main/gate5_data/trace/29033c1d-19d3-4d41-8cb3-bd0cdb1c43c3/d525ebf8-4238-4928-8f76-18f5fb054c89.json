@@ -1,0 +1,13 @@
+{
+  "span_id": "d525ebf8-4238-4928-8f76-18f5fb054c89",
+  "parent_id": null,
+  "task_id": "29033c1d-19d3-4d41-8cb3-bd0cdb1c43c3",
+  "name": "span1",
+  "start_time": 1783157116.0051851,
+  "end_time": 1783157116.005187,
+  "status": "completed",
+  "metadata": {},
+  "metrics": {
+    "latency_ms": 12.3
+  }
+}

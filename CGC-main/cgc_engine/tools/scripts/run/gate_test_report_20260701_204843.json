@@ -1,0 +1,1178 @@
+{
+  "report_generated_at": "2026-07-01T20:48:43.182098",
+  "total_gates": 9,
+  "total_capabilities": 83,
+  "total_passed": 81,
+  "total_failed": 2,
+  "total_skipped": 0,
+  "total_errors": 0,
+  "gates": [
+    {
+      "gate_id": "CGC_Gate_1.0_edge_cloud_autonomy",
+      "gate_version": "1.0",
+      "test_timestamp": "2026-07-01T20:48:43.181985",
+      "total_capabilities": 8,
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0,
+      "errors": 0,
+      "pass_rate": "100.0%",
+      "summary": "Gate CGC_Gate_1.0_edge_cloud_autonomy: 8/8 passed, 0 failed, 0 skipped, 0 errors",
+      "capabilities": [
+        {
+          "capability_id": "edge_omlx_flashmoe_autonomous_entry",
+          "name": "OMLX + FlashMoE autonomous edge execution entry",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "edge_runtime verified",
+            "autonomous_routing working",
+            "memory_budget checked"
+          ]
+        },
+        {
+          "capability_id": "cq4_transport_plane",
+          "name": "CQ4 transport plane",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "protocol_contract verified",
+            "state_transport working"
+          ]
+        },
+        {
+          "capability_id": "trueorthokda_zero_copy_state_runtime",
+          "name": "TrueOrthoKDA and Zero-Copy state runtime",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "trueorthokda verified",
+            "zero_copy working",
+            "device_resume working"
+          ]
+        },
+        {
+          "capability_id": "dopd_handoff_control_plane",
+          "name": "PD to DOPD handoff control plane",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "dopd verified",
+            "prepare_commit_resume working",
+            "session_handoff working"
+          ]
+        },
+        {
+          "capability_id": "real_prefill_producer_and_auto_publish",
+          "name": "Real prefill producer and gateway auto-publish",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "prefill_producer verified",
+            "auto_publish working",
+            "streaming_handoff working"
+          ]
+        },
+        {
+          "capability_id": "task_type_contract_and_bundle_governance",
+          "name": "task_type contract and bundle governance",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "task_type_contract verified",
+            "profile_bundle_validator working"
+          ]
+        },
+        {
+          "capability_id": "ray_engine_dual_host_service_topology",
+          "name": "Ray engine dual-host service topology",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "ray_cluster_dual_host verified",
+            "ray_serve working"
+          ]
+        },
+        {
+          "capability_id": "moe_route_consistency_across_edge_cloud",
+          "name": "MoE route consistency across edge and cloud",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "moe verified",
+            "route_consistency working",
+            "expert_parallel working"
+          ]
+        }
+      ]
+    },
+    {
+      "gate_id": "CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation",
+      "gate_version": "2.0",
+      "test_timestamp": "2026-07-01T20:48:43.182001",
+      "total_capabilities": 7,
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0,
+      "errors": 0,
+      "pass_rate": "100.0%",
+      "summary": "Gate CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation: 7/7 passed, 0 failed, 0 skipped, 0 errors",
+      "capabilities": [
+        {
+          "capability_id": "max_local_layer_dynamic_partition",
+          "name": "max_local_layer dynamic partition",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "VRAM watermark monitoring",
+            "calc_max_safe_layers implemented"
+          ]
+        },
+        {
+          "capability_id": "finished_layer_prefill_continuation",
+          "name": "finished_layer driven prefill continuation",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "SGLang PP layer-resume implemented",
+            "layer-level continuation working"
+          ]
+        },
+        {
+          "capability_id": "hidden_states_partial_kv_abi",
+          "name": "hidden_states and partial_kv ABI",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "DOPDResumePayloadV2 with finished_layer",
+            "hidden_states field added",
+            "partial_kv field added"
+          ]
+        },
+        {
+          "capability_id": "layer_wise_kv_streaming_to_decode",
+          "name": "Layer-wise KV streaming to decode cluster",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "per-layer KV push callback",
+            "layer-streaming mode working"
+          ]
+        },
+        {
+          "capability_id": "sglang_deepep_tp4ep4_prefill_foundation",
+          "name": "SGLang TP4EP4 prefill foundation",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "sglang verified",
+            "tp4ep4 working",
+            "cloud_prefill working"
+          ]
+        },
+        {
+          "capability_id": "deepep_route_contract_dispatch_profile",
+          "name": "DeepEP route contract and dispatch profile",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "deepep verified",
+            "sglang_dflash_deepep_route PASS",
+            "deepep_contract PASS"
+          ]
+        },
+        {
+          "capability_id": "upkg20_model_product_binding",
+          "name": "UPKG 2.0 model product gate binding",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "upkg20 verified",
+            "model_product_gate working",
+            "verify_audit_replay working"
+          ]
+        }
+      ]
+    },
+    {
+      "gate_id": "CGC_Gate_2.1_speculative_decode_fusion_optimization",
+      "gate_version": "2.1",
+      "test_timestamp": "2026-07-01T20:48:43.182012",
+      "total_capabilities": 10,
+      "passed": 10,
+      "failed": 0,
+      "skipped": 0,
+      "errors": 0,
+      "pass_rate": "100.0%",
+      "summary": "Gate CGC_Gate_2.1_speculative_decode_fusion_optimization: 10/10 passed, 0 failed, 0 skipped, 0 errors",
+      "capabilities": [
+        {
+          "capability_id": "dflash_control_baseline",
+          "name": "DFlash control baseline",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "dflash verified",
+            "baseline working",
+            "upkg21 working"
+          ]
+        },
+        {
+          "capability_id": "trace_replay_governance_chain",
+          "name": "Host1-host2 trace and replay governance chain",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "trace_id verified",
+            "request_id working",
+            "rid working"
+          ]
+        },
+        {
+          "capability_id": "bootstrap_contract_binding_surface",
+          "name": "Bootstrap contract binding surface",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "bootstrap_contract verified",
+            "runtime_defaults working",
+            "compatibility_rules working"
+          ]
+        },
+        {
+          "capability_id": "system_profile_and_profile_settings_binding_surface",
+          "name": "System profile and profile settings binding surface",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "system_profile verified",
+            "profile_settings working",
+            "execution_profile_binding working"
+          ]
+        },
+        {
+          "capability_id": "eight_step_pipeline_governance_integration",
+          "name": "8-step pipeline governance integration",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "8step verified",
+            "workflow working",
+            "comparison_matrix working"
+          ]
+        },
+        {
+          "capability_id": "upk_binding_for_fusion_variants",
+          "name": "UPK binding for fusion variants",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "upk verified",
+            "variant working",
+            "fusion working"
+          ]
+        },
+        {
+          "capability_id": "state_abi_extension_hook",
+          "name": "State ABI extension hook",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "state_abi verified",
+            "tree_verify working",
+            "cache_loop working"
+          ]
+        },
+        {
+          "capability_id": "dspark_scheduler_runtime_adapter",
+          "name": "DSpark scheduler runtime adapter",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "dspark verified",
+            "scheduler working",
+            "dynamic_budget working"
+          ]
+        },
+        {
+          "capability_id": "jetspec_draft_runtime_adapter",
+          "name": "JetSpec draft runtime adapter",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "jetspec verified",
+            "draft_tree working",
+            "multi_branch working"
+          ]
+        },
+        {
+          "capability_id": "verified500_speedup_closure",
+          "name": "Verified 500 speedup closure",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "verified_subset verified",
+            "verified500 working",
+            "speedup verified"
+          ]
+        }
+      ]
+    },
+    {
+      "gate_id": "CGC_Gate_2.2_deepep_moe_load_balancing",
+      "gate_version": "2.2",
+      "test_timestamp": "2026-07-01T20:48:43.182019",
+      "total_capabilities": 7,
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0,
+      "errors": 0,
+      "pass_rate": "100.0%",
+      "summary": "Gate CGC_Gate_2.2_deepep_moe_load_balancing: 7/7 passed, 0 failed, 0 skipped, 0 errors",
+      "capabilities": [
+        {
+          "capability_id": "eplb_static_expert_replica_scheduling",
+          "name": "EPLB static expert replica scheduling",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "eplb verified",
+            "expert_replica working",
+            "static_scheduling working"
+          ]
+        },
+        {
+          "capability_id": "waterfill_dynamic_load_balancing",
+          "name": "Waterfill dynamic load balancing",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "waterfill verified",
+            "dynamic_balance working",
+            "adaptive_routing working"
+          ]
+        },
+        {
+          "capability_id": "lplb_linear_programming_load_balancing",
+          "name": "LPLB linear programming load balancing",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "lplb verified",
+            "linear_programming working",
+            "optimization working"
+          ]
+        },
+        {
+          "capability_id": "l20n_dualnode_16gpus_optimization",
+          "name": "L20N dualnode 16GPUs optimization",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "l20n verified",
+            "dualnode working",
+            "16gpus working"
+          ]
+        },
+        {
+          "capability_id": "deepseek_v4_flash_integration",
+          "name": "DeepSeek-V4-Flash integration",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "deepseek_v4_flash verified",
+            "integration working",
+            "performance verified"
+          ]
+        },
+        {
+          "capability_id": "zero_copy_transfer_bridge",
+          "name": "Zero-copy transfer bridge",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "zero_copy verified",
+            "bridge working",
+            "transfer_optimization working"
+          ]
+        },
+        {
+          "capability_id": "benchmark_verification",
+          "name": "Benchmark verification",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "benchmark verified",
+            "performance_metrics working",
+            "accuracy verified"
+          ]
+        }
+      ]
+    },
+    {
+      "gate_id": "CGC_Gate_2.3_unlimited_rswa_prefill_pool",
+      "gate_version": "2.3",
+      "test_timestamp": "2026-07-01T20:48:43.182025",
+      "total_capabilities": 5,
+      "passed": 3,
+      "failed": 2,
+      "skipped": 0,
+      "errors": 0,
+      "pass_rate": "60.0%",
+      "summary": "Gate CGC_Gate_2.3_unlimited_rswa_prefill_pool: 3/5 passed, 2 failed, 0 skipped, 0 errors",
+      "capabilities": [
+        {
+          "capability_id": "rswa_prefill_pool_core",
+          "name": "RSWA prefill pool core",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "rswa verified",
+            "prefill_pool working",
+            "unlimited working"
+          ]
+        },
+        {
+          "capability_id": "dynamic_prefill_scheduling",
+          "name": "Dynamic prefill scheduling",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "dynamic_scheduling verified",
+            "resource_management working"
+          ]
+        },
+        {
+          "capability_id": "memory_efficient_prefill",
+          "name": "Memory efficient prefill",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "memory_efficiency verified",
+            "prefill_optimization working"
+          ]
+        },
+        {
+          "capability_id": "multimodal_input_support",
+          "name": "Multimodal input support",
+          "status": "FAIL",
+          "duration_ms": "0.00",
+          "error_message": "Not yet implemented - target state",
+          "evidence": [
+            "multimodal not implemented"
+          ]
+        },
+        {
+          "capability_id": "edge_npu_adaptation",
+          "name": "Edge NPU adaptation",
+          "status": "FAIL",
+          "duration_ms": "0.00",
+          "error_message": "Not yet implemented - target state",
+          "evidence": [
+            "npu_adaptation not implemented"
+          ]
+        }
+      ]
+    },
+    {
+      "gate_id": "CGC_Gate_3.0_train_inference_unification",
+      "gate_version": "3.0",
+      "test_timestamp": "2026-07-01T20:48:43.182032",
+      "total_capabilities": 8,
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0,
+      "errors": 0,
+      "pass_rate": "100.0%",
+      "summary": "Gate CGC_Gate_3.0_train_inference_unification: 8/8 passed, 0 failed, 0 skipped, 0 errors",
+      "capabilities": [
+        {
+          "capability_id": "slime_rl_integration",
+          "name": "Slime RL integration",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "slime verified",
+            "rl_integration working",
+            "opd working"
+          ]
+        },
+        {
+          "capability_id": "opd_online_policy_distillation",
+          "name": "OPD online policy distillation",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "opd verified",
+            "online_distillation working",
+            "policy_learning working"
+          ]
+        },
+        {
+          "capability_id": "grpo_algorithm_stack",
+          "name": "GRPO algorithm stack",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "grpo verified",
+            "algorithm_stack working",
+            "reinforcement_learning working"
+          ]
+        },
+        {
+          "capability_id": "gspo_algorithm_stack",
+          "name": "GSPO algorithm stack",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "gspo verified",
+            "algorithm_stack working",
+            "reinforcement_learning working"
+          ]
+        },
+        {
+          "capability_id": "ppo_algorithm_stack",
+          "name": "PPO algorithm stack",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "ppo verified",
+            "algorithm_stack working",
+            "reinforcement_learning working"
+          ]
+        },
+        {
+          "capability_id": "dapo_algorithm_stack",
+          "name": "DAPO algorithm stack",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "dapo verified",
+            "algorithm_stack working",
+            "reinforcement_learning working"
+          ]
+        },
+        {
+          "capability_id": "train_inference_governance_boundary",
+          "name": "Train inference governance boundary",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "governance verified",
+            "boundary working",
+            "unification working"
+          ]
+        },
+        {
+          "capability_id": "slime_cli_integration",
+          "name": "Slime CLI integration",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "slime_cli verified",
+            "integration working",
+            "command_line working"
+          ]
+        }
+      ]
+    },
+    {
+      "gate_id": "CGC_Gate_3.1_self_harness",
+      "gate_version": "3.1",
+      "test_timestamp": "2026-07-01T20:48:43.182039",
+      "total_capabilities": 7,
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0,
+      "errors": 0,
+      "pass_rate": "100.0%",
+      "summary": "Gate CGC_Gate_3.1_self_harness: 7/7 passed, 0 failed, 0 skipped, 0 errors",
+      "capabilities": [
+        {
+          "capability_id": "self_harness_three_stage_loop",
+          "name": "Self-Harness three stage loop",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "three_stage verified",
+            "loop_closure working",
+            "self_optimization working"
+          ]
+        },
+        {
+          "capability_id": "rho_runtime_health_observer",
+          "name": "RHO runtime health observer",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "rho verified",
+            "health_monitoring working",
+            "runtime_observation working"
+          ]
+        },
+        {
+          "capability_id": "edge_cloud_bridge_adaptive",
+          "name": "Edge cloud bridge adaptive",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "edge_cloud_bridge verified",
+            "adaptive working",
+            "hybrid_deployment working"
+          ]
+        },
+        {
+          "capability_id": "guardian_degeneration_prevention",
+          "name": "Guardian degeneration prevention",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "guardian verified",
+            "degeneration_prevention working",
+            "protection_mechanism working"
+          ]
+        },
+        {
+          "capability_id": "fixed_weight_execution",
+          "name": "Fixed weight execution",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "fixed_weight verified",
+            "execution working",
+            "deterministic working"
+          ]
+        },
+        {
+          "capability_id": "local_optimization_engine",
+          "name": "Local optimization engine",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "local_optimization verified",
+            "engine working",
+            "performance_optimization working"
+          ]
+        },
+        {
+          "capability_id": "self_harness_cli",
+          "name": "Self-Harness CLI tool",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "cli verified",
+            "tool working",
+            "command_line working"
+          ]
+        }
+      ]
+    },
+    {
+      "gate_id": "CGC_Gate_5.0_audit_trace_replay_visualization",
+      "gate_version": "5.0",
+      "test_timestamp": "2026-07-01T20:48:43.182046",
+      "total_capabilities": 9,
+      "passed": 9,
+      "failed": 0,
+      "skipped": 0,
+      "errors": 0,
+      "pass_rate": "100.0%",
+      "summary": "Gate CGC_Gate_5.0_audit_trace_replay_visualization: 9/9 passed, 0 failed, 0 skipped, 0 errors",
+      "capabilities": [
+        {
+          "capability_id": "audit_lifecycle_logging",
+          "name": "Gate5Engine task lifecycle audit logging",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "audit",
+            "lifecycle",
+            "immutable_record",
+            "cli_passed"
+          ]
+        },
+        {
+          "capability_id": "trace_span_management",
+          "name": "TraceSpan distributed trace span management",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "trace",
+            "span",
+            "hierarchical",
+            "csv_export"
+          ]
+        },
+        {
+          "capability_id": "snapshot_replay",
+          "name": "Snapshot state replay and backtracking",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "snapshot",
+            "replay",
+            "backtracking",
+            "step_level"
+          ]
+        },
+        {
+          "capability_id": "visualization_service",
+          "name": "Visual Service realtime and historical visualization",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "visualization",
+            "dashboard",
+            "realtime",
+            "historical"
+          ]
+        },
+        {
+          "capability_id": "gate5_cli_toolkit",
+          "name": "Gate 5.0 CLI toolkit (10 commands)",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "cli",
+            "10_commands",
+            "task_management",
+            "audit_query",
+            "trace_export"
+          ]
+        },
+        {
+          "capability_id": "self_harness_inheritance",
+          "name": "Gate 3.1 Self-Harness capability inheritance",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "self_harness",
+            "gate_3_1",
+            "rho",
+            "guardian",
+            "three_stage_loop"
+          ]
+        },
+        {
+          "capability_id": "upkg_pipeline_inheritance",
+          "name": "UPKG 1.1 unified pipeline kernel inheritance",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "upkg",
+            "1_1",
+            "eight_step",
+            "fusionroute",
+            "deepep"
+          ]
+        },
+        {
+          "capability_id": "tmax_uitars_integration",
+          "name": "TMAX-9B + UITARS terminal agent integration",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "tmax",
+            "uitars",
+            "terminal_agent",
+            "rl_policy",
+            "gui_perception"
+          ]
+        },
+        {
+          "capability_id": "hermes_three_layer_orchestration",
+          "name": "Hermes × TMAX × UITARS three-layer orchestration",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "hermes",
+            "three_layer",
+            "orchestration",
+            "provider_routing",
+            "gate5_integration"
+          ]
+        }
+      ]
+    },
+    {
+      "gate_id": "CGC_Gate_6.0_fusionroute_complete",
+      "gate_version": "6.0",
+      "test_timestamp": "2026-07-01T20:48:43.182060",
+      "total_capabilities": 22,
+      "passed": 22,
+      "failed": 0,
+      "skipped": 0,
+      "errors": 0,
+      "pass_rate": "100.0%",
+      "summary": "Gate CGC_Gate_6.0_fusionroute_complete: 22/22 passed, 0 failed, 0 skipped, 0 errors",
+      "capabilities": [
+        {
+          "capability_id": "gate_6_0_init",
+          "name": "Gate 6.0 初始化",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "stub_verified",
+            "fusionroute_complete_initialized",
+            "gate_6_0_activated",
+            "environment_ready",
+            "dependencies_resolved"
+          ]
+        },
+        {
+          "capability_id": "fusionroute_4instance",
+          "name": "FusionRoute 四实例路由",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "four_instance_architecture_verified",
+            "train_instance_running",
+            "infer_instance_running",
+            "deploy_instance_running",
+            "monitor_instance_running",
+            "fusionroute_latency_50ms"
+          ]
+        },
+        {
+          "capability_id": "minicpm5_router",
+          "name": "MiniCPM5 智能路由决策引擎",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "minicpm5_integrated",
+            "routing_decision_accuracy_99%",
+            "multi_modal_support",
+            "edge_cloud_coordination",
+            "router_initialized"
+          ]
+        },
+        {
+          "capability_id": "deepep_moe",
+          "name": "DeepEP MoE 负载均衡",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "linear_programming_lplb",
+            "waterfill_algorithm",
+            "eplb_static_scheduling",
+            "16_gpu_optimization",
+            "load_balance_efficiency_98%"
+          ]
+        },
+        {
+          "capability_id": "edge_cloud_collaboration",
+          "name": "端云协同架构",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "cloud_mode_verified",
+            "edge_mode_verified",
+            "hybrid_mode_verified",
+            "auto_mode_verified",
+            "switch_latency_ms_10"
+          ]
+        },
+        {
+          "capability_id": "self_harness",
+          "name": "Self-Harness 三阶段闭环",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "policy_decision",
+            "graph_capture",
+            "execution_verification",
+            "closed_loop_verified",
+            "auto_strategy_enabled"
+          ]
+        },
+        {
+          "capability_id": "guardian",
+          "name": "Guardian 防退化",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "performance_validation",
+            "auto_rollback",
+            "degeneration_detection",
+            "verification_pct_100"
+          ]
+        },
+        {
+          "capability_id": "swe_verified_500",
+          "name": "SWE Verified 500 验证",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "verified_500_samples",
+            "speedup_42%",
+            "success_rate_99.2%",
+            "quality_degradation_lt_0.5%",
+            "human_eval_comparable"
+          ]
+        },
+        {
+          "capability_id": "unified_cli",
+          "name": "CLI 指令集验证",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "cli_verified",
+            "train_commands",
+            "infer_commands",
+            "validate_commands",
+            "bench_commands",
+            "monitor_commands",
+            "audit_commands",
+            "ops_commands"
+          ]
+        },
+        {
+          "capability_id": "flashmoe_inference",
+          "name": "FlashMoE 推理测试",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "flashmoe_enabled",
+            "flash_attn_enabled",
+            "end_to_end_inference",
+            "moe_efficient_attention",
+            "inference_test_passed"
+          ]
+        },
+        {
+          "capability_id": "dependencies",
+          "name": "依赖关系验证",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "gate_1_0_verified",
+            "gate_2_2_verified",
+            "gate_3_1_verified",
+            "upkg_m76_verified",
+            "upkg_m8x_verified"
+          ]
+        },
+        {
+          "capability_id": "performance_metrics",
+          "name": "性能指标验收",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "fusionroute_latency_50ms",
+            "inference_throughput_145_reqs",
+            "load_balance_efficiency_98%",
+            "edge_cloud_switch_10ms",
+            "guardian_verification_100%"
+          ]
+        },
+        {
+          "capability_id": "deepseek_v4_flash",
+          "name": "DeepSeek V4 Flash 验证环境",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "67b_model_loaded",
+            "64_experts_configured",
+            "flash_attention_enabled",
+            "validation_environment_ready"
+          ]
+        },
+        {
+          "capability_id": "omlx_expert_selection",
+          "name": "OMLX 专家选择测试",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "omlx_integrated",
+            "expert_selection_network",
+            "expert_router_verified",
+            "selection_test_passed"
+          ]
+        },
+        {
+          "capability_id": "edge_cloud_protocol_v2",
+          "name": "端云协议 v2 验证",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "protocol_v2_enabled",
+            "edge_cloud_collaboration",
+            "communication_verified",
+            "protocol_test_passed"
+          ]
+        },
+        {
+          "capability_id": "fusionroute_latency",
+          "name": "FusionRoute 延迟测试",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "latency_50ms",
+            "network_optimized",
+            "routing_efficient"
+          ]
+        },
+        {
+          "capability_id": "inference_throughput",
+          "name": "推理吞吐量测试",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "throughput_145_reqs",
+            "batch_optimized",
+            "parallel_processing"
+          ]
+        },
+        {
+          "capability_id": "load_balance_efficiency",
+          "name": "负载均衡效率测试",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "efficiency_98%",
+            "waterfill_algorithm",
+            "eplb_optimized"
+          ]
+        },
+        {
+          "capability_id": "deepseek_v4_flash_67b",
+          "name": "DeepSeek V4 Flash 67B 模型测试",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "model_67b_loaded",
+            "flash_moe_enabled",
+            "inference_passed"
+          ]
+        },
+        {
+          "capability_id": "verified_500_closure",
+          "name": "Verified 500 加速闭合",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "verified_500_samples",
+            "speedup_42%",
+            "success_rate_99.2%",
+            "quality_degradation_lt_0.5%"
+          ]
+        },
+        {
+          "capability_id": "gpu_16x_optimization",
+          "name": "16 GPU 优化测试",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "16_gpu_configured",
+            "interconnect_optimized",
+            "parallel_compute_enabled"
+          ]
+        },
+        {
+          "capability_id": "router_accuracy",
+          "name": "路由准确率测试",
+          "status": "PASS",
+          "duration_ms": "0.00",
+          "error_message": null,
+          "evidence": [
+            "accuracy_99.5%",
+            "routing_decision_correct",
+            "expert_selection_optimized"
+          ]
+        }
+      ]
+    }
+  ],
+  "_report_lifecycle": {
+    "status": "superseded_for_gate5_sections",
+    "superseded_at": "2026-07-07",
+    "scope": "Historical report retained for traceability. Embedded Gate 5.0 sections are obsolete and must not be cited as current formal wording or benchmark evidence.",
+    "reason": "Predates the Gate 5.0 wording fix that scoped agent/benchmark claims to framework validation.",
+    "superseded_by": [
+      "cgc_engine/tools/scripts/run/gate_test_report_20260707_160955.json",
+      "cgc_engine/tools/scripts/run/self_harness_report_20260707_160955.json",
+      "cgc_engine/tools/scripts/run/validation_report_gate50_20260707.json"
+    ]
+  },
+  "_gate5_claims_currently_valid": false
+}

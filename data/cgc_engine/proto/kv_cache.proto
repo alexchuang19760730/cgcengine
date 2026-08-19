@@ -1,0 +1,41 @@
+syntax = "proto3";
+package kv_cache;
+
+// 单层Transformer KV数据（兼容vLLM/llama.cpp/KDA/δ-mem记忆增量）
+message KVLayer {
+    int32 layer_id = 1;
+    int32 num_heads = 2;
+    int32 head_dim = 3;
+    int32 seq_len = 4;
+    string dtype = 5; // "bf16", "f16", "f32"
+    bytes key_data = 6;
+    bytes value_data = 7;
+    // δ-mem 记忆增量特征（核心扩展字段）
+    bytes delta_mem_incr = 8;
+    float mem_decay_factor = 9;
+}
+
+// 模型全局配置信息（跨生态识别）
+message ModelInfo {
+    string name = 1;
+    int32 n_layers = 2;
+    int32 n_heads = 3;
+    int32 head_dim = 4;
+    int32 ctx_size = 5;
+    bool is_llama_cpp = 6;
+    bool is_vllm = 7;
+    bool use_kda = 8;
+    bool use_delta_mem = 9; // 标记是否启用δ-mem动态记忆
+    bool use_q2rl = 10;     // 标记是否启用 Q2RL 策略引导
+    string ai_runtime_target = 11; // 例如 "onnxruntime", "tensorrt", "openvino", "none"
+}
+
+// 完整端云KV传输状态（含时序KV+长效记忆+策略向量）
+message KVState {
+    ModelInfo model_info = 1;
+    repeated KVLayer layers = 2;
+    int32 consumed_tokens = 3;
+    string device = 4; // "cuda", "cpu", "metal", "npu"
+    float mem_update_rate = 5; // δ-mem更新率
+    bytes q2rl_strategy_vector = 6; // Q2RL 价值迭代后下发的轻量级 Q 向量
+}

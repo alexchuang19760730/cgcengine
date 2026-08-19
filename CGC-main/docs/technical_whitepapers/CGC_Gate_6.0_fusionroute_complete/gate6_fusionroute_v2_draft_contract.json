@@ -1,0 +1,76 @@
+{
+  "schema_version": "gate6.fusionroute_v2_draft_contract.v1",
+  "gate_id": "CGC_Gate_6.0_fusionroute_complete",
+  "gate_version": "6.0",
+  "status": "draft_projection",
+  "title": "Gate 6.0 FusionRoute v2 Draft Contract",
+  "description": "Draft-only contract rows for the FusionRoute v2 static contract, role locality contract, placement decision report, Perception Matrix suggestion/projection reports, and corresponding self-harness verifier naming. This manifest does not affect the current formal Gate 6.0 capability closure.",
+  "entries": [
+    {
+      "capability_id": "fusionroute_v2_tasktype_gate_domain_contract",
+      "status": "draft_projection",
+      "coverage_mode": "documentation_contract",
+      "cli_command": "python3 cgc_engine/cli.py fusionroute plan --task-type CODEGEN --print-json",
+      "cli_help_command": "python3 cgc_engine/cli.py fusionroute plan --help",
+      "self_harness_verifier": "validate_fusionroute_v2_tasktype_gate_domain_contract",
+      "artifact_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_FusionRoute_v2_Static_Contract_Technical_Whitepaper_v1.0_zh_CN.md",
+      "schema_ref": "",
+      "notes": "TaskType -> GateDomain -> PrimaryRole -> SecondaryRole 静态矩阵草案。"
+    },
+    {
+      "capability_id": "fusionroute_role_locality_contract",
+      "status": "draft_projection",
+      "coverage_mode": "schema_contract",
+      "cli_command": "python3 cgc_engine/cli.py fusionroute contract show --kind role-locality --role UI-TARS --print-json",
+      "cli_help_command": "python3 cgc_engine/cli.py fusionroute contract show --help",
+      "self_harness_verifier": "validate_fusionroute_role_locality_contract",
+      "artifact_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/role_locality_contract.schema.json",
+      "schema_ref": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/role_locality_contract.schema.json",
+      "notes": "role -> locality -> endpoint 的 machine-readable contract schema。"
+    },
+    {
+      "capability_id": "fusionroute_placement_decision_report",
+      "status": "draft_projection",
+      "coverage_mode": "schema_contract",
+      "cli_command": "python3 cgc_engine/cli.py fusionroute placement verify --task-type EXECUTION --role UI-TARS --print-json",
+      "cli_help_command": "python3 cgc_engine/cli.py fusionroute placement verify --help",
+      "self_harness_verifier": "validate_fusionroute_placement_decision_report",
+      "artifact_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/placement_decision_report.schema.json",
+      "schema_ref": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/placement_decision_report.schema.json",
+      "notes": "placement decision JSON 证据报告 schema。"
+    },
+    {
+      "capability_id": "fusionroute_policy_suggestion_report",
+      "status": "draft_projection",
+      "coverage_mode": "schema_contract",
+      "cli_command": "python3 cgc_engine/cli.py fusionroute perception plan --task-type CODEGEN --environment-type repo --print-json",
+      "cli_help_command": "python3 cgc_engine/cli.py fusionroute perception plan --help",
+      "self_harness_verifier": "validate_fusionroute_policy_suggestion_report",
+      "artifact_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/policy_suggestion_report.schema.json",
+      "schema_ref": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/policy_suggestion_report.schema.json",
+      "notes": "Perception Matrix + LLM policy suggestion JSON 证据 schema。"
+    },
+    {
+      "capability_id": "fusionroute_contract_projection_report",
+      "status": "draft_projection",
+      "coverage_mode": "schema_contract",
+      "cli_command": "python3 cgc_engine/cli.py fusionroute perception project --task-type CODEGEN --environment-type repo --print-json",
+      "cli_help_command": "python3 cgc_engine/cli.py fusionroute perception project --help",
+      "self_harness_verifier": "validate_fusionroute_contract_projection_report",
+      "artifact_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/contract_projection_report.schema.json",
+      "schema_ref": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/contract_projection_report.schema.json",
+      "notes": "Perception Matrix contract projection JSON 证据 schema。"
+    },
+    {
+      "capability_id": "fusionroute_v2_draft_contract_chain",
+      "status": "draft_projection",
+      "coverage_mode": "draft_manifest",
+      "cli_command": "python3 cgc_engine/cli.py fusionroute verify --capability all --print-json",
+      "cli_help_command": "python3 cgc_engine/cli.py fusionroute verify --help",
+      "self_harness_verifier": "validate_fusionroute_v2_draft_contract",
+      "artifact_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/gate6_fusionroute_v2_draft_contract.json",
+      "schema_ref": "",
+      "notes": "Draft manifest 将静态矩阵、schema、example JSON 与 FusionRoute verifier 名称绑定成可机读契约链。"
+    }
+  ]
+}

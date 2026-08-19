@@ -1,0 +1,103 @@
+{
+  "report_generated_at": "2026-07-07T13:49:27.025443",
+  "execution_mode": "self_harness_three_stage",
+  "total_gates": 1,
+  "total_capabilities": 12,
+  "total_passed": 12,
+  "gates": [
+    {
+      "gate_id": "CGC_Gate_1.0_edge_cloud_autonomy",
+      "gate_version": "1.0",
+      "execution_mode": "self_harness_three_stage",
+      "passed": 12,
+      "total": 12,
+      "pass_rate": "100.0%",
+      "capabilities": [
+        {
+          "id": "dopd_handoff",
+          "name": "DOPD Handoff Control Plane",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "cq4_transport",
+          "name": "CQ4 Transport Plane",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "trueorthokda",
+          "name": "TrueOrthoKDA KV + CQ4 Compression",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "zero_copy",
+          "name": "Zero-Copy VRAM",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "prefill_producer",
+          "name": "Prefill Producer & Auto-Publish",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "task_type_contract",
+          "name": "Task Type Contract",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "ray_dual_host",
+          "name": "Ray Dual-Host Topology",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "moe_route_consistency",
+          "name": "MoE Route Consistency",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "upkg_manager",
+          "name": "UPKG Version Management",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "system_profile",
+          "name": "System Profile Setting",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "state_abi",
+          "name": "State ABI Management",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "bootstrap",
+          "name": "Bootstrap & Recovery",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        }
+      ]
+    }
+  ]
+}

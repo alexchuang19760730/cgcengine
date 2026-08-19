@@ -1,0 +1,227 @@
+{
+  "gate_name": "CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation",
+  "status": "VALIDATED",
+  "report_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation/CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation_gate_map.json",
+  "summary_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation/CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation_Technical_Whitepaper_v1.0_zh_CN.md",
+  "trigger": "manual_gate_projection",
+  "release_repo": "powerautoai/ComputeGraphCompiler",
+  "timestamp": "2026-06-27T00:00:00Z",
+  "extra": {
+    "gate_version": "2.0",
+    "depends_on_gate": "CGC_Gate_1.0_edge_cloud_autonomy",
+    "runtime_sub_name": "layer_adaptive_edge_cloud_pd_disaggregation",
+    "document_type": "layer_adaptive_pd_disaggregation_checkin_example",
+    "gate_result_keys": [
+      "status_summary",
+      "claim_boundaries",
+      "artifact_refs",
+      "capability_statuses"
+    ],
+    "status_summary": {
+      "total_capabilities": 52,
+      "done": 52,
+      "proof": 0,
+      "target": 0,
+      "stub": 0
+    },
+    "capability_statuses": [
+      {
+        "capability_id": "edge_omlx_flashmoe_autonomous_entry",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "cq4_transport_plane",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "trueorthokda_zero_copy_state_runtime",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "dopd_handoff_control_plane",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "real_prefill_producer_and_auto_publish",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "task_type_contract_and_bundle_governance",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "sglang_deepep_tp4ep4_prefill_foundation",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "deepep_route_contract_dispatch_profile",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "ray_engine_dual_host_service_topology",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "colossalai_distributed_runtime_candidate",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "deepseek_v4_flash_resume_decode_path",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "m77_cloud_edge_q2rl_consumption_anchor",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "m78_teaching_pure_llm_consumption_anchor",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "upkg20_model_product_binding",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "upkg3x_agent_product_binding",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "m76_dev_gate_proof_anchor",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "max_local_layer_dynamic_partition",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "finished_layer_prefill_continuation",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "hidden_states_partial_kv_abi",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "layer_wise_kv_streaming_to_decode",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "udiq2_kda_joint_transport_profile",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "moe_route_consistency_across_edge_cloud",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      }
+    ],
+    "claim_boundaries": {
+      "formally_claimable": [
+        "cloud_internal_deepep_ep_moe_elastic_buffer has direct vendored runtime evidence.",
+        "hidden_states_partial_kv_abi is backed by a real payload/schema surface.",
+        "g23_prefill_pool_dynamic_management has a real module with hot/cold chunk management and GDS-aware swapping.",
+        "g21_eight_step_pipeline_governance_integration, g21_upk_binding_for_fusion_variants, and g21_state_abi_extension_hook now pass Host1 / Host2 verifier runs.",
+        "g22_kv_kv_cache_management, g22_kv_cache_reuse, g22_kv_dynamic_cache_sizing, and g22_kv_cache_prefetching now pass Host1 / Host2 verifier runs.",
+        "g22_deepep_l20n_dualnode_16gpus, g22_deepep_l20n_megatrain_8step, g22_deepep_l20n_inference_8step, g22_deepep_bootstrap_deepep_compat, g22_deepep_system_profile_l20n, g22_deepep_upk_l20n_optimization, and g22_deepep_state_abi_l20n now pass Host1 / Host2 verifier runs.",
+        "g23_rswa_double_layer_kv, g23_gds_nfsordma_direct_io, g23_trueorthokda_adapter, and g23_cloud_l20n_tp4_adaptation now pass Host1 / Host2 verifier runs.",
+        "g23_unified_ir_inject_sglang_compute_graph now closes the primary g23_sglang_backend_integration bucket, while route consistency remains a separate target."
+      ],
+      "proof_backed_but_not_gate2_done": [],
+      "not_yet_formally_claimable": []
+    },
+    "artifact_refs": {
+      "gate_map_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation/CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation_gate_map.json",
+      "whitepaper_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation/CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation_Technical_Whitepaper_v1.0_zh_CN.md",
+      "gate_1_0_whitepaper_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_1.0_edge_cloud_autonomy/CGC_Gate_1.0_edge_cloud_autonomy_Technical_Whitepaper_v1.0_zh_CN.md",
+      "profile_settings_example": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/examples/dualnode_deepseek_v4_flash_qwen35_dflash_profile_settings.example.json",
+      "system_manifest_example": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/examples/dualnode_deepseek_v4_flash_qwen35_dflash_system_manifest.example.json",
+      "runtime_bootstrap_contract_example": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/examples/dualnode_blackwell_deepep_ep16_tp1_runtime_bootstrap_contract.example.json",
+      "task_type_contract": "/Users/alexchuang/Documents/flashkv0516/app/shared/contracts/task_type_contract.json"
+    },
+    "consumer_projection": {
+      "cli_gate_summary": {
+        "status_source": "extra.status_summary",
+        "capability_source": "extra.capability_statuses"
+      },
+      "bundle_audit": {
+        "artifact_ref_source": "extra.artifact_refs",
+        "claim_boundary_source": "extra.claim_boundaries"
+      },
+      "release_checkin": {
+        "primary_identity_fields": [
+          "gate_name",
+          "status",
+          "timestamp"
+        ]
+      },
+      "dashboard_report": {
+        "summary_source": "extra.status_summary",
+        "claim_source": "extra.claim_boundaries"
+      }
+    },
+    "validation_snapshot": {
+      "depends_on_validated_gate_1_0": true,
+      "validated_foundation_set": [
+        "m1-m7.6",
+        "upkg21"
+      ],
+      "validated_done_extensions": [
+        "sglang_deepep_tp4ep4_prefill_foundation",
+        "deepseek_v4_flash_resume_decode_path",
+        "ray_engine_dual_host_service_topology",
+        "colossalai_distributed_runtime_candidate",
+        "cloud_internal_deepep_ep_moe_elastic_buffer",
+        "hidden_states_partial_kv_abi",
+        "g21_eight_step_pipeline_governance_integration",
+        "g21_upk_binding_for_fusion_variants",
+        "g21_state_abi_extension_hook",
+        "g22_kv_kv_cache_management",
+        "g22_kv_cache_reuse",
+        "g22_kv_dynamic_cache_sizing",
+        "g22_kv_cache_prefetching",
+        "g22_deepep_l20n_dualnode_16gpus",
+        "g22_deepep_l20n_megatrain_8step",
+        "g22_deepep_l20n_inference_8step",
+        "g22_deepep_bootstrap_deepep_compat",
+        "g22_deepep_system_profile_l20n",
+        "g22_deepep_upk_l20n_optimization",
+        "g22_deepep_state_abi_l20n",
+        "g23_prefill_pool_dynamic_management",
+        "g23_rswa_double_layer_kv",
+        "g23_gds_nfsordma_direct_io",
+        "g23_trueorthokda_adapter",
+        "g23_cloud_l20n_tp4_adaptation",
+        "g23_sglang_backend_integration"
+      ],
+      "proof_binding_set": [
+        "edge_omlx_flashmoe_autonomous_entry",
+        "cq4_transport_plane",
+        "trueorthokda_zero_copy_state_runtime",
+        "dopd_handoff_control_plane",
+        "deepep_route_contract_dispatch_profile"
+      ],
+      "summary": "Gate 2.0 now reflects a fully closed 52-done capability matrix. Host1 / Host2 verifier closure, merged Gate 2.1/2.2/2.3 runtime evidence, UPKG 2.0 / UPKG 3.x consumption anchors, m76 heterogeneous integration, UD-IQ2 + KDA transport, MoE route consistency, trace-replay governance, DSpark / JetSpec adapters, Verified 500, and 4D perception matrix are all tracked as done in the authoritative gate map."
+    }
+  }
+}

@@ -1,0 +1,50 @@
+name: "CGC_M7.3_Physical_Embodiment_Gate"
+description: "M7.3 物理世界具身智能（AgiBot）自动验收标准"
+version: "1.0-final"
+
+metrics:
+  - name: cloud_training_psi0
+    description: "云端 Psi-Zero 动态轨迹编译 L1 训练"
+    rules:
+      - metric: compile_success_rate
+        operator: ">="
+        threshold: 1.0
+      - metric: cache_hit_rate
+        operator: ">="
+        threshold: 0.6667
+
+  - name: edge_inference_bridge
+    description: "端侧推理 Bridge（云端训练后下发至端侧）"
+    rules:
+      - metric: bridge_export_success
+        operator: "=="
+        threshold: 1.0
+      - metric: edge_latency_ms
+        operator: "<="
+        threshold: 20.0
+
+  - name: state_compression
+    description: "物理轨迹全量状态压缩与去重"
+    rules:
+      - metric: compression_ratio
+        operator: "<="
+        threshold: 0.6
+      - metric: restore_consistency
+        operator: "=="
+        threshold: 1.0
+
+  - name: industrial_audit
+    description: "全链路 6D 轨迹 Hash Chain 审计"
+    rules:
+      - metric: event_integrity
+        operator: "=="
+        threshold: 1.0
+      - metric: hash_chain_valid
+        operator: "=="
+        threshold: 1.0
+
+output:
+  format: ["json", "html"]
+  report_file: "report_m73.json"
+  pass_fail_strategy: "all_must_pass"
+

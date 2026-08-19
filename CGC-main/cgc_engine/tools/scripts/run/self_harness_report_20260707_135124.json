@@ -1,0 +1,376 @@
+{
+  "report_generated_at": "2026-07-07T13:51:24.633667",
+  "execution_mode": "self_harness_three_stage",
+  "total_gates": 1,
+  "total_capabilities": 51,
+  "total_passed": 51,
+  "gates": [
+    {
+      "gate_id": "CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation",
+      "gate_version": "2.0",
+      "execution_mode": "self_harness_three_stage",
+      "passed": 51,
+      "total": 51,
+      "pass_rate": "100.0%",
+      "capabilities": [
+        {
+          "id": "edge_omlx_flashmoe_autonomous_entry",
+          "name": "OMLX + FlashMoE 端侧自治执行入口",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "cq4_transport_plane",
+          "name": "CQ4 端云协议承载层",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "trueorthokda_zero_copy_state_runtime",
+          "name": "TrueOrthoKDA 与 Zero-Copy 状态运行时",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "dopd_handoff_control_plane",
+          "name": "PD → DOPD handoff 控制面",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "real_prefill_producer_and_auto_publish",
+          "name": "云侧真实 prefill producer + gateway auto-publish",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "task_type_contract_and_bundle_governance",
+          "name": "task_type contract + 四段 bundle governance",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "sglang_deepep_tp4ep4_prefill_foundation",
+          "name": "SGLang TP4EP4 云侧 prefill 主干",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "deepep_route_contract_dispatch_profile",
+          "name": "DeepEP route contract + dispatch profile",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "ray_engine_dual_host_service_topology",
+          "name": "Ray engine 双主机 service topology",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "colossalai_distributed_runtime_candidate",
+          "name": "ColossalAI distributed runtime 候选",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "deepseek_v4_flash_resume_decode_path",
+          "name": "DeepSeek-V4-Flash 云侧 resume/decode 路径",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "m77_cloud_edge_q2rl_consumption_anchor",
+          "name": "m77 cloud-edge Q2RL 消费锚点",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "m78_teaching_pure_llm_consumption_anchor",
+          "name": "m78 GUI teaching / pure LLM 消费锚点",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "upkg20_model_product_binding",
+          "name": "UPKG 2.0 模型产品 gate 承接",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "upkg3x_agent_product_binding",
+          "name": "UPKG 3.x agent product chain 承接",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "m76_dev_gate_proof_anchor",
+          "name": "m7.6 dev gate 异构集成 bring-up 锚点",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "max_local_layer_dynamic_partition",
+          "name": "端侧 max_local_layer 层粒度动态切分",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "finished_layer_prefill_continuation",
+          "name": "finished_layer 驱动云侧按层接续 Prefill",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "hidden_states_partial_kv_abi",
+          "name": "hidden_states + partial_kv 正式中间态 ABI",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "layer_wise_kv_streaming_to_decode",
+          "name": "层流式 KV 同步至 Decode 集群",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "udiq2_kda_joint_transport_profile",
+          "name": "UD-IQ2 2bit + KDA 联合传输档位",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "moe_route_consistency_across_edge_cloud",
+          "name": "MoE 专家路由跨端云一致性",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g21_dflash_control_baseline",
+          "name": "DFlash 控制基线",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g21_trace_replay_governance_chain",
+          "name": "host1-host2 trace + replay 治理链",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g21_machine_consumable_fusion_artifacts",
+          "name": "机读 fusion artifacts",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g21_bootstrap_contract_binding_surface",
+          "name": "Bootstrap contract 绑定面",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g21_system_profile_and_profile_settings_binding_surface",
+          "name": "System profile + profile settings 绑定面",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g21_eight_step_pipeline_governance_integration",
+          "name": "8-step pipeline 治理整合",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g21_upk_binding_for_fusion_variants",
+          "name": "fusion variants UPK 绑定",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g21_state_abi_extension_hook",
+          "name": "State ABI 扩展钩子 (tree verify / accept frontier / reject frontier / divergent cache)",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g21_dspark_scheduler_runtime_adapter",
+          "name": "DSpark scheduler runtime adapter",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g21_jetspec_draft_runtime_adapter",
+          "name": "JetSpec draft runtime adapter",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g21_verified500_speedup_closure",
+          "name": "Verified 500 加速闭环",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g22_deepep_l20n_dualnode_16gpus",
+          "name": "L20N 双节点 16-GPU 优化",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g22_deepep_l20n_megatrain_8step",
+          "name": "L20N 训练 8-step pipeline",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g22_deepep_l20n_inference_8step",
+          "name": "L20N 推理 8-step pipeline",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g22_deepep_bootstrap_deepep_compat",
+          "name": "Bootstrap DeepEP 兼容性",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g22_deepep_system_profile_l20n",
+          "name": "System Profile L20N 支持",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g22_deepep_upk_l20n_optimization",
+          "name": "UPK L20N 优化",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g22_deepep_state_abi_l20n",
+          "name": "State ABI L20N 支持",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g22_kv_kv_cache_management",
+          "name": "KV 缓存管理 (分配与回收)",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g22_kv_cache_reuse",
+          "name": "缓存复用优化 (多轮对话)",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g22_kv_dynamic_cache_sizing",
+          "name": "动态缓存大小",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g22_kv_cache_prefetching",
+          "name": "缓存预取优化",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g23_rswa_double_layer_kv",
+          "name": "R-SWA 双层 KV 结构 (Reference 全局常驻 + Output 滑动窗口)",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g23_prefill_pool_dynamic_management",
+          "name": "Prefill Pool 动态块管理 (热块加载 / 冷块卸载)",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g23_gds_nfsordma_direct_io",
+          "name": "GDS + NFSoRDMA 直写显存",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g23_trueorthokda_adapter",
+          "name": "TrueOrthoKDA 适配 (Reference/Output KV 统一管理)",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g23_cloud_l20n_tp4_adaptation",
+          "name": "云端 L20N 双 TP4 适配 (无 PCIe 带宽风暴)",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g23_unified_ir_inject_sglang_compute_graph",
+          "name": "UnifiedIRInjector 整图注入 SGLang compute 计算图 (Attention + TopK + FusedMoE)",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "g23_endtoend_moe_tensor_transport",
+          "name": "端云 MoE 一层一层张量传输 (DeepEP + NFSoRDMA + CQ4 + TrueOrthoKDA + RSWA + Prefill Pool)",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        }
+      ]
+    }
+  ]
+}

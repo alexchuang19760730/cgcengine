@@ -1,0 +1,108 @@
+{
+  "report_generated_at": "2026-07-01T22:38:59.049540",
+  "execution_mode": "direct_cli",
+  "total_gates": 1,
+  "total_capabilities": 11,
+  "total_passed": 11,
+  "gates": [
+    {
+      "gate_id": "CGC_Gate_2.1_speculative_decode_fusion_optimization",
+      "gate_version": "2.1",
+      "execution_mode": "gate_2_1_acceptance",
+      "passed": 11,
+      "total": 11,
+      "pass_rate": "100.0%",
+      "capabilities": [
+        {
+          "id": "machine_consumable_fusion_artifacts",
+          "name": "Machine-consumable Fusion Artifacts",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "python cgc_engine/tools/scripts/run/gate_test_framework.py --gate CGC_Gate_2.1_speculative_decode_fusion_optimization"
+        },
+        {
+          "id": "trace_replay_governance_chain",
+          "name": "Trace Replay Governance Chain",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "python cgc_engine/tools/scripts/run/gate_test_framework.py --gate CGC_Gate_2.1_speculative_decode_fusion_optimization"
+        },
+        {
+          "id": "dflash_control_baseline",
+          "name": "DFlash Control Baseline",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model verify --model dflash_baseline --gate 2.1"
+        },
+        {
+          "id": "dspark_scheduler_runtime_adapter",
+          "name": "DSpark Scheduler Runtime Adapter",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model verify --model dspark_scheduler --gate 2.1 --enable-speculative --speculative-mode dspark --dspark-budget 64"
+        },
+        {
+          "id": "jetspec_draft_runtime_adapter",
+          "name": "JetSpec Draft Runtime Adapter",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model verify --model jetspec_draft --gate 2.1 --enable-speculative --speculative-mode jetspec --jetspec-branches 8"
+        },
+        {
+          "id": "bootstrap_contract_binding_surface",
+          "name": "Bootstrap Contract Binding Surface",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "python cgc_engine/tools/scripts/run/gate_test_framework.py --gate CGC_Gate_2.1_speculative_decode_fusion_optimization"
+        },
+        {
+          "id": "system_profile_and_profile_settings_binding_surface",
+          "name": "System Profile and Profile Settings Binding Surface",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "python cgc_engine/tools/scripts/run/gate_test_framework.py --gate CGC_Gate_2.1_speculative_decode_fusion_optimization"
+        },
+        {
+          "id": "eight_step_pipeline_governance_integration",
+          "name": "8-Step Pipeline Governance Integration",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "python cgc_engine/tools/scripts/run/gate_test_framework.py --gate CGC_Gate_2.1_speculative_decode_fusion_optimization"
+        },
+        {
+          "id": "upk_binding_for_fusion_variants",
+          "name": "UPK Binding for Fusion Variants",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model verify --model fusion_dspark_jetspec --gate 2.1 --enable-speculative --speculative-mode fusion --dspark-budget 64 --jetspec-branches 8"
+        },
+        {
+          "id": "state_abi_extension_hook",
+          "name": "State ABI Extension Hook",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "python cgc_engine/tools/scripts/run/gate_test_framework.py --gate CGC_Gate_2.1_speculative_decode_fusion_optimization"
+        },
+        {
+          "id": "verified500_speedup_closure",
+          "name": "Verified 500 Speedup Closure",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "python cgc_engine/tools/scripts/run/gate_test_framework.py --gate CGC_Gate_2.1_speculative_decode_fusion_optimization"
+        }
+      ]
+    }
+  ],
+  "_report_lifecycle": {
+    "status": "superseded_for_gate5_sections",
+    "superseded_at": "2026-07-07",
+    "scope": "Historical report retained for traceability. Embedded Gate 5.0 sections are obsolete and must not be cited as current formal wording or benchmark evidence.",
+    "reason": "Predates the Gate 5.0 wording fix that scoped agent/benchmark claims to framework validation.",
+    "superseded_by": [
+      "cgc_engine/tools/scripts/run/gate_test_report_20260707_160955.json",
+      "cgc_engine/tools/scripts/run/self_harness_report_20260707_160955.json",
+      "cgc_engine/tools/scripts/run/validation_report_gate50_20260707.json"
+    ]
+  },
+  "_gate5_claims_currently_valid": false
+}

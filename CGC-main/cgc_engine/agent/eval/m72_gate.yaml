@@ -1,0 +1,42 @@
+name: "CGC_M7.2_Industrial_Verification_Gate"
+description: "M7.2 工业级一体化底座政企 GUI Agent 验收标准（verification only）"
+version: "1.0-final"
+
+metrics:
+  - name: dynamic_trace_l1
+    description: "动态轨迹编译 L1（shape动态 + 固定控制流）"
+    rules:
+      - metric: compile_success_rate
+        operator: ">="
+        threshold: 1.0
+      - metric: cache_hit_rate
+        operator: ">="
+        threshold: 0.6667
+      - metric: correctness_consistency
+        operator: "=="
+        threshold: 1.0
+
+  - name: soft_rt_replay
+    description: "软实时回放与零拷贝极速传输 (无严格 10ms 限制)"
+    rules:
+      - metric: p99_latency_ms
+        operator: "<="
+        threshold: 1000.0
+      - metric: miss_rate
+        operator: "<="
+        threshold: 0.001
+
+  - name: industrial_audit
+    description: "全链路Hash Chain审计不可抵赖"
+    rules:
+      - metric: event_integrity
+        operator: "=="
+        threshold: 1.0
+      - metric: hash_chain_valid
+        operator: "=="
+        threshold: 1.0
+
+output:
+  format: ["json", "html"]
+  report_file: "report.json"
+  pass_fail_strategy: "all_must_pass"

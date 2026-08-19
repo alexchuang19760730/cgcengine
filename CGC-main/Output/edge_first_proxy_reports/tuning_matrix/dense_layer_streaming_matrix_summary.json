@@ -1,0 +1,102 @@
+[
+  {
+    "config": {
+      "name": "baseline_b512_u256_g6_w6",
+      "n_batch": "512",
+      "n_ubatch": "256",
+      "n_gpu_layers": "6",
+      "cur_w": "6",
+      "pre_w": "6"
+    },
+    "bench_exit_code": 1,
+    "routing_status": "PASS",
+    "production_readiness_status": "NO_GO",
+    "ttft_ms_avg": null,
+    "decode_tps_avg": null,
+    "cold_ttft_ms_avg": 3608.5,
+    "warm_hot_ttft_ms_avg": 396.1,
+    "warm_hot_decode_tps_avg": 5.4,
+    "warm_hot_status": null,
+    "cold_status": null,
+    "local_num_layers": 42,
+    "resident_gb": null,
+    "bytes_read_mb": null,
+    "bytes_prefetched_mb": null,
+    "dense_io_backend": null
+  },
+  {
+    "config": {
+      "name": "batch256_u128_g6_w6",
+      "n_batch": "256",
+      "n_ubatch": "128",
+      "n_gpu_layers": "6",
+      "cur_w": "6",
+      "pre_w": "6"
+    },
+    "bench_exit_code": 1,
+    "routing_status": "PASS",
+    "production_readiness_status": "NO_GO",
+    "ttft_ms_avg": null,
+    "decode_tps_avg": null,
+    "cold_ttft_ms_avg": 3263.4,
+    "warm_hot_ttft_ms_avg": 753.0,
+    "warm_hot_decode_tps_avg": 4.0,
+    "warm_hot_status": null,
+    "cold_status": null,
+    "local_num_layers": 42,
+    "resident_gb": null,
+    "bytes_read_mb": null,
+    "bytes_prefetched_mb": null,
+    "dense_io_backend": null
+  },
+  {
+    "config": {
+      "name": "batch512_u256_g8_w6",
+      "n_batch": "512",
+      "n_ubatch": "256",
+      "n_gpu_layers": "8",
+      "cur_w": "6",
+      "pre_w": "6"
+    },
+    "bench_exit_code": 1,
+    "routing_status": "PASS",
+    "production_readiness_status": "NO_GO",
+    "ttft_ms_avg": null,
+    "decode_tps_avg": null,
+    "cold_ttft_ms_avg": 3368.0,
+    "warm_hot_ttft_ms_avg": 738.2,
+    "warm_hot_decode_tps_avg": 5.0,
+    "warm_hot_status": null,
+    "cold_status": null,
+    "local_num_layers": 42,
+    "resident_gb": null,
+    "bytes_read_mb": null,
+    "bytes_prefetched_mb": null,
+    "dense_io_backend": null
+  },
+  {
+    "config": {
+      "name": "batch512_u256_g6_w4",
+      "n_batch": "512",
+      "n_ubatch": "256",
+      "n_gpu_layers": "6",
+      "cur_w": "4",
+      "pre_w": "4"
+    },
+    "bench_exit_code": 1,
+    "routing_status": "PASS",
+    "production_readiness_status": "NO_GO",
+    "ttft_ms_avg": null,
+    "decode_tps_avg": null,
+    "cold_ttft_ms_avg": 3063.6,
+    "warm_hot_ttft_ms_avg": 106.6,
+    "warm_hot_decode_tps_avg": 5.0,
+    "warm_hot_status": null,
+    "cold_status": null,
+    "local_num_layers": 42,
+    "resident_gb": null,
+    "bytes_read_mb": null,
+    "bytes_prefetched_mb": null,
+    "dense_io_backend": null
+  }
+]

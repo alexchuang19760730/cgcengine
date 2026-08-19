@@ -1,0 +1,28 @@
+============================================================
+FULL ABLATION TEST: Qwen2.5-7B-Instruct
+============================================================
+
+--- Test 1: Baseline (single GPU) ---
+INFO 05-09 12:38:15 config.py:1130] Casting torch.float32 to torch.float16.
+INFO 05-09 12:38:15 config.py:1151] Downcasting torch.float32 to torch.float16.
+Traceback (most recent call last):
+  File "/tmp/full_ablation.py", line 21, in <module>
+    llm1 = LLM(
+  File "/home/gs01/.local/lib/python3.10/site-packages/vllm/entrypoints/llm.py", line 144, in __init__
+    self.llm_engine = LLMEngine.from_engine_args(
+  File "/home/gs01/.local/lib/python3.10/site-packages/vllm/engine/llm_engine.py", line 335, in from_engine_args
+    engine_config = engine_args.create_engine_config()
+  File "/home/gs01/.local/lib/python3.10/site-packages/vllm/engine/arg_utils.py", line 559, in create_engine_config
+    model_config = ModelConfig(
+  File "/home/gs01/.local/lib/python3.10/site-packages/vllm/config.py", line 133, in __init__
+    self.max_model_len = _get_and_verify_max_len(
+  File "/home/gs01/.local/lib/python3.10/site-packages/vllm/config.py", line 1224, in _get_and_verify_max_len
+    assert "factor" in rope_scaling
+AssertionError
+ERROR: 
+
+============================================================
+TEST SUMMARY
+============================================================
+Test: FAILED - 
+============================================================

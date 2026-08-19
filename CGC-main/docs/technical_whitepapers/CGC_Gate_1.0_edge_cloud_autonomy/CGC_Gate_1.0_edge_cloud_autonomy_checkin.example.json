@@ -1,0 +1,128 @@
+{
+  "gate_name": "CGC_Gate_1.0_edge_cloud_autonomy",
+  "status": "VALIDATED",
+  "report_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_1.0_edge_cloud_autonomy/CGC_Gate_1.0_edge_cloud_autonomy_gate_map.json",
+  "summary_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_1.0_edge_cloud_autonomy/CGC_Gate_1.0_edge_cloud_autonomy_Technical_Whitepaper_v1.0_zh_CN.md",
+  "trigger": "manual_gate_projection",
+  "release_repo": "powerautoai/ComputeGraphCompiler",
+  "timestamp": "2026-06-27T00:00:00Z",
+  "extra": {
+    "gate_version": "1.0",
+    "runtime_sub_name": "upkg12_dopd_runtime_closure",
+    "historical_composite_alias": "upkg120_edge_cloud_autonomy",
+    "document_type": "edge_cloud_autonomy_checkin_example",
+    "gate_result_keys": [
+      "status_summary",
+      "claim_boundaries",
+      "artifact_refs",
+      "capability_statuses"
+    ],
+    "status_summary": {
+      "total_capabilities": 8,
+      "done": 8,
+      "proof": 0,
+      "target": 0,
+      "stub": 0
+    },
+    "capability_statuses": [
+      {
+        "capability_id": "edge_omlx_flashmoe_memory_threshold_decision",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "cq4_edge_cloud_protocol",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "zero_copy_vram_handoff",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "trueorthokda_kv_cq4_compression",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "dopd_prefill_decode_decoupling",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "sglang_deepep_tp4ep4_cloud_foundation",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "deepseek_v4_flash_cloud_runtime_resume_decode",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      },
+      {
+        "capability_id": "task_type_contract_bundle_governance",
+        "status": "done",
+        "gate_pass_claim": "allowed"
+      }
+    ],
+    "claim_boundaries": {
+      "formally_claimable": [
+        "Zero-Copy or low-copy device resume is materially present in the current codebase.",
+        "Cloud tp4ep4 prefill backbone is materially present and now validated through real DeepEP builder output on host1 and host2.",
+        "task_type contract and bundle governance chain are materially present and auditable.",
+        "CQ4 transport, TrueOrthoKDA compression, DOPD handoff, DeepSeek-V4-Flash resume/decode, and OMLX plus FlashMoE autonomy all pass the current Host1/Host2 verifier chain."
+      ],
+      "not_yet_formally_claimable": []
+    },
+    "artifact_refs": {
+      "gate_map_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_1.0_edge_cloud_autonomy/CGC_Gate_1.0_edge_cloud_autonomy_gate_map.json",
+      "whitepaper_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_1.0_edge_cloud_autonomy/CGC_Gate_1.0_edge_cloud_autonomy_Technical_Whitepaper_v1.0_zh_CN.md",
+      "profile_settings_example": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/examples/dualnode_deepseek_v4_flash_qwen35_dflash_profile_settings.example.json",
+      "system_manifest_example": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/examples/dualnode_deepseek_v4_flash_qwen35_dflash_system_manifest.example.json",
+      "runtime_bootstrap_contract_example": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/examples/dualnode_blackwell_deepep_ep16_tp1_runtime_bootstrap_contract.example.json",
+      "task_type_contract": "/Users/alexchuang/Documents/flashkv0516/app/shared/contracts/task_type_contract.json"
+    },
+    "consumer_projection": {
+      "cli_gate_summary": {
+        "status_source": "extra.status_summary",
+        "capability_source": "extra.capability_statuses"
+      },
+      "bundle_audit": {
+        "artifact_ref_source": "extra.artifact_refs",
+        "claim_boundary_source": "extra.claim_boundaries"
+      },
+      "release_checkin": {
+        "primary_identity_fields": [
+          "gate_name",
+          "status",
+          "timestamp"
+        ]
+      },
+      "dashboard_report": {
+        "summary_source": "extra.status_summary",
+        "claim_source": "extra.claim_boundaries"
+      }
+    },
+    "validation_snapshot": {
+      "source": "current_code_gate_runs",
+      "validated_green_set": [
+        "m1",
+        "m2",
+        "m3",
+        "m4",
+        "m5",
+        "m6",
+        "m7",
+        "m71",
+        "m72",
+        "m73",
+        "m74",
+        "m75",
+        "m76",
+        "upkg21"
+      ],
+      "summary": "Current Host1 and Host2 verifier runs close all eight audited Gate 1.0 capability buckets as done."
+    }
+  }
+}

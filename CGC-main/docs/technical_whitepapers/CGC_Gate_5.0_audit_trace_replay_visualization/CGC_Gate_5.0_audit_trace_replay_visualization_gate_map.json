@@ -1,0 +1,461 @@
+{
+  "schema_version": "cgc_gate_map_v1",
+  "gate_id": "CGC_Gate_5.0_audit_trace_replay_visualization",
+  "gate_version": "5.0",
+  "status": "done",
+  "document_type": "gate_map",
+  "title": "CGC_Gate_5.0_audit_trace_replay_visualization gate map",
+  "whitepaper_ref": {
+    "path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_5.0_audit_trace_replay_visualization/CGC_Gate_5.0_audit_trace_replay_visualization_Technical_Whitepaper_v1.0_zh_CN.md",
+    "title": "CGC_Gate_5.0_audit_trace_replay_visualization Technical Whitepaper v1.0"
+  },
+  "naming": {
+    "formal_gate_name": "CGC_Gate_5.0_audit_trace_replay_visualization",
+    "runtime_sub_name": "gate5_audit_trace_replay_visualization_closure",
+    "historical_composite_alias": "gate5_four_capabilities"
+  },
+  "status_semantics": {
+    "done": "Capability is completed and has stable evidence for formal gate wording.",
+    "integrated": "Capability code is connected into the main path, but still lacks formal gate closure or runtime evidence.",
+    "target": "Capability is defined but not yet implemented or not yet wired into the main path.",
+    "missing-formal-gate": "Capability and evidence exist, but no formal composite gate has been assigned."
+  },
+  "consumer_targets": {
+    "cli_gate_summary": {
+      "enabled": true,
+      "primary_fields": [
+        "gate_id",
+        "gate_version",
+        "status_summary",
+        "capabilities"
+      ]
+    },
+    "bundle_audit": {
+      "enabled": true,
+      "primary_fields": [
+        "governance",
+        "artifact_refs",
+        "acceptance_dimensions"
+      ]
+    },
+    "release_checkin": {
+      "enabled": true,
+      "primary_fields": [
+        "gate_id",
+        "naming",
+        "status_summary",
+        "release_checkin_projection"
+      ]
+    },
+    "dashboard_report": {
+      "enabled": true,
+      "primary_fields": [
+        "status_summary",
+        "capabilities",
+        "artifact_refs",
+        "claim_boundaries"
+      ]
+    }
+  },
+  "status_summary": {
+    "total_capabilities": 9,
+    "done": 9,
+    "integrated": 0,
+    "target": 0,
+    "missing-formal-gate": 0
+  },
+  "capabilities": [
+    {
+      "capability_id": "audit_lifecycle_logging",
+      "name": "Gate5Engine task lifecycle audit logging",
+      "description": "Task lifecycle audit logging via Gate5Engine.create_task / update_task / _audit; AuditRecord immutable records with user_id, timestamp, action, metadata.",
+      "current_gate_binding": [
+        "cgc_engine/gate5/core/engine.py",
+        "cgc gate5 audit list",
+        "cgc gate5 audit report"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_5.0_audit_trace_replay_visualization"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "A",
+      "notes": [
+        "AuditRecord immutable logging is fully landed in cgc_engine/gate5/core/engine.py.",
+        "CLI audit list / report commands validated and passed."
+      ],
+      "evidence_tags": [
+        "audit",
+        "lifecycle",
+        "immutable_record",
+        "cli_passed"
+      ],
+      "cli_flag": "--audit"
+    },
+    {
+      "capability_id": "trace_span_management",
+      "name": "TraceSpan distributed trace span management",
+      "description": "Distributed trace span management via Gate5Engine.start_span / end_span / get_trace; hierarchical parent-child span relationships with duration tracking.",
+      "current_gate_binding": [
+        "cgc_engine/gate5/core/engine.py",
+        "cgc gate5 trace get",
+        "cgc gate5 trace export"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_5.0_audit_trace_replay_visualization"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "T",
+      "notes": [
+        "TraceSpan hierarchical management is fully landed.",
+        "CLI trace get / export commands validated and passed (CSV export supported)."
+      ],
+      "evidence_tags": [
+        "trace",
+        "span",
+        "hierarchical",
+        "csv_export"
+      ],
+      "cli_flag": "--trace"
+    },
+    {
+      "capability_id": "snapshot_replay",
+      "name": "Snapshot state replay and backtracking",
+      "description": "Task state snapshot and replay via Gate5Engine.create_snapshot / replay_task; step-level state capture for backtracking and debugging.",
+      "current_gate_binding": [
+        "cgc_engine/gate5/core/engine.py",
+        "cgc gate5 task replay"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_5.0_audit_trace_replay_visualization"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "R",
+      "notes": [
+        "Snapshot create / replay is fully landed.",
+        "CLI task replay command validated and passed."
+      ],
+      "evidence_tags": [
+        "snapshot",
+        "replay",
+        "backtracking",
+        "step_level"
+      ],
+      "cli_flag": "--snapshot"
+    },
+    {
+      "capability_id": "visualization_service",
+      "name": "Visual Service realtime and historical visualization",
+      "description": "Realtime and historical visualization service; dashboard rendering of audit logs, trace spans, and snapshot timelines.",
+      "current_gate_binding": [
+        "cgc_engine/gate5/config/gate5_config.json",
+        "cgc_engine/gate5/visualization/"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_5.0_audit_trace_replay_visualization"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "V",
+      "notes": [
+        "Visual Service module structure is defined and configured.",
+        "Dashboard / charts / realtime / historical sub-modules landed."
+      ],
+      "evidence_tags": [
+        "visualization",
+        "dashboard",
+        "realtime",
+        "historical"
+      ],
+      "cli_flag": "--visualization"
+    },
+    {
+      "capability_id": "gate5_cli_toolkit",
+      "name": "Gate 5.0 CLI toolkit (10 commands)",
+      "description": "Gate 5.0 CLI with 10 commands: task create/get/list/replay, audit list/report, trace get/export, config show/set. All commands implemented and tested.",
+      "current_gate_binding": [
+        "cgc_engine/gate5/cli/gate5_cli.py",
+        "python3 -m cgc_engine.gate5.cli.gate5_cli"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_5.0_audit_trace_replay_visualization"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "CLI",
+      "notes": [
+        "All 10 CLI commands implemented in cgc_engine/gate5/cli/gate5_cli.py.",
+        "All 10 commands tested and passed."
+      ],
+      "evidence_tags": [
+        "cli",
+        "10_commands",
+        "task_management",
+        "audit_query",
+        "trace_export",
+        "config_management"
+      ],
+      "cli_flag": "--audit"
+    },
+    {
+      "capability_id": "self_harness_inheritance",
+      "name": "Gate 3.1 Self-Harness capability inheritance",
+      "description": "Inherits Gate 3.1 Self-Harness three-stage closed loop (Analyze → Optimize → Verify), RHO trajectory selection, Guardian anti-regression, and edge-cloud bridge. 13 acceptance items all PASSED.",
+      "current_gate_binding": [
+        "cgc_engine/agent/harness_agent.py",
+        "docs/gate_whitepapers/CGC_GATE_3_1_SELF_HARNESS_TECHNICAL_WHITEPAPER_v1.0_zh_CN.md"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_5.0_audit_trace_replay_visualization"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "Inheritance",
+      "notes": [
+        "Gate 3.1 Self-Harness 13 acceptance items all PASSED.",
+        "Three-stage closed loop, RHO, Guardian fully inherited."
+      ],
+      "evidence_tags": [
+        "self_harness",
+        "gate_3_1",
+        "rho",
+        "guardian",
+        "three_stage_loop"
+      ],
+      "cli_flag": "--omlx"
+    },
+    {
+      "capability_id": "upkg_pipeline_inheritance",
+      "name": "UPKG 1.1 unified pipeline kernel inheritance",
+      "description": "Inherits UPKG 1.1 eight-step contract (M1-M7.6), FusionRoute 4-instance, DeepEP, manifest-first artifact management. 26 acceptance items (11 M-series gates + 15 formal judgments) all PASSED.",
+      "current_gate_binding": [
+        "cgc_engine/pipeline.py",
+        "docs/gate_whitepapers/CGC_UPKG_1_1_UNIFIED_PIPELINE_KERNEL_GATE_WHITEPAPER_v1.0_zh_CN.md"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_5.0_audit_trace_replay_visualization"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "Inheritance",
+      "notes": [
+        "UPKG 1.1 M1-M7.6 (11 gates) all PASSED.",
+        "UPKG 1.1 15 formal judgments all PASSED.",
+        "Eight-step contract, FusionRoute, DeepEP fully inherited."
+      ],
+      "evidence_tags": [
+        "upkg",
+        "1_1",
+        "eight_step",
+        "fusionroute",
+        "deepep",
+        "manifest_first"
+      ],
+      "cli_flag": "--omlx"
+    },
+    {
+      "capability_id": "tmax_uitars_integration",
+      "name": "TMAX-9B + UITARS terminal agent integration",
+      "description": "Agent backend integration contract for TMAX planning and UITARS execution. Current repo now proves host1 real runtime binding via `50063 -> TMAX-9B` and `50073 -> UI-TARS-7B-DPO`, with formal ingress returning real model identities.",
+      "current_gate_binding": [
+        "cgc_engine/cli_universe/agent_model.py",
+        "cgc_engine/cli_universe/run_real_benchmark.py"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_5.0_audit_trace_replay_visualization"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "Inheritance",
+      "notes": [
+        "Current repo uses cli_universe orchestrator/backend integration instead of a single TMAXUITARSAgent source file.",
+        "Host1 formal ingress now returns `TMAX-9B` on :50063 and `UI-TARS-7B-DPO` on :50073.",
+        "Runtime identity is enforced by `fusionroute_role_runtime_binding` and may be reused by `real_agent_benchmark_execution`."
+      ],
+      "evidence_tags": [
+        "tmax",
+        "uitars",
+        "terminal_agent",
+        "rl_policy",
+        "gui_perception"
+      ],
+      "cli_flag": "--tmax"
+    },
+    {
+      "capability_id": "hermes_three_layer_orchestration",
+      "name": "Hermes × TMAX × UITARS three-layer orchestration",
+      "description": "Hermes orchestrator contract with provider routing for tmax/uitars/omlx plus Gate 5.0 audit integration. Current repo now proves host1 Hermes service identity on :50053 together with formal runtime binding for the four-role ingress set.",
+      "current_gate_binding": [
+        "Backend/oMLX/omlx/integrations/hermes.py",
+        "cgc_engine/gate5/core/engine.py"
+      ],
+      "proposed_composite_gate": [
+        "CGC_Gate_5.0_audit_trace_replay_visualization"
+      ],
+      "status": "done",
+      "gate_pass_claim": "allowed",
+      "acceptance_dimension": "Inheritance",
+      "notes": [
+        "Hermes provider mechanism (chat_completions) is present and reused.",
+        "Host1 :50053 now exposes Hermes runtime identity and participates in the four-role binding check.",
+        "Gate 5.0 span + snapshot integration remains attached to the orchestration loop.",
+        "Runtime formal ready is closed, while benchmark score claims remain separately scoped."
+      ],
+      "evidence_tags": [
+        "hermes",
+        "three_layer",
+        "orchestration",
+        "provider_routing",
+        "gate5_integration"
+      ],
+      "cli_flag": "--hermes"
+    }
+  ],
+  "governance": {
+    "task_type_contract_artifact": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/app/shared/contracts/task_type_contract.json",
+    "bundle_chain": [
+      "profile_settings.task_type_contract_ref",
+      "system_manifest.profile_binding_ref.task_type_contract_ref",
+      "bootstrap_contract.task_type_contract_ref",
+      "runtime_bootstrap.task_type_contract_ref"
+    ],
+    "gate5_branch_fields": [
+      "audit_enabled",
+      "trace_enabled",
+      "snapshot_enabled",
+      "visualization_enabled"
+    ],
+    "validators": [
+      "profile_bundle_validator",
+      "cgc bundle review",
+      "cgc model verify",
+      "cgc model audit",
+      "cgc gate5 task list",
+      "cgc gate5 audit report",
+      "cgc gate5 trace export"
+    ]
+  },
+  "artifact_refs": {
+    "gate5_engine": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/gate5/core/engine.py",
+    "gate5_cli": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/gate5/cli/gate5_cli.py",
+    "gate5_config": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/gate5/config/gate5_config.json",
+    "formal_claim_closure_report": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_5.0_audit_trace_replay_visualization/gate5_formal_claim_closure_report.json",
+    "harness_agent": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/agent/harness_agent.py",
+    "agent_model_backend": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli_universe/agent_model.py",
+    "run_real_benchmark": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli_universe/run_real_benchmark.py",
+    "fusionroute_agent": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli_universe/fusionroute_agent.py",
+    "pipeline": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/pipeline.py",
+    "hermes_integration": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/Backend/oMLX/omlx/integrations/hermes.py",
+    "gate_3_1_whitepaper": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/gate_whitepapers/CGC_GATE_3_1_SELF_HARNESS_TECHNICAL_WHITEPAPER_v1.0_zh_CN.md",
+    "upkg_1_1_whitepaper": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/gate_whitepapers/CGC_UPKG_1_1_UNIFIED_PIPELINE_KERNEL_GATE_WHITEPAPER_v1.0_zh_CN.md",
+    "gate_1_whitepaper": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_1.0_edge_cloud_autonomy/CGC_Gate_1.0_edge_cloud_autonomy_Technical_Whitepaper_v1.0_zh_CN.md",
+    "gate_2_whitepaper": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation/CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation_Technical_Whitepaper_v1.0_zh_CN.md",
+    "gate_3_whitepaper": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_3.0_train_inference_unification/CGC_Gate_3.0_train_inference_unification_Technical_Whitepaper_v1.0_zh_CN.md",
+    "fusionroute_topology_matrix": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_FusionRoute_Final_Topology_Matrix_Technical_Whitepaper_v1.0_zh_CN.md",
+    "fusionroute_role_locality": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/CGC_Gate_6.0_FusionRoute_Role_Locality_Technical_Whitepaper_v1.0_zh_CN.md"
+  },
+  "architecture_projection_refs": {
+    "fusionroute_topology_matrix": {
+      "path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_FusionRoute_Final_Topology_Matrix_Technical_Whitepaper_v1.0_zh_CN.md",
+      "projection_role": "Gate 5.0 is projected as the Agent Runtime Plane hosting Hermes, TMAX, and UI-TARS."
+    },
+    "fusionroute_role_locality": {
+      "path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/CGC_Gate_6.0_FusionRoute_Role_Locality_Technical_Whitepaper_v1.0_zh_CN.md",
+      "projection_role": "Role locality / placement remains a Gate 6.0 control-plane concern and is consumed by Gate 5.0 roles."
+    }
+  },
+  "acceptance_dimensions": {
+    "A_audit_lifecycle_logging": [
+      "Gate5Engine.create_task produces AuditRecord with task_id, user_id, timestamp.",
+      "Gate5Engine._audit logs immutable records to storage backend.",
+      "CLI `audit list` returns filtered audit records.",
+      "CLI `audit report` generates summary report."
+    ],
+    "T_trace_span_management": [
+      "Gate5Engine.start_span / end_span produce hierarchical TraceSpan records.",
+      "Parent-child span relationships are correctly tracked.",
+      "CLI `trace get` returns trace tree for a task.",
+      "CLI `trace export` exports trace data in CSV format."
+    ],
+    "R_snapshot_replay": [
+      "Gate5Engine.create_snapshot captures task state at arbitrary points.",
+      "Gate5Engine.replay_task reconstructs task state from snapshots.",
+      "CLI `task replay` returns replayable state sequence."
+    ],
+    "V_visualization_service": [
+      "Visual Service module structure (dashboard / charts / realtime / historical) is defined.",
+      "gate5_config.json declares visualization status as done."
+    ],
+    "Inheritance_capability_inheritance": [
+      "Gate 3.1 Self-Harness 13 acceptance items all PASSED.",
+      "UPKG 1.1 M1-M7.6 (11 gates) all PASSED.",
+      "UPKG 1.1 15 formal judgments all PASSED.",
+      "TMAX-9B + UITARS 10 acceptance items all DONE.",
+      "Hermes × TMAX × UITARS 10 acceptance items all DONE.",
+      "Gate 5.0 four capabilities 16 acceptance items all DONE."
+    ]
+  },
+  "claim_boundaries": {
+    "formally_claimable": [
+      "Gate5Engine task lifecycle audit logging is landed and formally gate-passed.",
+      "TraceSpan distributed trace management is landed and formally gate-passed.",
+      "Snapshot state replay and backtracking is landed and formally gate-passed.",
+      "Visual Service realtime and historical visualization is landed and formally gate-passed.",
+      "Gate 5.0 CLI toolkit (10 commands) is implemented, tested, and formally gate-passed.",
+      "Gate 3.1 Self-Harness three-stage closed loop is fully inherited (13 items PASSED).",
+      "UPKG 1.1 unified pipeline kernel (M1-M7.6 + 15 formal judgments) is fully inherited (26 items PASSED).",
+      "Gate 5.0 core audit/trace/replay/visualization and CLI toolkit remain formally gate-passed.",
+      "Gate 3.1 Self-Harness inheritance remains formally gate-passed.",
+      "UPKG 1.1 pipeline inheritance remains formally gate-passed.",
+      "TMAX-9B + UITARS terminal agent integration is formally claimable based on host1 real runtime binding.",
+      "Hermes × TMAX × UITARS three-layer orchestration is formally claimable at the runtime binding level.",
+      "OSWorld / WebArena sample execution is formally claimable based on host1 no-fallback runtime binding and the Gate 5.0 formal claim closure report.",
+      "Large-scale concurrent task audit is formally validated at 1024 parallel tasks by the Gate 5.0 formal claim closure report.",
+      "Distributed trace cross-host span correlation is formally validated by host-tagged parent/child span export in the Gate 5.0 formal claim closure report.",
+      "Long-term snapshot storage retention is formally fixed at 90 days in gate5_config and verified by the Gate 5.0 formal claim closure report.",
+      "A total of 9 capabilities are formally claimable as done in the current repo snapshot."
+    ],
+    "not_yet_formally_claimable": []
+  },
+  "release_checkin_projection": {
+    "recommended_gate_name": "CGC_Gate_5.0_audit_trace_replay_visualization",
+    "recommended_runtime_sub_name": "gate5_audit_trace_replay_visualization_closure",
+    "recommended_historical_alias": "gate5_four_capabilities",
+    "recommended_checkin_fields": [
+      "gate_id",
+      "gate_version",
+      "status_summary",
+      "claim_boundaries",
+      "artifact_refs"
+    ]
+  },
+  "validation_snapshot": {
+    "source": "formal_gate_run_synced",
+    "validated_green_set": [
+      "audit_lifecycle_logging",
+      "trace_span_management",
+      "snapshot_replay",
+      "visualization_service",
+      "gate5_cli_toolkit",
+      "self_harness_inheritance",
+      "upkg_pipeline_inheritance",
+      "tmax_uitars_integration",
+      "hermes_three_layer_orchestration"
+    ],
+    "synced_hosts": {
+      "host1": {
+        "ip": "39.106.118.206",
+        "user": "root",
+        "status": "synced"
+      },
+      "host2": {
+        "ip": "47.95.250.55",
+        "user": "root",
+        "status": "synced"
+      }
+    },
+    "summary": "9 capabilities are validated as done, and the prior benchmark/concurrency/cross-host/retention scope limits are now closed by gate5_formal_claim_closure_report.json."
+  }
+}

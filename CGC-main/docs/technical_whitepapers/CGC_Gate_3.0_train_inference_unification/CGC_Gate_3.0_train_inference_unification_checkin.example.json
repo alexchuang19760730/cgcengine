@@ -1,0 +1,291 @@
+{
+  "gate_name": "CGC_Gate_3.0_train_inference_unification",
+  "status": "VALIDATED",
+  "report_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_3.0_train_inference_unification/CGC_Gate_3.0_train_inference_unification_gate_map.json",
+  "summary_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_3.0_train_inference_unification/CGC_Gate_3.0_train_inference_unification_Technical_Whitepaper_v1.0_zh_CN.md",
+  "trigger": "manual_gate_projection_and_self_harness_verification",
+  "release_repo": "powerautoai/ComputeGraphCompiler",
+  "timestamp": "2026-07-07T11:43:01Z",
+  "extra": {
+    "gate_version": "3.0",
+    "runtime_sub_name": "upkg_train_inference_unification_closure",
+    "historical_composite_alias": "upkg_train_inference_unification",
+    "document_type": "train_inference_unification_checkin_example",
+    "gate_result_keys": [
+      "status_summary",
+      "claim_boundaries",
+      "artifact_refs",
+      "capability_statuses"
+    ],
+    "status_summary": {
+      "total_capabilities": 27,
+      "done": 27,
+      "integrated": 0,
+      "target": 0,
+      "missing-formal-gate": 0
+    },
+    "capability_statuses": [
+      {
+        "capability_id": "megatrain_cuda_training_codegen",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "C"
+      },
+      {
+        "capability_id": "mlx_tune_metal_lora_finetune",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "D"
+      },
+      {
+        "capability_id": "train_inference_graph_capture",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "C"
+      },
+      {
+        "capability_id": "megatrain_vllm_weight_consistency_bridge",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "A"
+      },
+      {
+        "capability_id": "kda_orthobasis_preservation",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "B"
+      },
+      {
+        "capability_id": "cgc_simd_train_inference_instruction_set",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "C"
+      },
+      {
+        "capability_id": "megatrain_single_layer_streaming_hook",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "C"
+      },
+      {
+        "capability_id": "mlx_tune_lora_edge_cloud_collaboration",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "D"
+      },
+      {
+        "capability_id": "train_inference_unification_governance",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "governance"
+      },
+      {
+        "capability_id": "distributed_topology_adaptive",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "C"
+      },
+      {
+        "capability_id": "colossalai_hardcode_fix",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "C"
+      },
+      {
+        "capability_id": "nemo_automodel_thin_adapter",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "C"
+      },
+      {
+        "capability_id": "cpp_moe_engine_train_inference_shared",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "C"
+      },
+      {
+        "capability_id": "preference_alignment_dpo",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "C"
+      },
+      {
+        "capability_id": "preference_alignment_orpo",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "C"
+      },
+      {
+        "capability_id": "preference_alignment_grpo",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "C"
+      },
+      {
+        "capability_id": "preference_alignment_kto",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "C"
+      },
+      {
+        "capability_id": "preference_alignment_simpo",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "C"
+      },
+      {
+        "capability_id": "slime_opd_online_policy_distillation",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "C"
+      },
+      {
+        "capability_id": "slime_rl_grpo",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "C"
+      },
+      {
+        "capability_id": "slime_rl_gspo",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "C"
+      },
+      {
+        "capability_id": "slime_rl_ppo",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "C"
+      },
+      {
+        "capability_id": "slime_rl_dapo",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "C"
+      },
+      {
+        "capability_id": "slime_moe_parallel_distillation",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "C"
+      },
+      {
+        "capability_id": "slime_speculative_decoding_integration",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "C"
+      },
+      {
+        "capability_id": "slime_rswa_long_context_cache",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "C"
+      },
+      {
+        "capability_id": "slime_teacher_student_inference_backend",
+        "status": "done",
+        "gate_pass_claim": "allowed",
+        "acceptance_dimension": "C"
+      }
+    ],
+    "claim_boundaries": {
+      "formally_claimable": [
+        "MegatrainCGC CUDA training backend codegen is landed and formally gate-passed.",
+        "MLXTuneCGC Apple Silicon Metal LoRA/QLoRA backend is landed and formally gate-passed.",
+        "torch.compile full graph capture (Megatrain + MLX-Tune) is landed and formally gate-passed.",
+        "MegatrainVLLMBridge train->inference weight consistency (tolerance < 1e-5) is formally gate-passed.",
+        "TrueOrthoKDA ortho_basis preservation across train->inference is formally gate-passed.",
+        "CGC SIMD shared train/inference instruction set is formally gate-passed.",
+        "MegatrainHook single-layer streaming execution is formally gate-passed.",
+        "MLX-Tune LoRA edge-cloud collaboration loop (Dimension D) is closed and formally gate-passed.",
+        "Train-inference unification governance extension is defined and formally gate-passed.",
+        "Distributed topology adaptation, ColossalAI hardcode removal, NeMo thin adapter, and the shared C++ MoE engine are formally gate-passed.",
+        "Preference alignment trainers (DPO / ORPO / GRPO / KTO / SimPO) are landed and formally gate-passed.",
+        "Slime OPD / RL / MoE distillation / speculative decoding / RSWA / teacher-student backend capabilities are landed and formally gate-passed.",
+        "All 27 capabilities validated as done; Gate 3.0 and self-harness both passed and were synced to host1 (39.106.118.206) and host2 (47.95.250.55)."
+      ],
+      "not_yet_formally_claimable": [
+        "Long-term stability of train-inference unification under large-scale training (1000+ GPUs) not yet validated.",
+        "MLX-Tune LoRA compatibility across the full Apple Silicon product line (including low-end devices) not yet validated.",
+        "Cumulative error of train-inference weight consistency under multi-level quantization chain (fp16 -> int8 -> 2bit) not yet closed."
+      ]
+    },
+    "artifact_refs": {
+      "gate_map_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_3.0_train_inference_unification/CGC_Gate_3.0_train_inference_unification_gate_map.json",
+      "whitepaper_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_3.0_train_inference_unification/CGC_Gate_3.0_train_inference_unification_Technical_Whitepaper_v1.0_zh_CN.md",
+      "summary_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/docs/technical_whitepapers/CGC_Gate_3.0_train_inference_unification/CGC_Gate_3.0_train_inference_unification_summary.example.json",
+      "self_harness_report_path": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/tools/scripts/run/self_harness_report_20260707_114301.json",
+      "megatrain_cgc": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/agent/megatrain_cgc.py",
+      "mlx_tune_cgc": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/agent/mlx_tune_cgc.py",
+      "megatrain_integration": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cgc/megatrain_integration.py",
+      "megatrain_vllm_bridge": "/Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/bridge/megatrain_vllm_bridge.py",
+      "task_type_contract": "/Users/alexchuang/Documents/flashkv0516/app/shared/contracts/task_type_contract.json"
+    },
+    "consumer_projection": {
+      "cli_gate_summary": {
+        "status_source": "extra.status_summary",
+        "capability_source": "extra.capability_statuses"
+      },
+      "bundle_audit": {
+        "artifact_ref_source": "extra.artifact_refs",
+        "claim_boundary_source": "extra.claim_boundaries"
+      },
+      "release_checkin": {
+        "primary_identity_fields": [
+          "gate_name",
+          "status",
+          "timestamp"
+        ]
+      },
+      "dashboard_report": {
+        "summary_source": "extra.status_summary",
+        "claim_source": "extra.claim_boundaries"
+      }
+    },
+    "validation_snapshot": {
+      "source": "formal_gate_run_synced_and_self_harness",
+      "validated_green_set": [
+        "megatrain_cuda_training_codegen",
+        "mlx_tune_metal_lora_finetune",
+        "train_inference_graph_capture",
+        "megatrain_vllm_weight_consistency_bridge",
+        "kda_orthobasis_preservation",
+        "cgc_simd_train_inference_instruction_set",
+        "megatrain_single_layer_streaming_hook",
+        "mlx_tune_lora_edge_cloud_collaboration",
+        "train_inference_unification_governance",
+        "distributed_topology_adaptive",
+        "colossalai_hardcode_fix",
+        "nemo_automodel_thin_adapter",
+        "cpp_moe_engine_train_inference_shared",
+        "preference_alignment_dpo",
+        "preference_alignment_orpo",
+        "preference_alignment_grpo",
+        "preference_alignment_kto",
+        "preference_alignment_simpo",
+        "slime_opd_online_policy_distillation",
+        "slime_rl_grpo",
+        "slime_rl_gspo",
+        "slime_rl_ppo",
+        "slime_rl_dapo",
+        "slime_moe_parallel_distillation",
+        "slime_speculative_decoding_integration",
+        "slime_rswa_long_context_cache",
+        "slime_teacher_student_inference_backend"
+      ],
+      "synced_hosts": {
+        "host1": {
+          "ip": "39.106.118.206",
+          "user": "root",
+          "status": "synced"
+        },
+        "host2": {
+          "ip": "47.95.250.55",
+          "user": "root",
+          "status": "synced"
+        }
+      },
+      "summary": "All 27 capabilities validated as done. Gate 3.0 formal verify passed, self-harness passed 27/27, and this checkin is synced to host1 and host2."
+    }
+  }
+}

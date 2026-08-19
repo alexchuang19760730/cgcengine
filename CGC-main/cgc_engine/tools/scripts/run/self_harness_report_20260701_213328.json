@@ -1,0 +1,692 @@
+{
+  "report_generated_at": "2026-07-01T21:33:28.728902",
+  "execution_mode": "self_harness_three_stage",
+  "total_gates": 9,
+  "total_capabilities": 83,
+  "total_passed": 0,
+  "gates": [
+    {
+      "gate_id": "CGC_Gate_1.0_edge_cloud_autonomy",
+      "gate_version": "1.0",
+      "execution_mode": "self_harness_three_stage",
+      "passed": 0,
+      "total": 8,
+      "pass_rate": "0.0%",
+      "capabilities": [
+        {
+          "id": "dopd_handoff",
+          "name": "DOPD Handoff Control Plane",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model dopd_handoff --compliance gate1.0 --strict"
+        },
+        {
+          "id": "cq4_transport",
+          "name": "CQ4 Transport Plane",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model cq4_transport --compliance gate1.0 --strict"
+        },
+        {
+          "id": "trueorthokda",
+          "name": "TrueOrthoKDA Zero-Copy State",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model trueorthokda --compliance gate1.0 --strict"
+        },
+        {
+          "id": "zero_copy",
+          "name": "Zero-Copy VRAM",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model zero_copy --compliance gate1.0 --strict"
+        },
+        {
+          "id": "prefill_producer",
+          "name": "Prefill Producer & Auto-Publish",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model prefill_producer --compliance gate1.0 --strict"
+        },
+        {
+          "id": "task_type_contract",
+          "name": "Task Type Contract",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model task_type_contract --compliance gate1.0 --strict"
+        },
+        {
+          "id": "ray_dual_host",
+          "name": "Ray Dual-Host Topology",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model ray_dual_host --compliance gate1.0 --strict"
+        },
+        {
+          "id": "moe_route_consistency",
+          "name": "MoE Route Consistency",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model moe_route_consistency --compliance gate1.0 --strict"
+        }
+      ]
+    },
+    {
+      "gate_id": "CGC_Gate_2.0_layer_adaptive_edge_cloud_pd_disaggregation",
+      "gate_version": "2.0",
+      "execution_mode": "self_harness_three_stage",
+      "passed": 0,
+      "total": 7,
+      "pass_rate": "0.0%",
+      "capabilities": [
+        {
+          "id": "max_local_layer",
+          "name": "Max Local Layer Partition",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model max_local_layer --compliance gate2.0 --strict"
+        },
+        {
+          "id": "finished_layer",
+          "name": "Finished Layer Continuation",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model finished_layer --compliance gate2.0 --strict"
+        },
+        {
+          "id": "partial_kv_abi",
+          "name": "Partial KV ABI",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model partial_kv_abi --compliance gate2.0 --strict"
+        },
+        {
+          "id": "layer_wise_kv",
+          "name": "Layer-wise KV Streaming",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model layer_wise_kv --compliance gate2.0 --strict"
+        },
+        {
+          "id": "sglang_tp4ep4",
+          "name": "SGLang TP4EP4 Prefill",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model sglang_tp4ep4 --compliance gate2.0 --strict"
+        },
+        {
+          "id": "deepep_route",
+          "name": "DeepEP Route Contract",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model deepep_route --compliance gate2.0 --strict"
+        },
+        {
+          "id": "upkg20_binding",
+          "name": "UPKG 2.0 Binding",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model upkg20_binding --compliance gate2.0 --strict"
+        }
+      ]
+    },
+    {
+      "gate_id": "CGC_Gate_2.1_speculative_decode_fusion_optimization",
+      "gate_version": "2.1",
+      "execution_mode": "self_harness_three_stage",
+      "passed": 0,
+      "total": 10,
+      "pass_rate": "0.0%",
+      "capabilities": [
+        {
+          "id": "dflash_baseline",
+          "name": "DFlash Control Baseline",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model dflash_baseline --compliance gate2.1 --strict"
+        },
+        {
+          "id": "dspark_scheduler",
+          "name": "DSpark Scheduler",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model dspark_scheduler --compliance gate2.1 --strict"
+        },
+        {
+          "id": "jetspec_draft",
+          "name": "JetSpec Draft Engine",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model jetspec_draft --compliance gate2.1 --strict"
+        },
+        {
+          "id": "fusion_dspark_jetspec",
+          "name": "Fusion DSpark+JetSpec",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model fusion_dspark_jetspec --compliance gate2.1 --strict"
+        },
+        {
+          "id": "trace_replay",
+          "name": "Trace Replay Governance",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model trace_replay --compliance gate2.1 --strict"
+        },
+        {
+          "id": "bootstrap_contract",
+          "name": "Bootstrap Contract",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model bootstrap_contract --compliance gate2.1 --strict"
+        },
+        {
+          "id": "system_profile",
+          "name": "System Profile Binding",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model system_profile --compliance gate2.1 --strict"
+        },
+        {
+          "id": "eight_step",
+          "name": "8-Step Pipeline",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model eight_step --compliance gate2.1 --strict"
+        },
+        {
+          "id": "upk_binding",
+          "name": "UPK Variant Binding",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model upk_binding --compliance gate2.1 --strict"
+        },
+        {
+          "id": "state_abi_hook",
+          "name": "State ABI Extension",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model state_abi_hook --compliance gate2.1 --strict"
+        }
+      ]
+    },
+    {
+      "gate_id": "CGC_Gate_2.2_deepep_moe_load_balancing",
+      "gate_version": "2.2",
+      "execution_mode": "self_harness_three_stage",
+      "passed": 0,
+      "total": 7,
+      "pass_rate": "0.0%",
+      "capabilities": [
+        {
+          "id": "eplb",
+          "name": "EPLB Static Expert Placement",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model eplb --compliance gate2.2 --strict"
+        },
+        {
+          "id": "waterfill",
+          "name": "Waterfill Dynamic Balance",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model waterfill --compliance gate2.2 --strict"
+        },
+        {
+          "id": "lplb",
+          "name": "LPLB Linear Programming",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model lplb --compliance gate2.2 --strict"
+        },
+        {
+          "id": "l20n_16gpu",
+          "name": "L20N Dual-Node 16GPUs",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model l20n_16gpu --compliance gate2.2 --strict"
+        },
+        {
+          "id": "deepseek_v4",
+          "name": "DeepSeek V4 Integration",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model deepseek_v4 --compliance gate2.2 --strict"
+        },
+        {
+          "id": "zero_copy_bridge",
+          "name": "Zero-Copy Transfer",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model zero_copy_bridge --compliance gate2.2 --strict"
+        },
+        {
+          "id": "moe_benchmark",
+          "name": "MoE Benchmark",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model moe_benchmark --compliance gate2.2 --strict"
+        }
+      ]
+    },
+    {
+      "gate_id": "CGC_Gate_2.3_unlimited_rswa_prefill_pool",
+      "gate_version": "2.3",
+      "execution_mode": "self_harness_three_stage",
+      "passed": 0,
+      "total": 5,
+      "pass_rate": "0.0%",
+      "capabilities": [
+        {
+          "id": "rswa_double_kv",
+          "name": "R-SWA Double KV Layer",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model rswa_double_kv --compliance gate2.3 --strict"
+        },
+        {
+          "id": "prefill_pool",
+          "name": "Prefill Pool Dynamic Management",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model prefill_pool --compliance gate2.3 --strict"
+        },
+        {
+          "id": "gds_nfsordma",
+          "name": "GDS+NFSoRDMA Direct IO",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model gds_nfsordma --compliance gate2.3 --strict"
+        },
+        {
+          "id": "trueorthokda_adapter",
+          "name": "TrueOrthoKDA Adapter",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model trueorthokda_adapter --compliance gate2.3 --strict"
+        },
+        {
+          "id": "cloud_l20n_tp4",
+          "name": "Cloud L20N TP4",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model cloud_l20n_tp4 --compliance gate2.3 --strict"
+        }
+      ]
+    },
+    {
+      "gate_id": "CGC_Gate_3.0_train_inference_unification",
+      "gate_version": "3.0",
+      "execution_mode": "self_harness_three_stage",
+      "passed": 0,
+      "total": 8,
+      "pass_rate": "0.0%",
+      "capabilities": [
+        {
+          "id": "megatrain_cuda",
+          "name": "Megatrain CUDA Codegen",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model megatrain_cuda --compliance gate3.0 --strict"
+        },
+        {
+          "id": "mlx_tune",
+          "name": "MLX-Tune LoRA",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model mlx_tune --compliance gate3.0 --strict"
+        },
+        {
+          "id": "graph_capture",
+          "name": "Graph Capture",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model graph_capture --compliance gate3.0 --strict"
+        },
+        {
+          "id": "weight_bridge",
+          "name": "Weight Consistency Bridge",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model weight_bridge --compliance gate3.0 --strict"
+        },
+        {
+          "id": "kda_orthobasis",
+          "name": "KDA Orthobasis Preservation",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model kda_orthobasis --compliance gate3.0 --strict"
+        },
+        {
+          "id": "cgc_simd",
+          "name": "CGC SIMD Instruction Set",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model cgc_simd --compliance gate3.0 --strict"
+        },
+        {
+          "id": "streaming_hook",
+          "name": "Streaming Hook",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model streaming_hook --compliance gate3.0 --strict"
+        },
+        {
+          "id": "edge_cloud_lora",
+          "name": "Edge-Cloud LoRA Collaboration",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model edge_cloud_lora --compliance gate3.0 --strict"
+        }
+      ]
+    },
+    {
+      "gate_id": "CGC_Gate_3.1_self_harness",
+      "gate_version": "3.1",
+      "execution_mode": "self_harness_three_stage",
+      "passed": 0,
+      "total": 7,
+      "pass_rate": "0.0%",
+      "capabilities": [
+        {
+          "id": "three_stage_loop",
+          "name": "Three-Stage Loop",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model three_stage_loop --compliance gate3.1 --strict"
+        },
+        {
+          "id": "rho_observer",
+          "name": "RHO Runtime Observer",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model rho_observer --compliance gate3.1 --strict"
+        },
+        {
+          "id": "edge_cloud_bridge",
+          "name": "Edge-Cloud Adaptive Bridge",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model edge_cloud_bridge --compliance gate3.1 --strict"
+        },
+        {
+          "id": "guardian",
+          "name": "Guardian Protection",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model guardian --compliance gate3.1 --strict"
+        },
+        {
+          "id": "fixed_weight",
+          "name": "Fixed Weight Execution",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model fixed_weight --compliance gate3.1 --strict"
+        },
+        {
+          "id": "local_optimizer",
+          "name": "Local Optimization Engine",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model local_optimizer --compliance gate3.1 --strict"
+        },
+        {
+          "id": "self_harness_cli",
+          "name": "Self-Harness CLI",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model self_harness_cli --compliance gate3.1 --strict"
+        }
+      ]
+    },
+    {
+      "gate_id": "CGC_Gate_5.0_audit_trace_replay_visualization",
+      "gate_version": "5.0",
+      "execution_mode": "self_harness_three_stage",
+      "passed": 0,
+      "total": 9,
+      "pass_rate": "0.0%",
+      "capabilities": [
+        {
+          "id": "audit_logging",
+          "name": "Audit Lifecycle Logging",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model audit_logging --compliance gate5.0 --strict"
+        },
+        {
+          "id": "trace_span",
+          "name": "TraceSpan Management",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model trace_span --compliance gate5.0 --strict"
+        },
+        {
+          "id": "snapshot_replay",
+          "name": "Snapshot Replay",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model snapshot_replay --compliance gate5.0 --strict"
+        },
+        {
+          "id": "visualization",
+          "name": "Visualization Service",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model visualization --compliance gate5.0 --strict"
+        },
+        {
+          "id": "gate5_cli",
+          "name": "Gate 5.0 CLI Toolkit",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model gate5_cli --compliance gate5.0 --strict"
+        },
+        {
+          "id": "self_harness_inherit",
+          "name": "Self-Harness Inheritance",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model self_harness_inherit --compliance gate5.0 --strict"
+        },
+        {
+          "id": "upkg_inherit",
+          "name": "UPKG Pipeline Inheritance",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model upkg_inherit --compliance gate5.0 --strict"
+        },
+        {
+          "id": "tmax_uitars",
+          "name": "TMAX-UITARS Integration",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model tmax_uitars --compliance gate5.0 --strict"
+        },
+        {
+          "id": "hermes_orchestration",
+          "name": "Hermes Three-Layer Orchestration",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model hermes_orchestration --compliance gate5.0 --strict"
+        }
+      ]
+    },
+    {
+      "gate_id": "CGC_Gate_6.0_fusionroute_complete",
+      "gate_version": "6.0",
+      "execution_mode": "self_harness_three_stage",
+      "passed": 0,
+      "total": 22,
+      "pass_rate": "0.0%",
+      "capabilities": [
+        {
+          "id": "fusionroute_init",
+          "name": "FusionRoute Initialization",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model fusionroute_init --compliance gate6.0 --strict"
+        },
+        {
+          "id": "four_instance",
+          "name": "Four-Instance Router",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model four_instance --compliance gate6.0 --strict"
+        },
+        {
+          "id": "minicpm5_router",
+          "name": "MiniCPM5 Router",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model minicpm5_router --compliance gate6.0 --strict"
+        },
+        {
+          "id": "deepep_moe",
+          "name": "DeepEP MoE Balance",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model deepep_moe --compliance gate6.0 --strict"
+        },
+        {
+          "id": "edge_cloud_collab",
+          "name": "Edge-Cloud Collaboration",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model edge_cloud_collab --compliance gate6.0 --strict"
+        },
+        {
+          "id": "self_harness_60",
+          "name": "Self-Harness Stage",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model self_harness_60 --compliance gate6.0 --strict"
+        },
+        {
+          "id": "guardian_60",
+          "name": "Guardian Protection",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model guardian_60 --compliance gate6.0 --strict"
+        },
+        {
+          "id": "swe_verified",
+          "name": "SWE Verified 500",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model swe_verified --compliance gate6.0 --strict"
+        },
+        {
+          "id": "cli_commands",
+          "name": "CLI Command Set",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model cli_commands --compliance gate6.0 --strict"
+        },
+        {
+          "id": "flashmoe",
+          "name": "FlashMoE Inference",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model flashmoe --compliance gate6.0 --strict"
+        },
+        {
+          "id": "dependencies",
+          "name": "Dependencies Verification",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model dependencies --compliance gate6.0 --strict"
+        },
+        {
+          "id": "performance",
+          "name": "Performance Metrics",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model performance --compliance gate6.0 --strict"
+        },
+        {
+          "id": "deepseek_flash",
+          "name": "DeepSeek V4 Flash",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model deepseek_flash --compliance gate6.0 --strict"
+        },
+        {
+          "id": "omlx_expert",
+          "name": "OMLX Expert Selection",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model omlx_expert --compliance gate6.0 --strict"
+        },
+        {
+          "id": "protocol_v2",
+          "name": "Edge-Cloud Protocol V2",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model protocol_v2 --compliance gate6.0 --strict"
+        },
+        {
+          "id": "fusion_latency",
+          "name": "FusionRoute Latency",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model fusion_latency --compliance gate6.0 --strict"
+        },
+        {
+          "id": "throughput",
+          "name": "Inference Throughput",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model throughput --compliance gate6.0 --strict"
+        },
+        {
+          "id": "load_balance",
+          "name": "Load Balance Efficiency",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model load_balance --compliance gate6.0 --strict"
+        },
+        {
+          "id": "deepseek_67b",
+          "name": "DeepSeek V4 Flash 67B",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model deepseek_67b --compliance gate6.0 --strict"
+        },
+        {
+          "id": "verified_closure",
+          "name": "Verified 500 Closure",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model verified_closure --compliance gate6.0 --strict"
+        },
+        {
+          "id": "gpu_16x",
+          "name": "16x GPU Optimization",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model gpu_16x --compliance gate6.0 --strict"
+        },
+        {
+          "id": "router_accuracy",
+          "name": "Router Accuracy",
+          "status": "FAIL",
+          "via_agent": false,
+          "cli_command": "python3 /Users/alexchuang/Documents/flashkv0516/ComputeGraphCompiler-main/cgc_engine/cli.py model audit --model router_accuracy --compliance gate6.0 --strict"
+        }
+      ]
+    }
+  ],
+  "_report_lifecycle": {
+    "status": "superseded_for_gate5_sections",
+    "superseded_at": "2026-07-07",
+    "scope": "Historical report retained for traceability. Embedded Gate 5.0 sections are obsolete and must not be cited as current formal wording or benchmark evidence.",
+    "reason": "Predates the Gate 5.0 wording fix that scoped agent/benchmark claims to framework validation.",
+    "superseded_by": [
+      "cgc_engine/tools/scripts/run/gate_test_report_20260707_160955.json",
+      "cgc_engine/tools/scripts/run/self_harness_report_20260707_160955.json",
+      "cgc_engine/tools/scripts/run/validation_report_gate50_20260707.json"
+    ]
+  },
+  "_gate5_claims_currently_valid": false
+}

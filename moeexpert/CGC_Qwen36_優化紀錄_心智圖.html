@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CGC Qwen36 優化紀錄心智圖</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #f8f7f4;
+    --surface2: #f1efe8;
+    --border: #e0ddd5;
+    --text: #1a1a1a;
+    --text2: #555550;
+    --text3: #888880;
+    --accent: #534AB7;
+    --teal: #0F6E56;
+    --amber: #854F0B;
+    --coral: #993C1D;
+    --blue: #185FA5;
+    --red: #A32D2D;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    font-size: 15px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .container { max-width: 980px; margin: 0 auto; padding: 0 24px; }
+
+  .cover { padding: 72px 0 48px; text-align: center; border-bottom: 1px solid var(--border); }
+  .cover h1 { font-size: 30px; font-weight: 600; letter-spacing: -0.5px; margin-bottom: 12px; }
+  .cover .subtitle { font-size: 16px; color: var(--text2); margin-bottom: 8px; }
+  .cover .meta { font-size: 13px; color: var(--text3); margin-top: 16px; }
+  .cover .badge { display: inline-block; padding: 4px 12px; border-radius: 100px; font-size: 12px; font-weight: 500; margin: 0 4px; }
+  .badge-teal { background: #E1F5EE; color: var(--teal); }
+  .badge-amber { background: #FAEEDA; color: var(--amber); }
+  .badge-coral { background: #FAECE7; color: var(--coral); }
+  .badge-blue { background: #E7EFFA; color: var(--blue); }
+  .badge-purple { background: #EEEDFE; color: var(--accent); }
+
+  section { padding: 44px 0; border-bottom: 1px solid var(--border); }
+  section h2 { font-size: 21px; font-weight: 600; margin-bottom: 8px; letter-spacing: -0.3px; }
+  section .sec-sub { font-size: 13px; color: var(--text3); margin-bottom: 20px; }
+  section h3 { font-size: 16px; font-weight: 600; margin: 24px 0 12px; color: var(--text); }
+  p { margin-bottom: 12px; }
+  ul, ol { margin: 8px 0 16px 22px; }
+  li { margin-bottom: 6px; }
+
+  /* Mind map tree */
+  .mm { margin: 24px 0 8px; }
+  .mm-root {
+    display: inline-block;
+    background: var(--accent); color: #fff;
+    border-radius: 12px; padding: 14px 24px;
+    font-size: 17px; font-weight: 600;
+    box-shadow: 0 2px 8px rgba(83,74,183,0.25);
+  }
+  .mm-branch { margin: 20px 0 0 22px; padding-left: 18px; border-left: 2px solid var(--border); }
+  .mm-branch-head {
+    display: flex; align-items: center; gap: 10px; cursor: pointer;
+    padding: 10px 14px; border-radius: 10px;
+    background: var(--surface); border: 1px solid var(--border);
+  }
+  .mm-branch-head:hover { background: var(--surface2); }
+  .mm-branch-head .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .mm-branch-head .title { font-size: 15px; font-weight: 600; }
+  .mm-branch-head .meta { font-size: 12px; color: var(--text3); }
+  .mm-branch-head .caret { margin-left: auto; font-size: 12px; color: var(--text3); }
+  .mm-branch.collapsed .mm-children { display: none; }
+  .mm-children { margin: 8px 0 0 18px; padding-left: 14px; border-left: 2px solid var(--border); }
+  .mm-leaf {
+    margin: 8px 0 0 0; padding: 8px 12px;
+    border-radius: 8px; border: 1px solid var(--border);
+    background: #fff;
+    display: flex; gap: 10px; align-items: baseline;
+  }
+  .mm-leaf .t { font-size: 13px; font-weight: 600; white-space: nowrap; }
+  .mm-leaf .m { font-size: 12px; color: var(--text2); }
+  .st-verified { color: var(--teal); }
+  .st-falsified { color: var(--red); }
+  .st-neutral { color: var(--blue); }
+  .st-wip { color: var(--amber); }
+  .st-target { color: var(--accent); }
+  .mm-leaf .tag, .mm-branch-head .tag {
+    font-size: 10px; font-weight: 600; padding: 1px 7px; border-radius: 100px; flex: none;
+  }
+  .tag-verified { background: #E1F5EE; color: var(--teal); }
+  .tag-falsified { background: #FCEBEB; color: var(--red); }
+  .tag-neutral { background: #E7EFFA; color: var(--blue); }
+  .tag-wip { background: #FAEEDA; color: var(--amber); }
+  .tag-target { background: #EEEDFE; color: var(--accent); }
+
+  .mm-hint { font-size: 12px; color: var(--text3); margin-bottom: 4px; }
+
+  /* Cards */
+  .card-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 18px 0; }
+  @media (max-width: 720px) { .card-grid { grid-template-columns: 1fr; } }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  .card.teal { border-left: 3px solid var(--teal); }
+  .card.amber { border-left: 3px solid var(--amber); }
+  .card.coral { border-left: 3px solid var(--coral); }
+  .card.blue { border-left: 3px solid var(--blue); }
+  .card.purple { border-left: 3px solid var(--accent); }
+  .card.red { border-left: 3px solid var(--red); }
+  .card h4 { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+  .card p, .card li { font-size: 12.5px; color: var(--text2); }
+  .card .num { font-size: 24px; font-weight: 600; margin-bottom: 2px; }
+
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { font-weight: 600; background: var(--surface); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text2); }
+  tr:hover { background: var(--surface); }
+
+  .highlight { background: var(--surface2); border-radius: 12px; padding: 16px 20px; margin: 14px 0; font-size: 13.5px; }
+  .highlight strong { color: var(--text); }
+
+  .metric-row { display: flex; gap: 20px; margin: 16px 0; flex-wrap: wrap; }
+  .metric { flex: 1; min-width: 110px; text-align: center; }
+  .metric .value { font-size: 30px; font-weight: 600; letter-spacing: -1px; }
+  .metric .label { font-size: 12px; color: var(--text3); margin-top: 2px; }
+
+  .vs-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 14px 0; }
+  @media (max-width: 720px) { .vs-grid { grid-template-columns: 1fr; } }
+  .vs-box { border-radius: 12px; padding: 16px; font-size: 13px; }
+  .vs-box.positive { background: #E1F5EE; border: 1px solid #9FE1CB; }
+  .vs-box.negative { background: #FCEBEB; border: 1px solid #F7C1C1; }
+  .vs-box h4 { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+  .vs-box.positive h4 { color: var(--teal); }
+  .vs-box.negative h4 { color: var(--red); }
+
+  .timeline { position: relative; padding-left: 22px; margin: 16px 0; }
+  .timeline::before { content: ''; position: absolute; left: 6px; top: 8px; bottom: 8px; width: 2px; background: var(--border); }
+  .timeline-item { position: relative; padding-bottom: 18px; }
+  .timeline-item::before {
+    content: ''; position: absolute; left: -20px; top: 6px;
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--accent); border: 2px solid var(--bg);
+  }
+  .timeline-item .phase { font-size: 11px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px; }
+  .timeline-item h4 { font-size: 14px; font-weight: 600; margin: 2px 0 4px; }
+  .timeline-item p { font-size: 12.5px; color: var(--text2); margin: 0; }
+
+  .footer { padding: 36px 0; text-align: center; font-size: 12px; color: var(--text3); }
+  .footer code { background: var(--surface2); padding: 1px 6px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="cover">
+    <h1>CGC Qwen36 優化紀錄心智圖</h1>
+    <div class="subtitle">Qwen3.6-35B-A3B · M4-16GB 端側 MoE decode 優化全景</div>
+    <div style="margin-top:18px;">
+      <span class="badge badge-teal">量化階梯</span>
+      <span class="badge badge-blue">記憶體 Pareto</span>
+      <span class="badge badge-purple">GPU Kernel</span>
+      <span class="badge badge-coral">MTP</span>
+      <span class="badge badge-amber">生產設定</span>
+    </div>
+    <div class="meta">活文件 · 每 request&action 後同步 §13.x 結論 · 2026-08-11 · 正典紀錄：TURBOFIELDFARE_MMAP_EXPERT_IO_PLAN_2026-08-07.md</div>
+  </div>
+
+  <!-- ============ 心智圖 ============ -->
+  <section>
+    <h2>一、心智圖總覽</h2>
+    <div class="sec-sub">點擊分支標題可收合/展開；顏色 = 結論狀態（綠=已定案正收益 / 紅=已證偽 / 藍=中性 / 黃=進行中 / 紫=目標）</div>
+    <div class="mm" id="mindmap"></div>
+  </section>
+
+  <!-- ============ 量化階梯 ============ -->
+  <section>
+    <h2>二、量化階梯：2.18 → 4.78 tok/s（+119%）</h2>
+    <div class="sec-sub">§13.99/13.101/13.102/13.105/13.110 · 全部 production release 128 tok 交錯 A/B 實測</div>
+
+    <div class="metric-row">
+      <div class="metric"><div class="value" style="color:var(--teal);">4.80</div><div class="label">r3q4la_e4 tok/s（家族紀錄）</div></div>
+      <div class="metric"><div class="value" style="color:var(--blue);">+16.6%</div><div class="label">vs r3q4_e4（linear_attn q4）</div></div>
+      <div class="metric"><div class="value" style="color:var(--amber);">44.5%</div><div class="label">resident 縮小（3254→1807MB）</div></div>
+      <div class="metric"><div class="value" style="color:var(--text2);">4.78</div><div class="label">r4q4la_ga_e4（前紀錄）</div></div>
+    </div>
+
+    <table>
+      <tr><th>步驟</th><th>動作</th><th>tok/s</th><th>增量</th><th>出處</th></tr>
+      <tr><td>0</td><td>r4 baseline（4-bit experts）</td><td>2.18</td><td>—</td><td>§13.99</td></tr>
+      <tr><td>1</td><td>+ lm_head / shared expert 4-bit → r4q4</td><td>3.45</td><td>+58%</td><td>§13.99</td></tr>
+      <tr><td>2</td><td>+ linear_attn qkv/z/out 4-bit → r4q4la</td><td>4.19</td><td>+21.8%</td><td>§13.101</td></tr>
+      <tr><td>3</td><td>+ GatedAttn q/k/v/o 4-bit → r4q4la_ga</td><td>4.27</td><td>+0.4%（RAM −392MB）</td><td>§13.102</td></tr>
+      <tr><td>4</td><td>+ pool96（省下 RAM 開出大 pool）</td><td>4.375</td><td>+3.6%</td><td>§13.103</td></tr>
+      <tr><td>5</td><td>+ embed_tokens 4-bit → r4q4la_ga_e4</td><td>4.48~4.78</td><td>+6.7~7.6%（§13.110 定案）</td><td>§13.105/110</td></tr>
+      <tr><td>—</td><td>r3 家族：r3q4_e4（3-bit experts）</td><td>4.28</td><td>embed q4 = parity +0.6%</td><td>§13.106</td></tr>
+      <tr><td>6</td><td>+ linear_attn q4 → <strong>r3q4la_e4</strong></td><td><strong>4.80</strong></td><td><strong>+16.6%</strong>（resident 縮 44.5%）→ 家族紀錄</td><td>§13.112</td></tr>
+    </table>
+
+    <div class="highlight">
+      <strong>關鍵教訓 1（§13.101）</strong>：linear_attn q4 在 r3 只值 +2.1%、在 r4 值 +21.8% —— <strong>IO 預算越緊，dense 頻寬減半的邊際收益越大</strong>。
+    </div>
+    <div class="highlight">
+      <strong>關鍵教訓 2（§13.102/13.110）</strong>：GatedAttn q4 直接收益 0（GEMV 是計算 bound 不是頻寬 bound），但它的價值在 <strong>RAM 槓桿</strong>（pool 80→96 把中性翻成 +3.6%）；embed q4 則靠 <strong>resident mmap 縮小</strong>（TLB/page-cache）帶來 +7.6%，且效應大小與縮小比例正相關（r4 縮 36% → +7.6%；r3 只縮 19% → +0.6%）。
+    </div>
+  </section>
+
+  <!-- ============ 記憶體 Pareto ============ -->
+  <section>
+    <h2>三、記憶體 / Expert 流式 Pareto</h2>
+    <div class="sec-sub">§13.57/13.100/13.103/13.104/13.108 · 16GB Mac 的 pool×slots 定案</div>
+    <div class="card-grid">
+      <div class="card teal"><h4>s96 + p96 = 支配點</h4><p>slots96 > slots64（−1~4%）；pool96 覆蓋 64.6% vs pool80 56.4%（+8.2pp）→ 4.375 tok/s。§13.103/13.108</p></div>
+      <div class="card green"><h4>pool112 定案（§13.116/13.117）</h4><p>r3 家族 7/7 配對 +5.0%；r4 家族 3/4 配對 +1.9%（preload 7.4GB 較大、收益稀釋但方向一致）。預設 96→112 為兩家族共用。§13.116/13.117</p></div>
+      <div class="card green"><h4>--scan-profile 漂移檢查</h4><p>run_prod_qwen36.sh 一鍵掃 96/112 交錯 + coherence gate。§13.113 兩掃描方向相反（髒窗）；§13.116 乾淨窗重驗 7/7 配對 p112 勝 → 預設翻 112。</p></div>
+      <div class="card red"><h4>embed q4 的 RAM 槓桿是幻覺</h4><p>ResidentBuffer 是 mmap demand-paging——embed 每步只 gather 4KB，物理佔用 ≈2MB。省的是磁碟不是 RAM。§13.104</p></div>
+      <div class="card teal"><h4>top96 mix profile</h4><p>code+prose 混合 trace 生成（make_mix_hotpool_profile.sh），r3/r4 共用（同 expert IDs）。§13.80.x</p></div>
+      <div class="card teal"><h4>PRELOAD=sync 必須</h4><p>pool96 的 6.4GB async 背景讀會跟 decode miss 搶 SSD；sync 是 §13.103 定案。</p></div>
+    </div>
+  </section>
+
+  <!-- ============ GPU Kernel ============ -->
+  <section>
+    <h2>四、GPU Kernel 優化（計算/IO 分解）</h2>
+    <div class="sec-sub">§13.81/13.82/13.83/13.85/13.87/13.92/13.95/13.98/13.101/13.102 · GPU 176ms / wall 245ms 分解</div>
+    <div class="vs-grid">
+      <div class="vs-box positive">
+        <h4>✅ 已回收</h4>
+        <ul>
+          <li><strong>lm_head GEMV xSmem 分塊</strong>：26.2 → ~13ms（§13.85）</li>
+          <li><strong>linear_attn 全鏈 4-bit dequant-inline</strong>：deltanet_project_q4 kernel（§13.82/13.101）</li>
+          <li><strong>q36_moe_shared_merge</strong>：shared+merge 融合 kernel（§13.83）</li>
+          <li><strong>shared 4-bit + warp-cooperative</strong>（§13.98）</li>
+          <li><strong>slot8 3-bit dequant 併入 GEMM</strong>（§13.87）</li>
+          <li><strong>GatedAttn q4 kernel</strong>（ga_gemv_q4 + oPacked，§13.102）</li>
+        </ul>
+      </div>
+      <div class="vs-box negative">
+        <h4>❌ 證偽 / 天花板</h4>
+        <ul>
+          <li><strong>CB 合併 42→6 雙重證偽</strong>：層間強資料依賴，跨層合併無收益（§13.64）</li>
+          <li><strong>全鏈 megakernel 融合 &lt;1%</strong>：中間張量全 &lt;100KB/層（§13.95 白皮書）</li>
+          <li><strong>GEMV = 計算 bound</strong>：GatedAttn q4 省 410MB 頻寬也只有 +0.4%（§13.92 教訓）</li>
+          <li><strong>頂層天花板</strong>：40 層 × 256 expert × top-8 的計算量物理下限 ≈ 5-5.5 tok/s（§13.95）</li>
+        </ul>
+      </div>
+    </div>
+    <div class="highlight">
+      <strong>wall 245ms 構成</strong>：GPU ~153ms（63%）+ fill ~40ms + idle ~40ms + CPU 序列化。剩餘最大可動手項目 = <strong>P1：fill 與 encode 的 CPU 並行</strong>（wall → ~203ms，約 +14%，估 4.9 tok/s）。
+    </div>
+  </section>
+
+  <!-- ============ MTP ============ -->
+  <section>
+    <h2>五、MTP / 投機解碼線</h2>
+    <div class="sec-sub">§13.66/13.67/13.95 · fused MTP head 已接進引擎但淨負，需 finetune 才有機會轉正</div>
+    <div class="timeline">
+      <div class="timeline-item"><div class="phase">已完成</div><h4>fused MTP head Metal runner 對拍通過</h4><p>MTPHeadRunner vs framework golden 7/7 全過；probe accept 94.7%。修了 3 個 bug：o_proj aliasing、GEMV cols 硬編碼、norm 雙重 1+w。§13.66</p></div>
+      <div class="timeline-item"><div class="phase">定案</div><h4>MTP 淨負（qwen36 未 finetune head）</h4><p>r3 −12% / r4 −29%（batch verify 的 expert union 成本 &gt; 接受率收益）。§13.66/13.67</p></div>
+      <div class="timeline-item"><div class="phase">進行中</div><h4>MoE-SpAc utility estimator</h4><p>MTP 前瞻 expert 預測已接（predictRoutingForDraft 每 32 步 refresh），prose hit +0.3pp。§13.55 系</p></div>
+      <div class="timeline-item"><div class="phase">目標</div><h4>MTP head finetune（gemma4 線 76.4% accept 已驗證路徑）</h4><p>CGC_Phase2/mtp_head 端側訓練可行（0.4B head 450s/epoch）；finetune 後 accept 90%+ 才有機會讓 verify 成本攤薄轉正——唯一突破飽和區的方向。§13.95</p></div>
+    </div>
+  </section>
+
+  <!-- ============ 已證偽 ============ -->
+  <section>
+    <h2>六、已證偽方向（不要再碰）</h2>
+    <div class="sec-sub">每個都花過 A/B 或架構分析定案，避免重走</div>
+    <table>
+      <tr><th>方向</th><th>結果</th><th>出處</th></tr>
+      <tr><td>CB 合併 42→6</td><td>跨層強依賴，雙重證偽</td><td>§13.64</td></tr>
+      <tr><td>WAKE_POLL_US=5000</td><td>qwen36 乾淨窗 A/B 無效，已從生產移除</td><td>§13.67</td></tr>
+      <tr><td>pool96 async preload</td><td>sync 必須（async 6.4GB 背景讀搶 SSD）</td><td>§13.103</td></tr>
+      <tr><td>pool112/128（r4 時代）</td><td>覆蓋率 +14pp 換 0%（§13.100/104/108，r4 4-bit 無 GA 餘裕時代）</td><td>§13.116 已翻案：r3q4la_ga_e4 下 p112 轉正</td></tr>
+      <tr><td>ADAPTIVE_POOL</td><td>無差異（7.86 vs 7.84）</td><td>gemma4 線</td></tr>
+      <tr><td>embed q4 RAM 槓桿</td><td>mmap demand-paging 前提不成立</td><td>§13.104</td></tr>
+      <tr><td>40→30 層蒸餾（C2C）</td><td>端側 M4 不可行（35B 學生需 GPU 訓練）；C2C 是跨模型 KV 通訊非層壓縮</td><td>白皮書 v0.1</td></tr>
+      <tr><td>router 4-bit</td><td>42MB、省 0.2%、直接影響 routing——風險/收益不成比例</td><td>§13.102 盤點</td></tr>
+    </table>
+  </section>
+
+  <!-- ============ 生產設定 ============ -->
+  <section>
+    <h2>七、生產設定現況（r3q4la_ga_e4h3）</h2>
+    <div class="sec-sub">§13.161.1/13.161.4/13.161.8/13.161.10 · 統一 run_prod.sh（FAMILY=qwen36）一鍵打包</div>
+    <div class="highlight">
+      <code>FAMILY=qwen36 + r3q4la_ga_e4h3（head 3-bit 默認 §13.161.10）+ EXPERT_SLOTS=96 + HOT_POOL=112 + top112_code_prose.json + PRELOAD=sync + READ_WORKERS=8 + --trust-receipt + Q36_FUSED_HEAD=1（LOOP=2, temp 0）+ Q36_DN_FUSED=1 + HYBRID=1 + TGS=32 + Q36_EMBED_Q4=auto（依模型 dtype）</code>
+      <br><strong>不設 WAKE_POLL_US</strong>（§13.67）；<strong>code-prune 已移除</strong>（code ppl +19% / prose +61%，§13.161.8）；<code>--scan-profile</code> 做 Pareto 漂移健康檢查 + coherence gate；<code>--scan-profile-type</code> 同 size 下 mix vs code 直接 A/B。
+    </div>
+    <div class="metric-row">
+      <div class="metric"><div class="value" style="color:var(--teal);">5.5-5.8</div><div class="label">一鍵預設 tok/s（§13.161.10/10b）</div></div>
+      <div class="metric"><div class="value" style="color:var(--blue);">5.3</div><div class="label">e4+fused 對照（§13.161.8）</div></div>
+      <div class="metric"><div class="value" style="color:var(--amber);">h3</div><div class="label">head 3-bit 默認（+2-4%）</div></div>
+      <div class="metric"><div class="value" style="color:var(--text2);">1.35GB</div><div class="label">resident（h3 全鏈 4-bit）</div></div>
+    </div>
+  </section>
+
+  <!-- ============ 天花板與未來 ============ -->
+  <section>
+    <h2>八、天花板與未來</h2>
+    <div class="sec-sub">§13.95/13.104/13.110 · 誠實的邊界</div>
+    <div class="card-grid">
+      <div class="card purple"><h4>h3 + fused head（§13.161.10/10b）</h4><p>§13.161.9 唯一現成槓桿已實作——LMHeadChainInt3 移植進 Qwen36ForwardRunner fused 路徑。+2-4%（7/8 配對勝；冷窗 ~0、load 下更優），生產一鍵 5.3 → 5.5-5.8 tok/s。</p></div>
+      <div class="card red"><h4>DVFS 分佈式 dispatch 證偽（§13.161.13/14）</h4><p>量測：head burst 3.1ms @ 72GB/s 觸發 current-limit；slices 1/2/4/8 全測淨負（128 tok baseline 全勝）——M4 對即時頻寬敏感、非時長積分。DVFS 牆 = 硬體特性，推理側無解。§13.161.12 槓桿 ① 正式關閉。</p></div>
+      <div class="card blue"><h4>診斷工具集（RUNTIME_CONTROLS.md）</h4><p>DVFS 調查產物、全部 env-gated 預設關、production 零影響：<code>Q36STEP head=</code>（merged 模式看 head CB span，3.1ms @ 72GB/s）、<code>Q36_FUSED_SLICES</code>（拆 N 片同 CB 依序 dispatch，證偽資產預設 1）、<code>Q36_FUSED_LOOP=2</code>（唯一有效緩解，降並發至 ~36GB/s）。已寫入 RUNTIME_CONTROLS.md「qwen36 diagnostic instrumentation」章節，與正典 §13.161.13/14 對齊。</p></div>
+      <div class="card purple"><h4>r3q4la_e4（進行中）</h4><p>把 r3 家族 linear_attn 補全 q4，resident 3.25→2.55GB，驗證 §13.110 縮小效應在 r3 轉正。</p></div>
+      <div class="card amber"><h4>gemma4 22 tok/s = 架構紅利</h4><p>30 層 + 4/8 sparse + 無 DeltaNet——不是推理引擎能補的差距。qwen36 天花板 ≈ 5.5-5.8 tok/s（h3+fused 後，§13.161.10b）。</p></div>
+      <div class="card coral"><h4>唯一剩餘 = 40→30 蒸餾（§13.161.9）</h4><p>剩餘槓桿盤點：router 4-bit / GA Kernel B / 記憶體側全套已證偽；唯一 >1.5× 路徑是架構級層蒸餾（需訓練算力）。</p></div>
+      <div class="card blue"><h4>dense 路徑已實證（雙引擎）</h4><p>mlx-lm 原生跑 Qwen3-8B-4bit = <strong>21.7 tok/s</strong>（本機實測，比 MoE 快 4.5x）；DFlash 在 16GB 小 dense 上 0.58x 負收益不建議；dense → MLX / MoE → TurboFieldfare 達成同時支持。評估文件 §4。</p></div>
+      <div class="card teal"><h4>工具鏈已完備</h4><p>make_embed_q4.sh（產模型）→ run_prod_qwen36.sh（一鍵生產）→ --scan-profile（漂移檢查）→ q36_*_ab.sh（A/B 重驗）。</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>九、llama.cpp fork 線（bounded residency + Metal 併入）</h2>
+    <div class="sec-sub">LLAMACPP_EXPERT_BOUNDED_RESIDENCY_FORK_方案.md §7/§8 · 2026-08-15：-ngl 0 轉正、n99c 4GiB 11.08、MTP 放著、預測線 P0 證偽終止</div>
+    <div class="card-grid">
+      <div class="card teal"><h4>-ngl 0 bounded residency 已轉正（P0 現行可用）</h4><p>L1 skip-load（loader 跳過 expert 載入）+ L3 Option A（static slot pool）全鏈 bit-identical：1GiB cache 換 ~4.1GiB RSS（mmap 128 tok −52%），RSS 2.67GiB bounded。1GiB cache 4:1 槓桿成立。</p></div>
+      <div class="card amber"><h4>Option A 真實文本 = −7%（修正 −1.8% 假象）</h4><p>llama-bench 喂隨機 token（54% hit、~56K pread），−1.8% 是低負載假象（今日重跑 −17%）。llama-simple 真實文本：base 14.2 tok/s 穩定、Option A 13.2（−7%）；L3-B ≈ Option A（preads ~19K 為主因）。</p></div>
+      <div class="card red"><h4>凍機事件（13:08 重啟）已定位</h4><p>-ngl 99 + cache + skip-load + mmap：Metal 在 graph-alloc 讀未寫入的 mmap expert 張量 → 9GB 冷頁 fault 風暴 + Metal buffer 分配 → 系統硬掛。診斷一律 -no-mmap；「-ngl 99 + cache + mmap」列為禁區。</p></div>
+      <div class="card blue"><h4>copy 時機根因（三臂隔離證實）</h4><p>-ngl>0 整個 graph 是單一 MTL split：remap/expert 在 split 開頭 copy（hook_swap=0），hook mid-compute 才寫 → Metal 讀 stale/零 ids → 全路由 expert 0 → tabIndex 退化。NOGATHER 隔離：無 remap/swap 時與 base 相同。</p></div>
+      <div class="card red"><h4>MTP 線封存：官方 MTP+IQ3 檔正確權重下仍淨負 6.4×（§8.59）</h4><p>peculiar-ragdoll/Nail-Qwen3.6-35B-A3B-GGUF-MTP 官方 IQ3_XXS 檔（hf-mirror + aria2c 68MiB/s 下載）：20 顆 blk.40 全在（含缺的 shared_head_norm）、Q2_K/Q3_K experts 進 pool 免 CPU override、無 OOM。accept 0%→14.3%（權重根因修好）但 MTP-4 1.47 vs C0 9.47 t/s——draft ctx 每 token 跑全模型，328 draft 全價抵不過 47 接受。手作重建（p0_mtp_rebuild.py，含 +1 norm / shared_head_norm）被官方檔取代。</p></div>
+<div class="card purple"><h4>A+B split 已修復（封存條件 1 ✅）</h4><p>三層缺一不可：① loader router 權重 CPU buft ② sched expand-gpu 釘 topk CPU ③ hook resident passthrough（real ids、不 swap/不 fill）。結果每層 [MTL attn]→[CPU router+topk]→[MTL FFN]→[CPU combine]——白皮書 A+B。雙家族（qwen36 IQ2 / gemma4 IQ3_S）-ngl 99 + cache 全 bit-identical。</p></div>
+      <div class="card amber"><h4>剩餘：封存條件 2/3</h4><p>skip-load 仍封 -ngl 0；條件 2/3 = 把 skip-load 併入 -ngl>0（loader 跳過 expert + hook 切回 bounded mode），驗證 gemma4 IQ3_S（11.29GB）壓進 11.45GB Metal working set 不再 OOM。</p></div>
+      <div class="card blue"><h4>診斷工具集（全 env-gated 預設 OFF）</h4><p>LLAMA_EXPERT_CACHE_ALLOW_NGL=1（診斷用放開 gate）、CGC_SCHED_DBG=1（split 結構 + hook_swap 計數 + Metal copy dump）、g_expert_swap_count。詳細見 RUNTIME_CONTROLS.md llama.cpp fork 章節。</p></div>
+    </div>
+  </section>
+
+  <div class="footer">
+    更新指引：每完成一次 request&action → ① 更新正典 <code>TURBOFIELDFARE_MMAP_EXPERT_IO_PLAN_2026-08-07.md</code> §13.x → ② 在下方 <code>TREE</code> 資料加節點 → ③ 對應 section 補結論卡片。<br>
+    CGC Project · 2026-08-11
+  </div>
+</div>
+
+<script>
+// ============ 心智圖資料（活文件核心：每 request&action 在此加節點） ============
+// status: verified(綠)/falsified(紅)/neutral(藍)/wip(黃)/target(紫)
+const TREE = {
+  root: "Qwen36-35B-A3B · M4-16GB decode 優化",
+  children: [
+    { label: "量化階梯", status: "verified", meta: "2.18 → 4.78 tok/s（+119%）",
+      children: [
+        { label: "r4 baseline", meta: "2.18 tok/s（4-bit experts）", status: "neutral" },
+        { label: "+head/shared q4 → r4q4", meta: "3.45（+58%）", status: "verified" },
+        { label: "+linear_attn q4 → r4q4la", meta: "4.19（+21.8%，IO 預算越緊收益越大）", status: "verified" },
+        { label: "+GatedAttn q4 → r4q4la_ga", meta: "+0.4% 中性，但 RAM −392MB", status: "neutral" },
+        { label: "+pool96", meta: "4.375（+3.6%，RAM 槓桿轉正）", status: "verified" },
+        { label: "+embed q4 → r4q4la_ga_e4", meta: "4.78（+7.6% §13.110 定案，mmap 縮小效應）", status: "verified" },
+        { label: "r3q4la_e4 全鏈 4-bit", meta: "4.80（+16.6%，resident 縮 44.5% — 家族紀錄）", status: "verified" },
+        { label: "r3q4_e4（前代）", meta: "4.28；embed q4 parity +0.6%（縮小比例小）", status: "neutral" },
+      ]},
+    { label: "記憶體 / Expert 流式 Pareto", status: "verified", meta: "s96+p96 = 支配點",
+      children: [
+        { label: "s96 + p96 支配點", meta: "slots96>64；pool96 覆蓋 64.6% → 4.375", status: "verified" },
+        { label: "pool112/128 收斂（r4 時代）", meta: "r4 無 GA 餘裕；§13.116 r3q4la_ga_e4 翻案 p112 +5.0%", status: "falsified" },
+        { label: "top96 mix profile", meta: "code+prose 混合 trace；r3/r4 共用", status: "verified" },
+        { label: "PRELOAD=sync 必須", meta: "async 6.4GB 背景讀搶 SSD", status: "verified" },
+        { label: "embed q4 RAM 槓桿", meta: "mmap demand-paging 前提不成立", status: "falsified" },
+        { label: "pool112 定案（兩家族）", meta: "r3 7/7 +5.0%（§13.116）；r4 3/4 +1.9%（§13.117）；預設 96→112", status: "verified" },
+      ]},
+    { label: "GPU Kernel 優化", status: "verified", meta: "GPU 176ms / wall 245ms",
+      children: [
+        { label: "lm_head xSmem 分塊", meta: "26.2 → ~13ms", status: "verified" },
+        { label: "linear_attn 全鏈 4-bit", meta: "deltanet_project_q4 dequant-inline", status: "verified" },
+        { label: "shared_merge 融合 + warp-coop", meta: "shared 0.22ms/層，已達頻寬附近", status: "verified" },
+        { label: "GatedAttn q4", meta: "+0.4%——GEMV 計算 bound 教訓", status: "neutral" },
+        { label: "CB 合併 42→6", meta: "跨層強依賴，雙重證偽", status: "falsified" },
+        { label: "全鏈 megakernel 融合", meta: "中間張量 <100KB/層，收益 <1%", status: "falsified" },
+        { label: "llama.cpp DeltaNet 對拍", meta: "報告已出：融合不借（delta_rule 僅 2% GPU）；借 B-token+K 快照 kernel（verifyBatch 使能件）+ h 轉置單 pass", status: "verified" },
+        { label: "Phase 1 轉置證偽（§13.120）", meta: "llama.cpp 標量-delta（[S_v,S_v] 方陣）≠ Qwen3.6 torch per-column（[k_dim,v_dim]）——transpose 數學前提不符；實作對拍失敗（yErr=4.98）已 revert。量測：delta_rule 實測僅 2.06ms/step（GPU 1.1%，舊估 3.5 過時），鏈大頭是 project 12.4ms。Phase 2 B-token+快照不受影響", status: "falsified" },
+        { label: "Prefill batch 化投影（§13.121）", meta: "Phase A GEMV→GEMM：project_b 初版 acc[64] 動態索引 spill→50ms，T-tile acc[16]→30ms，x-smem tiled（token-tile 8 載 smem 32KB）→2.6ms（12×）。對拍：framework golden 5.4e-4 + serial bit-identical，22/22 測試過。A/B（85-tok code，r3q4la_ga_e4 release）：交錯 off 27.07 vs on 25.83（-4.6%），乾淨窗 off 29.4 vs on 26.4（-10.2%）。預設翻 on（env=0 可關）。剩 output_b 21ms/鏈（o_normed 4096 device 讀放大）可套同款 x-smem", status: "verified" },
+        { label: "Prefill chunked 形式評估（llama.cpp §5）", meta: "實測 TTFT 85tok=27.66s = fill 7.7s + 載入/preload/CPU ~12s + GPU ~8s。llama.cpp 閉式 chunk 遞迴（decay mask+cumdecay=FLA chunk_gated_delta_rule）不值得做：delta_rule 真時僅 0.15ms/tok（層13%），B-token kernel 已覆蓋，tri-solve 串行段吃光紅利。真正獎品=batch 化投影（GEMV→GEMM）：project 0.72ms/tok 佔層63%、是 raw 頻寬 5 倍（GEMV 利用不足）；Phase A（batch project/conv/output + B-token delta_rule）1-2 天 → TTFT −8~11%；Phase B 閉式 2-4 天只多省 0.3s。更大槓桿：fill/載入重疊、GatedAttn batch、CPU 序列化", status: "verified" },
+        { label: "GatedAttn 10 層 batch 化（§13.122）", meta: "3 batch kernel（project_b grid=(16,tiles) x-smem token-tile 4 / attention_b grid=(16,B) / o_proj_b）+ encodeTokenBatch + prefillChunked 接線（env Q36_GATEDATTN_BATCH=0 可關）。對拍 bit-identical（dq/dgate/dy=0.0），24/24 測試過。關鍵：q4 dequant 分支 8× 回歸（proj_b 145.4 vs serial 18.3ms）→ 向量化（uint load 8 nibbles + 同 group scale/bias）→19.5ms。A/B（85-tok，release，乾淨窗）：off 24.55 vs on 24.44（-0.4% noise 內）= parity。結論：GatedAttn 僅 10/40 層、GPU 佔 TTFT ~1%，batch 化 TTFT 收益上限本就 ~0；真正價值是把 q4 分支 8× 回歸修掉（不修會 -2.2s）。預設維持 on。教訓：q4 dequant 向量化手法可套其他 q4 GEMV。下一槓桿=fill 與載入/sync preload 重疊（7.7s fill + 12s 載入才是 TTFT 大頭）", status: "verified" },
+        { label: "Phase 2 B-token+快照 kernel ✅（已對拍）", meta: "deltanet_delta_rule_b：1 dispatch 跑 B tokens + K 快照槽內建（fc 87/88/89、MODE=1 slot=K-1-t），繞過轉置前置（column-ownership 每 thread 持列駐寄存器）。B=3 對拍 framework golden：do=2.3e-06、dh=1.3e-04、3 快照槽全過；Qwen36MetalTests 19/19。抓兩個 bug：① 初版誤用跨列 tree 歸約（baseline kv_mem 是列內局部點積）② gen golden broadcasting 錯軸（k[j]·Σh[i,j] 而非 Σh[i,j]·k[i]，token0 巧合一致故難察）。產出 encodeDeltaRuleB + b3 npy golden。下一步：verifyBatch 主線（§13.95）用 1 dispatch 取代 B 次 dispatch → DeltaNet 側 verify 成本≈0", status: "verified" },
+      ]},
+    { label: "MTP / 投機解碼", status: "wip", meta: "接線完成但淨負，需 finetune",
+      children: [
+        { label: "fused MTP head 對拍通過", meta: "7/7 全過；probe accept 94.7%", status: "verified" },
+        { label: "MTP 淨負定案", meta: "r3 −12% / r4 −29%（union 成本 > 收益）", status: "falsified" },
+        { label: "MoE-SpAc utility", meta: "MTP 前瞻專家預測已接，32-step refresh", status: "wip" },
+        { label: "MTP head finetune", meta: "gemma4 線 76.4% accept 已驗證路徑；唯一突破線", status: "target" },
+        { label: "主模型 LoRA/蒸餾評估", meta: "16GB 裝不下：35B q4=20GB、學生 bf16=52GB；M4 訓練有效 1.5-4.5 TFLOPS；僅 0.4B head 可行。唯一落地=零訓練層裁剪（40→30 刪 10 DeltaNet 層，1 天實驗）", status: "verified" },
+        { label: "層重要性分析", meta: "§13.118：Q36IMP（ShortGPT 式 relT）40 層測完，候選 10 層 {25,24,21,20,5,9,13,17,22,4}；L20-25 中上段弱區塊；routing 無判別力、Δh 是主信號；vs 均勻刪交集僅 4 層", status: "verified" },
+        { label: "零訓練層裁剪（40→30）", meta: "§13.119：Q36_PRUNE_LAYERS 實作完成（整層跳過、env 控制、0 檔案改動）。PPL 對拍：code +19% rel 可接受、prose +61% rel 顯著退化；重要性法(5.521)<均勻法(5.879)。decode +23.5%（4.08→5.04 tok/s）。定案：生產預設不開，code 專用可選配", status: "verified" },
+      ]},
+    { label: "已證偽方向", status: "falsified", meta: "不要重走",
+      children: [
+        { label: "WAKE_POLL_US=5000", meta: "乾淨窗無效，已移除", status: "falsified" },
+        { label: "ADAPTIVE_POOL", meta: "無差異 7.86 vs 7.84", status: "falsified" },
+        { label: "router 4-bit", meta: "風險/收益不成比例", status: "falsified" },
+        { label: "40→30 蒸餾", meta: "端側不可行；C2C 非層壓縮工具", status: "falsified" },
+      ]},
+    { label: "生產設定", status: "verified", meta: "統一 run_prod.sh 一鍵 5.5-5.8",
+      children: [
+        { label: "r3q4la_ga_e4h3 主力", meta: "head 3-bit 默認（§13.161.10/10b）+pool112/top112/sync/RW8/trust-receipt", status: "verified" },
+        { label: "--scan-profile / --scan-profile-type", meta: "Pareto 漂移一鍵檢查 + coherence gate（§13.111）；mix vs code 直接 A/B（§13.161.6）", status: "verified" },
+        { label: "統一 launcher（§13.161.1）", meta: "FAMILY=qwen36|gemma4 共用機制，家族數值各自定案；run_prod_qwen36.sh = thin wrapper", status: "verified" },
+        { label: "code-prune 已移除（§13.161.8）", meta: "code ppl +19% / prose +61% 品質代價不可接受；生產回全 40 層", status: "falsified" },
+      ]},
+    { label: "天花板與未來", status: "target", meta: "~5.5-5.8 tok/s 現行架構上限",
+      children: [
+        { label: "h3 + fused head（§13.161.9/10/10b）", meta: "§13.161.9 唯一現成槓桿已實作：LMHeadChainInt3 移植進 Qwen36ForwardRunner fused 路徑；+2-4%（7/8 配對勝、冷窗 ~0、load 下更優）；5.3→5.5-5.8", status: "verified" },
+        { label: "剩餘槓桿盤點（§13.161.9/12）", meta: "router 4-bit / GA Kernel B / 記憶體側全套證偽；唯一剩餘 = 40→30 蒸餾（架構級）", status: "falsified" },
+        { label: "head DVFS 分佈式 dispatch（§13.161.13/14）", meta: "量測：head burst 3.1ms @ 72GB/s 是觸發主因；slices 1/2/4/8 全測淨負（128 tok S1 勝 S4 −1.9%、S2 −4.3%）——M4 current-limit 對即時頻寬敏感、非時長積分；rowLoop=2 即最優。+25-30% 理論終結", status: "falsified" },
+        { label: "診斷工具集（RUNTIME_CONTROLS.md）", meta: "Q36STEP head= 欄位（merged 模式 head span 量測）+ Q36_FUSED_SLICES（證偽資產，預設 1）+ Q36_FUSED_LOOP=2（唯一有效緩解）；全部 env-gated 預設關，production 零影響", status: "verified" },
+        { label: "P1 fill/encode 並行", meta: "wall →203ms（+14%）→ ~4.9 tok/s", status: "target" },
+        { label: "r3q4la_e4 完成", meta: "linear_attn q4 → resident 1.81GB，+16.6% 轉正（§13.112）", status: "verified" },
+        { label: "gemma4 22 tok/s", meta: "30層+稀疏+無DeltaNet 架構紅利，非引擎可補", status: "target" },
+        { label: "dense 路徑實證", meta: "mlx-lm 跑 Qwen3-8B = 21.7 tok/s（DFlash 0.58x 負收益）", status: "verified" },
+        { label: "Mio/DFlash 評估", meta: "完成（評估文件 §4-5：dense 走 MLX、DFlash 不建議）", status: "verified" },
+        { label: "llama.cpp DFlash 合併", meta: "PR #22105 merged；master 含 dflash.cpp+qwen35moe.cpp；GGUF 已備妥（IQ2/IQ3+draft，本地 SSD）", status: "verified" },
+        { label: "路 C draft 成本", meta: "實測：block=16 延遲 47-74ms（T=32-1024），每週期 59ms，draft 側 3.7ms/token；非瓶頸，verify 並集才是（§5.3）", status: "verified" },
+        { label: "路 B 端到端", meta: "16GB Metal OOM（target 10GB+draft）；-ngl 99 死局、-ngl 60 病理慢；待換機或 partial offload（§5.2）", status: "wip" },
+        { label: "MLX 引擎對比", meta: "§5.6：Qwen3.6-35B-A3B 所有 MLX 量化 19.32-24.7GB > 16GB RAM（最小 mxfp4）；Nail-MLX 實為 21.66GB 非 6.18GB；MLX 三方對比不可行——本機只剩 llama.cpp(IQ2 28 tok/s) vs TurboFieldfare(r3 4.8)", status: "verified" },
+        { label: "r3q4la_e4 新 profile", meta: "§13.113：128-tok 真 decode trace，top96 覆蓋 78.8%；scan 兩次方向相反 → p96 維持待乾淨窗重驗", status: "wip" },
+        { label: "r3q4la_ga_e4", meta: "§13.114：GA q/k/v/o 補 q4，resident 1807→1415MB；A/B parity（mmap 死區 <700MB）；品質保留；升為 Q36_BITS=3 預設", status: "verified" },
+        { label: "終極 A/B 定案", meta: "§13.115：r3q4la_e4 vs r4q4la_ga_e4 共用 profile、3/3 配對 r3 勝 → r3 家族為生產主力，launcher 預設翻 3（r3q4la_ga_e4）", status: "verified" },
+      ]},
+    { label: "llama.cpp fork 線（bounded residency + Metal）", status: "verified", meta: "P0 定案：-ngl 0 轉正、A+B split 已修；n99c 4GiB 破 10（11.08）；MTP 放著（共享 cache 修正）；預測線證偽終止；fill 並行定案：pool8（§8.11/8.12）；double-buffer 無淨收益 + miss 分析證步間預測死亡（§8.14）；prewarm 熱集（§8.15）與 TAILPIN pin（§8.16）證偽——預測/prewarm/pin 三線全關；n99 guard 防凍機（方案文 §7/§8 + MTP轉正規劃書 §0.5）",
+      children: [
+        { label: "-ngl 0 bounded residency 轉正", meta: "L1 skip-load + L3 Option A 全鏈 bit-identical；1GiB cache 換 4.1GiB RSS（mmap −52%）；RSS 2.67GiB bounded（4:1 槓桿）", status: "verified" },
+        { label: "Option A 真實文本 −7%", meta: "llama-bench −1.8% 是低負載假象（隨機 token，今日重跑 −17%）；真實文本 base 14.2 穩定、Option A 13.2（−7%）；L3-B ≈ Option A（~19K pread 主因）", status: "verified" },
+        { label: "凍機事件（13:08 重啟）", meta: "-ngl 99+cache+skip-load+mmap：Metal copy 讀未寫入 mmap → 9GB 冷頁 fault 風暴硬掛；-no-mmap 不凍；禁區 = -ngl 99+cache+mmap", status: "falsified" },
+        { label: "copy 時機根因", meta: "ngl>0 單一 MTL split：remap/expert 在 split 開頭 copy（hook_swap=0）、hook mid-compute 太晚 → stale/零 ids → 全路由 expert 0；NOGATHER 三臂隔離證實", status: "verified" },
+        { label: "A+B split 已修復（封存條件 1 ✅）", meta: "三層：① router 權重 CPU buft ② sched expand-gpu 釘 topk CPU ③ hook resident passthrough（real ids、不 swap/fill）；雙家族 -ngl 99+cache bit-identical（qwen36 IQ2 + gemma4 IQ3_S）", status: "verified" },
+        { label: "剩餘：skip-load 併入 Metal + working set 驗證", meta: "封存條件 2/3：skip-load 併入 -ngl>0 → 驗 gemma4 IQ3_S（11.29GB）壓進 11.45GB working set 不再 OOM", status: "wip" },
+        { label: "位寬品質曲線（§8.8）", meta: "IQ2 2.06bpw 11.21 t/s 但輸出即時崩潰（11 words 後 111…）；IQ3 3.4bpw 8.37 t/s 品質正常 → IQ3 是品質下限、日常配置", status: "verified" },
+        { label: "IQ3 budget 掃描（§8.9）", meta: "hit 66→77→85%（1/2/3GiB）但 tok/s 持平 8.3——ngl 0 牆是 CPU dequant+GEMM 非 IO；L4 pool 僅 +6%", status: "verified" },
+        { label: "n99c 4GiB 破 10（§8.10）", meta: "IQ3 FFN 上 Metal：4GiB pool 11.08 t/s（> ngl 0 的 8.37-8.82）；2GiB 6.10（pool 太小 fill 阻塞）、6GiB OOM（working set 11.45GB）；MMIDPROBE 確認 MTL0", status: "verified" },
+        { label: "MTP-4 端到端無加速（§8.7）", meta: "MTP-4+cache 5.34 vs 純 cache 10.77（accept 83.3%）；draft 與 target 共享同一個 model 層級 cache（非第二實例，§8.14 miss 分析修正）——真成本是 draft forward 使 expert 流量翻倍 + draft routing 對 target 無預測力（§8.14 miss 分析）；先放著；-md 對 MTP 有害（二次載入→Metal OOM）", status: "falsified" },
+        { label: "P0 預測線證偽（ISCA'26 Insight 1）", meta: "prefill→decode 預測不成立：長 prompt 370 tok 下 prefill top-K 頻率預測 decode 熱集僅 qwen36 23.2% / gemma4 52.2%（K=43，池命中代理）；seen-set 覆蓋恆真 100% 無意義；遠低 LRU 91.3%；短 prompt 更差", status: "falsified" },
+        { label: "預測線終止（MTP轉正規劃書 §0.5）", meta: "repo zhongkaiyu/moe_exp_placement = SGLang EP 佈局 + 離線仿真、非 runtime 預取；Insight 1 在單機有界池不轉移 → 不進 P1 SpAc 移植；P2「8.7% miss 非排程能解」維持；工具留用：LLAMA_EXPERT_CACHE_TRACE + tmp/p0_*_analysis.py", status: "falsified" },
+        { label: "fill 並行度 A/B（§8.11）", meta: "每 expert 3 段並行值 +6~33%；跨 expert batch +8.3%（11.52 vs 10.64，同 run）；全串行基線 10.02；抓到並修掉 s0 race（batch 同鎖連續指派 slot、LRU 換出剛指派的 slot → 兩 expert 一 slot → FFN garbage；修法 = 指派當下 bump last_use）；修後 deterministic + bit-identical", status: "verified" },
+        { label: "double-buffer prefetch 無淨收益（§8.13/8.14）", meta: "真 bg slot fill 取代 F_RDADVISE（-88% 災難消除）：slot_queued + pool_queue 復活 + drain barrier + step-boundary queue 全實作；但 qwen36 n99c 200-slot pool 被 prefill 塞滿，step union 全 resident → 0 fill 落地，hit/miss 與 base 完全相同；層鄰預測精度不足。維持 PREFETCH env-gated 預設關（診斷工具保留）", status: "falsified" },
+        { label: "decode miss 來源分析（§8.14）", meta: "1797 miss = 1796 唯一 (layer,expert)——重複率≈0，步間/層鄰預測在天花板層面死亡（同層跨步不重複選 expert）；prefill 覆蓋隨 prompt 增長：短 21.5% / 長 65.3% → prewarm 應改用 prefill 熱集（現選 experts 0..n 非熱集）為唯一剩餘方向；工具：LLAMA_EXPERT_CACHE_MISS_DUMP + tmp/q36_miss_source.py", status: "falsified" },
+        { label: "prewarm 熱集改進（§8.15）", meta: "PREWARM_HOT=1：prefill 累積路由頻率 → 首個 decode 前以 top-K 熱集填池。證偽 net negative：冷啟動從離時鐘移到關鍵路徑（8000 同步 pread 卡首 token）+ prefill 失去墊底 → qwen36 40-tok prompt 128-tok A/B 10.5→6.3 t/s（-40%）、miss 不降反升（10254→10347）；5-token 煙霧的 -4.1% miss 被冷啟動吞掉。熱集在 prefill 結束前不可知 → 預填必然落關鍵路徑（無 routing oracle），維持 load-time 0..n prewarm 為預設", status: "falsified" },
+        { label: "decode 首步 union 預熱 TAILPIN（§8.16）", meta: "不預測不 fill，首個 decode step 把 prefill 尾端 10 token union 的 resident experts pin（LRU 免驅逐）單步後 unpin。證偽 net≈0：4GiB 0 差異 / 1GiB -0.14%（12 miss）；根因 = LRU 新鮮度已保護 prefill 尾段（fill 時 bump last_use）+ §8.14 覆蓋發生在 128 步期間非首步（單步 pin 碰不到；跨步 pin 的容量成本 40% > 回收）+ 池小於 prefill union 時走 L3-B 無可 pin。預測/prewarm/pin 三線全證偽，剩 pool8", status: "falsified" },
+        { label: "收斂報告（§8.17）", meta: "I/O 側 11 槓桿全滅（readv/budget/fadvise/double-buffer/預測/熱集/TAILPIN/藏GPU/pool16/MTP/靜態pin）；用戶點名三維度全無頭寸：slot 大小（模型決定+相鄰必垃圾）、LRU（1796/1797 唯一無訊號）、union 預熱（兩刀證偽）；真正剩餘差距在計算側（gemma4 14.40 vs Swift 18-20 = scheduler/combine/kernel，非 pread）→ 封板 I/O、下一步火焰圖", status: "verified" },
+        { label: "計算側火焰圖（§8.18）", meta: "sample 採樣 gemma4 n99c decode：主執行緒 86.7% 卡 Metal waitUntilCompleted（GPU busy）、CPU backend 5.5%（= A+B split 的 router GEMM f32 + topk，可移回 GPU 回收 ~0.8 t/s）、cache hook 3.7%（同步 fill 僅 0.8%）、sched 2.1%；pread 藏在 GPU wait 後非關鍵路徑 → GPU-bound 定案，14.40 vs Swift 18-20 差距 = GPU kernel 執行（需 -22% GPU 時間）", status: "verified" },
+        { label: "P1 引擎層收斂工作分解（§8.19）", meta: "盤點：graph reuse 已開無可調（0%）、Metal dispatch 池化 +0.5-1%、combine n_ubatch 非 decode 槓桿（0%）；主候選 = router 回 GPU（+5.5%，topk 32B 回讀）+ FFN mul_mat_id kernel（+10-20% 高風險，需 xctrace 先拆 GPU 側）；執行序 P1-0 xctrace → P1-1 base 對照 → P1-2 router → P1-6 Swift 採樣 → P1-3 kernel；終態估 15.7-18 t/s", status: "target" },
+        { label: "P1-2 router 回 GPU（§8.20）", meta: "實作轉正：router GEMM 上 Metal（ffn_moe_gate 不再強制 CPU）、ffn_moe_probs pin CPU backend（softmax/topk/hook 留 CPU split，copy-timing §7.3.5 不破）；6 輪交錯 A/B（gemma4 n99c 4GiB、hit/miss 兩臂一致、bit-identical）：P1-2 median 14.70 vs ROUTER_CPU=1 11.54 = +27%，超 §8.19 預測 +5.5%（ROUTER_CPU 額外付 30 層 CPU↔Metal split barrier）；絕對值對齊 14.40 深夜基線；已為預設（ROUTER_CPU=1 保留診斷）", status: "verified" },
+        { label: "qwen36 P1-2 轉移證偽（§8.23）", meta: "gemma4 +27%（§8.20）不跨家族：qwen36 CPU router 10.4-11.8（median ~10.8、複現 11.76 基線）vs Metal router 6.2-8.8（median ~7.4）= −31-45% 回歸、bit-identical、hit 兩臂同；機制 = 40 層 CPU router 與前層 Metal FFN 軟體管線重疊，router 上 Metal 後整層 GPU 序列化；修正 = 預設家族分派（qwen35moe→CPU router、gemma→Metal router，env =0/=1 覆寫），qwen36 回到 ~11 t/s ✓", status: "falsified" },
+        { label: "P1-3 FFN kernel 設計定案（§8.21）", meta: "topk-cap 隔離：MoE FFN ≈ decode 25-27%、GEMV 效率僅純 BW 的 1/5；graph dump：每層 FFN 鏈已緊湊（mmid+view×2+glu+mmid+mul+sum_rows），op 層無冗餘；Swift 藍本 = phase-1（gate_up+act 單 kernel）+ phase-2（down+reduce 單 kernel，thread 依序累加無 atomic）；op 層融合只值 +2-3%，+10-20% 在 GEMV 內部（Swift 式 grid 重構：expert 進序列維）＝ multi-day kernel 專案，且需先重建安全的 GPU 側計時（per-op 工具因兩次當機已移除）", status: "target" },
+        { label: "P1-0 安全 GPU 計時重建 + decode 分解（§8.22）", meta: "CGC_GPU_OP_TIMING（每 op 單 buffer + GPUStartTime/EndTime + use_fusion=false，兩個當機根因都不碰；新增 ggml_metal_op_get_node_op、修 dump 雙轉義）；校準：per-op 2.1ms/layer vs 真實 2.3ms（誤差 ~10%）；gemma4 n99c 4GiB 穩定區分解：attention 投影 18.0% + 未名 core MUL_MAT 15.9% + MoE gate_up 14.3% + lm_head 13.3%（每 step 4.3ms、214MB 只跑 50GB/s = 42% BW，新靶）+ small 11.9% + down 9.2% + shared 9.0% + norm 4.9% + router 1.5% + SDPA 1.4%；MoE 23.5% 與 topk-cap 25-27% 交叉驗證 ✓；attention 全體 ~35% 超 §8.18 估", status: "verified" },
+        { label: "pool8 persistent worker（§8.12）", meta: "persistent 8-worker pool 取代 spawn-per-expert：qwen36 11.76 t/s（+6% vs spawn、變異 ±0.4 vs ±2.6）；pool16 反效果（SSD queue depth 打爆）；gemma4 驗證 median 15.46（+9.8% vs seriale、+13.4% vs serial，fill wall 5.2<5.6<6.5）；vs 原始串行累計 +17%；env：WORKERS/BATCH_SPAWN/SERIAL_EXPERT/SERIAL_FILL", status: "verified" },
+        { label: "P1-3a gate+up+down 融合（§8.42）", meta: "MUL_MAT_ID_GLU 融合 kernel：barrier 根因（同 command buffer 兩 dispatch 不保證可見性，融合繞過 node 級 barrier）→ 無條件 memoryBarrierWithScope；i0/il1-2/全層 5/5 確定 + bit-identical；GPU per-op 快 ~4% 但端到端 ≈ 0（gate/up 重疊損失抵消 + FFN bandwidth-bound 本質）→ 融合線收斂，淨值 ≈ 0", status: "verified" },
+        { label: "P1-3b nr0=8 compile-time（§8.43）", meta: "實作 nr0=8 模板：base 名稱缺 _nr0_8 後綴 → fallback 編譯 nr0=4 template 卻配 nr0=8 grid 錯配（§8.41 blocking 錯配翻案為此 bug）；修復後 qwen36 5 項 + gemma4 4 項（gate_up IQ2_S 半套用、down IQ4_NL 不受影響）全 BIT-IDENTICAL；速度無增益（qwen36 ≈0 至略負、gemma4 median +3% 略慢）→ nr0=4 預設維持，P1-3 線收斂", status: "verified" },
+        { label: "weight-read 路徑重盤（§8.44）", meta: "FFN bandwidth-bound 定案後：slot 佈局 readv 證偽（SSD queue depth 牆）、跨層 pread 合併證偽（層層依賴 + miss 唯一性）；qwen36 是 hybrid 架構（GATED_DELTA_NET/SSM_CONV/linear_attn 佔 ~1.8ms/layer 固定成本）；20 t/s 需 hit≥95%（4GiB 對高多樣性 prompt 不可達）→ 誠實終態 ~12-16 t/s（hit 驅動）；後續 P1-8（lm_head）翻案、P1-9（動態容量）證偽，qwen36 P1 槓桿耗盡", status: "verified" },
+        { label: "P1-8 lm_head 翻案（§8.45/§8.46）", meta: "qwen36 head output Q6_K 417MB ~4.5ms/step = 94GB/s（78% BW）已高效；gemma4 head token_embd Q6_K 605.6MB（§8.24 記 282MB 是錯的）穩定態 ~6.3ms = 93GB/s 與 qwen36 相同；§8.24「23-26ms/9%/36%」是 prefill batch>1 混入 + 序列化工具 slow mode 假象（CGC_GPU_WHOLE_TIMING 正常路徑無 4× 慢步，每 step ~31 個 1-2ms Metal subgraph 提交是唯一引擎層發現）；odd-nb/pad-ne00 假說證偽（CGC_HEAD_PAD_TEST）；H1 回收 ≈0-10% → lm_head 從 P1 靶清單移除", status: "verified" },
+        { label: "P1-9 動態 slot 容量證偽（§8.47）", meta: "trace 量測 decode uniq/layer 110-221（2.0× 偏斜、layer 0/1 最熱）；LRU 模擬 greedy 邊際分配同 8000 slots 只省 42/12480 = +0.3%（miss 是 one-shot routing 雜訊非 capacity thrash）；實測 150→200 slots（+33% 容量）只 +0.8pp hit、6GiB 撞 working-set 牆崩潰 → 容量曲線已平，不投入 loader 改動；qwen36 P1 槓桿至此全部耗盡（FFN kernel 證偽、lm_head 翻案、動態容量證偽）→ 12-16 t/s 是誠實終態", status: "falsified" },
+      ]},
+  ]
+};
+
+// ============ 渲染器 ============
+const STATUS_TAG = { verified: "定案", falsified: "證偽", neutral: "中性", wip: "進行中", target: "目標" };
+
+function renderNode(node, depth) {
+  const el = document.createElement("div");
+  el.className = depth === 0 ? "mm-root" : (node.children ? "mm-branch" : "mm-leaf");
+  if (depth === 0) {
+    el.textContent = node.root;
+    return el;
+  }
+  if (node.children) {
+    const head = document.createElement("div");
+    head.className = "mm-branch-head";
+    head.innerHTML =
+      '<span class="dot" style="background:var(--' + (node.status === 'falsified' ? 'red' : node.status === 'verified' ? 'teal' : node.status === 'neutral' ? 'blue' : node.status === 'target' ? 'accent' : 'amber') + ')"></span>' +
+      '<span class="tag tag-' + node.status + '">' + STATUS_TAG[node.status] + '</span>' +
+      '<span class="title">' + node.label + '</span>' +
+      '<span class="meta">' + (node.meta || "") + '</span>' +
+      '<span class="caret">▾</span>';
+    el.appendChild(head);
+    const children = document.createElement("div");
+    children.className = "mm-children";
+    for (const c of node.children) children.appendChild(renderNode(c, depth + 1));
+    el.appendChild(children);
+    el.addEventListener("click", (e) => {
+      if (e.target.closest(".mm-branch-head")) el.classList.toggle("collapsed");
+    });
+    return el;
+  }
+  const head = document.createElement("div");
+  head.className = "mm-branch-head mm-leaf-head";
+  head.innerHTML =
+    '<span class="dot" style="background:var(--' + (node.status === 'falsified' ? 'red' : node.status === 'verified' ? 'teal' : node.status === 'neutral' ? 'blue' : node.status === 'target' ? 'accent' : 'amber') + ')"></span>' +
+    '<span class="tag tag-' + node.status + '">' + STATUS_TAG[node.status] + '</span>' +
+    '<span class="title">' + node.label + '</span>' +
+    '<span class="meta">' + (node.meta || "") + '</span>';
+  el.appendChild(head);
+  return el;
+}
+
+document.getElementById("mindmap").appendChild(renderNode(TREE, 0));

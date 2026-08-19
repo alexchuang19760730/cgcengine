@@ -1,0 +1,330 @@
+{
+  "version": "5.0",
+  "gate_status": "ALL_PASSED",
+  "feature_status": "ALL_DONE",
+  "capability_sources": [
+    "CGC Gate 3.1 Self-Harness",
+    "UPKG 1.1 (M1-M7.6)",
+    "TMAX-9B"
+  ],
+  "gate5": {
+    "enabled": true,
+    "name": "CGC Gate 5.0",
+    "description": "CGC Engine 新一代管控门户 - 可审计、可追踪、可回溯、可可视化",
+    "status": "done",
+    "storage": {
+      "backend": "filesystem",
+      "path": "gate5_data",
+      "backup_enabled": true,
+      "backup_interval_hours": 24,
+      "supported_backends": {
+        "filesystem": "done",
+        "sqlite": "done",
+        "postgresql": "done",
+        "elasticsearch": "done",
+        "redis": "done"
+      }
+    },
+    "audit": {
+      "enabled": true,
+      "status": "done",
+      "retention_days": 90,
+      "compliance_checks": true,
+      "log_encryption": true,
+      "events": [
+        "task_created",
+        "task_completed",
+        "task_failed",
+        "model_loaded",
+        "configuration_changed",
+        "user_login",
+        "user_logout",
+        "api_access"
+      ],
+      "features": {
+        "audit_log_recording": "done",
+        "immutable_append_only": "done",
+        "compliance_report_generation": "done",
+        "access_tracking": "done"
+      }
+    },
+    "trace": {
+      "enabled": true,
+      "status": "done",
+      "sampling_rate": 1.0,
+      "max_span_duration_ms": 30000,
+      "export_to_jaeger": false,
+      "jaeger_endpoint": "http://localhost:14268/api/traces",
+      "export_to_zipkin": false,
+      "zipkin_endpoint": "http://localhost:9411/api/v2/spans",
+      "features": {
+        "distributed_tracing": "done",
+        "performance_analysis": "done",
+        "sampling_strategy": "done",
+        "data_export": "done"
+      }
+    },
+    "replay": {
+      "enabled": true,
+      "status": "done",
+      "snapshot_interval_ms": 1000,
+      "max_snapshots_per_task": 100,
+      "auto_snapshot_on_completion": true,
+      "debugger_enabled": false,
+      "features": {
+        "state_snapshot": "done",
+        "timeline_replay": "done",
+        "breakpoint_debugging": "done",
+        "comparison_analysis": "done"
+      }
+    },
+    "visualization": {
+      "enabled": true,
+      "status": "done",
+      "realtime_update_interval_ms": 5000,
+      "dashboard_refresh_interval_ms": 10000,
+      "default_time_range_hours": 24,
+      "supported_charts": [
+        "line",
+        "bar",
+        "pie",
+        "heatmap",
+        "call_graph"
+      ],
+      "components": {
+        "overview_dashboard": "done",
+        "task_monitor": "done",
+        "performance_chart": "done",
+        "audit_explorer": "done",
+        "trace_visualizer": "done",
+        "replay_player": "done"
+      },
+      "features": {
+        "realtime_monitoring": "done",
+        "historical_analysis": "done",
+        "dashboard": "done",
+        "alerting": "done"
+      }
+    },
+    "api": {
+      "enabled": true,
+      "status": "done",
+      "port": 8080,
+      "host": "0.0.0.0",
+      "workers": 4,
+      "cors_enabled": true,
+      "cors_origins": [
+        "*"
+      ],
+      "rate_limit_enabled": true,
+      "rate_limit_requests_per_minute": 1000,
+      "endpoints": {
+        "POST_/api/v1/tasks": "done",
+        "GET_/api/v1/tasks/{task_id}": "done",
+        "PUT_/api/v1/tasks/{task_id}": "done",
+        "GET_/api/v1/tasks/{task_id}/trace": "done",
+        "GET_/api/v1/tasks/{task_id}/replay": "done",
+        "GET_/api/v1/audit": "done",
+        "GET_/api/v1/audit/report": "done",
+        "GET_/api/v1/metrics": "done"
+      }
+    },
+    "cli": {
+      "enabled": true,
+      "status": "done",
+      "default_output_format": "json",
+      "verbose_mode": false
+    },
+    "security": {
+      "enabled": true,
+      "status": "done",
+      "auth_required": true,
+      "jwt_secret_key": "",
+      "session_timeout_minutes": 120,
+      "audit_log_encryption": true,
+      "access_control": {
+        "enabled": true,
+        "roles": [
+          {
+            "name": "admin",
+            "permissions": [
+              "*"
+            ]
+          },
+          {
+            "name": "user",
+            "permissions": [
+              "task:create",
+              "task:get",
+              "task:list",
+              "audit:read",
+              "metrics:read"
+            ]
+          },
+          {
+            "name": "viewer",
+            "permissions": [
+              "task:get",
+              "task:list",
+              "audit:read",
+              "metrics:read",
+              "trace:read",
+              "replay:read"
+            ]
+          }
+        ]
+      }
+    },
+    "integration": {
+      "self_harness": {
+        "enabled": true,
+        "status": "done",
+        "auto_trace": true,
+        "capabilities": {
+          "three_phase_loop": "done",
+          "eight_step_contract": "done",
+          "rho_trajectory_optimization": "done",
+          "rl_policy_optimization": "done",
+          "edge_cloud_bridge": "done",
+          "guardian_anti_degradation": "done",
+          "strategy_dispatcher": "done",
+          "formal_evidence": "done"
+        }
+      },
+      "upkg": {
+        "enabled": true,
+        "status": "all_passed",
+        "version": "1.1",
+        "coverage": "M1-M7.6",
+        "gates": {
+          "M1": "passed",
+          "M2": "passed",
+          "M3": "passed",
+          "M4": "passed",
+          "M5": "passed",
+          "M7.1": "passed",
+          "M7.2": "passed",
+          "M7.3": "passed",
+          "M7.4": "passed",
+          "M7.5": "passed",
+          "M7.6": "passed"
+        },
+        "formal_judgments": {
+          "trueorthokda": "passed",
+          "cloud_prefill_edge_decode": "passed",
+          "zero_copy_vram_real": "passed",
+          "compression_effective": "passed",
+          "remote_runtime_evidence": "passed",
+          "pd_service": "passed",
+          "perception_matrix_4d": "passed",
+          "fusionroute_4instance": "passed",
+          "router_runtime": "passed",
+          "four_instance_topology": "passed",
+          "fusionroute_hit_evidence": "passed",
+          "deepep_real_chain": "passed",
+          "multi_instance_resilience": "passed",
+          "request_trace_observability": "passed",
+          "swe_verified_formal_evidence": "passed"
+        },
+        "canonical_runtime_contract": {
+          "topology": "FusionRoute 4-instance / tp4 / ep4 / nnodes1",
+          "validation_line": "fusionroute_tp4_ep4_deepep_runtime",
+          "distributed_runtime_backend": "nccl",
+          "moe_a2a_backend": "deepep",
+          "moe_runner_backend": "triton"
+        },
+        "manifest_first": {
+          "enabled": true,
+          "single_source": "system_execution_manifest.json",
+          "artifact_chain": "report.json -> system_execution_manifest.json -> m76_report.json"
+        }
+      },
+      "tmaxuitars": {
+        "enabled": true,
+        "status": "done",
+        "auto_audit": true,
+        "capabilities": {
+          "60_step_planning": "done",
+          "rl_enhanced_inference": "done",
+          "environment_awareness": "done",
+          "multi_round_memory": "done",
+          "sandbox_isolation": "done",
+          "command_execution": "done",
+          "file_operations": "done",
+          "intelligent_fallback": "done",
+          "tmax_uitars_fusion": "done"
+        }
+      },
+      "eight_step_pipeline": {
+        "enabled": true,
+        "status": "all_passed",
+        "span_per_step": true,
+        "steps": {
+          "step0_scenario": "passed",
+          "step1_hardware": "passed",
+          "step2_capture": "passed",
+          "step3_analyze": "passed",
+          "step4_identify": "passed",
+          "step5_generate": "passed",
+          "step6_dispatch": "passed",
+          "step7_compare": "passed",
+          "step8_combine": "passed"
+        }
+      }
+    },
+    "monitoring": {
+      "enabled": true,
+      "status": "done",
+      "health_check_interval_seconds": 30,
+      "alerting": {
+        "enabled": true,
+        "slack_webhook": "",
+        "email_notifications": false,
+        "thresholds": {
+          "task_failure_rate": 0.1,
+          "avg_latency_ms": 5000,
+          "memory_usage_percent": 90,
+          "cpu_usage_percent": 95
+        }
+      }
+    },
+    "logging": {
+      "level": "INFO",
+      "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+      "file_path": "gate5.log",
+      "max_file_size_mb": 100,
+      "backup_count": 10
+    }
+  },
+  "gate_acceptance_summary": {
+    "total_items": 75,
+    "all_passed_or_done": 75,
+    "breakdown": {
+      "upkg_m_series_gates": {
+        "total": 11,
+        "passed": 11
+      },
+      "upkg_formal_judgments": {
+        "total": 15,
+        "passed": 15
+      },
+      "gate31_self_harness_acceptance": {
+        "total": 13,
+        "passed": 13
+      },
+      "tmax_agent_acceptance": {
+        "total": 10,
+        "done": 10
+      },
+      "gate50_four_capabilities_acceptance": {
+        "total": 16,
+        "done": 16
+      },
+      "hermes_tmax_uitars_three_layer_integration": {
+        "total": 10,
+        "done": 10
+      }
+    },
+    "overall_status": "ALL_PASSED / ALL_DONE"
+  }
+}

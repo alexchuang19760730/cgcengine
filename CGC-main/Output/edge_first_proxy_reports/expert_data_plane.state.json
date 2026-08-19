@@ -1,0 +1,357 @@
+{
+  "schema_version": "v1",
+  "saved_at": 1785653756.011997,
+  "catalog_source": "none",
+  "manifest_path": "",
+  "blob_root": "",
+  "pinned_keys": [],
+  "family_affinity": {
+    "gemma4|js_func": {}
+  },
+  "frontier_cursor": {
+    "gemma4|js_export|8779e070597bed3d|local_full": 24,
+    "gemma4|js_export|9a786ef1a93f5473|local_full": 12,
+    "gemma4|js_func|af9574698559b620|local_full": 6,
+    "gemma4|write|bench-normal-1785643765|local_full": 24,
+    "gemma4|write|bench-normal-1785644106|local_full": 18,
+    "gemma4|write|bench-normal-1785644137|local_full": 18,
+    "gemma4|write|bench-normal-1785644163|local_full": 12,
+    "gemma4|write|bench-normal-1785644414|local_full": 18,
+    "gemma4|write|bench-normal-1785644484|local_full": 18,
+    "gemma4|write|bench-normal-1785644570|local_full": 18,
+    "gemma4|write|bench-normal-1785644642|local_full": 12,
+    "gemma4|write|bench-normal-1785644759|local_full": 18,
+    "gemma4|write|bench-normal-1785644797|local_full": 18,
+    "gemma4|write|bench-normal-1785644838|local_full": 12
+  },
+  "last_plan": {
+    "enabled": true,
+    "reason": "dense_layer_streaming_active",
+    "model": "gemma4",
+    "family": "js_func",
+    "route_mode": "local_full",
+    "current_keys": [
+      "dense:gemma4:layer:30",
+      "dense:gemma4:layer:31",
+      "dense:gemma4:layer:32",
+      "dense:gemma4:layer:33",
+      "dense:gemma4:layer:34",
+      "dense:gemma4:layer:35"
+    ],
+    "next_keys": [
+      "dense:gemma4:layer:36",
+      "dense:gemma4:layer:37",
+      "dense:gemma4:layer:38",
+      "dense:gemma4:layer:39",
+      "dense:gemma4:layer:40",
+      "dense:gemma4:layer:41"
+    ],
+    "next_next_keys": [],
+    "far_keys": [],
+    "predicted_bytes_to_read_mb": 599.632,
+    "predicted_cold_bytes_mb": 599.632,
+    "route_slots": 6,
+    "route_swaps": 0,
+    "route_agree": 1.0,
+    "route_kl": 0.0,
+    "frontier_key": "gemma4|js_func|af9574698559b620|local_full",
+    "layer_cursor": 0,
+    "next_layer_cursor": 6,
+    "current_layer_ids": [
+      30,
+      31,
+      32,
+      33,
+      34,
+      35
+    ],
+    "next_layer_ids": [
+      36,
+      37,
+      38,
+      39,
+      40,
+      41
+    ],
+    "next_next_layer_ids": [
+      30,
+      31,
+      32,
+      33,
+      34,
+      35
+    ],
+    "runtime_unit_plan": {
+      "control_plane": "expert_data_plane",
+      "enabled": true,
+      "mode": "dense_layer_streaming",
+      "reason": "dense_layer_streaming_active",
+      "model": "gemma4",
+      "family": "js_func",
+      "route_mode": "local_full",
+      "frontier_key": "gemma4|js_func|af9574698559b620|local_full",
+      "current": [
+        {
+          "key": "dense:gemma4:layer:30",
+          "unit_kind": "layer",
+          "model": "gemma4",
+          "layer_id": 30,
+          "expert_id": -1,
+          "path": "/Users/alexchuang/Documents/flashkv0516/models/gemma4_e4b_test/gemma-4-E4B-it.Q2_K.gguf",
+          "size_bytes": 104793362,
+          "offset_bytes": 3143800860,
+          "io_backend": "file_range",
+          "tags": [
+            "dense",
+            "layer_streaming"
+          ],
+          "available": true,
+          "resident": true,
+          "pinned": false,
+          "prefetched": false
+        },
+        {
+          "key": "dense:gemma4:layer:31",
+          "unit_kind": "layer",
+          "model": "gemma4",
+          "layer_id": 31,
+          "expert_id": -1,
+          "path": "/Users/alexchuang/Documents/flashkv0516/models/gemma4_e4b_test/gemma-4-E4B-it.Q2_K.gguf",
+          "size_bytes": 104793362,
+          "offset_bytes": 3248594222,
+          "io_backend": "file_range",
+          "tags": [
+            "dense",
+            "layer_streaming"
+          ],
+          "available": true,
+          "resident": true,
+          "pinned": false,
+          "prefetched": false
+        },
+        {
+          "key": "dense:gemma4:layer:32",
+          "unit_kind": "layer",
+          "model": "gemma4",
+          "layer_id": 32,
+          "expert_id": -1,
+          "path": "/Users/alexchuang/Documents/flashkv0516/models/gemma4_e4b_test/gemma-4-E4B-it.Q2_K.gguf",
+          "size_bytes": 104793362,
+          "offset_bytes": 3353387584,
+          "io_backend": "file_range",
+          "tags": [
+            "dense",
+            "layer_streaming"
+          ],
+          "available": true,
+          "resident": true,
+          "pinned": false,
+          "prefetched": false
+        },
+        {
+          "key": "dense:gemma4:layer:33",
+          "unit_kind": "layer",
+          "model": "gemma4",
+          "layer_id": 33,
+          "expert_id": -1,
+          "path": "/Users/alexchuang/Documents/flashkv0516/models/gemma4_e4b_test/gemma-4-E4B-it.Q2_K.gguf",
+          "size_bytes": 104793362,
+          "offset_bytes": 3458180946,
+          "io_backend": "file_range",
+          "tags": [
+            "dense",
+            "layer_streaming"
+          ],
+          "available": true,
+          "resident": true,
+          "pinned": false,
+          "prefetched": false
+        },
+        {
+          "key": "dense:gemma4:layer:34",
+          "unit_kind": "layer",
+          "model": "gemma4",
+          "layer_id": 34,
+          "expert_id": -1,
+          "path": "/Users/alexchuang/Documents/flashkv0516/models/gemma4_e4b_test/gemma-4-E4B-it.Q2_K.gguf",
+          "size_bytes": 104793362,
+          "offset_bytes": 3562974308,
+          "io_backend": "file_range",
+          "tags": [
+            "dense",
+            "layer_streaming"
+          ],
+          "available": true,
+          "resident": true,
+          "pinned": false,
+          "prefetched": false
+        },
+        {
+          "key": "dense:gemma4:layer:35",
+          "unit_kind": "layer",
+          "model": "gemma4",
+          "layer_id": 35,
+          "expert_id": -1,
+          "path": "/Users/alexchuang/Documents/flashkv0516/models/gemma4_e4b_test/gemma-4-E4B-it.Q2_K.gguf",
+          "size_bytes": 104793362,
+          "offset_bytes": 3667767670,
+          "io_backend": "file_range",
+          "tags": [
+            "dense",
+            "layer_streaming"
+          ],
+          "available": true,
+          "resident": true,
+          "pinned": false,
+          "prefetched": false
+        }
+      ],
+      "next": [
+        {
+          "key": "dense:gemma4:layer:36",
+          "unit_kind": "layer",
+          "model": "gemma4",
+          "layer_id": 36,
+          "expert_id": -1,
+          "path": "/Users/alexchuang/Documents/flashkv0516/models/gemma4_e4b_test/gemma-4-E4B-it.Q2_K.gguf",
+          "size_bytes": 104793362,
+          "offset_bytes": 3772561032,
+          "io_backend": "file_range",
+          "tags": [
+            "dense",
+            "layer_streaming"
+          ],
+          "available": true,
+          "resident": true,
+          "pinned": false,
+          "prefetched": true
+        },
+        {
+          "key": "dense:gemma4:layer:37",
+          "unit_kind": "layer",
+          "model": "gemma4",
+          "layer_id": 37,
+          "expert_id": -1,
+          "path": "/Users/alexchuang/Documents/flashkv0516/models/gemma4_e4b_test/gemma-4-E4B-it.Q2_K.gguf",
+          "size_bytes": 104793362,
+          "offset_bytes": 3877354394,
+          "io_backend": "file_range",
+          "tags": [
+            "dense",
+            "layer_streaming"
+          ],
+          "available": true,
+          "resident": true,
+          "pinned": false,
+          "prefetched": true
+        },
+        {
+          "key": "dense:gemma4:layer:38",
+          "unit_kind": "layer",
+          "model": "gemma4",
+          "layer_id": 38,
+          "expert_id": -1,
+          "path": "/Users/alexchuang/Documents/flashkv0516/models/gemma4_e4b_test/gemma-4-E4B-it.Q2_K.gguf",
+          "size_bytes": 104793362,
+          "offset_bytes": 3982147756,
+          "io_backend": "file_range",
+          "tags": [
+            "dense",
+            "layer_streaming"
+          ],
+          "available": true,
+          "resident": true,
+          "pinned": false,
+          "prefetched": true
+        },
+        {
+          "key": "dense:gemma4:layer:39",
+          "unit_kind": "layer",
+          "model": "gemma4",
+          "layer_id": 39,
+          "expert_id": -1,
+          "path": "/Users/alexchuang/Documents/flashkv0516/models/gemma4_e4b_test/gemma-4-E4B-it.Q2_K.gguf",
+          "size_bytes": 104793362,
+          "offset_bytes": 4086941118,
+          "io_backend": "file_range",
+          "tags": [
+            "dense",
+            "layer_streaming"
+          ],
+          "available": true,
+          "resident": true,
+          "pinned": false,
+          "prefetched": true
+        },
+        {
+          "key": "dense:gemma4:layer:40",
+          "unit_kind": "layer",
+          "model": "gemma4",
+          "layer_id": 40,
+          "expert_id": -1,
+          "path": "/Users/alexchuang/Documents/flashkv0516/models/gemma4_e4b_test/gemma-4-E4B-it.Q2_K.gguf",
+          "size_bytes": 104793362,
+          "offset_bytes": 4191734480,
+          "io_backend": "file_range",
+          "tags": [
+            "dense",
+            "layer_streaming"
+          ],
+          "available": true,
+          "resident": true,
+          "pinned": false,
+          "prefetched": true
+        },
+        {
+          "key": "dense:gemma4:layer:41",
+          "unit_kind": "layer",
+          "model": "gemma4",
+          "layer_id": 41,
+          "expert_id": -1,
+          "path": "/Users/alexchuang/Documents/flashkv0516/models/gemma4_e4b_test/gemma-4-E4B-it.Q2_K.gguf",
+          "size_bytes": 104793374,
+          "offset_bytes": 4296527842,
+          "io_backend": "file_range",
+          "tags": [
+            "dense",
+            "layer_streaming"
+          ],
+          "available": true,
+          "resident": true,
+          "pinned": false,
+          "prefetched": true
+        }
+      ],
+      "next_next": [],
+      "far": [],
+      "summary": {
+        "current_unit_count": 6,
+        "next_unit_count": 6,
+        "next_next_unit_count": 0,
+        "far_unit_count": 0,
+        "predicted_bytes_to_read_mb": 599.632,
+        "predicted_cold_bytes_mb": 599.632
+      }
+    },
+    "request_id": "exp-1785653750328-66571",
+    "scheduled_prefetch": [
+      "dense:gemma4:layer:36",
+      "dense:gemma4:layer:37",
+      "dense:gemma4:layer:38",
+      "dense:gemma4:layer:39",
+      "dense:gemma4:layer:40",
+      "dense:gemma4:layer:41"
+    ],
+    "scheduled_prefetch_ahead": [],
+    "cache_hits": 0,
+    "prefetch_hits": 0,
+    "ts": 1785653750.463528,
+    "completed": true,
+    "success": true,
+    "execution_success": true,
+    "content_success": true,
+    "response_chars": 138,
+    "completed_ts": 1785653756.011992,
+    "frontier_advanced_to": 6
+  }
+}

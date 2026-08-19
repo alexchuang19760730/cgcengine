@@ -1,0 +1,25 @@
+fraQtl blk.40: 20 tensors
+Nail    blk.40: 20 tensors
+
+name                                                         shape                          fQ-type  nail-type match 
+---------------------------------------------------------------------------------------------------------------------
+blk.40.attn_k.weight                                         [np.uint64(2048), np.uint64(512)] 12       14       OK    
+blk.40.attn_k_norm.weight                                    [np.uint64(256)]               0        0        OK    
+blk.40.attn_norm.weight                                      [np.uint64(2048)]              0        0        OK    
+blk.40.attn_output.weight                                    [np.uint64(4096), np.uint64(2048)] 12       14       OK    
+blk.40.attn_q.weight                                         [np.uint64(2048), np.uint64(8192)] 12       14       OK    
+blk.40.attn_q_norm.weight                                    [np.uint64(256)]               0        0        OK    
+blk.40.attn_v.weight                                         [np.uint64(2048), np.uint64(512)] 12       14       OK    
+blk.40.ffn_down_exps.weight                                  [np.uint64(512), np.uint64(2048), np.uint64(256)] 12       11       OK    
+blk.40.ffn_down_shexp.weight                                 [np.uint64(512), np.uint64(2048)] 14       14       OK    
+blk.40.ffn_gate_exps.weight                                  [np.uint64(2048), np.uint64(512), np.uint64(256)] 12       10       OK    
+blk.40.ffn_gate_inp.weight                                   [np.uint64(2048), np.uint64(256)] 30       30       OK    
+blk.40.ffn_gate_inp_shexp.weight                             [np.uint64(2048)]              30       30       OK    
+blk.40.ffn_gate_shexp.weight                                 [np.uint64(2048), np.uint64(512)] 13       14       OK    
+blk.40.ffn_up_exps.weight                                    [np.uint64(2048), np.uint64(512), np.uint64(256)] 12       10       OK    
+blk.40.ffn_up_shexp.weight                                   [np.uint64(2048), np.uint64(512)] 13       14       OK    
+blk.40.nextn.eh_proj.weight                                  [np.uint64(4096), np.uint64(2048)] 8        8        OK    
+blk.40.nextn.enorm.weight                                    [np.uint64(2048)]              0        0        OK    
+blk.40.nextn.hnorm.weight                                    [np.uint64(2048)]              0        0        OK    
+blk.40.nextn.shared_head_norm.weight                         [np.uint64(2048)]              0        0        OK    
+blk.40.post_attention_norm.weight                            [np.uint64(2048)]              0        0        OK    

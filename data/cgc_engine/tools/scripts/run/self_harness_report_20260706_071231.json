@@ -1,0 +1,208 @@
+{
+  "report_generated_at": "2026-07-06T07:12:31.521965",
+  "execution_mode": "self_harness_three_stage",
+  "total_gates": 1,
+  "total_capabilities": 27,
+  "total_passed": 27,
+  "gates": [
+    {
+      "gate_id": "CGC_Gate_3.0_train_inference_unification",
+      "gate_version": "3.0",
+      "execution_mode": "self_harness_three_stage",
+      "passed": 27,
+      "total": 27,
+      "pass_rate": "100.0%",
+      "capabilities": [
+        {
+          "id": "megatrain_cuda",
+          "name": "MegatrainCGC CUDA Training Codegen",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "mlx_tune",
+          "name": "MLXTuneCGC Metal LoRA/QLoRA",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "graph_capture",
+          "name": "torch.compile Full Graph Capture",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "weight_bridge",
+          "name": "MegatrainVLLM Weight Consistency Bridge",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "kda_orthobasis",
+          "name": "TrueOrthoKDA Ortho Basis Preservation",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "cgc_simd",
+          "name": "CGC SIMD Shared Instruction Set",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "streaming_hook",
+          "name": "MegatrainHook Single-Layer Streaming",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "edge_cloud_lora",
+          "name": "MLX-Tune LoRA Edge-Cloud Collaboration",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "governance",
+          "name": "Train-Inference Unification Governance",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "distributed_topology",
+          "name": "Distributed Parallel Topology",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "colossalai_fix",
+          "name": "ColossalAI Path Hardcode Fix",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "nemo_automodel",
+          "name": "NeMo Automodel Thin Adapter",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "cpp_moe_engine",
+          "name": "Train-Inference Shared C++ MoE Engine",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "preference_alignment_dpo",
+          "name": "DPO Direct Preference Optimization",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "preference_alignment_orpo",
+          "name": "ORPO SFT+Preference Unified",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "preference_alignment_grpo",
+          "name": "GRPO Reasoning-Enhanced Alignment (DeepSeek-R1)",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "preference_alignment_kto",
+          "name": "KTO Lightweight Preference (Prospect Theory)",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "preference_alignment_simpo",
+          "name": "SimPO Length-Normalized Preference",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "slime_opd",
+          "name": "Slime OPD Online Policy Distillation",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "slime_rl_grpo",
+          "name": "Slime RL GRPO",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "slime_rl_gspo",
+          "name": "Slime RL GSPO",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "slime_rl_ppo",
+          "name": "Slime RL Standard PPO",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "slime_rl_dapo",
+          "name": "Slime RL DAPO Math RL",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "slime_moe_distillation",
+          "name": "Slime MoE Multi-Node Parallel Distillation",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "slime_speculative",
+          "name": "Slime Speculative Decoding Integration (JetSpec/DSpark/SGLang)",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "slime_rswa_cache",
+          "name": "Slime RSWA Long-Context Cache",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        },
+        {
+          "id": "slime_teacher_student",
+          "name": "Slime SGLang Actor+Teacher Dual-Model Backend",
+          "status": "PASS",
+          "via_agent": false,
+          "cli_command": "verify → audit → list"
+        }
+      ]
+    }
+  ]
+}

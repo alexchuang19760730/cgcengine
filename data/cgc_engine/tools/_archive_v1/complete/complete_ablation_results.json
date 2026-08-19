@@ -1,0 +1,7 @@
+[
+  {
+    "config": "Error",
+    "error": "Engine core initialization failed. See root cause above. Failed core proc(s): {}",
+    "success": false
+  }
+]

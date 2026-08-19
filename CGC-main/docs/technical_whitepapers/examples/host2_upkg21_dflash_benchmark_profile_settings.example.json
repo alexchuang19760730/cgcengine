@@ -1,0 +1,70 @@
+{
+  "profile_id": "host2_upkg21_dflash_benchmark_safe",
+  "profile_version": "v1",
+  "profile_label": "Host2 DeepSeek-V4-Flash DFLASH Safe Benchmark",
+  "execution_profile_binding_key": "upkg21_host2_dflash_benchmark_safe_exec_v1",
+  "bootstrap_contract_binding_key": "host2_blackwell_sglang_runtime_v1",
+  "flow_parameter_contract_binding_key": "upkg21_host2_dflash_benchmark_safe_flow_v1",
+  "task_type_contract_ref": {
+    "task_type_contract_version": "task_type_contract_v1",
+    "task_type_contract_path": "../../../../app/shared/contracts/task_type_contract.json",
+    "task_type_header": "x-cgc-task-type",
+    "known_task_types": [
+      "prefill",
+      "decode",
+      "inference",
+      "analysis",
+      "repo_debug",
+      "train"
+    ]
+  },
+  "bootstrap_contract_path": "host2_blackwell_sglang_runtime_bootstrap_contract.example.json",
+  "system_profile_ref": {
+    "profile_id": "host2_deepseek_v4_flash_qwen35_dflash_deepep",
+    "profile_version": "v1",
+    "source": "system_execution_manifest",
+    "source_path": "host2_upkg21_dflash_benchmark_system_manifest.example.json"
+  },
+  "benchmark_settings": {
+    "model_path": "/data/models/DeepSeek-V4-Flash",
+    "draft_model_path": "/nfs/embodied/models/Qwen3.5-4B-DFlash",
+    "contexts": [
+      1024,
+      4096,
+      8192
+    ],
+    "gen_tokens": 128,
+    "warmup_runs": 1,
+    "runs": 3,
+    "request_timeout_s": 300,
+    "startup_timeout_s": 900
+  },
+  "runtime_shape": {
+    "tp_size": 2,
+    "context_length": 8192,
+    "mem_fraction_static": 0.6,
+    "default_runtime_extra_args": [
+      "--moe-a2a-backend",
+      "deepep",
+      "--deepep-mode",
+      "normal",
+      "--cpu-offload-gb",
+      "4"
+    ],
+    "baseline": {
+      "port": 30111,
+      "env": {
+        "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+        "CGC_SGLANG_DISABLE_FP8_CPU_PIN_MEMORY": "1"
+      }
+    },
+    "optimized": {
+      "port": 30112,
+      "pythonpath": "/root/flashkv0516/ComputeGraphCompiler-main/Backend/CGC/cloud_sglang/python",
+      "env": {
+        "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+        "CGC_SGLANG_DISABLE_FP8_CPU_PIN_MEMORY": "1"
+      }
+    }
+  }
+}
