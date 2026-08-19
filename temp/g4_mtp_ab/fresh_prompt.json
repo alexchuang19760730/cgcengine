@@ -1,0 +1,1 @@
+[{"role": "user", "content": "Write a Python function that computes the longest increasing subsequence length of a list of integers in O(n log n), then unit-test it against a brute-force implementation on random arrays."}]

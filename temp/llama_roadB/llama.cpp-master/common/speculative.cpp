@@ -1293,10 +1293,12 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         : common_speculative_impl(COMMON_SPECULATIVE_TYPE_DRAFT_MTP, n_seq)
         , params(params.draft)
     {
+#ifdef MTP_SUPPORT
         if (getenv("CGC_MTP_DBG")) {
             fprintf(stderr, "MTPDBG mtp_ctor: entered, n_seq=%u\n", n_seq);
             fflush(stderr);
         }
+#endif
         auto * ctx_tgt = this->params.ctx_tgt;
         auto * ctx_dft = this->params.ctx_dft;
         GGML_ASSERT(ctx_tgt && ctx_dft && "MTP requires ctx_tgt and ctx_dft to be set");
@@ -1347,17 +1349,21 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             }
         }
 
+#ifdef MTP_SUPPORT
         if (getenv("CGC_MTP_DBG")) {
             fprintf(stderr, "MTPDBG mtp_ctor: BEFORE set_nextn, ctx_tgt=%p ctx_dft=%p\n",
                     (void*)ctx_tgt, (void*)ctx_dft);
             fflush(stderr);
         }
+#endif
         llama_set_embeddings_nextn(ctx_tgt, true, /*masked*/ false);
         llama_set_embeddings_nextn(ctx_dft, true, /*masked*/ true);
+#ifdef MTP_SUPPORT
         if (getenv("CGC_MTP_DBG")) {
             fprintf(stderr, "MTPDBG mtp_ctor: AFTER set_nextn\n");
             fflush(stderr);
         }
+#endif
 
         is_mem_shared = llama_get_ctx_other(ctx_dft) == ctx_tgt;
         chain_heads   = n_mtp_layers > 1 && !is_mem_shared;
@@ -1420,22 +1426,26 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     }
 
     bool process(const llama_batch & batch_in) override {
+#ifdef MTP_SUPPORT
         if (getenv("CGC_MTP_DBG")) {
             fprintf(stderr, "MTPDBG process_enter: n_tokens=%d token=%p embd=%p is_mem_shared=%d n_seq=%u\n",
                     batch_in.n_tokens, (void*)batch_in.token, (void*)batch_in.embd, (int)is_mem_shared, n_seq);
             fflush(stderr);
         }
+#endif
         if (batch_in.n_tokens <= 0) {
             return true;
         }
 
         // TODO: how to make it work with vision tokens?
         if (batch_in.token == nullptr || batch_in.embd != nullptr) {
+#ifdef MTP_SUPPORT
             if (getenv("CGC_MTP_DBG")) {
                 fprintf(stderr, "MTPDBG process_skip: early return (token=%p embd=%p)\n",
                         (void*)batch_in.token, (void*)batch_in.embd);
                 fflush(stderr);
             }
+#endif
             return true;
         }
 
@@ -1465,6 +1475,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
         // if kv is shared with target (e.g Gemma4), then we can skip this catch-up decode
         if (!is_mem_shared) {
+#ifdef MTP_SUPPORT
             // [CGC MTP fix] the draft phase just wrote these positions on ctx_dft; the catch-up
             // re-decodes the same range, and M-RoPE forbids Y <= X. Clear it first.
             for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
@@ -1472,6 +1483,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                     llama_memory_seq_rm(llama_get_memory(ctx_dft), seq_id, batch_in.pos[i_batch_beg[seq_id]], -1);
                 }
             }
+#endif
             common_batch_clear(batch);
 
             for (int k = 0; k < n_tokens; ++k) {
@@ -1484,6 +1496,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             //                                                       ^--- this is a problem
             // TODO:this is generally true, but would be nice to assert it
             {
+#ifdef MTP_SUPPORT
                 // [CGC MTP fix] use get_embeddings_nextn_ith to safely access each row
                 // This avoids reading beyond the valid range of the embd_nextn buffer
                 for (int i = 0; i < n_tokens - 1; i++) {
@@ -1500,6 +1513,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                     fprintf(stderr, "MTPDBG process: n_tokens=%d first_row_norm=%.3f\n",
                             n_tokens, sqrt(nr));
                 }
+#else
+                const float * h_tgt = llama_get_embeddings_nextn(ctx_tgt);
+                std::memcpy(batch.embd + (size_t) 1 * n_embd, h_tgt, row_bytes * (n_tokens-1));
+#endif
             }
 
             // fill the pending embeddings from a previous run
@@ -1548,11 +1565,13 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         }
 
         for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
+#ifdef MTP_SUPPORT
             if (getenv("CGC_MTP_DBG")) {
                 fprintf(stderr, "MTPDBG process_seq: seq=%d i_beg=%d i_end=%d\n",
                         seq_id, i_batch_beg[seq_id], i_batch_end[seq_id]);
                 fflush(stderr);
             }
+#endif
             if (i_batch_end[seq_id] < 0) {
                 continue;
             }
@@ -1563,21 +1582,27 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
             for (int32_t i = 0; i < n_rows; ++i) {
                 const float * h = llama_get_embeddings_nextn_ith(ctx_tgt, i_batch_beg[seq_id] + i);
+#ifdef MTP_SUPPORT
                 if (h != nullptr) {
                     std::memcpy(verify_h[seq_id].data() + (size_t) i * n_embd, h, row_bytes);
                 } else {
                     memset(verify_h[seq_id].data() + (size_t) i * n_embd, 0, row_bytes);
                 }
+#else
+                std::memcpy(verify_h[seq_id].data() + (size_t) i * n_embd, h, row_bytes);
+#endif
             }
 
             std::memcpy(pending_h[seq_id].data(),
                     verify_h[seq_id].data() + (size_t) (n_rows - 1) * n_embd, row_bytes);
+#ifdef MTP_SUPPORT
             if (getenv("CGC_MTP_DBG")) {
                 double nr = 0.0;
                 for (int k = 0; k < n_embd; ++k) nr += (double) pending_h[seq_id][k]*pending_h[seq_id][k];
                 fprintf(stderr, "MTPDBG process: pending_h[0..3]=%.4f %.4f %.4f %.4f norm=%.3f rows=%d\n",
                         pending_h[seq_id][0], pending_h[seq_id][1], pending_h[seq_id][2], pending_h[seq_id][3], sqrt(nr), n_rows);
             }
+#endif
         }
 
         return true;
@@ -1615,6 +1640,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             }
         }
 
+#ifdef MTP_SUPPORT
         // [CGC MTP fix] non-shared: the previous process() catch-up wrote id_last's position;
         // re-decoding it here would violate M-RoPE (Y <= X). Clear this round's region once.
         if (!is_mem_shared) {
@@ -1624,6 +1650,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 }
             }
         }
+#endif
 
         int i = 0;
 
@@ -1644,12 +1671,14 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 llama_set_nextn_layer_offset(ctx_dft, i);
             }
 
+#ifdef MTP_SUPPORT
             if (getenv("CGC_MTP_DBG") && i == 0) {
                 double nr = 0.0;
                 for (int k = 0; k < n_embd; ++k) nr += (double) batch.embd[k]*batch.embd[k];
                 fprintf(stderr, "MTPDBG draft step0: token=%d pos=%lld embd[0..3]=%.4f %.4f %.4f %.4f norm=%.3f n_batch=%d\n",
                         batch.token[0], (long long) batch.pos[0], batch.embd[0], batch.embd[1], batch.embd[2], batch.embd[3], sqrt(nr), batch.n_tokens);
             }
+#endif
             int ret = llama_decode(ctx_dft, batch);
             if (ret != 0) {
                 SPC_ERR("llama_decode[%d] returned %d\n", i, ret);
@@ -1682,12 +1711,14 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 // add drafted token for each sequence
                 const llama_token id = cur_p->data[0].id;
 
+#ifdef MTP_SUPPORT
                 if (getenv("CGC_MTP_DBG")) {
                     fprintf(stderr, "MTPDBG draft_pick: step=%d seq=%d id=%d p=%.4f h_row[0..3]=%.4f %.4f %.4f %.4f\n",
                             i, seq_id, id, cur_p->data[0].p,
                             h_row[0], h_row[1], h_row[2], h_row[3]);
                     fflush(stderr);
                 }
+#endif
 
                 // only collect very high-confidence draft tokens
                 if (cur_p->data[0].p < params.p_min) {
@@ -2463,10 +2494,12 @@ llama_context * common_speculative_init_result::context() {
     return pimpl->context.get();
 }
 
+#ifdef MTP_SUPPORT
 // [CGC §8.86] release sole ownership of the MTP draft context to the caller.
 llama_context * common_speculative_init_result::release_context() {
     return pimpl->context.release();
 }
+#endif
 
 common_speculative_init_result_ptr common_speculative_init_from_params(common_params & params, llama_model * model_tgt, llama_context * ctx_tgt) {
     return std::make_unique<common_speculative_init_result>(params, model_tgt, ctx_tgt);

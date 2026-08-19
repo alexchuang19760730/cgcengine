@@ -1,0 +1,1 @@
+[{"role": "user", "content": "Design a Go worker pool with context cancellation and graceful shutdown: show the main dispatch loop, the worker function, and how errors propagate to the caller."}]

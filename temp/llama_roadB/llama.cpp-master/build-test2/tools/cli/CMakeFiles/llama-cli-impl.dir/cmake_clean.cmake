@@ -1,0 +1,15 @@
+file(REMOVE_RECURSE
+  "../../bin/libllama-cli-impl.dylib"
+  "../../bin/libllama-cli-impl.pdb"
+  "CMakeFiles/llama-cli-impl.dir/cli-client.cpp.o"
+  "CMakeFiles/llama-cli-impl.dir/cli-client.cpp.o.d"
+  "CMakeFiles/llama-cli-impl.dir/cli-context.cpp.o"
+  "CMakeFiles/llama-cli-impl.dir/cli-context.cpp.o.d"
+  "CMakeFiles/llama-cli-impl.dir/cli.cpp.o"
+  "CMakeFiles/llama-cli-impl.dir/cli.cpp.o.d"
+)
+
+# Per-language clean rules from dependency scanning.
+foreach(lang CXX)
+  include(CMakeFiles/llama-cli-impl.dir/cmake_clean_${lang}.cmake OPTIONAL)
+endforeach()

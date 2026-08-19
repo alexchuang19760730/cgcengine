@@ -1,0 +1,1 @@
+[{"role": "user", "content": "Explain and implement gradient descent with momentum from scratch in numpy, and verify convergence on a 2D quadratic objective with a convergence plot description."}]

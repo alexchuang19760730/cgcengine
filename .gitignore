@@ -378,3 +378,4 @@ watch_traj.py
 /moeexpert/
 /data/
 /tmp/
+*.mmproj

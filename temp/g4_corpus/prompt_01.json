@@ -1,0 +1,1 @@
+[{"role": "user", "content": "Implement a Python class for a thread-safe LRU cache with get and put methods. Include unit tests."}]

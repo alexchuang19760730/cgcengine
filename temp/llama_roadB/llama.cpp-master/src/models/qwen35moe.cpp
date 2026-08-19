@@ -729,6 +729,12 @@ llama_model_qwen35moe::graph_mtp::graph_mtp(const llama_model & model, const llm
     res->t_h_nextn= cur;
 
     cur = ggml_get_rows(ctx0, cur, inp_out_ids);
+#ifdef MTP_SUPPORT
+    // [CGC MTP fix] expose the post-get_rows hidden state as t_embd so the MTP
+    // draft head's embedding input is observable/non-null (draft-mtp reads the
+    // h_nextn rows via llama_get_embeddings_nextn_ith on the draft context).
+    res->t_embd = cur;
+#endif
     cb(cur, "mtp_shared_head_norm", -1);
 
     ggml_tensor * head_w = layer.nextn.shared_head_head ? layer.nextn.shared_head_head : model.output;

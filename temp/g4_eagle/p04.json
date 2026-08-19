@@ -1,0 +1,1 @@
+[{"role": "user", "content": "Implement a C function that decodes a UTF-8 byte stream into code points, correctly handling 2-, 3- and 4-byte sequences and invalid continuation bytes."}]

@@ -39,6 +39,7 @@ int main(int argc, char ** argv) {
     llama_backend_init();
     llama_numa_init(params.numa);
 
+#ifdef MTP_SUPPORT
     // [CGC MTP fix] compute spec_mtp early so we can skip the default warmup.
     // The default warmup (inside common_init_from_params) builds the graph with
     // embeddings_nextn=false, but the MTP driver later calls llama_set_embeddings_nextn(true)
@@ -58,6 +59,9 @@ int main(int argc, char ** argv) {
     if (warmup_skip) {
         params.warmup = false;
     }
+#else
+    const bool spec_mtp = false;
+#endif
 
     llama_model * model_tgt = NULL;
 
@@ -74,12 +78,14 @@ int main(int argc, char ** argv) {
     // load the draft model
     llama_model_ptr model_dft;
     llama_context_ptr ctx_dft;
+#ifdef MTP_SUPPORT
     common_speculative_init_result_ptr spec_init;
 
     // MTP draft: the nextn head lives inside the target model. Create a second context with
     // ctx_type=MTP against the same model (mirrors llama-server via common_speculative_init_result).
     // The MTP context shares KV with the target (cparams.ctx_other = ctx_tgt) and only runs the
     // nextn block, so its decode cost is ~1 layer instead of the full trunk.
+#endif
 
     // no speculative decoding requested: run the plain target loop (C0 baseline arm)
     // note: the default types vector is { COMMON_SPECULATIVE_TYPE_NONE }, not empty
@@ -91,7 +97,9 @@ int main(int argc, char ** argv) {
     // TODO: simplify this logic
     if (no_spec) {
         // ctx_dft stays null; the loop skips draft/accept/process
-    } else if (spec_mtp) {
+    }
+#ifdef MTP_SUPPORT
+    else if (spec_mtp) {
         auto params_dft = common_base_params_to_speculative(params);
 
         spec_init = common_speculative_init_from_params(params_dft, model_tgt, ctx_tgt);
@@ -102,7 +110,9 @@ int main(int argc, char ** argv) {
             LOG_ERR("failed to create MTP context\n");
             return 1;
         }
-    } else {
+    }
+#endif
+    else {
         const auto & params_spec = params.speculative.draft;
 
         auto params_dft = params;
@@ -147,6 +157,7 @@ int main(int argc, char ** argv) {
     // Tokenize the prompt
     std::vector<llama_token> inp;
     inp = common_tokenize(ctx_tgt, params.prompt, true, true);
+#ifdef MTP_SUPPORT
     // [CGC MTP fix] Qwen3.5 tokenizer has add_bos=false, so tokenize() does not
     // prepend BOS.  The MTP driver needs at least one prompt token to extract the
     // hidden state for pending_h (the carry-over embedding fed to the draft head).
@@ -167,6 +178,7 @@ int main(int argc, char ** argv) {
             fflush(stderr);
         }
     }
+#endif
 
     if (llama_n_ctx(ctx_tgt) < (uint32_t) inp.size()) {
         LOG_ERR("%s: the prompt exceeds the context size (%d tokens, ctx %d)\n", __func__, (int) inp.size(), llama_n_ctx(ctx_tgt));
@@ -217,6 +229,7 @@ int main(int argc, char ** argv) {
     const auto & params_spec = params.speculative;
 
     struct common_speculative * spec = common_speculative_init(params.speculative, 1);
+#ifdef MTP_SUPPORT
     if (getenv("CGC_MTP_DBG")) {
         fprintf(stderr, "MTPDBG main: spec=%p warmup_skip=%d warmup_prev=%d ctx_dft=%p\n",
                 (void*)spec, (int)warmup_skip, (int)warmup_prev, (void*)params.speculative.draft.ctx_dft);
@@ -252,9 +265,11 @@ int main(int argc, char ** argv) {
             llama_perf_context_reset(ctx_dft.get());
         }
     }
+#endif
 
     common_speculative_begin(spec, seq_id, prompt_tgt);
 
+#ifdef MTP_SUPPORT
     // eval the prompt (for MTP the draft context shares KV with the target, so no separate
     // prompt decode is needed -- the driver's process() captures the hidden states)
     // note: use a properly-formed batch (pos/seq_id) -- llama_batch_get_one leaves them
@@ -273,6 +288,7 @@ int main(int argc, char ** argv) {
         common_speculative_process(spec, batch_enc);
         llama_batch_free(batch_enc);
     }
+#endif
     if (!spec_mtp && ctx_dft != nullptr) {
         llama_decode(ctx_dft.get(), llama_batch_get_one(inp.data(), inp.size() - 1));
     }
@@ -355,7 +371,9 @@ int main(int argc, char ** argv) {
             //LOG_DBG("target batch: %s\n", string_from(ctx_tgt, batch_tgt).c_str());
 
             llama_decode(ctx_tgt, batch_tgt);
+#ifdef MTP_SUPPORT
             common_speculative_process(spec, batch_tgt);
+#endif
         }
 
         // evaluate the same batch with the draft model

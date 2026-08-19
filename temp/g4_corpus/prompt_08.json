@@ -1,0 +1,1 @@
+[{"role": "user", "content": "Write a Python script that uses argparse to compute word frequency from a text file, with options for stopword removal and sorting."}]

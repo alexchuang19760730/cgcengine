@@ -1,0 +1,1 @@
+[{"role": "user", "content": "Write a SQL query using window functions to rank products by revenue within each region and return the top 3 per region, including the tie-breaking rule."}]

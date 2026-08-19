@@ -1,0 +1,1 @@
+[{"role": "user", "content": "Write pseudocode for a lock-free concurrent queue using hazard pointers, and explain where the ABA problem could arise and how the retired list mitigates it."}]

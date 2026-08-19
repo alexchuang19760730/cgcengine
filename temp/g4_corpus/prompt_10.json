@@ -1,0 +1,1 @@
+[{"role": "user", "content": "Write a Python function that performs matrix multiplication without numpy, with proper error handling for dimension mismatch."}]

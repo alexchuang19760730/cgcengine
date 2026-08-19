@@ -1,0 +1,34 @@
+
+[stop=maxTokens prefill=40tok new=128tok ttft=3.43s decode=15.88s tok/s=8.059]
+[expert-cache] slots/layer=96
+[expert-cache] prefill req=1858 hit=453 rate=24.4%
+[expert-cache] decode  req=30480 hit=29868 rate=98.0%
+[expert-cache] shared  req=0 hit=0 rate=n/a
+[expert-cache] total   req=32338 hit=30321 miss=2017 rate=93.8% evictions=1050
+[expert-io] readWall=3.134s bytes=4.89GiB throughput=1.56GiB/s ofTotal=16.2% ofDecode=19.7%
+[plan-residency] t=1 req=2 resHit=100.0% t=2 req=2 resHit=100.0% t=3 req=6 resHit=16.7% t=4 req=12 resHit=16.7% t=5 req=15 resHit=6.7% t=6 req=42 resHit=35.7% t=7 req=35 resHit=25.7% t=8 req=32224 resHit=94.0%
+[stage] cb1=0.59s(3%) io=1.30s(7%) cb2=0.33s(2%) head=1.52s(8%) gpuWait=15.57s(81%) wall=19.31s
+[cpu-chain] readback=0.04s plan=1.02s io=1.30s hitIo=0.12s missIo=1.17s cb2=0.33s total=3.99s chainWall=3.26s missPrefetch=0 lookaheadAcc=0.00 drain=0.00s unaccounted=-0.73s cb1Wait=10.08s ofWall=21%
+[gpu] attn=3.73s routedMoE=3.51s sharedFFN=1.44s phase1Hit=0.30s head=1.46s busy=10.43s ofWall=54%
+[sync] cbs=12202 cb1Wait=10.08s routedWait=0.24s blocked=10.32s sched=12.50s overhead=1.34s(110us/cb) ofWall=53%
+[cb-latency] wait=10.08s gpu=3.73s wake=0.63s sched=5.89s other=0.00s ofWall=52%
+[timeline] gpuBusy=10.43s gpuIdle=5.44s gaps=12198 <0.2ms:7706x=0.02s 0.2-1ms:2251x=1.45s 1-5ms:2215x=3.79s >5ms:26x=0.17s max=11.7ms top5=0.05s
+[gpu-idle-after] cb1=0.00s(3810x,0.0ms avg) sharedFFN=4.41s(3807x,1.2ms avg) phase1Hit=0.75s(518x,1.4ms avg) routed=0.07s(3810x,0.0ms avg) head=0.20s(253x,0.8ms avg)
+       23.52 real         6.62 user         6.11 sys
+          4110974976  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              537910  page reclaims
+                 858  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                3813  voluntary context switches
+               78232  involuntary context switches
+        105430600994  instructions retired
+         37409305061  cycles elapsed
+          7964847408  peak memory footprint

@@ -1,0 +1,1 @@
+[{"role": "user", "content": "Write Python code to serialize a nested dictionary to JSON with sorted keys, custom separators, and indentation. Include error handling for non-serializable values."}]

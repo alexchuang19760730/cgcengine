@@ -1,0 +1,27 @@
+
+[stop=maxTokens prefill=85tok new=128tok ttft=35.62s decode=53.40s tok/s=2.397]
+[expert-cache] slots/layer=48
+[expert-cache] prefill req=0 hit=0 rate=n/a
+[expert-cache] decode  req=67840 hit=47033 rate=69.3%
+[expert-cache] shared  req=0 hit=0 rate=n/a
+[expert-cache] total   req=67840 hit=47033 miss=20807 rate=69.3% evictions=20167
+[expert-io] readWall=14.759s bytes=26.67GiB throughput=1.81GiB/s ofTotal=16.6% ofDecode=27.6%
+[plan-residency] t=8 req=67840 resHit=69.3%
+       96.17 real         9.29 user        20.69 sys
+          1208729600  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              506554  page reclaims
+                1843  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   1  messages sent
+                   0  messages received
+                   0  signals received
+               24933  voluntary context switches
+              153090  involuntary context switches
+        168720565120  instructions retired
+         79811093486  cycles elapsed
+          3719960864  peak memory footprint

@@ -24,6 +24,11 @@ LLAMA_BUILD_SERVER="${LLAMA_BUILD_SERVER:-OFF}"
 LLAMA_BUILD_TESTS="${LLAMA_BUILD_TESTS:-OFF}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
 REBUILD="${REBUILD:-1}"
+# MTP isolation: compile the MTP staging API (release_context in
+# common/speculative.cpp) into libllama-common.  Without this flag the
+# MTP-only code is excluded (non-MTP builds).  The llama-simple binary itself
+# is still compiled without -DMTP_SUPPORT (see build_prod_binary.sh).
+MTP_SUPPORT="${MTP_SUPPORT:-ON}"
 
 echo "=========================================="
 echo "CGC Fork Build"
@@ -45,6 +50,13 @@ if [ "$REBUILD" = "1" ]; then
     rm -rf "$BUILD_DIR"
 fi
 
+# Only add the define when ON; "-DMTP_SUPPORT=OFF" would still define the macro.
+if [ "$MTP_SUPPORT" = "ON" ]; then
+    CXX_FLAGS_MTP="-DMTP_SUPPORT"
+else
+    CXX_FLAGS_MTP=""
+fi
+
 cmake -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
     -DGGML_METAL="$GGML_METAL" \
@@ -54,7 +66,8 @@ cmake -B "$BUILD_DIR" \
     -DGGML_OPENMP="$GGML_OPENMP" \
     -DLLAMA_CURL="$LLAMA_CURL" \
     -DLLAMA_BUILD_SERVER="$LLAMA_BUILD_SERVER" \
-    -DLLAMA_BUILD_TESTS="$LLAMA_BUILD_TESTS"
+    -DLLAMA_BUILD_TESTS="$LLAMA_BUILD_TESTS" \
+    -DCMAKE_CXX_FLAGS="$CXX_FLAGS_MTP"
 
 cmake --build "$BUILD_DIR" -j"$JOBS"
 

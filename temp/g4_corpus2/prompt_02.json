@@ -1,0 +1,1 @@
+[{"role": "user", "content": "Write a shell one-liner pipeline to find the top 10 most frequent words in a large text file, then explain each stage."}]

@@ -1,0 +1,1 @@
+[{"role": "user", "content": "Write a bash script that finds all Python files modified in the last 7 days and reports the total line count per file."}]

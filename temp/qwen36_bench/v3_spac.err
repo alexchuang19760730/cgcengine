@@ -1,0 +1,12 @@
+[moe-spac] enabled (refresh=32)
+[moe-spac] refresh pos=85 swaps=80
+[moe-spac] refresh pos=117 swaps=80
+
+[stop=maxTokens prefill=85tok new=64tok ttft=25.97s decode=21.52s tok/s=2.973]
+[expert-cache] slots/layer=64
+[expert-cache] prefill req=0 hit=0 rate=n/a
+[expert-cache] decode  req=20160 hit=15268 rate=75.7%
+[expert-cache] shared  req=0 hit=0 rate=n/a
+[expert-cache] total   req=20160 hit=15268 miss=4892 rate=75.7% evictions=9371
+[expert-io] readWall=11.493s bytes=16.50GiB refreshIO=0.26GiB throughput=1.44GiB/s ofTotal=24.2% ofDecode=53.4%
+[plan-residency] t=8 req=20160 resHit=75.7%

@@ -1,0 +1,1 @@
+[{"role": "user", "content": "Write a Python function using functools.reduce to compute the product of all even numbers in a list, or return 1 if none."}]

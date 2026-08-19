@@ -1,0 +1,9 @@
+
+[stop=maxTokens prefill=85tok new=96tok ttft=26.32s decode=30.91s tok/s=3.106]
+[expert-cache] slots/layer=64
+[expert-cache] prefill req=0 hit=0 rate=n/a
+[expert-cache] decode  req=30400 hit=22575 rate=74.3%
+[expert-cache] shared  req=0 hit=0 rate=n/a
+[expert-cache] total   req=30400 hit=22575 miss=7825 rate=74.3% evictions=12304
+[expert-io] readWall=14.129s bytes=21.33GiB throughput=1.51GiB/s ofTotal=24.7% ofDecode=45.7%
+[plan-residency] t=8 req=30400 resHit=74.3%

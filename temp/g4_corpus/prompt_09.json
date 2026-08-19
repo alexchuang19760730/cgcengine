@@ -1,0 +1,1 @@
+[{"role": "user", "content": "Explain the difference between processes and threads in Python, with a code example of multiprocessing.Pool for CPU-bound work."}]
