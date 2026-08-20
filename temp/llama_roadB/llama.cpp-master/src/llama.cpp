@@ -9,6 +9,7 @@
 #include "llama-model-loader.h"
 #include "llama-model-saver.h"
 #include "llama-model.h"
+#include "llama-expert-cache.h"
 
 #include "ggml.h"
 #include "ggml-cpp.h"
@@ -371,6 +372,16 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
             if (model->expert_cache) {
                 LLAMA_LOG_INFO("%s: expert cache initialized: %zu bytes budget, %zu index entries\n",
                     __func__, params.expert_cache_bytes, model->expert_index.size());
+                // CGC: hook + gather path gate (disabled by NOGATHER; on the Metal path (ngl > 0)
+                // it only runs with the explicit ALLOW_NGL override).
+                const char * no_gather = getenv("LLAMA_EXPERT_CACHE_NOGATHER");
+                model->expert_cache_active = (model->n_gpu_layers() <= 0 || getenv("LLAMA_EXPERT_CACHE_ALLOW_NGL")) && !(no_gather && no_gather[0]);
+                // static profile pin (LLAMA_EXPERT_CACHE_PIN_PROFILE)
+                const char * pin_profile = getenv("LLAMA_EXPERT_CACHE_PIN_PROFILE");
+                if (pin_profile && pin_profile[0]) {
+                    const size_t n_pinned = llama_expert_cache_load_pin_profile(model->expert_cache, pin_profile);
+                    LLAMA_LOG_INFO("%s: expert cache PIN_PROFILE: %zu experts pinned (%s)\n", __func__, n_pinned, pin_profile);
+                }
             } else {
                 LLAMA_LOG_WARN("%s: expert cache init failed (budget=%zu, index=%zu)\n",
                     __func__, params.expert_cache_bytes, model->expert_index.size());
