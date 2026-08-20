@@ -1609,6 +1609,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             ggml_backend_t input_backend = ggml_backend_sched_get_tensor_backend(sched, split->inputs[input_id]);
             struct ggml_tensor * input = split->inputs[input_id];
             struct ggml_tensor * input_cpy = tensor_copy(input, split_backend_id, sched->cur_copy);
+            if (strstr(input->name, "remap") && input->name[0]) {
+                fprintf(stderr, "DBG remap input_cpy=%p input=%p same=%d flags_INPUT=%d\n",
+                        (void *) input_cpy, (void *) input, input_cpy == input, !!(input->flags & GGML_TENSOR_FLAG_INPUT));
+            }
 
             if (input->flags & GGML_TENSOR_FLAG_INPUT) {
                 // inputs from the user must be copied immediately to prevent the user overwriting the data before the copy is done
@@ -1658,6 +1662,15 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         ids.resize(ggml_nbytes(ids_tensor) / sizeof(int32_t));
                         ggml_backend_tensor_get_async(ids_backend, ids_tensor, ids.data(), 0, ggml_nbytes(ids_tensor));
                         ggml_backend_synchronize(ids_backend);
+
+                        if (ids.size() >= 4 && node->op == GGML_OP_MUL_MAT_ID &&
+                            (node->src[0] == input_cpy || strstr(node->name, "ffn_moe"))) {
+                            fprintf(stderr, "DBG MOEOPT n_nodes=%ld node=%s ids[0..3]=%d %d %d %d idsT=%s idscopy=%p input=%s\n",
+                                    (long) split->graph.n_nodes, node->name,
+                                    ids[0], ids[1], ids[2], ids[3],
+                                    ids_tensor->name, (void *) tensor_copy(split->inputs[input_id], split_backend_id, sched->cur_copy),
+                                    input->name);
+                        }
 
                         // find the used experts
                         used_ids.clear();

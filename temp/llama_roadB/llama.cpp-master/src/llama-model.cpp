@@ -17,6 +17,8 @@
 #include "llama-memory-hybrid-iswa.h"
 #include "llama-memory-recurrent.h"
 
+#include "llama-expert-cache.h"
+
 #include "llama.h"
 #include "models/models.h"
 

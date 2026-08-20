@@ -1454,6 +1454,8 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     n_tokens         (ubatch.n_tokens),
     n_outputs        (params.n_outputs),
     n_ctx_orig       (cparams.n_ctx_orig_yarn),
+    expert_cache_active (params.expert_cache_active),
+    n_gpu_layers     (params.n_gpu_layers),
     pooling_type     (cparams.pooling_type),
     rope_type        (hparams.rope_type),
     sched            (params.sched),
@@ -2033,6 +2035,28 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     }
     cb(selected_experts, "ffn_moe_topk", il);
 
+    // CGC expert-cache: remap leaf. An I32 input tensor of the same shape as the top-k ids
+    // that the eval hook (expert_cache_on_topk) repoints to cache slot indices (pool path) or
+    // 0..k-1 gathered indices (L3-B path) before the FFN mul_mat_id dispatches. Built as an
+    // input so its data is writable from the host; the hook fills it via cache_remap_tensors.
+    // When active, mul_mat_id below uses remap_ids instead of the raw expert ids so the FFN
+    // reads cache-resident (pool / gather) weights; the routing weights (ffn_moe_weights) keep
+    // using the raw ids because they index the gating probs by expert.
+    ggml_tensor * remap_ids = nullptr;
+    const char * dw_env = getenv("LLAMA_EXPERT_CACHE_DISABLE_WRITE");
+    // Only single-token decode needs the remap leaf (cache slot / gather repointing). During
+    // prefill (n_tokens > 1) the FFN runs over the full expert weights, so the mul_mat_id must
+    // keep using the raw top-k ids. Creating a set_output leaf here would perturb the ggml-alloc
+    // buffer layout and corrupt the cross-layer conv_state buffers (observed: conv_input-1 diverges
+    // while layer 0 is bit-identical), so we must NOT create it for prefill.
+    if (expert_cache_active && !(dw_env && dw_env[0]) && n_tokens == 1 && il >= 0 && il < n_layer) {
+        ggml_tensor * remap = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_expert_used, n_tokens);
+        ggml_set_output(remap); // prevent ggml-alloc from overwriting the hook-written ids before mul_mat_id consumes them
+        cb(remap, "ffn_moe_topk_remap", il);
+        ggml_build_forward_expand(gf, remap);
+        remap_ids = remap;
+    }
+
     if (arch == LLM_ARCH_GROVEMOE && n_expert != hparams.n_expert) {
         // TODO: Use scalar div instead when/if implemented
         ggml_tensor * f_sel = ggml_cast(ctx0, selected_experts, GGML_TYPE_F32);
@@ -2044,6 +2068,11 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
     ggml_tensor * weights = ggml_get_rows(ctx0, probs, selected_experts); // [1, n_expert_used, n_tokens]
     cb(weights, "ffn_moe_weights", il);
+
+    // CGC expert-cache: the mul_mat_id / add_id ops below index the (cache-resident) expert
+    // weight tensors, so they must consume the remapped ids (slot indices) when active.
+    const char * mmid_raw = getenv("LLAMA_MMID_RAW");
+    ggml_tensor * mm_id_ids = (mmid_raw && mmid_raw[0]) ? selected_experts : (remap_ids != nullptr ? remap_ids : selected_experts);
 
 
     if (gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX_WEIGHT) {
@@ -2090,7 +2119,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
     if (gate_up_exps) {
         // merged gate_up path: one mul_mat_id, then split into gate and up views
-        ggml_tensor * gate_up = build_lora_mm_id(gate_up_exps, cur, selected_experts, up_exps_s); // [n_ff*2, n_expert_used, n_tokens]
+        ggml_tensor * gate_up = build_lora_mm_id(gate_up_exps, cur, mm_id_ids, up_exps_s); // [n_ff*2, n_expert_used, n_tokens]
         cb(gate_up, "ffn_moe_gate_up", il);
 
         if (up_exps_s) {
@@ -2098,7 +2127,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         }
 
         if (gate_up_exps_b) {
-            gate_up = ggml_add_id(ctx0, gate_up, gate_up_exps_b, selected_experts);
+            gate_up = ggml_add_id(ctx0, gate_up, gate_up_exps_b, mm_id_ids);
             cb(gate_up, "ffn_moe_gate_up_biased", il);
         }
 
@@ -2109,7 +2138,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         cb(up, "ffn_moe_up", il);
     } else {
         // separate gate and up path
-        up = build_lora_mm_id(up_exps, cur, selected_experts, up_exps_s); // [n_ff, n_expert_used, n_tokens]
+        up = build_lora_mm_id(up_exps, cur, mm_id_ids, up_exps_s); // [n_ff, n_expert_used, n_tokens]
         cb(up, "ffn_moe_up", il);
 
         if (up_exps_s) {
@@ -2117,12 +2146,12 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         }
 
         if (up_exps_b) {
-            up = ggml_add_id(ctx0, up, up_exps_b, selected_experts);
+            up = ggml_add_id(ctx0, up, up_exps_b, mm_id_ids);
             cb(up, "ffn_moe_up_biased", il);
         }
 
         if (gate_exps) {
-            cur = build_lora_mm_id(gate_exps, cur, selected_experts, gate_exps_s); // [n_ff, n_expert_used, n_tokens]
+            cur = build_lora_mm_id(gate_exps, cur, mm_id_ids, gate_exps_s); // [n_ff, n_expert_used, n_tokens]
             cb(cur, "ffn_moe_gate", il);
         } else {
             cur = up;
@@ -2133,7 +2162,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         }
 
         if (gate_exps_b) {
-            cur = ggml_add_id(ctx0, cur, gate_exps_b, selected_experts);
+            cur = ggml_add_id(ctx0, cur, gate_exps_b, mm_id_ids);
             cb(cur, "ffn_moe_gate_biased", il);
         }
     }
@@ -2211,7 +2240,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             GGML_ABORT("fatal error");
     }
 
-    experts = build_lora_mm_id(down_exps, cur, selected_experts, down_exps_s); // [n_embd, n_expert_used, n_tokens]
+    experts = build_lora_mm_id(down_exps, cur, mm_id_ids, down_exps_s); // [n_embd, n_expert_used, n_tokens]
     cb(experts, "ffn_moe_down", il);
 
     if (down_exps_s) {
@@ -2219,7 +2248,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     }
 
     if (down_exps_b) {
-        experts = ggml_add_id(ctx0, experts, down_exps_b, selected_experts);
+        experts = ggml_add_id(ctx0, experts, down_exps_b, mm_id_ids);
         cb(experts, "ffn_moe_down_biased", il);
     }
 

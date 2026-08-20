@@ -11,6 +11,7 @@
 #include "ggml-cpp.h"
 #include "ggml-opt.h"
 
+#include <deque>
 #include <map>
 #include <vector>
 
@@ -260,6 +261,18 @@ private:
             const llama_memory_context_i * mctx,
                           llm_graph_type   gtype) const;
 
+    // CGC expert-cache hook (rebuilt from build-test3 DWARF). Called from the eval callback
+    // when the compute graph reaches a `ffn_moe_topk-<il>` node during decode: reads the top-k
+    // expert ids, ensures the layer's union is resident in the pool, and repoints the FFN
+    // mul_mat_id src0 tensors + remap leaf so the layer computes over cache-resident weights.
+    void expert_cache_on_topk(ggml_tensor * t);
+
+    // Wrapper installed as cparams.cb_eval (static so it can be passed to
+    // ggml_backend_sched_set_eval_callback): dispatches expert_cache_on_topk on the top-k
+    // nodes, then forwards to the user's callback. Returns the user callback's result (or
+    // true when no user callback is installed).
+    static bool expert_cache_eval_cb(ggml_tensor * t, bool ask, void * user_data);
+
     llm_graph_cb graph_get_cb() const;
 
     // disable auto fused ops (Flash Attention, Gated Delta Net) whose op lands on a device
@@ -276,6 +289,37 @@ private:
     //
     // members
     //
+
+    // CGC expert-cache hook state (rebuilt from build-test3 DWARF; L243-282)
+    // Decode step counter for the eval hook (only incremented for decode n_tokens==1).
+    uint64_t cache_hook_count = 0;
+    // layer -> remap leaf tensor (ggml_dup_tensor of the top-k ids, marked input so the hook
+    // can write the remapped ids into its buffer before the FFN mul_mat_id dispatches).
+    // mutable: filled from the const graph_get_cb.
+    mutable std::map<int, ggml_tensor *> cache_remap_tensors;
+    // layer -> probs tensor (softmax over experts); the hook uses it to read per-token probs.
+    // mutable: filled from the const graph_get_cb.
+    mutable std::map<int, ggml_tensor *> cache_probs_tensors;
+    // layer -> the FFN expert weight tensors (src0 of mul_mat_id) by kind: 0=gate 1=up
+    // 2=down 3=gate_up. The hook repoints their data pointer at the cache pool region (pool
+    // path) or a per-step gather buffer (L3-B path), restoring it on the next step.
+    // mutable: filled from the const graph_get_cb.
+    mutable std::map<int, std::vector<ggml_tensor *>> cache_ffn_tensors;
+    // layer -> scratch buffer holding the remap ids written into cache_remap_tensors[il].
+    std::map<int, std::vector<uint8_t>> cache_remap_buf;
+    // [kind] per-kind gather buffers (L3-B path): the hook gathers selected expert weights
+    // into these contiguous buffers and points the FFN src0 tensor at them.
+    std::vector<std::vector<uint8_t>> cache_gather_buf;
+    // (layer, kind) -> (original src0 data pointer, original ne[2]); saved before the hook
+    // repoints the FFN tensor, restored on the next step.
+    std::map<std::pair<int,int>, void *> cache_orig;
+    // per-layer union of experts used by the current decode step (deduped, sorted).
+    std::vector<std::vector<uint32_t>> cache_step_union;
+    // per-layer union of experts used by the previous decode step.
+    std::vector<std::vector<uint32_t>> cache_prev_union;
+    // per-layer tail-union history (TAILPIN): deques of recent unions used to pre-pin.
+    std::vector<std::deque<std::vector<uint32_t>>> cache_tail_union;
+    bool cache_tail_unpinned = false;
 
     const llama_model & model;
 

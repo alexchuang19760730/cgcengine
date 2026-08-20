@@ -775,6 +775,11 @@ struct llm_graph_params {
 
     llm_graph_result * res;
 
+    // CGC expert-cache (rebuilt from build-test3 DWARF L781/L785): gate state copied from
+    // the model so build_moe_ffn can emit the ffn_moe_topk_remap leaf without touching the model.
+    bool expert_cache_active = false;
+    uint32_t n_gpu_layers = 0;
+
     // return true if the "other" params would result in a graph with the same topology as with the current params
     //   having the same topology allows us to reuse the graph in some cases
     bool allow_reuse(const llm_graph_params & other) const {
@@ -979,6 +984,12 @@ struct llm_graph_context {
     const int64_t n_tokens;
     const int64_t n_outputs;
     const int32_t n_ctx_orig; // yarn
+
+    // CGC expert-cache (rebuilt from build-test3 DWARF L993/L996): copy of the model's
+    // gate state so build_moe_ffn can decide (without touching the model) whether to
+    // emit the `ffn_moe_topk_remap-<il>` input leaf that the eval hook repoints.
+    const bool   expert_cache_active;
+    const uint32_t n_gpu_layers;
 
     const enum llama_pooling_type pooling_type;
     const enum llama_rope_type    rope_type;

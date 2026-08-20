@@ -13,6 +13,8 @@
 #include "llama-sampler.h"
 #include "llama.h"
 
+#include "llama-expert-cache.h"
+
 #include <cinttypes>
 #include <cmath>
 #include <cstring>
@@ -1351,7 +1353,9 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         res->reset();
 
         ggml_backend_sched_reset(sched.get());
-        ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
+        // CGC expert-cache: always install the wrapper; it forwards to the user callback and
+        // only dispatches the top-k hook when the cache is active (mirrors build-test3 0x6a654).
+        ggml_backend_sched_set_eval_callback(sched.get(), expert_cache_eval_cb, this);
 
         //const auto t_start_us = ggml_time_us();
 
@@ -2464,6 +2468,8 @@ llm_graph_params llama_context::graph_params(
         /*.n_outputs   =*/ n_outputs,
         /*.cb          =*/ graph_get_cb(),
         /*.res         =*/ res,
+        /*.expert_cache_active =*/ model.expert_cache_active,
+        /*.n_gpu_layers =*/ model.n_gpu_layers(),
     };
 }
 
@@ -2496,12 +2502,220 @@ ggml_status llama_context::graph_compute(
     return status;
 }
 
+bool llama_context::expert_cache_eval_cb(ggml_tensor * t, bool ask, void * user_data) {
+    llama_context * ctx = static_cast<llama_context *>(user_data);
+    // only react on the actual (non-ask) dispatch of a top-k node
+    if (!ask && ctx->model.expert_cache_active &&
+        strncmp(t->name, "ffn_moe_topk", 12) == 0) {
+        ctx->expert_cache_on_topk(t);
+    }
+    if (ctx->cparams.cb_eval != nullptr) {
+        return ctx->cparams.cb_eval(t, ask, ctx->cparams.cb_eval_user_data);
+    }
+    return true;
+}
+
+void llama_context::expert_cache_on_topk(ggml_tensor * t) {
+    const int64_t n_expert_used = t->ne[0];
+    const int64_t n_tokens      = t->ne[1];
+    const char * dash = strrchr(t->name, '-');
+    if (dash == nullptr) {
+        return;
+    }
+    const int il = atoi(dash + 1);
+    if (il < 0 || il >= (int) model.hparams.n_layer()) {
+        return;
+    }
+
+    llama_expert_cache * cache = model.expert_cache;
+    if (cache == nullptr) {
+        return;
+    }
+
+    // ensure the per-kind gather buffers exist before any L3-B path indexes them
+    if (cache_gather_buf.size() < 4) {
+        cache_gather_buf.resize(4);
+    }
+
+    const int32_t * ids = (const int32_t *) t->data;
+    if (ids == nullptr) {
+        return;
+    }
+    if (getenv("LLAMA_EXPERT_CACHE_DISABLE_WRITE")) {
+        return; // diagnostic: keep graph structure, do not write remap / repoint weights
+    }
+
+    // restore any FFN tensors repointed by the previous decode step (so prefill / the first
+            // layer of this step read the original full-expert weights). Only the data pointer is
+            // touched: ne[2] stays at n_expert (mul_mat_id's n_as = src0->ne[2]) so the remapped
+            // ids (slot/gather indices < n_expert) always pass the i02 < n_as bounds check.
+            for (auto it = cache_orig.begin(); it != cache_orig.end(); ) {
+                auto it_ffn = cache_ffn_tensors.find(it->first.first);
+                if (it_ffn != cache_ffn_tensors.end() && (size_t) it->first.second < it_ffn->second.size()) {
+                    ggml_tensor * wt = it_ffn->second[it->first.second];
+                    if (wt != nullptr) {
+                        wt->data = it->second;
+                    }
+                }
+                it = cache_orig.erase(it);
+            }
+
+    // build the per-step union (dedup + sorted) and the raw route list. The top-k ids tensor is
+    // [n_expert_used, n_tokens] in ggml layout (ne[0] fastest), so element (i, j) is at i + j*n_expert_used.
+    std::unordered_map<uint32_t, uint32_t> umap;
+    std::vector<uint32_t> uni;
+    std::vector<uint32_t> routes;
+    routes.reserve(n_tokens * n_expert_used);
+    uni.reserve(n_tokens * n_expert_used);
+    for (int64_t j = 0; j < n_tokens; ++j) {
+        for (int64_t i = 0; i < n_expert_used; ++i) {
+            const uint32_t e = (uint32_t) ids[i + j * n_expert_used];
+            routes.push_back(e);
+            if (!umap.count(e)) {
+                umap[e] = (uint32_t) uni.size();
+                uni.push_back(e);
+            }
+        }
+    }
+    if (uni.empty()) {
+        return;
+    }
+    std::sort(uni.begin(), uni.end());
+    // the L3-B gather buffer is laid out in sorted-union order, so remap must use the expert's
+    // position in the sorted union (insertion-order umap is NOT valid after the sort).
+    std::unordered_map<uint32_t, uint32_t> uidx;
+    uidx.reserve(uni.size());
+    for (size_t k = 0; k < uni.size(); ++k) {
+        uidx[uni[k]] = (uint32_t) k;
+    }
+
+    // prefill (multi-token): record route frequencies for the hot prewarm; the FFN tensors were
+    // restored above, so prefill computes over the full expert weights. No remap leaf is created
+    // for prefill (graph.cpp builds it only when n_tokens == 1), so there is nothing to fill here.
+    if (n_tokens > 1) {
+        llama_expert_cache_record_routes(cache, (uint32_t) il, routes.data(), routes.size());
+        return;
+    }
+
+    const uint32_t n_expert = model.hparams.n_expert;
+
+    // decode: L3 Option A static per-layer slot pool when active and the union fits, else the
+    // L3-B per-step gather path.
+    const uint32_t n_slots = llama_expert_cache_slots_per_layer_l(cache, (uint32_t) il);
+    if (llama_expert_cache_pool_active(cache) && uni.size() <= n_slots) {
+        llama_expert_cache_ensure_batch(cache, (uint32_t) il, uni.data(), uni.size());
+        llama_expert_cache_drain_layer(cache, (uint32_t) il);
+
+        // repoint the FFN expert weight tensors at the per-layer pool regions
+        for (int kind = 0; kind < 4; ++kind) {
+            ggml_tensor * wt = cache_ffn_tensors[il][kind];
+            if (wt == nullptr) {
+                continue;
+            }
+            const uint8_t * base = llama_expert_cache_pool_data(cache, (uint32_t) il, kind);
+            if (base == nullptr) {
+                continue;
+            }
+            const size_t stride = llama_expert_cache_pool_stride(cache, (uint32_t) il, kind);
+            if (stride == 0) {
+                continue;
+            }
+            cache_orig[{il, kind}] = wt->data;
+            wt->data = (void *) base;
+        }
+
+        // write the remap leaf: selected expert id -> slot index
+        ggml_tensor * remap = cache_remap_tensors[il];
+        if (remap != nullptr && remap->data != nullptr) {
+            const int32_t * st = llama_expert_cache_slot_table(cache, (uint32_t) il);
+            int32_t * rd = (int32_t *) remap->data;
+            for (int64_t j = 0; j < n_tokens; ++j) {
+                for (int64_t i = 0; i < n_expert_used; ++i) {
+                    const uint32_t e = (uint32_t) ids[i + j * n_expert_used];
+                    rd[i + j * n_expert_used] = (st != nullptr && e < n_expert) ? st[e] : (int32_t) e;
+                }
+            }
+        }
+        return;
+    }
+
+    // L3-B gather path: ensure resident, gather the union into contiguous buffers, repoint the
+    // FFN tensors and remap the ids to 0..k-1.
+    {
+        std::vector<uint32_t> layers(uni.size(), (uint32_t) il);
+        llama_expert_cache_ensure(cache, layers.data(), uni.data(), uni.size());
+
+        for (int kind = 0; kind < 4; ++kind) {
+            ggml_tensor * wt = cache_ffn_tensors[il][kind];
+            if (wt == nullptr) {
+                continue;
+            }
+            const size_t exp_bytes = ggml_row_size(wt->type, wt->ne[0]) * wt->ne[1];
+            if (cache_gather_buf[kind].size() < uni.size() * exp_bytes) {
+                cache_gather_buf[kind].resize(uni.size() * exp_bytes);
+            }
+            const int64_t copied = llama_expert_cache_fill(cache, (uint32_t) il, uni.data(),
+                    uni.size(), kind, cache_gather_buf[kind].data(), exp_bytes);
+            if (copied < 0) {
+                continue;
+            }
+            cache_orig[{il, kind}] = wt->data;
+            wt->data = cache_gather_buf[kind].data();
+        }
+
+        ggml_tensor * remap = cache_remap_tensors[il];
+        if (remap != nullptr && remap->data != nullptr) {
+            int32_t * rd = (int32_t *) remap->data;
+            for (int64_t j = 0; j < n_tokens; ++j) {
+                for (int64_t i = 0; i < n_expert_used; ++i) {
+                    const uint32_t e = (uint32_t) ids[i + j * n_expert_used];
+                    const uint32_t slot = uidx.count(e) ? uidx[e] : 0;
+                    rd[i + j * n_expert_used] = (int32_t) slot;
+                }
+            }
+        }
+    }
+}
+
 llm_graph_cb llama_context::graph_get_cb() const {
     return [&](const llama_ubatch & ubatch, ggml_tensor * cur, const char * name, int il) {
         if (il >= 0) {
             ggml_format_name(cur, "%s-%d", name, il);
         } else {
             ggml_set_name(cur, name);
+        }
+
+        // CGC expert-cache: capture the remap leaf (ffn_moe_topk) and the FFN expert weight
+        // tensors (src0 of the mul_mat_id results) so the eval hook can repoint them at the
+        // cache pool / gather buffers and write remapped ids. Mirrors build-prod graph_get_cb.
+        if (il >= 0 && model.expert_cache_active) {
+            if (strcmp(name, "ffn_moe_topk_remap") == 0) {
+                cache_remap_tensors[il] = cur;
+            } else if (strcmp(name, "ffn_moe_gate_up") == 0) {
+                if (cur->src[0] != nullptr) {
+                    auto & ffn = cache_ffn_tensors[il];
+                    if (ffn.size() < 4) ffn.resize(4);
+                    ffn[3] = cur->src[0];
+                }
+            } else if (strcmp(name, "ffn_moe_up") == 0) {
+                if (cur->src[0] != nullptr) {
+                    auto & ffn = cache_ffn_tensors[il];
+                    if (ffn.size() < 4) ffn.resize(4);
+                    ffn[1] = cur->src[0];
+                }
+            } else if (strcmp(name, "ffn_moe_gate") == 0) {
+                if (cur->src[0] != nullptr) {
+                    auto & ffn = cache_ffn_tensors[il];
+                    if (ffn.size() < 4) ffn.resize(4);
+                    ffn[0] = cur->src[0];
+                }
+            } else if (strcmp(name, "ffn_moe_down") == 0) {
+                if (cur->src[0] != nullptr) {
+                    auto & ffn = cache_ffn_tensors[il];
+                    if (ffn.size() < 4) ffn.resize(4);
+                    ffn[2] = cur->src[0];
+                }
+            }
         }
 
         // - norm may be automatically assigned to the backend of the previous layer, increasing data transfer between backends

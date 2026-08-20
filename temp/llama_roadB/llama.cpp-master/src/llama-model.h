@@ -667,6 +667,11 @@ struct llama_model {
     std::vector<llama_expert_index_entry> expert_index;
     size_t expert_index_data_start = 0;
     llama_expert_cache * expert_cache = nullptr;  // owned, freed in destructor
+    // CGC: hook + gather active (expert_cache != nullptr && n_gpu_layers() <= 0 && !NOGATHER).
+    // Gate for build_moe_ffn creating the remap leaf and for the eval hook path.
+    bool expert_cache_active = false;
+    // CGC: loader skips reading expert tensor data (bounded residency; non-mmap and mmap).
+    bool expert_cache_skip_load = false;
     // statically allocated context for assigning
     struct llama_meta_device_get_split_state_userdata get_split_state_ud;
 

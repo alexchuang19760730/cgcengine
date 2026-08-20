@@ -1541,7 +1541,7 @@ bool llama_model_loader::load_all_data(
         size_t n_size = ggml_nbytes(cur);
 
         // CGC expert-cache: build expert_index for expert tensors
-        if (expert_cache_bytes > 0 && expert_index.empty()) {
+        if (expert_cache_bytes > 0) {
             const char * name = ggml_get_name(cur);
             // match blk.{il}.ffn_{gate,up,down}[_up]?_exps.weight
             if (strstr(name, "_exps") && strstr(name, "blk.")) {
@@ -1556,9 +1556,11 @@ bool llama_model_loader::load_all_data(
                 else if (strstr(name, "ffn_gate_exps")) kind = 0;
                 else continue; // not a recognized expert tensor
 
-                const int32_t n_experts = (int32_t) cur->ne[1];
-                const size_t expert_bytes = ggml_row_size(cur->type, cur->ne[0]);
-                for (int32_t e = 0; e < n_experts; ++e) {
+                // expert weights are stored as {n_rows, n_cols, n_expert}: the expert dim is the
+                // slowest (ne[2]) and each expert blob is ne[0]*ne[1] contiguous elements.
+                const int64_t n_experts = cur->ne[2];
+                const size_t expert_bytes = ggml_row_size(cur->type, cur->ne[0]) * cur->ne[1];
+                for (int64_t e = 0; e < n_experts; ++e) {
                     llama_expert_index_entry entry;
                     entry.layer       = (il >= 0) ? (uint32_t) il : UINT32_MAX;
                     entry.expert      = (uint32_t) e;
