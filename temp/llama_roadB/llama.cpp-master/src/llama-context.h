@@ -310,9 +310,10 @@ private:
     // [kind] per-kind gather buffers (L3-B path): the hook gathers selected expert weights
     // into these contiguous buffers and points the FFN src0 tensor at them.
     std::vector<std::vector<uint8_t>> cache_gather_buf;
-    // (layer, kind) -> (original src0 data pointer, original ne[2]); saved before the hook
-    // repoints the FFN tensor, restored on the next step.
-    std::map<std::pair<int,int>, void *> cache_orig;
+    // (layer, kind) -> (original src0 data pointer); saved before the FFN tensor is repointed
+    // at the cache pool, restored in process_ubatch before every build_graph.
+    // mutable: written from the const graph_get_cb.
+    mutable std::map<std::pair<int,int>, void *> cache_orig;
     // per-layer union of experts used by the current decode step (deduped, sorted).
     std::vector<std::vector<uint32_t>> cache_step_union;
     // per-layer union of experts used by the previous decode step.

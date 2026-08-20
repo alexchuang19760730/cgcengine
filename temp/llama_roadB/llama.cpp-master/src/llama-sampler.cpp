@@ -893,15 +893,29 @@ uint32_t llama_sampler_backend_n_nodes(const llama_sampler * sampler) {
 }
 
 llama_token llama_sampler_sample(struct llama_sampler * smpl, struct llama_context * ctx, int32_t idx) {
+    const bool cgc_sampler_dbg = getenv("CGC_SAMPLER_DBG") != nullptr;
+    const int64_t s_t0 = cgc_sampler_dbg ? ggml_time_us() : 0;
     const llama_token   sampled_token  = llama_get_sampled_token_ith     (ctx, idx);
+    const int64_t s_tA = cgc_sampler_dbg ? ggml_time_us() : 0;
     const float *       sampled_probs  = llama_get_sampled_probs_ith     (ctx, idx);
+    const int64_t s_tB = cgc_sampler_dbg ? ggml_time_us() : 0;
     const float *       sampled_logits = llama_get_sampled_logits_ith    (ctx, idx);
+    const int64_t s_tC = cgc_sampler_dbg ? ggml_time_us() : 0;
     const llama_token * sampled_ids    = llama_get_sampled_candidates_ith(ctx, idx);
+    const int64_t s_t1 = cgc_sampler_dbg ? ggml_time_us() : 0;
+    if (cgc_sampler_dbg) {
+        fprintf(stderr, "CGC-SMPL: tok=%dus probs=%dus lgts=%dus cand=%dus tok_v=%d\n",
+                (int)(s_tA - s_t0), (int)(s_tB - s_tA), (int)(s_tC - s_tB), (int)(s_t1 - s_tC), (int) sampled_token);
+    }
 
     // If a backend sampler has already sampled a token, return it.
     if (sampled_token != LLAMA_TOKEN_NULL) {
         LLAMA_LOG_DEBUG("%s: Backend sampler selected token for idx %d. Skipping CPU samplers\n", __func__, idx);
         llama_sampler_accept(smpl, sampled_token);
+        if (cgc_sampler_dbg) {
+            fprintf(stderr, "CGC-SMPL: backend path total=%d us (get_ith=%d) token=%d\n",
+                    (int)(ggml_time_us() - s_t0), (int)(s_t1 - s_t0), (int) sampled_token);
+        }
         return sampled_token;
     }
 
@@ -958,6 +972,11 @@ llama_token llama_sampler_sample(struct llama_sampler * smpl, struct llama_conte
     auto token = cur_p.data[cur_p.selected].id;
 
     llama_sampler_accept(smpl, token);
+
+    if (cgc_sampler_dbg) {
+        fprintf(stderr, "CGC-SMPL: CPU path total=%d us (get_ith=%d) n_vocab=%d token=%d\n",
+                (int)(ggml_time_us() - s_t0), (int)(s_t1 - s_t0), (int) cur.size(), (int) token);
+    }
 
     return token;
 }

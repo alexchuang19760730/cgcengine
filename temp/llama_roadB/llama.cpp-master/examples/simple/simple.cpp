@@ -326,7 +326,12 @@ int main(int argc, char ** argv) {
         n_pos = n_prompt;
     }
 
+    // CGC: per-token wall timer (decode + sample cycle). CGC_STEP_TIMING=1 prints mean/p50/p90/p99.
+    const bool cgc_step_timing = getenv("CGC_STEP_TIMING") != nullptr;
+    std::vector<double> cgc_step_ms, cgc_decode_ms, cgc_sample_ms;
+
     for (; n_pos + batch.n_tokens < n_prompt + n_predict; ) {
+        const int64_t t_step0 = ggml_time_us();
         // evaluate the current batch with the transformer model
         if (llama_decode(ctx, batch)) {
             fprintf(stderr, "%s : failed to eval, return code %d\n", __func__, 1);
@@ -334,6 +339,7 @@ int main(int argc, char ** argv) {
             cgc_cleanup();
             return ret;
         }
+        const int64_t t_decode_end = ggml_time_us();
 
         n_pos += batch.n_tokens;
 
@@ -361,9 +367,28 @@ int main(int argc, char ** argv) {
 
             n_decode += 1;
         }
+
+        if (cgc_step_timing) {
+            cgc_step_ms.push_back((ggml_time_us() - t_step0) / 1000.0);
+            cgc_decode_ms.push_back((t_decode_end - t_step0) / 1000.0);
+            cgc_sample_ms.push_back((ggml_time_us() - t_decode_end) / 1000.0);
+        }
     }
 
     printf("\n");
+
+    if (cgc_step_timing && !cgc_step_ms.empty()) {
+        auto pct = [](std::vector<double> & v, double p) {
+            std::sort(v.begin(), v.end());
+            return v[std::min(v.size() - 1, (size_t)(p * v.size()))];
+        };
+        double d_sum = 0, s_sum = 0;
+        for (double v : cgc_decode_ms) d_sum += v;
+        for (double v : cgc_sample_ms) s_sum += v;
+        fprintf(stderr, "CGC-STEP: n=%zu mean=%.3f p50=%.3f p90=%.3f p99=%.3f ms/step | decode=%.3f sample=%.3f\n",
+                cgc_step_ms.size(), d_sum / cgc_step_ms.size(), pct(cgc_step_ms, 0.50), pct(cgc_step_ms, 0.90), pct(cgc_step_ms, 0.99),
+                d_sum / cgc_step_ms.size(), s_sum / cgc_step_ms.size());
+    }
 
     const auto t_main_end = ggml_time_us();
 

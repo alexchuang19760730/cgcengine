@@ -360,6 +360,15 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
             const char * no_gather = getenv("LLAMA_EXPERT_CACHE_NOGATHER");
             ml.expert_cache_skip_load = (params.n_gpu_layers <= 0 || getenv("LLAMA_EXPERT_CACHE_ALLOW_NGL")) && !(no_gather && no_gather[0]);
             model->expert_cache_skip_load = ml.expert_cache_skip_load;
+            // CGC expert-cache L4: bounded Metal pool, only on the Metal path (-ngl > 0 + ALLOW_NGL).
+            // compute_l4_pool_capacity scans the GGUF metadata (budget -> capacity) and sets
+            // expert_cache_pool_capacity; create_tensor then shrinks the expert tensors to it.
+            ml.expert_cache_l4_skip_layer0 = getenv("LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0") != nullptr;
+            const bool l4_path = params.n_gpu_layers > 0 && getenv("LLAMA_EXPERT_CACHE_ALLOW_NGL") && !(no_gather && no_gather[0]);
+            if (l4_path) {
+                ml.compute_l4_pool_capacity();
+                model->expert_cache_pool_capacity = ml.expert_cache_pool_capacity;
+            }
         }
 
         if (params.vocab_only) {
@@ -381,6 +390,27 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
                 // it only runs with the explicit ALLOW_NGL override).
                 const char * no_gather = getenv("LLAMA_EXPERT_CACHE_NOGATHER");
                 model->expert_cache_active = (model->n_gpu_layers() <= 0 || getenv("LLAMA_EXPERT_CACHE_ALLOW_NGL")) && !(no_gather && no_gather[0]);
+                // CGC expert-cache L4: adopt each expert tensor's Metal storage as the per-layer pool
+                // region (zero copy — the Metal FFN reads the pool directly). Then mark the first
+                // n_slots experts of every layer resident: their bytes were already pre-read into the
+                // pool during load, so the first accesses are pool hits instead of cold preads.
+                if (model->expert_cache_pool_capacity > 0) {
+                    for (const auto & ref : ml.l4_pool_tensors) {
+                        if (ref.tensor == nullptr || ref.tensor->data == nullptr) {
+                            continue;
+                        }
+                        llama_expert_cache_adopt_pool_region(model->expert_cache,
+                                ref.layer, ref.kind, (const uint8_t *) ref.tensor->data,
+                                (int64_t) model->expert_cache_pool_capacity, ref.expert_bytes);
+                    }
+                    for (const auto & ref : ml.l4_pool_tensors) {
+                        if (ref.kind != 0) {
+                            continue;
+                        }
+                        llama_expert_cache_prepopulate(model->expert_cache, ref.layer,
+                                (uint32_t) model->expert_cache_pool_capacity);
+                    }
+                }
                 // static profile pin (LLAMA_EXPERT_CACHE_PIN_PROFILE)
                 const char * pin_profile = getenv("LLAMA_EXPERT_CACHE_PIN_PROFILE");
                 if (pin_profile && pin_profile[0]) {

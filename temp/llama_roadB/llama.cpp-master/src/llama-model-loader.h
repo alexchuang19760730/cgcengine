@@ -101,6 +101,25 @@ struct llama_model_loader {
     // keeping the expert weights out of the Metal working set (bounded residency).
     bool expert_cache_skip_load = false;
     std::vector<llama_expert_index_entry> expert_index;
+    // CGC expert-cache L4 (Metal zero-copy pool): bounded pool capacity in slots/layer, computed by
+    // compute_l4_pool_capacity as 2 * clamp(budget / (n_layers * per_slot), 8, 256). When > 0 the
+    // expert tensors are created on the Metal buft with ne[2] shrunk to capacity and their storage
+    // adopted as the per-layer pool regions via llama_expert_cache_adopt_pool_region (zero copy:
+    // the Metal FFN reads the pool directly, no host -> Metal async copy, no CPU FFN fallback).
+    size_t expert_cache_pool_capacity = 0;
+    // Original expert dim (n_experts) saved before shrinking ne[2] to capacity. The L1 expert index
+    // is built with this value so it ALWAYS covers every expert (not just the capacity slots).
+    int64_t expert_cache_full_ne2 = 0;
+    // LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0=1: keep blk.0 expert tensors on the CPU (out of the pool).
+    bool expert_cache_l4_skip_layer0 = false;
+    // Expert tensors created as L4 Metal pool regions (consumed by adopt_pool_region after load).
+    struct llama_expert_pool_ref {
+        uint32_t layer;
+        int kind;
+        ggml_tensor * tensor;
+        size_t expert_bytes;
+    };
+    std::vector<llama_expert_pool_ref> l4_pool_tensors;
     llama_model_set_tensor_data_t set_tensor_data;
     void * set_tensor_data_ud;
     std::vector<ggml_context_ptr> contexts;
@@ -194,6 +213,10 @@ struct llama_model_loader {
     struct ggml_tensor * create_tensor(
         const llama_hparams & hparams, const buft_list_t * buft_list_cpu, const buft_list_t * buft_list_input, const buft_list_t * buft_list_output,
         const buft_list_t * buft_list_layer, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags);
+
+    // CGC expert-cache L4: scan the GGUF metadata and compute the bounded Metal pool capacity
+    // (sets expert_cache_pool_capacity). Call after expert_cache_bytes is set, before load_tensors.
+    void compute_l4_pool_capacity();
 
     void done_getting_tensors(bool partial = false) const;
 

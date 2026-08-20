@@ -246,6 +246,17 @@ llama_context::llama_context(
     // with causal attention, the batch size is limited by the context size
     cparams.n_batch = cparams.causal_attn ? std::min(cparams.n_ctx, params.n_batch) : params.n_batch;
 
+    // CGC expert-cache L4: cap n_batch so the per-step expert union (< 8 * n_batch) always fits the
+    // bounded Metal pool (union must be < capacity; the L3-B gather path is incompatible with a
+    // Metal-buft expert tensor, so the pool path must never be skipped). (capacity-1)/8 keeps a
+    // margin for the top-8 union exactly at the boundary. Chunked callers (mtmd, warmup) must read
+    // the capped value via llama_n_batch().
+    if (model.expert_cache_pool_capacity > 0 && cparams.n_batch > (model.expert_cache_pool_capacity - 1) / 8) {
+        cparams.n_batch = (uint32_t) ((model.expert_cache_pool_capacity - 1) / 8);
+        LLAMA_LOG_INFO("%s: L4 pool capacity=%zu -> n_batch capped to %u (expert union must fit the pool)\n",
+                __func__, model.expert_cache_pool_capacity, cparams.n_batch);
+    }
+
     cparams.n_ubatch = std::min(cparams.n_batch, params.n_ubatch == 0 ? params.n_batch : params.n_ubatch);
 
     cparams.n_outputs_max = params.n_outputs_max == 0 || llama_model_has_encoder(&model) ? cparams.n_batch : params.n_outputs_max;
@@ -371,6 +382,27 @@ llama_context::llama_context(
         }
 
         llama_set_abort_callback(this, params.abort_callback, params.abort_callback_data);
+
+        // CGC: multi-command-buffer encoding (CGC_N_CB). Overrides the Metal n_cb to cut command
+        // buffer submission overhead (production profile: n_cb = max(1, n_parallel) unless the env
+        // overrides). The proc-address form keeps this source decoupled from the Metal headers.
+        {
+            const char * cgc_n_cb = getenv("CGC_N_CB");
+            if (cgc_n_cb && cgc_n_cb[0]) {
+                typedef void (*ggml_backend_set_n_cb_t)(ggml_backend_t backend, int n_cb);
+                const int n_cb = std::max(1, atoi(cgc_n_cb));
+                for (auto & backend : backends) {
+                    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(backend.get()));
+                    if (!reg) {
+                        continue;
+                    }
+                    auto set_n_cb_fn = (ggml_backend_set_n_cb_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_set_n_cb");
+                    if (set_n_cb_fn) {
+                        set_n_cb_fn(backend.get(), n_cb);
+                    }
+                }
+            }
+        }
 
         // graph outputs buffer
         {
@@ -982,16 +1014,24 @@ float * llama_context::get_embeddings_layer_inp(uint32_t lid) {
 }
 
 llama_token llama_context::get_sampled_token_ith(int32_t idx) {
+    const bool cgc_gst_dbg = getenv("CGC_SAMPLER_DBG") != nullptr;
+    const int64_t g0 = cgc_gst_dbg ? ggml_time_us() : 0;
     output_reorder();
+    const int64_t g1 = cgc_gst_dbg ? ggml_time_us() : 0;
 
     if (!sampling.sampled.has_data()) {
+        if (cgc_gst_dbg) fprintf(stderr, "CGC-GST: reorder=%dus no_data\n", (int)(g1 - g0));
         return LLAMA_TOKEN_NULL;
     }
 
     try {
         const int64_t row = output_resolve_row(idx);
+        const int64_t g2 = cgc_gst_dbg ? ggml_time_us() : 0;
         GGML_ASSERT(row < (int64_t) sampling.sampled.size);
-        return sampling.sampled.data[row];
+        const llama_token tok = sampling.sampled.data[row];
+        if (cgc_gst_dbg) fprintf(stderr, "CGC-GST: reorder=%dus resolve=%dus read=%dus tok=%d\n",
+                (int)(g1 - g0), (int)(g2 - g1), (int)(ggml_time_us() - g2), (int) tok);
+        return tok;
     } catch (const std::exception & err) {
         LLAMA_LOG_ERROR("%s: invalid backend sampled token id %d, reason: %s\n", __func__, idx, err.what());
         return LLAMA_TOKEN_NULL;
@@ -1330,6 +1370,12 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         ret = GGML_STATUS_FAILED;
         return nullptr;
     }
+    // CGC: per-phase decode timing (CGC_PHASE_TIMING=1). Accumulates and prints mean per phase
+    // every 32 decode steps; batched (prefill) steps are skipped.
+    const bool cgc_phase_timing = getenv("CGC_PHASE_TIMING") != nullptr;
+    static int64_t ph_build=0, ph_alloc=0, ph_inputs=0, ph_compute=0, ph_n=0;
+    const int64_t ph_t0 = cgc_phase_timing ? ggml_time_us() : 0;
+    int64_t ph_t;
 
     auto * res = gf_res_prev.get();
     auto * gf  = res->get_gf();
@@ -1357,10 +1403,26 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         // only dispatches the top-k hook when the cache is active (mirrors build-test3 0x6a654).
         ggml_backend_sched_set_eval_callback(sched.get(), expert_cache_eval_cb, this);
 
+        // CGC: restore any FFN expert weights repointed at the cache pool by the previous
+        // step's graph, so every freshly built graph starts from the full original weights.
+        // decode (n_tokens == 1) re-points them at the pool regions in graph_get_cb
+        // (ffn_moe_topk_remap), while prefill computes over the full expert weights.
+        for (auto it = cache_orig.begin(); it != cache_orig.end(); ) {
+            auto it_ffn = cache_ffn_tensors.find(it->first.first);
+            if (it_ffn != cache_ffn_tensors.end() && (size_t) it->first.second < it_ffn->second.size()) {
+                ggml_tensor * wt = it_ffn->second[it->first.second];
+                if (wt != nullptr) {
+                    wt->data = it->second;
+                }
+            }
+            it = cache_orig.erase(it);
+        }
+
         //const auto t_start_us = ggml_time_us();
 
         gf = model.build_graph(gparams);
 
+        if (cgc_phase_timing) { ph_t = ggml_time_us(); ph_build += ph_t - ph_t0; }
         //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
 
         if (!gf) {
@@ -1374,16 +1436,19 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             ret = GGML_STATUS_ALLOC_FAILED;
             return nullptr;
         }
+        if (cgc_phase_timing) { int64_t t = ggml_time_us(); ph_alloc += t - ph_t; ph_t = t; }
     }
 
     // set the input data for the input tensors
     {
         //const auto t_start_us = ggml_time_us();
+        if (cgc_phase_timing) { ph_t = ggml_time_us(); }
 
         // FIXME this call causes a crash if any model inputs were not used in the graph and were therefore not allocated
         res->set_inputs(&ubatch);
 
         //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
+        if (cgc_phase_timing) { int64_t t = ggml_time_us(); ph_inputs += t - ph_t; ph_t = t; }
     }
 
     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
@@ -1391,6 +1456,18 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
         ret = status;
         return nullptr;
+    }
+    if (cgc_phase_timing) {
+        int64_t t = ggml_time_us();
+        if (ubatch.n_tokens == 1) {
+            ph_compute += t - ph_t;
+            ph_n++;
+            if (ph_n % 32 == 0) {
+                fprintf(stderr, "CGC-PHASE: n=%lld build=%.3f alloc=%.3f inputs=%.3f compute=%.3f ms\n",
+                        (long long) ph_n, ph_build/1000.0/ph_n, ph_alloc/1000.0/ph_n,
+                        ph_inputs/1000.0/ph_n, ph_compute/1000.0/ph_n);
+            }
+        }
     }
 
     ret = GGML_STATUS_SUCCESS;
@@ -2497,6 +2574,21 @@ ggml_status llama_context::graph_compute(
         LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
     }
 
+    static int cgc_sched_dbg = 0;
+    if (cgc_sched_dbg < 12) {
+        cgc_sched_dbg++;
+        LLAMA_LOG_INFO("CGC-SCHED: %d splits\n", ggml_backend_sched_get_n_splits(sched.get()));
+        for (int il = 0; il < 2 && il < (int) model.hparams.n_layer(); il++) {
+            ggml_tensor * r = cache_remap_tensors[il];
+            auto & ffn = cache_ffn_tensors[il];
+            const char * rb = "-";
+            const char * wb = "-";
+            if (r) rb = ggml_backend_name(ggml_backend_sched_get_tensor_backend(sched.get(), r));
+            if (ffn.size() > 1 && ffn[1]) wb = ggml_backend_name(ggml_backend_sched_get_tensor_backend(sched.get(), ffn[1]));
+            LLAMA_LOG_INFO("  CGC-SCHED: il=%d remap=%s up_w=%s\n", il, rb, wb);
+        }
+    }
+
     // fprintf(stderr, "splits: %d\n", ggml_backend_sched_get_n_splits(sched));
 
     return status;
@@ -2504,6 +2596,12 @@ ggml_status llama_context::graph_compute(
 
 bool llama_context::expert_cache_eval_cb(ggml_tensor * t, bool ask, void * user_data) {
     llama_context * ctx = static_cast<llama_context *>(user_data);
+    static int cgc_cb_dbg = 0;
+    if (strncmp(t->name, "ffn_moe_topk", 12) == 0 && cgc_cb_dbg < 20) {
+        cgc_cb_dbg++;
+        LLAMA_LOG_INFO("CGC-CB: name=%s ask=%d active=%d\n", t->name, ask ? 1 : 0,
+                ctx->model.expert_cache_active ? 1 : 0);
+    }
     // only react on the actual (non-ask) dispatch of a top-k node
     if (!ask && ctx->model.expert_cache_active &&
         strncmp(t->name, "ffn_moe_topk", 12) == 0) {
@@ -2545,20 +2643,11 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
         return; // diagnostic: keep graph structure, do not write remap / repoint weights
     }
 
-    // restore any FFN tensors repointed by the previous decode step (so prefill / the first
-            // layer of this step read the original full-expert weights). Only the data pointer is
-            // touched: ne[2] stays at n_expert (mul_mat_id's n_as = src0->ne[2]) so the remapped
-            // ids (slot/gather indices < n_expert) always pass the i02 < n_as bounds check.
-            for (auto it = cache_orig.begin(); it != cache_orig.end(); ) {
-                auto it_ffn = cache_ffn_tensors.find(it->first.first);
-                if (it_ffn != cache_ffn_tensors.end() && (size_t) it->first.second < it_ffn->second.size()) {
-                    ggml_tensor * wt = it_ffn->second[it->first.second];
-                    if (wt != nullptr) {
-                        wt->data = it->second;
-                    }
-                }
-                it = cache_orig.erase(it);
-            }
+    // NOTE: FFN tensor restore/repoint is done in process_ubatch (restore all before every
+    // build_graph) and in graph_get_cb (repoint at the L4 pool regions when the remap leaf is
+    // built). The hook here only ensures the slot data and writes the remap ids, because with
+    // the pipelined segmented dispatch (CGC_OA_ASYNC) the following segments are already
+    // submitted — repointing the weights after submit would be too late.
 
     // build the per-step union (dedup + sorted) and the raw route list. The top-k ids tensor is
     // [n_expert_used, n_tokens] in ggml layout (ne[0] fastest), so element (i, j) is at i + j*n_expert_used.
@@ -2606,23 +2695,8 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
         llama_expert_cache_ensure_batch(cache, (uint32_t) il, uni.data(), uni.size());
         llama_expert_cache_drain_layer(cache, (uint32_t) il);
 
-        // repoint the FFN expert weight tensors at the per-layer pool regions
-        for (int kind = 0; kind < 4; ++kind) {
-            ggml_tensor * wt = cache_ffn_tensors[il][kind];
-            if (wt == nullptr) {
-                continue;
-            }
-            const uint8_t * base = llama_expert_cache_pool_data(cache, (uint32_t) il, kind);
-            if (base == nullptr) {
-                continue;
-            }
-            const size_t stride = llama_expert_cache_pool_stride(cache, (uint32_t) il, kind);
-            if (stride == 0) {
-                continue;
-            }
-            cache_orig[{il, kind}] = wt->data;
-            wt->data = (void *) base;
-        }
+        // NOTE: the FFN expert weight tensors were already repointed at the pool regions in
+        // graph_get_cb (ffn_moe_topk_remap); the segmented dispatch submits with those pointers.
 
         // write the remap leaf: selected expert id -> slot index
         ggml_tensor * remap = cache_remap_tensors[il];
@@ -2691,6 +2765,27 @@ llm_graph_cb llama_context::graph_get_cb() const {
         if (il >= 0 && model.expert_cache_active) {
             if (strcmp(name, "ffn_moe_topk_remap") == 0) {
                 cache_remap_tensors[il] = cur;
+                // CGC: point this layer's expert weight tensors at the L4 pool regions up front
+                // (the remap leaf is built only for decode, n_tokens == 1). The segmented Metal
+                // dispatch (CGC_OA_ASYNC) submits segments whose weights already point at the
+                // pool, so the eval hook only needs to ensure the slot data and write the remap
+                // ids (it must not repoint after submit — that would be too late).
+                if (model.expert_cache != nullptr && llama_expert_cache_pool_active(model.expert_cache)) {
+                    auto & ffn = cache_ffn_tensors[il];
+                    if (ffn.size() < 4) ffn.resize(4);
+                    for (int kind = 0; kind < 4; ++kind) {
+                        ggml_tensor * wt = ffn[kind];
+                        if (wt == nullptr) {
+                            continue;
+                        }
+                        const uint8_t * base = llama_expert_cache_pool_data(model.expert_cache, (uint32_t) il, kind);
+                        if (base == nullptr) {
+                            continue;
+                        }
+                        cache_orig[{il, kind}] = wt->data;
+                        wt->data = (void *) base;
+                    }
+                }
             } else if (strcmp(name, "ffn_moe_gate_up") == 0) {
                 if (cur->src[0] != nullptr) {
                     auto & ffn = cache_ffn_tensors[il];

@@ -1609,10 +1609,6 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             ggml_backend_t input_backend = ggml_backend_sched_get_tensor_backend(sched, split->inputs[input_id]);
             struct ggml_tensor * input = split->inputs[input_id];
             struct ggml_tensor * input_cpy = tensor_copy(input, split_backend_id, sched->cur_copy);
-            if (strstr(input->name, "remap") && input->name[0]) {
-                fprintf(stderr, "DBG remap input_cpy=%p input=%p same=%d flags_INPUT=%d\n",
-                        (void *) input_cpy, (void *) input, input_cpy == input, !!(input->flags & GGML_TENSOR_FLAG_INPUT));
-            }
 
             if (input->flags & GGML_TENSOR_FLAG_INPUT) {
                 // inputs from the user must be copied immediately to prevent the user overwriting the data before the copy is done
@@ -1662,15 +1658,6 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         ids.resize(ggml_nbytes(ids_tensor) / sizeof(int32_t));
                         ggml_backend_tensor_get_async(ids_backend, ids_tensor, ids.data(), 0, ggml_nbytes(ids_tensor));
                         ggml_backend_synchronize(ids_backend);
-
-                        if (ids.size() >= 4 && node->op == GGML_OP_MUL_MAT_ID &&
-                            (node->src[0] == input_cpy || strstr(node->name, "ffn_moe"))) {
-                            fprintf(stderr, "DBG MOEOPT n_nodes=%ld node=%s ids[0..3]=%d %d %d %d idsT=%s idscopy=%p input=%s\n",
-                                    (long) split->graph.n_nodes, node->name,
-                                    ids[0], ids[1], ids[2], ids[3],
-                                    ids_tensor->name, (void *) tensor_copy(split->inputs[input_id], split_backend_id, sched->cur_copy),
-                                    input->name);
-                        }
 
                         // find the used experts
                         used_ids.clear();
@@ -1745,8 +1732,109 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             if (ec != GGML_STATUS_SUCCESS) {
                 return ec;
             }
+        } else if (getenv("CGC_OA_ASYNC") != nullptr && strcmp(ggml_backend_name(split_backend), "CPU") != 0) {
+            // CGC: dispatch the Metal split in segments, pipelining one segment ahead so the GPU
+            // never drains: submit segment[i+1] before waiting for segment[i]. When segment[i]
+            // (which ends at a top-k node) completes, the sched callback reads the router result
+            // and writes the remap leaf for segment[i+1], which the GPU will consume a while later
+            // (the segment is already submitted but reads the remap tensor data at execution time,
+            // so the CPU write lands in time). The completion is polled non-blocking via
+            // ggml_metal_get_cgc_done instead of a per-segment synchronize, keeping the pipeline full.
+            // Splits without any top-k node (prefill graph, plain graphs) run fully async.
+            int n_topk = 0;
+            for (int i = 0; i < split->graph.n_nodes; i++) {
+                if (strncmp(split->graph.nodes[i]->name, "ffn_moe_topk-", 13) == 0) {
+                    n_topk++;
+                }
+            }
+            if (n_topk == 0) {
+                enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
+                if (ec != GGML_STATUS_SUCCESS) {
+                    return ec;
+                }
+            } else {
+                // segments: [0..topk0], [topk0+1..topk1], ..., [topk_{n-1}+1..end]
+                // only the first n_topk segments carry a top-k node; the tail is plain compute
+                const int n_nodes = split->graph.n_nodes;
+                int topk_idx[64];
+                int n_topk_found = 0;
+                for (int i = 0; i < n_nodes; i++) {
+                    if (strncmp(split->graph.nodes[i]->name, "ffn_moe_topk-", 13) == 0) {
+                        topk_idx[n_topk_found++] = i;
+                    }
+                }
+                const int n_segs = n_topk_found + 1; // tail segment included
+
+                // poll the Metal backend for completed segments without blocking the pipeline
+                auto * reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(split_backend));
+                typedef int (*cgc_done_fn)(ggml_backend_t);
+                cgc_done_fn cgc_done = (cgc_done_fn) ggml_backend_reg_get_proc_address(reg, "ggml_metal_get_cgc_done");
+                const int done0 = cgc_done ? cgc_done(split_backend) : -1;
+
+                auto seg_view = [&](int s) {
+                    const int a = (s == 0) ? 0 : (topk_idx[s-1] + 1);
+                    const int b = (s == n_segs-1) ? n_nodes - 1 : topk_idx[s];
+                    struct ggml_cgraph gv = ggml_graph_view(&split->graph, a, b + 1);
+                    return gv;
+                };
+
+                // submit the first segment, then pipeline: submit seg[i+1] ahead, wait for seg[i],
+                // fire the top-k hook (writes the remap leaf) that seg[i+1] consumes
+                struct ggml_cgraph gv0 = seg_view(0);
+                enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &gv0);
+                if (ec != GGML_STATUS_SUCCESS) {
+                    return ec;
+                }
+                static int64_t p_us = 0, p_n = 0;
+                for (int i = 0; i < n_segs; i++) {
+                    if (i + 1 < n_segs) {
+                        const int64_t v0 = ggml_time_us();
+                        struct ggml_cgraph gv = seg_view(i + 1);
+                        ec = ggml_backend_graph_compute_async(split_backend, &gv);
+                        if (ec != GGML_STATUS_SUCCESS) {
+                            return ec;
+                        }
+                        const int64_t v1 = ggml_time_us();
+                        p_us += v1 - v0;
+                        p_n++;
+                    }
+                    if (i < n_topk_found) {
+                        static int64_t w_us = 0, c_us = 0, n = 0;
+                        const int64_t st0 = ggml_time_us();
+                        if (cgc_done) {
+                            const int target = done0 + i + 1; // segment i's main cmd buffer finished
+                            while (cgc_done(split_backend) < target) {
+                                sched_yield();
+                            }
+                        } else {
+                            ggml_backend_synchronize(split_backend);
+                        }
+                        const int64_t st1 = ggml_time_us();
+                        struct ggml_tensor * ttopk = split->graph.nodes[topk_idx[i]];
+                        if (!sched->callback_eval(ttopk, false, sched->callback_eval_user_data)) {
+                            break;
+                        }
+                        const int64_t st2 = ggml_time_us();
+                        w_us += st1 - st0;
+                        c_us += st2 - st1;
+                        n++;
+                        if (n % 160 == 0) {
+                            fprintf(stderr, "CGC-SEG: wait %.1f cb %.1f submit %.1f us (%d)\n",
+                                    (double) w_us / n, (double) c_us / n, (double) p_us / p_n, (int) n);
+                        }
+                    }
+                }
+
+                // CGC: measure how much tail (post top-k) GPU work remains un-waited after the loop
+                if (getenv("CGC_TAIL_DBG") != nullptr) {
+                    const int64_t tl0 = ggml_time_us();
+                    ggml_backend_synchronize(split_backend);
+                    fprintf(stderr, "CGC-TAIL: tail_sync=%dus\n", (int)(ggml_time_us() - tl0));
+                }
+            }
         } else {
             // similar to ggml_backend_compare_graph_backend
+            const int64_t cgc_t0 = ggml_time_us();
             for (int j0 = 0; j0 < split->graph.n_nodes; j0++) {
                 struct ggml_tensor * t = split->graph.nodes[j0];
 
@@ -1776,6 +1864,14 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 }
 
                 j0 = j1;
+            }
+            static int64_t cgc_cpu_us = 0;
+            static int64_t cgc_cpu_n  = 0;
+            cgc_cpu_us += ggml_time_us() - cgc_t0;
+            cgc_cpu_n++;
+            if (cgc_cpu_n % 160 == 0) {
+                fprintf(stderr, "CGC-CPU-SPLIT: avg %.1f us/split (%d)\n",
+                        (double) cgc_cpu_us / cgc_cpu_n, (int) cgc_cpu_n);
             }
         }
 

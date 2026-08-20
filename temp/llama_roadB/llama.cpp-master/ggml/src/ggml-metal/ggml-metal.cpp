@@ -565,6 +565,15 @@ static void ggml_backend_metal_set_n_cb(ggml_backend_t backend, int n_cb) {
     ggml_metal_set_n_cb(ctx, n_cb);
 }
 
+// CGC: poll how many graph-compute segments finished on the GPU (CGC_OA_ASYNC pipelined dispatch)
+static int ggml_backend_metal_get_cgc_done(ggml_backend_t backend) {
+    GGML_ASSERT(ggml_backend_is_metal(backend));
+
+    ggml_metal_t ctx = (ggml_metal_t)backend->context;
+
+    return ggml_metal_cgc_done(ctx);
+}
+
 static ggml_backend_i ggml_backend_metal_i = {
     /* .get_name                = */ ggml_backend_metal_name,
     /* .free                    = */ ggml_backend_metal_free,
@@ -872,6 +881,12 @@ static ggml_backend_feature * ggml_backend_metal_get_features(ggml_backend_reg_t
 static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     if (strcmp(name, "ggml_backend_get_features") == 0) {
         return (void *)ggml_backend_metal_get_features;
+    }
+    if (strcmp(name, "ggml_backend_set_n_cb") == 0) {
+        return (void *)ggml_backend_metal_set_n_cb;
+    }
+    if (strcmp(name, "ggml_metal_get_cgc_done") == 0) {
+        return (void *)ggml_backend_metal_get_cgc_done;
     }
 
     return NULL;

@@ -11,6 +11,9 @@
 
 #import <Metal/Metal.h>
 
+#include <sched.h>
+#include <stdatomic.h>
+
 #undef MIN
 #undef MAX
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -57,6 +60,12 @@ struct ggml_metal {
     int n_nodes_0;      // number of nodes submitted by the main thread
     int n_nodes_1;      // remaining number of nodes submitted by the n_cb threads
     int n_nodes_per_cb;
+
+    // CGC pipelined segment dispatch (CGC_OA_ASYNC): monotonically increasing count of
+    // graph-compute segments whose main command buffer finished on the GPU. The sched polls
+    // this (via ggml_metal_cgc_done) instead of blocking per segment, so the Metal pipeline
+    // stays busy while the CPU writes the remap leaves for the next segments.
+    _Atomic int cgc_done;
 
     struct ggml_cgraph * gf;
 
@@ -181,6 +190,8 @@ ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
 
     res->cmd_buf_last = nil;
 
+    atomic_store_explicit(&res->cgc_done, 0, memory_order_relaxed);
+
     res->pipelines_ext = ggml_metal_pipelines_init();
 
     return res;
@@ -236,11 +247,44 @@ const char * ggml_metal_get_name(ggml_metal_t ctx) {
     return ctx->name;
 }
 
+// CGC: wake-poll wait for a Metal command buffer (§8.51, env-gated, default off).
+// CGC_WAKE_POLL_US = spin budget in µs before falling back to the blocking wait; 0/absent = off
+// (pure blocking waitUntilCompleted). Mirrors turbo's waitForCompletionPolling: spin on the
+// command buffer status with sched_yield() between polls; on deadline or Error fall back to the
+// blocking wait so real errors are still reported. NOTE: validated as a net loss on llama.cpp's
+// graph-level submit model (no per-layer pipeline to overlap, §8.51), kept as a diagnostic env;
+// run_n30cache.sh sets it (production profile).
+static void cgc_wait_cmd_buf(id<MTLCommandBuffer> cmd_buf) {
+    const char * env = getenv("CGC_WAKE_POLL_US");
+    const int64_t poll_us = (env && env[0]) ? atoll(env) : 0;
+    if (poll_us > 0 && cmd_buf != nil) {
+        const int64_t deadline = ggml_time_us() + poll_us;
+        for (;;) {
+            const MTLCommandBufferStatus status = [cmd_buf status];
+            if (status == MTLCommandBufferStatusCompleted ||
+                status == MTLCommandBufferStatusError ||
+                ggml_time_us() >= deadline) {
+                break;
+            }
+            sched_yield();
+        }
+    }
+    // blocking wait: also reports real errors (fallback on deadline / Error)
+    [cmd_buf waitUntilCompleted];
+}
+
+int ggml_metal_cgc_done(ggml_metal_t ctx) {
+    return atomic_load_explicit(&ctx->cgc_done, memory_order_relaxed);
+}
+
 void ggml_metal_synchronize(ggml_metal_t ctx) {
+    const bool cgc_dbg = getenv("CGC_METAL_DBG") != NULL;
+    const int64_t s0 = cgc_dbg ? ggml_time_us() : 0;
     // wait for any backend operations to finish
     if (ctx->cmd_buf_last) {
-        [ctx->cmd_buf_last waitUntilCompleted];
+        cgc_wait_cmd_buf(ctx->cmd_buf_last);
         ctx->cmd_buf_last = nil;
+        if (cgc_dbg) fprintf(stderr, "CGC-SYNC: wait_last=%dus\n", (int)(ggml_time_us() - s0));
     }
 
     // check status of all command buffers
@@ -350,6 +394,8 @@ void ggml_metal_set_tensor_async(ggml_metal_t ctx, struct ggml_tensor * tensor, 
 
 void ggml_metal_get_tensor_async(ggml_metal_t ctx, const struct ggml_tensor * tensor, void * data, size_t offset, size_t size) {
     @autoreleasepool {
+        const bool cgc_dbg = getenv("CGC_METAL_DBG") != NULL;
+        const int64_t a0 = cgc_dbg ? ggml_time_us() : 0;
         id<MTLDevice> device = ggml_metal_device_get_obj(ctx->dev);
         id<MTLBuffer> buf_dst = [device newBufferWithBytesNoCopy:data
                                                           length:size
@@ -380,6 +426,7 @@ void ggml_metal_get_tensor_async(ggml_metal_t ctx, const struct ggml_tensor * te
         [encoder endEncoding];
         [cmd_buf commit];
         [buf_dst release];
+        const int64_t a1 = cgc_dbg ? ggml_time_us() : 0;
 
         // do not wait here for completion
         //[cmd_buf waitUntilCompleted];
@@ -389,6 +436,8 @@ void ggml_metal_get_tensor_async(ggml_metal_t ctx, const struct ggml_tensor * te
         ctx->cmd_buf_last = cmd_buf;
 
         [cmd_buf retain];
+
+        if (cgc_dbg) fprintf(stderr, "CGC-GTA: buf=%dus size=%zu '%s'\n", (int)(a1 - a0), size, tensor->name);
     }
 }
 
@@ -516,6 +565,13 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
                 [ctx->cmd_bufs[n_cb].obj release];
             }
             ctx->cmd_bufs[n_cb].obj = cmd_buf;
+
+            // CGC: count this segment's completion so the sched can poll it (CGC_OA_ASYNC
+            // pipelined dispatch) without blocking the Metal pipeline
+            [cmd_buf addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+                GGML_UNUSED(cb);
+                atomic_fetch_add_explicit(&ctx->cgc_done, 1, memory_order_relaxed);
+            }];
 
             [cmd_buf enqueue];
 

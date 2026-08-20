@@ -1057,9 +1057,78 @@ static ggml_backend_buffer_type_t select_weight_buft(const llama_hparams & hpara
     return nullptr;
 }
 
+// CGC expert-cache L4: compute the bounded Metal pool capacity in slots/layer.
+//   per_slot = max over layers of (sum over the 4 FFN kinds of one (layer, expert) blob)
+//   base     = clamp(budget / (n_layers * per_slot), 8, 256)
+//   capacity = base * 2
+// The loader later creates every expert tensor with ne[2] = capacity on the Metal buft and adopts
+// each tensor's storage as the per-layer pool region (zero copy). Call after expert_cache_bytes is
+// set, before load_tensors, and only on the L4 path (-ngl > 0 + LLAMA_EXPERT_CACHE_ALLOW_NGL).
+void llama_model_loader::compute_l4_pool_capacity() {
+    expert_cache_pool_capacity = 0;
+    if (expert_cache_bytes == 0 || metadata == nullptr) {
+        return;
+    }
+    const char * no_gather = getenv("LLAMA_EXPERT_CACHE_NOGATHER");
+    if ((no_gather && no_gather[0]) || !getenv("LLAMA_EXPERT_CACHE_ALLOW_NGL")) {
+        return; // same gate as llama.cpp's expert_cache_active on the Metal path
+    }
+    const int64_t n_t = gguf_get_n_tensors(metadata);
+    if (n_t <= 0) {
+        return;
+    }
+    // per-layer per-slot bytes (sum over the FFN kinds) and the number of layers
+    std::vector<uint64_t> per_slot_layer;
+    uint64_t per_slot = 0;
+    uint32_t max_layer = 0;
+    for (int64_t i = 0; i < n_t; ++i) {
+        const char * name = gguf_get_tensor_name(metadata, i);
+        if (name == nullptr || !strstr(name, "_exps") || !strstr(name, "blk.")) {
+            continue;
+        }
+        const char * p2 = strstr(name, "blk.");
+        const int il = p2 ? atoi(p2 + 4) : -1;
+        if (il < 0) {
+            continue;
+        }
+        int kind = 0;
+        if (strstr(name, "ffn_gate_up_exps")) kind = 3;
+        else if (strstr(name, "ffn_up_exps")) kind = 1;
+        else if (strstr(name, "ffn_down_exps")) kind = 2;
+        else if (strstr(name, "ffn_gate_exps")) kind = 0;
+        else continue; // not a recognized expert tensor
+        const int64_t * ne = gguf_get_tensor_ne(metadata, i);
+        const uint64_t eb = (uint64_t) ggml_row_size(gguf_get_tensor_type(metadata, i), ne[0]) * ne[1];
+        if ((size_t) il >= per_slot_layer.size()) {
+            per_slot_layer.resize(il + 1, 0);
+        }
+        per_slot_layer[il] += eb;
+        max_layer = std::max(max_layer, (uint32_t) il + 1);
+    }
+    for (uint64_t v : per_slot_layer) {
+        per_slot = std::max(per_slot, v);
+    }
+    if (max_layer == 0 || per_slot == 0) {
+        return;
+    }
+    const uint64_t denom = (uint64_t) max_layer * per_slot;
+    const uint64_t base  = std::max<uint64_t>(8, std::min<uint64_t>(256, denom ? expert_cache_bytes / denom : 256));
+    const uint64_t cap   = base * 2;
+    expert_cache_pool_capacity = (size_t) cap;
+    LLAMA_LOG_INFO("llama_model_loader: L4 metal pool capacity=%llu slots/layer (base %llu, per-slot %llu B)\n",
+            (unsigned long long) cap, (unsigned long long) base, (unsigned long long) per_slot);
+}
+
 struct ggml_tensor * llama_model_loader::create_tensor(
         const llama_hparams & hparams, const buft_list_t * buft_list_cpu, const buft_list_t * buft_list_input, const buft_list_t * buft_list_output,
         const buft_list_t * buft_list_layer, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) {
+    // CGC expert-cache L4: current expert tensor metadata. Filled in the main body (ne[2] shrink)
+    // before buft_for_tensor is called, so the buft selection knows whether this tensor is a L4
+    // Metal pool region (l4_kind >= 0) or must stay on the CPU (skip-load / L4_SKIP_LAYER0).
+    int l4_il = -1;
+    int l4_kind = -1;
+    size_t l4_expert_bytes = 0;
+
     auto ctx_for_buft = [&](ggml_backend_buffer_type_t buft) -> ggml_context * {
         auto it = ctx_map.find(buft);
         if (it == ctx_map.end()) {
@@ -1195,11 +1264,18 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         }
 
         if (!buft) {
-            // CGC expert-cache (L4 skip-load): keep expert tensors on the CPU. Active experts are
-            // staged onto the GPU pool via llama_expert_cache_adopt_pool_region at compute time, so
-            // the resident expert weights never need to enter the Metal working set. Only applies
-            // when no explicit override selected a buft (overrides win).
-            if (expert_cache_skip_load && strstr(t_meta->name, "_exps") && strstr(t_meta->name, "blk.")) {
+            // CGC expert-cache L4: the expert tensor was shrunk to the bounded pool capacity and
+            // keeps its normal buft (Metal at -ngl>0). Its own storage IS the pool region, adopted
+            // via llama_expert_cache_adopt_pool_region after load — the Metal FFN reads it zero-copy.
+            if (l4_kind >= 0) {
+                buft = select_weight_buft(hparams, t_meta, op, buft_list);
+                LLAMA_LOG_INFO("llama_model_loader: %s -> GPU pool buffer (L4 zero-copy, buft=%s host=%d)\n",
+                        t_meta->name, ggml_backend_buft_name(buft), ggml_backend_buft_is_host(buft) ? 1 : 0);
+            } else if (expert_cache_skip_load && strstr(t_meta->name, "_exps") && strstr(t_meta->name, "blk.")) {
+                // CGC expert-cache (L4 skip-load / L4_SKIP_LAYER0): keep expert tensors on the CPU.
+                // Active experts are staged onto the GPU pool via llama_expert_cache_adopt_pool_region
+                // at compute time, so the resident expert weights never enter the Metal working set.
+                // Only applies when no explicit override selected a buft (overrides win).
                 buft = ggml_backend_cpu_buffer_type();
                 LLAMA_LOG_INFO("llama_model_loader: keeping %s out of GPU buffers (skip-load expert streaming)\n", t_meta->name);
             } else {
@@ -1299,6 +1375,31 @@ struct ggml_tensor * llama_model_loader::create_tensor(
 
     GGML_ASSERT(ggml_nbytes(&t_meta) == ggml_nbytes(cur));
 
+    // CGC expert-cache L4: shrink expert tensors to the bounded pool capacity. The tensor keeps
+    // its normal buft (Metal at -ngl>0), acting as a zero-copy pool region; only the expert dim
+    // shrinks so the pool allocation is bounded. expert_cache_full_ne2 preserves the real expert
+    // count for the L1 index (which must cover ALL experts — see the load_all_data index build).
+    if (expert_cache_pool_capacity > 0) {
+        const std::string tname_str = tn.str();
+        const char * tname = tname_str.c_str();
+        if (strstr(tname, "_exps") && strstr(tname, "blk.")) {
+            const char * p2 = strstr(tname, "blk.");
+            l4_il = p2 ? atoi(p2 + 4) : -1;
+            if (strstr(tname, "ffn_gate_up_exps")) l4_kind = 3;
+            else if (strstr(tname, "ffn_up_exps")) l4_kind = 1;
+            else if (strstr(tname, "ffn_down_exps")) l4_kind = 2;
+            else if (strstr(tname, "ffn_gate_exps")) l4_kind = 0;
+            else l4_kind = -1;
+            if (l4_kind >= 0 && !(expert_cache_l4_skip_layer0 && l4_il == 0)) {
+                if (expert_cache_full_ne2 == 0) {
+                    expert_cache_full_ne2 = t_meta.ne[2];
+                }
+                t_meta.ne[2] = (int64_t) expert_cache_pool_capacity;
+                l4_expert_bytes = ggml_row_size(t_meta.type, t_meta.ne[0]) * t_meta.ne[1];
+            }
+        }
+    }
+
     ggml_backend_buffer_type_t buft = buft_for_tensor(&t_meta);
     if (buft == nullptr) {
         return nullptr;
@@ -1318,6 +1419,11 @@ struct ggml_tensor * llama_model_loader::create_tensor(
 
     struct ggml_tensor * tensor = ggml_dup_tensor(ctx, &t_meta);
     ggml_set_name(tensor, ggml_get_name(&t_meta));
+
+    // CGC expert-cache L4: record the Metal pool region (adopted after load, once the cache exists).
+    if (l4_kind >= 0) {
+        l4_pool_tensors.push_back({ (uint32_t) l4_il, l4_kind, tensor, l4_expert_bytes });
+    }
 
     if (duplicated) {
         size_data += ggml_nbytes(&t_meta);
@@ -1566,8 +1672,10 @@ bool llama_model_loader::load_all_data(
                 else continue; // not a recognized expert tensor
 
                 // expert weights are stored as {n_rows, n_cols, n_expert}: the expert dim is the
-                // slowest (ne[2]) and each expert blob is ne[0]*ne[1] contiguous elements.
-                const int64_t n_experts = cur->ne[2];
+                // slowest (ne[2]) and each expert blob is ne[0]*ne[1] contiguous elements. Under L4
+                // the tensor ne[2] was shrunk to the pool capacity, so use the saved full expert
+                // count — the index MUST cover every expert (index root-cause fix, §7.9.2).
+                const int64_t n_experts = expert_cache_full_ne2 > 0 ? expert_cache_full_ne2 : cur->ne[2];
                 const size_t expert_bytes = ggml_row_size(cur->type, cur->ne[0]) * cur->ne[1];
                 for (int64_t e = 0; e < n_experts; ++e) {
                     llama_expert_index_entry entry;
