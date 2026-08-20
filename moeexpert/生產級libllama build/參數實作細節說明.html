@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>生產級 libllama build/參數實作細節說明 · 2026-08-20</title>
+<style>
+  :root {
+    --bg: #0f1420; --card: #171e2e; --ink: #e8ecf4; --sub: #9aa5b8;
+    --line: #2a3350; --accent: #ffd479; --good: #8fe3a0; --warn: #f08a8a; --blue: #7fb8f0;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; padding: 32px 20px 60px; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  .sub { color: var(--sub); font-size: 14px; margin-bottom: 28px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px 24px; margin-bottom: 22px; }
+  .card h2 { font-size: 18px; margin: 0 0 6px; }
+  .card h3 { font-size: 15px; margin: 18px 0 8px; color: var(--accent); }
+  .card .desc { color: var(--sub); font-size: 13px; margin: 0 0 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--sub); font-weight: 600; font-size: 12px; background: #131a2b; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .hl { color: var(--accent); font-weight: 700; }
+  .g { color: var(--good); font-weight: 700; }
+  .w { color: var(--warn); font-weight: 700; }
+  code { background: #0c1019; border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; color: var(--blue); }
+  pre { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; font-size: 12.5px; line-height: 1.6; overflow-x: auto; font-family: "SF Mono", Menlo, monospace; }
+  pre code { background: none; border: none; padding: 0; color: var(--ink); }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; margin-left: 6px; }
+  .tag.g { background: #1c3a24; color: #8fe3a0; }
+  .tag.r { background: #3a1c1c; color: #f08a8a; }
+  .tag.b { background: #1c2a3a; color: #7fb8f0; }
+  .note { font-size: 12.5px; color: var(--sub); margin-top: 12px; line-height: 1.7; }
+  .note b { color: var(--ink); }
+  ul { font-size: 13px; line-height: 1.7; padding-left: 20px; }
+  li { margin-bottom: 4px; }
+  li b { color: var(--ink); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>生產級 libllama build / 參數實作細節說明</h1>
+<div class="sub">llama.cpp fork（Expert Bounded Residency + CGC 優化）· M4 Max 16GB · 2026-08-20 · 對應 <b>LLAMACPP_EXPERT_BOUNDED_RESIDENCY_FORK_方案.md</b></div>
+
+<!-- ============ 0. 總覽 ============ -->
+<div class="card">
+  <h2>0. 這份文件是什麼</h2>
+  <p class="desc">從源碼重建「生產級 libllama」的完整 build 步驟 + 所有 CGC/Expert-Cache 參數的實作細節。設計原理與 A/B 實驗證據見 <code>moeexpert/LLAMACPP_EXPERT_BOUNDED_RESIDENCY_FORK_方案.md</code>；效能分解見 <code>moeexpert/CGC_TPOT_延遲分解_2026-08-20.html</code>。</p>
+  <ul>
+    <li><b>目標</b>：16GB M4 上跑 IQ3_XXS（13.2GB）全 offload（-ngl 99）不 OOM，保留真實記憶體餘裕，且 tok/s 貼近全 offload。</li>
+    <li><b>核心手段</b>：Expert 權重 Bounded Residency——資料在 CPU 記憶體（L1 index），GPU 上開「bounded pool」（L4 zero-copy Metal pool），active experts 直接從 pool 被 Metal FFN 零拷貝讀取；配合 CGC segmented async dispatch 把 GPU 排程管線填滿。</li>
+    <li><b>實測（2026-08-20，qwen36 IQ3_XXS）</b>：compute <span class="hl">34.2ms</span>（= <span class="hl">29.2 t/s</span>，已達 28.6 kernel 地板）、wall p50 <span class="hl">38.8ms</span>（≈25.8 t/s）、RSS 8.82GB、hit rate 70%+（file_reads=0，真 I/O 不上線）。</li>
+  </ul>
+</div>
+
+<!-- ============ 1. Build 步驟 ============ -->
+<div class="card">
+  <h2>1. 生產級 build 步驟（3 步）</h2>
+  <p class="desc">兩段式建構：先用 CMake 把 libllama + ggml 全家 build 成 <code>build/bin</code> 的 dylibs，再手動重鏈 <code>llama-simple</code> 對齊這些 dylibs（確保「源碼實作」與「二進位部署」同一套）。</p>
+
+  <h3>Step 1 — CMake 建 libllama dylibs（scripts/build_fork_llama.sh）</h3>
+  <pre><code>scripts/build_fork_llama.sh</code></pre>
+  <p class="desc">內部等價命令（<b>關鍵旗標：GGML_BLAS=OFF / GGML_ACCELERATE=OFF / GGML_CPU_REPACK=OFF</b>，這三個只要開 IQ3_XXS/IQ2_S 輸出就會壞）：</p>
+  <pre><code>cmake -B temp/llama_roadB/llama.cpp-master/build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DGGML_METAL=ON \
+    -DGGML_BLAS=OFF \           # 必 OFF：Accelerate/BLAS 造成 IQ3 輸出壞
+    -DGGML_ACCELERATE=OFF \     # 必 OFF：同上
+    -DGGML_CPU_REPACK=OFF \     # 必 OFF：踩 IQ3 tensor boundary
+    -DGGML_OPENMP=OFF \
+    -DLLAMA_CURL=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TESTS=OFF \
+    -DCMAKE_CXX_FLAGS="-DMTP_SUPPORT"   # MTP staging API 進 libllama-common
+cmake --build temp/llama_roadB/llama.cpp-master/build -j$(sysctl -n hw.ncpu)</code></pre>
+  <p class="note">產出 <code>build/bin/{libllama,libggml,libggml-cpu,libggml-metal,libggml-base,libllama-common}.dylib</code>。<b>MTP 隔離</b>：<code>-DMTP_SUPPORT</code> 只進 libllama-common（draft-mtp 需要 <code>release_context()</code>）；<code>llama-simple</code> 本身不帶此宏（見 Step 2）。</p>
+
+  <h3>Step 2 — 重鏈生產 llama-simple（scripts/build_prod_binary.sh）</h3>
+  <pre><code>scripts/build_prod_binary.sh</code></pre>
+  <p class="desc">用 <code>-O3 -DNDEBUG -arch arm64</code> 把 HEAD 的 <code>simple.cpp</code>（含 expert-cache env 支援 + CGC_STEP_TIMING）鏈到 Step 1 的 dylibs（<code>-Wl,-rpath,</code> 指向 build/bin）。<code>llama-simple</code> <b>不帶</b> <code>-DMTP_SUPPORT</code>（純非 MTP binary）；<code>llama-speculative-simple</code> 帶 <code>-DMTP_SUPPORT</code> 供 <code>--mtp</code> 用。</p>
+
+  <h3>Step 3 — 生產啟動器（scripts/run_n30cache.sh）</h3>
+  <pre><code>./scripts/run_n30cache.sh -m qwen36 -n 128 -p "The capital of France is"</code></pre>
+  <p class="desc">打包所有經 A/B 定案的環境變數 + <code>-ngl 99 --no-mmap -t 8 -c 2048</code>。<code>--no-mmap</code> 是凍機防護（mmap 9GB 冷頁風暴根因）。<code>--mtp [N]</code> 切 graft model（含 blk.40 MTP head）+ speculative-simple + <code>-c 2048</code>（解 OOM）。</p>
+</div>
+
+<!-- ============ 2. 源碼實作細節 ============ -->
+<div class="card">
+  <h2>2. 源碼實作細節（逐檔案）</h2>
+  <p class="desc">commit <code>b23fb51</code>（<code>feat(expert-cache): L4 zero-copy Metal pool + CGC segmented async dispatch</code>）。全部 env 觸發、預設行為零變更。</p>
+
+  <h3>2.1 llama-model-loader.{h,cpp} — L1 index + L4 pool capacity</h3>
+  <ul>
+    <li><b>L1 expert index</b>：<code>expert_cache_skip_load</code> + <code>expert_index</code>——<code>(layer, expert) → (file_offset, bytes, kind, type)</code>，資料全來自 <code>weight->offs</code>（已是檔案絕對位置，含 data_start）+ <code>get_tensor_meta</code>，零新 GGUF 解析。</li>
+    <li><b><code>compute_l4_pool_capacity()</code></b>：掃 GGUF metadata，<code>budget → capacity</code>。容量 = <code>2 × clamp(budget / (n_layers × per_slot), 8, 256)</code>（per_slot = 各 kind expert bytes 總和）。</li>
+    <li><b>L4 縮維</b>：<code>create_tensor</code> 對 <code>_exps</code> 且含 <code>blk.</code> 的張量，把 <code>t_meta.ne[2]</code>（expert 維）縮到 <code>expert_cache_pool_capacity</code>，但 <b>保留正常 Metal buft</b>（-ngl>0）——張量自己的儲存就是 pool region（zero-copy）。<code>expert_cache_full_ne2</code> 存真實 expert 數，供 L1 index 仍覆蓋「所有」expert（index 覆蓋 bug 根因修正，§7.9.2）。</li>
+    <li><b><code>l4_pool_tensors</code></b>：記下每個 pool region <code>(layer, kind, tensor, expert_bytes)</code>，load 完由 llama.cpp 採納。</li>
+    <li><b><code>LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0=1</code></b>：blk.0 的 expert 張量留在 CPU（pool 排除修正，§8.35/8.36）。</li>
+  </ul>
+
+  <h3>2.2 llama.cpp — L4 採納 + prepopulate</h3>
+  <ul>
+    <li><b>L4 路徑 gate</b>：<code>n_gpu_layers > 0 && LLAMA_EXPERT_CACHE_ALLOW_NGL && !LLAMA_EXPERT_CACHE_NOGATHER</code> 才走 L4（否則維持 L3-B CPU gather 或 L3 skip-load CPU buft）。</li>
+    <li><b><code>adopt_pool_region</code></b>：load 完把每個 expert tensor 的 Metal 儲存採納為該 layer/kind 的 pool region——Metal FFN 直接讀 pool，<b>零 host→Metal async copy、零 CPU FFN fallback</b>。</li>
+    <li><b><code>prepopulate</code></b>：把每層前 capacity 個 experts 標 resident——load 時已 pre-read 進 pool，首次存取直接 pool hit（免冷 pread）。</li>
+  </ul>
+
+  <h3>2.3 llama-context.{h,cpp} — hook + ROUTER_CPU pinning + restore</h3>
+  <ul>
+    <li><b><code>expert_cache_eval_cb</code></b>：sched eval callback 包裝；對 <code>ffn_moe_topk-&lt;il&gt;</code> 非 ask 節點觸發 <code>expert_cache_on_topk</code>（建 union → ensure/fill → remap ids → repoint FFN src0）。</li>
+    <li><b>ROUTER_CPU pinning</b>：把 <code>ffn_moe_probs / ffn_moe_topk / ffn_moe_topk_remap</code> 鏈 pin 到 CPU split，讓 topk 鏈留在 CPU、hook 在 CPU split 觸發（hit rate 70%+、file_reads=0）。</li>
+    <li><b><code>process_ubatch</code> restore</b>：每次 build_graph 前把 FFN 張量 <code>(data, ne[2])</code> 還原（<code>cache_orig</code>），CGC-PHASE 計時（build/alloc/inputs/compute）亦在此。</li>
+    <li><b><code>get_sampled_token_ith</code></b>：CGC-GST 細分計時（output_reorder/resolve/read），證實 <code>ctx->synchronize()</code> 佔 EOG sync 大頭。</li>
+  </ul>
+
+  <h3>2.4 ggml-backend.cpp — CGC_OA_ASYNC segmented async dispatch</h3>
+  <ul>
+    <li><b>切段</b>：在 <code>ffn_moe_topk-&lt;il&gt;</code> 節點把 Metal split 切成 <code>[0..topk0], [topk0+1..topk1], …, tail</code>（n_segs = n_topk + 1）。</li>
+    <li><b>管線前推</b>：先 submit seg[0]，迴圈內「submit seg[i+1] 前進、wait seg[i] 觸發 hook」——GPU 永不排空（submit 下一段時上一段還在跑）。</li>
+    <li><b>非阻塞輪詢</b>：用 <code>ggml_metal_get_cgc_done</code>（Metal backend 的完成計數器）spin 等 seg[i] 完成，取代每次 <code>ggml_backend_synchronize</code>；hook 在 CPU 寫 remap leaf 給 seg[i+1] 消費（seg 已 submit、但執行當下才讀 remap 資料，CPU write 來得及）。</li>
+    <li><b>無 topk 的 split</b>（prefill/plain graph）直接 fully async。</li>
+    <li><b>CGC_TAIL_DBG</b>：證實 segmented loop 結束後 GPU 仍有 ~4.4ms tail（末幾層 + final norm + output layer）未等完——此即 EOG sync 本體。</li>
+  </ul>
+
+  <h3>2.5 ggml-metal-{context.m,context.h,cpp} — cgc_done + 計時</h3>
+  <ul>
+    <li><code>ggml_metal_cgc_done</code>：non-blocking 完成計數器（addCompletedHandler 遞增），供 sched 輪詢。</li>
+    <li><code>get_tensor_async / synchronize</code>：CGC_METAL_DBG 計時（blit cmd buffer 建立 ~30µs、waitUntilCompleted ~4.4ms——證實 EOG sync 是 GPU tail 真實計算，非開銷）。</li>
+  </ul>
+
+  <h3>2.6 效能儀表（env-gated）</h3>
+  <table>
+    <tr><th>Env</th><th>位置</th><th>輸出</th></tr>
+    <tr><td><code>CGC_STEP_TIMING=1</code></td><td>examples/simple/simple.cpp</td><td>per-step decode/sample mean/p50/p90/p99</td></tr>
+    <tr><td><code>CGC_PHASE_TIMING=1</code></td><td>llama-context.cpp process_ubatch</td><td>build/alloc/inputs/compute 平均</td></tr>
+    <tr><td><code>CGC_SAMPLER_DBG=1</code></td><td>llama-sampler.cpp</td><td>tok/probs/lgts/cand 各 get_ith 成本</td></tr>
+    <tr><td><code>CGC_METAL_DBG=1</code></td><td>ggml-metal-context.m</td><td>GTA（blit 建立）/SYNC（wait_last）</td></tr>
+    <tr><td><code>CGC_TAIL_DBG=1</code></td><td>ggml-backend.cpp</td><td>未等完的 tail GPU 時間</td></tr>
+  </table>
+</div>
+
+<!-- ============ 3. 參數總表 ============ -->
+<div class="card">
+  <h2>3. 生產參數總表</h2>
+  <p class="desc">全部有 §8 A/B 出處；不設 = 對應行為 off。</p>
+  <table>
+    <tr><th>參數 / Env</th><th>值</th><th>機制</th><th>出處</th></tr>
+    <tr><td>模型</td><td>Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf</td><td>Unsloth UD-IQ3_XXS（12GB）</td><td>—</td></tr>
+    <tr><td><code>-ngl</code></td><td><span class="hl">99</span></td><td>full GPU offload（qwen36）；gemma4 用 30（sweet spot）</td><td>§8.38/8.44</td></tr>
+    <tr><td><code>CGC_EXPERT_CACHE_BYTES</code></td><td><span class="hl">4GiB</span></td><td>bounded pool 預算 → L4 capacity 公式</td><td>§8.38/8.44</td></tr>
+    <tr><td><code>LLAMA_EXPERT_CACHE_ALLOW_NGL</code></td><td><b>1</b></td><td>-ngl&gt;0 + cache 硬 guard（L4 路徑必要）</td><td>—</td></tr>
+    <tr><td><code>LLAMA_EXPERT_CACHE_WORKERS</code></td><td><b>8</b></td><td>背景 pread worker（16 反效果）</td><td>§8.12</td></tr>
+    <tr><td><code>LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0</code></td><td><b>1</b></td><td>blk.0 排除 pool</td><td>§8.35/8.36</td></tr>
+    <tr><td><code>CGC_OA_ASYNC</code></td><td><b>1</b></td><td>Metal splits segmented async dispatch</td><td>§8.77/8.78</td></tr>
+    <tr><td><code>CGC_N_CB</code></td><td><b>8</b></td><td>multi-buffer MTL encode 平行化（cb8 壓 p50）</td><td>§8.93</td></tr>
+    <tr><td><code>CGC_GLU_FUSED_DOWN</code></td><td><b>1</b></td><td>fused gate+up+GLU+down（+6.5%）</td><td>§8.113</td></tr>
+    <tr><td><code>CGC_FUSED_MOE_FFN</code></td><td><b>1</b></td><td>fused kernel（減少 dispatch）</td><td>commit c85fec4</td></tr>
+    <tr><td><code>CGC_WAKE_POLL_US</code></td><td><b>15</b></td><td>背景 expert prefetch 輪詢</td><td>§8.51</td></tr>
+    <tr><td><code>LLAMA_EXPERT_CACHE_PIN_PROFILE</code></td><td>opt-in</td><td>static hot-pool profile（§8.55 已證偽，保留）</td><td>§8.55</td></tr>
+    <tr><td><code>--no-mmap</code></td><td><b>固定</b></td><td>凍機防護（mmap 9GB 冷頁風暴根因）</td><td>—</td></tr>
+    <tr><td><code>-c / -t</code></td><td>2048 / 8</td><td>context（MTP 用 2048 解 OOM）/ threads</td><td>§MTP</td></tr>
+    <tr><td><code>--mtp [N]</code></td><td>opt-in（qwen36）</td><td>draft-mtp：graft model（blk.40 head）+ speculative-simple</td><td>§MTP</td></tr>
+  </table>
+  <p class="note"><b>家族差異</b>：gemma4 <code>-ngl 30</code>（-ngl 99 不快且 content-dependent 風險）；qwen36 <code>-ngl 99</code>（base 硬 OOM 13.2GB&gt;11.45GB，只有 +cache 能 full offload）。</p>
+</div>
+
+<!-- ============ 4. 驗證 ============ -->
+<div class="card">
+  <h2>4. 驗證</h2>
+  <table>
+    <tr><th>項目</th><th>結果</th></tr>
+    <tr><td>hit rate</td><td><span class="g">70%+</span>（ROUTER_CPU pinning 後；file_reads=0 → 真 I/O 不上線）</td></tr>
+    <tr><td>RSS</td><td><span class="g">8.82 GB</span>（&lt; 16GB 上限，保留真實餘裕）</td></tr>
+    <tr><td>compute（kernel 地板）</td><td><span class="hl">34.2ms = 29.2 t/s</span>（已達 28.6 目標）</td></tr>
+    <tr><td>wall p50</td><td>38.8ms/step ≈ 25.8 t/s（含 EOG tail sync ~4.4ms 真實 GPU 計算）</td></tr>
+    <tr><td>bit-identical</td><td>L1 index 對 gguf-py 權威 offset byte-exact（qwen36 30720 entries）；L3-B gather 對拍 0 MISMATCH</td></tr>
+    <tr><td>OOM 防護</td><td>無 cache 時 qwen36 -ngl 99 硬 OOM；有 cache 才能 full offload</td></tr>
+  </table>
+</div>
+
+<!-- ============ 5. 結語 ============ -->
+<div class="card">
+  <h2>5. 結語</h2>
+  <p class="desc">「源碼實作」已 1:1 重現生產二進位的能力（L4 zero-copy pool + CGC segmented async），且多了完整的效能儀表。28.6 t/s kernel 地板已達；要讓 wall 突破 29 t/s，唯一途徑是 MTP 把 step N+1 的早期層與 step N 的 tail 重疊（見 CGC_TPOT_延遲分解_2026-08-20.html）。</p>
+</div>
+
+<p class="sub" style="margin-top:24px">參考：<code>moeexpert/LLAMACPP_EXPERT_BOUNDED_RESIDENCY_FORK_方案.md</code>（設計 + §8 實驗證據）、<code>moeexpert/CGC_TPOT_延遲分解_2026-08-20.html</code>（延遲分解）、git commit <code>b23fb51</code>（源碼）。Build 腳本：<code>scripts/build_fork_llama.sh</code> / <code>scripts/build_prod_binary.sh</code> / <code>scripts/run_n30cache.sh</code>。</p>
+
+</div>
+</body>
+</html>

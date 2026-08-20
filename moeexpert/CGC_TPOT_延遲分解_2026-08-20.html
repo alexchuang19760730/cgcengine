@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CGC TPOT 延遲分解（端到端長條圖）2026-08-20 · qwen36 25.8 t/s</title>
+<style>
+  :root {
+    --bg: #0f1420; --card: #171e2e; --ink: #e8ecf4; --sub: #9aa5b8;
+    --line: #2a3350;
+    /* qwen36 GPU */
+    --wr: #f0a45c; --small: #e86a6a; --ssm: #d98cf0; --sdpa: #7fb8f0; --bubble: #6b7aa8;
+    /* qwen36 CPU / tail */
+    --cpu-o: #8a97ad; --tail: #e3cf8f;
+    /* accent */
+    --accent: #ffd479; --good: #8fe3a0; --warn: #f08a8a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; padding: 32px 20px 60px; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  .sub { color: var(--sub); font-size: 14px; margin-bottom: 28px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px 24px; margin-bottom: 22px; }
+  .card h2 { font-size: 18px; margin: 0 0 4px; }
+  .card .desc { color: var(--sub); font-size: 13px; margin: 0 0 16px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 10px 0 18px; font-size: 12.5px; color: var(--sub); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .barwrap { margin-bottom: 10px; }
+  .barrow { display: flex; align-items: center; gap: 10px; }
+  .barlabel { width: 280px; font-size: 12.5px; color: var(--ink); flex-shrink: 0; line-height: 1.35; }
+  .barlabel small { display: block; color: var(--sub); font-size: 11px; }
+  .bar { flex: 1; height: 34px; border-radius: 8px; overflow: hidden; display: flex; background: #0c1019; border: 1px solid var(--line); }
+  .seg { height: 100%; display: flex; align-items: center; justify-content: center; font-size: 10.5px; color: #10141f; font-weight: 700; white-space: nowrap; overflow: hidden; min-width: 0; border-right: 1px solid rgba(15,20,32,.35); }
+  .seg.tiny { font-size: 0; }
+  .seg.tiny:hover { font-size: 10.5px; }
+  .total { font-size: 12px; color: var(--sub); text-align: right; margin: 4px 0 0 290px; }
+  .note { font-size: 12.5px; color: var(--sub); margin-top: 12px; line-height: 1.6; }
+  .note b { color: var(--ink); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--sub); font-weight: 600; font-size: 12px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .hl { color: var(--accent); font-weight: 700; }
+  .g { color: var(--good); font-weight: 700; }
+  .ceil { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .ceil .cl { width: 280px; font-size: 12.5px; flex-shrink: 0; }
+  .ceil .ctrack { flex: 1; height: 26px; background: #0c1019; border: 1px solid var(--line); border-radius: 7px; position: relative; }
+  .ceil .cfill { height: 100%; border-radius: 6px; display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; font-size: 11px; font-weight: 700; color: #10141f; }
+  .tokbadge { margin-left: 10px; font-size: 12.5px; color: var(--ink); width: 110px; flex-shrink: 0; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; margin-left: 6px; }
+  .tag.g { background: #1c3a24; color: #8fe3a0; }
+  .tag.r { background: #3a1c1c; color: #f08a8a; }
+  .tag.y { background: #3a321c; color: #e3cf8f; }
+  code { background: #0c1019; border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; color: #7fb8f0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>CGC · TPOT 端到端延遲分解（長條圖）</h1>
+<div class="sub">llama.cpp fork · M4 Max 16GB · 2026-08-20 · qwen36 IQ3_XXS -ngl 99 + cache 4GiB · source build（commit b23fb51）</div>
+
+<!-- ============ 1. 端到端 wall 分解 ============ -->
+<div class="card">
+  <h2>① 端到端 wall 分解（38.8 ms/step ≈ 25.8 tok/s）</h2>
+  <p class="desc">CGC_STEP_TIMING n=47：decode=34.516ms、sample=4.581ms、p50=38.8ms。新增 <b>CGC_TAIL_DBG</b> 精準拆出 EOG sync 的組成。</p>
+
+  <div class="legend">
+    <span><i class="sw" style="background:var(--wr)"></i>compute（top-k 分段 GPU，已達 kernel 地板）34.2ms</span>
+    <span><i class="sw" style="background:var(--tail)"></i>EOG tail sync（最後幾層+output，真實 GPU 計算）~4.4ms</span>
+    <span><i class="sw" style="background:var(--cpu-o)"></i>sampler CPU（248K argmax）~0.5ms</span>
+    <span><i class="sw" style="background:var(--bubble)"></i>build/alloc/inputs 0.26ms</span>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">wall 38.8ms（2026-08-20 源碼版）<small>25.8 tok/s · n=47 · hit 70% · RSS 8.82GB</small></div>
+      <div class="bar">
+        <div class="seg" style="width:88.1%;background:var(--wr)" title="compute=34.2ms：CGC_OA_ASYNC segmented dispatch 的全部 top-k 分段（每段 ~1ms，CGC-SEG wait 955-1277us）">34.2 compute</div>
+        <div class="seg" style="width:11.3%;background:var(--tail)" title="EOG tail sync ~4.4ms：segmented loop 結束後 GPU 仍有的最後幾層+final norm+output layer 計算（CGC-TAIL 4390-4852us），getter 的 ctx->synchronize() 在等它">4.4 EOG</div>
+        <div class="seg tiny" style="width:1.3%;background:var(--cpu-o)" title="sampler CPU ~0.5ms：248K argmax（CGC-SMPL CPU path total）">0.5</div>
+        <div class="seg tiny" style="width:0.7%;background:var(--bubble)" title="build 0.024 + alloc 0.231 + inputs 0.003 ms（CGC-PHASE）">0.26</div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note"><b>唯一大項</b>：compute 34.2ms 就是 <span class="hl">29.2 t/s</span> 的純 kernel 地板（&gt; 28.6 目標）。剩下的 4.4ms EOG tail 不是開銷——見 ②。</p>
+</div>
+
+<!-- ============ 2. EOG tail 拆解 ============ -->
+<div class="card">
+  <h2>② EOG tail sync 拆解：是真實 GPU 計算，不是 overhead</h2>
+  <p class="desc">08-19 只量到「EOG sync ~4ms」的黑箱。今天用 <code>CGC_TAIL_DBG</code>（segmented loop 後立刻 <code>ggml_backend_synchronize</code>）+ <code>CGC_METAL_DBG</code>（<code>get_tensor_async/synchronize</code>）把 4.4ms 拆開。</p>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">EOG 4.4ms 組成<small>CGC_TAIL 4390-4852us / CGC-SYNC wait_last 3569-4480us</small></div>
+      <div class="bar">
+        <div class="seg" style="width:99%;background:var(--tail)" title="tail segment：最後一個 transformer block 的 moe 後段 + final norm + output layer（248320×5120 matmul）的 GPU 執行，segmented loop 沒有等它就 return">~4.4ms GPU tail 執行</div>
+        <div class="seg tiny" style="width:1%;background:var(--cpu-o)" title="logits blit command buffer 建立僅 30us（CGC-GTA），1MB 拷貝本身很快">&lt;0.1 blit</div>
+      </div>
+    </div>
+  </div>
+
+  <ul style="font-size:13px;line-height:1.7;padding-left:20px;">
+    <li><b>為什麼 CPU 要等 4.4ms</b>：<code>llama_get_sampled_token_ith</code> 第一行 <code>ctx->synchronize()</code> 等最後的 logits blit command buffer（CGC-GST 證實 caller 側 4.8ms / callee 側 1us 的差異全在 synchronize）。</li>
+    <li><b>這 4.4ms 是「最後幾層 + output layer」的 GPU 執行</b>：segmented dispatch 只等每個 top-k 分段，<b>tail segment（末段純計算）沒有被等</b>，等到 getter 才補付。</li>
+    <li><b>單流貪婪解碼下結構性無法省</b>：logits 是整個圖的最後產出，CPU 必須等它；把 wait 提前（graph_compute 內同步）只是把 34.2+4.4 搬到 decode 帳上，總 wall 不變。生產版（08-19）同樣付這 4ms。</li>
+    <li><b>突破的唯一途徑 = MTP</b>：draft token 讓 step N+1 的早期層與 step N 的 tail 重疊，把這 4.4ms 藏進下一個 step 的 GPU 計算。</li>
+  </ul>
+</div>
+
+<!-- ============ 3. Segment pipeline ============ -->
+<div class="card">
+  <h2>③ Segmented pipeline 健康度（CGC-SEG）</h2>
+  <p class="desc">CGC_OA_ASYNC segmented dispatch 的逐段成本：submit 下一段 → wait 當前段 → hook 寫 remap。</p>
+  <table>
+    <tr><th>計量</th><th class="num">值</th><th>說明</th></tr>
+    <tr><td>segment wait</td><td class="num">955 → 1277 µs/段</td><td>等 seg[i] 主 cmd buffer 完成；隨暖機（expert cache）略降</td></tr>
+    <tr><td>submit 下一段</td><td class="num">104 → 140 µs/段</td><td>與 GPU 執行重疊，不佔 critical path</td></tr>
+    <tr><td>topk hook callback</td><td class="num">~4-5 µs/段</td><td>CPU 寫 remap leaf，極輕量</td></tr>
+  </table>
+  <p class="note"><b>結論</b>：管線是滿的——wait≈GPU 每段執行時間（~1ms），submit 140µs 被前一段執行蓋掉，hook 5µs 可忽略。40 段 × ~1ms ≈ 34ms 就是 compute 本體，<b>沒有 pipeline 空轉可撿</b>。</p>
+</div>
+
+<!-- ============ 4. 三層天花板（更新） ============ -->
+<div class="card">
+  <h2>④ 三層天花板（2026-08-20 更新：kernel 地板已達）</h2>
+  <p class="desc">08-19 定「純 kernel 地板 35ms = 28.6 tok/s」為不可達目標；今天 compute=34.2ms 已 <span class="g">突破</span>。剩餘差距全是 EOG tail（真實 GPU 計算）。</p>
+
+  <div class="ceil">
+    <div class="cl">wall（production 設定，源碼版）<br><small>p50 38.8 ms/step</small></div>
+    <div class="ctrack"><div class="cfill" style="width:38.8%;background:linear-gradient(90deg,#2c6a4a,#5cc09a)">38.8ms</div></div>
+    <div class="tokbadge">≈ <b class="hl">25.8</b> tok/s <span class="tag g">✓ 25+</span></div>
+  </div>
+  <div class="ceil">
+    <div class="cl">compute（kernel 地板，已達成）<br><small>34.2 ms/step</small></div>
+    <div class="ctrack"><div class="cfill" style="width:34.2%;background:linear-gradient(90deg,#1c4a3a,#3a8a6a)">34.2ms</div></div>
+    <div class="tokbadge">≈ <b class="hl">29.2</b> tok/s <span class="tag g">✓ 過 28.6</span></div>
+  </div>
+  <div class="ceil">
+    <div class="cl">08-19 production 基線<br><small>39.9 ms/step</small></div>
+    <div class="ctrack"><div class="cfill" style="width:39.9%;background:linear-gradient(90deg,#8a6a2c,#c0a05c)">39.9ms</div></div>
+    <div class="tokbadge">≈ <b>25.07</b> tok/s</div>
+  </div>
+  <div class="ceil">
+    <div class="cl">&gt;29 tok/s（wall）需要 MTP<br><small>把 4.4ms EOG tail 藏進下個 step</small></div>
+    <div class="ctrack" style="position:relative"><div style="position:absolute;left:37%;top:-6px;bottom:-6px;border-left:2px dashed var(--accent)"></div></div>
+    <div class="tokbadge">MTP 途徑</div>
+  </div>
+
+  <p class="note"><b>定案</b>：<b>28.6 t/s kernel 地板已達成</b>（compute 34.2ms = 29.2 t/s），wall 25.8 t/s 也優於 08-19 的 25.07。剩餘 4.4ms EOG tail 是單流貪婪解碼下真實 GPU 計算，<b>無法靠省開銷消除</b>——要讓 wall 突破 29 t/s 只有 MTP（speculative decode）一條路。</p>
+</div>
+
+<!-- ============ 5. 量化省錢空間 ============ -->
+<div class="card">
+  <h2>⑤ 可量化花銷一覽</h2>
+  <table>
+    <tr><th>項目</th><th class="num">時間</th><th>能否省</th><th>說明</th></tr>
+    <tr><td>compute（top-k 分段 GPU）</td><td class="num">34.2ms</td><td><span class="g">已達地板</span></td><td>29.2 t/s，&gt; 28.6 目標</td></tr>
+    <tr><td>EOG tail sync</td><td class="num">~4.4ms</td><td><span class="w">單流下不能省</span></td><td>最後幾層 + output layer 真實 GPU 計算；MTP 可藏</td></tr>
+    <tr><td>sampler CPU（248K argmax）</td><td class="num">~0.5ms</td><td>小省 ~0.2ms</td><td>NEON/vDSP SIMD argmax（~1%）</td></tr>
+    <tr><td>build/alloc/inputs</td><td class="num">0.26ms</td><td>已極小</td><td>CGC-PHASE 拆分</td></tr>
+  </table>
+  <p class="note"><b>重點</b>：唯一的大項（4.4ms EOG tail）不是開銷而是真 GPU 計算，摳不出來。<b>要突破 wall 29 t/s，唯一有效投資是 MTP</b>（graft model blk.40 head 已備妥、-c 2048 解 OOM），把 EOG tail 與下一個 step 重疊。</p>
+</div>
+
+<p class="sub" style="margin-top:24px">數據：CGC-PHASE（build=0.024 alloc=0.231 inputs=0.003 compute=34.225ms）、CGC-STEP（n=47 decode=34.516 sample=4.581 p50=38.808）、CGC-TAIL（4390-4852us）、CGC-SEG（wait 955-1277 / submit 104-140 / cb ~4.5us）、CGC-SMPL（CPU path ~5.4ms 其中 get_ith 4.8ms=synchronize）、CGC-METAL（GTA buf=30us / SYNC wait_last=4.4ms）。源碼版 commit <code>b23fb51</code>。對比：<code>CGC_TPOT_延遲分解_2026-08-19.html</code>（39.9ms / 25.07 t/s / EOG ~4ms 黑箱）。</p>
+
+</div>
+</body>
+</html>
