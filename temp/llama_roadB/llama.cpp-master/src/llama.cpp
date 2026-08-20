@@ -355,6 +355,11 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
         ml.expert_cache_bytes = params.expert_cache_bytes;
         if (params.expert_cache_bytes > 0) {
             model->expert_cache_path = fname;
+            // CGC: L4 skip-load gate — expert tensors stay on CPU (bounded residency). Same gate as
+            // expert_cache_active below: -ngl>0 only enables it with the explicit ALLOW_NGL override.
+            const char * no_gather = getenv("LLAMA_EXPERT_CACHE_NOGATHER");
+            ml.expert_cache_skip_load = (params.n_gpu_layers <= 0 || getenv("LLAMA_EXPERT_CACHE_ALLOW_NGL")) && !(no_gather && no_gather[0]);
+            model->expert_cache_skip_load = ml.expert_cache_skip_load;
         }
 
         if (params.vocab_only) {

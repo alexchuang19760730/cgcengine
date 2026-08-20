@@ -1195,7 +1195,16 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         }
 
         if (!buft) {
-            buft = select_weight_buft(hparams, t_meta, op, buft_list);
+            // CGC expert-cache (L4 skip-load): keep expert tensors on the CPU. Active experts are
+            // staged onto the GPU pool via llama_expert_cache_adopt_pool_region at compute time, so
+            // the resident expert weights never need to enter the Metal working set. Only applies
+            // when no explicit override selected a buft (overrides win).
+            if (expert_cache_skip_load && strstr(t_meta->name, "_exps") && strstr(t_meta->name, "blk.")) {
+                buft = ggml_backend_cpu_buffer_type();
+                LLAMA_LOG_INFO("llama_model_loader: keeping %s out of GPU buffers (skip-load expert streaming)\n", t_meta->name);
+            } else {
+                buft = select_weight_buft(hparams, t_meta, op, buft_list);
+            }
             if (!buft) {
                 throw std::runtime_error(format("failed to find a compatible buffer type for tensor %s", tn.str().c_str()));
             }

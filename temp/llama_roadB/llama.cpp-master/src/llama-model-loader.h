@@ -97,6 +97,9 @@ struct llama_model_loader {
 
     // CGC expert-cache: built during load_all_data when expert_cache_bytes > 0
     size_t expert_cache_bytes = 0;
+    // CGC expert-cache: when set, expert tensors (_exps) are forced to CPU buft (skip GPU load),
+    // keeping the expert weights out of the Metal working set (bounded residency).
+    bool expert_cache_skip_load = false;
     std::vector<llama_expert_index_entry> expert_index;
     llama_model_set_tensor_data_t set_tensor_data;
     void * set_tensor_data_ud;
