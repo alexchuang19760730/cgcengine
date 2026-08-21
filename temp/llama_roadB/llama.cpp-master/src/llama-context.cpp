@@ -1451,6 +1451,17 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         if (cgc_phase_timing) { int64_t t = ggml_time_us(); ph_inputs += t - ph_t; ph_t = t; }
     }
 
+    // Hot prewarm: before the first decode step, fill each layer's pool with its top-K most-
+    // routed experts from prefill (recorded by the hook via record_routes). One-time sync
+    // cold-start preads; a no-op on later steps (hot_prewarm_done). Together with the B
+    // async prefetch this keeps the working set warm from the very first decode token.
+    if (model.expert_cache_active && ubatch.n_tokens == 1) {
+        llama_expert_cache * ec = model.expert_cache;
+        if (ec != nullptr && llama_expert_cache_pool_active(ec)) {
+            llama_expert_cache_prewarm_hot(ec);
+        }
+    }
+
     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
@@ -1467,6 +1478,34 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
                         (long long) ph_n, ph_build/1000.0/ph_n, ph_alloc/1000.0/ph_n,
                         ph_inputs/1000.0/ph_n, ph_compute/1000.0/ph_n);
             }
+        }
+    }
+
+    // B: async-prefetch the step's per-layer expert unions into the pool's bg thread so the
+    // NEXT decode step's ensure_batch mostly hits (temporal locality). prefetch_slot is
+    // non-blocking (free-slot-only, never evicts a resident) and overlaps the disk IO with the
+    // sampler + next step's whole GPU window instead of stalling the hook on synchronous preads.
+    if (model.expert_cache_active && ubatch.n_tokens == 1) {
+        llama_expert_cache * ec = model.expert_cache;
+        if (ec != nullptr && llama_expert_cache_pool_active(ec) && !cache_step_union.empty()) {
+            const size_t n_l = (size_t) model.hparams.n_layer();
+            for (size_t il = 0; il < cache_step_union.size() && il < n_l; ++il) {
+                const auto & v = cache_step_union[il];
+                if (v.empty()) {
+                    continue;
+                }
+                for (uint32_t e : v) {
+                    llama_expert_cache_prefetch_slot(ec, (uint32_t) il, e);
+                }
+            }
+        }
+        // rotate: this step becomes the previous step; clear the buffer for the next build.
+        cache_prev_union.swap(cache_step_union);
+        if (cache_step_union.size() < (size_t) model.hparams.n_layer()) {
+            cache_step_union.resize(model.hparams.n_layer());
+        }
+        for (auto & v : cache_step_union) {
+            v.clear();
         }
     }
 
@@ -2710,6 +2749,14 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
                 }
             }
         }
+
+        // B: record this step's per-layer union so process_ubatch can async-prefetch it for the
+        // next decode step (temporal locality). The bg fill runs behind the sampler + next step's
+        // GPU window, so the next step's ensure_batch hits instead of blocking on disk reads.
+        if (cache_step_union.size() < (size_t) model.hparams.n_layer()) {
+            cache_step_union.resize(model.hparams.n_layer());
+        }
+        cache_step_union[(size_t) il] = uni;
         return;
     }
 

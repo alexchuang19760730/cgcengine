@@ -1786,15 +1786,22 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     return ec;
                 }
                 static int64_t p_us = 0, p_n = 0;
+                const bool submit_dbg = getenv("CGC_SUBMIT_DBG") != nullptr;
                 for (int i = 0; i < n_segs; i++) {
                     if (i + 1 < n_segs) {
                         const int64_t v0 = ggml_time_us();
+                        const int d0 = submit_dbg && cgc_done ? cgc_done(split_backend) : -1;
                         struct ggml_cgraph gv = seg_view(i + 1);
                         ec = ggml_backend_graph_compute_async(split_backend, &gv);
                         if (ec != GGML_STATUS_SUCCESS) {
                             return ec;
                         }
                         const int64_t v1 = ggml_time_us();
+                        const int d1 = submit_dbg && cgc_done ? cgc_done(split_backend) : -1;
+                        if (submit_dbg && (i % 40) == 0) {
+                            fprintf(stderr, "CGC-SUBMIT: seg=%d dur=%lld us gpu_adv=%d\n",
+                                    i + 1, (long long) (v1 - v0), d1 - d0);
+                        }
                         p_us += v1 - v0;
                         p_n++;
                     }
