@@ -128,7 +128,6 @@ ENVS=(LLAMA_EXPERT_CACHE_ALLOW_NGL=1
       CGC_WAKE_POLL_US=$WAKE_POLL_US)
 [ "$OA_ASYNC" = 1 ] && ENVS+=(CGC_OA_ASYNC=1)
 ENVS+=(CGC_N_CB=$N_CB)
-ENVS+=(CGC_GLU_FUSED_DOWN=1)  # §8.113: fused gate+up+GLU+down, +6.5% speed
 [ -n "${PIN_PROFILE:-}" ] && ENVS+=(LLAMA_EXPERT_CACHE_PIN_PROFILE="$PIN_PROFILE")
 
 echo "=== n30cache production run ==="

@@ -1769,7 +1769,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 auto * reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(split_backend));
                 typedef int (*cgc_done_fn)(ggml_backend_t);
                 cgc_done_fn cgc_done = (cgc_done_fn) ggml_backend_reg_get_proc_address(reg, "ggml_metal_get_cgc_done");
+                // each graph-compute creates n_cb+1 cmd buffers and cgc_done counts every buffer's
+                // completion, so a segment is "done" only after (n_cb+1) more completions
+                typedef int (*cgc_bufs_fn)(ggml_backend_t);
+                cgc_bufs_fn cgc_bufs = (cgc_bufs_fn) ggml_backend_reg_get_proc_address(reg, "ggml_metal_get_cgc_bufs");
                 const int done0 = cgc_done ? cgc_done(split_backend) : -1;
+                const int bufs  = cgc_bufs ? cgc_bufs(split_backend) : 1;
 
                 auto seg_view = [&](int s) {
                     const int a = (s == 0) ? 0 : (topk_idx[s-1] + 1);
@@ -1787,7 +1792,58 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 }
                 static int64_t p_us = 0, p_n = 0;
                 const bool submit_dbg = getenv("CGC_SUBMIT_DBG") != nullptr;
+                // CGC A/B: CGC_SUBMIT_AFTER=1 submits segment i+1 only AFTER the hook for segment i
+                // has written its remap leaf. This serializes the CPU hook write vs the GPU
+                // consuming segment (removes the submit-ahead remap race) at the cost of pipeline
+                // drain. Diagnostic for isolating the async remap race.
+                const bool submit_after = getenv("CGC_SUBMIT_AFTER") != nullptr;
                 for (int i = 0; i < n_segs; i++) {
+                    if (submit_after) {
+                        // wait seg i + fire hook BEFORE submitting seg i+1
+                        if (i < n_topk_found) {
+                            static int64_t w_us = 0, c_us = 0, n = 0;
+                            const int64_t st0 = ggml_time_us();
+                            if (cgc_done) {
+                                const int target = done0 + (i + 1) * bufs;
+                                while (cgc_done(split_backend) < target) {
+                                    sched_yield();
+                                }
+                            } else {
+                                ggml_backend_synchronize(split_backend);
+                            }
+                            const int64_t st1 = ggml_time_us();
+                            struct ggml_tensor * ttopk = split->graph.nodes[topk_idx[i]];
+                            if (!sched->callback_eval(ttopk, false, sched->callback_eval_user_data)) {
+                                break;
+                            }
+                            const int64_t st2 = ggml_time_us();
+                            w_us += st1 - st0;
+                            c_us += st2 - st1;
+                            n++;
+                            if (n % 160 == 0) {
+                                fprintf(stderr, "CGC-SEG: wait %.1f cb %.1f submit %.1f us (%d)\n",
+                                        (double) w_us / n, (double) c_us / n, (double) p_us / p_n, (int) n);
+                            }
+                        }
+                        if (i + 1 < n_segs) {
+                            const int64_t v0 = ggml_time_us();
+                            const int d0 = submit_dbg && cgc_done ? cgc_done(split_backend) : -1;
+                            struct ggml_cgraph gv = seg_view(i + 1);
+                            ec = ggml_backend_graph_compute_async(split_backend, &gv);
+                            if (ec != GGML_STATUS_SUCCESS) {
+                                return ec;
+                            }
+                            const int64_t v1 = ggml_time_us();
+                            const int d1 = submit_dbg && cgc_done ? cgc_done(split_backend) : -1;
+                            if (submit_dbg && (i % 40) == 0) {
+                                fprintf(stderr, "CGC-SUBMIT: seg=%d dur=%lld us gpu_adv=%d\n",
+                                        i + 1, (long long) (v1 - v0), d1 - d0);
+                            }
+                            p_us += v1 - v0;
+                            p_n++;
+                        }
+                        continue;
+                    }
                     if (i + 1 < n_segs) {
                         const int64_t v0 = ggml_time_us();
                         const int d0 = submit_dbg && cgc_done ? cgc_done(split_backend) : -1;
@@ -1809,7 +1865,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         static int64_t w_us = 0, c_us = 0, n = 0;
                         const int64_t st0 = ggml_time_us();
                         if (cgc_done) {
-                            const int target = done0 + i + 1; // segment i's main cmd buffer finished
+                            const int target = done0 + (i + 1) * bufs; // segment i: all n_cb+1 cmd buffers finished
                             while (cgc_done(split_backend) < target) {
                                 sched_yield();
                             }

@@ -277,6 +277,12 @@ int ggml_metal_cgc_done(ggml_metal_t ctx) {
     return atomic_load_explicit(&ctx->cgc_done, memory_order_relaxed);
 }
 
+// CGC: number of command buffers created per graph-compute (n_cb chunks + 1 main). cgc_done now
+// counts every buffer, so the sched converts "segments done" -> "cmd buffers done" with this.
+int ggml_metal_cgc_bufs(ggml_metal_t ctx) {
+    return ctx->n_cb + 1;
+}
+
 void ggml_metal_synchronize(ggml_metal_t ctx) {
     const bool cgc_dbg = getenv("CGC_METAL_DBG") != NULL;
     const int64_t s0 = cgc_dbg ? ggml_time_us() : 0;
@@ -591,6 +597,17 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
                 [ctx->cmd_bufs[cb_idx].obj release];
             }
             ctx->cmd_bufs[cb_idx].obj = cmd_buf;
+
+            // CGC: count this chunk buffer's completion too. cgc_done must reflect the WHOLE
+            // graph-compute (all n_cb chunk buffers + the main buffer), because the top-k/argsort
+            // node is encoded in the LAST chunk buffer — the main buffer (cmd_bufs[n_cb]) only
+            // encodes the first n_nodes_0 nodes and is enqueued first, so its completion fires
+            // while the argsort chunk is still running. Without this, CGC_OA_ASYNC polls cgc_done
+            // and fires the top-k hook early, reading uninitialized top-k ids -> garbage routing.
+            [cmd_buf addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+                GGML_UNUSED(cb);
+                atomic_fetch_add_explicit(&ctx->cgc_done, 1, memory_order_relaxed);
+            }];
 
             // always enqueue the first two command buffers
             // enqueue all of the command buffers if we don't need to abort

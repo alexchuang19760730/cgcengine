@@ -246,15 +246,18 @@ llama_context::llama_context(
     // with causal attention, the batch size is limited by the context size
     cparams.n_batch = cparams.causal_attn ? std::min(cparams.n_ctx, params.n_batch) : params.n_batch;
 
-    // CGC expert-cache L4: cap n_batch so the per-step expert union (< 8 * n_batch) always fits the
-    // bounded Metal pool (union must be < capacity; the L3-B gather path is incompatible with a
-    // Metal-buft expert tensor, so the pool path must never be skipped). (capacity-1)/8 keeps a
-    // margin for the top-8 union exactly at the boundary. Chunked callers (mtmd, warmup) must read
-    // the capped value via llama_n_batch().
-    if (model.expert_cache_pool_capacity > 0 && cparams.n_batch > (model.expert_cache_pool_capacity - 1) / 8) {
-        cparams.n_batch = (uint32_t) ((model.expert_cache_pool_capacity - 1) / 8);
-        LLAMA_LOG_INFO("%s: L4 pool capacity=%zu -> n_batch capped to %u (expert union must fit the pool)\n",
-                __func__, model.expert_cache_pool_capacity, cparams.n_batch);
+    // CGC expert-cache L4: the per-layer expert tensors are SHRUNK to the bounded pool capacity,
+    // so a multi-token (n_tokens > 1) prefill graph would read full-range router ids (0..n_expert-1)
+    // against a capacity-slot tensor -> OOB -> NaN -> garbage downstream (observed: layer-1 routes
+    // to experts >= capacity, layer-2+ router probs become NaN). The pool path is only correct for
+    // single-token steps (n_tokens == 1): the remap leaf is built, the hook maps expert ids to slot
+    // indices, and the FFN reads the pool region by slot. So when the pool is active we must cap
+    // n_batch to 1 so EVERY step (including prefill tokens) goes through the single-token pool
+    // path. Chunked callers (mtmd, warmup) must read the capped value via llama_n_batch().
+    if (model.expert_cache_pool_capacity > 0 && cparams.n_batch > 1) {
+        cparams.n_batch = 1;
+        LLAMA_LOG_INFO("%s: L4 pool capacity=%zu -> n_batch capped to 1 (prefill must run single-token through the pool path; multi-token prefill reads shrunk tensors OOB)\n",
+                __func__, model.expert_cache_pool_capacity);
     }
 
     cparams.n_ubatch = std::min(cparams.n_batch, params.n_ubatch == 0 ? params.n_batch : params.n_ubatch);
@@ -2681,6 +2684,20 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
     if (getenv("LLAMA_EXPERT_CACHE_DISABLE_WRITE")) {
         return; // diagnostic: keep graph structure, do not write remap / repoint weights
     }
+    if (getenv("CGC_SYNC_TEST") != nullptr && this->sched != nullptr) {
+        ggml_backend_sched_synchronize(this->sched.get());
+    }
+    if (getenv("CGC_ROUTE_DBG") != nullptr) {
+        float prob0[4] = {0};
+        ggml_tensor * asrc = t->src[0];
+        if (asrc != nullptr && asrc->src[0] != nullptr && asrc->src[0]->data != nullptr) {
+            ggml_backend_tensor_get(asrc->src[0], prob0, 0, sizeof(prob0));
+        }
+        fprintf(stderr, "CGC-ROUTE step il=%d ntok=%lld ids[0..7]=%d %d %d %d %d %d %d %d probs0=%.4f %.4f %.4f %.4f\n",
+                il, (long long) n_tokens,
+                ids[0], ids[1], ids[2], ids[3], ids[4], ids[5], ids[6], ids[7],
+                prob0[0], prob0[1], prob0[2], prob0[3]);
+    }
 
     // NOTE: FFN tensor restore/repoint is done in process_ubatch (restore all before every
     // build_graph) and in graph_get_cb (repoint at the L4 pool regions when the remap leaf is
@@ -2826,6 +2843,18 @@ llm_graph_cb llama_context::graph_get_cb() const {
                             continue;
                         }
                         const uint8_t * base = llama_expert_cache_pool_data(model.expert_cache, (uint32_t) il, kind);
+                        if (getenv("CGC_POOL_DBG") != nullptr && il == 0 && (kind == 3 || kind == 2)) {
+                            uint8_t db[8] = {0};
+                            const uint8_t * src = base != nullptr ? base : (const uint8_t *) wt->data;
+                            if (src != nullptr) {
+                                ggml_backend_tensor_get(wt, db, 0, sizeof(db));
+                            }
+                            LLAMA_LOG_INFO("CGC-POOL il=%d kind=%d base=%p wt=%s ne=[%lld,%lld,%lld] nbytes=%zu host=%d first8=%02x %02x %02x %02x %02x %02x %02x %02x poolbase=%p\n",
+                                il, kind, (void*) base, wt->name, (long long)wt->ne[0], (long long)wt->ne[1], (long long)wt->ne[2],
+                                (size_t) ggml_nbytes(wt), ggml_backend_buft_is_host(ggml_backend_buffer_get_type(wt->buffer)) ? 1 : 0,
+                                db[0],db[1],db[2],db[3],db[4],db[5],db[6],db[7],
+                                (void*) llama_expert_cache_pool_data(model.expert_cache, 0, kind));
+                        }
                         if (base == nullptr) {
                             continue;
                         }
@@ -2838,6 +2867,16 @@ llm_graph_cb llama_context::graph_get_cb() const {
                     auto & ffn = cache_ffn_tensors[il];
                     if (ffn.size() < 4) ffn.resize(4);
                     ffn[3] = cur->src[0];
+                    if (getenv("CGC_POOL_DBG") != nullptr && il == 0) {
+                        ggml_tensor * wt = cur->src[0];
+                        uint8_t db[8] = {0};
+                        ggml_backend_tensor_get(wt, db, 0, sizeof(db));
+                        LLAMA_LOG_INFO("CGC-POOL il=%d kind=3 wt=%s ne=[%lld,%lld,%lld] nbytes=%zu host=%d first8=%02x %02x %02x %02x %02x %02x %02x %02x poolbase=%p\n",
+                            il, wt->name, (long long)wt->ne[0], (long long)wt->ne[1], (long long)wt->ne[2],
+                            (size_t) ggml_nbytes(wt), wt->buffer ? (ggml_backend_buft_is_host(ggml_backend_buffer_get_type(wt->buffer)) ? 1 : 0) : -1,
+                            db[0],db[1],db[2],db[3],db[4],db[5],db[6],db[7],
+                            (void*) llama_expert_cache_pool_data(model.expert_cache, 0, 3));
+                    }
                 }
             } else if (strcmp(name, "ffn_moe_up") == 0) {
                 if (cur->src[0] != nullptr) {

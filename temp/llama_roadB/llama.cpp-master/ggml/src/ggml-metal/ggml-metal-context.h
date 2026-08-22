@@ -23,6 +23,12 @@ void ggml_metal_synchronize(ggml_metal_t ctx);
 // (polled by the sched pipelined dispatch; see CGC_OA_ASYNC)
 int ggml_metal_cgc_done(ggml_metal_t ctx);
 
+// CGC: number of command buffers created per graph-compute (n_cb chunk buffers + 1 main).
+// cgc_done now counts EVERY command buffer's completion (not just the main one), so the sched
+// must multiply a segment's completion target by this to wait for the whole segment (the top-k
+// node lives in the LAST chunk buffer, which the main buffer does NOT cover).
+int ggml_metal_cgc_bufs(ggml_metal_t ctx);
+
 void ggml_metal_set_tensor_async(ggml_metal_t ctx, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size);
 void ggml_metal_get_tensor_async(ggml_metal_t ctx, const struct ggml_tensor * tensor, void * data, size_t offset, size_t size);
 bool ggml_metal_cpy_tensor_async(ggml_metal_t ctx_src, ggml_metal_t ctx_dst, const struct ggml_tensor * src, struct ggml_tensor * dst);
