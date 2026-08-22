@@ -67,6 +67,10 @@ struct ggml_metal {
     // stays busy while the CPU writes the remap leaves for the next segments.
     _Atomic int cgc_done;
 
+    // CGC: signalled by every completion handler so ggml_metal_wait_cgc_done can block
+    // (instead of spinning on sched_yield) until the requested segment count is reached.
+    dispatch_semaphore_t cgc_sem;
+
     struct ggml_cgraph * gf;
 
     // the callback given to the thread pool
@@ -191,6 +195,7 @@ ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
     res->cmd_buf_last = nil;
 
     atomic_store_explicit(&res->cgc_done, 0, memory_order_relaxed);
+    res->cgc_sem = dispatch_semaphore_create(0);
 
     res->pipelines_ext = ggml_metal_pipelines_init();
 
@@ -214,6 +219,10 @@ void ggml_metal_free(ggml_metal_t ctx) {
 
     [ctx->cmd_bufs_ext removeAllObjects];
     [ctx->cmd_bufs_ext release];
+
+    if (ctx->cgc_sem) {
+        dispatch_release(ctx->cgc_sem);
+    }
 
     if (ctx->pipelines_ext) {
         ggml_metal_pipelines_free(ctx->pipelines_ext);
@@ -274,6 +283,18 @@ static void cgc_wait_cmd_buf(id<MTLCommandBuffer> cmd_buf) {
 }
 
 int ggml_metal_cgc_done(ggml_metal_t ctx) {
+    return atomic_load_explicit(&ctx->cgc_done, memory_order_relaxed);
+}
+
+// CGC: block until at least `target` segments finished. The completion handlers signal
+// cgc_sem once per finished command buffer, so the sched wakes immediately instead of paying
+// sched_yield poll latency. The while-loop re-checks cgc_done, so stale signals (left over
+// from a previous graph-compute) can never cause an early return. A generous timeout guards
+// against a hang if a signal is ever missed (errors surface through the normal synchronize).
+int ggml_metal_wait_cgc_done(ggml_metal_t ctx, int target) {
+    while (atomic_load_explicit(&ctx->cgc_done, memory_order_relaxed) < target) {
+        dispatch_semaphore_wait(ctx->cgc_sem, dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC));
+    }
     return atomic_load_explicit(&ctx->cgc_done, memory_order_relaxed);
 }
 
@@ -577,6 +598,7 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
             [cmd_buf addCompletedHandler:^(id<MTLCommandBuffer> cb) {
                 GGML_UNUSED(cb);
                 atomic_fetch_add_explicit(&ctx->cgc_done, 1, memory_order_relaxed);
+                dispatch_semaphore_signal(ctx->cgc_sem);
             }];
 
             [cmd_buf enqueue];
@@ -607,6 +629,7 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
             [cmd_buf addCompletedHandler:^(id<MTLCommandBuffer> cb) {
                 GGML_UNUSED(cb);
                 atomic_fetch_add_explicit(&ctx->cgc_done, 1, memory_order_relaxed);
+                dispatch_semaphore_signal(ctx->cgc_sem);
             }];
 
             // always enqueue the first two command buffers

@@ -23,6 +23,11 @@ void ggml_metal_synchronize(ggml_metal_t ctx);
 // (polled by the sched pipelined dispatch; see CGC_OA_ASYNC)
 int ggml_metal_cgc_done(ggml_metal_t ctx);
 
+// CGC: block until at least `target` segments finished, woken by the completion handler's
+// semaphore instead of a sched_yield spin (removes the poll latency from the pipelined
+// dispatch). Returns the current cgc_done count.
+int ggml_metal_wait_cgc_done(ggml_metal_t ctx, int target);
+
 // CGC: number of command buffers created per graph-compute (n_cb chunk buffers + 1 main).
 // cgc_done now counts EVERY command buffer's completion (not just the main one), so the sched
 // must multiply a segment's completion target by this to wait for the whole segment (the top-k

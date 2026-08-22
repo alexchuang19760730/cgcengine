@@ -2690,13 +2690,31 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
     if (getenv("CGC_ROUTE_DBG") != nullptr) {
         float prob0[4] = {0};
         ggml_tensor * asrc = t->src[0];
-        if (asrc != nullptr && asrc->src[0] != nullptr && asrc->src[0]->data != nullptr) {
-            ggml_backend_tensor_get(asrc->src[0], prob0, 0, sizeof(prob0));
+        ggml_tensor * probs_t = (asrc != nullptr) ? asrc->src[0] : nullptr;
+        if (probs_t != nullptr && probs_t->data != nullptr) {
+            ggml_backend_tensor_get(probs_t, prob0, 0, sizeof(prob0));
         }
-        fprintf(stderr, "CGC-ROUTE step il=%d ntok=%lld ids[0..7]=%d %d %d %d %d %d %d %d probs0=%.4f %.4f %.4f %.4f\n",
+        fprintf(stderr, "CGC-ROUTE step il=%d ntok=%lld ids[0..7]=%d %d %d %d %d %d %d %d probs0=%.4f %.4f %.4f %.4f",
                 il, (long long) n_tokens,
                 ids[0], ids[1], ids[2], ids[3], ids[4], ids[5], ids[6], ids[7],
                 prob0[0], prob0[1], prob0[2], prob0[3]);
+        // CGC margin-diagnostic: print the full probs ranking (top-32) so we can verify whether
+        // next step's "never seen" drift experts sit in the current step's top-K margin.
+        if (getenv("CGC_ROUTE_MARGIN") != nullptr && probs_t != nullptr && probs_t->data != nullptr) {
+            const int64_t n_exp = probs_t->ne[0];
+            if (n_exp > 0 && n_exp <= 2048) {
+                std::vector<float> pv((size_t) n_exp);
+                ggml_backend_tensor_get(probs_t, pv.data(), 0, n_exp * sizeof(float));
+                std::vector<int32_t> order((size_t) n_exp);
+                for (int32_t i = 0; i < (int32_t) n_exp; ++i) order[i] = i;
+                std::sort(order.begin(), order.end(), [&](int32_t a, int32_t b) { return pv[a] > pv[b]; });
+                fprintf(stderr, " margin32=");
+                for (int k = 0; k < 32 && k < (int) n_exp; ++k) {
+                    fprintf(stderr, "%d(%.3f)%c", order[k], pv[order[k]], k == 31 ? '\0' : ' ');
+                }
+            }
+        }
+        fprintf(stderr, "\n");
     }
 
     // NOTE: FFN tensor restore/repoint is done in process_ubatch (restore all before every

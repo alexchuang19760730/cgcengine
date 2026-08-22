@@ -749,6 +749,34 @@ void llama_expert_cache_prepopulate(llama_expert_cache * cache, uint32_t layer, 
     }
 }
 
+// Static profile fill (LLAMA_EXPERT_CACHE_PIN_PROFILE): after load_pin_profile() stores the
+// per-layer expert lists, fill each layer's pool with its profile experts via the same
+// bit-identical ensure_slot path the decode hook uses, and pin those slots (slot_pinned_static,
+// LRU-exempt) so decode churn cannot displace the profile's working set. The pool holds far
+// more slots than a typical prompt's per-layer union (87 slots vs ~16-62 routed), so pinning
+// the whole union costs nothing and the decode runs at ~100% hit. Returns slots filled.
+// Must be called WITHOUT cache->m held (ensure_slot takes the lock itself).
+size_t llama_expert_cache_fill_pin_profile(llama_expert_cache * cache) {
+    if (cache == nullptr || !cache->pool_active || cache->pin_profile.empty()) {
+        return 0;
+    }
+    size_t filled = 0;
+    for (uint32_t l = 0; l < cache->pin_profile.size() && l < cache->slot_owner.size(); ++l) {
+        const auto & list = cache->pin_profile[l];
+        if (list.empty() || cache->slot_pinned_static.size() <= l) {
+            continue;
+        }
+        for (uint32_t e : list) {
+            const int32_t slot = llama_expert_cache_ensure_slot(cache, l, e, false);
+            if (slot >= 0 && slot < (int32_t) cache->slot_pinned_static[l].size()) {
+                cache->slot_pinned_static[l][(size_t) slot] = 1;
+                filled++;
+            }
+        }
+    }
+    return filled;
+}
+
 uint32_t llama_expert_cache_slots_per_layer(const llama_expert_cache * cache) {
     return cache == nullptr ? 0 : cache->n_slots;
 }

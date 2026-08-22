@@ -128,12 +128,17 @@ ENVS=(LLAMA_EXPERT_CACHE_ALLOW_NGL=1
       CGC_WAKE_POLL_US=$WAKE_POLL_US)
 [ "$OA_ASYNC" = 1 ] && ENVS+=(CGC_OA_ASYNC=1)
 ENVS+=(CGC_N_CB=$N_CB)
+# §8.113 正確性強制：CGC_SUBMIT_AFTER=1（submit-ahead 是 racy，GPU 可能讀到舊 remap → 錯誤輸出）。
+# 必須在 GPU 寫 remap 後才 submit 下一個 segment。配 semaphore wake（ggml_metal_wait_cgc_done）
+# 消除 sched_yield poll 延遲：qwen36 8.35 → 15.6 t/s，短/長 coding prompt 皆 bit-identical。
+ENVS+=(CGC_SUBMIT_AFTER=1)
 [ -n "${PIN_PROFILE:-}" ] && ENVS+=(LLAMA_EXPERT_CACHE_PIN_PROFILE="$PIN_PROFILE")
 
 echo "=== n30cache production run ==="
 echo "  model  : $MODEL ($(basename "$M"))"
 echo "  ngl    : $NGL   budget: $((BUDGET/1073741824))GiB   workers: $WORKERS"
 echo "  pin    : ${PIN_PROFILE:-off}   wake-poll: ${WAKE_POLL_US}us   cache: ${NO_CACHE:-0}=off"
+echo "  submit : after (正確性強制, submit-ahead racy 已禁用)"
 [ "$MTP" = 1 ] && echo "  mtp    : ON (spec-type=draft-mtp, n_max=$MTP_N_MAX, ctx=$MTP_CTX)"
 
 CACHE_ARG=""  # patched: use CGC_EXPERT_CACHE_BYTES env var instead

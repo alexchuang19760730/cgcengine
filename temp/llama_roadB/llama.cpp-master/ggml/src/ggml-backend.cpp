@@ -1769,6 +1769,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 auto * reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(split_backend));
                 typedef int (*cgc_done_fn)(ggml_backend_t);
                 cgc_done_fn cgc_done = (cgc_done_fn) ggml_backend_reg_get_proc_address(reg, "ggml_metal_get_cgc_done");
+                // blocking wait woken by the Metal completion handler's semaphore (no spin)
+                typedef int (*cgc_wait_fn)(ggml_backend_t, int);
+                cgc_wait_fn cgc_wait = (cgc_wait_fn) ggml_backend_reg_get_proc_address(reg, "ggml_metal_wait_cgc_done");
                 // each graph-compute creates n_cb+1 cmd buffers and cgc_done counts every buffer's
                 // completion, so a segment is "done" only after (n_cb+1) more completions
                 typedef int (*cgc_bufs_fn)(ggml_backend_t);
@@ -1803,7 +1806,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         if (i < n_topk_found) {
                             static int64_t w_us = 0, c_us = 0, n = 0;
                             const int64_t st0 = ggml_time_us();
-                            if (cgc_done) {
+                            if (cgc_wait) {
+                                const int target = done0 + (i + 1) * bufs;
+                                cgc_wait(split_backend, target);
+                            } else if (cgc_done) {
                                 const int target = done0 + (i + 1) * bufs;
                                 while (cgc_done(split_backend) < target) {
                                     sched_yield();
@@ -1864,8 +1870,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     if (i < n_topk_found) {
                         static int64_t w_us = 0, c_us = 0, n = 0;
                         const int64_t st0 = ggml_time_us();
-                        if (cgc_done) {
-                            const int target = done0 + (i + 1) * bufs; // segment i: all n_cb+1 cmd buffers finished
+                        const int target = done0 + (i + 1) * bufs; // segment i: all n_cb+1 cmd buffers finished
+                        if (cgc_wait) {
+                            cgc_wait(split_backend, target);
+                        } else if (cgc_done) {
                             while (cgc_done(split_backend) < target) {
                                 sched_yield();
                             }

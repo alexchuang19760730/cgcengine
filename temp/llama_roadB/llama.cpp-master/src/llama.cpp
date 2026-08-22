@@ -394,6 +394,14 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
                 // region (zero copy — the Metal FFN reads the pool directly). Then mark the first
                 // n_slots experts of every layer resident: their bytes were already pre-read into the
                 // pool during load, so the first accesses are pool hits instead of cold preads.
+                // When a static PIN_PROFILE is present, load it FIRST and fill the pool from the
+                // profile's experts instead of the identity 0..n_slots-1 prefix (a prompt's actual
+                // per-layer union is far smaller than the slot count, so pinning it gives ~100% hit).
+                const char * pin_profile = getenv("LLAMA_EXPERT_CACHE_PIN_PROFILE");
+                if (pin_profile && pin_profile[0]) {
+                    const size_t n_pinned = llama_expert_cache_load_pin_profile(model->expert_cache, pin_profile);
+                    LLAMA_LOG_INFO("%s: expert cache PIN_PROFILE: %zu experts pinned (%s)\n", __func__, n_pinned, pin_profile);
+                }
                 if (model->expert_cache_pool_capacity > 0) {
                     for (const auto & ref : ml.l4_pool_tensors) {
                         if (ref.tensor == nullptr || ref.tensor->data == nullptr) {
@@ -403,19 +411,18 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
                                 ref.layer, ref.kind, (const uint8_t *) ref.tensor->data,
                                 (int64_t) model->expert_cache_pool_capacity, ref.expert_bytes);
                     }
-                    for (const auto & ref : ml.l4_pool_tensors) {
-                        if (ref.kind != 0) {
-                            continue;
+                    if (!model->expert_cache->pin_profile.empty()) {
+                        const size_t n_filled = llama_expert_cache_fill_pin_profile(model->expert_cache);
+                        LLAMA_LOG_INFO("%s: expert cache PIN_PROFILE filled %zu pool slots\n", __func__, n_filled);
+                    } else {
+                        for (const auto & ref : ml.l4_pool_tensors) {
+                            if (ref.kind != 0) {
+                                continue;
+                            }
+                            llama_expert_cache_prepopulate(model->expert_cache, ref.layer,
+                                    (uint32_t) model->expert_cache_pool_capacity);
                         }
-                        llama_expert_cache_prepopulate(model->expert_cache, ref.layer,
-                                (uint32_t) model->expert_cache_pool_capacity);
                     }
-                }
-                // static profile pin (LLAMA_EXPERT_CACHE_PIN_PROFILE)
-                const char * pin_profile = getenv("LLAMA_EXPERT_CACHE_PIN_PROFILE");
-                if (pin_profile && pin_profile[0]) {
-                    const size_t n_pinned = llama_expert_cache_load_pin_profile(model->expert_cache, pin_profile);
-                    LLAMA_LOG_INFO("%s: expert cache PIN_PROFILE: %zu experts pinned (%s)\n", __func__, n_pinned, pin_profile);
                 }
             } else {
                 LLAMA_LOG_WARN("%s: expert cache init failed (budget=%zu, index=%zu)\n",

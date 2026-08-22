@@ -574,6 +574,15 @@ static int ggml_backend_metal_get_cgc_done(ggml_backend_t backend) {
     return ggml_metal_cgc_done(ctx);
 }
 
+// CGC: block until at least `target` segments finished (semaphore wake, no sched_yield spin)
+static int ggml_backend_metal_wait_cgc_done(ggml_backend_t backend, int target) {
+    GGML_ASSERT(ggml_backend_is_metal(backend));
+
+    ggml_metal_t ctx = (ggml_metal_t)backend->context;
+
+    return ggml_metal_wait_cgc_done(ctx, target);
+}
+
 // CGC: number of command buffers per graph-compute (n_cb + 1); see ggml_metal_cgc_bufs
 static int ggml_backend_metal_get_cgc_bufs(ggml_backend_t backend) {
     GGML_ASSERT(ggml_backend_is_metal(backend));
@@ -896,6 +905,9 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const 
     }
     if (strcmp(name, "ggml_metal_get_cgc_done") == 0) {
         return (void *)ggml_backend_metal_get_cgc_done;
+    }
+    if (strcmp(name, "ggml_metal_wait_cgc_done") == 0) {
+        return (void *)ggml_backend_metal_wait_cgc_done;
     }
     if (strcmp(name, "ggml_metal_get_cgc_bufs") == 0) {
         return (void *)ggml_backend_metal_get_cgc_bufs;
