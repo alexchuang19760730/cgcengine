@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CGC Expert-Cache Early Write+Signal (CGC_EARLY) 技術白皮書 2026-08-25</title>
+<style>
+  :root {
+    --bg: #0f1420; --card: #171e2e; --ink: #e8ecf4; --sub: #9aa5b8;
+    --line: #2a3350;
+    --wr: #f0a45c; --small: #e86a6a; --ssm: #d98cf0; --sdpa: #7fb8f0; --bubble: #6b7aa8;
+    --cpu-o: #8a97ad; --tail: #e3cf8f;
+    --accent: #ffd479; --good: #8fe3a0; --warn: #f08a8a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; padding: 32px 20px 60px; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--sub); font-size: 14px; margin-bottom: 28px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px 24px; margin-bottom: 22px; }
+  .card .desc { color: var(--sub); font-size: 13px; margin: 0 0 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--sub); font-weight: 600; font-size: 12px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .hl { color: var(--accent); font-weight: 700; }
+  .good { color: var(--good); font-weight: 700; }
+  .warn { color: var(--warn); font-weight: 700; }
+  .note { font-size: 12.5px; color: var(--sub); margin-top: 12px; line-height: 1.6; }
+  .note b { color: var(--ink); }
+  .review { background: #1a2030; border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; padding: 14px 16px; margin: 12px 0; font-size: 13px; line-height: 1.6; }
+  .review .label { color: var(--accent); font-weight: 700; font-size: 12px; text-transform: uppercase; margin-bottom: 6px; }
+  code { background: #0c1019; border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; color: #7fb8f0; }
+  pre { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; color: #7fb8f0; overflow-x: auto; line-height: 1.5; margin: 12px 0; }
+  .diagram { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 16px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; line-height: 1.6; margin: 12px 0; white-space: pre; overflow-x: auto; }
+  .step-box { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin: 12px 0; font-size: 13px; line-height: 1.6; }
+  .step-box .step-num { color: var(--accent); font-weight: 700; font-size: 14px; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; margin-left: 6px; }
+  .tag.g { background: #1c3a24; color: #8fe3a0; }
+  .tag.r { background: #3a1c1c; color: #f08a8a; }
+  .tag.y { background: #3a321c; color: #e3cf8f; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>CGC Expert-Cache Early Write+Signal (CGC_EARLY) 技術白皮書</h1>
+<div class="sub">llama.cpp fork · M4 Max 16GB · 2026-08-25 · qwen36 IQ3_XXS -ngl 99 + cache 4GiB · commit 4764e0b（b23fb51 之上）</div>
+
+<!-- ============ §1 Executive Summary ============ -->
+<div class="card">
+  <h2>§1 摘要：決策與結果</h2>
+  <p class="desc">前一版（b23fb51 + event gate，CGC_EARLY 之前）的 event gating 淨成本約 <b>5.8 t/s</b>：gate 讓 submit-ahead 的 sched 在每層 <code>poll/wait</code> 序列化，即使 callback body 只剩 touch（~70µs）也拿不回速度。本白皮書決策：<b>Early Write+Signal（CGC_EARLY）</b> — 把 slot_table 寫入與 event signal 提前到 sched「等待 top-k segment 完成」<i>之前</i>，讓 write+signal 藏在仍在執行的 GPU segment 後面。</p>
+
+  <table>
+    <tr><th>指標</th><th>GATE（b23fb51 實測）</th><th>CGC_EARLY（實測）</th><th>NO_EVENT（上限，garbage）</th></tr>
+    <tr><td>Decode speed（255 token 同 prompt）</td><td class="warn">17.75 t/s</td><td class="hl">23.14–23.28 t/s</td><td class="hl">23.47 t/s</td></tr>
+    <tr><td>與上限差距</td><td class="warn">–5.7 t/s</td><td class="good">–0.33 t/s（1.5%）</td><td>—</td></tr>
+    <tr><td>輸出品質</td><td class="good">✅ 正確</td><td class="good">✅ 正確（對齊 -ngl 30 base）</td><td class="warn">❌ Garbage</td></tr>
+    <tr><td>hit rate（同 prompt）</td><td>66.0%</td><td>65.9%</td><td>66.6%</td></tr>
+    <tr><td>prefetch（decode fast path）</td><td>—</td><td class="good">2566 fills（bounded eviction 修復後）</td><td>—</td></tr>
+  </table>
+
+  <p class="note"><b>結論</b>：CGC_EARLY 拿回 event gate 吃掉的大部分效能，與 NO_EVENT 上限只差 <b>0.33 t/s（1.5%）</b>，同時保留正確輸出（NO_EVENT 之所以更快是因為直接丟掉同步 → race → garbage）。這是「<b>要正確性、速度又逼近無 gate 上限</b>」的甜點區。</p>
+</div>
+
+<!-- ============ §2 Root Cause ============ -->
+<div class="card">
+  <h2>§2 根因分析</h2>
+  <p class="desc">兩個獨立問題疊加：<b>(A) event gate 在 GPU critical path</b> 吃掉 ~5.8 t/s；<b>(B) prefetch_union 因 prepopulate 佔滿 slot 而形同 dead code</b>，導致短冷啟動 prompt 的 routed cold experts 全落 ZERO slot、輸出退化。</p>
+
+  <h3>2.1 Event gate 的淨成本</h3>
+  <p>以 <code>llama-simple</code> 同 prompt、同長度（255 token 故事）做乾淨 A/B（t/s 不再被 EOG run-length 污染）：</p>
+  <table>
+    <tr><th>設定</th><th>callback body</th><th>gate</th><th>t/s</th><th>結論</th></tr>
+    <tr><td>NO_EVENT</td><td>有（完整）</td><td class="warn">無（race）</td><td class="hl">25.32–23.47*</td><td>上限，但 garbage</td></tr>
+    <tr><td>CGC_EARLY</td><td>有（touch+union prefetch）</td><td class="good">有（提前 write+signal）</td><td class="hl">23.14</td><td>正確，逼近上限</td></tr>
+    <tr><td>GATE</td><td>有（touch+union prefetch）</td><td>有（post-poll write+signal）</td><td class="warn">17.75</td><td>正確，被 gate 拖慢</td></tr>
+  </table>
+  <p class="note">*NO_EVENT 的 25.32 是較短 run 的測量；255-token 同 prompt 下上限為 23.47。差別是固定開銷攤提，非真實速度差。</p>
+
+  <h3>2.2 為什麼 gate 拖慢：wait 序列化 submit-ahead</h3>
+  <div class="diagram">═══ GATE（壞）：post-poll write + signal ═══
+
+  sched 迴圈（layer i）:
+    poll seg[i]（等 GPU segment 完成 ──── 序列化點）
+        │  GPU 空轉等 CPU callback 寫 slot_table
+    callback: touch + prefetch + 寫 slot_table[i] + signal event(i)
+    submit seg[i+1]（FFN 讀 slot_table[i]）
+  → 每層的 write+signal 都在 GPU 完成「之後」，無法被 GPU 蓋住
+
+═══ CGC_EARLY（修）：pre-poll write + signal ═══
+
+  sched 迴圈（layer i）:
+    callback_eval_pre: 寫 slot_table[i]（快 bump，不 build union/touch/pf）
+        │  signal event(i)
+    poll seg[i]（等 GPU segment 完成 ── write+signal 已提前藏好）
+        │  GPU 這 810µs 期間 write+signal 已做完
+    callback (post-poll): touch + union prefetch（slot_table 寫入被抑制）
+    submit seg[i+1]
+  → write+signal 藏在執行中的 GPU segment 後面，gate 氣泡消失</div>
+
+  <h3>2.3 為何「callback 只做 2.3µs」仍慢：gate 機制本身</h3>
+  <table>
+    <tr><th>對照實驗</th><th>結果</th><th>判讀</th></tr>
+    <tr><td>SPIN 100µs（callback 內空轉）</td><td class="warn">19.59 → 11.07 t/s（砍半）</td><td>callback 確實在 critical path</td></tr>
+    <tr><td>TESTNOOP（cbE=101µs）vs SKIPFAST（cbE=4.3µs）</td><td>兩者 t/s 幾乎相同（~20.5）</td><td>cbE 的 100µs 與 t/s 無關，另有其因</td></tr>
+    <tr><td>CBEMPTY（gate、無 callback）vs NO_EVENT</td><td class="hl">21.54 vs 25.32</td><td class="hl">gate 淨成本 ~5.8 t/s，是絕對主因</td></tr>
+    <tr><td>SKIPSLOTTAB / NO_TOUCH / NO_PREFETCH</td><td>19.80 / 19.37 / 19.98</td><td>callback body 只佔 ~1 t/s；touch 對速度有正貢獻</td></tr>
+  </table>
+
+  <h3>2.4 次要根因：prefetch_union 形同 dead code</h3>
+  <p>L4 load 時 <code>llama_expert_cache_prepopulate</code> 把每層前 <code>capacity–1</code> 個 slot 標成 <code>slot_owner=expert</code>（表已「resident」）——<b>所有 slot 都被佔住 → free-scan 找到 0 free slots → prefetch_union 永遠 queue 0</b>。而 <code>n_expert=256 &gt; pool capacity=174</code>，routed cold experts（≥174）在 decode fast path 無任何填補路徑，全被 map 到 ZERO slot。單 token prompt（無 prefill 可 prewarm）時 FFN 8 個 expert 中 3 個貢獻 0 → 輸出退化（<code>"The The The"</code>）。CGC_ROUTEDBG 實證：<code>route=43->43 57->57 ... 181->-1 200->-1 238->-1</code>。</p>
+</div>
+
+<!-- ============ §3 Solution ============ -->
+<div class="card">
+  <h2>§3 方案</h2>
+
+  <h3>3.1 Early Write+Signal（CGC_EARLY，ggml-backend.cpp + llama-context.cpp）</h3>
+  <div class="step-box">
+    <p><span class="step-num">sched 端</span> — dispatch 迴圈在 <code>topk_idx[i]</code> 處、poll/wait 之前：</p>
+    <pre>if (cgc_early && sched-&gt;callback_eval_pre && !cgc_no_event) {
+    sched-&gt;callback_eval_pre(ttopk, false, sched-&gt;callback_eval_pre_user_data);
+    signal_ev(split_backend, i);   // write + signal 提前
+}
+// ... poll seg[i]（等 GPU）...
+if (!cgc_no_event &amp;&amp; !cgc_early) { signal_ev(split_backend, i); } // GATE 才在此 signal</pre>
+    <p><span class="step-num">hook 端</span> — 新增 <code>expert_cache_on_topk_pre</code>：只寫 layer i 的 slot_table（快 bump，無 union build / touch / prefetch），讀 host 端 <code>slot_table</code> 把 cold → ZERO slot；主 hook 在 <code>CGC_EARLY</code> 下抑制 slot_table 寫入（只留 touch + union prefetch）。</p>
+    <p><span class="step-num">正確性</span> — event gate 仍保證 write-before-read：seg[i] 的 FFN 以 <code>waitForEvent(event(i))</code> 等到 slot_table 寫完才執行。只是寫入時機從「GPU 完成後」提前到「等待前」，被執行中的 GPU segment 蓋住。</p>
+  </div>
+
+  <h3>3.2 prefetch_union bounded LRU eviction（llama-expert-cache.cpp）</h3>
+  <div class="step-box">
+    <ul>
+      <li>先數 routed cold members（<code>table[e] &lt; 0</code>）——<b>只 queue 當步 routed 的 cold experts，絕不 over-prefetch 預測</b>。</li>
+      <li>free slots 不足時，逐出「最舊、非當步 union 成員、非 ZERO / pinned / queued / in-flight」的 slot，<b>只補足 shortfall</b>（bounded）。</li>
+      <li>逐出同步釋放 <code>slot_table[evicted] = -1</code>，後續 pre-callback 寫入即把該 expert map 回 ZERO 直到重填。</li>
+      <li>修復後 decode fast path prefetch 從 0 → <b>2566 fills</b>，bg thread 在 decode 中積極 fill cold experts（fill_batch_usec=2.3s），速度不變。</li>
+    </ul>
+  </div>
+
+  <h3>3.3 為何早寫安全（與 GATE 的語意差異）</h3>
+  <p>GATE 的 slot_table 反映「seg[i] 完成瞬間」的 residency；EARLY 反映「seg[i] 開始前」的 residency。差別只在 seg[i] 執行期間 bg fill 是否 landing——但該 fill 無論如何要等下一次 pre-callback 才會進 slot_table，因此 EARLY 只是把「這一步該用什麼表」的決定點稍微提前，並不會讀到半填的 slot（event gate 保證）。</p>
+</div>
+
+<!-- ============ §4 Design Decisions ============ -->
+<div class="card">
+  <h2>§4 設計決策</h2>
+  <table>
+    <tr><th>決策點</th><th>選擇</th><th>理由</th></tr>
+    <tr><td>slot_table 寫入時機</td><td class="good">pre-poll（EARLY）</td><td>藏在 GPU segment 後；GATE 的 post-poll 序列化 submit-ahead</td></tr>
+    <tr><td>pre 與 post callback 分工</td><td>pre 只寫表；post 只 touch+prefetch</td><td>pre 快 bump（~µs），無需 union build / lock 掃描</td></tr>
+    <tr><td>event gate 去留</td><td class="good">保留</td><td>保證 write-before-read；NO_EVENT 雖快 0.33 t/s 但 garbage</td></tr>
+    <tr><td>prefetch 逐出策略</td><td class="good">bounded LRU（只補當步 cold shortfall）</td><td>全量 LRU 逐出 = over-prefetch（先前 batch 版 18.93 t/s）；無逐出 = dead code（free=0）</td></tr>
+    <tr><td>cold expert 的 FFN 值</td><td>ZERO slot（保留 slot，zero-init）</td><td>bounded、self-correcting；比 garbage 好、比同步 pread 快</td></tr>
+    <tr><td>pool capacity &lt; n_expert</td><td>接受（174 &lt; 256）</td><td>低記憶體機型；cold experts 由 union prefetch 逐步填補</td></tr>
+  </table>
+</div>
+
+<!-- ============ §5 Implementation ============ -->
+<div class="card">
+  <h2>§5 實作</h2>
+  <table>
+    <tr><th>檔案</th><th>變更</th></tr>
+    <tr><td>ggml/include/ggml-backend.h</td><td>宣告 <code>ggml_backend_sched_set_eval_callback_pre</code></td></tr>
+    <tr><td>ggml/src/ggml-backend.cpp</td><td>pre-callback 欄位 + setter；dispatch 迴圈在 poll 前呼叫 pre + signal</td></tr>
+    <tr><td>src/llama-context.h / .cpp</td><td><code>expert_cache_on_topk_pre</code> + <code>expert_cache_eval_cb_pre</code> wrapper；主 hook 在 EARLY 下抑制 slot_table 寫入</td></tr>
+    <tr><td>src/llama-expert-cache.cpp / .h</td><td>prefetch_union 改 bounded LRU eviction（count cold → scan free → evict shortfall → queue）</td></tr>
+    <tr><td>ggml-metal*</td><td>MTLSharedEvent gating 支援（既有，本版沿用）</td></tr>
+  </table>
+  <p class="note">診斷開關（沿用 CGC_* 慣例）：<code>CGC_EARLY</code>、<code>CGC_PFDBG</code>（prefetch 內部 guard/free/nqueued）、<code>CGC_ROUTEDBG</code>（layer0 routed expert→slot dump）、<code>CGC_NO_EVENT</code>（丟 gate，量上限）。</p>
+</div>
+
+<!-- ============ §6 Performance ============ -->
+<div class="card">
+  <h2>§6 效能（2026-08-25 實測）</h2>
+
+  <h3>6.1 255-token 長跑 A/B（同 prompt、同長度、同 hit rate，無 EOG 污染）</h3>
+  <table>
+    <tr><th>設定</th><th>t/s</th><th>hit%</th><th>輸出</th></tr>
+    <tr><td>GATE</td><td class="num warn">17.75</td><td class="num">66.0</td><td class="good">正確</td></tr>
+    <tr><td class="hl">CGC_EARLY</td><td class="num hl">23.14–23.28</td><td class="num">65.9</td><td class="good">正確（對齊 base）</td></tr>
+    <tr><td>NO_EVENT</td><td class="num hl">23.47</td><td class="num">66.6</td><td class="warn">Garbage</td></tr>
+  </table>
+
+  <h3>6.2 短冷啟動 prompt（"The"，1 token 無 prefill）</h3>
+  <table>
+    <tr><th>版本</th><th>prefetch</th><th>file_reads</th><th>t/s</th><th>輸出</th></tr>
+    <tr><td>修復前（free=0）</td><td class="num warn">0</td><td class="num">1623</td><td class="num">22.86</td><td class="warn">"The The The"（3/8 expert ZERO）</td></tr>
+    <tr><td class="good">修復後（bounded eviction）</td><td class="num good">450→2566</td><td class="num">1350→12165</td><td class="num">25.08→22.84</td><td class="good">與 -ngl 30 base 相同（base 也退化）</td></tr>
+  </table>
+  <p class="note">關鍵：<code>"The" → "The The The"</code> 是 <b>model 對單 token prompt 的真實 greedy 輸出</b>（-ngl 30 base 完全一致），非 cache 的 bug；"The capital of France is" → "Paris" 與 base 一致；255-token story 與 base 結構一致（coherent，僅 pool residency timing 造成小幅 run-to-run 差異）。</p>
+
+  <h3>6.3 callback body 成本分解（前期量測）</h3>
+  <table>
+    <tr><th>成分</th><th>成本</th><th>處置</th></tr>
+    <tr><td>per-expert prefetch loop</td><td class="num">~210µs/layer（→ on_topk 210µs）</td><td class="good">union batch 一次 lock/scan → on_topk 74µs</td></tr>
+    <tr><td>touch</td><td class="num">~70µs/layer</td><td>保留（移除反而更慢 19.39）</td></tr>
+    <tr><td>event gate 本身</td><td class="num">~5.8 t/s</td><td class="good">CGC_EARLY 藏入 GPU segment</td></tr>
+  </table>
+</div>
+
+<!-- ============ §7 Risks ============ -->
+<div class="card">
+  <h2>§7 風險評估</h2>
+  <table>
+    <tr><th>風險</th><th>機率</th><th>影響</th><th>緩解</th></tr>
+    <tr><td>EARLY 表快照較早 → 冷 experts 多一步 ZERO（首 token 品質）</td><td>低</td><td>低</td><td>pre-callback 只延後 1 步；union prefetch 補填；event gate 保證不讀半填</td></tr>
+    <tr><td>bounded eviction 逐出近期熱 expert</td><td>低</td><td>中（hit rate 微降）</td><td>只逐出「非當步 union」最舊 slot；當步 routed 永不逐出</td></tr>
+    <tr><td>prefetch 增加 bg 讀取 → 記憶體/磁碟壓力</td><td>中</td><td>低</td><td>只 queue 當步 cold members，量 bounded</td></tr>
+    <tr><td>run-to-run 輸出 nondeterminism（pool residency timing）</td><td>中</td><td>低</td><td>輸出恆為合法（coherent / 與 base 同退化），非 garbage</td></tr>
+    <tr><td>llama-bench 無法跑 CGC path（load 後卡 Metal init）</td><td>高</td><td>中（量測）</td><td>改用 llama-simple + 長非-EOG prompt 量穩態</td></tr>
+  </table>
+</div>
+
+<!-- ============ §8 Comparison ============ -->
+<div class="card">
+  <h2>§8 方案對照</h2>
+  <table>
+    <tr><th>設計點</th><th>NO_EVENT（丟 gate）</th><th>GATE（post-poll write）</th><th class="hl">CGC_EARLY（採用）</th></tr>
+    <tr><td>slot_table 寫入</td><td>—</td><td>GPU 完成後</td><td class="good">等待前（藏入 GPU）</td></tr>
+    <tr><td>event gate</td><td class="warn">無（race）</td><td>有</td><td class="good">有（write-before-read 保證）</td></tr>
+    <tr><td>255-token t/s</td><td>23.47</td><td>17.75</td><td class="good">23.14</td></tr>
+    <tr><td>輸出</td><td class="warn">❌ Garbage</td><td class="good">✅</td><td class="good">✅ 對齊 base</td></tr>
+    <tr><td>prefetch 有效性</td><td>—</td><td>union batch</td><td class="good">union batch + bounded eviction（2566 fills）</td></tr>
+    <tr><td>改動量</td><td>小（危險）</td><td>小</td><td>小–中（sched pre-callback + hook pre）</td></tr>
+  </table>
+  <p class="note"><b>結論</b>：CGC_EARLY 同時滿足「正確性」與「逼近無 gate 上限」。剩下 0.33 t/s 的差距來自 gate 的最小同步成本，若要全拿需冒 race 風險，不值得。</p>
+</div>
+
+<!-- ============ §9 Action Items ============ -->
+<div class="card">
+  <h2>§9 下一步行動</h2>
+  <table>
+    <tr><th>#</th><th>行動</th><th>說明</th></tr>
+    <tr><td>1</td><td>長生成（&gt;1000 token）穩態量測</td><td>hit rate 上升後 prefetch 成本下降，確認極限 t/s</td></tr>
+    <tr><td>2</td><td>GATE 的 story run-to-run nondeterminism 對照</td><td>確認是否 CGC_EARLY 特有或既有 pool race</td></tr>
+    <tr><td>3</td><td>single-token 短 turn 的 cold-start 品質回歸</td><td>bounded eviction 對首步 ZERO 的影響</td></tr>
+    <tr><td>4</td><td>llama-bench CGC path 卡 Metal init 調查</td><td>若可修，則有標準 A/B harness</td></tr>
+  </table>
+</div>
+
+<p class="sub" style="margin-top:24px">實測基線：2026-08-25，llama-simple（greedy），Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf，-ngl 99 + expert cache 4GiB + L4_SKIP_LAYER0，-t 8，CGC_OA_ASYNC + CGC_N_CB=8 + CGC_GLU_FUSED_DOWN。255-token story prompt 同 prompt/長度/hit 對照 GATE / CGC_EARLY / NO_EVENT；正確性以 -ngl 30 base 為基準。先前 commit：b23fb51（gate 基線）、4764e0b（本版）。</p>
+
+</div>
+</body>
+</html>
