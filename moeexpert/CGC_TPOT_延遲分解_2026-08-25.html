@@ -476,6 +476,32 @@
   <p class="note"><b>production script 對照（./scripts/run_n30cache.sh -m qwen36 --mtp --seed 42, n=120）</b>：baseline <b>24.597 t/s</b> → <code>--mtp-early-verify</code> <b>26.976 t/s（+9.7%）</b>。accept 未退化（88.3→91.4%）。新增 option：<code>--mtp-early-verify</code> / <code>N30CACHE_MTP_EARLY_VERIFY=1</code>（自動開 CGC_EARLY=1），預設 off。</p>
 
   <p class="note"><b>判定</b>：這是 §⑪ 缺的「verify 側」真正可挖的 ~8-11ms（graph/packing 層，event-gating 序列化）。與 §⑧ 結論「藏已歸零」不衝突——那是 blk.40/CPU 側；verify 的 event-gating 是 <b>GPU 閒置</b>（wait→hook→signal 串行時 GPU 等 CPU），不是可藏的 CPU 時間，是可修的 GPU bubble。<b>新天花板：step ≈ 114.8 − ~8 = ~107ms → ~27-28 t/s</b>（本頁實測 26.98）。輸出非 bit-identical（GATE vs early 臂），但 within-arm 確定性；如需 bit-identical 生產，可保持預設 off。</p>
+
+  <p class="note"><b>疊加 #3 head IQ2（Q6_K → IQ2_S output.weight）實測（n=200, seed 42, production script）</b>：early-verify 之上再疊 <code>--head-iq2</code>（headIQ2 model 檔）——</p>
+  <table>
+    <tr><th>臂</th><th class="num">decoded t/s</th><th class="num">vs 前臂</th><th class="num">accept</th><th>輸出</th></tr>
+    <tr><td>early-verify + Q6_K head</td><td class="num">27.47–27.62</td><td class="num">—</td><td class="num">96.4%</td><td rowspan="2">非 bit-identical（md5 1522ecb3 vs 12adbc0d）</td></tr>
+    <tr><td><b>early-verify + head IQ2</b></td><td class="num"><b>28.92</b></td><td class="num"><b>+5.3%</b></td><td class="num">97.1%（無損）</td></tr>
+  </table>
+  <p class="note"><b>判定：#3 head IQ2 疊 early-verify 只 +5.3%，不是預期的 +15%</b>——early-verify 已把 verify 縮到 ~78ms，head read 佔比變小 → marginal 收益被稀釋（p3b 早期在更慢的 verify 上測到 +12%）。28.9 t/s 離 30 差 ~4%（34.6 vs 33.3ms/token，需再省 ~1.3ms/token）。破 30 需再找 ~5-6ms/step：剩餘有界路徑是 <b>trunk FFN IQ2_XXS</b>（§⑪ 估 ~6ms，但 35B-A3B 全 FFN 低 bit 品質風險高、A/B 待做）或 head 再降 IQ1_S（需 imatrix）。</p>
+</div>
+
+<!-- ============ 14. bit-identity 分水嶺（2026-08-25） ============ -->
+<div class="card">
+  <h2>⑭ 「輸出非 bit-identical」分水嶺：從 MTP 轉正（CGC_VERIFY_DECODE=1）開始，非新壞點</h2>
+  <p class="desc">本頁多處寫「輸出非 bit-identical」，需拆成三個層次講清楚「對誰不 identical」與「從哪一版開始」——避免把 early-verify / head IQ2 誤判為新的品質壞點。源頭證據：llama-context.cpp hook 註解（「Default (unset) keeps the exact-load path so prefill / draft / verify stay bit-exact」→「Verify target logits become ZERO-approximated for cold routed experts… so its h_nextn degrades slightly」）。</p>
+
+  <table>
+    <tr><th>版本（commit）</th><th>verify 路徑</th><th>對 bit-exact/base 是否 identical</th><th>run-to-run</th></tr>
+    <tr><td>MTP 轉正前（exact-load）</td><td><code>ensure_batch/drain</code> 真權重</td><td><span class="tag g">✅ bit-exact</span>（13.85 t/s）</td><td class="num">✅</td></tr>
+    <tr><td><b>CGC_VERIFY_DECODE=1（8c5a036，MTP 轉正）</b></td><td>decode fast-path，<b>冷 experts → ZERO-slot</b></td><td><span class="tag r">❌ <b>分水嶺，從這裡開始</b></span>：verify 對冷 routed experts 用 ZERO 常數 bytes → h_nextn 偏離 base → accept 97.8→95.7%、輸出不再 = base（省 ~60ms/step 同步 pread 的已知取捨）</td><td class="num">✅ 確定性</td></tr>
+    <tr><td>+CGC_DRAFT_DECODE（119fa5a）</td><td>draft 也 touch-only</td><td><span class="tag r">❌</span> 同上（非 identical 狀態不變）</td><td class="num">✅</td></tr>
+    <tr><td><code>--mtp-top4</code>（16ba18e）</td><td>draft-only 8→4</td><td><span class="tag g">✅ 兩臂仍 bit-identical</span>（verify 是 trunk-greedy gate，draft 品質差被蓋掉，不影響最終文字）</td><td class="num">✅</td></tr>
+    <tr><td><code>--mtp-early-verify</code>（beed1a6）</td><td>verify early table write</td><td><span class="tag r">❌</span> 且<b>與 GATE 臂不同</b>（early 在 pool state 早一點時間點寫 table → timing 依賴）</td><td class="num">✅ 同臂確定</td></tr>
+    <tr><td><code>--head-iq2</code></td><td><b>model 權重</b> output.weight Q6_K→IQ2_S</td><td><span class="tag r">❌</span> 必然不同（model 層級改變，不是 runtime 行為）</td><td class="num">✅</td></tr>
+  </table>
+
+  <p class="note"><b>三層「bit-identity」別混</b>：① <b>對 base greedy</b>——分水嶺是 <code>CGC_VERIFY_DECODE=1</code>（8c5a036「MTP 轉正」），它刻意把 verify 從 exact-load 換成 ZERO-slot decode fast-path 換速度，代價是 h_nextn 不再等於 base（source 註解明寫 "h_nextn degrades slightly -> accept may drop"），這是 <b>刻意的、已知的</b>；② <b>同配置 run-to-run</b>——每一版都維持（touch+ZERO-slot 確定性，md5 相同）；③ <b>arm vs arm</b>（GATE vs EARLY / Q6_K vs IQ2）——不同配置本來就該不同。<b>結論：early-verify 與 head IQ2 是在「MTP 轉正」已非 identical 的基線上又改變輸出，不是新的品質壞點</b>（accept 均驗證無損：96.4→97.1%）。</p>
 </div>
 
 </div>
