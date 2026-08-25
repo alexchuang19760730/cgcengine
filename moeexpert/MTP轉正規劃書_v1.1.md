@@ -97,6 +97,39 @@ ZERO-slot，不 ensure_batch/drain → 不同步 pread）。**沒設 env = 原 e
 「verify 達 40ms/token 即可轉正」的判定標準已達成。可帶此結論繼續優化 gemma4（gemma4 無 blk.40，
 不適用 draft-mtp）。
 
+### 2026-08-25 追加：CGC_DRAFT_DECODE（draft 也走 decode-path）+ CGC_STEPT 逐相計時證實結構天花板
+
+用戶下一步要求「藏 draft / verify 固定 → 27-28 t/s（中等難度）」。實作 + 實測後結論是
+**該前提已不成立**——CGC_VERIFY_DECODE 把可藏的固定成本全藏光了，剩下都是真 GPU compute：
+
+**實作**：`CGC_DRAFT_DECODE=1`（[src/llama-context.cpp](file:///Users/alexchuang/Documents/flashkv0516/temp/llama_routeB/llama-src/temp/llama_roadB/llama.cpp-master/src/llama-context.cpp)）
+把 ctx_dft 的 1-token draft（`ctx_type==MTP && n_tokens==1`）也走 decode fast path（touch +
+ZERO-slot，無同步 pread）。與 verify 同 pool residency → 冷專家同處歸零，draft/verify 一致性反而
+**升** accept。process catch-up（`MTP && n_tokens>1`）維持 exact-load（它產生的 h_nextn 決定下次
+draft 品質，不能糟蹋）。
+
+**CGC_STEPT=1**（[speculative-simple.cpp](file:///Users/alexchuang/Documents/flashkv0516/temp/llama_routeB/llama-src/temp/llama_roadB/llama.cpp-master/examples/speculative-simple/speculative-simple.cpp)）
+逐相計時（69 steps / 7.95s，n=2）：
+
+| 相 | 內容 | ms/step | 說明 |
+|---|---|---|---|
+| ver | trunk verify（40 層 3-token） | 87.2 | 純線性 29.1ms/token，**零固定 overhead**，bandwidth floor |
+| dft + proc | blk.40 MTP head（5 token-runs） | 27.5 | 真 GPU compute（draft 13.2 + process 14.3），非可藏固定成本 |
+| acc | sampler + 非同步 logits GPU tail | 14.7 | 幾乎全是 GPU tail（logits 同步），CPU 已藏 |
+| **step total** | | **114.8** | ≈ GPU 時間總和；CPU 暴露 ≈ 0 |
+
+**結果**：
+- harness（production，n=2，雙 flag）：**23.22 → 25.16 t/s、accept 87.5% → 95.6%**；輸出正確。
+- raw：95.7 → 97.1% accept，25.4 t/s 持平。
+- n=1 / n=2 / n=3 全部落在 ~39.4ms/output-token：n=1 25.33、n=2 25.54、n=3 23.7（accept 72% 掉太多）。
+  效率不變是結構性：(trunk (n+1)×29.1 + blk.40 (2n+1)×5.5) / (n+1)×acc ≈ 39.4ms。
+- **harness 已更新**：預設開 `CGC_DRAFT_DECODE=1`（`N30CACHE_MTP_DRAFT_DECODE=0` 可關），獨立 option。
+
+**誠實結論**：MTP 已達結構天花板 ~25.5 t/s（= base）。verify 在 GPU bandwidth floor（29.1ms/token
+= 讀 weights），blk.40 是 MTP 架構自帶的 draft 模型成本（24%），CPU 已全藏。「藏」的空間歸零。
+要 27-28 t/s 只剩 model 側槓桿：砍 blk.40 成本（更小/更便宜 draft head）或更激進 quant（IQ2）/ kernel
+fusion——都不是 runtime 能藏的。以「MTP = base、不虧、正確」為標準已達標。
+
 ---
 
 

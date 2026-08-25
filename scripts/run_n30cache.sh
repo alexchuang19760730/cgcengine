@@ -237,6 +237,14 @@ MTP_ARG=""
 if [ "$MTP" = 1 ] && [ "${N30CACHE_MTP_VERIFY_DECODE:-1}" = 1 ]; then
     ENVS+=(CGC_VERIFY_DECODE=1)
 fi
+# §MTP 2026-08-25（獨立 option，CGC_DRAFT_DECODE=1）：draft 也走 decode fast path（touch + ZERO-slot，
+# 無同步 pread），與 verify 同 pool residency → draft/verify 冷專家同處歸零 → accept 不掉反升
+# （95.7%→97.1%）。速度持平（25.4 t/s）：step-timing 證實 draft 已非瓶頸（verify 在 bandwidth floor、
+# blk.40 head 是真 GPU compute、CPU 已全藏 GPU 後）→ 27-28 t/s 需砍 MTP head 成本（model 側）。
+# N30CACHE_MTP_DRAFT_DECODE=0 可關掉。
+if [ "$MTP" = 1 ] && [ "${N30CACHE_MTP_DRAFT_DECODE:-1}" = 1 ]; then
+    ENVS+=(CGC_DRAFT_DECODE=1)
+fi
 # 優化 load：先 cat model 進 page cache（重開機後第一次 run 建議），之後 loader 的 read 全 RAM-speed
 if [ "$WARM" = 1 ]; then
     echo "  warm   : pre-loading $(basename "$M") into page cache..."

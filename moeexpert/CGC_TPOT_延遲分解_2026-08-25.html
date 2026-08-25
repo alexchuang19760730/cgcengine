@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CGC TPOT 延遲分解（MTP 轉正版）2026-08-25 · MTP n=2 25.39 t/s</title>
+<title>CGC TPOT 延遲分解（MTP 轉正版）2026-08-25 · MTP n=2 25.2 t/s（step-timing 證實結構天花板）</title>
 <style>
   :root {
     --bg: #0f1420; --card: #171e2e; --ink: #e8ecf4; --sub: #9aa5b8;
@@ -66,16 +66,17 @@
 <div class="wrap">
 
 <h1>CGC · MTP TPOT 端到端延遲分解（長條圖）</h1>
-<div class="sub">llama.cpp fork · M4 Max 16GB · 2026-08-25 · Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS · cache 4GiB · CGC_VERIFY_DECODE=1 · MTP n=2 → <b class="hl">25.39 t/s</b>（= base decode）</div>
+<div class="sub">llama.cpp fork · M4 Max 16GB · 2026-08-25 · Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS · cache 4GiB · CGC_VERIFY_DECODE=1 + CGC_DRAFT_DECODE=1 · MTP n=2 → <b class="hl">25.2 t/s</b>（= base decode）</div>
 
-<!-- ============ 1. MTP verify 延遲分解 ============ -->
+<!-- ============ 1. MTP step 延遲分解（CGC_STEPT 實測） ============ -->
 <div class="card">
-  <h2>① MTP verify step（3-token batch）延遲分解：CGC_VERIFY_DECODE 前後</h2>
-  <p class="desc">verify = 40 層 trunk decode × <b>3-token batch</b>（id_last 重算 + 2 個 draft）。不是「40 層單 token」——這就是 base 39.8ms 但 verify 要 103-192ms 的原因。n=1 vs n=2 step 差 → <b>verify = 固定 overhead/step + 線性 per-token FFN</b>。</p>
+  <h2>① MTP n=2 step 延遲分解（CGC_STEPT 逐相實測，69 steps / 7.95s）</h2>
+  <p class="desc">step-timer（CGC_STEPT=1）把每步切成 dft / ver / proc / acc 四相。關鍵：<b>verify 是純線性（87.2ms/3 = 29.1ms/token，無固定 overhead）</b>；draft+process 是 blk.40（MTP head）真 GPU compute（~5.5ms/token）；CPU 已全藏在 GPU 後（acc 的 14.7ms 幾乎都是非同步 logits 的 GPU tail，不是 CPU）。</p>
 
   <div class="legend">
-    <span><i class="sw" style="background:var(--ffn)"></i>FFN（GPU bandwidth，weight reads）</span>
-    <span><i class="sw" style="background:var(--fixed)"></i>固定 overhead（sync pread + slot_table remap + graph build）</span>
+    <span><i class="sw" style="background:var(--ffn)"></i>trunk verify（40 層，3-token，GPU bandwidth-bound）</span>
+    <span><i class="sw" style="background:var(--draft)"></i>blk.40 draft+process（MTP head，1 層，5 token-runs）</span>
+    <span><i class="sw" style="background:var(--small)"></i>acc（sampler + 非同步 logits GPU tail）</span>
   </div>
 
   <div class="barwrap">
@@ -91,18 +92,18 @@
 
   <div class="barwrap">
     <div class="barrow">
-      <div class="barlabel">MTP n=2 verify step（CGC_VERIFY_DECODE，轉正後）<small>106ms/step = 35.44ms/token · 25.39 t/s · pread 6.9M usec（-73%）</small></div>
+      <div class="barlabel">MTP n=2 step（CGC_VERIFY_DECODE + CGC_DRAFT_DECODE，轉正後）<small>114.8ms/step · 25.2-25.4 t/s · step-timer 實測</small></div>
       <div class="bar">
-        <div class="seg" style="width:87.5%;background:var(--ffn)" title="FFN 92.7ms：純 weight reads，3-token batch 共享 experts → 30.9ms/token（無 pread wait）">FFN 92.7</div>
-        <div class="seg" style="width:12.8%;background:var(--fixed)" title="固定 13.6ms/step：殘餘（draft exact pread + remap + graph build）">固定 13.6</div>
+        <div class="seg" style="width:76%;background:var(--ffn)" title="trunk verify 87.2ms：3-token × 29.1ms/token，純 weight reads，GPU bandwidth floor">verify 87.2</div>
+        <div class="seg" style="width:24%;background:var(--draft)" title="blk.40 MTP head 27.5ms：process catch-up 3 runs（14.3ms）+ draft 2 runs（13.2ms）——真 GPU compute，非可藏的固定成本">blk.40 27.5</div>
       </div>
     </div>
   </div>
-  <div class="total">106ms/step</div>
+  <div class="total">114.8ms/step（≈ GPU 時間總和；CPU 已全藏）</div>
 
   <div class="barwrap">
     <div class="barrow">
-      <div class="barlabel">對比：base 單 token decode（graft）<small>39.79ms/token · 25.13 t/s</small></div>
+      <div class="barlabel">對比：base 單 token decode<small>39.8ms/token · 25.1 t/s</small></div>
       <div class="bar">
         <div class="seg" style="width:100%;background:var(--ffn2)" title="單 token 全 40 層 weight reads + attn/SSM/head">39.8</div>
       </div>
@@ -110,32 +111,30 @@
   </div>
   <div class="total">39.8ms/step</div>
 
-  <p class="note"><b>拆解結論</b>：CGC_VERIFY_DECODE 把 verify 的同步 pread 藏掉/省掉——<b>固定 overhead 58.7→13.6ms/step（-77%）</b>，且 per-token 也從 44.5→30.9ms（exact 路徑每 token 還在等 pread，decode 路徑純 compute）。<b>3-token batch 的 marginal FFN 30.9ms/token &lt; base 單 token 39.8ms</b>——batch 共享 experts + 攤薄固定成本，MTP 的 FFN 反而比單 token decode 便宜（overlap 效益）。</p>
+  <p class="note"><b>拆解結論（推翻前版「固定 13.6ms/step」）</b>：CGC_VERIFY_DECODE 已把同步 pread 全藏掉 → verify 現在是<b>純線性 29.1ms/token、零固定 overhead</b>（87.2ms/3，bandwidth floor）。剩下每步的非 verify 是 <b>blk.40 MTP head 真 GPU compute 27.5ms</b>（5 token-runs × 5.5ms）——不是可藏的固定成本，是 MTP 架構自帶的 draft/verify 模型成本。<b>有效 39.4ms/token = (3×29.1 + 5×5.5) / 2.9 output</b>，與 n=1（39.2）n=3（~41）一致 → 結構天花板。</p>
 </div>
 
 <!-- ============ 2. 每 token 成本歸因 ============ -->
 <div class="card">
-  <h2>② MTP n=2 每 token 成本歸因（39.4ms/token effective）</h2>
-  <p class="desc">有效 25.39 t/s = 39.4ms/token。其中 FFN（GPU bandwidth）佔 78%，其餘 22% 是可藏/可省的 overhead。</p>
+  <h2>② MTP n=2 每 output token 成本歸因（39.4ms/token effective，step-timer 實測）</h2>
+  <p class="desc">有效 25.2 t/s = 39.4ms/output-token。trunk verify（GPU bandwidth）佔 76%，blk.40 MTP head 佔 24%——<b>兩者都是真 GPU compute，無可藏的固定成本</b>。</p>
 
   <div class="legend">
-    <span><i class="sw" style="background:var(--ffn)"></i>FFN weight reads 30.9ms（78%）</span>
-    <span><i class="sw" style="background:var(--draft)"></i>draft + sampler + KV + driver ~3.9ms（10%）</span>
-    <span><i class="sw" style="background:var(--fixed)"></i>verify 固定 / prefill 攤薄 ~4.6ms（12%）</span>
+    <span><i class="sw" style="background:var(--ffn)"></i>trunk verify 30.1ms（76%，bandwidth floor，不可省）</span>
+    <span><i class="sw" style="background:var(--draft)"></i>blk.40 head 9.5ms（24%，draft+process，真 GPU compute）</span>
   </div>
 
   <div class="barwrap">
     <div class="barrow">
-      <div class="barlabel">MTP n=2 每 token（25.39 t/s）<small>39.4ms/token</small></div>
+      <div class="barlabel">MTP n=2 每 output token（25.2 t/s）<small>39.4ms/token</small></div>
       <div class="bar">
-        <div class="seg" style="width:78.5%;background:var(--ffn)" title="FFN 30.9ms：GPU bandwidth-bound（讀 routed experts weights），不可省">FFN 30.9</div>
-        <div class="seg" style="width:9.8%;background:var(--draft)" title="draft ~3.9ms：1-2 個 1-layer draft decode + process catch-up + sampler + KV">3.9</div>
-        <div class="seg" style="width:11.7%;background:var(--fixed)" title="verify 固定 + prefill 攤薄 ~4.6ms">4.6</div>
+        <div class="seg" style="width:76%;background:var(--ffn)" title="trunk verify 30.1ms：40 層 weight reads，GPU bandwidth-bound，不可省">verify 30.1</div>
+        <div class="seg" style="width:24%;background:var(--draft)" title="blk.40 head 9.5ms：5 token-runs × 5.5ms / 2.9 output——MTP head 是 A3B 全層，真 GPU compute">blk.40 9.5</div>
       </div>
     </div>
   </div>
 
-  <p class="note"><b>剩餘可動的只有 8.5ms/token（22%）</b>：draft 3.9ms + verify 固定 4.6ms。FFN 30.9ms 是 GPU bandwidth 地板（必須讀 weights）。若能全藏 → <b>~32 t/s</b>；藏一半 → <b>~28.5 t/s</b>（逼近單 token 的「kernel floor」28.6）。</p>
+  <p class="note"><b>CGC_STEPT 證實</b>：dft+proc+acc 三相的 wall time（13.2+14.3+14.7=42.2ms/step）疊加已超 total——三相在<b>非同步 dispatch 下與 GPU 重疊</b>，實際 CPU 暴露 ≈ 0。<b>沒有可藏的 CPU 時間。</b>剩餘唯一可動的是 blk.40 的 9.5ms/token（24%），但那要砍 MTP head 成本（model 側：更小/更便宜的 draft head），不是 runtime 可藏的。</p>
 </div>
 
 <!-- ============ 3. 瓶頸分類 ============ -->
@@ -175,39 +174,44 @@
 
 <!-- ============ 4. 剩餘槓桿（藏/省） ============ -->
 <div class="card">
-  <h2>④ 剩餘槓桿：還有哪些可以藏、可以省</h2>
-  <p class="desc">轉正後 MTP = base（25.4 t/s）。剩餘可動的是「非 FFN 的 8.5ms/token」+ GPU dispatch bubble。按難度排序。</p>
+  <h2>④ 剩餘槓桿：實測後「藏」的空間已歸零</h2>
+  <p class="desc">今天（2026-08-25）實作 CGC_DRAFT_DECODE + CGC_STEPT 逐相計時，把前版的「可藏 8.5ms/token」假設逐項驗證——<b>全部證偽</b>。下表是實測結果。</p>
 
   <table>
-    <tr><th>槓桿</th><th>藏 / 省</th><th>機制</th><th class="num">潛在 t/s</th><th>難度</th></tr>
+    <tr><th>槓桿</th><th>實測結果</th><th>結論</th></tr>
     <tr>
-      <td><b>draft overlap</b></td><td>藏</td>
-      <td>draft（1-layer）+ process catch-up 藏在 verify GPU compute 後面（draft 只依賴上一步 verify 的 h_nextn，但可提前 1 step 用 prefetch 資料）。回收 ~3.9ms/token。</td>
-      <td class="num">25.4 → <b>~27</b></td><td>中（需非阻塞 draft 佇列）</td>
+      <td><b>CGC_DRAFT_DECODE</b>（draft 走 decode-path，本次實作）</td>
+      <td>harness：<b>23.2 → 25.2 t/s、accept 87.5% → 95.6%</b>；raw：95.7 → 97.1%</td>
+      <td><span class="tag g">已入袋</span> draft 與 verify 同 pool residency → accept 不掉反升；速度也追上（draft 的 sync pread 消除）。</td>
     </tr>
     <tr>
-      <td><b>verify 固定 13.6ms/step</b></td><td>藏+省</td>
-      <td>剩餘 = draft exact pread + slot_table remap + graph build。把 draft 也走 ZERO-slot / 用 CGC_EARLY 式 early-write 藏 remap。回收 ~4.6ms/token。</td>
-      <td class="num">25.4 → <b>~27-28</b></td><td>中</td>
+      <td><b>draft overlap / 藏 draft</b>（前版假設回收 3.9ms/token）</td>
+      <td>step-timer：dft 13.2 + proc 14.3 = 27.5ms/step 是 <b>blk.40 真 GPU compute</b>（5 token-runs × 5.5ms），非可藏的固定成本</td>
+      <td><span class="tag r">證偽</span> draft 依賴上一步 verify 的 h_nextn → 與 verify 同 GPU 同 stream 完全序列化，無從藏起。</td>
     </tr>
     <tr>
-      <td><b>dispatch bubble / kernel fusion</b></td><td>省</td>
-      <td>CGC_FUSED_MOE_FFN 延伸：把 verify 的 attn+SSM+FFN 小 op 併進大 kernel，砍 dispatch 數（~2000 kernels/step）。這是唯一通往「28.6 kernel floor」以上的路。</td>
-      <td class="num">~28.6（單 token 地板）</td><td>高（kernel 重寫）</td>
+      <td><b>verify 固定 13.6ms/step</b>（前版假設回收 ~4.6ms/token）</td>
+      <td>step-timer：verify 87.2ms/3 = <b>純線性 29.1ms/token、零固定 overhead</b></td>
+      <td><span class="tag r">證偽</span> CGC_VERIFY_DECODE 已把固定成本全藏光；剩下的 29.1ms/token 是 GPU bandwidth floor（必須讀 weights）。</td>
     </tr>
     <tr>
-      <td><b>n=1 vs n=2</b></td><td>省（簡化）</td>
-      <td>n=1（25.28 t/s）與 n=2（25.39）幾乎同速；n=1 accept 100%、step 更簡單。production 可先用 n=1，n=2 的理論 headroom（27.9）要等 draft overlap 才吃得回來。</td>
-      <td class="num">—（同等）</td><td>低（已在 harness）</td>
+      <td><b>CPU 藏 GPU 後</b></td>
+      <td>dft+proc+acc 三相 wall 疊加（42.2ms）已超 step total（114.8ms）→ 三相在 async dispatch 下互相重疊</td>
+      <td><span class="tag g">已達成</span> CPU 暴露 ≈ 0，無額外可藏。</td>
     </tr>
     <tr>
-      <td><b>id_last re-decode</b></td><td>省（結構性）</td>
-      <td>verify 3-token 有 1 個是 id_last 重算（無新輸出）。qwen is_mem_shared=false → 結構性無法省；若 shared KV 可省 1/3 FFN → +8 t/s（超大槓桿，但需 kernel 層 KV sharing）。</td>
-      <td class="num">→ ~34（若可省）</td><td>高（非現架構）</td>
+      <td><b>n=1 / n=2 / n=3</b></td>
+      <td>step-timer：n=1 25.33、n=2 25.54、n=3 23.7（accept 掉到 72%）</td>
+      <td><span class="tag r">同天花板</span> 效率不變：(trunk n+1 + blk.40 ×(2n+1)) / (n+1)·acc ≈ 39.4ms/output-token。n=2 已是甜蜜點。</td>
+    </tr>
+    <tr>
+      <td><b>blk.40 MTP head 成本（24%）</b></td>
+      <td>9.5ms/output-token = 27.5ms/step，MTP 架構自帶的 draft 模型</td>
+      <td><span class="tag y">唯一剩槓桿（model 側）</span> 要 27-28 t/s 唯一路是砍 draft head 成本：更小 head / 更低 quant / 精簡 draft 層——不是 runtime 能藏的。</td>
     </tr>
   </table>
 
-  <p class="note"><b>務實結論</b>：轉正已達成（verify 35.4ms &lt; 40ms 門檻）。剩下最大、最可行的是 <b>「藏 draft + verify 固定」（8.5ms/token → ~27-28 t/s）</b>；要再往上走 <b>quant（IQ2，→ ~33 t/s）或 kernel fusion / shared-KV</b>，都是中等以上的工程 + 品質 A/B。若以「MTP ≈ base、不虧」為轉正標準，已收工可繼續 gemma4。</p>
+  <p class="note"><b>務實結論</b>：MTP 已達 <b>結構天花板 ~25.5 t/s（= base）</b>，verify 在 bandwidth floor、draft 是真 GPU compute、CPU 已全藏。<b>「藏」的空間已歸零</b>；27-28 t/s 需要 <b>model 側砍 MTP head 成本</b>（blk.40 的 24%）或更激進的 quant（IQ2）/ kernel fusion。以「MTP = base、不虧、輸出正確」為轉正標準已達標，可繼續 gemma4。</p>
 </div>
 
 <!-- ============ 5. Quant/Dequant ============ -->
