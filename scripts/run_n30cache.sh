@@ -39,9 +39,10 @@ BIN="$ROOT/temp/llama_routeB/llama-src/temp/llama_roadB/llama.cpp-master/build/b
 BIN_SPEC="$ROOT/temp/llama_routeB/llama-src/temp/llama_roadB/llama.cpp-master/build/bin/llama-speculative-simple"
 G4="${N30CACHE_G4:-$ROOT/models/gguf/gemma-4-26B-A4B-it-UD-IQ3_S.gguf}"
 Q36="$ROOT/models/gguf/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf"
-# §MTP: qwen36 graft model 含 fraQtl blk.40 MTP head（Q4_K），
-# 因純 UD-IQ3_XXS 沒 blk.40，無法啟用 --spec-type draft-mtp。
-Q36_MTP="$ROOT/models/gguf/Qwen3.6-35B-A3B-UD-IQ3XXS-trunk_Q4K-blk40.gguf"
+# §MTP: qwen36 MTP 載體用 Nail model（blk.40 MTP head 為 UD-IQ3_XXS，與 trunk 同量）。
+# 2026-08-25 實測：graft（blk.40 Q4_K）verify 126ms/token；Nail（blk.40 UD-IQ3_XXS）103ms/token
+# 且 hit rate 更高（77.4% vs 72.1%）→ 較快。純 UD-IQ3_XXS 沒 blk.40，無法啟用 --spec-type draft-mtp。
+Q36_MTP="$ROOT/models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS.gguf"
 
 MODEL="${N30CACHE_MODEL:-${1:-gemma4}}"
 N=128
@@ -223,7 +224,19 @@ IGNORE_EOS_ARG=""
 CTX_ARG=""
 [ "$CTX" != "0" ] && CTX_ARG="-c $CTX"
 MTP_ARG=""
-[ "$MTP" = 1 ] && MTP_ARG="--spec-type draft-mtp --spec-draft-n-max $MTP_N_MAX -c $MTP_CTX"
+# §MTP: speculative-simple 用 common_params_parse，只認 CLI -expert-cache（不讀 CGC_EXPERT_CACHE_BYTES
+# env——那是 llama-simple 的私有 patch）。MTP 不走 env 會回到全權重（weights ~8118 MiB）→ GPU OOM。
+# §MTP: --temp 0 對齊 base 臂（llama-simple 為 greedy）。MTP 預設 temp sampling 會讓 target 採樣
+# 偏離 draft argmax → accept 掉到 ~31%（target sample != draft argmax）→ 多 reject + checkpoint
+# restore → 速度砍半（3.6 vs 6.1 t/s）。greedy 下 draft head 與 target argmax 一致 → accept 87.5%。
+[ "$MTP" = 1 ] && MTP_ARG="--spec-type draft-mtp --spec-draft-n-max $MTP_N_MAX -c $MTP_CTX -expert-cache $BUDGET --temp 0"
+# §MTP 2026-08-25（獨立 option，CGC_VERIFY_DECODE=1）：verify 走 decode fast path（ZERO-slot，無
+# 同步 pread stall）。實測 verify 64→35.4ms/token、MTP 13.9→25.2 t/s（=base decode rate）、
+# accept 97.8%→95.7%、輸出仍正確（deterministic）。此 env 是 MTP 專屬 opt-in：沒設 = 原 exact-load
+# verify（bit-exact、較慢）。N30CACHE_MTP_VERIFY_DECODE=0 可關掉。
+if [ "$MTP" = 1 ] && [ "${N30CACHE_MTP_VERIFY_DECODE:-1}" = 1 ]; then
+    ENVS+=(CGC_VERIFY_DECODE=1)
+fi
 # 優化 load：先 cat model 進 page cache（重開機後第一次 run 建議），之後 loader 的 read 全 RAM-speed
 if [ "$WARM" = 1 ]; then
     echo "  warm   : pre-loading $(basename "$M") into page cache..."

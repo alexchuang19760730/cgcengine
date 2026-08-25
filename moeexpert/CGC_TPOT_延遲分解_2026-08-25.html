@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CGC TPOT 延遲分解（MTP 轉正版）2026-08-25 · MTP n=2 25.39 t/s</title>
+<style>
+  :root {
+    --bg: #0f1420; --card: #171e2e; --ink: #e8ecf4; --sub: #9aa5b8;
+    --line: #2a3350;
+    /* GPU */
+    --ffn: #7fb8f0; --ffn2: #4a7fbf; --fixed: #d98cf0; --small: #e86a6a;
+    --ssm: #6b7aa8; --sdpa: #7fd4c0;
+    /* CPU / I/O */
+    --cpu: #f0c25c; --draft: #8a97ad; --io: #f0a45c;
+    /* accent */
+    --accent: #ffd479; --good: #8fe3a0; --warn: #f08a8a; --gold: #e3cf8f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; padding: 32px 20px 60px; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  .sub { color: var(--sub); font-size: 14px; margin-bottom: 28px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px 24px; margin-bottom: 22px; }
+  .card h2 { font-size: 18px; margin: 0 0 4px; }
+  .card .desc { color: var(--sub); font-size: 13px; margin: 0 0 16px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 10px 0 18px; font-size: 12.5px; color: var(--sub); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .barwrap { margin-bottom: 12px; }
+  .barrow { display: flex; align-items: center; gap: 10px; }
+  .barlabel { width: 300px; font-size: 12.5px; color: var(--ink); flex-shrink: 0; line-height: 1.35; }
+  .barlabel small { display: block; color: var(--sub); font-size: 11px; }
+  .bar { flex: 1; height: 34px; border-radius: 8px; overflow: hidden; display: flex; background: #0c1019; border: 1px solid var(--line); }
+  .seg { height: 100%; display: flex; align-items: center; justify-content: center; font-size: 10.5px; color: #10141f; font-weight: 700; white-space: nowrap; overflow: hidden; min-width: 0; border-right: 1px solid rgba(15,20,32,.35); }
+  .seg.tiny { font-size: 0; }
+  .seg.tiny:hover { font-size: 10.5px; }
+  .total { font-size: 12px; color: var(--sub); text-align: right; margin: 4px 0 0 310px; }
+  .note { font-size: 12.5px; color: var(--sub); margin-top: 12px; line-height: 1.6; }
+  .note b { color: var(--ink); }
+  .note .hl { color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--sub); font-weight: 600; font-size: 12px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .hl { color: var(--accent); font-weight: 700; }
+  .ceil { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .ceil .cl { width: 300px; font-size: 12.5px; flex-shrink: 0; }
+  .ceil .ctrack { flex: 1; height: 26px; background: #0c1019; border: 1px solid var(--line); border-radius: 7px; position: relative; }
+  .ceil .cfill { height: 100%; border-radius: 6px; display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; font-size: 11px; font-weight: 700; color: #10141f; }
+  .tokbadge { margin-left: 10px; font-size: 12.5px; color: var(--ink); width: 130px; flex-shrink: 0; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; margin-left: 6px; }
+  .tag.g { background: #1c3a24; color: #8fe3a0; }
+  .tag.r { background: #3a1c1c; color: #f08a8a; }
+  .tag.y { background: #3a321c; color: #e3cf8f; }
+  .bnd { display: flex; gap: 14px; flex-wrap: wrap; }
+  .bnd .g { flex: 1; min-width: 220px; background: #121826; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .bnd .g h3 { margin: 0 0 6px; font-size: 14px; }
+  .bnd .g .st { font-size: 12px; font-weight: 700; margin-bottom: 6px; }
+  .bnd .g p { margin: 0; font-size: 12px; color: var(--sub); line-height: 1.55; }
+  .meter { height: 8px; border-radius: 5px; background: #0c1019; border: 1px solid var(--line); margin: 6px 0 8px; overflow: hidden; }
+  .meter i { display: block; height: 100%; border-radius: 5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>CGC · MTP TPOT 端到端延遲分解（長條圖）</h1>
+<div class="sub">llama.cpp fork · M4 Max 16GB · 2026-08-25 · Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS · cache 4GiB · CGC_VERIFY_DECODE=1 · MTP n=2 → <b class="hl">25.39 t/s</b>（= base decode）</div>
+
+<!-- ============ 1. MTP verify 延遲分解 ============ -->
+<div class="card">
+  <h2>① MTP verify step（3-token batch）延遲分解：CGC_VERIFY_DECODE 前後</h2>
+  <p class="desc">verify = 40 層 trunk decode × <b>3-token batch</b>（id_last 重算 + 2 個 draft）。不是「40 層單 token」——這就是 base 39.8ms 但 verify 要 103-192ms 的原因。n=1 vs n=2 step 差 → <b>verify = 固定 overhead/step + 線性 per-token FFN</b>。</p>
+
+  <div class="legend">
+    <span><i class="sw" style="background:var(--ffn)"></i>FFN（GPU bandwidth，weight reads）</span>
+    <span><i class="sw" style="background:var(--fixed)"></i>固定 overhead（sync pread + slot_table remap + graph build）</span>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">MTP n=2 verify step（exact-load，轉正前）<small>192ms/step = 64.08ms/token · 13.85 t/s · pread 26M usec</small></div>
+      <div class="bar">
+        <div class="seg" style="width:69.5%;background:var(--ffn)" title="FFN 133.5ms：3-token 的 MoE weight reads + 每 token 同步等 cold-expert pread（44.5ms/token）">FFN 133.5</div>
+        <div class="seg" style="width:30.5%;background:var(--fixed)" title="固定 58.7ms/step：每層 ensure_batch + drain 同步 pread stall + slot_table remap">固定 58.7</div>
+      </div>
+    </div>
+  </div>
+  <div class="total">192ms/step</div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">MTP n=2 verify step（CGC_VERIFY_DECODE，轉正後）<small>106ms/step = 35.44ms/token · 25.39 t/s · pread 6.9M usec（-73%）</small></div>
+      <div class="bar">
+        <div class="seg" style="width:87.5%;background:var(--ffn)" title="FFN 92.7ms：純 weight reads，3-token batch 共享 experts → 30.9ms/token（無 pread wait）">FFN 92.7</div>
+        <div class="seg" style="width:12.8%;background:var(--fixed)" title="固定 13.6ms/step：殘餘（draft exact pread + remap + graph build）">固定 13.6</div>
+      </div>
+    </div>
+  </div>
+  <div class="total">106ms/step</div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">對比：base 單 token decode（graft）<small>39.79ms/token · 25.13 t/s</small></div>
+      <div class="bar">
+        <div class="seg" style="width:100%;background:var(--ffn2)" title="單 token 全 40 層 weight reads + attn/SSM/head">39.8</div>
+      </div>
+    </div>
+  </div>
+  <div class="total">39.8ms/step</div>
+
+  <p class="note"><b>拆解結論</b>：CGC_VERIFY_DECODE 把 verify 的同步 pread 藏掉/省掉——<b>固定 overhead 58.7→13.6ms/step（-77%）</b>，且 per-token 也從 44.5→30.9ms（exact 路徑每 token 還在等 pread，decode 路徑純 compute）。<b>3-token batch 的 marginal FFN 30.9ms/token &lt; base 單 token 39.8ms</b>——batch 共享 experts + 攤薄固定成本，MTP 的 FFN 反而比單 token decode 便宜（overlap 效益）。</p>
+</div>
+
+<!-- ============ 2. 每 token 成本歸因 ============ -->
+<div class="card">
+  <h2>② MTP n=2 每 token 成本歸因（39.4ms/token effective）</h2>
+  <p class="desc">有效 25.39 t/s = 39.4ms/token。其中 FFN（GPU bandwidth）佔 78%，其餘 22% 是可藏/可省的 overhead。</p>
+
+  <div class="legend">
+    <span><i class="sw" style="background:var(--ffn)"></i>FFN weight reads 30.9ms（78%）</span>
+    <span><i class="sw" style="background:var(--draft)"></i>draft + sampler + KV + driver ~3.9ms（10%）</span>
+    <span><i class="sw" style="background:var(--fixed)"></i>verify 固定 / prefill 攤薄 ~4.6ms（12%）</span>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">MTP n=2 每 token（25.39 t/s）<small>39.4ms/token</small></div>
+      <div class="bar">
+        <div class="seg" style="width:78.5%;background:var(--ffn)" title="FFN 30.9ms：GPU bandwidth-bound（讀 routed experts weights），不可省">FFN 30.9</div>
+        <div class="seg" style="width:9.8%;background:var(--draft)" title="draft ~3.9ms：1-2 個 1-layer draft decode + process catch-up + sampler + KV">3.9</div>
+        <div class="seg" style="width:11.7%;background:var(--fixed)" title="verify 固定 + prefill 攤薄 ~4.6ms">4.6</div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note"><b>剩餘可動的只有 8.5ms/token（22%）</b>：draft 3.9ms + verify 固定 4.6ms。FFN 30.9ms 是 GPU bandwidth 地板（必須讀 weights）。若能全藏 → <b>~32 t/s</b>；藏一半 → <b>~28.5 t/s</b>（逼近單 token 的「kernel floor」28.6）。</p>
+</div>
+
+<!-- ============ 3. 瓶頸分類 ============ -->
+<div class="card">
+  <h2>③ 瓶頸分類：SSD 頻寬 / CPU / GPU compute / GPU memory bandwidth</h2>
+  <p class="desc">用測量數據逐項排除，答案是 <b class="hl">GPU memory-bandwidth-bound</b>（unified memory 讀 MoE weights）。SSD / CPU 已不是瓶頸。</p>
+
+  <div class="bnd">
+    <div class="g">
+      <h3>SSD（內建 NVMe）</h3>
+      <div class="st" style="color:var(--good)">非瓶頸 · 頻寬利用 ~9%</div>
+      <div class="meter"><i style="width:9%;background:var(--good)"></i></div>
+      <p>preads 6.9M usec（8 worker 累計）÷ 8 ≈ <b>0.86s / 7.9s wall ≈ 11%</b>，且多在冷啟動 + draft。file_reads≈4161 × ~740KB/read ≈ 3.1GB → <b>~450MB/s</b>，遠低於 M4 內建 NVMe（~5GB/s 級）。CGC_VERIFY_DECODE 已把 verify 同步 pread 藏掉（26M→6.9M usec）。<b>SSD 是 latency-bound 小隨機讀，不是頻寬瓶頸。</b></p>
+    </div>
+    <div class="g">
+      <h3>CPU（MTL encoding）</h3>
+      <div class="st" style="color:var(--good)">非瓶頸 · 已藏</div>
+      <div class="meter"><i style="width:10%;background:var(--good)"></i></div>
+      <p>CGC_OA_ASYNC + CGC_N_CB=8 把 MTL encoding（60→30ms）藏在 GPU compute 後面重疊；post_sync ~0.2ms；draft + driver 只剩 ~3.9ms/token。<b>CPU 不在 critical path。</b></p>
+    </div>
+    <div class="g">
+      <h3>GPU compute（kernel 執行）</h3>
+      <div class="st" style="color:var(--gold)">低 · 有 bubble</div>
+      <div class="meter"><i style="width:35%;background:var(--gold)"></i></div>
+      <p>IQ3_XXS 量化後 FLOPs 便宜；M4 Max FLOPs 遠高於需求。但有 ~2000 kernels/step 的 <b>dispatch bubble（~38ms，舊報告）</b>與 encoding 重疊——這是唯一可省的 GPU 側項目（kernel fusion）。</p>
+    </div>
+    <div class="g">
+      <h3>GPU memory bandwidth</h3>
+      <div class="st" style="color:var(--warn)">主瓶頸</div>
+      <div class="meter"><i style="width:95%;background:var(--warn)"></i></div>
+      <p>FFN 每 token 從 unified memory 讀 routed experts weights：<b>30.9ms/token（MTP batch）</b>。全 model 12.3GB 讀一次 @ M4 Max ~546GB/s ≈ <b>22.5ms</b>，與舊報告 weight-read 24.9ms 一致 → <b>就在 bandwidth envelope 上</b>。quant 越低（IQ3）weight-read 越小，這是「能跑」的關鍵。</p>
+    </div>
+  </div>
+
+  <p class="note"><b>一句話</b>：速度由 <b>GPU 讀 MoE weights 的 unified-memory 頻寬</b>決定（~31-35ms/token）。SSD 頻寬只用到 ~9%、CPU 已藏、GPU compute 有 bubble 但被 encoding 蓋住。<b>沒到 SSD bandwidth 瓶頸。</b></p>
+</div>
+
+<!-- ============ 4. 剩餘槓桿（藏/省） ============ -->
+<div class="card">
+  <h2>④ 剩餘槓桿：還有哪些可以藏、可以省</h2>
+  <p class="desc">轉正後 MTP = base（25.4 t/s）。剩餘可動的是「非 FFN 的 8.5ms/token」+ GPU dispatch bubble。按難度排序。</p>
+
+  <table>
+    <tr><th>槓桿</th><th>藏 / 省</th><th>機制</th><th class="num">潛在 t/s</th><th>難度</th></tr>
+    <tr>
+      <td><b>draft overlap</b></td><td>藏</td>
+      <td>draft（1-layer）+ process catch-up 藏在 verify GPU compute 後面（draft 只依賴上一步 verify 的 h_nextn，但可提前 1 step 用 prefetch 資料）。回收 ~3.9ms/token。</td>
+      <td class="num">25.4 → <b>~27</b></td><td>中（需非阻塞 draft 佇列）</td>
+    </tr>
+    <tr>
+      <td><b>verify 固定 13.6ms/step</b></td><td>藏+省</td>
+      <td>剩餘 = draft exact pread + slot_table remap + graph build。把 draft 也走 ZERO-slot / 用 CGC_EARLY 式 early-write 藏 remap。回收 ~4.6ms/token。</td>
+      <td class="num">25.4 → <b>~27-28</b></td><td>中</td>
+    </tr>
+    <tr>
+      <td><b>dispatch bubble / kernel fusion</b></td><td>省</td>
+      <td>CGC_FUSED_MOE_FFN 延伸：把 verify 的 attn+SSM+FFN 小 op 併進大 kernel，砍 dispatch 數（~2000 kernels/step）。這是唯一通往「28.6 kernel floor」以上的路。</td>
+      <td class="num">~28.6（單 token 地板）</td><td>高（kernel 重寫）</td>
+    </tr>
+    <tr>
+      <td><b>n=1 vs n=2</b></td><td>省（簡化）</td>
+      <td>n=1（25.28 t/s）與 n=2（25.39）幾乎同速；n=1 accept 100%、step 更簡單。production 可先用 n=1，n=2 的理論 headroom（27.9）要等 draft overlap 才吃得回來。</td>
+      <td class="num">—（同等）</td><td>低（已在 harness）</td>
+    </tr>
+    <tr>
+      <td><b>id_last re-decode</b></td><td>省（結構性）</td>
+      <td>verify 3-token 有 1 個是 id_last 重算（無新輸出）。qwen is_mem_shared=false → 結構性無法省；若 shared KV 可省 1/3 FFN → +8 t/s（超大槓桿，但需 kernel 層 KV sharing）。</td>
+      <td class="num">→ ~34（若可省）</td><td>高（非現架構）</td>
+    </tr>
+  </table>
+
+  <p class="note"><b>務實結論</b>：轉正已達成（verify 35.4ms &lt; 40ms 門檻）。剩下最大、最可行的是 <b>「藏 draft + verify 固定」（8.5ms/token → ~27-28 t/s）</b>；要再往上走 <b>quant（IQ2，→ ~33 t/s）或 kernel fusion / shared-KV</b>，都是中等以上的工程 + 品質 A/B。若以「MTP ≈ base、不虧」為轉正標準，已收工可繼續 gemma4。</p>
+</div>
+
+<!-- ============ 5. Quant/Dequant ============ -->
+<div class="card">
+  <h2>⑤ Quant / Dequant：已是最省 bandwidth 的槓桿，還有剩</h2>
+  <p class="desc">既然主瓶頸是「GPU 讀 weights 的 unified-memory 頻寬」，quant 格式直接決定 weight-read 大小；dequant 時間則因為 GPU 是 bandwidth-bound（有閒置 compute）通常不在 critical path。</p>
+
+  <div class="legend">
+    <span><i class="sw" style="background:var(--ffn)"></i>weight-read（bandwidth，主瓶頸）</span>
+    <span><i class="sw" style="background:var(--cpu)"></i>dequant compute（GPU 閒置可蓋）</span>
+    <span><i class="sw" style="background:var(--fixed)"></i>dispatch / 中間 buffer</span>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">FFN 每 token（IQ3_XXS 3.06bpw，現況）<small>30.9ms · batch overlap 已算入</small></div>
+      <div class="bar">
+        <div class="seg" style="width:78%;background:var(--ffn)" title="weight-read ~24ms：quant 後只有 FP16 的 1/3 bytes">weight ~24</div>
+        <div class="seg tiny" style="width:8%;background:var(--cpu)" title="dequant compute ~2-3ms：inline，被 bandwidth wait 蓋住">deq 2-3</div>
+        <div class="seg" style="width:14%;background:var(--fixed)" title="dispatch + 小張量 gather 延遲 ~4-5ms">dispatch ~4-5</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">若降 IQ2_XXS（2.06bpw）<small>weight-read ~2/3 → FFN ~21ms/token</small></div>
+      <div class="bar">
+        <div class="seg" style="width:62%;background:var(--ffn)" title="weight-read ~16ms：bytes 少 1/3">weight ~16</div>
+        <div class="seg tiny" style="width:8%;background:var(--cpu)" title="dequant compute：IQ2 略高但仍在等待 bandwidth">deq 2-3</div>
+        <div class="seg" style="width:14%;background:var(--fixed)" title="dispatch 不變">dispatch ~4-5</div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note"><b>已省（最大槓桿，已入袋）</b>：IQ3_XXS（3.06bpw）讓 weight-read 只有 FP16 的 <b>1/3</b>——沒有 quant 就無法 full offload（13.2GB &gt; 11.45GB）也撐不起 bandwidth。UD 格式（Unsloth dequant）本身已是最省 dequant compute 的變體。<b>quant 不是「還要省」的項目，是已經省下 3× 的項目。</b></p>
+  <p class="note"><b>dequant 時間</b>：GPU 是 bandwidth-bound（等待記憶體），dequant compute 被 wait 蓋住 → 不是 critical path。真正要確認的是 <b>verify FFN 走 inline-dequant matmul</b>（直接吃 quantized weights，不做 separate dequant pass 寫中間 buffer）——若有 separate pass 會多一次 buffer read/write + 一次 dispatch，這才是要省的 dequant「時間」。</p>
+
+  <table>
+    <tr><th>Quant/Dequant 槓桿</th><th>省什麼</th><th class="num">潛在 t/s</th><th>風險</th></tr>
+    <tr><td><b>降 IQ2_XXS（2.06bpw）</b></td><td>weight-read -1/3 → FFN 30.9→~21ms</td><td class="num">→ <b>~33</b></td><td>品質 A/B 待測（35B-A3B 用 IQ2 可能退化）</td></tr>
+    <tr><td><b>inline-dequant 確認/補強</b></td><td>省 separate dequant buffer read/write + dispatch</td><td class="num">→ ~26-27</td><td>低（kernel 層）</td></tr>
+    <tr><td><b>access pattern（sequential per-expert / aligned）</b></td><td>有效頻寬從 ~7 成拉近 9 成（MoE 小張量 gather 目前低效）</td><td class="num">→ ~28-30</td><td>中（kernel 重寫）</td></tr>
+    <tr><td>dequant 後 cache hot experts</td><td>省重複 dequant</td><td class="num">—（不建議）</td><td>dequant = 4-8× 記憶體，pool 效益逆轉</td></tr>
+  </table>
+</div>
+
+<!-- ============ 6. 天花板對照 ============ -->
+<div class="card">
+  <h2>⑥ 吞吐天花板對照</h2>
+  <p class="desc">MTP 已從 6.2 → 25.4 t/s，追平 base decode，並已達單 token「kernel floor」28.6 的 <b>89%</b>。</p>
+
+  <div class="ceil">
+    <div class="cl">MTP n=2（CGC_VERIFY_DECODE）<br><small>39.4ms/token · 2026-08-25</small></div>
+    <div class="ctrack"><div class="cfill" style="width:88.8%;background:linear-gradient(90deg,#2c6a4a,#5cc09a)">25.39 t/s</div></div>
+    <div class="tokbadge">≈ <b class="hl">25.4</b> tok/s <span class="tag g">✓ 轉正（verify 35.4ms）</span></div>
+  </div>
+  <div class="ceil">
+    <div class="cl">MTP n=1（CGC_VERIFY_DECODE）<br><small>39.6ms/token · accept 100%</small></div>
+    <div class="ctrack"><div class="cfill" style="width:88.4%;background:linear-gradient(90deg,#2c6a4a,#5cc09a)">25.28 t/s</div></div>
+    <div class="tokbadge">≈ <b>25.3</b> tok/s</div>
+  </div>
+  <div class="ceil">
+    <div class="cl">base 單 token decode<br><small>39.79ms/token · graft</small></div>
+    <div class="ctrack"><div class="cfill" style="width:87.9%;background:linear-gradient(90deg,#2c6a4a,#5cc09a)">25.13 t/s</div></div>
+    <div class="tokbadge">≈ <b>25.1</b> tok/s</div>
+  </div>
+  <div class="ceil">
+    <div class="cl">MTP 若藏掉全部 overhead（8.5ms/token → 0）<br><small>30.9ms/token · batch overlap 已算入</small></div>
+    <div class="ctrack"><div class="cfill" style="width:100%;background:linear-gradient(90deg,#1c4a3a,#3a8a6a)">~32.4 t/s</div></div>
+    <div class="tokbadge">≈ <b>32.4</b> tok/s（理論上界）</div>
+  </div>
+  <div class="ceil">
+    <div class="cl">單 token「kernel floor」（dispatch 免費）<br><small>35ms/step · §8.71</small></div>
+    <div class="ctrack"><div class="cfill" style="width:96.7%;background:linear-gradient(90deg,#8a6a2c,#c0a05c)">28.6 t/s</div></div>
+    <div class="tokbadge">≈ <b>28.6</b> tok/s</div>
+  </div>
+  <div class="ceil">
+    <div class="cl">>30 tok/s 需要<br><small>batch overlap + 藏 overhead</small></div>
+    <div class="ctrack" style="position:relative"><div style="position:absolute;left:93%;top:-6px;bottom:-6px;border-left:2px dashed var(--accent)"></div></div>
+    <div class="tokbadge">30 tok/s</div>
+  </div>
+
+  <p class="note"><b>定案</b>：MTP 的 <b>batch overlap 效益是真的</b>——3-token verify 的 marginal FFN 30.9ms/token 比單 token 39.8ms 低 22%（共享 experts + 攤薄固定成本）。所以 MTP 的天花板不是 28.6，而是 ~32（全藏 overhead）甚至更高（若 shared-KV 能省 id_last）。<b>現在卡在「overhead 沒藏」與「dispatch bubble」，不是卡在模型。</b></p>
+</div>
+
+<p class="sub" style="margin-top:24px">數據：2026-08-25 實測（Nail model + cache 4GiB + CGC_VERIFY_DECODE=1 + --temp 0，-n 200 warm steady-state）。n=1: 25.28 t/s / verify 37.72ms / accept 100%；n=2: 25.39 t/s / verify 35.44ms / accept 95.7%；exact 對照 n=2: 13.85 t/s / 64.08ms；base: 25.13 t/s / 39.79ms。M4 Max ~546GB/s unified BW、內建 NVMe ~5GB/s 級。FFN marginal = (n2 step − n1 step)/1 = (106.3−75.4) = 30.9ms/token；verify 固定 = n1 step − 2×30.9 = 13.6ms/step。舊報告基準：§8.65（GPU 73ms）、§8.71/8.72（三層天花板）、§8.77/8.93（OA_ASYNC + CB8）。Quant/dequant：IQ3_XXS=3.06bpw、IQ2_XXS=2.06bpw（weight-read 約正比）。</p>
+
+</div>
+</body>
+</html>
