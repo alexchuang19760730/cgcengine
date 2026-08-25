@@ -163,13 +163,14 @@
     </div>
     <div class="g">
       <h3>GPU memory bandwidth</h3>
-      <div class="st" style="color:var(--warn)">主瓶頸</div>
+      <div class="st" style="color:var(--warn)">原判主瓶頸 · 已被 ⑦ 修正</div>
       <div class="meter"><i style="width:95%;background:var(--warn)"></i></div>
-      <p>FFN 每 token 從 unified memory 讀 routed experts weights：<b>30.9ms/token（MTP batch）</b>。全 model 12.3GB 讀一次 @ M4 Max ~546GB/s ≈ <b>22.5ms</b>，與舊報告 weight-read 24.9ms 一致 → <b>就在 bandwidth envelope 上</b>。quant 越低（IQ3）weight-read 越小，這是「能跑」的關鍵。</p>
+      <p>FFN 每 token 從 unified memory 讀 routed experts weights：<b>30.9ms/token（MTP batch）</b>。全 model 12.3GB 讀一次 @ M4 Max ~546GB/s ≈ <b>22.5ms</b>，與舊報告 weight-read 24.9ms 一致 → 原本以為 <b>就在 bandwidth envelope 上</b>。quant 越低（IQ3）weight-read 越小，這是「能跑」的關鍵。</p>
+      <p style="margin-top:8px"><span class="tag r">已被 ⑦ 證偽</span> kernel 級 probe（temp/bw_probe.cpp）實測 FFN mmid 有效頻寬只有 <b class="hl">5-45 GB/s = peak 的 1-8%</b>，是 <b>latency/occupancy-bound</b>（每 dispatch 固定 ~0.4ms），不是 546GB/s envelope。FFN 的 ~31ms/step 可修（見 §⑦），「不可省的 bandwidth floor」不成立。</p>
     </div>
   </div>
 
-  <p class="note"><b>一句話</b>：速度由 <b>GPU 讀 MoE weights 的 unified-memory 頻寬</b>決定（~31-35ms/token）。SSD 頻寬只用到 ~9%、CPU 已藏、GPU compute 有 bubble 但被 encoding 蓋住。<b>沒到 SSD bandwidth 瓶頸。</b></p>
+  <p class="note"><b>一句話</b>：速度由 <b>GPU 讀 MoE weights 的 unified-memory 頻寬</b>決定（~31-35ms/token）。SSD 頻寬只用到 ~9%、CPU 已藏、GPU compute 有 bubble 但被 encoding 蓋住。<b>沒到 SSD bandwidth 瓶頸。</b> <span class="tag r">⑦ 修正</span> 但「頻寬」不是 546GB/s envelope：FFN mmid 只跑到 1-8%（latency floor），見 §⑦。</p>
 </div>
 
 <!-- ============ 4. 剩餘槓桿（藏/省） ============ -->
@@ -254,7 +255,7 @@
     <tr><th>Quant/Dequant 槓桿</th><th>省什麼</th><th class="num">潛在 t/s</th><th>風險</th></tr>
     <tr><td><b>降 IQ2_XXS（2.06bpw）</b></td><td>weight-read -1/3 → FFN 30.9→~21ms</td><td class="num">→ <b>~33</b></td><td>品質 A/B 待測（35B-A3B 用 IQ2 可能退化）</td></tr>
     <tr><td><b>inline-dequant 確認/補強</b></td><td>省 separate dequant buffer read/write + dispatch</td><td class="num">→ ~26-27</td><td>低（kernel 層）</td></tr>
-    <tr><td><b>access pattern（sequential per-expert / aligned）</b></td><td>有效頻寬從 ~7 成拉近 9 成（MoE 小張量 gather 目前低效）</td><td class="num">→ ~28-30</td><td>中（kernel 重寫）</td></tr>
+    <tr><td><b>access pattern（sequential per-expert / aligned）</b> <span class="tag r">前提錯（⑦）</span></td><td>實測有效頻寬 1-8%、且已是 sequential 讀（無 gather 問題）——非 bandwidth-bound，改為：<b>減少 mmid dispatch 數 / 加大 grid（併層）</b></td><td class="num">→ ~29（修 latency floor）</td><td>中（併層 kernel 重寫）</td></tr>
     <tr><td>dequant 後 cache hot experts</td><td>省重複 dequant</td><td class="num">—（不建議）</td><td>dequant = 4-8× 記憶體，pool 效益逆轉</td></tr>
   </table>
 </div>
@@ -299,6 +300,98 @@
 </div>
 
 <p class="sub" style="margin-top:24px">數據：2026-08-25 實測（Nail model + cache 4GiB + CGC_VERIFY_DECODE=1 + --temp 0，-n 200 warm steady-state）。n=1: 25.28 t/s / verify 37.72ms / accept 100%；n=2: 25.39 t/s / verify 35.44ms / accept 95.7%；exact 對照 n=2: 13.85 t/s / 64.08ms；base: 25.13 t/s / 39.79ms。M4 Max ~546GB/s unified BW、內建 NVMe ~5GB/s 級。FFN marginal = (n2 step − n1 step)/1 = (106.3−75.4) = 30.9ms/token；verify 固定 = n1 step − 2×30.9 = 13.6ms/step。舊報告基準：§8.65（GPU 73ms）、§8.71/8.72（三層天花板）、§8.77/8.93（OA_ASYNC + CB8）。Quant/dequant：IQ3_XXS=3.06bpw、IQ2_XXS=2.06bpw（weight-read 約正比）。</p>
+
+<!-- ============ 7. FFN weight-read 有效頻寬 A/B（kernel 級） ============ -->
+<div class="card">
+  <h2>⑦ FFN weight-read 有效頻寬 A/B（kernel 級實測）——「bandwidth envelope」與「access-pattern 7成」雙重證偽</h2>
+  <p class="desc">§3/§5/§6 主張 verify 的 FFN「就在 546GB/s bandwidth envelope 上」且「access-pattern 7成→9成」。為了定案是否值得重寫 kernel，用獨立 probe（temp/bw_probe.cpp）在 Metal 上以 <b>真實 qwen36 shapes</b> 直接量 mmid kernel 的有效頻寬（GB/s = 讀入 bytes / GPU 時間）。</p>
+
+  <p class="desc">方法：① isolated（單 op，sync 每 rep，取 min）與 sustained（200 個 graph 串流、每 20 個 sync——排除 per-graph encode 假象）；② in-graph（40 層 × 80 個 mmid op 塞進同一個 graph_compute，最接近真實 verify）。bytes = n_tokens × n_used 個 expert slab。gate/up = IQ2_S（m=512, k=2048）、down = IQ3_XXS（m=2048, k=512）、256 experts、top-8。</p>
+
+  <table>
+    <tr><th>情境</th><th>bytes</th><th>GPU 時間（min）</th><th class="num">有效頻寬</th><th class="num">vs 546GB/s</th></tr>
+    <tr><td>isolated · gate/up IQ2_S · used=8 · tok=1</td><td class="num">2.69 MB</td><td class="num">0.52 ms</td><td class="num">5.2 GB/s</td><td class="num">~1%</td></tr>
+    <tr><td>isolated · down IQ3_XXS · used=8 · tok=1</td><td class="num">3.21 MB</td><td class="num">0.29 ms</td><td class="num">11.2 GB/s</td><td class="num">~2%</td></tr>
+    <tr><td>isolated · gate/up · used=24 · tok=1</td><td class="num">8.06 MB</td><td class="num">0.38 ms</td><td class="num">21.1 GB/s</td><td class="num">~4%</td></tr>
+    <tr><td>isolated · gate/up · used=24 · tok=3</td><td class="num">24.18 MB</td><td class="num">0.66 ms</td><td class="num">36.5 GB/s</td><td class="num">~7%</td></tr>
+    <tr><td><b>in-graph · 40 層 × 80 mmid · used=16 · tok=3</b></td><td class="num">1415.6 MB</td><td class="num">31.35 ms（per-mmid 0.392）</td><td class="num"><b>45.1 GB/s</b></td><td class="num">~8%</td></tr>
+  </table>
+
+  <p class="note"><b>結論 1：有效頻寬只有 1-8%，不是「7 成」也不是「envelope」。</b>FFN mmid 的 weight-read 以 5-45 GB/s 在跑——比 §3 主張的 546GB/s envelope 低一個數量級。但「同一批 40 層 × 3 token 的 FFN 總量 ≈ 31.4ms」與 §1 的 FFN 數字吻合，所以 <b>doc 的 FFN 時間對、原因錯</b>：不是 bandwidth-bound，是 <b>latency/occupancy-bound</b>。</p>
+
+  <p class="note"><b>結論 2：三個證據指向 latency floor，不是 bandwidth。</b>① 時間不隨 bytes 線性成長：2.69MB→0.52ms、24.18MB→0.66ms（9 倍 bytes 只多 1.27 倍時間）；fit 出每 dispatch 固定 ~0.4ms + marginal ~150GB/s。② sustained ≈ isolated（pipeline 串流沒省到）→ 不是 per-graph encode 假象。③ in-graph 的 per-mmid（0.392ms）≈ isolated per-op（0.29-0.52ms）→ 塞進 40 層大 graph 也攤不掉 → 是<b>每個 kernel 自身的 GPU 固定延遲（小 grid、低 occupancy、memory latency 藏不住）</b>。</p>
+
+  <p class="note"><b>結論 3：sequential access 早已成立。</b>每個 expert slab（270-400KB）本身連續，mmid 直接順序讀；FFN 路徑根本沒有 `ggml_get_rows` 式 gather。所以「access-pattern（sequential / aligned）→ 7成→9成 → 28-30」<span class="tag r">前提錯誤，關閉</span>。正確槓桿是 <b>減少 dispatch 數 + 加大每個 kernel 的 grid</b>（bytes/dispatch 變大時效率上升：5→36 GB/s）——即「併層 mmid」（多層 experts 塞進同一個 kernel）。</p>
+
+  <p class="note"><b>對 verify 87.2ms 的重新歸因</b>：FFN mmid ≈ 31ms（36%，latency floor、<b>可修</b>）；其餘 ~56ms 是 10 層 full-attn + 30 層 linear-attn(SSM) + norms + head + ~2000 個小 kernel 的 dispatch/latency——這一塊尚未逐項分解（§⑦ 只證實 FFN 部分）。</p>
+</div>
+
+<!-- ============ 8. 為何 MTP 沒到 30 t/s（回覆：blk.40 cache + 攤薄） ============ -->
+<div class="card">
+  <h2>⑧ 為何「blk.40 進 cache + 多 token 攤薄」沒自動到 30 t/s</h2>
+  <p class="desc">直覺：non-MTP 25 t/s，verify 3-token 攤薄 20-27%，30 應該很容易。答案是 <b class="hl">「攤薄有發生，但被兩筆沒進到直覺的成本吃光」</b>。</p>
+
+  <table>
+    <tr><th>項目</th><th>數值</th><th>說明</th></tr>
+    <tr>
+      <td><b>verify 跑的是完整 40 層 trunk</b>（不是 blk.40）</td>
+      <td class="num">87.2 ms/step</td>
+      <td>draft 才是 blk.40 單層（speculative-simple.cpp L383-390：`llama_decode(ctx_tgt, [id_last, drafts])`）。blk.40 進 L4 pool 只省 draft 的 weight-loading（27.5ms/step 仍要跑 5 個 token-run），<b>與 verify 的 87.2ms 無關</b>——verify 必須用「真模型」確認 draft，一定跑全部層。</td>
+    </tr>
+    <tr>
+      <td><b>攤薄確實存在</b></td>
+      <td class="num">29.1 vs 39.8 ms/row</td>
+      <td>3-token verify 87.2/3 = 29.1ms/row，比單 token 39.8ms 低 <b>27%</b>（共享 experts + 攤薄固定成本）——你期待的效益是真的、已入帳。</td>
+    </tr>
+    <tr>
+      <td><b>但 step 只出 2.9 個 token</b>（不是 3）</td>
+      <td class="num">95.7% accept</td>
+      <td>n=2 的 step = [id_last + 2 drafts]，最多 3 個 output；實測 2.9 → 每 step 有 0.1 個 token 被拒（MTP head 品質）。公式（§1）：(3×29.1 + 5×5.5) / 2.9 = 39.4ms/output-token。</td>
+    </tr>
+    <tr>
+      <td><b>blk.40 MTP head 是 24% 的固定成本</b></td>
+      <td class="num">27.5 ms/step</td>
+      <td>draft+process 5 個 token-run × 5.5ms，MTP 架構自帶、與 verify 序列化（依賴 h_nextn），無法藏。這筆不在「攤薄」的直覺裡。</td>
+    </tr>
+  </table>
+
+  <p class="note"><b>所以「30 很容易」的漏洞</b>：攤薄攤的是「每行成本」（39.8→29.1），但 MTP 每 step 付 3 行的錢 + blk.40 27.5ms，只拿 2.9 個 token。全 accept（3 tokens/step）且 blk.40 免費時：3 / (87.2+8.5) = 31.3 t/s——那才是「30 很容易」的場景，現在兩者都沒達成。</p>
+
+  <p class="note"><b>要 30 t/s（= 33.3ms/token）需要省 6.1ms/token = ~17.7ms/step</b>，只有兩個 ~17ms 級來源：<br>
+  ① <b>model 側砍 blk.40 head</b>（27.5ms/step → 砍半 ~13ms）：step → ~98ms → <b>~29.6 t/s</b>；<br>
+  ② <b>kernel 側修 FFN latency floor</b>（§⑦：31.4ms → ~15ms，併層 mmid）：verify → ~71ms → step → ~98ms → <b>~29.5 t/s</b>；<br>
+  ③ 兩者都做 → ~34 t/s。<b>不是自動攤薄能到，是上面兩條有界的工程。</b> <span class="tag r">② 已被 §⑨ FFN_GU1 證偽</span></p>
+</div>
+
+<!-- ============ 9. verify 87.2ms 逐項分解（chained graph probe）+ 併層 mmid 證偽 ============ -->
+<div class="card">
+  <h2>⑨ verify 87.2ms 逐項分解（chained probe）+ 併層 mmid prototype——「②併層」證偽</h2>
+  <p class="desc">用 temp/decomp_probe.cpp v4+（<b>chained</b> 圖、真實 qwen36 shapes、共享唯讀權重、3-token batch、Metal、50 rep 取 min）把 verify 拆成 attention / linear-attn / SSM glue / FFN / norm+head 五塊。與 §⑦ 的 bw_probe（isolated/sustained）不同：這裡全部塞進「依賴鏈」graph，量的是 <b>verify 的真實序列成本</b>。</p>
+
+  <table>
+    <tr><th>測試</th><th>內容</th><th>bytes</th><th class="num">min (ms)</th><th class="num">佔 COMBINED</th></tr>
+    <tr><td>FULL_ATT</td><td>10 層 full-attn（Q6_K wqg/wk/wv/wo + flash_attn, KV=512）</td><td class="num">223.6 MB</td><td class="num">7.38</td><td class="num">10.3%</td></tr>
+    <tr><td>LIN_ATT_MM</td><td>30 層 linear-attn 只 3 matmul（wqkv/wz/wo, 無 SSM）</td><td class="num">825.8 MB</td><td class="num">22.09</td><td class="num">—</td></tr>
+    <tr><td>LIN_GLUE</td><td>30 層 linear-attn 只 SSM glue（conv1d/l2norm/gdn/gated-norm）</td><td class="num">0</td><td class="num">3.62</td><td class="num">—</td></tr>
+    <tr><td>LINEAR_ATT</td><td>30 層 linear-attn 全（matmul + SSM）＝MM+GLUE</td><td class="num">845.4 MB</td><td class="num">25.85</td><td class="num">36.0%</td></tr>
+    <tr><td>ATT_MIX</td><td>40 層混合（每 4 層 1 個 full-attn，其餘 linear）＝真實拓撲</td><td class="num">1069.1 MB</td><td class="num">33.01</td><td class="num">—</td></tr>
+    <tr><td>FFN_MMID</td><td>40 層只 3 mmid + swiglu（gate/up IQ2_S, down IQ3_S, top-8）</td><td class="num">359.1 MB</td><td class="num">22.81</td><td class="num">—</td></tr>
+    <tr><td><b>FFN_GU1</b></td><td>40 層併層：gate+up 併成 1 個 mmid（1024 列）＝2 mmid/層</td><td class="num">359.1 MB</td><td class="num"><b>22.67</b></td><td class="num">—</td></tr>
+    <tr><td>FFN</td><td>40 層 3 mmid + glue（norm/gate_inp F32/expert-sum/shared Q6_K）</td><td class="num">462.4 MB</td><td class="num">27.79</td><td class="num">38.7%</td></tr>
+    <tr><td>FFN_ROUTE</td><td>40 層 + 真 routing（softmax/argsort/get_rows/weight-norm）</td><td class="num">462.4 MB</td><td class="num">29.03</td><td class="num">—</td></tr>
+    <tr><td>NORM_HEAD</td><td>80 rms_norm + output_norm + head Q6_K[2048→248320]</td><td class="num">417.2 MB</td><td class="num">11.33</td><td class="num">15.8%</td></tr>
+    <tr><td><b>COMBINED</b></td><td>40 層 (attn-mix+ffn) + head（verify 近似）</td><td class="num">1948.6 MB</td><td class="num"><b>71.72</b></td><td class="num">100%</td></tr>
+  </table>
+
+  <p class="note"><b>分解結論（b 完成）</b>：COMBINED 71.7ms ≈ 7.38+25.85+27.79+11.33 = 72.35ms → chained 可加總、無隱藏 dispatch bubble。真正的兩個大頭：<b>FFN 40 層 27.8ms（38.7%）</b>與 <b>linear-attn 30 層 25.9ms（36.0%）</b>，合計 75%。full-attn 只 10.3%、norm+head 15.8%（head 佔其中大部分）。對照真 verify 87.2ms 的 ~15.5ms gap 是「每層獨特 experts + 真 routing + KV 讀取 + in-place」等未建模 overhead——probe 共享權重讓 8 個 expert slab 全命中 L2，低估了 weight-read 成本。</p>
+
+  <p class="note"><b>FFN 內部拆解</b>：3 個 mmid kernel 就佔 22.8ms（FFN 的 82%）；glue（norm+gate_inp+expert-sum+shared）只 4.98ms；routing 只 +1.24ms。→ <b>FFN latency floor 的 82% 是 mmid kernel 本身</b>，不是 glue、不是 routing。</p>
+
+  <p class="note"><b>併層 mmid prototype（a 完成，負面結論）</b>：FFN_GU1 把 gate+up 併成單一 1024-列 mmid（120→80 次 mmid dispatch），40 層只省 <b>0.137ms</b>（每省 1 次 dispatch ≈ 3.4µs）。→ <b>FFN 不是 dispatch-bound，是 per-mmid kernel 的 latency/occupancy-bound</b>（small grid、低佔用，與 §⑦ 的 1-8% 有效頻寬一致）。併層不改「每層要算的 expert 列數」，只是少排幾次 dispatch，而 dispatch 早已藏在 kernel 執行下。⇒ <span class="tag r">槓桿②「併層 mmid → 31.4→15ms」證偽、關閉</span>。</p>
+
+  <p class="note"><b>turbo 式 per-expert batched GEMM 驗證（c 完成，同樣負面）</b>：既然 ② 併層無效，進一步驗證「單 dispatch 多 expert 加大 grid」（§⑦ 結論 3 的正確槓桿）——FFN_PACK 把 G 層 experts 疊進單一 mmid dispatch（weight [k,m,G×256]、batch=G×3、grid z=24G），掃 G={1,2,4,8}：dispatch 數 80→10、grid z 24→192，總時間只從 22.34→22.14ms（<b>1.01×</b>）。→ 真實 verify 的 chained graph 已被 Metal 同 stream 管線化，GPU 在 dispatch 之間不閒置，isolated 的「每 dispatch 固定 ~0.4ms」早已藏掉（chained 下 per-mmid 只 0.19ms）。<b>FFN floor 是 sustained kernel-throughput bound（~16 GB/s 有效），不是 dispatch 數、也不是 grid size</b>。要動它只剩：① MM 路徑（simdgroup_mm，需 batch≥32，3-token verify 到不了）；② 自訂高佔用 kernel（本 fork 結構上不支援）。<span class="tag r">turbo 併層也證偽</span> → 30 t/s 只剩 §⑧ ①「model 側砍 blk.40 head」一條有界路線。</p>
+</div>
+
 
 </div>
 </body>
