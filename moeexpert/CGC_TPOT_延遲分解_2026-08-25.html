@@ -392,6 +392,38 @@
   <p class="note"><b>turbo 式 per-expert batched GEMM 驗證（c 完成，同樣負面）</b>：既然 ② 併層無效，進一步驗證「單 dispatch 多 expert 加大 grid」（§⑦ 結論 3 的正確槓桿）——FFN_PACK 把 G 層 experts 疊進單一 mmid dispatch（weight [k,m,G×256]、batch=G×3、grid z=24G），掃 G={1,2,4,8}：dispatch 數 80→10、grid z 24→192，總時間只從 22.34→22.14ms（<b>1.01×</b>）。→ 真實 verify 的 chained graph 已被 Metal 同 stream 管線化，GPU 在 dispatch 之間不閒置，isolated 的「每 dispatch 固定 ~0.4ms」早已藏掉（chained 下 per-mmid 只 0.19ms）。<b>FFN floor 是 sustained kernel-throughput bound（~16 GB/s 有效），不是 dispatch 數、也不是 grid size</b>。要動它只剩：① MM 路徑（simdgroup_mm，需 batch≥32，3-token verify 到不了）；② 自訂高佔用 kernel（本 fork 結構上不支援）。<span class="tag r">turbo 併層也證偽</span> → 30 t/s 只剩 §⑧ ①「model 側砍 blk.40 head」一條有界路線。</p>
 </div>
 
+<!-- ============ 10. #1 draft top-4 A/B 證偽（2026-08-25） ============ -->
+<div class="card">
+  <h2>⑩ #1「blk.40 draft top-8→top-4」A/B 實測——證偽（draft head 是 compute-bound 非 read-bound）</h2>
+  <p class="desc">獨立 option：<code>--mtp-top4</code> / <code>N30CACHE_MTP_TOP4=1</code> → <code>CGC_MTP_DRAFT_TOP4=1</code>（draft-only 覆寫 blk.40 MTP head 的 routed experts 8→4，trunk 不變；預設 off = 原 top-8，bit-exact）。固定 prompt + seed 42 + --ignore-eos + -n 1100，同 trunk 模型、greedy verify。graph_mtp 側同時修掉 build_moe_ffn 的 expert-view OOB（用 min(hparams.n_expert_used, n_expert_used)，warmup 行為不變，ref PR#14753）。</p>
+
+  <table>
+    <tr><th>arm</th><th class="num">t/s (1103 tok)</th><th class="num">hit rate</th><th class="num">accept</th><th class="num">n_drafted</th><th class="num">n_accept</th><th>輸出</th></tr>
+    <tr><td>top-8（baseline）</td><td class="num">26.325（41.900s）</td><td class="num">83.5%</td><td class="num">99.458%</td><td class="num">738</td><td class="num">734</td><td rowspan="2"><b>bit-identical</b><br><small>md5 63f80ef709ed…、4910 bytes 兩臂全同</small></td></tr>
+    <tr><td>top-4（--mtp-top4）</td><td class="num">26.269（41.989s）</td><td class="num">78.8%</td><td class="num">98.253%</td><td class="num">744</td><td class="num">731</td></tr>
+  </table>
+
+  <p class="note"><b>判定：<span class="tag r">#1 證偽（speed 槓桿）</span></b>。top-4 確實生效（accept 99.46%→98.25%、hit 83.5→78.8% 證明 draft 品質變差），但 t/s 幾乎不變（26.269 vs 26.325，<b>反而慢 0.2%</b>：accept 掉 → 每 step 拿少 0.8% tokens，抵銷了略減的 expert read）。把 blk.40 draft 的 routed expert 讀取砍半，在 27.5ms/step 的 draft+process 上只省 ~1ms（~3.6%）→ 證實 <b>blk.40 head 是 compute/latency-bound，不是 expert-weight-read bound</b>（8 experts 的 slab 讀取在 27.5ms 中只佔 ~7%）。</p>
+
+  <p class="note"><b>影響</b>：§⑧①「model 側砍 blk.40 head」不能靠「少讀 experts」達成——只有砍 head 的 <b>compute</b>（更小/更少層的 MTP head，模型側）才有用，runtime 無解。輸出 <b>bit-identical</b>（verify 是 trunk-greedy gate，draft 再差也不改最終文字），所以 top-4 無「品質損失」但也不省時 → <b>純粹不可取</b>。組合路 #1+#3 需重估：剩 #3（trunk head IQ2）單獨，~-7ms/step → ~28 t/s（見 §⑪ 估）。</p>
+</div>
+
+<!-- ============ 11. 剩餘未證偽槓桿（30 t/s 評估，2026-08-25） ============ -->
+<div class="card">
+  <h2>⑪ 剩餘未證偽槓桿——30 t/s 只剩「verify 側」兩條（已實測 26.3 t/s）</h2>
+  <p class="desc">底線（本頁實測）：step = 113.6ms（1103 tok / 41.9s）、tokens/step ≈ 2.99（n=2, accept 99.5%）。30 t/s 需要 step ≤ 99.7ms → <b>還差 ~14ms/step</b>。verify 87.2ms 佔 step 的 77%，是唯一還動得了的大頭（blk.40 27.5ms 已證 compute-bound、§⑩ 證 read 槓桿無效）。</p>
+
+  <table>
+    <tr><th>槓桿</th><th>target（verify 內佔比）</th><th class="num">估省 /step</th><th class="num">估 t/s</th><th>品質風險</th><th>狀態</th></tr>
+    <tr><td><b>#3 head IQ2</b>（trunk output.weight Q6_K→IQ2，417→~131MB）</td><td>norm+head 11.33ms（15.8%，head 佔幾乎全部；bandwidth-bound ~37GB/s）</td><td class="num">~8ms</td><td class="num">~28.3</td><td>低（只有 1 層 head；greedy 對 head 誤差敏感度待 A/B）</td><td><span class="tag g">未證偽，唯一確定槓桿</span>（p3a/p3b 待做）</td></tr>
+    <tr><td><b>trunk FFN → IQ2_XXS</b>（gate/up IQ2_S + down IQ3_XXS → 全 IQ2_XXS）</td><td>FFN 27.79ms（38.7%，mmid 22.81 是 read-bound ~16GB/s；1.49× 縮）</td><td class="num">~6ms</td><td class="num">~27.9</td><td>高（35B-A3B 全 FFN IQ2 可能退化，§⑤ 明言「品質 A/B 待測」）</td><td><span class="tag y">未證偽但風險高</span></td></tr>
+    <tr><td><b>#3 + FFN-IQ2 合併</b></td><td>—</td><td class="num">~14ms</td><td class="num">~30.0</td><td>中（head 低 + FFN 高）</td><td><span class="tag y">唯一到 30 的算術路徑</span></td></tr>
+    <tr><td>linear-attn 30 層 quant</td><td>LIN_ATT_MM 22.09ms（已 37GB/s，matmul-bound 非 read-bound）</td><td class="num">~0-1ms</td><td class="num">—</td><td>—</td><td><span class="tag r">分析已證偽（不是 read-bound）</span></td></tr>
+    <tr><td>full-attn 10 層 quant</td><td>7.38ms（flash compute-bound）</td><td class="num">~0</td><td class="num">—</td><td>—</td><td><span class="tag r">分析已證偽</span></td></tr>
+  </table>
+
+  <p class="note"><b>總結</b>：#1（top-4 draft）今證偽；②（FFN 併層 / turbo GEMM）§⑨ 已證偽；accept/n_max、batch 藏、CPU 藏都已到頂。真正還沒證偽、有 ~14ms 級槓桿的只剩 <b>verify 側</b>：#3 head IQ2（~8ms，低風險）＋ trunk FFN IQ2_XXS（~6ms，高風險）——兩者合併才摸到 <b>~30 t/s</b>，單獨都只有 ~28。blk.40 27.5ms 是 compute-bound、runtime 無解（除非換更小 MTP head，模型側）。下一步就是 p3a/p3b：<b>llama-quantize 單獨重量化 output.weight → IQ2-head model</b>（獨立 model 檔、獨立 option，不碰原 model）。</p>
+</div>
 
 </div>
 </body>

@@ -77,19 +77,23 @@ IGNORE_EOS=0
 MTP=0
 MTP_CTX=2048
 MTP_N_MAX="${N30CACHE_MTP_N_MAX:-2}"
+# §MTP 2026-08-25 A/B：draft-only top-8→top-4（CGC_MTP_DRAFT_TOP4=1，只改 blk.40 MTP head 的
+# routed experts，trunk 不變）。獨立 option、預設 off：沒設 = 原 top-8 draft（bit-exact）。
+MTP_TOP4="${N30CACHE_MTP_TOP4:-0}"
 
 usage() {
-    echo "usage: $0 [-m gemma4|qwen36] [-n tokens] [-p prompt | --prompt-file F] [--ngl N] [--budget BYTES] [--pin-profile F] [--no-cache] [--warm] [--mtp [N]] [--seed N] [--decodehit] [--long-prompt] [--ignore-eos] [--steady]
+    echo "usage: $0 [-m gemma4|qwen36] [-n tokens] [-p prompt | --prompt-file F] [--ngl N] [--budget BYTES] [--pin-profile F] [--no-cache] [--warm] [--mtp [N]] [--mtp-top4] [--seed N] [--decodehit] [--long-prompt] [--ignore-eos] [--steady]
 #   --warm 優化 load：run 前把 model cat 進 page cache（重開機後第一次 run 建議；load -22%）
 #   --mtp [N] 啟用 MTP draft-mtp（僅 qwen36 有效，自動切到 graft model + speculative-simple binary，-c 2048 解 OOM）；
 #             N 為 --spec-draft-n-max，預設 2；可用 N30CACHE_MTP_N_MAX 覆寫
+#   --mtp-top4 啟用 MTP draft top-8→top-4 A/B（blk.40 MTP head 只路由 4 experts，trunk 不變；獨立、預設 off）
 #   --seed N 固定 seed（bit-identity / run-to-run 對照必設；等於 N30CACHE_SEED）
 #   --decodehit 印 CGC_DECODEHIT（decode hit rate，每 390 step 一次）
 #   --long-prompt 產生確定性長 prompt（>1000 token；同內容跨 run 完全一致，供對照）
 #   --ignore-eos 越過 EOG 繼續生成（量 >1000 token steady-state 必用；--steady 自動開）
 #   --steady 驗證模式：--seed 42 + --long-prompt + --decodehit + --ignore-eos + -n 1100（量 steady-state t/s + hit rate）；
 #             --seed / -n 可覆寫
-#   env: N30CACHE_N_CB / N30CACHE_SEED / N30CACHE_BUDGET / N30CACHE_NGL / N30CACHE_WORKERS / N30CACHE_MTP_N_MAX / N30CACHE_WARM 可覆寫" >&2
+#   env: N30CACHE_N_CB / N30CACHE_SEED / N30CACHE_BUDGET / N30CACHE_NGL / N30CACHE_WORKERS / N30CACHE_MTP_N_MAX / N30CACHE_MTP_TOP4 / N30CACHE_WARM 可覆寫" >&2
     exit 2
 }
 
@@ -118,6 +122,7 @@ while [ $# -gt 0 ]; do
             esac
             shift
             ;;
+        --mtp-top4) MTP_TOP4=1; shift ;;
         -h|--help) usage ;;
         *) usage ;;
     esac
@@ -213,7 +218,7 @@ echo "  ngl    : $NGL   budget: $((BUDGET/1073741824))GiB   workers: $WORKERS"
 echo "  pin    : ${PIN_PROFILE:-off}   wake-poll: ${WAKE_POLL_US}us   cache: ${NO_CACHE:-0}=off   warm: $WARM"
 echo "  early  : $EARLY (CGC_EARLY decode-only)   decodehit: $DECODEHIT"
 echo "  seed   : ${SEED:-default}   long-prompt: $LONG_PROMPT   ignore-eos: $IGNORE_EOS   steady: $STEADY   gen: $N"
-[ "$MTP" = 1 ] && echo "  mtp    : ON (spec-type=draft-mtp, n_max=$MTP_N_MAX, ctx=$MTP_CTX)"
+[ "$MTP" = 1 ] && echo "  mtp    : ON (spec-type=draft-mtp, n_max=$MTP_N_MAX, ctx=$MTP_CTX, top4=$MTP_TOP4)"
 
 CACHE_ARG=""  # patched: use CGC_EXPERT_CACHE_BYTES env var instead
 [ "${NO_CACHE:-0}" = 1 ] && CACHE_ARG=""
@@ -244,6 +249,12 @@ fi
 # N30CACHE_MTP_DRAFT_DECODE=0 可關掉。
 if [ "$MTP" = 1 ] && [ "${N30CACHE_MTP_DRAFT_DECODE:-1}" = 1 ]; then
     ENVS+=(CGC_DRAFT_DECODE=1)
+fi
+# §MTP 2026-08-25 A/B（獨立 option，CGC_MTP_DRAFT_TOP4=1）：blk.40 MTP head 的 routed experts
+# 8→4（draft-only，trunk 不變）→ draft weight-read 減半。預設 off：沒設 = 原 top-8 draft（bit-exact）。
+# 用途：量 top-4 draft 對 accept / t/s / 輸出的影響（品質成本）。N30CACHE_MTP_TOP4=1 或 --mtp-top4 開啟。
+if [ "$MTP" = 1 ] && [ "$MTP_TOP4" = 1 ]; then
+    ENVS+=(CGC_MTP_DRAFT_TOP4=1)
 fi
 # 優化 load：先 cat model 進 page cache（重開機後第一次 run 建議），之後 loader 的 read 全 RAM-speed
 if [ "$WARM" = 1 ]; then
