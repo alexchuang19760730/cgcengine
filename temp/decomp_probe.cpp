@@ -77,8 +77,7 @@ struct G {
     void expand(ggml_tensor * t) { ggml_build_forward_expand(gf, t); }
 
     double run(ggml_backend_t backend, int n_rep = 50) {
-        ggml_backend_alloc_ctx_tensors(ctx, backend);
-        for (auto * x : leaves) {
+        ggml_backend_alloc_ctx_tensors(ctx, backend);        for (auto * x : leaves) {
             std::vector<float> f(ggml_nelements(x), 1.0f);
             ggml_backend_tensor_set(x, f.data(), 0, f.size()*sizeof(float));
         }
@@ -99,16 +98,20 @@ struct G {
             ggml_backend_graph_compute(backend, gf);
             ggml_backend_synchronize(backend);
         }
-        double t_min = 1e30;
+        double t_min = 1e30, t_sum = 0;
         for (int i = 0; i < n_rep; i++) {
             double t0 = now_ms();
             ggml_backend_graph_compute(backend, gf);
             ggml_backend_synchronize(backend);
             double dt = now_ms() - t0;
+            t_sum += dt;
             if (dt < t_min) t_min = dt;
         }
+        if (t_mean) *t_mean = t_sum / n_rep;
         return t_min;
     }
+
+    double * t_mean = nullptr;   // filled with the mean (not min) latency by run()
 };
 
 // ---- shared weight bundles (one copy, reused across all layers of a test) ----
@@ -451,6 +454,14 @@ int main(int argc, char ** argv) {
 
     ggml_backend_t backend = ggml_backend_metal_init();
     if (!backend) { fprintf(stderr, "no metal backend\n"); return 1; }
+    // CGC: match production encode parallelism (CGC_N_CB=8). PROBE_N_CB env overrides.
+    {
+        typedef void (*set_n_cb_fn)(ggml_backend_t, int);
+        auto fn = (set_n_cb_fn) ggml_backend_reg_get_proc_address(ggml_backend_metal_reg(), "ggml_backend_set_n_cb");
+        int n_cb = 1;
+        if (const char * e = getenv("PROBE_N_CB")) n_cb = atoi(e);
+        if (fn) { fn(backend, n_cb); printf("== n_cb = %d ==\n", n_cb); }
+    }
     printf("== CGC verify decomposition (chained, tok=%d, N_KV=%d, Metal) ==\n\n", N_TOK, N_KV);
 
     // ---- FULL_ATT x10 chained ----
@@ -465,8 +476,9 @@ int main(int argc, char ** argv) {
             cur = block_full_attn(g, cur, w);
             g.bytes += bytes_of(w.wqg) + bytes_of(w.wk) + bytes_of(w.wv) + bytes_of(w.wo);
         }
+        double tm; g.t_mean = &tm;
         double t = g.run(backend);
-        printf("FULL_ATT   10 chained layers        | %9.2f MB | min %7.3f ms | eff %6.1f GB/s\n", g.bytes/1e6, t, g.bytes/1e9/(t/1e3));
+        printf("FULL_ATT   10 chained layers        | %9.2f MB | min %7.3f ms | mean %7.3f ms | eff %6.1f GB/s\n", g.bytes/1e6, t, tm, g.bytes/1e9/(t/1e3));
     }
     // ---- LIN_ATT_MM x30 chained (3 matmuls only, no SSM glue) ----
     {
@@ -479,8 +491,9 @@ int main(int argc, char ** argv) {
             cur = block_linear_attn(g, cur, w);
             g.bytes += bytes_of(w.wqkv) + bytes_of(w.wz) + bytes_of(w.wo);
         }
+        double tm; g.t_mean = &tm;
         double t = g.run(backend);
-        printf("LIN_ATT_MM 30 layers, 3 mm only     | %9.2f MB | min %7.3f ms | eff %6.1f GB/s\n", g.bytes/1e6, t, g.bytes/1e9/(t/1e3));
+        printf("LIN_ATT_MM 30 layers, 3 mm only     | %9.2f MB | min %7.3f ms | mean %7.3f ms | eff %6.1f GB/s\n", g.bytes/1e6, t, tm, g.bytes/1e9/(t/1e3));
     }
     // ---- LIN_GLUE x30 chained (SSM glue only: conv+l2norm+gdn+normgated) ----
     {
@@ -490,8 +503,9 @@ int main(int argc, char ** argv) {
         for (int l = 0; l < 30; l++) {
             cur = block_linear_glue(g, cur, w);
         }
+        double tm; g.t_mean = &tm;
         double t = g.run(backend);
-        printf("LIN_GLUE   30 layers, ssm only      | %9.2f MB | min %7.3f ms | eff %6.1f GB/s\n", g.bytes/1e6, t, g.bytes/1e9/(t/1e3));
+        printf("LIN_GLUE   30 layers, ssm only      | %9.2f MB | min %7.3f ms | mean %7.3f ms | eff %6.1f GB/s\n", g.bytes/1e6, t, tm, g.bytes/1e9/(t/1e3));
     }
     // ---- LINEAR_ATT x30 chained (FULL real: matmuls + SSM glue) ----
     {
@@ -504,8 +518,9 @@ int main(int argc, char ** argv) {
                      + bytes_of(w.w_beta) + bytes_of(w.w_alpha) + bytes_of(w.w_a) + bytes_of(w.w_dt)
                      + bytes_of(w.conv_kernel);
         }
+        double tm; g.t_mean = &tm;
         double t = g.run(backend);
-        printf("LINEAR_ATT 30 chained layers (full) | %9.2f MB | min %7.3f ms | eff %6.1f GB/s\n", g.bytes/1e6, t, g.bytes/1e9/(t/1e3));
+        printf("LINEAR_ATT 30 chained layers (full) | %9.2f MB | min %7.3f ms | mean %7.3f ms | eff %6.1f GB/s\n", g.bytes/1e6, t, tm, g.bytes/1e9/(t/1e3));
     }
     // ---- ATT_MIX x40 (every 4th full) ----
     {
@@ -527,8 +542,9 @@ int main(int argc, char ** argv) {
                          + bytes_of(la.conv_kernel);
             }
         }
+        double tm; g.t_mean = &tm;
         double t = g.run(backend);
-        printf("ATT_MIX    40 chained layers (10F+30L)| %9.2f MB | min %7.3f ms | eff %6.1f GB/s\n", g.bytes/1e6, t, g.bytes/1e9/(t/1e3));
+        printf("ATT_MIX    40 chained layers (10F+30L)| %9.2f MB | min %7.3f ms | mean %7.3f ms | eff %6.1f GB/s\n", g.bytes/1e6, t, tm, g.bytes/1e9/(t/1e3));
     }
     // ---- FFN_MMID x40 (3 mmid + swiglu only, no glue) ----
     {
@@ -548,8 +564,9 @@ int main(int argc, char ** argv) {
             cur = block_ffn_mmid(g, cur, w, ids);
             g.bytes += per_layer;
         }
+        double tm; g.t_mean = &tm;
         double t = g.run(backend);
-        printf("FFN_MMID  40 layers, 3 mmid only    | %9.2f MB | min %7.3f ms | eff %6.1f GB/s\n", g.bytes/1e6, t, g.bytes/1e9/(t/1e3));
+        printf("FFN_MMID  40 layers, 3 mmid only    | %9.2f MB | min %7.3f ms | mean %7.3f ms | eff %6.1f GB/s\n", g.bytes/1e6, t, tm, g.bytes/1e9/(t/1e3));
     }
     // ---- FFN_GU1 x40 (merged gate+up mmid + down mmid = 2 mmid/layer) ----
     {
@@ -567,13 +584,14 @@ int main(int argc, char ** argv) {
             cur = block_ffn_mmid_gu(g, cur, w, ids, w_gu);
             g.bytes += per_layer;
         }
+        double tm; g.t_mean = &tm;
         double t = g.run(backend);
-        printf("FFN_GU1   40 layers, 2 mmid (GU+dn) | %9.2f MB | min %7.3f ms | eff %6.1f GB/s\n", g.bytes/1e6, t, g.bytes/1e9/(t/1e3));
+        printf("FFN_GU1   40 layers, 2 mmid (GU+dn) | %9.2f MB | min %7.3f ms | mean %7.3f ms | eff %6.1f GB/s\n", g.bytes/1e6, t, tm, g.bytes/1e9/(t/1e3));
     }
     // ---- FFN_PACK turbo sweep (G layers per dispatch) ----
     {
         printf("FFN_PACK  turbo sweep: G layers packed into 1 mmid dispatch (grid z=24G)\n");
-        const int Gs[] = { 1, 2, 4, 8, 12 };
+        const int Gs[] = { 1, 2, 4, 8 };
         double t_base = 0.0;
         for (int G : Gs) {
             double t = ffn_pack_time(backend, G);
@@ -603,8 +621,9 @@ int main(int argc, char ** argv) {
             cur = block_ffn(g, cur, w, ids, wts);
             g.bytes += per_layer;
         }
+        double tm; g.t_mean = &tm;
         double t = g.run(backend);
-        printf("FFN        40 chained layers (3 mmid)| %9.2f MB | min %7.3f ms | eff %6.1f GB/s\n", g.bytes/1e6, t, g.bytes/1e9/(t/1e3));
+        printf("FFN        40 chained layers (3 mmid)| %9.2f MB | min %7.3f ms | mean %7.3f ms | eff %6.1f GB/s\n", g.bytes/1e6, t, tm, g.bytes/1e9/(t/1e3));
     }
     // ---- FFN_ROUTE x40 chained (3 mmid + REAL routing: softmax/argsort/get_rows/weight-norm) ----
     {
@@ -624,8 +643,9 @@ int main(int argc, char ** argv) {
             cur = block_ffn_route(g, cur, w);
             g.bytes += per_layer;
         }
+        double tm; g.t_mean = &tm;
         double t = g.run(backend);
-        printf("FFN_ROUTE 40 layers (3 mmid+routing)| %9.2f MB | min %7.3f ms | eff %6.1f GB/s\n", g.bytes/1e6, t, g.bytes/1e9/(t/1e3));
+        printf("FFN_ROUTE 40 layers (3 mmid+routing)| %9.2f MB | min %7.3f ms | mean %7.3f ms | eff %6.1f GB/s\n", g.bytes/1e6, t, tm, g.bytes/1e9/(t/1e3));
     }
     // ---- NORM_HEAD ----
     {
@@ -637,8 +657,9 @@ int main(int argc, char ** argv) {
         ggml_tensor * logits = ggml_mul_mat(g.ctx, head, cur);
         g.expand(logits);
         g.bytes = bytes_of(head);
+        double tm; g.t_mean = &tm;
         double t = g.run(backend);
-        printf("NORM_HEAD  80 norm + head Q6_K      | %9.2f MB | min %7.3f ms | eff %6.1f GB/s\n", g.bytes/1e6, t, g.bytes/1e9/(t/1e3));
+        printf("NORM_HEAD  80 norm + head Q6_K      | %9.2f MB | min %7.3f ms | mean %7.3f ms | eff %6.1f GB/s\n", g.bytes/1e6, t, tm, g.bytes/1e9/(t/1e3));
     }
     // ---- COMBINED (40 attn-mix + ffn + head) ----
     {
@@ -683,8 +704,44 @@ int main(int argc, char ** argv) {
         ggml_tensor * logits = ggml_mul_mat(g.ctx, head, cur);
         g.expand(logits);
         g.bytes += bytes_of(head);
+        double tm; g.t_mean = &tm;
         double t = g.run(backend);
-        printf("COMBINED   40 attn+ffn + head      | %9.2f MB | min %7.3f ms | eff %6.1f GB/s\n", g.bytes/1e6, t, g.bytes/1e9/(t/1e3));
+        printf("COMBINED   40 attn+ffn + head      | %9.2f MB | min %7.3f ms | mean %7.3f ms | eff %6.1f GB/s\n", g.bytes/1e6, t, tm, g.bytes/1e9/(t/1e3));
+    }
+
+    // ---- FFN_UNIQ x40: G distinct expert bundles, layer l uses bundle l%G ----
+    // Real verify reads 40*256 DISTINCT experts per step (no cross-layer reuse). The shared
+    // FFN test above keeps ONE 256-expert bundle hot, which under-measures the real weight-read
+    // locality. This sweep varies the number of distinct bundles G (G=1 == shared FFN; G=8 ≈
+    // closer to real working set) at constant per-layer byte count.
+    for (int GP : { 1, 4, 8 }) {
+        G g;
+        std::vector<FFNW> ws;
+        for (int k = 0; k < GP; k++) {
+            FFNW w = { g.extra3(GGML_TYPE_IQ2_S, 2048, 512, N_EXP),
+                       g.extra3(GGML_TYPE_IQ2_S, 2048, 512, N_EXP),
+                       g.extra3(GGML_TYPE_IQ3_S, 512,  2048, N_EXP),
+                       g.extra(GGML_TYPE_Q6_K, 2048, 512),
+                       g.extra(GGML_TYPE_Q6_K, 2048, 512),
+                       g.extra(GGML_TYPE_Q6_K, 512,  2048) };
+            ws.push_back(w);
+        }
+        const FFNW & w0 = ws[0];
+        const double per_layer =
+            (bytes_of(w0.w_gate) + bytes_of(w0.w_up)) / N_EXP * N_USED +
+             bytes_of(w0.w_down) / N_EXP * N_USED +
+             bytes_of(w0.w_su) + bytes_of(w0.w_sg) + bytes_of(w0.w_sd);
+        ggml_tensor * ids = g.extra(GGML_TYPE_I32, N_USED, N_TOK);
+        ggml_tensor * wts = g.extra3(GGML_TYPE_F32, 1, N_USED, N_TOK);
+        ggml_tensor * cur = g.leaf(2048, N_TOK);
+        for (int l = 0; l < 40; l++) {
+            cur = block_ffn(g, cur, ws[l % GP], ids, wts);
+            g.bytes += per_layer;
+        }
+        double tm; g.t_mean = &tm;
+        double t = g.run(backend);
+        printf("FFN_UNIQ G=%2d 40L, 3 mmid, %d distinct bundles | %9.2f MB | min %7.3f ms | mean %7.3f ms | eff %6.1f GB/s\n",
+               GP, GP, g.bytes/1e6, t, tm, g.bytes/1e9/(t/1e3));
     }
 
     ggml_backend_free(backend);

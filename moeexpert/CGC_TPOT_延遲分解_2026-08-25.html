@@ -425,6 +425,59 @@
   <p class="note"><b>總結</b>：#1（top-4 draft）今證偽；②（FFN 併層 / turbo GEMM）§⑨ 已證偽；accept/n_max、batch 藏、CPU 藏都已到頂。真正還沒證偽、有 ~14ms 級槓桿的只剩 <b>verify 側</b>：#3 head IQ2（~8ms，低風險）＋ trunk FFN IQ2_XXS（~6ms，高風險）——兩者合併才摸到 <b>~30 t/s</b>，單獨都只有 ~28。blk.40 27.5ms 是 compute-bound、runtime 無解（除非換更小 MTP head，模型側）。下一步就是 p3a/p3b：<b>llama-quantize 單獨重量化 output.weight → IQ2-head model</b>（獨立 model 檔、獨立 option，不碰原 model）。</p>
 </div>
 
+<!-- ============ 12. decomp_probe 工具測量方式 + TPOT 拆解方法 ============ -->
+<div class="card">
+  <h2>⑫ 工具測量方式：decomp_probe（kernel 級 decompose）＋ TPOT 時間拆解方法</h2>
+  <p class="desc">本頁的 ①（CGC_STEPT 逐相）、⑦（bw_probe）、⑨（decomp_probe chained）用三套獨立工具，各量不同層次。這裡補齊各工具的<b>測量方式</b>與<b>TPOT 怎麼拆</b>，讓數字可複現、可互相比對。</p>
+
+  <h3 style="font-size:14px;margin:14px 0 8px">A. decomp_probe.cpp —「chained kernel 級 floor」測量</h3>
+  <table>
+    <tr><th>項目</th><th>做法</th></tr>
+    <tr><td><b>量什麼</b></td><td>把 verify 的 40 層 trunk 拆成 attn / linear-attn(SSM) / FFN / norm+head 四塊，各自以「40 層依賴鏈」graph 塞進一次 <code>ggml_backend_graph_compute</code>，量 GPU 序列執行時間（kernel floor）。不是 isolated、不是 sustained，是 <b>chained</b>——每層吃前一層的輸出，最接近真實 verify 的序列成本。</td></tr>
+    <tr><td><b>權重</b></td><td>真實 qwen36 shapes（gate/up IQ2_S 2048→512、down IQ3_XXS 512→2048、256 experts、top-8、3-token batch、shared/注意力 Q6_K、KV=512、head Q6_K 2048→248320）。預設<b>共享唯讀</b>權重（每層同一組 expert slab）→ 讓 8 個 slab 全命中 L2，量到「同權重的下限」；FFN_UNIQ 測試用 G 組 distinct bundles 量 locality 效應。</td></tr>
+    <tr><td><b>計時</b></td><td>每個 test block 自建 4GiB ggml ctx + 依賴鏈 graph；<code>run()</code> 對同一 graph 跑 50 rep（<code>graph_compute</code> + <code>synchronize</code>），同時記 <b>min</b>（排除變異）與 <b>mean</b>（對齊真實驗證的平均時間）。<code>PROBE_N_CB</code> env 控制 n_cb（預設對齊生產 CGC_N_CB=8）。</td></tr>
+    <tr><td><b>bytes/有效頻寬</b></td><td>每 block 累加每層實際讀入的 weight bytes，印 min/mean 與 <code>eff GB/s = bytes / min</code>——用於判斷該塊是 <b>bandwidth-bound</b>（eff→546GB/s 級）還是 <b>latency/occupancy-bound</b>（eff 只有個位數 GB/s，如 FFN mmid ~16GB/s）。</td></tr>
+    <tr><td><b>可加總性</b></td><td>COMBINED（40 attn+ffn + head 全鏈）≈ 各分塊 min 之和（73.0 ≈ 7.38+25.85+27.79+11.33）→ 驗證無隱藏 dispatch bubble，分塊可獨立優化。</td></tr>
+  </table>
+
+  <h3 style="font-size:14px;margin:14px 0 8px">B. TPOT 時間拆解方法（三層對照）</h3>
+  <table>
+    <tr><th>層次</th><th>工具</th><th>怎麼量</th><th>拆出什麼</th></tr>
+    <tr><td><b>驅動層逐步</b></td><td>CGC_STEPT</td><td>speculative-simple 每 step 把 <code>llama_decode</code> 四段（draft/verify/process/accept）各掐 <code>ggml_time_us()</code>，印 <code>CGC-STEPT total/dft/ver/proc/acc</code></td><td>step 的牆上時間分配：verify 87.2ms（trunk）、blk.40 27.5ms（draft+process）、acc 14.7ms（sampler+非同步 logits GPU tail）。<b>dft+proc+acc 牆上疊加超過 total → 三相在 async dispatch 下互相重疊，CPU 暴露≈0</b>。</td></tr>
+    <tr><td><b>CPU 側相位</b></td><td>CGC_PHASE_TIMING（CGC-PHASE / CGC-PHASE-B）</td><td>llama-context.cpp 的 <code>process_ubatch</code> 把每次 graph_compute 拆 build / alloc / inputs / compute，單 token 與多 token（verify）分開累計；CGC-PHASE-B 印單次值</td><td>verify graph_compute 的 CPU 成本極小（build 0.05 + alloc 0.1 + inputs 0.01ms）；<b>多 token 的 compute 單次值交替出現 ~85ms（trunk verify）與 ~1.2ms（blk.40 head）</b>——證明 verify GPU 真成本 ~85ms、CPU overhead 僅 ~2ms。</td></tr>
+    <tr><td><b>kernel 級 floor</b></td><td>decomp_probe</td><td>如 A——chained graph 取 min</td><td>COMBINED 73ms = 已知 bandwidth/latency 下限。與真 verify ~85ms 的差（~12ms）＝「未建模 overhead」（真實每層獨立 experts + 每層 routing + segment event-gating）——見 §⑬。</td></tr>
+  </table>
+  <p class="note"><b>三層關係</b>：<code>st_ver（驅動層）≥ phb_compute（CPU 側 graph_compute 牆上）≥ COMBINED（kernel floor）</code>。三者差額可逐層定位：st_ver − phb_compute ≈ CPU 後處理（extract_layer_inputs/logits，~2ms）；phb_compute − COMBINED ≈ 真實權重/路由/event-gating 成本（~12ms，§⑬ 分解）。</p>
+</div>
+
+<!-- ============ 13. verify 15.5ms gap 分解 + CGC_EARLY_VERIFY（2026-08-25） ============ -->
+<div class="card">
+  <h2>⑬ verify 15.5ms gap 分解 + <code>--mtp-early-verify</code>（early slot_table write）實測——挖回 ~8-11ms/step</h2>
+  <p class="desc">§⑨ 的 COMBINED probe 是 73ms，真 verify 是 87.2ms——這 ~15ms gap 用三種假說逐個測：① min-vs-mean（排除，probe mean 72.1≈min 71.5）；② KV 長度 512→2048（只 +1.6ms）；③ 每層獨特 experts locality（<b>FFN_UNIQ G=1/4 掃描：27.89 vs 27.82ms，無 locality 效應，證偽</b>）。最後定位在 <b>segment event-gating 序列化</b>。</p>
+
+  <table>
+    <tr><th>測量（真 binary，CGC-PHASE-B 單次值）</th><th class="num">trunk verify graph_compute</th><th>說明</th></tr>
+    <tr><td>baseline（GATE path）</td><td class="num">~86ms</td><td>CGC_OA_ASYNC 每 FFN layer 一個 topk segment → 40 段，每段邊界 wait→hook→signal 串行</td></tr>
+    <tr><td><b>CGC_NO_EVENT</b>（去 event gate）</td><td class="num"><b>~78ms</b></td><td>event-gating 序列化成本 <b>~8ms</b></td></tr>
+    <tr><td>CGC_SKIPFAST（跳 hook body）</td><td class="num">~85.6ms</td><td>hook body 便宜（<0.5ms）→ 序列化在「wait→hook→signal」整段，非 hook 內</td></tr>
+    <tr><td>CGC-SEG 統計</td><td class="num">wait 2.18ms / cb 0.6ms / sig 1.4µs 每段</td><td>wait 被 GPU 執行藏住；hook body 0.6ms/段 × 40 段是 critical-path 序列化主體</td></tr>
+  </table>
+
+  <p class="note"><b>根因</b>：verify 是 n_tokens=3，<code>CGC_EARLY</code>（early slot_table write + 提早 signal，藏在 GPU 後）只對 decode（ne[1]==1）生效 → verify 走 GATE path：<b>等整段 seg[i] 跑完 → CPU 讀 topk GPU 結果 → 寫 table → signal → seg[i+1] 才能開始</b>。每段 ~0.6ms CPU 序列化 × 40 段 ≈ 8ms。</p>
+
+  <p class="note"><b>實現（CGC_EARLY_VERIFY）</b>：把 CGC_EARLY 延伸到 n_tokens≤3。安全性：CGC_VERIFY_DECODE 下 verify hook 是 touch-only（不 ensure_batch、不搬 pool），slot_table 純粹是 pool state 的函數 → early 寫的 table 與 GATE 寫的相同；hook 側在 CGC_EARLY_VERIFY 下跳過自己的 post-ensure write（避免與已 signal、正在跑的消費段 race）。sched 尾段 tail-wait 已防 cross-step race（decode 的 early write 不會撞 verify 讀）。改動：ggml-backend.cpp（sched 條件）、llama-context.cpp（hook write 跳過）。</p>
+
+  <table>
+    <tr><th>arm（seed 42）</th><th class="num">ver/step</th><th class="num">decoded t/s</th><th class="num">accept</th><th>輸出</th></tr>
+    <tr><td>baseline（GATE verify）</td><td class="num">~95.6ms</td><td class="num">23.75</td><td class="num">88.3%</td><td rowspan="2">兩臂各自 within-run bit-stable（md5 相同）；<b>臂間非 bit-identical</b>（early table 在 pool state 的早一點時間點寫入）</td></tr>
+    <tr><td><b>--mtp-early-verify</b></td><td class="num"><b>~84.6ms（−11ms）</b></td><td class="num"><b>26.47（+11.5%）</b></td><td class="num">91.4%</td></tr>
+  </table>
+
+  <p class="note"><b>production script 對照（./scripts/run_n30cache.sh -m qwen36 --mtp --seed 42, n=120）</b>：baseline <b>24.597 t/s</b> → <code>--mtp-early-verify</code> <b>26.976 t/s（+9.7%）</b>。accept 未退化（88.3→91.4%）。新增 option：<code>--mtp-early-verify</code> / <code>N30CACHE_MTP_EARLY_VERIFY=1</code>（自動開 CGC_EARLY=1），預設 off。</p>
+
+  <p class="note"><b>判定</b>：這是 §⑪ 缺的「verify 側」真正可挖的 ~8-11ms（graph/packing 層，event-gating 序列化）。與 §⑧ 結論「藏已歸零」不衝突——那是 blk.40/CPU 側；verify 的 event-gating 是 <b>GPU 閒置</b>（wait→hook→signal 串行時 GPU 等 CPU），不是可藏的 CPU 時間，是可修的 GPU bubble。<b>新天花板：step ≈ 114.8 − ~8 = ~107ms → ~27-28 t/s</b>（本頁實測 26.98）。輸出非 bit-identical（GATE vs early 臂），但 within-arm 確定性；如需 bit-identical 生產，可保持預設 off。</p>
+</div>
+
 </div>
 </body>
 </html>

@@ -43,6 +43,10 @@ Q36="$ROOT/models/gguf/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf"
 # 2026-08-25 實測：graft（blk.40 Q4_K）verify 126ms/token；Nail（blk.40 UD-IQ3_XXS）103ms/token
 # 且 hit rate 更高（77.4% vs 72.1%）→ 較快。純 UD-IQ3_XXS 沒 blk.40，無法啟用 --spec-type draft-mtp。
 Q36_MTP="$ROOT/models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS.gguf"
+# §MTP 2026-08-25 #3：head IQ2 A/B 載體（--head-iq2 / N30CACHE_HEAD_IQ2=1）。
+# llama-quantize --tensor-type-file 只把 blk.40 MTP head 的 output.weight Q6_K→IQ2_S（其餘 752
+# tensor byte-copy，bit-identical by construction）。獨立 option、預設 off：沒設 = 原 Q6_K head。
+Q36_MTP_HEADIQ2="$ROOT/models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-headIQ2.gguf"
 
 MODEL="${N30CACHE_MODEL:-${1:-gemma4}}"
 N=128
@@ -80,20 +84,32 @@ MTP_N_MAX="${N30CACHE_MTP_N_MAX:-2}"
 # §MTP 2026-08-25 A/B：draft-only top-8→top-4（CGC_MTP_DRAFT_TOP4=1，只改 blk.40 MTP head 的
 # routed experts，trunk 不變）。獨立 option、預設 off：沒設 = 原 top-8 draft（bit-exact）。
 MTP_TOP4="${N30CACHE_MTP_TOP4:-0}"
+# §MTP 2026-08-25 #3：head IQ2 A/B（載體切到 output.weight IQ2_S 的 Nail model）。獨立 option、
+# 預設 off：沒設 = 原 Q6_K head（bit-exact）。
+HEAD_IQ2="${N30CACHE_HEAD_IQ2:-0}"
+# §MTP 2026-08-25（新，--mtp-early-verify / N30CACHE_MTP_EARLY_VERIFY=1）：把 decode 的 CGC_EARLY
+# early slot_table write + 提早 signal 延伸到 MTP verify（n_tokens<=3，需 CGC_VERIFY_DECODE touch-only
+# pool 穩定才安全）。實測 ver 95.6→84.6ms/step（-11ms）、decoded 23.75→26.47 t/s（+11.5%）、
+# accept 88.3%→91.4%（未退化）；輸出與 GATE 臂不同（非 bit-identical）但 within-arm 穩定。
+# 附帶自動開 CGC_EARLY=1（sched 條件需要）。預設 off。N30CACHE_MTP_EARLY_VERIFY=0 可關掉。
+MTP_EARLY_VERIFY="${N30CACHE_MTP_EARLY_VERIFY:-0}"
 
 usage() {
-    echo "usage: $0 [-m gemma4|qwen36] [-n tokens] [-p prompt | --prompt-file F] [--ngl N] [--budget BYTES] [--pin-profile F] [--no-cache] [--warm] [--mtp [N]] [--mtp-top4] [--seed N] [--decodehit] [--long-prompt] [--ignore-eos] [--steady]
+    echo "usage: $0 [-m gemma4|qwen36] [-n tokens] [-p prompt | --prompt-file F] [--ngl N] [--budget BYTES] [--pin-profile F] [--no-cache] [--warm] [--mtp [N]] [--mtp-top4] [--head-iq2] [--seed N] [--decodehit] [--long-prompt] [--ignore-eos] [--steady]
 #   --warm 優化 load：run 前把 model cat 進 page cache（重開機後第一次 run 建議；load -22%）
 #   --mtp [N] 啟用 MTP draft-mtp（僅 qwen36 有效，自動切到 graft model + speculative-simple binary，-c 2048 解 OOM）；
 #             N 為 --spec-draft-n-max，預設 2；可用 N30CACHE_MTP_N_MAX 覆寫
 #   --mtp-top4 啟用 MTP draft top-8→top-4 A/B（blk.40 MTP head 只路由 4 experts，trunk 不變；獨立、預設 off）
+#   --head-iq2 啟用 MTP head IQ2 A/B（載體切到 output.weight IQ2_S 的 Nail model；獨立、預設 off）
+#   --mtp-early-verify 啟用 MTP verify early slot_table write + 提早 signal（省 ~11ms/step、+11.5%
+#             t/s；輸出與 GATE 臂非 bit-identical，within-arm 穩定；自動開 CGC_EARLY；預設 off）
 #   --seed N 固定 seed（bit-identity / run-to-run 對照必設；等於 N30CACHE_SEED）
 #   --decodehit 印 CGC_DECODEHIT（decode hit rate，每 390 step 一次）
 #   --long-prompt 產生確定性長 prompt（>1000 token；同內容跨 run 完全一致，供對照）
 #   --ignore-eos 越過 EOG 繼續生成（量 >1000 token steady-state 必用；--steady 自動開）
 #   --steady 驗證模式：--seed 42 + --long-prompt + --decodehit + --ignore-eos + -n 1100（量 steady-state t/s + hit rate）；
 #             --seed / -n 可覆寫
-#   env: N30CACHE_N_CB / N30CACHE_SEED / N30CACHE_BUDGET / N30CACHE_NGL / N30CACHE_WORKERS / N30CACHE_MTP_N_MAX / N30CACHE_MTP_TOP4 / N30CACHE_WARM 可覆寫" >&2
+#   env: N30CACHE_N_CB / N30CACHE_SEED / N30CACHE_BUDGET / N30CACHE_NGL / N30CACHE_WORKERS / N30CACHE_MTP_N_MAX / N30CACHE_MTP_TOP4 / N30CACHE_HEAD_IQ2 / N30CACHE_WARM 可覆寫" >&2
     exit 2
 }
 
@@ -123,6 +139,8 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         --mtp-top4) MTP_TOP4=1; shift ;;
+        --head-iq2) HEAD_IQ2=1; shift ;;
+        --mtp-early-verify) MTP_EARLY_VERIFY=1; shift ;;
         -h|--help) usage ;;
         *) usage ;;
     esac
@@ -148,7 +166,11 @@ case "$MODEL" in
     qwen36)
         DEFAULT_NGL=99
         if [ "$MTP" = 1 ]; then
-            M="$Q36_MTP"
+            if [ "$HEAD_IQ2" = 1 ]; then
+                M="$Q36_MTP_HEADIQ2"
+            else
+                M="$Q36_MTP"
+            fi
             BIN="$BIN_SPEC"
         else
             M="$Q36"
@@ -218,7 +240,7 @@ echo "  ngl    : $NGL   budget: $((BUDGET/1073741824))GiB   workers: $WORKERS"
 echo "  pin    : ${PIN_PROFILE:-off}   wake-poll: ${WAKE_POLL_US}us   cache: ${NO_CACHE:-0}=off   warm: $WARM"
 echo "  early  : $EARLY (CGC_EARLY decode-only)   decodehit: $DECODEHIT"
 echo "  seed   : ${SEED:-default}   long-prompt: $LONG_PROMPT   ignore-eos: $IGNORE_EOS   steady: $STEADY   gen: $N"
-[ "$MTP" = 1 ] && echo "  mtp    : ON (spec-type=draft-mtp, n_max=$MTP_N_MAX, ctx=$MTP_CTX, top4=$MTP_TOP4)"
+[ "$MTP" = 1 ] && echo "  mtp    : ON (spec-type=draft-mtp, n_max=$MTP_N_MAX, ctx=$MTP_CTX, top4=$MTP_TOP4, early-verify=$MTP_EARLY_VERIFY)"
 
 CACHE_ARG=""  # patched: use CGC_EXPERT_CACHE_BYTES env var instead
 [ "${NO_CACHE:-0}" = 1 ] && CACHE_ARG=""
@@ -255,6 +277,13 @@ fi
 # 用途：量 top-4 draft 對 accept / t/s / 輸出的影響（品質成本）。N30CACHE_MTP_TOP4=1 或 --mtp-top4 開啟。
 if [ "$MTP" = 1 ] && [ "$MTP_TOP4" = 1 ]; then
     ENVS+=(CGC_MTP_DRAFT_TOP4=1)
+fi
+# §MTP 2026-08-25（--mtp-early-verify）：verify 的 early slot_table write + 提早 signal（n_tokens<=3）。
+# sched 條件要求 CGC_EARLY 也在（否則 early 不觸發），故自動開 CGC_EARLY=1。實測 -11ms/step、+11.5% t/s、
+# accept 未退化；輸出與 GATE 臂非 bit-identical（within-arm 穩定）。預設 off。
+if [ "$MTP" = 1 ] && [ "$MTP_EARLY_VERIFY" = 1 ]; then
+    ENVS+=(CGC_EARLY=1 CGC_EARLY_VERIFY=1)
+    EARLY=1
 fi
 # 優化 load：先 cat model 進 page cache（重開機後第一次 run 建議），之後 loader 的 read 全 RAM-speed
 if [ "$WARM" = 1 ]; then
