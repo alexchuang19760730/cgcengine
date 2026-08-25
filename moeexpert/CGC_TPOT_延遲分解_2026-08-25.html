@@ -504,6 +504,31 @@
   <p class="note"><b>三層「bit-identity」別混</b>：① <b>對 base greedy</b>——分水嶺是 <code>CGC_VERIFY_DECODE=1</code>（8c5a036「MTP 轉正」），它刻意把 verify 從 exact-load 換成 ZERO-slot decode fast-path 換速度，代價是 h_nextn 不再等於 base（source 註解明寫 "h_nextn degrades slightly -> accept may drop"），這是 <b>刻意的、已知的</b>；② <b>同配置 run-to-run</b>——每一版都維持（touch+ZERO-slot 確定性，md5 相同）；③ <b>arm vs arm</b>（GATE vs EARLY / Q6_K vs IQ2）——不同配置本來就該不同。<b>結論：early-verify 與 head IQ2 是在「MTP 轉正」已非 identical 的基線上又改變輸出，不是新的品質壞點</b>（accept 均驗證無損：96.4→97.1%）。</p>
 </div>
 
+<!-- ============ 15. dense IQ4_XS + head IQ2 量化 & n_max=3（2026-08-26） ============ -->
+<div class="card">
+  <h2>⑮ dense IQ4_XS + head IQ2 量化（<code>--dense-iq4x</code>）+ n_max=3：最佳單次 29.85 t/s，逼近 30、停在 16GB unified memory 天花板</h2>
+  <p class="desc">從 base IQ3_XXS 用 <code>llama-quantize --tensor-type-file</code> 重新量化出第二載體 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X-headIQ2.gguf</code>（12.5GB）：dense 層 Q6_K（attn_qkv / attn_output / ssm_out / ffn_*_shexp，共 250 個）→ <b>IQ4_XS</b>、output.weight → <b>IQ2_S</b>、其餘 752 tensor byte-copy（bit-identical by construction）。直接砍 verify/trunk 最重的 dense weight-read 頻寬（verify 是 bandwidth-bound）。</p>
+
+  <table>
+    <tr><th>臂（seed 42, n=1100, 4GiB budget, production script）</th><th class="num">decoded t/s（多次）</th><th class="num">accept</th><th class="num">hit rate</th><th class="num">RSS</th><th>輸出</th></tr>
+    <tr><td>base nm2（Q6_K dense + Q6_K head）</td><td class="num">25.68 / 25.65 / 21.56</td><td class="num">95.4%</td><td class="num">85.3%</td><td class="num">8.33 GB</td><td rowspan="5">base 與 dense 兩臂輸出軌跡不同（模型權重層級改變，非 runtime 行為）；各臂 within-run 完全確定性一致——accept / hit / 輸出逐次相同，僅牆鐘 t/s 隨環境漂移</td></tr>
+    <tr><td>dense nm2</td><td class="num">28.89 / 26.36</td><td class="num">99.3%</td><td class="num">89.5%</td><td class="num">7.76 GB</td></tr>
+    <tr><td><b>dense nm3</b> ⭐</td><td class="num"><b>29.85 / 24.57 / 27.75 / 29.81 / 26.43 / 21.17 / 20.39</b></td><td class="num">98.6%</td><td class="num">89.5%</td><td class="num">7.76 GB</td></tr>
+    <tr><td>dense nm4</td><td class="num">26.80</td><td class="num">99.0%</td><td class="num">81.0%</td><td class="num">7.83 GB</td></tr>
+    <tr><td>dense nm3 + early-verify</td><td class="num">27.73</td><td class="num">99.0%</td><td class="num">91.5%</td><td class="num">7.80 GB</td></tr>
+  </table>
+
+  <p class="note"><b>判定 #1：dense IQ4_XS 有效（疊 head IQ2，同窗 A/B +29%）</b>——確定性指標全面向上：hit 85.3→89.5%、accept 95.4→99.0%、RSS 8.33→7.76 GB（−0.6GB，直接減輕 unified memory 壓力）。同一時間窗 base 21.56 vs dense nm3 27.75 t/s（+29%）。</p>
+
+  <p class="note"><b>判定 #2：n_max=3 是最優 draft depth</b>——verify 是「批量驗證」：每步同一個 graph 驗 n_max 個 draft token。accept 98.6% 下 nm3 每步產出 ≈3 token、nm2 只 ≈2 → nm3 更快（冷啟動首跑 29.85 t/s 為最佳單次）；nm4 反而掉（hit 81%、批量 4 token 的 verify 成本 &gt; 多收的 1 token）。</p>
+
+  <p class="note"><b>判定 #3：8GiB budget 被硬體打回</b>——<code>N30CACHE_BUDGET=8GiB</code> 直接 GPU OOM：<code>kIOGPUCommandBufferCallbackErrorOutOfMemory</code>（286 slots/layer 超 16GB unified memory）。<b>4GiB（142 slots/layer）是這台 M4 Max 16GB 的硬體上限</b>。</p>
+
+  <p class="note"><b>判定 #4：卡在 unified memory / swap，不是算法</b>——16GB 塞 12.5GB 模型 + 4GB expert cache → swap 2.0-2.3GB/3GB、mds 索引 + IDE 背景負載 → 單次 t/s 波動 ±20%。連續 4 連跑呈單調衰減（29.81→26.43→21.17→20.39：熱降頻 / swap 累積），但每次冷啟動首跑都穩定回到 <b>~29.8 t/s</b>，且 accept/hit/輸出逐次完全一致（僅牆鐘漂移）。<b>最佳單次 29.85 t/s</b>。</p>
+
+  <p class="note"><b>剩餘方向（2026-08-26 用戶決定：不量化、安靜環境復測）</b>：破 30 只剩「再省 ~0.3ms/token」的記憶體路徑——把 Q6_K <code>token_embd.weight</code>（~380MB）與 8 個 q8_0 full-attn 層也轉 IQ4_XS（再省 ~0.5-1GB，越過 swap 懸崖），或等環境安靜（swap 回落 / 索引完成）後復測取中位數。</p>
+</div>
+
 </div>
 </body>
 </html>
