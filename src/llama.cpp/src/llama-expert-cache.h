@@ -129,6 +129,9 @@ struct llama_expert_cache {
     std::vector<uint32_t> n_slots_l;
     std::vector<std::vector<uint32_t>> pin_profile;        // [layer] experts pinned by the static profile (load-time filled + marked)
     std::deque<std::tuple<uint32_t, int32_t, uint32_t>> pool_queue; // (layer, slot, expert) queued pool fills (FIFO)
+    // [CGC MTP fast path] reserved ZERO-slot: 1 when the layer's last slot region has been
+    // zeroed (guarded by m). Only touched when CGC_VERIFY_DECODE / CGC_DRAFT_DECODE is set.
+    std::vector<uint8_t> zero_slot_done; // [layer] 1 = reserved slot zeroed once
 
     // telemetry
     size_t n_requests = 0;
@@ -243,3 +246,27 @@ int32_t llama_expert_cache_prefetch_slot(llama_expert_cache * cache, uint32_t la
 // waits for in-flight ones to complete. The hook calls this after the union ensure loop, right
 // before it points the FFN tensors at the pool.
 void llama_expert_cache_drain_layer(llama_expert_cache * cache, uint32_t layer);
+
+// [CGC MTP fast path] ZERO-slot mechanism (CGC_VERIFY_DECODE / CGC_DRAFT_DECODE): the last
+// slot of every layer is reserved as a zero-initialized "ZERO slot". Cold experts (not resident,
+// slot table == -1) map to it, so the decode fast path (which skips the blocking ensure_batch)
+// reads a finite zero contribution instead of an OOB pool row (NaN cascade). pick_slot and
+// prefetch_slot skip the reserved slot so no real expert is ever assigned to it.
+// True when either fast-path env is set (base/non-MTP runs never set them -> byte-identical).
+bool llama_expert_cache_zero_slot_enabled(const llama_expert_cache * cache);
+// Slot index of the reserved zero slot for `layer` (slots_l(layer) - 1 when enabled, else -1).
+int32_t llama_expert_cache_zero_slot(const llama_expert_cache * cache, uint32_t layer);
+// Number of slots actually usable for real experts (slots_l - 1 when the ZERO slot is reserved).
+uint32_t llama_expert_cache_usable_slots(const llama_expert_cache * cache, uint32_t layer);
+// Zero the reserved slot's pool region (all 4 kinds) once per layer (guarded). Must be called
+// before the first GPU read of the pool for the layer on the decode fast path.
+void llama_expert_cache_zero_reserved_slot(llama_expert_cache * cache, uint32_t layer);
+// Decode fast path LRU touch: bump last_use for RESIDENT experts only (no fill, no wait). The
+// decode fast path calls this instead of ensure_batch so resident hot experts keep their LRU
+// freshness (the next step's pick_slot cannot hand their slots out for a cold fill).
+void llama_expert_cache_touch(llama_expert_cache * cache, uint32_t layer,
+                              const uint32_t * experts, size_t n);
+// Slot-table lookup mapping -1 (not resident) to the ZERO slot. Same value as the raw slot
+// table for resident experts, so using it on the exact-load path is a no-op (bit-identical).
+int32_t llama_expert_cache_slot_table_safe(const llama_expert_cache * cache, uint32_t layer,
+                                           uint32_t expert);

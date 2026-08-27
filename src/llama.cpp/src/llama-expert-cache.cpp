@@ -156,6 +156,98 @@ static uint32_t slots_l(const llama_expert_cache * cache, uint32_t layer) {
     return cache->n_slots;
 }
 
+// defined below; forward-declared so llama_expert_cache_zero_reserved_slot can zero the
+// reserved slot's pool region (the ZERO-slot fast path runs before pool_region's definition).
+static inline const uint8_t * pool_region(const llama_expert_cache * cache, uint32_t layer,
+        int kind, size_t * stride_out, uint32_t * slots_out);
+
+// [CGC MTP fast path] ZERO-slot. Only enabled when a decode fast-path env is set (MTP
+// verify/draft). Base/non-MTP runs never set them, so zero_slot_enabled() == false there and
+// every helper below degrades to the exact original behavior (byte-identical).
+static bool zero_slot_enabled() {
+    return getenv("CGC_VERIFY_DECODE") != nullptr || getenv("CGC_DRAFT_DECODE") != nullptr;
+}
+
+bool llama_expert_cache_zero_slot_enabled(const llama_expert_cache * cache) {
+    (void) cache;
+    return zero_slot_enabled();
+}
+
+int32_t llama_expert_cache_zero_slot(const llama_expert_cache * cache, uint32_t layer) {
+    if (cache == nullptr || !zero_slot_enabled() || layer >= cache->slot_owner.size()) {
+        return -1;
+    }
+    return (int32_t) slots_l(cache, layer) - 1;
+}
+
+uint32_t llama_expert_cache_usable_slots(const llama_expert_cache * cache, uint32_t layer) {
+    if (cache == nullptr) {
+        return 0;
+    }
+    const uint32_t ns = slots_l(cache, layer);
+    return zero_slot_enabled() && ns > 1 ? ns - 1 : ns;
+}
+
+void llama_expert_cache_zero_reserved_slot(llama_expert_cache * cache, uint32_t layer) {
+    if (cache == nullptr || layer >= cache->slot_owner.size() || !zero_slot_enabled()) {
+        return;
+    }
+    if (cache->zero_slot_done.size() <= layer) {
+        cache->zero_slot_done.resize(layer + 1, 0);
+    }
+    if (cache->zero_slot_done[layer]) {
+        return;
+    }
+    const int32_t zs = llama_expert_cache_zero_slot(cache, layer);
+    if (zs < 0) {
+        return;
+    }
+    cache->zero_slot_done[layer] = 1;
+    for (int kind = 0; kind < 4; ++kind) {
+        size_t stride = 0;
+        uint32_t slots = 0;
+        const uint8_t * region = pool_region(cache, layer, kind, &stride, &slots);
+        if (region == nullptr || stride == 0 || (uint32_t) zs >= slots) {
+            continue;
+        }
+        memset((void *) (region + (size_t) zs * stride), 0, stride);
+    }
+}
+
+void llama_expert_cache_touch(llama_expert_cache * cache, uint32_t layer,
+                              const uint32_t * experts, size_t n) {
+    if (cache == nullptr || layer >= cache->slot_owner.size() || n == 0) {
+        return;
+    }
+    int32_t * table = cache->slot_table.data() + (size_t) layer * cache->n_expert;
+    std::lock_guard<std::mutex> lk(cache->m);
+    for (size_t i = 0; i < n; ++i) {
+        const uint32_t e = experts[i];
+        if (e >= cache->n_expert) {
+            continue;
+        }
+        const int32_t slot = table[e];
+        if (slot >= 0) {
+            cache->slot_last_use[layer][slot] = ++cache->tick;
+        }
+    }
+}
+
+int32_t llama_expert_cache_slot_table_safe(const llama_expert_cache * cache, uint32_t layer,
+                                           uint32_t expert) {
+    if (cache == nullptr || layer >= cache->slot_owner.size() || expert >= cache->n_expert) {
+        return -1;
+    }
+    const int32_t * table = cache->slot_table.data() + (size_t) layer * cache->n_expert;
+    const int32_t slot = table[expert];
+    if (slot >= 0) {
+        return slot;
+    }
+    // not resident: map to the ZERO slot (finite zero contribution) when it is reserved,
+    // else fall back to the raw -1 (exact-load path never hits this).
+    return llama_expert_cache_zero_slot(cache, layer);
+}
+
 // Finds a free slot in the layer, else evicts the LRU slot. Never evicts a slot whose prefetch
 // fill is in flight (slot_loading) — the bg thread would otherwise write the old expert's bytes
 // into a slot already reassigned to a new expert (silent corruption). Returns -1 when every slot
@@ -165,7 +257,9 @@ static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer) {
     auto & last   = cache->slot_last_use[layer];
     auto & load   = cache->slot_loading[layer];
     auto & queued = cache->slot_queued[layer];
-    for (uint32_t i = 0; i < slots_l(cache, layer); ++i) {
+    // [CGC MTP fast path] the reserved ZERO slot is never handed to a real expert.
+    const uint32_t ns = llama_expert_cache_usable_slots(cache, layer);
+    for (uint32_t i = 0; i < ns; ++i) {
         if (owner[i] < 0 && !load[i] && !queued[i]) {
             return (int32_t) i;
         }
@@ -173,7 +267,7 @@ static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer) {
     // all occupied (or loading/queued): evict LRU among the non-loading, non-queued
     uint64_t best_tick = UINT64_MAX;
     int32_t  best_slot = -1;
-    for (uint32_t i = 0; i < slots_l(cache, layer); ++i) {
+    for (uint32_t i = 0; i < ns; ++i) {
         if (load[i] || queued[i] || cache->slot_pinned[layer][i] || cache->slot_pinned_static[layer][i]) {
             continue;
         }
@@ -489,7 +583,9 @@ int32_t llama_expert_cache_prefetch_slot(llama_expert_cache * cache, uint32_t la
         return -1; // already resident: nothing to prefetch
     }
     int32_t slot = -1;
-    for (uint32_t i = 0; i < slots_l(cache, layer); ++i) {
+    // [CGC MTP fast path] skip the reserved ZERO slot (never assigned to a real expert).
+    const uint32_t ns = llama_expert_cache_usable_slots(cache, layer);
+    for (uint32_t i = 0; i < ns; ++i) {
         if (cache->slot_owner[layer][i] < 0 && !cache->slot_queued[layer][i] && !cache->slot_loading[layer][i]) {
             slot = (int32_t) i;
             break;
@@ -502,7 +598,7 @@ int32_t llama_expert_cache_prefetch_slot(llama_expert_cache * cache, uint32_t la
         // in-flight slots are never touched. This covers both load-time prewarmed slots (never
         // re-touched, stalest) and decode-time leftovers.
         uint64_t best_tick = UINT64_MAX;
-        for (uint32_t i = 0; i < slots_l(cache, layer); ++i) {
+        for (uint32_t i = 0; i < ns; ++i) {
             if (cache->slot_queued[layer][i] || cache->slot_loading[layer][i]) {
                 continue;
             }
@@ -732,7 +828,8 @@ void llama_expert_cache_prepopulate(llama_expert_cache * cache, uint32_t layer, 
     }
     std::lock_guard<std::mutex> lk(cache->m);
     int32_t * table = cache->slot_table.data() + (size_t) layer * cache->n_expert;
-    const uint32_t n = std::min(n_slots, slots_l(cache, layer));
+    // [CGC MTP fast path] never hand the reserved ZERO slot to a real expert.
+    const uint32_t n = std::min(n_slots, llama_expert_cache_usable_slots(cache, layer));
     if (getenv("LLAMA_EXPERT_CACHE_PREPOP_DBG") != nullptr && layer == 0 && n > 2) {
         for (int k = 0; k < 4; ++k) {
             size_t stride = 0; uint32_t slots = 0;

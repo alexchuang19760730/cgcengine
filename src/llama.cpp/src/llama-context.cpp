@@ -2858,6 +2858,47 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
     // L3-B per-step gather path.
     const uint32_t n_slots = llama_expert_cache_slots_per_layer_l(cache, (uint32_t) il);
     if (llama_expert_cache_pool_active(cache) && uni.size() <= n_slots) {
+        // [CGC MTP fast path] CGC_VERIFY_DECODE / CGC_DRAFT_DECODE (rebuilt 2026-08-28 from
+        // MTP轉正規劃書_v1.1.md): route MTP verify / draft through the decode fast path (touch +
+        // ZERO-slot, no synchronous pread). Detection:
+        //   - verify = ctx_tgt (DEFAULT) + embeddings_nextn + multi-token + seqmax > n_tokens-1
+        //     (n_past>0; the n_past==0 tiny-prompt prefill has seqmax == n_tokens-1 and stays exact)
+        //   - draft  = ctx_dft (MTP) 1-token
+        //   - process catch-up (MTP && n_tokens>1) and all non-MTP runs (no env) fall through to
+        //     the exact-load path below -> byte-identical base behaviour.
+        const bool verify_fast = getenv("CGC_VERIFY_DECODE") != nullptr &&
+            cparams.ctx_type == LLAMA_CONTEXT_TYPE_DEFAULT && cparams.embeddings_nextn &&
+            n_tokens > 1 && llama_memory_seq_pos_max(get_memory(), 0) > n_tokens - 1;
+        const bool draft_fast = getenv("CGC_DRAFT_DECODE") != nullptr &&
+            cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP && n_tokens == 1;
+        if (verify_fast || draft_fast) {
+            // zero the reserved ZERO slot once per layer: cold experts (slot table == -1) map to
+            // it, so the FFN reads a finite zero contribution instead of an OOB pool row (NaN
+            // cascade -> whole-graph corruption).
+            llama_expert_cache_zero_reserved_slot(cache, (uint32_t) il);
+            // LRU-touch resident experts only (no fill, no wait): keeps hot slots' freshness so
+            // the next step's pick_slot does not hand them out to a cold fill.
+            llama_expert_cache_touch(cache, (uint32_t) il, uni.data(), uni.size());
+            // write the remap leaf: resident -> slot index, cold -> ZERO-slot.
+            ggml_tensor * remap = cache_remap_tensors[il];
+            if (remap != nullptr && remap->data != nullptr) {
+                int32_t * rd = (int32_t *) remap->data;
+                for (int64_t j = 0; j < n_tokens; ++j) {
+                    for (int64_t i = 0; i < n_expert_used; ++i) {
+                        const uint32_t e = (uint32_t) ids[i + j * n_expert_used];
+                        rd[i + j * n_expert_used] = llama_expert_cache_slot_table_safe(cache, (uint32_t) il, e);
+                    }
+                }
+            }
+            static int cgc_fast_n = 0;
+            if (cgc_fast_n < 20) {
+                cgc_fast_n++;
+                fprintf(stderr, "CGC-FAST: %s il=%d ntok=%lld uni=%zu\n",
+                        cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP ? "draft" : "verify",
+                        il, (long long) n_tokens, uni.size());
+            }
+            return;
+        }
         static int cgc_pre_post_n = 0;
         const bool cgc_pp = cgc_pre_post_n < 24 && il <= 2;
         if (cgc_pp) {
