@@ -1396,6 +1396,12 @@ struct ggml_tensor * llama_model_loader::create_tensor(
                 }
                 t_meta.ne[2] = (int64_t) expert_cache_pool_capacity;
                 l4_expert_bytes = ggml_row_size(t_meta.type, t_meta.ne[0]) * t_meta.ne[1];
+            } else if (expert_cache_l4_skip_layer0 && l4_il == 0) {
+                // L4_SKIP_LAYER0: keep blk.0 out of the L4 pool entirely. It must be a normal
+                // (CPU skip-load) tensor, not a pool tensor: a pooled blk.0 would carry
+                // l4_expert_bytes=0 (adoption rejects stride==0) and an unshrunk ne[2], so its
+                // FFN reads an unadopted region -> layer-0 garbage that corrupts the whole net.
+                l4_kind = -1;
             }
         }
     }
