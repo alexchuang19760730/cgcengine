@@ -1733,17 +1733,22 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 return ec;
             }
         } else if (getenv("CGC_OA_ASYNC") != nullptr && strcmp(ggml_backend_name(split_backend), "CPU") != 0) {
-            // CGC: dispatch the Metal split in segments, pipelining one segment ahead so the GPU
-            // never drains: submit segment[i+1] before waiting for segment[i]. When segment[i]
-            // (which ends at an argsort node) completes, the sched callback reads the router result
-            // and writes the remap leaf for segment[i+1], which the GPU will consume a while later
-            // (the segment is already submitted but reads the remap tensor data at execution time,
-            // so the CPU write lands in time). The completion is polled non-blocking via
-            // ggml_metal_get_cgc_done instead of a per-segment synchronize, keeping the pipeline full.
-            // Segments end at the ARGSORT op (which actually produces the expert ids); the top-k
-            // VIEW is a dependency-free alias that ggml may place before its producer, so using it
-            // as the boundary would fire the hook before the ids are computed -> garbage routing.
-            // Splits without any argsort node (plain graphs) run fully async.
+            // CGC: dispatch the Metal split in segments. Segments end at the ARGSORT op (which
+            // actually produces the expert ids); the top-k VIEW is a dependency-free alias that
+            // ggml may place before its producer, so using it as the boundary would fire the hook
+            // before the ids are computed -> garbage routing. Splits without any argsort node
+            // (plain graphs) run fully async.
+            //
+            // DEFAULT (correct): per segment, first WAIT for segment[i] to fully complete (all
+            // n_cb+1 cmd buffers, polled non-blocking via ggml_metal_get_cgc_done), then fire the
+            // top-k hook which writes the remap leaf, and only THEN submit segment[i+1] (which
+            // consumes that remap leaf via mul_mat_id). Submitting segment[i+1] before the hook
+            // writes its remap is a CPU/GPU race: the Metal command buffer references the remap
+            // buffer and the GPU may read it before the CPU write lands (modifying a buffer of an
+            // in-flight command buffer is UB) -> stale remap -> garbage / non-deterministic output.
+            // This showed up as short-prompt/cold-cache divergence (slow hook due to cache fills)
+            // while warm long prompts happened to win the race and stayed bit-identical.
+            // A/B toggle: CGC_SUBMIT_AHEAD=1 restores the racy submit-ahead order (diagnostic).
             // A/B toggle: CGC_TOPK_BOUNDARY=1 reverts to the buggy topk-VIEW boundary (diagnostic).
             const char * cgc_topk_bd = getenv("CGC_TOPK_BOUNDARY");
             const bool use_topk_bd = cgc_topk_bd != nullptr && cgc_topk_bd[0] != 0;
@@ -1822,54 +1827,78 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 }
                 static int64_t p_us = 0, p_n = 0;
                 const bool submit_dbg = getenv("CGC_SUBMIT_DBG") != nullptr;
+                // CGC raciness fix: submit segment[i+1] only AFTER the top-k hook of segment[i]
+                // has written its remap leaf (which segment[i+1] consumes via mul_mat_id), so the
+                // remap buffer is stable before the command buffer referencing it is committed.
+                // CGC_SUBMIT_AHEAD=1 restores the old racy submit-ahead order for A/B perf compare.
+                const bool submit_ahead = getenv("CGC_SUBMIT_AHEAD") != nullptr;
+                auto submit_seg = [&](int s) -> enum ggml_status {
+                    const int64_t v0 = ggml_time_us();
+                    const int d0 = submit_dbg && cgc_done ? cgc_done(split_backend) : -1;
+                    struct ggml_cgraph gv = seg_view(s);
+                    enum ggml_status ec2 = ggml_backend_graph_compute_async(split_backend, &gv);
+                    if (ec2 != GGML_STATUS_SUCCESS) {
+                        return ec2;
+                    }
+                    const int64_t v1 = ggml_time_us();
+                    const int d1 = submit_dbg && cgc_done ? cgc_done(split_backend) : -1;
+                    if (submit_dbg && (s % 40) == 0) {
+                        fprintf(stderr, "CGC-SUBMIT: seg=%d dur=%lld us gpu_adv=%d\n",
+                                s, (long long) (v1 - v0), d1 - d0);
+                    }
+                    p_us += v1 - v0;
+                    p_n++;
+                    return GGML_STATUS_SUCCESS;
+                };
+                auto hook_seg = [&](int i) -> bool {
+                    static int64_t w_us = 0, c_us = 0, n = 0;
+                    const int64_t st0 = ggml_time_us();
+                    if (cgc_done) {
+                        // wait for segment i's WHOLE run: all n_cb+1 cmd buffers of segments 0..i
+                        // (one completion per buffer). Waiting only on the main buffer (done0+i+1)
+                        // fired the top-k hook while the argsort was still running -> stale ids ->
+                        // garbage remap -> whole-graph corruption (echo prompt / all-'!').
+                        const int target = done0 + (i + 1) * bufs;
+                        while (cgc_done(split_backend) < target) {
+                            sched_yield();
+                        }
+                    } else {
+                        ggml_backend_synchronize(split_backend);
+                    }
+                    const int64_t st1 = ggml_time_us();
+                    struct ggml_tensor * ttopk = as_topk[i];
+                    if (ttopk == nullptr) {
+                        ttopk = split->graph.nodes[as_idx[i]];
+                    }
+                    if (!sched->callback_eval(ttopk, false, sched->callback_eval_user_data)) {
+                        return false;
+                    }
+                    const int64_t st2 = ggml_time_us();
+                    w_us += st1 - st0;
+                    c_us += st2 - st1;
+                    n++;
+                    if (n % 160 == 0) {
+                        fprintf(stderr, "CGC-SEG: wait %.1f cb %.1f submit %.1f us (%d)\n",
+                                (double) w_us / n, (double) c_us / n, (double) p_us / p_n, (int) n);
+                    }
+                    return true;
+                };
                 for (int i = 0; i < n_segs; i++) {
-                    if (i + 1 < n_segs) {
-                        const int64_t v0 = ggml_time_us();
-                        const int d0 = submit_dbg && cgc_done ? cgc_done(split_backend) : -1;
-                        struct ggml_cgraph gv = seg_view(i + 1);
-                        ec = ggml_backend_graph_compute_async(split_backend, &gv);
+                    if (submit_ahead && i + 1 < n_segs) {
+                        ec = submit_seg(i + 1);
                         if (ec != GGML_STATUS_SUCCESS) {
                             return ec;
                         }
-                        const int64_t v1 = ggml_time_us();
-                        const int d1 = submit_dbg && cgc_done ? cgc_done(split_backend) : -1;
-                        if (submit_dbg && (i % 40) == 0) {
-                            fprintf(stderr, "CGC-SUBMIT: seg=%d dur=%lld us gpu_adv=%d\n",
-                                    i + 1, (long long) (v1 - v0), d1 - d0);
-                        }
-                        p_us += v1 - v0;
-                        p_n++;
                     }
                     if (i < n_as_found) {
-                        static int64_t w_us = 0, c_us = 0, n = 0;
-                        const int64_t st0 = ggml_time_us();
-                        if (cgc_done) {
-                            // wait for segment i's WHOLE run: all n_cb+1 cmd buffers of segments 0..i
-                            // (one completion per buffer). Waiting only on the main buffer (done0+i+1)
-                            // fired the top-k hook while the argsort was still running -> stale ids ->
-                            // garbage remap -> whole-graph corruption (echo prompt / all-'!').
-                            const int target = done0 + (i + 1) * bufs;
-                            while (cgc_done(split_backend) < target) {
-                                sched_yield();
-                            }
-                        } else {
-                            ggml_backend_synchronize(split_backend);
-                        }
-                        const int64_t st1 = ggml_time_us();
-                        struct ggml_tensor * ttopk = as_topk[i];
-                        if (ttopk == nullptr) {
-                            ttopk = split->graph.nodes[as_idx[i]];
-                        }
-                        if (!sched->callback_eval(ttopk, false, sched->callback_eval_user_data)) {
+                        if (!hook_seg(i)) {
                             break;
                         }
-                        const int64_t st2 = ggml_time_us();
-                        w_us += st1 - st0;
-                        c_us += st2 - st1;
-                        n++;
-                        if (n % 160 == 0) {
-                            fprintf(stderr, "CGC-SEG: wait %.1f cb %.1f submit %.1f us (%d)\n",
-                                    (double) w_us / n, (double) c_us / n, (double) p_us / p_n, (int) n);
+                    }
+                    if (!submit_ahead && i + 1 < n_segs) {
+                        ec = submit_seg(i + 1);
+                        if (ec != GGML_STATUS_SUCCESS) {
+                            return ec;
                         }
                     }
                 }

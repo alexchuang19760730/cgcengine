@@ -33,8 +33,7 @@ if [ "${N30CACHE_NO_CLEAN:-0}" != 1 ]; then
         pkill -9 -f "$pat" 2>/dev/null && echo "  [clean] killed stale $pat" || true
     done
 fi
-# 2026-08-25: BIN 指到 llama-src 新 build（含 CGC_EARLY 修復版/CGC_DECODEHIT）；舊 root build 無。
-# CGC_EARLY 修復版 = decode-only early-write + tail wait（bit-identity 對齊 GATE），N30CACHE_EARLY=1 啟用。
+# 2026-08-25: BIN 指到 llama-src 新 build（含 CGC_DECODEHIT）；舊 root build 無。
 BIN="$ROOT/src/llama.cpp/build/bin/llama-simple"
 BIN_SPEC="$ROOT/src/llama.cpp/build/bin/llama-speculative-simple"
 G4="${N30CACHE_G4:-$ROOT/models/gguf/gemma-4-26B-A4B-it-UD-IQ3_S.gguf}"
@@ -66,11 +65,6 @@ WAKE_POLL_US="${N30CACHE_WAKE_POLL_US:-15}"  # §8.51：15us 為生產設定（�
 WARM="${N30CACHE_WARM:-0}"
 # CGC_DECODEHIT 是診斷 counter（decode hit rate，每 390 step 印一次，實測 98.08%），非 perf 設定，預設 off
 DECODEHIT="${N30CACHE_DECODEHIT:-0}"
-# CGC_EARLY（2026-08-25 修復版）：decode-only early slot_table write + signal，藏在 GPU segment 後面；
-# prefill 走 post-ensure hook write；sched 結尾 tail wait 消掉 cross-step last-layer race。
-# 修復前 = 無限回顯 prompt（bit-identity FAILED）；修復後 decode-only + tail wait 已對齊 GATE。
-# 非預設：perf 實驗用（-ngl 99 decode 約 +5 t/s），production 建議先跑 bit-identity 對照再開。
-EARLY="${N30CACHE_EARLY:-0}"
 N_CB="${N30CACHE_N_CB:-8}"                    # §8.93：cb8 壓 p50（77→66ms），cb4 可覆寫
 SEED="${N30CACHE_SEED:-}"                     # 未設 = llama-simple 預設；bit-identity 驗證請設固定值
 LONG_PROMPT=0                                 # --long-prompt：產生確定性長 prompt（>1000 token）
@@ -94,12 +88,6 @@ HEAD_IQ2="${N30CACHE_HEAD_IQ2:-0}"
 # §MTP 2026-08-26 #1：dense IQ4_XS + head IQ2 A/B（載體切到 dense IQ4_XS / head IQ2_S 的 Nail model）。
 # 獨立 option、預設 off：沒設 = 原 Q6_K head+dense（bit-exact）。與 --head-iq2 互斥（此已含 head IQ2）。
 DENSE_IQ4X="${N30CACHE_DENSE_IQ4X:-0}"
-# §MTP 2026-08-25（新，--mtp-early-verify / N30CACHE_MTP_EARLY_VERIFY=1）：把 decode 的 CGC_EARLY
-# early slot_table write + 提早 signal 延伸到 MTP verify（n_tokens<=3，需 CGC_VERIFY_DECODE touch-only
-# pool 穩定才安全）。實測 ver 95.6→84.6ms/step（-11ms）、decoded 23.75→26.47 t/s（+11.5%）、
-# accept 88.3%→91.4%（未退化）；輸出與 GATE 臂不同（非 bit-identical）但 within-arm 穩定。
-# 附帶自動開 CGC_EARLY=1（sched 條件需要）。預設 off。N30CACHE_MTP_EARLY_VERIFY=0 可關掉。
-MTP_EARLY_VERIFY="${N30CACHE_MTP_EARLY_VERIFY:-0}"
 
 usage() {
     echo "usage: $0 [-m gemma4|qwen36] [-n tokens] [-p prompt | --prompt-file F] [--ngl N] [--budget BYTES] [--pin-profile F] [--no-cache] [--warm] [--mtp [N]] [--mtp-top4] [--head-iq2] [--dense-iq4x] [--seed N] [--decodehit] [--long-prompt] [--ignore-eos] [--steady]
@@ -110,8 +98,6 @@ usage() {
 #   --head-iq2 啟用 MTP head IQ2 A/B（載體切到 output.weight IQ2_S 的 Nail model；獨立、預設 off）
 #   --dense-iq4x 啟用 MTP dense IQ4_XS + head IQ2 A/B（載體切到 dense IQ4_XS / head IQ2_S 的 Nail
 #             model；含 head IQ2，與 --head-iq2 互斥；獨立、預設 off）
-#   --mtp-early-verify 啟用 MTP verify early slot_table write + 提早 signal（省 ~11ms/step、+11.5%
-#             t/s；輸出與 GATE 臂非 bit-identical，within-arm 穩定；自動開 CGC_EARLY；預設 off）
 #   --seed N 固定 seed（bit-identity / run-to-run 對照必設；等於 N30CACHE_SEED）
 #   --decodehit 印 CGC_DECODEHIT（decode hit rate，每 390 step 一次）
 #   --long-prompt 產生確定性長 prompt（>1000 token；同內容跨 run 完全一致，供對照）
@@ -150,7 +136,6 @@ while [ $# -gt 0 ]; do
         --mtp-top4) MTP_TOP4=1; shift ;;
         --head-iq2) HEAD_IQ2=1; shift ;;
         --dense-iq4x) DENSE_IQ4X=1; shift ;;
-        --mtp-early-verify) MTP_EARLY_VERIFY=1; shift ;;
         -h|--help) usage ;;
         *) usage ;;
     esac
@@ -229,20 +214,25 @@ if [ "$LONG_PROMPT" = 1 ]; then
     done
 fi
 [ -n "$PROMPT" ] || { echo "error: need -p prompt or --prompt-file" >&2; exit 2; }
+# --no-cache：真正關閉 expert cache。cache 由 env CGC_EXPERT_CACHE_BYTES 驅動
+#（llama-simple 只認 env，CLI -expert-cache 是 MTP/speculative-simple 專用）→ NO_CACHE 時 BUDGET=0。
+[ "${NO_CACHE:-0}" = 1 ] && BUDGET=0
 
 # 生產 env 集（全部有 §8 出處；不設則對應行為 off）
 ENVS=(LLAMA_EXPERT_CACHE_ALLOW_NGL=1
       CGC_EXPERT_CACHE_BYTES=$BUDGET
       LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0=1
       LLAMA_EXPERT_CACHE_WORKERS=$WORKERS
-      CGC_WAKE_POLL_US=$WAKE_POLL_US)
+      CGC_WAKE_POLL_US=$WAKE_POLL_US
+      # §8.6x hist prefetch（08-26 回歸移除，08-27 恢復）：CGC_PREFETCH_SRC=hist = rolling window
+      # (CGC_PREFETCH_WINDOW, 預設 4) 的近期 step union → 下一個 decode 的 ensure_batch 多命中，
+      # 冷 miss 不再卡 hook。CGC_EVICTED_RING=0 = 停用 evicted-ring re-prefetch（A/B 定案：省 ring
+      # 開銷，純 LRU）。兩者都只對非 MTP decode 生效。
+      CGC_PREFETCH_SRC=hist
+      CGC_EVICTED_RING=0)
 [ "$OA_ASYNC" = 1 ] && ENVS+=(CGC_OA_ASYNC=1)
 ENVS+=(CGC_N_CB=$N_CB)
 ENVS+=(CGC_GLU_FUSED_DOWN=1)  # §8.113: fused gate+up+GLU+down, +6.5% speed
-# CGC_EARLY 修復版（2026-08-25）：decode-only early-write + signal（藏在 GPU 後）+ tail wait。
-# 舊版（全 phase early-write）證偽（無限回顯 prompt）；修復版 decode-only 已對齊 GATE（bit-identity）。
-# 預設 off；N30CACHE_EARLY=1 開啟（perf 實驗用）。
-[ "$EARLY" = 1 ] && ENVS+=(CGC_EARLY=1)
 [ "$DECODEHIT" = 1 ] && ENVS+=(CGC_DECODEHIT=1)
 [ -n "${PIN_PROFILE:-}" ] && ENVS+=(LLAMA_EXPERT_CACHE_PIN_PROFILE="$PIN_PROFILE")
 
@@ -250,12 +240,10 @@ echo "=== n30cache production run ==="
 echo "  model  : $MODEL ($(basename "$M"))"
 echo "  ngl    : $NGL   budget: $((BUDGET/1073741824))GiB   workers: $WORKERS"
 echo "  pin    : ${PIN_PROFILE:-off}   wake-poll: ${WAKE_POLL_US}us   cache: ${NO_CACHE:-0}=off   warm: $WARM"
-echo "  early  : $EARLY (CGC_EARLY decode-only)   decodehit: $DECODEHIT"
+echo "  decodehit: $DECODEHIT"
 echo "  seed   : ${SEED:-default}   long-prompt: $LONG_PROMPT   ignore-eos: $IGNORE_EOS   steady: $STEADY   gen: $N"
-[ "$MTP" = 1 ] && echo "  mtp    : ON (spec-type=draft-mtp, n_max=$MTP_N_MAX, ctx=$MTP_CTX, top4=$MTP_TOP4, early-verify=$MTP_EARLY_VERIFY)"
+[ "$MTP" = 1 ] && echo "  mtp    : ON (spec-type=draft-mtp, n_max=$MTP_N_MAX, ctx=$MTP_CTX, top4=$MTP_TOP4)"
 
-CACHE_ARG=""  # patched: use CGC_EXPERT_CACHE_BYTES env var instead
-[ "${NO_CACHE:-0}" = 1 ] && CACHE_ARG=""
 SEED_ARG=""
 [ -n "$SEED" ] && SEED_ARG="-s $SEED"
 IGNORE_EOS_ARG=""
@@ -269,6 +257,12 @@ MTP_ARG=""
 # 偏離 draft argmax → accept 掉到 ~31%（target sample != draft argmax）→ 多 reject + checkpoint
 # restore → 速度砍半（3.6 vs 6.1 t/s）。greedy 下 draft head 與 target argmax 一致 → accept 87.5%。
 [ "$MTP" = 1 ] && MTP_ARG="--spec-type draft-mtp --spec-draft-n-max $MTP_N_MAX -c $MTP_CTX -expert-cache $BUDGET --temp 0"
+# §MTP 2026-08-27：async prefetch bg thread（B-section hist prefetch）在 GPU 執行 MTP verify 時
+# 填/逐 slots，覆寫 GPU 仍在讀的 slot → 輸出壞 + accept 掉（08-22 實測）。MTP 一律關 prefetch
+# （CGC_NO_PREFETCH=1），基於歷史約束 CGC_PREFETCH_OFF 的同一目的。
+if [ "$MTP" = 1 ]; then
+    ENVS+=(CGC_NO_PREFETCH=1)
+fi
 # §MTP 2026-08-25（獨立 option，CGC_VERIFY_DECODE=1）：verify 走 decode fast path（ZERO-slot，無
 # 同步 pread stall）。實測 verify 64→35.4ms/token、MTP 13.9→25.2 t/s（=base decode rate）、
 # accept 97.8%→95.7%、輸出仍正確（deterministic）。此 env 是 MTP 專屬 opt-in：沒設 = 原 exact-load
@@ -289,13 +283,6 @@ fi
 # 用途：量 top-4 draft 對 accept / t/s / 輸出的影響（品質成本）。N30CACHE_MTP_TOP4=1 或 --mtp-top4 開啟。
 if [ "$MTP" = 1 ] && [ "$MTP_TOP4" = 1 ]; then
     ENVS+=(CGC_MTP_DRAFT_TOP4=1)
-fi
-# §MTP 2026-08-25（--mtp-early-verify）：verify 的 early slot_table write + 提早 signal（n_tokens<=3）。
-# sched 條件要求 CGC_EARLY 也在（否則 early 不觸發），故自動開 CGC_EARLY=1。實測 -11ms/step、+11.5% t/s、
-# accept 未退化；輸出與 GATE 臂非 bit-identical（within-arm 穩定）。預設 off。
-if [ "$MTP" = 1 ] && [ "$MTP_EARLY_VERIFY" = 1 ]; then
-    ENVS+=(CGC_EARLY=1 CGC_EARLY_VERIFY=1)
-    EARLY=1
 fi
 # 優化 load：先 cat model 進 page cache（重開機後第一次 run 建議），之後 loader 的 read 全 RAM-speed
 if [ "$WARM" = 1 ]; then

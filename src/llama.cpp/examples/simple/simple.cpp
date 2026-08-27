@@ -37,6 +37,8 @@ int main(int argc, char ** argv) {
     std::string opt_prompt;
     // accepted for CLI compatibility; greedy sampling is deterministic so it is unused
     uint32_t seed = 0;
+    // --ignore-eos: keep generating past the EOG token (for steady-state t/s measurement)
+    bool ignore_eos = false;
 
     // parse command line arguments
 
@@ -119,6 +121,8 @@ int main(int argc, char ** argv) {
                     print_usage(argc, argv);
                     return 1;
                 }
+            } else if (strcmp(argv[i], "--ignore-eos") == 0) {
+                ignore_eos = true;
             } else {
                 // prompt starts here
                 break;
@@ -349,7 +353,10 @@ int main(int argc, char ** argv) {
 
             // is it an end of generation?
             if (llama_vocab_is_eog(vocab, new_token_id)) {
-                break;
+                if (!ignore_eos) {
+                    break;
+                }
+                // --ignore-eos: keep generating past EOG; the EOG token piece is still printed
             }
 
             char buf[128];
