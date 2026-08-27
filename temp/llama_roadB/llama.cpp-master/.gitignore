@@ -44,6 +44,17 @@
 /tags
 /.build/
 /build*
+# --- CGC production build artifacts: MUST stay tracked for reproducibility ---
+# git can't descend into an ignored dir, so: un-ignore build/, re-ignore its
+# children, then carve out build/bin + key dylibs/exes (the working build).
+!/build/
+/build/*
+!/build/bin/
+!/build/bin/*
+!/build/bin/*.dylib
+!/build/bin/llama-simple
+!/build/bin/llama-speculative-simple
+!/build/bin/llama-bench
 /release
 /debug
 /libllama.so
