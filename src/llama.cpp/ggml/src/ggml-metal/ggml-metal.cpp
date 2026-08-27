@@ -574,6 +574,16 @@ static int ggml_backend_metal_get_cgc_done(ggml_backend_t backend) {
     return ggml_metal_cgc_done(ctx);
 }
 
+// CGC: number of cmd-buffer completions per graph_compute (n_cb + 1); the sched multiplies its
+// per-segment wait target by this so the top-k hook only fires after the whole segment finished
+static int ggml_backend_metal_get_cgc_bufs(ggml_backend_t backend) {
+    GGML_ASSERT(ggml_backend_is_metal(backend));
+
+    ggml_metal_t ctx = (ggml_metal_t)backend->context;
+
+    return ggml_metal_cgc_bufs(ctx);
+}
+
 static ggml_backend_i ggml_backend_metal_i = {
     /* .get_name                = */ ggml_backend_metal_name,
     /* .free                    = */ ggml_backend_metal_free,
@@ -887,6 +897,9 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const 
     }
     if (strcmp(name, "ggml_metal_get_cgc_done") == 0) {
         return (void *)ggml_backend_metal_get_cgc_done;
+    }
+    if (strcmp(name, "ggml_metal_get_cgc_bufs") == 0) {
+        return (void *)ggml_backend_metal_get_cgc_bufs;
     }
 
     return NULL;

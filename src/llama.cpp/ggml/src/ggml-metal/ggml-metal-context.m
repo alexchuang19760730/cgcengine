@@ -277,6 +277,10 @@ int ggml_metal_cgc_done(ggml_metal_t ctx) {
     return atomic_load_explicit(&ctx->cgc_done, memory_order_relaxed);
 }
 
+int ggml_metal_cgc_bufs(ggml_metal_t ctx) {
+    return ctx->n_cb + 1; // one completion per cmd buffer, n_cb+1 per graph_compute
+}
+
 void ggml_metal_synchronize(ggml_metal_t ctx) {
     const bool cgc_dbg = getenv("CGC_METAL_DBG") != NULL;
     const int64_t s0 = cgc_dbg ? ggml_time_us() : 0;
@@ -591,6 +595,15 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
                 [ctx->cmd_bufs[cb_idx].obj release];
             }
             ctx->cmd_bufs[cb_idx].obj = cmd_buf;
+
+            // CGC: count this buffer's completion too so the sched can wait for the WHOLE segment
+            // (all n_cb+1 cmd buffers) before firing the top-k hook. Waiting only on the main
+            // cmd_buf[n_cb] fired the callback while the argsort (which may land in a secondary
+            // buffer) was still running -> stale ids -> garbage remap -> whole-graph corruption.
+            [cmd_buf addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+                GGML_UNUSED(cb);
+                atomic_fetch_add_explicit(&ctx->cgc_done, 1, memory_order_relaxed);
+            }];
 
             // always enqueue the first two command buffers
             // enqueue all of the command buffers if we don't need to abort

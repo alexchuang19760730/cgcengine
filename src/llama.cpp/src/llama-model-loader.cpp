@@ -1060,7 +1060,7 @@ static ggml_backend_buffer_type_t select_weight_buft(const llama_hparams & hpara
 // CGC expert-cache L4: compute the bounded Metal pool capacity in slots/layer.
 //   per_slot = max over layers of (sum over the 4 FFN kinds of one (layer, expert) blob)
 //   base     = clamp(budget / (n_layers * per_slot), 8, 256)
-//   capacity = base * 2
+//   capacity = base   (== budget-derived slots; the pool therefore occupies exactly the budget)
 // The loader later creates every expert tensor with ne[2] = capacity on the Metal buft and adopts
 // each tensor's storage as the per-layer pool region (zero copy). Call after expert_cache_bytes is
 // set, before load_tensors, and only on the L4 path (-ngl > 0 + LLAMA_EXPERT_CACHE_ALLOW_NGL).
@@ -1113,7 +1113,7 @@ void llama_model_loader::compute_l4_pool_capacity() {
     }
     const uint64_t denom = (uint64_t) max_layer * per_slot;
     const uint64_t base  = std::max<uint64_t>(8, std::min<uint64_t>(256, denom ? expert_cache_bytes / denom : 256));
-    const uint64_t cap   = base * 2;
+    const uint64_t cap   = base;
     expert_cache_pool_capacity = (size_t) cap;
     LLAMA_LOG_INFO("llama_model_loader: L4 metal pool capacity=%llu slots/layer (base %llu, per-slot %llu B)\n",
             (unsigned long long) cap, (unsigned long long) base, (unsigned long long) per_slot);

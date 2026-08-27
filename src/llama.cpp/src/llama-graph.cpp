@@ -2044,12 +2044,16 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // using the raw ids because they index the gating probs by expert.
     ggml_tensor * remap_ids = nullptr;
     const char * dw_env = getenv("LLAMA_EXPERT_CACHE_DISABLE_WRITE");
-    // Only single-token decode needs the remap leaf (cache slot / gather repointing). During
-    // prefill (n_tokens > 1) the FFN runs over the full expert weights, so the mul_mat_id must
-    // keep using the raw top-k ids. Creating a set_output leaf here would perturb the ggml-alloc
-    // buffer layout and corrupt the cross-layer conv_state buffers (observed: conv_input-1 diverges
-    // while layer 0 is bit-identical), so we must NOT create it for prefill.
-    if (expert_cache_active && !(dw_env && dw_env[0]) && n_tokens == 1 && il >= 0 && il < n_layer) {
+    // [CGC MTP fix] the remap leaf is created for single-token decode AND small multi-token
+    // pool steps (speculative/MTP verify, n_tokens <= cgc_pool_max_tokens()): the hook maps
+    // expert ids to pool slot indices across ALL tokens of the batch, and the FFN reads the
+    // pool regions by slot. Larger prefill batches (n_tokens > pool_max) compute over the
+    // full expert weights and MUST keep using the raw top-k ids, because the per-layer expert
+    // tensors are shrunk to the bounded pool capacity — a raw-id read against a capacity-slot
+    // tensor would go OOB -> NaN -> garbage downstream. Creating the leaf here for such batches
+    // would perturb the ggml-alloc buffer layout, so it is only built for the pool-path range.
+    if (expert_cache_active && !(dw_env && dw_env[0]) && n_tokens >= 1 &&
+            (uint64_t) n_tokens <= cgc_pool_max_tokens() && il >= 0 && il < n_layer + n_layer_nextn) {
         ggml_tensor * remap = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_expert_used, n_tokens);
         ggml_set_output(remap); // prevent ggml-alloc from overwriting the hook-written ids before mul_mat_id consumes them
         cb(remap, "ffn_moe_topk_remap", il);

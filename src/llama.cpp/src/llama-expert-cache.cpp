@@ -841,14 +841,24 @@ void llama_expert_cache::bg_loop() {
             const uint32_t expert = std::get<2>(pk);
             {
                 std::unique_lock<std::mutex> lk(m);
-                if (slot < 0 || slot >= (int32_t) slots_l(this, layer) || !slot_loading[layer][slot]) {
-                    continue; // stale (cancelled / evicted defensively)
+                // [CGC deadlock fix] prefetch_slot marks the slot with slot_queued (NOT
+                // slot_loading — that flag is set here, just before the pread). The old check
+                // `!slot_loading` was never true, so every queued prefetch was dropped as
+                // "stale" while leaving slot_queued=1 + owner set: each prefetch leaked a
+                // permanently-busy slot until pick_slot found nothing evictable and
+                // ensure_batch waited on bg_cv forever (deadlock). Validate slot_queued.
+                if (slot < 0 || slot >= (int32_t) slots_l(this, layer) || !slot_queued[layer][slot]) {
+                    continue; // stale (dropped by drain_layer / cancelled defensively)
                 }
                 if (slot_owner[layer][slot] != (int32_t) expert) {
                     // slot reassigned by a synchronous fill racing the queue: drop the fill
+                    slot_queued[layer][slot]  = 0;
                     slot_loading[layer][slot] = 0;
                     continue;
                 }
+                // mark in-flight so drain_layer waits for us (its predicate checks slot_loading)
+                // and pick_slot treats the slot as protected while the bg thread writes the bytes
+                slot_loading[layer][slot] = 1;
             }
             fill_pool_direct(this, layer, (uint32_t) slot, expert);
             std::unique_lock<std::mutex> lk(m);
@@ -1036,7 +1046,8 @@ llama_expert_cache * llama_expert_cache_init(const llama_model * model, size_t b
             }
             const uint64_t denom = (uint64_t) max_layer * (per_slot ? per_slot : 1);
             if (model->expert_cache_pool_capacity > 0) {
-                // L4: single source of truth is the loader's capacity (2x budget-derived slots).
+                // L4: single source of truth is the loader's capacity (budget-derived slots;
+                // the pool occupies exactly expert_cache_bytes).
                 cache->n_slots = (uint32_t) model->expert_cache_pool_capacity;
             } else {
                 cache->n_slots  = (uint32_t) std::max<uint64_t>(8, std::min<uint64_t>(256, denom ? budget_bytes / denom : 256));
@@ -1064,6 +1075,18 @@ llama_expert_cache * llama_expert_cache_init(const llama_model * model, size_t b
         cache->slot_loading.resize(max_layer);
         cache->slot_pinned.resize(max_layer);
         cache->slot_pinned_static.resize(max_layer);
+        // [CGC prefetch v2] recently-evicted expert ring (per layer): CGC_EVICTED_RING=N sets
+        // capacity (default 16; 0 = off, keeps the old pure-LRU behavior for A/B).
+        {
+            const char * er = getenv("CGC_EVICTED_RING");
+            uint32_t cap = 16;
+            if (er != nullptr && er[0] != '\0') {
+                long v = atol(er);
+                cap = v <= 0 ? 0 : (uint32_t) std::min<long>(v, 256);
+            }
+            cache->evicted_recent.resize(max_layer);
+            cache->evicted_ring_size.assign(max_layer, cap);
+        }
         for (uint32_t l = 0; l < max_layer; ++l) {
             const uint32_t ns = slots_l(cache, l);
             cache->slot_owner[l].assign(ns, -1);

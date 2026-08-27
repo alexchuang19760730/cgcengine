@@ -1790,6 +1790,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 auto * reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(split_backend));
                 typedef int (*cgc_done_fn)(ggml_backend_t);
                 cgc_done_fn cgc_done = (cgc_done_fn) ggml_backend_reg_get_proc_address(reg, "ggml_metal_get_cgc_done");
+                typedef int (*cgc_bufs_fn)(ggml_backend_t);
+                cgc_bufs_fn cgc_bufs = (cgc_bufs_fn) ggml_backend_reg_get_proc_address(reg, "ggml_metal_get_cgc_bufs");
+                const int bufs  = cgc_bufs ? cgc_bufs(split_backend) : 1; // completions per graph_compute (n_cb+1)
                 const int done0 = cgc_done ? cgc_done(split_backend) : -1;
 
                 auto seg_view = [&](int s) {
@@ -1841,7 +1844,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         static int64_t w_us = 0, c_us = 0, n = 0;
                         const int64_t st0 = ggml_time_us();
                         if (cgc_done) {
-                            const int target = done0 + i + 1; // segment i's main cmd buffer finished
+                            // wait for segment i's WHOLE run: all n_cb+1 cmd buffers of segments 0..i
+                            // (one completion per buffer). Waiting only on the main buffer (done0+i+1)
+                            // fired the top-k hook while the argsort was still running -> stale ids ->
+                            // garbage remap -> whole-graph corruption (echo prompt / all-'!').
+                            const int target = done0 + (i + 1) * bufs;
                             while (cgc_done(split_backend) < target) {
                                 sched_yield();
                             }

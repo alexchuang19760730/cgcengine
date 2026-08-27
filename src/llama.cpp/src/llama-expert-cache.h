@@ -117,6 +117,13 @@ struct llama_expert_cache {
     std::vector<std::vector<uint8_t>>  slot_loading;     // [layer][slot] 1 = bg thread filling (prefetch in flight)
     std::vector<std::vector<uint8_t>>  slot_pinned;      // [layer][slot] 1 = LRU-exempt (decode tail-union prewarm, TAILPIN)
     std::vector<std::vector<uint8_t>>  slot_pinned_static; // [layer][slot] 1 = LRU-exempt static profile pin (LLAMA_EXPERT_CACHE_PIN_PROFILE, never unpinned)
+    // [CGC prefetch v2] recently-evicted experts per layer (ring). When pick_slot evicts an
+    // expert to make room, that expert is a prime "will-be-needed-again" candidate (miss
+    // analysis: 1062 misses across 126 steps = only 80 distinct experts, 72 of them repeated —
+    // i.e. recurring hot experts that LRU evicted between uses, then miss again). The B-section
+    // prefetch re-residents these so the next ensure is a HIT instead of a synchronous pread.
+    std::vector<std::vector<uint32_t>> evicted_recent;   // [layer] ring of recently-evicted experts (newest at back)
+    std::vector<uint32_t> evicted_ring_size;             // [layer] per-layer ring capacity
     // [CGC §8.101 A/B] per-layer slot capacity (LLAMA_EXPERT_CACHE_LAYER_CAPS="start-end:cap,...";
     // default = n_slots for all layers). Sized max_layer; layer 0 (skip) unused.
     std::vector<uint32_t> n_slots_l;

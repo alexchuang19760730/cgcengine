@@ -57,6 +57,9 @@ else
     CXX_FLAGS_MTP=""
 fi
 
+# Preseed SVE/SME check results: this host cannot execute SVE/SME instructions
+# (the check_cxx_source_runs test binary hangs instead of trapping), so force them
+# OFF to let configure finish. Apple Silicon has no SVE/SME anyway.
 cmake -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
     -DGGML_METAL="$GGML_METAL" \
@@ -67,6 +70,8 @@ cmake -B "$BUILD_DIR" \
     -DLLAMA_CURL="$LLAMA_CURL" \
     -DLLAMA_BUILD_SERVER="$LLAMA_BUILD_SERVER" \
     -DLLAMA_BUILD_TESTS="$LLAMA_BUILD_TESTS" \
+    -DGGML_MACHINE_SUPPORTS_sve=OFF \
+    -DGGML_MACHINE_SUPPORTS_sme=OFF \
     -DCMAKE_CXX_FLAGS="$CXX_FLAGS_MTP"
 
 cmake --build "$BUILD_DIR" -j"$JOBS"
