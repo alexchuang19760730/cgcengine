@@ -16,7 +16,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-LLAMA="$ROOT/temp/llama_roadB/llama.cpp-master"
+LLAMA="$ROOT/src/llama.cpp"
 DYLIB="$LLAMA/build/bin"
 
 if [ ! -f "$DYLIB/libllama.0.dylib" ]; then

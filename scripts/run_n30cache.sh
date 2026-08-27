@@ -29,14 +29,14 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # 佔滿 16GB unified 記憶體 → 新 run 直接 kIOGPUCommandBufferCallbackErrorOutOfMemory。
 # 只 pkill 我們 fork 的 bin 路徑（不誤殺 IDE/其他 llama）。N30CACHE_NO_CLEAN=1 可跳過。
 if [ "${N30CACHE_NO_CLEAN:-0}" != 1 ]; then
-    for pat in "llama_roadB/llama.cpp-master/build/bin/llama-simple" "llama_roadB/llama.cpp-master/build/bin/llama-speculative-simple"; do
+    for pat in "src/llama.cpp/build/bin/llama-simple" "src/llama.cpp/build/bin/llama-speculative-simple"; do
         pkill -9 -f "$pat" 2>/dev/null && echo "  [clean] killed stale $pat" || true
     done
 fi
 # 2026-08-25: BIN 指到 llama-src 新 build（含 CGC_EARLY 修復版/CGC_DECODEHIT）；舊 root build 無。
 # CGC_EARLY 修復版 = decode-only early-write + tail wait（bit-identity 對齊 GATE），N30CACHE_EARLY=1 啟用。
-BIN="$ROOT/temp/llama_routeB/llama-src/temp/llama_roadB/llama.cpp-master/build/bin/llama-simple"
-BIN_SPEC="$ROOT/temp/llama_routeB/llama-src/temp/llama_roadB/llama.cpp-master/build/bin/llama-speculative-simple"
+BIN="$ROOT/src/llama.cpp/build/bin/llama-simple"
+BIN_SPEC="$ROOT/src/llama.cpp/build/bin/llama-speculative-simple"
 G4="${N30CACHE_G4:-$ROOT/models/gguf/gemma-4-26B-A4B-it-UD-IQ3_S.gguf}"
 Q36="$ROOT/models/gguf/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf"
 # §MTP: qwen36 MTP 載體用 Nail model（blk.40 MTP head 為 UD-IQ3_XXS，與 trunk 同量）。

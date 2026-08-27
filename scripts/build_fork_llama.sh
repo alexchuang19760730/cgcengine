@@ -9,7 +9,7 @@ set -e
 # configuration (dc605b4 era) for correctness.
 # ============================================================
 
-FORK_DIR="$(cd "$(dirname "$0")/../temp/llama_roadB/llama.cpp-master" && pwd)"
+FORK_DIR="$(cd "$(dirname "$0")/../src/llama.cpp" && pwd)"
 BUILD_DIR="${FORK_DIR}/build"
 
 # --- Configurable flags (override via env) ---

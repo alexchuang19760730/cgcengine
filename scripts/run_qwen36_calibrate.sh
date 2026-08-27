@@ -11,7 +11,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/temp/llama_roadB/llama.cpp-master/build/bin/llama-simple"
+BIN="$ROOT/src/llama.cpp/build/bin/llama-simple"
 Q36="$ROOT/models/gguf/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf"
 PROMPT_FILE="${N30CACHE_PROMPT_FILE:-$ROOT/scripts/prompts/calib_qwen36.txt}"
 N="${N30CACHE_N:-64}"

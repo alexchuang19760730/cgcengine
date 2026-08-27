@@ -43,7 +43,7 @@ while [ $# -gt 0 ]; do
         --repo) REPO_ROOT="$2"; shift 2 ;;
         --install-hook)
             INSTALL_HOOK=1; shift
-            # 可選擇性接 BIN_DIR：--install-hook temp/llama_roadB/llama.cpp-master/build/bin
+            # 可選擇性接 BIN_DIR：--install-hook src/llama.cpp/build/bin
             case "${1:-}" in ''|--*) : ;; *) HOOK_BIN_DIR="$1"; shift ;; esac
             ;;
         --list-rpaths) LIST_RPATHS=1; shift ;;
