@@ -1735,35 +1735,56 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         } else if (getenv("CGC_OA_ASYNC") != nullptr && strcmp(ggml_backend_name(split_backend), "CPU") != 0) {
             // CGC: dispatch the Metal split in segments, pipelining one segment ahead so the GPU
             // never drains: submit segment[i+1] before waiting for segment[i]. When segment[i]
-            // (which ends at a top-k node) completes, the sched callback reads the router result
+            // (which ends at an argsort node) completes, the sched callback reads the router result
             // and writes the remap leaf for segment[i+1], which the GPU will consume a while later
             // (the segment is already submitted but reads the remap tensor data at execution time,
             // so the CPU write lands in time). The completion is polled non-blocking via
             // ggml_metal_get_cgc_done instead of a per-segment synchronize, keeping the pipeline full.
-            // Splits without any top-k node (prefill graph, plain graphs) run fully async.
-            int n_topk = 0;
+            // Segments end at the ARGSORT op (which actually produces the expert ids); the top-k
+            // VIEW is a dependency-free alias that ggml may place before its producer, so using it
+            // as the boundary would fire the hook before the ids are computed -> garbage routing.
+            // Splits without any argsort node (plain graphs) run fully async.
+            // A/B toggle: CGC_TOPK_BOUNDARY=1 reverts to the buggy topk-VIEW boundary (diagnostic).
+            const char * cgc_topk_bd = getenv("CGC_TOPK_BOUNDARY");
+            const bool use_topk_bd = cgc_topk_bd != nullptr && cgc_topk_bd[0] != 0;
+            const char * bd_prefix = use_topk_bd ? "ffn_moe_topk-" : "ffn_moe_argsort-";
+            const size_t bd_len = use_topk_bd ? 13 : 16;
+            int n_as = 0;
             for (int i = 0; i < split->graph.n_nodes; i++) {
-                if (strncmp(split->graph.nodes[i]->name, "ffn_moe_topk-", 13) == 0) {
-                    n_topk++;
+                if (strncmp(split->graph.nodes[i]->name, bd_prefix, bd_len) == 0) {
+                    n_as++;
                 }
             }
-            if (n_topk == 0) {
+            if (n_as == 0) {
                 enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
                 if (ec != GGML_STATUS_SUCCESS) {
                     return ec;
                 }
             } else {
-                // segments: [0..topk0], [topk0+1..topk1], ..., [topk_{n-1}+1..end]
-                // only the first n_topk segments carry a top-k node; the tail is plain compute
+                // segments: [0..as0], [as0+1..as1], ..., [as_{n-1}+1..end]
+                // only the first n_as segments carry an argsort node; the tail is plain compute
                 const int n_nodes = split->graph.n_nodes;
-                int topk_idx[64];
-                int n_topk_found = 0;
+                int as_idx[64];
+                struct ggml_tensor * as_topk[64]; // matching top-k VIEW (same data, ne[0]=8)
+                int n_as_found = 0;
                 for (int i = 0; i < n_nodes; i++) {
-                    if (strncmp(split->graph.nodes[i]->name, "ffn_moe_topk-", 13) == 0) {
-                        topk_idx[n_topk_found++] = i;
+                    const char * nm = split->graph.nodes[i]->name;
+                    if (strncmp(nm, bd_prefix, bd_len) == 0) {
+                        as_idx[n_as_found] = i;
+                        // find the matching top-k view for the same layer
+                        struct ggml_tensor * view = nullptr;
+                        for (int k = 0; k < n_nodes; k++) {
+                            if (strncmp(split->graph.nodes[k]->name, "ffn_moe_topk-", 13) == 0 &&
+                                strcmp(split->graph.nodes[k]->name + 13, nm + bd_len) == 0) {
+                                view = split->graph.nodes[k];
+                                break;
+                            }
+                        }
+                        as_topk[n_as_found] = view;
+                        n_as_found++;
                     }
                 }
-                const int n_segs = n_topk_found + 1; // tail segment included
+                const int n_segs = n_as_found + 1; // tail segment included
 
                 // poll the Metal backend for completed segments without blocking the pipeline
                 auto * reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(split_backend));
@@ -1772,8 +1793,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 const int done0 = cgc_done ? cgc_done(split_backend) : -1;
 
                 auto seg_view = [&](int s) {
-                    const int a = (s == 0) ? 0 : (topk_idx[s-1] + 1);
-                    const int b = (s == n_segs-1) ? n_nodes - 1 : topk_idx[s];
+                    const int a = (s == 0) ? 0 : (as_idx[s-1] + 1);
+                    const int b = (s == n_segs-1) ? n_nodes - 1 : as_idx[s];
                     struct ggml_cgraph gv = ggml_graph_view(&split->graph, a, b + 1);
                     return gv;
                 };
@@ -1785,20 +1806,38 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 if (ec != GGML_STATUS_SUCCESS) {
                     return ec;
                 }
+                static int cgc_grph_dbg_n = 0;
+                if (getenv("CGC_GRPH_DBG") != nullptr && cgc_grph_dbg_n < 6) {
+                    cgc_grph_dbg_n++;
+                    fprintf(stderr, "CGC-GRPH-BEGIN n_nodes=%d backend=%s\n", split->graph.n_nodes, ggml_backend_name(split_backend));
+                    for (int gi = 0; gi < split->graph.n_nodes; gi++) {
+                        ggml_tensor * gn = split->graph.nodes[gi];
+                        fprintf(stderr, "CGC-GRPH[%d] name=%s op=%d(%s) ne=[%lld,%lld]\n",
+                                gi, gn->name, (int) gn->op, ggml_op_name(gn->op),
+                                (long long) gn->ne[0], (long long) gn->ne[1]);
+                    }
+                }
                 static int64_t p_us = 0, p_n = 0;
+                const bool submit_dbg = getenv("CGC_SUBMIT_DBG") != nullptr;
                 for (int i = 0; i < n_segs; i++) {
                     if (i + 1 < n_segs) {
                         const int64_t v0 = ggml_time_us();
+                        const int d0 = submit_dbg && cgc_done ? cgc_done(split_backend) : -1;
                         struct ggml_cgraph gv = seg_view(i + 1);
                         ec = ggml_backend_graph_compute_async(split_backend, &gv);
                         if (ec != GGML_STATUS_SUCCESS) {
                             return ec;
                         }
                         const int64_t v1 = ggml_time_us();
+                        const int d1 = submit_dbg && cgc_done ? cgc_done(split_backend) : -1;
+                        if (submit_dbg && (i % 40) == 0) {
+                            fprintf(stderr, "CGC-SUBMIT: seg=%d dur=%lld us gpu_adv=%d\n",
+                                    i + 1, (long long) (v1 - v0), d1 - d0);
+                        }
                         p_us += v1 - v0;
                         p_n++;
                     }
-                    if (i < n_topk_found) {
+                    if (i < n_as_found) {
                         static int64_t w_us = 0, c_us = 0, n = 0;
                         const int64_t st0 = ggml_time_us();
                         if (cgc_done) {
@@ -1810,7 +1849,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                             ggml_backend_synchronize(split_backend);
                         }
                         const int64_t st1 = ggml_time_us();
-                        struct ggml_tensor * ttopk = split->graph.nodes[topk_idx[i]];
+                        struct ggml_tensor * ttopk = as_topk[i];
+                        if (ttopk == nullptr) {
+                            ttopk = split->graph.nodes[as_idx[i]];
+                        }
                         if (!sched->callback_eval(ttopk, false, sched->callback_eval_user_data)) {
                             break;
                         }
