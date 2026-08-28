@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CGC TPOT 延遲分解（MTP steady-state 修復）2026-08-28 · qwen36 24.96 t/s</title>
+<style>
+  :root {
+    --bg: #0f1420; --card: #171e2e; --ink: #e8ecf4; --sub: #9aa5b8;
+    --line: #2a3350;
+    --wr: #f0a45c; --small: #e86a6a; --ssm: #d98cf0; --sdpa: #7fb8f0; --bubble: #6b7aa8;
+    --cpu-r: #f0c25c; --cpu-g: #b8d95c; --cpu-s: #7fd4c0; --cpu-o: #8a97ad;
+    --accent: #ffd479; --good: #8fe3a0; --warn: #f08a8a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; padding: 32px 20px 60px; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  .sub { color: var(--sub); font-size: 14px; margin-bottom: 28px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px 24px; margin-bottom: 22px; }
+  .card h2 { font-size: 18px; margin: 0 0 4px; }
+  .card .desc { color: var(--sub); font-size: 13px; margin: 0 0 16px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 10px 0 18px; font-size: 12.5px; color: var(--sub); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .barwrap { margin-bottom: 10px; }
+  .barrow { display: flex; align-items: center; gap: 10px; }
+  .barlabel { width: 280px; font-size: 12.5px; color: var(--ink); flex-shrink: 0; line-height: 1.35; }
+  .barlabel small { display: block; color: var(--sub); font-size: 11px; }
+  .bar { flex: 1; height: 34px; border-radius: 8px; overflow: hidden; display: flex; background: #0c1019; border: 1px solid var(--line); }
+  .seg { height: 100%; display: flex; align-items: center; justify-content: center; font-size: 10.5px; color: #10141f; font-weight: 700; white-space: nowrap; overflow: hidden; min-width: 0; border-right: 1px solid rgba(15,20,32,.35); }
+  .seg.tiny { font-size: 0; }
+  .seg.tiny:hover { font-size: 10.5px; }
+  .note { font-size: 12.5px; color: var(--sub); margin-top: 12px; line-height: 1.6; }
+  .note b { color: var(--ink); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--sub); font-weight: 600; font-size: 12px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .hl { color: var(--accent); font-weight: 700; }
+  .ceil { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .ceil .cl { width: 280px; font-size: 12.5px; flex-shrink: 0; }
+  .ceil .ctrack { flex: 1; height: 26px; background: #0c1019; border: 1px solid var(--line); border-radius: 7px; position: relative; }
+  .ceil .cfill { height: 100%; border-radius: 6px; display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; font-size: 11px; font-weight: 700; color: #10141f; }
+  .tokbadge { margin-left: 10px; font-size: 12.5px; color: var(--ink); width: 110px; flex-shrink: 0; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; margin-left: 6px; }
+  .tag.g { background: #1c3a24; color: #8fe3a0; }
+  .tag.r { background: #3a1c1c; color: #f08a8a; }
+  .tag.y { background: #3a321c; color: #e3cf8f; }
+  code { background: #0c1019; padding: 1px 6px; border-radius: 5px; font-size: 12px; color: #cde3a0; }
+  pre { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; font-size: 12px; line-height: 1.55; overflow-x: auto; color: #cde3a0; }
+  pre b { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>CGC · TPOT 延遲分解（MTP steady-state 修復版）</h1>
+<div class="sub">llama.cpp fork · M4 Max 16GB · 2026-08-28 · qwen36 IQ3_XXS -ngl 99 + expert-cache 4GiB + MTP draft-n-max 2 · branch <b>dev</b>（fc129b3a9 起，基於 9d13a2474 + chunked prefill）</div>
+
+<!-- ============ 1. 生產基線 ============ -->
+<div class="card">
+  <h2>① 2026-08-28 生產基線：qwen36 MTP steady-state ~25 t/s</h2>
+  <p class="desc">wall ≈ 40-44 ms/token ≈ <b class="hl">22.9~25.0 tok/s</b>（1222-token prompt + 1100-token 生成，seed 1，--steady；兩次實測 24.96 / 22.86 t/s，主機負載差異，輸出 bit-identical）。輸出全程連貫（12821 字元、0 個退化 run），accept <b>97.855%</b>，pool 真實 pread 填充（file_reads=36873）。歷史 Architecture A 版本（1cd1da2eb 鏈）同期輸出全壞（0000…）。</p>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">本版（9d13a2474 + chunked prefill）<small>1222 prompt + 1100 gen · accept 97.9% · 兩次實測</small></div>
+      <div class="bar">
+        <div class="seg" style="width:76%;background:var(--good)" title="24.96（worktree 基準）/ 22.86（主 repo 復驗）t/s，全程連貫">22.9-25.0 t/s ✓</div>
+        <div class="seg" style="width:24%;background:var(--warn)" title="與 26.4 t/s 歷史目標的差距（hit rate 51.5% → pread tail）">~1.4-3.5 gap</div>
+      </div>
+    </div>
+  </div>
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">歷史目標（MTP 1-token 量測）<small>37.9 ms/token</small></div>
+      <div class="bar">
+        <div class="seg" style="width:84.7%;background:linear-gradient(90deg,#2c6a4a,#5cc09a)">26.4 t/s</div>
+      </div>
+    </div>
+  </div>
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">Architecture A 鏈（arch-a-broken 分支保留）<small>短 prompt 7.88 t/s · 輸出退化 "the the the" · steady 全 0000</small></div>
+      <div class="bar">
+        <div class="seg" style="width:25.3%;background:var(--warn)" title="7.877 t/s，慢 2.8x 且輸出損壞">7.88 t/s ✗</div>
+        <div class="seg" style="width:74.7%;background:#3a1c1c" title="輸出損壞：prefill 繞過 pool path → pool 無 pread 數據 → hidden state 腐蝕">輸出損壞</div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note"><b>短 prompt 回歸</b>：21.5~22.0 t/s、accept 87.5%、輸出與 9d13a2474 baseline 完全一致（"France. France.…"，MTP greedy 重複特性，非損壞）。<b>模型本身驗證</b>：<code>--no-cache -ngl 30</code> 輸出 "Paris"（正確），排除權重/quant 問題。</p>
+</div>
+
+<!-- ============ 2. 退化根因 ============ -->
+<div class="card">
+  <h2>② 退化根因：二分定位（isoA/isoB/bypass 三重隔離）</h2>
+  <p class="desc">Architecture A（2413fd82b → b55996ad8 → 94e39b695）為支持長 prompt 移除 n_batch cap，代價是 prefill 完全繞過 expert-cache pool path——pool 只分配 slot 不做 pread，FFN 讀到零數據，hidden state 逐層腐蝕。</p>
+
+  <table>
+    <tr><th>隔離測試</th><th>設定</th><th>結果</th><th>結論</th></tr>
+    <tr><td>isoA（Architecture A 原版）</td><td>steady + exact-load（關 fast path）</td><td class="num">0000… 輸出</td><td>非 fast-path ZERO-slot 問題</td></tr>
+    <tr><td>CGC_POOL_BYPASS</td><td>所有 hook 走 identity remap + 恢復 FFN 原指針</td><td class="num">仍 0000…</td><td>非 pool 數據競態/汙染</td></tr>
+    <tr><td>模型對照</td><td>--no-cache -ngl 30</td><td class="num">"Paris" ✓</td><td>權重與 quant 正常</td></tr>
+    <tr><td>9d13a2474 對照</td><td>短 prompt MTP</td><td class="num">21.8 t/s ✓</td><td>退化點 = 2413fd82b（移除 n_batch cap）</td></tr>
+    <tr><td>9d13a2474 steady</td><td>長 prompt</td><td class="num">無法執行（"prompt exceeds batch size 1222 &gt; 8"）</td><td>舊版從未支持長 prompt——需 chunked prefill</td></tr>
+  </table>
+
+  <p class="note"><b>根因鏈</b>：移除 n_batch cap → 大批 prefill ubatch 走「full-weight 無 remap」路徑 → <code>record_routes</code> 後直接 return → pool 的 ensure_batch 從未被觸發 → slot table 有索引但 pool region 無數據（<code>pool_word=0x00000000</code>）→ 疊加 Architecture A 的「pool 未 adopt 時 remap 寫 slot 索引但 FFN 仍指 full tensor」→ mul_mat_id 讀錯 expert → NaN 級聯 / 0000 輸出。</p>
+</div>
+
+<!-- ============ 3. 修復設計 ============ -->
+<div class="card">
+  <h2>③ 修復設計：chunked prefill（38 行，單點修改）</h2>
+  <p class="desc">設計理念：<b>L4 pool path 的「小批量條件」不是 bug 而是 staging 正確性前提</b>——只有 n_tokens ≤ n_batch 的 ubatch 才走 pool/gather 路徑並觸發 pread 填充。正確支持長 prompt 的方式不是放寬條件（Architecture A 的錯誤方向），而是把長 prompt 切成 n_batch 大小的 chunk，讓每個 chunk 都走 pool path。</p>
+
+<pre>
+<code>// src/llama.cpp/examples/speculative-simple/speculative-simple.cpp（eb16bd129）
+// [CGC chunked prefill] decode in n_batch-sized chunks so every ubatch walks the
+// L4 expert-cache pool path (small-batch condition) and fills the pool via pread.
+const size_t n_enc = inp.size() - 1;
+const int32_t n_chunk = llama_n_batch(ctx_tgt);          <b>// = 8（L4 pool 條件）</b>
+for (size_t off = 0; off &lt; n_enc; off += (size_t) n_chunk) {
+    const size_t len = std::min((size_t) n_chunk, n_enc - off);
+    llama_batch batch_enc = llama_batch_init((int32_t) len, 0, 1);
+    for (size_t i = 0; i &lt; len; ++i) {
+        common_batch_add(batch_enc, inp[off + i], (llama_pos)(off + i), { 0 },
+                         off + i + 1 == n_enc);           <b>// 只在最后一格取 logits</b>
+    }
+    if (llama_decode(ctx_tgt, batch_enc) != 0) { ... return 1; }
+    common_speculative_process(spec, batch_enc);         <b>// MTP driver 捕捉 hidden states</b>
+    llama_batch_free(batch_enc);
+}</code></pre>
+
+  <p class="note"><b>為何有效</b>：1222-token prompt = 153 個 chunk，每個 chunk 觸發 41 層 × ensure_batch → 真實 pread（file_reads=36873）填 pool → 後續 decode 命中真實權重。同時 <code>common_speculative_process</code> 按 ubatch 消化（process() 本就逐 batch 處理），MTP draft 的 hidden-state 捕捉不受影響。<b>非 MTP 路徑</b>（ctx_dft 獨立 KV）也改為 chunk 循環保持對稱。</p>
+</div>
+
+<!-- ============ 4. Production 設定 ============ -->
+<div class="card">
+  <h2>④ Production 設定定案（run_n30cache.sh 預設值）</h2>
+
+  <table>
+    <tr><th>參數</th><th>值</th><th>說明</th></tr>
+    <tr><td>模型</td><td>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS.gguf</td><td>MTP 版（含 draft head）</td></tr>
+    <tr><td>-ngl</td><td><b>99</b>（full GPU offload）</td><td>只有 +cache 能 full offload（13.2GB &gt; 11.45GB）</td></tr>
+    <tr><td>-expert-cache</td><td><b>4GiB</b>（CLI 參數，speculative-simple 不讀 env）</td><td>bounded L4 Metal pool</td></tr>
+    <tr><td>MTP ctx（-c）</td><td><b>3072</b>（N30CACHE_MTP_CTX 可覆寫）</td><td>steady 2322 token 需求；2048 會 KV 用盡 rc=1</td></tr>
+    <tr><td>--spec-draft-n-max</td><td><b>2</b></td><td>MTP 1-token draft</td></tr>
+    <tr><td>CGC_VERIFY_DECODE / CGC_DRAFT_DECODE</td><td><b>1</b>（--mtp 自動開）</td><td>verify/draft 走 fast path（LRU touch + ZERO-slot fallback）</td></tr>
+    <tr><td>CGC_NO_PREFETCH</td><td><b>1</b>（--mtp 自動開）</td><td>prefetch bg thread 與 GPU verify 競態，必須關</td></tr>
+    <tr><td>CGC_OA_ASYNC</td><td><b>1</b></td><td>Metal splits async（§8.77，+12.6%）</td></tr>
+    <tr><td>CGC_N_CB</td><td><b>8</b></td><td>MTL encode 平行（§8.93）</td></tr>
+    <tr><td>CGC_GLU_FUSED_DOWN</td><td><b>1</b></td><td>fused gate+up+GLU+down（+6.5%）</td></tr>
+    <tr><td>LLAMA_EXPERT_CACHE_ALLOW_NGL</td><td><b>1</b></td><td>-ngl&gt;0 + cache 硬 guard</td></tr>
+    <tr><td>LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0</td><td><b>1</b></td><td>blk.0 非 pooled（full-weight skip-load）</td></tr>
+    <tr><td>LLAMA_EXPERT_CACHE_WORKERS</td><td><b>8</b></td><td>pread 甜蜜點</td></tr>
+    <tr><td>CGC_WAKE_POLL_US</td><td><b>15</b></td><td>§8.51 生產值</td></tr>
+    <tr><td>--temp</td><td><b>0</b>（--mtp 時）</td><td>MTP 驗證需 greedy</td></tr>
+  </table>
+
+  <p class="note"><b>驗證 seed</b>：短 prompt 用 <code>--seed 42</code>，steady 用 <code>--seed 1</code>（固定 seed 才能比對輸出正確性）。<b>採樣約束</b>：target sampler 不可用 repeat penalty（accept 掉到 25.6%）；draft sampler 可用 1.1~1.2。</p>
+</div>
+
+<!-- ============ 5. Build 修改與重建 ============ -->
+<div class="card">
+  <h2>⑤ Build：修改了啥、怎麼重建</h2>
+  <p class="desc">本版相對 9d13a2474 的源碼修改只有兩處；build 產物全數 git 追蹤（防 8/26 疏失），checkout 後<b>不需要重建</b>即可驗證。</p>
+
+  <table>
+    <tr><th>文件</th><th>修改</th><th>commit</th></tr>
+    <tr><td>src/llama.cpp/examples/speculative-simple/speculative-simple.cpp</td><td>chunked prefill（+38 行）；移除 "prompt exceeds batch size" 硬錯誤</td><td>eb16bd129</td></tr>
+    <tr><td>scripts/run_n30cache.sh</td><td>MTP_CTX 2048→3072（steady 需求）</td><td>ffeeb59e9</td></tr>
+    <tr><td>src/llama.cpp/build/bin/*（73 個 dylib + 47 個 exe）</td><td>REBUILD=1 全量重建後提交（本 commit）</td><td>—</td></tr>
+  </table>
+
+  <pre>
+<code># 重建流程（僅在改源碼後需要；checkout 驗證可跳過）
+REBUILD=1 JOBS=8 bash scripts/build_fork_llama.sh
+
+# 已知問題（不影響關鍵產物）：llama-app 連結失敗（llama-server-impl 未建）
+# → make exit 2，但 bin/llama 本來就未被 git 追蹤，其餘 47 exe + 全部 dylib 均已生成
+
+# 提交前自檢（pre-commit hook 同款檢查）
+BIN_DIR=src/llama.cpp/build/bin bash scripts/check_build_tracked.sh
+# 預期輸出：OK: build/bin 的 dylib 與 rpath 全部追蹤正常。</code></pre>
+
+  <p class="note"><b>分支拓撲</b>：<code>dev</code>（本線，9d13a2474 + chunked prefill + docs）｜<code>arch-a-broken</code>（1cd1da2eb 備份，Architecture A 壞鏈 + AIOS/docs 原始提交）｜<code>prod-chunked-prefill</code>（修復兩提交）｜<code>main</code>（b55996ad8，暫落後）。舊 debug 代碼已棄（stash 保存）。</p>
+</div>
+
+<!-- ============ 6. 一次驗證 ============ -->
+<div class="card">
+  <h2>⑥ Checkout 後一次驗證（免重建）</h2>
+  <p class="desc">build/bin 已提交，<code>git checkout dev</code> 後直接跑以下三步，全部通過 = 環境健康。</p>
+
+  <pre>
+<code># 1) 產物追蹤自檢（&lt;1s）
+BIN_DIR=src/llama.cpp/build/bin bash scripts/check_build_tracked.sh
+
+# 2) 短 prompt MTP 回歸（~30s）
+./scripts/run_n30cache.sh -m qwen36 --mtp -n 64 -p "The capital of France is" --seed 42
+#    預期：~21-22 t/s · accept 87.5% · 輸出 "France. France.…"（greedy 重複=正常）
+
+# 3) steady-state 長 prompt（~2min）
+./scripts/run_n30cache.sh -m qwen36 --mtp --steady --seed 1
+#    預期：~25 t/s · accept ~97.9% · 輸出全程連貫（grep -c "0000" 輸出文件 = 0）</code></pre>
+
+  <p class="note"><b>判讀</b>：第 3 步輸出落在 <code>/tmp/n30cache.out</code>（腳本固定路徑）；出現 "0000" 連續串或 "the the the" 退化即為回歸。速度在 M4 Max 16GB（11.45GB working set 限制）上 ±10% 屬正常。</p>
+</div>
+
+<!-- ============ 7. TODO ============ -->
+<div class="card">
+  <h2>⑦ TODO：24.96 → 26.4 → 29.85 t/s</h2>
+
+  <table>
+    <tr><th>項目</th><th>現況</th><th>預期收益</th></tr>
+    <tr><td>steady hit rate 51.5%（短 prompt 71.1%）</td><td>miss 12291/25320 → pread tail（15.8s pread 總量，workers=8 部分重疊）</td><td>修 prewarm 觸發可吃回 ~1.4 t/s 差距</td></tr>
+    <tr><td>prewarm_hot 早退 bug</td><td>steady 統計 prewarm req=0：MTP 2-token warmup 階段 freq 全零時就標記 hot_prewarm_done，之後永不再進</td><td>改為「無路由時不設 done」，prefill 路由已由 chunked prefill 正確記錄</td></tr>
+    <tr><td>29.85 t/s 目標</td><td>需 kernel 級（IQ3 inline dequant + sequential access；08-19 文件估算非 MTP 地板 ~28.6）</td><td>3-6 週工程</td></tr>
+    <tr><td>llama-app 連結失敗</td><td>LLAMA_BUILD_SERVER=OFF 但 app 仍連 llama-server-impl</td><td>build 配置修復（低優先）</td></tr>
+    <tr><td>draft ctx 長文支持</td><td>MTP_CTX=3072 上限（更長 prompt 用 N30CACHE_MTP_CTX 覆寫，需防 OOM）</td><td>動態 size 或 KV 分頁</td></tr>
+  </table>
+
+  <p class="note"><b>教訓（寫進規約）</b>：長 prompt prefill <b>永遠不要</b>移除 n_batch cap 來「放行」——pool path 小批量條件是 pread staging 的正確性前提，不是性能限制。正確做法 = chunked decode 調用。</p>
+</div>
+
+<p class="sub" style="margin-top:24px">數據：本文件所有數字為 2026-08-28 實測（主 repo src/llama.cpp/build/bin，M4 Max 16GB）。二分定位：isoA exact-load 0000 輸出、POOL_BYPASS 仍壞、--no-cache -ngl 30 "Paris" ✓、9d13a2474 短 prompt 21.8 t/s ✓ + steady "prompt exceeds batch size" → 確認退化點 2413fd82b。修復驗證：短 21.5~22.0 t/s accept 87.5%（與 baseline bit-identical）、steady 24.96（worktree 基準）/ 22.86 t/s（主 repo 生產目錄復驗，輸出 bit-identical：12821 字元 0 退化）accept 97.855%。</p>
+
+</div>
+</body>
+</html>
