@@ -247,6 +247,12 @@ if [ -n "${N30CACHE_WIN_PIN:-}" ]; then
 fi
 [ "$DECODEHIT" = 1 ] && ENVS+=(CGC_DECODEHIT=1)
 [ -n "${PIN_PROFILE:-}" ] && ENVS+=(LLAMA_EXPERT_CACHE_PIN_PROFILE="$PIN_PROFILE")
+# §CGC 2026-08-28: per-step miss timeline（llama-context.cpp STEP_DBG）：每 20 步打印
+# 累計 fast-path union/cold + ensure req/hit，判定 miss 為前期集中（cold start → prewarm
+# 修復有效）還是 steady churn（結構性 → prewarm 無效）。診斷用，不影響行為。
+if [ -n "${N30CACHE_STEP_DBG:-}" ]; then
+    ENVS+=(LLAMA_EXPERT_CACHE_STEP_DBG=1)
+fi
 
 echo "=== n30cache production run ==="
 echo "  model  : $MODEL ($(basename "$M"))"
