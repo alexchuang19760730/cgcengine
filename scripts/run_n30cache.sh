@@ -253,6 +253,10 @@ fi
 if [ -n "${N30CACHE_STEP_DBG:-}" ]; then
     ENVS+=(LLAMA_EXPERT_CACHE_STEP_DBG=1)
 fi
+# §CGC 2026-08-29 merge-read A/B（LLAMA_EXPERT_CACHE_NO_MERGE=1 回退 per-segment pread）
+if [ -n "${N30CACHE_NO_MERGE:-}" ]; then
+    ENVS+=(LLAMA_EXPERT_CACHE_NO_MERGE=1)
+fi
 
 echo "=== n30cache production run ==="
 echo "  model  : $MODEL ($(basename "$M"))"
