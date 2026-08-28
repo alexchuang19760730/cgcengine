@@ -252,7 +252,14 @@ int32_t llama_expert_cache_slot_table_safe(const llama_expert_cache * cache, uin
 // fill is in flight (slot_loading) — the bg thread would otherwise write the old expert's bytes
 // into a slot already reassigned to a new expert (silent corruption). Returns -1 when every slot
 // is loading (caller waits for a fill to finish). Must be called holding cache->m.
-static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer) {
+// [CGC WIN_PIN fix] min_tick: slots whose last_use >= min_tick were assigned EARLIER IN THE
+// CALLER'S BATCH and must never be evicted mid-batch — with WIN_PIN pinning the previous
+// batches' residents, the LRU scan would otherwise see this batch's own fresh assignments as
+// the "stalest non-pinned" and hand the SAME slot to two experts (concurrent fills overwrite
+// each other → corrupted FFN + near-hang). 0 = no restriction (single-expert ensure path).
+// Overflow pass: when every non-pinned candidate is exhausted, evict the LRU PINNED slot
+// instead of returning -1 / deadlocking (a pin is a preference, not a hard guarantee).
+static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer, uint64_t min_tick = 0) {
     auto & owner  = cache->slot_owner[layer];
     auto & last   = cache->slot_last_use[layer];
     auto & load   = cache->slot_loading[layer];
@@ -264,27 +271,39 @@ static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer) {
             return (int32_t) i;
         }
     }
-    // all occupied (or loading/queued): evict LRU among the non-loading, non-queued
-    uint64_t best_tick = UINT64_MAX;
-    int32_t  best_slot = -1;
-    for (uint32_t i = 0; i < ns; ++i) {
-        if (load[i] || queued[i] || cache->slot_pinned[layer][i] || cache->slot_pinned_static[layer][i]) {
-            continue;
+    // all occupied (or loading/queued): evict LRU. Pass 0 skips pinned; pass 1 (overflow)
+    // allows evicting a DYNAMICALLY pinned slot (slot_pinned — window/tail pins are a
+    // preference) when nothing else is available. slot_pinned_static (PIN_PROFILE) stays a
+    // hard guarantee in both passes, matching the pre-WIN_PIN behavior. Neither pass touches
+    // this-batch assignments (min_tick) or in-flight fills.
+    for (int pass = 0; pass < 2; ++pass) {
+        uint64_t best_tick = UINT64_MAX;
+        int32_t  best_slot = -1;
+        for (uint32_t i = 0; i < ns; ++i) {
+            if (load[i] || queued[i] || cache->slot_pinned_static[layer][i]) {
+                continue;
+            }
+            if (min_tick != 0 && last[i] >= min_tick) {
+                continue; // assigned earlier in the caller's batch
+            }
+            if (pass == 0 && cache->slot_pinned[layer][i]) {
+                continue;
+            }
+            if (last[i] < best_tick) {
+                best_tick = last[i];
+                best_slot = (int32_t) i;
+            }
         }
-        if (last[i] < best_tick) {
-            best_tick = last[i];
-            best_slot = (int32_t) i;
+        if (best_slot >= 0) {
+            const int32_t evicted = owner[best_slot];
+            if (evicted >= 0 && evicted < (int32_t) cache->n_expert) {
+                cache->slot_table[(size_t) layer * cache->n_expert + evicted] = -1;
+            }
+            owner[best_slot] = -1;
+            return best_slot;
         }
     }
-    if (best_slot < 0) {
-        return -1;
-    }
-    const int32_t evicted = owner[best_slot];
-    if (evicted >= 0 && evicted < (int32_t) cache->n_expert) {
-        cache->slot_table[(size_t) layer * cache->n_expert + evicted] = -1;
-    }
-    owner[best_slot] = -1;
-    return best_slot;
+    return -1;
 }
 
 // L3 Option A: pread one (layer, expert) straight into its pool slot regions (per kind).
@@ -412,6 +431,11 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
     {
         std::unique_lock<std::mutex> lk(cache->m);
         cache->n_requests += n;
+        // [CGC WIN_PIN fix] batch_tick: taken ONCE before the per-expert loop — every
+        // last_use bump done at/after this tick (hits re-touched + misses assigned) belongs
+        // to THIS batch, so pick_slot's LRU must never evict them mid-batch. Taking it inside
+        // the loop would re-raise the floor each expert and miss the earlier assignments.
+        const uint64_t batch_tick = cache->tick + 1;
         if (getenv("LLAMA_EXPERT_CACHE_PREFETCH_DBG") != nullptr) {
             unsigned busy0 = 0;
             for (uint32_t i = 0; i < slots_l(cache, layer); ++i) if (cache->slot_owner[layer][i] >= 0) busy0++;
@@ -447,7 +471,7 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
             }
             int32_t slot;
             for (;;) {
-                slot = pick_slot(cache, layer);
+                slot = pick_slot(cache, layer, batch_tick);
                 if (slot >= 0) {
                     break;
                 }
@@ -517,6 +541,43 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
             const int32_t  s = miss_slots[i];
             cache->slot_last_use[layer][s] = ++cache->tick;
             table[e] = s;
+        }
+        // [CGC WIN_PIN] roll this batch's union into the layer's window and repin the LRU-exempt
+        // set. Runs AFTER table[] is updated so this step's union (hits + just-filled misses) is
+        // fully resident and gets pinned. pick_slot skips pinned slots, so evictions now only
+        // touch cold/non-window experts — the recurring hot experts stay resident and the next
+        // step's ensure HITS instead of paying a synchronous pread. LLAMA_EXPERT_CACHE_WIN_PIN=K
+        // (default 0 = off = old pure-LRU, bit-identical). Recycles slot_pinned (TAILPIN's field;
+        // decode-time repin supersedes the one-shot prefill tail pin by design). Note: the roll
+        // happens on miss-steps only (inside this if) — a hits-only step keeps the window as-is,
+        // which stretches its TIME span across clean steps: recurring experts reused every N
+        // steps stay covered even when N exceeds K.
+        {
+            static const int win_pin_k = []() {
+                const char * s = getenv("LLAMA_EXPERT_CACHE_WIN_PIN");
+                return (s != nullptr && s[0] != '\0') ? atoi(s) : 0;
+            }();
+            if (win_pin_k > 0 && layer < cache->win_union.size()) {
+                auto & dq = cache->win_union[layer];
+                dq.push_back(std::vector<uint32_t>(experts, experts + n));
+                while ((int) dq.size() > win_pin_k) {
+                    dq.pop_front();
+                }
+                const uint32_t ns = slots_l(cache, layer);
+                auto & pin = cache->slot_pinned[layer];
+                std::fill(pin.begin(), pin.end(), 0);
+                for (const auto & u : dq) {
+                    for (uint32_t e : u) {
+                        if (e >= cache->n_expert) {
+                            continue;
+                        }
+                        const int32_t s = table[e];
+                        if (s >= 0 && (uint32_t) s < ns) {
+                            pin[s] = 1;
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1172,6 +1233,7 @@ llama_expert_cache * llama_expert_cache_init(const llama_model * model, size_t b
         cache->slot_loading.resize(max_layer);
         cache->slot_pinned.resize(max_layer);
         cache->slot_pinned_static.resize(max_layer);
+        cache->win_union.resize(max_layer);
         // [CGC prefetch v2] recently-evicted expert ring (per layer): CGC_EVICTED_RING=N sets
         // capacity (default 16; 0 = off, keeps the old pure-LRU behavior for A/B).
         {

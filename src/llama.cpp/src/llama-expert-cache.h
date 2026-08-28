@@ -127,6 +127,13 @@ struct llama_expert_cache {
     // [CGC §8.101 A/B] per-layer slot capacity (LLAMA_EXPERT_CACHE_LAYER_CAPS="start-end:cap,...";
     // default = n_slots for all layers). Sized max_layer; layer 0 (skip) unused.
     std::vector<uint32_t> n_slots_l;
+    // [CGC WIN_PIN] rolling per-layer step-union window (last K ensure_batch calls): resident
+    // members get slot_pinned (LRU-exempt) so recurring hot experts are not evicted between
+    // uses. Miss analysis (steady MTP, 4GiB pool): 12291 misses are mostly REPEATS — hot
+    // experts LRU-evicted then needed again. Pure replacement-policy change, runs on the
+    // synchronous path under cache->m (never writes pool bytes) → no MTP bg-thread race.
+    // LLAMA_EXPERT_CACHE_WIN_PIN=K enables (0 = default off = old pure-LRU behavior).
+    std::vector<std::deque<std::vector<uint32_t>>> win_union; // [layer] last K step unions
     std::vector<std::vector<uint32_t>> pin_profile;        // [layer] experts pinned by the static profile (load-time filled + marked)
     std::deque<std::tuple<uint32_t, int32_t, uint32_t>> pool_queue; // (layer, slot, expert) queued pool fills (FIFO)
     // [CGC MTP fast path] reserved ZERO-slot: 1 when the layer's last slot region has been

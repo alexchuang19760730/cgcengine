@@ -179,7 +179,8 @@ esac
 # 兩家族都驗證 bit-identical + 更快：qwen36 +12.6%、gemma4 +22%（§8.78）。
 # 安全機制：ffn_moe_probs pin CPU（llama-context.cpp:3489）把 topk 鏈留在 CPU split，
 # hook 在 CPU split 觸發，Metal split 無需 callback。
-OA_ASYNC=1
+# 2026-08-28: 暴露 N30CACHE_OA_ASYNC=0 覆寫供 MTP 路徑 A/B（預設仍 1 = 生產值）。
+OA_ASYNC="${N30CACHE_OA_ASYNC:-1}"
 # §8.81: CGC_N_CB=4 — MTL encode 平行化（fork 預設 1 是 per-op 計時安全設定，非最優）。
 # qwen36 掃描：cb1 mean 106-126ms/run vs cb4 82-84ms/run（-20~25%），四臂 BIT-IDENTICAL，
 # 機制是消掉串行 encode 的 >100ms 尾部尖峰（14-21/48 step → 4/48）。gemma4 短測亦 identical。
@@ -233,6 +234,17 @@ ENVS=(LLAMA_EXPERT_CACHE_ALLOW_NGL=1
 [ "$OA_ASYNC" = 1 ] && ENVS+=(CGC_OA_ASYNC=1)
 ENVS+=(CGC_N_CB=$N_CB)
 ENVS+=(CGC_GLU_FUSED_DOWN=1)  # §8.113: fused gate+up+GLU+down, +6.5% speed
+# §CGC 2026-08-28 WIN_PIN（LLAMA_EXPERT_CACHE_WIN_PIN=K）：window pin — 每層保留最近 K 個
+# miss-step union 的 expert 不被 LRU 逐出。A/B 結論（steady MTP 4GiB seed 1，2026-08-28）：
+# K=4 hit 51.0%、K=2 hit 51.4%（baseline 51.5%）→ 全 K 值中性無效。根因：steady 的 miss
+# 為 chunked prefill 的結構性 cold routing（跨 chunk 路由重疊極低，非 recurring hot
+# eviction）；decode 期 93% 步走 fast path（touch+ZERO，不 fill），ensure_batch 只在
+# prefill/catch-up。且 pread 16.28s 為 8-worker 平行累計值 → 實際 prefill wall ~1-2s
+# （總時間 <4%）→ miss rate 對可感知速度影響極小。保留代碼供後續 prefill I/O 優化
+# 復用；預設 off（=舊純 LRU，bit-identical 已驗證）。A/B 用 N30CACHE_WIN_PIN=K 傳入。
+if [ -n "${N30CACHE_WIN_PIN:-}" ]; then
+    ENVS+=(LLAMA_EXPERT_CACHE_WIN_PIN=$N30CACHE_WIN_PIN)
+fi
 [ "$DECODEHIT" = 1 ] && ENVS+=(CGC_DECODEHIT=1)
 [ -n "${PIN_PROFILE:-}" ] && ENVS+=(LLAMA_EXPERT_CACHE_PIN_PROFILE="$PIN_PROFILE")
 

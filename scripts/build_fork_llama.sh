@@ -21,6 +21,9 @@ GGML_CPU_REPACK="${GGML_CPU_REPACK:-OFF}" # MUST be OFF —踩 IQ3 tensor bounda
 GGML_OPENMP="${GGML_OPENMP:-OFF}"        # OFF for stability
 LLAMA_CURL="${LLAMA_CURL:-OFF}"
 LLAMA_BUILD_SERVER="${LLAMA_BUILD_SERVER:-OFF}"
+# 2026-08-28: app/（unified binary llama）硬依賴 llama-server-impl；SERVER=OFF 時不存在
+# → ld: library 'llama-server-impl' not found（build 尾段失敗）。SERVER=OFF 時一併關 app。
+LLAMA_BUILD_APP="${LLAMA_BUILD_APP:-$([ "$LLAMA_BUILD_SERVER" = "ON" ] && echo ON || echo OFF)}"
 LLAMA_BUILD_TESTS="${LLAMA_BUILD_TESTS:-OFF}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
 REBUILD="${REBUILD:-1}"
@@ -69,6 +72,7 @@ cmake -B "$BUILD_DIR" \
     -DGGML_OPENMP="$GGML_OPENMP" \
     -DLLAMA_CURL="$LLAMA_CURL" \
     -DLLAMA_BUILD_SERVER="$LLAMA_BUILD_SERVER" \
+    -DLLAMA_BUILD_APP="$LLAMA_BUILD_APP" \
     -DLLAMA_BUILD_TESTS="$LLAMA_BUILD_TESTS" \
     -DGGML_MACHINE_SUPPORTS_sve=OFF \
     -DGGML_MACHINE_SUPPORTS_sme=OFF \

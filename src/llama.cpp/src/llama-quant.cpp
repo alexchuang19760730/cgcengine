@@ -1054,7 +1054,10 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
 
         if (params->imatrix) {
             metadata[i].remapped_imatrix_name = remap_imatrix(tensor->name, mapped);
-        } else if (metadata[i].allows_quantization && metadata[i].requires_imatrix) {
+        } else if (metadata[i].allows_quantization && metadata[i].requires_imatrix && metadata[i].target_type != tensor->type) {
+            // [CGC 2026-08-28] byte-copy case (target == current, e.g. a tensor-type-file pinning
+            // IQ2_S experts to their existing type) never quantizes, so an imatrix is not needed;
+            // the old unconditional check aborted such requantize-pins at load time.
             if (params->dry_run) {
                 will_require_imatrix = true;
             } else {
