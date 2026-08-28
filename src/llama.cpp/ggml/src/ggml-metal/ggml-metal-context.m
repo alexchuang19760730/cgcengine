@@ -13,6 +13,9 @@
 
 #include <sched.h>
 #include <stdatomic.h>
+#include <stdio.h>   // snprintf ([CGC watchdog] capture command)
+#include <stdlib.h>  // system, getenv ([CGC watchdog] capture command)
+#include <unistd.h>  // getpid, usleep ([CGC watchdog] dump hint + probe poll)
 
 #undef MIN
 #undef MAX
@@ -67,6 +70,28 @@ struct ggml_metal {
     // stays busy while the CPU writes the remap leaves for the next segments.
     _Atomic int cgc_done;
 
+    // [CGC 2026-08-29 deadlock watchdog] the sched busy-waits on cgc_done (hook_seg);
+    // an intermittent freeze (~1-in-4 steady runs) shows it never reaching its target.
+    // Tracking: expected = completion handlers attached at COMMIT (fires exactly once per
+    // committed buffer); last_progress = updated by every completion; per-cb encode
+    // start/done + create timestamps for the LATEST graph_compute. The watchdog thread
+    // (CGC_WATCHDOG=1, CGC_WATCHDOG_MS threshold) dumps all cmd buffer statuses when
+    // completions stall or an encode worker hangs, then aborts after a 60s sampling window.
+    _Atomic int        cgc_expected;
+    _Atomic int64_t    cgc_last_progress_us;
+    _Atomic int64_t    cgc_last_submit_us;
+    _Atomic int        cgc_n_computes;
+    _Atomic int64_t    cgc_encode_start_us[GGML_METAL_MAX_COMMAND_BUFFERS + 1];
+    _Atomic int64_t    cgc_encode_done_us[GGML_METAL_MAX_COMMAND_BUFFERS + 1];
+    int64_t            cgc_cb_create_us[GGML_METAL_MAX_COMMAND_BUFFERS + 1]; // main thread only
+    _Atomic bool       cgc_watchdog_stop;
+    dispatch_queue_t   cgc_watchdog_queue;
+    dispatch_source_t  cgc_watchdog_timer;
+    int                cgc_watchdog_ms;       // constant after init
+    int64_t            cgc_watchdog_fired_us; // watchdog queue only
+    int64_t            cgc_watchdog_dump_us;  // watchdog queue only
+    bool               cgc_probe_done;        // watchdog queue only (see cgc_watchdog_probe)
+
     struct ggml_cgraph * gf;
 
     // the callback given to the thread pool
@@ -89,6 +114,9 @@ struct ggml_metal {
     // once set, graph_compute will return GGML_STATUS_FAILED until the backend is recreated
     bool has_error;
 };
+
+// [CGC watchdog] defined below (after the init/free section)
+static void cgc_watchdog_tick(ggml_metal_t ctx);
 
 ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
     GGML_LOG_INFO("%s: allocating\n", __func__);
@@ -192,6 +220,33 @@ ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
 
     atomic_store_explicit(&res->cgc_done, 0, memory_order_relaxed);
 
+    // [CGC watchdog] opt-in via CGC_WATCHDOG=1 (default off = production unchanged)
+    atomic_store_explicit(&res->cgc_expected,        0, memory_order_relaxed);
+    atomic_store_explicit(&res->cgc_last_progress_us, 0, memory_order_relaxed);
+    atomic_store_explicit(&res->cgc_last_submit_us,   0, memory_order_relaxed);
+    atomic_store_explicit(&res->cgc_n_computes,      0, memory_order_relaxed);
+    atomic_store_explicit(&res->cgc_watchdog_stop,   false, memory_order_relaxed);
+    {
+        const char * wd  = getenv("CGC_WATCHDOG");
+        const char * wms = getenv("CGC_WATCHDOG_MS");
+        res->cgc_watchdog_ms = (wms && wms[0]) ? atoi(wms) : 10000;
+        if (wd && atoi(wd) != 0 && res->cgc_watchdog_ms > 0) {
+            res->cgc_watchdog_queue = dispatch_queue_create("ggml-metal-wd", DISPATCH_QUEUE_SERIAL);
+            res->cgc_watchdog_timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, res->cgc_watchdog_queue);
+            GGML_ASSERT(res->cgc_watchdog_timer);
+            dispatch_source_set_timer(res->cgc_watchdog_timer,
+                    dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC),
+                    (uint64_t) 500 * NSEC_PER_MSEC, (uint64_t) 100 * NSEC_PER_MSEC);
+            ggml_metal_t ctx_wd = res; // captured by the handler block below
+            dispatch_source_set_event_handler(res->cgc_watchdog_timer, ^{
+                cgc_watchdog_tick(ctx_wd);
+            });
+            dispatch_resume(res->cgc_watchdog_timer);
+            GGML_LOG_WARN("%s: CGC deadlock watchdog ON (threshold %d ms, 60s sampling grace)\n",
+                    __func__, res->cgc_watchdog_ms);
+        }
+    }
+
     res->pipelines_ext = ggml_metal_pipelines_init();
 
     return res;
@@ -199,6 +254,17 @@ ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
 
 void ggml_metal_free(ggml_metal_t ctx) {
     GGML_LOG_INFO("%s: deallocating\n", __func__);
+
+    // [CGC watchdog] stop + drain before teardown so the tick cannot touch freed state
+    if (ctx->cgc_watchdog_timer) {
+        atomic_store_explicit(&ctx->cgc_watchdog_stop, true, memory_order_relaxed);
+        dispatch_sync(ctx->cgc_watchdog_queue, ^{}); // wait out any in-flight tick
+        dispatch_source_cancel(ctx->cgc_watchdog_timer);
+        dispatch_release(ctx->cgc_watchdog_timer);
+        ctx->cgc_watchdog_timer = NULL;
+        dispatch_release(ctx->cgc_watchdog_queue);
+        ctx->cgc_watchdog_queue = NULL;
+    }
 
     for (int i = 0; i < GGML_METAL_MAX_COMMAND_BUFFERS; ++i) {
         if (ctx->cmd_bufs[i].obj) {
@@ -279,6 +345,200 @@ int ggml_metal_cgc_done(ggml_metal_t ctx) {
 
 int ggml_metal_cgc_bufs(ggml_metal_t ctx) {
     return ctx->n_cb + 1; // one completion per cmd buffer, n_cb+1 per graph_compute
+}
+
+// [CGC 2026-08-29 deadlock watchdog] see struct comment. MTLCommandBufferStatus:
+// 0=NotEnqueued 1=Enqueued 2=Committed 3=Scheduled 4=Executing 5=Completed 6=Error
+static const char * cgc_cb_status_name(int s) {
+    switch (s) {
+        case 0: return "NotEnqueued";
+        case 1: return "Enqueued";
+        case 2: return "Committed";
+        case 3: return "Scheduled";
+        case 4: return "Executing";
+        case 5: return "Completed";
+        case 6: return "Error";
+        default: return "?";
+    }
+}
+
+static void cgc_watchdog_dump(ggml_metal_t ctx, int64_t now, int expected, int done, bool enc_stale) {
+    @autoreleasepool {
+        const int n_cb = ctx->n_cb;
+        // [CGC probe] wedge-instant forensics: how long since the LAST completion vs this
+        // graph's submission. stale == submit_age => completions stopped the moment this
+        // graph was committed; stale << submit_age => progressed then stopped mid-graph.
+        const int64_t last_prog = atomic_load_explicit(&ctx->cgc_last_progress_us, memory_order_relaxed);
+        const int64_t last_subm = atomic_load_explicit(&ctx->cgc_last_submit_us,   memory_order_relaxed);
+        fprintf(stderr,
+                "CGC-WATCHDOG: Metal stall: ctx=%p expected=%d done=%d n_cb=%d computes=%d enc_stale=%d pid=%d\n"
+                "CGC-WATCHDOG: stale=%lldms (since last completion) submit_age=%lldms wedge_at=%lldms after submit\n"
+                "CGC-WATCHDOG: (sample me within the grace window: `sample %d 5 -file /tmp/cgc_sample.txt`)\n",
+                (void *) ctx, expected, done, n_cb,
+                atomic_load_explicit(&ctx->cgc_n_computes, memory_order_relaxed),
+                enc_stale ? 1 : 0, (int) getpid(),
+                last_prog > 0 ? (long long) (now - last_prog) / 1000 : -1LL,
+                last_subm > 0 ? (long long) (now - last_subm) / 1000 : -1LL,
+                (last_prog > 0 && last_subm > 0 && last_prog >= last_subm)
+                    ? (long long) (last_prog - last_subm) / 1000 : -1LL,
+                (int) getpid());
+        for (int i = 0; i <= n_cb; ++i) {
+            id<MTLCommandBuffer> cb = ctx->cmd_bufs[i].obj;
+            const int64_t create = ctx->cgc_cb_create_us[i];
+            const int64_t enc_s  = atomic_load_explicit(&ctx->cgc_encode_start_us[i], memory_order_relaxed);
+            const int64_t enc_d  = atomic_load_explicit(&ctx->cgc_encode_done_us[i],  memory_order_relaxed);
+            if (cb == nil) {
+                fprintf(stderr, "CGC-WATCHDOG: cb[%d] obj=nil (create=%lldms ago)\n", i,
+                        create ? (now - create) / 1000 : -1);
+                continue;
+            }
+            const MTLCommandBufferStatus st = [cb status];
+            fprintf(stderr, "CGC-WATCHDOG: cb[%d] status=%s(%d) create=%lldms enc_start=%lldms enc_done=%lldms",
+                    i, cgc_cb_status_name((int) st), (int) st,
+                    create ? (now - create) / 1000 : -1,
+                    enc_s  ? (now - enc_s)  / 1000 : -1,
+                    enc_d  ? (now - enc_d)  / 1000 : -1);
+            if (st == MTLCommandBufferStatusError) {
+                NSError * err = [cb error];
+                fprintf(stderr, " err=%s", err ? [[err localizedDescription] UTF8String] : "(nil)");
+            }
+            fprintf(stderr, "\n");
+        }
+        fflush(stderr);
+    }
+}
+
+// [CGC probe 2026-08-29] liveness test at stall time. Two probes:
+//   A) same-queue: a 16B fill submitted to THE shared mtl_queue — it lands BEHIND the
+//      wedged buffers, so ALIVE => the wedge does not block the queue tail (buffer-local
+//      dependency); DEAD => the queue is wedged from the stuck position onward.
+//   B) fresh-queue: same fill on a brand-new command queue — ALIVE => the DEVICE still
+//      processes new work (queue-level wedge; recovery = migrate to a new queue);
+//      DEAD => device/kernel-level wedge (only avoid-or-restart).
+// Runs once, at the first watchdog fire, on the watchdog's serial queue (blocking <=6s).
+static void cgc_watchdog_probe(ggml_metal_t ctx) {
+    if (ctx->cgc_probe_done) {
+        return;
+    }
+    ctx->cgc_probe_done = true;
+
+    id<MTLCommandQueue> queue = ggml_metal_device_get_queue(ctx->dev);
+    id<MTLDevice> device = ggml_metal_device_get_obj(ctx->dev);
+
+    for (int which = 0; which < 2; ++which) {
+        @autoreleasepool {
+            id<MTLCommandQueue> q = which == 0 ? queue : [device newCommandQueue];
+            if (q == nil) {
+                fprintf(stderr, "CGC-WATCHDOG: probe[%s] FAILED to get queue\n", which == 0 ? "same" : "fresh");
+                continue;
+            }
+
+            const int64_t t0 = ggml_time_us();
+            id<MTLBuffer> buf = [device newBufferWithLength:16 options:MTLResourceStorageModePrivate];
+            id<MTLCommandBuffer> cb = [q commandBuffer];
+            {
+                id<MTLBlitCommandEncoder> enc = [cb blitCommandEncoder];
+                [enc fillBuffer:buf range:NSMakeRange(0, 16) value:0];
+                [enc endEncoding];
+            }
+            [cb commit];
+
+            MTLCommandBufferStatus st = [cb status];
+            const int64_t deadline = t0 + 3000000; // 3s
+            while (st != MTLCommandBufferStatusCompleted &&
+                   st != MTLCommandBufferStatusError &&
+                   ggml_time_us() < deadline) {
+                usleep(1000);
+                st = [cb status];
+            }
+            const int64_t dt_ms = (ggml_time_us() - t0) / 1000;
+
+            if (st == MTLCommandBufferStatusCompleted) {
+                fprintf(stderr, "CGC-WATCHDOG: probe[%s-queue] ALIVE (%lldms)\n", which == 0 ? "same" : "fresh", dt_ms);
+            } else if (st == MTLCommandBufferStatusError) {
+                fprintf(stderr, "CGC-WATCHDOG: probe[%s-queue] ERROR (%lldms): %s\n",
+                        which == 0 ? "same" : "fresh", dt_ms,
+                        [[cb error].localizedDescription UTF8String]);
+            } else {
+                fprintf(stderr, "CGC-WATCHDOG: probe[%s-queue] DEAD (timeout 3000ms, status=%s) — %s\n",
+                        which == 0 ? "same" : "fresh", cgc_cb_status_name((int) st),
+                        which == 0
+                            ? "shared command queue is wedged from the stuck position onward"
+                            : "DEVICE/kernel-level wedge: new queues cannot run either");
+            }
+            [buf release];
+            if (which == 1) {
+                [q release];
+            }
+        }
+    }
+
+    // [CGC probe] optional kernel-side state capture (CGC_WATCHDOG_CAPTURE=1): GPU scheduler
+    // view + memory pressure, ~10s after the wedge — closest we can get to the wedge instant.
+    if (getenv("CGC_WATCHDOG_CAPTURE") != NULL) {
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd),
+            "sh -c 'ioreg -r -d 1 -w 0 -c IOGPUDevice > /tmp/cgc_gpu_probe.txt 2>&1;"
+            " memory_pressure > /tmp/cgc_memp_probe.txt 2>&1;"
+            " sample %d 5 -file /tmp/cgc_sample_probe.txt > /dev/null 2>&1'",
+            (int) getpid());
+        const int rc = system(cmd);
+        fprintf(stderr, "CGC-WATCHDOG: kernel-state capture %s (ioreg + memory_pressure + sample -> /tmp/cgc_{{gpu,memp,sample}}_probe.txt)\n",
+                rc == 0 ? "done" : "failed");
+    }
+    fflush(stderr);
+}
+
+static void cgc_watchdog_tick(ggml_metal_t ctx) {
+    if (atomic_load_explicit(&ctx->cgc_watchdog_stop, memory_order_relaxed)) {
+        return;
+    }
+    const int     expected     = atomic_load_explicit(&ctx->cgc_expected, memory_order_relaxed);
+    const int     done         = atomic_load_explicit(&ctx->cgc_done,     memory_order_relaxed);
+    const int64_t now          = ggml_time_us();
+    const int64_t threshold_us = (int64_t) ctx->cgc_watchdog_ms * 1000;
+
+    int64_t last = atomic_load_explicit(&ctx->cgc_last_progress_us, memory_order_relaxed);
+    if (last <= 0) {
+        last = atomic_load_explicit(&ctx->cgc_last_submit_us, memory_order_relaxed);
+    }
+    const int64_t stale_us = now - last;
+
+    // encode-stall: an encode worker started but never finished (dispatch_apply hang)
+    bool enc_stale = false;
+    for (int i = 0; i <= GGML_METAL_MAX_COMMAND_BUFFERS; ++i) {
+        const int64_t s = atomic_load_explicit(&ctx->cgc_encode_start_us[i], memory_order_relaxed);
+        const int64_t d = atomic_load_explicit(&ctx->cgc_encode_done_us[i],  memory_order_relaxed);
+        if (s > 0 && d == 0 && now - s > threshold_us) {
+            enc_stale = true;
+            break;
+        }
+    }
+
+    const bool stalled = (expected > done && stale_us > threshold_us) || enc_stale;
+
+    if (!stalled) {
+        if (ctx->cgc_watchdog_fired_us != 0) {
+            ctx->cgc_watchdog_fired_us = 0;
+            ctx->cgc_watchdog_dump_us  = 0;
+            fprintf(stderr, "CGC-WATCHDOG: recovered (progress resumed)\n");
+        }
+        return;
+    }
+
+    if (ctx->cgc_watchdog_fired_us == 0) {
+        ctx->cgc_watchdog_fired_us = now;
+    }
+    if (ctx->cgc_watchdog_dump_us == 0 || now - ctx->cgc_watchdog_dump_us >= 15000000) {
+        ctx->cgc_watchdog_dump_us = now;
+        cgc_watchdog_dump(ctx, now, expected, done, enc_stale);
+        // [CGC probe] run the liveness pair once, right after the first dump
+        cgc_watchdog_probe(ctx);
+    }
+    if (now - ctx->cgc_watchdog_fired_us >= 60000000) {
+        GGML_ABORT("CGC-WATCHDOG: Metal stall for %.1fs — aborting (60s sampling grace elapsed)\n",
+                   (now - ctx->cgc_watchdog_fired_us) / 1e6);
+    }
 }
 
 void ggml_metal_synchronize(ggml_metal_t ctx) {
@@ -494,6 +754,15 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
         return GGML_STATUS_FAILED;
     }
 
+    // [CGC watchdog] per-compute bookkeeping: reset the per-cb timestamps for THIS graph
+    atomic_store_explicit(&ctx->cgc_last_submit_us, ggml_time_us(), memory_order_relaxed);
+    atomic_fetch_add_explicit(&ctx->cgc_n_computes, 1, memory_order_relaxed);
+    for (int i = 0; i <= GGML_METAL_MAX_COMMAND_BUFFERS; ++i) {
+        ctx->cgc_cb_create_us[i] = 0;
+        atomic_store_explicit(&ctx->cgc_encode_start_us[i], 0, memory_order_relaxed);
+        atomic_store_explicit(&ctx->cgc_encode_done_us[i],  0, memory_order_relaxed);
+    }
+
     // number of nodes encoded by the main thread (empirically determined)
     const int n_main = MAX(64, 0.1*gf->n_nodes);
 
@@ -569,12 +838,14 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
                 [ctx->cmd_bufs[n_cb].obj release];
             }
             ctx->cmd_bufs[n_cb].obj = cmd_buf;
+            ctx->cgc_cb_create_us[n_cb] = ggml_time_us(); // [CGC watchdog]
 
             // CGC: count this segment's completion so the sched can poll it (CGC_OA_ASYNC
             // pipelined dispatch) without blocking the Metal pipeline
             [cmd_buf addCompletedHandler:^(id<MTLCommandBuffer> cb) {
                 GGML_UNUSED(cb);
                 atomic_fetch_add_explicit(&ctx->cgc_done, 1, memory_order_relaxed);
+                atomic_store_explicit(&ctx->cgc_last_progress_us, ggml_time_us(), memory_order_relaxed);
             }];
 
             [cmd_buf enqueue];
@@ -595,6 +866,7 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
                 [ctx->cmd_bufs[cb_idx].obj release];
             }
             ctx->cmd_bufs[cb_idx].obj = cmd_buf;
+            ctx->cgc_cb_create_us[cb_idx] = ggml_time_us(); // [CGC watchdog]
 
             // CGC: count this buffer's completion too so the sched can wait for the WHOLE segment
             // (all n_cb+1 cmd buffers) before firing the top-k hook. Waiting only on the main
@@ -603,6 +875,7 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
             [cmd_buf addCompletedHandler:^(id<MTLCommandBuffer> cb) {
                 GGML_UNUSED(cb);
                 atomic_fetch_add_explicit(&ctx->cgc_done, 1, memory_order_relaxed);
+                atomic_store_explicit(&ctx->cgc_last_progress_us, ggml_time_us(), memory_order_relaxed);
             }];
 
             // always enqueue the first two command buffers
@@ -678,6 +951,32 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
 
             ctx->capture_started = false;
         }
+
+        // [CGC drain 2026-08-29] deadlock mitigation experiment (CGC_DRAIN_EVERY=K, 0/absent = off):
+        // every K-th graph_compute does a FULL queue drain (waitUntilCompleted on the last-enqueued
+        // buffer — FIFO => waits for everything, including the other Metal context's in-flight work).
+        // Hypothesis: the intermittent completion wedge builds up in the driver's never-drained
+        // firehose (~1900 cb/s for minutes); a periodic quiescent window lets the kernel command
+        // queue fully recycle. Cost = one pipeline bubble every K segments (~2-5ms / K).
+        {
+            static int cgc_drain_every = -1;
+            if (cgc_drain_every < 0) {
+                const char * env = getenv("CGC_DRAIN_EVERY");
+                cgc_drain_every = (env && env[0]) ? atoi(env) : 0;
+                if (cgc_drain_every > 0) {
+                    GGML_LOG_WARN("%s: CGC periodic queue drain ON (every %d graph_computes)\n",
+                            __func__, cgc_drain_every);
+                }
+            }
+            if (cgc_drain_every > 0 &&
+                (atomic_load_explicit(&ctx->cgc_n_computes, memory_order_relaxed) % cgc_drain_every) == 0) {
+                if (ctx->cmd_buf_last) {
+                    const int64_t t0 = ggml_time_us();
+                    cgc_wait_cmd_buf(ctx->cmd_buf_last);
+                    GGML_LOG_DEBUG("%s: CGC drain took %.1f ms\n", __func__, (ggml_time_us() - t0) / 1000.0);
+                }
+            }
+        }
     }
 
     return GGML_STATUS_SUCCESS;
@@ -746,6 +1045,9 @@ void ggml_metal_set_n_cb(ggml_metal_t ctx, int n_cb) {
         const int cb_idx = iter;
         const int n_cb_l = ctx->n_cb;
 
+        // [CGC watchdog] encode bookkeeping for this cb (start / done)
+        atomic_store_explicit(&ctx->cgc_encode_start_us[cb_idx], ggml_time_us(), memory_order_relaxed);
+
         const int n_nodes_0 = ctx->n_nodes_0;
         const int n_nodes_1 = ctx->n_nodes_1;
 
@@ -786,7 +1088,12 @@ void ggml_metal_set_n_cb(ggml_metal_t ctx, int n_cb) {
 
         if (cb_idx < 2 || ctx->abort_callback == NULL) {
             [cmd_buf commit];
+            // [CGC watchdog] a committed buffer's completion handler fires exactly once
+            atomic_fetch_add_explicit(&ctx->cgc_expected, 1, memory_order_relaxed);
         }
+
+        // [CGC watchdog] encode done (after commit)
+        atomic_store_explicit(&ctx->cgc_encode_done_us[cb_idx], ggml_time_us(), memory_order_relaxed);
     });
 }
 

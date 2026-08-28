@@ -263,6 +263,22 @@ fi
 if [ -n "${N30CACHE_NO_RDADVISE:-}" ]; then
     ENVS+=(LLAMA_EXPERT_CACHE_NO_RDADVISE=1)
 fi
+# §CGC 2026-08-29 deadlock watchdog（CGC_WATCHDOG=1：Metal completion 停滯 >10s 時 dump 所有
+# command buffer 狀態並在 60s 取樣寬限後 abort；診斷間歇性 prefill 死鎖用，預設 off）
+if [ -n "${N30CACHE_WATCHDOG:-}" ]; then
+    ENVS+=(CGC_WATCHDOG=1)
+    [ -n "${N30CACHE_WATCHDOG_MS:-}" ] && ENVS+=(CGC_WATCHDOG_MS=$N30CACHE_WATCHDOG_MS)
+fi
+# §CGC 2026-08-29 watchdog 擴充（N30CACHE_WATCHDOG_CAPTURE=1）：stall 時自動跑同 queue/新 queue
+# 雙活性探針（判定 queue 級 vs device 級 wedge）+ ioreg/memory_pressure/sample 捕捉
+if [ -n "${N30CACHE_WATCHDOG_CAPTURE:-}" ]; then
+    ENVS+=(CGC_WATCHDOG=1 CGC_WATCHDOG_CAPTURE=1)
+fi
+# §CGC 2026-08-29 死鎖緩解實驗（CGC_DRAIN_EVERY=K）：每 K 個 graph_compute 全 queue 排水
+# （waitUntilCompleted），強制 kernel command queue 週期性回收；預設 off
+if [ -n "${N30CACHE_DRAIN_EVERY:-}" ]; then
+    ENVS+=(CGC_DRAIN_EVERY=$N30CACHE_DRAIN_EVERY)
+fi
 
 echo "=== n30cache production run ==="
 echo "  model  : $MODEL ($(basename "$M"))"
