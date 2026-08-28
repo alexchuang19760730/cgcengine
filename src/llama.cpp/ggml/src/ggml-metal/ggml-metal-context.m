@@ -415,11 +415,16 @@ static void cgc_watchdog_dump(ggml_metal_t ctx, int64_t now, int expected, int d
 //   B) fresh-queue: same fill on a brand-new command queue — ALIVE => the DEVICE still
 //      processes new work (queue-level wedge; recovery = migrate to a new queue);
 //      DEAD => device/kernel-level wedge (only avoid-or-restart).
-// Runs once, at the first watchdog fire, on the watchdog's serial queue (blocking <=6s).
+// Runs at every watchdog dump cadence (15s) while a stall persists, on the watchdog's
+// serial queue (blocking <=6s per call). [CGC probe 2026-08-29 repeat-kick fix]
+// D3 evidence: a second stall episode in the same process got NO probe (old one-shot
+// guard) and hung to the 60s abort. The probe pair is the RECOVERY KICK (new commit
+// re-triggers the driver's lost-wakeup scheduler), so it must fire per episode — and
+// repeat every 15s within an episode if the first kick does not take. The kernel-state
+// capture (system()/sample, ~5s) stays once per episode (cgc_probe_done re-armed on
+// recovery) to keep the diagnostic cost bounded.
 static void cgc_watchdog_probe(ggml_metal_t ctx) {
-    if (ctx->cgc_probe_done) {
-        return;
-    }
+    const bool do_capture = !ctx->cgc_probe_done;
     ctx->cgc_probe_done = true;
 
     id<MTLCommandQueue> queue = ggml_metal_device_get_queue(ctx->dev);
@@ -475,7 +480,8 @@ static void cgc_watchdog_probe(ggml_metal_t ctx) {
 
     // [CGC probe] optional kernel-side state capture (CGC_WATCHDOG_CAPTURE=1): GPU scheduler
     // view + memory pressure, ~10s after the wedge — closest we can get to the wedge instant.
-    if (getenv("CGC_WATCHDOG_CAPTURE") != NULL) {
+    // Once per stall episode (cgc_probe_done re-armed on recovery).
+    if (do_capture && getenv("CGC_WATCHDOG_CAPTURE") != NULL) {
         char cmd[512];
         snprintf(cmd, sizeof(cmd),
             "sh -c 'ioreg -r -d 1 -w 0 -c IOGPUDevice > /tmp/cgc_gpu_probe.txt 2>&1;"
@@ -521,6 +527,7 @@ static void cgc_watchdog_tick(ggml_metal_t ctx) {
         if (ctx->cgc_watchdog_fired_us != 0) {
             ctx->cgc_watchdog_fired_us = 0;
             ctx->cgc_watchdog_dump_us  = 0;
+            ctx->cgc_probe_done        = false; // re-arm probe+capture for a future episode
             fprintf(stderr, "CGC-WATCHDOG: recovered (progress resumed)\n");
         }
         return;
