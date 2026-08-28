@@ -259,6 +259,10 @@ fi
 if [ -n "${N30CACHE_NO_MERGE:-}" ]; then
     ENVS+=(LLAMA_EXPERT_CACHE_NO_MERGE=1)
 fi
+# §CGC 2026-08-29 F_RDADVISE A/B（LLAMA_EXPERT_CACHE_NO_RDADVISE=1 關閉 read-ahead 提示）
+if [ -n "${N30CACHE_NO_RDADVISE:-}" ]; then
+    ENVS+=(LLAMA_EXPERT_CACHE_NO_RDADVISE=1)
+fi
 
 echo "=== n30cache production run ==="
 echo "  model  : $MODEL ($(basename "$M"))"

@@ -8,6 +8,7 @@
 #include <thread>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/uio.h> // struct iovec / preadv (merge-read jobs)
 
 #ifdef __APPLE__
 #include <pthread.h>
@@ -1110,17 +1111,49 @@ void llama_expert_cache::pool_loop() {
         }
         // pread OUTSIDE the lock (may block on IO)
         const auto t0 = std::chrono::steady_clock::now();
-        const ssize_t rd = pread(fileno(job.f), job.dst, job.bytes, job.offset);
-        if (getenv("LLAMA_EXPERT_CACHE_PREAD_DBG") != nullptr && rd != (ssize_t) job.bytes) {
-            struct stat st;
-            fstat(fileno(job.f), &st);
-            fprintf(stderr, "PREADDBG off=%llu want=%zu got=%zd errno=%d fsize=%lld\n",
-                    (unsigned long long) job.offset, job.bytes, rd, errno, (long long) st.st_size);
+        if (job.iovs != nullptr) {
+            // [CGC 2026-08-29 merge-read] one preadv covers the whole contiguous-file run
+            // (memory scattered across pool slots). Verdict shared by all run members: a short
+            // read cannot tell WHICH member is missing, so the whole run is failed and the
+            // caller zeroes every member dst (same conservatively-safe semantics as the
+            // per-segment short-read path).
+#if defined(__APPLE__) || defined(__linux__)
+            const ssize_t rd = preadv(fileno(job.f), job.iovs, job.niov, job.offset);
+#else
+            ssize_t rd = 0;
+            for (int i = 0; i < job.niov; ++i) { // fallback: per-member pread into the iov dst
+                const ssize_t r = pread(fileno(job.f), job.iovs[i].iov_base, job.iovs[i].iov_len,
+                                        job.offset + rd);
+                if (r != (ssize_t) job.iovs[i].iov_len) { rd = -1; break; }
+                rd += r;
+            }
+#endif
+            const int okv = rd == (ssize_t) job.bytes;
+            for (int i = 0; i < job.niov; ++i) {
+                *job.oks[i] = okv;
+            }
+            if (getenv("LLAMA_EXPERT_CACHE_PREAD_DBG") != nullptr && !okv) {
+                fprintf(stderr, "PREADVDBG off=%llu want=%zu got=%zd errno=%d niov=%d\n",
+                        (unsigned long long) job.offset, job.bytes, rd, errno, job.niov);
+            }
+            const auto t1 = std::chrono::steady_clock::now();
+            pread_usec.fetch_add((uint64_t) std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
+            n_reads.fetch_add(1, std::memory_order_relaxed);
+            delete[] job.iovs;
+            delete[] job.oks;
+        } else {
+            const ssize_t rd = pread(fileno(job.f), job.dst, job.bytes, job.offset);
+            if (getenv("LLAMA_EXPERT_CACHE_PREAD_DBG") != nullptr && rd != (ssize_t) job.bytes) {
+                struct stat st;
+                fstat(fileno(job.f), &st);
+                fprintf(stderr, "PREADDBG off=%llu want=%zu got=%zd errno=%d fsize=%lld\n",
+                        (unsigned long long) job.offset, job.bytes, rd, errno, (long long) st.st_size);
+            }
+            const auto t1 = std::chrono::steady_clock::now();
+            pread_usec.fetch_add((uint64_t) std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
+            n_reads.fetch_add(1, std::memory_order_relaxed);
+            *job.ok = rd == (ssize_t) job.bytes;
         }
-        const auto t1 = std::chrono::steady_clock::now();
-        pread_usec.fetch_add((uint64_t) std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
-        n_reads.fetch_add(1, std::memory_order_relaxed);
-        *job.ok = rd == (ssize_t) job.bytes;
         {
             std::lock_guard<std::mutex> lk(pool_m);
             --pool_outstanding;
@@ -1134,6 +1167,22 @@ void llama_expert_cache::pool_loop() {
 // Submit segment jobs to the persistent pool and block until ALL complete. The ok flags are
 // written by the workers; caller zeroes any failed dst (short-read path, same as the spawn
 // fill). Single submitter at a time (the hook thread's per-layer batch) — no interleaving.
+#ifdef __APPLE__
+// [CGC 2026-08-29 RDADVISE] Darwin read-ahead advisory: queues an ASYNC page-cache populate
+// for the range without blocking. Issued at submit time for the whole batch, it raises the
+// effective read queue depth beyond the worker count — workers' preads then mostly hit pages
+// already in flight. Purely advisory: the workers still pread the exact same ranges, so the
+// pool bytes are bit-identical. LLAMA_EXPERT_CACHE_NO_RDADVISE disables (A/B; default on).
+static void rdadvise_range(FILE * f, off_t off, size_t bytes) {
+    if (bytes == 0) {
+        return;
+    }
+    struct radvisory ra;
+    ra.ra_offset = off;
+    ra.ra_count  = (int) (bytes > (size_t) INT_MAX ? (size_t) INT_MAX : bytes);
+    (void) fcntl(fileno(f), F_RDADVISE, &ra);
+}
+#endif
 static void fill_segments_pool(llama_expert_cache * cache,
                                const std::vector<llama_expert_cache::segment> & segs,
                                const std::vector<uint8_t *> & dsts,
@@ -1143,16 +1192,112 @@ static void fill_segments_pool(llama_expert_cache * cache,
     if (n == 0) {
         return;
     }
+    // [CGC 2026-08-29 merge-read] sort the batch's segments by (file_idx, file_offset) and
+    // submit each file-contiguous RUN as ONE preadv job. Within one expert tensor (kind) the
+    // segments of adjacent expert ids are adjacent in the file, so a layer's miss set forms
+    // multi-expert runs — e.g. 72 scattered 90KB preads collapse into a handful of large
+    // sequential reads (measured: 25470 reads / 15.3s pread_usec for 2.3GB vs 3.2GB/s
+    // sequential). Same file ranges, same dsts -> pool contents bit-identical by construction;
+    // only the syscall pattern changes. LLAMA_EXPERT_CACHE_NO_MERGE reverts to the per-segment
+    // jobs (A/B; legacy aggregate init keeps that path byte-identical).
+    static const bool no_merge = getenv("LLAMA_EXPERT_CACHE_NO_MERGE") != nullptr;
+#ifdef __APPLE__
+    static const bool no_rdadvise = getenv("LLAMA_EXPERT_CACHE_NO_RDADVISE") != nullptr;
+    std::vector<std::tuple<FILE *, off_t, size_t>> advises; // read-ahead hints, issued post-submit
+    advises.reserve(n);
+#endif
     {
         std::lock_guard<std::mutex> lk(cache->pool_m);
-        for (size_t i = 0; i < n; ++i) {
-            cache->jobs.push_back({ cache->files.at(segs[i].file_idx),
-                                    (off_t) segs[i].file_offset, segs[i].bytes,
-                                    dsts[i], &ok[i] });
-            cache->pool_outstanding++;
+        if (no_merge) {
+            for (size_t i = 0; i < n; ++i) {
+                cache->jobs.push_back({ cache->files.at(segs[i].file_idx),
+                                        (off_t) segs[i].file_offset, segs[i].bytes,
+                                        dsts[i], &ok[i] });
+                cache->pool_outstanding++;
+#ifdef __APPLE__
+                if (!no_rdadvise) {
+                    advises.emplace_back(cache->files.at(segs[i].file_idx),
+                                         (off_t) segs[i].file_offset, segs[i].bytes);
+                }
+#endif
+            }
+        } else {
+            std::vector<uint32_t> order(n);
+            for (size_t i = 0; i < n; ++i) {
+                order[i] = (uint32_t) i;
+            }
+            std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+                if (segs[a].file_idx != segs[b].file_idx) {
+                    return segs[a].file_idx < segs[b].file_idx;
+                }
+                return segs[a].file_offset < segs[b].file_offset;
+            });
+            size_t i = 0;
+            while (i < n) {
+                // extend the run while the next sorted segment is file-contiguous with the current
+                size_t j = i;
+                while (j + 1 < n
+                       && segs[order[j + 1]].file_idx == segs[order[i]].file_idx
+                       && segs[order[j]].file_offset + segs[order[j]].bytes == segs[order[j + 1]].file_offset) {
+                    ++j;
+                }
+                if (j == i) {
+                    // single segment: legacy job (iovs == nullptr -> plain pread)
+                    cache->jobs.push_back({ cache->files.at(segs[order[i]].file_idx),
+                                            (off_t) segs[order[i]].file_offset, segs[order[i]].bytes,
+                                            dsts[order[i]], &ok[order[i]] });
+                    cache->pool_outstanding++;
+#ifdef __APPLE__
+                    if (!no_rdadvise) {
+                        advises.emplace_back(cache->files.at(segs[order[i]].file_idx),
+                                             (off_t) segs[order[i]].file_offset, segs[order[i]].bytes);
+                    }
+#endif
+                } else {
+                    const int cnt = (int) (j - i + 1);
+                    auto * iovs = new struct iovec[cnt];
+                    auto * oks  = new int *[cnt];
+                    size_t total = 0;
+                    for (size_t k = i; k <= j; ++k) {
+                        const uint32_t s = order[k];
+                        iovs[k - i].iov_base = (void *) dsts[s];
+                        iovs[k - i].iov_len  = segs[s].bytes;
+                        oks[k - i]           = &ok[s];
+                        total += segs[s].bytes;
+                    }
+                    llama_expert_cache::pread_job job;
+                    job.f      = cache->files.at(segs[order[i]].file_idx);
+                    job.offset = (off_t) segs[order[i]].file_offset;
+                    job.bytes  = total;
+                    job.dst    = nullptr; // unused on the iov path (worker branches on iovs)
+                    job.ok     = nullptr;
+                    job.iovs   = iovs;
+                    job.oks    = oks;
+                    job.niov   = cnt;
+                    cache->jobs.push_back(job);
+                    cache->pool_outstanding++;
+#ifdef __APPLE__
+                    if (!no_rdadvise) {
+                        // one hint covers the whole contiguous run
+                        advises.emplace_back(job.f, job.offset, total);
+                    }
+#endif
+                }
+                i = j + 1;
+            }
         }
         cache->pool_cv.notify_all();
     }
+#ifdef __APPLE__
+    // [CGC 2026-08-29 RDADVISE] issue the read-ahead hints OUTSIDE pool_m (fcntl is cheap but
+    // never under the workers' lock). Workers already drain the queue; these hints let the
+    // kernel populate pages for the not-yet-started jobs concurrently, raising queue depth.
+    if (!no_rdadvise) {
+        for (const auto & a : advises) {
+            rdadvise_range(std::get<0>(a), std::get<1>(a), std::get<2>(a));
+        }
+    }
+#endif
     {
         std::unique_lock<std::mutex> lk(cache->pool_m);
         cache->pool_done_cv.wait(lk, [&]{ return cache->pool_outstanding == 0; });

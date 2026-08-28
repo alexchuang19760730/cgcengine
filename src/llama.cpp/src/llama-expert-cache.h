@@ -2,6 +2,8 @@
 
 #include "llama.h"
 
+#include <sys/uio.h> // struct iovec (pread_job merge-read form)
+
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -82,6 +84,15 @@ struct llama_expert_cache {
         size_t    bytes;
         uint8_t * dst;
         int *     ok;
+        // [CGC 2026-08-29 merge-read] contiguous-file scattered-dst run, read with ONE preadv
+        // (file side contiguous, memory side scattered — exactly preadv's iovec semantics).
+        // Same experts, same file ranges, same dsts as the per-segment preads it replaces ->
+        // pool contents bit-identical by construction; only the syscall count changes.
+        // iovs/oks are heap arrays owned by the job (submitted by fill_segments_pool, freed by
+        // the worker after the read). nullptr iovs = legacy single pread(dst, bytes).
+        struct iovec * iovs = nullptr;
+        int          ** oks = nullptr; // pointers to each run member's caller ok flag
+        int            niov = 0;
     };
     std::vector<std::thread> workers;
     std::deque<pread_job>    jobs;
