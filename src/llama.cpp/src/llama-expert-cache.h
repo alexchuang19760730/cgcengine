@@ -144,6 +144,18 @@ struct llama_expert_cache {
     size_t n_requests = 0;
     size_t n_hits     = 0;
     size_t n_misses   = 0;
+    // [CGC MTP fast-path telemetry] decode fast path (touch + ZERO-slot): union members examined
+    // vs COLD members (slot table == -1 -> ZERO-mapped: that expert's real weight contribution
+    // is lost for the step). The final-stats decode/pool hit rate counts only the
+    // ensure_slot/ensure_batch paths (prefill / catch-up); the fast path never fills and its
+    // cold rate was unmeasured — this is the REAL steady decode miss rate (it drives
+    // verify/draft hidden quality -> MTP accept rate). Draft (ctx MTP) split kept separately.
+    size_t n_fast_calls        = 0; // touch() invocations (steps x layers)
+    size_t n_fast_union        = 0; // union members examined
+    size_t n_fast_cold         = 0; // of those, ZERO-mapped
+    size_t n_fast_draft_calls  = 0;
+    size_t n_fast_draft_union  = 0;
+    size_t n_fast_draft_cold   = 0;
     size_t n_map_requests = 0;  // L3-B ensure() path (prefill / multi-token)
     size_t n_map_hits     = 0;
     // [CGC §8.99-2] loader prewarm fills (llama_model_loader: experts 0..n at load) are kept
@@ -271,8 +283,10 @@ void llama_expert_cache_zero_reserved_slot(llama_expert_cache * cache, uint32_t 
 // Decode fast path LRU touch: bump last_use for RESIDENT experts only (no fill, no wait). The
 // decode fast path calls this instead of ensure_batch so resident hot experts keep their LRU
 // freshness (the next step's pick_slot cannot hand their slots out for a cold fill).
+// draft_path: telemetry tag — the caller is the draft context (ctx MTP). Counted separately
+// (n_fast_draft_*) so verify vs draft cold rates are distinguishable; defaults false = verify.
 void llama_expert_cache_touch(llama_expert_cache * cache, uint32_t layer,
-                              const uint32_t * experts, size_t n);
+                              const uint32_t * experts, size_t n, bool draft_path = false);
 // Slot-table lookup mapping -1 (not resident) to the ZERO slot. Same value as the raw slot
 // table for resident experts, so using it on the exact-load path is a no-op (bit-identical).
 int32_t llama_expert_cache_slot_table_safe(const llama_expert_cache * cache, uint32_t layer,

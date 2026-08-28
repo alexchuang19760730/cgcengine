@@ -215,12 +215,31 @@ void llama_expert_cache_zero_reserved_slot(llama_expert_cache * cache, uint32_t 
 }
 
 void llama_expert_cache_touch(llama_expert_cache * cache, uint32_t layer,
-                              const uint32_t * experts, size_t n) {
+                              const uint32_t * experts, size_t n, bool draft_path) {
     if (cache == nullptr || layer >= cache->slot_owner.size() || n == 0) {
         return;
     }
     int32_t * table = cache->slot_table.data() + (size_t) layer * cache->n_expert;
     std::lock_guard<std::mutex> lk(cache->m);
+    // [CGC MTP fast-path telemetry] count union members vs cold (ZERO-mapped) BEFORE the LRU
+    // loop. Only when the fast path is active (base runs never call touch / stay identical).
+    if (zero_slot_enabled()) {
+        size_t cold = 0;
+        for (size_t i = 0; i < n; ++i) {
+            const uint32_t e = experts[i];
+            if (e < cache->n_expert && table[e] < 0) {
+                cold++;
+            }
+        }
+        cache->n_fast_calls++;
+        cache->n_fast_union += n;
+        cache->n_fast_cold  += cold;
+        if (draft_path) {
+            cache->n_fast_draft_calls++;
+            cache->n_fast_draft_union += n;
+            cache->n_fast_draft_cold  += cold;
+        }
+    }
     for (size_t i = 0; i < n; ++i) {
         const uint32_t e = experts[i];
         if (e >= cache->n_expert) {
@@ -940,6 +959,23 @@ llama_expert_cache::~llama_expert_cache() {
         fprintf(stderr, "llama_expert_cache: decode/pool (ensure_slot+batch) hits=%zu/%zu (%.1f%%)  gather (ensure) hits=%zu/%zu\n",
                 n_dec_hit, n_dec_req, n_dec_req ? 100.0 * (double) n_dec_hit / (double) n_dec_req : 0.0,
                 n_map_hits, n_map_requests);
+        // [CGC MTP fast-path telemetry] the REAL steady decode miss rate: cold = read the ZERO
+        // slot (weight contribution lost) on the touch+ZERO fast path (prefill/catch-up fills
+        // excluded — those are the ensure_slot+batch line above). verify = ctx_tgt multi-token,
+        // draft = ctx_dft 1-token. STEP_DBG timeline (LLAMA_EXPERT_CACHE_STEP_DBG) shows the
+        // split is structural churn (~65% steady), not cold-start concentration.
+        if (n_fast_calls > 0) {
+            const size_t v_union = n_fast_union - n_fast_draft_union;
+            const size_t v_cold  = n_fast_cold  - n_fast_draft_cold;
+            const size_t v_calls = n_fast_calls - n_fast_draft_calls;
+            fprintf(stderr, "llama_expert_cache: MTP fast path: calls=%zu union=%zu cold(ZERO)=%zu (%.1f%%)   verify: calls=%zu union=%zu cold=%zu (%.1f%%)   draft: calls=%zu union=%zu cold=%zu (%.1f%%)\n",
+                    n_fast_calls, n_fast_union, n_fast_cold,
+                    n_fast_union ? 100.0 * (double) n_fast_cold / (double) n_fast_union : 0.0,
+                    v_calls, v_union, v_cold,
+                    v_union ? 100.0 * (double) v_cold / (double) v_union : 0.0,
+                    n_fast_draft_calls, n_fast_draft_union, n_fast_draft_cold,
+                    n_fast_draft_union ? 100.0 * (double) n_fast_draft_cold / (double) n_fast_draft_union : 0.0);
+        }
         bg_stop = true;
     }
     bg_cv.notify_all();

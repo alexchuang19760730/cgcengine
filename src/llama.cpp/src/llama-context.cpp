@@ -2877,8 +2877,27 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
             // cascade -> whole-graph corruption).
             llama_expert_cache_zero_reserved_slot(cache, (uint32_t) il);
             // LRU-touch resident experts only (no fill, no wait): keeps hot slots' freshness so
-            // the next step's pick_slot does not hand them out to a cold fill.
-            llama_expert_cache_touch(cache, (uint32_t) il, uni.data(), uni.size());
+            // the next step's pick_slot does not hand them out to a cold fill. draft_path tag:
+            // fast-path telemetry splits verify (ctx_tgt) vs draft (ctx MTP) cold rates.
+            llama_expert_cache_touch(cache, (uint32_t) il, uni.data(), uni.size(),
+                                     cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP);
+            // [CGC STEP_DBG] per-step miss timeline (il==1 fires once per step): cumulative
+            // fast-path cold (ZERO-mapped) + ensure_batch (prefill chunk 1 / catch-up) requests
+            // and hits. Measured verdict (2026-08-28, steady MTP denseIQ4X seed1): cold stays
+            // ~65% across ALL phases (no early concentration) -> structural churn (per-layer
+            // route working set >> pool slots), NOT a cold start a prewarm could fix.
+            if (il == 1 && getenv("LLAMA_EXPERT_CACHE_STEP_DBG") != nullptr) {
+                static uint32_t step_dbg_n = 0;
+                if ((step_dbg_n % 20) == 0) {
+                    fprintf(stderr, "STEPDBG step=%u phase=%s ntok=%lld fastuni=%zu fastcold=%zu ensure_req=%zu ensure_hit=%zu\n",
+                            step_dbg_n,
+                            cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP ? "draft" : "verify",
+                            (long long) n_tokens,
+                            cache->n_fast_union, cache->n_fast_cold,
+                            cache->n_requests, cache->n_hits);
+                }
+                step_dbg_n++;
+            }
             // write the remap leaf: resident -> slot index, cold -> ZERO-slot.
             ggml_tensor * remap = cache_remap_tensors[il];
             if (remap != nullptr && remap->data != nullptr) {
