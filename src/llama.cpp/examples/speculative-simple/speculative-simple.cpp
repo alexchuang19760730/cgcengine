@@ -186,10 +186,15 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
+    // [CGC chunked prefill] L4 expert-cache pool path requires n_tokens <= n_batch per
+    // decode call (pool path + pread staging only fires for small batches). Long prompts
+    // are now split into n_batch-sized chunks, each processed by its own llama_decode +
+    // common_speculative_process call, so every chunk walks the pool path and fills the
+    // pool. This replaces the previous hard error "prompt exceeds the batch size".
     if (llama_n_batch(ctx_tgt) < (uint32_t) inp.size()) {
-        LOG_ERR("%s: the prompt exceeds the batch size (%d tokens, batch %d)\n", __func__, (int) inp.size(), llama_n_batch(ctx_tgt));
-
-        return 1;
+        LOG("%s: chunked prefill: prompt %d tokens, batch %d - will decode in %d chunks\n", __func__,
+            (int) inp.size(), llama_n_batch(ctx_tgt),
+            (int) ((inp.size() + llama_n_batch(ctx_tgt) - 1) / llama_n_batch(ctx_tgt)));
     }
 
     LOG("\n\n");
@@ -274,23 +279,41 @@ int main(int argc, char ** argv) {
     // prompt decode is needed -- the driver's process() captures the hidden states)
     // note: use a properly-formed batch (pos/seq_id) -- llama_batch_get_one leaves them
     // null, and the MTP driver's process() dereferences seq_id[k][0] directly.
+    // [CGC chunked prefill] decode in n_batch-sized chunks so every ubatch walks the
+    // L4 expert-cache pool path (small-batch condition) and fills the pool via pread.
     {
-        llama_batch batch_enc = llama_batch_init(inp.size() - 1, 0, 1);
-        for (size_t i = 0; i < inp.size() - 1; ++i) {
-            common_batch_add(batch_enc, inp[i], (llama_pos) i, { 0 }, i == inp.size() - 2);
+        const size_t n_enc = inp.size() - 1;
+        const int32_t n_chunk = llama_n_batch(ctx_tgt);
+        for (size_t off = 0; off < n_enc; off += (size_t) n_chunk) {
+            const size_t len = std::min((size_t) n_chunk, n_enc - off);
+            llama_batch batch_enc = llama_batch_init((int32_t) len, 0, 1);
+            for (size_t i = 0; i < len; ++i) {
+                common_batch_add(batch_enc, inp[off + i], (llama_pos) (off + i), { 0 },
+                                 off + i + 1 == n_enc);
+            }
+            if (getenv("CGC_MTP_DBG") && off == 0) {
+                fprintf(stderr, "MTPDBG prompt_enc: inp.size=%zu chunk_len=%zu id_last=%d\n",
+                        inp.size(), len, id_last);
+                fflush(stderr);
+            }
+            if (llama_decode(ctx_tgt, batch_enc) != 0) {
+                LOG_ERR("%s: llama_decode(ctx_tgt) failed during chunked prefill (off=%zu len=%zu)\n",
+                        __func__, off, len);
+                llama_batch_free(batch_enc);
+                return 1;
+            }
+            common_speculative_process(spec, batch_enc);
+            llama_batch_free(batch_enc);
         }
-        if (getenv("CGC_MTP_DBG")) {
-            fprintf(stderr, "MTPDBG prompt_enc: inp.size=%zu batch_enc.n_tokens=%d id_last=%d\n",
-                    inp.size(), batch_enc.n_tokens, id_last);
-            fflush(stderr);
-        }
-        llama_decode(ctx_tgt, batch_enc);
-        common_speculative_process(spec, batch_enc);
-        llama_batch_free(batch_enc);
     }
 #endif
     if (!spec_mtp && ctx_dft != nullptr) {
-        llama_decode(ctx_dft.get(), llama_batch_get_one(inp.data(), inp.size() - 1));
+        const size_t n_enc = inp.size() - 1;
+        const int32_t n_chunk = llama_n_batch(ctx_dft.get());
+        for (size_t off = 0; off < n_enc; off += (size_t) n_chunk) {
+            const size_t len = std::min((size_t) n_chunk, n_enc - off);
+            llama_decode(ctx_dft.get(), llama_batch_get_one(inp.data() + off, (int32_t) len));
+        }
     }
 
     llama_batch batch_tgt = llama_batch_init(llama_n_batch(ctx_tgt), 0, 1);
