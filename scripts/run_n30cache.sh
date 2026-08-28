@@ -46,10 +46,12 @@ Q36_MTP="$ROOT/models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS.gguf"
 # llama-quantize --tensor-type-file 只把 blk.40 MTP head 的 output.weight Q6_K→IQ2_S（其餘 752
 # tensor byte-copy，bit-identical by construction）。獨立 option、預設 off：沒設 = 原 Q6_K head。
 Q36_MTP_HEADIQ2="$ROOT/models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-headIQ2.gguf"
-# §MTP 2026-08-26 #1：dense IQ4_XS + head IQ2 A/B 載體（--dense-iq4x / N30CACHE_DENSE_IQ4X=1）。
+# §MTP 2026-08-29：dense IQ4_XS 載體（--dense-iq4x / N30CACHE_DENSE_IQ4X=1），head 保留 Q6_K。
 # 從 base IQ3_XXS 以 --tensor-type-file 重新量化：dense Q6_K（attn_*/ssm_out/ffn_*_shexp）→IQ4_XS、
-# output.weight→IQ2_S、其餘 752 tensor byte-copy。獨立 option、預設 off：沒設 = 原 Q6_K head+dense。
-Q36_MTP_DENSEIQ4X="$ROOT/models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X-headIQ2.gguf"
+# output.weight 釘 Q6_K（byte-copy）、其餘 tensor byte-copy（gen_denseiq4x_tt.py --keep-head）。
+# 前代 headIQ2 版（27.33 t/s）出現確定性退化尾段（seed 1：1101 token 的最後 ~140 個 → 0000），
+# head IQ2_S 為頭號嫌疑（target+draft 共用 lm_head）→ 重建為 Q6_K head。檔案 13020 MiB（+243 MiB）。
+Q36_MTP_DENSEIQ4X="$ROOT/models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf"
 
 MODEL="${N30CACHE_MODEL:-${1:-gemma4}}"
 N=128
