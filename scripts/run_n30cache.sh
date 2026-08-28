@@ -77,7 +77,7 @@ IGNORE_EOS=0
 # 實測 -c 0（model 預設 4096）+ MTP 必 OOM（kIOGPUCommandBufferCallbackErrorOutOfMemory）。
 # §MTP n_max：draft tokens 數，預設 2（graft blk.40 為 Q4_K，>2 accept rate 不增反降）。
 MTP=0
-MTP_CTX=2048
+MTP_CTX=3072
 MTP_N_MAX="${N30CACHE_MTP_N_MAX:-2}"
 # §MTP 2026-08-25 A/B：draft-only top-8→top-4（CGC_MTP_DRAFT_TOP4=1，只改 blk.40 MTP head 的
 # routed experts，trunk 不變）。獨立 option、預設 off：沒設 = 原 top-8 draft（bit-exact）。
