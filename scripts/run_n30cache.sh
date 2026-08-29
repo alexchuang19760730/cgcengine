@@ -291,6 +291,20 @@ if [ -n "${N30CACHE_LAYER_CAPS:-}" ]; then
 elif [ "$MTP" = "1" ] && [ "$STEADY" = "1" ]; then
     ENVS+=(LLAMA_EXPERT_CACHE_LAYER_CAPS="40-40:256")
 fi
+# §CGC 2026-08-29 routing-aware placement（2-pass oracle）：
+#   pass 1: N30CACHE_ROUTE_RECORD=1 N30CACHE_ROUTE_DUMP=<file> 跑 steady → dump per-layer
+#           top-K 路由頻率表（K = usable slots，LAYER_CAPS 感知）+ coverage 判定
+#           （測量定案：oracle top-71 coverage mean 67.0% vs LRU live 35.6%，重尾確認）
+#   pass 2: N30CACHE_PIN_PROFILE=<file> 餵回 → ensure_batch 填入的 pin 成員標記
+#           slot_pinned_static（永不逐出）；層滿釘後 tail 專家 ZERO-mapped（pin_skip）
+#           不再死等。預設 off。
+if [ -n "${N30CACHE_ROUTE_RECORD:-}" ]; then
+    ENVS+=(LLAMA_EXPERT_CACHE_ROUTE_RECORD=1)
+    [ -n "${N30CACHE_ROUTE_DUMP:-}" ] && ENVS+=(LLAMA_EXPERT_CACHE_ROUTE_DUMP=$N30CACHE_ROUTE_DUMP)
+fi
+if [ -n "${N30CACHE_PIN_PROFILE:-}" ]; then
+    ENVS+=(LLAMA_EXPERT_CACHE_PIN_PROFILE=$N30CACHE_PIN_PROFILE)
+fi
 # §CGC 2026-08-29 P1-3a 融合派發（CGC_MMV_FUSE=1：MoE gate+up+swiglu 三連融合 GEMV kernel，
 # bit-identical 已驗證；預設 off。N30CACHE_MMV_FUSE_DBG=1 開 OPSEQ/MMV_FUSE debug 探針）
 if [ -n "${N30CACHE_MMV_FUSE:-}" ] && [ "$N30CACHE_MMV_FUSE" != "0" ]; then

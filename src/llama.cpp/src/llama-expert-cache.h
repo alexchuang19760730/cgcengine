@@ -14,6 +14,7 @@
 #include <tuple>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // L2: bounded resident cache for MoE expert weights (expert streaming).
@@ -146,6 +147,12 @@ struct llama_expert_cache {
     // LLAMA_EXPERT_CACHE_WIN_PIN=K enables (0 = default off = old pure-LRU behavior).
     std::vector<std::deque<std::vector<uint32_t>>> win_union; // [layer] last K step unions
     std::vector<std::vector<uint32_t>> pin_profile;        // [layer] experts pinned by the static profile (load-time filled + marked)
+    // [CGC routing-aware placement 2026-08-29] pin_profile lookup set: when a listed expert is
+    // filled (ensure_batch), its slot gets slot_pinned_static = 1. pick_slot skips static pins
+    // in passes 0/1; overflow pass 2 may evict the LRU static pin when a fill needs a slot and
+    // nothing else is available (a skipped fill would leave table == -1 -> strict catch-up
+    // remap reads OOB -> NaN cascade; waiting would hang — see pick_slot).
+    std::vector<std::unordered_set<uint32_t>> pin_set;     // [layer] O(1) membership for pin_profile
     std::deque<std::tuple<uint32_t, int32_t, uint32_t>> pool_queue; // (layer, slot, expert) queued pool fills (FIFO)
     // [CGC MTP fast path] reserved ZERO-slot: 1 when the layer's last slot region has been
     // zeroed (guarded by m). Only touched when CGC_VERIFY_DECODE / CGC_DRAFT_DECODE is set.
@@ -177,6 +184,12 @@ struct llama_expert_cache {
     size_t n_prewarm_misses   = 0;
     size_t n_prefetch = 0;          // pool prefetches queued to the bg thread
     size_t n_prefetch_dropped = 0;  // skipped (queue full / no free slot / already resident)
+    // [CGC routing-aware placement 2026-08-29] static-pin telemetry: how many fills landed on
+    // pin_profile members (got slot_pinned_static) and how many static pins were evicted by
+    // pick_slot's overflow pass 2 (a fill needed the slot and nothing else was available —
+    // the pin is a preference, not a capacity reservation).
+    size_t n_pin_marked = 0;
+    size_t n_pin_yield  = 0;
     std::atomic<size_t> n_reads{0};
     std::atomic<uint64_t> pread_usec{0}; // accumulated pread wall time (us)
     std::atomic<uint64_t> fill_batch_usec{0}; // hook-thread elapsed per fill batch (us; comparable across serial/parallel)

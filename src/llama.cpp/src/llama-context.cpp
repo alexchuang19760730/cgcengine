@@ -2854,6 +2854,21 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
         return;
     }
 
+    // [CGC routing-aware placement §1/2 2026-08-29] record route frequencies for ALL pool-path
+    // steps (fast touch+ZERO and catch-up ensure alike). The stock record_routes call above only
+    // fires on n_tokens > pmax large-prefill steps, which never happen under L4 chunked prefill
+    // (n_batch=8 <= pmax) — that is why freq stayed empty in the prewarm_hot dead-code era.
+    // Pure counting under the cache lock: no pool writes, no deadlock surface (the 2026-08-28
+    // GPU deadlock was prewarm_hot's bulk FILLS, not recording). LLAMA_EXPERT_CACHE_ROUTE_RECORD=1
+    // opt-in; default off = stock behavior untouched. Consumed by the destructor's
+    // LLAMA_EXPERT_CACHE_ROUTE_DUMP (top-K list + coverage verdict).
+    {
+        static const bool route_record = getenv("LLAMA_EXPERT_CACHE_ROUTE_RECORD") != nullptr;
+        if (route_record) {
+            llama_expert_cache_record_routes(cache, (uint32_t) il, routes.data(), routes.size());
+        }
+    }
+
     // decode: L3 Option A static per-layer slot pool when active and the union fits, else the
     // L3-B per-step gather path.
     const uint32_t n_slots = llama_expert_cache_slots_per_layer_l(cache, (uint32_t) il);

@@ -293,14 +293,23 @@ static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer, uint64_t mi
     }
     // all occupied (or loading/queued): evict LRU. Pass 0 skips pinned; pass 1 (overflow)
     // allows evicting a DYNAMICALLY pinned slot (slot_pinned — window/tail pins are a
-    // preference) when nothing else is available. slot_pinned_static (PIN_PROFILE) stays a
-    // hard guarantee in both passes, matching the pre-WIN_PIN behavior. Neither pass touches
-    // this-batch assignments (min_tick) or in-flight fills.
-    for (int pass = 0; pass < 2; ++pass) {
+    // preference) when nothing else is available. Pass 2 ([CGC routing-aware placement]
+    // 2026-08-29) extends the overflow to STATIC pins (slot_pinned_static — the PIN_PROFILE
+    // hot set): the pin is a strong preference, but a fill that needs a slot and finds only
+    // pinned ones must NOT skip (a skipped expert leaves table == -1 and the strict catch-up
+    // remap writes -1 -> ggml_get_rows reads an OOB pool row -> NaN cascade) and must NOT
+    // wait forever (no in-flight fill can free a static pin). So under direct pressure the
+    // LRU static pin yields. Neither pass touches this-batch assignments (min_tick) or
+    // in-flight fills — pick_slot still returns -1 only while a fill is in flight, which the
+    // caller's bg_cv.wait handles correctly.
+    for (int pass = 0; pass < 3; ++pass) {
         uint64_t best_tick = UINT64_MAX;
         int32_t  best_slot = -1;
         for (uint32_t i = 0; i < ns; ++i) {
-            if (load[i] || queued[i] || cache->slot_pinned_static[layer][i]) {
+            if (load[i] || queued[i]) {
+                continue;
+            }
+            if (pass < 2 && cache->slot_pinned_static[layer][i]) {
                 continue;
             }
             if (min_tick != 0 && last[i] >= min_tick) {
@@ -315,6 +324,13 @@ static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer, uint64_t mi
             }
         }
         if (best_slot >= 0) {
+            if (pass == 2) {
+                // the pin yielded its slot: clear the flag so the slot's NEW owner does not
+                // inherit pin protection it never earned (static pins are never rebuilt
+                // wholesale the way WIN_PIN's dynamic pins are).
+                cache->slot_pinned_static[layer][best_slot] = 0;
+                cache->n_pin_yield++;
+            }
             const int32_t evicted = owner[best_slot];
             if (evicted >= 0 && evicted < (int32_t) cache->n_expert) {
                 cache->slot_table[(size_t) layer * cache->n_expert + evicted] = -1;
@@ -561,6 +577,16 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
             const int32_t  s = miss_slots[i];
             cache->slot_last_use[layer][s] = ++cache->tick;
             table[e] = s;
+            // [CGC routing-aware placement] the fill landed on a PIN_PROFILE member: mark the
+            // slot static-pinned so pick_slot never hands it to a tail expert again. The pin
+            // takes effect only after the fill (this loop) — the slot table entry is already
+            // valid here, so the expert is usable from this step on.
+            if (layer < cache->pin_set.size() && cache->pin_set[layer].count(e)) {
+                if (!cache->slot_pinned_static[layer][s]) {
+                    cache->slot_pinned_static[layer][s] = 1;
+                    cache->n_pin_marked++;
+                }
+            }
         }
         // [CGC WIN_PIN] roll this batch's union into the layer's window and repin the LRU-exempt
         // set. Runs AFTER table[] is updated so this step's union (hits + just-filled misses) is
@@ -897,6 +923,12 @@ size_t llama_expert_cache_load_pin_profile(llama_expert_cache * cache, const cha
         layer++;
     }
     fclose(f);
+    // [CGC routing-aware placement 2026-08-29] O(1) membership set for the ensure_batch pin
+    // marking (pin_profile stays the dump-format source of truth).
+    cache->pin_set.assign(cache->pin_profile.size(), {});
+    for (uint32_t l = 0; l < cache->pin_profile.size(); ++l) {
+        cache->pin_set[l].insert(cache->pin_profile[l].begin(), cache->pin_profile[l].end());
+    }
     if (getenv("LLAMA_EXPERT_CACHE_GATE_DBG") != nullptr) {
         fprintf(stderr, "PINPROFILE: %zu experts across %zu layers\n", total, layer);
     }
@@ -976,6 +1008,72 @@ llama_expert_cache::~llama_expert_cache() {
                     v_union ? 100.0 * (double) v_cold / (double) v_union : 0.0,
                     n_fast_draft_calls, n_fast_draft_union, n_fast_draft_cold,
                     n_fast_draft_union ? 100.0 * (double) n_fast_draft_cold / (double) n_fast_draft_union : 0.0);
+        }
+        // [CGC routing-aware placement §2/2 2026-08-29] dump per-layer top-K route-frequency
+        // lists in PIN_PROFILE format (line i = layer i, space-separated expert ids, K = usable
+        // slots for that layer, LAYER_CAPS-aware) so the next run can feed it back via
+        // LLAMA_EXPERT_CACHE_PIN_PROFILE. Also prints the coverage verdict — the fraction of
+        // route mass the top-K set covers. Capacity baseline for uniform routing is K/n_expert
+        // (e.g. 71/128 = 55.5%); coverage far above baseline = heavy-tailed routing = the
+        // placement lever is live; coverage near baseline = diffuse routing = lever closed.
+        // Requires LLAMA_EXPERT_CACHE_ROUTE_RECORD=1 during the run (freq only fills then).
+        {
+            static const char * dump_path = []() {
+                const char * p = getenv("LLAMA_EXPERT_CACHE_ROUTE_DUMP");
+                return (p && p[0]) ? p : nullptr;
+            }();
+            if (dump_path != nullptr && !freq.empty()) {
+                FILE * f = fopen(dump_path, "w");
+                if (f != nullptr) {
+                    double cov_sum = 0.0, cov_min = 1.0e9, cov_max = -1.0;
+                    uint32_t cov_n = 0;
+                    for (uint32_t l = 0; l < freq.size(); ++l) {
+                        uint64_t total = 0;
+                        for (uint32_t e = 0; e < n_expert; ++e) {
+                            total += freq[l][e];
+                        }
+                        if (total == 0) {
+                            fprintf(f, "\n"); // keep line numbering = layer index
+                            continue;
+                        }
+                        std::vector<uint32_t> order(n_expert);
+                        for (uint32_t e = 0; e < n_expert; ++e) {
+                            order[e] = e;
+                        }
+                        std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+                            const uint64_t fa = freq[l][a], fb = freq[l][b];
+                            return fa != fb ? fa > fb : a < b;
+                        });
+                        const uint32_t k = std::min<uint32_t>(llama_expert_cache_usable_slots(this, l), n_expert);
+                        uint64_t top = 0;
+                        for (uint32_t i = 0; i < k; ++i) {
+                            top += freq[l][order[i]];
+                            fprintf(f, "%u%c", order[i], (i + 1 == k) ? '\n' : ' ');
+                        }
+                        if (k == 0) {
+                            fprintf(f, "\n");
+                        }
+                        const double cov = (double) top / (double) total;
+                        cov_sum += cov;
+                        cov_n++;
+                        cov_min = std::min(cov_min, cov);
+                        cov_max = std::max(cov_max, cov);
+                    }
+                    fclose(f);
+                    fprintf(stderr, "llama_expert_cache: ROUTE-DUMP: %s written (%u layers with routes) coverage: mean=%.1f%% min=%.1f%% max=%.1f%% (uniform-routing baseline = K/128)\n",
+                            dump_path, cov_n,
+                            cov_n ? 100.0 * cov_sum / cov_n : 0.0,
+                            cov_n ? 100.0 * cov_min : 0.0,
+                            cov_n ? 100.0 * cov_max : 0.0);
+                } else {
+                    fprintf(stderr, "llama_expert_cache: ROUTE-DUMP: open failed: %s\n", dump_path);
+                }
+            }
+        }
+        // [CGC routing-aware placement] static-pin telemetry (only printed when a profile ran)
+        if (n_pin_marked > 0 || n_pin_yield > 0) {
+            fprintf(stderr, "llama_expert_cache: routing-aware placement: pin_marked=%zu pin_yield(evicted)=%zu\n",
+                    n_pin_marked, n_pin_yield);
         }
         bg_stop = true;
     }
