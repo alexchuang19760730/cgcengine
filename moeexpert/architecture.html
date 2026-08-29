@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<title>GGUF → MindSpore Lite (.ms) 轉換架構說明書</title>
+<style>
+  body { font-family: "Microsoft JhengHei", "PingFang TC", sans-serif; max-width: 960px;
+         margin: 40px auto; padding: 0 24px; color: #222; line-height: 1.7; }
+  h1 { border-bottom: 3px solid #2c6fbb; padding-bottom: 8px; color: #1a4f8a; }
+  h2 { color: #2c6fbb; margin-top: 36px; }
+  .box { background: #f5f8fc; border: 1px solid #cfe0f5; border-radius: 8px;
+         padding: 16px 20px; margin: 16px 0; }
+  .warn { background: #fff7e6; border: 1px solid #f0d9a8; }
+  .ok { background: #eefaf0; border: 1px solid #bfe5c6; }
+  .stage { display: flex; align-items: stretch; margin: 10px 0; }
+  .stage .num { min-width: 42px; display: flex; align-items: center; justify-content: center;
+                background: #2c6fbb; color: #fff; font-weight: bold; border-radius: 6px 0 0 6px; }
+  .stage .body { flex: 1; background: #f5f8fc; border: 1px solid #cfe0f5; border-left: none;
+                 border-radius: 0 6px 6px 0; padding: 10px 16px; }
+  .stage .tool { color: #7a4f00; font-weight: bold; }
+  code { background: #eef1f5; padding: 2px 6px; border-radius: 4px; font-size: 0.92em; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+  th, td { border: 1px solid #ccc; padding: 8px 12px; text-align: left; }
+  th { background: #2c6fbb; color: #fff; }
+  .arrow { text-align: center; color: #2c6fbb; font-size: 22px; margin: 2px 0; }
+  .diagram { font-family: Consolas, monospace; background: #1e1e2e; color: #cdd6f4;
+             border-radius: 8px; padding: 20px; overflow-x: auto; white-space: pre; font-size: 13px; line-height: 1.5; }
+  .hl { color: #89dceb; font-weight: bold; }
+  .g { color: #a6e3a1; }
+  .y { color: #f9e2af; }
+  .r { color: #f38ba8; }
+  .small { font-size: 0.88em; color: #666; }
+</style>
+</head>
+<body>
+
+<h1>GGUF → MindSpore Lite (.ms) 轉換架構說明書</h1>
+<p><b>專案：</b>Qwen3-0.6B &nbsp;|&nbsp; <b>日期：</b>2026-08-29 &nbsp;|&nbsp; <b>狀態：</b>管線已跑通（轉換成功、精度驗證中）</p>
+
+<h2>1. 核心問題：cgc engine 有沒有參與轉換？</h2>
+<div class="box warn">
+  <b>沒有。</b>整條 GGUF → .ms 轉換鏈是 <b>PC 端離線轉換</b>，與 cgc engine（llama.cpp 裝置端推理引擎）完全無關。
+  <ul>
+    <li><b>cgc engine</b>：裝置端的推理引擎（llama.cpp via N-API），只負責<b>執行</b> GGUF 模型，不參與任何模型格式轉換。</li>
+    <li><b>轉換工具</b>：MindSpore 官方離線工具 <code>converter_lite</code>（本地執行檔，非雲端 API）＋ 我們自寫的 Python 圖處理腳本（transformers / torch.onnx / onnx 圖手術）。</li>
+  </ul>
+</div>
+
+<h2>2. 整體架構：兩條獨立路徑</h2>
+<div class="diagram">
+                       <span class="hl">PC 端（離線轉換 + 驗證）</span>                    <span class="hl">裝置端（HarmonyOS App 進程內）</span>
+ ┌─────────────────────────────────────────────────┐    ┌─────────────────────────────────────────────┐
+ │                                                 │    │                                             │
+ │  Qwen3-0.6B-Q4_K_M.gguf (378 MB)                │    │   <span class="y">路徑 A（現行・已上線）</span>                        │
+ │        │                                        │    │   GGUF ──► <span class="g">cgc engine (llama.cpp)</span> ──► 推理輸出      │
+ │        │  transformers 反量化 Q4_K_M→fp16        │    │                 │  N-API 橋接                     │
+ │        ▼                                        │    │                 ▼                                │
+ │  HF safetensors (fp16)                          │    │   <span class="y">路徑 B（本文件主題・驗證中）</span>                  │
+ │        │  torch.onnx.export (opset 17)          │    │   <span class="r">.ms</span> ──► <span class="g">MindSpore Lite Runtime</span> ──► 推理輸出      │
+ │        ▼                                        │    │        （需新增整合，類似 llama.cpp 橋接）      │
+ │  ONNX (fp16, 固定 shape 1×128)                  │    │                                             │
+ │        │  Python 圖手術 (自寫腳本)               │    │   兩引擎<b>並存</b>，各自獨立：                    │
+ │        │  ・bake mask / 常數折疊                 │    │   cgc engine 跑 GGUF，                        │
+ │        │  ・移除 IsNaN+Where                     │    │   MindSpore Lite 跑 .ms                       │
+ │        │  ・fp16→fp32 統一 (x86 驗證用)          │    │                                             │
+ │        ▼                                        │    └─────────────────────────────────────────────┘
+ │  ONNX (純 fp32, 已通過 ORT 驗證)                 │
+ │        │  <span class="g">converter_lite（MindSpore 官方工具）</span>  │
+ │        ▼                                        │
+ │  MindIR Lite: .ms + .msw (~3 GB fp32)           │
+ │        │  benchmark.exe（MindSpore 官方工具）    │
+ │        ▼                                        │
+ │  精度 (cosine) + 性能 (ms/iter) 驗證             │
+ └─────────────────────────────────────────────────┘
+</div>
+<p class="small">註：fp16 版 .ms (1.3 GB) 已備份於 <code>D:\ms_convert_backup\</code>，供 ARM 裝置端使用；x86 PC 因 NNACL 不支援 fp16 算術算子，驗證改用 fp32 版。</p>
+
+<h2>3. 轉換管線七階段詳解</h2>
+
+<div class="stage"><div class="num">0</div><div class="body">
+  <b>GGUF 檢查</b> — <span class="tool">gguf.py</span>（pygguf）<br>
+  讀取 metadata（架構 qwen3、28 層、hidden 1024、vocab 151936、Q4_K_M 量化）→ <code>gguf_metadata.json</code>
+</div></div>
+
+<div class="stage"><div class="num">1</div><div class="body">
+  <b>GGUF → HF</b> — <span class="tool">transformers (gguf_file)</span><br>
+  <code>AutoModelForCausalLM.from_pretrained(gguf_file=...)</code> 反量化 Q4_K_M → fp16，做 sanity generation 後存 safetensors。
+  <span class="small">（此階段產物已清理，可由 GGUF 重新生成）</span>
+</div></div>
+
+<div class="stage"><div class="num">2</div><div class="body">
+  <b>HF → ONNX</b> — <span class="tool">torch.onnx.export</span><br>
+  opset 17、固定 shape <code>1×128</code>（pp128 式 prefill 基準）、顯式三輸入（ids/mask/pos）避開動態控制流。
+</div></div>
+
+<div class="stage"><div class="num">3</div><div class="body">
+  <b>ONNX 圖手術</b> — <span class="tool">自寫 Python 腳本</span>（本管線的核心工程量）<br>
+  ① <code>export_baked.py</code>：attention_mask 烘焙為常數，消除動態 mask 子圖<br>
+  ② <code>fold_constants.py / fold_phase1_split.py / fold_phase2_surgery.py</code>：常數折疊（Shape/Add/Gather/CumSum 鏈）<br>
+  ③ <code>remove_isnan.py / remove_isnan_fold.py</code>：移除 MindSpore 不支援的 <code>IsNaN+Where</code> 保護對（28 層 × attention NaN guard）<br>
+  ④ <code>to_fp32.py</code>：f16 initializer 串流轉 f32、移除 314 個 f16↔f32 Cast、統一 dtype（解 x86 NNACL 限制）
+</div></div>
+
+<div class="stage"><div class="num">4</div><div class="body">
+  <b>Shape 推斷</b> — <span class="tool">onnx.shape_inference (data_prop)</span><br>
+  補全 2436 個 value_info，MindSpore 轉換器需要完整形狀資訊。
+</div></div>
+
+<div class="stage"><div class="num">5</div><div class="body">
+  <b>ONNX → MindIR Lite</b> — <span class="tool">converter_lite.exe（MindSpore 官方）</span><br>
+  <code>--fmk=ONNX --modelFile=... --outputFile=...</code> → 產出 <code>.ms</code>（圖結構）+ <code>.msw</code>（權重，大模型自動拆分）。<br>
+  i64 輸入自動轉 i32（實測 512B 輸入需求）。
+</div></div>
+
+<div class="stage"><div class="num">6</div><div class="body">
+  <b>驗證</b> — <span class="tool">onnxruntime + benchmark.exe</span><br>
+  ① ORT 對 fp32 ONNX：cosine=0.999353、argmax 一致（271）✔<br>
+  ② <code>benchmark.exe</code> 對 .ms：MarkAccuracy（cosine distance 閾值 0.01）+ MarkPerformance（ms/iter、threads、fp16 優先）
+</div></div>
+
+<h2>4. 工具歸屬對照表</h2>
+<table>
+  <tr><th>環節</th><th>工具</th><th>來源</th><th>是否涉及 cgc engine</th></tr>
+  <tr><td>GGUF 反量化</td><td><code>transformers</code></td><td>HuggingFace 開源</td><td>否</td></tr>
+  <tr><td>匯出 ONNX</td><td><code>torch.onnx.export</code></td><td>PyTorch 官方</td><td>否</td></tr>
+  <tr><td>圖手術/常數折疊</td><td>自寫腳本 <code>fold_*.py</code> 等</td><td><b>本專案自研</b></td><td>否</td></tr>
+  <tr><td>轉 .ms</td><td><code>converter_lite.exe</code></td><td>MindSpore 官方離線工具</td><td>否</td></tr>
+  <tr><td>精度/性能驗證</td><td><code>benchmark.exe</code></td><td>MindSpore 官方離線工具</td><td>否</td></tr>
+  <tr><td>裝置端跑 GGUF</td><td>llama.cpp (cgc engine)</td><td><b>本專案自研整合</b></td><td><b>是（唯一的接觸點）</b></td></tr>
+  <tr><td>裝置端跑 .ms（未來）</td><td>MindSpore Lite Runtime SDK</td><td>MindSpore 官方 (HarmonyOS ARM)</td><td>否（新引擎，並存）</td></tr>
+</table>
+
+<h2>5. 已知限制與設計決策</h2>
+<div class="box">
+  <ul>
+    <li><b>x86 fp16 限制</b>：MindSpore NNACL 在 x86 上把 fp16 活動值自動轉 f32、權重留 f16 → <code>ARITHMETIC_DATA_TYPE_UNMATCH</code>（error 18）。因此 PC 驗證用 fp32 版；fp16 .ms 留給 ARM 裝置（NNACL ARM 有完整 fp16 kernel）。</li>
+    <li><b>無 KV cache</b>：匯出時 <code>use_cache=False</code>、固定 shape 1×128。此為「單次 prefill 基準」型模型，裝置端要做自回歸生成需在 runtime 端逐 step 餵入（後續可評估匯出帶 cache 的版本或以 reshape 支援動態長度）。</li>
+    <li><b>精度基準</b>：ref 為 fp16-ORT logits，fp32 版差異 max≈1.09 / mean≈0.13 / cosine 0.9994，屬 f16↔f32 計算精度差，argmax 一致。</li>
+    <li><b>磁碟策略</b>：C: 空間不足 → 大檔（fp32 資料 3 GB、.msw）全部寫 <code>D:\ms_convert_fp32\</code>；fp16 產物備份 <code>D:\ms_convert_backup\</code>。</li>
+  </ul>
+</div>
+
+<h2>6. 裝置端整合藍圖（路徑 B 下一步）</h2>
+<div class="box ok">
+  <ol>
+    <li>取得 MindSpore Lite HarmonyOS 版 runtime（arm64-v8a 的 <code>libmindspore-lite.so</code>）。</li>
+    <li>以 N-API 包裝（同現在 llama.cpp 的 <code>llama_bench_bridge.cpp</code> 模式）：載入 .ms + .msw → Build → Predict。</li>
+    <li>fp16 .ms（1324 MB）在 ARM 上直接執行，量測 TTFT/TPOT/tok/s 對比 cgc engine 的 llama.cpp 數據。</li>
+    <li>（可選）<code>converter_lite --quantType=WEIGHT_QUANT</code> 做 INT8 權重量化，.ms 可縮至 ~400 MB。</li>
+  </ol>
+</div>
+
+<h2>7. 檔案與腳本位置</h2>
+<table>
+  <tr><th>項目</th><th>路徑</th></tr>
+  <tr><td>轉換腳本與日誌</td><td><code>C:\Users\User\Desktop\Alex\ms_convert\</code></td></tr>
+  <tr><td>fp32 轉換工作區（D:）</td><td><code>D:\ms_convert_fp32\qwen3_06b_fp32_fold.onnx</code> (+ .data / .ms / .msw)</td></tr>
+  <tr><td>fp16 備份（D:）</td><td><code>D:\ms_convert_backup\</code>（fp16 .ms 1324 MB + ONNX 鏈 + 全部腳本）</td></tr>
+  <tr><td>GGUF 來源</td><td><code>C:\Users\User\Desktop\Alex\Qwen3-0.6B-Q4_K_M.gguf</code></td></tr>
+  <tr><td>MindSpore Lite 工具鏈</td><td><code>ms_convert\mslite\mindspore-lite-2.4.0-win-x64\</code></td></tr>
+</table>
+
+<h2>8. cgc 引擎能否插入 MindSpore Lite Runtime？</h2>
+<div class="box">
+  <b>可以，MindSpore Lite 有兩個正式的第三方插入點</b>（本機 runtime include 已含這些 API）：
+  <table>
+    <tr><th>插入點</th><th>API 標頭</th><th>做法</th><th>評估</th></tr>
+    <tr><td><b>Delegate</b>（後端代理）</td><td><code>runtime/include/api/delegate.h</code><br><code>delegate_api.h</code></td>
+        <td>實作 <code>cgcDelegate : mindspore::Delegate</code>，於 Build 階段接管整圖或子圖，交給 cgc 引擎執行</td>
+        <td>官方為第三方引擎設計的接管機制（NPU delegate 同款），架構完全成立</td></tr>
+    <tr><td><b>Custom Kernel</b>（自訂算子）</td><td><code>registry/register_kernel.h</code><br><code>api/kernel.h</code></td>
+        <td>註冊特定算子（如 MatMul / Attention）的 cgc 實作，MS 排程器自動選用</td>
+        <td>粒度太細，只適合替換熱點算子</td></tr>
+  </table>
+</div>
+<div class="box warn">
+  <b>ROI 誠實分析：</b>
+  <ul>
+    <li>cgc（llama.cpp）的優勢在 <b>GGUF 區塊量化 kernel</b>（block dequant + SIMD matmul）；接手 .ms 的 fp32/fp16 dense 圖拿不到量化紅利，等於在 ggml 重寫一遍算子映射。</li>
+    <li>MS Lite 的獨特價值是它<b>自己的 delegate 生態</b>（HarmonyOS 裝置可接 NPU）——這是 llama.cpp 沒有的。</li>
+    <li>最務實的整合在 <b>App 層</b>而非 runtime 層：<code>GenerationWorkflow</code> 統一介面，依模型格式路由到 cgc engine（GGUF）或 MS runtime（.ms），兩引擎並存、互相基準。</li>
+  </ul>
+</div>
+<div class="diagram">
+ <span class="y">App 層統一路由（建議的整合形態）</span>
+
+   GenerationWorkflow (ArkTS)
+        │  依模型副檔名/格式路由
+        ├──────────────────────► .gguf ──► <span class="g">cgc engine (llama.cpp, N-API)</span> ──► tok/s 基準 A
+        └──────────────────────► .ms   ──► <span class="g">MindSpore Lite Runtime (N-API)</span> ──► 基準 B
+                                            │
+                                            └─(可選) NPU delegate ──► <span class="hl">Kirin NPU</span>
+</div>
+
+<h2>9. 混合引擎架構：讀 .ms 統一 IR，cgc 專任 MoE 加速</h2>
+<div class="box ok">
+  <b>提案（2026-08-29）：</b>模型讀入 .ms 統一 IR；<b>除 MoE 專家計算外，全部 backend 走 MindSpore</b>；<b>cgc engine 只做 MoE 專家引擎</b>。<br>
+  <b>關鍵洞察：</b>權重留在 GGUF block-quant 格式、只跨邊界傳 activation → <b>量化紅利完整保留</b>（推翻第 8 節「拿不到紅利」的結論——那是針對 dense .ms 餵 ggml 的方向）。
+</div>
+<div class="diagram">
+ <span class="y">每層的分工（Qwen3.6-35B-A3B 型 MoE）</span>
+
+ <span class="g">MindSpore Lite（dense 部分・可上 NPU delegate）</span>          <span class="hl">cgc engine（ggml）</span>
+ ┌────────────────────────────────────────────┐   ┌───────────────────────────────┐
+ │  embedding / lm_head                        │   │  專家權重: GGUF block-quant     │
+ │  RMSNorm (input/post-attn)                  │   │  w1/w3 (gate+up) ×N experts    │
+ │  attention (GQA/MQA, causal)                │   │  w2 (down)    ×N experts       │
+ │  <span class="r">router: gemm + softmax + top-k</span>                    │   │                               │
+ │                                             │   │                               │
+ │      邊界 A: [T×H] activation ───────────────┼──►│  <span class="r">mul_mat_id</span> (現成 kernel)      │
+ │      邊界 B: top-k expert ids/weights ──────┼──►│  silu × expert FFN             │
+ │                                             │   │  專家輸出加權合                │
+ │      合併回 residual ◄───────────────────────┼───┤  邊界 C: [T×H] expert out      │
+ └────────────────────────────────────────────┘   └───────────────────────────────┘
+   <span class="y">邊界流量極小</span>：每層只有 activation + 路由表，權重(12.6GB)不出 GGUF
+</div>
+<h3>9.1 實作層設計</h3>
+<table>
+  <tr><th>環節</th><th>做法</th><th>現成資產</th></tr>
+  <tr><td>圖分割</td><td>ONNX 階段圖手術：把每層 MoE FFN 子圖（scatter→w1/w3→silu→w2→gather→加權合）剝除，折成單一 custom op 佔位</td><td>沿用本管線 fold/isnan/reshape 同套技術</td></tr>
+  <tr><td>權重雙軌</td><td>.ms 只存 dense 部分（embed+attention+router+norm+lm_head，35B-A3B 約 ~1GB）；專家權重留 GGUF 原檔</td><td>GGUF 不動，總大小不變</td></tr>
+  <tr><td>MS 端接點</td><td>Custom Kernel：註冊 <code>MoEExpertFFN</code>（<code>registry/register_kernel.h</code>），scheduler 遇到就調 cgc</td><td>本機 mslite include 已有</td></tr>
+  <tr><td>cgc 端 kernel</td><td>ggml 已有 MoE 前向：<code>ggml_mul_mat_id</code>（按 expert id 批次矩陣乘）＋ GGUF 專家權重 loader</td><td>llama.cpp 的 n_expert 路徑</td></tr>
+  <tr><td>呼叫路徑</td><td>同 process、同 native 層：MS custom kernel → C++ 直調 ggml（不經 N-API，零橋接開銷）</td><td>—</td></tr>
+</table>
+<h3>9.2 風險與對策</h3>
+<div class="box warn">
+  <ul>
+    <li><b>執行緒爭搶</b>：MS 與 ggml 都想吃滿 CPU → 對策：MS context threads 設低、ggml 端獨佔大核；或按層序列化交替執行。</li>
+    <li><b>記憶體交接</b>：邊界 tensor 需零拷貝（MS tensor data ptr 直接餵 ggml）→ 兩邊都是 C++ 連續記憶體，可行。</li>
+    <li><b>router 歸屬</b>：router 本身極小（H×N gemm + topk），放 MS 端即可；top-k 結果以 int32 張量過邊界。</li>
+    <li><b>模型適配</b>：僅 MoE 模型（35B-A3B）受益；0.6B dense 無專家，走純 MS 路徑做管線驗證正好互補。</li>
+  </ul>
+</div>
+
+<h3>9.3 KV cache 關卡：膠囊邊界 + pad-to-4 設計（2026-08-29 補充）</h3>
+<div class="box warn">
+  <b>問題本質：KV cache 是「三重動態」，MS 凍結圖一重都容不下。</b>
+  <table>
+    <tr><th>動態物</th><th>decode 每步怎麼動</th><th>MS 靜態圖的下場</th></tr>
+    <tr><td><b>KV cache 本體</b></td><td><code>[T, kv_heads, dim]</code>，T 每步 +1（MTP verify 時 +3）——跨步持續存在的狀態</td>
+        <td>形狀編譯期定死；更致命的是 <code>Predict()</code> <b>無狀態</b>，沒有「buffer 活過這次調用」的概念</td></tr>
+    <tr><td><b>causal mask</b></td><td>形狀 <code>[B, T+1]</code> 每步變</td>
+        <td>0.6B 管線用 <code>export_baked.py</code> 把 mask 烘焙成常數——只在固定 1×128 單次 prefill 成立，decode 第一步就失效</td></tr>
+    <tr><td><b>RoPE position</b></td><td>絕對位置每步位移，MTP verify 跳位</td><td>位置值是 runtime 資料，非圖常數</td></tr>
+  </table>
+  <p>llama.cpp 沒這個問題是因為它<b>每個 decode step 重建計算圖</b>（動態圖天生處理動態形狀）——兩引擎的根本性格差異，KV cache 是衝突爆發點。</p>
+</div>
+<div class="box ok">
+  <b>解法核心（本設計最重要的一句話）：</b><br>
+  <b>KV cache 不過邊界、不進 MS 圖——它作為 C++ 物件住在 custom op 內部，跨 <code>Predict()</code> 調用持續存在。</b><br>
+  MS scheduler 每步調用 <code>AttnWithKV</code> custom op 時，op 內部直接讀寫自己持有的 KV buffer
+  （ggml 端用 llama.cpp 現成 kv-cache-unified 機制）。MS 以為在調無狀態算子，
+  實際每個 op 實例是<b>有記憶的膠囊</b>——動態狀態就這樣走私過凍結圖的邊界。<br>
+  <span class="small">反例（不可行）：KV 當 input/output 每步過邊界——ctx 2048 全模型 KV ≈350MB，每步 copy 進+出 700MB，
+  在 ~40GB/s 頻寬 = 17ms/step 純搬運 = KV 讀取成本付兩次。膠囊方案成本為零。</span>
+</div>
+<div class="diagram">
+ <span class="y">每層切點（decode batch pad 到 4）</span>
+
+ <span class="g">MS piece 1</span>  residual add + RMSNorm + QKV proj          <span class="small">（靜態 [4,2048] 恆定）</span>
+     │ 邊界：q,k,v [4,2048] + position + real_len
+ <span class="hl">[CGC op A]</span>  <span class="r">AttnWithKV</span>：RoPE + KV 寫入 + attention      <span class="small">（動態三件套全在此）</span>
+     │ 邊界：attn_out [4,2048]
+ <span class="g">MS piece 2</span>  O proj + residual + RMSNorm + router + shared expert
+     │ 邊界：hidden [4,2048] + topk ids [4,8] int32 + routing weights
+ <span class="hl">[CGC op B]</span>  <span class="r">MoEExpertFFN</span>：routed experts + 加權合       <span class="small">（data-dependent 路由 + GGUF 量化權重）</span>
+     │ 邊界：moe_out [4,2048]
+ <span class="g">MS piece 3</span> = 下一層 piece 1 ...
+
+ <span class="y">鐵律：形狀會變的、有狀態的、依賴 runtime 資料的 → cgc 側；
+        形狀恆定的純矩陣運算 → MS 側（讓 MS GPU backend 餵 Maleoon）</span>
+</div>
+<h4>9.3.1 O projection 旋鈕（政策決定，非技術決定）</h4>
+<table>
+  <tr><th></th><th>O proj 放 cgc op A 內</th><th>O proj 留 MS piece 2 開頭</th></tr>
+  <tr><td>邊界數/層</td><td>2</td><td>3（attention 輸出先過回 MS）</td></tr>
+  <tr><td>誰算</td><td>ggml/CPU</td><td>Maleoon（經 MS GPU backend）</td></tr>
+  <tr><td>適用</td><td>MS GPU 慢或不可用時的 <b>fallback</b></td><td>MS GPU 快時——dense 算力盡量外包</td></tr>
+</table>
+<p class="small">第三邊界成本 μs 級（activation 4×2048×4B ≈ 32KB）。Maleoon compute 吞吐實測後決定撥向。</p>
+<h4>9.3.2 batch 動態 → pad-to-4 + cgc 側 mask = 全靜態圖</h4>
+<div class="box">
+  <ul>
+    <li>MTP 三種 decode batch（target 1 / draft 2 / verify 3）→ <b>MS 圖固定 pad 到 4</b>。</li>
+    <li>dense matmul / RMSNorm / router <b>逐列獨立</b>：pad 的垃圾列不影響真實列數值（真實 token 的 bit-identity 保持）。</li>
+    <li>垃圾列由 cgc op A 的 mask 兜底——attention 直接遮掉、KV 只寫真實位置、sampling 只看真實列。</li>
+    <li>紅利：MS 側永遠不需要動態 mask，圖完全凍結。4×2048 GEMM pad 開銷可忽略。</li>
+  </ul>
+</div>
+<h4>9.3.3 排程順序與未知數</h4>
+<div class="box">
+  <ul>
+    <li><b>prefill 先不走 MS</b>：一次性成本，chunked prefill 圖更大——直接 cgc 純 CPU；MS 混合先只做 decode（效能關鍵路徑）。之後若要 GPU prefill：另導 b=128 的 .ms 變體，dense 權重（~1GB）兩份，屆時再評估。</li>
+    <li><b>未知數 1</b>：MS Lite 2.4 custom kernel 調用是序列還是可並行、與 MS backend 的執行緒爭搶（第一個實測點）。</li>
+    <li><b>未知數 2</b>：MS GPU backend 在 Maleoon 的實際吞吐——決定 O proj 旋鈕方向。</li>
+    <li><b>未知數 3</b>：<code>registry/register_kernel.h</code> 註冊的 op 能否持有跨調用狀態（C++ 物件成員，理論可行，需驗證生命週期）。</li>
+  </ul>
+</div>
+
+</body>
+</html>
