@@ -26,6 +26,8 @@ import asyncio
 import json
 import time
 import hashlib
+import platform
+import subprocess
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
 from enum import Enum
@@ -38,6 +40,66 @@ except ImportError:
     ETCD_AVAILABLE = False
     etcd3 = None
 
+
+
+@dataclass
+class DeviceProfile:
+    total_ram_gb: float = 0.0
+    available_ram_gb: float = 0.0
+    gpu_type: str = "none"
+    gpu_vram_gb: float = 0.0
+    cpu_cores: int = 0
+    cpu_arch: str = ""
+    compute_score: float = 0.0
+    prefill_tok_per_sec: Dict = field(default_factory=dict)
+    decode_tok_per_sec: Dict = field(default_factory=dict)
+    network_latency_ms: float = 0.0
+    bandwidth_mbps: float = 0.0
+    role: str = "both"
+    max_concurrent: int = 1
+    pd_modes: List = field(default_factory=lambda: ["端云","端端","纯端"])
+
+    @classmethod
+    def detect_local(cls):
+        import os
+        p = cls()
+        try:
+            if platform.system() == "Windows":
+                import ctypes
+                k32 = ctypes.windll.kernel32
+                cu = ctypes.c_ulonglong
+                class MS(ctypes.Structure):
+                    _fields_ = [("dwLength",ctypes.c_ulong),("dwMemoryLoad",ctypes.c_ulong),("ullTotalPhys",cu),("ullAvailPhys",cu),("ullTotalPageFile",cu),("ullAvailPageFile",cu),("ullTotalVirtual",cu),("ullAvailVirtual",cu),("ullAvailExtendedVirtual",cu)]
+                m = MS(); m.dwLength = ctypes.sizeof(MS)
+                k32.GlobalMemoryStatusEx(ctypes.byref(m))
+                p.total_ram_gb = round(m.ullTotalPhys/(1024**3),1)
+                p.available_ram_gb = round(m.ullAvailPhys/(1024**3),1)
+            else:
+                pages = os.sysconf("SC_PHYS_PAGES")
+                avail = os.sysconf("SC_AVPHYS_PAGES")
+                ps = os.sysconf("SC_PAGE_SIZE")
+                p.total_ram_gb = round(pages*ps/(1024**3),1)
+                p.available_ram_gb = round(avail*ps/(1024**3),1)
+        except: pass
+        p.cpu_cores = os.cpu_count() or 0
+        p.cpu_arch = platform.machine()
+        try:
+            if platform.system() == "Windows":
+                r = subprocess.run(["nvidia-smi","--query-gpu=name,memory.total","--format=csv,noheader"],capture_output=True,text=True,timeout=5)
+                if r.returncode == 0 and r.stdout.strip():
+                    parts = r.stdout.strip().split(",")
+                    p.gpu_type = parts[0].strip()
+                    if len(parts)>1: p.gpu_vram_gb = float(parts[1].strip().replace("MiB","").replace("GiB",""))/1024
+            elif platform.machine() == "arm64":
+                p.gpu_type = "Apple Silicon"
+                p.gpu_vram_gb = p.total_ram_gb * 0.7
+        except: pass
+        p.compute_score = round(min(p.total_ram_gb/32,1)*40 + min(p.gpu_vram_gb/24,1)*30 + min(p.cpu_cores/12,1)*30,1)
+        return p
+
+    def to_dict(self): return {k:v for k,v in self.__dict__.items()}
+    @classmethod
+    def from_dict(cls, d): return cls(**{k:v for k,v in d.items() if k in cls.__dataclass_fields__})
 
 class NodeStatus(Enum):
     """节点状态"""
@@ -62,6 +124,7 @@ class PDNode:
     registered_at: float = field(default_factory=time.time)
     last_heartbeat: float = field(default_factory=time.time)
     version: str = "1.0.0"
+    profile: Optional[DeviceProfile] = None
 
     @property
     def address(self) -> str:
