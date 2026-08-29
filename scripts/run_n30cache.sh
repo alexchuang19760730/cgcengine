@@ -52,6 +52,9 @@ Q36_MTP_HEADIQ2="$ROOT/models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-headIQ2.g
 # 前代 headIQ2 版（27.33 t/s）出現確定性退化尾段（seed 1：1101 token 的最後 ~140 個 → 0000），
 # head IQ2_S 為頭號嫌疑（target+draft 共用 lm_head）→ 重建為 Q6_K head。檔案 13020 MiB（+243 MiB）。
 Q36_MTP_DENSEIQ4X="$ROOT/models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf"
+# [2026-08-29 three-platform 整合修正] dev bcc22133f 曾把此路徑指向 denseIQ4X-headIQ2.gguf
+# （Windows 8GB 機本地只有該檔）。main 生產線維持 Q6_K head 載體（尾段退化已修、27+ t/s 實測）；
+# Windows 端若無此檔請把本地檔改名/軟連結成此檔名。
 
 MODEL="${N30CACHE_MODEL:-${1:-gemma4}}"
 N=128
@@ -371,10 +374,10 @@ fi
 # 優化 load：先 cat model 進 page cache（重開機後第一次 run 建議），之後 loader 的 read 全 RAM-speed
 if [ "$WARM" = 1 ]; then
     echo "  warm   : pre-loading $(basename "$M") into page cache..."
-    /usr/bin/time -l sh -c "cat '$M' > /dev/null" 2>&1 | grep -E "real" | sed 's/^/    /'
+    sh -c "cat '$M' > /dev/null" 2>&1 | grep -E "real" | sed 's/^/    /'
 fi
 OUT=/tmp/n30cache.out; ERR=/tmp/n30cache.err
-/usr/bin/time -l env "${ENVS[@]}" "$BIN" -m "$M" -n "$N" -ngl "$NGL" --no-mmap -t 8 \
+env "${ENVS[@]}" "$BIN" -m "$M" -n "$N" -ngl "$NGL" --no-mmap -t 8 \
     $SEED_ARG $IGNORE_EOS_ARG $CTX_ARG $MTP_ARG -p "$PROMPT" > "$OUT" 2> "$ERR"
 RC=$?
 

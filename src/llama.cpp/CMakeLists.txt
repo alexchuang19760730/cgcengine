@@ -63,6 +63,13 @@ option(BUILD_SHARED_LIBS "build shared libraries" ${BUILD_SHARED_LIBS_DEFAULT})
 
 if (WIN32)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+    # 2026-08-29 three-platform (Windows build fix, from dev bcc22133f):
+    #   MTP_SUPPORT    — MinGW Windows binary compiles the MTP code paths in
+    #   _WIN32_WINNT   — cpp-httplib 0.53 requires Win10+ target
+    # Guarded WIN32-only: Mac keeps MTP isolation via build_fork_llama.sh
+    # -DMTP_SUPPORT (llama-simple / prod binary stays non-MTP, bit-identity preserved).
+    add_compile_definitions(MTP_SUPPORT)
+    add_compile_definitions(_WIN32_WINNT=0x0A00)
 endif()
 
 if (MSVC)
