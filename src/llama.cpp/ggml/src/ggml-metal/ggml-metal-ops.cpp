@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <limits>
 #include <cmath>
+#include <cstdlib>
 
 static ggml_metal_buffer_id ggml_metal_get_buffer_id(const ggml_tensor * t) {
     if (!t) {
@@ -77,6 +78,22 @@ struct ggml_metal_op {
         return ggml_graph_node(gf, idxs[i]);
     }
 
+    // CGC P1-3a: nodes whose computation has already been encoded by an earlier fused
+    // dispatch (e.g. the second mul_mat_id and the swiglu of a fused gate+up+glu triple).
+    // The encode loop consults is_consumed() and skips them without dispatching.
+    bool is_consumed(const ggml_tensor * t) const {
+        for (const auto * c : consumed) {
+            if (c == t) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void mark_consumed(ggml_tensor * t) {
+        consumed.push_back(t);
+    }
+
     bool can_fuse(int i0, const ggml_op * ops, int n_ops) const {
         assert(use_fusion);
         assert(i0 >= 0 && i0 < n_nodes());
@@ -108,6 +125,9 @@ private:
 
     // non-empty node indices
     std::vector<int> idxs;
+
+    // CGC P1-3a: tensors already computed by a fused dispatch (see is_consumed)
+    std::vector<ggml_tensor *> consumed;
 };
 
 ggml_metal_op_t ggml_metal_op_init(
@@ -174,6 +194,24 @@ static bool ggml_metal_op_concurrency_add(ggml_metal_op_t ctx, const ggml_tensor
 
 static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
     struct ggml_tensor * node = ctx->node(idx);
+
+    // [dbg OPSEQ] one-shot node sequence dump: what actually flows through Metal encode
+    // (opt-in via CGC_MMV_FUSE_DBG — keeps production stderr clean)
+    {
+        static const bool dbg = (getenv("CGC_MMV_FUSE_DBG") != nullptr);
+        static int n_probe = 0;
+        if (dbg && n_probe < 500) {
+            n_probe++;
+            GGML_LOG_WARN("[OPSEQ] idx=%3d/%d op=%-14s name=%-28s compute=%d\n",
+                    idx, ctx->n_nodes(), ggml_op_name(node->op), node->name,
+                    (node->flags & GGML_TENSOR_FLAG_COMPUTE) ? 1 : 0);
+        }
+    }
+
+    // CGC P1-3a: already computed by an earlier fused dispatch -> skip
+    if (ctx->is_consumed(node)) {
+        return 1;
+    }
 
     //GGML_LOG_INFO("%s: encoding node %3d, op = %8s\n", __func__, idx, ggml_op_name(node->op));
 
@@ -2552,8 +2590,293 @@ size_t ggml_metal_op_mul_mat_id_extra_ids(const ggml_tensor * op) {
     return ggml_type_size(GGML_TYPE_I32)*ne02*ne21;
 }
 
+// CGC P1-3a (ops-level wiring): pattern-match the MoE FFN triple
+//   mul_mat_id(gate) -> mul_mat_id(up) -> swiglu_split(gate, up)
+// and dispatch the fused kernel_mul_mv_id_glu_* GEMV that computes both projections
+// against a single y load and writes silu(gate)*up straight into the swiglu output.
+// Enabled via env CGC_MMV_FUSE=1 (default off). Constraints: IQ3_XXS / IQ2_S gate+up
+// (same type), same y and same ids tensor for both projections, decode GEMV path only
+// (ne21 < 32), F32 y and contiguous F32 swiglu output. Bit-identical to the unfused
+// pair + swiglu (accumulation mirrors kernel_mul_mv_iq3_xxs/iq2_s_f32_impl).
+//
+// NOTE: the routed gate/up mul_mat_id pair is NOT adjacent to its swiglu in the final
+// graph — the shared-expert MUL_MATs (ffn_gate/ffn_up/shared_expert_gate) and the
+// routing weights (GET_ROWS) are interleaved between them. So the matcher looks the
+// swiglu up within a forward window (same encode segment) and the fused dispatch marks
+// the second mul_mat_id + the swiglu node as consumed so the encode loop skips them.
+static bool ggml_metal_op_can_fuse_mmv_glu(ggml_metal_op_t ctx, int idx, int * glu_idx) {
+    static const bool enabled = []{
+        const char * e = getenv("CGC_MMV_FUSE");
+        return e != nullptr && e[0] == '1';
+    }();
+
+    *glu_idx = -1;
+
+    if (!enabled) {
+        return false;
+    }
+
+    // [dbg] one-shot dump for real MoE candidates (quantized MUL_MAT_ID): why did the
+    // pattern fail? fires on the first ~40 candidates (= first graph build, all layers)
+    static int n_dbg = 0;
+    const bool dbg = (n_dbg < 40);
+
+    ggml_tensor * a = ctx->node(idx);
+
+    const bool cand = (a->op == GGML_OP_MUL_MAT_ID && a->src[0] &&
+            (a->src[0]->type == GGML_TYPE_IQ3_XXS || a->src[0]->type == GGML_TYPE_IQ2_S));
+
+    if (!cand) {
+        return false;
+    }
+
+    if (idx + 1 >= ctx->n_nodes()) {
+        if (dbg) {
+            GGML_LOG_WARN("[MMV_FUSE dbg] idx=%d/%d a=%s BOUNDARY fail: idx+1 >= segment n_nodes\n",
+                    idx, ctx->n_nodes(), a->name);
+            n_dbg++;
+        }
+        return false;
+    }
+
+    ggml_tensor * b = ctx->node(idx + 1); // second mul_mat_id of the pair
+
+    if (b->op != GGML_OP_MUL_MAT_ID) {
+        if (dbg) {
+            GGML_LOG_WARN("[MMV_FUSE dbg] idx=%d/%d a=%s b=%s(%s) fail: b not MUL_MAT_ID\n",
+                    idx, ctx->n_nodes(), a->name, b->name, ggml_op_name(b->op));
+            n_dbg++;
+        }
+        return false;
+    }
+
+    // same activations and the same expert-id tensor for both projections
+    if (a->src[1] != b->src[1] || a->src[2] != b->src[2]) {
+        if (dbg) {
+            GGML_LOG_WARN("[MMV_FUSE dbg] idx=%d/%d a=%s b=%s fail: y/ids mismatch\n",
+                    idx, ctx->n_nodes(), a->name, b->name);
+            n_dbg++;
+        }
+        return false;
+    }
+
+    // single activation row per token (MoE decode shape: [K, 1, n_tokens])
+    if (a->src[1]->ne[1] != 1) {
+        return false;
+    }
+
+    const ggml_type tw = a->src[0]->type;
+
+    if (tw != GGML_TYPE_IQ3_XXS && tw != GGML_TYPE_IQ2_S) {
+        return false;
+    }
+
+    if (b->src[0]->type != tw) {
+        if (dbg) {
+            GGML_LOG_WARN("[MMV_FUSE dbg] idx=%d/%d a=%s(%s) b=%s(%s) fail: weight type mismatch\n",
+                    idx, ctx->n_nodes(), a->name, ggml_type_name(tw),
+                    b->name, ggml_type_name(b->src[0]->type));
+            n_dbg++;
+        }
+        return false;
+    }
+
+    if (a->src[1]->type != GGML_TYPE_F32) {
+        return false;
+    }
+
+    // decode GEMV path only: the stock matrix-matrix kernel takes over at ne21 >= 32
+    if (a->src[2]->ne[1] >= 32) {
+        return false;
+    }
+
+    // forward search for the swiglu that consumes this exact pair (shared-expert nodes
+    // are interleaved between the pair and its GLU — see the note above)
+    ggml_tensor * c = nullptr;
+
+    constexpr int N_FORWARD = 16;
+
+    const int j_end = MIN(idx + 1 + N_FORWARD, ctx->n_nodes());
+
+    for (int j = idx + 2; j < j_end; j++) {
+        ggml_tensor * t = ctx->node(j);
+
+        if (t->op != GGML_OP_GLU || ggml_get_glu_op(t) != GGML_GLU_OP_SWIGLU) {
+            continue;
+        }
+
+        // c = silu(gate) * up : src[0] = gate result, src[1] = up result. The two
+        // mul_mat_id nodes may appear in either order (qwen builds up first).
+        if ((t->src[0] == a && t->src[1] == b) || (t->src[0] == b && t->src[1] == a)) {
+            c = t;
+            *glu_idx = j;
+            break;
+        }
+    }
+
+    if (c == nullptr) {
+        if (dbg) {
+            GGML_LOG_WARN("[MMV_FUSE dbg] idx=%d/%d a=%s b=%s fail: no swiglu GLU consuming the pair within +%d\n",
+                    idx, ctx->n_nodes(), a->name, b->name, N_FORWARD);
+            n_dbg++;
+        }
+        return false;
+    }
+
+    // the fused kernel writes the swiglu output with contiguous addressing
+    if (c->type != GGML_TYPE_F32 || !ggml_is_contiguous(c)) {
+        if (dbg) {
+            GGML_LOG_WARN("[MMV_FUSE dbg] idx=%d/%d c=%s fail: GLU dst not contiguous F32\n",
+                    idx, ctx->n_nodes(), c->name);
+            n_dbg++;
+        }
+        return false;
+    }
+
+    return true;
+}
+
+static int ggml_metal_op_mul_mat_id_glu_fused(ggml_metal_op_t ctx, int idx, int glu_idx) {
+    ggml_metal_library_t lib = ctx->lib;
+    ggml_metal_encoder_t enc = ctx->enc;
+
+    ggml_tensor * a = ctx->node(idx);           // first mul_mat_id of the pair
+    ggml_tensor * b = ctx->node(idx + 1);       // second mul_mat_id
+    ggml_tensor * c = ctx->node(glu_idx);       // swiglu_split output = fused dst
+
+    ggml_tensor * gate = (c->src[0] == b) ? b : a;
+    ggml_tensor * up   = (c->src[0] == b) ? a : b;
+
+    const ggml_tensor * w_gate = gate->src[0];
+    const ggml_tensor * w_up   = up->src[0];
+    const ggml_tensor * y      = gate->src[1];
+    const ggml_tensor * ids    = gate->src[2];
+
+    static int n_logged = 0;
+
+    if (n_logged == 0) {
+        n_logged = 1;
+
+        GGML_LOG_WARN("%s: CGC_MMV_FUSE: dispatching fused gate+up+glu (type %s, ne21 = %d, rows = %d)\n",
+                __func__, ggml_type_name(w_gate->type), (int) ids->ne[1], (int) w_gate->ne[1]);
+    }
+
+    GGML_ASSERT(w_gate->ne[3] == 1);
+    GGML_ASSERT(y->ne[3] == 1);
+    GGML_ASSERT(ggml_is_quantized(w_gate->type) ? w_gate->ne[0] >= 8 : true);
+
+    auto pipeline = ggml_metal_library_get_pipeline_mul_mv_id_glu(lib, w_gate, GGML_TYPE_F32);
+
+    const int nr0 = pipeline.nr0;
+    const int nr1 = pipeline.nr1;
+    const int nsg = pipeline.nsg;
+
+    const size_t smem = pipeline.smem;
+
+    GGML_ASSERT(smem <= ggml_metal_device_get_props(ctx->dev)->max_theadgroup_memory_size);
+
+    if (ggml_is_quantized(w_gate->type)) {
+        GGML_ASSERT(w_gate->ne[0] >= nsg*nr0);
+    }
+
+    ggml_metal_kargs_mul_mv_id_glu args = {
+        /*.nei0        =*/ (int32_t) ids->ne[0],           // n_expert_used (top-k)
+        /*.nei1        =*/ (int32_t) ids->ne[1],           // n_tokens
+        /*.nbi1        =*/ ids->nb[1],                     // ids token stride
+        /*.nbi1o       =*/ ids->nb[1],                     // ids_orig stride (same tensor)
+        /*.ne00        =*/ (int32_t) w_gate->ne[0],        // K
+        /*.ne01        =*/ (int32_t) w_gate->ne[1],        // N rows (n_ff)
+        /*.ne02        =*/ (int32_t) w_gate->ne[2],        // n_expert / pool slots
+        /*.nb00        =*/ w_gate->nb[0],
+        /*.nb01        =*/ w_gate->nb[1],                  // gate row stride
+        /*.nb02        =*/ w_gate->nb[2],                  // gate slot stride
+        /*.nb01u       =*/ w_up->nb[1],                    // up row stride
+        /*.nb02u       =*/ w_up->nb[2],                    // up slot stride
+        /*.ne10        =*/ (int32_t) y->ne[0],
+        /*.ne11        =*/ (int32_t) y->ne[1],
+        /*.ne12        =*/ (int32_t) y->ne[2],
+        /*.ne13        =*/ (int32_t) y->ne[3],
+        /*.nb10        =*/ y->nb[0],
+        /*.nb11        =*/ y->nb[1],
+        /*.nb12        =*/ y->nb[2],
+        /*.ne0         =*/ (int32_t) c->ne[0],             // n_ff (dst rows)
+        /*.ne1         =*/ (int32_t) c->ne[1],             // n_expert_used (dst)
+        /*.nb1         =*/ c->nb[1],
+        /*.nr0         =*/ nr0,
+        /*.has_g_scale =*/ false,
+        /*.has_u_scale =*/ false,
+        /*.ne00d       =*/ 0,
+        /*.ne01d       =*/ 0,
+        /*.ne02d       =*/ 0,                              // 0 disables fused-down
+        /*.nb01d       =*/ 0,
+        /*.nb02d       =*/ 0,
+    };
+
+    ggml_metal_buffer_id bid_w_gate = ggml_metal_get_buffer_id(w_gate);
+    ggml_metal_buffer_id bid_w_up   = ggml_metal_get_buffer_id(w_up);
+    ggml_metal_buffer_id bid_src1   = ggml_metal_get_buffer_id(y);
+    ggml_metal_buffer_id bid_ids    = ggml_metal_get_buffer_id(ids);
+    ggml_metal_buffer_id bid_dst    = ggml_metal_get_buffer_id(c);
+
+    ggml_metal_encoder_set_pipeline(enc, pipeline);
+    ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
+    ggml_metal_encoder_set_buffer  (enc, bid_w_gate, 1); // src0   (gate weights)
+    ggml_metal_encoder_set_buffer  (enc, bid_w_up,   2); // src0u  (up weights)
+    ggml_metal_encoder_set_buffer  (enc, bid_src1,   3); // src1   (y)
+    ggml_metal_encoder_set_buffer  (enc, bid_dst,    4); // dst    (swiglu output)
+    ggml_metal_encoder_set_buffer  (enc, bid_ids,    5); // ids    (slot / expert ids)
+    ggml_metal_encoder_set_buffer  (enc, bid_ids,    6); // ids_orig (unused: no scales)
+    ggml_metal_encoder_set_buffer  (enc, bid_ids,    7); // scale_g  (unused: has_g_scale = false)
+    ggml_metal_encoder_set_buffer  (enc, bid_ids,    8); // scale_u  (unused: has_u_scale = false)
+
+    if (w_gate->type == GGML_TYPE_IQ3_XXS) {
+        // src0d (down weights) is only declared on the iq3_xxs variant; bind a valid
+        // buffer since ne02d = 0 keeps the fused-down path dead
+        ggml_metal_encoder_set_buffer  (enc, bid_w_gate, 9);
+    }
+
+    ggml_metal_encoder_set_threadgroup_memory_size(enc, smem, 0);
+
+    const int64_t _ne1 = 1;
+    const int64_t ne123 = ids->ne[0]*ids->ne[1];
+
+    ggml_metal_encoder_dispatch_threadgroups(enc, (w_gate->ne[1] + nr0*nsg - 1)/(nr0*nsg), (_ne1 + nr1 - 1)/nr1, ne123, 32, nsg, 1);
+
+    // the fused kernel computed the second mul_mat_id and the swiglu as well: mark both
+    // as consumed so the encode loop skips their stock dispatches. Only THIS node (the
+    // first mul_mat_id position) is consumed by the loop's n_fuse return.
+    ctx->mark_consumed(b);
+    ctx->mark_consumed(c);
+
+    // keep the concurrency range tracking honest: the fused kernel writes c's range here
+    // (earlier than the original swiglu position)
+    ggml_metal_op_concurrency_add(ctx, c);
+
+    return 1;
+}
+
 int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
     ggml_tensor * op = ctx->node(idx);
+
+    // [dbg] verify this dispatcher is reached at all (one-shot; opt-in via CGC_MMV_FUSE_DBG)
+    {
+        static const bool dbg = (getenv("CGC_MMV_FUSE_DBG") != nullptr);
+        static int n_enter = 0;
+        if (dbg && n_enter < 5) {
+            n_enter++;
+            GGML_LOG_WARN("[MMV_FUSE dbg] mul_mat_id ENTER idx=%d/%d name=%s src0=%s\n",
+                    idx, ctx->n_nodes(), op->name,
+                    op->src[0] ? ggml_type_name(op->src[0]->type) : "-");
+        }
+    }
+
+    // CGC P1-3a: fused gate+up+GLU dispatch (env CGC_MMV_FUSE=1, default off)
+    {
+        int glu_idx = -1;
+        if (ggml_metal_op_can_fuse_mmv_glu(ctx, idx, &glu_idx)) {
+            return ggml_metal_op_mul_mat_id_glu_fused(ctx, idx, glu_idx);
+        }
+    }
 
     ggml_metal_library_t lib = ctx->lib;
     ggml_metal_encoder_t enc = ctx->enc;

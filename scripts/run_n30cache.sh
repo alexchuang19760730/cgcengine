@@ -150,6 +150,9 @@ if [ "$STEADY" = 1 ]; then
     DECODEHIT=1
     IGNORE_EOS=1
     [ "$N_SET" = 0 ] && N=1100
+    # steady 跑長時間（~1min+），間歇 Metal lost-wakeup 死鎖風險高 — 自動開 watchdog
+    # （N30CACHE_WATCHDOG=0 顯式關閉）
+    [ -z "${N30CACHE_WATCHDOG:-}" ] && N30CACHE_WATCHDOG=1
 fi
 
 # MTP 只支援 qwen36（純 UD-IQ3_XXS 沒 blk.40 MTP head）
@@ -265,7 +268,8 @@ if [ -n "${N30CACHE_NO_RDADVISE:-}" ]; then
 fi
 # §CGC 2026-08-29 deadlock watchdog（CGC_WATCHDOG=1：Metal completion 停滯 >10s 時 dump 所有
 # command buffer 狀態並在 60s 取樣寬限後 abort；診斷間歇性 prefill 死鎖用，預設 off）
-if [ -n "${N30CACHE_WATCHDOG:-}" ]; then
+# steady 模式自動開（見上方 --steady 段）；N30CACHE_WATCHDOG=0 顯式關閉
+if [ -n "${N30CACHE_WATCHDOG:-}" ] && [ "$N30CACHE_WATCHDOG" != "0" ]; then
     ENVS+=(CGC_WATCHDOG=1)
     [ -n "${N30CACHE_WATCHDOG_MS:-}" ] && ENVS+=(CGC_WATCHDOG_MS=$N30CACHE_WATCHDOG_MS)
 fi
@@ -286,6 +290,12 @@ if [ -n "${N30CACHE_LAYER_CAPS:-}" ]; then
     fi
 elif [ "$MTP" = "1" ] && [ "$STEADY" = "1" ]; then
     ENVS+=(LLAMA_EXPERT_CACHE_LAYER_CAPS="40-40:256")
+fi
+# §CGC 2026-08-29 P1-3a 融合派發（CGC_MMV_FUSE=1：MoE gate+up+swiglu 三連融合 GEMV kernel，
+# bit-identical 已驗證；預設 off。N30CACHE_MMV_FUSE_DBG=1 開 OPSEQ/MMV_FUSE debug 探針）
+if [ -n "${N30CACHE_MMV_FUSE:-}" ] && [ "$N30CACHE_MMV_FUSE" != "0" ]; then
+    ENVS+=(CGC_MMV_FUSE=1)
+    [ -n "${N30CACHE_MMV_FUSE_DBG:-}" ] && ENVS+=(CGC_MMV_FUSE_DBG=1)
 fi
 if [ -n "${N30CACHE_WATCHDOG_CAPTURE:-}" ]; then
     ENVS+=(CGC_WATCHDOG=1 CGC_WATCHDOG_CAPTURE=1)

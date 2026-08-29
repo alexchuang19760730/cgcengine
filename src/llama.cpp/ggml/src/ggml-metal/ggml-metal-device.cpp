@@ -1258,8 +1258,8 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_id(ggml_m
 }
 
 // CGC P1-3a: pipeline lookup for the fused gate+up+GLU phase-1 kernel.
-//   src0 = gate type (quantized), src1 = F32 (y). IQ3_XXS only for now.
-ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_id_glu(ggml_metal_library_t lib, const ggml_tensor * op) {
+//   w = gate weights tensor, tsrc1 = y (activation) type. IQ3_XXS / IQ2_S.
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_id_glu(ggml_metal_library_t lib, const ggml_tensor * w, ggml_type tsrc1) {
     char base[256];
     char name[256];
 
@@ -1269,9 +1269,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_id_glu(gg
 
     size_t smem = 0;
 
-    const ggml_type tsrc0 = op->src[0]->type;
-    // second name part = y (activation) type, like the mv/mv_id convention
-    const ggml_type tsrc1 = op->src[2]->type;
+    const ggml_type tsrc0 = w->type;
 
     switch (tsrc0) {
         case GGML_TYPE_IQ3_XXS:
