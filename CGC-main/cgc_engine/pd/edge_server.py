@@ -173,17 +173,40 @@ def run_generate(prompt, n_predict, seed=None):
     )
     err = StderrCollector(proc.stderr)
     err.start()
-    # stdout：prompt 回顯 + 生成 token，char-by-char 轉發（llama-simple fflush 每 token）
-    buf = []
+    # stdout：prompt 回顯 + 生成 token，char-by-char 轉發（llama-simple fflush 每 token）。
+    # 2026-08-29 修正 log 污染：tool 會把 'main: ' 前綴 log 行（chunked prefill 等）印到
+    # stdout，混進 token 流 → client 端 gen 帶 log 行 + echo 偵測失效。逐行判定：
+    # 行首 6 字元內匹配 'main: ' = log 行整行丟棄；其餘照常轉發（僅行首延遲 ≤6 字元）。
+    LOG_PREFIX = "main: "
+    pending = ""       # 行首待判定緩衝（None = 一般模式，直接轉發）
+    log_line = False   # 目前在丟棄中的 log 行
     while True:
         ch = proc.stdout.read(1)
         if ch:
-            buf.append(ch)
-            yield ("token", {"t": ch})
+            if log_line:
+                if ch == "\n":
+                    log_line, pending = False, ""
+                continue
+            if pending is not None:
+                pending += ch
+                if LOG_PREFIX.startswith(pending):
+                    if pending == LOG_PREFIX:
+                        log_line, pending = True, None
+                    continue
+                for c in pending:     # 非 log 前綴 → 緩衝一次發出
+                    yield ("token", {"t": c})
+                pending = None
+            else:
+                yield ("token", {"t": ch})
+            if ch == "\n" and pending is None:
+                pending = ""           # 新行重新進入判定模式
         elif proc.poll() is not None:
             break
         else:
             time.sleep(0.005)
+    if pending:                        # EOF 尾行無換行：非 log 才補發
+        for c in pending:
+            yield ("token", {"t": c})
     proc.stdout.close()
     rc = proc.wait()
     err.join(timeout=5)
