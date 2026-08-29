@@ -3,6 +3,7 @@
 #include "ggml-alloc.h"
 #include "ggml.h"
 #include "gguf.h"
+#include "llama-expert-cache.h"
 #include "llama-hparams.h"
 #include "llama.h"
 
@@ -1394,7 +1395,12 @@ struct ggml_tensor * llama_model_loader::create_tensor(
                 if (expert_cache_full_ne2 == 0) {
                     expert_cache_full_ne2 = t_meta.ne[2];
                 }
-                t_meta.ne[2] = (int64_t) expert_cache_pool_capacity;
+                // [CGC §8.101 L4] per-layer capacity: the tensor shrink MUST match the cache's
+                // slot vectors (llama-expert-cache.cpp n_slots_l), or the pool region adopted
+                // from this tensor is narrower than the cache's slot writes -> OOB pool rows.
+                // cgc_layer_cap reads LLAMA_EXPERT_CACHE_LAYER_CAPS once per process; without
+                // the env it returns the uniform expert_cache_pool_capacity (byte-identical).
+                t_meta.ne[2] = (int64_t) cgc_layer_cap((uint32_t) l4_il, (uint32_t) expert_cache_pool_capacity);
                 l4_expert_bytes = ggml_row_size(t_meta.type, t_meta.ne[0]) * t_meta.ne[1];
             } else if (expert_cache_l4_skip_layer0 && l4_il == 0) {
                 // L4_SKIP_LAYER0: keep blk.0 out of the L4 pool entirely. It must be a normal

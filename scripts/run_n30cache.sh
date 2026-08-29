@@ -269,8 +269,24 @@ if [ -n "${N30CACHE_WATCHDOG:-}" ]; then
     ENVS+=(CGC_WATCHDOG=1)
     [ -n "${N30CACHE_WATCHDOG_MS:-}" ] && ENVS+=(CGC_WATCHDOG_MS=$N30CACHE_WATCHDOG_MS)
 fi
-# §CGC 2026-08-29 watchdog 擴充（N30CACHE_WATCHDOG_CAPTURE=1）：stall 時自動跑同 queue/新 queue
-# 雙活性探針（判定 queue 級 vs device 級 wedge）+ ioreg/memory_pressure/sample 捕捉
+# §CGC 2026-08-29 LAYER_CAPS（LLAMA_EXPERT_CACHE_LAYER_CAPS="start-end:cap;..."）：
+# per-layer slot 容量。MISS_DUMP 定案：steady 的 miss 79.3% 集中於 layer 40（MTP draft 層，
+# il == n_layer()）—— draft 層 routing 涵蓋 250 distinct experts，遠超 71 slots 的
+# LRU 抖動區；trunk 1-39 層各僅 ~60 miss（健康）。40-40:256 = draft 層全常駐。
+# A/B（重開機 ABBA 4 跑，2026-08-29）：misses 11574→2622（-77%）、draft cold 32%→0%、
+# file_reads -79%、accept 98.919→99.728%（+0.8pt）、速度 +0.8 t/s（ON 兩對全勝）。
+# MTP steady profile 預設啟用；N30CACHE_LAYER_CAPS=0 顯式關閉回 uniform 71（A/B 用）。
+# LFU-aging 置換同日定案中性無效（fast-path cold 64.0% 一 token 不動）——置換策略
+# 槓桿關閉，LAYER_CAPS 是容量「重分配」而非擴充（pool 總大小不變，僅層間移 185 slots）。
+if [ -n "${N30CACHE_LAYER_CAPS:-}" ]; then
+    if [ "$N30CACHE_LAYER_CAPS" = "0" ]; then
+        : # explicit OFF for A/B
+    else
+        ENVS+=(LLAMA_EXPERT_CACHE_LAYER_CAPS=$N30CACHE_LAYER_CAPS)
+    fi
+elif [ "$MTP" = "1" ] && [ "$STEADY" = "1" ]; then
+    ENVS+=(LLAMA_EXPERT_CACHE_LAYER_CAPS="40-40:256")
+fi
 if [ -n "${N30CACHE_WATCHDOG_CAPTURE:-}" ]; then
     ENVS+=(CGC_WATCHDOG=1 CGC_WATCHDOG_CAPTURE=1)
 fi
