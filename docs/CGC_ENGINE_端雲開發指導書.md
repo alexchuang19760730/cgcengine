@@ -178,6 +178,39 @@ py -3 CGC-main/cgc_engine/pd/pd_e2e_test.py \
 - **Windows 防火牆**：Step 4 的 server listen 0.0.0.0:1234，第一次起會跳
   防火牆允許提示，要允許（Mac 才連得到 Windows；Mac 端同樣在系統設定放行 1234）。
 
+## 5.5 非 MTP 跑 Nail 載體 + MTP 退化輸出根因（2026-08-29 深夜定案）
+
+**結論：llama-simple（非 speculative）可以跑 Nail-MTP-denseIQ4X 載體，不會出問題** ——
+前提 `CGC_NO_PREFETCH=1`。實測（Mac，-ngl 99 + 4GiB 池，seed 42，n 64）：
+rc=0、63 tok @ 4.56 t/s、池 hit 71.0%、輸出真實文本（貪婪重複句 = 載體行為）。
+載入層面 merged draft layer-40 tensors 由載入器容忍，零 tensor 錯誤 —— 非 MTP
+Fallback 可用（生產仍以 base Q36 為準）。
+
+三個定案（A/B 證據鏈，同機同 prompt 同 seed）：
+
+1. **死鎖根因 = hist prefetch bg race（非 MTP 路徑）**：
+   `CGC_PREFETCH_SRC=hist` 不帶 `CGC_NO_PREFETCH` 時，ensure_batch 在
+   `bg_cv` 等一個 queued/loading slot，但 bg_loop 與 8 個 pool workers 全部
+   已睡（sample 證據：main 卡 `condition_variable::wait`，bg/pool idle）——
+   slot flag 與 pool_queue 配對被 drain_layer/prefetch 交錯打斷，永遠沒人清。
+   watchdog 不救：它只監控 GPU cmd buffer completion，這是 CPU 端 lost-wakeup。
+   **生產 non-MTP env 集（run_n30cache.sh §8.6x hist prefetch）帶同款風險** ——
+   建議 non-MTP 也補 `CGC_NO_PREFETCH=1`（或修 race 後再開）。
+2. **MTP「退化輸出」根因 = CGC_VERIFY_DECODE fast path 的 ZERO-mapping**：
+   verify 期 73.6% 冷 expert 被映到 ZERO slot（讀零而非真實權重）→ 全換行
+   輸出（25.8 t/s 的代價）。unset CGC_VERIFY_DECODE 後：6.5 t/s + 真實文本。
+   **先前「IQ3_XXS 模型級退化 / fact recall loss」結論不成立** —— 兩平台
+   量測都經過被污染的 MTP fast path。載體本身（非 MTP 路徑）能出正常文。
+3. **spec 與 non-spec 位元級一致仍未達成**：關 fast path 後 MTP 輸出仍與
+   llama-simple 分歧（重複 prompt ×3 vs "What is the possible name..."）。
+   嫌疑範圍：verify 3-token batch 與 1-token eval 的 kernel 數值差、或
+   CGC_OA_ASYNC submit-ahead remap race。待後續工程。
+
+腳註：直跑 speculative-simple 若用 `-t 8` + 不完整 env，draft context 建立
+會 GPU OOM（kIOGPUCommandBufferCallbackErrorOutOfMemory）；用 edge_server
+參數集（`-t 5` + 完整 env）穩定重現 rc=0。A/B 腳本：`/tmp/spec_ab.sh`
+（VERIFY/DRAFT/OUT 環境變數控制）。
+
 ## 6. Phase 2 路線圖（真正的分裂 PD）
 
 1. **C++ fork emit/resume 端點**（最大工程量）：llama-simple 加
