@@ -17,6 +17,7 @@
 #include <iomanip>
 #include <map>
 #include <cinttypes>
+#include <cmath>
 
 #define SPC_DBG(fmt, ...) LOG_DBG("spec %12.*s: " fmt, 12, __func__, __VA_ARGS__)
 #define SPC_TRC(fmt, ...) LOG_TRC("spec %12.*s: " fmt, 12, __func__, __VA_ARGS__)
