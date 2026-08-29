@@ -34,6 +34,28 @@ dual(修後): local_full（local score 60.4 sufficient）→ 執行 local ✅
 單元 :  router 7/7 PASS（35B→pure_cloud、7B 送最快、tie 留本地、solo、mac-local）
 ```
 
+### 1.5 Windows↔Mac 真機 dual E2E 實測（2026-08-29）+ Mac 生產配置還原
+
+Windows 端（8GB）跑 dual E2E 對 35B：**Router 決策 pure_cloud ✅、
+token 流從 Mac SSE 回流 ✅、輸出正確 ✅**。但實測 wall 29.3s vs Router
+估算 1.1s——差距 27×，拆解如下（同一台 Mac、同 server 的四跑階梯）：
+
+| 跑 | 配置 | decode t/s | load | hit rate | 說明 |
+|---|---|---|---|---|---|
+| Windows dual（首跑） | llama-simple + base IQ3_XXS | **1.71** | 21.8s | — | 冷 page cache + -n 8 攤提 |
+| Mac 驗證 #1 | 同上（暖） | 6.05 | 4.9s | 81.5% | 短跑仍吃冷啟動 |
+| Mac 驗證 #2 | 同上（暖+n 200） | 8.50 | 4.8s | 91.0% | 非 MTP 配置天花板 |
+| **Mac MTP 生產** | **speculative + denseIQ4X + 全槓桿** | **26.44** | 4.3s | 79.2% | **accept 97.4%、draft cold 0%** |
+
+**定案**：
+1. 首跑 1.71 t/s 的主因 = 冷 page cache（load 21.8s vs 暖 4.8s）+
+   `-n 8` 短生成攤提 Metal 暖機與 pool 填充爬坡，**不是配置錯誤**。
+2. 6→8.5→26 的跳升 = 配置換成 MTP 生產集（`--mtp 2` + Nail denseIQ4X
+   載體 + LAYER_CAPS + MMV_FUSE + GLU_FUSED_DOWN）——這才是對外服務
+   該跑的配置（Step 5 命令已更新）。
+3. Router 估算（18.1 t/s）對應「乾淨穩態規格值」；E2E 實測要對齊需
+   Phase 2 常駐 session（消 5-7s/次的模型重載）+ 量測回填。
+
 ## 2. Windows 端下一步（按序執行）
 
 ### Step 1 — 同步代碼
@@ -84,16 +106,23 @@ Mac 16GB 的凍機防護配置。）
 ### Step 5 — Mac 端起 server（Mac 側操作，同步給 Windows）
 
 ```bash
-# Mac（生產配置 = run_n30cache.sh 的 env 集）
+# Mac（MTP 生產配置 = run_n30cache.sh --steady 的完整槓桿集）
 CGC_EXPERT_CACHE_BYTES=4294967296 LLAMA_EXPERT_CACHE_ALLOW_NGL=1 \
 LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0=1 LLAMA_EXPERT_CACHE_WORKERS=8 \
 CGC_WAKE_POLL_US=15 CGC_PREFETCH_SRC=hist CGC_EVICTED_RING=0 \
-CGC_OA_ASYNC=1 CGC_N_CB=8 \
+CGC_OA_ASYNC=1 CGC_N_CB=8 CGC_GLU_FUSED_DOWN=1 \
+LLAMA_EXPERT_CACHE_LAYER_CAPS=40-40:256 CGC_MMV_FUSE=1 \
 python3 CGC-main/cgc_engine/pd/edge_server.py \
-    --binary src/llama.cpp/build/bin/llama-simple \
-    --model models/gguf/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf \
-    --ngl 99 --no-mmap --port 1234
+    --binary src/llama.cpp/build/bin/llama-speculative-simple \
+    --model models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf \
+    --ngl 99 --no-mmap --threads 8 --mtp 2 --port 1234
 ```
+
+`--mtp 2` 內建正確參數集（`--spec-type draft-mtp --spec-draft-n-max 2
+-c 3072 -expert-cache 4GiB --temp 0`）+ 自動補 MTP 必要 env
+（`CGC_NO_PREFETCH/VERIFY_DECODE/DRAFT_DECODE/WATCHDOG`，已設不覆蓋）。
+實測（2026-08-29）：**decode 26.44 t/s、accept 97.4%、draft cold 0%**——
+Mac 生產線完整還原（見 §1.5 階梯表）。
 
 ### Step 6 — 端雲聯調（Windows 上跑）
 
@@ -134,8 +163,9 @@ py -3 CGC-main/cgc_engine/pd/pd_e2e_test.py \
 3. **SSE 無重連**：客戶端斷線 = 該請求作廢（subprocess 跑完為止）。
 4. **profile 的 decode/prefill 量測值預設空**：Router 用公式估算（偏樂觀）。
    精確路由 = 先跑一次量測再回填。
-5. MTP draft（RouteDecision.draft_n）目前是估算標記，Windows 端沒有真的
-   跑 MTP draft 二進制流程（Mac 生產線才有 speculative-simple）。
+5. **Windows 端跑不了 MTP draft**：MTP 生產線在 Mac（speculative-simple +
+   Nail 載體）。Windows 端 llama-simple 是 CPU 非 MTP 路徑（RouteDecision
+   的 draft_n 對 Windows 是估算標記）。Mac 端已支援：`--mtp 2`（26.44 t/s）。
 
 ## 5. 常見問題（繼承自 bcc22133f 的教訓）
 
@@ -161,8 +191,9 @@ py -3 CGC-main/cgc_engine/pd/pd_e2e_test.py \
 4. **DOPDSessionRuntime 接 ComputeRouter**：coordinator.py 的 generate
    端點調 `router.select()` → 按 decision 打對應節點（把 E2E harness 的
    邏輯產品化）。
-5. **MTP 上端雲**：Mac 的 speculative-simple 也包進 edge_server
-   （--binary 換掉即可，25-26 t/s decode 用於 pure_cloud 模式）。
+5. ~~**MTP 上端雲**~~：**已完成（2026-08-29）**——edge_server `--mtp 2`
+   內建 speculative-simple 參數集 + MTP env，Mac 端 26.44 t/s / accept 97.4%
+   實測（§1.5）。
 
 ## 7. 相關文件
 

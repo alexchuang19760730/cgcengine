@@ -32,6 +32,20 @@ HTTP 服務，暴露 /v1/cgc/{health, profile, emit, resume} 端點，讓 Comput
       --model models/gguf/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf \
       --ngl 99 --no-mmap --port 1234
 
+用法（Mac，qwen36 MTP 生產配置＝run_n30cache.sh --steady 的完整槓桿集）：
+  CGC_EXPERT_CACHE_BYTES=4294967296 LLAMA_EXPERT_CACHE_ALLOW_NGL=1 \
+  LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0=1 LLAMA_EXPERT_CACHE_WORKERS=8 \
+  CGC_WAKE_POLL_US=15 CGC_PREFETCH_SRC=hist CGC_EVICTED_RING=0 \
+  CGC_OA_ASYNC=1 CGC_N_CB=8 CGC_GLU_FUSED_DOWN=1 \
+  LLAMA_EXPERT_CACHE_LAYER_CAPS=40-40:256 CGC_MMV_FUSE=1 \
+  python3 CGC-main/cgc_engine/pd/edge_server.py \
+      --binary src/llama.cpp/build/bin/llama-speculative-simple \
+      --model models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf \
+      --ngl 99 --no-mmap --mtp 2 --port 1234
+  （--mtp 2 內建 --spec-type draft-mtp --spec-draft-n-max 2 -c 3072
+   -expert-cache 4294967296 --temp 0 + MTP 必要 env：CGC_NO_PREFETCH/
+  CGC_VERIFY_DECODE/CGC_DRAFT_DECODE/CGC_WATCHDOG，未設才補）
+
 用法（Windows，小模型/低 ngl）：
   py -3 CGC-main\\cgc_engine\\pd\\edge_server.py ^
       --binary src\\llama.cpp\\build\\bin\\llama-simple.exe ^
@@ -63,7 +77,11 @@ try:
 except ImportError:  # 單檔可用：profile 端點降級為 OS 基本探測
     DeviceProfile = None
 
-PERF_DECODE = re.compile(r"decoded\s+(\d+)\s+tokens\s+in\s+([\d.]+)\s+s,\s*speed:\s*([\d.]+)\s*t/s")
+# 相容兩種輸出：llama-simple "in 5.12 s," / speculative-simple "in 41.800 seconds,"
+PERF_DECODE = re.compile(r"decoded\s+(\d+)\s+tokens\s+in\s+([\d.]+)\s*s(?:econds?)?\s*,\s*speed:\s*([\d.]+)\s*t/s")
+PERF_ACCEPT = re.compile(r"accept\s*=\s*([\d.]+)%")        # speculative-simple
+PERF_NDRAFT = re.compile(r"n_drafted\s*=\s*(\d+)")          # speculative-simple
+PERF_NACCEPT = re.compile(r"n_accept\s*=\s*(\d+)")          # speculative-simple
 PERF_PROMPT_EVAL = re.compile(r"prompt eval time.*?([\d.]+)\s*tokens per second")
 PERF_EVAL = re.compile(r"^\s*eval time.*?([\d.]+)\s*tokens per second", re.M)
 LOAD_TIME = re.compile(r"load time\s*=\s*(\d+)")
@@ -125,6 +143,15 @@ class StderrCollector(threading.Thread):
             out["n_decoded"] = int(m.group(1))
             out["decode_s"] = float(m.group(2))
             out["decode_tps"] = float(m.group(3))
+        m = PERF_ACCEPT.search(blob)
+        if m:
+            out["accept_pct"] = float(m.group(1))
+        m = PERF_NDRAFT.search(blob)
+        if m:
+            out["n_drafted"] = int(m.group(1))
+        m = PERF_NACCEPT.search(blob)
+        if m:
+            out["n_accept"] = int(m.group(1))
         m = PERF_PROMPT_EVAL.search(blob)
         if m:
             out["prompt_tps"] = float(m.group(1))
@@ -248,7 +275,17 @@ def main():
     ap.add_argument("--ngl", type=int, default=0)
     ap.add_argument("--threads", "-t", type=int, default=None)
     ap.add_argument("--no-mmap", action="store_true", help="Mac 凍機防護（生產配置）")
-    ap.add_argument("--extra", nargs="*", default=[], help="透傳 binary 的額外旗標")
+    ap.add_argument("--extra", nargs="*", default=[], help="透傳 binary 的額外旗標（注意 argparse 會吃掉 -- 開頭 token，MTP 請改用 --mtp）")
+    # §MTP 生產模式（run_n30cache.sh §MTP 定案參數集）：speculative-simple 只認
+    # CLI -expert-cache（不讀 CGC_EXPERT_CACHE_BYTES env），且 MTP 需要 greedy
+    # (--temp 0) + 關 prefetch + verify/draft decode fast path，缺任何一個都會
+    # accept 崩掉或 verify race（歷史教訓）。
+    ap.add_argument("--mtp", type=int, default=0, metavar="N",
+                    help="MTP draft-mtp 生產模式（N=spec-draft-n-max，建議 2）：內建 --spec-type draft-mtp "
+                         "-c MTP_CTX -expert-cache BUDGET --temp 0，並自動補 MTP 必要 env")
+    ap.add_argument("--mtp-ctx", type=int, default=3072, help="MTP draft context（OOM 邊界，勿超）")
+    ap.add_argument("--budget", type=int, default=4294967296,
+                    help="MTP 模式 -expert-cache bytes（llama-simple 模式走 CGC_EXPERT_CACHE_BYTES env）")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=1234)
     args = ap.parse_args()
@@ -257,6 +294,19 @@ def main():
     CFG.no_mmap, CFG.extra_args = args.no_mmap, args.extra
     if args.threads:
         CFG.threads = args.threads
+
+    if args.mtp:
+        CFG.extra_args += ["--spec-type", "draft-mtp",
+                           "--spec-draft-n-max", str(args.mtp),
+                           "-c", str(args.mtp_ctx),
+                           "-expert-cache", str(args.budget),
+                           "--temp", "0"]
+        # MTP 必要 env（run_n30cache.sh §MTP）：launch 已設者不覆蓋
+        for k, v in (("CGC_NO_PREFETCH", "1"),     # prefetch bg race 於 MTP verify
+                     ("CGC_VERIFY_DECODE", "1"),   # verify 走 decode fast path
+                     ("CGC_DRAFT_DECODE", "1"),    # draft 同 pool residency
+                     ("CGC_WATCHDOG", "1")):       # 長跑 lost-wakeup 自救
+            os.environ.setdefault(k, v)
 
     bin_path = CFG.resolve_binary()
     for f in (bin_path, CFG.model):
@@ -268,6 +318,9 @@ def main():
     print(f"=== CGC edge server (text-bridge phase 1) ===")
     print(f"  binary : {bin_path}")
     print(f"  model  : {CFG.model}  ngl={CFG.ngl} t={CFG.threads} no_mmap={CFG.no_mmap}")
+    if args.mtp:
+        print(f"  mtp    : ON (draft-mtp, n_max={args.mtp}, ctx={args.mtp_ctx}, "
+              f"expert-cache={args.budget}, temp=0)")
     print(f"  listen : http://{args.host}:{args.port}/v1/cgc/{{health,profile,emit,resume}}")
     print(f"  note   : 每請求重載模型（phase 1）；hidden-state 分裂 PD 見指導書 Phase 2")
     try:
