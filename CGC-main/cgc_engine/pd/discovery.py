@@ -75,11 +75,18 @@ class DeviceProfile:
                 p.total_ram_gb = round(m.ullTotalPhys/(1024**3),1)
                 p.available_ram_gb = round(m.ullAvailPhys/(1024**3),1)
             else:
-                pages = os.sysconf("SC_PHYS_PAGES")
-                avail = os.sysconf("SC_AVPHYS_PAGES")
-                ps = os.sysconf("SC_PAGE_SIZE")
-                p.total_ram_gb = round(pages*ps/(1024**3),1)
-                p.available_ram_gb = round(avail*ps/(1024**3),1)
+                try:
+                    pages = os.sysconf("SC_PHYS_PAGES")
+                    avail = os.sysconf("SC_AVPHYS_PAGES")
+                    ps = os.sysconf("SC_PAGE_SIZE")
+                    p.total_ram_gb = round(pages*ps/(1024**3),1)
+                    p.available_ram_gb = round(avail*ps/(1024**3),1)
+                except (ValueError, OSError, AttributeError):
+                    # [2026-08-29 fix] macOS 沒有 SC_PHYS_PAGES（Linux 專用）→ RAM 恆 0
+                    # → Router 誤判「塞不下模型」永遠走 cloud prefill。改 sysctl hw.memsize。
+                    r = subprocess.run(["sysctl","-n","hw.memsize"],capture_output=True,text=True,timeout=5)
+                    p.total_ram_gb = round(int(r.stdout.strip())/(1024**3),1)
+                    p.available_ram_gb = p.total_ram_gb  # 統一記憶體：無免費頁細分，粗估
         except: pass
         p.cpu_cores = os.cpu_count() or 0
         p.cpu_arch = platform.machine()

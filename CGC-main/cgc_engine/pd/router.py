@@ -143,6 +143,26 @@ class ComputeRouter:
         load_score = (1 - node.current_load / 100.0) * 15
         return round(ram_score + gpu_score + cpu_score + net_score + load_score, 1)
 
+    def _pick_decode_node(self, local: Optional[PDNode], remotes, model_name: str):
+        """[2026-08-29 decode-speed fix] Pick the FASTEST decode node among
+        nodes that can run the model — not just "local if it fits".
+
+        Previously: small models (7B/1.5B) always kept decode local even when
+        the remote decodes 5-10x faster. Now decode speed decides. Ties prefer
+        local (edge-first: privacy, no network hop). Nobody runnable → first
+        remote (or local) as legacy fallback.
+        """
+        candidates = []
+        if local is not None and self._can_run_model(local, model_name):
+            candidates.append((local, self._decode_speed(local, model_name)))
+        for r in remotes:
+            if r is not None and r != local and self._can_run_model(r, model_name):
+                candidates.append((r, self._decode_speed(r, model_name)))
+        if candidates:
+            return max(candidates, key=lambda x: x[1])
+        fallback = remotes[0] if remotes else local
+        return fallback, self._decode_speed(fallback, model_name)
+
     def _can_run_model(self, node: PDNode, model_name: str) -> bool:
         """D2+D3: can this node run this model locally?"""
         if not node.profile or model_name not in MODEL_PRESETS:
@@ -234,15 +254,19 @@ class ComputeRouter:
                 if remote:
                     best_remote = max(remote, key=lambda n: self._device_compute_score(n))
                     pf = self._prefill_speed(best_remote, model)
-                    dc = self._decode_speed(local, model) if self._can_run_model(local, model) else pf
+                    # [decode-speed fix] fastest runnable node, not just "local if it fits"
+                    dc_node, dc = self._pick_decode_node(local, [best_remote], model)
                     net_ms = self._estimate_network_ms(best_remote, local)
                     pf_ms = (prompt_tokens / pf) * 1000
                     dc_ms = (output_tokens / dc) * 1000
                     return RouteDecision(
-                        mode="edge_cloud",
+                        mode="pure_cloud" if dc_node == best_remote else "edge_cloud",
                         prefill_node=best_remote,
-                        decode_node=local if self._can_run_model(local, model) else best_remote,
-                        reason=f"local RAM {local_ram:.1f}GB < model {model_gb:.1f}GB → cloud prefill",
+                        decode_node=dc_node,
+                        reason=(
+                            f"local RAM {local_ram:.1f}GB < model {model_gb:.1f}GB → cloud prefill; "
+                            f"decode → {dc_node.node_id} (fastest, {dc:.1f} t/s est)"
+                        ),
                         confidence=0.95,
                         prefill_latency_ms=pf_ms,
                         decode_latency_ms=dc_ms,
@@ -280,13 +304,9 @@ class ComputeRouter:
             best_remote, best_score = max(remote_scores, key=lambda x: x[1])
             if best_score > local_score * 1.3 or not self._can_run_model(local, model):
                 pf = self._prefill_speed(best_remote, model)
-                # Decode: use local if it can run the model, else remote
-                if local and self._can_run_model(local, model):
-                    dc_node = local
-                    dc = self._decode_speed(local, model)
-                else:
-                    dc_node = best_remote
-                    dc = self._decode_speed(best_remote, model)
+                # [decode-speed fix] fastest runnable node, not just "local if it fits"
+                # small models (7B/1.5B): if the remote decodes faster, decode goes remote
+                dc_node, dc = self._pick_decode_node(local, [best_remote], model)
                 net_ms = self._estimate_network_ms(best_remote, dc_node)
                 pf_ms = (prompt_tokens / pf) * 1000
                 dc_ms = (output_tokens / dc) * 1000
@@ -301,10 +321,13 @@ class ComputeRouter:
                         pf_ms *= 0.6  # MTP speeds up prefill
 
                 return RouteDecision(
-                    mode="edge_cloud",
+                    mode="pure_cloud" if dc_node == best_remote else "edge_cloud",
                     prefill_node=best_remote,
                     decode_node=dc_node,
-                    reason=f"remote {best_remote.node_id} score {best_score} >> local {local_score}",
+                    reason=(
+                        f"remote {best_remote.node_id} score {best_score} >> local {local_score}; "
+                        f"decode → {dc_node.node_id} (fastest, {dc:.1f} t/s est)"
+                    ),
                     confidence=0.92,
                     prefill_latency_ms=pf_ms,
                     decode_latency_ms=dc_ms,
