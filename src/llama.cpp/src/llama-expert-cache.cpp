@@ -272,14 +272,30 @@ int32_t llama_expert_cache_slot_table_safe(const llama_expert_cache * cache, uin
 // fill is in flight (slot_loading) — the bg thread would otherwise write the old expert's bytes
 // into a slot already reassigned to a new expert (silent corruption). Returns -1 when every slot
 // is loading (caller waits for a fill to finish). Must be called holding cache->m.
-// [CGC WIN_PIN fix] min_tick: slots whose last_use >= min_tick were assigned EARLIER IN THE
-// CALLER'S BATCH and must never be evicted mid-batch — with WIN_PIN pinning the previous
-// batches' residents, the LRU scan would otherwise see this batch's own fresh assignments as
-// the "stalest non-pinned" and hand the SAME slot to two experts (concurrent fills overwrite
-// each other → corrupted FFN + near-hang). 0 = no restriction (single-expert ensure path).
+// [CGC WIN_PIN fix -> 2026-08-30 exact-mask fix] batch_mask: slots the CALLER'S CURRENT BATCH
+// already owns (hits + assigned misses) and that must never be evicted mid-batch — with WIN_PIN
+// pinning the previous batches' residents, the LRU scan would otherwise see this batch's own
+// fresh assignments as the "stalest non-pinned" and hand the SAME slot to two experts
+// (concurrent fills overwrite each other → corrupted FFN + near-hang). nullptr = no restriction
+// (single-expert ensure path).
+// HISTORY (deadlock root cause, 2026-08-30): the mask used to be approximated by
+// "last_use >= batch_tick" (min_tick). That approximation is ONLY valid when nothing else
+// bumps the global tick during the batch. With CGC_PREFETCH_SRC=hist the bg thread completes
+// flood fills DURING ensure_batch's assignment loop and stamps slot_last_use = ++tick on
+// every completed slot — i.e. >= batch_tick — so pick_slot mistook bg-completed slots for
+// "assigned by this batch" and skipped them in ALL passes. Once the bg drained the flood
+// queue, every slot had last_use >= batch_tick, pick_slot returned -1 forever and the main
+// thread waited on bg_cv with the bg thread asleep (queue empty) = PERMANENT DEADLOCK
+// (repro: non-MTP llama-simple, CGC_PREFETCH_SRC=hist, prefill chunk il=1). The exact mask
+// fixes it: only the batch's OWN hits/assignments are protected; bg-completed slots stay
+// evictable (their freshness still wins LRU when there is no pressure — prefetch yields to
+// actual demand only under pressure, which is the correct priority). In the OFF path (no
+// prefetch → bg idle → the only tick bumps during the batch are the batch's own hits/
+// assignments) mask == {last_use >= batch_tick} exactly, so the eviction choice sequence is
+// bit-identical to the old min_tick behavior.
 // Overflow pass: when every non-pinned candidate is exhausted, evict the LRU PINNED slot
 // instead of returning -1 / deadlocking (a pin is a preference, not a hard guarantee).
-static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer, uint64_t min_tick = 0) {
+static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer, const uint8_t * batch_mask = nullptr) {
     auto & owner  = cache->slot_owner[layer];
     auto & last   = cache->slot_last_use[layer];
     auto & load   = cache->slot_loading[layer];
@@ -299,7 +315,7 @@ static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer, uint64_t mi
     // pinned ones must NOT skip (a skipped expert leaves table == -1 and the strict catch-up
     // remap writes -1 -> ggml_get_rows reads an OOB pool row -> NaN cascade) and must NOT
     // wait forever (no in-flight fill can free a static pin). So under direct pressure the
-    // LRU static pin yields. Neither pass touches this-batch assignments (min_tick) or
+    // LRU static pin yields. Neither pass touches this-batch-owned slots (batch_mask) or
     // in-flight fills — pick_slot still returns -1 only while a fill is in flight, which the
     // caller's bg_cv.wait handles correctly.
     for (int pass = 0; pass < 3; ++pass) {
@@ -312,8 +328,8 @@ static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer, uint64_t mi
             if (pass < 2 && cache->slot_pinned_static[layer][i]) {
                 continue;
             }
-            if (min_tick != 0 && last[i] >= min_tick) {
-                continue; // assigned earlier in the caller's batch
+            if (batch_mask != nullptr && batch_mask[i]) {
+                continue; // owned by the caller's current batch (hit or assigned miss)
             }
             if (pass == 0 && cache->slot_pinned[layer][i]) {
                 continue;
@@ -438,6 +454,21 @@ int32_t llama_expert_cache_ensure_slot(llama_expert_cache * cache, uint32_t laye
         if (slot >= 0) {
             break;
         }
+        // [CGC 2026-08-30 hang watchdog] same as ensure_batch: -1 is recoverable only while a
+        // fill is in flight; with nothing loading/queued the wait would sleep forever.
+        bool in_flight = false;
+        for (uint32_t i = 0; i < slots_l(cache, layer); ++i) {
+            if (cache->slot_loading[layer][i] || cache->slot_queued[layer][i]) {
+                in_flight = true;
+                break;
+            }
+        }
+        if (!in_flight) {
+            fprintf(stderr,
+                    "llama_expert_cache: FATAL ensure_slot layer=%u: no usable slot and no fill in flight — cannot assign; aborting\n",
+                    layer);
+            abort();
+        }
         cache->bg_cv.wait(lk); // all slots loading: wait for a fill to finish, then retry
     }
     cache->slot_owner[layer][slot] = (int32_t) expert;
@@ -467,11 +498,16 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
     {
         std::unique_lock<std::mutex> lk(cache->m);
         cache->n_requests += n;
-        // [CGC WIN_PIN fix] batch_tick: taken ONCE before the per-expert loop — every
-        // last_use bump done at/after this tick (hits re-touched + misses assigned) belongs
-        // to THIS batch, so pick_slot's LRU must never evict them mid-batch. Taking it inside
-        // the loop would re-raise the floor each expert and miss the earlier assignments.
-        const uint64_t batch_tick = cache->tick + 1;
+        // [CGC WIN_PIN fix -> 2026-08-30 exact-mask fix] batch_owned: slots this batch has
+        // already claimed (hit slots + assigned miss slots) and that pick_slot must never
+        // hand to a second expert mid-batch. This EXACTLY replaces the old batch_tick
+        // (min_tick) heuristic, which approximated this set as "last_use >= batch_tick" —
+        // an approximation the bg prefetch thread violates (its fill completions stamp
+        // ++tick on unrelated slots during our assignment loop, over-protecting them until
+        // pick_slot starves and the bare bg_cv.wait below deadlocks; see pick_slot's
+        // HISTORY comment). With the bg idle (prefetch OFF) the two sets coincide exactly,
+        // so the OFF path eviction sequence is bit-identical.
+        std::vector<uint8_t> batch_owned(llama_expert_cache_usable_slots(cache, layer), 0);
         if (getenv("LLAMA_EXPERT_CACHE_PREFETCH_DBG") != nullptr) {
             unsigned busy0 = 0;
             for (uint32_t i = 0; i < slots_l(cache, layer); ++i) if (cache->slot_owner[layer][i] >= 0) busy0++;
@@ -490,6 +526,7 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
                 }
                 cache->n_hits++;
                 cache->slot_last_use[layer][slot] = ++cache->tick;
+                batch_owned[slot] = 1; // this batch reads it via the remap: never evict mid-batch
                 slots[i] = slot;
                 continue;
             }
@@ -507,20 +544,42 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
             }
             int32_t slot;
             for (;;) {
-                slot = pick_slot(cache, layer, batch_tick);
+                slot = pick_slot(cache, layer, batch_owned.data());
                 if (slot >= 0) {
                     break;
+                }
+                // [CGC 2026-08-30 hang watchdog] pick_slot == -1 is recoverable ONLY while a
+                // fill is in flight on this layer (loading/queued — bg will complete it and
+                // notify). If nothing is in flight, every usable slot is already owned by THIS
+                // batch (union larger than the layer's slot count) and the wait below would
+                // sleep forever: the 2026-08-30 hist-prefetch deadlock class. Fail loudly with
+                // the diagnosis instead of hanging silently.
+                bool in_flight = false;
+                for (uint32_t i = 0; i < slots_l(cache, layer); ++i) {
+                    if (cache->slot_loading[layer][i] || cache->slot_queued[layer][i]) {
+                        in_flight = true;
+                        break;
+                    }
+                }
+                if (!in_flight) {
+                    fprintf(stderr,
+                            "llama_expert_cache: FATAL ensure_batch layer=%u: %zu distinct experts exceed the %u usable pool slots and no fill is in flight — cannot assign; aborting\n",
+                            layer, n, llama_expert_cache_usable_slots(cache, layer));
+                    abort();
                 }
                 cache->bg_cv.wait(lk); // all slots loading: wait for a fill to finish
             }
             cache->slot_owner[layer][slot] = (int32_t) e;
-            // Bump last_use NOW (not after the fill like ensure_slot): the batch assigns all
-            // slots under one lock, and the next pick_slot's LRU eviction would otherwise see
-            // this slot as the stalest and hand it out AGAIN (two experts on one slot ->
-            // concurrent fills overwrite the same region -> nondeterministic FFN garbage).
+            // Claim the slot for this batch BEFORE the fill: the batch assigns all slots under
+            // one lock, and the next pick_slot's LRU eviction would otherwise see this slot as
+            // the stalest (fresh assignments bump last_use) and hand it out AGAIN (two experts
+            // on one slot -> concurrent fills overwrite the same region -> nondeterministic FFN
+            // garbage). batch_owned is the exact mid-batch protection; the last_use bump below
+            // keeps the LRU ordering correct for FUTURE batches.
             // ensure_slot gets away without this because its next pick_slot happens only after
             // the fill + last_use bump (serial per expert).
             cache->slot_last_use[layer][slot] = ++cache->tick;
+            batch_owned[slot] = 1;
             slots[i] = slot;
             miss_exps.push_back(e);
             miss_slots.push_back(slot);
