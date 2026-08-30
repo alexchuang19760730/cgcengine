@@ -1732,7 +1732,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             if (ec != GGML_STATUS_SUCCESS) {
                 return ec;
             }
-        } else if (getenv("CGC_OA_ASYNC") != nullptr && strcmp(ggml_backend_name(split_backend), "CPU") != 0) {
+        } else if (getenv("CGC_OA_ASYNC") != nullptr &&
+                   getenv("CGC_VERIFY_OP_TIMING") == nullptr &&
+                   strcmp(ggml_backend_name(split_backend), "CPU") != 0) {
             // CGC: dispatch the Metal split in segments. Segments end at the ARGSORT op (which
             // actually produces the expert ids); the top-k VIEW is a dependency-free alias that
             // ggml may place before its producer, so using it as the boundary would fire the hook
@@ -1958,6 +1960,41 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         } else {
             // similar to ggml_backend_compare_graph_backend
             const int64_t cgc_t0 = ggml_time_us();
+            const bool cgc_verify_op_timing = getenv("CGC_VERIFY_OP_TIMING") != nullptr;
+            auto cgc_verify_op_kind = [](const struct ggml_tensor * node) -> const char * {
+                if (node == nullptr || node->name[0] == '\0') {
+                    return nullptr;
+                }
+                if (strncmp(node->name, "ffn_moe_gate-", 13) == 0) {
+                    return "gate";
+                }
+                if (strncmp(node->name, "ffn_moe_up-", 11) == 0) {
+                    return "up";
+                }
+                if (strncmp(node->name, "shared_expert_gate_sigmoid-", sizeof("shared_expert_gate_sigmoid-") - 1) == 0 ||
+                    strncmp(node->name, "mtp_shared_expert_gate_sigmoid-", sizeof("mtp_shared_expert_gate_sigmoid-") - 1) == 0) {
+                    return "shared_gate_sigmoid";
+                }
+                if (strncmp(node->name, "ffn_moe_down-", 13) == 0) {
+                    return "down";
+                }
+                return nullptr;
+            };
+            auto cgc_verify_op_ntok = [](const struct ggml_tensor * node) -> int64_t {
+                if (node == nullptr) {
+                    return 0;
+                }
+                if (node->src[2] != nullptr && node->src[2]->type == GGML_TYPE_I32 && node->src[2]->ne[1] > 0) {
+                    return node->src[2]->ne[1];
+                }
+                if (node->ne[2] > 0) {
+                    return node->ne[2];
+                }
+                if (node->ne[1] > 0) {
+                    return node->ne[1];
+                }
+                return 0;
+            };
             for (int j0 = 0; j0 < split->graph.n_nodes; j0++) {
                 struct ggml_tensor * t = split->graph.nodes[j0];
 
@@ -1974,6 +2011,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
 
                 struct ggml_cgraph gv = ggml_graph_view(&split->graph, j0, j1 + 1);
 
+                const int64_t cgc_chunk_t0 = ggml_time_us();
                 enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &gv);
                 if (ec != GGML_STATUS_SUCCESS) {
                     return ec;
@@ -1981,6 +2019,30 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
 
                 // TODO: pass backend to the callback, then the user can decide if they want to synchronize
                 ggml_backend_synchronize(split_backend);
+                const int64_t cgc_chunk_us = ggml_time_us() - cgc_chunk_t0;
+
+                if (cgc_verify_op_timing && need) {
+                    const char * kind = cgc_verify_op_kind(t);
+                    const int64_t ntok = cgc_verify_op_ntok(t);
+                    if (kind != nullptr && ntok > 1) {
+                        static int cgc_verify_op_n = 0;
+                        if (cgc_verify_op_n < 4096) {
+                            cgc_verify_op_n++;
+                            struct ggml_tensor * first = split->graph.nodes[j0];
+                            fprintf(stderr,
+                                    "CGC-VERIFY-OP: kind=%s us=%lld ntok=%lld span=%d j0=%d j1=%d first=%s last=%s backend=%s\n",
+                                    kind,
+                                    (long long) cgc_chunk_us,
+                                    (long long) ntok,
+                                    j1 - j0 + 1,
+                                    j0,
+                                    j1,
+                                    first && first->name[0] ? first->name : "-",
+                                    t->name[0] ? t->name : "-",
+                                    ggml_backend_name(split_backend));
+                        }
+                    }
+                }
 
                 if (need && !sched->callback_eval(t, false, sched->callback_eval_user_data)) {
                     break;

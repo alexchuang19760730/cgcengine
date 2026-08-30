@@ -2749,6 +2749,38 @@ ggml_status llama_context::graph_compute(
 
 bool llama_context::expert_cache_eval_cb(ggml_tensor * t, bool ask, void * user_data) {
     llama_context * ctx = static_cast<llama_context *>(user_data);
+    const bool cgc_verify_op_timing = getenv("CGC_VERIFY_OP_TIMING") != nullptr;
+    auto cgc_is_verify_timing_target = [](const ggml_tensor * node) -> bool {
+        if (node == nullptr || node->name[0] == '\0') {
+            return false;
+        }
+        if (strncmp(node->name, "ffn_moe_topk-", 13) == 0) {
+            return true;
+        }
+        // Extra boundary markers used only to keep the down-path chunk from swallowing
+        // the interleaved shared-expert FFN work that sits between routed swiglu and
+        // routed down in the final execution order.
+        if (strncmp(node->name, "ffn_gate-",       9) == 0 ||
+            strncmp(node->name, "ffn_up-",         7) == 0 ||
+            strncmp(node->name, "ffn_swiglu-",    11) == 0 ||
+            strncmp(node->name, "ffn_moe_swiglu-", 15) == 0 ||
+            strncmp(node->name, "shared_expert_gate_sigmoid-", sizeof("shared_expert_gate_sigmoid-") - 1) == 0 ||
+            strncmp(node->name, "mtp_shared_expert_gate_sigmoid-", sizeof("mtp_shared_expert_gate_sigmoid-") - 1) == 0) {
+            return true;
+        }
+        if (strncmp(node->name, "ffn_moe_gate-", 13) != 0 &&
+            strncmp(node->name, "ffn_moe_up-",   11) != 0 &&
+            strncmp(node->name, "ffn_moe_down-", 13) != 0) {
+            return false;
+        }
+        if (node->op != GGML_OP_MUL_MAT_ID || node->src[2] == nullptr) {
+            return false;
+        }
+        return node->src[2]->type == GGML_TYPE_I32 && node->src[2]->ne[1] > 1;
+    };
+    if (ask && cgc_verify_op_timing) {
+        return cgc_is_verify_timing_target(t);
+    }
     static int cgc_cb_dbg = 0;
     if (strncmp(t->name, "ffn_moe_topk", 12) == 0 && cgc_cb_dbg < 20) {
         cgc_cb_dbg++;
@@ -2956,7 +2988,7 @@ void llama_context::cgc_dump_graph_tensors(ggml_cgraph * gf) {
     const int n_nodes = ggml_graph_n_nodes(gf);
     for (int i = 0; i < n_nodes; ++i) {
         ggml_tensor * t = ggml_graph_node(gf, i);
-        if (t == nullptr || t->name == nullptr || t->name[0] == '\0') {
+        if (t == nullptr || t->name[0] == '\0') {
             continue;
         }
         if (t->type != GGML_TYPE_F32 || t->data == nullptr) {
