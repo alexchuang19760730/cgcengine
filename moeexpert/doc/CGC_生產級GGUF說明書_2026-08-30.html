@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CGC 生產級 GGUF 說明書 2026-08-30</title>
+<style>
+  :root {
+    --bg: #0f1420; --card: #171e2e; --ink: #e8ecf4; --sub: #9aa5b8;
+    --line: #2a3350;
+    --accent: #ffd479; --good: #8fe3a0; --warn: #f08a8a; --info: #7fb8f0;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; padding: 32px 20px 60px; }
+  .wrap { max-width: 1020px; margin: 0 auto; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 0 0 4px; }
+  h3 { font-size: 14.5px; margin: 16px 0 8px; }
+  .sub { color: var(--sub); font-size: 13.5px; margin-bottom: 24px; line-height: 1.6; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px; margin-bottom: 18px; }
+  .card .desc { color: var(--sub); font-size: 12.5px; margin: 0 0 14px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 6px; }
+  th, td { text-align: left; padding: 6px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--sub); font-weight: 600; font-size: 11.5px; }
+  .good { color: var(--good); font-weight: 700; }
+  .warn { color: var(--warn); font-weight: 700; }
+  .info { color: var(--info); }
+  .hl { color: var(--accent); font-weight: 700; }
+  .note { font-size: 12.5px; color: var(--sub); margin-top: 12px; line-height: 1.6; }
+  .note b { color: var(--ink); }
+  .review { background: #1a2030; border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; padding: 12px 15px; margin: 12px 0; font-size: 12.5px; line-height: 1.6; }
+  .review .label { color: var(--accent); font-weight: 700; font-size: 11.5px; text-transform: uppercase; margin-bottom: 5px; }
+  .review.red { border-left-color: var(--warn); }
+  .review.red .label { color: var(--warn); }
+  code { background: #0c1019; border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 11.5px; font-family: "SF Mono", Menlo, monospace; color: #7fb8f0; }
+  pre { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 13px 15px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; color: #7fb8f0; overflow-x: auto; line-height: 1.5; margin: 10px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>生產級 GGUF 說明書</h1>
+<div class="sub">模型載體選型 · 路徑↔binary↔gguf 對應 · MTP 載體邏輯與淘汰史 · bit-identity 同檔規則<br>llama.cpp fork（cgcengine0823）· 2026-08-30 · gemma4 載體已確認回位 <code>models/gguf/</code></div>
+
+<div class="card">
+  <h2>§1 現況盤點（models/gguf/，2026-08-30）</h2>
+  <table>
+    <tr><th>檔案</th><th>大小</th><th>角色</th></tr>
+    <tr><td><code>Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf</code></td><td>12G</td><td class="hl">生產：非 MTP（llama-simple）</td></tr>
+    <tr><td><code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code></td><td>13G</td><td class="hl">生產：MTP（llama-speculative-simple）＋ bit-identity A/B 基準檔</td></tr>
+    <tr><td><code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS.gguf</code></td><td>13G</td><td class="info">MTP 載體變體（預設 head=trunk 同量；A/B 對照用）</td></tr>
+    <tr><td><code>gemma-4-26B-A4B-it-UD-IQ3_S.gguf</code></td><td>11G</td><td class="good">生產：gemma4 家族（8/30 已移回，<code>run_n30cache.sh</code> G4 路徑恢復有效）</td></tr>
+    <tr><td><code>Huihui-Qwen3.8-27B-abliterated-UD-IQ3_S.gguf</code></td><td>11G</td><td class="info">實驗/備用（<code>moeexpert/tmp/dl_huihui*.sh</code> 下載，未進生產腳本）</td></tr>
+  </table>
+  <div class="note">模型權重不入版控（<code>.gitignore</code> 含 <code>*.gguf</code>）—— 換機/部署需另傳檔；部署包預設模型另見 §6。</div>
+</div>
+
+<div class="card">
+  <h2>§2 路徑 ↔ binary ↔ gguf 對應（生產定案）</h2>
+  <table>
+    <tr><th>路徑</th><th>binary</th><th>gguf</th></tr>
+    <tr><td><b>非 MTP（生產）</b></td><td><code>llama-simple</code></td><td><code>Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf</code>（12G，純量版，無 blk.40）</td></tr>
+    <tr><td><b>MTP（生產）</b></td><td><code>llama-speculative-simple</code></td><td><code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（13G，含 blk.40 MTP head）</td></tr>
+    <tr><td><b>bit-identity A/B</b><br>（近期所有驗收）</td><td>兩個 binary <b>都用</b></td><td><b>同一個</b> <code>Nail-...-denseIQ4X.gguf</code>（13G）</td></tr>
+    <tr><td><b>gemma4 家族</b></td><td><code>llama-simple</code></td><td><code>gemma-4-26B-A4B-it-UD-IQ3_S.gguf</code>（-ngl 30，無 MTP 路徑）</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>§3 選型邏輯（為什麼是這樣）</h2>
+  <h3>3.1 MTP 必須用 Nail（graft）系</h3>
+  <p class="note">純 <code>Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf</code> <b>沒有 blk.40 MTP head</b>，<code>--spec-type draft-mtp</code> 無法啟用。MTP 只支援 qwen36（<code>run_n30cache.sh</code> 對 <code>--mtp</code> + 非 qwen36 直接報錯）。</p>
+  <h3>3.2 MTP 載體三個變體（都基於 Nail）</h3>
+  <table>
+    <tr><th>變體</th><th>內容</th><th>狀態</th></tr>
+    <tr><td>預設 <code>Nail-...-IQ3_XXS.gguf</code></td><td>blk.40 head 與 trunk 同量（UD-IQ3_XXS）</td><td class="info">A/B 對照基準</td></tr>
+    <tr><td><code>--head-iq2</code>（headIQ2 檔）</td><td>blk.40 output.weight Q6_K→IQ2_S（其餘 byte-copy）</td><td class="warn"><b>已淘汰</b> —— seed 1 尾段 ~140 token 確定性退化成 0000，head IQ2 為頭號嫌疑</td></tr>
+    <tr><td><code>--dense-iq4x</code>（denseIQ4X 檔）</td><td>dense Q6_K→IQ4_XS ＋ <b>head 釘回 Q6_K</b>（+243MiB）</td><td class="good"><b>生產線採用</b> —— 尾段退化已修、27+ t/s 實測</td></tr>
+  </table>
+  <h3>3.3 bit-identity 對比的「同檔」鐵則</h3>
+  <p class="note">兩路徑（simp vs spec）對比<b>必用同一檔</b>（Nail denseIQ4X）—— 否則量到的是模型差異不是路徑差異。llama-simple 載入 Nail 時 blk.40 head 只是<b>載入不使用</b>，不影響輸出。T-F 四方對比、T-PN pin 驗收均依此規則。</p>
+  <h3>3.4 歷史 A/B 證據（選 Nail 系當 MTP 載體的原因）</h3>
+  <p class="note">Nail（blk.40 UD-IQ3_XXS）vs graft（blk.40 Q4_K）：verify <b>103 vs 126 ms/token</b>、hit rate <b>77.4% vs 72.1%</b> —— Nail 較快且命中更高。</p>
+</div>
+
+<div class="card">
+  <h2>§4 生產指令速查（scripts/run_n30cache.sh）</h2>
+  <pre># qwen36 非 MTP（Q36 純量版 + llama-simple）
+./scripts/run_n30cache.sh -m qwen36 -n 128 -p "..."
+
+# qwen36 MTP（自動切 Nail denseIQ4X + speculative-simple + -c 3072 + --temp 0）
+./scripts/run_n30cache.sh -m qwen36 --mtp --dense-iq4x -n 128 -p "..."
+
+# gemma4（G4 + llama-simple，-ngl 30 sweet spot）
+./scripts/run_n30cache.sh -m gemma4 -n 128 -p "The capital of France is"
+
+# bit-identity / steady 驗證模式
+./scripts/run_n30cache.sh -m qwen36 --mtp --dense-iq4x --seed 42 --steady</pre>
+  <div class="note">關鍵差異：speculative-simple 只認 CLI <code>-expert-cache</code>（llama-simple 只認 env <code>CGC_EXPERT_CACHE_BYTES</code>）；MTP 一律 <code>CGC_NO_PREFETCH=1</code>；<code>--temp 0</code> 對齊 base 臂 greedy（MTP 預設 temp sampling 會讓 accept 掉到 ~31%）。</div>
+</div>
+
+<div class="card">
+  <h2>§5 維護注意</h2>
+  <ul style="font-size:13px; line-height:1.8; margin:8px 0; padding-left:20px; color:var(--ink);">
+    <li><b>Windows 8GB 機</b>：本地若只有 denseIQ4X-headIQ2 檔，請把本地檔<b>改名/軟連結</b>成 <code>Nail-...-denseIQ4X.gguf</code> 檔名（run_n30cache.sh §MTP 註解的既有指示）。</li>
+    <li><b>模型權重不入版控</b>（<code>*.gguf</code> ignored）—— 三平台部署時模型檔各自取得；鴻蒙 phone 部署包預設 <code>Qwen3-14B-IQ4_XS.gguf</code>（bartowski，HDC 推送）。</li>
+    <li><b>載體更換 = 重跑 bit-identity</b>：任何 gguf 換檔（含重新量化）後，依測試計劃白皮書 §4.2 四方對比復驗；pin profile 亦需重校準（技術講解白皮書 §5.5：模型換了必須重校準）。</li>
+    <li><b>head 量化紀律</b>：head 低量化（IQ2_S）歷史上造成尾段確定性退化 —— 載體實驗時 head 保持 Q6_K。</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h2>§6 部署包的模型預設</h2>
+  <table>
+    <tr><th>部署包</th><th>模型取得</th></tr>
+    <tr><td><code>deploy-harmonyos/macos/</code></td><td>自包含 dylib/exe；模型由使用者以 <code>-m</code> 指定（驗收用 Nail denseIQ4X）</td></tr>
+    <tr><td><code>deploy-harmonyos/phone/</code></td><td>預設 <code>Qwen3-14B-IQ4_XS.gguf</code>（<code>huggingface-cli download bartowski/Qwen_Qwen3-14B-GGUF</code>）</td></tr>
+    <tr><td><code>deploy-harmonyos/harmonyos/</code></td><td>CPU-only build；模型同上另傳</td></tr>
+  </table>
+</div>
+
+<div class="review">
+  <div class="label">一頁總結</div>
+  非 MTP 用<b>純量版</b>（12G）、MTP 用 <b>Nail denseIQ4X</b>（13G）、bit-identity 對比<b>兩邊同用 Nail denseIQ4X</b>、gemma4 家族 <b>G4 + -ngl 30</b>（已回位）。MTP 載體不碰 head 量化（Q6_K 釘死）；換任何 gguf 後 = 四方對比 + pin 重校準。
+</div>
+
+</div>
+</body>
+</html>
