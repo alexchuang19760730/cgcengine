@@ -1,0 +1,14 @@
+{
+  "task_id": "hello-world",
+  "instruction": "Create a file called hello.txt in the current directory. Write \"Hello, world!\" to it. Make sure it ends in a newline. Don't make any other files or folders.",
+  "category": "file-operations",
+  "difficulty": "easy",
+  "is_resolved": true,
+  "failure_mode": "none",
+  "n_steps": 2,
+  "total_input_tokens": 2141,
+  "total_output_tokens": 356,
+  "duration_sec": 23.4,
+  "test_output": "..                                                                       [100%]\n2 passed in 0.04s",
+  "sandbox": "git-bash-rehearsal"
+}

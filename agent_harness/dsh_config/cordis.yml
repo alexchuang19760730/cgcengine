@@ -1,0 +1,63 @@
+# ============================================================
+# DSH (DeepSeek Harness) 配置 — 连接本地 Qwen3.6-35B
+# 通过 CGC edge_server.py 的 OpenAI-compatible API
+# ============================================================
+
+# 默认模型：Qwen3.6-35B via llama-server
+agentDefaultModel:
+  provider: "local-qwen36"
+  model: "qwen3.6-35b-a3b"
+
+# Provider 配置
+remotes:
+  # 本地 Qwen3.6-35B (via CGC edge_server.py 或 llama-server)
+  local-qwen36:
+    kind: "openai-compatible"
+    baseUrl: "http://127.0.0.1:1234/v1"
+    apiKey: "sk-local"
+    models:
+      - id: "qwen3.6-35b-a3b"
+        name: "Qwen3.6-35B-A3B (local)"
+        contextWindow: 131072
+        maxOutput: 8192
+
+  # Gemma4-26B (Mac M4 远端, via CGC edge_server)
+  remote-gemma4:
+    kind: "openai-compatible"
+    baseUrl: "http://192.168.101.87:1234/v1"
+    apiKey: "sk-local"
+    models:
+      - id: "gemma-4-26b-a4b"
+        name: "Gemma4-26B-A4B (Mac M4)"
+        contextWindow: 131072
+        maxOutput: 8192
+
+# Agent 预设
+presets:
+  # DSH Minimal mode — 基准测试用
+  minimal-qwen36:
+    extends: "minimal"
+    agentDefaultModel:
+      provider: "local-qwen36"
+      model: "qwen3.6-35b-a3b"
+
+  # DSH Standard mode — 完整 coding agent
+  standard-qwen36:
+    extends: "standard"
+    agentDefaultModel:
+      provider: "local-qwen36"
+      model: "qwen3.6-35b-a3b"
+
+  # 多模型协同 — Qwen3.6 写代码 + Gemma4 审查
+  multi-model:
+    extends: "standard"
+    agentDefaultModel:
+      provider: "local-qwen36"
+      model: "qwen3.6-35b-a3b"
+    subagents:
+      code-review:
+        provider: "remote-gemma4"
+        model: "gemma-4-26b-a4b"
+      reasoning:
+        provider: "remote-gemma4"
+        model: "gemma-4-26b-a4b"

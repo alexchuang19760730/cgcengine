@@ -1,0 +1,14 @@
+{
+  "task_id": "new-encrypt-command",
+  "instruction": "Please help me encrypt all the files I have in the data/ folder using rencrypt which i've just installed.\n\nI want to use the most secure encryption that it provides and the output should go into a encrypted_data/ directory where the basenames are the same.",
+  "category": "security",
+  "difficulty": "medium",
+  "is_resolved": true,
+  "failure_mode": "none",
+  "n_steps": 6,
+  "total_input_tokens": 31843,
+  "total_output_tokens": 2583,
+  "duration_sec": 72.0,
+  "test_output": ".                                                                        [100%]\n1 passed in 0.02s",
+  "sandbox": "git-bash-rehearsal"
+}

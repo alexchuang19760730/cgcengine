@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "socketPath": "\\\\.\\pipe\\prime-agent-daemon",
+  "defaultSessionConfig": {
+    "cwd": "C:\\tmp\\pasmoke",
+    "agentDir": "D:/alex/flashkv0516/tb_loop/harness",
+    "telemetryDisabled": true,
+    "serializedRefine": false
+  }
+}

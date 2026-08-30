@@ -1,0 +1,14 @@
+{
+  "task_id": "organization-json-generator",
+  "instruction": "Create a JSON processor that transforms CSV data into a structured JSON file following the schema defined in schema.json. Requirements: 1. Use the provided CSV files (departments.csv, employees.csv, projects.csv) as input data 2. Generate a file called 'organization.json' that follows the schema defined. 3. The output must include: Organization metadata, Department information with employees and projects, Statistical calculations",
+  "category": "file-operations",
+  "difficulty": "hard",
+  "is_resolved": false,
+  "failure_mode": "test_failed",
+  "n_steps": 3,
+  "total_input_tokens": 9396,
+  "total_output_tokens": 8365,
+  "duration_sec": 60.9,
+  "test_output": "\n_eval\\test_outputs.py:66: FileNotFoundError\n=========================== short test summary info ===========================\nFAILED _eval/test_outputs.py::test_json_file_exists - AssertionError: D:\\alex...\nFAILED _eval/test_outputs.py::test_organization_structure - FileNotFoundError...\nFAILED _eval/test_outputs.py::test_relationships_integrity - FileNotFoundErro...\nFAILED _eval/test_outputs.py::test_statistics_calculations - FileNotFoundErro...\n4 failed in 0.14s",
+  "sandbox": "git-bash-rehearsal"
+}
