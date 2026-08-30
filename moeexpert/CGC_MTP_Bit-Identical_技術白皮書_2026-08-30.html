@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CGC MTP 位元級一致性（galloc overlap guard）技術白皮書 2026-08-30</title>
+<style>
+  :root {
+    --bg: #0f1420; --card: #171e2e; --ink: #e8ecf4; --sub: #9aa5b8;
+    --line: #2a3350;
+    --wr: #f0a45c; --small: #e86a6a; --ssm: #d98cf0; --sdpa: #7fb8f0; --bubble: #6b7aa8;
+    --cpu-o: #8a97ad; --tail: #e3cf8f;
+    --accent: #ffd479; --good: #8fe3a0; --warn: #f08a8a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; padding: 32px 20px 60px; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 0 0 4px; }
+  h3 { font-size: 15px; margin: 18px 0 8px; color: var(--ink); }
+  .sub { color: var(--sub); font-size: 14px; margin-bottom: 28px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px 24px; margin-bottom: 22px; }
+  .card .desc { color: var(--sub); font-size: 13px; margin: 0 0 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--sub); font-weight: 600; font-size: 12px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .hl { color: var(--accent); font-weight: 700; }
+  .good { color: var(--good); font-weight: 700; }
+  .warn { color: var(--warn); font-weight: 700; }
+  .note { font-size: 12.5px; color: var(--sub); margin-top: 12px; line-height: 1.6; }
+  .note b { color: var(--ink); }
+  .review { background: #1a2030; border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; padding: 14px 16px; margin: 12px 0; font-size: 13px; line-height: 1.6; }
+  .review .label { color: var(--accent); font-weight: 700; font-size: 12px; text-transform: uppercase; margin-bottom: 6px; }
+  code { background: #0c1019; border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; color: #7fb8f0; }
+  pre { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; color: #7fb8f0; overflow-x: auto; line-height: 1.5; margin: 12px 0; }
+  .diagram { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 16px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; line-height: 1.6; margin: 12px 0; white-space: pre; overflow-x: auto; }
+  .step-box { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin: 12px 0; font-size: 13px; line-height: 1.6; }
+  .step-box .step-num { color: var(--accent); font-weight: 700; font-size: 14px; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; margin-left: 6px; }
+  .tag.g { background: #1c3a24; color: #8fe3a0; }
+  .tag.r { background: #3a1c1c; color: #f08a8a; }
+  .tag.y { background: #3a321c; color: #e3cf8f; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>CGC MTP 位元級一致性（galloc lifetime-overlap guard）技術白皮書</h1>
+<div class="sub">llama.cpp fork · M4 Max 16GB · 2026-08-30 · Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X · -ngl 99 + expert-cache 4GiB · commit b7364f886（46b7b9d31 之上）</div>
+
+<!-- ============ §1 Executive Summary ============ -->
+<div class="card">
+  <h2>§1 摘要：決策與結果</h2>
+  <p class="desc">硬性要求：<b>投機解碼（MTP）與非投機（llama-simple）在相同 prompt、相同 seed、greedy sampling 下必須位元級一致（bit-identical）</b>。本白皮書記錄完整的分歧 bisect 過程、兩個獨立根因（warmup 專家快取污染 + fused GLU kernel 的 galloc lifetime overlap）、修復方案（fuse 決策防護）與四方驗證結果。</p>
+
+  <table>
+    <tr><th>指標</th><th>修復前</th><th>修復後（guard）</th></tr>
+    <tr><td>simp FUSE=1 vs FUSE=0（專家 ID）</td><td class="warn">777/800 keys 分歧</td><td class="good">0/800 完全一致</td></tr>
+    <tr><td>spec FUSE=1 vs FUSE=0（專家 ID）</td><td>0/422（本就無 overlap）</td><td class="good">0/422 維持一致</td></tr>
+    <tr><td>simp 16-token 輸出 vs spec 輸出</td><td class="warn">分歧</td><td class="good">精確前綴（byte-level）</td></tr>
+    <tr><td>spec draft accept rate</td><td>&lt;100%</td><td class="good">12/12 = 100%</td></tr>
+    <tr><td>eval 速度（融合保留度）</td><td>F1 127.77 ms/tok</td><td class="hl">F1 127.77 vs F0 145.10 ms/tok（快 12%）</td></tr>
+    <tr><td>fused 派送（M=8 prefill chunk）</td><td>多層融合（含危險層）</td><td class="hl">安全層融合 il=1；危險層 il=3 拒絕 3 次</td></tr>
+  </table>
+
+  <p class="note"><b>結論</b>：兩條路徑、兩種 FUSE 設定（4 個組合）現全部位元級一致，且融合效能完全保留。分歧不是 kernel 數值本身，而是 <b>galloc 記憶體規劃與 fused kernel 寫入時點的 lifetime 衝突</b> —— 是否觸發取決於<b>計算圖形狀</b>（節點數、MoE 前後排序），llama-simple 與 speculative MTP 的圖形形狀不同，導致「只有一邊壞」的詭異現象。</p>
+</div>
+
+<!-- ============ §2 Symptom & Hypothesis Timeline ============ -->
+<div class="card">
+  <h2>§2 現象與假說排除時間線</h2>
+  <p class="desc">同一 prompt、seed=42、temp=0 下，spec 續寫與 simp 續寫從某個 token 開始分岔。Bisect 過程依序排除/確認了下列假說：</p>
+
+  <table>
+    <tr><th>#</th><th>假說</th><th>實驗</th><th>結果</th></tr>
+    <tr><td>1</td><td>MTP nextn head（layer 40）污染 target forward</td><td>檢查 nextn 與 target 的 KV/graph 隔離</td><td class="good">排除（架構隔離無污染）</td></tr>
+    <tr><td>2</td><td>verify batch vs 1-token eval 的 kernel 分派差異（GDN AR/CH + matmul M-dependence）</td><td><code>CGC_MM_BITIDENT</code> 強制 M-invariant mul-mv（M≤8 全走 mul_mv）</td><td class="good">排除（M-invariant 後仍分歧）</td></tr>
+    <tr><td>3</td><td>row-wise 比較方法錯誤</td><td>spec 第一個 target eval 是 verify batch（M=3，pmax=28），simp 是 M=1 逐 token —— 拿不同 batch 組成的行直接比無意義</td><td class="hl">方法修正：per-position 對齊後，position 0–26 位元級一致</td></tr>
+    <tr><td>4</td><td>專家選擇（expert ID）分歧</td><td><code>CGC-IDS</code> trace + <code>CGC_LAYER_BIN</code> per-layer input dump + TDCB（in-compute tensor dump）</td><td class="hl">定位：chunk0 L4 rows0-2 的 expert 順序翻轉（相同集合、argsort 近平手翻轉）</td></tr>
+    <tr><td>5</td><td><b>根因 A：MTP warmup 污染專家快取</b></td><td><code>CGC_MTP_NO_WARMUP=1</code>（跳過手動 warmup decode）+ <code>CGC_NO_SEQ_RM_PROBE=1</code>（跳過 can_seq_rm probe decode）</td><td class="good">確認並修復（chunk0 IDS 全一致；TDCB 的 ffn_shexp 污染觀察同步消失）</td></tr>
+    <tr><td>6</td><td><b>根因 B：fused gate+up+glu kernel（CGC_MMV_FUSE）</b></td><td><code>CGC_MMV_FUSE=0</code> A/B</td><td class="hl">確認：FUSE=0 時輸出位元級一致（accept 100%、simp 16-token 為 spec 前綴）</td></tr>
+    <tr><td>7</td><td>根因 B 細分：fuse 決策不一致 vs kernel 數值差異</td><td>cross-FUSE 對比（同路徑 F1 vs F0 的 IDS）</td><td class="hl">simp 自身 F1 vs F0 分歧 777/800 → <b>不是 spec/simp 決策差異，是 simp 圖形下 fused 結果本身錯</b></td></tr>
+    <tr><td>8</td><td>根因 B 精確機制：galloc lifetime overlap</td><td>拒絕記錄 <code>CGC_MMV_FUSE_DBG</code>：il=3 的 <code>ffn_moe_weights-3</code> 與 fused 輸出 <code>ffn_moe_swiglu-3</code> 記憶體重疊</td><td class="warn">確認：讀到 garbage 的確定性污染</td></tr>
+  </table>
+
+  <div class="review">
+    <div class="label">關鍵轉折</div>
+    第 7 步是本 case 的轉折點：原本以為是「兩路徑的 fuse 決策不一致」，但 cross-FUSE 對比顯示 <b>spec 是 FUSE 不變的（0/422），simp 卻不是（777/800）</b>。若只是決策差異，兩邊都會變。單邊改變 + 圖形形狀相依 → 記憶體重疊假說。同一時間線上還發現 09:07 與 09:36 兩次運行的 binary 可能不同（09:40 有重建），先以 source mtime 釐清時間線後才下結論，避免拿不同 binary 的輸出互比。
+  </div>
+</div>
+
+<!-- ============ §3 Root Cause B Mechanism ============ -->
+<div class="card">
+  <h2>§3 根因 B 機制：galloc lifetime overlap</h2>
+  <p class="desc">fused kernel 把三個節點（mul_mat_id gate、mul_mat_id up、swiglu）壓成一個 dispatch，但 galloc 是按「未融合」的圖形規劃記憶體的。</p>
+
+  <div class="diagram">═══ 未融合（galloc 的規劃依據）═══
+
+  node[gate]:  dst = ff8_out_gate   ──┐
+  node[up]:    dst = ff8_out_up     ──┤─ 之後
+  node[glu]:   dst = ff8_out(c)     ──┘
+
+  galloc 看到 glu 是最後寫入者 → c 的 range 可以和
+  「gate 之前就死掉」的張量重疊（lifetime 分析）。
+  ll=3 的 llama-simple 圖形中，gate 與 glu 之間還有
+  ffn_moe_weights-3 等中間張量被計算/讀取。
+
+═══ fused（CGC_MMV_FUSE=1 實際執行）═══
+
+  dispatch 發生在 GATE 節點位置：
+    kernel 直接寫 c（swiglu 輸出）到「GATE 的時點」
+    ↑ 此時 ffn_moe_weights-3 還沒算完 / 還要被讀
+    ↑ 而 c 的 range 與它重疊
+    → ffn_moe_weights-3 讀到 garbage
+    → argsort 近平手翻轉 → L4 專家順序翻轉
+    → 挑到不同 expert → 下游全分歧
+
+═══ 為什麼只有 simp 壞、spec 不壞 ═══
+
+  是否重疊取決於圖形 SHAPE（節點數 / MoE 前後排序）：
+    simp 圖（39 節點版本）：il=3 區間有重疊 → 壞
+    spec 圖（37 節點版本）：il=3 區間無重疊 → 好的
+  同一 kernel、同樣 fused，行為因路徑而異 → 偽裝成
+  「spec/simp 決策差異」或「kernel 數值差異」。</div>
+
+  <p class="note"><b>證據鏈</b>：(a) <code>CGC_MMV_FUSE_DBG</code> 的 REJECT 記錄直接印出重疊張量名（<code>ffn_moe_weights-3</code>，k=5/6，介於 gate 與 glu 之間）；(b) TDCB in-compute dump 早先觀察到 <code>ffn_shexp</code>（共享專家）被污染 —— 與「gate/glu 區間的中間張量被覆寫」自洽；(c) spec 圖形無此重疊 → FUSE 不變；(d) 設 FUSE=0 後分歧消失。</p>
+</div>
+
+<!-- ============ §4 Solution ============ -->
+<div class="card">
+  <h2>§4 方案：fuse 決策的 lifetime-overlap guard</h2>
+  <p class="desc">位置：<code>ggml/src/ggml-metal/ggml-metal-ops.cpp</code>（<code>ggml_metal_op_mul_mat_id_glu_fused</code> 的 fuse 決策處）。原則：<b>防護性拒絕融合，而不是重寫 galloc</b> —— galloc 的 lifetime 分析對未融合圖形是正確的，問題只在「融合改變了寫入時點」這個契約破壞。在決策點檢查即可，安全時仍融合（保效能），危險時走原路（保正確）。</p>
+
+  <pre>// [CGC bit-identical 2026-08-30 v10] galloc lifetime-overlap guard.
+// The fused kernel writes c (the swiglu output) at the GATE position, but galloc
+// assigned c its memory based on the swiglu position: any range c shares with a
+// tensor that is computed OR read strictly between the gate and the swiglu node
+// makes the fused plan and the galloc plan disagree -> one of the two tensors
+// reads garbage.
+{
+    static const bool guard_dbg = (getenv("CGC_MMV_FUSE_DBG") != nullptr);
+
+    const char * c_base = (const char *) c->data;
+    const size_t c_nbytes = ggml_nbytes(c);
+    const ggml_backend_buffer_t c_buf = c->view_src ? c->view_src->buffer : c->buffer;
+
+    auto range_overlap = [&](const ggml_tensor * t) -> bool {
+        if (t == nullptr || t->data == nullptr || t == c) {
+            return false;
+        }
+        const ggml_backend_buffer_t t_buf = t->view_src ? t->view_src->buffer : t->buffer;
+        if (t_buf == nullptr || t_buf != c_buf) {
+            return false;   // 不同 buffer 不可能重疊
+        }
+        const char * p = (const char *) t->data;
+        const size_t nb = ggml_nbytes(t);
+        return p &lt; c_base + c_nbytes &amp;&amp; c_base &lt; p + nb;   // 區間相交
+    };
+
+    const int glu = *glu_idx;
+    for (int k = idx + 2; k &lt; glu; k++) {          // gate..glu 之間的每個節點
+        ggml_tensor * t = ctx-&gt;node(k);
+        bool hit = range_overlap(t);                 // dst 本身
+        for (int s = 0; !hit &amp;&amp; s &lt; GGML_MAX_SRC &amp;&amp; t-&gt;src[s]; s++) {
+            hit = range_overlap(t-&gt;src[s]);          // 以及它的 src
+        }
+        if (hit) {
+            if (guard_dbg) {
+                GGML_LOG_WARN("[MMV_FUSE dbg] idx=%d/%d a=%s c=%s REJECT: galloc overlap with %s (k=%d) between gate and glu\n",
+                        idx, ctx-&gt;n_nodes(), a-&gt;name, c-&gt;name, t-&gt;name, k);
+            }
+            return false;   // 拒絕融合 → 走未融合原路（bit-identical）
+        }
+    }
+}</pre>
+
+  <h3>4.1 設計要點</h3>
+  <table>
+    <tr><th>設計</th><th>理由</th></tr>
+    <tr><td>檢查 <code>dst</code> 與其 <code>src</code> 兩層</td><td>「computed OR read」都要防：src 在區間內被讀也會踩到 c 已被提前寫入的 range</td></tr>
+    <tr><td>用 <code>view_src</code> 的 buffer 判同 buffer</td><td>view 的 data 指向母張量，實體 buffer 才是判斷重疊的正確依據</td></tr>
+    <tr><td>只掃 <code>idx+2 .. glu</code> 區間</td><td>gate 之前的張量 lifetime 已結束（galloc 保證），gate..glu 之間才是 fused 寫入時點提前的受害窗口</td></tr>
+    <tr><td>重疊即拒絕融合（fallback 原路）</td><td>未融合路徑本來就 bit-identical；拒絕的代價只是該層失去融合加速，不是全域退步</td></tr>
+    <tr><td><code>CGC_MMV_FUSE_DBG</code> 印 REJECT</td><td>可觀測性：哪層、與哪個張量重疊、k 位置，直接對應 galloc 規劃</td></tr>
+  </table>
+
+  <h3>4.2 環境開關（皆預設關閉，生產路徑不受影響）</h3>
+  <table>
+    <tr><th>環境變數</th><th>作用</th><th>本次用途</th></tr>
+    <tr><td><code>CGC_MMV_FUSE</code></td><td>1=啟用 fused gate+up+glu；0=停用</td><td>A/B 切換定位根因</td></tr>
+    <tr><td><code>CGC_MTP_NO_WARMUP</code></td><td>跳過 MTP context 的手動 warmup decode</td><td>根因 A 修復（專家快取污染）</td></tr>
+    <tr><td><code>CGC_NO_SEQ_RM_PROBE</code></td><td>跳過 ctx_tgt 的 can_seq_rm probe decode</td><td>根因 A 修復（probe decode 同樣會污染）</td></tr>
+    <tr><td><code>CGC_MM_BITIDENT</code></td><td>M≤8 強制 M-invariant mul-mv 分派</td><td>排除假說 2</td></tr>
+    <tr><td><code>CGC_LAYER_BIN</code></td><td>per-layer input dump（<code>/tmp/cgc_&lt;tag&gt;_l&lt;il&gt;.f32</code>）</td><td>分層 bisect</td></tr>
+    <tr><td><code>CGC_LOGIT_BIN / CGC_LOGIT_DBG</code></td><td>完整 logit row / 分佈 dump</td><td>輸出端分歧定位</td></tr>
+    <tr><td><code>CGC_MMV_FUSE_DBG</code></td><td>fused 派送 + guard REJECT trace</td><td>根因 B 證據鏈</td></tr>
+    <tr><td><code>CGC-IDS</code> trace</td><td>每個 (pmax, layer) 的專家選擇 ID 行</td><td>專家翻轉偵測（row-major，可 row-wise 比較）</td></tr>
+    <tr><td>TDCB（<code>CGC_TENSOR_DUMP</code> / <code>CGC_TD_CB</code>）</td><td>in-compute 中間張量 dump（segmented scheduler）</td><td>在計算中途截獲被污染的 ffn_shexp</td></tr>
+  </table>
+</div>
+
+<!-- ============ §5 Validation ============ -->
+<div class="card">
+  <h2>§5 驗證：四方對比 + IDS + 效能</h2>
+  <p class="desc">防護後在同一 binary 上跑 2 路徑 × 2 FUSE 設定，加上新舊 binary 的 FUSE=0 基準回歸，共 5 個 run。模型 Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X，seed=42，temp=0，n=16，MTP draft-n-max=2。</p>
+
+  <h3>5.1 輸出與接受率</h3>
+  <table>
+    <tr><th>run</th><th>rc</th><th>輸出（續寫，節錄）</th><th>判讀</th></tr>
+    <tr><td>simp F0（新 binary）</td><td>0</td><td rowspan="2">…steady winds from the northwest throughout the morning, and</td><td class="good">與舊 binary F0 基準 byte-identical</td></tr>
+    <tr><td>simp F1+guard</td><td>0</td><td class="good">與 F0 完全一致（同 byte）</td></tr>
+    <tr><td>spec F1+guard</td><td>0</td><td>…steady winds … morning, and the tide</td><td class="good">byte-identical 於 spec F0；simp 16-token 為其精確前綴（多 2 token 是 verify batch overshoot）</td></tr>
+    <tr><td>spec accept</td><td>—</td><td>n_drafted = 12, n_accept = 12</td><td class="good">accept 100%</td></tr>
+  </table>
+
+  <h3>5.2 專家 ID 位元級比較（cross-FUSE，同路徑）</h3>
+  <table>
+    <tr><th>比較</th><th>修復前</th><th>修復後</th></tr>
+    <tr><td>simp F1 vs F0（800 個 (pmax,il) keys）</td><td class="warn">777 不同</td><td class="good">0 不同</td></tr>
+    <tr><td>spec F1 vs F0（422 個 (pmax,il) keys）</td><td>0 不同</td><td class="good">0 不同（維持）</td></tr>
+    <tr><td>simp F1 vs spec F1（row-wise, per-position）</td><td>position 27+ 分歧</td><td class="good">position 0–26 全一致；27+ 屬 verify overshoot/重採，token 流仍一致</td></tr>
+  </table>
+
+  <h3>5.3 防護日誌（simp F1）</h3>
+  <pre>[MMV_FUSE dbg] idx=0/39 a=ffn_moe_gate-3 c=ffn_moe_swiglu-3 REJECT: galloc overlap with ffn_moe_weights-3 (k=6) between gate and glu
+[MMV_FUSE dbg] idx=0/37 a=ffn_moe_gate-3 c=ffn_moe_swiglu-3 REJECT: galloc overlap with ffn_moe_weights-3 (k=5) between gate and glu
+[MMV_FUSE dbg] idx=0/37 a=ffn_moe_gate-3 c=ffn_moe_swiglu-3 REJECT: galloc overlap with ffn_moe_weights-3 (k=5) between gate and glu
+ggml_metal_op_mul_mat_id_glu_fused: CGC_MMV_FUSE: dispatching fused gate+up+glu (type iq2_s, ne21 = 8, rows = 512, node=ffn_moe_gate-1 glu=ffn_moe_swiglu-1)</pre>
+  <p class="note">3 次 REJECT 全部指向 il=3 的 <code>ffn_moe_weights-3</code>（正是分歧源頭層）；il=1 的 M=8 prefill chunk 無重疊 → 保留融合。spec 路徑 0 次 REJECT、1 次融合（圖形形狀本就無重疊，行為不變）。</p>
+
+  <h3>5.4 效能（融合保留度）</h3>
+  <table>
+    <tr><th>設定</th><th>prompt eval</th><th>eval（decode）</th><th>結論</th></tr>
+    <tr><td>simp F1 + guard</td><td class="num">2557.22 ms / 26 tok（98.35 ms/tok）</td><td class="num hl">127.77 ms/tok</td><td rowspan="2">融合仍在安全層生效，decode 快 <b>12.0%</b>；危險層的 3 次 REJECT 只影響該層，無全域退步</td></tr>
+    <tr><td>simp F0（基準）</td><td class="num">2601.83 ms / 26 tok（100.07 ms/tok）</td><td class="num">145.10 ms/tok</td></tr>
+  </table>
+</div>
+
+<!-- ============ §6 Files & Repro ============ -->
+<div class="card">
+  <h2>§6 變更檔案與重現指令</h2>
+  <table>
+    <tr><th>檔案</th><th>變更</th></tr>
+    <tr><td><code>ggml/src/ggml-metal/ggml-metal-ops.cpp</code></td><td>galloc lifetime-overlap guard（v10）＋ CGC_MM_BITIDENT（v2）＋ MMV_FUSE_DBG trace（v8）</td></tr>
+    <tr><td><code>examples/speculative-simple/speculative-simple.cpp</code></td><td>CGC_MTP_NO_WARMUP / CGC_NO_SEQ_RM_PROBE（根因 A）；CGC_LOGIT_DBG/BIN dump</td></tr>
+    <tr><td><code>examples/simple/simple.cpp</code></td><td>CGC_LAYER_BIN per-layer dump 鏡像；embeddings 啟用條件</td></tr>
+    <tr><td><code>src/llama-context.cpp / .h</code></td><td>per-layer input extraction API、tensor dump、decode trace、CGC-IDS 輸出</td></tr>
+    <tr><td><code>ggml/src/ggml-backend.cpp</code></td><td>segmented scheduler 支援 in-compute tensor dump（TDCB）</td></tr>
+    <tr><td><code>build/bin/*</code>（5 個）</td><td>重建後的 dylib / exe（repo 慣例一併追蹤）</td></tr>
+  </table>
+
+  <h3>重現（bit-identical 驗證）</h3>
+  <pre>COMMON="CGC_EXPERT_CACHE_BYTES=4294967296 LLAMA_EXPERT_CACHE_ALLOW_NGL=1 \
+LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0=1 LLAMA_EXPERT_CACHE_WORKERS=8 \
+CGC_WAKE_POLL_US=15 CGC_PREFETCH_SRC=hist CGC_EVICTED_RING=0 \
+CGC_OA_ASYNC=1 CGC_N_CB=8 CGC_GLU_FUSED_DOWN=1 \
+LLAMA_EXPERT_CACHE_LAYER_CAPS=40-40:256 \
+CGC_NO_PREFETCH=1 CGC_WATCHDOG=1 CGC_LAYER_BIN=1 CGC_MM_BITIDENT=1"
+
+# simp FUSE=1（含 guard）
+env $COMMON CGC_MMV_FUSE=1 CGC_SIMP_TAIL_SPLIT=1 \
+  src/llama.cpp/build/bin/llama-simple \
+  -m models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf \
+  -ngl 99 --no-mmap -t 8 --seed 42 -n 16 -p "$PROMPT"
+
+# spec FUSE=1（含 guard）
+env $COMMON CGC_MMV_FUSE=1 CGC_MTP_NO_WARMUP=1 CGC_NO_SEQ_RM_PROBE=1 \
+  src/llama.cpp/build/bin/llama-speculative-simple \
+  -m models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf \
+  -n 16 -ngl 99 -t 5 --no-mmap -s 42 --spec-type draft-mtp \
+  --spec-draft-n-max 2 -c 3072 -expert-cache 4294967296 --temp 0 -p "$PROMPT"
+
+# 判定：兩者的 CGC-IDS 行逐 (pmax,il) key 比較需 0 差異；
+#        simp 16-token 續寫 == spec 續寫前綴；accept = 12/12。</pre>
+
+  <div class="review">
+    <div class="label">方法論回顧（可複用）</div>
+    <b>(1)</b> 比較單位要對齊：verify batch（M=3）與 M=1 逐 token 的輸出必須 row-wise（per-position）比，直接逐行比會製造假分歧。<b>(2)</b> 二分「決策差異」vs「數值差異」的訣竅：同一條路徑內 toggle 開關（cross-FUSE），而不是只跨路徑比 —— 單邊不變、單邊改變即指向環境/記憶體相依。<b>(3)</b> 圖形形狀相依的 bug（galloc overlap）在「兩條圖形不同的路徑」對比下會自動現形。<b>(4)</b> 下結論前先確認 binary 一致性（source mtime / 重建時間線），避免拿不同 binary 的輸出互比。<b>(5)</b> 修這類契約破壞的最佳位置是「破壞方」的決策點（fuse 決策），而不是被依賴方（galloc）—— galloc 對未融合圖形是正確的。
+  </div>
+</div>
+
+<!-- ============ §7 Conclusion ============ -->
+<div class="card">
+  <h2>§7 結論</h2>
+  <table>
+    <tr><th>項目</th><th>狀態</th></tr>
+    <tr><td>根因 A（warmup / probe 污染專家快取）</td><td class="good">已修復：CGC_MTP_NO_WARMUP + CGC_NO_SEQ_RM_PROBE（env-gated，預設關）</td></tr>
+    <tr><td>根因 B（fused GLU galloc lifetime overlap）</td><td class="good">已修復：fuse 決策 lifetime-overlap guard（永久生效於 fused 路徑）</td></tr>
+    <tr><td>spec vs non-spec 位元級一致</td><td class="good">達成（4 組合全通過：IDS 0/800、0/422、byte-identical 輸出、accept 100%）</td></tr>
+    <tr><td>融合效能</td><td class="good">保留（decode 127.77 vs 145.10 ms/tok，快 12%）</td></tr>
+    <tr><td>生產路徑風險</td><td class="good">低：guard 無 env 開關、純邏輯判斷；除錯設施全部 env-gated 預設關</td></tr>
+  </table>
+
+  <p class="note"><b>引用</b>：commit <code>b7364f886</code>（<code>46b7b9d31</code> 之上，dev 分支）。修復涵蓋 6 個原始檔（+777/−18）與 5 個重建 binary。前一版（46b7b9d31）已確立「非 MTP 跑 Nail 載體可行」與「MTP 退化輸出根因翻案」；本版把最後一塊「spec vs non-spec 位元級一致」補齊。</p>
+</div>
+
+</div>
+</body>
+</html>
