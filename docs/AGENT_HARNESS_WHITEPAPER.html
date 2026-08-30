@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Agent Harness 技术白皮书 — DSH + Prime Agent + Qwen3.6 + Gemma4 多模型协同架构</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 <style>
   :root {
     --bg: #0d1117;
@@ -29,108 +30,26 @@
     margin: 0 auto;
     padding: 2rem 1.5rem;
   }
-  h1 {
-    font-size: 2rem;
-    color: var(--heading);
-    border-bottom: 2px solid var(--accent);
-    padding-bottom: 0.5rem;
-    margin-bottom: 1rem;
-  }
-  h2 {
-    font-size: 1.5rem;
-    color: var(--accent);
-    margin-top: 2.5rem;
-    margin-bottom: 0.8rem;
-    border-left: 4px solid var(--accent);
-    padding-left: 0.8rem;
-  }
-  h3 {
-    font-size: 1.2rem;
-    color: var(--green);
-    margin-top: 1.8rem;
-    margin-bottom: 0.5rem;
-  }
-  h4 {
-    font-size: 1.05rem;
-    color: var(--yellow);
-    margin-top: 1.2rem;
-    margin-bottom: 0.4rem;
-  }
+  h1 { font-size: 2rem; color: var(--heading); border-bottom: 2px solid var(--accent); padding-bottom: 0.5rem; margin-bottom: 1rem; }
+  h2 { font-size: 1.5rem; color: var(--accent); margin-top: 2.5rem; margin-bottom: 0.8rem; border-left: 4px solid var(--accent); padding-left: 0.8rem; }
+  h3 { font-size: 1.2rem; color: var(--green); margin-top: 1.8rem; margin-bottom: 0.5rem; }
+  h4 { font-size: 1.05rem; color: var(--yellow); margin-top: 1.2rem; margin-bottom: 0.4rem; }
   p { margin-bottom: 0.8rem; }
-  .subtitle {
-    color: var(--text);
-    font-size: 1rem;
-    opacity: 0.8;
-    margin-bottom: 2rem;
-  }
-  .meta {
-    display: flex;
-    gap: 2rem;
-    flex-wrap: wrap;
-    margin-bottom: 2rem;
-    font-size: 0.85rem;
-    color: var(--text);
-    opacity: 0.7;
-  }
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    margin: 1rem 0;
-    font-size: 0.9rem;
-  }
-  th, td {
-    border: 1px solid var(--border);
-    padding: 0.6rem 0.8rem;
-    text-align: left;
-  }
-  th {
-    background: var(--card);
-    color: var(--heading);
-    font-weight: 600;
-  }
+  .subtitle { color: var(--text); font-size: 1rem; opacity: 0.8; margin-bottom: 2rem; }
+  .meta { display: flex; gap: 2rem; flex-wrap: wrap; margin-bottom: 2rem; font-size: 0.85rem; color: var(--text); opacity: 0.7; }
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.9rem; }
+  th, td { border: 1px solid var(--border); padding: 0.6rem 0.8rem; text-align: left; }
+  th { background: var(--card); color: var(--heading); font-weight: 600; }
   tr:nth-child(even) { background: var(--card); }
-  code {
-    background: var(--code-bg);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 0.15rem 0.4rem;
-    font-size: 0.88em;
-    font-family: 'JetBrains Mono', 'Fira Code', monospace;
-  }
-  pre {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 1rem 1.2rem;
-    overflow-x: auto;
-    margin: 1rem 0;
-    font-size: 0.85rem;
-    line-height: 1.5;
-  }
-  pre code {
-    background: none;
-    border: none;
-    padding: 0;
-  }
-  .callout {
-    background: var(--card);
-    border-left: 4px solid var(--accent);
-    padding: 1rem 1.2rem;
-    border-radius: 0 8px 8px 0;
-    margin: 1.2rem 0;
-  }
+  code { background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 0.15rem 0.4rem; font-size: 0.88em; font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+  pre { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.2rem; overflow-x: auto; margin: 1rem 0; font-size: 0.85rem; line-height: 1.5; }
+  pre code { background: none; border: none; padding: 0; }
+  .callout { background: var(--card); border-left: 4px solid var(--accent); padding: 1rem 1.2rem; border-radius: 0 8px 8px 0; margin: 1.2rem 0; }
   .callout.warn { border-left-color: var(--yellow); }
   .callout.success { border-left-color: var(--green); }
   .callout.danger { border-left-color: var(--red); }
   .callout strong { color: var(--heading); }
-  .badge {
-    display: inline-block;
-    padding: 0.15rem 0.5rem;
-    border-radius: 12px;
-    font-size: 0.75rem;
-    font-weight: 600;
-    margin-right: 0.3rem;
-  }
+  .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 12px; font-size: 0.75rem; font-weight: 600; margin-right: 0.3rem; }
   .badge-blue { background: #1f6feb33; color: var(--accent); }
   .badge-green { background: #23863633; color: var(--green); }
   .badge-red { background: #f8514933; color: var(--red); }
@@ -138,61 +57,44 @@
   .badge-purple { background: #8957e533; color: var(--purple); }
   ul, ol { margin: 0.5rem 0 1rem 1.5rem; }
   li { margin-bottom: 0.3rem; }
-  .toc {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 1.2rem 1.5rem;
-    margin: 1.5rem 0;
-  }
+  .toc { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1.2rem 1.5rem; margin: 1.5rem 0; }
   .toc ul { list-style: none; margin: 0; padding: 0; }
   .toc li { margin: 0.3rem 0; }
   .toc a { color: var(--accent); text-decoration: none; }
   .toc a:hover { text-decoration: underline; }
-  .flow-diagram {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 1.5rem;
-    margin: 1.2rem 0;
-    font-family: monospace;
-    font-size: 0.85rem;
-    line-height: 1.4;
-    white-space: pre;
-    overflow-x: auto;
-  }
-  .phase-box {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 1.2rem;
-    margin: 1rem 0;
-  }
+  .mermaid { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin: 1.2rem 0; text-align: center; overflow-x: auto; }
+  .mermaid svg { max-width: 100%; height: auto; }
+  .phase-box { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1.2rem; margin: 1rem 0; }
   .phase-box h4 { margin-top: 0; }
-  .comparison-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 1rem;
-    margin: 1rem 0;
-  }
-  .comparison-grid > div {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 1rem;
-  }
-  @media (max-width: 700px) {
-    .comparison-grid { grid-template-columns: 1fr; }
-    body { padding: 1rem; }
-  }
-  hr {
-    border: none;
-    border-top: 1px solid var(--border);
-    margin: 2rem 0;
-  }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+  @media (max-width: 700px) { body { padding: 1rem; } }
 </style>
 </head>
 <body>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      primaryColor: '#1f6feb',
+      primaryTextColor: '#f0f6fc',
+      primaryBorderColor: '#30363d',
+      lineColor: '#58a6ff',
+      secondaryColor: '#238636',
+      tertiaryColor: '#161b22',
+      background: '#161b22',
+      mainBkg: '#161b22',
+      nodeBorder: '#30363d',
+      clusterBkg: '#0d1117',
+      clusterBorder: '#30363d',
+      titleColor: '#f0f6fc',
+      edgeLabelBackground: '#161b22',
+      fontSize: '14px'
+    },
+    flowchart: { curve: 'basis', padding: 20, htmlLabels: true }
+  });
+</script>
 
 <h1>Agent Harness 技术白皮书</h1>
 <p class="subtitle">
@@ -235,42 +137,12 @@
 </div>
 
 <table>
-  <tr>
-    <th>维度</th>
-    <th>Ornith 1.5-35B</th>
-    <th>我们的组合</th>
-    <th>优势来源</th>
-  </tr>
-  <tr>
-    <td>Agent 框架</td>
-    <td>标准 harness</td>
-    <td>DSH 插件化 + Prime Agent RLM</td>
-    <td><span class="badge badge-blue">推理时可调</span></td>
-  </tr>
-  <tr>
-    <td>Tool Calling</td>
-    <td>GRPO 训练优化</td>
-    <td>DSH 结构化 prompt + /refine 迭代</td>
-    <td><span class="badge badge-green">跨会话学习</span></td>
-  </tr>
-  <tr>
-    <td>多模型协作</td>
-    <td>❌ 单模型</td>
-    <td>Qwen3.6 写代码 + Gemma4 推理验证</td>
-    <td><span class="badge badge-purple">独有优势</span></td>
-  </tr>
-  <tr>
-    <td>运行时优化</td>
-    <td>❌ 无</td>
-    <td>expert-cache + L4 skip load + MTP</td>
-    <td><span class="badge badge-green">CGC fork</span></td>
-  </tr>
-  <tr>
-    <td>端云协同</td>
-    <td>❌ 无</td>
-    <td>DOPD PD 分离 + 跨设备路由</td>
-    <td><span class="badge badge-green">独有优势</span></td>
-  </tr>
+  <tr><th>维度</th><th>Ornith 1.5-35B</th><th>我们的组合</th><th>优势来源</th></tr>
+  <tr><td>Agent 框架</td><td>标准 harness</td><td>DSH 插件化 + Prime Agent RLM</td><td><span class="badge badge-blue">推理时可调</span></td></tr>
+  <tr><td>Tool Calling</td><td>GRPO 训练优化</td><td>DSH 结构化 prompt + /refine 迭代</td><td><span class="badge badge-green">跨会话学习</span></td></tr>
+  <tr><td>多模型协作</td><td>❌ 单模型</td><td>Qwen3.6 写代码 + Gemma4 推理验证</td><td><span class="badge badge-purple">独有优势</span></td></tr>
+  <tr><td>运行时优化</td><td>❌ 无</td><td>expert-cache + L4 skip load + MTP</td><td><span class="badge badge-green">CGC fork</span></td></tr>
+  <tr><td>端云协同</td><td>❌ 无</td><td>DOPD PD 分离 + 跨设备路由</td><td><span class="badge badge-green">独有优势</span></td></tr>
 </table>
 
 <!-- ============================================================ -->
@@ -279,76 +151,16 @@
 <h3>2.1 完整 Benchmark 对比</h3>
 
 <table>
-  <tr>
-    <th>Benchmark</th>
-    <th>Qwen3.6-35B (原始)</th>
-    <th>Ornith 1.5 35B</th>
-    <th>差距</th>
-    <th>我们的目标</th>
-  </tr>
-  <tr>
-    <td><strong>Terminal-Bench 2.1 (Claude Code)</strong></td>
-    <td>49.2</td>
-    <td>68.5</td>
-    <td style="color:var(--red)">+19.3</td>
-    <td style="color:var(--green)">≥68.5</td>
-  </tr>
-  <tr>
-    <td><strong>Terminal-Bench 2.1 (Terminus-2)</strong></td>
-    <td>52.5</td>
-    <td>67.8</td>
-    <td style="color:var(--red)">+15.3</td>
-    <td style="color:var(--green)">≥67.8</td>
-  </tr>
-  <tr>
-    <td><strong>SWE-bench Verified</strong></td>
-    <td>73.4</td>
-    <td>79</td>
-    <td style="color:var(--red)">+5.6</td>
-    <td style="color:var(--green)">≥79</td>
-  </tr>
-  <tr>
-    <td><strong>SWE-bench Pro</strong></td>
-    <td>49.5</td>
-    <td>59.6</td>
-    <td style="color:var(--red)">+10.1</td>
-    <td style="color:var(--yellow)">≥55</td>
-  </tr>
-  <tr>
-    <td><strong>DeepSWE</strong></td>
-    <td>0</td>
-    <td>22</td>
-    <td style="color:var(--red)">+22</td>
-    <td style="color:var(--yellow)">≥15</td>
-  </tr>
-  <tr>
-    <td><strong>NL2Repo</strong></td>
-    <td>29.4</td>
-    <td>46.2</td>
-    <td style="color:var(--red)">+16.8</td>
-    <td style="color:var(--yellow)">≥40</td>
-  </tr>
-  <tr>
-    <td><strong>MCP-Atlas</strong></td>
-    <td>62.8</td>
-    <td>70.2</td>
-    <td style="color:var(--red)">+7.4</td>
-    <td style="color:var(--green)">≥70</td>
-  </tr>
-  <tr>
-    <td><strong>Toolathlon-Verified</strong></td>
-    <td>41.7</td>
-    <td>48.7</td>
-    <td style="color:var(--red)">+7.0</td>
-    <td style="color:var(--green)">≥49</td>
-  </tr>
-  <tr>
-    <td><strong>GPQA Diamond</strong></td>
-    <td>86</td>
-    <td>89.2</td>
-    <td style="color:var(--red)">+3.2</td>
-    <td style="color:var(--green)">≥89</td>
-  </tr>
+  <tr><th>Benchmark</th><th>Qwen3.6-35B</th><th>Ornith 1.5 35B</th><th>差距</th><th>我们的目标</th></tr>
+  <tr><td><strong>Terminal-Bench 2.1 (Claude Code)</strong></td><td>49.2</td><td>68.5</td><td style="color:var(--red)">+19.3</td><td style="color:var(--green)">≥68.5</td></tr>
+  <tr><td><strong>Terminal-Bench 2.1 (Terminus-2)</strong></td><td>52.5</td><td>67.8</td><td style="color:var(--red)">+15.3</td><td style="color:var(--green)">≥67.8</td></tr>
+  <tr><td><strong>SWE-bench Verified</strong></td><td>73.4</td><td>79</td><td style="color:var(--red)">+5.6</td><td style="color:var(--green)">≥79</td></tr>
+  <tr><td><strong>SWE-bench Pro</strong></td><td>49.5</td><td>59.6</td><td style="color:var(--red)">+10.1</td><td style="color:var(--yellow)">≥55</td></tr>
+  <tr><td><strong>DeepSWE</strong></td><td>0</td><td>22</td><td style="color:var(--red)">+22</td><td style="color:var(--yellow)">≥15</td></tr>
+  <tr><td><strong>NL2Repo</strong></td><td>29.4</td><td>46.2</td><td style="color:var(--red)">+16.8</td><td style="color:var(--yellow)">≥40</td></tr>
+  <tr><td><strong>MCP-Atlas</strong></td><td>62.8</td><td>70.2</td><td style="color:var(--red)">+7.4</td><td style="color:var(--green)">≥70</td></tr>
+  <tr><td><strong>Toolathlon-Verified</strong></td><td>41.7</td><td>48.7</td><td style="color:var(--red)">+7.0</td><td style="color:var(--green)">≥49</td></tr>
+  <tr><td><strong>GPQA Diamond</strong></td><td>86</td><td>89.2</td><td style="color:var(--red)">+3.2</td><td style="color:var(--green)">≥89</td></tr>
 </table>
 
 <h3>2.2 Ornith 1.5 的优势来源</h3>
@@ -360,15 +172,14 @@
 </div>
 
 <p>Ornith 1.5 的自我改进循环：</p>
-<div class="flow-diagram">
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  Task Generation │ ──→ │ Scaffold         │ ──→ │ Rollout         │
-│  (生成训练任务)   │     │ Construction     │     │ Optimization    │
-│                  │     │ (构造解题框架)    │     │ (优化解题路径)   │
-└────────┬────────┘     └──────────────────┘     └────────┬────────┘
-         │                                                │
-         └────────────── GRPO 强化学习 ←──────────────────┘
-                        (联合优化三维度)
+<div class="mermaid">
+flowchart LR
+    TG["🎯 Task Generation<br/>生成训练任务"] --> SC["🏗️ Scaffold Construction<br/>构造解题框架"]
+    SC --> RO["🚀 Rollout Optimization<br/>优化解题路径"]
+    RO -->|"GRPO 强化学习"| TG
+    style TG fill:#1f6feb33,stroke:#58a6ff,color:#f0f6fc
+    style SC fill:#23863633,stroke:#3fb950,color:#f0f6fc
+    style RO fill:#d2992233,stroke:#d29922,color:#f0f6fc
 </div>
 
 <!-- ============================================================ -->
@@ -376,66 +187,96 @@
 
 <h3>3.1 系统架构图</h3>
 
-<div class="flow-diagram">
-                    ┌─────────────────────────────────────────────┐
-                    │          Agent Harness 协同架构               │
-                    ├─────────────────────────────────────────────┤
-                    │                                             │
-                    │  ┌─────────────┐    ┌──────────────────┐   │
-                    │  │  DSH (dsh)  │───→│  Cordis Plugin   │   │
-                    │  │  基础设施层  │    │  Kernel          │   │
-                    │  └──────┬──────┘    └──────────────────┘   │
-                    │         │                                    │
-                    │         ▼                                    │
-                    │  ┌──────────────────────────────────────┐   │
-                    │  │        Prime Agent (RLM)              │   │
-                    │  │  ┌────────┐ ┌────────┐ ┌──────────┐ │   │
-                    │  │  │/refine │ │compact │ │  agent_  │ │   │
-                    │  │  │ 自改进  │ │ 上下文  │ │ message  │ │   │
-                    │  │  └────────┘ └────────┘ └──────────┘ │   │
-                    │  └──────────────┬───────────────────────┘   │
-                    │                 │                            │
-                    │         ┌───────┴───────┐                   │
-                    │         ▼               ▼                   │
-                    │  ┌─────────────┐ ┌─────────────┐           │
-                    │  │  Qwen3.6    │ │   Gemma4    │           │
-                    │  │  35B-A3B    │ │   26B-A4B   │           │
-                    │  │  (代码生成)  │ │  (推理验证)  │           │
-                    │  └──────┬──────┘ └──────┬──────┘           │
-                    │         │               │                   │
-                    │         ▼               ▼                   │
-                    │  ┌──────────────────────────────────────┐   │
-                    │  │       CGC Engine (Runtime)            │   │
-                    │  │  expert-cache │ L4-skip │ MTP │ PD   │   │
-                    │  └──────────────────────────────────────┘   │
-                    │                                             │
-                    └─────────────────────────────────────────────┘
+<div class="mermaid">
+graph TB
+    subgraph Harness["🎯 Agent Harness 协同架构"]
+        direction TB
+        DSH["🔌 DSH<br/>DeepSeek Harness<br/>插件化基础设施"]
+        CORDIS["⚙️ Cordis Kernel<br/>插件管理 + 依赖注入"]
+        DSH --> CORDIS
+
+        subgraph PrimeAgent["🧠 Prime Agent (RLM)"]
+            direction LR
+            REFINE["🔄 /refine<br/>自我改进"]
+            COMPACT["📦 compact<br/>上下文压缩"]
+            A2A["📡 agent_message<br/>子代理通信"]
+            RLM["🔁 RLM<br/>递归子代理"]
+        end
+        CORDIS --> PrimeAgent
+
+        subgraph Models["🤖 双模型协作"]
+            direction LR
+            QWEN["🟦 Qwen3.6-35B-A3B<br/>代码生成 + Tool Calling<br/>3B active / 256 experts"]
+            GEMMA["🟩 Gemma4-26B-A4B<br/>推理验证 + 代码审查<br/>4B active"]
+        end
+        PrimeAgent --> Models
+
+        subgraph Runtime["⚡ CGC Engine Runtime"]
+            direction LR
+            EC["💾 Expert Cache<br/>4GiB 预加载"]
+            L4["⏭️ L4 Skip Load<br/>跳过非活跃 expert"]
+            MTP["🚀 MTP<br/>Speculative Decoding"]
+            PD["🌐 DOPD PD<br/>端云分离推理"]
+        end
+        Models --> Runtime
+    end
+
+    style Harness fill:#0d1117,stroke:#30363d,stroke-width:2px
+    style PrimeAgent fill:#161b22,stroke:#58a6ff,stroke-width:1px
+    style Models fill:#161b22,stroke:#3fb950,stroke-width:1px
+    style Runtime fill:#161b22,stroke:#d29922,stroke-width:1px
+    style DSH fill:#1f6feb33,stroke:#58a6ff,color:#f0f6fc
+    style CORDIS fill:#1f6feb33,stroke:#58a6ff,color:#f0f6fc
+    style REFINE fill:#23863633,stroke:#3fb950,color:#f0f6fc
+    style COMPACT fill:#23863633,stroke:#3fb950,color:#f0f6fc
+    style A2A fill:#23863633,stroke:#3fb950,color:#f0f6fc
+    style RLM fill:#23863633,stroke:#3fb950,color:#f0f6fc
+    style QWEN fill:#1f6feb33,stroke:#58a6ff,color:#f0f6fc
+    style GEMMA fill:#23863633,stroke:#3fb950,color:#f0f6fc
+    style EC fill:#9e6a0333,stroke:#d29922,color:#f0f6fc
+    style L4 fill:#9e6a0333,stroke:#d29922,color:#f0f6fc
+    style MTP fill:#9e6a0333,stroke:#d29922,color:#f0f6fc
+    style PD fill:#9e6a0333,stroke:#d29922,color:#f0f6fc
 </div>
 
 <h3>3.2 数据流</h3>
 
-<div class="flow-diagram">
-用户任务
-  │
-  ▼
-DSH Standard Mode (插件化工具编排)
-  │
-  ├─→ Prime Agent RLM (递归子代理调度)
-  │     │
-  │     ├─→ /refine (推理时自我改进)
-  │     │     ├─ create_prompt_note()  → 优化 system prompt
-  │     │     ├─ create_skill()        → 添加工具技能
-  │     │     ├─ create_memory()       → 添加经验记忆
-  │     │     └─ create_subagent()     → 创建子代理
-  │     │
-  │     ├─→ Qwen3.6-35B (主推理: 代码生成 + tool calling)
-  │     │     └─ CGC Engine: expert-cache + L4 skip load
-  │     │
-  │     └─→ Gemma4-26B (辅助推理: 代码审查 + 逻辑验证)
-  │
-  └─→ Terminal-Bench 任务执行 (bash + str_replace_editor)
-        │
-        └─→ 结果反馈 → /refine 迭代优化
+<div class="mermaid">
+flowchart TB
+    INPUT["📥 用户任务"] --> DSH2["🔌 DSH Standard Mode<br/>插件化工具编排"]
+    DSH2 --> PA["🧠 Prime Agent RLM<br/>递归子代理调度"]
+    PA --> REFINE2["🔄 /refine<br/>推理时自我改进"]
+    PA --> QWEN2["🟦 Qwen3.6-35B<br/>主推理: 代码生成"]
+    PA --> GEMMA2["🟩 Gemma4-26B<br/>辅助: 代码审查"]
+
+    REFINE2 --> NOTES["📝 Prompt Notes"]
+    REFINE2 --> SKILLS["🛠️ Skills"]
+    REFINE2 --> MEMORY["💾 Memory"]
+    REFINE2 --> SUB["🤖 Sub-agents"]
+
+    QWEN2 --> CGC2["⚡ CGC Engine<br/>expert-cache + L4 skip"]
+    GEMMA2 --> REVIEW2["✅ 代码审查结果"]
+
+    CGC2 --> TB2["🖥️ Terminal-Bench<br/>任务执行"]
+    REVIEW2 --> TB2
+
+    TB2 --> RESULT["📊 结果"]
+    RESULT -->|"失败/可优化"| REFINE2
+
+    style INPUT fill:#1f6feb33,stroke:#58a6ff,color:#f0f6fc
+    style DSH2 fill:#1f6feb33,stroke:#58a6ff,color:#f0f6fc
+    style PA fill:#23863633,stroke:#3fb950,color:#f0f6fc
+    style REFINE2 fill:#8957e533,stroke:#bc8cff,color:#f0f6fc
+    style QWEN2 fill:#1f6feb33,stroke:#58a6ff,color:#f0f6fc
+    style GEMMA2 fill:#23863633,stroke:#3fb950,color:#f0f6fc
+    style CGC2 fill:#9e6a0333,stroke:#d29922,color:#f0f6fc
+    style TB2 fill:#f8514933,stroke:#f85149,color:#f0f6fc
+    style RESULT fill:#161b22,stroke:#30363d,color:#f0f6fc
+    style NOTES fill:#161b22,stroke:#30363d,color:#c9d1d9
+    style SKILLS fill:#161b22,stroke:#30363d,color:#c9d1d9
+    style MEMORY fill:#161b22,stroke:#30363d,color:#c9d1d9
+    style SUB fill:#161b22,stroke:#30363d,color:#c9d1d9
+    style REVIEW2 fill:#23863633,stroke:#3fb950,color:#f0f6fc
 </div>
 
 <!-- ============================================================ -->
@@ -456,36 +297,11 @@ DSH Standard Mode (插件化工具编排)
 <h4>DSH 四种运行模式对比</h4>
 
 <table>
-  <tr>
-    <th>模式</th>
-    <th>工具集</th>
-    <th>对模型要求</th>
-    <th>适合场景</th>
-  </tr>
-  <tr>
-    <td><span class="badge badge-green">Standard</span></td>
-    <td>file edit, shell, web search, skills, planning, subagents, workflows</td>
-    <td>高</td>
-    <td>完整 coding agent</td>
-  </tr>
-  <tr>
-    <td><span class="badge badge-blue">PTC (Code)</span></td>
-    <td>Standard 全部 + Code Mode SDK 编排</td>
-    <td>最高</td>
-    <td>模型生成代码编排工具调用</td>
-  </tr>
-  <tr>
-    <td><span class="badge badge-yellow">Minimal</span></td>
-    <td>bash + str_replace_editor (仅两个)</td>
-    <td>低</td>
-    <td>基准测试、小模型</td>
-  </tr>
-  <tr>
-    <td><span class="badge badge-purple">Creator</span></td>
-    <td>Standard + runtime inspection + plugin experiments</td>
-    <td>高</td>
-    <td>自定义 agent preset</td>
-  </tr>
+  <tr><th>模式</th><th>工具集</th><th>对模型要求</th><th>适合场景</th></tr>
+  <tr><td><span class="badge badge-green">Standard</span></td><td>file edit, shell, web search, skills, planning, subagents, workflows</td><td>高</td><td>完整 coding agent</td></tr>
+  <tr><td><span class="badge badge-blue">PTC (Code)</span></td><td>Standard 全部 + Code Mode SDK 编排</td><td>最高</td><td>模型生成代码编排工具调用</td></tr>
+  <tr><td><span class="badge badge-yellow">Minimal</span></td><td>bash + str_replace_editor (仅两个)</td><td>低</td><td>基准测试、小模型</td></tr>
+  <tr><td><span class="badge badge-purple">Creator</span></td><td>Standard + runtime inspection + plugin experiments</td><td>高</td><td>自定义 agent preset</td></tr>
 </table>
 
 <h4>DSH 对 Qwen3.6-35B 的提升路径</h4>
@@ -521,19 +337,21 @@ DSH Standard Mode (插件化工具编排)
 
 <h4>/refine 自改进机制</h4>
 
-<div class="flow-diagram">
-/refine 执行流程:
-  │
-  ├─ Phase 1: Planning (后台, 不阻塞)
-  │    └─ LLM 分析 trajectory → 提出最小 CRUD 编辑
-  │
-  └─ Phase 2: Apply (快速, 仅在 turn boundary)
-       └─ 写入 disk → 重建 system prompt
-
-每条 refinement 记录:
-  - trigger: 触发原因 (失败观察 / 可复用策略)
-  - outcome: 产生的效果
-  → 改进有证据支撑, 不是任意修改
+<div class="mermaid">
+flowchart LR
+    subgraph Phase1["Phase 1: Planning (后台)"]
+        TRAJ["📊 分析 Trajectory"] --> PROPOSE["💡 提出最小 CRUD 编辑"]
+    end
+    subgraph Phase2["Phase 2: Apply (快速)"]
+        DISK["💾 写入 Disk"] --> REBUILD["🔧 重建 System Prompt"]
+    end
+    Phase1 --> Phase2
+    style Phase1 fill:#161b22,stroke:#58a6ff,stroke-width:1px
+    style Phase2 fill:#161b22,stroke:#3fb950,stroke-width:1px
+    style TRAJ fill:#1f6feb33,stroke:#58a6ff,color:#f0f6fc
+    style PROPOSE fill:#1f6feb33,stroke:#58a6ff,color:#f0f6fc
+    style DISK fill:#23863633,stroke:#3fb950,color:#f0f6fc
+    style REBUILD fill:#23863633,stroke:#3fb950,color:#f0f6fc
 </div>
 
 <div class="callout success">
@@ -567,31 +385,11 @@ DSH Standard Mode (插件化工具编排)
 
 <table>
   <tr><th>特性</th><th>状态</th><th>效果</th></tr>
-  <tr>
-    <td>Expert Cache</td>
-    <td><span class="badge badge-green">✅ 已验证</span></td>
-    <td>Mac M4: 3t/s → 27t/s (9x 提升)</td>
-  </tr>
-  <tr>
-    <td>L4 Skip Load</td>
-    <td><span class="badge badge-green">✅ 已验证</span></td>
-    <td>跳过非活跃 expert 的磁盘读取</td>
-  </tr>
-  <tr>
-    <td>MTP Speculative Decoding</td>
-    <td><span class="badge badge-yellow">⚠️ 8GB 受限</span></td>
-    <td>Mac M4: 可用; Windows 8GB: accept rate 低</td>
-  </tr>
-  <tr>
-    <td>DOPD PD 分离</td>
-    <td><span class="badge badge-green">✅ 已联调通过</span></td>
-    <td>Windows → Mac: 16.6t/s 跨 LAN decode</td>
-  </tr>
-  <tr>
-    <td>三平台编译</td>
-    <td><span class="badge badge-green">✅ Mac/Windows/鸿蒙PC</span></td>
-    <td>统一代码库, 平台特化编译</td>
-  </tr>
+  <tr><td>Expert Cache</td><td><span class="badge badge-green">✅ 已验证</span></td><td>Mac M4: 3t/s → 27t/s (9x 提升)</td></tr>
+  <tr><td>L4 Skip Load</td><td><span class="badge badge-green">✅ 已验证</span></td><td>跳过非活跃 expert 的磁盘读取</td></tr>
+  <tr><td>MTP Speculative Decoding</td><td><span class="badge badge-yellow">⚠️ 8GB 受限</span></td><td>Mac M4: 可用; Windows 8GB: accept rate 低</td></tr>
+  <tr><td>DOPD PD 分离</td><td><span class="badge badge-green">✅ 已联调通过</span></td><td>Windows → Mac: 16.6t/s 跨 LAN decode</td></tr>
+  <tr><td>三平台编译</td><td><span class="badge badge-green">✅ Mac/Windows/鸿蒙PC</span></td><td>统一代码库, 平台特化编译</td></tr>
 </table>
 
 <!-- ============================================================ -->
@@ -599,35 +397,25 @@ DSH Standard Mode (插件化工具编排)
 
 <h3>5.1 路由策略</h3>
 
-<div class="flow-diagram">
-任务输入
-  │
-  ▼
-┌─────────────────────────┐
-│   DSH Task Analyzer     │
-│   (分析任务类型)         │
-└───────────┬─────────────┘
-            │
-     ┌──────┴──────┐
-     ▼             ▼
-┌─────────┐  ┌─────────┐
-│ 代码生成 │  │ 推理验证 │
-│ 任务    │  │ 任务    │
-└────┬────┘  └────┬────┘
-     │             │
-     ▼             ▼
-┌──────────┐  ┌──────────┐
-│ Qwen3.6  │  │ Gemma4   │
-│ 35B-A3B  │  │ 26B-A4B  │
-│ (主推理)  │  │ (辅助)   │
-└────┬────┘  └────┬────┘
-     │             │
-     └──────┬──────┘
-            ▼
-┌─────────────────────────┐
-│   Prime Agent /refine   │
-│   (结果审查 + 经验学习)  │
-└─────────────────────────┘
+<div class="mermaid">
+flowchart TB
+    INPUT3["📥 任务输入"] --> ANALYZE["🔍 DSH Task Analyzer<br/>分析任务类型"]
+
+    ANALYZE -->|"代码生成"| QWEN3["🟦 Qwen3.6-35B-A3B<br/>主推理引擎"]
+    ANALYZE -->|"推理验证"| GEMMA3["🟩 Gemma4-26B-A4B<br/>辅助推理"]
+    ANALYZE -->|"视觉任务"| GEMMA3
+
+    QWEN3 --> REVIEW3["✅ 代码审查"]
+    GEMMA3 --> REVIEW3
+
+    REVIEW3 --> REFINE3["🔄 Prime Agent /refine<br/>结果审查 + 经验学习"]
+
+    style INPUT3 fill:#1f6feb33,stroke:#58a6ff,color:#f0f6fc
+    style ANALYZE fill:#161b22,stroke:#30363d,color:#f0f6fc
+    style QWEN3 fill:#1f6feb33,stroke:#58a6ff,color:#f0f6fc
+    style GEMMA3 fill:#23863633,stroke:#3fb950,color:#f0f6fc
+    style REVIEW3 fill:#d2992233,stroke:#d29922,color:#f0f6fc
+    style REFINE3 fill:#8957e533,stroke:#bc8cff,color:#f0f6fc
 </div>
 
 <h3>5.2 DSH Subagent 路由配置</h3>
@@ -659,42 +447,12 @@ DSH Standard Mode (插件化工具编排)
 <h3>5.3 任务分配矩阵</h3>
 
 <table>
-  <tr>
-    <th>任务类型</th>
-    <th>主模型</th>
-    <th>辅助模型</th>
-    <th>原因</th>
-  </tr>
-  <tr>
-    <td>代码生成 / 修复</td>
-    <td><span class="badge badge-blue">Qwen3.6</span></td>
-    <td>Gemma4 (审查)</td>
-    <td>Qwen3.6 SWE-bench 73.4, 代码能力强</td>
-  </tr>
-  <tr>
-    <td>多步推理</td>
-    <td><span class="badge badge-green">Gemma4</span></td>
-    <td>Qwen3.6 (执行)</td>
-    <td>Gemma4 GPQA 更高, 推理链更稳</td>
-  </tr>
-  <tr>
-    <td>视觉理解</td>
-    <td><span class="badge badge-green">Gemma4</span></td>
-    <td>—</td>
-    <td>Qwen3.6 无视觉能力</td>
-  </tr>
-  <tr>
-    <td>Terminal-Bench bash</td>
-    <td><span class="badge badge-blue">Qwen3.6</span></td>
-    <td>—</td>
-    <td>Minimal mode, 单模型足够</td>
-  </tr>
-  <tr>
-    <td>SWE-bench repo-level</td>
-    <td><span class="badge badge-blue">Qwen3.6</span></td>
-    <td><span class="badge badge-green">Gemma4</span> (验证)</td>
-    <td>生成 + 审查双循环</td>
-  </tr>
+  <tr><th>任务类型</th><th>主模型</th><th>辅助模型</th><th>原因</th></tr>
+  <tr><td>代码生成 / 修复</td><td><span class="badge badge-blue">Qwen3.6</span></td><td>Gemma4 (审查)</td><td>Qwen3.6 SWE-bench 73.4, 代码能力强</td></tr>
+  <tr><td>多步推理</td><td><span class="badge badge-green">Gemma4</span></td><td>Qwen3.6 (执行)</td><td>Gemma4 GPQA 更高, 推理链更稳</td></tr>
+  <tr><td>视觉理解</td><td><span class="badge badge-green">Gemma4</span></td><td>—</td><td>Qwen3.6 无视觉能力</td></tr>
+  <tr><td>Terminal-Bench bash</td><td><span class="badge badge-blue">Qwen3.6</span></td><td>—</td><td>Minimal mode, 单模型足够</td></tr>
+  <tr><td>SWE-bench repo-level</td><td><span class="badge badge-blue">Qwen3.6</span></td><td><span class="badge badge-green">Gemma4</span> (验证)</td><td>生成 + 审查双循环</td></tr>
 </table>
 
 <!-- ============================================================ -->
@@ -704,181 +462,94 @@ DSH Standard Mode (插件化工具编排)
 
 <table>
   <tr><th>组件</th><th>位置</th><th>作用</th></tr>
-  <tr>
-    <td>tb_loop agent harness</td>
-    <td><code>/d/alex/flashkv0516/tb_loop/</code></td>
-    <td>Terminal-Bench 跑任务 + SFT 数据生成</td>
-  </tr>
-  <tr>
-    <td>local_rehearsal.py</td>
-    <td><code>tb_loop/scripts/</code></td>
-    <td>核心 agent (调 API → 解析命令 → 执行 → 收集观察)</td>
-  </tr>
-  <tr>
-    <td>batch_run.sh</td>
-    <td><code>tb_loop/scripts/</code></td>
-    <td>批量跑多个任务</td>
-  </tr>
-  <tr>
-    <td>refine_harness.sh</td>
-    <td><code>tb_loop/learning/</code></td>
-    <td>云端 /refine 蒸馏</td>
-  </tr>
-  <tr>
-    <td>gen_sft.sh</td>
-    <td><code>tb_loop/</code></td>
-    <td>生成 SFT 成功轨迹数据集</td>
-  </tr>
-  <tr>
-    <td>CGC Engine</td>
-    <td><code>/d/alex/flashkv0516/cgcengine_full/</code></td>
-    <td>expert-cache + MTP + PD 分离</td>
-  </tr>
-  <tr>
-    <td>edge_server.py</td>
-    <td><code>cgcengine_full/CGC-main/cgc_engine/pd/</code></td>
-    <td>端设备 HTTP server + profile 上报</td>
-  </tr>
-  <tr>
-    <td>router.py</td>
-    <td><code>cgcengine_full/CGC-main/cgc_engine/pd/</code></td>
-    <td>DOPD 路由决策</td>
-  </tr>
+  <tr><td>tb_loop agent harness</td><td><code>/d/alex/flashkv0516/tb_loop/</code></td><td>Terminal-Bench 跑任务 + SFT 数据生成</td></tr>
+  <tr><td>local_rehearsal.py</td><td><code>tb_loop/scripts/</code></td><td>核心 agent (调 API → 解析命令 → 执行 → 收集观察)</td></tr>
+  <tr><td>batch_run.sh</td><td><code>tb_loop/scripts/</code></td><td>批量跑多个任务</td></tr>
+  <tr><td>refine_harness.sh</td><td><code>tb_loop/learning/</code></td><td>云端 /refine 蒸馏</td></tr>
+  <tr><td>gen_sft.sh</td><td><code>tb_loop/</code></td><td>生成 SFT 成功轨迹数据集</td></tr>
+  <tr><td>CGC Engine</td><td><code>/d/alex/flashkv0516/cgcengine_full/</code></td><td>expert-cache + MTP + PD 分离</td></tr>
+  <tr><td>edge_server.py</td><td><code>cgcengine_full/CGC-main/cgc_engine/pd/</code></td><td>端设备 HTTP server + profile 上报</td></tr>
+  <tr><td>router.py</td><td><code>cgcengine_full/CGC-main/cgc_engine/pd/</code></td><td>DOPD 路由决策</td></tr>
 </table>
 
 <h3>6.2 整合方案</h3>
 
-<div class="flow-diagram">
-现有 tb_loop:
-  local_rehearsal.py → llama-server (Qwen3.6) → Terminal-Bench
-                              │
-                              ▼ (替换为)
-整合后:
-  DSH (Standard/Minimal) → Prime Agent (RLM + /refine)
-    │
-    ├─→ Qwen3.6-35B (via CGC edge_server.py)
-    │     └─ expert-cache + L4 skip load
-    │
-    ├─→ Gemma4-26B (via CGC edge_server.py, Mac M4)
-    │     └─ 推理验证子代理
-    │
-    └─→ Terminal-Bench 任务执行
-          └─→ /refine 迭代 → SFT 数据 → 微调 Qwen3.6
+<div class="mermaid">
+flowchart TB
+    subgraph BEFORE["📌 现有 tb_loop"]
+        direction LR
+        LR["📝 local_rehearsal.py"] --> LS["🖥️ llama-server<br/>Qwen3.6"] --> TB1["🖥️ Terminal-Bench"]
+    end
+    BEFORE -->|"替换为"| AFTER
+
+    subgraph AFTER["🚀 整合后架构"]
+        direction TB
+        DSH4["🔌 DSH Standard/Minimal"] --> PA4["🧠 Prime Agent<br/>RLM + /refine"]
+        PA4 --> Q4["🟦 Qwen3.6-35B<br/>expert-cache"]
+        PA4 --> G4["🟩 Gemma4-26B<br/>推理验证子代理"]
+        PA4 --> TB4["🖥️ Terminal-Bench"]
+        TB4 --> SFT4["📊 SFT 数据"]
+        SFT4 --> LORA4["🔧 LoRA 微调"]
+    end
+
+    style BEFORE fill:#f8514933,stroke:#f85149,stroke-width:1px
+    style AFTER fill:#3fb95033,stroke:#3fb950,stroke-width:1px
+    style LR fill:#161b22,stroke:#30363d,color:#c9d1d9
+    style LS fill:#161b22,stroke:#30363d,color:#c9d1d9
+    style TB1 fill:#161b22,stroke:#30363d,color:#c9d1d9
+    style DSH4 fill:#1f6feb33,stroke:#58a6ff,color:#f0f6fc
+    style PA4 fill:#23863633,stroke:#3fb950,color:#f0f6fc
+    style Q4 fill:#1f6feb33,stroke:#58a6ff,color:#f0f6fc
+    style G4 fill:#23863633,stroke:#3fb950,color:#f0f6fc
+    style TB4 fill:#d2992233,stroke:#d29922,color:#f0f6fc
+    style SFT4 fill:#8957e533,stroke:#bc8cff,color:#f0f6fc
+    style LORA4 fill:#8957e533,stroke:#bc8cff,color:#f0f6fc
 </div>
 
 <h3>6.3 关键整合点</h3>
 
 <table>
   <tr><th>整合点</th><th>现有实现</th><th>DSH/Prime Agent 替代</th><th>迁移难度</th></tr>
-  <tr>
-    <td>任务调度</td>
-    <td>batch_run.sh</td>
-    <td>DSH Headless mode + Prime Agent autonomous</td>
-    <td><span class="badge badge-green">低</span></td>
-  </tr>
-  <tr>
-    <td>Agent 核心</td>
-    <td>local_rehearsal.py</td>
-    <td>Prime Agent RLM + IPython REPL</td>
-    <td><span class="badge badge-yellow">中</span></td>
-  </tr>
-  <tr>
-    <td>自我改进</td>
-    <td>refine_harness.sh (云端)</td>
-    <td>Prime Agent /refine (本地推理时)</td>
-    <td><span class="badge badge-green">低</span></td>
-  </tr>
-  <tr>
-    <td>模型调用</td>
-    <td>OpenAI API → llama-server</td>
-    <td>DSH model plugin → CGC edge_server.py</td>
-    <td><span class="badge badge-yellow">中</span></td>
-  </tr>
-  <tr>
-    <td>SFT 数据</td>
-    <td>gen_sft.sh + build_sft_dataset.py</td>
-    <td>DSH trajectory log → SFT pipeline</td>
-    <td><span class="badge badge-green">低</span></td>
-  </tr>
+  <tr><td>任务调度</td><td>batch_run.sh</td><td>DSH Headless mode + Prime Agent autonomous</td><td><span class="badge badge-green">低</span></td></tr>
+  <tr><td>Agent 核心</td><td>local_rehearsal.py</td><td>Prime Agent RLM + IPython REPL</td><td><span class="badge badge-yellow">中</span></td></tr>
+  <tr><td>自我改进</td><td>refine_harness.sh (云端)</td><td>Prime Agent /refine (本地推理时)</td><td><span class="badge badge-green">低</span></td></tr>
+  <tr><td>模型调用</td><td>OpenAI API → llama-server</td><td>DSH model plugin → CGC edge_server.py</td><td><span class="badge badge-yellow">中</span></td></tr>
+  <tr><td>SFT 数据</td><td>gen_sft.sh + build_sft_dataset.py</td><td>DSH trajectory log → SFT pipeline</td><td><span class="badge badge-green">低</span></td></tr>
 </table>
 
 <!-- ============================================================ -->
 <h2 id="s7">7. 四步 Benchmark 验证计划</h2>
 
 <h3>Step 1: DSH Minimal Mode Baseline</h3>
-
 <div class="phase-box">
   <h4><span class="badge badge-blue">Step 1</span> DSH Minimal mode + Qwen3.6-35B</h4>
   <p><strong>目标：</strong> 确认 DSH harness 层对 Qwen3.6 的提升幅度</p>
-  <p><strong>配置：</strong></p>
-  <ul>
-    <li>DSH Minimal mode (bash + str_replace_editor only)</li>
-    <li>Qwen3.6-35B-A3B via llama-server (expert-cache ON)</li>
-    <li>10 个 Terminal-Bench 任务 (混合难度)</li>
-  </ul>
-  <p><strong>预期：</strong> Terminal-Bench 49.2 → 52~57 (+3~5 pts)</p>
-  <p><strong>对照组：</strong> local_rehearsal.py + Qwen3.6 (现有 baseline)</p>
-  <p><strong>耗时：</strong> ~2 小时</p>
+  <p><strong>配置：</strong> DSH Minimal mode (bash + str_replace) + Qwen3.6-35B via llama-server (expert-cache ON) + 10 个 Terminal-Bench 任务</p>
+  <p><strong>预期：</strong> Terminal-Bench 49.2 → 52~57 (+3~5 pts) &nbsp; <strong>耗时：</strong> ~2 小时</p>
 </div>
 
 <h3>Step 2: 加入 Prime Agent /refine</h3>
-
 <div class="phase-box">
   <h4><span class="badge badge-green">Step 2</span> + Prime Agent /refine 自改进</h4>
   <p><strong>目标：</strong> 验证 /refine 跨会话学习对 Qwen3.6 的提升</p>
-  <p><strong>配置：</strong></p>
-  <ul>
-    <li>DSH Standard mode + Prime Agent RLM</li>
-    <li>/refine enabled (每轮结束后自动 refine)</li>
-    <li>同一 10 个 Terminal-Bench 任务, 跑 3 轮</li>
-  </ul>
-  <p><strong>预期：</strong> Terminal-Bench 52~57 → 58~65 (+5~8 pts)</p>
-  <p><strong>关键指标：</strong></p>
-  <ul>
-    <li>harness_state.json 条目变化数量</li>
-    <li>每轮成功率提升曲线</li>
-    <li>refine 产生的 skill/memory 质量</li>
-  </ul>
-  <p><strong>耗时：</strong> ~6 小时 (3 轮 × 10 任务)</p>
+  <p><strong>配置：</strong> DSH Standard + Prime Agent RLM + /refine + 同 10 任务跑 3 轮</p>
+  <p><strong>预期：</strong> Terminal-Bench 52~57 → 58~65 (+5~8 pts) &nbsp; <strong>耗时：</strong> ~6 小时</p>
 </div>
 
 <h3>Step 3: 加入 Gemma4 子代理</h3>
-
 <div class="phase-box">
   <h4><span class="badge badge-purple">Step 3</span> + Gemma4 推理验证子代理</h4>
   <p><strong>目标：</strong> 验证多模型协作对 agent 准确率的提升</p>
-  <p><strong>配置：</strong></p>
-  <ul>
-    <li>DSH Standard mode + Prime Agent RLM</li>
-    <li>Qwen3.6-35B: 代码生成 + tool calling</li>
-    <li>Gemma4-26B: 代码审查 + 逻辑验证 (subagent)</li>
-    <li>Prime Agent A2A messaging 协调两个模型</li>
-  </ul>
-  <p><strong>预期：</strong> Terminal-Bench 58~65 → 62~68 (+2~3 pts)</p>
-  <p><strong>关键验证：</strong></p>
-  <ul>
-    <li>Gemma4 审查是否能捕获 Qwen3.6 的代码错误</li>
-    <li>多模型协调开销是否抵消准确率提升</li>
-    <li>子代理 spawn 延迟 (模型加载时间)</li>
-  </ul>
-  <p><strong>耗时：</strong> ~8 小时 (含模型切换调试)</p>
+  <p><strong>配置：</strong> Qwen3.6 (代码生成) + Gemma4 (代码审查) + Prime Agent A2A messaging</p>
+  <p><strong>预期：</strong> Terminal-Bench 58~65 → 62~68 (+2~3 pts) &nbsp; <strong>耗时：</strong> ~8 小时</p>
 </div>
 
 <h3>Step 4: 全组件联调</h3>
-
 <div class="phase-box">
   <h4><span class="badge badge-yellow">Step 4</span> 全组件联调 + 端云协同</h4>
   <p><strong>目标：</strong> 端到端验证, 对比 Ornith 1.5-35B-A3B</p>
-  <p><strong>配置：</strong></p>
-  <ul>
-    <li>DSH Standard mode + Prime Agent RLM + /refine</li>
-    <li>Qwen3.6-35B: Mac M4 (expert-cache + L4 skip) → 27t/s</li>
-    <li>Gemma4-26B: Mac M4 (推理验证子代理)</li>
-    <li>CGC PD 分离: Windows 8GB → Mac M4 decode</li>
-    <li>full 76 Terminal-Bench 任务</li>
-  </ul>
-  <p><strong>目标分数：</strong> Terminal-Bench ≥ 67.8 (超越 Ornith 1.5)</p>
-  <p><strong>耗时：</strong> ~12 小时 (76 任务 × 多轮)</p>
+  <p><strong>配置：</strong> DSH + Prime Agent + Qwen3.6 (Mac M4 27t/s) + Gemma4 + CGC PD 分离 + full 76 任务</p>
+  <p><strong>目标：</strong> Terminal-Bench ≥ 67.8 (超越 Ornith 1.5) &nbsp; <strong>耗时：</strong> ~12 小时</p>
 </div>
 
 <!-- ============================================================ -->
@@ -887,94 +558,24 @@ DSH Standard Mode (插件化工具编排)
 <h3>8.1 预期 Terminal-Bench 提升路径</h3>
 
 <table>
-  <tr>
-    <th>阶段</th>
-    <th>配置</th>
-    <th>预期分数</th>
-    <th>提升</th>
-    <th>置信度</th>
-  </tr>
-  <tr>
-    <td>原始</td>
-    <td>Qwen3.6 + local_rehearsal.py</td>
-    <td>49.2 ~ 52.5</td>
-    <td>—</td>
-    <td><span class="badge badge-green">已验证</span></td>
-  </tr>
-  <tr>
-    <td>Step 1</td>
-    <td>+ DSH Minimal</td>
-    <td>52 ~ 57</td>
-    <td>+3~5</td>
-    <td><span class="badge badge-green">高</span></td>
-  </tr>
-  <tr>
-    <td>Step 2</td>
-    <td>+ Prime Agent /refine</td>
-    <td>58 ~ 65</td>
-    <td>+5~8</td>
-    <td><span class="badge badge-yellow">中</span></td>
-  </tr>
-  <tr>
-    <td>Step 3</td>
-    <td>+ Gemma4 子代理</td>
-    <td>62 ~ 68</td>
-    <td>+2~3</td>
-    <td><span class="badge badge-yellow">中</span></td>
-  </tr>
-  <tr>
-    <td>Step 4</td>
-    <td>+ CGC runtime 优化</td>
-    <td>63 ~ 70</td>
-    <td>+1~2</td>
-    <td><span class="badge badge-red">低</span></td>
-  </tr>
-  <tr style="background: var(--card);">
-    <td colspan="3"><strong>Ornith 1.5-35B-A3B</strong></td>
-    <td><strong>68.5</strong></td>
-    <td><span class="badge badge-green">已发布</span></td>
-  </tr>
+  <tr><th>阶段</th><th>配置</th><th>预期分数</th><th>提升</th><th>置信度</th></tr>
+  <tr><td>原始</td><td>Qwen3.6 + local_rehearsal.py</td><td>49.2 ~ 52.5</td><td>—</td><td><span class="badge badge-green">已验证</span></td></tr>
+  <tr><td>Step 1</td><td>+ DSH Minimal</td><td>52 ~ 57</td><td>+3~5</td><td><span class="badge badge-green">高</span></td></tr>
+  <tr><td>Step 2</td><td>+ Prime Agent /refine</td><td>58 ~ 65</td><td>+5~8</td><td><span class="badge badge-yellow">中</span></td></tr>
+  <tr><td>Step 3</td><td>+ Gemma4 子代理</td><td>62 ~ 68</td><td>+2~3</td><td><span class="badge badge-yellow">中</span></td></tr>
+  <tr><td>Step 4</td><td>+ CGC runtime 优化</td><td>63 ~ 70</td><td>+1~2</td><td><span class="badge badge-red">低</span></td></tr>
+  <tr style="background:var(--card)"><td colspan="3"><strong>Ornith 1.5-35B-A3B</strong></td><td><strong>68.5</strong></td><td><span class="badge badge-green">已发布</span></td></tr>
 </table>
 
 <h3>8.2 风险矩阵</h3>
 
 <table>
-  <tr>
-    <th>风险</th>
-    <th>概率</th>
-    <th>影响</th>
-    <th>缓解措施</th>
-  </tr>
-  <tr>
-    <td>/refine 学到无效/有害条目</td>
-    <td><span class="badge badge-yellow">中</span></td>
-    <td><span class="badge badge-red">高</span></td>
-    <td>教训级归因验证 + 自动回滚</td>
-  </tr>
-  <tr>
-    <td>多模型协调开销抵消准确率</td>
-    <td><span class="badge badge-yellow">中</span></td>
-    <td><span class="badge badge-yellow">中</span></td>
-    <td>先测 Step 3 单独效果, 再决定是否启用</td>
-  </tr>
-  <tr>
-    <td>DSH + Prime Agent 兼容性问题</td>
-    <td><span class="badge badge-green">低</span></td>
-    <td><span class="badge badge-yellow">中</span></td>
-    <td>DSH 支持 model plugin, Prime Agent 支持任意 API</td>
-  </tr>
-  <tr>
-    <td>Qwen3.6 MoE 路由不稳定</td>
-    <td><span class="badge badge-yellow">中</span></td>
-    <td><span class="badge badge-yellow">中</span></td>
-    <td>temperature=0 + top-p=0.9 稳定路由</td>
-  </tr>
-  <tr>
-    <td>expert-cache 与多模型冲突</td>
-    <td><span class="badge badge-green">低</span></td>
-    <td><span class="badge badge-green">低</span></td>
-    <td>两个模型用独立 edge_server 实例</td>
-  </tr>
+  <tr><th>风险</th><th>概率</th><th>影响</th><th>缓解措施</th></tr>
+  <tr><td>/refine 学到无效/有害条目</td><td><span class="badge badge-yellow">中</span></td><td><span class="badge badge-red">高</span></td><td>教训级归因验证 + 自动回滚</td></tr>
+  <tr><td>多模型协调开销抵消准确率</td><td><span class="badge badge-yellow">中</span></td><td><span class="badge badge-yellow">中</span></td><td>先测 Step 3 单独效果, 再决定是否启用</td></tr>
+  <tr><td>DSH + Prime Agent 兼容性问题</td><td><span class="badge badge-green">低</span></td><td><span class="badge badge-yellow">中</span></td><td>DSH 支持 model plugin, Prime Agent 支持任意 API</td></tr>
+  <tr><td>Qwen3.6 MoE 路由不稳定</td><td><span class="badge badge-yellow">中</span></td><td><span class="badge badge-yellow">中</span></td><td>temperature=0 + top-p=0.9 稳定路由</td></tr>
+  <tr><td>expert-cache 与多模型冲突</td><td><span class="badge badge-green">低</span></td><td><span class="badge badge-green">低</span></td><td>两个模型用独立 edge_server 实例</td></tr>
 </table>
 
 <!-- ============================================================ -->
@@ -983,130 +584,63 @@ DSH Standard Mode (插件化工具编排)
 <h3>9.1 设备清单</h3>
 
 <table>
-  <tr>
-    <th>设备</th>
-    <th>RAM</th>
-    <th>GPU</th>
-    <th>角色</th>
-    <th>模型</th>
-  </tr>
-  <tr>
-    <td><strong>Mac M4</strong></td>
-    <td>16-64GB</td>
-    <td>M4 GPU (unified)</td>
-    <td>Prefill + Decode (主推理)</td>
-    <td>Qwen3.6-35B (27t/s) + Gemma4</td>
-  </tr>
-  <tr>
-    <td><strong>Windows 8GB</strong></td>
-    <td>8GB</td>
-    <td>MX250 2GB</td>
-    <td>Agent 控制 + 轻量 decode</td>
-    <td>Qwen2.5-7B (fallback)</td>
-  </tr>
-  <tr>
-    <td><strong>鸿蒙 PC (MateBook)</strong></td>
-    <td>24GB</td>
-    <td>麒麟 NPU</td>
-    <td>Decode 节点</td>
-    <td>Qwen3.6-35B (3-5t/s)</td>
-  </tr>
-  <tr>
-    <td><strong>鸿蒙手机 (Mate 70 Pro)</strong></td>
-    <td>12GB</td>
-    <td>麒麟 NPU</td>
-    <td>轻量 decode + 端侧 agent</td>
-    <td>Qwen3-14B (规划中)</td>
-  </tr>
+  <tr><th>设备</th><th>RAM</th><th>GPU</th><th>角色</th><th>模型</th></tr>
+  <tr><td><strong>Mac M4</strong></td><td>16-64GB</td><td>M4 GPU (unified)</td><td>Prefill + Decode (主推理)</td><td>Qwen3.6-35B (27t/s) + Gemma4</td></tr>
+  <tr><td><strong>Windows 8GB</strong></td><td>8GB</td><td>MX250 2GB</td><td>Agent 控制 + 轻量 decode</td><td>Qwen2.5-7B (fallback)</td></tr>
+  <tr><td><strong>鸿蒙 PC (MateBook)</strong></td><td>24GB</td><td>麒麟 NPU</td><td>Decode 节点</td><td>Qwen3.6-35B (3-5t/s)</td></tr>
+  <tr><td><strong>鸿蒙手机 (Mate 70 Pro)</strong></td><td>12GB</td><td>麒麟 NPU</td><td>轻量 decode + 端侧 agent</td><td>Qwen3-14B (规划中)</td></tr>
 </table>
 
 <h3>9.2 数据流拓扑</h3>
 
-<div class="flow-diagram">
-┌──────────────────────────────────────────────────────────┐
-│                    Windows 8GB (Agent Hub)                │
-│                                                          │
-│  DSH ──→ Prime Agent ──→ CGC edge_server.py             │
-│    │         │                │                          │
-│    │         │           ┌────┴────┐                     │
-│    │         │           │ DOPD    │                     │
-│    │         │           │ Router  │                     │
-│    │         │           └────┬────┘                     │
-│    │         │                │                          │
-│    │         ▼                ▼                          │
-│    │    /refine          ┌─────────┐                     │
-│    │    (本地)           │ local   │──→ Qwen2.5-7B     │
-│    │                     └─────────┘   (fallback)       │
-│    │                        │                            │
-└────┼────────────────────────┼────────────────────────────┘
-     │                        │
-     │    LAN (192.168.101.x)  │
-     │                        │
-     ▼                        ▼
-┌────────────────────────────────────┐
-│         Mac M4 (Decode Engine)     │
-│                                    │
-│  edge_server.py                    │
-│  ├─ Qwen3.6-35B (expert-cache)    │
-│  │   └─ 27t/s decode              │
-│  └─ Gemma4-26B (推理验证)          │
-│      └─ 子代理审查                  │
-│                                    │
-└────────────────────────────────────┘
+<div class="mermaid">
+flowchart TB
+    subgraph WIN["🖥️ Windows 8GB — Agent Hub"]
+        direction TB
+        DSH5["🔌 DSH"] --> PA5["🧠 Prime Agent"]
+        PA5 --> REFINE5["🔄 /refine (本地)"]
+        PA5 --> EDGE5["⚡ CGC edge_server.py"]
+        EDGE5 --> ROUTER5["🔀 DOPD Router"]
+        ROUTER5 -->|"fallback"| LOCAL5["🟦 Qwen2.5-7B"]
+    end
+
+    ROUTER5 -->|"LAN 192.168.101.x"| MAC2
+
+    subgraph MAC2["🍎 Mac M4 — Decode Engine"]
+        direction TB
+        EDGE6["⚡ CGC edge_server.py"] --> QWEN6["🟦 Qwen3.6-35B<br/>expert-cache → 27t/s"]
+        EDGE6 --> GEMMA6["🟩 Gemma4-26B<br/>推理验证子代理"]
+    end
+
+    style WIN fill:#161b22,stroke:#58a6ff,stroke-width:2px
+    style MAC2 fill:#161b22,stroke:#3fb950,stroke-width:2px
+    style DSH5 fill:#1f6feb33,stroke:#58a6ff,color:#f0f6fc
+    style PA5 fill:#23863633,stroke:#3fb950,color:#f0f6fc
+    style REFINE5 fill:#8957e533,stroke:#bc8cff,color:#f0f6fc
+    style EDGE5 fill:#9e6a0333,stroke:#d29922,color:#f0f6fc
+    style ROUTER5 fill:#f8514933,stroke:#f85149,color:#f0f6fc
+    style LOCAL5 fill:#1f6feb33,stroke:#58a6ff,color:#f0f6fc
+    style EDGE6 fill:#9e6a0333,stroke:#d29922,color:#f0f6fc
+    style QWEN6 fill:#1f6feb33,stroke:#58a6ff,color:#f0f6fc
+    style GEMMA6 fill:#23863633,stroke:#3fb950,color:#f0f6fc
 </div>
 
 <!-- ============================================================ -->
 <h2 id="s10">10. 实施时间线</h2>
 
 <table>
-  <tr>
-    <th>阶段</th>
-    <th>任务</th>
-    <th>耗时</th>
-    <th>产出</th>
-  </tr>
-  <tr>
-    <td><strong>Phase 1</strong></td>
-    <td>安装 DSH + Prime Agent, 配置连接 llama-server</td>
-    <td>1 天</td>
-    <td>DSH 可运行, 连接 Qwen3.6</td>
-  </tr>
-  <tr>
-    <td><strong>Phase 2</strong></td>
-    <td>Step 1: DSH Minimal baseline (10 任务)</td>
-    <td>1 天</td>
-    <td>Baseline 分数</td>
-  </tr>
-  <tr>
-    <td><strong>Phase 3</strong></td>
-    <td>Step 2: + Prime Agent /refine (3 轮)</td>
-    <td>2 天</td>
-    <td>/refine 效果数据</td>
-  </tr>
-  <tr>
-    <td><strong>Phase 4</strong></td>
-    <td>Step 3: + Gemma4 子代理</td>
-    <td>2 天</td>
-    <td>多模型协作效果</td>
-  </tr>
-  <tr>
-    <td><strong>Phase 5</strong></td>
-    <td>Step 4: 全组件联调 (76 任务)</td>
-    <td>3 天</td>
-    <td>最终分数, 对比 Ornith 1.5</td>
-  </tr>
-  <tr>
-    <td><strong>Phase 6</strong></td>
-    <td>SFT 数据生成 + Qwen3.6 LoRA 微调</td>
-    <td>3 天</td>
-    <td>微调后模型, 第二轮 benchmark</td>
-  </tr>
+  <tr><th>阶段</th><th>任务</th><th>耗时</th><th>产出</th></tr>
+  <tr><td><strong>Phase 1</strong></td><td>安装 DSH + Prime Agent, 配置连接 llama-server</td><td>1 天</td><td>DSH 可运行, 连接 Qwen3.6</td></tr>
+  <tr><td><strong>Phase 2</strong></td><td>Step 1: DSH Minimal baseline (10 任务)</td><td>1 天</td><td>Baseline 分数</td></tr>
+  <tr><td><strong>Phase 3</strong></td><td>Step 2: + Prime Agent /refine (3 轮)</td><td>2 天</td><td>/refine 效果数据</td></tr>
+  <tr><td><strong>Phase 4</strong></td><td>Step 3: + Gemma4 子代理</td><td>2 天</td><td>多模型协作效果</td></tr>
+  <tr><td><strong>Phase 5</strong></td><td>Step 4: 全组件联调 (76 任务)</td><td>3 天</td><td>最终分数, 对比 Ornith 1.5</td></tr>
+  <tr><td><strong>Phase 6</strong></td><td>SFT 数据生成 + Qwen3.6 LoRA 微调</td><td>3 天</td><td>微调后模型, 第二轮 benchmark</td></tr>
 </table>
 
 <hr>
 
 <h2>附录 A: 参考资料</h2>
-
 <ul>
   <li><strong>DeepSeek Harness</strong>: <code>github.com/deepseek-ai/deepseek-harness</code> (v0.1.2-alpha.1, MIT)</li>
   <li><strong>Prime Agent</strong>: <code>primeintellect.ai/blog/prime-agent</code> (arXiv: 2608.23552)</li>
@@ -1118,7 +652,6 @@ DSH Standard Mode (插件化工具编排)
 </ul>
 
 <h2>附录 B: 术语表</h2>
-
 <table>
   <tr><th>术语</th><th>含义</th></tr>
   <tr><td>DSH</td><td>DeepSeek Harness, 开源 agent harness 框架</td></tr>
