@@ -1,8 +1,10 @@
 #!/bin/bash
 # run_qwen36_calibrate.sh — 產生 qwen36 的 PIN_PROFILE（LLAMA_EXPERT_CACHE_RECORD_ALL calibration）
 #
-# 執行一次 calibration：用代表 prompt 跑一小段生成，RECORD_ALL 記錄每層路由頻率，
-# teardown 時 RECORD_DUMP 寫出 per-layer top-K 高頻 profile → profiles/qwen36_calib.pin。
+# 執行一次 calibration：用代表 prompt 跑一小段生成，LLAMA_EXPERT_CACHE_ROUTE_RECORD=1
+# 記錄每層路由頻率，teardown 時 LLAMA_EXPERT_CACHE_ROUTE_DUMP 寫出 per-layer top-K 高頻
+# profile + stderr 印 coverage verdict（mean/min/max vs uniform baseline K/128）→
+# profiles/qwen36_calib.pin。
 # run_n30cache.sh（qwen36）預設載入此 profile pin 住 decode working set（§8.55）。
 #
 # 用法：
@@ -31,9 +33,10 @@ env CGC_EXPERT_CACHE_BYTES=4294967296 \
     CGC_WAKE_POLL_US=15 \
     CGC_OA_ASYNC=1 \
     CGC_N_CB=8 \
-    LLAMA_EXPERT_CACHE_RECORD_ALL=1 \
-    LLAMA_EXPERT_CACHE_RECORD_DUMP="$OUT" \
+    LLAMA_EXPERT_CACHE_ROUTE_RECORD=1 \
+    LLAMA_EXPERT_CACHE_ROUTE_DUMP="$OUT" \
     "$BIN" -m "$Q36" -ngl 99 --no-mmap -t 8 \
         --prompt-file "$PROMPT_FILE" -n "$N" \
         > /tmp/qwen36_calib.out 2> /tmp/qwen36_calib.err || { tail -5 /tmp/qwen36_calib.err >&2; exit 1; }
 echo "profile written: $OUT ($(awk '{n+=NF} END{print n}' "$OUT") experts, $(wc -l < "$OUT") layers)"
+grep "ROUTE-DUMP" /tmp/qwen36_calib.err || true
