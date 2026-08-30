@@ -35,6 +35,17 @@ shasum -a 256 -c SHA256SUMS        # 全部 5 檔
 shasum -a 256 -c <(grep denseIQ4X SHA256SUMS)   # 單檔
 ```
 
+Windows（PowerShell，無 shasum）：
+
+```powershell
+cd models\gguf
+Get-FileHash .\Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf -Algorithm SHA256
+# 對照上表（或 SHA256SUMS 內對應行）
+```
+
+註：`hf download` 本身會做服務端 hash 校驗（上傳時已驗 5 檔全 MATCH），
+下載成功即位元組一致；shasum/Get-FileHash 是離線複查手段。
+
 ## 在地重生（替代下載）
 
 - **denseIQ4X 載體**：不從 HF 下載也能從基底模型重生成（bit-identical by construction）：

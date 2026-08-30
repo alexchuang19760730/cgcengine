@@ -197,7 +197,21 @@ OA_ASYNC="${N30CACHE_OA_ASYNC:-1}"
 NGL="${N30CACHE_NGL:-$DEFAULT_NGL}"
 
 [ -f "$BIN" ] || { echo "error: binary not found: $BIN (先跑 scripts/build_cgc_llama.sh)" >&2; exit 2; }
-[ -f "$M" ]  || { echo "error: model not found: $M" >&2; exit 2; }
+# 模型缺失指引：GGUF 太大（11-14GB）不進 git/GitHub（單檔 100MB/LFS 2GB 上限），
+# 正式備份在 Hugging Face Alexchuang/cgcengine-models。夥伴從 GitHub clone 後
+# 依此處指引下載，再以 SHA256SUMS 驗證（完整說明：models/gguf/MANIFEST.md）。
+[ -f "$M" ]  || {
+    echo "error: model not found: $M" >&2
+    echo "" >&2
+    echo "  GGUF 不進 git（>100MB）。從 Hugging Face 下載：" >&2
+    echo "    hf download Alexchuang/cgcengine-models \"$(basename "$M")\" --local-dir models/gguf" >&2
+    echo "    (沒有 hf CLI: pip install -U huggingface_hub；或用 MANIFEST.md 內的 curl 直下)" >&2
+    echo "" >&2
+    echo "  下載後驗證（位元組與本 repo 測試一致）：" >&2
+    echo "    cd models/gguf && shasum -a 256 -c SHA256SUMS" >&2
+    echo "  全部 5 個模型的清單與角色：models/gguf/MANIFEST.md" >&2
+    exit 2
+}
 if [ -n "$PROMPT_FILE" ]; then
     PROMPT="$(cat "$PROMPT_FILE")"
 fi
