@@ -174,9 +174,35 @@ cd models/gguf && shasum -a 256 -c SHA256SUMS</pre>
     <li>Windows 8GB 機：cache/L4/Metal 功能不適用（三平台白皮書）</li>
   </ul>
 
+  <h3>4.5 incident：llama-server 測試觸發 macOS 核心 panic（2026-08-30 18:59，已定案）</h3>
+  <table>
+    <tr><th>項</th><th>內容</th></tr>
+    <tr><td>症狀</td><td>整機凍結 91 秒後核心強制重開機（watchdogd 無心跳）；<b>非 app crash，是 kernel panic</b>（panic-full-2026-08-30-185924.0002.panic，panicked task = llama-server，jetsam 出現 484 次）</td></tr>
+    <tr><td>根因</td><td>16GB 統一記憶體被<b>行程疊加</b>超賣到核心 wedged：server 測試視窗內 3 次重啟（各重讀 13GB --no-mmap）+ 同視窗 13GB llama-simple 對照 + 4GiB wired Metal pool（不可逐出）+ IDE → 壓縮/jetsam 追不上 → 核心執行緒餓死</td></tr>
+    <tr><td>判別要點</td><td><code>CGC_WATCHDOG=1</code> 是<b>行程內</b> GPU watchdog，救不了 kernel 層凍結；整機無回應重開機 → 查 <code>/Library/Logs/DiagnosticReports/panic-full-*.panic</code></td></tr>
+    <tr><td>鐵律</td><td>(1) <b>一次一個重工行程</b>：server 運行期間禁止任何 13GB 級操作（simple 對照/量化/HF 下載）；(2) 重啟 server 前 <code>ps</code> 確認舊行程已死；(3) 避免短時間重啟風暴（每輪 = 13GB page cache）；(4) 附帶損失：/tmp 診斷 log 全滅——重要 log 即時 tee 到 repo 外持久路徑</td></tr>
+  </table>
+
+  <h3>4.6 修正一則錯誤結論：KV cache 瘦身（-c 1024）不成立</h3>
+  <table>
+    <tr><th>項</th><th>內容</th></tr>
+    <tr><td>原說法</td><td>「-c 2048 → 1024 可替 server 瘦身」（直覺，未驗證）</td></tr>
+    <tr><td>實測數學</td><td>從 GGUF 檔頭解析：qwen35moe，<b>GQA head_count_kv = 2</b>（非 16）、k/v_len=256、40 層 → KV = <b>4 KB/token</b>；-c 1024/2048/4096 = KV 4/8/16 MB——相對 13.2GB 權重 + 4GiB wired pool 是 0.03% 雜訊</td></tr>
+    <tr><td>定案</td><td><b>維持 -c 2048</b>（與生產線一致）；當機根因是行程疊加，不是 n_ctx。教訓：dense 模型 KV 直覺不可移植到 GQA MoE——<b>下記憶體結論前先算 KV 數學</b>（2 × n_head_kv × (k+v) × 2B × n_layer）</td></tr>
+  </table>
+
+  <h3>4.7 OPEN：llama-server 輸出 0000 退化（調查中）</h3>
+  <table>
+    <tr><th>項</th><th>內容</th></tr>
+    <tr><td>症狀</td><td>同 CGC env 下：llama-simple 輸出正常（hit 78%、5811 真 pread）；llama-server <code>/v1/chat/completions</code> 與 raw <code>/completion</code> 均輸出 <code>0000...</code></td></tr>
+    <tr><td>已排除</td><td>chat template（raw /completion 同症狀）· kv_unified/np 併發（--no-kv-unified -np 1 同症狀）· batch 大小（-b 8 -ub 8 同症狀）· pool path 未觸發（CGC-PRE 顯示冷專家、CGC-POST 顯示 slot 分配）</td></tr>
+    <tr><td>狀態</td><td class="bad">OPEN——根因調查中（重開機滅證後以新遙測重現）；llama-server 對外服務暫緩上線</td></tr>
+  </table>
+
+
   <div class="review red">
     <div class="label">本輪的工程教訓（制度化結論）</div>
-    (1) <b>近似狀態會隨並發腐爛</b>：用啟發式近似某狀態集合的保護邏輯，新增任一併發寫入者即失效——必須用精確集合（mask）。(2) <b>等待必須可證偽</b>：條件不可能再滿足的 wait 要大聲 FATAL，不得無聲掛死。(3) <b>離線反組譯 3 步</b>是掛起類問題的快速定案工具。(4) <b>慢先判路徑</b>：非 MTP 的慢是結構，不是 bug。全部已進 pre-commit（T-P7/T-P8）與測試計劃（T-A6/T-A7/T-E5）。
+    (1) <b>近似狀態會隨並發腐爛</b>：用啟發式近似某狀態集合的保護邏輯，新增任一併發寫入者即失效——必須用精確集合（mask）。(2) <b>等待必須可證偽</b>：條件不可能再滿足的 wait 要大聲 FATAL，不得無聲掛死。(3) <b>離線反組譯 3 步</b>是掛起類問題的快速定案工具。(4) <b>慢先判路徑</b>：非 MTP 的慢是結構，不是 bug。(5) <b>一次一個重工行程</b>：13GB 級行程疊加會把 16GB 機器推進 kernel panic（§4.5）。(6) <b>下記憶體結論前先算 KV 數學</b>：GQA MoE 的 KV 是雜訊級（§4.6）。全部已進 pre-commit（T-P7/T-P8）與測試計劃（T-A6/T-A7/T-E5）。
   </div>
 </div>
 
