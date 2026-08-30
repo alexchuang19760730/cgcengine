@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CGC 三平台開發技術白皮書（mac 實測打通版）2026-08-30</title>
+<style>
+  :root {
+    --bg: #0f1420; --card: #171e2e; --ink: #e8ecf4; --sub: #9aa5b8;
+    --line: #2a3350;
+    --wr: #f0a45c; --small: #e86a6a; --ssm: #d98cf0; --sdpa: #7fb8f0; --bubble: #6b7aa8;
+    --cpu-o: #8a97ad; --tail: #e3cf8f;
+    --accent: #ffd479; --good: #8fe3a0; --warn: #f08a8a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; padding: 32px 20px 60px; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 0 0 4px; }
+  h3 { font-size: 15px; margin: 18px 0 8px; color: var(--ink); }
+  .sub { color: var(--sub); font-size: 14px; margin-bottom: 28px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px 24px; margin-bottom: 22px; }
+  .card .desc { color: var(--sub); font-size: 13px; margin: 0 0 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--sub); font-weight: 600; font-size: 12px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .hl { color: var(--accent); font-weight: 700; }
+  .good { color: var(--good); font-weight: 700; }
+  .warn { color: var(--warn); font-weight: 700; }
+  .note { font-size: 12.5px; color: var(--sub); margin-top: 12px; line-height: 1.6; }
+  .note b { color: var(--ink); }
+  .review { background: #1a2030; border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; padding: 14px 16px; margin: 12px 0; font-size: 13px; line-height: 1.6; }
+  .review .label { color: var(--accent); font-weight: 700; font-size: 12px; text-transform: uppercase; margin-bottom: 6px; }
+  code { background: #0c1019; border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; color: #7fb8f0; }
+  pre { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; color: #7fb8f0; overflow-x: auto; line-height: 1.5; margin: 12px 0; }
+  .diagram { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 16px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; line-height: 1.6; margin: 12px 0; white-space: pre; overflow-x: auto; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; margin-left: 6px; }
+  .tag.g { background: #1c3a24; color: #8fe3a0; }
+  .tag.r { background: #3a1c1c; color: #f08a8a; }
+  .tag.y { background: #3a321c; color: #e3cf8f; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>CGC 三平台開發技術白皮書 — mac 實測打通版</h1>
+<div class="sub">llama.cpp fork · Mac M4 Max / Windows / 鴻蒙 PC · 2026-08-30 · 基準 commit <code>9d06e18ca</code>（github0823 dev = main）· mac 已全流程實測，Windows/鴻夥伴依本白皮書落地</div>
+
+<!-- ============ §1 Executive Summary ============ -->
+<div class="card">
+  <h2>§1 摘要：現況與任務分派</h2>
+  <p class="desc">目標：讓 <b>同一份 CGC fork 代碼</b>（含 expert-cache、MTP 投機解碼、bit-identical 修復、compute-sharing 共享版）在 <b>Mac M4 / Windows / 鴻蒙 PC</b> 三平台都能 build 出可用的 release。mac 路徑今日已完整打通並實測；本白皮書把 mac 的驗證全過程與另外兩平台的落地指南一次寫清楚，夥伴照做即可。</p>
+
+  <table>
+    <tr><th>平台</th><th>狀態</th><th>說明</th></tr>
+    <tr><td>macOS（M4 Max, arm64）</td><td class="good">✅ 已打通（2026-08-30 實測）</td><td>乾淨重建（rm -rf build）→ 兩段式隔離編譯 → 與已驗證基準 byte-identical、accept 12/12</td></tr>
+    <tr><td>Windows（x86_64）</td><td class="hl"> 夥伴任務（有既往基礎）</td><td><code>b8d09d914</code>（=遠端 <code>bcc22133f</code> 超集）已完成 MinGW 編譯修復與 8GB benchmark，需更新到 <code>9d06e18ca</code> 並跑 bit-identical 驗收</td></tr>
+    <tr><td>鴻蒙 PC（麒麟 9030）</td><td class="hl"> 夥伴任務（CPU-only）</td><td>依 §6 指南：CPU-only build + 驗收流程</td></tr>
+  </table>
+
+  <p class="note"><b>讀法</b>：§2–§4 是 mac 已實測的事實（含兩段式 MTP 隔離設計與乾淨重建全過程）；§5–§6 是 Windows/鴻夥伴的操作指南；§7 是三平台共享版（compute sharing）組件；§8 是統一驗收標準 —— <b>任何平台的 release 都必須通過 §8 的 bit-identical 驗收才算數</b>。</p>
+</div>
+
+<!-- ============ §2 Baseline ============ -->
+<div class="card">
+  <h2>§2 基準版本：拿到正確的代碼</h2>
+
+  <pre>git clone git@github.com:alexchuang19760730/cgcengine0823.git
+cd cgcengine0823
+git checkout 9d06e18ca          # 或 git checkout main（兩者同指）</pre>
+
+  <table>
+    <tr><th>要點</th><th>內容</th></tr>
+    <tr><td>基準 commit</td><td><code>9d06e18ca</code>（dev = main，github0823 已同步）</td></tr>
+    <tr><td>包含的能力</td><td>expert-cache（bounded pool 4GiB、L4 skip、prefetch）、MTP draft-mtp 投機解碼、<b>bit-identical 修復</b>（galloc overlap guard + warmup/probe 污染修復）、fused GLU kernel（CGC_MMV_FUSE）、compute-sharing 共享版（DeviceProfile / EtcdServiceDiscovery / ComputeRouter 4D / edge_server --mtp）</td></tr>
+    <tr><td>核心目錄</td><td><code>src/llama.cpp/</code>（fork 本體）、<code>scripts/build_fork_llama.sh</code> + <code>scripts/build_prod_binary.sh</code>（mac 兩段式）、<code>CGC-main/cgc_engine/pd/</code>（共享版 Python）、<code>deploy-harmonyos/</code>（鴻夢部署包）、<code>docs/</code>（架構文件）、<code>moeexpert/</code>（技術白皮書）</td></tr>
+    <tr><td>mac 實測模型</td><td><code>models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（IQ3_XXS + denseIQ4X 載體 + Q6_K head）</td></tr>
+  </table>
+
+  <div class="review">
+    <div class="label">為什麼基準選 9d06e18ca</div>
+    它是 dev（開發線）與 main（穩定線）的匯合點：包含 2026-08-30 的 MTP bit-identical 修復（<code>b7364f886</code>）—— 修復前 spec 與 non-spec 在 fused kernel 下有 777/800 專家分歧；修復後全 byte-identical。任何平台若 build 出來的 binary 跑 §8 驗收失敗，第一懷疑是<b>沒拿到這個 commit 之後的代碼</b>，或該平台編譯器對 galloc 相關行為有不同表現（見 §8 排查表）。
+  </div>
+</div>
+
+<!-- ============ §3 Mac Two-Stage Design ============ -->
+<div class="card">
+  <h2>§3 Mac 兩段式 Build 設計（MTP 隔離，bit-identity 的根基）</h2>
+  <p class="desc">這是本 fork 最重要的編譯設計：<b>llama-simple（生產 non-MTP binary）與 llama-speculative-simple（MTP binary）從編譯期就隔離</b>。MTP 的所有代碼變更都經 <code>MTP_SUPPORT</code> 編譯選項分離 —— 生產 binary 不含任何 MTP 代碼，這是「MTP 與非 MTP 位元級一致」硬性要求的建築基礎。</p>
+
+  <div class="diagram">═══ 兩段式結構 ═══
+
+Stage 1: scripts/build_fork_llama.sh
+  cmake 全量編譯所有 dylib（Release + Metal）
+  -DCMAKE_CXX_FLAGS="-DMTP_SUPPORT"
+      │
+      │  為什麼要 -DMTP_SUPPORT：
+      │  MTP staging API（release_context 等，在
+      │  common/speculative.cpp）要編進 libllama-common
+      │  —— 沒有它 MTP binary 無法 link
+      ▼
+  build/bin/libllama-common.0.dylib  （含 MTP staging API）
+  build/bin/libggml*.dylib / libllama.0.dylib / ...
+
+Stage 2: scripts/build_prod_binary.sh
+  直接以 c++ 重編兩個 example、link 上述 dylib：
+
+  llama-simple:
+    不帶 -DMTP_SUPPORT
+    → binary 內 0 個 MTP 符號（生產 non-MTP）
+
+  llama-speculative-simple:
+    帶 -DMTP_SUPPORT
+    → draft-mtp 代碼路徑編入（MTP 模式）
+
+═══ 隔離驗證方法 ═══
+  strings build/bin/llama-simple               | grep -ci mtp   → 0
+  strings build/bin/llama-speculative-simple   | grep -i mtp    → C 容器啟動 MTP 代碼路徑</div>
+
+  <h3>3.1 Stage 1 關鍵 flag（一個都不能錯）</h3>
+  <table>
+    <tr><th>flag</th><th>值</th><th>原因</th></tr>
+    <tr><td><code>CMAKE_BUILD_TYPE</code></td><td>Release</td><td>生產效能</td></tr>
+    <tr><td><code>GGML_METAL</code></td><td>ON</td><td>Apple GPU（M4 Max -ngl 99 全 offload）</td></tr>
+    <tr><td><code>GGML_BLAS</code></td><td class="warn">OFF（必須）</td><td>BLAS（Accelerate）會造成 IQ3_XXS/IQ2_S 輸出亂碼</td></tr>
+    <tr><td><code>GGML_ACCELERATE</code></td><td class="warn">OFF（必須）</td><td>同上，正確性問題</td></tr>
+    <tr><td><code>GGML_CPU_REPACK</code></td><td class="warn">OFF（必須）</td><td>踩 IQ3 tensor 邊界</td></tr>
+    <tr><td><code>GGML_OPENMP</code></td><td>OFF</td><td>穩定性</td></tr>
+    <tr><td><code>LLAMA_BUILD_SERVER / APP / TESTS</code></td><td>OFF</td><td>app/ 硬依賴 server-impl；SERVER=OFF 時一併關</td></tr>
+    <tr><td><code>GGML_MACHINE_SUPPORTS_sve/sme</code></td><td>OFF</td><td>預填結果，避免 configure 期檢查 binary 卡死（Apple Silicon 無 SVE/SME）</td></tr>
+    <tr><td><code>-DCMAKE_CXX_FLAGS</code></td><td><code>-DMTP_SUPPORT</code></td><td>把 MTP staging API 編進 libllama-common（僅 dylib 層；example 層的隔離在 Stage 2）</td></tr>
+  </table>
+
+  <h3>3.2 Stage 2 產物與 rpath</h3>
+  <p>兩個 example 都以 <code>-Wl,-rpath,"…/src/llama.cpp/build/bin"</code> link 六個 dylib（libllama.0 / libggml.0 / libggml-cpu.0 / libggml-metal.0 / libllama-common.0 / libggml-base.0）。binary 位置固定在 <code>src/llama.cpp/build/bin/</code>（生產目錄慣例，且 dylib/exe 均被 git 追蹤 —— <code>scripts/check_build_tracked.sh</code> 會在每次 commit 時檢查）。</p>
+
+  <p class="note"><b>注意 Windows 夥伴</b>：Windows 的 CMakeLists（<code>if (WIN32)</code> 區塊）目前是<b>全域</b>定義 <code>MTP_SUPPORT</code>（<code>bcc22133f</code> 設計，讓 MinGW binary 直接有 MTP 路徑）。這與 mac 的 per-binary 隔離不同 —— 兩條路都可用，但若要在 Windows 上完整複刻 bit-identity 架構，建議仿 mac Stage 2 的做法（llama-simple 單獨編、不帶 define），細節見 §5。</p>
+</div>
+
+<!-- ============ §4 Mac Verified Process ============ -->
+<div class="card">
+  <h2>§4 Mac 實測全過程（2026-08-30，可重現）</h2>
+  <p class="desc">以下<b>全部是今天的實測紀錄</b>，不是推測。從 rm -rf 到 bit-identical 驗證一次跑通。</p>
+
+  <h3>4.1 乾淨重建</h3>
+  <pre># Stage 1：rm -rf build → 全新 configure + 全量編譯
+bash scripts/build_fork_llama.sh
+# 內建 REBUILD=1 → rm -rf src/llama.cpp/build
+# cmake -B build …（§3.1 全套 flag）
+# cmake --build build -j$(sysctl -n hw.ncpu)
+# → [100%] Built target llama-bench（全量完成，無錯誤）
+
+# Stage 2：兩個 example 隔離編譯
+bash scripts/build_prod_binary.sh
+# → Built: build/bin/llama-speculative-simple（-DMTP_SUPPORT）
+# → Done:  build/bin/llama-simple（無 MTP）</pre>
+
+  <h3>4.2 隔離驗證</h3>
+  <table>
+    <tr><th>檢查</th><th>指令</th><th>結果</th></tr>
+    <tr><td>llama-simple 無 MTP</td><td><code>strings build/bin/llama-simple \| grep -ci mtp</code></td><td class="good">0（乾淨）</td></tr>
+    <tr><td>speculative-simple 有 MTP</td><td><code>strings build/bin/llama-speculative-simple \| grep -i mtp</code></td><td class="good">有（CGC_MTP_DBG、warmup_skip、spec_mtp…）</td></tr>
+    <tr><td>rpath 正確</td><td><code>otool -l build/bin/llama-simple \| grep -A2 LC_RPATH</code></td><td class="good">指向 repo 的 build/bin</td></tr>
+  </table>
+
+  <h3>4.3 Bit-identical 驗收（新 binary vs 已驗證基準）</h3>
+  <p>用<b>與 bit-identical 白皮書同一組生產 env</b>（seed=42、temp=0、n=16、FUSE=1 含 galloc guard），把重建後的 binary 輸出與先前已四方位元級驗證的基準比：</p>
+  <pre>COMMON="CGC_EXPERT_CACHE_BYTES=4294967296 LLAMA_EXPERT_CACHE_ALLOW_NGL=1 \
+LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0=1 LLAMA_EXPERT_CACHE_WORKERS=8 \
+CGC_WAKE_POLL_US=15 CGC_PREFETCH_SRC=hist CGC_EVICTED_RING=0 \
+CGC_OA_ASYNC=1 CGC_N_CB=8 CGC_GLU_FUSED_DOWN=1 \
+LLAMA_EXPERT_CACHE_LAYER_CAPS=40-40:256 \
+CGC_NO_PREFETCH=1 CGC_WATCHDOG=1 CGC_LAYER_BIN=1 CGC_MM_BITIDENT=1"
+
+# non-MTP 生產 binary
+env $COMMON CGC_MMV_FUSE=1 CGC_SIMP_TAIL_SPLIT=1 \
+  build/bin/llama-simple -m $MODEL -ngl 99 --no-mmap -t 8 --seed 42 -n 16 -p "$P"
+# → 輸出與基準 diff：IDENTICAL（bit-identical）
+
+# MTP binary
+env $COMMON CGC_MMV_FUSE=1 CGC_MTP_NO_WARMUP=1 CGC_NO_SEQ_RM_PROBE=1 \
+  build/bin/llama-speculative-simple -m $MODEL -n 16 -ngl 99 -t 5 --no-mmap -s 42 \
+  --spec-type draft-mtp --spec-draft-n-max 2 -c 3072 -expert-cache 4294967296 --temp 0 -p "$P"
+# → 輸出 cmp 基準：BYTE-IDENTICAL；n_drafted=12, n_accept=12（100%）</pre>
+
+  <table>
+    <tr><th>驗收項</th><th>結果</th></tr>
+    <tr><td>乾淨重建（rm -rf build → 全量）</td><td class="good">[100%] 無錯誤</td></tr>
+    <tr><td>兩段式隔離編譯</td><td class="good">llama-simple 0 個 MTP 符號；spec 有 MTP 路徑</td></tr>
+    <tr><td>simp（FUSE=1 + guard）vs 基準</td><td class="good">bit-identical</td></tr>
+    <tr><td>spec vs 基準</td><td class="good">byte-identical（cmp）</td></tr>
+    <tr><td>draft accept rate</td><td class="good">12/12 = 100%</td></tr>
+    <tr><td>fused GLU 派送</td><td class="good">il=1 融合生效（效能保留）</td></tr>
+  </table>
+
+  <p class="note"><b>結論</b>：mac release 路徑 <b>完全可重現</b> —— 從零到 byte-identical 的驗收 binary，兩個 script 一口氣跑完。重建後的 binary 已連同本白皮書 commit 回 repo（binary 屬 git 追蹤慣例）。</p>
+</div>
+
+<!-- ============ §5 Windows Guide ============ -->
+<div class="card">
+  <h2>§5 Windows 夥伴指南（x86_64）</h2>
+  <p class="desc">既往基礎：<code>b8d09d914</code>（本地 dev，內容為遠端 <code>bcc22133f</code> 的超集）已解決 Windows 編譯問題並完成 8GB benchmark（MTP 0.521 t/s、accept 50%）。你的任務：在 <code>9d06e18ca</code> 上重現 build + 跑 §8 驗收。</p>
+
+  <h3>5.1 環境與編譯</h3>
+  <pre># MSYS2 Clang（推薦）
+cmake -B build-clang -G Ninja \
+  -DCMAKE_C_COMPILER=clang.exe -DCMAKE_CXX_COMPILER=clang++.exe \
+  -DCMAKE_SYSROOT=/clang64 \
+  -DGGML_METAL=OFF \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CXX_FLAGS="-D_WIN32_WINNT=0x0A00"
+cmake --build build-clang -j8</pre>
+
+  <table>
+    <tr><th>已知注意事項（來自 b8d09d914 實戰）</th><th>解法</th></tr>
+    <tr><td>cpp-httplib 需 0.53.0</td><td>從 b9553 源碼複製</td></tr>
+    <tr><td><code>CreateFile2</code> 在 MinGW 不存在</td><td>patch 為 <code>CreateFileW</code></td></tr>
+    <tr><td><code>miniaudio.h</code> + <code>stb_image.h</code> 缺</td><td>手動下載放進 include 路徑</td></tr>
+    <tr><td><code>_WIN32_WINNT</code> 未定義</td><td>CMakeLists WIN32 區塊已加 <code>_WIN32_WINNT=0x0A00</code>（cpp-httplib 0.53 要 Win10+）</td></tr>
+    <tr><td>MTP 代碼沒編進</td><td>同區塊已全域 <code>add_compile_definitions(MTP_SUPPORT)</code> —— Windows 預設兩個 binary 都含 MTP</td></tr>
+  </table>
+
+  <h3>5.2 MTP 隔離（可選，建議做）</h3>
+  <p>Windows 目前是 WIN32 全域 define（兩 binary 都 MTP）。若要完整對齊 mac 的 bit-identity 架構，仿 mac Stage 2：</p>
+  <pre># 方案 A（現狀，最快）：全域 MTP_SUPPORT —— 先跑通、跑 §8 驗收
+# 方案 B（對齊 mac 隔離）：單獨編 llama-simple，不帶 define
+clang++ -O2 -DNDEBUG \
+  -I ggml/include -I src -I common -I include \
+  examples/simple/simple.cpp -o build/bin/llama-simple \
+  build/bin/libllama.dll build/bin/libggml.dll …（不帶 -DMTP_SUPPORT）
+# → 之後 llama-simple 即生產 non-MTP binary；speculative-simple 用方案 A 的產物</pre>
+
+  <h3>5.3 低記憶體機器的事實（來自既往 benchmark，別重踩）</h3>
+  <table>
+    <tr><th>設定</th><th>結果（8GB RAM + 14GB 模型）</th><th>判讀</th></tr>
+    <tr><td>MTP + cache OFF</td><td class="good">0.521 t/s，accept 50%</td><td>低記憶體最佳解</td></tr>
+    <tr><td>MTP + cache ON</td><td class="warn">0.295 t/s，accept 0%</td><td>expert cache 在「RAM &lt; 模型」時是純開銷 —— <b>cache 是大記憶體機器的功能</b>（Mac 64GB、A100 等）</td></tr>
+    <tr><td>無 MTP baseline</td><td>0.470 t/s</td><td>參考基準</td></tr>
+  </table>
+
+  <div class="review">
+    <div class="label">Windows 夥伴的交付清單</div>
+    (1) 在 <code>9d06e18ca</code> 上完成 build（clang 或 MinGW gcc，擇一記錄版本）；(2) 兩個 binary 的 MTP 符號檢查（§4.2 同款指令，Windows 用 <code>strings</code> 或 <code>dumpbin</code>）；(3) §8 驗收全項跑過 + 記錄輸出；(4) 效能數字（t/s + accept rate）；(5) 任何編譯差異回報（特別注意 §8 的 galloc 行為差異排查）。
+  </div>
+</div>
+
+<!-- ============ §6 HarmonyOS Guide ============ -->
+<div class="card">
+  <h2>§6 鴻夥伴指南（鴻蒙 PC，麒麟 9030）</h2>
+  <p class="desc">CPU-only 路徑。既往有 <code>deploy-harmonyos/</code> 部署包與 <code>AIOS/deploy-to-harmonyos.sh</code> 一鍵部署（ssh 到裝置、帶 build script + run.sh）。</p>
+
+  <h3>6.1 編譯（裝置端）</h3>
+  <pre># 從 mac 一鍵部署（AIOS/ 內）
+./deploy-to-harmonyos.sh alex@192.168.1.100
+# 裝置端執行：
+./harmonyos/run.sh -m model.gguf
+
+# 或裝置端自行編譯（CPU-only）
+cmake -B build -DGGML_METAL=OFF -DGGML_BLAS=OFF \
+  -DGGML_ACCELERATE=OFF -DGGML_CPU_REPACK=OFF \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)</pre>
+
+  <table>
+    <tr><th>要點</th><th>說明</th></tr>
+    <tr><td>後端</td><td>CPU-only（無 GPU offload，<code>-ngl 0</code>）</td></tr>
+    <tr><td>flag 紀律</td><td class="warn">BLAS / ACCELERATE / CPU_REPACK 一樣 OFF —— IQ3 系列亂碼問題與平台無關，是數值問題</td></tr>
+    <tr><td>記憶體</td><td>同 Windows 原則：RAM &lt; 模型時<b>不要開 expert cache</b>（純 I/O 開銷）</td></tr>
+    <tr><td>預估效能</td><td>3–5 t/s（麒麟 9030，參考架構文件）</td></tr>
+    <tr><td>模型選擇</td><td>小載體優先（Nail denseIQ4X 14GB 級在低記憶體上仍吃緊；必要時用更小 head/量化）</td></tr>
+  </table>
+
+  <h3>6.2 驗收</h3>
+  <p>與 §8 同一套（prompt/seed/env/binary 二元對比），只是兩個 binary 都是 CPU 路徑、無 Metal。bit-identical 的驗收<b>不因平台改變</b> —— 這正是它的價值：同一份代碼在三平台應有一致的貪婪採樣行為。</p>
+
+  <div class="review">
+    <div class="label">鴻夥伴的交付清單</div>
+    (1) <code>9d06e18ca</code> 上 CPU-only build 完成（記錄編譯器版本與 flag）；(2) §8 驗收全項 + 輸出記錄；(3) t/s 效能數字（cache OFF 模式）；(4) 若 <code>deploy-harmonyos/</code> 的 build.sh 與 §6.1 flag 有出入，以 §6.1 為準並回報差異。
+  </div>
+</div>
+
+<!-- ============ §7 Compute Sharing ============ -->
+<div class="card">
+  <h2>§7 共享版組件（三平台的「遠端共享」層）</h2>
+  <p class="desc">三平台不只是各自 build —— <b>compute sharing</b> 讓三平台的算力互通（端側 M4 / 雲側 / Windows 機器互為 prefill/decode 節點）。這層是 Python，<b>無需編譯</b>，三平台行為一致。</p>
+
+  <table>
+    <tr><th>組件</th><th>位置</th><th>職責</th></tr>
+    <tr><td><code>DeviceProfile</code></td><td><code>CGC-main/cgc_engine/pd/discovery.py</code></td><td>節點能力畫像（OS/晶片/記憶體/後端）</td></tr>
+    <tr><td><code>EtcdServiceDiscovery</code> / <code>PDNodeRegistrar</code></td><td>同上</td><td>節點註冊與發現（etcd）</td></tr>
+    <tr><td><code>ComputeRouter</code>（4D）</td><td><code>CGC-main/cgc_engine/pd/router.py</code></td><td>network×hardware×model×runtime 四維矩陣選路由，含 prefill/decode 延遲估計</td></tr>
+    <tr><td><code>edge_server.py</code></td><td>同目錄</td><td>端側 HTTP 服務，<code>--mtp 2</code> 生產模式（內建 draft-mtp 參數、OOM 邊界 -mtp-ctx 3072、log 過濾防 token 流污染）</td></tr>
+  </table>
+
+  <pre># mac 端起共享節點（實測指令）
+python3 CGC-main/cgc_engine/pd/edge_server.py \
+  --model models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf \
+  --ngl 99 --no-mmap --mtp 2 --port 1234
+# --mtp 2 內建：--spec-type draft-mtp --spec-draft-n-max 2 -c 3072</pre>
+
+  <p class="note"><b>夥伴整合</b>：Windows/鴻夢各自 build 出 binary 後，用同款 <code>edge_server.py</code> 包起來即成共享節點 —— DeviceProfile 會自動帶出平台畫像給 ComputeRouter 做跨平台路由。這是「三平台算力池」的接入方式。</p>
+</div>
+
+<!-- ============ §8 Acceptance ============ -->
+<div class="card">
+  <h2>§8 統一驗收標準（每個平台的 release 都要過）</h2>
+  <p class="desc">驗收即「bit-identical 二元對比」：同 prompt、seed、貪婪採樣下，non-MTP 與 MTP 輸出必須位元級一致。這是本 fork 的硬性要求，平台無關。</p>
+
+  <h3>8.1 驗收步驟</h3>
+  <table>
+    <tr><th>#</th><th>步驟</th><th>通過標準</th></tr>
+    <tr><td>1</td><td>MTP 符號隔離檢查（§4.2）</td><td class="good">llama-simple = 0 個 MTP 符號；spec 有</td></tr>
+    <tr><td>2</td><td>跑 non-MTP：llama-simple，§4.3 的 COMMON env + <code>CGC_MMV_FUSE=1 CGC_SIMP_TAIL_SPLIT=1</code>，seed 42、n 16</td><td class="good">rc=0、正常文本</td></tr>
+    <tr><td>3</td><td>跑 MTP：speculative-simple，同 env + <code>CGC_MTP_NO_WARMUP=1 CGC_NO_SEQ_RM_PROBE=1</code>，<code>--spec-draft-n-max 2 --temp 0</code></td><td class="good">rc=0</td></tr>
+    <tr><td>4</td><td>輸出對比：simp 的 16-token 續寫是否為 spec 續寫的<b>精確前綴</b>（spec 會多 1–2 token 的 verify batch overshoot）</td><td class="good">前綴成立（byte-level）</td></tr>
+    <tr><td>5</td><td>accept rate</td><td class="good">12/12 = 100%（此 prompt 基準）</td></tr>
+    <tr><td>6</td><td>（加分）IDS 對比：兩 run 的 stderr 各取 <code>CGC-IDS:</code> 行，同 (pmax, il) key 逐行比</td><td class="good">0 差異</td></tr>
+  </table>
+
+  <h3>8.2 驗收失敗排查表</h3>
+  <table>
+    <tr><th>症狀</th><th>最可能原因</th><th>動作</th></tr>
+    <tr><td>spec 續寫從第一 token 就不同</td><td>沒拿到 bit-identical 修復（<code>b7364f886</code> 之前）</td><td><code>git log --oneline -3</code> 確認基準含 <code>9d06e18ca</code></td></tr>
+    <tr><td>無 MTP 二元缺 env（忘了 CGC_MTP_NO_WARMUP 等）</td><td>驗收 env 沒帶齊</td><td>嚴格用 §4.3 的 COMMON 完整集合</td></tr>
+    <tr><td>輸出亂碼 / "The The The"</td><td>BLAS/ACCELERATE/REPACK 沒 OFF（IQ3 亂碼）</td><td>檢查 CMakeCache flag；重編</td></tr>
+    <tr><td>expert 選擇分歧（IDS 比對差異）</td><td>fused kernel 在該平台的 galloc 行為差異</td><td>先 <code>CGC_MMV_FUSE=0</code> 確認是否 kernel 融合相關；回報 binary + 平台 + flag 組合</td></tr>
+    <tr><td>低記憶體機器 accept 掉到 0%</td><td>cache ON 在 RAM &lt; 模型時的反效果</td><td>cache OFF 再驗（accept 會回 50%+）</td></tr>
+  </table>
+
+  <p class="note"><b>Env 對照</b>：完整生產 env 集合見 §4.3 的 <code>COMMON</code>。三個 bit-identical 關鍵 env（缺一不可）：<code>CGC_MM_BITIDENT=1</code>（M-invariant kernel 選擇）、<code>CGC_MTP_NO_WARMUP=1</code> + <code>CGC_NO_SEQ_RM_PROBE=1</code>（專家快取污染修復）。galloc overlap guard 是純邏輯、永久生效，無 env。</p>
+</div>
+
+<!-- ============ §9 Conclusion ============ -->
+<div class="card">
+  <h2>§9 結論與分工</h2>
+  <table>
+    <tr><th>角色</th><th>狀態 / 任務</th></tr>
+    <tr><td>Mac（已完成）</td><td class="good">乾淨重建 → 兩段式隔離 → bit-identical 驗收全過 → binary 回 commit。本白皮書即實測報告</td></tr>
+    <tr><td>Windows 夥伴</td><td>依 §5：build（clang/MinGW）→ 隔離（建議方案 B）→ §8 驗收 → 效能記錄 → 交付清單 5 項</td></tr>
+    <tr><td>鴻夥伴</td><td>依 §6：CPU-only build → §8 驗收 → t/s 記錄 → 交付清單 4 項</td></tr>
+    <tr><td>共用</td><td>§7 共享版（Python 免編譯）：各平台 binary 包上 edge_server 即成共享節點，DeviceProfile + ComputeRouter 4D 做跨平台路由</td></tr>
+  </table>
+
+  <p class="note"><b>引用</b>：基準 <code>9d06e18ca</code>（= <code>b7364f886</code> bit-identical 修復 + <code>431f2ce9a</code> MTP 白皮書 + 遠端共享版 merge）。mac 乾淨重建的 binary 隨本白皮書一併 commit。相關文件：<code>moeexpert/CGC_MTP_Bit-Identical_技術白皮書_2026-08-30.html</code>（修復根因與驗證細節）、<code>docs/CGC_CROSS_PLATFORM_ARCHITECTURE.md</code>（三平台架構）、<code>docs/CGC_COMPUTE_SHARING_ARCHITECTURE.md</code>（共享版拓撲）。</p>
+</div>
+
+</div>
+</body>
+</html>
