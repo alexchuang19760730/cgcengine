@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CGC Fork 生產級 Release — 2026-08-30</title>
+<style>
+  :root {
+    --bg: #0f1420; --card: #171e2e; --ink: #e8ecf4; --sub: #9aa5b8;
+    --line: #2a3350;
+    --accent: #ffd479; --good: #8fe3a0; --warn: #f08a8a; --info: #7fb8f0;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; padding: 32px 20px 60px; }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 0 0 4px; }
+  h3 { font-size: 15px; margin: 18px 0 8px; }
+  h4 { font-size: 13.5px; margin: 14px 0 6px; color: var(--accent); }
+  .sub { color: var(--sub); font-size: 14px; margin-bottom: 28px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px 24px; margin-bottom: 22px; }
+  .card .desc { color: var(--sub); font-size: 13px; margin: 0 0 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
+  th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--sub); font-weight: 600; font-size: 11.5px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .hl { color: var(--accent); font-weight: 700; }
+  .good { color: var(--good); font-weight: 700; }
+  .warn { color: var(--warn); font-weight: 700; }
+  .info { color: var(--info); }
+  .note { font-size: 12.5px; color: var(--sub); margin-top: 12px; line-height: 1.6; }
+  .note b { color: var(--ink); }
+  .review { background: #1a2030; border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; padding: 14px 16px; margin: 12px 0; font-size: 13px; line-height: 1.6; }
+  .review .label { color: var(--accent); font-weight: 700; font-size: 12px; text-transform: uppercase; margin-bottom: 6px; }
+  .review.red { border-left-color: var(--warn); }
+  .review.red .label { color: var(--warn); }
+  code { background: #0c1019; border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 11.5px; font-family: "SF Mono", Menlo, monospace; color: #7fb8f0; }
+  pre { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; color: #7fb8f0; overflow-x: auto; line-height: 1.5; margin: 12px 0; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; margin-left: 6px; }
+  .tag.g { background: #1c3a24; color: #8fe3a0; }
+  .tag.r { background: #3a1c1c; color: #f08a8a; }
+  .tag.y { background: #3a321c; color: #e3cf8f; }
+  .tag.b { background: #1c2a3a; color: #7fb8f0; }
+  .toc { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px; }
+  .toc a { color: var(--info); text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>CGC Fork 生產級 Release</h1>
+<div class="sub">Production Release · 開發資產（代碼 / Shell / GGUF）· 測試覆蓋 · 指標說明 · 本輪修正優化 Release Note<br>llama.cpp fork（<code>cgcengine0823</code>）· 2026-08-30 · HEAD <code>d02e8cef2</code>（dev，已推 github0823）· 16GB M4 Max（macOS / Metal）</div>
+
+<div class="card">
+  <h2>目錄</h2>
+  <div class="toc">
+    <a href="#s1">§1 開發介紹：代碼 / Shell / GGUF</a>
+    <a href="#s2">§2 測試覆蓋（L0–L3）</a>
+    <a href="#s3">§3 指標說明</a>
+    <a href="#s4">§4 本輪修正優化 Release Note</a>
+  </div>
+</div>
+
+<!-- ============ §1 ============ -->
+<div class="card" id="s1">
+  <h2>§1 開發介紹：代碼 / Shell / GGUF</h2>
+  <p class="desc">本 fork 在 llama.cpp 上實作 <b>CGC bounded-residency 專家快取</b>：MoE 專家權重不常駐 GPU，以 4GiB bounded pool + 檔案 pread 按需填充，使 35B MoE（13.2GB）能在 16GB 統一記憶體機器上 <code>-ngl 99</code> 全卸載。所有程式碼位於 <code>src/llama.cpp</code>（生產目錄），build 產物隨 git 版控（checkout 免重建可驗證）。</p>
+
+  <h3>1.1 核心代碼（src/llama.cpp/src/）</h3>
+  <table>
+    <tr><th>檔案</th><th>職責</th><th>關鍵機制</th></tr>
+    <tr><td><code>llama-expert-cache.cpp</code></td><td>專家快取本體</td><td>slot 分配（LRU + batch_owned 精確 mask）、bg 填充執行緒、LAYER_CAPS 每層槽數、ZERO-slot fast path、掛死看門狗（FATAL 可證偽）、遙測（hit/miss/pread_usec）</td></tr>
+    <tr><td><code>llama-context.cpp</code></td><td>decode hook + 預取</td><td>pool-path 進入條件、hist 視窗預取、n_batch union-fit cap、ROUTE-DUMP/PIN_PROFILE 測試鉤子</td></tr>
+    <tr><td><code>llama-model-loader.cpp</code></td><td>載入期縮放</td><td>per-layer caps（<code>cgc_layer_cap(il)</code>）張量縮放</td></tr>
+    <tr><td><code>ggml-metal/ggml-metal-ops.cpp</code></td><td>Metal kernels</td><td>MMV_FUSE（gate+up+swiglu 融合 dispatch，bit-identical by guard）、ADD-chain 融合、GET_ROWS 綁定 Metal</td></tr>
+    <tr><td><code>examples/simple/simple.cpp</code></td><td>非 MTP 生產 binary</td><td>llama-simple + CGC_SIMP_TAIL_SPLIT（bit-bisect 對齊投機路徑 batch 形狀）</td></tr>
+    <tr><td><code>examples/simple/speculative-simple.cpp</code></td><td>MTP 生產 binary</td><td>llama-speculative-simple（draft-mtp verify/draft fast path）</td></tr>
+  </table>
+
+  <h3>1.2 Shell / 工具腳本</h3>
+  <table>
+    <tr><th>腳本</th><th>用途</th></tr>
+    <tr><td><code>scripts/run_n30cache.sh</code></td><td><b>生產啟動器</b>（家族預設 / MTP / steady 驗收 / LAYER_CAPS profile 全打包）</td></tr>
+    <tr><td><code>scripts/check_build_tracked.sh</code></td><td><b>pre-commit 把關</b>（8 項：dylib 追蹤 / rpath / main⊆dev / 死鎖防護守衛 / 原始碼↔binary 同步）</td></tr>
+    <tr><td><code>scripts/gen_denseiq4x_tt.py</code></td><td>denseIQ4X 載體重生（錨定 ^name$ per-tensor 釘選，byte-copy 保 bit-identity）</td></tr>
+    <tr><td><code>scripts/diag/{decode_breakdown,dlk_ab,dlk_phase2}</code></td><td>解碼延遲分解 / deadlock A/B 診斷</td></tr>
+    <tr><td><code>scripts/run_qwen36_calibrate.sh</code></td><td>PIN_PROFILE 離線校準</td></tr>
+  </table>
+
+  <h3>1.3 GGUF 模型資產（models/gguf/）</h3>
+  <p class="desc">11–13GB 大檔無法進 GitHub（單檔 100MB 硬限制、LFS 2GB 上限），正式雲端備份在 <b>Hugging Face：<code>Alexchuang/cgcengine-models</code></b>（public）。git 內以 <code>models/gguf/MANIFEST.md</code> + <code>SHA256SUMS</code> 版控錨點——任何機器下載後驗 hash 即得本 repo 測試的相同位元組。</p>
+  <table>
+    <tr><th>模型</th><th>大小</th><th>生產角色</th><th>SHA256（前 12 碼）</th></tr>
+    <tr><td>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-<b>denseIQ4X</b></td><td class="num">13.7GB</td><td><b>MTP 生產線</b>（blk.40 head Q6_K + dense IQ4_XS）</td><td><code>13a43e06e7f4</code></td></tr>
+    <tr><td>Qwen3.6-35B-A3B-UD-IQ3_XXS</td><td class="num">13.2GB</td><td><b>非 MTP 生產線</b>（無 blk.40）</td><td><code>9c964e657212</code></td></tr>
+    <tr><td>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS</td><td class="num">14.1GB</td><td>MTP 載體基底（head 同 trunk 量）</td><td><code>6275d06c6e1b</code></td></tr>
+    <tr><td>gemma-4-26B-A4B-it-UD-IQ3_S</td><td class="num">11.3GB</td><td>gemma4 家族（-ngl 30）</td><td><code>878be93f9c23</code></td></tr>
+    <tr><td>Huihui-Qwen3.8-27B-abliterated-UD-IQ3_S</td><td class="num">12.0GB</td><td>Qwen3.8 MoE 測試</td><td><code>f785ad524b13</code></td></tr>
+  </table>
+  <pre># 下載 + 驗證（任何機器）：
+hf download Alexchuang/cgcengine-models &lt;檔名&gt; --local-dir models/gguf
+cd models/gguf && shasum -a 256 -c SHA256SUMS</pre>
+  <p class="note">denseIQ4X 載體另可<b>在地重生</b>（<code>scripts/gen_denseiq4x_tt.py</code>，byte-copy by construction 保 bit-identity）——不依賴網路。</p>
+
+  <h3>1.4 Build 產物（隨 git 版控）</h3>
+  <p class="note">dylib 家族 0.0.70 / ggml 0.19.0、<code>llama-simple</code>、<code>llama-speculative-simple</code>、<code>llama-bench</code> 全部 commit 進 <code>src/llama.cpp/build/bin/</code>（T-P1–T-P8 pre-commit 保證不脫鉤）。部署包 <code>deploy-harmonyos/macos</code> 自包含（dylib 全家 + exe）。</p>
+</div>
+
+<!-- ============ §2 ============ -->
+<div class="card" id="s2">
+  <h2>§2 測試覆蓋（四層金字塔 L0–L3）</h2>
+  <p class="desc">完整定義見《CGC_測試計劃_白皮書_2026-08-30.html》；此處為 release 摘要。</p>
+  <table>
+    <tr><th>層</th><th>覆蓋</th><th>測試項</th><th>狀態</th></tr>
+    <tr><td><b>L0</b> Build</td><td>從零 rebuild 重現、binary 可跑</td><td>T-B1–B6</td><td class="good">PASS</td></tr>
+    <tr><td><b>L1</b> Pre-commit</td><td>產物追蹤 / rpath / main⊆dev / <b>死鎖防護靜態守衛</b> / 原始碼↔binary 同步</td><td>T-P1–P8（8 項，每次 commit 自動）</td><td class="good">PASS（本輪 2 commit 實測）</td></tr>
+    <tr><td><b>L2</b> 功能</td><td>bit-identical（simp↔spec 位元級一致）、antiloop、MTP 效能</td><td>T-F1–F5、T-A1–A7、T-E1–E5、T-PN1–PN6</td><td class="good">PASS</td></tr>
+    <tr><td><b>L3</b> 部署包</td><td>脫離 build 環境可跑且輸出相同</td><td>T-D1–D5</td><td class="good">PASS（BIT-IDENTICAL）</td></tr>
+  </table>
+  <div class="review">
+    <div class="label">本輪新增的測試項（8/30）</div>
+    <b>T-P7</b> 死鎖防護靜態守衛（7a batch_mask 精確集合 / 7b batch_owned ≥3 / 7c FATAL 看門狗 / 7d 裸 wait ≤ 守衛數）；<b>T-P8</b> 原始碼↔build 產物同步；<b>T-A6</b> hist-prefetch 死鎖回歸（原 100% 掛死重現器 → rc=0）；<b>T-A7</b> 看門狗可證偽；<b>T-E5</b> 非 MTP ~7 t/s 結構性基線（防在錯誤路徑追速度）+ MTP steady 回歸閾值。
+  </div>
+</div>
+
+<!-- ============ §3 ============ -->
+<div class="card" id="s3">
+  <h2>§3 指標說明</h2>
+  <table>
+    <tr><th>指標</th><th>定義</th><th>判讀</th><th>本輪實測</th></tr>
+    <tr><td><b>t/s（吞吐）</b></td><td>生成 token 數 ÷ decode 壁鐘時間</td><td>MTP steady ≥26 為回歸底線；<b>非 MTP ~7 t/s 屬結構性</b>（GPU-bound 專家收集，勿在該路徑追速度）</td><td class="num">26.573</td></tr>
+    <tr><td><b>accept rate</b></td><td>投機 verify 接受的 draft token 比例</td><td>≥99% 為健康（draft 品質 + remap 正確性）</td><td class="num">99.187%</td></tr>
+    <tr><td><b>hit rate</b></td><td>專家請求命中 pool 比例（runtime，final stats）</td><td>≥88%（LAYER_CAPS 40-40:256 生產 profile）</td><td class="num">88.9%</td></tr>
+    <tr><td><b>fast-path cold 率</b></td><td>fast path 觸發 ZERO-slot 映射比例</td><td>~65% 為結構性 churn（per-layer 路由工作集 &gt; 槽位）；LAYER_CAPS 後 draft cold 32%→0%</td><td class="num">draft 0%</td></tr>
+    <tr><td><b>pread_usec</b></td><td>填充讀檔累計時間</td><td><b>多執行緒累計值</b>（16 workers ≈ 2× 壁鐘）——不得拿壁鐘除它；steady I/O 僅 ~2s/40s</td><td class="num">—</td></tr>
+    <tr><td><b>wait / submit / fill</b></td><td>decode 分解：GPU pipeline 等待 / 提交 / catch-up 填充</td><td>wait 主導 = GPU-bound（2326µs/hook clean）；fill ~1.3%/step 非瓶頸</td><td class="num">wait 主導</td></tr>
+    <tr><td><b>bit-identity</b></td><td>同 prompt/seed/greedy 下輸出 byte 級一致</td><td>fork 硬性要求；任何分歧 = P0</td><td class="good">PASS</td></tr>
+  </table>
+  <p class="note"><b>速度量測紀律</b>：A/B 必須同 pair 內比較（首跑冷 page cache 常假性慢 20%）；乾淨測量 = 重開機 → 1 次暖跑 → 只量一次。Q6_K head 載體專家讀取比 headIQ2 多 37%，跨載體比較無效。</p>
+</div>
+
+<!-- ============ §4 ============ -->
+<div class="card" id="s4">
+  <h2>§4 本輪修正優化 Release Note</h2>
+  <p class="desc">基準 <code>568eafc96</code> → HEAD <code>d02e8cef2</code>（3 個功能 commit + 1 個夥伴 merge），已推 github0823/dev。</p>
+
+  <h3>4.1 fix：hist-prefetch prefill 死鎖（<code>4a746c724</code>）</h3>
+  <table>
+    <tr><th>項</th><th>內容</th></tr>
+    <tr><td>症狀</td><td>非 MTP llama-simple + <code>CGC_PREFETCH_SRC=hist</code>：prefill 100% 掛死於 ensure_batch(il=1)，0% CPU，主執行緒與 bg 執行緒同時睡死</td></tr>
+    <tr><td>根因</td><td>pick_slot 以「last_use ≥ batch_tick」<b>啟發式近似</b>「本 batch 持有的 slot」；bg 洪泛填充完成的 <code>++tick</code> 把全部 slot 推進保護集 → pick_slot 永遠 -1 → 裸 <code>bg_cv.wait</code> 永久等待（<b>近似狀態隨並發腐爛</b>）</td></tr>
+    <tr><td>修復</td><td>精確 <code>batch_owned</code> mask（本 batch hit + 分配 slot）取代 min_tick；ensure_batch/ensure_slot 掛死看門狗（pick_slot -1 且無 in-flight → FATAL 大聲死，不無聲掛死）</td></tr>
+    <tr><td>驗證</td><td class="good">hist repro rc=0（原 100% 掛死）· OFF 路徑修復前後 bit-identical · MTP steady 26.573 t/s / accept 99.187% / hit 88.9%（無回歸）</td></tr>
+    <tr><td>診斷法</td><td><code>sample &lt;pid&gt;</code> + 離線 <code>nm -n</code>/<code>objdump -d</code> 反組譯定位精確行號（~10 秒定案；lldb 對 5GB Metal 行程太慢）</td></tr>
+  </table>
+
+  <h3>4.2 test：死鎖教訓制度化（<code>7c3f0fd3d</code>）</h3>
+  <ul>
+    <li>pre-commit <b>檢查 7</b>（死鎖防護靜態守衛）+ <b>檢查 8</b>（原始碼↔build 產物同步）——回歸檢測實證：對修復前版本 7a–7d 全 FAIL、修復後全 PASS，防止修復被靜默回退</li>
+    <li>測試計劃新增 T-P7/T-P8/T-A6/T-A7/T-E5（§2）+ §10.2 掛死離線定位 3 步排查程序</li>
+  </ul>
+
+  <h3>4.3 資產：模型雲端備份（本輪）</h3>
+  <ul>
+    <li>Hugging Face repo <b>Alexchuang/cgcengine-models</b>（public）：5 個 GGUF（~64GB）上傳（斷點續傳）</li>
+    <li>git 內 <code>models/gguf/MANIFEST.md</code> + <code>SHA256SUMS</code>：hash 錨點 + 下載/驗證/在地重生程序</li>
+  </ul>
+
+  <h3>4.4 已知限制（非本輪新增，明示以防空誤解）</h3>
+  <ul>
+    <li>非 MTP decode ~7 t/s（143 ms/token）為<b>結構性</b>——27 t/s 必須走 MTP（T-E5 防呆）</li>
+    <li>29.85 t/s 投影在本架構下存疑（timing misalignment 根因未解）；<b>26.5 t/s = 當前最佳可重現狀態</b>（LAYER_CAPS + MMV_FUSE）</li>
+    <li>routing-aware placement、kernel-fusion 兩大槓桿已關閉（白皮書 §5.7 定案）</li>
+    <li>Windows 8GB 機：cache/L4/Metal 功能不適用（三平台白皮書）</li>
+  </ul>
+
+  <div class="review red">
+    <div class="label">本輪的工程教訓（制度化結論）</div>
+    (1) <b>近似狀態會隨並發腐爛</b>：用啟發式近似某狀態集合的保護邏輯，新增任一併發寫入者即失效——必須用精確集合（mask）。(2) <b>等待必須可證偽</b>：條件不可能再滿足的 wait 要大聲 FATAL，不得無聲掛死。(3) <b>離線反組譯 3 步</b>是掛起類問題的快速定案工具。(4) <b>慢先判路徑</b>：非 MTP 的慢是結構，不是 bug。全部已進 pre-commit（T-P7/T-P8）與測試計劃（T-A6/T-A7/T-E5）。
+  </div>
+</div>
+
+</div>
+</body>
+</html>
