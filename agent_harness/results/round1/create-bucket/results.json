@@ -1,0 +1,14 @@
+{
+  "task_id": "create-bucket",
+  "instruction": "Create an S3 bucket named \"sample-bucket\" using the aws cli and set it to public read.",
+  "category": "file-operations",
+  "difficulty": "easy",
+  "is_resolved": false,
+  "failure_mode": "test_failed",
+  "n_steps": 7,
+  "total_input_tokens": 95795,
+  "total_output_tokens": 14787,
+  "duration_sec": 235.5,
+  "test_output": ">           raise EndpointConnectionError(endpoint_url=request.url, error=e)\nE           botocore.exceptions.EndpointConnectionError: Could not connect to the endpoint URL: \"http://localhost:4566/sample-bucket?acl\"\n\n..\\..\\..\\..\\..\\.tb-loop-venv\\Lib\\site-packages\\botocore\\httpsession.py:539: EndpointConnectionError\n=========================== short test summary info ===========================\nFAILED _eval/test_outputs.py::test_bucket_exists - botocore.exceptions.Endpoi...\nFAILED _eval/test_outputs.py::test_bucket_public_access - botocore.exceptions...\n2 failed in 58.15s",
+  "sandbox": "git-bash-rehearsal"
+}

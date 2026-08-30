@@ -389,3 +389,11 @@ data/**/cmake-build/
 
 # ---- 2026-08-30: Backup/（1.8G 手動備份區，明確排除追蹤）----
 Backup/
+
+# DeepSeek Harness (外部克隆, 不入库)
+dsh/
+
+# DSH 构建产物
+dsh/node_modules/
+dsh/apps/*/dist/
+dsh/packages/*/dist/

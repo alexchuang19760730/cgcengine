@@ -1,0 +1,14 @@
+{
+  "task_id": "csv-to-parquet",
+  "instruction": "Convert the file './data.csv' into a Parquet file named './data.parquet'. The CSV file contains sample data with headers.",
+  "category": "data-science",
+  "difficulty": "easy",
+  "is_resolved": false,
+  "failure_mode": "test_failed",
+  "n_steps": 3,
+  "total_input_tokens": 4432,
+  "total_output_tokens": 735,
+  "duration_sec": 33.3,
+  "test_output": "                         ^^^^^^^^^^^^^^^^^^^^^^^^^\nE               FileNotFoundError: [Errno 2] No such file or directory: 'D:/alex/flashkv0516/tb_loop/results/rehearsal_b1/csv-to-parquet/workspace/data.parquet'\n\n..\\..\\..\\..\\..\\.tb-loop-venv\\Lib\\site-packages\\pandas\\io\\common.py:939: FileNotFoundError\n=========================== short test summary info ===========================\nFAILED _eval/test_outputs.py::test_parquet_exists - AssertionError: data.parq...\nFAILED _eval/test_outputs.py::test_data_matches - FileNotFoundError: [Errno 2...\n2 failed in 1.08s",
+  "sandbox": "git-bash-rehearsal"
+}
