@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CGC Pin-Profile 驗收摘要（Code Review 用）2026-08-30</title>
+<style>
+  :root {
+    --bg: #0f1420; --card: #171e2e; --ink: #e8ecf4; --sub: #9aa5b8;
+    --line: #2a3350;
+    --accent: #ffd479; --good: #8fe3a0; --warn: #f08a8a; --info: #7fb8f0;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; padding: 32px 20px 60px; }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 0 0 4px; }
+  h3 { font-size: 14.5px; margin: 16px 0 8px; }
+  .sub { color: var(--sub); font-size: 13.5px; margin-bottom: 24px; line-height: 1.6; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px; margin-bottom: 18px; }
+  .card .desc { color: var(--sub); font-size: 12.5px; margin: 0 0 14px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 6px; }
+  th, td { text-align: left; padding: 6px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--sub); font-weight: 600; font-size: 11.5px; }
+  .good { color: var(--good); font-weight: 700; }
+  .warn { color: var(--warn); font-weight: 700; }
+  .info { color: var(--info); }
+  .neutral { color: var(--sub); }
+  .hl { color: var(--accent); font-weight: 700; }
+  .note { font-size: 12.5px; color: var(--sub); margin-top: 12px; line-height: 1.6; }
+  .note b { color: var(--ink); }
+  .review { background: #1a2030; border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; padding: 12px 15px; margin: 12px 0; font-size: 12.5px; line-height: 1.6; }
+  .review .label { color: var(--accent); font-weight: 700; font-size: 11.5px; text-transform: uppercase; margin-bottom: 5px; }
+  .review.red { border-left-color: var(--warn); }
+  .review.red .label { color: var(--warn); }
+  code { background: #0c1019; border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 11.5px; font-family: "SF Mono", Menlo, monospace; color: #7fb8f0; }
+  pre { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 13px 15px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; color: #7fb8f0; overflow-x: auto; line-height: 1.5; margin: 10px 0; }
+  .stats { display: flex; gap: 14px; margin: 10px 0 4px; flex-wrap: wrap; }
+  .stat { background: #0c1019; border: 1px solid var(--line); border-radius: 9px; padding: 10px 16px; min-width: 130px; }
+  .stat .v { font-size: 20px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .stat .k { font-size: 11px; color: var(--sub); margin-top: 2px; }
+  .stat.g .v { color: var(--good); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Pin-Profile 驗收摘要</h1>
+<div class="sub">Code Review 速覽版 · 八維度品質判定 + T-PN1~6 驗收結果 · 2026-08-30<br>
+Commit <code>2bf75926f</code> · 詳細文件：技術講解白皮書 <b>§5.5</b> · 測試計劃白皮書 <b>§4.3</b></div>
+
+<div class="card">
+  <h2>基本資訊</h2>
+  <div class="stats">
+    <div class="stat g"><div class="v">6/6</div><div class="k">T-PN 驗收 PASS</div></div>
+    <div class="stat"><div class="v">2.6×</div><div class="k">coverage vs baseline</div></div>
+    <div class="stat g"><div class="v">253B</div><div class="k">pin ON == OFF（bit-identical）</div></div>
+    <div class="stat"><div class="v">3393</div><div class="k">experts pinned</div></div>
+  </div>
+  <table>
+    <tr><th>項目</th><th>值</th></tr>
+    <tr><td>機制</td><td><code>LLAMA_EXPERT_CACHE_PIN_PROFILE</code> —— 離線校準（ROUTE_DUMP）→ 線上釘選（per-layer top-N，LRU 豁免）</td></tr>
+    <tr><td>Profile</td><td><code>profiles/qwen36_calib.pin</code>（8/30 重產；<code>a9c546ffd</code> 修正 env 名漂移後的產物）</td></tr>
+    <tr><td>校準工具</td><td><code>scripts/run_qwen36_calibrate.sh</code>（<code>ROUTE_RECORD=1</code> + <code>ROUTE_DUMP</code>）</td></tr>
+    <tr><td>測試環境</td><td>qwen36 · n=64 校準 / n=16 驗收 · 4GiB cache · <code>CGC_MMV_FUSE=1</code> · binary <code>84e321590</code> 系</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>一、八維度品質判定</h2>
+  <div class="desc">✅ = 優 · ⚠️ = 需注意 · ➖ = 中性</div>
+  <table>
+    <tr><th>維度</th><th>判定</th><th>依據</th></tr>
+    <tr><td>路由質量涵蓋</td><td class="good">✅ 優</td><td>coverage mean=87.8%（min 80.8 / max 93.1）；uniform baseline ≈34% → <b>2.6× 重尾確證</b></td></tr>
+    <tr><td>位元級安全（exact 模式）</td><td class="good">✅ 優</td><td>pin 只改 placement 不改 bytes；開/關輸出<b>位元級相同</b>（T-PN3 實證）</td></tr>
+    <tr><td>fast-path 品質影響</td><td class="info">⚠️ 條件性</td><td>VERIFY/DRAFT cold 讀 ZERO slot 時，pin 減少 cold = <b>品質提升</b>（正向副作用）</td></tr>
+    <tr><td>死鎖 / NaN 安全</td><td class="good">✅ 優</td><td>槽滿時 pass-2 靜態 pin 讓位（記 <code>pin_yield</code>）—— 不卡死、不留 table==-1</td></tr>
+    <tr><td>workload 特異性</td><td class="warn">⚠️ 最大弱點</td><td>跨配置 top-K 重疊僅 ~29% —— <b>換 workload 必須重校準</b>，否則保護錯的「熱」集</td></tr>
+    <tr><td>硬體 K 耦合</td><td class="warn">⚠️ 需注意</td><td>K = f(cache bytes, LAYER_CAPS)；大 cache 產的 profile 拿到小 cache 機器 pin 密度稀釋，反向覆蓋不足</td></tr>
+    <tr><td>模型錯配防護</td><td class="warn">⚠️ 僅範圍檢查</td><td>id 只驗 [0, n_expert) —— 錯模型 id 在範圍內<b>靜默接受</b>；靠檔名綁模型紀律</td></tr>
+    <tr><td>懶標記</td><td class="neutral">➖ 中性</td><td>expert 首次被路由填入才 pin → 載入零成本，前幾個 step 漸生效</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>二、T-PN1~6 驗收結果（8/30 實測，6/6 PASS）</h2>
+  <table>
+    <tr><th>#</th><th>測什麼</th><th>通過標準</th><th>結果</th></tr>
+    <tr><td><b>T-PN1</b></td><td>env 名存在性（防漂移）</td><td>dylib 三新名 ≥1、舊名 = 0</td><td class="good">PASS（1/1/1；舊名 0 殘留）</td></tr>
+    <tr><td><b>T-PN2</b></td><td>載入生效</td><td>pin_marked &gt; 0</td><td class="good">PASS（3393 pinned；marked=2174）</td></tr>
+    <tr><td><b>T-PN3</b></td><td><b>pin ON/OFF 位元級一致（核心）</b></td><td>byte-identical</td><td class="good">PASS（253B == 253B）</td></tr>
+    <tr><td><b>T-PN4</b></td><td>槽壓力遙測</td><td>pin_yield 可取得且有限</td><td class="info">yield=714（16-token 短跑壓力大；長跑另量）</td></tr>
+    <tr><td><b>T-PN5</b></td><td>coverage 品質門檻</td><td>mean ≥ 2× baseline</td><td class="good">PASS（87.8% vs ≈34%）</td></tr>
+    <tr><td><b>T-PN6</b></td><td>重校準程序可用</td><td>腳本產出 profile + verdict</td><td class="good">PASS（<code>a9c546ffd</code> 修復後）</td></tr>
+  </table>
+  <div class="review red">
+    <div class="label">分級規則</div>
+    <b>T-PN3 失敗視為 P0</b> —— 違反 bit-identity 承諾（exact 模式 pin 不得改變輸出）。T-PN1 失敗 = env 名漂移（歷史案例：腳本用舊名 <code>RECORD_ALL</code>、代碼讀 <code>ROUTE_RECORD</code>，靜默斷線無報錯）。
+  </div>
+</div>
+
+<div class="card">
+  <h2>三、維護規則（換環境時）</h2>
+  <table>
+    <tr><th>觸發條件</th><th>動作</th></tr>
+    <tr><td class="warn">換模型 / 改 <code>CGC_EXPERT_CACHE_BYTES</code> / 改 <code>LAYER_CAPS</code></td><td><b>必須重校準</b>（id 語意 / K 完全不同）</td></tr>
+    <tr><td class="info">換 workload 領域 / binary 行為變更</td><td>建議重校準（路由分佈漂移 / ULP 可翻路由）</td></tr>
+  </table>
+  <pre># 重校準（目標機器上）+ 復驗:
+./scripts/run_qwen36_calibrate.sh              # T-PN5 verdict + T-PN6 產出
+# → 讀 stderr "ROUTE-DUMP: coverage mean/min/max"
+# → pin ON/OFF 兩跑 cmp                        # T-PN3 位元級復驗</pre>
+  <div class="review">
+    <div class="label">快速驗指令（§4.2 COMMON 之上）</div>
+    <code>env $COMMON LLAMA_EXPERT_CACHE_PIN_PROFILE=profiles/qwen36_calib.pin llama-simple …</code><br>
+    <code>cmp /tmp/pn_on_out.txt /tmp/pn_off_out.txt</code> · <code>grep -o "pin_marked=[0-9]* pin_yield(evicted)=[0-9]*"</code>
+  </div>
+</div>
+
+<div class="card">
+  <h2>結論</h2>
+  <p class="note" style="font-size:13.5px; line-height:1.7;">
+    Pin profile 的<b>核心承諾已實證</b>：exact 模式下開/關位元級一致（T-PN3），placement 槓桿有效（coverage 2.6× baseline，T-PN5），機制無死鎖風險（pass-2 讓位）。<br>
+    主要風險不在正確性而在<b>時效性</b>：profile 是 workload 快照（特異性 ~29% 重疊），換模型/硬體/workload 不重校準 = 靜默保護錯誤的熱集 —— 已納入測試計劃 §9 場景表（換環境 → 重校準 ~5 分鐘）與 §10 排查表（T-PN1~5 症狀 → 動作）。
+  </p>
+</div>
+
+</div>
+</body>
+</html>
