@@ -1866,6 +1866,27 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         ggml_backend_synchronize(split_backend);
                     }
                     const int64_t st1 = ggml_time_us();
+                    // [CGC bit-bisect v7] in-compute tensor dump: forward every node of the
+                    // just-completed segment to the eval callback (ask=false). Segments 0..i
+                    // have completed and segment i+1 has not been submitted yet, so every
+                    // node's output buffer still holds its computed value — unlike a post-
+                    // compute dump, where later segments have already recycled those buffers.
+                    // The llama_context side (expert_cache_eval_cb -> cgc_tdcb_maybe_dump)
+                    // filters by exact tensor name (CGC_TD_CB) and writes the data. Nodes named
+                    // ffn_moe_topk* are skipped here: the dedicated call right below fires those.
+                    if (getenv("CGC_TD_CB") != nullptr) {
+                        const int a0 = (i == 0) ? 0 : (as_idx[i-1] + 1);
+                        for (int k = a0; k <= as_idx[i]; k++) {
+                            struct ggml_tensor * tn = split->graph.nodes[k];
+                            if (tn == nullptr || tn->name[0] == '\0') {
+                                continue;
+                            }
+                            if (strncmp(tn->name, "ffn_moe_topk", 12) == 0) {
+                                continue;
+                            }
+                            sched->callback_eval(tn, false, sched->callback_eval_user_data);
+                        }
+                    }
                     struct ggml_tensor * ttopk = as_topk[i];
                     if (ttopk == nullptr) {
                         ttopk = split->graph.nodes[as_idx[i]];
@@ -1908,6 +1929,30 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     const int64_t tl0 = ggml_time_us();
                     ggml_backend_synchronize(split_backend);
                     fprintf(stderr, "CGC-TAIL: tail_sync=%dus\n", (int)(ggml_time_us() - tl0));
+                }
+                // [CGC bit-bisect v7] tail segment (everything after the last argsort): the
+                // loop above never hooks it. Wait for it to complete, then forward its nodes
+                // the same way so post-MoE tensors (ffn_out / l_out / output head) are dumped
+                // with fresh values too. Debug-only (CGC_TD_CB): serializes the async pipeline.
+                if (getenv("CGC_TD_CB") != nullptr && n_as_found > 0) {
+                    if (cgc_done) {
+                        const int target = done0 + n_segs * bufs;
+                        while (cgc_done(split_backend) < target) {
+                            sched_yield();
+                        }
+                    } else {
+                        ggml_backend_synchronize(split_backend);
+                    }
+                    for (int k = as_idx[n_as_found - 1] + 1; k < n_nodes; k++) {
+                        struct ggml_tensor * tn = split->graph.nodes[k];
+                        if (tn == nullptr || tn->name[0] == '\0') {
+                            continue;
+                        }
+                        if (strncmp(tn->name, "ffn_moe_topk", 12) == 0) {
+                            continue;
+                        }
+                        sched->callback_eval(tn, false, sched->callback_eval_user_data);
+                    }
                 }
             }
         } else {

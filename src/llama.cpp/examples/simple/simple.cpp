@@ -1,9 +1,30 @@
 #include "llama.h"
+// [CGC layer bisect] staging API: llama_set_embeddings_layer_inp / llama_get_embeddings_layer_inp
+#include "../../src/llama-ext.h"
 #include <clocale>
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
+
+// [CGC layer bisect] write every enabled layer-input buffer's rows to
+// /tmp/cgc_<tag>_l<il>.f32. The buffer holds the LAST decode call's tokens:
+// row j = the j-th token of that call. Used for the bit-level spec-vs-non-spec
+// divergence bisect (see speculative-simple.cpp for the mirror dump).
+static void cgc_dump_layer_inp(llama_context * ctx, const llama_model * model, const char * tag, int n_rows) {
+    const int n_layer = llama_model_n_layer(model);
+    const int n_embd  = llama_model_n_embd(model);
+    for (int il = 0; il < n_layer; ++il) {
+        const float * p = llama_get_embeddings_layer_inp(ctx, (uint32_t) il);
+        if (!p) continue;
+        char path[128];
+        snprintf(path, sizeof(path), "/tmp/cgc_%s_l%02d.f32", tag, il);
+        FILE * f = fopen(path, "wb");
+        if (f) { fwrite(p, sizeof(float), (size_t) n_embd * n_rows, f); fclose(f); }
+    }
+    fprintf(stderr, "CGC-LAYER-DUMP %s: %d layers x %d rows x %d embd\n", tag, n_layer, n_rows, n_embd);
+    fflush(stderr);
+}
 
 static void print_usage(int, char ** argv) {
     printf("\nexample usage:\n");
@@ -207,6 +228,12 @@ int main(int argc, char ** argv) {
     ctx_params.n_batch = n_prompt;
     // enable performance counters
     ctx_params.no_perf = false;
+    // [CGC logit bin] result_norm rows (llama_get_embeddings_ith) for the
+    // bit-level comparison vs the speculative path — embeddings default to
+    // false, which makes get_embeddings_ith fail.
+    if (getenv("CGC_LOGIT_DBG") || getenv("CGC_LAYER_BIN")) {
+        ctx_params.embeddings = true;
+    }
 
     ctx = llama_init_from_model(model, ctx_params);
 
@@ -215,6 +242,18 @@ int main(int argc, char ** argv) {
         ret = 1;
         cgc_cleanup();
         return ret;
+    }
+
+    // [CGC layer bisect] enable per-layer input extraction BEFORE the first decode
+    // so the graph is built with those outputs and output_reserve() allocates the
+    // host buffers (n_embd * n_batch floats per layer). Layers 0..n_layer-1 only —
+    // index n_layer (the output-norm input) is served by embeddings/nextn instead.
+    if (getenv("CGC_LAYER_BIN")) {
+        const int n_layer_dbg = llama_model_n_layer(model);
+        for (int il = 0; il < n_layer_dbg; ++il) {
+            llama_set_embeddings_layer_inp(ctx, (uint32_t) il, true);
+        }
+        fprintf(stderr, "SIMP: CGC_LAYER_BIN enabled layer_inp on %d layers\n", n_layer_dbg);
     }
 
     // initialize the sampler
@@ -271,10 +310,80 @@ int main(int argc, char ** argv) {
         // eval the prompt in n_batch-sized chunks: the L4 metal-pool union-fit cap may shrink
         // n_batch below the prompt length (llama-cli chunks the same way).
         const int32_t n_batch_eff = llama_n_batch(ctx);
+        // [CGC bit-bisect 2026-08-30 v3] CGC_SIMP_TAIL_SPLIT=1: decode the LAST prefill chunk
+        // as [n-1 tokens] + [last token alone (M=1)] — exactly the batch shapes the speculative
+        // path uses (prefill tail M=2 [24,25] then tok26 as row0 of a fresh batch with
+        // n_past=26). Dumping both sub-batches (simpp / simp) discriminates:
+        //   1. simpp(M=2) vs specp(M=2)      — equal => spec prefill itself is clean
+        //   2. simp(M=1 tok26) vs spec verify row0 — equal => full-attn kernel is shape-dependent
+        //   3. simp(M=1 tok26) vs simp3(M=3 row2)  — the M=3-row2 vs M=1 shape divergence itself
+        const bool cgc_tail_split = getenv("CGC_SIMP_TAIL_SPLIT") != nullptr;
         int32_t i_last_chunk = 0;
+        int32_t n_eval_last = 0;
         for (int32_t i = 0; i < (int32_t) prompt_tokens.size(); i += n_batch_eff) {
             i_last_chunk = i;
             const int32_t n_eval = std::min<int32_t>(n_batch_eff, (int32_t) prompt_tokens.size() - i);
+            const bool is_last_chunk = i + n_eval == (int32_t) prompt_tokens.size();
+            if (cgc_tail_split && is_last_chunk && n_eval >= 2) {
+                // sub-batch A: [i .. i+n_eval-2] with logits on its last row (mirrors spec's
+                // prefill tail: logits only on the final prefill token)
+                {
+                    const int32_t na = n_eval - 1;
+                    llama_batch pb = llama_batch_init(na, 0, 1);
+                    for (int32_t j = 0; j < na; ++j) {
+                        pb.token[j]   = prompt_tokens[i + j];
+                        pb.pos[j]     = i + j;
+                        pb.n_seq_id[j] = 1;
+                        pb.seq_id[j][0] = 0;
+                        pb.logits[j]  = false;
+                    }
+                    pb.logits[na - 1] = true;
+                    pb.n_tokens = na;
+                    const int rc = llama_decode(ctx, pb);
+                    llama_batch_free(pb);
+                    if (rc) {
+                        fprintf(stderr, "%s : failed to eval prompt tail-split A\n", __func__);
+                        ret = 1;
+                        cgc_cleanup();
+                        return ret;
+                    }
+                    if (getenv("CGC_LAYER_BIN")) {
+                        fprintf(stderr, "SIMP: tail-split A pos=%d n_eval=%d\n", i, na);
+                        cgc_dump_layer_inp(ctx, model, "simpp", na);
+                        // [CGC v4 per-chunk] chunk idx 3 == spec's prefill chunk 3 (both M=2
+                        // [24,25]) — sc3 vs pc3 is the per-chunk cross-path comparison.
+                        char tag[8];
+                        snprintf(tag, sizeof(tag), "sc%d", i / n_batch_eff);
+                        cgc_dump_layer_inp(ctx, model, tag, na);
+                    }
+                }
+                // sub-batch B: the last prompt token alone (M=1, n_past = i+n_eval-1)
+                {
+                    const int32_t ib = i + n_eval - 1;
+                    llama_batch pb = llama_batch_init(1, 0, 1);
+                    pb.token[0]   = prompt_tokens[ib];
+                    pb.pos[0]     = ib;
+                    pb.n_seq_id[0] = 1;
+                    pb.seq_id[0][0] = 0;
+                    pb.logits[0]  = true;
+                    pb.n_tokens = 1;
+                    const int rc = llama_decode(ctx, pb);
+                    llama_batch_free(pb);
+                    if (rc) {
+                        fprintf(stderr, "%s : failed to eval prompt tail-split B\n", __func__);
+                        ret = 1;
+                        cgc_cleanup();
+                        return ret;
+                    }
+                    n_eval_last = 1;
+                    if (getenv("CGC_LAYER_BIN")) {
+                        fprintf(stderr, "SIMP: tail-split B (M=1) pos=%d n_eval=1\n", ib);
+                        cgc_dump_layer_inp(ctx, model, "simp", 1);
+                    }
+                }
+                continue;
+            }
+            n_eval_last = n_eval;
             // explicit positions: chunk j sits at KV pos i+j (llama_batch_get_one restarts at 0)
             llama_batch pb = llama_batch_init(n_eval, 0, 1);
             for (int32_t j = 0; j < n_eval; ++j) {
@@ -295,6 +404,25 @@ int main(int argc, char ** argv) {
                 cgc_cleanup();
                 return ret;
             }
+            // [CGC v4 per-chunk] dump EVERY prefill chunk (not just the last): tag sc<idx>
+            // mirrors spec's pc<idx> — chunks 0..2 are M=8 in BOTH paths, so a divergence
+            // found in an early chunk means the tail-chunk comparison was looking at a
+            // symptom, not the cause.
+            if (getenv("CGC_LAYER_BIN")) {
+                char tag[8];
+                snprintf(tag, sizeof(tag), "sc%d", i / n_batch_eff);
+                fprintf(stderr, "SIMP: chunk %d pos=%d n_eval=%d\n", i / n_batch_eff, i, n_eval);
+                cgc_dump_layer_inp(ctx, model, tag, n_eval);
+            }
+        }
+        // [CGC layer bisect] dump the LAST prefill chunk's per-layer inputs.
+        // row j = prompt position (i_last_chunk + j); the last row is the last
+        // prompt token — the token the speculative path instead computes inside
+        // its first verify batch [id_last, d0, d1]. The buffer still holds this
+        // chunk's data because no decode has run since.
+        if (getenv("CGC_LAYER_BIN") && n_eval_last > 0) {
+            fprintf(stderr, "SIMP: last prefill chunk pos=%d n_eval=%d\n", i_last_chunk, n_eval_last);
+            cgc_dump_layer_inp(ctx, model, "simp", n_eval_last);
         }
         // debug: dump top-5 logits after the last (prefill) chunk. The logits buffer only holds
         // the LAST chunk's rows, so the row id must be relative to i_last_chunk (llama_get_logits_ith
@@ -330,6 +458,16 @@ int main(int argc, char ** argv) {
         n_pos = n_prompt;
     }
 
+    // [CGC 2026-08-29 bit-identical fix] decoder-only models: the chunked prefill above
+    // already decoded ALL prompt tokens (logits on the last chunk's last row), so the
+    // first sample must read those logits directly. The old code re-decoded
+    // prompt_tokens.back() in the loop, which auto-positioned at n_prompt and
+    // DUPLICATED the last prompt token in the KV — the first sample was conditioned
+    // on [prompt + dup(last tok)] instead of [prompt], shifting every later position
+    // +1 and diverging from the speculative path (verified via CGC_LOGIT_DBG:
+    // SIMP pos=28 vs SPEC pos=27 with structurally different logits).
+    bool first_sample_prefill = !llama_model_has_encoder(model);
+
     // CGC: per-token wall timer (decode + sample cycle). CGC_STEP_TIMING=1 prints mean/p50/p90/p99.
     const bool cgc_step_timing = getenv("CGC_STEP_TIMING") != nullptr;
     std::vector<double> cgc_step_ms, cgc_decode_ms, cgc_sample_ms;
@@ -337,15 +475,48 @@ int main(int argc, char ** argv) {
     for (; n_pos + batch.n_tokens < n_prompt + n_predict; ) {
         const int64_t t_step0 = ggml_time_us();
         // evaluate the current batch with the transformer model
-        if (llama_decode(ctx, batch)) {
+        if (first_sample_prefill) {
+            // first sample after prefill: logits already computed (last chunk's
+            // last row) — no decode, no n_pos advance (see comment above).
+            first_sample_prefill = false;
+        } else if (llama_decode(ctx, batch)) {
             fprintf(stderr, "%s : failed to eval, return code %d\n", __func__, 1);
             ret = 1;
             cgc_cleanup();
             return ret;
+        } else {
+            n_pos += batch.n_tokens;
         }
         const int64_t t_decode_end = ggml_time_us();
 
-        n_pos += batch.n_tokens;
+        // CGC_LOGIT_DBG: dump the distribution the sampler actually consumes this step
+        // (top-2 with hex floats — ULP-level diff vs the speculative path).
+        // CGC_LOGIT_BIN=1 additionally writes the full logit row + result_norm to
+        // /tmp/cgc_simp_pos<N>{_lg,_nm}.f32 for offline divergence analysis
+        // (constant-shift vs per-element noise vs structural).
+        if (getenv("CGC_LOGIT_DBG")) {
+            const int n_vocab_dbg = llama_vocab_n_tokens(vocab);
+            const float * lg = llama_get_logits_ith(ctx, -1);
+            int b0 = 0, b1 = 0; float v0 = -1e30f, v1 = -1e30f;
+            for (int v = 0; v < n_vocab_dbg; ++v) {
+                if (lg[v] > v0) { v1 = v0; b1 = b0; v0 = lg[v]; b0 = v; }
+                else if (lg[v] > v1) { v1 = lg[v]; b1 = v; }
+            }
+            fprintf(stderr, "SIMP pos=%d top2: %d=%a %d=%a\n", n_pos, b0, v0, b1, v1);
+            if (getenv("CGC_LOGIT_BIN")) {
+                char path[128];
+                snprintf(path, sizeof(path), "/tmp/cgc_simp_pos%d_lg.f32", n_pos);
+                FILE * f = fopen(path, "wb");
+                if (f) { fwrite(lg, sizeof(float), n_vocab_dbg, f); fclose(f); }
+                const int n_embd_dbg = llama_model_n_embd(model);
+                const float * nm = llama_get_embeddings_ith(ctx, -1);
+                if (nm) {
+                    snprintf(path, sizeof(path), "/tmp/cgc_simp_pos%d_nm.f32", n_pos);
+                    f = fopen(path, "wb");
+                    if (f) { fwrite(nm, sizeof(float), n_embd_dbg, f); fclose(f); }
+                }
+            }
+        }
 
         // sample the next token
         {

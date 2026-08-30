@@ -273,6 +273,32 @@ private:
     // true when no user callback is installed).
     static bool expert_cache_eval_cb(ggml_tensor * t, bool ask, void * user_data);
 
+    // [CGC bit-bisect v6] dump intermediate F32 graph tensors by name after each ubatch
+    // compute (CGC_TENSOR_DUMP="name-substr,name-substr", CGC_TD_PMAX gates batches by
+    // seq pos_max, default 7 = prefill chunk 0). Files: /tmp/cgc_td_<DEF|MTP>_p<pmax>_
+    // <tensor-name>.f32 — identical names across the spec / simple runs so the files can
+    // be diffed bit-by-bit. Used to bisect WHERE inside layer 3 (full-attn) rows 0-2 of
+    // chunk 0 first diverge between the MTP and non-MTP paths.
+    void cgc_dump_graph_tensors(ggml_cgraph * gf);
+
+    // [CGC bit-bisect v7] in-compute tensor dump. The CGC segmented dispatcher
+    // (ggml-backend.cpp hook_seg) forwards each node to expert_cache_eval_cb with
+    // ask=false right after the node's segment completed and before the next
+    // segment is submitted, so the node's buffer still holds its computed value
+    // (the post-compute cgc_dump_graph_tensors reads recycled work buffers).
+    // CGC_TD_CB="Name,Name,FA": exact tensor-name matches (use "-<il>" suffixes,
+    // exact strcmp — no substring layer-30 pollution); "FA" additionally dumps
+    // every GGML_OP_FLASH_ATTN_EXT node's Q/K/V/mask inputs and its output as
+    // fa<n>_q/k/v/m/o (visit order = layer order). Gated to ubatch
+    // CGC_TD_CB_UB (default 1 = prefill chunk 0) via cgc_tdcb_ubatch_seq.
+    // Files: /tmp/cgc_tdcb_<DEF|MTP>_<name>[_n<occ>].f32 (F16/BF16 converted to
+    // F32 losslessly; other types dumped raw as .bin). ne/nb are logged to
+    // stderr as "CGC-TDCB:" lines so the comparison script can decode strides.
+    void cgc_tdcb_maybe_dump(ggml_tensor * t);
+
+    // ubatch sequence counter (1 = first ubatch the context ever computed)
+    int64_t cgc_tdcb_ubatch_seq = 0;
+
     llm_graph_cb graph_get_cb() const;
 
     // disable auto fused ops (Flash Attention, Gated Delta Net) whose op lands on a device

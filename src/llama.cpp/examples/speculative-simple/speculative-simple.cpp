@@ -4,6 +4,8 @@
 #include "speculative.h"
 #include "log.h"
 #include "llama.h"
+// [CGC layer bisect] staging API: llama_set_embeddings_layer_inp / llama_get_embeddings_layer_inp
+#include "../../src/llama-ext.h"
 
 #include <algorithm>
 #include <clocale>
@@ -13,6 +15,25 @@
 #include <string>
 #include <vector>
 #include <utility>
+
+// [CGC layer bisect] write every enabled layer-input buffer's rows to
+// /tmp/cgc_<tag>_l<il>.f32. The buffer holds the LAST decode call's tokens:
+// row j = the j-th token of that call. Mirror of simple.cpp's dump — used to
+// bisect where the spec and non-spec forwards first diverge at the bit level.
+static void cgc_dump_layer_inp(llama_context * ctx, const llama_model * model, const char * tag, int n_rows) {
+    const int n_layer = llama_model_n_layer(model);
+    const int n_embd  = llama_model_n_embd(model);
+    for (int il = 0; il < n_layer; ++il) {
+        const float * p = llama_get_embeddings_layer_inp(ctx, (uint32_t) il);
+        if (!p) continue;
+        char path[128];
+        snprintf(path, sizeof(path), "/tmp/cgc_%s_l%02d.f32", tag, il);
+        FILE * f = fopen(path, "wb");
+        if (f) { fwrite(p, sizeof(float), (size_t) n_embd * n_rows, f); fclose(f); }
+    }
+    fprintf(stderr, "CGC-LAYER-DUMP %s: %d layers x %d rows x %d embd\n", tag, n_layer, n_rows, n_embd);
+    fflush(stderr);
+}
 
 int main(int argc, char ** argv) {
     std::setlocale(LC_NUMERIC, "C");
@@ -72,6 +93,19 @@ int main(int argc, char ** argv) {
 
     model_tgt = llama_init_tgt->model();
     ctx_tgt   = llama_init_tgt->context();
+
+    // [CGC layer bisect] enable per-layer input extraction on the TARGET context
+    // BEFORE any decode (incl. the MTP manual warmup) so the graph is built with
+    // those outputs and output_reserve() allocates the host buffers. Layers
+    // 0..n_layer-1 only — index n_layer is served by the nextn/embd output.
+    const bool cgc_layer_bin = getenv("CGC_LAYER_BIN") != nullptr;
+    if (cgc_layer_bin) {
+        const int n_layer_dbg = llama_model_n_layer(model_tgt);
+        for (int il = 0; il < n_layer_dbg; ++il) {
+            llama_set_embeddings_layer_inp(ctx_tgt, (uint32_t) il, true);
+        }
+        fprintf(stderr, "SPEC: CGC_LAYER_BIN enabled layer_inp on %d layers\n", n_layer_dbg);
+    }
 
     const llama_vocab * vocab = llama_model_get_vocab(model_tgt);
 
@@ -147,8 +181,15 @@ int main(int argc, char ** argv) {
     params.speculative.draft.ctx_dft = ctx_dft.get();
 
     // check if the context supports partial sequence removal
-    const bool use_ckpt_tgt = (common_context_can_seq_rm(ctx_tgt)       == COMMON_CONTEXT_SEQ_RM_TYPE_FULL);
-    const bool use_ckpt_dft = !spec_mtp && ctx_dft != nullptr && (common_context_can_seq_rm(ctx_dft.get()) == COMMON_CONTEXT_SEQ_RM_TYPE_FULL);
+    // [CGC bit-bisect v5] CGC_NO_SEQ_RM_PROBE=1 skips common_context_can_seq_rm for ctx_tgt:
+    // that probe DECODES 2 tokens [0,0] through the full trunk ("eval 2 tokens to check if the
+    // context is compatible") — it fills expert-cache slots + bumps LRU ticks, and the
+    // llama_memory_clear inside it does NOT reset the expert cache. llama-simple never probes,
+    // so this leaves spec's pool state divergent before prefill chunk 0 (chunk0 L4 rows 0-2
+    // divergence). use_ckpt_tgt=false is safe for the MTP flow (memory supports seq_rm).
+    const bool cgc_no_probe = getenv("CGC_NO_SEQ_RM_PROBE") != nullptr;
+    const bool use_ckpt_tgt = !cgc_no_probe && (common_context_can_seq_rm(ctx_tgt)       == COMMON_CONTEXT_SEQ_RM_TYPE_FULL);
+    const bool use_ckpt_dft = !cgc_no_probe && !spec_mtp && ctx_dft != nullptr && (common_context_can_seq_rm(ctx_dft.get()) == COMMON_CONTEXT_SEQ_RM_TYPE_FULL);
 
     if (use_ckpt_tgt) {
         LOG_INF("speculative decoding will use checkpoints (context does not support partial sequence removal)\n");
@@ -163,11 +204,17 @@ int main(int argc, char ** argv) {
     // hidden state for pending_h (the carry-over embedding fed to the draft head).
     // Without BOS, inp=[9419] for "Hello", batch_enc would be empty (inp.size()-1=0),
     // process() sees n_tokens=0 and skips pending_h, so the draft gets a zero embedding
-    // and produces garbage logits (argmax=0).  Manually prepend BOS when missing.
+    // and produces garbage logits (argmax=0).
+    // [CGC 2026-08-29 bit-identical fix] prepend ONLY on the degenerate single-token
+    // prompt (inp.size() < 2). The old unconditional prepend changed the model INPUT
+    // for every prompt (BOS + N text tokens vs llama-simple's N text tokens) ->
+    // different conditional distribution -> greedy outputs diverged between spec and
+    // non-spec. Long prompts (n_enc >= 1) never needed it: pending_h extraction only
+    // requires inp.size()-1 >= 1.
     {
         const llama_vocab * vocab = llama_model_get_vocab(model_tgt);
         const llama_token bos = llama_vocab_bos(vocab);
-        if (bos != LLAMA_TOKEN_NULL && (inp.empty() || inp[0] != bos)) {
+        if (bos != LLAMA_TOKEN_NULL && inp.size() < 2 && (inp.empty() || inp[0] != bos)) {
             inp.insert(inp.begin(), bos);
         }
         if (getenv("CGC_MTP_DBG")) {
@@ -244,7 +291,13 @@ int main(int argc, char ** argv) {
     // The default warmup was skipped (params.warmup=false above) to avoid building a graph with
     // embeddings_nextn=false.  Now that the MTP driver has enabled embeddings_nextn on both
     // ctx_tgt (unmasked) and ctx_dft (masked), we safely warm up with the correct graph topology.
-    if (warmup_skip && warmup_prev) {
+    // [CGC bit-bisect v5] CGC_MTP_NO_WARMUP=1 skips the manual warmup decode entirely for the
+    // divergence experiment: the warmup's 2-token forward fills expert-cache slots + bumps LRU
+    // ticks, and llama_memory_clear does NOT reset the expert cache — llama-simple starts with
+    // a cold cache, so the warmup leaves spec's cache state divergent before prefill chunk 0.
+    // The first real decode then builds the correct-topology graph itself (sched_need_reserve).
+    const bool cgc_no_warmup = getenv("CGC_MTP_NO_WARMUP") != nullptr;
+    if (warmup_skip && warmup_prev && !cgc_no_warmup) {
         if (getenv("CGC_MTP_DBG")) {
             fprintf(stderr, "MTPDBG main: entering manual warmup, ctx_tgt=%p ctx_dft=%p\n",
                     (void*)ctx_tgt, (void*)ctx_dft.get());
@@ -302,6 +355,26 @@ int main(int argc, char ** argv) {
                 llama_batch_free(batch_enc);
                 return 1;
             }
+            // [CGC layer bisect] dump the LAST prefill chunk's rows (positions
+            // off..off+len-1). llama-simple computes those same positions inside
+            // its last prefill chunk of a possibly different size — comparing
+            // the two isolates batch-composition bit divergence on identical
+            // (token, position) pairs.
+            if (cgc_layer_bin && off + len == n_enc) {
+                fprintf(stderr, "SPEC: last prefill chunk pos=%zu n_eval=%zu\n", off, len);
+                cgc_dump_layer_inp(ctx_tgt, model_tgt, "specp", (int) len);
+            }
+            // [CGC v4 per-chunk] dump EVERY prefill chunk: tag pc<idx> mirrors
+            // llama-simple's sc<idx>. Chunks 0..2 are M=8 in both paths with the
+            // same (token, pos) rows — pcK vs scK row-by-row localizes WHICH
+            // chunk the divergence starts in (tail-only => state carry; early
+            // => warmup/pool contamination).
+            if (cgc_layer_bin) {
+                char tag[8];
+                snprintf(tag, sizeof(tag), "pc%zu", off / (size_t) n_chunk);
+                fprintf(stderr, "SPEC: chunk %zu pos=%zu n_eval=%zu\n", off / (size_t) n_chunk, off, len);
+                cgc_dump_layer_inp(ctx_tgt, model_tgt, tag, (int) len);
+            }
             common_speculative_process(spec, batch_enc);
             llama_batch_free(batch_enc);
         }
@@ -319,6 +392,11 @@ int main(int argc, char ** argv) {
     llama_batch batch_tgt = llama_batch_init(llama_n_batch(ctx_tgt), 0, 1);
 
     size_t n_draft = 0;
+
+    // [CGC layer bisect] dump only the FIRST verify batch (row 0 = id_last at
+    // pos n_past-1 = the last prompt token) — the batch llama-simple instead
+    // computes as the last row of its final prefill chunk.
+    bool cgc_layer_first = cgc_layer_bin;
 
     llama_tokens draft;
     common_prompt_checkpoint ckpt;
@@ -394,8 +472,53 @@ int main(int argc, char ** argv) {
             //LOG_DBG("target batch: %s\n", string_from(ctx_tgt, batch_tgt).c_str());
 
             llama_decode(ctx_tgt, batch_tgt);
+            // [CGC layer bisect] dump the FIRST verify batch's per-layer inputs:
+            // row 0 = id_last (the last prompt token, pos n_past-1), rows 1.. =
+            // draft tokens. Mirrors simple.cpp's last-prefill-chunk dump.
+            if (cgc_layer_first) {
+                cgc_layer_first = false;
+                fprintf(stderr, "SPEC: first verify batch n_tokens=%d row0_pos=%d\n",
+                        (int) batch_tgt.n_tokens, n_past - 1);
+                cgc_dump_layer_inp(ctx_tgt, model_tgt, "spec", (int) batch_tgt.n_tokens);
+            }
 #ifdef MTP_SUPPORT
+            // CGC_LOGIT_DBG: dump row-0 (id_last) distribution — the rows the sampler
+            // consumes for the first accepted/sampled token of this step. Hex floats
+            // for ULP-level comparison against llama-simple's 1-token decode.
+            if (getenv("CGC_LOGIT_DBG")) {
+                const int n_vocab_dbg = llama_vocab_n_tokens(vocab);
+                const float * lg = llama_get_logits_ith(ctx_tgt, 0);
+                int b0 = 0, b1 = 0; float v0 = -1e30f, v1 = -1e30f;
+                for (int v = 0; v < n_vocab_dbg; ++v) {
+                    if (lg[v] > v0) { v1 = v0; b1 = b0; v0 = lg[v]; b0 = v; }
+                    else if (lg[v] > v1) { v1 = lg[v]; b1 = v; }
+                }
+                fprintf(stderr, "SPEC pos=%d top2: %d=%a %d=%a row0[0]=%a row0[198]=%a row0[271]=%a row0[561]=%a\n",
+                        n_past, b0, v0, b1, v1, lg[0], lg[198], lg[271], lg[561]);
+                // CGC_LOGIT_BIN: full logit row + the pre-norm embedding row
+                // (h_nextn row 0 == result_norm row for id_last) for offline
+                // divergence analysis vs llama-simple's CGC_LOGIT_BIN dump.
+                if (getenv("CGC_LOGIT_BIN")) {
+                    char path[128];
+                    snprintf(path, sizeof(path), "/tmp/cgc_spec_pos%d_lg.f32", n_past);
+                    FILE * f = fopen(path, "wb");
+                    if (f) { fwrite(lg, sizeof(float), n_vocab_dbg, f); fclose(f); }
+                    const float * nm = llama_get_embeddings_nextn_ith(ctx_tgt, 0);
+                    if (nm) {
+                        snprintf(path, sizeof(path), "/tmp/cgc_spec_pos%d_nm.f32", n_past);
+                        f = fopen(path, "wb");
+                        if (f) { fwrite(nm, sizeof(float), llama_model_n_embd(model_tgt), f); fclose(f); }
+                    }
+                }
+            }
             common_speculative_process(spec, batch_tgt);
+            // second dump AFTER process(): if row-0 values changed, the MTP driver
+            // overwrote the target logits with draft-head logits.
+            if (getenv("CGC_LOGIT_DBG")) {
+                const float * lg = llama_get_logits_ith(ctx_tgt, 0);
+                fprintf(stderr, "SPEC-AFTER-PROCESS pos=%d row0[0]=%a row0[198]=%a row0[271]=%a row0[561]=%a\n",
+                        n_past, lg[0], lg[198], lg[271], lg[561]);
+            }
 #endif
         }
 

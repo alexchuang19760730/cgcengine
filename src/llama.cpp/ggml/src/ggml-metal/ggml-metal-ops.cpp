@@ -197,14 +197,22 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
 
     // [dbg OPSEQ] one-shot node sequence dump: what actually flows through Metal encode
     // (opt-in via CGC_MMV_FUSE_DBG — keeps production stderr clean)
+    // [CGC bit-bisect v8] CGC_MMV_FUSE_DBG=3: unlimited + node->data range, to find
+    // galloc buffer OVERLAPS with the fused GLU dst (the fused kernel writes the
+    // swiglu output at the gate position — if galloc reused that memory for a tensor
+    // still alive between gate and the original swiglu position, that tensor is
+    // corrupted deterministically -> the MTP/non-MTP ULP divergence).
     {
-        static const bool dbg = (getenv("CGC_MMV_FUSE_DBG") != nullptr);
-        static int n_probe = 0;
-        if (dbg && n_probe < 500) {
-            n_probe++;
-            GGML_LOG_WARN("[OPSEQ] idx=%3d/%d op=%-14s name=%-28s compute=%d\n",
+        static const int dbg3 = []{
+            const char * e = getenv("CGC_MMV_FUSE_DBG");
+            return e != nullptr && e[0] == '3';
+        }();
+        if (dbg3) {
+            const size_t nb = node->data ? ggml_nbytes(node) : 0;
+            GGML_LOG_WARN("[OPSEQ] idx=%3d/%d op=%-14s name=%-28s compute=%d data=%p-%p(%zu)\n",
                     idx, ctx->n_nodes(), ggml_op_name(node->op), node->name,
-                    (node->flags & GGML_TENSOR_FLAG_COMPUTE) ? 1 : 0);
+                    (node->flags & GGML_TENSOR_FLAG_COMPUTE) ? 1 : 0,
+                    node->data, node->data ? (char*)node->data + nb : nullptr, nb);
         }
     }
 
@@ -2368,9 +2376,44 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
     // to the matrix-vector kernel
     const int ne11_mm_min = 8;
 
+    // [CGC bit-divergence debug] trace which kernel family each mul_mat takes.
+    // M (=ne11) selects the family: small-batch mat-mv (r1ptg by ne11), mul_mm (ne11 > 8),
+    // or mul_mv. If the same logical row produces different values across families/shapes,
+    // spec verify batches and 1-token decodes diverge at the bit level.
+    #define CGC_MM_TRACE(tag) do { \
+        if (getenv("CGC_MM_DBG")) { \
+            fprintf(stderr, "MMDBG %s ne11=%d ne00=%d ne01=%d t0=%s t1=%s\n", \
+                    (tag), ne11, ne00, ne01, ggml_type_name(op->src[0]->type), ggml_type_name(op->src[1]->type)); \
+        } \
+    } while (0)
+
+    // [CGC bit-identical 2026-08-30 v2] CGC_MM_BITIDENT=1 routes mul_mat around the
+    // small-batch mat-mv family for ALL src[0] types (v1 only bypassed F32xF32).
+    // That family picks (nxpsg, r1ptg) from ne11 (=M):
+    // ne11=2 -> nxpsg=16/r1ptg=2, ne11=3 -> nxpsg=8/r1ptg=3, ne11=1 -> not even eligible
+    // (mul_mv). The per-row K-reduction tree therefore changes with the batch size, so the
+    // SAME logical row yields ULP-different values depending on how many rows share the
+    // batch. v1 fixed the router (ffn_gate_inp, F32) but the UD dynamic per-layer quant
+    // puts Q8_0 tensors in a handful of layers (first flip measured at layer 4: MMDBG
+    // showed "small-batch ne11=3/8 t0=q8_0" — shared-expert/GDN projections), and those
+    // kept flipping experts for every layer >= 4 on the prefill tail (simp [24,25,26] M=3
+    // vs spec [24,25] M=2: 6-of-8 expert overlap per layer, cascading to ~1e-1 layer-input
+    // drift and argmax flips at the logits). Bypassing the family for every type makes
+    // all ne11 <= 8 land on mul_mv (ne11 > 8 still goes to mul_mm, and both paths use the
+    // same chunking there), and mul_mv's per-element mapping depends only on (tsrc0, ne00)
+    // — ne11 only sets the grid row count — so per-row results are M-invariant: prefill
+    // tails (M=2 vs M=3), verify batches (M=3) and 1-token decodes (M=1) all produce
+    // bit-identical rows. Perf note: M in [2,8] loses the small-batch GEMV (falls back to
+    // mul_mv) — acceptable for this opt-in bit-identical mode.
+    static const bool cgc_mm_bitident = []{
+        const char * e = getenv("CGC_MM_BITIDENT");
+        return e != nullptr && e[0] == '1';
+    }();
+
     // first try to use small-batch mat-mv kernels
     // these should be efficient for BS [2, ~8]
     if (op->src[1]->type == GGML_TYPE_F32 && (ne00%128 == 0) &&
+        !(cgc_mm_bitident) &&
         (
          (
           (
@@ -2407,6 +2450,8 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
         //       my current hypothesis is that the work grid is not evenly divisible for different nsg
         //       values and there can be some tail effects when nsg is high. need to confirm this
         //
+        CGC_MM_TRACE("small-batch");
+
         const int nsg    = 2;                 // num simdgroups per threadgroup
 
         // num threads along row per simdgroup
@@ -2476,6 +2521,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
         // for now the matrix-matrix multiplication kernel only works on A14+/M1+ SoCs
         // AMD GPU and older A-chips will reuse matrix-vector multiplication kernel
         props_dev->has_simdgroup_mm && ne00 >= 64 && ne11 > ne11_mm_min) {
+        CGC_MM_TRACE("mul_mm");
         //GGML_LOG_INFO("matrix: ne00 = %6d, ne01 = %6d, ne02 = %6d, ne11 = %6d, ne12 = %6d\n", ne00, ne01, ne02, ne11, ne12);
 
         // some Metal matrix data types require aligned pointers
@@ -2522,6 +2568,7 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
 
         ggml_metal_encoder_dispatch_threadgroups(enc, ((ne11 + nr1 - 1) / nr1), ((ne01 + nr0 - 1) / nr0), ne12 * ne13, 32, nsg, 1);
     } else {
+        CGC_MM_TRACE("mul_mv");
         auto pipeline = ggml_metal_library_get_pipeline_mul_mv(lib, op);
 
         const int nr0 = pipeline.nr0;
@@ -2733,6 +2780,62 @@ static bool ggml_metal_op_can_fuse_mmv_glu(ggml_metal_op_t ctx, int idx, int * g
         return false;
     }
 
+    // [CGC bit-identical 2026-08-30 v10] galloc lifetime-overlap guard.
+    // The fused kernel writes c (the swiglu output) at the GATE position, but galloc
+    // assigned c its memory based on the swiglu position: any range c shares with a
+    // tensor that is computed OR read strictly between the gate and the swiglu node
+    // makes the fused plan and the galloc plan disagree -> one of the two tensors
+    // reads garbage. Whether an overlap occurs depends on the graph SHAPE (node
+    // count / ordering around the MoE), which differs between llama-simple and
+    // speculative MTP graphs, so one path was silently corrupted while the other
+    // stayed clean — measured: simp CGC_MMV_FUSE=1 vs 0 diverged on 777/800
+    // (pmax,layer) expert-ID keys (fused kernel corrupts the shared-expert input y
+    // when galloc reuses y's freed range for c) while spec was 0/422 (no overlap in
+    // its layout). Refuse the fusion whenever any in-between node touches c's range;
+    // the pair then runs stock and stays bit-identical (the fusion is a pure perf
+    // optimization, never a numerics change).
+    {
+        static const bool guard_dbg = (getenv("CGC_MMV_FUSE_DBG") != nullptr);
+
+        const char * c_base = (const char *) c->data;
+        const size_t c_nbytes = ggml_nbytes(c);
+        const ggml_backend_buffer_t c_buf = c->view_src ? c->view_src->buffer : c->buffer;
+
+        auto range_overlap = [&](const ggml_tensor * t) -> bool {
+            if (t == nullptr || t->data == nullptr || t == c) {
+                return false;
+            }
+            const ggml_backend_buffer_t t_buf = t->view_src ? t->view_src->buffer : t->buffer;
+            if (t_buf == nullptr || t_buf != c_buf) {
+                return false;
+            }
+            const char * p = (const char *) t->data;
+            const size_t nb = ggml_nbytes(t);
+            return p < c_base + c_nbytes && c_base < p + nb;
+        };
+
+        // k = idx+1 is b itself: its dst is never written in the fused plan (dead),
+        // and its srcs (y/ids/w_up) are read by the fused kernel at the gate position,
+        // still inside their galloc lifetime — no hazard. Everything from idx+2 up to
+        // (excluding) the swiglu must not touch c's range in either direction.
+        const int glu = *glu_idx;
+        for (int k = idx + 2; k < glu; k++) {
+            ggml_tensor * t = ctx->node(k);
+
+            bool hit = range_overlap(t);
+            for (int s = 0; !hit && s < GGML_MAX_SRC && t->src[s]; s++) {
+                hit = range_overlap(t->src[s]);
+            }
+            if (hit) {
+                if (guard_dbg) {
+                    GGML_LOG_WARN("[MMV_FUSE dbg] idx=%d/%d a=%s c=%s REJECT: galloc overlap with %s (k=%d) between gate and glu\n",
+                            idx, ctx->n_nodes(), a->name, c->name, t->name, k);
+                }
+                return false;
+            }
+        }
+    }
+
     return true;
 }
 
@@ -2753,12 +2856,22 @@ static int ggml_metal_op_mul_mat_id_glu_fused(ggml_metal_op_t ctx, int idx, int 
     const ggml_tensor * ids    = gate->src[2];
 
     static int n_logged = 0;
+    // [CGC bit-bisect v8] CGC_MMV_FUSE_DBG=2 logs EVERY fused dispatch (name+layer+M)
+    // so the two inference paths' fuse decisions can be diffed per layer — a one-shot
+    // log hid that spec/simple may fuse DIFFERENT node pairs (graph-shape-dependent
+    // BOUNDARY/N_FORWARD failures), which sends one path through the fused kernel and
+    // the other through stock mul_mat_id with different dot-product accumulation order.
+    static const bool dbg_all = []{
+        const char * e = getenv("CGC_MMV_FUSE_DBG");
+        return e != nullptr && e[0] == '2';
+    }();
 
-    if (n_logged == 0) {
+    if (n_logged == 0 || dbg_all) {
         n_logged = 1;
 
-        GGML_LOG_WARN("%s: CGC_MMV_FUSE: dispatching fused gate+up+glu (type %s, ne21 = %d, rows = %d)\n",
-                __func__, ggml_type_name(w_gate->type), (int) ids->ne[1], (int) w_gate->ne[1]);
+        GGML_LOG_WARN("%s: CGC_MMV_FUSE: dispatching fused gate+up+glu (type %s, ne21 = %d, rows = %d, node=%s glu=%s)\n",
+                __func__, ggml_type_name(w_gate->type), (int) ids->ne[1], (int) w_gate->ne[1],
+                a->name, c->name);
     }
 
     GGML_ASSERT(w_gate->ne[3] == 1);

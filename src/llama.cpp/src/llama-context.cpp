@@ -21,6 +21,8 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 //
 // llama_context
@@ -1373,6 +1375,10 @@ bool llama_context::set_adapter_cvec(
 }
 
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
+    // [CGC bit-bisect v7] ubatch sequence counter for the in-compute dump (1 = first
+    // ubatch = prefill chunk 0 with the chunked-prefill driver config)
+    ++cgc_tdcb_ubatch_seq;
+
     if (mctx && !mctx->apply()) {
         LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
         ret = GGML_STATUS_FAILED;
@@ -1475,6 +1481,11 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
         ret = status;
         return nullptr;
+    }
+
+    // [CGC bit-bisect v6] post-compute intermediate tensor dump (see header comment).
+    if (getenv("CGC_TENSOR_DUMP") != nullptr) {
+        cgc_dump_graph_tensors(res->get_gf());
     }
     if (cgc_phase_timing) {
         int64_t t = ggml_time_us();
@@ -1844,6 +1855,20 @@ int llama_context::decode(const llama_batch & batch_inp) {
     // MTP hook batches carry both token (next-token id) and embd (h_nextn row),
     // so accept either present rather than requiring exactly one.
     GGML_ASSERT(batch_inp.token || batch_inp.embd);
+
+    // [CGC bit-bisect v5 TEMP] trace every decode entry: who decodes what, when.
+    // Used to locate a hidden 2-token decode on ctx_tgt that runs before prefill.
+    if (getenv("CGC_DECODE_TRACE")) {
+        fprintf(stderr, "CGC-DEC: ctx=%p type=%s n_tokens=%d pos0=%d tok0=%d tok1=%d embd=%p\n",
+                (void *) this,
+                cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP ? "MTP" : "DEF",
+                batch_inp.n_tokens,
+                batch_inp.pos ? (int) batch_inp.pos[0] : -1,
+                batch_inp.token ? (int) batch_inp.token[0] : -1,
+                (batch_inp.token && batch_inp.n_tokens > 1) ? (int) batch_inp.token[1] : -1,
+                (void *) batch_inp.embd);
+        fflush(stderr);
+    }
 
     if (!memory) {
         LLAMA_LOG_DEBUG("%s: cannot decode batches with this context (calling encode() instead)\n", __func__);
@@ -2734,10 +2759,242 @@ bool llama_context::expert_cache_eval_cb(ggml_tensor * t, bool ask, void * user_
         strncmp(t->name, "ffn_moe_topk", 12) == 0) {
         ctx->expert_cache_on_topk(t);
     }
+    // [CGC bit-bisect v7] in-compute tensor dump: the CGC segmented dispatcher
+    // forwards each completed segment's nodes here (ask=false) — see header comment.
+    if (!ask) {
+        ctx->cgc_tdcb_maybe_dump(t);
+    }
     if (ctx->cparams.cb_eval != nullptr) {
         return ctx->cparams.cb_eval(t, ask, ctx->cparams.cb_eval_user_data);
     }
     return true;
+}
+
+void llama_context::cgc_tdcb_maybe_dump(ggml_tensor * t) {
+    static const std::vector<std::string> td_filters = []() {
+        std::vector<std::string> v;
+        const char * e = getenv("CGC_TD_CB");
+        if (e != nullptr && e[0] != '\0') {
+            std::string s(e);
+            size_t p = 0;
+            while (p <= s.size()) {
+                size_t q = s.find(',', p);
+                std::string tok = s.substr(p, q == std::string::npos ? std::string::npos : q - p);
+                if (!tok.empty()) {
+                    v.push_back(tok);
+                }
+                if (q == std::string::npos) {
+                    break;
+                }
+                p = q + 1;
+            }
+        }
+        return v;
+    }();
+    static const bool td_fa = []() {
+        for (const auto & f : td_filters) {
+            if (f == "FA") {
+                return true;
+            }
+        }
+        return false;
+    }();
+    static const int64_t td_ub = []() {
+        const char * e = getenv("CGC_TD_CB_UB");
+        return e != nullptr && e[0] != '\0' ? (int64_t) atoll(e) : 1;
+    }();
+    if (td_filters.empty() || t == nullptr) {
+        return;
+    }
+    // only dump the configured ubatch (default 1 = prefill chunk 0)
+    if (cgc_tdcb_ubatch_seq != td_ub) {
+        return;
+    }
+
+    const char * ctype = cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP ? "MTP" : "DEF";
+
+    // per-ubatch occurrence state: names can repeat (e.g. Kcur before/after RoPE);
+    // occurrence index follows node visit order, identical across the two paths
+    static int64_t last_seq = -1;
+    static std::unordered_map<std::string, int> seen;
+    static int fa_occ = 0;
+    if (last_seq != cgc_tdcb_ubatch_seq) {
+        last_seq = cgc_tdcb_ubatch_seq;
+        seen.clear();
+        fa_occ = 0;
+    }
+
+    auto dump_tensor = [&](const ggml_tensor * ts, const char * name) {
+        if (ts == nullptr || ts->data == nullptr) {
+            return;
+        }
+        const std::string key(name);
+        const int occ = ++seen[key];
+        char path[256];
+        if (occ == 1) {
+            snprintf(path, sizeof(path), "/tmp/cgc_tdcb_%s_%s", ctype, name);
+        } else {
+            snprintf(path, sizeof(path), "/tmp/cgc_tdcb_%s_%s_n%d", ctype, name, occ);
+        }
+
+        const size_t nbytes = ggml_nbytes(ts);
+        // F16/BF16 -> F32 (lossless, 2x size) so the compare script can treat those
+        // files as f32 too; other types are dumped raw for a byte-level comparison.
+        // [CGC fix 2026-08-30] the old version memcpy'd the widened f32 data back into
+        // the nbytes-sized buf -> 2x heap overflow -> SIGABRT a few allocations later.
+        if (ts->type == GGML_TYPE_F16 || ts->type == GGML_TYPE_BF16) {
+            strcat(path, ".f32");
+            std::vector<uint8_t> buf(nbytes);
+            ggml_backend_tensor_get(const_cast<ggml_tensor *>(ts), buf.data(), 0, nbytes);
+            const size_t n = nbytes / ggml_type_size(ts->type);
+            std::vector<float> f(n);
+            if (ts->type == GGML_TYPE_F16) {
+                ggml_fp16_to_fp32_row((const ggml_fp16_t *) buf.data(), f.data(), (int64_t) n);
+            } else {
+                ggml_bf16_to_fp32_row((const ggml_bf16_t *) buf.data(), f.data(), (int64_t) n);
+            }
+            FILE * fo = fopen(path, "wb");
+            if (fo != nullptr) {
+                fwrite(f.data(), sizeof(float), n, fo);
+                fclose(fo);
+            }
+        } else {
+            if (ts->type == GGML_TYPE_F32) {
+                strcat(path, ".f32");
+            } else {
+                strcat(path, ".bin");
+            }
+            std::vector<uint8_t> buf(nbytes);
+            ggml_backend_tensor_get(const_cast<ggml_tensor *>(ts), buf.data(), 0, nbytes);
+            FILE * fo = fopen(path, "wb");
+            if (fo != nullptr) {
+                fwrite(buf.data(), 1, buf.size(), fo);
+                fclose(fo);
+            }
+        }
+        fprintf(stderr, "CGC-TDCB: %s type=%s ne=[%lld %lld %lld %lld] nb=[%zu %zu %zu %zu] %s\n",
+                path, ggml_type_name(ts->type),
+                (long long) ts->ne[0], (long long) ts->ne[1], (long long) ts->ne[2], (long long) ts->ne[3],
+                (size_t) ts->nb[0], (size_t) ts->nb[1], (size_t) ts->nb[2], (size_t) ts->nb[3],
+                ctype);
+        fflush(stderr);
+    };
+
+    // flash-attention node: dump its Q/K/V/mask inputs and its output. Visit order
+    // across the whole graph = layer order, so fa1_* is the first full-attn layer.
+    if (td_fa && t->op == GGML_OP_FLASH_ATTN_EXT) {
+        fa_occ++;
+        char nm[32];
+        snprintf(nm, sizeof(nm), "fa%d_o", fa_occ);
+        dump_tensor(t, nm);
+        snprintf(nm, sizeof(nm), "fa%d_q", fa_occ);
+        dump_tensor(t->src[0], nm);
+        snprintf(nm, sizeof(nm), "fa%d_k", fa_occ);
+        dump_tensor(t->src[1], nm);
+        snprintf(nm, sizeof(nm), "fa%d_v", fa_occ);
+        dump_tensor(t->src[2], nm);
+        if (t->src[3] != nullptr) {
+            snprintf(nm, sizeof(nm), "fa%d_m", fa_occ);
+            dump_tensor(t->src[3], nm);
+        }
+        return;
+    }
+
+    // exact-name match (no substring: "Kcur-3" must not hit "Kcur-31")
+    if (t->name[0] == '\0') {
+        return;
+    }
+    for (const auto & flt : td_filters) {
+        if (flt == t->name) {
+            dump_tensor(t, t->name);
+            return;
+        }
+    }
+}
+
+void llama_context::cgc_dump_graph_tensors(ggml_cgraph * gf) {
+    static const std::vector<std::string> td_filters = []() {
+        std::vector<std::string> v;
+        const char * e = getenv("CGC_TENSOR_DUMP");
+        if (e != nullptr && e[0] != '\0') {
+            std::string s(e);
+            size_t p = 0;
+            while (p <= s.size()) {
+                size_t q = s.find(',', p);
+                std::string tok = s.substr(p, q == std::string::npos ? std::string::npos : q - p);
+                if (!tok.empty()) {
+                    v.push_back(tok);
+                }
+                if (q == std::string::npos) {
+                    break;
+                }
+                p = q + 1;
+            }
+        }
+        return v;
+    }();
+    static const int td_pmax_max = []() {
+        const char * e = getenv("CGC_TD_PMAX");
+        return e != nullptr ? atoi(e) : 7;
+    }();
+    if (td_filters.empty() || gf == nullptr) {
+        return;
+    }
+
+    const llama_pos pmax = llama_memory_seq_pos_max(memory.get(), 0);
+    if (pmax < 0 || pmax > td_pmax_max) {
+        return;
+    }
+
+    const char * ctype = cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP ? "MTP" : "DEF";
+
+    // the async pipeline may still be draining — sync before reading work buffers
+    ggml_backend_sched_synchronize(sched.get());
+
+    std::unordered_map<std::string, int> seen;
+    const int n_nodes = ggml_graph_n_nodes(gf);
+    for (int i = 0; i < n_nodes; ++i) {
+        ggml_tensor * t = ggml_graph_node(gf, i);
+        if (t == nullptr || t->name == nullptr || t->name[0] == '\0') {
+            continue;
+        }
+        if (t->type != GGML_TYPE_F32 || t->data == nullptr) {
+            continue;
+        }
+        bool match = false;
+        for (const auto & f : td_filters) {
+            if (strstr(t->name, f.c_str()) != nullptr) {
+                match = true;
+                break;
+            }
+        }
+        if (!match) {
+            continue;
+        }
+
+        // same name can appear on several nodes (e.g. Kcur before/after RoPE) —
+        // disambiguate by graph order, which is identical across the two paths
+        const std::string key(t->name);
+        const int occ = ++seen[key];
+        char path[256];
+        if (occ == 1) {
+            snprintf(path, sizeof(path), "/tmp/cgc_td_%s_p%d_%s.f32", ctype, (int) pmax, t->name);
+        } else {
+            snprintf(path, sizeof(path), "/tmp/cgc_td_%s_p%d_%s_n%d.f32", ctype, (int) pmax, t->name, occ);
+        }
+
+        const size_t nbytes = ggml_nbytes(t);
+        std::vector<uint8_t> buf(nbytes);
+        ggml_backend_tensor_get(t, buf.data(), 0, nbytes);
+
+        FILE * f = fopen(path, "wb");
+        if (f != nullptr) {
+            fwrite(buf.data(), 1, nbytes, f);
+            fclose(f);
+            LLAMA_LOG_INFO("CGC-TD: %s ne=[%lld %lld %lld %lld] %zu bytes\n", path,
+                    (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2], (long long) t->ne[3], nbytes);
+        }
+    }
 }
 
 void llama_context::expert_cache_on_topk(ggml_tensor * t) {
@@ -2781,9 +3038,33 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
     static int cgc_hook_dbg_n = 0;
     if (cgc_hook_dbg_n < 80) {
         cgc_hook_dbg_n++;
-        fprintf(stderr, "CGC-HOOK: il=%d ntok=%lld ids=[%d %d %d %d %d %d %d %d]\n",
-                il, (long long) n_tokens,
+        fprintf(stderr, "CGC-HOOK: ctx=%p il=%d ntok=%lld ids=[%d %d %d %d %d %d %d %d]\n",
+                (void *) this, il, (long long) n_tokens,
                 ids[0], ids[1], ids[2], ids[3], ids[4], ids[5], ids[6], ids[7]);
+    }
+    // [CGC bit-bisect 2026-08-30] small batches (prefill chunks / tail / verify / draft): dump
+    // the FULL ids tensor so the expert selection of the SAME token can be compared across
+    // paths (simp last-chunk row2 vs spec verify row0). ids layout: [n_expert_used, n_tokens],
+    // element (i, j) at i + j*n_expert_used — so token row j = ids[j*n_expert_used ... ].
+    // [CGC v4] threshold raised 4 -> 8 so the M=8 prefill chunks (present in BOTH paths with
+    // identical shapes) are captured too — this is where an early expert flip could hide.
+    // Line budget env-tunable (default 4000: ~21 decode calls x 41 layers per path).
+    static int cgc_ids_max_lines = -1;
+    if (cgc_ids_max_lines < 0) {
+        const char * e = getenv("CGC_IDS_MAX_LINES");
+        cgc_ids_max_lines = e ? atoi(e) : 4000;
+    }
+    if (n_tokens <= 8 && cgc_hook_dbg_n < cgc_ids_max_lines) {
+        cgc_hook_dbg_n++;
+        // [CGC bit-bisect] pos_max identifies the batch (async dispatch scrambles the
+        // stderr order, so ctx+ntok alone can't attribute a line to a decode call).
+        const llama_pos cgc_pmax = llama_memory_seq_pos_max(memory.get(), 0);
+        fprintf(stderr, "CGC-IDS: ctx=%p pmax=%d il=%d ntok=%lld", (void *) this, (int) cgc_pmax, il, (long long) n_tokens);
+        const int64_t n_show = n_tokens * n_expert_used;
+        for (int64_t k = 0; k < n_show; ++k) {
+            fprintf(stderr, " %d", ids[k]);
+        }
+        fprintf(stderr, "\n");
     }
     if (getenv("LLAMA_EXPERT_CACHE_DISABLE_WRITE")) {
         return; // diagnostic: keep graph structure, do not write remap / repoint weights
