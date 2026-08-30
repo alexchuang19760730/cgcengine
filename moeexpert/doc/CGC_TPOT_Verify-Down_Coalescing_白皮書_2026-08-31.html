@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CGC TPOT 白皮書 2026-08-31 · Verify Down Coalescing</title>
+<style>
+  :root {
+    --bg: #0f1420; --card: #171e2e; --ink: #e8ecf4; --sub: #9aa5b8;
+    --line: #2a3350; --accent: #ffd479; --good: #8fe3a0; --warn: #f08a8a; --info: #7fb8f0;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; padding: 32px 20px 60px; }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--sub); font-size: 14px; margin-bottom: 28px; line-height: 1.6; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px 24px; margin-bottom: 22px; }
+  .card .desc { color: var(--sub); font-size: 13px; margin: 0 0 16px; line-height: 1.65; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 10px; }
+  .stat { background: #101725; border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .stat .v { font-size: 24px; font-weight: 800; color: var(--accent); }
+  .stat .k { font-size: 12px; color: var(--sub); margin-top: 4px; line-height: 1.5; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--sub); font-weight: 600; font-size: 11.5px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .good { color: var(--good); font-weight: 700; }
+  .warn { color: var(--warn); font-weight: 700; }
+  .info { color: var(--info); font-weight: 700; }
+  .hl { color: var(--accent); font-weight: 700; }
+  .note { font-size: 12.5px; color: var(--sub); margin-top: 12px; line-height: 1.65; }
+  .note b { color: var(--ink); }
+  .review { background: #1a2030; border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; padding: 14px 16px; margin: 12px 0; font-size: 13px; line-height: 1.65; }
+  .review .label { color: var(--accent); font-weight: 700; font-size: 12px; text-transform: uppercase; margin-bottom: 6px; }
+  code { background: #0c1019; border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 11.5px; color: #7fb8f0; }
+  pre { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; font-size: 12px; line-height: 1.55; overflow-x: auto; color: #cde3a0; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; margin-left: 6px; }
+  .tag.g { background: #1c3a24; color: #8fe3a0; }
+  .tag.y { background: #3a321c; color: #e3cf8f; }
+  .mono { font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  @media (max-width: 900px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 560px) { .stats { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>CGC TPOT 白皮書：Verify Down Coalescing</h1>
+<div class="sub">Production MTP shell / GGUF 實測 · qwen36 denseIQ4X steady verify path · 2026-08-31<br>
+repo: <code>flashkv0516</code> · branch: <code>dev</code> · shell: <code>scripts/run_n30cache.sh</code> · target: verify-side <code>ffn_moe_down</code> 主路徑</div>
+
+<div class="card">
+  <h2>一、執行摘要</h2>
+  <p class="desc">這輪不是重開舊的 <code>gate+up</code> 試驗，而是先用 verify graph audit 和 per-op timing 把瓶頸重新定義，再只對最大宗主路徑下刀。結論很清楚：verify 在 <code>CGC_MMV_FUSE=1</code> 下本來就大量命中既有 <code>gate+up+glu</code> fuse，剩餘 ceiling 主要落在 routed <code>down</code> 及其前後的小型 post-swiglu 微子圖。因此本次實作採用 <b>main-path early down coalescing</b>，只收 <code>gate/up=iq2_s -&gt; down=iq3_s</code>，晚層 <code>iq4_xs</code> 保持 fallback，不再回頭碰舊 <code>gate+up</code> 分支。</p>
+  <div class="stats">
+    <div class="stat"><div class="v">26.062 → 26.507</div><div class="k">steady decode t/s<br>fused-down off → on</div></div>
+    <div class="stat"><div class="v">38.37 → 37.73</div><div class="k">TPOT(ms)<br>改善 0.64 ms / token</div></div>
+    <div class="stat"><div class="v">+0.445 t/s</div><div class="k">吞吐增益<br>+1.71%</div></div>
+    <div class="stat"><div class="v">0</div><div class="k">A/B 輸出中的 <code>0000</code><br>未觀察到退化</div></div>
+  </div>
+  <div class="review">
+    <div class="label">一句話結論</div>
+    這一刀值得保留：在 production shell 的 shortened steady A/B 上，主路徑 early-down coalescing 帶來 <b>正向 TPOT 改善</b>，而且沒有把 correctness 或 accept/hit 打壞。
+  </div>
+</div>
+
+<div class="card">
+  <h2>二、為什麼不是再做 gate+up</h2>
+  <p class="desc">我們先做了三層證據收斂，避免又回到已經做過很多次、但價值不高的舊方向。</p>
+  <table>
+    <tr><th>證據</th><th>結果</th><th>解讀</th></tr>
+    <tr><td>verify fuse hit audit<br><code>CGC_MMV_FUSE_DBG=2</code></td><td class="mono">verify 已大量命中 gate+up+glu fuse</td><td>問題不是「matcher 沒打到」</td></tr>
+    <tr><td>per-op timing split</td><td><span class="mono">gate 809.5 us</span><br><span class="mono">up 785.2 us</span><br><span class="mono">down 1057.4 us</span></td><td><code>down</code> 明顯比 <code>gate/up</code> 更重</td></tr>
+    <tr><td>post-swiglu chunk 形狀</td><td><span class="mono">span=6</span> 主變體<br><span class="mono">span=2</span> 次變體</td><td>瓶頸是小型微子圖的 dispatch granularity，不是單顆 gate/up kernel</td></tr>
+  </table>
+  <p class="note"><b>重點</b>：verify-side ceiling 比較像「已 fuse 的 gate+up 之後，還有一段固定且頻繁的 post-swiglu/down strip 沒被吃掉」。所以接下來更合理的方向是 <b>coalescing / batching</b> 或直接做 <b>down 主路徑</b>，而不是把時間再花回已被證偽的 gate+up-only 假設。</p>
+</div>
+
+<div class="card">
+  <h2>三、Audit 定位到的主路徑</h2>
+  <p class="desc">用 <code>N30CACHE_MMV_FUSE=1 CGC_MMV_FUSE_DBG=2 CGC_MMV_DOWN_DBG=2</code> 跑 shortened steady audit 後，主路徑的 down consumer 已經非常具體，足以直接拿來做 implementation cut。</p>
+  <table>
+    <tr><th>項目</th><th>結果</th></tr>
+    <tr><td>主路徑型別</td><td><span class="mono">gate/up=iq2_s -&gt; down=iq3_s</span>，<b>6408</b> 次 candidate</td></tr>
+    <tr><td>晚層旁支</td><td><span class="mono">gate/up=iq2_s -&gt; down=iq4_xs</span>，只在 layer <b>34 / 38</b>，<b>356</b> 次 candidate</td></tr>
+    <tr><td>dominant gap=5</td><td><span class="mono">ffn_moe_swiglu -&gt; shared_expert_gate_sigmoid -&gt; conv_states -&gt; ffn_moe_weights_sum -&gt; ffn_moe_down</span></td></tr>
+    <tr><td>secondary gap=4</td><td><span class="mono">ffn_moe_swiglu -&gt; shared_expert_gate_sigmoid -&gt; ffn_moe_weights_sum -&gt; ffn_moe_down</span></td></tr>
+    <tr><td>資料關係</td><td><span class="mono">ids_same=1</span>、<span class="mono">y_same=1</span>，主路徑沒有 graph ambiguity</td></tr>
+  </table>
+  <div class="review">
+    <div class="label">Interpretation</div>
+    這代表我們不需要再猜「下游是不是另一條圖」。對主路徑來說，<code>down</code> 的 consumer 和前置微子圖都是穩定的，所以可以安全地把優化收斂成一個很窄的切口：<b>只吃 <code>iq2_s -&gt; iq3_s</code>，其餘先 fallback</b>。
+  </div>
+</div>
+
+<div class="card">
+  <h2>四、實作內容：main-path early down coalescing</h2>
+  <p class="desc">這次實作刻意不把它包裝成 single-shader fused-down kernel，而是先做一個更穩的 host-side coalesced phase-2：當 fused <code>gate+up+glu</code> 成功後，直接在同一個 encode site 立即 dispatch 對應的 <code>ffn_moe_down</code>，再把該 node 標記 consumed。</p>
+  <table>
+    <tr><th>範圍</th><th>本次處理</th><th>本次不處理</th></tr>
+    <tr><td>主路徑</td><td class="good"><code>iq2_s -&gt; iq3_s</code> 立即 dispatch + consumed</td><td>—</td></tr>
+    <tr><td>晚層旁支</td><td>保留 stock fallback</td><td class="warn"><code>iq4_xs</code>（layer 34/38）</td></tr>
+    <tr><td>舊分支</td><td>不回頭碰</td><td class="warn">gate+up-only 重新試驗</td></tr>
+  </table>
+  <p class="note"><b>Guard 條件</b>：相同 ids tensor、<code>down-&gt;src[1] == fused_glu_output</code>、down weight type 精準等於 <code>iq3_s</code>、contiguous <code>F32</code> dst，以及跨 in-between nodes 的 galloc overlap rejection。這樣做的目的很明確：<b>把正收益吃掉，但不把 correctness 風險放大</b>。</p>
+  <pre>核心策略（簡化描述）
+1. gate+up+glu fused dispatch 命中
+2. 向後尋找同 ids、同 glu 輸出的 ffn_moe_down
+3. 若型別為 iq3_s 且無 overlap 風險，立刻 dispatch down
+4. 將該 down node 標記 consumed，避免後續 stock 路徑重複 dispatch</pre>
+</div>
+
+<div class="card">
+  <h2>五、Runtime 證據</h2>
+  <p class="desc">先看 early-down 命中率，再看 production A/B。這樣能分開回答「功能有沒有真的走到」和「TPOT 有沒有真的變好」。</p>
+  <table>
+    <tr><th>檢查</th><th>結果</th><th>判讀</th></tr>
+    <tr><td><code>CGC_MMV_DOWN_DBG=2</code></td><td><span class="mono">6012</span> main-path candidates<br><span class="mono">6012</span> early dispatches<br><span class="mono">0</span> overlap rejects</td><td class="good">主路徑命中完整，guard 沒把大宗案例擋掉</td></tr>
+    <tr><td>correctness smoke check</td><td>A/B output 中 <span class="mono">0000</span> 搜尋結果 = <span class="mono">0</span></td><td class="good">未觀察到本輪回歸</td></tr>
+  </table>
+  <table>
+    <tr><th>A/B</th><th>steady 設定</th><th class="num">t/s</th><th class="num">TPOT(ms)</th><th class="num">hit</th><th class="num">accept</th><th>結論</th></tr>
+    <tr><td><code>N30CACHE_GLU_FUSED_DOWN=0</code></td><td><code>-m qwen36 --mtp --dense-iq4x --steady -n 64</code></td><td class="num">26.062</td><td class="num">38.37</td><td class="num">83.6%</td><td class="num">95.652%</td><td>baseline</td></tr>
+    <tr><td><code>N30CACHE_GLU_FUSED_DOWN=1</code></td><td><code>-m qwen36 --mtp --dense-iq4x --steady -n 64</code></td><td class="num hl">26.507</td><td class="num hl">37.73</td><td class="num hl">84.9%</td><td class="num hl">97.727%</td><td class="good">本次 cut</td></tr>
+    <tr><td>delta</td><td>同 shell / 同模型 / 同 MTP 設定</td><td class="num good">+0.445</td><td class="num good">-0.64</td><td class="num good">+1.3 pt</td><td class="num good">+2.075 pt</td><td class="good">正向</td></tr>
+  </table>
+  <div class="review">
+    <div class="label">解讀</div>
+    這份 A/B 雖然是 shortened steady window，不是整輪 production soak，但它已經足夠證明這一刀不是虛假命中。<b>throughput、TPOT、hit、accept 四項都往正方向走</b>，而且沒有冒出新的輸出退化訊號。
+  </div>
+</div>
+
+<div class="card">
+  <h2>六、修改檔案與交付範圍</h2>
+  <p class="desc">這次 commit 只收這輪修復和對應文檔，不把其他在途改動混進來。</p>
+  <table>
+    <tr><th>檔案</th><th>角色</th></tr>
+    <tr><td><code>src/llama.cpp/ggml/src/ggml-metal/ggml-metal-ops.cpp</code></td><td>主路徑 early-down coalescing + down audit helper</td></tr>
+    <tr><td><code>scripts/run_n30cache.sh</code></td><td>production shell A/B 開關：<code>N30CACHE_GLU_FUSED_DOWN=0/1</code></td></tr>
+    <tr><td><code>debug-verify-path-breakdown.md</code></td><td>debug 證據與結論追記</td></tr>
+    <tr><td><code>moeexpert/doc/CGC_TPOT_Verify-Down_Coalescing_白皮書_2026-08-31.html</code></td><td>本白皮書</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>七、後續建議</h2>
+  <p class="desc">這輪已經把最值得碰的主路徑吃掉了。下一步如果要繼續追 verify ceiling，我會照這個順序走。</p>
+  <table>
+    <tr><th>優先級</th><th>方向</th><th>理由</th></tr>
+    <tr><td>1</td><td>把 late-layer <code>iq4_xs</code> side path 補成同型 cut 或更明確 fallback audit</td><td>目前只剩 layer 34/38 的旁支沒吃到</td></tr>
+    <tr><td>2</td><td>把 gap=4/5 strip 做更進一步 batching / coalescing</td><td>目前仍是 host-side phase-2，還有壓 dispatch granularity 的空間</td></tr>
+    <tr><td>3</td><td>若收益停滯，再評估 single-shader fused-down</td><td>那會是更高風險但更深的下一刀</td></tr>
+  </table>
+  <p class="note"><b>不建議</b>：重新回頭做沒有新證據支持的 gate+up-only 試驗。這輪 audit 已經清楚說明那不是目前最有價值的方向。</p>
+</div>
+
+<p class="sub" style="margin-top:24px">數據來源：production shell <code>scripts/run_n30cache.sh</code>、A/B 輸出 <code>/tmp/down_ab_off.out</code> / <code>/tmp/down_ab_on.out</code>、debug note <code>debug-verify-path-breakdown.md</code>。本報告目的：把 verify/down 優化的設計理由、TPOT 量化結果、以及 commit 範圍固定成可回看白皮書。</p>
+
+</div>
+</body>
+</html>

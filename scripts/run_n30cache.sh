@@ -255,7 +255,9 @@ ENVS=(LLAMA_EXPERT_CACHE_ALLOW_NGL=1
       CGC_EVICTED_RING=0)
 [ "$OA_ASYNC" = 1 ] && ENVS+=(CGC_OA_ASYNC=1)
 ENVS+=(CGC_N_CB=$N_CB)
-ENVS+=(CGC_GLU_FUSED_DOWN=1)  # §8.113: fused gate+up+GLU+down, +6.5% speed
+if [ "${N30CACHE_GLU_FUSED_DOWN:-1}" != "0" ]; then
+    ENVS+=(CGC_GLU_FUSED_DOWN=1)  # §8.113: fused gate+up+GLU+down, +6.5% speed
+fi
 # §CGC 2026-08-28 WIN_PIN（LLAMA_EXPERT_CACHE_WIN_PIN=K）：window pin — 每層保留最近 K 個
 # miss-step union 的 expert 不被 LRU 逐出。A/B 結論（steady MTP 4GiB seed 1，2026-08-28）：
 # K=4 hit 51.0%、K=2 hit 51.4%（baseline 51.5%）→ 全 K 值中性無效。根因：steady 的 miss

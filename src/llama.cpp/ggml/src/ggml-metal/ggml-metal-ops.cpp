@@ -2839,6 +2839,200 @@ static bool ggml_metal_op_can_fuse_mmv_glu(ggml_metal_op_t ctx, int idx, int * g
     return true;
 }
 
+static void ggml_metal_op_audit_mmv_glu_down(ggml_metal_op_t ctx, int idx, int glu_idx) {
+    const char * e = getenv("CGC_MMV_DOWN_DBG");
+    if (e == nullptr) {
+        return;
+    }
+
+    static int n_dbg = 0;
+    const bool dbg_all = e[0] == '2';
+    if (!dbg_all && n_dbg >= 64) {
+        return;
+    }
+    n_dbg++;
+
+    ggml_tensor * a   = ctx->node(idx);
+    ggml_tensor * b   = ctx->node(idx + 1);
+    ggml_tensor * glu = ctx->node(glu_idx);
+
+    constexpr int N_FORWARD_DOWN = 24;
+    const int j_end = MIN(glu_idx + 1 + N_FORWARD_DOWN, ctx->n_nodes());
+
+    int down_idx = -1;
+    ggml_tensor * down = nullptr;
+    for (int j = glu_idx + 1; j < j_end; ++j) {
+        ggml_tensor * t = ctx->node(j);
+        if (t->op == GGML_OP_MUL_MAT_ID && t->src[1] == glu) {
+            down_idx = j;
+            down = t;
+            break;
+        }
+    }
+
+    if (down == nullptr) {
+        GGML_LOG_WARN("[MMV_DOWN dbg] idx=%d/%d gate=%s up=%s glu=%s fail: no down MUL_MAT_ID consuming glu within +%d\n",
+                idx, ctx->n_nodes(), a->name, b->name, glu->name, N_FORWARD_DOWN);
+        return;
+    }
+
+    std::string between;
+    for (int j = glu_idx + 1; j < down_idx; ++j) {
+        ggml_tensor * t = ctx->node(j);
+        if (!between.empty()) {
+            between += ",";
+        }
+        between += t->name[0] ? t->name : ggml_op_name(t->op);
+    }
+
+    const ggml_tensor * w_down = down->src[0];
+    const ggml_tensor * y_down = down->src[1];
+    const ggml_tensor * ids_down = down->src[2];
+
+    GGML_LOG_WARN("[MMV_DOWN dbg] idx=%d/%d gate=%s glu=%s down=%s delta=%d w_down=%s ntok=%d ids_same=%d y_same=%d between=[%s]\n",
+            idx, ctx->n_nodes(),
+            a->name,
+            glu->name,
+            down->name,
+            down_idx - glu_idx,
+            w_down ? ggml_type_name(w_down->type) : "-",
+            ids_down ? (int) ids_down->ne[1] : -1,
+            ids_down == a->src[2] ? 1 : 0,
+            y_down == glu ? 1 : 0,
+            between.empty() ? "-" : between.c_str());
+
+    if (w_down == nullptr) {
+        GGML_LOG_WARN("[MMV_DOWN dbg] down=%s fail: missing down weights\n", down->name);
+        return;
+    }
+
+    if (w_down->type != GGML_TYPE_IQ3_S && w_down->type != GGML_TYPE_IQ3_XXS) {
+        GGML_LOG_WARN("[MMV_DOWN dbg] down=%s fail: unsupported down weight type %s\n",
+                down->name, ggml_type_name(w_down->type));
+        return;
+    }
+
+    if (ids_down != a->src[2]) {
+        GGML_LOG_WARN("[MMV_DOWN dbg] down=%s fail: ids mismatch vs fused gate/up pair\n", down->name);
+        return;
+    }
+
+    if (down->src[1] != glu) {
+        GGML_LOG_WARN("[MMV_DOWN dbg] down=%s fail: down src1 is not fused glu output\n", down->name);
+        return;
+    }
+
+    GGML_LOG_WARN("[MMV_DOWN dbg] down=%s candidate: gate/up=%s down=%s gap=%d\n",
+            down->name,
+            ggml_type_name(a->src[0]->type),
+            ggml_type_name(w_down->type),
+            down_idx - glu_idx);
+}
+
+static bool ggml_metal_op_find_mmv_glu_down(
+        ggml_metal_op_t ctx,
+        int idx,
+        int glu_idx,
+        int * down_idx) {
+    ggml_tensor * a   = ctx->node(idx);
+    ggml_tensor * glu = ctx->node(glu_idx);
+
+    constexpr int N_FORWARD_DOWN = 24;
+    const int j_end = MIN(glu_idx + 1 + N_FORWARD_DOWN, ctx->n_nodes());
+
+    *down_idx = -1;
+
+    for (int j = glu_idx + 1; j < j_end; ++j) {
+        ggml_tensor * t = ctx->node(j);
+        if (t->op != GGML_OP_MUL_MAT_ID) {
+            continue;
+        }
+        if (t->src[1] != glu) {
+            continue;
+        }
+        if (t->src[2] != a->src[2]) {
+            continue;
+        }
+        *down_idx = j;
+        return true;
+    }
+
+    return false;
+}
+
+static bool ggml_metal_op_can_batch_mmv_glu_down(
+        ggml_metal_op_t ctx,
+        int idx,
+        int glu_idx,
+        int * down_idx) {
+    if (getenv("CGC_GLU_FUSED_DOWN") == nullptr) {
+        return false;
+    }
+
+    ggml_tensor * a = ctx->node(idx);
+    ggml_tensor * c = ctx->node(glu_idx);
+
+    if (a->src[0] == nullptr || a->src[0]->type != GGML_TYPE_IQ2_S) {
+        return false;
+    }
+
+    if (!ggml_metal_op_find_mmv_glu_down(ctx, idx, glu_idx, down_idx)) {
+        return false;
+    }
+
+    ggml_tensor * down = ctx->node(*down_idx);
+
+    if (down->src[0] == nullptr || down->src[0]->type != GGML_TYPE_IQ3_S) {
+        return false;
+    }
+
+    if (down->src[1] != c || down->src[2] != a->src[2]) {
+        return false;
+    }
+
+    if (down->type != GGML_TYPE_F32 || !ggml_is_contiguous(down)) {
+        return false;
+    }
+
+    const char * down_base = (const char *) down->data;
+    const size_t down_nbytes = ggml_nbytes(down);
+    const ggml_backend_buffer_t down_buf = down->view_src ? down->view_src->buffer : down->buffer;
+
+    auto range_overlap = [&](const ggml_tensor * t) -> bool {
+        if (t == nullptr || t->data == nullptr || t == down || t == c) {
+            return false;
+        }
+        const ggml_backend_buffer_t t_buf = t->view_src ? t->view_src->buffer : t->buffer;
+        if (t_buf == nullptr || t_buf != down_buf) {
+            return false;
+        }
+        const char * p = (const char *) t->data;
+        const size_t nb = ggml_nbytes(t);
+        return p < down_base + down_nbytes && down_base < p + nb;
+    };
+
+    for (int k = idx + 1; k < *down_idx; ++k) {
+        ggml_tensor * t = ctx->node(k);
+        if (t == down) {
+            continue;
+        }
+        bool hit = range_overlap(t);
+        for (int s = 0; !hit && s < GGML_MAX_SRC && t->src[s]; ++s) {
+            hit = range_overlap(t->src[s]);
+        }
+        if (hit) {
+            const char * e = getenv("CGC_MMV_DOWN_DBG");
+            if (e != nullptr) {
+                GGML_LOG_WARN("[MMV_DOWN dbg] down=%s REJECT: galloc overlap with %s (k=%d) before early dispatch\n",
+                        down->name, t->name, k);
+            }
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static int ggml_metal_op_mul_mat_id_glu_fused(ggml_metal_op_t ctx, int idx, int glu_idx) {
     ggml_metal_library_t lib = ctx->lib;
     ggml_metal_encoder_t enc = ctx->enc;
@@ -2873,6 +3067,11 @@ static int ggml_metal_op_mul_mat_id_glu_fused(ggml_metal_op_t ctx, int idx, int 
                 __func__, ggml_type_name(w_gate->type), (int) ids->ne[1], (int) w_gate->ne[1],
                 a->name, c->name);
     }
+
+    ggml_metal_op_audit_mmv_glu_down(ctx, idx, glu_idx);
+
+    int down_idx = -1;
+    const bool batch_down = ggml_metal_op_can_batch_mmv_glu_down(ctx, idx, glu_idx, &down_idx);
 
     GGML_ASSERT(w_gate->ne[3] == 1);
     GGML_ASSERT(y->ne[3] == 1);
@@ -2965,6 +3164,18 @@ static int ggml_metal_op_mul_mat_id_glu_fused(ggml_metal_op_t ctx, int idx, int 
     // (earlier than the original swiglu position)
     ggml_metal_op_concurrency_add(ctx, c);
 
+    if (batch_down) {
+        ggml_tensor * down = ctx->node(down_idx);
+        const char * e = getenv("CGC_MMV_DOWN_DBG");
+        if (e != nullptr) {
+            GGML_LOG_WARN("[MMV_DOWN dbg] dispatching early down after fused glu: down=%s gap=%d type=%s\n",
+                    down->name, down_idx - glu_idx, ggml_type_name(down->src[0]->type));
+        }
+        const int n_fuse_down = ggml_metal_op_mul_mat_id(ctx, down_idx);
+        GGML_ASSERT(n_fuse_down == 1);
+        ctx->mark_consumed(down);
+    }
+
     return 1;
 }
 
@@ -3028,7 +3239,27 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
     // ne21 = n_rows (batch size)
     const int ne21_mm_id_min = 32;
 
+    // [CGC verify-kernel probe 2026-08-31] cheap census for routed MoE FFN dispatches. This is
+    // intentionally shape-only (no behavior change): when enabled, it lets us confirm whether the
+    // remaining verify ceiling is dominated by many small stock GEMV mul_mat_id launches on
+    // ffn_moe_gate/up/down rather than file reads or host-side hook work.
+    const bool cgc_verify_mmv_dbg = getenv("CGC_VERIFY_MMV_DBG") != nullptr;
+    const bool cgc_moe_node = op->name &&
+        (strstr(op->name, "ffn_moe_gate") != nullptr ||
+         strstr(op->name, "ffn_moe_up")   != nullptr ||
+         strstr(op->name, "ffn_moe_down") != nullptr);
+    const bool cgc_multi_token = ne21 > 1;
+
     if (props_dev->has_simdgroup_mm && ne00 >= 64 && (ne21 >= ne21_mm_id_min)) {
+        if (cgc_verify_mmv_dbg && cgc_moe_node && cgc_multi_token) {
+            static int cgc_mmid_mm_n = 0;
+            if (cgc_mmid_mm_n < 256) {
+                cgc_mmid_mm_n++;
+                GGML_LOG_WARN("CGC-MMID path=MM idx=%d name=%s type=%s nei1=%d nei0=%d ne01=%d ne02=%d ne00=%d\n",
+                        idx, op->name, ggml_type_name(op->src[0]->type),
+                        (int) ne21, (int) ne20, (int) ne01, (int) ne02, (int) ne00);
+            }
+        }
         // some Metal matrix data types require aligned pointers
         // ref: https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf (Table 2.5)
         //switch (op->src[0]->type) {
@@ -3116,6 +3347,15 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
             ggml_metal_encoder_dispatch_threadgroups(enc, (ne21 + 31)/32, (ne01 + 63)/64, ne02, 128, 1, 1);
         }
     } else {
+        if (cgc_verify_mmv_dbg && cgc_moe_node && cgc_multi_token) {
+            static int cgc_mmid_mv_n = 0;
+            if (cgc_mmid_mv_n < 512) {
+                cgc_mmid_mv_n++;
+                GGML_LOG_WARN("CGC-MMID path=MV idx=%d name=%s type=%s nei1=%d nei0=%d ne01=%d ne02=%d ne00=%d\n",
+                        idx, op->name, ggml_type_name(op->src[0]->type),
+                        (int) ne21, (int) ne20, (int) ne01, (int) ne02, (int) ne00);
+            }
+        }
         auto pipeline = ggml_metal_library_get_pipeline_mul_mv_id(lib, op);
 
         const int nr0 = pipeline.nr0;
