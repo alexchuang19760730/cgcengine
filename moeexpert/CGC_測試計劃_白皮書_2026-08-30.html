@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CGC Fork 完整測試計劃白皮書（Test Plan）2026-08-30</title>
+<style>
+  :root {
+    --bg: #0f1420; --card: #171e2e; --ink: #e8ecf4; --sub: #9aa5b8;
+    --line: #2a3350;
+    --accent: #ffd479; --good: #8fe3a0; --warn: #f08a8a; --info: #7fb8f0;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; padding: 32px 20px 60px; }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 0 0 4px; }
+  h3 { font-size: 15px; margin: 18px 0 8px; }
+  h4 { font-size: 13.5px; margin: 14px 0 6px; color: var(--accent); }
+  .sub { color: var(--sub); font-size: 14px; margin-bottom: 28px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px 24px; margin-bottom: 22px; }
+  .card .desc { color: var(--sub); font-size: 13px; margin: 0 0 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
+  th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--sub); font-weight: 600; font-size: 11.5px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .hl { color: var(--accent); font-weight: 700; }
+  .good { color: var(--good); font-weight: 700; }
+  .warn { color: var(--warn); font-weight: 700; }
+  .info { color: var(--info); }
+  .note { font-size: 12.5px; color: var(--sub); margin-top: 12px; line-height: 1.6; }
+  .note b { color: var(--ink); }
+  .review { background: #1a2030; border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; padding: 14px 16px; margin: 12px 0; font-size: 13px; line-height: 1.6; }
+  .review .label { color: var(--accent); font-weight: 700; font-size: 12px; text-transform: uppercase; margin-bottom: 6px; }
+  .review.red { border-left-color: var(--warn); }
+  .review.red .label { color: var(--warn); }
+  code { background: #0c1019; border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 11.5px; font-family: "SF Mono", Menlo, monospace; color: #7fb8f0; }
+  pre { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; color: #7fb8f0; overflow-x: auto; line-height: 1.5; margin: 12px 0; }
+  .diagram { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 16px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; line-height: 1.6; margin: 12px 0; white-space: pre; overflow-x: auto; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; margin-left: 6px; }
+  .tag.g { background: #1c3a24; color: #8fe3a0; }
+  .tag.r { background: #3a1c1c; color: #f08a8a; }
+  .tag.y { background: #3a321c; color: #e3cf8f; }
+  .tag.b { background: #1c2a3a; color: #7fb8f0; }
+  .toc { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px; }
+  .toc a { color: var(--info); text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>CGC Fork 完整測試計劃白皮書</h1>
+<div class="sub">Test Plan · Build 驗證 · Pre-commit · Commit 後驗收（bit-identical / antiloop / MTP / 效能）· 部署包 · 歷史測試覆蓋<br>llama.cpp fork（cgcengine0823）· 2026-08-30 · 基準 <code>84e321590</code> · 第四份白皮書：機制 → 修復 → 落地 → <b>測試</b></div>
+
+<div class="card">
+  <h2>目錄</h2>
+  <div class="toc">
+    <div><a href="#s1">§1 測試體系總覽：四層金字塔</a></div>
+    <div><a href="#s2">§2 L0 Build 驗證</a></div>
+    <div><a href="#s3">§3 L1 Pre-commit 自動測試</a></div>
+    <div><a href="#s4">§4 L2 功能驗收：bit-identical</a></div>
+    <div><a href="#s5">§5 L2 功能驗收：antiloop 與穩定性</a></div>
+    <div><a href="#s6">§6 L2 功能驗收：MTP 與效能</a></div>
+    <div><a href="#s7">§7 L3 部署包驗收</a></div>
+    <div><a href="#s8">§8 歷史測試覆蓋資產</a></div>
+    <div><a href="#s9">§9 統一測試腳本與執行順序</a></div>
+    <div><a href="#s10">§10 三平台適用與失敗排查</a></div>
+  </div>
+</div>
+
+<!-- ============ §1 ============ -->
+<div class="card" id="s1">
+  <h2>§1 測試體系總覽：四層金字塔</h2>
+  <p class="desc">本 fork 的測試不是單一大腳本，而是<b>嵌在開發流程每一站的自動/半自動關卡</b>。每一層失敗都擋住下一層 —— 從編譯到部署，任何一層的失敗都有明確的修復指引（§10）。</p>
+
+  <div class="diagram">            ┌─────────────────────────────┐
+            │  L3 部署包驗收               │ 夾帶 dylib 自包含、
+            │  （拿到別台機器也能跑）        │ bit-identical 重驗
+            ├─────────────────────────────┤
+            │  L2 Commit 後功能驗收         │ bit-identical 四方對比、
+            │  （品質證明）                 │ antiloop、MTP、效能
+            ├─────────────────────────────┤
+            │  L1 Pre-commit 自動測試       │ check_build_tracked.sh
+            │  （每次 git commit 必跑）      │ 5 項：dylib/symlink/exe/rpath
+            ├─────────────────────────────┤
+            │  L0 Build 驗證                │ clean rebuild 100%、
+            │  （兩段式 + MTP 隔離）         │ MTP 符號隔離、flag 紀律
+            └─────────────────────────────┘
+   時間軸:  改代碼 → L0 rebuild → git add → L1 hook → commit → L2 驗收 → 打包 → L3
+            （L1 是自動的；L2/L3 是驗收跑，指令都收錄在 §9）</div>
+
+  <table>
+    <tr><th>層</th><th>名稱</th><th>觸發時機</th><th>自動化</th><th>失敗後果</th></tr>
+    <tr><td class="hl">L0</td><td>Build 驗證</td><td>每次 rebuild</td><td>半自動（2 個 script）</td><td>不進 commit</td></tr>
+    <tr><td class="hl">L1</td><td>Pre-commit</td><td>每次 <code>git commit</code></td><td class="good">全自動（git hook）</td><td>commit 被擋下</td></tr>
+    <tr><td class="hl">L2</td><td>功能驗收</td><td>commit 後（重要變更、晉升 main 前）</td><td>半自動（指令集 §9）</td><td>不得晉升 main</td></tr>
+    <tr><td class="hl">L3</td><td>部署包驗收</td><td>更新部署包後</td><td>半自動</td><td>不得發佈</td></tr>
+  </table>
+
+  <p class="note"><b>測試金字塔的設計原則</b>：越下層越便宜、跑越勤；越上層越貴、只在里程碑跑。L1 的 5 項檢查 &lt; 2 秒（純 git/otool 查詢），每次 commit 都跑；L2 的 bit-identical 四方對比每 run 要數分鐘（35B 模型），只在關鍵變更跑。<b>歷史教訓：8/26 的 build 追蹤疏失（29.85 t/s build 一度救不回來）就是因為當時沒有 L1 —— 現在有。</b></p>
+</div>
+
+<!-- ============ §2 ============ -->
+<div class="card" id="s2">
+  <h2>§2 L0 Build 驗證</h2>
+  <p class="desc">兩段式 build 的每一段都有專屬驗證。目標：確認產物<b>正確、隔離、可載入</b>。</p>
+
+  <table>
+    <tr><th>ID</th><th>測試</th><th>指令</th><th>通過標準</th><th>最近結果</th></tr>
+    <tr><td><b>T-B1</b></td><td>Clean rebuild（可重現性）</td><td><code>bash scripts/build_fork_llama.sh</code>（內建 REBUILD=1 → rm -rf build）</td><td>cmake 全量 [100%] 無錯誤</td><td class="good">8/30 PASS</td></tr>
+    <tr><td><b>T-B2</b></td><td>二段式隔離編譯</td><td><code>bash scripts/build_prod_binary.sh</code></td><td>兩個 example 都 link 成功</td><td class="good">8/30 PASS</td></tr>
+    <tr><td><b>T-B3</b></td><td>MTP 符號隔離<span class="tag r">關鍵</span></td><td><code>strings build/bin/llama-simple \| grep -ci mtp</code><br><code>strings build/bin/llama-speculative-simple \| grep -i mtp \| head</code></td><td>simple = <b>0</b>；spec 有（CGC_MTP_DBG 等）</td><td class="good">8/30 PASS（0 / 有）</td></tr>
+    <tr><td><b>T-B4</b></td><td>rpath 指向本 repo</td><td><code>otool -l build/bin/llama-simple \| grep -A2 LC_RPATH</code></td><td>指向 repo 的 build/bin</td><td class="good">8/30 PASS</td></tr>
+    <tr><td><b>T-B5</b></td><td>flag 紀律（數值正確性）<span class="tag r">關鍵</span></td><td>查 CMakeCache：<code>GGML_BLAS / GGML_ACCELERATE / GGML_CPU_REPACK</code></td><td>三者皆 <b>OFF</b>（IQ3 系列亂碼防線）</td><td class="good">8/30 PASS</td></tr>
+    <tr><td><b>T-B6</b></td><td>dylib 家族完整</td><td><code>ls build/bin/*.dylib</code></td><td>libllama / libggml{,-cpu,-metal,-base} / libllama-common 版本化 + symlink 成對</td><td class="good">8/30 PASS（0.0.70 / 0.19.0）</td></tr>
+  </table>
+
+  <div class="review">
+    <div class="label">T-B3 為什麼是關鍵</div>
+    MTP 隔離是 bit-identity 的<b>編譯期根基</b>（生產 binary 不含任何 MTP 代碼）。歷史上 Windows MinGW 曾把 <code>MTP_SUPPORT</code> 全域定義（兩 binary 都含 MTP）—— 若在 Windows 對齊 mac 架構（三平台白皮書 §5.2 方案 B），T-B3 是驗收第一關。
+  </div>
+</div>
+
+<!-- ============ §3 ============ -->
+<div class="card" id="s3">
+  <h2>§3 L1 Pre-commit 自動測試（check_build_tracked.sh）</h2>
+  <p class="desc">每次 <code>git commit</code> 自動執行（git hook），&lt; 2 秒，5 項檢查。直接源自 8/26 檢討報告的兩個疏失（洞 B / 洞 D），防止再犯。</p>
+
+  <table>
+    <tr><th>ID</th><th>檢查（洞）</th><th>內容</th><th>通過標準</th></tr>
+    <tr><td><b>T-P1</b></td><td>dylib 被追蹤（<b>洞 B</b>）</td><td>build/bin 每個 *.dylib 都 <code>git ls-files --error-unmatch</code> 成功</td><td>全部追蹤（untracked = 會被 rebuild 靜默覆寫遺失）</td></tr>
+    <tr><td><b>T-P2</b></td><td>必要 dylib 前綴</td><td>libllama. / libllama-common. / libmtmd. / libggml. 前綴至少一個已追蹤</td><td>4 個前綴都有</td></tr>
+    <tr><td><b>T-P3</b></td><td>symlink 目標被追蹤（<b>洞 B</b>）</td><td><code>libllama.0.dylib</code> 等 symlink 的 realpath 目標已追蹤且在 repo 內</td><td>全部解析到已追蹤目標</td></tr>
+    <tr><td><b>T-P4</b></td><td>關鍵 exe 追蹤</td><td>llama-simple / llama-speculative-simple / llama-bench 存在且已追蹤</td><td>3 個 exe 都追蹤</td></tr>
+    <tr><td><b>T-P5</b></td><td>@rpath 指向本 repo（<b>洞 D</b>）</td><td>exe 的 LC_RPATH realpath == repo 的 build/bin</td><td>不得指向別的 build 目錄（載入錯 dylib → batch cap / 亂碼）</td></tr>
+  </table>
+
+  <pre># 安裝（每個開機環境一次）：
+scripts/check_build_tracked.sh --install-hook src/llama.cpp/build/bin
+
+# 手動跑（等同 commit 時自動執行的）：
+scripts/check_build_tracked.sh
+
+# 8/30 實測輸出（17 PASS / 0 FAIL）：
+--- 檢查 dylib 被追蹤（洞 B） ---
+  PASS  追蹤 OK: src/llama.cpp/build/bin/libllama-common.0.0.70.dylib
+  PASS  追蹤 OK: src/llama.cpp/build/bin/libggml.0.19.0.dylib ...
+--- 檢查 symlink 目標被追蹤 ---
+  PASS  symlink 目標已追蹤: libllama.0.dylib -> .../libllama.0.0.70.dylib ...
+--- 檢查關鍵 exe 被追蹤 ---
+  PASS  exe 追蹤 OK: src/llama.cpp/build/bin/llama-simple ...
+--- 檢查 @rpath（洞 D） ---
+  PASS  @rpath 指向本 repo build/bin: llama-simple -> .../build/bin ...
+OK: build/bin 的 dylib 與 rpath 全部追蹤正常。</pre>
+
+  <p class="note"><b>歷史事件</b>：8/30 的 SOVERSION bump（0.0.60 → 0.0.70）commit 時，T-P1 立刻抓到「舊 dylib 已刪、新 dylib untracked」的狀態差異並擋下第一次 commit —— 這正是它存在的意義（同類事件 8/26 曾造成 29.85 t/s build 永久遺失）。修法：<code>git add -A src/llama.cpp/build/bin/</code> 讓版本輪替（刪舊+加新）一起進 commit。</p>
+</div>
+
+<!-- ============ §4 ============ -->
+<div class="card" id="s4">
+  <h2>§4 L2 功能驗收：bit-identical（核心品質證明）</h2>
+  <p class="desc">fork 的硬性要求：<b>投機（MTP）與非投機（llama-simple）在同 prompt/seed/greedy 下位元級一致</b>。四方位對比矩陣是標準驗收法。</p>
+
+  <h3>4.1 測試矩陣</h3>
+  <div class="diagram">              FUSE=0        FUSE=1(+guard)
+   simp        A ──────────── B        B == A（防護不該改數值）
+   spec        C ──────────── D        D == C
+   跨路徑      C == A 的 16-token 前綴（spec 多 1-2 token overshoot）
+                            D == B 同前綴
+
+   通過 = 4 個 run 的續寫全部一致（byte-level）</div>
+
+  <table>
+    <tr><th>ID</th><th>測試</th><th>通過標準</th><th>最近結果</th></tr>
+    <tr><td><b>T-F1</b></td><td>四方位輸出對比（simp F0/F1 + spec F0/F1）</td><td>4 個輸出互相一致（simp 16-token = spec 前綴）</td><td class="good">8/30 PASS（修復前 B≠A：777/800 IDS 翻轉）</td></tr>
+    <tr><td><b>T-F2</b></td><td>Expert-ID 一致性（<code>CGC-IDS</code> trace）</td><td>同 (pmax, il) key 逐行比 → <b>0 差異</b>（≤4000 行）</td><td class="good">8/30 PASS：simp 0/800、spec 0/422</td></tr>
+    <tr><td><b>T-F3</b></td><td>Draft accept rate</td><td>基準 prompt：12/12 = 100%</td><td class="good">8/30 PASS</td></tr>
+    <tr><td><b>T-F4</b></td><td>guard 拒絕日誌（FUSE=1）</td><td><code>CGC_MMV_FUSE_DBG=1</code> 有 REJECT 記錄（有重疊時）且輸出不變</td><td class="good">8/30 PASS：simp 3 REJECT + 1 融合、spec 0 REJECT</td></tr>
+    <tr><td><b>T-F5</b></td><td>bit-identical env 齊全性</td><td>三支柱 env 都在：<code>CGC_MM_BITIDENT</code> + <code>CGC_MTP_NO_WARMUP</code> + <code>CGC_NO_SEQ_RM_PROBE</code></td><td class="good">驗收指令內建（缺一即 T-F2 失敗）</td></tr>
+  </table>
+
+  <h3>4.2 驗收指令（標準 env 全集）</h3>
+  <pre>M=models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf
+P="The coastal observatory recorded steady winds from the northwest throughout the morning, and the tide charts suggested a calm crossing for the research vessel."
+COMMON="CGC_EXPERT_CACHE_BYTES=4294967296 LLAMA_EXPERT_CACHE_ALLOW_NGL=1 \
+LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0=1 LLAMA_EXPERT_CACHE_WORKERS=8 \
+CGC_WAKE_POLL_US=15 CGC_PREFETCH_SRC=hist CGC_EVICTED_RING=0 \
+CGC_OA_ASYNC=1 CGC_N_CB=8 CGC_GLU_FUSED_DOWN=1 \
+LLAMA_EXPERT_CACHE_LAYER_CAPS=40-40:256 \
+CGC_NO_PREFETCH=1 CGC_WATCHDOG=1 CGC_LAYER_BIN=1 CGC_MM_BITIDENT=1"
+
+# A/C: FUSE=0
+env $COMMON CGC_MMV_FUSE=0 CGC_SIMP_TAIL_SPLIT=1 build/bin/llama-simple \
+  -m $M -ngl 99 --no-mmap -t 8 --seed 42 -n 16 -p "$P" > /tmp/A_out.txt 2>/tmp/A_err.txt
+env $COMMON CGC_MMV_FUSE=0 CGC_MTP_NO_WARMUP=1 CGC_NO_SEQ_RM_PROBE=1 \
+  build/bin/llama-speculative-simple -m $M -n 16 -ngl 99 -t 5 --no-mmap -s 42 \
+  --spec-type draft-mtp --spec-draft-n-max 2 -c 3072 -expert-cache 4294967296 \
+  --temp 0 -p "$P" > /tmp/C_out.txt 2>/tmp/C_err.txt
+# B/D: 同上改 CGC_MMV_FUSE=1
+# 判定:
+diff /tmp/A_out.txt /tmp/B_out.txt          # B == A
+diff /tmp/C_out.txt /tmp/D_out.txt          # D == C
+head -c $(wc -c < /tmp/A_out.txt) /tmp/C_out.txt | diff - /tmp/A_out.txt
+grep "n_accept" /tmp/C_err.txt /tmp/D_err.txt
+grep "CGC-IDS:" /tmp/A_err.txt > /tmp/A_ids.txt   # T-F2: python 比較器逐 key 對</pre>
+
+  <p class="note"><b>row-wise 陷阱</b>（bit-bisect 的教訓）：spec 的第一個 target eval 是 verify batch（M=3，pmax 涵蓋多位置）、simp 是 M=1 逐 token —— <b>直接拿相同 pmax 的 IDS 行相比是無意義的</b>（不同 batch 組成）。正確做法是 row-wise（per-position）：verify batch 的 row0 對 simp 的對應 token。白皮書二的 ids 比較器已實作此邏輯。</p>
+</div>
+
+<!-- ============ §5 ============ -->
+<div class="card" id="s5">
+  <h2>§5 L2 功能驗收：antiloop 與穩定性</h2>
+  <p class="desc">「沒 loop」= 不死鎖、不停滯。驗證 watchdog 體系在位且整個測試過程無 wedge。所有 L2 的長跑測試本身就兼任 antiloop 觀測。</p>
+
+  <table>
+    <tr><th>ID</th><th>測試</th><th>方法</th><th>通過標準</th><th>最近結果</th></tr>
+    <tr><td><b>T-A1</b></td><td>長跑無 stall</td><td>任何 L2 測試（每 run 數分鐘、~2000 command buffers）跑 <code>CGC_WATCHDOG=1</code></td><td>無 <code>CGC-WATCHDOG: stalled</code> 日誌、rc=0</td><td class="good">8/30 全 PASS</td></tr>
+    <tr><td><b>T-A2</b></td><td>queue 鑑別能力在位</td><td>watchdog 配置確認（不需真的觸發）</td><td><code>CGC_WATCHDOG=1</code> 且（需要時）<code>CGC_DRAIN_EVERY</code> 可開</td><td class="good">在位</td></tr>
+    <tr><td><b>T-A3</b></td><td>無 race 提交順序</td><td>確認 env <b>沒有</b> <code>CGC_SUBMIT_AHEAD</code> / <code>CGC_TOPK_BOUNDARY</code></td><td>兩個 bug 重現器都未設</td><td class="good">8/30 PASS</td></tr>
+    <tr><td><b>T-A4</b></td><td>GPU OOM 暫態重試</td><td>rc=138/SIGBUS 時 sleep 5 重跑一次</td><td>重跑 rc=0（區分暫態壓力 vs 真失敗）</td><td class="good">8/30 驗證（部署包初測 138 → 重跑過）</td></tr>
+    <tr><td><b>T-A5</b></td><td>prewarm / hook pipeline 無死鎖</td><td>prefetch 關閉（MTP 安全模式 <code>CGC_NO_PREFETCH=1</code>）下整跑</td><td>無 hang（歷史 deadlock 均為 bg-thread 與 verify 重疊）</td><td class="good">8/30 PASS</td></tr>
+  </table>
+
+  <div class="review red">
+    <div class="label">antiloop 的深層保證不是「測出來」的，是「設計出來」的</div>
+    死鎖防線是結構性的：(1) 提交順序 race-free（hook 寫完 remap 才提交消費它的 buffer —— 預設行為，無選項）；(2) <code>drain_layer</code> 等同層 in-flight 填寫完成才繼續（防撕裂）；(3) <code>pick_slot</code> 寧可逐出也不等待（免死鎖）；(4) watchdog 60 秒硬止損。測試 T-A1–A5 驗證的是這些防線<b>沒有被繞過</b>。歷史 wedge 的完整翻案記錄在技術講解白皮書 §4.1。
+  </div>
+</div>
+
+<!-- ============ §6 ============ -->
+<div class="card" id="s6">
+  <h2>§6 L2 功能驗收：MTP 與效能（llama-bench + 投機吞吐）</h2>
+  <p class="desc">效能驗收雙軌：<b>非 MTP 用 llama-bench</b>（標準 benchmark 工具，pp/tn 兩軸）、<b>MTP 用投機實跑的 eval time + accept rate</b>（llama-bench 不支援 spec，投機收益 = accept × 每步多 token）。</p>
+
+  <h3>6.1 非 MTP：llama-bench</h3>
+  <pre>build/bin/llama-bench -m $MODEL -p 128 -n 32 -ngl 99 -t 8
+# 追蹤: pp128（prefill t/s）與 pp + tg 的 ms/tok
+# 快取 A/B（deploy-harmonyos/benchmark-macos.sh 已內建）:
+#   baseline（無 cache）vs CGC_EXPERT_CACHE_BYTES=4294967296</pre>
+
+  <h3>6.2 MTP：投機實跑</h3>
+  <pre># 用 §4.2 的 spec 指令（本來就會輸出）:
+grep -E "eval time|n_accept|n_drafted" /tmp/D_err.txt
+# 判讀:
+#   eval time (per eval) / accepted tokens = 有效每 token 成本
+#   accept 12/12 = 100%（此 prompt）→ 每步 3 token（1 + 2 draft）
+#   對照非 MTP tg32 的 ms/tok → 投機加速比</pre>
+
+  <table>
+    <tr><th>ID</th><th>測試</th><th>通過標準</th><th>最近結果（8/30, 16GB M4 Max）</th></tr>
+    <tr><td><b>T-E1</b></td><td>llama-bench 非 MTP 吞吐</td><td>無快取亂碼、pp/tn 數字在家族常識範圍</td><td class="info">指令在 §6.1（35B 長跑另補；已知 eval 實測見 T-E2）</td></tr>
+    <tr><td><b>T-E2</b></td><td>MTP 投機吞吐</td><td>eval ms/tok &lt; 非 MTP 對照（127.77 vs 145.10）</td><td class="good">PASS（快 12%）</td></tr>
+    <tr><td><b>T-E3</b></td><td>cache 命中率</td><td>final stats：runtime hit rate 合理（&gt;80%）、prewarm 分帳正確</td><td class="good">PASS（96% 含 prewarm 帳）</td></tr>
+    <tr><td><b>T-E4</b></td><td>fast-path cold 率（若開 VERIFY/DRAFT）</td><td>遙測穩定、有數字可決策</td><td class="info">量測值 ~65%（結構性 churn，技術講解 §7.4）</td></tr>
+  </table>
+
+  <p class="note"><b>效能驗收的「不退化」底線</b>：guard 加入後 decode 不得慢於無融合基準 5% 以上（T-E2 的 127.77 已含 1 次安全融合 + 3 次拒絕融合，仍快 12%）。Windows 低記憶體機器另有一組基準（MTP+cache OFF 0.521 t/s 為最佳解 —— cache 是大記憶體機器的功能，見三平台白皮書 §5.3）。</p>
+</div>
+
+<!-- ============ §7 ============ -->
+<div class="card" id="s7">
+  <h2>§7 L3 部署包驗收（deploy-harmonyos/macos）</h2>
+  <p class="desc">部署包的定義：<b>拿到沒有 build 環境的機器也能跑</b>。8/30 實測發現舊包是壞的（exe rpath 指向已消失的 temp/llama_roadB、目錄無 dylib），已修復為自包含並全項驗證。</p>
+
+  <table>
+    <tr><th>ID</th><th>測試</th><th>指令</th><th>通過標準</th><th>8/30 結果</th></tr>
+    <tr><td><b>T-D1</b></td><td>自包含性<span class="tag r">修復當天才過</span></td><td><code>cd deploy-harmonyos/macos && ./llama-simple --version</code>（無任何 DYLD override、不在 build 目錄）</td><td>dyld 載入成功</td><td class="good">PASS（修復前：Library not loaded）</td></tr>
+    <tr><td><b>T-D2</b></td><td>dylib 齊全</td><td><code>ls deploy-harmonyos/macos/</code></td><td>6 dylib 版本檔 + 6 symlink + 3 exe</td><td class="good">PASS（0.0.70/0.19.0 全家）</td></tr>
+    <tr><td><b>T-D3</b></td><td>bit-identical（部署包 binary vs 基準）<span class="tag r">關鍵</span></td><td>§4.2 指令改用部署包 exe（cd 進 macos/ 跑 ./llama-simple）</td><td>輸出 == 已驗證基準（byte 級）</td><td class="good">PASS（BIT-IDENTICAL）</td></tr>
+    <tr><td><b>T-D4</b></td><td>run-macos.sh 冒煙</td><td><code>./run-macos.sh -m &lt;model&gt; -n 2 -p "hi"</code></td><td>跑完 rc=0</td><td class="good">PASS（註：其 2&gt;&amp;1 設計會混流，正式對比用 T-D3 直跑）</td></tr>
+    <tr><td><b>T-D5</b></td><td>benchmark 腳本可用</td><td><code>benchmark-macos.sh &lt;model&gt;</code></td><td>baseline + cache ON 兩組數字</td><td class="good">PASS</td></tr>
+  </table>
+
+  <div class="review">
+    <div class="label">L3 的教訓（2026-08-30）</div>
+    「build 過 ≠ 部署包能跑」：build/bin 的 exe 走 rpath 找 dylib，部署包 exe 靠 <code>DYLD_LIBRARY_PATH=$SCRIPT_DIR</code> —— 兩種機制不同。舊包 exe 的 rpath 指向開發機的 temp 路徑且同目錄無 dylib，<b>在沒有 build 環境的機器上 100% 跑不起來</b>。修復：exe + 全 dylib 家族複製進 macos/。這就是 L3 必須獨立於 L0 存在的原因 —— L0 驗的是 build/bin，L3 驗的是「脫離 build 環境」。
+  </div>
+
+  <p class="note"><b>AIOS/ 目錄清理</b>：AIOS/ 不被 git 追蹤（<code>git ls-files AIOS/</code> = 0 檔案），內容停在舊時代（27c4e90），已被 deploy-harmonyos/ 頂層統一架構取代 —— 磁碟上可刪（git 不受影響）。</p>
+</div>
+
+<!-- ============ §8 ============ -->
+<div class="card" id="s8">
+  <h2>§8 歷史測試覆蓋資產（bit-bisect 全武器庫）</h2>
+  <p class="desc">修復 bit-identical 分歧的過程累積了一套<b>可重用的診斷測試</b>。它們不進常規流程，但在「驗收失敗需要定位」時是現成的武器。按調查階段排列：</p>
+
+  <table>
+    <tr><th>資產</th><th>類型</th><th>用途</th><th>關鍵發現（歷史戰果）</th></tr>
+    <tr><td><code>CGC_DECODE_TRACE</code></td><td>trace env</td><td>印出每次 decode 的 ctx/型別/token 數</td><td>抓到 spec 的<b>隱藏 2-token warmup</b>（污染源一）</td></tr>
+    <tr><td><code>CGC-IDS</code> + 比較器</td><td>trace + python</td><td>每層 expert 選擇逐 key 比對</td><td>777/800 翻轉 → 直指 fused kernel；chunk0 rows0-2 → 指向 warmup</td></tr>
+    <tr><td><code>CGC_TENSOR_DUMP</code> / <code>CGC_TD_CB</code></td><td>dump env</td><td>post-compute / in-compute 張量落盤</td><td>verify batch row0 與 M=1 位元級一致（M-invariance 已在）→ 分歧必在開頭；TDCB 抓到 ffn_shexp 被污染</td></tr>
+    <tr><td><code>CGC_LAYER_BIN</code></td><td>per-layer dump</td><td>每層輸入對照（simp/spec 對稱 tag）</td><td>chunk0 L4 rows0-2 發散 → 鎖定 warmup 污染假說</td></tr>
+    <tr><td><code>CGC_LOGIT_DBG/BIN</code></td><td>logit dump</td><td>top-2 hex float / 完整 logit row</td><td>ULP 級對比；發現 simp pos=28 vs spec pos=27 的位置錯位（simple 重解最後 token 的 bug）</td></tr>
+    <tr><td><code>CGC_MM_DBG</code> / <code>CGC_MMV_FUSE_DBG</code></td><td>kernel trace</td><td>mul_mat kernel family / 融合決策</td><td>確認 M-invariance 繞過與融合派送差異</td></tr>
+    <tr><td>A/B env 切換</td><td>方法論</td><td>單一變數開關對比（FUSE 0/1、warmup on/off…）</td><td>v1–v10 的 bisect 骨架：<b>一次只翻一個開關</b></td></tr>
+    <tr><td>row-wise 比較器</td><td>方法論</td><td>per-position 對比不同 batch 組成</td><td>破解「pmax 相同但 batch 組成不同」的假分歧</td></tr>
+  </table>
+
+  <p class="note"><b>方法論五律</b>（從 bit-bisect 提煉，寫進所有測試）：(1) 一次只翻一個開關；(2) 比較前先確認<b>兩邊 binary 相同</b>（時間線上的 rebuild 會污染結論）；(3) batch 組成不同時先做 row-wise 對齊再比；(4) 用 pmax 歸屬 batch（非同步 stderr 順序不可信）；(5) 短 prompt 的分歧比長 prompt 乾淨（無「長 prompt 剛好贏 race」的僥倖）。</p>
+</div>
+
+<!-- ============ §9 ============ -->
+<div class="card" id="s9">
+  <h2>§9 統一測試腳本與執行順序</h2>
+  <p class="desc">把 L0→L3 + antiloop + 效能收斂成<b>一條龍指令</b>（每次重要變更後照跑；建議存成 <code>scripts/run_test_plan.sh</code>）。</p>
+
+  <pre>#!/bin/zsh
+# CGC fork 完整測試計劃 — L0→L3 一條龍
+set -e
+cd /Users/alexchuang/Documents/flashkv0516
+M=models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf
+P="The coastal observatory recorded steady winds from the northwest throughout the morning, and the tide charts suggested a calm crossing for the research vessel."
+
+echo "== L0: build =="
+bash scripts/build_fork_llama.sh      # T-B1（REBUILD=1 全量）
+bash scripts/build_prod_binary.sh     # T-B2
+[ "$(strings src/llama.cpp/build/bin/llama-simple | grep -ci mtp)" = "0" ] && echo "T-B3 PASS"
+
+echo "== L1: pre-commit =="
+scripts/check_build_tracked.sh        # T-P1..P5（17 PASS）
+
+echo "== L2: bit-identical 四方 =="
+# （§4.2 的 A/B/C/D 四 run + 判定 —— 略，完整指令見 §4.2）
+
+echo "== L2: antiloop + 效能 =="
+CGC_WATCHDOG=1 … llama-bench -m $M -p 128 -n 32 -ngl 99 -t 8    # T-E1（全程即 T-A1）
+# spec run 的 eval time + n_accept                        # T-E2/T-E3（即四方對比的 D）
+
+echo "== L3: 部署包 =="
+cp src/llama.cpp/build/bin/{llama-simple,llama-speculative-simple,llama-bench} deploy-harmonyos/macos/
+cp src/llama.cpp/build/bin/*.dylib deploy-harmonyos/macos/   # 版本檔 + symlink
+(cd deploy-harmonyos/macos && ./llama-simple --version)     # T-D1
+# §4.2 改用部署包 exe 重跑 → T-D3 BIT-IDENTICAL 判定</pre>
+
+  <table>
+    <tr><th>場景</th><th>跑哪些</th><th>時間</th></tr>
+    <tr><td>每次 commit</td><td>L1（自動）</td><td>&lt; 2 秒</td></tr>
+    <tr><td>rebuild 後</td><td>L0 + 快煙測（-n 2）</td><td>~10 分（build）+ 1 分</td></tr>
+    <tr><td>行為變更 / 晉升 main 前</td><td><b>全套 L0–L3</b></td><td>~30 分（四方對比佔大頭）</td></tr>
+    <tr><td>部署包更新後</td><td>L3（T-D1–D5）</td><td>~5 分</td></tr>
+    <tr><td>驗收失敗時</td><td>§8 武器庫（按 §10 排查表選）</td><td>視問題</td></tr>
+  </table>
+</div>
+
+<!-- ============ §10 ============ -->
+<div class="card" id="s10">
+  <h2>§10 三平台適用與失敗排查</h2>
+
+  <h3>10.1 測試項的平台適用性</h3>
+  <table>
+    <tr><th>層</th><th>mac</th><th>Windows</th><th>鴻蒙</th></tr>
+    <tr><td>L0 build</td><td>兩段式（本白皮書）</td><td>clang/MinGW + 方案 B 隔離</td><td>CPU-only（-ngl 0）</td></tr>
+    <tr><td>L1 pre-commit</td><td colspan="3">git hook 通用（check_build_tracked.sh；Windows 查 exe 用 <code>dumpbin</code>、rpath 概念改 PATH/DLL 搜尋）</td></tr>
+    <tr><td>L2 bit-identical</td><td colspan="3"><b>同一套</b>（§4.2 指令 + 判定，這是跨平台的意義所在）</td></tr>
+    <tr><td>L2 效能</td><td colspan="3">llama-bench 通用；低記憶體機器 cache OFF 模式</td></tr>
+    <tr><td>L3 部署包</td><td>macos/ 自包含 dylib</td><td>exe + DLL + PATH</td><td>deploy-harmonyos/harmonyos + phone/</td></tr>
+  </table>
+
+  <h3>10.2 失敗排查表（症狀 → 動作）</h3>
+  <table>
+    <tr><th>失敗測試</th><th>症狀</th><th>最可能原因</th><th>動作</th></tr>
+    <tr><td>T-B3</td><td>simple 有 MTP 符號</td><td>編譯帶了 -DMTP_SUPPORT（Windows 全域 define）</td><td>三平台白皮書 §5.2 方案 B</td></tr>
+    <tr><td>T-B5</td><td>輸出亂碼</td><td>BLAS/ACCELERATE/REPACK 沒 OFF</td><td>查 CMakeCache 重編</td></tr>
+    <tr><td>T-P1</td><td>untracked dylib</td><td>SOVERSION bump 後沒 add 新版</td><td><code>git add -A src/llama.cpp/build/bin/</code></td></tr>
+    <tr><td>T-P5</td><td>rpath 指向別處</td><td>exe 被搬到別的 build 蓋過</td><td>重跑 build_prod_binary.sh</td></tr>
+    <tr><td>T-F1/F2</td><td>spec 第一 token 就不同</td><td>基準落後（&lt; b7364f886）或三支柱 env 缺一</td><td>git log 確認基準；查 MM_BITIDENT / NO_WARMUP / NO_SEQ_RM_PROBE</td></tr>
+    <tr><td>T-F2</td><td>IDS 有限差異</td><td>fused kernel 該平台 galloc 行為差</td><td>先 CGC_MMV_FUSE=0 復測；回報 binary+平台+flag</td></tr>
+    <tr><td>T-F3</td><td>accept 掉到 0%</td><td>低記憶體 + cache ON</td><td>cache OFF 復測（Windows 8GB 事實）</td></tr>
+    <tr><td>T-A1</td><td>watchdog stalled</td><td>completion wedge</td><td>看 same/fresh-queue probe 結果分層；開 CGC_DRAIN_EVERY=8</td></tr>
+    <tr><td>T-D1</td><td>dyld Library not loaded</td><td>部署包缺 dylib（8/30 舊包病灶）</td><td>§9 的 cp 指令補齊全家</td></tr>
+    <tr><td>任何</td><td>rc=138 / SIGBUS</td><td>暫態 GPU 記憶體壓力</td><td>sleep 5 重跑一次再判（T-A4）</td></tr>
+  </table>
+
+  <h3>10.3 結論</h3>
+  <p class="note">本測試計劃的完整性承諾：<b>每一個通過的 release commit，都能回答四個問題</b> —— (1) 從零 rebuild 可重現嗎（L0）？(2) binary 資產進版控了嗎（L1，8/26 教訓）？(3) MTP 與非 MTP 位元級一致嗎（L2 bit-identical）？(4) 拿到別台機器能跑且輸出相同嗎（L3）？—— 加上 antiloop 與效能數字，構成與四份白皮書（機制 / 修復 / 落地 / <b>測試</b>）對應的驗收閉環。歷史武器庫（§8）保證失敗時不是從頭猜，而是按排查表走。</p>
+</div>
+
+</div>
+</body>
+</html>
