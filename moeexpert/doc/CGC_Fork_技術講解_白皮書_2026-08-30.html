@@ -241,6 +241,43 @@ per-layer: slots_l（LAYER_CAPS 可各自不同）+ ZERO slot 保留位</div>
     <li><b>大 prefill 批只記錄不 remap</b>：routing 頻率進 prewarm 的依據。</li>
     <li><b>遙測分帳</b>：prewarm 另計（否則命中率低估 ~15pt：81.3% vs 96%）；decode/pool 與 gather 分開；MTP verify/draft cold 分開。</li>
   </ul>
+
+  <h3>5.5 靜態 pin profile：嚴謹品質判定與更新程序</h3>
+  <p class="desc">PIN_PROFILE 是唯一「離線校準 → 線上釘選」的循環機制。以下判定基於 2026-08-30 實測（qwen36, n=64, 4GiB cache, K≈87/層, 256 experts/層）。</p>
+
+  <table>
+    <tr><th>維度</th><th>判定</th><th>證據 / 機制</th></tr>
+    <tr><td><b>路由質量涵蓋</b></td><td class="good">優（2.6× baseline）</td><td>coverage mean=87.8% min=80.8% max=93.1%；uniform baseline = K/256 ≈ 34% → 重尾路由確證，placement 槓桿有效</td></tr>
+    <tr><td><b>位元級安全性</b></td><td class="good">優（exact 模式）</td><td>pin 只改「哪個 slot 放哪個 expert」與逐出順序；exact 路徑每個被路由 expert 都會被 ensure_batch 精確填充 → <b>PIN_PROFILE 開/關輸出位元級相同</b>（只有命中/miss 的時間差）。可用四方對比直接驗證</td></tr>
+    <tr><td><b>fast-path 品質影響</b></td><td class="info">條件性</td><td>VERIFY/DRAFT fast path 下 cold expert 讀 ZERO slot（權重貢獻歸零）→ pin 減少 cold = <b>提升輸出品質</b>。此模式下 pin 有品質後果（正向），與 exact 模式不同</td></tr>
+    <tr><td><b>死鎖/NaN 安全</b></td><td class="good">優</td><td>pick_slot pass-2：槽滿且只剩 pinned 時靜態 pin 讓位（清 flag、記 <code>n_pin_yield</code>）—— 不卡死、不留 table==-1（NaN 級聯的替代方案）</td></tr>
+    <tr><td><b>workload 特異性</b></td><td class="warn">最大弱點</td><td>top-K 成員跨配置重疊僅 ~29%（不同 K/prompt 樣本）。校準 prompt 的路由分佈 ≠ 生產 prompt → <b>換 workload 必須重校準</b>，否則 pin 保護的是錯的「熱」集</td></tr>
+    <tr><td><b>硬體 K 耦合</b></td><td class="warn">需注意</td><td>K = usable_slots = f(CGC_EXPERT_CACHE_BYTES, LAYER_CAPS)。大 cache 機器產的 profile（N 大）拿到小 cache 機器：多餘 id 不會炸（只在實際填入時標 pin），但 pin 密度稀釋；反向則覆蓋不足</td></tr>
+    <tr><td><b>模型錯配防護</b></td><td class="warn">僅範圍檢查</td><td>id 只驗 [0, n_expert) —— 錯模型 id 在範圍內<b>靜默接受</b>（語意錯誤的 pin，浪費保護不會崩潰）。依賴紀律：profile 檔名綁模型（qwen36_calib.pin）</td></tr>
+    <tr><td><b>懶標記</b></td><td class="info">中性</td><td>pin 在 expert 首次<b>被路由填入</b>時才生效（非載入即 pin）→ 載入零額外成本，但也代表 profile 前幾個 step 逐漸生效</td></tr>
+  </table>
+
+  <h4>換硬體 / 換模型的更新程序</h4>
+  <pre>【何時必須重校準】（任一條件變動）
+  模型換了          → 必須（id 語意完全不同）
+  CGC_EXPERT_CACHE_BYTES 或 LAYER_CAPS 變了 → 必須（K 變，coverage 失準）
+  workload 換領域    → 建議（路由分佈隨 prompt 領域漂移）
+  binary 行為變更    → 建議（ULP 翻轉可翻路由，如 fused-GLU 事件的教訓）
+
+【重校準（目標機器上執行）】
+  ./scripts/run_qwen36_calibrate.sh          # ROUTE_RECORD=1 + ROUTE_DUMP
+  # 讀 verdict: coverage mean/min/max vs baseline（健康標準見測試計劃 T-PN5）
+
+【線上使用】
+  LLAMA_EXPERT_CACHE_PIN_PROFILE=profiles/qwen36_calib.pin
+  # teardown 遙測: "routing-aware placement: pin_marked=N pin_yield(evicted)=M"
+  #   pin_marked=0 → profile 沒生效（檔名/路徑/模型錯配）
+  #   pin_yield 大 → 槽壓力大，考慮加大 cache 或縮 LAYER_CAPS</pre>
+
+  <div class="review">
+    <div class="label">歷史教訓：env 名漂移讓校準鏈靜默斷線（2026-08-30 修復）</div>
+    校準腳本曾用舊名 <code>LLAMA_EXPERT_CACHE_RECORD_ALL/RECORD_DUMP</code>，而現行代碼讀 <code>ROUTE_RECORD/ROUTE_DUMP</code> —— 腳本跑現有 binary <b>不記錄也不 dump、無任何報錯</b>。已在 <code>a9c546ffd</code> 修正並重產 profile。防再犯：測試計劃 T-PN1 用 <code>strings</code> 驗 env 名存在性（編譯進 binary 的 getenv 名單）。
+  </div>
 </div>
 
 <!-- ============ §6 ============ -->
@@ -383,13 +420,13 @@ accept: common_sampler_sample_and_accept_n
   <table>
     <tr><th>變數</th><th>讀取</th><th>作用</th><th>預設</th><th>生產</th></tr>
     <tr><td><code>LLAMA_EXPERT_CACHE_WIN_PIN</code></td><td>K</td><td>最近 K 個 batch union 標 pin（免 LRU 逐出）</td><td>0 = 純 LRU</td><td>4-8</td></tr>
-    <tr><td><code>LLAMA_EXPERT_CACHE_PIN_PROFILE</code></td><td>檔案</td><td>靜態 pin 清單（per-layer top-N，永不解 pin）</td><td>off</td><td>離線產出後用</td></tr>
+    <tr><td><code>LLAMA_EXPERT_CACHE_PIN_PROFILE</code></td><td>檔案</td><td>靜態 pin 清單（per-layer top-N，永不解 pin）—— <b>換硬體/模型/工作負載的重校準程序見 §5.5</b></td><td>off</td><td>ROUTE_DUMP 校準後用；遙測驗 pin_marked&gt;0</td></tr>
     <tr><td><code>CGC_PREFETCH_SRC</code></td><td>step/prev/hist</td><td>背景 prefetch 來源（hist=滾動視窗 union，註解 recommended）</td><td class="warn">step（近無效）</td><td class="hl">hist</td></tr>
     <tr><td><code>CGC_PREFETCH_WINDOW</code></td><td>int [1,16]</td><td>hist 視窗大小</td><td>4</td><td>4</td></tr>
     <tr><td><code>CGC_NO_PREFETCH</code></td><td>存在即停</td><td>整個背景 prefetch 關閉。<b>MTP verify 安全性</b>：bg thread 在 GPU mid-verify 填/逐出會覆寫仍在讀的 slot</td><td>啟用</td><td class="hl">MTP 流程 1</td></tr>
     <tr><td><code>CGC_NO_PREWARM</code></td><td>存在即停</td><td>第一個 decode step 前的 hot prewarm（prefill 路由 top-K 填池）</td><td>啟用</td><td>不設</td></tr>
-    <tr><td><code>LLAMA_EXPERT_CACHE_ROUTE_RECORD</code></td><td>存在即啟</td><td>所有 pool-path step 記錄路由頻率（餵 ROUTE_DUMP/PIN_PROFILE）</td><td>僅大 prefill 批</td><td>產 profile 時 1</td></tr>
-    <tr><td><code>LLAMA_EXPERT_CACHE_ROUTE_DUMP</code></td><td>檔案</td><td>結束時 dump top-K 清單 + coverage 判定（重尾 = placement 槓桿）</td><td>off</td><td>離線分析</td></tr>
+    <tr><td><code>LLAMA_EXPERT_CACHE_ROUTE_RECORD</code></td><td>存在即啟</td><td>所有 pool-path step 記錄路由頻率（餵 ROUTE_DUMP/PIN_PROFILE）</td><td>僅大 prefill 批</td><td>校準跑時 1（§5.5）</td></tr>
+    <tr><td><code>LLAMA_EXPERT_CACHE_ROUTE_DUMP</code></td><td>檔案</td><td>結束時 dump top-K 清單 + coverage 判定（重尾 = placement 槓桿）—— <b>品質判定標準見 §5.5 / 測試計劃 T-PN5</b></td><td>off</td><td>校準跑用；健康門檻 mean ≥ 2× baseline</td></tr>
   </table>
 
   <h3>8.3 MTP 與 fast path</h3>

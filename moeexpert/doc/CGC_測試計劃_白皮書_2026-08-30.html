@@ -205,6 +205,26 @@ grep "n_accept" /tmp/C_err.txt /tmp/D_err.txt
 grep "CGC-IDS:" /tmp/A_err.txt > /tmp/A_ids.txt   # T-F2: python 比較器逐 key 對</pre>
 
   <p class="note"><b>row-wise 陷阱</b>（bit-bisect 的教訓）：spec 的第一個 target eval 是 verify batch（M=3，pmax 涵蓋多位置）、simp 是 M=1 逐 token —— <b>直接拿相同 pmax 的 IDS 行相比是無意義的</b>（不同 batch 組成）。正確做法是 row-wise（per-position）：verify batch 的 row0 對 simp 的對應 token。白皮書二的 ids 比較器已實作此邏輯。</p>
+
+  <h3>4.3 靜態 pin profile 驗收（T-PN1–T-PN6）</h3>
+  <p class="desc">PIN_PROFILE 是唯一「離線校準 → 線上釘選」循環（機制與優劣判定：技術講解白皮書 §5.5）。<b>核心安全性質：exact 模式下 pin 只改 placement 不改 bytes —— 開/關必須位元級一致</b>。2026-08-30 全組實測（binary <code>84e321590</code> 系）。</p>
+  <table>
+    <tr><th>#</th><th>測什麼</th><th>方法</th><th>通過標準</th><th>8/30 實測</th></tr>
+    <tr><td><b>T-PN1</b></td><td>env 名存在性（防漂移）</td><td><code>strings build/bin/libllama.*.dylib | grep</code> 三個新名 + 舊名殘留</td><td>新名各 ≥1；<code>RECORD_ALL/RECORD_DUMP</code> 舊名 = 0</td><td class="good">PASS（1 / 1 / 1，舊名 0）</td></tr>
+    <tr><td><b>T-PN2</b></td><td>載入生效</td><td>stderr <code>PIN_PROFILE: N experts pinned</code> + teardown <code>pin_marked=/pin_yield=</code></td><td>N &gt; 0 且 pin_marked &gt; 0（=0 → 檔名/路徑/模型錯配）</td><td class="good">PASS（3393 pinned；marked=2174, yield=714）</td></tr>
+    <tr><td><b>T-PN3</b></td><td><b>bit-identity（核心）</b></td><td>同 seed 同 prompt 跑 pin ON / OFF，<code>cmp</code> 輸出</td><td>byte-identical（placement 無品質副作用）</td><td class="good">PASS（253B == 253B）</td></tr>
+    <tr><td><b>T-PN4</b></td><td>槽壓力遙測</td><td>teardown <code>pin_yield(evicted)</code></td><td>可取得且有限（yield 大 → 加大 cache 或縮 LAYER_CAPS；機制安全不卡死）</td><td class="info">yield=714（16-token 短跑壓力大；長跑另量）</td></tr>
+    <tr><td><b>T-PN5</b></td><td>coverage verdict 品質門檻</td><td>校準跑 stderr <code>ROUTE-DUMP:</code> 行</td><td>mean ≥ 2× uniform baseline（本模型實測 2.6×）</td><td class="good">PASS（mean=87.8% vs baseline≈34%）</td></tr>
+    <tr><td><b>T-PN6</b></td><td>重校準程序可用</td><td><code>scripts/run_qwen36_calibrate.sh</code>（目標機上跑）</td><td>產出 profile + 印 verdict 行；換模型/硬體/workload 後重跑（時機表：技術講解 §5.5）</td><td class="good">PASS（<code>a9c546ffd</code> 修復後）</td></tr>
+  </table>
+  <pre># T-PN2/3/4 快速驗（在 §4.2 COMMON 之上）:
+env $COMMON LLAMA_EXPERT_CACHE_PIN_PROFILE=profiles/qwen36_calib.pin \
+  build/bin/llama-simple ... > /tmp/pn_on_out.txt 2>/tmp/pn_on_err.txt
+env $COMMON build/bin/llama-simple ... > /tmp/pn_off_out.txt 2>/tmp/pn_off_err.txt
+cmp /tmp/pn_on_out.txt /tmp/pn_off_out.txt        # T-PN3: 必須相同
+grep -o "pin_marked=[0-9]* pin_yield(evicted)=[0-9]*" /tmp/pn_on_err.txt
+# T-PN1: strings build/bin/libllama.*.dylib | grep -c LLAMA_EXPERT_CACHE_PIN_PROFILE</pre>
+  <p class="note"><b>fast-path 例外</b>：VERIFY/DRAFT fast path（cold 讀 ZERO slot）下 pin <b>會</b>改變輸出（減少 cold = 品質提升）—— T-PN3 的位元級一致僅對 exact 模式成立，文件化的行為差異而非 bug。</p>
 </div>
 
 <!-- ============ §5 ============ -->
@@ -322,6 +342,12 @@ scripts/check_build_tracked.sh        # T-P1..P5（17 PASS）
 echo "== L2: bit-identical 四方 =="
 # （§4.2 的 A/B/C/D 四 run + 判定 —— 略，完整指令見 §4.2）
 
+echo "== L2: pin profile（T-PN1–T-PN6，§4.3）=="
+strings src/llama.cpp/build/bin/libllama.*.dylib | grep -c LLAMA_EXPERT_CACHE_PIN_PROFILE  # T-PN1
+# pin ON / OFF 兩 run（§4.3 快速驗指令）→ cmp                    # T-PN3 核心
+# grep pin_marked/pin_yield                                        # T-PN2/T-PN4
+# 校準（換硬體/模型/工作負載後）: scripts/run_qwen36_calibrate.sh  # T-PN5/T-PN6
+
 echo "== L2: antiloop + 效能 =="
 CGC_WATCHDOG=1 … llama-bench -m $M -p 128 -n 32 -ngl 99 -t 8    # T-E1（全程即 T-A1）
 # spec run 的 eval time + n_accept                        # T-E2/T-E3（即四方對比的 D）
@@ -338,6 +364,7 @@ cp src/llama.cpp/build/bin/*.dylib deploy-harmonyos/macos/   # 版本檔 + symli
     <tr><td>rebuild 後</td><td>L0 + 快煙測（-n 2）</td><td>~10 分（build）+ 1 分</td></tr>
     <tr><td>行為變更 / 晉升 main 前</td><td><b>全套 L0–L3</b></td><td>~30 分（四方對比佔大頭）</td></tr>
     <tr><td>部署包更新後</td><td>L3（T-D1–D5）</td><td>~5 分</td></tr>
+    <tr><td>換硬體 / 換模型 / 換 workload</td><td><b>pin 重校準</b>（calibrate → T-PN5 verdict → T-PN3 復驗）</td><td>~5 分</td></tr>
     <tr><td>驗收失敗時</td><td>§8 武器庫（按 §10 排查表選）</td><td>視問題</td></tr>
   </table>
 </div>
@@ -367,6 +394,11 @@ cp src/llama.cpp/build/bin/*.dylib deploy-harmonyos/macos/   # 版本檔 + symli
     <tr><td>T-F2</td><td>IDS 有限差異</td><td>fused kernel 該平台 galloc 行為差</td><td>先 CGC_MMV_FUSE=0 復測；回報 binary+平台+flag</td></tr>
     <tr><td>T-F3</td><td>accept 掉到 0%</td><td>低記憶體 + cache ON</td><td>cache OFF 復測（Windows 8GB 事實）</td></tr>
     <tr><td>T-A1</td><td>watchdog stalled</td><td>completion wedge</td><td>看 same/fresh-queue probe 結果分層；開 CGC_DRAIN_EVERY=8</td></tr>
+    <tr><td>T-PN1</td><td>env 名 grep = 0</td><td><b>env 名漂移</b>（腳本舊名 RECORD_*；代碼已改 ROUTE_*）</td><td>腳本對齊現行代碼 getenv；歷史案例 <code>a9c546ffd</code></td></tr>
+    <tr><td>T-PN2</td><td>pin_marked=0</td><td>profile 路徑錯 / 模型錯配（id 在範圍內靜默接受）</td><td>確認檔名綁模型；目標機重跑 calibrate</td></tr>
+    <tr><td>T-PN3</td><td>pin on/off 輸出不同</td><td>exact 模式被破壞（不該發生）或誤開 fast path</td><td>查 VERIFY/DRAFT env；視為 P0 bug（違反 bit-identity 承諾）</td></tr>
+    <tr><td>T-PN4</td><td>pin_yield 爆大</td><td>槽壓力 &gt; pin 保護力（K 太小）</td><td>加大 CGC_EXPERT_CACHE_BYTES 或調 LAYER_CAPS；重校準</td></tr>
+    <tr><td>T-PN5</td><td>coverage &lt; 2× baseline</td><td>該 workload 路由不夠重尾 / profile 過期</td><td>用生產代表性 prompt 重校準；仍低則 pin 對此 workload 無槓桿</td></tr>
     <tr><td>T-D1</td><td>dyld Library not loaded</td><td>部署包缺 dylib（8/30 舊包病灶）</td><td>§9 的 cp 指令補齊全家</td></tr>
     <tr><td>任何</td><td>rc=138 / SIGBUS</td><td>暫態 GPU 記憶體壓力</td><td>sleep 5 重跑一次再判（T-A4）</td></tr>
   </table>
