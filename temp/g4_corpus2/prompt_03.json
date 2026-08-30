@@ -1,1 +1,0 @@
-[{"role": "user", "content": "Debug this code: def f(n): return n if n < 2 else f(n-1) + f(n-2). It is too slow for n=35. Rewrite it efficiently and explain the fix."}]

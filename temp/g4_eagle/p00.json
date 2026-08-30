@@ -1,1 +1,0 @@
-[{"role": "user", "content": "Implement a Python LRU cache class with O(1) get and put, using an ordered dict, and unit-test it with a capacity-2 scenario."}]

@@ -1,1 +1,0 @@
-[{"role": "user", "content": "Write a Python generator that yields prime numbers indefinitely using a sieve-based approach, and show how to consume the first 20."}]

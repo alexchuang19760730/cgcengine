@@ -386,3 +386,6 @@ LLVM-*.exe
 data/**/build/
 data/**/CMakeFiles/
 data/**/cmake-build/
+
+# ---- 2026-08-30: Backup/（1.8G 手動備份區，明確排除追蹤）----
+Backup/

@@ -1,1 +1,0 @@
-[{"role": "user", "content": "Refactor this messy function into clean helpers: def f(xs): r=[]; for i,x in enumerate(xs): if x%2==0: r.append((i,x*x)); return r. Explain your decomposition."}]
