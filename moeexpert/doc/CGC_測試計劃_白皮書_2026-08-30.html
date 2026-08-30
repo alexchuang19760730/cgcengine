@@ -133,6 +133,7 @@
     <tr><td><b>T-P3</b></td><td>symlink 目標被追蹤（<b>洞 B</b>）</td><td><code>libllama.0.dylib</code> 等 symlink 的 realpath 目標已追蹤且在 repo 內</td><td>全部解析到已追蹤目標</td></tr>
     <tr><td><b>T-P4</b></td><td>關鍵 exe 追蹤</td><td>llama-simple / llama-speculative-simple / llama-bench 存在且已追蹤</td><td>3 個 exe 都追蹤</td></tr>
     <tr><td><b>T-P5</b></td><td>@rpath 指向本 repo（<b>洞 D</b>）</td><td>exe 的 LC_RPATH realpath == repo 的 build/bin</td><td>不得指向別的 build 目錄（載入錯 dylib → batch cap / 亂碼）</td></tr>
+    <tr><td><b>T-P6</b></td><td>main⊆dev 分支包含性（2026-08-30）</td><td>在 dev 上 commit 時 <code>git merge-base --is-ancestor main HEAD</code>（同時驗 github0823/main）；在 main 上直接 commit 一律擋</td><td>main 與 github0823/main 都是 HEAD 祖先。失敗修復：先 <code>git merge main</code>（或 fetch 後 merge）再 commit；晉升一律走 <code>git switch main && git merge --ff-only dev</code>（ff 不觸發 hook）</td></tr>
   </table>
 
   <pre># 安裝（每個開機環境一次）：
@@ -390,6 +391,7 @@ cp src/llama.cpp/build/bin/*.dylib deploy-harmonyos/macos/   # 版本檔 + symli
     <tr><td>T-B5</td><td>輸出亂碼</td><td>BLAS/ACCELERATE/REPACK 沒 OFF</td><td>查 CMakeCache 重編</td></tr>
     <tr><td>T-P1</td><td>untracked dylib</td><td>SOVERSION bump 後沒 add 新版</td><td><code>git add -A src/llama.cpp/build/bin/</code></td></tr>
     <tr><td>T-P5</td><td>rpath 指向別處</td><td>exe 被搬到別的 build 蓋過</td><td>重跑 build_prod_binary.sh</td></tr>
+    <tr><td>T-P6</td><td>dev 缺 main 的 commit</td><td>夥伴 push 了 main（遠端領先）或本地 main 被直接 commit</td><td><code>git fetch github0823 && git merge main</code>（dev 上）整合後再 commit；main 直接 commit 屬違規，改到 dev 走 ff 晉升</td></tr>
     <tr><td>T-F1/F2</td><td>spec 第一 token 就不同</td><td>基準落後（&lt; b7364f886）或三支柱 env 缺一</td><td>git log 確認基準；查 MM_BITIDENT / NO_WARMUP / NO_SEQ_RM_PROBE</td></tr>
     <tr><td>T-F2</td><td>IDS 有限差異</td><td>fused kernel 該平台 galloc 行為差</td><td>先 CGC_MMV_FUSE=0 復測；回報 binary+平台+flag</td></tr>
     <tr><td>T-F3</td><td>accept 掉到 0%</td><td>低記憶體 + cache ON</td><td>cache OFF 復測（Windows 8GB 事實）</td></tr>
