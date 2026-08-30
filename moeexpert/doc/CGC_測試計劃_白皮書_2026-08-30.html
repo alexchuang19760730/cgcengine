@@ -124,7 +124,7 @@
 <!-- ============ §3 ============ -->
 <div class="card" id="s3">
   <h2>§3 L1 Pre-commit 自動測試（check_build_tracked.sh）</h2>
-  <p class="desc">每次 <code>git commit</code> 自動執行（git hook），&lt; 2 秒，5 項檢查。直接源自 8/26 檢討報告的兩個疏失（洞 B / 洞 D），防止再犯。</p>
+  <p class="desc">每次 <code>git commit</code> 自動執行（git hook），&lt; 2 秒，8 項檢查（1–5 源自 8/26 檢討報告的洞 B / 洞 D；6 分支紀律；7–8 源自 8/30 hist-prefetch 死鎖教訓，commit <code>4a746c724</code>）。防止再犯。</p>
 
   <table>
     <tr><th>ID</th><th>檢查（洞）</th><th>內容</th><th>通過標準</th></tr>
@@ -134,6 +134,8 @@
     <tr><td><b>T-P4</b></td><td>關鍵 exe 追蹤</td><td>llama-simple / llama-speculative-simple / llama-bench 存在且已追蹤</td><td>3 個 exe 都追蹤</td></tr>
     <tr><td><b>T-P5</b></td><td>@rpath 指向本 repo（<b>洞 D</b>）</td><td>exe 的 LC_RPATH realpath == repo 的 build/bin</td><td>不得指向別的 build 目錄（載入錯 dylib → batch cap / 亂碼）</td></tr>
     <tr><td><b>T-P6</b></td><td>main⊆dev 分支包含性（2026-08-30）</td><td>在 dev 上 commit 時 <code>git merge-base --is-ancestor main HEAD</code>（同時驗 github0823/main）；在 main 上直接 commit 一律擋</td><td>main 與 github0823/main 都是 HEAD 祖先。失敗修復：先 <code>git merge main</code>（或 fetch 後 merge）再 commit；晉升一律走 <code>git switch main && git merge --ff-only dev</code>（ff 不觸發 hook）</td></tr>
+    <tr><td><b>T-P7</b></td><td>CGC 死鎖防護靜態守衛（2026-08-30 死鎖教訓）<span class="tag r">關鍵</span></td><td>對 <code>src/llama-expert-cache.cpp</code> 四項靜態把關：<b>7a</b> pick_slot 必須用 batch_mask 精確集合（<code>uint64_t min_tick</code> 重現 = FAIL）；<b>7b</b> batch_owned mask ≥3 處（宣告/hit/分配）；<b>7c</b> FATAL ensure_batch + FATAL ensure_slot 看門狗在位；<b>7d</b> 裸 <code>bg_cv.wait(lk);</code> 數 ≤ <code>in_flight</code> 守衛數</td><td>4 子項全過。設計鐵律：<b>近似狀態會隨並發腐爛</b>（啟發式近似某狀態集合的保護，新增任一併發寫入者即失效 — 用精確 mask）；<b>等待必須可證偽</b>（條件不可能滿足的 wait 要大聲 FATAL，不得無聲掛死）</td></tr>
+    <tr><td><b>T-P8</b></td><td>原始碼 ↔ build 產物同步（2026-08-30）</td><td>stage 了 llama 原始碼（src/ 或 examples/ 的 .cpp/.h/.c/.mm/.metal）的 commit：(a) build/bin 產物必須同 commit staged；(b) binary mtime 不得老於最新 staged 原始碼（= 有重建過；<code>ALLOW_STALE_BIN=1</code> 跳過 (b)）</td><td>兩項都過（否則 repo 內 binary 與原始碼脫鉤，「checkout 免重建可驗證」不變量失效）</td></tr>
   </table>
 
   <pre># 安裝（每個開機環境一次）：
@@ -155,6 +157,8 @@ scripts/check_build_tracked.sh
 OK: build/bin 的 dylib 與 rpath 全部追蹤正常。</pre>
 
   <p class="note"><b>歷史事件</b>：8/30 的 SOVERSION bump（0.0.60 → 0.0.70）commit 時，T-P1 立刻抓到「舊 dylib 已刪、新 dylib untracked」的狀態差異並擋下第一次 commit —— 這正是它存在的意義（同類事件 8/26 曾造成 29.85 t/s build 永久遺失）。修法：<code>git add -A src/llama.cpp/build/bin/</code> 讓版本輪替（刪舊+加新）一起進 commit。</p>
+
+  <p class="note"><b>歷史事件（T-P7 的由來，8/30 hist-prefetch 死鎖）</b>：<code>CGC_PREFETCH_SRC=hist</code> 的非 MTP prefill <b>100% 掛死</b>於 ensure_batch(il=1)：pick_slot 以「last_use ≥ batch_tick」<b>啟發式近似</b>「本 batch 持有的 slot」，但 bg 洪泛填充完成時的 <code>++tick</code> 把全部 slot 推進保護集 → pick_slot 永遠 -1 → 裸 <code>bg_cv.wait</code> 死鎖（主執行緒與 bg 同時睡死）。修復 commit <code>4a746c724</code>：精確 batch_owned mask 取代 min_tick + 掛死看門狗。T-P7 的四項靜態守衛確保此修復<b>不會被靜默回退</b>（實測：對修復前版本 7a–7d 全 FAIL、修復後全 PASS）。診斷工具鏈見 §10.2 的「hist 掛死」列。</p>
 </div>
 
 <!-- ============ §4 ============ -->
@@ -240,11 +244,13 @@ grep -o "pin_marked=[0-9]* pin_yield(evicted)=[0-9]*" /tmp/pn_on_err.txt
     <tr><td><b>T-A3</b></td><td>無 race 提交順序</td><td>確認 env <b>沒有</b> <code>CGC_SUBMIT_AHEAD</code> / <code>CGC_TOPK_BOUNDARY</code></td><td>兩個 bug 重現器都未設</td><td class="good">8/30 PASS</td></tr>
     <tr><td><b>T-A4</b></td><td>GPU OOM 暫態重試</td><td>rc=138/SIGBUS 時 sleep 5 重跑一次</td><td>重跑 rc=0（區分暫態壓力 vs 真失敗）</td><td class="good">8/30 驗證（部署包初測 138 → 重跑過）</td></tr>
     <tr><td><b>T-A5</b></td><td>prewarm / hook pipeline 無死鎖</td><td>prefetch 關閉（MTP 安全模式 <code>CGC_NO_PREFETCH=1</code>）下整跑</td><td>無 hang（歷史 deadlock 均為 bg-thread 與 verify 重疊）</td><td class="good">8/30 PASS</td></tr>
+    <tr><td><b>T-A6</b></td><td>hist-prefetch 死鎖回歸測試<span class="tag r">修復當天加入</span></td><td>§4.2 的 COMMON env <b>拿掉 CGC_NO_PREFETCH=1</b>（即 hist prefetch 開啟）跑 llama-simple 8-token 短跑（原 100% 掛死重現器）</td><td>rc=0、輸出通順（修復 <code>4a746c724</code> 後 PASS；若掛死 → 看門狗 FATAL 或 §10.2 診斷程序）</td><td class="good">8/30 PASS（修復前：ensure_batch(il=1) 永久掛死）</td></tr>
+    <tr><td><b>T-A7</b></td><td>掛死看門狗可證偽</td><td>rg <code>FATAL ensure_batch|FATAL ensure_slot</code>（binary 用 strings 驗）；pre-commit T-P7c 自動把關</td><td>兩個看門狗都在（pick_slot -1 且無 in-flight 填充 → 大聲 crash 而非無聲掛死）</td><td class="good">8/30 在位（4a746c724）</td></tr>
   </table>
 
   <div class="review red">
     <div class="label">antiloop 的深層保證不是「測出來」的，是「設計出來」的</div>
-    死鎖防線是結構性的：(1) 提交順序 race-free（hook 寫完 remap 才提交消費它的 buffer —— 預設行為，無選項）；(2) <code>drain_layer</code> 等同層 in-flight 填寫完成才繼續（防撕裂）；(3) <code>pick_slot</code> 寧可逐出也不等待（免死鎖）；(4) watchdog 60 秒硬止損。測試 T-A1–A5 驗證的是這些防線<b>沒有被繞過</b>。歷史 wedge 的完整翻案記錄在技術講解白皮書 §4.1。
+    死鎖防線是結構性的：(1) 提交順序 race-free（hook 寫完 remap 才提交消費它的 buffer —— 預設行為，無選項）；(2) <code>drain_layer</code> 等同層 in-flight 填寫完成才繼續（防撕裂）；(3) <code>pick_slot</code> 寧可逐出也不等待（免死鎖）；(4) watchdog 60 秒硬止損；(5) <b>（8/30 新增）</b>pick_slot 的 in-batch 保護用<b>精確 batch_owned mask</b>（不用 tick 啟發式 —— 近似狀態會隨並發腐爛，8/30 死鎖根因）；(6) <b>（8/30 新增）</b>ensure_batch/ensure_slot 的等待可證偽（pick_slot -1 且無 in-flight → FATAL，不無聲掛死）。測試 T-A1–A7 驗證的是這些防線<b>沒有被繞過</b>。歷史 wedge 的完整翻案記錄在技術講解白皮書 §4.1。
   </div>
 </div>
 
@@ -273,9 +279,10 @@ grep -E "eval time|n_accept|n_drafted" /tmp/D_err.txt
     <tr><td><b>T-E2</b></td><td>MTP 投機吞吐</td><td>eval ms/tok &lt; 非 MTP 對照（127.77 vs 145.10）</td><td class="good">PASS（快 12%）</td></tr>
     <tr><td><b>T-E3</b></td><td>cache 命中率</td><td>final stats：runtime hit rate 合理（&gt;80%）、prewarm 分帳正確</td><td class="good">PASS（96% 含 prewarm 帳）</td></tr>
     <tr><td><b>T-E4</b></td><td>fast-path cold 率（若開 VERIFY/DRAFT）</td><td>遙測穩定、有數字可決策</td><td class="info">量測值 ~65%（結構性 churn，技術講解 §7.4）</td></tr>
+    <tr><td><b>T-E5</b></td><td>非 MTP 結構性基線（防呆）+ MTP steady 回歸閾值</td><td>非 MTP llama-simple decode 實測 ~7 t/s（143 ms/token，GPU-bound 專家收集）屬<b>結構性</b>（warm cache 亦然，hit 69.7% 不變速）—— <b>不得在非 MTP 路徑上追 decode 速度</b>；MTP steady（<code>./scripts/run_n30cache.sh -m qwen36 --mtp --dense-iq4x --steady</code>）量 t/s / accept / hit</td><td>MTP steady ≥ 26 t/s、accept ≥ 99%、hit ≥ 88%（8/30 實測 26.573 / 99.187% / 88.9%）；非 MTP 掉速 <b>先問「是否本來就該走 MTP」</b>再找 bug</td></tr>
   </table>
 
-  <p class="note"><b>效能驗收的「不退化」底線</b>：guard 加入後 decode 不得慢於無融合基準 5% 以上（T-E2 的 127.77 已含 1 次安全融合 + 3 次拒絕融合，仍快 12%）。Windows 低記憶體機器另有一組基準（MTP+cache OFF 0.521 t/s 為最佳解 —— cache 是大記憶體機器的功能，見三平台白皮書 §5.3）。</p>
+  <p class="note"><b>效能驗收的「不退化」底線</b>：guard 加入後 decode 不得慢於無融合基準 5% 以上（T-E2 的 127.77 已含 1 次安全融合 + 3 次拒絕融合，仍快 12%）。Windows 低記憶體機器另有一組基準（MTP+cache OFF 0.521 t/s 為最佳解 —— cache 是大記憶體機器的功能，見三平台白皮書 §5.3）。<b>8/30 教訓（T-E5）</b>：decode 變慢的第一反應曾經是找 bug —— 實測是非 MTP 路徑的結構性上限（27 t/s 必須走 MTP）；「慢」要先判定「哪條路徑的慢」再動手。</p>
 </div>
 
 <!-- ============ §7 ============ -->
@@ -401,6 +408,9 @@ cp src/llama.cpp/build/bin/*.dylib deploy-harmonyos/macos/   # 版本檔 + symli
     <tr><td>T-PN3</td><td>pin on/off 輸出不同</td><td>exact 模式被破壞（不該發生）或誤開 fast path</td><td>查 VERIFY/DRAFT env；視為 P0 bug（違反 bit-identity 承諾）</td></tr>
     <tr><td>T-PN4</td><td>pin_yield 爆大</td><td>槽壓力 &gt; pin 保護力（K 太小）</td><td>加大 CGC_EXPERT_CACHE_BYTES 或調 LAYER_CAPS；重校準</td></tr>
     <tr><td>T-PN5</td><td>coverage &lt; 2× baseline</td><td>該 workload 路由不夠重尾 / profile 過期</td><td>用生產代表性 prompt 重校準；仍低則 pin 對此 workload 無槓桿</td></tr>
+    <tr><td>T-A6</td><td>hist prefetch 掛死（0% CPU、 stderr 停在 CGC-PRE il=1）</td><td>expert-cache 等待迴圈條件永不可能滿足（歷史：min_tick 啟發式被 bg ++tick 污染，<code>4a746c724</code>）</td><td><b>離線定位 3 步（~10 秒，lldb 對 5GB Metal 行程太慢）</b>：(1) <code>sample &lt;pid&gt; 2</code> 看各執行緒卡點；(2) <code>nm -n libllama.*.dylib | grep 符號</code> 得函數基址；(3) <code>objdump -d --start-address=基址+偏移</code> 把 PC 減 load base 後反組譯 → 精確行號。修好後跑 T-A6 回歸 + pre-commit T-P7 把關</td></tr>
+    <tr><td>T-P7</td><td>7a–7d 任一 FAIL</td><td>死鎖修復被回退（重構/merge 拿掉 batch_owned mask 或看門狗）</td><td>恢復 <code>4a746c724</code> 的修復結構（batch_owned mask + FATAL 看門狗）；若介面必須改，先在 §5 補新的可證偽設計再動</td></tr>
+    <tr><td>T-P8</td><td>binary 比 staged 原始碼舊 / 產物沒 stage</td><td>改了原始碼沒重建就 commit</td><td><code>cmake --build src/llama.cpp/build --target llama-simple llama-speculative-simple -j 8</code> 後 <code>git add src/llama.cpp/build/bin/</code> 一起 commit（跳過：ALLOW_STALE_BIN=1，不建議）</td></tr>
     <tr><td>T-D1</td><td>dyld Library not loaded</td><td>部署包缺 dylib（8/30 舊包病灶）</td><td>§9 的 cp 指令補齊全家</td></tr>
     <tr><td>任何</td><td>rc=138 / SIGBUS</td><td>暫態 GPU 記憶體壓力</td><td>sleep 5 重跑一次再判（T-A4）</td></tr>
   </table>

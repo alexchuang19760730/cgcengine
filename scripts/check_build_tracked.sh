@@ -17,6 +17,22 @@
 #   修復方式：git merge main（在 dev 上）整合後再 commit；晉升一律走
 #   git switch main && git merge --ff-only dev（fast-forward 不觸發本 hook）。
 #
+# 檢查 7（2026-08-30 新增，commit 4a746c724 死鎖教訓）：CGC 專家快取死鎖防護（靜態）
+#   事件：CGC_PREFETCH_SRC=hist 非 MTP prefill 100% 掛死於 ensure_batch(il=1)。
+#   根因：pick_slot 用「last_use >= batch_tick」啟發式近似「本 batch 持有的 slot」，
+#         bg 洪泛填充完成的 ++tick 把全部 slot 推進保護集 → pick_slot 永遠 -1 →
+#         裸 bg_cv.wait 死鎖。教訓：近似狀態會隨並發腐爛，必須用精確集合（mask）。
+#   7a pick_slot 必須用 batch_mask（精確集合），不得回到 min_tick（啟發式）
+#   7b ensure_batch 的 batch_owned mask 必須在位（宣告 + hit 標記 + 分配標記）
+#   7c ensure_batch/ensure_slot 的掛死看門狗（FATAL）必須在位（等待必須可證偽）
+#   7d 裸 bg_cv.wait(lk)（無述詞）數量 ≤ in_flight 守衛數量（新等待點必須掛守衛）
+#
+# 檢查 8（2026-08-30 新增）：原始碼 ↔ build 產物同步
+#   專案硬性要求：build 產物隨原始碼一起 commit（checkout 免重建可驗證）。
+#   改了 llama 原始碼的 commit：(a) build/bin 產物必須一起 staged、
+#   (b) binary mtime 不得老於 staged 原始碼（= 有重建過）。
+#   ALLOW_STALE_BIN=1 可跳過 (b)。
+#
 # 用法：
 #   scripts/check_build_tracked.sh                 # 檢查目前 cwd 所在的 repo
 #   scripts/check_build_tracked.sh --repo PATH     # 檢查指定 repo
@@ -28,6 +44,7 @@
 #   REQUIRED_EXES    空白分隔的 exe 清單（預設 "llama-simple llama-speculative-simple llama-bench"）
 #   REQUIRED_DYLIB   空白分隔的 dylib 前綴（預設 "libllama. libllama-common. libmtmd. libggml."）
 #   ALLOW_MISSING=1  允許 build/bin 或檔案不存在（不擋 commit；預設為擋）
+#   ALLOW_STALE_BIN=1 允許 binary 比 staged 原始碼舊（不建議；預設為擋）
 
 set -uo pipefail
 
@@ -40,7 +57,7 @@ REQUIRED_EXES=(${REQUIRED_EXES:-llama-simple llama-speculative-simple llama-benc
 REQUIRED_DYLIB=(${REQUIRED_DYLIB:-libllama. libllama-common. libmtmd. libggml.})
 
 usage() {
-    sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,60p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
 }
 
@@ -221,12 +238,100 @@ for exe in "${REQUIRED_EXES[@]}"; do
     fi
 done
 
+# ============ 檢查 7：CGC 專家快取死鎖防護（2026-08-30 hist-prefetch 死鎖，4a746c724 修復） ============
+# 教訓一（近似狀態隨並發腐爛）：「用啟發式近似某狀態集合」的保護邏輯，只要新增一個
+#   併發寫入者（bg 填充的 ++tick）就會失效 → 必須用精確集合（batch_owned mask）。
+# 教訓二（等待必須可證偽）：條件不可能再滿足的 wait 必須大聲 FATAL，不得無聲掛死。
+echo "--- 檢查 CGC 死鎖防護（hist-prefetch 教訓） ---"
+# llama 原始碼根：從 build/bin 往上兩層（src/llama.cpp/build/bin → src/llama.cpp；build/bin → repo 根）
+LLAMA_ROOT="$(dirname "$(dirname "$BIN_ABS")")"
+EC_SRC="$LLAMA_ROOT/src/llama-expert-cache.cpp"
+if [ ! -f "$EC_SRC" ]; then
+    echo "SKIP  $EC_SRC 不存在（非 CGC fork repo）"
+else
+    # 7a：pick_slot 用精確 batch_mask，不得回到 min_tick 啟發式
+    if grep -q 'uint64_t min_tick' "$EC_SRC"; then
+        fail "7a pick_slot 回到 min_tick 啟發式（近似狀態隨並發腐爛 — 2026-08-30 死鎖根因）"
+    elif grep -qF 'const uint8_t * batch_mask' "$EC_SRC"; then
+        pass "7a pick_slot 用精確 batch_mask（非啟發式近似）"
+    else
+        fail "7a pick_slot 簽名找不到 batch_mask（ensure_batch 的 in-batch 保護被改壞？）"
+    fi
+    # 7b：batch_owned mask 在位（宣告 + hit 標記 + miss 分配標記）
+    n_mask="$(grep -cF 'batch_owned' "$EC_SRC" || true)"
+    if [ "${n_mask:-0}" -ge 3 ]; then
+        pass "7b batch_owned mask 在位（${n_mask} 處 ≥ 3）"
+    else
+        fail "7b batch_owned mask 不完整（${n_mask} 處 < 3：宣告/hit 標記/分配標記）"
+    fi
+    # 7c：掛死看門狗在位（等待可證偽）
+    if grep -qF 'FATAL ensure_batch' "$EC_SRC" && grep -qF 'FATAL ensure_slot' "$EC_SRC"; then
+        pass "7c 掛死看門狗在位（ensure_batch + ensure_slot FATAL）"
+    else
+        fail "7c 掛死看門狗被移除（pick_slot -1 且無 in-flight 時的等待不可證偽 = 無聲掛死）"
+    fi
+    # 7d：每個「等待填充完成」的裸 wait 都要有 in_flight 守衛
+    n_bare="$(grep -cF 'cache->bg_cv.wait(lk);' "$EC_SRC" || true)"
+    n_guard="$(grep -cF 'in_flight = false' "$EC_SRC" || true)"
+    if [ "${n_bare:-0}" -le "${n_guard:-0}" ]; then
+        pass "7d 裸 bg_cv.wait ${n_bare} 個 ≤ in_flight 守衛 ${n_guard} 個"
+    else
+        fail "7d 裸 bg_cv.wait(lk) ${n_bare} 個 > 守衛 ${n_guard} 個 — 新等待點必須先證明有 in-flight 填充可等"
+    fi
+fi
+
+# ============ 檢查 8：原始碼 ↔ build 產物同步（checkout 免重建可驗證不變量） ============
+echo "--- 檢查 原始碼↔binary 同步 ---"
+STAGED_FILES="$(git -C "$REPO_ROOT" diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)"
+if [ -z "$STAGED_FILES" ]; then
+    echo "SKIP  無 staged 檔案（手動跑 hook 時屬正常；commit 時必有 staged）"
+else
+    # staged 的 llama 原始碼（src/ 與 examples/ 下的 .cpp/.h/.c/.mm/.metal — 都編進 binary）
+    staged_src=()
+    while IFS= read -r f; do
+        case "$f" in
+            *src/*.cpp|*src/*.h|*src/*.c|*src/*.mm|*src/*.metal|*examples/*.cpp|*examples/*.h)
+                [ -f "$REPO_ROOT/$f" ] && staged_src+=("$f") ;;
+        esac
+    done <<< "$STAGED_FILES"
+    if [ "${#staged_src[@]}" -eq 0 ]; then
+        pass "8 無 llama 原始碼變更（僅 doc/腳本/產物）"
+    else
+        # (a) build/bin 產物必須在同一個 commit staged
+        staged_bin="$(grep -F 'build/bin/' <<< "$STAGED_FILES" | head -1 || true)"
+        if [ -n "$staged_bin" ]; then
+            pass "8 build 產物隨原始碼 staged（${staged_bin##*/}）"
+        else
+            fail "8 stage 了 ${#staged_src[@]} 個原始碼但沒 stage build/bin 產物 — git add src/llama.cpp/build/bin/ 一起進 commit"
+        fi
+        # (b) binary mtime 不得老於最新 staged 原始碼（有重建過；ALLOW_STALE_BIN=1 跳過）
+        if [ "${ALLOW_STALE_BIN:-0}" != 1 ]; then
+            newest_src=0
+            for f in "${staged_src[@]}"; do
+                m="$(stat -f %m "$REPO_ROOT/$f" 2>/dev/null || echo 0)"
+                [ "$m" -gt "$newest_src" ] && newest_src="$m"
+            done
+            newest_bin=0
+            for f in "$BIN_ABS"/*.dylib; do
+                [ -f "$f" ] || continue
+                m="$(stat -f %m "$f" 2>/dev/null || echo 0)"
+                [ "$m" -gt "$newest_bin" ] && newest_bin="$m"
+            done
+            if [ "$newest_bin" -ge "$newest_src" ]; then
+                pass "8 binary 比 staged 原始碼新（已重建）"
+            else
+                fail "8 binary 比 staged 原始碼舊 — 先 cmake --build src/llama.cpp/build --target llama-simple llama-speculative-simple -j 8 再 commit（ALLOW_STALE_BIN=1 可跳過）"
+            fi
+        fi
+    fi
+fi
+
 # ============ 總結 ============
 if [ "$fail_count" -gt 0 ]; then
     echo ""
-    echo "FAIL: $fail_count 項未通過。先修好再 commit（關鍵 build 產物不允許 untracked / rpath 錯亂）。"
+    echo "FAIL: $fail_count 項未通過。先修好再 commit（build 產物追蹤 / rpath / main⊆dev / 死鎖防護 / 原始碼↔binary 同步）。"
     exit 1
 fi
 echo ""
-echo "OK: build/bin 的 dylib 與 rpath 追蹤正常，main⊆dev 包含性成立。"
+echo "OK: build/bin 追蹤與 rpath 正常、main⊆dev 成立、CGC 死鎖防護在位、原始碼↔binary 同步。"
 exit 0
