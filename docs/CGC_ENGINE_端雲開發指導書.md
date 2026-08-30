@@ -228,11 +228,154 @@ Fallback 可用（生產仍以 base Q36 為準）。
    內建 speculative-simple 參數集 + MTP env，Mac 端 26.44 t/s / accept 97.4%
    實測（§1.5）。
 
-## 7. 相關文件
+## 7. Phase 3 路線圖：MTP 本地 Decode + 雲端 Prefill（DGX Spark）
+
+> 新增（2026-08-30）：在 Phase 2 分裂 PD 基礎上，引入雲端大模型做 prefill，
+> 本地設備做 MTP 加速 decode，實現「雲端算力 + 本地隱私 + MTP 加速」三贏。
+
+### 7.1 架構概覽
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                    Cloud (DGX Spark ×2)                   │
+│                                                          │
+│  DeepSeek V4 Flash 0731 (155GB, 2×DGX Spark)            │
+│  ├─ Prefill: 60 tok/s (128GB unified LPDDR5x)           │
+│  ├─ 1M context window                                    │
+│  ├─ SWE-bench: 79% | TB 2.1: 82.7%                      │
+│  └─ 輸出: KV cache → 發送到本地                          │
+│                                                          │
+│  或 Qwen3.8-Flash-Next (125B/6B, 單台 DGX Spark)        │
+│  ├─ SWE-bench Pro: 62.5% | DeepSWE: 58.7%               │
+│  └─ Apache 2.0 開源                                      │
+└──────────────────────┬───────────────────────────────────┘
+                       │ LAN / Internet
+                       │ KV cache transfer (~5MB/1K tokens)
+                       ▼
+┌──────────────────────────────────────────────────────────┐
+│              Local Decode (多設備)                         │
+│                                                          │
+│  Mac M4 (主 decode)                                       │
+│  ├─ Qwen3.6-35B-A3B GGUF (IQ3_XXS, 13GB)               │
+│  ├─ MTP draft=2: ~40 t/s                                 │
+│  ├─ Expert-cache: 4GiB                                   │
+│  └─ CGC edge_server.py                                   │
+│                                                          │
+│  Windows 8GB (fallback)                                   │
+│  ├─ Qwen2.5-7B 或 Qwen3.6-35B (CPU only)                │
+│  └─ 3-5 t/s                                             │
+│                                                          │
+│  鴻蒙手机 Mate 70 Pro (端側 agent)                        │
+│  ├─ Qwen3-14B (規劃中)                                   │
+│  └─ 輕量 decode + 端側推理                               │
+└──────────────────────────────────────────────────────────┘
+```
+
+### 7.2 為什麼 MTP 本地 Decode 是關鍵
+
+MTP (Multi-Token Prediction) 在 PD 分離中的作用：
+
+```
+傳統 decode:  token₁ → token₂ → token₃ → token₄  (逐個生成)
+MTP decode:   token₁ → [token₂, token₃, token₄]  (一次預測多個)
+```
+
+| 指標 | 無 MTP | 有 MTP (draft=2) | 有 MTP (draft=4) |
+|---|---|---|---|
+| **Decode 速度** | 27 t/s | ~40 t/s (+50%) | ~55 t/s (+100%) |
+| **Accept rate** | — | 50-70% | 40-60% |
+| **適合場景** | — | 短回覆 | 長回覆 |
+
+本 fork 已支援 MTP（`llama-speculative-simple` + `--spec-type draft-mtp`），
+Mac 端實測 26.44 t/s / accept 97.4%（§1.5）。
+
+### 7.3 DGX Spark 規格
+
+| 項目 | 值 |
+|---|---|
+| **晶片** | GB10 (Blackwell) |
+| **記憶體** | 128GB unified LPDDR5x |
+| **頻寬** | 273 GB/s |
+| **互連** | ConnectX-7 200Gbps (2 台串聯) |
+| **價格** | ~$4,700/台 |
+| **可跑模型** | DeepSeek V4 Flash (155GB, 需 2 台) / Qwen3.6 27B (單台) |
+
+### 7.4 三種可行路徑
+
+**路徑 A：同一模型 PD 分離（最簡單）**
+```
+DGX Spark: Qwen3.6-35B full precision prefill
+Mac M4:   Qwen3.6-35B GGUF decode (MTP)
+KV cache: 直接傳輸 (格式相容)
+難度: ⭐⭐
+```
+
+**路徑 B：雲端大模型 + 本地蒸餾（效果最好）**
+```
+DGX Spark: DeepSeek V4 Flash prefill (82.7% TB)
+Mac M4:   Qwen3.6-35B 蒸餾版 decode (MTP)
+KV cache: 需要投影層轉換
+難度: ⭐⭐⭐⭐
+```
+
+**路徑 C：混合路由（推薦）**
+```
+簡單任務: 本地 Qwen3.6 全流程 ($0)
+複雜任務: DGX Spark prefill → 本地 MTP decode (~$0.01)
+路由: CGC DOPD Router 自動決策
+難度: ⭐⭐⭐
+```
+
+### 7.5 與現有 DOPD 的差異
+
+| | 現有 DOPD (Phase 1) | MTP + Cloud Prefill (Phase 3) |
+|---|---|---|
+| **Prefill** | 本地 Mac M4 | 雲端 DGX Spark |
+| **Decode** | 本地 Mac M4 | 本地多設備 (MTP 加速) |
+| **模型** | Qwen3.6-35B (同一模型) | 雲端大模型 + 本地量化版 |
+| **KV cache** | 本地記憶體 | 跨網路傳輸 |
+| **成本** | $0 | 雲端 ~$0.14/M input |
+| **優勢** | 完全本地 | 雲端 prefill 更快, 本地 decode 更便宜 |
+
+### 7.6 關鍵技術挑戰
+
+| 挑戰 | 難度 | 解決方案 |
+|---|---|---|
+| **KV cache 跨網路傳輸** | ⚠️ 中 | 5MB/1K tokens, LAN <10ms, WAN 需壓縮 |
+| **MTP accept rate** | ⚠️ 中 | CGC fork 已驗證 50%+ |
+| **雲端模型 ≠ 本地模型** | ⚠️ 需適配 | 雲端用 V4 Flash, 本地用 Qwen3.6 蒸餾版 |
+| **KV cache 格式相容** | ❌ 高 | 不同模型 KV shape 不同, 需要轉換層 |
+| **延遲疊加** | ⚠️ 中 | Prefill 雲端 + 網路 + 本地 decode |
+
+### 7.7 Benchmark 差距參考
+
+| 模型 | Terminal-Bench 2.1 | SWE-bench | 成本 |
+|---|---|---|---|
+| DeepSeek V4 Flash | **82.7** | 79 | $0.14/M input |
+| DeepSeek V4 Pro | **87.9** | 80.6 | $0.27/M input |
+| Ornith 1.5 35B | 67.8 | 79 | 自託管 |
+| Qwen3.6-35B (原始) | 52.5 | 73.4 | 自託管 |
+| **我們的目標 (Phase 6)** | **68-75** | **78-82** | $0 (本地) |
+
+### 7.8 推薦實施順序
+
+1. **Phase 3a**: 路徑 A POC — Mac M4 做 prefill + decode（驗證 KV cache 傳輸）
+2. **Phase 3b**: 路徑 C 混合路由 — CGC Router 自動切換本地/雲端
+3. **Phase 3c**: 接入 DGX Spark — 雲端 prefill + 本地 MTP decode
+4. **Phase 3d**: 蒸餾 — 用 V4 Flash 做 teacher 訓練 Qwen3.6 蒸餾版
+
+---
+
+## 8. 相關文件
 
 - `docs/CGC_COMPUTE_SHARING_ARCHITECTURE.md` — 三平台總體架構
+- `docs/CGC_CROSS_PLATFORM_ARCHITECTURE.md` — 四平台架構方案 v1.1
+- `docs/CGC_HARMONYOS_PHONE_ARCHITECTURE.md` — 鴻蒙手機端架構方案
+- `docs/AGENT_HARNESS_WHITEPAPER.html` — Agent Harness 技術白皮書 (DSH + Prime Agent)
 - `docs/M4_SETUP_GUIDE.md` — Mac 端環境
+- `docs/MTP_BENCHMARK_WIN8GB.md` — Windows 8GB MTP 基準測試
 - `CGC-main/cgc_engine/pd/router.py` — 4D 路由 + decode-速度感知（本次）
 - `CGC-main/cgc_engine/pd/edge_server.py` — 最後一哩 server（本次）
 - `CGC-main/cgc_engine/pd/pd_e2e_test.py` — 聯調 harness（本次）
 - `moeexpert/CGC_CPOT_分析工具白皮書_2026-08-29.md` — Mac 生產線效能定案
+- `agent_harness/dsh_config/` — DSH + agent_harness 整合配置
