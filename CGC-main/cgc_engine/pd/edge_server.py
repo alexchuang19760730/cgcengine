@@ -43,8 +43,9 @@ HTTP 服務，暴露 /v1/cgc/{health, profile, emit, resume} 端點，讓 Comput
       --model models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf \
       --ngl 99 --no-mmap --mtp 2 --port 1234
   （--mtp 2 內建 --spec-type draft-mtp --spec-draft-n-max 2 -c 3072
-   -expert-cache 4294967296 --temp 0 + MTP 必要 env：CGC_NO_PREFETCH/
-  CGC_VERIFY_DECODE/CGC_DRAFT_DECODE/CGC_WATCHDOG，未設才補）
+   -expert-cache 4294967296 --temp 0 + env：CGC_NO_PREFETCH/CGC_WATCHDOG。
+   2026-08-30 0000 根因定案後預設走 exact 補槽路徑——舊 CGC_VERIFY/DRAFT_DECODE
+   fast path 對 cold expert 讀零權重 → 輸出 0000，僅 --mtp-fast 速度實驗用）
 
 用法（Windows，小模型/低 ngl）：
   py -3 CGC-main\\cgc_engine\\pd\\edge_server.py ^
@@ -301,11 +302,20 @@ def main():
     ap.add_argument("--extra", nargs="*", default=[], help="透傳 binary 的額外旗標（注意 argparse 會吃掉 -- 開頭 token，MTP 請改用 --mtp）")
     # §MTP 生產模式（run_n30cache.sh §MTP 定案參數集）：speculative-simple 只認
     # CLI -expert-cache（不讀 CGC_EXPERT_CACHE_BYTES env），且 MTP 需要 greedy
-    # (--temp 0) + 關 prefetch + verify/draft decode fast path，缺任何一個都會
-    # accept 崩掉或 verify race（歷史教訓）。
+    # (--temp 0) + 關 prefetch（歷史教訓）。
+    # [2026-08-30 0000 根因定案] 舊版自動補的 CGC_VERIFY_DECODE/CGC_DRAFT_DECODE 會讓
+    # verify/draft 走 touch+ZERO-slot fast path：cold expert（pool 未駐留）映射到零權重
+    # slot → FFN 貢獻為 0 → logits 全錯 → greedy 輸出 0000…（穩態 cold 實測 ~65-70%，
+    # llama-context.cpp fast path 註解自證；draft/verify 同錯 → accept 率反而虛高 97%）。
+    # 修正：--mtp 預設 exact 路徑（ensure_batch 同步補槽 = 正確權重）。--mtp-fast 才回
+    # 舊 fast path（僅速度實驗，輸出會 0000）。
     ap.add_argument("--mtp", type=int, default=0, metavar="N",
                     help="MTP draft-mtp 生產模式（N=spec-draft-n-max，建議 2）：內建 --spec-type draft-mtp "
-                         "-c MTP_CTX -expert-cache BUDGET --temp 0，並自動補 MTP 必要 env")
+                         "-c MTP_CTX -expert-cache BUDGET --temp 0（verify/draft 走 exact 補槽路徑）")
+    ap.add_argument("--mtp-fast", action="store_true",
+                    help="MTP 走 touch+ZERO-slot fast path（舊行為：快但 cold expert 讀零權重 → 輸出退化 0000，僅速度實驗用）")
+    ap.add_argument("--mtp-prefetch", action="store_true",
+                    help="MTP exact 路徑 + hist 預取（bg 補下一步 union，verify 不卡同步 pread；exact 路徑才記錄 union）")
     ap.add_argument("--mtp-ctx", type=int, default=3072, help="MTP draft context（OOM 邊界，勿超）")
     ap.add_argument("--budget", type=int, default=4294967296,
                     help="MTP 模式 -expert-cache bytes（llama-simple 模式走 CGC_EXPERT_CACHE_BYTES env）")
@@ -324,12 +334,24 @@ def main():
                            "-c", str(args.mtp_ctx),
                            "-expert-cache", str(args.budget),
                            "--temp", "0"]
-        # MTP 必要 env（run_n30cache.sh §MTP）：launch 已設者不覆蓋
-        for k, v in (("CGC_NO_PREFETCH", "1"),     # prefetch bg race 於 MTP verify
-                     ("CGC_VERIFY_DECODE", "1"),   # verify 走 decode fast path
-                     ("CGC_DRAFT_DECODE", "1"),    # draft 同 pool residency
-                     ("CGC_WATCHDOG", "1")):       # 長跑 lost-wakeup 自救
+        # MTP env（run_n30cache.sh §MTP）：launch 已設者不覆蓋。
+        # [2026-08-30 0000 根因] 不再自動補 CGC_VERIFY_DECODE/CGC_DRAFT_DECODE：
+        # 該 fast path 對 cold expert 讀零權重 → greedy 輸出 0000（見 --mtp-fast 註解）。
+        # exact 路徑 = ensure_batch 同步補槽，輸出正確。
+        # --mtp-prefetch：exact + hist 預取（bg 補下一步 union → verify 不卡同步 pread；
+        # fast path 提前 return 不記錄 union，預取無效）。舊「prefetch bg race 於 MTP
+        # verify」教訓屬 fast path 時代；exact 與非 MTP 生產線同機制，死鎖已由 exact
+        # batch_owned mask 修正（commit 4a746c724）。無預取實測：1.8 t/s（pread 佔滿）。
+        for k, v in (("CGC_WATCHDOG", "1"),):      # 長跑 lost-wakeup 自救
             os.environ.setdefault(k, v)
+        if args.mtp_prefetch and not args.mtp_fast:
+            os.environ["CGC_PREFETCH_SRC"] = "hist"          # 覆蓋 launch env，強制開
+            os.environ.pop("CGC_NO_PREFETCH", None)
+        else:
+            os.environ.setdefault("CGC_NO_PREFETCH", "1")    # 保守預設：關預取
+        if args.mtp_fast:                          # 舊 fast path（速度實驗用；輸出會 0000）
+            os.environ.setdefault("CGC_VERIFY_DECODE", "1")
+            os.environ.setdefault("CGC_DRAFT_DECODE", "1")
 
     bin_path = CFG.resolve_binary()
     for f in (bin_path, CFG.model):
