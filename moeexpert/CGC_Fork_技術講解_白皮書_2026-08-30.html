@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CGC Fork 技術講解白皮書 — Bit-Identical / 穩定不退化 / Exact Cache / L4 Skip-Load / MTP 2026-08-30</title>
+<style>
+  :root {
+    --bg: #0f1420; --card: #171e2e; --ink: #e8ecf4; --sub: #9aa5b8;
+    --line: #2a3350;
+    --wr: #f0a45c; --small: #e86a6a; --ssm: #d98cf0; --sdpa: #7fb8f0; --bubble: #6b7aa8;
+    --cpu-o: #8a97ad; --tail: #e3cf8f;
+    --accent: #ffd479; --good: #8fe3a0; --warn: #f08a8a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; padding: 32px 20px 60px; }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 0 0 4px; }
+  h3 { font-size: 15px; margin: 18px 0 8px; color: var(--ink); }
+  h4 { font-size: 13.5px; margin: 14px 0 6px; color: var(--accent); }
+  .sub { color: var(--sub); font-size: 14px; margin-bottom: 28px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px 24px; margin-bottom: 22px; }
+  .card .desc { color: var(--sub); font-size: 13px; margin: 0 0 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
+  th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--sub); font-weight: 600; font-size: 11.5px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .hl { color: var(--accent); font-weight: 700; }
+  .good { color: var(--good); font-weight: 700; }
+  .warn { color: var(--warn); font-weight: 700; }
+  .note { font-size: 12.5px; color: var(--sub); margin-top: 12px; line-height: 1.6; }
+  .note b { color: var(--ink); }
+  .review { background: #1a2030; border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; padding: 14px 16px; margin: 12px 0; font-size: 13px; line-height: 1.6; }
+  .review .label { color: var(--accent); font-weight: 700; font-size: 12px; text-transform: uppercase; margin-bottom: 6px; }
+  .review.red { border-left-color: var(--warn); }
+  .review.red .label { color: var(--warn); }
+  code { background: #0c1019; border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 11.5px; font-family: "SF Mono", Menlo, monospace; color: #7fb8f0; }
+  pre { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; color: #7fb8f0; overflow-x: auto; line-height: 1.5; margin: 12px 0; }
+  .diagram { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 16px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; line-height: 1.6; margin: 12px 0; white-space: pre; overflow-x: auto; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; margin-left: 6px; }
+  .tag.g { background: #1c3a24; color: #8fe3a0; }
+  .tag.r { background: #3a1c1c; color: #f08a8a; }
+  .tag.y { background: #3a321c; color: #e3cf8f; }
+  .toc { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px; }
+  .toc a { color: var(--sdpa); text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>CGC Fork 技術講解白皮書</h1>
+<div class="sub">Bit-Identical · 沒 Loop 沒退化 · Exact Cache · L4 Skip-Load · MTP · 全技術選項細節<br>llama.cpp fork（cgcengine0823）· Mac M4 Max 16GB · 2026-08-30 · 基準 commit <code>9d06e18ca</code> · 銜接 <code>CGC_MTP_Bit-Identical_技術白皮書</code> 與 <code>CGC_三平台開發_技術白皮書</code></div>
+
+<div class="card">
+  <h2>目錄</h2>
+  <div class="toc">
+    <div><a href="#s1">§1 摘要：五大訴求與達成方式</a></div>
+    <div><a href="#s2">§2 技術地圖：機制總覽與協作</a></div>
+    <div><a href="#s3">§3 Bit-Identical：位元級一致的三支柱</a></div>
+    <div><a href="#s4">§4 沒 Loop 沒退化：穩定性與品質防線</a></div>
+    <div><a href="#s5">§5 Exact Cache：專家快取的位元組等同</a></div>
+    <div><a href="#s6">§6 L4 Skip-Load：Metal 零拷貝池</a></div>
+    <div><a href="#s7">§7 MTP 投機解碼全解</a></div>
+    <div><a href="#s8">§8 環境變數完整手冊（90 項盤點）</a></div>
+    <div><a href="#s9">§9 生產配置食譜</a></div>
+    <div><a href="#s10">§10 已知陷阱與結論</a></div>
+  </div>
+</div>
+
+<!-- ============ §1 ============ -->
+<div class="card" id="s1">
+  <h2>§1 摘要：五大訴求與達成方式</h2>
+  <p class="desc">本 fork 在 upstream llama.cpp 之上做了五大類改造。本白皮書逐一講解每個訴求背後的<b>機制、選項、與證據</b> —— 所有數字來自 repo 內註解與量測紀錄，非推測。</p>
+
+  <table>
+    <tr><th>訴求</th><th>核心機制</th><th>關鍵選項</th><th>證據</th></tr>
+    <tr><td><b>Bit-identical</b><br>（MTP 與非 MTP 位元級一致）</td><td>三支柱：M-invariant kernel 選擇 + warmup/probe 污染排除 + galloc overlap guard</td><td><code>CGC_MM_BITIDENT</code>、<code>CGC_MTP_NO_WARMUP</code>、<code>CGC_NO_SEQ_RM_PROBE</code>（guard 無選項、永久生效）</td><td class="good">IDS 0/800 &amp; 0/422 差異；輸出 byte-identical；accept 12/12</td></tr>
+    <tr><td><b>沒 Loop</b><br>（不死鎖、不停滯）</td><td>Metal watchdog（dispatch timer + liveness probe）+ 週期性 drain + race-free 提交順序</td><td><code>CGC_WATCHDOG</code>、<code>CGC_WATCHDOG_MS</code>、<code>CGC_DRAIN_EVERY</code>；<b>不設</b> <code>CGC_SUBMIT_AHEAD</code></td><td class="good">stall 偵測 + same/fresh-queue 鑑別 + 60s 硬中止；歷史 deadlock 章節有完整翻案記錄</td></tr>
+    <tr><td><b>沒退化</b><br>（輸出品質不崩壞）</td><td>ZERO-slot 品質監控（cold 率遙測）+ 快取污染防護 + IQ3 相容 flag 紀律</td><td><code>CGC_VERIFY_DECODE</code>／<code>CGC_DRAFT_DECODE</code> 的 cold 遙測；BLAS/ACCELERATE/REPACK 必 OFF</td><td class="good">fast-path cold ~65%（結構性 churn，被量測量化而非隱藏）；亂碼根因（BLAS）已定位</td></tr>
+    <tr><td><b>Exact cache</b><br>（快取位元組等同直接讀）</td><td>segment-aware pread + merge-read（preadv）+ F_RDADVISE；只改 syscall 模式不改 bytes</td><td><code>LLAMA_EXPERT_CACHE_NO_MERGE</code>／<code>NO_RDADVISE</code>（A/B 回退用）</td><td class="good">25470 次散讀收斂為大循序讀（2.3GB @ 3.2GB/s）；qwen36 IQ2 + gemma4 IQ3 byte-verified</td></tr>
+    <tr><td><b>L4 skip-load</b><br>（Metal 零拷貝池）</td><td>expert tensor 建在 Metal buffer、ne[2] 縮到 capacity、adopt_pool_region 收養；blk.0 恆等 remap 排除</td><td><code>LLAMA_EXPERT_CACHE_ALLOW_NGL</code>、<code>LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0</code>、<code>LLAMA_EXPERT_CACHE_LAYER_CAPS</code></td><td class="good">無 host→Metal copy、無 CPU FFN fallback；prepopulate 把 cold-start 122ms→88ms</td></tr>
+  </table>
+</div>
+
+<!-- ============ §2 ============ -->
+<div class="card" id="s2">
+  <h2>§2 技術地圖：機制總覽與協作</h2>
+  <p class="desc">整個 fork 的改造圍繞一條主軸：<b>MoE 專家權重不全部常駐 VRAM，按路由動態載入，且這件事對輸出零汙染</b>。所有機制掛在 ggml 計算圖的 eval hook 上，藉分段非同步 dispatch 獲得 GPU-busy 期間做 CPU 填池的機會。</p>
+
+  <div class="diagram">Router(gate) → argsort → topk ids ──┐
+                                          │ hook 觸發點
+   ┌──────────────────────────────────────▼──────────────────────────┐
+   │ expert_cache_on_topk（llama-context.cpp）                         │
+   │  snapshot ids → sorted union → ensure_batch(miss 填池)            │
+   │  → drain_layer → 寫 remap leaf（expert id → slot idx）             │
+   └──────────────────────────────────────┬──────────────────────────┘
+                                          │ remap leaf
+   FFN mul_mat_id 的 src0 = pool region（L4: Metal buffer）
+   FFN kernel 以 slot idx 取得該步真正需要的 8 個專家
+
+   分段 dispatch（CGC_OA_ASYNC）:
+   submit seg[i+1] → wait seg[i] done → hook 寫 remap →
+   （預設順序：寫完 remap 才提交消費它的 seg —— race-free）
+   seg[i+1] 的 mul_mat_id 消費 remap
+
+   分層:
+   L2  bounded resident cache（pread, segment-aware）
+   L3A 靜態 per-layer slot pool（malloc 路徑）
+   L4  Metal zero-copy（ALLOW_NGL, adopt_pool_region, 本白皮書 §6）</div>
+
+  <table>
+    <tr><th>機制</th><th>實作位置</th><th>一句話</th></tr>
+    <tr><td>Expert cache（L2/L3/L4）</td><td><code>src/llama-expert-cache.cpp/.h</code></td><td>bounded pool + slot table + LRU + pin，按 top-k 路由動態駐留</td></tr>
+    <tr><td>Top-k hook</td><td><code>llama-context.cpp: expert_cache_on_topk</code></td><td>ids ready 時同步/非同步填池並重映射</td></tr>
+    <tr><td>分段非同步 dispatch</td><td><code>ggml/src/ggml-backend.cpp</code></td><td>以 argsort 為界切 segment，管線化提交與 hook</td></tr>
+    <tr><td>Fused GLU GEMV</td><td><code>ggml-metal-ops.cpp: can_fuse_mmv_glu</code></td><td>gate+up+swiglu 三節點一發（含 v10 overlap guard）</td></tr>
+    <tr><td>M-invariant mat-mv</td><td><code>ggml-metal-ops.cpp</code></td><td>M≤8 全走 mul_mv，per-row 歸約與 batch 形狀無關</td></tr>
+    <tr><td>MTP 投機解碼</td><td><code>speculative-simple.cpp + common/speculative.cpp</code></td><td>同模型 nextn block 當 draft，verify batch 一次前向</td></tr>
+    <tr><td>Watchdog / drain</td><td><code>ggml-metal-context.m</code></td><td>stall 偵測、queue 鑑別、週期性排空</td></tr>
+    <tr><td>ZERO slot fast path</td><td><code>llama-context.cpp:3156</code> + cache</td><td>verify/draft 不等待填池，cold 專家映到零貢獻 slot</td></tr>
+  </table>
+</div>
+
+<!-- ============ §3 ============ -->
+<div class="card" id="s3">
+  <h2>§3 Bit-Identical：位元級一致的三支柱</h2>
+  <p class="desc">定義：同 prompt、同 seed、greedy（temp 0）下，<b>投機（MTP）輸出 = 非投機（llama-simple）輸出</b>，逐 bit。這不是「結果相似」，是同一 token 流。達成需要三個獨立污染源同時關閉 —— 缺一個都會在幾百個 expert-ID key 上翻轉。</p>
+
+  <h3>3.1 支柱一：M-invariant kernel 選擇（CGC_MM_BITIDENT）</h3>
+  <div class="diagram">問題：small-batch mat-mv family 的 (nxpsg, r1ptg) 由 ne11（=M）
+     選擇 → per-row K-reduction tree 隨 batch 大小改變：
+       M=1（simple 逐 token）  → kernel A 的歸約樹
+       M=3（spec verify 批）   → kernel B 的歸約樹
+     同一邏輯列在不同 M 下 ULP 不同 → logit 漂移 → argsort 近平手翻轉
+
+修復：CGC_MM_BITIDENT=1 → 所有 src[0] 型別 ne11<=8 都繞過
+     small-batch family 落到 mul_mv。
+     mul_mv 的 per-element 映射只依 (tsrc0, ne00)；ne11 只設定
+     grid 列數 → 每列結果 M-invariant：
+       prefill 尾 M=2 / verify M=3 / decode M=1 全部位元組一致
+
+v2 教訓：v1 只繞 F32xF32 → UD 動態量化讓 shared-expert/GDN
+     投影出現 Q8_0，第一個 flip 藏在 layer 4 → v2 擴到所有型別
+
+代價：M∈[2,8] 失去 small-batch GEMV（回退 mul_mv）——
+     這是「品質優先」開關，追求速度可不設</div>
+
+  <h3>3.2 支柱二：warmup / probe 污染排除</h3>
+  <p>spec 路徑在 prefill chunk 0 之前<b>偷偷跑了兩次 decode</b>，兩次都會填 expert slot + bump LRU tick，而 <code>llama_memory_clear</code> 不會重置 expert cache → spec 的 pool 狀態與 cold-cache 的 simple 從第一步就分歧（chunk0 L4 rows 0-2 專家翻轉的根因）：</p>
+  <table>
+    <tr><th>污染源</th><th>是什麼</th><th>關閉選項</th></tr>
+    <tr><td>手動 warmup</td><td>spec 初始化時的 2-token warmup decode（還以錯誤的 graph topology 建圖）</td><td><code>CGC_MTP_NO_WARMUP=1</code></td></tr>
+    <tr><td>seq-rm probe</td><td><code>common_context_can_seq_rm(ctx_tgt)</code> 探測 decode 的 [0,0] 2 tokens</td><td><code>CGC_NO_SEQ_RM_PROBE=1</code></td></tr>
+  </table>
+  <p class="note">兩者皆 env-gated（預設執行 = upstream 行為）。<code>CGC_DECODE_TRACE</code> 是抓這類隱藏 decode 的工具：每次 decode 印 ctx/type/n_tokens/pos0 —— MTP 位元調查就是靠它看到「看不到的 2-token warmup」。</p>
+
+  <h3>3.3 支柱三：galloc lifetime-overlap guard（無選項，永久生效）</h3>
+  <p>最隱蔽的一個：fused gate+up+swiglu kernel 在 <b>GATE 節點位置</b>寫 swiglu 輸出 c，但 galloc 按 <b>SWIGLU 位置</b>分配 c 的記憶體 —— 若兩節點之間有張量（計算或讀取）與 c 重疊，fused 執行會覆寫它（量測：simple 圖形 777/800 keys 發散，galloc 把 y 的 freed range 重用給 c；spec 圖形 0/422 恰好無 overlap）。修復在 fuse 決策點檢查 <code>idx+2..glu</code> 每個節點的 dst 與 src 是否與 c 的記憶體區間相交，命中即拒絕融合 fallback 原路。純邏輯、無 env、安全層仍融合（decode 127.77 vs 145.10 ms/tok，快 12%）。</p>
+
+  <h3>3.4 驗收方法（任何平台適用）</h3>
+  <pre># 判定三件套（詳見 bit-identical 白皮書 §5）：
+# 1) simp 16-token 續寫 == spec 續寫的精確前綴（byte-level）
+# 2) accept rate = 12/12（此基準 prompt）
+# 3) 兩 run 的 CGC-IDS 行同 (pmax,il) key 逐行比 → 0 差異
+# IDS layout: [n_expert_used, n_tokens]，token row j = ids[j*n_used..]
+# pmax 用來歸屬 batch（非同步 dispatch 打亂 stderr 順序）</pre>
+</div>
+
+<!-- ============ §4 ============ -->
+<div class="card" id="s4">
+  <h2>§4 沒 Loop 沒退化：穩定性與品質防線</h2>
+  <p class="desc">「沒 loop」= 不死鎖、不停滯（Metal completion wedge / dispatch 卡死）；「沒退化」= 輸出不變 garbage、不 "The The The"。兩者各有獨立防線。</p>
+
+  <h3>4.1 死鎖防線（沒 loop）</h3>
+  <table>
+    <tr><th>層</th><th>機制</th><th>選項</th><th>行為</th></tr>
+    <tr><td>偵測</td><td>Metal watchdog：500ms dispatch timer，<code>expected &gt; done</code> 停滯超閾值或 encode worker 卡住 → 判 stalled</td><td><code>CGC_WATCHDOG=1</code>、<code>CGC_WATCHDOG_MS</code>（預設 10000）</td><td>dump 狀態 + probe</td></tr>
+    <tr><td>鑑別</td><td>liveness probe：同 queue 與 fresh queue 各提交 3s probe buffer</td><td><code>CGC_WATCHDOG_CAPTURE=1</code>（另存 ioreg/memory_pressure/sample 到 /tmp）</td><td>same-queue DEAD = 共享 command queue 從卡點全 wedged；fresh-queue DEAD = device/kernel 級 wedge —— <b>直接分層定責</b></td></tr>
+    <tr><td>止損</td><td>停滯滿 60s（sampling grace）→ <code>GGML_ABORT</code>，恢復時 re-arm</td><td>同上</td><td>不無限掛死</td></tr>
+    <tr><td>緩解</td><td>週期性全佇列 drain（waitUntilCompleted 於最後 buffer；FIFO 等於等全部）</td><td><code>CGC_DRAIN_EVERY=K</code>（0=off）</td><td>假說：driver 的「從不排空 firehose」（~1900 cb/s 數分鐘）累積 wedge；週期靜默窗口讓 queue 完全回收。代價 = 每 K 段一個 2-5ms pipeline bubble</td></tr>
+    <tr><td>根除</td><td>race-free 提交順序（預設）：hook 寫完 remap <b>之後</b>才提交消費它的 command buffer</td><td><b>不設</b> <code>CGC_SUBMIT_AHEAD</code></td><td>在 flight command buffer 的 buffer 上寫入是 UB（stale remap → 非確定性輸出）。舊 race 序僅留作 A/B</td></tr>
+  </table>
+  <div class="review red">
+    <div class="label">絕對不要設的兩個「重現 bug」開關</div>
+    <code>CGC_SUBMIT_AHEAD=1</code>（回復 race 提交順序）與 <code>CGC_TOPK_BOUNDARY=1</code>（回退用 top-k VIEW 當 segment 邊界 —— view 是無依賴別名、可能排在生產者之前，用它當邊界會在 ids 算出前觸發 hook → 垃圾路由）。兩者都是刻意保留的 bug 重現器，做 A/B 對照用，任何生產 env 出現它們都是事故。
+  </div>
+
+  <h3>4.2 品質防線（沒退化）</h3>
+  <table>
+    <tr><th>退化形態</th><th>根因</th><th>防線</th></tr>
+    <tr><td>輸出亂碼</td><td>BLAS（Accelerate）對 IQ3_XXS/IQ2_S 的 dequant 路徑</td><td>build 期 flag 紀律：<code>GGML_BLAS=OFF</code>、<code>GGML_ACCELERATE=OFF</code>（<code>GGML_CPU_REPACK=OFF</code> 防 tensor 邊界）</td></tr>
+    <tr><td>"The The The" 式退化</td><td>pool 滿 + 路由重尾：routed cold experts 全落 ZERO/未映射</td><td>pin 策略（<code>WIN_PIN</code>/<code>PIN_PROFILE</code>）+ <code>LAYER_CAPS</code> 依 ROUTE_DUMP 分配 + prewarm；歷史 root cause 文件有完整翻案</td></tr>
+    <tr><td>MTP accept 崩潰</td><td>verify fast path 的 cold 專家零貢獻</td><td><b>不是隱藏而是量化</b>：fast-path 遙測分項（n_fast_cold 等）量出 cold ~65% 為結構性 churn（per-layer working set &gt;&gt; slots），決策有數據</td></tr>
+    <tr><td>NaN 級聯</td><td>strict remap 讀 OOB pool row（table==-1 直進 get_rows）</td><td>ZERO slot：cold → 保留 slot（清零）而非 -1；<code>pick_slot</code>/<code>prefetch_slot</code> 掃 usable_slots-1，真專家永不進駐</td></tr>
+  </table>
+</div>
+
+<!-- ============ §5 ============ -->
+<div class="card" id="s5">
+  <h2>§5 Exact Cache：專家快取的位元組等同</h2>
+  <p class="desc">「Exact」的承諾：池裡的權重 bytes 與直接從 GGUF 讀<b>完全相同</b> —— 快取只改變「何時讀、用什麼 syscall 讀」，不改變讀到的內容。所有 IO 優化都遵守這條線。</p>
+
+  <h3>5.1 快取單元與結構</h3>
+  <div class="diagram">單元 = (layer, expert)
+slot blob 內按 L1 index 順序串接該 expert 所有 present kind
+（gate/up/down 或合併 gate_up）的 segment，
+每段以 pread 從 GGUF 絕對偏移讀入
+（segment-aware addressing；與 gguf-py 在 qwen36 IQ2 +
+ gemma4 IQ3 上 byte-verified）
+
+slot_table[layer*n_expert + expert] = slot idx（-1 = 非 resident）
+配套：slot_owner / last_use(LRU) / queued / loading /
+      pinned / pinned_static
+per-layer: slots_l（LAYER_CAPS 可各自不同）+ ZERO slot 保留位</div>
+
+  <h3>5.2 替換策略：LRU + 三層 pin 偏好</h3>
+  <table>
+    <tr><th>策略</th><th>選項</th><th>解決的量測問題</th></tr>
+    <tr><td>基礎 LRU</td><td>（預設）</td><td>位元組等同 base</td></tr>
+    <tr><td>滾動 window pin</td><td><code>LLAMA_EXPERT_CACHE_WIN_PIN=K</code></td><td>miss 剖析：12291 miss 多為 REPEAT —— 熱專家在兩次使用間被 LRU 逐出。保留最近 K 個 batch union，成員標 pinned 免逐出。同步路徑、不寫 pool bytes → 無 race</td></tr>
+    <tr><td>靜態 pin profile</td><td><code>LLAMA_EXPERT_CACHE_PIN_PROFILE=&lt;file&gt;</code></td><td>離線 ROUTE_DUMP 產出的 per-layer top-N 清單，載入時標 <code>pinned_static</code>（永不解 pin；overflow 讓位）</td></tr>
+  </table>
+  <p class="note"><b>pin 是偏好不是保留</b>：<code>pick_slot</code> 三 pass（跳 pin → 可逐動態 pin → 可逐 LRU 靜態 pin）。全部跳過會留下 table==-1 → strict remap 讀 OOB → NaN 級聯；等待會死鎖。所以寧可逐出也不卡死。</p>
+
+  <h3>5.3 IO 引擎（exact 的載體）</h3>
+  <table>
+    <tr><th>技術</th><th>機制</th><th>量測</th><th>回退開關</th></tr>
+    <tr><td>持久 pread worker pool</td><td><code>LLAMA_EXPERT_CACHE_WORKERS</code>（預設 8，clamp 1..64，USER_INITIATED QoS）一 job = 一 segment pread，整層 miss 攤平一次提交、等 outstanding==0</td><td>background QoS 會在重 compute 期間被餓死 —— 註解明言等待反而比同步 pread 慢</td><td><code>LLAMA_EXPERT_CACHE_SERIAL_FILL</code></td></tr>
+    <tr><td>merge-read</td><td>批次 segment 按 (file_idx, offset) 排序，檔案連續 run 合併為單一 <code>preadv</code>（記憶體端散落、檔案端連續 = iovec 語意）</td><td>25470 次 90KB 散讀 → 少數大循序讀（2.3GB @ 3.2GB/s）</td><td><code>LLAMA_EXPERT_CACHE_NO_MERGE</code></td></tr>
+    <tr><td>F_RDADVISE</td><td>提交時對整批範圍發 Darwin 非同步 page-cache 預熱</td><td>—</td><td><code>LLAMA_EXPERT_CACHE_NO_RDADVISE</code></td></tr>
+  </table>
+  <p class="note">三者<b>都保證 pool bytes 位元組等同</b>（只改 syscall 模式）。這是「exact cache」的技術含義。</p>
+
+  <h3>5.4 Hook 管線與正確性細節</h3>
+  <ul style="font-size:13px; line-height:1.7; margin:8px 0; padding-left:20px; color:var(--ink);">
+    <li><b>snapshot ids</b>：hook 先複製 top-k ids —— <code>CGC_OA_ASYNC</code> 管線下 galloc 可能重用 top-k buffer，不 snapshot 會 use-after-clobber。</li>
+    <li><b>邊界用 argsort 不用 top-k VIEW</b>：view 無依賴、可能排前 → 舊 bug（見 §4.1 紅框）。</li>
+    <li><b>drain_layer</b>：丟棄該層未開始的 queued fill 並等 in-flight 完成 —— Metal region copy 是全 region 的，in-flight 填寫會撕裂。</li>
+    <li><b>prefetch 只用 free slot</b>：free 用盡才逐該層 global LRU（當前步 union 剛 bump 過，LRU 必非 union → 誤逐出不會把當前命中變 miss）。</li>
+    <li><b>大 prefill 批只記錄不 remap</b>：routing 頻率進 prewarm 的依據。</li>
+    <li><b>遙測分帳</b>：prewarm 另計（否則命中率低估 ~15pt：81.3% vs 96%）；decode/pool 與 gather 分開；MTP verify/draft cold 分開。</li>
+  </ul>
+</div>
+
+<!-- ============ §6 ============ -->
+<div class="card" id="s6">
+  <h2>§6 L4 Skip-Load：Metal 零拷貝池</h2>
+  <p class="desc">「skip-load」= 專家權重<b>不在模型載入時全量進 Metal</b>，只預留 capacity 大小的 pool region；池的 storage 就是 expert tensor 自己的 Metal buffer（收養而非另配）。FFN 直接讀 pool，無 host→Metal async copy、無 CPU FFN fallback。</p>
+
+  <h3>6.1 建立流程（loader 端）</h3>
+  <pre>觸發: -ngl &gt; 0 且 LLAMA_EXPERT_CACHE_ALLOW_NGL=1
+       （沒有這個 env，-ngl&gt;0 時 expert cache 整個不啟用 —— 顯式 override）
+
+capacity = 2 * clamp(budget/(n_layers*per_slot), 8, 256)
+  expert tensor 建在 Metal buft 上，ne[2] 縮到 capacity
+  （LLAMA_EXPERT_CACHE_LAYER_CAPS 可讓單層例外，loader 與
+   cache 兩側同讀一次 per process —— 兩側看到同一個容量）
+載入後 adopt_pool_region: tensor 自身的 Metal storage
+  收養為 pool region（非擁有）
+prepopulate: 每層前 n_slots 個 expert 標 resident
+  （table[e]=e，loader 預讀順序；last_use=0 = 滿時第一個被逐出；
+   只到 usable_slots —— ZERO slot 啟用時保留最後一個）
+  cold-start 量測: 122ms → 88ms</pre>
+
+  <h3>6.2 L4_SKIP_LAYER0（ blk.0 的特殊處理）</h3>
+  <div class="review">
+    <div class="label">為什麼 layer 0 必須排除</div>
+    blk.0 的專家 tensor 是<b>全量 CPU skip-load tensor</b>（不進 pool、沒有 adopted region）。若 hook 對它寫 slot id，<code>mul_mat_id</code> 會索引一個沒有 backing 的 pool slot → layer-0 垃圾污染整個網路。所以 <code>LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0=1</code> 讓 hook 對 il==0 寫<b>恆等 remap</b>（直接抄原始 expert id）並跳過 ensure_batch 與 union 記錄；prewarm_hot 同步跳過。<b>L4 路徑必設</b>，否則 pool 無 adopted region 直接炸。
+  </div>
+
+  <h3>6.3 L2 / L3A / L4 對照</h3>
+  <table>
+    <tr><th>層</th><th>路徑</th><th>FFN 讀取方式</th><th>選項</th></tr>
+    <tr><td>L2</td><td>gather（cache → 臨時 tensor）</td><td>per-step memcpy</td><td>預設（L3-B）</td></tr>
+    <tr><td>L3A</td><td>靜態 per-layer slot pool（malloc）</td><td>src0 指向 pool region，eval hook 只寫 remap（一次 int32 寫入）</td><td><code>LLAMA_EXPERT_CACHE_POOL=1</code></td></tr>
+    <tr><td class="hl">L4</td><td class="hl">Metal zero-copy</td><td class="hl">同上 + pool 在 Metal + 無 CPU fallback</td><td class="hl"><code>ALLOW_NGL</code>（L4 時 L3A 自動開）</td></tr>
+  </table>
+</div>
+
+<!-- ============ §7 ============ -->
+<div class="card" id="s7">
+  <h2>§7 MTP 投機解碼全解</h2>
+  <p class="desc">draft-mtp 模式：<b>同一個 target model 的 nextn block 當 draft</b>（解碼成本 ~1 層而非整個主幹），不需要獨立 draft model。這是 GGUF 裡帶 MTP head 的模型（如 Nail-Qwen3.6-MTP 載體）的原生投機解碼。</p>
+
+  <h3>7.1 編譯隔離（MTP_SUPPORT）</h3>
+  <div class="diagram">Mac 兩段式（bit-identity 根基）:
+  build_fork_llama.sh  -DMTP_SUPPORT → 編進 libllama-common
+                        （staging API: release_context 等）
+  build_prod_binary.sh:
+    llama-simple              不帶 define → 0 個 MTP 符號
+    llama-speculative-simple  帶 define   → MTP 路徑編入
+
+Windows 例外: CMakeLists WIN32 區塊全域定義
+  （bcc22133f 的 MinGW 修復；MTP code 原本在 #ifdef 後從未編過）
+所有 MTP 特有代碼包在 #ifdef MTP_SUPPORT 內</div>
+
+  <h3>7.2 執行流程</h3>
+  <pre>init:  common_speculative_init_from_params
+         對同一 model 建第二個 context（ctx_type=MTP、
+         cparams.ctx_other=ctx_tgt 共享 KV）
+         spec_init-&gt;release_context() 移交所有權（borrow+reset
+         會 double-free，ASan 確認）
+       ctx_tgt: llama_set_embeddings_nextn(true, /*masked*/false)
+       ctx_dft: llama_set_embeddings_nextn(true, /*masked*/true)
+         （masked 只對 batch.logits!=0 的 token 輸出）
+       多 head: chain_heads，n_max clamp 到 n_mtp_layers
+
+prefill: chunked（n_batch 切塊 decode ctx_tgt —— 讓每個 ubatch
+         走 L4 pool 路徑），每塊後 process() 捕獲 hidden states
+
+draft:  pending_h（上次 process 捕獲的最後一列 h_nextn）
+         作為 batch.embd 餵 ctx_dft
+         每步 llama_decode(ctx_dft) → top_k=10 greedy
+         p &lt; p_min 則停；chained heads 每步 seq_rm draft 區
+         + llama_set_nextn_layer_offset(ctx_dft, i) 換 head
+
+verify: [id_last, draft0..draftN-1] 一次 llama_decode(ctx_tgt)
+         （共享 KV：MTP 不需 ctx_dft 重解 —— driver 的 process()
+          已在 target decode 期間捕獲 verify hidden states）
+
+accept: common_sampler_sample_and_accept_n
+         從 target 分佈逐列取樣，接受與 sampler 一致的 draft 前綴
+         至少回 1 token；部分接受且 use_ckpt_tgt 時 restore
+         checkpoint、已接受 token 當下一輪 partial draft 重送
+         全接受 → common_speculative_accept 提交
+
+--spec-draft-n-max N → verify batch = N+1 tokens
+  對應 CGC_POOL_MAX_TOKENS（預設 8 → 涵蓋 N≤7）</pre>
+
+  <h3>7.3 Staging API（src/llama-ext.h）</h3>
+  <table>
+    <tr><th>API</th><th>用途</th></tr>
+    <tr><td><code>llama_set_embeddings_nextn(ctx, v, masked)</code></td><td>控制輸出 nextn（pre-norm）embeddings；tgt 全 token / dft 只 logits 標記的</td></tr>
+    <tr><td><code>llama_get_embeddings_nextn(_ith)</code></td><td>安全逐列讀取（_ith 有越界防護 —— MTP 修復點）</td></tr>
+    <tr><td><code>llama_set_embeddings_layer_inp(_ith)</code></td><td>per-layer 輸入抽取（CGC_LAYER_BIN 載體，bit-bisect 用）</td></tr>
+    <tr><td><code>llama_set_nextn_layer_offset(ctx, off)</code></td><td>選擇第幾個 NextN head（il = n_layer + off，多 head chaining）</td></tr>
+  </table>
+
+  <h3>7.4 verify / draft fast path（CGC_VERIFY_DECODE / CGC_DRAFT_DECODE）</h3>
+  <div class="diagram">觸發:
+  verify_fast = CGC_VERIFY_DECODE &amp;&amp; ctx=DEFAULT +
+                embeddings_nextn + multi-token + seqmax&gt;n_tokens-1
+  draft_fast  = CGC_DRAFT_DECODE &amp;&amp; ctx=MTP + 1-token
+  （n_past==0 的極短 prefill 仍走精確路徑；
+   MTP catch-up 與所有非 MTP 執行 → 精確 ensure_batch）
+
+行為（跳過阻塞 ensure）:
+  (1) zero_reserved_slot: 每層一次性把最後 slot 的 pool region
+      全 kind 清零（zero_slot_done 防重入）
+  (2) touch: 只 bump resident 專家的 LRU + fast-path 遙測
+      （n_fast_cold = 真實穩態 decode miss 率 —— ensure 路徑
+       的計數不含 fast path，不量會誤判）
+  (3) remap 用 slot_table_safe:
+      resident → slot idx；cold → ZERO slot（slots_l-1）
+
+品質代價 = 該步該專家零貢獻（影響 accept rate）
+量測（steady MTP denseIQ4XS seed1）: cold ~65% 全階段穩定
+  → 結構性 churn（per-layer working set &gt;&gt; slots），
+    不是 prewarm 能修的冷啟動集中 —— 有數據的取捨</div>
+  <p class="note"><b>不設這兩個 env</b>時 verify/draft 走精確 ensure_batch = 位元組等同 base。要 bit-identical 驗收的 run 通常不開 fast path；生產要速度才開（並用遙測盯 cold 率）。</p>
+</div>
+
+<!-- ============ §8 ============ -->
+<div class="card" id="s8">
+  <h2>§8 環境變數完整手冊</h2>
+  <p class="desc">repo 內 90 處 <code>getenv</code> 的完整盤點。分六類：核心功能 / 效能 / 品質與位元一致 / 穩定性 / 除錯與量測 / 無效旋鈕。「預設」欄 = <b>不設時的行為</b>。</p>
+
+  <h3>8.1 核心功能（expert cache 開關與結構）</h3>
+  <table>
+    <tr><th>變數</th><th>讀取</th><th>作用</th><th>預設</th><th>生產</th></tr>
+    <tr><td><code>CGC_EXPERT_CACHE_BYTES</code></td><td>bytes</td><td>expert cache 預算（simple.cpp：旗標未給時的唯一開關）</td><td>0 = 全關</td><td class="hl">4294967296（4GiB）</td></tr>
+    <tr><td><code>LLAMA_EXPERT_CACHE_ALLOW_NGL</code></td><td>存在即啟</td><td><b>-ngl&gt;0 時允許專家留 CPU / 走 L4</b>（沒有它 -ngl&gt;0 整個 cache 不啟用）</td><td>-ngl&gt;0 → cache off</td><td class="hl">1</td></tr>
+    <tr><td><code>LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0</code></td><td>存在即啟</td><td>blk.0 恆等 remap、跳過 pool（否則 OOB 炸）</td><td>off（L4 會炸）</td><td class="hl">1</td></tr>
+    <tr><td><code>LLAMA_EXPERT_CACHE_LAYER_CAPS</code></td><td>"40-40:256;0-3:256,4-39:180"</td><td>每層 slot 容量（loader+cache 兩側同讀）</td><td>統一 n_slots</td><td>依 ROUTE_DUMP</td></tr>
+    <tr><td><code>LLAMA_EXPERT_CACHE_POOL</code></td><td>'1'</td><td>L3A 靜態 pool（malloc 路徑）</td><td>L3-B gather</td><td>L3 用 1；L4 自動</td></tr>
+    <tr><td><code>LLAMA_EXPERT_CACHE_NOGATHER</code></td><td>非空</td><td>關閉 hook+gather+skip-load</td><td>啟用</td><td>不設</td></tr>
+    <tr><td><code>LLAMA_EXPERT_CACHE_WORKERS</code></td><td>int [1,64]</td><td>持久 pread worker 數（USER_INITIATED QoS）</td><td>8</td><td>8</td></tr>
+    <tr><td><code>CGC_POOL_MAX_TOKENS</code></td><td>int [2,16]</td><td>pool 路徑最大 batch tokens（verify=N+1；大於走 prefill 全量）</td><td>8</td><td>覆蓋 n_max≤7</td></tr>
+  </table>
+
+  <h3>8.2 替換與 prefetch 策略</h3>
+  <table>
+    <tr><th>變數</th><th>讀取</th><th>作用</th><th>預設</th><th>生產</th></tr>
+    <tr><td><code>LLAMA_EXPERT_CACHE_WIN_PIN</code></td><td>K</td><td>最近 K 個 batch union 標 pin（免 LRU 逐出）</td><td>0 = 純 LRU</td><td>4-8</td></tr>
+    <tr><td><code>LLAMA_EXPERT_CACHE_PIN_PROFILE</code></td><td>檔案</td><td>靜態 pin 清單（per-layer top-N，永不解 pin）</td><td>off</td><td>離線產出後用</td></tr>
+    <tr><td><code>CGC_PREFETCH_SRC</code></td><td>step/prev/hist</td><td>背景 prefetch 來源（hist=滾動視窗 union，註解 recommended）</td><td class="warn">step（近無效）</td><td class="hl">hist</td></tr>
+    <tr><td><code>CGC_PREFETCH_WINDOW</code></td><td>int [1,16]</td><td>hist 視窗大小</td><td>4</td><td>4</td></tr>
+    <tr><td><code>CGC_NO_PREFETCH</code></td><td>存在即停</td><td>整個背景 prefetch 關閉。<b>MTP verify 安全性</b>：bg thread 在 GPU mid-verify 填/逐出會覆寫仍在讀的 slot</td><td>啟用</td><td class="hl">MTP 流程 1</td></tr>
+    <tr><td><code>CGC_NO_PREWARM</code></td><td>存在即停</td><td>第一個 decode step 前的 hot prewarm（prefill 路由 top-K 填池）</td><td>啟用</td><td>不設</td></tr>
+    <tr><td><code>LLAMA_EXPERT_CACHE_ROUTE_RECORD</code></td><td>存在即啟</td><td>所有 pool-path step 記錄路由頻率（餵 ROUTE_DUMP/PIN_PROFILE）</td><td>僅大 prefill 批</td><td>產 profile 時 1</td></tr>
+    <tr><td><code>LLAMA_EXPERT_CACHE_ROUTE_DUMP</code></td><td>檔案</td><td>結束時 dump top-K 清單 + coverage 判定（重尾 = placement 槓桿）</td><td>off</td><td>離線分析</td></tr>
+  </table>
+
+  <h3>8.3 MTP 與 fast path</h3>
+  <table>
+    <tr><th>變數</th><th>讀取</th><th>作用</th><th>預設</th><th>生產</th></tr>
+    <tr><td><code>CGC_VERIFY_DECODE</code></td><td>存在即啟</td><td>verify 批走 fast path（touch + ZERO slot）</td><td>off = 精確 ensure</td><td>速度優先 1</td></tr>
+    <tr><td><code>CGC_DRAFT_DECODE</code></td><td>存在即啟</td><td>draft（1-token）走 fast path</td><td>off</td><td>速度優先 1</td></tr>
+    <tr><td><code>CGC_MTP_NO_WARMUP</code></td><td>存在即啟</td><td>跳過手動 warmup（防 cache 污染；bit-identical 必設）</td><td>執行 warmup</td><td class="hl">1</td></tr>
+    <tr><td><code>CGC_NO_SEQ_RM_PROBE</code></td><td>存在即啟</td><td>跳過 can_seq_rm 探測 decode（防 cache 污染）</td><td>執行 probe</td><td class="hl">1</td></tr>
+  </table>
+
+  <h3>8.4 效能（Metal kernel / dispatch）</h3>
+  <table>
+    <tr><th>變數</th><th>讀取</th><th>作用</th><th>預設</th><th>生產</th></tr>
+    <tr><td><code>CGC_MMV_FUSE</code></td><td>'1'</td><td>fused gate+up+swiglu GEMV（含 v10 overlap guard，位元組等同）</td><td>off</td><td class="hl">1（IQ3_XXS/IQ2_S）</td></tr>
+    <tr><td><code>CGC_OA_ASYNC</code></td><td>存在即啟（split 非 CPU）</td><td>分段非同步 dispatch（argsort 為界、管線化提交+hook）</td><td>off = 同步 callback</td><td class="hl">1（hook pipeline 必要）</td></tr>
+    <tr><td><code>CGC_N_CB</code></td><td>int</td><td>覆寫 Metal command buffer 數（降低提交 overhead）</td><td>production profile = max(1,n_parallel)</td><td>不設</td></tr>
+    <tr><td><code>CGC_MMV_NR0</code></td><td>"8"</td><td>per-expert GEMV 的 nr0（僅 IQ2_S/IQ3_XXS 可覆寫）</td><td>per-type 常數</td><td>調校用</td></tr>
+    <tr><td><code>CGC_MMV_NSG</code></td><td>int [1,32]</td><td>runtime nsg（Metal function constant）。每列 dot 在單一 simdgroup 內完成 → 不改歸約順序（保 bit-identity）</td><td>per-type 常數</td><td>調校用</td></tr>
+    <tr><td><code>CGC_GLU_FUSED_DOWN</code></td><td>存在即啟</td><td>IQ3_XXS pipeline smem +2048B。<b>附註：host dispatch 固定 ne02d=0，down 融合未接線，目前只影響 smem 尺寸</b></td><td>標準 smem</td><td>無實效（§10）</td></tr>
+    <tr><td><code>CGC_WAKE_POLL_US</code></td><td>int &gt;0</td><td>cmd buf spin-wait 預算。<b>量測為淨損失（§8.51），保留診斷用</b>；production script 有設</td><td>0 = 阻塞等待</td><td>不設</td></tr>
+  </table>
+
+  <h3>8.5 品質與位元一致</h3>
+  <table>
+    <tr><th>變數</th><th>讀取</th><th>作用</th><th>預設</th><th>生產</th></tr>
+    <tr><td><code>CGC_MM_BITIDENT</code></td><td>'1'</td><td>M≤8 全走 mul_mv（M-invariant per-row 歸約）—— bit-identical 支柱一</td><td>off</td><td class="hl">品質優先 1</td></tr>
+    <tr><td><code>CGC_SIMP_TAIL_SPLIT</code></td><td>存在即啟</td><td>chunked prefill 尾 chunk 拆 M-1 + M=1（鏡像 spec 的 batch 形狀，bit-bisect 用）</td><td>off</td><td>對照 run 用</td></tr>
+    <tr><td><code>LLAMA_EXPERT_CACHE_DISABLE_WRITE</code></td><td>存在即啟</td><td>hook 保持結構但不寫 remap（診斷）</td><td>正常寫入</td><td>不設</td></tr>
+  </table>
+
+  <h3>8.6 穩定性</h3>
+  <table>
+    <tr><th>變數</th><th>讀取</th><th>作用</th><th>預設</th><th>生產</th></tr>
+    <tr><td><code>CGC_WATCHDOG</code></td><td>非 0</td><td>Metal 死鎖 watchdog（偵測+probe+60s 止損）</td><td>off</td><td>長跑 1</td></tr>
+    <tr><td><code>CGC_WATCHDOG_MS</code></td><td>int</td><td>stall 判定閾值</td><td>10000</td><td>視負載</td></tr>
+    <tr><td><code>CGC_WATCHDOG_CAPTURE</code></td><td>存在即啟</td><td>wedge 後 ioreg/memory_pressure/sample 存 /tmp</td><td>off</td><td>除錯</td></tr>
+    <tr><td><code>CGC_DRAIN_EVERY</code></td><td>int K</td><td>每 K 個 graph_compute 全佇列 drain（代價 2-5ms bubble/K）</td><td>0 = off</td><td>間歇 wedge 時 8</td></tr>
+  </table>
+
+  <h3>8.7 除錯與量測（預設全關，不影響生產）</h3>
+  <table>
+    <tr><th>變數</th><th>輸出</th><th>用途</th></tr>
+    <tr><td><code>CGC-IDS</code>（自動，<code>CGC_IDS_MAX_LINES</code> 限 4000）</td><td>stderr：ctx/pmax/il/ntok + 全部 ids</td><td>跨路徑專家選擇比較（n_tokens≤8 時 hook 內 dump）</td></tr>
+    <tr><td><code>CGC_DECODE_TRACE</code></td><td>CGC-DEC 行</td><td>抓隱藏 decode（2-token warmup 就是它抓到的）</td></tr>
+    <tr><td><code>CGC_TENSOR_DUMP</code>（+<code>CGC_TD_PMAX</code>）</td><td>/tmp/cgc_td_*.f32（post-compute）</td><td>graph 終值比對（F32 節點、pmax 過濾）</td></tr>
+    <tr><td><code>CGC_TD_CB</code>（+<code>CGC_TD_CB_UB</code>）</td><td>/tmp/cgc_tdcb_*.f32（in-compute）</td><td>分段 dispatcher 在 seg 邊界轉發節點值（比 TENSOR_DUMP 新鮮；FA 模式 dump Q/K/V；F16 無損轉 F32）</td></tr>
+    <tr><td><code>CGC_LAYER_BIN</code></td><td>/tmp/cgc_&lt;tag&gt;_l&lt;il&gt;.f32</td><td>per-layer 輸入（simp/spec 兩側對稱；tag: simp/specp/pc*/spec…）</td></tr>
+    <tr><td><code>CGC_LOGIT_DBG / CGC_LOGIT_BIN</code></td><td>top-2 hex float / /tmp 完整 row</td><td>ULP 級 logit 比對</td></tr>
+    <tr><td><code>CGC_MM_DBG</code></td><td>MMDBG</td><td>每個 mul_mat 走哪個 kernel family</td></tr>
+    <tr><td><code>CGC_MMV_FUSE_DBG</code></td><td>=2 每次 dispatch log；=3 無限+data range</td><td>融合決策比對 / galloc overlap 抓取</td></tr>
+    <tr><td><code>CGC_MTP_DBG</code></td><td>MTPDBG</td><td>MTP 全流程狀態行</td></tr>
+    <tr><td><code>CGC_PHASE_TIMING / CGC_STEP_TIMING / CGC_SAMPLER_DBG</code></td><td>階段/逐步/sampler 計時</td><td>延遲分解</td></tr>
+    <tr><td><code>CGC_GRPH_DBG / CGC_SUBMIT_DBG / CGC_TAIL_DBG / CGC_METAL_DBG</code></td><td>segment/提交/尾段/sync</td><td>管線觀測</td></tr>
+    <tr><td><code>LLAMA_EXPERT_CACHE_*_DBG / MISS_DUMP / BATCH_DBG / PREAD_DBG / PREFETCH_DBG / PREPOP_DBG / GATE_DBG / STEP_DBG</code></td><td>各 PFDBG/BATCHDBG…</td><td>cache 細部觀測</td></tr>
+    <tr><td><code>CGC_SUBMIT_AHEAD / CGC_TOPK_BOUNDARY</code></td><td>—</td><td class="warn"><b>bug 重現器</b>（§4.1 紅框），生產禁用</td></tr>
+  </table>
+</div>
+
+<!-- ============ §9 ============ -->
+<div class="card" id="s9">
+  <h2>§9 生產配置食譜</h2>
+
+  <h4>食譜 A：L4 Metal pool 基本盤（非 MTP 生產）</h4>
+  <pre>CGC_EXPERT_CACHE_BYTES=4294967296 \
+LLAMA_EXPERT_CACHE_ALLOW_NGL=1 \
+LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0=1 \
+LLAMA_EXPERT_CACHE_WORKERS=8 \
+CGC_OA_ASYNC=1 CGC_N_CB=8 \
+CGC_PREFETCH_SRC=hist CGC_PREFETCH_WINDOW=4 \
+CGC_MMV_FUSE=1 \
+CGC_WATCHDOG=1
+# + LLAMA_EXPERT_CACHE_LAYER_CAPS 依 ROUTE_DUMP 的重尾分配
+# + LLAMA_EXPERT_CACHE_WIN_PIN=4~8（REPEAT miss 多時）</pre>
+
+  <h4>食譜 B：MTP 投機生產（速度優先）</h4>
+  <pre>食譜 A 的全部 +
+CGC_VERIFY_DECODE=1 CGC_DRAFT_DECODE=1 \
+CGC_NO_PREFETCH=1          # verify 期間 bg thread 安全
+# 盯 fast-path cold 遙測；--spec-draft-n-max 2 -c 3072 --temp 0</pre>
+
+  <h4>食譜 C：bit-identical 驗收（品質證明）</h4>
+  <pre>食譜 A 的全部 +
+CGC_MM_BITIDENT=1 \
+CGC_MTP_NO_WARMUP=1 CGC_NO_SEQ_RM_PROBE=1 \
+CGC_SIMP_TAIL_SPLIT=1（simple 側）
+# 不開 VERIFY/DRAFT fast path（走精確 ensure = 位元組等同 base）
+# 判定：simp 16-token == spec 前綴；accept 12/12；IDS 0 差異</pre>
+
+  <h4>低記憶體機器（RAM &lt; 模型大小，如 Windows 8GB + 14GB 模型）</h4>
+  <table>
+    <tr><th>設定</th><th>實測</th><th>結論</th></tr>
+    <tr><td>MTP + cache OFF</td><td class="good">0.521 t/s，accept 50%</td><td rowspan="2"><b>cache 是大記憶體機器的功能</b>；RAM&lt;model 時純 I/O 開銷（MTP+cache ON 反而 0.295 t/s、accept 0%）</td></tr>
+    <tr><td>無 MTP baseline</td><td>0.470 t/s</td></tr>
+  </table>
+</div>
+
+<!-- ============ §10 ============ -->
+<div class="card" id="s10">
+  <h2>§10 已知陷阱與結論</h2>
+
+  <h3>10.1 無效／未接線旋鈕（誠實清單）</h3>
+  <table>
+    <tr><th>旋鈕</th><th>現況</th><th>證據</th></tr>
+    <tr><td class="warn"><code>CGC_EVICTED_RING</code></td><td>無效</td><td><code>evicted_recent</code> 只有 init resize 與讀取端（llama-context.cpp:1578），<b>全 repo 無 push_back 寫入端</b> → ring 永遠空，re-prefetch 迴圈是死碼。設 0 或 16 行為相同（bit-identical 驗證組曾設 0）</td></tr>
+    <tr><td class="warn"><code>CGC_GLU_FUSED_DOWN</code></td><td>半接線</td><td>device.cpp 只加大 pipeline smem；ops.cpp 的 fused dispatch 固定 <code>ne02d=0</code>（註解「0 disables fused-down」）→ .metal 的 fused-down 變體存在但 host 從未啟用</td></tr>
+    <tr><td><code>LLAMA_EXPERT_CACHE_TAILPIN / PREWARM_HOT / BATCH</code></td><td>只剩註解</td><td>runtime 無讀取（被 WIN_PIN、<code>CGC_NO_PREWARM</code> 反向開關、預設 worker pool 取代）</td></tr>
+  </table>
+
+  <h3>10.2 三條鐵律</h3>
+  <div class="review">
+    <div class="label">繼承自血淚教訓</div>
+    (1) <b>BLAS / ACCELERATE / CPU_REPACK 永遠 OFF</b> —— IQ3 系列亂碼是數值問題不是平台問題，三平台一體適用。<br>
+    (2) <b>bit-identical 的三支柱缺一不可</b> —— MM_BITIDENT（kernel M-invariance）、MTP_NO_WARMUP + NO_SEQ_RM_PROBE（cache 污染）、guard（無選項自動生效）。驗收失敗時按三平台白皮書 §8.2 排查表走。<br>
+    (3) <b>所有 DBG/DUMP env 都是除錯用</b> —— 存在即生效、影響效能，生產 env 不該出現任何 <code>*_DBG</code> / <code>*_DUMP</code> / <code>*_TRACE</code>。
+  </div>
+
+  <h3>10.3 結論</h3>
+  <p class="note">本 fork 的價值主張可壓縮成一句：<b>「動態載入的 MoE 推理，做到了 upstream 直接讀檔的位元組等同 + MTP 與非 MTP 的位元級一致，同時保留融合與管線化的效能」</b>。五大訴求各有明確機制與選項（§1 表），90 個 env 的每一個都知道自己為什麼存在（§8），無效旋鈕誠實標註（§10.1）。三份白皮書構成完整文件鏈：本書講<b>機制</b>、<code>CGC_MTP_Bit-Identical_技術白皮書</code> 講<b>修復過程與證據</b>、<code>CGC_三平台開發_技術白皮書</code> 講<b>落地與夥伴交付</b>。</p>
+</div>
+
+</div>
+</body>
+</html>
