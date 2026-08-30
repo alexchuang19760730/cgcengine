@@ -70,8 +70,10 @@ def stream_resume(url, prompt, max_tokens, seed=None):
                 text.append(obj.get("t", ""))
             elif ev == "summary":
                 summary = obj
-    # stdout = prompt 回顯 + 生成；把回顯剝掉（client 知道 prompt 內容）
-    full = "".join(text)
+    # stdout = prompt 回顯 + 生成；把回顯剝掉（client 知道 prompt 內容）。
+    # 2026-08-29 修正：tool 在回顯前印 '\n\n'、（server 修前）log 行會墊在前頭 →
+    # startswith 直接失敗 → gen 帶著回顯被誤判。先剝前置換行再比對。
+    full = "".join(text).lstrip("\n")
     gen = full[len(prompt):] if full.startswith(prompt[:32]) else full
     return gen, summary, time.time() - t0
 
@@ -105,7 +107,11 @@ def main():
         n = fetch_node(url, "solo")
         print(f"[solo] profile: {n.profile.__dict__}")
         gen, summ, wall = stream_resume(url, args.prompt, args.max_tokens, args.seed)
-        print(f"[solo] gen ({args.max_tokens} tok, wall {wall:.1f}s): {gen[:120]!r}")
+        # 2026-08-29 修正：只印 gen[:120] 曾把「串流丟失」假警報餵給診斷（實際文本完整）。
+        # 改印總長 + 頭尾各 100 字元。
+        print(f"[solo] gen ({args.max_tokens} tok, wall {wall:.1f}s, {len(gen)} chars):")
+        print(f"  head: {gen[:100]!r}")
+        print(f"  tail: {gen[-100:]!r}")
         print(f"[solo] binary perf: {summ}")
         return 0 if summ and summ.get("rc") == 0 else 1
 
@@ -132,7 +138,7 @@ def main():
     chosen_url = args.local if d.decode_node == local_n else args.remote
     print(f"\n[exec] decode_node={d.decode_node.node_id} → {chosen_url}")
     gen, summ, wall = stream_resume(chosen_url, args.prompt, args.max_tokens, args.seed)
-    print(f"[exec] gen: {gen[:120]!r}")
+    print(f"[exec] gen ({len(gen)} chars): head={gen[:80]!r} tail={gen[-80:]!r}")
     print(f"[exec] wall {wall:.1f}s  binary perf: "
           f"decode_tps={summ.get('decode_tps')} rc={summ.get('rc')}")
     print(f"[exec] Router 估 decode {d.decode_latency_ms:.0f}ms vs 實測 {wall*1000:.0f}ms"
@@ -142,7 +148,7 @@ def main():
         other = args.remote if chosen_url == args.local else args.local
         print(f"\n[A/B] other node {other}")
         gen2, summ2, wall2 = stream_resume(other, args.prompt, args.max_tokens, args.seed)
-        print(f"[A/B] gen: {gen2[:120]!r}")
+        print(f"[A/B] gen ({len(gen2)} chars): head={gen2[:80]!r} tail={gen2[-80:]!r}")
         print(f"[A/B] wall {wall2:.1f}s  decode_tps={summ2.get('decode_tps')}")
         win = "chosen" if wall <= wall2 else "other"
         print(f"[A/B] verdict: {win} wins ({wall:.1f}s vs {wall2:.1f}s)")

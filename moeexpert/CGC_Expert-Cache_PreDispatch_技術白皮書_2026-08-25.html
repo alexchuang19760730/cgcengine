@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CGC Expert-Cache Route B (pin-CPU topk) 修復技術白皮書 2026-08-25</title>
+<style>
+  :root {
+    --bg: #0f1420; --card: #171e2e; --ink: #e8ecf4; --sub: #9aa5b8;
+    --line: #2a3350;
+    --wr: #f0a45c; --small: #e86a6a; --ssm: #d98cf0; --sdpa: #7fb8f0; --bubble: #6b7aa8;
+    --cpu-o: #8a97ad; --tail: #e3cf8f;
+    --accent: #ffd479; --good: #8fe3a0; --warn: #f08a8a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; padding: 32px 20px 60px; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--sub); font-size: 14px; margin-bottom: 28px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px 24px; margin-bottom: 22px; }
+  .card .desc { color: var(--sub); font-size: 13px; margin: 0 0 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--sub); font-weight: 600; font-size: 12px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .hl { color: var(--accent); font-weight: 700; }
+  .good { color: var(--good); font-weight: 700; }
+  .warn { color: var(--warn); font-weight: 700; }
+  .note { font-size: 12.5px; color: var(--sub); margin-top: 12px; line-height: 1.6; }
+  .note b { color: var(--ink); }
+  .review { background: #1a2030; border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; padding: 14px 16px; margin: 12px 0; font-size: 13px; line-height: 1.6; }
+  .review .label { color: var(--accent); font-weight: 700; font-size: 12px; text-transform: uppercase; margin-bottom: 6px; }
+  code { background: #0c1019; border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; color: #7fb8f0; }
+  pre { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; color: #7fb8f0; overflow-x: auto; line-height: 1.5; margin: 12px 0; }
+  .diagram { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 16px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; line-height: 1.6; margin: 12px 0; white-space: pre; overflow-x: auto; }
+  .step-box { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin: 12px 0; font-size: 13px; line-height: 1.6; }
+  .step-box .step-num { color: var(--accent); font-weight: 700; font-size: 14px; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; margin-left: 6px; }
+  .tag.g { background: #1c3a24; color: #8fe3a0; }
+  .tag.r { background: #3a1c1c; color: #f08a8a; }
+  .tag.y { background: #3a321c; color: #e3cf8f; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>CGC Expert-Cache Route B (pin-CPU topk) 修復技術白皮書</h1>
+<div class="sub">llama.cpp fork · M4 Max 16GB · 2026-08-25 · qwen36 IQ3_XXS -ngl 99 + cache 4GiB · commit b23fb51</div>
+
+<!-- ============ §1 Executive Summary ============ -->
+<div class="card">
+  <h2>§1 摘要：決策與預期</h2>
+  <p class="desc">b23fb51 的 ngl 99 + expert-cache 產生 garbage（"!!!..."）。本白皮書決策：<b>路線 B — 恢復 pin-CPU topk 鏈</b>，讓 routing 與 hook 在 CPU split 上以有效數據執行，Metal 只算 FFN。結構上消除 remap race，同時移除 segmented dispatch 的 submit-ahead 開銷。</p>
+
+  <table>
+    <tr><th>指標</th><th>b23fb51（實測 2026-08-25）</th><th>修復後（路線 B 預期）</th></tr>
+    <tr><td>輸出品質</td><td class="warn">❌ Garbage（"!!!..."）</td><td class="good">✅ Correct（bit-identical to base）</td></tr>
+    <tr><td>Decode speed</td><td class="hl">21.48 t/s（production 配置實測）</td><td class="hl">~23–25 t/s（詳見 §6）</td></tr>
+    <tr><td>Hit rate</td><td class="warn">62.4%（routing 已污染）</td><td>~95–99%（routing 正確後）</td></tr>
+    <tr><td>Dispatch 結構</td><td>segmented per-topk + sched callback 讀 GPU argsort</td><td>scheduler per-layer split + hook 在 CPU split</td></tr>
+    <tr><td>Callback 角色</td><td>remap 寫者（raced）</td><td>remap 寫者（CPU 端，無 race）</td></tr>
+  </table>
+
+  <p class="note"><b>決策依據</b>：b23fb51 把 pre-b23fb51 的「pin-CPU <code>ffn_moe_probs</code>」機制（run_n30cache.sh 引用的 llama-context.cpp:3489，§8.77/8.78）移除，改成「segmented Metal dispatch + sched callback 讀 GPU argsort」——這一改同時造成 garbage（remap race）與速度下滑。路線 B 是<b>恢復並修正</b>原始 production 設計，而非從零新寫。</p>
+</div>
+
+<!-- ============ §2 Root Cause（修正版） ============ -->
+<div class="card">
+  <h2>§2 根因分析（修正版）</h2>
+  <p class="desc">2026-08-25 以 production 配置（run_n30cache.sh，-n 64）實測 b23fb51：garbage 輸出、hit rate 62.4%、eval 2723ms/62 runs = 43.9ms/token = <b>21.48 t/s</b>、CGC-SEG wait 906µs / cb 3.0µs / submit 91.8µs、RSS 8.82GB。</p>
+
+  <h3>2.1 b23fb51 相對 production 的架構變化（關鍵）</h3>
+  <table>
+    <tr><th></th><th>pre-b23fb51（production，25–27 t/s）</th><th>b23fb51（實測 21.5 t/s + garbage）</th></tr>
+    <tr><td>routing 計算位置</td><td class="good">CPU split（<code>ffn_moe_probs</code> pin CPU）</td><td class="warn">Metal split（gate matmul + argsort 上 GPU）</td></tr>
+    <tr><td>hook 觸發</td><td class="good">CPU split，數據天生有效</td><td class="warn">Metal sched callback，讀 GPU argsort（race）</td></tr>
+    <tr><td>dispatch</td><td>CGC_OA_ASYNC（Metal split 純 async，無 per-layer sync）</td><td>segmented per-topk + submit-ahead + cgc_done 輪詢</td></tr>
+    <tr><td>remap 寫入時機</td><td>CPU split 完成 → 寫 remap → Metal FFN split 才執行</td><td class="warn">seg(i+1) 已 submit 後才寫 remap（可能太晚）</td></tr>
+  </table>
+
+  <h3>2.2 三個壞點</h3>
+  <table>
+    <tr><th>壞點</th><th>機制</th><th>證據</th></tr>
+    <tr>
+      <td><b>A. Remap race（decode 主因）</b></td>
+      <td>segmented dispatch 的 callback 在 seg(i+1) 已 submit 後才寫 remap_i，Metal 可能已用舊 remap 跑完 FFN_i（ggml-backend.cpp 迴圈：先 submit 後 callback，無同步）</td>
+      <td>callback 3.0µs vs submit 91.8µs——callback 太晚</td>
+    </tr>
+    <tr>
+      <td><b>B. cgc_done 提前滿足 → 讀未完成 argsort</b></td>
+      <td>cgc_done 只掛 main command buffer（ggml-metal-context.m），<code>target=done0+i+1</code> 可能在 segment 非同步尾 buffer 未完成時就滿足</td>
+      <td>SEGDBG vs CBD 對同一 topk 讀值不同；prefill il=2+ identity</td>
+    </tr>
+    <tr>
+      <td><b>C. Prefill 不載入 pool</b></td>
+      <td>callback 在 n_tokens&gt;1 只 record_routes；且 prefill 也走 segmented dispatch，il=2+ 讀到 stale argsort</td>
+      <td>prefill il=2+ 路由 identity（<code>[8j..8j+7]</code>）</td>
+    </tr>
+  </table>
+
+  <div class="review">
+    <div class="label">白皮書 v1（08-24）修正紀錄</div>
+    <p><b>R1 — 根因模型錯一半</b>：v1 說 garbage 從 first decode（pool 空）開始；但實測 <b>prefill il=2+ 已 identity</b>，且 sequential（每段 synchronize）路徑也復現 → 不是「pool 空」單一原因，是 segmented dispatch 的時序/讀取問題。</p>
+    <p><b>R2 — "gate 被 repoint" 假設錯誤</b>：v1 把 NaN 歸因於 gate_inp aliasing。實測 routing gate（<code>gate_inp</code>）不在 <code>cache_ffn_tensors</code>、不會被 repoint（llama-context.cpp 只 capture ffn_moe_gate/up/down/gate_up）。真正壞點是 callback 時序，不是 gate repoint。</p>
+    <p><b>M2 — 刪除 clamp 建議</b>：v1 的 §4.3「clamp expert ID」會選到錯誤 expert；正確 fallback（union&gt;slots 走 L3-B gather）已存在。</p>
+    <p><b>M3 — Phase 1 過度設計</b>：v1 的 per-layer two-phase 手動分段是繞路；路線 B 由 scheduler 的 backend 指派<b>自然產生</b>相同的 per-layer 交錯結構。</p>
+  </div>
+</div>
+
+<!-- ============ §3 Solution：Route B ============ -->
+<div class="card">
+  <h2>§3 方案：路線 B — pin-CPU topk 鏈</h2>
+  <p class="desc">核心原則：任何消費 remap/pool 的 split，執行前 remap 與 pool 已就緒。把 routing 鏈 pin 到 CPU split，hook 在 CPU 端以有效數據寫 remap；scheduler 的 split 順序保證 Metal FFN split 在 remap 寫入後才執行。<b>不需要手動分段、不需要 event gate、不需要禁 fused-down。</b></p>
+
+  <h3>3.1 架構對照</h3>
+
+  <div class="diagram">═══ b23fb51（壞）：segmented Metal dispatch ═══
+
+  Metal: seg[i] = [.. FFN(i-1) .. gate_i .. argsort_i .. topk_i]
+                └─ callback 讀 GPU argsort ─→ 寫 remap_i（太晚，seg(i+1) 已 submit）
+  Metal: seg[i+1] = [FFN_i(讀 remap_i，可能是舊值) .. gate_{i+1} .. topk_{i+1}]
+  → race → garbage
+
+═══ 路線 B（修）：pin-CPU routing + scheduler per-layer split ═══
+
+  Metal split: [layer_i attn → hidden_i]        (async)
+       │  Metal→CPU copy hidden_i（~16KB，unified memory）
+       ▼
+  CPU split : [gate_i → probs_i → argsort_i → topk_i → weights_i]
+       │  hook 在 CPU split 完成時觸發（數據有效）：
+       │     read topk ids → ensure pool → write remap_i
+       ▼
+  Metal split: [FFN_i = mul_mat_id(pool, hidden_i, remap_i) → 加權 → 輸出_i]
+       │
+       ▼（下一層重複）
+  scheduler 保證：CPU split 完成（remap 已寫）→ Metal FFN split 才執行
+  → 無 race，remap 永遠新鮮</div>
+
+  <h3>3.2 為什麼結構上無 race</h3>
+  <p>ggml_backend_sched 依圖拓撲順序執行 splits：<code>gate_i→topk_i</code>（CPU）在 <code>FFN_i</code>（Metal）之前；CPU backend compute 為同步，callback 在 split 完成後立刻觸發、寫 remap，之後才 submit Metal FFN split。FFN 的 <code>mul_mat_id</code> 讀 <code>remap_ids</code> leaf 時，remap 已被 CPU hook 寫好。<b>submit-ahead 的 race 窗口被 scheduler 的順序性消除</b>。</p>
+
+  <h3>3.3 實作要點</h3>
+  <div class="step-box">
+    <p><span class="step-num">要點 1</span> — pin routing 鏈到 CPU（llama-context.cpp <code>graph_get_cb</code>）</p>
+    <ul>
+      <li>對 <code>ffn_moe_probs</code>（softmax 輸出）呼叫 <code>ggml_backend_sched_set_tensor_backend(sched, cur, cpu_backend)</code>，反向傳播讓 gate matmul + argsort + topk 一起留在 CPU split。</li>
+      <li>回歸 b23fb51 之前的 pin 機制（run_n30cache.sh §8.77/8.78），但<b>只 pin routing 鏈</b>，不 pin FFN。</li>
+    </ul>
+    <p><span class="step-num">要點 2</span> — hook 觸發粒度</p>
+    <ul>
+      <li>CPU routing split 的最後節點可能是 <code>ffn_moe_weights</code>（非 topk）。hook 需改為：偵測 routing 鏈任一節點（topk/weights/probs）即觸發，並從該 split 的 topk ids 讀取（或由 callback 傳入 split 內 topk tensor）。</li>
+    </ul>
+    <p><span class="step-num">要點 3</span> — dispatch 改回純 async（移除 segmented per-topk）</p>
+    <ul>
+      <li>回歸 <code>CGC_OA_ASYNC</code> 的「Metal split 整體 async、無 per-layer callback」路徑（ggml-backend.cpp 保留無 topk 時的 async 分支即為此）。刪除 segmented 迴圈 / cgc_done 輪詢 / submit-ahead。</li>
+    </ul>
+    <p><span class="step-num">要點 4</span> — prefill 也載入 pool</p>
+    <ul>
+      <li>移除 n_tokens&gt;1 的 early return；prefill 結束時 pool 已 warm（§4.3），第一個 decode step 不空轉。</li>
+    </ul>
+    <p><span class="step-num">要點 5</span> — 保留既有修正</p>
+    <ul>
+      <li>il=0（L4_SKIP_LAYER0，無 pool region）remap 寫 identity（e→e），不 ensure/gather。</li>
+      <li>fused-down 保持啟用（GLU gate 屬 FFN，repoint 到 pool 是正確的；routing gate 不受影響）。</li>
+    </ul>
+  </div>
+
+  <h3>3.4 關鍵成本：Metal→CPU hidden copy</h3>
+  <p>routing gate 需要每層 attention 後的 hidden state。decode（1 token）時為 <code>[n_embd=4096]</code> = 16KB/層 × 40 層 = 640KB/step，unified memory 下每個 copy ~µs 級，非同步執行可與 GPU 尾段重疊。CPU gate matmul（4096×256）~10–30µs/層，同樣可被 GPU 前層 FFN 覆蓋。這是路線 B 的主要新增 CPU 負擔，量級遠小於 GPU 層時間（~900µs）。</p>
+</div>
+
+<!-- ============ §4 Design Decisions ============ -->
+<div class="card">
+  <h2>§4 設計決策（修正版）</h2>
+
+  <h3>4.1 Routing 來源</h3>
+  <table>
+    <tr><th>方案</th><th>結論</th><th>說明</th></tr>
+    <tr><td>CPU gate matmul（v1 提案）</td><td class="warn">❌ 不可行</td><td>IQ3_XXS 反量化太慢（~50ms/層）</td></tr>
+    <tr><td>讀 GPU argsort（b23fb51）</td><td class="warn">❌ race</td><td>segmented callback 時序問題；且 il=2+ 已污染</td></tr>
+    <tr><td class="good">CPU argsort from CPU probs（路線 B）</td><td class="good">✅ 採用</td><td>probs 在 CPU split 同步算出，argsort 讀取無 race；~10µs/層</td></tr>
+  </table>
+
+  <h3>4.2 GPU argsort 去留</h3>
+  <p class="note">v1 的「buffer aliasing、已實測不可靠」說法不成立——實測差異是 <b>async race（提前讀）</b>，非靜態 aliasing。路線 B 下 argsort 在 CPU 算，GPU 端 <code>ffn_moe_argsort/topk</code> 節點隨 routing 鏈一併移到 CPU，<b>不需 graph surgery</b>（scheduler 依 backend 自動切分），自然解決。</p>
+
+  <h3>4.3 Prefill pool loading</h3>
+  <p class="note">移除 n_tokens&gt;1 的 early return：prefill callback 也 ensure_batch + drain，pool 在 prefill 結束時已載入 routing 決定的 experts。prefill 只跑一次，不影響 decode throughput。</p>
+
+  <h3>4.4 Pool capacity vs n_experts</h3>
+  <p class="note"><b>不採用 clamp</b>（會選到錯誤 expert）。既有 fallback 已正確：<code>uni.size() &lt;= slots</code> 走 pool 路徑，否則走 L3-B gather 路徑。routing 修正後 hit rate 應回到 ~95–99%，union 超限機率低。</p>
+
+  <h3>4.5 Fused-down 相容性</h3>
+  <p class="note"><b>保持啟用</b>（CGC_GLU_FUSED_DOWN=1，+6.5%）。v1 的「gate 不能 repoint」混淆了兩個 gate：routing gate（<code>gate_inp</code>，不 repoint，probs 有效）與 GLU silu gate（fused gate_up 的一部分，repoint 到 pool 是 FFN 的本意）。路線 B 下兩者天然分離，不需禁 fused-down。</p>
+
+  <h3>4.6 同步手段</h3>
+  <p class="note">完全交給 scheduler 的 split 順序 + CPU 同步 compute。<b>不需要</b> event gate、cgc_done 輪詢、手動 submit-ahead。這也消除了 b23fb51 的 <code>done0+i+1</code> 脆弱的 cgc_done 算術。</p>
+</div>
+
+<!-- ============ §5 Implementation Plan ============ -->
+<div class="card">
+  <h2>§5 實作計畫</h2>
+
+  <h3>Phase 1：Correct（優先）</h3>
+  <div class="step-box">
+    <p><span class="step-num">Step 1</span> — Diagnostic（前置驗證，~30 min）</p>
+    <ul>
+      <li>production 配置下 dump prefill 的 layer 2 gate logits（NaN? ramp?）與 layer 1 FFN 輸出，確認 il=2+ 污染的實際來源。</li>
+      <li>確認 <code>gate_inp</code> 的 data pointer 未被 repoint（R2 驗證）。</li>
+    </ul>
+    <p><span class="step-num">Step 2</span> — pin-CPU routing（llama-context.cpp <code>graph_get_cb</code>）</p>
+    <ul>
+      <li>pin <code>ffn_moe_probs</code> 到 CPU backend（~15 行）。</li>
+      <li>hook 觸發改為「routing 鏈任一節點」並正確取得 topk ids（~20 行）。</li>
+    </ul>
+    <p><span class="step-num">Step 3</span> — dispatch 回歸純 async（ggml-backend.cpp）</p>
+    <ul>
+      <li>移除 segmented 迴圈 / cgc_done / submit-ahead，走既有「無 topk」async 分支（~30 行刪減）。</li>
+    </ul>
+    <p><span class="step-num">Step 4</span> — prefill pool loading（llama-context.cpp hook）</p>
+    <ul>
+      <li>移除 n_tokens&gt;1 的 early return，prefill 也 ensure_batch（~10 行）。</li>
+    </ul>
+    <p><span class="step-num">Step 5</span> — 驗證</p>
+    <ul>
+      <li>ngl 99 + cache：輸出 bit-identical 對齊 base（-ngl 30 或 ngl 99 no-cache 若可跑）。</li>
+      <li>速度：production 配置測量，目標 ~23–25 t/s。</li>
+    </ul>
+  </div>
+
+  <h3>Phase 2：Tuning（可選）</h3>
+  <div class="step-box">
+    <ul>
+      <li>Metal→CPU hidden copy 非同步化 / 與 GPU 尾段重疊。</li>
+      <li>CPU gate 多執行緒（-t 8）或 reuse 已計算的 probs（避免重複 softmax）。</li>
+      <li>hit rate 回歸驗證（預期 95–99%）。</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============ §6 Performance Projection（修正） ============ -->
+<div class="card">
+  <h2>§6 效能預測（修正版，誠實估）</h2>
+
+  <h3>6.1 基線分解（2026-08-25 實測，production 配置）</h3>
+  <table>
+    <tr><th>成分</th><th>時間</th><th>說明</th></tr>
+    <tr><td>GPU 層執行（wait≈seg 時間）</td><td class="num">~36.2 ms/step</td><td>CGC-SEG wait 906µs × 40（GPU-bound）</td></tr>
+    <tr><td>EOG / 尾段</td><td class="num">~2.5 ms</td><td>最後一層 norm + output（估算）</td></tr>
+    <tr><td>submit / callback / 其他</td><td class="num">~5.2 ms</td><td>submit 91.8µs×40、copy、sampler 等（部分未完全隱藏）</td></tr>
+    <tr><td><b>總計</b></td><td class="num"><b>43.9 ms/step → 21.48 t/s</b></td><td>實測 eval 2723ms/62 runs</td></tr>
+  </table>
+
+  <h3>6.2 路線 B 的增益與代價</h3>
+  <table>
+    <tr><th>因素</th><th>方向</th><th>量級</th></tr>
+    <tr><td>移除 segmented submit-ahead</td><td class="good">省</td><td>submit 91.8µs×40 不再佔關鍵路徑（若 scheduler 重疊更好）</td></tr>
+    <tr><td>gate matmul 上 CPU</td><td class="warn">省（極小）</td><td>gate 僅 ~1M MACs/層，約 FFN（470M）的 0.2%——<b>不要指望靠這個加速</b></td></tr>
+    <tr><td>Metal→CPU hidden copy</td><td class="warn">加（小）</td><td>16KB×40 = 640KB/step，unified memory ~µs 級</td></tr>
+    <tr><td>CPU gate + argsort</td><td class="warn">加（小）</td><td>~10–30µs/層 × 40 = 0.4–1.2ms（可與 GPU 重疊）</td></tr>
+    <tr><td>正確 routing → hit rate↑</td><td class="good">省</td><td>62.4% → ~95–99%，miss 造成的 pread 大幅下降</td></tr>
+  </table>
+
+  <h3>6.3 預測</h3>
+  <div class="review">
+    <div class="label">誠實估</div>
+    <p><b>樂觀</b>：CPU gate/copy 完全與 GPU 重疊、submit 開銷消失 → <b>~25 t/s</b>（回到 production 水平）。</p>
+    <p><b>中性</b>：CPU gate 每層 ~30µs 部分曝露 → <b>~23 t/s</b>。</p>
+    <p><b>保守</b>：hidden copy 或 split 順序有額外同步 → <b>~22 t/s</b>（與現在持平，但輸出正確）。</p>
+    <p>v1 白皮書的「-4%→24.5 t/s」與「+5.5ms(+14%)」算術有誤（39.2+5.5=44.7ms 應為 22.4 t/s）；本版以實測 43.9ms 為基線重算。</p>
+  </div>
+</div>
+
+<!-- ============ §7 Risks ============ -->
+<div class="card">
+  <h2>§7 風險評估</h2>
+  <table>
+    <tr><th>風險</th><th>機率</th><th>影響</th><th>緩解</th></tr>
+    <tr><td>pin-CPU 造成 scheduler split 爆炸或 copy 過多</td><td>中</td><td>中（速度回退）</td><td>Step 2 先小範圍驗證；必要時只 pin 部分層</td></tr>
+    <tr><td>hook 觸發粒度（weights 在 split 尾）導致漏觸發</td><td>中</td><td>高（remap 未寫）</td><td>Step 2 明確處理 routing 鏈偵測 + diagnostic 覆蓋</td></tr>
+    <tr><td>prefill il=2+ 污染根因非 dispatch（如 restore/repoint 遺留）</td><td>低–中</td><td>高（修完仍 garbage）</td><td>Step 1 diagnostic 先行定位，確認後再動 Step 2</td></tr>
+    <tr><td>CPU gate 增加主執行緒負擔拖慢 submit 路徑</td><td>低</td><td>中</td><td>-t 8 平行；Phase 2 調整</td></tr>
+    <tr><td>回歸 pin-CPU 後與 CGC_GLU_FUSED_DOWN 交互</td><td>低</td><td>中</td><td>Step 5 做 fused=0/1 交叉驗證</td></tr>
+  </table>
+</div>
+
+<!-- ============ §8 Comparison ============ -->
+<div class="card">
+  <h2>§8 方案對照</h2>
+  <table class="vs-table">
+    <tr><th>設計點</th><th>路線 A（原地修 b23fb51）</th><th class="hl">路線 B（pin-CPU topk，採用）</th></tr>
+    <tr><td>routing 位置</td><td>GPU（保留）</td><td class="good">CPU（恢復 production 設計）</td></tr>
+    <tr><td>hook 數據</td><td>仍需修同步避免提前讀</td><td class="good">天生有效（CPU 同步）</td></tr>
+    <tr><td>remap race</td><td>需 pre-dispatch / gate 修</td><td class="good">結構消除</td></tr>
+    <tr><td>dispatch</td><td>保留 segmented + submit-ahead</td><td class="good">回歸純 async（少 ~3.7ms submit 開銷）</td></tr>
+    <tr><td>改動量</td><td>中（同步 + 時序）</td><td>小–中（pin + hook + 刪 segmented）</td></tr>
+    <tr><td>fused-down</td><td>保留</td><td class="good">保留</td></tr>
+    <tr><td>速度預期</td><td>~21.5–23</td><td class="good">~22–25</td></tr>
+  </table>
+
+  <p class="note"><b>結論</b>：路線 B 一次解決質量（remap race）與速度（submit-ahead 開銷），且貼近 run_n30cache.sh 的原始 production 設計（pin-CPU probs + CGC_OA_ASYNC）。Phase 1 以「先 diagnostic、再 pin、再驗證」的順序推進，每步可獨立驗證。</p>
+</div>
+
+<!-- ============ §9 Action Items ============ -->
+<div class="card">
+  <h2>§9 下一步行動</h2>
+  <table>
+    <tr><th>#</th><th>行動</th><th>預估</th></tr>
+    <tr><td>1</td><td>Step 1 diagnostic：prefill layer 2 gate logits / layer 1 FFN 輸出 + gate_inp 指針驗證</td><td>30 min</td></tr>
+    <tr><td>2</td><td>Step 2：pin-CPU routing + hook 觸發改造</td><td>0.5 day</td></tr>
+    <tr><td>3</td><td>Step 3：移除 segmented dispatch（回歸純 async）</td><td>0.5 day</td></tr>
+    <tr><td>4</td><td>Step 4：prefill pool loading</td><td>2 hr</td></tr>
+    <tr><td>5</td><td>Step 5：ngl 99 輸出對齊 base + production 速度測量</td><td>0.5 day</td></tr>
+    <tr><td>6</td><td>Commit Phase 1 + 更新本白皮書實測欄位</td><td>—</td></tr>
+  </table>
+</div>
+
+<p class="sub" style="margin-top:24px">實測基線：2026-08-25 以 run_n30cache.sh（-n 64, seed 42）量測 b23fb51（21.48 t/s, garbage, hit 62.4%）。production 對照：CGC_TPOT_延遲分解_2026-08-19（25.07 t/s）、2026-08-20（25.8 t/s）為 pre-b23fb51 pin-CPU 架構。模型：Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf。機器：M4 Max 16GB。</p>
+
+</div>
+</body>
+</html>

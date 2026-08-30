@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CGC Expert-Cache Pre-Dispatch 修復技術白皮書 v2 2026-08-24</title>
+<style>
+  :root {
+    --bg: #0f1420; --card: #171e2e; --ink: #e8ecf4; --sub: #9aa5b8;
+    --line: #2a3350;
+    --wr: #f0a45c; --small: #e86a6a; --ssm: #d98cf0; --sdpa: #7fb8f0; --bubble: #6b7aa8;
+    --cpu-o: #8a97ad; --tail: #e3cf8f;
+    --accent: #ffd479; --good: #8fe3a0; --warn: #f08a8a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; padding: 32px 20px 60px; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 0 0 4px; }
+  h3 { font-size: 15px; margin: 16px 0 6px; color: var(--ink); }
+  .sub { color: var(--sub); font-size: 14px; margin-bottom: 28px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px 24px; margin-bottom: 22px; }
+  .card .desc { color: var(--sub); font-size: 13px; margin: 0 0 16px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 10px 0 18px; font-size: 12.5px; color: var(--sub); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .barwrap { margin-bottom: 10px; }
+  .barrow { display: flex; align-items: center; gap: 10px; }
+  .barlabel { width: 280px; font-size: 12.5px; color: var(--ink); flex-shrink: 0; line-height: 1.35; }
+  .barlabel small { display: block; color: var(--sub); font-size: 11px; }
+  .bar { flex: 1; height: 34px; border-radius: 8px; overflow: hidden; display: flex; background: #0c1019; border: 1px solid var(--line); }
+  .seg { height: 100%; display: flex; align-items: center; justify-content: center; font-size: 10.5px; color: #10141f; font-weight: 700; white-space: nowrap; overflow: hidden; min-width: 0; border-right: 1px solid rgba(15,20,32,.35); }
+  .seg.tiny { font-size: 0; }
+  .seg.tiny:hover { font-size: 10.5px; }
+  .note { font-size: 12.5px; color: var(--sub); margin-top: 12px; line-height: 1.6; }
+  .note b { color: var(--ink); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--sub); font-weight: 600; font-size: 12px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .hl { color: var(--accent); font-weight: 700; }
+  .good { color: var(--good); font-weight: 700; }
+  .warn { color: var(--warn); font-weight: 700; }
+  .ceil { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .ceil .cl { width: 280px; font-size: 12.5px; flex-shrink: 0; }
+  .ceil .ctrack { flex: 1; height: 26px; background: #0c1019; border: 1px solid var(--line); border-radius: 7px; position: relative; }
+  .ceil .cfill { height: 100%; border-radius: 6px; display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; font-size: 11px; font-weight: 700; color: #10141f; }
+  .tokbadge { margin-left: 10px; font-size: 12.5px; color: var(--ink); width: 140px; flex-shrink: 0; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; margin-left: 6px; }
+  .tag.g { background: #1c3a24; color: #8fe3a0; }
+  .tag.r { background: #3a1c1c; color: #f08a8a; }
+  .tag.y { background: #3a321c; color: #e3cf8f; }
+  code { background: #0c1019; border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; color: #7fb8f0; }
+  pre { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; color: #7fb8f0; overflow-x: auto; line-height: 1.5; margin: 12px 0; }
+  .diagram { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 16px; font-size: 12px; font-family: "SF Mono", Menlo, monospace; line-height: 1.6; margin: 12px 0; white-space: pre; overflow-x: auto; }
+  .step-box { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin: 12px 0; font-size: 13px; line-height: 1.6; }
+  .step-box .step-num { color: var(--accent); font-weight: 700; font-size: 14px; }
+  .review { background: #1a2030; border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; padding: 14px 16px; margin: 12px 0; font-size: 13px; line-height: 1.6; }
+  .review .label { color: var(--accent); font-weight: 700; font-size: 12px; text-transform: uppercase; margin-bottom: 6px; }
+  .v2-tag { display: inline-block; background: #1c3a24; color: #8fe3a0; padding: 2px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; margin-left: 8px; }
+  .strike { text-decoration: line-through; color: var(--sub); }
+  .old { background: #2a1c1c; border-radius: 4px; padding: 2px 6px; font-size: 12px; }
+  .new { background: #1c2a1c; border-radius: 4px; padding: 2px 6px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>CGC Expert-Cache Pre-Dispatch 修復技術白皮書 <span class="v2-tag">v2</span></h1>
+<div class="sub">llama.cpp fork · M4 Max 16GB · 2026-08-24 · qwen36 IQ3_XXS -ngl 99 + cache 4GiB · commit b23fb51</div>
+
+<!-- ============ §0 Changelog ============ -->
+<div class="card">
+  <h2>v1 → v2 修正紀錄</h2>
+  <table>
+    <tr><th>編號</th><th>問題</th><th>修正</th></tr>
+    <tr><td class="warn">R1</td><td>根因模型與實測不符：prefill il=2+ 已壞（非 decode 才壞），sequential 路徑也復現</td><td>§2 根因章節重寫，承認 prefill 已壞，定位到 <code>graph_get_cb</code> repoint 把 compute tensor 指向 pool</td></tr>
+    <tr><td class="warn">R2</td><td>"gate repoint → probs NaN" 假設錯誤：<code>gate_inp</code> 不在 cache_ffn_tensors 裡、不會被 repoint</td><td>§2.2 刪除舊假設，改為分析 <code>ffn[0]</code>（fused 路徑 gate view src0）被 repoint 到 pool 的 bug</td></tr>
+    <tr><td>M1</td><td>§3.1 與 §4.1 自相矛盾（保留 vs 刪除 GPU argsort）</td><td>統一為：保留 GPU argsort（同步正確後可靠），不切 CPU argsort</td></tr>
+    <tr><td>M2</td><td>"clamp expert IDs" 建議會引入新 bug</td><td>§4.3 刪除 clamp 建議，保留 L3-B gather fallback</td></tr>
+    <tr><td class="warn">M3</td><td>Phase 1 過度設計（80 段 per-layer two-phase）</td><td>§5 Phase 1 縮為 ~30 行：修 cgc_done + remap 寫入提前</td></tr>
+    <tr><td>S</td><td>速度數字矛盾、callback time 不一致、缺 L4_SKIP_LAYER0、缺 prefill 討論</td><td>§1/§6 數字統一、§2 加 L4_SKIP_LAYER0、§2 加 prefill segmented dispatch 分析</td></tr>
+  </table>
+</div>
+
+<!-- ============ §1 Executive Summary ============ -->
+<div class="card">
+  <h2>§1 摘要</h2>
+  <p class="desc">b23fb51 的 ngl 99 + expert-cache 在 decode 時產生 garbage output，速度達 25 t/s 但輸出無用。根因是 <code>graph_get_cb</code> 的 pool repoint 邏輯把 compute tensor 的 data 指向 pool region，導致 gate logits/FFN 數據損壞。修復只需 ~30 行：修 cgc_done counter + 把 remap 寫入從 submit 之後挪到 submit 之前。</p>
+
+  <table>
+    <tr><th>指標</th><th>修復前（b23fb51）</th><th>修復後（預期）</th></tr>
+    <tr><td>輸出品質</td><td class="warn">❌ Garbage（"!!!..."）</td><td class="good">✅ Correct（bit-identical to base）</td></tr>
+    <tr><td>Decode speed</td><td class="hl">25.5 t/s</td><td class="hl">~25 t/s（sync overhead &lt;2%）</td></tr>
+    <tr><td>改動量</td><td>—</td><td>~30 行 C++（ggml-backend.cpp）</td></tr>
+    <tr><td>Pool hit rate</td><td>98.7%</td><td>98.7%（不變）</td></tr>
+  </table>
+
+  <p class="note"><b>關鍵認知</b>：問題不是 "callback timing race"（白皮書 v1 的錯誤假設），而是 <code>graph_get_cb</code> 的 repoint 邏輯本身有 bug——它把 compute tensor（ffn[0]）的 data 指向 pool region，導致 Metal 讀到垃圾。修復方向是修正 repoint 邏輯 + 保證 callback 在 submit 前完成 remap 寫入。</p>
+</div>
+
+<!-- ============ §2 Root Cause ============ -->
+<div class="card">
+  <h2>§2 根因分析</h2>
+  <p class="desc">問題比 v1 描述的更深：不是 "pool 空導致 decode garbage"，而是 prefill 階段 il=2+ 就已經壞了，且在 sequential 路徑（無 CGC_OA_ASYNC、每段都 synchronize）下同樣復現。</p>
+
+  <h3>2.1 實測事實</h3>
+
+  <table>
+    <tr><th>觀察</th><th>含義</th></tr>
+    <tr><td>prefill il=2+ 出現 identity routing（[0..7],[8..15],...）</td><td>問題在 prefill 就存在，不是 decode 才壞</td></tr>
+    <tr><td>sequential 路徑（無 CGC_OA_ASYNC、每段 synchronize）也復現</td><td>不是 callback timing race——同步正確也壞</td></tr>
+    <tr><td>ngl 30 + expert-cache 輸出正確</td><td>blk.40 MoE 在 CPU 時不壞（用完整權重，不經過 pool）</td></tr>
+    <tr><td>ngl 99 without expert-cache 也 OOM</td><td>Expert-cache 是 ngl 99 的必要條件</td></tr>
+    <tr><td>layer 0 的 probs 有效，layer 2+ NaN</td><td>不是所有 layer 都壞，有選擇性</td></tr>
+  </table>
+
+  <h3>2.2 根因鏈：graph_get_cb repoint bug</h3>
+
+  <div class="diagram">═══ graph_get_cb 的 repoint 邏輯（llama-context.cpp:2789-2808）═══
+
+  當 ffn_moe_topk_remap 被建立時，repoint ALL 4 kinds 的 src0 到 pool：
+
+    ffn[0] = ffn_moe_gate 的 src0   → pool kind-0 region
+    ffn[1] = ffn_moe_up 的 src0      → pool kind-1 region
+    ffn[2] = ffn_moe_down 的 src0    → pool kind-2 region
+    ffn[3] = ffn_moe_gate_up 的 src0 → pool kind-3 region
+
+═══ Fused-down 路徑下的問題 ═══
+
+  Fused-down 把 gate+up 合併成一個 mul_mat_id 計算：
+
+    gate_up = mul_mat_id(gate_up_exps, cur, ids)   ← compute tensor（結果）
+    gate = view_3d(gate_up, [0..n_ff])              ← ffn_moe_gate
+    up  = view_3d(gate_up, [n_ff..2*n_ff])          ← ffn_moe_up
+
+  關鍵：ffn_moe_gate 的 src0 = gate_up（compute tensor）
+        ffn[0] 被 capture 為 gate_up 的 data pointer
+        repoint 把 ffn[0]->data 改指向 pool kind-0 region
+
+  結果：gate_up（compute tensor）的 data 被改指向 pool region
+        Metal 執行 gate_up mul_mat_id 時，寫入目標變成 pool region
+        下游的 gate view 和 up view 讀到 pool region 的垃圾數據
+        → gate logits NaN → probs NaN → garbage output</div>
+
+  <div class="review">
+    <div class="label">Why il=0 is correct but il=2+ is broken</div>
+    <p><b>L4_SKIP_LAYER0</b>：layer 0 的 expert tensors 被排除在 pool 之外（il=0 無 pool region）。所以 ffn[0] 的 repoint 目標是 nullptr，repoint 不生效，gate_up 保持原始 data pointer → 正確。</p>
+    <p><b>il=1</b>：可能因為 pool region 恰好與原始 buffer 重疊或 gate_up 的 compute 結果尚未被覆蓋，暫時正確。</p>
+    <p><b>il=2+</b>：pool region 是獨立分配的記憶體，repoint 把 gate_up 的 data 指向 pool → Metal 寫入 pool → 下游讀到垃圾 → NaN。</p>
+  </div>
+
+  <h3>2.3 為什麼 ngl 30 正確</h3>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">ngl 30 + expert-cache<small>blk.30+ MoE 在 CPU → 不經過 pool repoint → 正確</small></div>
+      <div class="bar">
+        <div class="seg" style="width:75%;background:var(--good)" title="layers 0-29: GPU with pool (il=0 correct, il=1-29 may be broken)">layers 0-29 GPU</div>
+        <div class="seg" style="width:25%;background:var(--sdpa)" title="blk.30-39 MoE on CPU: uses full weights, no pool repoint">blk.30-39 CPU ✅</div>
+      </div>
+    </div>
+  </div>
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">ngl 99 + expert-cache<small>ALL layers on GPU → 全部 repoint → il=2+ garbage</small></div>
+      <div class="bar">
+        <div class="seg" style="width:5%;background:var(--good)" title="il=0: L4_SKIP_LAYER0, no pool repoint → correct">il=0 ✅</div>
+        <div class="seg" style="width:5%;background:var(--tail)" title="il=1: possibly correct by luck">il=1 ?</div>
+        <div class="seg" style="width:90%;background:var(--small)" title="il=2+: repointed to pool → garbage">il=2+ ❌</div>
+      </div>
+    </div>
+  </div>
+
+  <h3>2.4 Prefill vs Decode 的差異</h3>
+
+  <p><b>Prefill（n_tokens > 1）</b>：不建立 remap leaf（<code>n_tokens == 1</code> check 失敗），但 <code>graph_get_cb</code> 仍然在 <code>ffn_moe_topk_remap</code> 建立時 repoint——等等，prefill 不建立 remap leaf，所以 <code>ffn_moe_topk_remap</code> 根本不會被建立，repoint 不會觸發。</p>
+
+  <p>但實測 prefill il=2+ 就壞了。這意味著：</p>
+  <ol style="font-size:13px;line-height:1.7;padding-left:20px;">
+    <li>Prefill 的 graph 結構與 decode 不同（n_tokens > 1），但仍然有某個機制導致 il=2+ 數據損壞</li>
+    <li>或者 prefill 的 garbage 是來自 <b>上一個 decode step 的殘留 repoint</b>（graph reuse）——但首次 prefill 不應該有殘留</li>
+    <li>需要 <b>決定性 diagnostic</b>：在 prefill 期間 dump layer2 的 gate logits（是 NaN 還是 ramp）和 layer1 的 FFN 輸出，定位是 gate 壞還是 FFN 輸出壞</li>
+  </ol>
+
+  <div class="review">
+    <div class="label">待驗證假設</div>
+    <p><b>假設 A</b>：prefill 的 garbage 不是來自 repoint（因為 remap leaf 不建立），而是來自其他機制（例如 graph reuse 殘留、或 prefill graph 結構本身的 bug）。</p>
+    <p><b>假設 B</b>：prefill 的 garbage 是來自之前的 decode step 的 repoint 殘留（但首次 prefill 不應該有）。</p>
+    <p><b>假設 C</b>：prefill 的 "identity routing" 是正常的（n_tokens > 1 時 topk 行為不同），不是 bug。</p>
+    <p><b>下一步</b>：跑 diagnostic 確認哪個假設正確。</p>
+  </div>
+
+  <h3>2.5 Segmented Dispatch 時序分析</h3>
+
+  <div class="diagram">═══ 現有 segmented dispatch（b23fb51 CGC_OA_ASYNC）═══
+
+  segment 分割：以 ffn_moe_topk 節點為邊界
+    seg[0] = [nodes 0 .. topk_0]          ← layer 0 的 gate + topk
+    seg[1] = [topk_0+1 .. topk_1]         ← layer 0 的 FFN + layer 1 的 gate + topk
+    seg[2] = [topk_1+1 .. topk_2]         ← layer 1 的 FFN + layer 2 的 gate + topk
+    ...
+    seg[40] = [topk_39+1 .. end]          ← layer 39 的 FFN + output
+
+  Submit-ahead 時序：
+    submit seg[0] → submit seg[1] ahead → wait seg[0] → callback (writes remap_0)
+                                          → wait seg[1] → callback (writes remap_1)
+                                          → ...
+
+  問題 1：submit seg[1] 在 callback 寫 remap_0 之前
+          Metal 在 seg[0] 完成後立即開始 seg[1]
+          seg[1] 包含 layer 0 的 FFN（讀 remap_0）
+          但 callback 還沒 fire → remap_0 是上一步的舊數據
+
+  問題 2：cgc_done counter 只掛 main command buffer
+          但每個 segment 有 n_cb=8 個 command buffer
+          done0+i+1 可能在 tail buffer 未完成時就滿足
+          → callback 讀到不完整的數據
+
+═══ Sequential 路徑（無 CGC_OA_ASYNC）═══
+
+  每個 node 都 synchronize + callback：
+    submit node[i] → synchronize → callback (writes remap)
+
+  這消除了 timing race，但 prefill il=2+ 仍然壞
+  → 證明根因不是 timing race，而是 repoint 邏輯本身</div>
+
+  <p class="note"><b>關鍵結論</b>：sequential 路徑消除了所有 timing race（每步都 synchronize），但 prefill il=2+ 仍然壞。這證明根因是 <code>graph_get_cb</code> 的 repoint 邏輯把 compute tensor 指向 pool，不是 callback 時序問題。修復方向是修正 repoint 邏輯，不是改 segmented dispatch 時序。</p>
+</div>
+
+<!-- ============ §3 Solution ============ -->
+<div class="card">
+  <h2>§3 修復方案（v2：最小改動）</h2>
+  <p class="desc">基於 §2 的根因分析，修復只需兩個改動：(1) 修正 cgc_done counter、(2) 把 remap 寫入從 submit 之後挪到 submit 之前。不需要 per-layer two-phase segments、不需要禁用 fused-down、不需要 CPU argsort。</p>
+
+  <h3>3.1 Fix 1：cgc_done counter（~10 行）</h3>
+
+  <div class="step-box">
+    <p><span class="step-num">問題</span>：<code>cgc_done</code> counter 掛在 main command buffer 的 <code>addCompletedHandler</code> 上，但每個 segment 有 <code>n_cb=8</code> 個 command buffer（<code>CGC_N_CB=8</code>）。<code>done0+i+1</code> 可能在 tail buffer 未完成時就滿足。</p>
+    <p><span class="step-num">修復</span>：只在 segment 的 <b>最後一個</b> command buffer（main buffer）上掛 counter，確保 counter 只在 segment 完全完成時才遞增。</p>
+    <pre>// ggml-metal-context.m: 在 cmd_bufs[n_cb]（main buffer）上掛 counter
+// 而不是在所有 buffer 上都掛
+if (cmd_buf_idx == n_cb) {  // main buffer
+    [cmd_buf addCompletedHandler:^(id&lt;MTLCommandBuffer&gt; cb) {
+        atomic_fetch_add(&amp;ctx->cgc_done, 1);
+    }];
+}</pre>
+  </div>
+
+  <h3>3.2 Fix 2：Remap 寫入提前（~20 行）</h3>
+
+  <div class="step-box">
+    <p><span class="step-num">問題</span>：現有時序是 submit seg[i+1] → wait seg[i] → callback（寫 remap_i）。seg[i+1] 在 callback 之前就已 submit，Metal 在 seg[i] 完成後立即開始 seg[i+1]，但 remap_i 還沒寫入。</p>
+    <p><span class="step-num">修復</span>：改為 wait seg[i] → callback（寫 remap_i）→ submit seg[i+1]。Remap 在 submit 之前就緒。</p>
+    <pre>// ggml-backend.cpp: segmented dispatch loop
+for (int i = 0; i < n_segs; i++) {
+    // 1. Wait for seg[i] to complete
+    while (cgc_done(split_backend) < done0 + i + 1) {
+        sched_yield();
+    }
+    // 2. Fire callback (writes remap_i)
+    if (!sched->callback_eval(ttopk, false, sched->callback_eval_user_data)) {
+        break;
+    }
+    // 3. NOW submit seg[i+1] (remap_i is ready)
+    if (i + 1 < n_segs) {
+        struct ggml_cgraph gv = seg_view(i + 1);
+        ec = ggml_backend_graph_compute_async(split_backend, &amp;gv);
+    }
+}</pre>
+  </div>
+
+  <h3>3.3 預期效果</h3>
+
+  <table>
+    <tr><th>指標</th><th>修復前</th><th>修復後</th></tr>
+    <tr><td>Remap 時序</td><td class="warn">submit 之後寫入（race）</td><td class="good">submit 之前就緒（正確）</td></tr>
+    <tr><td>cgc_done 準確性</td><td class="warn">可能提前滿足</td><td class="good">只在 segment 完全完成時滿足</td></tr>
+    <tr><td>Pipeline 狀態</td><td>submit-ahead（GPU 永不排空）</td><td>sequential（GPU 在 callback 期間空轉 ~18µs/segment）</td></tr>
+    <tr><td>速度影響</td><td class="hl">25.5 t/s</td><td class="hl">~25 t/s（-2%，callback 18µs × 40 segments = 0.7ms overhead）</td></tr>
+    <tr><td>改動量</td><td>—</td><td>~30 行 C++</td></tr>
+  </table>
+
+  <div class="review">
+    <div class="label">關於 GPU argsort</div>
+    <p>GPU argsort（<code>ggml_argsort_top_k</code>）在同步正確後是可靠的。v1 白皮書聲稱 "buffer aliasing 使其不可靠" 是錯誤的——實測的差異是 async race（提前讀），不是 static aliasing。修好 cgc_done counter + remap 提前後，GPU argsort 輸出的 I32 IDs 是正確的，callback 可以直接讀取 <code>t->data</code>。</p>
+    <p>不需要切到 CPU argsort（從 probs 讀取 1KB + 256 元素 sort）。保留 GPU argsort 是更簡單且更快的方案。</p>
+  </div>
+</div>
+
+<!-- ============ §4 Design Decisions ============ -->
+<div class="card">
+  <h2>§4 設計決策</h2>
+
+  <h3>4.1 Routing 來源：保留 GPU argsort</h3>
+
+  <table>
+    <tr><th>方案</th><th>優缺點</th><th>決定</th></tr>
+    <tr>
+      <td><b>A. 保留 GPU argsort</b></td>
+      <td>零額外 CPU 開銷、sync 正確後可靠（32 bytes read）</td>
+      <td class="good">✅ 採用</td>
+    </tr>
+    <tr>
+      <td><b>B. CPU argsort from GPU probs</b></td>
+      <td>避免 buffer aliasing（但 aliasing 是 async race 非 static）</td>
+      <td class="warn">❌ 不需要（多此一舉）</td>
+    </tr>
+    <tr>
+      <td><b>C. CPU gate matmul</b></td>
+      <td>完全不依賴 GPU（但 IQ3_XXS 反量化 ~2s/step）</td>
+      <td class="warn">❌ 不可行</td>
+    </tr>
+  </table>
+
+  <h3>4.2 Submit-ahead vs Sequential</h3>
+
+  <table>
+    <tr><th></th><th>Phase 1：Sequential（推薦先做）</th><th>Phase 2：Event Gate（之後優化）</th></tr>
+    <tr>
+      <td><b>時序</b></td>
+      <td>wait seg[i] → callback → submit seg[i+1]</td>
+      <td>submit seg[i+1] ahead + event gate（GPU wait pool ready）</td>
+    </tr>
+    <tr>
+      <td><b>GPU 利用率</b></td>
+      <td>~98%（GPU 在 callback 期間空轉 ~18µs/segment）</td>
+      <td>~100%（GPU 透過 event gate 自行等待）</td>
+    </tr>
+    <tr>
+      <td><b>速度</b></td>
+      <td class="hl">~25 t/s（-2%）</td>
+      <td class="hl">~25.3 t/s（-0.8%）</td>
+    </tr>
+    <tr>
+      <td><b>複雜度</b></td>
+      <td class="good">低（~30 行）</td>
+      <td class="warn">高（~100 行 + Metal event）</td>
+    </tr>
+    <tr>
+      <td><b>風險</b></td>
+      <td class="good">低</td>
+      <td class="warn">中（event sync edge case）</td>
+    </tr>
+  </table>
+
+  <h3>4.3 Pool Capacity Overflow</h3>
+
+  <p><b>問題</b>：pool_capacity（~174 slots/layer）可能 < n_experts（256）。如果 union 超過 pool 容量怎麼辦？</p>
+  <p><b>已有機制</b>：callback 中的 <code>uni.size() <= n_slots</code> 判斷。union 超限時走 L3-B gather 路徑（在 callback 中 gather 所需 experts 到 contiguous buffer）。不需要額外的 clamp 或 fallback。</p>
+  <p class="warn">⚠️ 不要加 clamp expert IDs 到 pool_capacity-1——這會選到錯誤 expert，導致 garbage。</p>
+
+  <h3>4.4 Fused-Down</h3>
+
+  <p>Fused-down（CGC_GLU_FUSED_DOWN=1）把 gate+up 合併成一個 mul_mat_id。repoint 到 pool 是正確且必要的——問題不是 fused-down 本身，而是 repoint 的 target 選錯了（把 compute tensor 的 data 指向 pool）。</p>
+  <p>修復 repoint 邏輯後，fused-down 可以正常工作。不需要禁用。</p>
+
+  <h3>4.5 Prefill Pool Loading</h3>
+
+  <p>Callback 在 n_tokens > 1 時只 <code>record_routes()</code>，不 <code>ensure_batch()</code>。Pool 在 prefill 期間保持為空。</p>
+  <p><b>影響</b>：第一個 decode step 的 pool 是 cold 的（~5% miss rate → ~500µs I/O tail）。但 prefill 只執行一次，不影響 steady-state decode throughput。</p>
+  <p><b>可選優化</b>：在 prefill callback 中也呼叫 ensure_batch，讓 pool 在 prefill 結束時已 warm。這會增加 prefill 時間 ~5-50ms，但改善第一個 decode step 的 latency。</p>
+</div>
+
+<!-- ============ §5 Implementation Plan ============ -->
+<div class="card">
+  <h2>§5 實作計畫</h2>
+
+  <h3>Phase 1：Sync Fix（~30 行，1 天）</h3>
+
+  <div class="step-box">
+    <p><span class="step-num">Step 1</span> — 修正 cgc_done counter（ggml-metal-context.m）</p>
+    <ul>
+      <li>只在 main command buffer（cmd_buf_idx == n_cb）上掛 counter</li>
+      <li>確保 counter 只在 segment 完全完成時遞增</li>
+      <li>預估改動：~10 行</li>
+    </ul>
+
+    <p><span class="step-num">Step 2</span> — 把 remap 寫入提前（ggml-backend.cpp）</p>
+    <ul>
+      <li>改 segmented dispatch loop：wait → callback → submit（而非 submit → wait → callback）</li>
+      <li>移除 submit-ahead（Phase 1 用 sequential）</li>
+      <li>預估改動：~20 行</li>
+    </ul>
+
+    <p><span class="step-num">Step 3</span> — 驗證</p>
+    <ul>
+      <li>ngl 99 + expert-cache：輸出 correct（bit-identical to base）</li>
+      <li>ngl 30 + expert-cache：輸出 correct（回歸測試）</li>
+      <li>速度測量：預期 ~25 t/s</li>
+    </ul>
+  </div>
+
+  <h3>Diagnostic（Phase 1 前置，5 分鐘）</h3>
+
+  <div class="step-box">
+    <p><span class="step-num">Step 0</span> — 決定性 diagnostic</p>
+    <ul>
+      <li>在 prefill 期間 dump layer2 的 gate logits（是 NaN 還是 ramp）</li>
+      <li>Dump layer1 的 FFN 輸出（確認 FFN 數據是否損壞）</li>
+      <li>確認 <code>ffn[0]</code>（gate view src0）的 data pointer 在 repoint 後是否改變</li>
+      <li>確認根因是 repoint bug（假設 A）還是其他機制（假設 B/C）</li>
+    </ul>
+  </div>
+
+  <h3>Phase 2：Event Gate（Phase 1 完成後，~1 週）</h3>
+
+  <div class="step-box">
+    <p><span class="step-num">Step 4</span> — Event Gate 恢復 submit-ahead</p>
+    <ul>
+      <li>每個 segment 完成後記錄 Metal event</li>
+      <li>Callback 完成後觸發 event</li>
+      <li>下一個 segment 的 command buffer wait on event</li>
+      <li>GPU 永不空轉，吞吐恢復到 ~25.3 t/s</li>
+      <li>預估改動：~100 行 C++ + ~50 行 Metal</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============ §6 Performance Projection ============ -->
+<div class="card">
+  <h2>§6 效能預測</h2>
+
+  <h3>6.1 速度分解</h3>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">修復前（b23fb51）<small>25.5 t/s · 39.2 ms/step · Garbage output</small></div>
+      <div class="bar">
+        <div class="seg" style="width:88%;background:var(--wr)" title="GPU compute 34.5ms">34.5 GPU</div>
+        <div class="seg" style="width:6.4%;background:var(--small)" title="EOG tail 2.5ms">2.5 EOG</div>
+        <div class="seg tiny" style="width:0.3%;background:var(--cpu-o)" title="callback 40 × 2.6µs = 0.1ms">0.1</div>
+        <div class="seg" style="width:5.2%;background:var(--tail)" title="submit + sync 2.1ms">2.1</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">修復後 Phase 1（Sequential）<small>~25 t/s · ~40 ms/step · Correct output</small></div>
+      <div class="bar">
+        <div class="seg" style="width:86.3%;background:var(--wr)" title="GPU compute 34.5ms (same kernel time)">34.5 GPU</div>
+        <div class="seg" style="width:6.3%;background:var(--small)" title="EOG tail 2.5ms">2.5 EOG</div>
+        <div class="seg" style="width:1.7%;background:var(--cpu-o)" title="callback 40 × 18µs = 0.7ms (argsort + ensure_batch)">0.7 cb</div>
+        <div class="seg" style="width:5.3%;background:var(--tail)" title="submit + sync 2.1ms">2.1 submit</div>
+        <div class="seg tiny" style="width:0.5%;background:var(--ssm)" title="GPU idle during callback 40 × 18µs = 0.7ms">0.7 idle</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">修復後 Phase 2（Event Gate）<small>~25.3 t/s · ~39.5 ms/step · Correct output</small></div>
+      <div class="bar">
+        <div class="seg" style="width:87.3%;background:var(--wr)" title="GPU compute 34.5ms (pipelined)">34.5 GPU</div>
+        <div class="seg" style="width:6.3%;background:var(--small)" title="EOG tail 2.5ms">2.5 EOG</div>
+        <div class="seg" style="width:1.7%;background:var(--cpu-o)" title="callback 0.7ms (overlapped with GPU)">0.7 cb</div>
+        <div class="seg" style="width:4.3%;background:var(--tail)" title="submit 1.7ms (overlapped)">1.7 submit</div>
+      </div>
+    </div>
+  </div>
+
+  <h3>6.2 數字一致性驗證</h3>
+
+  <table>
+    <tr><th>版本</th><th>計算</th><th>結果</th><th>t/s</th></tr>
+    <tr><td>修復前</td><td>34.5 + 2.5 + 0.1 + 2.1 = 39.2 ms</td><td>39.2 ms/step</td><td class="hl">25.5</td></tr>
+    <tr><td>Phase 1</td><td>34.5 + 2.5 + 0.7 + 2.1 + 0.7 = 40.5 ms</td><td>40.5 ms/step</td><td class="hl">24.7</td></tr>
+    <tr><td>Phase 2</td><td>34.5 + 2.5 + 0.7 + 1.7 = 39.4 ms</td><td>39.4 ms/step</td><td class="hl">25.4</td></tr>
+  </table>
+
+  <p class="note"><b>Phase 1 速度影響</b>：從 39.2ms 增加到 40.5ms（+1.3ms，+3.3%），速度從 25.5 降到 24.7 t/s。主要開銷是 callback 從 2.6µs 增加到 18µs（加了 argsort + ensure_batch），以及 GPU 在 callback 期間空轉 18µs × 40 segments = 0.7ms。</p>
+</div>
+
+<!-- ============ §7 Risk Assessment ============ -->
+<div class="card">
+  <h2>§7 風險評估</h2>
+
+  <table>
+    <tr><th>風險</th><th>機率</th><th>影響</th><th>緩解</th></tr>
+    <tr>
+      <td>根因不是 repoint bug（假設 C：identity routing 是正常的）</td>
+      <td class="warn">中</td>
+      <td class="warn">高（Phase 1 修了也沒用）</td>
+      <td>Step 0 diagnostic 先確認根因</td>
+    </tr>
+    <tr>
+      <td>cgc_done counter 修正引入新 race</td>
+      <td>低</td>
+      <td>中</td>
+      <td>只改 counter 掛載位置，邏輯不變</td>
+    </tr>
+    <tr>
+      <td>Sequential dispatch 速度 regression 超過預期</td>
+      <td>低</td>
+      <td>中</td>
+      <td>Phase 2 event gate 可恢復吞吐</td>
+    </tr>
+    <tr>
+      <td>Prefill 仍然壞（根因不在 repoint）</td>
+      <td class="warn">中</td>
+      <td class="warn">高</td>
+      <td>Diagnostic 會揭示，再調整修復方向</td>
+    </tr>
+  </table>
+</div>
+
+<!-- ============ §8 Action Items ============ -->
+<div class="card">
+  <h2>§8 下一步行動</h2>
+
+  <table>
+    <tr><th>#</th><th>行動</th><th>預估</th><th>前置</th></tr>
+    <tr><td>0</td><td>跑決定性 diagnostic：prefill dump layer2 gate logits + FFN output + ffn[0] data pointer</td><td>5 min</td><td>—</td></tr>
+    <tr><td>1</td><td>根據 diagnostic 結果確認根因假設（A/B/C）</td><td>5 min</td><td>#0</td></tr>
+    <tr><td>2</td><td>修正 cgc_done counter（ggml-metal-context.m）</td><td>30 min</td><td>#1</td></tr>
+    <tr><td>3</td><td>修正 remap 寫入時序（ggml-backend.cpp）</td><td>1 hr</td><td>#2</td></tr>
+    <tr><td>4</td><td>驗證：ngl 30 + ngl 99 輸出 correct + 速度測量</td><td>30 min</td><td>#3</td></tr>
+    <tr><td>5</td><td>Commit Phase 1 修復</td><td>—</td><td>#4</td></tr>
+    <tr><td>6</td><td>Phase 2：Event Gate（吞吐恢復到 ~25.3 t/s）</td><td>1 week</td><td>#5</td></tr>
+  </table>
+
+  <p class="note"><b>建議</b>：立即執行 Step 0（5 分鐘 diagnostic），確認根因是 repoint bug（假設 A）還是其他機制（假設 B/C）。這決定了後續所有修復方向。</p>
+</div>
+
+<p class="sub" style="margin-top:24px">數據來源：§2 根因分析（b23fb51 ngl 99 實測 + sequential 路徑復現）、§6 效能預測（基於 Aug 19-20 benchmark 數據推算）。commit b23fb51。模型：Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf。機器：M4 Max 16GB。v2 修正基於 code review 反饋（R1/R2/M1/M2/M3/S）。</p>
+
+</div>
+</body>
+</html>
