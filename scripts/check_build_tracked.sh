@@ -45,6 +45,9 @@
 #   REQUIRED_DYLIB   空白分隔的 dylib 前綴（預設 "libllama. libllama-common. libmtmd. libggml."）
 #   ALLOW_MISSING=1  允許 build/bin 或檔案不存在（不擋 commit；預設為擋）
 #   ALLOW_STALE_BIN=1 允許 binary 比 staged 原始碼舊（不建議；預設為擋）
+#   RUN_CGC_PROD_ACCEPT=1  啟用重型生產驗收（短/長 prompt no-0000 + 指標摘錄）
+#   CGC_ACCEPT_SHORT_MIN_TPS / CGC_ACCEPT_LONG_BASE_MIN_TPS / CGC_ACCEPT_LONG_DENSE_MIN_TPS
+#                    可選：為重型生產驗收加 t/s 下限（未設 = 僅回報，不擋）
 
 set -uo pipefail
 
@@ -90,6 +93,7 @@ realpath_() { python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "
 fail_count=0
 pass() { printf '  PASS  %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1"; fail_count=$((fail_count + 1)); }
+info() { printf '  INFO  %s\n' "$1"; }
 
 echo "repo: $REPO_ROOT"
 echo "build: $BIN_ABS"
@@ -326,12 +330,90 @@ else
     fi
 fi
 
+# ============ 檢查 9：重型生產驗收（短/長 prompt no-0000 + 指標摘錄） ============
+echo "--- 檢查 生產 MTP 驗收（短/長 prompt） ---"
+RUN_N30="$REPO_ROOT/scripts/run_n30cache.sh"
+if [ "${RUN_CGC_PROD_ACCEPT:-0}" != 1 ]; then
+    echo "SKIP  RUN_CGC_PROD_ACCEPT=1 未啟用（重型驗收保留在本 script 內，需手動開）"
+elif [ ! -x "$RUN_N30" ]; then
+    fail "9 找不到生產腳本: $RUN_N30"
+else
+    prod_accept_check() {
+        local label="$1"; shift
+        local expect="$1"; shift
+        local min_tps="${1:-}"; shift || true
+        local log="/tmp/cgc_precommit_${label}.log"
+        local out="/tmp/cgc_precommit_${label}.out"
+
+        if "$RUN_N30" "$@" >"$log" 2>&1; then
+            :
+        else
+            fail "9 ${label} 執行失敗（見 $log）"
+            return
+        fi
+
+        cp /tmp/n30cache.out "$out" 2>/dev/null || true
+
+        if [ ! -f "$out" ]; then
+            fail "9 ${label} 沒有產出 /tmp/n30cache.out"
+            return
+        fi
+
+        if grep -q '0000' "$out"; then
+            fail "9 ${label} 輸出含 0000 退化"
+        else
+            pass "9 ${label} 無 0000 退化"
+        fi
+
+        if [ -n "$expect" ]; then
+            if grep -qF "$expect" "$out"; then
+                pass "9 ${label} 命中關鍵文本：$expect"
+            else
+                fail "9 ${label} 未命中關鍵文本：$expect"
+            fi
+        fi
+
+        local tps accept hit tpot
+        tps="$(sed -n 's/.*speed: *\([0-9.][0-9.]*\) t\/s.*/\1/p' "$log" | tail -1)"
+        accept="$(sed -n 's/.*accept *= *\([0-9.][0-9.]*%\).*/\1/p' "$log" | tail -1)"
+        hit="$(sed -n 's/.*hit rate \([0-9.][0-9.]*%\).*/\1/p' "$log" | tail -1)"
+        if [ -n "${tps:-}" ]; then
+            tpot="$(python3 - <<PY
+tps = float("${tps}")
+print(f"{1000.0/tps:.2f}")
+PY
+)"
+            info "9 ${label} 指標：t/s=${tps} TPOT=${tpot}ms/tok accept=${accept:-n/a} hit=${hit:-n/a}"
+            if [ -n "$min_tps" ]; then
+                if python3 - <<PY
+import sys
+sys.exit(0 if float("${tps}") >= float("${min_tps}") else 1)
+PY
+                then
+                    pass "9 ${label} t/s ${tps} >= 門檻 ${min_tps}"
+                else
+                    fail "9 ${label} t/s ${tps} < 門檻 ${min_tps}"
+                fi
+            fi
+        else
+            fail "9 ${label} 無法從 log 解析 t/s（見 $log）"
+        fi
+    }
+
+    prod_accept_check short_base "The capital of France is Paris" "${CGC_ACCEPT_SHORT_MIN_TPS:-}" \
+        -m qwen36 --mtp --seed 42 -n 48 -p "The capital of France is"
+    prod_accept_check long_base "" "${CGC_ACCEPT_LONG_BASE_MIN_TPS:-}" \
+        -m qwen36 --mtp --steady
+    prod_accept_check long_dense "" "${CGC_ACCEPT_LONG_DENSE_MIN_TPS:-}" \
+        -m qwen36 --mtp --dense-iq4x --steady
+fi
+
 # ============ 總結 ============
 if [ "$fail_count" -gt 0 ]; then
     echo ""
-    echo "FAIL: $fail_count 項未通過。先修好再 commit（build 產物追蹤 / rpath / main⊆dev / 死鎖防護 / 原始碼↔binary 同步）。"
+    echo "FAIL: $fail_count 項未通過。先修好再 commit（build 產物追蹤 / rpath / main⊆dev / 死鎖防護 / 原始碼↔binary 同步 / 生產驗收）。"
     exit 1
 fi
 echo ""
-echo "OK: build/bin 追蹤與 rpath 正常、main⊆dev 成立、CGC 死鎖防護在位、原始碼↔binary 同步。"
+echo "OK: build/bin 追蹤與 rpath 正常、main⊆dev 成立、CGC 死鎖防護在位、原始碼↔binary 同步、生產驗收通過/未啟用。"
 exit 0

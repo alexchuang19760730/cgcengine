@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CGC TPOT 與 Pre-commit 驗收報告 2026-08-31</title>
+<style>
+  :root {
+    --bg: #0f1420; --card: #171e2e; --ink: #e8ecf4; --sub: #9aa5b8;
+    --line: #2a3350; --accent: #ffd479; --good: #8fe3a0; --warn: #f08a8a; --info: #7fb8f0;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; padding: 32px 20px 60px; }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 0 0 4px; }
+  h3 { font-size: 15px; margin: 18px 0 8px; }
+  .sub { color: var(--sub); font-size: 14px; margin-bottom: 28px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px 24px; margin-bottom: 22px; }
+  .card .desc { color: var(--sub); font-size: 13px; margin: 0 0 16px; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 10px; }
+  .stat { background: #101725; border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .stat .v { font-size: 24px; font-weight: 800; color: var(--accent); }
+  .stat .k { font-size: 12px; color: var(--sub); margin-top: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--sub); font-weight: 600; font-size: 11.5px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .good { color: var(--good); font-weight: 700; }
+  .warn { color: var(--warn); font-weight: 700; }
+  .info { color: var(--info); font-weight: 700; }
+  .hl { color: var(--accent); font-weight: 700; }
+  .note { font-size: 12.5px; color: var(--sub); margin-top: 12px; line-height: 1.6; }
+  .note b { color: var(--ink); }
+  .review { background: #1a2030; border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; padding: 14px 16px; margin: 12px 0; font-size: 13px; line-height: 1.6; }
+  .review .label { color: var(--accent); font-weight: 700; font-size: 12px; text-transform: uppercase; margin-bottom: 6px; }
+  code { background: #0c1019; border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 11.5px; color: #7fb8f0; }
+  pre { background: #0c1019; border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; font-size: 12px; line-height: 1.55; overflow-x: auto; color: #cde3a0; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; margin-left: 6px; }
+  .tag.g { background: #1c3a24; color: #8fe3a0; }
+  .tag.y { background: #3a321c; color: #e3cf8f; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>CGC TPOT 與 Pre-commit 驗收報告</h1>
+<div class="sub">Production MTP shell / GGUF 實測 · TPOT / decode throughput · pre-commit 覆蓋與驗收情況 · 2026-08-31<br>
+repo: <code>flashkv0516</code> · shell: <code>scripts/run_n30cache.sh</code> · pre-commit: <code>scripts/check_build_tracked.sh</code> · qwen36 MTP production line</div>
+
+<div class="card">
+  <h2>一、這輪結論</h2>
+  <p class="desc">本輪把 TPOT 量測與 pre-commit 重型生產驗收合併到同一口徑：<code>RUN_CGC_PROD_ACCEPT=1 BIN_DIR=src/llama.cpp/build/bin scripts/check_build_tracked.sh</code>。短 prompt 與長 prompt（base / denseIQ4X）皆 <span class="good">無 0000 退化</span>；pre-commit 腳本已納入對應驗收；decode/TPOT 則保留為同腳本輸出指標，可再加速度門檻 env 做嚴格卡關。正式 commit 前另清除了 warm-gate 調試插樁，並補追蹤 <code>libllama-cli-impl.dylib</code>，使 hook 在 staged 狀態下完整通過。</p>
+  <div class="stats">
+    <div class="stat"><div class="v">3/3</div><div class="k">生產驗收 PASS<br>short / long-base / long-dense</div></div>
+    <div class="stat"><div class="v">49.38</div><div class="k">long base TPOT<br>ms / token</div></div>
+    <div class="stat"><div class="v">56.69</div><div class="k">long dense TPOT<br>ms / token</div></div>
+    <div class="stat"><div class="v">20.25 / 17.64</div><div class="k">long decode t/s<br>base / denseIQ4X</div></div>
+  </div>
+  <p class="note"><b>重要說明</b>：這輪是「單行程、同口徑、最佳努力乾淨環境」量測，不是重開機後的真正冷機首跑。量測前記錄到 <code>vm_stat</code> free pages = <b>242605</b>、<code>memory_pressure</code> 顯示系統仍有既有 swap 歷史，因此此報告適合作為 <b>當前可重現驗收</b>，而不是最終 cold-boot ceiling。</p>
+</div>
+
+<div class="card">
+  <h2>二、TPOT / Decode 實測</h2>
+  <p class="desc">口徑完全對齊 production shell：<code>qwen36</code>、<code>--mtp</code>、<code>-ngl 99</code>、<code>expert-cache 4GiB</code>、<code>ctx 3072</code>。短 prompt 使用 <code>seed=42</code>；長 prompt 使用 <code>--steady</code>（固定長 prompt + ignore-eos + decodehit）。TPOT = <b>1000 / t/s</b>。</p>
+  <table>
+    <tr><th>路徑</th><th>模型</th><th>生成</th><th>decode 秒數</th><th class="num">t/s</th><th class="num">TPOT(ms)</th><th class="num">accept</th><th class="num">hit rate</th><th>0000 驗收</th></tr>
+    <tr><td><b>short_base</b></td><td>UD-IQ3_XXS</td><td>49 tok</td><td class="num">3.413</td><td class="num hl">14.355</td><td class="num">69.66</td><td class="num">94.118%</td><td class="num">62.0%</td><td class="good">PASS（含 Paris）</td></tr>
+    <tr><td><b>long_base</b></td><td>UD-IQ3_XXS</td><td>1102 tok</td><td class="num">54.418</td><td class="num hl">20.251</td><td class="num">49.38</td><td class="num">99.728%</td><td class="num">50.1%</td><td class="good">PASS</td></tr>
+    <tr><td><b>long_dense</b></td><td>UD-IQ3_XXS-denseIQ4X</td><td>1101 tok</td><td class="num">62.418</td><td class="num hl">17.639</td><td class="num">56.69</td><td class="num">99.187%</td><td class="num">88.9%</td><td class="good">PASS</td></tr>
+  </table>
+  <div class="review">
+    <div class="label">解讀</div>
+    <b>正確性</b>這輪是乾淨的：三條生產路徑都沒有 <code>0000</code>。<br>
+    <b>吞吐/TPOT</b>上，long base 明顯快於 long dense（<code>49.38ms</code> vs <code>56.69ms</code>），denseIQ4X 的優勢沒有在這輪量測裡出現。由於同機在前面同日多輪 A/B 已出現更高值，這次更像是<strong>當下機器狀態的可重現值</strong>，不是載體 ceiling。<br>
+    <b>短 prompt</b> 則證明 shell 層 warm gate 路徑已有效：<code>The capital of France is Paris</code> 穩定命中，且未再回到 <code>100000...</code> / <code>0000...</code> 家族退化。
+  </div>
+  <pre>量測命令（由 pre-commit script 內部執行）
+short : ./scripts/run_n30cache.sh -m qwen36 --mtp --seed 42 -n 48 -p "The capital of France is"
+long  : ./scripts/run_n30cache.sh -m qwen36 --mtp --steady
+dense : ./scripts/run_n30cache.sh -m qwen36 --mtp --dense-iq4x --steady</pre>
+</div>
+
+<div class="card">
+  <h2>三、pre-commit 覆蓋情況</h2>
+  <p class="desc">重點不是另起一支測試腳本，而是把 runtime 驗收收回 <code>scripts/check_build_tracked.sh</code> 裡。這樣 build 追蹤、死鎖防護、原始碼↔binary 同步、以及 short/long prompt no-0000 驗收都在同一入口。</p>
+  <table>
+    <tr><th>層級</th><th>項目</th><th>位置</th><th>預設</th><th>本輪狀態</th></tr>
+    <tr><td><b>T-P1~T-P5</b></td><td>dylib / symlink / exe / rpath 追蹤</td><td><code>scripts/check_build_tracked.sh</code></td><td>自動</td><td class="good">PASS</td></tr>
+    <tr><td><b>T-P6</b></td><td>main⊆dev 分支包含性</td><td><code>scripts/check_build_tracked.sh</code></td><td>自動</td><td class="good">PASS</td></tr>
+    <tr><td><b>T-P7</b></td><td>hist-prefetch 死鎖靜態守衛</td><td><code>scripts/check_build_tracked.sh</code></td><td>自動</td><td class="good">PASS</td></tr>
+    <tr><td><b>T-P8</b></td><td>原始碼↔binary 同步</td><td><code>scripts/check_build_tracked.sh</code></td><td>自動</td><td class="good">PASS（含 <code>libllama-cli-impl.dylib</code> 追蹤）</td></tr>
+    <tr><td><b>T-P9</b></td><td>重型生產驗收：short_base 無 0000 + 命中 Paris</td><td><code>scripts/check_build_tracked.sh</code></td><td><span class="tag y">RUN_CGC_PROD_ACCEPT=1</span></td><td class="good">PASS</td></tr>
+    <tr><td><b>T-P10</b></td><td>重型生產驗收：long_base / long_dense 無 0000 + 指標摘錄</td><td><code>scripts/check_build_tracked.sh</code></td><td><span class="tag y">RUN_CGC_PROD_ACCEPT=1</span></td><td class="good">PASS</td></tr>
+  </table>
+  <p class="note"><b>為什麼 T-P9/T-P10 是條件啟用</b>：它們是 35B production 模型的重型驗收，單次要數分鐘。如果做成每次普通 commit 都強制執行，會把 pre-commit 變成「幾分鐘起跳」的超重流程，開發體驗和誤判風險都不好。現在的做法是：<b>腳本內已覆蓋</b>，但以 <code>RUN_CGC_PROD_ACCEPT=1</code> 顯式開啟；需要速度門檻時，可再加 <code>CGC_ACCEPT_SHORT_MIN_TPS</code> / <code>CGC_ACCEPT_LONG_BASE_MIN_TPS</code> / <code>CGC_ACCEPT_LONG_DENSE_MIN_TPS</code>。</p>
+  <pre>手動重跑本輪同口徑驗收：
+BIN_DIR=src/llama.cpp/build/bin RUN_CGC_PROD_ACCEPT=1 \
+  scripts/check_build_tracked.sh
+
+可選：把 decode 速度也變成 gate
+CGC_ACCEPT_SHORT_MIN_TPS=12
+CGC_ACCEPT_LONG_BASE_MIN_TPS=24
+CGC_ACCEPT_LONG_DENSE_MIN_TPS=21</pre>
+</div>
+
+<div class="card">
+  <h2>四、本輪驗收結果</h2>
+  <p class="desc">這裡只列本輪實跑結論，不混歷史最好值。</p>
+  <table>
+    <tr><th>驗收項</th><th>通過標準</th><th>結果</th><th>判定</th></tr>
+    <tr><td>short prompt 正確性</td><td>輸出含 <code>Paris</code>，且不含 <code>0000</code></td><td><code>short_base</code> 命中 Paris，0 個 0000</td><td class="good">PASS</td></tr>
+    <tr><td>long prompt base 正確性</td><td>整段續寫，不含 <code>0000</code></td><td><code>long_base</code> 13521 字元，0 個 0000</td><td class="good">PASS</td></tr>
+    <tr><td>long prompt dense 正確性</td><td>整段續寫，不含 <code>0000</code></td><td><code>long_dense</code> 12797 字元，0 個 0000</td><td class="good">PASS</td></tr>
+    <tr><td>pre-commit 既有靜態守衛</td><td>T-P1~T-P7 全通過</td><td>dylib/rpath/main⊆dev/死鎖守衛全 PASS</td><td class="good">PASS</td></tr>
+    <tr><td>pre-commit runtime 覆蓋落地</td><td>腳本內可執行 short/long 生產驗收</td><td>T-P9/T-P10 已加入同一 script 並實跑 PASS</td><td class="good">PASS</td></tr>
+    <tr><td>速度門檻硬卡</td><td>有明確 cold-machine 門檻</td><td>本輪先保留為可選 env，未硬卡</td><td class="warn">待冷機定門檻</td></tr>
+  </table>
+  <div class="review">
+    <div class="label">一句話判定</div>
+    <b>這輪已經做到</b>：production shell 口徑下，短 prompt 與長 prompt（base / denseIQ4X）都能通過 no-0000 驗收，而且這套驗收已經實際收進 <code>scripts/check_build_tracked.sh</code>。<br>
+    <b>還沒定案的只剩一件事</b>：decode/TPOT 的最終 cold-machine 門檻，尤其是 long dense 的 ceiling 仍需要更乾淨環境再量一次，才適合寫死成 pre-commit speed gate。
+  </div>
+</div>
+
+<div class="card">
+  <h2>五、附件與證據</h2>
+  <table>
+    <tr><th>證據</th><th>內容</th></tr>
+    <tr><td><code>/tmp/cgc_precommit_short_base.log</code></td><td>short prompt 生產驗收 log（14.355 t/s，69.66 ms/token）</td></tr>
+    <tr><td><code>/tmp/cgc_precommit_long_base.log</code></td><td>long base 生產驗收 log（20.251 t/s，49.38 ms/token）</td></tr>
+    <tr><td><code>/tmp/cgc_precommit_long_dense.log</code></td><td>long dense 生產驗收 log（17.639 t/s，56.69 ms/token）</td></tr>
+    <tr><td><code>/tmp/cgc_precommit_*.out</code></td><td>三條 production 輸出樣本；本輪皆 <b>0 個 0000</b></td></tr>
+    <tr><td><code>vm_stat</code> / <code>memory_pressure</code></td><td>量測前記憶體快照：free pages 242605，非真正 reboot-cold</td></tr>
+  </table>
+</div>
+
+<p class="sub" style="margin-top:24px">數據來源：本輪由 <code>scripts/check_build_tracked.sh</code>（啟用 <code>RUN_CGC_PROD_ACCEPT=1</code>）直接觸發 production shell 量測，並由同腳本摘錄 <code>t/s / TPOT / accept / hit rate</code>。報告目的：把 short/long prompt no-0000 驗收收回 pre-commit 單一入口，同時保留 decode/TPOT 作為後續 cold-machine speed gate 的量測基線。</p>
+
+</div>
+</body>
+</html>

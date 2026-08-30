@@ -379,6 +379,21 @@ fi
 if [ "$MTP" = 1 ] && [ "${N30CACHE_MTP_DRAFT_DECODE:-1}" = 1 ]; then
     ENVS+=(CGC_DRAFT_DECODE=1)
 fi
+# §MTP 2026-08-30 warm gate: short prompts need a small verify warmup to avoid
+# ZERO-slot collapse ("0000..."), while long prompts must not inherit the short
+# threshold. Keep a shell-level default that matches the production test paths,
+# and let N30CACHE_WARM_NPAST override it for focused A/B runs.
+if [ "$MTP" = 1 ]; then
+    if [ -n "${N30CACHE_WARM_NPAST:-}" ]; then
+        ENVS+=(CGC_WARM_NPAST=$N30CACHE_WARM_NPAST)
+    elif [ "$LONG_PROMPT" = 1 ] || [ "$STEADY" = 1 ]; then
+        if [ "$DENSE_IQ4X" = 1 ]; then
+            ENVS+=(CGC_WARM_NPAST=0)
+        fi
+    else
+        ENVS+=(CGC_WARM_NPAST=8)
+    fi
+fi
 # §MTP 2026-08-25 A/B（獨立 option，CGC_MTP_DRAFT_TOP4=1）：blk.40 MTP head 的 routed experts
 # 8→4（draft-only，trunk 不變）→ draft weight-read 減半。預設 off：沒設 = 原 top-8 draft（bit-exact）。
 # 用途：量 top-4 draft 對 accept / t/s / 輸出的影響（品質成本）。N30CACHE_MTP_TOP4=1 或 --mtp-top4 開啟。

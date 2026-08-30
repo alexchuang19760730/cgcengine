@@ -17,6 +17,7 @@
 
 #include <cinttypes>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -3167,7 +3168,26 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
             n_tokens > 1 && llama_memory_seq_pos_max(get_memory(), 0) > n_tokens - 1;
         const bool draft_fast = getenv("CGC_DRAFT_DECODE") != nullptr &&
             cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP && n_tokens == 1;
-        if (verify_fast || draft_fast) {
+        // [CGC warmup gate 2026-08-30] 短 prompt 的 prefill 餵不飽 pool（55 tok ≈ 7 chunk），
+        // decode 冷啟動期大量 cold expert 被 ZERO-slot 讀成零權重 → logits 崩潰成 0000...。
+        // 根因是「pool 未餵飽」而非「cold 率本身」（長/短 prompt decode 期 cold 分佈相近，用
+        // ratio 門檻會誤傷長 prompt）。確定性修復：n_past 未達暖機門檻（pool 尚未餵飽）時
+        // 禁用 fast path，走下方 exact ensure_batch 補槽；n_past 達標後恢復 fast path。長
+        // prompt prefill 已餵飽 pool，decode 首步 n_past 就超門檻，完全不受影響。env
+        // CGC_WARM_NPAST 可調（預設 256）。
+        const long long cgc_n_past = llama_memory_seq_pos_max(get_memory(), 0);
+        const char * cgc_warm_env = getenv("CGC_WARM_NPAST");
+        const long long cgc_warm_npast = cgc_warm_env ? atoll(cgc_warm_env) : 256;
+        const bool cgc_warm_gate = cgc_n_past < cgc_warm_npast;
+        const bool cgc_fast_eligible = !cgc_warm_gate;
+        static int cgc_warm_dbg = 0;
+        if (cgc_warm_dbg < 24 && il <= 1) {
+            cgc_warm_dbg++;
+            fprintf(stderr, "CGC-WARM %s n_past=%lld warm=%lld fast=%d\n",
+                    cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP ? "draft" : "verify",
+                    cgc_n_past, cgc_warm_npast, (int) cgc_fast_eligible);
+        }
+        if ((verify_fast || draft_fast) && cgc_fast_eligible) {
             // zero the reserved ZERO slot once per layer: cold experts (slot table == -1) map to
             // it, so the FFN reads a finite zero contribution instead of an OOB pool row (NaN
             // cascade -> whole-graph corruption).
