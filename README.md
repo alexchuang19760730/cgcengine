@@ -62,6 +62,17 @@ cd models/gguf && shasum -a 256 -c SHA256SUMS && cd ../..
 scripts/build_cgc_llama.sh          # cmake --build，產物進 src/llama.cpp/build/bin
 ```
 
+### 3b. 跑 HTTP 服務（llama-server，給 Windows/其他夥伴遠端測試）
+
+```bash
+./scripts/run_server.sh             # 0.0.0.0:8080，OpenAI 相容，log 進 Backup/cgc_logs/
+```
+
+- 夥伴端：程式直接指 `http://<Mac LAN IP>:8080/v1`（腳本啟動完成會印連線卡）
+- 本機 curl 測 localhost **必帶 `--noproxy '*'`**（本地代理會攔 127.0.0.1 → 502 空回應）
+- 內建防護：啟動前清殘留行程、記憶體 <25% 拒跑（16GB 機疊 13GB 模型會 kernel panic——**server 運行期間本機禁跑任何 13GB 級操作**）
+- 非 MTP 基線 ~7 t/s（結構性）；注意 Qwen3 為思考模型，簡短問答的答案在 `reasoning_content` 欄位
+
 ### 4. 驗收（steady-state 回歸基準）
 
 ```bash

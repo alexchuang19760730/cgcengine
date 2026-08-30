@@ -191,13 +191,17 @@ cd models/gguf && shasum -a 256 -c SHA256SUMS</pre>
     <tr><td>定案</td><td><b>維持 -c 2048</b>（與生產線一致）；當機根因是行程疊加，不是 n_ctx。教訓：dense 模型 KV 直覺不可移植到 GQA MoE——<b>下記憶體結論前先算 KV 數學</b>（2 × n_head_kv × (k+v) × 2B × n_layer）</td></tr>
   </table>
 
-  <h3>4.7 OPEN：llama-server 輸出 0000 退化（調查中）</h3>
+  <h3>4.7 resolved：llama-server 輸出 0000 退化（記憶體壓力相關，2026-08-30 定案）</h3>
   <table>
     <tr><th>項</th><th>內容</th></tr>
-    <tr><td>症狀</td><td>同 CGC env 下：llama-simple 輸出正常（hit 78%、5811 真 pread）；llama-server <code>/v1/chat/completions</code> 與 raw <code>/completion</code> 均輸出 <code>0000...</code></td></tr>
-    <tr><td>已排除</td><td>chat template（raw /completion 同症狀）· kv_unified/np 併發（--no-kv-unified -np 1 同症狀）· batch 大小（-b 8 -ub 8 同症狀）· pool path 未觸發（CGC-PRE 顯示冷專家、CGC-POST 顯示 slot 分配）</td></tr>
-    <tr><td>狀態</td><td class="bad">OPEN——根因調查中（重開機滅證後以新遙測重現）；llama-server 對外服務暫緩上線</td></tr>
+    <tr><td>症狀</td><td>8/30 晚：同 CGC env 下 llama-simple 正常，llama-server 三端點輸出 <code>0000...</code></td></tr>
+    <tr><td>已排除</td><td>chat template（raw /completion 同症）· kv_unified/np 併發 · batch 大小 · pool path 未觸發 · <b>本地代理</b>（7897 只會 502 送不到，無法偽造 JSON 內容）</td></tr>
+    <tr><td>定案</td><td><b>乾淨單行程環境無法重現</b>：重開機後同 binary 同參數三端點全健康（reasoning='The capital of France is **Paris**.'、40-token 長文正常、6.8 t/s 非 MTP 基線、log 0 損壞事件）。0000 只出現在<b>記憶體超賣視窗</b>（3 次 server 疊代 + 13GB simple 對照共存 = §4.5 panic 同現場，或殭屍 server 殘留服務）</td></tr>
+    <tr><td>根因分類</td><td>營運面（行程衛生），非代碼 defect——與 kernel panic 同一根因的兩種表現。防護 = <code>scripts/run_server.sh</code>：啟動前 pkill 殘留 + 記憶體水位 &lt;25% 拒跑 + 持久 log（Backup/cgc_logs）+ 健康輪詢 + 連線卡</td></tr>
+    <tr><td>新 gotcha</td><td><b>curl 測 localhost 必帶 <code>--noproxy '*'</code></b>：本地代理（7897）攔 127.0.0.1 → 502 空回應，症狀酷似 server 掛死。診斷順序：先 <code>curl -sv --noproxy '*'</code> 再下結論</td></tr>
+    <tr><td>驗證</td><td class="good">/health ok · /completion 文本正常 · /v1/chat reasoning 正確 · 2333 行 log 0 次損壞事件（zeroing/short read/FATAL/NaN 全零）</td></tr>
   </table>
+
 
 
   <div class="review red">
