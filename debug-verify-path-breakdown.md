@@ -88,26 +88,44 @@
     - secondary gap `4`: `ffn_moe_swiglu-* -> shared_expert_gate_sigmoid-* -> ffn_moe_weights_sum-* -> ffn_moe_down-*`
   - All sampled candidates preserved the same routed ids (`ids_same=1`) and directly consume the fused GLU output (`y_same=1`), so the blocker is no longer graph ambiguity. The remaining work is implementation work: either batch/coalesce that `gap=4/5` post-swiglu strip, or add a real fused-down kernel path for `iq2_s -> iq3_s` (and optionally the `iq4_xs` late-layer side path).
 - Implemented cut: main-path early down coalescing (`CGC_GLU_FUSED_DOWN=1`):
-  - Scope is intentionally narrow:
-    - only `gate/up=iq2_s -> down=iq3_s`
-    - late-layer `iq4_xs` (`ffn_moe_down-34`, `ffn_moe_down-38`) stays on stock fallback
-    - no revisit of the old standalone `gate+up` experiment
+  - Scope started narrow and now covers the known late-layer side path as well:
+    - main path: `gate/up=iq2_s -> down=iq3_s`
+    - late-layer side path: `gate/up=iq2_s -> down=iq4_xs` on `ffn_moe_down-34` / `ffn_moe_down-38`
+    - still no revisit of the old standalone `gate+up` experiment
   - Implementation:
     - after a successful fused `gate+up+glu` dispatch, host immediately dispatches the matched `ffn_moe_down-*` `MUL_MAT_ID` from the same encode site and marks it consumed, collapsing the observed `gap=4/5` strip without pretending this is a single-shader fused-down kernel.
     - guarded by:
       - same ids tensor as the fused pair
       - `down->src[1] == fused_glu_output`
-      - down weight type exactly `iq3_s`
+      - down weight type in `{iq3_s, iq3_xxs, iq4_xs}`
       - contiguous `F32` down dst
       - galloc overlap rejection across in-between nodes before early dispatch
   - Runtime evidence (`CGC_MMV_DOWN_DBG=2`, shortened steady run `-n 32`):
     - `6012` main-path candidates
     - `6012` early dispatches
     - `0` overlap rejects
+  - Late-layer validation (`CGC_MMV_DOWN_DBG=2`, shortened steady run `-n 64` after extending eligibility):
+    - `ffn_moe_down-34` now logs `candidate: gate/up=iq2_s down=iq4_xs gap=4`
+    - `ffn_moe_down-38` now logs `candidate: gate/up=iq2_s down=iq4_xs gap=4`
+    - both late-layer nodes also log `dispatching early down after fused glu`, confirming they no longer stay on fallback
+    - short steady probe result under validation logging: `26.035 t/s`, `hit 85.1%`, `accept 95.652%`
   - Production-shell A/B (`N30CACHE_MMV_FUSE=1`, steady `-n 64`):
     - `N30CACHE_GLU_FUSED_DOWN=0`: `26.062 t/s`, `hit 83.6%`, `accept 95.652%`
     - `N30CACHE_GLU_FUSED_DOWN=1`: `26.507 t/s`, `hit 84.9%`, `accept 97.727%`
     - delta: `+0.445 t/s` on this shortened steady window, with no observed `0000` regression in output.
+  - Cleaner long steady ABBA (`A=off, B=on, B=on, A=off`, `-n 1100`, `N30CACHE_WARM=0`):
+    - `A1`: `26.632 t/s`, `hit 88.9%`, `accept 99.187%`, `n_accept=732`
+    - `B1`: `24.007 t/s`, `hit 90.6%`, `accept 98.919%`, `n_accept=732`
+    - `B2`: `20.667 t/s`, `hit 90.0%`, `accept 99.864%`, `n_accept=735`
+    - `A2`: `20.859 t/s`, `hit 88.9%`, `accept 99.187%`, `n_accept=732`
+    - takeaway: this window is cleaner than the earlier biased `AAA/BBB` ordering, but machine-state drift is still large. In this ABBA cut, the extended fused-down path again improves hit/accept, but does not yet prove a stable long-steady throughput gain.
+  - Falsified next cut: eager host-side reordering of the in-between `shared_expert_gate_sigmoid-*` / `ffn_moe_weights_sum-*` sidecars from the fused-GLU site:
+    - trial shape: after fused `gate+up+glu`, proactively encode `shared_expert_gate_sigmoid-*` and/or `ffn_moe_weights_sum-*` before their original loop position, then keep early-dispatching `ffn_moe_down-*`
+    - outcome on shortened steady validation (`-n 64`):
+      - `shared_expert_gate_sigmoid` only: `9.046 t/s`, `accept 0.781%`, `n_accept=1`
+      - `ffn_moe_weights_sum` only: `8.901 t/s`, `accept 0.000%`, `n_accept=0`
+      - both together: `8.937 t/s`, `accept 0.000%`, `n_accept=0`
+    - conclusion: this is not a safe host-side reordering cut. The sidecar nodes may look independent in the local `gap=4/5` window, but moving them ahead of their original dispatch position breaks the production speculative path. The code change was reverted after validation; the remaining viable direction is shader/local fusion that preserves original scheduling order, not eager reordering from the GLU site.
 
 ## Verification Conclusion
 - A: **Confirmed.** Remaining headroom is primarily limited by verify-side compute/gather time. Late steady verify batches still take about `92-98 ms` even when `requests_delta=0` and `file_reads_delta=0`.
@@ -120,3 +138,6 @@
 - H: **Confirmed.** The post-swiglu/down region is not behaving like a single clean node boundary. On `MTL0` it is repeatedly executed as short `span=2` or `span=6` chunks ending at `ffn_moe_down-*`, with the dominant variant starting at `conv_states-*`. That makes dispatch batching / chunk coalescing the highest-value next lever, with routed-down still the best local kernel candidate inside that region.
 - I: **Confirmed.** The routed-down target is now concrete rather than speculative: the actual verify path repeatedly presents `gate/up=iq2_s -> down=iq3_s` candidates with the same ids and a fixed `gap=4/5`. This means the next optimization can focus directly on that post-swiglu strip without reopening the old gate+up question.
 - J: **Confirmed.** The main-path early-down coalescing cut is live and profitable: on the current shortened steady production A/B it improves throughput (`26.062 -> 26.507 t/s`) while preserving acceptance/hit behavior and showing no `0000` regression. This is now the correct base to iterate on, instead of reopening the old gate+up-only branch.
+- K: **Confirmed.** The late-layer `iq4_xs` side path was blocked by eligibility rather than graph shape. After extending the accepted down types, `ffn_moe_down-34` and `ffn_moe_down-38` both dispatch early from the fused GLU site.
+- L: **Inconclusive for throughput, positive for quality.** A cleaner long-window ABBA still shows better hit/accept behavior with fused-down enabled, but the run-to-run drift remains too large to claim a locked long-steady throughput win from this cut alone.
+- M: **Rejected.** Direct eager reordering of `shared_expert_gate_sigmoid-*` or `ffn_moe_weights_sum-*` from the fused-GLU site is not production-safe: every variant collapsed speculative acceptance during validation, so this path should not be merged as a host-side batching optimization.

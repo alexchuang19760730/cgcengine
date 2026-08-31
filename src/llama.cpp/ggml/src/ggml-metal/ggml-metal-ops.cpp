@@ -2906,7 +2906,13 @@ static void ggml_metal_op_audit_mmv_glu_down(ggml_metal_op_t ctx, int idx, int g
         return;
     }
 
-    if (w_down->type != GGML_TYPE_IQ3_S && w_down->type != GGML_TYPE_IQ3_XXS) {
+    auto is_batchable_down_type = [](ggml_type type) {
+        return type == GGML_TYPE_IQ3_S ||
+               type == GGML_TYPE_IQ3_XXS ||
+               type == GGML_TYPE_IQ4_XS;
+    };
+
+    if (!is_batchable_down_type(w_down->type)) {
         GGML_LOG_WARN("[MMV_DOWN dbg] down=%s fail: unsupported down weight type %s\n",
                 down->name, ggml_type_name(w_down->type));
         return;
@@ -2960,6 +2966,12 @@ static bool ggml_metal_op_find_mmv_glu_down(
     return false;
 }
 
+static bool ggml_metal_op_is_batchable_mmv_glu_down_type(ggml_type type) {
+    return type == GGML_TYPE_IQ3_S ||
+           type == GGML_TYPE_IQ3_XXS ||
+           type == GGML_TYPE_IQ4_XS;
+}
+
 static bool ggml_metal_op_can_batch_mmv_glu_down(
         ggml_metal_op_t ctx,
         int idx,
@@ -2982,7 +2994,7 @@ static bool ggml_metal_op_can_batch_mmv_glu_down(
 
     ggml_tensor * down = ctx->node(*down_idx);
 
-    if (down->src[0] == nullptr || down->src[0]->type != GGML_TYPE_IQ3_S) {
+    if (down->src[0] == nullptr || !ggml_metal_op_is_batchable_mmv_glu_down_type(down->src[0]->type)) {
         return false;
     }
 
