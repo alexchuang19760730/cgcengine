@@ -1,0 +1,7 @@
+{
+  "task_id": "sqlite-db-truncate",
+  "instruction": "I have a sqlite database in ./trunc.db that was corrupted. Recover as many of the rows as possible, and create a JSON file in ./recover.json. The output should have the format [{\"word\": \"testwordXY\", \"value\": M}, {\"word\": \"testwordZZ\",\"value\": N}, ...]",
+  "is_resolved": false,
+  "failure_mode": "runner_error: timed out",
+  "n_steps": 0
+}

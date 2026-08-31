@@ -1,0 +1,7 @@
+{
+  "task_id": "fix-pandas-version",
+  "instruction": "You are working on a data analysis project that processes customer\ntransaction data. The project's test suite is failing with the following error:\n\nInput:\npython -m src.data_processor\n\nOutput:\nTypeError: read_csv() got an\\\n\\ unexpected keyword argument 'dtype_backend'\n\nPlease fix to environment to\\\n\\ support the features used in the code. \n\"",
+  "is_resolved": false,
+  "failure_mode": "runner_error: HTTP 502: b'{\"error\":{\"message\":\"Codebuff request failed: 429 {\\\\\"status\\\\\":\\\\\"spend_limited\\\\\",\\\\\"accessTier\\\\\":\\\\\"limited\\\\\",\\\\\"message\\\\\":\\\\\"This account has reduced capacity: it was flagged for VPN or proxy usage, a restricted location, or an email domain commonly used by bot farms. If you are on a VPN, connecting dir'",
+  "n_steps": 0
+}

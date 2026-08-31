@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CGC Engine 整体架构 — MoE Engine / Agent Harness / Hermes Router / PD 算力共享</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  :root { --bg:#0d1117; --card:#161b22; --border:#30363d; --text:#c9d1d9; --heading:#f0f6fc; --accent:#58a6ff; --green:#3fb950; --red:#f85149; --yellow:#d29922; --purple:#bc8cff; --orange:#db6d28; }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans SC',Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;max-width:1100px;margin:0 auto;padding:1.5rem}
+  h1{font-size:1.8rem;color:var(--heading);text-align:center;margin-bottom:0.3rem}
+  .subtitle{text-align:center;opacity:0.7;margin-bottom:1.5rem;font-size:0.9rem}
+  h2{font-size:1.3rem;color:var(--accent);margin:1.8rem 0 0.6rem;border-left:4px solid var(--accent);padding-left:0.6rem}
+  h3{font-size:1.1rem;color:var(--green);margin:1.2rem 0 0.4rem}
+  .mermaid{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:1.2rem;margin:1rem 0;text-align:center;overflow-x:auto}
+  .mermaid svg{max-width:100%;height:auto}
+  table{width:100%;border-collapse:collapse;margin:0.8rem 0;font-size:0.85rem}
+  th,td{border:1px solid var(--border);padding:0.5rem 0.6rem;text-align:left}
+  th{background:var(--card);color:var(--heading);font-weight:600}
+  tr:nth-child(even){background:var(--card)}
+  .badge{display:inline-block;padding:0.1rem 0.4rem;border-radius:10px;font-size:0.7rem;font-weight:600;margin-right:0.2rem}
+  .b-blue{background:#1f6feb33;color:var(--accent)} .b-green{background:#23863633;color:var(--green)} .b-red{background:#f8514933;color:var(--red)} .b-yellow{background:#9e6a0333;color:var(--yellow)} .b-purple{background:#8957e533;color:var(--purple)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0.8rem;margin:0.8rem 0}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.8rem;margin:0.8rem 0}
+  .box{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:0.8rem}
+  .box h4{font-size:0.95rem;margin-bottom:0.3rem}
+  .box p,.box li{font-size:0.82rem;margin:0.2rem 0}
+  .box ul{margin:0.3rem 0 0 1.2rem}
+  .callout{background:var(--card);border-left:4px solid var(--accent);padding:0.8rem 1rem;border-radius:0 8px 8px 0;margin:0.8rem 0;font-size:0.85rem}
+  .callout.green{border-left-color:var(--green)} .callout.yellow{border-left-color:var(--yellow)} .callout.red{border-left-color:var(--red)}
+  .callout strong{color:var(--heading)}
+  code{background:#0d1117;border:1px solid var(--border);border-radius:3px;padding:0.1rem 0.3rem;font-size:0.82em;font-family:'JetBrains Mono',monospace}
+  .tag{display:inline-block;font-size:0.7rem;padding:0.1rem 0.35rem;border-radius:4px;margin:0.1rem;font-weight:600}
+  .tag-moe{background:#1f6feb33;color:var(--accent)} .tag-pd{background:#d2992233;color:var(--yellow)} .tag-agent{background:#23863633;color:var(--green)} .tag-mtp{background:#8957e533;color:var(--purple)}
+  hr{border:none;border-top:1px solid var(--border);margin:1.2rem 0}
+  .footer{text-align:center;opacity:0.5;font-size:0.75rem;margin-top:1.5rem}
+  @media(max-width:700px){.grid2,.grid3{grid-template-columns:1fr}body{padding:0.8rem}}
+</style>
+</head>
+<body>
+<script>
+mermaid.initialize({startOnLoad:true,theme:'dark',themeVariables:{primaryColor:'#1f6feb',primaryTextColor:'#f0f6fc',primaryBorderColor:'#30363d',lineColor:'#58a6ff',secondaryColor:'#238636',tertiaryColor:'#161b22',background:'#161b22',mainBkg:'#161b22',nodeBorder:'#30363d',clusterBkg:'#0d1117',clusterBorder:'#30363d',titleColor:'#f0f6fc',edgeLabelBackground:'#161b22',fontSize:'13px'},flowchart:{curve:'basis',padding:15,htmlLabels:true}});
+</script>
+
+<h1>CGC Engine 整体架构</h1>
+<p class="subtitle">MoE Engine · General Engine · Agent Harness · Hermes Router · PD 算力共享</p>
+
+<!-- ====== 1. 全局架构 ====== -->
+<h2>1. 全局架构</h2>
+
+<div class="mermaid">
+graph TB
+    subgraph CLIENT["📱 客户端层"]
+        direction LR
+        C1["Windows 8GB<br/>Agent Hub"]
+        C2["Mac M4<br/>Decode Engine"]
+        C3["鸿蒙PC 24GB<br/>Decode Node"]
+        C4["Mate 70 Pro<br/>端侧 Agent"]
+    end
+
+    subgraph ROUTER["🔀 Hermes Router"]
+        direction LR
+        R1["DOPD Router<br/>4D 路由决策"]
+        R2["Decode-Speed<br/>感知路由"]
+        R3["Profile<br/>设备能力上报"]
+    end
+
+    subgraph ENGINE["⚡ CGC Engine Runtime"]
+        direction LR
+        subgraph MOE["MoE Engine"]
+            E1["Expert Cache<br/>4GiB 预加载"]
+            E2["L4 Skip Load<br/>跳过非活跃 Expert"]
+        end
+        subgraph GENERAL["General Engine"]
+            E3["MTP Speculative<br/>Draft × 2-4"]
+            E4["PD Separation<br/>Prefill-Decode 分离"]
+        end
+    end
+
+    subgraph HARNESS["🧠 Agent Harness"]
+        direction LR
+        H1["DSH<br/>DeepSeek Harness"]
+        H2["Prime Agent<br/>RLM + /refine"]
+        H3["Terminal-Bench<br/>76 任务评估"]
+    end
+
+    CLIENT --> ROUTER
+    ROUTER --> ENGINE
+    ENGINE --> HARNESS
+
+    style CLIENT fill:#161b22,stroke:#58a6ff,stroke-width:2px
+    style ROUTER fill:#161b22,stroke:#d29922,stroke-width:2px
+    style ENGINE fill:#161b22,stroke:#3fb950,stroke-width:2px
+    style HARNESS fill:#161b22,stroke:#bc8cff,stroke-width:2px
+    style MOE fill:#0d1117,stroke:#58a6ff,stroke-width:1px
+    style GENERAL fill:#0d1117,stroke:#3fb950,stroke-width:1px
+    style C1 fill:#1f6feb33,stroke:#58a6ff,color:#f0f6fc
+    style C2 fill:#23863633,stroke:#3fb950,color:#f0f6fc
+    style C3 fill:#23863633,stroke:#3fb950,color:#f0f6fc
+    style C4 fill:#23863633,stroke:#3fb950,color:#f0f6fc
+    style R1 fill:#d2992233,stroke:#d29922,color:#f0f6fc
+    style R2 fill:#d2992233,stroke:#d29922,color:#f0f6fc
+    style R3 fill:#d2992233,stroke:#d29922,color:#f0f6fc
+    style E1 fill:#1f6feb33,stroke:#58a6ff,color:#f0f6fc
+    style E2 fill:#1f6feb33,stroke:#58a6ff,color:#f0f6fc
+    style E3 fill:#23863633,stroke:#3fb950,color:#f0f6fc
+    style E4 fill:#23863633,stroke:#3fb950,color:#f0f6fc
+    style H1 fill:#8957e533,stroke:#bc8cff,color:#f0f6fc
+    style H2 fill:#8957e533,stroke:#bc8cff,color:#f0f6fc
+    style H3 fill:#8957e533,stroke:#bc8cff,color:#f0f6fc
+</div>
+
+<!-- ====== 2. 四大模块 ====== -->
+<h2>2. 四大核心模块</h2>
+
+<div class="grid2">
+  <div class="box">
+    <h4>⚡ MoE Engine <span class="tag tag-moe">Core</span></h4>
+    <p>MoE 模型推理加速引擎，专为 35B-A3B 等稀疏 MoE 模型优化</p>
+    <ul>
+      <li><strong>Expert Cache</strong> — 4GiB 预加载池，Mac M4: 3→27 t/s (9x)</li>
+      <li><strong>L4 Skip Load</strong> — 跳过非活跃 expert 磁盘读取</li>
+      <li><strong>Expert Prefetch</strong> — hist/src 双模式预测性加载</li>
+      <li><strong>GLU Fused Down</strong> — 融合 gate+up 计算</li>
+    </ul>
+    <p><span class="badge b-green">✅ 已验证</span> Expert Cache + L4 Skip</p>
+  </div>
+  <div class="box">
+    <h4>🚀 General Engine <span class="tag tag-mtp">MTP</span></h4>
+    <p>通用推理加速，MTP Speculative Decoding + PD 分离</p>
+    <ul>
+      <li><strong>MTP Draft × 2-4</strong> — 一次预测多 token，加速 50-100%</li>
+      <li><strong>PD Separation</strong> — Prefill-Decode 分离，跨设备推理</li>
+      <li><strong>DOPD Router</strong> — Decode-Speed 感知路由</li>
+      <li><strong>edge_server.py</strong> — 设备级 HTTP endpoint</li>
+    </ul>
+    <p><span class="badge b-green">✅ 已验证</span> MTP 26.4 t/s / accept 97.4%</p>
+  </div>
+  <div class="box">
+    <h4>🧠 Agent Harness <span class="tag tag-agent">Agent</span></h4>
+    <p>智能体框架，DSH + Prime Agent 自改进循环</p>
+    <ul>
+      <li><strong>DSH</strong> — 插件化 agent harness (v0.1.2)</li>
+      <li><strong>Prime Agent</strong> — RLM 递归子代理 + /refine</li>
+      <li><strong>Terminal-Bench</strong> — 76 任务评估套件</li>
+      <li><strong>SFT Pipeline</strong> — 轨迹→数据集→LoRA 微调</li>
+    </ul>
+    <p><span class="badge b-yellow">🔧 开发中</span> Phase 1: DSH Baseline</p>
+  </div>
+  <div class="box">
+    <h4>🔀 Hermes Router <span class="tag tag-pd">Router</span></h4>
+    <p>多维路由决策，4D 评分 + decode-speed 感知</p>
+    <ul>
+      <li><strong>4D Routing</strong> — RAM/GPU/Score/Speed 综合评分</li>
+      <li><strong>Decode-Speed</strong> — 实测 tok/s 驱动决策</li>
+      <li><strong>DeviceProfile</strong> — 设备能力自动上报</li>
+      <li><strong>PD Modes</strong> — pure_cloud/edge_cloud/local_full</li>
+    </ul>
+    <p><span class="badge b-green">✅ 已验证</span> Windows↔Mac 联调通过</p>
+  </div>
+</div>
+
+<!-- ====== 3. PD 算力共享 ====== -->
+<h2>3. PD 算力共享：四种模式</h2>
+
+<div class="mermaid">
+flowchart LR
+    subgraph MODES["PD 算力共享模式"]
+        direction TB
+        M1["☁️ 纯云<br/>Cloud Only"]
+        M2["🌐 端云<br/>Edge-Cloud PD"]
+        M3["📱 端端<br/>Edge-Edge PD"]
+        M4["💻 纯端<br/>Local Only"]
+    end
+
+    M1 -->|"DGX Spark<br/>V4 Flash 82.7%"| CLOUD["☁️ Cloud<br/>Prefill 60t/s"]
+    M2 -->|"DGX Spark prefill<br/>+ Mac decode"| HYBRID["🌐 Hybrid<br/>Cloud+Edge"]
+    M3 -->|"Mac prefill<br/>+ Windows decode"| PEER["📱 Peer<br/>Edge↔Edge"]
+    M4 -->|"Mac M4<br/>全套推理"| LOCAL["💻 Local<br/>$0 全离线"]
+
+    style MODES fill:#0d1117,stroke:#30363d,stroke-width:1px
+    style M1 fill:#f8514933,stroke:#f85149,color:#f0f6fc
+    style M2 fill:#d2992233,stroke:#d29922,color:#f0f6fc
+    style M3 fill:#1f6feb33,stroke:#58a6ff,color:#f0f6fc
+    style M4 fill:#23863633,stroke:#3fb950,color:#f0f6fc
+    style CLOUD fill:#f8514933,stroke:#f85149,color:#f0f6fc
+    style HYBRID fill:#d2992233,stroke:#d29922,color:#f0f6fc
+    style PEER fill:#1f6feb33,stroke:#58a6ff,color:#f0f6fc
+    style LOCAL fill:#23863633,stroke:#3fb950,color:#f0f6fc
+</div>
+
+<table>
+  <tr><th>模式</th><th>Prefill</th><th>Decode</th><th>模型</th><th>成本</th><th>适用场景</th></tr>
+  <tr>
+    <td><span class="badge b-red">☁️ 纯云</span></td>
+    <td>DGX Spark ×2</td>
+    <td>DGX Spark</td>
+    <td>V4 Flash 155GB</td>
+    <td>$0.14/M input</td>
+    <td>复杂 repo-level SWE 任务</td>
+  </tr>
+  <tr>
+    <td><span class="badge b-yellow">🌐 端云</span></td>
+    <td>DGX Spark / Mac M4</td>
+    <td>Mac / Windows / 鸿蒙</td>
+    <td>V4 Flash + Qwen3.6 GGUF</td>
+    <td>~$0.01/请求</td>
+    <td>中等难度，需要云端算力</td>
+  </tr>
+  <tr>
+    <td><span class="badge b-blue">📱 端端</span></td>
+    <td>Mac M4 (27t/s)</td>
+    <td>Windows 8GB / 鸿蒙PC</td>
+    <td>Qwen3.6-35B GGUF</td>
+    <td>$0</td>
+    <td>本地协作，隐私优先</td>
+  </tr>
+  <tr>
+    <td><span class="badge b-green">💻 纯端</span></td>
+    <td>Mac M4</td>
+    <td>Mac M4</td>
+    <td>Qwen3.6-35B GGUF</td>
+    <td>$0</td>
+    <td>简单任务，完全离线</td>
+  </tr>
+</table>
+
+<!-- ====== 4. 设备矩阵 ====== -->
+<h2>4. 设备能力矩阵</h2>
+
+<table>
+  <tr><th>设备</th><th>RAM</th><th>GPU/NPU</th><th>Decode 速度</th><th>可跑模型</th><th>角色</th></tr>
+  <tr>
+    <td><strong>Mac M4</strong></td><td>16-64GB</td><td>M4 GPU (unified)</td>
+    <td><span class="badge b-green">27 t/s</span> (MTP)</td>
+    <td>Qwen3.6-35B IQ3 / Gemma4</td>
+    <td>主 Decode + Prefill</td>
+  </tr>
+  <tr>
+    <td><strong>Windows 8GB</strong></td><td>8GB</td><td>MX250 2GB</td>
+    <td><span class="badge b-yellow">3-5 t/s</span></td>
+    <td>Qwen2.5-7B</td>
+    <td>Agent Hub + 轻量 Decode</td>
+  </tr>
+  <tr>
+    <td><strong>鸿蒙 PC</strong></td><td>24GB</td><td>麒麟 NPU</td>
+    <td><span class="badge b-yellow">3-5 t/s</span></td>
+    <td>Qwen3.6-35B (CPU)</td>
+    <td>Decode 节点</td>
+  </tr>
+  <tr>
+    <td><strong>Mate 70 Pro</strong></td><td>12GB</td><td>麒麟 NPU</td>
+    <td><span class="badge b-red">规划中</span></td>
+    <td>Qwen3-14B</td>
+    <td>端侧 Agent</td>
+  </tr>
+  <tr>
+    <td><strong>DGX Spark ×2</strong></td><td>256GB</td><td>GB10 Blackwell</td>
+    <td><span class="badge b-green">60 t/s</span></td>
+    <td>V4 Flash 155GB</td>
+    <td>云端 Prefill</td>
+  </tr>
+</table>
+
+<!-- ====== 5. 数据流 ====== -->
+<h2>5. 端到端数据流</h2>
+
+<div class="mermaid">
+flowchart TB
+    USER["👤 用户任务"] --> ROUTER2["🔀 Hermes Router<br/>4D 评分 + decode-speed"]
+
+    ROUTER2 -->|"复杂任务"| CLOUD2["☁️ DGX Spark<br/>Prefill 60t/s"]
+    ROUTER2 -->|"中等任务"| MAC["🍎 Mac M4<br/>Prefill+Decode 27t/s"]
+    ROUTER2 -->|"简单任务"| WIN["🖥️ Windows<br/>Local Decode 3t/s"]
+
+    CLOUD2 -->|"KV cache<br/>~5MB/1K tokens"| DECODE["⚡ Local Decode<br/>MTP × 2-4"]
+    MAC --> DECODE
+    WIN --> DECODE
+
+    DECODE --> AGENT["🧠 Agent Harness<br/>DSH + /refine"]
+    AGENT --> RESULT["📊 结果"]
+    RESULT -->|"失败/可优化"| REFINE["🔄 /refine<br/>harness 改进"]
+    REFINE --> AGENT
+
+    style USER fill:#161b22,stroke:#30363d,color:#f0f6fc
+    style ROUTER2 fill:#d2992233,stroke:#d29922,color:#f0f6fc
+    style CLOUD2 fill:#f8514933,stroke:#f85149,color:#f0f6fc
+    style MAC fill:#23863633,stroke:#3fb950,color:#f0f6fc
+    style WIN fill:#1f6feb33,stroke:#58a6ff,color:#f0f6fc
+    style DECODE fill:#8957e533,stroke:#bc8cff,color:#f0f6fc
+    style AGENT fill:#8957e533,stroke:#bc8cff,color:#f0f6fc
+    style RESULT fill:#161b22,stroke:#30363d,color:#f0f6fc
+    style REFINE fill:#23863633,stroke:#3fb950,color:#f0f6fc
+</div>
+
+<!-- ====== 6. Benchmark ====== -->
+<h2>6. Benchmark 对标</h2>
+
+<table>
+  <tr><th>模型</th><th>Terminal-Bench 2.1</th><th>SWE-bench</th><th>部署方式</th><th>成本</th></tr>
+  <tr><td>DeepSeek V4 Pro</td><td><strong>87.9</strong></td><td>80.6</td><td>API</td><td>$0.27/M</td></tr>
+  <tr><td>DeepSeek V4 Flash</td><td><strong>82.7</strong></td><td>79</td><td>DGX Spark / API</td><td>$0.14/M</td></tr>
+  <tr><td>Ornith 1.5 35B</td><td>67.8</td><td>79</td><td>自托管</td><td>$0</td></tr>
+  <tr style="background:var(--card)"><td><strong>Qwen3.6-35B (原始)</strong></td><td>52.5</td><td>73.4</td><td>自托管</td><td>$0</td></tr>
+  <tr style="background:#23863615"><td><strong>🎯 我们的目标 (Phase 6)</strong></td><td><strong>68-75</strong></td><td><strong>78-82</strong></td><td>本地 MTP + /refine</td><td><strong>$0</strong></td></tr>
+</table>
+
+<div class="callout green">
+  <strong>策略：</strong> 用 DSH + Prime Agent /refine + 多模型协作 (Qwen3.6 + Gemma4) + CGC MTP 加速，
+  在完全本地部署 ($0 成本) 下达到 Ornith 1.5 水平 (68+)，接近 DeepSeek V4 Flash (82.7) 的 80-90%。
+</div>
+
+<!-- ====== 7. 路线图 ====== -->
+<h2>7. 开发路线图</h2>
+
+<div class="grid3">
+  <div class="box">
+    <h4>Phase 1-2 ✅</h4>
+    <p><span class="badge b-green">已完成</span></p>
+    <ul>
+      <li>CGC Engine 三平台编译</li>
+      <li>Expert Cache + L4 Skip</li>
+      <li>MTP 26.4 t/s 实测</li>
+      <li>DOPD Router 联调</li>
+      <li>Windows↔Mac E2E</li>
+    </ul>
+  </div>
+  <div class="box">
+    <h4>Phase 3 🔧</h4>
+    <p><span class="badge b-yellow">进行中</span></p>
+    <ul>
+      <li>DSH + agent_harness 整合</li>
+      <li>DSH Minimal baseline</li>
+      <li>Prime Agent /refine</li>
+      <li>Gemma4 子代理</li>
+      <li>76 任务全量评估</li>
+    </ul>
+  </div>
+  <div class="box">
+    <h4>Phase 4 📋</h4>
+    <p><span class="badge b-purple">规划中</span></p>
+    <ul>
+      <li>DGX Spark 接入</li>
+      <li>KV cache 跨网络传输</li>
+      <li>混合路由 (本地/云端)</li>
+      <li>V4 Flash 蒸馏</li>
+      <li>鸿蒙手机端部署</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ====== 8. 技术栈 ====== -->
+<h2>8. 技术栈一览</h2>
+
+<table>
+  <tr><th>层级</th><th>技术</th><th>状态</th></tr>
+  <tr><td><strong>模型</strong></td><td>Qwen3.6-35B-A3B · Gemma4-26B-A4B · Qwen3-14B</td><td><span class="badge b-green">可用</span></td></tr>
+  <tr><td><strong>推理引擎</strong></td><td>CGC fork llama.cpp · Expert Cache · MTP Speculative</td><td><span class="badge b-green">已验证</span></td></tr>
+  <tr><td><strong>路由</strong></td><td>Hermes Router · DOPD · 4D Scoring · decode-speed</td><td><span class="badge b-green">已验证</span></td></tr>
+  <tr><td><strong>Agent</strong></td><td>DSH v0.1.2 · Prime Agent RLM · /refine</td><td><span class="badge b-yellow">整合中</span></td></tr>
+  <tr><td><strong>部署</strong></td><td>edge_server.py · HDC · deploy scripts</td><td><span class="badge b-green">三平台</span></td></tr>
+  <tr><td><strong>评估</strong></td><td>Terminal-Bench 76 tasks · SWE-bench · DSH trajectory</td><td><span class="badge b-yellow">开发中</span></td></tr>
+  <tr><td><strong>微调</strong></td><td>MLX LoRA · SFT pipeline · teacher 蒸馏</td><td><span class="badge b-purple">Phase 6</span></td></tr>
+</table>
+
+<hr>
+<p class="footer">
+  CGC Engine Architecture Overview — Alex Chuang — 2026-08-30<br>
+  <code>cgcengine0823</code> · dev branch · <code>github.com/alexchuang19760730/cgcengine0823</code>
+</p>
+
+</body>
+</html>
