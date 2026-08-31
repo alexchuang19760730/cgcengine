@@ -1,6 +1,6 @@
 # llama.cpp Deployment Guide
 
-**Version:** 27c4e90 (expert-cache L4 + CGC_EARLY)  
+**Version:** sync with current `dev` via `deploy-harmonyos/macos/build-macos.sh`
 **Platforms:** macOS (M4 Max) + HarmonyOS (Kirin 9030 + Maleoon 935)
 
 ---
@@ -22,6 +22,9 @@
 ### Pre-built Binary (Recommended)
 
 ```bash
+# Sync the macOS bundle from the latest local dev build
+./macos/build-macos.sh
+
 # Run
 ./macos/run-macos.sh -m ~/models/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf
 
@@ -32,11 +35,17 @@
 ### Build from Source
 
 ```bash
-cd temp/llama_roadB/llama.cpp-master
-mkdir -p build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release -DGGML_METAL=ON
-cmake --build . -j8 --target llama-simple llama-bench
+cd deploy-harmonyos/macos
+./build-macos.sh
 ```
+
+This produces a complete macOS bundle under `deploy-harmonyos/macos/`, including:
+
+- `llama-simple`
+- `llama-speculative-simple`
+- `llama-bench`
+- `llama-server`
+- required runtime dylibs such as `libllama`, `libllama-common`, `libmtmd`, `libllama-server-impl`, and Metal/ggml libraries
 
 ---
 
@@ -93,4 +102,4 @@ CGC_OA_ASYNC=1 CGC_EXPERT_CACHE_BYTES=4294967296 llama-simple -m model.gguf -ngl
 
 ---
 
-*Version: 27c4e90 · Date: 2026-08-26*
+*Version: current dev sync · Date: 2026-08-31*

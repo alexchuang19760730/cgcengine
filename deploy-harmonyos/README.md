@@ -1,11 +1,12 @@
 # llama.cpp Dual-Platform Deploy Package
 
-**Version:** 27c4e90 (expert-cache L4 + CGC_EARLY)
+**Version:** sync with current `dev` via `macos/build-macos.sh`
 
 ## Quick Start
 
 ### macOS (M4 Max)
 ```bash
+./macos/build-macos.sh
 ./benchmark-macos.sh ~/models/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf
 ```
 
@@ -27,6 +28,7 @@
 | DEPLOY_GUIDE.md | Full deployment guide |
 | benchmark-macos.sh | Mac M4 benchmark |
 | deploy-to-harmonyos.sh | One-click deploy |
-| macos/ | Pre-built macOS binaries |
+| macos/build-macos.sh | Build + sync latest macOS bundle |
+| macos/ | Latest macOS binaries synced from `src/llama.cpp/build/bin` |
 | harmonyos/ | Build + run scripts for Kirin 9030 |
 | src.tar.gz | Source code tarball |
