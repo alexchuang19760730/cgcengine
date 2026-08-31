@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<title>CGC 0000 退化根因調查報告 — 2026-08-31 夥伴簡報</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "PingFang TC", "Microsoft JhengHei", sans-serif; background: #1a1d24; color: #d8dde6; }
+  .slide { width: 1024px; margin: 24px auto; background: #22262f; border-radius: 14px; padding: 40px 52px; box-shadow: 0 6px 24px rgba(0,0,0,.4); page-break-after: always; }
+  h1 { font-size: 30px; color: #6fc3ff; margin-bottom: 14px; }
+  h2 { font-size: 24px; color: #ffd166; margin-bottom: 16px; border-bottom: 2px solid #3a3f4b; padding-bottom: 8px; }
+  h3 { font-size: 17px; color: #98c379; margin: 14px 0 6px; }
+  p, li { font-size: 15px; line-height: 1.65; }
+  ul, ol { padding-left: 22px; margin: 8px 0; }
+  li { margin: 5px 0; }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 14px; }
+  th { background: #2e3440; color: #ffd166; text-align: left; padding: 7px 10px; }
+  td { border: 1px solid #3a3f4b; padding: 7px 10px; vertical-align: top; }
+  code { background: #2e3440; color: #c678dd; padding: 1px 6px; border-radius: 4px; font-size: 13px; font-family: "SF Mono", Menlo, monospace; }
+  .good { color: #98c379; font-weight: bold; }
+  .bad  { color: #e06c75; font-weight: bold; }
+  .warn { color: #e5c07b; font-weight: bold; }
+  .tag { display: inline-block; background: #c678dd; color: #fff; border-radius: 6px; padding: 1px 10px; font-size: 12px; margin-left: 8px; }
+  .box { background: #2a2f3a; border-left: 4px solid #6fc3ff; border-radius: 6px; padding: 12px 16px; margin: 12px 0; }
+  .box.red { border-left-color: #e06c75; }
+  .box.green { border-left-color: #98c379; }
+  .kpi { display: flex; gap: 16px; margin: 14px 0; }
+  .kpi div { flex: 1; background: #2a2f3a; border-radius: 8px; padding: 14px; text-align: center; }
+  .kpi .num { font-size: 26px; color: #6fc3ff; font-weight: bold; }
+  .kpi .lbl { font-size: 12px; color: #8b93a3; margin-top: 4px; }
+  .timeline li { margin: 8px 0; }
+  .muted { color: #8b93a3; font-size: 13px; }
+  @media print { .slide { width: 100%; margin: 0; border-radius: 0; } body { background: #fff; } }
+</style>
+</head>
+<body>
+
+<!-- ===== 封面 ===== -->
+<div class="slide">
+  <h1>llama-server「0000 退化」根因調查報告</h1>
+  <p class="muted">CGC 引擎 · 事件編號 INC-20260830 · 2026-08-31 夥伴報告</p>
+  <div class="box">
+    <p><b>一句話結論：</b>0000 輸出不是代碼 bug，是 <b>16GB 記憶體被多個 13GB 級行程超賣</b>的兩種表現之一（另一種表現是核心 panic 強制重開機）。乾淨單行程環境下 <span class="good">無法重現</span>，server 三個端點全部健康。防護已落地為 <code>scripts/run_server.sh</code>。</p>
+  </div>
+  <div class="kpi">
+    <div><div class="num">0</div><div class="lbl">代碼 defect 數</div></div>
+    <div><div class="num">2</div><div class="lbl">同根因事件（panic + 0000）</div></div>
+    <div><div class="num">3/3</div><div class="lbl">復驗端點全部健康</div></div>
+    <div><div class="num">3</div><div class="lbl">修復 commit（已推 GitHub）</div></div>
+  </div>
+  <p class="muted">講者：Alex · 對象：Windows 夥伴測試組 + 全體 · 時長：約 10 分鐘</p>
+</div>
+
+<!-- ===== 時間線 ===== -->
+<div class="slide">
+  <h2>1. 事件時間線（2026-08-30）</h2>
+  <ul class="timeline">
+    <li><b>傍晚</b> — Windows 夥伴提出需求：「Mac M4 上啟動 llama-server，我們要遠端測試」</li>
+    <li><b>18:35</b> — 首次構建 llama-server（補開 <code>LLAMA_BUILD_SERVER=ON</code>，dylib 0.0.70→0.0.97）</li>
+    <li><b>18:4x</b> — 第一次啟動（預設參數）→ 發現 <code>--expert-cache</code> 參數名不對，重啟</li>
+    <li><b>18:5x</b> — 第二次啟動 → 輸出 <span class="bad">0000...</span>；嘗試 <code>-b 8</code>、第三次 <code>--no-kv-unified -np 1</code> → 仍 0000</li>
+    <li><b>18:5x</b> — 同視窗跑 llama-simple 對照（同 env）→ <span class="good">輸出正常</span>（hit 78%、5811 次真實 pread）→ 問題鎖定 server 特有</li>
+    <li><b>18:59:24</b> — <span class="bad">macOS 核心 panic</span>（watchdogd 91 秒無心跳 → 整機強制重開機），<code>/tmp</code> 診斷 log 全滅</li>
+    <li><b>重開機後</b> — 乾淨環境重啟 server（單行程）→ <span class="good">三端點全部健康，0000 消失</span></li>
+    <li><b>夜間</b> — 根因定案、<code>run_server.sh</code> 防護落地、文件與 commit 完成（<code>983589a12</code> 推 GitHub dev+main）</li>
+  </ul>
+</div>
+
+<!-- ===== 症狀 ===== -->
+<div class="slide">
+  <h2>2. 症狀：什麼是「0000 退化」</h2>
+  <table>
+    <tr><th>端點</th><th>現場（8/30 晚，壞）</th><th>復驗（8/31 乾淨環境，好）</th></tr>
+    <tr><td><code>/v1/chat/completions</code></td><td class="bad">content = "0000..."</td><td class="good">reasoning = "The capital of France is **Paris**."</td></tr>
+    <tr><td><code>/completion</code>（raw）</td><td class="bad">content = "0000..."</td><td class="good">" the capital of the country of France. It is"</td></tr>
+    <tr><td>長生成（40 token）</td><td>—（沒測到）</td><td class="good">正常思考文本，6.8 t/s（非 MTP 基線）</td></tr>
+    <tr><td>對照組 llama-simple（同 env）</td><td class="good">正常</td><td class="good">正常</td></tr>
+  </table>
+  <div class="box red">
+    <p><b>0000 的本質：</b>decode 輸出的 token ID 全部是 0。在 CGC 專家快取架構下，這是「專家權重讀到全零 → FFN 輸出歸零 → 模型退化到最平凡輸出」的典型病徵（與歷史上 slot table -1 → OOB 讀 → NaN 級聯同一家族）。</p>
+  </div>
+  <p class="muted">重點：simple 正常 + server 壞 = 當時直覺是「server 特有 bug」。這個直覺方向是對的排除法，但結論後來被推翻——見第 4 頁。</p>
+</div>
+
+<!-- ===== 排除過程 ===== -->
+<div class="slide">
+  <h2>3. 排除法：六個假設逐一檢驗</h2>
+  <table>
+    <tr><th>#</th><th>假設</th><th>檢驗動作</th><th>結果</th></tr>
+    <tr><td>1</td><td>chat template 問題</td><td>改打 raw <code>/completion</code></td><td class="bad">同症狀 → 排除</td></tr>
+    <tr><td>2</td><td>kv_unified / 多 slot 併發</td><td><code>--no-kv-unified -np 1</code></td><td class="bad">同症狀 → 排除</td></tr>
+    <tr><td>3</td><td>batch 太大繞過 pool-path</td><td><code>-b 8 -ub 8</code></td><td class="bad">同症狀 → 排除</td></tr>
+    <tr><td>4</td><td>pool path 沒觸發</td><td>log 遙測 CCG-PRE / CCG-POST</td><td class="bad">有冷專家、有 slot 分配 → 排除</td></tr>
+    <tr><td>5</td><td>本地代理污染回應</td><td><code>curl -sv</code> 看路由</td><td class="warn">代理 7897 攔截 → 502 空回應，但<b>無法偽造 JSON 內容</b> → 只解釋「空回應」，不解釋 0000</td></tr>
+    <tr><td>6</td><td><b>記憶體壓力 / 殭屍行程</b></td><td>重開機後單行程復驗</td><td class="good">三端點全健康 → <b>定案</b></td></tr>
+  </table>
+  <div class="box">
+    <p><b>方法論要點：</b>排除法做到第 5 步時，「server 特有 bug」的假設空間已經很窄。但 panic log 的 <code>panicked task = llama-server</code> + <b>jetsam 出現 484 次</b>指向了另一個方向——記憶體。</p>
+  </div>
+</div>
+
+<!-- ===== 根因 ===== -->
+<div class="slide">
+  <h2>4. 根因：記憶體超賣——一次根因，兩種表現</h2>
+  <div class="box red">
+    <p><b>核心 panic 證據鏈</b>（<code>panic-full-2026-08-30-185924.0002.panic</code>）：</p>
+    <ul>
+      <li><code>watchdog timeout: no checkins from watchdogd in 91 seconds</code> — 整機凍結 91 秒</li>
+      <li><code>panicked task = llama-server</code> — 凍結時正在跑我們的運算</li>
+      <li><b>jetsam（記憶體殺手）出現 484 次</b> — 核心瘋狂搶救記憶體的痕跡</li>
+      <li>任務表同時有 llama-server <b>與</b> llama-simple（兩個 13GB 級行程共存）</li>
+    </ul>
+  </div>
+  <h3>超賣的算術（16GB 統一記憶體）</h3>
+  <table>
+    <tr><th>記憶體大戶</th><th>大小</th><th>可逐出？</th></tr>
+    <tr><td>llama-server 模型載入（<code>--no-mmap</code>）</td><td>13.2 GB</td><td>進 page cache，壓力下可壓縮但難以及時逐出</td></tr>
+    <tr><td>llama-simple 對照（同視窗殘留）</td><td>13 GB</td><td>同上</td></tr>
+    <tr><td>CGC 4GiB Metal pool</td><td>4 GB</td><td class="bad">wired，核心完全不可逐出</td></tr>
+    <tr><td>macOS + IDE + 其他</td><td>~4-6 GB</td><td>部分 wired</td></tr>
+  </table>
+  <p>→ 需求遠超 16GB → 壓縮/jetsam 追不上 → 核心執行緒餓死 → watchdogd 心跳斷 91 秒 → panic。</p>
+  <div class="box">
+    <p><b>兩種表現：</b>同一個記憶體超賣視窗，(a) 惡化到極端 = 核心 panic 重開機；(b) 中度 = 專家 pread 短讀/填充失敗 → blob 歸零 → <b>0000 輸出</b>。加上 3 次 server 重啟風暴（每次重讀 13GB），就是我們看到的全部現象。</p>
+  </div>
+</div>
+
+<!-- ===== 兩個插曲 ===== -->
+<div class="slide">
+  <h2>5. 調查途中的兩個插曲（值得單獨講）</h2>
+  <h3>插曲 A：本地代理的「假掛死」</h3>
+  <p>Mac 上的 curl 預設走了本地代理（port 7897），代理攔截 <code>127.0.0.1</code> 請求回 <b>502 空回應</b>——症狀酷似 server 掛死。</p>
+  <div class="box"><p><b>Gotcha 入檔：</b>本機 curl 測 localhost <b>必帶</b> <code>curl --noproxy '*'</code>。診斷順序：先 <code>curl -sv --noproxy '*'</code> 看清路由，再下「server 掛了」的結論。夥伴遠端連線不受影響（不走 Mac 的代理）。</p></div>
+  <h3>插曲 B：一個錯誤結論的當場回收</h3>
+  <p>調查中我曾建議「server 改 <code>-c 1024</code> 瘦身記憶體」。被追問後實算 KV 數學：</p>
+  <table>
+    <tr><th>參數（從 GGUF 檔頭解析）</th><th>值</th></tr>
+    <tr><td>head_count_kv（GQA）</td><td><b>2</b>（不是 16！）</td></tr>
+    <tr><td>key/value length</td><td>256 / 256</td></tr>
+    <tr><td>KV per token</td><td>2×2×(256+256)×2B×40層 = <b>4 KB</b></td></tr>
+    <tr><td>-c 1024 / 2048 / 4096</td><td>KV 僅 <b>4 / 8 / 16 MB</b></td></tr>
+  </table>
+  <p>→ 相對 13.2GB 權重是 <b>0.03% 雜訊</b>，省它毫無意義還砍半上下文。<span class="bad">結論收回</span>，維持 <code>-c 2048</code>（與生產線一致）。</p>
+  <div class="box green"><p><b>教訓：</b>dense 模型的 KV 直覺不可移植到 GQA MoE——下記憶體結論前先算 KV 數學。</p></div>
+</div>
+
+<!-- ===== 修復與防護 ===== -->
+<div class="slide">
+  <h2>6. 修復與防護：run_server.sh（已落地）</h2>
+  <p>根因是營運面（行程衛生），所以防護也是營運面——不是改 C++，是把紀律寫進啟動器：</p>
+  <table>
+    <tr><th>防護</th><th>內容</th></tr>
+    <tr><td>① 清殘留行程</td><td>啟動前 <code>pkill</code> 舊 server / simple / speculative（殭屍是 0000 與 panic 的共同土壤）</td></tr>
+    <tr><td>② 記憶體水位檢查</td><td>系統可用 &lt;25% 直接拒跑並提示（13GB 模型 + 4GiB wired pool 的硬門檻）</td></tr>
+    <tr><td>③ 持久 log</td><td>寫 <code>Backup/cgc_logs/</code>（重開機不滅證；<code>/tmp</code> 這次把診斷證據全吃掉了）</td></tr>
+    <tr><td>④ 健康輪詢 + 連線卡</td><td>起來後自動驗 <code>/health</code>，印出 LAN IP、測試指令、<code>--noproxy</code> 提醒、停止方法</td></tr>
+    <tr><td>⑤ 參數對齊生產線</td><td><code>-np 1 --no-kv-unified -c 2048</code> + 完整 CGC env + watchdog</td></tr>
+  </table>
+  <div class="box"><p><b>夥伴用法：</b><code>./scripts/run_server.sh</code> → 等連線卡 → Windows 端直接指 <code>http://&lt;Mac LAN IP&gt;:8080/v1</code>（OpenAI 相容）。</p></div>
+  <p class="muted">Git：commit <code>dca4ba0b7</code>（server 入庫）→ <code>a1a5f2b95</code>（文件）→ <code>983589a12</code>（run_server.sh + 定案），已推 github0823 的 dev 與 main。</p>
+</div>
+
+<!-- ===== 教訓 ===== -->
+<div class="slide">
+  <h2>7. 制度化教訓（給全團隊）</h2>
+  <ol>
+    <li><b>一次一個重工行程（鐵律）</b> — server 運行期間，那台 Mac 禁止任何 13GB 級操作：llama-simple 對照、量化、HF 下載。行程疊加 = kernel panic，不是「慢一點」。</li>
+    <li><b>重啟前確認舊行程已死</b> — <code>ps</code> 確認，不是只按 Stop；短時間重啟風暴（每次重讀 13GB）本身就是記憶體轟炸。</li>
+    <li><b>CGC_WATCHDOG 救不了 kernel 層</b> — 它是行程內 GPU watchdog；整機凍結要看 <code>/Library/Logs/DiagnosticReports/panic-full-*.panic</code>。判斷口訣：app crash 看 stderr，整機重開機看 panic log。</li>
+    <li><b>重要 log 即時寫持久路徑</b> — <code>/tmp</code> 會被重開機清掉，這次把現場證據全滅了。</li>
+    <li><b>先驗工具再看症狀</b> — <code>curl -sv --noproxy '*'</code> 十秒鐘分清「送不到」vs「模型輸出壞」。</li>
+    <li><b>下記憶體結論前先算 KV 數學</b> — GQA MoE 的 KV 是雜訊級，直覺會帶錯方向（插曲 B）。</li>
+    <li><b>「無法重現」本身是證據</b> — 當所有代碼假設排除且乾淨環境變好，根因在環境（記憶體/行程），要敢於定案不在代碼裡找。</li>
+  </ol>
+</div>
+
+<!-- ===== 現況與下一步 ===== -->
+<div class="slide">
+  <h2>8. 現況與下一步</h2>
+  <h3>現在可以直接測</h3>
+  <ul>
+    <li>Server 運行中：<code>http://192.168.101.87:8080/v1</code>（OpenAI 相容）</li>
+    <li>Windows 夥伴：程式直接指向上面位址即可（<b>不需要</b>走代理設定）</li>
+    <li>注意：Qwen3 是思考模型——簡短問答的答案常在 <code>reasoning_content</code> 欄位；要直接文本用 <code>/completion</code> 或加大 max_tokens</li>
+    <li>非 MTP 基線 <b>~7 t/s（結構性）</b>；要 26.5 t/s 走 MTP 生產線（另一個 binary）</li>
+  </ul>
+  <h3>下一步（依優先級）</h3>
+  <ol>
+    <li>夥伴實測回報：連線穩定性 + 併發行為（目前 <code>-np 1</code> 單流）</li>
+    <li>若需要對外長跑：評估 MTP 模式進 server（server 已支援 spec 參數，需 A/B）</li>
+    <li>把「一次一個重工行程」加進夥伴測試規範文件</li>
+  </ol>
+  <div class="box green">
+    <p><b>報告要點回顧：</b>0000 = 記憶體超賣的症狀，不是 bug；panic = 同一根因的極端表現；防護 = <code>run_server.sh</code> 紀律自動化；server 現已健康可測。</p>
+  </div>
+</div>
+
+</body>
+</html>
