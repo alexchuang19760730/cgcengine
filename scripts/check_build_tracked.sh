@@ -46,6 +46,7 @@
 #   ALLOW_MISSING=1  允許 build/bin 或檔案不存在（不擋 commit；預設為擋）
 #   ALLOW_STALE_BIN=1 允許 binary 比 staged 原始碼舊（不建議；預設為擋）
 #   RUN_CGC_PROD_ACCEPT=1  啟用重型生產驗收（短/長 prompt no-0000 + 指標摘錄）
+#   RUN_DEPLOY_HARMONYOS_ACCEPT=1  啟用 deploy-harmonyos/macOS 重型驗收（重建 bundle + 啟動檢查）
 #   CGC_ACCEPT_SHORT_MIN_TPS / CGC_ACCEPT_LONG_BASE_MIN_TPS / CGC_ACCEPT_LONG_DENSE_MIN_TPS
 #                    可選：為重型生產驗收加 t/s 下限（未設 = 僅回報，不擋）
 
@@ -139,195 +140,200 @@ for ref in refs/heads/main refs/remotes/github0823/main; do
     fi
 done
 
-# --- build/bin 不存在 ---
+HAVE_BIN_DIR=1
 if [ ! -d "$BIN_ABS" ]; then
+    HAVE_BIN_DIR=0
     if [ "${ALLOW_MISSING:-0}" = 1 ]; then
-        echo "SKIP  $BIN_DIR 不存在，ALLOW_MISSING=1 → 不擋 commit"
-        exit 0
+        echo "SKIP  $BIN_DIR 不存在，ALLOW_MISSING=1 → 跳過 build/bin 追蹤檢查"
+    else
+        echo "SKIP  $BIN_DIR 不存在（本 repo 若無生產 build 屬正常；仍會繼續跑其他驗收）"
     fi
-    echo "SKIP  $BIN_DIR 不存在（本 repo 若無生產 build 屬正常，用 ALLOW_MISSING=1 略過）"
-    exit 0
 fi
 
 # ============ 檢查 1：build/bin 內每個 *.dylib 都必須被 git 追蹤 ============
-echo "--- 檢查 dylib 被追蹤（洞 B） ---"
-DYLIBS=()
-while IFS= read -r f; do DYLIBS+=("$f"); done < <(find "$BIN_ABS" -maxdepth 1 -name '*.dylib' -type f 2>/dev/null | sort)
-if [ "${#DYLIBS[@]}" -eq 0 ]; then
-    fail "build/bin 沒有任何 *.dylib"
-else
-    for f in "${DYLIBS[@]}"; do
-        rel="${f#"$REPO_ROOT"/}"
-        if git -C "$REPO_ROOT" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
-            pass "追蹤 OK: $rel"
-        else
-            fail "未追蹤 dylib（會被 git 靜默忽略/遺失）: $rel"
-        fi
-    done
-fi
-
-# ============ 檢查 2：必要 dylib 前綴至少要有一個已追蹤的檔案 ============
-for prefix in "${REQUIRED_DYLIB[@]}"; do
-    found=0
-    for f in "${DYLIBS[@]}"; do
-        base="$(basename "$f")"
-        case "$base" in
-            "$prefix"*)
-                rel="${f#"$REPO_ROOT"/}"
-                if git -C "$REPO_ROOT" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then found=1; fi
-                ;;
-        esac
-    done
-    if [ "$found" = 1 ]; then
-        pass "必要 dylib 前綴已追蹤: $prefix"
+if [ "$HAVE_BIN_DIR" = 1 ]; then
+    echo "--- 檢查 dylib 被追蹤（洞 B） ---"
+    DYLIBS=()
+    while IFS= read -r f; do DYLIBS+=("$f"); done < <(find "$BIN_ABS" -maxdepth 1 -name '*.dylib' -type f 2>/dev/null | sort)
+    if [ "${#DYLIBS[@]}" -eq 0 ]; then
+        fail "build/bin 沒有任何 *.dylib"
     else
-        fail "缺少已追蹤的必要 dylib 前綴: $prefix"
-    fi
-done
-
-# ============ 檢查 3：symlink 必須解析到已追蹤的目標 ============
-echo "--- 檢查 symlink 目標被追蹤 ---"
-LINKS=()
-while IFS= read -r l; do LINKS+=("$l"); done < <(find "$BIN_ABS" -maxdepth 1 -type l 2>/dev/null | sort)
-for l in "${LINKS[@]}"; do
-    target="$(realpath_ "$l")"
-    rel_target="${target#"$REPO_ROOT"/}"
-    if [ "$rel_target" = "$target" ]; then
-        fail "symlink 指向 repo 外: $l -> $target"
-        continue
-    fi
-    if git -C "$REPO_ROOT" ls-files --error-unmatch -- "$rel_target" >/dev/null 2>&1; then
-        pass "symlink 目標已追蹤: $(basename "$l") -> $rel_target"
-    else
-        fail "symlink 目標未追蹤（洞 B）: $l -> $rel_target"
-    fi
-done
-
-# ============ 檢查 4：關鍵 exe 存在且被追蹤 ============
-echo "--- 檢查關鍵 exe 被追蹤 ---"
-for exe in "${REQUIRED_EXES[@]}"; do
-    p="$BIN_ABS/$exe"
-    if [ ! -x "$p" ]; then
-        fail "關鍵 exe 不存在: $exe"
-        continue
-    fi
-    rel="${p#"$REPO_ROOT"/}"
-    if git -C "$REPO_ROOT" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
-        pass "exe 追蹤 OK: $rel"
-    else
-        fail "未追蹤 exe: $rel"
-    fi
-done
-
-# ============ 檢查 5：關鍵 exe 的 @rpath 必須指向本 repo 自己的 build/bin ============
-echo "--- 檢查 @rpath（洞 D） ---"
-for exe in "${REQUIRED_EXES[@]}"; do
-    p="$BIN_ABS/$exe"
-    [ -x "$p" ] || continue
-    # otool: LC_RPATH 下的 path 行 → 取第 2 欄（絕對路徑）
-    rpaths=($(otool -l "$p" 2>/dev/null | awk '/LC_RPATH/{f=1} f && /path /{print $2; f=0}'))
-    if [ "${#rpaths[@]}" -eq 0 ]; then
-        fail "@rpath 不存在（可能載入不相容 dylib）: $exe"
-        continue
-    fi
-    ok=0
-    for rp in "${rpaths[@]}"; do
-        rp_real="$(realpath_ "$rp")"
-        if [ "$rp_real" = "$BIN_ABS" ]; then ok=1; fi
-    done
-    if [ "$ok" = 1 ]; then
-        pass "@rpath 指向本 repo build/bin: $exe -> ${rpaths[*]}"
-    else
-        fail "@rpath 被改到別處（洞 D）: $exe -> ${rpaths[*]}（預期 $BIN_ABS）"
-    fi
-done
-
-# ============ 檢查 7：CGC 專家快取死鎖防護（2026-08-30 hist-prefetch 死鎖，4a746c724 修復） ============
-# 教訓一（近似狀態隨並發腐爛）：「用啟發式近似某狀態集合」的保護邏輯，只要新增一個
-#   併發寫入者（bg 填充的 ++tick）就會失效 → 必須用精確集合（batch_owned mask）。
-# 教訓二（等待必須可證偽）：條件不可能再滿足的 wait 必須大聲 FATAL，不得無聲掛死。
-echo "--- 檢查 CGC 死鎖防護（hist-prefetch 教訓） ---"
-# llama 原始碼根：從 build/bin 往上兩層（src/llama.cpp/build/bin → src/llama.cpp；build/bin → repo 根）
-LLAMA_ROOT="$(dirname "$(dirname "$BIN_ABS")")"
-EC_SRC="$LLAMA_ROOT/src/llama-expert-cache.cpp"
-if [ ! -f "$EC_SRC" ]; then
-    echo "SKIP  $EC_SRC 不存在（非 CGC fork repo）"
-else
-    # 7a：pick_slot 用精確 batch_mask，不得回到 min_tick 啟發式
-    if grep -q 'uint64_t min_tick' "$EC_SRC"; then
-        fail "7a pick_slot 回到 min_tick 啟發式（近似狀態隨並發腐爛 — 2026-08-30 死鎖根因）"
-    elif grep -qF 'const uint8_t * batch_mask' "$EC_SRC"; then
-        pass "7a pick_slot 用精確 batch_mask（非啟發式近似）"
-    else
-        fail "7a pick_slot 簽名找不到 batch_mask（ensure_batch 的 in-batch 保護被改壞？）"
-    fi
-    # 7b：batch_owned mask 在位（宣告 + hit 標記 + miss 分配標記）
-    n_mask="$(grep -cF 'batch_owned' "$EC_SRC" || true)"
-    if [ "${n_mask:-0}" -ge 3 ]; then
-        pass "7b batch_owned mask 在位（${n_mask} 處 ≥ 3）"
-    else
-        fail "7b batch_owned mask 不完整（${n_mask} 處 < 3：宣告/hit 標記/分配標記）"
-    fi
-    # 7c：掛死看門狗在位（等待可證偽）
-    if grep -qF 'FATAL ensure_batch' "$EC_SRC" && grep -qF 'FATAL ensure_slot' "$EC_SRC"; then
-        pass "7c 掛死看門狗在位（ensure_batch + ensure_slot FATAL）"
-    else
-        fail "7c 掛死看門狗被移除（pick_slot -1 且無 in-flight 時的等待不可證偽 = 無聲掛死）"
-    fi
-    # 7d：每個「等待填充完成」的裸 wait 都要有 in_flight 守衛
-    n_bare="$(grep -cF 'cache->bg_cv.wait(lk);' "$EC_SRC" || true)"
-    n_guard="$(grep -cF 'in_flight = false' "$EC_SRC" || true)"
-    if [ "${n_bare:-0}" -le "${n_guard:-0}" ]; then
-        pass "7d 裸 bg_cv.wait ${n_bare} 個 ≤ in_flight 守衛 ${n_guard} 個"
-    else
-        fail "7d 裸 bg_cv.wait(lk) ${n_bare} 個 > 守衛 ${n_guard} 個 — 新等待點必須先證明有 in-flight 填充可等"
-    fi
-fi
-
-# ============ 檢查 8：原始碼 ↔ build 產物同步（checkout 免重建可驗證不變量） ============
-echo "--- 檢查 原始碼↔binary 同步 ---"
-STAGED_FILES="$(git -C "$REPO_ROOT" diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)"
-if [ -z "$STAGED_FILES" ]; then
-    echo "SKIP  無 staged 檔案（手動跑 hook 時屬正常；commit 時必有 staged）"
-else
-    # staged 的 llama 原始碼（src/ 與 examples/ 下的 .cpp/.h/.c/.mm/.metal — 都編進 binary）
-    staged_src=()
-    while IFS= read -r f; do
-        case "$f" in
-            *src/*.cpp|*src/*.h|*src/*.c|*src/*.mm|*src/*.metal|*examples/*.cpp|*examples/*.h)
-                [ -f "$REPO_ROOT/$f" ] && staged_src+=("$f") ;;
-        esac
-    done <<< "$STAGED_FILES"
-    if [ "${#staged_src[@]}" -eq 0 ]; then
-        pass "8 無 llama 原始碼變更（僅 doc/腳本/產物）"
-    else
-        # (a) build/bin 產物必須在同一個 commit staged
-        staged_bin="$(grep -F 'build/bin/' <<< "$STAGED_FILES" | head -1 || true)"
-        if [ -n "$staged_bin" ]; then
-            pass "8 build 產物隨原始碼 staged（${staged_bin##*/}）"
-        else
-            fail "8 stage 了 ${#staged_src[@]} 個原始碼但沒 stage build/bin 產物 — git add src/llama.cpp/build/bin/ 一起進 commit"
-        fi
-        # (b) binary mtime 不得老於最新 staged 原始碼（有重建過；ALLOW_STALE_BIN=1 跳過）
-        if [ "${ALLOW_STALE_BIN:-0}" != 1 ]; then
-            newest_src=0
-            for f in "${staged_src[@]}"; do
-                m="$(stat -f %m "$REPO_ROOT/$f" 2>/dev/null || echo 0)"
-                [ "$m" -gt "$newest_src" ] && newest_src="$m"
-            done
-            newest_bin=0
-            for f in "$BIN_ABS"/*.dylib; do
-                [ -f "$f" ] || continue
-                m="$(stat -f %m "$f" 2>/dev/null || echo 0)"
-                [ "$m" -gt "$newest_bin" ] && newest_bin="$m"
-            done
-            if [ "$newest_bin" -ge "$newest_src" ]; then
-                pass "8 binary 比 staged 原始碼新（已重建）"
+        for f in "${DYLIBS[@]}"; do
+            rel="${f#"$REPO_ROOT"/}"
+            if git -C "$REPO_ROOT" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
+                pass "追蹤 OK: $rel"
             else
-                fail "8 binary 比 staged 原始碼舊 — 先 cmake --build src/llama.cpp/build --target llama-simple llama-speculative-simple -j 8 再 commit（ALLOW_STALE_BIN=1 可跳過）"
+                fail "未追蹤 dylib（會被 git 靜默忽略/遺失）: $rel"
+            fi
+        done
+    fi
+
+    # ============ 檢查 2：必要 dylib 前綴至少要有一個已追蹤的檔案 ============
+    for prefix in "${REQUIRED_DYLIB[@]}"; do
+        found=0
+        for f in "${DYLIBS[@]}"; do
+            base="$(basename "$f")"
+            case "$base" in
+                "$prefix"*)
+                    rel="${f#"$REPO_ROOT"/}"
+                    if git -C "$REPO_ROOT" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then found=1; fi
+                    ;;
+            esac
+        done
+        if [ "$found" = 1 ]; then
+            pass "必要 dylib 前綴已追蹤: $prefix"
+        else
+            fail "缺少已追蹤的必要 dylib 前綴: $prefix"
+        fi
+    done
+
+    # ============ 檢查 3：symlink 必須解析到已追蹤的目標 ============
+    echo "--- 檢查 symlink 目標被追蹤 ---"
+    LINKS=()
+    while IFS= read -r l; do LINKS+=("$l"); done < <(find "$BIN_ABS" -maxdepth 1 -type l 2>/dev/null | sort)
+    for l in "${LINKS[@]}"; do
+        target="$(realpath_ "$l")"
+        rel_target="${target#"$REPO_ROOT"/}"
+        if [ "$rel_target" = "$target" ]; then
+            fail "symlink 指向 repo 外: $l -> $target"
+            continue
+        fi
+        if git -C "$REPO_ROOT" ls-files --error-unmatch -- "$rel_target" >/dev/null 2>&1; then
+            pass "symlink 目標已追蹤: $(basename "$l") -> $rel_target"
+        else
+            fail "symlink 目標未追蹤（洞 B）: $l -> $rel_target"
+        fi
+    done
+
+    # ============ 檢查 4：關鍵 exe 存在且被追蹤 ============
+    echo "--- 檢查關鍵 exe 被追蹤 ---"
+    for exe in "${REQUIRED_EXES[@]}"; do
+        p="$BIN_ABS/$exe"
+        if [ ! -x "$p" ]; then
+            fail "關鍵 exe 不存在: $exe"
+            continue
+        fi
+        rel="${p#"$REPO_ROOT"/}"
+        if git -C "$REPO_ROOT" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
+            pass "exe 追蹤 OK: $rel"
+        else
+            fail "未追蹤 exe: $rel"
+        fi
+    done
+
+    # ============ 檢查 5：關鍵 exe 的 @rpath 必須指向本 repo 自己的 build/bin ============
+    echo "--- 檢查 @rpath（洞 D） ---"
+    for exe in "${REQUIRED_EXES[@]}"; do
+        p="$BIN_ABS/$exe"
+        [ -x "$p" ] || continue
+        # otool: LC_RPATH 下的 path 行 → 取第 2 欄（絕對路徑）
+        rpaths=($(otool -l "$p" 2>/dev/null | awk '/LC_RPATH/{f=1} f && /path /{print $2; f=0}'))
+        if [ "${#rpaths[@]}" -eq 0 ]; then
+            fail "@rpath 不存在（可能載入不相容 dylib）: $exe"
+            continue
+        fi
+        ok=0
+        for rp in "${rpaths[@]}"; do
+            rp_real="$(realpath_ "$rp")"
+            if [ "$rp_real" = "$BIN_ABS" ]; then ok=1; fi
+        done
+        if [ "$ok" = 1 ]; then
+            pass "@rpath 指向本 repo build/bin: $exe -> ${rpaths[*]}"
+        else
+            fail "@rpath 被改到別處（洞 D）: $exe -> ${rpaths[*]}（預期 $BIN_ABS）"
+        fi
+    done
+
+    # ============ 檢查 7：CGC 專家快取死鎖防護（2026-08-30 hist-prefetch 死鎖，4a746c724 修復） ============
+    # 教訓一（近似狀態隨並發腐爛）：「用啟發式近似某狀態集合」的保護邏輯，只要新增一個
+    #   併發寫入者（bg 填充的 ++tick）就會失效 → 必須用精確集合（batch_owned mask）。
+    # 教訓二（等待必須可證偽）：條件不可能再滿足的 wait 必須大聲 FATAL，不得無聲掛死。
+    echo "--- 檢查 CGC 死鎖防護（hist-prefetch 教訓） ---"
+    # llama 原始碼根：從 build/bin 往上兩層（src/llama.cpp/build/bin → src/llama.cpp；build/bin → repo 根）
+    LLAMA_ROOT="$(dirname "$(dirname "$BIN_ABS")")"
+    EC_SRC="$LLAMA_ROOT/src/llama-expert-cache.cpp"
+    if [ ! -f "$EC_SRC" ]; then
+        echo "SKIP  $EC_SRC 不存在（非 CGC fork repo）"
+    else
+        # 7a：pick_slot 用精確 batch_mask，不得回到 min_tick 啟發式
+        if grep -q 'uint64_t min_tick' "$EC_SRC"; then
+            fail "7a pick_slot 回到 min_tick 啟發式（近似狀態隨並發腐爛 — 2026-08-30 死鎖根因）"
+        elif grep -qF 'const uint8_t * batch_mask' "$EC_SRC"; then
+            pass "7a pick_slot 用精確 batch_mask（非啟發式近似）"
+        else
+            fail "7a pick_slot 簽名找不到 batch_mask（ensure_batch 的 in-batch 保護被改壞？）"
+        fi
+        # 7b：batch_owned mask 在位（宣告 + hit 標記 + miss 分配標記）
+        n_mask="$(grep -cF 'batch_owned' "$EC_SRC" || true)"
+        if [ "${n_mask:-0}" -ge 3 ]; then
+            pass "7b batch_owned mask 在位（${n_mask} 處 ≥ 3）"
+        else
+            fail "7b batch_owned mask 不完整（${n_mask} 處 < 3：宣告/hit 標記/分配標記）"
+        fi
+        # 7c：掛死看門狗在位（等待可證偽）
+        if grep -qF 'FATAL ensure_batch' "$EC_SRC" && grep -qF 'FATAL ensure_slot' "$EC_SRC"; then
+            pass "7c 掛死看門狗在位（ensure_batch + ensure_slot FATAL）"
+        else
+            fail "7c 掛死看門狗被移除（pick_slot -1 且無 in-flight 時的等待不可證偽 = 無聲掛死）"
+        fi
+        # 7d：每個「等待填充完成」的裸 wait 都要有 in_flight 守衛
+        n_bare="$(grep -cF 'cache->bg_cv.wait(lk);' "$EC_SRC" || true)"
+        n_guard="$(grep -cF 'in_flight = false' "$EC_SRC" || true)"
+        if [ "${n_bare:-0}" -le "${n_guard:-0}" ]; then
+            pass "7d 裸 bg_cv.wait ${n_bare} 個 ≤ in_flight 守衛 ${n_guard} 個"
+        else
+            fail "7d 裸 bg_cv.wait(lk) ${n_bare} 個 > 守衛 ${n_guard} 個 — 新等待點必須先證明有 in-flight 填充可等"
+        fi
+    fi
+
+    # ============ 檢查 8：原始碼 ↔ build 產物同步（checkout 免重建可驗證不變量） ============
+    echo "--- 檢查 原始碼↔binary 同步 ---"
+    STAGED_FILES="$(git -C "$REPO_ROOT" diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)"
+    if [ -z "$STAGED_FILES" ]; then
+        echo "SKIP  無 staged 檔案（手動跑 hook 時屬正常；commit 時必有 staged）"
+    else
+        # staged 的 llama 原始碼（src/ 與 examples/ 下的 .cpp/.h/.c/.mm/.metal — 都編進 binary）
+        staged_src=()
+        while IFS= read -r f; do
+            case "$f" in
+                *src/*.cpp|*src/*.h|*src/*.c|*src/*.mm|*src/*.metal|*examples/*.cpp|*examples/*.h)
+                    [ -f "$REPO_ROOT/$f" ] && staged_src+=("$f") ;;
+            esac
+        done <<< "$STAGED_FILES"
+        if [ "${#staged_src[@]}" -eq 0 ]; then
+            pass "8 無 llama 原始碼變更（僅 doc/腳本/產物）"
+        else
+            # (a) build/bin 產物必須在同一個 commit staged
+            staged_bin="$(grep -F 'build/bin/' <<< "$STAGED_FILES" | head -1 || true)"
+            if [ -n "$staged_bin" ]; then
+                pass "8 build 產物隨原始碼 staged（${staged_bin##*/}）"
+            else
+                fail "8 stage 了 ${#staged_src[@]} 個原始碼但沒 stage build/bin 產物 — git add src/llama.cpp/build/bin/ 一起進 commit"
+            fi
+            # (b) binary mtime 不得老於最新 staged 原始碼（有重建過；ALLOW_STALE_BIN=1 跳過）
+            if [ "${ALLOW_STALE_BIN:-0}" != 1 ]; then
+                newest_src=0
+                for f in "${staged_src[@]}"; do
+                    m="$(stat -f %m "$REPO_ROOT/$f" 2>/dev/null || echo 0)"
+                    [ "$m" -gt "$newest_src" ] && newest_src="$m"
+                done
+                newest_bin=0
+                for f in "$BIN_ABS"/*.dylib; do
+                    [ -f "$f" ] || continue
+                    m="$(stat -f %m "$f" 2>/dev/null || echo 0)"
+                    [ "$m" -gt "$newest_bin" ] && newest_bin="$m"
+                done
+                if [ "$newest_bin" -ge "$newest_src" ]; then
+                    pass "8 binary 比 staged 原始碼新（已重建）"
+                else
+                    fail "8 binary 比 staged 原始碼舊 — 先 cmake --build src/llama.cpp/build --target llama-simple llama-speculative-simple -j 8 再 commit（ALLOW_STALE_BIN=1 可跳過）"
+                fi
             fi
         fi
     fi
+else
+    echo "--- 檢查 dylib 被追蹤（洞 B） ---"
+    echo "SKIP  $BIN_DIR 不存在 → 跳過 build/bin 追蹤 / rpath / deadlock / binary sync 檢查"
 fi
 
 # ============ 檢查 9：重型生產驗收（短/長 prompt no-0000 + 指標摘錄） ============
@@ -408,12 +414,28 @@ PY
         -m qwen36 --mtp --dense-iq4x --steady
 fi
 
+# ============ 檢查 10：deploy-harmonyos macOS bundle 可重建 / 可啟動 ============
+echo "--- 檢查 deploy-harmonyos macOS bundle 驗收 ---"
+DEPLOY_MACOS_CHECK="$REPO_ROOT/deploy-harmonyos/macos/check-macos-bundle.sh"
+if [ "${RUN_DEPLOY_HARMONYOS_ACCEPT:-0}" != 1 ]; then
+    echo "SKIP  RUN_DEPLOY_HARMONYOS_ACCEPT=1 未啟用（deploy-harmonyos 驗收保留在本 script 內，需手動開）"
+elif [ ! -x "$DEPLOY_MACOS_CHECK" ]; then
+    fail "10 找不到 deploy 驗收腳本: $DEPLOY_MACOS_CHECK"
+else
+    if "$DEPLOY_MACOS_CHECK" > /tmp/cgc_precommit_deploy_harmonyos.log 2>&1; then
+        pass "10 deploy-harmonyos macOS bundle 可重建且 llama-server/llama-simple 可啟動"
+        info "10 deploy 驗收記錄：/tmp/cgc_precommit_deploy_harmonyos.log"
+    else
+        fail "10 deploy-harmonyos 驗收失敗（見 /tmp/cgc_precommit_deploy_harmonyos.log）"
+    fi
+fi
+
 # ============ 總結 ============
 if [ "$fail_count" -gt 0 ]; then
     echo ""
-    echo "FAIL: $fail_count 項未通過。先修好再 commit（build 產物追蹤 / rpath / main⊆dev / 死鎖防護 / 原始碼↔binary 同步 / 生產驗收）。"
+    echo "FAIL: $fail_count 項未通過。先修好再 commit（build 產物追蹤 / rpath / main⊆dev / 死鎖防護 / 原始碼↔binary 同步 / 生產驗收 / deploy 驗收）。"
     exit 1
 fi
 echo ""
-echo "OK: build/bin 追蹤與 rpath 正常、main⊆dev 成立、CGC 死鎖防護在位、原始碼↔binary 同步、生產驗收通過/未啟用。"
+echo "OK: build/bin 追蹤與 rpath 正常、main⊆dev 成立、CGC 死鎖防護在位、原始碼↔binary 同步、生產驗收與 deploy 驗收通過/未啟用。"
 exit 0

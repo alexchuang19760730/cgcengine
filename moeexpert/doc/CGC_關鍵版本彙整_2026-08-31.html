@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <title>CGC 關鍵版本彙整 2026-08-31</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 40px; color: #1f2937; line-height: 1.6; }
+    h1, h2 { color: #111827; }
+    table { border-collapse: collapse; width: 100%; margin: 16px 0 28px; }
+    th, td { border: 1px solid #d1d5db; padding: 10px 12px; text-align: left; vertical-align: top; }
+    th { background: #f3f4f6; }
+    code { font-family: "SFMono-Regular", Menlo, monospace; }
+  </style>
+</head>
+<body>
+  <h1>CGC 關鍵版本彙整</h1>
+  <p>日期：2026-08-31</p>
+  <p>用途：把這一輪 verify / deploy 主線上的關鍵版本與作用整理成單頁摘要，方便驗收與回溯。</p>
+
+  <h2>版本摘要</h2>
+  <table>
+    <tr>
+      <th>Commit</th>
+      <th>主題</th>
+      <th>這版做了什麼</th>
+      <th>狀態</th>
+    </tr>
+    <tr>
+      <td><code>468704f73</code></td>
+      <td>verify down coalescing</td>
+      <td>在 <code>ggml-metal-ops.cpp</code> 實作 verify-side 主路徑 <code>iq2_s -&gt; iq3_s</code> early-down coalescing，並補上第一版 TPOT 白皮書。</td>
+      <td>建立主路徑 down 優化基線</td>
+    </tr>
+    <tr>
+      <td><code>a91704d47</code></td>
+      <td>pd/server 修補</td>
+      <td>把 <code>edge_server.py</code> / <code>run_server.sh</code> 的新累積變更獨立收斂，固定預設 MTP exact 路徑並強化 server 啟動。</td>
+      <td>與 verify 主線分離</td>
+    </tr>
+    <tr>
+      <td><code>2de2a18ff</code></td>
+      <td>debug cleanup</td>
+      <td>保留 <code>CGC_VERIFY_OP_TIMING</code>，移除一次性的 <code>CGC_VERIFY_PATH_DEBUG + curl</code> session probe。</td>
+      <td>清掉一次性探針，保留可控 timing 開關</td>
+    </tr>
+    <tr>
+      <td><code>f225bfd49</code></td>
+      <td>deploy-harmonyos 同步</td>
+      <td>新增 <code>deploy-harmonyos/macos/build-macos.sh</code>，把 macOS bundle 與當時 <code>dev</code> build 對齊，補齊 <code>llama-server</code>、<code>libmtmd</code> 與必要 dylib。</td>
+      <td>讓 deploy-harmonyos 首次具備完整 macOS bundle</td>
+    </tr>
+    <tr>
+      <td><code>bddeaa10e</code></td>
+      <td>late-layer iq4_xs batching</td>
+      <td>把 verify-side early-down eligibility 擴到晚層 <code>iq4_xs</code>；同時記錄 <code>shared_expert_gate_sigmoid / weights_sum</code> eager reordering 會打穿 accept，因此不能進 production。</td>
+      <td>補齊晚層 path，封存一條失敗方向</td>
+    </tr>
+    <tr>
+      <td><code>HEAD + deploy 驗收 commit</code></td>
+      <td>precommit deploy acceptance</td>
+      <td>新增 <code>deploy-harmonyos/macos/check-macos-bundle.sh</code>，並把 <code>RUN_DEPLOY_HARMONYOS_ACCEPT=1</code> 接進 <code>scripts/check_build_tracked.sh</code>。</td>
+      <td>把 deploy build / launch 驗收正式流程化</td>
+    </tr>
+  </table>
+
+  <h2>主線判讀</h2>
+  <table>
+    <tr><th>面向</th><th>目前結論</th></tr>
+    <tr><td>decode/verify</td><td>host-side 可安全吃到的 down batching 已接近上限；再往前搬 <code>shared_expert_gate_sigmoid / weights_sum</code> 會傷 accept。</td></tr>
+    <tr><td>deploy-harmonyos</td><td>已從「手動同步 bundle」升級成「可重跑、可被 precommit 觸發的正式驗收」。</td></tr>
+    <tr><td>方法論</td><td>把一次性 debug 與可重複驗收分開：runtime 探針可刪，正式 gate 必須落成腳本。</td></tr>
+  </table>
+
+  <h2>推薦閱讀順序</h2>
+  <ol>
+    <li>先看 <code>468704f73</code>，理解 verify down 主路徑是怎麼建立的。</li>
+    <li>再看 <code>bddeaa10e</code>，理解晚層 <code>iq4_xs</code> 與 sidecar fallback 的邊界。</li>
+    <li>最後看本次 deploy 驗收 commit，確認 macOS bundle 在 <code>deploy-harmonyos</code> 下已可被正式 gate。</li>
+  </ol>
+</body>
+</html>

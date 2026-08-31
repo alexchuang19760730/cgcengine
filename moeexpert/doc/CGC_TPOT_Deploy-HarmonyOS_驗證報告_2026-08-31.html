@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <title>CGC TPOT Deploy-HarmonyOS 驗證報告 2026-08-31</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 40px; color: #1f2937; line-height: 1.6; }
+    h1, h2 { color: #111827; }
+    table { border-collapse: collapse; width: 100%; margin: 16px 0 28px; }
+    th, td { border: 1px solid #d1d5db; padding: 10px 12px; text-align: left; vertical-align: top; }
+    th { background: #f3f4f6; }
+    .ok { color: #065f46; font-weight: 700; }
+    .warn { color: #92400e; font-weight: 700; }
+    code, pre { font-family: "SFMono-Regular", Menlo, monospace; }
+    pre { background: #f9fafb; border: 1px solid #e5e7eb; padding: 12px; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>CGC TPOT Deploy-HarmonyOS 驗證報告</h1>
+  <p>日期：2026-08-31</p>
+  <p>目標：確認最新 <code>HEAD</code>（含 <code>bddeaa10e</code>）在 <code>deploy-harmonyos</code> 路徑下可重新 build、可正常啟動，並把這套驗收正式接入 precommit。</p>
+
+  <h2>本次結論</h2>
+  <table>
+    <tr><th>項目</th><th>結果</th><th>說明</th></tr>
+    <tr><td>deploy-harmonyos/macOS bundle rebuild</td><td class="ok">PASS</td><td><code>./deploy-harmonyos/macos/build-macos.sh</code> 以最新 <code>HEAD</code> 成功重建 bundle。</td></tr>
+    <tr><td>llama-server 啟動驗證</td><td class="ok">PASS</td><td><code>llama-server --version</code> 回報 <code>version: 107 (bddeaa10e)</code>。</td></tr>
+    <tr><td>llama-simple 啟動驗證</td><td class="ok">PASS</td><td><code>llama-simple --help</code> 正常輸出 usage；該 CLI exit code 為 1，但屬既有行為，不是 bundle 壞掉。</td></tr>
+    <tr><td>precommit deploy 驗收入口</td><td class="ok">PASS</td><td>新增 <code>RUN_DEPLOY_HARMONYOS_ACCEPT=1</code>，可由 <code>scripts/check_build_tracked.sh</code> 直接觸發。</td></tr>
+    <tr><td>最近 TPOT 證據</td><td class="ok">KEEP</td><td>沿用最新 verify-side 穩定探針：短 steady <code>25.957 t/s</code>、<code>hit 85.6%</code>、<code>accept 97.727%</code>；本次 deploy 驗收未改動 decode 核心路徑。</td></tr>
+  </table>
+
+  <h2>驗證命令</h2>
+  <pre><code>./deploy-harmonyos/macos/build-macos.sh
+RUN_BUILD=1 CHECK_OTOOL=1 ./deploy-harmonyos/macos/check-macos-bundle.sh
+RUN_DEPLOY_HARMONYOS_ACCEPT=1 ./scripts/check_build_tracked.sh --repo /Users/alexchuang/Documents/flashkv0516</code></pre>
+
+  <h2>關鍵輸出摘錄</h2>
+  <pre><code>version: 107 (bddeaa10e)
+built with AppleClang 17.0.0.17000013 for Darwin arm64
+
+example usage:
+  deploy-harmonyos/macos/llama-simple -m model.gguf [-n n_predict] ...
+
+@rpath/libllama-server-impl.dylib
+@rpath/libllama-common.0.dylib
+@rpath/libmtmd.0.dylib
+@rpath/libllama.0.dylib</code></pre>
+
+  <h2>已知環境訊號</h2>
+  <table>
+    <tr><th>訊號</th><th>處理</th></tr>
+    <tr><td><code>npm ci</code> 因 Node 18 不符 upstream UI engine requirement 而失敗</td><td>接受。server 最終以「無 embedded UI」模式成功 build，未阻塞 macOS bundle 驗收。</td></tr>
+    <tr><td>HF UI asset download 出現 SSL connect error</td><td>接受。server 執行檔與 dylib 仍成功生成並可啟動。</td></tr>
+  </table>
+
+  <h2>TPOT / 驗收判讀</h2>
+  <p>這次 commit 的核心是 <strong>deploy 驗收自動化</strong>，不是新的 decode kernel 優化，因此不應把它解讀成新的 TPOT 提升刀。TPOT 應以最近一次 verify-side 穩定量測為基準；本次要鎖定的是：</p>
+  <ul>
+    <li>最新 <code>HEAD</code> 的 macOS bundle 可以從 <code>deploy-harmonyos</code> 重新生成。</li>
+    <li>重建後的 <code>llama-server</code> / <code>llama-simple</code> 能啟動，且版本號對上目前核心 commit。</li>
+    <li>這套驗收能進 precommit，在需要時成為正式 gate。</li>
+  </ul>
+
+  <h2>建議</h2>
+  <ul>
+    <li>日常 commit 維持預設關閉 deploy 重型驗收，避免每次 precommit 都做完整 bundle rebuild。</li>
+    <li>發佈前或切給 <code>deploy-harmonyos</code> 前，固定用 <code>RUN_DEPLOY_HARMONYOS_ACCEPT=1</code> 跑一遍。</li>
+    <li>若要在 deploy 報告中引入新的 TPOT 數字，應在同一 commit 後重新跑 production shell，再補量測段落。</li>
+  </ul>
+</body>
+</html>
