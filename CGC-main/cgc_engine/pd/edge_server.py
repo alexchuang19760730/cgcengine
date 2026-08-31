@@ -43,9 +43,8 @@ HTTP 服務，暴露 /v1/cgc/{health, profile, emit, resume} 端點，讓 Comput
       --model models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf \
       --ngl 99 --no-mmap --mtp 2 --port 1234
   （--mtp 2 內建 --spec-type draft-mtp --spec-draft-n-max 2 -c 3072
-   -expert-cache 4294967296 --temp 0 + env：CGC_NO_PREFETCH/CGC_WATCHDOG。
-   2026-08-30 0000 根因定案後預設走 exact 補槽路徑——舊 CGC_VERIFY/DRAFT_DECODE
-   fast path 對 cold expert 讀零權重 → 輸出 0000，僅 --mtp-fast 速度實驗用）
+   -expert-cache 4294967296 --temp 0 + MTP 必要 env：CGC_NO_PREFETCH/
+  CGC_VERIFY_DECODE/CGC_DRAFT_DECODE/CGC_WATCHDOG，未設才補）
 
 用法（Windows，小模型/低 ngl）：
   py -3 CGC-main\\cgc_engine\\pd\\edge_server.py ^
@@ -62,7 +61,9 @@ API：
                           event:summary 含 decode_tps）
 """
 
+import atexit
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -71,6 +72,8 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib import error as urlerror
+from urllib import request as urlrequest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -96,6 +99,13 @@ class EdgeConfig:
         self.threads = max(1, (os.cpu_count() or 8) // 2)
         self.no_mmap = False
         self.extra_args = []
+        self.worker_mode = "spawn"
+        self.worker_binary = ""
+        self.worker_host = "127.0.0.1"
+        self.worker_port = 2234
+        self.worker_parallel = 1
+        self.worker_start_timeout = 120
+        self.worker_slots = 1
 
     def resolve_binary(self):
         """Windows 上 build 產物叫 llama-simple.exe；MSYS2/git-bash 傳相對路徑也可。"""
@@ -106,8 +116,31 @@ class EdgeConfig:
                 return cand
         return self.binary
 
+    def resolve_worker_binary(self):
+        if self.worker_binary:
+            if os.path.exists(self.worker_binary):
+                return self.worker_binary
+            for cand in (self.worker_binary + ".exe", os.path.abspath(self.worker_binary) + ".exe"):
+                if os.path.exists(cand):
+                    return cand
+            return self.worker_binary
+
+        binary = self.resolve_binary()
+        dname = os.path.dirname(binary)
+        worker = os.path.join(dname, "llama-server")
+        if os.path.exists(worker):
+            return worker
+        if os.path.exists(worker + ".exe"):
+            return worker + ".exe"
+        return worker
+
 
 CFG = EdgeConfig()
+WORKER = {
+    "proc": None,
+    "log_fh": None,
+}
+WORKER_LOCK = threading.Lock()
 
 
 def build_cmd(prompt, n_predict, seed=None):
@@ -121,6 +154,287 @@ def build_cmd(prompt, n_predict, seed=None):
     if prompt:
         cmd += ["-p", prompt]
     return cmd
+
+
+def build_worker_cmd():
+    cmd = [CFG.resolve_worker_binary(), "-m", CFG.model,
+           "-ngl", str(CFG.ngl), "-t", str(CFG.threads),
+           "--host", CFG.worker_host, "--port", str(CFG.worker_port),
+           "--threads-http", "1", "--parallel", str(max(1, CFG.worker_parallel)),
+           "--no-webui"]
+    if CFG.no_mmap:
+        cmd += ["--no-mmap"]
+    cmd += CFG.extra_args
+    return cmd
+
+
+def worker_base_url(path):
+    return f"http://{CFG.worker_host}:{CFG.worker_port}{path}"
+
+
+def _worker_log_path():
+    return f"/tmp/cgc_edge_worker_{CFG.worker_port}.log"
+
+
+def _close_worker_log():
+    fh = WORKER.get("log_fh")
+    if fh is not None:
+        try:
+            fh.close()
+        except Exception:
+            pass
+        WORKER["log_fh"] = None
+
+
+def stop_worker():
+    with WORKER_LOCK:
+        proc = WORKER.get("proc")
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+        WORKER["proc"] = None
+        _close_worker_log()
+
+
+atexit.register(stop_worker)
+
+
+def worker_health_ok():
+    try:
+        with urlrequest.urlopen(worker_base_url("/health"), timeout=2) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return bool(data.get("status") == "ok" or data.get("status") == "healthy" or data.get("status") is None)
+    except Exception:
+        return False
+
+
+def ensure_worker():
+    if CFG.worker_mode != "persistent":
+        return True, None
+
+    with WORKER_LOCK:
+        proc = WORKER.get("proc")
+        if proc is not None and proc.poll() is None and worker_health_ok():
+            return True, None
+
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+        WORKER["proc"] = None
+        _close_worker_log()
+
+        log_fh = open(_worker_log_path(), "ab", buffering=0)
+        proc = subprocess.Popen(
+            build_worker_cmd(),
+            stdout=log_fh, stderr=subprocess.STDOUT,
+            env=os.environ.copy(),
+        )
+        WORKER["proc"] = proc
+        WORKER["log_fh"] = log_fh
+
+    deadline = time.time() + max(5, CFG.worker_start_timeout)
+    while time.time() < deadline:
+        proc = WORKER.get("proc")
+        if proc is None:
+            break
+        rc = proc.poll()
+        if rc is not None:
+            return False, f"worker exited early rc={rc}, log={_worker_log_path()}"
+        if worker_health_ok():
+            return True, None
+        time.sleep(0.5)
+    return False, f"worker start timeout, log={_worker_log_path()}"
+
+
+def pick_worker_slot(prompt, body):
+    slot = int(body.get("id_slot", -1))
+    if slot >= 0:
+        return slot
+    if CFG.worker_slots <= 1:
+        return -1
+    h = hashlib.sha1(prompt.encode("utf-8", errors="ignore")).hexdigest()
+    return int(h[:8], 16) % CFG.worker_slots
+
+
+def worker_payload(prompt, n_predict, seed, body, stream):
+    payload = {
+        "prompt": prompt,
+        "n_predict": n_predict,
+        "stream": stream,
+        "cache_prompt": bool(body.get("cache_prompt", True)),
+        "timings_per_token": False,
+    }
+    if seed is not None:
+        payload["seed"] = seed
+    if body.get("ignore_eos") or "--ignore-eos" in CFG.extra_args:
+        payload["ignore_eos"] = True
+
+    slot = pick_worker_slot(prompt, body)
+    if slot >= 0:
+        payload["id_slot"] = slot
+
+    for src, dst in (
+        ("temperature", "temperature"),
+        ("top_p", "top_p"),
+        ("top_k", "top_k"),
+        ("min_p", "min_p"),
+        ("repeat_penalty", "repeat_penalty"),
+        ("presence_penalty", "presence_penalty"),
+        ("frequency_penalty", "frequency_penalty"),
+    ):
+        if src in body:
+            payload[dst] = body[src]
+    if "stop" in body:
+        payload["stop"] = body["stop"]
+    return payload
+
+
+def worker_summary_from_obj(obj):
+    timings = obj.get("timings") or {}
+    out = {
+        "rc": 0,
+        "tokens_cached": obj.get("tokens_cached"),
+        "tokens_evaluated": obj.get("tokens_evaluated"),
+        "slot_id": obj.get("id_slot", obj.get("slot_id")),
+        "stop_type": obj.get("stop_type"),
+    }
+    if "predicted_n" in timings:
+        out["n_decoded"] = int(timings["predicted_n"])
+    if "predicted_ms" in timings:
+        out["decode_s"] = float(timings["predicted_ms"]) / 1000.0
+    if "predicted_per_second" in timings:
+        out["decode_tps"] = float(timings["predicted_per_second"])
+    if "prompt_per_second" in timings:
+        out["prompt_tps"] = float(timings["prompt_per_second"])
+    if "load_ms" in timings:
+        out["load_ms"] = int(round(float(timings["load_ms"])))
+    return out
+
+
+def run_generate_spawn(prompt, n_predict, seed=None):
+    """yield ('status'|'token'|'summary', obj) — 真實 subprocess 串流。"""
+    t0 = time.time()
+    yield ("status", {"stage": "loading", "cmd_n": n_predict, "mode": "spawn"})
+    proc = subprocess.Popen(
+        build_cmd(prompt, n_predict, seed),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace",
+        bufsize=1, env=os.environ.copy(),
+    )
+    err = StderrCollector(proc.stderr)
+    err.start()
+    # stdout：prompt 回顯 + 生成 token，char-by-char 轉發（llama-simple fflush 每 token）
+    buf = []
+    while True:
+        ch = proc.stdout.read(1)
+        if ch:
+            buf.append(ch)
+            yield ("token", {"t": ch})
+        elif proc.poll() is not None:
+            break
+        else:
+            time.sleep(0.005)
+    proc.stdout.close()
+    rc = proc.wait()
+    err.join(timeout=5)
+    perf = err.perf()
+    perf.update({"rc": rc, "wall_s": round(time.time() - t0, 2),
+                 "stderr_tail": err.text[-15:], "mode": "spawn"})
+    yield ("summary", perf)
+
+
+def run_generate_worker(prompt, n_predict, seed=None, body=None):
+    """yield ('status'|'token'|'summary', obj) — persistent llama-server worker."""
+    body = body or {}
+    t0 = time.time()
+    ok, err = ensure_worker()
+    if not ok:
+        yield ("summary", {"rc": 1, "error": err, "mode": "persistent", "wall_s": round(time.time() - t0, 2)})
+        return
+
+    payload = worker_payload(prompt, n_predict, seed, body, stream=self_path_is_resume(body))
+    yield ("status", {"stage": "worker_ready", "cmd_n": n_predict, "mode": "persistent",
+                      "worker": worker_base_url("/completion"), "slot_id": payload.get("id_slot", -1)})
+
+    if not payload["stream"]:
+        req = urlrequest.Request(
+            worker_base_url("/completion"),
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlrequest.urlopen(req, timeout=600) as resp:
+                obj = json.loads(resp.read().decode("utf-8"))
+        except urlerror.HTTPError as e:
+            detail = e.read().decode("utf-8", errors="replace")
+            yield ("summary", {"rc": 1, "error": f"worker http {e.code}: {detail}",
+                               "mode": "persistent", "wall_s": round(time.time() - t0, 2)})
+            return
+        except Exception as e:
+            yield ("summary", {"rc": 1, "error": f"worker request failed: {e}",
+                               "mode": "persistent", "wall_s": round(time.time() - t0, 2)})
+            return
+
+        content = obj.get("content", "")
+        for ch in content:
+            yield ("token", {"t": ch})
+        perf = worker_summary_from_obj(obj)
+        perf.update({"wall_s": round(time.time() - t0, 2), "mode": "persistent"})
+        yield ("summary", perf)
+        return
+
+    req = urlrequest.Request(
+        worker_base_url("/completion"),
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
+        method="POST",
+    )
+    final_obj = None
+    try:
+        with urlrequest.urlopen(req, timeout=3600) as resp:
+            for raw in resp:
+                if not raw:
+                    continue
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line or line.startswith(":"):
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    continue
+                obj = json.loads(data)
+                final_obj = obj
+                text = obj.get("content", "")
+                if text:
+                    for ch in text:
+                        yield ("token", {"t": ch})
+    except urlerror.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")
+        yield ("summary", {"rc": 1, "error": f"worker stream http {e.code}: {detail}",
+                           "mode": "persistent", "wall_s": round(time.time() - t0, 2)})
+        return
+    except Exception as e:
+        yield ("summary", {"rc": 1, "error": f"worker stream failed: {e}",
+                           "mode": "persistent", "wall_s": round(time.time() - t0, 2)})
+        return
+
+    perf = worker_summary_from_obj(final_obj or {})
+    perf.update({"wall_s": round(time.time() - t0, 2), "mode": "persistent"})
+    yield ("summary", perf)
+
+
+def self_path_is_resume(body):
+    return bool(body.get("__stream__", False))
 
 
 class StderrCollector(threading.Thread):
@@ -162,59 +476,11 @@ class StderrCollector(threading.Thread):
         return out
 
 
-def run_generate(prompt, n_predict, seed=None):
-    """yield ('status'|'token'|'summary', obj) — 真實 subprocess 串流。"""
-    t0 = time.time()
-    yield ("status", {"stage": "loading", "cmd_n": n_predict})
-    proc = subprocess.Popen(
-        build_cmd(prompt, n_predict, seed),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, encoding="utf-8", errors="replace",
-        bufsize=1, env=os.environ.copy(),
-    )
-    err = StderrCollector(proc.stderr)
-    err.start()
-    # stdout：prompt 回顯 + 生成 token，char-by-char 轉發（llama-simple fflush 每 token）。
-    # 2026-08-29 修正 log 污染：tool 會把 'main: ' 前綴 log 行（chunked prefill 等）印到
-    # stdout，混進 token 流 → client 端 gen 帶 log 行 + echo 偵測失效。逐行判定：
-    # 行首 6 字元內匹配 'main: ' = log 行整行丟棄；其餘照常轉發（僅行首延遲 ≤6 字元）。
-    LOG_PREFIX = "main: "
-    pending = ""       # 行首待判定緩衝（None = 一般模式，直接轉發）
-    log_line = False   # 目前在丟棄中的 log 行
-    while True:
-        ch = proc.stdout.read(1)
-        if ch:
-            if log_line:
-                if ch == "\n":
-                    log_line, pending = False, ""
-                continue
-            if pending is not None:
-                pending += ch
-                if LOG_PREFIX.startswith(pending):
-                    if pending == LOG_PREFIX:
-                        log_line, pending = True, None
-                    continue
-                for c in pending:     # 非 log 前綴 → 緩衝一次發出
-                    yield ("token", {"t": c})
-                pending = None
-            else:
-                yield ("token", {"t": ch})
-            if ch == "\n" and pending is None:
-                pending = ""           # 新行重新進入判定模式
-        elif proc.poll() is not None:
-            break
-        else:
-            time.sleep(0.005)
-    if pending:                        # EOF 尾行無換行：非 log 才補發
-        for c in pending:
-            yield ("token", {"t": c})
-    proc.stdout.close()
-    rc = proc.wait()
-    err.join(timeout=5)
-    perf = err.perf()
-    perf.update({"rc": rc, "wall_s": round(time.time() - t0, 2),
-                 "stderr_tail": err.text[-15:]})
-    yield ("summary", perf)
+def run_generate(prompt, n_predict, seed=None, body=None):
+    if CFG.worker_mode == "persistent":
+        yield from run_generate_worker(prompt, n_predict, seed, body)
+    else:
+        yield from run_generate_spawn(prompt, n_predict, seed)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -228,7 +494,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/v1/cgc/health":
             self._json({"ok": True, "model": CFG.model,
-                        "binary": CFG.binary, "ngl": CFG.ngl})
+                        "binary": CFG.binary, "ngl": CFG.ngl,
+                        "worker_mode": CFG.worker_mode,
+                        "worker_binary": CFG.resolve_worker_binary() if CFG.worker_mode == "persistent" else ""})
         elif self.path == "/v1/cgc/profile":
             prof = {}
             if DeviceProfile is not None:
@@ -237,7 +505,9 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:  # noqa: BLE001 — 探測失敗不炸服務
                     prof = {"detect_error": str(e)}
             self._json({"profile": prof, "model": CFG.model,
-                        "ngl": CFG.ngl, "threads": CFG.threads})
+                        "ngl": CFG.ngl, "threads": CFG.threads,
+                        "worker_mode": CFG.worker_mode,
+                        "worker_slots": CFG.worker_slots})
         else:
             self._json({"error": "not found"}, 404)
 
@@ -257,12 +527,14 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/cgc/emit":
             # prefill 探針：-n 1（載入 + prefill + 首 token），不串流
             result = {}
-            for kind, obj in run_generate(prompt, 1, body.get("seed")):
+            body["__stream__"] = False
+            for kind, obj in run_generate(prompt, 1, body.get("seed"), body):
                 if kind == "summary":
                     result = obj
             self._json({"ok": result.get("rc") == 0, "emit": result})
         elif self.path == "/v1/cgc/resume":
-            self._sse(prompt, int(body.get("max_tokens", 32)), body.get("seed"))
+            body["__stream__"] = True
+            self._sse(prompt, int(body.get("max_tokens", 32)), body)
         else:
             self._json({"error": "not found"}, 404)
 
@@ -275,13 +547,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(blob)
 
-    def _sse(self, prompt, n_predict, seed):
+    def _sse(self, prompt, n_predict, body):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         try:
-            for kind, obj in run_generate(prompt, n_predict, seed):
+            for kind, obj in run_generate(prompt, n_predict, body.get("seed"), body):
                 payload = dict(obj)
                 payload["event"] = kind
                 self.wfile.write(b"data: " +
@@ -300,22 +572,25 @@ def main():
     ap.add_argument("--threads", "-t", type=int, default=None)
     ap.add_argument("--no-mmap", action="store_true", help="Mac 凍機防護（生產配置）")
     ap.add_argument("--extra", nargs="*", default=[], help="透傳 binary 的額外旗標（注意 argparse 會吃掉 -- 開頭 token，MTP 請改用 --mtp）")
+    ap.add_argument("--worker-mode", choices=["spawn", "persistent"], default="spawn",
+                    help="執行模式：spawn=每請求重載（legacy，可完全回退），persistent=內部 llama-server 常駐 worker")
+    ap.add_argument("--worker-binary", default="",
+                    help="persistent 模式的 worker binary（預設同目錄下的 llama-server）")
+    ap.add_argument("--worker-port", type=int, default=2234,
+                    help="persistent worker 監聽埠（僅 localhost）")
+    ap.add_argument("--worker-parallel", type=int, default=1,
+                    help="persistent worker 的 server slots/parallel 數")
+    ap.add_argument("--worker-start-timeout", type=int, default=120,
+                    help="等待 persistent worker 就緒的秒數")
+    ap.add_argument("--worker-slots", type=int, default=1,
+                    help="edge 層為 persistent worker 做的 session slot 數（>1 時依 prompt hash 分配）")
     # §MTP 生產模式（run_n30cache.sh §MTP 定案參數集）：speculative-simple 只認
     # CLI -expert-cache（不讀 CGC_EXPERT_CACHE_BYTES env），且 MTP 需要 greedy
-    # (--temp 0) + 關 prefetch（歷史教訓）。
-    # [2026-08-30 0000 根因定案] 舊版自動補的 CGC_VERIFY_DECODE/CGC_DRAFT_DECODE 會讓
-    # verify/draft 走 touch+ZERO-slot fast path：cold expert（pool 未駐留）映射到零權重
-    # slot → FFN 貢獻為 0 → logits 全錯 → greedy 輸出 0000…（穩態 cold 實測 ~65-70%，
-    # llama-context.cpp fast path 註解自證；draft/verify 同錯 → accept 率反而虛高 97%）。
-    # 修正：--mtp 預設 exact 路徑（ensure_batch 同步補槽 = 正確權重）。--mtp-fast 才回
-    # 舊 fast path（僅速度實驗，輸出會 0000）。
+    # (--temp 0) + 關 prefetch + verify/draft decode fast path，缺任何一個都會
+    # accept 崩掉或 verify race（歷史教訓）。
     ap.add_argument("--mtp", type=int, default=0, metavar="N",
                     help="MTP draft-mtp 生產模式（N=spec-draft-n-max，建議 2）：內建 --spec-type draft-mtp "
-                         "-c MTP_CTX -expert-cache BUDGET --temp 0（verify/draft 走 exact 補槽路徑）")
-    ap.add_argument("--mtp-fast", action="store_true",
-                    help="MTP 走 touch+ZERO-slot fast path（舊行為：快但 cold expert 讀零權重 → 輸出退化 0000，僅速度實驗用）")
-    ap.add_argument("--mtp-prefetch", action="store_true",
-                    help="MTP exact 路徑 + hist 預取（bg 補下一步 union，verify 不卡同步 pread；exact 路徑才記錄 union）")
+                         "-c MTP_CTX -expert-cache BUDGET --temp 0，並自動補 MTP 必要 env")
     ap.add_argument("--mtp-ctx", type=int, default=3072, help="MTP draft context（OOM 邊界，勿超）")
     ap.add_argument("--budget", type=int, default=4294967296,
                     help="MTP 模式 -expert-cache bytes（llama-simple 模式走 CGC_EXPERT_CACHE_BYTES env）")
@@ -325,6 +600,12 @@ def main():
 
     CFG.binary, CFG.model, CFG.ngl = args.binary, args.model, args.ngl
     CFG.no_mmap, CFG.extra_args = args.no_mmap, args.extra
+    CFG.worker_mode = args.worker_mode
+    CFG.worker_binary = args.worker_binary
+    CFG.worker_port = args.worker_port
+    CFG.worker_parallel = max(1, args.worker_parallel)
+    CFG.worker_start_timeout = max(5, args.worker_start_timeout)
+    CFG.worker_slots = max(1, args.worker_slots)
     if args.threads:
         CFG.threads = args.threads
 
@@ -334,27 +615,18 @@ def main():
                            "-c", str(args.mtp_ctx),
                            "-expert-cache", str(args.budget),
                            "--temp", "0"]
-        # MTP env（run_n30cache.sh §MTP）：launch 已設者不覆蓋。
-        # [2026-08-30 0000 根因] 不再自動補 CGC_VERIFY_DECODE/CGC_DRAFT_DECODE：
-        # 該 fast path 對 cold expert 讀零權重 → greedy 輸出 0000（見 --mtp-fast 註解）。
-        # exact 路徑 = ensure_batch 同步補槽，輸出正確。
-        # --mtp-prefetch：exact + hist 預取（bg 補下一步 union → verify 不卡同步 pread；
-        # fast path 提前 return 不記錄 union，預取無效）。舊「prefetch bg race 於 MTP
-        # verify」教訓屬 fast path 時代；exact 與非 MTP 生產線同機制，死鎖已由 exact
-        # batch_owned mask 修正（commit 4a746c724）。無預取實測：1.8 t/s（pread 佔滿）。
-        for k, v in (("CGC_WATCHDOG", "1"),):      # 長跑 lost-wakeup 自救
+        # MTP 必要 env（run_n30cache.sh §MTP）：launch 已設者不覆蓋
+        for k, v in (("CGC_NO_PREFETCH", "1"),     # prefetch bg race 於 MTP verify
+                     ("CGC_VERIFY_DECODE", "1"),   # verify 走 decode fast path
+                     ("CGC_DRAFT_DECODE", "1"),    # draft 同 pool residency
+                     ("CGC_WATCHDOG", "1")):       # 長跑 lost-wakeup 自救
             os.environ.setdefault(k, v)
-        if args.mtp_prefetch and not args.mtp_fast:
-            os.environ["CGC_PREFETCH_SRC"] = "hist"          # 覆蓋 launch env，強制開
-            os.environ.pop("CGC_NO_PREFETCH", None)
-        else:
-            os.environ.setdefault("CGC_NO_PREFETCH", "1")    # 保守預設：關預取
-        if args.mtp_fast:                          # 舊 fast path（速度實驗用；輸出會 0000）
-            os.environ.setdefault("CGC_VERIFY_DECODE", "1")
-            os.environ.setdefault("CGC_DRAFT_DECODE", "1")
 
     bin_path = CFG.resolve_binary()
-    for f in (bin_path, CFG.model):
+    need_files = [bin_path, CFG.model]
+    if CFG.worker_mode == "persistent":
+        need_files.append(CFG.resolve_worker_binary())
+    for f in need_files:
         if not os.path.exists(f):
             print(f"error: not found: {f}", file=sys.stderr)
             sys.exit(2)
@@ -363,11 +635,18 @@ def main():
     print(f"=== CGC edge server (text-bridge phase 1) ===")
     print(f"  binary : {bin_path}")
     print(f"  model  : {CFG.model}  ngl={CFG.ngl} t={CFG.threads} no_mmap={CFG.no_mmap}")
+    print(f"  mode   : {CFG.worker_mode}")
     if args.mtp:
         print(f"  mtp    : ON (draft-mtp, n_max={args.mtp}, ctx={args.mtp_ctx}, "
               f"expert-cache={args.budget}, temp=0)")
+    if CFG.worker_mode == "persistent":
+        print(f"  worker : {CFG.resolve_worker_binary()} @ {CFG.worker_host}:{CFG.worker_port} "
+              f"parallel={CFG.worker_parallel} slots={CFG.worker_slots}")
     print(f"  listen : http://{args.host}:{args.port}/v1/cgc/{{health,profile,emit,resume}}")
-    print(f"  note   : 每請求重載模型（phase 1）；hidden-state 分裂 PD 見指導書 Phase 2")
+    if CFG.worker_mode == "persistent":
+        print(f"  note   : edge 保留原 API；底層改用常駐 llama-server worker（可用 --worker-mode spawn 回退）")
+    else:
+        print(f"  note   : 每請求重載模型（phase 1）；hidden-state 分裂 PD 見指導書 Phase 2")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
