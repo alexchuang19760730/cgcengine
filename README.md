@@ -115,6 +115,9 @@ scripts/build_cgc_llama.sh          # cmake --build，產物進 src/llama.cpp/bu
 3. 分支紀律：開發在 `dev`；晉升一律 `git switch main && git merge --ff-only dev`（hook 擋 main 直接 commit）
 4. 新增/更換模型：`shasum -a 256` 更新 `MANIFEST.md`+`SHA256SUMS` →
    `hf upload Alexchuang/cgcengine-models <file> <file>` → 同一 commit
+5. 發版前固定驗收：若本輪涉及 `deploy-harmonyos` / macOS bundle，同步執行
+   `BIN_DIR=src/llama.cpp/build/bin RUN_DEPLOY_HARMONYOS_ACCEPT=1 ./scripts/check_build_tracked.sh --repo "$PWD"`
+   ，確認 deploy bundle 可重建且 `llama-server` / `llama-simple` 可啟動。
 
 ## 文件地圖
 

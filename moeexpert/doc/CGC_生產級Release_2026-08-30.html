@@ -113,7 +113,7 @@ cd models/gguf && shasum -a 256 -c SHA256SUMS</pre>
   <table>
     <tr><th>層</th><th>覆蓋</th><th>測試項</th><th>狀態</th></tr>
     <tr><td><b>L0</b> Build</td><td>從零 rebuild 重現、binary 可跑</td><td>T-B1–B6</td><td class="good">PASS</td></tr>
-    <tr><td><b>L1</b> Pre-commit</td><td>產物追蹤 / rpath / main⊆dev / <b>死鎖防護靜態守衛</b> / 原始碼↔binary 同步</td><td>T-P1–P8（8 項，每次 commit 自動）</td><td class="good">PASS（本輪 2 commit 實測）</td></tr>
+    <tr><td><b>L1</b> Pre-commit</td><td>產物追蹤 / rpath / main⊆dev / <b>死鎖防護靜態守衛</b> / 原始碼↔binary 同步 / deploy bundle gate</td><td>T-P1–P8 + deploy acceptance（發版前固定口徑）</td><td class="good">PASS（最新流程已落腳本）</td></tr>
     <tr><td><b>L2</b> 功能</td><td>bit-identical（simp↔spec 位元級一致）、antiloop、MTP 效能</td><td>T-F1–F5、T-A1–A7、T-E1–E5、T-PN1–PN6</td><td class="good">PASS</td></tr>
     <tr><td><b>L3</b> 部署包</td><td>脫離 build 環境可跑且輸出相同</td><td>T-D1–D5</td><td class="good">PASS（BIT-IDENTICAL）</td></tr>
   </table>
@@ -121,6 +121,9 @@ cd models/gguf && shasum -a 256 -c SHA256SUMS</pre>
     <div class="label">本輪新增的測試項（8/30）</div>
     <b>T-P7</b> 死鎖防護靜態守衛（7a batch_mask 精確集合 / 7b batch_owned ≥3 / 7c FATAL 看門狗 / 7d 裸 wait ≤ 守衛數）；<b>T-P8</b> 原始碼↔build 產物同步；<b>T-A6</b> hist-prefetch 死鎖回歸（原 100% 掛死重現器 → rc=0）；<b>T-A7</b> 看門狗可證偽；<b>T-E5</b> 非 MTP ~7 t/s 結構性基線（防在錯誤路徑追速度）+ MTP steady 回歸閾值。
   </div>
+  <p class="note"><b>2026-08-31 口徑補充</b>：凡 release / deploy-harmonyos 相關發版，固定加跑
+    <code>BIN_DIR=src/llama.cpp/build/bin RUN_DEPLOY_HARMONYOS_ACCEPT=1 ./scripts/check_build_tracked.sh --repo &lt;repo&gt;</code>，
+    把 macOS bundle rebuild、<code>llama-server --version</code>、<code>llama-simple --help</code> 與 dylib linkage 一次驗完。</p>
 </div>
 
 <!-- ============ §3 ============ -->

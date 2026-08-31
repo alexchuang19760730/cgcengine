@@ -416,7 +416,7 @@ cp src/llama.cpp/build/bin/*.dylib deploy-harmonyos/macos/   # 版本檔 + symli
   </table>
 
   <h3>10.3 結論</h3>
-  <p class="note">本測試計劃的完整性承諾：<b>每一個通過的 release commit，都能回答四個問題</b> —— (1) 從零 rebuild 可重現嗎（L0）？(2) binary 資產進版控了嗎（L1，8/26 教訓）？(3) MTP 與非 MTP 位元級一致嗎（L2 bit-identical）？(4) 拿到別台機器能跑且輸出相同嗎（L3）？—— 加上 antiloop 與效能數字，構成與四份白皮書（機制 / 修復 / 落地 / <b>測試</b>）對應的驗收閉環。歷史武器庫（§8）保證失敗時不是從頭猜，而是按排查表走。</p>
+  <p class="note">本測試計劃的完整性承諾：<b>每一個通過的 release commit，都能回答四個問題</b> —— (1) 從零 rebuild 可重現嗎（L0）？(2) binary 資產進版控了嗎（L1，8/26 教訓）？(3) MTP 與非 MTP 位元級一致嗎（L2 bit-identical）？(4) 拿到別台機器能跑且輸出相同嗎（L3）？—— 加上 antiloop 與效能數字，構成與四份白皮書（機制 / 修復 / 落地 / <b>測試</b>）對應的驗收閉環。2026-08-31 起，凡 release / deploy-harmonyos 發版前再固定加跑 <code>BIN_DIR=src/llama.cpp/build/bin RUN_DEPLOY_HARMONYOS_ACCEPT=1 ./scripts/check_build_tracked.sh --repo &lt;repo&gt;</code>，把 deploy bundle rebuild 與 macOS 啟動檢查正式納入口徑。歷史武器庫（§8）保證失敗時不是從頭猜，而是按排查表走。</p>
 </div>
 
 </div>
