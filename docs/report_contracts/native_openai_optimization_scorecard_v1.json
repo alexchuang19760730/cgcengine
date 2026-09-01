@@ -1,0 +1,68 @@
+{
+  "scorecard_name": "native_openai_optimization_scorecard_v1",
+  "version": 2,
+  "updated": "2026-09-01",
+  "purpose": "六軸收斂：API messages / serializer output / native healthy prompt / prefill speed / decode speed / quality。所有速度指標以 Service API（llama-server /v1/completions）為準。",
+  "target_vector": [80, 80, 80, 80, 80, 80],
+  "current_vector": [100, 92, 82, 40, 40, 40],
+  "dimensions": [
+    {
+      "id": "api_messages",
+      "name": "API Messages",
+      "target_score": 80,
+      "current_score": 100,
+      "current_metric": "6 類 probes 已外部化成 versioned contract fixture"
+    },
+    {
+      "id": "serializer_output",
+      "name": "Serializer Output",
+      "target_score": 80,
+      "current_score": 92,
+      "current_metric": "6 個 contract cases 全部與 native healthy prompt 對齊"
+    },
+    {
+      "id": "native_healthy_prompt",
+      "name": "Native Healthy Prompt",
+      "target_score": 80,
+      "current_score": 82,
+      "current_metric": "6 個 probes 已定義 native healthy prompt，且已接上字串與 token 級對拍"
+    },
+    {
+      "id": "prefill_speed",
+      "name": "Prefill Speed",
+      "target_score": 80,
+      "current_score": 40,
+      "metric_type": "ratio",
+      "current_metric": 4.96,
+      "metric_unit": "tok/s (llama-server /v1/completions, base model, cold start, 2026-09-01)",
+      "target_metric": 20.0,
+      "why_this_score": "2026-09-01 實測：llama-server + expert-cache + skip-chat-parsing + CGC_OA_ASYNC=1，cold prefill 4.96 t/s。Warm 後 request 2-4 可達 17-27 t/s。CLI 同配置 25.09 t/s。Service API cold start 顯著慢於 CLI。",
+      "evidence": ["llama-server /v1/completions test (2026-09-01)"],
+      "next_cut": "Pre-warm prompt 或 persistent session 讓首次 request 也達到 warm 速度"
+    },
+    {
+      "id": "decode_speed",
+      "name": "Decode Speed",
+      "target_score": 80,
+      "current_score": 40,
+      "metric_type": "ratio",
+      "current_metric": 8.79,
+      "metric_unit": "tok/s (llama-server /v1/completions, base model, 1000 tokens, 2026-09-01)",
+      "target_metric": 20.0,
+      "why_this_score": "2026-09-01 實測：llama-server + expert-cache + OA_ASYNC，decode 8.79 t/s（CLI 同模型 11.25 t/s 的 78%）。差距來自 HTTP wrapper overhead。MTP 模型可達 27+ t/s（需 32GB 機器驗證）。",
+      "evidence": ["llama-server /v1/completions test (2026-09-01)", "scripts/run_n30cache.sh (CLI baseline: 11.25 t/s base, 27.24 t/s MTP)"],
+      "next_cut": "用 MTP 模型 + 32GB 機器驗證 Service API decode 達到 25+ t/s"
+    },
+    {
+      "id": "quality",
+      "name": "Quality",
+      "target_score": 80,
+      "current_score": 40,
+      "metric_type": "manual",
+      "current_metric": "skip-chat-parsing output correct (no think/echo), but needs full 4-probe validation",
+      "why_this_score": "2026-09-01 實測：/v1/completions 輸出正確（capital of France → Paris）；/v1/chat/completions + skip-chat-parsing 輸出正確（2+2 → 4）。無 think/echo/循環。但未跑完整 4 probe 套件。",
+      "evidence": ["llama-server test output (2026-09-01)"],
+      "next_cut": "跑完整 QA/摘要/completion/streaming 4 probe 套件確認 quality"
+    }
+  ]
+}

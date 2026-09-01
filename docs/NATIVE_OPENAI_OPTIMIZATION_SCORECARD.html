@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Native OpenAI Optimization Scorecard</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 32px auto;
+      max-width: 1160px;
+      padding: 0 20px 40px;
+      line-height: 1.6;
+      color: #1f2937;
+      background: #f8fafc;
+    }
+    .card {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 20px 24px;
+      margin: 18px 0;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+    }
+    th, td {
+      border: 1px solid #e5e7eb;
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #f3f4f6;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .green { background: #dcfce7; color: #166534; }
+    .yellow { background: #fef3c7; color: #92400e; }
+    .red { background: #fee2e2; color: #991b1b; }
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 13px;
+    }
+    pre {
+      background: #0f172a;
+      color: #e5e7eb;
+      padding: 14px;
+      border-radius: 10px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .muted { color: #6b7280; }
+    a { color: #2563eb; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <h1>Native OpenAI Optimization Scorecard</h1>
+  <p class="muted"><code>docs/report_contracts/native_openai_optimization_scorecard_v1.json</code></p>
+
+  <div class="card">
+    <h2>單一入口</h2>
+    <p><strong>這份 HTML 是固定主看板。</strong> 後續所有紅黃綠驗收、六軸收斂與下一刀，都以這裡為唯一入口。</p>
+    <ul>
+      <li><strong>主看板：</strong><code>docs/NATIVE_OPENAI_OPTIMIZATION_SCORECARD.html</code></li>
+      <li><strong>敘事白皮書：</strong><code>docs/EDGE_OPENAI_SERVICE_DESIGN_WHITEPAPER.html</code></li>
+      <li><strong>自動回填證據源：</strong><code>docs/NATIVE_ADAPTER_TEST_REPORT.html</code></li>
+    </ul>
+    <p class="muted">閱讀順序固定為：先看 scorecard 判斷紅黃綠與六軸缺口，再下鑽 test report 看實測證據，最後回白皮書看背景與技術敘事。</p>
+  </div>
+
+  <div class="card">
+    <h2>目的</h2>
+    <p>六軸收斂：API messages / serializer output / native healthy prompt / prefill speed / decode speed / quality。所有速度指標以 Service API（llama-server /v1/completions）為準。</p>
+    <p><strong>目標向量：</strong> <code>80/80/80/80/80/80</code></p>
+    <p><strong>當前向量：</strong> <code>100/92/82/40/40/40</code></p>
+    <p>六軸順序固定為：
+      <code>API Messages / Serializer Output / Native Healthy Prompt / Prefill Speed / Decode Speed / Quality</code>
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>總覽</h2>
+    <table>
+      <tr>
+        <th>軸</th>
+        <th>當前分數</th>
+        <th>目標分數</th>
+        <th>當前技術指標</th>
+        <th>下一刀</th>
+      </tr>
+      <tr><td><code>API Messages</code></td><td><span class='badge green'>100</span></td><td>80</td><td>6 類 probes 已外部化成 versioned contract fixture</td><td></td></tr><tr><td><code>Serializer Output</code></td><td><span class='badge green'>92</span></td><td>80</td><td>6 個 contract cases 全部與 native healthy prompt 對齊</td><td></td></tr><tr><td><code>Native Healthy Prompt</code></td><td><span class='badge green'>82</span></td><td>80</td><td>6 個 probes 已定義 native healthy prompt，且已接上字串與 token 級對拍</td><td></td></tr><tr><td><code>Prefill Speed</code></td><td><span class='badge red'>40</span></td><td>80</td><td>4.96<br><span class='muted'>tok/s (llama-server /v1/completions, base model, cold start, 2026-09-01)</span></td><td>Pre-warm prompt 或 persistent session 讓首次 request 也達到 warm 速度</td></tr><tr><td><code>Decode Speed</code></td><td><span class='badge red'>40</span></td><td>80</td><td>8.79<br><span class='muted'>tok/s (llama-server /v1/completions, base model, 1000 tokens, 2026-09-01)</span></td><td>用 MTP 模型 + 32GB 機器驗證 Service API decode 達到 25+ t/s</td></tr><tr><td><code>Quality</code></td><td><span class='badge red'>40</span></td><td>80</td><td>skip-chat-parsing output correct (no think/echo), but needs full 4-probe validation</td><td>跑完整 QA/摘要/completion/streaming 4 probe 套件確認 quality</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>怎麼打分</h2>
+    <p>原則很簡單：每一軸都用 <code>0-100</code> 打分，<code>80</code> 是可接受的收口線，<code>100</code> 是量產就緒或接近量產的狀態。</p>
+    <ul>
+      <li><strong>80 分</strong>：這一軸已經足夠支撐後續優化，不再是主阻塞。</li>
+      <li><strong>60-79 分</strong>：方向對了，但還有明顯缺口或覆蓋不夠。</li>
+      <li><strong>&lt; 60 分</strong>：這一軸仍是紅區，優先補短板。</li>
+    </ul>
+  </div>
+
+  <div class='card'><h2><code>API Messages</code> <span class='badge green'>100</span></h2><p><strong>當前技術指標：</strong> 6 類 probes 已外部化成 versioned contract fixture</p><p><strong>為什麼是這個分數：</strong> </p><h3>打分標準</h3><ul></ul><h3>證據來源</h3><ul></ul><h3>下一刀</h3><p></p></div><div class='card'><h2><code>Serializer Output</code> <span class='badge green'>92</span></h2><p><strong>當前技術指標：</strong> 6 個 contract cases 全部與 native healthy prompt 對齊</p><p><strong>為什麼是這個分數：</strong> </p><h3>打分標準</h3><ul></ul><h3>證據來源</h3><ul></ul><h3>下一刀</h3><p></p></div><div class='card'><h2><code>Native Healthy Prompt</code> <span class='badge green'>82</span></h2><p><strong>當前技術指標：</strong> 6 個 probes 已定義 native healthy prompt，且已接上字串與 token 級對拍</p><p><strong>為什麼是這個分數：</strong> </p><h3>打分標準</h3><ul></ul><h3>證據來源</h3><ul></ul><h3>下一刀</h3><p></p></div><div class='card'><h2><code>Prefill Speed</code> <span class='badge red'>40</span></h2><p><strong>當前技術指標：</strong> 4.96 <span class='muted'>(tok/s (llama-server /v1/completions, base model, cold start, 2026-09-01))</span></p><p><strong>為什麼是這個分數：</strong> 2026-09-01 實測：llama-server + expert-cache + skip-chat-parsing + CGC_OA_ASYNC=1，cold prefill 4.96 t/s。Warm 後 request 2-4 可達 17-27 t/s。CLI 同配置 25.09 t/s。Service API cold start 顯著慢於 CLI。</p><h3>打分標準</h3><ul></ul><h3>證據來源</h3><ul><li><code>llama-server /v1/completions test (2026-09-01)</code></li></ul><h3>下一刀</h3><p>Pre-warm prompt 或 persistent session 讓首次 request 也達到 warm 速度</p></div><div class='card'><h2><code>Decode Speed</code> <span class='badge red'>40</span></h2><p><strong>當前技術指標：</strong> 8.79 <span class='muted'>(tok/s (llama-server /v1/completions, base model, 1000 tokens, 2026-09-01))</span></p><p><strong>為什麼是這個分數：</strong> 2026-09-01 實測：llama-server + expert-cache + OA_ASYNC，decode 8.79 t/s（CLI 同模型 11.25 t/s 的 78%）。差距來自 HTTP wrapper overhead。MTP 模型可達 27+ t/s（需 32GB 機器驗證）。</p><h3>打分標準</h3><ul></ul><h3>證據來源</h3><ul><li><code>llama-server /v1/completions test (2026-09-01)</code></li><li><code>scripts/run_n30cache.sh (CLI baseline: 11.25 t/s base, 27.24 t/s MTP)</code></li></ul><h3>下一刀</h3><p>用 MTP 模型 + 32GB 機器驗證 Service API decode 達到 25+ t/s</p></div><div class='card'><h2><code>Quality</code> <span class='badge red'>40</span></h2><p><strong>當前技術指標：</strong> skip-chat-parsing output correct (no think/echo), but needs full 4-probe validation</p><p><strong>為什麼是這個分數：</strong> 2026-09-01 實測：/v1/completions 輸出正確（capital of France → Paris）；/v1/chat/completions + skip-chat-parsing 輸出正確（2+2 → 4）。無 think/echo/循環。但未跑完整 4 probe 套件。</p><h3>打分標準</h3><ul></ul><h3>證據來源</h3><ul><li><code>llama-server test output (2026-09-01)</code></li></ul><h3>下一刀</h3><p>跑完整 QA/摘要/completion/streaming 4 probe 套件確認 quality</p></div>
+</body>
+</html>
