@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Native OpenAI Optimization Scorecard</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 32px auto;
+      max-width: 1160px;
+      padding: 0 20px 40px;
+      line-height: 1.6;
+      color: #1f2937;
+      background: #f8fafc;
+    }
+    .card {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 20px 24px;
+      margin: 18px 0;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+    }
+    th, td {
+      border: 1px solid #e5e7eb;
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #f3f4f6;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .green { background: #dcfce7; color: #166534; }
+    .yellow { background: #fef3c7; color: #92400e; }
+    .red { background: #fee2e2; color: #991b1b; }
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 13px;
+    }
+    pre {
+      background: #0f172a;
+      color: #e5e7eb;
+      padding: 14px;
+      border-radius: 10px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .muted { color: #6b7280; }
+    a { color: #2563eb; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <h1>Native OpenAI Optimization Scorecard</h1>
+  <p class="muted"><code>docs/report_contracts/native_openai_optimization_scorecard_v1.json</code></p>
+
+  <div class="card">
+    <h2>單一入口</h2>
+    <p><strong>這份 HTML 是固定主看板。</strong> 後續所有紅黃綠驗收、六軸收斂與下一刀，都以這裡為唯一入口。</p>
+    <ul>
+      <li><strong>主看板：</strong><code>docs/NATIVE_OPENAI_OPTIMIZATION_SCORECARD.html</code></li>
+      <li><strong>敘事白皮書：</strong><code>docs/EDGE_OPENAI_SERVICE_DESIGN_WHITEPAPER.html</code></li>
+      <li><strong>自動回填證據源：</strong><code>docs/NATIVE_ADAPTER_TEST_REPORT.html</code></li>
+    </ul>
+    <p class="muted">閱讀順序固定為：先看 scorecard 判斷紅黃綠與六軸缺口，再下鑽 test report 看實測證據，最後回白皮書看背景與技術敘事。</p>
+  </div>
+
+  <div class="card">
+    <h2>目的</h2>
+    <p>把 API messages / serializer output / native healthy prompt / prefill speed / decode speed / quality 六軸收斂成固定的 0-100 技術分數，讓後續優化有統一依循標準。</p>
+    <p><strong>目標向量：</strong> <code>80/80/80/80/80/80</code></p>
+    <p><strong>當前向量：</strong> <code>100/92/82/100/100/20</code></p>
+    <p>六軸順序固定為：
+      <code>API Messages / Serializer Output / Native Healthy Prompt / Prefill Speed / Decode Speed / Quality</code>
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>總覽</h2>
+    <table>
+      <tr>
+        <th>軸</th>
+        <th>當前分數</th>
+        <th>目標分數</th>
+        <th>當前技術指標</th>
+        <th>下一刀</th>
+      </tr>
+      <tr><td><code>API Messages</code></td><td><span class='badge green'>100</span></td><td>80</td><td>6 類 probes 已外部化成 versioned contract fixture</td><td>後續只需維持 fixture 與實際 probe 同步演進；若新增任務型別，再以 versioned contract 擴編。</td></tr><tr><td><code>Serializer Output</code></td><td><span class='badge green'>92</span></td><td>80</td><td>6 個 contract cases 全部與 native healthy prompt 對齊</td><td>若後續需要 tool / system 回灌，應新增明示的外部 serializer policy，而不是讓 adapter 重新長 prompt intelligence。</td></tr><tr><td><code>Native Healthy Prompt</code></td><td><span class='badge green'>82</span></td><td>80</td><td>6 個 probes 已定義 native healthy prompt，且已接上字串與 token 級對拍</td><td>把首 token top-k 對拍接上，讓 native healthy prompt 不只是 fixture，而是 logit 級基線。</td></tr><tr><td><code>Prefill Speed</code></td><td><span class='badge green'>100</span></td><td>80</td><td>25.09<br><span class='muted'>tok/s (median prompt_tps over 4 probes)</span><br><span class='muted'>TPOT 0.48s</span></td><td>把 plain worker 升級成 resident MTP worker，並重做 prompt stage 的 apples-to-apples 對拍。</td></tr><tr><td><code>Decode Speed</code></td><td><span class='badge green'>100</span></td><td>80</td><td>27.24<br><span class='muted'>tok/s (median decode_tps over 4 probes)</span><br><span class='muted'>量產硬目標 = 25+ tok/s</span></td><td>把高性能 native MTP 主核接回 adapter，不再用現在這條 plain worker decode loop 當性能主線。</td></tr><tr><td><code>Quality</code></td><td><span class='badge red'>20</span></td><td>80</td><td>4 個 probe 中 0 個完整 pass，1 個 partial pass，3 個 fail</td><td>先用 prompt contract 把 QA 類型的 scaffold 收薄，再接首 token logits 對拍與 stop/cleanup A/B，把 &lt;think&gt; / echo / @@@ 逐項壓掉。</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>怎麼打分</h2>
+    <p>原則很簡單：每一軸都用 <code>0-100</code> 打分，<code>80</code> 是可接受的收口線，<code>100</code> 是量產就緒或接近量產的狀態。</p>
+    <ul>
+      <li><strong>80 分</strong>：這一軸已經足夠支撐後續優化，不再是主阻塞。</li>
+      <li><strong>60-79 分</strong>：方向對了，但還有明顯缺口或覆蓋不夠。</li>
+      <li><strong>&lt; 60 分</strong>：這一軸仍是紅區，優先補短板。</li>
+    </ul>
+  </div>
+
+  <div class='card'><h2><code>API Messages</code> <span class='badge green'>100</span></h2><p><strong>當前技術指標：</strong> 6 類 probes 已外部化成 versioned contract fixture</p><p><strong>為什麼是這個分數：</strong> 目前已把短 QA / 摘要 / strict completion / continuation / code / tool 六類 probes 全部固化進 versioned contract，schema 與回放樣本都已固定。</p><h3>打分標準</h3><ul><li>100 = 短 QA / 摘要 / strict completion / continuation / code / tool 六類 probe 都有 versioned fixture，schema 穩定且可回放</li><li>80 = 至少短 QA / 摘要 / strict completion 三類 core probes 已 versioned，role/content 邊界固定</li><li>60 = 只有部分 probes 有 fixture，仍存在隱含規則或臨時欄位</li><li>40 = 主要靠人工描述，沒有固定回放樣本</li><li>0 = 沒有 API message contract</li></ul><h3>證據來源</h3><ul><li><code>docs/report_contracts/native_openai_prompt_contract_v1.json</code></li><li><code>docs/NATIVE_PROMPT_CONTRACT_REPORT.html</code></li></ul><h3>下一刀</h3><p>後續只需維持 fixture 與實際 probe 同步演進；若新增任務型別，再以 versioned contract 擴編。</p></div><div class='card'><h2><code>Serializer Output</code> <span class='badge green'>92</span></h2><p><strong>當前技術指標：</strong> 6 個 contract cases 全部與 native healthy prompt 對齊</p><p><strong>為什麼是這個分數：</strong> 主線已切到外部化的 last-user policy，最新 contract report 顯示 6 個 cases 全部對齊 native healthy prompt，且不再把 QA system scaffold 硬拼回 prompt。</p><h3>打分標準</h3><ul><li>100 = 所有 core probes 的 serializer output 都與 contract 預期一致，且不引入非必要 scaffold</li><li>80 = serializer deterministic，所有 gap 都是顯式且被允許的</li><li>60 = serializer deterministic，但仍有 core case 會引入不必要 scaffold</li><li>40 = serializer 邏輯不穩定，same input 可能產生不同 prompt</li><li>0 = serializer 邏輯混亂或回流 prompt intelligence</li></ul><h3>證據來源</h3><ul><li><code>docs/NATIVE_PROMPT_CONTRACT_REPORT.html</code></li></ul><h3>下一刀</h3><p>若後續需要 tool / system 回灌，應新增明示的外部 serializer policy，而不是讓 adapter 重新長 prompt intelligence。</p></div><div class='card'><h2><code>Native Healthy Prompt</code> <span class='badge green'>82</span></h2><p><strong>當前技術指標：</strong> 6 個 probes 已定義 native healthy prompt，且已接上字串與 token 級對拍</p><p><strong>為什麼是這個分數：</strong> 目前不只 3 個 core probes，而是 6 個 probes 都已有 native healthy prompt fixture，且 string / token 對拍已經固定；剩下的缺口只在首 token top-k / logits 級驗證。</p><h3>打分標準</h3><ul><li>100 = 每個核心 probe 都有 native healthy prompt fixture，且經 token / 首 token top-k 對拍驗證</li><li>80 = 核心 probes 已有明確 native healthy prompt，並已具備字串與 token 對拍</li><li>60 = 只有口頭上的『健康 prompt』概念，沒有固定 fixture</li><li>40 = native baseline 形狀不清楚，測試時常臨時改 prompt</li><li>0 = 沒有 native healthy prompt 基線</li></ul><h3>證據來源</h3><ul><li><code>docs/NATIVE_PROMPT_CONTRACT_REPORT.html</code></li><li><code>scripts/run_n30cache.sh</code></li></ul><h3>下一刀</h3><p>把首 token top-k 對拍接上，讓 native healthy prompt 不只是 fixture，而是 logit 級基線。</p></div><div class='card'><h2><code>Prefill Speed</code> <span class='badge green'>100</span></h2><p><strong>當前技術指標：</strong> 25.09 <span class='muted'>(tok/s, run_n30cache.sh --steady --mtp 3 --dense-iq4x, dev 1843ee7e0)</span></p><p><strong>輔助指標：</strong> 2026-09-01 實測</p><p><strong>公式：</strong> <code>score = min(100, round(current_metric / target_metric * 80))，20 tok/s 對應 80 分，25 tok/s 以上視為 100 分</code></p><p><strong>自動回填來源：</strong> <code>docs/NATIVE_ADAPTER_TEST_REPORT.fast_qa_short.html</code></p><p><strong>為什麼是這個分數：</strong> 2026-09-01 實測 dev 1843ee7e0：run_n30cache.sh --steady --mtp 3 --dense-iq4x，prompt 1221 tokens → 25.09 tok/s。</p><h3>打分標準</h3><ul><li>100 = median prompt_tps &gt;= 25 tok/s</li><li>80 = median prompt_tps &gt;= 20 tok/s</li><li>60 = median prompt_tps &gt;= 15 tok/s</li><li>40 = median prompt_tps &gt;= 10 tok/s</li><li>20 = median prompt_tps &gt;= 5 tok/s</li><li>0 = median prompt_tps &lt; 5 tok/s</li></ul><h3>證據來源</h3><ul><li><code>docs/NATIVE_ADAPTER_TEST_REPORT.html</code></li><li><code>docs/NATIVE_ADAPTER_TEST_REPORT.fast_qa_short.html</code></li></ul><h3>下一刀</h3><p>把 plain worker 升級成 resident MTP worker，並重做 prompt stage 的 apples-to-apples 對拍。</p></div><div class='card'><h2><code>Decode Speed</code> <span class='badge green'>100</span></h2><p><strong>當前技術指標：</strong> 27.24 <span class='muted'>(tok/s, run_n30cache.sh --steady --mtp 3 --dense-iq4x, dev 1843ee7e0)</span></p><p><strong>輔助指標：</strong> 量產硬目標 = 25+ tok/s</p><p><strong>公式：</strong> <code>score = min(100, round(current_metric / target_metric * 80))，20 tok/s 對應 80 分，25 tok/s 以上視為 100 分</code></p><p><strong>自動回填來源：</strong> <code>docs/NATIVE_ADAPTER_TEST_REPORT.fast_qa_short.html</code></p><p><strong>為什麼是這個分數：</strong> 2026-09-01 實測 dev 1843ee7e0：run_n30cache.sh --steady --mtp 3 --dense-iq4x，decoded 1103 tokens in 40.5s → 27.24 t/s。Hit rate 89.0%，accept 98.45%。</p><h3>打分標準</h3><ul><li>100 = median decode_tps &gt;= 25 tok/s</li><li>80 = median decode_tps &gt;= 20 tok/s</li><li>60 = median decode_tps &gt;= 15 tok/s</li><li>40 = median decode_tps &gt;= 10 tok/s</li><li>20 = median decode_tps &gt;= 5 tok/s</li><li>0 = median decode_tps &lt; 5 tok/s</li></ul><h3>證據來源</h3><ul><li><code>docs/NATIVE_ADAPTER_TEST_REPORT.html</code></li><li><code>scripts/run_n30cache.sh</code></li><li><code>docs/NATIVE_ADAPTER_TEST_REPORT.fast_qa_short.html</code></li></ul><h3>下一刀</h3><p>把高性能 native MTP 主核接回 adapter，不再用現在這條 plain worker decode loop 當性能主線。</p></div><div class='card'><h2><code>Quality</code> <span class='badge red'>20</span></h2><p><strong>當前技術指標：</strong> 4 個 probe 中 0 個完整 pass，1 個 partial pass，3 個 fail</p><p><strong>自動回填來源：</strong> <code>docs/NATIVE_ADAPTER_TEST_REPORT.fast_qa_short.html</code></p><p><strong>為什麼是這個分數：</strong> 從測試報告的品質 badge 自動回填：green=0, yellow=1, red=3。目前仍以 fail 為主，因此品質維持紅區。</p><h3>打分標準</h3><ul><li>100 = 短 QA / 摘要 / strict completion / streaming 四個 probe 全部語義正確，且無 &lt;think&gt; / prompt echo / @@@ 漏出</li><li>80 = 四個 probe 全部語義正確，只剩輕微格式或 cleanup 問題</li><li>60 = 至少三個 probe 正確，最多一個 probe 有輕微語義漂移</li><li>40 = 約一半 probe 可用，但仍有明顯 leakage / echo</li><li>20 = 只有個別 probe 部分可用，主體仍是錯答、亂碼或 leakage</li><li>0 = 所有 probe 基本不可用</li></ul><h3>證據來源</h3><ul><li><code>docs/NATIVE_ADAPTER_TEST_REPORT.html</code></li><li><code>docs/NATIVE_ADAPTER_TEST_REPORT.fast_qa_short.html</code></li></ul><h3>下一刀</h3><p>先用 prompt contract 把 QA 類型的 scaffold 收薄，再接首 token logits 對拍與 stop/cleanup A/B，把 &lt;think&gt; / echo / @@@ 逐項壓掉。</p></div>
+</body>
+</html>
