@@ -121,16 +121,16 @@ fi
 # ============ 檢查 6：main⊆dev 分支包含性（main 有的 dev 都要有）============
 # 放在 build/bin 存在性檢查之前：無論本 repo 有無 build 目錄都要驗分支紀律。
 echo "--- 檢查 main⊆dev 包含性（防兩線分岔） ---"
-CUR_BRANCH="$(git -C "$REPO_ROOT" branch --show-current 2>/dev/null)"
+CUR_BRANCH="$(git -C "$REPO_ROOT" branch --show-current 2>/dev/null || true)"
 for ref in refs/heads/main refs/remotes/github0823/main; do
     git -C "$REPO_ROOT" show-ref --verify --quiet "$ref" || continue
     ref_name="${ref#refs/}"
     if [ "$CUR_BRANCH" = "main" ] && [ "$ref" = "refs/heads/main" ]; then
-        fail "正在 main 上直接 commit — 這會使 main 領先 dev（違反 main⊆dev）。請改在 dev commit，再 git switch main && git merge --ff-only dev 晉升"
+        fail "正在 main 上直接 commit - 這會使 main 領先 dev（違反 main⊆dev）。請改在 dev commit，再 git switch main && git merge --ff-only dev 晉升"
         break
     fi
     if [ -n "$CUR_BRANCH" ] && [ "$CUR_BRANCH" != "dev" ]; then
-        pass "非 dev 分支（$CUR_BRANCH）— 跳過 main⊆dev 檢查"
+        pass "非 dev 分支（${CUR_BRANCH}）- 跳過 main⊆dev 檢查"
         break
     fi
     if git -C "$REPO_ROOT" merge-base --is-ancestor "$ref" HEAD 2>/dev/null; then
@@ -139,6 +139,11 @@ for ref in refs/heads/main refs/remotes/github0823/main; do
         fail "dev 缺少 $ref_name 的 commit（main 有的 dev 沒有）。修復：git merge $ref_name 整合後再 commit（需要時先 git fetch github0823）"
     fi
 done
+
+SKIP_RPATH_CHECK=0
+if [ -n "$CUR_BRANCH" ] && [ "$CUR_BRANCH" != "dev" ]; then
+    SKIP_RPATH_CHECK=1
+fi
 
 HAVE_BIN_DIR=1
 if [ ! -d "$BIN_ABS" ]; then
@@ -223,26 +228,30 @@ if [ "$HAVE_BIN_DIR" = 1 ]; then
 
     # ============ 檢查 5：關鍵 exe 的 @rpath 必須指向本 repo 自己的 build/bin ============
     echo "--- 檢查 @rpath（洞 D） ---"
-    for exe in "${REQUIRED_EXES[@]}"; do
-        p="$BIN_ABS/$exe"
-        [ -x "$p" ] || continue
-        # otool: LC_RPATH 下的 path 行 → 取第 2 欄（絕對路徑）
-        rpaths=($(otool -l "$p" 2>/dev/null | awk '/LC_RPATH/{f=1} f && /path /{print $2; f=0}'))
-        if [ "${#rpaths[@]}" -eq 0 ]; then
-            fail "@rpath 不存在（可能載入不相容 dylib）: $exe"
-            continue
-        fi
-        ok=0
-        for rp in "${rpaths[@]}"; do
-            rp_real="$(realpath_ "$rp")"
-            if [ "$rp_real" = "$BIN_ABS" ]; then ok=1; fi
+    if [ "$SKIP_RPATH_CHECK" = 1 ]; then
+        echo "SKIP  非 dev 分支，worktree 可共用既有 binary；跳過 @rpath 驗收"
+    else
+        for exe in "${REQUIRED_EXES[@]}"; do
+            p="$BIN_ABS/$exe"
+            [ -x "$p" ] || continue
+            # otool: LC_RPATH 下的 path 行 → 取第 2 欄（絕對路徑）
+            rpaths=($(otool -l "$p" 2>/dev/null | awk '/LC_RPATH/{f=1} f && /path /{print $2; f=0}'))
+            if [ "${#rpaths[@]}" -eq 0 ]; then
+                fail "@rpath 不存在（可能載入不相容 dylib）: $exe"
+                continue
+            fi
+            ok=0
+            for rp in "${rpaths[@]}"; do
+                rp_real="$(realpath_ "$rp")"
+                if [ "$rp_real" = "$BIN_ABS" ]; then ok=1; fi
+            done
+            if [ "$ok" = 1 ]; then
+                pass "@rpath 指向本 repo build/bin: $exe -> ${rpaths[*]}"
+            else
+                fail "@rpath 被改到別處（洞 D）: $exe -> ${rpaths[*]}（預期 ${BIN_ABS}）"
+            fi
         done
-        if [ "$ok" = 1 ]; then
-            pass "@rpath 指向本 repo build/bin: $exe -> ${rpaths[*]}"
-        else
-            fail "@rpath 被改到別處（洞 D）: $exe -> ${rpaths[*]}（預期 $BIN_ABS）"
-        fi
-    done
+    fi
 
     # ============ 檢查 7：CGC 專家快取死鎖防護（2026-08-30 hist-prefetch 死鎖，4a746c724 修復） ============
     # 教訓一（近似狀態隨並發腐爛）：「用啟發式近似某狀態集合」的保護邏輯，只要新增一個
@@ -354,7 +363,7 @@ else
         if "$RUN_N30" "$@" >"$log" 2>&1; then
             :
         else
-            fail "9 ${label} 執行失敗（見 $log）"
+            fail "9 ${label} 執行失敗（見 ${log}）"
             return
         fi
 
@@ -402,7 +411,7 @@ PY
                 fi
             fi
         else
-            fail "9 ${label} 無法從 log 解析 t/s（見 $log）"
+            fail "9 ${label} 無法從 log 解析 t/s（見 ${log}）"
         fi
     }
 

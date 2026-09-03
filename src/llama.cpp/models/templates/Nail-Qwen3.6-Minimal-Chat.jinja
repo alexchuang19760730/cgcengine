@@ -1,0 +1,28 @@
+{# Minimal chat template for Nail-Qwen3.6-MTP (custom tokens) #}
+{%- set prefill_text = assistant_prefill if assistant_prefill is defined and assistant_prefill is string else '' -%}
+{%- set summary_prefill = assistant_prefill_summary if assistant_prefill_summary is defined and assistant_prefill_summary is string else '' -%}
+{%- set prefill_mode = assistant_prefill_mode if assistant_prefill_mode is defined and assistant_prefill_mode is string else 'always' -%}
+
+{%- for message in messages -%}
+  {%- if message.role == 'user' -%}
+<|user|>
+{{ message.content }}</output>
+  {%- elif message.role == 'assistant' -%}
+<|assistant|>
+{{ message.content }}</output>
+  {%- elif message.role == 'tool' -%}
+<|assistant|>
+{{ message.content }}</output>
+  {%- endif -%}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+  {%- if summary_prefill -%}
+<|assistant|>
+{{ summary_prefill }}
+  {%- elif prefill_text and prefill_mode == 'always' -%}
+<|assistant|>
+{{ prefill_text }}
+  {%- else -%}
+<|assistant|>
+  {%- endif -%}
+{%- endif -%}
