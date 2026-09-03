@@ -26,7 +26,8 @@ scripts/
 - 以及其他安装脚本...
 
 ### check/
-- `check_server.sh` - 检查服务器状态
+- `check_server.sh` - 用固定 `qa-zh` / `longform-zh` replay payload 做 llama-server regression smoke check
+- `check_server_profiles.py` - 回归检查主体；要求 `finish_reason=stop` 且无模板边界污染
 - `check_vllm.sh` - 检查 vLLM 安装
 - `check_torch.sh` - 检查 PyTorch
 - 以及其他检查脚本...
@@ -34,6 +35,7 @@ scripts/
 ### benchmark/
 - `run_phi3_moe_benchmark.sh` - 运行 Phi-3 MoE 基准测试
 - `full_benchmark.sh` - 完整基准测试
+- `benchmark_server_profiles.py` - 对固定 `qa-zh` / `longform-zh` replay payload 做多轮 server benchmark，并汇总 decode / prompt / acceptance 指标
 - 以及其他基准测试脚本...
 
 ### sync/
@@ -68,6 +70,12 @@ bash scripts/install/install_vllm.sh
 
 # 运行基准测试
 bash scripts/benchmark/run_phi3_moe_benchmark.sh
+
+# 运行 llama-server regression smoke check
+bash scripts/check/check_server.sh --base-url http://127.0.0.1:8080/v1
+
+# 运行固定 replay payload benchmark
+python3 scripts/benchmark/benchmark_server_profiles.py --base-url http://127.0.0.1:8080/v1 --iterations 3
 
 # 同步代码
 bash scripts/sync/sync_code.sh

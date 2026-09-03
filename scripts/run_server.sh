@@ -382,6 +382,8 @@ for i in $(seq 1 60); do
         echo "  Base URL   : http://$LAN_IP:$PORT/v1（OpenAI 相容）"
         echo "  測試       : curl --noproxy '*' http://127.0.0.1:$PORT/v1/models"
         echo "  Windows 伙伴 : 程式內直接指 http://$LAN_IP:$PORT/v1/chat/completions"
+        echo "  Regression : bash scripts/check/check_server.sh --base-url http://127.0.0.1:$PORT/v1"
+        echo "  Benchmark  : python3 scripts/benchmark/benchmark_server_profiles.py --base-url http://127.0.0.1:$PORT/v1 --iterations 3"
         if [ "$SERVER_PROFILE" = "qa-zh" ]; then
             echo "  Profile    : qa-zh（中文短答；已驗證答：前綴可避開 <think>）"
             echo "  Payload    : {\"messages\":[{\"role\":\"user\",\"content\":\"請用一句中文回答：巴黎是哪個國家的首都？\"}],\"max_tokens\":$SERVER_CHAT_AB_MAX_TOKENS,\"stop\":[\"$SERVER_CHAT_AB_STOP\",\"<|end|>\",\"<|output|>\",\"<|user|>\"]}"
