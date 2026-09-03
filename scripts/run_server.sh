@@ -21,9 +21,11 @@
 # 用法：
 #   ./scripts/run_server.sh                       # 預設 qwen36 MTP（25+ t/s），port 8080
 #   ./scripts/run_server.sh --detach              # 同上，但脫離父 shell（setsid），不被 SIGHUP 殺
-#   CGC_SERVER_MTP=0 ./scripts/run_server.sh      # 非 MTP 基線（~8 t/s）
+#   CGC_SERVER_RUNTIME_PROFILE=non-mtp ./scripts/run_server.sh   # 非 MTP 基線（~8 t/s）
+#   CGC_SERVER_RUNTIME_PROFILE=mtp ./scripts/run_server.sh        # 明確切回 MTP 生產配置
 #   CGC_SERVER_OOM_SAFE=1 ./scripts/run_server.sh # 16GB 機器上的 fallback / 保命模式
 #   CGC_SERVER_PORT=9931 ./scripts/run_server.sh  # 換 port
+#   CGC_SERVER_MODEL_ROOT=/path/to/models/gguf ./scripts/run_server.sh # worktree 外掛模型目錄
 #   伙伴（Windows/其他機器）：http://<Mac LAN IP>:8080/v1/chat/completions（OpenAI 相容）
 #
 # 鐵律：server 運行期間，本機禁止任何 13GB 級操作（llama-simple 對照/量化/HF 下載）。
@@ -71,10 +73,12 @@ fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$ROOT/src/llama.cpp/build/bin/llama-server"
 SERVER_MINIMAL_CHAT_TEMPLATE="$ROOT/src/llama.cpp/models/templates/Nail-Qwen3.6-Minimal-Chat.jinja"
-Q36="$ROOT/models/gguf/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf"
-Q36_MTP="$ROOT/models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS.gguf"
-Q36_MTP_DENSEIQ4X="$ROOT/models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf"
+MODEL_ROOT="${CGC_SERVER_MODEL_ROOT:-$ROOT/models/gguf}"
+Q36="$MODEL_ROOT/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf"
+Q36_MTP="$MODEL_ROOT/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS.gguf"
+Q36_MTP_DENSEIQ4X="$MODEL_ROOT/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf"
 
+SERVER_RUNTIME_PROFILE="${CGC_SERVER_RUNTIME_PROFILE:-auto}"
 SERVER_MTP="${CGC_SERVER_MTP:-1}"
 SERVER_DENSE_IQ4X="${CGC_SERVER_DENSE_IQ4X:-1}"  # denseIQ4X is the production MTP carrier
 SERVER_N_CB="${CGC_SERVER_N_CB:-8}"  # §8.93: cb8 sweet spot
@@ -93,6 +97,21 @@ SERVER_CHAT_AB="${CGC_SERVER_CHAT_AB:-off}"
 SERVER_CHAT_AB_PREFIX="${CGC_SERVER_CHAT_AB_PREFIX:-巴黎是法國的首都。}"
 SERVER_CHAT_AB_MAX_TOKENS="${CGC_SERVER_CHAT_AB_MAX_TOKENS:-8}"
 SERVER_CHAT_AB_STOP="${CGC_SERVER_CHAT_AB_STOP:-。}"
+
+case "$SERVER_RUNTIME_PROFILE" in
+    ''|auto|off) ;;
+    mtp)
+        SERVER_MTP=1
+        ;;
+    non-mtp|non_mtp)
+        SERVER_MTP=0
+        ;;
+    *)
+        echo "error: CGC_SERVER_RUNTIME_PROFILE must be auto|mtp|non-mtp (got $SERVER_RUNTIME_PROFILE)" >&2
+        exit 2
+        ;;
+esac
+
 MODEL_DEFAULT="$Q36"
 if [ "$SERVER_MTP" = "1" ]; then
     if [ "$SERVER_DENSE_IQ4X" = "1" ]; then
@@ -197,6 +216,10 @@ LOG="$LOG_DIR/llama_server_$(date +%Y%m%d_%H%M%S).log"
 if [ ! -f "$MODEL" ]; then
     echo "error: model not found: $MODEL" >&2
     echo "" >&2
+    echo "  目前模型目錄：$MODEL_ROOT" >&2
+    echo "  若 devserver worktree 沒放模型，可設：" >&2
+    echo "    CGC_SERVER_MODEL_ROOT=/path/to/models/gguf" >&2
+    echo "" >&2
     echo "  GGUF 不進 git（>100MB）。從 Hugging Face 下載：" >&2
     echo "    hf download Alexchuang/cgcengine-models \"$(basename "$MODEL")\" --local-dir models/gguf" >&2
     echo "  下載後驗證：cd models/gguf && shasum -a 256 -c SHA256SUMS" >&2
@@ -255,6 +278,7 @@ if [ -n "$SERVER_BATCH" ] || [ -n "$SERVER_UBATCH" ]; then
     echo "[perf]  batch=${SERVER_BATCH:-auto} ubatch=${SERVER_UBATCH:-auto}"
 fi
 echo "[perf]  n_cb=$SERVER_N_CB glu_fused_down=$SERVER_GLU_FUSED_DOWN watchdog=$SERVER_WATCHDOG oa_async=$SERVER_OA_ASYNC"
+echo "[perf]  runtime_profile=$SERVER_RUNTIME_PROFILE model_root=$MODEL_ROOT"
 if [ "$SERVER_PROFILE" != "off" ]; then
     echo "[chat]  profile=$SERVER_PROFILE"
 fi
@@ -382,6 +406,7 @@ for i in $(seq 1 60); do
         echo "  Base URL   : http://$LAN_IP:$PORT/v1（OpenAI 相容）"
         echo "  測試       : curl --noproxy '*' http://127.0.0.1:$PORT/v1/models"
         echo "  Windows 伙伴 : 程式內直接指 http://$LAN_IP:$PORT/v1/chat/completions"
+        echo "  Runtime    : CGC_SERVER_RUNTIME_PROFILE=mtp|non-mtp（目前 $SERVER_RUNTIME_PROFILE）"
         echo "  Regression : bash scripts/check/check_server.sh --base-url http://127.0.0.1:$PORT/v1"
         echo "  Benchmark  : python3 scripts/benchmark/benchmark_server_profiles.py --base-url http://127.0.0.1:$PORT/v1 --iterations 3"
         if [ "$SERVER_PROFILE" = "qa-zh" ]; then
