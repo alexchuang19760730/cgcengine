@@ -730,6 +730,33 @@ presence_penalty / stop 拐杖、temp=0。</p>
 採樣層放大，兩者都是 server 端可修</li>
 </ul>
 
+<h3>如何使用官方 OpenRouter API 做 ground truth（2026-09-09 實作）</h3>
+<p><strong>渠道：</strong>OpenRouter（海外可直接連，註冊送少量額度）</p>
+<ul>
+<li>Endpoint：<span class="code">https://openrouter.ai/api/v1</span>（OpenAI 相容）</li>
+<li>Model ID：<span class="code">qwen/qwen3.6-35b-a3b</span>（ctx 262K，$0.10/M input / $0.90/M output）</li>
+<li>其他可選：<span class="code">qwen/qwen3.6-flash</span>（$0.19/M / $1.13/M）</li>
+<li>金鑰：https://openrouter.ai/keys 註冊拿 <span class="code">sk-or-...</span></li>
+</ul>
+
+<p><strong>關鍵參數 — 必須關 thinking：</strong>Qwen3.6 預設 thinking ON 時 content=null
+（max_tokens 全被 "Thinking Process:" 吃光），需在請求 body 加：</p>
+<pre>{
+  "model": "qwen/qwen3.6-35b-a3b",
+  "messages": [{"role": "user", "content": "..."}],
+  "reasoning": {"enabled": false}   // ← 關鍵：關 thinking
+}</pre>
+
+<p><strong>本地代理（供 replay harness 對官方跑）：</strong></p>
+<pre># /tmp/or_proxy.py — 監聽 127.0.0.1:8082，注入 key + reasoning off
+# 使用：python3 /tmp/or_proxy.py
+python3 scripts/check/replay_server_profile.py --all-profiles   --base-url http://127.0.0.1:8082/v1 --model qwen36-official   --runs 2 --warmup --bench-output /tmp/replay_official.json</pre>
+
+<p><strong>裸問 runner（測真品質、無拐杖）：</strong></p>
+<pre># /tmp/bare_48.py — 48 題裸問雙邊對比（本地 8080 vs 官方 proxy）
+# 純 user message、無 prefill / pp / stop、temp=0
+python3 /tmp/bare_48.py</pre>
+
 <h3>附：replay harness 為何測不出差異</h3>
 <p>7-profile replay 兩邊都 1.0，因為 harness 每個 profile 都帶拐杖：qa-zh prefill「答:」、
 coding prefill「```python」+ pp=1.5、longform system prompt + pp=1.5。這些拐杖正是為讓
