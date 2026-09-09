@@ -1447,6 +1447,97 @@ uint32_t llama_expert_cache_slots_per_layer(const llama_expert_cache * cache) {
     return cache == nullptr ? 0 : cache->n_slots;
 }
 
+// [CGC identity-slot verify 2026-09-09] Load-time identity fill check. The loader pre-reads
+// experts 0..n_slots-1 into the adopted pool regions (identity order) and prepopulate marks them
+// resident WITHOUT the runtime fill path — so CGC_EXACT_CACHE_VERIFY (which only fires post-fill)
+// never checks these bytes. If the load-time pread landed at the wrong file offset (stride or
+// alignment mismatch), the identity slots silently hold garbage and EVERY layer computes with
+// wrong weights from the first chunk — matches the L4 oracle: diverges from control at prefill
+// chunk 1 while V1 reports 0 mismatch. Env-gated: LLAMA_EXPERT_CACHE_VERIFY_IDENTITY=1.
+// Verifies layers 0..2 in full; deeper layers sample slots 0..1 (same loader path, spot check).
+void llama_expert_cache_verify_identity(llama_expert_cache * cache) {
+    if (cache == nullptr || getenv("LLAMA_EXPERT_CACHE_VERIFY_IDENTITY") == nullptr) {
+        return;
+    }
+    size_t checked = 0, mismatched = 0;
+    const uint32_t n_layers = (uint32_t) cache->slot_owner.size();
+    for (uint32_t layer = 0; layer < n_layers; ++layer) {
+        for (int kind = 0; kind < 4; ++kind) {
+            size_t stride = 0;
+            uint32_t slots = 0;
+            const uint8_t * region = pool_region(cache, layer, kind, &stride, &slots);
+            if (region == nullptr || stride == 0 || slots == 0) {
+                continue;
+            }
+            const uint32_t n_check = (layer < 3) ? slots : (slots < 2 ? slots : 2);
+            for (uint32_t s = 0; s < n_check; ++s) {
+                // locate the index entry for (layer, kind, expert=s)
+                const llama_expert_index_entry * ent = nullptr;
+                for (size_t i = 0; i < cache->index_size; ++i) {
+                    const auto & e = cache->index[i];
+                    if (e.layer == layer && (uint32_t) e.kind == (uint32_t) kind && e.expert == s) {
+                        ent = &e;
+                        break;
+                    }
+                }
+                if (ent == nullptr || ent->file_idx >= cache->files_path.size() ||
+                    cache->files_path[ent->file_idx].empty()) {
+                    continue;
+                }
+                const uint8_t * slot = region + (size_t) s * stride;
+                const int fd = ::open(cache->files_path[ent->file_idx].c_str(), O_RDONLY);
+                if (fd < 0) {
+                    fprintf(stderr, "CGC-IDENT-VERIFY: open(%s) failed errno=%d\n",
+                            cache->files_path[ent->file_idx].c_str(), errno);
+                    continue;
+                }
+                std::vector<uint8_t> ref((size_t) ent->bytes);
+                size_t off = 0;
+                while (off < ref.size()) {
+                    const ssize_t r = ::pread(fd, ref.data() + off, ref.size() - off,
+                                              (off_t) ent->file_offset + (off_t) off);
+                    if (r <= 0) {
+                        fprintf(stderr, "CGC-IDENT-VERIFY: pread failed off=%zu errno=%d — aborting\n",
+                                off, errno);
+                        ::close(fd);
+                        abort();
+                    }
+                    off += (size_t) r;
+                }
+                ::close(fd);
+                checked++;
+                size_t diff = SIZE_MAX;
+                for (size_t k = 0; k < ref.size(); ++k) {
+                    if (slot[k] != ref[k]) {
+                        diff = k;
+                        break;
+                    }
+                }
+                if (diff != SIZE_MAX) {
+                    mismatched++;
+                    fprintf(stderr,
+                            "CGC-IDENT-MISMATCH: layer=%u kind=%d slot=%u expert=%u "
+                            "file_off=%llu bytes=%u diff_off=%zu pool=0x%02x ref=0x%02x "
+                            "stride=%zu path=%s — load-time identity fill corrupted\n",
+                            layer, kind, s, s, (unsigned long long) ent->file_offset,
+                            (unsigned) ent->bytes, diff, slot[diff], ref[diff], stride,
+                            cache->files_path[ent->file_idx].c_str());
+                    if (mismatched >= 8) {
+                        fprintf(stderr, "CGC-IDENT-VERIFY: %zu checked, %zu mismatched (first 8 shown) — aborting\n",
+                                checked, mismatched);
+                        abort();
+                    }
+                }
+            }
+        }
+    }
+    fprintf(stderr, "CGC-IDENT-VERIFY: %zu identity slots byte-compared vs GGUF, %zu mismatched\n",
+            checked, mismatched);
+    if (mismatched > 0) {
+        abort();
+    }
+}
+
 // [CGC §8.101 A/B] per-layer cap: the slot count actually usable for `layer`. Without the env
 // this equals slots_per_layer (uniform n_slots).
 uint32_t llama_expert_cache_slots_per_layer_l(const llama_expert_cache * cache, uint32_t layer) {

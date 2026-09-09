@@ -89,7 +89,7 @@ SERVER_NO_SEQ_RM_PROBE="${CGC_SERVER_NO_SEQ_RM_PROBE:-0}" # pass-through: skip s
 SERVER_N_CB="${CGC_SERVER_N_CB:-8}"  # §8.93: cb8 sweet spot
 SERVER_GLU_FUSED_DOWN="${CGC_SERVER_GLU_FUSED_DOWN:-1}"  # §8.113: +6.5% speed
 SERVER_WATCHDOG="${CGC_SERVER_WATCHDOG:-1}"  # Metal deadlock watchdog
-SERVER_OA_ASYNC="${CGC_SERVER_OA_ASYNC:-1}"  # §8.77/8.78: async callback split
+SERVER_OA_ASYNC="${CGC_SERVER_OA_ASYNC:-0}"  # §8.77/8.78: async callback split（2026-09-09 預設改 0：OA_ASYNC 疊加 skip0 時 0/10；單獨 8/10，不值得）
 SERVER_PROFILE="${CGC_SERVER_PROFILE:-off}"
 SERVER_CHAT_TEMPLATE="${CGC_SERVER_CHAT_TEMPLATE:-}"
 SERVER_CHAT_TEMPLATE_FILE="${CGC_SERVER_CHAT_TEMPLATE_FILE:-}"
@@ -615,7 +615,10 @@ fi
 SERVER_ENV=(
     CGC_EXPERT_CACHE_BYTES="$BUDGET"
     LLAMA_EXPERT_CACHE_ALLOW_NGL=1
-    LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0=1
+    # 2026-09-09 品質修復：L4_SKIP_LAYER0 已證實 4/10 品質殺手（blk.0 走 CPU
+    # skip-load 但 graph 在 Metal → cross-backend garbage）。甜蜜點（12:44 log
+    # 5976 slots = 預設 uniform caps、layer 0 在 pool 內）無 skip0 = 90-100%。
+    LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0=0
     LLAMA_EXPERT_CACHE_WORKERS=8
     CGC_WAKE_POLL_US=15
     CGC_PREFETCH_SRC=hist

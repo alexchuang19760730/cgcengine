@@ -558,6 +558,10 @@ bool llama_expert_cache_adopt_pool_region(llama_expert_cache * cache, uint32_t l
 // first accesses are pool HITS instead of re-preading the same bytes — otherwise every short
 // prompt pays a cold refill window (measured: L4@4GiB short-prompt decode 122ms vs base 88ms).
 void llama_expert_cache_prepopulate(llama_expert_cache * cache, uint32_t layer, uint32_t n_slots);
+
+// [CGC identity-slot verify 2026-09-09] load-time identity fill byte check vs the GGUF file.
+// Env-gated: LLAMA_EXPERT_CACHE_VERIFY_IDENTITY=1. Aborts on mismatch.
+void llama_expert_cache_verify_identity(llama_expert_cache * cache);
 // [CGC 2026-09-06] load-time pin prefill: fill every PIN_PROFILE member (hot experts) into the
 // pool and static-pin it, BEFORE any request. Requires load_pin_profile to have run first.
 size_t llama_expert_cache_pin_prefill(llama_expert_cache * cache);

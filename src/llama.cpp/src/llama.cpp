@@ -357,8 +357,12 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
             model->expert_cache_path = fname;
             // CGC: L4 skip-load gate — expert tensors stay on CPU (bounded residency). Same gate as
             // expert_cache_active below: -ngl>0 only enables it with the explicit ALLOW_NGL override.
+            // LLAMA_EXPERT_CACHE_L3_NGL=1 is the r7-style L3 gate: active at ngl>0 WITHOUT the L4
+            // shrink/adoption path (no ALLOW_NGL => no compute_l4_pool_capacity => tensors keep
+            // the full 256 experts; the malloc'd Option-A pool + blocking fills handle residency).
             const char * no_gather = getenv("LLAMA_EXPERT_CACHE_NOGATHER");
-            ml.expert_cache_skip_load = (params.n_gpu_layers <= 0 || getenv("LLAMA_EXPERT_CACHE_ALLOW_NGL")) && !(no_gather && no_gather[0]);
+            const bool cgc_l3_ngl = getenv("LLAMA_EXPERT_CACHE_L3_NGL") != nullptr;
+            ml.expert_cache_skip_load = (params.n_gpu_layers <= 0 || getenv("LLAMA_EXPERT_CACHE_ALLOW_NGL") || cgc_l3_ngl) && !(no_gather && no_gather[0]);
             model->expert_cache_skip_load = ml.expert_cache_skip_load;
             // CGC expert-cache L4: bounded Metal pool, only on the Metal path (-ngl > 0 + ALLOW_NGL).
             // compute_l4_pool_capacity scans the GGUF metadata (budget -> capacity) and sets
@@ -389,13 +393,15 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
                 // CGC: hook + gather path gate (disabled by NOGATHER; on the Metal path (ngl > 0)
                 // it only runs with the explicit ALLOW_NGL override).
                 const char * no_gather = getenv("LLAMA_EXPERT_CACHE_NOGATHER");
-                model->expert_cache_active = (model->n_gpu_layers() <= 0 || getenv("LLAMA_EXPERT_CACHE_ALLOW_NGL")) && !(no_gather && no_gather[0]);
+                const bool cgc_l3_ngl = getenv("LLAMA_EXPERT_CACHE_L3_NGL") != nullptr;
+                model->expert_cache_active = (model->n_gpu_layers() <= 0 || getenv("LLAMA_EXPERT_CACHE_ALLOW_NGL") || cgc_l3_ngl) && !(no_gather && no_gather[0]);
                 // Verify expert_cache_active is correctly set for ngl=99 path
                 const char * allow_ngl = getenv("LLAMA_EXPERT_CACHE_ALLOW_NGL");
-                LLAMA_LOG_INFO("%s: expert_cache_active=%d n_gpu_layers=%d ALLOW_NGL=%s no_gather=%d [CGC_DEBUG]",
+                LLAMA_LOG_INFO("%s: expert_cache_active=%d n_gpu_layers=%d ALLOW_NGL=%s L3_NGL=%d no_gather=%d [CGC_DEBUG]",
                                __func__, (int) model->expert_cache_active,
                                (int) model->n_gpu_layers(),
                                allow_ngl ? allow_ngl : "(null)",
+                               (int) cgc_l3_ngl,
                                (int) (no_gather && no_gather[0]));
                 // CGC expert-cache L4: adopt each expert tensor's Metal storage as the per-layer pool
                 // region (zero copy — the Metal FFN reads the pool directly). Then mark the first
@@ -435,6 +441,10 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
                         llama_expert_cache_prepopulate(model->expert_cache, ref.layer,
                                 (uint32_t) model->expert_cache_pool_capacity);
                     }
+                    // [CGC identity-slot verify 2026-09-09] V1 (CGC_EXACT_CACHE_VERIFY) only
+                    // checks runtime fills; the load-time identity slots (prepopulate) are never
+                    // verified. Byte-compare them against the GGUF here (env-gated).
+                    llama_expert_cache_verify_identity(model->expert_cache);
                 }
             } else {
                 LLAMA_LOG_WARN("%s: expert cache init failed (budget=%zu, index=%zu)\n",

@@ -2837,9 +2837,92 @@ ggml_status llama_context::graph_compute(
         }
     }
 
+    // [CGC remap write-vs-alloc bisect 2026-09-09] read back what the GPU will ACTUALLY
+    // consume from the remap leaves at dispatch time (post-alloc). The hook writes the leaves
+    // during build_graph, BEFORE ggml_backend_sched_alloc_graph reassigns input data
+    // pointers — if alloc moved remap->data, the dispatch buffer holds garbage and the FFN
+    // reads wrong experts from the first chunk (oracle divergence at [0,0,DEF]).
+    static const bool cgc_rmap_dbg = getenv("CGC_REMAP_DBG") != nullptr;
+    if (cgc_rmap_dbg) {
+        llama_expert_cache * ec = model.expert_cache;
+        for (int il = 0; il < 3 && il < (int) model.hparams.n_layer(); il++) {
+            const char * rc_ctx = cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP ? "MTP" : "DEF";
+            ggml_tensor * r = cache_remap_tensors[il];
+            if (r == nullptr) {
+                fprintf(stderr, "CGC-REMAP-READBACK: %s il=%d remap=null\n", rc_ctx, il);
+                continue;
+            }
+            if (r->data == nullptr) {
+                fprintf(stderr, "CGC-REMAP-READBACK: %s il=%d remap-data=null\n", rc_ctx, il);
+                continue;
+            }
+            const int32_t * rd = (const int32_t *) r->data;
+            const int64_t nv = r->ne[0] * r->ne[1] < 16 ? r->ne[0] * r->ne[1] : 16;
+            fprintf(stderr, "CGC-REMAP-READBACK: %s il=%d data=%p ntok=%lld vals=[", rc_ctx, il,
+                    (const void *) r->data, (long long) r->ne[1]);
+            for (int64_t k = 0; k < nv; ++k) {
+                fprintf(stderr, "%s%d", k ? " " : "", rd[k]);
+            }
+            fprintf(stderr, "]\n");
+            // FFN weight tensor data ptr vs pool region base (L4 adoption)
+            auto & ffn = cache_ffn_tensors[il];
+            for (int kind = 0; kind < 4; ++kind) {
+                ggml_tensor * wt = (size_t) kind < ffn.size() ? ffn[kind] : nullptr;
+                if (wt == nullptr) {
+                    continue;
+                }
+                size_t stride = 0;
+                uint32_t slots = 0;
+                const uint8_t * region = nullptr;
+                if (ec != nullptr) {
+                    region = llama_expert_cache_pool_data(ec, (uint32_t) il, kind);
+                    stride = llama_expert_cache_pool_stride(ec, (uint32_t) il, kind);
+                    slots = llama_expert_cache_slots_per_layer_l(ec, (uint32_t) il);
+                }
+                fprintf(stderr, "CGC-FFN-PTR: il=%d kind=%d wt->data=%p ne=[%lld %lld %lld] nb2=%lld region=%p stride=%zu slots=%u match=%d\n",
+                        il, kind, (const void *) wt->data,
+                        (long long) wt->ne[0], (long long) wt->ne[1], (long long) wt->ne[2],
+                        (long long) wt->nb[2], (const void *) region, stride, slots,
+                        region != nullptr && wt->data == region ? 1 : 0);
+            }
+        }
+    }
+
     auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
+    }
+
+    // [CGC remap post-compute bisect 2026-09-09] AFTER the graph ran, read back what mul_mat_id
+    // ACTUALLY consumed from the remap leaves. The pre-dispatch readback above runs before
+    // ggml_backend_sched_alloc_graph reassigns input data pointers AND before the ggml_cont copy
+    // node executes — if alloc moved remap->data, or the cont op overwrites the hook-written slot
+    // ids with the raw expert ids (0..255 on a 143-slot tensor), the post-compute values diverge
+    // from the pre-dispatch ones and the FFN reads wrong/OOB experts from the first chunk.
+    static const bool cgc_rmap_post = getenv("CGC_REMAP_POST_DBG") != nullptr;
+    if (cgc_rmap_post) {
+        ggml_backend_sched_synchronize(sched.get());
+        const int nq = cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP ? 3 : 3;
+        const int il_base = cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP ? (int) model.hparams.n_layer() : 0;
+        for (int qi = 0; qi < nq; qi++) {
+            const int il = il_base + qi;
+            if (il >= (int) model.hparams.n_layer_all) continue;
+            const char * rc_ctx = cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP ? "MTP" : "DEF";
+            ggml_tensor * r = cache_remap_tensors[il];
+            if (r == nullptr || r->data == nullptr) {
+                fprintf(stderr, "CGC-REMAP-POST: %s il=%d remap=null\n", rc_ctx, il);
+                continue;
+            }
+            const int64_t ntot = r->ne[0] * r->ne[1];
+            std::vector<int32_t> buf((size_t) ntot);
+            ggml_backend_tensor_get(r, buf.data(), 0, (size_t) ntot * sizeof(int32_t));
+            const int64_t nv = ntot < 16 ? ntot : 16;
+            fprintf(stderr, "CGC-REMAP-POST: %s il=%d ntok=%lld vals=[", rc_ctx, il, (long long) r->ne[1]);
+            for (int64_t k = 0; k < nv; ++k) {
+                fprintf(stderr, "%s%d", k ? " " : "", buf[(size_t) k]);
+            }
+            fprintf(stderr, "]\n");
+        }
     }
 
     static int cgc_sched_dbg = 0;
@@ -2896,11 +2979,18 @@ bool llama_context::expert_cache_eval_cb(ggml_tensor * t, bool ask, void * user_
     if (ask && cgc_verify_op_timing) {
         return cgc_is_verify_timing_target(t);
     }
-    static int cgc_cb_dbg = 0;
-    if (strncmp(t->name, "ffn_moe_topk", 12) == 0 && cgc_cb_dbg < 20) {
-        cgc_cb_dbg++;
-        LLAMA_LOG_INFO("CGC-CB: name=%s ask=%d active=%d\n", t->name, ask ? 1 : 0,
-                ctx->model.expert_cache_active ? 1 : 0);
+    static int cgc_cb_mtp = 0;
+    static int cgc_cb_def = 0;
+    const bool cgc_cb_is_mtp = ctx->cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP;
+    const int cgc_cb_cnt = cgc_cb_is_mtp ? cgc_cb_mtp : cgc_cb_def;
+    if (strncmp(t->name, "ffn_moe_topk", 12) == 0 && cgc_cb_cnt < 200 && getenv("CGC_CB_DBG") != nullptr) {
+        if (cgc_cb_is_mtp) { cgc_cb_mtp++; } else { cgc_cb_def++; }
+        const char * dash = strrchr(t->name, '-');
+        const int cb_il = dash ? atoi(dash + 1) : -1;
+        fprintf(stderr, "CGC-CB: %s name=%s ask=%d active=%d map_has=%d\n",
+                cgc_cb_is_mtp ? "MTP" : "DEF",
+                t->name, ask ? 1 : 0, ctx->model.expert_cache_active ? 1 : 0,
+                (int) ctx->cache_remap_tensors.count(cb_il));
     }
     // [CGC Step-2/3 weighted cold guard] produce moved into expert_cache_on_topk head: the
     // async segmented dispatcher (CGC_OA_ASYNC) only forwards each segment's ffn_moe_topk node
