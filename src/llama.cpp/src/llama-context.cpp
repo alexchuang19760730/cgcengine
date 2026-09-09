@@ -3111,7 +3111,7 @@ void llama_context::cgc_dump_graph_tensors(ggml_cgraph * gf) {
         if (t == nullptr || t->name[0] == '\0') {
             continue;
         }
-        if (t->type != GGML_TYPE_F32 || t->data == nullptr) {
+        if ((t->type != GGML_TYPE_F32 && t->type != GGML_TYPE_I32) || t->data == nullptr) {
             continue;
         }
         bool match = false;
@@ -3144,7 +3144,8 @@ void llama_context::cgc_dump_graph_tensors(ggml_cgraph * gf) {
         if (f != nullptr) {
             fwrite(buf.data(), 1, nbytes, f);
             fclose(f);
-            LLAMA_LOG_INFO("CGC-TD: %s ne=[%lld %lld %lld %lld] %zu bytes\n", path,
+            LLAMA_LOG_INFO("CGC-TD: %s type=%s ne=[%lld %lld %lld %lld] %zu bytes\n", path,
+                    ggml_type_name(t->type),
                     (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2], (long long) t->ne[3], nbytes);
         }
     }
