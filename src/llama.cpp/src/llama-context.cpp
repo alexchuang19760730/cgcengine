@@ -3194,24 +3194,36 @@ void llama_context::cgc_logits_oracle_dump(ggml_cgraph * gf, uint32_t n_tokens, 
     if (first_n_max >= 0 && dump_seq >= first_n_max) {
         return;
     }
-    // find logits tensor: F32, ne[1] == n_tokens, ne[0] is the vocab dim
-    // (the result_output / result_logits tensors match this; the rest of the graph is mostly F16/BF16)
+    // find logits tensor. Prefer the node named "result_output" (the LM-head output that
+    // llama.cpp model files register; the only F32 [n_vocab, n_tokens] tensor in the graph).
+    // Shape heuristics are unreliable here: async/segmented graphs contain thousands of F32
+    // intermediates with ne[1]==n_tokens (hidden states, KV views, MTP heads), so fall back
+    // to largest-ne[0] only when no result_output node exists.
     ggml_tensor * t_logits = nullptr;
     const int n_nodes = ggml_graph_n_nodes(gf);
+    int n_cand = 0;
     for (int i = 0; i < n_nodes; ++i) {
         ggml_tensor * t = ggml_graph_node(gf, i);
         if (t == nullptr || t->type != GGML_TYPE_F32) {
             continue;
         }
+        // name match first, without the ne[1] constraint: prefill graphs compute logits
+        // only for the final token (ne[1]==1 even when n_tokens>1), while verify batches
+        // need all rows (ne[1]==n_tokens).
+        if (strncmp(t->name, "result_output", 13) == 0) {
+            t_logits = t;
+            break;
+        }
         if (t->ne[1] != (int64_t) n_tokens) {
             continue;
         }
-        // vocab dim is typically the largest ne[0] in the graph (>> 1024)
         if (t->ne[0] < 1024) {
             continue;
         }
-        t_logits = t;
-        break;
+        n_cand++;
+        if (t_logits == nullptr || t->ne[0] > t_logits->ne[0]) {
+            t_logits = t;
+        }
     }
     if (t_logits == nullptr) {
         return;
@@ -3230,6 +3242,7 @@ void llama_context::cgc_logits_oracle_dump(ggml_cgraph * gf, uint32_t n_tokens, 
 
     const uint64_t h_full = cgc_logits_fnv1a64(buf.data(), nbytes);
     const char * ctype = cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP ? "MTP" : "DEF";
+    const char * tname = t_logits->name[0] != '\0' ? t_logits->name : "?";
 
     // Per-token row dump: one JSON object per (ubatch_step, token_idx) so single-token
     // divergence in a multi-token ubatch is detectable (vs. only the last-token argmax).
@@ -3286,13 +3299,16 @@ void llama_context::cgc_logits_oracle_dump(ggml_cgraph * gf, uint32_t n_tokens, 
         }
         top_json += "]";
 
+        const long long cgc_dump_pmax = llama_memory_seq_pos_max(memory.get(), 0);
         fprintf(f_out,
             "{\"step\":%d,\"token_idx\":%lld,\"n_tokens\":%lld,\"n_vocab\":%lld,\"ctx_type\":\"%s\","
+            "\"node\":\"%s\",\"n_cand\":%d,\"pmax\":%lld,"
             "\"logits_fnv1a64\":\"%016llx\",\"row_fnv1a64\":\"%016llx\","
             "\"sum\":%.6f,\"mean\":%.6e,"
             "\"argmax_token\":%lld,\"argmax_logit\":%.6f,"
             "\"top\":%s}\n",
             dump_seq, (long long) t, (long long) n_tok, (long long) n_vocab, ctype,
+            tname, n_cand, cgc_dump_pmax,
             (unsigned long long) h_full, (unsigned long long) h_row,
             sum, mean,
             (long long) argmax, (double) maxv,
@@ -4011,6 +4027,36 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
             // instead of the ZERO-slot. Default OFF (cgc_fast_wait_on()=false) = no-op.
             if (verify_fast) {
                 llama_expert_cache_wait_loading(cache, (uint32_t) il, uni.data(), uni.size());
+            }
+            // [CGC SyncFill 2026-09-09] Residual cold experts: blocking fill instead of
+            // ZERO-slot. The ZERO-slot fast path maps cold experts (slot_table == -1) to a
+            // zeroed region -> the FFN reads zeros as if that expert contributed nothing,
+            // corrupting layer logits (measured: 15+27 十連發 0/10 with L4 pool + fast path
+            // vs 10/10 without; v1/v2 oracle FAIL on the L4 path). Fix: for this step's
+            // actually-selected experts, synchronously fill the cold ones (usually 0-2 per
+            // layer) so the remap below writes their REAL slot. SpAc EMA membership keeps
+            // the cold ratio low (<5%); this closes the residual gap exactly. The ZERO-slot
+            // reservation is kept as a safe fallback for ensure_slot failure.
+            // CGC_SYNCFILL_COLD=1 enables; default OFF = legacy ZERO-slot behavior.
+            static const bool cgc_syncfill_cold = []() {
+                const char * e = getenv("CGC_SYNCFILL_COLD");
+                return e != nullptr && e[0] == '1';
+            }();
+            if (cgc_syncfill_cold) {
+                const int32_t * cst = cache->slot_table.data() + (size_t) il * cache->n_expert;
+                size_t n_cold_filled = 0;
+                for (size_t i = 0; i < uni.size(); ++i) {
+                    const uint32_t e = uni[i];
+                    if (e < cache->n_expert && cst[e] < 0) {
+                        llama_expert_cache_ensure_slot(cache, (uint32_t) il, e, /*count=*/false);
+                        n_cold_filled++;
+                    }
+                }
+                if (n_cold_filled > 0 && il <= 1) {
+                    fprintf(stderr, "CGC-SYNCFILL: %s il=%d cold_filled=%zu\n",
+                            cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP ? "draft" : "verify",
+                            il, n_cold_filled);
+                }
             }
             // [CGC STEP_DBG] per-step miss timeline (il==1 fires once per step): cumulative
             // fast-path cold (ZERO-mapped) + ensure_batch (prefill chunk 1 / catch-up) requests

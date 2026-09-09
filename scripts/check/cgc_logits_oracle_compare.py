@@ -39,7 +39,9 @@ def _load_oracle(path):
             except json.JSONDecodeError as e:
                 print(f"ERROR: {path}:{lineno} invalid JSON: {e}", file=sys.stderr)
                 sys.exit(2)
-            key = (int(obj.get("step", 0)), int(obj.get("token_idx", 0)))
+            # include ctx_type in the alignment key so MTP/DEF (step, token_idx) entries
+            # from different contexts never collide.
+            key = (int(obj.get("step", 0)), int(obj.get("token_idx", 0)), obj.get("ctx_type", "DEF"))
             out[key] = obj
     return out
 
