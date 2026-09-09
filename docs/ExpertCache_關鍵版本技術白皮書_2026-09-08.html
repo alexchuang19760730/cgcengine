@@ -640,6 +640,61 @@
 </tbody>
 </table>
 
+<h2>🎯 L4_SKIP_LAYER0 + OA_ASYNC 品質殺手定位（2026-09-09）</h2>
+
+<p><strong>背景：</strong>2026-09-09 裸請求品質調查（15+27 十連發）發現 run_server.sh 生產配置品質崩潰（0/10 echo），
+逐項隔離後定位到兩個品質殺手，修復後品質恢復甜蜜點水準。</p>
+
+<h3>隔離 A/B（15+27 ×10 裸探針，temp=0.4，同一 binary）</h3>
+<table>
+<thead><tr><th>配置</th><th>品質</th><th>結論</th></tr></thead>
+<tbody>
+<tr><td>純 LLAMA_EXPERT_CACHE_ALLOW_NGL（無其他 env）</td><td class="good">10/10 ✅</td><td>L4 Metal pool 本身乾淨（remap POST readback 值 ≤143 正確）</td></tr>
+<tr><td>+ L4_SKIP_LAYER0=1</td><td class="bad">4/10 ❌</td><td>blk.0 走 CPU skip-load 但 graph 在 Metal → cross-backend garbage 污染全網（loader 註解自承）</td></tr>
+<tr><td>+ CGC_OA_ASYNC=1</td><td class="bad">8/10 ⚠️</td><td>async callback split：top-k ids buffer 回收 race（歷史防護 6 的 0000 根因）</td></tr>
+<tr><td>完整 prod env（skip0 + OA_ASYNC + hist）</td><td class="bad">0/10 ❌</td><td>兩者疊加 = 全崩</td></tr>
+<tr><td>甜蜜點（12:44 log：無 skip0、layer 0 在 pool、預設 uniform caps 5976 slots）</td><td class="good">90% ✅</td><td>與修復後配置一致</td></tr>
+</tbody>
+</table>
+
+<h3>為什麼之前一直找不到</h3>
+<ul>
+<li>所有 0/10 測試都帶 run_server.sh 完整 env（skip0 + OA_ASYNC）→ 誤判「L4 壞」</li>
+<li>v1.0.0（25.17 t/s）就是 skip0=1 + OA_ASYNC=1 的品質壞配置 — replay 拐杖（prefill+pp）蓋住了裸請求的崩潰</li>
+<li>「MTP OFF 0/5」測試只換模型 symlink、沒關 server MTP/env → 結論誤導</li>
+<li>甜蜜點 90% 是無 skip0 的 LAYER_CAPS 配置 → 只有 10% 冷啟動抖動</li>
+</ul>
+
+<h3>修復（commit 17c3dcf94）</h3>
+<ul>
+<li>run_server.sh：<span class="code">LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0</span> 預設 1→0（layer 0 留在 pool，對齊甜蜜點）</li>
+<li>run_server.sh：<span class="code">CGC_OA_ASYNC</span> 預設 1→0（+12.6% 速度不值得品質歸零）</li>
+<li>同批 commit 附 env-gated 診斷（L3_NGL gate、identity-fill byte verifier、CGC_REMAP_DBG/POST_DBG/CGC_CB_DBG readback），預設 OFF 無行為影響</li>
+</ul>
+
+<h3>修復後驗證（2026-09-09 16:40，Mac 16GB、8GiB pool、MTP ON、ctx 8192、KV Q8）</h3>
+<table>
+<thead><tr><th>Profile</th><th>品質</th><th>decode t/s（持續）</th><th>draft accept</th></tr></thead>
+<tbody>
+<tr><td>qa-zh</td><td class="good">1.0</td><td>14.5</td><td>54.0%</td></tr>
+<tr><td>longform-zh</td><td class="good">1.0</td><td>15.2</td><td>54.8%</td></tr>
+<tr><td>coding</td><td class="good">1.0</td><td>15.3</td><td>48.4%</td></tr>
+<tr><td>math</td><td class="good">1.0</td><td>14.6</td><td>54.0%</td></tr>
+<tr><td>reasoning</td><td class="good">1.0</td><td>10.3</td><td>65.7%</td></tr>
+<tr><td>writing</td><td class="good">1.0</td><td>7.5</td><td>19.2%</td></tr>
+<tr><td>translation</td><td class="good">1.0</td><td>9.9</td><td>49.2%</td></tr>
+</tbody>
+</table>
+<p>15+27 十連發：<strong>9/10</strong>（第 1 個冷啟動 echo，其後 9 連發全對 42）— 與甜蜜點 90% 一致。</p>
+
+<h3>速度真相：25+ 是 ZERO 污染時代的假象</h3>
+<ul>
+<li>白皮書 §0.1 已修正：<strong>「28 t/s」是短輸出瞬間峰值，coding 長輸出持續值 = 16.1 t/s</strong>（guard ON 誠實值）</li>
+<li>§0.4：decode 25-37 t/s（09-04）是 ZERO-slot 免載入的污染速度 — 快但品質沒人驗證；現在 15-17 t/s 是品質 1.0 換來的誠實速度</li>
+<li>修復後（OA_ASYNC=0 再 -5%）：coding 15.3 t/s、warm 短探針 15.0-15.7 t/s — 與 16.1 一致</li>
+<li>提升 decode 不能靠放寬採樣（DRY/temp/pp 無感），只能讓 draft 本身變準（draft ctx 更高精度載入）或降 cold 比率</li>
+</ul>
+
 <h2>📌 未解決事項（
 
 <h2 id="prev-token-prefetch-test">Prev-Token Prefetch 實測（2026-09-08）</h2>
