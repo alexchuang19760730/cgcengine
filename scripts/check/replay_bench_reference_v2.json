@@ -1,234 +1,342 @@
 {
-  "_doc": "replay_server_profile.py 的 reference rules v2 (擴充版)。每個 profile 一個 rules 區塊, 用 7 個 check: length / required_any / required_all / forbidden / ok_finish_reasons / loop_max_run / loop_phrase。score = 加權 pass 比例 (0.0-1.0)。loop_phrase (相同 6+ 字元片語連續重複 >=3 次) 與 loop_run 為硬閘門: 偵測到迴圈時最終 score 壓到 <=0.3, 不讓迴圈輸出拿到高分。precommit hook 用 score < 0.5 視為 quality regression。v2 擴充: 增加 math/reasoning/writing/translation profile, 每個 profile 多個 prompt, 更嚴格的迴圈檢測。",
-  "_version": "2.0",
-  "_profiles": ["qa-zh", "longform-zh", "coding", "math", "reasoning", "writing", "translation"],
-
-  "qa-zh": {
-    "prompts": [
-      "法國的首都是哪裡？請簡短回答。",
-      "太陽系有幾個行星？請列出名稱。",
-      "請問 15 + 27 等於多少？"
-    ],
-    "length_min": 4,
-    "length_max": 200,
-    "required_any": [
-      "巴黎",
-      "法國",
-      "行星",
-      "水星",
-      "42",
-      "四十二"
-    ],
-    "forbidden": [
-      "<|",
-      "0000",
-      "<think>",
-      "Answer directly",
-      "system prompt",
-      "重複重複",
-      "的的的的"
-    ],
-    "ok_finish_reasons": ["stop", "length"],
-    "loop_max_run": 8,
-    "loop_phrase_min_len": 6,
-    "loop_phrase_min_repeat": 3
-  },
-
-  "longform-zh": {
-    "prompts": [
-      "請介紹巴黎的歷史、文化和著名景點。",
-      "請說明人工智慧的發展歷史、現狀和未來趨勢。",
-      "請介紹台灣的地理、文化和經濟特色。"
-    ],
-    "length_min": 80,
-    "length_max": 1500,
-    "required_any": [
-      "巴黎",
-      "法國",
-      "文化",
-      "歷史",
-      "人工智慧",
-      "發展",
-      "台灣",
-      "地理"
-    ],
-    "forbidden": [
-      "Answer directly, after thinking",
-      "system prompt",
-      "<think>",
-      "<|im_start|>user",
-      "<|im_start|>system",
-      "重複重複",
-      "的的的的"
-    ],
-    "ok_finish_reasons": ["stop", "length"],
-    "loop_max_run": 12,
-    "loop_phrase_min_len": 8,
-    "loop_phrase_min_repeat": 3
-  },
-
-  "coding": {
-    "prompts": [
-      "用 Python 寫一個函數計算斐波那契數列的第 n 項。",
-      "用 Python 寫一個冒泡排序函數。",
-      "用 Python 寫一個函數判斷一個字符串是否是回文。"
-    ],
-    "length_min": 50,
-    "length_max": 2000,
-    "required_any": [
-      "def ",
-      "fibonacci",
-      "return",
-      "bubble",
-      "sort",
-      "palindrome",
-      "回文"
-    ],
-    "forbidden": [
-      "0000",
-      "<think>",
-      "答:",
-      "因為因為因為",
-      "```\n```",
-      "def fibonacci(n):\ndef fibonacci(n):",
-      "fibonacci(n) = fibonacci(n) ="
-    ],
-    "ok_finish_reasons": ["stop", "length"],
-    "loop_max_run": 12,
-    "loop_phrase_min_len": 6,
-    "loop_phrase_min_repeat": 3,
-    "code_block_check": true,
-    "code_block_max_repeat": 2
-  },
-
-  "math": {
-    "prompts": [
-      "請計算 123 × 456 等於多少？請顯示計算過程。",
-      "請問一個圓的半徑是 5，面積是多少？（π 取 3.14）",
-      "請解方程式 2x + 5 = 15，x 等於多少？"
-    ],
-    "length_min": 10,
-    "length_max": 500,
-    "required_any": [
-      "56088",
-      "78.5",
-      "5",
-      "x = 5",
-      "等於"
-    ],
-    "forbidden": [
-      "0000",
-      "<think>",
-      "重複重複",
-      "的的的的"
-    ],
-    "ok_finish_reasons": ["stop", "length"],
-    "loop_max_run": 8,
-    "loop_phrase_min_len": 6,
-    "loop_phrase_min_repeat": 3
-  },
-
-  "reasoning": {
-    "prompts": [
-      "如果所有的貓都是動物，所有的動物都需要水，那麼貓需要水嗎？請解釋推理過程。",
-      "一個農場有雞和兔子，總共 30 隻頭，80 隻腳。請問雞和兔子各有多少隻？",
-      "請問「所有的程式設計師都喜歡咖啡」和「小明不喜歡咖啡」，可以得出什麼結論？"
-    ],
-    "length_min": 20,
-    "length_max": 800,
-    "required_any": [
-      "需要",
-      "雞",
-      "兔子",
-      "20",
-      "10",
-      "不是",
-      "結論"
-    ],
-    "forbidden": [
-      "0000",
-      "<think>",
-      "重複重複",
-      "的的的的"
-    ],
-    "ok_finish_reasons": ["stop", "length"],
-    "loop_max_run": 10,
-    "loop_phrase_min_len": 8,
-    "loop_phrase_min_repeat": 3
-  },
-
-  "writing": {
-    "prompts": [
-      "請寫一首關於春天的短詩（4-8 行）。",
-      "請寫一段關於日落的散文描寫（100-200 字）。",
-      "請寫一封感謝信，感謝老師的教導。"
-    ],
-    "length_min": 30,
-    "length_max": 1000,
-    "required_any": [
-      "春天",
-      "花",
-      "日落",
-      "太陽",
-      "感謝",
-      "老師"
-    ],
-    "forbidden": [
-      "0000",
-      "<think>",
-      "重複重複",
-      "的的的的",
-      "春天春天春天"
-    ],
-    "ok_finish_reasons": ["stop", "length"],
-    "loop_max_run": 10,
-    "loop_phrase_min_len": 6,
-    "loop_phrase_min_repeat": 3
-  },
-
-  "translation": {
-    "prompts": [
-      "請將「Hello, how are you?」翻譯成中文。",
-      "請將「人工智慧正在改變世界」翻譯成英文。",
-      "請將「Thank you for your help」翻譯成中文。"
-    ],
-    "length_min": 5,
-    "length_max": 200,
-    "required_any": [
-      "你好",
-      "人工智慧",
-      "Artificial Intelligence",
-      "謝謝",
-      "感謝"
-    ],
-    "forbidden": [
-      "0000",
-      "<think>",
-      "重複重複",
-      "的的的的"
-    ],
-    "ok_finish_reasons": ["stop", "length"],
-    "loop_max_run": 6,
-    "loop_phrase_min_len": 4,
-    "loop_phrase_min_repeat": 3
-  },
-
-  "_aggregate": {
-    "min_quality_score": 0.5,
-    "min_profiles_passing": 5,
-    "_doc": "7 個 profile 中至少 5 個的 quality.score >= 0.5, 否則 precommit hook 視為 quality regression"
-  },
-
-  "_compare_thresholds": {
-    "decode_tps_regression_pct": 30.0,
-    "prefill_tps_regression_pct": 30.0,
-    "peak_rss_mb_regression_pct": 25.0,
-    "quality_score_regression_abs": 0.1,
-    "_doc": "precommit hook 比較上次 commit 跟這次 commit 的指標。品質是硬閘門 (quality regression → FAIL)；速度/內存門檻 2026-09-06 校準到本機實測雜訊下限。v2 擴充到 7 個 profile, 品質門檻更嚴格。",
-    "improvement_required_min_count": 0,
-    "regression_tolerance_max_count": 1,
-    "quality_variance_unstable_threshold": 0.2,
-    "speed_variance_unstable_cv_pct": 30.0,
-    "speed_regression_tolerance_when_quality_improved": 6
-  }
+ "_doc": "replay_server_profile.py 的 reference rules v2 (擴充版)。每個 profile 一個 rules 區塊, 用 7 個 check: length / required_any / required_all / forbidden / ok_finish_reasons / loop_max_run / loop_phrase。score = 加權 pass 比例 (0.0-1.0)。loop_phrase (相同 6+ 字元片語連續重複 >=3 次) 與 loop_run 為硬閘門: 偵測到迴圈時最終 score 壓到 <=0.3, 不讓迴圈輸出拿到高分。precommit hook 用 score < 0.5 視為 quality regression。v2 擴充: 增加 math/reasoning/writing/translation profile, 每個 profile 多個 prompt, 更嚴格的迴圈檢測。 [v3 2026-09-09: coding 3→10 題、qa/math 3→8 題、reasoning/writing/translation 3→6 題]",
+ "_version": "v3-20260909-extended",
+ "_profiles": [
+  "qa-zh",
+  "longform-zh",
+  "coding",
+  "math",
+  "reasoning",
+  "writing",
+  "translation"
+ ],
+ "qa-zh": {
+  "prompts": [
+   "法國的首都是哪裡？請簡短回答。",
+   "太陽系有幾個行星？請列出名稱。",
+   "請問 15 + 27 等於多少？",
+   "台灣的首都是哪裡？請簡短回答。",
+   "世界上最高的山是什麼？請簡短回答。",
+   "水的化學式是什麼？請簡短回答。",
+   "一年有幾個月？請簡短回答。",
+   "地球繞太陽一圈大約需要多久？請簡短回答。"
+  ],
+  "length_min": 4,
+  "length_max": 200,
+  "required_any": [
+   "巴黎",
+   "法國",
+   "行星",
+   "水星",
+   "42",
+   "四十二",
+   "台北",
+   "臺北",
+   "聖母峰",
+   "珠穆朗瑪峰",
+   "H2O",
+   "水分子",
+   "12",
+   "十二",
+   "365",
+   "一年"
+  ],
+  "forbidden": [
+   "<|",
+   "0000",
+   "<think>",
+   "Answer directly",
+   "system prompt",
+   "重複重複",
+   "的的的的"
+  ],
+  "ok_finish_reasons": [
+   "stop",
+   "length"
+  ],
+  "loop_max_run": 8,
+  "loop_phrase_min_len": 6,
+  "loop_phrase_min_repeat": 3
+ },
+ "longform-zh": {
+  "prompts": [
+   "請介紹巴黎的歷史、文化和著名景點。",
+   "請說明人工智慧的發展歷史、現狀和未來趨勢。",
+   "請介紹台灣的地理、文化和經濟特色。",
+   "寫一篇 200 字左右的短文，介紹你喜歡的一本書。",
+   "寫一段 150 字的段落，說明為什麼睡眠對健康很重要。",
+   "寫一篇 180 字左右的短文，描述一次你難忘的旅行。"
+  ],
+  "length_min": 80,
+  "length_max": 1500,
+  "required_any": [
+   "巴黎",
+   "法國",
+   "文化",
+   "歷史",
+   "人工智慧",
+   "發展",
+   "台灣",
+   "地理",
+   "書",
+   "睡眠",
+   "健康",
+   "旅行",
+   "難忘"
+  ],
+  "forbidden": [
+   "Answer directly, after thinking",
+   "system prompt",
+   "<think>",
+   "<|im_start|>user",
+   "<|im_start|>system",
+   "重複重複",
+   "的的的的"
+  ],
+  "ok_finish_reasons": [
+   "stop",
+   "length"
+  ],
+  "loop_max_run": 12,
+  "loop_phrase_min_len": 8,
+  "loop_phrase_min_repeat": 3
+ },
+ "coding": {
+  "prompts": [
+   "用 Python 寫一個函數計算斐波那契數列的第 n 項。",
+   "用 Python 寫一個冒泡排序函數。",
+   "用 Python 寫一個函數判斷一個字符串是否是回文。",
+   "用 Python 寫一個函數反轉字串。",
+   "用 Python 寫一個函數找出整數列表中的最大值。",
+   "用 Python 寫一個函數計算 n 的階乘。",
+   "用 Python 寫一個函數判斷一個整數是否為質數。",
+   "用 Python 寫一個函數將兩個已排序列表合併成一個排序列表。",
+   "用 Python 寫一個函數計算字串中每個字元的出現次數。",
+   "用 Python 寫一個函數做二元搜尋。",
+   "用 Python 寫一個函數計算兩個整數的最大公因數。"
+  ],
+  "length_min": 50,
+  "length_max": 2000,
+  "required_any": [
+   "def ",
+   "fibonacci",
+   "return",
+   "bubble",
+   "sort",
+   "palindrome",
+   "回文",
+   "reverse",
+   "反轉",
+   "max(",
+   "最大值",
+   "factorial",
+   "階乘",
+   "prime",
+   "質數",
+   "merge",
+   "合併",
+   "count",
+   "出現次數",
+   "binary_search",
+   "binary search",
+   "二元搜尋",
+   "gcd",
+   "最大公因數"
+  ],
+  "forbidden": [
+   "0000",
+   "<think>",
+   "答:",
+   "因為因為因為",
+   "```\n```",
+   "def fibonacci(n):\ndef fibonacci(n):",
+   "fibonacci(n) = fibonacci(n) ="
+  ],
+  "ok_finish_reasons": [
+   "stop",
+   "length"
+  ],
+  "loop_max_run": 12,
+  "loop_phrase_min_len": 6,
+  "loop_phrase_min_repeat": 3,
+  "code_block_check": true,
+  "code_block_max_repeat": 2
+ },
+ "math": {
+  "prompts": [
+   "請計算 123 × 456 等於多少？請顯示計算過程。",
+   "請問一個圓的半徑是 5，面積是多少？（π 取 3.14）",
+   "請解方程式 2x + 5 = 15，x 等於多少？",
+   "請計算 25 × 4 等於多少？",
+   "請計算 100 - 37 等於多少？",
+   "三角形三個內角的和是多少度？",
+   "請計算 2 的 10 次方等於多少？",
+   "1/4 用小數表示是多少？"
+  ],
+  "length_min": 10,
+  "length_max": 500,
+  "required_any": [
+   "56088",
+   "78.5",
+   "5",
+   "x = 5",
+   "等於",
+   "100",
+   "63",
+   "180",
+   "1024",
+   "0.25",
+   "0. 25"
+  ],
+  "forbidden": [
+   "0000",
+   "<think>",
+   "重複重複",
+   "的的的的"
+  ],
+  "ok_finish_reasons": [
+   "stop",
+   "length"
+  ],
+  "loop_max_run": 8,
+  "loop_phrase_min_len": 6,
+  "loop_phrase_min_repeat": 3
+ },
+ "reasoning": {
+  "prompts": [
+   "如果所有的貓都是動物，所有的動物都需要水，那麼貓需要水嗎？請解釋推理過程。",
+   "一個農場有雞和兔子，總共 30 隻頭，80 隻腳。請問雞和兔子各有多少隻？",
+   "請問「所有的程式設計師都喜歡咖啡」和「小明不喜歡咖啡」，可以得出什麼結論？",
+   "如果所有的貓都是動物，且所有的動物都需要睡覺，那麼貓需要睡覺嗎？請回答是或否。",
+   "一個盒子裡有 3 顆紅球和 2 顆藍球，隨機抽出一顆，抽出紅球的機率是多少？"
+  ],
+  "length_min": 20,
+  "length_max": 800,
+  "required_any": [
+   "需要",
+   "雞",
+   "兔子",
+   "20",
+   "10",
+   "不是",
+   "結論",
+   "是",
+   "需要",
+   "0.6",
+   "60%",
+   "五分之三",
+   "3/5"
+  ],
+  "forbidden": [
+   "0000",
+   "<think>",
+   "重複重複",
+   "的的的的"
+  ],
+  "ok_finish_reasons": [
+   "stop",
+   "length"
+  ],
+  "loop_max_run": 10,
+  "loop_phrase_min_len": 8,
+  "loop_phrase_min_repeat": 3
+ },
+ "writing": {
+  "prompts": [
+   "請寫一首關於春天的短詩（4-8 行）。",
+   "請寫一段關於日落的散文描寫（100-200 字）。",
+   "請寫一封感謝信，感謝老師的教導。",
+   "寫一封簡短的感謝信給你的老師。",
+   "用 3 句話描述你最喜欢的季節。"
+  ],
+  "length_min": 30,
+  "length_max": 1000,
+  "required_any": [
+   "春天",
+   "花",
+   "日落",
+   "太陽",
+   "感謝",
+   "老師",
+   "感謝",
+   "謝謝",
+   "敬愛",
+   "春天",
+   "夏天",
+   "秋天",
+   "冬天",
+   "季節"
+  ],
+  "forbidden": [
+   "0000",
+   "<think>",
+   "重複重複",
+   "的的的的",
+   "春天春天春天"
+  ],
+  "ok_finish_reasons": [
+   "stop",
+   "length"
+  ],
+  "loop_max_run": 10,
+  "loop_phrase_min_len": 6,
+  "loop_phrase_min_repeat": 3
+ },
+ "translation": {
+  "prompts": [
+   "請將「Hello, how are you?」翻譯成中文。",
+   "請將「人工智慧正在改變世界」翻譯成英文。",
+   "請將「Thank you for your help」翻譯成中文。",
+   "把這句話翻譯成中文：The quick brown fox jumps over the lazy dog.",
+   "把這句話翻譯成英文：今天天氣很好。"
+  ],
+  "length_min": 5,
+  "length_max": 200,
+  "required_any": [
+   "你好",
+   "人工智慧",
+   "Artificial Intelligence",
+   "謝謝",
+   "感謝",
+   "狐狸",
+   "懶狗",
+   "quick",
+   "brown",
+   "fox",
+   "The weather",
+   "Weather",
+   "today",
+   "Today"
+  ],
+  "forbidden": [
+   "0000",
+   "<think>",
+   "重複重複",
+   "的的的的"
+  ],
+  "ok_finish_reasons": [
+   "stop",
+   "length"
+  ],
+  "loop_max_run": 6,
+  "loop_phrase_min_len": 4,
+  "loop_phrase_min_repeat": 3
+ },
+ "_aggregate": {
+  "min_quality_score": 0.5,
+  "min_profiles_passing": 5,
+  "_doc": "7 個 profile 中至少 5 個的 quality.score >= 0.5, 否則 precommit hook 視為 quality regression"
+ },
+ "_compare_thresholds": {
+  "decode_tps_regression_pct": 30.0,
+  "prefill_tps_regression_pct": 30.0,
+  "peak_rss_mb_regression_pct": 25.0,
+  "quality_score_regression_abs": 0.1,
+  "_doc": "precommit hook 比較上次 commit 跟這次 commit 的指標。品質是硬閘門 (quality regression → FAIL)；速度/內存門檻 2026-09-06 校準到本機實測雜訊下限。v2 擴充到 7 個 profile, 品質門檻更嚴格。",
+  "improvement_required_min_count": 0,
+  "regression_tolerance_max_count": 1,
+  "quality_variance_unstable_threshold": 0.2,
+  "speed_variance_unstable_cv_pct": 30.0,
+  "speed_regression_tolerance_when_quality_improved": 6
+ }
 }

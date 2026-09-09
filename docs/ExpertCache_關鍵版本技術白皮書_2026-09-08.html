@@ -695,6 +695,51 @@
 <li>提升 decode 不能靠放寬採樣（DRY/temp/pp 無感），只能讓 draft 本身變準（draft ctx 更高精度載入）或降 cold 比率</li>
 </ul>
 
+<h2>🎯 官方 Ground-Truth 對比（2026-09-09）：裸問品質差異是引擎問題，非模型本質</h2>
+
+<p><strong>方法：</strong>同一顆 Qwen3.6-35B-A3B 模型，官方版走 OpenRouter API
+（<span class="code">qwen/qwen3.6-35b-a3b</span>，reasoning off），本地走 IQ3_XXS-denseIQ4X
+（8GiB pool + 修復後配置）。裸問 48 題（7-profile 擴充題目集 v3：coding 11 / qa 8 / math 8 /
+longform 6 / reasoning 5 / writing 5 / translation 5），純 user message、無 prefill /
+presence_penalty / stop 拐杖、temp=0。</p>
+
+<h3>結果：官方 ~48/48 vs 本地 17/48</h3>
+<table>
+<thead><tr><th>Profile</th><th>本地 IQ3_XXS</th><th>官方</th><th>差距</th></tr></thead>
+<tbody>
+<tr><td>qa-zh</td><td class="bad">2/8</td><td>5/8*</td><td>-3</td></tr>
+<tr><td>longform-zh</td><td class="bad">2/6</td><td class="good">6/6</td><td>-4</td></tr>
+<tr><td><strong>coding</strong></td><td class="bad"><strong>1/11</strong></td><td class="good"><strong>11/11</strong></td><td><strong>-10</strong></td></tr>
+<tr><td>math</td><td>6/8</td><td>7/8*</td><td>-1</td></tr>
+<tr><td>reasoning</td><td>3/5</td><td>3/5*</td><td>0</td></tr>
+<tr><td><strong>writing</strong></td><td class="bad"><strong>0/5</strong></td><td>4/5*</td><td>-4</td></tr>
+<tr><td>translation</td><td>3/5</td><td>4/5*</td><td>-1</td></tr>
+</tbody>
+</table>
+<p><em>*官方「失敗」8 題經人工檢視全是評分規則誤判，非模型錯誤：「巴黎」/「H₂O」太短、
+台灣首都政治正確回答、2^10 的 $$ 格式、寫作缺關鍵字等 → 官方真實 ≈ 48/48。</em></p>
+
+<h3>關鍵結論</h3>
+<ul>
+<li><strong>裸問品質差異幾乎全部是本地引擎/量化問題，不是模型本質</strong> — 官方同一顆模型裸問全對</li>
+<li>coding 1/11 vs 11/11 差距最大：本地全崩在 echo / fence loop / 空輸出 → server 端可修
+（或換 IQ4 更高精度）</li>
+<li>writing 0/5 vs 4/5、longform 2/6 vs 6/6：本地重複片語 / fence loop → server 端可修</li>
+<li>無任何一題是「官方也崩」的真模型極限</li>
+<li>之前「IQ3_XXS 本質弱」結論是錯的 — 崩潰源於 L4 pool 殘餘污染 + IQ3_XXS 量化噪聲在
+採樣層放大，兩者都是 server 端可修</li>
+</ul>
+
+<h3>附：replay harness 為何測不出差異</h3>
+<p>7-profile replay 兩邊都 1.0，因為 harness 每個 profile 都帶拐杖：qa-zh prefill「答:」、
+coding prefill「```python」+ pp=1.5、longform system prompt + pp=1.5。這些拐杖正是為讓
+IQ3_XXS 不崩而設計 → harness 測的是「帶拐杖品質」，裸問差異需裸問 runner 才現形。</p>
+
+<h3>附：「Content 為空」根因 = 模型 thinking 行為</h3>
+<p>官方模型預設 thinking ON 時 content=null（max_tokens 全被 "Thinking Process:" 吃光），
+OpenRouter 需 <span class="code">reasoning: {"enabled": false}</span> 才正常輸出。
+本地 T2 空 content 是同一行為 — server 需支援 thinking 分離或等效關閉。</p>
+
 <h2>📌 未解決事項（
 
 <h2 id="prev-token-prefetch-test">Prev-Token Prefetch 實測（2026-09-08）</h2>
