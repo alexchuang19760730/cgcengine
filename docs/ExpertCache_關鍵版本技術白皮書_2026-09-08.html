@@ -622,6 +622,38 @@
 <p><strong>可試：</strong>CGC_DBUF2=1（雙緩衝）、Q4_K_M/Q4_K_XL 高精度檔（logits 邊界分開 → 抖動可能歸零，需 32GB）</p>
 </div>
 
+<h2>🧹 scaffold-strip 修復 + 48 題裸問對比（2026-09-09）</h2>
+
+<h3>0.6 scaffold marker 洩漏修復（CGC_STRIP_SCAFFOLD，chat.cpp）</h3>
+<p><strong>現象：</strong>vanilla Qwen3.6（enable_thinking=false）在長輸出中會再次輸出 generation-prompt 的 scaffold marker（<span class="code">\n thinking\n\n</span>、<span class="code">\n response\n\n</span>）。deepseek/TAG_BASED reasoning parser 只剝離<strong>第一個</strong> thinking...response block（generation prompt 自帶的），之後重開的 marker 存活進 content → 洩漏給 client（48 題裸問 12/16 失敗是此模式）。</p>
+<p><strong>修復：</strong><span class="code">common_chat_peg_parse</span> 最終出口（<span class="code">mapper->from_ast</span> 後）剝離獨立成行的 scaffold marker（thinking / response / assistant），保留正文中含這些詞的正常文句。Gate：<span class="code">CGC_STRIP_SCAFFOLD=1</span>（預設開）。僅在 final（非 partial）parse 套用，streaming delta 保持單調。</p>
+
+<h3>0.7 IQ4_XS 48 題裸問 A/B — 記憶體壓力是品質主因</h3>
+<table>
+<thead><tr><th>配置</th><th>記憶體 free</th><th>48 題品質</th><th>decode 中位數</th></tr></thead>
+<tbody>
+<tr><td>IQ4_XS + 10GB pool（記憶體崩潰）</td><td class="bad">10%</td><td class="bad">5/47</td><td>9.8 tok/s</td></tr>
+<tr><td>IQ4_XS + 10GB pool（乾淨重啟）</td><td>12%</td><td>36/48</td><td>12.2 tok/s</td></tr>
+<tr><td>IQ4_XS + 8GB pool（無 strip）</td><td>23%</td><td>32/48</td><td>10.9 tok/s</td></tr>
+<tr><td><strong>IQ4_XS + 8GB pool + scaffold-strip</strong></td><td>24%</td><td class="good"><strong>37/48</strong></td><td>11.4 tok/s</td></tr>
+<tr><td>官方 OpenRouter</td><td>—</td><td class="good">48/48</td><td>—</td></tr>
+</tbody>
+</table>
+<p><strong>結論：</strong>記憶體壓力（swap）是品質最大殺手 — 同配置 free 10% vs 12% 差 31 分（5→36）。scaffold-strip 讓 8GB 配置（37/48）超越 10GB（36/48），且 24% free 穩定。</p>
+
+<h3>0.8 甜蜜點以下的真相：ZERO-slot vs syncfill 對比（你問「慢但對」）</h3>
+<table>
+<thead><tr><th>冷 expert 處理</th><th>48 題品質</th><th>decode 中位數</th><th>SYNCFILL 觸發</th></tr></thead>
+<tbody>
+<tr><td>ZERO-slot（預設）</td><td class="good">37/48</td><td class="good">11.4 tok/s</td><td>0</td></tr>
+<tr><td>syncfill 阻塞載入（CGC_SYNCFILL_COLD=1）</td><td>34/48</td><td class="bad">5.8 tok/s（-49%）</td><td>269 次/48 題</td></tr>
+</tbody>
+</table>
+<p><strong>結論：甜蜜點以下沒有正確解。</strong>理論上「小於甜蜜點 = 慢但對」正確，但 IQ4_XS + 8GB（110 slots/層 < 143 甜蜜點）冷 expert 過多：ZERO 錯、syncfill 慢到 5.8 tok/s 不可用。且殘餘失敗（中文 echo、重複句）不是 ZERO-slot 造成 — 15+27 中文固定錯 17 在 syncfill 開/關都一樣，是 IQ4_XS vanilla 模型本質行為。<strong>甜蜜點（143+ slots/層）的意義是 ZERO-slot 污染可控閾值，之上冷 expert 少 guard 擋得住，之下兩條路都死。</strong></p>
+
+<h3>0.9 IQ4_XS 中文 echo — 與 expert cache 無關的模型行為</h3>
+<p>IQ4_XS vanilla + empty prefill 在中文 prompt 下必然回顯 user prompt（<span class="code">15+27 等於多少？請只回答數字。</span> → 固定錯答 17；英文 <span class="code">What is 15+27?</span> → 10/10 答 42）。加 <span class="code">assistant_prefill</span> 可打破 echo 但內容品質不穩（greedy 卡註解/重複）。這是模型本質，server 端需內容匹配的 prefill 注入才能救（未完成）。</p>
+
 <h2>📈 已驗證的死路（不要重複嘗試）</h2>
 
 <table>

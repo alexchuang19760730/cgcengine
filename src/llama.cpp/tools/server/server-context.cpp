@@ -2058,6 +2058,35 @@ private:
                     slot.generated_text.size(), slot.generated_text.substr(tail).c_str());
         }
 
+        // [CGC scaffold-reopen guard 2026-09-09] vanilla Qwen3.6 (enable_thinking=true
+        // default) re-opens the think scaffold mid-generation: after a valid answer
+        // starts it emits "\n response\n\n" / "\n thinking\n" again as literal text
+        // (and repeats the user prompt), producing an infinite response-loop that the
+        // phrase-loop guard misses (short unit, <3 consecutive repeats). Detect the
+        // newline-prefixed scaffold markers appearing more than once in the tail and
+        // truncate. Bare "response"/"thinking" words in prose are unaffected (we only
+        // match the newline-prefixed scaffold form). Gated by CGC_LOOP_GUARD like the
+        // phrase guard; override scan window via CGC_SCAFFOLD_GUARD_WINDOW.
+        if (cgc_loop_guard_on() && slot.has_next_token && !incomplete &&
+                slot.n_decoded >= 8 && (slot.n_decoded % cgc_loop_guard_every()) == 0) {
+            // Count scaffold markers over the WHOLE generated text, not just the
+            // tail window: the loop interleaves long prompt echoes between markers,
+            // so the tail (even 1024 chars) may contain only one occurrence.
+            const std::string & gt = slot.generated_text;
+            size_t n_resp = 0, n_think = 0;
+            for (size_t pos = 0; (pos = gt.find(" response", pos)) != std::string::npos; pos += 9) ++n_resp;
+            for (size_t pos = 0; (pos = gt.find(" thinking", pos)) != std::string::npos; pos += 9) ++n_think;
+            SLT_INF(slot, "CGC-SCAFFOLD-DBG: n_decoded=%zu resp=%zu think=%zu gt_len=%zu head=[%s]\n",
+                    (size_t) slot.n_decoded, n_resp, n_think, gt.size(), gt.substr(0, 80).c_str());
+            if (n_resp >= 2 || n_think >= 2) {
+                slot.stop           = STOP_TYPE_LIMIT;
+                slot.has_next_token = false;
+                const size_t t2 = gt.size() > 50 ? gt.size() - 50 : 0;
+                SLT_INF(slot, "CGC-SCAFFOLD-GUARD: scaffold reopen detected (resp=%zu think=%zu), forcing stop (tail: %s)\n",
+                        n_resp, n_think, gt.substr(t2).c_str());
+            }
+        }
+
         // check the limits
         if (slot.n_decoded > 0 && slot.has_next_token && !slot.has_budget(params_base)) {
             slot.stop           = STOP_TYPE_LIMIT;

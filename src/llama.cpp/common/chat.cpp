@@ -3970,6 +3970,61 @@ common_chat_msg common_chat_peg_parse(const common_peg_arena &          src_pars
     }
     mapper->from_ast(ctx.ast, result);
 
+    // 2026-09-09 CGC scaffold-strip: vanilla Qwen3.6 (enable_thinking=false) re-emits
+    // the generation-prompt scaffold markers ("\n thinking\n\n", "\n response\n\n")
+    // mid-generation. The deepseek/TAG_BASED reasoning parser strips only the FIRST
+    // thinking...response block (the one embedded in the generation prompt); any
+    // LATER re-opened marker survives into content and leaks to the client as
+    // literal " thinking"/" response" lines (measured: 12/16 of the 48-question
+    // bare-ask failures were this exact pattern). Strip standalone scaffold marker
+    // LINES from content (newline-prefixed + newline-suffixed) so they cannot leak,
+    // while keeping normal prose that merely contains those words. Gated by
+    // CGC_STRIP_SCAFFOLD=1 (default on). Applied on final (non-partial) parse only
+    // so streaming deltas stay monotonic.
+    if (!is_partial && !msg.content.empty()) {
+        static const bool cgc_strip_scaffold = [] {
+            const char * e = getenv("CGC_STRIP_SCAFFOLD");
+            return e == nullptr || e[0] != '0';
+        }();
+        if (cgc_strip_scaffold) {
+            std::string & c = msg.content;
+            // Remove lines that consist solely of a scaffold marker, optionally
+            // surrounded by whitespace. Markers: "thinking", "response", "assistant".
+            const std::string markers[] = {" thinking", " response", " assistant", "thinking", "response", "assistant"};
+            std::string out;
+            out.reserve(c.size());
+            size_t pos = 0;
+            while (pos < c.size()) {
+                size_t nl = c.find('\n', pos);
+                size_t line_end = (nl == std::string::npos) ? c.size() : nl;
+                std::string line = c.substr(pos, line_end - pos);
+                std::string trimmed = line;
+                // trim whitespace
+                size_t b = 0, e2 = trimmed.size();
+                while (b < e2 && (trimmed[b] == ' ' || trimmed[b] == '\t' || trimmed[b] == '\r')) ++b;
+                while (e2 > b && (trimmed[e2-1] == ' ' || trimmed[e2-1] == '\t' || trimmed[e2-1] == '\r')) --e2;
+                bool is_marker = false;
+                if (e2 > b) {
+                    std::string core = trimmed.substr(b, e2 - b);
+                    for (const std::string & mk : markers) {
+                        if (core == mk) { is_marker = true; break; }
+                    }
+                }
+                if (!is_marker) {
+                    out += line;
+                    if (nl != std::string::npos) out += '\n';
+                } else if (nl == std::string::npos && out.empty()) {
+                    // leading marker with no trailing newline: drop it entirely
+                    out.clear();
+                }
+                pos = (nl == std::string::npos) ? c.size() : nl + 1;
+            }
+            if (out.size() != c.size()) {
+                msg.content = std::move(out);
+            }
+        }
+    }
+
     if (ctx.is_debug()) {
         fprintf(stderr, "\nAST for %s parse:\n%s\n", is_partial ? "partial" : "full", ctx.ast.dump().c_str());
         fflush(stderr);

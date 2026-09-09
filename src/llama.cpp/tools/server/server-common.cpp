@@ -1012,6 +1012,15 @@ json oaicompat_chat_params_parse(
         for (const char * s : { "<im_end>", "<im_start>", "<|im_end|>", "<|im_start|>" }) {
             llama_params["stop"].push_back(s);
         }
+        // 2026-09-09 CGC: vanilla Qwen3.6 (enable_thinking=true default) re-opens
+        // the think scaffold mid-generation — it emits "\n response\n\n" / "\n thinking\n"
+        // as literal text after the answer starts, producing an infinite response-loop.
+        // Stop on the newline-prefixed markers so the generation truncates the moment
+        // a second scaffold block begins. Bare "response"/"thinking" are NOT stopped
+        // (they legitimately appear as words in prose).
+        for (const char * s : { "\n response", "\n thinking", "\nresponse", "\nthinking" }) {
+            llama_params["stop"].push_back(s);
+        }
     }
 
     auto json_schema = json_value(body, "json_schema", json());
