@@ -13,12 +13,88 @@
 ## 文件結構
 
 ```
-scripts/check/e2e/
-├── README.md                          # 本文檔
-├── e2e_quality_test.py                # 端到端品質測試腳本（裸請求 + upstream 對比）
-├── agent_acceptance_checker.py        # Agent 逐條驗收檢查器
-└── issue_coverage.py                  # 問題覆蓋清單（這十天遇到的所有問題）
+scripts/check/
+├── precommit_e2e_gate.sh             # Pre-commit E2E Quality Gate（集成到 git hook）
+└── e2e/
+    ├── README.md                      # 本文檔
+    ├── e2e_quality_test.py            # 端到端品質測試腳本（裸請求 + upstream 對比）
+    ├── agent_acceptance_checker.py    # Agent 逐條驗收檢查器
+    └── issue_coverage.py              # 問題覆蓋清單（這十天遇到的所有問題）
 ```
+
+## Pre-commit Hook 集成
+
+E2E 測試框架已經集成到 git pre-commit hook 中，每次 commit 時會自動運行品質檢查。
+
+### 工作原理
+
+1. **自動觸發**：每次 `git commit` 時，pre-commit hook 會自動運行
+2. **智能跳過**：
+   - 只有文檔/配置變更（沒有代碼文件）→ 跳過
+   - 環境變數 `E2E_GATE_MODE=skip` → 跳過
+   - `git commit --no-verify` → 跳過（不推薦）
+3. **多層次檢查**：
+   - `fast` 模式（預設）：3 個關鍵 profile（qa-zh, coding, reasoning），約 2-3 分鐘
+   - `full` 模式：全部 15 個 profile + upstream 對比，約 15-30 分鐘
+4. **通過/失敗標準**：
+   - 平均品質分數 >= 0.8
+   - 沒有 critical 問題（echo/循環/thinking 標籤泄漏）
+   - 失敗比例 <= 20%
+   - 我們的修改不引入新的 critical 問題（upstream 對比）
+
+### 使用方法
+
+```bash
+# 預設 fast 模式（每次 commit 自動運行）
+git commit -m "your commit message"
+
+# full 模式（release 前建議使用）
+E2E_GATE_MODE=full git commit -m "release commit"
+
+# 跳過 gate（不推薦，僅用於緊急修復或純文檔 commit）
+E2E_GATE_MODE=skip git commit -m "urgent fix"
+# 或者
+git commit --no-verify -m "urgent fix"
+
+# 查看當前配置
+./scripts/check/precommit_e2e_gate.sh --status
+```
+
+### 環境變數
+
+| 環境變數 | 預設值 | 說明 |
+|----------|--------|------|
+| `E2E_GATE_MODE` | `fast` | 運行模式：`fast` / `full` / `skip` |
+| `E2E_GATE_SKIP` | `0` | 設為 `1` 跳過 gate（等同 `E2E_GATE_MODE=skip`） |
+| `E2E_GATE_SERVER` | `http://127.0.0.1:8080` | server 地址 |
+| `E2E_GATE_UPSTREAM` | 未設定 | upstream server 地址（用於對比） |
+| `E2E_GATE_MIN_QUALITY` | `0.8` | 最低品質分數 |
+| `E2E_GATE_TIMEOUT` | `300` | 超時時間（秒） |
+
+### 失敗時怎麼辦？
+
+如果 pre-commit hook 檢查失敗：
+
+1. **查看報告**：
+   ```
+   測試報告: /tmp/cgc_precommit_e2e_*.json
+   驗收報告: /tmp/cgc_precommit_acceptance_*.json
+   ```
+
+2. **修復問題**：根據報告中的失敗原因修復品質問題
+
+3. **重新 commit**：修復後重新運行 `git commit`
+
+4. **如果是預期的變更**（例如故意降低速度以換取品質）：
+   ```bash
+   E2E_GATE_MODE=skip git commit -m "expected change: trade speed for quality"
+   ```
+
+### 注意事項
+
+- **server 必須在運行**：pre-commit hook 需要連接到 server 進行測試。如果 server 未運行，會提示先啟動 server
+- **git worktree 支援**：pre-commit hook 已正確處理 git worktree 配置
+- **與舊的 replay gate 兼容**：舊的 `precommit_replay_gate.sh` 仍然保留，但 pre-commit hook 已切換到新的 E2E gate
 
 ## 快速開始
 
