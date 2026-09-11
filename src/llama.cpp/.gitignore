@@ -165,5 +165,18 @@ a.out.*
 AGENTS.local.md
 .pi/SYSTEM.md
 
-# Build artifacts (too large for git, rebuild from source)
-build/
+# Build artifacts.
+#
+# The bulk of build/ is object files + CMake state (~900 MB) and is regenerated, so it stays
+# ignored. build/bin is the exception and MUST stay tracked:
+#   * scripts/check_build_tracked.sh (installed as .git/hooks/pre-commit) FAILS a commit when
+#     any build/bin dylib / symlink target is not tracked -- the project once lost a 29.85 t/s
+#     build because a rebuild silently overwrote an untracked dylib, and a checkout is supposed
+#     to be runnable/verifiable without rebuilding.
+#   * a bare `build/` rule swallows build/bin too, which silently defeats that gate (it reports
+#     every dylib as untracked). Do NOT put `build/` back here; use the `build/*` + negation
+#     pair below, which ignores the directory contents one level down while re-including bin/.
+# Negation cannot resurrect a path whose parent directory is excluded, which is why the parent
+# is matched with `build/*` (children only) instead of the whole `build/` tree.
+build/*
+!build/bin/
