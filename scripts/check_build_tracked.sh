@@ -166,6 +166,34 @@ if [ ! -d "$BIN_ABS" ]; then
 fi
 
 # ============ 檢查 1：build/bin 內每個 *.dylib 都必須被 git 追蹤 ============
+# A build artifact that is not tracked has one of exactly two causes, and the two need
+# opposite fixes. diagnose_untracked names which one it is, because the confusing case is the
+# first: the project's own .gitignore once had a bare `build/` rule that silently swallowed
+# build/bin, so this gate reported "untracked dylib" for every artifact and the real cause
+# (an ignore rule) was nowhere in the output.
+#   * ignored  -> find the LAST matching rule. The build/bin carve-out already exists at the
+#                 TOP of src/llama.cpp/.gitignore (`/build*` -> `!/build/` -> `/build/*` ->
+#                 `!/build/bin/` -> `!/build/bin/*`); a plain `build/` further down overrides
+#                 it via last-match-wins. Fix = remove/narrow that rule -- NOT `git add -f`,
+#                 which tracks the artifact once and lets the next rebuild vanish silently.
+#   * not staged -> plain `git add` of the artifact is the fix.
+diagnose_untracked() {
+    local rel="$1" rule
+    # `-q` is the only reliable "is it ignored" test: `check-ignore -v` also prints NEGATION
+    # rules (`!/build/bin/*.dylib`), i.e. the patterns that make a path NOT ignored. Testing
+    # only for non-empty output therefore misreported a merely-unstaged file as ignored
+    # (caught by the branch test for exactly that case).
+    if git -C "$REPO_ROOT" check-ignore -q -- "$rel" 2>/dev/null; then
+        rule="$(git -C "$REPO_ROOT" check-ignore -v -- "$rel" 2>/dev/null | head -1)"
+        echo "      原因: 被 .gitignore 靜默忽略 -> $rule"
+        echo "      修法: 找出那條規則並縮小它（build/bin 的 carve-out 已在 .gitignore 頂部；"
+        echo "            最後一條匹配的規則勝出，所以後面的 build/ 會覆蓋前面的 !/build/bin/）。"
+        echo "            不要用 git add -f —— 那只會追蹤一次，下次重建又會靜默消失。"
+    else
+        echo "      原因: 檔案未被納入 index（沒有 ignore 規則擋它）-> git add \"$rel\""
+    fi
+}
+
 if [ "$HAVE_BIN_DIR" = 1 ]; then
     echo "--- 檢查 dylib 被追蹤（洞 B） ---"
     DYLIBS=()
@@ -179,6 +207,7 @@ if [ "$HAVE_BIN_DIR" = 1 ]; then
                 pass "追蹤 OK: $rel"
             else
                 fail "未追蹤 dylib（會被 git 靜默忽略/遺失）: $rel"
+                diagnose_untracked "$rel"
             fi
         done
     fi
@@ -233,6 +262,7 @@ if [ "$HAVE_BIN_DIR" = 1 ]; then
             pass "exe 追蹤 OK: $rel"
         else
             fail "未追蹤 exe: $rel"
+            diagnose_untracked "$rel"
         fi
     done
 
