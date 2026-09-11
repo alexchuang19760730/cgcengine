@@ -1200,7 +1200,10 @@ json oaicompat_chat_params_parse(
     // Replay profiles always send assistant_prefill themselves and are
     // therefore untouched by this default.
     // ====================================================================
-    static const bool cgc_auto_anchor = getenv("CGC_SERVER_AUTO_ANCHOR") ? true : false;
+    static const bool cgc_auto_anchor = [] {
+        const char * e = getenv("CGC_SERVER_AUTO_ANCHOR");
+        return e == nullptr || e[0] != '0';  // default on, disable with CGC_SERVER_AUTO_ANCHOR=0
+    }();
     // 2026-09-07 CGC v2: Claude Code always sends tool_choice:null + tool schemas even on
     // plain-text question turns, so gating on inputs.tools.empty() skipped the anchor on the
     // real customer path (echo loop returned). Gate instead on FORCED tool turns only

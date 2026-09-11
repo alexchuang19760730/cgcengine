@@ -380,7 +380,7 @@ cgc_apply_prod_memory_fallback() {
     fi
 }
 
-[ -x "$BIN" ] || { echo "error: llama-server 不存在：$BIN（cmake -DLLAMA_BUILD_SERVER=ON 後構建）" >&2; exit 1; }
+[ -x "$BIN" ] || { echo "error: llama-server 不存在：${BIN}（cmake -DLLAMA_BUILD_SERVER=ON 後構建）" >&2; exit 1; }
 if [ ! -f "$MODEL" ]; then
     echo "error: model not found: $MODEL" >&2
     echo "" >&2
@@ -810,7 +810,7 @@ for i in $(seq 1 60); do
         echo "=================================================="
         echo ""
         if [ "$CGC_DETACHED" = 1 ]; then
-            echo "[detach] server PID=$SERVER_PID（已脫離父 shell，不受 SIGHUP 影響）"
+            echo "[detach] server PID=${SERVER_PID}（已脫離父 shell，不受 SIGHUP 影響）"
             echo "         停止: kill -INT $SERVER_PID 或 pkill -INT -f llama-server"
             echo "         log: tail -f $LOG"
             exit 0

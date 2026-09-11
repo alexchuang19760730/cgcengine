@@ -4128,10 +4128,28 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
             // layer) so the remap below writes their REAL slot. SpAc EMA membership keeps
             // the cold ratio low (<5%); this closes the residual gap exactly. The ZERO-slot
             // reservation is kept as a safe fallback for ensure_slot failure.
-            // CGC_SYNCFILL_COLD=1 enables; default OFF = legacy ZERO-slot behavior.
+            // [CGC default flip 2026-09-11] DEFAULT ON. Off was not a neutral performance choice:
+            // it made the output depend on the POOL LAYOUT, because how many experts are cold at
+            // a given step depends on how many slots the pool has. Measured with the logits
+            // oracle, 4/6/8 GiB against each other at a fixed CGC_POOL_MAX_TOKENS=6:
+            //   * every single-token step (no fast path) was BIT-IDENTICAL across pools;
+            //   * the first multi-token step -- the MTP verify batch, which IS the fast path --
+            //     diverged by 12-24% RELATIVE in the logits, with genuinely different top-4
+            //     candidates (e.g. top3 20/22/21 vs 20/22/15). The identical count was exactly
+            //     7/39 for iq3 and iq4 alike, i.e. a deterministic divergence at that step,
+            //     and the corruption then persisted into every later single-token step.
+            // A 12-24% swing cannot be floating-point ordering: those experts were simply read
+            // as zero. Turning this on makes every selected expert resident before the remap is
+            // written, so the result no longer depends on which slots happen to be warm.
+            // CGC_SYNCFILL_COLD=0 restores the legacy ZERO-slot behavior. Note the parsing: the
+            // old `e[0] == '1'` / `!= nullptr` style silently treats =0 as ON, so a numeric
+            // value is compared explicitly here and anything not starting with '0' means on.
             static const bool cgc_syncfill_cold = []() {
                 const char * e = getenv("CGC_SYNCFILL_COLD");
-                return e != nullptr && e[0] == '1';
+                if (e == nullptr) {
+                    return true;
+                }
+                return e[0] != '0';
             }();
             if (cgc_syncfill_cold) {
                 const int32_t * cst = cache->slot_table.data() + (size_t) il * cache->n_expert;

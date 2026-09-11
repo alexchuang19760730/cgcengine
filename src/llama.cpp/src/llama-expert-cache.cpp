@@ -2381,11 +2381,24 @@ llama_expert_cache * llama_expert_cache_init(const llama_model * model, size_t b
         }
         if (!cache->n_slots_l.empty()) {
             uint64_t tot_slots = 0;
+            // [CGC per-layer min 2026-09-11] The DECODE hook takes the pool path only when the
+            // per-ubatch expert union fits THAT LAYER's cap, so the binding number is the
+            // minimum over layers -- not n_slots and not the average. Reporting it lets the
+            // evaluation harness decide arithmetically whether a given CGC_POOL_MAX_TOKENS can
+            // even reach the L3-B gather path (cap*topk <= min_slots - 1), instead of relying
+            // on a particular prompt happening to route into an overflowing layer and print
+            // `buffer is nil`. min is only meaningful over layers that own expert regions.
+            uint32_t min_slots_l = UINT32_MAX;
             for (uint32_t l = 0; l < max_layer; ++l) {
-                tot_slots += slots_l(cache, l);
+                const uint32_t s = slots_l(cache, l);
+                tot_slots += s;
+                if (s > 0 && s < min_slots_l) {
+                    min_slots_l = s;
+                }
             }
-            fprintf(stderr, "llama_expert_cache: LAYER_CAPS per-layer caps: total %llu slots (avg %.1f/layer)\n",
-                    (unsigned long long) tot_slots, (double) tot_slots / max_layer);
+            fprintf(stderr, "llama_expert_cache: LAYER_CAPS per-layer caps: total %llu slots (avg %.1f/layer, min %u/layer)\n",
+                    (unsigned long long) tot_slots, (double) tot_slots / max_layer,
+                    min_slots_l == UINT32_MAX ? 0 : min_slots_l);
         }
     }
 

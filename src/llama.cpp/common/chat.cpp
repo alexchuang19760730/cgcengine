@@ -3954,7 +3954,84 @@ common_chat_msg common_chat_peg_parse(const common_peg_arena &          src_pars
         }
         LOG_WRN("%s: unparsed %s output: %s\n", __func__, common_chat_format_name(params.format), effective_input.substr(result.end).c_str());
         LOG_DBG("%s: full %s output triggering error:\n=== BEGIN ===\n%s\n=== END ===\n", __func__, common_chat_format_name(params.format), effective_input.c_str());
-        throw std::runtime_error(std::string("The model produced output that does not match the expected ") + common_chat_format_name(params.format) + " format");
+        // CGC FALLBACK (2026-09-11): instead of throwing, return raw input with
+        // CGC_STRIP_SCAFFOLD applied. This handles model outputs that don't match
+        // the expected chat format (e.g. "assistant<think>..." prompt-echo loops)
+        // while still stripping scaffold markers and think tags.
+        {
+            common_chat_msg msg;
+            msg.role = "assistant";
+            msg.content = effective_input;
+            // Apply CGC_STRIP_SCAFFOLD to the fallback content
+            static const bool cgc_strip_scaffold = [] {
+                const char * e = getenv("CGC_STRIP_SCAFFOLD");
+                return e == nullptr || e[0] != '0';
+            }();
+            if (cgc_strip_scaffold && !is_partial) {
+                std::string & c = msg.content;
+                // Pass 1: globally remove <think>...</think> tags
+                {
+                    std::string out;
+                    out.reserve(c.size());
+                    size_t pos = 0;
+                    while (pos < c.size()) {
+                        size_t open = c.find("<think", pos);
+                        size_t close = c.find("</think>", pos);
+                        if (open == std::string::npos && close == std::string::npos) {
+                            out += c.substr(pos);
+                            break;
+                        }
+                        if (open != std::string::npos && (close == std::string::npos || open < close)) {
+                            out += c.substr(pos, open - pos);
+                            size_t next_close = c.find("</think>", open);
+                            if (next_close == std::string::npos) break;
+                            pos = next_close + 8;
+                        } else {
+                            out += c.substr(pos, close - pos);
+                            pos = close + 8;
+                        }
+                    }
+                    c = std::move(out);
+                }
+                // Pass 2: remove standalone scaffold marker LINES
+                const std::string markers[] = {" thinking", " response", " assistant", "thinking", "response", "assistant", "user", " user"};
+                std::string out;
+                out.reserve(c.size());
+                size_t pos = 0;
+                while (pos < c.size()) {
+                    size_t nl = c.find('\n', pos);
+                    size_t line_end = (nl == std::string::npos) ? c.size() : nl;
+                    std::string line = c.substr(pos, line_end - pos);
+                    std::string trimmed = line;
+                    size_t b = 0, e2 = trimmed.size();
+                    while (b < e2 && (trimmed[b] == ' ' || trimmed[b] == '\t' || trimmed[b] == '\r')) ++b;
+                    while (e2 > b && (trimmed[e2-1] == ' ' || trimmed[e2-1] == '\t' || trimmed[e2-1] == '\r')) --e2;
+                    bool is_marker = false;
+                    if (e2 > b) {
+                        std::string core = trimmed.substr(b, e2 - b);
+                        for (const std::string & mk : markers) {
+                            if (core == mk) { is_marker = true; break; }
+                        }
+                    }
+                    if (!is_marker) {
+                        out += line;
+                        if (nl != std::string::npos) out += '\n';
+                    } else if (nl == std::string::npos && out.empty()) {
+                        out.clear();
+                    }
+                    pos = (nl == std::string::npos) ? c.size() : nl + 1;
+                }
+                // Pass 3: trim leading/trailing whitespace
+                {
+                    size_t b = 0, e2 = out.size();
+                    while (b < e2 && (out[b] == ' ' || out[b] == '\t' || out[b] == '\r' || out[b] == '\n')) ++b;
+                    while (e2 > b && (out[e2-1] == ' ' || out[e2-1] == '\t' || out[e2-1] == '\r' || out[e2-1] == '\n')) --e2;
+                    if (b > 0 || e2 < out.size()) out = out.substr(b, e2 - b);
+                }
+                msg.content = std::move(out);
+            }
+            return msg;
+        }
     }
 
     common_chat_msg msg;
@@ -3981,6 +4058,10 @@ common_chat_msg common_chat_peg_parse(const common_peg_arena &          src_pars
     // while keeping normal prose that merely contains those words. Gated by
     // CGC_STRIP_SCAFFOLD=1 (default on). Applied on final (non-partial) parse only
     // so streaming deltas stay monotonic.
+    // 2026-09-11 EXTENDED: also strip <think>/</think> XML-style tags (with optional
+    // whitespace between open/close) which the embedded Qwen3.6 template emits when
+    // reasoning=off. These appear as "<think>\n\n</think>\n\n" at the start of content
+    // and cause prompt-echo loops. Remove them globally before the line-based pass.
     if (!is_partial && !msg.content.empty()) {
         static const bool cgc_strip_scaffold = [] {
             const char * e = getenv("CGC_STRIP_SCAFFOLD");
@@ -3988,9 +4069,41 @@ common_chat_msg common_chat_peg_parse(const common_peg_arena &          src_pars
         }();
         if (cgc_strip_scaffold) {
             std::string & c = msg.content;
-            // Remove lines that consist solely of a scaffold marker, optionally
-            // surrounded by whitespace. Markers: "thinking", "response", "assistant".
-            const std::string markers[] = {" thinking", " response", " assistant", "thinking", "response", "assistant"};
+            // Pass 1: globally remove <think>...</think> tags (including empty
+            // <think>\n\n</think> and any content between them — that content is
+            // reasoning/scratchpad, not final answer). Also remove standalone
+            // <think> or </think> tags that appear without a pair (model sometimes
+            // re-opens the scaffold mid-generation in no-think mode).
+            {
+                std::string out;
+                out.reserve(c.size());
+                size_t pos = 0;
+                while (pos < c.size()) {
+                    size_t open = c.find("<think", pos);
+                    size_t close = c.find("</think>", pos);
+                    if (open == std::string::npos && close == std::string::npos) {
+                        out += c.substr(pos);
+                        break;
+                    }
+                    if (open != std::string::npos && (close == std::string::npos || open < close)) {
+                        // <think> comes first
+                        out += c.substr(pos, open - pos);
+                        size_t next_close = c.find("</think>", open);
+                        if (next_close == std::string::npos) {
+                            // unclosed <think>: drop from open to end
+                            break;
+                        }
+                        pos = next_close + 8; // strlen("</think>")
+                    } else {
+                        // standalone </think> (no preceding <think> in this pass)
+                        out += c.substr(pos, close - pos);
+                        pos = close + 8;
+                    }
+                }
+                c = std::move(out);
+            }
+            // Pass 2: remove standalone scaffold marker LINES.
+            const std::string markers[] = {" thinking", " response", " assistant", "thinking", "response", "assistant", "user", " user"};
             std::string out;
             out.reserve(c.size());
             size_t pos = 0;
@@ -4018,6 +4131,15 @@ common_chat_msg common_chat_peg_parse(const common_peg_arena &          src_pars
                     out.clear();
                 }
                 pos = (nl == std::string::npos) ? c.size() : nl + 1;
+            }
+            // Pass 3: trim leading/trailing whitespace after stripping.
+            {
+                size_t b = 0, e2 = out.size();
+                while (b < e2 && (out[b] == ' ' || out[b] == '\t' || out[b] == '\r' || out[b] == '\n')) ++b;
+                while (e2 > b && (out[e2-1] == ' ' || out[e2-1] == '\t' || out[e2-1] == '\r' || out[e2-1] == '\n')) --e2;
+                if (b > 0 || e2 < out.size()) {
+                    out = out.substr(b, e2 - b);
+                }
             }
             if (out.size() != c.size()) {
                 msg.content = std::move(out);

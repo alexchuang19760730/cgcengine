@@ -1,24 +1,35 @@
 {# Minimal ChatML template for Qwen3.6 (no-think).
-   CGC FIX 2026-09-06: removed the stray literal " response" token that the
-   previous version inserted between <im_start>assistant and the prefill —
-   the model was echoing it back ("response答:...") causing marker loops.
+   CGC FIX 2026-09-06: removed the stray literal "</think>" token that the
+   previous version inserted between <im_start>assistant and the prefill -- the model was
+   echoing it back ("</think>答:...") causing marker loops.
 
    CGC FIX 2026-09-09 (pipe tokens): the model's real special tokens are
    <|im_start|>/<|im_end|> (WITH pipe, ids 248045/248046). The previous
    version rendered <im_start>/<im_end> WITHOUT pipe, which the tokenizer
-   splits into 5 plain-text tokens (27, 316, 4747/6018, 29, ...) — the model
+   splits into 5 plain-text tokens (27, 316, 4747/6018, 29, ...) -- the model
    sees literal marker text and echoes it back, leaking the thinking
    scaffold and producing echo loops on bare requests. Verified via
    /tokenize: "<im_start>" -> [27,316,4747,29], "<|im_start|>" -> [248045].
 
    CGC FIX 2026-09-09 (completed think scaffold): with empty assistant_prefill
-   the old generation prompt was bare "<|im_start|>assistant\n" — the model
+   the old generation prompt was bare "<|im_start|>assistant\n" -- the model
    immediately emits <|im_end|> (1 token, empty content). The embedded
    Qwen3.6-froggeric template renders a COMPLETED think block
-   " thinking\n\n response\n\n" for no-think mode; we mirror that so bare
-   requests continue from the response part of the scaffold. When
-   assistant_prefill is present, keep "<|im_start|>assistant\n{{ prefill }}"
-   (the harness 1.0 path).
+   "<think>\n\n</think>\n\n" for no-think mode; we mirror that so bare
+   requests continue from the response part of the scaffold.
+
+   CGC FIX 2026-09-11 (think block AND anchor -- the two were mutually exclusive, and you
+   need BOTH). The previous version rendered either the completed block OR the prefill:
+       {%- if prefill_text %} {{ prefill_text }} {%- else %} <completed block> {%- endif %}
+   Measured on iq3 with the canonical bare question, raw /completion of the three exact
+   generation prompts:
+       "assistant<think>\n\n</think>\n\n"        -> "<think>\n\n</think>\n\n15+27 = 42\n</think>..."
+                                                    (computes 42 but loops the markers)
+       "assistant答："                            -> "15+27 等於多少？請只输出答案"  (pure echo)
+       "assistant<think>\n\n</think>\n\n答："      -> "15+27=42"                        CORRECT
+   So the completed block tells the model thinking is over, and the anchor tells it to start
+   answering; neither alone works. Bare requests (no prefill) keep exactly their old prompt,
+   so only the prefill path changes behaviour.
 #}
 {%- set prefill_text = assistant_prefill if assistant_prefill is defined and assistant_prefill is string else '' -%}
 {%- for message in messages %}
@@ -26,13 +37,8 @@
 {{ message.content | trim }}<|im_end|>
 {%- endfor %}
 {%- if add_generation_prompt %}
-<|im_start|>assistant
+{{- '<|im_start|>assistant\n<think>\n\n</think>\n\n' }}
 {%- if prefill_text %}
-{{ prefill_text }}
-{%- else %}
- thinking
-
- response
-
+{{- prefill_text }}
 {%- endif %}
 {%- endif %}
