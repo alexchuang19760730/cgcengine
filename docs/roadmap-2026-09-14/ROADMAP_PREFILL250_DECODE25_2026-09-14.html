@@ -861,9 +861,32 @@
       <tr><td>M1 工作項 1：loader 讓 expert tensor 保持全尺寸 256（pool 改成獨立 buffer）</td><td><span class="badge badge-danger">❌ 未做</span></td><td>這是 W3 的另一半。目前有效容量仍是 <code>n_slots</code>（透過縮小 expert tensor 實作）</td></tr>
       <tr><td>M1 工作項 2：graph 按 phase 分流（<code>T ≥ 512</code> → PREFILL GRAPH 整層 slab）</td><td><span class="badge badge-danger">❌ 未做</span></td><td><strong>本輪修的只是 decode 分支</strong>。prefill 的 batching 紅利、以及 M2 的整層 slab，都還不存在</td></tr>
       <tr><td>§6 的 pool-path 閘門 off-by-one（<code>n_slots</code> → <code>usable_slots</code>）</td><td><span class="badge badge-success">✅ 已修並實測</span></td><td>閘門現在用 <code>llama_expert_cache_usable_slots()</code>，所以 <code>(usable, n_slots]</code> 不再進 <code>ensure_batch</code>。<br><strong>驗法是用 <code>LAYER_CAPS=1-39:32</code> 把那格寬的視窗撐開</strong>（usable=31 <code>&lt;</code> n_slots=32）：結果 <code>mode=gather</code>、<code>abort=0</code>、slab 3 次配置 / 89.0 MiB / 零成長 / 零 nil、M1/M2/M3 = 117/117。<br>這也證明了那個 bug 的另一半：修正前它不是 abort 就是走那條會 nil 的路</td></tr>
+      <tr><td><strong>cap invariance</strong>（同一 pool、不同 <code>CGC_POOL_MAX_TOKENS</code> → M1 = 100%）</td><td><span class="badge badge-danger">❌ 新增條件，且目前 FAIL</span></td><td>8 GiB 同一 pool、同一 binary、同一 GGUF：<code>cap=5</code> 對 <code>cap=8</code> 參考的比對結果是 <strong>M1 3/82、M2 15/82、M3 3/82</strong>，第一個分歧在第 3 步（第 0–2 步逐位元組相同），<code>max |Δsum| = 353 991</code>；而且 <code>cap=5</code> 的 preflight <strong>退化成回顯＋迴圈</strong>（<code>echo=True</code>、<code>finish=length</code>、內容重複 <code>15+27=42 / ### 解釋：</code>），<code>cap=8</code> 基線是 <code>15+27 等於 42。</code> 且停止。<br><strong>這條閘門以前不存在</strong>，而它比「換 pool 比對」更利：它不動 pool，只動 pool <em>佈局</em>（每個 step 的 union 組成），所以它是「歸約順序是否真正與佈局無關」最直接的形式。詳見 <code>docs/M1_POOL_GRAPH_DECOUPLE_PLAN_2026-09-14.md</code> §6</td></tr>
       <tr><td>閘門自己的證據產生（<code>flip_rate.py</code> 的 <code>score_one</code> 匯入）</td><td><span class="badge badge-success">✅ 已修</span></td><td><code>bare_48.py</code> 在 <code>b492c8c75</code> 把單一評分器改成雙尺（<code>score_legacy</code> + <code>score_strict</code>）時，<code>flip_rate.py</code> 還在 import 已不存在的 <code>score_one</code> → 整個 speed/greedy/seeded 欄位靜默變成 <code>None</code>（矩陣只把欄位印成空白，不報錯）。<br>已改成 <code>score_strict(rules, key, prompt, content, finish)</code> 並傳入與 <code>bare_48.run_suite</code> 相同的每題答案鍵。<br><strong>教訓和 union-routable 那次一樣：一個閘門只要 «無法產生自己要判的證據»，它就會回一個看起來像「還沒做」的空值，而不是 FAIL</strong></td></tr>
     </tbody>
   </table>
+
+  <h3>2026-09-14 新發現：pool cap <em>就是</em> prefill chunk，而且變大一定更慢</h3>
+  <p><strong>把一個沒人寫下來的耦合找出來了：</strong><code>llama-context.cpp</code> 在 L4 pool 啟動時把 <code>n_batch</code> 壓到
+  <code>cgc_pool_max_tokens()</code>（<code>--spec-draft-n-max</code> 與 profile 的 <code>-b</code> 都被它覆寫）。原因是 loader 把 expert tensor 的 <code>ne[2]</code>
+  <strong>縮到 pool 容量</strong>，所以比 cap 寬的 batch 會拿原始 expert id 去讀容量槽張量 → OOB → NaN。
+  兩個推論：<strong>①prefill chunk 大小就是 <code>CGC_POOL_MAX_TOKENS</code>；②「prefill 讀全尺寸 expert 權重」那條路徑在縮減開啟時<em>根本到不了</em></strong>（程式碼註解把它寫成活的）。</p>
+  <table>
+    <thead><tr><th><code>CGC_POOL_MAX_TOKENS</code></th><th>prefill t/s</th><th>decode t/s</th><th>備註</th></tr></thead>
+    <tbody>
+      <tr><td>2</td><td>20.03 / 17.23 / 15.09</td><td>9.6</td><td><strong>MTP ON 時載入就 abort</strong></td></tr>
+      <tr><td>4</td><td>9.66 / 9.19 / 9.24 與 10.19 / 9.20 / 9.17</td><td>8.1–9.5</td><td>兩次獨立量測</td></tr>
+      <tr><td><strong>8（預設）</strong></td><td>8.55 / 8.31 / 8.30 與 6.48 / 8.24 / 8.35</td><td>7.3–7.6</td><td>重現性 ~1%</td></tr>
+      <tr><td>16</td><td>6.00 / 6.19 / 5.90</td><td>6.9</td><td>−28%</td></tr>
+      <tr><td>32</td><td><strong>0.37</strong>（190.69 s 跑 71 tokens）</td><td>—</td><td>中止；slab C=256 實測 <strong>356 MiB</strong></td></tr>
+    </tbody>
+  </table>
+  <p><strong>所以 union 是「工作集槓桿」，不是「分攤槓桿」：</strong><code>union(n)</code> 隨 chunk 超線性長大，而常駐 pool 固定（8 GiB 時 142 可用格），
+  到 32 tokens 時每一步的足跡已經塞不進去，於是每個 expert 都變成 cold fill。
+  <strong>「chunk 越大 → 一個 union 分攤給越多 token → prefill 越快」這個假設被否證了。</strong></p>
+  <p><strong>下限是架構給的，不是旋鈕：</strong><code>cap=4/2</code> 載入即 abort —— <code>llama-batch.cpp:609 GGML_ASSERT(n_ubatch &gt; n_keep_tail)</code>，
+  而 <code>n_keep_tail = n_rs_seq + 1</code>（這顆 hybrid 模型的線性注意力回滾窗）→ <code>n_ubatch ≥ 5</code>。<br>
+  <strong>唯一還在檯面上的便宜數字是 <code>cap=5</code>（+13–15% prefill），而它目前<em>不可用</em></strong>，因為它過不了上面那條新閘門。</p>
 
   <h3>M2 的狀態：未開始，且它的前提還沒成立</h3>
   <p>M2 的離開條件寫的是「prefill 一次性 materialize 整層 slab」。但<strong>整層 slab 這條路徑今天還不存在</strong> ——
@@ -871,7 +894,9 @@
   所以 <strong>M2 目前的正確狀態是「擋在 M1 的工作項 1/2 後面」，不是「等排程」</strong>。</p>
   <p>唯一可以先做、而且現在就能做的一塊是<strong>量測</strong>：<code>bytes/token</code>、裝置 GB/s、<code>load_wall</code> 的拆解
   （它們不需要整層路徑）。預算用實測幾何算：<code>C = 256</code> 的整層 slab 對 Nail 是 4× 的 C=64 值 ≈ <strong>約 300 MiB</strong>
-  （gate/up 各 110 MiB、down 136 MiB），double-buffer 後 <strong>約 600 MiB</strong> —— 在 4 GiB pool 上是 15%。</p>
+  （gate/up 各 110 MiB、down 136 MiB），double-buffer 後 <strong>約 600 MiB</strong> —— 在 4 GiB pool 上是 15%。<br>
+  <strong>2026-09-14 實測取代估算：</strong><code>cap=32</code> 那一輪 slab 真的配起來，日誌是
+  <code>kind=0 110.00 MiB + kind=1 110.00 MiB + kind=2 136.00 MiB = 356 MiB</code>（<code>buft=MTL0</code>）—— 與估算一致。</p>
 </div>
 
 <!-- Coverage Section -->

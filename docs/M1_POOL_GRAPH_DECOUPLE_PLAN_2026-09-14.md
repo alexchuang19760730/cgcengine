@@ -22,7 +22,8 @@ tensor at full width, graph splits by phase) have not been started, and M2 depen
 | decode must not regress | ⏳ not measured this round (`--gates-only` leaves tok/s empty) |
 | work item 1: loader, full-width expert tensor, independent pool buffer | ❌ not started |
 | work item 2: phase split (`T ≥ 512` → whole-layer slab) | ❌ not started |
-| §6 pool-path gate off-by-one (`n_slots` → `usable_slots`) | ⏳ one line, and only safe **now** that the slab exists |
+| §7 pool-path gate off-by-one (`n_slots` → `usable_slots`) | ⏳ one line, and only safe **now** that the slab exists |
+| **cap invariance** (same pool, different `CGC_POOL_MAX_TOKENS` → M1 = 100 %) | **❌ FAILS — measured 3/82 this round, see §6.** Not an exit condition before; it is one now |
 
 Reproduce:
 
@@ -300,6 +301,10 @@ steady-state 4-token verify, which is consistent with `union == n_tokens × top_
    the nil, because the nil currently masks any order effect.
 4. Existing: M1/M2 100 % at 4/6/8/10 GiB with a regenerated reference; RSS ±0.5 GiB; decode must
    not regress.
+5. **Cap invariance** (added 2026-09-14, see §6): the *same* pool, two different
+   `CGC_POOL_MAX_TOKENS`, must give M1 = 100 %. It currently fails at 8 GiB: 3/82 aligned rows.
+   This is the sharpest form of gate 3, because it moves the pool-layout variable without moving
+   the pool at all.
 
 ## 5. Honest status
 
@@ -310,13 +315,111 @@ steady-state 4-token verify, which is consistent with `union == n_tokens × top_
   usable 34 → gather path → 468 `buffer is nil` in the same run. The reference arm's degenerate
   text is still true, and is the reason §4's acceptance test belongs on logits (M1) rather than on
   the text.
-- **New finding, §6:** a one-expert-wide off-by-one in the pool-path gate, live in MTP mode,
+- **New finding, §7:** a one-expert-wide off-by-one in the pool-path gate, live in MTP mode,
   deliberately left unfixed until the slab lands.
 - `scripts/check/m1_early_verification/` is untracked and was not authored here; it is left alone.
 
 ---
 
-## 6. A live off-by-one in the pool-path gate (found 2026-09-14, deliberately not fixed yet)
+## 6. The pool cap *is* the prefill chunk size — and the invariant is cap-conditional (measured 2026-09-14)
+
+### 6.1 The coupling nobody had written down
+
+`llama-context.cpp` caps `n_batch` to `cgc_pool_max_tokens()` whenever the L4 pool is active:
+
+```cpp
+if (model.expert_cache_pool_capacity > 0 && cparams.n_batch > 1) {
+    const uint32_t pmax = cgc_pool_max_tokens();
+    if (cparams.n_batch > pmax) cparams.n_batch = pmax;   // -> n_ubatch = pmax too
+}
+```
+
+The reason given in the comment is correct and load-bearing: the loader **shrinks each expert
+tensor's `ne[2]` to the pool capacity**, so a batch wider than the cap would read raw router ids
+(`0..n_expert-1`) against a capacity-slot tensor → OOB → NaN. Two consequences:
+
+- **The prefill chunk size *is* `CGC_POOL_MAX_TOKENS`.** Not `-ub`, not the profile's `-b`: those
+  are overwritten by this cap. Grepping a server log for `ntok=` shows prefill in 8-token chunks at
+  the default (two consecutive 8-token batches at `pmax=7` and `pmax=15`), and the harness prints
+  `[cap] fixed cap=N` beside it.
+- **The "prefill computes over the full expert weights" path is unreachable** while the shrink is
+  on (the comment in `expert_cache_on_topk` describes it as live). That path cannot exist until
+  work item 1 (full-width tensor + independent pool buffer) lands — the same dependency M2 has.
+
+### 6.2 The measured curve — bigger chunks are *worse*
+
+8 GiB pool on Nail IQ3_XXS-denseIQ4X, MTP off, 3 requests of ~100 prompt tokens each, same binary,
+`Backup/cgc_logs/m1_cap_sweep_evidence_20260914.txt`:
+
+| `CGC_POOL_MAX_TOKENS` | prefill t/s | decode t/s | note |
+|---|---|---|---|
+| 2 | 20.03 / 17.23 / 15.09 | 9.6 | **aborts at load with MTP on** |
+| 4 | 9.66 / 9.19 / 9.24 and 10.19 / 9.20 / 9.17 | 8.1–9.5 | two independent runs |
+| 8 (default) | 8.55 / 8.31 / 8.30 and 6.48 / 8.24 / 8.35 | 7.3–7.6 | reproducible to ~1 % |
+| 16 | 6.00 / 6.19 / 5.90 | 6.9 | −28 % |
+| 32 | **0.37** (190.69 s for 71 tokens) | — | killed; slab C=256 = **356 MiB** |
+
+So the union is a **working-set lever, not an amortisation lever**: `union(n)` grows
+super-linearly while the resident pool is fixed (142 usable at 8 GiB), so by 32 tokens the per-step
+footprint no longer fits and every expert is a cold fill. The earlier hypothesis — "a bigger chunk
+amortises one union over more tokens, so prefill rises with the cap" — is **falsified**.
+
+### 6.3 The floor is architectural, not a knob
+
+`cap = 4` (and `2`) abort at load:
+
+```
+llama-batch.cpp:609: GGML_ASSERT(n_ubatch > n_keep_tail) failed
+```
+
+`n_keep_tail = n_rs_seq + 1` (llama-memory-hybrid.cpp:89) — the recurrent/linear-attention rollback
+window of this hybrid model — so `n_ubatch ≥ 5` is required on this architecture regardless of MTP.
+With MTP the same bound is implied again by the verify batch (`n_max + 1 = 4`). `cap = 5` loads and
+runs; `cap = 4` and below cannot.
+
+### 6.4 And the +13 % is **not free**: cap invariance fails
+
+A `cap = 5` oracle dump at the **same 8 GiB pool** compared against the `cap = 8` reference
+(`Backup/knifeedge_matrix/oracle_iq3_pool8gb_cap5.jsonl` vs `oracle_iq3_pool8gb.jsonl`, compared by
+`(step, token_idx, node, ctx_type)`):
+
+| gate | result |
+|---|---|
+| M1 (`row_fnv1a64` byte-identical) | **3/82** |
+| M2 (`argmax_token`) | **15/82** |
+| M3 (top-k id set) | **3/82** |
+| max abs(sum) delta | 353 991 |
+
+First divergence at step 3 (steps 0–2 identical), and the `cap = 5` preflight **degenerated**:
+`echo=True`, `finish=length`, content looping `15+27=42 / ### 解釋：` — the `cap = 8` baseline
+answers `15+27 等於 42。` and stops.
+
+**This is a correction to §1.1.** "No known slot-dependent summation order" is true *across pool
+sizes at a fixed cap* (which is the 117/117 measurement), but **false across caps at a fixed pool**:
+moving the chunk changes which union each step gathers, and the logits move with it. The M1
+invariant is therefore **cap-conditional today, and that was never gated**. Note the confound that
+makes this evidence rather than proof: the candidate session also generated different text (the
+loop), so the 82 aligned rows are aligned *up to* the divergence, not throughout. The mechanism to
+test next is the one §1.1's own code shows: the pool path indexes by **slot** and the wide path
+indexes by **position in the sorted union**, so a step that changes path (or union composition)
+changes the per-token summation order; float addition is not associative.
+
+### 6.5 What this changes for the plan
+
+- **Work item 2 (union gather) does not feed prefill as a speed lever.** The binding constraint on
+  prefill throughput is the pool's working set, so widening the chunk makes things worse; the only
+  structure that can beat it is M2's whole-layer sequential read (read the layer's experts once, in
+  order, for a large chunk) — which needs work item 1's full-width tensors. This round gives M2 its
+  first live memory number to budget against: `C=256` = **356 MiB** measured (110 + 110 + 136 MiB
+  for kinds 0/1/2, Nail).
+- **The cheapest real prefill number on the table is now `cap = 5` (+13–15 %) — and it is
+  inadmissible** until the reduction order is made canonical, because it fails §4's new gate 5.
+- **Gate 5 is cheap**: two oracle dumps at one pool, no code change, ~2 min. It should become a
+  first-class harness case rather than something run by hand.
+
+---
+
+## 7. A live off-by-one in the pool-path gate (found 2026-09-14, deliberately not fixed yet)
 
 `llama-context.cpp` gates the pool path on the **raw** slot count:
 
@@ -346,9 +449,9 @@ land before §3.1.** A union in `(usable, n_slots]` would then be routed to the 
 the slab exists. So the gate change ships *with* the slab, and until then `CGC_UNION_LOG` reports
 `usable` beside `max` so the window is at least visible (`[WIDE: exceeds usable]`).
 
-### 6.1 Order of work this implies for M1
+### 7.1 Order of work this implies for M1
 
 1. Slab + pass loop (§3), with `C >= 64` fixed by a constant.
-2. **Then** the gate off-by-one (§6) — one line, now safe.
+2. **Then** the gate off-by-one (§7) — one line, now safe.
 3. **Then** the M1/M2 `union > slots` case can be tightened to an acceptance test (§4.1/§4.2),
    because it will finally be a case that passes.

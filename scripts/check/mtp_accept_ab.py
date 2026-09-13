@@ -105,7 +105,8 @@ def gate(model: Path) -> dict:
     return fp
 
 
-def launch(model: Path, pool_gb: float, port: int, logpath: Path, mtp: str = "1") -> None:
+def launch(model: Path, pool_gb: float, port: int, logpath: Path, mtp: str = "1",
+           extra_env=()) -> None:
     env = dict(os.environ)
     env.update({
         "CGC_DETACHED": "1",
@@ -115,6 +116,9 @@ def launch(model: Path, pool_gb: float, port: int, logpath: Path, mtp: str = "1"
         "CGC_SERVER_EXPERT_CACHE_BYTES": str(int(pool_gb * 1024 ** 3)),
         "CGC_SERVER_PORT": str(port),
     })
+    for kv in extra_env or ():
+        k, _, v = kv.partition("=")
+        env[k.strip()] = v.strip()
     with open(logpath, "wb") as fh:
         subprocess.Popen(["bash", "scripts/run_server.sh"], cwd=ROOT, env=env,
                          stdout=fh, stderr=fh, stdin=subprocess.DEVNULL,
@@ -201,6 +205,26 @@ def wait_health(port: int, logpath: Path, timeout=600, startup_grace=150) -> boo
     return False
 
 
+# Deterministic filler, so a long-prompt prefill measurement is the same bytes every run.
+# Prose rather than random tokens: it keeps the router's expert choice realistic (a random token
+# soup would drive the union toward "all 256 experts on every layer", which is the pessimistic
+# end of the range and not what a real request looks like).
+FILLER = (
+    "A river system carries sediment from its headwaters to the sea, and the amount it carries "
+    "depends on the slope, the rock, and the vegetation along the way. Near the source the channel "
+    "is steep and the water moves quickly, so it can move boulders and gravel. Lower down the "
+    "slope flattens, the current slows, and the load becomes sand and silt. Where the channel "
+    "meets a standing body of water the current drops almost to nothing and the load settles out "
+    "as a delta. "
+)
+
+
+def context_prefix(chars: int) -> str:
+    if chars <= 0:
+        return ""
+    return (FILLER * (chars // len(FILLER) + 1))[:chars] + "\n\n"
+
+
 def complete(port: int, prompt: str, n_predict: int, timeout=900) -> dict:
     return http(f"http://127.0.0.1:{port}/completion", {
         "prompt": prompt, "n_predict": n_predict, "temperature": 0,
@@ -209,28 +233,30 @@ def complete(port: int, prompt: str, n_predict: int, timeout=900) -> dict:
 
 
 def measure(label: str, model: Path, pool_gb: float, port: int, n_predict: int,
-            warm: bool = True, mtp: str = "1") -> dict:
+            warm: bool = True, mtp: str = "1", extra_env=(), context_chars: int = 0) -> dict:
     LOGDIR.mkdir(parents=True, exist_ok=True)
     logpath = LOGDIR / f"mtp_accept_{label}_{time.strftime('%Y%m%d_%H%M%S')}.log"
-    log(f"launching {label}: {model.name} pool={pool_gb}GB port={port} mtp={mtp}")
+    log(f"launching {label}: {model.name} pool={pool_gb}GB port={port} mtp={mtp}"
+        f" extra={list(extra_env) or '-'} ctx_chars={context_chars}")
     log(f"    log: {logpath}")
 
     stop_server()
-    launch(model, pool_gb, port, logpath, mtp)
+    launch(model, pool_gb, port, logpath, mtp, extra_env)
     try:
         if not wait_health(port, logpath):
             raise SystemExit(f"{label}: server did not become healthy")
         log(f"    healthy (pid {server_pid()})")
 
+        prefix = context_prefix(context_chars)
         if warm:
             # Cold-cache first touch: its accept is real but its timings are not comparable.
             log("    warmup request (not counted)")
-            complete(port, PROMPTS[0], 24)
+            complete(port, prefix + PROMPTS[0], 24)
 
         reqs = []
         for i, p in enumerate(PROMPTS):
             t0 = time.time()
-            r = complete(port, p, n_predict)
+            r = complete(port, prefix + p, n_predict)
             dt = time.time() - t0
             tm = r.get("timings", {})
             d_n = int(tm.get("draft_n", 0))
@@ -238,13 +264,15 @@ def measure(label: str, model: Path, pool_gb: float, port: int, n_predict: int,
             reqs.append({
                 "prompt": p[:48], "wall_s": round(dt, 2),
                 "draft_n": d_n, "draft_n_accepted": d_a,
+                "prompt_n": tm.get("prompt_n"),
                 "prefill_tps": tm.get("prompt_per_second"),
                 "decode_tps": tm.get("predicted_per_second"),
                 "n_predicted": tm.get("predicted_n"),
                 "text_chars": len(r.get("content", "")),
             })
-            log(f"    req {i+1}: draft {d_a}/{d_n}  decode={tm.get('predicted_per_second', 0):.2f} t/s"
-                f"  {dt:.1f}s")
+            log(f"    req {i+1}: prompt_n={tm.get('prompt_n')} "
+                f"prefill={tm.get('prompt_per_second', 0):.2f} t/s "
+                f"decode={tm.get('predicted_per_second', 0):.2f} t/s  draft {d_a}/{d_n}  {dt:.1f}s")
     finally:
         stop_server()
 
@@ -271,6 +299,12 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=9932)
     ap.add_argument("--n-predict", type=int, default=96)
     ap.add_argument("--out", default="Backup/cgc_logs/mtp_accept_ab.json")
+    ap.add_argument("--context-chars", type=int, default=0,
+                    help="deterministic filler prepended to every prompt, to make the prefill "
+                         "measurement a real prefill instead of a ~20-token chat turn")
+    ap.add_argument("--extra-env", action="append", default=[],
+                    help="KEY=VAL for run_server.sh (repeatable) -- e.g. the pool cap and slab "
+                         "capacity being A/B'd")
     args = ap.parse_args()
 
     results = []
@@ -286,7 +320,8 @@ def main() -> int:
         fp = gate(model)
         log(f"    head identity {fp['identity'][:16]}…  degenerate={fp['degenerate'] or '{}'}")
         try:
-            res = measure(label, model, args.pool_gb, args.port, args.n_predict, mtp=mtp)
+            res = measure(label, model, args.pool_gb, args.port, args.n_predict, mtp=mtp,
+                          extra_env=args.extra_env, context_chars=args.context_chars)
         except SystemExit as e:
             # One carrier failing must not cost the others' measurements: a 3-arm run takes many
             # minutes and a launcher refusal on arm 2 is not a reason to discard arm 1.
@@ -309,7 +344,7 @@ def main() -> int:
     out.write_text(json.dumps(results, indent=2) + "\n")
     print()
     print(f"{'carrier':<10} {'accept':>8} {'acc/gen':>12} {'mean len':>9} "
-          f"{'decode t/s':>11} {'head':>14}")
+          f"{'prefill t/s':>12} {'decode t/s':>11} {'head':>14}")
     for r in results:
         if "failed" in r:
             print(f"{r['label']:<10} FAILED  {r['failed'][:60]}")
@@ -317,7 +352,8 @@ def main() -> int:
         a = r["accept"]
         print(f"{r['label']:<10} {'n/a' if a is None else f'{a*100:7.2f}%':>8} "
               f"{r['draft_n_accepted']:>5}/{r['draft_n']:<6} "
-              f"{r['mean_acc_len'] or 0:9.2f} {r['decode_tps_mean'] or 0:11.2f} "
+              f"{r['mean_acc_len'] or 0:9.2f} {r['prefill_tps_mean'] or 0:12.2f} "
+              f"{r['decode_tps_mean'] or 0:11.2f} "
               f"{r['head_identity'][:12]:>14}")
     print(f"\nwrote {out}")
     return 0
