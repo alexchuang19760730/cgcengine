@@ -4098,6 +4098,72 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
                 }
             }
         }
+        // [CGC verify-strict 2026-09-13] The verify context is GROUND TRUTH: it must never read
+        // the reserved ZERO slot. The ZERO slot substitutes a zeroed region for a cold expert,
+        // i.e. that expert's contribution silently disappears — and HOW MANY disappear depends on
+        // how many slots the pool has, which is exactly how the pool size leaked into the values
+        // (measured: 4/6/8 GiB diverged at the first multi-token step, 7/39 identically on iq3 and
+        // iq4, while every single-token step was bit-identical). CGC_SYNCFILL_COLD (default on)
+        // closed that gap by filling the step's selected cold experts first; this prologue makes
+        // the invariant STRUCTURAL instead of a default that an A/B can silently flip:
+        //   1. fill this step's selected cold experts (blocking, real bytes) when enabled,
+        //   2. re-count and, if ANY selected expert is still cold (ensure_slot failure), REFUSE
+        //      the fast path so the exact path below runs. The ZERO slot then cannot be read for a
+        //      selected expert at all; CGC_VERIFY_STRICT=0 is the only way back to the old way.
+        static const bool cgc_syncfill_cold = []() {
+            const char * e = getenv("CGC_SYNCFILL_COLD");
+            if (e == nullptr) {
+                return true;
+            }
+            // a numeric value is compared explicitly: the old `!= nullptr` style silently treats
+            // CGC_SYNCFILL_COLD=0 as ON.
+            return e[0] != '0';
+        }();
+        if ((verify_fast || draft_fast) && cgc_fast_eligible) {
+            const char * vs_env = getenv("CGC_VERIFY_STRICT");
+            const bool cgc_verify_strict = vs_env ? atoi(vs_env) != 0 : true;
+            if (cgc_verify_strict) {
+                const int32_t * cst = cache->slot_table.data() + (size_t) il * cache->n_expert;
+                size_t cgc_cold_before = 0;
+                for (size_t i = 0; i < uni.size(); ++i) {
+                    const uint32_t e = uni[i];
+                    if (e < cache->n_expert && cst[e] < 0) {
+                        cgc_cold_before++;
+                    }
+                }
+                if (cgc_cold_before > 0 && cgc_syncfill_cold) {
+                    size_t n_cold_filled = 0;
+                    for (size_t i = 0; i < uni.size(); ++i) {
+                        const uint32_t e = uni[i];
+                        if (e < cache->n_expert && cst[e] < 0) {
+                            llama_expert_cache_ensure_slot(cache, (uint32_t) il, e, /*count=*/false);
+                            n_cold_filled++;
+                        }
+                    }
+                    if (n_cold_filled > 0 && il <= 1) {
+                        fprintf(stderr, "CGC-SYNCFILL: %s il=%d cold_filled=%zu\n",
+                                cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP ? "draft" : "verify",
+                                il, n_cold_filled);
+                    }
+                }
+                size_t cgc_cold_after = 0;
+                for (size_t i = 0; i < uni.size(); ++i) {
+                    const uint32_t e = uni[i];
+                    if (e < cache->n_expert && cst[e] < 0) {
+                        cgc_cold_after++;
+                    }
+                }
+                if (cgc_cold_after > 0) {
+                    cgc_fast_eligible = false;
+                    cache->n_verify_strict_refused++;
+                    if (il <= 1 || cache->n_verify_strict_refused <= 8) {
+                        fprintf(stderr, "CGC-VERIFY-STRICT: %s il=%d cold=%zu/%zu (before=%zu) -> exact path, ZERO-slot refused\n",
+                                cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP ? "draft" : "verify",
+                                il, cgc_cold_after, uni.size(), cgc_cold_before);
+                    }
+                }
+            }
+        }
         static int cgc_warm_dbg = 0;
         if (cgc_warm_dbg < 24 && il <= 1) {
             cgc_warm_dbg++;
@@ -4148,29 +4214,11 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
             // CGC_SYNCFILL_COLD=0 restores the legacy ZERO-slot behavior. Note the parsing: the
             // old `e[0] == '1'` / `!= nullptr` style silently treats =0 as ON, so a numeric
             // value is compared explicitly here and anything not starting with '0' means on.
-            static const bool cgc_syncfill_cold = []() {
-                const char * e = getenv("CGC_SYNCFILL_COLD");
-                if (e == nullptr) {
-                    return true;
-                }
-                return e[0] != '0';
-            }();
-            if (cgc_syncfill_cold) {
-                const int32_t * cst = cache->slot_table.data() + (size_t) il * cache->n_expert;
-                size_t n_cold_filled = 0;
-                for (size_t i = 0; i < uni.size(); ++i) {
-                    const uint32_t e = uni[i];
-                    if (e < cache->n_expert && cst[e] < 0) {
-                        llama_expert_cache_ensure_slot(cache, (uint32_t) il, e, /*count=*/false);
-                        n_cold_filled++;
-                    }
-                }
-                if (n_cold_filled > 0 && il <= 1) {
-                    fprintf(stderr, "CGC-SYNCFILL: %s il=%d cold_filled=%zu\n",
-                            cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP ? "draft" : "verify",
-                            il, n_cold_filled);
-                }
-            }
+            // [CGC verify-strict 2026-09-13] The selected cold experts were already filled by the
+            // verify-strict prologue ABOVE (it runs before the fast-path/eligibility split so that a
+            // still-cold expert refuses the fast path instead of being ZERO-mapped). If we reach
+            // here, every selected expert is resident — that is now an invariant, not the
+            // consequence of a default that an A/B can silently flip off.
             // [CGC STEP_DBG] per-step miss timeline (il==1 fires once per step): cumulative
             // fast-path cold (ZERO-mapped) + ensure_batch (prefill chunk 1 / catch-up) requests
             // and hits. Measured verdict (2026-08-28, steady MTP denseIQ4X seed1): cold stays
@@ -4192,11 +4240,28 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
             ggml_tensor * remap = cache_remap_tensors[il];
             if (remap != nullptr && remap->data != nullptr) {
                 int32_t * rd = (int32_t *) remap->data;
+                // [CGC verify-strict 2026-09-13] Detect any selected expert that still comes back as
+                // the ZERO slot: that means its contribution is silently lost. The prologue above
+                // makes this unreachable on the default path, so a nonzero count here is a bug
+                // signal — and it must never be silent (it is exactly what made the logits depend
+                // on the pool size before).
+                int32_t n_zero_mapped = 0;
+                const int32_t zs = llama_expert_cache_zero_slot(cache, (uint32_t) il);
                 for (int64_t j = 0; j < n_tokens; ++j) {
                     for (int64_t i = 0; i < n_expert_used; ++i) {
                         const uint32_t e = (uint32_t) ids[i + j * n_expert_used];
-                        rd[i + j * n_expert_used] = llama_expert_cache_slot_table_safe(cache, (uint32_t) il, e);
+                        const int32_t slot = llama_expert_cache_slot_table_safe(cache, (uint32_t) il, e);
+                        rd[i + j * n_expert_used] = slot;
+                        if (zs >= 0 && slot == zs) {
+                            n_zero_mapped++;
+                        }
                     }
+                }
+                if (n_zero_mapped > 0) {
+                    cache->n_zero_mapped_selected += (size_t) n_zero_mapped;
+                    fprintf(stderr, "CGC-ZERO-MAPPED: %s il=%d n=%d/%lld -> selected expert(s) read the ZERO slot (contribution lost)\n",
+                            cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP ? "draft" : "verify",
+                            il, n_zero_mapped, (long long) (n_tokens * n_expert_used));
                 }
             }
             static int cgc_fast_n = 0;

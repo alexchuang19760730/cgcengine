@@ -1280,6 +1280,13 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     bool    is_mem_shared = false;   // gemma4
     bool    chain_heads   = false;   // derived in the ctor: n_mtp_layers > 1 && !is_mem_shared
 
+    // [CGC MTP sampler parity 2026-09-13] CGC_MTP_SAMPLER_PARITY=1 makes the draft chain the
+    // target's chain (see common_params_speculative_draft::sampling) instead of the hard-coded
+    // {TOP_K=10}, and makes the drafted token the chain's SAMPLE rather than its argmax. Both
+    // halves are needed: a chain with no dist sampler returns the argmax anyway, so fixing only
+    // the chain values would leave the draft deterministic.
+    bool    sampler_parity = false;
+
     // Per-sequence cross-batch carryover: pair (h_p, x_{p+1}) at MTP pos p+1.
     // The last h-row of one process() call needs the first token of the NEXT
     // call to pair with, so it's stashed here until that next call fires.
@@ -1331,13 +1338,44 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         // TODO: fix, how to call without malloc
         batch.token = (llama_token *) malloc(sizeof(llama_token) * n_b);
 
+        // [CGC MTP sampler parity 2026-09-13] "draft drawn from the target's distribution".
+        // Two independent reasons the old draft was NOT:
+        //   1. the chain was {TOP_K, top_k=10} -- no temp / top_p / repeat penalty, so under the
+        //      production recipe (temp 0.4 / top_p 0.8 / repeat-penalty 1.3) the draft used a
+        //      different distribution entirely;
+        //   2. the drafted token was forced to cur_p->data[0].id (the argmax) further down, so
+        //      even with the right distribution the draw was deterministic.
+        // Requires the server to have handed down the target's sampling config; without it we
+        // keep the legacy chain rather than silently running a chain nobody asked for.
+        sampler_parity = getenv("CGC_MTP_SAMPLER_PARITY") != nullptr &&
+                !this->params.sampling.samplers.empty();
+        if (getenv("CGC_MTP_SAMPLER_PARITY") != nullptr && !sampler_parity) {
+            SPC_WRN("%s", "CGC_MTP_SAMPLER_PARITY set but the target sampling chain was not "
+                    "handed down (sampling.samplers empty) -- keeping the legacy {TOP_K=10} "
+                    "draft chain\n");
+        }
+        if (sampler_parity) {
+            // The backend chain below cannot mirror a per-seq chain, and a top_k-only backend
+            // chain returns the argmax -- which would defeat half the fix. Let the CPU side own
+            // the draft draw.
+            this->params.backend_sampling = false;
+        }
+
         smpls.resize(n_seq);
         for (auto & s : smpls) {
             common_params_sampling sparams;
-            sparams.no_perf  = false;
-            sparams.top_k    = 10;
-            sparams.samplers = { COMMON_SAMPLER_TYPE_TOP_K };
+            if (sampler_parity) {
+                sparams = this->params.sampling; // the target's chain, verbatim
+            } else {
+                sparams.no_perf  = false;
+                sparams.top_k    = 10;
+                sparams.samplers = { COMMON_SAMPLER_TYPE_TOP_K };
+            }
             s.reset(common_sampler_init(llama_get_model(ctx_dft), sparams));
+        }
+        if (sampler_parity) {
+            SPC_WRN("CGC_MTP_SAMPLER_PARITY: draft chain now mirrors the target: %s\n",
+                    common_sampler_print(smpls[0].get()).c_str());
         }
 
         // offload draft sampling to the backend
@@ -1711,7 +1749,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
                 auto * smpl = smpls[seq_id].get();
 
-                common_sampler_sample(smpl, ctx_dft, i_last[seq_id], true);
+                const llama_token sampled_id = common_sampler_sample(smpl, ctx_dft, i_last[seq_id], true);
                 const float * h_row = llama_get_embeddings_nextn_ith(ctx_dft, i_last[seq_id]);
 
                 const auto * cur_p = common_sampler_get_candidates(smpl, true);
@@ -1723,7 +1761,14 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 }
 
                 // add drafted token for each sequence
-                const llama_token id = cur_p->data[0].id;
+                // [CGC MTP sampler parity 2026-09-13] legacy: force the argmax
+                // (cur_p->data[0].id). With parity on, take the token the mirrored chain
+                // actually DREW -- otherwise p_d stays one-hot and "draft samples from the
+                // target's distribution" is still false. Under the current exact-match accept
+                // rule this is expected to LOWER accept (P(match) = sum p_t*p_d, maximised by
+                // the argmax); it is a prerequisite for rejection sampling, not a speedup on
+                // its own. See docs note in the commit message.
+                const llama_token id = sampler_parity ? sampled_id : cur_p->data[0].id;
 
 #ifdef MTP_SUPPORT
                 if (getenv("CGC_MTP_DBG")) {
@@ -2909,5 +2954,24 @@ void common_speculative_print_stats(const common_speculative * spec) {
                 impl->n_acc_tokens,
                 str_stats.c_str(),
                 str_perf.c_str());
+        // [CGC MTP perf split 2026-09-13] The same numbers go to stderr when CGC_MTP_PERF is
+        // set, because the line above is LOG_TRC and the server runs at INFO -- so the timings
+        // were always being ACCUMULATED and never printed, which is why "where does an MTP
+        // forward's time go" could not be answered from the logs. Counters are cumulative, so
+        // the last line of a run is the run total.
+        //   t_begin  = spec impl refresh (hidden-state catch-up / staging) per round
+        //   t_draft  = the MTP head's own forwards (the draft phase)
+        //   t_accept = accept bookkeeping (counters only, expected ~0)
+        // The TARGET's verify forward is NOT here; take it from llama_print_timings' eval time,
+        // which covers everything ctx_tgt evaluated.
+        if (getenv("CGC_MTP_PERF") != nullptr) {
+            fprintf(stderr, "CGC-MTP-PERF type=%s calls_begin=%zu calls_draft=%zu calls_accept=%zu "
+                    "gen_tokens=%zu acc_tokens=%zu t_begin_ms=%.1f t_draft_ms=%.1f t_accept_ms=%.1f\n",
+                    common_speculative_type_to_str(impl->type).c_str(),
+                    impl->n_call_begin, impl->n_call_draft, impl->n_call_accept,
+                    impl->n_gen_tokens, impl->n_acc_tokens,
+                    impl->t_begin_us / 1000.0, impl->t_draft_us / 1000.0,
+                    impl->t_accept_us / 1000.0);
+        }
     }
 }

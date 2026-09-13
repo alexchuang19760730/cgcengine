@@ -75,6 +75,10 @@ fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$ROOT/src/llama.cpp/build/bin/llama-server"
 SERVER_MINIMAL_CHAT_TEMPLATE="$ROOT/src/llama.cpp/models/templates/Qwen3-nothink-ChatML.jinja"
+# Edge0-35B's own chat template.  Byte-exact copy of the GGUF's tokenizer.chat_template
+# (sha256 e84f32a23fdda27689f868aa4a1a5621f41133e51a48d7f3efcbea2839574259) and identical
+# to edge0 repo models/edge0-35b/chat_template.jinja.  See the Edge0 selector below.
+SERVER_EDGE0_CHAT_TEMPLATE="$ROOT/src/llama.cpp/models/templates/Edge0-35B-ChatML.jinja"
 MODEL_ROOT="${CGC_SERVER_MODEL_ROOT:-$ROOT/models/gguf}"
 Q36="$MODEL_ROOT/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf"
 Q36_MTP="$MODEL_ROOT/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS.gguf"
@@ -270,7 +274,17 @@ UBATCH_DEFAULT=""
 #   - 8GiB + CGC_RN_ROUTING=1 + CGC_WCOLD_EN=1: decode 25.9 t/s / 98.7% accept but quality 0.3
 #     (renorm mask mechanism bug, invariant to pool size — see docs …RenormRouting_AB §8).
 # Still overridable: N30CACHE_BUDGET / CGC_SERVER_EXPERT_CACHE_BYTES / CGC_SERVER_OOM_SAFE=1.
-BUDGET_DEFAULT="${N30CACHE_BUDGET:-8589934592}"   # 8GiB expert pool（16GB 機 A/B 驗證過）
+# [CGC 2026-09-13] 8GiB -> 10GiB. The pool is a COMPUTED number of slots, not a raw byte pool:
+#   capacity = budget / (41 layers * per_slot 1.465MB)   ->   8GiB = 143 slots/layer
+# The routing oracle (LLAMA_EXPERT_CACHE_ROUTE_RECORD + _ROUTE_DUMP + CGC_MASSCOV) measured, at
+# 143 slots on Nail denseIQ4X, hit rate 90.8%:
+#   current membership mass coverage      90.3%
+#   best possible top-143-by-mass         90.5%   -> placement gap 0.2pp
+#   counterfactual: K=96 79.7%  K=128 87.7%  K=192 97.1%  K=256 100.0%
+# So no placement heuristic can win more than 0.2pp, while capacity buys ~6.6pp per +49 slots.
+# 10GiB -> 178 slots/layer -> ~95% coverage (interpolated), i.e. non-resident selected experts
+# 9.8% -> ~5%, for ~+2GiB RSS (measured 7.55GiB at 143 slots, including 1.61GiB dense).
+BUDGET_DEFAULT="${N30CACHE_BUDGET:-10737418240}"  # 10GiB expert pool
 SPEC_DRAFT_N_MAX="${CGC_SERVER_MTP_N_MAX:-3}"  # MTP draft tokens
 SERVER_LAYER_CAPS="${CGC_SERVER_LAYER_CAPS:-}"  # Layer caps for expert cache
 # [2026-09-12] 記憶體模式改可覆寫。預設 none = 舊的 --no-mmap 行為（逐值相同）。
@@ -509,6 +523,28 @@ fi
 if [ -n "$SERVER_CHAT_TEMPLATE" ]; then
     echo "[chat]  template=$SERVER_CHAT_TEMPLATE"
 fi
+# ── Edge0-35B: use the model's OWN vendored chat template ────────────────────────
+# The hand-written Qwen3-nothink-ChatML.jinja above is a Nail-era artifact; it is NOT
+# Edge0's template.  For an Edge0 checkpoint, fall back to the model's own template.
+#
+# "--reasoning off" (already set for the no-think profiles) sets
+# enable_thinking=false in common/arg.cpp, and Edge0's template then renders its
+# canonical DIRECT-ANSWER generation prompt
+#     <|im_start|>assistant\n<think>\n\n</think>\n\n
+# which is exactly the form edge0's own server uses with think=False (see
+# edge0 src/edge0/server/chat.py::_chat_text).  A bare "<|im_start|>assistant\n"
+# without the closed block makes the model emit its own opener, which leaks into
+# content -- that is the symptom this selector removes.
+#
+# An explicit CGC_SERVER_CHAT_TEMPLATE_FILE / CGC_SERVER_CHAT_TEMPLATE always wins.
+if [ -z "${CGC_SERVER_CHAT_TEMPLATE_FILE:-}" ] && [ -z "${CGC_SERVER_CHAT_TEMPLATE:-}" ]; then
+    case "$(basename "$MODEL")" in
+        Edge0-*)
+            SERVER_CHAT_TEMPLATE_FILE="$SERVER_EDGE0_CHAT_TEMPLATE"
+            echo "[chat]  Edge0 model -> model's own template ($(basename "$SERVER_EDGE0_CHAT_TEMPLATE"))"
+            ;;
+    esac
+fi
 if [ -n "$SERVER_CHAT_TEMPLATE_FILE" ]; then
     echo "[chat]  template_file=$SERVER_CHAT_TEMPLATE_FILE"
 fi
@@ -627,14 +663,31 @@ SERVER_ENV=(
     LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0=0
     LLAMA_EXPERT_CACHE_WORKERS=8
     CGC_WAKE_POLL_US=15
-    CGC_PREFETCH_SRC=hist
+    # [CGC 2026-09-13] CGC_PREFETCH_SRC=hist removed: it is a placement/prefetch heuristic
+    # (it re-residents LRU-evicted hot experts from a rolling window), and the routing oracle
+    # bounded ALL placement work at +0.2pp of routing mass. Unset = the "step" default, which
+    # prefetches this step's own (already resident) union and drops everything. Opt back in with
+    # CGC_PREFETCH_SRC=hist for A/B.
     CGC_EVICTED_RING=0
     CGC_N_CB="$SERVER_N_CB"
     CGC_OA_ASYNC="$SERVER_OA_ASYNC"  # §8.77/8.78: +12.6% speed (0000 bug fixed in C++)
     CGC_SERVER_AUTO_ANCHOR="$SERVER_AUTO_ANCHOR"
     CGC_SERVER_DEFAULT_MARKER_STOPS="$SERVER_DEFAULT_MARKER_STOPS"
-    CGC_FORCE_TEMP0="$CGC_FORCE_TEMP0"
 )
+# [CGC 2026-09-13 FIX] CGC_FORCE_TEMP0 used to be exported unconditionally. The C++ side
+# tests PRESENCE, not value --  static const bool cgc_force_temp0 = getenv("CGC_FORCE_TEMP0") ? true : false;
+# (tools/server/server-common.cpp:1356) -- so exporting the default "0" still ENABLED the
+# override. The 2026-09-09 comment above declares the default OFF and says temp 0.1-0.3 both
+# avoids the IQ3_XXS noise collapse and breaks the greedy loop, but that fix never took effect:
+# every request was forced to temperature=0 (and seed=0, since the same block sets it).
+# Measured 2026-09-13 on Edge0-35B-Q4_0-MTP-edge0head with the old export: request temperatures
+# 0.0 / 0.4 / 0.9 / 1.5 all returned BYTE-IDENTICAL text, and two independent server starts
+# reproduced 44/420 MTP drafts exactly -- greediness proves the override was live.
+# This is the same 0-means-unset contract the 0000-guard flags already honour (see the
+# "0000 防護 : ... (1=set, 0=unset)" line in the banner), applied where it was missed.
+if [ "$CGC_FORCE_TEMP0" = "1" ]; then
+    SERVER_ENV+=(CGC_FORCE_TEMP0="1")
+fi
 # CGC P0: down-combine (Lily-style batch down projection). Pass through if externally set.
 if [ -n "${CGC_DOWN_COMBINE:-}" ]; then
     SERVER_ENV+=(CGC_DOWN_COMBINE="$CGC_DOWN_COMBINE")
@@ -651,6 +704,28 @@ fi
 if [ -n "${CGC_EXACT_PATH_DBG:-}" ]; then
     SERVER_ENV+=(CGC_EXACT_PATH_DBG="$CGC_EXACT_PATH_DBG")
 fi
+# [CGC 2026-09-13] expert-cache diagnosis pass-throughs (diagnostic only, default off).
+# These two oracles are the cheapest way to answer "is the miss traffic attackable?"
+# before writing any code:
+#   - ROUTE_DUMP writes a PIN_PROFILE-format file (one line per layer, top-K expert ids)
+#     plus the top-K coverage verdict. Compare that coverage against K/n_expert -- this
+#     model has 256 experts, so the uniform baseline is 143/256 = 55.9%, NOT the
+#     "K/128" the log line hard-codes. Coverage far above baseline = heavy-tailed
+#     routing = the placement lever is live; near baseline = diffuse = lever closed.
+#   - CGC_MASSCOV prints the LIVE membership coverage plus the counterfactual
+#     top-K-by-mass coverage at 96/128/192/256 slots: the capacity curve for free,
+#     without touching the budget.
+# Without these blocks the explicit `env` allowlist on the launch line silently drops
+# them, so setting them in the shell appears to do nothing.
+if [ -n "${LLAMA_EXPERT_CACHE_ROUTE_RECORD:-}" ]; then
+    SERVER_ENV+=(LLAMA_EXPERT_CACHE_ROUTE_RECORD="$LLAMA_EXPERT_CACHE_ROUTE_RECORD")
+fi
+if [ -n "${LLAMA_EXPERT_CACHE_ROUTE_DUMP:-}" ]; then
+    SERVER_ENV+=(LLAMA_EXPERT_CACHE_ROUTE_DUMP="$LLAMA_EXPERT_CACHE_ROUTE_DUMP")
+fi
+if [ -n "${CGC_MASSCOV:-}" ]; then
+    SERVER_ENV+=(CGC_MASSCOV="$CGC_MASSCOV")
+fi
 # CGC Fast-Path Wait: wait for in-flight fills instead of ZERO-mapping (default off)
 if [ -n "${CGC_FAST_WAIT:-}" ]; then
     SERVER_ENV+=(CGC_FAST_WAIT="$CGC_FAST_WAIT")
@@ -660,6 +735,23 @@ if [ -n "${CGC_FAST_WAIT_US:-}" ]; then
 fi
 if [ -n "${CGC_FAST_WAIT_MAX:-}" ]; then
     SERVER_ENV+=(CGC_FAST_WAIT_MAX="$CGC_FAST_WAIT_MAX")
+fi
+# [CGC verify-strict 2026-09-13] The ZERO-slot fix now lives in the code: the fast path REFUSES a
+# step whose selected expert is still cold (the exact path runs instead) instead of reading the
+# reserved zero region and silently dropping that expert's contribution. These knobs are passed
+# through so the strictness itself can be A/B'd from the launcher — without them in this allowlist
+# `CGC_VERIFY_STRICT=0 ./scripts/run_server.sh` would be silently dropped and the A/B would report
+# "no effect" that is really "no knob".
+if [ -n "${CGC_VERIFY_STRICT:-}" ]; then
+    SERVER_ENV+=(CGC_VERIFY_STRICT="$CGC_VERIFY_STRICT")
+fi
+if [ -n "${CGC_SYNCFILL_COLD:-}" ]; then
+    SERVER_ENV+=(CGC_SYNCFILL_COLD="$CGC_SYNCFILL_COLD")
+fi
+# CGC pool-path batch cap (C++ default 8): the pool path cannot exceed cap x top_k usable slots,
+# so raising it interacts with the pool size and must be visible to the launcher.
+if [ -n "${CGC_POOL_MAX_TOKENS:-}" ]; then
+    SERVER_ENV+=(CGC_POOL_MAX_TOKENS="$CGC_POOL_MAX_TOKENS")
 fi
 # CGC prev-token prefetch (default off)
 if [ -n "${CGC_PREV_TOKEN_PREFETCH:-}" ]; then
@@ -697,9 +789,12 @@ fi
 if [ "${CGC_DBUF:-1}" != "0" ]; then
     SERVER_ENV+=(CGC_DBUF=1)
 fi
-# CGC SPAC: EMA utility-based prefetch (production ON by default, α=0.75 is the tuned sweet spot).
-# Set CGC_SPAC=0 to disable; override alpha with CGC_SPAC_ALPHA.
-if [ "${CGC_SPAC:-1}" != "0" ]; then
+# [CGC 2026-09-13] DEFAULT FLIPPED TO OFF. SpAc is a placement heuristic (EMA-utility prefetch
+# source plus EMA victim selection). The routing oracle measured the ceiling of ALL placement
+# work at +0.2pp of routing mass — current membership 90.3% vs the best possible top-K-by-mass
+# 90.5% at the same 143 slots — so it cannot pay for itself. Keep it reachable for A/B via
+# CGC_SPAC=1, but do not enable it by default. Alpha, if opted in, defaults to the tuned 0.75.
+if [ "${CGC_SPAC:-0}" != "0" ]; then
     SERVER_ENV+=(CGC_SPAC=1)
     if [ -n "${CGC_SPAC_ALPHA:-}" ]; then
         SERVER_ENV+=(CGC_SPAC_ALPHA="$CGC_SPAC_ALPHA")
@@ -707,18 +802,21 @@ if [ "${CGC_SPAC:-1}" != "0" ]; then
         SERVER_ENV+=(CGC_SPAC_ALPHA=0.75)
     fi
 fi
-# CGC Soft Pool: L0/L1 tier partition (production default L0=48/L1=48, tuned for 8GB pool / 143 slots).
-# L0 = fixed hot slots (no LRU eviction), L1 = warm LRU slots. L0+L1 <= n_slots.
-# Set CGC_SOFT_POOL_L0=0 / CGC_SOFT_POOL_L1=0 to disable partition (legacy uniform behavior).
+# CGC Soft Pool: L0/L1 tier partition. L0 = fixed hot slots (no LRU eviction), L1 = warm LRU
+# slots. L0+L1 <= n_slots; L0+L1=0 keeps the legacy uniform n_slots behavior.
+# [CGC 2026-09-13] DEFAULT FLIPPED TO 0/0 (partition off). L0 is a hand-picked "fixed hot set",
+# which is exactly the placement decision the routing oracle showed is worth at most 0.2pp
+# (current 90.3% vs best-possible 90.5%). Opt back in with CGC_SOFT_POOL_L0=48
+# CGC_SOFT_POOL_L1=48.
 if [ -n "${CGC_SOFT_POOL_L0:-}" ]; then
     SERVER_ENV+=(CGC_SOFT_POOL_L0="$CGC_SOFT_POOL_L0")
 else
-    SERVER_ENV+=(CGC_SOFT_POOL_L0=48)
+    SERVER_ENV+=(CGC_SOFT_POOL_L0=0)
 fi
 if [ -n "${CGC_SOFT_POOL_L1:-}" ]; then
     SERVER_ENV+=(CGC_SOFT_POOL_L1="$CGC_SOFT_POOL_L1")
 else
-    SERVER_ENV+=(CGC_SOFT_POOL_L1=48)
+    SERVER_ENV+=(CGC_SOFT_POOL_L1=0)
 # [CGC phrase-loop guard 2026-09-08] server-side truncation of live phrase loops
 # (>=6 char block x3 consecutive, mirroring the replay quality gate). Default ON;
 # set CGC_LOOP_GUARD=0 to disable. CGC_LOOP_GUARD_EVERY = check cadence (tokens).
@@ -768,6 +866,27 @@ if [ "$SERVER_MTP" = "1" ]; then
     fi
     if [ "$SERVER_MTP_NO_WARMUP" = "1" ]; then
         SERVER_ENV+=(CGC_MTP_NO_WARMUP=1)
+    fi
+    # [CGC MTP sampler parity 2026-09-13] pass through the draft-sampler A/B knob. Without this
+    # the explicit `env` allowlist on the launch line drops it and the server silently keeps the
+    # legacy {TOP_K=10} draft chain, so an A/B would show "no effect" that is really "no knob".
+    if [ -n "${CGC_MTP_SAMPLER_PARITY:-}" ]; then
+        SERVER_ENV+=(CGC_MTP_SAMPLER_PARITY="$CGC_MTP_SAMPLER_PARITY")
+    fi
+    # [CGC MTP perf split 2026-09-13] print the spec impl's own phase timings
+    # (t_begin / t_draft / t_accept, cumulative) to stderr. Always accumulated, never printed:
+    # the existing line is LOG_TRC and the server runs at INFO.
+    if [ -n "${CGC_MTP_PERF:-}" ]; then
+        SERVER_ENV+=(CGC_MTP_PERF="$CGC_MTP_PERF")
+    fi
+    # [CGC 2026-09-13] CGC-IDS / CGC-HOOK dumping has NO env gate -- it fires for every batch
+    # with n_tokens <= 8 (i.e. every decode step, every verify/draft batch) until a 4000-line
+    # budget runs out, via synchronous fprintf(stderr) inside the decode loop. So every run
+    # silently pays ~4000 lines of stderr I/O before settling. Pass the budget through so it
+    # can be turned off for measurement (CGC_IDS_MAX_LINES=0) instead of only being tunable
+    # by editing code.
+    if [ -n "${CGC_IDS_MAX_LINES:-}" ]; then
+        SERVER_ENV+=(CGC_IDS_MAX_LINES="$CGC_IDS_MAX_LINES")
     fi
     if [ "$SERVER_NO_SEQ_RM_PROBE" = "1" ]; then
         SERVER_ENV+=(CGC_NO_SEQ_RM_PROBE=1)

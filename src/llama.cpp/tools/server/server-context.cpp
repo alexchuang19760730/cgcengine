@@ -1269,6 +1269,12 @@ private:
 
                 params_base.speculative.draft.ctx_tgt = ctx_tgt;
                 params_base.speculative.draft.ctx_dft = ctx_dft;
+                // [CGC MTP sampler parity 2026-09-13] hand the target's sampling config to the
+                // draft spec params. Per-task sampling is seeded from this same params.sampling
+                // (see tparams.sampling = params.sampling below), so this is the closest
+                // static mirror of "the sampler the target will use". Only read when
+                // CGC_MTP_SAMPLER_PARITY is set; default behaviour is unchanged.
+                params_base.speculative.draft.sampling = params_base.sampling;
             }
 
             load_progress_callback(1.0f, &load_progress_spec);

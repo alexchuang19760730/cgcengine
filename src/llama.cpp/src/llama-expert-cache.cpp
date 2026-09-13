@@ -472,6 +472,9 @@ static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer, const uint8
                 cache->slot_decode_reserved[layer][best_slot] = 0;
             }
             const int32_t evicted = owner[best_slot];
+            if (evicted >= 0) {
+                cache->n_evictions++; // [CGC miss attribution] a resident expert is losing its slot
+            }
             if (evicted >= 0 && evicted < (int32_t) cache->n_expert) {
                 cache->slot_table[(size_t) layer * cache->n_expert + evicted] = -1;
             }
@@ -649,6 +652,17 @@ int32_t llama_expert_cache_ensure_slot(llama_expert_cache * cache, uint32_t laye
         return slot;
     }
     (count ? cache->n_misses : cache->n_prewarm_misses)++;
+    if (count && expert < cache->n_expert) {
+        // [CGC miss attribution] first demand touch of this (layer, expert) = compulsory; a
+        // second touch means it was resident once and got evicted = capacity.
+        if (cache->ever_loaded[layer][expert] == 0) {
+            cache->ever_loaded[layer][expert] = 1;
+            cache->n_distinct_demanded[layer]++;
+            cache->n_miss_compulsory++;
+        } else {
+            cache->n_miss_capacity++;
+        }
+    }
 
     // miss: find the slot (free or evict LRU), fill it from the file synchronously.
     // Option A: the pool IS the storage — pread straight into the slot's regions (no
@@ -742,6 +756,15 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
                 continue;
             }
             cache->n_misses++;
+            // [CGC miss attribution] same split as ensure_slot: first demand touch of this
+            // (layer, expert) is compulsory, a repeat means it was evicted = capacity.
+            if (cache->ever_loaded[layer][e] == 0) {
+                cache->ever_loaded[layer][e] = 1;
+                cache->n_distinct_demanded[layer]++;
+                cache->n_miss_compulsory++;
+            } else {
+                cache->n_miss_capacity++;
+            }
             if (getenv("LLAMA_EXPERT_CACHE_MISS_DUMP") != nullptr) {
                 static FILE * fmiss = nullptr;
                 static const char * miss_path = getenv("LLAMA_EXPERT_CACHE_MISS_DUMP");
@@ -1705,14 +1728,67 @@ llama_expert_cache::~llama_expert_cache() {
     ggml_cpu_clear_mmid_slot_tables_all(); // pool buffers are about to die
     {
         std::lock_guard<std::mutex> lk(m);
+        // [CGC 2026-09-13] `resident` used to print total_bytes, which is the L3 blob-map
+        // accounting. The L4 path adopts its pool regions from the expert tensors and never
+        // touches the blob map, so every L4 run reported resident=0.00 MiB while an 8 GiB pool
+        // was fully in use -- precisely the number you need when reasoning about RAM. Use the
+        // blob accounting when it is live, otherwise the L4 pool's real occupancy
+        // (filled slots x that layer's per-slot stride over the FFN kinds).
+        double resident_mib = total_bytes / 1024.0 / 1024.0;
+        if (resident_mib == 0.0 && !pool_ext.empty()) {
+            for (size_t l = 0; l < slot_owner.size(); ++l) {
+                size_t occupied = 0;
+                for (size_t s = 0; s < slot_owner[l].size(); ++s) {
+                    if (slot_owner[l][s] >= 0) {
+                        ++occupied;
+                    }
+                }
+                if (occupied == 0 || l >= pool_ext_stride.size()) {
+                    continue;
+                }
+                size_t per_slot = 0;
+                for (size_t k = 0; k < pool_ext_stride[l].size(); ++k) {
+                    per_slot += pool_ext_stride[l][k];
+                }
+                resident_mib += (double) occupied * (double) per_slot / 1024.0 / 1024.0;
+            }
+        }
         fprintf(stderr, "llama_expert_cache: final stats: runtime requests=%zu hits=%zu misses=%zu (hit rate %.1f%%)  prewarm req=%zu hit=%zu miss=%zu  resident=%.2f MiB file_reads=%zu pread_usec=%llu fill_batch_usec=%llu prefetch=%zu/%zu\n",
                 n_requests, n_hits, n_misses,
                 n_requests ? 100.0 * (double) n_hits / (double) n_requests : 0.0,
                 n_prewarm_requests, n_prewarm_hits, n_prewarm_misses,
-                total_bytes / 1024.0 / 1024.0, n_reads.load(std::memory_order_relaxed),
+                resident_mib, n_reads.load(std::memory_order_relaxed),
                 (unsigned long long) pread_usec.load(std::memory_order_relaxed),
                 (unsigned long long) fill_batch_usec.load(std::memory_order_relaxed),
                 n_prefetch, n_prefetch_dropped);
+        // [CGC miss attribution 2026-09-13] compulsory vs capacity, plus the per-layer check that
+        // actually decides the lever. If a layer's distinct demanded experts fit inside its slot
+        // count, no capacity miss is possible there once warm -> only locality / routing can
+        // help and growing the pool is pure RSS cost. If distinct >> slots, the LRU is thrashing
+        // and capacity IS the lever.
+        if (!n_distinct_demanded.empty()) {
+            const double miss_total = (double) (n_miss_compulsory + n_miss_capacity);
+            uint32_t layers_over = 0, worst_l = 0, worst_d = 0, worst_ns = 0;
+            for (size_t li = 0; li < n_distinct_demanded.size(); ++li) {
+                const uint32_t d  = n_distinct_demanded[li];
+                const uint32_t ns = li < slot_owner.size() ? (uint32_t) slot_owner[li].size() : 0;
+                if (ns > 0 && d > ns) {
+                    ++layers_over;
+                }
+                if (d > worst_d) { worst_d = d; worst_l = (uint32_t) li; worst_ns = ns; }
+            }
+            fprintf(stderr, "llama_expert_cache: miss attribution: compulsory=%zu capacity=%zu (%.1f%% / %.1f%% of %.0f)  evictions=%zu  layers_distinct_over_slots=%u  worst=layer %u distinct=%u slots=%u\n",
+                    n_miss_compulsory, n_miss_capacity,
+                    miss_total > 0.0 ? 100.0 * (double) n_miss_compulsory / miss_total : 0.0,
+                    miss_total > 0.0 ? 100.0 * (double) n_miss_capacity / miss_total : 0.0,
+                    miss_total, n_evictions, layers_over, worst_l, worst_d, worst_ns);
+            if (getenv("LLAMA_EXPERT_CACHE_MISS_ATTR_LAYERS") != nullptr) {
+                for (size_t li = 0; li < n_distinct_demanded.size(); ++li) {
+                    fprintf(stderr, "llama_expert_cache:   miss-attr layer=%zu distinct=%u slots=%zu\n",
+                            li, n_distinct_demanded[li], slot_owner[li].size());
+                }
+            }
+        }
         // [CGC miss-path cost audit 2026-09-13] the number that decides device-vs-cache: the
         // mean run size actually fetched, and the effective rate it was fetched at.
         {
@@ -1770,6 +1846,13 @@ llama_expert_cache::~llama_expert_cache() {
                     n_fast_draft_calls, n_fast_draft_union, n_fast_draft_cold,
                     n_fast_draft_union ? 100.0 * (double) n_fast_draft_cold / (double) n_fast_draft_union : 0.0);
         }
+        // [CGC verify-strict 2026-09-13] Both must be 0 in a healthy run. A nonzero
+        // zero_mapped_selected means a selected expert was read from the reserved ZERO slot, i.e.
+        // its weight contribution was dropped — the pool-size-dependent quality leak. Printed
+        // unconditionally (not env-gated) so it can never be silent again.
+        fprintf(stderr, "llama_expert_cache: verify-strict: refused=%zu  zero_mapped_selected=%zu%s\n",
+                n_verify_strict_refused, n_zero_mapped_selected,
+                n_zero_mapped_selected ? "  <-- QUALITY LEAK: selected expert read as zeros" : "");
         // [CGC MTP Draft Prefetch 2026-09-07] final stats: how many experts were queued for
         // prefetch from draft predictions, and how many of those predictions were actually selected
         // by the verify step (hit) vs wasted (miss). Hit rate should track draft_accept (~92-98%).
@@ -1798,6 +1881,13 @@ llama_expert_cache::~llama_expert_cache() {
                 if (f != nullptr) {
                     double cov_sum = 0.0, cov_min = 1.0e9, cov_max = -1.0;
                     uint32_t cov_n = 0;
+                    // [CGC 2026-09-13] K varies per layer once LAYER_CAPS is set, so the
+                    // uniform-routing baseline is mean(K)/n_expert -- not a constant. The old
+                    // text hard-coded "K/128", which on a 256-expert model halves the stated
+                    // baseline and can make heavy-tailed routing read as diffuse (exactly the
+                    // wrong conclusion, and the one that decides whether to keep optimising
+                    // placement at all).
+                    uint64_t slots_sum = 0;
                     for (uint32_t l = 0; l < freq.size(); ++l) {
                         uint64_t total = 0;
                         for (uint32_t e = 0; e < n_expert; ++e) {
@@ -1827,15 +1917,20 @@ llama_expert_cache::~llama_expert_cache() {
                         const double cov = (double) top / (double) total;
                         cov_sum += cov;
                         cov_n++;
+                        slots_sum += k;
                         cov_min = std::min(cov_min, cov);
                         cov_max = std::max(cov_max, cov);
                     }
                     fclose(f);
-                    fprintf(stderr, "llama_expert_cache: ROUTE-DUMP: %s written (%u layers with routes) coverage: mean=%.1f%% min=%.1f%% max=%.1f%% (uniform-routing baseline = K/128)\n",
+                    const double base_pct = (cov_n && n_expert)
+                        ? 100.0 * (double) slots_sum / (double) cov_n / (double) n_expert : 0.0;
+                    fprintf(stderr, "llama_expert_cache: ROUTE-DUMP: %s written (%u layers with routes) coverage: mean=%.1f%% min=%.1f%% max=%.1f%%  (uniform-routing baseline = mean K/n_expert = %llu/%u = %.1f%%; coverage far above baseline = heavy-tailed routing, placement lever live)\n",
                             dump_path, cov_n,
                             cov_n ? 100.0 * cov_sum / cov_n : 0.0,
                             cov_n ? 100.0 * cov_min : 0.0,
-                            cov_n ? 100.0 * cov_max : 0.0);
+                            cov_n ? 100.0 * cov_max : 0.0,
+                            (unsigned long long) (cov_n ? slots_sum / cov_n : 0), (unsigned) n_expert,
+                            base_pct);
                 } else {
                     fprintf(stderr, "llama_expert_cache: ROUTE-DUMP: open failed: %s\n", dump_path);
                 }
@@ -1898,7 +1993,11 @@ llama_expert_cache::~llama_expert_cache() {
                         fprintf(stderr, "  COUNTERFACTUAL top-K by mass: K=%3u  mass coverage mean=%.1f%% min=%.1f%% max=%.1f%%\n",
                                 ks[ki], 100.0 * cov[ki] / cov_n[ki], 100.0 * cmin[ki], 100.0 * cmax[ki]);
                     }
-                    fprintf(stderr, "  (uniform-routing mass baseline = K/n_expert; per-layer detail in MASSCOV file)\n");
+                    // [CGC 2026-09-13] print the number, not just the formula: this run's live
+                    // per-layer capacity over the model's real expert count.
+                    fprintf(stderr, "  (uniform-routing mass baseline = K/n_expert = %u/%u = %.1f%%; per-layer detail in MASSCOV file)\n",
+                            (unsigned) k_run, (unsigned) n_ex,
+                            n_ex ? 100.0 * (double) k_run / (double) n_ex : 0.0);
                 }
                 const char * mp = getenv("CGC_MASSCOV_DUMP");
                 if (mp && mp[0]) {
@@ -2456,6 +2555,9 @@ llama_expert_cache * llama_expert_cache_init(const llama_model * model, size_t b
             cache->slot_pinned_static[l].assign(ns, 0);
             cache->slot_decode_reserved[l].assign(ns, 0);
         }
+        // [CGC miss attribution 2026-09-13] session-long demand bitmaps (41 x 256 bytes here).
+        cache->ever_loaded.assign(max_layer, std::vector<uint8_t>(cache->n_expert, 0));
+        cache->n_distinct_demanded.assign(max_layer, 0);
         if (getenv("LLAMA_EXPERT_CACHE_PREFETCH_DBG") != nullptr) {
             unsigned busy0 = 0;
             for (uint32_t l = 0; l < max_layer; ++l)

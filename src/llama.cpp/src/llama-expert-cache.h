@@ -206,6 +206,31 @@ struct llama_expert_cache {
     size_t n_requests = 0;
     size_t n_hits     = 0;
     size_t n_misses   = 0;
+    // [CGC miss attribution 2026-09-13] Split every pooled miss by whether this (layer, expert)
+    // has ever been DEMANDED before in this session:
+    //   compulsory = first demand touch. No amount of slots removes it; only a workload with
+    //                less expert diversity, or a resident set chosen a priori (pin/LoRA), can.
+    //   capacity   = demanded once already, so it was resident and then evicted -> this is what
+    //                slots / LRU policy / prefetch can remove.
+    // The ratio is what decides whether the lever is pool capacity or routing locality, and the
+    // existing counters cannot see it: n_evictions counts evictions, but an evicted expert that
+    // is never re-demanded costs nothing, and one that IS re-demanded is exactly a capacity miss.
+    // (The MTP fast path's ZERO-slot path is a third class: it never fills, so its "cold" count
+    // lives in n_fast_cold and is deliberately NOT part of this split.)
+    size_t n_miss_compulsory = 0;
+    size_t n_miss_capacity   = 0;
+    size_t n_evictions       = 0;
+    // [CGC verify-strict 2026-09-13] Ground-truth quality counters. Both must stay 0 in a healthy
+    // run. n_verify_strict_refused counts fast-path steps that were REFUSED because a selected
+    // expert was still cold after the fill attempt (the exact path ran instead), and
+    // n_zero_mapped_selected counts selected experts that were actually read from the reserved
+    // ZERO slot — i.e. whose weight contribution was silently dropped. That second number is
+    // exactly the pool-size-dependent quality leak (7/39 divergence class); it is now counted and
+    // printed instead of being invisible.
+    size_t n_verify_strict_refused = 0;
+    size_t n_zero_mapped_selected  = 0;
+    std::vector<std::vector<uint8_t>> ever_loaded;   // [layer][expert] 1 = demanded at least once
+    std::vector<uint32_t>             n_distinct_demanded; // [layer] distinct experts ever demanded
     // [CGC MTP fast-path telemetry] decode fast path (touch + ZERO-slot): union members examined
     // vs COLD members (slot table == -1 -> ZERO-mapped: that expert's real weight contribution
     // is lost for the step). The final-stats decode/pool hit rate counts only the

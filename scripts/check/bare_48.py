@@ -256,6 +256,27 @@ def score_strict(profile_rules, key, prompt, content, finish, apply_length_overr
 TEMPERATURE = 0.0
 TOP_P = None
 
+# --- Timeout policy -----------------------------------------------------------
+# A flat 120 s per question turns a throughput limit into an apparent quality
+# failure: longform-zh (min 80 chars) and coding (up to 2000) cannot finish inside
+# 120 s at the ~6 t/s this box sustains while streaming experts, so they come back
+# as finish=error with zero output and score FAIL for reasons that have nothing to
+# do with the answer. Derive the budget per profile from that profile's own
+# length_max, at a deliberately pessimistic decode rate, so the number is a floor
+# rather than a fit to one observed run.
+TIMEOUT_BASE = 120.0           # short profiles: never stricter than the historic value
+TIMEOUT_MAX = 900.0            # hard cap so a looping model cannot stall the suite
+TIMEOUT_ASSUMED_TPS = 4.0      # below the measured ~6.3 t/s single-stream decode
+TIMEOUT_PREFILL_S = 45.0       # prefill + first-token latency at a few thousand tokens
+TIMEOUT_CHARS_PER_TOKEN = 1.0  # 1.0 = one token per char (zh-safe upper bound)
+
+
+def timeout_for_profile(rules):
+    """Per-question request timeout, derived from the profile's own length_max."""
+    lmax = rules.get("length_max") or 0
+    budget = TIMEOUT_PREFILL_S + (lmax / TIMEOUT_CHARS_PER_TOKEN) / TIMEOUT_ASSUMED_TPS
+    return round(min(max(TIMEOUT_BASE, budget), TIMEOUT_MAX), 1)
+
 
 def chat_completion(base_url, model, prompt, timeout=120):
     """裸問：純 user message、temp=TEMPERATURE、無拐杖"""
@@ -292,7 +313,8 @@ def chat_completion(base_url, model, prompt, timeout=120):
     return {"content": content, "finish_reason": finish, "elapsed": time.time() - t0}
 
 
-def run_suite(base_url, model, label, max_per_profile=None, dump_full=False):
+def run_suite(base_url, model, label, max_per_profile=None, dump_full=False,
+              only_profiles=None):
     ref = load_reference()
     keys = load_answer_keys()
     profiles = ref["_profiles"]
@@ -312,6 +334,8 @@ def run_suite(base_url, model, label, max_per_profile=None, dump_full=False):
     print(f"{'='*100}\n")
 
     for profile in profiles:
+        if only_profiles and profile not in only_profiles:
+            continue
         profile_rules = {k: v for k, v in ref[profile].items() if k != "prompts"}
         prompt_keys = keys.get(profile, [])
         prompts = ref[profile]["prompts"]
@@ -325,8 +349,12 @@ def run_suite(base_url, model, label, max_per_profile=None, dump_full=False):
         prof_pass = {"legacy": 0, "core": 0, "strict": 0}
         profile_results = []
 
+        prof_timeout = timeout_for_profile(profile_rules)
+        print(f"  -- {profile}: length_max={profile_rules.get('length_max')}"
+              f" → timeout {prof_timeout:.0f}s")
+
         for i, prompt in enumerate(prompts):
-            resp = chat_completion(base_url, model, prompt)
+            resp = chat_completion(base_url, model, prompt, timeout=prof_timeout)
             content = resp["content"]
             finish = resp["finish_reason"]
             elapsed = resp["elapsed"]
@@ -354,6 +382,10 @@ def run_suite(base_url, model, label, max_per_profile=None, dump_full=False):
             flags = []
             if not content.strip():
                 flags.append("EMPTY")
+            # finish=error at the ceiling is a budget miss, not a wrong answer —
+            # keep it visible so a timeout can never be read as a model failure.
+            if finish == "error" and elapsed >= prof_timeout * 0.95:
+                flags.append("TIMEOUT")
             if "```" in content and content.count("```") >= 4:
                 flags.append("FENCE_LOOP")
             echoed, echo_why = detect_echo(prompt, content)
@@ -369,6 +401,7 @@ def run_suite(base_url, model, label, max_per_profile=None, dump_full=False):
                 "new": {"passed": st_ok, "fail": st_checks},
                 "finish_reason": finish,
                 "elapsed_s": round(elapsed, 1),
+                "timeout_s": prof_timeout,
                 "output_len": len(content),
                 "novel_chars": nv,
                 "flags": flags,
@@ -453,6 +486,16 @@ def run_suite(base_url, model, label, max_per_profile=None, dump_full=False):
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "temperature": TEMPERATURE,
         "top_p": TOP_P,
+        "timeout_policy": {
+            "base_s": TIMEOUT_BASE,
+            "max_s": TIMEOUT_MAX,
+            "assumed_tps": TIMEOUT_ASSUMED_TPS,
+            "prefill_s": TIMEOUT_PREFILL_S,
+            "chars_per_token": TIMEOUT_CHARS_PER_TOKEN,
+            "rule": "min(max(base, prefill + length_max/chars_per_token/assumed_tps), max)",
+            "per_profile": {p: timeout_for_profile(
+                {k: v for k, v in ref[p].items() if k != "prompts"}) for p in results},
+        },
         "full_outputs_stored": dump_full,
         "scales": {
             "old": "legacy flat required_any (37/48-baseline ruler, unchanged)",
@@ -576,11 +619,25 @@ def main():
                         help="把每題完整輸出寫進結果 JSON。沒有全文就無法在評分器改版後回頭重評，建議開。")
     parser.add_argument("--selftest-echo", action="store_true",
                         help="不需 server：把每題 prompt 當答案餵回兩把尺，斷言新尺 0 PASS")
+    parser.add_argument("--profiles", default=None,
+                        help="只跑指定 profile（逗號分隔）；預設全部。長跑時可分段續跑。")
+    parser.add_argument("--timeout", type=float, default=None,
+                        help="短題基準 timeout 秒數（預設 120）；長題仍由 length_max 推導")
+    parser.add_argument("--timeout-max", type=float, default=None,
+                        help="單題 timeout 上限秒數（預設 900）")
+    parser.add_argument("--assumed-tps", type=float, default=None,
+                        help="推導 timeout 用的悲觀 decode 速率（預設 4.0 t/s）")
     parser.add_argument("--compare", nargs=2, metavar=("FILE_A", "FILE_B"), help="對比兩個結果檔")
     args = parser.parse_args()
 
-    global TEMPERATURE, TOP_P
+    global TEMPERATURE, TOP_P, TIMEOUT_BASE, TIMEOUT_MAX, TIMEOUT_ASSUMED_TPS
     TEMPERATURE, TOP_P = args.temperature, args.top_p
+    if args.timeout is not None:
+        TIMEOUT_BASE = args.timeout
+    if args.timeout_max is not None:
+        TIMEOUT_MAX = args.timeout_max
+    if args.assumed_tps is not None:
+        TIMEOUT_ASSUMED_TPS = args.assumed_tps
 
     if args.selftest_echo:
         sys.exit(selftest_echo())
@@ -589,8 +646,9 @@ def main():
         compare_results(args.compare[0], args.compare[1])
         return
 
+    only = [p.strip() for p in args.profiles.split(",")] if args.profiles else None
     summary = run_suite(args.base_url, args.model, args.label, args.max_per_profile,
-                        dump_full=args.dump_full)
+                        dump_full=args.dump_full, only_profiles=only)
 
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:

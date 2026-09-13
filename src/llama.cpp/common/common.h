@@ -330,6 +330,15 @@ struct common_params_speculative_draft {
 
     bool backend_sampling = true; // offload draft sampling to the backend (default: on)
 
+    // [CGC MTP sampler parity 2026-09-13] The TARGET's sampling config, handed down from the
+    // server so the draft chain can be built from exactly what the target chain is built from
+    // (server-context.cpp builds the target with common_sampler_init(model_tgt, task.params
+    // .sampling)). Previously the draft chain was hard-coded to {TOP_K, top_k=10} -- no temp,
+    // no top_p, no repeat penalty -- so under the production recipe (temp 0.4 / top_p 0.8 /
+    // repeat-penalty 1.3) the draft was drawn from a distribution the target never samples
+    // from. Consumed only when CGC_MTP_SAMPLER_PARITY is set.
+    common_params_sampling sampling;
+
     common_params_model mparams;
 
     llama_context * ctx_tgt = nullptr;
