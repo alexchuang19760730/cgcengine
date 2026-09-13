@@ -2023,6 +2023,24 @@ struct ggml_metal_buffer_id ggml_metal_buffer_get_id(ggml_metal_buffer_t buf, co
         }
     }
 
+    // [CGC M1 Metal slab 2026-09-14] The range-check operands, so a nil is attributable instead of
+    // guessed. Inert unless CGC_METAL_DBG=1; capped so a systematic failure prints a sample.
+    if (getenv("CGC_METAL_DBG") != NULL) {
+        static int cgc_metal_dbg_n = 0;
+        if (cgc_metal_dbg_n < 24) {
+            cgc_metal_dbg_n++;
+            fprintf(stderr,
+                    "CGC-METAL-NIL: %s buf=%p n_buffers=%d b0data=%p b0size=%zu tdata=%p tbuf=%p "
+                    "tsize=%zu ne=[%lld,%lld,%lld] tview_src=%p\n",
+                    t->name, (void *) buf, buf->n_buffers,
+                    buf->n_buffers > 0 ? (void *) buf->buffers[0].data : NULL,
+                    buf->n_buffers > 0 ? (size_t) buf->buffers[0].size : 0,
+                    t->data, (void *) t->buffer, (size_t) tsize,
+                    (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2],
+                    t->view_src);
+        }
+    }
+
     GGML_LOG_ERROR("%s: error: tensor '%s' buffer is nil\n", __func__, t->name);
 
     return res;

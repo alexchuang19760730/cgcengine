@@ -1,0 +1,206 @@
+{
+  "block_count": 41,
+  "degenerate": {},
+  "gguf": "models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf",
+  "gguf_bytes": 13663116512,
+  "head_bytes": 734844928,
+  "head_layer": 40,
+  "identity": "219b27c4f9eebc758d5341697f0d22cb4d35dc0800c4bf36ddbb62b46ae496ed",
+  "n_tensors": 21,
+  "schema": "cgc.mtp_head_identity/1",
+  "tensors": {
+    "blk.40.attn_k.weight": {
+      "nbytes": 557056,
+      "sha256": "5481b40e64cdaf0c65962baf47474cd4a7b84ddbc23537706ae938ac77476aff",
+      "shape": [
+        2048,
+        512
+      ],
+      "type": "IQ4_XS"
+    },
+    "blk.40.attn_k_norm.weight": {
+      "nbytes": 1024,
+      "sha256": "ff4dcaa69c46276d3d4de2438de42aefc2ac4636332376d22c7f9c94064bc597",
+      "shape": [
+        256
+      ],
+      "type": "F32"
+    },
+    "blk.40.attn_norm.weight": {
+      "nbytes": 8192,
+      "sha256": "d19fb0a43d49e4a2690091b383e16e3b005dc11e308cc8ca5f9fdb4f17909a6a",
+      "shape": [
+        2048
+      ],
+      "type": "F32"
+    },
+    "blk.40.attn_output.weight": {
+      "nbytes": 4456448,
+      "sha256": "0ea08b01597202aed44a041db9ed47f456a1e2753cb47f7cf88c3b85bafe2e74",
+      "shape": [
+        4096,
+        2048
+      ],
+      "type": "IQ4_XS"
+    },
+    "blk.40.attn_q.weight": {
+      "nbytes": 8912896,
+      "sha256": "2f45f76175bd45a9333966b3148b4407870471c0275ed4672ea8c29601c04a71",
+      "shape": [
+        2048,
+        8192
+      ],
+      "type": "IQ4_XS"
+    },
+    "blk.40.attn_q_norm.weight": {
+      "nbytes": 1024,
+      "sha256": "b4e21f652c5ab87f50be67a49ee984f3d67f7742c1ada7660822cb31f57db13b",
+      "shape": [
+        256
+      ],
+      "type": "F32"
+    },
+    "blk.40.attn_v.weight": {
+      "nbytes": 557056,
+      "sha256": "77ab4ed30165b95b236037ced2b8e27b35dc4d8ae29f87c6c0df20865005e384",
+      "shape": [
+        2048,
+        512
+      ],
+      "type": "IQ4_XS"
+    },
+    "blk.40.ffn_down_exps.weight": {
+      "nbytes": 115343360,
+      "sha256": "4d9066389360aabee8a52c5c065159ad85bd1a3cd877ce73b929dd8a719bfec3",
+      "shape": [
+        512,
+        2048,
+        256
+      ],
+      "type": "Q3_K"
+    },
+    "blk.40.ffn_down_shexp.weight": {
+      "nbytes": 557056,
+      "sha256": "0af95d4f3032d11ed27fe52cf2c4c4b1754e3f9a01397cd17c6987a4f7333764",
+      "shape": [
+        512,
+        2048
+      ],
+      "type": "IQ4_XS"
+    },
+    "blk.40.ffn_gate_exps.weight": {
+      "nbytes": 88080384,
+      "sha256": "58f3901cc97900a8d267bbcac7a30ec29c68b1c9a3b4099d826055c4e10eb2ec",
+      "shape": [
+        2048,
+        512,
+        256
+      ],
+      "type": "Q2_K"
+    },
+    "blk.40.ffn_gate_inp.weight": {
+      "nbytes": 1048576,
+      "sha256": "ed592b6a2138228dc40dacc96179ce0c657ebd5c55c92476938c4eb0ede9108c",
+      "shape": [
+        2048,
+        256
+      ],
+      "type": "BF16"
+    },
+    "blk.40.ffn_gate_inp_shexp.weight": {
+      "nbytes": 4096,
+      "sha256": "6cf70655851eae34334fc252072d3d872d908b6ea2479ac45676e667ded61c2e",
+      "shape": [
+        2048
+      ],
+      "type": "BF16"
+    },
+    "blk.40.ffn_gate_shexp.weight": {
+      "nbytes": 557056,
+      "sha256": "1bb4fe97d8ea4c725a10da142a9ba2ad86306adbf9177f81abbe727f7d6b1b06",
+      "shape": [
+        2048,
+        512
+      ],
+      "type": "IQ4_XS"
+    },
+    "blk.40.ffn_up_exps.weight": {
+      "nbytes": 88080384,
+      "sha256": "53d78f47cf099ac17c5f2b14e3245330646b13924d84832e388f7efcc8fda98c",
+      "shape": [
+        2048,
+        512,
+        256
+      ],
+      "type": "Q2_K"
+    },
+    "blk.40.ffn_up_shexp.weight": {
+      "nbytes": 557056,
+      "sha256": "6d5e3387ecb1a8f99b763c50e08267de165803815ca9ec31516b761353a89d1f",
+      "shape": [
+        2048,
+        512
+      ],
+      "type": "IQ4_XS"
+    },
+    "blk.40.nextn.eh_proj.weight": {
+      "nbytes": 8912896,
+      "sha256": "03487220d40e35dcf441ba4ea7ee94ce6cfc13e1983b020cdf6ca29decd10854",
+      "shape": [
+        4096,
+        2048
+      ],
+      "type": "Q8_0"
+    },
+    "blk.40.nextn.enorm.weight": {
+      "nbytes": 8192,
+      "sha256": "0a4310389073ed444876ec823dd27ca3029dc30aeb84487a13b6de4b90ed7717",
+      "shape": [
+        2048
+      ],
+      "type": "F32"
+    },
+    "blk.40.nextn.hnorm.weight": {
+      "nbytes": 8192,
+      "sha256": "6dda2c53989ed9a86757bdccf4427ac84f38c85a1850f5fe04ba5fbdfcb20a1b",
+      "shape": [
+        2048
+      ],
+      "type": "F32"
+    },
+    "blk.40.nextn.shared_head_norm.weight": {
+      "nbytes": 8192,
+      "sha256": "5fb1b8b3a994fa6a2adb1fd56d660d2ce2cf317e842a311db19e01ded3d27e1b",
+      "shape": [
+        2048
+      ],
+      "type": "F32"
+    },
+    "blk.40.post_attention_norm.weight": {
+      "nbytes": 8192,
+      "sha256": "c0eb303e03d76e7f7636fc7f178f9d5d4d61297d086e90e26d5eadb89700622c",
+      "shape": [
+        2048
+      ],
+      "type": "F32"
+    },
+    "output.weight": {
+      "nbytes": 417177600,
+      "sha256": "122386a599833ffec3a266e48dd8a90aedc65e24c31323ce2388f40d7cc7b30c",
+      "shape": [
+        2048,
+        248320
+      ],
+      "type": "Q6_K"
+    }
+  },
+  "types": {
+    "BF16": 2,
+    "F32": 7,
+    "IQ4_XS": 7,
+    "Q2_K": 2,
+    "Q3_K": 1,
+    "Q6_K": 1,
+    "Q8_0": 1
+  }
+}

@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Roadmap — Prefill 250 t/s · Decode 25 t/s · 2026-09-14</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans TC', sans-serif;
+    background: #0f1117;
+    color: #e4e4e7;
+    line-height: 1.7;
+    padding: 20px;
+  }
+  .container { max-width: 1200px; margin: 0 auto; }
+  
+  /* Header */
+  .header {
+    background: linear-gradient(135deg, #1e3a5f 0%, #0f1117 100%);
+    border-radius: 16px;
+    padding: 40px;
+    margin-bottom: 30px;
+    border: 1px solid #2d3748;
+  }
+  .header h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    background: linear-gradient(90deg, #60a5fa, #a78bfa);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 10px;
+  }
+  .header .subtitle {
+    color: #9ca3af;
+    font-size: 1.1em;
+    margin-bottom: 20px;
+  }
+  .header .meta {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+  .header .meta-item {
+    background: rgba(255,255,255,0.05);
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 0.9em;
+    color: #d1d5db;
+  }
+  .header .meta-item strong { color: #60a5fa; }
+
+  /* Navigation */
+  .nav {
+    background: #1a1d29;
+    border-radius: 12px;
+    padding: 16px 24px;
+    margin-bottom: 30px;
+    border: 1px solid #2d3748;
+    position: sticky;
+    top: 10px;
+    z-index: 100;
+  }
+  .nav ul {
+    list-style: none;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .nav a {
+    color: #9ca3af;
+    text-decoration: none;
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 0.9em;
+    transition: all 0.2s;
+  }
+  .nav a:hover {
+    background: #2d3748;
+    color: #e4e4e7;
+  }
+
+  /* Section */
+  .section {
+    background: #1a1d29;
+    border-radius: 12px;
+    padding: 30px;
+    margin-bottom: 24px;
+    border: 1px solid #2d3748;
+  }
+  .section h2 {
+    font-size: 1.6em;
+    color: #60a5fa;
+    margin-bottom: 20px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid #2d3748;
+  }
+  .section h3 {
+    font-size: 1.25em;
+    color: #a78bfa;
+    margin: 20px 0 12px;
+  }
+  .section h4 {
+    font-size: 1.1em;
+    color: #fbbf24;
+    margin: 16px 0 8px;
+  }
+  .section p { margin-bottom: 12px; color: #d1d5db; }
+  .section ul, .section ol { margin: 12px 0 12px 24px; }
+  .section li { margin-bottom: 8px; color: #d1d5db; }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 0.9em;
+  }
+  th, td {
+    padding: 12px 14px;
+    text-align: left;
+    border-bottom: 1px solid #2d3748;
+  }
+  th {
+    background: #2d3748;
+    color: #60a5fa;
+    font-weight: 600;
+  }
+  tr:hover { background: rgba(96, 165, 250, 0.05); }
+
+  /* Status badges */
+  .badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 0.8em;
+    font-weight: 600;
+  }
+  .badge-success { background: #065f46; color: #6ee7b7; }
+  .badge-warning { background: #78350f; color: #fcd34d; }
+  .badge-danger { background: #7f1d1d; color: #fca5a5; }
+  .badge-info { background: #1e3a5f; color: #93c5fd; }
+
+  /* Milestone cards */
+  .milestone {
+    background: #0f1117;
+    border-radius: 10px;
+    padding: 24px;
+    margin: 16px 0;
+    border-left: 4px solid #60a5fa;
+  }
+  .milestone.m0 { border-left-color: #6b7280; }
+  .milestone.m1 { border-left-color: #ef4444; }
+  .milestone.m2 { border-left-color: #10b981; }
+  .milestone.m3 { border-left-color: #f59e0b; }
+  .milestone.m4 { border-left-color: #8b5cf6; }
+  .milestone.m5 { border-left-color: #6b7280; }
+  .milestone.m6 { border-left-color: #06b6d4; }
+  
+  .milestone-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .milestone-title {
+    font-size: 1.3em;
+    font-weight: 700;
+  }
+  .milestone-meta {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  /* Code blocks */
+  pre {
+    background: #0f1117;
+    border: 1px solid #2d3748;
+    border-radius: 8px;
+    padding: 16px;
+    overflow-x: auto;
+    margin: 12px 0;
+    font-size: 0.85em;
+    line-height: 1.5;
+  }
+  code {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    color: #fbbf24;
+  }
+  pre code { color: #d1d5db; }
+
+  /* Highlight box */
+  .highlight {
+    background: linear-gradient(135deg, rgba(96, 165, 250, 0.1) 0%, rgba(167, 139, 250, 0.1) 100%);
+    border: 1px solid #3b82f6;
+    border-radius: 10px;
+    padding: 20px;
+    margin: 16px 0;
+  }
+  .highlight strong { color: #60a5fa; }
+
+  /* Warning box */
+  .warning {
+    background: rgba(251, 191, 36, 0.1);
+    border: 1px solid #f59e0b;
+    border-radius: 10px;
+    padding: 20px;
+    margin: 16px 0;
+  }
+  .warning strong { color: #fbbf24; }
+
+  /* Dependency graph */
+  .dep-graph {
+    background: #0f1117;
+    border-radius: 10px;
+    padding: 24px;
+    text-align: center;
+    font-family: 'SF Mono', monospace;
+    font-size: 0.9em;
+    line-height: 2;
+    color: #9ca3af;
+    overflow-x: auto;
+  }
+  .dep-graph .node {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 6px;
+    margin: 2px;
+    font-weight: 600;
+  }
+  .dep-graph .node.m0 { background: #374151; color: #d1d5db; }
+  .dep-graph .node.m1 { background: #7f1d1d; color: #fca5a5; }
+  .dep-graph .node.m2 { background: #065f46; color: #6ee7b7; }
+  .dep-graph .node.m3 { background: #78350f; color: #fcd34d; }
+  .dep-graph .node.m4 { background: #4c1d95; color: #c4b5fd; }
+  .dep-graph .node.m5 { background: #374151; color: #9ca3af; }
+  .dep-graph .node.m6 { background: #164e63; color: #67e8f9; }
+
+  /* Two columns */
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin: 16px 0;
+  }
+  @media (max-width: 768px) {
+    .two-col { grid-template-columns: 1fr; }
+    .header h1 { font-size: 1.6em; }
+    .header { padding: 24px; }
+    .section { padding: 20px; }
+  }
+
+  /* Footer */
+  .footer {
+    text-align: center;
+    padding: 30px;
+    color: #6b7280;
+    font-size: 0.9em;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- Header -->
+<div class="header">
+  <h1>Roadmap — Prefill 250 t/s · Decode 25 t/s</h1>
+  <div class="subtitle">CGC MoE Engine 效能優化路線圖 · 每個里程碑維持 M1/M2/M3 bit-identical</div>
+  <div class="meta">
+    <div class="meta-item"><strong>日期：</strong>2026-09-14</div>
+    <div class="meta-item"><strong>分支：</strong>demo/sweet-spot-windows-fix</div>
+    <div class="meta-item"><strong>機器：</strong>MacBook Air M4 16GB</div>
+    <div class="meta-item"><strong>模型：</strong>Qwen3.6-35B-A3B (IQ3_XXS / IQ4_XS)</div>
+    <div class="meta-item"><strong>M1 數值閘門：</strong>2/4/6/8/10 GiB = 117/117 ✅</div>
+    <div class="meta-item"><strong>union-routable：</strong>PASS（mode=gather）✅</div>
+    <div class="meta-item"><strong>M2：</strong>未開始 ⏳</div>
+  </div>
+</div>
+
+<!-- Navigation -->
+<div class="nav">
+  <ul>
+    <li><a href="#overview">總覽</a></li>
+    <li><a href="#walls">三面牆</a></li>
+    <li><a href="#gates">不變閘門</a></li>
+    <li><a href="#m0">M0 量測</a></li>
+    <li><a href="#m1">M1 解耦 ★</a></li>
+    <li><a href="#m2">M2 Prefill</a></li>
+    <li><a href="#m3">M3 Decode</a></li>
+    <li><a href="#m4">M4 MTP</a></li>
+    <li><a href="#m5">M5 Prerouter</a></li>
+    <li><a href="#m6">M6 量化</a></li>
+    <li><a href="#verification">驗證結果</a></li>
+    <li><a href="#coverage">覆蓋度</a></li>
+    <li><a href="#probability">成功機率</a></li>
+  </ul>
+</div>
+
+<!-- Overview Section -->
+<div class="section" id="overview">
+  <h2>📊 總覽</h2>
+  <p>這份 roadmap 的目標是在 <strong>16GB 記憶體</strong>的機器上，讓 35B MoE 模型達到 <strong>prefill 250+ t/s</strong> 和 <strong>decode 25+ t/s</strong>，同時在每個里程碑都維持 <strong>M1/M2/M3 bit-identical</strong>。</p>
+  
+  <div class="highlight">
+    <strong>核心洞察：</strong>W3（<code>cap × top_k ≤ usable slots</code>）是總開關，它同時造成 prefill 無法批次、以及 MTP verify 拿不到紅利。所以 <strong>M1 是所有事情的依賴來源</strong>，其他里程碑都不能繞過它。
+  </div>
+
+  <h3>依賴與排序</h3>
+  <div class="dep-graph">
+    <span class="node m0">M0 量測</span> → 
+    <span class="node m1">M1 解耦 ★最關鍵</span> → 
+    <span class="node m2">M2 Prefill</span> + 
+    <span class="node m3">M3 Decode</span> → 
+    <span class="node m4">M4 MTP</span><br>
+    <span class="node m6">M6 量化（可平行）</span> &nbsp;&nbsp;
+    <span class="node m5">M5 Prerouter（可選，最後）</span>
+  </div>
+</div>
+
+<!-- Three Walls Section -->
+<div class="section" id="walls">
+  <h2>🧱 這份計畫要解的三面牆</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>牆</th>
+        <th>內容</th>
+        <th>現在的位置</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>W1 頻寬天花板</strong></td>
+        <td><code>t/s = 頻寬 ÷ bytes/token</code>，bytes/token 由「層數 × top_k × per_expert」決定</td>
+        <td>decode：Edge0-int4 <strong>580 MB/tok</strong>、Nail-IQ3 <strong>368 MB/tok</strong></td>
+      </tr>
+      <tr>
+        <td><strong>W2 每 token 計算</strong></td>
+        <td>T=1 是 ~100 ms/token，與 I/O 幾乎無關</td>
+        <td>MTP 額外成本的 <strong>84%</strong> 在這裡</td>
+      </tr>
+      <tr>
+        <td><strong>W3 cap × top_k ≤ usable slots</strong></td>
+        <td>pool 用「縮小 expert tensor」實作 → ubatch 被鎖在 8</td>
+        <td>union 只有 28.7/256 = 11% → <strong>沒有 batching 紅利</strong></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- Gates Section -->
+<div class="section" id="gates">
+  <h2>🚪 每個里程碑都必須通過的「不變閘門」</h2>
+  <p>每個里程碑結尾都要重跑，缺一不可：</p>
+  <ol>
+    <li><strong>oracle M1</strong>（bit-identical logits）<strong>= 100%</strong>，且與 M2 分開報告</li>
+    <li><strong>oracle M2</strong>（argmax 一致）<strong>= 100%</strong></li>
+    <li><strong>oracle M3</strong>（top-k 集合一致）<strong>= 100%</strong></li>
+    <li>template（closed scaffold）· 5. buffer-nil · 6. preflight（<code>knifeedge_matrix.py --gates-only</code>）</li>
+    <li><strong>pool-size sweep 4 / 6 / 8 / 10 GiB 全部 M1 = 100%</strong>，而參考 oracle 必須用當下的 binary 重生</li>
+    <li><strong>RSS 必須在 4 / 6 / 8 / 10 GiB 四個 pool 都量</strong>，且 slab/scratch 分開報</li>
+  </ol>
+  <div class="warning">
+    <strong>重要原則：</strong>每個里程碑的 M1 失敗都優先於該里程碑的速度數字。這個專案的歷史就是「先有數字、後發現數字是假的」，所以閘門先於產出。
+  </div>
+</div>
+
+<!-- M0 Section -->
+<div class="section" id="m0">
+  <div class="milestone m0">
+    <div class="milestone-header">
+      <div class="milestone-title">M0 — 先把量測能力建起來</div>
+      <div class="milestone-meta">
+        <span class="badge badge-info">前置</span>
+        <span class="badge badge-success">風險：低</span>
+        <span class="badge badge-info">投入：1-1.5 天</span>
+      </div>
+    </div>
+    <p><strong>目標：</strong>讓「decode 的 100 ms/token 花在哪」變成一個可回答的問題，並讓 M1/M2 harness 能覆蓋 <code>union > slots</code> 這個目前完全沒有被測到的區域。</p>
+    
+    <h4>工作項</h4>
+    <ol>
+      <li><strong>decode 逐層剖面</strong>：把 T=1 的 100 ms/token 拆成 <code>dispatch</code> / <code>gather</code> / <code>eval-sync</code> / <code>attention</code> / <code>MoE-math</code>。最終輸出一張「41 層 × 各項 ms」的表。</li>
+      <li><strong><code>union-fit</code> 閘門語義變更</strong>：現在它是硬性 PASS/FAIL，認證「pool path 不可能被觸發」。解耦之後 <code>union > slots</code> 必須是合法的（走串流），所以改成 <code>union-routable</code>：<code>union ≤ slots</code> 或串流路徑被走過。同時新增一個 <code>union > slots</code> 的 M1/M2 測試案例。</li>
+      <li><strong>重生 8 GiB 參考 oracle</strong> 並更新 sidecar（commit、cap、模型 sha、source digest）。</li>
+    </ol>
+    
+    <h4>離開條件</h4>
+    <ul>
+      <li>一張表，各項相加 = 實測的 ms/token（誤差 ±5%）</li>
+      <li>新增的 <code>union > slots</code> 案例：<strong>M1/M2 目前預期是 FAIL</strong>，並把失敗的 step/層記錄下來 —— 這是交付物，不是障礙</li>
+      <li>新參考 oracle 生效，4/6/8 GiB 對它 M1 = 100%</li>
+    </ul>
+  </div>
+</div>
+
+<!-- M1 Section -->
+<div class="section" id="m1">
+  <div class="milestone m1">
+    <div class="milestone-header">
+      <div class="milestone-title">M1 — 解耦 pool 與圖形（W3）★ 最關鍵</div>
+      <div class="milestone-meta">
+        <span class="badge badge-danger">風險：高</span>
+        <span class="badge badge-info">投入：3-5 天</span>
+        <span class="badge badge-warning">依賴：M0</span>
+        <span class="badge badge-success">數值閘門：已達成（117/117 @ 2/4/6/8/10 GiB）</span>
+      </div>
+    </div>
+    <p><strong>目標：</strong>expert tensor 不再被縮小；pool 變成<strong>獨立的 cache buffer</strong>，只回答「哪些位元組已經在 RAM」；ubatch 寬度不再由 pool 大小決定。</p>
+
+    <div class="highlight">
+      <strong>2026-09-14 實際進度：這個里程碑有一半落地了，而且不是預期的那一半。</strong><br>
+      ✅ <strong>工作項 4（canonical order）證明本來就成立</strong>；<code>union &gt; slots</code> 的數值正確性已修（host gather buffer → Metal slab，468 → 0 次 <code>buffer is nil</code>），
+      並用 2 GiB 那格拉到 <strong>M1/M2/M3 = 117/117</strong>，<code>union-routable</code> 也從 FAIL 變成 <strong>PASS（mode=gather）</strong>。這是 <em>decode 分支</em>。<br>
+      ❌ <strong>工作項 1（loader 全尺寸 expert tensor）與工作項 2（phase split）都還沒動</strong> —— 而 prefill 的 batching 紅利、
+      以及 M2 頼以成立的整層 slab，都靠那兩項。所以 <strong>M1 不能宣告完成</strong>；正確的狀態是「數值地基已驗、架構解耦未做」。
+    </div>
+    
+    <h4>工作項</h4>
+    <ol>
+      <li><strong>loader</strong>：pool 改成獨立配置的 Metal buffer；expert tensor（或它的可用視圖）保持全尺寸 256。</li>
+      <li><strong>graph 按 phase 分流，在建圖前決定</strong>（依 request 的 token 數，<strong>不看常駐</strong>）：
+        <ul>
+          <li><code>T ≥ T_prefill</code>（先用 512 當起點）→ <strong>PREFILL GRAPH</strong>：整層 slab，256 experts</li>
+          <li><code>T ≤ T_decode</code>（16 = <code>floor(slots/top_k)</code> 的上界）→ <strong>DECODE GRAPH</strong>：compacted gather</li>
+        </ul>
+      </li>
+      <li><strong><code>cap</code> 不再是從 slots 推導的常數</strong>：它退化成「decode graph 的寬度上限」。</li>
+      <li><strong>canonical gather order</strong>：compacted 之後的 expert <strong>按 expert id 排序</strong>再進 batched matmul。<strong>這是這個新架構唯一的 M1 陷阱</strong>——slot index 是 pool 相關的，若累加順序跟著 slot 走，換 pool 大小就會改變舍入，M1 直接垮。</li>
+      <li>計數器：<code>resident bytes</code> vs <code>pool capacity</code>、per-layer slots、<code>phase</code>（prefill/decode）每請求各跑幾次。</li>
+    </ol>
+    
+    <h4>離開條件</h4>
+    <table>
+      <thead>
+        <tr><th>閘門</th><th>標準</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>M1 / M2 @ 4/6/8/10 GiB</td><td><strong>100%</strong>，<strong>且包含 <code>union > slots</code> 案例</strong></td></tr>
+        <tr><td><code>union-routable</code></td><td>PASS（串流路徑被走過）</td></tr>
+        <tr><td>prefill chunk 2048</td><td>被接受，無 OOB、無 NaN、無 <code>buffer is nil</code></td></tr>
+        <tr><td>RSS @ 10 GiB</td><td>與現在（9.08 GiB）差 ±0.5 GiB</td></tr>
+        <tr><td>decode 速度</td><td><strong>不得退步</strong>（現在 9.3–10.5 t/s）</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- M2 Section -->
+<div class="section" id="m2">
+  <div class="milestone m2">
+    <div class="milestone-header">
+      <div class="milestone-title">M2 — Prefill 走整層串流（W1 + W3）</div>
+      <div class="milestone-meta">
+        <span class="badge badge-warning">風險：中</span>
+        <span class="badge badge-info">投入：3-4 天</span>
+        <span class="badge badge-warning">依賴：M1</span>
+        <span class="badge badge-danger">狀態：未開始（擋在 M1 工作項 1/2 後面）</span>
+      </div>
+    </div>
+    <p><strong>目標：</strong>prefill 一次性 materialize 整層 slab（常駐的從 pool、其餘逐層順序串流），且算 L 時讀 L+1。</p>
+    
+    <h4>為什麼這條路成立</h4>
+    <p>2048 tokens × top_k 8 = 16384 次抽取分佈在 256 顆上 → <strong>union 飽和到 256</strong>。所以 prefill 的預取是<strong>無條件且 100% 準確的，不需要預測</strong>（prerouter 在 prefill 沒有角色）。實測 cap=8 時 union 只有 28.7/256 = 11%，正是同一公式的另一端。</p>
+    
+    <h4>工作項</h4>
+    <ol>
+      <li><strong>整層 slab 讀取</strong>：按 <code>(proj, part)</code> 對整層發批次 <code>preadv</code>，而不是 9 tensor × 145 expert 各自一次（這是「245 MB/s → 823 MB/s」那條未完成的路）。</li>
+      <li><strong>double-buffer</strong>：算 layer L 的 FFN 時讀 L+1（prefill 沒有依賴問題，所以可以無條件做）。</li>
+      <li>量測：<code>bytes/token</code>、裝置 GB/s、<code>load_wall</code>、compute ms/token。</li>
+    </ol>
+    
+    <h4>離開條件（Nail IQ3_XXS 幾何：11.92 GB expert set、1.122 MB/expert）</h4>
+    <table>
+      <thead>
+        <tr><th>量</th><th>標準</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>bytes/token @ chunk 2048</td><td><strong>≤ 3.0 MB</strong>（理論 2.79：只讀非常駐的 48%）</td></tr>
+        <tr><td>裝置持續速率</td><td><strong>≥ 1.0 GB/s</strong></td></tr>
+        <tr><td>I/O 與 compute 重疊</td><td>請求 wall < I/O + compute（證明有 overlap）</td></tr>
+        <tr><td>prefill t/s</td><td>記錄實測值；<strong>250 t/s 可達/不可達要誠實寫明</strong></td></tr>
+        <tr><td>M1 / M2</td><td><strong>100%</strong>（prefill 因為永遠 materialize 256，不變性是建構保證）</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- M3 Section -->
+<div class="section" id="m3">
+  <div class="milestone m3">
+    <div class="milestone-header">
+      <div class="milestone-title">M3 — Decode 的 compute 削減（W2）★ 最可能失敗</div>
+      <div class="milestone-meta">
+        <span class="badge badge-danger">風險：高</span>
+        <span class="badge badge-info">投入：2-3 天</span>
+        <span class="badge badge-warning">依賴：M0、M1</span>
+      </div>
+    </div>
+    <p><strong>目標：</strong>找出 <code>100 ms/token → 40 ms/token</code> 的那 <strong>2.4×</strong>。</p>
+    
+    <h4>為什麼這一格是關鍵</h4>
+    <ul>
+      <li>pool 從 143 → 179 slots 讓 I/O 少 3.7×，<strong>decode 只 +9%</strong> → I/O 不是瓶頸。</li>
+      <li>MTP-on 的 profile：draft head 只佔多出來成本的 16%，<strong>84% 是 verify 批量拿不到批量紅利</strong>（T=1 是 92 ms/token、T=2.6 是 104 ms/token）。</li>
+      <li>那筆 run 的 pool hit 是 87.3%，而 <code>pread</code> 只用到 <strong>8 條 worker 裡的 1 條</strong> → 加預取沒用。</li>
+    </ul>
+    
+    <h4>工作項（按 M0 剖面的結果排序，最貴的先動）</h4>
+    <ol>
+      <li>消除 per-layer 的 <code>eval()</code> 同步</li>
+      <li>MoE gather 的融合</li>
+      <li><strong>batched-union gather</strong>：一次收 union、一次 batched matmul（現在是 T 次各自的 gather）</li>
+    </ol>
+    
+    <h4>離開條件</h4>
+    <ul>
+      <li><strong>成功</strong>：decode（MTP off）≥ <strong>15 t/s</strong>，且 M1/M2 = 100%</li>
+      <li><strong>失敗</strong>：寫一份「找不到路」的結論，<strong>附上 M0 的剖面表當證據</strong>。這個里程碑允許以否定結果結束，但<strong>不允許用沒拆開的數字下去做決策</strong></li>
+    </ul>
+  </div>
+</div>
+
+<!-- M4 Section -->
+<div class="section" id="m4">
+  <div class="milestone m4">
+    <div class="milestone-header">
+      <div class="milestone-title">M4 — MTP 拒絕取樣 + verify 真批次（W2）</div>
+      <div class="milestone-meta">
+        <span class="badge badge-warning">風險：中</span>
+        <span class="badge badge-info">投入：2-3 天</span>
+        <span class="badge badge-warning">依賴：M1、M3</span>
+      </div>
+    </div>
+    <p><strong>目標：</strong>accept 從 19.9% 拉到 60–80%，並讓 verify 真的吃到批量紅利。</p>
+    
+    <h4>工作項</h4>
+    <ol>
+      <li><strong>拒絕取樣</strong>：以 <code>min(1, p_t/p_d)</code> 接受、被拒時從殘差 <code>max(0, p_t − p_d)</code> 重抽。現在的規則是<strong>精確相等</strong>（<code>sampling.cpp</code>），所以 <code>accept = Σ p_t·p_d</code>，而這在 <code>p_d</code> 是 one-hot(argmax) 時<strong>最大</strong> —— 這解釋了為什麼改 draft 取樣器量到 18.3% → 18.1%（<strong>沒有改善，而且不可能改善</strong>）。拒絕取樣是前置條件，不是替代品。</li>
+      <li><strong>batched-union gather 套進 verify</strong>（M1 的副產品）。</li>
+      <li>量 accept、tokens/forward、ms/forward 的三段拆解。</li>
+      <li><strong>head 身分與存活閘門（前置條件，2026-09-14 新增）</strong>：每個 artifact 的 MTP head 要有
+        <code>*.mtphead.json</code> sidecar，啟動前用 <code>scripts/check/mtp_head_identity.py check</code> 過閘。
+        這一步不是形式——它已經抓到一個會讓任何 accept 量測變成無意義的缺陷（見離開條件下的註記）。</li>
+    </ol>
+    
+    <h4>離開條件</h4>
+    <ul>
+      <li>accept <strong>≥ 60%</strong>；<strong>MTP-on ≥ MTP-off</strong>（今天是 <strong>1.8× 淨損失</strong>）</li>
+      <li>M1 / M2 = 100% <strong>with MTP ON</strong>（現在 <code>plain_match=False</code> 在四條臂上全部成立）</li>
+      <li><strong>head 閘門 PASS</strong>：<code>mtp_head_identity.py check</code> 對量測用的 artifact 回 0
+        （身分＝sidecar，且無 <code>degenerate</code> 張量）</li>
+    </ul>
+
+    <div class="warning">
+      <strong>⚠ 量測順序的前置阻塞（2026-09-14 實測）：</strong>
+      <code>Edge0-35B-Q4_0-MTP-edge0head.gguf</code> 的 MTP head router
+      （<code>blk.40.ffn_gate_inp.weight</code>，BF16 無損）數值上是死的——
+      min <code>−3.26e−09</code> / max <code>+9.31e−10</code> / std <code>7.74e−12</code>，
+      而另外兩個 artifact 都是 std <code>0.00963</code>、範圍 ±0.14。router 全零 ⇒ 每個 expert 的 logit 相同
+      ⇒ top-k 退化 ⇒ draft 分佈與 target 無關 ⇒ <strong>accept 必然塌成 0</strong>。
+      同一個 artifact 的 <code>blk.40.nextn.shared_head_norm.weight</code> 也少了 loader 的 +1.0 norm shift
+      （min <code>−0.177</code> vs 另兩者的 <code>+0.829</code>，相差恰為 1.0）。
+      <br>所以：<strong>修好這兩個缺陷並重建之前，任何 accept 數字都不成立</strong>；
+      而先前「F16 儲存型別是 0% accept 成因」的假設已被證偽——
+      兩個 Edge0 artifact 的 head 型別表<b>完全相同</b>（BF16=2 F32=7 IQ4_XS=7 Q2_K=2 Q3_K=1 Q4_0=1 Q8_0=1，各 575.8 MiB）。
+      反面則是好消息：<code>Edge0-35B-Q4_0-MTP.gguf</code>（Nail head 移植）對 Nail 載體的每一個無損 head 張量
+      都是 rel_l2 = 0.00000，證明那次移植位元完美——它的 0.81% 純粹是 (base, head) 不匹配。
+      <br>細節與可重跑的證據：<code>docs/MTP_HEAD_PROVENANCE_GATE_2026-09-14.md</code>。
+    </div>
+  </div>
+</div>
+
+<!-- M5 Section -->
+<div class="section" id="m5">
+  <div class="milestone m5">
+    <div class="milestone-header">
+      <div class="milestone-title">M5 — Prerouter 只當預取提示（可選，期望值低）</div>
+      <div class="milestone-meta">
+        <span class="badge badge-info">可選</span>
+        <span class="badge badge-success">風險：低</span>
+        <span class="badge badge-info">投入：2 天</span>
+      </div>
+    </div>
+    
+    <h4>前置結論（已量測）</h4>
+    <ul>
+      <li>placement 天花板 <strong>0.2pp</strong>（mass coverage 90.3% vs 最佳 90.5%）</li>
+      <li><code>start_layer = 7</code> → owner layers 6..38，而 churn 最重的是 <strong>layer 1/2（distinct 250–253/256）</strong>—— <strong>最需要預測的層它沒有 head</strong>。</li>
+      <li>edge0 自己的成績：ON 有 1.5× 但品質 0.3、PREFETCH_ONLY 12/12 bit-identical 但增益未證實、LRU 64 格 / 40 層 = 1.6 格/層 → prefill <code>hits=0</code>。</li>
+    </ul>
+    
+    <h4>工作項</h4>
+    <p>只做 <strong>decode、只做 L+1 的 8 顆、只影響時間</strong>（PREFETCH_ONLY 語義：predictions 永不決定 routing）。量的是 <strong>overlap（ms）</strong>，不是 hit rate。</p>
+    
+    <h4>離開條件</h4>
+    <ul>
+      <li>overlap 增益 ≥ <strong>10%</strong> 才保留；< 10% <strong>記錄為已排除的死路</strong>並把旗標預設關閉</li>
+      <li>M1 / M2 = 100%</li>
+    </ul>
+  </div>
+</div>
+
+<!-- M6 Section -->
+<div class="section" id="m6">
+  <div class="milestone m6">
+    <div class="milestone-header">
+      <div class="milestone-title">M6 — 換量化幾何（W1，不動引擎就有量級）</div>
+      <div class="milestone-meta">
+        <span class="badge badge-success">風險：低</span>
+        <span class="badge badge-info">投入：1-2 天</span>
+        <span class="badge badge-success">可與 M1 平行</span>
+      </div>
+    </div>
+    <p><strong>目標：</strong>per-expert 從 1.769 MB 降到 ~1.122 MB。<strong>這一步同時降低「要讀的」和「要放的」。</strong></p>
+    
+    <table>
+      <thead>
+        <tr><th></th><th>Edge0-int4</th><th>目標（IQ3 級）</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>6 GB pool 的 slots/layer</td><td>85（33% → hit ~61%）</td><td><strong>133（52% → hit ~84%）</strong></td></tr>
+        <tr><td>decode 25 t/s 需要的殘餘頻寬</td><td><strong>5.66 GB/s ✗</strong></td><td><strong>1.47 GB/s ⚠️</strong></td></tr>
+        <tr><td>prefill 250 t/s 需要的殘餘頻寬</td><td>1.51 GB/s（103% of device）</td><td><strong>0.70 GB/s ✅</strong></td></tr>
+      </tbody>
+    </table>
+    
+    <h4>離開條件</h4>
+    <ul>
+      <li><code>verify_edge0_gguf.py</code> 全通（含多層 LoRA 目標）</li>
+      <li>M1 / M2 = 100%（換量化是<strong>換參考</strong>，不是換引擎 → 必須重建 oracle）</li>
+      <li>48 題用<strong>新舊兩把尺</strong>並排報告</li>
+    </ul>
+  </div>
+</div>
+
+<!-- Verification Results Section -->
+<div class="section" id="verification">
+  <h2>🔬 M1 實作與量測結果</h2>
+  <p>日期：2026-09-14 · 分支：demo/sweet-spot-windows-fix · 機器：MacBook Air M4 16GB · 模型：Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS（13.66 GB，<strong>混合量化</strong>）</p>
+
+  <div class="highlight">
+    <strong>結論：M1 的數值閘門已達成。</strong>2/4/6/8/10 GiB 全部 <strong>M1 = M2 = M3 = 117/117</strong>，
+    其中 <strong>2 GiB 是唯一一個 <code>union &gt; slots</code> 的配置</strong>（走 compacted gather 路徑）。
+    也就是說「pool 大小只影響速度、不影響數值」現在有實測支撐，而且參考 oracle 與候選是用<strong>同一顆 binary</strong> 重生、
+    cap 兩側都固定 8（cap 會夾 n_batch，不固定就會把「形狀差異」誤讀成「pool 差異」）。
+  </div>
+
+  <h3>五格掃描（cap = 8 兩側固定；MTP ON；同一顆 GGUF）</h3>
+  <table>
+    <thead>
+      <tr><th>pool</th><th>n_slots</th><th>usable</th><th>union 上限</th><th>實際路徑</th><th><code>buffer is nil</code></th><th>M1 / M2 / M3</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>2 GiB</strong></td><td>35</td><td>34</td><td>64 &gt; 34</td><td><strong>gather（Metal slab）</strong></td><td><strong>0</strong> ✅</td><td><strong>117/117 ✅</strong></td></tr>
+      <tr><td>4 GiB</td><td>71</td><td>70</td><td>64 ≤ 70</td><td>pool</td><td>0 ✅</td><td>117/117 ✅</td></tr>
+      <tr><td>6 GiB</td><td>107</td><td>106</td><td>64 ≤ 106</td><td>pool</td><td>0 ✅</td><td>117/117 ✅</td></tr>
+      <tr><td>8 GiB</td><td>143</td><td>142</td><td>64 ≤ 142</td><td>pool</td><td>0 ✅</td><td><em>參考（同 binary 重生）</em></td></tr>
+      <tr><td>10 GiB</td><td>179</td><td>178</td><td>64 ≤ 178</td><td>pool</td><td>0 ✅</td><td>117/117 ✅</td></tr>
+    </tbody>
+  </table>
+  <p>探針 <code>15+27 等於多少？請只輸出答案</code>：preflight 五格都正確回答 <code>42</code>（<code>echo=False leak=False</code>）。
+  8 GiB 那格是<strong>參考列</strong>，所以「與 8 GiB 一致」在 2/4/6/10 這四格是逐格成立的。</p>
+
+  <div class="highlight">
+    <strong>閘門命令（可重現）：</strong>
+    <code>--models iq3 --pools 2,4,6,10 --pool-cap 8 --oracle-ref Backup/knifeedge_matrix/oracle_iq3_pool8gb.jsonl --gates-only</code><br>
+    <strong><code>--pool-cap 8</code> 是必要的，不是裝飾</strong>：<code>--pool-cap auto</code> 的探針目標是「讓最小的 pool 也走 pool path」，
+    也就是<em>主動把 <code>union &gt; slots</code> 這個 case 挑掉</em> —— 預設值會讓你得到一个全綠、但從未測到該路徑的結果。
+  </div>
+
+  <h3>根因：<code>buffer is nil</code> 是兩個獨立的事實疊在一起</h3>
+  <ol>
+    <li><strong>gather 路徑把 <code>wt-&gt;data</code> 指到 host 的 <code>std::vector</code>。</strong>Metal 解析 tensor 的方式是
+      <code>t-&gt;view_src ? view_src-&gt;buffer : t-&gt;buffer</code> → <code>ggml_metal_buffer_get_id()</code>，純位址區間比對。
+      host 記憶體不落在任何 Metal buffer 的區間內 → 回報 nil（而不是報錯，這是重點：<strong>它不會 abort，它會靜默地讀到 nil</strong>）。</li>
+    <li><strong>只搬 <code>data</code> 不夠。</strong>Metal 用 tensor <em>自己的</em> buffer 查找（不是掃全部緩衝區），所以 <code>wt-&gt;buffer</code> 必須一起搬；
+      而 Metal 的區間檢查用 <code>ggml_nbytes(t)</code>，後者隨 <code>ne[2]</code> 縮放，所以 <code>wt-&gt;ne[2] = union</code> 也必須一起設 ——
+      否則 <code>union &lt; capacity</code> 時仍然 nil、<code>union &gt; capacity</code> 時 <code>mul_mat_id</code> 的 ids 會越界。
+      <strong>三個欄位必須同時移動</strong>，這是第一次修（只搬 <code>data</code>）留下 468 次 nil 的原因。</li>
+  </ol>
+
+  <h3>修正方式</h3>
+  <p>把 host 的 gather buffer 換成 <strong>Metal slab</strong>：用<em>expert tensor 自己的 buft</em> 配置（不是裝置預設，
+  因為 Metal 只在 <code>use_shared_buffers &amp;&amp; shared</code> 時給 host-visible storage，否則 CPU 端填寫會寫進虛擬位址），
+  固定容量 <code>C = cap × top_k = 64</code>（實測的 union 上限，不是平均 28.7），並以 <strong>kind 的最大 stride</strong> 定尺寸。</p>
+  <div class="highlight">
+    <strong><code>C</code> 必須是常數，不能跟 pool 或觀測到的 union 走。</strong>若 slab 容量跟著 pool，
+    需要多趟的 union 其 pass 邊界也會跟著 pool 移動，每個 token 的 sum 就變成 pool 相關的<em>外層</em> sum ——
+    正是這道閘門要抓的失效。也因為 <code>C = 64</code> 且 <code>cap = 8</code>，<code>ceil(64/64) = 1</code>，
+    <strong>§3.2 的 pass loop 在 M1 可證明不需要</strong>（它是 M2 加寬 ubatch 時才需要）。
+  </div>
+
+  <h3>2026-09-13「三項早期驗證」的更正</h3>
+  
+  <table>
+    <thead>
+      <tr><th>2026-09-13 的早期結論</th><th>查證結果</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>測試 1：累加順序按 <strong>slot index</strong>（pool 相關）→ 換 pool size 會改變舍入順序 → M1 直接垮 → 必須實作 <strong>canonical gather order</strong></td>
+        <td><span class="badge badge-success">不成立</span> <strong>順序本來就不是 slot-dependent</strong>：4/6/8 GiB 在<em>這次改動之前</em>就已經逐位元組相同（117/117），
+          而它們的 slot index 完全不同（143/71/107 格、LRU 命中順序各異）。所以「canonical gather order」<strong>不是待辦工作項，而是閘門項</strong> ——
+          現在用 2 GiB 這個 <code>union &gt; slots</code> 的 cell 釘住它。<code>test_canonical_gather.py</code> 找的是不存在的
+          <code>CGC_CANONICAL_GATHER_ORDER</code>，那是 scaffold 不是 test。</td>
+      </tr>
+      <tr>
+        <td>測試 2：<code>union &gt; slots</code> 會 <code>abort()</code>（<code>distinct experts exceed the usable pool slots</code>）</td>
+        <td><span class="badge badge-danger">只在一個分支成立，而且是比較好的那個</span> 那兩個 abort 掛在 <code>if (!in_flight)</code>；
+          實際走到的分支是<strong>靜默算錯</strong>：2 GiB 舊行為 = <strong>468 次 <code>buffer is nil</code></strong>、<strong>M1 2/42</strong>、
+          第 2 步就分歧（該步 <code>sum</code> −335486.28 vs −519561.70，差 <strong>55%</strong>）。
+          <strong>比 abort 糟</strong>，而且不 grep 日誌看不出來。</td>
+      </tr>
+      <tr>
+        <td>測試 3：Metal 可配置 280 MB+ 連續 buffer、整層 batch matmul（256 experts）</td>
+        <td><span class="badge badge-success">有效，且已落地</span> 這是三項裡直接有用的一項 —— 它驗的正是 slab 的硬體前提，
+          現在 <code>C = 64</code> 的 per-kind slab 已在真實路徑上跑起來（見下方幾何表）。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="warning">
+    <strong>為什麼「它會 abort」這句話很危險：</strong>如果照這個假設去排程，結論會是「等 M1 把串流路徑寫出來就好了」。
+    真的事實是<strong>現在這條路會回傳錯誤的數值、而且看起來像品質問題</strong>——2026-09-13 那次「M1 只有 2/42」被讀成
+    「pool 太小難免飄」就是這個。所以順序是：<strong>先讓寬 union 合法（slab），再收緊閘門</strong>。
+  </div>
+  
+  <h4>測試 3：Metal 整層 Slab 可行性</h4>
+  <p><span class="badge badge-success">✅ 全部通過</span></p>
+  <table>
+    <thead>
+      <tr><th>測試項</th><th>結果</th><th>耗時</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>分配 280MB 連續 buffer（256×[1024,512] FP16）</td><td>✅ 成功</td><td>299 ms</td></tr>
+      <tr><td>Batch matmul [256,1024,512] × [256,512,256]</td><td>✅ 成功</td><td>70 ms</td></tr>
+      <tr><td>整層 MoE 三個 proj（gate/up/down），共 768MB</td><td>✅ 成功</td><td>436 ms</td></tr>
+      <tr><td>FFN 計算（8 tokens × 單 expert）</td><td>✅ 成功</td><td>68.6 ms</td></tr>
+      <tr><td>Prefill 整層計算（256 tokens，batch expert）</td><td>✅ 成功</td><td>23.5 ms</td></tr>
+    </tbody>
+  </table>
+  
+  <div class="highlight">
+    <strong>結論：</strong>Metal 硬體完全可以支援整層 slab，prefill 路徑的硬體基礎可行。實際完整尺寸（256 × [2048,512] × FP16 × 3 proj）= ~1.5GB，在 16GB 機器上與 6GB expert pool 共存可行。
+  </div>
+  
+  <h4>更正後的總結</h4>
+  <table>
+    <thead>
+      <tr><th>項目</th><th>狀態</th><th>對 M1 的意義</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>1. Canonical gather order</td><td>✅ 本來就成立（閘門項，非工作項）</td><td>2 GiB 的 <code>union &gt; slots</code> cell = 117/117，它現在被釘住了</td></tr>
+      <tr><td>2. <code>union &gt; slots</code> 數值正確性</td><td>✅ 已修（468 → 0 次 nil）</td><td>「pool 大小只影響速度」的前提<strong>已實測成立</strong></td></tr>
+      <tr><td>3. Metal slab（decode 分支）</td><td>✅ 已實作並通過</td><td>M2 的整層 slab 接的是同一條路（只是 <code>C = 256</code>）</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Slab 幾何（實測，不是估算）</h3>
+  <p>「slab 多大」<strong>不是常數，是模型的函數</strong>：這顆 GGUF 是混合量化，光是它就 8 個 <code>(kind, stride)</code> 組合
+  （gate/up 各 iq2_s|iq3_s|q2_K、down 為 iq3_s|iq4_xs）。所以「每 kind 一個固定大小」的估法在數學上就是不可能的。</p>
+  <table>
+    <thead>
+      <tr><th>kind</th><th>tensor</th><th>出現的型別</th><th>per-expert bytes</th><th>C=64 slab（取該 kind 最大 stride）</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>0</td><td><code>ffn_gate_exps</code></td><td>iq2_s / iq3_s / q2_K</td><td>335,872 / 450,560 / 344,064</td><td><strong>27.5 MiB</strong></td></tr>
+      <tr><td>1</td><td><code>ffn_up_exps</code></td><td>iq2_s / iq3_s / q2_K</td><td>335,872 / 450,560 / 344,064</td><td><strong>27.5 MiB</strong></td></tr>
+      <tr><td>2</td><td><code>ffn_down_exps</code></td><td>iq3_s / iq4_xs</td><td>450,560 / 557,056</td><td><strong>34.0 MiB</strong></td></tr>
+      <tr><td>3</td><td><code>ffn_gate_up_exps</code></td><td><em>不存在</em></td><td>—</td><td>—</td></tr>
+    </tbody>
+  </table>
+  <p>設計採「<strong>每 kind 一個 slab、以該 kind 的最大 stride 定尺寸</strong>」——小 stride 的層可以共用為大 stride 配的 slab，
+  因為 <code>ggml_nbytes = union × 本層 stride ≤ cap × max_stride = 配置大小</code>。這也順帶避開一個真實的 bug：
+  按 <code>(kind, stride)</code> 逐層重配時，舊 slab 會被 free，而其他層的 <code>wt-&gt;buffer</code> 還指在裡面。</p>
+  <div class="warning">
+    <strong>這裡要更正兩個數字，而且是兩個方向都錯：</strong>原 roadmap 寫的「64 × 1.122 MB ≈ 72 MB/kind、四 kind ≈ <strong>288 MB</strong>」偏高約 4 倍，
+    錯在（a）1.122 MB 是<em>三個投影的總和</em>，不是 per-kind 切片；（b）沒有第 4 個 kind。<br>
+    <strong>但實作留下一筆新的待清：</strong>目前 supersede（同 kind 之後出現更大 stride）是<strong>再配一塊新的</strong>，
+    舊的要等 context 解構才釋放 → 2 GiB 這個配置實測<strong>累計配置 157.5 MiB</strong>，而活著的邊界只需 75 MiB。
+    修法：first-touch 時就用該 kind 的<em>全模型</em>最大 stride 配置，或在 graph-build 的還原路徑釋放（那裡才安全）。
+  </div>
+
+  <h3>M1 還沒完成的離開條件</h3>
+  <table>
+    <thead>
+      <tr><th>離開條件</th><th>狀態</th><th>缺口</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>M1/M2 = 100% @ 4/6/8/10 GiB，含 <code>union &gt; slots</code></td><td><span class="badge badge-success">✅ 已達成</span></td><td>4/6/8/10 都 PASS；<code>union &gt; slots</code> 用 2 GiB 那一格涵蓋（117/117）</td></tr>
+      <tr><td><code>union-routable</code> 閘門語義</td><td><span class="badge badge-success">✅ 已達成</span></td><td><code>gate-union-fit</code> → <code>gate-union-routable</code>，判準改成「<code>union ≤ slots</code>（<strong>mode=pool</strong>）<strong>或</strong> 寬 union 路徑被走過且無 nil（<strong>mode=gather</strong>）」。2 GiB 實測：<code>PASS mode=gather ... wide route: layers=8 steps=16/65</code>，同時 M1/M2/M3 = 117/117。<br><strong>過程中又抓到一個「未知 vs 不通過」的例子：</strong>第一次跑時 117/117 全綠，
+          而閘門卻回 <code>FAIL mode=unreachable ... layers=0 steps=0/0</code> —— 因為它讀的 <code>CGC-UNION</code> 證據根本沒被產生（<code>CGC_UNION_LOG</code> 只在手動跑時設過）。已修：harness <strong>無條件</strong>自己開那個旗標，
+          因為「閘門必須能自己产生它要判的證據」</td></tr>
+      <tr><td>prefill chunk 2048 被接受、無 OOB/NaN/nil</td><td><span class="badge badge-warning">⏳ 未做</span></td><td>需要 M1 工作項 2（phase split）先存在</td></tr>
+      <tr><td><strong>RSS</strong> @ 4/6/8/10 GiB，slab 分開報</td><td><span class="badge badge-warning">⏳ 未做</span></td><td>已量到總 RSS（2/4/6/8/10 GiB → 4.16/5.28/6.49/7.88/9.32 GB），但 <strong>slab 未分開報</strong>；且 slab 的成本正是落在小 pool 上（2 GiB 時 157.5 MiB = 7.7% 的 pool）</td></tr>
+      <tr><td><strong>decode 速度不得退步</strong></td><td><span class="badge badge-warning">⏳ 未做</span></td><td>本輪 <code>--gates-only</code> 沒有量 token/s（欄位是 None）。slab 只增加配置與一次 memcpy 填寫，但這是<em>必須量</em>而不是可以推論的</td></tr>
+      <tr><td>M1 工作項 1：loader 讓 expert tensor 保持全尺寸 256（pool 改成獨立 buffer）</td><td><span class="badge badge-danger">❌ 未做</span></td><td>這是 W3 的另一半。目前有效容量仍是 <code>n_slots</code>（透過縮小 expert tensor 實作）</td></tr>
+      <tr><td>M1 工作項 2：graph 按 phase 分流（<code>T ≥ 512</code> → PREFILL GRAPH 整層 slab）</td><td><span class="badge badge-danger">❌ 未做</span></td><td><strong>本輪修的只是 decode 分支</strong>。prefill 的 batching 紅利、以及 M2 的整層 slab，都還不存在</td></tr>
+      <tr><td>§6 的 pool-path 閘門 off-by-one（<code>n_slots</code> → <code>usable_slots</code>）</td><td><span class="badge badge-warning">⏳ 已知未修</span></td><td>閘門目前用原始 slot 數，但 ZERO slot 保留最後一格（MTP 模式）→ <code>union == n_slots</code> 這一格寬的視窗仍會進 <code>ensure_batch</code> 然後 abort。修法是<strong>一行</strong>，而且<strong>只有現在（slab 已落地）才安全</strong>，否則 <code>(usable, n_slots]</code> 會被導到那條壞掉的路</td></tr>
+    </tbody>
+  </table>
+
+  <h3>M2 的狀態：未開始，且它的前提還沒成立</h3>
+  <p>M2 的離開條件寫的是「prefill 一次性 materialize 整層 slab」。但<strong>整層 slab 這條路徑今天還不存在</strong> ——
+  本輪的 slab 是 decode 分支的 compacted gather（<code>C = 64</code>），<code>C = 256</code> 的整層版本要接的是 M1 工作項 2 的 phase split。
+  所以 <strong>M2 目前的正確狀態是「擋在 M1 的工作項 1/2 後面」，不是「等排程」</strong>。</p>
+  <p>唯一可以先做、而且現在就能做的一塊是<strong>量測</strong>：<code>bytes/token</code>、裝置 GB/s、<code>load_wall</code> 的拆解
+  （它們不需要整層路徑）。預算用實測幾何算：<code>C = 256</code> 的整層 slab 對 Nail 是 4× 的 C=64 值 ≈ <strong>約 300 MiB</strong>
+  （gate/up 各 110 MiB、down 136 MiB），double-buffer 後 <strong>約 600 MiB</strong> —— 在 4 GiB pool 上是 15%。</p>
+</div>
+
+<!-- Coverage Section -->
+<div class="section" id="coverage">
+  <h2>📋 目標覆蓋度分析</h2>
+  <p>針對「prefill 250+ decode 25+ 跨模型皆可支持 16gb 內存手機 pc 筆記本 並可 m1/m2 identical」的完整目標覆蓋度評估。</p>
+  
+  <table>
+    <thead>
+      <tr><th>要求</th><th>是否包含</th><th>說明</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>prefill 250+</strong></td><td><span class="badge badge-success">✅ 明確包含</span></td><td>M2（prefill 整層串流）+ M6（換量化幾何）</td></tr>
+      <tr><td><strong>decode 25</strong></td><td><span class="badge badge-success">✅ 明確包含</span></td><td>M3（decode compute 削減）+ M4（MTP 拒絕取樣 + verify 真批次）</td></tr>
+      <tr><td><strong>跨模型皆可支持</strong></td><td><span class="badge badge-warning">⚠️ 部分包含</span></td><td>有 slab 大小檢查，但沒有通用模型適配層</td></tr>
+      <tr><td><strong>16GB PC/筆記本</strong></td><td><span class="badge badge-success">✅ 明確包含</span></td><td>整個 roadmap 主線就是 MacBook Air M4 16GB</td></tr>
+      <tr><td><strong>16GB 手機</strong></td><td><span class="badge badge-warning">⚠️ 部分包含</span></td><td>獨立裝置線（§0.3），但結論是 35B 做不到 decode 25</td></tr>
+      <tr><td><strong>M1/M2 identical</strong></td><td><span class="badge badge-success">✅ 明確包含</span></td><td>每個里程碑的離開條件都要求 M1/M2/M3 = 100%</td></tr>
+    </tbody>
+  </table>
+  
+  <h3>主要缺口</h3>
+  
+  <div class="two-col">
+    <div>
+      <h4>缺口1：跨模型支持的系統化方法</h4>
+      <p>Roadmap 目前是「兩個模型的特定優化」，不是「跨模型的通用框架」。需要補充：</p>
+      <ul>
+        <li>模型架構抽象層（attention 類型、MoE 幾何、量化格式）</li>
+        <li>通用的 expert cache 適配機制</li>
+        <li>跨模型的 M1/M2/M3 回歸測試矩陣</li>
+        <li>新模型接入的 checklist 和驗證流程</li>
+      </ul>
+    </div>
+    <div>
+      <h4>缺口2：16GB 手機的可行性評估</h4>
+      <p>Roadmap 只評估了 12GB 手機，結論是 35B 做不到 decode 25。需要：</p>
+      <ul>
+        <li>重新評估 16GB 手機（可能 35B 有機會，因為 pool 可以更大）</li>
+        <li>手機端的實際實現路線圖（不是只預測門檻）</li>
+        <li>手機端的散熱和持續負載策略</li>
+        <li>手機端的量化幾何優化（M6 在手機上的優先度最高）</li>
+      </ul>
+    </div>
+  </div>
+  
+  <h3>缺口 3–8：實作 M1 時量到、但 roadmap 沒有覆蓋的部分</h3>
+  <table>
+    <thead>
+      <tr><th>#</th><th>缺口</th><th>為什麼危險（都有本次實測背書）</th><th>建議</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>3</strong></td><td><strong><code>--pool-cap auto</code> 會主動避開 <code>union &gt; slots</code></strong></td>
+        <td><code>probe_pool_cap()</code> 的目標是「找一個讓<em>最小的 pool 也走 pool path</em> 的 cap」。
+          也就是說：<strong>harness 的預設值會把我們要測的那個 case 挑掉</strong>。本輪全部用 <code>--pool-cap 8</code> 固定才踩得到 2 GiB 的寬 union。
+          這是「量測工具自己決定不量那格」的同一類缺陷，而且它會以「全部 PASS」的形式出現。</td>
+        <td>把「cap 必須固定」寫進閘門（現在只有 <code>_cap_guard</code> 事後繼），並在報告裡強制宣告 cap 是手動指定還是 auto</td></tr>
+      <tr><td><strong>4</strong></td><td><strong>launcher 的 <code>env</code> allowlist 會靜默丢變數</strong></td>
+        <td>未知的 <code>CGC_*</code> 變數不會報錯，只是不傳給 server。所以「旋鈕沒效」有兩種完全不同的成因（真沒效 / 根本沒設），而 log 看不出區別。
+          本輪兩個診斷（<code>CGC_UNION_LOG</code>、<code>CGC_SLAB_DBG</code>）都是先被丢掉，補上 allowlist 才看到數字。</td>
+        <td><strong>同一個 commit 裡</strong>新增診斷旗標與 allowlist 條目；在 <code>run_server.sh</code> 頂部寫成規則</td></tr>
+      <tr><td><strong>5</strong></td><td><strong>MTP-on 沒有自己的 oracle cell</strong></td>
+        <td>本輪五格全部是 MTP ON 的 <em>引擎</em>，但 oracle 探針是單輪 chat。M4 的離開條件寫的是「M1/M2 = 100% <strong>with MTP ON</strong>」，
+          而今天已知 <code>plain_match=False</code>（batch verify 與逐 token 解碼不一致）—— 換句話說：<strong>oracle 綠不代表 MTP 的 verify 路徑是綠的</strong>，
+          那條路有自己的 batch、自己的 draft context、自己的 <code>ne[2]</code>。</td>
+        <td>把 MTP verify 當成第六格（或一個 <code>--extra-env CGC_VERIFY_DECODE=1</code> 的 tag），它也是一個 <code>union &gt; slots</code> 的天然場景</td></tr>
+      <tr><td><strong>6</strong></td><td><strong>只有一顆模型被驗過 slab 幾何</strong></td>
+        <td>slab 大小是<strong>模型的函數</strong>（8 個 <code>(kind,stride)</code> 組合；Edge0 Q4_0 是另一組 589,824 B/expert/kind）。
+          閘門現在只對 iq3 跑過；沒有任何條件要求「換模型要重跑 <code>union &gt; slots</code> 那格」。</td>
+        <td>把 <code>--models iq3,iq4</code> 的 2 GiB 格當成跨模型的標準回歸（它同時驗 slab 幾何與 M1 不變性）</td></tr>
+      <tr><td><strong>7</strong></td><td><strong>prefill 的 M1 不變性是「建構保證」，但它還沒有建構</strong></td>
+        <td>M2 寫「prefill 永遠 materialize 256，所以數值與 pool 無關」。這句話在<em>整層 slab 存在</em>時成立；
+          今天 prefill 走的仍是 ubatch=8 的 pool/gather 路徑，所以「prefill 的 M1 是免費的」現在是<strong>一個未被驗證的主張</strong>，不是事實。</td>
+        <td>M2 落地時把「chunk 2048 的 oracle cell」與「<code>bytes/token</code> ≤ 3.0 MB」並列為離開條件（現在只列了後者的一半）</td></tr>
+      <tr><td><strong>8</strong></td><td><strong>每個數值改動都要重生參考 oracle</strong></td>
+        <td>sidecar 會因 <code>llama-context.cpp</code> / <code>llama-expert-cache.cpp</code> 的 source digest 變動而<strong>主動拒比</strong>。
+          這是正確的保護，但它也意味著：<strong>每一次 M1 迭代的成本 = 一次完整的 8 GiB 參考跑</strong>。排程時不能當它免費。</td>
+        <td>把「參考重生」寫進每個里程碑的工時（本輪：每格 ~4 分鐘，五格 ~20 分鐘，不含機器歸零）</td></tr>
+    </tbody>
+  </table>
+
+  <h3>還有一件「文件與實作不同步」的事</h3>
+  <p><code>ROADMAP_PREFILL250_DECODE25_2026-09-13.md</code> 與本檔曾在<strong>不同的樹</strong>上（一個在主 clone <code>flashkv0516</code> 的 <code>dev</code>、本檔在 devserver 的 demo 分支）。
+  兩份文件當時給出的 slab 估算也不同（68.5 MiB vs 89.0 MiB vs 288 MB）。已統一：<strong>以本檔下方的實測幾何為準</strong>，
+  並且要記住：編輯工具的根目錄是 <code>flashkv0516</code>（<code>dev</code>）、實際開發樹是 <code>flashkv-devserver</code>（<code>demo/sweet-spot-windows-fix</code>）——
+  這個陷阱已經咬過一次（改到别人的在製品）。</p>
+
+  <div class="warning">
+    <strong>建議：</strong>先按 roadmap 主線推進 M0→M1→M2/M3→M4，同時在 M1 完成後補充跨模型適配層，並重新評估 16GB 手機的可行性。如果 16GB 手機可行，再補充手機端的實現里程碑。
+  </div>
+</div>
+
+<!-- Probability Section -->
+<div class="section" id="probability">
+  <h2>🎯 成功機率評估</h2>
+  <p>如果 M0/M1 成功，整體任務（prefill 250 + decode 25）的成功機率評估。</p>
+  
+  <h3>各里程碑成功機率（假設 M0+M1 已成功）</h3>
+  <table>
+    <thead>
+      <tr><th>里程碑</th><th>說明</th><th>成功機率</th><th>關鍵風險</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>M2</strong></td><td>prefill 整層串流</td><td>~80%</td><td>Metal slab 已驗證可行，主要是工程實作</td></tr>
+      <tr><td><strong>M3</strong></td><td>decode compute 削減</td><td>~70%</td><td>需要優化 decode 路徑，有一定不確定性</td></tr>
+      <tr><td><strong>M4</strong></td><td>MTP 拒絕取樣 + verify 真批次</td><td>~40-50%</td><td><strong>高風險</strong>：batch verify 之前在 MLX 路徑上因 SSM state 不一致失敗</td></tr>
+      <tr><td><strong>M6</strong></td><td>換量化幾何</td><td>~90%</td><td>量化幾何相對獨立，風險低</td></tr>
+    </tbody>
+  </table>
+  
+  <h3>達成目標的機率</h3>
+  <div class="two-col">
+    <div>
+      <h4>目標1：prefill 250 tok/s</h4>
+      <p>主要依賴：M2 + M6</p>
+      <p><strong>機率：80% × 90% ≈ 72%</strong></p>
+    </div>
+    <div>
+      <h4>目標2：decode 25 tok/s</h4>
+      <p>主要依賴：M3 + M4（MTP 優化是關鍵）</p>
+      <p><strong>機率：70% × 45% ≈ 32%</strong></p>
+    </div>
+  </div>
+  
+  <div class="highlight">
+    <strong>兩個目標都達成：72% × 32% ≈ 23%</strong>
+  </div>
+  
+  <h3>為什麼 decode 25 這麼難？</h3>
+  <p><strong>關鍵瓶頸：M4（MTP batch verify）</strong></p>
+  <ul>
+    <li>當前 10GB pool 實測：decode <strong>9.3 t/s</strong></li>
+    <li>MTP-on profile：verify batch 佔 <strong>84%</strong>，draft head 只佔 16%</li>
+    <li>T=1 是 92ms/token、T=2.6 是 104ms/token（<strong>無批量紅利</strong>）</li>
+    <li>完美 accept + K=3 只到 13.7 t/s，25 t/s 需要：完美 accept + 更大 draft 窗口 + batch path 變便宜</li>
+  </ul>
+  
+  <h3>提升成功機率的策略</h3>
+  <table>
+    <thead>
+      <tr><th>策略</th><th>說明</th><th>預期機率</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>基準估計</strong></td><td>M2+M3+M4+M6 都需要</td><td>~23%</td></tr>
+      <tr><td><strong>M4 替代方案</strong></td><td>更大 draft + sequential verify，避開 batch verify 的高風險</td><td>~35-40%</td></tr>
+      <tr><td><strong>只要求 prefill 250</strong></td><td>M2+M6，風險較低</td><td>~72%</td></tr>
+      <tr><td><strong>只要求 decode 15-18</strong></td><td>M3+部分 MTP，不需要完整 M4</td><td>~60%</td></tr>
+    </tbody>
+  </table>
+  
+  <div class="warning">
+    <strong>我的判斷：</strong>如果 M0+M1 成功，整體任務（prefill 250 + decode 25）的成功機率大約在 <strong>30-40%</strong>，關鍵在於 M4（MTP 優化）是否能找到可行的實作路徑。如果 batch verify 做不通，用更大 draft 窗口 + sequential verify 的替代方案，有機會把機率提升到 40-50%。
+  </div>
+</div>
+
+<!-- Footer -->
+<div class="footer">
+  <p>CGC MoE Engine Roadmap · 2026-09-14 · 基於 ROADMAP_PREFILL250_DECODE25_2026-09-13.md + Metal Slab 驗證結果</p>
+  <p>分支：demo/sweet-spot-windows-fix · 機器：MacBook Air M4 16GB</p>
+</div>
+
+</div>
+</body>
+</html>

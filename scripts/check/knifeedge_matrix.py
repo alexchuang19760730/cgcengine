@@ -317,14 +317,51 @@ def scan_nil(paths):
     return {"ok": not hits, "hits": hits}
 
 
-def union_fit_gate(facts, cap, topk):
-    """Is the pool guaranteed to hold the WORST-CASE expert union for one ubatch?
+# `CGC-UNION: layer=1 union avg=38.2 min=16 max=64 of usable=34 (188%)  [WIDE: exceeds usable] gather=3/9`
+# The `gather=N/M` tail is the only place the engine reports that the WIDE-union route was
+# actually taken (llama-context.cpp, CGC_UNION_LOG). The WIDE marker is required in the pattern:
+# a narrow layer can also print gather>0 for other reasons, and those would prove nothing about
+# the wide-union path this gate is about.
+GATHER_RE = re.compile(r"CGC-UNION: layer=(\d+).*?\[WIDE[^\]]*\].*?gather=(\d+)/(\d+)")
+
+
+def scan_gather_evidence(paths):
+    """Did the WIDE-union route actually run, and how many steps went through it?
+
+    Why this exists: `union > slots` used to be a hard FAIL because the only route out was the
+    L3-B gather path, which repointed a Metal-resident FFN tensor at HOST memory and produced
+    `buffer is nil` (measured 2 GiB, 2026-09-13: 468 nil, M1 2/42, first divergence at step 2,
+    that step's sum off by 55%). That is no longer the case -- the gather path now fills a Metal
+    slab (docs/M1_POOL_GRAPH_DECOUPLE_PLAN_2026-09-14.md 3.1) -- so the criterion becomes
+    "routable": EITHER the pool is arithmetically guaranteed to hold the union, OR the wide-union
+    route ran and produced no nil. Arithmetic alone would mark a correct 2 GiB cell as broken;
+    nil alone would pass a cell that never exercised the path, which is the failure mode that
+    hid this for two days.
+    """
+    wide_layers, steps, total = 0, 0, 0
+    for p in paths:
+        if not p:
+            continue
+        try:
+            txt = open(p, "rb").read().decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001 - harness
+            continue
+        for _layer, hit, tot in GATHER_RE.findall(txt):
+            total += int(tot)
+            steps += int(hit)
+            if int(hit) > 0:
+                wide_layers += 1
+    return {"wide_layers": wide_layers, "gather_steps": steps, "total_steps": total,
+            "exercised": wide_layers > 0}
+
+
+def union_fit_gate(facts, cap, topk, paths=None):
+    """Is the pool EITHER guaranteed to hold the worst-case union, OR proven routable?
 
     The decode hook takes the pool path only when `union <= slots_per_layer`; otherwise it falls
-    through to the L3-B gather path, which repoints a Metal-resident FFN tensor at host memory
-    and yields `buffer is nil`. A ubatch of `cap` tokens selects at most `cap * topk` distinct
-    experts, so `cap * topk <= n_slots - 1` (slot 0 is the reserved ZERO slot) is the exact
-    condition under which the broken path is unreachable -- for ANY model and ANY pool size.
+    through to the wide-union route. A ubatch of `cap` tokens selects at most `cap * topk`
+    distinct experts, so `cap * topk <= n_slots - 1` (slot 0 is the reserved ZERO slot) is the
+    exact condition under which that fallback is unreachable -- for ANY model and ANY pool size.
 
     Reported as ok=None when the launch log did not expose n_slots (e.g. --attach to a server
     someone else started): unknown is not the same as passing.
@@ -342,9 +379,25 @@ def union_fit_gate(facts, cap, topk):
                 "error": "neither min per-layer slots nor n_slots in the launch log"}
     union_max = cap * topk
     usable = n_slots - 1
-    return {"ok": bool(union_max <= usable), "cap": cap, "topk": topk, "n_slots": n_slots,
+    fit = bool(union_max <= usable)
+    ev = scan_gather_evidence(paths or [])
+    # mode is reported so a PASS cannot be mistaken for the other reason: `pool` means the
+    # fallback was unreachable by arithmetic, `gather` means it was reached and stayed clean.
+    if fit:
+        mode = "pool"
+    elif ev["exercised"]:
+        mode = "gather"
+    else:
+        # Not routable by arithmetic AND no evidence the wide route ran. Two causes, and they
+        # need different fixes: either the cell genuinely never reaches the wide route (then the
+        # arithmetic is what matters and this is a real FAIL), or the evidence was never
+        # recorded (CGC_UNION_LOG off -> `layers=0 steps=0/0`). The harness now sets that flag
+        # unconditionally, so seeing this mode means the fallback really was not exercised.
+        mode = "unreachable"
+    return {"ok": bool(fit or ev["exercised"]), "mode": mode, "fit": fit,
+            "cap": cap, "topk": topk, "n_slots": n_slots,
             "source": src, "usable_slots": usable, "union_max": union_max,
-            "headroom": usable - union_max}
+            "headroom": usable - union_max, "gather": ev}
 
 
 # Floor for `CGC_POOL_MAX_TOKENS`. Two independent lower bounds:
@@ -989,6 +1042,13 @@ def run_combo(kind, gb, args):
     # Oracle dump is env-gated at launch; kept out of the result name so a rerun overwrites it.
     oracle_dump = os.path.join(RESULT_DIR, f"oracle_{label}.jsonl")
     extra = list(args.extra_env)
+    # The union-routable gate must not depend on an OPTIONAL diagnostic flag the caller happened
+    # to pass: on 2026-09-14 the 2 GiB cell scored M1/M2/M3 117/117 while the gate said FAIL
+    # mode=unreachable simply because CGC_UNION_LOG was not set, so the `gather=N/M` evidence it
+    # reads had never been written. "Unknown" and "not routable" must not look the same -- the
+    # harness therefore always asks the engine for the evidence it is about to judge. (Without
+    # this the gate can only ever pass a config whose FIRST version was measured by hand.)
+    extra.append("CGC_UNION_LOG=1")
     cap = cap_for(args, kind)
     if cap is not None:
         # ONE cap for every pool so the ubatch shape and the chunking are identical across pool
@@ -1103,10 +1163,15 @@ def run_combo(kind, gb, args):
     # arithmetic guarantee, independent of which experts this particular prompt happens to route
     # to -- so it holds for every model and every pool size, not just the probes here.
     g_union = union_fit_gate(facts, cap if cap is not None else args.pool_cap_max,
-                             MODELS[kind].get("topk", 8))
-    print(f"[{label}] gate-union-fit {'PASS' if g_union['ok'] else 'FAIL' if g_union['ok'] is False else 'n/a'}  "
-          f"cap={g_union['cap']} x topk={g_union['topk']} = {g_union['union_max']} vs "
-          f"usable={g_union.get('usable_slots')} (n_slots={g_union.get('n_slots')}) "
+                             MODELS[kind].get("topk", 8),
+                             paths=[launch_log, facts.get("log_path")])
+    _ev = g_union.get("gather") or {}
+    print(f"[{label}] gate-union-routable "
+          f"{'PASS' if g_union['ok'] else 'FAIL' if g_union['ok'] is False else 'n/a'}  "
+          f"mode={g_union.get('mode')} cap={g_union['cap']} x topk={g_union['topk']} = "
+          f"{g_union['union_max']} vs usable={g_union.get('usable_slots')} "
+          f"(n_slots={g_union.get('n_slots')}); wide route: layers={_ev.get('wide_layers')} "
+          f"steps={_ev.get('gather_steps')}/{_ev.get('total_steps')} "
           f"{g_union.get('error', '')}", flush=True)
 
     # PREFLIGHT: refuse to produce numbers from a broken prompt scaffold. This is the gate

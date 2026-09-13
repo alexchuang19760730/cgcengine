@@ -524,9 +524,132 @@ llama_context::llama_context(
     }
 }
 
+// [CGC M1 Metal slab 2026-09-14] Capacity of the gather slab, in experts.
+//
+// This is deliberately a CONSTANT and not derived from the pool. The pool path's whole correctness
+// argument -- and the M1 invariant gate that enforces it -- is that a given routing set is
+// combined in the same order no matter how big the pool is. If the slab capacity followed the
+// pool, then on any union wide enough to need more than one fill pass the pass boundaries would
+// move with the pool too, and each token's sum would become an outer sum whose shape depends on
+// the pool size: exactly the failure the gate exists to catch.
+//
+// 64 is the correct value for M1 because the union ceiling is cap * top_k = 8 * 8 = 64 -- measured,
+// not estimated (docs/M1_POOL_GRAPH_DECOUPLE_PLAN_2026-09-14.md 2.1: union max=64 of usable=34 at
+// 2 GiB, across layers 1-8). With C = 64 the pass loop of 3.2 is provably a single pass at cap=8.
+// The env override exists for A/B only; a larger C is what M2's wider ubatches will need.
+static uint32_t cgc_gather_slab_cap() {
+    static const uint32_t cap = []() {
+        const char * e = getenv("CGC_GATHER_SLAB_CAP");
+        const int v = e != nullptr ? atoi(e) : 64;
+        return (uint32_t) (v < 2 ? 2 : (v > 1024 ? 1024 : v));
+    }();
+    return cap;
+}
+
+llama_context::cgc_gather_slab * llama_context::cgc_gather_slab_get(int kind, size_t exp_bytes,
+                                                                 ggml_backend_buffer_type_t buft) {
+    if (kind < 0 || kind >= 4 || exp_bytes == 0 || buft == nullptr) {
+        return nullptr;
+    }
+    // ONE slab per kind, sized for the kind's **whole-model maximum stride**.
+    //
+    // Why the whole model and not "whatever arrived first": these GGUFs are MIXED QUANT, so one
+    // kind carries several per-expert sizes across layers (Nail: kind 0/1 are iq2_s|iq3_s|q2_K at
+    // 335,872 / 450,560 / 344,064 B, kind 2 is iq3_s|iq4_xs at 450,560 / 557,056 B) -- 8 distinct
+    // (kind, stride) combinations inside one 41-layer model. Sizing on first touch (the earlier
+    // behaviour) therefore allocated a SECOND slab the first time some layer asked for a bigger
+    // stride, and pinned the first one until the context died: measured 157.5 MiB allocated to
+    // serve an 89.0 MiB live boundary (docs/M1_POOL_GRAPH_DECOUPLE_PLAN_2026-09-14.md 3.1.1).
+    // All layers' expert tensors are captured into cache_ffn_tensors during build_graph, i.e.
+    // BEFORE the first eval hook runs, so the model's true worst case is already known here and
+    // one allocation is enough.
+    //
+    // Keyed by kind, NOT by (kind, stride): the latter would allocate a fresh ~30 MiB buffer at
+    // nearly every layer boundary and then FREE the one that other layers' live tensors still
+    // point into.
+    size_t want_stride = exp_bytes;
+    if (cache_gather_cur[kind] < 0) {
+        for (const auto & it : cache_ffn_tensors) {
+            if ((size_t) kind >= it.second.size()) {
+                continue;
+            }
+            const ggml_tensor * t = it.second[(size_t) kind];  // nullptr: kind 3 is absent in these GGUFs
+            if (t == nullptr) {
+                continue;
+            }
+            const size_t stride = ggml_row_size(t->type, t->ne[0]) * t->ne[1];
+            if (stride > want_stride) {
+                want_stride = stride;
+            }
+        }
+    }
+    // A larger slab always serves a smaller request: Metal's range check is
+    // `ioffs + ggml_nbytes(wt) <= buffers[0].size`, and ggml_nbytes = exp_bytes * union
+    // <= cap * slab_stride = the allocated size. So this test is what the per-call exp_bytes
+    // still drives.
+    if (cache_gather_cur[kind] >= 0) {
+        llama_context::cgc_gather_slab & cur = cache_gather_slab[(size_t) cache_gather_cur[kind]];
+        if (cur.size >= (size_t) cgc_gather_slab_cap() * exp_bytes) {
+            return &cur;
+        }
+        // Unreachable now that the first allocation covers the whole model. Kept so that a model
+        // whose tensor geometry grows after first touch still cannot silently overrun the slab.
+        fprintf(stderr, "CGC-GATHER-SLAB: growth after first touch kind=%d from stride=%zu "
+                "to %zu -- the model's geometry changed under the slab\n",
+                kind, cur.stride, want_stride);
+    }
+
+    const size_t want = (size_t) cgc_gather_slab_cap() * want_stride;
+    // Lazily allocated, and only for the kinds the wide-union path actually touches, so a config
+    // that never takes it (the default 10 GiB pool: the pool path always wins) allocates nothing.
+    //
+    // The buffer type is the EXPERT TENSOR's own, deliberately not the device default. Metal only
+    // hands out host-visible storage when `use_shared_buffers && shared` (ggml-metal-device.m:1666);
+    // otherwise `all_data` is a virtual address and the CPU fill below would write into nothing.
+    // The expert tensor's buft is the shared one by construction: the pool path CPU-memcpy's into
+    // that very region (pool_region -> pool_ext), which is only possible if it is host-visible.
+    ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(buft, want);
+    if (buf == nullptr) {
+        fprintf(stderr, "CGC-GATHER-SLAB: allocation of %.2f MiB failed kind=%d stride=%zu on %s\n",
+                (double) want / (1024.0 * 1024.0), kind, exp_bytes, ggml_backend_buft_name(buft));
+        return nullptr;
+    }
+    ggml_backend_buffer_set_usage(buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+
+    cache_gather_slab.push_back(llama_context::cgc_gather_slab{});
+    llama_context::cgc_gather_slab & s = cache_gather_slab.back();
+    s.kind   = kind;
+    s.stride = want_stride;
+    s.buf    = buf;
+    s.base   = (uint8_t *) ggml_backend_buffer_get_base(buf);
+    s.size   = want;
+    cache_gather_cur[kind] = (int) (cache_gather_slab.size() - 1);
+    fprintf(stderr, "CGC-GATHER-SLAB: kind=%d cap=%u stride=%zu (requested=%zu) size=%.2f MiB "
+            "base=%p buft=%s\n",
+            kind, cgc_gather_slab_cap(), want_stride, exp_bytes,
+            (double) want / (1024.0 * 1024.0), (void *) s.base, ggml_backend_buft_name(buft));
+    return &s;
+}
+
 llama_context::~llama_context() {
     // wait for any pending asynchronous copies into the output buffers before they are freed
     synchronize();
+
+    // [CGC M1 Metal slab 2026-09-14] release the gather slabs. Empty in any config that never took
+    // the wide-union gather path, which includes the default 10 GiB pool. This is the ONLY place
+    // they are freed: freeing a superseded slab earlier would leave the tensors of other layers
+    // pointing into freed memory until the next graph build restores them.
+    for (llama_context::cgc_gather_slab & s : cache_gather_slab) {
+        if (s.buf != nullptr) {
+            ggml_backend_buffer_free(s.buf);
+            s.buf  = nullptr;
+            s.base = nullptr;
+        }
+    }
+    cache_gather_slab.clear();
+    for (int k = 0; k < 4; k++) {
+        cache_gather_cur[k] = -1;
+    }
 
     if (!model.hparams.no_alloc) {
         for (size_t i = 0; i < backend_ptrs.size(); ++i) {
@@ -1461,6 +1584,25 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
                 }
             }
             it = cache_orig.erase(it);
+        }
+
+        // [CGC M1 Metal slab 2026-09-14] restore ne[2] for the FFN tensors the gather path
+        // resized. Same lifecycle as cache_orig: written during the step's eval hook, put back
+        // here before build_graph so the next graph sees the full original expert geometry.
+        for (auto it = cache_gather_ne2.begin(); it != cache_gather_ne2.end(); ) {
+            auto it_ffn = cache_ffn_tensors.find(it->first.first);
+            if (it_ffn != cache_ffn_tensors.end() && (size_t) it->first.second < it_ffn->second.size()) {
+                ggml_tensor * wt = it_ffn->second[it->first.second];
+                if (wt != nullptr) {
+                    wt->ne[2] = it->second;
+                    auto it_buf = cache_gather_orig_buf.find(it->first);
+                    if (it_buf != cache_gather_orig_buf.end()) {
+                        wt->buffer = it_buf->second;
+                        cache_gather_orig_buf.erase(it_buf);
+                    }
+                }
+            }
+            it = cache_gather_ne2.erase(it);
         }
 
         //const auto t_start_us = ggml_time_us();
@@ -3550,10 +3692,9 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
         }
     }
 
-    // ensure the per-kind gather buffers exist before any L3-B path indexes them
-    if (cache_gather_buf.size() < 4) {
-        cache_gather_buf.resize(4);
-    }
+    // [CGC M1 Metal slab 2026-09-14] The per-kind gather buffers used to be eagerly resized here.
+    // They are now lazily allocated Metal buffers (cache_gather_slab, created on first wide union),
+    // so there is nothing to pre-create: a default-config server never allocates one at all.
 
     const int32_t * ids = (const int32_t *) t->data;
     if (ids == nullptr) {
@@ -3971,8 +4112,134 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
 
     // decode: L3 Option A static per-layer slot pool when active and the union fits, else the
     // L3-B per-step gather path.
-    const uint32_t n_slots = llama_expert_cache_slots_per_layer_l(cache, (uint32_t) il);
-    if (llama_expert_cache_pool_active(cache) && uni.size() <= n_slots) {
+    const uint32_t n_usable = llama_expert_cache_usable_slots(cache, (uint32_t) il);
+    // [CGC M1 union-routable 2026-09-14] Record what the union actually was, and which of the two
+    // decode paths it was routed to. The M0 union>slots case (2 GiB) failed M1 2/42, but the union
+    // AT the divergent layer was never logged -- the chain "union > usable -> gather -> host buffer
+    // -> Metal nil -> wrong values" was inferred from the pool geometry (n_slots=35) plus 234
+    // `buffer is nil` dispatches, not observed. This closes that gap.
+    //
+    // The predicate below is the true pool-vs-gather split: the pool branch returns at its own end
+    // (see the "L3-B gather path" block further down), so a false predicate IS the gather path.
+    //
+    // Note on slots vs usable -- FIXED 2026-09-14. llama_expert_cache_slots_per_layer_l() returns
+    // the RAW count, while the last slot may be the reserved ZERO slot
+    // (llama_expert_cache_zero_slot() == slots_l - 1, and zero_slot_enabled() is true only under
+    // the MTP fast path). So under CGC_VERIFY_DECODE / CGC_DRAFT_DECODE the pool path can hold only
+    // usable = n_slots - 1 experts, while the gate used to admit union <= n_slots -- a
+    // one-expert-wide window (union == n_slots) that reached ensure_batch and aborted
+    // ("distinct experts exceed the usable pool slots", the caps32 abort).
+    //
+    // That tightening was deliberately withheld while the fallback was broken: routing
+    // (usable, n_slots] to the gather path produced WRONG VALUES rather than an abort, so the plan's
+    // 6 called the abort "the lesser evil until the Metal slab lands". The slab has landed and is
+    // verified (2 GiB: 117/117 bit-identical, 0 nil), so the gate now uses the usable count: the
+    // window goes to the gather path, which is correct there. The log below still reports usable
+    // (and raw) so the window stays observable.
+    //
+    // Inert unless CGC_UNION_LOG=1. One block per 8 layer sweeps, ranked by max union.
+    static const bool cgc_union_log = getenv("CGC_UNION_LOG") != nullptr;
+    static uint32_t cgc_ul_max[128]  = {0};
+    static uint32_t cgc_ul_min[128]  = {0};
+    static uint64_t cgc_ul_sum[128]  = {0};
+    static uint32_t cgc_ul_n[128]    = {0};
+    static uint32_t cgc_ul_gath[128] = {0};
+    static int      cgc_ul_sweeps    = 0;
+    static int      cgc_ul_prev_il   = -1;
+    const bool cgc_union_pool = llama_expert_cache_pool_active(cache) && uni.size() <= n_usable;
+    if (cgc_union_log && il >= 0 && il < 128) {
+        const uint32_t cgc_u = (uint32_t) uni.size();
+        if (cgc_ul_n[il] == 0 || cgc_u < cgc_ul_min[il]) {
+            cgc_ul_min[il] = cgc_u;
+        }
+        if (cgc_u > cgc_ul_max[il]) {
+            cgc_ul_max[il] = cgc_u;
+        }
+        cgc_ul_sum[il] += cgc_u;
+        cgc_ul_n[il]++;
+        if (!cgc_union_pool) {
+            cgc_ul_gath[il]++;
+        }
+        // a sweep ends when the layer index wraps back down
+        if (cgc_ul_prev_il >= 0 && il < cgc_ul_prev_il && (++cgc_ul_sweeps % 8) == 0) {
+            uint32_t cgc_mx[128];
+            for (int l = 0; l < 128; l++) {
+                cgc_mx[l] = cgc_ul_max[l];
+            }
+            for (int rank = 0; rank < 8; rank++) {
+                int cgc_best = -1;
+                for (int l = 0; l < 128; l++) {
+                    if (cgc_ul_n[l] == 0 || cgc_mx[l] == 0) {
+                        continue;
+                    }
+                    if (cgc_best < 0 || cgc_mx[l] > cgc_mx[cgc_best]) {
+                        cgc_best = l;
+                    }
+                }
+                if (cgc_best < 0) {
+                    break;
+                }
+                const uint32_t cgc_us  = llama_expert_cache_usable_slots(cache, (uint32_t) cgc_best);
+                const uint32_t cgc_raw = llama_expert_cache_slots_per_layer_l(cache, (uint32_t) cgc_best);
+                fprintf(stderr,
+                        "CGC-UNION: layer=%d union avg=%.1f min=%u max=%u of usable=%u (raw=%u) "
+                        "(%.0f%%)%s gather=%u/%u\n",
+                        cgc_best,
+                        cgc_ul_n[cgc_best] ? (double) cgc_ul_sum[cgc_best] / (double) cgc_ul_n[cgc_best] : 0.0,
+                        cgc_ul_min[cgc_best], cgc_ul_max[cgc_best], cgc_us, cgc_raw,
+                        cgc_us ? 100.0 * (double) cgc_ul_max[cgc_best] / (double) cgc_us : 0.0,
+                        cgc_ul_max[cgc_best] > cgc_us ? "  [WIDE: exceeds usable]" : "",
+                        cgc_ul_gath[cgc_best], cgc_ul_n[cgc_best]);
+                cgc_mx[cgc_best] = 0;
+            }
+            for (int l = 0; l < 128; l++) {
+                cgc_ul_max[l] = 0;
+                cgc_ul_min[l] = 0;
+                cgc_ul_sum[l] = 0;
+                cgc_ul_n[l]   = 0;
+                cgc_ul_gath[l] = 0;
+            }
+        }
+        cgc_ul_prev_il = il;
+    }
+    if (cgc_union_pool) {
+        // [CGC M1 2026-09-14] Un-repoint anything this tensor was left in GATHER state in.
+        //
+        // The pool branch does not repoint; it relies on the repoint done in graph_get_cb at
+        // BUILD time. With a REUSED graph that build never ran, so a tensor left holding the slab
+        // (data/buffer = slab, ne[2] = union) would be read here with POOL slot ids -- the slab
+        // holds the previous step's sorted union, so this silently reads the wrong experts rather
+        // than failing. Putting the recorded pre-gather values back IS the pool state (data = the
+        // pool region, buffer = the model buffer, ne[2] = the raw slot count), which is exactly
+        // what the gather hook recorded on its first call.
+        //
+        // Reachable whenever a layer flips gather -> pool between two steps of the same shape
+        // (same shape => reuse => no restore), and that is the common case as soon as the pool is
+        // smaller than cap x top_k. Verified on the caps config below and on 2 GiB.
+        for (int k = 0; k < 4; ++k) {
+            auto it = cache_gather_ne2.find({il, k});
+            if (it == cache_gather_ne2.end()) {
+                continue;
+            }
+            auto it_ffn = cache_ffn_tensors.find(il);
+            ggml_tensor * wt = (it_ffn != cache_ffn_tensors.end() &&
+                                (size_t) k < it_ffn->second.size())
+                    ? it_ffn->second[(size_t) k] : nullptr;
+            if (wt != nullptr) {
+                auto ito = cache_orig.find({il, k});
+                if (ito != cache_orig.end()) {
+                    wt->data = ito->second;
+                    cache_orig.erase(ito);
+                }
+                auto itb = cache_gather_orig_buf.find({il, k});
+                if (itb != cache_gather_orig_buf.end()) {
+                    wt->buffer = itb->second;
+                    cache_gather_orig_buf.erase(itb);
+                }
+                wt->ne[2] = it->second;
+            }
+            cache_gather_ne2.erase(it);
+        }
         // [CGC MTP fast path] CGC_VERIFY_DECODE / CGC_DRAFT_DECODE (rebuilt 2026-08-28 from
         // [CGC Phase Discrimination 2026-09-08] Use explicit phase marker set by the caller
         // (server-context.cpp / common/speculative.cpp) instead of unreliable n_tokens/seq_pos_max
@@ -4403,20 +4670,110 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
 
         for (int kind = 0; kind < 4; ++kind) {
             ggml_tensor * wt = cache_ffn_tensors[il][kind];
-            if (wt == nullptr) {
+            if (wt == nullptr || uni.empty()) {
                 continue;
             }
             const size_t exp_bytes = ggml_row_size(wt->type, wt->ne[0]) * wt->ne[1];
-            if (cache_gather_buf[kind].size() < uni.size() * exp_bytes) {
-                cache_gather_buf[kind].resize(uni.size() * exp_bytes);
+            // [CGC M1 Metal slab 2026-09-14] A union wider than the slab's fixed capacity would need
+            // the multi-pass loop of 3.2, which is not implemented (and is provably unnecessary at
+            // cap=8, where the ceiling is exactly 64 -- see cgc_gather_slab_cap). Refuse rather than
+            // repoint at a slab that cannot hold the union: that would put ggml_nbytes(wt) past the
+            // end of the buffer, which is the "buffer is nil" we are removing. Loud, once per kind.
+            if (uni.size() > (size_t) cgc_gather_slab_cap()) {
+                static bool cgc_slab_overflow_warned = false;
+                if (!cgc_slab_overflow_warned) {
+                    cgc_slab_overflow_warned = true;
+                    fprintf(stderr, "CGC-GATHER-SLAB: OVERFLOW il=%d kind=%d union=%zu > cap=%u -- "
+                            "multi-pass (M1 3.2) not implemented; leaving the original weights in "
+                            "place, values for this layer are NOT trustworthy\n",
+                            il, kind, uni.size(), cgc_gather_slab_cap());
+                }
+                continue;
+            }
+            // The slab is allocated with the EXPERT TENSOR's own buffer type. Not the device
+            // default: Metal only gives host-visible storage when `use_shared_buffers && shared`
+            // (ggml-metal-device.m:1666), otherwise `all_data` is a virtual address and the CPU
+            // fill below writes into nothing. The tensor's buft is the shared one by construction
+            // -- the pool path CPU-memcpy's into that same region (pool_region -> pool_ext).
+            ggml_backend_buffer_type_t wt_buft = wt->buffer != nullptr
+                    ? ggml_backend_buffer_get_type(wt->buffer) : nullptr;
+            uint8_t * slab = nullptr;
+            ggml_backend_buffer_t slab_buf = nullptr;
+            {
+                cgc_gather_slab * sl = cgc_gather_slab_get(kind, exp_bytes, wt_buft);
+                if (sl == nullptr) {
+                    continue;
+                }
+                // copied out immediately: an allocation for a later kind moves the vector
+                slab     = sl->base;
+                slab_buf = sl->buf;
             }
             const int64_t copied = llama_expert_cache_fill(cache, (uint32_t) il, uni.data(),
-                    uni.size(), kind, cache_gather_buf[kind].data(), exp_bytes);
+                    uni.size(), kind, slab, exp_bytes);
             if (copied < 0) {
                 continue;
             }
-            cache_orig[{il, kind}] = wt->data;
-            wt->data = cache_gather_buf[kind].data();
+            // [CGC M1 2026-09-14] Record the pre-repoint state ONCE per step, not once per call.
+            // The graph-build restore is SKIPPED when the graph is REUSED (same ubatch shape -- see
+            // the `else` branch of graph_compute), so two gather steps for one tensor can run back
+            // to back with no restore in between. Recording on the second call would then save the
+            // SLAB ITSELF as the "original" buffer, and the next restore would set data (a pool
+            // pointer) and buffer (the slab) to values from two different states -- the mixed state
+            // Metal reports as `buffer is nil`.
+            //
+            // Measured 2026-09-14, LLAMA_EXPERT_CACHE_LAYER_CAPS=1-39:32 (the wide route is taken on
+            // ~7 of 8 steps per layer): 117 nils, exactly one per (layer, kind), every one of them
+            // that mixed state (CGC-METAL-NIL: b0data = the slab base, tdata elsewhere, ne[2] = 32 =
+            // the raw slot count). Keeping the FIRST values makes the restore land on the
+            // consistent pool state instead.
+            const bool cgc_first_repoint =
+                    cache_gather_ne2.find({il, kind}) == cache_gather_ne2.end();
+            if (cgc_first_repoint) {
+                cache_orig[{il, kind}] = wt->data;
+            }
+            // Metal's range check is `ioffs + ggml_nbytes(t) <= buffers[i].size`, and ggml_nbytes
+            // scales with ne[2] -- which the loader set to the POOL capacity, not to this union.
+            // Leaving it alone is wrong in BOTH directions, which is why the old host buffer could
+            // never have worked: with ne[2] > union, ggml_nbytes exceeds the gathered slab and Metal
+            // still reports nil; with ne[2] < union, the ids the remap writes below (positions in
+            // the sorted union, so in [0, union-1]) exceed the expert count mul_mat_id believes in.
+            // Setting ne[2] = union makes both the range check and mul_mat_id agree with what was
+            // actually gathered. Restored next graph build via cache_gather_ne2.
+            if (cgc_first_repoint) {
+                cache_gather_ne2[{il, kind}] = wt->ne[2];
+                cache_gather_orig_buf[{il, kind}] = wt->buffer;
+            }
+            wt->ne[2] = (int64_t) uni.size();
+            // Metal resolves a tensor through ITS OWN buffer, not by scanning every buffer:
+            //     ggml_backend_buffer_t b = t->view_src ? t->view_src->buffer : t->buffer;
+            //     return ggml_metal_buffer_get_id(b->context, t);
+            // (ggml-metal-ops.cpp:22-26). So moving `data` without moving `buffer` leaves the
+            // lookup computing ioffs against the ORIGINAL allocation -> negative -> Metal still
+            // reports "buffer is nil". That is exactly why the first version of this change left
+            // the nil count at 468. data, buffer and ne[2] must all move together.
+            wt->data   = slab;
+            wt->buffer = slab_buf;
+            // [CGC M1 Metal slab] Replicate Metal's own range check right here so that a failure
+            // is attributable instead of guessed. ggml_metal_buffer_get_id() (ggml-metal-device.m)
+            // walks the buffer's sub-ranges and returns the first one where
+            //     ioffs + ggml_nbytes(t) <= buffers[i].size,  ioffs = t->data - buffers[i].data
+            // and logs "buffer is nil" when none matches. The values below are exactly those
+            // operands. Inert unless CGC_SLAB_DBG=1.
+            static const bool cgc_slab_dbg = getenv("CGC_SLAB_DBG") != nullptr;
+            if (cgc_slab_dbg) {
+                const size_t bsize = ggml_backend_buffer_get_size(slab_buf);
+                const void * bbase = ggml_backend_buffer_get_base(slab_buf);
+                const size_t tsz   = ggml_nbytes(wt);
+                const long   offs  = (long) ((const char *) wt->data - (const char *) bbase);
+                fprintf(stderr,
+                        "CGC-SLAB-CHECK: %s il=%d kind=%d data=%p base=%p size=%zu nbytes=%zu "
+                        "offs=%ld fits=%d ne=[%lld,%lld,%lld,%lld] nb=[%zu,%zu,%zu,%zu]\n",
+                        wt->name, il, kind, wt->data, bbase, bsize, tsz, offs,
+                        (offs >= 0 && (size_t) offs + tsz <= bsize) ? 1 : 0,
+                        (long long) wt->ne[0], (long long) wt->ne[1],
+                        (long long) wt->ne[2], (long long) wt->ne[3],
+                        wt->nb[0], wt->nb[1], wt->nb[2], wt->nb[3]);
+            }
         }
 
         ggml_tensor * remap = cache_remap_tensors[il];

@@ -364,11 +364,55 @@ private:
     std::map<int, std::vector<uint8_t>> cache_remap_buf;
     // [kind] per-kind gather buffers (L3-B path): the hook gathers selected expert weights
     // into these contiguous buffers and points the FFN src0 tensor at them.
-    std::vector<std::vector<uint8_t>> cache_gather_buf;
+    //
+    // [CGC M1 Metal slab 2026-09-14] These were host std::vector<uint8_t>. That is the root cause
+    // of the union>slots corruption: the FFN src0 tensor lives in a Metal buffer, and
+    // ggml_metal_buffer_get_id() resolves a tensor to a buffer purely by ADDRESS RANGE --
+    //
+    //     ioffs = (int64_t) t->data - (int64_t) buf->buffers[i].data;
+    //     if (ioffs >= 0 && ioffs + ggml_nbytes(t) <= buf->buffers[i].size) -> found
+    //     else -> "tensor '%s' buffer is nil"
+    //
+    // A host pointer lies in no Metal buffer's range, so Metal read nothing and the layer produced
+    // wrong values. Measured at 2 GiB: 468 nil dispatches, M1 2/42, step-2 sum 55% off.
+    // The slab is a real Metal backend buffer instead. See
+    // docs/M1_POOL_GRAPH_DECOUPLE_PLAN_2026-09-14.md 3.1.
+    struct cgc_gather_slab {
+        int                   kind   = -1;
+        size_t                stride = 0;  // bytes/expert: this kind's WHOLE-MODEL max stride
+        ggml_backend_buffer_t buf    = nullptr;
+        uint8_t *             base   = nullptr;
+        size_t                size   = 0;  // bytes = cgc_gather_slab_cap() * stride
+    };
+    // At most one slab per kind in practice (2026-09-14): each is sized for its kind's whole-model
+    // maximum stride on first touch, so there is nothing left to grow to -- the entries that used
+    // to pile up (157.5 MiB allocated for an 89.0 MiB live boundary) are gone. Never freed early
+    // and never shrunk regardless: a repointed tensor keeps pointing into its slab until the next
+    // graph build restores it, so freeing on growth would leave other layers' tensors dangling.
+    // All of them are released in the destructor.
+    std::vector<cgc_gather_slab> cache_gather_slab;
+    // Index into cache_gather_slab of the current (largest) slab per kind, or -1. An index rather
+    // than a pointer, because push_back may move the vector's storage.
+    int cache_gather_cur[4] = { -1, -1, -1, -1 };
+    // Return the slab to gather this kind into, or nullptr if the request cannot be served.
+    // Capacity is cgc_gather_slab_cap() experts and never follows the pool or the observed union
+    // -- see the comment on cgc_gather_slab_cap in llama-context.cpp. The SIZE is the kind's
+    // whole-model max stride (all layers are captured before the first eval hook), so the first
+    // allocation is final; `exp_bytes` only still decides whether the existing slab is big enough.
+    cgc_gather_slab * cgc_gather_slab_get(int kind, size_t exp_bytes, ggml_backend_buffer_type_t buft);
     // (layer, kind) -> (original src0 data pointer); saved before the FFN tensor is repointed
     // at the cache pool, restored in process_ubatch before every build_graph.
     // mutable: written from the const graph_get_cb.
     mutable std::map<std::pair<int,int>, void *> cache_orig;
+    // [CGC M1 Metal slab] (layer, kind) -> original src0 ne[2], for the tensors whose ne[2] the
+    // gather path rewrites to the union size. Restored in the same pass as cache_orig, so every
+    // freshly built graph starts from the full original expert geometry.
+    mutable std::map<std::pair<int,int>, int64_t> cache_gather_ne2;
+    // [CGC M1 Metal slab] (layer, kind) -> original src0 buffer. The gather path must move the
+    // tensor's BUFFER along with its data, because Metal resolves a tensor through its own buffer
+    // (see the note in llama-context.cpp); moving only data leaves the lookup computing an offset
+    // against the original allocation and Metal still reports nil. Restored with the ne[2] above.
+    mutable std::map<std::pair<int,int>, ggml_backend_buffer_t> cache_gather_orig_buf;
     // per-layer union of experts used by the current decode step (deduped, sorted).
     std::vector<std::vector<uint32_t>> cache_step_union;
     // per-layer union of experts used by the previous decode step.

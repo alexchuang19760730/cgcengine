@@ -764,6 +764,30 @@ fi
 if [ -n "${CGC_DECODE_PROFILE_ALL:-}" ]; then
     SERVER_ENV+=(CGC_DECODE_PROFILE_ALL="$CGC_DECODE_PROFILE_ALL")
 fi
+# [CGC M1 union-routable 2026-09-14] Per-layer union + chosen decode path (pool vs gather),
+# ranked by max union over 8 layer sweeps, with the layer's usable slot count beside it so the
+# `union > usable` window (see docs/M1_POOL_GRAPH_DECOUPLE_PLAN_2026-09-14.md) is directly
+# observable instead of inferred from pool geometry. Independent of CGC_OA_ASYNC: the hook runs
+# on the default single-submit path too.
+if [ -n "${CGC_UNION_LOG:-}" ]; then
+    SERVER_ENV+=(CGC_UNION_LOG="$CGC_UNION_LOG")
+fi
+# [CGC M1 Metal slab 2026-09-14] Capacity of the gather slab in experts (default 64 = cap*top_k
+# at cap 8). Override for A/B only -- the capacity must stay a constant, not follow the pool or
+# the observed union, or the summation order stops being pool-independent.
+if [ -n "${CGC_GATHER_SLAB_CAP:-}" ]; then
+    SERVER_ENV+=(CGC_GATHER_SLAB_CAP="$CGC_GATHER_SLAB_CAP")
+fi
+# [CGC M1 Metal slab 2026-09-14] Print the operands of Metal's own buffer range check at every
+# gather-path repoint (CGC-SLAB-CHECK), so a "buffer is nil" is attributable, not guessed.
+if [ -n "${CGC_SLAB_DBG:-}" ]; then
+    SERVER_ENV+=(CGC_SLAB_DBG="$CGC_SLAB_DBG")
+fi
+# [CGC M1 Metal slab 2026-09-14] Print the operands Metal itself sees when its range check fails
+# (CGC-METAL-NIL), so a nil is attributable instead of inferred from our side of the check.
+if [ -n "${CGC_METAL_DBG:-}" ]; then
+    SERVER_ENV+=(CGC_METAL_DBG="$CGC_METAL_DBG")
+fi
 if [ -n "${CGC_PREV_TOKEN_PREFETCH:-}" ]; then
     SERVER_ENV+=(CGC_PREV_TOKEN_PREFETCH="$CGC_PREV_TOKEN_PREFETCH")
 fi
