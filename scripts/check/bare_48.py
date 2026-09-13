@@ -82,16 +82,28 @@ def score_one(profile, rules, content, finish):
     return len(checks) == 0, checks
 
 
+# Sampling sent with every bare-ask request. This used to be hardcoded to 0.0 (greedy),
+# which made the sampling axis UNMEASURABLE from this harness: the request-level value
+# overrides the server's --temp, so launching with CGC_SERVER_TEMP=0.4 changed nothing while
+# this stayed 0.0. The 37/48 baseline recipe (scripts/run_knifeedge_sweep.sh) ran at
+# --temp 0.4 --top-p 0.8, so a comparison against that number has to be able to set it.
+# Defaults reproduce the historic behaviour exactly (greedy, no top-p).
+TEMPERATURE = 0.0
+TOP_P = None
+
+
 def chat_completion(base_url, model, prompt, timeout=120):
-    """裸問：純 user message、temp=0、無拐杖"""
+    """裸問：純 user message、temp=TEMPERATURE、無拐杖"""
     url = f"{base_url}/chat/completions"
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.0,
+        "temperature": TEMPERATURE,
         "max_tokens": 2048,
-        # 故意不設 presence_penalty / stop / top_p → 裸問
+        # 故意不設 presence_penalty / stop → 裸問；top_p 只在明確要求時送
     }
+    if TOP_P is not None:
+        payload["top_p"] = TOP_P
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -261,8 +273,16 @@ def main():
     parser.add_argument("--label", default="local", help="標籤（用於輸出）")
     parser.add_argument("--output", default=None, help="結果輸出 JSON 路徑")
     parser.add_argument("--max-per-profile", type=int, default=None, help="每 profile 最多題數（除錯用）")
+    parser.add_argument("--temperature", type=float, default=0.0,
+                        help="取樣溫度（預設 0.0 = greedy，與歷史行為逐位元相同）；"
+                             "設 0.4 才能對照 37/48 基線配方")
+    parser.add_argument("--top-p", type=float, default=None,
+                        help="top-p（預設不送；37/48 基線用 0.8）")
     parser.add_argument("--compare", nargs=2, metavar=("FILE_A", "FILE_B"), help="對比兩個結果檔")
     args = parser.parse_args()
+
+    global TEMPERATURE, TOP_P
+    TEMPERATURE, TOP_P = args.temperature, args.top_p
 
     if args.compare:
         compare_results(args.compare[0], args.compare[1])
