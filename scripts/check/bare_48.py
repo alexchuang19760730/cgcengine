@@ -30,6 +30,12 @@ sys.path.insert(0, SCRIPT_DIR)
 
 REFERENCE_FILE = os.path.join(SCRIPT_DIR, "replay_bench_reference_v2.json")
 
+# 死伺服器防護。伺服器一旦不在，/v1/chat/completions 會「瞬間」回空——
+# 之後每一題都會被計為 0 分，看起來像品質崩壞，其實只是沒有人在聽。
+# 2026-09-13 的 cap6 對照就是這樣：伺服器在第 26 個請求後收到 signal 結束，
+# 剩下的 22 題全部瞬間失敗，而報告只寫「0/48」。
+DEAD_SERVER_STREAK = 5
+
 
 def load_reference():
     with open(REFERENCE_FILE, "r", encoding="utf-8") as f:
@@ -115,6 +121,8 @@ def run_suite(base_url, model, label, max_per_profile=None):
     results = {}
     total_pass = 0
     total_count = 0
+    dead_streak = 0
+    dead_abort = None
 
     print(f"\n{'='*70}")
     print(f"裸問 48 題測試 — {label}")
@@ -170,6 +178,19 @@ def run_suite(base_url, model, label, max_per_profile=None):
                 print(f"         prompt: {prompt[:80]}")
                 print(f"         output: {content[:100].replace(chr(10), ' ')}")
 
+            # 連續「瞬間空回應」= 伺服器已死，後面的分數都是假的。
+            if not content.strip() and elapsed < 1.0:
+                dead_streak += 1
+            else:
+                dead_streak = 0
+            if dead_streak >= DEAD_SERVER_STREAK:
+                dead_abort = (
+                    f"連續 {dead_streak} 題瞬間空回應（elapsed<1s）——伺服器已不在，"
+                    f"中止於 {profile} #{i+1}；此報告的通過率無效"
+                )
+                print(f"\n!! {dead_abort}\n")
+                break
+
             if passed:
                 profile_pass += 1
             total_count += 1
@@ -183,6 +204,9 @@ def run_suite(base_url, model, label, max_per_profile=None):
         }
         print(f"\n  → {profile}: {profile_pass}/{len(prompts)} ({profile_pass/len(prompts)*100:.0f}%)\n")
 
+        if dead_abort:
+            break
+
     summary = {
         "label": label,
         "base_url": base_url,
@@ -192,10 +216,15 @@ def run_suite(base_url, model, label, max_per_profile=None):
         "total_count": total_count,
         "total_rate": round(total_pass / total_count, 3) if total_count else 0,
         "profiles": results,
+        "invalid": dead_abort is not None,
+        "invalid_reason": dead_abort,
     }
 
     print(f"\n{'='*70}")
-    print(f"總計: {total_pass}/{total_count} ({total_pass/total_count*100:.1f}%)")
+    if dead_abort:
+        print(f"總計: {total_pass}/{total_count} (無效 — {dead_abort})")
+    else:
+        print(f"總計: {total_pass}/{total_count} ({total_pass/total_count*100:.1f}%)")
     print(f"{'='*70}\n")
 
     return summary

@@ -451,7 +451,278 @@ def probe_pool_cap(kind, gb, args):
     return rec
 
 
-def oracle_gate(port, dump_path, ref_path, label, timeout):
+# Source files that DECIDE the numerics. A reference oracle is a snapshot of the engine these
+# files describe, so a change here invalidates it. Deliberately narrow: harness/probe scripts
+# are excluded because editing them cannot move a single logit.
+NUMERIC_SOURCES = (
+    "src/llama.cpp/src/llama-expert-cache.cpp",
+    "src/llama.cpp/src/llama-expert-cache.h",
+    "src/llama.cpp/src/llama-context.cpp",
+    "src/llama.cpp/src/llama-graph.cpp",
+)
+
+
+def _git_out(argv):
+    """Run git in the repo root; '' on any failure (git absent, not a repo, timeout)."""
+    try:
+        return subprocess.run(["git"] + list(argv), cwd=ROOT, capture_output=True,
+                              text=True, timeout=30).stdout.strip()
+    except Exception:  # noqa: BLE001 - harness
+        return ""
+
+
+def source_stamp():
+    """Fingerprint the code that decides the numerics, plus WHO last commit-touched it.
+
+    Both halves are load-bearing and neither is sufficient on its own:
+      * a commit-only stamp misses UNCOMMITTED work, and that is not hypothetical -- the live
+        state on 2026-09-13 is exactly it: HEAD's newest commit over these paths is 09-11
+        22:54, while the three expert-cache/context files were then edited 09-13 00:31-01:35
+        and the binary rebuilt 01:36. A commit-only rule would call that tree unchanged.
+      * a content-only stamp cannot say which commit introduced the change, so a stale
+        reference could not be explained, only rejected.
+    """
+    digests, missing, h = {}, [], hashlib.sha256()
+    for rel in NUMERIC_SOURCES:
+        p = os.path.join(ROOT, rel)
+        if not os.path.exists(p):
+            missing.append(rel)
+            continue
+        blob = open(p, "rb").read()
+        digests[rel] = hashlib.sha256(blob).hexdigest()[:16]
+        h.update(rel.encode())
+        h.update(blob)
+    return {"source_digest": h.hexdigest(),
+            "sources": digests,
+            "missing": missing,
+            "last_commit": _git_out(["log", "-1", "--format=%h %ct %s", "--"] +
+                                    list(NUMERIC_SOURCES)),
+            "head": _git_out(["rev-parse", "--short", "HEAD"]),
+            "dirty": bool(_git_out(["status", "--short", "--"] + list(NUMERIC_SOURCES)))}
+
+
+def _oracle_meta(path):
+    """Read an oracle's sidecar as a dict, or None. Tolerant of the legacy plain-cap form."""
+    if not path:
+        return None
+    p = path + ".cap"
+    if not os.path.exists(p):
+        return None
+    try:
+        raw = open(p, encoding="utf-8").read().strip()
+    except Exception:  # noqa: BLE001 - harness
+        return None
+    if not raw:
+        return None
+    try:
+        d = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"cap": raw}          # legacy: the file held the bare cap, e.g. "6"
+    if isinstance(d, dict):
+        return d
+    return {"cap": str(d)}           # legacy: a bare JSON number
+
+
+def _cap_sidecar(path):
+    """Read the cap (CGC_POOL_MAX_TOKENS) recorded beside an oracle dump, or None if absent.
+
+    The sidecar exists because the cap is NOT a neutral knob: it clamps n_batch and therefore
+    fixes the ubatch shape and the prefill chunking (see probe_pool_cap's docstring -- 8 GB at
+    pmax=8 vs pmax=6 agreed on argmax only 15.4% of steps). Comparing a dump taken at one cap
+    against a reference taken at another yields a large, entirely SPURIOUS M1/M2 failure that
+    reads as "the pool broke numerics". Measured 2026-09-13: a cap=8 dump vs a cap=6 reference
+    scored M1 3/98 and M2 12/98 while the two caps' dumps are byte-identical within their own
+    cap. Guarding against it beats explaining it afterwards.
+    """
+    m = _oracle_meta(path)
+    if not m or m.get("cap") is None:
+        return None
+    return str(m["cap"])
+
+
+MODEL_SAMPLE_BYTES = 4 << 20        # 4 MiB from the head + 4 MiB from the tail
+
+
+def _model_digest_full():
+    """Full 13 GB sha256 is opt-in: it evicts the page cache the harness depends on."""
+    return os.environ.get("CGC_ORACLE_MODEL_DIGEST", "").strip().lower() == "full"
+
+
+def model_stamp(model_file):
+    """Identity of the WEIGHTS an oracle dump was produced from.
+
+    The source stamp records the CODE but not the MODEL, so a reference taken from one GGUF
+    could be compared against another -- and that is not hypothetical: this matrix's `iq3`
+    column was silently resolving to the IQ4_XS file, so two columns measured a single model
+    and nothing in the record showed it. The model dimension is the whole point of this harness.
+
+    Cost/benefit: realpath+size+inode+mtime are free and already catch that observed failure
+    (IQ4_XS is 18.2 GB vs IQ3's 13.66 GB). A sampled digest (head+tail 4 MiB) additionally makes
+    a SAME-SIZE swap detectable, because a re-quantized file differs in its GGUF header/KV block
+    and in its tail. A full sha256 is available via CGC_ORACLE_MODEL_DIGEST=full, but not the
+    default: reading 13.7 GB evicts the page cache, and page-cache state (7721 MiB/s hot vs
+    1225 MiB/s cold) is exactly what these measurements turn on.
+    """
+    if not model_file:
+        return None
+    try:
+        real = os.path.realpath(model_file)
+        st = os.stat(real)
+    except OSError as e:
+        return {"path": model_file, "error": str(e)[:200]}
+    rec = {"path": model_file, "realpath": real, "size": st.st_size,
+           "mtime": int(st.st_mtime), "inode": st.st_ino,
+           "digest": None, "digest_mode": None}
+    try:
+        if _model_digest_full():
+            h = hashlib.sha256()
+            with open(real, "rb") as f:
+                for chunk in iter(lambda: f.read(8 << 20), b""):
+                    h.update(chunk)
+            rec.update({"digest": h.hexdigest(), "digest_mode": "full"})
+        else:
+            h = hashlib.sha256()
+            with open(real, "rb") as f:
+                h.update(f.read(MODEL_SAMPLE_BYTES))
+                if st.st_size > 2 * MODEL_SAMPLE_BYTES:
+                    f.seek(st.st_size - MODEL_SAMPLE_BYTES)
+                    h.update(f.read(MODEL_SAMPLE_BYTES))
+            rec.update({"digest": h.hexdigest(), "digest_mode": "sampled(head+tail)"})
+    except OSError as e:
+        rec["digest_error"] = str(e)[:200]
+    return rec
+
+
+def _model_guard(ref_path, model_file):
+    """Refuse to compare when the reference came from different WEIGHTS."""
+    if not model_file:
+        return None
+    ref = (_oracle_meta(ref_path) or {}).get("model")
+    cur = model_stamp(model_file)
+    if not isinstance(ref, dict) or ref.get("error"):
+        return {"ok": None, "model_unknown": True, "current_model": cur,
+                "error": (f"MODEL IDENTITY UNKNOWN: {os.path.basename(ref_path)} records no "
+                          f"weights identity, so it could have come from any GGUF and comparing "
+                          f"logits across two models is meaningless. Rebuild the reference, or "
+                          f"pass --allow-model-mismatch to compare anyway.")}
+    same = (ref.get("realpath") == cur.get("realpath")
+            and ref.get("size") == cur.get("size")
+            and ref.get("digest") == cur.get("digest"))
+    if same:
+        return None
+    return {"ok": False, "model_mismatch": {"ref": ref, "candidate": cur},
+            "error": (f"MODEL MISMATCH: {os.path.basename(ref_path)} was produced from "
+                      f"{ref.get('realpath')} ({ref.get('size')} B, "
+                      f"{ref.get('digest_mode')}={str(ref.get('digest'))[:12]}), but this run "
+                      f"measures {cur.get('realpath')} ({cur.get('size')} B, "
+                      f"{cur.get('digest_mode')}={str(cur.get('digest'))[:12]}). Any M1/M2 "
+                      f"number would compare two different models. Regenerate the reference "
+                      f"for this GGUF, or pass --allow-model-mismatch if that is deliberate.")}
+
+
+def _write_oracle_meta(path, cap, model_file=None):
+    """Write the provenance sidecar: cap + source stamp + weights identity + timestamp."""
+    meta = {"cap": str(cap) if cap is not None else "default",
+            "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "stamp": source_stamp()}
+    m = model_stamp(model_file)
+    if m is not None:
+        meta["model"] = m
+    with open(path + ".cap", "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2, sort_keys=True)
+        f.write("\n")
+
+
+def _cap_guard(ref_path, dump_path):
+    """Return an error record when the reference and the dump were taken at different caps."""
+    cap_ref, cap_new = _cap_sidecar(ref_path), _cap_sidecar(dump_path)
+    if cap_ref and cap_new and cap_ref != cap_new:
+        return {"ok": False,
+                "cap_mismatch": {"ref": cap_ref, "candidate": cap_new},
+                "error": (f"CAP MISMATCH: reference was produced at cap={cap_ref}, this dump at "
+                          f"cap={cap_new}. The cap clamps n_batch, so these are different "
+                          f"computations -- any M1/M2 number would be a shape artifact, not a "
+                          f"pool difference. Re-run with --pool-cap {cap_ref}.")}
+    return None
+
+
+def _stamp_guard(ref_path):
+    """Refuse to compare when the reference predates a change to the numerics sources.
+
+    Why this exists: on 2026-09-13 a reference captured 21:58 was silently compared against an
+    engine fixed at 22:54, and the result (M1 0/53) read as a pool regression for hours. A stale
+    reference cannot be detected from the numbers -- it fails loud, looks real, and points at
+    the wrong subsystem. So provenance is checked BEFORE the comparison, not after.
+    """
+    rec = (_oracle_meta(ref_path) or {}).get("stamp")
+    cur = source_stamp()
+    if not isinstance(rec, dict):
+        return {"ok": None, "stale_unknown": True, "current_source_stamp": cur,
+                "error": (f"REFERENCE PROVENANCE UNKNOWN: {os.path.basename(ref_path)} has no "
+                          f"source stamp, so it is impossible to tell which expert-cache code "
+                          f"produced it. Rebuild it (this driver now stamps every reference), "
+                          f"or pass --allow-stale-oracle to compare anyway.")}
+    same_digest = rec.get("source_digest") == cur["source_digest"]
+    same_commit = rec.get("last_commit") == cur["last_commit"]
+    if same_digest and same_commit:
+        return None
+    changed = sorted(r for r in NUMERIC_SOURCES
+                     if rec.get("sources", {}).get(r) != cur["sources"].get(r))
+    kind = "content_changed" if not same_digest else "commit_changed"
+    detail = (f"changed sources: {', '.join(os.path.basename(c) for c in changed) or '(none)'}"
+              if not same_digest else
+              "file contents are identical; only the newest commit over these paths moved")
+    if kind == "content_changed":
+        ask = ("Rebuild the reference from the current tree, then re-run the comparison so the "
+               "pool-size verdict describes ONE engine.")
+    else:
+        ask = ("The numerics are unchanged, so a comparison is still meaningful -- pass "
+               "--allow-stale-oracle once you have confirmed that, or refresh the reference.")
+    return {"ok": False, "stale": True, "stale_kind": kind,
+            "ref_source_stamp": rec, "current_source_stamp": cur, "changed_sources": changed,
+            "error": (f"STALE REFERENCE ({kind}): {os.path.basename(ref_path)} was produced from "
+                      f"different engine code than the tree about to be measured. "
+                      f"ref last_commit = {rec.get('last_commit') or '?'} | "
+                      f"current last_commit = {cur['last_commit'] or '?'} | {detail}. "
+                      f"Any M1/M2 number here describes the code drift, not the pool size. {ask}")}
+
+
+def _oracle_guard(ref_path, dump_path, model_file=None, allow_stale=False,
+                  allow_model_mismatch=False):
+    """Return an error record when the comparison would be meaningless, else None.
+
+    Three independent preconditions, each of which has already produced a large and entirely
+    spurious "the pool broke numerics" verdict on this box: the cap (ubatch shape), the source
+    provenance (engine version) and the weights identity (which model).
+    """
+    bad = _cap_guard(ref_path, dump_path)
+    if bad:
+        return bad
+    bad = _model_guard(ref_path, model_file)
+    if bad and not allow_model_mismatch:
+        return bad
+    if bad:
+        mm = bad.get("model_mismatch")
+        if mm:
+            print(f"[oracle-guard] WARNING -- model mismatch accepted via "
+                  f"--allow-model-mismatch: ref={(mm.get('ref') or {}).get('realpath')} vs "
+                  f"now={(mm.get('candidate') or {}).get('realpath')}",
+                  file=sys.stderr, flush=True)
+        else:
+            print("[oracle-guard] WARNING -- unknown model identity accepted via "
+                  "--allow-model-mismatch", file=sys.stderr, flush=True)
+    bad = _stamp_guard(ref_path)
+    if bad and not allow_stale:
+        return bad
+    if bad:
+        print(f"[oracle-guard] WARNING -- stale reference accepted via --allow-stale-oracle: "
+              f"{bad.get('stale_kind', bad.get('stale_unknown'))}", file=sys.stderr, flush=True)
+    return None
+    return None
+
+
+def oracle_gate(port, dump_path, ref_path, label, timeout, allow_stale=False,
+                model_file=None, allow_model_mismatch=False):
     """Send the deterministic probe, then compare this combo's logits oracle against a
     reference using the TWO independent metrics (never merged).
 
@@ -463,6 +734,9 @@ def oracle_gate(port, dump_path, ref_path, label, timeout):
         return {"ok": None, "error": "no oracle dump produced"}
     if not (ref_path and os.path.exists(ref_path)):
         return {"ok": None, "error": f"reference oracle missing: {ref_path}"}
+    bad = _oracle_guard(ref_path, dump_path, model_file, allow_stale, allow_model_mismatch)
+    if bad:
+        return bad
     ask_probe(port, timeout)
     time.sleep(1.0)
     rep = os.path.join(RESULT_DIR, f"oraclecmp_{label}.json")
@@ -479,6 +753,46 @@ def oracle_gate(port, dump_path, ref_path, label, timeout):
             "m2_decision_agreement": f"{m2['equal']}/{m2['n']}",
             "cross_tab": d["cross_tab"],
             "report": rep}
+
+
+def oracle_recompare(dump_path, ref_path, label, allow_stale=False, model_file=None,
+                     allow_model_mismatch=False):
+    """Re-compare the COMPLETE dump and print the verdict; returns the report dict or None.
+
+    `oracle_gate` deliberately runs first (its comment: the dump's early ubatches must line up
+    with the reference run's). But the template and preflight probes that follow keep APPENDING
+    to the same JSONL, so the comparison it performs measures only a PREFIX of the file -- on
+    2026-09-13 it compared 53 of the eventual 103 step keys. That silently understates the gate
+    instead of failing it. The finished file is a strict superset of what was compared, so
+    re-comparing here is free and strictly stronger; no extra request is sent.
+    """
+    if not (dump_path and os.path.exists(dump_path) and ref_path
+            and os.path.exists(ref_path)):
+        return None
+    if _oracle_guard(ref_path, dump_path, model_file, allow_stale, allow_model_mismatch):
+        return None
+    rep = os.path.join(RESULT_DIR, f"oraclecmp_{label}_final.json")
+    subprocess.run([sys.executable,
+                    os.path.join(ROOT, "scripts", "check", "cgc_logits_oracle_compare.py"),
+                    "--a", ref_path, "--b", dump_path, "--report", rep],
+                   cwd=ROOT, capture_output=True)
+    if not os.path.exists(rep):
+        return None
+    d = json.load(open(rep, encoding="utf-8"))
+    m1, m2 = d["metrics"]["numeric_identity"], d["metrics"]["decision_agreement"]
+    m3 = d["metrics"]["topk_set_agreement"]
+    out = {"ok": (m1["rate"] == 1.0 and m2["rate"] == 1.0),
+           "m1_numeric_identity": f"{m1['equal']}/{m1['n']}",
+           "m2_decision_agreement": f"{m2['equal']}/{m2['n']}",
+           "m3_topk_set_agreement": f"{m3['equal']}/{m3['n']}",
+           "n_compared": m1["n"],
+           "cross_tab": d["cross_tab"],
+           "report": rep}
+    print(f"[{label}] gate-oracle-final {'PASS' if out['ok'] else 'CHECK'}  "
+          f"M1(bit-identical)={out['m1_numeric_identity']} "
+          f"M2(argmax)={out['m2_decision_agreement']} "
+          f"M3(topk)={out['m3_topk_set_agreement']} (n={out['n_compared']})", flush=True)
+    return out
 
 
 def ask_probe(port, timeout=180.0):
@@ -680,10 +994,18 @@ def run_combo(kind, gb, args):
         # ONE cap for every pool so the ubatch shape and the chunking are identical across pool
         # sizes -- otherwise a pool "difference" is partly a shape difference (see probe_pool_cap).
         extra.append(f"CGC_POOL_MAX_TOKENS={cap}")
-    if args.oracle_ref:
+    if args.oracle_ref or args.dump_oracle:
         if os.path.exists(oracle_dump):
             os.remove(oracle_dump)
         extra += [f"CGC_LOGITS_ORACLE_DUMP={oracle_dump}", "CGC_LOGITS_ORACLE_TOPN=8"]
+        # Record provenance next to the dump so a future comparison can PROVE it is looking at
+        # the same computation: the cap (which clamps n_batch) AND the state of the code that
+        # decides the numerics. Without this, forgetting --pool-cap silently yields reference
+        # and candidate computed under different ubatch shapes, and an expert-cache edit makes
+        # an old reference describe an engine that no longer exists -- in both cases the
+        # resulting M1 collapse looks exactly like a real pool-induced numeric regression.
+        _write_oracle_meta(oracle_dump, cap if cap is not None else args.pool_cap_max,
+                           model_file=model_path(kind))
     if args.attach:
         # Shared checkout: someone else's server may already own the port. Measure it
         # read-only (no launch, no kill) instead of fighting over the machine.
@@ -743,12 +1065,27 @@ def run_combo(kind, gb, args):
     # GATE: numeric invariance vs the reference oracle. Run this BEFORE anything else talks to
     # the server so the dump's early ubatches line up with the reference run's.
     g_oracle = None
+    g_oracle_final = None
     if args.oracle_ref:
-        g_oracle = oracle_gate(args.port, oracle_dump, args.oracle_ref, label, args.timeout)
+        g_oracle = oracle_gate(args.port, oracle_dump, args.oracle_ref, label, args.timeout,
+                               allow_stale=args.allow_stale_oracle,
+                               model_file=model_path(kind),
+                               allow_model_mismatch=args.allow_model_mismatch)
         print(f"[{label}] gate-oracle  {'PASS' if g_oracle.get('ok') else 'CHECK'}  "
               f"M1(bit-identical)={g_oracle.get('m1_numeric_identity')} "
               f"M2(argmax)={g_oracle.get('m2_decision_agreement')} "
               f"{g_oracle.get('error', '')}", flush=True)
+    elif args.dump_oracle:
+        # Producing a reference must exercise the SAME probe sequence a comparison cell will.
+        # `ask_probe()` lives inside oracle_gate and is what appends those steps to the dump.
+        # Without this call the reference is a strict PREFIX of every candidate, so a
+        # prefix-matching compare reports a perfect 60/60 while the remaining keys are never
+        # tested -- the same silent understatement as §6 of POOLSIZE_INVARIANCE_2026-09-13.md,
+        # just moved into the reference instead of the comparison.
+        ask_probe(args.port, args.timeout)
+        time.sleep(1.0)
+        print(f"[{label}] dump-oracle: probe sent, so the reference covers the same steps as "
+              f"a comparison cell", flush=True)
 
     # GATE: the rendered generation prompt must be a CLOSED scaffold. A degenerating model can
     # still stumble onto the right answer, so the answer check alone is not sufficient.
@@ -783,6 +1120,12 @@ def run_combo(kind, gb, args):
               f"42={pf.get('answers_42')} echo={pf.get('echoes_prompt')} "
               f"leak={pf.get('scaffold_leak')} empty={pf.get('empty')} "
               f"finish={pf.get('finish')}  content={pf.get('content','')[:90]!r}", flush=True)
+        # The probes above appended to the same dump the oracle gate compared, so that verdict
+        # only covered a prefix. Re-compare the finished file before anything is recorded.
+        g_oracle_final = oracle_recompare(oracle_dump, args.oracle_ref, label,
+                                         allow_stale=args.allow_stale_oracle,
+                                         model_file=model_path(kind),
+                                         allow_model_mismatch=args.allow_model_mismatch)
         if not pf.get("ok"):
             msg = (f"[{label}] preflight FAILED -- the prompt scaffold is broken, so any "
                    f"quality number from this config would be measuring the template, "
@@ -797,7 +1140,8 @@ def run_combo(kind, gb, args):
                 rec = {"label": label, "model": kind, "pool_gb": gb, "up": True,
                        "preflight": rec_pf,
                        "gates": {"template": g_template, "buffer_nil": g_nil,
-                                 "union_fit": g_union, "oracle": g_oracle},
+                                 "union_fit": g_union, "oracle": g_oracle,
+                                 "oracle_final": g_oracle_final},
                        "pool_cap": cap,
                        "free_before_pct": free_before,
                        "free_after_pct": free_after, "rss_gb": rss,
@@ -811,6 +1155,11 @@ def run_combo(kind, gb, args):
             print(msg, file=sys.stderr, flush=True)
     else:
         rec_pf = None
+        # No preflight traffic, but the template probe still grew the dump; re-compare it.
+        g_oracle_final = oracle_recompare(oracle_dump, args.oracle_ref, label,
+                                         allow_stale=args.allow_stale_oracle,
+                                         model_file=model_path(kind),
+                                         allow_model_mismatch=args.allow_model_mismatch)
 
     if args.gates_only:
         print(f"[{label}] --gates-only: skipping the quality suite", flush=True)
@@ -819,7 +1168,8 @@ def run_combo(kind, gb, args):
         rec = {"label": label, "model": kind, "pool_gb": gb, "up": True,
                "preflight": rec_pf,
                "gates": {"template": g_template, "buffer_nil": g_nil, "union_fit": g_union,
-                         "oracle": g_oracle},
+                         "oracle": g_oracle,
+                         "oracle_final": g_oracle_final},
                "pool_cap": cap, "gates_only": True,
                "gates_ok": (bool(g_nil["ok"]) and g_template.get("ok") is not False
                             and g_union.get("ok") is not False),
@@ -857,7 +1207,8 @@ def run_combo(kind, gb, args):
     rec = {"label": label, "model": kind, "pool_gb": gb, "up": True,
            "preflight": rec_pf,
            "gates": {"template": g_template, "buffer_nil": g_nil, "union_fit": g_union,
-                     "oracle": g_oracle},
+                     "oracle": g_oracle,
+                     "oracle_final": g_oracle_final},
            "pool_cap": cap,
            "gates_ok": (bool(g_nil["ok"]) and g_template.get("ok") is not False
                         and g_union.get("ok") is not False),
@@ -1039,6 +1390,12 @@ def main():
                     help="reference logits oracle JSONL; enables the M1/M2 numeric-invariance "
                          "gate for every combo (a pool size may differ ONLY in speed, so M1 "
                          "numeric identity must be full -- M2 alone is not proof)")
+    ap.add_argument("--dump-oracle", action="store_true",
+                    help="write the logits oracle dump WITHOUT comparing it to anything. This is "
+                         "how a reference is produced: previously the dump was only written as a "
+                         "side effect of --oracle-ref, so making a fresh reference required "
+                         "pointing at some other dump first -- a chicken-and-egg that made the "
+                         "reference's own provenance accidental.")
     ap.add_argument("--pool-cap", default="auto",
                     help="CGC_POOL_MAX_TOKENS, IDENTICAL for every pool (default 'auto' = probe "
                          "the smallest pool until it reports no `buffer is nil`, then reuse that "
@@ -1046,6 +1403,18 @@ def main():
                          "required because the cap clamps n_batch and so the ubatch shape.")
     ap.add_argument("--pool-cap-max", type=int, default=8,
                     help="largest cap 'auto' may pick (build default is 8)")
+    ap.add_argument("--allow-model-mismatch", action="store_true",
+                    help="compare against an oracle reference taken from a DIFFERENT GGUF. Off "
+                         "by default and rarely what you want: logits from two models are not "
+                         "comparable, so an M1 failure would be guaranteed and meaningless. "
+                         "This matrix's `iq3` column once silently resolved to the IQ4_XS file, "
+                         "so two columns measured one model -- the model guard exists for that.")
+    ap.add_argument("--allow-stale-oracle", action="store_true",
+                    help="compare against an oracle reference even when its provenance stamp "
+                         "shows it was produced from older expert-cache/context code. Off by "
+                         "default: a stale reference fails loudly and looks like a real pool "
+                         "regression (measured 2026-09-13: M1 0/53 that looked like a bug for "
+                         "hours). Use only when you have confirmed the drift is numerics-neutral.")
     ap.add_argument("--summary", action="store_true",
                     help="print the consolidated (model x pool) gate table from the records on "
                          "disk and exit. Warns when a model was measured with more than one cap.")
