@@ -14,6 +14,7 @@
 | Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS.gguf | 14,069,275,872 | MTP 載體基底（blk.40 MTP head 同 trunk UD-IQ3_XXS） | `6275d06c6e1b0d0a4e07a69a5fbdc719dbaeaae87bc48e6c8377f4cd58ec369c` |
 | gemma-4-26B-A4B-it-UD-IQ3_S.gguf | 11,289,671,136 | gemma4 家族（-ngl 30，無 MTP 路徑） | `878be93f9c238ea853b3fd1eb602637ce3cf1cddea56dc345d9a7bf2d6093e29` |
 | Huihui-Qwen3.8-27B-abliterated-UD-IQ3_S.gguf | 11,952,901,024 | Qwen3.8 MoE 測試用 | `f785ad524b138cd53575410e07e93dfa6eff1cc92ca698264cb9c96973db6886` |
+| Ornith-1.5-35B-A3B-Abliterated-MTPv2-APEX-I-Compact-v2D-lite.gguf | 17,566,434,976 | **第三個獨立 (base, head) 對**：Ornith 1.5 35B 阿爾法去審查 bf16 基座重量化（q3_K/q4_K trunk + q8_0 MTP 層），arch qwen35moe、41 blocks + nextn 1、256 experts、top_k 8。CGC 模型矩陣的 `ornith` 條目。2026-09-14 由使用者下載，**HF 上未確認有此檔**，故此列目前只保證本機校驗 | `625ce839176c914555701629133b352d7fe021efc27153d0f2bb32438ef4d497` |
 
 ## 下載（Hugging Face）
 

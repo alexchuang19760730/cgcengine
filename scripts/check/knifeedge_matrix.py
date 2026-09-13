@@ -110,7 +110,23 @@ MODELS = {
         "file": "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf",
         "mtp": "1",
         "topk": 8,
-        "note": "vanilla IQ4_XS (18.2 GB)",
+        "note": "vanilla IQ4_XS (18.2 GB). NOT on disk in this checkout -- see the model-id line, "
+                "which prints exists=False rather than silently comparing something else.",
+    },
+    "ornith": {
+        # A different BASE, not a different quantisation of the same base: Ornith 1.5 35B is an
+        # abliterated MLX-bf16 fine-tune, requantised here to a mixed q3_K/q4_K trunk plus a q8_0
+        # MTP layer (123 expert tensors: q3_K=90, q4_K=30, q8_0=3).
+        "file": "Ornith-1.5-35B-A3B-Abliterated-MTPv2-APEX-I-Compact-v2D-lite.gguf",
+        "mtp": "1",
+        "topk": 8,
+        "note": "17.6 GB, arch qwen35moe, block_count 41 + nextn_predict_layers 1, 256 experts, "
+                "top_k 8, n_ff_exp 512 -> 589,824 B/expert for the q4_K kinds (the same per-slot "
+                "geometry as the Edge0 Q4_0 entry, so a given pool maps to a comparable slot "
+                "count) and 450,560 B/expert for q3_K. It carries its own head (fingerprint "
+                "2e35283d4a95c0bc, 21 tensors, 1372.7 MiB, types F32=9/Q8_0=12, router alive) -- "
+                "no graft, so this is a THIRD independently-paired (base, head) rather than a "
+                "second carrier for an existing pair.",
     },
 }
 
