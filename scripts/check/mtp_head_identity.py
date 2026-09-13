@@ -57,6 +57,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -76,6 +77,12 @@ SHARED_LM_HEAD = "output.weight"
 # "different precision" with "different weights", which is the distinction this gate exists
 # to make.
 LOSSLESS = ("BF16", "F16", "F32")
+
+# The 16-bit pair whose member sizes are IDENTICAL, so a wrong type tag cannot be detected by
+# size, offset, tensor count, or hash -- only by scale. Measured case: blk.40.ffn_gate_inp.weight
+# declared BF16 while its bytes are F16, which multiplies every weight by ~2**-26 and makes the
+# router effectively constant. See fix-encoding.
+ALT16 = {"BF16": "F16", "F16": "BF16"}
 
 
 def open_reader(path: Path) -> gguf.GGUFReader:
@@ -133,8 +140,15 @@ def head_tensors(reader, layer: int):
 
 
 def to_f32(t):
-    ty = t.tensor_type.name
-    b = raw_bytes(t)
+    return decode_as(raw_bytes(t), t.tensor_type.name)
+
+
+def decode_as(b: bytes, ty: str):
+    """Decode a blob under a GIVEN 16/32-bit interpretation.
+
+    Separate from `to_f32` because the interesting failure is precisely that the declared type
+    and the stored encoding disagree; the gate has to be able to decode the bytes BOTH ways.
+    """
     if ty == "BF16":
         u = np.frombuffer(b, dtype="<u2").astype(np.uint32) << 16
         return u.view(np.float32).astype(np.float32)
@@ -143,6 +157,18 @@ def to_f32(t):
     if ty == "F32":
         return np.frombuffer(b, dtype="<f4").astype(np.float32)
     return None
+
+
+def encode_bf16(f) -> bytes:
+    """float32 -> BF16 bits, round-to-nearest-even at bit 16."""
+    u = np.ascontiguousarray(f, dtype=np.float32).view(np.uint32)
+    lsb = (u >> 16) & 1
+    u = (u + (0x7FFF + lsb)) & 0xFFFF0000
+    return (u >> 16).astype("<u2").tobytes()
+
+
+def encode_f16(f) -> bytes:
+    return np.ascontiguousarray(f, dtype=np.float32).astype("<f2").tobytes()
 
 
 def degenerate(t) -> str | None:
@@ -192,6 +218,17 @@ def fingerprint(path: Path) -> dict:
         }
         why = degenerate(t)
         if why:
+            # Name the mechanism when it is the 16-bit tag swap, because "collapsed" alone sends
+            # a reader looking for a missing weight instead of a wrong label.
+            alt_ty = ALT16.get(t.tensor_type.name)
+            if alt_ty is not None:
+                alt = decode_as(b, alt_ty)
+                if alt is not None:
+                    peak = float(np.max(np.abs(alt))) if alt.size else 0.0
+                    if peak >= 1e-3:
+                        why = (f"{why}; bytes read as {alt_ty} give peak {peak:.4f} -- "
+                               f"the declared type does not match the stored encoding "
+                               f"(run fix-encoding)")
             dead[t.name] = why
 
     lines = [f"{n}|{v['type']}|{v['nbytes']}|{v['sha256']}" for n, v in sorted(recs.items())]
@@ -358,6 +395,84 @@ def cmd_check(args) -> int:
     return 1
 
 
+def cmd_fix_encoding(args) -> int:
+    """Re-encode head tensors whose declared 16-bit type contradicts their stored bytes.
+
+    Only touches tensors that are BOTH dead as declared AND healthy under the alternate 16-bit
+    reading, so it cannot "fix" a legitimately-small tensor or a genuinely different head. The
+    write is in place with the same byte count, which means no header field, offset or file
+    length changes -- nothing else in the artifact can move.
+    """
+    path = Path(args.gguf)
+    r = open_reader(path)
+    layer = head_layer(r)
+
+    todo = []
+    for t in head_tensors(r, layer):
+        alt_ty = ALT16.get(t.tensor_type.name)
+        if alt_ty is None or degenerate(t) is None:
+            continue
+        b = raw_bytes(t)
+        alt = decode_as(b, alt_ty)
+        if alt is None:
+            continue
+        peak = float(np.max(np.abs(alt))) if alt.size else 0.0
+        if peak < 1e-3:
+            continue
+        todo.append((t, b, alt_ty, alt, peak))
+
+    if not todo:
+        print("no 16-bit encoding mismatch in the head -- nothing to fix")
+        return 0
+
+    for t, b, alt_ty, alt, peak in todo:
+        declared = t.tensor_type.name
+        print(f"{t.name}")
+        print(f"  declared {declared}: peak {float(np.max(np.abs(decode_as(b, declared)))):.3e} (dead)")
+        print(f"  bytes as {alt_ty}: peak {peak:.6f} (healthy)")
+        print(f"  -> re-encode the stored values to {declared} ({len(b):,} bytes, in place)")
+
+    if not args.apply:
+        print("\nDRY RUN. Re-run with --apply.")
+        return 1
+
+    backup = Path(args.backup) if args.backup else path.with_name(path.name + ".encbak")
+    if not backup.exists():
+        # APFS clone is instant and shares blocks; anything else costs a full copy, which on an
+        # 18 GB artifact is the difference between "always" and "never".
+        subprocess.run(["cp", "-c", str(path), str(backup)], check=False)
+        if not backup.exists() or backup.stat().st_size != path.stat().st_size:
+            print(f"backup: clonefile unavailable, copying {path.stat().st_size / 2**30:.1f} GiB")
+            subprocess.run(["cp", str(path), str(backup)], check=True)
+    print(f"\nbackup: {backup} ({backup.stat().st_size:,} bytes)")
+
+    with open(path, "r+b") as f:
+        for t, b, alt_ty, alt, _peak in todo:
+            off = int(t.data_offset)
+            f.seek(off)
+            if f.read(len(b)) != b:
+                raise SystemExit(f"{t.name}: file bytes at {off} do not match the reader's view; "
+                                 "refusing to write")
+            blob = encode_bf16(alt) if t.tensor_type.name == "BF16" else encode_f16(alt)
+            if len(blob) != len(b):
+                raise SystemExit(f"{t.name}: re-encoded to {len(blob)} B, expected {len(b)} B")
+            f.seek(off)
+            f.write(blob)
+            print(f"  wrote {t.name} @ {off:,}")
+
+    after = fingerprint(path)
+    print(f"\nnew identity: {after['identity']}")
+    print(f"degenerate  : {after['degenerate'] or '{}'}")
+    if after["degenerate"]:
+        print("STILL DEAD -- restore from the backup and investigate")
+        return 1
+    if args.out:
+        Path(args.out).write_text(json.dumps(after, indent=2, sort_keys=True) + "\n")
+        print(f"wrote {args.out}")
+    print("PASS  the head is numerically alive again")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -380,6 +495,15 @@ def main(argv=None) -> int:
     p.add_argument("--gguf", required=True)
     p.add_argument("--expect", required=True)
     p.set_defaults(func=cmd_check)
+
+    p = sub.add_parser("fix-encoding",
+                       help="re-encode head tensors whose declared 16-bit type contradicts "
+                            "their stored bytes")
+    p.add_argument("--gguf", required=True)
+    p.add_argument("--apply", action="store_true")
+    p.add_argument("--backup", help="backup path (default: <gguf>.encbak, APFS clone)")
+    p.add_argument("--out", help="write the new sidecar here after a successful fix")
+    p.set_defaults(func=cmd_fix_encoding)
 
     args = ap.parse_args(argv)
     return args.func(args)

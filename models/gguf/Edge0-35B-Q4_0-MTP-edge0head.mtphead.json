@@ -1,13 +1,11 @@
 {
   "block_count": 41,
-  "degenerate": {
-    "blk.40.ffn_gate_inp.weight": "collapsed (peak |v| = 3.26e-09)"
-  },
+  "degenerate": {},
   "gguf": "models/gguf/Edge0-35B-Q4_0-MTP-edge0head.gguf",
   "gguf_bytes": 19853282144,
   "head_bytes": 603731968,
   "head_layer": 40,
-  "identity": "aa16b5e9865ee2349bdd2fde187dab0d7be03a75611413d1ee0484e067cf6c0d",
+  "identity": "d29f7e9dd6cfa7ddfe97710687faed13757d5e2cba0d6041951438495c4949a8",
   "n_tensors": 21,
   "schema": "cgc.mtp_head_identity/1",
   "tensors": {
@@ -102,7 +100,7 @@
     },
     "blk.40.ffn_gate_inp.weight": {
       "nbytes": 1048576,
-      "sha256": "1c5e705a1a2964f91d4959294829ec9c50b1b95c1eb62bfce17786b64f4e9f1f",
+      "sha256": "d4f2f512169ca1d885446b5ca7347d4019ca545a00bd13f09bd7be213e4b0513",
       "shape": [
         2048,
         256

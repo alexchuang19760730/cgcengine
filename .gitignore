@@ -14,6 +14,11 @@
 *.gguf
 *.safetensors
 *.bin
+# gguf_retensor / mtp_head_identity 的可逆备份（与 *.gguf 同量级，绝不能入库）
+*.gguf.encbak
+*.gguf.bak
+*.retensor.tmp
+*.retensor.scratch/
 
 # Python
 __pycache__/

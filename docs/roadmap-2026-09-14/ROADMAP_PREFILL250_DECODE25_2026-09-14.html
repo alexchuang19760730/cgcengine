@@ -552,23 +552,36 @@
       <li>accept <strong>≥ 60%</strong>；<strong>MTP-on ≥ MTP-off</strong>（今天是 <strong>1.8× 淨損失</strong>）</li>
       <li>M1 / M2 = 100% <strong>with MTP ON</strong>（現在 <code>plain_match=False</code> 在四條臂上全部成立）</li>
       <li><strong>head 閘門 PASS</strong>：<code>mtp_head_identity.py check</code> 對量測用的 artifact 回 0
-        （身分＝sidecar，且無 <code>degenerate</code> 張量）</li>
+        （身分＝sidecar，且無 <code>degenerate</code> 張量）。
+        <code>Edge0-35B-Q4_0-MTP-edge0head.gguf</code> 已於 2026-09-14 修好並 PASS（<code>d29f7e9d…</code>）</li>
     </ul>
 
     <div class="warning">
-      <strong>⚠ 量測順序的前置阻塞（2026-09-14 實測）：</strong>
+      <strong>⚠ 一個會讓 accept 量測完全無意義的缺陷（2026-09-14 實測 → 已修）：</strong>
       <code>Edge0-35B-Q4_0-MTP-edge0head.gguf</code> 的 MTP head router
       （<code>blk.40.ffn_gate_inp.weight</code>，BF16 無損）數值上是死的——
       min <code>−3.26e−09</code> / max <code>+9.31e−10</code> / std <code>7.74e−12</code>，
       而另外兩個 artifact 都是 std <code>0.00963</code>、範圍 ±0.14。router 全零 ⇒ 每個 expert 的 logit 相同
       ⇒ top-k 退化 ⇒ draft 分佈與 target 無關 ⇒ <strong>accept 必然塌成 0</strong>。
-      同一個 artifact 的 <code>blk.40.nextn.shared_head_norm.weight</code> 也少了 loader 的 +1.0 norm shift
-      （min <code>−0.177</code> vs 另兩者的 <code>+0.829</code>，相差恰為 1.0）。
-      <br>所以：<strong>修好這兩個缺陷並重建之前，任何 accept 數字都不成立</strong>；
-      而先前「F16 儲存型別是 0% accept 成因」的假設已被證偽——
-      兩個 Edge0 artifact 的 head 型別表<b>完全相同</b>（BF16=2 F32=7 IQ4_XS=7 Q2_K=2 Q3_K=1 Q4_0=1 Q8_0=1，各 575.8 MiB）。
+      <br><strong>真因（已修）：那批位元組是 F16，標頭卻宣告 BF16。</strong>
+      把同一批位元組當 F16 解讀：peak <code>0.167969</code> / std <code>0.009695</code>，
+      與 npz 權威值 <b>rel_l2 = 0.000000、corr = 1.000000</b>——
+      也就是說<strong>檔案裡的數字是對的，標籤是錯的</strong>。因為 BF16 與 F16 都是 16 bit，
+      <code>nbytes</code> 完全相同，所以大小、張量數、偏移、sha256 沒有任何一項看得出來；
+      唯一的症狀是每個權重被乘上約 2^−26。
+      修法 <code>fix-encoding</code>：把既有的 F16 值重新編碼成 BF16（round-to-nearest-even），
+      <b>就地、同長度</b>寫回（標頭、偏移、檔案長度都不變），APFS clone 備份。
+      修好後 peak <code>0.167969</code>、與 npz <code>rel_l2 = 0.000000</code>、
+      新身分 <code>d29f7e9d…</code>、<code>degenerate</code> = <code>{}</code>、<code>check</code> <b>PASS</b>。
+      <br>而先前「F16 儲存型別是 0% accept 成因」的假設仍被證偽——
+      兩個 Edge0 artifact 的 head 型別表<b>完全相同</b>（BF16=2 F32=7 IQ4_XS=7 Q2_K=2 Q3_K=1 Q4_0=1 Q8_0=1，各 575.8 MiB）；
+      真因不是「某個張量是 F16」，而是「<b>標頭與位元組不一致</b>」。
       反面則是好消息：<code>Edge0-35B-Q4_0-MTP.gguf</code>（Nail head 移植）對 Nail 載體的每一個無損 head 張量
       都是 rel_l2 = 0.00000，證明那次移植位元完美——它的 0.81% 純粹是 (base, head) 不匹配。
+      <br><b>一則已撤回的誤判：</b>本表初版把 <code>shared_head_norm</code> 的 ~1.0 偏移判成「少了 +1.0 norm shift」，
+      那是錯的——loader 明文 <code>mtp.norm 不需要 shift</code>（<code>mtp_head_qwen35.py:190</code>），
+      那個偏移只是「Edge0 的 head 與 Nail 的 head 不同」。
+      <code>merge_mtp_head_edge0.py</code> 的註解早就警告過這個陷阱，我重犯了同一個錯。
       <br>細節與可重跑的證據：<code>docs/MTP_HEAD_PROVENANCE_GATE_2026-09-14.md</code>。
     </div>
   </div>
