@@ -38,7 +38,14 @@ import urllib.request
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
-from bare_48 import load_reference, score_one  # noqa: E402
+# bare_48 scores with TWO rulers since b492c8c75 (legacy + strict), so the old single
+# `score_one` no longer exists. This driver follows the STRICT ruler -- the one whose exit
+# criteria the roadmap is written against -- and passes the same per-question answer key that
+# bare_48's own run_suite does, so a flip counted here means the same thing there.
+# The import is what broke: it kept naming `score_one` after the rename, and the failure stayed
+# invisible because this runs inside the matrix's subprocess, which reported the columns as
+# None rather than as an error.
+from bare_48 import load_answer_keys, load_reference, score_strict  # noqa: E402
 
 
 def ask(base_url, model, prompt, temperature, seed, timeout, max_tokens):
@@ -92,8 +99,15 @@ def build_questions(ref, profiles, per_profile):
     return out
 
 
+def _key_for(keys, profile, index):
+    """Answer key for one question, or None -- same lookup rule as bare_48.run_suite."""
+    pk = keys.get(profile, [])
+    return pk[index] if index < len(pk) else None
+
+
 def run_session(args):
     ref = load_reference()
+    keys = load_answer_keys()
     profiles = args.profiles.split(",")
     questions = build_questions(ref, profiles, args.per_profile)
     seeds = [args.seed_base + i for i in range(args.repeats)]
@@ -108,7 +122,8 @@ def run_session(args):
         greedy = []
         for _ in range(args.greedy_repeats):
             r = ask(args.base_url, args.model, q["prompt"], 0.0, None, args.timeout, args.max_tokens)
-            ok, checks = score_one(q["profile"], rules, r["content"], r["finish_reason"])
+            ok, checks = score_strict(rules, _key_for(keys, q["profile"], q["index"]),
+                                      q["prompt"], r["content"], r["finish_reason"])
             greedy.append({"pass": ok, "checks": checks, "content": r["content"],
                            "finish": r["finish_reason"], "elapsed": r["elapsed"],
                            "completion_tokens": r["completion_tokens"], "tps": r["tps"]})
@@ -116,7 +131,8 @@ def run_session(args):
         for s in seeds:
             r = ask(args.base_url, args.model, q["prompt"], args.temperature, s,
                     args.timeout, args.max_tokens)
-            ok, checks = score_one(q["profile"], rules, r["content"], r["finish_reason"])
+            ok, checks = score_strict(rules, _key_for(keys, q["profile"], q["index"]),
+                                      q["prompt"], r["content"], r["finish_reason"])
             seeded.append({"seed": s, "pass": ok, "checks": checks, "content": r["content"],
                            "finish": r["finish_reason"], "elapsed": r["elapsed"],
                            "completion_tokens": r["completion_tokens"], "tps": r["tps"]})

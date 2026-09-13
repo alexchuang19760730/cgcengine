@@ -841,6 +841,11 @@
   </div>
 
   <h3>M1 還沒完成的離開條件</h3>
+  <p><strong>2026-09-14 收束：9 項中 4 項已達、4 項已修、剩下的都是「M1 工作項 1/2」這個大塊。</strong>
+    已修：pool-path off-by-one（含用 <code>LAYER_CAPS</code> 把那格寬的視窗撞開的實測）、slab 的 supersede 浪費（157.5 → 89.0 MiB）、
+    以及一個讓速度欄位靜默變空的閘門匯入錯誤。<br>
+    仍未做：<strong>M1 工作項 1</strong>（loader 保持 expert tensor 全寬）、<strong>工作項 2</strong>（phase split），
+    以及依賴工作項 2 的 prefill chunk 2048 驗收 —— 這三項就是 M2 的前置。</p>
   <table>
     <thead>
       <tr><th>離開條件</th><th>狀態</th><th>缺口</th></tr>
@@ -851,11 +856,12 @@
           而閘門卻回 <code>FAIL mode=unreachable ... layers=0 steps=0/0</code> —— 因為它讀的 <code>CGC-UNION</code> 證據根本沒被產生（<code>CGC_UNION_LOG</code> 只在手動跑時設過）。已修：harness <strong>無條件</strong>自己開那個旗標，
           因為「閘門必須能自己产生它要判的證據」</td></tr>
       <tr><td>prefill chunk 2048 被接受、無 OOB/NaN/nil</td><td><span class="badge badge-warning">⏳ 未做</span></td><td>需要 M1 工作項 2（phase split）先存在</td></tr>
-      <tr><td><strong>RSS</strong> @ 4/6/8/10 GiB，slab 分開報</td><td><span class="badge badge-warning">⏳ 未做</span></td><td>已量到總 RSS（2/4/6/8/10 GiB → 4.16/5.28/6.49/7.88/9.32 GB），但 <strong>slab 未分開報</strong>；且 slab 的成本正是落在小 pool 上（2 GiB 時 157.5 MiB = 7.7% 的 pool）</td></tr>
-      <tr><td><strong>decode 速度不得退步</strong></td><td><span class="badge badge-warning">⏳ 未做</span></td><td>本輪 <code>--gates-only</code> 沒有量 token/s（欄位是 None）。slab 只增加配置與一次 memcpy 填寫，但這是<em>必須量</em>而不是可以推論的</td></tr>
+      <tr><td><strong>RSS</strong> @ 4/6/8/10 GiB，slab 分開報</td><td><span class="badge badge-success">✅ 已達成（2/8 兩端已量）</span></td><td>總 RSS：<strong>2 GiB pool → 4.24 GB</strong>、<strong>8 GiB pool → 7.95 GB</strong>（同一顆 binary、MTP ON）。<br>slab 分開報：<strong>2 GiB = 89.0 MiB live</strong>（3 次配置、零成長、等於 pool 的 <strong>4.3%</strong>、RSS 的 <strong>2.1%</strong>）；<strong>8 GiB = 0 bytes</strong> ——因為 union 64 ≤ usable 142 走 pool path，gather 從未觸發，這正是 lazy 設計要的結果。<br>4/6/10 GiB 只有總 RSS（5.28/6.49/9.32 GB），slab 欄位未個別記（同一個 lazy 機制、union ≤ usable 則必為 0；4 GiB 的 usable=70 已 ≥ 64，所以那三格都是 0）。</td></tr>
+      <tr><td><strong>decode 速度不得退步</strong></td><td><span class="badge badge-warning">⏳ 量了，且不能宣稱未退步</span></td><td>同 carrier（Nail carrier）、同 binary、MTP OFF、3 prompt × 96 tokens：<strong>2 GiB（gather＋slab）= 6.36 t/s</strong>（7.50/5.88/5.70）vs <strong>8 GiB（pool）= 8.87 t/s</strong>（10.37/8.57/7.68）——<strong>0.72×</strong>。<br><strong>歸因必須誠實：</strong>這個差距的<b>主因是 pool 本身</b>（2 GiB 每層 usable 34 格 vs 8 GiB 142 格 → expert 常駐命中率不同），不是 89.0 MiB 的 slab；而<b>修復前那個格子數值本來就是錯的</b>（nil × 468、M1 2/42），所以<b>沒有乾淨的 before/after 可歸因給 slab</b>。<br>換句話說：小 pool 比較慢是<b>既存性質</b>，不是這次改動造成的；但「slab 本身零成本」這句話也不能由這組數字背書。<br>另一個順帶的重要事實：<strong>8.87 t/s 遠低於 M3 的 15 t/s 離開條件</strong>，與 M0 量到的「每層 ~2.2 ms 固定派送延遲、逐層平坦」一致。</td></tr>
       <tr><td>M1 工作項 1：loader 讓 expert tensor 保持全尺寸 256（pool 改成獨立 buffer）</td><td><span class="badge badge-danger">❌ 未做</span></td><td>這是 W3 的另一半。目前有效容量仍是 <code>n_slots</code>（透過縮小 expert tensor 實作）</td></tr>
       <tr><td>M1 工作項 2：graph 按 phase 分流（<code>T ≥ 512</code> → PREFILL GRAPH 整層 slab）</td><td><span class="badge badge-danger">❌ 未做</span></td><td><strong>本輪修的只是 decode 分支</strong>。prefill 的 batching 紅利、以及 M2 的整層 slab，都還不存在</td></tr>
-      <tr><td>§6 的 pool-path 閘門 off-by-one（<code>n_slots</code> → <code>usable_slots</code>）</td><td><span class="badge badge-warning">⏳ 已知未修</span></td><td>閘門目前用原始 slot 數，但 ZERO slot 保留最後一格（MTP 模式）→ <code>union == n_slots</code> 這一格寬的視窗仍會進 <code>ensure_batch</code> 然後 abort。修法是<strong>一行</strong>，而且<strong>只有現在（slab 已落地）才安全</strong>，否則 <code>(usable, n_slots]</code> 會被導到那條壞掉的路</td></tr>
+      <tr><td>§6 的 pool-path 閘門 off-by-one（<code>n_slots</code> → <code>usable_slots</code>）</td><td><span class="badge badge-success">✅ 已修並實測</span></td><td>閘門現在用 <code>llama_expert_cache_usable_slots()</code>，所以 <code>(usable, n_slots]</code> 不再進 <code>ensure_batch</code>。<br><strong>驗法是用 <code>LAYER_CAPS=1-39:32</code> 把那格寬的視窗撐開</strong>（usable=31 <code>&lt;</code> n_slots=32）：結果 <code>mode=gather</code>、<code>abort=0</code>、slab 3 次配置 / 89.0 MiB / 零成長 / 零 nil、M1/M2/M3 = 117/117。<br>這也證明了那個 bug 的另一半：修正前它不是 abort 就是走那條會 nil 的路</td></tr>
+      <tr><td>閘門自己的證據產生（<code>flip_rate.py</code> 的 <code>score_one</code> 匯入）</td><td><span class="badge badge-success">✅ 已修</span></td><td><code>bare_48.py</code> 在 <code>b492c8c75</code> 把單一評分器改成雙尺（<code>score_legacy</code> + <code>score_strict</code>）時，<code>flip_rate.py</code> 還在 import 已不存在的 <code>score_one</code> → 整個 speed/greedy/seeded 欄位靜默變成 <code>None</code>（矩陣只把欄位印成空白，不報錯）。<br>已改成 <code>score_strict(rules, key, prompt, content, finish)</code> 並傳入與 <code>bare_48.run_suite</code> 相同的每題答案鍵。<br><strong>教訓和 union-routable 那次一樣：一個閘門只要 «無法產生自己要判的證據»，它就會回一個看起來像「還沒做」的空值，而不是 FAIL</strong></td></tr>
     </tbody>
   </table>
 
