@@ -556,6 +556,48 @@
         <code>Edge0-35B-Q4_0-MTP-edge0head.gguf</code> 已於 2026-09-14 修好並 PASS（<code>d29f7e9d…</code>）</li>
     </ul>
 
+    <h4>實測結果（2026-09-14，8 GiB pool，同一顆 binary，3 個 prompt × 96 tokens，temp 0）</h4>
+    <p>新增 <code>scripts/check/mtp_accept_ab.py</code>：它先跑 head 閘門（身分＋存活），再啟動 carrier 量
+      <code>timings.draft_n_accepted / draft_n</code>。<strong>它拒絕對一個死掉的 head 產出數字</strong>，因為那會把
+      檔案缺陷誤報成模型性質。</p>
+    <table>
+      <thead><tr><th>carrier</th><th>head</th><th>accept</th><th>acc / gen</th><th>mean len</th><th>decode t/s</th></tr></thead>
+      <tbody>
+        <tr><td><strong>nail</strong>（Nail 的 head ＋ Nail 的 base）</td><td><code>219b27c4…</code></td>
+            <td><span class="badge badge-success">70.39%</span></td><td>107 / 152</td><td>36.67</td><td>6.74</td></tr>
+        <tr><td><strong>edge0head</strong>（修好後的 Edge0 head ＋ Edge0 base）</td><td><code>d29f7e9d…</code></td>
+            <td><span class="badge badge-warning">26.81%</span></td><td>37 / 138</td><td>13.33</td><td>3.14</td></tr>
+        <tr><td><strong>graft</strong>（Nail 的 head ＋ Edge0 base）</td><td><code>bc0cfecf…</code></td>
+            <td><span class="badge badge-danger">0.61%</span></td><td>5 / 822</td><td>2.67</td><td>1.18</td></tr>
+        <tr><td><strong>nail_nomtp</strong>（同一 carrier，MTP OFF）</td><td>—</td>
+            <td>n/a</td><td>0 / 0</td><td>1.00</td><td><strong>8.87</strong></td></tr>
+      </tbody>
+    </table>
+    <p>原始輸出：<code>Backup/cgc_logs/mtp_accept_ab.json</code>（三個 carrier）與
+      <code>Backup/cgc_logs/mtp_accept_nomtp.json</code>（MTP-off 分母），
+      每筆都保留 per-request 的 draft 計數與 t/s（<code>Backup/</code> 是 gitignored，只留路徑引用）。</p>
+    <p>三個結論，都是可量化的：</p>
+    <ol>
+      <li><strong>head 存活修復有效且必要：</strong>Edge0 head 從 router 塌成常數（accept 無從發生）變成
+        <strong>26.81%</strong>。<code>mean len</code> 也跟著走（36.67 / 13.33 / 2.67）——兩個獨立指標一致。</li>
+      <li><strong>accept 是 (base, head) 配對的性質，而且是唯一被證明的版本：</strong>graft 用的是
+        <b>與 nail 完全相同的 head</b>（<code>bc0cfecf…</code> 與 <code>219b27c4…</code> 逐位元組互為同一 head 的
+        兩份拷貝，§M4 上方已證 rel_l2 = 0.00000），只換了 base，accept 就從 70.39% 掉到 0.61%（<b>115×</b>）。
+        所以「用官方 head 保證初始 accept」成立的前提是：那顆 head 要配它自己的 base。</li>
+      <li><strong>M4 的主要離開條件仍未過，但原因不是 accept：</strong>Nail 配對的 accept
+        <span class="badge badge-success">70.39% ≥ 60%</span> 已過；然而同一 carrier 的
+        <strong>MTP-on 6.74 t/s &lt; MTP-off 8.87 t/s</strong>（0.76×）。也就是說在 70% accept 之下，
+        draft＋verify 的固定成本仍然大於收益——這就是 roadmap 說的「MTP 額外成本 84% 在 verify 拿不到批量紅利」。
+        <b>下一步的槓桿在 verify 批次的成本，不在 accept。</b></li>
+    </ol>
+    <div class="warning">
+      <strong>樣本量必須標註：</strong>每個 carrier 只有 3 個 prompt、每個 96 tokens、單次執行，
+      而且是 <b>MTP ON 的 8 GiB pool</b>。decode t/s 的絕對值會隨 page cache 與其他行程變動，
+      所以我只用它做<b>同一 run 內</b>的 MTP-on/off 比值，不跨 run 比較絕對值。
+      <br>另外這 26.81% 是<b>尚未</b>實作 M4 工作項 1（拒絕取樣）的數字——也就是說 Edge0 這個配對的
+      26.81% 是「現行精確相等規則」下的值，還有工作項 1 的空間。
+    </div>
+
     <div class="warning">
       <strong>⚠ 一個會讓 accept 量測完全無意義的缺陷（2026-09-14 實測 → 已修）：</strong>
       <code>Edge0-35B-Q4_0-MTP-edge0head.gguf</code> 的 MTP head router

@@ -1,0 +1,327 @@
+#!/usr/bin/env python3
+"""Measure MTP draft acceptance per carrier, with the head's identity recorded alongside it.
+
+WHY
+---
+An MTP accept rate is a property of the (base, head) pair, and it is the number the roadmap's
+M4 exits on. Until now the harness had no cell for it at all: the five oracle cells all ran the
+MTP *engine*, but their probe was a single chat turn, so a green oracle said nothing about the
+verify path or about accept. This driver is that missing cell.
+
+It refuses to produce a number for a head that is not alive. That is not ceremony: the Edge0
+head artifact carried an F16 payload under a BF16 type tag, which collapsed its router and made
+accept a foregone conclusion. A driver that reports "accept 0.0%" for that artifact is reporting
+a file defect as a model property. `mtp_head_identity.py` decides liveness; this script obeys it.
+
+WHAT IT REPORTS
+---------------
+Per carrier: accepted / generated draft tokens (the server's own counters, from the HTTP
+`timings.draft_n_accepted` / `timings.draft_n` fields), the ratio, the mean accepted run length,
+and prefill/decode tok/s. Summed over the measured requests, with the per-request values kept in
+the JSON so a single outlier cannot hide inside an average.
+
+USAGE
+-----
+    python3 scripts/check/mtp_accept_ab.py                     # all carriers
+    python3 scripts/check/mtp_accept_ab.py --arms nail         # one
+    python3 scripts/check/mtp_accept_ab.py --pool-gb 8 --n-predict 96
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+GATE = ROOT / "scripts" / "check" / "mtp_head_identity.py"
+LOGDIR = ROOT / "Backup" / "cgc_logs"
+
+# The three carriers that matter, and why each one is here:
+#   nail      -- the known-good pair (Nail's own head on Nail's own base). This is the
+#                baseline the strategy promises to reach, so it must reproduce.
+#   edge0head -- Edge0's own head on Edge0's base, i.e. the artifact the policy calls for.
+#                Was reporting a dead router; measure it now that it is alive.
+#   graft     -- Nail's head on Edge0's base. The (base, head) mismatch, kept as the control
+#                that shows accept is a property of the PAIR and not of the head's precision.
+# (model, why, mtp) -- the mtp flag is part of the arm because M4's exit is "MTP-on >= MTP-off",
+# and that comparison is only meaningful on the same carrier with the same head.
+ARMS = {
+    "nail":      ("models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf",
+                  "Nail head on Nail base (known-good pair)", "1"),
+    "edge0head": ("models/gguf/Edge0-35B-Q4_0-MTP-edge0head.gguf",
+                  "Edge0's own head on Edge0 base (the policy's carrier)", "1"),
+    "graft":     ("models/gguf/Edge0-35B-Q4_0-MTP.gguf",
+                  "Nail head on Edge0 base ((base,head) mismatch control)", "1"),
+    "nail_nomtp": ("models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf",
+                   "same Nail carrier with MTP OFF -- the denominator of 'MTP-on >= MTP-off'", "0"),
+}
+
+PROMPTS = [
+    "Write one paragraph describing how a river changes between its source and the sea.",
+    "Explain in a few sentences why the sky is blue.",
+    "List four differences between a lake and an ocean, with one clause each.",
+]
+
+
+def log(m: str) -> None:
+    print(f"[{time.strftime('%H:%M:%S')}] {m}", flush=True)
+
+
+def sh(*args) -> str:
+    return subprocess.run(args, capture_output=True, text=True).stdout
+
+
+def http(url: str, payload=None, timeout=600):
+    data = None if payload is None else json.dumps(payload).encode()
+    req = urllib.request.Request(url, data=data,
+                                headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode())
+
+
+def gate(model: Path) -> dict:
+    """Identity + liveness, delegated to mtp_head_identity.py.
+
+    Raises if the head is not alive. The delegation matters: the rule about what counts as a
+    usable head lives in one place, so this driver cannot quietly measure a dead one.
+    """
+    out = subprocess.run([sys.executable, str(GATE), "check", "--gguf", str(model)],
+                         capture_output=True, text=True)
+    sidecar = Path((str(model)[:-5] if str(model).endswith(".gguf") else str(model))
+                   + ".mtphead.json")
+    for line in (out.stdout + out.stderr).strip().splitlines():
+        log(f"    gate: {line}")
+    if out.returncode != 0:
+        raise SystemExit(f"refusing to measure accept for {model.name}: the head gate failed")
+    fp = json.loads(sidecar.read_text())
+    return fp
+
+
+def launch(model: Path, pool_gb: float, port: int, logpath: Path, mtp: str = "1") -> None:
+    env = dict(os.environ)
+    env.update({
+        "CGC_DETACHED": "1",
+        "_CGC_DETACHED_MARKER": "1",
+        "CGC_SERVER_MODEL": str(model),
+        "CGC_SERVER_MTP": mtp,
+        "CGC_SERVER_EXPERT_CACHE_BYTES": str(int(pool_gb * 1024 ** 3)),
+        "CGC_SERVER_PORT": str(port),
+    })
+    with open(logpath, "wb") as fh:
+        subprocess.Popen(["bash", "scripts/run_server.sh"], cwd=ROOT, env=env,
+                         stdout=fh, stderr=fh, stdin=subprocess.DEVNULL,
+                         start_new_session=True)
+
+
+def server_pid() -> int | None:
+    out = sh("pgrep", "-f", "build/bin/llama-server").split()
+    return int(out[0]) if out else None
+
+
+def stop_server() -> None:
+    subprocess.run(["pkill", "-9", "-f", "build/bin/llama-server"], check=False)
+    for _ in range(20):
+        if server_pid() is None:
+            return
+        time.sleep(0.5)
+
+
+# Markers that mean the launch is over rather than still in flight.
+#
+# Deliberately NOT the bare "[guard]" prefix: run_server.sh prints an informational
+# "[guard] memory_mode=... free=74%" line on every successful launch, so matching it made a
+# perfectly healthy load look dead. Only the refusal forms count, and those all carry the
+# script's own "error:" prefix.
+FATAL = ("error: startup blocked", "error: even fallback memory guard",
+         "error: model not found", "error: CGC_SERVER_RUNTIME_PROFILE",
+         "out of memory", "cannot allocate", "failed to load",
+         "Killed:", "terminate called")
+
+
+def dump_tail(logpath: Path, n=30) -> None:
+    log(f"    tail of {logpath.name}:")
+    try:
+        for line in logpath.read_text(errors="replace").splitlines()[-n:]:
+            log(f"      {line}")
+    except OSError:
+        log("      (unreadable)")
+
+
+def wait_health(port: int, logpath: Path, timeout=600, startup_grace=150) -> bool:
+    """Wait for /health, distinguishing "still loading" from "the launch is dead".
+
+    The trap this avoids: run_server.sh validates, checks memory, computes a profile and only
+    then execs the server, so `pgrep` legitimately finds NOTHING for the first several seconds
+    after launch. Treating "no process yet" as death made the first run abandon a server that
+    was loading normally. Now an absent process only counts after `startup_grace`.
+    """
+    url = f"http://127.0.0.1:{port}/health"
+    t0 = time.time()
+    last_note = 0.0
+    while time.time() - t0 < timeout:
+        try:
+            with urllib.request.urlopen(url, timeout=5) as r:
+                if r.status == 200:
+                    return True
+        except Exception:
+            pass
+
+        if time.time() - t0 > 5 and logpath.exists():
+            try:
+                txt = logpath.read_text(errors="replace")
+            except OSError:
+                txt = ""
+            for line in txt.splitlines():
+                if any(m in line for m in FATAL):
+                    log(f"    launch reported a failure: {line.strip()}")
+                    dump_tail(logpath)
+                    return False
+
+        el = time.time() - t0
+        if el > startup_grace and server_pid() is None:
+            log(f"    no server process after {int(el)}s")
+            dump_tail(logpath)
+            return False
+
+        if el - last_note > 60:
+            last_note = el
+            log(f"    loading… {int(el)}s (pid {server_pid()})")
+        time.sleep(5)
+
+    log(f"    timed out after {timeout}s")
+    dump_tail(logpath)
+    return False
+
+
+def complete(port: int, prompt: str, n_predict: int, timeout=900) -> dict:
+    return http(f"http://127.0.0.1:{port}/completion", {
+        "prompt": prompt, "n_predict": n_predict, "temperature": 0,
+        "stream": False, "cache_prompt": False,
+    }, timeout=timeout)
+
+
+def measure(label: str, model: Path, pool_gb: float, port: int, n_predict: int,
+            warm: bool = True, mtp: str = "1") -> dict:
+    LOGDIR.mkdir(parents=True, exist_ok=True)
+    logpath = LOGDIR / f"mtp_accept_{label}_{time.strftime('%Y%m%d_%H%M%S')}.log"
+    log(f"launching {label}: {model.name} pool={pool_gb}GB port={port} mtp={mtp}")
+    log(f"    log: {logpath}")
+
+    stop_server()
+    launch(model, pool_gb, port, logpath, mtp)
+    try:
+        if not wait_health(port, logpath):
+            raise SystemExit(f"{label}: server did not become healthy")
+        log(f"    healthy (pid {server_pid()})")
+
+        if warm:
+            # Cold-cache first touch: its accept is real but its timings are not comparable.
+            log("    warmup request (not counted)")
+            complete(port, PROMPTS[0], 24)
+
+        reqs = []
+        for i, p in enumerate(PROMPTS):
+            t0 = time.time()
+            r = complete(port, p, n_predict)
+            dt = time.time() - t0
+            tm = r.get("timings", {})
+            d_n = int(tm.get("draft_n", 0))
+            d_a = int(tm.get("draft_n_accepted", 0))
+            reqs.append({
+                "prompt": p[:48], "wall_s": round(dt, 2),
+                "draft_n": d_n, "draft_n_accepted": d_a,
+                "prefill_tps": tm.get("prompt_per_second"),
+                "decode_tps": tm.get("predicted_per_second"),
+                "n_predicted": tm.get("predicted_n"),
+                "text_chars": len(r.get("content", "")),
+            })
+            log(f"    req {i+1}: draft {d_a}/{d_n}  decode={tm.get('predicted_per_second', 0):.2f} t/s"
+                f"  {dt:.1f}s")
+    finally:
+        stop_server()
+
+    tot_n = sum(r["draft_n"] for r in reqs)
+    tot_a = sum(r["draft_n_accepted"] for r in reqs)
+    dec = [r["decode_tps"] for r in reqs if r["decode_tps"]]
+    pre = [r["prefill_tps"] for r in reqs if r["prefill_tps"]]
+    return {
+        "label": label, "model": model.name, "pool_gb": pool_gb, "mtp": mtp,
+        "draft_n": tot_n, "draft_n_accepted": tot_a,
+        "accept": (tot_a / tot_n) if tot_n else None,
+        "mean_acc_len": (1.0 + tot_a / len(reqs)) if reqs else None,
+        "decode_tps_mean": sum(dec) / len(dec) if dec else None,
+        "prefill_tps_mean": sum(pre) / len(pre) if pre else None,
+        "requests": reqs,
+    }
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--arms", default=",".join(ARMS), help=f"subset of {list(ARMS)}")
+    ap.add_argument("--pool-gb", type=float, default=8.0)
+    ap.add_argument("--port", type=int, default=9932)
+    ap.add_argument("--n-predict", type=int, default=96)
+    ap.add_argument("--out", default="Backup/cgc_logs/mtp_accept_ab.json")
+    args = ap.parse_args()
+
+    results = []
+    for label in [a.strip() for a in args.arms.split(",") if a.strip()]:
+        if label not in ARMS:
+            raise SystemExit(f"unknown arm {label!r}; known: {list(ARMS)}")
+        rel, why, mtp = ARMS[label]
+        model = ROOT / rel
+        if not model.exists():
+            log(f"SKIP {label}: {rel} not present")
+            continue
+        log(f"=== {label}: {why}")
+        fp = gate(model)
+        log(f"    head identity {fp['identity'][:16]}…  degenerate={fp['degenerate'] or '{}'}")
+        try:
+            res = measure(label, model, args.pool_gb, args.port, args.n_predict, mtp=mtp)
+        except SystemExit as e:
+            # One carrier failing must not cost the others' measurements: a 3-arm run takes many
+            # minutes and a launcher refusal on arm 2 is not a reason to discard arm 1.
+            log(f"    ARM FAILED: {e}")
+            stop_server()
+            results.append({"label": label, "model": model.name, "failed": str(e),
+                            "head_identity": fp["identity"], "head_types": fp["types"]})
+            time.sleep(5)
+            continue
+        res["head_identity"] = fp["identity"]
+        res["head_types"] = fp["types"]
+        results.append(res)
+        a = res["accept"]
+        log(f"    => accept {'n/a' if a is None else f'{a*100:.2f}%'}"
+            f" ({res['draft_n_accepted']}/{res['draft_n']}), "
+            f"decode {res['decode_tps_mean'] or 0:.2f} t/s")
+        time.sleep(10)
+
+    out = ROOT / args.out
+    out.write_text(json.dumps(results, indent=2) + "\n")
+    print()
+    print(f"{'carrier':<10} {'accept':>8} {'acc/gen':>12} {'mean len':>9} "
+          f"{'decode t/s':>11} {'head':>14}")
+    for r in results:
+        if "failed" in r:
+            print(f"{r['label']:<10} FAILED  {r['failed'][:60]}")
+            continue
+        a = r["accept"]
+        print(f"{r['label']:<10} {'n/a' if a is None else f'{a*100:7.2f}%':>8} "
+              f"{r['draft_n_accepted']:>5}/{r['draft_n']:<6} "
+              f"{r['mean_acc_len'] or 0:9.2f} {r['decode_tps_mean'] or 0:11.2f} "
+              f"{r['head_identity'][:12]:>14}")
+    print(f"\nwrote {out}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

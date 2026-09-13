@@ -156,9 +156,20 @@ PASS  head blk.40.* + output.weight, 21 tensors, 575.8 MiB, {'BF16': 2, 'F32': 7
 
 ## 5. 還沒覆蓋的部分（要講清楚）
 
-1. **accept rate 本身沒有閘門。** 引擎有遙測（`server-context.cpp` 的 `n_draft_total` / `n_draft_accepted`，
-   以及 `draft_ratio` / `mean_acc_len` / per-position 表），但 harness 沒有任何一格去判它。
-   §0 的「保證最初的 accept rate」目前只有**前置條件**（head 正確且活著）被閘住，**結果**沒有。
+1. ~~accept rate 本身沒有閘門~~ → **2026-09-14 已補上**：`scripts/check/mtp_accept_ab.py` 先過 head 閘門，
+   再從 HTTP `timings.draft_n_accepted / draft_n` 量每個 carrier 的 accept。實測（8 GiB pool，3 prompt × 96 tokens）：
+
+   | carrier | head | accept | acc / gen | mean len | decode t/s |
+   |---|---|---|---|---|---|
+   | `nail`（Nail head ＋ Nail base） | `219b27c4…` | **70.39%** | 107 / 152 | 36.67 | 6.74 |
+   | `edge0head`（修好後的 Edge0 head ＋ Edge0 base） | `d29f7e9d…` | **26.81%** | 37 / 138 | 13.33 | 3.14 |
+   | `graft`（Nail head ＋ Edge0 base） | `bc0cfecf…` | **0.61%** | 5 / 822 | 2.67 | 1.18 |
+   | `nail_nomtp`（同一 carrier，MTP OFF） | — | n/a | 0 / 0 | 1.00 | **8.87** |
+
+   §0 的第 2 條（accept 是 (base, head) 配對的性質）在這張表上有了另一組獨立證據：graft 用的是
+   **與 nail 逐位元組相同的 head**，只換 base，accept 就從 70.39% 掉到 0.61%。
+   而 Nail 配對已達 70.39%，超過 M4 的 60% 離開條件；**該配對仍未過的是
+   `MTP-on ≥ MTP-off`（6.74 < 8.87）**，與 accept 無關。
 2. **MTP-on 沒有自己的 oracle cell。** 五格掃描全部是 MTP ON 的*引擎*，但 oracle 探針是單輪 chat；
    已知 `plain_match=False`（batch verify 與逐 token 解碼不一致）⇒ **oracle 綠不代表 verify 路徑綠**。
 3. **只有一顆 base 被這樣驗過。** I3（語意定位）在架構上支援其他模型，但沒有第二顆模型實測過。
@@ -167,8 +178,8 @@ PASS  head blk.40.* + output.weight, 21 tensors, 575.8 MiB, {'BF16': 2, 'F32': 7
 5. **同一個編碼缺陷類別可能還在別處。** `fix-encoding` 今天只看 head 的 21 個張量。
    任何 F16/F32/BF16 的**成對同尺寸**誤標（F16↔BF16 都是 16 bit）都不會被大小檢查抓到；
    主幹的 753 個張量沒有做過這個稽核。
-6. **量測順序**：§3.1 已修、gate 已 PASS，所以 accept 的前提**成立**了。
-   下一步是重建（已完成）、重新 fingerprint（已完成）、**量 accept**。
+6. ~~量測順序~~：§3.1 已修、gate 已 PASS、accept 已量（§5.1）。剩下的就是 M4 自己那個
+   `MTP-on ≥ MTP-off` 的缺口（verify 批次成本）與 `plain_match=False`（batch verify 的逐值一致性）。
 
 ---
 

@@ -369,7 +369,20 @@ def _tensor_by_name(fp, name):
     return None
 
 
+def default_sidecar(gguf: Path) -> Path:
+    """`X.gguf` -> `X.mtphead.json`, beside the artifact.
+
+    Built with string surgery rather than Path.with_suffix, because the suffix here has dots in
+    it and `with_suffix` will not take `".mtphead.json"`.
+    """
+    s = str(gguf)
+    return Path((s[:-5] if s.endswith(".gguf") else s) + ".mtphead.json")
+
+
 def cmd_check(args) -> int:
+    if not args.expect:
+        args.expect = str(default_sidecar(Path(args.gguf)))
+        print(f"expect {args.expect} (derived)")
     exp = json.loads(Path(args.expect).read_text())
     got = load_fp(args.gguf)
     if got["degenerate"]:
@@ -493,7 +506,7 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("check", help="PASS/FAIL against a recorded sidecar")
     p.add_argument("--gguf", required=True)
-    p.add_argument("--expect", required=True)
+    p.add_argument("--expect", help="sidecar path (default: <gguf without .gguf>.mtphead.json)")
     p.set_defaults(func=cmd_check)
 
     p = sub.add_parser("fix-encoding",
