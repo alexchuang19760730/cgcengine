@@ -106,6 +106,7 @@ struct llama_hparams {
     uint32_t expert_gating_func   = LLAMA_EXPERT_GATING_FUNC_TYPE_NONE;
     uint32_t moe_every_n_layers   = 0;
     uint32_t moe_latent_size      = 0;
+    uint32_t moe_gate_input_dim   = 0; // 0 = n_embd (default); Edge0 = 2*n_embd (residual-gated MoE)
 
     float f_norm_eps;
     float f_norm_rms_eps;

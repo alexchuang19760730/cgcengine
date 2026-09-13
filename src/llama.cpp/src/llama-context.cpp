@@ -1265,6 +1265,10 @@ void llama_context::set_warmup(bool value) {
 // UNKNOWN is the safe default: exact ensure_batch path, no ZERO-slot fast path.
 void llama_context::set_cgc_phase(cgc_phase_t phase) {
     cgc_current_phase = phase;
+    // [CGC PREFILL_PROTECT A/B 2026-09-13] refresh the runtime toggle once per batch (one
+    // open()/read() per decode step) so one server can run both arms of the A/B. No-op unless
+    // CGC_PREFILL_PROTECT_FILE is set.
+    llama_expert_cache_refresh_prefill_protect();
 }
 
 cgc_phase_t llama_context::get_cgc_phase() const {
@@ -4249,7 +4253,13 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
                         (e < cache->n_expert && (uint32_t) il < cache->slot_queued.size() && st0[e] >= 0) ? cache->slot_queued[il][st0[e]] : -3);
             }
         }
-        llama_expert_cache_ensure_batch(cache, (uint32_t) il, uni.data(), uni.size());
+        // [CGC P1 prefill-protect 2026-09-12] Tell the cache whether this fill belongs to a
+        // PREFILL step. When CGC_PREFILL_PROTECT=1 the cache then defers evicting slots whose
+        // owner was filled during decode, instead of churning the working set the next
+        // generation needs (measured: 22.2 t/s steady-state decode vs 8.1-8.9 t/s after a
+        // prefill). False for every other phase, so the default build is unchanged.
+        llama_expert_cache_ensure_batch(cache, (uint32_t) il, uni.data(), uni.size(),
+                                        cgc_current_phase == CGC_PHASE_PREFILL);
         llama_expert_cache_drain_layer(cache, (uint32_t) il);
         if (cgc_ep) {
             const int32_t * st1 = llama_expert_cache_slot_table(cache, (uint32_t) il);

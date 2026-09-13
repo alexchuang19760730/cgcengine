@@ -296,7 +296,102 @@ int32_t llama_expert_cache_slot_table_safe(const llama_expert_cache * cache, uin
 // bit-identical to the old min_tick behavior.
 // Overflow pass: when every non-pinned candidate is exhausted, evict the LRU PINNED slot
 // instead of returning -1 / deadlocking (a pin is a preference, not a hard guarantee).
-static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer, const uint8_t * batch_mask = nullptr) {
+// [CGC P1 prefill-protect 2026-09-12] When CGC_PREFILL_PROTECT=1, a fill issued during the
+// PREFILL phase must not evict a slot whose current owner was filled during a decode phase.
+// Rationale (measured on this box, 8 GiB pool, IQ3_XXS-denseIQ4X): a 67-token prefill churns
+// the pool and the next 32 decode tokens must re-read ~1850 experts (~2 GB, ~2.4 s) to
+// re-converge. Steady-state decode is 22.2 t/s but drops to 8.1-8.9 t/s for the first
+// generation after any prefill. Prefill's per-chunk union is at most n_batch(8) x topk(8) = 64
+// slots/layer against 143 usable, so there is room to keep the ~45 slots/layer that decode
+// converges on. Purely a victim-choice change: same fills, same remap, same maths.
+// Default OFF = eviction order untouched.
+//
+// [CGC PREFILL_PROTECT A/B 2026-09-13] This used to be a function-local static, i.e. decided
+// once at process start, so an A/B needed one full server reload per arm. On this 16 GB box a
+// reload is not a neutral act: 12.7 GB model (--no-mmap) + 8 GiB pool over-commits RAM, swap
+// grows by GBs across arms, and the after-prefill decode metric then moves by up to 4.7x
+// (116 -> 541 ms/tok) for reasons that have nothing to do with the victim rule. Measured
+// across 5 interleaved blocks, that drift was larger than the effect under test.
+// `CGC_PREFILL_PROTECT_FILE` makes the switch runtime-togglable so both arms can share ONE
+// server (and therefore one machine state). The file is re-read once per batch from
+// llama_context::set_cgc_phase - one open()/read() per decode step, not per fill. Contents:
+// "1" = force on, "0" = force off, empty/missing = fall back to the env default.
+static int g_prefill_protect_override = -1;  // -1 = env default, 0 = off, 1 = on
+// [A/B rig] the cache the snapshot below belongs to. Set in llama_expert_cache_init, cleared
+// in the destructor. Only used by the rig print, which costs nothing when no rig is attached.
+static llama_expert_cache * g_rig_cache = nullptr;
+
+void llama_expert_cache_set_prefill_protect(int mode) {
+    g_prefill_protect_override = mode;
+}
+
+// Cumulative-counter snapshot at every arm boundary. This is what makes the A/B identifiable:
+// the wall-clock metric on this box is dominated by how deep into swap the machine currently
+// is (measured: 116 -> 541 ms/tok purely from swap growth inside one run), whereas read/miss
+// COUNTS are a property of the routing and the pool policy alone, so they do not move when the
+// machine thrashes. Differencing consecutive snapshots gives per-arm counts.
+static void rig_snapshot(int mode) {
+    llama_expert_cache * c = g_rig_cache;
+    if (c == nullptr) {
+        return;
+    }
+    const size_t reads  = c->n_reads.load(std::memory_order_relaxed);
+    const size_t reqs   = c->n_requests;
+    const size_t hits   = c->n_hits;
+    const size_t misses = c->n_misses;
+    // pread_usec/fill_batch_usec are here (not only in the teardown) because the teardown line is
+    // unreliable: on SIGINT the process can abort in ggml_metal_device_free (GGML_ASSERT
+    // [rsets->data count] == 0) before ~llama_expert_cache runs, and a SECOND interrupt makes it
+    // worse ("terminating immediately"). Mid-run snapshots do not depend on shutdown at all.
+    fprintf(stderr,
+            "CGC-RIG-SNAPSHOT mode=%d reads=%zu read_bytes=%llu pread_usec=%llu fill_usec=%llu "
+            "reqs=%zu hits=%zu misses=%zu "
+            "defer_skip=%llu defer_yield=%llu fast_calls=%zu fast_union=%zu fast_cold=%zu\n",
+            mode, reads, (unsigned long long) c->n_read_bytes.load(std::memory_order_relaxed),
+            (unsigned long long) c->pread_usec.load(std::memory_order_relaxed),
+            (unsigned long long) c->fill_batch_usec.load(std::memory_order_relaxed),
+            reqs, hits, misses,
+            (unsigned long long) c->n_defer_skip,
+            (unsigned long long) c->n_prefill_defer_yield,
+            c->n_fast_calls, c->n_fast_union, c->n_fast_cold);
+}
+
+void llama_expert_cache_refresh_prefill_protect() {
+    static const char * path = getenv("CGC_PREFILL_PROTECT_FILE");
+    if (path == nullptr || path[0] == '\0') {
+        return;  // no rig attached: env default decides, permanently
+    }
+    // Report on any CONTENT change, not just a mode change: the rig appends a sequence number
+    // after the mode, so two consecutive same-arm requests still get one snapshot each. That
+    // makes requesting k's counters = snapshot[k+1] - snapshot[k], i.e. per-request resolution.
+    static char last_buf[8] = { 0 };
+    static size_t last_n = 0;
+    char buf[8] = { 0 };
+    FILE * f = fopen(path, "rb");
+    if (f == nullptr) {
+        g_prefill_protect_override = -1;
+        return;
+    }
+    const size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    g_prefill_protect_override = (n == 0) ? -1 : (buf[0] == '1' ? 1 : (buf[0] == '0' ? 0 : -1));
+    if (n != last_n || memcmp(buf, last_buf, n) != 0) {
+        memcpy(last_buf, buf, n);
+        last_n = n;
+        rig_snapshot(g_prefill_protect_override);
+    }
+}
+
+static bool cgc_prefill_protect_on() {
+    if (g_prefill_protect_override >= 0) {
+        return g_prefill_protect_override != 0;
+    }
+    static const bool env_on = getenv("CGC_PREFILL_PROTECT") != nullptr;
+    return env_on;
+}
+
+static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer, const uint8_t * batch_mask = nullptr,
+                         bool defer_decode = false) {
     auto & owner  = cache->slot_owner[layer];
     auto & last   = cache->slot_last_use[layer];
     auto & load   = cache->slot_loading[layer];
@@ -343,6 +438,13 @@ static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer, const uint8
             if (pass == 0 && cache->slot_pinned[layer][i]) {
                 continue;
             }
+            // [CGC P1 prefill-protect] defer decode-filled victims to the overflow pass. Pass 2
+            // already carries the rule that a fill under direct pressure must yield rather than
+            // leave table[e] == -1 (the abort / OOB class documented above).
+            if (defer_decode && pass < 2 && cache->slot_decode_reserved[layer][i]) {
+                cache->n_defer_skip++;  // engagement proof: the rule changed this victim choice
+                continue;
+            }
             if (spac_victim && owner[i] >= 0 && owner[i] < (int32_t) cache->n_expert) {
                 const double util = cache->spac_util[layer][owner[i]];
                 if (util < best_util || (util == best_util && last[i] < best_tick)) {
@@ -364,6 +466,10 @@ static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer, const uint8
                 // wholesale the way WIN_PIN's dynamic pins are).
                 cache->slot_pinned_static[layer][best_slot] = 0;
                 cache->n_pin_yield++;
+            }
+            if (defer_decode && cache->slot_decode_reserved[layer][best_slot]) {
+                cache->n_prefill_defer_yield++;
+                cache->slot_decode_reserved[layer][best_slot] = 0;
             }
             const int32_t evicted = owner[best_slot];
             if (evicted >= 0 && evicted < (int32_t) cache->n_expert) {
@@ -586,10 +692,12 @@ int32_t llama_expert_cache_ensure_slot(llama_expert_cache * cache, uint32_t laye
 // them like the serial loop), then one thread per missed expert, joined before return so the
 // pool is stable before the FFN dispatches (same synchronous guarantee as ensure_slot).
 void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
-                                     const uint32_t * experts, size_t n) {
+                                     const uint32_t * experts, size_t n,
+                                     bool defer_decode_protect) {
     if (cache == nullptr || layer >= cache->slot_owner.size() || n == 0) {
         return;
     }
+    const bool defer_decode = defer_decode_protect && cgc_prefill_protect_on();
     int32_t * table = cache->slot_table.data() + (size_t) layer * cache->n_expert;
     std::vector<int32_t>  slots(n, -1);
     std::vector<uint32_t> miss_exps;   // (expert) to fill concurrently
@@ -625,6 +733,10 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
                 }
                 cache->n_hits++;
                 cache->slot_last_use[layer][slot] = ++cache->tick;
+                // [CGC P1 prefill-protect] a decode hit promotes the slot to protected.
+                if (!defer_decode_protect) {
+                    cache->slot_decode_reserved[layer][slot] = 1;
+                }
                 batch_owned[slot] = 1; // this batch reads it via the remap: never evict mid-batch
                 slots[i] = slot;
                 continue;
@@ -643,7 +755,7 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
             }
             int32_t slot;
             for (;;) {
-                slot = pick_slot(cache, layer, batch_owned.data());
+                slot = pick_slot(cache, layer, batch_owned.data(), defer_decode);
                 if (slot >= 0) {
                     break;
                 }
@@ -669,6 +781,12 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
                 cache->bg_cv.wait(lk); // all slots loading: wait for a fill to finish
             }
             cache->slot_owner[layer][slot] = (int32_t) e;
+            // [CGC P1 prefill-protect] stamp the phase this slot was filled in: a decode fill
+            // marks the slot protected, a prefill fill clears the mark so it is the first thing
+            // the NEXT prefill evicts. NOTE: a variant that stamped ONLY on a decode HIT (on the
+            // theory that "reuse" is the right protection key) measured WORSE -- 9.97-11.19 t/s
+            // after a prefill vs 12.73-14.91 t/s for this one -- so protection is keyed on "a
+            // decode step chose this slot", not on "decode has hit it at least once".
             // Claim the slot for this batch BEFORE the fill: the batch assigns all slots under
             // one lock, and the next pick_slot's LRU eviction would otherwise see this slot as
             // the stalest (fresh assignments bump last_use) and hand it out AGAIN (two experts
@@ -1583,6 +1701,7 @@ size_t llama_expert_cache_pin_prefill(llama_expert_cache * cache) {
 extern "C" void ggml_cpu_clear_mmid_slot_tables_all(void);
 
 llama_expert_cache::~llama_expert_cache() {
+    g_rig_cache = nullptr;  // [A/B rig] stop snapshotting a cache that is going away
     ggml_cpu_clear_mmid_slot_tables_all(); // pool buffers are about to die
     {
         std::lock_guard<std::mutex> lk(m);
@@ -1594,6 +1713,20 @@ llama_expert_cache::~llama_expert_cache() {
                 (unsigned long long) pread_usec.load(std::memory_order_relaxed),
                 (unsigned long long) fill_batch_usec.load(std::memory_order_relaxed),
                 n_prefetch, n_prefetch_dropped);
+        // [CGC miss-path cost audit 2026-09-13] the number that decides device-vs-cache: the
+        // mean run size actually fetched, and the effective rate it was fetched at.
+        {
+            const size_t rd_n = n_reads.load(std::memory_order_relaxed);
+            const uint64_t rd_b = n_read_bytes.load(std::memory_order_relaxed);
+            const uint64_t rd_u = pread_usec.load(std::memory_order_relaxed);
+            if (rd_n > 0 && rd_u > 0) {
+                fprintf(stderr, "llama_expert_cache: read shape: jobs=%zu bytes=%llu (%.2f MiB/job as one contiguous run)  "
+                        "us/job=%.0f  effective_rate=%.0f MiB/s  total_bytes=%.2f GiB\n",
+                        rd_n, (unsigned long long) rd_b, rd_n ? (double) rd_b / rd_n / 1048576.0 : 0.0,
+                        (double) rd_u / rd_n, (double) rd_b / (double) rd_u,
+                        (double) rd_b / 1073741824.0);
+            }
+        }
         // [CGC Prefetch Drop Audit 2026-09-07] per-reason drop breakdown. The legacy
         // n_prefetch_dropped only counted 2 of 12 drop points; this line shows the full
         // classification so replay/database/precommit can see the real loss breakdown.
@@ -1809,6 +1942,13 @@ llama_expert_cache::~llama_expert_cache() {
             fprintf(stderr, "llama_expert_cache: routing-aware placement: pin_marked=%zu pin_yield(evicted)=%zu\n",
                     n_pin_marked, n_pin_yield);
         }
+        // [CGC P1 prefill-protect 2026-09-13] engagement telemetry, printed at teardown.
+        // defer_skip = victim choices the rule changed; defer_yield = fills that still had to
+        // evict a decode-stamped slot (overflow pass 2, i.e. the pool was genuinely too small).
+        if (n_defer_skip > 0 || n_prefill_defer_yield > 0) {
+            fprintf(stderr, "llama_expert_cache: prefill-protect: defer_skip=%llu defer_yield(overflow)=%llu\n",
+                    (unsigned long long) n_defer_skip, (unsigned long long) n_prefill_defer_yield);
+        }
         bg_stop = true;
     }
     bg_cv.notify_all();
@@ -1981,6 +2121,7 @@ void llama_expert_cache::pool_loop() {
             const auto t1 = std::chrono::steady_clock::now();
             pread_usec.fetch_add((uint64_t) std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
             n_reads.fetch_add(1, std::memory_order_relaxed);
+            n_read_bytes.fetch_add((uint64_t) job.bytes, std::memory_order_relaxed);
             delete[] job.iovs;
             delete[] job.oks;
         } else {
@@ -1994,6 +2135,7 @@ void llama_expert_cache::pool_loop() {
             const auto t1 = std::chrono::steady_clock::now();
             pread_usec.fetch_add((uint64_t) std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
             n_reads.fetch_add(1, std::memory_order_relaxed);
+            n_read_bytes.fetch_add((uint64_t) job.bytes, std::memory_order_relaxed);
             *job.ok = rd == (ssize_t) job.bytes;
         }
         {
@@ -2164,6 +2306,7 @@ llama_expert_cache * llama_expert_cache_init(const llama_model * model, size_t b
     }
 
     auto * cache = new llama_expert_cache();
+    g_rig_cache = cache;  // [A/B rig] snapshot target (see refresh_prefill_protect)
     cache->index      = idx;
     cache->index_size = nidx;
     cache->budget     = budget_bytes;
@@ -2289,6 +2432,7 @@ llama_expert_cache * llama_expert_cache_init(const llama_model * model, size_t b
         cache->slot_loading.resize(max_layer);
         cache->slot_pinned.resize(max_layer);
         cache->slot_pinned_static.resize(max_layer);
+        cache->slot_decode_reserved.resize(max_layer);
         cache->win_union.resize(max_layer);
         // [CGC prefetch v2] recently-evicted expert ring (per layer): CGC_EVICTED_RING=N sets
         // capacity (default 16; 0 = off, keeps the old pure-LRU behavior for A/B).
@@ -2310,6 +2454,7 @@ llama_expert_cache * llama_expert_cache_init(const llama_model * model, size_t b
             cache->slot_loading[l].assign(ns, 0);
             cache->slot_pinned[l].assign(ns, 0);
             cache->slot_pinned_static[l].assign(ns, 0);
+            cache->slot_decode_reserved[l].assign(ns, 0);
         }
         if (getenv("LLAMA_EXPERT_CACHE_PREFETCH_DBG") != nullptr) {
             unsigned busy0 = 0;

@@ -148,8 +148,19 @@ struct llama_expert_cache {
     std::vector<std::vector<uint64_t>> slot_last_use;    // [layer][slot]
     std::vector<std::vector<uint8_t>>  slot_queued;      // [layer][slot] 1 = prefetch queued to bg, fill not started yet
     std::vector<std::vector<uint8_t>>  slot_loading;     // [layer][slot] 1 = bg thread filling (prefetch in flight)
+    std::vector<std::vector<uint8_t>>  slot_decode_reserved;
+    uint64_t n_prefill_defer_yield = 0;  // prefill fills that had to evict a deferred slot anyway (overflow)
+    uint64_t n_defer_skip = 0;           // victim choices the defer rule actually changed (engagement proof)
+
     std::vector<std::vector<uint8_t>>  slot_pinned;      // [layer][slot] 1 = LRU-exempt (decode tail-union prewarm, TAILPIN)
     std::vector<std::vector<uint8_t>>  slot_pinned_static; // [layer][slot] 1 = LRU-exempt static profile pin (LLAMA_EXPERT_CACHE_PIN_PROFILE, never unpinned)
+    // [CGC P1 prefill-protect 2026-09-12] [layer][slot] 1 = this slot's current owner was filled
+    // during a DECODE phase (VERIFY / DRAFT / NORMAL_DECODE). With CGC_PREFILL_PROTECT=1 a fill
+    // issued during PREFILL defers evicting these slots to the overflow pass, so a long prompt's
+    // union (<= n_batch*topk = 64 slots/layer at the default L4 chunk) cannot churn away the
+    // decode-converged working set (~45 slots/layer) against 143 available. This changes only
+    // WHICH slot an expert lands in -- the fill, the remap and the maths are untouched, so the
+    // oracle M1/M2 gate must still come back bit-identical. Default OFF = eviction untouched.
     // [CGC Hybrid 2026-09-05] Soft Pool tier partition (env CGC_SOFT_POOL_L0 / CGC_SOFT_POOL_L1):
     // slot indices [0, soft_pool_l0) are L0 hot (no LRU eviction), [soft_pool_l0, soft_pool_l0+l1)
     // are L1 warm (LRU). soft_pool_l0 + soft_pool_l1 <= slots_l(layer) — slots beyond L1 are
@@ -309,6 +320,11 @@ struct llama_expert_cache {
     size_t n_pin_marked = 0;
     size_t n_pin_yield  = 0;
     std::atomic<size_t> n_reads{0};
+    // [CGC miss-path cost audit 2026-09-13] bytes actually fetched from the file. n_reads counts
+    // preadv JOBS (one per file-contiguous run after merge-read), so bytes/jobs is the mean run
+    // size -- without it there is no way to convert the reported MB/s into a device-vs-cache
+    // verdict.
+    std::atomic<uint64_t> n_read_bytes{0};
     std::atomic<uint64_t> pread_usec{0}; // accumulated pread wall time (us)
     std::atomic<uint64_t> fill_batch_usec{0}; // hook-thread elapsed per fill batch (us; comparable across serial/parallel)
 
@@ -483,8 +499,18 @@ int32_t llama_expert_cache_ensure_slot(llama_expert_cache * cache, uint32_t laye
 // on the critical path; the batch collapses it to max(miss fills) — SSD queue depth permitting.
 // Same semantics as ensure_slot per expert (blocking on miss, LRU within the layer, slot table
 // + last_use updated on return). Must be called WITHOUT cache->m held.
+// `defer_decode_protect`: true when this fill is issued by a PREFILL step (see CGC_PREFILL_PROTECT).
+// It makes pick_slot defer evicting slots whose owner was filled during decode, and it stamps the
+// slots this call fills as non-decode. Default false = byte-identical legacy eviction order.
 void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
-                                     const uint32_t * experts, size_t n);
+                                     const uint32_t * experts, size_t n,
+                                     bool defer_decode_protect = false);
+// [CGC PREFILL_PROTECT A/B 2026-09-13] Runtime override of the CGC_PREFILL_PROTECT victim rule
+// so both arms of an A/B can share ONE server process (one machine state). -1 = env default,
+// 0 = force off, 1 = force on. `refresh` re-reads the CGC_PREFILL_PROTECT_FILE toggle file and
+// is called once per batch; without that env var it is a no-op and behaviour is unchanged.
+void llama_expert_cache_set_prefill_protect(int mode);
+void llama_expert_cache_refresh_prefill_protect();
 // Prefill hot prewarm: accumulate (layer, expert) route frequencies (prefill only; repeated
 // across tokens counts multiple times). Then llama_expert_cache_prewarm_hot fills the pool with
 // each layer's top-K most-routed experts at the first decode step. Returns 0 when skipped.

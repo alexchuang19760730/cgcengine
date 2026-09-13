@@ -273,6 +273,12 @@ UBATCH_DEFAULT=""
 BUDGET_DEFAULT="${N30CACHE_BUDGET:-8589934592}"   # 8GiB expert pool（16GB 機 A/B 驗證過）
 SPEC_DRAFT_N_MAX="${CGC_SERVER_MTP_N_MAX:-3}"  # MTP draft tokens
 SERVER_LAYER_CAPS="${CGC_SERVER_LAYER_CAPS:-}"  # Layer caps for expert cache
+# [2026-09-12] 記憶體模式改可覆寫。預設 none = 舊的 --no-mmap 行為（逐值相同）。
+# 16GB 機器上 --no-mmap 讓 dense 段變成可被 swap 的匿名頁；mmap 則讓它變成可回收的
+# clean file page。實測本機曾出現 swap used 5.8GB / free pages 61MB，這是速度主因之一。
+#   CGC_SERVER_LOAD_MODE=mmap ./scripts/run_server.sh   # 讓 OS 可回收模型頁
+# 合法值：auto | none | mmap | mlock | mmap+mlock
+SERVER_LOAD_MODE="${CGC_SERVER_LOAD_MODE:-none}"
 
 if [ "$SERVER_MTP" = "1" ]; then
     # [CGC 2026-09-07 ctx 3072 -> 8192] Claude Code CLI sends ~3117 tokens MINIMUM
@@ -494,7 +500,7 @@ fi
 if [ -n "$SERVER_BATCH" ] || [ -n "$SERVER_UBATCH" ]; then
     echo "[perf]  batch=${SERVER_BATCH:-auto} ubatch=${SERVER_UBATCH:-auto}"
 fi
-echo "[perf]  n_cb=$SERVER_N_CB glu_fused_down=$SERVER_GLU_FUSED_DOWN watchdog=$SERVER_WATCHDOG oa_async=$SERVER_OA_ASYNC"
+echo "[perf]  n_cb=$SERVER_N_CB glu_fused_down=$SERVER_GLU_FUSED_DOWN watchdog=$SERVER_WATCHDOG oa_async=$SERVER_OA_ASYNC load_mode=$SERVER_LOAD_MODE"
 echo "[perf]  runtime_profile=$SERVER_RUNTIME_PROFILE model_root=$MODEL_ROOT"
 echo "[guard] memory_mode=$SERVER_MEMORY_MODE class=$MEM_CLASS phys=${PHYS_MEM_GB}GB free=${FREE_PCT}% other_llama_servers=$OTHER_LLAMA_SERVERS"
 if [ "$SERVER_PROFILE" != "off" ]; then
@@ -523,7 +529,7 @@ SERVER_ARGS=(
     -m "$MODEL"
     -expert-cache "$BUDGET"
     -ngl "$SERVER_NGL"
-    --no-mmap
+    --load-mode "$SERVER_LOAD_MODE"
     -t 8
     -c "$CTX"
     -np "${CGC_SERVER_CONCURRENCY:-1}"
@@ -732,11 +738,19 @@ if [ "$SERVER_MTP" = "1" ]; then
     # - 關 prefetch：避免 verify/draft 期背景填槽覆寫 GPU 正在讀的 slot
     # - verify/draft decode fast path：把 server 服務語義拉回生產 MTP 水位
     # - warm gate：短 prompt 避免 0000 退化；denseIQ4X 長 prompt 則不繼承短 prompt 門檻
-    SERVER_ENV+=(
-        CGC_NO_PREFETCH=1
-        CGC_VERIFY_DECODE=1
-        CGC_DRAFT_DECODE=1
-    )
+    #
+    # [2026-09-12 A/B] 這三個原本寫死，現在可覆寫。預設 1（行為與改動前逐值相同）。
+    #   CGC_SERVER_VERIFY_DECODE=0 CGC_SERVER_DRAFT_DECODE=0 ./scripts/run_server.sh
+    #
+    # ⚠️ 陷阱：C++ 端對這些布林旗標全部用 `getenv(X) != nullptr` 判斷（presence，不是值），
+    # 所以 `CGC_VERIFY_DECODE=0` 仍然是「開」。這裡因此把 0 翻成「完全不傳該變數」，
+    # 傳 0 才會真的關掉。（第一版 A/B 就是踩到這個：兩臂逐位元相同，等於沒改。）
+    SERVER_NO_PREFETCH="${CGC_SERVER_NO_PREFETCH:-1}"
+    SERVER_VERIFY_DECODE="${CGC_SERVER_VERIFY_DECODE:-1}"
+    SERVER_DRAFT_DECODE="${CGC_SERVER_DRAFT_DECODE:-1}"
+    [ "$SERVER_NO_PREFETCH" = "0" ]  || SERVER_ENV+=(CGC_NO_PREFETCH=1)
+    [ "$SERVER_VERIFY_DECODE" = "0" ] || SERVER_ENV+=(CGC_VERIFY_DECODE=1)
+    [ "$SERVER_DRAFT_DECODE" = "0" ]  || SERVER_ENV+=(CGC_DRAFT_DECODE=1)
     if [ -n "${CGC_SERVER_WARM_NPAST:-}" ]; then
         SERVER_ENV+=(CGC_WARM_NPAST="$CGC_SERVER_WARM_NPAST")
     elif [ "$SERVER_DENSE_IQ4X" = "1" ]; then
@@ -801,7 +815,7 @@ for i in $(seq 1 60); do
         echo "  停止       : pkill -INT -f llama-server（或 kill ${SERVER_PID}）"
         if [ "$SERVER_MTP" = "1" ]; then
             echo "  服務模式   : MTP / draft-mtp（目標 = 25+ t/s）"
-            echo "  0000 防護  : CGC_NO_PREFETCH=1 + CGC_VERIFY_DECODE=1 + CGC_DRAFT_DECODE=1"
+            echo "  0000 防護  : CGC_NO_PREFETCH=$SERVER_NO_PREFETCH CGC_VERIFY_DECODE=$SERVER_VERIFY_DECODE CGC_DRAFT_DECODE=$SERVER_DRAFT_DECODE (1=set, 0=unset)"
             echo "  OA_ASYNC   : ${SERVER_OA_ASYNC}（+12.6% speed, 0000 bug fixed in C++）"
             echo "  Layer Caps : 40-40:256（MTP draft layer full residency）"
         else
