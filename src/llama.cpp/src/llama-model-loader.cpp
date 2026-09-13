@@ -1106,8 +1106,39 @@ void llama_model_loader::compute_l4_pool_capacity() {
         per_slot_layer[il] += eb;
         max_layer = std::max(max_layer, (uint32_t) il + 1);
     }
-    for (uint64_t v : per_slot_layer) {
-        per_slot = std::max(per_slot, v);
+    // [CGC] The MTP / NextN layer(s) must NOT set per_slot. per_slot is a MAX over layers and
+    // every layer is then sized to the SAME `capacity`, so charging the trunk the MTP layer's
+    // per-slot bytes makes the trunk's pool depend on how the *head* happens to be stored.
+    // Measured on Edge0-35B (blk.40 = MTP, LAYER_CAPS default "40-40:256"):
+    //   head experts quantized -> per_slot 1,769,472 B (blk.39)      -> 118 slots/layer  (8.97% accept)
+    //   head experts F16       -> per_slot 6,291,456 B (blk.40, 3.6x) ->  33 slots/layer  (0% accept)
+    // and the 33-slot run logged 585 "buffer is nil" errors on blk.1..39 expert tensors: the
+    // trunk's top-k unions no longer fit, so the FFN silently read nothing. The head was
+    // blamed for 3 rounds (F16 != precision) but the failure is entirely in the trunk's pool
+    // geometry. MTP layers get their slots from LAYER_CAPS (default 256) regardless.
+    uint64_t n_nextn = 0;
+    {
+        const int aid = gguf_find_key(metadata, "general.architecture");
+        const char * arch = aid >= 0 ? gguf_get_val_str(metadata, aid) : nullptr;
+        if (arch != nullptr) {
+            const std::string key = std::string(arch) + ".nextn_predict_layers";
+            const int kid = gguf_find_key(metadata, key.c_str());
+            if (kid >= 0) {
+                n_nextn = (uint64_t) gguf_get_val_u32(metadata, kid);
+            }
+        }
+    }
+    const size_t n_decoder = n_nextn < max_layer ? (size_t) (max_layer - n_nextn) : (size_t) max_layer;
+    for (size_t il = 0; il < per_slot_layer.size(); ++il) {
+        if (il >= n_decoder) {
+            continue; // MTP / NextN layer: sized by LAYER_CAPS, not by the trunk's max
+        }
+        per_slot = std::max(per_slot, per_slot_layer[il]);
+    }
+    if (per_slot == 0) {
+        for (uint64_t v : per_slot_layer) {
+            per_slot = std::max(per_slot, v); // no decoder layer carried experts: fall back
+        }
     }
     if (max_layer == 0 || per_slot == 0) {
         return;

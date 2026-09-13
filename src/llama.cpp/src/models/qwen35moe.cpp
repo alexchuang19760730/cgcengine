@@ -44,16 +44,7 @@ void llama_model_qwen35moe::load_arch_tensors(llama_model_loader & ml) {
     const int trunk_flags = mtp_only ? TENSOR_NOT_REQUIRED : 0;
     int mtp_flags = !ml.load_mtp ? TENSOR_SKIP : 0;
 
-    // Detect Edge0-style residual-gated MoE: ffn_gate_inp input is 2*n_embd
-    // (concat of post_attention_norm + residual) instead of standard n_embd.
-    if (hparams.moe_gate_input_dim == 0) {
-        const auto * gate_w = ml.get_weight("blk.0.ffn_gate_inp.weight");
-        if (gate_w && gate_w->tensor && (int64_t)gate_w->tensor->ne[0] == 2 * n_embd) {
-            hparams.moe_gate_input_dim = 2 * n_embd;
-            LLAMA_LOG_INFO("qwen35moe: detected Edge0 residual-gated MoE (gate input dim=%d)\n", (int)hparams.moe_gate_input_dim);
-        }
-    }
-    const int64_t gate_in_dim = hparams.moe_gate_input_dim > 0 ? (int64_t)hparams.moe_gate_input_dim : n_embd;
+    // Standard MoE gate input is n_embd (Edge0 uses 8-bit quantized gate, still 2048 input)
 
     tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, 0);
 
@@ -107,12 +98,12 @@ void llama_model_qwen35moe::load_arch_tensors(llama_model_loader & ml) {
         }
 
         // Routed experts
-        layer.ffn_gate_inp  = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP,  "weight", il), { gate_in_dim, n_expert }, flags);
+        layer.ffn_gate_inp  = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP,  "weight", il), { n_embd, n_expert }, flags);
         layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", il), { n_ff_exp, n_embd, n_expert }, flags);
         create_tensor_gate_up_exps(layer, il, n_embd, n_ff_exp, n_expert, flags);
 
         // Shared experts
-        layer.ffn_gate_inp_shexp = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP_SHEXP, "weight", il), { gate_in_dim }, flags);
+        layer.ffn_gate_inp_shexp = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP_SHEXP, "weight", il), { n_embd }, flags);
         layer.ffn_gate_shexp     = create_tensor(tn(LLM_TENSOR_FFN_GATE_SHEXP,     "weight", il), { n_embd, n_ff_shexp }, flags);
         layer.ffn_up_shexp       = create_tensor(tn(LLM_TENSOR_FFN_UP_SHEXP,       "weight", il), { n_embd, n_ff_shexp }, flags);
         layer.ffn_down_shexp     = create_tensor(tn(LLM_TENSOR_FFN_DOWN_SHEXP,     "weight", il), { n_ff_shexp, n_embd }, flags);
@@ -218,7 +209,7 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
         cur = ggml_add(ctx0, cur, inpSA);
         cb(cur, "attn_residual", il);
 
-        // Save the tensor before post-attention norm for residual connection
+        // Save tensor before post-attention norm for FFN residual
         ggml_tensor * ffn_residual = cur;
 
         // Post-attention norm
@@ -226,10 +217,10 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
         cb(attn_post_norm, "attn_post_norm", il);
 
         // MOE FFN layer
-        cur = build_layer_ffn(attn_post_norm, ffn_residual, il);
+        cur = build_layer_ffn(attn_post_norm, il);
         cb(cur, "ffn_out", il);
 
-        // Residual connection for FFN - add to the tensor from before post_attention_layernorm
+        // Residual connection for FFN
         cur = ggml_add(ctx0, cur, ffn_residual);
         cb(cur, "post_moe", il);
 
@@ -505,21 +496,9 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_attn_linear(
     return cur;
 }
 
-ggml_tensor * llama_model_qwen35moe::graph::build_layer_ffn(ggml_tensor * cur, ggml_tensor * ffn_residual, const int il) {
+ggml_tensor * llama_model_qwen35moe::graph::build_layer_ffn(ggml_tensor * cur, const int il) {
     // Check if this is an MoE layer
     GGML_ASSERT(model.layers[il].ffn_gate_inp != nullptr);
-
-    // Edge0 residual-gated MoE: gate input is concat(post_attention_norm, residual)
-    // instead of just post_attention_norm. The router gate uses the concatenated
-    // 4096-dim input, but the expert FFN computation still uses the 2048-dim cur.
-    ggml_tensor * gate_input = cur;
-    ggml_tensor * precomputed_logits = nullptr;
-    if (hparams.moe_gate_input_dim == 2 * n_embd && ffn_residual != nullptr) {
-        gate_input = ggml_concat(ctx0, cur, ffn_residual, 0);
-        cb(gate_input, "ffn_gate_input_concat", il);
-        precomputed_logits = build_lora_mm(model.layers[il].ffn_gate_inp, gate_input);
-        cb(precomputed_logits, "ffn_moe_logits_precomputed", il);
-    }
 
     ggml_tensor * moe_out =
         build_moe_ffn(cur,
@@ -532,7 +511,7 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_ffn(ggml_tensor * cur, g
             LLM_FFN_SILU, true,
             hparams.expert_weights_scale,
             LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
-            precomputed_logits, model.layers[il].ffn_gate_up_exps,
+            nullptr, model.layers[il].ffn_gate_up_exps,
             model.layers[il].ffn_up_exps_s,
             model.layers[il].ffn_gate_exps_s,
             model.layers[il].ffn_down_exps_s);
@@ -551,9 +530,7 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_ffn(ggml_tensor * cur, g
 
         // Apply shared expert gating as in the reference implementation
         // The shared expert has its own gate that is sigmoided
-        // Note: ffn_gate_inp_shexp is the shared expert gate (outputs 1 value per token)
-        // For Edge0 residual-gated MoE, shared gate also uses the concatenated input
-        ggml_tensor * shared_gate = build_lora_mm(model.layers[il].ffn_gate_inp_shexp, gate_input);
+        ggml_tensor * shared_gate = build_lora_mm(model.layers[il].ffn_gate_inp_shexp, cur);
         cb(shared_gate, "shared_expert_gate", il);
 
         // Apply sigmoid to the gate
