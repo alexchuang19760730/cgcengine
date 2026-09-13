@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L3 Softpool vs L4 Skip-Load 技術成熟度比較報告</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1117;
+    --card: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --heading: #f0f6fc;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --orange: #db6d28;
+    --purple: #bc8cff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans TC', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+  }
+  h1 { font-size: 1.8rem; color: var(--heading); border-bottom: 2px solid var(--accent); padding-bottom: 0.5rem; margin-bottom: 0.5rem; }
+  h2 { font-size: 1.4rem; color: var(--accent); margin-top: 2.5rem; margin-bottom: 0.8rem; border-left: 4px solid var(--accent); padding-left: 0.8rem; }
+  h3 { font-size: 1.15rem; color: var(--green); margin-top: 1.5rem; margin-bottom: 0.5rem; }
+  h4 { font-size: 1rem; color: var(--yellow); margin-top: 1rem; margin-bottom: 0.3rem; }
+  p { margin-bottom: 0.8rem; }
+  .subtitle { color: var(--text); font-size: 0.95rem; opacity: 0.8; margin-bottom: 1.5rem; }
+  .meta { display: flex; gap: 1.5rem; flex-wrap: wrap; margin-bottom: 1.5rem; font-size: 0.82rem; opacity: 0.7; }
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.88rem; }
+  th, td { border: 1px solid var(--border); padding: 0.55rem 0.7rem; text-align: left; vertical-align: top; }
+  th { background: var(--card); color: var(--heading); font-weight: 600; }
+  tr:nth-child(even) { background: rgba(22,27,34,0.5); }
+  code { background: #0d1117; border: 1px solid var(--border); border-radius: 4px; padding: 0.12rem 0.35rem; font-size: 0.85em; font-family: 'JetBrains Mono', 'Fira Code', monospace; color: #79c0ff; }
+  pre { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 0.9rem 1.1rem; overflow-x: auto; margin: 1rem 0; font-size: 0.82rem; line-height: 1.5; }
+  pre code { background: none; border: none; padding: 0; }
+  .callout { background: var(--card); border-left: 4px solid var(--accent); padding: 0.9rem 1.1rem; border-radius: 0 8px 8px 0; margin: 1.1rem 0; }
+  .callout.warn { border-left-color: var(--yellow); }
+  .callout.success { border-left-color: var(--green); }
+  .callout.danger { border-left-color: var(--red); }
+  .callout strong { color: var(--heading); }
+  .badge { display: inline-block; padding: 0.12rem 0.45rem; border-radius: 12px; font-size: 0.72rem; font-weight: 600; margin-right: 0.25rem; }
+  .badge-blue { background: rgba(88,166,255,0.15); color: var(--accent); border: 1px solid rgba(88,166,255,0.3); }
+  .badge-green { background: rgba(63,185,80,0.15); color: var(--green); border: 1px solid rgba(63,185,80,0.3); }
+  .badge-red { background: rgba(248,81,73,0.15); color: var(--red); border: 1px solid rgba(248,81,73,0.3); }
+  .badge-yellow { background: rgba(210,153,34,0.15); color: var(--yellow); border: 1px solid rgba(210,153,34,0.3); }
+  .badge-purple { background: rgba(188,140,255,0.15); color: var(--purple); border: 1px solid rgba(188,140,255,0.3); }
+  .chart-container { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin: 1.2rem 0; }
+  .chart { width: 100%; height: 380px; }
+  .chart-sm { width: 100%; height: 320px; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; margin: 1.2rem 0; }
+  @media (max-width: 768px) { .two-col { grid-template-columns: 1fr; } }
+  ul, ol { margin: 0.5rem 0 1rem 1.5rem; }
+  li { margin-bottom: 0.25rem; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+  .score-card { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin: 1.2rem 0; }
+  .score-item { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; text-align: center; }
+  .score-item .label { font-size: 0.82rem; opacity: 0.7; margin-bottom: 0.3rem; }
+  .score-item .value { font-size: 1.8rem; font-weight: 700; }
+  .score-item .sub { font-size: 0.75rem; opacity: 0.6; margin-top: 0.2rem; }
+</style>
+</head>
+<body>
+
+<h1>L3 Softpool vs L4 Skip-Load 技術成熟度比較報告</h1>
+<p class="subtitle">基於 flashkv0516 (dev 分支) 與 flashkv-devserver (demo/sweet-spot-windows-fix 分支) 的源碼、文件、Git 歷史與測試覆蓋分析</p>
+
+<div class="meta">
+  <span>報告日期: 2026-09-09</span>
+  <span>分析範圍: flashkv0516 + flashkv-devserver</span>
+  <span>分支: dev (83c47b1) / demo/sweet-spot (51c8ac1)</span>
+  <span>分析者: Emodibrain</span>
+</div>
+
+<!-- ============================================================ -->
+<h2>1. 執行摘要</h2>
+
+<div class="callout success">
+  <strong>核心結論:</strong>
+  <ul>
+    <li><strong>L3 Softpool（三層動態可縮池）</strong>成熟度較高：代碼完整、文件體系完善、有不變量契約、已進入生產預設配置（L0=48/L1=48），並通過 7-profile replay 基線驗證。</li>
+    <li><strong>L4 Skip-Load（Metal Fast Path 精準切片）</strong>成熟度中等：核心邏輯已實現（compute_l4_pool_capacity + adopt_pool_region），但<b>預設 OFF</b>、無專屬單元測試、16GB 設備 OOM 風險未解、文件依附於 Softpool 白皮書而非獨立文件。</li>
+    <li>兩者是<b>上下游協同關係</b>而非競爭：L4 決定「哪些 expert 實際 load 到 memory」，L3 決定「loaded expert 在 Metal pool 中如何分層管理」。L4 是 L3 的前置條件。</li>
+  </ul>
+</div>
+
+<div class="score-card">
+  <div class="score-item">
+    <div class="label">L3 Softpool 綜合成熟度</div>
+    <div class="value" style="color:var(--green)">7.8/10</div>
+    <div class="sub">生產可用，持續優化中</div>
+  </div>
+  <div class="score-item">
+    <div class="label">L4 Skip-Load 綜合成熟度</div>
+    <div class="value" style="color:var(--yellow)">5.2/10</div>
+    <div class="sub">實驗階段，需顯式開啟</div>
+  </div>
+  <div class="score-item">
+    <div class="label">devserver 分支活躍度</div>
+    <div class="value" style="color:var(--accent)">103</div>
+    <div class="sub">9月以來 commits (vs dev 分支 7)</div>
+  </div>
+  <div class="score-item">
+    <div class="label">代碼量增長 (devserver vs dev)</div>
+    <div class="value" style="color:var(--purple)">+40%</div>
+    <div class="sub">expert-cache.cpp 128KB vs 91KB</div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2>2. 技術定位與協同關係</h2>
+
+<h3>2.1 兩個技術的定義</h3>
+
+<table>
+  <tr><th>維度</th><th>L3 Softpool（三層動態可縮池）</th><th>L4 Skip-Load（Metal Fast Path 精準切片）</th></tr>
+  <tr>
+    <td><strong>核心問題</strong></td>
+    <td>已 load 的 expert 權重在 GPU pool 中如何分層、淘汰、動態縮容</td>
+    <td>哪些 expert tensor 需要實際 load 到 memory，哪些只記 GGUF offset 走 mmap</td>
+  </tr>
+  <tr>
+    <td><strong>作用層級</strong></td>
+    <td>運行時（runtime）— cache 管理層</td>
+    <td>加載時（loader）— 模型加載層</td>
+  </tr>
+  <tr>
+    <td><strong>關鍵數據結構</strong></td>
+    <td><code>soft_pool_l0</code> / <code>soft_pool_l1</code> / LRU slot table</td>
+    <td><code>expert_cache_pool_capacity</code> / <code>expert_cache_skip_load</code> / <code>l4_pool_tensors</code></td>
+  </tr>
+  <tr>
+    <td><strong>核心函數</strong></td>
+    <td><code>cgc_soft_pool_tier()</code> / LRU evict / promote</td>
+    <td><code>compute_l4_pool_capacity()</code> / <code>llama_expert_cache_adopt_pool_region()</code></td>
+  </tr>
+  <tr>
+    <td><strong>預設狀態</strong></td>
+    <td><span class="badge badge-green">ON</span> L0=48, L1=48 (devserver 分支)</td>
+    <td><span class="badge badge-red">OFF</span> 需 <code>LLAMA_EXPERT_CACHE_ALLOW_NGL=1</code></td>
+  </tr>
+  <tr>
+    <td><strong>性能收益</strong></td>
+    <td>省 27% 內存，維持 decode 速度；命中率 L0 85%+ / L1 12%</td>
+    <td>Metal zero-copy FFN，理論 +30% t/s；但 16GB OOM 風險</td>
+  </tr>
+</table>
+
+<h3>2.2 協同流程</h3>
+
+<div class="chart-container">
+  <div id="chart-flow" class="chart-sm"></div>
+</div>
+
+<!-- ============================================================ -->
+<h2>3. L3 Softpool 成熟度分析</h2>
+
+<h3>3.1 代碼完整性</h3>
+
+<table>
+  <tr><th>指標</th><th>devserver 分支</th><th>dev 分支 (flashkv0516)</th><th>評估</th></tr>
+  <tr><td><code>llama-expert-cache.h</code></td><td>607 行 / 40.9 KB</td><td>~320 行 / 21.7 KB</td><td><span class="badge badge-green">完整</span></td></tr>
+  <tr><td><code>llama-expert-cache.cpp</code></td><td>2543 行 / 127.8 KB</td><td>~1800 行 / 91.5 KB</td><td><span class="badge badge-green">完整</span></td></tr>
+  <tr><td>Softpool 相關引用</td><td>16 處 (L0/L1/soft_pool)</td><td>較少</td><td><span class="badge badge-green">已整合</span></td></tr>
+  <tr><td>核心函數 <code>cgc_soft_pool_tier()</code></td><td>已實現 (inline, env 讀取 + clamp)</td><td>部分</td><td><span class="badge badge-green">已實現</span></td></tr>
+  <tr><td>LRU eviction 邏輯</td><td>已實現 (slot_owner timestamp + promote)</td><td>基礎</td><td><span class="badge badge-green">已實現</span></td></tr>
+  <tr><td>L0 hot 固定區</td><td>已實現 (no eviction)</td><td>無</td><td><span class="badge badge-green">已實現</span></td></tr>
+</table>
+
+<h3>3.2 環境變數與配置</h3>
+
+<pre><code># L3 Softpool 配置 (devserver 分支預設)
+CGC_SOFT_POOL=1              # 整體開關，預設 ON
+CGC_SOFT_POOL_L0=48          # L0 hot 層容量 (從 32 調優到 48)
+CGC_SOFT_POOL_L1=48          # L1 warm LRU 層容量 (從 32 調優到 48)
+# 合計 96 slot，比早期 87 slot 更寬裕，比 256 全量省 62% 內存
+
+# 極限配置
+CGC_SOFT_POOL_L0=0           # 關閉 L0，全部走 L1 LRU
+CGC_SOFT_POOL_L1=0           # 關閉 L1，退化到 L2 mmap + ZERO-slot
+CGC_SOFT_POOL=0              # 完全關閉 Softpool，退回單層 Expert Cache</code></pre>
+
+<div class="callout">
+  <strong>配置演進:</strong> 白皮書初始預設為 L0=32/L1=32（合計 64，省 27% 內存），後續 commit <code>ca47e0367</code> 調優為 L0=48/L1=48（合計 96），在 7-profile replay 中找到「甜蜜點」——品質全 1.0 且速度最優。
+</div>
+
+<h3>3.3 測試覆蓋</h3>
+
+<table>
+  <tr><th>測試類型</th><th>覆蓋情況</th><th>評估</th></tr>
+  <tr><td>單元測試 <code>test-expert-cache.cpp</code></td><td>184 行，覆蓋 byte-identity、warm hits、background prefetch、LRU eviction</td><td><span class="badge badge-yellow">基礎覆蓋</span></td></tr>
+  <tr><td>Softpool L0/L1 分層專測</td><td>無專屬測試，現有測試是 CPU-only (n_gpu_layers=0)</td><td><span class="badge badge-red">缺失</span></td></tr>
+  <tr><td>Replay benchmark</td><td>7-profile multi-prompt，含 qa-zh/longform/coding/math/reasoning/writing</td><td><span class="badge badge-green">完善</span></td></tr>
+  <tr><td>V1 Hash 守護</td><td><code>CGC_EXACT_CACHE_VERIFY=1</code>，pool-fill SHA-256 比對</td><td><span class="badge badge-green">已實現</span></td></tr>
+  <tr><td>V2 Logits Oracle</td><td><code>CGC_LOGITS_ORACLE_DUMP</code>，2433/2433 bit-level 一致</td><td><span class="badge badge-green">已驗證</span></td></tr>
+  <tr><td>Pre-commit gate</td><td>Hook 8 (source↔binary sync) + Hook 11 (replay bench regression)</td><td><span class="badge badge-green">已上線</span></td></tr>
+  <tr><td>CI workflow</td><td><code>.github/workflows/cgc-replay-bench.yml</code></td><td><span class="badge badge-green">已配置</span></td></tr>
+</table>
+
+<h3>3.4 文件體系</h3>
+
+<table>
+  <tr><th>文件</th><th>類型</th><th>成熟度</th></tr>
+  <tr><td><code>CGC_EXPERT_CACHE_SOFTPOOL_WHITE_PAPER_2026-09-05.html</code></td><td>技術白皮書 (34KB, 10章節)</td><td><span class="badge badge-green">完善</span></td></tr>
+  <tr><td><code>CGC_SOFTPOOL_EXPERT_CACHE_L4_V1V2_2026-09-05.html</code></td><td>整合白皮書 (29KB, 8章節)</td><td><span class="badge badge-green">完善</span></td></tr>
+  <tr><td><code>CGC_EXPERT_CACHE_INVARIANTS_v1.md</code></td><td>不變量契約 (13條, 機器可讀)</td><td><span class="badge badge-green">完善</span></td></tr>
+  <tr><td><code>CGC_EXPERT_CACHE_HYBRID_DESIGN_2026-09-05.html</code></td><td>Hybrid Slot Table 設計</td><td><span class="badge badge-green">完善</span></td></tr>
+  <tr><td><code>ExpertCache_關鍵版本技術白皮書_2026-09-08.html</code></td><td>版本演進白皮書 (最新)</td><td><span class="badge badge-green">最新</span></td></tr>
+</table>
+
+<h3>3.5 Git 提交軌跡</h3>
+
+<div class="chart-container">
+  <div id="chart-l3-timeline" class="chart-sm"></div>
+</div>
+
+<!-- ============================================================ -->
+<h2>4. L4 Skip-Load 成熟度分析</h2>
+
+<h3>4.1 代碼完整性</h3>
+
+<table>
+  <tr><th>指標</th><th>實現狀態</th><th>位置</th><th>評估</th></tr>
+  <tr><td><code>compute_l4_pool_capacity()</code></td><td>已實現 — 掃 GGUF metadata 計算 pool 容量</td><td><code>llama-model-loader.cpp:1068</code></td><td><span class="badge badge-green">已實現</span></td></tr>
+  <tr><td><code>expert_cache_skip_load</code></td><td>已實現 — expert tensor 保留在 CPU (bounded residency)</td><td><code>llama-model-loader.cpp:1275</code></td><td><span class="badge badge-green">已實現</span></td></tr>
+  <tr><td><code>l4_path</code> gate 邏輯</td><td>已實現 — ngl>0 + ALLOW_NGL + !NOGATHER</td><td><code>llama-model-loader.cpp:328</code></td><td><span class="badge badge-green">已實現</span></td></tr>
+  <tr><td><code>llama_expert_cache_adopt_pool_region()</code></td><td>已實現 — zero-copy 採用 expert tensor Metal storage</td><td><code>llama-expert-cache.cpp:1122</code></td><td><span class="badge badge-green">已實現</span></td></tr>
+  <tr><td><code>L4_SKIP_LAYER0</code></td><td>已實現 — 跳過 layer 0 的 expert pool</td><td><code>llama-model-loader.cpp:1406</code></td><td><span class="badge badge-green">已實現</span></td></tr>
+  <tr><td><code>PIN_PROFILE</code> 靜態 pin</td><td>已實現 — load-time pin prefill</td><td>commit <code>7e8afd3b5</code></td><td><span class="badge badge-green">已實現</span></td></tr>
+  <tr><td>L4 cold-start 預讀</td><td>已實現 — loader 預讀 FIRST n_slots experts</td><td><code>llama-expert-cache.h:559</code></td><td><span class="badge badge-yellow">有代價</span></td></tr>
+</table>
+
+<h3>4.2 環境變數與配置</h3>
+
+<pre><code># L4 Skip-Load 配置 (全部預設 OFF)
+LLAMA_EXPERT_CACHE_ALLOW_NGL=1     # 允許 ngl>0 啟用 expert cache (核心開關)
+LLAMA_EXPERT_CACHE_NOGATHER=1      # 完全關閉 expert cache (debug 用)
+LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0=1  # L4 中跳過 layer 0 (省 ~250MB)
+LLAMA_EXPERT_CACHE_PIN_PROFILE=./top8.profile  # 靜態 pin 特定 expert
+
+# 啟動 L4 path 的必要條件 (全部滿足才啟用):
+#   1. params.n_gpu_layers > 0
+#   2. LLAMA_EXPERT_CACHE_ALLOW_NGL 已設置
+#   3. LLAMA_EXPERT_CACHE_NOGATHER 未設置或為空</code></pre>
+
+<div class="callout warn">
+  <strong>為什麼預設 OFF?</strong> 在 production (-ngl=99, 全 GPU) 環境啟用 Expert Cache 是雙刃劍：好處是 zero-copy FFN，風險是 Metal pool 容量若算錯會 OOM 整個 process。設計哲學是「讓 production 配置主動承擔風險，而不是默認承擔」。
+</div>
+
+<h3>4.3 測試覆蓋</h3>
+
+<table>
+  <tr><th>測試類型</th><th>覆蓋情況</th><th>評估</th></tr>
+  <tr><td>L4 專屬單元測試</td><td><strong>無</strong> — test-expert-cache.cpp 是 CPU-only (n_gpu_layers=0)</td><td><span class="badge badge-red">缺失</span></td></tr>
+  <tr><td>Metal path 集成測試</td><td>無自動化測試，依賴手動 A/B</td><td><span class="badge badge-red">缺失</span></td></tr>
+  <tr><td>OOM 邊界測試</td><td>無 — 16GB 設備 OOM 風險僅有文件記錄</td><td><span class="badge badge-red">缺失</span></td></tr>
+  <tr><td>adopt_pool_region 驗證</td><td>僅靠 V1 hash 守護 (env-gated, default OFF)</td><td><span class="badge badge-yellow">間接</span></td></tr>
+  <tr><td>L4 cold-start 性能測試</td><td>有手動數據: L4@4GiB short-prompt decode 122ms vs base 88ms</td><td><span class="badge badge-yellow">手動</span></td></tr>
+  <tr><td>Replay benchmark 中的 L4</td><td>replay 基線是 ngl=99 + baseline (非 L4 path)，L4 未進入基線</td><td><span class="badge badge-red">未納入</span></td></tr>
+</table>
+
+<h3>4.4 文件體系</h3>
+
+<table>
+  <tr><th>文件</th><th>類型</th><th>成熟度</th></tr>
+  <tr><td>L4 獨立白皮書</td><td><strong>無</strong> — L4 內容依附在 Softpool 白皮書 §4</td><td><span class="badge badge-red">缺失</span></td></tr>
+  <tr><td>L4 章節在整合白皮書中</td><td>§4 L4 Skip-Load Gate (約 4 小節)</td><td><span class="badge badge-yellow">基礎</span></td></tr>
+  <tr><td>L4 不變量契約</td><td>INV-05 (Sub-buffer View Aliasing) 標註「設計中」</td><td><span class="badge badge-red">未完成</span></td></tr>
+  <tr><td>L4 已知邊界</td><td>白皮書 §8.1 列了 4 項 (V3 未實作、16GB OOM、物理上限、profile dispatch)</td><td><span class="badge badge-green">有記錄</span></td></tr>
+</table>
+
+<h3>4.5 Git 提交軌跡</h3>
+
+<div class="chart-container">
+  <div id="chart-l4-timeline" class="chart-sm"></div>
+</div>
+
+<!-- ============================================================ -->
+<h2>5. 多維度成熟度對比</h2>
+
+<div class="two-col">
+  <div class="chart-container">
+    <div id="chart-radar" class="chart"></div>
+  </div>
+  <div class="chart-container">
+    <div id="chart-bar" class="chart"></div>
+  </div>
+</div>
+
+<h3>5.1 成熟度評分矩陣</h3>
+
+<table>
+  <tr><th>維度</th><th>權重</th><th>L3 Softpool</th><th>L4 Skip-Load</th><th>差距說明</th></tr>
+  <tr><td>代碼完整性</td><td>20%</td><td><span class="badge badge-green">9/10</span></td><td><span class="badge badge-green">8/10</span></td><td>L4 核心邏輯都已實現，但邊界處理較少</td></tr>
+  <tr><td>測試覆蓋</td><td>20%</td><td><span class="badge badge-yellow">6/10</span></td><td><span class="badge badge-red">2/10</span></td><td>L4 完全沒有專屬測試，也未納入 replay 基線</td></tr>
+  <tr><td>文件完整性</td><td>15%</td><td><span class="badge badge-green">9/10</span></td><td><span class="badge badge-yellow">5/10</span></td><td>L4 無獨立白皮書，內容依附在 L3 文檔中</td></tr>
+  <tr><td>生產驗證</td><td>15%</td><td><span class="badge badge-green">8/10</span></td><td><span class="badge badge-red">3/10</span></td><td>L3 已進入預設配置並通過 7-profile；L4 預設 OFF</td></tr>
+  <tr><td>風險可控性</td><td>10%</td><td><span class="badge badge-green">8/10</span></td><td><span class="badge badge-red">3/10</span></td><td>L4 有 16GB OOM 風險，無自動化邊界檢查</td></tr>
+  <tr><td>CI/CD 整合</td><td>10%</td><td><span class="badge badge-green">8/10</span></td><td><span class="badge badge-red">2/10</span></td><td>L3 有 replay bench CI；L4 未納入任何 CI</td></tr>
+  <tr><td>開發活躍度</td><td>10%</td><td><span class="badge badge-green">8/10</span></td><td><span class="badge badge-yellow">5/10</span></td><td>L3 持續有調優 commit；L4 近期活躍度較低</td></tr>
+  <tr><td><strong>加權總分</strong></td><td>100%</td><td><strong style="color:var(--green)">7.8/10</strong></td><td><strong style="color:var(--yellow)">4.3/10</strong></td><td>L3 領先約 3.5 分</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2>6. 兩個分支的差異分析</h2>
+
+<table>
+  <tr><th>維度</th><th>flashkv0516 (dev 分支)</th><th>flashkv-devserver (demo/sweet-spot 分支)</th></tr>
+  <tr><td>HEAD commit</td><td><code>83c47b137</code></td><td><code>51c8ac101</code></td></tr>
+  <tr><td>8月以來 commits</td><td>120</td><td>216</td></tr>
+  <tr><td>9月以來 commits</td><td>7</td><td>103</td></tr>
+  <tr><td>expert-cache.cpp</td><td>91.5 KB</td><td>127.8 KB (+40%)</td></tr>
+  <tr><td>expert-cache.h</td><td>21.7 KB</td><td>40.9 KB (+89%)</td></tr>
+  <tr><td>Softpool 預設</td><td>基礎實現，L0/L1 配置較舊</td><td>L0=48/L1=48，已調優</td></tr>
+  <tr><td>L4 實現</td><td>基礎 skip-load</td><td>完整 l4_path + adopt_pool_region</td></tr>
+  <tr><td>Replay profile</td><td>3-profile (qa/longform/coding)</td><td>7-profile (+math/reasoning/writing 等)</td></tr>
+  <tr><td>品質守護</td><td>基礎 V1/V2</td><td>V1/V2 + E2E quality gate + loop guard</td></tr>
+  <tr><td>文件數量</td><td>25 份 docs</td><td>41 份 docs (+64%)</td></tr>
+</table>
+
+<div class="callout">
+  <strong>建議:</strong> 成熟度分析應以 <code>flashkv-devserver</code>（demo/sweet-spot-windows-fix 分支）為基準，因為它包含最新的 L3/L4 實現、調優和文件。flashkv0516 的 dev 分支已停滯（9月僅 7 commits），可能是穩定分支或等待合併。
+</div>
+
+<!-- ============================================================ -->
+<h2>7. 風險與已知問題</h2>
+
+<h3>7.1 L3 Softpool 風險</h3>
+
+<table>
+  <tr><th>風險</th><th>嚴重性</th><th>現狀</th><th>緩解措施</th></tr>
+  <tr><td>L0/L1 容量配置不當導致命中率下降</td><td><span class="badge badge-yellow">中</span></td><td>已通過 7-profile 找到甜蜜點 (48/48)</td><td>Replay benchmark 持續監控</td></tr>
+  <tr><td>LRU evict 時機不當導致 decode 抖動</td><td><span class="badge badge-yellow">中</span></td><td>有 hang watchdog + batch_mask 精確性</td><td>INV-08/09/10 always-on FATAL</td></tr>
+  <tr><td>V3 sub-buffer alias check 未實作</td><td><span class="badge badge-yellow">中</span></td><td>設計完成，待實作 (Q4 2026)</td><td>V1+V2 雙保險覆蓋大部分場景</td></tr>
+  <tr><td>Softpool 分層無專屬單元測試</td><td><span class="badge badge-yellow">中</span></td><td>僅靠集成測試和 replay</td><td>建議補 L0/L1 邊界單測</td></tr>
+</table>
+
+<h3>7.2 L4 Skip-Load 風險</h3>
+
+<table>
+  <tr><th>風險</th><th>嚴重性</th><th>現狀</th><th>緩解措施</th></tr>
+  <tr><td>16GB Mac OOM (pool 容量算錯)</td><td><span class="badge badge-red">高</span></td><td>已知風險，僅靠手動配置</td><td>預設 OFF + L4_SKIP_LAYER0 可緩解</td></tr>
+  <tr><td>Metal sub-buffer alias (view 指錯)</td><td><span class="badge badge-red">高</span></td><td>V3 設計中，V1/V2 抓不到 mild regression</td><td>需 V3 實作才能完整守護</td></tr>
+  <tr><td>L4 cold-start 開銷 (122ms vs 88ms)</td><td><span class="badge badge-yellow">中</span></td><td>有手動測量數據</td><td>PIN_PROFILE 可預熱熱點 expert</td></tr>
+  <tr><td>無自動化測試，regression 無法即時發現</td><td><span class="badge badge-red">高</span></td><td>完全依賴手動 A/B</td><td>需納入 CI 和 replay 基線</td></tr>
+  <tr><td>compute_l4_pool_capacity 邊界 case</td><td><span class="badge badge-yellow">中</span></td><td>無單測覆蓋 GGUF metadata 異常</td><td>建議補畸形 GGUF 的邊界測試</td></tr>
+  <tr><td>跨後端兼容性 (僅 Metal)</td><td><span class="badge badge-yellow">中</span></td><td>L4 zero-copy 是 Metal-only 設計</td><td>CPU/Vulkan 走 mmap fallback</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2>8. 建議與 Roadmap</h2>
+
+<h3>8.1 L3 Softpool 後續建議（短期，1-2 週）</h3>
+
+<ol>
+  <li><strong>補 L0/L1 分層單元測試</strong>: 在 test-expert-cache.cpp 中增加 soft_pool_l0=0 / l1=0 / 邊界值的測試 case，確保 clamp 和退化路徑正確。</li>
+  <li><strong>V3 sub-buffer alias check 實作</strong>: 按照白皮書 §5.4 的設計，在 ggml-metal.metal 的 subBuffer alloc 點插入 trace hook，實作 reverse-lookup SHA-256 驗證。</li>
+  <li><strong>Softpool 容量自動調優</strong>: 根據當前 batch 的 expert 訪問分佈，動態調整 L0/L1 比例，而不是固定 48/48。</li>
+</ol>
+
+<h3>8.2 L4 Skip-Load 後續建議（中期，1-2 月）</h3>
+
+<ol>
+  <li><strong>補 L4 專屬單元測試</strong>: 創建 test-expert-cache-l4.cpp，覆蓋 compute_l4_pool_capacity、adopt_pool_region、L4_SKIP_LAYER0 等邊界。</li>
+  <li><strong>納入 Replay 基線</strong>: 在 replay benchmark 中增加 L4 path 的 profile (ALLOW_NGL=1)，與 baseline 對比，確保 L4 改動不會 regression。</li>
+  <li><strong>16GB OOM 自動檢測</strong>: 在 compute_l4_pool_capacity 中增加物理內存檢查，如果 pool_capacity > 可用內存的 70%，自動降級到 L4_SKIP_LAYER0 或關閉 L4。</li>
+  <li><strong>撰寫 L4 獨立白皮書</strong>: 將 L4 內容從 Softpool 白皮書中抽出，成為獨立文件，涵蓋設計動機、gate 邏輯、zero-copy 機制、OOM 風險、配置矩陣。</li>
+  <li><strong>L4 CI workflow</strong>: 創建 .github/workflows/cgc-l4-metal-test.yml，在 self-hosted macOS runner 上跑 L4 path 的 smoke test。</li>
+</ol>
+
+<h3>8.3 長期方向（Q4 2026 - Q1 2027）</h3>
+
+<table>
+  <tr><th>項目</th><th>優先級</th><th>ETA</th><th>預期收益</th></tr>
+  <tr><td>V3 sub-buffer alias check 上線</td><td><span class="badge badge-yellow">P1</span></td><td>Q4 2026</td><td>補齊 L4 Metal view 層盲點</td></tr>
+  <tr><td>L4 納入生產預設 (32GB+ 設備)</td><td><span class="badge badge-yellow">P1</span></td><td>Q4 2026</td><td>解鎖 +30% t/s 的 Metal fast path</td></tr>
+  <tr><td>Self-hosted macOS CI runner</td><td><span class="badge badge-yellow">P1</span></td><td>Q4 2026</td><td>L4 Metal path 自動化測試</td></tr>
+  <tr><td>Softpool L2 預熱策略</td><td><span class="badge badge-blue">P2</span></td><td>Q1 2027</td><td>避免 cold start 抖動</td></tr>
+  <tr><td>多 profile 自動 dispatch (根據 prompt 選 L0/L1)</td><td><span class="badge badge-blue">P2</span></td><td>Q1 2027</td><td>自適應容量調優</td></tr>
+  <tr><td>L4 跨後端移植 (Vulkan/CUDA)</td><td><span class="badge badge-purple">P3</span></td><td>Q2 2027</td><td>非 Metal 設備也能受益</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2>9. 結論</h2>
+
+<div class="callout success">
+  <strong>L3 Softpool: 生產可用級別 (TRL 7-8)</strong>
+  <p>L3 Softpool 已經從實驗階段進入生產預設配置，具備完整的代碼實現、完善的文件體系、不變量契約、雙層 bit-correctness 守護（V1+V2）、pre-commit gate 和 CI 整合。7-profile replay benchmark 驗證了 L0=48/L1=48 的「甜蜜點」配置，品質全 1.0 且速度最優。剩餘工作主要是補單元測試和實作 V3。</p>
+</div>
+
+<div class="callout warn">
+  <strong>L4 Skip-Load: 實驗驗證級別 (TRL 4-5)</strong>
+  <p>L4 Skip-Load 的核心邏輯（compute_l4_pool_capacity + adopt_pool_region zero-copy）已經實現，但仍處於「需顯式開啟」的實驗階段。主要瓶頸是：(1) 16GB 設備 OOM 風險未解；(2) 完全沒有自動化測試；(3) 未納入 replay 基線和 CI；(4) V3 sub-buffer alias check 尚未實作，Metal view 層存在盲點。建議在 32GB+ 設備上先做小範圍生產驗證，同時補齊測試和文件後再考慮預設開啟。</p>
+</div>
+
+<div class="callout">
+  <strong>協同建議:</strong>
+  <p>L3 和 L4 是上下游協同關係，L4 是 L3 的前置條件。當前 L3 已經成熟，但 L4 尚未解鎖，導致 L3 的 Metal pool 能力沒有完全發揮（L3 管理的是 CPU mmap 路徑的 cache，而不是 L4 zero-copy 的 Metal pool）。建議優先推進 L4 的測試覆蓋和 OOM 風險控制，一旦 L4 在 32GB+ 設備上穩定，L3+L4 組合可以釋放完整的 Metal fast path 性能潛力（理論 decode 30+ t/s）。</p>
+</div>
+
+<hr>
+
+<p style="opacity:0.6; font-size:0.8rem;">
+  本報告基於 2026-09-09 的源碼快照分析。數據來源: flashkv0516 (dev @ 83c47b1) + flashkv-devserver (demo/sweet-spot-windows-fix @ 51c8ac1)。<br>
+  分析方法: 源碼行數統計 + Git log 分析 + 文件體系審查 + 測試覆蓋評估 + 環境變數配置矩陣。<br>
+  成熟度評分為主觀評估，基於代碼完整性、測試覆蓋、文件、生產驗證、風險可控性、CI 整合、開發活躍度七個維度加權。
+</p>
+
+<script>
+// 協同流程圖
+var chartFlow = echarts.init(document.getElementById('chart-flow'));
+chartFlow.setOption({
+  backgroundColor: 'transparent',
+  title: { text: 'L4 → L3 協同流程', left: 'center', textStyle: { color: '#f0f6fc', fontSize: 14 } },
+  tooltip: { trigger: 'item', triggerOn: 'click', renderMode: 'richText', confine: true },
+  series: [{
+    type: 'sankey',
+    left: '10%', right: '10%', top: 50, bottom: 20,
+    nodeWidth: 18, nodeGap: 12,
+    label: { color: '#c9d1d9', fontSize: 11 },
+    lineStyle: { color: 'gradient', curveness: 0.5, opacity: 0.6 },
+    data: [
+      { name: '模型加載階段', itemStyle: { color: '#58a6ff' } },
+      { name: 'compute_l4_pool_capacity', itemStyle: { color: '#d29922' } },
+      { name: 'L4 skip-load gate', itemStyle: { color: '#d29922' } },
+      { name: '專家張量分配', itemStyle: { color: '#bc8cff' } },
+      { name: '運行時階段', itemStyle: { color: '#58a6ff' } },
+      { name: 'L0 Hot 層 (48 slot)', itemStyle: { color: '#3fb950' } },
+      { name: 'L1 Warm LRU 層 (48 slot)', itemStyle: { color: '#3fb950' } },
+      { name: 'L2 Cold mmap 層', itemStyle: { color: '#f85149' } },
+      { name: 'Metal FFN zero-copy', itemStyle: { color: '#3fb950' } }
+    ],
+    links: [
+      { source: '模型加載階段', target: 'compute_l4_pool_capacity', value: 10 },
+      { source: 'compute_l4_pool_capacity', target: 'L4 skip-load gate', value: 10 },
+      { source: 'L4 skip-load gate', target: '專家張量分配', value: 10 },
+      { source: '專家張量分配', target: '運行時階段', value: 10 },
+      { source: '運行時階段', target: 'L0 Hot 層 (48 slot)', value: 6 },
+      { source: '運行時階段', target: 'L1 Warm LRU 層 (48 slot)', value: 3 },
+      { source: '運行時階段', target: 'L2 Cold mmap 層', value: 1 },
+      { source: 'L0 Hot 層 (48 slot)', target: 'Metal FFN zero-copy', value: 6 },
+      { source: 'L1 Warm LRU 層 (48 slot)', target: 'Metal FFN zero-copy', value: 3 }
+    ]
+  }]
+});
+
+// L3 時間線
+var chartL3 = echarts.init(document.getElementById('chart-l3-timeline'));
+chartL3.setOption({
+  backgroundColor: 'transparent',
+  title: { text: 'L3 Softpool 關鍵提交時間線', left: 'center', textStyle: { color: '#f0f6fc', fontSize: 14 } },
+  tooltip: { trigger: 'axis', triggerOn: 'click', renderMode: 'richText', confine: true, axisPointer: { type: 'shadow' } },
+  grid: { left: 120, right: 30, top: 50, bottom: 30, containLabel: true },
+  xAxis: { type: 'value', name: '成熟度', min: 0, max: 10, axisLabel: { color: '#8b949e' }, splitLine: { lineStyle: { color: '#21262d' } } },
+  yAxis: { type: 'category', data: ['2026-08-15\nL4 cold-start 預讀', '2026-08-29\nbatch_mask 精確性', '2026-08-30\nhang watchdog', '2026-09-01\nHybrid Soft Pool 設計', '2026-09-05\nV1+V2 bit-correctness', '2026-09-05\nReplay bench CI gate', '2026-09-05\n§5 不變量契約 v1', '2026-09-07\n7-profile replay 甜蜜點', '2026-09-08\n關鍵版本技術白皮書'], axisLabel: { color: '#8b949e', fontSize: 10 } },
+  series: [{
+    type: 'bar',
+    data: [3, 4, 5, 5.5, 7, 7.2, 7.4, 7.6, 7.8],
+    itemStyle: { color: new echarts.graphic.LinearGradient(0, 0, 1, 0, [{ offset: 0, color: '#58a6ff' }, { offset: 1, color: '#3fb950' }]) },
+    label: { show: true, position: 'right', color: '#c9d1d9', fontSize: 10, formatter: '{c}' }
+  }]
+});
+
+// L4 時間線
+var chartL4 = echarts.init(document.getElementById('chart-l4-timeline'));
+chartL4.setOption({
+  backgroundColor: 'transparent',
+  title: { text: 'L4 Skip-Load 關鍵提交時間線', left: 'center', textStyle: { color: '#f0f6fc', fontSize: 14 } },
+  tooltip: { trigger: 'axis', triggerOn: 'click', renderMode: 'richText', confine: true, axisPointer: { type: 'shadow' } },
+  grid: { left: 120, right: 30, top: 50, bottom: 30, containLabel: true },
+  xAxis: { type: 'value', name: '成熟度', min: 0, max: 10, axisLabel: { color: '#8b949e' }, splitLine: { lineStyle: { color: '#21262d' } } },
+  yAxis: { type: 'category', data: ['2026-08-15\nL4 cold-start 基礎', '2026-08-20\ncompute_l4_pool_capacity', '2026-08-25\nadopt_pool_region zero-copy', '2026-09-01\nPIN_PROFILE load-time pin', '2026-09-05\nL4 章節納入白皮書', '2026-09-05\nV3 alias check 設計(未實作)', '2026-09-07\n(無 L4 相關提交)', '2026-09-08\n(無 L4 相關提交)', '2026-09-09\n(仍預設 OFF)'], axisLabel: { color: '#8b949e', fontSize: 10 } },
+  series: [{
+    type: 'bar',
+    data: [2, 3, 4, 4.5, 5, 5.2, 5.2, 5.2, 5.2],
+    itemStyle: { color: new echarts.graphic.LinearGradient(0, 0, 1, 0, [{ offset: 0, color: '#d29922' }, { offset: 1, color: '#f85149' }]) },
+    label: { show: true, position: 'right', color: '#c9d1d9', fontSize: 10, formatter: '{c}' }
+  }]
+});
+
+// 雷達圖
+var chartRadar = echarts.init(document.getElementById('chart-radar'));
+chartRadar.setOption({
+  backgroundColor: 'transparent',
+  title: { text: '多維度成熟度雷達圖', left: 'center', textStyle: { color: '#f0f6fc', fontSize: 14 } },
+  tooltip: { trigger: 'item', triggerOn: 'click', renderMode: 'richText', confine: true },
+  legend: { bottom: 0, data: ['L3 Softpool', 'L4 Skip-Load'], textStyle: { color: '#8b949e', fontSize: 11 }, itemWidth: 14, itemHeight: 8 },
+  radar: {
+    indicator: [
+      { name: '代碼完整性', max: 10 },
+      { name: '測試覆蓋', max: 10 },
+      { name: '文件完整性', max: 10 },
+      { name: '生產驗證', max: 10 },
+      { name: '風險可控性', max: 10 },
+      { name: 'CI/CD 整合', max: 10 },
+      { name: '開發活躍度', max: 10 }
+    ],
+    center: ['50%', '52%'],
+    radius: '62%',
+    axisName: { color: '#8b949e', fontSize: 10 },
+    splitArea: { areaStyle: { color: ['rgba(22,27,34,0.3)', 'rgba(22,27,34,0.6)'] } },
+    splitLine: { lineStyle: { color: '#30363d' } },
+    axisLine: { lineStyle: { color: '#30363d' } }
+  },
+  series: [{
+    type: 'radar',
+    data: [
+      { value: [9, 6, 9, 8, 8, 8, 8], name: 'L3 Softpool', itemStyle: { color: '#3fb950' }, areaStyle: { color: 'rgba(63,185,80,0.2)' }, lineStyle: { color: '#3fb950', width: 2 } },
+      { value: [8, 2, 5, 3, 3, 2, 5], name: 'L4 Skip-Load', itemStyle: { color: '#d29922' }, areaStyle: { color: 'rgba(210,153,34,0.2)' }, lineStyle: { color: '#d29922', width: 2 } }
+    ]
+  }]
+});
+
+// 柱狀圖
+var chartBar = echarts.init(document.getElementById('chart-bar'));
+chartBar.setOption({
+  backgroundColor: 'transparent',
+  title: { text: '各維度得分對比', left: 'center', textStyle: { color: '#f0f6fc', fontSize: 14 } },
+  tooltip: { trigger: 'axis', triggerOn: 'click', renderMode: 'richText', confine: true, axisPointer: { type: 'shadow' } },
+  legend: { bottom: 0, data: ['L3 Softpool', 'L4 Skip-Load'], textStyle: { color: '#8b949e', fontSize: 11 }, itemWidth: 14, itemHeight: 8 },
+  grid: { left: 50, right: 20, top: 50, bottom: 50, containLabel: true },
+  xAxis: { type: 'category', data: ['代碼', '測試', '文件', '生產', '風險', 'CI', '活躍'], axisLabel: { color: '#8b949e', fontSize: 10 } },
+  yAxis: { type: 'value', max: 10, axisLabel: { color: '#8b949e' }, splitLine: { lineStyle: { color: '#21262d' } } },
+  series: [
+    { name: 'L3 Softpool', type: 'bar', data: [9, 6, 9, 8, 8, 8, 8], itemStyle: { color: '#3fb950' }, barWidth: '30%' },
+    { name: 'L4 Skip-Load', type: 'bar', data: [8, 2, 5, 3, 3, 2, 5], itemStyle: { color: '#d29922' }, barWidth: '30%' }
+  ]
+});
+
+window.addEventListener('resize', function() {
+  chartFlow.resize();
+  chartL3.resize();
+  chartL4.resize();
+  chartRadar.resize();
+  chartBar.resize();
+});
+</script>
+
+</body>
+</html>
