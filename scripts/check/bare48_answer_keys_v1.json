@@ -1,0 +1,85 @@
+{
+  "_version": 1,
+  "_purpose": "Per-prompt answer keys for the 48-question bare-ask suite. Replaces the flat profile-level required_any, which was a single list shared by every question in a profile. That sharing made 'echo the question back' a PASS: e.g. qa-zh required_any contained '行星' while its own prompt was '太陽系有幾個行星？', and longform-zh contained '巴黎'/'文化'/'歷史' while prompt #0 was '請介紹巴黎的歷史、文化和著名景點。'.",
+  "_rules": {
+    "required_any": "list[str] — at least one string must appear in the answer (ASCII keys are compared case-insensitively)",
+    "required_all_groups": "list[list[str]] — every group must have at least one hit; use when the answer needs two independent components (a claim AND a justification)",
+    "novelty_min": "used only when no keyword key is given (open-ended prompts). The answer must contain at least this many characters that do NOT occur in the prompt. Echo-proof by construction.",
+    "length_min / length_max": "optional per-prompt override of the profile-level length window",
+    "note": "provenance for why this key is shaped this way"
+  },
+  "_echo_proof": "Every key below was chosen so that the prompt text itself does NOT satisfy it. This is verified mechanically by `bare_48.py --selftest-echo`, which feeds each prompt back as its own answer and asserts 0 PASS under the strict ruler.",
+  "_honest_limits": [
+    "longform-zh / writing / the last 3 creative prompts have NO keyword key by design: an open-ended answer cannot be keyword-scored without inventing requirements. They are gated on echo + length + novelty + loop + forbidden instead. Consequence: a long, on-length, non-echo, topically irrelevant answer can still pass. The old flat required_any did not really stop that either (13 shared keywords), and it actively let echoes pass.",
+    "translation and qa-zh answers that are legitimately shorter than the profile length_min get a per-prompt length_min override; those overrides are reported separately from the required_any fix so the two changes are not confused."
+  ],
+
+  "qa-zh": [
+    {"required_any": ["巴黎", "Paris"], "length_min": 2, "note": "「巴黎。」 is 3 chars and failed the profile length_min=4 even though the prompt says 請簡短回答"},
+    {"required_any": ["木星", "土星", "水星", "金星", "火星", "地球", "天王星", "海王星", "八大行星", "八顆", "八個", "8顆", "8個"], "length_max": 800, "note": "must name planets; profile length_max=200 rejected a correct 332-char list, and the prompt explicitly asks 請列出名稱"},
+    {"required_any": ["42", "四十二"], "note": "the answer, not the question: the prompt contains neither"},
+    {"required_any": ["台北", "臺北"], "length_min": 2, "note": "「台北」 is 2 chars"},
+    {"required_any": ["聖母峰", "珠穆朗瑪", "珠峰", "聖母", "Everest", "8848"], "note": "prompt says 世界上最高的山 but not the name"},
+    {"required_any": ["H2O", "H₂O", "H₂0", "水分子"], "note": "prompt says 水的化學式 but not the formula"},
+    {"required_any": ["12", "十二"], "note": "prompt contains 一年 but not 12/十二"},
+    {"required_any": ["365", "一年", "365天", "365 天", "365.25"], "note": "orbital period"}
+  ],
+
+  "longform-zh": [
+    {"required_any": [], "novelty_min": 40, "note": "open-ended"},
+    {"required_any": [], "novelty_min": 40, "note": "open-ended"},
+    {"required_any": [], "novelty_min": 40, "note": "open-ended"},
+    {"required_any": [], "novelty_min": 40, "note": "open-ended"},
+    {"required_any": [], "novelty_min": 40, "note": "open-ended"},
+    {"required_any": [], "novelty_min": 40, "note": "open-ended"}
+  ],
+
+  "coding": [
+    {"required_any": ["fibonacci(", "def fib", "def fibonacci"], "note": "answer must define/call the function; the prompt has no 'fibonacci'"},
+    {"required_any": ["bubble_sort", "bubblesort", "bubbleSort", "bubble(", "def bubble"], "note": "prompt says 冒泡排序, no latin name"},
+    {"required_any": ["is_palindrome", "palindrome(", "def palindrome"], "note": "'回文' was in the old flat list AND in the prompt, so echoing passed"},
+    {"required_any": ["def reverse", "reverse(", "[::-1]", "reversed("], "note": "'反轉' was in the old flat list AND in the prompt"},
+    {"required_any": ["def find_max", "def findmax", "findmax", "max(", "def max", "max_value"]},
+    {"required_any": ["def factorial", "factorial("]},
+    {"required_any": ["def is_prime", "is_prime", "prime("]},
+    {"required_any": ["def merge", "merge("]},
+    {"required_any": ["def count", "count(", "Counter(", "collections."]},
+    {"required_any": ["def binary_search", "binary_search(", "def binarysearch", "bin_search"]},
+    {"required_any": ["def gcd", "gcd(", "math.gcd", "輾轉相除", "euclid"], "note": "'最大公因數' was in the old flat list AND in the prompt"}
+  ],
+
+  "math": [
+    {"required_any": ["56088", "56,088"], "note": "123 x 456; a bare '5' used to pass via the flat list"},
+    {"required_any": ["78.5", "78.50", "78.5398", "78.6", "25π", "25 π", "25 × 3.14"], "note": "pi*r^2 with r=5"},
+    {"required_any": ["x = 5", "x=5", "x 等於 5", "x 為 5", "x 是 5", "x＝5"], "note": "the prompt itself contains '5' (2x + 5 = 15), so a bare '5' key was echo-passable"},
+    {"required_any": ["100"]},
+    {"required_any": ["63"]},
+    {"required_any": ["180", "一百八十"]},
+    {"required_any": ["1024", "1,024"]},
+    {"required_any": ["0.25", "0.250", "四分之一"]}
+  ],
+
+  "reasoning": [
+    {"required_all_groups": [["需要水", "要水"], ["因此", "所以", "結論", "故", "可知", "推得"]], "note": "the prompt already contains 需要水, so a claim keyword alone is echo-passable; pair it with a justification marker"},
+    {"required_all_groups": [["20"], ["10"], ["雞"], ["兔"]], "note": "30 heads / 80 feet -> 20 chickens, 10 rabbits; the prompt has 30 and 80, not 20 and 10"},
+    {"required_all_groups": [["不是程式設計師", "並非程式設計師", "不是一位程式設計師", "不可能是程式設計師"], ["小明"]], "note": "the conclusion, which the prompt does not state"},
+    {"required_all_groups": [["是", "對"], ["因此", "所以", "結論", "由此", "故", "可知"]], "note": "the prompt asks 是或否; a bare '是' passes on the echoed question, so require a conclusion marker"},
+    {"required_any": ["0.6", "60%", "0.60", "3/5", "五分之三"], "note": "3 of 5 -> 0.6; the prompt has 3 and 2 but not the probability"}
+  ],
+
+  "writing": [
+    {"required_any": [], "novelty_min": 30, "length_min": 20, "length_max": 400, "note": "poem; open-ended, and '春天' is in the prompt so no keyword can discriminate"},
+    {"required_any": [], "novelty_min": 40, "length_min": 100, "length_max": 320, "note": "prompt asks for 100-200 chars"},
+    {"required_any": [], "novelty_min": 30, "note": "the prompt contains both 感謝 and 老師, so any keyword pair is echo-passable"},
+    {"required_any": [], "novelty_min": 30, "note": "same as above"},
+    {"required_any": [], "novelty_min": 20, "note": "3 sentences; open-ended, '季節' is in the prompt"}
+  ],
+
+  "translation": [
+    {"required_any": ["你好", "您好", "妳好", "你好嗎"], "note": "the prompt is English; a Chinese rendering is required"},
+    {"required_any": ["artificial intelligence", "ai is", "ai is changing", "ai transforms", "artificial intelligence is changing the world", "ai changes"], "note": "requires an English rendering; the prompt is Chinese"},
+    {"required_any": ["謝謝", "感謝", "谢谢", "不客氣"], "note": "the prompt is English"},
+    {"required_any": ["狐狸", "棕色", "褐", "懶", "跳", "越過", "跨過", "敏捷"], "note": "the prompt contains the English source, so only Chinese keys count"},
+    {"required_any": ["weather", "today", "nice", "good", "sunny"], "note": "requires an English rendering; the prompt is Chinese"}
+  ]
+}
