@@ -754,6 +754,16 @@ if [ -n "${CGC_POOL_MAX_TOKENS:-}" ]; then
     SERVER_ENV+=(CGC_POOL_MAX_TOKENS="$CGC_POOL_MAX_TOKENS")
 fi
 # CGC prev-token prefetch (default off)
+# [CGC M0 decode profile 2026-09-13] Per-layer wait/cb/submit attribution of a decode step.
+# Only produces output under CGC_OA_ASYNC=1 (see CGC_SERVER_OA_ASYNC): without the segmented
+# dispatcher the whole 41-layer graph is one async submit and none of the three components is
+# separable. CGC_DECODE_PROFILE_ALL=1 adds every layer instead of the top 8.
+if [ -n "${CGC_DECODE_PROFILE:-}" ]; then
+    SERVER_ENV+=(CGC_DECODE_PROFILE="$CGC_DECODE_PROFILE")
+fi
+if [ -n "${CGC_DECODE_PROFILE_ALL:-}" ]; then
+    SERVER_ENV+=(CGC_DECODE_PROFILE_ALL="$CGC_DECODE_PROFILE_ALL")
+fi
 if [ -n "${CGC_PREV_TOKEN_PREFETCH:-}" ]; then
     SERVER_ENV+=(CGC_PREV_TOKEN_PREFETCH="$CGC_PREV_TOKEN_PREFETCH")
 fi

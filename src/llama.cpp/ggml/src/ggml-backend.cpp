@@ -1802,6 +1802,23 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 const int bufs  = cgc_bufs ? cgc_bufs(split_backend) : 1; // completions per graph_compute (n_cb+1)
                 const int done0 = cgc_done ? cgc_done(split_backend) : -1;
 
+                // [CGC M0 decode profile 2026-09-13] Per-layer attribution of a decode step. The
+                // segmented loop below serializes GPU layer i -> CPU top-k hook -> submit of layer
+                // i+1, so the step wall is sum(wait + cb + submit) over layers. The CGC-SEG print
+                // averages over 160 segments (~4 steps), which cannot answer "which layer
+                // dominates" -- and the churn data says the answer is NOT uniform (layers 1-2 carry
+                // the highest demand distinct-expert counts). Inert unless CGC_DECODE_PROFILE.
+                // NOTE: only reachable under CGC_OA_ASYNC=1; without it the whole graph is one async
+                // submit and none of these three components is separable.
+                static const bool dp_on  = getenv("CGC_DECODE_PROFILE") != nullptr;
+                static const int  dp_all = []() { const char * e = getenv("CGC_DECODE_PROFILE_ALL"); return e != nullptr ? atoi(e) : 0; }();
+                static int64_t dp_last_submit_us = 0;  // pending submit, consumed by the next hook
+                static int64_t dp_lay_w[64]   = {0};   // GPU wait, per layer
+                static int64_t dp_lay_cb[64]  = {0};   // top-k hook (slot mgmt + blocking fill)
+                static int64_t dp_lay_sub[64] = {0};   // submit of that layer's segment
+                static int64_t dp_lay_n[64]   = {0};   // segments observed, per layer
+                static int64_t dp_step        = 0;     // graph_computes since start
+
                 auto seg_view = [&](int s) {
                     const int a = (s == 0) ? 0 : (as_idx[s-1] + 1);
                     const int b = (s == n_segs-1) ? n_nodes - 1 : as_idx[s];
@@ -1811,8 +1828,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
 
                 // submit the first segment, then pipeline: submit seg[i+1] ahead, wait for seg[i],
                 // fire the top-k hook (writes the remap leaf) that seg[i+1] consumes
+                const int64_t dp_v0 = dp_on ? ggml_time_us() : 0;
                 struct ggml_cgraph gv0 = seg_view(0);
                 enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &gv0);
+                if (dp_on) { dp_last_submit_us = ggml_time_us() - dp_v0; }
                 if (ec != GGML_STATUS_SUCCESS) {
                     return ec;
                 }
@@ -1843,6 +1862,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         return ec2;
                     }
                     const int64_t v1 = ggml_time_us();
+                    dp_last_submit_us = v1 - v0;   // [CGC M0] consumed by the next top-k hook
                     const int d1 = submit_dbg && cgc_done ? cgc_done(split_backend) : -1;
                     if (submit_dbg && (s % 40) == 0) {
                         fprintf(stderr, "CGC-SUBMIT: seg=%d dur=%lld us gpu_adv=%d\n",
@@ -1897,6 +1917,19 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         return false;
                     }
                     const int64_t st2 = ggml_time_us();
+                    // [CGC M0 decode profile] attribute this layer's wait / hook / submit. The
+                    // submit consumed here is the one that queued THIS layer's segment.
+                    if (dp_on) {
+                        const char * dp_dash = ttopk != nullptr ? strrchr(ttopk->name, '-') : nullptr;
+                        const int dp_il = dp_dash != nullptr ? atoi(dp_dash + 1) : i;
+                        if (dp_il >= 0 && dp_il < 64) {
+                            dp_lay_w[dp_il]   += st1 - st0;
+                            dp_lay_cb[dp_il]  += st2 - st1;
+                            dp_lay_sub[dp_il] += dp_last_submit_us;
+                            dp_lay_n[dp_il]++;
+                        }
+                        dp_last_submit_us = 0;
+                    }
                     w_us += st1 - st0;
                     c_us += st2 - st1;
                     n++;
@@ -1923,6 +1956,76 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         if (ec != GGML_STATUS_SUCCESS) {
                             return ec;
                         }
+                    }
+                }
+
+                // [CGC M0 decode profile] One line per 8 steps with the wait/cb/submit split, the
+                // top-8 layers by (wait + cb), and -- with CGC_DECODE_PROFILE_ALL=1 -- every layer.
+                // Reset each step: these are per-step attributions, not run totals.
+                if (dp_on) {
+                    dp_step++;
+                    int64_t dp_w = 0, dp_cb = 0, dp_sb = 0;
+                    int dp_layers = 0;
+                    for (int l = 0; l < 64; l++) {
+                        if (dp_lay_n[l] == 0) {
+                            continue;
+                        }
+                        dp_layers++;
+                        dp_w  += dp_lay_w[l];
+                        dp_cb += dp_lay_cb[l];
+                        dp_sb += dp_lay_sub[l];
+                    }
+                    const int64_t dp_tot = dp_w + dp_cb + dp_sb;
+                    if (dp_tot > 0 && (dp_step % 8) == 0) {
+                        const double dp_inv = 100.0 / (double) dp_tot;
+                        fprintf(stderr,
+                                "CGC-DECPROF: step=%lld segs=%d layers=%d total=%.2f ms | "
+                                "wait=%.2f (%.0f%%) cb=%.2f (%.0f%%) submit=%.2f (%.0f%%)\n",
+                                (long long) dp_step, n_segs, dp_layers, (double) dp_tot / 1000.0,
+                                (double) dp_w / 1000.0, (double) dp_w * dp_inv,
+                                (double) dp_cb / 1000.0, (double) dp_cb * dp_inv,
+                                (double) dp_sb / 1000.0, (double) dp_sb * dp_inv);
+                        bool dp_used[64] = {false};
+                        for (int rank = 0; rank < 8; rank++) {
+                            int dp_best = -1;
+                            int64_t dp_bestv = 0;
+                            for (int l = 0; l < 64; l++) {
+                                if (dp_used[l] || dp_lay_n[l] == 0) {
+                                    continue;
+                                }
+                                const int64_t v = dp_lay_w[l] + dp_lay_cb[l];
+                                if (dp_best < 0 || v > dp_bestv) {
+                                    dp_best  = l;
+                                    dp_bestv = v;
+                                }
+                            }
+                            if (dp_best < 0) {
+                                break;
+                            }
+                            dp_used[dp_best] = true;
+                            fprintf(stderr, "CGC-DECPROF top%d: L%d wait=%.2f cb=%.2f submit=%.2f ms n=%lld\n",
+                                    rank + 1, dp_best,
+                                    (double) dp_lay_w[dp_best] / 1000.0,
+                                    (double) dp_lay_cb[dp_best] / 1000.0,
+                                    (double) dp_lay_sub[dp_best] / 1000.0,
+                                    (long long) dp_lay_n[dp_best]);
+                        }
+                        if (dp_all != 0) {
+                            for (int l = 0; l < 64; l++) {
+                                if (dp_lay_n[l] == 0) {
+                                    continue;
+                                }
+                                fprintf(stderr, "CGC-DECPROF all: L%d wait=%.2f cb=%.2f submit=%.2f ms n=%lld\n",
+                                        l,
+                                        (double) dp_lay_w[l] / 1000.0,
+                                        (double) dp_lay_cb[l] / 1000.0,
+                                        (double) dp_lay_sub[l] / 1000.0,
+                                        (long long) dp_lay_n[l]);
+                            }
+                        }
+                    }
+                    for (int l = 0; l < 64; l++) {
+                        dp_lay_w[l] = dp_lay_cb[l] = dp_lay_sub[l] = dp_lay_n[l] = 0;
                     }
                 }
 
