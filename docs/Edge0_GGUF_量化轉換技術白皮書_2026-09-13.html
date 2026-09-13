@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Edge0 → GGUF 量化轉換技術白皮書</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; background: #f5f5f5; color: #333; line-height: 1.65; }
+  h1 { color: #1a1a2e; border-bottom: 3px solid #16213e; padding-bottom: 10px; }
+  h2 { color: #16213e; margin-top: 36px; border-left: 4px solid #0f3460; padding-left: 10px; }
+  h3 { color: #0f3460; margin-top: 24px; }
+  h4 { color: #0f3460; margin-top: 18px; margin-bottom: 6px; }
+  table { border-collapse: collapse; width: 100%; margin: 15px 0; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+  th { background: #16213e; color: white; padding: 10px 8px; text-align: left; font-size: 13px; vertical-align: bottom; }
+  td { padding: 8px; border-bottom: 1px solid #eee; font-size: 13px; vertical-align: top; }
+  tr:hover { background: #f0f4ff; }
+  .best { background: #d4edda; font-weight: bold; }
+  .good { background: #fff3cd; }
+  .bad { background: #f8d7da; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: bold; white-space: nowrap; }
+  .tag-best { background: #28a745; color: white; }
+  .tag-good { background: #ffc107; color: #333; }
+  .tag-bad { background: #dc3545; color: white; }
+  .tag-info { background: #17a2b8; color: white; }
+  .tag-unv { background: #6c757d; color: white; }
+  .summary-box { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; margin: 20px 0; }
+  .summary-box h2 { color: white; border: none; }
+  .summary-box a { color: #d9e2ff; }
+  .param-box { background: #e8f4f8; border-left: 4px solid #17a2b8; padding: 15px; margin: 10px 0; border-radius: 0 5px 5px 0; }
+  .param-name { font-family: 'Courier New', monospace; font-weight: bold; color: #0f3460; }
+  .param-default { color: #28a745; font-weight: bold; }
+  .warn-box { background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 10px 0; border-radius: 0 5px 5px 0; }
+  .bad-box { background: #f8d7da; border-left: 4px solid #dc3545; padding: 15px; margin: 10px 0; border-radius: 0 5px 5px 0; }
+  .ok-box { background: #d4edda; border-left: 4px solid #28a745; padding: 15px; margin: 10px 0; border-radius: 0 5px 5px 0; }
+  .footer { text-align: center; color: #888; margin-top: 40px; padding-top: 20px; border-top: 1px solid #ddd; font-size: 12px; }
+  .code { font-family: 'Courier New', monospace; background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-size: 12px; }
+  pre { font-family: 'Courier New', monospace; background: #f4f4f4; padding: 12px; border-radius: 6px; font-size: 12px; overflow-x: auto; line-height: 1.5; }
+  .diagram { background: #1e1e2e; color: #cdd6f4; font-family: 'Courier New', monospace; padding: 20px; border-radius: 8px; margin: 15px 0; font-size: 13px; line-height: 1.6; overflow-x: auto; white-space: pre; }
+  .diagram .hl { color: #a6e3a1; font-weight: bold; }
+  .diagram .red { color: #f38ba8; }
+  .diagram .ylw { color: #f9e2af; }
+  .diagram .cyn { color: #89dceb; }
+  .ev { font-size: 11px; font-weight: bold; padding: 1px 6px; border-radius: 3px; }
+  .ev-m { background: #d4edda; color: #155724; }
+  .ev-c { background: #cce5ff; color: #004085; }
+  .ev-u { background: #e2e3e5; color: #383d41; }
+  .toc { background: white; padding: 15px 25px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+  .toc a { color: #0f3460; text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .toc li { margin: 4px 0; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<h1>Edge0 → GGUF 量化轉換技術白皮書</h1>
+<p><strong>日期：</strong>2026-09-13 &nbsp;|&nbsp; <strong>硬體：</strong>MacBook Pro M4 16GB（統一記憶體，無獨顯）</p>
+<p><strong>引擎：</strong>flashkv-devserver / demo branch，llama.cpp fork（CGC Expert Cache L4）</p>
+<p><strong>來源模型：</strong>Edge0-35B（MLX <em>affine int4</em> safetensors + 40MB LoRA）</p>
+<p><strong>產物：</strong><span class="code">Edge0-35B-Q4_0.gguf</span>（base）、<span class="code">Edge0-35B-Q4_0-MTP.gguf</span>、<span class="code">Edge0-35B-Q4_0-MTP-edge0head.gguf</span>（正式出貨）</p>
+
+<div class="summary-box">
+<h2>📊 執行摘要</h2>
+<p><strong>這份文件記錄的不是一個轉換腳本，而是一條完整的「不被靜默錯誤騙過去」的除錯鏈。</strong>把一顆 MLX affine-int4 的 35B MoE 模型搬進 GGUF，一共挖出 <strong>7 個缺陷</strong>（D1–D6、D9）。它們的共同特徵是：<em>沒有任何警告、沒有任何例外，產物「看起來」完全正常</em>。</p>
+<p><strong>最貴的一個（D9）：</strong>框架的 <span class="code">conversion/qwen.py:387-388</span> 對所有 <span class="code">*norm.weight</span> 無條件 <span class="code">+1.0</span>，而 Edge0 的 checkpoint 存的是<strong>絕對值</strong>。結果每一層的 RMSNorm gain 從 1.03 變成 2.03 → 殘差流在每一層被放大兩倍 → 輸出是<strong>流暢但無意義</strong>的中文。它讓 MTP draft 的 accept rate 變成 <strong>0.00%</strong>，而我為此連續三輪往錯的方向找（換 MTP head、懷疑精度、懷疑 ne 軸向）。</p>
+<p><strong>最有價值的一個（pool 幾何）：</strong>修好 D9 之後 base 已經正確，但 MTP 的 accept 卡在 8.97%，而同一顆引擎上的捐贈者模型 Nail 是 52%。根因<em>不在模型</em>：<span class="code">compute_l4_pool_capacity()</span> 用「所有層 per-slot 的最大值」當分母，而 <strong>MTP 層（blk.40）也在其中</strong>。把 MTP head 存成 <strong>F16（更高精度！）反而讓主幹的 expert pool 從 118 slots 塌成 33 slots</strong>，主幹的 top-k union 塞不下 → 585 次 <span class="code">buffer is nil</span> → FFN 讀到空的 → 每個 draft token 都被拒。</p>
+<p><strong>核心教訓：</strong>量化格式是<em>模型屬性</em>，但它會經由<em>引擎的記憶體幾何</em>影響<strong>完全不同的層</strong>。「精度更高所以品質更好」在這裡是錯的，而且錯得非常徹底。</p>
+</div>
+
+<div class="toc">
+<strong>目錄</strong>
+<ol>
+<li><a href="#s1">來源格式與目標格式的語意落差</a></li>
+<li><a href="#s2">轉換管線</a></li>
+<li><a href="#s3">缺陷帳 D1–D9（本文件的核心）</a></li>
+<li><a href="#s4">子張量手術：把 MTP head 移植進 blk.40</a></li>
+<li><a href="#s5">決定性發現：MTP 層的儲存型別決定主幹的 pool 大小</a></li>
+<li><a href="#s6">工具鏈：為什麼現成的 gguf-py 不夠用</a></li>
+<li><a href="#s7">證據紀律與可重現性</a></li>
+<li><a href="#s8">未解問題與後續工作</a></li>
+<li><a href="#s9">附錄：指令、參數與檔案清單</a></li>
+</ol>
+</div>
+
+<p style="margin-top:18px"><strong>證據標記約定</strong>（本文件每一個數字都必須帶標記）：</p>
+<table>
+<thead><tr><th style="width:110px">標記</th><th>意義</th></tr></thead>
+<tbody>
+<tr><td><span class="ev ev-m">實測</span></td><td>本次工作直接量到的數字，附命令或 log 位置。</td></tr>
+<tr><td><span class="ev ev-c">推算</span></td><td>由已驗證的公式／metadata 推導，且公式本身已被至少兩個實測值交叉驗證。</td></tr>
+<tr><td><span class="ev ev-u">未驗</span></td><td>合理但沒有量過。<strong>不得當成基線引用。</strong></td></tr>
+</tbody>
+</table>
+
+<h2 id="s1">1. 來源格式與目標格式的語意落差</h2>
+
+<p>Edge0 在 HuggingFace 上是一份 <strong>MLX affine int4</strong> 的權重：每個 group 存一個整數張量 <span class="code">q</span>、一個 <span class="code">scales</span>、一個 <span class="code">biases</span>，還原公式是</p>
+
+<pre>w = q * scales + biases          # group_size 預設 64</pre>
+
+<p>這與 GGUF 的 k-quant / i-quant <strong>不是同一件事</strong>：GGUF 的量化型別是「一整塊 256 個權重共用一個 scale 與一組非線性碼本」，而 affine int4 是「64 個權重共用一個 scale 與一個 bias」。轉換時必須先把 affine 還原成 fp32，再用 GGUF 自己的編碼器重量化。<strong>這一步是不可逆的資訊損失</strong>，也是後面所有缺陷的溫床：一旦還原錯了，重編碼只會忠實地把錯誤封裝起來。</p>
+
+<div class="warn-box">
+<strong>關鍵陷阱：routers 是 8-bit，不是 4-bit。</strong> <span class="code">config.json</span> 的 <span class="code">quantization</span> 映射只列出<strong>與預設不同的</strong>張量：<strong>80 個條目，全部 bits=8，全部是 <span class="code">mlp.gate</span> / <span class="code">mlp.shared_expert_gate</span>（router）</strong>。把 router 當 4-bit 讀，in_dim 會算成 4096 而不是 2048（512 個 packed word 的 4-bit 解讀）。這個錯誤會<strong>直接改變張量形狀</strong>，但模型仍然「載得進去」——因為 GGUF 的形狀是由 converter 寫入的，不是由來源驗證的。
+</div>
+
+<h3>1.1 來源模型結構盤點（實測）</h3>
+<table>
+<thead><tr><th>項目</th><th>值</th><th>來源</th></tr></thead>
+<tbody>
+<tr><td>架構</td><td><span class="code">qwen35moe</span>（與捐贈者 Nail 同架構）</td><td>GGUF metadata</td></tr>
+<tr><td>層數</td><td>41 = 40 decoder + 1 MTP（<span class="code">nextn_predict_layers=1</span>）</td><td>GGUF metadata</td></tr>
+<tr><td>注意力</td><td>混合：<span class="code">full_attention_interval=4</span> → 每 4 層 1 層全注意力，其餘為 GatedDeltaNet（線性注意力）</td><td>GGUF metadata</td></tr>
+<tr><td>MoE</td><td>256 experts / top-8 / expert_ff 512 / shared_expert_ff 512，<span class="code">shared_expert_gate</span> 開啟</td><td>GGUF metadata</td></tr>
+<tr><td>張量數</td><td><strong>753</strong></td><td>gguf-py</td></tr>
+<tr><td>LoRA</td><td>40 MB，310 個 key，<strong>無 norm 相關 key</strong>（已驗證）</td><td>safetensors index</td></tr>
+</tbody>
+</table>
+
+<h3>1.2 產物張量型別分布（實測）</h3>
+<p><span class="code">Edge0-35B-Q4_0-MTP-edge0head.gguf</span>，753 tensors：</p>
+<table>
+<thead><tr><th>型別</th><th>數量</th><th>說明</th></tr></thead>
+<tbody>
+<tr><td><span class="code">Q4_0</span></td><td>372</td><td>主體權重（4-bit 對稱）</td></tr>
+<tr><td><span class="code">F32</span></td><td>288</td><td>norm、bias、delta-net gates 等必須全精度者</td></tr>
+<tr><td><span class="code">Q8_0</span></td><td>81</td><td><strong>80 個 router（8-bit）+ MTP 的 eh_proj</strong></td></tr>
+<tr><td><span class="code">IQ4_XS</span></td><td>7</td><td>MTP head 的 attention / shexp 投影</td></tr>
+<tr><td><span class="code">BF16</span></td><td>2</td><td>MTP head 的 gate_inp 家族</td></tr>
+<tr><td><span class="code">Q2_K</span> / <span class="code">Q3_K</span></td><td>2 / 1</td><td>MTP head 的三個 expert stack</td></tr>
+</tbody>
+</table>
+<p><strong>注意第 3 列。</strong>「80 個 router 是 8-bit」這件事最後變成了 D2，而「MTP head 的型別是抄捐贈者的」這件事變成了 §5 的根因。</p>
+
+<h2 id="s2">2. 轉換管線</h2>
+
+<div class="diagram">Edge0-35B (MLX affine-int4 + LoRA, safetensors shards)
+   │
+   │  <span class="cyn">D1</span> dtype-correct f32 還原（LoRA 是 F16，不是 BF16）
+   │  <span class="cyn">D2</span> router 依 config.json 保持 8-bit
+   │  <span class="cyn">D4</span> delta-net 的 ssm_alpha/ssm_beta 強制 F32
+   │  <span class="cyn">D9</span> 取消框架對 *norm.weight 的無條件 +1.0
+   │  <span class="cyn">D3</span> LoRA merge 計數 + inert 保護
+   ▼
+conversion/qwen.py (Qwen3_5MoeTextModel)
+   │      <span class="red">D6</span> 修正 expert stack 的 dict 累積器（每 tensor 保留 114 MB）
+   ▼
+GGUFWriter
+   │      <span class="red">D5</span> 改為 temp-file streaming（flat memory）
+   ▼
+Edge0-35B-Q4_0.gguf                                   18.19 GiB / 733 tensors
+   │
+   │  merge_mtp_head_edge0.py：npz → blk.40（+20 tensors / +303 MiB）
+   ▼
+Edge0-35B-Q4_0-MTP-edge0head.gguf                     18.49 GiB / 753 tensors
+   │
+   │  verify_edge0_gguf.py：型別／形狀／norm 慣例／LoRA byte-exact
+   ▼
+llama.cpp (CGC Expert Cache L4)
+</div>
+
+<h2 id="s3">3. 缺陷帳 D1–D9</h2>
+
+<p>編號沿用 <span class="code">convert_edge0_to_gguf.py</span> 的 module docstring（那是本專案對這些缺陷的權威定義）。表中「誰發現的」欄位刻意保留，因為<strong>發現方式本身就是這份文件要傳達的知識</strong>。</p>
+
+<table>
+<thead><tr><th style="width:44px">#</th><th style="width:120px">一句話</th><th>機制</th><th style="width:250px">為什麼靜默 / 怎麼被抓到</th></tr></thead>
+<tbody>
+<tr class="bad">
+  <td><strong>D1</strong></td>
+  <td>LoRA 完全沒生效</td>
+  <td>LoRA 張量是 <strong>F16</strong>，卻被 <span class="code">bf16_to_f32()</span> 處理。該函式把 16 個 raw bit 當成 float32 的<strong>上半部</strong>——對 F16 而言是無意義的重解讀，每個 LoRA 值塌成 ~1e-18。</td>
+  <td>310/310 key 全部匹配、零警告、零例外。merge 確實執行了，只是加了個數值上等於 0 的東西。<strong>整個 GGUF 與「不套 LoRA」的版本無法區分。</strong>修法：<span class="code">to_f32()</span> 依實際 dtype 分派。</td>
+</tr>
+<tr class="bad">
+  <td><strong>D2</strong></td>
+  <td>8-bit router 被降回 4-bit</td>
+  <td><span class="code">patched_add</span> 把每個 2-D <span class="code">*weight</span> 一律寫成 Q4_0，包含 router。讀取端是對的（8-bit），寫入端卻靜默降級。</td>
+  <td>產物裡 <span class="code">blk.20.ffn_gate_inp.weight = Q4_0</span>，而來源是 8-bit。<strong>這是「router 精度」整條線的起點。</strong>修法：router 維持 Q8_0。</td>
+</tr>
+<tr class="bad">
+  <td><strong>D3</strong></td>
+  <td>無法偵測「merge 了個寂寞」</td>
+  <td>流程缺陷：沒有「LoRA 實際改了幾個張量」的計數，也沒有量級檢查。</td>
+  <td>正因為 D3 存在，D1 才能活那麼久。修法：合併計數 + <span class="code">|Δ| / |W|</span> 比值 + inert 時<strong>硬失敗</strong> + 寫入後重讀 GGUF 斷言 router 型別。</td>
+</tr>
+<tr class="bad">
+  <td><strong>D4</strong></td>
+  <td>delta-net gates 被 F16 捨入</td>
+  <td><span class="code">ssm_alpha</span>/<span class="code">ssm_beta</span> 必須全精度。第一版只擋住了<em>我們的</em>量化器，但<strong>框架自己的 F16 pass 仍然會捨入它們</strong>。</td>
+  <td>跑 30/40 層都對，剩下 10 層悄悄變差——典型的「分佈式小錯」。修法：把 gate 強制為 F32，讓框架的量化變成 no-op（30 層 × 2 = 60 個 gate，已驗證）。</td>
+</tr>
+<tr class="good">
+  <td><strong>D5</strong></td>
+  <td>寫入端記憶體爆掉</td>
+  <td>GGUFWriter 在 RAM 裡組裝所有張量資料。</td>
+  <td>16GB 機器上直接進 swap。修法：走 temp-file streaming（flat memory，代價是約 2× 輸出檔的磁碟）。</td>
+</tr>
+<tr class="bad">
+  <td><strong>D6</strong></td>
+  <td>「每張量洩漏 70 MB」的真因</td>
+  <td><span class="code">conversion/qwen.py</span> 的 <span class="code">Qwen2MoeModel</span> 為「一個 expert 一個檔案」的模型保留累積器；本模型是<strong>已合併的 stack</strong>，所以計數永遠到不了 768，張量永不釋放。判定用 <span class="code">name.find("experts") != -1</span> 這種裸子字串比對，我們的譯名剛好命中。<br><strong>實測：每層保留 2.147 GB（每個轉換過的張量 114 MB）</strong>；40 層 ≈ 86 GB 匿名記憶體，被 OS 拿去壓縮／交換，直到 jetsam 砍掉行程。而且轉換<strong>根本無法完成</strong>（<span class="code">prepare_tensors()</span> 拋 "Unprocessed experts"）。</td>
+  <td>對任何 Python 物件計數都是隱形的：live numpy/torch array = 0，因為保留者是<strong>一個活著的 dict</strong>。<br><strong>另外還有一個量測陷阱</strong>：進度列印的是 <span class="code">ru_maxrss</span>，那是單調高水位——它<strong>只會上升</strong>，所以「每 25 個張量 RSS 又漲了」是必然發生的假象，正是它把上一輪的人送去追一個不存在的洩漏。改用 rss/uss/malloc 三者並列才分得清 mmap 的 file-backed 頁（無害）與匿名記憶體（會逼 swap）。<br>修法：把已合併的 expert stack 導向 <span class="code">TextModel.modify_tensors</span>。驗證：保留量 <strong>114.4 → 0.3 MB/tensor</strong>，張量名與形狀不變。</td>
+</tr>
+<tr class="bad">
+  <td><strong>D9</strong></td>
+  <td><strong>每一層的 RMSNorm gain 都是 2.0 而不是 1.0</strong></td>
+  <td><span class="code">conversion/qwen.py:387-388</span>：<br><span class="code">elif name.endswith("norm.weight") and not name.endswith("linear_attn.norm.weight"): data_torch = data_torch + 1</span><br>這是給「norm 存成 <em>delta</em>（w−1）」的 checkpoint 用的慣例。Edge0 存的是<strong>絕對值</strong>。結果：<span class="code">attn_norm</span>/<span class="code">post_attention_norm</span>/<span class="code">q_norm</span>/<span class="code">k_norm</span>/<span class="code">output_norm</span> 全部 +1.0（<span class="code">linear_attn.norm</span> 因為被排除所以正確，這正是洩漏的指紋）。<br>殘差流每層被放大約兩倍 → 輸出<strong>流暢但無意義</strong>。MTP accept 變 <strong>0.00%</strong>。</td>
+  <td>產物載得進去、跑得出來、文字還是中文字。<br>**四項獨立證據交叉定案**：<br>① 來源 safetensors（torch, bf16）<span class="code">input_layernorm = 1.031160</span><br>② GGUF <span class="code">blk.0.attn_norm.weight = 2.031160</span>，逐元素 <strong>恰好 +1.0</strong><br>③ 能跑的 Nail GGUF = 1.031111<br>④ Edge0 自己的 MLX loader 只在 <span class="code">has_mtp_weights or has_unsanitized_conv1d</span> 時才 shift，而兩者皆 False<br><strong>定案方式</strong>：不是在程式碼裡 grep 出來的（我 grep 自己的 converter 三次都乾淨，因為 shift 在<em>框架</em>裡），而是在執行期<b>追蹤數值</b>——<span class="code">post-dequant 1.031160</span> → <span class="code">at-add 2.031160</span>，夾出它發生在 <span class="code">merge_lora</span> 與 <span class="code">add_tensor</span> 之間。</td>
+</tr>
+<tr class="good">
+  <td><strong>—</strong></td>
+  <td>我自己種的錯：<span class="code">nextn.shared_head_norm</span></td>
+  <td>我手動把它 <span class="code">+1.0</span>，理由是「Nail 的值比它高 1.06」。</td>
+  <td><strong>推理無效</strong>：MTP head 是<em>模型專屬</em>的，跟另一顆頭差 1.0 只代表「兩顆頭不同」。權威來源 <span class="code">mtp_head_qwen35.py:188-190</span> 明寫 <span class="code">mtp.norm 不需要 shift</span>；npz 的數值結構也印證：被 shift 的家族原始 mean 都是<strong>負的 delta</strong>（<span class="code">input_layernorm −0.105</span>），只有 <span class="code">mtp.norm</span> 是<strong>正常尺度的絕對值 +1.861</strong>。<br><strong>已回滾</strong>，並在 <span class="code">merge_mtp_head_edge0.py</span> 加了 runtime guard：若慣例被反過來匯出，建置直接 <span class="code">ValueError</span> 而不是靜默產出一顆 gain 翻倍的 norm。</td>
+</tr>
+</tbody>
+</table>
+
+<h3>3.1 一個反覆出現的失敗模式</h3>
+<div class="bad-box">
+<p>把 D1、D6、D9 放在一起看，它們是<strong>同一個模式的三次重演</strong>：</p>
+<ol>
+<li><strong>框架默默做了一件事</strong>（重解讀 dtype / 保留參照 / +1.0）；</li>
+<li><strong>沒有警告，產物結構完全合法</strong>；</li>
+<li><strong>唯一的偵測方式是「拿數值去對」</strong>，不是讀程式碼。</li>
+</ol>
+<p>而 D3 與那個 <span class="code">ru_maxrss</span> 陷阱則是這個模式的<em>放大器</em>：缺少計數器與正確的量測定義，讓「無事發生」與「做錯了」長得一模一樣。因此本專案後續所有修復都附帶一條<strong>會硬失敗的斷言</strong>。</p>
+</div>
+
+<h2 id="s4">4. 子張量手術：把 MTP head 移植進 blk.40</h2>
+
+<p>Edge0 的 MTP head 不在 base GGUF 裡（來源是 <span class="code">models/mtp_heads/qwen35_mtp_head_fp16.npz</span>，1.6 GB）。要讓 llama.cpp 的 <span class="code">--spec-type draft-mtp</span> 能用，必須把它當成 <strong>blk.40</strong> 的 20 個張量寫進同一個 GGUF。</p>
+
+<h3>4.1 GGUF 要求資料區「完全緊密」</h3>
+<div class="warn-box">
+<p>最自然的做法——「只把 <span class="code">type</span> 欄位改小、保留原 offset」——<strong>會讓模型載不進去</strong>：</p>
+<pre>E gguf_init_from_reader: tensor 'blk.40.attn_k.weight'
+                         has offset 19558178304, expected 19533536768</pre>
+<p><span class="code">ggml/src/gguf.cpp:770</span> 要求資料區在<strong>標頭順序上逐張累加</strong> <span class="code">GGML_PAD(ggml_nbytes(t), alignment)</span>。任何空隙都會被拒。因此改變任一張量的大小，都必須<strong>重打包（repack）它之後的所有張量</strong>。</p>
+<p><strong>可用的槓桿：</strong>blk.40 剛好是標頭順序的<strong>最後 20 筆</strong>（733..752 of 753），所以重打包只涉及檔尾。這讓「F16 → 量化」可以在地縮小檔案（省 1.3 GiB），而「量化 → F16」只需在檔尾長大（+1.5 GiB）。</p>
+</div>
+
+<h3>4.2 已驗證的 npz → blk.40 對映</h3>
+<table>
+<thead><tr><th>檢查</th><th>結果</th><th>標記</th></tr></thead>
+<tbody>
+<tr><td>20 個 blk.40 張量與捐贈者 Nail 逐一比對型別</td><td>全部相同（IQ4_XS ×7、Q8_0 ×1、Q2_K ×2、Q3_K ×1、BF16 ×2、F32 ×7）</td><td><span class="ev ev-m">實測</span></td></tr>
+<tr><td>從 npz 重建 20/20 張量，含 <span class="code">ne</span> 軸向契約</td><td><strong>EXACT，0 mismatch</strong></td><td><span class="ev ev-m">實測</span></td></tr>
+<tr><td>Q/gate 交錯佈局</td><td>Edge0 <span class="code">qwen3_next.py:155-159</span> reshape 成 <span class="code">[B,L,n_heads,2·head_dim]</span> 再 split → 原生就是 <span class="code">[Q_h0,G_h0,Q_h1,G_h1,…]</span>，<strong>與 llama.cpp 的 <span class="code">nb1=head_dim*2</span> 視圖一致，不需 permute</strong></td><td><span class="ev ev-m">實測</span></td></tr>
+<tr><td>concat 順序</td><td><span class="code">_forward_step:254-257</span> = <span class="code">[embedding, hidden]</span>，與 <span class="code">ggml_concat(e_norm, h_norm)</span> 相同</td><td><span class="ev ev-m">實測</span></td></tr>
+<tr><td>12 個架構參數（heads 16/2、head_dim 256、experts 256/8/512/512、eps 1e-6、theta 1e7、partial rotary 0.25→64）</td><td>與 GGUF metadata 全等</td><td><span class="ev ev-m">實測</span></td></tr>
+<tr><td>量化誤差是否符合位元寬</td><td>IQ4_XS 7.9–8.6%、Q3_K 15.5%、Q2_K 30.0%、Q8_0 0.86%、BF16 0.00%</td><td><span class="ev ev-m">實測</span></td></tr>
+</tbody>
+</table>
+
+<div class="warn-box">
+<strong>文件會騙人：</strong><span class="code">scripts/test_mtp_prenorm.py</span> 的 concat 順序是<strong>反的</strong>，與權威的 <span class="code">_forward_step</span> 不符。若照著那支實驗腳本寫，就會得到一個看起來有依據、實際錯誤的實作。
+</div>
+
+<h2 id="s5">5. 決定性發現：MTP 層的儲存型別決定主幹的 pool 大小</h2>
+
+<p>這一節是整條除錯鏈的終點，也是唯一一個「問題不在模型、而在引擎另一層」的案例。</p>
+
+<h3>5.1 症狀</h3>
+<p>修好 D9 之後，base 用 MTP-off 已經完全正確（<span class="code">15+27=42</span>、巴黎、MoE 解釋），但三臂 A/B 顯示一件反直覺的事：</p>
+<table>
+<thead><tr><th>arm</th><th>accept rate</th><th>備註</th></tr></thead>
+<tbody>
+<tr class="bad"><td>edge0 base + edge0 head（<strong>F16</strong>）</td><td><strong>0.00%</strong>（0/63；另一輪 0/2835）</td><td>輸出塌成 <span class="code">文摘文摘…</span></td></tr>
+<tr><td>edge0 base + Nail head（量化）</td><td>1.75%</td><td></td></tr>
+<tr class="good"><td>edge0 base + edge0 head（<strong>重編碼成 Nail 的型別</strong>）</td><td><strong>8.97%</strong>（28/312）</td><td><strong>第一次答對</strong>；兩次獨立執行逐位元組相同</td></tr>
+<tr class="good"><td>Nail base + Nail head</td><td><strong>52.1%</strong></td><td>同一引擎上的已知可用值</td></tr>
+</tbody>
+</table>
+<p><strong>更高精度（F16）反而嚴格更差</strong>，而把 F16 換成 donor 的量化型別就從 0% 跳到 9%。這不是精度曲線，這是別的東西。</p>
+
+<h3>5.2 機制</h3>
+<p><span class="code">src/llama-model-loader.cpp:1068 compute_l4_pool_capacity()</span>（修復前）：</p>
+<pre>per_slot_layer[il] = Σ (ggml_row_size(type, ne[0]) · ne[1])   over layer il 的 *_exps
+per_slot          = max over ALL layers        ← 包含 MTP 層 blk.40
+capacity          = clamp(budget / (n_layers · per_slot), 8, 256)
+</pre>
+<p>而之後<strong>每一層都被縮成同一個 <code>capacity</code></strong>。於是「用 MTP 層的 per-slot 去收主幹的費」，就讓<strong>主幹 pool 的大小取決於頭部剛好用什麼格式存</strong>。</p>
+
+<h3>5.3 算術（與兩個實測值精確吻合）</h3>
+<p>參數：<span class="code">budget = 8 GiB = 8,589,934,592 B</span>、<span class="code">n_layers = 41</span>、<span class="code">LAYER_CAPS = 40-40:256</span>（MTP 層自己拿 256 slots）。</p>
+<table>
+<thead><tr><th>arm</th><th>blk.40 型別</th><th>blk.40 per-slot</th><th>max per-slot</th><th>capacity</th><th>log 實測</th></tr></thead>
+<tbody>
+<tr class="good"><td>出貨（量化）</td><td>Q2_K/Q3_K</td><td>1,138,688 B<br><span style="font-size:11px">(主幹的 0.64×)</span></td><td>1,769,472 B<br><span style="font-size:11px">(blk.39)</span></td><td><strong>118</strong></td><td><strong>118</strong> ✅</td></tr>
+<tr class="bad"><td>F16 head</td><td>F16</td><td><strong>6,291,456 B</strong><br><span style="font-size:11px">(主幹的 3.6×)</span></td><td>6,291,456 B<br><span style="font-size:11px">(blk.40)</span></td><td><strong>33</strong></td><td><strong>33</strong> ✅</td></tr>
+</tbody>
+</table>
+<p><span class="ev ev-c">推算</span> 這兩個數字是<strong>只從 GGUF metadata</strong> 算出來的，與兩次真實 server log <strong>精確相符</strong>——這就是公式模型已驗證的意思。</p>
+
+<h3>5.4 後果：整個主幹的 FFN 讀到空的</h3>
+<table>
+<thead><tr><th>配置</th><th>slots/layer</th><th><span class="code">buffer is nil</span> 次數</th><th>涉及範圍</th></tr></thead>
+<tbody>
+<tr class="bad"><td>F16 head</td><td>33</td><td><strong>585</strong></td><td><strong>blk.1 – blk.39</strong>（整個主幹，不只 blk.40）</td></tr>
+<tr class="good"><td>量化 head</td><td>118</td><td><strong>0</strong></td><td>—</td></tr>
+</tbody>
+</table>
+<p>33 slots 撐不住主幹的 top-k union → Metal 層拿到 nil buffer → expert 貢獻無聲消失 → 數學全錯 → 每個 draft token 都被拒。<span class="ev ev-m">實測</span></p>
+
+<h3>5.5 修法與 A/B 驗證</h3>
+<div class="ok-box">
+<p><strong>修法：</strong>從 <span class="code">per_slot</span> 的 max 中<strong>排除 NextN/MTP 層</strong>（讀 <span class="code">&lt;arch&gt;.nextn_predict_layers</span>）。MTP 層的 slot 本來就由 <span class="code">LAYER_CAPS</span>（預設 <span class="code">40-40:256</span>）給定，不該參與主幹的容量計算。若 <span class="code">nextn_predict_layers</span> 不存在則 <span class="code">n_nextn=0</span>，行為與舊版完全相同。</p>
+<p><strong>驗證方式</strong>：做了一個 blk.40 experts = <strong>Q8_0</strong> 的 probe 檔（per-slot 3,342,336 B，<em>會</em>支配主幹；磁碟成本只有 F16 的 1/3），同一檔案、同一組參數，只差這個 hunk：</p>
+<table>
+<thead><tr><th>binary</th><th>主幹 slots/layer</th><th>與公式預測</th></tr></thead>
+<tbody>
+<tr class="bad"><td>修復前</td><td><strong>62</strong></td><td>預測 62 ✅</td></tr>
+<tr class="good"><td>修復後</td><td><strong>118</strong></td><td>預測 118 ✅</td></tr>
+</tbody>
+</table>
+<p>而修復後的 binary 跑<strong>正式出貨檔</strong>仍是 <strong>118 slots/layer</strong>、<span class="code">L0=48 L1=48</span>、total 4976 slots、零 nil 錯誤——即對現行量產配置是<strong>逐位元組的 no-op</strong>，不影響既有的 M1 一致性閘門。</p>
+</div>
+
+<h3>5.6 教訓</h3>
+<div class="summary-box" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+<p><strong>「精度更高所以品質更好」在共享記憶體池的引擎裡是錯的，而且錯得非常徹底。</strong></p>
+<p>一個 40 MB 的頭部張量格式選擇，改寫了 40 層主幹的 <strong>118 → 33 slots（−72%）</strong> 的記憶體配置。要能在這種系統裡除錯，必須把「模型屬性」與「引擎幾何」當成兩個獨立變因，並且<strong>可以分別量測</strong>——這就是為什麼本專案最終做了：</p>
+<ul>
+<li>可 runtime 切換的 flag（同一個 server process 內 A/B，排除機器漂移）；</li>
+<li>APFS <span class="code">cp -c</span> clone（20 GB 檔案零成本複製，單一變因實驗）；</li>
+<li>pool 幾何的 log 行（<span class="code">L4 metal pool: N slots/layer</span>）當成第一級觀測量。</li>
+</ul>
+</div>
+
+<h2 id="s6">6. 工具鏈：為什麼現成的 gguf-py 不夠用</h2>
+
+<p>本工作反覆需要「把某幾張張量換成另一種量化型別，其餘不動」。現成工具做不到，原因有三層——每一層都逼出一個自製元件。</p>
+
+<h3>6.1 障礙一：gguf-py 不會編碼 IQ 系列與 K-quant</h3>
+<table>
+<thead><tr><th>型別</th><th>gguf-py <span class="code">quantize</span></th><th>本工作是否需要</th></tr></thead>
+<tbody>
+<tr class="good"><td>Q8_0 / Q4_0 / F16 / F32</td><td>✅</td><td>需要</td></tr>
+<tr class="bad"><td><strong>IQ4_XS / Q2_K / Q3_K</strong></td><td><strong>❌ <span class="code">NotImplementedError</span></strong></td><td><strong>需要（捐贈者的型別集）</strong></td></tr>
+</tbody>
+</table>
+<p><strong>解法：</strong>寫一支 C shim（<span class="code">qctl</span>）直接連結 <span class="code">libggml-base</span>，呼叫 <span class="code">ggml_quantize_chunk</span>——也就是<strong>當初做出那些檔案的同一個 kernel</strong>。用 Python 手寫編碼器會產生「看起來對、數值上與 production 不一致」的張量，正是本文件一直在對抗的那類錯誤。</p>
+
+<h3>6.2 障礙二：不能只改 type 欄位</h3>
+<p>見 §4.1。任何大小改變都必須重打包之後的所有張量，否則 ggml 直接拒載。</p>
+
+<h3>6.3 障礙三：磁碟</h3>
+<p>本機可用磁碟長期在 <strong>8–11 GiB</strong>，而模型 18–20 GB。「複製一份來實驗」不可行。三個對策：</p>
+<div class="param-box">
+<p><span class="param-name">APFS clone</span> — <span class="code">cp -c</span> 產生 copy-on-write 分身，<strong>實測磁碟用量不變</strong>，只有被改寫的 extent 才配置新塊。這是所有「單一變因 A/B」的前提。</p>
+<p><span class="param-name">in-place tail repack</span> — blk.40 是檔尾，所以縮小可在地完成、長大只需追加。</p>
+<p><span class="param-name">zero-temp 寫入順序</span> — 先建立<strong>剛好等於新檔尾長度</strong>的暫存檔再 splice；磁碟峰值 = 2× 檔尾。第一次實作時把「絕對 offset」與「相對位移」相減寫成了一個 <strong>19.5 GiB 的零填充</strong>（把 <span class="code">new_end</span>（絕對）減去 <span class="code">out.tell()</span>（相對）），直接灌爆磁碟；現在有 <span class="code">assert</span> 釘住暫存檔長度。</p>
+</div>
+
+<h3>6.4 已建立的工具</h3>
+<table>
+<thead><tr><th>檔案</th><th>用途</th><th>狀態</th></tr></thead>
+<tbody>
+<tr><td><span class="code">scripts/gguf_retensor_qctl.c</span></td><td>ggml 原生量化／反量化／型別表。<br><span class="code">types</span> 讓型別表<strong>由 ggml 自己產生</strong>，Python 端不需維護硬編碼表；<span class="code">cast</span> 是通用 src→f32→dst（F32/F16/BF16 走 ggml 的 row converter，其餘走 quantize traits）；<span class="code">deq</span>/<span class="code">quant</span> 保留作微基準。</td><td class="best">已完成，自動編譯並驗證</td></tr>
+<tr><td><span class="code">scripts/gguf_retensor.py</span></td><td>子張量手術的驅動：<span class="code">types</span> / <span class="code">list</span> / <span class="code">verify</span> / <span class="code">set-type</span> / <span class="code">repack</span> / <span class="code">restore</span> / <span class="code">digest</span>。<br>可逆備份 = manifest + before-image；變更前先與 gguf-py 對帳並檢查緊密打包（這道閘門才讓「按檔案位置改標頭」變得安全），變更後自動重驗。</td><td class="best">已完成，往返逐位元組驗證</td></tr>
+<tr><td><span class="code">edge0/convert_edge0_to_gguf.py</span></td><td>主轉換器，D1–D6/D9 的修復落點</td><td>768 行，未 commit</td></tr>
+<tr><td><span class="code">edge0/merge_mtp_head_edge0.py</span></td><td>npz → blk.40，含 norm shift runtime guard</td><td>278 行，未 commit</td></tr>
+<tr><td><span class="code">edge0/verify_edge0_gguf.py</span></td><td>型別／形狀／norm 慣例／LoRA byte-exact 驗證</td><td>567 行，未 commit</td></tr>
+<tr><td><span class="code">flashkv-devserver/.tmp_qctl/</span></td><td>本輪的暫存工具（qctl、repack、pool 幾何分析）</td><td><strong>未追蹤且未被 gitignore</strong>——應正式化或忽略</td></tr>
+</tbody>
+</table>
+
+<h2 id="s7">7. 證據紀律與可重現性</h2>
+
+<p>本專案曾因為引用「只有速度、沒有閘門」的數字而付出代價，因此規則很硬：</p>
+
+<div class="ok-box">
+<p><strong>規則：</strong>一個數字要能被引用，必須同時附上<strong>產生它的 binary/commit</strong> 與<strong>閘門判定</strong>。只有速度、沒有閘門的數字一律標記「未驗證」，不得當作基線。</p>
+</div>
+
+<h3>7.1 本文件每個數字的來源</h3>
+<table>
+<thead><tr><th>數字</th><th>來源</th><th>標記</th></tr></thead>
+<tbody>
+<tr><td>753 tensors；型別分布</td><td>gguf-py 直讀出貨檔</td><td><span class="ev ev-m">實測</span></td></tr>
+<tr><td>118 / 33 slots per layer；585 / 0 nil 錯誤</td><td><span class="code">Backup/cgc_logs/llama_server_20260913_154004.log</span> / <span class="code">…151846.log</span></td><td><span class="ev ev-m">實測</span></td></tr>
+<tr><td>修復前 62 / 修復後 118</td><td>同一 probe 檔、同一組 flags、只差一個 hunk</td><td><span class="ev ev-m">實測</span></td></tr>
+<tr><td>accept 0.00% / 1.75% / 8.97% / 52.1%</td><td>各 arm 的 <span class="code">/tmp/accept_*_server.log</span> 與 <span class="code">draft_n / draft_n_accepted</span></td><td><span class="ev ev-m">實測</span></td></tr>
+<tr><td>1,769,472 / 1,138,688 / 6,291,456 B</td><td>由 GGUF metadata 依 <span class="code">ggml_row_size</span> 公式計算；公式已被兩個實測值驗證</td><td><span class="ev ev-c">推算</span></td></tr>
+<tr><td>114.4 → 0.3 MB/tensor 保留量</td><td>D6 修復前後的實測</td><td><span class="ev ev-m">實測</span></td></tr>
+</tbody>
+</table>
+
+<h3>7.2 修正過的兩個早期結論</h3>
+<div class="warn-box">
+<p><strong>① 跨模型的「M1/M2 全部 100%」是假的。</strong> 那份漂亮結論實際上是<strong>同一個檔案被量了兩次</strong>（iq3 欄是 iq4 的 symlink，md5 相同）。事後才補上 <span class="code">gate_model_identity()</span>（realpath + size + 前 1 MiB sha256）。</p>
+<p><strong>② 「Nail 證明過 25 t/s @ 98% accept」在字面上不成立。</strong> M1/M2 這兩個指標定義於 <strong>2026-09-11</strong>，而那個 25.17 t/s 的 run 是 <strong>09-07</strong>——<strong>它不是「沒過閘門」，是閘門還不存在</strong>。更麻煩的是同一份文件 §5 自己記著：最快的鄰居配置（<span class="code">8GB + RN_ROUTING，25.9 t/s</span>）<strong>品質 0.3，是死路</strong>。09-11 之前的文件已移至 <span class="code">docs/archive/pre-consistency-metrics-2026-09-11/</span>。</p>
+</div>
+
+<h3>7.3 量測本身的陷阱（本輪踩到的）</h3>
+<table>
+<thead><tr><th>陷阱</th><th>後果</th><th>對策</th></tr></thead>
+<tbody>
+<tr><td><span class="code">ru_maxrss</span> 是單調高水位</td><td>製造出一個不存在的「每張量 70 MB 洩漏」</td><td>並列 rss / uss / malloc_in_use；只有 uss 會逼 swap</td></tr>
+<tr><td>gguf-py 的 <span class="code">shape</span> 已是 ggml 序（<span class="code">ne[0]</span> 在前）</td><td>多做一次 reverse 會算出完全錯誤的 bytes（我第一次算 per-slot 就是這樣得到 442,368 而非 1,769,472）</td><td>直接用 <span class="code">t.shape</span>，並拿實測 log 驗證公式</td></tr>
+<tr><td>把 block 型別的 <span class="code">t.data</span> 當浮點值平均</td><td><span class="code">123.27</span> 其實是<strong>位元組平均值</strong>；以此斷定「tensor 損壞」是錯的（我犯了<strong>兩次</strong>）</td><td>先確認 <span class="code">dtype</span>：30 = BF16，需正確解碼後再比較</td></tr>
+<tr><td>以「另一顆模型的值」當正確性基準</td><td>把一顆<em>正確</em>的 norm 改壞（<span class="code">shared_head_norm</span>）</td><td>只接受<strong>同一模型自己的權威實作</strong>（該模型的 loader 或訓練碼）</td></tr>
+<tr><td>檔案在腳本執行中被別的 agent 改動</td><td>—</td><td>動工前檢查 mtime；共用 checkout 不要 <span class="code">git add -A</span></td></tr>
+</tbody>
+</table>
+
+<h2 id="s8">8. 未解問題與後續工作</h2>
+
+<table>
+<thead><tr><th style="width:70px">優先</th><th>項目</th><th>現況</th></tr></thead>
+<tbody>
+<tr><td><span class="tag tag-bad">高</span></td><td><strong>F16 head 的 accept rate 仍未量</strong></td><td>pool 幾何修好了，但「修好之後 F16 是否贏過量化的 8.97%」<strong>沒有實測</strong>。第一次嘗試建立 F16 檔時因上述的 19.5 GiB 零填充灌爆磁碟而中止（已清理）。<span class="ev ev-u">未驗</span></td></tr>
+<tr><td><span class="tag tag-bad">高</span></td><td><strong>8.97% → 52.1% 的差距</strong></td><td>已排除：MTP head 權重錯誤（20/20 EXACT）、blk.40 被誤判為 GDN（有 <span class="code">i &lt; n_layer()</span> guard）、Q/gate 佈局、concat 順序、12 個架構參數。<br><strong>主導變數是 base</strong>（固定 head 換 base：52% → 1.75%），所以嫌疑落在「edge0 base 產生的 hidden state 統計量」與 MTP head 訓練時所見不同。<span class="ev ev-u">未驗</span></td></tr>
+<tr class="best"><td><span class="tag tag-best">完成</span></td><td>正式化 <span class="code">qctl</span> 為可重用工具</td><td><span class="code">scripts/gguf_retensor.py</span> + <span class="code">gguf_retensor_qctl.c</span>。<strong>往返測試已通過</strong>：APFS clone → <span class="code">set-type</span>（長大） → <span class="code">verify</span> → <span class="code">restore</span> → 全檔 sha256 與原檔<strong>逐位元組相同</strong>；縮小路徑另以「標頭 + 檔尾區段」digest 驗證，同樣回收原值。次級驗證：<span class="code">verify</span> 在出貨檔（753 tensors）與 Nail（753）與 base（733）上皆 PASS。</td></tr>
+<tr><td><span class="tag tag-good">中</span></td><td><span class="code">.tmp_qctl/</span> 未追蹤且未 gitignore</td><td>會意外被 commit。應正式收進 <span class="code">scripts/</span> 或加入 <span class="code">.gitignore</span>。</td></tr>
+<tr><td><span class="tag tag-info">低</span></td><td><span class="code">ffn_gate_inp_shexp</span> 形狀</td><td>寫成 <span class="code">(2048,1)</span>，而 <span class="code">qwen35moe.cpp:106</span> 宣告 <span class="code">{n_embd}</span>。ggml 中可能無害，但與參考建置有分歧。</td></tr>
+<tr><td><span class="tag tag-info">低</span></td><td>pool 容量公式的一般化</td><td>現行公式用「最大 per-slot × 層數」，在異質層時<strong>過度配置</strong>（每層都被收最大值的費）。理論正解是 <span class="code">capacity = budget / Σ per_slot_layer</span>，但這會改變所有既有產物的容量（此處 118 → 119），需要重建 oracle 與閘門向量。</td></tr>
+<tr><td><span class="tag tag-bad">高</span></td><td>提交</td><td>以下全部<strong>未 commit</strong>：<span class="code">edge0/convert_edge0_to_gguf.py</span>、<span class="code">merge_mtp_head_edge0.py</span>、<span class="code">verify_edge0_gguf.py</span>、<span class="code">flashkv-devserver/src/llama.cpp/src/llama-model-loader.cpp</span>（+33/−2）、<span class="code">scripts/gguf_retensor_qctl.c</span>。</td></tr>
+</tbody>
+</table>
+
+<h2 id="s9">9. 附錄：指令、參數與檔案清單</h2>
+
+<h3>9.1 關鍵參數</h3>
+<table>
+<thead><tr><th>參數</th><th>值</th><th>意義</th></tr></thead>
+<tbody>
+<tr><td><span class="param-name">expert pool budget</span></td><td><span class="param-default">8 GiB</span>（<span class="code">run_server.sh:277 N30CACHE_BUDGET</span>）</td><td>L4 Metal pool 的預算；capacity 的分母來源</td></tr>
+<tr><td><span class="param-name">LLAMA_EXPERT_CACHE_LAYER_CAPS</span></td><td><span class="param-default">40-40:256</span></td><td>MTP 層拿滿 256 slots；<strong>不參與</strong> capacity 計算（修復後）</td></tr>
+<tr><td><span class="param-name">CGC_SOFT_POOL_L0 / L1</span></td><td><span class="param-default">48 / 48</span></td><td>pool 分區；超過 <span class="code">n_slots</span> 會 clamp</td></tr>
+<tr><td><span class="param-name">CGC_SERVER_MODEL</span></td><td>—</td><td>指定要載入的 GGUF（A/B 用）</td></tr>
+<tr><td><span class="param-name">CGC_SERVER_MTP / _MTP_N_MAX</span></td><td><span class="param-default">1 / 3</span></td><td>啟用 draft-mtp 與 draft 長度</td></tr>
+</tbody>
+</table>
+
+<h3>9.2 觀測指令</h3>
+<pre># pool 幾何（第一級觀測量）
+grep -E "L4 metal pool|Soft Pool init|LAYER_CAPS per-layer" &lt;server log&gt;
+
+# 單一變因 A/B：APFS clone + 檔尾重打包
+cp -c models/gguf/&lt;base&gt;.gguf /private/tmp/&lt;probe&gt;.gguf    # 磁碟用量不變
+
+# 型別／形狀／量化誤差核對
+python3 -c "import gguf; r=gguf.GGUFReader('&lt;file&gt;'); ..."
+
+# qctl（ggml 原生）
+cc -O2 -o qctl scripts/gguf_retensor_qctl.c \
+   -Isrc/llama.cpp/ggml/include \
+   -Lsrc/llama.cpp/build/bin -lggml-base -Wl,-rpath,$PWD/src/llama.cpp/build/bin
+./qctl types
+./qctl cast Q8_0 in.bin IQ4_XS out.bin &lt;nrows&gt; &lt;n_per_row&gt;
+</pre>
+
+<h3>9.3 產物清單</h3>
+<table>
+<thead><tr><th>檔案</th><th>大小 (B)</th><th>GiB</th><th>張量</th><th>備註</th></tr></thead>
+<tbody>
+<tr><td><span class="code">Edge0-35B-Q4_0.gguf</span></td><td>19,535,613,472</td><td>18.19</td><td>733</td><td>base（無 MTP）</td></tr>
+<tr><td><span class="code">Edge0-35B-Q4_0-MTP.gguf</span></td><td>19,853,282,144</td><td>18.49</td><td>753</td><td>+ 捐贈者（Nail）head</td></tr>
+<tr><td><span class="code">Edge0-35B-Q4_0-MTP-edge0head.gguf</span></td><td>19,853,282,144</td><td>18.49</td><td>753</td><td><strong>+ Edge0 自己的 head（出貨）</strong></td></tr>
+<tr><td><span class="code">Nail-…-IQ3_XXS-denseIQ4X.gguf</span></td><td>13,663,116,512</td><td>12.72</td><td>—</td><td>捐贈者／已知可用對照</td></tr>
+</tbody>
+</table>
+
+<h3>9.4 一句話總結</h3>
+<div class="summary-box">
+<p>這次轉換真正的產出不是一顆 GGUF，而是<strong>一套能區分「模型錯了」與「引擎錯了」的量測方法</strong>：把 pool 幾何寫進 log、用 APFS clone 做單一變因 A/B、用 ggml 自己的 kernel 做型別轉換、以及對「靜默成功」永久保持懷疑。</p>
+<p>七個缺陷裡有 <strong>六個沒有任何警告</strong>。唯一可靠的通報機制，是拿數值去對，而不是讀程式碼。</p>
+</div>
+
+<div class="footer">
+Edge0 → GGUF 量化轉換技術白皮書 · 2026-09-13 · flashkv-devserver / demo branch<br>
+所有數字均附證據標記；<span class="ev ev-u">未驗</span> 項不得作為基線引用。
+</div>
+
+</body>
+</html>
