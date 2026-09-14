@@ -818,6 +818,17 @@ fi
 if [ -n "${CGC_PREFILL_STREAM:-}" ]; then
     SERVER_ENV+=(CGC_PREFILL_STREAM="$CGC_PREFILL_STREAM")
 fi
+# [CGC M2 pool reuse 2026-09-14] Slab-fill diagnostics: CGC_M2_PROFILE prints one CGC-M2-FILL /
+# CGC-M2-PROF line per (layer,kind) fill (pool vs disk bytes, ms), CGC_M2_DB_DISABLE turns the
+# double-buffer off for A/B. Both must be in this allowlist: unknown CGC_* variables are dropped
+# silently, so "the knob did nothing" and "the knob was never set" would look identical in the log
+# (roadmap gap #4 -- it already cost two diagnostics on 2026-09-14).
+if [ -n "${CGC_M2_PROFILE:-}" ]; then
+    SERVER_ENV+=(CGC_M2_PROFILE="$CGC_M2_PROFILE")
+fi
+if [ -n "${CGC_M2_DB_DISABLE:-}" ]; then
+    SERVER_ENV+=(CGC_M2_DB_DISABLE="$CGC_M2_DB_DISABLE")
+fi
 # [CGC M1 Metal slab 2026-09-14] Print the operands of Metal's own buffer range check at every
 # gather-path repoint (CGC-SLAB-CHECK), so a "buffer is nil" is attributable, not guessed.
 if [ -n "${CGC_SLAB_DBG:-}" ]; then

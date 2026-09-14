@@ -367,6 +367,14 @@ struct llama_expert_cache {
     // size -- without it there is no way to convert the reported MB/s into a device-vs-cache
     // verdict.
     std::atomic<uint64_t> n_read_bytes{0};
+    // [CGC M2 pool reuse 2026-09-14] bytes the whole-layer slab path took from the RESIDENT pool
+    // (a memcpy) vs from the file (a pread). The M2 exit condition is stated in bytes/token, and
+    // until these counters existed there was no way to tell "the fill read 100% of the layer" from
+    // "it read only the non-resident share": the CGC-PREFILL-STREAM line printed the slab's SIZE,
+    // which is identical in both cases. Together with n_read_bytes these make the I/O budget
+    // measurable instead of inferred.
+    std::atomic<uint64_t> n_slab_bytes_pool{0};
+    std::atomic<uint64_t> n_slab_bytes_disk{0};
     std::atomic<uint64_t> pread_usec{0}; // accumulated pread wall time (us)
     std::atomic<uint64_t> fill_batch_usec{0}; // hook-thread elapsed per fill batch (us; comparable across serial/parallel)
 

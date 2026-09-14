@@ -397,6 +397,15 @@ private:
     // Index into cache_gather_slab of the current (largest) slab per kind, or -1. An index rather
     // than a pointer, because push_back may move the vector's storage.
     int cache_gather_cur[4] = { -1, -1, -1, -1 };
+    // [CGC M2 2026-09-14] CGC_PREFILL_STREAM, validated once at construction. The stream path sets
+    // ne[2] = n_expert on the expert tensors and fills n_expert experts, so it is only legal when
+    // the slab can hold them all: with the default cap of 64 the fill writes 256 experts into a
+    // 64-expert buffer, i.e. out of bounds, and the FFN then reads past its own allocation.
+    // Measured: CGC_PREFILL_STREAM=1 without CGC_GATHER_SLAB_CAP=256 allocated a 27.50 MiB slab
+    // (64 x 450,560 bytes) while CGC-PREFILL-STREAM logged experts=256. Refusing here means the
+    // n_batch clamp stays on and the pool path runs, which is slow but correct -- the alternative
+    // is a silently wrong slab.
+    bool cgc_stream_on = false;
     // Return the slab to gather this kind into, or nullptr if the request cannot be served.
     // Capacity is cgc_gather_slab_cap() experts and never follows the pool or the observed union
     // -- see the comment on cgc_gather_slab_cap in llama-context.cpp. The SIZE is the kind's
@@ -422,6 +431,14 @@ private:
     // layer L+1 into set 1-N. The eval hook swaps sets at each layer boundary.
     int  cgc_db_cur       = 0;       // current slab set in use (0 or 1)
     int  cgc_db_slab[2][4] = {{-1,-1,-1,-1}, {-1,-1,-1,-1}};  // indices into cache_gather_slab
+    // [CGC M2 pool reuse 2026-09-14] per (layer, kind) DESTINATION spacing for the slab fill, i.e.
+    // the layer's own per-expert byte count (what mul_mat_id walks as nb[2]). It must not be the
+    // slab's stride: that is the kind's whole-model maximum, so on a mixed-quant GGUF the experts
+    // would be laid out on a different pitch than the reader walks (harmless only while the
+    // contiguous fast path -- which ignores the parameter and writes linearly -- is the one that
+    // runs). Precomputed here because the fill worker must not touch cache_ffn_tensors while the
+    // main thread builds a graph.
+    std::vector<std::vector<size_t>> cgc_db_stride;  // [layer][kind] bytes/expert, 0 = absent
     bool cgc_db_init       = false;   // both sets allocated
     std::thread cgc_db_thread;
     std::mutex  cgc_db_mtx;

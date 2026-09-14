@@ -86,6 +86,10 @@ static const llm_fused_op_probe llm_fused_op_dsv4_hc_post_probe = {
     /*.n_tokens_per_seq =*/ 1,
 };
 
+// [CGC M2 2026-09-14] defined next to cgc_gather_slab_cap() below; declared here because the
+// constructor validates CGC_PREFILL_STREAM before the clamp decision.
+static bool cgc_prefill_stream_enabled(int64_t n_expert);
+
 llama_context::llama_context(
         const llama_model & model,
               llama_context_params params) :
@@ -276,8 +280,8 @@ llama_context::llama_context(
     // Metal slab, ne[2]=n_expert, remap ids are raw expert ids), so the shrunk-tensor OOB reason
     // for the clamp no longer applies. Decode / MTP verify still run n_tokens<=pmax through the
     // pool path; only prefill chunks exceed it. Leave the clamp in place for every other config.
-    static const bool cgc_prefill_stream = getenv("CGC_PREFILL_STREAM") != nullptr
-            && getenv("CGC_PREFILL_STREAM")[0] != '0';
+    cgc_stream_on = cgc_prefill_stream_enabled((int64_t) model.hparams.n_expert);
+    const bool cgc_prefill_stream = cgc_stream_on;
     if (model.expert_cache_pool_capacity > 0 && cparams.n_batch > 1 && !cgc_prefill_stream) {
         const uint32_t pmax = cgc_pool_max_tokens();
         if (cparams.n_batch > pmax) {
@@ -567,6 +571,39 @@ static uint32_t cgc_gather_slab_cap() {
     return cap;
 }
 
+// [CGC M2 2026-09-14] Is the whole-layer prefill stream path usable in this process?
+//
+// The stream path repoints the expert tensors with ne[2] = n_expert and fills n_expert experts
+// into the slab, while the slab's capacity is cgc_gather_slab_cap() experts (default 64, which is
+// the M1 wide-union ceiling). Any cap below n_expert means fill_layer_slab writes expert bytes
+// past the end of the allocation and mul_mat_id walks past it, silently. Measured: with
+// CGC_PREFILL_STREAM=1 and no CGC_GATHER_SLAB_CAP, the driver allocated a 27.50 MiB slab
+// (64 x 450,560 B) and CGC-PREFILL-STREAM logged experts=256.
+//
+// Refusing (rather than aborting or silently raising the cap on the user's behalf) keeps the
+// in-process n_batch clamp on, so the run falls back to the pool path: slower, but the numbers
+// stay right. The caller sees a loud one-time explanation of the exact mismatch.
+static bool cgc_prefill_stream_enabled(int64_t n_expert) {
+    const char * e = getenv("CGC_PREFILL_STREAM");
+    if (e == nullptr || e[0] == '0') {
+        return false;
+    }
+    const uint32_t cap = cgc_gather_slab_cap();
+    if (n_expert > 0 && cap < (uint32_t) n_expert) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            fprintf(stderr, "CGC-PREFILL-STREAM: REFUSED -- slab cap %u < n_expert %lld. The stream path "
+                    "sets ne[2]=n_expert and fills that many experts, so this slab would be written out "
+                    "of bounds (and read past its end). Set CGC_GATHER_SLAB_CAP=%lld (or unset "
+                    "CGC_PREFILL_STREAM). Falling back to the pool path, with the n_batch clamp kept on.\n",
+                    cap, (long long) n_expert, (long long) n_expert);
+        }
+        return false;
+    }
+    return true;
+}
+
 llama_context::cgc_gather_slab * llama_context::cgc_gather_slab_get(int kind, size_t exp_bytes,
                                                                  ggml_backend_buffer_type_t buft) {
     if (kind < 0 || kind >= 4 || exp_bytes == 0 || buft == nullptr) {
@@ -666,13 +703,19 @@ void llama_context::cgc_db_worker() {
             set   = cgc_db_job_set;
             cgc_db_job_done = false;
         }
-        // Fill all 4 kinds for this layer into the target set's slabs
+        // Fill all 4 kinds for this layer into the target set's slabs.
+        // [CGC M2 pool reuse 2026-09-14] Destination pitch = this LAYER's per-expert byte count
+        // (the pitch mul_mat_id walks as nb[2]), not the slab's kind-wide max stride.
         for (int kind = 0; kind < 4; ++kind) {
             const int slab_idx = cgc_db_slab[set][kind];
             if (slab_idx < 0) continue;
             cgc_gather_slab & sl = cache_gather_slab[(size_t) slab_idx];
+            const size_t sp = ((size_t) layer < cgc_db_stride.size() &&
+                               cgc_db_stride[(size_t) layer][(size_t) kind] > 0)
+                    ? cgc_db_stride[(size_t) layer][(size_t) kind]
+                    : sl.stride;
             llama_expert_cache_fill_layer_slab(
-                    model.expert_cache, (uint32_t) layer, kind, sl.base, sl.stride);
+                    model.expert_cache, (uint32_t) layer, kind, sl.base, sp);
         }
         {
             std::lock_guard<std::mutex> lk(cgc_db_mtx);
@@ -4168,8 +4211,7 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
     // to n_expert those ids are in range by construction. This is what lifts the n_batch clamp:
     // prefill chunks of 2048 run the FFN against a freshly-streamed full expert set instead of
     // the shrunk pool tensor.
-    static const bool cgc_prefill_stream = getenv("CGC_PREFILL_STREAM") != nullptr
-            && getenv("CGC_PREFILL_STREAM")[0] != '0';
+    const bool cgc_prefill_stream = cgc_stream_on;  // validated once in the constructor
     if ((uint64_t) n_tokens > cgc_pool_max_tokens()) {
         static int dbg_cnt = 0;
         if (dbg_cnt < 10) {
@@ -4267,12 +4309,32 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
                     }
                     cgc_db_init = true;
                 }
+                // [CGC M2 pool reuse 2026-09-14] Cache every (layer, kind)'s own per-expert byte
+                // count once: that is the pitch the fill must use (see cgc_db_stride in the header).
+                // The slab's stride is the kind's whole-model MAX, so on this mixed-quant GGUF the
+                // two differ for most layers.
+                if (cgc_db_stride.empty()) {
+                    const int nl = (int) model.hparams.n_layer();
+                    cgc_db_stride.assign((size_t) nl, std::vector<size_t>(4, 0));
+                    for (const auto & it : cache_ffn_tensors) {
+                        const int l = it.first;
+                        if (l < 0 || l >= nl) continue;
+                        for (size_t k = 0; k < it.second.size() && k < 4; ++k) {
+                            const ggml_tensor * t = it.second[k];
+                            if (t == nullptr) continue;
+                            cgc_db_stride[(size_t) l][k] = ggml_row_size(t->type, t->ne[0]) * t->ne[1];
+                        }
+                    }
+                }
                 // Synchronously fill layer 0 into set 0
                 for (int kind = 0; kind < 4; ++kind) {
                     const int si = cgc_db_slab[0][kind];
                     if (si < 0) continue;
                     cgc_gather_slab & sl = cache_gather_slab[(size_t) si];
-                    llama_expert_cache_fill_layer_slab(cache, 0, kind, sl.base, sl.stride);
+                    const size_t sp = (!cgc_db_stride.empty() && cgc_db_stride[0][(size_t) kind] > 0)
+                            ? cgc_db_stride[0][(size_t) kind]
+                            : sl.stride;
+                    llama_expert_cache_fill_layer_slab(cache, 0, kind, sl.base, sp);
                 }
                 // Launch background fill of layer 1 into set 1
                 if (n_layers > 1) {
@@ -5174,8 +5236,7 @@ llm_graph_cb llama_context::graph_get_cb() const {
             // (shrunk) storage is what ggml-alloc sizes against. Leaving it untouched here means
             // the eval hook's repoint is the only geometry change, and the graph-build restore
             // (cache_gather_ne2 / cache_orig) returns the tensor to its shrunk state afterward.
-            static const bool prefill_stream = getenv("CGC_PREFILL_STREAM") != nullptr
-                    && getenv("CGC_PREFILL_STREAM")[0] != '0';
+            const bool prefill_stream = cgc_stream_on;  // validated once in the constructor
             if (prefill_stream && (int64_t) ubatch.n_tokens > (int64_t) cgc_pool_max_tokens()) {
                 return; // eval hook handles it (whole-layer slab)
             }

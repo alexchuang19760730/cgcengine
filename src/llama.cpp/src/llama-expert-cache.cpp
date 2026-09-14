@@ -1856,6 +1856,19 @@ llama_expert_cache::~llama_expert_cache() {
                 (unsigned long long) pread_usec.load(std::memory_order_relaxed),
                 (unsigned long long) fill_batch_usec.load(std::memory_order_relaxed),
                 n_prefetch, n_prefetch_dropped);
+        // [CGC M2 pool reuse 2026-09-14] What the whole-layer slab path actually read. The M2 exit
+        // condition is "bytes/token @ chunk 2048 <= 3.0 MB (i.e. only the non-resident share)";
+        // report it as the ratio so a claim about it can be checked instead of inferred.
+        {
+            const uint64_t sb_pool = n_slab_bytes_pool.load(std::memory_order_relaxed);
+            const uint64_t sb_disk = n_slab_bytes_disk.load(std::memory_order_relaxed);
+            if (sb_pool + sb_disk > 0) {
+                fprintf(stderr, "llama_expert_cache: slab fills: pool=%.1f MiB disk=%.1f MiB "
+                        "(non-resident share %.1f%%)\n",
+                        (double) sb_pool / 1048576.0, (double) sb_disk / 1048576.0,
+                        100.0 * (double) sb_disk / (double) (sb_pool + sb_disk));
+            }
+        }
         // [CGC miss attribution 2026-09-13] compulsory vs capacity, plus the per-layer check that
         // actually decides the lever. If a layer's distinct demanded experts fit inside its slot
         // count, no capacity miss is possible there once warm -> only locality / routing can
@@ -2888,12 +2901,24 @@ int64_t llama_expert_cache_fill(llama_expert_cache * cache, uint32_t layer,
 // provably saturated (2048 * top_k 8 = 16384 draws over 256 experts -> ~100% coverage), so
 // reading ALL experts is both necessary and predictable (no prediction needed).
 //
+// [CGC M2 pool reuse 2026-09-14] byte accounting for the slab path (defined below the function).
+static void record_slab_bytes(llama_expert_cache * cache, uint32_t layer, int kind, uint32_t ne,
+        int64_t pool_bytes, int64_t disk_bytes, size_t stride, int fast);
+
 // Layout: expert e's bytes for `kind` land at dst + e * stride. The caller sets ne[2] = n_expert
 // and the remap ids are raw expert ids (0..n_expert-1), so mul_mat_id indexes directly into this
 // slab with no slot-indirection layer.
 //
-// Returns total bytes read, or -1 on any short read (the caller should then fall back to the
-// pool path rather than trust a partial slab).
+// [CGC M2 pool reuse 2026-09-14] Experts the pool already holds are memcpy'd from the pool region
+// instead of being read from the file again. This is the difference between 13.9 GiB per ubatch
+// and the 44% that is genuinely non-resident, and the slab path is I/O-bound (measured: fill
+// ~125 ms/layer = 287 MB at ~2.3 GB/s, i.e. the whole per-ubatch fixed cost), so the saving is
+// close to the byte ratio. The bytes are the same bytes: the pool is filled from these very file
+// segments, so a pool-served slab is bit-identical by construction -- which is also what the M2
+// oracle gate asserts after this change.
+//
+// Returns total bytes read+served, or -1 on any short read (the caller should then fall back to
+// the pool path rather than trust a partial slab).
 int64_t llama_expert_cache_fill_layer_slab(llama_expert_cache * cache, uint32_t layer,
         int kind, void * dst, size_t stride) {
     if (cache == nullptr || dst == nullptr || layer >= cache->slot_owner.size()) {
@@ -2912,6 +2937,15 @@ int64_t llama_expert_cache_fill_layer_slab(llama_expert_cache * cache, uint32_t 
     dsts.reserve((size_t) ne);
     uint8_t * out = (uint8_t *) dst;
     int64_t total = 0;
+    // [CGC M2 pool reuse 2026-09-14] Read the residency state BEFORE taking the cache lock: these
+    // accessors are pure readers of immutable-after-init geometry, and calling them inside would
+    // re-enter cache->m.
+    const int32_t * resident    = llama_expert_cache_slot_table(cache, layer);
+    const uint32_t  usable      = llama_expert_cache_usable_slots(cache, layer);
+    const uint8_t * pool_base   = llama_expert_cache_pool_data(cache, layer, kind);
+    const size_t    pool_stride = llama_expert_cache_pool_stride(cache, layer, kind);
+    int64_t pool_bytes = 0;
+    int64_t disk_bytes = 0;
     // Collect every expert's segment for this kind. One lock for the whole traversal — the
     // index/key_segs are immutable after init, so this is a read-only walk and could be
     // lock-free, but taking the lock matches every other index reader and costs nothing vs IO.
@@ -2933,15 +2967,34 @@ int64_t llama_expert_cache_fill_layer_slab(llama_expert_cache * cache, uint32_t 
             if (idx == nullptr) {
                 continue;
             }
+            const uint32_t nb = (uint32_t) idx->bytes;
+            // Resident? Then the pool already holds this expert's file bytes verbatim and the copy
+            // is the cheapest possible fill. Three guards, each load-bearing:
+            //   * slot < usable: the reserved ZERO slot (last slot, MTP mode) contains zeros, not
+            //     this expert's bytes -- copying it would silently zero an expert out.
+            //   * pool_stride == nb: source pitch must equal the expert's size, or `slot*stride`
+            //     walks into the neighbouring slot's bytes.
+            //   * nb == stride: the destination pitch must equal the expert's size, or the reader
+            //     (mul_mat_id walks nb[2] = the expert's own size) reads a different pitch. When
+            //     any guard fails we fall through to the file, which is always correct.
+            const int32_t slot = resident != nullptr ? resident[e] : -1;
+            if (pool_base != nullptr && slot >= 0 && (uint32_t) slot < usable &&
+                    pool_stride == (size_t) nb && (size_t) nb == stride) {
+                memcpy(out + (size_t) e * stride, pool_base + (size_t) slot * pool_stride, nb);
+                pool_bytes += nb;
+                total += nb;
+                continue;
+            }
             llama_expert_cache::segment s;
             s.kind        = idx->kind;
             s.file_idx    = idx->file_idx;
             s.file_offset = idx->file_offset;
             s.off         = 0;
-            s.bytes       = (uint32_t) idx->bytes;
+            s.bytes       = nb;
             segs.push_back(s);
             dsts.push_back(out + (size_t) e * stride);
-            total += idx->bytes;
+            disk_bytes += nb;
+            total += nb;
         }
     }
     if (segs.empty()) {
@@ -2951,7 +3004,11 @@ int64_t llama_expert_cache_fill_layer_slab(llama_expert_cache * cache, uint32_t 
     // contiguous in the file (same file_idx, consecutive offsets, same bytes), do ONE large
     // pread instead of N small ones. This is the case for standard GGUF MoE layouts and
     // cuts slab fill from ~150ms to ~10ms (15x).
-    bool contiguous = (segs.size() > 1);
+    // [CGC M2 pool reuse 2026-09-14] `segs.size() == ne` is required as well: this path reads the
+    // file's contiguous run STRAIGHT into dst (it never uses `stride`), which is only the correct
+    // layout when every one of the ne experts came from the file in order. With pool reuse some
+    // experts are already in place via memcpy, so the linear assumption has to be given up.
+    bool contiguous = (segs.size() == ne && segs.size() > 1);
     if (contiguous) {
         const uint32_t fidx = segs[0].file_idx;
         const uint32_t bsz  = segs[0].bytes;
@@ -2988,6 +3045,7 @@ int64_t llama_expert_cache_fill_layer_slab(llama_expert_cache * cache, uint32_t 
                         layer, kind, segs.size(), (long long) total, (double) dt / 1000.0);
             }
         }
+        record_slab_bytes(cache, layer, kind, ne, pool_bytes, disk_bytes, stride, 1);
         return total;
     }
     if (!fill_segments_concurrent(cache, segs, dsts)) {
@@ -3002,7 +3060,24 @@ int64_t llama_expert_cache_fill_layer_slab(llama_expert_cache * cache, uint32_t 
                     layer, kind, segs.size(), (long long) total, (double) dt / 1000.0);
         }
     }
+    record_slab_bytes(cache, layer, kind, ne, pool_bytes, disk_bytes, stride, 0);
     return total;
+}
+
+// [CGC M2 pool reuse 2026-09-14] One line per fill under CGC_M2_PROFILE, plus process-wide
+// counters that the stats printer reports at shutdown. bytes/token is the M2 exit condition and
+// the only way to evaluate it is to know which half of the layer came from the pool.
+static void record_slab_bytes(llama_expert_cache * cache, uint32_t layer, int kind, uint32_t ne,
+        int64_t pool_bytes, int64_t disk_bytes, size_t stride, int fast) {
+    cache->n_slab_bytes_pool.fetch_add((uint64_t) pool_bytes, std::memory_order_relaxed);
+    cache->n_slab_bytes_disk.fetch_add((uint64_t) disk_bytes, std::memory_order_relaxed);
+    static const bool m2_fill_log = getenv("CGC_M2_PROFILE") != nullptr;
+    static std::atomic<int> logged{0};
+    if (m2_fill_log && logged.fetch_add(1) < 400) {
+        fprintf(stderr, "CGC-M2-FILL layer=%u kind=%d experts=%u pool_bytes=%lld disk_bytes=%lld "
+                "stride=%zu fast=%d\n",
+                layer, kind, ne, (long long) pool_bytes, (long long) disk_bytes, stride, fast);
+    }
 }
 
 void llama_expert_cache_get_stats(const llama_expert_cache * cache,

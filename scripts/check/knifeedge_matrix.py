@@ -2334,7 +2334,10 @@ def run_combo(kind, gb, args):
     oracle_dump = os.path.join(RESULT_DIR, f"oracle_{label}.jsonl")
     extra = list(args.extra_env)
     # M2 prefill-stream mode: whole-layer slab gather, has its own oracle (L2 divergence vs std)
-    if args.m2:
+    # getattr, not args.m2: run_combo is also driven by callers that build their own Namespace
+    # (feasibility_gate_selftest.py), and an AttributeError there reads as "the gate crashed"
+    # rather than "the flag is off". Off-by-default is the correct meaning of an absent flag.
+    if getattr(args, "m2", False):
         extra.append("CGC_PREFILL_STREAM=1")
         extra.append("CGC_GATHER_SLAB_CAP=256")
     # The union-routable gate must not depend on an OPTIONAL diagnostic flag the caller happened
