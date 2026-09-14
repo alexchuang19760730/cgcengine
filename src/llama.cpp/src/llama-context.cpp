@@ -4118,6 +4118,23 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
             fprintf(stderr, "CGC-M2-DBG: il=%d n_tokens=%lld pmax=%u stream=%d\n",
                     il, (long long) n_tokens, cgc_pool_max_tokens(), (int) cgc_prefill_stream);
         }
+        // [M2 debug 2026-09-14] Print standard-path prefill tensor state
+        static const bool m2_state_dbg = getenv("CGC_M2_STATE_DBG") != nullptr;
+        if (m2_state_dbg && il == 0) {
+            for (int kind = 0; kind < 1; ++kind) {
+                ggml_tensor * wt = cache_ffn_tensors[il][kind];
+                if (wt != nullptr) {
+                    fprintf(stderr, "CGC-STD-PREFILL: il=%d kind=%d ntok=%lld "
+                            "ne=[%lld,%lld,%lld,%lld] nb=[%zu,%zu,%zu,%zu] data=%p buf=%p buft=%s\n",
+                            il, kind, (long long) n_tokens,
+                            (long long) wt->ne[0], (long long) wt->ne[1],
+                            (long long) wt->ne[2], (long long) wt->ne[3],
+                            wt->nb[0], wt->nb[1], wt->nb[2], wt->nb[3],
+                            wt->data, (void *) wt->buffer,
+                            wt->buffer ? ggml_backend_buft_name(ggml_backend_buffer_get_type(wt->buffer)) : "null");
+                }
+            }
+        }
         llama_expert_cache_record_routes(cache, (uint32_t) il, routes.data(), routes.size());
         if (!cgc_prefill_stream) {
             return;
@@ -4129,6 +4146,18 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
             if (wt == nullptr) {
                 continue;
             }
+            // [M2 debug 2026-09-14] Print tensor state BEFORE repoint
+            static const bool m2_state_dbg = getenv("CGC_M2_STATE_DBG") != nullptr;
+            if (m2_state_dbg && il == 0 && kind == 0) {
+                fprintf(stderr, "CGC-M2-STATE-BEFORE: il=%d kind=%d ntok=%lld "
+                        "ne=[%lld,%lld,%lld,%lld] nb=[%zu,%zu,%zu,%zu] data=%p buf=%p buft=%s\n",
+                        il, kind, (long long) n_tokens,
+                        (long long) wt->ne[0], (long long) wt->ne[1],
+                        (long long) wt->ne[2], (long long) wt->ne[3],
+                        wt->nb[0], wt->nb[1], wt->nb[2], wt->nb[3],
+                        wt->data, (void *) wt->buffer,
+                        wt->buffer ? ggml_backend_buft_name(ggml_backend_buffer_get_type(wt->buffer)) : "null");
+            }
             const size_t exp_bytes = ggml_row_size(wt->type, wt->ne[0]) * wt->ne[1];
             ggml_backend_buffer_type_t wt_buft = wt->buffer != nullptr
                     ? ggml_backend_buffer_get_type(wt->buffer) : nullptr;
@@ -4138,6 +4167,26 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
             if (llama_expert_cache_pool_buffer(cache, (uint32_t) il, kind) != nullptr) {
                 wt_buft = ggml_backend_buffer_get_type(
                         llama_expert_cache_pool_buffer(cache, (uint32_t) il, kind));
+            }
+            // [M2 fix 2026-09-14] If expert tensor was skip-loaded (--load-mode none), its buffer
+            // is CPU-only and the slab would be allocated as CPU → Metal mul_mat_id SIGSEGVs.
+            // Fall back to the first non-CPU backend's default buffer type.
+            if (wt_buft != nullptr) {
+                const char * buft_name = ggml_backend_buft_name(wt_buft);
+                if (strcmp(buft_name, "CPU") == 0) {
+                    for (size_t bi = 0; bi < backends.size(); ++bi) {
+                        auto dev = ggml_backend_get_device(backends[bi].get());
+                        if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_CPU) {
+                            auto * dev_buft = ggml_backend_get_default_buffer_type(backends[bi].get());
+                            if (dev_buft) {
+                                wt_buft = dev_buft;
+                                fprintf(stderr, "CGC-PREFILL-STREAM: CPU buft for il=%d kind=%d "
+                                        "→ using %s\n", il, kind, ggml_backend_buft_name(wt_buft));
+                                break;
+                            }
+                        }
+                    }
+                }
             }
             cgc_gather_slab * sl = cgc_gather_slab_get(kind, exp_bytes, wt_buft);
             if (sl == nullptr) {
@@ -4163,6 +4212,19 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
             wt->ne[2]  = (int64_t) n_expert_full;
             wt->data   = sl->base;
             wt->buffer = sl->buf;
+            // [M2 debug 2026-09-14] Print tensor state AFTER repoint
+            if (m2_state_dbg && il == 0 && kind == 0) {
+                fprintf(stderr, "CGC-M2-STATE-AFTER: il=%d kind=%d ntok=%lld "
+                        "ne=[%lld,%lld,%lld,%lld] nb=[%zu,%zu,%zu,%zu] data=%p buf=%p buft=%s "
+                        "slab_stride=%zu exp_bytes=%zu\n",
+                        il, kind, (long long) n_tokens,
+                        (long long) wt->ne[0], (long long) wt->ne[1],
+                        (long long) wt->ne[2], (long long) wt->ne[3],
+                        wt->nb[0], wt->nb[1], wt->nb[2], wt->nb[3],
+                        wt->data, (void *) wt->buffer,
+                        wt->buffer ? ggml_backend_buft_name(ggml_backend_buffer_get_type(wt->buffer)) : "null",
+                        sl->stride, exp_bytes);
+            }
             if (il <= 1 && kind == 0) {
                 static int ps_dbg = 0;
                 if (ps_dbg < 4) {
@@ -4805,6 +4867,21 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
             if (llama_expert_cache_pool_buffer(cache, (uint32_t) il, kind) != nullptr) {
                 wt_buft = ggml_backend_buffer_get_type(
                         llama_expert_cache_pool_buffer(cache, (uint32_t) il, kind));
+            }
+            // [M2 fix 2026-09-14] If expert tensor was skip-loaded (--load-mode none), its buffer
+            // is CPU-only and the slab would be allocated as CPU → Metal mul_mat_id SIGSEGVs.
+            // Fall back to the first non-CPU backend's default buffer type.
+            if (wt_buft != nullptr && strcmp(ggml_backend_buft_name(wt_buft), "CPU") == 0) {
+                for (auto & backend : backends) {
+                    auto dev = ggml_backend_get_device(backend.get());
+                    if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_CPU) {
+                        auto * dev_buft = ggml_backend_get_default_buffer_type(backend.get());
+                        if (dev_buft) {
+                            wt_buft = dev_buft;
+                            break;
+                        }
+                    }
+                }
             }
             uint8_t * slab = nullptr;
             ggml_backend_buffer_t slab_buf = nullptr;

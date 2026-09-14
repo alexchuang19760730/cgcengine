@@ -552,6 +552,7 @@ def record_provenance(kind, gb, args, cap=None, facts=None, extra_env=None):
                                in ("1", "true", "on", "yes"),
                        "spec_n_max": _env_int(env, "CGC_SERVER_MTP_N_MAX", 3),
                        "layer_caps": env.get("CGC_SERVER_LAYER_CAPS") or "default",
+                       "mode": "M2_stream" if getattr(args, "m2", False) else "standard",
                        "extra_env": sorted(ee)},
             # The SHAPE of the measurement, not of the engine. Two rows measured with different
             # suites are not the same experiment even when the pool, engine and weights match --
@@ -589,6 +590,7 @@ def record_geometry_key(rec):
             "binary": binary,
             "weights": (w.get("realpath"), w.get("size"), w.get("digest")),
             "cap": rec.get("pool_cap", (prov.get("pool") or {}).get("cap")),
+            "mode": L.get("mode", "standard"),
             "mtp": L.get("mtp"), "spec_n_max": L.get("spec_n_max"),
             "layer_caps": L.get("layer_caps"), "extra_env": tuple(L.get("extra_env") or ()),
             "suite": tuple(sorted(((prov.get("suite") or {}).items()))) }
@@ -619,6 +621,7 @@ KEY_FIELDS = (("engine", "numerics code (source digest)"),
               ("binary", "built binary"),
               ("weights", "weights identity"),
               ("cap", "CGC_POOL_MAX_TOKENS"),
+              ("mode", "prefill mode (standard / M2_stream)"),
               ("mtp", "MTP"),
               ("spec_n_max", "spec-draft-n-max"),
               ("layer_caps", "LAYER_CAPS"),
@@ -2171,6 +2174,13 @@ def feasibility_cell(kind, gb, cap=None, extra_env=None):
               "cap_max": cap_max, "floor": floor, "topk": topk, "mtp": mtp,
               "spec_n_max": spec, "verdict": verdict, "why": why,
               "ref_cap_ok": cap_max >= ref, "path": model_path(kind)})
+    # Convert numpy scalar types (uint64 etc.) to Python natives so the cell is JSON-serializable.
+    for k, v in list(r.items()):
+        if hasattr(v, "item") and not isinstance(v, (dict, list)):
+            try:
+                r[k] = v.item()
+            except Exception:  # noqa: BLE001
+                pass
     return r
 
 
@@ -2323,6 +2333,10 @@ def run_combo(kind, gb, args):
     # Oracle dump is env-gated at launch; kept out of the result name so a rerun overwrites it.
     oracle_dump = os.path.join(RESULT_DIR, f"oracle_{label}.jsonl")
     extra = list(args.extra_env)
+    # M2 prefill-stream mode: whole-layer slab gather, has its own oracle (L2 divergence vs std)
+    if args.m2:
+        extra.append("CGC_PREFILL_STREAM=1")
+        extra.append("CGC_GATHER_SLAB_CAP=256")
     # The union-routable gate must not depend on an OPTIONAL diagnostic flag the caller happened
     # to pass: on 2026-09-14 the 2 GiB cell scored M1/M2/M3 117/117 while the gate said FAIL
     # mode=unreachable simply because CGC_UNION_LOG was not set, so the `gather=N/M` evidence it
@@ -2896,6 +2910,11 @@ def main():
                          "side effect of --oracle-ref, so making a fresh reference required "
                          "pointing at some other dump first -- a chicken-and-egg that made the "
                          "reference's own provenance accidental.")
+    ap.add_argument("--m2", action="store_true",
+                    help="M2 prefill-stream mode: sets CGC_PREFILL_STREAM=1 CGC_GATHER_SLAB_CAP=256, "
+                         "uses ref_<model>_pool8gb_M2.jsonl as default oracle ref, and records "
+                         "mode=M2_stream in provenance. M2 has its own oracle because it changes "
+                         "the prefill chunk size (L2 divergence vs standard path).")
     ap.add_argument("--pool-cap", default="auto",
                     help="CGC_POOL_MAX_TOKENS, IDENTICAL for every pool (default 'auto' = probe "
                          "the smallest pool until it reports no `buffer is nil`, then reuse that "
@@ -2975,6 +2994,18 @@ def main():
     ap.add_argument("--dry-run", action="store_true",
                     help="print the plan (models/pools/kwargs/facts) and exit")
     args = ap.parse_args()
+
+    # M2 mode: use the M2-specific reference oracle by default. M2 changes the prefill
+    # chunk size (L2 divergence vs standard path), so it must NOT be compared against the
+    # standard-path reference. The M2 reference lives at ref_<model>_pool8gb_M2.jsonl.
+    if args.m2 and not args.oracle_ref and not args.dump_oracle:
+        m2_ref = os.path.join(RESULT_DIR, f"ref_{args.models}_pool8gb_M2.jsonl")
+        if os.path.exists(m2_ref):
+            args.oracle_ref = m2_ref
+            print(f"[m2] using M2 reference oracle: {m2_ref}", flush=True)
+        else:
+            print(f"[m2] WARNING: no M2 reference oracle at {m2_ref}; "
+                  f"run with --m2 --dump-oracle on 8GB pool to create it", flush=True)
 
     if args.summary:
         summary_table()
