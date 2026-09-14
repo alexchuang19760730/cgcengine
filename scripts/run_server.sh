@@ -753,6 +753,19 @@ fi
 if [ -n "${CGC_POOL_MAX_TOKENS:-}" ]; then
     SERVER_ENV+=(CGC_POOL_MAX_TOKENS="$CGC_POOL_MAX_TOKENS")
 fi
+# CGC M1 work item 1 (C++ default OFF): keep the expert tensors at FULL WIDTH and give the pool its
+# own Metal allocation, which is what decouples the batch width from the pool size. Needs a load mode
+# that can map the model (CGC_SERVER_LOAD_MODE=mmap), otherwise the full-width tensors are allocated
+# and read resident -- that difference IS the cost being measured.
+if [ -n "${CGC_POOL_SPLIT:-}" ]; then
+    SERVER_ENV+=(CGC_POOL_SPLIT="$CGC_POOL_SPLIT")
+fi
+# Diagnostic for the above: prints every pool-region adoption and, for the first layers, what the
+# graph repointed each FFN tensor to (il / kind / base / pool buffer). Without it in this list a
+# "the diagnostics printed nothing" would read as "the mechanism did not run".
+if [ -n "${CGC_POOL_SPLIT_DBG:-}" ]; then
+    SERVER_ENV+=(CGC_POOL_SPLIT_DBG="$CGC_POOL_SPLIT_DBG")
+fi
 # CGC prev-token prefetch (default off)
 # [CGC M0 decode profile 2026-09-13] Per-layer wait/cb/submit attribution of a decode step.
 # Only produces output under CGC_OA_ASYNC=1 (see CGC_SERVER_OA_ASYNC): without the segmented

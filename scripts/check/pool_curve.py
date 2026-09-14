@@ -15,6 +15,7 @@ Rows accumulate in --out keyed by pool GB, so the sweep can be run pool-by-pool 
 final table printed with --report.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -30,6 +31,66 @@ from probe_skip0 import PROMPTS, ask  # noqa: E402
 LOG_DIR = os.path.join(ROOT, "Backup", "cgc_logs")
 SERVER_MATCH = "build/bin/llama-server"
 DEFAULT_MODEL = os.path.join(ROOT, "models", "gguf", "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf")
+SERVER_BIN = os.path.join(ROOT, "src", "llama.cpp", "build", "bin", "llama-server")
+
+
+def _file_digest(path, sample_size=65536):
+    """Size + first/last 64KiB hash. Same sampling philosophy as knifeedge_matrix:
+    a full sha256 of a 13GB file is too slow for every row, and the head/tail sample
+    catches every real-world swap (different quantization, different metadata)."""
+    if not os.path.exists(path):
+        return None
+    size = os.path.getsize(path)
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        h.update(f.read(sample_size))
+        if size > sample_size * 2:
+            f.seek(-sample_size, 2)
+            h.update(f.read(sample_size))
+    return {"size": size, "head_hash": h.hexdigest()[:16]}
+
+
+def record_provenance(pool_gb, model_path, extra_env, facts=None):
+    """Simplified provenance for pool_curve rows. The full version lives in
+    knifeedge_matrix.record_provenance; this one covers the fields that make
+    two pool_curve rows comparable (or not): model identity, binary identity,
+    launch env, and the predicted-vs-launched slot geometry.
+
+    Stored inside every row so a curve taken last week cannot be silently
+    compared with one taken today after a loader change.
+    """
+    pool = {"gb": int(pool_gb), "bytes": int(pool_gb) * 1024 ** 3}
+    # Predicted slots: try the shared feasibility cell; fall back to None if
+    # knifeedge_matrix cannot be imported (it has heavy deps).
+    predicted = None
+    try:
+        from knifeedge_matrix import feasibility_cell  # noqa: WPS433
+        cell = feasibility_cell("generic", pool_gb, None, list(extra_env or []))
+        predicted = cell.get("min_layer_slots")
+        pool.update({"min_layer_slots": predicted,
+                     "usable_slots": cell.get("usable_slots"),
+                     "cap_max": cell.get("cap_max"),
+                     "verdict": cell.get("verdict")})
+    except Exception:  # noqa: BLE001 - provenance must never kill a measurement
+        pass
+    if facts:
+        launched = facts.get("min_layer_slots")
+        pool["launched_min_layer_slots"] = launched
+        pool["launched_n_slots"] = facts.get("n_slots")
+        if predicted is not None and launched is not None:
+            mismatch = int(predicted) != int(launched)
+            pool["geometry_mismatch"] = mismatch
+            if mismatch:
+                pool["geometry_mismatch_detail"] = (
+                    f"predicted {predicted} vs launched {launched}")
+        else:
+            pool["geometry_mismatch"] = None
+    return {"when": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "pool": pool,
+            "model": {"realpath": os.path.realpath(model_path),
+                      **(_file_digest(model_path) or {})},
+            "binary": {"path": SERVER_BIN, **(_file_digest(SERVER_BIN) or {})},
+            "launch": {"extra_env": sorted(extra_env or [])}}
 
 
 def kill_server():
@@ -158,8 +219,13 @@ def run_row(args):
         "en_shots": len(en_outs),
         "en_sample": en_outs[0] if en_outs else None,
     })
-    row.update(log_facts(log_path))
+    facts = log_facts(log_path)
+    row.update(facts)
     row["log"] = os.path.basename(log_path) if log_path else None
+    # Provenance: stamped AFTER the facts are read so it can carry both the
+    # predicted and launched slot counts -- a geometry mismatch is then visible
+    # per row, not just via a one-shot cap probe.
+    row["provenance"] = record_provenance(args.pool, args.model, args.extra_env, facts=facts)
     kill_server()
     row["free_teardown_pct"] = mem_free_pct()
     return row
@@ -179,7 +245,7 @@ def save(out_path, row):
 def report(out_path):
     data = json.load(open(out_path, encoding="utf-8"))
     print(f"{'row':>8} {'n_slots':>8} {'RSS GB':>7} {'free%':>6} {'zh ok':>6} {'uniq':>5} "
-          f"{'echo':>5} {'t/s(srv)':>9} {'finish':>12}")
+          f"{'echo':>5} {'t/s(srv)':>9} {'geom':>6} {'finish':>12}")
 
     def sort_key(k):
         m = re.match(r"\d+", k)
@@ -190,10 +256,13 @@ def report(out_path):
         if not r.get("up"):
             print(f"{key:>8} {'—':>8} {'—':>7} {'—':>6} {'DOWN':>6}")
             continue
+        prov = r.get("provenance") or {}
+        gm = (prov.get("pool") or {}).get("geometry_mismatch")
+        gms = "n/a" if gm is None else ("MIS" if gm else "ok")
         print(f"{key:>8} {str(r.get('n_slots')):>8} {r.get('rss_gb'):>7} {r.get('free_after_pct'):>6} "
               f"{str(r.get('zh_correct')) + '/' + str(r.get('zh_shots')):>6} {r.get('zh_unique'):>5} "
               f"{r.get('zh_echo_prompt'):>5} {str(r.get('decode_tps_server')):>9} "
-              f"{','.join(r.get('zh_finish_reasons') or []):>12}")
+              f"{gms:>6} {','.join(r.get('zh_finish_reasons') or []):>12}")
 
 
 def main():

@@ -2030,9 +2030,9 @@ struct ggml_metal_buffer_id ggml_metal_buffer_get_id(ggml_metal_buffer_t buf, co
         if (cgc_metal_dbg_n < 24) {
             cgc_metal_dbg_n++;
             fprintf(stderr,
-                    "CGC-METAL-NIL: %s buf=%p n_buffers=%d b0data=%p b0size=%zu tdata=%p tbuf=%p "
+                    "CGC-METAL-NIL: t=%p %s buf=%p n_buffers=%d b0data=%p b0size=%zu tdata=%p tbuf=%p "
                     "tsize=%zu ne=[%lld,%lld,%lld] tview_src=%p\n",
-                    t->name, (void *) buf, buf->n_buffers,
+                    (void *) t, t->name, (void *) buf, buf->n_buffers,
                     buf->n_buffers > 0 ? (void *) buf->buffers[0].data : NULL,
                     buf->n_buffers > 0 ? (size_t) buf->buffers[0].size : 0,
                     t->data, (void *) t->buffer, (size_t) tsize,

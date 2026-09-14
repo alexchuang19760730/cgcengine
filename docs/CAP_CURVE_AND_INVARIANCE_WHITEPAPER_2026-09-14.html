@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pool cap 不是 prefill 的旋鈕 — cap 曲線與 cap invariance 失效白皮書 · 2026-09-14</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans TC', sans-serif;
+    background: #0f1117; color: #e4e4e7; line-height: 1.7; padding: 20px;
+  }
+  .container { max-width: 1200px; margin: 0 auto; }
+  .header {
+    background: linear-gradient(135deg, #1e3a5f 0%, #0f1117 100%);
+    border-radius: 16px; padding: 40px; margin-bottom: 30px; border: 1px solid #2d3748;
+  }
+  .header h1 {
+    font-size: 2.05em; font-weight: 700;
+    background: linear-gradient(90deg, #60a5fa, #a78bfa);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 10px;
+  }
+  .header .subtitle { color: #9ca3af; font-size: 1.05em; margin-bottom: 20px; }
+  .header .meta { display: flex; gap: 14px; flex-wrap: wrap; }
+  .header .meta-item {
+    background: rgba(255,255,255,0.05); padding: 8px 16px; border-radius: 8px;
+    font-size: 0.88em; color: #d1d5db;
+  }
+  .header .meta-item strong { color: #60a5fa; }
+
+  .nav { background: #1a1d29; border-radius: 12px; padding: 18px 24px; margin-bottom: 30px; border: 1px solid #2d3748; }
+  .nav ul { list-style: none; display: flex; flex-wrap: wrap; gap: 8px 20px; }
+  .nav a { color: #93c5fd; text-decoration: none; font-size: 0.9em; }
+  .nav a:hover { color: #bfdbfe; text-decoration: underline; }
+
+  /* overflow-x: a wide table scrolls inside its own section on a narrow screen instead
+     of pushing the whole document sideways. No effect at the 1200px container width. */
+  .section { background: #161925; border-radius: 14px; padding: 28px 32px; margin-bottom: 24px;
+             border: 1px solid #262b3a; overflow-x: auto; }
+  .section h2 { font-size: 1.5em; color: #93c5fd; margin-bottom: 18px; padding-bottom: 10px; border-bottom: 1px solid #262b3a; }
+  .section h3 { font-size: 1.16em; color: #a5b4fc; margin: 24px 0 12px; }
+  .section h4 { font-size: 1.02em; color: #cbd5e1; margin: 18px 0 8px; }
+  .section p { margin-bottom: 12px; color: #d1d5db; }
+  .section ul, .section ol { margin: 12px 0 12px 24px; }
+  .section li { margin-bottom: 8px; color: #d1d5db; }
+
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 0.9em; }
+  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #262b3a; vertical-align: top; }
+  th { background: #1e2333; color: #93c5fd; font-weight: 600; font-size: 0.88em; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  code {
+    background: rgba(96,165,250,0.12); color: #bfdbfe; padding: 1px 6px;
+    border-radius: 5px; font-size: 0.9em; font-family: 'SF Mono', Menlo, monospace;
+  }
+  pre {
+    background: #0b0d14; border: 1px solid #262b3a; border-left: 3px solid #3b82f6;
+    border-radius: 8px; padding: 14px 18px; overflow-x: auto; margin: 14px 0;
+    font-family: 'SF Mono', Menlo, monospace; font-size: 0.84em; color: #cbd5e1; line-height: 1.55;
+  }
+
+  .badge {
+    display: inline-block; padding: 3px 11px; border-radius: 20px;
+    font-size: 0.78em; font-weight: 600; white-space: nowrap;
+  }
+  .badge-success { background: #065f46; color: #6ee7b7; }
+  .badge-warning { background: #78350f; color: #fcd34d; }
+  .badge-danger  { background: #7f1d1d; color: #fca5a5; }
+  .badge-info    { background: #1e3a5f; color: #93c5fd; }
+  .badge-muted   { background: #374151; color: #9ca3af; }
+
+  .highlight { background: rgba(96,165,250,0.08); border-left: 3px solid #3b82f6; padding: 14px 18px; border-radius: 8px; margin: 16px 0; }
+  .highlight strong { color: #60a5fa; }
+  .warning { background: rgba(251,191,36,0.08); border-left: 3px solid #f59e0b; padding: 14px 18px; border-radius: 8px; margin: 16px 0; }
+  .warning strong { color: #fbbf24; }
+  .danger { background: rgba(239,68,68,0.08); border-left: 3px solid #ef4444; padding: 14px 18px; border-radius: 8px; margin: 16px 0; }
+  .danger strong { color: #fca5a5; }
+  .ok { background: rgba(16,185,129,0.08); border-left: 3px solid #10b981; padding: 14px 18px; border-radius: 8px; margin: 16px 0; }
+  .ok strong { color: #6ee7b7; }
+
+  /* cap curve bars */
+  .curve { margin: 18px 0; }
+  .curve-row { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; font-size: 0.88em; }
+  .curve-label { width: 130px; color: #9ca3af; text-align: right; flex: none; }
+  .curve-bar { height: 22px; border-radius: 4px; background: linear-gradient(90deg,#3b82f6,#8b5cf6); }
+  .curve-val { color: #d1d5db; font-variant-numeric: tabular-nums; }
+  .curve-bar.bad { background: linear-gradient(90deg,#ef4444,#7f1d1d); }
+
+  .footnote { color: #9ca3af; font-size: 0.86em; }
+  .kpi { display: flex; gap: 14px; flex-wrap: wrap; margin: 16px 0; }
+  .kpi .card { flex: 1 1 190px; background: #1a1d29; border: 1px solid #262b3a; border-radius: 10px; padding: 14px 16px; }
+  .kpi .card .k { color: #9ca3af; font-size: 0.8em; }
+  .kpi .card .v { font-size: 1.3em; font-weight: 700; color: #93c5fd; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<div class="header">
+  <h1>Pool cap 不是 prefill 的旋鈕</h1>
+  <div class="subtitle">cap 曲線、cap invariance 失效的定位，以及跨模型時哪一條前提先斷</div>
+  <div class="meta">
+    <div class="meta-item"><strong>日期</strong> 2026-09-14</div>
+    <div class="meta-item"><strong>引擎</strong> <code>e8b85393d</code>（未改動 binary）</div>
+    <div class="meta-item"><strong>主模型</strong> Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X</div>
+    <div class="meta-item"><strong>對照模型</strong> Ornith-1.5-35B-A3B-Abliterated-MTPv2 · Qwen3.6 UD-IQ4_XS</div>
+  </div>
+</div>
+
+<div class="nav">
+  <ul>
+    <li><a href="#tldr">TL;DR</a></li>
+    <li><a href="#names">1. 三個被混用的名詞</a></li>
+    <li><a href="#curve">2. cap 曲線</a></li>
+    <li><a href="#notknob">3. 為什麼 cap 不是 prefill 的旋鈕</a></li>
+    <li><a href="#localize">4. cap invariance 失效的定位</a></li>
+    <li><a href="#twoinvar">5. 兩個不變性必須分開</a></li>
+    <li><a href="#crossmodel">6. 跨模型：哪個前提先失效</a></li>
+    <li><a href="#decide">7. 決策建議</a></li>
+    <li><a href="#honest">8. 誠實標註與重現</a></li>
+  </ul>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<div class="section" id="tldr">
+  <h2>TL;DR</h2>
+  <div class="kpi">
+    <div class="card"><div class="k">cap 8 → 2 的 prefill 變化</div><div class="v">8.4 → 17.4 t/s</div></div>
+    <div class="card"><div class="k">cap 8 → 32 的 prefill 變化</div><div class="v">8.4 → 0.37 t/s</div></div>
+    <div class="card"><div class="k">固定 cap、pool 4/6/8 GiB<br><span class="footnote">兩個 cap 各驗一次</span></div><div class="v">117/117 · 103/103 ✅</div></div>
+    <div class="card"><div class="k">cap 5 vs 8（同 pool）</div><div class="v">M1 1/391 ❌</div></div>
+  </div>
+
+  <div class="danger">
+    <strong>一句話：</strong><code>CGC_POOL_MAX_TOKENS</code> 不是「pool 的參數」，它是 <strong>prefill 的 chunk 大小</strong>。
+    llama-context.cpp 在 L4 pool 啟動時把 <code>n_batch</code> clamp 成 cap，而 <code>n_ubatch = min(n_batch, params.n_ubatch)</code>，
+    所以 cap 直接決定「每個 forward 處理幾個 token」。
+  </div>
+
+  <h3>四個結論</h3>
+  <ol>
+    <li><strong>cap 曲線是單調的，而且方向與直覺相反。</strong> 從 8 往上（16、32）prefill <em>下降</em>；
+        從 8 往下（5、4、2）<em>上升</em>（cap=2 是 17.4 t/s，約 2.1×）。機制是 union 隨 chunk 超線性成長，
+        而常駐格數固定 —— <strong>union 是「工作集」槓桿，不是「分攤」槓桿</strong>。</li>
+    <li><strong>cap 不是可以自由調的旋鈕，它是 pool 的結果。</strong> 前提是
+        <code>cap × top_k ≤ usable_slots</code>；池子小到某個程度，能用的 cap 會撞到<em>架構地板</em>，
+        此時 pool 不是「變慢」而是<strong>完全不可用</strong>（loader abort）。</li>
+    <li><strong>cap invariance 的失效與 pool 佈局無關。</strong> 三臂實驗（只差 prefill step partition）產出三個不同答案；
+        而<strong>固定 cap 下 pool 2/4/6/8/10 GiB 全部 bit-identical</strong>。分歧已經在最後一個 prefill 輸出，
+        layer 0 routing 三臂相同、layer 1 三分裂；三臂每一層 <code>gather=0</code>。</li>
+    <li><strong>跨模型時，先斷的永遠是「槽位容量」這條前提</strong>，不是精度、不是佈局、不是 MTP。
+        它與 <code>每 expert 位元組 × 層數 × top_k</code> 成正比，所以換一顆每 expert 更大的模型，
+        同一顆 pool 的可用 cap 會先掉下來。</li>
+  </ol>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<div class="section" id="names">
+  <h2>1. 三個被混用的名詞</h2>
+  <p>這份白皮書一半的價值來自把三件事分開。它們在對話裡長期被當成同一個「pool 的設定」，
+     但它們的因果方向、代價、以及失效方式完全不同。</p>
+
+  <table>
+    <thead><tr>
+      <th>名詞</th><th>它是什麼</th><th>誰決定</th><th>改變它會動什麼</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>pool size</strong><br><span class="footnote">例如 4 / 6 / 8 / 10 GiB</span></td>
+        <td>給 expert cache 的字節預算</td>
+        <td>啟動參數（<code>--expert-cache</code> 等）</td>
+        <td><span class="badge badge-warning">速度</span> 決定常駐格數 → 命中率 → I/O 量。<strong>不應動數值。</strong></td>
+      </tr>
+      <tr>
+        <td><strong>pool layout</strong><br><span class="footnote">哪顆 expert 在哪個 slot、union 怎麼排</span></td>
+        <td>池內部的配置</td>
+        <td>填充歷史（受路由序列影響）</td>
+        <td><span class="badge badge-danger">數值</span> 這才是 M1 不變性要保護的東西。</td>
+      </tr>
+      <tr>
+        <td><strong>pool cap</strong><br><span class="footnote"><code>CGC_POOL_MAX_TOKENS</code></span></td>
+        <td><strong>不是池的參數：是 <code>n_batch</code> 的上限</strong></td>
+        <td>啟動參數（<em>模擬</em>成池的旋鈕）</td>
+        <td><span class="badge badge-danger">數值 + 速度</span> 它改的是 <strong>prefill 的 chunk 大小</strong>，
+            也就是「每個 forward 幾個 token」。<em>連帶</em>才影響 union 寬度。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>耦合發生在哪一行</h3>
+  <pre>// src/llama.cpp/src/llama-context.cpp
+// loader 把每個 expert tensor 的 ne[2] 縮到 pool 容量，所以比 cap 寬的 batch
+// 會拿原始 expert id 去讀容量槽張量 → OOB → NaN。
+if (model.expert_cache_pool_capacity &gt; 0 &amp;&amp; cparams.n_batch &gt; 1) {
+    const uint32_t pmax = cgc_pool_max_tokens();
+    if (cparams.n_batch &gt; pmax) {
+        cparams.n_batch = pmax;      // ← cap 在這裡變成 prefill 的 chunk 上限
+    }
+}
+cparams.n_ubatch = std::min(cparams.n_batch, params.n_ubatch);
+// 於是 -ub 與 profile 的 -b 都被 cap 覆寫：日誌裡只看得到 ntok = 1/2/4/5/8 …</pre>
+
+  <div class="warning">
+    <strong>為什麼這個耦合一直沒被看見：</strong> cap 的名字（POOL_MAX_<em>TOKENS</em>）、它的說明（「pool path 的 batch 上限」）、
+    以及它與 pool size 一起被掃的行為，都讓人以為它是池的旋鈕。真正決定它是 chunk 大小的是上面那個 clamp ——
+    而 clamp 的理由（縮減後的 tensor 會 OOB）寫在註解裡，卻沒有寫在任何「參數說明」的地方。
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<div class="section" id="curve">
+  <h2>2. cap 曲線</h2>
+  <p><strong>配置：</strong>Nail IQ3_XXS-denseIQ4X、8 GiB pool、<strong>MTP OFF</strong>、3 個 ~100-token 請求、
+     每臂一顆全新 server、同一顆 binary 與同一份 GGUF。
+     驅動：<code>scripts/check/mtp_accept_ab.py --arms nail_nomtp --pool-gb 8</code>。</p>
+
+  <table>
+    <thead><tr>
+      <th class="num">cap</th><th class="num">slab</th>
+      <th class="num">prefill t/s（三個請求）</th><th class="num">平均</th>
+      <th class="num">decode t/s（平均）</th><th>備註</th>
+    </tr></thead>
+    <tbody>
+      <tr><td class="num">2</td><td class="num">64</td><td class="num">20.03 / 17.23 / 15.09</td><td class="num"><strong>17.4</strong></td><td class="num">9.6</td><td>MTP OFF 才能跑（見 §3 地板）</td></tr>
+      <tr><td class="num">4</td><td class="num">64</td><td class="num">9.66 / 9.19 / 9.24</td><td class="num">9.4</td><td class="num">8.1</td><td>兩次獨立量測</td></tr>
+      <tr><td class="num">4</td><td class="num">64</td><td class="num">10.19 / 9.20 / 9.17</td><td class="num">9.5</td><td class="num">8.6</td><td>重測</td></tr>
+      <tr><td class="num">5</td><td class="num">—</td><td class="num" colspan="2">+13–15% vs cap 8</td><td class="num">—</td><td>MTP ON 也 HEALTHY</td></tr>
+      <tr style="background:rgba(96,165,250,0.07);"><td class="num"><strong>8</strong></td><td class="num">64</td><td class="num">8.55 / 8.31 / 8.30</td><td class="num"><strong>8.4</strong></td><td class="num">7.7</td><td><strong>預設</strong></td></tr>
+      <tr><td class="num">8</td><td class="num">64</td><td class="num">6.48 / 8.24 / 8.35</td><td class="num">7.7</td><td class="num">7.3</td><td>重測（reproducibility ~1%）</td></tr>
+      <tr><td class="num">8</td><td class="num">64</td><td class="num">8.58 / 8.13 / 8.26</td><td class="num">8.3</td><td class="num">7.7</td><td>union probe</td></tr>
+      <tr><td class="num">16</td><td class="num">128</td><td class="num">6.00 / 6.19 / 5.90</td><td class="num">6.0</td><td class="num">6.9</td><td>−28%</td></tr>
+      <tr style="background:rgba(239,68,68,0.07);"><td class="num">32</td><td class="num">256</td><td class="num">190.69 s / 71 tokens</td><td class="num"><strong>0.37</strong></td><td class="num">中止</td><td>slab 356 MiB</td></tr>
+    </tbody>
+  </table>
+
+  <div class="curve">
+    <div class="curve-row"><div class="curve-label">cap 2</div><div class="curve-bar" style="width:88%"></div><div class="curve-val">17.4 t/s</div></div>
+    <div class="curve-row"><div class="curve-label">cap 4</div><div class="curve-bar" style="width:48%"></div><div class="curve-val">9.4 t/s</div></div>
+    <div class="curve-row"><div class="curve-label">cap 5</div><div class="curve-bar" style="width:43%"></div><div class="curve-val">~9.5 t/s</div></div>
+    <div class="curve-row"><div class="curve-label">cap 8（預設）</div><div class="curve-bar" style="width:43%"></div><div class="curve-val">8.4 t/s</div></div>
+    <div class="curve-row"><div class="curve-label">cap 16</div><div class="curve-bar" style="width:30%"></div><div class="curve-val">6.0 t/s</div></div>
+    <div class="curve-row"><div class="curve-label">cap 32</div><div class="curve-bar bad" style="width:2%"></div><div class="curve-val">0.37 t/s</div></div>
+  </div>
+
+  <h3>機制：union 是工作集，不是分攤量</h3>
+  <p>原本的假設是：一個 chunk 的 union 被越多 token 共用，就越划算，所以 chunk 越大越快。
+     實測是否證。真正在發生的事是 ——</p>
+  <ul>
+    <li>常駐格數固定（8 GiB 下某些層 143 格、最緊的層 106 格，取 <code>min_layer_slots</code>）。</li>
+    <li>一個 chunk 的 union 寬度 ≈ <code>chunk × top_k</code>，而且因為不同 token 會選到不同 expert，
+        union 的成長實際上<strong>接近線性於 chunk、並且很快逼近上界</strong>（256 experts 中的大量集合）。</li>
+    <li>當 <code>union(chunk)</code> 開始塞不進常駐格，每個 expert 每步都變成 <strong>cold fill</strong>：
+        付的是檔案讀取，不是計算。cap=32 的 0.37 t/s 就是這個狀態。</li>
+  </ul>
+  <div class="highlight">
+    <strong>所以 cap 往下的速度紅利，本質是「把每步的工作集縮小到能全部常駐」。</strong>
+    它買到的不是算術效率，而是<strong>命中率</strong> —— 這也解釋了為什麼它與 pool size 是同一條槓桿的兩端：
+    加大池子（容量）與縮小 chunk（工作集）都會提高命中率，而兩者都會動數值的前提條件（見 §4、§5）。
+  </div>
+
+  <h3>架構地板（不是調參選擇）</h3>
+  <pre>// src/llama.cpp/src/llama-memory-hybrid.cpp:85-89
+// the trailing (1 + n_rs_seq) tokens of each seq must stay in the same ubatch
+const uint32_t n_rs_seq = mem_recr-&gt;n_rs_seq;
+ubatch = balloc.split_equal(n_ubatch, !unified, n_rs_seq &gt; 0 ? n_rs_seq + 1 : 0);
+
+// src/llama.cpp/src/llama-batch.cpp:609
+GGML_ASSERT(n_ubatch &gt; n_keep_tail);</pre>
+  <p>也就是 <code>n_keep_tail = (n_rs_seq &gt; 0) ? n_rs_seq + 1 : 0</code>，故
+     <strong><code>cap ≥ n_rs_seq + 2</code></strong>。</p>
+  <ul>
+    <li><strong>MTP ON</strong>：draft rollback 需要保留遞迴狀態尾窗，<code>n_rs_seq = 3</code> → <code>n_keep_tail = 4</code>
+        → <code>cap ≥ 5</code>。實測 cap=4 <strong>載入即 abort</strong>，cap=5 HEALTHY。
+        harness 取 <code>MIN_CAP = 6</code> 作為餘裕。</li>
+    <li><strong>MTP OFF</strong>：<code>n_rs_seq = 0</code> → <code>n_keep_tail = 0</code> → <strong>沒有地板</strong>，
+        cap=2 可以跑（也就是上表 cap=2 那 17.4 t/s 的來源）。</li>
+  </ul>
+  <p class="footnote">這條地板是<strong>遞迴/線性注意力層的語意</strong>，不是 expert cache 的設計選擇 ——
+     它與池子大小無關，卻直接限制 cap 能降到多低。</p>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<div class="section" id="notknob">
+  <h2>3. 為什麼 cap 不是 prefill 的旋鈕</h2>
+
+  <h3>(a) 因果方向反了：cap 是 pool 的<em>結果</em></h3>
+  <p>pool path 能運作的前提是「這個 step 的 union 全部能放進可用格數」：</p>
+  <pre>cap × top_k  ≤  usable_slots   （= min_layer_slots − 1，ZERO slot 保留）</pre>
+  <p>於是 <code>cap_max ≈ usable_slots / top_k</code>，而 <code>usable_slots ∝ pool_bytes / (層數 × 每 expert 位元組)</code>。
+     <strong>cap 是被池子與模型幾何推導出來的，不是可以獨立給定的自由度。</strong>
+     harness 的 cap 探測因此不是「調參」，而是「找出這個池子還走得通的最大 chunk」。</p>
+
+  <h3>(b) 往上調不是變快，是崩掉</h3>
+  <p>見 §2：cap 32 是 0.37 t/s（比預設慢 <strong>23×</strong>）。這不是「參數調壞了」，是工作集超過常駐容量後的相變 ——
+     從 compute-bound 掉進 per-expert cold fill。曲線上 8 就是那個拐點，而 8 恰好也是預設值。</p>
+
+  <h3>(c) 往下調會撞到架構地板，而且撞到的時候 pool 是「不可用」</h3>
+  <p>當 <code>usable_slots / top_k</code> 掉到 <code>n_rs_seq + 2</code> 以下，這個池子對這顆模型就<strong>完全不能用</strong>：
+     cap 大到能塞進格數的 → 超過容量；cap 小到能塞進容量的 → 違反架構地板。沒有中間解。
+     harness 的診斷訊息就是這個狀態：</p>
+  <pre>{"kind": "iq3", "pool_gb": 2, "cap": null, "min_cap": 6,
+ "error": "pool 2GB holds 34 usable slots: cap 4*8 would fit but cap < 6 aborts at
+           llama-batch.cpp:609 (GGML_ASSERT(n_ubatch > n_keep_tail)) during warmup.
+           This pool is too small for topk=8."}</pre>
+
+  <h3>結論</h3>
+  <div class="highlight">
+    <strong>prefill 的真正旋鈕不是 cap。</strong> cap 只回答一個是非題：<em>「pool path 還走不走得通，以及每步的工作集多小」</em>。
+     prefill 的量級空間在另一件事上 —— <strong>整層順序串流（M2 的 whole-layer prefill）</strong>，
+     也就是「一次把該層需要的 expert 連續讀進來」，把 1626 次隨機讀換成順序讀。
+     cap 曲線只能在這條曲線上移動一個點（而且往上一定更差）；它不是提升 prefill 的自由度。
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<div class="section" id="localize">
+  <h2>4. cap invariance 失效的定位</h2>
+  <p>問題是：<em>「哪一步讓 logits 改變？把 pool path 與 gather path 的專家歸約順序統一（例如按 expert id 排序）會不會讓 cap invariance 回到 M1 = 100%？」</em></p>
+  <p><strong>答案：分歧出現在<em>第一個 chunk 大小不同的 prefill step</em>，而上述修法<em>完全無效</em>。</strong>
+     以下是三臂實驗。</p>
+
+  <h3>三臂，只差 prefill step partition</h3>
+  <table>
+    <thead><tr><th>arm</th><th>pool 幾何</th><th>prefill partition（實測）</th><th class="num">pos=59 argmax</th></tr></thead>
+    <tbody>
+      <tr><td><code>cap5</code></td><td>cap-5</td><td><code>2x1, 5x11</code></td><td class="num"><strong>198</strong></td></tr>
+      <tr><td><code>cap8</code></td><td>cap-8</td><td><code>2x1, 8x6, 4x3</code></td><td class="num"><strong>271</strong></td></tr>
+      <tr style="background:rgba(251,191,36,0.07);"><td><code>iso = cap8 + -ub 5</code></td><td><strong>cap-8</strong></td><td><code>2x1,5x1,3x1,5x1,…</code>（5,3,5,3…）</td><td class="num"><strong>95772</strong></td></tr>
+    </tbody>
+  </table>
+  <p><code>iso</code> 保有 <strong>cap-8 的池子幾何</strong>，只把 chunk 換成 cap-5 大小 —— 它誰都不等。
+     <strong>三個 partition → 三個不同答案。</strong></p>
+
+  <h3>分歧位置：最後一個 prefill 輸出</h3>
+  <pre>=== cap5 vs cap8   common rows: 391
+  M1 (row bits)     : 1/391          ← 只有 pmax=1（warmup）位元相同
+  M2 (argmax_token) : 17/391
+  first M1 divergence: pos=59  ntok=1  DEF
+      sum -586802.375 vs -603048.726   argmax 198 vs 271</pre>
+  <p><code>pos=59</code> 是<strong>最後一個 prompt 位置</strong> —— 分歧已經在 prefill 的輸出裡。
+     之後沒有任何一個 decode step 位元相同，因為生成已經岔開。</p>
+
+  <h3>而且不是捨入</h3>
+  <table>
+    <thead><tr><th class="num">token</th><th class="num">cap5</th><th class="num">cap8</th><th class="num">Δ</th></tr></thead>
+    <tbody>
+      <tr><td class="num">96608</td><td class="num">9.826461</td><td class="num">8.761765</td><td class="num"><strong>+1.065</strong></td></tr>
+      <tr><td class="num">271</td><td class="num">10.282467</td><td class="num">11.217863</td><td class="num">−0.935</td></tr>
+      <tr><td class="num">198</td><td class="num">10.291896</td><td class="num">10.917831</td><td class="num">−0.626</td></tr>
+      <tr><td class="num">95772</td><td class="num">10.095130</td><td class="num">9.530836</td><td class="num">+0.564</td></tr>
+    </tbody>
+  </table>
+  <p>~1 logit 的差距需要 ~0.1 的相對 hidden-state 差，不是 ulp。<strong>某個離散決策翻面了，然後級聯。</strong></p>
+
+  <h3>哪一層</h3>
+  <pre> il  cap5                             cap8                             iso(cap8,ub5)
+  0  [38,21,114,182,163,77,24,60] = [38,21,114,182,163,77,24,60] = [38,21,114,182,163,77,24,60]  ← 三臂一致
+  1  [181,110,42,170,138,51,136,148]  [193,42,238,148,138,181,136,18]  [249,205,148,193,42,142,170,18]
+  2  [27,117,135,255,187,222,57,233]   [255,172,123,222,233,135,27,200]  [172,57,253,121,222,87,233,10]</pre>
+  <p><strong>layer 0 routing 三臂完全相同，layer 1 就三分裂。</strong>
+     layer 0 是 GatedDeltaNet（線性注意力）層（<code>full_attention_interval = 4</code>）——
+     序列掃描加上其周圍批次形狀相依的投影，正是 partition 敏感的那一塊。
+     擾動在 layer 0 的計算裡被引入：小到不足以翻掉 layer 0 自己的 router，大到足以翻掉 layer 1 的。</p>
+
+  <h3>為什麼「統一歸約順序」無效</h3>
+  <pre>=== gather 使用量，每一臂的每一層 ===
+  cap5:  407× "gather=0/8",  1× "gather=0/9"
+  cap8:  391× "gather=0/8",  1× "gather=0/9"
+  iso :  231× "gather=0/8",  1× "gather=0/9"</pre>
+  <ol>
+    <li><strong><code>gather=0</code> everywhere。</strong> 沒有任何一層走到 gather path。
+        cap5 最大 union 40、cap8 是 64，對上該層 <strong>143 可用格</strong>
+        （<code>min_layer_slots</code> 在 8 GiB 下是 106，最緊的層才是約束 —— 但即使取 106，64 也遠低於它），
+        兩者都穩穩在 pool path。
+        → <strong>沒有 pool↔gather 切換可以統一。</strong></li>
+    <li><strong>歸約順序已經是 cap 無關的。</strong> <code>llama-graph.cpp</code> 的
+        <code>moe_out = cur_experts[0] + cur_experts[1] + … + cur_experts[K-1]</code>
+        沿著 <em>k</em> 序（router top-k 的順序）累加，不是 slot 序、也不是 sorted-union 序。
+        layer 0 三臂的 <em>k</em> 序完全相同。</li>
+  </ol>
+  <div class="danger">
+    <strong>結論：</strong>這個失效模式與 expert reduction 無關，也與 pool↔gather 無關。
+    按 expert id 重排歸約<strong>不會改變任何一個位元</strong>。
+  </div>
+
+  <h3>真正的機制鏈</h3>
+  <pre>CGC_POOL_MAX_TOKENS
+  → clamp 到 n_batch → n_ubatch = min(n_batch, params.n_ubatch)
+  → prefill 的 step partition 改變（5,5,5… vs 8,8,8… vs 5,3,5,3…）
+  → 批次形狀相依的 kernel / 縮減順序改變
+  → ulp 級差異
+  → 某層 router 的 top-k 翻面（離散）
+  → 隱藏狀態 ~0.1 相對差
+  → ~1 logit 的輸出差 → 不同的 token → 生成完全岔開</pre>
+  <p class="footnote">注意：鏈條的前半段（partition → ulp）不是 bug，是「不同的 forward pass」。
+     模型的 forward 不對 partition 不變，這是模型與 kernel 的性質，不是 expert cache 能修的。</p>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<div class="section" id="twoinvar">
+  <h2>5. 兩個不變性必須分開</h2>
+  <p>把「池子變大不該動數值」與「cap 變了不該動數值」當成同一件事，是這個題目最大的混淆源。
+     它們的實測結果相反。</p>
+
+  <table>
+    <thead><tr>
+      <th>不變性</th><th>固定什麼、變什麼</th><th class="num">M1（row bits）</th><th class="num">M2（argmax）</th><th>判定</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>pool-layout invariance</strong><br><span class="footnote">產品真正要的</span></td>
+        <td>固定 cap = 8<br>pool 4 / 6 / 8 GiB（三對）</td>
+        <td class="num"><strong>117/117</strong></td><td class="num"><strong>117/117</strong></td>
+        <td><span class="badge badge-success">PASS</span></td>
+      </tr>
+      <tr>
+        <td><strong>pool-layout invariance</strong><br><span class="footnote">在另一個 cap 上重驗</span></td>
+        <td>固定 cap = 6<br>pool 4 / 6 / 8 GiB（三對）</td>
+        <td class="num"><strong>103/103</strong></td><td class="num"><strong>103/103</strong></td>
+        <td><span class="badge badge-success">PASS</span></td>
+      </tr>
+      <tr>
+        <td><strong>cap invariance</strong><br><span class="footnote">其實是 partition invariance</span></td>
+        <td>固定 pool = 8 GiB<br>cap 6 vs cap 8</td>
+        <td class="num">3/103 · 1/391 · 2/29</td><td class="num">12/103 · 17/391 · 7/29</td>
+        <td><span class="badge badge-danger">FAIL（但理由不是佈局）</span></td>
+      </tr>
+      <tr>
+        <td><strong>決定性對照組</strong></td>
+        <td>同 cap = 8，兩個獨立行程</td>
+        <td class="num">35/35</td><td class="num">35/35</td>
+        <td><span class="badge badge-success">PASS</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>最乾淨的一組：同一個 build、兩個獨立的 pool 掃描</h3>
+  <p>下面兩個掃描來自<strong>同一個 engine stamp</strong>（<code>source_digest e50eb794…</code>），各自在一個固定 cap 上
+     跑三顆池子。因為列序也相同（同 cap → 同 chunking → 同 rollback 模式），
+     可以<strong>逐一列</strong>比對，不需任何對齊假設。</p>
+  <pre>=== cap = 8，pool 4 / 6 / 8 GiB（三對）===
+  pool4 vs pool6   rows 117/117  M1 117/117  M2 117/117  M3 117/117  PASS
+  pool4 vs pool8   rows 117/117  M1 117/117  M2 117/117  M3 117/117  PASS
+  pool6 vs pool8   rows 117/117  M1 117/117  M2 117/117  M3 117/117  PASS
+
+=== cap = 6，pool 4 / 6 / 8 GiB（三對）===
+  pool4 vs pool6   rows 103/103  M1 103/103  M2 103/103  M3 103/103  PASS
+  pool4 vs pool8   rows 103/103  M1 103/103  M2 103/103  M3 103/103  PASS
+  pool6 vs pool8   rows 103/103  M1 103/103  M2 103/103  M3 103/103  PASS
+
+=== 同一個 build、同一個 pool，只換 cap ===
+  pool8 cap6 vs cap8   rows 103/117  M1 3/103  M2 12/103  M3 3/103  FAIL</pre>
+  <div class="ok">
+    <strong>好消息：</strong>原始的產品目標 ——「4 GB / 6 GB / 8 GB 跑出來要 byte-identical，只是速度不同」——
+    在<strong>固定 cap</strong> 的前提下<strong>已經達成，而且在兩個不同的 cap 上各驗一次</strong>（117/117 與 103/103），
+    涵蓋 DEF（target）與 MTP（draft head）兩種 context。
+    決定性對照組（同 cap 兩次獨立行程 PASS）也證明引擎本身可重現。<br>
+    <strong>而同一組 dump 裡換 cap 就是 3/103</strong> —— 這四行放在一起，就把「pool 佈局」與「step partition」兩件事徹底分開了。
+    早一輪的跨 build dump（pool 2/4/6/10 對 8）也都是 117/117，作為旁證一致，但因跨了 build，不當主證。
+  </div>
+
+  <h3>閘門現在會自我解釋</h3>
+  <p><code>knifeedge_matrix.py</code> 新增 <code>step_partition()</code>：把每臂的 prefill <code>ntok</code> 序列
+     做成 run-length 記進 record，並在每個 pair 上寫 <code>attribution</code>，直接說明<em>哪個旋鈕動了</em>：</p>
+  <pre>config                           pool   capA   capB  verdict  M1 bit-id    M2 argmax     cover   partn
+capinv_iq3_pool8gb                 8G      8      8     PASS      35/35        35/35      100%     n/a
+capinv_iq3_pool8gb                 8G      6      8     FAIL       2/29         7/29       94%    diff
+
+partn = prefill step partition, same/diff. diff => the two caps ran different forward
+        passes, so the row is NOT a statement about pool layout.</pre>
+  <p>判定邏輯（PASS / DRIFT / FAIL / INCONCLUSIVE / REFUSED）沒有改動，只有解釋變明確。</p>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<div class="section" id="crossmodel">
+  <h2>6. 跨模型：哪個前提先失效</h2>
+  <p>把整個機制拆成四條前提，然後問「換一顆模型時，哪一條先斷」。答案不是靠推論，是靠 cap 探測的實測幾何。</p>
+
+  <h3>四條前提</h3>
+  <table>
+    <thead><tr><th>#</th><th>前提</th><th>形式</th><th>斷掉的後果</th></tr></thead>
+    <tbody>
+      <tr><td><strong>P1</strong></td><td>槽位容量</td>
+          <td><code>cap × top_k ≤ usable_slots</code></td>
+          <td><span class="badge badge-danger">pool 不可用</span>（不是變慢）</td></tr>
+      <tr><td><strong>P2</strong></td><td>架構地板</td>
+          <td><code>cap ≥ n_rs_seq + 2</code>（MTP ON 時 = 5）</td>
+          <td><span class="badge badge-danger">載入即 abort</span></td></tr>
+      <tr><td><strong>P3</strong></td><td>佈局無關</td>
+          <td>固定 cap，pool size 變化 → 位元相同</td>
+          <td><span class="badge badge-success">已成立</span>（同一 build、兩個 cap 上各驗一次：117/117 與 103/103）</td></tr>
+      <tr><td><strong>P4</strong></td><td>partition 無關</td>
+          <td>不同 cap → 位元相同</td>
+          <td><span class="badge badge-warning">不成立，且跨模型都不成立</span>（模型自身性質）</td></tr>
+    </tbody>
+  </table>
+
+  <h3>實測幾何（cap 探測記錄，<code>topk = 8</code> 全部相同）</h3>
+  <table>
+    <thead><tr>
+      <th>模型</th><th class="num">檔案大小</th><th class="num">pool</th>
+      <th class="num">n_slots（最緊層）</th><th class="num">usable</th>
+      <th class="num">cap 8 放得下？</th><th class="num">選定 cap</th><th class="num">headroom</th>
+      <th>先斷的前提</th>
+    </tr></thead>
+    <tbody>
+      <tr style="background:rgba(239,68,68,0.07);">
+        <td>Nail IQ3_XXS</td><td class="num">13.66 GB</td><td class="num">2 GiB</td>
+        <td class="num">35</td><td class="num">34</td>
+        <td class="num">✗（−30）</td><td class="num"><strong>null</strong></td><td class="num">−30</td>
+        <td><span class="badge badge-danger">P1</span> cap 4×8 擠得下，但 4 &lt; 地板 5 → <strong>池子太小</strong></td>
+      </tr>
+      <tr><td>Nail IQ3_XXS</td><td class="num">13.66 GB</td><td class="num">4 GiB</td>
+          <td class="num">71</td><td class="num">70</td><td class="num">✓</td><td class="num">8</td><td class="num">+6</td>
+          <td><span class="badge badge-muted">—（P1 勉強過）</span></td></tr>
+      <tr><td>Nail IQ3_XXS</td><td class="num">13.66 GB</td><td class="num">6 GiB</td>
+          <td class="num">107</td><td class="num">106</td><td class="num">✓</td><td class="num">8</td><td class="num">+42</td>
+          <td><span class="badge badge-muted">—</span></td></tr>
+      <tr><td>Nail IQ3_XXS</td><td class="num">13.66 GB</td><td class="num">8 GiB</td>
+          <td class="num">106</td><td class="num">105</td><td class="num">✓</td><td class="num">8</td><td class="num">+41</td>
+          <td><span class="badge badge-muted">—</span></td></tr>
+      <tr><td>Qwen3.6 UD-IQ4_XS</td><td class="num">18.2 GB</td><td class="num">4 GiB</td>
+          <td class="num">53</td><td class="num">52</td><td class="num">—</td><td class="num"><strong>6</strong></td><td class="num">+4</td>
+          <td><span class="badge badge-warning">P1 逼近</span>（cap 8 需要 64 &gt; 52）</td></tr>
+      <tr style="background:rgba(251,191,36,0.07);">
+        <td><strong>Ornith 1.5 35B</strong></td><td class="num">16 GB</td><td class="num">4 GiB</td>
+          <td class="num">59</td><td class="num">58</td><td class="num">✗（−6）</td><td class="num"><strong>7</strong></td><td class="num">+2</td>
+          <td><span class="badge badge-warning">P1 就在邊緣</span>（cap 8 差 6 格）</td></tr>
+    </tbody>
+  </table>
+
+  <h3>判讀</h3>
+  <ol>
+    <li><strong>先斷的永遠是 P1（槽位容量）。</strong> 它與
+        <code>層數 × 每 expert 位元組 × top_k / pool_bytes</code> 成正比。
+        Ornith 在同一顆 4 GiB 池子上只拿到 cap 7（headroom +2），IQ4_XS 拿到 cap 6，
+        而 Nail IQ3 拿到 cap 8 —— 差別全在每 expert 位元組。
+        <strong>換一顆 expert 更大的模型，同一顆池子的可用 cap 會先掉。</strong></li>
+    <li><strong>P1 斷掉的後果是「池子不可用」，不是「比較慢」。</strong>
+        Nail IQ3 在 2 GiB 是 <code>cap = null</code>：能塞進格數的 cap 違反架構地板，反之亦然。
+        這是<strong>離散</strong>的失效，沒有中間的降級解 —— 除非 gather/streaming 路徑可用（目前 <code>gather=0</code>，不可用）。</li>
+    <li><strong>P2 是硬地板，與池子無關，但 MTP 會把它從 0 抬到 5。</strong>
+        這意味著「開啟 MTP」會<em>同時</em>抬高 cap 下限（P2）與 union 需求（verify batch 4 tokens），
+        所以小池子 + MTP 是最容易兩頭夾殺的組合。這是為什麼 cap 探測記錄裡
+        <code>min_cap</code> 全場都是 6。</li>
+    <li><strong>P3 目前成立，而且是唯一真正需要的。</strong> 但要注意它成立的前提是「cap 不變」——
+        一旦 cap 因為池子變小而被迫下降（P1 逼的），P3 的實驗條件就不再是「只變池子」了，
+        這時候看到的差異是 P4（partition），不是佈局。<strong>這是跨模型最容易被誤讀的陷阱。</strong></li>
+    <li><strong>P4 從來不成立，而且不可能靠 expert cache 修好。</strong> 它斷言的是「模型自身的 forward 對
+        step partition 不變」，而實測三種 partition 給三個答案。跨模型都一樣。</li>
+  </ol>
+
+  <div class="warning">
+    <strong>跨模型的正確問法不是「pool 4/6/8/10 是否 bit-identical」，而是
+    「在這個模型 + 這個池子上，<em>usable_slots / top_k</em> 是否仍 ≥ 5（MTP ON）」。</strong>
+    若否，這個 (模型, 池子) 組合根本不在可比較的範圍內，硬比就是在比兩個不同的模型路徑。
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<div class="section" id="decide">
+  <h2>7. 決策建議</h2>
+  <table>
+    <thead><tr><th>選項</th><th>內容</th><th>成本</th><th>建議</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>A. 校正標籤</strong></td>
+        <td>把 cap invariance 從「要求」改為「partition 敏感度報告」；
+            pool-layout invariance（固定 cap、變池子）才是閘門。</td>
+        <td>已完成（閘門會印 partition + attribution）</td>
+        <td><span class="badge badge-success">採用</span></td>
+      </tr>
+      <tr>
+        <td><strong>B. 解耦 partition 與 cap</strong></td>
+        <td>M1 工作項 1（<code>CGC_POOL_SPLIT</code>）的意圖，也是唯一能讓 P4 成立的架構路線。</td>
+        <td>已實作、已量測、<strong>已否證</strong>：full-width expert tensor 走 Metal wide path 會 fault；
+            且小池子在原理上不可能（一步的 union 必須整批放進池子）。</td>
+        <td><span class="badge badge-danger">不做</span></td>
+      </tr>
+      <tr>
+        <td><strong>C. 讓 forward 對 partition 不變</strong></td>
+        <td>強制每個 per-token 縮減的結合順序與 batch 寬度無關（40 層，含 GDN 掃描）。</td>
+        <td>不是局部改動，且要付速度代價</td>
+        <td><span class="badge badge-muted">不做</span></td>
+      </tr>
+      <tr>
+        <td><strong>D. 固定 cap、只掃 pool</strong></td>
+        <td>把 cap 視為由池子推導、不可獨立指定的量；實驗只掃 pool size。</td>
+        <td>零；這已經是通過的配置</td>
+        <td><span class="badge badge-success">採用（操作準則）</span></td>
+      </tr>
+      <tr>
+        <td><strong>E. prefill 真正的槓桿</strong></td>
+        <td>整層順序串流（把 1626 次隨機讀換成順序大讀）；這與 cap 曲線正交。</td>
+        <td>需要先修好 whole-layer 量測盲區</td>
+        <td><span class="badge badge-info">下一步</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>操作準則（給之後的每一次掃描）</h3>
+  <ol>
+    <li><strong>先算 P1，再開機。</strong> 用 cap 探測（或 <code>usable_slots / top_k</code>）確認這顆池子走得通，
+        而不是先跑再說。</li>
+    <li><strong>掃 pool 時把 cap 釘住。</strong> 若 cap 必須變（因為 P1 逼的），那次掃描就不是「pool 掃描」，
+        要在報告裡改名。</li>
+    <li><strong>PASS 只在 <code>partn = same</code> 時才有意義。</strong> 閘門已經會標。</li>
+    <li><strong>不要把 <code>cap = 5</code> 那 +13–15% 當成可用的效能紅利。</strong>
+        它確實更快，但它換掉的是 partition，代價是 M1 1/391。</li>
+  </ol>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<div class="section" id="honest">
+  <h2>8. 誠實標註與重現</h2>
+
+  <h3>這份白皮書<em>沒有</em>主張的事</h3>
+  <ul>
+    <li><strong>沒有中間 activation dump。</strong> 「擾動起源於 layer 0」是從
+        「三臂 layer 0 routing 相同、layer 1 三分裂」推論的，不是直接量到的。
+        直接的因果位置（attention 還是 MoE、哪個 kernel）沒有量。</li>
+    <li><strong>M1 只在 cap 6 vs 8、cap 5 vs 8 驗過，不是每個 cap。</strong>
+        cap=5 那格用的是舊的 ubatch 對齊（M1 3/82），已被正確對齊的 1/391、2/29 取代。
+        pool 不變性那組用的是 <strong>MTP ON</strong> 的既有 dump（既存產物，不是為本文件新跑的），
+        其中主證（<code>e50eb794</code>，cap 8 與 cap 6 各三對）是同一個 engine stamp，但
+        <strong>不是同一個行程連續跑出來的</strong> —— 每一格都是一顆新 server；
+        「同一 (cap, pool) 重跑兩次」的獨立行程對照由閘門的 <code>8,8</code> 控制組負責（35/35 PASS）。</li>
+    <li><strong>長文的定位與 harness 探針的 partition 形狀不同。</strong>
+        harness 探針較短，會出現 <code>n_keep_tail</code> 造成的長 <code>4xN</code> 尾巴
+        （例如 <code>2x1,6x3,2x2,4x8</code>），與 §4 的 <code>2x1,5x11</code> 不是同一串。
+        結論依賴的是<em>方向</em>（partition 不同 → 輸出不同；partition 相同 → bit-identical），兩份資料都支持這點。</li>
+    <li><strong>cap 曲線是單一模型、單一池子（8 GiB）、MTP OFF 的量測。</strong>
+        cap=2 那格只在 MTP OFF 下存在（P2 地板）。曲線的<em>形狀</em>（8 是拐點）在 3 次獨立重測下可重現到 ~1%，
+        但沒有在別顆模型上重跑。</li>
+    <li><strong>六格矩陣的 prefill/decode 絕對值受機器狀態影響</strong>（page cache、swap、其他 agent）。
+        這份文件引用的是<em>同一臂內</em>的相對值與 bit-identical 判定，不是絕對 t/s 的排名。</li>
+  </ul>
+
+  <h3>重現指令</h3>
+  <pre>cd /Users/alexchuang/Documents/flashkv-devserver
+
+# 1) cap invariance 閘門（會記錄並印出每臂的 prefill step partition 與 attribution）
+python3 scripts/check/knifeedge_matrix.py --cap-invariance \
+    --models iq3 --pools 8 --cap-invariance-caps 6,8
+
+#   決定性對照組：同一 cap 開兩個獨立行程（應該 PASS）
+python3 scripts/check/knifeedge_matrix.py --cap-invariance \
+    --models iq3 --pools 8 --cap-invariance-caps 8,8
+
+# 2) 隔離臂：cap-8 幾何、cap-5 大小的 chunk（partition 會是 5,3,5,3…）
+python3 .tmp_cap_iso.py 8 5 iso
+
+# 3) 在「真實序列位置」上比較任兩份 dump，M1 與 M2 分開報
+python3 .tmp_cap_iso_cmp.py /tmp/capinf_5.jsonl /tmp/capiso_iso.jsonl cap5 iso
+
+# 4) pool-layout invariance（固定 cap，變池子）—— 閘門已內建
+python3 scripts/check/knifeedge_matrix.py --gates-only --models iq3 --pools 4,6,8
+
+#    或逐一列比對既有 dump（同 cap 時列序也相同，不需任何對齊假設，這是最嚴格的比法）
+python3 - &lt;&lt;'PY'
+import glob, json, os, re
+B = "Backup/knifeedge_matrix"
+L = lambda p: [json.loads(l) for l in open(p)]
+def m1(a, b):
+    n = min(len(a), len(b))
+    return sum(a[i]["row_fnv1a64"] == b[i]["row_fnv1a64"] for i in range(n)), n
+# 主證：同一 engine stamp (e50eb794)，cap 8 與 cap 6 各三顆池子
+groups = {"cap8": sorted(glob.glob(f"{B}/oracle_iq3_pool?gb_cap8_inv*.jsonl")),
+           "cap6": sorted(glob.glob(f"{B}/oracle_iq3_pool?gb_inv?gb.jsonl"))}
+for cap, files in groups.items():
+    print(f"--- {cap}")
+    for f in files:
+        print(f"    {os.path.basename(f):<44} rows={len(L(f))}")
+    for i in range(len(files)):
+        for j in range(i + 1, len(files)):
+            e, n = m1(L(files[i]), L(files[j]))
+            print(f"    {os.path.basename(files[i])[:22]:<24} vs "
+                  f"{os.path.basename(files[j])[:22]:<24} M1 {e}/{n}")
+# 反例：同 build、同 pool，只換 cap
+f6 = f"{B}/oracle_iq3_pool8gb_inv8gb.jsonl"
+f8 = f"{B}/oracle_iq3_pool8gb_cap8_inv8gb.jsonl"
+e, n = m1(L(f6), L(f8))
+print(f"--- same pool, cap 6 vs cap 8: M1 {e}/{n}  (expected to FAIL)")
+PY</pre>
+
+  <h3>證據檔案</h3>
+  <table>
+    <thead><tr><th>內容</th><th>路徑</th></tr></thead>
+    <tbody>
+      <tr><td>cap 曲線原始量測</td><td><code>Backup/cgc_logs/m1_cap_sweep_evidence_20260914.txt</code></td></tr>
+      <tr><td>三臂 CGC-IDS / union 日誌</td><td><code>Backup/cgc_logs/llama_server_20260914_101328.log</code>（cap5）·
+          <code>…_101703.log</code>（cap8）· <code>…_102255.log</code>（iso）</td></tr>
+      <tr><td>三臂 oracle dump</td><td><code>/tmp/capinf_{5,8}.jsonl</code> · <code>/tmp/capiso_iso.jsonl</code></td></tr>
+      <tr><td>閘門記錄（含 partition / attribution）</td>
+          <td><code>Backup/knifeedge_matrix/capinv_iq3_pool8gb.json</code> ·
+              <code>cap_invariance.json</code></td></tr>
+      <tr><td>跨模型 cap 探測幾何</td><td><code>Backup/knifeedge_matrix/cap_probe_*.json</code></td></tr>
+      <tr><td>pool 不變性 dump（主證：同一 build，cap 8 與 cap 6 各三顆池子）</td>
+          <td><code>Backup/knifeedge_matrix/oracle_iq3_pool{4,6,8}gb_cap8_inv*.jsonl</code>（117 列）<br>
+              <code>…_pool{4,6,8}gb_inv*.jsonl</code>（103 列，cap 6）</td></tr>
+      <tr><td>旁證：早期跨 build 的 pool dump</td>
+          <td><code>Backup/knifeedge_matrix/oracle_iq3_pool{2,4,6,8,10}gb.jsonl</code>
+              （兩個不同 <code>source_digest</code>，全部 117/117；見 §8 限制）</td></tr>
+      <tr><td>配套文件</td><td><code>docs/CAP_INVARIANCE_LOCALIZATION_2026-09-14.md</code> ·
+          <code>docs/CAP_INVARIANCE_GATE_2026-09-14.md</code>（含 CORRECTION 區塊）·
+          <code>docs/M1_POOL_SPLIT_COST_2026-09-14.md</code></td></tr>
+    </tbody>
+  </table>
+
+  <p class="footnote">引擎 <code>e8b85393d</code>；本文件所有量測在<strong>未改動 binary</strong> 的前提下完成
+     （閘門的 partition 記錄是 harness 端的改動）。<code>Backup/</code> 為 gitignored，數字已抄進本文件與上述 markdown。</p>
+</div>
+
+</div>
+</body>
+</html>

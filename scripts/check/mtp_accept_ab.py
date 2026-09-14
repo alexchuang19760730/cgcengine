@@ -30,6 +30,7 @@ USAGE
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -43,6 +44,64 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 GATE = ROOT / "scripts" / "check" / "mtp_head_identity.py"
 LOGDIR = ROOT / "Backup" / "cgc_logs"
+SERVER_BIN = ROOT / "src" / "llama.cpp" / "build" / "bin" / "llama-server"
+
+
+def _file_digest(path, sample_size=65536):
+    """Size + first/last 64KiB hash. Same sampling as knifeedge_matrix / pool_curve:
+    a full sha256 of a 13GB file is too slow for every arm, and the head/tail sample
+    catches every real-world swap."""
+    p = Path(path)
+    if not p.exists():
+        return None
+    size = p.stat().st_size
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        h.update(f.read(sample_size))
+        if size > sample_size * 2:
+            f.seek(-sample_size, 2)
+            h.update(f.read(sample_size))
+    return {"size": size, "head_hash": h.hexdigest()[:16]}
+
+
+def _facts_from_log(logpath: Path) -> dict:
+    """Extract min_layer_slots / n_slots from the server log, same fields
+    knifeedge_matrix.read_launch_facts() reads. Kept local so mtp_accept_ab
+    does not grow a dependency on the matrix harness's globals."""
+    facts = {}
+    try:
+        text = logpath.read_text(errors="replace")
+    except OSError:
+        return facts
+    for pat, key in ((r"min (\d+)/layer", "min_layer_slots"),
+                     (r"n_slots[= ]+(\d+)", "n_slots")):
+        m = re.search(pat, text)
+        if m:
+            facts[key] = int(m.group(1))
+    return facts
+
+
+def record_provenance(label: str, model: Path, pool_gb: float, mtp: str,
+                      extra_env, logpath: Path) -> dict:
+    """Provenance for one MTP accept arm. Same philosophy as knifeedge_matrix:
+    the result carries enough identity that two arms measured weeks apart can
+    be certified comparable -- or refused.
+
+    The MTP-specific fields (mtp flag, head identity via the model path) are
+    what make an accept rate attributable: a 60% accept from a dead head is
+    not the same measurement as 60% from a live one."""
+    pool = {"gb": float(pool_gb), "bytes": int(pool_gb * 1024 ** 3)}
+    facts = _facts_from_log(logpath)
+    if facts:
+        pool["launched_min_layer_slots"] = facts.get("min_layer_slots")
+        pool["launched_n_slots"] = facts.get("n_slots")
+    return {"when": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "arm": label,
+            "pool": pool,
+            "model": {"name": model.name, "realpath": str(model.resolve()),
+                      **(_file_digest(model) or {})},
+            "binary": {"path": str(SERVER_BIN), **(_file_digest(SERVER_BIN) or {})},
+            "launch": {"mtp": mtp, "extra_env": sorted(extra_env or [])}}
 
 # The three carriers that matter, and why each one is here:
 #   nail      -- the known-good pair (Nail's own head on Nail's own base). This is the
@@ -288,6 +347,12 @@ def measure(label: str, model: Path, pool_gb: float, port: int, n_predict: int,
         "decode_tps_mean": sum(dec) / len(dec) if dec else None,
         "prefill_tps_mean": sum(pre) / len(pre) if pre else None,
         "requests": reqs,
+        # Provenance: stamped with the log still warm so it carries the launched
+        # slot counts. An accept rate without this is unattributable -- the same
+        # number from a different (base, head) pair or a different loader is not
+        # the same measurement, and the roadmap's M4 exit depends on being able
+        # to prove which pair produced it.
+        "provenance": record_provenance(label, model, pool_gb, mtp, extra_env, logpath),
     }
 
 

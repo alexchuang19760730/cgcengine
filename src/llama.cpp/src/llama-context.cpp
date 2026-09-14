@@ -260,13 +260,34 @@ llama_context::llama_context(
     // cgc_pool_max_tokens() so speculative/MTP verify batches (n_max+1 <= cap) flow through the pool
     // path, while still bounding every step to the pool (never the full model). Chunked callers
     // (mtmd, warmup) must read the capped value via llama_n_batch().
-    if (model.expert_cache_pool_capacity > 0 && cparams.n_batch > 1) {
+    // [CGC M1 work item 1 CGC_POOL_SPLIT, 2026-09-14] The clamp is NOT lifted for an owned pool.
+    // The temptation was: with the expert tensors left full width, a wide batch's router ids are in
+    // range by construction, so the clamp's stated reason disappears. Measured, it does not:
+    // lifting it produced a `ntok=16 mode=wide ne2=256` build whose Metal encoder faulted, and the
+    // hook at il=2 then reported router ids that are the bit pattern of a NaN. The wide path means
+    // Metal reading a 256-expert tensor through the model's weight buffer, which is the exact
+    // configuration this engine's loader shrink exists to avoid (docs/M1_POOL_GRAPH_DECOUPLE_PLAN
+    // §1.1: `buffer is nil`, and the earlier P1 mmap-stream residency explosion). Keeping the clamp
+    // means every step -- decode, MTP verify, prefill chunk -- runs the pool path, which is the only
+    // expert-weight path Metal is known to read correctly here. Prefill chunk size therefore remains
+    // bounded by the pool capacity, exactly as in the legacy (shrunk-tensor) mode.
+    // [CGC M2 prefill streaming 2026-09-14] When CGC_PREFILL_STREAM=1 the whole-layer slab path
+    // serves large prefill chunks (expert weights are read straight from the GGUF into a transient
+    // Metal slab, ne[2]=n_expert, remap ids are raw expert ids), so the shrunk-tensor OOB reason
+    // for the clamp no longer applies. Decode / MTP verify still run n_tokens<=pmax through the
+    // pool path; only prefill chunks exceed it. Leave the clamp in place for every other config.
+    static const bool cgc_prefill_stream = getenv("CGC_PREFILL_STREAM") != nullptr
+            && getenv("CGC_PREFILL_STREAM")[0] != '0';
+    if (model.expert_cache_pool_capacity > 0 && cparams.n_batch > 1 && !cgc_prefill_stream) {
         const uint32_t pmax = cgc_pool_max_tokens();
         if (cparams.n_batch > pmax) {
             cparams.n_batch = pmax;
             LLAMA_LOG_INFO("%s: L4 pool capacity=%zu -> n_batch capped to %u (multi-token pool path up to %u tokens; larger batches read shrunk tensors OOB)\n",
                     __func__, model.expert_cache_pool_capacity, pmax, pmax);
         }
+    }
+    if (cgc_prefill_stream && model.expert_cache_pool_capacity > 0) {
+        LLAMA_LOG_INFO("%s: CGC_PREFILL_STREAM=1 -> n_batch NOT capped (prefill chunks use whole-layer slab path)\n", __func__);
     }
 
     cparams.n_ubatch = std::min(cparams.n_batch, params.n_ubatch == 0 ? params.n_batch : params.n_ubatch);
@@ -1575,16 +1596,20 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         // step's graph, so every freshly built graph starts from the full original weights.
         // decode (n_tokens == 1) re-points them at the pool regions in graph_get_cb
         // (ffn_moe_topk_remap), while prefill computes over the full expert weights.
-        for (auto it = cache_orig.begin(); it != cache_orig.end(); ) {
-            auto it_ffn = cache_ffn_tensors.find(it->first.first);
-            if (it_ffn != cache_ffn_tensors.end() && (size_t) it->first.second < it_ffn->second.size()) {
-                ggml_tensor * wt = it_ffn->second[it->first.second];
-                if (wt != nullptr) {
-                    wt->data = it->second;
+    for (auto it = cache_orig.begin(); it != cache_orig.end(); ) {
+        auto it_ffn = cache_ffn_tensors.find(it->first.first);
+        if (it_ffn != cache_ffn_tensors.end() && (size_t) it->first.second < it_ffn->second.size()) {
+            ggml_tensor * wt = it_ffn->second[it->first.second];
+            if (wt != nullptr) {
+                wt->data = it->second;
+                if (getenv("CGC_POOL_SPLIT_DBG") != nullptr && strstr(wt->name, "_exps") != nullptr) {
+                    fprintf(stderr, "CGC-POOL-SPLIT-RESTORE-data: %s wt=%p data=%p\n",
+                            wt->name, (void *) wt, wt->data);
                 }
             }
-            it = cache_orig.erase(it);
         }
+        it = cache_orig.erase(it);
+    }
 
         // [CGC M1 Metal slab 2026-09-14] restore ne[2] for the FFN tensors the gather path
         // resized. Same lifecycle as cache_orig: written during the step's eval hook, put back
@@ -1599,6 +1624,10 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
                     if (it_buf != cache_gather_orig_buf.end()) {
                         wt->buffer = it_buf->second;
                         cache_gather_orig_buf.erase(it_buf);
+                    }
+                    if (getenv("CGC_POOL_SPLIT_DBG") != nullptr && strstr(wt->name, "_exps") != nullptr) {
+                        fprintf(stderr, "CGC-POOL-SPLIT-RESTORE-geom: %s wt=%p ne2=%lld buf=%p\n",
+                                wt->name, (void *) wt, (long long) wt->ne[2], (void *) wt->buffer);
                     }
                 }
             }
@@ -4071,8 +4100,80 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
     // cgc_pool_max_tokens()), so there is nothing to fill here. Small multi-token batches
     // (speculative/MTP verify) fall through to the pool/gather path below, where the union spans
     // ALL tokens and the remap leaf is written for every token.
+    //
+    // [CGC M2 prefill streaming 2026-09-14] When CGC_PREFILL_STREAM=1, instead of returning here
+    // we fill a whole-layer slab (all 256 experts, read straight from the GGUF via preadv) and
+    // repoint each FFN weight tensor at it. The slab is the same cgc_gather_slab infrastructure
+    // used by the wide-union path, but sized to n_expert (set CGC_GATHER_SLAB_CAP=256). Because
+    // no remap leaf exists for large batches, mul_mat_id reads RAW expert ids — and with ne[2] set
+    // to n_expert those ids are in range by construction. This is what lifts the n_batch clamp:
+    // prefill chunks of 2048 run the FFN against a freshly-streamed full expert set instead of
+    // the shrunk pool tensor.
+    static const bool cgc_prefill_stream = getenv("CGC_PREFILL_STREAM") != nullptr
+            && getenv("CGC_PREFILL_STREAM")[0] != '0';
     if ((uint64_t) n_tokens > cgc_pool_max_tokens()) {
+        static int dbg_cnt = 0;
+        if (dbg_cnt < 10) {
+            dbg_cnt++;
+            fprintf(stderr, "CGC-M2-DBG: il=%d n_tokens=%lld pmax=%u stream=%d\n",
+                    il, (long long) n_tokens, cgc_pool_max_tokens(), (int) cgc_prefill_stream);
+        }
         llama_expert_cache_record_routes(cache, (uint32_t) il, routes.data(), routes.size());
+        if (!cgc_prefill_stream) {
+            return;
+        }
+        // Whole-layer slab path: fill + repoint each kind's expert tensor.
+        const uint32_t n_expert_full = model.hparams.n_expert;
+        for (int kind = 0; kind < 4; ++kind) {
+            ggml_tensor * wt = cache_ffn_tensors[il][kind];
+            if (wt == nullptr) {
+                continue;
+            }
+            const size_t exp_bytes = ggml_row_size(wt->type, wt->ne[0]) * wt->ne[1];
+            ggml_backend_buffer_type_t wt_buft = wt->buffer != nullptr
+                    ? ggml_backend_buffer_get_type(wt->buffer) : nullptr;
+            // Use the pool's buffer type (host-visible Metal shared storage) so the CPU pread
+            // fill below actually lands where Metal can read it (same reasoning as the wide-union
+            // path in cgc_apply_expert_geometry).
+            if (llama_expert_cache_pool_buffer(cache, (uint32_t) il, kind) != nullptr) {
+                wt_buft = ggml_backend_buffer_get_type(
+                        llama_expert_cache_pool_buffer(cache, (uint32_t) il, kind));
+            }
+            cgc_gather_slab * sl = cgc_gather_slab_get(kind, exp_bytes, wt_buft);
+            if (sl == nullptr) {
+                continue;
+            }
+            const int64_t filled = llama_expert_cache_fill_layer_slab(cache, (uint32_t) il,
+                    kind, sl->base, exp_bytes);
+            if (filled < 0) {
+                fprintf(stderr, "CGC-PREFILL-STREAM: fill_layer_slab FAILED il=%d kind=%d — "
+                        "falling back to original (shrunk) weights, values NOT trustworthy\n",
+                        il, kind);
+                continue;
+            }
+            // Record original state ONCE per (layer, kind) so the graph-build restore lands on
+            // the consistent shrunk-tensor state (same mechanism as the wide-union path).
+            const bool first_repoint =
+                    cache_gather_ne2.find({il, kind}) == cache_gather_ne2.end();
+            if (first_repoint) {
+                cache_orig[{il, kind}]       = wt->data;
+                cache_gather_ne2[{il, kind}] = wt->ne[2];
+                cache_gather_orig_buf[{il, kind}] = wt->buffer;
+            }
+            wt->ne[2]  = (int64_t) n_expert_full;
+            wt->data   = sl->base;
+            wt->buffer = sl->buf;
+            if (il <= 1 && kind == 0) {
+                static int ps_dbg = 0;
+                if (ps_dbg < 4) {
+                    ps_dbg++;
+                    fprintf(stderr, "CGC-PREFILL-STREAM: il=%d kind=%d ntok=%lld "
+                            "experts=%u slab=%.2f MiB filled=%lld bytes\n",
+                            il, kind, (long long) n_tokens, n_expert_full,
+                            (double) sl->size / (1024.0 * 1024.0), (long long) filled);
+                }
+            }
+        }
         return;
     }
 
@@ -4697,6 +4798,14 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
             // -- the pool path CPU-memcpy's into that same region (pool_region -> pool_ext).
             ggml_backend_buffer_type_t wt_buft = wt->buffer != nullptr
                     ? ggml_backend_buffer_get_type(wt->buffer) : nullptr;
+            // [CGC M1 work item 1] With CGC_POOL_SPLIT the tensor's own buffer is a CPU mapping, so
+            // its type is NOT host-visible Metal storage and a slab allocated from it would be
+            // unwritable by the CPU fill and unreadable by Metal. The pool's buffer is the right
+            // type by construction (the pool fill memcpy's into it).
+            if (llama_expert_cache_pool_buffer(cache, (uint32_t) il, kind) != nullptr) {
+                wt_buft = ggml_backend_buffer_get_type(
+                        llama_expert_cache_pool_buffer(cache, (uint32_t) il, kind));
+            }
             uint8_t * slab = nullptr;
             ggml_backend_buffer_t slab_buf = nullptr;
             {
@@ -4798,6 +4907,69 @@ llm_graph_cb llama_context::graph_get_cb() const {
             ggml_set_name(cur, name);
         }
 
+        // [CGC M1 work item 1 CGC_POOL_SPLIT] Install this build's expert geometry deterministically.
+        //
+        // Why here and why derived: with an OWNED pool the expert tensor alternates between two
+        // geometries -- the pool's (slots, pool buffer, pool base) for a pool build and the
+        // loader's full-width weights for a wide build -- and all three fields must come from the
+        // SAME state, because Metal resolves a tensor through its own buffer and bounds
+        // ggml_nbytes, which scales with ne[2]. Recording "the previous state" per build cannot
+        // work: once a repoint has happened the recorded state IS the pool state, so the next
+        // restore writes pool `data` next to a full-width `ne[2]` and the model `buffer` -- the
+        // exact operand triple Metal reports as `buffer is nil` (measured). Deriving both sides
+        // from stored values makes every build idempotent instead.
+        //
+        // This callback runs for every MoE weight of every layer in every build, which is what
+        // makes it the right place: the wide path builds NO remap leaf, so the remap-leaf callback
+        // never fires for it.
+        auto cgc_apply_expert_geometry = [&](ggml_tensor * wt, int il_, int kind) {
+            if (wt == nullptr || model.expert_cache == nullptr) {
+                return;
+            }
+            // [CGC M2 prefill streaming 2026-09-14] When CGC_PREFILL_STREAM=1 and this is a large
+            // prefill chunk (n_tokens > pool_max), the eval hook will fill a whole-layer slab and
+            // repoint this tensor at it JUST BEFORE the FFN computes. We must NOT set data/buffer
+            // here (graph build), because the slab is allocated per-step and the tensor's own
+            // (shrunk) storage is what ggml-alloc sizes against. Leaving it untouched here means
+            // the eval hook's repoint is the only geometry change, and the graph-build restore
+            // (cache_gather_ne2 / cache_orig) returns the tensor to its shrunk state afterward.
+            static const bool prefill_stream = getenv("CGC_PREFILL_STREAM") != nullptr
+                    && getenv("CGC_PREFILL_STREAM")[0] != '0';
+            if (prefill_stream && (int64_t) ubatch.n_tokens > (int64_t) cgc_pool_max_tokens()) {
+                return; // eval hook handles it (whole-layer slab)
+            }
+            if (!llama_expert_cache_pool_owned(model.expert_cache)) {
+                return; // legacy path: the tensor's buffer already points at the pool by construction
+            }
+            if ((int64_t) ubatch.n_tokens <= (int64_t) cgc_pool_max_tokens()) {
+                const uint8_t * base = llama_expert_cache_pool_data(model.expert_cache, (uint32_t) il_, kind);
+                ggml_backend_buffer_t pbuf = llama_expert_cache_pool_buffer(model.expert_cache, (uint32_t) il_, kind);
+                if (base == nullptr || pbuf == nullptr) {
+                    return;
+                }
+                wt->data   = (void *) base;
+                wt->buffer = pbuf;
+                wt->ne[2]  = (int64_t) llama_expert_cache_slots_per_layer_l(model.expert_cache, (uint32_t) il_);
+            } else {
+                void * wdata = nullptr;
+                ggml_backend_buffer_t wbuf = nullptr;
+                int64_t wne2 = 0;
+                if (!llama_expert_cache_pool_get_wide(model.expert_cache, (uint32_t) il_, kind,
+                                                      &wdata, &wbuf, &wne2)) {
+                    return;
+                }
+                wt->data   = wdata;
+                wt->buffer = wbuf;
+                wt->ne[2]  = wne2;
+            }
+            if (getenv("CGC_POOL_SPLIT_DBG") != nullptr && il_ <= 2) {
+                fprintf(stderr, "CGC-POOL-SPLIT-GEOM: il=%d kind=%d ntok=%lld mode=%s ne2=%lld data=%p buf=%p\n",
+                        il_, kind, (long long) ubatch.n_tokens,
+                        (int64_t) ubatch.n_tokens <= (int64_t) cgc_pool_max_tokens() ? "pool" : "wide",
+                        (long long) wt->ne[2], wt->data, (void *) wt->buffer);
+            }
+        };
+
         // CGC expert-cache: capture the remap leaf (ffn_moe_topk) and the FFN expert weight
         // tensors (src0 of the mul_mat_id results) so the eval hook can repoint them at the
         // cache pool / gather buffers and write remapped ids. Mirrors build-prod graph_get_cb.
@@ -4828,6 +5000,11 @@ llm_graph_cb llama_context::graph_get_cb() const {
                         if (base == nullptr) {
                             continue;
                         }
+                        // [CGC M1 work item 1 CGC_POOL_SPLIT] With an OWNED pool this data-only move is
+                        // redundant: the ffn_moe_* capture below installs the full geometry (data +
+                        // buffer + ne[2]) for this build, and it runs later in the same build, so it
+                        // overwrites this. Kept because it is harmless and it is the whole repoint the
+                        // legacy zero-copy path needs (there the tensor's own storage IS the pool).
                         cache_orig[{il, kind}] = wt->data;
                         wt->data = (void *) base;
                     }
@@ -4837,24 +5014,28 @@ llm_graph_cb llama_context::graph_get_cb() const {
                     auto & ffn = cache_ffn_tensors[il];
                     if (ffn.size() < 4) ffn.resize(4);
                     ffn[3] = cur->src[0];
+                    cgc_apply_expert_geometry(ffn[3], il, 3);
                 }
             } else if (strcmp(name, "ffn_moe_up") == 0) {
                 if (cur->src[0] != nullptr) {
                     auto & ffn = cache_ffn_tensors[il];
                     if (ffn.size() < 4) ffn.resize(4);
                     ffn[1] = cur->src[0];
+                    cgc_apply_expert_geometry(ffn[1], il, 1);
                 }
             } else if (strcmp(name, "ffn_moe_gate") == 0) {
                 if (cur->src[0] != nullptr) {
                     auto & ffn = cache_ffn_tensors[il];
                     if (ffn.size() < 4) ffn.resize(4);
                     ffn[0] = cur->src[0];
+                    cgc_apply_expert_geometry(ffn[0], il, 0);
                 }
             } else if (strcmp(name, "ffn_moe_down") == 0) {
                 if (cur->src[0] != nullptr) {
                     auto & ffn = cache_ffn_tensors[il];
                     if (ffn.size() < 4) ffn.resize(4);
                     ffn[2] = cur->src[0];
+                    cgc_apply_expert_geometry(ffn[2], il, 2);
                 }
             }
         }

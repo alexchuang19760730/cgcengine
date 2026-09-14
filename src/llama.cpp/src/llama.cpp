@@ -369,6 +369,26 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
             // expert_cache_pool_capacity; create_tensor then shrinks the expert tensors to it.
             ml.expert_cache_l4_skip_layer0 = getenv("LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0") != nullptr;
             const bool l4_path = params.n_gpu_layers > 0 && getenv("LLAMA_EXPERT_CACHE_ALLOW_NGL") && !(no_gather && no_gather[0]);
+            // CGC M1 work item 1: CGC_POOL_SPLIT=1 keeps the expert tensors at full width and gives
+            // the pool its own allocation (see llama-model-loader.h). Numeric parse so CGC_POOL_SPLIT=0
+            // is OFF rather than "present".
+            {
+                const char * split_env = getenv("CGC_POOL_SPLIT");
+                const bool split_on = split_env != nullptr && split_env[0] != '0';
+                ml.expert_cache_pool_split = split_on && l4_path;
+                if (split_on && !l4_path) {
+                    LLAMA_LOG_WARN("%s: CGC_POOL_SPLIT ignored: the L4 pool path is not active\n", __func__);
+                }
+                if (ml.expert_cache_pool_split) {
+                    // EXPERIMENTAL and NOT WORKING: measured 2026-09-14 (docs/M1_POOL_SPLIT_COST_2026-09-14.md),
+                    // this configuration produces degenerate routing at il=1 (the remap maps two experts to
+                    // one slot) and a NaN cascade -> SIGSEGV in the Metal encoder at il=2. Kept for the
+                    // experiment's reproducibility, but nothing should ship or benchmark on it.
+                    LLAMA_LOG_WARN("%s: CGC_POOL_SPLIT is an EXPERIMENTAL, KNOWN-BROKEN configuration "
+                            "(degenerate routing + SIGSEGV) - see docs/M1_POOL_SPLIT_COST_2026-09-14.md; "
+                            "do not benchmark or ship with it\n", __func__);
+                }
+            }
             if (l4_path) {
                 ml.compute_l4_pool_capacity();
                 model->expert_cache_pool_capacity = ml.expert_cache_pool_capacity;
@@ -411,13 +431,66 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
                 // (pin prefill preads into the adopted Metal pool regions), then load the pin
                 // profile + fill the hot experts, then prepopulate identity slots for the rest.
                 if (model->expert_cache_pool_capacity > 0) {
-                    for (const auto & ref : ml.l4_pool_tensors) {
-                        if (ref.tensor == nullptr || ref.tensor->data == nullptr) {
-                            continue;
+                    if (!ml.l4_split_tensors.empty()) {
+                        // CGC M1 work item 1 (CGC_POOL_SPLIT): the pool is its OWN allocation. One
+                        // buffer per kind covering every layer, so the whole pool is 3 Metal
+                        // buffers -- 117 (layer, kind) buffers is what made the earlier full-width
+                        // attempt stall in IOKit residency registration. Regions are laid out in
+                        // ascending layer order, each layer getting its own slots x stride slice.
+                        for (int kind = 0; kind < 4; ++kind) {
+                            ggml_backend_buffer_type_t buft = nullptr;
+                            size_t total = 0;
+                            size_t n_refs = 0;
+                            for (const auto & r : ml.l4_split_tensors) {
+                                if (r.kind != kind) {
+                                    continue;
+                                }
+                                if (buft == nullptr) {
+                                    buft = r.buft;
+                                }
+                                total += (size_t) r.slots * r.stride;
+                                n_refs++;
+                            }
+                            if (n_refs == 0 || buft == nullptr) {
+                                continue;
+                            }
+                            ggml_backend_buffer_t pool_buf = nullptr;
+                            if (!llama_expert_cache_pool_split_alloc(model->expert_cache, kind, buft, total, &pool_buf)) {
+                                LLAMA_LOG_ERROR("%s: expert pool split: kind %d allocation failed (%.2f MiB)\n",
+                                        __func__, kind, (double) total / 1024.0 / 1024.0);
+                                continue;
+                            }
+                            const uint8_t * base = (const uint8_t *) ggml_backend_buffer_get_base(pool_buf);
+                            size_t offs = 0;
+                            for (const auto & r : ml.l4_split_tensors) {
+                                if (r.kind != kind) {
+                                    continue;
+                                }
+                                llama_expert_cache_pool_split_adopt(model->expert_cache, r.layer, kind,
+                                        base + offs, r.slots, r.stride, pool_buf);
+                                // The full-width geometry the graph switches back to for a wide
+                                // build (batch > cap). Recorded ONCE here, while r.tensor is still
+                                // the loader's untouched full-width tensor: deriving it later from
+                                // "whatever the tensor looks like now" is what produced a mixed
+                                // tensor and `buffer is nil`.
+                                if (r.tensor != nullptr) {
+                                    llama_expert_cache_pool_set_wide(model->expert_cache, r.layer, kind,
+                                            r.tensor->data, r.tensor->buffer, r.tensor->ne[2]);
+                                }
+                                offs += (size_t) r.slots * r.stride;
+                            }
+                            LLAMA_LOG_INFO("%s: expert pool split: kind=%d %zu layers, %.2f MiB total\n",
+                                    __func__, kind, n_refs, (double) total / 1024.0 / 1024.0);
                         }
-                        llama_expert_cache_adopt_pool_region(model->expert_cache,
-                                ref.layer, ref.kind, (const uint8_t *) ref.tensor->data,
-                                (int64_t) model->expert_cache_pool_capacity, ref.expert_bytes);
+                    } else {
+                        for (const auto & ref : ml.l4_pool_tensors) {
+                            if (ref.tensor == nullptr || ref.tensor->data == nullptr) {
+                                continue;
+                            }
+                            llama_expert_cache_adopt_pool_region(model->expert_cache,
+                                    ref.layer, ref.kind, (const uint8_t *) ref.tensor->data,
+                                    (int64_t) model->expert_cache_pool_capacity, ref.expert_bytes);
+                        }
                     }
                 }
                 // static profile pin (LLAMA_EXPERT_CACHE_PIN_PROFILE) — load + prefill BEFORE
@@ -434,7 +507,28 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
                     llama_expert_cache_pin_prefill(model->expert_cache);
                 }
                 if (model->expert_cache_pool_capacity > 0) {
+                    // CGC M1 work item 1: both the legacy (adopted-region) pool and the owned
+                    // (CGC_POOL_SPLIT) pool call prepopulate. The difference is inside it: the
+                    // legacy path's slots were already filled by the loader pre-reading experts
+                    // 0..capacity-1 into the tensor storage that IS the pool, so it only has to mark
+                    // them resident, whereas an owned pool is a fresh allocation and prepopulate
+                    // preads those same experts into it. Both end up with the identical resident set
+                    // (slot e holds expert e), which is what makes the two modes comparable.
                     for (const auto & ref : ml.l4_pool_tensors) {
+                        if (ref.kind != 0) {
+                            continue;
+                        }
+                        llama_expert_cache_prepopulate(model->expert_cache, ref.layer,
+                                (uint32_t) model->expert_cache_pool_capacity);
+                    }
+                    // CGC M1 work item 1 (CGC_POOL_SPLIT): in split mode the expert tensors live
+                    // in l4_split_tensors (NOT l4_pool_tensors), so the loop above is a no-op and
+                    // prepopulate never runs. Without it the owned pool's identity slots are both
+                    // EMPTY and UNMARKED (slot_owner all -1), and the first ensure_batch assigns
+                    // two experts to one slot -> NaN cascade -> SIGSEGV (the exact failure in
+                    // docs/M1_POOL_SPLIT_COST_2026-09-14.md §4 Blocker B). Iterate split tensors
+                    // here so the owned pool gets the same identity fill the legacy pool gets.
+                    for (const auto & ref : ml.l4_split_tensors) {
                         if (ref.kind != 0) {
                             continue;
                         }

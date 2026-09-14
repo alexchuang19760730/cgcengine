@@ -547,6 +547,18 @@ llama_model_loader::llama_model_loader(
     this->use_mmap      = load_mode == LLAMA_LOAD_MODE_MMAP || load_mode == LLAMA_LOAD_MODE_MMAP_MLOCK || load_mode == LLAMA_LOAD_MODE_AUTO;
     this->use_direct_io = load_mode == LLAMA_LOAD_MODE_DIRECT_IO;
 
+    // CGC M1 work item 1 (CGC_POOL_SPLIT): decouple the pool from the graph's tensor geometry.
+    // When ON, expert tensors keep their full ne[2]=256 width and the pool is a SEPARATE Metal
+    // allocation adopted into the cache. This removes the batch-width coupling (W3 in the roadmap)
+    // that caps n_batch at cap*top_k and is the prerequisite for M2 (prefill whole-layer streaming)
+    // and M4 (MTP batch verify).
+    const char * split_env = getenv("CGC_POOL_SPLIT");
+    this->expert_cache_pool_split = (split_env != nullptr && atoi(split_env) != 0);
+    if (this->expert_cache_pool_split) {
+        LLAMA_LOG_INFO("llama_model_loader: CGC_POOL_SPLIT=1 -- expert tensors keep full width, "
+                       "pool is a separate allocation (M1)\n");
+    }
+
     if (!fname.empty()) {
         // Load the main GGUF
         struct ggml_context * ctx = NULL;
@@ -1160,6 +1172,11 @@ struct ggml_tensor * llama_model_loader::create_tensor(
     int l4_il = -1;
     int l4_kind = -1;
     size_t l4_expert_bytes = 0;
+    // CGC M1 work item 1: this tensor is an expert tensor whose pool lives elsewhere, so its own
+    // geometry stays full width and its storage is not adopted as a pool region.
+    bool l4_split = false;
+    uint32_t l4_split_slots = 0;
+    ggml_backend_buffer_type_t l4_pool_buft = nullptr;
 
     auto ctx_for_buft = [&](ggml_backend_buffer_type_t buft) -> ggml_context * {
         auto it = ctx_map.find(buft);
@@ -1431,8 +1448,19 @@ struct ggml_tensor * llama_model_loader::create_tensor(
                 // from this tensor is narrower than the cache's slot writes -> OOB pool rows.
                 // cgc_layer_cap reads LLAMA_EXPERT_CACHE_LAYER_CAPS once per process; without
                 // the env it returns the uniform expert_cache_pool_capacity (byte-identical).
-                t_meta.ne[2] = (int64_t) cgc_layer_cap((uint32_t) l4_il, (uint32_t) expert_cache_pool_capacity);
-                l4_expert_bytes = ggml_row_size(t_meta.type, t_meta.ne[0]) * t_meta.ne[1];
+                const uint32_t l4_cap = cgc_layer_cap((uint32_t) l4_il, (uint32_t) expert_cache_pool_capacity);
+                if (expert_cache_pool_split) {
+                    // CGC M1 work item 1: do NOT shrink. The pool is its own allocation now, so the
+                    // tensor no longer has to double as the pool region, and keeping ne[2] full is
+                    // what removes the batch-width coupling. The pool's geometry travels in
+                    // l4_split_tensors (slots + stride + the buft to allocate from).
+                    l4_split        = true;
+                    l4_split_slots  = l4_cap;
+                    l4_expert_bytes = ggml_row_size(t_meta.type, t_meta.ne[0]) * t_meta.ne[1];
+                } else {
+                    t_meta.ne[2] = (int64_t) l4_cap;
+                    l4_expert_bytes = ggml_row_size(t_meta.type, t_meta.ne[0]) * t_meta.ne[1];
+                }
             } else if (expert_cache_l4_skip_layer0 && l4_il == 0) {
                 // L4_SKIP_LAYER0: keep blk.0 out of the L4 pool entirely. It must be a normal
                 // (CPU skip-load) tensor, not a pool tensor: a pooled blk.0 would carry
@@ -1446,6 +1474,24 @@ struct ggml_tensor * llama_model_loader::create_tensor(
     ggml_backend_buffer_type_t buft = buft_for_tensor(&t_meta);
     if (buft == nullptr) {
         return nullptr;
+    }
+    if (l4_split) {
+        // The pool is allocated from this same buft (host-visible: the fill path memcpy's into it).
+        // The tensor itself STAYS on the Metal buft on purpose. Moving it to the CPU buft was tried
+        // and segfaults, for a reason worth keeping written down: on the FIRST graph build
+        // cache_ffn_tensors is still empty when the remap leaf is captured, so the pool-path repoint
+        // cannot fire, and Metal then encodes mul_mat_id against a tensor whose buffer is not a
+        // Metal buffer -- ggml_metal_get_buffer_id casts buffer->context to ggml_metal_buffer_t and
+        // dereferences it (EXC_BAD_ACCESS in setBuffer_impl, measured). Keeping a Metal buft makes
+        // the tensor valid for Metal in EVERY build, whether or not the repoint happened.
+        //
+        // With mmap that buft is the device-default one, so llama-model.cpp maps the file into the
+        // Metal buffer zero-copy (buffer_from_host_ptr) -- the full-width weights cost page cache,
+        // not anonymous memory. Without mmap they are a real full-width Metal allocation, and THAT
+        // difference is the cost this mode exists to measure.
+        l4_pool_buft = buft;
+        LLAMA_LOG_INFO("llama_model_loader: %s -> FULL WIDTH on %s (L4 pool split)\n",
+                t_meta.name, ggml_backend_buft_name(l4_pool_buft));
     }
 
     ggml_context * ctx = ctx_for_buft(buft);
@@ -1464,7 +1510,12 @@ struct ggml_tensor * llama_model_loader::create_tensor(
     ggml_set_name(tensor, ggml_get_name(&t_meta));
 
     // CGC expert-cache L4: record the Metal pool region (adopted after load, once the cache exists).
-    if (l4_kind >= 0) {
+    // With CGC_POOL_SPLIT the tensor is NOT a pool region: its own storage is the full-width CPU
+    // mapping, and the pool is allocated separately (l4_split_tensors).
+    if (l4_split) {
+        l4_split_tensors.push_back({ (uint32_t) l4_il, l4_kind, l4_split_slots, l4_expert_bytes, l4_pool_buft, tensor });
+        l4_kind = -1;
+    } else if (l4_kind >= 0) {
         l4_pool_tensors.push_back({ (uint32_t) l4_il, l4_kind, tensor, l4_expert_bytes });
     }
 

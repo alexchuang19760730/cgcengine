@@ -1272,6 +1272,87 @@ bool llama_expert_cache_adopt_pool_region(llama_expert_cache * cache, uint32_t l
     return true;
 }
 
+// CGC M1 work item 1 (CGC_POOL_SPLIT) -- see the header for why this exists.
+bool llama_expert_cache_pool_split_alloc(llama_expert_cache * cache, int kind,
+        ggml_backend_buffer_type_t buft, size_t total_bytes, ggml_backend_buffer_t * out_buf) {
+    if (cache == nullptr || kind < 0 || kind >= 4 || buft == nullptr || total_bytes == 0) {
+        return false;
+    }
+    ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(buft, total_bytes);
+    if (buf == nullptr) {
+        fprintf(stderr, "CGC-POOL-SPLIT: allocation of %.2f MiB failed kind=%d on %s\n",
+                (double) total_bytes / (1024.0 * 1024.0), kind, ggml_backend_buft_name(buft));
+        return false;
+    }
+    // WEIGHTS usage so the scheduler prefers the backend that holds the pool (same as the model's
+    // own weight buffers).
+    ggml_backend_buffer_set_usage(buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+    cache->pool_owned_bufs.push_back(buf);
+    fprintf(stderr, "CGC-POOL-SPLIT: kind=%d size=%.2f MiB base=%p buft=%s\n",
+            kind, (double) total_bytes / (1024.0 * 1024.0), ggml_backend_buffer_get_base(buf),
+            ggml_backend_buft_name(buft));
+    if (out_buf != nullptr) {
+        *out_buf = buf;
+    }
+    return true;
+}
+
+bool llama_expert_cache_pool_split_adopt(llama_expert_cache * cache, uint32_t layer, int kind,
+        const uint8_t * base, uint32_t slots, size_t stride, ggml_backend_buffer_t buf) {
+    if (buf == nullptr) {
+        return false;
+    }
+    const bool ok = llama_expert_cache_adopt_pool_region(cache, layer, kind, base, (int64_t) slots, stride);
+    if (getenv("CGC_POOL_SPLIT_DBG") != nullptr) {
+        fprintf(stderr, "CGC-POOL-SPLIT-ADOPT: layer=%u kind=%d slots=%u stride=%zu base=%p buf=%p "
+                "pool_ext.size=%zu pool_ext_buf.size=%zu ok=%d\n",
+                layer, kind, slots, stride, (const void *) base, (void *) buf,
+                cache->pool_ext.size(), cache->pool_ext_buf.size(), (int) ok);
+    }
+    if (!ok) {
+        return false;
+    }
+    if (layer < cache->pool_ext_buf.size()) {
+        cache->pool_ext_buf[layer][kind] = buf;
+    }
+    return true;
+}
+
+ggml_backend_buffer_t llama_expert_cache_pool_buffer(const llama_expert_cache * cache, uint32_t layer, int kind) {
+    if (cache == nullptr || layer >= cache->pool_ext_buf.size() || kind < 0 || kind >= 4) {
+        return nullptr;
+    }
+    return cache->pool_ext_buf[layer][kind];
+}
+
+bool llama_expert_cache_pool_owned(const llama_expert_cache * cache) {
+    return cache != nullptr && !cache->pool_owned_bufs.empty();
+}
+
+void llama_expert_cache_pool_set_wide(llama_expert_cache * cache, uint32_t layer, int kind,
+        const void * data, ggml_backend_buffer_t buf, int64_t ne2) {
+    if (cache == nullptr || layer >= cache->pool_wide_data.size() || kind < 0 || kind >= 4) {
+        return;
+    }
+    cache->pool_wide_data[layer][kind]  = const_cast<void *>(data);
+    cache->pool_wide_buf[layer][kind]   = buf;
+    cache->pool_wide_ne2[layer][kind]   = ne2;
+}
+
+bool llama_expert_cache_pool_get_wide(const llama_expert_cache * cache, uint32_t layer, int kind,
+        void ** data, ggml_backend_buffer_t * buf, int64_t * ne2) {
+    if (cache == nullptr || layer >= cache->pool_wide_data.size() || kind < 0 || kind >= 4) {
+        return false;
+    }
+    if (cache->pool_wide_data[layer][kind] == nullptr) {
+        return false;
+    }
+    if (data != nullptr) { *data = cache->pool_wide_data[layer][kind]; }
+    if (buf  != nullptr) { *buf  = cache->pool_wide_buf[layer][kind]; }
+    if (ne2  != nullptr) { *ne2  = cache->pool_wide_ne2[layer][kind]; }
+    return true;
+}
+
 // Prefill hot prewarm: accumulate (layer, expert) route frequencies. Called from the hook for
 // every prefill/multi-token batch (repetition across tokens counts multiple times, so the
 // top-K reflects true routing frequency). Lock is brief (one increment per expert).
@@ -1561,10 +1642,24 @@ void llama_expert_cache_prepopulate(llama_expert_cache * cache, uint32_t layer, 
     if (cache == nullptr || layer >= cache->slot_owner.size() || cache->n_expert == 0 || n_slots == 0) {
         return;
     }
-    std::lock_guard<std::mutex> lk(cache->m);
-    int32_t * table = cache->slot_table.data() + (size_t) layer * cache->n_expert;
     // [CGC MTP fast path] never hand the reserved ZERO slot to a real expert.
     const uint32_t n = std::min(n_slots, llama_expert_cache_usable_slots(cache, layer));
+    // [CGC M1 work item 1 CGC_POOL_SPLIT] With an OWNED pool the identity slots hold NOTHING yet.
+    // The legacy path gets their bytes for free: the loader pre-read experts 0..n-1 into the tensor's
+    // own storage, and that storage IS the adopted pool region (which is why the loop below can say
+    // "slot e holds expert e" without copying anything). A separate pool allocation has no such
+    // loader, so the identity mapping would mark uninitialised Metal memory as resident; the first
+    // routed batch then mixes filled slots (experts >= n) with empty ones (< n) and the layer emits
+    // NaN (measured: hook ids at il=2 are a NaN bit pattern, then SIGSEGV in the Metal encoder).
+    // Fill them explicitly instead - same bytes, same identity order, and exactly the read the
+    // loader used to perform. Must run WITHOUT cache->m (fill_pool_direct preads and may block).
+    if (llama_expert_cache_pool_owned(cache)) {
+        for (uint32_t e = 0; e < n && e < cache->n_expert; ++e) {
+            fill_pool_direct(cache, layer, (int32_t) e, e);
+        }
+    }
+    std::lock_guard<std::mutex> lk(cache->m);
+    int32_t * table = cache->slot_table.data() + (size_t) layer * cache->n_expert;
     if (getenv("LLAMA_EXPERT_CACHE_PREPOP_DBG") != nullptr && layer == 0 && n > 2) {
         for (int k = 0; k < 4; ++k) {
             size_t stride = 0; uint32_t slots = 0;
@@ -2069,6 +2164,14 @@ llama_expert_cache::~llama_expert_cache() {
             fclose(f);
         }
     }
+    // CGC M1 work item 1 (CGC_POOL_SPLIT): the pool owns its allocations here (one per kind). Empty
+    // on every other path, where the pool regions are the expert tensors' own storage.
+    for (ggml_backend_buffer_t b : pool_owned_bufs) {
+        if (b != nullptr) {
+            ggml_backend_buffer_free(b);
+        }
+    }
+    pool_owned_bufs.clear();
 }
 
 void llama_expert_cache::bg_loop() {
@@ -2593,6 +2696,10 @@ llama_expert_cache * llama_expert_cache_init(const llama_model * model, size_t b
         cache->pool_ext.assign(max_layer, std::vector<const uint8_t *>(4, nullptr));
         cache->pool_ext_stride.assign(max_layer, std::vector<size_t>(4, 0));
         cache->pool_ext_slots.assign(max_layer, std::vector<uint32_t>(4, 0));
+        cache->pool_ext_buf.assign(max_layer, std::vector<ggml_backend_buffer_t>(4, nullptr));
+        cache->pool_wide_data.assign(max_layer, std::vector<void *>(4, nullptr));
+        cache->pool_wide_buf.assign(max_layer, std::vector<ggml_backend_buffer_t>(4, nullptr));
+        cache->pool_wide_ne2.assign(max_layer, std::vector<int64_t>(4, 0));
         // "1" enables the pool; any other value (including "0") leaves it off. The L3-B gather
         // path is always available regardless. L4 (-ngl>0 + ALLOW_NGL) forces the pool on: the
         // Metal-visible pool is the only correct FFN source for a Metal-buft expert tensor.
@@ -2770,6 +2877,78 @@ int64_t llama_expert_cache_fill(llama_expert_cache * cache, uint32_t layer,
         memcpy(out + i * stride, s.blob.data() + seg->off, seg->bytes);
         total += seg->bytes;
         s.last_use = ++cache->tick;
+    }
+    return total;
+}
+
+// [CGC M2 whole-layer streaming 2026-09-14] Read an entire layer's experts (0..n_expert-1) for
+// one kind straight from the GGUF file into a caller-provided slab. Unlike fill() (which copies
+// from already-resident cache blobs), this reads directly from disk — the slab is transient and
+// the pool is bypassed entirely. Used by the prefill streaming path: at chunk 2048 the union is
+// provably saturated (2048 * top_k 8 = 16384 draws over 256 experts -> ~100% coverage), so
+// reading ALL experts is both necessary and predictable (no prediction needed).
+//
+// Layout: expert e's bytes for `kind` land at dst + e * stride. The caller sets ne[2] = n_expert
+// and the remap ids are raw expert ids (0..n_expert-1), so mul_mat_id indexes directly into this
+// slab with no slot-indirection layer.
+//
+// Returns total bytes read, or -1 on any short read (the caller should then fall back to the
+// pool path rather than trust a partial slab).
+int64_t llama_expert_cache_fill_layer_slab(llama_expert_cache * cache, uint32_t layer,
+        int kind, void * dst, size_t stride) {
+    if (cache == nullptr || dst == nullptr || layer >= cache->slot_owner.size()) {
+        return -1;
+    }
+    if (kind < 0 || kind >= 4) {
+        return -1;
+    }
+    const uint32_t ne = cache->n_expert;
+    if (ne == 0) {
+        return 0;
+    }
+    std::vector<llama_expert_cache::segment> segs;
+    std::vector<uint8_t *> dsts;
+    segs.reserve((size_t) ne);
+    dsts.reserve((size_t) ne);
+    uint8_t * out = (uint8_t *) dst;
+    int64_t total = 0;
+    // Collect every expert's segment for this kind. One lock for the whole traversal — the
+    // index/key_segs are immutable after init, so this is a read-only walk and could be
+    // lock-free, but taking the lock matches every other index reader and costs nothing vs IO.
+    {
+        std::lock_guard<std::mutex> lk(cache->m);
+        for (uint32_t e = 0; e < ne; ++e) {
+            const uint64_t key = make_key(layer, e);
+            auto it = cache->key_segs.find(key);
+            if (it == cache->key_segs.end()) {
+                continue; // expert has no tensor for this kind (e.g. kind 3 absent)
+            }
+            const llama_expert_index_entry * idx = nullptr;
+            for (uint32_t pos : it->second) {
+                if (cache->index[pos].kind == kind) {
+                    idx = &cache->index[pos];
+                    break;
+                }
+            }
+            if (idx == nullptr) {
+                continue;
+            }
+            llama_expert_cache::segment s;
+            s.kind        = idx->kind;
+            s.file_idx    = idx->file_idx;
+            s.file_offset = idx->file_offset;
+            s.off         = 0;
+            s.bytes       = (uint32_t) idx->bytes;
+            segs.push_back(s);
+            dsts.push_back(out + (size_t) e * stride);
+            total += idx->bytes;
+        }
+    }
+    if (segs.empty()) {
+        return 0;
+    }
+    if (!fill_segments_concurrent(cache, segs, dsts)) {
+        return -1;
     }
     return total;
 }

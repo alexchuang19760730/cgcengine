@@ -129,6 +129,23 @@ struct llama_expert_cache {
     std::vector<std::vector<const uint8_t *>> pool_ext;       // [layer][kind] base
     std::vector<std::vector<size_t>>          pool_ext_stride; // [layer][kind] bytes per slot
     std::vector<std::vector<uint32_t>>        pool_ext_slots;  // [layer][kind] capacity
+    // CGC M1 work item 1 (CGC_POOL_SPLIT): when the pool is its OWN allocation rather than the
+    // expert tensor's storage, the graph must resolve the FFN weight through the pool's buffer (not
+    // the tensor's) -- Metal looks a tensor up via ITS OWN buffer, so moving `data` alone leaves
+    // nil. pool_ext_buf[layer][kind] is that buffer (non-owning); pool_owned_bufs owns the one
+    // allocation per kind and is freed with the cache.
+    std::vector<std::vector<ggml_backend_buffer_t>> pool_ext_buf; // [layer][kind] owner buffer
+    std::vector<ggml_backend_buffer_t> pool_owned_bufs;
+    // CGC M1 work item 1: the LOAD-TIME geometry of each expert tensor, captured ONCE while it is
+    // still the loader's full-width tensor. With a split pool the graph has to alternate between two
+    // geometries (pool slots vs the full-width weights), and deriving both sides from stored values
+    // is what keeps it deterministic: the earlier attempt recorded the state it saw on each build,
+    // and once a repoint had happened the record became the POOL state -- the next restore then
+    // wrote a mixed tensor (pool data + full-width ne[2] + model buffer), which Metal reports as
+    // `buffer is nil` (measured: exactly that operand triple, docs/M1_POOL_SPLIT_COST_2026-09-14.md).
+    std::vector<std::vector<void *>>         pool_wide_data;  // [layer][kind] full-width data ptr
+    std::vector<std::vector<ggml_backend_buffer_t>> pool_wide_buf; // [layer][kind] full-width buffer
+    std::vector<std::vector<int64_t>>        pool_wide_ne2;   // [layer][kind] full-width ne[2]
     // prefill hot prewarm (LLAMA_EXPERT_CACHE_PREWARM_HOT=1): per-layer expert route frequency
     // accumulated during prefill; the first decode step fills the pool with the top-K hot set
     // (instead of the loader's experts-0..n prewarm, which ignores actual routing).
@@ -604,6 +621,29 @@ size_t llama_expert_cache_load_pin_profile(llama_expert_cache * cache, const cha
 // machinery then writes into the tensor's buffer; the Metal FFN reads it directly (zero copy).
 bool llama_expert_cache_adopt_pool_region(llama_expert_cache * cache, uint32_t layer, int kind,
         const uint8_t * base, int64_t n_slots, size_t stride);
+// CGC M1 work item 1 (CGC_POOL_SPLIT): the pool as its own buffer set. Allocate one buffer per kind
+// (sized to every layer's slots x stride, so the whole pool is 3 allocations instead of one per
+// (layer, kind) -- 117 Metal buffers is what made the earlier full-width attempt hang on residency
+// registration), then register each layer's region inside it. Returns false on any failure and
+// leaves the cache unchanged.
+bool llama_expert_cache_pool_split_alloc(llama_expert_cache * cache, int kind,
+        ggml_backend_buffer_type_t buft, size_t total_bytes, ggml_backend_buffer_t * out_buf);
+bool llama_expert_cache_pool_split_adopt(llama_expert_cache * cache, uint32_t layer, int kind,
+        const uint8_t * base, uint32_t slots, size_t stride, ggml_backend_buffer_t buf);
+// The buffer that owns (layer, kind)'s pool region, or nullptr when the pool is the tensor's own
+// storage (the legacy zero-copy path) -- the repoint must only move `buffer` in the former case.
+ggml_backend_buffer_t llama_expert_cache_pool_buffer(const llama_expert_cache * cache, uint32_t layer, int kind);
+// Record (once, at load) and read back the expert tensor's full-width geometry. The graph sets the
+// pool geometry for pool steps and this geometry for wide steps, so neither depends on what the
+// previous step happened to leave behind.
+void llama_expert_cache_pool_set_wide(llama_expert_cache * cache, uint32_t layer, int kind,
+        const void * data, ggml_backend_buffer_t buf, int64_t ne2);
+bool llama_expert_cache_pool_get_wide(const llama_expert_cache * cache, uint32_t layer, int kind,
+        void ** data, ggml_backend_buffer_t * buf, int64_t * ne2);
+// True when the pool owns its allocations (CGC_POOL_SPLIT), i.e. the pool is NOT the expert
+// tensors' storage. Callers use it to decide whether the graph must also repoint a tensor's
+// `buffer` (and the batch clamp, which only exists because the tensors are shrunk).
+bool llama_expert_cache_pool_owned(const llama_expert_cache * cache);
 // L4 cold-start (2026-08-15): the loader pre-reads the FIRST n_slots experts of every layer into
 // the adopted Metal pool regions (the expert tensor buffers). Mark those slots resident so the
 // first accesses are pool HITS instead of re-preading the same bytes — otherwise every short
@@ -620,6 +660,12 @@ size_t llama_expert_cache_pin_prefill(llama_expert_cache * cache);
 bool llama_expert_cache_pool_active(const llama_expert_cache * cache);
 // Per-layer slot table: expert id -> slot index (-1 = not resident). nullptr when pool inactive.
 const int32_t * llama_expert_cache_slot_table(const llama_expert_cache * cache, uint32_t layer);
+// [CGC M2 whole-layer streaming 2026-09-14] Read an entire layer's experts (0..n_expert-1) for
+// one kind straight from the GGUF file into a caller-provided slab. Expert e lands at
+// dst + e * stride. Returns total bytes read, or -1 on short read. Used by the prefill
+// streaming path (CGC_PREFILL_STREAM=1) where the union is provably saturated.
+int64_t llama_expert_cache_fill_layer_slab(llama_expert_cache * cache, uint32_t layer,
+        int kind, void * dst, size_t stride);
 // L3 Option A prefetch: queue (layer, expert) for the background thread to fill into the pool.
 // Non-blocking; uses only FREE slots (never evicts for a prediction). Returns 0 if queued, -1 if
 // skipped (pool inactive / already resident or queued / no free slot / queue full).

@@ -120,6 +120,25 @@ struct llama_model_loader {
         size_t expert_bytes;
     };
     std::vector<llama_expert_pool_ref> l4_pool_tensors;
+    // CGC M1 work item 1 (CGC_POOL_SPLIT=1): decouple the pool from the graph's tensor geometry.
+    // The expert tensor keeps its FULL width (ne[2] = n_expert) and is placed on the CPU buft --
+    // with mmap enabled that makes it a zero-copy view of the GGUF mapping (real bytes, no resident
+    // allocation), so the raw router ids stay in range for ANY batch width, which is exactly the
+    // coupling that forces n_batch down to cgc_pool_max_tokens() when the tensor is shrunk.
+    // The pool itself is then allocated separately (one buffer per kind) from the buft recorded
+    // here -- the same Metal buft the tensor would have used, which is host-visible by construction
+    // because the fill path CPU-memcpy's into it.
+    bool expert_cache_pool_split = false;
+    struct llama_expert_split_ref {
+        uint32_t layer;
+        int kind;
+        uint32_t slots;                    // pool slots for this (layer, kind)
+        size_t stride;                     // bytes per expert
+        ggml_backend_buffer_type_t buft;   // Metal buft to allocate the pool from
+        ggml_tensor * tensor;              // the full-width tensor (its data/buffer/ne[2] are the
+                                           // wide geometry the graph falls back to)
+    };
+    std::vector<llama_expert_split_ref> l4_split_tensors;
     llama_model_set_tensor_data_t set_tensor_data;
     void * set_tensor_data_ud;
     std::vector<ggml_context_ptr> contexts;
