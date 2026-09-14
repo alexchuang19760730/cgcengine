@@ -29,10 +29,15 @@ static inline void signal_handler(int signal) {
     if (is_terminating.test_and_set()) {
         // in case it hangs, we can force terminate the server by hitting Ctrl+C twice
         // this is for better developer experience, we can remove when the server is stable enough
-        fprintf(stderr, "Received second interrupt, terminating immediately.\n");
+        fprintf(stderr, "[CGC] Received second interrupt (SIG%d). WARNING: forcing exit will LEAK GPU memory "
+                "(Metal buffers not freed). Prefer 'kill -TERM <pid>' or 'curl /shutdown' for graceful shutdown.\n", signal);
+        // Still attempt atexit handlers — _exit() would skip them, exit() runs them.
         exit(1);
     }
 
+    const char * sig_name = (signal == SIGTERM) ? "SIGTERM" : (signal == SIGINT) ? "SIGINT" : "signal";
+    fprintf(stderr, "[CGC] Received %s — initiating graceful shutdown (expert cache + Metal buffers will be freed). "
+            "Do NOT use kill -9; it leaks GPU memory.\n", sig_name);
     shutdown_handler(signal);
 }
 
@@ -107,6 +112,12 @@ int llama_server(int argc, char ** argv) {
     }
 
     llama_backend_init();
+
+    // [CGC 2026-09-14] Reminder: graceful shutdown is required to free Metal GPU buffers.
+    // kill -9 / pkill -9 skips destructors and leaks GPU memory (observed ~8GB after 10 crashes).
+    // Use: kill -TERM <pid>, curl -X POST http://host:port/shutdown, or Ctrl+C once.
+    fprintf(stderr, "[CGC] Shutdown reminder: use 'kill -TERM' or 'curl /shutdown' for graceful exit. "
+            "kill -9 will LEAK GPU memory (Metal buffers not freed).\n");
     llama_numa_init(params.numa);
 
     return llama_server(params, argc, argv);

@@ -418,9 +418,30 @@ fi
 # [防護 1] 清殘留（§4.5：殭屍 server 是 0000 退化與 kernel panic 的共同土壤）
 # pattern 用「build/bin/llama-*」子字串：行程可能是絕對路徑或相對路徑啟動（sandbox 用相對），
 # 絕對路徑 pattern 比對不到相對路徑行程 → port 衝突 → 新行程秒退（2026-08-30 實測踩過）。
+# [CGC 2026-09-14] 先用 SIGTERM 優雅退出（釋放 Metal GPU buffer），等 3s 後仍殘留才 SIGKILL。
+# 之前直接 pkill -9 導致 GPU 記憶體洩漏：10 次崩潰累積 ~8GB，vramFree 只剩 15MB。
 if [ "${N30CACHE_NO_CLEAN:-0}" != 1 ]; then
     for pat in "build/bin/llama-server" "build/bin/llama-simple" "build/bin/llama-speculative-simple"; do
-        pkill -9 -f "$pat" 2>/dev/null && echo "  [clean] killed stale $pat" || true
+        if pkill -TERM -f "$pat" 2>/dev/null; then
+            echo "  [clean] sent SIGTERM to stale $pat (graceful shutdown, freeing GPU memory)"
+        fi
+    done
+    # Wait up to 5s for graceful shutdown
+    for i in $(seq 1 10); do
+        sleep 0.5
+        remaining=0
+        for pat in "build/bin/llama-server" "build/bin/llama-simple" "build/bin/llama-speculative-simple"; do
+            # pgrep returns 1 when no match; with pipefail that would kill the script
+            # under `set -e`. `|| true` makes the count 0 instead of aborting.
+            remaining=$((remaining + $(pgrep -f "$pat" 2>/dev/null | wc -l | tr -d ' ' || true)))
+        done
+        [ "$remaining" -eq 0 ] && break
+    done
+    # Force-kill any survivors
+    for pat in "build/bin/llama-server" "build/bin/llama-simple" "build/bin/llama-speculative-simple"; do
+        if pkill -9 -f "$pat" 2>/dev/null; then
+            echo "  [clean] WARNING: force-killed unresponsive $pat (GPU memory may leak)"
+        fi
     done
     sleep 1
 fi
@@ -790,6 +811,12 @@ fi
 # the observed union, or the summation order stops being pool-independent.
 if [ -n "${CGC_GATHER_SLAB_CAP:-}" ]; then
     SERVER_ENV+=(CGC_GATHER_SLAB_CAP="$CGC_GATHER_SLAB_CAP")
+fi
+# [CGC M2 whole-layer streaming 2026-09-14] Enable prefill whole-layer slab path. When on,
+# prefill chunks wider than cap materialize the full 256-expert layer into a Metal slab and
+# dispatch mul_mat_id against the full-width tensor. Decode stays on the pool path.
+if [ -n "${CGC_PREFILL_STREAM:-}" ]; then
+    SERVER_ENV+=(CGC_PREFILL_STREAM="$CGC_PREFILL_STREAM")
 fi
 # [CGC M1 Metal slab 2026-09-14] Print the operands of Metal's own buffer range check at every
 # gather-path repoint (CGC-SLAB-CHECK), so a "buffer is nil" is attributable, not guessed.
