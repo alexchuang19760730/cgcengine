@@ -652,9 +652,68 @@ llama_context::cgc_gather_slab * llama_context::cgc_gather_slab_get(int kind, si
     return &s;
 }
 
+// [CGC M2 double-buffer 2026-09-14] Background worker: fills one layer's worth of slabs
+// (all 4 kinds) into the target set. Runs while the main thread builds the graph for
+// the previous layer, hiding the ~40-195ms slab-fill I/O behind graph build/compute.
+void llama_context::cgc_db_worker() {
+    while (true) {
+        int layer = -1, set = -1;
+        {
+            std::unique_lock<std::mutex> lk(cgc_db_mtx);
+            cgc_db_cv.wait(lk, [this]{ return cgc_db_stop || cgc_db_job_layer >= 0; });
+            if (cgc_db_stop) return;
+            layer = cgc_db_job_layer;
+            set   = cgc_db_job_set;
+            cgc_db_job_done = false;
+        }
+        // Fill all 4 kinds for this layer into the target set's slabs
+        for (int kind = 0; kind < 4; ++kind) {
+            const int slab_idx = cgc_db_slab[set][kind];
+            if (slab_idx < 0) continue;
+            cgc_gather_slab & sl = cache_gather_slab[(size_t) slab_idx];
+            llama_expert_cache_fill_layer_slab(
+                    model.expert_cache, (uint32_t) layer, kind, sl.base, sl.stride);
+        }
+        {
+            std::lock_guard<std::mutex> lk(cgc_db_mtx);
+            cgc_db_job_done  = true;
+            cgc_db_job_layer = -1;
+        }
+        cgc_db_cv.notify_one();
+    }
+}
+
+void llama_context::cgc_db_start_prefill(int layer, int set) {
+    if (!cgc_db_thread.joinable()) {
+        cgc_db_thread = std::thread(&llama_context::cgc_db_worker, this);
+    }
+    {
+        std::lock_guard<std::mutex> lk(cgc_db_mtx);
+        cgc_db_job_layer = layer;
+        cgc_db_job_set   = set;
+        cgc_db_job_done  = false;
+    }
+    cgc_db_cv.notify_one();
+}
+
+void llama_context::cgc_db_wait() {
+    std::unique_lock<std::mutex> lk(cgc_db_mtx);
+    cgc_db_cv.wait(lk, [this]{ return cgc_db_job_done || cgc_db_job_layer < 0; });
+}
+
 llama_context::~llama_context() {
     // wait for any pending asynchronous copies into the output buffers before they are freed
     synchronize();
+
+    // [CGC M2 double-buffer] stop background prefill thread
+    {
+        std::lock_guard<std::mutex> lk(cgc_db_mtx);
+        cgc_db_stop = true;
+    }
+    cgc_db_cv.notify_one();
+    if (cgc_db_thread.joinable()) {
+        cgc_db_thread.join();
+    }
 
     // [CGC M1 Metal slab 2026-09-14] release the gather slabs. Empty in any config that never took
     // the wide-union gather path, which includes the default 10 GiB pool. This is the ONLY place
@@ -4139,6 +4198,97 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
         if (!cgc_prefill_stream) {
             return;
         }
+        // [CGC M2 double-buffer 2026-09-14] Overlap slab fill with graph build:
+        // - Layer 0: synchronously fill set 0, launch background fill of layer 1 into set 1
+        // - Layer L>0: wait for background fill of layer L into current set, then launch
+        //   background fill of layer L+1 into the other set
+        // - The swap happens at each layer boundary, so the current set always has fresh data.
+        static const bool cgc_db_enable = getenv("CGC_M2_DB_DISABLE") == nullptr;
+        const int n_layers = (int) model.hparams.n_layer();
+        if (cgc_db_enable) {
+            // Initialize both slab sets on first layer (il == 0)
+            if (il == 0) {
+                // Wait for any leftover background job from a previous graph build
+                if (cgc_db_init) {
+                    cgc_db_wait();
+                }
+                cgc_db_cur = 0;
+                if (!cgc_db_init) {
+                    // First time: allocate both slab sets
+                    for (int set = 0; set < 2; ++set) {
+                        for (int kind = 0; kind < 4; ++kind) {
+                            ggml_tensor * wt = cache_ffn_tensors[0][kind];
+                            if (wt == nullptr) continue;
+                            const size_t exp_bytes = ggml_row_size(wt->type, wt->ne[0]) * wt->ne[1];
+                            ggml_backend_buffer_type_t wt_buft = wt->buffer != nullptr
+                                    ? ggml_backend_buffer_get_type(wt->buffer) : nullptr;
+                            if (llama_expert_cache_pool_buffer(cache, 0, kind) != nullptr) {
+                                wt_buft = ggml_backend_buffer_get_type(
+                                        llama_expert_cache_pool_buffer(cache, 0, kind));
+                            }
+                            if (wt_buft != nullptr && strcmp(ggml_backend_buft_name(wt_buft), "CPU") == 0) {
+                                for (size_t bi = 0; bi < backends.size(); ++bi) {
+                                    auto dev = ggml_backend_get_device(backends[bi].get());
+                                    if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_CPU) {
+                                        auto * dev_buft = ggml_backend_get_default_buffer_type(backends[bi].get());
+                                        if (dev_buft) { wt_buft = dev_buft; break; }
+                                    }
+                                }
+                            }
+                            cgc_gather_slab * sl = cgc_gather_slab_get(kind, exp_bytes, wt_buft);
+                            if (sl != nullptr) {
+                                if (set == 1) {
+                                    // Allocate a second buffer for set 1
+                                    const size_t want = (size_t) cgc_gather_slab_cap() * sl->stride;
+                                    ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(wt_buft, want);
+                                    if (buf != nullptr) {
+                                        ggml_backend_buffer_set_usage(buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+                                        cache_gather_slab.push_back(cgc_gather_slab{});
+                                        cgc_gather_slab & s2 = cache_gather_slab.back();
+                                        s2.kind   = kind;
+                                        s2.stride = sl->stride;
+                                        s2.buf    = buf;
+                                        s2.base   = (uint8_t *) ggml_backend_buffer_get_base(buf);
+                                        s2.size   = want;
+                                        cgc_db_slab[set][kind] = (int) (cache_gather_slab.size() - 1);
+                                        fprintf(stderr, "CGC-M2-DB: allocated set=%d kind=%d slab=%.2f MiB\n",
+                                                set, kind, (double) want / (1024.0*1024.0));
+                                    }
+                                } else {
+                                    for (size_t i = 0; i < cache_gather_slab.size(); ++i) {
+                                        if (&cache_gather_slab[i] == sl) {
+                                            cgc_db_slab[set][kind] = (int) i;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    cgc_db_init = true;
+                }
+                // Synchronously fill layer 0 into set 0
+                for (int kind = 0; kind < 4; ++kind) {
+                    const int si = cgc_db_slab[0][kind];
+                    if (si < 0) continue;
+                    cgc_gather_slab & sl = cache_gather_slab[(size_t) si];
+                    llama_expert_cache_fill_layer_slab(cache, 0, kind, sl.base, sl.stride);
+                }
+                // Launch background fill of layer 1 into set 1
+                if (n_layers > 1) {
+                    cgc_db_start_prefill(1, 1);
+                }
+            } else if (cgc_db_init) {
+                // Wait for background fill of this layer into current set
+                cgc_db_wait();
+                // Swap to the set that was just filled
+                cgc_db_cur = 1 - cgc_db_cur;
+                // Launch background fill of next layer into the other set
+                if (il + 1 < n_layers) {
+                    cgc_db_start_prefill(il + 1, 1 - cgc_db_cur);
+                }
+            }
+        }
         // Whole-layer slab path: fill + repoint each kind's expert tensor.
         const uint32_t n_expert_full = model.hparams.n_expert;
         for (int kind = 0; kind < 4; ++kind) {
@@ -4188,16 +4338,28 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
                     }
                 }
             }
-            cgc_gather_slab * sl = cgc_gather_slab_get(kind, exp_bytes, wt_buft);
-            if (sl == nullptr) {
-                continue;
+            cgc_gather_slab * sl = nullptr;
+            if (cgc_db_enable && cgc_db_init) {
+                // Double-buffer path: use the pre-filled slab from the current set
+                const int si = cgc_db_slab[cgc_db_cur][kind];
+                if (si >= 0) {
+                    sl = &cache_gather_slab[(size_t) si];
+                }
+            } else {
+                // Original path: allocate + fill synchronously
+                sl = cgc_gather_slab_get(kind, exp_bytes, wt_buft);
+                if (sl != nullptr) {
+                    const int64_t filled = llama_expert_cache_fill_layer_slab(cache, (uint32_t) il,
+                            kind, sl->base, exp_bytes);
+                    if (filled < 0) {
+                        fprintf(stderr, "CGC-PREFILL-STREAM: fill_layer_slab FAILED il=%d kind=%d — "
+                                "falling back to original (shrunk) weights, values NOT trustworthy\n",
+                                il, kind);
+                        sl = nullptr;
+                    }
+                }
             }
-            const int64_t filled = llama_expert_cache_fill_layer_slab(cache, (uint32_t) il,
-                    kind, sl->base, exp_bytes);
-            if (filled < 0) {
-                fprintf(stderr, "CGC-PREFILL-STREAM: fill_layer_slab FAILED il=%d kind=%d — "
-                        "falling back to original (shrunk) weights, values NOT trustworthy\n",
-                        il, kind);
+            if (sl == nullptr) {
                 continue;
             }
             // Record original state ONCE per (layer, kind) so the graph-build restore lands on
@@ -4229,10 +4391,12 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
                 static int ps_dbg = 0;
                 if (ps_dbg < 4) {
                     ps_dbg++;
+                    const int64_t filled = (cgc_db_enable && cgc_db_init) ? (int64_t) sl->size : -1;
                     fprintf(stderr, "CGC-PREFILL-STREAM: il=%d kind=%d ntok=%lld "
-                            "experts=%u slab=%.2f MiB filled=%lld bytes\n",
+                            "experts=%u slab=%.2f MiB filled=%lld bytes db=%d\n",
                             il, kind, (long long) n_tokens, n_expert_full,
-                            (double) sl->size / (1024.0 * 1024.0), (long long) filled);
+                            (double) sl->size / (1024.0 * 1024.0), (long long) filled,
+                            (int) (cgc_db_enable && cgc_db_init));
                 }
             }
         }

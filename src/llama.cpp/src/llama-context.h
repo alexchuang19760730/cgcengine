@@ -13,6 +13,9 @@
 
 #include <deque>
 #include <map>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 #include <vector>
 
 struct llama_model;
@@ -413,6 +416,23 @@ private:
     // (see the note in llama-context.cpp); moving only data leaves the lookup computing an offset
     // against the original allocation and Metal still reports nil. Restored with the ne[2] above.
     mutable std::map<std::pair<int,int>, ggml_backend_buffer_t> cache_gather_orig_buf;
+
+    // [CGC M2 double-buffer 2026-09-14] Two slab sets (A/B) for overlapping slab fill with
+    // graph build. While layer L computes/builds against set N, a background thread fills
+    // layer L+1 into set 1-N. The eval hook swaps sets at each layer boundary.
+    int  cgc_db_cur       = 0;       // current slab set in use (0 or 1)
+    int  cgc_db_slab[2][4] = {{-1,-1,-1,-1}, {-1,-1,-1,-1}};  // indices into cache_gather_slab
+    bool cgc_db_init       = false;   // both sets allocated
+    std::thread cgc_db_thread;
+    std::mutex  cgc_db_mtx;
+    std::condition_variable cgc_db_cv;
+    int  cgc_db_job_layer = -1;       // layer the background thread is filling (-1 = no job)
+    int  cgc_db_job_set   = -1;       // which set the background thread is filling
+    bool cgc_db_job_done  = false;    // background job completed
+    bool cgc_db_stop      = false;    // signal background thread to exit
+    void cgc_db_worker();             // background thread entry point
+    void cgc_db_start_prefill(int layer, int set);  // launch background fill for layer into set
+    void cgc_db_wait();               // wait for background job to finish
     // per-layer union of experts used by the current decode step (deduped, sorted).
     std::vector<std::vector<uint32_t>> cache_step_union;
     // per-layer union of experts used by the previous decode step.
