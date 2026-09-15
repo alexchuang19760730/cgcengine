@@ -77,6 +77,10 @@ CURATED = [
     ("scripts/check/gguf_dead_expert_census.py", "probe", "engine", True, False,
      "census of all-zero and zero-PREFIXED expert rows straight from the GGUF, no log needed. "
      "The file-side ground truth behind every zero_row / zero-region alarm."),
+    ("scripts/check/prefill_certifiability.py", "probe", "engine", True, False,
+     "N independent processes, one identical command, launch memory state recorded: is a "
+     "throughput number a spec or a draw? --warm-runs forces the page cache up to break the "
+     "run-order confound. Quote the repeatable band, not the target."),
     ("scripts/check/flip_rate.py", "probe", "engine", True, False,
      "route-flip rate; the measurement behind the 'which experts change' question."),
     ("scripts/check/mtp_accept_ab.py", "compare", "engine", True, False,
@@ -142,6 +146,9 @@ CURATED = [
      "the mul_mat_id geometry findings."),
     ("docs/LATEST_COMMIT_GAP_ANALYSIS_2026-09-15.md", "conclusion", "engine", False, False,
      "gap analysis against the current commit."),
+    ("docs/PREFILL250_CERTIFIABILITY_20260916.html", "conclusion", "engine", False, True,
+     "1/11 runs cleared 250; the 155-184 band is the operating point; free memory AND page cache "
+     "both refuted as explanations; and the self-correction of 'nothing is blocking 250/25'."),
 ]
 
 

@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>prefill 250 可認證性：11 次獨立啟動的判決（2026-09-16）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  figure{margin:20px 0}
+  figcaption{font-size:12.5px;color:var(--muted);margin-top:8px;text-align:center}
+  svg{display:block;width:100%;height:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>prefill 250 可認證性：11 次獨立啟動的判決</h1>
+<div class="sub">
+  日期 2026-09-16 · 分支 <code>demo/sweet-spot-windows-fix</code> · commit <code>53b7df693</code> 之後<br>
+  模型 Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf（13.66 GB · 256 experts · 40 layers）·
+  硬體 MacBook Air M16,12 / Apple M4 / 16 GB unified<br>
+  儀器 <code>scripts/check/prefill_certifiability.py</code>（本輪新增）
+</div>
+
+<div class="box b-red">
+  <p><strong>一句話結論：250 不是這個形狀的操作點。11 次獨立啟動中只有 1 次越過它，
+  而越過的那次不是任何被我量到的啟動狀態造成的 —— 同樣的啟動狀態重跑一次得到 179 t/s。</strong></p>
+  <p>可引用的 band 是 <strong>155–184 t/s</strong>（18.5% 離散），不是 250。而「把記憶體水位當前置條件」
+  這條修法已經被<strong>實驗否證</strong>：我把 page cache 強制拉高 4.3 倍，吞吐沒有動。</p>
+</div>
+
+<div class="cards">
+  <div class="card"><div class="k">越過 250 的次數</div><div class="v bad">1 / 11</div>
+    <div class="small">同命令、同形狀、11 個獨立行程</div></div>
+  <div class="card"><div class="k">可引用 band</div><div class="v">155–184</div>
+    <div class="small">t/s，離散 18.5%（排除單一極端值）</div></div>
+  <div class="card"><div class="k">組內離散（同行程）</div><div class="v ok">1.7–19.4</div>
+    <div class="small">± t/s，<code>-r 3</code> 三個樣本彼此接近</div></div>
+  <div class="card"><div class="k">page cache rho</div><div class="v bad">+0.09</div>
+    <div class="small">cache 2.32→9.96 GiB，吞吐不動</div></div>
+</div>
+
+<h2>1. 為什麼要做這個實驗</h2>
+
+<p>250 這個數字<strong>已經被達到過</strong>：09-14 的 <code>264.78 tok/s</code>
+（<code>Backup/cgc_logs/llama_server_20260915_011146.log</code>）、<code>254.74</code>、峰值 <code>276.59</code>。
+它也被同一個命令<strong>錯過過</strong>：<code>pp2048 @ -ub 6144</code> 四次獨立啟動得到
+<code>276.59 / 198.84 / 176.18 / 122.68</code>（2.25× 離散），而每次啟動<em>內部</em>的三個樣本
+只差 2.08–15.41。</p>
+
+<p>所以離散不是量測噪聲，是<strong>行程之間的狀態</strong>。一個 2.25 次才有一次命中的數字不是規格，
+是抽獎；下游沒有任何東西能建在它上面。這個實驗就是把那個狀態找出來 ——
+找到了，250 就變成「加上前置條件後可認證」；找不到，就該停止猜測。</p>
+
+<h3>1.1 儀器的來源是唯一的</h3>
+
+<p>命令不是手寫的：<code>llama_bench_matrix.py</code> 用 <code>run_server.sh CGC_DUMP_ENV=1</code>
+取得 <code>prefill250</code> profile 的 <strong>resolved env 與 argv</strong>，再餵給 <code>llama-bench</code>。
+11 次啟動的實際命令逐字相同：</p>
+
+<pre><code>llama-bench -m …/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf -ngl 99 \
+  --load-mode none -t 8 -expert-cache 8589934592 --cache-type-k q8_0 --cache-type-v q8_0 \
+  -b 6144 -ub 6144 -p 2048 -n 16 -d 0 -r 3 -o json</code></pre>
+
+<p>每次啟動前記錄 <code>vm_stat</code>，並且<strong>每次都換一個新行程</strong>。這就是「11 個獨立行程」的意思。</p>
+
+<h2>2. 第一輪：假設被否證，而且方向是反的</h2>
+
+<p>候選機制是啟動時的記憶體水位：16 GB 要同時裝 13.66 GiB 模型 + 8 GiB pool +
+6144 寬 ubatch 的 compute buffer，而 <code>run_server.sh:427-434</code> 已經記載
+<strong>pool 多 2 GiB 就足以把 6144 的 compute buffer 挤出 GPU</strong>（
+<code>command buffer failed with status 5 / Insufficient Memory</code>）。形狀是超訂的，
+所以抽獎抽的應該是「工作集有多少是常駐的」。</p>
+
+<table>
+  <tr><th>run</th><th>usable%</th><th>free GiB</th><th>swap MiB</th><th>pp t/s</th><th>±</th><th>wall s</th></tr>
+  <tr><td class="num">1</td><td class="num">55.4</td><td class="num">3.90</td><td class="num">3485</td>
+      <td class="num ok"><strong>286.67</strong></td><td class="num">12.24</td><td class="num">45</td></tr>
+  <tr><td class="num">2</td><td class="num">63.9</td><td class="num">7.34</td><td class="num">4737</td>
+      <td class="num">173.54</td><td class="num">19.41</td><td class="num">61</td></tr>
+  <tr><td class="num">3</td><td class="num">66.0</td><td class="num">7.51</td><td class="num">4809</td>
+      <td class="num">155.62</td><td class="num">10.70</td><td class="num">71</td></tr>
+  <tr><td class="num">4</td><td class="num">64.2</td><td class="num">7.70</td><td class="num">4678</td>
+      <td class="num">166.06</td><td class="num">1.52</td><td class="num">64</td></tr>
+  <tr><td class="num">5</td><td class="num">67.7</td><td class="num">7.69</td><td class="num">4839</td>
+      <td class="num">166.63</td><td class="num">4.81</td><td class="num">62</td></tr>
+</table>
+
+<p>結果：spread <strong>84.2%</strong>，rho(usable%, t/s) = <strong>−0.70</strong> ——
+記憶體<em>越多</em>反而<em>越慢</em>，而唯一達標的那次是記憶體<strong>最少</strong>的那次。</p>
+
+<h3>2.1 這個「反相關」暴露了我自己的儀器錯誤</h3>
+
+<div class="box b-amber">
+  <p><strong>我量的是錯的變數。</strong> <code>free + inactive</code> 不是 page cache 的量度。
+  <code>Pages free</code> 低可以是「cache 很大」（macOS 會把閒置 RAM 填成 cache ⇒ 應該快），
+  也可以是「別的行程佔住」（⇒ 應該慢）。<strong>這兩個方向相反，而我把它們平均掉了。</strong></p>
+  <p>當場實測：<code>free = 5.94 GiB</code>，但真正的 cache（<code>File-backed pages</code>）只有
+  <code>3.33 GiB</code>，另有 <code>3.82 GiB</code> anonymous。兩者根本不是同一個量。</p>
+</div>
+
+<p>修正後，儀器改為記錄 <code>File-backed pages</code>（真正的 page cache）與
+<code>Anonymous pages</code>，並加上 <code>--warm-runs</code>：在指定次數<strong>預先讀完整個模型檔</strong>，
+強制把 cache 拉上去。<strong>這是打破「執行順序 ≡ 變數順序」這個混淆的唯一方法</strong> ——
+自然狀態下 cache 與 free 是一起動的，強制暖機則讓 cache 上升、free 下降。</p>
+
+<h2>3. 第二輪：cache 被強制拉高 4.3 倍，吞吐沒動</h2>
+
+<p>6 次啟動，第 2/4/6 次之前先把 13.66 GB 的模型檔完整讀一遍。</p>
+
+<table>
+  <tr><th>run</th><th>暖機</th><th>free GiB</th><th><strong>cache GiB</strong></th><th>anon GiB</th>
+      <th>swap MiB</th><th>pp t/s</th><th>±</th><th>wall s</th></tr>
+  <tr><td class="num">1</td><td>—</td><td class="num">3.74</td><td class="num">4.51</td>
+      <td class="num">4.80</td><td class="num">4452</td><td class="num">179.09</td><td class="num">4.37</td><td class="num">73</td></tr>
+  <tr><td class="num">2</td><td>✓</td><td class="num">0.07</td><td class="num ok"><strong>9.61</strong></td>
+      <td class="num">3.22</td><td class="num">4867</td><td class="num">184.09</td><td class="num">5.15</td><td class="num">61</td></tr>
+  <tr><td class="num">3</td><td>—</td><td class="num">7.81</td><td class="num">2.98</td>
+      <td class="num">1.52</td><td class="num">5028</td><td class="num">184.06</td><td class="num">2.04</td><td class="num">60</td></tr>
+  <tr><td class="num">4</td><td>✓</td><td class="num">0.06</td><td class="num ok"><strong>9.89</strong></td>
+      <td class="num">2.92</td><td class="num">4876</td><td class="num">173.76</td><td class="num">7.59</td><td class="num">63</td></tr>
+  <tr><td class="num">5</td><td>—</td><td class="num">7.26</td><td class="num">2.32</td>
+      <td class="num">2.88</td><td class="num">4860</td><td class="num">155.33</td><td class="num">4.15</td><td class="num">66</td></tr>
+  <tr><td class="num">6</td><td>✓</td><td class="num">0.06</td><td class="num ok"><strong>9.96</strong></td>
+      <td class="num">2.82</td><td class="num">5125</td><td class="num">175.23</td><td class="num">1.69</td><td class="num">63</td></tr>
+</table>
+
+<figure>
+<svg viewBox="0 0 680 300" role="img" aria-label="11 次啟動的 prefill 吞吐與 250 目標線">
+  <rect x="0" y="0" width="680" height="300" fill="#ffffff"/>
+  <!-- gridlines -->
+  <g stroke="#e5e7eb" stroke-width="1">
+    <line x1="60" y1="240" x2="660" y2="240"/>
+    <line x1="60" y1="190" x2="660" y2="190"/>
+    <line x1="60" y1="140" x2="660" y2="140"/>
+    <line x1="60" y1="90"  x2="660" y2="90"/>
+    <line x1="60" y1="40"  x2="660" y2="40"/>
+  </g>
+  <!-- y labels: value = 100 + (240-y)/... ; map 100 t/s -> y240, 300 -> y40 ; 1 t/s = 1px -->
+  <g font-size="11" fill="#6b7280" font-family="-apple-system,sans-serif">
+    <text x="52" y="244" text-anchor="end">100</text>
+    <text x="52" y="194" text-anchor="end">150</text>
+    <text x="52" y="144" text-anchor="end">200</text>
+    <text x="52" y="94"  text-anchor="end">250</text>
+    <text x="52" y="44"  text-anchor="end">300</text>
+  </g>
+  <!-- 250 target line -->
+  <line x1="60" y1="90" x2="660" y2="90" stroke="#dc2626" stroke-width="2" stroke-dasharray="6 4"/>
+  <text x="656" y="84" font-size="11" fill="#dc2626" text-anchor="end"
+        font-family="-apple-system,sans-serif" font-weight="700">目標 250 t/s</text>
+  <!-- bars: exp1 (5) then exp2 (6). x start 78, width 44, gap 8 -->
+  <!-- exp1: 286.67,173.54,155.62,166.06,166.63 -->
+  <g>
+    <rect x="78"  y="53.3" width="44" height="186.7" fill="#dc2626"/>
+    <rect x="130" y="166.5" width="44" height="73.5" fill="#c9ced6"/>
+    <rect x="182" y="184.4" width="44" height="55.6" fill="#c9ced6"/>
+    <rect x="234" y="173.9" width="44" height="66.1" fill="#c9ced6"/>
+    <rect x="286" y="173.4" width="44" height="66.6" fill="#c9ced6"/>
+  </g>
+  <!-- exp2: 179.09,184.09,184.06,173.76,155.33,175.23 -->
+  <g>
+    <rect x="358" y="160.9" width="44" height="79.1" fill="#93a3b8"/>
+    <rect x="410" y="155.9" width="44" height="84.1" fill="#93a3b8"/>
+    <rect x="462" y="155.9" width="44" height="84.1" fill="#93a3b8"/>
+    <rect x="514" y="166.2" width="44" height="73.8" fill="#93a3b8"/>
+    <rect x="566" y="184.7" width="44" height="55.3" fill="#93a3b8"/>
+    <rect x="618" y="164.8" width="44" height="75.2" fill="#93a3b8"/>
+  </g>
+  <!-- values -->
+  <g font-size="10" fill="#111827" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-weight="700">
+    <text x="100" y="47">287</text>
+    <text x="152" y="160">174</text>
+    <text x="204" y="178">156</text>
+    <text x="256" y="168">166</text>
+    <text x="308" y="167">167</text>
+    <text x="380" y="155">179</text>
+    <text x="432" y="150">184</text>
+    <text x="484" y="150">184</text>
+    <text x="536" y="160">174</text>
+    <text x="588" y="179">155</text>
+    <text x="640" y="159">175</text>
+  </g>
+  <!-- x group labels -->
+  <g font-size="11" fill="#6b7280" text-anchor="middle" font-family="-apple-system,sans-serif">
+    <text x="204" y="262">第 1 輪（5 次，自由變化）</text>
+    <text x="512" y="262">第 2 輪（6 次，第 2/4/6 次強制暖機）</text>
+  </g>
+  <line x1="60" y1="240" x2="660" y2="240" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="60" y="288" font-size="11" fill="#6b7280" font-family="-apple-system,sans-serif">
+    紅色＝唯一越過 250 的一次；灰／藍＝其餘 10 次，全部落在 155–184。250 線以上沒有任何第二次。</text>
+</svg>
+<figcaption>圖 1：11 次獨立啟動的 pp2048 吞吐。目標線 250 只被越過一次（1/11）。</figcaption>
+</figure>
+
+<p>結果：<strong>0/6 越過 250</strong>；離散 <strong>18.5%</strong>；而
+<strong>rho(cache GiB, t/s) = +0.09</strong>。</p>
+
+<div class="box b-red">
+  <p><strong>兩個假設都死了：</strong>不是 free memory（−0.14），不是 page cache（+0.09），
+  也不是 anonymous（+0.14）。cache 從 2.32 拉到 9.96 GiB（4.3 倍）、free 掉到 0.06 GiB，
+  <strong>吞吐落在同一條 155–184 的帶上</strong>。</p>
+</div>
+
+<figure>
+<svg viewBox="0 0 680 260" role="img" aria-label="page cache 對吞吐的散佈圖，無相關">
+  <rect x="0" y="0" width="680" height="260" fill="#ffffff"/>
+  <g stroke="#e5e7eb" stroke-width="1">
+    <line x1="80" y1="220" x2="620" y2="220"/>
+    <line x1="80" y1="170" x2="620" y2="170"/>
+    <line x1="80" y1="120" x2="620" y2="120"/>
+    <line x1="80" y1="70"  x2="620" y2="70"/>
+    <line x1="80" y1="20"  x2="620" y2="20"/>
+  </g>
+  <g font-size="11" fill="#6b7280" font-family="-apple-system,sans-serif">
+    <text x="72" y="224" text-anchor="end">150</text>
+    <text x="72" y="174" text-anchor="end">170</text>
+    <text x="72" y="124" text-anchor="end">190</text>
+    <text x="72" y="74"  text-anchor="end">210</text>
+    <text x="72" y="24"  text-anchor="end">230</text>
+    <text x="350" y="252" text-anchor="middle">page cache（File-backed pages, GiB）→</text>
+  </g>
+  <g font-size="11" fill="#6b7280" font-family="-apple-system,sans-serif">
+    <text x="140" y="240" text-anchor="middle">3</text>
+    <text x="260" y="240" text-anchor="middle">5</text>
+    <text x="380" y="240" text-anchor="middle">7</text>
+    <text x="500" y="240" text-anchor="middle">9</text>
+    <text x="590" y="240" text-anchor="middle">10</text>
+  </g>
+  <!-- y: t/s -> y = 220 - (v-150)*2.5 ; x: cache 2.3 -> 100, 10 -> 600 => x = 100 + (c-2.3)*64.9 -->
+  <!-- points: (4.51,179.09)->(243,147.3) ; (9.61,184.09)->(574,134.8) ; (2.98,184.06)->(144,134.9)
+              (9.89,173.76)->(592,160.6) ; (2.32,155.33)->(101,206.7) ; (9.96,175.23)->(597,156.9) -->
+  <g>
+    <circle cx="243" cy="147" r="7" fill="#93a3b8"/>
+    <circle cx="574" cy="135" r="7" fill="#059669"/>
+    <circle cx="144" cy="135" r="7" fill="#93a3b8"/>
+    <circle cx="592" cy="161" r="7" fill="#059669"/>
+    <circle cx="101" cy="207" r="7" fill="#93a3b8"/>
+    <circle cx="597" cy="157" r="7" fill="#059669"/>
+  </g>
+  <text x="620" y="30" font-size="11" fill="#dc2626" text-anchor="end"
+        font-family="-apple-system,sans-serif" font-weight="700">rho = +0.09　（綠＝強制暖機的三次）</text>
+  <text x="90" y="16" font-size="11" fill="#6b7280" font-family="-apple-system,sans-serif">
+    pp t/s ↑（150 起，每格 20）</text>
+</svg>
+<figcaption>圖 2：把 page cache 拉高 4.3 倍，點雲仍是一條水平線 —— 沒有斜率。</figcaption>
+</figure>
+
+<h2>3.5 決定性的那一對</h2>
+
+<p>比任何相關係數都清楚的是這一對：</p>
+
+<table>
+  <tr><th>實驗</th><th>free GiB</th><th>cache GiB</th><th>swap MiB</th><th>pp t/s</th></tr>
+  <tr><td>第 1 輪 · run 1</td><td class="num">3.90</td><td class="num">（未記錄）</td>
+      <td class="num">3485</td><td class="num ok"><strong>286.67</strong></td></tr>
+  <tr><td>第 2 輪 · run 1</td><td class="num">3.74</td><td class="num">4.51</td>
+      <td class="num">4452</td><td class="num bad"><strong>179.09</strong></td></tr>
+</table>
+
+<p><strong>幾乎相同的啟動狀態，60% 的差距。</strong> 所以 286.67 不是「某一種機器狀態」，
+它是一個目前<strong>無法用任何我量到的量定位的極端值</strong>。要誠實的話，
+這一輪的產出是<strong>否定的</strong>：我砍掉了兩條修法，而不是找到了一條。</p>
+
+<h2>4. 而程式碼那邊：M1 不是「未實作」，是「已實作、已量測、已否決」</h2>
+
+<p>250/25 這條路的關鍵依賴是 M1（W3 解耦）。我上一輪說「沒有東西擋著」，這句話在程式碼面前是錯的，
+而且錯得比「未實作」更重：</p>
+
+<pre><code>docs/M1_POOL_SPLIT_COST_2026-09-14.md
+Status: implemented, measured, and rejected. The configuration is env-gated
+        (CGC_POOL_SPLIT=1, default OFF) and now logs a loud warning at enable time.</code></pre>
+
+<p>兩個獨立的阻斷，各附精確的失敗簽名：</p>
+
+<table>
+  <tr><th>阻斷</th><th>失敗簽名</th><th>為什麼不是能修的 bug</th></tr>
+  <tr>
+    <td><strong>A. 寬路徑是 Metal 已知讀不對的那個配置</strong></td>
+    <td class="mono">CGC-POOL-SPLIT-GEOM: il=1 kind=1 ntok=16 mode=wide ne2=256</td>
+    <td>「wide」＝ Metal 透過模型權重緩衝讀一個 256-expert 張量，正是 loader 的 shrink 存在的理由
+        （plan §1.1 的 <code>buffer is nil</code>，以及 P1 mmap-stream 的 residency 爆炸）。
+        所以夾制被<strong>刻意保留</strong>。</td>
+  </tr>
+  <tr>
+    <td><strong>B. 自有 pool 下 pool 路徑自己錯配 slot</strong></td>
+    <td class="mono">CGC-POST: il=1 st[0]=1 st[1]=1 &nbsp;← 兩個 expert 共用 slot 1<br>
+        CGC-HOOK: il=2 ids=[-1096546439 …] &nbsp;← NaN 位元模式</td>
+    <td>remap 兩次讀同一區域 ⇒ 該層輸出 NaN ⇒ 傳到 il=2 讓 Metal encoder 出錯（SIGSEGV）。
+        舊路徑沒這問題是<strong>結構性的</strong>：那裡 pool「就是」張量自己的儲存，
+        所以「slot e 持有 expert e」在任何 fill 之前就字面成立。</td>
+  </tr>
+</table>
+
+<div class="box b-red">
+  <p><strong>結論欄自己說的話：</strong>「Reject work item 1 as specified. On this engine the pool must
+  remain the expert tensor's own storage. Decoupling them is not a refactor of the pool; it is a rewrite
+  of the ownership model (<code>slot_owner</code> / <code>slot_table</code> / <code>batch_owned</code> /
+  prepopulate identity) <em>and</em> of how Metal is allowed to see expert weights, and the measured
+  prize is not prefill throughput — <strong>the clamp survives either way</strong>.」</p>
+</div>
+
+<p>而 <code>llama.cpp:424</code> 在啟用時會印：</p>
+
+<pre><code>CGC_POOL_SPLIT is an EXPERIMENTAL, KNOWN-BROKEN configuration (degenerate routing + SIGSEGV)
+- see docs/M1_POOL_SPLIT_COST_2026-09-14.md; do not benchmark or ship with it</code></pre>
+
+<p>順帶一提：阻斷 B 所在的那套記帳，<strong>正是本輪稍早我在讀的東西</strong>
+（<code>llama-expert-cache.cpp:827</code> 的 <code>slot_owner</code>、<code>CGC-POST</code> 的
+<code>st[…]</code> slot table、owner-set 掃描）。所以那一輪的工作不但沒清路，它<em>緊鄰</em>真正的障礙。</p>
+
+<h2>5. 修正後回答「250 / 25 還有機會嗎」</h2>
+
+<table>
+  <tr><th>目標</th><th>現在的實話</th><th>障礙的種類</th></tr>
+  <tr>
+    <td><strong>prefill 250</strong></td>
+    <td>峰值達到過（286.67 / 264.78 / 276.59），但<strong>不是可重現的操作點</strong>：
+        1/11。<strong>可引用的是 155–184 t/s。</strong> 而「把記憶體水位當前置條件」這條路
+        <strong>已被實驗否證</strong> —— 我強制把 page cache 拉高 4.3 倍，吞吐沒動。</td>
+    <td><strong>未定位</strong>。既不是 free memory、也不是 page cache、也不是 anonymous。
+        剩下的候選在引擎自己的狀態裡（slot / fill 路徑、Metal buffer 重用），
+        不在機器的記憶體計數器裡。</td>
+  </tr>
+  <tr>
+    <td><strong>decode 25</strong></td>
+    <td>9.05 t/s（最新 matrix），需 <strong>2.76×</strong>。roadmap 自己已把 M3 的離場條件
+        從 25 降到 <strong>15 t/s（MTP off）</strong>，並標為「★ 最可能失敗」。</td>
+    <td><strong>已量測的失敗</strong>。M1（W3 解耦）是宣告的關鍵依賴，而它
+        「implemented, measured, and rejected」，兩個阻斷各有簽名。
+        這比「還沒做」更貴：有人試過，而且 fault 了。</td>
+  </tr>
+</table>
+
+<h2>6. 我對自己上一輪那句話的更正</h2>
+
+<p>上一輪我說「250/25 那條路上現在沒有東西擋著了」。這是錯的，而且是三層的錯：</p>
+
+<ol>
+  <li><strong>那份 zero-region 工作從來不在那條路上。</strong> 那個發現是關於<em>探針寬度</em>
+      （4096 B vs 長 4592–13120 B 的零前綴），是量測工具的問題，不是性能槓桿。
+      所以結束它<strong>不可能</strong>清空任何路 —— 在我開始之前那條路也同樣「沒有東西擋著」，
+      而 250/25 至今沒做到。<strong>我把「移除了一個干擾」講成了「移除了一個障礙」。</strong></li>
+  <li><strong>那條路的宣告第一依賴（M1/W3）不是未實作，是已否決</strong>，
+      附兩個精確的失敗簽名（§4）。這是比「未實作」更重的障礙。</li>
+  <li><strong>兩個目標在同一個 16 GB 上互相競爭</strong>，而我上輪完全沒提：
+      <code>prefill250</code> 要 ctx 8192 + ubatch 6144，<code>prod25</code> 是 ctx 4096 + 模型預設 batch；
+      兩者共用 8 GiB pool。要一個 server 同時做兩件事，就必須付 6144-wide compute buffer 的記憶體代價 ——
+      而那正是讓 250 不穩定的那個配置。</li>
+</ol>
+
+<div class="box b-blue">
+  <p><strong>所以：不，我沒有信心。</strong> 這一份報告的可信度建立在<strong>它敢於否定自己</strong>上：
+  兩個候選機制被自己的實驗砍掉，一個數字（250）被自己的儀器降級為極端值。
+  唯一站得住的是三件可複查的事實：<strong>1/11、18.5% 的帶、以及 M1 的「已否決」狀態。</strong></p>
+</div>
+
+<h2>7. 下一步（按投報率）</h2>
+
+<ol>
+  <li><strong>把 286.67 那筆單獨追出來（最高投報率）。</strong> 它是唯一越過 250 的樣本，
+      而它的啟動狀態與另一筆 179.09 幾乎相同。兩者的差異只可能在引擎內部
+      ⇒ 用既有儀器（<code>CGC-DECPROF</code> / <code>CGC-M2-FILL</code> /
+      <code>CGC-DBUF</code> / teardown <code>pool integrity</code>）把那 45 秒的 run 與
+      73 秒的 run 逐段對拆。這是唯一能把「抽獎」變成「規格」的路，且不需要新理論。</li>
+  <li><strong>修 M1 的正確形狀已經被指出了，但不在 M1 的原始規格裡</strong>：
+      該文件的收尾說真正的槓桿是「wide tensors 作為<em>讀取來源</em>，
+      由 host 側供給 pool，而非作為 graph 能 dispatch 的張量」。
+      若要走這條路，起點是 ownership model（<code>slot_owner</code>/<code>slot_table</code>/
+      <code>batch_owned</code>），不是 loader。</li>
+  <li><strong>不要再調 pool 大小或記憶體水位去追 250。</strong> 本輪已否證；那個旋鈕不在這條路上。</li>
+</ol>
+
+<div class="sub" style="margin-top:44px;border-top:1px solid var(--line);padding-top:14px">
+  儀器 <code>scripts/check/prefill_certifiability.py</code> ·
+  原始輸出 <code>Backup/llama_bench/prefill_certifiability_20260916.json</code>、
+  <code>Backup/llama_bench/prefill_certifiability_warm_20260916.json</code> ·
+  日誌 <code>Backup/cgc_logs/prefill_certifiability_warm_20260916.log</code> ·
+  複現 <code>/opt/homebrew/bin/python3 scripts/check/prefill_certifiability.py --runs 6 --warm-runs 2,4,6</code>
+</div>
+
+</div>
+</body>
+</html>
