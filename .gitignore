@@ -410,3 +410,14 @@ dsh/packages/*/dist/
 /.replay_bench_current.json
 /.replay_bench_report.json
 
+# ---- 2026-09-15: HF Space 部署鏡像 (自帶 .git, 是獨立 repo) ----
+#   hf-space-deploy/ 有自己的 origin = hf-mirror.com/spaces/Alexchuang/cgc-engine-native-test。
+#   外層 repo 若 add 到它只會得到一個 gitlink (無內容), 而且會在 submodule 檢查裡造假。
+#   它的內容要同步時一律在自己目錄內 push, 不經過本 repo。
+hf-space-deploy/
+
+# ---- 2026-09-15: replay bench 資料檔 (已 stale) ----
+#   .replay_bench_baseline.json 已失真, 一律以 RUN_REPLAY_BENCH=0 跑; database.json
+#   與 records/ 是舊跑的殘留, 不入庫以免被當成有效 baseline。
+data/replay_bench/
+
