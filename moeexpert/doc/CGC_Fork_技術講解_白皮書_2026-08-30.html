@@ -408,7 +408,16 @@ accept: common_sampler_sample_and_accept_n
     <tr><th>變數</th><th>讀取</th><th>作用</th><th>預設</th><th>生產</th></tr>
     <tr><td><code>CGC_EXPERT_CACHE_BYTES</code></td><td>bytes</td><td>expert cache 預算（simple.cpp：旗標未給時的唯一開關）</td><td>0 = 全關</td><td class="hl">4294967296（4GiB）</td></tr>
     <tr><td><code>LLAMA_EXPERT_CACHE_ALLOW_NGL</code></td><td>存在即啟</td><td><b>-ngl&gt;0 時允許專家留 CPU / 走 L4</b>（沒有它 -ngl&gt;0 整個 cache 不啟用）</td><td>-ngl&gt;0 → cache off</td><td class="hl">1</td></tr>
-    <tr><td><code>LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0</code></td><td>存在即啟</td><td>blk.0 恆等 remap、跳過 pool（否則 OOB 炸）</td><td>off（L4 會炸）</td><td class="hl">1</td></tr>
+    <tr><td><code>LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0</code></td><td><s>存在即啟</s><br><b>值語意</b>（2026-09-16 起）</td><td>blk.0 恆等 remap、跳過 pool（否則 OOB 炸）。<br><b>它是「對齊 base 佈局」旋鈕</b>：<code>-ngl&nbsp;30</code> 的 base 把 blk.0 留在 CPU ⇒ 設 <b>1</b>；full-offload（<code>ALLOW_NGL=1</code>，40 層全在 Metal）的 base 把 blk.0 放在 Metal ⇒ 設 <b>0</b>（設 1 會讓 layer 0 變 cross-backend，15+27 只答對 4/10）</td><td>off</td><td class="hl">0（blk.0 在 pool 內）</td></tr>
+    <tr><td colspan="5" class="small"><b>[2026-09-16 更正]</b> 本列原記「讀取＝存在即啟、生產＝1」。三個讀者
+      （<code>llama.cpp</code>、<code>llama-expert-cache.cpp</code>、<code>llama-context.cpp</code>）當時全部測
+      <b>存在</b>，因此在 profile 寫 <code>=0</code> 的意圖（關閉）與實際（開啟）相反 ⇒
+      2026-09-09 的品質修復空轉六天。現已收束為單一 predicate <code>cgc_l4_skip_layer0_on()</code>
+      （定義在 <code>llama-expert-cache.h</code>）：unset／空／前導 <code>0</code> = OFF。
+      生產 profile 走 full-offload，故值為 <b>0</b>；<code>-ngl&nbsp;30</code> 的 cache 臂仍應為
+      <b>1</b>。<b>要量兩者差異</b>不再需要改腳本，用 <code>CGC_SERVER_SKIP0=0|1</code>。
+      詳見 <code>docs/SKIP0_VALUE_SEMANTICS_20260916_0021.html</code> 與
+      <code>agent_harness/CONVENTIONS.md</code> A9／A10。</td></tr>
     <tr><td><code>LLAMA_EXPERT_CACHE_LAYER_CAPS</code></td><td>"40-40:256;0-3:256,4-39:180"</td><td>每層 slot 容量（loader+cache 兩側同讀）</td><td>統一 n_slots</td><td>依 ROUTE_DUMP</td></tr>
     <tr><td><code>LLAMA_EXPERT_CACHE_POOL</code></td><td>'1'</td><td>L3A 靜態 pool（malloc 路徑）</td><td>L3-B gather</td><td>L3 用 1；L4 自動</td></tr>
     <tr><td><code>LLAMA_EXPERT_CACHE_NOGATHER</code></td><td>非空</td><td>關閉 hook+gather+skip-load</td><td>啟用</td><td>不設</td></tr>

@@ -5219,7 +5219,14 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
     // reading the ORIGINAL tensor with the raw expert ids, so write an IDENTITY remap (instead of
     // slot indices) and skip ensure_batch / union recording. Writing slot ids would make mul_mat_id
     // index pool slots that have no adopted region -> layer-0 garbage that corrupts the whole net.
-    if (getenv("LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0") != nullptr && il == 0) {
+    //
+    // [CGC 2026-09-16] The predicate is now VALUE-based (cgc_l4_skip_layer0_on, defined once in
+    // llama-expert-cache.h). While it tested `getenv(...) != nullptr` this branch was taken even
+    // when the profile wrote `=0`, so layer 0 never entered the pool and the 2026-09-09 quality
+    // fix was inert. Flipping this branch is a numerics change: with skip0 off, layer 0 falls
+    // through to the pooled path below (ensure_batch + union recording, 40 pooled layers), which
+    // needs its own M1/M2/M3 reference -- it is NOT comparable to a skip0-on dump.
+    if (cgc_l4_skip_layer0_on() && il == 0) {
         // [CGC 2026-09-15 S1 slot-table] This path deliberately writes an IDENTITY map (raw expert
         // ids, not slots) because layer 0's FFN reads the full-weight tensor. The GPU table must
         // carry the same identity -- otherwise the graph's get_rows would hand mul_mat_id pool slot

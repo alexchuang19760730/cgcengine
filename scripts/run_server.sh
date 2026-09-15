@@ -939,10 +939,31 @@ fi
 SERVER_ENV=(
     CGC_EXPERT_CACHE_BYTES="$BUDGET"
     LLAMA_EXPERT_CACHE_ALLOW_NGL=1
-    # 2026-09-09 品質修復：L4_SKIP_LAYER0 已證實 4/10 品質殺手（blk.0 走 CPU
-    # skip-load 但 graph 在 Metal → cross-backend garbage）。甜蜜點（12:44 log
-    # 5976 slots = 預設 uniform caps、layer 0 在 pool 內）無 skip0 = 90-100%。
-    LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0=0
+    # [CGC 2026-09-16] VALUE semantics, not presence. Until today the three readers of this knob
+    # (llama.cpp, llama-expert-cache.cpp, llama-context.cpp) tested `getenv(...) != nullptr`, under
+    # which `0` is a NON-NULL pointer -- so this line ENABLED skip0 and the 2026-09-09 quality fix
+    # below was inert for six days, while every cap_*.json and llama-bench env block recorded `"0"`
+    # and read as if it were off. The readers now parse the value (unset/empty/leading `0` = off),
+    # so `0` here finally means what the comment says. Do not "fix" a mode by writing `=0` at a
+    # call site while the reader tests presence -- that is this bug.
+    #
+    # What `0` means: blk.0 STAYS IN the pool -- 40 pooled layers, not 39. skip0 is a
+    # layout-matching knob, not a quality knob: `-ngl 30` (run_n30cache.sh) keeps blk.0's FFN on
+    # the CPU in the base, so skip0=1 is the bit-identical setting THERE; this profile is
+    # full-offload L4 (ALLOW_NGL=1, all 40 layers on Metal), where skip0=1 makes layer 0 a
+    # full-weight CPU tensor read by a Metal graph -- measured 4/10 on the 15+27 probe on
+    # 2026-09-09, vs 90-100% for the sweet spot (uniform caps, layer 0 in the pool).
+    #
+    # Flipping this line is a NUMERICS change (pooled-layer count 39<->40 changes layer 0's FFN
+    # consumer path, the pool's resident bytes and layer 0's pread traffic), so it needs its own
+    # M1/M2/M3 reference: a skip0-off dump is not comparable to a skip0-on one even though the
+    # resolved env string is identical in both cases.
+    #
+    # Overridable as CGC_SERVER_SKIP0 (same shape as CGC_SERVER_WORKERS below) so the control arm
+    # `CGC_SERVER_SKIP0=1` can be measured against the pre-fix reference without editing this file.
+    # A literal here could not be overridden from outside at all: `env "${SERVER_ENV[@]}"` would
+    # apply this line over any incoming value, so a hand-set env var would silently lose.
+    LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0="${CGC_SERVER_SKIP0:-0}"
     # [CGC 2026-09-15] Was the literal 8, never swept. It is the ONLY concurrency knob on the
     # expert-fill path, and the 2026-09-15 measurements say concurrency -- not bytes -- is the
     # binding term: 57363 preads x 1.73 ms = 99.03 s of summed latency inside a 57.5 s decode

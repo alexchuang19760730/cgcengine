@@ -1705,7 +1705,7 @@ size_t llama_expert_cache_prewarm_hot(llama_expert_cache * cache) {
         if (top[l].empty()) {
             continue; // no prefill routes for this layer
         }
-        if (getenv("LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0") != nullptr && l == 0) {
+        if (cgc_l4_skip_layer0_on() && l == 0) {
             continue; // blk.0 is not pooled (full-weight CPU skip-load tensor)
         }
         for (uint32_t e : top[l]) {

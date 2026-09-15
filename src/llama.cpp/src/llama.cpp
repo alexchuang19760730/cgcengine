@@ -393,7 +393,12 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
             // fills those slots. Hook off + shrunk tensor = weights that were never written, i.e.
             // an arm that measures nothing. With l4_path off the tensors keep all 256 experts, so
             // hook-off is a clean "resident full-width" arm.
-            ml.expert_cache_l4_skip_layer0 = getenv("LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0") != nullptr;
+            // VALUE semantics, not presence ([CGC 2026-09-16]): this used to be
+            // `getenv(...) != nullptr`, which made the profile's `...=0` a no-op that ENABLED
+            // skip0 and silently defeated the 2026-09-09 quality fix for six days. The single
+            // predicate lives in llama-expert-cache.h (cgc_l4_skip_layer0_on) and the other two
+            // readers call it too.
+            ml.expert_cache_l4_skip_layer0 = cgc_l4_skip_layer0_on();
             const bool l4_path = params.n_gpu_layers > 0 && getenv("LLAMA_EXPERT_CACHE_ALLOW_NGL") && !(no_gather && no_gather[0]) && !cgc_no_hook;
             if (cgc_no_hook) {
                 LLAMA_LOG_WARN("%s: LLAMA_EXPERT_CACHE_NOHOOK=1 -- hook/remap/pool/slab DISABLED, "

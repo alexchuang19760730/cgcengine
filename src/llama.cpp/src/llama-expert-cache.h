@@ -17,6 +17,42 @@
 #include <unordered_set>
 #include <vector>
 
+// Value semantics for CGC's boolean env knobs -- the ONE definition of "this flag is on".
+//
+// Why this exists (CONVENTIONS A9, and it cost six days): the readers of
+// LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0 used to test `getenv(...) != nullptr`, under which `"0"` is a
+// NON-NULL pointer, i.e. writing `0` ENABLED the flag. run_server.sh's profile wrote
+// `LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0=0` with a comment saying "layer 0 goes back into the pool",
+// and the 2026-09-09 quality fix was therefore inert while every cap_*.json and llama-bench env
+// block recorded the intent rather than the behaviour. The three readers live in three files, so
+// the fix is not three copies of a comparison -- it is one predicate that they all call and
+// cannot drift apart again.
+//
+// Off: unset, empty, or a leading '0'. Anything else is on (so "1", "true", "yes" all work).
+inline bool cgc_env_on(const char * name) {
+    const char * v = getenv(name);
+    if (v == nullptr || v[0] == '\0') {
+        return false;
+    }
+    return v[0] != '0';
+}
+
+// LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0: keep blk.0's expert FFN out of the L4 Metal pool.
+//
+// This is a *layout-matching* knob, not a quality knob, and the two historical verdicts on it are
+// both right because they were taken against different bases:
+//   - `-ngl 30` (run_n30cache.sh): the base keeps blk.0's FFN on the CPU, so pooling blk.0 moves
+//     layer 0 to Metal -> float divergence vs base. skip0=1 is the bit-identical setting. (§8.36)
+//   - full offload (ALLOW_NGL=1, all layers on Metal): the base has blk.0 on Metal, so skip0=1
+//     turns layer 0 into a full-weight CPU tensor read by a Metal graph -> 4/10 on the 15+27
+//     probe. skip0=0 is the correct setting. (2026-09-09)
+// Set it to match the base layout of the configuration you are running, and expect the numerics
+// to move when you flip it: it changes the pooled-layer count (39 vs 40) and layer 0's FFN
+// consumer path. Any M1/M2/M3 reference is only comparable to the same value.
+inline bool cgc_l4_skip_layer0_on() {
+    return cgc_env_on("LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0");
+}
+
 // L2: bounded resident cache for MoE expert weights (expert streaming).
 //
 // Cache unit = (layer, expert). A slot holds a blob with all present kinds (gate/up/down, or the

@@ -99,7 +99,32 @@ COMPARE = ROOT / "scripts" / "check" / "cgc_logits_oracle_compare.py"
 #
 # `prefill250` now PINS CGC_SERVER_OA_ASYNC=1 in run_server.sh (eng-gate-0006: the knob a profile
 # fails to state is the knob that drifts). v2 is kept on disk for the historical record.
-DEFAULT_REF = ROOT / "Backup" / "knifeedge_matrix" / "ref_iq3_pool8gb_M2_6144_bitident_v3.jsonl"
+#
+# v3 RETIRED 2026-09-16 by the skip0 value-semantics fix; v4 is the current reference
+# (Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident_v4_skip0off.jsonl).
+#
+# Read this before concluding anything from a v4-vs-v3 diff. The three readers of
+# LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0 used to test PRESENCE (`getenv(...) != nullptr`), so the
+# profile's `=0` meant ON and v3 was dumped with layer 0 OUT of the pool (39 pooled layers, and
+# `CGC-DECPROF layers=39` on all 19 steps of that era's log). The fix made the readers parse the
+# VALUE, so the profile's `=0` now means OFF: layer 0 joins the pool, 40 pooled layers, +142
+# resident slots and +152 MiB of pool.
+#
+#   * `LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0=1` (the pre-fix behaviour, reachable via
+#     `CGC_SERVER_SKIP0=1`) reproduces v3 BIT-IDENTICALLY: M1 9/9, M2 9/9, M3 9/9, full-row
+#     fnv1a64 9/9. That is the evidence that v3 was dumped with skip0 ON and that the predicate
+#     change is inert in every other dimension.
+#   * The new default does NOT reproduce v3: M1 4/9, M2 9/9, M3 6/9, cross-tab
+#     `{same/same: 4, diff/same: 5, diff/diff: 0}` -- drift, not divergence.
+#
+# ★ The trap this comment exists for: the *resolved env string is identical on both sides* ("0"
+# before the fix and "0" after it). The comparability check above is a string diff, so it CANNOT
+# detect a value-semantics change and will report a plain M1 FAIL against v3 -- a category error,
+# not a regression. Unlike the CGC_OA_ASYNC round (where the string itself moved, so the gate
+# raised INVALID COMPARISON on its own), this class of change only ever gets caught by a human
+# re-baselining on purpose. If a future knob change is described as "same env, different meaning",
+# write a new reference; do not re-read the old one.
+DEFAULT_REF = ROOT / "Backup" / "knifeedge_matrix" / "ref_iq3_pool8gb_M2_6144_bitident_v4_skip0off.jsonl"
 RESULT_DIR = ROOT / "Backup" / "m123_oracle_gate"
 
 # knifeedge_matrix.PROBE_PROMPT, verbatim. The oracle dump is keyed on

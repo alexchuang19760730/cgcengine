@@ -539,7 +539,14 @@ D3 要成立，必須另找理由（或接受 D3 只買到「圖裡沒有 host �
       外加 <code>run_server.sh</code> 的註解要改成值語意。<strong>但這是數值變更</strong>
       （layer 0 進入 pool ⇒ 40 層池化）⇒ 必須附自己的 M1/M2/M3 重新基線，
       且要預期它會像 <code>CGC_OA_ASYNC</code> 那次一樣<strong>移動多個 profile 的數值</strong>。
-      這條品質修復已經空轉六天，是目前投報率最高的一項。</li>
+      這條品質修復已經空轉六天，是目前投報率最高的一項。
+      <br><span class="tag">2026-09-16 00:21 已完成</span>
+      <span class="small">三個站點收束成單一 predicate <code>cgc_l4_skip_layer0_on()</code>；
+      控制臂（<code>CGC_SERVER_SKIP0=1</code>）對 v3 <strong>M1/M2/M3/整列 fnv1a64 全 9/9</strong>，
+      新預設對 v3 M1 4/9（cross-tab <code>{same/same 4, diff/same 5, diff/diff 0}</code>）⇒ 已換
+      v4 參照。見 <code>docs/SKIP0_VALUE_SEMANTICS_20260916_0021.html</code>。
+      本項衍生的兩個待量項寫在那份文件 §6／§7：layer 0 帶進的 <strong>4 個 zero region</strong>
+      與 step 1 的未漂移。</span></li>
   <li><strong>量被消費 id 背後的 slot 內容（owner-set）</strong>——判別式已把載體收斂到
       「partial pool 服務的層」，而映射與排列都已被排除。這是唯一還站著的候選，
       也是 S1 能否進 S3 的閘門。</li>

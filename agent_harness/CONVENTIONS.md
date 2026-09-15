@@ -135,8 +135,45 @@
 - 檢查：用**推導量**而不是旋鈕自己來驗行為。本例唯一吐出真相的觀測是
   `CGC-DECPROF` 的 `layers=39`（同 log 內 19 次，`layers=40` **0 次**）——
   池服務 39 層而非 40。**任何宣稱 profile 行為的句子都不得引用這個 knob 的值。**
+- **已修（2026-09-16）**：三個站點改成呼叫**單一 predicate**
+  `cgc_l4_skip_layer0_on()`（定義在 `llama-expert-cache.h`，三個 TU 都已 include ⇒
+  結構上不可能再各自漂移）。`0`／空字串 = OFF，其餘 = ON。
+  `run_server.sh` 的註解改為值語意，並把字面值改成 `${CGC_SERVER_SKIP0:-0}`——
+  原本的字面值**無法從外部覆寫**（`env "${SERVER_ENV[@]}"` 會蓋掉傳入值），
+  所以控制臂跑不起來。
+- ★ **值語意的變更，快照看不出來。** 這是本例與 `CGC_OA_ASYNC` 那次最關鍵的差別：
+  OA_ASYNC 動的是「值 → 解析方式」，resolved env **字串變了** ⇒ 閘門自動報
+  `INVALID COMPARISON` 叫醒人。本例前後字串**都是 `"0"`**，閘門的可比性檢查是字串比對
+  ⇒ 它會報一個**普通的 M1 FAIL，而那是 category error**。
+  **凡是「env 相同、意義不同」的變更，一律主動換參照檔，不得沿用舊參照。**
+- 兩臂驗證法（可複用）：**先跑控制臂**，讓「舊參照 × 舊行為」自己證明診斷。
+  控制臂 `CGC_SERVER_SKIP0=1` 對 v3 得 M1/M2/M3/整列 fnv1a64 **全部 9/9**
+  ⇒ 同時證明 (a) v3 是 skip0 開啟時 dump 的，(b) predicate 改動在其餘維度數值中性。
+  然後新預設臂 `=0` 對 v3 得 M1 4/9（cross-tab：漂移 5、真分歧 0）⇒ 語意真的變了 ⇒
+  用 `--write-ref` 換 v4。**沒有控制臂，`=0` 的 FAIL 就無法與「改壞了」區分。**
+- **反面判準（本輪新學）：拿恆定的計畫值當狀態的證據，與 presence-vs-value 同病。**
+  `LAYER_CAPS per-layer caps: total 5976 slots` 在**兩臂都印 5976**
+  （＝40 層 ×143 ＋ MTP 層 256 的計畫總和），它與 layer 0 是否真的進池無關。
+  2026-09-09 甜蜜點 log 的「5976 slots = layer 0 在 pool 內」把計畫值讀成了狀態。
+  能區分狀態的是 teardown 的 `owner-set slots`（5793 → 5935 ＝**恰好 +142**，
+  正是 layer 0 的 resident slot 數）與 `zero regions`（0 → 4，全在 layer 0）。
 - 邊界：presence-gating **不是錯的**——本專案大量診斷就是這樣拼「開」。它的代價是
   **`0` 與 unset 同義** ⇒ 任何「寫 `=0` 期望關掉」的 profile 都寫了一個 no-op。
+
+**A10｜`LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0` 是「對齊 base 佈局」的旋鈕，不是品質旋鈕。**
+它的正確值由 base 的 `n_gpu_layers` 決定，不由「品質好不好」決定。
+- 規則：**blk.0 的 FFN 在 base 裡住在哪個後端，skip0 就要讓它住在同一個後端。**
+  - `-ngl 30`（`run_n30cache.sh`）：base 把 blk.0 留在 CPU ⇒ **skip0=1** 才 bit-identical（§8.36）。
+  - full-offload L4（`ALLOW_NGL=1`、40 層全在 Metal）：base 的 blk.0 就在 Metal
+    ⇒ **skip0=0**；寫 1 會把 layer 0 變成「Metal graph 讀 CPU 全寬張量」，
+    15+27 十連發量到 **4/10**（2026-09-09），而無 skip0 的甜蜜點是 90–100%。
+- 為什麼要立這條：這兩個結論**互相矛盾卻都對**，於是六天內文件同時存在
+  「skip0=1 是正確性修復」與「skip0=1 是品質殺手」兩種敘述，任何引用者都會踩到一半。
+  把它寫成規則後，「skip0 該設多少」必須連帶回答「哪個 base」。
+- 檢查：**任何宣稱 skip0 行為的句子都必須標出 base 的 ngl**；否則該句無法證偽。
+- 副作用（2026-09-16 量的）：39 → 40 層池化 ⇒ owner-set slots +142、pool +152 MiB、
+  file_reads +396、requests +191，**且 layer 0 出現 4 個 zero region（A 臂為 0）**
+  ⇒ 待量：這 4 個是「填充沒落地」還是既定的 ZERO slot 機制。**淨速度效果未定，不得假設。**
 
 ---
 

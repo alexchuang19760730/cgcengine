@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>skip0 值語意修復與重新基線（2026-09-16 00:21）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  .up{color:var(--red)} .down{color:var(--green)}
+  figure{margin:20px 0}
+  figcaption{font-size:12.5px;color:var(--muted);margin-top:8px;text-align:center}
+  svg{display:block;width:100%;height:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>skip0 值語意修復與重新基線</h1>
+<div class="sub">
+  日期 2026-09-16 00:21 · 分支 <code>demo/sweet-spot-windows-fix</code> · 基線 commit <code>2c17103e8</code><br>
+  模型 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（256 experts/layer、40 layers + MTP）·
+  profile <code>prefill250</code> · 硬體 MacBook Air M4 / 16 GB<br>
+  <code>libllama.0.dylib</code> md5 <code class="mono">def47c28…</code> → <code class="mono">952ed137…</code> ·
+  新參照 <code class="mono">ref_…_bitident_v4_skip0off.jsonl</code>
+</div>
+
+<div class="box b-amber">
+  <p><strong>一句話結論：這不是一個「變快」的修復，而是一個「讓數字重新有意義」的修復。</strong>
+  <code>LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0</code> 的三個讀者長期測「存在」而非「值」，
+  profile 寫 <code>=0</code>（意圖關閉）卻一直是<strong>開啟</strong>狀態 ⇒
+  <strong>2026-09-09 的品質修復空轉六天，而這六天內每一份 cap 快照與 llama-bench env 區塊都記著
+  <code>"0"</code>，讀起來像「已關閉」。</strong>
+  本輪把它改成單一值語意 predicate 並重新基線；控制臂（<code>skip0=1</code>）對舊參照
+  <strong>M1 9/9、M2 9/9、M3 9/9、整列 fnv1a64 9/9</strong>，證明 v3 參照確實是 skip0 開啟時 dump 的，
+  且這個 predicate 改動在其餘維度上數值中性。</p>
+</div>
+
+<h2>1. 這個 knob 的真身：一條「對齊 base 佈局」的開關</h2>
+
+<p>先把最貴的誤解拆掉。<code>L4_SKIP_LAYER0</code> 在專案文件裡有<strong>兩個互相矛盾的結論</strong>，
+而它們<strong>都是對的</strong>——因為量測當時的 base 佈局不同：</p>
+
+<ul>
+  <li><strong>§8.36（2026-08-16）</strong>：<code>-ngl 30</code> 下，base 的 blk.0 FFN 留在 CPU（ngl=30 offload 29 層 + output）。
+      把 blk.0 收進 pool 會把它搬到 Metal ⇒ 與 base 的 float 分歧。所以 <strong>skip0=1 才是 bit-identical</strong>，
+      並據此把「blk.0 排除 pool」立為修復。</li>
+  <li><strong>2026-09-09 品質調查</strong>：full-offload L4（<code>ALLOW_NGL=1</code>，全部 40 層都在 Metal）下，
+      base 的 blk.0 本來就在 Metal。此時 skip0=1 反而把 layer 0 變成「Metal graph 讀一顆 CPU 全寬張量」
+      ⇒ 15+27 十連發只有 <strong>4/10</strong>；無 skip0 的甜蜜點是 <strong>90–100%</strong>。</li>
+</ul>
+
+<figure>
+<svg viewBox="0 0 1000 300" role="img" aria-label="skip0 的正確值取決於 base 佈局">
+  <rect x="0" y="0" width="1000" height="300" fill="#ffffff"/>
+  <!-- left panel -->
+  <rect x="14" y="34" width="466" height="248" rx="10" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="34" y="62" font-size="15" font-weight="700" fill="#1e40af">base 佈局 A：-ngl 30</text>
+  <text x="34" y="82" font-size="12" fill="#3730a3">offload 29 層 + output，blk.0 留在 CPU</text>
+
+  <rect x="40" y="100" width="150" height="46" rx="7" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="115" y="119" font-size="12" text-anchor="middle" fill="#111827">blk.0 FFN</text>
+  <text x="115" y="136" font-size="11.5" text-anchor="middle" fill="#dc2626">CPU（full-width）</text>
+
+  <rect x="214" y="100" width="150" height="46" rx="7" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="289" y="119" font-size="12" text-anchor="middle" fill="#111827">blk.1–29 FFN</text>
+  <text x="289" y="136" font-size="11.5" text-anchor="middle" fill="#059669">Metal</text>
+
+  <line x1="190" y1="123" x2="214" y2="123" stroke="#94a3b8" stroke-width="1.5"/>
+  <line x1="364" y1="123" x2="392" y2="123" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="404" y="127" font-size="11" fill="#64748b">…</text>
+
+  <rect x="40" y="170" width="392" height="42" rx="7" fill="#ecfdf5" stroke="#a7f3d0"/>
+  <text x="56" y="196" font-size="13" fill="#065f46">要與此 base 同位元 ⇒ <tspan font-weight="700">skip0 = 1</tspan>（blk.0 留在 CPU）</text>
+
+  <rect x="40" y="226" width="392" height="42" rx="7" fill="#fef2f2" stroke="#fecaca"/>
+  <text x="56" y="252" font-size="13" fill="#991b1b">寫 0（blk.0 進 pool）⇒ 與 base 分歧，§8.36 量到 DIVERGED</text>
+
+  <!-- right panel -->
+  <rect x="520" y="34" width="466" height="248" rx="10" fill="#fffbeb" stroke="#fde68a"/>
+  <text x="540" y="62" font-size="15" font-weight="700" fill="#92400e">base 佈局 B：full-offload L4（ALLOW_NGL=1）</text>
+  <text x="540" y="82" font-size="12" fill="#92400e">全部 40 層（含 blk.0）都在 Metal</text>
+
+  <rect x="546" y="100" width="150" height="46" rx="7" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="621" y="119" font-size="12" text-anchor="middle" fill="#111827">blk.0 FFN</text>
+  <text x="621" y="136" font-size="11.5" text-anchor="middle" fill="#059669">Metal（pool）</text>
+
+  <rect x="720" y="100" width="150" height="46" rx="7" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="795" y="119" font-size="12" text-anchor="middle" fill="#111827">blk.1–39 FFN</text>
+  <text x="795" y="136" font-size="11.5" text-anchor="middle" fill="#059669">Metal（pool）</text>
+
+  <line x1="696" y1="123" x2="720" y2="123" stroke="#94a3b8" stroke-width="1.5"/>
+
+  <rect x="546" y="170" width="392" height="42" rx="7" fill="#ecfdf5" stroke="#a7f3d0"/>
+  <text x="562" y="196" font-size="13" fill="#065f46">要與此 base 同位元 ⇒ <tspan font-weight="700">skip0 = 0</tspan>（blk.0 進 pool）</text>
+
+  <rect x="546" y="226" width="392" height="42" rx="7" fill="#fef2f2" stroke="#fecaca"/>
+  <text x="562" y="252" font-size="13" fill="#991b1b">寫 1 ⇒ layer 0 變 cross-backend，15+27 十連發 4/10</text>
+
+  <text x="500" y="20" font-size="13" font-weight="700" text-anchor="middle" fill="#111827">
+    同一個 knob、同一個值，對與錯取決於你跑哪個 base
+  </text>
+</svg>
+<figcaption>圖 1｜skip0 不是「品質旋鈕」而是「佈局對齊旋鈕」。生產 profile 走的是右邊那條路。</figcaption>
+</figure>
+
+<div class="box b-blue">
+  <p><strong>推論：</strong>任何「skip0 該設多少」的句子若不寫出 base 的 ngl，就是一句無法證偽的話。
+  本輪把它寫成一條規則（見 §5）。</p>
+</div>
+
+<h2>2. 六天的空轉：三個讀者測「存在」，profile 寫「0」</h2>
+
+<p>三個讀者全部用 <code>getenv(...) != nullptr</code>。<code>"0"</code> 這個字串是<strong>非空指標</strong>，
+所以 gate 為真——<code>0</code> 等於打開。而 <code>run_server.sh</code> 把這個變數無條件塞進
+<code>SERVER_ENV</code>，再由 <code>env "${SERVER_ENV[@]}"</code> 真正傳進子行程。</p>
+
+<figure>
+<svg viewBox="0 0 1000 330" role="img" aria-label="presence 與 value 兩種讀法的真值表">
+  <rect x="0" y="0" width="1000" height="330" fill="#ffffff"/>
+
+  <!-- env value chip -->
+  <rect x="24" y="42" width="180" height="58" rx="9" fill="#f6f8fa" stroke="#cbd5e1"/>
+  <text x="114" y="66" font-size="12" text-anchor="middle" fill="#6b7280">profile 寫入的值</text>
+  <text x="114" y="89" font-size="15" text-anchor="middle" font-family="Menlo,monospace" fill="#111827">"0"</text>
+
+  <line x1="204" y1="71" x2="270" y2="71" stroke="#94a3b8" stroke-width="2"/>
+  <path d="M270 71 l-9 -5 l0 10 z" fill="#94a3b8"/>
+
+  <!-- three readers -->
+  <rect x="270" y="34" width="286" height="30" rx="6" fill="#fef2f2" stroke="#fecaca"/>
+  <text x="284" y="54" font-size="12.5" font-family="Menlo,monospace" fill="#7f1d1d">llama.cpp  != nullptr</text>
+  <rect x="270" y="70" width="286" height="30" rx="6" fill="#fef2f2" stroke="#fecaca"/>
+  <text x="284" y="90" font-size="12.5" font-family="Menlo,monospace" fill="#7f1d1d">llama-expert-cache.cpp  != nullptr</text>
+  <rect x="270" y="106" width="286" height="30" rx="6" fill="#fef2f2" stroke="#fecaca"/>
+  <text x="284" y="126" font-size="12.5" font-family="Menlo,monospace" fill="#7f1d1d">llama-context.cpp  != nullptr</text>
+
+  <line x1="556" y1="85" x2="618" y2="85" stroke="#dc2626" stroke-width="2"/>
+  <path d="M618 85 l-9 -5 l0 10 z" fill="#dc2626"/>
+  <rect x="622" y="58" width="150" height="54" rx="9" fill="#fef2f2" stroke="#dc2626"/>
+  <text x="697" y="82" font-size="14" text-anchor="middle" font-weight="700" fill="#991b1b">TRUE</text>
+  <text x="697" y="100" font-size="12" text-anchor="middle" fill="#991b1b">skip0 開啟</text>
+
+  <rect x="796" y="58" width="180" height="54" rx="9" fill="#fffbeb" stroke="#d97706"/>
+  <text x="886" y="80" font-size="12.5" text-anchor="middle" fill="#92400e">作者意圖：關閉</text>
+  <text x="886" y="99" font-size="12.5" text-anchor="middle" font-weight="700" fill="#92400e">實際：相反</text>
+
+  <!-- truth table -->
+  <text x="24" y="176" font-size="13" font-weight="700" fill="#111827">真值表（同一個變數，兩種讀法）</text>
+  <g font-size="13">
+    <rect x="24" y="190" width="150" height="30" fill="#f9fafb" stroke="#e5e7eb"/>
+    <text x="99" y="210" text-anchor="middle" fill="#374151" font-weight="600">環境變數</text>
+    <rect x="174" y="190" width="222" height="30" fill="#f9fafb" stroke="#e5e7eb"/>
+    <text x="285" y="210" text-anchor="middle" fill="#374151" font-weight="600">舊：!= nullptr（presence）</text>
+    <rect x="396" y="190" width="222" height="30" fill="#f9fafb" stroke="#e5e7eb"/>
+    <text x="507" y="210" text-anchor="middle" fill="#374151" font-weight="600">新：cgc_env_on（value）</text>
+    <rect x="618" y="190" width="358" height="30" fill="#f9fafb" stroke="#e5e7eb"/>
+    <text x="797" y="210" text-anchor="middle" fill="#374151" font-weight="600">說明</text>
+
+    <rect x="24" y="220" width="150" height="30" fill="#ffffff" stroke="#e5e7eb"/>
+    <text x="99" y="240" text-anchor="middle" font-family="Menlo,monospace" fill="#111827">unset</text>
+    <rect x="174" y="220" width="222" height="30" fill="#ffffff" stroke="#e5e7eb"/>
+    <text x="285" y="240" text-anchor="middle" fill="#059669">OFF</text>
+    <rect x="396" y="220" width="222" height="30" fill="#ffffff" stroke="#e5e7eb"/>
+    <text x="507" y="240" text-anchor="middle" fill="#059669">OFF</text>
+    <rect x="618" y="220" width="358" height="30" fill="#ffffff" stroke="#e5e7eb"/>
+    <text x="632" y="240" fill="#6b7280">兩者一致</text>
+
+    <rect x="24" y="250" width="150" height="30" fill="#fef2f2" stroke="#e5e7eb"/>
+    <text x="99" y="270" text-anchor="middle" font-family="Menlo,monospace" fill="#111827">"0"</text>
+    <rect x="174" y="250" width="222" height="30" fill="#fef2f2" stroke="#e5e7eb"/>
+    <text x="285" y="270" text-anchor="middle" font-weight="700" fill="#dc2626">ON　←　缺陷</text>
+    <rect x="396" y="250" width="222" height="30" fill="#ecfdf5" stroke="#e5e7eb"/>
+    <text x="507" y="270" text-anchor="middle" font-weight="700" fill="#059669">OFF　←　修正後</text>
+    <rect x="618" y="250" width="358" height="30" fill="#fef2f2" stroke="#e5e7eb"/>
+    <text x="632" y="270" fill="#991b1b">六天來生產 profile 就在這一格</text>
+
+    <rect x="24" y="280" width="150" height="30" fill="#ffffff" stroke="#e5e7eb"/>
+    <text x="99" y="300" text-anchor="middle" font-family="Menlo,monospace" fill="#111827">"1" / "true"</text>
+    <rect x="174" y="280" width="222" height="30" fill="#ffffff" stroke="#e5e7eb"/>
+    <text x="285" y="300" text-anchor="middle" fill="#059669">ON</text>
+    <rect x="396" y="280" width="222" height="30" fill="#ffffff" stroke="#e5e7eb"/>
+    <text x="507" y="300" text-anchor="middle" fill="#059669">ON</text>
+    <rect x="618" y="280" width="358" height="30" fill="#ffffff" stroke="#e5e7eb"/>
+    <text x="632" y="300" fill="#6b7280">run_n30cache.sh 用的就是這個（在那裡 <em>正確</em>）</text>
+  </g>
+</svg>
+<figcaption>圖 2｜缺陷只在 <code>"0"</code> 這一格；修正後 <code>"0"</code> 與 unset 同義，符合直覺。</figcaption>
+</figure>
+
+<p>旁證（不是靠這個 knob 的值，而是靠推導量）：<code>CGC-DECPROF</code> 在六天內的 log 中
+<strong>19 次全部報 <code>layers=39</code></strong>、<code>layers=40</code> 零次——池只服務 39 層。
+這正是 CONVENTIONS A9 的判準：<em>快照記錄的是意圖，行為卻相反</em>。</p>
+
+<h2>3. 修法：一個 predicate，三個呼叫點</h2>
+
+<p>三個站點分散在三個檔案，所以修法不是三份比較式，而是<strong>一份定義</strong>——放在三個 TU 都已經 include 的
+<code>llama-expert-cache.h</code>，這樣它們<strong>結構上不可能再各自漂移</strong>。</p>
+
+<pre><code>// llama-expert-cache.h -- 唯一的「這個旗標是開的」定義
+inline bool cgc_env_on(const char * name) {
+    const char * v = getenv(name);
+    if (v == nullptr || v[0] == '\0') { return false; }   // unset / 空字串 = off
+    return v[0] != '0';                                   // "0"/"0x…" = off；其餘 = on
+}
+inline bool cgc_l4_skip_layer0_on() {
+    return cgc_env_on("LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0");
+}</code></pre>
+
+<table>
+  <tr><th>檔案</th><th>舊</th><th>新</th></tr>
+  <tr><td class="mono">llama.cpp</td>
+      <td class="mono">getenv("…SKIP_LAYER0") != nullptr</td>
+      <td class="mono">cgc_l4_skip_layer0_on()</td></tr>
+  <tr><td class="mono">llama-expert-cache.cpp</td>
+      <td class="mono">getenv("…SKIP_LAYER0") != nullptr &amp;&amp; l == 0</td>
+      <td class="mono">cgc_l4_skip_layer0_on() &amp;&amp; l == 0</td></tr>
+  <tr><td class="mono">llama-context.cpp</td>
+      <td class="mono">getenv("…SKIP_LAYER0") != nullptr &amp;&amp; il == 0</td>
+      <td class="mono">cgc_l4_skip_layer0_on() &amp;&amp; il == 0</td></tr>
+  <tr><td class="mono">scripts/run_server.sh</td>
+      <td class="mono">LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0=0　（註解寫意圖）</td>
+      <td class="mono">…="${CGC_SERVER_SKIP0:-0}"　（值語意註解 + 可覆寫）</td></tr>
+</table>
+
+<p class="small">附帶把 <code>run_server.sh</code> 那行由字面值改成
+<code>${CGC_SERVER_SKIP0:-0}</code>：原本的字面值<strong>無法從外部覆寫</strong>
+（<code>env "${SERVER_ENV[@]}"</code> 會蓋掉任何傳入值），所以控制臂根本跑不起來；
+寫死的那一格就是會漂移的那一格（eng-gate-0006）。</p>
+
+<h2>4. 投報率：這條修復在優化什麼？</h2>
+
+<p>專案的方法論是「交錯 A/B ×3 + md5」，一個測量值的可用性可以寫成兩個因子的乘積：</p>
+
+<p style="text-align:center;font-size:15px;margin:18px 0">
+  <code>可用的數字 ＝ 數字 × P（配置與它自稱的一致）</code>
+</p>
+
+<p>skip0 的缺陷把第二個因子<strong>壓到接近 0，而且沒有任何儀器會喊</strong>。
+所以這條修復<strong>不是優化某個數字，而是優化「數字的產生器」</strong>。四個受益面，按槓桿排序：</p>
+
+<figure>
+<svg viewBox="0 0 1000 300" role="img" aria-label="四項受益的槓桿與衰減特性">
+  <rect x="0" y="0" width="1000" height="300" fill="#ffffff"/>
+  <text x="24" y="22" font-size="13" font-weight="700" fill="#111827">修復後每項收益的「覆蓋面 × 是否隨時間衰減」</text>
+
+  <!-- axis -->
+  <line x1="60" y1="250" x2="960" y2="250" stroke="#cbd5e1"/>
+  <text x="510" y="286" font-size="12.5" text-anchor="middle" fill="#6b7280">覆蓋面（受影響的測量數）→</text>
+  <line x1="60" y1="250" x2="60" y2="52" stroke="#cbd5e1"/>
+  <text x="22" y="150" font-size="12.5" text-anchor="middle" fill="#6b7280" transform="rotate(-90 22 150)">不衰減性 →</text>
+
+  <!-- quadrant labels -->
+  <text x="500" y="44" font-size="11.5" text-anchor="middle" fill="#94a3b8">複利區（高覆蓋 × 不衰減）</text>
+
+  <!-- 1 -->
+  <circle cx="800" cy="90" r="26" fill="#059669" fill-opacity="0.15" stroke="#059669"/>
+  <text x="800" y="95" font-size="13" text-anchor="middle" font-weight="700" fill="#065f46">1</text>
+  <text x="836" y="86" font-size="13" font-weight="600" fill="#065f46">量測有效性</text>
+  <text x="836" y="104" font-size="11.5" fill="#6b7280">所有 run_server.sh profile × 所有未來</text>
+
+  <!-- 2 -->
+  <circle cx="560" cy="140" r="22" fill="#d97706" fill-opacity="0.15" stroke="#d97706"/>
+  <text x="560" y="145" font-size="13" text-anchor="middle" font-weight="700" fill="#92400e">2</text>
+  <text x="592" y="136" font-size="13" font-weight="600" fill="#92400e">品質（使用者可見）</text>
+  <text x="592" y="154" font-size="11.5" fill="#6b7280">4/10 → 甜蜜點；一次驗證即結案</text>
+
+  <!-- 3 -->
+  <circle cx="330" cy="185" r="18" fill="#2563eb" fill-opacity="0.15" stroke="#2563eb"/>
+  <text x="330" y="190" font-size="13" text-anchor="middle" font-weight="700" fill="#1e40af">3</text>
+  <text x="358" y="181" font-size="13" font-weight="600" fill="#1e40af">語意一致性</text>
+  <text x="358" y="199" font-size="11.5" fill="#6b7280">把兩則矛盾的軼事換成一條規則</text>
+
+  <!-- 4 -->
+  <circle cx="150" cy="212" r="14" fill="#6b7280" fill-opacity="0.15" stroke="#6b7280"/>
+  <text x="150" y="217" font-size="12.5" text-anchor="middle" font-weight="700" fill="#374151">4</text>
+  <text x="174" y="209" font-size="13" font-weight="600" fill="#374151">速度</text>
+  <text x="174" y="227" font-size="11.5" fill="#6b7280">方向未定，必須量（見 §6）</text>
+</svg>
+<figcaption>圖 3｜槓桿排序。第 1 項之所以最大，是因為它<strong>乘在每一個其他數字上</strong>。</figcaption>
+</figure>
+
+<h3>1｜量測有效性（最高槓桿、會複利）</h3>
+<ul>
+  <li>六天內凡經 <code>run_server.sh</code> 啟動的 profile，其 <code>cap_*.json</code> 與 llama-bench <code>env</code> 區塊
+      <strong>都記 <code>"0"</code>，但實際行為是 <code>ON</code></strong>。任何「prod25 vs X」的比較都夾帶一個未申報的隱變數。</li>
+  <li>修完之後<strong>快照 = 行為</strong>。收益不隨時間衰減，且<strong>每一個未來測量都繼承</strong>——
+      這是它投報率最高的真正原因：它修的不是一個數字，是<strong>產生數字的那台機器</strong>。</li>
+</ul>
+
+<h3>2｜品質（使用者可見，且驗證便宜）</h3>
+<ul>
+  <li>生產 profile 一直在跑 2026-09-09 判定為 4/10 的配置，而文件聲稱它是 90–100% 的甜蜜點。</li>
+  <li>若該機制在當前架構仍成立，這是<strong>真實的品質缺陷</strong>，不是量測問題；驗證成本極低
+      （<code>probe_skip0.py --shots 10</code> 兩臂）。</li>
+</ul>
+
+<h3>3｜語意一致性：把矛盾的軼事換成一條規則</h3>
+<ul>
+  <li>§8.36 與 2026-09-09 <strong>都對</strong>，差別在 base 佈局（<code>-ngl</code>）。修完後文件可以寫規則而不是兩則互相矛盾的歷史。</li>
+  <li>價值在於<strong>防止第 N 次同類誤判</strong>——包含讓後續讀者不必再重跑一次六天的除錯。</li>
+</ul>
+
+<h3>4｜速度（次要，方向未定，禁止假設）</h3>
+<ul>
+  <li>39 → 40 層池化同時帶來<strong>成本與收益</strong>：
+      <span class="bad">成本</span>＝layer 0 的 142 個 resident slot 進駐 Metal（+152 MiB）、
+      layer 0 的 expert 改走 <code>ensure_batch</code> 填充（+396 次 pread 進關鍵路徑）；
+      <span class="ok">收益</span>＝layer 0 的 FFN 不再是「Metal graph 讀 CPU 全寬張量」（移除一個跨後端消費路徑）。</li>
+  <li>淨號<strong>未定</strong>。本輪沒有量速度，也<strong>不主張任何速度結論</strong>。</li>
+</ul>
+
+<div class="box b-red">
+  <p><strong>與 CGC_OA_ASYNC 那次最關鍵的差別：這次閘門<u>無法自己發現</u>。</strong></p>
+  <p>OA_ASYNC 那次改的是「值 → 解析方式」，resolved env 字串<strong>變了</strong>，所以閘門自動報
+     <code>INVALID COMPARISON</code>，四個 profile 被靜默改道時有人被叫醒。</p>
+  <p>這次前後的字串<strong>都是 <code>"0"</code></strong>；差別在語意。閘門的可比性檢查是<strong>字串比對</strong>，
+     所以它會<strong>報一個 FAIL，而那是 category error</strong>。這是本輪必須由人宣告、
+     並且必須<strong>換掉參照檔（v3 → v4）</strong>的原因。</p>
+</div>
+
+<h2>5. 兩臂實驗（同一顆 binary，只換 skip0）</h2>
+
+<p>設計上刻意的順序：<strong>先跑控制臂</strong>，用「舊參照 + 舊行為」去證明診斷，
+再跑新預設臂並重新基線。控制臂是可證偽的預測：<em>若 v3 真是 skip0 開啟時 dump 的，
+則 <code>skip0=1</code> 應該逐位元重現它。</em></p>
+
+<table>
+  <tr><th>臂</th><th>skip0 實際值</th><th>對 v3 參照 M1</th><th>M2</th><th>M3</th><th>整列 fnv1a64</th><th>判讀</th></tr>
+  <tr>
+    <td><strong>A 控制</strong> <span class="tag">CGC_SERVER_SKIP0=1</span></td>
+    <td class="num">ON</td>
+    <td class="num ok">9/9</td><td class="num ok">9/9</td><td class="num ok">9/9</td><td class="num ok">9/9</td>
+    <td>預測成立 ⇒ v3 是 skip0 <strong>開啟</strong>時 dump 的；predicate 改動<strong>數值中性</strong></td>
+  </tr>
+  <tr>
+    <td><strong>B 新預設</strong> <span class="tag">CGC_SERVER_SKIP0 未設 ⇒ 0</span></td>
+    <td class="num">OFF</td>
+    <td class="num bad">4/9</td><td class="num ok">9/9</td><td class="num warn">6/9</td><td class="num bad">4/9</td>
+    <td>語意真的變了 ⇒ <strong>必須重新基線</strong>；cross-tab 0 個 real divergence</td>
+  </tr>
+</table>
+
+<p class="small">兩臂的 dump 都通過 gate 的 dump 有效性檢查（9 records, validated），
+探針應答都正確（<code>'42'</code>）——排除了「空回答 + 健康 dump」那個 Metal OOM 簽名。</p>
+
+<h3>5.1 用「推導量」而不是旋鈕值來證明 layer 0 真的進池了</h3>
+
+<p>旋鈕的值正是本次的嫌疑犯，所以不能拿它當證據。teardown 的池完整性掃描給出乾淨的判別式：</p>
+
+<figure>
+<svg viewBox="0 0 1000 330" role="img" aria-label="兩臂的池幾何與 zero region 差異">
+  <rect x="0" y="0" width="1000" height="330" fill="#ffffff"/>
+
+  <!-- arm A -->
+  <rect x="18" y="30" width="466" height="270" rx="10" fill="#f9fafb" stroke="#cbd5e1"/>
+  <text x="38" y="58" font-size="15" font-weight="700" fill="#111827">A 控制：skip0 = ON（layer 0 不在池內）</text>
+  <text x="38" y="82" font-size="12.5" fill="#6b7280">owner-set slots</text>
+  <text x="464" y="82" font-size="15" text-anchor="end" font-family="Menlo,monospace" fill="#111827">5793</text>
+  <text x="38" y="108" font-size="12.5" fill="#6b7280">zero regions</text>
+  <text x="464" y="108" font-size="15" text-anchor="end" font-family="Menlo,monospace" fill="#059669">0</text>
+  <text x="38" y="134" font-size="12.5" fill="#6b7280">resident</text>
+  <text x="464" y="134" font-size="15" text-anchor="end" font-family="Menlo,monospace" fill="#111827">6278.63 MiB</text>
+  <text x="38" y="160" font-size="12.5" fill="#6b7280">file_reads / requests</text>
+  <text x="464" y="160" font-size="15" text-anchor="end" font-family="Menlo,monospace" fill="#111827">15801 / 7745</text>
+  <text x="38" y="186" font-size="12.5" fill="#6b7280">hit rate</text>
+  <text x="464" y="186" font-size="15" text-anchor="end" font-family="Menlo,monospace" fill="#111827">86.7%</text>
+  <text x="38" y="212" font-size="12.5" fill="#6b7280">LAYER_CAPS total</text>
+  <text x="464" y="212" font-size="15" text-anchor="end" font-family="Menlo,monospace" fill="#6b7280">5976</text>
+  <rect x="38" y="228" width="426" height="52" rx="7" fill="#ffffff" stroke="#e5e7eb"/>
+  <text x="52" y="249" font-size="12" fill="#6b7280">teardown 不含任何 layer=0 的 slot 蹤跡</text>
+  <text x="52" y="268" font-size="12" fill="#059669">⇒ 池服務 39 層（與 CGC-DECPROF layers=39 一致）</text>
+
+  <!-- arm B -->
+  <rect x="516" y="30" width="466" height="270" rx="10" fill="#ecfdf5" stroke="#a7f3d0"/>
+  <text x="536" y="58" font-size="15" font-weight="700" fill="#065f46">B 新預設：skip0 = OFF（layer 0 進池）</text>
+  <text x="536" y="82" font-size="12.5" fill="#6b7280">owner-set slots</text>
+  <text x="962" y="82" font-size="15" text-anchor="end" font-family="Menlo,monospace" fill="#065f46">5935</text>
+  <text x="536" y="108" font-size="12.5" fill="#6b7280">zero regions</text>
+  <text x="962" y="108" font-size="15" text-anchor="end" font-family="Menlo,monospace" fill="#d97706">4（全在 layer 0）</text>
+  <text x="536" y="134" font-size="12.5" fill="#6b7280">resident</text>
+  <text x="962" y="134" font-size="15" text-anchor="end" font-family="Menlo,monospace" fill="#065f46">6430.62 MiB</text>
+  <text x="536" y="160" font-size="12.5" fill="#6b7280">file_reads / requests</text>
+  <text x="962" y="160" font-size="15" text-anchor="end" font-family="Menlo,monospace" fill="#065f46">16197 / 7936</text>
+  <text x="536" y="186" font-size="12.5" fill="#6b7280">hit rate</text>
+  <text x="962" y="186" font-size="15" text-anchor="end" font-family="Menlo,monospace" fill="#111827">86.8%</text>
+  <text x="536" y="212" font-size="12.5" fill="#6b7280">LAYER_CAPS total</text>
+  <text x="962" y="212" font-size="15" text-anchor="end" font-family="Menlo,monospace" fill="#6b7280">5976</text>
+  <rect x="536" y="228" width="426" height="52" rx="7" fill="#ffffff" stroke="#a7f3d0"/>
+  <text x="550" y="249" font-size="12" fill="#065f46">first zero region: layer=0 slot=18 kind=0</text>
+  <text x="550" y="268" font-size="12" fill="#065f46">layer=0 zero=4 of 142 resident slots</text>
+
+  <!-- delta arrow -->
+  <line x1="484" y1="165" x2="516" y2="165" stroke="#059669" stroke-width="2"/>
+  <text x="500" y="312" font-size="13" text-anchor="middle" fill="#065f46" font-weight="600">
+    Δ owner-set slots ＋142 ＝ 恰好一層的量（layer 0 的 142 個 resident slot）
+  </text>
+  <text x="500" y="20" font-size="13" text-anchor="middle" fill="#111827" font-weight="700">
+    layer 0 的 142 個 slot 憑空出現在 owner-set 裡 ⇒ 它<em>就是</em>新進池的那一層
+  </text>
+</svg>
+<figcaption>圖 4｜判別式：<code>5793 → 5935</code>、<code>zero regions 0 → 4</code>，且 zero region 全部落在 layer 0。</figcaption>
+</figure>
+
+<div class="box b-amber">
+  <p><strong>一條必須撤回的舊判讀：</strong><code>LAYER_CAPS total 5976 slots</code> <strong>兩臂都是 5976</strong>，
+  所以它<strong>不是</strong> skip0 的判別量。它只是 LAYER_CAPS 的計畫總和
+  （40 層 × 143 ＋ MTP 層 256 ＝ 5976），與 layer 0 是否真的進池無關。</p>
+  <p>2026-09-09 甜蜜點 log 的「5976 slots = layer 0 在 pool 內」把一個<strong>恆定的計畫值</strong>當成了
+  <strong>狀態的證據</strong>——與本次的 presence-vs-value 是同一個病：<em>拿一個不隨狀態改變的讀數去證明狀態</em>。</p>
+</div>
+
+<h3>5.2 分歧的逐列形狀（未完全歸因，誠實記錄）</h3>
+
+<table>
+  <tr><th>step</th><th>ctx</th><th>n_cand</th><th>n_tokens</th><th>A vs B</th><th>解讀</th></tr>
+  <tr><td class="num">0</td><td>DEF</td><td class="num">1273</td><td class="num">1</td><td class="bad">DIFF</td><td>trunk 首個輸出，layer 0 在路徑上</td></tr>
+  <tr><td class="num">1</td><td>DEF</td><td class="num">1273</td><td class="num">1</td><td>same</td><td class="warn">未歸因（見下）</td></tr>
+  <tr><td class="num">2–4</td><td>MTP</td><td class="num">41</td><td class="num">1</td><td>same</td><td>draft head 列（41 候選）⇒ <strong>不經過 trunk 的 layer 0</strong></td></tr>
+  <tr><td class="num">5 ×4</td><td>DEF</td><td class="num">1334</td><td class="num">4</td><td class="bad">DIFF</td><td>verify 批次（4 token 一次算），trunk 全路徑</td></tr>
+</table>
+
+<ul>
+  <li><strong>2–4 列共同的機制可解釋</strong>：<code>n_cand=41</code> 的 draft 列只跑 MTP 層，layer 0 的改動不在它的路徑上，
+      所以逐位元相同是<em>預期</em>。</li>
+  <li><strong>step 1 目前無法歸因</strong>：它是 trunk 列（<code>n_cand=1273</code>），理論上應該分歧卻相同。
+      本輪<strong>不編造機制</strong>，把它列為待量項（§7）。值得注意的是 cross-tab 中
+      「M1 不同 &amp; M2 相同」有 5 列、「真正分歧」0 列 ⇒ 這是漂移，不是崩塌。</li>
+</ul>
+
+<h2>6. 新風險：layer 0 帶來 4 個 zero region</h2>
+
+<p>這輪最該被追下去的一項，而且<strong>它與「修復」是同一件事的兩面</strong>：
+A 臂的池完整性是 <code>zero-regions=0  [OK: every resident slot holds non-zero bytes]</code>；
+B 臂變成 <code>zero-regions=4</code>，且<strong>四個全在 layer 0</strong>
+（<code>first zero region: layer=0 slot=18 kind=0 owner_expert=252</code>）。</p>
+
+<div class="box b-red">
+  <p><strong>為什麼這是風險而不是雜訊：</strong>一個 slot 被 owner-set 認領（宣稱持有 expert 252）
+  卻整段是零位元組 ⇒ 任何路由到它的 token，在 layer 0 的 FFN 貢獻會被<strong>靜默地算成 0</strong>。
+  這正好是「輸出會漂移、argmax 卻還跟得上」的形狀——與 §5.2 量到的
+  <strong>M1 4/9、M2 9/9</strong>一致。</p>
+  <p><strong>但它同時可能是設計行為</strong>：本專案的 ZERO slot 是 MTP 快路徑的既定機制
+  （<code>zero_slot == slots_l - 1</code>，僅 MTP 快路徑啟用）。<strong>兩臂都開了 MTP，A 臂卻是 0</strong>，
+  所以「設計行為」不足以解釋。本輪<strong>不下結論</strong>，列為第一優先待量項。</p>
+</div>
+
+<h2>7. 下一步（依槓桿排序）</h2>
+
+<ol>
+  <li><strong>量 layer 0 的 4 個 zero region 是不是壞值。</strong>最小實驗：<code>skip0=0</code> 下固定路由到
+      <code>layer=0 slot=18 expert=252</code>，比較該 slot 的位元組與 GGUF 中 expert 252 的原值。
+      若是「填充沒落地」就是<strong>真實品質缺陷</strong>，且會直接解釋 §5.2 的漂移。</li>
+  <li><strong>歸因 step 1 的「應該分歧卻相同」。</strong>需要的是 layer 0 在那一步的 route 觀測
+      （哪些 expert、被映射到哪些 slot），而不是更多 logits。</li>
+  <li><strong>品質十連發兩臂</strong>（<code>probe_skip0.py --shots 10</code>，只有 skip0 不同）。
+      這是唯一能結案「4/10 vs 90–100%」的量測，成本一次 server launch。</li>
+  <li><strong>同族掃描的其他兩個站點</strong>：全庫 67 個 presence 讀者中，另有
+      <code>CGC_DBUF</code> 與 <code>CGC_SPAC</code> 在 <code>scripts/run_p1_mmap_stream.sh</code>
+      被寫成 <code>0</code>（= 開啟）。同一條 predicate 可直接複用。</li>
+  <li><strong>速度</strong>：39 → 40 層池化的淨號（+142 resident slot、+396 pread vs 移除跨後端消費）
+      需獨立量測，且必須在<strong>新的 v4 基線</strong>上量。</li>
+</ol>
+
+<h2>8. 附件與指紋</h2>
+
+<table>
+  <tr><th>項目</th><th>值</th></tr>
+  <tr><td>新 M2 oracle 參照</td>
+      <td class="mono">Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident_v4_skip0off.jsonl<br>
+      md5 a0a0ca742ca94e843c54b39981742738 · cap md5 1732c6150cdf7ce876285c362cdf0c49</td></tr>
+  <tr><td>退役參照（僅存歷史）</td>
+      <td class="mono">ref_iq3_pool8gb_M2_6144_bitident_v3.jsonl · md5 d2f0b9a01fc5404ebb04dcf3583e133f</td></tr>
+  <tr><td>binary 指紋</td>
+      <td class="mono">src/llama.cpp/build/bin/libllama.0.dylib<br>
+      def47c28033559171ace800fb8090beb → 952ed137bc86f245b1cdaf013b0e7297</td></tr>
+  <tr><td>gate 紀錄</td>
+      <td class="mono">Backup/m123_oracle_gate/summary_skip0valued_control_on.json<br>
+      Backup/m123_oracle_gate/summary_skip0valued_default_off.json</td></tr>
+  <tr><td>server log</td>
+      <td class="mono">Backup/cgc_logs/llama_server_20260916_001834.log（A 控制）<br>
+      Backup/cgc_logs/llama_server_20260916_001915.log（B 新預設）</td></tr>
+</table>
+
+<p class="small">建置方式：對既有 build tree 做<strong>增量</strong> <code>cmake --build</code>（22 s）。
+刻意<strong>不</strong>用 <code>build_fork_llama.sh</code>——它會 <code>rm -rf build</code> 並以
+<code>LLAMA_BUILD_SERVER=OFF</code> 重配置，等於刪掉生產 binary，且本樹的 cache 是
+<code>GGML_BLAS=ON</code>／<code>ACCELERATE=ON</code>（與該腳本的 "MUST be OFF" 相反），
+重配置會靜默換掉數值骨幹。</p>
+
+<h2>9. 附件：llama-bench 生產 matrix（新預設）</h2>
+
+<p>慣例要求的生產標準度量，跑在新預設（<code>skip0=0</code> ⇒ layer 0 進池）上。
+命令：<code>llama_bench_matrix.py --arms prod25-stream --depths 0,512,1024,2048,4096</code>
+（<code>-p 512 -n 128 -r 3</code>，<code>-b/-ub 512</code>，wall 382.5 s）。</p>
+
+<table>
+  <tr><th>shape</th><th>depth</th><th>t/s（新預設 09-16）</th><th>t/s（舊預設 09-15）</th><th>Δ</th><th>cache hit%</th></tr>
+  <tr><td>pp</td><td class="num">0</td><td class="num">113.92 ± 6.08</td><td class="num">119.86</td><td class="num down">−5.0%</td><td class="num">97.1</td></tr>
+  <tr><td>tg</td><td class="num">0</td><td class="num">9.05 ± 0.79</td><td class="num">9.65</td><td class="num down">−6.2%</td><td class="num">97.1</td></tr>
+  <tr><td>pp</td><td class="num">512</td><td class="num">106.80 ± 4.05</td><td class="num">118.44</td><td class="num down">−9.8%</td><td class="num">97.1</td></tr>
+  <tr><td>tg</td><td class="num">512</td><td class="num">8.74 ± 0.53</td><td class="num">12.83</td><td class="num down">−31.9%</td><td class="num">97.1</td></tr>
+  <tr><td>pp</td><td class="num">1024</td><td class="num">106.41 ± 4.61</td><td class="num">115.12</td><td class="num down">−7.6%</td><td class="num">97.1</td></tr>
+  <tr><td>tg</td><td class="num">1024</td><td class="num">9.81 ± 0.73</td><td class="num">10.14</td><td class="num down">−3.3%</td><td class="num">97.1</td></tr>
+  <tr><td>pp</td><td class="num">2048</td><td class="num">110.21 ± 1.06</td><td class="num">114.43</td><td class="num down">−3.7%</td><td class="num">97.1</td></tr>
+  <tr><td>tg</td><td class="num">2048</td><td class="num">10.02 ± 0.42</td><td class="num">10.34</td><td class="num down">−3.1%</td><td class="num">97.1</td></tr>
+  <tr><td>pp</td><td class="num">4096</td><td class="num">107.51 ± 3.48</td><td class="num">111.86</td><td class="num down">−3.9%</td><td class="num">97.1</td></tr>
+  <tr><td>tg</td><td class="num">4096</td><td class="num">9.50 ± 0.30</td><td class="num">10.13</td><td class="num down">−6.2%</td><td class="num">97.1</td></tr>
+</table>
+
+<div class="box b-amber">
+  <p><strong>這張表<u>不能</u>用來宣稱「skip0 修復讓它慢了 ~5%」。</strong>理由是量測本身的解析度：</p>
+  <ul>
+    <li>同一支 binary、同一配置的三跑，極差已達 <strong>33.6%</strong>（本系列 2026-09-15 白皮書 §3 記錄）。
+        這裡的 pp 差異落在 <strong>−3.7% ~ −9.8%</strong>，<strong>完全在輪間雜訊內</strong>；
+        <code>tg@512</code> 的 <strong>−31.9%</strong> 正是那個雜訊會產生的形狀（單一深度暴走，相鄰深度 −3.3%）。</li>
+    <li>兩跑還差在：指紋、以及唯一的配置差異 skip0（舊跑 <code>env</code> 也印 <code>"0"</code>，
+        <strong>但當時 <code>0</code> = 開啟</strong>——這正是 §2 的缺陷，這張表本身就是它的受害者）。</li>
+    <li>方向性上可以說的只有<strong>物理預期</strong>：layer 0 進池後多 142 個 resident slot（＋152 MiB）、
+        多 396 次 pread 進關鍵路徑 ⇒ 若有影響，符號應該是<strong>略慢</strong>。
+        這與觀測同向，但<strong>幅度不可引用</strong>。</li>
+    <li><strong>要結案必須做交錯 A/B ×3</strong>（<code>CGC_SERVER_SKIP0=0</code> vs <code>1</code>，
+        paired per-rep median + 兩臂指紋），本輪<strong>沒有做</strong>，所以 §4 第 4 項維持「方向未定」。</li>
+  </ul>
+  <p class="small">附註：<code>cache hit 97.1%</code> 比舊跑高（舊跑同 profile 記 43.5% 非 resident 份額）；
+  這是 prefill-stream 臂的常態，因為大 chunk 走 whole-layer slab 而不是 pool。</p>
+</div>
+
+<p class="small">檔案：<code>Backup/llama_bench/matrix_skip0valued_20260916.json</code> /
+<code>.md</code> · <code>Backup/cgc_logs/matrix_skip0valued_20260916.log</code> ·
+舊跑對照 <code>Backup/llama_bench/matrix_prod25-stream_20260915_1659.json</code></p>
+
+</div>
+</body>
+</html>
