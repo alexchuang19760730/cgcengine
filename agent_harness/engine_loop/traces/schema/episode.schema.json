@@ -1,0 +1,162 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "engine_loop/traces/schema/episode.schema.json",
+  "title": "engine-loop episode — one run of one arm",
+  "description": "An episode is the atomic observation: a single arm executed once, with its build fingerprint, its measurements and the artifact that produced them. It carries NO interpretation — interpretation lives in `decision` and `lesson`. The two hard gates are (1) a missing build fingerprint makes the episode incomparable and therefore useless, and (2) an unstable answer_md5 means the run was not deterministic and must not be used as evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type", "episode_id", "loop", "profile", "goal", "arm", "build", "obs",
+    "gate", "artifact", "usable_as_evidence", "caveats"
+  ],
+  "properties": {
+    "type": { "const": "episode" },
+    "episode_id": {
+      "type": "string",
+      "pattern": "^eng-[0-9]{8}-[0-9]{6}-[A-Za-z0-9._-]+-r[0-9]+$",
+      "description": "eng-<YYYYMMDD>-<HHMMSS>-<arm>-r<rep>. The timestamp is taken from the server log filename, never typed by hand."
+    },
+    "loop": { "const": "engine" },
+    "profile": { "type": "string", "minLength": 1 },
+    "goal": {
+      "type": "string",
+      "minLength": 8,
+      "description": "One sentence: what this run was trying to establish. Required, because an observation with no question attached cannot be turned into a decision."
+    },
+    "arm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "declared_purpose", "usable_for_throughput", "env"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "declared_purpose": {
+          "type": "string",
+          "description": "What this arm claims to prove, copied verbatim from the ARMS table in scripts/check/decode_sweep.py so the claim cannot drift from the arm."
+        },
+        "usable_for_throughput": {
+          "type": "boolean",
+          "description": "false for probe arms (GGML_SCHED_DEBUG, CGC_S1_DBG, ...) and for upper-bound probes whose output is deliberately wrong. A false here makes decode_tps unquotable, not merely unreliable."
+        },
+        "env": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+    "build": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["server", "metal", "llama"],
+      "description": "Three md5 prefixes, or null when the artifact does not record them. NULL IS NOT A WARNING, IT IS A VERDICT: an episode with build == null MUST have usable_as_evidence == false, because a throughput or bit-identical number whose binaries are unknown cannot be compared to anything -- not to another arm, and not to itself a day later after a rebuild. validate.py enforces the implication. Historical rows predating fingerprint recording (scripts/check/decode_sweep.py only started writing it on 2026-09-15) are emitted with build == null rather than dropped: they are still usable as tool-trace examples, just never as measurements.",
+      "properties": {
+        "server": { "type": "string", "minLength": 4 },
+        "metal": { "type": "string", "minLength": 4 },
+        "llama": { "type": "string", "minLength": 4 }
+      }
+    },
+    "obs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "decode_tps"],
+      "properties": {
+        "kind": {
+          "enum": ["sweep", "interleave", "gate", "oracle", "bench"],
+          "description": "Which artifact shape this observation has. The emitter sets it; it is what tells a reader which of the optional blocks below are meaningful instead of merely absent. `sweep`/`interleave`/`bench` carry a generation (so answer_md5 is mandatory); `gate`/`oracle` verify logits and carry no throughput."
+        },
+        "decode_tps": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["median"],
+          "properties": {
+            "median": { "type": ["number", "null"] },
+            "min": { "type": ["number", "null"] },
+            "max": { "type": ["number", "null"] },
+            "n_rounds": { "type": ["integer", "null"] }
+          }
+        },
+        "prefill_tps_median": { "type": ["number", "null"] },
+        "answer_md5": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "The SET of answer digests observed across rounds. Size > 1 is the non-determinism alarm. Mandatory (non-empty) whenever decode_tps.median is a number, i.e. whenever a generation actually happened."
+        },
+        "answer_stable": { "type": ["boolean", "null"] },
+        "oracle": {
+          "type": ["object", "null"],
+          "description": "gate/oracle episodes: the logits digest set and whether it matched the reference.",
+          "additionalProperties": false,
+          "properties": {
+            "rows": { "type": ["integer", "null"] },
+            "distinct_row_digests": { "type": ["integer", "null"] },
+            "ref": { "type": ["string", "null"] },
+            "verdict": { "enum": ["pass", "fail", "unknown"] }
+          }
+        },
+        "pool": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "properties": {
+            "hit_rate_pct": { "type": ["number", "null"] },
+            "capacity_pct": { "type": ["number", "null"] },
+            "io_effective_mib_s": { "type": ["number", "null"] },
+            "zero_mapped_selected": { "type": ["number", "null"] }
+          }
+        },
+        "phase_ms": {
+          "type": ["object", "null"],
+          "description": "Steady-state medians parsed from the CGC-GPUTIME / CGC-DECPROF lines of the artifact log. gpu_busy_sum may exceed 100% of the step because kernels overlap; `gap` is the GPU-clock window with nothing running.",
+          "additionalProperties": { "type": ["number", "null"] }
+        },
+        "asserts": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "properties": {
+            "mmid_lines": { "type": ["integer", "null"] },
+            "mmid_oob_total": { "type": ["integer", "null"] },
+            "mmid_zero_row_total": { "type": ["integer", "null"] },
+            "zero_mapped": { "type": ["integer", "null"] }
+          }
+        }
+      }
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "verdict"],
+      "properties": {
+        "name": { "type": "string" },
+        "verdict": { "enum": ["pass", "fail", "n/a"] },
+        "ref": { "type": ["string", "null"] },
+        "env_passthrough": { "type": "object", "additionalProperties": { "type": "string" } },
+        "diagnostic_keys": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Env keys the gate had to whitelist because they ARE the proposition under test. Recorded so a pass cannot be read as broader than it is."
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["log"],
+      "properties": {
+        "log": {
+          "type": ["string", "null"],
+          "description": "$REPO-relative, sanitized. null when the artifact is not a server log (a bench matrix, a gate dump, an oracle .jsonl) — those point at their own file via `source` instead of pretending to have a log."
+        },
+        "log_bytes": { "type": ["integer", "null"] },
+        "sha256": { "type": ["string", "null"] }
+      }
+    },
+    "source": {
+      "type": "string",
+      "description": "The file this episode was emitted from (repo-relative). Provenance for re-emission and for auditing the emitter itself."
+    },
+    "usable_as_evidence": {
+      "type": "boolean",
+      "description": "false when the answer was unstable, the fingerprint is missing, or the arm is a deliberate-wrong-output probe. It gates QUOTING A NUMBER, not being cited at all: an unstable episode is precisely the evidence a decision needs in order to establish non-determinism (see dec-20260915-2115-s1-divergence-is-per-layer-not-global, which rests on a row with usable_as_evidence == false). Such a row must therefore still carry the observed digest set in obs.answer_md5 and name the instability in caveats, so the structural claim can be checked without re-running anything."
+    },
+    "caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Machine-checkable honesty. A reader must be able to reconstruct why a number is or is not quotable without reading the log."
+    }
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "engine_loop/traces/schema/decision.schema.json",
+  "title": "engine-loop decision — one judgement point",
+  "description": "The highest-value record: a question, the episodes that bear on it, the reasoning that connects them, the answer, and — most importantly — what the answer rules out. A decision is what turns a pile of measurements into a policy. `judgement` is the gate that stops a refuted hypothesis from being trained on as a positive example.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type", "decision_id", "question", "evidence", "reasoning", "conclusion",
+    "judgement", "action", "superseded_by"
+  ],
+  "properties": {
+    "type": { "const": "decision" },
+    "decision_id": {
+      "type": "string",
+      "pattern": "^dec-[0-9]{8}-[0-9]{4}-[a-z0-9-]+$",
+      "description": "dec-<YYYYMMDD>-<HHMM>-<slug>"
+    },
+    "question": {
+      "type": "string",
+      "minLength": 12,
+      "description": "The question must be falsifiable as written. 'Is the GPU slow?' is not; 'Is the ~44% of step time removable serialization, or is the GPU genuinely busy?' is."
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["reading"],
+        "properties": {
+          "episode_id": { "type": ["string", "null"] },
+          "artifact": { "type": ["string", "null"], "description": "repo-relative path when the evidence is a document rather than a run" },
+          "reading": {
+            "type": "string",
+            "minLength": 8,
+            "description": "What the evidence SAYS — the numbers, not a restatement of the episode's goal."
+          }
+        }
+      }
+    },
+    "reasoning": {
+      "type": "string",
+      "minLength": 20,
+      "description": "The inference from evidence to conclusion, including which of the readings are load-bearing and which are structural artifacts. A conclusion with no reasoning is an opinion."
+    },
+    "conclusion": { "type": "string", "minLength": 8 },
+    "confidence": { "enum": ["high", "medium", "low", "unknown"] },
+    "judgement": {
+      "enum": ["sound", "refuted", "unresolved"],
+      "description": "sound = still believed; refuted = later evidence contradicted it (then superseded_by MUST be set); unresolved = the evidence did not settle it. This field is the anti-training-poison gate: refuted decisions never become positive examples."
+    },
+    "action": {
+      "type": "string",
+      "minLength": 4,
+      "description": "What was actually done as a result. This is the supervised target for the (state -> next move) projection."
+    },
+    "ruled_out": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claim", "why_false"],
+        "properties": {
+          "claim": { "type": "string", "minLength": 8 },
+          "why_false": { "type": "string", "minLength": 8 }
+        }
+      },
+      "description": "Hypotheses this decision kills, with the evidence that killed them. Negative knowledge is what stops a later agent from re-walking the same path; it is the single most reused thing in this loop."
+    },
+    "artifact": { "type": ["string", "null"] },
+    "supersedes": { "type": "array", "items": { "type": "string" } },
+    "superseded_by": {
+      "type": ["string", "null"],
+      "description": "decision_id that replaced this one. Must resolve. Required non-null when judgement == 'refuted'."
+    }
+  }
+}

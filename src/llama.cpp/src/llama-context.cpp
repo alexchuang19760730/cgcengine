@@ -1721,7 +1721,14 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     // CGC: per-phase decode timing (CGC_PHASE_TIMING=1). Accumulates and prints mean per phase
     // every 32 decode steps; batched (prefill) steps are skipped.
     const bool cgc_phase_timing = getenv("CGC_PHASE_TIMING") != nullptr;
-    static int64_t ph_build=0, ph_alloc=0, ph_inputs=0, ph_compute=0, ph_n=0;
+    // [CGC decode phase decomposition 2026-09-15] `compute` is `graph_compute()`, which contains
+    // BOTH the Metal encoding of all 40 layers AND the expert-cache fill wait (the hook blocks in
+    // ensure_batch/fill_pool_direct inside graph_compute). A step whose whole cost lands in
+    // `compute` therefore cannot be attributed to GPU vs disk from this line alone. ph_fillwait is
+    // the same window's delta of the calling-thread fill-wait counter, so
+    // `compute - fill_wait` = GPU/encoding, `fill_wait` = disk. See
+    // llama_expert_cache_fill_wait_us() for why the delta is meaningful only for this thread.
+    static int64_t ph_build=0, ph_alloc=0, ph_inputs=0, ph_compute=0, ph_fillwait=0, ph_n=0;
     const int64_t ph_t0 = cgc_phase_timing ? ggml_time_us() : 0;
     int64_t ph_t;
 
@@ -1754,6 +1761,21 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     } else {
         res->reset();
 
+        // [CGC 2026-09-15 S1 slot-table] The captured table is deliberately NOT reset here.
+        //
+        // An earlier revision cleared it on the fresh-build branch, and that was wrong for a
+        // reason worth recording: capture (the build callback) and use (the eval hook) interleave
+        // PER LAYER, not per step. The hook for layer k runs before layer k's table is captured, so
+        // a per-build reset emptied the map on every step and the hook could never publish
+        // anything -- get_rows then gathered from uninitialised memory (measured: every id
+        // out-of-bounds, first=987120956, ids ne=[8,1]).
+        //
+        // The leaf (cache_remap_tensors) has always worked this way and is never reset: the hook
+        // publishes into the tensor captured by the PREVIOUS build, which is still correct because
+        // ggml-alloc hands a same-shaped graph the same buffer, so the old pointer and the new
+        // pointer are the same address. The table must follow exactly the same lifecycle -- and it
+        // is built under exactly the same condition as the leaf (one or the other per layer, never
+        // both), so the two can never disagree about which steps have a table.
         ggml_backend_sched_reset(sched.get());
 
         // CGC: restore any FFN expert weights repointed at the cache pool by the previous
@@ -1842,6 +1864,13 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         }
     }
 
+    // [CGC decode phase decomposition 2026-09-15] sample the calling-thread fill-wait counter
+    // around graph_compute so the fill wait can be split out of `compute`. The window is exactly
+    // graph_compute, which is also exactly the window `compute` measures. Non-owning.
+    llama_expert_cache * ec_phase = model.expert_cache;
+    const uint64_t ph_fw0 = (cgc_phase_timing && ec_phase != nullptr)
+                          ? llama_expert_cache_fill_wait_us(ec_phase) : 0;
+
     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
@@ -1857,11 +1886,24 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         int64_t t = ggml_time_us();
         if (ubatch.n_tokens == 1) {
             ph_compute += t - ph_t;
+            if (ec_phase != nullptr) {
+                const uint64_t fw1 = llama_expert_cache_fill_wait_us(ec_phase);
+                if (fw1 >= ph_fw0) {
+                    ph_fillwait += (int64_t) (fw1 - ph_fw0);
+                }
+            }
             ph_n++;
             if (ph_n % 32 == 0) {
-                fprintf(stderr, "CGC-PHASE: n=%lld build=%.3f alloc=%.3f inputs=%.3f compute=%.3f ms\n",
+                // gpu = compute - fillwait. When fillwait > compute the two windows disagree
+                // (the fill counter is monotonic across all callers, and graph_compute also does
+                // non-fill work outside the hook), so print it raw and let the reader see the
+                // inconsistency rather than clamping it to a fake 0.
+                const double cms  = ph_compute/1000.0/ph_n;
+                const double fwms = ph_fillwait/1000.0/ph_n;
+                fprintf(stderr, "CGC-PHASE: n=%lld build=%.3f alloc=%.3f inputs=%.3f compute=%.3f"
+                                " fill_wait=%.3f gpu=%.3f ms\n",
                         (long long) ph_n, ph_build/1000.0/ph_n, ph_alloc/1000.0/ph_n,
-                        ph_inputs/1000.0/ph_n, ph_compute/1000.0/ph_n);
+                        ph_inputs/1000.0/ph_n, cms, fwms, cms - fwms);
             }
         }
     }
@@ -3264,6 +3306,127 @@ ggml_status llama_context::graph_compute(
         }
     }
 
+    // [CGC 2026-09-15 S1 slot-table] The decisive readback: what the Metal GET_ROWS actually
+    // produced, read on the host AFTER ggml_backend_sched_synchronize(). CGC-MMID-ASSERT reads the
+    // same buffer at encode time (before the command buffer runs) and therefore reports the
+    // allocator's leftovers for any GPU-computed id vector -- F32 router probabilities, +NaN, or a
+    // mix of legal and illegal indices inside a single node, which is exactly what it reported.
+    // Comparing the gather's output against the host leaf for the SAME step splits the two
+    // remaining possibilities cleanly:
+    //   equal    -> the GPU path is correct and every id_oob line was a probe artifact; the logits
+    //               divergence then has a different cause and the gate stays the only judge.
+    //   differs  -> the gather really produced wrong ids, and the printed pair says by how much.
+    static const bool cgc_s1_post = getenv("CGC_S1_DBG") != nullptr;
+    if (cgc_s1_post) {
+        static int cgc_s1_post_n = 0;
+        if (cgc_s1_post_n < 6) {
+            cgc_s1_post_n++;
+            ggml_backend_sched_synchronize(sched.get());
+            // [CGC 2026-09-15 S1 window fix] This loop used to be `for (int il = 0; il < 4; ++il)`,
+            // i.e. it read back layers 0..3 only, while the divergence the ladder localized sits at
+            // layers 10..19 -- so the probe kept confirming a mapping nobody had questioned. It now
+            // walks every captured `ffn_moe_slots` node, which is what "the gather is correct" was
+            // always supposed to mean. Only the readback cost changes: these are host reads after a
+            // synchronize that already happened, on a diagnostic arm whose throughput nobody quotes.
+            for (const auto & cgc_kv : cache_slots_out_tensors) {
+                const int il = cgc_kv.first;
+                ggml_tensor * s  = cgc_kv.second;
+                ggml_tensor * tb = cache_slot_table_tensors.count(il) ? cache_slot_table_tensors[il] : nullptr;
+                ggml_tensor * rm = cache_remap_tensors.count(il) ? cache_remap_tensors[il] : nullptr;
+                if (s == nullptr || s->data == nullptr) {
+                    fprintf(stderr, "CGC-S1: POST il=%d gather=null (leaf path)\n", il);
+                    continue;
+                }
+                const int64_t ntot = s->ne[0] * s->ne[1];
+                std::vector<int32_t> sbuf((size_t) ntot);
+                ggml_backend_tensor_get(s, sbuf.data(), 0, (size_t) ntot * sizeof(int32_t));
+                std::vector<int32_t> rbuf;
+                if (rm != nullptr && rm->data != nullptr && rm->ne[0] == s->ne[0] && rm->ne[1] == s->ne[1]) {
+                    rbuf.resize((size_t) ntot);
+                    ggml_backend_tensor_get(rm, rbuf.data(), 0, (size_t) ntot * sizeof(int32_t));
+                }
+                // Then attempt the complete differential: read the index vector and the whole table
+                // on the host, recompute table[idx[j]] for every j, and compare against the gather's
+                // own output.
+                //
+                // IT ONLY MEANS SOMETHING WHEN ids_src_valid=1, and that is the whole point of this
+                // comment. `ids_cont` (the CONT that feeds the gather) is NOT an output, so
+                // ggml-alloc may recycle its buffer as soon as the gather has consumed it. Reading it
+                // AFTER the graph completed therefore reads whatever tensor took the buffer next --
+                // measured: layer 1 read small ints, layers 2 and 3 read F32 bit patterns
+                // (idx=1043923934), producing 16/16 "mismatches" that are an artifact of the probe,
+                // not of the gather. This is the MIRROR of the encode-time race: that one read the
+                // buffer too early, this one reads a dead buffer too late. The two valid ways to
+                // compare a transient against a GPU product are to PIN it (ggml_set_output, which
+                // perturbs the graph and so is not acceptable on a gate arm) or to sample it at the
+                // right moment -- which is what the hook-side `CGC-S1: EXPECT-*` lines already do.
+                // Cross-referencing EXPECT (what the table holds for this step's ids, read at hook
+                // time) with POST (the gather output, read post-sync) is what actually closes the
+                // loop; see docs/REMAP_ROUNDTRIP_REMOVAL_PLAN_2026-09-15.md §8.2.
+                ggml_tensor * ids_src = (s->view_src != nullptr) ? s->view_src->src[1] : nullptr;
+                const void * ids_src_data = ids_src != nullptr ? ids_src->data : nullptr;
+                std::vector<int32_t> ibuf;
+                std::vector<int32_t> tbuf;
+                if (ids_src != nullptr && ids_src->data != nullptr &&
+                        ggml_nelements(ids_src) == ntot) {
+                    ibuf.resize((size_t) ntot);
+                    ggml_backend_tensor_get(ids_src, ibuf.data(), 0, (size_t) ntot * sizeof(int32_t));
+                }
+                if (tb != nullptr && tb->data != nullptr) {
+                    tbuf.resize((size_t) tb->ne[1]);
+                    ggml_backend_tensor_get(tb, tbuf.data(), 0, (size_t) tb->ne[1] * sizeof(int32_t));
+                }
+                int ids_src_valid = 0;
+                for (int32_t v : ibuf) {
+                    if (v < 0 || v >= (int32_t) (tb != nullptr ? tb->ne[1] : 0)) {
+                        ids_src_valid = 0;
+                        break;
+                    }
+                    ids_src_valid = 1;
+                }                int64_t n_gather_mis = -1;
+                if (ids_src_valid == 1 && !tbuf.empty()) {
+                    n_gather_mis = 0;
+                    for (int64_t k = 0; k < ntot; ++k) {
+                        if (tbuf[(size_t) ibuf[(size_t) k]] != sbuf[(size_t) k]) {
+                            if (n_gather_mis < 4) {
+                                fprintf(stderr, "CGC-S1: POST il=%d MISMATCH k=%lld idx=%d table=%d gather=%d\n",
+                                        il, (long long) k, ibuf[(size_t) k],
+                                        tbuf[(size_t) ibuf[(size_t) k]], sbuf[(size_t) k]);
+                            }
+                            n_gather_mis++;
+                        }
+                    }
+                }
+                const int64_t nv = ntot < 16 ? ntot : 16;
+                fprintf(stderr, "CGC-S1: POST il=%d ntok=%lld n_expert=%lld gather=[",
+                        il, (long long) s->ne[1], tb != nullptr ? (long long) tb->ne[1] : -1);
+                for (int64_t k = 0; k < nv; ++k) {
+                    fprintf(stderr, "%s%d", k ? " " : "", sbuf[(size_t) k]);
+                }
+                fprintf(stderr, "] leaf=[");
+                if (rbuf.empty()) {
+                    fprintf(stderr, "n/a");
+                } else {
+                    for (int64_t k = 0; k < nv; ++k) {
+                        fprintf(stderr, "%s%d", k ? " " : "", rbuf[(size_t) k]);
+                    }
+                }
+                char vtb[64];
+                if (ids_src_valid == 1) {
+                    snprintf(vtb, sizeof(vtb), "%lld", (long long) n_gather_mis);
+                } else {
+                    snprintf(vtb, sizeof(vtb), "n/a (index vector buffer recycled)");
+                }
+                fprintf(stderr, "] gather_data=%p ids_src_data=%p table_data=%p same=%d ids_src_valid=%d gather_vs_table=[%s]%s\n",
+                        s->data, ids_src_data, tb != nullptr ? tb->data : nullptr,
+                        (!rbuf.empty() && memcmp(sbuf.data(), rbuf.data(), (size_t) ntot * sizeof(int32_t)) == 0) ? 1 : 0,
+                        ids_src_valid, vtb,
+                        (s->data != nullptr && s->data == ids_src_data)
+                                ? " *** mmid consumes the INDEX vector, not the gather output ***" : "");
+            }
+        }
+    }
+
     static int cgc_sched_dbg = 0;
     if (cgc_sched_dbg < 12) {
         cgc_sched_dbg++;
@@ -3670,6 +3833,66 @@ void llama_context::cgc_logits_oracle_dump(ggml_cgraph * gf, uint32_t n_tokens, 
     ggml_backend_sched_synchronize(sched.get());
     ggml_backend_tensor_get(t_logits, buf.data(), 0, nbytes);
 
+    // [CGC-LOGITS-VALID 2026-09-15] P0: never emit a dump we cannot stand behind.
+    //
+    // Motivating incident: a Metal command buffer failed with Insufficient Memory, the
+    // graph never ran, and this function read the *previous* compute's bytes out of the
+    // output buffer. The dump looked structurally fine (a JSON object per row) but held
+    // sum=-6.83e38 / mean=-2.75e33 and a top-8 of consecutive ids 59400..59407 all tied
+    // at 0.125. A watchdog now aborts on that failure, but a dump must be defensible on
+    // its own: any consumer may treat the file as an oracle reference, and a poisoned
+    // reference silently destroys every comparison built on it. So validate first, and
+    // on failure emit a sidecar `<dump>.invalid` that the harness refuses to read.
+    //
+    // Bounds are deliberately loose - they only have to separate real logits from garbage:
+    // a plausible LM logit is O(10..100), so |sum| over <=150k vocab stays under ~1e10 and
+    // f32 representation tops out at 3.4e38. These thresholds are ~5 and ~8 orders of
+    // magnitude away from anything a real forward pass can produce.
+    bool dump_invalid = false;
+    char invalid_reason[256] = {0};
+    {
+        double vsum = 0.0;
+        double vmax_abs = 0.0;
+        int64_t n_nonfinite = 0;
+        for (size_t i = 0; i < n_floats; ++i) {
+            const float v = buf[i];
+            if (!std::isfinite(v)) {
+                n_nonfinite++;
+                continue;
+            }
+            vsum += (double) v;
+            const double a = std::fabs((double) v);
+            if (a > vmax_abs) {
+                vmax_abs = a;
+            }
+        }
+        const double vmean = (n_floats > 0) ? vsum / (double) n_floats : 0.0;
+        if (n_nonfinite > 0) {
+            dump_invalid = true;
+            snprintf(invalid_reason, sizeof(invalid_reason), "non-finite values: %lld of %zu", (long long) n_nonfinite, n_floats);
+        } else if (vmax_abs > 1.0e30) {
+            dump_invalid = true;
+            snprintf(invalid_reason, sizeof(invalid_reason), "|max|=%.6e exceeds 1e30 (stale/failed compute)", vmax_abs);
+        } else if (std::fabs(vsum) > 1.0e15) {
+            dump_invalid = true;
+            snprintf(invalid_reason, sizeof(invalid_reason), "|sum|=%.6e exceeds 1e15 (%zu floats)", std::fabs(vsum), n_floats);
+        } else if (std::fabs(vmean) > 1.0e9) {
+            dump_invalid = true;
+            snprintf(invalid_reason, sizeof(invalid_reason), "|mean|=%.6e exceeds 1e9", std::fabs(vmean));
+        }
+        if (dump_invalid) {
+            LLAMA_LOG_ERROR("%s: CGC-LOGITS-INVALID: refusing to emit oracle dump (%s)\n", __func__, invalid_reason);
+            const std::string marker = std::string(env_path) + ".invalid";
+            if (FILE * fm = fopen(marker.c_str(), "w")) {
+                fprintf(fm, "{\"reason\":\"%s\",\"n_floats\":%zu,\"n_tokens\":%lld,\"n_vocab\":%lld,\"pmax\":%lld}\n",
+                        invalid_reason, n_floats, (long long) n_tok, (long long) n_vocab,
+                        (long long) llama_memory_seq_pos_max(memory.get(), 0));
+                fclose(fm);
+            }
+            return;
+        }
+    }
+
     const uint64_t h_full = cgc_logits_fnv1a64(buf.data(), nbytes);
     const char * ctype = cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP ? "MTP" : "DEF";
     const char * tname = t_logits->name[0] != '\0' ? t_logits->name : "?";
@@ -3718,6 +3941,41 @@ void llama_context::cgc_logits_oracle_dump(ggml_cgraph * gf, uint32_t n_tokens, 
         }
         // per-row hash so single-token divergence is detectable even if total hash collides
         const uint64_t h_row = cgc_logits_fnv1a64(row, sizeof(float) * (size_t) n_vocab);
+
+        // [CGC-LOGITS-VALID] row-level degeneracy screen. Two shapes that a real forward
+        // pass cannot produce but a stale/partial buffer can:
+        //   (a) the whole row is one repeated bit pattern
+        //   (b) the top-N is a run of consecutive ids tied on the exact same bits - this is
+        //       the 2026-09-15 fingerprint (ids 59400..59407, all 0.125). Ties in f32 are
+        //       possible in principle, but a *consecutive-id* run of >=4 bit-identical
+        //       values is not something a trained LM head emits.
+        {
+            bool row_uniform = true;
+            for (int64_t v = 1; v < n_vocab; ++v) {
+                if (memcmp(&row[v], &row[0], sizeof(float)) != 0) {
+                    row_uniform = false;
+                    break;
+                }
+            }
+            int n_tied_consecutive = 0;
+            for (size_t i = 1; i < top.size(); ++i) {
+                const bool consecutive = (top[i].first == top[i - 1].first + 1);
+                const bool identical = memcmp(&top[i].second, &top[i - 1].second, sizeof(float)) == 0;
+                if (consecutive && identical) {
+                    n_tied_consecutive++;
+                }
+            }
+            if (row_uniform || n_tied_consecutive >= 3) {
+                dump_invalid = true;
+                snprintf(invalid_reason, sizeof(invalid_reason),
+                        "%s at token_idx=%lld (topn_tied_consecutive=%d, %zu topn entries)",
+                        row_uniform ? "row is a single repeated value" : "top-N is a consecutive tie run",
+                        (long long) t, n_tied_consecutive, top.size());
+                LLAMA_LOG_ERROR("%s: CGC-LOGITS-INVALID: %s - truncating dump\n", __func__, invalid_reason);
+                break;
+            }
+        }
+
         // build top JSON array inline
         std::string top_json = "[";
         for (size_t i = 0; i < top.size(); ++i) {
@@ -3743,6 +4001,19 @@ void llama_context::cgc_logits_oracle_dump(ggml_cgraph * gf, uint32_t n_tokens, 
             sum, mean,
             (long long) argmax, (double) maxv,
             top_json.c_str());
+    }
+    if (dump_invalid) {
+        // [CGC-LOGITS-VALID] the row loop broke early, so the file holds a partial dump.
+        // Do NOT advance dump_seq and do NOT flush-and-forget: stamp the sidecar so the
+        // harness can never mistake this file for a usable oracle reference.
+        const std::string marker = std::string(env_path) + ".invalid";
+        if (FILE * fm = fopen(marker.c_str(), "w")) {
+            fprintf(fm, "{\"reason\":\"%s\",\"partial\":true,\"stopped_at_step\":%d,\"n_tokens\":%lld,\"n_vocab\":%lld}\n",
+                    invalid_reason, dump_seq, (long long) n_tok, (long long) n_vocab);
+            fclose(fm);
+        }
+        fflush(f_out);
+        return;
     }
     dump_seq++;
     fflush(f_out);
@@ -3786,6 +4057,123 @@ static ggml_tensor * cgc_topk_find_logits(ggml_tensor * t, int il) {
         }
     }
     return nullptr;
+}
+
+// [CGC 2026-09-15 S1 diagnostic] Print the slot vector the hook just published for THIS step's
+// ids, together with the site that published it. The number to compare it against is
+// CGC-MMID-ASSERT's `first=` for the same layer: the assertion reports what the GPU consumed, this
+// reports what the host wrote. If they differ, the GPU is not reading the buffer the hook wrote,
+// and no amount of staring at the mapping will show that. If they agree, the mapping is right and
+// the divergence is downstream of the table (the gather's index or the gather output's buffer).
+// `site` also answers "which of the four remap write sites ran", which the missing EXPECT in the
+// first diagnostic run could not tell us.
+static void cgc_s1_expect_dbg(const char * site, int il, int64_t n_tokens, int64_t n_expert_used,
+                             const int32_t * ids, const ggml_tensor * tbl) {
+    static const bool on = getenv("CGC_S1_DBG") != nullptr;
+    // [CGC 2026-09-15 S1 window fix] This used to be `!on || il > 3` with a cap of 8 lines, i.e. the
+    // hook-side probe looked at layers 0..3 only. Every probe run of the day therefore reported "the
+    // table is correct" while the bit-identical gate kept failing, and the reason was not that the
+    // probe was wrong -- it was that the bisect put the divergence at layers 10..19, OUTSIDE the
+    // window the probe could see. An instrument whose scan range is narrower than the hypothesis
+    // cannot falsify it, and its silence then reads as confirmation (the same failure as
+    // CONVENTIONS.md B2, one level up: there the probe printed nothing at all, here it printed
+    // something true about the wrong place). The window is now the whole stack; the cap is sized so
+    // one full layer sweep over a few steps fits. Cost is stderr volume, which is opt-in and gated.
+    if (!on) {
+        return;
+    }
+    static int n = 0;
+    if (n >= 512) {
+        return;
+    }
+    n++;
+    if (tbl == nullptr || tbl->data == nullptr) {
+        fprintf(stderr, "CGC-S1: EXPECT-%s il=%d ntok=%lld TBL=null\n",
+                site, il, (long long) n_tokens);
+        return;
+    }
+    const int32_t * tb = (const int32_t *) tbl->data;
+    fprintf(stderr, "CGC-S1: EXPECT-%s il=%d ntok=%lld data=%p host=%d buf=%s ids=[",
+            site, il, (long long) n_tokens, (void *) tbl->data,
+            tbl->buffer ? (int) ggml_backend_buffer_is_host(tbl->buffer) : -1,
+            tbl->buffer ? ggml_backend_buffer_name(tbl->buffer) : "nil");
+    for (int64_t i = 0; i < n_expert_used; ++i) {
+        fprintf(stderr, "%s%d->%d", i ? " " : "", ids[i], tb[ids[i]]);
+    }
+    fprintf(stderr, "]\n");
+}
+
+static bool cgc_s1_ident() {
+    // [CGC 2026-09-15 S1 diagnostic] CGC_S1_IDENT=1 makes every publish write a constant 0 instead
+    // of the real mapping. It is the one experiment that separates the two failure modes that both
+    // present as CGC-MMID-ASSERT id_oob: if the host write reaches the buffer the gather reads, the
+    // gather must now return 0 for every id and the assertion must go silent (the answer will be
+    // numerically wrong -- that is the point). If id_oob persists, the host write is not reaching
+    // the buffer at all, or the gather's index is not what the host published.
+    static const bool v = getenv("CGC_S1_IDENT") != nullptr;
+    return v;
+}
+
+static bool cgc_s1_tag() {
+    // [CGC 2026-09-15 S1 diagnostic] CGC_S1_TAG=1 publishes 1000+layer into every table entry.
+    // Strictly more informative than the constant-0 probe: the CGC-MMID-ASSERT `first=` field then
+    // names the layer whose table the GPU actually read, so "the write does not land", "the write
+    // lands one layer late" and "the write is correct" become three distinguishable answers instead
+    // of one. See the note on the same switch in llama-expert-cache.cpp.
+    static const bool v = getenv("CGC_S1_TAG") != nullptr;
+    return v;
+}
+
+// [CGC 2026-09-15 S1 slot-table equivalence] Differential check between the TWO implementations of
+// the expert->slot mapping, for every expert this step actually selects.
+//
+//   llama_expert_cache_publish_slot_table()  sweeps the whole layer in one call (what the GPU table
+//                                            gets), and is reached only from the S1 path.
+//   llama_expert_cache_slot_table_safe()     is asked once per selected expert (what the host leaf
+//                                            gets), and is the only path the bit-identical
+//                                            reference was ever produced with.
+//
+// They are deliberately separate code paths -- a bulk export and a per-lookup -- so they can drift,
+// and a drift is invisible in the logits oracle until it changes which slot a cold expert reads.
+// The leaf is the authority here: the gate's reference is a leaf-path product. So this reports every
+// SELECTED expert whose published table entry differs from what slot_table_safe() returns for it.
+// The interesting case is the one the two functions were written to disagree on: a NON-resident
+// expert on a layer with no reserved ZERO slot. publish clamps it to 0 (and counts a clamp); safe
+// returns the raw -1. 0 is a legal slot index pointing at some other expert's weights; -1 is not an
+// index at all. Neither is what the leaf path needs, and which one is in the table decides whether
+// the failure is silent (wrong expert) or loud (id_oob), so it must be printed rather than assumed.
+static void cgc_s1_equiv_dbg(const char * site, const llama_expert_cache * cache, int il,
+                             int64_t n_tokens, int64_t n_expert_used, const int32_t * ids,
+                             const ggml_tensor * tbl, bool identity) {
+    static const bool on = getenv("CGC_S1_DBG") != nullptr;
+    if (!on || ids == nullptr || tbl == nullptr || tbl->data == nullptr) {
+        return;
+    }
+    if (cgc_s1_tag() || cgc_s1_ident()) {
+        return; // deliberate perturbations: the table does not carry the real mapping by design
+    }
+    const int32_t * tb = (const int32_t *) tbl->data;
+    const int64_t n_sel = n_tokens * n_expert_used;
+    int64_t n_mismatch = 0;
+    int32_t first_e = -1, first_got = 0, first_want = 0;
+    for (int64_t j = 0; j < n_sel; ++j) {
+        const uint32_t e = (uint32_t) ids[j];
+        const int32_t want = identity ? (int32_t) e
+                                      : llama_expert_cache_slot_table_safe(cache, (uint32_t) il, e);
+        if (tb[e] != want) {
+            if (n_mismatch == 0) {
+                first_e = (int32_t) e;
+                first_got = tb[e];
+                first_want = want;
+            }
+            n_mismatch++;
+        }
+    }
+    const int32_t zs = identity ? -1 : llama_expert_cache_zero_slot(cache, (uint32_t) il);
+    fprintf(stderr, "CGC-S1: EQUIV-%s il=%d ntok=%lld n_sel=%lld mismatch=%lld"
+                    " first_e=%d table=%d safe=%d zero_slot=%d map=%s\n",
+            site, il, (long long) n_tokens, (long long) n_sel, (long long) n_mismatch,
+            first_e, first_got, first_want, zs, identity ? "identity" : "slot");
 }
 
 void llama_context::expert_cache_on_topk(ggml_tensor * t) {
@@ -4538,11 +4926,57 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
 
     const uint32_t n_expert = model.hparams.n_expert;
 
+    // [CGC 2026-09-15 S1 slot-table diagnostic] One line per hook call for the first 60 calls:
+    // is the GPU table actually present in the capture map, and is it the same tensor the graph
+    // built? This separates "capture never happened" from "capture happened but the GPU reads
+    // something else", which the CGC-MMID-ASSERT (id_oob) alone cannot distinguish.
+    static const bool cgc_s1_dbg = getenv("CGC_S1_DBG") != nullptr;
+    if (cgc_s1_dbg && n_tokens <= 2) {
+        static int cgc_s1_n = 0;
+        if (cgc_s1_n < 80) {
+            const auto it_leaf = cache_remap_tensors.find(il);
+            const auto it_tbl  = cache_slot_table_tensors.find(il);
+            ggml_tensor * tl = it_leaf != cache_remap_tensors.end() ? it_leaf->second : nullptr;
+            ggml_tensor * tt = it_tbl  != cache_slot_table_tensors.end() ? it_tbl->second  : nullptr;
+            char keys[256];
+            int  klen = 0;
+            keys[0] = 0;
+            for (const auto & kv : cache_slot_table_tensors) {
+                klen += snprintf(keys + klen, sizeof(keys) - (size_t) klen, "%d,", kv.first);
+                if (klen > (int) sizeof(keys) - 8) {
+                    break;
+                }
+            }
+            fprintf(stderr, "CGC-S1: hook t=%s il=%d ne=[%lld,%lld,%lld,%lld] n_tok=%lld n_eu=%lld "
+                            "tbl_map=%zu keys=[%s] tbl=%p(tbl_data=%p) leaf=%p\n",
+                    t->name, il, (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2], (long long) t->ne[3],
+                    (long long) n_tokens, (long long) n_expert_used,
+                    cache_slot_table_tensors.size(), keys,
+                    (void *) tt, tt ? tt->data : nullptr, (void *) tl);
+            cgc_s1_n++;
+        }
+    }
+
     // L4_SKIP_LAYER0: blk.0 is a full-weight CPU skip-load tensor, not pooled. Its FFN must keep
     // reading the ORIGINAL tensor with the raw expert ids, so write an IDENTITY remap (instead of
     // slot indices) and skip ensure_batch / union recording. Writing slot ids would make mul_mat_id
     // index pool slots that have no adopted region -> layer-0 garbage that corrupts the whole net.
     if (getenv("LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0") != nullptr && il == 0) {
+        // [CGC 2026-09-15 S1 slot-table] This path deliberately writes an IDENTITY map (raw expert
+        // ids, not slots) because layer 0's FFN reads the full-weight tensor. The GPU table must
+        // carry the same identity -- otherwise the graph's get_rows would hand mul_mat_id pool slot
+        // indices for a layer whose weights were never repointed at the pool.
+        ggml_tensor * cgc_stable0 = cache_slot_table_tensors[il];
+        if (cgc_stable0 != nullptr && cgc_stable0->data != nullptr) {
+            int32_t * td0 = (int32_t *) cgc_stable0->data;
+            for (int64_t e = 0; e < n_expert; ++e) {
+                td0[e] = cgc_s1_tag() ? 1000 + (int32_t) il : (int32_t) e;
+            }
+        }
+        cgc_s1_expect_dbg("L4", il, n_tokens, n_expert_used, ids, cgc_stable0);
+        // layer 0's contract is the IDENTITY map on purpose (full-width weights), so the expected
+        // table entry is the raw expert id, not a slot.
+        cgc_s1_equiv_dbg("L4", cache, il, n_tokens, n_expert_used, ids, cgc_stable0, true);
         ggml_tensor * remap = cache_remap_tensors[il];
         if (remap != nullptr && remap->data != nullptr) {
             int32_t * rd = (int32_t *) remap->data;
@@ -5004,6 +5438,40 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
                 }
                 step_dbg_n++;
             }
+            // [CGC 2026-09-15 S1 slot-table] Publish the GPU-readable expert->slot table under the
+            // SAME mapping this path writes into the leaf below. The two writes are one mapping and
+            // are kept adjacent on purpose: if one of the four remap write sites ever published the
+            // table under a different mapping, the GPU-computed ids would silently diverge from the
+            // host-written ones and only the logits oracle would catch it.
+            ggml_tensor * cgc_stable = cache_slot_table_tensors[il];
+            if (cgc_stable != nullptr && cgc_stable->data != nullptr) {
+                const int64_t cgc_clamped = llama_expert_cache_publish_slot_table(
+                        cache, (uint32_t) il, (int32_t *) cgc_stable->data, (uint32_t) n_expert);
+                if (cgc_clamped > 0) {
+                    static int cgc_st_clamp_n = 0;
+                    if (cgc_st_clamp_n++ < 8) {
+                        fprintf(stderr, "CGC-SLOT-TABLE: %s il=%d clamped=%lld (no ZERO slot reserved; gather reads index 0)\n",
+                                cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP ? "draft" : "verify",
+                                il, (long long) cgc_clamped);
+                    }
+                }
+                if (cgc_s1_dbg) {
+                    // [CGC 2026-09-15 S1 diagnostic] The decisive comparison: what the HOOK just
+                    // published for THIS step's ids, next to what the CGC-MMID-ASSERT reports the
+                    // GPU actually consumed. Equal -> the table is correct and the divergence is
+                    // downstream of it (the gather's index). Different -> the GPU is reading a
+                    // different buffer than the hook wrote. Without both numbers side by side the
+                    // two are indistinguishable, because both surface as an out-of-range id.
+                    //
+                    // Was `il == 1`. Layer 1 was the interesting layer while the question was the
+                    // CPU/Metal boundary (layer 0's FFN runs on CPU); it is NOT the interesting layer
+                    // now that the ladder localized the divergence to 10..19. Gating a probe on a
+                    // single layer is how a probe ends up proving something about a layer nobody
+                    // asked about.
+                    cgc_s1_expect_dbg("fast", il, n_tokens, n_expert_used, ids, cgc_stable);
+                }
+                cgc_s1_equiv_dbg("fast", cache, il, n_tokens, n_expert_used, ids, cgc_stable, false);
+            }
             // write the remap leaf: resident -> slot index, cold -> ZERO-slot.
             ggml_tensor * remap = cache_remap_tensors[il];
             if (remap != nullptr && remap->data != nullptr) {
@@ -5108,6 +5576,16 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
         // NOTE: the FFN expert weight tensors were already repointed at the pool regions in
         // graph_get_cb (ffn_moe_topk_remap); the segmented dispatch submits with those pointers.
 
+        // [CGC 2026-09-15 S1 slot-table] Same mapping as the leaf write below (raw slot table, not
+        // the *_safe variant). For every expert this path selects, verify-strict has already made it
+        // resident, so both variants agree on the ids that are actually consumed.
+        ggml_tensor * cgc_stable_e = cache_slot_table_tensors[il];
+        if (cgc_stable_e != nullptr && cgc_stable_e->data != nullptr) {
+            llama_expert_cache_publish_slot_table(cache, (uint32_t) il,
+                                                 (int32_t *) cgc_stable_e->data, (uint32_t) n_expert);
+        }
+        cgc_s1_expect_dbg("pool", il, n_tokens, n_expert_used, ids, cgc_stable_e);
+        cgc_s1_equiv_dbg("pool", cache, il, n_tokens, n_expert_used, ids, cgc_stable_e, false);
         // write the remap leaf: selected expert id -> slot index
         ggml_tensor * remap = cache_remap_tensors[il];
         if (remap != nullptr && remap->data != nullptr) {
@@ -5308,6 +5786,40 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
             }
         }
 
+        // [CGC 2026-09-15 S1 slot-table] This path uses a DIFFERENT mapping from the others: the
+        // weights were gathered into a contiguous per-step buffer, so the ids are union indices
+        // (`uidx`), not pool slots. The published table must use the same union-index mapping --
+        // publishing the slot table here would point mul_mat_id at pool slots while the FFN reads
+        // the gather buffer. Experts outside the union map to 0, exactly as the leaf write does.
+        ggml_tensor * cgc_stable_g = cache_slot_table_tensors[il];
+        if (cgc_stable_g != nullptr && cgc_stable_g->data != nullptr) {
+            int32_t * tdg = (int32_t *) cgc_stable_g->data;
+            for (int64_t e = 0; e < n_expert; ++e) {
+                tdg[e] = cgc_s1_tag() ? 1000 + (int32_t) il
+                                      : (int32_t) (uidx.count((uint32_t) e) ? uidx[(uint32_t) e] : 0);
+            }
+        }
+        cgc_s1_expect_dbg("gather", il, n_tokens, n_expert_used, ids, cgc_stable_g);
+        // Same differential check, but against the mapping this site is actually defined on: the
+        // gather path maps a raw expert id to its UNION index, not to a pool slot, so
+        // slot_table_safe is the wrong oracle here by construction. The leaf write just below is the
+        // authority, and it is literally the same `uidx.count(e) ? uidx[e] : 0` expression.
+        if (cgc_stable_g != nullptr && cgc_stable_g->data != nullptr &&
+                getenv("CGC_S1_DBG") != nullptr && !cgc_s1_tag() && !cgc_s1_ident()) {
+            const int32_t * tbg = (const int32_t *) cgc_stable_g->data;
+            int64_t n_mis = 0;
+            int32_t fe = -1, fg = 0, fw = 0;
+            for (int64_t j = 0; j < n_tokens * n_expert_used; ++j) {
+                const uint32_t e = (uint32_t) ids[j];
+                const int32_t want = (int32_t) (uidx.count(e) ? uidx[e] : 0);
+                if (tbg[e] != want) {
+                    if (n_mis == 0) { fe = (int32_t) e; fg = tbg[e]; fw = want; }
+                    n_mis++;
+                }
+            }
+            fprintf(stderr, "CGC-S1: EQUIV-gather il=%d ntok=%lld table_vs_uidx=%lld first_e=%d table=%d uidx=%d union=%zu\n",
+                    il, (long long) n_tokens, (long long) n_mis, fe, fg, fw, uidx.size());
+        }
         ggml_tensor * remap = cache_remap_tensors[il];
         if (remap != nullptr && remap->data != nullptr) {
             int32_t * rd = (int32_t *) remap->data;
@@ -5403,8 +5915,36 @@ llm_graph_cb llama_context::graph_get_cb() const {
                 cache_rn_mask_tensors[il] = cur;
                 return;
             }
-            if (strcmp(name, "ffn_moe_topk_remap") == 0) {
-                cache_remap_tensors[il] = cur;
+            // [CGC 2026-09-15 S1 slot-table] `ffn_moe_slots` is the GPU gather's output -- the tensor
+            // mul_mat_id actually consumes as ids. Captured so the post-synchronize readback can
+            // read it back on the host AFTER the command buffer completed; see the note on
+            // cache_slots_out_tensors in the header for why the encode-time probe cannot.
+            if (strcmp(name, "ffn_moe_slots") == 0) {
+                cache_slots_out_tensors[il] = cur;
+            }
+            // [CGC 2026-09-15 S1 slot-table] `ffn_moe_slot_table` is the S1 replacement for
+            // `ffn_moe_topk_remap` and is built under the same conditions, so it must get the same
+            // capture AND the same pool repoint below. The repoint hangs off this branch rather
+            // than off the FFN weight nodes, so a table build that skipped it would leave the FFN
+            // src0 pointing at the full-width weights while mul_mat_id indexes pool slots.
+            const bool cgc_cap_is_remap = strcmp(name, "ffn_moe_topk_remap") == 0;
+            const bool cgc_cap_is_table = strcmp(name, "ffn_moe_slot_table") == 0;
+            if (cgc_cap_is_remap || cgc_cap_is_table) {
+                if (cgc_cap_is_remap) {
+                    cache_remap_tensors[il] = cur;
+                } else {
+                    cache_slot_table_tensors[il] = cur;
+                    // [CGC 2026-09-15 S1 diagnostic] capture order vs the hook's read order.
+                    if (getenv("CGC_S1_DBG") != nullptr) {
+                        static int cgc_s1_cap_n = 0;
+                        if (cgc_s1_cap_n < 12) {
+                            cgc_s1_cap_n++;
+                            fprintf(stderr, "CGC-S1: CAPTURE table il=%d cur=%p data=%p map=%p size=%zu ntok=%lld\n",
+                                    il, (void *) cur, cur->data, (void *) &cache_slot_table_tensors,
+                                    cache_slot_table_tensors.size(), (long long) ubatch.n_tokens);
+                        }
+                    }
+                }
                 // CGC: point this layer's expert weight tensors at the L4 pool regions up front
                 // (the remap leaf is built only for decode, n_tokens == 1). The segmented Metal
                 // dispatch (CGC_OA_ASYNC) submits segments whose weights already point at the

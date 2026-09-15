@@ -514,6 +514,20 @@ typedef struct {
     uint64_t nb21;
 } ggml_metal_kargs_mul_mm_id_map0;
 
+// [CGC 2026-09-15 S1 kernel-side ids capture] Shared layout for the post-consumer snapshot
+// kernel. Lives in this header because the .metal shader and the host encoder must agree
+// byte-for-byte, and a silent divergence here would look like a wrong-ids result.
+//   n_ids  : elements in the ids operand (ne20 * ne21)
+//   slot   : host-assigned destination slot; negative disables the capture
+//   stride : int32 words written per slot
+//   n_skip : index of the first element to snapshot (aims at the tail of a long prefill vector)
+typedef struct {
+    int32_t n_ids;
+    int32_t slot;
+    int32_t stride;
+    int32_t n_skip;
+} ggml_metal_kargs_cgc_ids_capture;
+
 typedef struct {
     int32_t  ne00;
     int32_t  ne02;

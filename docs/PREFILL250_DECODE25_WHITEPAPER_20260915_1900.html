@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>prefill 250 / decode 25 技術白皮書（2026-09-15 19:00）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>prefill 250 tok/s / decode 25 tok/s 技術白皮書</h1>
+<div class="sub">
+  日期 2026-09-15 19:00 · 分支 <code>demo/sweet-spot-windows-fix</code> · 基線 commit <code>a679eef09</code>（未提交，工作區狀態）<br>
+  模型 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（13.6 GB，256 experts/layer，40 layers）·
+  硬體 MacBook Air Mac16,12 / Apple M4 10 核 / 16 GB unified memory<br>
+  檔名 <code>PREFILL250_DECODE25_WHITEPAPER_20260915_1900.html</code>
+</div>
+
+<div class="box b-red">
+  <p><strong>一句話結論：decode 步的 91% 是 GPU 在跑，不是 IO、不是 encode、不是 dispatch。</strong>
+  用內建的 M0 剖析器量到 <code>wait=72.56 (91%) / cb=4.54 (6%) / submit=2.98 (4%)</code>。
+  這<strong>推翻</strong>了「decode 是 SSD-IO bound」與「decode 是 encode bound」兩個先前假設。</p>
+
+  <p><strong>所以你的兩個問題有了同一個答案的兩半：</strong></p>
+  <ul>
+    <li><strong>算子融合（node fusion）：槓桿已用盡</strong>——它只能壓 <code>cb</code>，而 <code>cb</code> 只佔
+        <strong>6%（4.5 ms）</strong>。實測同向：<code>CGC_MMV_FUSE</code> 今天在這個配置下
+        <strong>變慢且輸出損壞</strong>（見 §2）。</li>
+    <li><strong>Metal：還有空間，而且現在知道在哪</strong>——那 72 ms 的 <code>wait</code>。
+        每層單 token 只需搬 ~9 MiB 專家權重，頻寬地板 ~3 ms/token，實測 72 ms
+        → <strong>n_tokens=1 的 GEMV 是延遲／並行度受限，不是頻寬打滿</strong>。
+        真正的槓桿是<strong>「批次融合」</strong>（一層 8 個 expert GEMV 合成一次派發、8× 並行度），
+        與已證僞的「節點融合」是<strong>兩類不同的東西</strong>。</li>
+  </ul>
+</div>
+
+<h2>1. 三個決定性測量</h2>
+
+<h3>1.1 <code>CGC-PHASE</code>：整個 step 都在 <code>compute</code> 裡</h3>
+<p>為此新增了 <code>fill_wait_us</code> 計數（<code>llama-expert-cache.{h,cpp}</code>），
+語意刻意與 <code>pread_usec</code> 不同：後者是跨 worker 的<strong>聚合</strong>值（可超過牆鐘），
+前者只由<strong>呼叫執行緒</strong>累加，所以它是唯一能與單步牆鐘直接相除的計數。
+它掛在三個點上：<code>ensure_slot</code> 的 <code>bg_cv.wait</code>、<code>ensure_slot</code> 的
+<code>fill_pool_direct</code>、<code>ensure_batch</code> 的 <code>bg_cv.wait</code>。</p>
+
+<pre><code>CGC-PHASE: n=192 build=0.038 alloc=0.075 inputs=0.017 compute=100.989 fill_wait=0.000 gpu=100.989 ms
+                                    └──── 合計 0.11 ms（0.1%）────┘  └── 100% ──┘   └ 0 ┘</code></pre>
+
+<p><code>fill_wait = 0</code> <strong>是對的，不是儀器壞</strong>：decode 期 93% 的步走 fast path
+（<code>touch</code> + ZERO-slot，<em>不 fill</em>），<code>ensure_batch</code> 只在 prefill／catch-up 用到
+→ <strong>decode 的關鍵路徑上本來就沒有 cache fill</strong>。teardown 側完全對上：</p>
+
+<pre><code>llama_expert_cache: final stats: ... hit rate 88.3%  resident=6043.98 MiB
+llama_expert_cache: read shape: jobs=44691 bytes=18012577792 (0.38 MiB/job) us/job=1930 effective_rate=209 MiB/s
+llama_expert_cache: miss attribution: compulsory=8690 capacity=7138 (54.9% / 45.1%)
+llama_expert_cache: verify-strict: refused=0  zero_mapped_selected=0</code></pre>
+
+<p class="small">注意 <code>us/job=1930 µs</code>／<code>209 MiB/s</code> 看起來很糟，但這些 pread
+是 8 條 worker 平行發生的，與 decode 關鍵路徑不重疊 → 它<strong>不是</strong>那 100 ms 的來源。</p>
+
+<h3>1.2 <code>n_cb</code> 掃描：encode 既不是瓶頸、也不是槓桿</h3>
+<p>如果 <code>compute</code> 是 command-buffer 編碼，它應該隨 <code>n_cb</code> 顯著變化。
+結果是完全不變：</p>
+
+<table>
+<tr><th><code>n_cb</code></th><th>decode t/s</th><th><code>compute</code> (n=192)</th><th>對照</th></tr>
+<tr><td class="num">1</td><td class="num">10.34</td><td class="num">100.99 ms</td><td class="small">—</td></tr>
+<tr><td class="num">2</td><td class="num">9.98</td><td class="num">101.90 ms</td><td class="small">—</td></tr>
+<tr><td class="num">8（生產）</td><td class="num">10.19</td><td class="num">104.44 ms</td><td class="small">§8.93「cb8 sweet spot」在此配置<strong>不成立</strong></td></tr>
+<tr><td class="num">16</td><td class="num">10.28</td><td class="num">99.14 ms</td><td class="small">—</td></tr>
+</table>
+
+<p>反證同時來自 worker 數：把 <code>LLAMA_EXPERT_CACHE_WORKERS</code> 從 8 提到 32，
+<code>compute</code> 反而被推到 <strong>155.7 ms</strong>（decode 5.01 t/s）——
+這是 <strong>CPU 競爭</strong>的指紋，不是 GPU 的。</p>
+
+<h3>1.3 <code>CGC_DECODE_PROFILE=1</code>：91% 是 GPU 等待 <span class="tag">決定性</span></h3>
+<p>這個 fork 內建了 M0 解碼剖析器（<code>ggml-backend.cpp:1965</code>），把每個 step 拆成
+<code>wait</code>（等前一段 GPU 完成）／<code>cb</code>（eval callback + encode）／
+<code>submit</code>（command buffer 提交），並附逐層歸因：</p>
+
+<pre><code>CGC-DECPROF: step=456 segs=40 layers=39 total=80.07 ms | wait=72.56 (91%) cb=4.54 (6%) submit=2.98 (4%)
+CGC-DECPROF top1: L28 wait=2.88 cb=0.01 submit=0.08 ms
+CGC-DECPROF top2: L12 wait=2.64 cb=0.01 submit=0.07 ms
+CGC-DECPROF top3: L20 wait=2.54 cb=0.01 submit=0.08 ms
+CGC-DECPROF top4: L4  wait=2.32 cb=0.52 submit=0.07 ms
+CGC-DECPROF top5: L2  wait=1.88 cb=0.60 submit=0.10 ms
+CGC-DECPROF top6: L38 wait=1.84 cb=0.64 submit=0.07 ms
+CGC-DECPROF top7: L1  wait=1.66 cb=0.91 submit=0.07 ms</code></pre>
+
+<div class="cards">
+  <div class="card"><div class="k">wait（GPU 執行）</div><div class="v bad">72.6 ms</div><div class="small">91%</div></div>
+  <div class="card"><div class="k">cb（encode + callback）</div><div class="v">4.5 ms</div><div class="small">6%</div></div>
+  <div class="card"><div class="k">submit（提交）</div><div class="v">3.0 ms</div><div class="small">4%</div></div>
+  <div class="card"><div class="k">每層 wait</div><div class="v">1.3–2.9 ms</div><div class="small">單 token，39 層</div></div>
+</div>
+
+<p class="small">剖析本身只讓吞吐降 2.4%（9.95 vs 10.19 t/s），所以這組數字具代表性。</p>
+
+<h2>2. 問題一：還有多算子 fusion 成大 kernel 的槓桿嗎？</h2>
+
+<div class="box b-amber">
+  <p><strong>答案是「幾乎沒有，而且現在開啟會壞」。</strong>融合能省的只有 encode，
+  而 encode 只佔 6%。這不是推論，是今天實測的三個層次。</p>
+</div>
+
+<h3>2.1 已經有兩個融合 kernel，兩個都預設 OFF，兩個都不划算</h3>
+<table>
+<tr><th>kernel</th><th>融合內容</th><th>實測</th><th>結論</th></tr>
+<tr>
+  <td><code>CGC_MMV_FUSE</code><br><span class="small">ops.cpp:2659</span></td>
+  <td>gate <code>mul_mat_id</code> + up <code>mul_mat_id</code> + swiglu GLU → 1 個 dispatch<br>
+      <span class="small">node 數 1613 → 1533</span></td>
+  <td>乾淨窗（load 2.6/2.8）p50 <strong>Δ = −0.59 ms（−0.7%）</strong><br>
+      <span class="small">§8.95-2（2026-08-18）：cb8 的 8 條並行 encode 把 marginal effect 吞掉了</span></td>
+  <td class="bad">不進生產</td>
+</tr>
+<tr>
+  <td><code>CGC_DOWN_COMBINE</code><br><span class="small">ops.cpp:3664</span></td>
+  <td>8 個 per-expert down GEMV + 7 次 add → 1 個 kernel</td>
+  <td><strong>23.29 t/s vs baseline 25.87</strong>（更慢）<br>
+      <span class="small">且硬綁 <code>GGML_TYPE_Q3_K</code> down 權重 — 本模型是 IQ3_XXS/IQ2_S，<strong>根本進不去</strong></span></td>
+  <td class="bad">不適用</td>
+</tr>
+</table>
+
+<h3>2.2 今天重現：在這個配置下開啟 fusion 會<strong>變慢且輸出損壞</strong></h3>
+<p>過程意外暴露了一個<strong>接線 bug</strong>，值得單獨記：<code>CGC_MMV_FUSE</code>
+<strong>不在 <code>run_server.sh</code> 的 env allowlist</strong> 裡 → 從啟動器永遠無法開啟；
+而 <code>CGC_GLU_FUSED_DOWN</code>（<code>:1242</code>）<strong>在</strong> allowlist 裡。
+但後者的唯一讀取點 <code>ggml_metal_op_can_batch_mmv_glu_down</code>（<code>ops.cpp:2980</code>）
+只從 <code>ggml_metal_op_mul_mat_id_glu_fused</code> <strong>內部</strong>可達，
+而後者僅在 <code>CGC_MMV_FUSE=1</code> 時進入：</p>
+
+<div class="box b-red">
+  <p><strong>也就是說 <code>glu_fused_down=1</code> 一直是失效配置。</strong>
+  <code>[perf]</code> 橫幅每次都印它，但它什麼都不做——§8.113 宣稱的「+6.5% speed」
+  在現行啟動路徑上<strong>從未生效</strong>。更糟的是：任何經過啟動器的 fusion A/B
+  都會因為融合根本沒被打開，而以「無效果」收場——<strong>這正是為什麼這個槓桿會看起來像已經探索完了。</strong></p>
+</div>
+
+<p>修好 pass-through 之後重跑，三條獨立證據同時到位：</p>
+<pre><code>[perf]  n_cb=8 glu_fused_down=1(mm_fuse=1) ...        ← 橫幅現在說實話
+
+0.06.282.601 W ggml_metal_op_mul_mat_id_glu_fused: CGC_MMV_FUSE: dispatching
+    fused gate+up+glu (type iq2_s, ne21 = 2, rows = 512, node=ffn_moe_gate-1 glu=ffn_moe_swiglu-1)
+                                                       ← 融合確實啟用了（以前不可能出現）
+
+CGC-PHASE: n=192 ... compute=108.649 fill_wait=0.000 gpu=108.649 ms
+                                                       ← 比 baseline（99–105 ms）更慢
+decode 8.84 t/s   md5=5c1d1480  vs  baseline 10.19 t/s  md5=28097996
+                                                       ← 而且輸出損壞（退化文字）</code></pre>
+
+<p><strong>結論：<code>CGC_MMV_FUSE</code> 不但在這個配置下沒有收益，還會破壞正確性。</strong>
+它與 <code>galloc</code> lifetime overlap 的歷史病灶（08-30 白皮書的「根因 B」）在這個
+配置下再次成立。開它之前必須先修 overlap guard。</p>
+
+<h3>2.3 但有一類「融合」還沒被試過，而且它打的是對的地方</h3>
+<div class="box b-green">
+  <p>上面兩個都是<strong>節點融合</strong>（node fusion）：把幾個 graph node 合併成一次 dispatch，
+  省的是 <code>cb</code>——已經證明只有 6%。</p>
+  <p>還沒試過的是<strong>批次融合</strong>（batching fusion）：把<strong>一層的 8 個 expert GEMV
+  合併成一次派發</strong>，讓 GPU 同時有 8× 的權重讀取在飛。它省的<strong>不是</strong> encode，
+  而是<strong>提高單次 GEMV 的並行度</strong>——也就是直攻那 72 ms 的 <code>wait</code>。</p>
+  <p>這與路線圖 M3 的工作項 3「batched-union gather（一次收 union、一次 batched matmul）」
+  是同一條路。它<strong>不是</strong>已證僞的那條。</p>
+</div>
+
+<h2>3. 問題二：Metal 還有優化空間嗎？</h2>
+
+<div class="box b-green">
+  <p><strong>有，而且空間很具體：那 72.6 ms 的 <code>wait</code>。</strong>
+  <code>cb</code>+<code>submit</code> 合計 7.5 ms（9%）——encode 側已經幾乎沒有東西可拿。</p>
+</div>
+
+<h3>3.1 為什麼說 72 ms 是「遠離地板」而不是「已經到頂」</h3>
+<p>用 teardown 自報的 read shape 反推單 token 的權重搬運量：</p>
+<table>
+<tr><th>項</th><th>算法</th><th>值</th></tr>
+<tr><td>每個 expert 每種 kind</td><td class="num">0.38 MiB/job</td><td class="num">0.38 MiB</td></tr>
+<tr><td>每個 expert（gate+up+down）</td><td class="num">0.38 × 3</td><td class="num">1.15 MiB</td></tr>
+<tr><td>每層每 token 的 8 個 expert</td><td class="num">1.15 × 8</td><td class="num">9.2 MiB</td></tr>
+<tr><td>全模型（39 層）</td><td class="num">9.2 × 39</td><td class="num">359 MiB/token</td></tr>
+<tr><td><strong>頻寬地板</strong></td><td class="num">359 MiB ÷ 120 GB/s（M4 10 核 LPDDR5X）</td><td class="num ok"><strong>≈ 3.1 ms</strong></td></tr>
+<tr><td><strong>實測 <code>wait</code></strong></td><td class="num">CGC-DECPROF</td><td class="num bad"><strong>72.6 ms</strong></td></tr>
+</table>
+
+<p>即 <strong>約 20× 的差距</strong>。這個數字是<strong>下界風味</strong>的估計——把
+attention、shared expert、dense 層、<code>lm_head</code>（248320 × 2048）全加進去只會
+<strong>抬高</strong>地板，不會改變結論的方向：每層單 token 1.3–2.9 ms 的成本，
+不是「權重搬不完」，而是<strong>搬得不夠滿</strong>（GEMV 在 <code>n_tokens=1</code> 時的
+threadgroup／simdgroup 並行度不足，同時在飛的權重讀取太少的典型症狀）。</p>
+
+<h3>3.2 按證據排序的 Metal 槓桿</h3>
+<table>
+<tr><th>#</th><th>槓桿</th><th>打的項</th><th>為什麼可信 / 需要先量什麼</th></tr>
+<tr>
+  <td>1</td>
+  <td><strong>批次融合：一層 8 個 expert GEMV → 一次派發</strong></td>
+  <td class="num">wait</td>
+  <td>直接把同時在飛的權重讀取乘 8 倍。這是唯一直接對準 91% 那一項的改動。
+      需要先確認 kernel 目前的 threadgroup 數是否隨 expert 數線性成長（現在是「每 expert 一次 dispatch」）。</td>
+</tr>
+<tr>
+  <td>2</td>
+  <td><strong>拆分 72 ms：attention vs MoE-GEMV vs shared expert</strong></td>
+  <td class="num">量測</td>
+  <td>已有 <code>CGC_DECODE_PROFILE_ALL=1</code> 的逐層 wait；下一步要在層內再切。
+      <strong>先量再改</strong>——否則會重演「改了半天卻沒對準」。</td>
+</tr>
+<tr>
+  <td>3</td>
+  <td>single-token GEMV 的 simdgroup / threadgroup 調度</td>
+  <td class="num">wait</td>
+  <td>TGX 路徑已有 2.5–3.4×（已進生產）。剩下的空間在 <strong>每層同時在飛的讀取數</strong>，不在單筆讀取效率。</td>
+</tr>
+<tr>
+  <td>4</td>
+  <td>attention（KV 已是 q8）</td>
+  <td class="num">wait</td>
+  <td>本輪的 prompt 很短（<code>n_past</code> 尚小），所以 attention 不會是那 72 ms 的主項
+      → <strong>優先度低於 #1/#2</strong>，不要先動它。</td>
+</tr>
+<tr>
+  <td>—</td>
+  <td>encode 側（<code>n_cb</code>、args pool、plan reuse、node fusion）</td>
+  <td class="num">cb / submit</td>
+  <td class="bad">已封。合計 9%，且 <code>n_cb</code> 1→16 全平。</td>
+</tr>
+</table>
+
+<h2>4. 誠實的邊界</h2>
+<ul>
+  <li><code>wait</code> 的實作是 <code>hook_seg()</code> 裡對 <code>cgc_done(split_backend)</code>
+      的自旋輪詢（<code>ggml-backend.cpp:1883-1886</code>，<code>sched_yield()</code> 迴圈），
+      等的是 segment i 的<strong>全部</strong> command buffer 完成。所以它是
+      <strong>GPU 完成等待</strong>，語意明確。</li>
+  <li><strong>更關鍵的結構性事實：層與層之間沒有重疊。</strong>同一段程式碼的註解說明，
+      為了修 raciness（top-k hook 必須先寫好 remap leaf，segment i+1 才能消費），
+      派發器在 <strong>每個 segment 邊界都把管線排空</strong>——先等 segment i 整個跑完，才 submit
+      i+1。也就是說「encode → GPU → 等」是<strong>序列</strong>的，41 段各付一次。
+      因此每段那 1.77 ms（72.56 / 41）<strong>理論上可能</strong>混了兩件事：
+      (a) segment 的 GPU 執行時間，(b) 完成回報／啟動爬升的延遲。
+      兩者在目前儀器下<strong>沒有分開</strong>。這正是 §6 第 1 項（層內切分）必須先做的原因——
+      如果 (b) 佔比高，那槓桿就不是 kernel 而是<strong>恢復層間重疊</strong>（例如讓 remap 寫入
+      與 GPU 執行解耦，而非靠排空管線保證順序）。</li>
+  <li>「20×」依賴 120 GB/s 這個<strong>峰值</strong>。GPU 實際可持續頻寬低於峰值，
+      所以真實倍數小於 20；<strong>但方向（遠離地板）與量級（不是 1.5×）不受影響</strong>。</li>
+  <li><code>CGC_DECODE_PROFILE</code> 本身有成本（吞吐降 2.4%），且它只覆蓋分段派發迴圈內的時間
+      （<code>total=80.07 ms</code> vs 未剖析時 <code>compute≈100 ms</code>）→
+      約 20 ms 落在迴圈外（tail segment、取樣、HTTP）。<strong>這 20 ms 尚未歸因。</strong></li>
+  <li>本輪所有數字都是 MTP-off 臂。MTP-on 的 <code>CGC-PHASE</code> 顯示 <code>compute=1.12 ms</code>，
+      那是 <strong>MTP draft head</strong> 的單 token 前向（因為 <code>n_tokens==1</code> 的過濾把
+      verify 的多 token 步排除在外）→ <strong>MTP-on 的 phase 數字不可與 MTP-off 互比</strong>。</li>
+  <li>16 GB 機器上<strong>不存在 cache-free oracle</strong>：<code>CGC_SERVER_EXPERT_CACHE_OFF=1</code>
+      需要 256 experts × 40 層常駐 → Metal OOM，且在載入期就被 P0 的 fail-stop 直接 abort
+      （<code>Insufficient Memory</code> + <code>cgc_wait_cmd_buf → ggml_backend_sched_synchronize</code>）。
+      這正是 P1（<code>--n-cpu-moe</code> pass-through）存在的理由。</li>
+</ul>
+
+<h2>5. 本輪隨附的修復</h2>
+<table>
+<tr><th>檔案</th><th>改動</th></tr>
+<tr><td><code>src/llama.cpp/src/llama-expert-cache.{h,cpp}</code></td>
+    <td><code>fill_wait_us</code> 計數 + <code>llama_expert_cache_fill_wait_us()</code>；接入 teardown
+        <code>final stats</code> 與 <code>CGC-RIG-SNAPSHOT</code></td></tr>
+<tr><td><code>src/llama.cpp/src/llama-context.cpp</code></td>
+    <td><code>CGC-PHASE</code> 新增 <code>fill_wait=</code> / <code>gpu=</code>；在 <code>graph_compute</code> 兩側取
+        <code>fill_wait_us</code> 差分（與 <code>compute</code> 同一視窗）</td></tr>
+<tr><td><code>scripts/run_server.sh</code></td>
+    <td>補 <code>CGC_MMV_FUSE</code> pass-through；<code>[perf]</code> 橫幅改印
+        <code>glu_fused_down=1(mm_fuse=off)</code>，不再讓失效配置看起來有效</td></tr>
+<tr><td><code>scripts/check/decode_sweep.py</code></td>
+    <td>修正 <code>nocache</code> / <code>nocache-phase</code> 臂（<code>EXPERT_CACHE_BYTES=0</code>
+        → <code>EXPERT_CACHE_OFF=1</code>，前者會造成 HTTP 500，故這兩臂從來沒出過數字）；
+        新增 phase / cb / decprof / fuse 共 9 條臂</td></tr>
+</table>
+
+<h2>6. 下一步（依槓桿排序）</h2>
+<ol>
+  <li><strong>把 72 ms 的 <code>wait</code> 在層內再切開，並分離「GPU 執行」與「完成回報」</strong>
+      （attention / routed MoE gate+up GEMV / routed down GEMV / shared expert / dense）。
+      這是所有後續改動的前提，成本最低、資訊量最大。判別方法：若 <code>wait</code> 隨
+      segment 數（而非隨權重位元組）成長，那槓桿是<strong>恢復層間重疊</strong>而非 kernel 效率。</li>
+  <li>依切分結果實作<strong>批次融合</strong>（一層 8 個 expert GEMV 一次派發）。</li>
+  <li>P0 已完成的 fail-stop 保護維持默認開啟；<code>CGC_MMV_FUSE</code> 在 overlap guard 修好前<strong>不要開</strong>。</li>
+  <li>P1：<code>--n-cpu-moe N</code> pass-through，取回 16 GB 機器上缺失的絕對 oracle。</li>
+</ol>
+
+<p class="small" style="margin-top:40px">
+  本白皮書與 <code>PREFILL250_DECODE25_WHITEPAPER_20260915_1810.html</code> 為同一系列的下一版。
+  1810 版處理「零 row 結案 / M1 邊界修正 / cache-OFF 損壞」，本版處理「decode 相位歸因 / fusion 定案 / Metal 槓桿排序」。
+</p>
+
+</div>
+</body>
+</html>

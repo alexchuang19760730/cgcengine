@@ -1818,6 +1818,22 @@ bool ggml_metal_buffer_is_shared(ggml_metal_buffer_t buf) {
     return buf->is_shared;
 }
 
+// [CGC 2026-09-15 S1 kernel-side ids capture] See the declaration in ggml-metal-device.h.
+struct ggml_metal_buffer_id ggml_metal_buffer_get_id_whole(ggml_metal_buffer_t buf) {
+    struct ggml_metal_buffer_id res = { nil, 0 };
+
+    GGML_ASSERT(buf != NULL);
+    // Multiple wrappers exist only to work around the maximum buffer size limit when mmap-ing a
+    // model. A debug destination is tiny and allocated by ggml_metal_buffer_init, so exactly one
+    // wrapper is expected and offset 0 is the whole thing.
+    GGML_ASSERT(buf->n_buffers == 1);
+
+    res.metal = buf->buffers[0].metal;
+    res.offs  = 0;
+
+    return res;
+}
+
 void ggml_metal_buffer_memset_tensor(ggml_metal_buffer_t buf, struct ggml_tensor * tensor, uint8_t value, size_t offset, size_t size) {
     if (buf->is_shared) {
         memset((char *) tensor->data + offset, value, size);

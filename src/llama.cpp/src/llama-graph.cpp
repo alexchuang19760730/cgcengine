@@ -2109,6 +2109,68 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // using the raw ids because they index the gating probs by expert.
     ggml_tensor * remap_ids = nullptr;
     const char * dw_env = getenv("LLAMA_EXPERT_CACHE_DISABLE_WRITE");
+    // [CGC 2026-09-15 S1: GPU-side slot lookup, CGC_SLOT_TABLE_GPU=1]
+    //
+    // The remap leaf below is an INPUT tensor that the eval hook hand-writes every step, and it is
+    // the reason the dispatcher has to drain the pipeline at every layer boundary (segment i+1 may
+    // not be submitted until the hook of segment i has written the leaf). This switch moves the
+    // mapping into the graph as a gather:
+    //
+    //     slots = get_rows(slot_table, selected_experts)      slot_table : I32 [1, n_expert]
+    //
+    // which is exactly what the hook computes today (llama-context.cpp, expert_cache_on_topk), just
+    // executed on the GPU instead of the host.
+    //
+    // SHAPE: ggml_get_rows asserts src0->ne[2] == ids->ne[1] and yields [src0->ne[0], ids->ne[0]..],
+    // so a 1-wide row table plus a flattened ids vector gives [1, k*n_tokens], which reshapes back
+    // to [k, n_tokens] in the ids' own memory order. That keeps the table's shape independent of
+    // n_tokens -- one [1, n_expert] tensor per layer, reused every step, no per-step shape churn.
+    //
+    // NO NEW OP: ggml_get_rows already carries an I32 path everywhere it can run --
+    // ggml.c ("if (a->type == GGML_TYPE_I32) type = a->type"), ggml-cpu/ops.cpp
+    // ("case GGML_TYPE_I32: ggml_compute_forward_get_rows_f32") and the Metal template
+    // instantiation "kernel_get_rows_i32" (ggml-metal.metal:9962).
+    //
+    // SCOPE: exactly the leaf's condition -- every step where the leaf would have been built
+    // (single-token decode AND the small multi-token pool steps: MTP verify, gather/union), so the
+    // table and the leaf can never disagree about which steps carry a mapping. An earlier revision
+    // narrowed it to n_tokens == 1, which was wrong for a subtle reason worth recording:
+    // build_moe_ffn's `n_tokens` is NOT ubatch.n_tokens (measured: the hook sees t->ne[1] == 2 while
+    // the ubatch is 1), so the decode step never built a table at all -- only the dummy reserve
+    // build did. Widening it is also what S2/S3 need, and it depends on this stage passing the
+    // bit-identical gate first.
+    static const bool cgc_slot_table_gpu = getenv("CGC_SLOT_TABLE_GPU") != nullptr;
+    static const bool cgc_s1_dbg = getenv("CGC_S1_DBG") != nullptr;
+    // [CGC 2026-09-15 S1 CONTROL] Build the S1 nodes but keep mul_mat_id consuming the host leaf.
+    // The full rationale is at the point of use, further down the S1 branch.
+    static const bool cgc_s1_keep_leaf = getenv("CGC_S1_KEEP_LEAF") != nullptr;
+    // [CGC 2026-09-15 S1 CONTROL] Build the host leaf as well but leave it unconsumed, i.e. the
+    // design the header comment on cache_slot_table_tensors describes. See the point of use.
+    static const bool cgc_s1_build_leaf = getenv("CGC_S1_BUILD_LEAF") != nullptr;
+    // [CGC 2026-09-15 S1 layer-0 gate] The GPU table must be used ONLY for layers whose MoE FFN is
+    // actually offloaded to Metal. Layer 0 is not: in the prod25 profile its expert tensors keep
+    // their full size (blk.0.ffn_gate_exps = 82M vs 45M for blk.1) and live in the BLAS buffer, so
+    // its mul_mat_id is assigned to the CPU backend. The `## SPLIT`/`node #` dump from
+    // GGML_SCHED_DEBUG=2 (2026-09-15 20:26/20:27 pair) shows the whole difference between the two
+    // arms in one line each:
+    //
+    //   baseline : node #73 (MUL_MAT_ID) ffn_moe_gate-0 [CPU] ... src[2] = ffn_moe_topk_remap-0 [CPU]
+    //   S1       : node #77 (MUL_MAT_ID) ffn_moe_gate-0 [CPU] ... src[2] = CPU#ffn_moe_slots-0# [NULL]
+    //
+    // i.e. the baseline's ids operand is a CPU-backend graph input (the host writes it straight into
+    // the buffer the CPU kernel reads), while S1's ids are computed on MTL0 and therefore need a
+    // Metal->CPU cross-backend copy of a RESHAPE view -- which the scheduler records with a NULL
+    // backend. That is the only structural difference, and it is the shape of the 20:18 crash
+    // (SIGSEGV inside ggml_compute_forward_mul_mat_id on libggml-cpu, a signature absent from every
+    // other run of the day). Layers >= 1 are unaffected: node #180 ffn_moe_gate-1 [MTL0] with
+    // src[2] = ffn_moe_slots-1 [MTL0], same backend, no copy.
+    //
+    // So the GPU table is gated to il >= CGC_S1_MIN_IL (default 1); layer 0 keeps the host leaf.
+    // That still removes 39 of 40 round trips per decode step, which is the point of S1.
+    static const int cgc_s1_min_il = [] {
+        const char * e = getenv("CGC_S1_MIN_IL");
+        return e != nullptr ? atoi(e) : 1;
+    }();
     // [CGC MTP fix] the remap leaf is created for single-token decode AND small multi-token
     // pool steps (speculative/MTP verify, n_tokens <= cgc_pool_max_tokens()): the hook maps
     // expert ids to pool slot indices across ALL tokens of the batch, and the FFN reads the
@@ -2119,11 +2181,137 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // would perturb the ggml-alloc buffer layout, so it is only built for the pool-path range.
     if (expert_cache_active && !(dw_env && dw_env[0]) && n_tokens >= 1 &&
             (uint64_t) n_tokens <= cgc_pool_max_tokens() && il >= 0 && il < n_layer + n_layer_nextn) {
+        if (cgc_slot_table_gpu && il >= cgc_s1_min_il) {
+            // table: [1, n_expert], published by the hook, identical for every layer of the same
+            // width so the shape (and thus ggml-alloc's sizing) never changes step to step.
+            ggml_tensor * slot_table = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, 1, n_expert);
+            ggml_set_output(slot_table); // same reason the leaf is an output: the hook writes it just before the dispatch that reads it
+            cb(slot_table, "ffn_moe_slot_table", il);
+            ggml_build_forward_expand(gf, slot_table);
+
+            // CONT: `selected_experts` is ggml_argsort_top_k()'s output, i.e. ggml_argsort +
+            // ggml_view_4d that keeps nb[1] = n_expert*4 and only cuts ne[0] down to k. It is
+            // therefore NOT contiguous, and ggml_reshape_1d asserts ggml_is_contiguous --
+            // measured: GGML_ASSERT(ggml_is_contiguous(a)) abort inside the very first
+            // graph_reserve build, before any token was generated. One I32->I32 cont makes the
+            // row-major [k, n_tokens] order explicit, which is the same order the host leaf writes
+            // (rd[i + j*n_expert_used]). It stays on the GPU: ggml-metal-device.m supports_op for
+            // GGML_OP_CONT has "case GGML_TYPE_I32: return op->type == GGML_TYPE_I32" and
+            // kernel_cpy_i32_i32 is instantiated, so no CPU fallback (which would reintroduce a
+            // per-layer sync). Cost is one tiny cpy of k*n_tokens ints per layer, and dropping it
+            // (the id vector is already contiguous in the host path) is S2 work.
+            ggml_tensor * ids_cont = ggml_cont(ctx0, selected_experts);
+            ggml_tensor * ids_flat = ggml_reshape_1d(ctx0, ids_cont, n_expert_used * n_tokens);
+            ggml_tensor * slots    = ggml_get_rows(ctx0, slot_table, ids_flat); // I32 [1, k*n_tokens]
+            // [CGC 2026-09-15 S1: buffer aliasing] `ggml_set_output` is REQUIRED here for exactly the
+            // reason the old leaf needed it, and the measurement is unambiguous. The CGC-MMID-ASSERT
+            // provenance field added today (`ids_data=%p`) shows that WITHOUT this flag every layer's
+            // gather result collapses onto the SAME address:
+            //
+            //   ids_name='ffn_moe_slots-1' ids_op=VIEW ids_view_op=GET_ROWS ids_data=0x128179d60
+            //   ids_name='ffn_moe_slots-2' ...                            ids_data=0x128179d60
+            //   ids_name='ffn_moe_slots-4' ...                            ids_data=0x128179d60
+            //   (10 of the 11 layers observed in Backup/cgc_logs/llama_server_20260915_203053.log)
+            //
+            // Every MoE layer then reads one shared 16-int buffer that at most one layer can have
+            // written, which is exactly the observed symptom: `id_oob=16/16` on essentially every
+            // layer, with the "value" being whatever F32 tensor last occupied that memory
+            // (0x3F4EC2F8 ~ 0.808 = a router probability, 0x7FC00000 = +NaN). The leaf path never had
+            // this because `ggml_set_output(remap)` pins one buffer per layer.
+            //
+            // Marking the GET_ROWS result directly (not just the reshape view) is deliberate: the view
+            // is not allocated separately, so the flag has to live on the tensor ggml-alloc actually
+            // sizes.
+            ggml_set_output(slots);
+            slots = ggml_reshape_2d(ctx0, slots, n_expert_used, n_tokens);
+            cb(slots, "ffn_moe_slots", il);
+            remap_ids = slots;
+            // [CGC 2026-09-15 S1 CONTROL: CGC_S1_KEEP_LEAF]
+            //
+            // The bisect left two explanations for the digest divergence that need OPPOSITE fixes,
+            // and md5 sets alone cannot separate them:
+            //   MAPPING  the GPU-computed ids differ from the host-written ids at some layer;
+            //   NUMERICS the ids are identical everywhere, but ADDING these four nodes per layer
+            //            (table + CONT + GET_ROWS + VIEW) changes what ggml-backend/sched and
+            //            ggml-alloc produce -- a different buffer assignment or a different Metal
+            //            kernel/accumulation order -- so the logits move in the last bits.
+            // Measured so far: min_il=39 (1 layer), 38 (2) and 20 (20 layers, ~80 extra nodes) are
+            // all bit-identical, min_il=6 is stably DIFFERENT and min_il=2 is UNSTABLE. "Stably
+            // different" is the part a mapping error explains least well, because a wrong table
+            // entry points at another expert's weights -- a large, deterministic change -- whereas a
+            // numerically perturbed logit diverges only at the argmax.
+            //
+            // This flag is the control that separates them. It builds every node the S1 branch
+            // builds AND the host leaf, then lets mul_mat_id consume the LEAF. The graph therefore
+            // carries exactly the S1 extra nodes while the ids still come from the host, so:
+            //   bit-identical to the baseline -> the extra nodes have NO numerical effect, and any
+            //                                   divergence in the real arm is the mapping;
+            //   still different               -> the extra nodes themselves move the answer, and the
+            //                                   mapping was never the question.
+            // The leaf is not dead code here: it is the thing being controlled for. Note that this
+            // arm is only meaningful against a baseline in the SAME sweep (same build fingerprint),
+            // and it must never be quoted for throughput -- it exists to answer one yes/no question.
+            if (cgc_s1_keep_leaf || cgc_s1_build_leaf) {
+                // Two related experiments, one block, because they share the leaf construction.
+                //
+                // CGC_S1_KEEP_LEAF=1 -- build the leaf AND let mul_mat_id consume it. The graph then
+                // carries the whole S1 node set while the ids come from the host, which is what
+                // separates "the ids are wrong" from "the nodes move the answer". Measured: with all
+                // 39 layers served it is BIT-IDENTICAL to the baseline (dc055e63, stable), so the
+                // nodes are inert; and a per-layer readback of the gather against this leaf showed
+                // the ids agree at every layer for the tokens that matter.
+                //
+                // When the leaf is consumed, nothing else consumes `slots`, so the CONT / GET_ROWS /
+                // VIEW chain would be orphaned and `slot_table` would become a graph root with no
+                // consumer -- the scheduler never assigns it a backend and ggml-alloc aborts the
+                // reserve build with `ggml-alloc.c:623 GGML_ASSERT(buffer_id >= 0)`. Expanding
+                // `slots` here keeps the chain live. A tensor is in the graph only if the traversal
+                // reaches it, not merely because it was constructed.
+                //
+                // CGC_S1_BUILD_LEAF=1 -- build the leaf and LEAVE IT UNCONSUMED (ids still come from
+                // the gather). This is not a new design: it is exactly what the header comment on
+                // cache_slot_table_tensors has always claimed S1 does --
+                //     "The leaf itself is still built when this is on: it is simply not consumed.
+                //      That keeps every other path bit-identical and makes the S1 A/B a pure
+                //      scheduler/dispatch change."
+                // The implementation never did it (the branch below is an if/else, so the leaf is
+                // NOT built when the table is). With the ids ruled out on one side and the extra
+                // nodes ruled out on the other, the one remaining difference between the real S1
+                // arm and the keep-leaf control is the ABSENCE of this node, so the documented
+                // design is the obvious thing to measure. The hook still writes it (and still
+                // counts n_zero_mapped_selected), so this also repairs the silently disabled
+                // instrument recorded in eng-gate-0003.
+                if (cgc_s1_keep_leaf) {
+                    ggml_build_forward_expand(gf, slots);
+                }
+                ggml_tensor * remap = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_expert_used, n_tokens);
+                ggml_set_output(remap);
+                cb(remap, "ffn_moe_topk_remap", il);
+                ggml_build_forward_expand(gf, remap);
+                if (cgc_s1_keep_leaf) {
+                    remap_ids = remap;
+                }
+            }
+            if (cgc_s1_dbg) {
+                static int cgc_s1_gn = 0;
+                if (cgc_s1_gn < 6) {
+                    cgc_s1_gn++;
+                    // ids_data (printed by the CGC-MMID-ASSERT provenance probe, ggml-metal-ops.cpp)
+                    // must EQUAL slots_data here, otherwise the mmid is not consuming this tensor.
+                    fprintf(stderr, "CGC-S1: graph slot-table il=%d n_expert=%lld ids_flat_ne0=%lld "
+                                    "slots_ne=[%lld,%lld] table_data=%p ids_flat_data=%p slots_data=%p\n",
+                            il, (long long) n_expert, (long long) ids_flat->ne[0],
+                            (long long) slots->ne[0], (long long) slots->ne[1],
+                            slot_table->data, ids_flat->data, slots->data);
+                }
+            }
+        } else {
         ggml_tensor * remap = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_expert_used, n_tokens);
         ggml_set_output(remap); // prevent ggml-alloc from overwriting the hook-written ids before mul_mat_id consumes them
         cb(remap, "ffn_moe_topk_remap", il);
         ggml_build_forward_expand(gf, remap);
         remap_ids = remap;
+        }
     }
 
     if (arch == LLM_ARCH_GROVEMOE && n_expert != hparams.n_expert) {

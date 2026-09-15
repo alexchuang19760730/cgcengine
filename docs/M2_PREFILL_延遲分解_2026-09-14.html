@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>M2 Prefill 延遲分解與優化路線圖 2026-09-14</title>
+<style>
+  :root {
+    --bg: #0f1420; --card: #171e2e; --ink: #e8ecf4; --sub: #9aa5b8;
+    --line: #2a3350;
+    --ffn: #f0a45c; --attn: #7fb8f0; --dense: #d98cf0; --norm: #6cc060;
+    --dispatch: #6b7aa8; --io: #e86a6a; --overlap: #5cc09a; --misc: #8a97ad;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; padding: 32px 20px 60px; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  .sub { color: var(--sub); font-size: 14px; margin-bottom: 28px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px 24px; margin-bottom: 22px; }
+  .card h2 { font-size: 18px; margin: 0 0 4px; }
+  .card .desc { color: var(--sub); font-size: 13px; margin: 0 0 16px; line-height: 1.6; }
+  .legend { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 10px 0 18px; font-size: 12.5px; color: var(--sub); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .barwrap { margin-bottom: 10px; }
+  .barrow { display: flex; align-items: center; gap: 10px; }
+  .barlabel { width: 260px; font-size: 12.5px; color: var(--ink); flex-shrink: 0; line-height: 1.35; }
+  .barlabel small { display: block; color: var(--sub); font-size: 11px; }
+  .bar { flex: 1; height: 34px; border-radius: 8px; overflow: hidden; display: flex; background: #0c1019; border: 1px solid var(--line); }
+  .seg { height: 100%; display: flex; align-items: center; justify-content: center; font-size: 10.5px; color: #10141f; font-weight: 700; white-space: nowrap; overflow: hidden; min-width: 0; border-right: 1px solid rgba(15,20,32,.35); }
+  .seg.tiny { font-size: 0; }
+  .seg.tiny:hover { font-size: 10.5px; }
+  .total { font-size: 12px; color: var(--sub); text-align: right; margin: 4px 0 0 270px; }
+  .note { font-size: 12.5px; color: var(--sub); margin-top: 12px; line-height: 1.6; }
+  .note b { color: var(--ink); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--sub); font-weight: 600; font-size: 12px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .hl { color: #ffd479; font-weight: 700; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; margin-left: 6px; }
+  .tag.g { background: #1c3a24; color: #8fe3a0; }
+  .tag.r { background: #3a1c1c; color: #f08a8a; }
+  .tag.y { background: #3a321c; color: #e3cf8f; }
+  .tag.b { background: #1c2a3a; color: #8fb8e3; }
+  .ceil { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .ceil .cl { width: 260px; font-size: 12.5px; flex-shrink: 0; line-height: 1.35; }
+  .ceil .cl small { display: block; color: var(--sub); font-size: 11px; }
+  .ceil .ctrack { flex: 1; height: 26px; background: #0c1019; border: 1px solid var(--line); border-radius: 7px; position: relative; }
+  .ceil .cfill { height: 100%; border-radius: 6px; display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; font-size: 11px; font-weight: 700; color: #10141f; }
+  .tokbadge { margin-left: 10px; font-size: 12.5px; color: var(--ink); width: 110px; flex-shrink: 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>M2 Prefill 延遲分解與優化路線圖</h1>
+<div class="sub">CGC engine · M2 整層串流 · 8GB pool · IQ3_XXS-denseIQ4X · 1361-token prompt · 2026-09-14</div>
+
+<!-- ============ 1. 速度進展 ============ -->
+<div class="card">
+  <h2>① Prefill 速度進展（同模型、同 prompt）</h2>
+  <p class="desc">從標準路徑 4.39 t/s 到 M2 + double-buffer 64.8 t/s，<b class="hl">14.8×</b>。距離 250 t/s 目標還有 3.86×。</p>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">標準路徑（4GB pool）<small>baseline · 無 M2</small></div>
+      <div class="bar">
+        <div class="seg" style="width:1.8%;background:var(--io)" title="4.39 t/s">4.4</div>
+      </div>
+      <div class="tokbadge"><b>4.4</b> t/s</div>
+    </div>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">M2 整層串流（8GB）<small>feat(m2) · fe6c0fbf2</small></div>
+      <div class="bar">
+        <div class="seg" style="width:8.8%;background:var(--ffn)" title="19-24 t/s">~22</div>
+      </div>
+      <div class="tokbadge"><b>~22</b> t/s</div>
+    </div>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">M2 + 連續讀（8GB）<small>perf(m2) · 987e597d6</small></div>
+      <div class="bar">
+        <div class="seg" style="width:20.3%;background:var(--attn)" title="50.7 t/s">50.7</div>
+      </div>
+      <div class="tokbadge"><b>50.7</b> t/s</div>
+    </div>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">M2 + 連續讀 + Double-buffer<small>perf(m2) · b8220555f · bit-identical ✓</small></div>
+      <div class="bar">
+        <div class="seg" style="width:25.9%;background:var(--overlap)" title="64.8 t/s">64.8</div>
+      </div>
+      <div class="tokbadge"><b class="hl">64.8</b> t/s</div>
+    </div>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">目標<small>ROADMAP 里程碑</small></div>
+      <div class="bar">
+        <div class="seg" style="width:100%;background:var(--dispatch)" title="250 t/s">250</div>
+      </div>
+      <div class="tokbadge"><b>250</b> t/s</div>
+    </div>
+  </div>
+
+  <p class="note"><b>關鍵發現</b>：三個優化（M2 整層串流 +400%、連續讀 +130%、double-buffer +28%）都是 I/O 層面的。剩下的 3.86× 必須從 compute/scheduling 層面挖掘。</p>
+</div>
+
+<!-- ============ 2. 每層延遲分解 ============ -->
+<div class="card">
+  <h2>② 每層延遲分解（1361 tokens · 8GB pool · 熱啟動）</h2>
+  <p class="desc">總計 ~524ms/層（64.8 t/s × 1361 tokens ÷ 40 層）。Double-buffer 後 slab I/O 已隱藏，剩餘 ~524ms 全在 graph compute 內部。</p>
+
+  <div class="legend">
+    <span><i class="sw" style="background:var(--io)"></i>slab 填充 I/O（已隱藏）</span>
+    <span><i class="sw" style="background:var(--ffn)"></i>FFN mul_mat_id</span>
+    <span><i class="sw" style="background:var(--attn)"></i>Attention（QKV+SDPA+out）</span>
+    <span><i class="sw" style="background:var(--dense)"></i>Dense matmul（QKV/output）</span>
+    <span><i class="sw" style="background:var(--norm)"></i>RMSNorm + RoPE</span>
+    <span><i class="sw" style="background:var(--dispatch)"></i>Dispatch / scheduling overhead</span>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">Double-buffer OFF<small>50.7 t/s · ~673ms/層</small></div>
+      <div class="bar">
+        <div class="seg" style="width:5.9%;background:var(--io)" title="slab 填充 ~40ms（熱啟動）">40 I/O</div>
+        <div class="seg tiny" style="width:0.5%;background:var(--ffn)" title="FFN ~3ms（跳過僅 +0.8%）">~3</div>
+        <div class="seg tiny" style="width:3.8%;background:var(--attn)" title="Attention ~26ms（Flash 帶來 5.6%）">~26</div>
+        <div class="seg tiny" style="width:2.1%;background:var(--dense)" title="Dense ~14ms（跳過 +3.2%）">~14</div>
+        <div class="seg tiny" style="width:1.2%;background:var(--norm)" title="RMSNorm+RoPE ~8ms（跳過 +1.8%）">~8</div>
+        <div class="seg" style="width:86.5%;background:var(--dispatch)" title="Dispatch/scheduling ~582ms（跳過所有計算只 +5%）">~582 dispatch</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">Double-buffer ON<small>64.8 t/s · ~524ms/層 · bit-identical ✓</small></div>
+      <div class="bar">
+        <div class="seg" style="width:0%;background:var(--io)" title="slab I/O 已隱藏在 graph build 後面">0 (hidden)</div>
+        <div class="seg tiny" style="width:0.6%;background:var(--ffn)" title="FFN ~3ms">~3</div>
+        <div class="seg tiny" style="width:4.9%;background:var(--attn)" title="Attention ~26ms">~26</div>
+        <div class="seg tiny" style="width:2.7%;background:var(--dense)" title="Dense ~14ms">~14</div>
+        <div class="seg tiny" style="width:1.5%;background:var(--norm)" title="RMSNorm+RoPE ~8ms">~8</div>
+        <div class="seg" style="width:90.3%;background:var(--dispatch)" title="Dispatch/scheduling ~473ms">~473 dispatch</div>
+      </div>
+    </div>
+  </div>
+
+  <p class="note"><b>驚人發現</b>：跳過 FFN（整個 MoE 計算）只提升 0.8%，跳過 dense+RMSNorm+RoPE 只提升 5%。<b class="hl">90% 的時間花在 dispatch/scheduling overhead，不是實際計算</b>。這和 2026-08-17 TPOT 報告的結論一致：~2000 顆 short kernel 的固定 launch 成本是結構性下限。</p>
+</div>
+
+<!-- ============ 2.5 Dispatch Overhead 精細分解 ============ -->
+<div class="card">
+  <h2>②.5 Dispatch Overhead 精細分解（CPU vs GPU）</h2>
+  <p class="desc">用三種獨立方法交叉驗證：① 異步 vs 同步 A/B ② CGC_PHASE_TIMING 逐階段計時 ③ 跳過計算實驗。口徑：8GB pool · M2 ON · DB ON · 熱啟動。</p>
+
+  <div class="legend">
+    <span><i class="sw" style="background:var(--dense)"></i>CPU graph build</span>
+    <span><i class="sw" style="background:var(--norm)"></i>CPU alloc + inputs</span>
+    <span><i class="sw" style="background:var(--attn)"></i>CPU Metal encoding</span>
+    <span><i class="sw" style="background:var(--ffn)"></i>GPU 實際計算</span>
+    <span><i class="sw" style="background:var(--dispatch)"></i>GPU dispatch / kernel launch</span>
+    <span><i class="sw" style="background:var(--overlap)"></i>CPU/GPU 重疊（隱藏）</span>
+  </div>
+
+  <h3 style="font-size:14px;margin:16px 0 10px;color:var(--sub)">方法①：異步 vs 同步 A/B（推算 GPU 時間）</h3>
+  <table>
+    <tr><th>模式</th><th>Prefill 速度</th><th>每 token 時間</th><th>說明</th></tr>
+    <tr><td>異步（預設）</td><td class="num">62.8 t/s</td><td class="num">15.9 ms</td><td>GPU compute 與 CPU 後續工作重疊</td></tr>
+    <tr><td>同步（CGC_DISPATCH_PROFILE=1）</td><td class="num">16.9 t/s</td><td class="num">59.2 ms</td><td>強制 synchronize，CPU 與 GPU 串行</td></tr>
+    <tr><td><b>差異（被隱藏的 GPU 時間）</b></td><td class="num">—</td><td class="num"><b class="hl">~43 ms</b></td><td>同步模式多出來的時間 = GPU compute + dispatch</td></tr>
+  </table>
+
+  <h3 style="font-size:14px;margin:20px 0 10px;color:var(--sub)">方法②：CGC_PHASE_TIMING 逐階段計時</h3>
+  <table>
+    <tr><th>階段</th><th>時間（ms/ubatch）</th><th>佔比</th><th>說明</th></tr>
+    <tr><td>graph build</td><td class="num">0.2 – 0.4</td><td class="num">&lt;1%</td><td>構建計算圖（可忽略）</td></tr>
+    <tr><td>graph alloc</td><td class="num">0.5 – 1.0</td><td class="num">~2%</td><td>分配 tensor buffer</td></tr>
+    <tr><td>set inputs</td><td class="num">0.02 – 0.03</td><td class="num">&lt;1%</td><td>寫入輸入 token（可忽略）</td></tr>
+    <tr><td>CPU encoding（graph_compute_async）</td><td class="num">~13.6</td><td class="num">~23%</td><td>Metal command buffer 編碼</td></tr>
+    <tr><td>GPU compute + dispatch（同步等待）</td><td class="num">~45.6</td><td class="num">~77%</td><td>從提交到完成的總時間</td></tr>
+  </table>
+
+  <h3 style="font-size:14px;margin:20px 0 10px;color:var(--sub)">方法③：跳過計算實驗（驗證實際計算佔比）</h3>
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">GPU 內部分解<small>~45.6ms（同步模式）</small></div>
+      <div class="bar">
+        <div class="seg tiny" style="width:0.8%;background:var(--ffn)" title="FFN ~0.4ms（跳過 +0.8%）">FFN</div>
+        <div class="seg tiny" style="width:5.6%;background:var(--attn)" title="Attention ~2.6ms（Flash 帶來 5.6%）">Attn</div>
+        <div class="seg tiny" style="width:3.2%;background:var(--dense)" title="Dense ~1.5ms（跳過 +3.2%）">Dense</div>
+        <div class="seg tiny" style="width:1.8%;background:var(--norm)" title="Norm+RoPE ~0.8ms">Norm</div>
+        <div class="seg" style="width:88.6%;background:var(--dispatch)" title="Kernel launch + command buffer ~40.4ms">~40ms dispatch</div>
+      </div>
+    </div>
+  </div>
+
+  <h3 style="font-size:14px;margin:20px 0 10px;color:var(--sub)">完整時間分解（每 token，同步模式）</h3>
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">總計 59.2 ms/token<small>同步模式 · 16.9 t/s</small></div>
+      <div class="bar">
+        <div class="seg tiny" style="width:0.7%;background:var(--dense)" title="graph build ~0.4ms">build</div>
+        <div class="seg tiny" style="width:1.7%;background:var(--norm)" title="alloc+inputs ~1.0ms">alloc</div>
+        <div class="seg" style="width:23.0%;background:var(--attn)" title="CPU Metal encoding ~13.6ms">~13.6 CPU encode</div>
+        <div class="seg tiny" style="width:0.7%;background:var(--ffn)" title="GPU FFN ~0.4ms">FFN</div>
+        <div class="seg tiny" style="width:4.4%;background:var(--attn)" title="GPU Attention ~2.6ms">Attn</div>
+        <div class="seg tiny" style="width:2.5%;background:var(--dense)" title="GPU Dense ~1.5ms">Dense</div>
+        <div class="seg tiny" style="width:1.4%;background:var(--norm)" title="GPU Norm+RoPE ~0.8ms">Norm</div>
+        <div class="seg" style="width:65.6%;background:var(--dispatch)" title="GPU dispatch/kernel launch ~38.8ms">~38.8 GPU dispatch</div>
+      </div>
+    </div>
+  </div>
+  <div class="total">59.2 ms/token = 16.9 t/s（同步）</div>
+
+  <h3 style="font-size:14px;margin:20px 0 10px;color:var(--sub)">完整時間分解（每 token，異步模式 = 生產配置）</h3>
+  <div class="barwrap">
+    <div class="barrow">
+      <div class="barlabel">總計 15.9 ms/token<small>異步模式 · 62.8 t/s</small></div>
+      <div class="bar">
+        <div class="seg tiny" style="width:2.5%;background:var(--dense)" title="graph build ~0.4ms">build</div>
+        <div class="seg tiny" style="width:6.3%;background:var(--norm)" title="alloc+inputs ~1.0ms">alloc</div>
+        <div class="seg" style="width:85.5%;background:var(--attn)" title="CPU encoding ~13.6ms（瓶頸！GPU 被隱藏）">~13.6 CPU encode</div>
+        <div class="seg tiny" style="width:5.7%;background:var(--overlap)" title="GPU compute 與 CPU 重疊，幾乎完全隱藏">GPU hidden</div>
+      </div>
+    </div>
+  </div>
+  <div class="total">15.9 ms/token = 62.8 t/s（異步，生產配置）</div>
+
+  <p class="note">
+    <b>核心結論</b>：<br>
+    ① <b class="hl">異步模式下，瓶頸是 CPU Metal encoding（~13.6ms，佔 85%）</b>，GPU compute 被完全隱藏在後面。<br>
+    ② <b>GPU 內部，實際計算只佔 ~11%</b>，剩下 ~89% 是 ~2000 顆小 kernel 的 dispatch/launch overhead。<br>
+    ③ <b>同步模式下，GPU dispatch 是最大頭（~38.8ms，佔 66%）</b>，但這個模式不用於生產。<br>
+    ④ <b>要突破 250 t/s，必須同時攻兩個方向</b>：減少 CPU encoding 時間（graph build 緩存、kernel fusion）+ 減少 GPU dispatch overhead（大 kernel、減少 op 數量）。
+  </p>
+
+  <p class="note" style="margin-top:12px">
+    <b>與 TPOT 報告（decode）對照</b>：Decode 的 dispatch overhead 分解為 CPU MTL encoding 60ms + GPU compute 35ms（重疊）+ EOG sync 4.24ms + dispatch bubble 38ms。Prefill 的結構類似，但 batch 更大，GPU compute 更容易被 CPU encoding 掩蓋。<b>兩者的共同結論：llama.cpp 的 per-op dispatch 模型是結構性瓶頸，不是參數調優能解決的</b>。
+  </p>
+</div>
+
+<!-- ============ 3. 瓶頸定位實驗 ============ -->
+<div class="card">
+  <h2>③ 瓶頸定位實驗（跳過各部分的速度變化）</h2>
+  <p class="desc">基線 49.9 t/s（M2 + 連續讀，DB OFF）。每個實驗只跳過一個組件，其餘不變。</p>
+
+  <table>
+    <tr><th>實驗</th><th>速度</th><th>變化</th><th>結論</th></tr>
+    <tr><td>基線（正常）</td><td class="num">49.9 t/s</td><td class="num">—</td><td>—</td></tr>
+    <tr><td>跳過 FFN（mul_mat_id）</td><td class="num">50.3 t/s</td><td class="num"><span class="tag g">+0.8%</span></td><td>FFN 完全不是瓶頸</td></tr>
+    <tr><td>Flash Attention OFF</td><td class="num">47.1 t/s</td><td class="num"><span class="tag r">-5.6%</span></td><td>Attention 佔 ~5.6%</td></tr>
+    <tr><td>跳過 dense matmul</td><td class="num">51.5 t/s</td><td class="num"><span class="tag g">+3.2%</span></td><td>QKV/output 投影佔 ~3.2%</td></tr>
+    <tr><td>跳過 dense + RMSNorm</td><td class="num">52.3 t/s</td><td class="num"><span class="tag g">+4.8%</span></td><td>RMSNorm 佔 ~1.6%</td></tr>
+    <tr><td>跳過 dense + RMSNorm + RoPE</td><td class="num">52.4 t/s</td><td class="num"><span class="tag g">+5.0%</span></td><td>RoPE 佔 ~0.2%</td></tr>
+    <tr><td>n_cb=1 vs n_cb=8</td><td class="num">48.4 vs 48.0</td><td class="num"><span class="tag y">無差異</span></td><td>CPU 編碼不是瓶頸</td></tr>
+    <tr><td>強制連續 ids</td><td class="num">21.0 t/s</td><td class="num"><span class="tag y">不變</span></td><td>Memory access pattern 不是瓶頸</td></tr>
+    <tr><td>跳過反量化</td><td class="num">20.7 t/s</td><td class="num"><span class="tag y">不變</span></td><td>量化反量化不是瓶頸</td></tr>
+  </table>
+
+  <p class="note"><b>結論</b>：所有實際計算（FFN + Attention + Dense + Norm + RoPE）加起來只佔 ~10%。<b class="hl">剩下 90% 是 Metal command buffer 創建/提交、~2000 顆小 kernel 的 dispatch overhead、以及 graph build/encoding</b>。</p>
+</div>
+
+<!-- ============ 4. 優化方向與預期收益 ============ -->
+<div class="card">
+  <h2>④ 優化方向與預期收益（按 ROI 排序）</h2>
+  <p class="desc">目標：64.8 → 250 t/s（3.86×）。I/O 層面已見頂，剩下必須從 compute/scheduling 挖掘。</p>
+
+  <div class="legend">
+    <span><i class="sw" style="background:var(--overlap)"></i>高 ROI（已驗證機制）</span>
+    <span><i class="sw" style="background:var(--attn)"></i>中 ROI（需要實驗）</span>
+    <span><i class="sw" style="background:var(--io)"></i>低 ROI（已否證）</span>
+  </div>
+
+  <table>
+    <tr><th>優化項</th><th>機制</th><th>預期收益</th><th>風險</th><th>狀態</th></tr>
+    <tr>
+      <td><b>Metal kernel fusion</b></td>
+      <td>合併 ~2000 顆小 kernel → 幾十顆大 kernel，消除 dispatch overhead</td>
+      <td class="num"><span class="tag g">2-3×</span></td>
+      <td>高（需改 ggml-metal）</td>
+      <td><span class="tag y">未開始</span></td>
+    </tr>
+    <tr>
+      <td><b>Gather matmul 專用 kernel</b></td>
+      <td>類似 edge0 的 gather_qmm，針對 full-width tensor 優化</td>
+      <td class="num"><span class="tag g">1.5-2×</span></td>
+      <td>中（需寫 Metal kernel）</td>
+      <td><span class="tag y">未開始</span></td>
+    </tr>
+    <tr>
+      <td><b>Graph build 緩存</b></td>
+      <td>重用 per-step dispatch plan / block-encode，避免每次重新 build graph</td>
+      <td class="num"><span class="tag g">1.3-1.5×</span></td>
+      <td>中（需改 llama.cpp graph 架構）</td>
+      <td><span class="tag y">未開始</span></td>
+    </tr>
+    <tr>
+      <td><b>更大 batch（cap 8→32/64）</b></td>
+      <td>充分利用整層 slab，提高 GPU 利用率</td>
+      <td class="num"><span class="tag y">1.1-1.3×</span></td>
+      <td>低（配置參數）</td>
+      <td><span class="tag r">已否證（n_batch sweep 無變化）</span></td>
+    </tr>
+    <tr>
+      <td><b>Command buffer 平行</b></td>
+      <td>多 command buffer 並行提交，隱藏 CPU encoding</td>
+      <td class="num"><span class="tag y">1.1-1.2×</span></td>
+      <td>中（需改 Metal backend）</td>
+      <td><span class="tag y">未開始</span></td>
+    </tr>
+    <tr>
+      <td><b>PSO 預編譯</b></td>
+      <td>預編譯 Metal pipeline state，減少運行時編譯開銷</td>
+      <td class="num"><span class="tag r">~1.05×</span></td>
+      <td>低</td>
+      <td><span class="tag r">已否證（TPOT 報告 §8.79）</span></td>
+    </tr>
+    <tr>
+      <td><b>n_cb 調整</b></td>
+      <td>multi-buffer async encoding</td>
+      <td class="num"><span class="tag r">~1.0×</span></td>
+      <td>低</td>
+      <td><span class="tag r">已否證（n_cb=1 vs 8 無差異）</span></td>
+    </tr>
+  </table>
+
+  <p class="note"><b>優先順序建議</b>：<br>
+  1. <b>Gather matmul 專用 kernel</b>（中風險、高收益、可獨立驗證）—— 先做這個，因為 FFN 雖然只佔 0.8%，但 mul_mat_id 的 dispatch 模式可能是整個 overhead 的源頭<br>
+  2. <b>Graph build 緩存</b>（中風險、高收益）—— 重用 dispatch plan，直接攻 90% 的 overhead<br>
+  3. <b>Metal kernel fusion</b>（高風險、最高收益）—— 最終手段，需要深度改動 ggml-metal</p>
+</div>
+
+<!-- ============ 5. 天花板分析 ============ -->
+<div class="card">
+  <h2>⑤ 三層天花板分析</h2>
+  <p class="desc">類似 TPOT 報告的三層天花板，prefill 也有對應的結構性限制。</p>
+
+  <div class="ceil">
+    <div class="cl">當前（M2+DB）<br><small>64.8 t/s · ~524ms/層</small></div>
+    <div class="ctrack"><div class="cfill" style="width:25.9%;background:linear-gradient(90deg,#8a3c3c,#b05c5c)">64.8</div></div>
+    <div class="tokbadge"><b>64.8</b> t/s</div>
+  </div>
+  <div class="ceil">
+    <div class="cl">消除 dispatch overhead（理論）<br><small>~580 t/s · 純計算地板（跳過所有計算只 +5%，意味著計算本身只佔 ~26ms/層）</small></div>
+    <div class="ctrack"><div class="cfill" style="width:100%;background:linear-gradient(90deg,#2c6a4a,#5cc09a)">~580</div></div>
+    <div class="tokbadge"><b>~580</b> t/s</div>
+  </div>
+  <div class="ceil">
+    <div class="cl">目標<br><small>250 t/s · ROADMAP 里程碑</small></div>
+    <div class="ctrack" style="position:relative"><div style="position:absolute;left:40%;top:-6px;bottom:-6px;border-left:2px dashed #ffd479"></div></div>
+    <div class="tokbadge"><b>250</b> t/s</div>
+  </div>
+
+  <p class="note"><b>關鍵洞察</b>：純計算地板是 ~580 t/s（因為跳過所有計算只提升 5%，意味著實際計算只佔 5% 的時間）。<b class="hl">250 t/s 完全在理論範圍內</b>，但需要消除 ~90% 的 dispatch overhead。這不是 kernel 優化能解決的，需要引擎級別的改動（graph build 緩存、kernel fusion、command buffer 平行）。</p>
+</div>
+
+<!-- ============ 6. 與 TPOT 報告對照 ============ -->
+<div class="card">
+  <h2>⑥ 與 2026-08-17 TPOT 報告對照</h2>
+  <p class="desc">Decode 和 Prefill 的瓶頸結構高度相似——都是 dispatch overhead 主導。</p>
+
+  <table>
+    <tr><th>維度</th><th>Decode（TPOT 報告）</th><th>Prefill（本次）</th><th>共通點</th></tr>
+    <tr><td>模型</td><td class="num">qwen36 IQ3_XXS</td><td class="num">qwen36 IQ3_XXS</td><td>同模型</td></tr>
+    <tr><td>配置</td><td class="num">-ngl 99 + cache 8GiB</td><td class="num">-ngl 99 + cache 8GiB + M2</td><td>full offload</td></tr>
+    <tr><td>速度</td><td class="num">24.5 t/s（8GiB pool · 標準路徑）</td><td class="num">64.8 t/s（M2+DB 後）</td><td>—</td></tr>
+    <tr><td>Dispatch bubble</td><td class="num">38ms（37% of 103ms）</td><td class="num">~473ms（90% of 524ms）</td><td><b class="hl">都是最大瓶頸</b></td></tr>
+    <tr><td>實際計算</td><td class="num">~35ms GPU + ~30ms CPU</td><td class="num">~51ms（10%）</td><td>計算不是瓶頸</td></tr>
+    <tr><td>已優化</td><td class="num">CGC_OA_ASYNC（+12.6%）</td><td class="num">M2+連續讀+DB（+1380%）</td><td>I/O 層面已見頂</td></tr>
+    <tr><td>下一步</td><td class="num">kernel 重寫或引擎級重寫</td><td class="num">graph build 緩存 + kernel fusion</td><td><b class="hl">都需要引擎級改動</b></td></tr>
+  </table>
+
+  <p class="note"><b>結論</b>：Decode 和 Prefill 都已經到達了 llama.cpp fork 的架構天花板——<b class="hl">dispatch overhead 是結構性下限，不是參數調優能解決的</b>。TPOT 報告建議「>20 tok/s 需移交 Swift/turbo 引擎線」，Prefill 的 250 t/s 同樣需要引擎級別的改動（graph build 緩存、kernel fusion），或者考慮遷移到更高效的推理引擎（MLX/Metal 原生）。</p>
+</div>
+
+<p class="sub" style="margin-top:24px">數據來源：M2 實驗日誌（2026-09-14）、瓶頸定位系列實驗（跳過 FFN/Attention/Dense/Norm/RoPE）、CGC_TPOT_延遲分解_2026-08-17.html、ROADMAP_PREFILL250_DECODE25_2026-09-13.md</p>
+
+</div>
+</body>
+</html>

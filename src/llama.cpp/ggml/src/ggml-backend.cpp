@@ -984,20 +984,27 @@ static char * fmt_size(size_t size) {
 }
 
 static void ggml_backend_sched_print_assignments(ggml_backend_sched_t sched, struct ggml_cgraph * graph) {
+    // [CGC 2026-09-15 S1] The split header is promoted from GGML_LOG_DEBUG to GGML_LOG_WARN on
+    // purpose. `sched->debug` is already non-zero only when GGML_SCHED_DEBUG is set, so nothing
+    // changes for a normal run, but the default llama log verbosity threshold (INFO) filters
+    // GGML_LOG_LEVEL_DEBUG out entirely -- measured: a build with GGML_SCHED_DEBUG=1 printed
+    // ZERO "## SPLIT" lines, which is indistinguishable from "there is exactly one split". A
+    // diagnostic that can silently print nothing is worse than no diagnostic. The per-node detail
+    // below stays at DEBUG (use ---verbose if you need it).
     int cur_split = 0;
     for (int i = 0; i < graph->n_nodes; i++) {
         if (cur_split < sched->n_splits && i == sched->splits[cur_split].i_start) {
             ggml_backend_t split_backend = sched->backends[sched->splits[cur_split].backend_id];
-            GGML_LOG_DEBUG("\n## SPLIT #%d: %s # %d inputs", cur_split, ggml_backend_name(split_backend),
+            GGML_LOG_WARN("\n## SPLIT #%d: %s # %d inputs", cur_split, ggml_backend_name(split_backend),
                 sched->splits[cur_split].n_inputs);
             for (int j = 0; j < sched->splits[cur_split].n_inputs; j++) {
                 if (j == 0) {
-                    GGML_LOG_DEBUG(": ");
+                    GGML_LOG_WARN(": ");
                 }
-                GGML_LOG_DEBUG("[%s (%5.5s)] ", sched->splits[cur_split].inputs[j]->name,
+                GGML_LOG_WARN("[%s (%5.5s)] ", sched->splits[cur_split].inputs[j]->name,
                     fmt_size(ggml_nbytes(sched->splits[cur_split].inputs[j])));
             }
-            GGML_LOG_DEBUG("\n");
+            GGML_LOG_WARN("\n");
             cur_split++;
         }
         struct ggml_tensor * node = graph->nodes[i];
@@ -1005,8 +1012,11 @@ static void ggml_backend_sched_print_assignments(ggml_backend_sched_t sched, str
             continue;
         }
         if (sched->debug > 1) {
+            // [CGC 2026-09-15 S1] promoted from GGML_LOG_DEBUG for the same reason as the split
+            // header above: the default llama verbosity threshold hides DEBUG, and a diagnostic
+            // that silently prints nothing reads as "nothing to report".
             ggml_backend_t tensor_backend = ggml_backend_sched_get_tensor_backend(sched, node);
-            GGML_LOG_DEBUG("node #%3d (%10.10s): %20.20s (%5.5s) [%5.5s %8.8s] use=%d,c=%d:", i, ggml_op_desc(node), node->name,
+            GGML_LOG_WARN("node #%3d (%10.10s): %20.20s (%5.5s) [%5.5s %8.8s] use=%d,c=%d:", i, ggml_op_desc(node), node->name,
                 fmt_size(ggml_nbytes(node)), tensor_backend ? ggml_backend_name(tensor_backend) : "NULL", GET_CAUSE(node),
                 graph->use_counts[ggml_hash_find(&graph->visited_hash_set, node)], node->flags & GGML_TENSOR_FLAG_COMPUTE ? 1 : 0);
             for (int j = 0; j < GGML_MAX_SRC; j++) {
@@ -1015,10 +1025,10 @@ static void ggml_backend_sched_print_assignments(ggml_backend_sched_t sched, str
                     continue;
                 }
                 ggml_backend_t src_backend = ggml_backend_sched_get_tensor_backend(sched, src);
-                GGML_LOG_DEBUG(" %20.20s (%5.5s) [%5.5s %8.8s]", src->name,
+                GGML_LOG_WARN(" %20.20s (%5.5s) [%5.5s %8.8s]", src->name,
                     fmt_size(ggml_nbytes(src)), src_backend ? ggml_backend_name(src_backend) : "NULL", GET_CAUSE(src));
             }
-            GGML_LOG_DEBUG("\n");
+            GGML_LOG_WARN("\n");
         }
     }
 }
@@ -1591,6 +1601,31 @@ static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
     return true;
 }
 
+// [CGC 2026-09-15] `CGC_OA_ASYNC` is a VALUE, not a flag, and until now the gate in
+// ggml_backend_sched_compute_splits read it as `getenv("CGC_OA_ASYNC") != nullptr`. So
+// CGC_OA_ASYNC=0 -- which run_server.sh emits for every profile that asks for the non-segmented
+// path, and which the startup banner then prints as `oa_async=0` -- still selected the SEGMENTED
+// branch. An empty string would too, because getenv returns "" and not NULL. The switch had
+// therefore been ON in every arm ever run through run_server.sh, including the ones recorded as
+// oa_async=0: a "control" that was byte-for-byte the arm under test.
+//
+// The failure mode is the same one the run_server.sh env allowlist has (an unlisted variable is
+// silently dropped, so "no effect" and "not set" are indistinguishable) except inverted: here the
+// variable IS set and its VALUE is ignored, which reads as "this dispatcher makes no difference".
+// Measured 2026-09-15 21:32: p25-gputime-noasync and p25-slotgpu-noasync reproduced the segmented
+// arms' md5 sets exactly ({dc055e63} and {29ca694a, 672585db, b8c705cc}) and the same pool counters
+// (misses 13040 / 14296, file_reads 36360 / 39948), i.e. they were re-runs, not controls.
+//
+// Unset / empty / nonzero first char = segmented. That keeps every recorded digest reproducible
+// (prod25 sets "1") while making "0" mean what every caller already documents it to mean.
+static bool cgc_oa_async_enabled() {
+    const char * e = getenv("CGC_OA_ASYNC");
+    if (e == nullptr || e[0] == '\0') {
+        return true; // unset: the historical default is the segmented path
+    }
+    return e[0] != '0';
+}
+
 static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t sched) {
     GGML_ASSERT(sched);
     struct ggml_backend_sched_split * splits = sched->splits;
@@ -1732,7 +1767,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             if (ec != GGML_STATUS_SUCCESS) {
                 return ec;
             }
-        } else if (getenv("CGC_OA_ASYNC") != nullptr &&
+        } else if (cgc_oa_async_enabled() &&
                    getenv("CGC_VERIFY_OP_TIMING") == nullptr &&
                    strcmp(ggml_backend_name(split_backend), "CPU") != 0) {
             // CGC: dispatch the Metal split in segments. Segments end at the ARGSORT op (which
@@ -1802,6 +1837,14 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 const int bufs  = cgc_bufs ? cgc_bufs(split_backend) : 1; // completions per graph_compute (n_cb+1)
                 const int done0 = cgc_done ? cgc_done(split_backend) : -1;
 
+                // [CGC GPU-side timing] resolved through the same proc-address mechanism as
+                // cgc_done (libggml-metal is a separate dylib; libggml never links it directly).
+                // NULL when CGC_GPU_TIMING is unset, in which case the completions never sample.
+                typedef int (*cgc_gpu_take_fn)(ggml_backend_t, int64_t *);
+                cgc_gpu_take_fn cgc_gpu_take = getenv("CGC_GPU_TIMING") != nullptr
+                    ? (cgc_gpu_take_fn) ggml_backend_reg_get_proc_address(reg, "ggml_metal_get_cgc_gpu_take")
+                    : nullptr;
+
                 // [CGC M0 decode profile 2026-09-13] Per-layer attribution of a decode step. The
                 // segmented loop below serializes GPU layer i -> CPU top-k hook -> submit of layer
                 // i+1, so the step wall is sum(wait + cb + submit) over layers. The CGC-SEG print
@@ -1818,6 +1861,20 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 static int64_t dp_lay_sub[64] = {0};   // submit of that layer's segment
                 static int64_t dp_lay_n[64]   = {0};   // segments observed, per layer
                 static int64_t dp_step        = 0;     // graph_computes since start
+
+                // [CGC 2026-09-15 GPU-side timing] Accumulators for CGC_GPU_TIMING (see
+                // ggml-metal-context.m for why). gpu_* come from the Metal command buffers'
+                // own GPUStartTime/GPUEndTime, read at each segment boundary right after the
+                // cgc_done poll succeeded. `wait` is the same CPU-side window CGC-DECPROF
+                // reports, so gpu_busy_sum/wait is directly the answer to "is the 91% wait real
+                // GPU execution or launch + completion latency?".
+                //   busy_sum: Σ(end-start) over the segment's n_cb+1 buffers (overlap counted twice)
+                //   union:    max(end)-min(start) -- << busy_sum means the buffers DO overlap
+                //   gap:      Σ(start_i - end_{i-1}) in the GPU clock => GPU idle between segments.
+                //             gt_prev_end is cleared per graph, so gap never spans a
+                //             draft->verify or step->step transition.
+                static int64_t gt_busy = 0, gt_union = 0, gt_gap = 0, gt_wait = 0;
+                static int64_t gt_nseg = 0, gt_nbuf = 0, gt_nstep = 0, gt_unsup = 0, gt_prev_end = -1;
 
                 auto seg_view = [&](int s) {
                     const int a = (s == 0) ? 0 : (as_idx[s-1] + 1);
@@ -1888,6 +1945,31 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         ggml_backend_synchronize(split_backend);
                     }
                     const int64_t st1 = ggml_time_us();
+                    // [CGC GPU-side timing] the poll above just observed segment i's last
+                    // completion, so all of segment i's command buffers are completed -- the
+                    // only point where Metal reports GPUStartTime/GPUEndTime. Segment i+1 has
+                    // not been submitted yet, so nothing else can be in flight.
+                    if (cgc_gpu_take != nullptr) {
+                        int64_t g[5] = {0, 0, 0, 0, 0};
+                        const int gns = cgc_gpu_take(split_backend, g);
+                        gt_busy  += g[0];
+                        gt_union += g[1];
+                        gt_unsup += g[4];
+                        gt_nbuf  += gns;
+                        if (gns > 0) {
+                            gt_nseg++;
+                        }
+                        // GPU-clock idle between the previous segment's end and this one's start.
+                        // This window sits inside the previous segment's hook+submit (CPU) time,
+                        // so gap vs (cb+submit) is a built-in cross-check on both instruments.
+                        if (g[2] > 0 && gt_prev_end > 0 && g[2] > gt_prev_end) {
+                            gt_gap += g[2] - gt_prev_end;
+                        }
+                        if (g[3] > 0) {
+                            gt_prev_end = g[3];
+                        }
+                        gt_wait += st1 - st0;
+                    }
                     // [CGC bit-bisect v7] in-compute tensor dump: forward every node of the
                     // just-completed segment to the eval callback (ask=false). Segments 0..i
                     // have completed and segment i+1 has not been submitted yet, so every
@@ -2027,6 +2109,40 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     for (int l = 0; l < 64; l++) {
                         dp_lay_w[l] = dp_lay_cb[l] = dp_lay_sub[l] = dp_lay_n[l] = 0;
                     }
+                }
+
+                // [CGC GPU-side timing] One line per 4 qualifying graph_computes. The decision
+                // number is gpu_busy_sum / wait: >=70% => the wait is real GPU execution (batch
+                // the per-expert GEMVs); <=40% => it is launch/completion latency (remove the
+                // GPU->CPU->GPU round trip at the segment boundary). gpu_union << gpu_busy_sum
+                // additionally says the n_cb+1 buffers of a segment genuinely run concurrently,
+                // which is the assumption behind every n_cb tuning result.
+                // `skipped` counts buffers with no usable timestamp: it must stay at 0 or the
+                // platform is not reporting them and the whole line is meaningless.
+                // Only graphs with a real MoE layer count qualify: the MTP draft context runs
+                // through here too with a ~2-segment graph, and averaging two different machines
+                // together would produce a number that describes neither.
+                if (cgc_gpu_take != nullptr) {
+                    if (n_as_found >= 5 && gt_nseg > 0) {
+                        gt_nstep++;
+                        if ((gt_nstep % 4) == 0) {
+                            const double w  = (double) gt_wait  / 1e3;
+                            const double b  = (double) gt_busy  / 1e6;
+                            const double u  = (double) gt_union / 1e6;
+                            const double gp = (double) gt_gap   / 1e6;
+                            const double pc = w > 0.0 ? 100.0 / w : 0.0;
+                            fprintf(stderr,
+                                    "CGC-GPUTIME: step=%lld segs=%lld bufs=%lld skipped=%lld "
+                                    "wait=%.2f gpu_busy_sum=%.2f (%.0f%%) gpu_union=%.2f (%.0f%%) "
+                                    "gap=%.2f (%.0f%%) ms\n",
+                                    (long long) gt_nstep, (long long) gt_nseg, (long long) gt_nbuf,
+                                    (long long) gt_unsup, w,
+                                    b, b * pc, u, u * pc, gp, gp * pc);
+                        }
+                    }
+                    gt_busy = gt_union = gt_gap = gt_wait = 0;
+                    gt_nseg = gt_nbuf = gt_unsup = 0;
+                    gt_prev_end = -1;
                 }
 
                 // CGC: measure how much tail (post top-k) GPU work remains un-waited after the loop

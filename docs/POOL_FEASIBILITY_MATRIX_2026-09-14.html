@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>(模型 × 池子) 可行性表 — 開機前判定 · 2026-09-14</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans TC', sans-serif;
+    background: #0f1117; color: #e4e4e7; line-height: 1.7; padding: 20px;
+  }
+  .container { max-width: 1200px; margin: 0 auto; }
+  .header {
+    background: linear-gradient(135deg, #1e3a5f 0%, #0f1117 100%);
+    border-radius: 16px; padding: 36px; margin-bottom: 24px; border: 1px solid #2d3748;
+  }
+  .header h1 {
+    font-size: 1.95em; font-weight: 700;
+    background: linear-gradient(90deg, #60a5fa, #a78bfa);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 8px;
+  }
+  .header .subtitle { color: #9ca3af; font-size: 1.02em; margin-bottom: 18px; }
+  .header .meta { display: flex; gap: 12px; flex-wrap: wrap; }
+  .header .meta-item {
+    background: rgba(255,255,255,0.05); padding: 7px 14px; border-radius: 8px;
+    font-size: 0.86em; color: #d1d5db;
+  }
+  .header .meta-item strong { color: #60a5fa; }
+
+  .section { background: #161925; border-radius: 14px; padding: 26px 30px; margin-bottom: 22px;
+             border: 1px solid #262b3a; overflow-x: auto; }
+  .section h2 { font-size: 1.42em; color: #93c5fd; margin-bottom: 16px; padding-bottom: 9px;
+                border-bottom: 1px solid #262b3a; }
+  .section h3 { font-size: 1.1em; color: #a5b4fc; margin: 20px 0 10px; }
+  .section p { margin-bottom: 11px; color: #d1d5db; }
+  .section ul, .section ol { margin: 11px 0 11px 22px; }
+  .section li { margin-bottom: 7px; color: #d1d5db; }
+
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 0.88em; }
+  th, td { padding: 9px 10px; text-align: left; border-bottom: 1px solid #262b3a; vertical-align: top; }
+  th { background: #1e2333; color: #93c5fd; font-weight: 600; font-size: 0.86em; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.c, th.c { text-align: center; }
+  code {
+    background: rgba(96,165,250,0.12); color: #bfdbfe; padding: 1px 6px;
+    border-radius: 5px; font-size: 0.89em; font-family: 'SF Mono', Menlo, monospace;
+  }
+  pre {
+    background: #0b0d14; border: 1px solid #262b3a; border-left: 3px solid #3b82f6;
+    border-radius: 8px; padding: 13px 16px; overflow-x: auto; margin: 13px 0;
+    font-family: 'SF Mono', Menlo, monospace; font-size: 0.82em; color: #cbd5e1; line-height: 1.55;
+  }
+
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 20px;
+           font-size: 0.76em; font-weight: 600; white-space: nowrap; }
+  .badge-success { background: #065f46; color: #6ee7b7; }
+  .badge-warning { background: #78350f; color: #fcd34d; }
+  .badge-danger  { background: #7f1d1d; color: #fca5a5; }
+  .badge-info    { background: #1e3a5f; color: #93c5fd; }
+
+  .highlight { background: rgba(96,165,250,0.08); border-left: 3px solid #3b82f6;
+               padding: 13px 17px; border-radius: 8px; margin: 15px 0; }
+  .highlight strong { color: #60a5fa; }
+  .warning { background: rgba(251,191,36,0.08); border-left: 3px solid #f59e0b;
+             padding: 13px 17px; border-radius: 8px; margin: 15px 0; }
+  .warning strong { color: #fbbf24; }
+  .ok { background: rgba(16,185,129,0.08); border-left: 3px solid #10b981;
+        padding: 13px 17px; border-radius: 8px; margin: 15px 0; }
+  .ok strong { color: #6ee7b7; }
+  .danger { background: rgba(239,68,68,0.08); border-left: 3px solid #ef4444;
+            padding: 13px 17px; border-radius: 8px; margin: 15px 0; }
+  .danger strong { color: #fca5a5; }
+
+  /* verdict grid */
+  .grid { border-collapse: separate; border-spacing: 6px; margin: 16px 0; }
+  .grid th { background: transparent; color: #93c5fd; font-size: 0.84em; padding: 6px 10px; }
+  .grid td {
+    border: 1px solid #2d3748; border-radius: 9px; padding: 10px 12px; text-align: center;
+    font-variant-numeric: tabular-nums; min-width: 92px; line-height: 1.35;
+  }
+  .grid td.ok   { background: rgba(16,185,129,0.13); border-color: #065f46; }
+  .grid td.warn { background: rgba(245,158,11,0.13); border-color: #78350f; }
+  .grid td.bad  { background: rgba(239,68,68,0.13); border-color: #7f1d1d; }
+  .grid .cap { font-size: 1.25em; font-weight: 700; display: block; }
+  .grid .lbl { font-size: 0.72em; }
+  .grid td.ok   .cap { color: #6ee7b7; }
+  .grid td.warn .cap { color: #fcd34d; }
+  .grid td.bad  .cap { color: #fca5a5; }
+  .grid .model { text-align: left; font-weight: 600; color: #d1d5db; white-space: nowrap;
+                 border: none; background: transparent; }
+
+  .footnote { color: #9ca3af; font-size: 0.85em; }
+  .match { color: #6ee7b7; font-weight: 600; }
+  .mismatch { color: #fca5a5; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<div class="header">
+  <h1>(模型 × 池子) 可行性表</h1>
+  <div class="subtitle">開機前判定每一格：<strong>可用</strong> / <strong>只能當 partition 敏感度參考</strong> / <strong>不可用</strong></div>
+  <div class="meta">
+    <div class="meta-item"><strong>日期</strong> 2026-09-14</div>
+    <div class="meta-item"><strong>由</strong> <code>scripts/check/pool_feasibility.py</code> 產生</div>
+    <div class="meta-item"><strong>來源</strong> GGUF header + 引擎自身的算式（無需啟動、不讀權重）</div>
+    <div class="meta-item"><strong>驗證</strong> 6 筆實測對照（1 筆為過期記錄）</div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════ -->
+<div class="section">
+  <h2>判定規則</h2>
+  <p>每一格只被兩條前提決定。<code>CGC_POOL_MAX_TOKENS</code>（cap）不是池子的參數 ——
+     llama-context.cpp 在 L4 pool 啟動時把 <code>n_batch</code> clamp 成它，所以 <strong>cap 就是 prefill 的 chunk 大小</strong>。</p>
+
+  <table>
+    <thead><tr><th class="c">#</th><th>前提</th><th>算式</th><th>不滿足的後果</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="c"><strong>P1</strong></td><td>槽位容量</td>
+        <td><code>cap × top_k ≤ usable_slots</code><br>
+            <span class="footnote">slot 0 是保留的 ZERO slot，故 <code>usable = min_layer_slots − 1</code></span></td>
+        <td>union 塞不進該層的格數 → 走到 gather/wide 路徑（本引擎該路徑不可用）</td>
+      </tr>
+      <tr>
+        <td class="c"><strong>P2</strong></td><td>存活性</td>
+        <td><code>cap ≥ n_keep_tail + 1</code><br>
+            <code>n_keep_tail = (n_rs_seq &gt; 0) ? n_rs_seq+1 : 0</code><br>
+            <code>n_rs_seq = draft.n_max</code>（MTP/EAGLE3/DFLASH/DSPARK 時）</td>
+        <td>載入即 abort：<code>GGML_ASSERT(n_ubatch &gt; n_keep_tail)</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>槽位數怎麼算（與 loader 同一條式子）</h3>
+  <pre>per_slot_layer[il] = Σ over 4 kinds ( row_size(type, ne[0]) × ne[1] )      # 該層每顆 expert 的位元組
+per_slot          = max over DECODER layers (il &lt; max_layer − n_nextn)      # MTP/NextN 層不計
+capacity          = clamp( pool_bytes / (max_layer × per_slot), 8, 256 )    # llama-model-loader.cpp:1145
+min_layer_slots   = min over layers of cgc_layer_cap(l, capacity)          # LAYER_CAPS 可覆寫（後者勝）
+usable_slots      = min_layer_slots − 1
+cap_max           = usable_slots // top_k</pre>
+  <p class="footnote">MTP 層刻意不計入 <code>per_slot</code>：把 head 的位元組算進 trunk，
+      會讓 trunk 的池子幾何取決於 head 剛好怎麼存（實測 F16 head 把 trunk 從 118 格打到 33 格，
+      並產生 585 次 <code>buffer is nil</code>）。</p>
+
+  <h3>三個判定</h3>
+  <table>
+    <thead><tr><th>判定</th><th>條件</th><th>這一格可以拿去幹嘛</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="badge badge-success">USABLE</span> 可用</td>
+        <td><code>cap_max ≥ 8</code>（build 預設 cap）</td>
+        <td>可以<strong>和別格用同一個 cap</strong> 跑。跨格比較因此是「只變池子」的乾淨實驗，
+            pool-layout 不變性（固定 cap 下 bit-identical）此刻成立。</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-warning">PARTITION-REF</span><br>只能當 partition 敏感度參考</td>
+        <td><code>floor ≤ cap_max &lt; 8</code></td>
+        <td>跑得起來，但<strong>只能在那個較小的 cap</strong> 上跑。拿它去對 cap=8 的參考比，
+            量到的是 <strong>prefill step partition</strong> 的差異，不是池子佈局。
+            它的 logits 只對「partition 有多敏感」有意義。</td>
+      </tr>
+      <tr>
+        <td><span class="badge badge-danger">UNUSABLE</span> 不可用</td>
+        <td><code>cap_max &lt; floor</code></td>
+        <td>沒有任何 cap 能同時滿足 P1 與 P2：大到塞得進格數的違反存活性，
+            小到活得了的塞不進。pool path 直接停擺。</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="footnote"><code>floor</code> = MTP ON 時 5（<code>n_rs_seq = --spec-draft-n-max = 3</code>），
+     MTP OFF 時 1（無 spec type → <code>n_rs_seq = 0</code> → <code>n_keep_tail = 0</code>，assert 恆真）。</p>
+</div>
+
+<!-- ══════════════════════════════════════ -->
+<div class="section">
+  <h2>可行性矩陣（MTP ON — 生產配置）</h2>
+  <p>格內大數字是 <code>cap_max</code>（這一格最大能用的 cap）。</p>
+
+  <table class="grid">
+    <thead><tr>
+      <th class="model">模型</th><th>2 GiB</th><th>4 GiB</th><th>6 GiB</th><th>8 GiB</th><th>10 GiB</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td class="model">Nail IQ3_XXS<br><span class="footnote">13.7 GB · 256 experts · 41 層<br>per_slot 1,458,176 B（binding blk.39）</span></td>
+        <td class="bad"><span class="cap">4</span><span class="lbl">UNUSABLE</span></td>
+        <td class="ok"><span class="cap">8</span><span class="lbl">USABLE</span></td>
+        <td class="ok"><span class="cap">13</span><span class="lbl">USABLE</span></td>
+        <td class="ok"><span class="cap">17</span><span class="lbl">USABLE</span></td>
+        <td class="ok"><span class="cap">22</span><span class="lbl">USABLE</span></td>
+      </tr>
+      <tr>
+        <td class="model">Ornith 1.5 35B<br><span class="footnote">16 GB · 256 experts · 41 層<br>per_slot 1,769,472 B（binding blk.0）</span></td>
+        <td class="bad"><span class="cap">3</span><span class="lbl">UNUSABLE</span></td>
+        <td class="warn"><span class="cap">7</span><span class="lbl">PARTITION-REF</span></td>
+        <td class="ok"><span class="cap">10</span><span class="lbl">USABLE</span></td>
+        <td class="ok"><span class="cap">14</span><span class="lbl">USABLE</span></td>
+        <td class="ok"><span class="cap">18</span><span class="lbl">USABLE</span></td>
+      </tr>
+      <tr>
+        <td class="model">iq3ext<br><span class="footnote">同一份 IQ3_XXS，走外接碟<br>（幾何與 iq3 相同）</span></td>
+        <td class="bad"><span class="cap">4</span><span class="lbl">UNUSABLE</span></td>
+        <td class="ok"><span class="cap">8</span><span class="lbl">USABLE</span></td>
+        <td class="ok"><span class="cap">13</span><span class="lbl">USABLE</span></td>
+        <td class="ok"><span class="cap">17</span><span class="lbl">USABLE</span></td>
+        <td class="ok"><span class="cap">22</span><span class="lbl">USABLE</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="ok">
+    <strong>讀法：</strong>IQ3_XXS 在 <strong>4 GiB 以上全部可用</strong> —— 所以「4/6/8/10 GiB 只差速度」這句在它身上成立。
+    <strong>Ornith 不行</strong>：4 GiB 只能跑 cap 7，而 cap 是 partition 旋鈕，所以那格只能當 partition 參考；
+    2 GiB 直接不可用。同一句話換一顆模型就失效 —— 差別只在 <code>per_slot</code>（1.458 MB vs 1.769 MB，+21%）。
+  </div>
+
+  <div class="warning">
+    <strong>最容易誤讀的陷阱：</strong>當池子小到把 cap 壓下來時，那一格就<em>不再是「只變池子」</em>了。
+    拿它去和 cap=8 的參考比，看到的是 partition 差異（實測：同 pool 換 cap → M1 3/103；
+    固定 cap 換 pool → M1 117/117）。矩陣的 ⚠️ 格就是在標這件事。
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════ -->
+<div class="section">
+  <h2>MTP OFF 的差異（floor 從 5 掉到 1）</h2>
+  <p>同一個池子，只是把 MTP 關掉，P2 的地板就消失，兩個原本「不可用」的格子變成「只能當參考」：</p>
+
+  <table class="grid">
+    <thead><tr>
+      <th class="model">模型（MTP OFF）</th><th>2 GiB</th><th>4 GiB</th><th>6 GiB</th><th>8 GiB</th><th>10 GiB</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td class="model">Nail IQ3_XXS</td>
+        <td class="warn"><span class="cap">4</span><span class="lbl">PARTITION-REF</span></td>
+        <td class="ok"><span class="cap">8</span><span class="lbl">USABLE</span></td>
+        <td class="ok"><span class="cap">13</span><span class="lbl">USABLE</span></td>
+        <td class="ok"><span class="cap">17</span><span class="lbl">USABLE</span></td>
+        <td class="ok"><span class="cap">22</span><span class="lbl">USABLE</span></td>
+      </tr>
+      <tr>
+        <td class="model">Ornith 1.5 35B</td>
+        <td class="warn"><span class="cap">3</span><span class="lbl">PARTITION-REF</span></td>
+        <td class="warn"><span class="cap">7</span><span class="lbl">PARTITION-REF</span></td>
+        <td class="ok"><span class="cap">10</span><span class="lbl">USABLE</span></td>
+        <td class="ok"><span class="cap">14</span><span class="lbl">USABLE</span></td>
+        <td class="ok"><span class="cap">18</span><span class="lbl">USABLE</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="highlight">
+    <strong>所以「MTP 是不是免費的」有一個具體答案：</strong>MTP 把 P2 的地板從 1 抬到 5，
+    因此在 IQ3_XXS 上<strong>一整格（2 GiB）從「可跑但 cap 較小」變成「完全不可用」</strong>。
+    這與 P1 無關、與記憶體也不完全有關 —— 是遞迴/線性注意力層的 rollback 語意加上 spec 設定一起造成的。
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════ -->
+<div class="section">
+  <h2>明細（MTP ON）</h2>
+  <table>
+    <thead><tr>
+      <th>模型</th><th class="num">池子</th><th class="num">min_layer_slots</th><th class="num">usable</th>
+      <th class="num">cap_max</th><th class="num">floor</th><th>判定</th>
+    </tr></thead>
+    <tbody>
+      <tr><td>iq3</td><td class="num">2 GiB</td><td class="num">35</td><td class="num">34</td><td class="num">4</td><td class="num">5</td><td><span class="badge badge-danger">UNUSABLE</span></td></tr>
+      <tr><td>iq3</td><td class="num">4 GiB</td><td class="num">71</td><td class="num">70</td><td class="num">8</td><td class="num">5</td><td><span class="badge badge-success">USABLE</span></td></tr>
+      <tr><td>iq3</td><td class="num">6 GiB</td><td class="num">107</td><td class="num">106</td><td class="num">13</td><td class="num">5</td><td><span class="badge badge-success">USABLE</span></td></tr>
+      <tr><td>iq3</td><td class="num">8 GiB</td><td class="num">143</td><td class="num">142</td><td class="num">17</td><td class="num">5</td><td><span class="badge badge-success">USABLE</span></td></tr>
+      <tr><td>iq3</td><td class="num">10 GiB</td><td class="num">179</td><td class="num">178</td><td class="num">22</td><td class="num">5</td><td><span class="badge badge-success">USABLE</span></td></tr>
+      <tr><td>ornith</td><td class="num">2 GiB</td><td class="num">29</td><td class="num">28</td><td class="num">3</td><td class="num">5</td><td><span class="badge badge-danger">UNUSABLE</span></td></tr>
+      <tr><td>ornith</td><td class="num">4 GiB</td><td class="num">59</td><td class="num">58</td><td class="num">7</td><td class="num">5</td><td><span class="badge badge-warning">PARTITION-REF</span></td></tr>
+      <tr><td>ornith</td><td class="num">6 GiB</td><td class="num">88</td><td class="num">87</td><td class="num">10</td><td class="num">5</td><td><span class="badge badge-success">USABLE</span></td></tr>
+      <tr><td>ornith</td><td class="num">8 GiB</td><td class="num">118</td><td class="num">117</td><td class="num">14</td><td class="num">5</td><td><span class="badge badge-success">USABLE</span></td></tr>
+      <tr><td>ornith</td><td class="num">10 GiB</td><td class="num">148</td><td class="num">147</td><td class="num">18</td><td class="num">5</td><td><span class="badge badge-success">USABLE</span></td></tr>
+      <tr><td>iq3ext</td><td class="num">2 GiB</td><td class="num">35</td><td class="num">34</td><td class="num">4</td><td class="num">5</td><td><span class="badge badge-danger">UNUSABLE</span></td></tr>
+      <tr><td>iq3ext</td><td class="num">4 GiB</td><td class="num">71</td><td class="num">70</td><td class="num">8</td><td class="num">5</td><td><span class="badge badge-success">USABLE</span></td></tr>
+      <tr><td>iq3ext</td><td class="num">6 GiB</td><td class="num">107</td><td class="num">106</td><td class="num">13</td><td class="num">5</td><td><span class="badge badge-success">USABLE</span></td></tr>
+      <tr><td>iq3ext</td><td class="num">8 GiB</td><td class="num">143</td><td class="num">142</td><td class="num">17</td><td class="num">5</td><td><span class="badge badge-success">USABLE</span></td></tr>
+      <tr><td>iq3ext</td><td class="num">10 GiB</td><td class="num">179</td><td class="num">178</td><td class="num">22</td><td class="num">5</td><td><span class="badge badge-success">USABLE</span></td></tr>
+    </tbody>
+  </table>
+  <p class="footnote">Qwen3.6 UD-IQ4_XS 未列入：本 checkout 沒有這個檔案（<code>models/gguf/</code> 只有 IQ3_XXS 與 Ornith）。
+     它一旦落地，跑一次 <code>pool_feasibility.py --models iq4</code> 就會自己出現在表上。</p>
+</div>
+
+<!-- ══════════════════════════════════════ -->
+<div class="section">
+  <h2>驗證：預測 vs 實測</h2>
+  <p>沒有對照的預測只是包裝過去的猜測。<code>--validate</code> 會把每一格對上 harness 既有的
+     <code>cap_probe_*.json</code> 實測記錄（那些是<em>真的開機跑出來的</em>）：</p>
+
+  <table>
+    <thead><tr>
+      <th>模型</th><th class="num">池子</th><th class="c">預測 slots/usable/cap_max</th>
+      <th class="c">實測</th><th>結果</th>
+    </tr></thead>
+    <tbody>
+      <tr><td>iq3</td><td class="num">2 GiB</td><td class="c">35 / 34 / 4</td><td class="c">35 / 34 / —</td><td class="match">MATCH</td></tr>
+      <tr><td>iq3</td><td class="num">4 GiB</td><td class="c">71 / 70 / 8</td><td class="c">71 / 70 / 8</td><td class="match">MATCH</td></tr>
+      <tr><td>iq3</td><td class="num">6 GiB</td><td class="c">107 / 106 / 13</td><td class="c">107 / 106 / 8</td><td class="match">MATCH</td></tr>
+      <tr><td>iq3</td><td class="num">8 GiB</td><td class="c">143 / 142 / 17</td><td class="c">143 / 142 / 8</td>
+          <td class="match">MATCH<sup>*</sup></td></tr>
+      <tr><td>ornith</td><td class="num">4 GiB</td><td class="c">59 / 58 / 7</td><td class="c">59 / 58 / 7</td><td class="match">MATCH</td></tr>
+      <tr><td>iq3ext</td><td class="num">4 GiB</td><td class="c">71 / 70 / 8</td><td class="c">71 / 70 / 8</td><td class="match">MATCH</td></tr>
+    </tbody>
+  </table>
+
+  <div class="warning">
+    <strong><sup>*</sup> 這一格原本是 <code>MISMATCH</code>（舊記錄說 106 格），而它現在已經是 <code>MATCH</code> ——
+    因為比對已經內建在 harness 的啟動路徑裡，拒絕了那筆過期記錄並重新探測。</strong><br>
+    <code>cap_probe_iq3_pool8gb.json</code> 建於 <strong>2026-09-11 20:21</strong>（106 格）；09-14 的日誌全部寫 <strong>143 格</strong>，
+    而預測正是 143。4 GiB（09-13 量）與 6 GiB（09-12 量）都對得上，所以是 09-11→09-12 之間池子分配改過 ——
+    這正好說明為什麼這種對照要自動化：<strong>快取的舊數字看起來一樣合理</strong>。<br>
+    舊記錄的位元組完整保留在 <code>Backup/knifeedge_matrix/cap_probe_iq3_pool8gb.stale-20260911.json</code>，
+    它現在是<strong>被拒絕的證據</strong>，而不是被沿用的數字。
+  </div>
+
+  <h3>另外三筆來自「今天的 log」的直接對照</h3>
+  <table>
+    <thead><tr><th>模型</th><th class="num">池子</th><th class="num">日誌寫的 slots</th><th class="num">預測</th><th>結果</th></tr></thead>
+    <tbody>
+      <tr><td>iq3</td><td class="num">8 GiB</td><td class="num">143</td><td class="num">143</td><td class="match">MATCH</td></tr>
+      <tr><td>iq3</td><td class="num">10 GiB</td><td class="num">179</td><td class="num">179</td><td class="match">MATCH</td></tr>
+      <tr><td>ornith</td><td class="num">4 GiB</td><td class="num">59</td><td class="num">59</td><td class="match">MATCH</td></tr>
+    </tbody>
+  </table>
+  <p class="footnote">來源：<code>Backup/cgc_logs/llama_server_20260914_*.log</code> 的
+     <code>llama_expert_cache: L4 metal pool: N slots/layer</code> 行。</p>
+</div>
+
+<!-- ══════════════════════════════════════ -->
+<div class="section">
+  <h2>怎麼用 / 怎麼重生</h2>
+  <pre>cd /Users/alexchuang/Documents/flashkv-devserver
+
+# 全表（MTP 依 MODELS 的設定）
+python3 scripts/check/pool_feasibility.py --models iq3,ornith,iq3ext,iq4 --pools 2,4,6,8,10
+
+# 逐格對照實測記錄，並標出過期的那幾筆
+python3 scripts/check/pool_feasibility.py --pools 2,4,6,8,10 --validate
+
+# 新模型（還沒進 MODELS 的 GGUF）直接判
+python3 scripts/check/pool_feasibility.py --gguf models/gguf/新模型.gguf --pools 4,6,8 --mtp 1
+
+# 關掉 MTP（地板消失，矩陣會變）／自訂 LAYER_CAPS
+python3 scripts/check/pool_feasibility.py --pools 2,4 --mtp 0
+python3 scripts/check/pool_feasibility.py --pools 8 --layer-caps "0-39:64,40-40:256"
+
+# 輸出 markdown 表 / JSON 記錄
+python3 scripts/check/pool_feasibility.py --md
+python3 scripts/check/pool_feasibility.py --json /tmp/feas.json</pre>
+
+  <h3>操作準則</h3>
+  <ol>
+    <li><strong>開機前先看這張表。</strong> ⚠️ 與 ❌ 的格子不該進掃描；尤其不要讓它們和 ✅ 的格子放在同一張對比表的同一句話裡。</li>
+    <li><strong>掃 pool 時 cap 必須固定。</strong> 只有 ✅ 的格子保證做得到；⚠️ 的格子天生做不到。</li>
+    <li><strong>換模型就重跑一次。</strong> 這張表對 <code>per_slot</code> 很敏感（+21% 就讓 Ornith 掉一格），而 per_slot 由量化型別與 <code>n_ff_exp</code> 決定，不是「差不多 35B」就能沿用。</li>
+    <li><strong>引擎改到池子分配就重跑 <code>--validate</code>。</strong> 那筆 09-11 的過期記錄就是這個機制要抓的東西。</li>
+  </ol>
+</div>
+
+<!-- ══════════════════════════════════════ -->
+<div class="section">
+  <h2>已經接進 harness：開機前直接拒跑（2026-09-14）</h2>
+  <p>這張表原本只是「開機前該看一眼」的準則 —— 而準則會被跳過。現在
+     <code>knifeedge_matrix.py</code> 在 <strong>任何 launch 之前</strong>對每一格 (模型, 池子, cap) 做同一個判定，
+     碰到 ⚠️ / ❌ 就<strong>直接拒絕啟動並說出算式</strong>。判定用的 <code>cap</code> 不是猜的，
+     而是整個 sweep 真的會用的那個（<code>cap_for()</code> 解析出來的），所以閘門與實際跑的東西不可能分岐。</p>
+
+  <pre># 開機前掃一眼整格（不啟動、不碰 GPU）
+python3 scripts/check/knifeedge_matrix.py --feasibility-only --models iq3,ornith --pools 2,4,6,8,10
+
+# 真掃描時：` --` 與 `⚠️` 的格子會被拒跑，記錄裡會寫明理由，而不是「server 沒起來」
+python3 scripts/check/knifeedge_matrix.py --models iq3,ornith --pools 4,6,8 --gates-only
+
+# 真的想量 partition 敏感度（例如要證明 cap=5 那 +13-15% 的代價）時才用
+python3 scripts/check/knifeedge_matrix.py --models iq3 --pools 4,6,8 --allow-partition-ref
+python3 scripts/check/knifeedge_matrix.py --models iq3 --pools 4,6,8 --no-feasibility-gate
+
+# 探測結果與算式對帳（預設會拒給快取、重探；這條只在探測真的違背算式時才拒絕整個 sweep）
+python3 scripts/check/knifeedge_matrix.py --models iq3 --pools 8 --gates-only
+python3 scripts/check/knifeedge_matrix.py --models iq3 --pools 8 --gates-only --allow-geometry-drift
+
+# 決策邏輯的離線自測（不需要 GGUF、不需要 GPU）
+python3 scripts/check/feasibility_gate_selftest.py</pre>
+
+  <h3>第三個檢查：探測結果必須對得上算式（2026-09-14 補）</h3>
+  <p><code>--pool-cap auto</code> 的探測是<strong>整個 sweep 唯一決定 cap 的地方</strong>，而它過去只相信自己快取的
+     <code>cap_probe_*.json</code>。所以現在每一筆探測記錄在<strong>被重用的那一刻</strong>都要過一次對帳：
+     實測 slots vs 算式預測 slots。吻合才准用；不吻合就<strong>拒絕快取、重新探測</strong>，而且分成兩種說法：</p>
+  <table>
+    <thead><tr><th>判定</th><th>條件</th><th>動作</th></tr></thead>
+    <tbody>
+      <tr><td class="match">MATCH</td><td>實測 = 預測</td><td>重用（記錄裡附 <code>verified_slots</code>；若無 provenance 會註明它靠的是「數字吻合」）</td></tr>
+      <tr><td class="mismatch">STALE_RECORD</td><td>不吻合，且記錄的 provenance 與現樹不符 / 根本沒有 provenance</td><td><strong>拒絕快取並重探</strong>，並指出是哪一半動了：pool-geometry 程式碼、權重、或 launch env（<code>layer_caps</code>/<code>mtp</code>/<code>spec_n_max</code>）</td></tr>
+      <tr><td class="mismatch">PREDICTOR_STALE</td><td>不吻合，但 provenance <em>完全符合</em>現樹（或就是剛剛探的）</td><td><strong>拒跑整個 sweep</strong>：程式碼沒動，那就是 <code>pool_feasibility.py</code> 的算式不再描述 loader ——
+          而它是每一個可行性判定的依據</td></tr>
+    </tbody>
+  </table>
+  <p>另外，<strong>探測記錄從現在起自帶 provenance</strong>（pool-geometry 三個檔案的 digest + 最近 commit、權重 identity、
+     layer caps、MTP、spec-n-max、extra_env），並把對帳結果寫進 <code>reconciled</code> 欄位。
+    沒有 provenance 的舊記錄不會被靜默重用 —— 它只能靠「數字吻合」被接受，而且會當場講出來。</p>
+  <pre>[cap-probe] iq3 pool8GB cache REFUSED
+  CAP-PROBE MISMATCH (STALE_RECORD): measured 106 slots vs predicted 143 for iq3 pool8GB.
+  Cause: the record carries NO provenance, so nothing ties it to this tree (records written
+  before 2026-09-14 have none).
+  Re-probing instead of reusing it: the cap must come from a geometry this engine actually has.
+[cap-probe] iq3 pool8GB trying cap=8 (union &lt;= 64)
+[cap-probe] geometry reconciled: measured 143 slots = predicted 143</pre>
+  <p><code>--allow-geometry-drift</code> 是唯一的逃生口：它只在「探測違背算式」那條路上生效，量測照跑，
+     但衝突會被蓋進記錄裡。</p>
+
+  <h3>拒絕的形狀</h3>
+  <pre>[iq3_pool2gb] feasibility UNUSABLE  iq3@2GiB cap=8
+  cap_max 4 &lt; floor 5: P1 and P2 cannot both hold at any cap (34 usable slots, n_rs_seq=3)
+  REFUSING to launch: this cell cannot produce a number comparable with a reference-cap cell.
+
+摘要表：
+iq3_pool2gb  -- UNUSABLE at launch: cap_max=4 &lt; cap 8 (usable slots 34, floor 5)
+                -&gt; REFUSED, not a pool result; --allow-partition-ref to measure it as partition sensitivity</pre>
+
+  <p><strong>關鍵性質：拒絕不是結果。</strong> 被拒的格子<strong>不會</strong>寫進
+     <code>knifeedge_*.json</code>（沿用 <code>low_memory</code> 的規則）。若寫了，之後的 sweep 會把它當「已完成的量測」而 SKIP，
+     於是表上會出現一個從來沒被量過的 config —— 這正是這條規則存在的理由。
+     拒絕同時發生在任何遠端程序被殺之前，所以一格不可比的格子不會先弄死別人的 server 再放棄。</p>
+
+  <h3>覆蓋範圍與自測釘住的東西</h3>
+  <ul>
+    <li>覆蓋路徑：<code>run_combo</code>（一般 pool sweep）與 <code>cap_invariance_dump</code>（每個 cap 都 launch 一次的那條），
+        各自在 <code>kill_servers()</code> 之前判定。</li>
+    <li><code>--allow-partition-ref</code> 只放行 PARTITION-REF，<code>--allow-unusable</code> 只放行 UNUSABLE —— 用錯的旗子不開錯的門（自測有這一項）。</li>
+    <li>GGUF 讀不到時<strong>警告並照跑</strong>：預測器不該成為跑不動的理由。</li>
+    <li>MTP 開關會改變地板（<code>n_rs_seq=3</code> → floor 5；MTP off → floor 1），自測用合成 layer caps
+        把三種判定都走一遍真路徑，不依賴任何 GGUF。</li>
+    <li><strong>探測對帳</strong>也在覆蓋範圍內（自測第 6 節）：<code>MATCH</code> / <code>STALE_RECORD</code> /
+        <code>PREDICTOR_STALE</code> / <code>NO_EVIDENCE</code> 四種判定，以及讓 provenance 動起來的三種方式
+        （pool-geometry 程式碼、權重、launch env）各自有一項。</li>
+  </ul>
+</div>
+
+<!-- ══════════════════════════════════════ -->
+<div class="section">
+  <h2>限制與誠實標註</h2>
+  <ul>
+    <li><strong>這是算術預測，不是量測。</strong> 它複製 loader 的式子（<code>compute_l4_pool_capacity</code>）與
+        <code>cgc_layer_cap</code> 的 <code>LAYER_CAPS</code> 解析；若引擎改了分配方式，
+        預測會先錯、<code>--validate</code> 才會發現。目前對得上 5/6 筆實測 + 3 筆當日 log。</li>
+    <li><strong><code>per_slot</code> 取 decoder 層的最大值。</strong> 這是刻意的（見上），
+        但它意味著 MTP head 自己的槽位不在這條式子裡 —— head 的槽位走 <code>LAYER_CAPS</code>。</li>
+    <li><strong>P1 用的是 <code>min_layer_slots</code></strong>，即最緊的那一層。
+        取平均或 <code>n_slots</code> 會高估空間，可能核准一個仍會溢出的 cap。</li>
+    <li><strong>「USABLE」只保證這一格能<em>跑</em>，不保證快。</strong> 速度由命中率與 I/O 決定；
+        cap 曲線（見白皮書）顯示同一池子內 cap 越小越快，而 cap 是被 P1 推導出來的。</li>
+    <li><strong>Qwen3.6 UD-IQ4_XS 不在表上</strong>：檔案不在這個 checkout。</li>
+    <li><strong>top_k 取自 GGUF 的 <code>expert_used_count</code></strong>（此處皆 8）。
+        不同模型若 top_k 不同，同一格數會給出不同的 cap_max。</li>
+  </ul>
+
+  <p class="footnote">配套：<code>docs/CAP_CURVE_AND_INVARIANCE_WHITEPAPER_2026-09-14.html</code>（cap 曲線、
+     為什麼 cap 不是 prefill 的旋鈕、前提階梯）、<code>docs/CAP_INVARIANCE_LOCALIZATION_2026-09-14.md</code>（定位）、
+     <code>docs/CAP_INVARIANCE_GATE_2026-09-14.md</code>（閘門）。</p>
+</div>
+
+</div>
+</body>
+</html>

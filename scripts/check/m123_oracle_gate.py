@@ -65,6 +65,7 @@ Exit code: 0 = M1 and M2 both 1.0, 1 = any difference, 2 = harness error / not c
 """
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -76,10 +77,29 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 COMPARE = ROOT / "scripts" / "check" / "cgc_logits_oracle_compare.py"
-# v2, dumped 2026-09-15 from the first configuration that actually has all three bit-identical
-# pillars wired into the launch allowlist. v1 (`ref_iq3_pool8gb_M2_6144.jsonl`) is kept for the
-# historical record but is NOT a valid M1 oracle -- see CONFIG COMPARABILITY above.
-DEFAULT_REF = ROOT / "Backup" / "knifeedge_matrix" / "ref_iq3_pool8gb_M2_6144_bitident.jsonl"
+# v3, dumped 2026-09-15 22:33. Its 9 rows are BYTE-IDENTICAL to v2 (md5
+# d2f0b9a01fc5404ebb04dcf3583e133f for both), so this is not a re-baseline of the numerics -- it
+# corrects what the sidecar RECORDS.
+#
+# v2's cap says `CGC_OA_ASYNC=0`, but v2 was dumped at 17:21 against the PRESENCE-based gate
+# (`getenv("CGC_OA_ASYNC") != nullptr`), while `run_server.sh` unconditionally puts the variable
+# into SERVER_ENV. So that `0` selected the SEGMENTED dispatcher exactly as `1` does; the recorded
+# value never had behavioural meaning. When the 21:36 fix made the gate value-aware and the
+# launcher default was restored to 1 (preserving the effective behaviour of every profile that
+# does not set the knob -- see dec-20260915-2215), `prefill250` resolved to `1` and the gate began
+# reporting INVALID COMPARISON (`ENV.CGC_OA_ASYNC: ref='0' now='1'`) on EVERY run, i.e. the
+# comparability check itself had gone dark.
+#
+# The verdict was never in doubt, and the dump proves it independently: M1 was 9/9 bit-identical
+# against v2. The non-segmented path lands on `ff68c5a2`, not on the anchor `dc055e63`, so two runs
+# that both reproduce `dc055e63` are both on the segmented path no matter what their env string
+# says. A missing/incomparable config stamp must not be allowed to veto a bit-identity that the
+# logits themselves establish -- and equally, `--allow-incomparable` is not the fix, because it
+# discards the check for every future run too.
+#
+# `prefill250` now PINS CGC_SERVER_OA_ASYNC=1 in run_server.sh (eng-gate-0006: the knob a profile
+# fails to state is the knob that drifts). v2 is kept on disk for the historical record.
+DEFAULT_REF = ROOT / "Backup" / "knifeedge_matrix" / "ref_iq3_pool8gb_M2_6144_bitident_v3.jsonl"
 RESULT_DIR = ROOT / "Backup" / "m123_oracle_gate"
 
 # knifeedge_matrix.PROBE_PROMPT, verbatim. The oracle dump is keyed on
@@ -94,6 +114,13 @@ DIAGNOSTIC_KEYS = {
     "CGC_LOGITS_ORACLE_FIRST_N", "CGC_SLOT_DBG", "CGC_MMID_MV_DBG", "CGC_MMID_ASSERT",
     "CGC_MMID_ASSERT_FATAL", "CGC_PREV_PF_DBG", "CGC_IDS_MAX_LINES", "CGC_SLAB_DBG",
     "CGC_MM_DBG", "CGC_SPAC_DBG", "CGC_CAP_DBG", "CGC_ROUTE_DUMP",
+    # [CGC 2026-09-15 S1 slot-table] This key is deliberately in the "does not change the numbers"
+    # set, because that IS its claim: CGC_SLOT_TABLE_GPU=1 moves the expert->slot mapping from a
+    # host-written input leaf to a graph gather (get_rows over a per-layer table) and must produce
+    # the same id vector. Leaving it out would make every S1 run report "incomparable" against the
+    # reference, so the gate could never express the one proposition it exists to test. If the
+    # claim is false the gate fails on the LOGITS, which is exactly where it should fail.
+    "CGC_SLOT_TABLE_GPU",
 }
 # CGCENV scalars that are comparability-irrelevant (paths/timing only).
 DIAGNOSTIC_CGCENV = {"LOG", "PORT"}
@@ -129,6 +156,89 @@ def server_pids():
 def tee(name, text):
     RESULT_DIR.mkdir(parents=True, exist_ok=True)
     (RESULT_DIR / name).write_text(text, errors="replace")
+
+
+# ---------------------------------------------------------------------------
+# [P0 2026-09-15] dump validity -- a gate that can accept a poisoned dump is worse than no gate
+# ---------------------------------------------------------------------------
+# Motivating incident: a Metal command buffer failed with Insufficient Memory, so the graph never
+# ran and the dump was read straight out of the *previous* compute's output buffer. The file was
+# structurally valid JSONL, so every consumer downstream treated it as ground truth. The engine now
+# aborts on that failure and stamps `<dump>.invalid`; these checks are the second line of defence so
+# a dump that is garbage for *any other* reason is also refused.
+
+INVALID_SUFFIX = ".invalid"
+# A real LM logit is O(10..100); over <=150K vocab that keeps |sum| under ~1e10 and |mean| under
+# ~1e4. These bounds sit ~5-8 orders of magnitude away from anything a forward pass can produce,
+# so they exclude garbage without ever risking a false positive on legitimate output.
+MAX_ABS_LOGIT = 1.0e30
+MAX_ABS_SUM = 1.0e15
+MAX_ABS_MEAN = 1.0e9
+# Shortest run of consecutive ids tied on the *exact* same bits that we treat as degenerate.
+# The incident produced ids 59400..59407 all at 0.125.
+MIN_TIED_RUN = 3
+
+
+def validate_dump(path: Path):
+    """Return (ok, reason). Never raises for a malformed record: that *is* a failure.
+
+    Checks, in order of cheapness: the sidecar stamp written by the engine, then per-record
+    numeric sanity, then the degeneracy shapes.
+    """
+    stamp = Path(str(path) + INVALID_SUFFIX)
+    if stamp.exists():
+        detail = stamp.read_text(errors="replace").strip()
+        return False, f"engine stamped this dump invalid ({stamp.name}): {detail}"
+
+    if not path.exists() or path.stat().st_size == 0:
+        return False, "dump is missing or empty"
+
+    n_rec = 0
+    n_rows_checked = 0
+    for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError as e:
+            return False, f"line {lineno} is not valid JSON: {e}"
+        n_rec += 1
+
+        for key, bound, label in (("sum", MAX_ABS_SUM, "|sum|"),
+                                  ("mean", MAX_ABS_MEAN, "|mean|")):
+            v = rec.get(key)
+            if v is None:
+                continue
+            if not math.isfinite(v):
+                return False, f"line {lineno}: {key}={v} is not finite"
+            if abs(v) > bound:
+                return False, f"line {lineno}: {label}={abs(v):.3e} exceeds {bound:.0e} (stale/failed compute)"
+
+        top = rec.get("top") or []
+        if not top:
+            return False, f"line {lineno}: empty top-k (argmax_token={rec.get('argmax_token')})"
+        if not math.isfinite(rec.get("argmax_logit", 0.0)):
+            return False, f"line {lineno}: argmax_logit is not finite"
+        if abs(rec.get("argmax_logit", 0.0)) > MAX_ABS_LOGIT:
+            return False, f"line {lineno}: argmax_logit={rec['argmax_logit']:.3e} exceeds f32 sanity"
+
+        run = 0
+        for a, b in zip(top, top[1:]):
+            consecutive = int(b["t"]) == int(a["t"]) + 1
+            # exact-bit comparison: `==` on floats is what we want here, and it is what the
+            # engine-side screen does too
+            identical = float(b["v"]) == float(a["v"])
+            run = run + 1 if (consecutive and identical) else 0
+            if run >= MIN_TIED_RUN:
+                return False, (f"line {lineno}: top-k contains {run + 1} consecutive ids tied on "
+                               f"identical values (e.g. t={a['t']} -> t={b['t']}, v={a['v']})")
+        n_rows_checked += 1
+
+    if n_rec == 0 or n_rows_checked == 0:
+        return False, "dump contains no rows"
+
+    return True, f"{n_rec} records"
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +373,13 @@ def main() -> int:
                     help="downgrade a cross-config comparison from exit 2 to a loud warning. Use "
                          "it only to read a diff you already know is cross-config -- never to "
                          "turn it into a regression verdict.")
+    ap.add_argument("--allow-empty-probe", action="store_true",
+                    help="do not fail the run when the probe answer is empty. Default is to fail: "
+                         "an empty answer plus a structurally-valid dump is the 2026-09-15 "
+                         "stale-buffer signature, and comparing it would report a false 1.0.")
+    ap.add_argument("--allow-invalid-ref", action="store_true",
+                    help="skip dump-validity screening on the reference file. Default is to refuse "
+                         "a reference that does not pass the same checks as a fresh dump.")
     ap.add_argument("--ready-timeout", type=float, default=300.0)
     ap.add_argument("--teardown-timeout", type=float, default=90.0)
     args = ap.parse_args()
@@ -275,6 +392,17 @@ def main() -> int:
         print(f"ERROR: reference oracle missing: {ref}", file=sys.stderr)
         print(f"       create it with: {Path(__file__).name} --write-ref {args.ref}", file=sys.stderr)
         return 2
+
+    # [P0 2026-09-15] A reference is the most dangerous file in the whole harness: everything is
+    # measured against it, so a poisoned reference makes every future run look "identical". Screen
+    # it with the same rules as a fresh dump, not with a weaker one.
+    if not args.allow_invalid_ref:
+        ref_ok, ref_reason = validate_dump(ref)
+        if not ref_ok:
+            print(f"ERROR: reference {ref} fails dump validity: {ref_reason}", file=sys.stderr)
+            print("       Re-baseline from a healthy run, or pass --allow-invalid-ref to override "
+                  "(the verdict will be meaningless).", file=sys.stderr)
+            return 2
 
     print(f"=== M1/M2/M3 oracle gate (tag {tag}) ===", flush=True)
     print(f"  profile : {args.profile}", flush=True)
@@ -321,7 +449,7 @@ def main() -> int:
 
     kill_servers()
     dump = Path(args.dump)
-    for p in (dump, Path(str(dump) + ".cap")):
+    for p in (dump, Path(str(dump) + ".cap"), Path(str(dump) + INVALID_SUFFIX)):
         if p.exists():
             p.unlink()
 
@@ -418,9 +546,37 @@ def main() -> int:
               f"CGC_LOGITS_ORACLE_DUMP must survive run_server.sh's env allowlist "
               f"(run_server.sh:989).", file=sys.stderr)
         return 2
+
+    # [P0 2026-09-15] Refuse to build a verdict on a run that cannot be trusted. Order matters:
+    # both checks sit BEFORE write_cap()/--write-ref, so an invalid run can never become a
+    # reference and can never acquire a provenance sidecar that makes it look legitimate.
+    if not ans.strip() and not args.allow_empty_probe:
+        print(flush=True)
+        print("!" * 74)
+        print("  INVALID RUN: the probe returned an empty answer.")
+        print("  An empty answer with a healthy-looking dump is the exact signature of the")
+        print("  2026-09-15 Metal OOM (the graph never ran; the server replied HTTP 200 with")
+        print("  stale bytes). M1/M2/M3 below would happily report 1.0 on such a dump, which")
+        print("  is precisely the failure mode this gate must not have. Not comparing.")
+        print(f"  Server log: {srv_log}")
+        print("  Override with --allow-empty-probe only if the emptiness is known-unrelated.")
+        print("!" * 74, flush=True)
+        return 2
+
+    ok_dump, reason = validate_dump(dump)
+    if not ok_dump:
+        print(flush=True)
+        print("!" * 74)
+        print(f"  INVALID DUMP: {reason}")
+        print(f"  {dump} is not usable as an oracle reference and was NOT made one.")
+        print("  Investigate the engine-side failure first; do not re-run until it is understood.")
+        print("!" * 74, flush=True)
+        return 2
+    print(f"  dump    : {reason}, validated", flush=True)
+
     # The fresh dump's own provenance, carried with the fresh dump.
     write_cap(dump, now_cfg, note=f"gate run {tag}",
-              extra={"probe_answer": ans.strip()})
+              extra={"probe_answer": ans.strip(), "validated": True})
 
     # (3) re-baseline in one step when asked. Done BEFORE the comparison so a --write-ref run
     # also reports what the new baseline looks like against the old one.
@@ -430,6 +586,10 @@ def main() -> int:
             dst = ROOT / dst
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(dump, dst)
+        # a stale sidecar next to the destination would make the *new* reference look invalid
+        stale = Path(str(dst) + INVALID_SUFFIX)
+        if stale.exists():
+            stale.unlink()
         write_cap(dst, now_cfg, note=args.ref_note or f"re-baselined by gate run {tag}",
                   extra={"probe_answer": ans.strip()})
         print(f"  baseline: wrote {dst.relative_to(ROOT)} + .cap (this run is the new reference)",

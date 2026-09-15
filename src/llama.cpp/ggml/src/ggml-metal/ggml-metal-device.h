@@ -137,6 +137,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_ex
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm            (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv            (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id_map0    (ggml_metal_library_t lib, int ne02, int ne20);
+struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_cgc_ids_capture  (ggml_metal_library_t lib);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id         (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_id         (ggml_metal_library_t lib, const struct ggml_tensor * op);
 struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_id_glu     (ggml_metal_library_t lib, const struct ggml_tensor * w, enum ggml_type tsrc1);
@@ -326,6 +327,13 @@ void   ggml_metal_buffer_clear        (ggml_metal_buffer_t buf, uint8_t value);
 // Metal buffer based on the host memory pointer
 //
 struct ggml_metal_buffer_id ggml_metal_buffer_get_id(ggml_metal_buffer_t buf, const struct ggml_tensor * t);
+
+// [CGC 2026-09-15 S1 kernel-side ids capture] Whole-buffer id for a buffer this code owns
+// end-to-end. ggml_metal_buffer_get_id locates a TENSOR inside a buffer; a debug destination has
+// no tensor, and giving it one would mean allocating it through the graph allocator, which is
+// exactly the thing the capture must not do. Only valid for the single-wrapper buffers built by
+// ggml_metal_buffer_init.
+struct ggml_metal_buffer_id ggml_metal_buffer_get_id_whole(ggml_metal_buffer_t buf);
 
 #ifdef __cplusplus
 }

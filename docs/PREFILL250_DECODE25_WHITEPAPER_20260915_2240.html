@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>prefill 250 / decode 25 技術白皮書（2026-09-15 22:40）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  .up{color:var(--red)} .down{color:var(--green)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>prefill 250 tok/s / decode 25 tok/s 技術白皮書</h1>
+<div class="sub">
+  日期 2026-09-15 22:40 · 分支 <code>demo/sweet-spot-windows-fix</code> · 基線 commit <code>a679eef09</code>（未提交，工作區狀態）<br>
+  模型 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（13.6 GB，256 experts/layer，40 layers）·
+  硬體 MacBook Air Mac16,12 / Apple M4 10 核 / 16 GB unified memory<br>
+  檔名 <code>PREFILL250_DECODE25_WHITEPAPER_20260915_2240.html</code>
+</div>
+
+<div class="box b-red">
+  <p><strong>一句話結論：S1 的 ids 是<b>逐位元相同</b>的，缺陷在它們<b>指向的東西</b>。</strong>
+  本輪把「S1 過不了 bit-identical 閘門」這個問題，從「不知道哪一半錯了」收斂到單一命題：
+  <strong>池／slot 的內容不一致</strong>。做法是把 <code>mul_mat_id</code> 的 Metal kernel
+  <strong>實際解碼出的 ids</strong> 寫進 pinned debug buffer、sync 後讀回——這是唯一同時切開
+  「時序」與「allocator 別名」的讀數，不依賴任何主機端推論。</p>
+
+  <p><strong>而閘門自己有三個更嚴重的病，本輪全部修好：</strong></p>
+  <ul>
+    <li><strong>指紋漏檔</strong>——建置指紋只雜湊 3 個檔案，而閘門修正所在的
+        <code>ggml-backend.cpp</code> 編進 <code>libggml-base</code>，不在那 3 檔裡 ⇒
+        <strong>修前修後兩跑被標成可比</strong>。</li>
+    <li><strong>profile 漂移</strong>——閘門由「測存在」改成「測值」之後，
+        <code>off / prefill250 / qa-zh / longform-zh</code> 四個 profile 被靜默改道；
+        只有 <code>prod25</code> 不受影響，因為它是唯一<b>顯式</b>寫死該旋鈕的 profile。</li>
+    <li><strong>可比性檢查全盲</strong>——舊 oracle 的 cap 是在「值不生效」的年代寫的，
+        它記錄的是<b>意圖</b>不是行為 ⇒ <strong>每一跑</strong>都判 INVALID COMPARISON。
+        本輪修好後閘門回到 <span class="ok">PASS</span>。</li>
+  </ul>
+</div>
+
+<h2>1. 內核側 ids 讀數（本輪核心儀器）</h2>
+
+<h3>1.1 為什麼非做這個讀數不可</h3>
+<p>在此之前有兩個探針，讀同一個欄位，給出<b>相反</b>的答案。差別不在數值，在<b>時刻</b>：</p>
+<table>
+<tr><th>探針</th><th>在哪裡讀</th><th>時機</th><th>它量到什麼</th></tr>
+<tr><td><code>CGC-MMID-ASSERT</code></td><td>主機端（encode 期）</td><td>在 command buffer <b>執行之前</b></td>
+    <td><b>前一位佔用者</b>的殘留</td></tr>
+<tr><td><code>CGC-IDS-CAP</code>（本輪新增）</td><td>Metal kernel（消費後）</td><td>同一 command buffer <b>之內</b></td>
+    <td>kernel 真正解碼出的值</td></tr>
+</table>
+<p>主機探針看到 <code>id_oob=16/16 first=1063585220</code>，而
+<code>1063585220 = 0x3F65BD44</code> 是一個 <b>F32 約 0.895 的路由器機率</b>——不是 id。
+內核探針對同一層看到 <code>[2,105,7,9,5,106,1,84]</code>，全部落在 <code>[0,143)</code>。
+<strong>兩者都「對」，因為它們量的是不同時刻的同一個 buffer。</strong></p>
+
+<h3>1.2 儀器的設計約束</h3>
+<p>三個約束決定了實作形狀，值得記下來（換一個專案也會踩）：</p>
+<ul>
+  <li><strong>不改主 kernel</strong>：在消費 kernel 之後、同一 encoder 內追加一個 tiny kernel
+      <code>kernel_cgc_ids_capture</code>，綁<b>同一個</b> ids buffer。同一 command buffer ⇒
+      執行順序天然在後，不需要 fence。</li>
+  <li><strong>不改 graph</strong>：觀察者不得擾動 allocator 佈局。這條是有代價換來的——當天稍早的
+      <code>p25-buildleaf</code> 就是因為多建一個節點而整個跑不起來。</li>
+  <li><strong>destination 不受 allocator 管理</strong>：用
+      <code>ggml_metal_buffer_init(dev, size, shared=true)</code> ⇒ <code>n_buffers=1</code>、
+      主機可讀、不經 graph allocator。<strong>這同時就是 D3 對 <code>slot_table</code> buffer
+      的壽命要求</strong>（見 §5），已有可運行先例。</li>
+</ul>
+
+<h3>1.3 量到什麼</h3>
+<div class="cards">
+  <div class="card"><div class="k">slots</div><div class="v">4096</div><div class="small">36 graphs × 117 = 39 層 × 3</div></div>
+  <div class="card"><div class="k">路徑</div><div class="v">MV</div><div class="small"><code>ne21 ≤ 8 &lt; 32</code>，MM 0 次</div></div>
+  <div class="card"><div class="k">值域</div><div class="v">0..142</div><div class="small">越界 0 筆</div></div>
+  <div class="card"><div class="k">graph 0/1/2</div><div class="v ok">117/117</div><div class="small">與基準臂逐 node 相同</div></div>
+</div>
+<p class="small">路徑判別：<code>mul_mat_id</code> 有 MV（<code>ne21 &lt; 32</code>）與 MM 兩條路，
+前者 kernel 直接讀 <code>bid_src2</code>，後者 <code>map0</code> 產 <code>hids</code>。實測本輪全程 MV，
+所以<b>一個讀數點覆蓋兩條路徑</b>（<code>map0</code> 的 <code>hids</code> 是 <code>src2</code> 的確定性函數）。</p>
+
+<h3>1.4 決定性比對（與基準臂 <code>p25-gputime</code>，按 (graph, node) 配對）</h3>
+<table>
+<tr><th>graph</th><th>SAME</th><th>DIFF</th><th>第一個 DIFF</th></tr>
+<tr><td>0 / 1 / 2</td><td class="num ok">117 / 117</td><td class="num">0</td><td>—</td></tr>
+<tr><td>3 / 4</td><td class="num">3</td><td class="num bad">114</td><td><code>ffn_moe_gate-2</code></td></tr>
+</table>
+<div class="box b-green">
+  <p><strong>缺陷定位（推理鏈）：</strong>graph 3 的 <b>layer 1 ids 相同</b>、layer 1 router 相同
+  ⇒ layer 1 的<b>輸入</b>相同；layer 1 的 MoE <b>ids 也相同</b> ⇒ 在「輸入相同 + ids 相同」的前提下
+  layer 1 的 MoE <b>輸出不同</b>。</p>
+  <p>⇒ <strong>缺陷不是 ids，不是映射，而是 ids 指向的權重內容（池／slot）。</strong>
+  嫌疑收斂到 <code>publish_slot_table</code> 與 <code>slot_table_safe</code> 的 clamp 分歧，
+  以及表與池狀態之間的時序。</p>
+</div>
+<p class="small"><b>儀器限制（誠實記錄）：</b><code>stride=8</code> ⇒ <code>n_ids=64</code> 時
+<b>只看得到 token 0</b>；要看尾部需要非零 <code>n_skip</code>。</p>
+
+<h2>2. 閘門的三個真實缺陷（本輪修好）</h2>
+
+<h3>2.1 建置指紋漏了 <code>libggml-base</code></h3>
+<p><code>build_fingerprint()</code> 只雜湊 <code>llama-server</code> + <code>libggml-metal</code> +
+<code>libllama</code> 三檔，而閘門修正所在的 <code>ggml-backend.cpp</code> 編進
+<strong><code>libggml-base</code></strong>。後果不是「不準」，是<strong>反向</strong>的：
+修前修後兩跑被判定<b>可比</b>，於是「閘門修好」這件事在指紋層面<strong>不可見</strong>。
+修法：glob 所有 <code>libggml*</code> / <code>libllama*</code> + server binary（8 鍵）。
+固化為 <code>eng-mh-0007</code>。</p>
+
+<h3>2.2 「讓閘門讀值」是一次行為變更，不只是修 bug</h3>
+<p>舊閘門是 <code>getenv("CGC_OA_ASYNC") != nullptr</code>（測<b>存在</b>），而
+<code>run_server.sh</code> <b>無條件</b>把該變數塞進 <code>SERVER_ENV</code> ⇒
+<strong>那個 <code>0</code> 從來沒有生效過</strong>，每個 profile 都跑分段。
+改成 value-aware 之後，<code>0</code> 第一次真的生效，四個 profile 被靜默改道到
+<b>非分段</b>路徑（同一 build 實測 <b>6.95 → 0.72 t/s</b>，約 10×）。</p>
+<div class="box b-amber">
+  <p><strong>而「錨 digest 不變」不能證明行為不變。</strong>
+  <code>prod25</code> 是唯一<b>顯式</b>把該變數設成 <code>1</code> 的 profile ⇒
+  它正是 value-aware 修正<b>不可能移動</b>的那一格 ⇒ 它是<b>最差的證人</b>。
+  固化為 <code>eng-gate-0006</code>。</p>
+</div>
+
+<h3>2.3 舊 oracle 的 cap 記錄的是「意圖」，不是「行為」</h3>
+<p>本輪跑閘門得到一個看似矛盾的結果：<strong>M1/M2/M3 全 9/9，判決卻是 INVALID COMPARISON</strong>。
+唯一差異是 <code>ENV.CGC_OA_ASYNC: ref='0' now='1'</code>。</p>
+<p>追下去：v2 oracle（<code>ref_iq3_pool8gb_M2_6144_bitident.jsonl</code>）dump 於
+<b>17:21</b>，比 21:36 的 value-aware 修正早四小時。也就是說它的 cap 是在
+<strong>「值不生效」的年代</strong>寫的：它記錄的是<b>啟動器的意圖</b>，
+不是那次真正跑的分支。</p>
+<div class="box b-blue">
+  <p><strong>兩問被混為一問。</strong>
+  cap 問「配置相同嗎」；logits 問「數字相同嗎」。它們不一致時，直覺會信 cap，因為 cap 是閘門
+  自己的機械。但 cap 只跟<b>寫它的那個閘門</b>一樣有行為意義。</p>
+  <p><strong>判別器：</strong>兩條 dispatcher 是實測 10× 的分支、digest 不同
+  （非分段落在 <code>ff68c5a2</code>，錨是 <code>dc055e63</code>）。
+  若今天跑的是非分段，就<b>不可能</b>對分段的 v2 量到 9/9 bit-identical。</p>
+  <p><strong>處置：</strong>把 profile 一直是的那一格寫死（<code>prefill250</code> 顯式 pin
+  <code>CGC_SERVER_OA_ASYNC=1</code>），並重錄 ref 讓 cap 記錄<b>行為</b>。
+  重錄之所以不是「移動球門」，是因為新 dump 與舊 dump <b>逐位元相同</b>：
+  <code>md5 d2f0b9a01fc5404ebb04dcf3583e133f</code>（v2 與 v3 一致）。</p>
+  <p><span class="bad">明確拒絕</span> <code>--allow-incomparable</code>：那是對一個邊界已知的
+  一次性 stale metadata 問題給<b>永久特赦</b>，會讓未來真正的跨配置回歸以 PASS 的形式到來。
+  固化為 <code>eng-gate-0008</code>、<code>dec-20260915-2233</code>。</p>
+</div>
+
+<h2>3. 生產數字（llama-bench，本輪重建後）</h2>
+<p class="small">arm <code>prod25-stream</code>（profile <code>prod25</code> + <code>CGC_PREFILL_STREAM=1</code>
++ <code>CGC_GATHER_SLAB_CAP=256</code>）。env 由 <code>run_server.sh CGC_DUMP_ENV=1</code> 解析，
+不是本腳本自己寫的第二份。<code>-b 512 -ub 512</code>，<code>-r 3</code>。</p>
+<table>
+<tr><th>shape</th><th>depth</th><th>t/s</th><th>±</th><th>18:00 同格</th><th>差</th></tr>
+<tr><td>pp</td><td class="num">0</td>    <td class="num">109.29</td><td class="num">3.08</td>  <td class="num">117.73</td><td class="num down">−7.2%</td></tr>
+<tr><td>tg</td><td class="num">0</td>    <td class="num">8.67</td>  <td class="num">1.53</td>  <td class="num">9.79</td>  <td class="num down">−11.4%</td></tr>
+<tr><td>pp</td><td class="num">512</td>  <td class="num">97.55</td><td class="num">15.25</td> <td class="num">107.40</td><td class="num down">−9.2%</td></tr>
+<tr><td>tg</td><td class="num">512</td>  <td class="num">6.72</td>  <td class="num">0.83</td>  <td class="num">10.79</td> <td class="num down">−37.7%</td></tr>
+<tr><td>pp</td><td class="num">1024</td> <td class="num">79.88</td><td class="num">3.18</td>  <td class="num">114.60</td><td class="num down">−30.3%</td></tr>
+<tr><td>tg</td><td class="num">1024</td> <td class="num">8.49</td>  <td class="num">1.27</td>  <td class="num">13.18</td> <td class="num down">−35.6%</td></tr>
+<tr><td>pp</td><td class="num">2048</td> <td class="num">95.89</td><td class="num">1.54</td>  <td class="num">104.86</td><td class="num down">−8.6%</td></tr>
+<tr><td>tg</td><td class="num">2048</td> <td class="num">9.03</td>  <td class="num">0.09</td>  <td class="num">7.96</td>  <td class="num up">+13.4%</td></tr>
+<tr><td>pp</td><td class="num">4096</td> <td class="num">81.52</td><td class="num">10.64</td> <td class="num">106.83</td><td class="num down">−23.7%</td></tr>
+<tr><td>tg</td><td class="num">4096</td> <td class="num">8.33</td>  <td class="num">0.47</td>  <td class="num">9.90</td>  <td class="num down">−15.9%</td></tr>
+</table>
+<div class="box b-amber">
+  <p><strong>本表白皮書不宣稱這是一個 regression，也不宣稱它是一個中性結果。</strong></p>
+  <p>三件事同時成立：(a) 多數格低 6–12%，但<b>方向不一致</b>（<code>tg@2048</code> 反而升 13.4%）；
+  (b) <code>±</code> 很大（<code>pp@512</code> 達 ±15.25，即 15.6%）；
+  (c) 本輪改動經<b>逐行 review</b>，全部位於 env gate 之後——<code>CGC_IDS_CAPTURE</code> 未設時，
+  capture 只做一次 bool 檢查即 return；<code>CGC_S1_DBG</code> / <code>CGC_PHASE</code> 同理。</p>
+  <p>⇒ 兩次之間<b>沒有 code-level 機制</b>可以產生這個差異。但單次測量無法排除環境／熱狀態漂移，
+  而且<strong>沒有跑交錯 A/B</strong>。依 <code>eng-mh-0003</code>，未經交錯 A/B ≥3 輪配對中位數的
+  吞吐差<b>不可引用</b>——所以這裡只把原始讀數列出，不給結論。列為下一步第 1 項。</p>
+</div>
+
+<h2>4. M1/M2/M3 與 oracle 判決</h2>
+<table>
+<tr><th>指標</th><th>定義</th><th>結果</th></tr>
+<tr><td><b>M1</b> 數值同一</td><td>同一 <code>row_fnv1a64</code>（逐位元相同 logits）</td><td class="num ok">9/9 (100%)</td></tr>
+<tr><td><b>M2</b> 決策一致</td><td>同一 <code>argmax_token</code>（選出的 token 沒變）</td><td class="num ok">9/9 (100%)</td></tr>
+<tr><td><b>M3</b> top-k 集合一致</td><td>同一 top-N id 集合（候選集沒變）</td><td class="num ok">9/9 (100%)</td></tr>
+<tr><td>(aux) <code>full_fnv1a64</code></td><td>整列雜湊相同</td><td class="num ok">9/9 (100%)</td></tr>
+</table>
+<pre><code>CROSS-TAB (n=9) -- read BOTH axes or you will draw the wrong conclusion
+  M1 same &amp; M2 same : 9    no drift, same choice
+  M1 same &amp; M2 diff : 0    should be 0; non-zero = tie-break bug
+  M1 diff &amp; M2 same : 0    drift only; M1 says 'differs', M2 says 'same'
+  M1 diff &amp; M2 diff : 0    real divergence
+
+GATE s1kernel_v3ref_20260915: PASS  M1=9/9  M2=9/9  M3=9/9  n=9</code></pre>
+<p>閘門指令：<code>python3 scripts/check/m123_oracle_gate.py --profile prefill250</code>，
+ref 指向 v3。<code>RUN_REPLAY_BENCH=0</code>。</p>
+<p class="small"><strong>這 9/9 證明了什麼、沒證明什麼：</strong>它是 cache-ON 的<b>相對</b>不變量檢查
+（兩個 dump 是否一致），<strong>不是絕對正確性</strong>。M1 的定義就是「兩個 dump 相同」，
+所以一個<b>確定性</b>的錯誤在兩側完全相同、依構造不可見。絕對 ground truth 在 16 GB 機器上仍不可得
+（cache-free oracle 需要 256 experts × 40 層常駐 → Metal OOM）。</p>
+
+<h2>5. D3：把 expert→slot 查表搬到 GPU</h2>
+<p>目前 <code>remap</code> 是<b>主機每步手寫</b>的 input leaf
+（<code>llama-graph.cpp:2122-2126</code>），消費點在 <code>:2144</code>。
+這正是「每個 segment 邊界必須排空管線」的<b>唯一理由</b>：segment i+1 不得在 hook 寫完 leaf 之前提交。</p>
+<p>D3 把它改成 graph 算出來的 <code>slot_lookup(selected_experts, slot_table)</code>，
+table 由主機維護並發布。<strong>圖裡不再有 host 寫入 ⇒ 段邊界失去存在理由</strong>，
+<code>n_segs</code> 由 40 收到 ~1，那 44% 才吃得到。</p>
+<table>
+<tr><th>階段</th><th>內容</th><th>閘門</th></tr>
+<tr><td><b>S1</b></td><td>table 化、<b>段數不變</b></td><td>先過 bit-identical</td></tr>
+<tr><td><b>S3</b></td><td>收段（~1 split）</td><td>吞吐 + bit-identical</td></tr>
+<tr><td>S2</td><td>去掉等待（保留分段）</td><td><b>建議作 fallback</b>——段邊界失去理由後，正確動作是「不要分段」</td></tr>
+</table>
+<div class="box b-blue">
+  <p><strong>submit-ahead 不是被廢棄的方案——它一天都不曾是方案。</strong>
+  <code>CGC_SUBMIT_AHEAD=1</code> 是<b>故意錯</b>的 ceiling probe（在 segment i 的 top-k hook
+  寫 remap leaf <b>之前</b>提交 segment i+1），它只是量具。D3 之下它的角色由「S2 天花板」
+  變成「<b>段邊界的總價值 = S3 天花板</b>」，其數字成為 D3 的驗收參考。
+  D3 明確優於它：<b>D3 沒有 race</b>。</p>
+  <p><strong>唯一的前提風險：</strong><code>slot_lookup</code> 的 table <b>仍是主機寫的</b>
+  （<code>publish_slot_table</code>）。所以「圖裡不再有 host 寫入」成立的條件是
+  <strong><code>publish_slot_table</code> 不在熱路徑</strong>。這是待測且最便宜的一項。
+  注意 <code>CGC-SLOT-TABLE</code> 的 clamp 計數<b>全天 0 行不能回答</b>這個問題
+  （它只在 clamp 觸發時計數）。</p>
+  <p><strong>數字陷阱：</strong><code>CGC_OA_ASYNC=0</code> 的 0.72 t/s <b>不能</b>推論
+  「D3 收段會慢 ~20×」——那是 <b>40 splits + 序列化調度</b>；D3 是 <b>~1 split</b>。
+  <code>CGC_OA_ASYNC</code> 動的是<b>調度策略</b>，D3 動的是 <b>split 數</b>。</p>
+</div>
+
+<h2>6. 誠實的邊界</h2>
+<ul>
+  <li><b>S1 的 bit-identical 閘門仍未通過。</b>命題已收斂為「ids 正確，缺陷在池／slot 內容」，
+      但<b>尚未證明</b>。下一個唯一決定性的測量是 capture <code>ffn_moe_down-1</code> 的<b>輸出</b>
+      （兩臂、graph 3）：若輸入與 ids 相同而輸出不同，池內容就被證明是載體。</li>
+  <li><b>本輪的 llama-bench 未做交錯 A/B</b>（見 §3），所以 §3 的差異不構成 regression 主張。</li>
+  <li><b><code>publish_slot_table</code> 的呼叫次數尚未測</b>——它決定 S2 是否存在，
+      必須排在任何 S1 實作之前。</li>
+  <li><b>內核儀器的 stride 限制</b>：<code>n_ids=64</code> 時只看得到 token 0。</li>
+  <li><b>S1 的臨時診斷</b>（<code>CGC_S1_DBG</code> 等）保留為 opt-in，尚未清理。</li>
+  <li>本輪<b>沒有動</b> E1（<code>git mv</code> 進 <code>tb_loop/</code>）與 E2/E3/E4 的任何檔案。</li>
+</ul>
+
+<h2>7. 本輪隨附的修復</h2>
+<table>
+<tr><th>檔案</th><th>改動</th></tr>
+<tr><td><code>ggml-metal.metal</code></td><td>新增 <code>kernel_cgc_ids_capture</code>（1 threadgroup × 1 thread，拷 <code>stride</code> 個 int32，越界填 <code>0x7fffffff</code>）</td></tr>
+<tr><td><code>ggml-metal-impl.h</code></td><td><code>ggml_metal_kargs_cgc_ids_capture</code>（n_ids / slot / stride / n_skip）</td></tr>
+<tr><td><code>ggml-metal-ops.cpp</code></td><td>capture state（4096 slots、stride 8）+ MV/MM 兩處呼叫點 + <code>extern "C" ggml_metal_cgc_ids_dump()</code>（游標式，只印未印過的 slot）</td></tr>
+<tr><td><code>ggml-metal-device.{h,cpp}</code></td><td>pipeline getter（無 template、無 smem）</td></tr>
+<tr><td><code>ggml-metal-device.m</code></td><td><code>ggml_metal_buffer_get_id_whole</code>（<b>.m 以 C 模式編譯，不能用 <code>nullptr</code></b>）</td></tr>
+<tr><td><code>ggml-metal-context.m</code></td><td><code>ggml_metal_synchronize</code> 尾端掛 dump（所有 cmd buffer 都 Completed 之後）</td></tr>
+<tr><td><code>ggml-backend.cpp</code></td><td><code>cgc_oa_async_enabled()</code> + 閘門改為 value-aware</td></tr>
+<tr><td><code>run_server.sh</code></td><td><code>CGC_IDS_CAPTURE</code> 進 allowlist；預設 <code>SERVER_OA_ASYNC</code> 0→1（恢復歷史有效行為）；<b><code>prefill250</code> 顯式 pin 1</b></td></tr>
+<tr><td><code>m123_oracle_gate.py</code></td><td><code>DEFAULT_REF</code> 指向 v3 + 完整理由註解</td></tr>
+<tr><td><code>decode_sweep.py</code> / <code>ab_interleave.py</code></td><td><code>build_fingerprint()</code> 改 glob 所有 shared library（8 鍵）；後者委派前者</td></tr>
+<tr><td><code>llama_bench_matrix.py</code></td><td>修正過時的 <code>OA_ASYNC=0</code> arm 註解</td></tr>
+<tr><td><code>ids_capture_diff.py</code>（新）</td><td>逐 (graph, node) 配對兩份 capture，<b>拒絕按 slot index 配對</b></td></tr>
+<tr><td><code>REMAP_ROUNDTRIP_REMOVAL_PLAN_2026-09-15.md</code></td><td>§9.14–§9.18</td></tr>
+<tr><td><code>agent_harness/engine_loop/</code>（新）</td><td>引擎調校迴圈：tri-schema traces（episode / decision / lesson）+ 記憶索引 + 資產 manifest</td></tr>
+</table>
+
+<h2>8. 下一步（依槓桿排序）</h2>
+<ol>
+  <li><b>跑一次交錯 A/B，關掉 §3 的懸案</b>（<code>ab_interleave.py</code>，≥3 輪，指紋與 md5 並列）。
+      這是唯一能讓本輪吞吐數字<b>可引用</b>的路徑。</li>
+  <li><b>capture <code>ffn_moe_down-1</code> 的輸出</b>（兩臂、graph 3）——唯一決定性的下一步測量。</li>
+  <li><b>測 <code>publish_slot_table</code> 每 decode step 的呼叫次數</b>——決定 S2 是否存在。</li>
+  <li><b>S1 過 bit-identical 閘門</b>（<code>--profile prefill250 --env CGC_SLOT_TABLE_GPU=1</code>），
+      然後才進 S3。</li>
+  <li>處理 §8.3 地雷：對 GPU 表服務的層強制保留 ZERO slot，或把 clamp 計數升為硬前置條件。</li>
+  <li>清理 S1 臨時診斷（保留 <code>CGC_S1_DBG</code> 作為 opt-in）。</li>
+</ol>
+
+<p class="small" style="margin-top:40px">
+  本白皮書與 <code>PREFILL250_DECODE25_WHITEPAPER_20260915_1900.html</code> 為同一系列的下一版。
+  1900 版處理「decode 相位歸因 / fusion 定案 / Metal 槓桿排序」，本版處理「內核側 ids 讀數 /
+  閘門三缺陷 / D3 定位」。<br>
+  相關決策：<code>dec-20260915-2215</code>（profile 改道）、<code>dec-20260915-2226</code>（不穩定是
+  分段 dispatcher 的性質）、<code>dec-20260915-2233</code>（舊 cap 記錄意圖）、
+  <code>dec-20260915-2240</code>（D3 與 submit-ahead 定位）、
+  <code>dec-20260915-2248</code>（ids 逐位元相同，缺陷在它們指向的東西）。<br>
+  相關教訓：<code>eng-gate-0006</code>、<code>eng-gate-0007</code>、<code>eng-gate-0008</code>、
+  <code>eng-mh-0007</code>、<code>eng-mh-0008</code>。
+</p>
+
+</div>
+</body>
+</html>

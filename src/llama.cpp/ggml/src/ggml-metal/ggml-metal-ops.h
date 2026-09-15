@@ -100,6 +100,11 @@ int ggml_metal_op_opt_step_adamw    (ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_opt_step_sgd      (ggml_metal_op_t ctx, int idx);
 int ggml_metal_op_count_equal       (ggml_metal_op_t ctx, int idx);
 
+// [CGC 2026-09-15 S1 kernel-side ids capture] Emit every capture slot not yet emitted. Called from
+// ggml_metal_synchronize, i.e. only at points where the GPU work has provably completed. Counts as
+// a diagnostic: it is a no-op unless CGC_IDS_CAPTURE is set, and it changes no numerics.
+void ggml_metal_cgc_ids_dump(void);
+
 #ifdef __cplusplus
 }
 #endif

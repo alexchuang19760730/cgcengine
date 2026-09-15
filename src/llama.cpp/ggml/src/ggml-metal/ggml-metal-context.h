@@ -19,10 +19,25 @@ const char * ggml_metal_get_name(ggml_metal_t ctx);
 
 void ggml_metal_synchronize(ggml_metal_t ctx);
 
+// [CGC-METAL-FAIL 2026-09-15] Error query for the owner of any output tensor.
+//
+// Metal work is asynchronous: a failing command buffer is only observed at the next
+// synchronize(), by which point the output buffer holds stale bytes from an earlier
+// compute. Any consumer that syncs and then reads a tensor MUST check this first,
+// otherwise it will silently treat stale data as a valid result.
+// See docs/PREFILL250_DECODE25_WHITEPAPER_*.html (2026-09-15, P0).
+bool         ggml_metal_has_error  (ggml_metal_t ctx);
+const char * ggml_metal_error_desc (ggml_metal_t ctx);
+
 // CGC: non-blocking count of graph-compute segments that finished on the GPU
 // (polled by the sched pipelined dispatch; see CGC_OA_ASYNC)
 int ggml_metal_cgc_done(ggml_metal_t ctx);
 int ggml_metal_cgc_bufs(ggml_metal_t ctx);
+// [CGC 2026-09-15 GPU-side timing] Drain this segment's GPU busy/start/end samples and reset
+// them. `out` holds 5 int64: {busy sum, busy union, earliest start, latest end, unsupported}.
+// Returns the number of cmd buffers sampled. All zeros when the segment had no completed buffer.
+// Gated by CGC_GPU_TIMING (off => the completions never sample, so take() returns 0).
+int ggml_metal_cgc_gpu_take(ggml_metal_t ctx, int64_t * out);
 
 void ggml_metal_set_tensor_async(ggml_metal_t ctx, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size);
 void ggml_metal_get_tensor_async(ggml_metal_t ctx, const struct ggml_tensor * tensor, void * data, size_t offset, size_t size);

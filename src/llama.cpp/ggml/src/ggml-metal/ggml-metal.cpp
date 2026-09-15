@@ -584,6 +584,17 @@ static int ggml_backend_metal_get_cgc_bufs(ggml_backend_t backend) {
     return ggml_metal_cgc_bufs(ctx);
 }
 
+// [CGC 2026-09-15 GPU-side timing] Drain the segment's GPU busy/start/end samples (see the
+// struct comment in ggml-metal-context.m). Returns the number of cmd buffers sampled; `out`
+// must have 5 int64 slots. Inert unless CGC_GPU_TIMING is set.
+static int ggml_backend_metal_get_cgc_gpu_take(ggml_backend_t backend, int64_t * out) {
+    GGML_ASSERT(ggml_backend_is_metal(backend));
+
+    ggml_metal_t ctx = (ggml_metal_t)backend->context;
+
+    return ggml_metal_cgc_gpu_take(ctx, out);
+}
+
 static ggml_backend_i ggml_backend_metal_i = {
     /* .get_name                = */ ggml_backend_metal_name,
     /* .free                    = */ ggml_backend_metal_free,
@@ -901,6 +912,9 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const 
     }
     if (strcmp(name, "ggml_metal_get_cgc_bufs") == 0) {
         return (void *)ggml_backend_metal_get_cgc_bufs;
+    }
+    if (strcmp(name, "ggml_metal_get_cgc_gpu_take") == 0) {
+        return (void *)ggml_backend_metal_get_cgc_gpu_take;
     }
 
     return NULL;

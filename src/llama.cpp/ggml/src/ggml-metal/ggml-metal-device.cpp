@@ -1045,6 +1045,18 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id_map0(g
     return res;
 }
 
+// [CGC 2026-09-15 S1 kernel-side ids capture] No template parameters and no threadgroup memory:
+// the whole kernel is one threadgroup of one thread copying `stride` words, so there is exactly
+// one pipeline to cache and no variant explosion.
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_cgc_ids_capture(ggml_metal_library_t lib) {
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, "kernel_cgc_ids_capture");
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, "kernel_cgc_ids_capture", "kernel_cgc_ids_capture", nullptr);
+    }
+    res.smem = 0;
+    return res;
+}
+
 ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id(ggml_metal_library_t lib, const ggml_tensor * op) {
     char base[256];
     char name[256];

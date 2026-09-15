@@ -92,6 +92,20 @@ struct ggml_metal {
     int64_t            cgc_watchdog_dump_us;  // watchdog queue only
     bool               cgc_probe_done;        // watchdog queue only (see cgc_watchdog_probe)
 
+    // [CGC 2026-09-15 GPU-side timing] No state is kept here on purpose: MTLCommandBuffer
+    // records GPUStartTime/GPUEndTime itself, and ggml_metal_cgc_gpu_take() reads them off
+    // ctx->cmd_bufs[] at the segment boundary, so this instrument adds no fields, no
+    // completion-handler work and no hot-path cost when CGC_GPU_TIMING is unset.
+    // Why it exists at all: CGC-DECPROF attributes 91% of a decode step to `wait`, but `wait`
+    // is a CPU-side spin on cgc_done, so it cannot tell apart two situations with OPPOSITE
+    // fixes:
+    //   (A) the GPU really was busy ~72 ms -> n_tokens=1 GEMV is execution/occupancy bound and
+    //       the lever is batching a layer's 8 expert GEMVs into one dispatch;
+    //   (B) the GPU finished quickly and the window is mostly launch + completion-report
+    //       latency -> the lever is removing the GPU->CPU->GPU round trip the segmented
+    //       dispatch performs at every layer boundary (the remap leaf).
+    // Measure instead of inferring. See ggml_metal_cgc_gpu_take() for the sampling contract.
+
     struct ggml_cgraph * gf;
 
     // the callback given to the thread pool
@@ -113,7 +127,72 @@ struct ggml_metal {
     // error state - set when a command buffer fails during synchronize
     // once set, graph_compute will return GGML_STATUS_FAILED until the backend is recreated
     bool has_error;
+
+    // [CGC-METAL-FAIL 2026-09-15] rich record of the FIRST command-buffer failure.
+    //
+    // Why this exists: Metal work is committed asynchronously and only inspected at
+    // ggml_metal_synchronize(). Before this change a failed command buffer produced
+    // only a GGML_LOG_ERROR line, and the *caller* then read whatever stale bytes
+    // happened to be in the output buffer and reported success (HTTP 200 + garbage
+    // logits - see the 2026-09-15 "sum=-6.83e38" incident). The record below makes
+    // the failure (a) unambiguous, (b) queryable by whoever owns the output tensor,
+    // and (c) impossible to lose behind a later failure.
+    bool    err_set;                        // first failure recorded
+    int     err_cb_idx;                     // which command buffer
+    int     err_status;                     // MTLCommandBufferStatus
+    int64_t err_at_us;                       // wall clock at detection (NOT err_us: that is a mach macro)
+    int64_t err_n_computes;                  // how many graph_computes had been submitted
+    char    err_desc[256];                   // localizedDescription, or ""
+
+    // [CGC-METAL-FAIL] fail-stop policy. Default ON: a command-buffer failure aborts
+    // the process instead of allowing a caller to observe a stale output buffer.
+    // Set CGC_METAL_FAIL_STOP=0 to restore the old log-only behaviour (debugging only).
+    bool    fail_stop;
 };
+
+// [CGC-METAL-FAIL] record the first command-buffer failure. Idempotent: only the
+// first failure is kept, so the original cause is never overwritten by cascades.
+static void cgc_metal_record_error(ggml_metal_t ctx, int cb_idx, int status, id<MTLCommandBuffer> cmd_buf) {
+    if (ctx->err_set) {
+        return;
+    }
+
+    ctx->err_set        = true;
+    ctx->err_cb_idx     = cb_idx;
+    ctx->err_status     = status;
+    ctx->err_at_us      = ggml_time_us();
+    ctx->err_n_computes = (int64_t) atomic_load_explicit(&ctx->cgc_n_computes, memory_order_relaxed);
+    ctx->err_desc[0]    = '\0';
+
+    if (cmd_buf != nil && status == MTLCommandBufferStatusError) {
+        NSError * err = [cmd_buf error];
+        if (err != nil) {
+            snprintf(ctx->err_desc, sizeof(ctx->err_desc), "%s", [[err localizedDescription] UTF8String]);
+        }
+    }
+
+    GGML_LOG_ERROR("CGC-METAL-FAIL: command buffer %d failed with status %d (compute #%lld, %s) desc=%s\n",
+            ctx->err_cb_idx, ctx->err_status, (long long) ctx->err_n_computes,
+            ctx->fail_stop ? "fail-stop" : "log-only",
+            ctx->err_desc[0] ? ctx->err_desc : "(none)");
+}
+
+// returns true if the caller must stop consuming GPU output
+bool ggml_metal_has_error(ggml_metal_t ctx) {
+    return ctx != NULL && ctx->has_error;
+}
+
+const char * ggml_metal_error_desc(ggml_metal_t ctx) {
+    if (ctx == NULL || !ctx->err_set) {
+        return "";
+    }
+
+    static char buf[512];
+    snprintf(buf, sizeof(buf), "cb=%d status=%d compute#=%lld desc=%s",
+            ctx->err_cb_idx, ctx->err_status, (long long) ctx->err_n_computes,
+            ctx->err_desc[0] ? ctx->err_desc : "(none)");
+    return buf;
+}
 
 // [CGC watchdog] defined below (after the init/free section)
 static void cgc_watchdog_tick(ggml_metal_t ctx);
@@ -207,6 +286,20 @@ ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
     }
 
     res->has_error = false;
+
+    // [CGC-METAL-FAIL] default ON: never let a caller consume a stale output buffer.
+    res->err_set        = false;
+    res->err_cb_idx     = -1;
+    res->err_status     = 0;
+    res->err_at_us      = 0;
+    res->err_n_computes = 0;
+    res->err_desc[0]    = '\0';
+    {
+        const char * val = getenv("CGC_METAL_FAIL_STOP");
+        res->fail_stop = !(val != NULL && val[0] == '0');
+    }
+    GGML_LOG_INFO("%s: metal fail-stop = %s (CGC_METAL_FAIL_STOP=0 to disable)\n",
+            __func__, res->fail_stop ? "ON" : "OFF");
 
     res->gf = nil;
     res->encode_async = nil;
@@ -341,6 +434,69 @@ static void cgc_wait_cmd_buf(id<MTLCommandBuffer> cmd_buf) {
 
 int ggml_metal_cgc_done(ggml_metal_t ctx) {
     return atomic_load_explicit(&ctx->cgc_done, memory_order_relaxed);
+}
+
+// [CGC 2026-09-15 GPU-side timing] Read the GPU start/end that Metal itself recorded for the
+// command buffers of the MOST RECENT graph_compute. See the struct comment for why this exists.
+//
+// Why it reads ctx->cmd_bufs[] instead of sampling in addCompletedHandler: each dispatch segment
+// is its own ggml_backend_graph_compute_async call, so at a segment boundary ctx->cmd_bufs[]
+// holds exactly that segment's n_cb+1 buffers, and the caller reaches here only after the
+// cgc_done poll confirmed all of them completed -- the only point where MTLCommandBuffer
+// reports GPUStartTime/GPUEndTime. A first attempt accumulated per-buffer samples in atomics
+// from the completion handlers; resetting those accumulators with atomic_exchange while a
+// handler was mid compare-exchange left the min/max wider than the sum (measured: union 1230 ms
+// > busy_sum 746 ms > wait 375 ms -- mathematically impossible for one segment), i.e. a textbook
+// ABA race on the reset. Reading the finished objects directly needs no shared state at all,
+// cannot race (the main thread is the only mutator), and costs nothing when the env is unset
+// because the caller then never calls this.
+//
+// `out` must have 5 elements:
+//   out[0] = GPU busy sum   (ns)  -- sum over the segment's cmd buffers
+//   out[1] = GPU busy union (ns)  -- max(end) - min(start); << out[0] means the buffers overlap
+//   out[2] = earliest GPU start (ns, mach absolute clock -- comparable across segments)
+//   out[3] = latest   GPU end   (ns, same clock)
+//   out[4] = buffers without a usable timestamp (no buffer / not completed / 0.0 / NaN)
+// Returns the number of buffers that contributed. All zeros with a nonzero out[4] means the
+// platform does not report the timestamps and the line means nothing.
+int ggml_metal_cgc_gpu_take(ggml_metal_t ctx, int64_t * out) {
+    out[0] = out[1] = out[2] = out[3] = out[4] = 0;
+    if (ctx == NULL) {
+        return 0;
+    }
+    int64_t busy = 0;
+    int64_t s_min = INT64_MAX;
+    int64_t e_max = INT64_MIN;
+    int n = 0;
+    int unsup = 0;
+    const int n_bufs = ctx->n_cb + 1;
+    for (int i = 0; i < n_bufs && i <= GGML_METAL_MAX_COMMAND_BUFFERS; ++i) {
+        id<MTLCommandBuffer> cb = ctx->cmd_bufs[i].obj;
+        if (cb == nil || [cb status] != MTLCommandBufferStatusCompleted) {
+            unsup++;
+            continue;
+        }
+        const CFTimeInterval s = [cb GPUStartTime];
+        const CFTimeInterval e = [cb GPUEndTime];
+        if (!(s > 0.0) || !(e > s)) {
+            unsup++;
+            continue;
+        }
+        const int64_t s_ns = (int64_t) (s * 1e9);
+        const int64_t e_ns = (int64_t) (e * 1e9);
+        busy += e_ns - s_ns;
+        if (s_ns < s_min) { s_min = s_ns; }
+        if (e_ns > e_max) { e_max = e_ns; }
+        n++;
+    }
+    if (n > 0) {
+        out[0] = busy;
+        out[1] = e_max - s_min;
+        out[2] = s_min;
+        out[3] = e_max;
+    }
+    out[4] = unsup;
+    return n;
 }
 
 int ggml_metal_cgc_bufs(ggml_metal_t ctx) {
@@ -575,6 +731,16 @@ void ggml_metal_synchronize(ggml_metal_t ctx) {
                     GGML_LOG_ERROR("error: %s\n", [[cmd_buf error].localizedDescription UTF8String]);
                 }
                 ctx->has_error = true;
+                cgc_metal_record_error(ctx, cb_idx, (int) status, cmd_buf);
+                if (ctx->fail_stop) {
+                    // [CGC-METAL-FAIL] The graph never ran: every output tensor this compute
+                    // was supposed to produce still holds whatever the previous compute left
+                    // there. Returning normally would let the caller read that stale data as
+                    // a valid result (the 2026-09-15 garbage-logits incident). Stop instead.
+                    GGML_ABORT("CGC-METAL-FAIL: command buffer %d failed (status %d, %s) - refusing to return stale output; "
+                               "lower Metal memory pressure (expert cache / -ub) or set CGC_METAL_FAIL_STOP=0 to override\n",
+                               cb_idx, (int) status, ctx->err_desc[0] ? ctx->err_desc : "no description");
+                }
                 return;
             }
         }
@@ -599,6 +765,12 @@ void ggml_metal_synchronize(ggml_metal_t ctx) {
                 [ctx->cmd_bufs_ext removeAllObjects];
 
                 ctx->has_error = true;
+                cgc_metal_record_error(ctx, (int) i, (int) status, cmd_buf);
+                if (ctx->fail_stop) {
+                    GGML_ABORT("CGC-METAL-FAIL: extra command buffer %d failed (status %d, %s) - refusing to return stale output; "
+                               "set CGC_METAL_FAIL_STOP=0 to override\n",
+                               (int) i, (int) status, ctx->err_desc[0] ? ctx->err_desc : "no description");
+                }
                 return;
             }
 
@@ -607,6 +779,13 @@ void ggml_metal_synchronize(ggml_metal_t ctx) {
 
         [ctx->cmd_bufs_ext removeAllObjects];
     }
+
+    // [CGC 2026-09-15 S1 kernel-side ids capture] Reached only when every command buffer reported
+    // Completed -- the failing paths returned above. So the bytes captured by
+    // kernel_cgc_ids_capture are now host-visible and can be emitted. Slots are consumed by a
+    // cursor, so calling this from each of the many synchronize points a segmented dispatch
+    // performs emits each captured value exactly once.
+    ggml_metal_cgc_ids_dump();
 }
 
 static struct ggml_metal_buffer_id ggml_metal_get_buffer_id(const struct ggml_tensor * t) {
@@ -984,6 +1163,16 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
                 }
             }
         }
+    }
+
+    // [CGC-METAL-FAIL] Re-check at every exit. A worker thread or an awaited command buffer
+    // can have latched a failure while this graph was being encoded - the early-entry check
+    // above only covers failures from *previous* calls. Without this, a compute that already
+    // knows it failed would still report GGML_STATUS_SUCCESS to the scheduler.
+    if (ctx->has_error) {
+        GGML_LOG_ERROR("%s: returning FAILED - backend latched a command buffer error during this compute (%s)\n",
+                __func__, ctx->err_set ? ggml_metal_error_desc(ctx) : "no detail");
+        return GGML_STATUS_FAILED;
     }
 
     return GGML_STATUS_SUCCESS;

@@ -1,0 +1,67 @@
+# engine_loop/memory — 專案記憶的索引入口
+
+這個目錄**不是**記憶的存放處。專案記憶的權威位置是 `.workbuddy/memory/`：
+
+```
+.workbuddy/memory/MEMORY.md          # 跨日的專案長期事實（模型身分、profile 幾何、入口指令、量測衛生）
+.workbuddy/memory/YYYY-MM-DD.md      # 每日工作記錄，append-only，一天可能到 1000+ 行
+```
+
+那些檔由 host（其他 WorkBuddy session）在 loop 跑的時候持續寫入。因此本目錄**只放衍生物**。
+
+## 為什麼是索引，不是副本
+
+複製一份到 `agent_harness/` 會讓同一批 bytes 有第二個權威來源，而第二個來源的失效方式是安靜的：
+原檔改了，副本看起來還是一樣權威。本專案對 `scripts/check/*` 已經有同一條規則（放索引、不複製），
+記憶適用同一條理由。所以：
+
+- 原檔留在 host 寫入的位置；
+- 這裡只有 `INDEX.jsonl`（由腳本產生，可重建、可驗證）；
+- `--check` 會重新推導並在 drift 時**失敗**。
+
+若要把內容實體鏡像進 repo，那是另一個決定（會引入同步義務），目前刻意不做。
+
+## 用法
+
+```sh
+# 重建索引（記憶檔有變動時）
+python3 memory/build_memory_index.py
+
+# 驗證索引與 .workbuddy/memory/ 一致；不一致 exit 1
+python3 memory/build_memory_index.py --check
+
+# 查「我們對 X 已知什麼」——只讀索引，不載入 1000 行
+python3 memory/build_memory_index.py --query mmid -n 8
+python3 memory/build_memory_index.py --query "allowlist" --full
+```
+
+`--query` 會回報 `path:line_start-line_end` 與該節的子標題，所以下一步是精準讀取，例如
+`Read(.workbuddy/memory/2026-09-15.md, offset=854, limit=70)`（`offset` 直接用印出來的
+`line_start`，是 1-based）。
+
+## `INDEX.jsonl` 的形狀
+
+每行一筆，兩種 `row`：
+
+| row | 欄位 | 用途 |
+| --- | --- | --- |
+| `file` | `path` `abs` `bytes` `sha256`（前 16 碼）`lines` `mtime` | 這份記憶現在是哪一版 |
+| `section` | `path` `title` `line_start` `line_end` `lines` `body_bytes` `subs[]` | 一個 `##` 節及其 `###` 子標題 |
+
+節的邊界是 `##`。`#`（檔標題）與 `###` 刻意不切：前者只出現一次，後者掛在父節上，這樣一節剛好是
+一次能讀完的單位。
+
+## 與其他機制的關係
+
+- `traces/` 記的是**引擎**發生了什麼（episode / decision / lesson）。
+- `memory/` 通的是**這個 repo 已知什麼**（人與 agent 累積的判斷）。
+- 兩者不重疊：`decisions.jsonl` 回答「這一步該怎麼判」，記憶回答「這件事以前怎麼走過來的」。
+  一個 decision 的 `action` 若指向某段記憶，應引 `path:line_start`，不要複述內容——複述會漂移。
+
+## 已知邊界
+
+- 索引只涵蓋 `.workbuddy/memory/`。`~/.workbuddy/MEMORY.md`（跨專案的個人偏好）與雲端
+  profile 不在這裡，它們的 scope 不是這個 repo。
+- `sha256` 只取前 16 碼，用途是「是不是同一版」，不是完整性證明。
+- 每日記錄是 append-only 且持續變動，所以索引在**同一天內**會頻繁過期；`--check` 紅燈在這種
+  情況下是預期行為，重跑即可。

@@ -350,6 +350,36 @@ private:
     // can write the remapped ids into its buffer before the FFN mul_mat_id dispatches).
     // mutable: filled from the const graph_get_cb.
     mutable std::map<int, ggml_tensor *> cache_remap_tensors;
+    // [CGC 2026-09-15 S1 slot-table] layer -> the I32 [1, n_expert] expert->slot table that the
+    // graph reads through ggml_get_rows when CGC_SLOT_TABLE_GPU=1. It is the GPU-side replacement
+    // for the host-written remap leaf: instead of the CPU mapping "selected expert -> slot" and
+    // hand-writing the resulting id vector, the hook publishes the whole per-layer table and the
+    // graph computes `slots = get_rows(table, selected_experts)`.
+    //
+    // INVARIANT (the whole point of stage S1): every place that writes the remap leaf must ALSO
+    // publish this table under the SAME mapping, so the GPU-computed ids and the host-written ids
+    // are the same sequence by construction. The four write sites are the decode fast path, the
+    // exact/prefill path, the L4 layer-0 identity path and the gather (union-index) path.
+    //
+    // The leaf itself is still built when this is on: it is simply not consumed. That keeps every
+    // other path bit-identical and makes the S1 A/B a pure scheduler/dispatch change.
+    // mutable: filled from the const graph_get_cb.
+    mutable std::map<int, ggml_tensor *> cache_slot_table_tensors;
+    // [CGC 2026-09-15 S1 slot-table] layer -> the `ffn_moe_slots` node, i.e. the GET_ROWS result
+    // (viewed as [k, n_tokens]) that mul_mat_id consumes as its ids operand. Captured ONLY so the
+    // post-synchronize readback can read back what the Metal gather actually produced, on the host,
+    // after the command buffer completed.
+    //
+    // Why that readback is the only trustworthy one: CGC-MMID-ASSERT reads this same buffer from the
+    // host at Metal ENCODE time, i.e. before the command buffer that contains the gather has run.
+    // For a host-written leaf that is harmless (the CPU wrote it), but for a GPU-computed id vector
+    // the host read is a race -- it sees whatever the allocator last put at that address, which is
+    // exactly the shape of the reported symptoms (F32 router probabilities, +/-NaN, and a mix of
+    // legal and illegal indices within one node). Reading after ggml_backend_sched_synchronize()
+    // separates "the gather really produced garbage" from "the probe read too early"; the two are
+    // otherwise indistinguishable and they demand opposite fixes.
+    // mutable: filled from the const graph_get_cb.
+    mutable std::map<int, ggml_tensor *> cache_slots_out_tensors;
     // layer -> renormalized-routing mask leaf (F32 [n_expert, 1]; CGC_RN_ROUTING=1 only): the
     // hook rewrites 0.0/-inf per expert from the slot_table before the router softmax reads it
     // (Step-3: cold experts get -inf -> softmax renormalizes over resident experts).

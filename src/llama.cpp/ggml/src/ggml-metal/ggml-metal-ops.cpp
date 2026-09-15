@@ -3196,6 +3196,129 @@ static int ggml_metal_op_mul_mat_id_glu_fused(ggml_metal_op_t ctx, int idx, int 
     return 1;
 }
 
+// [CGC 2026-09-15 S1 kernel-side ids capture] See kernel_cgc_ids_capture in ggml-metal.metal for
+// what this instrument answers and why a host-side read could not. The host half is deliberately a
+// plain file-scope block: the destination must NOT be allocator-managed, because reading bytes the
+// graph allocator is free to recycle is precisely the defect the existing probes suffer from.
+namespace {
+
+constexpr int32_t CGC_IDS_SLOTS  = 4096;
+constexpr int32_t CGC_IDS_STRIDE = 8;
+
+struct cgc_ids_rec {
+    char    name[48];
+    int32_t n_ids;
+    int32_t kind; // 0 = MV (src2 is consumed directly), 1 = MM (src2 is consumed by map0)
+};
+
+struct cgc_ids_state {
+    bool                inited  = false;
+    bool                enabled = false;
+    ggml_metal_buffer_t buf     = nullptr;
+    int32_t *           base    = nullptr;
+    int32_t             slots   = 0;
+    int32_t             printed = 0;
+    cgc_ids_rec *       recs    = nullptr;
+};
+
+cgc_ids_state g_cgc_ids;
+
+bool cgc_ids_init(ggml_metal_device_t dev) {
+    if (g_cgc_ids.inited) {
+        return g_cgc_ids.enabled;
+    }
+    g_cgc_ids.inited = true;
+
+    const char * e = getenv("CGC_IDS_CAPTURE");
+    g_cgc_ids.enabled = (e != nullptr && e[0] != '0');
+    if (!g_cgc_ids.enabled) {
+        return false;
+    }
+
+    const size_t bytes = (size_t) CGC_IDS_SLOTS * (size_t) CGC_IDS_STRIDE * sizeof(int32_t);
+
+    g_cgc_ids.buf  = ggml_metal_buffer_init(dev, bytes, /*shared*/ true);
+    g_cgc_ids.base = g_cgc_ids.buf != nullptr ? (int32_t *) ggml_metal_buffer_get_base(g_cgc_ids.buf) : nullptr;
+    g_cgc_ids.recs = (cgc_ids_rec *) calloc((size_t) CGC_IDS_SLOTS, sizeof(cgc_ids_rec));
+
+    if (g_cgc_ids.buf == nullptr || g_cgc_ids.base == nullptr || g_cgc_ids.recs == nullptr) {
+        GGML_LOG_WARN("CGC-IDS-CAP disabled: allocation failed\n");
+        g_cgc_ids.enabled = false;
+        return false;
+    }
+
+    GGML_LOG_WARN("CGC-IDS-CAP enabled: slots=%d stride=%d bytes=%zu shared=%d "
+                  "(destination is NOT allocator-managed)\n",
+                  CGC_IDS_SLOTS, CGC_IDS_STRIDE, bytes,
+                  (int) ggml_metal_buffer_is_shared(g_cgc_ids.buf));
+
+    return true;
+}
+
+// Submit the snapshot into the SAME encoder, immediately after the kernel that consumes `ids`.
+void cgc_ids_capture(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_ids,
+                     const struct ggml_tensor * op, int32_t n_ids, int32_t kind) {
+    if (!cgc_ids_init(ctx->dev) || g_cgc_ids.slots >= CGC_IDS_SLOTS) {
+        return;
+    }
+
+    const int32_t slot = g_cgc_ids.slots++;
+
+    ggml_metal_kargs_cgc_ids_capture args = {
+        /*.n_ids  =*/ n_ids,
+        /*.slot   =*/ slot,
+        /*.stride =*/ CGC_IDS_STRIDE,
+        /*.n_skip =*/ 0,
+    };
+
+    ggml_metal_encoder_t enc = ctx->enc;
+
+    ggml_metal_encoder_set_pipeline(enc, ggml_metal_library_get_pipeline_cgc_ids_capture(ctx->lib));
+    ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
+    ggml_metal_encoder_set_buffer  (enc, bid_ids, 1);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_buffer_get_id_whole(g_cgc_ids.buf), 2);
+
+    ggml_metal_encoder_dispatch_threadgroups(enc, 1, 1, 1, 32, 1, 1);
+
+    cgc_ids_rec & r = g_cgc_ids.recs[slot];
+    // op->name is a fixed-size array, never a null pointer -- compare the first byte instead, which
+    // is also what distinguishes an anonymous node (empty name) from a named one.
+    snprintf(r.name, sizeof(r.name), "%s", op->name[0] != '\0' ? op->name : "(anon)");
+    r.n_ids = n_ids;
+    r.kind  = kind;
+}
+
+} // namespace
+
+// [CGC 2026-09-15 S1 kernel-side ids capture] Print every slot not printed before. Called at a
+// synchronize point, so the bytes are guaranteed to be on the host side. Slots are never rewritten
+// (each encode takes a new one), which is what makes a cursor sufficient and makes the emission
+// monotone across the many synchronize calls a segmented dispatch performs.
+// extern "C" because ggml-metal-context.m is ObjC and includes ggml-metal-ops.h: without it the
+// declaration there and this definition here would disagree on linkage and fail to link.
+extern "C" void ggml_metal_cgc_ids_dump(void) {
+    if (!g_cgc_ids.enabled) {
+        return;
+    }
+    for (int32_t s = g_cgc_ids.printed; s < g_cgc_ids.slots; ++s) {
+        const cgc_ids_rec & r = g_cgc_ids.recs[s];
+        const int32_t * v = g_cgc_ids.base + (size_t) s * CGC_IDS_STRIDE;
+
+        char b[128];
+        int p = 0;
+        for (int32_t i = 0; i < CGC_IDS_STRIDE; ++i) {
+            p += snprintf(b + p, sizeof(b) - (size_t) p, "%s%d", i ? "," : "", (int) v[i]);
+            if (p >= (int) sizeof(b) - 12) {
+                break;
+            }
+        }
+
+        GGML_LOG_WARN("CGC-IDS-CAP slot=%d path=%s n_ids=%d name=%s ids=[%s]\n",
+                      s, r.kind == 0 ? "MV" : "MM", (int) r.n_ids, r.name, b);
+    }
+    g_cgc_ids.printed = g_cgc_ids.slots;
+}
+
 int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
     ggml_tensor * op = ctx->node(idx);
 
@@ -3454,15 +3577,26 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
                                    ((cgc_oob_total + cgc_zero_total) % 1000 == 0);
                 if (print) {
                     cgc_asrt_prints++;
+                    // [CGC 2026-09-15 S1 provenance probe] The ids operand of mul_mat_id is
+                    // op->src[2]. Its NAME and its PRODUCER op answer the one question the values
+                    // cannot: is this the tensor this graph built (ffn_moe_slots, produced by
+                    // RESHAPE over GET_ROWS), or did the mmid end up consuming something else
+                    // entirely (selected_experts, or a stale buffer)? Shape cannot tell them apart
+                    // -- both are [k, n_tokens] I32. Cheap: one pointer/name read per printed line.
                     GGML_LOG_WARN("CGC-MMID-ASSERT name=%s ne02=%d n_ids=%lld"
                                   " | id_oob=%d (first=%d, total=%d)"
                                   " | zero_row=%d (first_id=%d, total=%d)"
-                                  " | src0 ne=[%d,%d,%d] nb02=%llu ids ne=[%d,%d]\n",
+                                  " | src0 ne=[%d,%d,%d] nb02=%llu ids ne=[%d,%d]"
+                                  " | ids_name='%s' ids_op=%d ids_view_op=%d ids_data=%p\n",
                                   op->name, (int) ne02, (long long) n_ids,
                                   n_oob,  (int) oob_v,  cgc_oob_total,
                                   n_zero, (int) zero_v,  cgc_zero_total,
                                   (int) ne00, (int) ne01, (int) ne02,
-                                  (unsigned long long) nb02, (int) ne20, (int) ne21);
+                                  (unsigned long long) nb02, (int) ne20, (int) ne21,
+                                  op->src[2]->name != nullptr ? op->src[2]->name : "(anon)",
+                                  (int) op->src[2]->op,
+                                  (int) (op->src[2]->view_src != nullptr ? op->src[2]->view_src->op : -1),
+                                  op->src[2]->data);
                 }
                 if (cgc_asrt_fatal) {
                     GGML_ABORT("CGC-MMID-ASSERT fatal: name=%s ne02=%d id_oob=%d zero_row=%d "
@@ -3546,6 +3680,12 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
 
             ggml_metal_encoder_dispatch_threadgroups(enc, 1, 1, 1, ne02, 1, 1);
         }
+
+        // [CGC 2026-09-15 S1 kernel-side ids capture] map0 has just consumed src2. Snapshot src2
+        // here, still inside the same command buffer, so the value the consumer received becomes
+        // observable. map0 rewrites ids into linear indices ((i21+t)*ne20 + sel - 1), a
+        // deterministic function of src2, so capturing src2 covers the MM path as well.
+        cgc_ids_capture(ctx, bid_src2, op, (int32_t) (ne20 * ne21), /*kind*/ 1);
 
         // this barrier is always needed because the next kernel has to wait for the id maps to be computed
         ggml_metal_op_concurrency_reset(ctx);
@@ -3651,6 +3791,10 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
         } else {
             ggml_metal_encoder_dispatch_threadgroups(enc, (ne01 + nr0*nsg - 1)/(nr0*nsg), (_ne1 + nr1 - 1)/nr1, ne123, 32, nsg, 1);
         }
+
+        // [CGC 2026-09-15 S1 kernel-side ids capture] The MV kernel consumes bid_src2 directly
+        // (bound as buffer 4 above), so this snapshot sees exactly what the GEMV read.
+        cgc_ids_capture(ctx, bid_src2, op, (int32_t) (ne20 * ne21), /*kind*/ 0);
     }
 
     return 1;

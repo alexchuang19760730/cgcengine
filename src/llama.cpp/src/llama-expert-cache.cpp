@@ -270,6 +270,58 @@ int32_t llama_expert_cache_slot_table_safe(const llama_expert_cache * cache, uin
     return llama_expert_cache_zero_slot(cache, layer);
 }
 
+int64_t llama_expert_cache_publish_slot_table(const llama_expert_cache * cache, uint32_t layer,
+                                             int32_t * dst, uint32_t n_expert) {
+    if (cache == nullptr || dst == nullptr || layer >= cache->slot_owner.size()) {
+        return 0;
+    }
+    // [CGC 2026-09-15 S1 diagnostic] Layer-tagged table: every entry becomes 1000+layer, which is
+    // necessarily out of range for any pool capacity, so CGC-MMID-ASSERT fires and its `first=`
+    // reports WHICH layer's table the GPU actually read. That single number separates the three
+    // candidate mechanisms that all surface as the same `id_oob` symptom:
+    //   1000+layer  -> the host write reaches the very buffer the GPU reads, and the order is right;
+    //                  the divergence must then be in the CONTENT the real mapping computes.
+    //   1000+other  -> the GPU read another layer's table (stale/dangling pointer, or the segment
+    //                  was dispatched before the hook published).
+    //   garbage     -> the GPU did not read a table this hook ever wrote.
+    // A plain constant (0) cannot tell these apart, which is why the earlier CGC_S1_IDENT run was
+    // inconclusive: it changed the answer but left the assertion in place.
+    if (getenv("CGC_S1_TAG") != nullptr) {
+        for (uint32_t e = 0; e < n_expert; ++e) {
+            dst[e] = 1000 + (int32_t) layer;
+        }
+        return 0;
+    }
+    if (getenv("CGC_S1_IDENT") != nullptr) {
+        for (uint32_t e = 0; e < n_expert; ++e) {
+            dst[e] = 0;
+        }
+        return 0;
+    }
+    const uint32_t ne = n_expert < cache->n_expert ? n_expert : cache->n_expert;
+    const int32_t * table = cache->slot_table.data() + (size_t) layer * cache->n_expert;
+    const int32_t zs = llama_expert_cache_zero_slot(cache, layer);
+    int64_t clamped = 0;
+    for (uint32_t e = 0; e < ne; ++e) {
+        const int32_t slot = table[e];
+        if (slot >= 0) {
+            dst[e] = slot;
+        } else if (zs >= 0) {
+            dst[e] = zs;
+        } else {
+            // No reserved ZERO slot on this layer. The host path would write -1 here; the gather
+            // must not (index -1 reads out of bounds). Clamp to 0 and let the caller report it.
+            dst[e] = 0;
+            clamped++;
+        }
+    }
+    // Anything past the cache's own expert count would otherwise keep the previous step's value.
+    for (uint32_t e = ne; e < n_expert; ++e) {
+        dst[e] = 0;
+    }
+    return clamped;
+}
+
 // Finds a free slot in the layer, else evicts the LRU slot. Never evicts a slot whose prefetch
 // fill is in flight (slot_loading) — the bg thread would otherwise write the old expert's bytes
 // into a slot already reassigned to a new expert (silent corruption). Returns -1 when every slot
@@ -346,11 +398,13 @@ static void rig_snapshot(int mode) {
     // worse ("terminating immediately"). Mid-run snapshots do not depend on shutdown at all.
     fprintf(stderr,
             "CGC-RIG-SNAPSHOT mode=%d reads=%zu read_bytes=%llu pread_usec=%llu fill_usec=%llu "
+            "fill_wait_us=%llu "
             "reqs=%zu hits=%zu misses=%zu "
             "defer_skip=%llu defer_yield=%llu fast_calls=%zu fast_union=%zu fast_cold=%zu\n",
             mode, reads, (unsigned long long) c->n_read_bytes.load(std::memory_order_relaxed),
             (unsigned long long) c->pread_usec.load(std::memory_order_relaxed),
             (unsigned long long) c->fill_batch_usec.load(std::memory_order_relaxed),
+            (unsigned long long) c->fill_wait_us.load(std::memory_order_relaxed),
             reqs, hits, misses,
             (unsigned long long) c->n_defer_skip,
             (unsigned long long) c->n_prefill_defer_yield,
@@ -685,7 +739,9 @@ int32_t llama_expert_cache_ensure_slot(llama_expert_cache * cache, uint32_t laye
         if (cache->slot_loading[layer][slot] || cache->slot_queued[layer][slot]) {
             // prefetch queued/in flight: wait for the bg thread to finish the fill (it clears
             // the flags and notifies). The pread is hidden behind the current layer's FFN.
+            const int64_t fw0 = ggml_time_us();
             cache->bg_cv.wait(lk, [&]{ return !cache->slot_loading[layer][slot] && !cache->slot_queued[layer][slot]; });
+            cache->fill_wait_us.fetch_add((uint64_t) (ggml_time_us() - fw0), std::memory_order_relaxed);
         }
         (count ? cache->n_hits : cache->n_prewarm_hits)++;
         cache->slot_last_use[layer][slot] = ++cache->tick;
@@ -788,7 +844,9 @@ int32_t llama_expert_cache_ensure_slot(llama_expert_cache * cache, uint32_t laye
     cache->slot_owner[layer][slot] = (int32_t) expert;
     lk.unlock();
 
+    const int64_t fill_t0 = ggml_time_us();
     fill_pool_direct(cache, layer, slot, expert);
+    cache->fill_wait_us.fetch_add((uint64_t) (ggml_time_us() - fill_t0), std::memory_order_relaxed);
 
     lk.lock();
     cache->slot_last_use[layer][slot] = ++cache->tick;
@@ -838,7 +896,9 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
                 const int32_t slot = table[e];
                 if (cache->slot_loading[layer][slot] || cache->slot_queued[layer][slot]) {
                     // prefetch queued/in flight: wait for the bg thread (same as ensure_slot)
+                    const int64_t fw0 = ggml_time_us();
                     cache->bg_cv.wait(lk, [&]{ return !cache->slot_loading[layer][slot] && !cache->slot_queued[layer][slot]; });
+                    cache->fill_wait_us.fetch_add((uint64_t) (ggml_time_us() - fw0), std::memory_order_relaxed);
                 }
                 cache->n_hits++;
                 cache->slot_last_use[layer][slot] = ++cache->tick;
@@ -1811,6 +1871,14 @@ uint32_t llama_expert_cache_slots_per_layer(const llama_expert_cache * cache) {
     return cache == nullptr ? 0 : cache->n_slots;
 }
 
+// [CGC decode phase decomposition 2026-09-15] see the field comment in the header: this is the
+// only counter on the fill path accumulated by the CALLING thread, so a per-step delta is
+// directly comparable to that step's wall clock. pread_usec is an aggregate over worker threads
+// and therefore cannot be compared to a step at all.
+uint64_t llama_expert_cache_fill_wait_us(const llama_expert_cache * cache) {
+    return cache == nullptr ? 0 : cache->fill_wait_us.load(std::memory_order_relaxed);
+}
+
 // [CGC identity-slot verify 2026-09-09] Load-time identity fill check. The loader pre-reads
 // experts 0..n_slots-1 into the adopted pool regions (identity order) and prepopulate marks them
 // resident WITHOUT the runtime fill path — so CGC_EXACT_CACHE_VERIFY (which only fires post-fill)
@@ -1976,13 +2044,14 @@ llama_expert_cache::~llama_expert_cache() {
                 resident_mib += (double) occupied * (double) per_slot / 1024.0 / 1024.0;
             }
         }
-        fprintf(stderr, "llama_expert_cache: final stats: runtime requests=%zu hits=%zu misses=%zu (hit rate %.1f%%)  prewarm req=%zu hit=%zu miss=%zu  resident=%.2f MiB file_reads=%zu pread_usec=%llu fill_batch_usec=%llu prefetch=%zu/%zu\n",
+        fprintf(stderr, "llama_expert_cache: final stats: runtime requests=%zu hits=%zu misses=%zu (hit rate %.1f%%)  prewarm req=%zu hit=%zu miss=%zu  resident=%.2f MiB file_reads=%zu pread_usec=%llu fill_batch_usec=%llu fill_wait_us=%llu prefetch=%zu/%zu\n",
                 n_requests, n_hits, n_misses,
                 n_requests ? 100.0 * (double) n_hits / (double) n_requests : 0.0,
                 n_prewarm_requests, n_prewarm_hits, n_prewarm_misses,
                 resident_mib, n_reads.load(std::memory_order_relaxed),
                 (unsigned long long) pread_usec.load(std::memory_order_relaxed),
                 (unsigned long long) fill_batch_usec.load(std::memory_order_relaxed),
+                (unsigned long long) fill_wait_us.load(std::memory_order_relaxed),
                 n_prefetch, n_prefetch_dropped);
         // [CGC 2026-09-15] Pool integrity at teardown. The always-on mul_mat_id assertion in
         // ggml-metal-ops fires ~8x/run and ALWAYS as a gate+up pair on il=1 (pool slot 14 / slab

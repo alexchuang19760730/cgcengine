@@ -107,8 +107,17 @@ ARMS: dict[str, tuple[str, dict[str, str]]] = {
     # `spac_util` holds a NaN. This arm sets CGC_SPAC=0 to confirm or kill that hypothesis.
     "prod25-stream-nospac": ("prod25", {"CGC_PREFILL_STREAM": "1", "CGC_GATHER_SLAB_CAP": "256",
                                         "CGC_SPAC": "0"}),
-    # The 2026-09-15 GA profile as it stands (OA_ASYNC=0, SPAC off, batch 6144): the IO-hostile
-    # configuration, kept as the control that the 4.93-7.97 t/s numbers were measured under.
+    # The 2026-09-15 GA profile as it stands (OA_ASYNC=1, SPAC off, batch 6144/6144, M2 prefill
+    # streaming): the control that the 4.93-7.97 t/s decode numbers were measured under.
+    #
+    # This note used to read `OA_ASYNC=0`. That value was never executed: the knob's gate tested
+    # presence, not value, and run_server.sh always exports the variable, so every profile ran the
+    # SEGMENTED dispatcher whatever the 0 said. The 2026-09-15 value-aware fix turned the 0 into a
+    # real choice for the first time (non-segmented measured 10x slower on the same build), the
+    # launcher default was restored to 1 to preserve effective behaviour, and prefill250 now pins 1.
+    # See m123_oracle_gate.DEFAULT_REF (v3) and dec-20260915-2215. It still aborts with GPU OOM on
+    # wide prompts unless CGC_PREFILL_STREAM is set -- that is the profile's own shape, and why the
+    # `prod25-stream` arm below is the one that yields usable pp/tg rows.
     "prefill250": ("prefill250", {}),
 }
 

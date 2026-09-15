@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "engine_loop/traces/schema/lesson.schema.json",
+  "title": "engine-loop lesson — a reusable rule (the harness state)",
+  "description": "A lesson is a decision that has been generalised past its own occasion: it must be usable WITHOUT the episode in hand. It is the unit that gets injected back into the agent's harness (one file per lesson under harness_engine/memories/engine/), so the test for a good lesson is whether it changes behaviour on a DIFFERENT problem. `because` keeps it anchored to the observation that cost something; a rule with no cost attached is a platitude.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "lesson_id", "class", "rule", "because", "applies_to", "superseded_by"],
+  "properties": {
+    "type": { "const": "lesson" },
+    "lesson_id": {
+      "type": "string",
+      "pattern": "^eng-(mh|lf|diag|gate|src|bound|perf|smoke)-[0-9]{4}$",
+      "description": "eng-<class abbreviation>-<4 digits>. Abbreviations: mh measurement-hygiene, lf log-forensics, diag diagnosis, gate gate-integrity, src source-reading, bound honest-bounds, perf performance, smoke smoke."
+    },
+    "class": {
+      "enum": [
+        "measurement-hygiene", "log-forensics", "diagnosis", "gate-integrity",
+        "source-reading", "honest-bounds", "performance", "smoke"
+      ]
+    },
+    "rule": {
+      "type": "string",
+      "minLength": 20,
+      "description": "Imperative and self-contained: a reader who has never seen the episode must be able to act on it. 'Be careful with numbers' is not a rule; 'Quote a delta only as the paired per-rep median of an interleaved A/B with >=3 rounds' is."
+    },
+    "because": {
+      "type": "string",
+      "minLength": 20,
+      "description": "The specific observation that cost time or produced a wrong number, with the numbers. Anchors the rule so it can be re-litigated if the evidence changes."
+    },
+    "counterexample_observed": {
+      "type": ["string", "null"],
+      "description": "episode_id or artifact where the rule was violated. A lesson that has never been violated in practice is usually not worth injecting."
+    },
+    "applies_to": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" },
+      "description": "repo-relative paths (scripts, docs) the rule governs. This is what makes the lesson injectable at the right moment instead of as generic advice."
+    },
+    "superseded_by": { "type": ["string", "null"] }
+  }
+}

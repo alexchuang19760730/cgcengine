@@ -10521,6 +10521,40 @@ template [[host_name("kernel_mul_mm_id_map0_ne20_10")]] kernel kernel_mul_mm_id_
 template [[host_name("kernel_mul_mm_id_map0_ne20_16")]] kernel kernel_mul_mm_id_map0_t kernel_mul_mm_id_map0<16>;
 template [[host_name("kernel_mul_mm_id_map0_ne20_22")]] kernel kernel_mul_mm_id_map0_t kernel_mul_mm_id_map0<22>;
 
+// [CGC 2026-09-15 S1 kernel-side ids capture] Snapshot an ids operand AT THE MOMENT ITS CONSUMER
+// RUNS, without perturbing anything that could produce the divergence being investigated.
+//
+// Why a kernel and not a host read: CGC-MMID-ASSERT reads op->src[2]->data from the host during
+// graph ENCODING. For a device-computed ids tensor the GPU has not written it yet at that point, so
+// that probe reports the buffer's previous occupant -- it tracks WHO writes the buffer, not what
+// the consumer receives (eng-mh-0008). Submitting this kernel immediately after the consuming
+// kernel, into the SAME command buffer, makes the consumed value observable while leaving the
+// graph, the allocator layout and the dispatch order untouched. Every earlier S1 probe had to
+// perturb at least one of those three (eng-diag-0018).
+//
+// The value snapshot is the raw ids operand (src2), NOT the map0 output: map0 rewrites ids into
+// linear indices ((i21+t)*ne20 + sel - 1), a deterministic function of src2, so capturing src2
+// answers the question for both the MV and the MM path with one instrument.
+kernel void kernel_cgc_ids_capture(
+        constant ggml_metal_kargs_cgc_ids_capture & args,
+        device const char * ids,
+        device       char * dbg,
+        uint tgpig [[threadgroup_position_in_grid]]) {
+    if (tgpig != 0 || args.slot < 0) {
+        return;
+    }
+
+    device int32_t * out = (device int32_t *) (dbg + (size_t) args.slot * (size_t) args.stride * sizeof(int32_t));
+    device const int32_t * in = (const device int32_t *) ids;
+
+    for (int32_t i = 0; i < args.stride; ++i) {
+        const int32_t j = args.n_skip + i;
+        // 0x7fffffff is the same sentinel the host-side probe prints as an out-of-bounds id, so a
+        // short vector cannot be mistaken for a vector whose tail is legitimately 0.
+        out[i] = (j < args.n_ids) ? in[j] : 0x7fffffff;
+    }
+}
+
 template<typename S0, typename S0_4x4, typename S0_8x8, typename S1, typename S1_2x4, typename S1_8x8, typename block_q, short nl, void (*dequantize_func)(device const block_q *, short, thread S0_4x4 &), typename T0, typename T0_4x4, typename T1, typename T1_2x4>
 kernel void kernel_mul_mm_id(
         constant ggml_metal_kargs_mul_mm_id & args,

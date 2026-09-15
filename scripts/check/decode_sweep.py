@@ -16,6 +16,8 @@ Usage:
     python3 scripts/check/decode_sweep.py --report /tmp/decode_sweep.json
 """
 import argparse
+import glob
+import hashlib
 import json
 import os
 import re
@@ -28,6 +30,60 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 LOG_DIR = os.path.join(ROOT, "Backup", "cgc_logs")
 SERVER_MATCH = "build/bin/llama-server"
 
+
+def build_fingerprint():
+    """The exact binaries a row's numbers belong to, discovered by GLOB over every shared library
+    the run loads (`libggml*.dylib`, `libllama*.dylib`) plus the server binary itself.
+
+    Why every row needs it: a sweep row without a fingerprint cannot be compared to anything --
+    not to another arm, and not to itself a day later after a rebuild. The emitter in
+    agent_harness/engine_loop REFUSES a row without one, so recording it here is what makes a run
+    quotable at all. Recorded per row rather than per file so a rebuild mid-sweep is visible
+    instead of silently averaging two different binaries.
+
+    [CGC 2026-09-15 measurement-hygiene fix] Until now this hashed a hand-picked THREE files:
+    llama-server, libggml-metal and libllama. That list omits libggml-base, which is where
+    ggml-backend.cpp lives -- i.e. the scheduler and the `CGC_OA_ASYNC` gate -- and it omits
+    libggml-cpu, which is where the mul_mat_id crash signature of the 20:18 SIGSEGV lives
+    (build/ggml/src/CMakeFiles/ggml-base.dir/ggml-backend.cpp.o proves the mapping against the
+    CMake object layout, not by inference). Consequence, measured: the pair recorded at 21:34
+    (the OA_ASYNC gate still read presence, so both "noasync" arms bit-copied their segmented
+    counterparts) and the pair recorded at 21:41 (gate value-aware, p25-slotgpu-noasync =
+    {ff68c5a2}) carried the SAME server/metal/llama triple -- two runs whose scheduler code
+    differed, stamped comparable by the very tool whose rule is "compare only within one
+    fingerprint". See lessons.jsonl eng-mh-0007.
+
+    Two things this shape buys, beyond coverage:
+      * keys are version-free (`libggml-base`, not `libggml-base.0.19.0`), so a version bump
+        cannot silently degrade an entry to "missing" (which is what the old literal filenames
+        would have done) nor silently re-point to a different file;
+      * the KEY SET is itself the fingerprint's shape. Old rows carry 3 keys, new rows carry 8;
+        a comparison that mixes them is flagged by the key set rather than by nobody noticing.
+        Rows recorded before this change are therefore not comparable to rows after it on the
+        libggml-base dimension -- which is exactly the fact this change exists to expose."""
+    fp = {}
+
+    def add(key, path):
+        try:
+            with open(path, "rb") as fh:
+                fp[key] = hashlib.md5(fh.read()).hexdigest()[:12]
+        except OSError:
+            fp[key] = "missing"
+
+    bin_dir = os.path.join(ROOT, "src/llama.cpp/build/bin")
+    add("server", os.path.join(bin_dir, "llama-server"))
+    for pat in ("libggml*.dylib", "libllama*.dylib"):
+        for path in sorted(glob.glob(os.path.join(bin_dir, pat))):
+            base = os.path.basename(path)
+            # only the real versioned files: `libggml-base.0.19.0.dylib`, not the `.dylib` /
+            # `.0.dylib` symlinks to them (same bytes three times is not more information).
+            m = re.match(r"^(lib[a-z0-9]+(?:-[a-z0-9]+)*)\.\d", base)
+            if m is None:
+                continue
+            add(m.group(1), path)
+    return fp
+
+
 # tag -> extra env. Base is CGC_SERVER_PROFILE=prefill250 for every arm so the only
 # difference between arms is the variable under test.
 ARMS = {
@@ -37,10 +93,18 @@ ARMS = {
     "pool-6g":       {"CGC_SERVER_EXPERT_CACHE_BYTES": "6442450944"},
     "pool-10g":      {"CGC_SERVER_EXPERT_CACHE_BYTES": "10737418240"},
     # budget 0 = expert cache off entirely: every expert is read where the loader put it, so
-    # decode has no pool, no remap, no fill. This is the "zero-IO-work" upper bound and the
+    # decode has no pool, no remap and no fill. This is the "zero-IO-work" upper bound and the
     # single most informative arm -- if decode does NOT go up here, the bottleneck is compute,
     # not the cache, and no amount of pool/fill tuning can reach 25 t/s.
-    "nocache":       {"CGC_SERVER_EXPERT_CACHE_BYTES": "0"},
+    #
+    # [2026-09-15 fix] This arm used to set CGC_SERVER_EXPERT_CACHE_BYTES=0, which does NOT
+    # disable the cache: run_server.sh still appends `-expert-cache 0`, the L4 load-time path
+    # still runs (skip_load on, CPU placement, ne02 shrunk), and the resulting tensor geometry
+    # disagrees with what the hook expects -- measured: every request HTTP 500, which is why the
+    # arm never produced a number. The only launch that is actually cache-free OMITS the flag,
+    # which is what CGC_SERVER_EXPERT_CACHE_OFF=1 does (run_server.sh:827). Same bug and same fix
+    # in `nocache-phase` below.
+    "nocache":       {"CGC_SERVER_EXPERT_CACHE_OFF": "1"},
     # P1 prefill-protect. The build default is OFF and run_server.sh never set it, so every
     # server-profile decode number recorded so far is the "after a prefill" case. The code
     # comment at llama-context.cpp:4987 records 22.2 t/s steady-state with it on.
@@ -115,6 +179,375 @@ ARMS = {
     # the cheapest untested lever on the whole path.
     "p25-workers16": {"CGC_SERVER_WORKERS": "16"},
     "p25-workers32": {"CGC_SERVER_WORKERS": "32"},
+    # ---- P0/P1 phase decomposition 2026-09-15 ----
+    # These arms exist to ATTRIBUTE the time inside one decode step, not to certify a throughput
+    # number, so one round each is the intent. CGC_PHASE_TIMING adds the per-step
+    # build/alloc/inputs/compute split (CGC-PHASE, every 32 steps) and CGC_M2_PROFILE adds one
+    # line per (layer,kind) slab fill carrying pool-vs-disk bytes and ms. Together with the
+    # teardown counters (pread_usec / fill_batch_usec / file_reads) divided by n_decoded, the
+    # step cost decomposes into: disk syscalls, pool gather, GPU, and everything else.
+    #
+    # `nocache` is the decisive control and the reason this set is worth a run: with no pool,
+    # no remap and no fill, the only remaining costs are graph build + Metal. If decode does
+    # NOT improve there, the ~100 ms/token is NOT an IO/cache problem and no pool or fill knob
+    # can reach the budget.
+    "p25-mtpoff-phase":  {"CGC_SERVER_MTP": "0", "CGC_PHASE_TIMING": "1", "CGC_M2_PROFILE": "1"},
+    "nocache-phase":     {"CGC_SERVER_EXPERT_CACHE_OFF": "1",
+                          "CGC_PHASE_TIMING": "1", "CGC_M2_PROFILE": "1"},
+    # MTP-on counterpart of p25-mtpoff-phase: MTP is the one arm where the capacity-miss flood
+    # is 88% (measured 09-15), so its fill_wait should be dramatically larger. The pair is what
+    # makes the fill_wait counter informative -- a single arm cannot tell a clean 0 from a broken
+    # instrument.
+    "p25-phase-mtp":     {"CGC_PHASE_TIMING": "1", "CGC_M2_PROFILE": "1"},
+    "p25-phase-w32":     {"CGC_SERVER_MTP": "0", "CGC_SERVER_WORKERS": "32",
+                          "CGC_PHASE_TIMING": "1", "CGC_M2_PROFILE": "1"},
+    # n_cb sweep, phase-timed. `compute` is graph_compute()'s wall time and is the ONLY phase
+    # left once build/alloc/inputs (~0.13 ms) and fill_wait (~0) are subtracted. The question this
+    # sweep answers is what `compute` IS: MTLCommandBuffer encoding is CPU-side and parallelises
+    # across n_cb command buffers, GPU execution does not. So if compute falls steeply from
+    # n_cb=1 to 8 and is flat after, the remaining term is GPU execution (Metal kernel work is
+    # the lever). If it keeps falling past 8, or if adding WORKER threads (not encode threads)
+    # raises it -- measured: workers=32 pushed compute 104 -> 156 ms -- then `compute` is
+    # CPU-side contention and no further kernel micro-optimisation can reach it.
+    "p25-cb1-phase":     {"CGC_SERVER_MTP": "0", "CGC_SERVER_N_CB": "1",
+                          "CGC_PHASE_TIMING": "1"},
+    "p25-cb2-phase":     {"CGC_SERVER_MTP": "0", "CGC_SERVER_N_CB": "2",
+                          "CGC_PHASE_TIMING": "1"},
+    "p25-cb16-phase":    {"CGC_SERVER_MTP": "0", "CGC_SERVER_N_CB": "16",
+                          "CGC_PHASE_TIMING": "1"},
+    # [2026-09-15] The decisive arm. CGC_DECODE_PROFILE is the fork's built-in M0 decode profiler
+    # (ggml-backend.cpp:1965, "CGC-DECPROF"): per step it splits the segmented dispatch into
+    #   wait   = time blocked on the previous segment's GPU completion
+    #   cb     = eval-callback + encode time for the segment
+    #   submit = command-buffer submit/commit time
+    # plus a per-layer attribution. `compute` (CGC-PHASE) is n_cb-invariant at ~101 ms, so the
+    # question is what those 101 ms are: GPU execution (wait) or CPU-side dispatch (cb/submit).
+    # No amount of Metal kernel work can reach a `cb`-dominated step, and no amount of node
+    # fusion can reach a `wait`-dominated one. CGC_DECODE_PROFILE_ALL=1 adds every layer.
+    "p25-decprof":       {"CGC_SERVER_MTP": "0", "CGC_DECODE_PROFILE": "1",
+                          "CGC_DECODE_PROFILE_ALL": "1"},
+    # [2026-09-15] Fusion re-test, now that run_server.sh can actually pass CGC_MMV_FUSE through
+    # (it could not before -- the var was missing from the launcher allowlist, so every earlier
+    # fusion A/B through this launcher measured a fusion that was never enabled). The fused
+    # dispatch logs one GGML_LOG_WARN per run, so the arm is also self-verifying: no WARN = the
+    # fusion did not engage and the arm's number is meaningless.
+    # CGC_GLU_FUSED_DOWN rides along because §8.113's "+6.5%" was recorded for the pair.
+    "p25-fuse":          {"CGC_SERVER_MTP": "0", "CGC_MMV_FUSE": "1",
+                          "CGC_SERVER_GLU_FUSED_DOWN": "1"},
+    "p25-fuse-phase":    {"CGC_SERVER_MTP": "0", "CGC_MMV_FUSE": "1",
+                          "CGC_SERVER_GLU_FUSED_DOWN": "1",
+                          "CGC_PHASE_TIMING": "1"},
+    # ---- 2026-09-15: split the 72 ms `wait` into GPU execution vs launch/completion latency ----
+    # CGC-DECPROF says 91% of a decode step is `wait`, but `wait` is a CPU-side spin on cgc_done,
+    # so it cannot say whether the GPU was actually busy for 72 ms or finished early and left the
+    # window to launch + completion-report latency. The two readings imply OPPOSITE work:
+    #   GPU-busy high  -> n_tokens=1 GEMV is occupancy/latency bound; batch a layer's 8 expert
+    #                     GEMVs into one dispatch (roadmap M3 item 3) and raise per-dispatch
+    #                     parallelism. Touches ggml-metal kernels.
+    #   GPU-busy low   -> the GPU is starving; restore inter-segment overlap instead of draining
+    #                     the queue at every segment boundary (the remap-leaf dependency that
+    #                     forces the drain, see the CGC_SUBMIT_AHEAD comment in ggml-backend.cpp).
+    #                     Touches the dispatcher, not a single kernel.
+    # CGC_GPU_TIMING makes the Metal completion handlers record each buffer's own
+    # GPUStartTime/GPUEndTime; the dispatcher prints `CGC-GPUTIME:` per 8 steps with
+    # wait / gpu_busy_sum / gpu_union / gap. Decision rule: busy/wait >= 70% -> execution;
+    # <= 40% -> latency. Either way `unsupported=` in the line must be 0, or the platform is
+    # not reporting the timestamps and the line means nothing.
+    # CGC_DECODE_PROFILE rides along so `wait` comes from the instrument that produced the
+    # 72.56 ms figure, in the same run.
+    "p25-gputime":       {"CGC_SERVER_MTP": "0", "CGC_GPU_TIMING": "1",
+                          "CGC_DECODE_PROFILE": "1"},
+    # MTP-on counterpart (same reason as p25-phase-mtp): a single arm cannot tell a clean 0
+    # busy-time from a broken instrument.
+    "p25-gputime-mtp":   {"CGC_GPU_TIMING": "1", "CGC_DECODE_PROFILE": "1"},
+    # [2026-09-15] The CEILING probe for the whole "restore inter-segment overlap" family.
+    # CGC_SUBMIT_AHEAD=1 submits segment i+1 BEFORE the top-k hook of segment i writes its remap
+    # leaf, which is exactly the raciness the current order was introduced to fix. It is therefore
+    # WRONG and its output is expected to be corrupt (md5 must change -- if it does not, the flag
+    # never reached the process and the number is meaningless). It is worth a run anyway because
+    # it deletes the entire CPU window between the poll and the commit in one switch: no
+    # double-buffered remap design can beat this, so if decode does not speed up here, that whole
+    # family is dead and the remaining lever is the GPU work itself.
+    "p25-submit-ahead":  {"CGC_SERVER_MTP": "0", "CGC_SUBMIT_AHEAD": "1",
+                          "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    # [CGC 2026-09-15 S1 slot-table] The first CORRECT member of the "restore inter-segment
+    # overlap" family. CGC_SLOT_TABLE_GPU=1 makes the expert->slot mapping a graph node
+    # (get_rows over a per-layer table) instead of a host-written input leaf. Stage S1 deliberately
+    # does NOT touch the dispatcher, so n_segs stays at 40 and the speedup here should be ~0 --
+    # what this arm has to prove is that the output is bit-identical to `p25-gputime` (same md5,
+    # same logits). That gate is the precondition for S2 (drop the segment drain) and S3 (collapse
+    # the segments), which is where the x1.78 that p25-submit-ahead measured becomes reachable
+    # without corrupting the answer.
+    "p25-slotgpu":       {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1",
+                          "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    # Same arm with the S1 diagnostics on (CGC-S1: graph / CAPTURE / hook / EXPECT). Use it when
+    # p25-slotgpu diverges and you need to know WHERE: the hook traces say whether the table was
+    # captured at all and whether the hook found it, and EXPECT prints the slot vector the host
+    # just published for this step's ids -- the number to put next to CGC-MMID-ASSERT's `first=`.
+    # Never use this arm for a throughput number: it writes to stderr from inside the hot path.
+    "p25-slotgpu-dbg":   {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_DBG": "1",
+                          "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    # The one experiment that separates the two S1 failure modes that both show up as
+    # CGC-MMID-ASSERT id_oob: CGC_S1_IDENT=1 publishes a constant 0 table. Silence means the host
+    # write does reach the buffer the gather reads (so a diverging ids vector is downstream of the
+    # table), persistence means it does not. The answer is numerically wrong by construction.
+    "p25-slotgpu-ident": {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_IDENT": "1",
+                          "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    # Layer-tagged table: every entry is 1000+layer, so CGC-MMID-ASSERT's `first=` names the layer
+    # whose table the GPU actually read. Supersedes p25-slotgpu-ident, whose constant 0 could only
+    # answer "did the write have *some* effect", not "which table was read".
+    #
+    # CGC_S1_DBG is on because the 2026-09-15 20:13 run produced a result that cannot be read
+    # without the provenance print now added to CGC-MMID-ASSERT: `ids_name/ids_op/ids_view_op/
+    # ids_data`. Pairing that with the build-time `slots_data=%p` from the graph dump answers
+    # whether mul_mat_id is even consuming the gather result. The `first=` value alone does not:
+    # the assert prints at most 8 lines verbatim and then only every 1000th violation, so its
+    # layer list is a SAMPLE of ~200k events, not the set of affected layers.
+    "p25-slotgpu-tag":   {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_TAG": "1",
+                          "CGC_S1_DBG": "1",
+                          "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    # [CGC 2026-09-15 S1 localization] CGC_S1_MIN_IL gates which layers get the GPU table, so the
+    # arm bisects the divergence instead of arguing about it.
+    #
+    # RESOLVED by rung 1 (Backup/phase_decomp/s1_bisect_20260915.json, --rounds 2 --n-predict 24,
+    # build server 131bc5316ebf / metal 9729ad35ddd1 / llama bcf32c3f0917):
+    #
+    #   p25-gputime     md5 {dc055e63}          stable   <- anchor
+    #   p25-slotgpu-l39 md5 {dc055e63}          stable
+    #   p25-slotgpu-l38 md5 {dc055e63}          stable
+    #   p25-slotgpu-l20 md5 {dc055e63}          stable
+    #   p25-slotgpu     md5 {29ca694a,b8c705cc} UNSTABLE (2 rounds -> 2 values)
+    #
+    # The two possibilities this arm was built to separate:
+    #   one-layer arm already unstable -> the divergence is not in the mapping at all; the mere
+    #                                     PRESENCE of the extra nodes (CONT + GET_ROWS + VIEW per
+    #                                     layer) perturbs the graph/segment layout globally;
+    #   one-layer arm bit-identical     -> the mapping is correct and the divergence appears at a
+    #                                     specific layer, which the arm ladder then localizes.
+    #
+    # => the SECOND branch. l20 already adds 20 layers' worth of CONT+GET_ROWS+VIEW+table nodes
+    #    (~80 nodes) and is still bit-identical AND stable, so "extra nodes perturb the layout
+    #    globally" is refuted; the divergence is confined to the layers l20 does not touch, i.e.
+    #    1..19. Note also the SHAPE of the failure: the full arm is not stably wrong but UNSTABLE,
+    #    which rules out a plain deterministic mapping error and points at ordering/state.
+    #    Rung 2 (below) samples 1..19.
+    #
+    # Run these with a baseline in the same sweep (`--arms p25-gputime,p25-slotgpu-...`) so all
+    # rows share one build fingerprint -- and one n_predict, which the digest is scoped to.
+    "p25-slotgpu-l39":   {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_MIN_IL": "39",
+                          "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    "p25-slotgpu-l38":   {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_MIN_IL": "38",
+                          "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    "p25-slotgpu-l20":   {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_MIN_IL": "20",
+                          "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    # ---- Rung 2: rung 1 excluded 20..39, so the culprit is in 1..19 --------------------------
+    # The arms are NESTED (min_il=m covers layers m..39), so the LARGEST m that is still
+    # bit-identical is exactly one less than the culprit layer:
+    #   l2  identical -> the culprit is layer 1 (the only layer l2 still excludes)
+    #   l6  identical -> culprit in 2..5       l10 identical -> culprit in 6..9
+    #   l14 identical -> culprit in 10..13     l18 identical -> culprit in 14..17
+    #   none identical -> culprit in 18..19
+    # Layer 0 is never a candidate: CGC_S1_MIN_IL's default of 1 exists precisely to keep layer 0
+    # on the host leaf (its MoE FFN runs on CPU/BLAS, so a GPU-computed id vector would need a
+    # cross-backend copy -- the shape of the 20:18 SIGSEGV).
+    "p25-slotgpu-l2":    {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_MIN_IL": "2",
+                          "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    "p25-slotgpu-l6":    {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_MIN_IL": "6",
+                          "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    "p25-slotgpu-l10":   {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_MIN_IL": "10",
+                          "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    "p25-slotgpu-l14":   {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_MIN_IL": "14",
+                          "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    "p25-slotgpu-l18":   {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_MIN_IL": "18",
+                          "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    # ---- Rung 2 RESULT (Backup/phase_decomp/s1_bisect2_20260915.json, --rounds 3 --n-predict 24) --
+    #
+    #   p25-gputime     md5 {dc055e63}          stable   <- anchor
+    #   p25-slotgpu-l20 md5 {dc055e63}          stable   (rung 1)   serves 20..39, 20 layers
+    #   p25-slotgpu-l18 md5 {4991e6d2}          stable   serves 18..39, 22 layers
+    #   p25-slotgpu-l14 md5 {65bd254b}          stable   serves 14..39, 26 layers
+    #   p25-slotgpu-l10 md5 {1c5a05df}          stable   serves 10..39, 30 layers
+    #   p25-slotgpu-l6  md5 {7042e5e4}          stable   serves  6..39, 34 layers
+    #   p25-slotgpu-l2  md5 {0d472bf5,51548f50} UNSTABLE serves  2..39, 38 layers
+    #   p25-slotgpu     md5 {29ca694a,b8c705cc} UNSTABLE serves  1..39, 39 layers
+    #
+    # Read naively this says "the bad layer is 18 or 19". That reading is NOT licensed by this
+    # experiment, and the reason is structural: CGC_S1_MIN_IL is a PREFIX gate, so every arm serves a
+    # contiguous SUFFIX of the stack. The digest is monotone in the LEFTMOST served layer, and the
+    # count of served layers moves together with it -- 20 served is identical, 22 served is not. So
+    # the same table also fits "any arm serving >= 21 layers diverges", which is a threshold/resource
+    # effect and needs a COMPLETELY different fix from a wrong mapping at one layer. A nested-arm
+    # ladder cannot separate those two, no matter how many rungs are added: it has only one degree of
+    # freedom. Do not add a rung 3 of the same shape.
+    #
+    # What DOES separate them is comparing the two id vectors directly at every layer, which is what
+    # `p25-keepleaf` exists for. In that arm mul_mat_id consumes the host leaf while every S1 node is
+    # still built, so the post-sync readback can walk all captured layers and print gather-vs-leaf
+    # (same=1/0). Mapping error -> some layer prints same=0 and the arm's digest is bit-identical to
+    # the baseline (the extra nodes are then provably inert). Threshold effect -> every layer prints
+    # same=1 and the arm's digest still differs, which would mean the ids were never the problem.
+    #
+    # Run it with the baseline in the SAME sweep: the whole comparison is a same-fingerprint claim.
+    "p25-keepleaf":      {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_KEEP_LEAF": "1",
+                          "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    # Same, with the diagnostics on. POST (gather vs leaf, every layer), EXPECT (table[ids] at hook
+    # time) and EQUIV (published table vs slot_table_safe) all ride on CGC_S1_DBG. Throughput from
+    # this arm is meaningless -- it writes to stderr from inside the hot path -- so it is tagged as a
+    # probe by NEG_MARKERS in traces/emit_episodes.py.
+    "p25-keepleaf-dbg":  {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_KEEP_LEAF": "1",
+                          "CGC_S1_DBG": "1",
+                          "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    # ---- RESULT of the keep-leaf control, and what it leaves open ------------------------------
+    #
+    # p25-keepleaf is BIT-IDENTICAL to the baseline (dc055e63, stable, 24 tokens, same prefix) with
+    # all 39 layers served and every S1 node present, and its pool counters match the anchor exactly
+    # (misses 13040, file_reads 36360). So the 156 extra nodes are numerically inert, and no
+    # served-layer-count threshold can be involved -- which also removes the ambiguity rung 2 could
+    # not resolve, licensing the per-layer reading: min_il=20 identical and min_il=18 different pin
+    # the fault to layer 18 or 19.
+    #
+    # The per-layer readback then killed the ids: p25-keepleaf-dbg prints gather-vs-leaf for every
+    # captured layer, and for TOKEN 0 the two agree at EVERY layer, 6 samples each. (Token 1 differs
+    # at every layer -- that is the padding row whose layout/n_tokens quirk is recorded in
+    # eng-src-0005, and it is provably benign because min_il=20 carries 20 layers of it and is still
+    # bit-identical.) Note the aggregate `same=` field reads 0 because it compares the whole vector;
+    # the meaningful comparison is per token, which is why it has to be split by hand.
+    #
+    # So both explanations S1 was built around are dead. What remains between the real arm and the
+    # control is the ABSENCE of the leaf node -- and the header comment on cache_slot_table_tensors
+    # says that absence was never intended ("the leaf itself is still built when this is on: it is
+    # simply not consumed"). p25-buildleaf measures exactly that documented design.
+    "p25-buildleaf":     {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_BUILD_LEAF": "1",
+                          "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    # ---- RESULT of the build-leaf arm: IT DOES NOT RUN, and that is the finding ---------------
+    #
+    # p25-buildleaf aborted at server start: `ggml-alloc.c:623 GGML_ASSERT(buffer_id >= 0)` from
+    # ggml_gallocr_allocate_node <- ggml_gallocr_reserve_n_impl <- ggml_backend_sched_reserve <-
+    # llama_context::graph_reserve. It never produced a digest, so it is NOT evidence about the
+    # logits -- it is evidence about the allocator. With BUILD_LEAF set, `slots` is not expanded and
+    # not consumed, so the S1 chain (table/cont/get_rows/view) is orphaned; `slot_table` survives
+    # only because line ~2190 expands it unconditionally, which makes it a graph ROOT WITH NO
+    # CONSUMER -- and the new `remap` leaf is a second one. The scheduler assigns no backend to a
+    # root that nothing consumes and ggml-alloc then aborts on buffer_id = -1.
+    #
+    # So the header comment on cache_slot_table_tensors ("the leaf itself is still built when this
+    # is on: it is simply not consumed ... a pure scheduler/dispatch change") describes something
+    # the allocator will not accept. It was wrong in two ways, not one: the branch is an if/else so
+    # the leaf is NOT built (eng-gate-0003), and building it unconsumed is not viable either. The
+    # experiment is retired; do not re-add it without an innocuous consumer for the leaf.
+    #
+    # ---------------------------------------------------------------------------------------
+    # [CGC 2026-09-15 S1 timing] CGC_SERVER_OA_ASYNC=0 pair -- the ONE variable left after the
+    # value-level explanations died.
+    #
+    # By 21:29 the ids were exonerated twice over and on the real arm, not on a control:
+    #   * p25-slotgpu-dbg, CGC-S1: EQUIV-* = 2067 lines, mismatch=0 on every one. The published
+    #     table equals slot_table_safe() for every selected expert, so the "publish clamps a
+    #     non-resident expert to slot 0 while safe returns -1" drift the two functions were written
+    #     to have is NOT happening here -- consistent with the CGC-SLOT-TABLE clamp counter staying
+    #     at 0 lines in every S1 log of the day.
+    #   * CGC-S1: POST (the gather, read after ggml_backend_sched_synchronize) vs CGC-S1: EXPECT-*
+    #     (what the hook published for THIS step's ids): all 39 layers x all 6 sampled graph builds
+    #     agree, in every row the probe prints. On the real arm. With no leaf anywhere.
+    # Together with p25-keepleaf being bit-identical, that leaves no value difference at all between
+    # the real arm and the control, which is only possible if the difference is WHEN the table write
+    # lands relative to the segment that reads it.
+    #
+    # That is exactly the hazard llama-graph.cpp describes at the S2 comment: the segmented async
+    # dispatcher (CGC_OA_ASYNC, prod25 = on) submits segment i+1 only after the hook of segment i
+    # has written the leaf, and the drain exists BECAUSE the leaf is a host-written input. S1 moves
+    # the mapping into a graph node; if the drain is keyed to the leaf rather than to the hook, S1
+    # loses the ordering guarantee and the gather can read the table before the host wrote it.
+    #
+    # This pair is the test: OA_ASYNC=0 reverts to the non-segmented dispatcher, so the ordering
+    # question disappears. Compare WITHIN the pair -- both arms must carry the same value of this
+    # switch or the digests are not comparable (CONVENTIONS.md rule A5 is about length; this is the
+    # same class of mistake with a build switch).
+    #   slotgpu-noasync bit-identical to gputime-noasync -> the drain really was keyed to the leaf,
+    #       and S1's fix is to make the dispatcher drain on the hook (or on the table) instead.
+    #   slotgpu-noasync still different -> the ordering is not it either, and the remaining suspect
+    #       is the ggml-alloc buffer assignment (which the now-dead BUILD_LEAF arm was meant to
+    #       probe); the instrument for that is GGML_SCHED_DEBUG=2 node-level GET_CAUSE, not another
+    #       digest.
+    #
+    # FIRST RUN OF THIS PAIR WAS A NO-OP, and the reason is a gate bug now fixed at
+    # ggml/src/ggml-backend.cpp:1745. The segmented dispatch was selected with
+    # `getenv("CGC_OA_ASYNC") != nullptr`, so CGC_OA_ASYNC=0 -- and an empty string, and every
+    # profile run_server.sh emits -- selected the SEGMENTED branch. The two arms therefore re-ran
+    # the segmented arms exactly: md5 sets {dc055e63} and {29ca694a, 672585db, b8c705cc}, pool
+    # counters misses 13040 / 14296 and file_reads 36360 / 39948, all identical to the segmented
+    # run. The gate is now value-aware (unset/empty/nonzero = segmented, "0" = off), which keeps
+    # prod25's recorded digests reproducible because prod25 sets "1".
+    #
+    # So the ordering hypothesis is UNTESTED, not refuted. Any earlier row whose declared purpose
+    # says "non-segmented" is a segmented row; see lesson eng-gate-0005.
+
+    # Baseline for the noasync pair: non-segmented dispatch, host-written leaf.
+    "p25-gputime-noasync": {"CGC_SERVER_MTP": "0", "CGC_SERVER_OA_ASYNC": "0",
+                            "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    # S1 with non-segmented dispatch. Bit-identical to p25-gputime-noasync would mean the
+    # segment-boundary ordering was the cause and the fix is to keep the drain tied to the hook.
+    "p25-slotgpu-noasync": {"CGC_SERVER_MTP": "0", "CGC_SERVER_OA_ASYNC": "0", "CGC_SLOT_TABLE_GPU": "1",
+                            "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    # The keep-leaf control with non-segmented dispatch. This is now the decisive pair, because the
+    # gate fix changed what the noasync arms mean. Measured with the gate fixed (build fingerprint
+    # 2026-09-15 21:37):
+    #   p25-gputime-noasync md5 {dc055e63} stable, misses 13040, file_reads 36360
+    #       -- identical to the SEGMENTED anchor, so the dispatcher is numerically neutral when the
+    #          ids come from the host leaf.
+    #   p25-slotgpu-noasync md5 {ff68c5a2} stable, misses 16717, file_reads 47574
+    #       -- a value that appears in neither the segmented S1 set {29ca694a, 672585db, b8c705cc}
+    #          nor the anchor. So the ordering hypothesis is REFUTED (the arm is still wrong with
+    #          the hazard removed) and, separately, the S1 answer DEPENDS on the dispatcher:
+    #          segmented = 3 values across 3 rounds, non-segmented = 1 stable value.
+    # That splits the failure into a non-deterministic part introduced by the segmented dispatch and
+    # a deterministic part underneath it. This arm asks whether the extra nodes are still inert once
+    # the dispatch is not there:
+    #   keepleaf-noasync bit-identical to gputime-noasync -> the nodes are inert again, so the
+    #       residual deterministic difference is the ABSENCE of the leaf node (allocator layout),
+    #       and the instrument is GGML_SCHED_DEBUG=2 per-node GET_CAUSE.
+    #   keepleaf-noasync different -> the S1 nodes are only inert under the segmented dispatcher,
+    #       which would make the segmented path's bit-identity a coincidence of ordering and would
+    #       move the suspect back onto the nodes themselves.
+    # Throughput from this pair is not a candidate number: genuinely non-segmented costs ~10x
+    # (6.95 -> 0.72 t/s for the baseline). Note that fact is itself the evidence the gate fix works,
+    # and it is the size of the prize S2/S3 are chasing.
+    "p25-keepleaf-noasync": {"CGC_SERVER_MTP": "0", "CGC_SERVER_OA_ASYNC": "0", "CGC_SLOT_TABLE_GPU": "1",
+                             "CGC_S1_KEEP_LEAF": "1",
+                             "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    # ---------------------------------------------------------------------------------------
+    # Backend-assignment pair (2026-09-15 20:18 finding)
+    #
+    # The S1 run at 20:18 died with SIGSEGV inside ggml_compute_forward_mul_mat_id **on
+    # libggml-cpu** (parsed from ~/Library/Logs/DiagnosticReports/llama-server-2026-09-15-201852.ips;
+    # stack: ggml_backend_cpu_graph_compute <- ggml_backend_sched_graph_compute_async <-
+    # llama_context::graph_compute <- ... <- common_init_from_params). That signature appears in NO
+    # other run of the day -- the only other crashes are SIGBUS in fill_pool_direct/prewarm and
+    # SIGABRT from ggml_abort. It means at least one mul_mat_id was assigned to the CPU backend
+    # while its weight operand is a pool-repointed tensor living in a Metal buffer.
+    #
+    # This pair runs the SAME profile twice with ggml's own scheduler dump on (GGML_SCHED_DEBUG=1
+    # prints "## SPLIT #N: <backend> # M inputs" plus the input tensor names for every split; =2
+    # additionally prints EVERY node with its assigned backend and the reason code in GET_CAUSE).
+    # Diff the two logs: if S1 introduces a CPU split that the baseline does not have, the whole
+    # `id_oob with F32 bit patterns` mystery is answered -- the consumer is not reading the gather
+    # output at all, it is a different backend reading a different buffer. Throughput from these two
+    # arms is meaningless (the dump is on); use them only for the split table.
+    #
+    # IMPORTANT (measured 2026-09-15 20:23, first attempt): with GGML_SCHED_DEBUG=1 the dump is
+    # emitted via GGML_LOG_DEBUG, which the default llama verbosity threshold (INFO) FILTERS OUT --
+    # the log contained zero "## SPLIT" lines, which is indistinguishable from "exactly one split".
+    # Both print sites in ggml_backend_sched_print_assignments are now promoted to GGML_LOG_WARN
+    # (still gated on sched->debug), so =1 and =2 are both readable at default verbosity.
+    #
+    # REFUTED by that first run: the split STRUCTURE is identical between base and S1 (18 graph
+    # builds each, every build = [CPU, MTL0, CPU(attn_post_norm residual), MTL0], 72 split headers
+    # in both). So "S1 changes which backend the moe nodes land on" is NOT the mechanism at graph
+    # granularity. What is still open is the node-level cause code, which is why this arm is =2.
+    "p25-sched-base":    {"CGC_SERVER_MTP": "0", "GGML_SCHED_DEBUG": "2",
+                          "CGC_DECODE_PROFILE": "1"},
+    "p25-sched-slotgpu": {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1", "GGML_SCHED_DEBUG": "2",
+                          "CGC_DECODE_PROFILE": "1"},
 }
 
 
@@ -345,6 +778,7 @@ def main():
         row.update({k: v for k, v in bench.items() if k != "tag"})
         row["loopiness"] = loopiness(bench.get("sample", "") or "")
         row.update(harvest(srv_log))
+        row["build"] = build_fingerprint()
         rows.append(row)
         json.dump(rows, open(args.json, "w"), ensure_ascii=False, indent=2)
         print(f"  -> decode {row.get('decode_tps_median')} t/s  "

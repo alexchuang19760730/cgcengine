@@ -386,6 +386,20 @@ struct llama_expert_cache {
     std::atomic<uint64_t> pread_usec{0}; // accumulated pread wall time (us)
     std::atomic<uint64_t> fill_batch_usec{0}; // hook-thread elapsed per fill batch (us; comparable across serial/parallel)
 
+    // [CGC decode phase decomposition 2026-09-15] Wall time this thread spent BLOCKED inside the
+    // expert-cache fill paths -- both the `bg_cv.wait` for an in-flight prefetch and the
+    // synchronous `fill_pool_direct` pread on a miss. This is the missing term that CGC-PHASE
+    // cannot see: `CGC-PHASE ... compute=` measures all of graph_compute, which contains both the
+    // Metal layer encoding AND this fill wait, so a step whose entire cost sits in `compute` looks
+    // identical whether the time went to the GPU or to the disk.
+    //
+    // Semantics differ from pread_usec on purpose. pread_usec is an AGGREGATE across worker
+    // threads (it can exceed wall time by the worker count), so it cannot be compared against a
+    // step's wall clock. This one is accumulated by the CALLING thread only, so
+    // `fill_wait_us(step) / n_tokens` IS comparable to the per-token wall time.
+    std::atomic<uint64_t> fill_wait_us{0};
+
+
     ~llama_expert_cache();
 
     void bg_loop();
@@ -626,6 +640,11 @@ const uint8_t * llama_expert_cache_pool_data(const llama_expert_cache * cache, u
 // Per-kind stride within the pool (bytes per slot). 0 if kind absent for the layer.
 size_t llama_expert_cache_pool_stride(const llama_expert_cache * cache, uint32_t layer, int kind);
 uint32_t llama_expert_cache_slots_per_layer(const llama_expert_cache * cache);
+// [CGC decode phase decomposition 2026-09-15] Calling-thread wall time blocked in the fill paths
+// (monotonic, in us). Take a delta around one decode step to get that step's fill cost; this is
+// the only counter on this path whose units are comparable to a step's wall clock. Returns 0 when
+// no cache is active, which is exactly the "no fill to wait for" case.
+uint64_t llama_expert_cache_fill_wait_us(const llama_expert_cache * cache);
 uint32_t llama_expert_cache_slots_per_layer_l(const llama_expert_cache * cache, uint32_t layer); // [CGC] per-layer cap (LAYER_CAPS)
 // Static profile pin (LLAMA_EXPERT_CACHE_PIN_PROFILE=<file>, 2026-08-17): read a per-layer
 // top-N expert list (one line per layer, space-separated ids; missing/empty lines = no pins)
@@ -718,3 +737,16 @@ void llama_expert_cache_touch(llama_expert_cache * cache, uint32_t layer,
 // table for resident experts, so using it on the exact-load path is a no-op (bit-identical).
 int32_t llama_expert_cache_slot_table_safe(const llama_expert_cache * cache, uint32_t layer,
                                            uint32_t expert);
+// [CGC 2026-09-15 S1 slot-table] Materialise the WHOLE layer's expert->slot map into `dst`
+// (n_expert int32), for the GPU-side gather that replaces the host-written remap leaf
+// (CGC_SLOT_TABLE_GPU=1). Per expert this produces exactly what
+// llama_expert_cache_slot_table_safe returns for it -- resident -> its slot, everything else ->
+// the ZERO slot -- so a GPU-computed id vector is the same sequence the host would have written.
+//
+// It exists as one function because the invariant only holds if EVERY remap-leaf write site
+// publishes the table under the same mapping; a per-site reimplementation is how those sites would
+// drift apart. Returns the number of entries that had to be clamped to 0 because the layer has no
+// reserved ZERO slot (the map would otherwise contain -1 and the gather would read out of bounds);
+// callers report a nonzero count instead of treating it as normal.
+int64_t llama_expert_cache_publish_slot_table(const llama_expert_cache * cache, uint32_t layer,
+                                             int32_t * dst, uint32_t n_expert);

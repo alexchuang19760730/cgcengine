@@ -106,7 +106,16 @@ SERVER_NO_SEQ_RM_PROBE="${CGC_SERVER_NO_SEQ_RM_PROBE:-1}" # pass-through: skip s
 SERVER_N_CB="${CGC_SERVER_N_CB:-8}"  # §8.93: cb8 sweet spot
 SERVER_GLU_FUSED_DOWN="${CGC_SERVER_GLU_FUSED_DOWN:-1}"  # §8.113: +6.5% speed
 SERVER_WATCHDOG="${CGC_SERVER_WATCHDOG:-1}"  # Metal deadlock watchdog
-SERVER_OA_ASYNC="${CGC_SERVER_OA_ASYNC:-0}"  # §8.77/8.78: async callback split（2026-09-09 預設改 0：OA_ASYNC 疊加 skip0 時 0/10；單獨 8/10，不值得）
+# §8.77/8.78: async callback split。2026-09-09 把這裡的預設改成 0，但**當時它從來沒有生效**：
+# ggml-backend.cpp 的閘門讀的是 `getenv("CGC_OA_ASYNC") != nullptr`（存在，不是值），而這個腳本
+# 無條件把它塞進 SERVER_ENV，所以 `0` 與「設成任何字串」都選到**分段**分支——「預設 0」是一個
+# 從未被執行的意圖。2026-09-15 閘門改成 value-aware 之後，這個 0 第一次真的生效，乾跑實測
+# `CGC_SERVER_PROFILE=off|prefill250|qa-zh|longform-zh` 全部是 `ENV CGC_OA_ASYNC=0`，
+# 也就是把這些 profile 從分段靜默降到非分段（同一 build 量測：6.95 → 0.72 t/s，約 10×）。
+# 預設因此回到 1，**保留歷史有效行為**；只有顯式 `CGC_SERVER_OA_ASYNC=0` 才選非分段路徑
+# （它仍然有效，是 S1 診斷要用的一格）。prod25 內部另外會把 1 寫死一次（外部可覆寫），
+# 所以生產口徑不受這裡影響。教訓：`traces/lessons.jsonl` eng-gate-0005。
+SERVER_OA_ASYNC="${CGC_SERVER_OA_ASYNC:-1}"
 SERVER_PROFILE="${CGC_SERVER_PROFILE:-off}"
 SERVER_CHAT_TEMPLATE="${CGC_SERVER_CHAT_TEMPLATE:-}"
 SERVER_CHAT_TEMPLATE_FILE="${CGC_SERVER_CHAT_TEMPLATE_FILE:-}"
@@ -282,6 +291,21 @@ case "$SERVER_PROFILE" in
         #   CGC_PREFILL_STREAM=1      -> 大 chunk 走 whole-layer slab（ne[2]=n_expert）而不是 pool
         #   CGC_GATHER_SLAB_CAP=256   -> slab 裝得下全部 256 個 expert，否則 streaming 會被拒
         # 實際的 batch/ubatch/stream 覆寫在下面的 BUDGET 解析之後（那裡 SERVER_BATCH 才被定案）。
+        #
+        # [CGC 2026-09-15] 把 dispatcher 旋鈕寫死，理由就是 eng-gate-0006：**profile 不寫的那一格，
+        # 就是會漂移的那一格**。prefill250 從來沒設 CGC_SERVER_OA_ASYNC，所以它一路繼承全域預設；
+        # 09-15 21:36 把全域預設由 0 改回 1（恢復閘門修正前的實際行為，見 eng-gate-0005）之後，
+        # 這個 profile 被靜默重解析，於是 oracle gate 每一跑都報 INVALID COMPARISON：
+        #
+        #   ENV.CGC_OA_ASYNC: ref='0'  now='1'
+        #
+        # 1 不是新選擇，而是**這個 profile 一直都是的行為**：v2 ref（
+        # Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident.jsonl，17:21）是在
+        # presence-based 閘門下 dump 的，當時 `CGC_OA_ASYNC` 只問存在、不問值，而本腳本無條件把
+        # 它塞進 SERVER_ENV ⇒ 那個 `0` 選的是**分段**分支，與今天的 `1` 同一條路。獨立證據：
+        # 同一份 dump 對 v2 量到 M1 9/9 bit-identical，而非分段路徑的 digest 是 `ff68c5a2`，
+        # 不是錨點 `dc055e63`——所以兩邊跑的確實是同一條路。詳見 dec-20260915-2215。
+        [ -z "${CGC_SERVER_OA_ASYNC+x}" ] && SERVER_OA_ASYNC=1
         [ -z "${CGC_SERVER_MTP+x}" ] && SERVER_MTP=1
         [ -z "${CGC_SERVER_DENSE_IQ4X+x}" ] && SERVER_DENSE_IQ4X=1
         [ -z "${CGC_SERVER_CHAT_AB+x}" ] && SERVER_CHAT_AB="custom-prefix"
@@ -750,7 +774,10 @@ fi
 if [ -n "$SERVER_BATCH" ] || [ -n "$SERVER_UBATCH" ]; then
     echo "[perf]  batch=${SERVER_BATCH:-auto} ubatch=${SERVER_UBATCH:-auto}"
 fi
-echo "[perf]  n_cb=$SERVER_N_CB glu_fused_down=$SERVER_GLU_FUSED_DOWN watchdog=$SERVER_WATCHDOG oa_async=$SERVER_OA_ASYNC load_mode=$SERVER_LOAD_MODE"
+# [CGC 2026-09-15] print glu_fused_down with its actual gate. The fused-glu entry point requires
+# CGC_MMV_FUSE=1; without it the flag is inert (see the pass-through below), and a bare
+# "glu_fused_down=1" invites the reader to believe a fusion is active when it is not.
+echo "[perf]  n_cb=$SERVER_N_CB glu_fused_down=$SERVER_GLU_FUSED_DOWN(mm_fuse=${CGC_MMV_FUSE:-off}) watchdog=$SERVER_WATCHDOG oa_async=$SERVER_OA_ASYNC load_mode=$SERVER_LOAD_MODE"
 echo "[perf]  runtime_profile=$SERVER_RUNTIME_PROFILE model_root=$MODEL_ROOT"
 echo "[guard] memory_mode=$SERVER_MEMORY_MODE class=$MEM_CLASS phys=${PHYS_MEM_GB}GB free=${FREE_PCT}% other_llama_servers=$OTHER_LLAMA_SERVERS"
 if [ "$SERVER_PROFILE" != "off" ]; then
@@ -1075,6 +1102,98 @@ fi
 if [ -n "${CGC_DECODE_PROFILE_ALL:-}" ]; then
     SERVER_ENV+=(CGC_DECODE_PROFILE_ALL="$CGC_DECODE_PROFILE_ALL")
 fi
+# [CGC 2026-09-15 GPU-side timing] CGC_GPU_TIMING=1 makes the Metal completion handlers record
+# each command buffer's own GPUStartTime/GPUEndTime, and the segmented dispatcher prints
+# CGC-GPUTIME: per-step wait / gpu_busy_sum / gpu_union / gap. It answers the one question
+# CGC_DECODE_PROFILE cannot: the 91% `wait` is a CPU-side spin, so it cannot distinguish real
+# GPU execution (lever: batch the per-expert GEMVs) from launch + completion-report latency
+# (lever: restore inter-segment overlap). Same dispatcher as CGC_DECODE_PROFILE, and the same
+# allowlist rule: an unlisted CGC_* is dropped silently, which looks exactly like "no effect".
+if [ -n "${CGC_GPU_TIMING:-}" ]; then
+    SERVER_ENV+=(CGC_GPU_TIMING="$CGC_GPU_TIMING")
+fi
+# [CGC 2026-09-15 remap-overlap ceiling probe] CGC_SUBMIT_AHEAD=1 restores the pre-fix submit
+# order (submit segment i+1 BEFORE the top-k hook of segment i writes its remap leaf). That order
+# is WRONG -- it is exactly the raciness the current order was introduced to fix, and the GPU can
+# read a stale remap -> garbage output. It exists because it is the only zero-code measurement of
+# the CEILING of the whole "restore inter-segment overlap" family: it deletes the CPU window
+# between the poll and the commit in one switch. If decoding does not speed up here, no
+# double-buffered remap design can help and the segmented dispatch is not the bottleneck.
+# Must be in this allowlist: ggml-backend.cpp reads it, but an unlisted CGC_* is dropped, so the
+# probe would silently do nothing (the same trap as CGC_MMV_FUSE -- see the note near the top).
+if [ -n "${CGC_SUBMIT_AHEAD:-}" ]; then
+    SERVER_ENV+=(CGC_SUBMIT_AHEAD="$CGC_SUBMIT_AHEAD")
+fi
+# [CGC 2026-09-15 S1 slot-table] CGC_SLOT_TABLE_GPU=1 replaces the host-written remap leaf with a
+# GPU-side gather: the eval hook publishes the per-layer expert->slot table (I32 [1, n_expert]) and
+# the graph computes `slots = get_rows(table, selected_experts)`, which is byte-for-byte what the
+# hook used to write. Single-token decode only; every multi-token / gather path keeps the leaf.
+# Same allowlist rule as CGC_SUBMIT_AHEAD and CGC_MMV_FUSE: an unlisted CGC_* is dropped silently,
+# which is indistinguishable from "the change had no effect".
+if [ -n "${CGC_SLOT_TABLE_GPU:-}" ]; then
+    SERVER_ENV+=(CGC_SLOT_TABLE_GPU="$CGC_SLOT_TABLE_GPU")
+fi
+if [ -n "${CGC_S1_DBG:-}" ]; then
+    SERVER_ENV+=(CGC_S1_DBG="$CGC_S1_DBG")
+fi
+# [CGC 2026-09-15 S1 kernel-side ids capture] Opt-in snapshot of the ids a mul_mat_id kernel
+# actually consumed, written by a tiny post-consumer kernel into a buffer the graph allocator does
+# not own. Must be listed here for the same reason as CGC_SLOT_TABLE_GPU above: the launch line's
+# allowlist drops anything else, which is indistinguishable from "the instrument did nothing".
+if [ -n "${CGC_IDS_CAPTURE:-}" ]; then
+    SERVER_ENV+=(CGC_IDS_CAPTURE="$CGC_IDS_CAPTURE")
+fi
+if [ -n "${CGC_S1_IDENT:-}" ]; then
+    SERVER_ENV+=(CGC_S1_IDENT="$CGC_S1_IDENT")
+fi
+if [ -n "${CGC_S1_TAG:-}" ]; then
+    SERVER_ENV+=(CGC_S1_TAG="$CGC_S1_TAG")
+fi
+# [CGC 2026-09-15 S1 layer-0 gate] Lowest layer index that may use the GPU slot table (default 1).
+# Layer 0's MoE FFN is not offloaded in prod25 (full-size expert tensors in the BLAS buffer), so its
+# mul_mat_id runs on the CPU backend and needs the ids in a CPU-visible buffer. The baseline leaf is
+# a CPU-backend graph input so that holds automatically; a Metal-computed gather does not, and the
+# scheduler records the cross-backend copy as "CPU#ffn_moe_slots-0# [NULL]". See the long note in
+# llama-graph.cpp (build_moe_ffn) and the GGML_SCHED_DEBUG=2 evidence in Backup/cgc_logs.
+if [ -n "${CGC_S1_MIN_IL:-}" ]; then
+    SERVER_ENV+=(CGC_S1_MIN_IL="$CGC_S1_MIN_IL")
+fi
+# [CGC 2026-09-15 S1 CONTROL] CGC_S1_KEEP_LEAF=1 builds every node the S1 branch builds (the per-layer
+# table, the CONT, the GET_ROWS, the VIEW) AND the host leaf, and lets mul_mat_id consume the LEAF.
+# The graph therefore carries exactly the S1 extra nodes while the ids still come from the host, which
+# is the only control that separates "the GPU-computed ids are wrong" from "adding these four nodes
+# per layer moves the answer by itself" -- the two remaining explanations for the digest divergence,
+# which need opposite fixes. It is also the only arm in which the POST readback can do its direct
+# comparison: POST walks every captured ffn_moe_slots node and prints gather-vs-leaf (same=1/0), and
+# both tensors are ggml_set_output so both stay readable after the synchronize.
+if [ -n "${CGC_S1_KEEP_LEAF:-}" ]; then
+    SERVER_ENV+=(CGC_S1_KEEP_LEAF="$CGC_S1_KEEP_LEAF")
+fi
+# [CGC 2026-09-15 S1 CONTROL] CGC_S1_BUILD_LEAF=1 builds the host leaf AS WELL but leaves it
+# unconsumed (ids still come from the GPU gather). This is the design the header comment on
+# cache_slot_table_tensors has always claimed S1 implements -- "the leaf itself is still built when
+# this is on: it is simply not consumed ... a pure scheduler/dispatch change" -- while
+# llama-graph.cpp's if/else never built it. With the ids ruled out (per-layer readback: the gather
+# equals the host mapping at every layer) and the extra nodes ruled out (all 39 layers' nodes are
+# bit-identical), the absence of this node is the only remaining difference between the real arm
+# and the keep-leaf control, so the documented design is the thing to measure.
+if [ -n "${CGC_S1_BUILD_LEAF:-}" ]; then
+    SERVER_ENV+=(CGC_S1_BUILD_LEAF="$CGC_S1_BUILD_LEAF")
+fi
+# [CGC 2026-09-15 S1 backend-assignment probe] GGML_SCHED_DEBUG=1 prints one "## SPLIT #N: <backend>
+# # M inputs" line per split; =2 additionally prints every node with its assigned backend and the
+# reason code. It is the only instrument that answers which backend a given mul_mat_id landed on,
+# and it is also ggml's own code path (ggml-backend.cpp:2271 reads the env; :986 prints), so it
+# needs no CGC-side plumbing. Why it matters here: the 2026-09-15 20:18 S1 run crashed with
+# SIGSEGV inside ggml_compute_forward_mul_mat_id on libggml-cpu -- a signature that appears in no
+# other run of the day -- i.e. at least one mul_mat_id was scheduled on the CPU backend while its
+# weight operand is pool-repointed into a Metal buffer. Cheap to read, expensive to guess.
+if [ -n "${GGML_SCHED_DEBUG:-}" ]; then
+    SERVER_ENV+=(GGML_SCHED_DEBUG="$GGML_SCHED_DEBUG")
+fi
+if [ -n "${CGC_SUBMIT_DBG:-}" ]; then
+    SERVER_ENV+=(CGC_SUBMIT_DBG="$CGC_SUBMIT_DBG")
+fi
 # [CGC M1 union-routable 2026-09-14] Per-layer union + chosen decode path (pool vs gather),
 # ranked by max union over 8 layer sweeps, with the layer's usable slot count beside it so the
 # `union > usable` window (see docs/M1_POOL_GRAPH_DECOUPLE_PLAN_2026-09-14.md) is directly
@@ -1105,6 +1224,15 @@ if [ -n "${CGC_M2_PROFILE:-}" ]; then
 fi
 if [ -n "${CGC_M2_DB_DISABLE:-}" ]; then
     SERVER_ENV+=(CGC_M2_DB_DISABLE="$CGC_M2_DB_DISABLE")
+fi
+# [CGC decode phase decomposition 2026-09-15] CGC_PHASE_TIMING prints the per-decode-step
+# build/alloc/inputs/compute breakdown (llama-context.cpp:1721, CGC-PHASE line every 32 steps).
+# Needed to attribute the measured ~100 ms/token against the 5-10 ms/token budget: without this
+# line the only numbers available are the process-wide teardown totals, which say how much IO
+# happened but not where in the step it was spent. Same allowlist rule as above: an unlisted
+# CGC_* is dropped silently, which looks exactly like "the knob had no effect".
+if [ -n "${CGC_PHASE_TIMING:-}" ]; then
+    SERVER_ENV+=(CGC_PHASE_TIMING="$CGC_PHASE_TIMING")
 fi
 # [CGC 2026-09-15] Slab-fill FAILURE diagnostics. fill_job() already reports the exact failing
 # pread (offset/want/got/errno/fsize) under LLAMA_EXPERT_CACHE_PREAD_DBG, and
@@ -1232,6 +1360,17 @@ fi
 fi
 if [ "$SERVER_GLU_FUSED_DOWN" = "1" ]; then
     SERVER_ENV+=(CGC_GLU_FUSED_DOWN=1)
+fi
+# [CGC 2026-09-15] CGC_MMV_FUSE (fused gate+up+swiglu, ggml-metal-ops.cpp:2659) was NOT in this
+# allowlist, so it could never be set from this launcher -- while CGC_GLU_FUSED_DOWN above WAS
+# appended. That is an inert combination: ggml_metal_op_can_batch_mmv_glu_down (ops.cpp:2980) is
+# only reachable from inside ggml_metal_op_mul_mat_id_glu_fused, which is entered only when
+# CGC_MMV_FUSE=1. So the [perf] banner below has been printing `glu_fused_down=1` for a knob that
+# does nothing, and the "§8.113: +6.5% speed" it cites is not in effect. Worse, any fusion A/B
+# driven through this launcher would have read as "no effect" because the arm never turned the
+# fusion on. Pass both through so the pair is testable; default stays off (unchanged behaviour).
+if [ -n "${CGC_MMV_FUSE:-}" ]; then
+    SERVER_ENV+=(CGC_MMV_FUSE="$CGC_MMV_FUSE")
 fi
 if [ "$SERVER_WATCHDOG" = "1" ]; then
     SERVER_ENV+=(CGC_WATCHDOG=1)
