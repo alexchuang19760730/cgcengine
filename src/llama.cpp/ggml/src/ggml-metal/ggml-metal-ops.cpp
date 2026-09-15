@@ -3362,21 +3362,38 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
     //       e.g. 71/143) and RAW expert ids on the M2 slab path (ne02 = n_expert = 256). A
     //       mismatch reads a real-but-wrong expert: ne02=slots + raw id walks into the next
     //       tensor's storage, ne02=256 + slot id reads expert[slot] instead of the routed one.
-    //   (b) all-zero expert row. A pooled row that is still zero means the fill did not land
-    //       before the read -- the contribution of that expert is silently dropped. Probe runs
-    //       found ~0.3% of rows zero (4GB: 2/600, 8GB: 6/2048), concentrated at il=1 with
-    //       gate/up zero while the same slot's down was fine: the signature of a first-decode
-    //       read that beat the fill.
+    //   (b) all-zero expert row. A row that is still zero when mul_mat_id reads it means that
+    //       expert's contribution is dropped -- plausible logits, wrong answer. This was carried
+    //       for months as an open engine defect ("the fill lost a race with the read").
+    //
+    //       [CGC 2026-09-15] RESOLVED, AND IT WAS NEVER AN ENGINE DEFECT. The engine only ever
+    //       sees the slab; the file is the ground truth, and for this GGUF the file itself has
+    //       zero rows. Measured over the whole model (35484 rows, 4KB probe):
+    //           all-zero rows = 10 (0.028%) -- layer 0 gate/up experts 25/195/205/252,
+    //           layer 1 gate/up expert 214; ffn_down_exps has ZERO dead rows.
+    //       Every alarm this assertion has ever raised on layer 1 (first_id=214) is one of them:
+    //       `scripts/check/mmid_zero_row_triage.py <log>` re-reads each alarm's expert row
+    //       straight from the GGUF and classifies it MODEL-ZERO (expected, file is zero there)
+    //       vs ENGINE-ZERO (file is non-zero -> a real dropped expert). Across the reference
+    //       dump, the gate run and every A/B arm it reports 14 MODEL-ZERO / 0 ENGINE-ZERO.
+    //       So the message below is a CANARY, not a bug report: a row on this list is the model's
+    //       own data and needs no action; anything else must be triaged with that script. Note
+    //       the consequence for the M1/M2/M3 gate: the reference dump is itself computed with
+    //       these rows zero, so the gate is blind to them by construction -- a self-comparison
+    //       can only detect nondeterminism, never a deterministic error. See the whitepaper
+    //       (docs/PREFILL250_DECODE25_WHITEPAPER_20260915_1810.html).
     //
     // Cost: (a) is one int32 load + 2 compares per id (~2k per decode token, ~49k on a 6144-token
     // prefill chunk -- a single pass over a buffer we are about to DMA anyway). (b) is a
-    // word-wise scan with early exit, so the 99.7% non-zero case costs one 8-byte load per
+    // word-wise scan with early exit, so the 99.972% non-zero case costs one 8-byte load per
     // checked row and we only check the first 8 rows per node.
     //
     //   CGC_MMID_ASSERT=0        -> disable both (only when measuring peak throughput)
-    //   CGC_MMID_ASSERT_FATAL=1  -> abort on the first violation (CI / oracle gate)
-    // Default: detect + log, do not abort -- the zero rows are a known open defect and we still
-    // need to be able to run throughput on top of them.
+    //   CGC_MMID_ASSERT_FATAL=1  -> abort on the first violation (CI / oracle gate). Note it
+    //                              aborts on MODEL-ZERO rows too -- on this model that means
+    //                              every run, so pair it with the triage script, not with a
+    //                              blank "no violations" expectation.
+    // Default: detect + log, do not abort.
     {
         static int cgc_asrt_on = -1;
         static int cgc_asrt_fatal = -1;

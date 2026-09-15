@@ -1106,6 +1106,17 @@ fi
 if [ -n "${CGC_M2_DB_DISABLE:-}" ]; then
     SERVER_ENV+=(CGC_M2_DB_DISABLE="$CGC_M2_DB_DISABLE")
 fi
+# [CGC 2026-09-15] Slab-fill FAILURE diagnostics. fill_job() already reports the exact failing
+# pread (offset/want/got/errno/fsize) under LLAMA_EXPERT_CACHE_PREAD_DBG, and
+# LLAMA_EXPERT_CACHE_SERIAL_FILL forces the pre-threaded fill loop -- both are the direct way to
+# tell "the fill list is wrong" from "the fill raced the read". They were absent from this
+# allowlist, so the open layer-1 zero-row defect could not be attributed from the launcher.
+if [ -n "${LLAMA_EXPERT_CACHE_PREAD_DBG:-}" ]; then
+    SERVER_ENV+=(LLAMA_EXPERT_CACHE_PREAD_DBG="$LLAMA_EXPERT_CACHE_PREAD_DBG")
+fi
+if [ -n "${LLAMA_EXPERT_CACHE_SERIAL_FILL:-}" ]; then
+    SERVER_ENV+=(LLAMA_EXPERT_CACHE_SERIAL_FILL="$LLAMA_EXPERT_CACHE_SERIAL_FILL")
+fi
 if [ -n "${CGC_MMID_MV_DBG:-}" ]; then
     SERVER_ENV+=(CGC_MMID_MV_DBG="$CGC_MMID_MV_DBG")
 fi

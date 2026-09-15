@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>prefill 250 / decode 25 技術白皮書（2026-09-15 18:10）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>prefill 250 tok/s / decode 25 tok/s 技術白皮書</h1>
+<div class="sub">
+  日期 2026-09-15 18:10 · 分支 <code>demo/sweet-spot-windows-fix</code> · 基線 commit <code>d3cbe9744</code><br>
+  模型 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（13.6 GB，256 experts/layer，40 layers）·
+  硬體 MacBook Air Mac16,12 / Apple M4 10 核 / 16 GB unified memory<br>
+  檔名 <code>PREFILL250_DECODE25_WHITEPAPER_20260915_1810.html</code>（對應格式要求
+  <code>prefill 250 tok/s / decode 25 tok/s 技術白皮書202609151810.html</code>；檔名不能含
+  <code>/</code> 與空格，故以 <code>_</code> 取代，標題原樣保留）
+</div>
+
+<div class="box b-red">
+  <p><strong>一句話結論：你問對了，而且問的是閘門的根本性質。</strong>
+  「layer 1 <code>ffn_moe_gate-1</code> / <code>ffn_moe_up-1</code> 的全零 expert row 沒解決，
+  怎麼做到 M1/M2/M3 oracle 的正確性？」——<strong>答案是：證明不了。</strong>
+  M1/M2/M3 拿 cache-ON 的參考做逐位元對比，而 <strong>M1 的定義就是「兩份 dump 相同」</strong>；
+  一個<strong>確定性</strong>的數值錯誤在兩邊一模一樣，所以它<strong>在原理上不可能</strong>被自比對抓到。
+  這個閘門證明的是<strong>確定性（determinism）與 M-invariance</strong>，不是正確性。</p>
+
+  <p><strong>但那一項本身結案了，而且不是引擎的錯。</strong>直接回讀 GGUF 量到：
+  <strong>全零 expert row 是模型檔案自己的資料</strong>——全模型 35484 個 row（4 KB probe）中
+  只有 <strong>10 個</strong>全零（0.028%），全部集中在 <strong>layer 0 的 gate/up（experts 25/195/205/252）
+  與 layer 1 的 gate/up（expert 214）</strong>，而 <code>ffn_down_exps</code> <strong>一個都沒有</strong>。
+  每一個歷史警報都在 layer 1 / id=214，完全吻合。斷言的前提（「量化 expert 權重的前 4 KB 永不為零」）
+  對這個 <code>denseIQ4X</code> 混合量化 merge 出來的 GGUF 是<strong>不成立</strong>的。</p>
+
+  <p><strong>真正的壞消息在另一邊：我們現在沒有任何可用的絕對 oracle。</strong>
+  上一輪才接上、並在上一份白皮書被稱為「真正的 cache-free launch」的
+  <code>CGC_SERVER_EXPERT_CACHE_OFF=1</code>，實測是<strong>壞的</strong>：探針回傳空字串，
+  dump 的 <code>argmax=59400</code>、top-8 是<strong>連續 id 59400..59407 且全部並列 0.125</strong>、
+  <code>sum=−6.83e38</code>（超過 <code>FLT_MAX</code>，典型的未初始化／錯誤張量讀取）。
+  <code>--load-mode none</code> 與 <code>--load-mode mmap</code> 得到<strong>同一個 sum 到全精度</strong>，
+  所以不是「權重沒載入」，是這條路徑本身壞掉。<strong>結論：cache-ON 的正確性目前無法由任何獨立來源驗證。</strong></p>
+</div>
+
+<h2>1. 質疑的核心：自比對閘門抓不到確定性錯誤</h2>
+
+<p>M1/M2/M3 的三個指標定義是：<strong>M1</strong> = <code>row_fnv1a64</code> 逐位元組相同；
+<strong>M2</strong> = <code>argmax_token</code> 相同；<strong>M3</strong> = top-N id 集合相同。
+閘門把「本次 dump」與「參考 oracle」比對。這個結構有一個必然的盲點：</p>
+
+<pre><code>若錯誤是確定性的（deterministic），則
+    參考 dump   = f(正確輸入) + 同一個錯誤
+    本次 dump   = f(正確輸入) + 同一個錯誤
+    => M1 = 1.0、M2 = 1.0、M3 = 1.0  ->  PASS
+
+PASS 只推論出「兩次運行一致」，無法推論出「與真值一致」。</code></pre>
+
+<p>這不是理論擔憂 —— 它是本專案當時正在追的具體缺陷形態。而我們可以<strong>直接檢查</strong>
+這個盲點有沒有被觸發：如果全零 row 真的落在探針的 forward pass 裡，那參考 dump 本身就已經
+是在該 row 為零的狀態下算出來的。</p>
+
+<h3>1.1 證據：警報發生在參考「自己」的探針 prefill 中</h3>
+
+<p>以產出新基準 oracle 的那一次運行（<code>rebaseline</code> → server log
+<code>llama_server_20260915_172136.log</code>）為例，逐行看：</p>
+
+<pre><code>L73   0.07.878.885 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+L75   CGC-HOOK: ctx=0x15082a400 il=0 ntok=207 ids=[38 132 129 213 21 253 244 16]
+L76   CGC-GATHER-SLAB: kind=0 cap=256 stride=450560 (requested=335872) size=110.00 MiB
+L77-79 CGC-M2-DB: allocated set=1 kind=0/1/2 ...
+L81   CGC-PREFILL-STREAM: il=0 kind=0 ntok=207 experts=256 slab=110.00 MiB filled=115343360 bytes db=1
+L84   CGC-HOOK: ctx=0x15082a400 il=1 ntok=207 ids=[214 148 161 151 110 39 212 139]     &lt;-- id 214 在這裡
+L85   CGC-PREFILL-STREAM: il=1 kind=0 ntok=207 experts=256 ...
+L87   CGC-MMID-ASSERT name=ffn_moe_gate-1 ne02=256 n_ids=1656 | zero_row=1 (first_id=214, total=1)
+L88   CGC-MMID-ASSERT name=ffn_moe_up-1   ne02=256 n_ids=1656 | zero_row=1 (first_id=214, total=2)
+L140  0.15.319.033 I slot print_timing: id 0 | task 0 | prompt eval time = 6199.64 ms / 207 tokens
+L141  0.15.319.036 I slot print_timing: id 0 | task 0 |        eval time =  1240.43 ms /   3 tokens
+L144  0.15.319.343 I slot print_timing: id 0 | task 0 | draft acceptance = 0.66667 ( 2 accepted / 3 generated)</code></pre>
+
+<p>L73 是<strong>探針自己</strong>的請求，L75 是它的 207-token prefill，L87/L88 是它的
+<code>il=1</code> 讀取，L140/L141 是它的 <code>prompt eval time</code> 與 <code>eval time</code>。
+<strong>警報與被 dump 的 forward pass 是同一個請求。</strong>因此新基準 oracle 是在
+「layer 1 的 expert 214 貢獻為零」的狀態下產生的 —— 而閘門那一跑（<code>final_v2</code>）完全相同，
+所以 M1 = 9/9 是<strong>必然</strong>的結果。</p>
+
+<h3>1.2 警報的分布：每一次 cache-ON 運行都有，且完全一致</h3>
+
+<table>
+  <tr><th>運行</th><th>tag / log</th><th>zero_row</th><th>first_id</th><th>n_ids</th><th>M1</th></tr>
+  <tr><td>產出新基準 oracle</td><td class="num">rebaseline · 172136</td><td class="num">2</td><td class="num">214</td><td class="num">1656</td><td>本體</td></tr>
+  <tr><td>閘門（對新基準）</td><td class="num">final_v2 · 172233</td><td class="num">2</td><td class="num">214</td><td class="num">1656</td><td class="ok">9/9</td></tr>
+  <tr><td>確定性 A/B/C/D</td><td class="num">detA · 171616</td><td class="num">2</td><td class="num">214</td><td class="num">1656</td><td class="ok">4×9/9</td></tr>
+  <tr><td>小配置（ctx4096/b512）</td><td class="num">con_small · 174616</td><td class="num">2</td><td class="num">214</td><td class="num">1656</td><td class="ok">9/9</td></tr>
+  <tr><td>關閉雙緩衝</td><td class="num">nodb · 174803</td><td class="num">2</td><td class="num">214</td><td class="num">1656</td><td class="ok">9/9</td></tr>
+  <tr><td>開啟 pread 診斷</td><td class="num">preaddbg · 174823</td><td class="num">2</td><td class="num">214</td><td class="num">1656</td><td class="ok">9/9</td></tr>
+  <tr><td>反向旋鈕臂</td><td class="num">rev · 171321</td><td class="num">8</td><td class="num">14 / 214</td><td class="num">1656</td><td class="bad">3/13</td></tr>
+</table>
+
+<p class="small">六個不同的 cache-ON 配置，全部得到同一組 <code>(il=1, id=214, n_ids=1656)</code>，
+且全部 M1 = 9/9（<code>rev</code> 臂是因為關掉了 <code>MM_BITIDENT</code> 才不同）。
+<strong>確定性到這個程度，正是「兩邊一起錯」的樣子。</strong></p>
+
+<h2>2. 結案：全零 row 是模型檔案的事實</h2>
+
+<h3>2.1 直接回讀 GGUF</h3>
+
+<p>不再從引擎側推論，直接把檔案讀出來。用 <code>gguf.gguf_reader</code> 取得
+<code>blk.1.ffn_gate_exps.weight</code> 的 <code>data_offset</code>，再讀
+<code>offset + expert × nb02</code>（<code>nb02 = 335872</code>）的前 4096 位元組：</p>
+
+<table>
+  <tr><th>tensor</th><th>expert</th><th>前 4 KB 非零位元組數</th><th>FNV-1a64(前 4 KB)</th></tr>
+  <tr><td class="num">blk.1.ffn_gate_exps.weight</td><td class="num">214</td><td class="bad num">0 / 4096</td><td class="num">b43a063055adc383</td></tr>
+  <tr><td class="num">blk.1.ffn_gate_exps.weight</td><td class="num">148</td><td class="num">4064 / 4096</td><td class="num">09e9cceeb80feef8</td></tr>
+  <tr><td class="num">blk.1.ffn_gate_exps.weight</td><td class="num">161</td><td class="num">4051 / 4096</td><td class="num">c0663f66c16e8def</td></tr>
+  <tr><td class="num">blk.1.ffn_gate_exps.weight</td><td class="num">151</td><td class="num">4054 / 4096</td><td class="num">d1c8f4a7392f0ab0</td></tr>
+  <tr><td class="num">blk.1.ffn_gate_exps.weight</td><td class="num">0</td><td class="num">4048 / 4096</td><td class="num">706d8cdbefd6a556</td></tr>
+  <tr><td class="num">blk.1.ffn_up_exps.weight</td><td class="num">214</td><td class="bad num">0 / 4096</td><td class="num">b43a063055adc383</td></tr>
+  <tr><td class="num">blk.1.ffn_up_exps.weight</td><td class="num">148</td><td class="num">4050 / 4096</td><td class="num">be52d3125182000c</td></tr>
+</table>
+
+<p><code>blk.1</code> 的 gate 與 up 在 expert 214 上都是 <strong>0 / 4096 個非零位元組</strong>，
+而其他 expert 都是 4048–4055。注意兩者的 FNV 相同（<code>b43a063055adc383</code>）——
+因為兩者都是零。</p>
+
+<h3>2.2 全模型掃描：10 / 35484</h3>
+
+<p>對所有 <code>*_exps.weight</code> 逐 expert 做同樣的 4 KB probe 掃描：</p>
+
+<pre><code>total expert rows (4KB probe): 35484   all-zero-in-first-4KB: 10  (0.028%)
+by kind: {'ffn_down_exps': '0/14306', 'ffn_gate_exps': '5/10589', 'ffn_up_exps': '5/10589'}
+
+layer kind            n_zero  first ids
+    0 ffn_gate_exps        4  [25, 195, 205, 252]
+    0 ffn_up_exps          4  [25, 195, 205, 252]
+    1 ffn_gate_exps        1  [214]
+    1 ffn_up_exps          1  [214]</code></pre>
+
+<p>三個關鍵事實：</p>
+<ol>
+  <li>死 expert 只存在於 <strong>layer 0 與 layer 1</strong>，而 layer 0 在
+      <code>LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0=0</code> 的生產配置下不進 slab 掃描 ——
+      所以<strong>唯一會發出警報的就是 layer 1 的 expert 214</strong>，與觀測完全一致。</li>
+  <li>gate 與 up 的死 expert id <strong>成對相同</strong>（layer 0 是 25/195/205/252，layer 1 是 214），
+      <code>ffn_down_exps</code> 則<strong>完全沒有</strong> —— 這是混合量化 merge 的典型痕跡，
+      不是填充邏輯會產生的樣態（填充是按 row 位址寫入，不會「成對」漏）。</li>
+  <li>比例 0.028% 與早期 probe 記錄的「~0.3% of rows zero (4GB: 2/600, 8GB: 6/2048)」同數量級
+      —— 早期抽樣偏高，因為 sample 恰好落在 layer 0/1。</li>
+</ol>
+
+<div class="box b-green">
+  <p><strong>結論：</strong>斷言的前提「量化 expert 權重的前 4 KB 永不為零」對這個 GGUF 不成立。
+  這個 <code>denseIQ4X</code> merge 出來的模型<strong>本來就有死 expert</strong>。
+  引擎側從來看不到檔案，只看到 slab，所以它無法自行區分「模型本身是零」與「填充沒落地」——
+  這件事必須由檔案裁決（見 §3）。</p>
+</div>
+
+<h2>3. 裁決工具：<code>mmid_zero_row_triage.py</code></h2>
+
+<p>斷言本身仍然有價值（它是「expert 貢獻被靜默丟棄」唯一的線上探針），問題只出在它<strong>無法自我裁決</strong>。
+新增工具把每個警報的 expert row 直接用 <code>mmid_pool_vs_gguf.py</code> 同一套約定回讀 GGUF：</p>
+
+<pre><code>MODEL-ZERO   檔案該 row 也是零          -> 預期行為，不是缺陷，不要再追
+ENGINE-ZERO  檔案該 row 非零但 slab 是零 -> 真正的 dropped-expert 缺陷
+UNRESOLVED   id 無法映射到 expert        -> pool 路徑（ne02 &lt; n_expert）缺少 CGC-EXACT-POST 對照表</code></pre>
+
+<p>兩個 id 約定的判別方式與既有工具一致：<code>ne02 &gt;= n_expert</code> 表示 ids 是<strong>原始 expert id</strong>
+（M2 whole-layer slab 路徑）；否則表示 ids 是 <strong>slot index</strong>（pool 路徑），需要把
+expert→slot 表反轉。全臂執行結果：</p>
+
+<pre><code>$ python3 scripts/check/mmid_zero_row_triage.py Backup/cgc_logs/llama_server_20260915_17*.log
+...
+{
+ "MODEL-ZERO": 14,
+ "ENGINE-ZERO": 0,
+ "UNRESOLVED": 6,
+ "rows": 20
+}
+VERDICT: 14 MODEL-ZERO, 0 ENGINE-ZERO, 6 UNRESOLVED (of 20 alarms).
+         UNRESOLVED = a pool-path (ne02 &lt; n_expert) alarm whose slot-&gt;expert map is
+         absent from the log. Re-run with CGC_EXACT_PATH_DBG=1 to get the map.
+         MODEL-ZERO is the model file's own data, not a fill/read defect ...</code></pre>
+
+<p><strong>零個 ENGINE-ZERO。</strong>exit code 語義：<code>0</code> = 無真缺陷；
+<code>1</code> = 有 ENGINE-ZERO；<code>2</code> = 無法解析。這讓「閘門 PASS 但零 row 在吵」這件事
+第一次有了明確的處置方式：<strong>跑 triage，看 exit code，而不是憑 alert 文字猜。</strong></p>
+
+<h2>4. 被推翻的兩個假設（都有反證）</h2>
+
+<p>在拿到檔案證據之前，我先提出了兩個機制假設，兩個都被實驗推翻 —— 記在這裡是為了避免後人重走：</p>
+
+<table>
+  <tr><th>假設</th><th>提議的機制</th><th>反證</th></tr>
+  <tr>
+    <td><strong>A. 雙緩衝丟棄回傳值</strong></td>
+    <td><code>cgc_db_worker()</code> 呼叫
+        <code>llama_expert_cache_fill_layer_slab()</code> 時<strong>沒有檢查回傳值</strong>
+        （<code>llama-context.cpp:717</code>），而非 DB 路徑會檢查
+        <code>filled &lt; 0</code> 並退回（:4487）。失敗時 slab 只有部分被寫，未寫的 row 讀為 0。</td>
+    <td>用 <code>CGC_M2_DB_DISABLE=1</code> 關掉雙緩衝（改走<strong>同步且有檢查</strong>的填充路徑）：
+        <strong>全零 row 照樣出現</strong>，仍是 <code>il=1 / id=214</code>。<br>
+        <span class="small">註：這個不對稱本身仍是真缺陷（見 §6），只是不是本項的元凶。</span></td>
+  </tr>
+  <tr>
+    <td><strong>B. 短讀</strong></td>
+    <td><code>fill_job()</code> 的 <code>pread</code> 短讀使 <code>ok[i]=0</code> →
+        <code>fill_segments_concurrent</code> 回 false → 該 expert 目的地位元組未寫入。</td>
+    <td><code>LLAMA_EXPERT_CACHE_PREAD_DBG=1</code>（該開關會在
+        <code>rd != seg-&gt;bytes</code> 時印出 offset/want/got/errno/fsize）
+        <strong>全場零輸出 —— 沒有任何短讀</strong>。</td>
+  </tr>
+</table>
+
+<p>兩個反證同時也確立了另一件事：<code>n_ids=1656 = 8×207</code> 在
+<code>-b 512</code> 與 <code>-b 6144</code> 下完全一樣，所以它與 chunk 寬度無關，
+是<strong>模型層級</strong>的固定事實。</p>
+
+<h2>5. 絕對 oracle 目前是壞的</h2>
+
+<p>這是本輪最重要的壞消息，而且它直接決定了「正確性」這一格能不能填。</p>
+
+<table>
+  <tr><th>配置</th><th>probe_answer</th><th>argmax</th><th>top-8</th><th>sum</th></tr>
+  <tr>
+    <td>cache-ON（生產）</td>
+    <td class="ok num">正常回答</td><td class="num">248046</td>
+    <td class="num">248046, 198, 271, …</td><td class="num">−297333.37015</td>
+  </tr>
+  <tr>
+    <td><code>EXPERTS_CACHE_OFF=1</code><br><span class="small">load-mode none</span></td>
+    <td class="bad num">""（空）</td><td class="bad num">59400</td>
+    <td class="bad num">59400, 59401, 59402, …, 59407<br><span class="small">全部並列 0.125</span></td>
+    <td class="bad num">−6.830992237459492e38</td>
+  </tr>
+  <tr>
+    <td><code>EXPERTS_CACHE_OFF=1</code><br><span class="small">load-mode mmap</span></td>
+    <td class="bad num">""（空）</td><td class="bad num">59400</td>
+    <td class="bad num">59400 … 59407（同上）</td>
+    <td class="bad num">−6.830992237459492e38</td>
+  </tr>
+</table>
+
+<p>三個判讀：</p>
+<ul>
+  <li><strong>top-8 是連續 id 且全部並列 0.125</strong> —— 真實的 logit 分布不可能長這樣。
+      這是讀到未初始化／錯位張量的特徵，不是「模型答錯」。</li>
+  <li><code>sum = −6.83e38</code> 超過 <code>FLT_MAX</code>（3.4e38）——
+      若 logits 是 f32 且以 double 累加，單一元素不可能超出這個範圍。</li>
+  <li><strong>兩種 load-mode 得到同一個 sum 到全精度</strong> —— 排除了「expert 權重沒被載入」
+      這個最直覺的解釋；壞的是這條路徑本身。</li>
+</ul>
+
+<div class="box b-amber">
+  <p><strong>這同時修正了上一份白皮書的一句話。</strong>上一輪把
+  <code>CGC_SERVER_EXPERT_CACHE_OFF=1</code> 描述為「a genuine cache-free launch」——
+  它確實能啟動（不帶 <code>-expert-cache</code>），但<strong>輸出無效</strong>。
+  「能啟動」不等於「能當 oracle」。在修好之前，任何「絕對正確性已驗證」的敘述都是不成立的。</p>
+</div>
+
+<h2>6. M1/M2/M3 的定位修正（以及它仍然值得留著的理由）</h2>
+
+<p>基於 §1，這個閘門的 verdict 應該被讀成 <strong>determinism / invariance gate</strong>，
+而不是 correctness gate。但它並未因此失去價值：</p>
+
+<ul>
+  <li><strong>它是唯一能在 16 GB 機器上跑得動的逐位元閘門。</strong>絕對 oracle 目前不存在（§5），
+      而在它存在之前，M1/M2/M3 是唯一能回答「這次改動有沒有移動數值」的量具。</li>
+  <li><strong>它抓到的都是真的。</strong>最近一輪它抓出 4 個真 bug
+      （M2 slab 的 UNREPOINT、<code>pick_slot</code> 的 SpAc victim 上界、llama-bench harness 的
+      <code>test_time</code> 型別錯誤、串流 JSON 被中途 OOM 截斷而丟棄已完成 instance）。</li>
+  <li><strong>它驗證了 M-invariance。</strong>本輪的 <code>con_small</code> 臂（ctx 4096 / b512）
+      對參考（ctx 8192 / b6144）仍是 M1 = 9/9 —— 也就是
+      <code>CGC_MM_BITIDENT=1</code> 讓 <code>ne11 ≤ 8</code> 全走 <code>mul_mv</code>
+      所帶來的 M-invariance 是真的、且跨 chunk 寬度成立。這是一個有內容的正面結論。</li>
+</ul>
+
+<p>建議的後續動作（尚未執行）：</p>
+<ol>
+  <li>把閘門輸出裡的 <code>VERDICT M1 (numeric identity)</code> 改標為
+      <code>determinism / invariance</code>，並在結尾自動呼叫 triage 印出 zero_row 的分類摘要。</li>
+  <li>修好 cache-OFF 路徑（§5），或另建獨立 oracle —— 見 §7。</li>
+</ol>
+
+<h2>7. 正確性要怎麼真的被證明（尚未完成）</h2>
+
+<p>既然自比對不夠、而 cache-OFF 壞掉，正確性需要<strong>獨立來源</strong>。三條可行路徑，依成本排序：</p>
+
+<table>
+  <tr><th>路徑</th><th>作法</th><th>狀態</th></tr>
+  <tr>
+    <td><strong>1. 修好 cache-free 路徑</strong></td>
+    <td>cache-OFF 的輸出是<strong>確定性</strong>的垃圾（同 sum 到全精度），
+        所以它是可除錯的：從 <code>result_output</code> 的張列印往回追，
+        先確認 <code>src0</code> 是否真的指向專家權重、再確認 <code>n_vocab</code> 與 logits 的 stride。</td>
+    <td class="warn">未開始（本輪只確立它是壞的）</td>
+  </tr>
+  <tr>
+    <td><strong>2. 同一 prompt 對照上游 build</strong></td>
+    <td>用不含 CGC 改動的 <code>versions/llama_roadB/upstream_ref</code> build，在同一 GGUF、
+        同一 prompt 上取 logits，作為絕對參考。只要 prompt 的 token 序列可對齊即可比對。</td>
+    <td class="warn">未開始</td>
+  </tr>
+  <tr>
+    <td><strong>3. 可加性檢查</strong></td>
+    <td>把某層某 expert 的 slab row 在讀取前<strong>人為清零</strong>，量測 logits 變化；
+        再對照「該 expert 在檔案裡的 delta」。若兩者一致，則 slab 路徑對該 expert 的讀取是忠實的。</td>
+    <td class="warn">未開始</td>
+  </tr>
+</table>
+
+<p class="small">在這三條之一完成之前，白皮書的立場是：<strong>正確性未驗證（unverified），而非已驗證或已知有錯。</strong></p>
+
+<h2>8. 本輪量測（llama-bench）與 M1/M2/M3</h2>
+
+<p>依專案慣例，提交前必須以 <strong>llama-bench（pp/tg × depth）</strong> +
+<strong>M1/M2/M3</strong> + <strong>最新 M2 oracle</strong> 完成品質驗證。本輪改動為
+「註解修正 + 新增診斷工具 + 三個 allowlist pass-through」，不含任何 numerics 變更
+（<code>ggml-metal-ops.cpp</code> 只動註解；新增變數只在 log 路徑），因此預期
+<strong>M1 = 9/9</strong> 且吞吐與上一輪同一格。</p>
+
+<table id="bench">
+  <tr><th>shape</th><th>prompt</th><th>depth</th><th>t/s（本次）</th><th>±</th><th>t/s（<code>d3cbe9744</code>）</th><th>n_batch</th></tr>
+  <tr><td class="num">pp</td><td class="num">512</td><td class="num">0</td><td class="num">117.73</td><td class="num">1.88</td><td class="num">119.86</td><td class="num">512</td></tr>
+  <tr><td class="num">pp</td><td class="num">512</td><td class="num">512</td><td class="num">107.40</td><td class="num">17.37</td><td class="num">118.44</td><td class="num">512</td></tr>
+  <tr><td class="num">pp</td><td class="num">512</td><td class="num">1024</td><td class="num">114.60</td><td class="num">1.14</td><td class="num">115.12</td><td class="num">512</td></tr>
+  <tr><td class="num">pp</td><td class="num">512</td><td class="num">2048</td><td class="num">104.86</td><td class="num">1.64</td><td class="num">114.43</td><td class="num">512</td></tr>
+  <tr><td class="num">pp</td><td class="num">512</td><td class="num">4096</td><td class="num">106.83</td><td class="num">6.37</td><td class="num">111.86</td><td class="num">512</td></tr>
+  <tr><td class="num">tg</td><td class="num">0</td><td class="num">0</td><td class="num">9.79</td><td class="num">1.07</td><td class="num">9.65</td><td class="num">512</td></tr>
+  <tr><td class="num">tg</td><td class="num">0</td><td class="num">512</td><td class="num">10.79</td><td class="num">0.31</td><td class="num">12.83</td><td class="num">512</td></tr>
+  <tr><td class="num">tg</td><td class="num">0</td><td class="num">1024</td><td class="num">13.18</td><td class="num">0.46</td><td class="num">10.14</td><td class="num">512</td></tr>
+  <tr><td class="num">tg</td><td class="num">0</td><td class="num">2048</td><td class="num">7.96</td><td class="num">2.03</td><td class="num">10.34</td><td class="num">512</td></tr>
+  <tr><td class="num">tg</td><td class="num">0</td><td class="num">4096</td><td class="num">9.90</td><td class="num">0.13</td><td class="num">10.13</td><td class="num">512</td></tr>
+</table>
+
+<p class="small">cache：hit <strong>97.1%</strong>、misses 17605、reads 519501、us/job 25858、cap 61.0%。
+兩欄對照的意義：本次改動<strong>只動註解與 log 路徑</strong>，所以這兩個數字集是「同一份引擎」的兩次抽樣。
+差異落在同一個帶狀區間內（pp −2% ～ −11%，tg −18% ～ +30%），且本次 <code>pp512 d512</code> 的
+組內標準差本身就高達 <strong>±17.37</strong>（上表其他 pp 列只有 ±1.1–6.4）——
+這是上一份白皮書已記錄的「同配置跨運行離散」現象，不是本次改動造成的回歸。
+<strong>結論：無 numerics 變更、無吞吐回歸；250 與 25 兩個目標的狀態與上一份相同（均未認證）。</strong></p>
+
+<table id="gate">
+  <tr><th>檢查</th><th>結果</th></tr>
+  <tr><td>M1（bit-identical logits）</td><td class="ok num">9/9（100.0%）</td></tr>
+  <tr><td>M2（argmax 一致）</td><td class="ok num">9/9（100.0%）</td></tr>
+  <tr><td>M3（top-N 集合一致）</td><td class="ok num">9/9（100.0%）</td></tr>
+  <tr><td>cross-tab</td><td class="ok num">(9, 0, 0, 0) — 無飄移、同選擇</td></tr>
+  <tr><td>閘門 verdict</td><td class="ok">PASS（tag <code>post_triage</code>，對 <code>ref_…_M2_6144_bitident</code>）</td></tr>
+  <tr><td>zero_row triage</td><td class="ok">14 MODEL-ZERO / 0 ENGINE-ZERO（見 §3）</td></tr>
+</table>
+
+<div class="box b-amber">
+  <p><strong>如何正確讀這張閘門表：</strong>它證明的是<strong>確定性與不變性</strong>（引擎可重現、
+  <code>MM_BITIDENT</code> 的 M-invariance 成立、本次改動沒有移動數值），
+  <strong>不是正確性</strong>（§1、§5、§7）。這一行字是本次白皮書相對於上一份最重要的修正。</p>
+</div>
+
+<h2>9. 本次異動檔案</h2>
+
+<table>
+  <tr><th>檔案</th><th>內容</th></tr>
+  <tr><td><code>scripts/check/mmid_zero_row_triage.py</code></td>
+      <td><strong>新增。</strong>把 <code>CGC-MMID-ASSERT</code> 的 zero_row 警報逐筆回讀 GGUF，
+          裁決 MODEL-ZERO / ENGINE-ZERO / UNRESOLVED。exit 0/1/2。
+          沿用 <code>mmid_pool_vs_gguf.py</code> 的 id 約定判別（<code>ne02 &gt;= n_expert</code> → 原始 id）。</td></tr>
+  <tr><td><code>src/llama.cpp/ggml/src/ggml-metal/ggml-metal-ops.cpp</code></td>
+      <td><strong>只改註解。</strong>把 M2 斷言裡「zero row = 填充輸給讀取」的<strong>錯誤診斷</strong>
+          換成實測事實（10/35484、layer 0–1、gate/up、<code>down</code> 為 0），
+          寫明它是 <strong>canary 而非 bug report</strong>，並指出自比對閘門對它是盲的。</td></tr>
+  <tr><td><code>scripts/run_server.sh</code></td>
+      <td>補三個被白名單靜默丟棄的 pass-through：
+          <code>LLAMA_EXPERT_CACHE_PREAD_DBG</code>（短讀診斷）、
+          <code>LLAMA_EXPERT_CACHE_SERIAL_FILL</code>（填充 A/B）——
+          沒有它們，本輪的假設 A/B 都無法從啟動器驗證。</td></tr>
+  <tr><td><code>docs/PREFILL250_DECODE25_WHITEPAPER_20260915_1810.html</code></td>
+      <td>本文件。</td></tr>
+</table>
+
+<h2>10. 未解清單（誠實版）</h2>
+
+<ol>
+  <li><strong>絕對正確性：未驗證。</strong>cache-OFF 崩壞（§5），三條替代路徑都未開始（§7）。
+      這是目前最大的空洞，也是「M1/M2/M3 PASS」不能等同「正確」的原因。</li>
+  <li><strong>decode ≥ 25 tok/s 仍未達成</strong>（llama-bench tg ≈ 10–13 t/s）。
+      兩顆已挖到但尚未實測的槓桿：
+      <code>CGC_PREFILL_PROTECT=1</code>（<code>llama-context.cpp:4987</code> 記錄的實測
+      steady-state decode <strong>22.2 t/s 開 vs 8.1–8.9 關</strong>；這個 pass-through 過去不在白名單，
+      所以以前所有 server decode 數字都是「關」的那一格）、
+      <code>LLAMA_EXPERT_CACHE_WORKERS</code>（原本寫死 8，從未被掃過；瓶頸是<strong>併發</strong>不是位元組）。</li>
+  <li><strong><code>cgc_db_worker()</code> 未檢查 <code>fill_layer_slab()</code> 的回傳值</strong>
+      （<code>llama-context.cpp:717</code>）。本輪證明它不是 zero_row 的元凶，
+      但它是<strong>真實的不對稱缺陷</strong>：同一支函式在非 DB 路徑（:4487）會檢查 <code>filled &lt; 0</code>
+      並退回，DB 路徑失敗時會沿用一個只寫了一半的 slab。應改為失敗時同步重試一次，
+      仍失敗則拒絕重指向。</li>
+  <li><strong>MTP 在所有已測配置下仍是淨負擔</strong>（MTP-off 10.43 vs MTP-on 6.48 t/s）。</li>
+  <li><strong>prefill 250 的認證仍卡在超訂配置</strong>（§ 上一份白皮書：13.6 GB 模型 + 8 GiB pool +
+      6144 寬 compute buffer 塞 16 GB）。可認證數字仍是窄 chunk 的 111.86–120.56 t/s。</li>
+  <li><strong>使用者延後項：</strong>replay benchmark 閘門的 stale baseline
+      （2026-09-08、<code>commit: "WORKTREE"</code>）、48 題品質問題。</li>
+</ol>
+
+<p class="small" style="margin-top:36px;border-top:1px solid var(--line);padding-top:14px">
+本文件由 <code>docs/PREFILL250_DECODE25_WHITEPAPER_20260915_1810.html</code> 產生；
+所有數字均來自本輪實測，來源路徑寫在各節。閘門與 bench 的原始輸出位於
+<code>Backup/m123_oracle_gate/</code>、<code>Backup/llama_bench/</code>、<code>Backup/cgc_logs/</code>（皆為 gitignore）。
+</p>
+
+</div>
+</body>
+</html>
