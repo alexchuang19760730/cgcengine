@@ -517,8 +517,19 @@ static inline uint32_t cgc_layer_cap(uint32_t layer, uint32_t def) {
 // hook returns and its remap references union slots only), and prefetch_slot evicts only
 // non-union LRU slots + publishes slot_table only after bytes land -> race-free (see
 // llama-context.cpp call site + spike doc).
+//
+// NOTE 2026-09-16: the predicate here used to be `getenv(...) != nullptr && [0] != '\0'`, i.e. "set
+// to anything at all". Under it a literal `CGC_DBUF=0` was ON, and run_p1_mmap_stream.sh writes
+// exactly that literal on the line under a comment saying "in P1 mode turn the pool optimisations
+// off" -- so the knob's own value in P1 mode said ON while the comment next to it said OFF. Whether
+// the P1 (mmap identity-mapping) path actually REACHES the call site (llama-context.cpp:5780, gated
+// on `verify_fast`) is NOT established here: a knob's value states intent, not behaviour
+// (CONVENTIONS A9). What was wrong, and is now fixed, is the value itself.
+// (run_server.sh escaped this only by omission: it pushes nothing when CGC_DBUF=0, so the wrapper's
+// documented disable path worked by luck of the shell rather than by the reader.) Value semantics
+// now come from cgc_env_on(), so "0" means off wherever it is written.
 static inline bool cgc_dbuf_on() {
-    static const bool v = getenv("CGC_DBUF") != nullptr && getenv("CGC_DBUF")[0] != '\0';
+    static const bool v = cgc_env_on("CGC_DBUF");
     return v;
 }
 
@@ -528,8 +539,11 @@ static inline bool cgc_dbuf_on() {
 // spike's restriction that prefetch_slot can only evict non-union slots — fills can target ANY
 // slot in scratch because decode never reads scratch. Default OFF = legacy single-buffer behavior
 // (fills write slot_table directly, byte-identical).
+// NOTE 2026-09-16: converted with the rest of the family. No script sets CGC_DBUF2 at all, so this
+// is behaviour-preserving today; it is converted so that the family cannot drift back apart and so
+// that `CGC_DBUF2=0` will mean what it says the first time someone writes it.
 static inline bool cgc_dbuf2_on() {
-    static const bool v = getenv("CGC_DBUF2") != nullptr && getenv("CGC_DBUF2")[0] != '\0';
+    static const bool v = cgc_env_on("CGC_DBUF2");
     return v;
 }
 
@@ -539,8 +553,11 @@ static inline bool cgc_dbuf2_on() {
 // in-flight fills without materially slowing decode. Default OFF = byte-identical (immediate
 // ZERO-slot). CGC_FAST_WAIT_US default 1000 (1ms); CGC_FAST_WAIT_MAX default 4 = at most N
 // experts waited per step (bounds total step latency <= MAX * wait_us).
+// NOTE 2026-09-16: converted with the rest of the family (see cgc_dbuf_on). No script sets
+// CGC_FAST_WAIT, so behaviour-preserving today. run_server.sh does forward it verbatim when set
+// (run_server.sh:1079), which is the path where a literal `=0` would previously have meant ON.
 static inline bool cgc_fast_wait_on() {
-    static const bool v = getenv("CGC_FAST_WAIT") != nullptr && getenv("CGC_FAST_WAIT")[0] != '\0';
+    static const bool v = cgc_env_on("CGC_FAST_WAIT");
     return v;
 }
 static inline uint64_t cgc_fast_wait_us() {
@@ -569,8 +586,14 @@ static inline uint32_t cgc_fast_wait_max() {
 // = stock behavior, bit-identical). CGC_SPAC_ALPHA default 0.85 (SpAc's measured inertia),
 // CGC_SPAC_K default 8 = top-K per layer re-targeted each refresh, CGC_SPAC_REFRESH default 1
 // = run the refresh every Nth B-section (1 = every step, the Swift's per-step prefetch cadence).
+//
+// NOTE 2026-09-16: see cgc_dbuf_on -- run_p1_mmap_stream.sh writes `CGC_SPAC=0` under a comment
+// declaring the pool optimisations off, so this knob's own value in P1 mode also said ON while its
+// neighbour said OFF. Same caveat as there: the call sites (llama-context.cpp:1942 source selection
+// and :4739 utility update) were not traced through the P1 identity-mapping path. Converted to
+// cgc_env_on() so the value means what it says.
 static inline bool cgc_spac_on() {
-    static const bool v = getenv("CGC_SPAC") != nullptr && getenv("CGC_SPAC")[0] != '\0';
+    static const bool v = cgc_env_on("CGC_SPAC");
     return v;
 }
 static inline double cgc_spac_alpha() {

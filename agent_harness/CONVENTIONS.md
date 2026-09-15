@@ -175,6 +175,29 @@
   file_reads +396、requests +191，**且 layer 0 出現 4 個 zero region（A 臂為 0）**
   ⇒ 待量：這 4 個是「填充沒落地」還是既定的 ZERO slot 機制。**淨速度效果未定，不得假設。**
 
+**A11｜啟動環境要在「你要的那個配置」下 dump 出來看，不能只看預設。**
+- 儀器：`CGC_DUMP_ENV=1 CGC_SERVER_PROFILE=<p> [旋鈕=值] bash scripts/run_server.sh`
+  印出 `ENV …`（逐項＝交給 `env` 的陣列）、`ARG …`（逐項＝argv）與 `CGCENV …`，
+  然後**不啟動任何東西就 exit**（`run_server.sh:1497`）。
+- 為什麼不能只看預設：旋鈕之間的互動只在你那個配置下顯形。2026-09-16 就是這樣抓到
+  `CGC_SOFT_POOL_L1` 的 `else` 分支裡夾著 phrase-loop guard（少一個 `fi`，`:1381-1392`）——
+  設了 L1（正是註解推薦的「opt back in with L0=48 L1=48」寫法）會**靜默丟掉 `CGC_LOOP_GUARD`**，
+  連 `CGC_LOOP_GUARD=1` 都要不回來。預設 profile 不設 L1 ⇒ 只看預設永遠看不到。
+- 指紋（把 dump 當「啟動環境有無改變」的變更偵測器）：
+  ```
+  CGC_DUMP_ENV=1 ... bash scripts/run_server.sh 2>/dev/null \
+    | grep -E '^(ENV |ARG |CGCENV )' | grep -vE '^CGCENV LOG|\.log$' | md5 -q
+  ```
+  **必須濾掉 `CGCENV LOG`（含時間戳）與 `free=NN%` 兩類行**，否則同一配置兩跑就不同 md5
+  （實測：不濾時 `prefill250` 連跑兩次不同，`prod25` 恰好相同 ⇒ 會誤判為穩定）。
+- 檢查：任何改動啟動邏輯的 commit，都要附**預設配置**的正常化指紋前後對照。指紋不變
+  ⇒ 生產 profile 的數值不可能移動 ⇒ 不需要重新基線。這是可比性論證，比重跑一次閘門便宜。
+- 邊界：指紋只涵蓋**啟動環境**，不涵蓋程式碼路徑。指紋不變仍要跑閘門（本輪：指紋不變，
+  且 M1/M2/M3/整列 fnv1a64 對 v4 = 9/9）。
+- 反向陷阱：**在 linked worktree 內 dump 的時候，環境變數要寫成兩個獨立賦值**。
+  `env "A=1 B=2"` 在 zsh 下不會被 word-split，會變成一個變數名含空格的賦值，
+  再經 `SERVER_ENV+=(VAR="$VAR")` 印成看起來像「一個元素含空格」的假象。本輪為此誤判過一次。
+
 ---
 
 ## B. 診斷

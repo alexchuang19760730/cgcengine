@@ -1350,7 +1350,11 @@ if [ -n "${CGC_PREFETCH_WINDOW:-}" ]; then
     SERVER_ENV+=(CGC_PREFETCH_WINDOW="$CGC_PREFETCH_WINDOW")
 fi
 # CGC DBUF: hook-time step-ahead refill (production ON by default, b8a564d45 verified +25% coding speed).
-# Set CGC_DBUF=0 to disable.
+# CGC_DBUF=0 disables it. Note HOW that worked: this block only ever pushes `CGC_DBUF=1`, and
+# disabling is done by pushing NOTHING, leaving the knob absent. That omission was load-bearing
+# until 2026-09-16, because the reader tested non-emptiness, so a literal `CGC_DBUF=0` meant ON and
+# only the omission made "=0" behave as documented. The reader is value-aware now, so both
+# spellings agree; the omission is kept because it also keeps the env block clean.
 if [ "${CGC_DBUF:-1}" != "0" ]; then
     SERVER_ENV+=(CGC_DBUF=1)
 fi
@@ -1382,13 +1386,23 @@ if [ -n "${CGC_SOFT_POOL_L1:-}" ]; then
     SERVER_ENV+=(CGC_SOFT_POOL_L1="$CGC_SOFT_POOL_L1")
 else
     SERVER_ENV+=(CGC_SOFT_POOL_L1=0)
+fi
 # [CGC phrase-loop guard 2026-09-08] server-side truncation of live phrase loops
 # (>=6 char block x3 consecutive, mirroring the replay quality gate). Default ON;
 # set CGC_LOOP_GUARD=0 to disable. CGC_LOOP_GUARD_EVERY = check cadence (tokens).
+#
+# [CGC 2026-09-16 FIX] This block used to sit INSIDE the `else` branch of the CGC_SOFT_POOL_L1 test
+# above -- a missing `fi`. Measured with CGC_DUMP_ENV=1: setting CGC_SOFT_POOL_L1, which is exactly
+# what the comment above recommends ("opt back in with CGC_SOFT_POOL_L0=48 CGC_SOFT_POOL_L1=48"),
+# silently DROPPED CGC_LOOP_GUARD from the launch env, and CGC_LOOP_GUARD=1 could not restore it:
+# "push the guard" lived in the branch that only runs when CGC_SOFT_POOL_L1 is UNSET. So the one
+# setting that opts the soft pool back in also switched off the phrase-loop guard -- a quality
+# guard, and unreachable, not merely defaulted off. Same disease as the presence-gated knob fixed
+# earlier the same day: one setting silently deciding an unrelated one. No default profile sets
+# CGC_SOFT_POOL_L1, so the production launch env is unchanged by this fix (verified by fingerprint).
 if [ "${CGC_LOOP_GUARD:-1}" != "0" ]; then
     SERVER_ENV+=(CGC_LOOP_GUARD=1)
     [ -n "${CGC_LOOP_GUARD_EVERY:-}" ] && SERVER_ENV+=(CGC_LOOP_GUARD_EVERY="$CGC_LOOP_GUARD_EVERY")
-fi
 fi
 if [ "$SERVER_GLU_FUSED_DOWN" = "1" ]; then
     SERVER_ENV+=(CGC_GLU_FUSED_DOWN=1)

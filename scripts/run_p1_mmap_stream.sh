@@ -81,6 +81,12 @@ SERVER_ENV=(
     LLAMA_EXPERT_CACHE_RESIDENT_MB="${CGC_P1_RESIDENT_MB:-1024}"
     CGC_EXPERT_CACHE_BYTES="$BUDGET"
     # P1 模式下關閉 pool 相關優化（identity mapping 不需要）
+    # [2026-09-16 值語意] CGC_DBUF / CGC_SPAC 原本的 reader 測「非空即開」——`0` 非空 ⇒ 這兩行
+    # 寫的 OFF 其實是 ON，與上一行註解相反。reader 已改為值語意（cgc_env_on，見
+    # llama-expert-cache.h），現在 `0` 才真的等於關。注意語意變更僅止於「值」：本腳本的
+    # identity-mapping 路徑是否真的走到那兩個呼叫點（llama-context.cpp:5780 / 1942）尚未驗證，
+    # 所以不要宣稱 P1 的行為一定變了。
+    # CGC_SOFT_POOL_L0/L1 不受影響：它們走數值 parser（cgc_soft_pool_tier），0 本來就是 0。
     CGC_DBUF=0
     CGC_SPAC=0
     CGC_SOFT_POOL_L0=0
