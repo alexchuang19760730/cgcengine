@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>layer 0 的 4 個 zero region：結案報告（2026-09-16）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  figure{margin:20px 0}
+  figcaption{font-size:12.5px;color:var(--muted);margin-top:8px;text-align:center}
+  svg{display:block;width:100%;height:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>layer 0 的 4 個 zero region：結案報告</h1>
+<div class="sub">
+  日期 2026-09-16 · 分支 <code>demo/sweet-spot-windows-fix</code> · 模型
+  <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（256 experts/layer、40 layers + MTP layer 40）<br>
+  觸發：skip0 值語意修復把 layer 0 拉進 pool 之後，teardown 掃描從 <code>zero-regions=2</code> 變成
+  <code>zero-regions=4</code>，全部落在 layer 0，第一筆 <code>layer=0 slot=18 kind=0 owner_expert=252</code>。
+</div>
+
+<div class="cards">
+  <div class="card"><div class="k">判定</div><div class="v ok">不是缺陷</div>
+    <div class="small">checkpoint 自身的零前綴</div></div>
+  <div class="card"><div class="k">zero-regions（修後）</div><div class="v ok">4 → 0</div>
+    <div class="small">zero-prefix-only=4 另計</div></div>
+  <div class="card"><div class="k">真正會靜默丟專家的機制</div><div class="v ok">0</div>
+    <div class="small">zero_mapped_selected</div></div>
+  <div class="card"><div class="k">閘門 vs v4</div><div class="v ok">9/9/9/9</div>
+    <div class="small">M1/M2/M3/fnv1a64</div></div>
+</div>
+
+<h2>一、問題與答案</h2>
+
+<p><strong>問：</strong>4 個 zero region 是不是填充缺陷？也就是說，路由到 expert 252 的 token，在 layer 0 的 FFN
+是不是被<strong>靜默算成 0</strong> —— 恰好長成「輸出漂移但 argmax 跟得上」的樣子。</p>
+
+<p><strong>答：不是。</strong>那 4 個區域的內容<strong>就是檔案要求的內容</strong>。整個模型 31488 條
+gate/up/down expert 列裡，有 10 列的前綴是零；池中那 4 個區域正好是其中 2 個「在池中」的 expert ×
+gate/up 兩種。<strong>缺陷不在填充，在探針寬度。</strong></p>
+
+<div class="box b-green">
+  <p><strong>一句話版本：</strong>警報與它的裁定工具都用「頭 4096 bytes 是否全零」判案，而這批列的零前綴
+  長 4592–13120 bytes —— 探針窗<strong>整個落在合法的零資料裡面</strong>。共享同一個盲點的兩件儀器，
+  永遠只會互相印證。</p>
+</div>
+
+<h2>二、列的解剖：4096 落在哪裡</h2>
+
+<p>先把幾何講清楚。一條 expert 列是 <code>335872</code> bytes（<code>ne=[2048,512,256]</code>、
+<code>nb02=335872</code>，由 log 與 tensor 自身的 numpy view <code>(256, 512, 656)</code> 兩邊確認）。
+零前綴是「整數條 656-byte 量化列」——不是任意長度的雜訊，是<strong>結構性的</strong>。</p>
+
+<figure>
+<svg viewBox="0 0 1040 300" role="img" aria-label="expert 252 列的解剖">
+  <text x="0" y="18" font-size="13" font-weight="700" fill="#111827">blk.0.ffn_gate_exps.weight · expert 252 · 一條列 = 335,872 B</text>
+
+  <text x="0" y="52" font-size="11.5" fill="#6b7280">0 B</text>
+  <text x="960" y="52" font-size="11.5" fill="#6b7280">335,872 B</text>
+
+  <!-- row bar -->
+  <rect x="34" y="60" width="960" height="34" fill="#f3f4f6" stroke="#d1d5db"/>
+  <!-- zero prefix 7216 B -> scaled: 7216/335872*960 = 20.6px -->
+  <rect x="34" y="60" width="21" height="34" fill="#fecaca" stroke="#dc2626"/>
+  <!-- probe window 4096 B -> 11.7px, inside prefix -->
+  <rect x="34" y="60" width="12" height="34" fill="#dc2626"/>
+  <text x="70" y="82" font-size="12" fill="#374151">資料（27.5% 非零 · 92,221 B）</text>
+
+  <!-- zoom callout -->
+  <line x1="34" y1="94" x2="34" y2="126" stroke="#9ca3af" stroke-dasharray="3 3"/>
+  <line x1="34" y1="126" x2="300" y2="126" stroke="#9ca3af" stroke-dasharray="3 3"/>
+  <line x1="300" y1="126" x2="300" y2="146" stroke="#9ca3af" stroke-dasharray="3 3"/>
+
+  <text x="0" y="166" font-size="12" font-weight="700" fill="#111827">放大：前 20 KiB</text>
+
+  <!-- zoomed bar: 0..20480 B mapped to 34..514 px -->
+  <rect x="34" y="176" width="480" height="34" fill="#f3f4f6" stroke="#d1d5db"/>
+  <!-- zero prefix 7216 -> 7216/20480*480 = 169px -->
+  <rect x="34" y="176" width="169" height="34" fill="#fecaca" stroke="#dc2626"/>
+  <!-- data starts -->
+  <rect x="203" y="176" width="311" height="34" fill="#d1d5db" stroke="#9ca3af"/>
+  <!-- probe 4096 -> 96px -->
+  <rect x="34" y="176" width="96" height="34" fill="#dc2626"/>
+  <text x="42" y="198" font-size="11" font-weight="700" fill="#ffffff">探針 4 KiB</text>
+  <text x="212" y="198" font-size="11" fill="#374151">第一個非零 byte 在 7,216 B</text>
+
+  <text x="34" y="230" font-size="11.5" fill="#dc2626">零前綴 0 – 7,216 B（11 條 656-B 列，全部為零）</text>
+  <text x="34" y="250" font-size="11.5" fill="#374151">4 KiB 探針完全落在這裡 ⇒ 掃描看到「全零」，但它看不到後面還有 92,221 個非零 byte</text>
+
+  <!-- two-tier marker -->
+  <line x1="34" y1="176" x2="34" y2="268" stroke="#059669"/>
+  <line x1="514" y1="176" x2="514" y2="268" stroke="#059669"/>
+  <text x="550" y="196" font-size="11.5" font-weight="700" fill="#059669">兩階段探針（本次修法）</text>
+  <text x="550" y="214" font-size="11.5" fill="#374151">4 KiB 全零 ⇒ 再讀整條 335,872 B</text>
+  <text x="550" y="232" font-size="11.5" fill="#374151">整條也全零 ⇒ 才算 zero-region（填充沒落）</text>
+  <text x="550" y="250" font-size="11.5" fill="#374151">只有前綴為零 ⇒ zero-prefix-only（檔案性質）</text>
+</svg>
+<figcaption>圖 1：4 KiB 探針落在 expert 252 的七千多 byte 零前綴裡面。這不是雜訊造成的巧合 —— 零前綴長度是 656 的整數倍。</figcaption>
+</figure>
+
+<h2>三、檔案側普查（不需要 log）</h2>
+
+<p>新增 <code>scripts/check/gguf_dead_expert_census.py</code>：直接讀 GGUF，對每一條 gate/up/down 列
+先掃 4 KiB，若全零則再讀<strong>整條 row stride</strong>。31488 條列裡：</p>
+
+<table>
+  <tr><th>layer</th><th>kind</th><th>expert</th><th>零前綴長度</th><th>整列非零 byte</th><th>非零比例</th></tr>
+  <tr><td class="num">0</td><td>gate</td><td class="num">25</td><td class="num">11,152 B</td><td class="num">59,860</td><td class="num">17.8%</td></tr>
+  <tr><td class="num">0</td><td>up</td><td class="num">25</td><td class="num">11,152 B</td><td class="num">60,092</td><td class="num">17.9%</td></tr>
+  <tr><td class="num">0</td><td>gate</td><td class="num">195</td><td class="num">4,592 B</td><td class="num">158,004</td><td class="num">47.0%</td></tr>
+  <tr><td class="num">0</td><td>up</td><td class="num">195</td><td class="num">4,592 B</td><td class="num">158,066</td><td class="num">47.1%</td></tr>
+  <tr><td class="num">0</td><td>gate</td><td class="num">205</td><td class="num">6,560 B</td><td class="num">120,242</td><td class="num">35.8%</td></tr>
+  <tr><td class="num">0</td><td>up</td><td class="num">205</td><td class="num">6,560 B</td><td class="num">121,190</td><td class="num">36.1%</td></tr>
+  <tr><td class="num">0</td><td>gate</td><td class="num"><strong>252</strong></td><td class="num">7,216 B</td><td class="num">92,221</td><td class="num">27.5%</td></tr>
+  <tr><td class="num">0</td><td>up</td><td class="num"><strong>252</strong></td><td class="num">7,216 B</td><td class="num">95,691</td><td class="num">28.5%</td></tr>
+  <tr><td class="num">1</td><td>gate</td><td class="num">214</td><td class="num">13,120 B</td><td class="num">91,314</td><td class="num">27.2%</td></tr>
+  <tr><td class="num">1</td><td>up</td><td class="num">214</td><td class="num">13,120 B</td><td class="num">91,404</td><td class="num">27.2%</td></tr>
+</table>
+
+<p><strong>其餘 31478 條列的零前綴長度恰好是 0。</strong>所以這不是「很多列都很稀疏」，而是 10 條有明確零前綴的列。
+<code>ffn_down_exps</code> 一條都沒有。</p>
+
+<p>這些列也<strong>不是 dead expert</strong>：整列 17.8–47.0% 非零。舊說法「file itself has zero rows」、
+裁定工具回報的 <code>MODEL-ZERO</code>，都只描述了那 4 KiB 的窗，不是整條列。</p>
+
+<h2>四、為什麼裁定工具看不見（本輪最貴的一課）</h2>
+
+<p>這是整個案子的關鍵：<strong>裁定工具用了與警報完全相同的 4096 bytes 寬度。</strong>對任何「前 4 KiB 為零」
+的列，它<em>只可能</em>回 MODEL-ZERO。它 2026-09-15 寫下的「14 MODEL-ZERO / 0 ENGINE-ZERO」
+不是量出來的，是<strong>結構上保證的</strong>。</p>
+
+<figure>
+<svg viewBox="0 0 1040 260" role="img" aria-label="共享盲點">
+  <text x="0" y="16" font-size="13" font-weight="700" fill="#111827">共享同一個盲點的兩個儀器，永遠只會互相印證</text>
+
+  <rect x="0" y="36" width="300" height="76" rx="8" fill="#fef2f2" stroke="#fecaca"/>
+  <text x="14" y="58" font-size="12" font-weight="700" fill="#b91c1c">警報：CGC-MMID-ASSERT</text>
+  <text x="14" y="76" font-size="11.5" fill="#7f1d1d">讀 pool/slab 的頭 4096 B</text>
+  <text x="14" y="94" font-size="11.5" fill="#7f1d1d">全零 ⇒ zero_row=1</text>
+
+  <rect x="0" y="132" width="300" height="76" rx="8" fill="#fef2f2" stroke="#fecaca"/>
+  <text x="14" y="154" font-size="12" font-weight="700" fill="#b91c1c">裁定：mmid_zero_row_triage.py</text>
+  <text x="14" y="172" font-size="11.5" fill="#7f1d1d">讀「檔案」的頭 4096 B</text>
+  <text x="14" y="190" font-size="11.5" fill="#7f1d1d">全零 ⇒ MODEL-ZERO</text>
+
+  <line x1="300" y1="74" x2="392" y2="110" stroke="#dc2626" stroke-width="1.5"/>
+  <line x1="300" y1="170" x2="392" y2="134" stroke="#dc2626" stroke-width="1.5"/>
+  <rect x="392" y="92" width="250" height="60" rx="8" fill="#fef2f2" stroke="#dc2626"/>
+  <text x="404" y="116" font-size="12" font-weight="700" fill="#b91c1c">兩者結論必然相同</text>
+  <text x="404" y="136" font-size="11.5" fill="#7f1d1d">「一致」在此不含資訊</text>
+
+  <line x1="642" y1="122" x2="700" y2="122" stroke="#059669" stroke-width="1.5"/>
+  <polygon points="700,116 712,122 700,128" fill="#059669"/>
+  <rect x="712" y="82" width="300" height="80" rx="8" fill="#ecfdf5" stroke="#a7f3d0"/>
+  <text x="724" y="106" font-size="12" font-weight="700" fill="#047857">加一步：讀完整條 stride</text>
+  <text x="724" y="126" font-size="11.5" fill="#065f46">整條非零 ⇒ PROBE-TOO-NARROW</text>
+  <text x="724" y="146" font-size="11.5" fill="#065f46">⇒ 該修的是探針，不是填充</text>
+</svg>
+<figcaption>圖 2：這就是 CONVENTIONS A13。判定用的儀器若沿用被判定對象的視窗寬度，它只能確認前提。</figcaption>
+</figure>
+
+<h2>五、認定鏈：slot 18 真的是 expert 252 嗎</h2>
+
+<p>三條互相獨立的來源指向同一格，缺一不可：</p>
+
+<ol>
+  <li>自斷言（pool 路徑、<code>ne02=143</code> ⇒ id 是 slot）：<code>ffn_moe_gate-0 … first_id=18</code></li>
+  <li>teardown 掃描自己印出的對照：<code>layer=0 slot=18 kind=0 owner_expert=252</code></li>
+  <li>同一份 log 的 slot table：<code>CGC-POST: il=0 … st[252]=18 st[25]=25 …</code></li>
+</ol>
+
+<p>第 3 條同時給出第二個候選 expert <strong>25</strong> —— 而 25 也在普查名單上。於是
+<code>layer=0 zero=4 of 142 resident slots</code> 的四個 = {25, 252} × {gate, up}，數量吻合
+（195、205 從未取得 slot ⇒ 沒被路由到 ⇒ 不在池中）。</p>
+
+<pre><code>$ python3 scripts/check/mmid_zero_row_triage.py Backup/cgc_logs/llama_server_20260916_011759.log
+log                             alarm      op              id expert nz@probe  nz@full   lead  verdict
+zero_row   ffn_moe_gate-1       214    214        0    91314  13120  PROBE-TOO-NARROW
+zero_row   ffn_moe_up-1         214    214        0    91404  13120  PROBE-TOO-NARROW
+zero_row   ffn_moe_gate-0        18    252        0    92221   7216  PROBE-TOO-NARROW
+zero_row   ffn_moe_up-0          18    252        0    95691   7216  PROBE-TOO-NARROW
+zero-region ffn_gate_exps        18    252        0    92221   7216  PROBE-TOO-NARROW
+{ "MODEL-ZERO": 0, "PROBE-TOO-NARROW": 5, "ENGINE-ZERO": 0, "UNRESOLVED": 0, "alarms": 5 }
+exit=3</code></pre>
+
+<p class="small">工具現在同時裁定兩種警報，並可從 pool-integrity 那行直接取得 (layer, slot, owner_expert)，
+所以同一 slot 的自斷言警報也能解析。<code>exit=3</code> 的語意是「修探針」，不是「修填充」。</p>
+
+<h2>六、真正會靜默丟專家的那個機制，讀數是 0</h2>
+
+<p>「路由到的 expert 貢獻被靜默丟掉」在這個引擎裡有<strong>專屬機制</strong>：pool 裡的保留 ZERO slot。
+當被選中的 expert 尚冷時，remap 用 ZERO slot 代替它 —— mul_mat_id 就會乘到一片零。
+這個計數<strong>無條件印出</strong>（<code>llama-expert-cache.cpp:2211</code>）：</p>
+
+<pre><code>llama_expert_cache: verify-strict: refused=1  zero_mapped_selected=0</code></pre>
+
+<p><code>refused=1</code> 表示 verify-strict 前導正確地<strong>拒絕了一次</strong> fast path
+（因為有 expert 仍冷），而 <code>zero_mapped_selected=0</code> 表示<strong>從來沒有</strong>任何 token
+真的從 ZERO slot 讀到權重。也就是說：使用者擔心的那個形狀，有專門的儀器在守，而它讀 0。</p>
+
+<h2>七、修了什麼</h2>
+
+<table>
+  <tr><th>位置</th><th>修法</th></tr>
+  <tr><td class="mono">ggml-metal-ops.cpp<br><span class="small">CGC-MMID-ASSERT</span></td>
+      <td>4 KiB 探針全零時，再讀<strong>整條列</strong>確認。新增 <code>zero_full=</code> 欄位；
+          <strong>並且 <code>CGC_MMID_ASSERT_FATAL</code> 改為只在已確認的整列零才 abort</strong>
+          —— 舊行為會對這 10 列 abort（舊註解自己承認「on this model that means every run」）。</td></tr>
+  <tr><td class="mono">llama-expert-cache.cpp<br><span class="small">teardown 掃描</span></td>
+      <td>同一套兩階段。輸出改為 <code>zero-regions=%zu zero-prefix-only=%zu</code>：
+          <code>zero-regions</code> 現在真的等於「區域裡什麼都沒寫」；checkpoint 的零前綴另計並具名。</td></tr>
+  <tr><td class="mono">mmid_zero_row_triage.py</td>
+      <td>檔案側改讀<strong>整條 stride</strong>、新增 <code>PROBE-TOO-NARROW</code> 判決、
+          <code>exit 3</code>、可裁定 pool-integrity 警報、與引擎的 <code>zero_full</code> 互相交叉檢查。</td></tr>
+  <tr><td class="mono">gguf_dead_expert_census.py</td>
+      <td>新增。不需 log 的檔案側普查（零前綴長度 / 整列非零 byte / DEAD-ROW vs PROBE-TOO-NARROW）。</td></tr>
+  <tr><td class="mono">CONVENTIONS.md</td><td>新增 <strong>A13</strong>：判定用儀器不得沿用被判定對象的視窗寬度。</td></tr>
+</table>
+
+<p>修後同一配置的輸出：</p>
+
+<pre><code>pool integrity: owner-set slots=5935 zero-regions=0 zero-prefix-only=4 (probe&lt;=4KiB, full stride on zero, 70.8 MiB scanned)
+  zero-PREFIX only (not a defect; the file row starts with zeros): first layer=0 slot=18 kind=0 owner_expert=252
+  layer=0 zero-prefix=4 of 142 resident slots
+
+CGC-MMID-ASSERT name=ffn_moe_gate-1 ... zero_row=1 (first_id=214, total=1) | zero_full=0 (first_id=-1, total=0) | ...</code></pre>
+
+<div class="box b-blue">
+  <p><strong>這次改動可證為數值中性：</strong>改的是列印與分類，不是數值路徑。</p>
+  <ul>
+    <li>啟動環境指紋（A11 配方）：<code>e68a5dc537d626622a9af6c9c7ddf665</code>，<strong>與改動前完全相同</strong>。</li>
+    <li>M1/M2/M3 閘門 vs 未變動的 v4 參考：<code>9/9 · 9/9 · 9/9 · fnv1a64 9/9</code>，comparable=true。</li>
+    <li>所以<strong>不需要重新基線</strong>。</li>
+  </ul>
+</div>
+
+<h2>八、這條結論「不」說什麼</h2>
+
+<p>誠實劃界，避免把這個結案讀成比它更大的東西：</p>
+
+<ul>
+  <li><strong>它不撤回 skip0 修復是數值變更這件事。</strong>M1 對 v3 仍是 4/9（漂移）。那個證據是
+      owner-set 的 <code>5793 → 5935</code>（差 <strong>142</strong> = 恰好一層）與閘門本身，<strong>不是</strong>
+      zero-region 的 <code>2 → 4</code>。</li>
+  <li><strong>它說 zero-region 計數一直只是「內容讀數」</strong>，會隨 teardown 當下的 resident set 移動
+      （<code>5935 = 40×142 + 255</code>、<code>5793 = 39×142 + 255</code>、舊 build 的
+      <code>5720 = 40×143</code> / <code>5577 = 39×143</code>）。拿它當「layer 0 是否進池」的判別式本身就錯。</li>
+  <li><strong>它不保證 layer 0 進池沒有品質問題。</strong>零前綴是「每 token 都相同」的靜態性質；
+      池化 layer 0 改變的是<em>別的</em>東西（fill 身分 / 池佈局）。這條路仍需 M1 判別式
+      （slab 256/256 逐位元相同、partial pool 143/256 必分歧）。</li>
+  <li><strong>它沒有動 hook 是否改呼叫 <code>precommit_e2e_gate.sh</code></strong>（09-09 的意圖），
+      那會改變「哪一道閘門守 commit」，不搭這條便車。</li>
+</ul>
+
+<h2>九、驗收收據</h2>
+
+<table>
+  <tr><th>項目</th><th>值</th></tr>
+  <tr><td>檔案側普查</td><td class="mono">31488 列 · 零前綴 10 列 · 其餘零前綴長度 0</td></tr>
+  <tr><td>log 側裁定（新 binary）</td><td class="mono">MODEL-ZERO 0 · PROBE-TOO-NARROW 5 · ENGINE-ZERO 0 · UNRESOLVED 0</td></tr>
+  <tr><td>真正丟專家的機制</td><td class="mono">zero_mapped_selected = 0</td></tr>
+  <tr><td>M1/M2/M3 閘門 vs v4</td><td class="mono">9/9 · 9/9 · 9/9 · fnv1a64 9/9（comparable）</td></tr>
+  <tr><td>啟動環境指紋（A11）</td><td class="mono">e68a5dc537d626622a9af6c9c7ddf665（不變）</td></tr>
+  <tr><td>trace</td><td class="mono">lessons 40（+eng-mh-0014）· decisions 30（+dec-20260916-0125）</td></tr>
+  <tr><td>資產清單</td><td class="mono">62 assets，無漂移；selftest 8/8</td></tr>
+  <tr><td>產物</td><td class="mono">Backup/scratch/gguf_dead_expert_census_20260916.json<br>
+      Backup/m123_oracle_gate/summary_zero_probe_two_tier.json<br>
+      Backup/cgc_logs/llama_server_20260916_011759.log</td></tr>
+</table>
+
+<p class="small">報告檔 <code>docs/ZERO_REGION_TRIAGE_20260916.html</code> · 相關
+<code>docs/SKIP0_VALUE_SEMANTICS_20260916_0021.html</code>、<code>agent_harness/CONVENTIONS.md</code> A10–A13</p>
+
+</div>
+</body>
+</html>

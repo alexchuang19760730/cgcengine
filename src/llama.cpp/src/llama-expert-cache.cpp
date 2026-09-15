@@ -2045,10 +2045,24 @@ llama_expert_cache::~llama_expert_cache() {
         //       slot, so the GPU really did multiply by zeros.
         // At teardown nothing is in flight and nothing is mid-remap, so a zero region here is (b)
         // by construction. Walking owner-SET slots only makes this cheap (no env gate needed).
+        //
+        // [CGC 2026-09-16] The "(b) by construction" inference rested on an unstated premise --
+        // that a correctly filled region is never all-zero in its first 4 KiB. That premise does
+        // NOT hold for this checkpoint: 10 of 31488 expert rows (measure them with
+        // scripts/check/gguf_dead_expert_census.py) begin with 4592-13120 B of zeros while being
+        // 17.8-47.0% non-zero overall, so the 4 KiB probe sits entirely inside a legitimately
+        // zero prefix. Every `zero-regions` this scan has ever printed is one of those rows.
+        // Hence the two-tier probe: 4 KiB first (cheap), and the FULL stride only when that
+        // comes back all-zero. `zero-regions` now means "the region holds nothing, the fill did
+        // not land" -- the property the scan was written to detect -- and the checkpoint's zero
+        // prefixes are reported separately instead of being folded into it.
         if (!slot_owner.empty() && (!pool_ext.empty() || !pool.empty())) {
             size_t zero_slots = 0, checked_slots = 0, checked_bytes = 0;
+            size_t prefix_only = 0;
             int    first_l = -1, first_s = -1, first_k = -1, first_e = -1;
+            int    pref_l  = -1, pref_s  = -1, pref_k  = -1, pref_e  = -1;
             std::vector<size_t> zero_per_layer(slot_owner.size(), 0);
+            std::vector<size_t> pref_per_layer(slot_owner.size(), 0);
             std::vector<size_t> chk_per_layer(slot_owner.size(), 0);
             for (size_t l = 0; l < slot_owner.size(); ++l) {
                 const size_t nk = (l < pool_ext.size()) ? pool_ext[l].size()
@@ -2083,18 +2097,34 @@ llama_expert_cache::~llama_expert_cache() {
                             if (w != 0) { allzero = false; break; }
                         }
                         checked_bytes += probe;
-                        if (allzero) {
+                        if (!allzero) {
+                            continue;
+                        }
+                        // All-zero over the probe. Confirm over the whole stride before calling it
+                        // a dropped fill; a prefix-only region is the checkpoint talking.
+                        bool whole_zero = true;
+                        for (size_t b = probe; b + 8 <= stride; b += 8) {
+                            uint64_t w;
+                            memcpy(&w, row + b, 8);
+                            if (w != 0) { whole_zero = false; break; }
+                        }
+                        checked_bytes += stride - probe;
+                        if (whole_zero) {
                             ++zero_slots;
                             ++zero_per_layer[l];
                             if (first_l < 0) { first_l = (int) l; first_s = (int) s; first_k = (int) k; first_e = (int) e; }
+                        } else {
+                            ++prefix_only;
+                            ++pref_per_layer[l];
+                            if (pref_l < 0) { pref_l = (int) l; pref_s = (int) s; pref_k = (int) k; pref_e = (int) e; }
                         }
                     }
                 }
             }
             fprintf(stderr, "llama_expert_cache: pool integrity: owner-set slots=%zu zero-regions=%zu "
-                    "(probe<=4KiB/slot/kind, %.1f MiB scanned)%s\n",
-                    checked_slots, zero_slots, (double) checked_bytes / 1048576.0,
-                    zero_slots ? "" : "  [OK: every resident slot holds non-zero bytes]");
+                    "zero-prefix-only=%zu (probe<=4KiB, full stride on zero, %.1f MiB scanned)%s\n",
+                    checked_slots, zero_slots, prefix_only, (double) checked_bytes / 1048576.0,
+                    (zero_slots || prefix_only) ? "" : "  [OK: every resident slot holds non-zero bytes]");
             if (zero_slots) {
                 fprintf(stderr, "llama_expert_cache:   first zero region: layer=%d slot=%d kind=%d owner_expert=%d\n",
                         first_l, first_s, first_k, first_e);
@@ -2102,6 +2132,16 @@ llama_expert_cache::~llama_expert_cache() {
                     if (zero_per_layer[l]) {
                         fprintf(stderr, "llama_expert_cache:   layer=%zu zero=%zu of %zu resident slots\n",
                                 l, zero_per_layer[l], chk_per_layer[l]);
+                    }
+                }
+            }
+            if (prefix_only) {
+                fprintf(stderr, "llama_expert_cache:   zero-PREFIX only (not a defect; the file row starts with zeros): first layer=%d slot=%d kind=%d owner_expert=%d\n",
+                        pref_l, pref_s, pref_k, pref_e);
+                for (size_t l = 0; l < pref_per_layer.size(); ++l) {
+                    if (pref_per_layer[l]) {
+                        fprintf(stderr, "llama_expert_cache:   layer=%zu zero-prefix=%zu of %zu resident slots\n",
+                                l, pref_per_layer[l], chk_per_layer[l]);
                     }
                 }
             }

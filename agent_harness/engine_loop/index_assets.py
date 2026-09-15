@@ -72,7 +72,11 @@ CURATED = [
     ("scripts/check/mmid_pool_vs_gguf.py", "probe", "engine", True, False,
      "cross-checks pool-resident expert bytes against the GGUF source."),
     ("scripts/check/mmid_zero_row_triage.py", "probe", "engine", True, False,
-     "splits every CGC-MMID-ASSERT into MODEL-ZERO vs ENGINE-ZERO. Classify before fixing."),
+     "adjudicates CGC-MMID-ASSERT zero_row AND pool-integrity zero-region alarms against the GGUF. "
+     "Reads the WHOLE row stride: MODEL-ZERO / PROBE-TOO-NARROW / ENGINE-ZERO. Exit 3 = fix the probe."),
+    ("scripts/check/gguf_dead_expert_census.py", "probe", "engine", True, False,
+     "census of all-zero and zero-PREFIXED expert rows straight from the GGUF, no log needed. "
+     "The file-side ground truth behind every zero_row / zero-region alarm."),
     ("scripts/check/flip_rate.py", "probe", "engine", True, False,
      "route-flip rate; the measurement behind the 'which experts change' question."),
     ("scripts/check/mtp_accept_ab.py", "compare", "engine", True, False,

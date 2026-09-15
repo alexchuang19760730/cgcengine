@@ -216,6 +216,26 @@
   「git 實際宣告的路徑」做自我核對（`git rev-parse --git-path …`），
   外加對「另一個可能是雙胞胎的位置」做存在性警告。
 
+**A13｜「判定用」的儀器若沿用被判定對象的視窗寬度，它只能確認前提，不能檢驗前提。**
+- 事證：兩個警報（`CGC-MMID-ASSERT … zero_row=`、`pool integrity: … zero-regions=`）都以
+  「某個 expert 列的前 4096 bytes 全零」判定「填充掉了、貢獻被靜默丟棄」。裁定工具
+  `scripts/check/mmid_zero_row_triage.py` 也用**同樣的 4096 bytes** 讀檔來分類 MODEL-ZERO /
+  ENGINE-ZERO。於是它對任何「前 4 KiB 為零」的列**只可能**回 MODEL-ZERO——它在 2026-09-15
+  寫下的「14 MODEL-ZERO / 0 ENGINE-ZERO」是結構保證的，不是量出來的。
+- 真相（`scripts/check/gguf_dead_expert_census.py`，不需 log，直接讀檔）：gate/up/down 共
+  31488 列中有 10 列的前綴為零——**零前綴長 4592–13120 B（恰為整數條量化列），整列
+  17.8–47.0% 非零**；其餘 31478 列的零前綴長度**恰為 0**。這 10 列不是 dead expert，
+  是 zero-PREFIXED expert。所以池中那個區域為零**是檔案要求**，不是缺陷。
+- 規則：任何「此區域為零 ⇒ 有缺陷」的儀器，其確認步驟必須用**與警報不同的寬度**：
+  先窄探針（便宜），全零時再讀**整條 stride** 才計數。否則警報與裁定共享同一個盲點，
+  而共享盲點的兩個儀器永遠互相印證。
+- 同一條規則的第二個後果：`CGC_MMID_ASSERT_FATAL=1` 原本對這 10 列 abort（舊註解自己
+  承認「on this model that means every run」）⇒ 在健康配置上不可用。修好分類後，
+  fatal 只認**已用整列確認**的零列。
+- 檢查：改動 probe 後要同時附 (1) 檔案側普查（零前綴 vs 整列零）、(2) 裁定工具在
+  **新舊日誌**上的判決（`exit 3` = 修探針，不是修填充）、(3) 啟動環境指紋（A11）與
+  M1/M2/M3 閘門；本輪三者：指紋不變 `e68a5dc5…`、閘門 M1/M2/M3/fnv1a64 = 9/9/9/9。
+
 ---
 
 ## B. 診斷

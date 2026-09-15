@@ -3506,22 +3506,41 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
     //       can only detect nondeterminism, never a deterministic error. See the whitepaper
     //       (docs/PREFILL250_DECODE25_WHITEPAPER_20260915_1810.html).
     //
+    //       [CGC 2026-09-16] CORRECTION -- those 10 rows are ZERO-PREFIX rows, not zero rows, and
+    //       "MODEL-ZERO" was a conclusion the adjudicator could not have failed to reach: it
+    //       re-read the expert row at the SAME 4096-byte width as the alarm it was judging. The
+    //       file-side truth, measured over the full row stride (scripts/check/
+    //       gguf_dead_expert_census.py, 31488 gate/up/down rows):
+    //           zero-prefix rows = 10 -- layer 0 experts 25/195/205/252 and layer 1 expert 214,
+    //           gate+up in each case. Leading zero run = 4592..13120 B (a whole number of the
+    //           quantised row lines), and the row is 17.8-47.0% NON-zero overall. Every one of
+    //           the other 31478 rows has a leading zero run of exactly 0.
+    //       So the 4 KiB probe lands entirely inside a legitimately zero prefix, and a pool
+    //       region that is zero there is REQUIRED behaviour, not a dropped expert. What follows
+    //       for the counters: `zero_row` = probe-wide hits (cheap, can be a checkpoint property),
+    //       `zero_full` = hits that survived a whole-row read (the only ones that warrant action).
+    //       The teardown pool-integrity scan carries the same two-tier split; see
+    //       llama-expert-cache.cpp. Consequence for the gate: it stays blind to these rows, but
+    //       now for a stated reason rather than an unverified one.
+    //
     // Cost: (a) is one int32 load + 2 compares per id (~2k per decode token, ~49k on a 6144-token
     // prefill chunk -- a single pass over a buffer we are about to DMA anyway). (b) is a
-    // word-wise scan with early exit, so the 99.972% non-zero case costs one 8-byte load per
-    // checked row and we only check the first 8 rows per node.
+    // word-wise scan with early exit, so the 99.968% non-zero case costs one 8-byte load per
+    // checked row and we only check the first 8 rows per node; the whole-row confirmation runs
+    // only on the all-zero path, where it costs one pass over that one row.
     //
     //   CGC_MMID_ASSERT=0        -> disable both (only when measuring peak throughput)
-    //   CGC_MMID_ASSERT_FATAL=1  -> abort on the first violation (CI / oracle gate). Note it
-    //                              aborts on MODEL-ZERO rows too -- on this model that means
-    //                              every run, so pair it with the triage script, not with a
-    //                              blank "no violations" expectation.
+    //   CGC_MMID_ASSERT_FATAL=1  -> abort on the first violation (CI / oracle gate). Since
+    //                              2026-09-16 it aborts on id_oob or a CONFIRMED zero row only,
+    //                              so it is usable on this model: a `zero_row=1 zero_full=0` line
+    //                              (the checkpoint's zero prefixes) does not abort.
     // Default: detect + log, do not abort.
     {
         static int cgc_asrt_on = -1;
         static int cgc_asrt_fatal = -1;
         static int cgc_oob_total = 0;
         static int cgc_zero_total = 0;
+        static int cgc_zero_full_total = 0;
         static int cgc_asrt_prints = 0;
         if (cgc_asrt_on < 0) {
             const char * a = getenv("CGC_MMID_ASSERT");
@@ -3536,6 +3555,25 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
 
             int n_oob = 0;  int32_t oob_v = 0;
             int n_zero = 0; int32_t zero_v = -1;
+            // [CGC 2026-09-16] `n_zero` counts PREFIX hits (probe-wide) and `n_zero_full` counts
+            // those that survived a full-row confirmation. Only the confirmed one can mean a
+            // dropped expert; see the header note.
+            int n_zero_full = 0; int32_t zero_full_v = -1;
+
+            // Word-wise + early exit. `pref` is the probe width: min(rowb, 4096).
+            auto cgc_row_all_zero = [](const uint8_t * p, size_t n) {
+                size_t b = 0;
+                for (; b + 8 <= n; b += 8) {
+                    uint64_t w;
+                    memcpy(&w, p + b, 8);
+                    if (w != 0) { return false; }
+                }
+                for (; b < n; ++b) {
+                    if (p[b] != 0) { return false; }
+                }
+                return true;
+            };
+            const size_t pref = (rowb < 4096) ? (size_t) rowb : (size_t) 4096;
 
             if (ids_p != nullptr) {
                 for (int64_t i = 0; i < n_ids; ++i) {
@@ -3545,29 +3583,29 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
                         n_oob++;
                         continue;
                     }
-                    // (b) zero-row scan: quantized expert weights are never all-zero in their
-                    // first 64 bytes. Word-wise + early exit, capped at the first 8 rows so a
-                    // wide prefill chunk cannot turn this into a real cost.
+                    // (b) zero-row scan, capped at the first 8 rows so a wide prefill chunk cannot
+                    // turn this into a real cost. On an all-zero probe the whole row is read once
+                    // to confirm it: a checkpoint may legitimately begin a row with a zero run
+                    // longer than any probe. Measured on this GGUF (scripts/check/
+                    // gguf_dead_expert_census.py): 10 of 31488 expert rows start with 4.6-13.1 KiB
+                    // of zeros while the row overall is 18-47% non-zero -- the 4 KiB probe sits
+                    // entirely inside that prefix, so without the confirmation this assertion
+                    // cannot tell "the file starts with zeros" from "the fill dropped the expert".
                     if (n_zero == 0 && s0 != nullptr && rowb >= 64 && i < 8) {
                         const uint8_t * row = s0 + (int64_t) v * (int64_t) rowb;
-                        bool allzero = true;
-                        for (int k = 0; k < 8 && allzero; ++k) {
-                            uint64_t w;
-                            memcpy(&w, row + (size_t) k * 8, 8);
-                            if (w != 0) { allzero = false; }
+                        if (cgc_row_all_zero(row, pref)) {
+                            zero_v = v; n_zero++;
+                            if (cgc_row_all_zero(row, (size_t) rowb)) {
+                                zero_full_v = v; n_zero_full++;
+                            }
                         }
-                        for (size_t b = 64; allzero && rowb >= 4096 && b < 4096; b += 8) {
-                            uint64_t w;
-                            memcpy(&w, row + b, 8);
-                            if (w != 0) { allzero = false; }
-                        }
-                        if (allzero) { zero_v = v; n_zero++; }
                     }
                 }
             }
 
-            cgc_oob_total  += n_oob;
-            cgc_zero_total += n_zero;
+            cgc_oob_total       += n_oob;
+            cgc_zero_total      += n_zero;
+            cgc_zero_full_total += n_zero_full;
 
             // Rate limit: the first 8 occurrences verbatim, then one line every 1000th -- enough
             // to attribute a violation to a layer/token without re-creating the 4000-line stderr
@@ -3586,11 +3624,13 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
                     GGML_LOG_WARN("CGC-MMID-ASSERT name=%s ne02=%d n_ids=%lld"
                                   " | id_oob=%d (first=%d, total=%d)"
                                   " | zero_row=%d (first_id=%d, total=%d)"
+                                  " | zero_full=%d (first_id=%d, total=%d)"
                                   " | src0 ne=[%d,%d,%d] nb02=%llu ids ne=[%d,%d]"
                                   " | ids_name='%s' ids_op=%d ids_view_op=%d ids_data=%p\n",
                                   op->name, (int) ne02, (long long) n_ids,
                                   n_oob,  (int) oob_v,  cgc_oob_total,
                                   n_zero, (int) zero_v,  cgc_zero_total,
+                                  n_zero_full, (int) zero_full_v, cgc_zero_full_total,
                                   (int) ne00, (int) ne01, (int) ne02,
                                   (unsigned long long) nb02, (int) ne20, (int) ne21,
                                   op->src[2]->name != nullptr ? op->src[2]->name : "(anon)",
@@ -3598,10 +3638,14 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
                                   (int) (op->src[2]->view_src != nullptr ? op->src[2]->view_src->op : -1),
                                   op->src[2]->data);
                 }
-                if (cgc_asrt_fatal) {
-                    GGML_ABORT("CGC-MMID-ASSERT fatal: name=%s ne02=%d id_oob=%d zero_row=%d "
+                // [CGC 2026-09-16] Fatal is now gated on the CONFIRMED count, not the probe-wide
+                // one. A prefix hit is a property of the checkpoint (see the header note), so
+                // aborting on it made CGC_MMID_ASSERT_FATAL unusable on this model -- it fired on
+                // every healthy run. `zero_row > 0 && zero_full == 0` is now a normal line.
+                if (cgc_asrt_fatal && (n_oob > 0 || n_zero_full > 0)) {
+                    GGML_ABORT("CGC-MMID-ASSERT fatal: name=%s ne02=%d id_oob=%d zero_row=%d zero_full=%d "
                                "(see CGC-MMID-ASSERT lines above)",
-                               op->name, (int) ne02, n_oob, n_zero);
+                               op->name, (int) ne02, n_oob, n_zero, n_zero_full);
                 }
             }
         }
