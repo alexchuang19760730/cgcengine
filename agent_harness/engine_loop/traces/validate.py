@@ -183,6 +183,16 @@ def validate_file(path: str, quiet: bool = False, episodes_index: dict | None = 
     for dup in {i for i in ids if ids.count(i) > 1}:
         errs.append(f"duplicate episode_id {dup}")
 
+    # The same rule for the other two record types. It was written for episodes only -- the check
+    # sat next to the episode rules and was never generalised -- so two lessons shared
+    # `eng-gate-0006` and two more shared `eng-bound-0001` while this validator stayed green.
+    # A record id is a KEY: duplicates silently break `supersedes`/`superseded_by` resolution and
+    # make any "the lesson about X" reference ambiguous.
+    for rtype, key in (("decision", "decision_id"), ("lesson", "lesson_id")):
+        rids = [r.get(key) for r in recs if r.get("type") == rtype]
+        for dup in {i for i in rids if rids.count(i) > 1}:
+            errs.append(f"duplicate {key} {dup}")
+
     # id resolution against the episodes index (when we have one)
     if episodes_index:
         known = set(episodes_index)

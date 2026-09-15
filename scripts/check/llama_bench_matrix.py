@@ -119,6 +119,16 @@ ARMS: dict[str, tuple[str, dict[str, str]]] = {
     # wide prompts unless CGC_PREFILL_STREAM is set -- that is the profile's own shape, and why the
     # `prod25-stream` arm below is the one that yields usable pp/tg rows.
     "prefill250": ("prefill250", {}),
+    # `CGC-DECPROF` was decode-only *by construction*: its print gate was `(dp_step % 8) == 0`, and a
+    # 2048-token prefill at `-ub 6144` is a single graph_compute (dp_step=1) whose per-layer
+    # accumulators are zeroed before step 8 is reached -- so no prefill ever printed and the
+    # instrument looked like it did not exist (eng-src-0011). The gate now also fires on the first
+    # graph and on any graph whose top-k tensor says n_tokens > 1, and each line carries `ntok=`, so
+    # a printed step states its own shape rather than being *assumed* to be a prefill. `CGC_GPU_TIMING`
+    # rides along so one launch yields both the per-layer split and the union/wait cross-check, and
+    # `_ALL` is on because the uniformity verdict needs all 40 layers, not the top 8.
+    "prefill250-decprof": ("prefill250", {"CGC_DECODE_PROFILE": "1", "CGC_DECODE_PROFILE_ALL": "1",
+                                          "CGC_GPU_TIMING": "1"}),
 }
 
 # Args we forward from the resolved server argv to llama-bench. Allowlist, not denylist: the server

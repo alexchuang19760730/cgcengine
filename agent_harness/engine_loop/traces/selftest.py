@@ -68,6 +68,18 @@ def cases() -> list:
         ("bad_lesson_class",
          "class is what makes a lesson injectable at the right moment",
          "lesson", {**les, "class": "vibes"}),
+        # Duplicate ids were the one integrity rule that had NO enforcement at all -- only
+        # episode_id was checked, because the check was written next to the episode rules and never
+        # generalised. Two lessons shipped sharing `eng-gate-0006` and two more sharing
+        # `eng-bound-0001`, and validate.py stayed green. An id is a KEY: a duplicate silently
+        # breaks every `supersedes`/`superseded_by` reference and makes "the lesson about X"
+        # ambiguous, which is exactly the failure mode D4 exists to prevent.
+        ("duplicate_lesson_id",
+         "two different lessons under one id make every reference to it ambiguous",
+         "lesson", [les, {**les, "rule": "A different rule that claims the same id as its twin."}]),
+        ("duplicate_decision_id",
+         "a supersede chain cannot resolve if the id it names is not unique",
+         "decision", [dec, {**dec, "conclusion": "A different conclusion under the same decision id."}]),
     ]
 
 
@@ -76,8 +88,12 @@ def main() -> int:
     missed = []
     for name, why, kind, rec in cases():
         p = os.path.join(tmp, f"{kind}_{name}.jsonl")
+        # `rec` is one record, or a list of them for cases whose violation is a RELATION between
+        # records (a duplicate id only exists in the presence of its twin).
+        recs = rec if isinstance(rec, list) else [rec]
         with open(p, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            for r in recs:
+                fh.write(json.dumps(r, ensure_ascii=False) + "\n")
         r = subprocess.run([sys.executable, os.path.join(HERE, "validate.py"), p,
                             "--quiet", "--dir", HERE],
                            capture_output=True, text=True)

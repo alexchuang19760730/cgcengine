@@ -107,6 +107,242 @@ def mem_state() -> dict:
     }
 
 
+SEG_PATTERNS = {
+    # from `llama_expert_cache: final stats: ...`
+    "resident_mib":    r"resident=([\d.]+) MiB",
+    "file_reads":      r"file_reads=(\d+)",
+    "pread_usec":      r"pread_usec=(\d+)",
+    "fill_batch_usec": r"fill_batch_usec=(\d+)",
+    "fill_wait_us":    r"fill_wait_us=(\d+)",
+    "req_hit_rate":    r"hit rate ([\d.]+)%",
+    # from `slab fills:` -- the M2 exit condition, and the first thing to check
+    "slab_pool_mib":   r"slab fills: pool=([\d.]+) MiB",
+    "slab_disk_mib":   r"disk=([\d.]+) MiB",
+    "nonresident_pct": r"non-resident share ([\d.]+)%",
+    # from `read shape:`
+    "read_jobs":       r"read shape: jobs=(\d+)",
+    "read_bytes":      r"read shape: jobs=\d+ bytes=(\d+)",
+    "us_per_job":      r"us/job=([\d.]+)",
+    # from `pool integrity:` and the two failure gates
+    "owner_slots":     r"owner-set slots=(\d+)",
+    "zero_regions":    r"zero-regions=(\d+)",
+    "verify_refused":  r"verify-strict: refused=(\d+)",
+    "zero_mapped":     r"zero_mapped_selected=(\d+)",
+    # from `miss attribution:`
+    "miss_compulsory": r"compulsory=(\d+)",
+    "miss_capacity":   r"capacity=(\d+)",
+    "evictions":       r"evictions=(\d+)",
+}
+
+
+def harvest_segments(stderr_text: str) -> dict:
+    """Mine the always-on teardown counters out of one launch's stderr.
+
+    These lines are emitted by the engine at every `~llama_expert_cache`, with no env gate, so
+    the numbers are directly comparable to a run that was profiled with no instrumentation at
+    all -- which is the only reason a high run and a low run can be differenced. `CGC-SEG` is
+    summed here as (wait, cb, submit) totals over its per-segment lines.
+
+    Two fields on these lines are NOT trustworthy as an I/O measure, and are harvested anyway so
+    the defect stays visible rather than being silently quoted:
+      - `read_bytes` / `us_per_job`: `n_read_bytes` is incremented on the pool path only
+        (llama-expert-cache.cpp:2657,2671), never in `fill_job` (:41), so a run whose fills all
+        take the concurrent-segment path reports bytes=0 and an `effective_rate` of ~1 MiB/s
+        against 178 GiB actually read. Use `pread_usec` + `file_reads` instead.
+      - `pread_usec` is an AGGREGATE over worker threads (llama-expert-cache.h:463,473) and can
+        exceed wall time by the worker count; only `fill_wait_us` is on the calling thread.
+    The whole-layer slab `pread` (llama-expert-cache.cpp:3351) increments NOTHING, so
+    `file_reads`/`pread_usec` under-count prefill I/O by an amount that is not currently known.
+    """
+    seg: dict = {}
+    for key, pat in SEG_PATTERNS.items():
+        m = None
+        for m in re.finditer(pat, stderr_text):
+            pass
+        if m is not None:
+            seg[key] = float(m.group(1)) if "." in m.group(1) else int(m.group(1))
+    # CGC-SEG prints CUMULATIVE AVERAGES (`w_us/n`), so the last line times n is the total and
+    # summing the printed values is meaningless -- doing that inflated a 30 s wait to 0.54 s on
+    # the first version of this harvester. Take the last line only.
+    m = None
+    for m in re.finditer(r"CGC-SEG: wait ([\d.]+) cb ([\d.]+) submit ([\d.]+) us \((\d+)\)",
+                         stderr_text):
+        pass
+    if m is not None:
+        w, c, s, n_seg = (float(m.group(1)), float(m.group(2)), float(m.group(3)),
+                          int(m.group(4)))
+        seg.update({"seg_n": n_seg,
+                    "seg_wait_s": w * n_seg / 1e6,      # GPU-bound: spin until the cmd buffers land
+                    "seg_cb_s": c * n_seg / 1e6,        # CPU: encode
+                    "seg_submit_s": s * n_seg / 1e6,    # CPU: commit
+                    "seg_wait_avg_ms": w / 1e3})
+    seg["prefill_stream_fills"] = len(re.findall(r"CGC-PREFILL-STREAM: il=\d+ kind=\d+ ntok=",
+                                                 stderr_text))
+    return seg
+
+
+def harvest_gputime(stderr_text: str) -> dict:
+    """Mine `CGC-GPUTIME` (needs CGC_GPU_TIMING=1; gate: ggml-backend.cpp:1844).
+
+    One line == ONE graph_compute (the accumulators reset per graph, :2143). `wait` is wall time
+    the CPU spent spinning for that graph's command buffers; `gpu_union` is the union of the GPU's
+    own start/end intervals -- how much of that wait the GPU was genuinely busy. The engine states
+    its own decision rule at :2115-2122: union/wait >= 70% means the wait IS GPU execution (batch
+    the per-expert GEMVs); <= 40% means launch/completion latency (remove the GPU->CPU->GPU round
+    trip at the segment boundary). `skipped` must stay 0 or Metal reported no timestamps and the
+    whole line means nothing.
+    """
+    rows = []
+    for m in re.finditer(
+            r"CGC-GPUTIME: step=(\d+) segs=(\d+) bufs=(\d+) skipped=(\d+) "
+            r"wait=([\d.]+) gpu_busy_sum=([\d.]+) \(([\d.]+)%\) "
+            r"gpu_union=([\d.]+) \(([\d.]+)%\) gap=([\d.]+) \(([\d.]+)%\) ms", stderr_text):
+        rows.append(dict(step=int(m.group(1)), segs=int(m.group(2)), bufs=int(m.group(3)),
+                         skipped=int(m.group(4)), wait_ms=float(m.group(5)),
+                         busy_ms=float(m.group(6)), union_ms=float(m.group(8)),
+                         union_pct=float(m.group(9)), gap_ms=float(m.group(10))))
+    if not rows:
+        return {}
+    big = max(rows, key=lambda r: r["wait_ms"])        # the prefill graph is the big one
+    tw = sum(r["wait_ms"] for r in rows)
+    tu = sum(r["union_ms"] for r in rows)
+    return {"gpu_lines": len(rows),
+            "gpu_skipped": sum(r["skipped"] for r in rows),
+            "gpu_wait_ms": tw, "gpu_union_ms": tu,
+            "gpu_union_pct": 100.0 * tu / tw if tw else 0.0,
+            "gpu_gap_ms": sum(r["gap_ms"] for r in rows),
+            "ppg_wait_ms": big["wait_ms"], "ppg_union_ms": big["union_ms"],
+            "ppg_union_pct": big["union_pct"], "ppg_gap_ms": big["gap_ms"],
+            "ppg_segs": big["segs"], "ppg_bufs": big["bufs"]}
+
+
+DECPROF_SUM_RE = re.compile(
+    r"CGC-DECPROF: step=(\d+) segs=(\d+) layers=(\d+) total=([\d.]+) ms \| "
+    r"wait=([\d.]+) \((\d+)%\) cb=([\d.]+) \((\d+)%\) submit=([\d.]+) \((\d+)%\)"
+    r"(?: ntok=(\d+))?")
+DECPROF_LAY_RE = re.compile(
+    r"CGC-DECPROF (top\d+|all): L(\d+) wait=([\d.]+) cb=([\d.]+) submit=([\d.]+) ms n=(\d+)")
+
+
+def harvest_decprof(stderr_text: str) -> dict:
+    """Mine `CGC-DECPROF` -- the per-layer wait/cb/submit split. Needs `CGC_DECODE_PROFILE=1`
+    AND the segmented dispatcher (`CGC_OA_ASYNC != 0`), i.e. `arm prefill250-decprof`.
+
+    Why this harvester exists at all: until 2026-09-16 the instrument could not see a prefill.
+    Its print gate was `(dp_step % 8) == 0` (`ggml-backend.cpp:2061`) and a 2048-token prefill at
+    `-ub 6144` is a single `graph_compute`, so `dp_step` was 1 and the per-layer accumulators were
+    zeroed long before step 8 was reached. 95 preserved logs, every one of them with a minimum
+    printed `step` of 8, is the fingerprint of that (lesson `eng-src-0011`). The gate now also
+    fires on the first graph of the process and on any graph whose top-k tensor reports
+    `n_tokens > 1`, and every line carries `ntok=` -- so **this harvester keys off `ntok`, never off
+    `step`**: a graph is a prefill because it says it is, not because it came first.
+
+    What the three components mean, per layer:
+      - `wait_ms`  -- the CPU spinning until that layer's command buffers complete. This is the
+                      bucket that dominates prefill, and it is the same quantity `CGC-GPUTIME`
+                      reports as `gpu_union/wait` for the whole graph.
+      - `cb_ms`    -- the top-k hook: slot management plus any *blocking* fill, charged to the
+                      layer whose segment was just consumed. This is where a cold expert fill
+                      lands, and it is why the first prefill graph costs more than the second.
+      - `submit_ms`-- committing that layer's segment to Metal.
+    Uniformity of `wait_ms` across layers is the discriminator the report asks for: a tight spread
+    means every layer slowed by the same factor (a clock/power ceiling), a single dominant layer
+    means one implementation is the cost.
+
+    One parsing rule that is load-bearing: `top<N>:` and `all:` lines describe the SAME layers --
+    `top8` is a subset of `all`. Both are collected into one dict keyed by layer index, never a
+    list, because appending them double-counts every layer (40 `all` + 8 `top` = 48 "layers" on a
+    40-layer model) and inflates `max` and the coefficient of variation, which is exactly the
+    quantity the uniformity verdict is computed from. Measured 2026-09-16, before the fix.
+    """
+    graphs: list[dict] = []
+    cur: dict | None = None
+    for line in stderr_text.splitlines():
+        m = DECPROF_SUM_RE.search(line)
+        if m is not None:
+            cur = {"step": int(m.group(1)), "segs": int(m.group(2)), "layers": int(m.group(3)),
+                   "total_ms": float(m.group(4)), "wait_ms": float(m.group(5)),
+                   "cb_ms": float(m.group(7)), "submit_ms": float(m.group(9)),
+                   "ntok": int(m.group(11)) if m.group(11) is not None else None,
+                   "lay": {}}
+            graphs.append(cur)
+            continue
+        m = DECPROF_LAY_RE.search(line)
+        if m is not None and cur is not None:
+            # keyed by layer, so a `topN` line for a layer the `all:` pass already reported just
+            # rewrites it with identical numbers instead of counting it twice
+            cur["lay"][int(m.group(2))] = [float(m.group(3)), float(m.group(4)),
+                                           float(m.group(5)), int(m.group(6))]
+    for g in graphs:
+        g["lay"] = [[l, *g["lay"][l]] for l in sorted(g["lay"])]
+    if not graphs:
+        return {}
+
+    pre = [g for g in graphs if (g["ntok"] or 0) > 1]
+    dec = [g for g in graphs if (g["ntok"] or 0) <= 1]
+    out: dict = {"dp_graphs": len(graphs), "dp_prefill_graphs": len(pre),
+                 "dp_decode_graphs": len(dec),
+                 # the per-graph records themselves: the per-layer wait series is what says whether
+                 # a slowdown was uniform or localised, and it cannot be reconstructed from the
+                 # summary keys alone
+                 "dp_series": graphs,
+                 "dp_ntok_max": max((g["ntok"] or 0) for g in graphs),
+                 "dp_prefill_s": round(sum(g["total_ms"] for g in pre) / 1000.0, 3),
+                 "dp_decode_s": round(sum(g["total_ms"] for g in dec) / 1000.0, 3),
+                 "dp_ntok_none": sum(1 for g in graphs if g["ntok"] is None)}
+
+    # The cold/hot pair the report needs: the FIRST prefill graph of the process (which also pays
+    # the cold expert fill) and the SECOND (same shape, fill already warm). Also flatten each, so a
+    # diff between two launches is a key-by-key comparison rather than a re-parse.
+    for q, g in (("dpq1", pre[0] if pre else None), ("dpq2", pre[1] if len(pre) > 1 else None)):
+        if g is None:
+            continue
+        ws = [v[1] for v in g["lay"]]
+        cbs = [v[2] for v in g["lay"]]
+        n = len(ws)
+        mean = sum(ws) / n if n else 0.0
+        var = sum((x - mean) ** 2 for x in ws) / n if n else 0.0
+        srt = sorted(ws)
+        med = (srt[n // 2] if n % 2 else 0.5 * (srt[n // 2 - 1] + srt[n // 2])) if n else 0.0
+        p25 = srt[n // 4] if n else 0.0
+        p75 = srt[(3 * n) // 4] if n else 0.0
+        within = sum(1 for x in ws if med and abs(x - med) <= 0.25 * med)
+        top = max(g["lay"], key=lambda v: v[1]) if g["lay"] else None
+        out.update({
+            f"{q}_step": g["step"], f"{q}_ntok": g["ntok"], f"{q}_segs": g["segs"],
+            f"{q}_layers_seen": n, f"{q}_total_ms": g["total_ms"],
+            f"{q}_wait_ms": g["wait_ms"], f"{q}_cb_ms": g["cb_ms"],
+            f"{q}_submit_ms": g["submit_ms"],
+            f"{q}_lay_w_mean_ms": round(mean, 3),
+            f"{q}_lay_w_median_ms": round(med, 3),
+            f"{q}_lay_w_min_ms": round(min(ws), 3) if ws else 0.0,
+            f"{q}_lay_w_max_ms": round(max(ws), 3) if ws else 0.0,
+            f"{q}_lay_w_cv_pct": round(100.0 * (var ** 0.5) / mean, 2) if mean else 0.0,
+            # Robust uniformity, because the raw spread is dominated by a PIPELINE RAMP, not by a
+            # slow layer: with `submit_ahead`, layer i's wait is what layer i's segment had to wait
+            # for, so the first handful of layers have less GPU backlog to wait on and report less.
+            # In the fast 285 t/s probe L0 was ALSO the minimum (112 ms against a 155 ms plateau), so
+            # the ramp is structural and says nothing about the state. `peak/mean` conflates the two
+            # and mislabels a uniformly-scaled graph as localised; IQR/median and the fraction of
+            # layers within +/-25% of the median do not.
+            f"{q}_lay_w_iqr_over_median": round((p75 - p25) / med, 3) if med else 0.0,
+            f"{q}_lay_w_frac_within_25pct": round(within / n, 3) if n else 0.0,
+            f"{q}_lay_w_argmax_layer": top[0] if top else None,
+            f"{q}_lay_w_sum_ms": round(sum(ws), 3),
+            f"{q}_lay_cb_sum_ms": round(sum(cbs), 3),
+            f"{q}_lay_w_top_layer": top[0] if top else None,
+            f"{q}_lay_w_top_ms": top[1] if top else None,
+        })
+    if out.get("dpq1_lay_w_max_ms") and out.get("dpq1_lay_w_mean_ms"):
+        # ratio of the slowest layer to the mean. < ~1.3 => the graph slowed as a whole.
+        out["dpq1_lay_w_peak_over_mean"] = round(
+            out["dpq1_lay_w_max_ms"] / out["dpq1_lay_w_mean_ms"], 3)
+    if out.get("dpq2_lay_w_mean_ms") and out.get("dpq1_lay_w_mean_ms"):
+        out["dpq1_over_dpq2_lay_w"] = round(
+            out["dpq1_lay_w_mean_ms"] / out["dpq2_lay_w_mean_ms"], 3)
+    return out
+
+
 def pp_from(json_path: Path) -> list[dict]:
     """Pull the pp row(s) out of the matrix harness summary json."""
     if not json_path.exists():
@@ -145,10 +381,35 @@ def main() -> int:
     ap.add_argument("--warm-file",
                     default=str(ROOT / "models" / "gguf"
                                 / "Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf"))
+    ap.add_argument("--logdir",
+                    default=str(ROOT / "Backup" / "llama_bench" / "cert_runs"),
+                    help="one subdirectory per launch, so every launch keeps its own "
+                         "llama_bench_<arm>.stderr.log (the matrix names the file after the ARM)")
+    ap.add_argument("--idle-before", type=int, default=0,
+                    help="sleep this many seconds before the FIRST launch, to test whether the "
+                         "fast state is the cold state (first launch after an idle period)")
     ap.add_argument("--json")
     args = ap.parse_args()
 
+    # A relative `--logdir` breaks the reporting step: the per-launch log path is then relative
+    # while ROOT is absolute, and `segpath.relative_to(ROOT)` raises ValueError -- which crashed the
+    # harness *after* the measurement but *before* the summary, so the run's numbers were lost to a
+    # cosmetic lookup (measured 2026-09-16: a 285.58 t/s probe died on exactly this line). Resolve
+    # both paths once, here, so every later use is absolute by construction.
+    logdir = Path(args.logdir)
+    if not logdir.is_absolute():
+        logdir = ROOT / logdir
+    args.logdir = str(logdir)
+    if args.json:
+        jp = Path(args.json)
+        args.json = str(jp if jp.is_absolute() else ROOT / jp)
+
     warm_set = {int(x) for x in args.warm_runs.split(",") if x.strip()}
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    if args.idle_before:
+        print(f"  [idle] sleeping {args.idle_before}s before the first launch "
+              f"(cold-state probe)", flush=True)
+        time.sleep(args.idle_before)
     runs: list[dict] = []
     for i in range(1, args.runs + 1):
         warm_s = None
@@ -179,10 +440,18 @@ def main() -> int:
             runs.append({"run": i, "skipped": True, "pre": pre})
             continue
 
-        jpath = Path("/tmp") / f"prefill_certifiability_{i}.json"
+        # ONE WORKDIR PER RUN. `llama_bench_matrix.py` names its stderr capture after the ARM
+        # (`llama_bench_<arm>.stderr.log`), so N launches of one arm overwrite each other and the
+        # only surviving log belongs to the last launch. That is not a cosmetic loss: it is how
+        # the 286.67 run's segment counters were destroyed on 2026-09-16, which is exactly the
+        # evidence this experiment needs. The tag itself cannot vary (it selects the arm), so the
+        # directory has to.
+        rdir = Path(args.logdir) / f"{stamp}_run{i:02d}"
+        rdir.mkdir(parents=True, exist_ok=True)
+        jpath = rdir / "summary.json"
         cmd = [PY, str(MATRIX), "--arms", args.arm, "--prompt", args.prompt,
                "--gen", args.gen, "--depths", args.depths, "--reps", str(args.reps),
-               "--json", str(jpath)]
+               "--workdir", str(rdir), "--json", str(jpath)]
         t0 = time.time()
         proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)
         wall = time.time() - t0
@@ -190,12 +459,63 @@ def main() -> int:
         if proc.returncode != 0:
             sys.stdout.write(proc.stderr[-1200:])
         rows = pp_from(jpath)
+
+        # Harvest the engine's own teardown counters for THIS launch from its preserved log.
+        segpath = rdir / f"llama_bench_{args.arm}.stderr.log"
+        raw = segpath.read_text(errors="replace") if segpath.exists() else None
+        seg = harvest_segments(raw) if raw is not None else {}
+        if raw is not None:
+            seg.update(harvest_gputime(raw))
+            seg.update(harvest_decprof(raw))
+        if seg.get("slab_disk_mib"):
+            print(f"  -> seg: slab pool={seg.get('slab_pool_mib')} MiB "
+                  f"disk={seg.get('slab_disk_mib')} MiB ({seg.get('nonresident_pct')}% non-resident)"
+                  f"  file_reads={seg.get('file_reads')} pread_usec={seg.get('pread_usec')}"
+                  f"  fill_wait_us={seg.get('fill_wait_us')}", flush=True)
+        # The instrument this whole arm exists for: is the prefill slowdown uniform across layers
+        # (=> clock/power) or carried by one layer (=> implementation)?
+        if seg.get("dp_prefill_graphs"):
+            print(f"  -> decprof: {seg['dp_prefill_graphs']} prefill graph(s) ntok={seg.get('dp_ntok_max')}"
+                  f" totalling {seg.get('dp_prefill_s')} s, "
+                  f"{seg.get('dp_decode_graphs')} decode graph(s) totalling {seg.get('dp_decode_s')} s",
+                  flush=True)
+            print(f"     1st prefill graph: total={seg.get('dpq1_total_ms')} ms "
+                  f"wait={seg.get('dpq1_wait_ms')} cb={seg.get('dpq1_cb_ms')} "
+                  f"submit={seg.get('dpq1_submit_ms')}", flush=True)
+            if seg.get("dpq1_lay_w_median_ms"):
+                med = seg["dpq1_lay_w_median_ms"]
+                iqr = seg.get("dpq1_lay_w_iqr_over_median") or 0.0
+                frac = seg.get("dpq1_lay_w_frac_within_25pct") or 0.0
+                uniform = frac >= 0.80 and iqr <= 0.35
+                verdict = ("UNIFORM across layers => the graph scaled as a whole "
+                           "(clock / power ceiling)" if uniform else
+                           "NOT uniform => a subrange dominates; read the series, not the summary")
+                print(f"     layer wait over {seg.get('dpq1_layers_seen')} layers: "
+                      f"median={med} ms iqr/median={iqr} within+-25%={frac:.0%} "
+                      f"min={seg.get('dpq1_lay_w_min_ms')} max={seg.get('dpq1_lay_w_max_ms')} "
+                      f"(argmax=L{seg.get('dpq1_lay_w_argmax_layer')}) -> {verdict}", flush=True)
+                print("     judged on median/IQR: the first few layers read LOW in both states "
+                      "(pipeline ramp), so peak/mean mislabels a uniformly slow graph.", flush=True)
+            if seg.get("dpq2_total_ms"):
+                cb1 = seg.get("dpq1_cb_ms") or 0.0
+                cb2 = seg.get("dpq2_cb_ms") or 0.0
+                print(f"     2nd prefill graph: total={seg.get('dpq2_total_ms')} ms "
+                      f"wait={seg.get('dpq2_wait_ms')} cb={seg.get('dpq2_cb_ms')} "
+                      f"submit={seg.get('dpq2_submit_ms')}   "
+                      f"cb 1st/2nd = {(cb1 / cb2):.2f}x, layer-wait 1st/2nd = "
+                      f"{seg.get('dpq1_over_dpq2_lay_w')}x", flush=True)
+        try:
+            log_disp = segpath.resolve().relative_to(ROOT.resolve())
+        except ValueError:
+            log_disp = segpath          # --logdir may legitimately point outside the repo
+        print(f"  -> log: {log_disp if segpath.exists() else '(missing)'}", flush=True)
         for r in rows:
             print(f"  -> pp{r['n_prompt']} d={r['n_depth']} = {r['avg_ts']:.2f} ± "
                   f"{r['stddev_ts']:.2f} t/s  (b={r['n_batch']}, {wall:.0f}s wall, rc={proc.returncode})",
                   flush=True)
         runs.append({"run": i, "skipped": False, "pre": pre, "wall_s": round(wall, 1),
-                     "warm_s": warm_s, "rc": proc.returncode, "pp": rows,
+                     "warm_s": warm_s, "rc": proc.returncode, "pp": rows, "seg": seg,
+                     "log": str(segpath),
                      "err": None if proc.returncode == 0 else proc.stderr.strip().splitlines()[-1:]})
         time.sleep(5)  # let Metal release the GPU buffers before the next process
 
@@ -310,6 +630,57 @@ def main() -> int:
         print(f"  no candidate variable tracked t/s (|rho| < 0.7 for page cache, free memory and "
               f"anonymous pages). The draw is driven by something not measured here; instrument "
               f"the slot/fill path instead of the machine's memory counters.")
+
+    # ---- segment decomposition: fastest vs slowest launch --------------------------------
+    # The machine-level counters are all dead, so the difference has to live inside the engine.
+    # These are the engine's own teardown numbers, emitted with no env gate, so the two launches
+    # being differenced ran byte-identical instrumentation. Whatever moves here is a segment; a
+    # segment that does NOT move cannot be the cause.
+    srt = sorted(got, key=lambda r: r["pp"][0]["avg_ts"])
+    slow, fast = srt[0], srt[-1]
+    if fast["seg"] and slow["seg"]:
+        print(f"\n{'='*90}\n  SEGMENT DECOMPOSITION -- run {fast['run']} ({fast['pp'][0]['avg_ts']:.2f} t/s)"
+              f"  vs  run {slow['run']} ({slow['pp'][0]['avg_ts']:.2f} t/s)"
+              f"   ratio {fast['pp'][0]['avg_ts']/slow['pp'][0]['avg_ts']:.2f}x\n{'='*90}")
+        keys = [k for k in SEG_PATTERNS if k in fast["seg"] or k in slow["seg"]]
+        print(f"{'segment':>18s} {'FAST':>16s} {'SLOW':>16s} {'fast/slow':>10s}  read")
+        for k in keys:
+            fv, sv = fast["seg"].get(k), slow["seg"].get(k)
+            if fv is None or sv is None:
+                continue
+            ratio = (fv / sv) if sv else float("inf")
+            # A segment can only explain the gap if it moves; flag the ones that do not.
+            note = "" if abs(ratio - 1.0) > 0.02 else "  (unchanged)"
+            print(f"{k:>18s} {fv:>16.2f} {sv:>16.2f} {ratio:>10.2f}{note}")
+        # Wall time implied by each candidate, per launch: does the movement ACCOUNT for the gap?
+        for k, unit in (("slab_disk_mib", "MiB"), ("pread_usec", "us aggr"),
+                        ("fill_wait_us", "us"), ("seg_wait_s", "s"), ("seg_cb_s", "s"),
+                        ("gpu_wait_ms", "ms"), ("gpu_union_ms", "ms"), ("gpu_gap_ms", "ms"),
+                        ("ppg_wait_ms", "ms"), ("ppg_union_ms", "ms")):
+            if k in fast["seg"] and k in slow["seg"]:
+                print(f"  {k}: fast={fast['seg'][k]:.0f} {unit}  slow={slow['seg'][k]:.0f} {unit}  "
+                      f"delta={fast['seg'][k]-slow['seg'][k]:+.0f} {unit}")
+        if "nonresident_pct" in fast["seg"]:
+            print(f"  non-resident share: fast={fast['seg']['nonresident_pct']:.1f}%  "
+                  f"slow={slow['seg']['nonresident_pct']:.1f}%   <- M2 exit condition")
+        # The two numbers that decide whether the gap is fixable in the engine at all.
+        print(f"\n  >>> throughput ratio (fast/slow)          : "
+              f"{fast['pp'][0]['avg_ts']/slow['pp'][0]['avg_ts']:.2f}x")
+        for k in ("seg_wait_s", "seg_cb_s", "gpu_union_ms"):
+            if k in fast["seg"] and slow["seg"] and fast["seg"][k]:
+                print(f"  >>> {k:14s} ratio (slow/fast)     : {slow['seg'][k]/fast['seg'][k]:.2f}x")
+        if "gpu_union_pct" in fast["seg"]:
+            print(f"  >>> GPU busy / wait  fast={fast['seg']['gpu_union_pct']:.0f}%  "
+                  f"slow={slow['seg']['gpu_union_pct']:.0f}%   "
+                  f"(engine rule: >=70% = real GPU execution, <=40% = launch latency)")
+        if "gpu_skipped" in fast["seg"]:
+            print(f"  >>> GPU timestamps skipped: fast={fast['seg']['gpu_skipped']} "
+                  f"slow={slow['seg']['gpu_skipped']}  (must be 0 or the GPU numbers are void)")
+        print(f"  logs: fast {Path(fast['log']).relative_to(ROOT)}")
+        print(f"        slow {Path(slow['log']).relative_to(ROOT)}")
+        print(f"  NOTE  fill_wait_us is the only I/O term on the CALLING thread (comparable to wall);")
+        print(f"        pread_usec is an aggregate over worker threads and CANNOT be compared to it.")
+        print(f"        The whole-layer slab pread increments NO counter, so slab I/O is invisible here.")
 
     if args.json:
         Path(args.json).write_text(json.dumps(

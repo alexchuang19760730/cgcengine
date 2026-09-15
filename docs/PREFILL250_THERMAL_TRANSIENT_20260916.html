@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>prefill 250 不是抽獎：無風扇機體的熱暫態（2026-09-16）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  figure{margin:20px 0}
+  figcaption{font-size:12.5px;color:var(--muted);margin-top:8px;text-align:center}
+  svg{display:block;width:100%;height:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>prefill 250 不是抽獎：它是無風扇機體的熱暫態</h1>
+<div class="sub">
+  日期 2026-09-16 · 分支 <code>demo/sweet-spot-windows-fix</code><br>
+  模型 Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf（13.66 GB · 256 experts · 40 layers）·
+  命令 <code>llama-bench -b 6144 -ub 6144 -p 2048 -n 16 -r 3</code>（profile <code>prefill250</code>）<br>
+  硬體 <code>Mac16,12</code> MacBook Air · Apple M4 · 8 核 GPU · 16 GB unified · <strong>無風扇</strong><br>
+  新增儀器 <code>prefill_certifiability.py --logdir</code> / <code>--idle-before</code>、<code>prefill_gputime_report.py</code><br>
+  取代 <code>docs/PREFILL250_CERTIFIABILITY_20260916.html</code> 的「抽獎」判決（decision
+  <code>dec-20260916-0225</code> supersedes <code>dec-20260916-0142</code>）
+</div>
+
+<div class="box b-green">
+  <p><strong>一句話結論：</strong>「閒置後第一次啟動」這個狀態下，250 已經<strong>四次全部越過</strong>
+  （286.67 / 293.11 / 299.35 / 286.57，離散 4.5%）；連續負載下沉降到 <strong>155–184</strong>。
+<span class="small">（2026-09-16 追加：155–184 是<b>間歇</b>負載的帶，<b>不是熱態的下限</b>——
+連續熱跑（間隔 0–120 s）可以低到 <strong>122.39 t/s</strong>，因為升溫是跨連續數次 prefill 累積的。
+見 §3.3。）</span>
+  兩態之間，引擎搬的位元組<strong>逐位元相同</strong>、分段數相同、IO 等待同級，
+  唯一移動的是 <strong>GPU 自己的忙碌時間（1.44×）</strong>，而吞吐比是 1.42×。
+  障礙是這台無風扇機體的 GPU 執行速率，不是引擎。</p>
+</div>
+
+<h2>1. 問題與前情</h2>
+<p>
+  250 t/s 一直被當成「達得到、但只有 1/11 的機率」的目標。上一輪（<code>PREFILL250_CERTIFIABILITY_20260916.html</code>）
+  用 11 次獨立啟動證明：組內離散只有 2–15%，而組間離散 84%，所以差異是「行程之間的狀態」而非量測噪聲；
+  並把候選機制 free 記憶體（rho −0.70）與 page cache（強制拉高 4.3× 無效）雙雙否證，
+  結論是「250 是離群值，操作點是 ~170」。<strong>那個結論有一半是對的，漏掉的是一個協變量。</strong>
+</p>
+<div class="box b-amber">
+  <p><strong>漏掉的那一問：</strong>那個離群值，是不是「這個 session 的第一次啟動」？
+  前兩輪把 286.67 的環境記成「free 3.90 GiB」，卻沒有記「前一次 GPU 負載在幾分鐘前結束」。</p>
+</div>
+
+<h2>2. 資料：22 次啟動，5 個 session</h2>
+<p>
+  五個 session 各自獨立，差別只在「第一次啟動前閒置多久」。下表每一列都是一個獨立的行程，
+  命令逐字相同（env 由 <code>run_server.sh</code> 解析，不手抄）。
+</p>
+
+<table>
+  <tr><th>session</th><th>首次啟動前的實際間隔<br><span class="small">（由時戳導出，見 §2.2）</span></th>
+      <th>run 1</th><th>run 2</th><th>run 3</th><th>run 4</th><th>run 5</th><th>run 6</th></tr>
+  <tr><td>S1</td><td>—<span class="small">（本輪第一個 session）</span></td>
+      <td class="num ok"><strong>286.67</strong></td><td class="num">173.54</td><td class="num">155.62</td>
+      <td class="num">166.06</td><td class="num">166.63</td><td>—</td></tr>
+  <tr class="hl"><td>S2</td><td class="num bad"><strong>67 s</strong>（1.1 分鐘）</td>
+      <td class="num bad">179.09</td><td class="num">184.09</td><td class="num">184.06</td>
+      <td class="num">173.76</td><td class="num">155.33</td><td class="num">175.23</td></tr>
+  <tr><td>S3</td><td class="num">848 s（14.1 分鐘）</td>
+      <td class="num ok"><strong>293.11</strong></td><td class="num">227.51</td><td class="num">164.59</td>
+      <td class="num">162.97</td><td class="num">171.39</td><td class="num">169.26</td></tr>
+  <tr><td>S4</td><td class="num">923 s（15.4 分鐘）</td>
+      <td class="num ok"><strong>299.35</strong></td><td class="num">278.59</td><td class="num">211.38</td>
+      <td>—</td><td>—</td><td>—</td></tr>
+  <tr><td>S5</td><td class="num ok"><strong>247 s</strong>（4.1 分鐘）</td>
+      <td class="num ok"><strong>286.57</strong></td><td class="num">200.02</td>
+      <td>—</td><td>—</td><td>—</td><td>—</td></tr>
+</table>
+
+<div class="box b-amber">
+  <p><strong>更正（本欄初版是估計值，沒有儀器）。</strong>表格初版把這一欄填成
+  「~10 分鐘 / 5 秒 / ~14 分鐘 / 12 分鐘 / 3 分鐘」——那時
+  <code>--idle-before</code> <strong>還不存在</strong>（它是本輪才加進
+  <code>prefill_certifiability.py</code> 的），日誌與 json 裡也沒有任何時間欄位，
+  所以初版那個「5 秒」是<strong>未量測的敘述</strong>。上表已改成可複核的導出值，方法見 §2.2。</p>
+</div>
+
+<h3 id="s22">2.2 間隔是導出的，不是猜的：兩個獨立時戳來源</h3>
+<p>
+  每個 run 的 <code>summary.json</code> 的 <strong>mtime</strong> 是該 run 完成的時刻；
+  而 <code>prefill_certifiability_warm_20260916.log</code> 的每個 <code>pp</code> 行尾都帶
+  UTF 時戳（例：<code>(b=6144 2026-09-15T17:34:53Z)</code>，即本地 <code>01:34:53</code>）。
+  用「前一 session 最後一個 run 的完成時刻 → 本 session run 1 的啟動時刻」相減，
+  得到下表。<strong>這張表取代了初版那個沒有來源的「閒置」欄。</strong>
+</p>
+<table>
+  <tr><th>session</th><th>前一 session 結束</th><th>run 1 啟動（推估）</th><th>間隔</th><th>run 1 t/s</th></tr>
+  <tr><td>S1</td><td>—</td><td>—</td><td>—</td><td class="num">286.67</td></tr>
+  <tr class="hl"><td>S2</td><td>01:33:25</td><td>01:34:32</td><td class="num bad"><strong>67 s</strong></td><td class="num bad">179.09</td></tr>
+  <tr><td>S3</td><td>01:42:03</td><td>01:56:11</td><td class="num">848 s</td><td class="num ok">293.11</td></tr>
+  <tr><td>S4</td><td>02:02:23</td><td>02:17:46</td><td class="num">923 s</td><td class="num ok">299.35</td></tr>
+  <tr><td>S5</td><td>02:20:16</td><td>02:24:23</td><td class="num">247 s</td><td class="num ok">286.57</td></tr>
+</table>
+<div class="box b-green">
+  <p><strong>改成導出值之後，結論反而變銳利。</strong>初版只說「≥3 分鐘足夠」；實際間隔顯示
+  <strong>247 s 就給滿紅利、67 s 完全沒有</strong>——恢復時間常數被夾在
+  <strong>67 s 與 247 s 之間</strong>（初版寫的「≤ 3 分鐘」可收緊到「≤ 4.1 分鐘、且 &gt; 67 s」）。
+  四個 session 的關係是單調的：923 s→299.35、848 s→293.11、247 s→286.57、67 s→179.09。</p>
+</div>
+
+<h3 id="s21">2.1 為什麼「286.67 vs 179.09」不是一對可做引擎內部對拆的樣本</h3>
+<p>
+  下一步原本的構想是把 286.67（wall 45 s）與 179.09（wall 73 s）逐段對拆，理由是
+  「兩者啟動狀態幾乎相同，差異只可能在引擎內部」。<strong>這個前提在資料上不成立</strong>——
+  而且是在兩個層次上：它只在 <code>free_gib</code> 這一軸上「幾乎相同」，而這一對其實是
+  <strong>兩個不同 session 的第一次啟動</strong>，差別正好落在「啟動前間隔多久」這個自變數上。
+</p>
+<table>
+  <tr><th>啟動狀態</th><th>286.67（S1 run 1）</th><th>179.09（S2 run 1）</th><th>差</th><th>判讀</th></tr>
+  <tr><td><code>free_gib</code></td><td class="num">3.90</td><td class="num">3.74</td><td class="num">Δ0.16</td>
+      <td>幾乎相同 ⇒ <strong>前提在這一軸上成立</strong></td></tr>
+  <tr><td><code>swap_used_mib</code></td><td class="num">3485</td><td class="num">4452</td><td class="num">Δ967</td>
+      <td>已不相當 ⇒ 前提在這一軸上<strong>不成立</strong></td></tr>
+  <tr class="hl"><td><strong>啟動前的間隔</strong></td><td class="num">未記錄<span class="small">（本輪首個 session）</span></td><td class="num bad">67 s（導出）</td>
+      <td>—</td>
+      <td><strong>S2 是五個 session 中唯一沒進快帶的</strong>，而它的間隔正是最短的那個；四個間隔 ≥ 247 s 的 session 全部 ≥ 286</td></tr>
+</table>
+<div class="box b-red">
+  <p><strong>所以這一對不是「同狀態、引擎內部差異」的樣本。</strong>已記錄的兩個軸上，它已經不同：
+  <code>swap_used_mib</code> 差 967 MiB（28%），而啟動前的間隔一邊是 67 s、另一邊是四個 ≥ 247 s 的
+  session 之一。把兩個「各自 session 的第一次啟動、但底盤起始溫度不同」的樣本拿來對拆，
+  量到的會是底盤，不是引擎。真正的同 session 對拆見 §3（S3 的 293.11 vs 162.97）——
+  那一對的引擎設定逐位元相同，而移動的仍然只有 <code>CGC-GPUTIME</code> 的 GPU 忙碌時間。</p>
+  <p><strong>反過來，這個資料集裡找不到任何「引擎內部抽獎」的證據：</strong>5 個 session 中 4 個的
+  run 1 都是該 session 的最大值；唯一例外的 S2 正是那個「間隔只有 67 s」的 session，而它的組內離散也
+  從 80–84% 塌縮到 <strong>18.5%</strong>。生效的設定在 session 內是逐位元相同的（同 env／同模型／同 build），
+  一個「鎖在 run 序號上」的效應不可能是引擎內部造成的。</p>
+</div>
+
+<div class="cards">
+  <div class="card"><div class="k">間隔 ≥ 247 s 後的首次啟動</div>
+    <div class="v ok">4/4 · 286–299</div>
+    <div class="small">平均 291.4、離散 4.5%——比 5% 的「可認證」門檻還窄</div></div>
+  <div class="card"><div class="k">連續負載下的平台（第 3 次之後）</div>
+    <div class="v bad">155–184</div>
+    <div class="small">S3 最深平台 162.97–171.39（4 次、離散 5.2%）</div></div>
+  <div class="card"><div class="k">只隔 67 秒就啟動（S2 run 1）</div>
+    <div class="v bad">179.09</div>
+    <div class="small">沒有首次紅利 ⇒ 判別量是「距上次負載多久」，不是「第幾次」</div></div>
+</div>
+
+<figure>
+<svg viewBox="0 0 1000 340" role="img" aria-label="五個 session 的啟動序與吞吐">
+  <rect x="0" y="0" width="1000" height="340" fill="#ffffff"/>
+  <!-- axes -->
+  <line x1="90" y1="280" x2="960" y2="280" stroke="#d1d5db" stroke-width="1"/>
+  <line x1="90" y1="40"  x2="90"  y2="280" stroke="#d1d5db" stroke-width="1"/>
+  <!-- gridlines + labels -->
+  <g font-size="11" fill="#6b7280">
+    <line x1="90" y1="205" x2="960" y2="205" stroke="#f3f4f6"/>
+    <text x="80" y="209" text-anchor="end">200</text>
+    <line x1="90" y1="130" x2="960" y2="130" stroke="#f3f4f6"/>
+    <text x="80" y="134" text-anchor="end">250</text>
+    <line x1="90" y1="55" x2="960" y2="55" stroke="#f3f4f6"/>
+    <text x="80" y="59" text-anchor="end">300</text>
+    <text x="80" y="283" text-anchor="end">150</text>
+    <text x="34" y="165" transform="rotate(-90 34 165)" text-anchor="middle">pp2048 t/s</text>
+  </g>
+  <!-- 250 target line -->
+  <line x1="90" y1="130" x2="960" y2="130" stroke="#dc2626" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="966" y="134" font-size="11" fill="#dc2626" text-anchor="end" dx="-6">目標 250</text>
+
+  <!-- S1 (#2563eb) 286.67/173.54/155.62/166.06/166.63 -->
+  <polyline fill="none" stroke="#2563eb" stroke-width="2"
+    points="150,75 300,245 450,272 600,256 750,255"/>
+  <g fill="#2563eb">
+    <circle cx="150" cy="75" r="4"/><circle cx="300" cy="245" r="4"/><circle cx="450" cy="272" r="4"/>
+    <circle cx="600" cy="256" r="4"/><circle cx="750" cy="255" r="4"/>
+  </g>
+  <!-- S2 (#7c3aed) 179.09/184.09/184.06/173.76/155.33/175.23 -->
+  <polyline fill="none" stroke="#7c3aed" stroke-width="2"
+    points="150,236 300,229 450,229 600,244 750,272 900,242"/>
+  <g fill="#7c3aed">
+    <circle cx="150" cy="236" r="4"/><circle cx="300" cy="229" r="4"/><circle cx="450" cy="229" r="4"/>
+    <circle cx="600" cy="244" r="4"/><circle cx="750" cy="272" r="4"/><circle cx="900" cy="242" r="4"/>
+  </g>
+  <!-- S3 (#0891b2) 293.11/227.51/164.59/162.97/171.39/169.26 -->
+  <polyline fill="none" stroke="#0891b2" stroke-width="2"
+    points="150,65 300,164 450,258 600,261 750,248 900,251"/>
+  <g fill="#0891b2">
+    <circle cx="150" cy="65" r="4"/><circle cx="300" cy="164" r="4"/><circle cx="450" cy="258" r="4"/>
+    <circle cx="600" cy="261" r="4"/><circle cx="750" cy="248" r="4"/><circle cx="900" cy="251" r="4"/>
+  </g>
+  <!-- S4 (#d97706) 299.35/278.59/211.38 -->
+  <polyline fill="none" stroke="#d97706" stroke-width="2"
+    points="150,56 300,87 450,188"/>
+  <g fill="#d97706">
+    <circle cx="150" cy="56" r="4"/><circle cx="300" cy="87" r="4"/><circle cx="450" cy="188" r="4"/>
+  </g>
+  <!-- S5 (#059669) 286.57/200.02 -->
+  <polyline fill="none" stroke="#059669" stroke-width="2"
+    points="150,75 300,205"/>
+  <g fill="#059669">
+    <circle cx="150" cy="75" r="4"/><circle cx="300" cy="205" r="4"/>
+  </g>
+
+  <!-- x labels -->
+  <g font-size="11" fill="#6b7280">
+    <text x="150" y="300" text-anchor="middle">run 1</text>
+    <text x="300" y="300" text-anchor="middle">run 2</text>
+    <text x="450" y="300" text-anchor="middle">run 3</text>
+    <text x="600" y="300" text-anchor="middle">run 4</text>
+    <text x="750" y="300" text-anchor="middle">run 5</text>
+    <text x="900" y="300" text-anchor="middle">run 6</text>
+  </g>
+  <!-- legend -->
+  <g font-size="11.5" fill="#374151">
+    <rect x="120" y="318" width="14" height="3" fill="#2563eb"/><text x="140" y="323">S1 間隔 —</text>
+    <rect x="285" y="318" width="14" height="3" fill="#7c3aed"/><text x="305" y="323">S2 間隔 <tspan font-weight="700">67 s</tspan></text>
+    <rect x="440" y="318" width="14" height="3" fill="#0891b2"/><text x="460" y="323">S3 間隔 848 s</text>
+    <rect x="620" y="318" width="14" height="3" fill="#d97706"/><text x="640" y="323">S4 間隔 923 s</text>
+    <rect x="780" y="318" width="14" height="3" fill="#059669"/><text x="800" y="323">S5 間隔 247 s</text>
+  </g>
+</svg>
+<figcaption>圖 1：每個 session 的第一次啟動都在 286–299（藍/青/橙/綠的第一點），之後掉到 155–184 的平台。
+唯一的例外是 S2（紫）——它只隔 67 秒就啟動，所以沒有冷態紅利，第一點就落在慢帶。</figcaption>
+</figure>
+
+<h2>3. 逐段分解：同一份工作，同一組分段，只有 GPU 時間移動</h2>
+<p>
+  拆解的對象是 S3 的最快與最慢兩次（293.11 vs 162.97，1.80×）。所有數字都來自引擎在
+  <code>~llama_expert_cache</code> 印出的常駐統計行，<strong>不需要任何額外環境變數</strong>——
+  所以被比較的兩次跑的是逐位元相同的儀器。
+</p>
+
+<table>
+  <tr><th>逐段量</th><th>快（293.11 t/s）</th><th>慢（162.97 t/s）</th><th>慢/快</th><th>讀法</th></tr>
+  <tr><td>slab 來自池（MiB）</td><td class="num">24614.8</td><td class="num">24614.8</td><td class="num">1.00</td><td rowspan="5"><strong>逐位元相同</strong><br><span class="small">工作量不是變數</span></td></tr>
+  <tr><td>slab 來自磁碟（MiB）</td><td class="num">19761.2</td><td class="num">19761.2</td><td class="num">1.00</td></tr>
+  <tr><td>non-resident share</td><td class="num">44.5%</td><td class="num">44.5%</td><td class="num">1.00</td></tr>
+  <tr><td>resident（MiB）</td><td class="num">6153.70</td><td class="num">6153.70</td><td class="num">1.00</td></tr>
+  <tr><td>owner-set slots</td><td class="num">5680</td><td class="num">5680</td><td class="num">1.00</td></tr>
+  <tr><td>capacity miss</td><td class="num">0</td><td class="num">0</td><td class="num">—</td><td>沒有容量抖動</td></tr>
+  <tr><td>compulsory miss</td><td class="num">2427</td><td class="num">2053</td><td class="num">1.18</td><td>快的那次反而做了<strong>更多</strong> IO</td></tr>
+  <tr><td><code>fill_wait_us</code>（呼叫執行緒）</td><td class="num">53,563</td><td class="num">56,272</td><td class="num">0.95</td><td>53 ms vs 56 ms ⇒ <strong>IO 不是瓶頸</strong></td></tr>
+  <tr><td><code>CGC-SEG</code> wait 總量（s）</td><td class="num">30.66</td><td class="num">52.57</td><td class="num">1.71</td><td>等 command buffer 完成的總時間</td></tr>
+  <tr><td><code>CGC-SEG</code> 編碼總量（s）</td><td class="num">3.652</td><td class="num">2.795</td><td class="num">0.77</td><td>CPU 側<strong>下降</strong> ⇒ 不是 CPU 上限</td></tr>
+</table>
+
+<p>
+  剩下的問題只有一個：那多出來的 22 秒，是「GPU 真的多跑了」，還是「CPU 在等別的東西」？
+  引擎自己就有判準（<code>ggml-backend.cpp:2115-2122</code>）：<code>gpu_union/wait ≥ 70%</code>
+  表示那段等待就是真 GPU 執行，<code>≤ 40%</code> 則是啟動／完成延遲。
+  打開 <code>CGC_GPU_TIMING=1</code>（取 Metal 的 <code>GPUStartTime/GPUEndTime</code>）後：
+</p>
+
+<table>
+  <tr><th>run</th><th>pp t/s</th><th>prefill wait (s)</th><th>GPU 忙碌 (s)</th><th>忙碌/等待</th><th>GPU 閒置 gap (ms)</th><th>segs / bufs</th></tr>
+  <tr><td>S4 run 1</td><td class="num ok">299.35</td><td class="num">6.59</td><td class="num">6.62</td><td class="num ok">101%</td><td class="num">241</td><td class="num">40 / 352</td></tr>
+  <tr><td>S4 run 2</td><td class="num">278.59</td><td class="num">7.55</td><td class="num">7.57</td><td class="num ok">100%</td><td class="num">109</td><td class="num">40 / 353</td></tr>
+  <tr><td>S4 run 3</td><td class="num">211.38</td><td class="num">9.45</td><td class="num">9.56</td><td class="num ok">101%</td><td class="num">416</td><td class="num">40 / 360</td></tr>
+</table>
+
+<figure>
+<svg viewBox="0 0 1000 250" role="img" aria-label="三個 run 的 GPU 忙碌與閒置分解">
+  <rect x="0" y="0" width="1000" height="250" fill="#ffffff"/>
+  <g font-size="12" fill="#374151">
+    <text x="20" y="42">299.35 t/s</text>
+    <text x="20" y="106">278.59 t/s</text>
+    <text x="20" y="170">211.38 t/s</text>
+  </g>
+  <!-- bars: x from 140, 1 s = 70 px  (max 9.56 -> 669 px) -->
+  <!-- run1: union 6.62 -> 463, gap 0.24 -> 17 -->
+  <rect x="140" y="26"  width="463" height="26" fill="#059669"/>
+  <rect x="603" y="26"  width="17"  height="26" fill="#fbbf24"/>
+  <text x="628" y="45" font-size="12" fill="#065f46">GPU 忙碌 6.62 s</text>
+  <!-- run2: union 7.57 -> 530, gap 0.11 -> 8 -->
+  <rect x="140" y="90"  width="530" height="26" fill="#059669"/>
+  <rect x="670" y="90"  width="9"   height="26" fill="#fbbf24"/>
+  <text x="695" y="109" font-size="12" fill="#065f46">GPU 忙碌 7.57 s</text>
+  <!-- run3: union 9.56 -> 669, gap 0.42 -> 29 -->
+  <rect x="140" y="154" width="669" height="26" fill="#059669"/>
+  <rect x="809" y="154" width="29"  height="26" fill="#fbbf24"/>
+  <text x="850" y="173" font-size="12" fill="#065f46">GPU 忙碌 9.56 s</text>
+  <!-- connector annotation -->
+  <line x1="140" y1="196" x2="140" y2="212" stroke="#9ca3af"/>
+  <line x1="609" y1="196" x2="609" y2="212" stroke="#9ca3af"/>
+  <line x1="140" y1="212" x2="609" y2="212" stroke="#9ca3af"/>
+  <text x="374" y="230" font-size="11.5" fill="#6b7280" text-anchor="middle">
+    GPU 忙碌時間 slow/fast = 1.44× ／ 吞吐比 = 1.42×
+  </text>
+  <g font-size="11.5" fill="#374151">
+    <rect x="740" y="196" width="14" height="10" fill="#059669"/><text x="760" y="205">GPU 忙碌（union）</text>
+    <rect x="740" y="216" width="14" height="10" fill="#fbbf24"/><text x="760" y="225">GPU 閒置（gap）</text>
+  </g>
+</svg>
+<figcaption>圖 2：三個 run 的 prefill 大圖。綠色越長＝GPU 越忙。每一次的「忙碌／等待」都是 100–101%，
+閒置只有 109–416 ms（1.5–4%）——依引擎自己的判準，那段等待<strong>就是</strong> GPU 執行，不是啟動延遲。
+棕色的差距（+0.24 / +0.42 s）解釋不了 1.44×。</figcaption>
+</figure>
+
+<div class="box b-blue">
+  <p><strong>把兩件事分開：</strong>
+  「GPU 忙著」與「GPU 為什麼變慢」是兩個問題。上表只證明前者——等待期間 GPU 沒有在發呆，
+  所以問題不在啟動路徑、不在分段結構、不在 CPU 編碼。要指認<em>後者</em>是頻率、功耗上限
+  還是記憶體子系統，需要 root 的 <code>powermetrics</code>（見 §6）。</p>
+</div>
+
+<h3 id="s31">3.1 第二個獨立儀器的同向結果：IOAccelerator 的裝置利用率</h3>
+<p>
+  上表的判準來自 Metal 自己的 <code>GPUStartTime/GPUEndTime</code>。同一輪還留了一份
+  <strong>完全不同來源</strong>的配對時序：<code>Backup/cgc_logs/gpu_util_prefill_paired_20260916.log</code>——
+  <code>ioreg -r -c IOAccelerator</code> 的 <code>Device Utilization %</code>，1 Hz、300 筆，
+  涵蓋 <strong>02:18:01 → 02:23:40</strong>。（該檔先前未被引用；同輪的
+  <code>powermetrics_prefill_paired_20260916.log</code> 只有一行
+  <code>operation not permitted: sudo</code>，即<strong>從未跑成</strong>，見 §6。）
+</p>
+<p>
+  時序與 S4（<code>cert_runs/20260916_020546</code>，三個 run）的
+  <code>summary.json</code> mtime <strong>逐個對齊</strong>：02:18:29 / 02:19:17 / 02:20:16。
+</p>
+<table>
+  <tr><th>S4 的 run</th><th>pp t/s</th><th>prefill 負載區塊</th><th>利用率 平均</th><th>峰值</th><th>區塊內最低</th><th>與下一 run 的裂口</th></tr>
+  <tr><td>run 1</td><td class="num ok">299.35</td><td class="num">02:18:03–02:18:29 <span class="small">（於時序起點被截斷）</span></td><td class="num">91.3%</td><td class="num">99%</td><td class="num">66%</td><td class="num">11–14%（約 10 s）</td></tr>
+  <tr><td>run 2</td><td class="num">278.59</td><td class="num">02:18:42–02:19:11</td><td class="num">97.3%</td><td class="num">99%</td><td class="num">72%</td><td class="num">14–18%（約 11 s）</td></tr>
+  <tr><td>run 3</td><td class="num">211.38</td><td class="num">02:19:31–02:20:16</td><td class="num">94.2%</td><td class="num">99%</td><td class="num">67%</td><td class="num">—（session 結束）</td></tr>
+</table>
+<p class="small">
+  複現：<code>scripts/check/prefill_gputime_report.py --gpu-util</code>。
+  配對規則是「以每個 run 的 <code>summary.json</code> mtime 為其結束邊界，run k 擁有
+  (mtime<sub>k-1</sub>, mtime<sub>k</sub>] 這個窗口，並在窗口內取最長的 ≥60% 連續段」。
+  <strong>不用「哪個區塊含有 mtime」</strong>：run 2 的 prefill 與短 decode 尾之間有一筆 59% 的取樣
+  （02:19:12），會把區塊切成兩段，而 mtime 剛好落在小碎片裡——那個規則會把 run 2 配到它自己的尾巴
+  （mean 74.2%）而不是它的 prefill。此缺陷是加這個模式時當場暴露的。
+</p>
+<div class="box b-green">
+  <p><strong>兩個獨立儀器同向：prefill 期間 GPU 是飽和的。</strong>利用率平均 91–97%、三個 run
+  <strong>都觸到 99%</strong>，區塊內最低仍有 66–72%；只有兩個 run 之間那約 10 秒的重載模型期掉到
+  11–18%。這與 Metal 時戳給出的 <code>gpu_union/wait = 100–101%</code> 是同一件事，
+  但來自另一套計數器——所以「<strong>慢的那次不是因為 GPU 在發呆</strong>」現在有兩份互不相干的證據。
+  既然三次都飽和，快慢之別只能是 GPU 的<strong>工作速率</strong>，不是「有沒有在跑」。</p>
+  <p><span class="small">注意邊界：利用率是<em>佔用比例</em>，不是頻率。同一份證據<strong>不能</strong>推出時脈。
+  要指認頻率／功耗上限仍須 root 的 <code>powermetrics</code>；且 run 1 的區塊在時序起點被截斷，
+  其平均值只涵蓋部分窗口，不宜與 run 2/3 直接比大小。</span></p>
+</div>
+
+<h3 id="s32">3.2 逐層歸因：把 <code>CGC-DECPROF</code> 打開之後，答案是「全層等比」</h3>
+<p>
+  §3 與 §3.1 只證明「GPU 忙著」。§8 第 1 項當初規劃的下一步，是改一行讓 <code>CGC-DECPROF</code>
+  看見 prefill，然後問一個更細的問題：<strong>是某一層變慢，還是全層等比變慢？</strong>
+  前者指向實作，後者指向時脈／功耗。這一項已經做完，答案是全層等比。
+</p>
+<p>
+  改動只有三處，都在 <code>ggml-backend.cpp</code> 的 <code>dp_on</code> 區塊：
+</p>
+<table>
+  <tr><th>改動</th><th>位置</th><th>作用</th></tr>
+  <tr><td>列印閘門加上 <code>|| dp_step == 1 || dp_ntok &gt; 1</code></td>
+      <td><code>:2080</code></td>
+      <td>原本 <code>(dp_step % 8) == 0</code> 永遠輪不到 prefill（§6.1 閘門 3）。<code>dp_ntok</code>
+          那一項讓<em>任何</em> batched 圖都會列印，所以不必假設「第一個圖就是 prefill」。</td></tr>
+  <tr><td>新增 <code>dp_ntok</code>：讀 top-k 張量的 <code>ne[1]</code>，每步重置</td>
+      <td><code>:1864</code>, <code>:2011</code>, <code>:2132</code></td>
+      <td>讓每一行<strong>自證形狀</strong>（<code>ntok=2048</code> = prefill、<code>ntok=1</code> = decode），
+          而不是靠「它是第幾個圖」推論。若某次 warmup 搶走了 <code>dp_step=1</code>，這一行會直接顯示出來。</td></tr>
+  <tr><td>同一行尾追加 <code>ntok=%lld</code></td><td><code>:2084</code></td>
+      <td>把上述形狀寫進輸出。</td></tr>
+</table>
+<p>
+  開啟之後第一次跑（<code>arm prefill250-decprof</code>，即 <code>CGC_DECODE_PROFILE=1</code>
+  <code>CGC_DECODE_PROFILE_ALL=1</code> <code>CGC_GPU_TIMING=1</code>）就印出了 90 行，形狀一目了然：
+</p>
+<pre><code>CGC-DECPROF: step=1 segs=41 layers=40 total=7328.43 ms | wait=6224.80 (85%) cb=982.46 (13%) submit=121.18 ( 2%) ntok=2048
+CGC-DECPROF: step=2 segs=41 layers=40 total=6710.28 ms | wait=6508.63 (97%) cb=184.40 ( 3%) submit= 17.25 ( 0%) ntok=2048
+CGC-DECPROF: step=3 segs=41 layers=40 total=7437.65 ms | wait=6693.16 (90%) cb=708.38 (10%) submit= 36.10 ( 0%) ntok=2048
+CGC-DECPROF: step=4 segs=41 layers=40 total=7049.47 ms | wait=6925.13 (98%) cb=100.98 ( 1%) submit= 23.36 ( 0%) ntok=2048
+CGC-DECPROF: step=8 segs=41 layers=40 total= 131.49 ms | wait=  56.26 (43%) cb= 70.19 (53%) submit=  5.04 ( 4%) ntok=1
+CGC-DECPROF: step=16 segs=41 layers=40 total= 111.81 ms | wait=  55.24 (49%) cb= 50.58 (45%) submit=  5.99 ( 5%) ntok=1</code></pre>
+<p>
+  四個 <code>ntok=2048</code> 的圖就是四次 prefill 重複（<code>-r 3</code> 加一次 warmup），
+  <code>step=8</code> 起才是 decode。這一張表本身就完成了兩件事：
+  <strong>(1)</strong> 它證明閘門分析是對的——同一個行程裡 prefill 是 <code>dp_step=1</code>；
+  <strong>(2)</strong> 它給出 prefill 的三段拆分：<code>wait</code> 85–98%、<code>cb</code> 1–13%、
+  <code>submit</code> 0–2%。decode 的形狀完全不同（<code>cb</code> 佔 21–53%），
+  所以之前用 decode 的形狀去推 prefill 是沒有依據的。
+</p>
+
+<h4>快慢對拆：逐層比值</h4>
+<p>
+  第一次做這個對拆時，我拿的是「快探針（285.58 t/s）」對「慢跑（122.39 t/s）」，得到
+  <code>2.32×</code>（CV 6.5%）對吞吐 <code>2.33×</code>。那個數字<strong>結論是對的，但證據是壞的</strong>，
+  所以本節改用一組乾淨的配對，並把理由寫下來。
+</p>
+<div class="box b-amber">
+  <p><strong>陷阱 A：兩份日誌的層覆蓋不同，配對會偷偷偏向參考跑最貴的層。</strong>
+  快探針那份日誌（2026-09-16 02:58:54）是在 <code>CGC_DECODE_PROFILE_ALL</code> 生效之前抓的，
+  所以它每個圖只列印 <code>top1..top8</code> 共 80 行；sweep 的日誌（03:01:36 起）每個圖列印
+  <code>all1..all40</code> 共 400 行（<code>llama_bench_matrix.py</code> 的 mtime 03:00:53 正好落在兩者之間）。
+  於是「共同層」只剩快跑的 <strong>top-8</strong>，而那 8 層是由快跑自己的成本排名選出來的——不是隨機抽樣，
+  而且它們恰好全落在 L28–L38 這段（比值一致地 ~2.3×）。<strong>用不同粒度的子集做配對，等於自己挑了樣本。</strong>
+  </p>
+</div>
+<p>
+  乾淨的配對必須兩邊都覆蓋全部 40 層。以下用同一輪 sweep 裡的一快一慢：preheat session（198.64 t/s）
+  對 idle=0 run 1（122.39 t/s），兩個 session 都有 <code>_ALL</code> 生效、都是 4 個 prefill 圖。
+</p>
+<p>
+  還有一個選擇要交代：<code>-r 3</code> 讓<em>每個行程</em>留下 4 個 prefill 圖，而<strong>第一個圖帶著
+  一次性的載入／首次觸碰成本</strong>。只讀第一個圖，會把這個一次性暫態記到「當時正在跑的那幾層」帳上。
+  所以配對取<strong>跨圖平均</strong>（每個圖的每一層 wait 先平均），並且把每圖形狀直接印出來：
+</p>
+<pre><code>fast: 4 prefill graph(s), per-graph shape:
+    g0 ntok= 2048 layers= 40 total=   9236.8 ms wait=   8918.5 ms worst=L16(271.2 ms)
+    g1 ntok= 2048 layers= 40 total=   9578.4 ms wait=   9454.5 ms worst=L29(259.0 ms)
+    g2 ntok= 2048 layers= 40 total=   9942.5 ms wait=   9847.5 ms worst=L37(268.6 ms)
+    g3 ntok= 2048 layers= 40 total=  10970.7 ms wait=  10850.1 ms worst=L9(303.7 ms)
+slow: 4 prefill graph(s), per-graph shape:
+    g0 ntok= 2048 layers= 40 total=  14967.1 ms wait=  14354.3 ms worst=L5(628.9 ms)
+    g1 ntok= 2048 layers= 40 total=  15723.9 ms wait=  15467.6 ms worst=L4(430.1 ms)
+    g2 ntok= 2048 layers= 40 total=  16847.2 ms wait=  16147.3 ms worst=L32(471.2 ms)
+    g3 ntok= 2048 layers= 40 total=  16534.6 ms wait=  16374.0 ms worst=L4(458.9 ms)</code></pre>
+<p>
+  這張診斷本身就是證據：快跑的「最貴層」在 4 個圖之間<em>漂移</em>（L16→L29→L37→L9），
+  慢跑則在 g0/g1/g3 都指向 L4–L5。那個 L4–L8 的隆起<strong>不是只有第一個圖才有</strong>，所以不是暖機假象；
+  但它會被跨圖平均大幅稀釋——這正是下面 CV 從 30.1% 掉到 8.7% 的原因。
+</p>
+<table>
+  <tr><th>layer</th><th>fast (ms)</th><th>slow (ms)</th><th>slow/fast</th>
+      <th>layer</th><th>fast (ms)</th><th>slow (ms)</th><th>slow/fast</th></tr>
+  <tr><td>0</td><td class="num">125.1</td><td class="num">159.4</td><td class="num">1.27</td>
+      <td>20</td><td class="num">254.5</td><td class="num">410.1</td><td class="num">1.61</td></tr>
+  <tr><td>1</td><td class="num">206.6</td><td class="num">258.2</td><td class="num">1.25</td>
+      <td>21</td><td class="num">253.9</td><td class="num">407.6</td><td class="num">1.61</td></tr>
+  <tr><td>2</td><td class="num">218.4</td><td class="num">308.9</td><td class="num">1.41</td>
+      <td>22</td><td class="num">254.4</td><td class="num">402.7</td><td class="num">1.58</td></tr>
+  <tr><td>3</td><td class="num">216.5</td><td class="num">358.8</td><td class="num">1.66</td>
+      <td>23</td><td class="num">237.6</td><td class="num">386.0</td><td class="num">1.62</td></tr>
+  <tr class="hl"><td>4</td><td class="num">234.9</td><td class="num">413.6</td><td class="num">1.76</td>
+      <td>24</td><td class="num">243.8</td><td class="num">399.7</td><td class="num">1.64</td></tr>
+  <tr class="hl"><td>5</td><td class="num">234.9</td><td class="num">483.2</td><td class="num">2.06</td>
+      <td>25</td><td class="num">248.5</td><td class="num">404.6</td><td class="num">1.63</td></tr>
+  <tr class="hl"><td>6</td><td class="num">236.9</td><td class="num">472.5</td><td class="num">1.99</td>
+      <td>26</td><td class="num">252.2</td><td class="num">354.0</td><td class="num">1.40</td></tr>
+  <tr class="hl"><td>7</td><td class="num">235.2</td><td class="num">431.4</td><td class="num">1.83</td>
+      <td>27</td><td class="num">245.2</td><td class="num">340.7</td><td class="num">1.39</td></tr>
+  <tr><td>8</td><td class="num">249.8</td><td class="num">418.5</td><td class="num">1.68</td>
+      <td>28</td><td class="num">255.9</td><td class="num">391.1</td><td class="num">1.53</td></tr>
+  <tr><td>9</td><td class="num">254.8</td><td class="num">380.8</td><td class="num">1.49</td>
+      <td>29</td><td class="num">256.7</td><td class="num">414.9</td><td class="num">1.62</td></tr>
+  <tr><td>10</td><td class="num">251.0</td><td class="num">374.7</td><td class="num">1.49</td>
+      <td>30</td><td class="num">253.0</td><td class="num">417.3</td><td class="num">1.65</td></tr>
+  <tr><td>11</td><td class="num">245.0</td><td class="num">377.1</td><td class="num">1.54</td>
+      <td>31</td><td class="num">246.6</td><td class="num">405.8</td><td class="num">1.65</td></tr>
+  <tr><td>12</td><td class="num">257.7</td><td class="num">393.0</td><td class="num">1.53</td>
+      <td>32</td><td class="num">254.4</td><td class="num">422.3</td><td class="num">1.66</td></tr>
+  <tr><td>13</td><td class="num">261.2</td><td class="num">395.2</td><td class="num">1.51</td>
+      <td>33</td><td class="num">257.4</td><td class="num">410.4</td><td class="num">1.59</td></tr>
+  <tr><td>14</td><td class="num">259.1</td><td class="num">401.8</td><td class="num">1.55</td>
+      <td>34</td><td class="num">256.9</td><td class="num">417.9</td><td class="num">1.63</td></tr>
+  <tr><td>15</td><td class="num">251.3</td><td class="num">393.9</td><td class="num">1.57</td>
+      <td>35</td><td class="num">241.2</td><td class="num">396.1</td><td class="num">1.64</td></tr>
+  <tr><td>16</td><td class="num">260.5</td><td class="num">408.2</td><td class="num">1.57</td>
+      <td>36</td><td class="num">252.7</td><td class="num">402.0</td><td class="num">1.59</td></tr>
+  <tr><td>17</td><td class="num">258.7</td><td class="num">402.0</td><td class="num">1.55</td>
+      <td>37</td><td class="num">259.4</td><td class="num">409.9</td><td class="num">1.58</td></tr>
+  <tr><td>18</td><td class="num">247.4</td><td class="num">387.4</td><td class="num">1.57</td>
+      <td>38</td><td class="num">255.9</td><td class="num">401.4</td><td class="num">1.57</td></tr>
+  <tr><td>19</td><td class="num">238.7</td><td class="num">385.1</td><td class="num">1.61</td>
+      <td>39</td><td class="num">243.9</td><td class="num">387.7</td><td class="num">1.59</td></tr>
+  <tr class="hl"><td colspan="3"><strong>40 層共同覆蓋，平均值</strong></td>
+      <td class="num">1.59×（CV 9.2%）</td>
+      <td colspan="3"><strong>排除 L0 後（39 層）</strong></td>
+      <td class="num ok"><strong>1.60×（CV 8.7%）</strong></td></tr>
+  <tr class="hl"><td colspan="3"><strong>吞吐比值（198.64 / 122.39）</strong></td>
+      <td class="num ok"><strong>1.62×</strong></td>
+      <td colspan="3"><strong>沒有任何一層超過中位數的 1.5 倍</strong></td>
+      <td class="num ok"><strong>→ 無局部超額</strong></td></tr>
+</table>
+<div class="box b-green">
+  <p><strong>答案仍然是「全層等比」，但這次的證據站得住。</strong>全部 40 層、跨 4 個 prefill 圖平均之後，
+  逐層 <code>slow/fast</code> 是 <strong>1.60×，層間 CV 8.7%</strong>（min 1.25、max 2.06）；
+  吞吐比值是 <strong>1.62×</strong>。兩者一致到 1.2% 以內。慢的那一次不是某一層壞掉，
+  而是<strong>整張圖以同一個倍率變慢</strong>，且倍率等於吞吐損失 ⇒ 依 §3 與 §6 的判準，
+  這指向 <strong>時脈／功耗上限</strong>，不是實作熱點。</p>
+  <p><span class="small">三個邊界一起讀：(1) <strong>殘留的 L4–L8 隆起是真的、但很小</strong>——L5 的比值 2.06
+  是中位數 1.59 的 1.30 倍，未達 1.5 倍的標記門檻；L5+L6 合計只佔 <code>wait</code> 缺口
+  （15585.8 − 9767.6 = 5818 ms）的約 <strong>3.5%</strong>，其餘 96% 是廣泛的等比放大。
+  (2) L1 的比值 1.25 是最低者、L0 是 1.27：<code>submit_ahead</code> 之下第 i 層等的是「到第 i 層為止
+  累積的 GPU 工作量」，所以最前面幾層無論快慢都等得少，這是管線填充而非例外。
+  (3) 快的那份日誌是同日的一次 preheat session（198.64 t/s），不是 285 t/s 的冷態，
+  所以這一對量的是「熱 vs 更熱」的 1.62× 差，不是 250 的全距。</span></p>
+</div>
+<div class="box b-amber">
+  <p><strong>陷阱 B：不要把「單一圖的逐層剖面」當成穩態剖面。</strong>
+  同一份資料，只讀<em>第一個</em> prefill 圖時，比值是 <code>mean=1.64×、CV=30.1%</code>、
+  L5 高達 <code>3.50×</code>，判定會翻成 <em>NOT UNIFORM：去找某一層</em>；
+  改成跨 4 個圖平均後，同一份資料是 <code>1.60×、CV 8.7%</code>。差別全部來自每個行程一次的
+  載入／首次觸碰暫態，而那個暫態落在哪幾層是<em>取決於時序</em>、不是取決於那幾層的實作。
+  <strong>所以「層間 CV」本身就是一個會被儀器讀法左右的量</strong>：讀一個圖會把它放大約 3 倍。
+  驗證方法很便宜——把每個圖的 <code>worst layer</code> 印出來（上面的診斷區塊）：它如果在圖之間漂移，
+  那就是暫態，不是層的性質。</p>
+</div>
+<div class="box b-amber">
+  <p><strong>陷阱 C：不要用 <code>peak/mean</code> 判斷「均勻還是局部」。</strong>
+  慢跑的 <code>peak/mean = 1.75</code>，用「&gt; 1.5 就是單層問題」的門檻會判成 <em>LOCALISED</em>——
+  但那個峰值屬於管線爬升段，而 L0–L4 全部低於平台。把最大值除以平均值，等於讓一個結構性的暫態
+  去支配判準。改用 <strong>中位數 + IQR/中位數 + 落在中位數 ±25% 內的層比例</strong>，
+  同一份資料立刻變成 UNIFORM。這個修正在 <code>scripts/check/prefill_certifiability.py</code> 的
+  harvester 裡（欄位 <code>dpq1_lay_w_median_ms</code>、<code>dpq1_lay_w_iqr_over_median</code>、
+  <code>dpq1_lay_w_frac_within_25pct</code>）。</p>
+</div>
+<p>
+  附帶一個可用的副產品：<code>cb</code>（top-k hook，含<em>阻塞式</em>填充）在快取冷時明顯偏高——
+  探針第一次 prefill 的 <code>cb=982 ms</code>、第二次 <code>184 ms</code>；
+  慢跑是 <code>383.68 ms</code> 對 <code>121.38 ms</code>。這證明「每個行程的第一個 prefill 圖要付
+  一次冷填充成本」是可量測的，也解釋了 <code>step=1</code> 為何系統性貴於 <code>step=2</code>。
+  但它的量級（~0.1–0.4 s）遠小於 <code>wait</code>（6.2–14.4 s），所以不是快慢之別的主因。
+</p>
+
+<h3 id="s33">3.3 恢復時間常數 τ：直接量到的折點在 120–150 s 之間</h3>
+<p>
+  §2.2 把 τ 夾在 <code>67 s &lt; τ ≤ 247 s</code>，但那兩個數字是<em>推導</em>出來的
+  （session 結束 → 下次 session 首次啟動），每邊只有一個樣本、沒有形狀。§8 第 3 項要的是直接量：
+  用 <code>scripts/check/prefill_idle_sweep.py</code> 把「機器安靜了多久」變成自變數——
+  每個 session 先 <code>--idle-before N</code> 再跑，<code>--preheat</code> 先丟棄一次啟動，
+  這樣 session 1 不是從冷態起步（否則 0 秒那一點與其他點不可比）。
+  7 個 idle × 2 次啟動 = 14 次，加上 preheat 共 15 次，同一道命令。
+</p>
+<table>
+  <tr><th>idle-before</th><th>run 1 t/s</th><th>run 2 t/s</th><th>run 1 逐層中位數 (ms)</th>
+      <th>IQR/中位數</th><th>±25% 內</th><th>最貴層</th></tr>
+  <tr><td><em>preheat（丟棄）</em></td><td class="num">198.64</td><td class="num">—</td>
+      <td class="num">251.1</td><td class="num">0.059</td><td class="num">98%</td><td class="num">L13</td></tr>
+  <tr><td>0 s</td><td class="num">122.39</td><td class="num">131.89</td>
+      <td class="num">401.6</td><td class="num">0.061</td><td class="num">95%</td><td class="num">L5</td></tr>
+  <tr><td>60 s</td><td class="num">133.58</td><td class="num">126.05</td>
+      <td class="num">368.4</td><td class="num">0.073</td><td class="num">95%</td><td class="num">L10</td></tr>
+  <tr><td>90 s</td><td class="num">127.82</td><td class="num">126.11</td>
+      <td class="num">391.6</td><td class="num">0.049</td><td class="num">95%</td><td class="num">L4</td></tr>
+  <tr><td>120 s</td><td class="num">124.99</td><td class="num">123.11</td>
+      <td class="num">403.2</td><td class="num">0.051</td><td class="num">95%</td><td class="num">L4</td></tr>
+  <tr class="hl"><td><strong>150 s</strong></td><td class="num ok"><strong>294.05</strong></td><td class="num">172.55</td>
+      <td class="num ok"><strong>167.4</strong></td><td class="num">0.036</td><td class="num">98%</td><td class="num">L32</td></tr>
+  <tr class="hl"><td><strong>180 s</strong></td><td class="num ok"><strong>300.09</strong></td><td class="num">222.97</td>
+      <td class="num ok"><strong>162.3</strong></td><td class="num">0.025</td><td class="num">98%</td><td class="num">L4</td></tr>
+  <tr class="hl"><td><strong>240 s</strong></td><td class="num ok"><strong>307.84</strong></td><td class="num">273.86</td>
+      <td class="num ok"><strong>161.3</strong></td><td class="num">0.025</td><td class="num">98%</td><td class="num">L28</td></tr>
+</table>
+<div class="box b-green">
+  <p><strong>折點在 120 s 與 150 s 之間：<code>120 s &lt; τ ≤ 150 s</code>。</strong>
+  ≤ 120 s 時 run 1 一律落在 122–134 t/s（逐層中位數 368–403 ms）；到 150 s 就跳到
+  <strong>294.05 t/s</strong>（中位數 167.4 ms），180 s 是 300.09、240 s 是 307.84。
+  這把 §2.2 的推導區間 <code>67 &lt; τ ≤ 247</code> 收緊了一個數量級，而且與它<strong>一致</strong>：
+  舊資料在 idle=67 s 是 179.09 t/s（未恢復，因為 67 &lt; 120），在 idle=247 s 是 286.57 t/s（已恢復）。</p>
+  <p><span class="small">轉換是<strong>陡的，不是漸進的</strong>：120 s 與 150 s 之間沒有中間值被採到
+  （124.99 → 294.05）。這對「操作規則」是好消息——「等 150 秒」就夠，不需要猜。冷態的逐層中位數
+  161–167 ms 對熱態的 368–403 ms，比值約 <strong>2.4×</strong>，與 §3.2 的等比結論同一方向。</span></p>
+</div>
+<div class="box b-amber">
+  <p><strong>副產品：「熱」也不是單一狀態，而是一段連續值。</strong>
+  本報告 §2 把持續負載的操作點寫成 <code>155–184 t/s</code> 的帶；本輪的熱態 run 低到
+  <strong>122.39 t/s</strong>。差別在於本輪的熱態是「連續多次熱跑、中間只隔 0–120 秒」造成的累積，
+  比 §2 那些「session 之間隔了幾百秒」的熱跑更熱。
+  證據是 run 2 隨前一個 idle 變長而<em>變冷</em>：idle 150/180/240 的 run 2 分別是
+  172.55 / 222.97 / 273.86 t/s（逐層中位數 286.9 / 217.5 / 179.8 ms）——
+  run 2 緊接 run 1 之後、中間沒有 idle，所以它繼承的是 run 1 結束時的深度；
+  idle 越長 ⇒ run 1 起點越冷 ⇒ run 2 也越冷。<strong>升溫是在連續數次 prefill 之間累積的，
+  單次 prefill 不足以把機器烘到最熱。</strong>所以「持續負載的規格」不該是一個帶，
+  而該說是「熱態會隨連續負載繼續下探，本輪最低觀察到 122 t/s」。</p>
+</div>
+<div class="box b-amber">
+  <p><strong>「最貴層」在 15 次啟動之間任意漂移，這是「局部熱點」不存在的直接證據。</strong>
+  15 次啟動的最貴層依次是
+  <code>L13, L5, L5, L10, L5, L4, L5, L4, L5, L32, L28, L4, L36, L28, L37</code>——
+  冷跑（150/180/240 的 run 1）指向 L32/L4/L28，熱跑指向 L5/L4/L10。
+  同一個模型、同一道命令，最貴層卻在整張圖上跳動，而且全部落在 <code>IQR/中位數 ≤ 0.073</code>、
+  <code>±25% 內 ≥ 90%</code> 的緊平台上。<strong>查「哪一層最慢」是在量測時序噪聲，不是量測層。</strong></p>
+</div>
+<div class="box b-amber">
+  <p><strong>方法註記：長時間執行的 sweep 會一直用它啟動時載入的那份程式碼。</strong>
+  <code>prefill_idle_sweep.py</code> 對每個 session 是<em>開子行程</em>呼叫
+  <code>prefill_certifiability.py</code>（所以每個 session 用的是當下的新程式碼），
+  但它自己的彙總表在行程啟動時就載入了。本輪 sweep 跑到一半時 harvester 被修正，
+  於是每個 session 的 <code>summary.json</code> 是新格式、而最後那張彙總表仍是舊欄位
+  （<code>peak/mean</code>、48 層）。上面這張表是<strong>事後統一重取</strong>的結果——
+  這也是唯一能讓整份資料內部一致的做法，而且它是一道指令：
+  <pre><code>scripts/check/prefill_idle_sweep.py --reharvest \
+  Backup/llama_bench/prefill_idle_sweep_20260916.json \
+  --reharvest-preheat 'Backup/llama_bench/idle_sweep/idle0000_20260916_030136/*_run01/llama_bench_*decprof.stderr.log'</code></pre>
+  該模式會先印出 harvester 的 mtime 再逐列重讀 15 份日誌，所以「用的是哪一版程式碼」在輸出裡看得見。
+  lesson <code>eng-mh-0029</code>、規則 A19。</p>
+</div>
+
+<h2>4. 這個結論推翻了什麼、保留了什麼</h2>
+<table>
+  <tr><th>上一輪的判讀</th><th>本輪的處置</th></tr>
+  <tr><td>「250 是極端值，操作點是 ~170 的帶」</td>
+      <td><strong>推翻。</strong>250 在冷態是可重複的操作點（4/4）；「帶」是真的，但成因不是抽獎。</td></tr>
+  <tr><td>「free 記憶體不是機制」（rho −0.70）</td>
+      <td><strong>保留且強化。</strong>S3 run 1 在 free = 1.06 GiB、S4 run 1 在 free = <strong>0.12 GiB</strong>
+          （usable 42.1%）下跑出該批次最高吞吐。方向與假設相反。</td></tr>
+  <tr><td>「page cache 不是機制」（強制拉高 4.3× 無效）</td>
+      <td><strong>保留。</strong>S2 六次內 rho(cached, t/s) = +0.09。</td></tr>
+  <tr><td>「swap 不是機制」（rho +0.02）</td>
+      <td><strong>保留。</strong>但注意快的那幾次 swap 也最低（2782 / 3235 / 3485 / 4005 MiB）；
+          這是「距上次負載多久」的<em>共同果</em>，不是因。兩者同步移動時，rho 分不開因果與累積。</td></tr>
+  <tr><td>「記憶體計數器不是引擎依賴的那個資源的量度」（A14）</td>
+      <td><strong>保留，而且現在有了正面答案：</strong>那個資源是 GPU 執行速率。</td></tr>
+</table>
+
+<h2>5. 這條結論<strong>不</strong>說什麼</h2>
+<ul>
+  <li><strong>不改變 decode。</strong>S3 六次與 S4 三次的 tg：冷態 6.46 / 7.14 / 7.23，熱態
+      6.45 / 6.92 / 6.55 / 6.54 / 6.84 t/s——<strong>沒有趨勢</strong>。decode 對這個熱狀態不敏感，
+      所以這個發現對 <strong>25 tok/s 那條路沒有任何幫助</strong>：它的障礙仍是已實作、已量測、
+      已被否決的 M1/W3（<code>docs/M1_POOL_SPLIT_COST_2026-09-14.md</code>）。</li>
+  <li><strong>不指認頻率。</strong><code>gpu_union/wait ≈ 100%</code> 只說明「等待期間 GPU 在忙」。
+      頻率／功耗上限／記憶體子系統三者在這裡未被分離。</li>
+  <li><strong>不是絕對 oracle。</strong>250 與 165 都是這台機器、這個 <code>prefill250</code> shape、
+      這個 commit 下的讀數；M1/M2/M3 閘門仍只是相對不變量。</li>
+  <li><strong>樣本仍小。</strong>冷態 n=4、最深平台 n=4。四次全中是很強的訊號。
+      <span class="small">（本項原本寫「間隔多久才完全恢復」只被夾在 <code>67 s &lt; τ ≤ 247 s</code>，不是一條曲線——
+      這一項已在 §3.3 直接量測解決（<code>120 s &lt; τ ≤ 150 s</code>，7 個 idle × 2 次啟動）。
+      仍成立的部分是：S1 自己的間隔<strong>沒有被記錄</strong>，因為它是本輪第一個 session，沒有任何前置時戳可比。）</span></li>
+</ul>
+
+<h2>6. 量測注意事項（本輪親手踩到的）</h2>
+<table>
+  <tr><th>儀器</th><th>問題</th><th>處置</th></tr>
+  <tr><td><code>llama_bench_matrix.py:295</code></td>
+      <td>log 檔名用固定 arm 名 ⇒ N 次啟動互相覆寫；S1/S2 共 11 次只留下最後一次，
+          <strong>286.67 那次的逐段計數被自己銷毀</strong>，逐段分解被迫整輪重跑。</td>
+      <td><code>prefill_certifiability.py</code> 每次啟動給獨立 <code>--logdir</code>；
+          <code>--idle-before</code> 讓冷態成為可指定的自變數。</td></tr>
+  <tr><td><code>CGC-SEG</code></td>
+      <td>印的是<strong>累積平均</strong>（<code>w_us/n</code>，數值隨 n 下降）。第一版 harvester 逐行加總，
+          得到 0.54 s；真值 30.66 s（差 57×），而錯誤方向正好是「讓等待看起來不存在」。</td>
+      <td>只取最後一行 × 它的 n。已寫成 lesson <code>eng-mh-0018</code>。</td></tr>
+  <tr><td><code>CGC-PHASE</code></td>
+      <td>累加區塊被 <code>if (ubatch.n_tokens == 1)</code> 包住，註解自承
+          <code>batched (prefill) steps are skipped</code> ⇒ <strong>結構上無法量 prefill</strong>。</td>
+      <td>prefill 改用 <code>CGC_GPU_TIMING=1</code> 的 <code>CGC-GPUTIME</code> 與常駐 teardown 統計。
+          lesson <code>eng-src-0009</code>。</td></tr>
+  <tr class="hl"><td><code>CGC-DECPROF</code></td>
+      <td><strong>（更正）</strong>本表初版寫「這個字面在原始碼樹裡不存在」——<strong>錯了</strong>。
+          它存在於 <code>ggml-backend.cpp:2064/2088/2100</code>，閘門是 <code>CGC_DECODE_PROFILE</code>，
+          且在保留的日誌裡<strong>已實際輸出過</strong>（最大一份 <code>llama_server_20260915_185704.log</code>
+          有 2736 行）。初版只 grep 了 <code>src/llama.cpp/src/</code>，漏掉 <code>ggml/src/</code>——
+          又是窄範圍 grep 陷阱。但「它答不了 prefill」的結論方向仍成立，理由要換成下面三個可證閘門。</td>
+      <td>更正 lesson <code>eng-src-0009</code>；新增 <code>eng-src-0011</code> 記「先看日誌有沒有這個字面，
+          再談它在不在原始碼裡」。見 §6.1。</td></tr>
+  <tr><td><code>read shape:</code> / <code>effective_rate</code></td>
+      <td><code>n_read_bytes</code> 只在池路徑累加；整層 slab 的 <code>pread</code>
+          （<code>llama-expert-cache.cpp:3351</code>）一個計數器都不加。實測印出
+          <code>bytes=0 effective_rate=0 MiB/s</code>，同檔卻有 <code>disk=41134 MiB</code>。</td>
+      <td>不以它作 IO 量度；改用 <code>file_reads</code> + <code>fill_wait_us</code>（唯一在呼叫執行緒上的）。
+          lesson <code>eng-src-0010</code>。</td></tr>
+  <tr><td><code>CGC-GPUTIME</code></td>
+      <td><code>skipped=16–46</code>／<code>bufs≈352</code>（4–13% 的 buffer 沒回報時間戳），
+          註解要求它必須為 0。</td>
+      <td>因此只以大尺度關係（<code>union ≈ wait</code>、<code>gap</code> 為個位數百分比）立論。見 A16 的邊界。
+          已用 §3.1 的 IOAccelerator 利用率交叉驗證。</td></tr>
+  <tr><td><code>powermetrics</code></td>
+      <td><strong>失敗卻留下了看起來像成功的檔名</strong>：<code>Backup/cgc_logs/powermetrics_prefill_paired_20260916.log</code>
+          存在（所以「有這個檔」會被誤讀成「跑過了」），內容卻只有一行
+          <code>(eval):1: operation not permitted: sudo</code>。沙箱封鎖 <code>sudo</code>，
+          重試與 <code>dangerouslyDisableSandbox</code> 都無效。</td>
+      <td>明確記為<strong>未執行</strong>（§8 第 2 項列出要人工跑的命令），
+          並改用不需 root 的 <code>Device Utilization %</code> 作為替代證據（§3.1）。</td></tr>
+  <tr><td><code>gpu_util_prefill_paired_20260916.log</code></td>
+      <td><strong>不是缺陷，是漏用</strong>：這份 300 筆的 1 Hz 利用率時序在同一輪就產出了，
+          但報告初版只引用 Metal 時戳、沒發現它，導致「獨立第二儀器」這條佐證被擱置。</td>
+      <td>納入 §3.1；與 S4 三個 run 的 <code>summary.json</code> mtime 逐個對齊後可用。</td></tr>
+  <tr><td><code>prefill_certifiability.py --logdir</code></td>
+      <td><strong>量測成功、回報時崩掉</strong>：<code>--logdir</code> 給相對路徑時，per-launch 日誌路徑是
+          相對的而 <code>ROOT</code> 是絕對的，<code>segpath.relative_to(ROOT)</code> 直接
+          <code>ValueError</code> 結束行程——而那行<em>只是要印出路徑</em>。
+          實測：一次 285.58 t/s 的探針在印完 seg 統計後死在這一行，整個 summary 表格沒印出來。</td>
+      <td>在 <code>parse_args</code> 之後把 <code>--logdir</code>/<code>--json</code> 一律解析成絕對路徑，
+          並把列印改成容忍 repo 外的路徑。<code>prefill_idle_sweep.py</code> 由此誕生（它本來就是
+          被這個崩潰擋住的那一輪）。</td></tr>
+  <tr><td><code>CGC-DECPROF</code> harvester（我寫的那版）</td>
+      <td><strong>逐層資料被重複計算</strong>：<code>top8:</code> 與 <code>all:</code> 描述的是
+          <em>同一批層</em>（top8 是 all 的子集），而第一版 harvester 把兩種行<em>都</em> append 進
+          一個 list，於是 40 層的模型報成 <strong>48 層</strong>（40 + 8）。
+          這不是美觀問題：它抬高了 <code>max</code>、連帶抬高 <code>max/mean</code> 與 CV，
+          而均勻性判準正是用這些量算的——同一份資料因此被判成「單層問題」。</td>
+      <td>改成以層號為鍵的 dict（<code>topN</code> 只是覆寫同一層的相同數值），並把判準從
+          <code>max/mean</code> 換成中位數 + IQR/中位數 + 落在 ±25% 內的比例（§3.2 的琥珀框）。
+          lesson <code>eng-mh-0023</code>。</td></tr>
+  <tr class="hl"><td><code>--decprof-pair</code> 初版（我寫的那版）</td>
+      <td><strong>拿不同粒度的兩份日誌配對</strong>：快探針只印 <code>top1..top8</code>、
+          sweep 日誌印 <code>all1..all40</code>，於是「共同層」只剩快跑<em>自己成本最高的 8 層</em>——
+          不是隨機抽樣，而且全部落在 L28–L38。得出的 <code>2.32×／CV 6.5%</code> 結論恰好對，
+          但它建立在一個被選過的子集上，換一組參考就跑出 <code>1.64×／CV 30%</code>。</td>
+      <td>配對前先檢查兩邊的層覆蓋並印出來；本節的正式配對改用兩份都含 <code>_ALL</code> 的日誌（§3.2 陷阱 A）。
+          lesson <code>eng-mh-0026</code>。</td></tr>
+  <tr class="hl"><td><code>--decprof-pair</code> 只讀第一個 prefill 圖</td>
+      <td><strong>把一次性暫態記成穩態層成本</strong>：<code>-r 3</code> 讓每個行程留下 4 個 prefill 圖，
+          第一個圖帶載入／首次觸碰成本。只讀它，L5 的比值會是 <code>3.50×</code>、層間 CV
+          <code>30.1%</code>，判定翻成 <em>NOT UNIFORM</em>；改成跨 4 圖平均後同一份資料是
+          <code>1.60×／CV 8.7%</code>。<strong>「層間 CV」本身會被讀法放大約 3 倍。</strong></td>
+      <td>新增 <code>--graph first|last|mean</code>（預設 <code>mean</code>），並在配對前先印出每個圖的形狀
+          （<code>worst layer</code> 若在圖之間漂移，就是暫態）。§3.2 陷阱 B、lesson <code>eng-mh-0027</code>。</td></tr>
+</table>
+
+<h3 id="s61">6.1 <code>CGC-DECPROF</code> 為什麼答不了 prefill：三個獨立閘門（全部可證）</h3>
+<p>
+  既然它存在而且會發聲，就得說清楚它<em>為什麼</em>在這 22 次啟動上一次都沒輸出。閘門有三個，
+  任何一個關著都足以讓它靜音，而這一輪三個全關。
+</p>
+<table>
+  <tr><th>#</th><th>閘門</th><th>位置</th><th>本輪狀態</th></tr>
+  <tr><td>1</td><td><code>CGC_DECODE_PROFILE</code> 未設 ⇒ <code>dp_on == false</code></td>
+      <td><code>ggml-backend.cpp:1856</code></td>
+      <td class="bad">22/22 次啟動皆未設。<br><span class="small">設過它的 73 份 run dump 全屬 decode 家族
+      （<code>phase_decomp/s1*</code>、<code>ab_submit_ahead</code>、<code>decode_sweep.py</code> 的
+      <code>p25-*</code> 臂），沒有一個是 prefill250。</span></td></tr>
+  <tr><td>2</td><td>分段路徑必須開啟（<code>cgc_oa_async_enabled()</code> 為真）</td>
+      <td><code>ggml-backend.cpp:1770</code>；dp 區塊在分段迴圈之後（<code>:2047</code>）</td>
+      <td>cert_runs 是 <code>CGC_OA_ASYNC=1</code>（可達），但獨立矩陣
+      <code>matrix_prefill250_20260915.json</code> 是 <code>CGC_OA_ASYNC=0</code> ⇒
+      <code>cgc_oa_async_enabled()</code> 回 <code>false</code>（<code>:1626</code>），
+      分段路徑不走，<code>:2047</code> 與 <code>:2114</code> 兩個區塊都不可達。</td></tr>
+  <tr class="hl"><td>3</td><td><strong>列印閘門 <code>(dp_step % 8) == 0</code>，且逐層累加器每步重置</strong></td>
+      <td><code>:2048</code>（<code>dp_step++</code>）、<code>:2061</code>（列印）、<code>:2109–2111</code>（重置）</td>
+      <td class="bad">結構性：<code>n_prompt=2048</code>、<code>ubatch=6144</code> ⇒ prefill 是
+      <strong>1 個 <code>graph_compute</code></strong>，即 <code>dp_step=1</code>；<code>1 % 8 ≠ 0</code>，
+      所以 prefill 那一步永遠不列印。第一次列印落在 <code>dp_step=8</code>——那已經是第 7 個 decode 步，
+      而 <code>:2110</code> 早在 <code>dp_step=2</code> 就把第 1 步的逐層資料清掉了。
+      <br><strong>（已修，2026-09-16）</strong>列印閘門改為
+      <code>((dp_step % 8) == 0 || dp_step == 1 || dp_ntok &gt; 1)</code>，
+      並讓每一行輸出帶 <code>ntok=</code> 自證形狀。本輪的探針與 sweep 都因此印出完整 40 層。
+      見下方綠框與 §3.2。</td></tr>
+</table>
+
+<div class="box b-amber">
+  <p><strong>閘門 3 有經驗指紋，而且是決定性的。</strong>掃過全部保留日誌中<em>每一個</em>含
+  <code>CGC-DECPROF</code> 的檔案（<strong>95 份、數萬行</strong>），
+  <strong>每一份的最小 <code>step</code> 都是 8，無一例外</strong>；全域 <code>step</code> 直方圖從 8 起算，
+  <code>step&lt;8</code> 的出現次數是 <strong>0</strong>。這正是「prefill 是第 1 步、而列印從第 8 步才開始」
+  的形狀——不是推論，是 95 份日誌的一致讀數。</p>
+</div>
+
+<div class="box b-green">
+  <p><strong>解鎖已完成，而且立刻給出了答案（見 §3.2）。</strong>
+  閘門 3 原本是 <code>if (dp_tot &gt; 0 &amp;&amp; (dp_step % 8) == 0) {</code>；現在是</p>
+  <pre class="small">if (dp_tot &gt; 0 &amp;&amp; ((dp_step % 8) == 0 || dp_step == 1 || dp_ntok &gt; 1)) {</pre>
+  <p>比 §3.2 的原始規劃多了 <code>dp_ntok &gt; 1</code> 這一項，理由是不必<em>假設</em>「第一個圖就是
+  prefill」：<code>dp_ntok</code> 讀 top-k 張量的 <code>ne[1]</code>，所以任何 batched 圖都會放行，
+  而每一行輸出都帶 <code>ntok=</code> 自證形狀。配合 <code>CGC_DECODE_PROFILE=1</code>、
+  <code>CGC_DECODE_PROFILE_ALL=1</code> 與 <code>CGC_OA_ASYNC≠0</code>，
+  第一次 prefill 就印出了 41 segments / 40 layers 的完整逐層 <code>wait/cb/submit</code> 拆分。
+  <strong>這一項不需要 root，且已經跑完。</strong></p>
+</div>
+
+<h2>7. 可操作規則</h2>
+<ol>
+  <li><strong>報 prefill 數字時必附三件事</strong>：本 session 第幾次啟動、距上次啟動結束的間隔秒數、
+      <code>gpu_union/wait</code>。只看「第幾次」會把熱暫態誤讀成抽獎。
+      <strong>間隔必須是導出值或儀器值，不是估計值</strong>——本報告初版就是在這一欄放了沒有來源的數字
+      （§2.2）。</li>
+  <li><strong>要 250，就讓它是間隔後第一次，而且間隔 ≥ 150 秒</strong>（§3.3 直接量到
+      <code>120 s &lt; τ ≤ 150 s</code>；舊文的「≥ 247 s 已足夠、67 s 不足」方向對但太寬）。
+      這是配置層面的操作規則，不是程式碼修復。</li>
+  <li><strong>把 165 當成「間歇負載」的規格，但要知道熱態會繼續下探</strong>：連續熱跑（中間隔 0–120 s）
+      本輪觀察到低到 <strong>122 t/s</strong>（§3.3）。冷啟動可達 250–308。
+      三個數字都是真的，差別在操作點；單獨引用任一個都是錯的。</li>
+  <li><strong>要抬升持續負載的上限</strong>，只能降低每 token 的 GPU 工作量（或換機體）。
+      本輪證據排除了「調 pool 大小 / 調分段 / 調 CPU 側」這三類做法——它們要嘛逐位元相同，
+      要嘛在慢態反而更快。</li>
+  <li><strong>宣告一個儀器「不存在」之前，先看日誌裡有沒有它的輸出字面。</strong>
+      <code>CGC-DECPROF</code> 的誤判（§6）是本專案第二個窄範圍 grep 假陰性；日誌裡有 95 份含它，
+      一眼可證。</li>
+  <li><strong>配對兩份日誌之前，先確認兩邊的「粒度」相同。</strong>層覆蓋不同（<code>top8</code> 對
+      <code>all40</code>）會讓共同層退化成參考跑<em>自己選出來</em>的子集，而那個子集不是隨機的
+      （§3.2 陷阱 A）。先印覆蓋範圍，再算比值。</li>
+  <li><strong>逐層剖面要跨圖平均，不要只讀第一個圖。</strong><code>-r 3</code> 之下第一個 prefill 圖
+      含一次性載入成本，會把「層間 CV」放大約 3 倍並偽裝成局部熱點（§3.2 陷阱 B）。
+      便宜的驗證：印出每個圖的 <code>worst layer</code>——在圖之間漂移就是暫態。</li>
+  <li><strong>一個統計量若由「讀法」決定，就要在結論裡標明讀法。</strong>本輪「層間 CV」
+      在 6.5% / 8.7% / 30.1% 三個值之間移動，差別全來自樣本選擇與圖的選擇，不是來自機器。</li>
+</ol>
+
+<h2>8. 下一步</h2>
+<ol>
+  <li><strong>（已完成）讓 <code>CGC-DECPROF</code> 看見 prefill</strong>（§6.1、§3.2）。
+      列印閘門已改為 <code>((dp_step % 8) == 0 || dp_step == 1 || dp_ntok &gt; 1)</code>，
+      <code>dp_ntok</code> 讓每行自證形狀，<code>libggml-base</code> 隨 commit 進版。
+      <strong>答案：全層等比</strong>——40 層全覆蓋、跨 4 個 prefill 圖平均後，逐層 <code>slow/fast</code>
+      <code>1.60×（CV 8.7%）</code> 對吞吐 <code>1.62×</code>，指向時脈／功耗上限而不是實作熱點。
+      <span class="small">這一項在做的過程中反而先推翻了自己第一次的證據（8 層子集 + 單圖；
+      §3.2 陷阱 A/B），結論沒變但證據重做了。</span></li>
+  <li><strong>物理確認：頻率（需要你人工跑，沙箱內 <code>sudo</code> 被封鎖）</strong>：
+    本輪<b>已嘗試但失敗</b>——<code>Backup/cgc_logs/powermetrics_prefill_paired_20260916.log</code>
+    只有一行 <code>operation not permitted: sudo</code>。也試過繞過 root 的路：
+    <code>scripts/check/ioreport_gpu_pstate_probe.py</code> 以 <code>ctypes</code> 直接讀
+    <code>/usr/lib/libIOReport.dylib</code>，結果是一個<strong>可證的否定</strong>——
+    channel 能列舉，但 <code>IOReportCreateSubscription</code> 回傳 NULL（用可變 dict 時直接
+    拋 <code>-[__NSDictionaryM objectAtIndex:]</code>），<strong>所以無特權路徑是關的</strong>，
+    這一步只能人工。現成指令：
+    <pre><code>scripts/check/powermetrics_gpu_freq.sh --seconds 180 --out ~/Desktop/pm_prefill.log
+scripts/check/powermetrics_gpu_freq.sh --parse ~/Desktop/pm_prefill.log</code></pre>
+    <span class="small">（<code>--parse</code> 只是把抓到的日誌整理成頻率／residency／功率序列，其機制已用合成樣本驗過，
+    尚未用真實日誌驗過。）</span>
+    要看的欄位是 <strong>GPU HW active frequency</strong> 與 <strong>GPU active residency</strong>
+    在冷態首跑與後續跑之間的差別。若頻率下降而 residency 都在 ~100%，頻率就是答案。
+    <span class="small">（本輪已有 <code>Device Utilization %</code> 的 91–97%／峰值 99%，見 §3.1，
+    所以期待的形狀就是「residency 不變、frequency 下降」。）</span></li>
+  <li><strong>（已完成）恢復時間常數</strong>：直接量到折點 —— <strong><code>120 s &lt; τ ≤ 150 s</code></strong>（§3.3）。
+      7 個 idle × 2 次啟動（加 preheat 共 15 次）顯示：≤ 120 s 一律 122–134 t/s，
+      150 s 跳到 <strong>294.05</strong>、180 s 是 300.09、240 s 是 307.84 t/s。
+      與 §2.2 的推導區間 <code>67 &lt; τ ≤ 247</code> 一致並收緊。
+      副產品：熱態<em>沒有下限</em>——連續熱跑可低到 122 t/s，比 §2 的 155–184 帶更低（§3.3 琥珀框）。</li>
+  <li><strong>decode 25</strong>：本輪<strong>沒有推進</strong>，而且理由不是難，是證據不足。
+      回到 <code>docs/M1_POOL_SPLIT_COST_2026-09-14.md</code> 的兩個 blocker
+      （wide 路徑的 <code>mode=wide ne2=256</code>；<code>CGC-POST: il=1 st[0]=1 st[1]=1</code>
+      兩個 expert 共用一 slot ⇒ NaN ⇒ il=2 SIGSEGV）時發現：
+      <strong>那份文件 §4 的關鍵引文自相矛盾，所以 blocker B 目前不能照它修</strong>。
+      <code>CGC-POST</code> 與 <code>CGC-SLOT</code> 共用<em>同一份</em> <code>st</code> 快照
+      （<code>llama-context.cpp:5853</code>），而 <code>remap</code> 是用那份快照逐格寫的
+      （<code>:5861-5866</code>），所以 <code>st[1]=1</code> 與 <code>remap[1]=2</code>
+      在同一次列印裡不可能同時成立——引文至少有一處不是該行原文。
+      本輪的淨產出是把範圍縮到兩件事：
+      <strong>(1)</strong> 需要一次乾淨的重擷取（<code>CGC_POOL_SPLIT=1 CGC_POOL_SPLIT_DBG=1
+      CGC_IDENT_VERIFY=1 CGC_EXACT_PATH_DBG=1 CGC_SLOT_DBG=1</code>，保留完整不截斷的 stderr）；
+      <strong>(2)</strong> 已命名一個具體可疑點：<code>llama-expert-cache.cpp:1848</code> 的
+      <code>slot_last_use = 0</code>（註解自承「oldest: first eviction candidate when full」），
+      配上 <code>pick_slot</code> 的 LRU 平手時以掃描序決定 ⇒ <strong>slot 0 系統性地成為第一個犧牲者</strong>，
+      正好對上症狀裡 <code>st[0]</code> 掉了而 <code>st[1..7]</code> 都還在的不對稱。
+      另兩項已排除：<code>CGC_DBUF2</code> 的交換（預設關、只在 verify-decode 單 token 步觸發，且不動
+      <code>slot_owner</code>）、以及「zero slot 就是 slot 0」（它是 <code>slots_l - 1</code>）。
+      <strong>在重擷取之前不要改 <code>pick_slot</code> 或 <code>prepopulate</code>。</strong></li>
+</ol>
+
+</div>
+</body>
+</html>

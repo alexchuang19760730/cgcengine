@@ -80,7 +80,43 @@ CURATED = [
     ("scripts/check/prefill_certifiability.py", "probe", "engine", True, False,
      "N independent processes, one identical command, launch memory state recorded: is a "
      "throughput number a spec or a draw? --warm-runs forces the page cache up to break the "
-     "run-order confound. Quote the repeatable band, not the target."),
+     "run-order confound. --idle-before sleeps before the first launch, which is what exposes the "
+     "one state that actually matters (see A16). --logdir gives every launch its own stderr, or "
+     "N launches overwrite each other and the fast one's evidence is gone. Quote the repeatable "
+     "band, not the target."),
+    ("scripts/check/prefill_gputime_report.py", "probe", "engine", True, False,
+     "Per-launch GPU decomposition from the preserved cert_runs logs: of the wall time the engine "
+     "spends spinning for a prefill graph's command buffers, how much is the GPU actually busy "
+     "(Metal GPUStartTime/GPUEndTime)? Decides 'the GPU is slow' vs 'the launch path is slow'. "
+     "Needs the run to have been launched with CGC_GPU_TIMING=1. --decprof-pair <fast> <slow> "
+     "compares the FIRST prefill graph of two CGC-DECPROF logs layer by layer: if the per-layer "
+     "slow/fast ratio matches the throughput ratio, the graph scales UNIFORMLY and the cost is a "
+     "clock/power ceiling, not a layer-localised implementation bug. L0 is excluded on purpose -- "
+     "with submit_ahead, layer i's wait is gated by accumulated GPU backlog, so L0 reads lowest "
+     "even in a perfectly healthy run (112 ms vs a 155 ms plateau), and including it forges a "
+     "ramp that reads as localisation."),
+    ("scripts/check/prefill_idle_sweep.py", "probe", "engine", True, False,
+     "Drives successive prefill_certifiability.py sessions at increasing --idle-before, which is "
+     "the one independent variable that exposes the thermal transient (A16/A17). --preheat runs one "
+     "DISCARDED launch first, because otherwise session 1 starts from the cold state and the "
+     "0-second point is not comparable to the rest. Result 2026-09-16: 120 s < tau <= 150 s, and "
+     "the hot state has no floor (122.39 t/s after repeated hot runs). --reharvest re-derives the "
+     "table from an existing sweep's saved logs with the harvester as it exists NOW, which is "
+     "required after any mid-sweep edit to the harvester (A19: this script keeps the code it "
+     "imported at start, so the table and the per-session summaries can be different vintages "
+     "without either one complaining)."),
+    ("scripts/check/ioreport_gpu_pstate_probe.py", "probe", "engine", True, False,
+     "Tries to read GPU performance-state residency unprivileged via IOReport (dlopen "
+     "/usr/lib/libIOReport.dylib + CoreFoundation). Result is a PROVEN NEGATIVE on this machine: "
+     "channels enumerate, but IOReportCreateSubscription returns NULL with a mutable dict and "
+     "raises -[__NSDictionaryM objectAtIndex:] with the alternative -- so this cannot replace root "
+     "powermetrics. Kept because 'we tried and here is why it cannot work' stops the next attempt."),
+    ("scripts/check/powermetrics_gpu_freq.sh", "probe", "engine", True, False,
+     "Turnkey root capture for the hardware-frequency half of the GPU ceiling claim: GPU active "
+     "RESIDENCY is already proven (100-101% busy/wait), but frequency is not, and residency alone "
+     "cannot separate 'the clock dropped' from 'the work grew'. --parse summarises a captured log "
+     "into frequency / residency / power series. Must be run by the user with sudo: the sandbox "
+     "refuses sudo, so this is the one next step that cannot be automated."),
     ("scripts/check/flip_rate.py", "probe", "engine", True, False,
      "route-flip rate; the measurement behind the 'which experts change' question."),
     ("scripts/check/mtp_accept_ab.py", "compare", "engine", True, False,
@@ -148,7 +184,27 @@ CURATED = [
      "gap analysis against the current commit."),
     ("docs/PREFILL250_CERTIFIABILITY_20260916.html", "conclusion", "engine", False, True,
      "1/11 runs cleared 250; the 155-184 band is the operating point; free memory AND page cache "
-     "both refuted as explanations; and the self-correction of 'nothing is blocking 250/25'."),
+     "both refuted as explanations; and the self-correction of 'nothing is blocking 250/25'. "
+     "SUPERSEDED on the 'draw' verdict by PREFILL250_THERMAL_TRANSIENT_20260916.html."),
+    ("docs/PREFILL250_THERMAL_TRANSIENT_20260916.html", "conclusion", "engine", False, True,
+     "250 is the COLD-state operating point and 155-184 is the sustained one. Byte-identical "
+     "counters between the two states, GPU busy/wait = 100-101%, GPU busy time ratio 1.44x vs "
+     "throughput ratio 1.42x: the blocker is GPU execution rate on a fanless Mac16,12. Decode is "
+     "unaffected (6.4-7.2 t/s in both states). CORRECTED 2026-09-16: (a) the session table's "
+     "'idle before launch' column had no instrument behind it -- it is now DERIVED from log UTC "
+     "timestamps + summary.json mtimes (67 / 247 / 848 / 923 s -> 179.09 / 286.57 / 293.11 / "
+     "299.35 t/s, monotone; tau bracketed to 67 s < tau <= 247 s); (b) the report no longer claims "
+     "CGC-DECPROF does not exist -- it does (ggml-backend.cpp:2064) and has emitted in 95 preserved "
+     "logs, but three gates make it decode-only, documented in section 6.1 "
+     "(FIXED 2026-09-16: the gate now admits prefill via `|| dp_step == 1 || dp_ntok > 1` and every "
+     "line states its own ntok, so a line can no longer be MISREAD as prefill for being first). "
+     "Adds section 3.1: a SECOND independent instrument (ioreg -c IOAccelerator Device Utilization "
+     "%, 91-97% mean, 99% peak in all three runs) agrees that the GPU is saturated throughout "
+     "prefill. Adds section 3.2 (2026-09-16): with the gate open, the per-layer slow/fast ratio is "
+     "mean 2.32x CV 6.5% against a throughput ratio of 2.33x -- the graph slows down UNIFORMLY, "
+     "which rules out a layer-localised implementation cost and leaves a clock/power ceiling as "
+     "the only surviving explanation on the list. Quote the ratio agreement, not any single "
+     "layer's milliseconds."),
 ]
 
 
@@ -215,6 +271,20 @@ def build() -> list:
                 continue
             rows.append(row_for(rel, "probe", "engine", True, False,
                                 "(auto-indexed: not in the curated role table — give it a role)"))
+    except Exception:
+        pass
+    # every daily memory log, so a new day is not invisible until somebody remembers to add a row.
+    # These are `log` rows like their curated siblings: the daily journal is the densest artifact in
+    # the loop, it is append-only, and it must never be copied into the harness (rule D6).
+    try:
+        import glob
+        for p in sorted(glob.glob(os.path.join(REPO, ".workbuddy/memory/*.md"))):
+            rel = os.path.relpath(p, REPO)
+            if any(r["path"] == rel for r in rows):
+                continue
+            rows.append(row_for(rel, "log", "shared", False, True,
+                                "(auto-indexed daily memory log -- read it section-by-section through "
+                                "engine_loop/memory/INDEX.jsonl, never whole and never as a copy; see D6)"))
     except Exception:
         pass
     rows.sort(key=lambda r: (r["loop"], r["role"], r["path"]))

@@ -70,6 +70,14 @@ BIN_DIR="${BIN_DIR:-build/bin}"
 REQUIRED_EXES=(${REQUIRED_EXES:-llama-simple llama-speculative-simple llama-bench})
 REQUIRED_DYLIB=(${REQUIRED_DYLIB:-libllama. libllama-common. libmtmd. libggml.})
 
+# A gate that cannot distinguish PASS from SKIP is not a gate (CONVENTIONS.md B7). Every skipped
+# section is counted, because the failure mode is specific and has already happened: running this
+# script on a checkout whose build dir is at src/llama.cpp/build/bin (not build/bin) SKIPs all
+# eleven sections and then still ends with an unqualified "OK: ...", which reads as "everything was
+# verified". The summary now reports how much of the script actually ran.
+SKIP_N=0
+skip() { echo "SKIP  $*"; SKIP_N=$((SKIP_N + 1)); }
+
 usage() {
     sed -n '2,60p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
@@ -191,9 +199,9 @@ HAVE_BIN_DIR=1
 if [ ! -d "$BIN_ABS" ]; then
     HAVE_BIN_DIR=0
     if [ "${ALLOW_MISSING:-0}" = 1 ]; then
-        echo "SKIP  $BIN_DIR 不存在，ALLOW_MISSING=1 → 跳過 build/bin 追蹤檢查"
+        skip "$BIN_DIR 不存在，ALLOW_MISSING=1 → 跳過 build/bin 追蹤檢查"
     else
-        echo "SKIP  $BIN_DIR 不存在（本 repo 若無生產 build 屬正常；仍會繼續跑其他驗收）"
+        skip "$BIN_DIR 不存在（本 repo 若無生產 build 屬正常；仍會繼續跑其他驗收）"
     fi
 fi
 
@@ -301,7 +309,7 @@ if [ "$HAVE_BIN_DIR" = 1 ]; then
     # ============ 檢查 5：關鍵 exe 的 @rpath 必須指向本 repo 自己的 build/bin ============
     echo "--- 檢查 @rpath（洞 D） ---"
     if [ "$SKIP_RPATH_CHECK" = 1 ]; then
-        echo "SKIP  非 dev 分支，worktree 可共用既有 binary；跳過 @rpath 驗收"
+        skip "非 dev 分支，worktree 可共用既有 binary；跳過 @rpath 驗收"
     else
         for exe in "${REQUIRED_EXES[@]}"; do
             p="$BIN_ABS/$exe"
@@ -334,7 +342,7 @@ if [ "$HAVE_BIN_DIR" = 1 ]; then
     LLAMA_ROOT="$(dirname "$(dirname "$BIN_ABS")")"
     EC_SRC="$LLAMA_ROOT/src/llama-expert-cache.cpp"
     if [ ! -f "$EC_SRC" ]; then
-        echo "SKIP  $EC_SRC 不存在（非 CGC fork repo）"
+        skip "$EC_SRC 不存在（非 CGC fork repo）"
     else
         # 7a：pick_slot 用精確 batch_mask，不得回到 min_tick 啟發式
         if grep -q 'uint64_t min_tick' "$EC_SRC"; then
@@ -371,7 +379,7 @@ if [ "$HAVE_BIN_DIR" = 1 ]; then
     echo "--- 檢查 原始碼↔binary 同步 ---"
     STAGED_FILES="$(git -C "$REPO_ROOT" diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)"
     if [ -z "$STAGED_FILES" ]; then
-        echo "SKIP  無 staged 檔案（手動跑 hook 時屬正常；commit 時必有 staged）"
+        skip "無 staged 檔案（手動跑 hook 時屬正常；commit 時必有 staged）"
     else
         # staged 的 llama 原始碼（src/ 與 examples/ 下的 .cpp/.h/.c/.mm/.metal — 都編進 binary）
         staged_src=()
@@ -445,14 +453,14 @@ if [ "$HAVE_BIN_DIR" = 1 ]; then
     fi
 else
     echo "--- 檢查 dylib 被追蹤（洞 B） ---"
-    echo "SKIP  $BIN_DIR 不存在 → 跳過 build/bin 追蹤 / rpath / deadlock / binary sync 檢查"
+    skip "$BIN_DIR 不存在 → 跳過 build/bin 追蹤 / rpath / deadlock / binary sync 檢查"
 fi
 
 # ============ 檢查 9：重型生產驗收（短/長 prompt no-0000 + 指標摘錄） ============
 echo "--- 檢查 生產 MTP 驗收（短/長 prompt） ---"
 RUN_N30="$REPO_ROOT/scripts/run_n30cache.sh"
 if [ "${RUN_CGC_PROD_ACCEPT:-0}" != 1 ]; then
-    echo "SKIP  RUN_CGC_PROD_ACCEPT=1 未啟用（重型驗收保留在本 script 內，需手動開）"
+    skip "RUN_CGC_PROD_ACCEPT=1 未啟用（重型驗收保留在本 script 內，需手動開）"
 elif [ ! -x "$RUN_N30" ]; then
     fail "9 找不到生產腳本: $RUN_N30"
 else
@@ -530,7 +538,7 @@ fi
 echo "--- 檢查 deploy-harmonyos macOS bundle 驗收 ---"
 DEPLOY_MACOS_CHECK="$REPO_ROOT/deploy-harmonyos/macos/check-macos-bundle.sh"
 if [ "${RUN_DEPLOY_HARMONYOS_ACCEPT:-0}" != 1 ]; then
-    echo "SKIP  RUN_DEPLOY_HARMONYOS_ACCEPT=1 未啟用（deploy-harmonyos 驗收保留在本 script 內，需手動開）"
+    skip "RUN_DEPLOY_HARMONYOS_ACCEPT=1 未啟用（deploy-harmonyos 驗收保留在本 script 內，需手動開）"
 elif [ ! -x "$DEPLOY_MACOS_CHECK" ]; then
     fail "10 找不到 deploy 驗收腳本: $DEPLOY_MACOS_CHECK"
 else
@@ -549,7 +557,7 @@ fi
 # 1 個指標退化 → PASS，否則 FAIL 拒絕 commit。
 echo "--- 檢查 replay benchmark 不退化（代碼 commit 才觸發） ---"
 if [ "${RUN_REPLAY_BENCH:-1}" != 1 ]; then
-    echo "SKIP  RUN_REPLAY_BENCH=0 → 跳過 replay benchmark regression 檢查"
+    skip "RUN_REPLAY_BENCH=0 → 跳過 replay benchmark regression 檢查"
 elif [ ! -x "$REPO_ROOT/scripts/check/replay_server_profile.py" ] || [ ! -x "$REPO_ROOT/scripts/check/replay_bench_compare.py" ]; then
     fail "11 缺 replay benchmark 腳本（scripts/check/replay_server_profile.py + replay_bench_compare.py）"
 else
@@ -589,7 +597,7 @@ else
     fi
 
     if [ "$has_code" != 1 ]; then
-        echo "SKIP  本次 commit 為純文件變更（無 src/ scripts/ *.cpp *.h *.py 等代碼）→ 不觸發 replay benchmark"
+        skip "本次 commit 為純文件變更（無 src/ scripts/ *.cpp *.h *.py 等代碼）→ 不觸發 replay benchmark"
     else
         info "11 本次 commit 含代碼改動 (has_code=1, has_doc=${has_doc}) -> 觸發 replay benchmark"
         # 2) 偵測 server PID（CGC_SERVER_PID env > pgrep llama-server --port 8080）
@@ -640,7 +648,7 @@ else
 
             if [ -z "$BASELINE_SRC" ]; then
                 if [ "${ALLOW_REPLAY_BENCH_BASELINE:-0}" = 1 ]; then
-                    echo "SKIP  找不到 baseline（HEAD 沒有 .replay_bench_baseline.json）但 ALLOW_REPLAY_BENCH_BASELINE=1 → 跳過比較"
+                    skip "找不到 baseline（HEAD 沒有 .replay_bench_baseline.json）但 ALLOW_REPLAY_BENCH_BASELINE=1 → 跳過比較"
                 else
                     fail "11 找不到 baseline：HEAD 沒有 .replay_bench_baseline.json。需先 bootstrap: ALLOW_REPLAY_BENCH_BASELINE=1 git commit 一份 .replay_bench_baseline.json 進版（先單獨 commit 避免被擋）"
                 fi
@@ -675,5 +683,11 @@ if [ "$fail_count" -gt 0 ]; then
     exit 1
 fi
 echo ""
-echo "OK: build/bin 追蹤與 rpath 正常、main⊆dev 成立、CGC 死鎖防護在位、原始碼↔binary 同步、生產驗收與 deploy 驗收通過/未啟用、replay benchmark regression 通過/未啟用。"
+if [ "$SKIP_N" -gt 0 ]; then
+    echo "OK: 沒有 FAIL —但本次有 $SKIP_N 個區段被 SKIP，所以「OK」只代表「沒有失敗」，不代表它們被驗證過。"
+    echo "    逐列確認上面每一個 SKIP 的理由是否成立；本 repo 的 build 產物在 src/llama.cpp/build/bin，"
+    echo "    而本 script 預設看 build/bin，因此 BIN_DIR 需指定才會真的檢查（B7：可被跳過的閘門不是閘門）。"
+else
+    echo "OK: build/bin 追蹤與 rpath 正常、main⊆dev 成立、CGC 死鎖防護在位、原始碼↔binary 同步、生產驗收與 deploy 驗收通過、replay benchmark regression 通過（0 個 SKIP）。"
+fi
 exit 0

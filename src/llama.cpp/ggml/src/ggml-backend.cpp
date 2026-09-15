@@ -1861,6 +1861,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 static int64_t dp_lay_sub[64] = {0};   // submit of that layer's segment
                 static int64_t dp_lay_n[64]   = {0};   // segments observed, per layer
                 static int64_t dp_step        = 0;     // graph_computes since start
+                static int64_t dp_ntok        = 0;     // tokens in the graph being profiled (its own shape)
 
                 // [CGC 2026-09-15 GPU-side timing] Accumulators for CGC_GPU_TIMING (see
                 // ggml-metal-context.m for why). gpu_* come from the Metal command buffers'
@@ -2002,6 +2003,17 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     // [CGC M0 decode profile] attribute this layer's wait / hook / submit. The
                     // submit consumed here is the one that queued THIS layer's segment.
                     if (dp_on) {
+                        // [CGC prefill-visible profile] The token count of THIS graph, read off the
+                        // top-k tensor (ne = [n_expert_used, n_tokens]). It is recorded because
+                        // `dp_step == 1` is only the *assumption* that the first graph is the
+                        // prefill; a warmup graph would silently take that slot and the profile
+                        // would then be describing decode while claiming prefill. Printing the
+                        // shape makes each line state its own provenance: ntok=2048 => prefill,
+                        // ntok=1 => decode. See eng-src-0011.
+                        const int64_t dp_t = ttopk != nullptr ? ttopk->ne[1] : 0;
+                        if (dp_t > dp_ntok) {
+                            dp_ntok = dp_t;
+                        }
                         const char * dp_dash = ttopk != nullptr ? strrchr(ttopk->name, '-') : nullptr;
                         const int dp_il = dp_dash != nullptr ? atoi(dp_dash + 1) : i;
                         if (dp_il >= 0 && dp_il < 64) {
@@ -2058,15 +2070,23 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         dp_sb += dp_lay_sub[l];
                     }
                     const int64_t dp_tot = dp_w + dp_cb + dp_sb;
-                    if (dp_tot > 0 && (dp_step % 8) == 0) {
+                    // Emit on the decode cadence, on the first graph of the process, and on ANY
+                    // batched graph. The last two conditions are what make this instrument able to
+                    // answer a prefill question at all: with `n_prompt=2048` and `-ub 6144` the whole
+                    // prefill is a single graph_compute (dp_step=1), so the original
+                    // `(dp_step % 8) == 0` never fired for it and the accumulators were zeroed
+                    // before any later step could see them -- prefill was structurally invisible.
+                    // See eng-src-0011 (and the 95-log "min step is always 8" fingerprint).
+                    if (dp_tot > 0 && ((dp_step % 8) == 0 || dp_step == 1 || dp_ntok > 1)) {
                         const double dp_inv = 100.0 / (double) dp_tot;
                         fprintf(stderr,
                                 "CGC-DECPROF: step=%lld segs=%d layers=%d total=%.2f ms | "
-                                "wait=%.2f (%.0f%%) cb=%.2f (%.0f%%) submit=%.2f (%.0f%%)\n",
+                                "wait=%.2f (%.0f%%) cb=%.2f (%.0f%%) submit=%.2f (%.0f%%) ntok=%lld\n",
                                 (long long) dp_step, n_segs, dp_layers, (double) dp_tot / 1000.0,
                                 (double) dp_w / 1000.0, (double) dp_w * dp_inv,
                                 (double) dp_cb / 1000.0, (double) dp_cb * dp_inv,
-                                (double) dp_sb / 1000.0, (double) dp_sb * dp_inv);
+                                (double) dp_sb / 1000.0, (double) dp_sb * dp_inv,
+                                (long long) dp_ntok);
                         bool dp_used[64] = {false};
                         for (int rank = 0; rank < 8; rank++) {
                             int dp_best = -1;
@@ -2109,6 +2129,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     for (int l = 0; l < 64; l++) {
                         dp_lay_w[l] = dp_lay_cb[l] = dp_lay_sub[l] = dp_lay_n[l] = 0;
                     }
+                    dp_ntok = 0;   // per-step attribution: the next graph states its own shape
                 }
 
                 // [CGC GPU-side timing] One line per 4 qualifying graph_computes. The decision
