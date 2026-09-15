@@ -983,7 +983,17 @@ SERVER_ENV=(
 #   NOGATHER = 2 variables at once (skip_load AND hook) -- kept for continuity with the
 #              2026-09-14 A/B, but NOHOOK is the one that localises.
 #   L3_NGL   = activate at ngl>0 without the L4 shrink/adoption path.
+# [CGC 2026-09-15] LLAMA_EXPERT_CACHE_STEP_DBG added to the list below. It is not a new knob: it
+# has existed in llama-context.cpp (the per-step miss timeline, whose 2026-08-28 reading -- cold
+# ~65% in EVERY phase, hence "structural churn, not a cold start a prewarm could fix" -- is quoted
+# verbatim in that comment) but was never allowlisted, so it could not be turned on through the
+# launcher at all; that verdict must therefore have been taken by some other launch path, and every
+# attempt since has been a silent no-op rather than a negative result.
+# It matters now because it is the cheapest probe of RESIDENCY CHURN, which is what decides D3's
+# premise B (publication off the hot path): a slot table whose entries move every step has to be
+# republished every step, and then the segment boundary keeps its reason to exist.
 for _v in LLAMA_EXPERT_CACHE_NOHOOK LLAMA_EXPERT_CACHE_NOGATHER LLAMA_EXPERT_CACHE_L3_NGL \
+          LLAMA_EXPERT_CACHE_STEP_DBG \
           CGC_LOGITS_ORACLE_TOPN CGC_LOGITS_ORACLE_FIRST_N; do
     if [ -n "${!_v:-}" ]; then
         SERVER_ENV+=("$_v=${!_v}")

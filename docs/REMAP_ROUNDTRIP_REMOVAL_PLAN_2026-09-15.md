@@ -759,6 +759,33 @@ ceiling probe（在 segment i 的 top-k hook 寫 remap leaf **之前**就提交 
 被呼叫幾次。注意現有的 `CGC-SLOT-TABLE` clamp 計數（全天 0 行）**不能**回答這個問題——它只在
 clamp 發生時觸發，0 行只證明「沒有 clamp」，不證明「沒有更新」。必須新增一個發布次數的計數。
 
+**（d′）2026-09-15 22:47 更正：上面指定的儀器是退化的，量不到這個問題。**
+
+查了呼叫點才發現：`llama_expert_cache_publish_slot_table` 的**全部**呼叫點只有兩個，都在
+`llama-context.cpp` 的 **S1 remap hook 內部**（:5448 與 :5584），header 註解自己寫著
+「reached only from the S1 path」。⇒「每 step 被呼叫幾次」的答案是 **by construction** 的：
+**baseline 0 次、S1 每個服務層 1 次**。它量的是「這個機制存不存在」，**不是**「狀態多久變一次」
+——與 `CGC-SLOT-TABLE` clamp 計數同一個病。
+
+**真正要量的東西是 residency churn**：`cache->slot_table` 的**entry 有多少在相鄰兩步之間改值**。
+表內容每步都動 ⇒ 必須每步重發布 ⇒ 前提 B 不成立。這與呼叫次數無關，與**池的換入換出率**有關。
+
+現有的最便宜代理是 `LLAMA_EXPERT_CACHE_STEP_DBG` 的 `fastcold/fastuni`（程式內註解引用的
+2026-08-28 結論「cold ~65% in EVERY phase ⇒ structural churn, not a cold start」就是它），但**兩個
+障礙**：
+
+1. 該 variable **從未在 `run_server.sh` 的 allowlist 裡**（allowlist 是明確列表，非 CGC_* 前綴規則）
+   ⇒ 透過 launcher 根本開不起來，每次嘗試都是**靜默 no-op**，而不是陰性結果。已在 2026-09-15
+   補進 allowlist（與 NOHOOK/NOGATHER 同一個 `for _v in` 列表）。
+2. 它的 block 在 **fast-path 分支內**（`if ((verify_fast || draft_fast) && cgc_fast_eligible)`）。
+   補好 allowlist 後跑 `prod25`（MTP off）實測：**每一步 `CGC-WARM … fast=0`** ⇒ fast path 在這個
+   臂**不可用**，block 永不執行、0 行輸出。⇒ 這條代理在 prod25 上是死路，不是零 churn。
+
+**⇒ 結論：churn 計數必須放在 fast-path 分支「之外」**（例如 `il == 1` 處把 `slot_table` 與上一步
+的快照逐一比對、累加改值 entry 數）。在它跑出來之前，**前提 B 未測**，而 2026-08-28 那個
+「structural churn」的舊讀數**指向另一個方向**（若屬實 ⇒ 前提 B 不成立）——但那個讀數取自
+**另一個配置**，只能當先驗，不能當結論。
+
 **（e）一個新論據支持 D3（來自 §9.13 的補實驗）。** 分段 dispatcher **本身引入不確定性**：S1 真臂在
 分段下同 build、同 N、**3 輪 3 值**；同一臂在非分段下**穩定單值**。⇒ **收段不只省時間，還消除一個
 不確定性來源**，讓 S1 的 bit-identical 閘門從「擲骰子」變成「可判定」（穩定失敗 vs 隨機假通過）。
