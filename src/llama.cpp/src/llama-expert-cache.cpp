@@ -3,6 +3,7 @@
 #include "llama-model.h" // llama_model::expert_cache_path / expert_index
 
 #include <algorithm>
+#include <limits>
 #include <cstring>
 #include <chrono>
 #include <thread>
@@ -420,11 +421,31 @@ static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer, const uint8
     // when utilities are equal (e.g. before the first feed). Default OFF = bit-identical
     // pure-LRU. The utility vector is seeded 0.5 for all experts, so pre-feed tie-break
     // by last_use preserves the old eviction order exactly.
-    const bool spac_victim = cgc_spac_on() && layer < cache->spac_util.size();
+    //
+    // [CGC 2026-09-15 FIX] `best_util` used to be initialised to 2.0 with the comment
+    // "> max possible (1.0), so any real utility wins". That upper bound is NOT a property of
+    // spac_util: `spac_update` bumps `u[e] += bump` once per OCCURRENCE in the routed union, so
+    // an expert selected k times in one step reaches the fixed point k (measured: 4.375 for the
+    // layer-1 owner of slot 0). Once any slot's utility exceeded 2.0 the comparison
+    // `util < best_util` was false for every candidate, all three passes returned best_slot == -1
+    // and the caller aborted with "no usable slot and no fill in flight" -- a hard crash on a
+    // full pool, reachable only with CGC_SPAC=1 and only once the EMA had accumulated past 2.0
+    // (which is why it survived the 09-14/09-15 SPAC sweeps). Initialising to +infinity makes
+    // every finite utility win, which is exactly what the old code did whenever all utilities
+    // were < 2.0 -- so the SPAC-off and SPAC-normal paths stay byte-identical.
+    const bool spac_victim = cgc_spac_on() && layer < cache->spac_util.size() &&
+                             !cache->spac_util[layer].empty();
     for (int pass = 0; pass < 3; ++pass) {
         uint64_t best_tick = UINT64_MAX;
-        double   best_util = 2.0;  // > max possible (1.0), so any real utility wins
+        double   best_util = std::numeric_limits<double>::infinity();
         int32_t  best_slot = -1;
+        // [CGC 2026-09-15 FIX] flag-filtered LRU candidate tracked independently of the SpAc
+        // branch. It is only ever consulted when the SpAc branch selected nothing, so it cannot
+        // change any victim choice that used to succeed; it converts the "every utility is
+        // infinite/NaN" abort into the LRU eviction the callers' contract already assumes
+        // ("pick_slot returns -1 only while a fill is in flight").
+        uint64_t lru_tick = UINT64_MAX;
+        int32_t  lru_slot = -1;
         for (uint32_t i = 0; i < ns; ++i) {
             if (load[i] || queued[i]) {
                 continue;
@@ -445,8 +466,22 @@ static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer, const uint8
                 cache->n_defer_skip++;  // engagement proof: the rule changed this victim choice
                 continue;
             }
+            if (last[i] < lru_tick) {
+                lru_tick = last[i];
+                lru_slot = (int32_t) i;
+            }
             if (spac_victim && owner[i] >= 0 && owner[i] < (int32_t) cache->n_expert) {
+                // can only be false when spac_util holds a non-finite value; log once so a
+                // corrupt utility row is visible instead of silently disabling SpAc victims.
                 const double util = cache->spac_util[layer][owner[i]];
+                if (!(util < std::numeric_limits<double>::infinity())) {
+                    if (cache->n_spac_nonfinite == 0) {
+                        fprintf(stderr, "CGC-SPAC: non-finite util=%.17g at layer=%u expert=%u — "
+                                        "falling back to pure-LRU victims for this slot\n",
+                                util, layer, owner[i]);
+                    }
+                    cache->n_spac_nonfinite++;
+                }
                 if (util < best_util || (util == best_util && last[i] < best_tick)) {
                     best_util = util;
                     best_tick = last[i];
@@ -458,6 +493,11 @@ static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer, const uint8
                     best_slot = (int32_t) i;
                 }
             }
+        }
+        if (best_slot < 0 && lru_slot >= 0) {
+            best_slot = lru_slot;
+            best_tick = lru_tick;
+            cache->n_spac_lru_fallback++;
         }
         if (best_slot >= 0) {
             if (pass == 2) {
@@ -683,9 +723,64 @@ int32_t llama_expert_cache_ensure_slot(llama_expert_cache * cache, uint32_t laye
             }
         }
         if (!in_flight) {
+            // [CGC 2026-09-15] the bare message below was not actionable: `pick_slot` returning -1
+            // and this loop seeing no in-flight fill can only BOTH be true when the two loops are
+            // not scanning the same set of slots -- i.e. when the per-layer vectors are shorter
+            // than `slots_l(cache, layer)`, or `slots_l` itself is 0. Dump the shape so the next
+            // occurrence names the culprit instead of requiring another bisect.
+            const uint32_t ns_l      = slots_l(cache, layer);
+            const uint32_t ns_usable = llama_expert_cache_usable_slots(cache, layer);
+            size_t n_owned = 0, n_load = 0, n_queued = 0, n_pin = 0, n_dres = 0, n_pin_static = 0;
+            uint64_t last_min = UINT64_MAX, last_max = 0;
+            for (uint32_t i = 0; i < ns_l && i < cache->slot_owner[layer].size(); ++i) {
+                if (cache->slot_owner[layer][i] >= 0)    { n_owned++;  }
+                if (cache->slot_loading[layer][i])       { n_load++;   }
+                if (cache->slot_queued[layer][i])        { n_queued++; }
+                if (cache->slot_pinned[layer][i])        { n_pin++;    }
+                if (cache->slot_pinned_static[layer][i]) { n_pin_static++; }
+                if (cache->slot_decode_reserved[layer][i]) { n_dres++; }
+                const uint64_t lu = cache->slot_last_use[layer][i];
+                last_min = std::min(last_min, lu);
+                last_max = std::max(last_max, lu);
+            }
+            // The eviction passes can only return -1 when every owned slot is rejected, and the
+            // ONLY rejection rule that depends on data rather than flags is the SpAc victim branch
+            // (`util < best_util || util == best_util`), which is false for every comparison once
+            // `util` is NaN. Dump the utility row so the next occurrence is self-explanatory.
+            const bool spac_victim = cgc_spac_on() && layer < cache->spac_util.size();
+            const size_t spac_row = layer < cache->spac_util.size() ? cache->spac_util[layer].size() : 0;
+            double u0 = -1.0, u1 = -1.0, ow0 = -1.0;
+            if (spac_row > 0 && cache->slot_owner[layer][0] >= 0) {
+                ow0 = (double) cache->slot_owner[layer][0];
+                if ((size_t) cache->slot_owner[layer][0] < spac_row) {
+                    u0 = cache->spac_util[layer][cache->slot_owner[layer][0]];
+                }
+            }
+            if (spac_row > 0) { u1 = cache->spac_util[layer][0]; }
             fprintf(stderr,
-                    "llama_expert_cache: FATAL ensure_slot layer=%u: no usable slot and no fill in flight — cannot assign; aborting\n",
-                    layer);
+                    "llama_expert_cache: FATAL ensure_slot layer=%u: no usable slot and no fill in flight — cannot assign; aborting\n"
+                    "llama_expert_cache:   shape: slots_l=%u usable=%u n_slots=%u n_slots_l_size=%zu zero_slot=%d\n"
+                    "llama_expert_cache:   vectors: owner=%zu loading=%zu queued=%zu pinned=%zu pinned_static=%zu decode_reserved=%zu\n"
+                    "llama_expert_cache:   occupancy: owned=%zu loading=%zu queued=%zu pinned=%zu pinned_static=%zu decode_reserved=%zu\n"
+                    "llama_expert_cache:   last_use: min=%llu max=%llu tick=%llu\n"
+                    "llama_expert_cache:   spac: on=%d victim=%d rows=%zu row_size=%zu util[layer][0]=%.17g util[layer][owner[0]]=%.17g owner[0]=%.0f\n"
+                    "llama_expert_cache:   cache=%p n_expert=%u n_layer=%zu slot_owner_size=%zu n_slots_l_nonzero=%zu\n",
+                    layer,
+                    ns_l, ns_usable, cache->n_slots, cache->n_slots_l.size(),
+                    (int) (zero_slot_enabled() ? 1 : 0),
+                    cache->slot_owner[layer].size(), cache->slot_loading[layer].size(),
+                    cache->slot_queued[layer].size(), cache->slot_pinned[layer].size(),
+                    cache->slot_pinned_static[layer].size(), cache->slot_decode_reserved[layer].size(),
+                    n_owned, n_load, n_queued, n_pin, n_pin_static, n_dres,
+                    (unsigned long long) last_min, (unsigned long long) last_max,
+                    (unsigned long long) cache->tick,
+                    (int) (cgc_spac_on() ? 1 : 0), (int) (spac_victim ? 1 : 0),
+                    cache->spac_util.size(), spac_row, u1, u0, ow0,
+                    (const void *) cache, cache->n_expert,
+                    cache->n_expert ? cache->slot_table.size() / cache->n_expert : (size_t) 0,
+                    cache->slot_owner.size(),
+                    (size_t) std::count_if(cache->n_slots_l.begin(), cache->n_slots_l.end(),
+                                           [](uint32_t v) { return v > 0; }));
             abort();
         }
         cache->bg_cv.wait(lk); // all slots loading: wait for a fill to finish, then retry
@@ -796,9 +891,42 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
                     }
                 }
                 if (!in_flight) {
+                    // [CGC 2026-09-15] the headline numbers in this message were unreadable on
+                    // their own: it printed "8 distinct experts exceed the 143 usable pool slots",
+                    // where 8 > 143 is impossible. `pick_slot` can only return -1 here when every
+                    // slot in [0, usable) is load/queued/batch_mask-pinned, and this loop just
+                    // proved none is load/queued -- so the batch mask itself is the suspect. Dump
+                    // the mask and the vector shapes instead of another bisect.
+                    const uint32_t ns_l      = slots_l(cache, layer);
+                    const uint32_t ns_usable = llama_expert_cache_usable_slots(cache, layer);
+                    size_t mask_set = 0, n_owned = 0, n_pin_static = 0, n_dres = 0;
+                    for (uint32_t i = 0; i < ns_usable && i < batch_owned.size(); ++i) {
+                        if (batch_owned[i]) { mask_set++; }
+                    }
+                    for (uint32_t i = 0; i < ns_l && i < cache->slot_owner[layer].size(); ++i) {
+                        if (cache->slot_owner[layer][i] >= 0)        { n_owned++;      }
+                        if (cache->slot_pinned_static[layer][i])     { n_pin_static++; }
+                        if (cache->slot_decode_reserved[layer][i])   { n_dres++;       }
+                    }
                     fprintf(stderr,
-                            "llama_expert_cache: FATAL ensure_batch layer=%u: %zu distinct experts exceed the %u usable pool slots and no fill is in flight — cannot assign; aborting\n",
-                            layer, n, llama_expert_cache_usable_slots(cache, layer));
+                            "llama_expert_cache: FATAL ensure_batch layer=%u: %zu distinct experts exceed the %u usable pool slots and no fill in flight — cannot assign; aborting\n"
+                            "llama_expert_cache:   shape: slots_l=%u usable=%u n_slots=%u n_slots_l_size=%zu zero_slot=%d\n"
+                            "llama_expert_cache:   mask: batch_owned_size=%zu mask_set=%zu (must be <= the %zu experts in this batch)\n"
+                            "llama_expert_cache:   vectors: owner=%zu loading=%zu queued=%zu pinned_static=%zu decode_reserved=%zu\n"
+                            "llama_expert_cache:   occupancy: owned=%zu pinned_static=%zu decode_reserved=%zu -- batch_owned.data()=%p\n"
+                            "llama_expert_cache:   cache=%p n_expert=%u slot_owner_size=%zu n_slots_l_nonzero=%zu defer_decode=%d\n",
+                            layer, n, ns_usable,
+                            ns_l, ns_usable, cache->n_slots, cache->n_slots_l.size(),
+                            (int) (zero_slot_enabled() ? 1 : 0),
+                            batch_owned.size(), mask_set, n,
+                            cache->slot_owner[layer].size(), cache->slot_loading[layer].size(),
+                            cache->slot_queued[layer].size(), cache->slot_pinned_static[layer].size(),
+                            cache->slot_decode_reserved[layer].size(),
+                            n_owned, n_pin_static, n_dres, (const void *) batch_owned.data(),
+                            (const void *) cache, cache->n_expert, cache->slot_owner.size(),
+                            (size_t) std::count_if(cache->n_slots_l.begin(), cache->n_slots_l.end(),
+                                                   [](uint32_t v) { return v > 0; }),
+                            (int) (defer_decode ? 1 : 0));
                     abort();
                 }
                 cache->bg_cv.wait(lk); // all slots loading: wait for a fill to finish
@@ -1856,6 +1984,76 @@ llama_expert_cache::~llama_expert_cache() {
                 (unsigned long long) pread_usec.load(std::memory_order_relaxed),
                 (unsigned long long) fill_batch_usec.load(std::memory_order_relaxed),
                 n_prefetch, n_prefetch_dropped);
+        // [CGC 2026-09-15] Pool integrity at teardown. The always-on mul_mat_id assertion in
+        // ggml-metal-ops fires ~8x/run and ALWAYS as a gate+up pair on il=1 (pool slot 14 / slab
+        // expert 214). That assertion reads at graph-BUILD time, so on its own it cannot separate
+        //   (a) a benign transient -- the fill for that slot was still in flight when the graph
+        //       was built, and the GPU read the completed region a moment later, from
+        //   (b) a real fill bug -- the region was never written, or was written to a different
+        //       slot, so the GPU really did multiply by zeros.
+        // At teardown nothing is in flight and nothing is mid-remap, so a zero region here is (b)
+        // by construction. Walking owner-SET slots only makes this cheap (no env gate needed).
+        if (!slot_owner.empty() && (!pool_ext.empty() || !pool.empty())) {
+            size_t zero_slots = 0, checked_slots = 0, checked_bytes = 0;
+            int    first_l = -1, first_s = -1, first_k = -1, first_e = -1;
+            std::vector<size_t> zero_per_layer(slot_owner.size(), 0);
+            std::vector<size_t> chk_per_layer(slot_owner.size(), 0);
+            for (size_t l = 0; l < slot_owner.size(); ++l) {
+                const size_t nk = (l < pool_ext.size()) ? pool_ext[l].size()
+                                 : (l < pool.size() ? pool[l].size() : 0);
+                for (size_t s = 0; s < slot_owner[l].size(); ++s) {
+                    const int32_t e = slot_owner[l][s];
+                    if (e < 0) {
+                        continue;
+                    }
+                    ++checked_slots;
+                    ++chk_per_layer[l];
+                    for (size_t k = 0; k < nk; ++k) {
+                        const uint8_t * base = nullptr;
+                        size_t stride = 0;
+                        if (l < pool_ext.size() && k < pool_ext[l].size() && pool_ext[l][k] != nullptr) {
+                            base   = pool_ext[l][k];
+                            stride = (l < pool_ext_stride.size() && k < pool_ext_stride[l].size())
+                                     ? pool_ext_stride[l][k] : 0;
+                        } else if (l < pool.size() && k < pool[l].size() && !pool[l][k].empty()) {
+                            stride = pool[l][k].size() / std::max<size_t>(slot_owner[l].size(), 1);
+                            base   = pool[l][k].data();
+                        }
+                        if (base == nullptr || stride < 64) {
+                            continue;
+                        }
+                        const uint8_t * row = base + (size_t) s * stride;
+                        const size_t probe = std::min<size_t>(stride, 4096);
+                        bool allzero = true;
+                        for (size_t b = 0; b + 8 <= probe; b += 8) {
+                            uint64_t w;
+                            memcpy(&w, row + b, 8);
+                            if (w != 0) { allzero = false; break; }
+                        }
+                        checked_bytes += probe;
+                        if (allzero) {
+                            ++zero_slots;
+                            ++zero_per_layer[l];
+                            if (first_l < 0) { first_l = (int) l; first_s = (int) s; first_k = (int) k; first_e = (int) e; }
+                        }
+                    }
+                }
+            }
+            fprintf(stderr, "llama_expert_cache: pool integrity: owner-set slots=%zu zero-regions=%zu "
+                    "(probe<=4KiB/slot/kind, %.1f MiB scanned)%s\n",
+                    checked_slots, zero_slots, (double) checked_bytes / 1048576.0,
+                    zero_slots ? "" : "  [OK: every resident slot holds non-zero bytes]");
+            if (zero_slots) {
+                fprintf(stderr, "llama_expert_cache:   first zero region: layer=%d slot=%d kind=%d owner_expert=%d\n",
+                        first_l, first_s, first_k, first_e);
+                for (size_t l = 0; l < zero_per_layer.size(); ++l) {
+                    if (zero_per_layer[l]) {
+                        fprintf(stderr, "llama_expert_cache:   layer=%zu zero=%zu of %zu resident slots\n",
+                                l, zero_per_layer[l], chk_per_layer[l]);
+                    }
+                }
+            }
+        }
         // [CGC M2 pool reuse 2026-09-14] What the whole-layer slab path actually read. The M2 exit
         // condition is "bytes/token @ chunk 2048 <= 3.0 MB (i.e. only the non-resident share)";
         // report it as the ratio so a claim about it can be checked instead of inferred.

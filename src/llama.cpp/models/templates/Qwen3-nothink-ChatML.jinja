@@ -37,8 +37,10 @@
 {{ message.content | trim }}<|im_end|>
 {%- endfor %}
 {%- if add_generation_prompt %}
-{{- '<|im_start|>assistant\n<think>\n\n</think>\n\n' }}
 {%- if prefill_text %}
+{{- '<|im_start|>assistant\n<think>\n\n</think>\n\n' }}
 {{- prefill_text }}
+{%- else %}
+{{- '<|im_start|>assistant\n' }}
 {%- endif %}
 {%- endif %}

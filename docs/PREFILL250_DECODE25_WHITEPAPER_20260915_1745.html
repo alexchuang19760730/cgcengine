@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>prefill 250 / decode 25 技術白皮書（2026-09-15 17:45）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>prefill 250 tok/s / decode 25 tok/s 技術白皮書</h1>
+<div class="sub">
+  日期 2026-09-15 17:45 · 分支 <code>demo/sweet-spot-windows-fix</code> · 基線 commit <code>b75c1a3de</code><br>
+  模型 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（13.6 GB，256 experts/layer）·
+  硬體 MacBook Air Mac16,12 / Apple M4 10 核 / 16 GB unified memory<br>
+  檔名 <code>PREFILL250_DECODE25_WHITEPAPER_20260915_1745.html</code>（對應格式要求
+  <code>prefill 250 tok/s / decode 25 tok/s 技術白皮書202609151745.html</code>；檔名不能含
+  <code>/</code> 與空格，故以 <code>_</code> 取代，標題原樣保留）
+</div>
+
+<div class="box b-red">
+  <p><strong>一句話結論：</strong>把量測口徑換成使用者指定的 <strong>llama-bench（pp/tg × depth 多上下文）</strong>
+  之後：<strong>prefill 的 250 是「達到過但無法認證」</strong> —— 同一條命令、同一個 profile，
+  <code>pp2048 @ -ub 6144</code> 四次獨立啟動量到
+  <strong>276.59 / 198.84 / 176.18 / 122.68 t/s</strong>（<strong>2.25× 離散</strong>），
+  而且 <strong>OOM 天花板在 p3072 與 p4096 之間游移</strong>；組內標準差只有 2–15，
+  所以離散<strong>完全來自呼叫之間</strong>（記憶體狀態），不是量測噪聲。
+  <strong>decode 的 25 則穩定地未達成</strong>（9.58–12.83 t/s）。</p>
+  <p>可以認證的生產數字是<strong>窄 chunk（<code>-b 512</code>）下的 prefill 111.86–120.56 t/s</strong>
+  （對 prompt 512/2048/4096 與 depth 0–4096 全部穩定，±1.5%）。也就是說 250 不是假的，
+  而是被<strong>這台 16 GB 機器上「13.6 GB 模型 + 8 GiB pool + 6144 寬 compute buffer 三者同時常駐」</strong>
+  這個超訂配置綁住了 —— 它是一種記憶體狀態的抽獎結果，不是可交付的規格。</p>
+  <p>本輪真正的工程進展有三件：<strong>(1)</strong> llama-bench 多 context 口徑跑得完了 ——
+  修掉兩個會讓行程 <code>SIGSEGV</code> / <code>SIGABRT</code> 的真 bug；
+  <strong>(2)</strong> M1/M2/M3 過去那個 FAIL 經查是<strong>類別錯誤</strong>（拿舊配置的參考當 bit-identity
+  oracle），已把「參考是否可比」做成閘門前置條件，並以四次獨立啟動逐位元相同證明引擎是確定的；
+  <strong>(3)</strong> harness 修掉「單一 shape 失敗就丟棄整個 arm 已完成數據」的缺陷 ——
+  本節的 250 認證爭議全靠這個修正才看得見。</p>
+</div>
+
+<h2>1. 目標達成現況</h2>
+
+<div class="cards">
+  <div class="card"><div class="k">prefill（窄 chunk <code>-b 512</code>）</div><div class="v ok">119.86 <span style="font-size:13px;font-weight:400">tok/s</span></div>
+    <div class="small">111.86–120.56 全 shape 穩定 · <span class="tag">可認證</span></div></div>
+  <div class="card"><div class="k">prefill（寬 chunk <code>-ub 6144</code>）</div><div class="v bad">122.68–276.59 <span style="font-size:13px;font-weight:400">tok/s</span></div>
+    <div class="small">四次同命令，2.25× 離散 · <span class="tag">不可認證</span></div></div>
+  <div class="card"><div class="k">decode（llama-bench tg128）</div><div class="v bad">9.58–12.83 <span style="font-size:13px;font-weight:400">tok/s</span></div>
+    <div class="small">目標 25 · 差 2.0–2.6×</div></div>
+  <div class="card"><div class="k">M1/M2/M3 閘門</div><div class="v ok">PASS</div>
+    <div class="small">M1/M2/M3 各 9/9，cross-tab (9,0,0,0)</div></div>
+  <div class="card"><div class="k">llama-bench 多 context</div><div class="v ok">跑得完</div>
+    <div class="small">修 bug 前 SIGSEGV / SIGABRT</div></div>
+  <div class="card"><div class="k">bit-identical 可重現性</div><div class="v ok">4/4</div>
+    <div class="small">四次獨立啟動逐位元相同</div></div>
+</div>
+
+<table>
+  <tr><th>目標</th><th>llama-bench 量到的</th><th>判定</th><th>限制</th></tr>
+  <tr>
+    <td>prefill ≥ 250 tok/s</td>
+    <td class="num">276.59 / 198.84 / 176.18 / 122.68<br>
+        <span class="small">（pp2048, <code>-ub 6144</code>, 四次獨立啟動）</span></td>
+    <td class="bad">達到過，<strong>不可認證</strong></td>
+    <td>同命令 2.25× 離散；<code>p3072</code>/<code>p4096</code> 觸發 GPU OOM，且天花板位置在兩次
+        run 之間從 4096 移到 3072</td>
+  </tr>
+  <tr>
+    <td>prefill 認證基準</td>
+    <td class="num">111.86 – 120.56 tok/s<br>
+        <span class="small">（<code>-b 512</code>，p512/2048/4096 × d0–d4096）</span></td>
+    <td class="ok">可認證</td>
+    <td>離 250 差 2.1×。這是窄 chunk 的真實上限</td>
+  </tr>
+  <tr>
+    <td>decode ≥ 25 tok/s</td>
+    <td class="num">9.58 – 12.83 tok/s<br>
+        <span class="small">（tg128，d0–d4096）</span></td>
+    <td class="bad">未達成</td>
+    <td>MTP 在所有已測配置下仍為淨負擔</td>
+  </tr>
+  <tr>
+    <td>M1/M2/M3 對 M2 oracle bit identical</td>
+    <td class="num">M1 9/9、M2 9/9、M3 9/9</td>
+    <td class="ok">達成</td>
+    <td>僅證明<strong>相對</strong>不變性；絕對正確性仍缺 cache-free 控制組（§5）</td>
+  </tr>
+</table>
+
+<h2>2. 生產級量測口徑：llama-bench 的 pp/tg × depth</h2>
+
+<p>本輪依使用者指示，把 prefill / decode 的驗收口徑改為 <strong>llama-bench 的多上下文標準</strong>。
+口徑的定義是：<code>-p n_prompt</code>（pp）× <code>-n n_gen</code>（tg）× <code>-d n_depth</code>，
+其中 <code>--n-depth</code> 是「量測開始前 context 裡已經裝了多少 token」；
+<code>n_ctx = n_depth + n_prompt + n_gen</code>，而且 llama-bench 對<strong>每一個 (p, n, d) 組合都會
+新建並釋放一個 <code>llama_context</code></strong> —— 它天生就是一個多 context harness。
+這正是 streaming-expert 引擎該被檢驗的軸：整個設計關心的就是工作集隨 context 變長會發生什麼事。</p>
+
+<h3>2.1 為什麼 llama-bench 跑我們的模型會 OOM（已修）</h3>
+
+<p>根因不是記憶體不足，是<strong>沒帶 <code>-expert-cache</code></strong>。
+<code>llama-bench</code> 確實接受 <code>-expert-cache &lt;bytes&gt;</code>（<code>--help</code> 已確認），
+不帶的話模型會以「40 個 MoE layer × 256 experts 全部常駐」載入 = <strong>13.66 GiB</strong>，
+對上這台 M4/16GB 的 <code>recommendedMaxWorkingSetSize</code> = <strong>11.45 GiB</strong>，
+第一個 batch 就 <code>test_prompt: failed to decode prompt batch, res = -3</code>。
+解法是讓 bench 走 <code>run_server.sh</code> 解析出的 profile（<code>-expert-cache 8589934592</code>），
+loader 就會改用 143 slots/layer 的 L4 pool。</p>
+
+<h3>2.2 為什麼修完 OOM 之後又踩斷言（已修）</h3>
+
+<p>pool 一起用，<code>llama-context.cpp:285</code> 就會把 <code>cparams.n_batch</code>
+夾到 <code>cgc_pool_max_tokens()</code>（預設 8），因為更寬的 batch 會把縮小後的 per-layer
+expert tensor 讀出界。於是 <code>-p 512</code> 直接
+<code>GGML_ASSERT(n_tokens_all &lt;= cparams.n_batch)</code> 中止。
+llama-bench 無法從外部設 <code>n_batch</code>，所以 harness 必須自己決定：
+stream 臂用 <code>CGC_PREFILL_STREAM=1</code> + <code>CGC_GATHER_SLAB_CAP=256</code>（夾制被解除，
+寬 chunk 走 whole-layer slab），pool 臂用 <code>-b 8 -ub 8</code>
+（這不是 workaround，這正是 server 自己在該配置下每個 prefill chunk 的做法）。</p>
+
+<h3>2.3 一個真相來源</h3>
+
+<p>bench 的 env <strong>不是</strong>在 harness 裡另寫一份清單，而是呼叫
+<code>run_server.sh CGC_DUMP_ENV=1</code> 取得「所有 profile 預設與覆寫都已套用、就在 exec 之前」
+的那份 <code>CGCENV</code>/<code>ENV</code>/<code>ARG</code>。理由：25.17 → 5 t/s 那次回歸本身就是
+配置漂移（<code>CGC_OA_ASYNC</code> 1→0、<code>CGC_SPAC</code> on→off、
+<code>CGC_MM_BITIDENT</code> 掉出 allowlist、兩個 bit-identical 支柱 1→0），
+所以第二份手寫的 env 副本正是要避免的失敗模式。</p>
+
+<h3>2.4 生產級矩陣（arm <code>prod25-stream</code>，p512 / n128 / r3）</h3>
+
+<table>
+  <tr><th>shape</th><th>depth</th><th>t/s</th><th>±</th><th>n_batch</th></tr>
+  <tr><td>pp512</td><td class="num">0</td><td class="num">119.86</td><td class="num">0.30</td><td class="num">512</td></tr>
+  <tr><td>pp512</td><td class="num">512</td><td class="num">118.44</td><td class="num">1.37</td><td class="num">512</td></tr>
+  <tr><td>pp512</td><td class="num">1024</td><td class="num">115.12</td><td class="num">1.13</td><td class="num">512</td></tr>
+  <tr><td>pp512</td><td class="num">2048</td><td class="num">114.43</td><td class="num">0.76</td><td class="num">512</td></tr>
+  <tr><td>pp512</td><td class="num">4096</td><td class="num">111.86</td><td class="num">2.50</td><td class="num">512</td></tr>
+  <tr><td>tg128</td><td class="num">0</td><td class="num">9.65</td><td class="num">0.83</td><td class="num">512</td></tr>
+  <tr><td>tg128</td><td class="num">512</td><td class="num">12.83</td><td class="num">1.87</td><td class="num">512</td></tr>
+  <tr><td>tg128</td><td class="num">1024</td><td class="num">10.14</td><td class="num">0.18</td><td class="num">512</td></tr>
+  <tr><td>tg128</td><td class="num">2048</td><td class="num">10.34</td><td class="num">0.28</td><td class="num">512</td></tr>
+  <tr><td>tg128</td><td class="num">4096</td><td class="num">10.13</td><td class="num">0.21</td><td class="num">512</td></tr>
+</table>
+<p class="small">
+  原始數據 <code>Backup/llama_bench/matrix_prod25-stream_20260915_1659.json</code>。
+  cache hit 97.1%、capacity miss 60.3%、518769 次 file read、24986 µs/job。
+  註：<code>depth 512</code> 的 tg 12.83 比 d0 的 9.65 高，是因為 d0 那一筆含冷 pool 的第一次 fill；
+  這也是 llama-bench 每個 instance 都重建 context 的必然結果 —— 它量的是 cold-ish 情境，
+  不是「服務中已暖機」的情境（要用 <code>--no-warmup</code> 的相反面才更接近服務態）。
+</p>
+
+<h3>2.5 長 prompt 的 prefill 標度（llama-bench，p2048/p4096）</h3>
+
+<p>「250 tok/s 只在很長的 prompt 上出現」是一個必須用生產口徑驗證的假說：若 prefill 吞吐隨
+prompt 長度上升，那 250 就不該被當成達標。以下為同一 arm、同一 depth 軸下的量測
+（<code>prod25-stream</code>，<code>-b 512 -ub 512</code>）。</p>
+
+<table>
+  <tr><th>shape</th><th>prompt</th><th>depth</th><th>t/s</th><th>±</th></tr>
+  <tr><td>pp</td><td class="num">2048</td><td class="num">0</td><td class="num">115.16</td><td class="num">2.93</td></tr>
+  <tr><td>pp</td><td class="num">4096</td><td class="num">0</td><td class="num">114.61</td><td class="num">1.74</td></tr>
+  <tr><td>pp</td><td class="num">2048</td><td class="num">4096</td><td class="num">107.93</td><td class="num">3.97</td></tr>
+  <tr><td>pp</td><td class="num">4096</td><td class="num">4096</td><td class="num">101.22</td><td class="num">5.51</td></tr>
+  <tr><td>tg</td><td class="num">0</td><td class="num">0</td><td class="num">9.58</td><td class="num">1.37</td></tr>
+  <tr><td>tg</td><td class="num">0</td><td class="num">4096</td><td class="num">10.00</td><td class="num">0.18</td></tr>
+</table>
+<p class="small">
+  <code>Backup/llama_bench/matrix_longprompt_20260915.{json,md}</code>。
+  cache hit 96.7%、1411554 reads、28209 µs/job。
+</p>
+
+<div class="box b-amber">
+<p><strong>「prompt 越長、prefill 越快」的假說被否決。</strong>p512 = 119.86、p2048 = 115.16、
+p4096 = 114.61 t/s —— 對 prompt 長度<strong>持平甚至微降</strong>（長 context 的 attention 成本上升），
+離 250 差 2.2×。也就是說 250 <strong>不是</strong>「短 prompt 才量不到」的問題。</p>
+<p>本節的量測用的是 harness 給 stream 臂的 <code>-b 512 -ub 512</code>
+（選擇理由見下方 §2.6）。250 那筆跑的是 <code>-ub 6144</code>，所以真正的問題不是
+「prompt 多長」，而是「同一個 chunk 裡塞多寬」 —— 見 §2.6。</p>
+</div>
+
+<h3>2.6 寬 chunk（<code>-ub 6144</code>）的生產口徑對照 —— 250 的認證爭議</h3>
+
+<p><code>prod25-stream</code> 這個 arm 走的是 <code>prod25</code> profile，而 <code>prod25</code>
+<strong>不設</strong> <code>CGC_SERVER_BATCH</code>／<code>UBATCH</code>，所以 harness 依
+「stream 臂夾制已解除」給出 <code>-b 512 -ub 512</code>。但 254.74 t/s 那筆是
+<code>-ub 6144</code>，而 <code>prefill250</code> profile 正是把 <code>-b 6144 -ub 6144</code>
+寫進去的配置。因此 harness 直接跑 <code>prefill250</code> arm（profile 自帶 batch），
+這才是「用 llama-bench 驗收生產 prefill 配置」的對照。</p>
+
+<table>
+  <tr><th>#</th><th>命令（<code>--arms prefill250</code> 之後的差異）</th><th>pp512</th><th>pp2048</th><th>pp3072</th><th>pp4096</th></tr>
+  <tr><td>A</td><td class="mono">-p 512,4096</td><td class="num">117.54</td><td class="num">—</td><td class="num">—</td><td class="bad">OOM</td></tr>
+  <tr><td>B</td><td class="mono">-p 512,2048,4096</td><td class="num">119.83</td><td class="num bad">276.59 ± 6.96</td><td class="num">—</td><td class="bad">OOM</td></tr>
+  <tr><td>C</td><td class="mono">-p 512,2048,3072,4096</td><td class="num">120.56</td><td class="num bad">198.84 ± 15.41</td><td class="bad">OOM</td><td class="num">—</td></tr>
+  <tr><td>D</td><td class="mono">-p 2048</td><td class="num">—</td><td class="num bad">122.68 ± 1.99</td><td class="num">—</td><td class="num">—</td></tr>
+  <tr><td>E</td><td class="mono">-p 2048</td><td class="num">—</td><td class="num bad">176.18 ± 2.08</td><td class="num">—</td><td class="num">—</td></tr>
+  <tr><th colspan="2">散佈</th><th class="num ok">117.54–120.56（±1.5%）</th>
+      <th class="num bad">122.68–276.59（2.25×）</th><th class="bad">OOM 位置游移</th><th class="bad">OOM</th></tr>
+</table>
+<p class="small">
+  OOM 訊息一律是 <code>test_prompt: failed to decode prompt batch, res = -3</code>。
+  原始數據：<code>Backup/llama_bench/matrix_prefill250_20260915.{json,md}</code>（run B/C）。
+</p>
+
+<div class="box b-red">
+<p><strong>250 是「達到過」但無法認證。</strong>同一個 profile、同一條命令，
+<code>pp2048 @ -ub 6144</code> 四次獨立啟動得到 <strong>276.59 / 198.84 / 176.18 / 122.68</strong> t/s
+—— <strong>2.25× 的離散</strong>。關鍵在於<strong>組內</strong>標準差只有 2.08–15.41
+（<code>-r 3</code> 的三個樣本彼此非常接近），所以離散<strong>不是量測噪聲，而是呼叫之間的狀態差</strong>。
+同時 OOM 天花板在 run B 是 <code>p4096</code>、在 run C 就降到 <code>p3072</code>。</p>
+<p>把兩件事放在一起看：<code>pp512 @ -ub 6144</code> 穩定在 117.54–120.56（離 250 差 2.1×），
+而 <code>pp2048</code> 在同一個 ubatch 下能抽到 276.59。這表示<strong>提高 prefill 吞吐的槓桿是
+「同一個大 chunk 內塞進更多 token」，而它的上限由記憶體水位決定</strong> ——
+13.6 GB 模型 + 8 GiB pool + 6144 寬 compute buffer 在 16 GB unified memory 上同時常駐是<strong>超訂</strong>的，
+所以 250 是高水位下的產物，不是任何時刻都能交付的規格。</p>
+<p><strong>可交付的 prefill 認證數字因此是窄 chunk 的 111.86–120.56 t/s</strong>；
+若要把 250 變成規格，必須先讓配置在記憶體上<strong>閉合</strong>（例如縮 ubatch、縮 pool，
+或把「載入後 free% 低於門檻就拒跑」寫進 guard），而不是靠 preflight 只在<em>啟動前</em>檢查一次。</p>
+</div>
+
+<h2>3. 兩個真 bug：讓多 context 口徑跑不完的元凶</h2>
+
+<p>llama-bench 每個 instance 都建/釋放一個 context。這個行為把兩個過去被單 context 使用模式遮住的
+bug 曝露出來。兩者都不是「量測問題」，是真的會讓行程死掉。</p>
+
+<h3>3.1 SIGSEGV（<code>rc=-11</code>）：teardown 釋放 slab 前沒有把 tensor 還原</h3>
+
+<p>M2 whole-layer slab 路徑的做法是<strong>就地改寫模型自己的 FFN expert tensor</strong>：
+把 <code>wt-&gt;data</code> / <code>wt-&gt;buffer</code> / <code>wt-&gt;ne[2]</code> 指向 slab，
+原值存在 <code>cache_orig</code> / <code>cache_gather_orig_buf</code> / <code>cache_gather_ne2</code>，
+還原時機是<strong>下一層的 per-layer hook</strong>。最後一層沒有「下一層」，所以它的重指向
+永久懸空；<code>~llama_context</code> 把 slab 釋放掉之後，<strong>第二個從同一個 model 建出來的
+context</strong> 就會透過懸空的 <code>wt-&gt;buffer</code> 去認領 L4 pool。</p>
+
+<p>症狀：<code>prod25-stream</code> 的 pp512 跑出 115.84 t/s 之後崩掉；
+<code>prod25-stream-nodb</code> 仍崩（排除 double-buffer 執行緒）；
+只有不含 slab 的 <code>prod25</code>（pool-only）不崩 —— 定位收斂到 slab。
+修法是在釋放 slab 迴圈<strong>之前</strong>插入 UNREPOINT 還原迴圈，並印出還原了幾個 tensor。
+修完之後 4 個 llama-bench instance 連續跑完不崩；另外第一節的<b>四次獨立啟動逐位元相同</b>
+也只有在這個修法之後才成立。</p>
+
+<h3>3.2 SIGABRT（<code>rc=-6</code>）：<code>pick_slot</code> 的 SpAc victim 上界假設錯誤</h3>
+
+<p>中止訊息是 <code>ensure_slot layer=1: no usable slot and no fill in flight</code>，
+而 instrumentation 顯示該層 <code>owned=142/142</code> usable slots、<code>loading=0</code>、
+<code>queued=0</code>、<code>pinned=0</code> —— 一次「應該會成功的驅逐」卻回傳了 -1。</p>
+
+<p><code>pick_slot</code> 的三段 pass 裡，<code>pick_slot</code> 唯一會「三 pass 全數拒絕所有已擁有
+slot」的分支就是 SpAc victim：<code>util &lt; best_util || util == best_util</code>。
+舊碼把上界寫成：</p>
+
+<pre><code>double best_util = 2.0;  // &gt; max possible (1.0), so any real utility wins</code></pre>
+
+<p>這個「max possible = 1.0」<strong>不是 <code>spac_util</code> 的性質</strong>。
+<code>spac_update</code> 對 routed union 裡<strong>每一次出現</strong>都加一次 bump
+（<code>u[e] *= alpha; u[experts[i]] += bump</code>），所以一個在單步內被選中 k 次的 expert
+其固定點是 <strong>k</strong>（實測 layer 1 slot 0 的擁有者 = <strong>4.375</strong>）。
+一旦有任何 slot 的 utility 超過 2.0，<code>util &lt; best_util</code> 就對所有候選皆為假，
+三 pass 全部回 <code>best_slot == -1</code>，呼叫端直接 abort。
+它只在 <code>CGC_SPAC=1</code> 且 EMA 累積超過 2.0 之後可達 —— 這正是它躲過
+09-14 / 09-15 兩輪 SPAC 掃描的原因。</p>
+
+<p>修法三件（可證明不改變任何「本來會成功」的決策）：把上界改成
+<code>std::numeric_limits&lt;double&gt;::infinity()</code>；把 <code>spac_util[layer]</code>
+可能是空 vector 的情況補上 <code>!empty()</code> 守衛；另立一個 flag-filtered 的 LRU 候選，
+<strong>只在 SpAc 分支什麼都沒選到時</strong>才被採用 —— 把「所有 utility 都是 inf/NaN」的 abort
+轉成呼叫端契約本來就假設的 LRU 驅逐（<code>pick_slot</code> 回 -1 只允許發生在「有 fill 在飛」）。
+另補兩個計數器 <code>n_spac_nonfinite</code> / <code>n_spac_lru_fallback</code>，
+讓腐敗的 utility row 是可見的而不是靜默停用 SpAc。</p>
+
+<h2>4. M1/M2/M3 閘門：那個 FAIL 是「類別錯誤」，不是回歸</h2>
+
+<p>前一份白皮書寫「M1/M2/M3 尚未解決」。本輪把它查到底，結論是：<strong>當時報的 FAIL
+不是引擎的缺陷，而是拿一個「在另一種配置下、由另一份程式碼」產生的參考，去做 bit-identity 比對。</strong>
+三條獨立證據如下。</p>
+
+<h3>4.1 舊參考的出身</h3>
+
+<table>
+  <tr><th>項目</th><th>舊參考 <code>ref_iq3_pool8gb_M2_6144.jsonl</code></th><th>現況</th></tr>
+  <tr><td>產生時間</td><td class="num">2026-09-15 01:13:36</td><td class="num">2026-09-15 17:21</td></tr>
+  <tr><td>HEAD</td><td class="num">b8220555f + dirty</td><td class="num">b75c1a3de + dirty</td></tr>
+  <tr><td><code>source_digest</code></td><td class="num">9085a310e795a336…</td><td class="num">（不同）</td></tr>
+  <tr><td><code>CGC_MM_BITIDENT</code></td><td class="bad">未設置（當時根本不在此 launch allowlist 內）</td><td class="ok">= 1</td></tr>
+  <tr><td>與 <code>oracle_iq3_pool8gb_m2_reference_6144.jsonl</code></td>
+      <td colspan="2">md5 <code>6adef53719a6e06dbeecb00ab88a7d0d</code> 完全相同 —— 舊參考就是那份 01:13 dump 的副本</td></tr>
+</table>
+
+<h3>4.2 單旋鈕二分：<code>CGC_MM_BITIDENT</code> 是充要條件</h3>
+
+<p>以生產預設為底，每次只反轉一個旋鈕，看 step-0 的 <code>row_fnv1a64</code>：
+舊參考是 <code>e2578ac0ff15b37e</code>，生產預設是 <code>a6302fd4d0ced8c0</code>。</p>
+
+<table>
+  <tr><th>arm（其餘旋鈕皆為生產預設）</th><th>step-0 row_fnv1a64</th><th>step-0 sum</th><th>與舊參考</th></tr>
+  <tr><td class="mono">CGC_MM_BITIDENT=0</td><td class="num ok">e2578ac0ff15b37e</td><td class="num ok">-297433.270027</td><td class="ok">MATCH</td></tr>
+  <tr><td class="mono">CGC_SERVER_MTP_NO_WARMUP=0</td><td class="num">a6302fd4d0ced8c0</td><td class="num">-297333.37015</td><td class="bad">≠</td></tr>
+  <tr><td class="mono">CGC_SERVER_NO_SEQ_RM_PROBE=0</td><td class="num">a6302fd4d0ced8c0</td><td class="num">-297333.37015</td><td class="bad">≠</td></tr>
+  <tr><td class="mono">CGC_SYNCFILL_SERIAL=1</td><td class="num">a6302fd4d0ced8c0</td><td class="num">-297333.37015</td><td class="bad">≠</td></tr>
+</table>
+
+<p>而 <code>CGC_MM_BITIDENT=1</code> 正是本專案 bit-identical 三支柱的第 1 根，
+其作用在 <code>ggml-metal-ops.cpp:2395</code> 有完整註解：強制所有
+<code>ne11 ≤ 8</code> 的 <code>mul_mat</code> 走 <code>mul_mv</code>，因為
+small-batch mat-mv family 會<strong>依 <code>ne11</code>（=M）挑 <code>(nxpsg, r1ptg)</code></strong>，
+每 row 的 K 縮減樹隨 batch size 改變 —— 也就是同一邏輯 row 在 M=1 與 M=3 會得到 ULP 級不同的值。
+<strong>少了它，M-invariance 根本不成立，那就不存在任何「可以 bit-identical」的參考。</strong>
+舊參考正是在沒有它的狀態下 dump 的，所以在原理上不可能與 <code>MM_BITIDENT=1</code> 的 dump 逐位元相同。</p>
+
+<h3>4.3 決定性證據：引擎本身是確定的</h3>
+
+<div class="box b-green">
+<p><strong>四次獨立啟動（detA/detB/detC/detD），同一份生產配置，互相逐位元比對：
+common = 9 keys、only_A = 0、only_B = 0、row mismatch = <strong>0</strong>。</strong></p>
+<p>這直接證明「舊參考過期」而不是「引擎壞了」：現役配置不但可重現，而且<strong>已經達成
+run-to-run bit-identity</strong> —— 也就是說 M1 指標的前提是成立的。</p>
+</div>
+
+<h3>4.4 閘門升級：把「參考是否可比」變成前置條件</h3>
+
+<p>舊閘門的缺陷不是判錯數字，是<strong>沒有能力發現自己在做跨配置比對</strong>。已在
+<code>scripts/check/m123_oracle_gate.py</code> 補上：</p>
+
+<ul>
+  <li><strong>兩側都用同一條路徑解析配置</strong>：<code>run_server.sh CGC_DUMP_ENV=1</code>，
+      在「所有 profile 預設／覆寫都套用完、就在 exec 之前」印出
+      <code>CGCENV</code>/<code>ENV</code>/<code>ARG</code> 後 <code>exit 0</code>。
+      純讀取、無副作用，且不可能與 server 實際收到的東西漂移。</li>
+  <li><strong>比對「決定數值的子集」</strong>：排除純診斷鍵（<code>CGC_LOGITS_ORACLE_*</code>、
+      <code>*_DBG</code>、log/port 路徑），其餘逐鍵 diff。</li>
+  <li><strong>跨配置 → <code>INVALID COMPARISON</code>（exit 2），不是 FAIL</strong>，
+      並列出差異與一行的重新基準化指令。也支援 <code>--allow-incomparable</code> 只讀差異。</li>
+  <li><strong><code>--write-ref PATH</code></strong>：把剛跑完的 dump 複製成新參考並寫下
+      <code>PATH.cap</code>（含完整解析後配置、profile、模型 digest、note）。
+      每次跑閘門也會留下自己的 <code>Backup/m123_oracle_gate/cap_&lt;tag&gt;.json</code>，
+      讓下一次的「可比性」有東西可比。</li>
+</ul>
+
+<div class="box b-blue">
+<p><strong>本輪結果：</strong>舊參考已按倉庫既有的 <code>_STALE_</code> 慣例退役為
+<code>ref_iq3_pool8gb_M2_6144_STALE_pre-mmbitident.jsonl</code>，其 <code>.cap</code> 記下退役理由、
+二分證據與 superseding 檔名。新基準為
+<code>Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident.jsonl</code>（profile
+<code>prefill250</code>，三支柱全部 = 1，ctx 8192 / batch 6144 / budget 8 GiB）。</p>
+</div>
+
+<h2>5. 已知限制 / 下一步</h2>
+
+<ol>
+  <li><strong>把 250 變成規格的前提是「記憶體閉合」，不是「再調一個旋鈕」。</strong>
+      目前 <code>prefill250</code> 是超訂的（13.6 GB 模型 + 8 GiB pool + 6144 寬 compute buffer
+      塞 16 GB unified），所以 <code>pp2048</code> 會在 122.68–276.59 之間抽獎，而 OOM 天花板
+      在 p3072/p4096 之間游移。<strong>可驗收的下一步是把「載入後」的 free% 也納入 guard</strong>
+      （現在 preflight 只在啟動前檢查一次），或把 ubatch 降到能穩定不 OOM 的值，
+      然後在固定 shape 上重複 5 次確認離散 &lt;5%。在此之前，認證數字是窄 chunk 的 111.86–120.56。</li>
+  <li><strong>M1/M2/M3 閘門只證明「相對不變性」。</strong>cache-ON 的參考永遠不能被當成真值
+      （<code>knifeedge_matrix.py --oracle-abs</code> 對這點是拒絕的），因為 pool 的成員決定
+      logits。絕對正確性需要 <code>CGC_SERVER_EXPERT_CACHE_OFF=1</code> 的控制組 dump；
+      在 16 GB 機器上它只裝得下很小的 prompt。這一格仍然是空的。</li>
+  <li><strong>layer 1 的 gate/up expert row 全零（fill-vs-read 時序）尚未解。</strong>
+      <code>b75c1a3de</code> 的常開斷言抓到 8 次全零 row，全部在
+      <code>ffn_moe_gate-1</code> / <code>ffn_moe_up-1</code>（同 slot 的 down 非零，
+      pool 與 slab 兩條路徑都中）。全零 row 代表該 expert 的貢獻被靜默丟掉 ——
+      這是<strong>絕對正確性</strong>的缺口。下一步：<code>CGC_MMID_ASSERT_FATAL=1</code>
+      讓它停在第一次違規，再對照 <code>ensure_batch</code> / double-buffer publish 的時序。</li>
+  <li><strong>decode 25 的兩個新槓桿（尚未實測）：</strong>
+    <ul>
+      <li><code>CGC_PREFILL_PROTECT=1</code>：<code>llama-context.cpp:4987</code> 記錄的實測是
+          <strong>steady-state decode 22.2 t/s（開）vs 8.1–8.9 t/s（關）</strong> ——
+          因為 prefill 的 fill 會把 decode 即將需要的 slot 沖掉。這個 pass-through 直到本輪
+          才被加進 allowlist，所以<strong>過去所有 server-profile 的 decode 數字都是 8 t/s 那一格</strong>。
+          驗證命令（llama-bench，兩臂同一次調用）：
+          <code>--arms "prefill250,prefill250:CGC_PREFILL_PROTECT=1" --prompt 0 --gen 128</code></li>
+      <li><code>LLAMA_EXPERT_CACHE_WORKERS</code>：原本寫死 8，從未被掃過；
+          它是 expert-fill 路徑上唯一的併發旋鈕。實測記錄顯示<strong>瓶頸是併發而不是位元組</strong>：
+          57363 次 pread × 1.73 ms = 99.03 s 的加總延遲塞在 57.5 s 的 decode 牆內（MTP off）、
+          285279 次 pread = 553.78 s 塞在 92.6 s 內（MTP on）；而 81.5 GiB 就算只跑 2 GB/s 也只是 41 s。
+          本輪把 MTP fast path 的冷填改走 <code>ensure_batch</code>（串行版留在
+          <code>CGC_SYNCFILL_SERIAL=1</code>），這使得這個 worker 數<strong>終於會作用到 MTP 路徑</strong>。
+          掃描用 <code>--arms "prefill250:CGC_SERVER_WORKERS=16"</code> 等。</li>
+    </ul>
+  </li>
+  <li><strong>MTP 在所有已測配置下仍是淨負擔</strong>（MTP-off 10.43 vs MTP-on 6.48 t/s）。
+      draft acceptance 低、mean len 短，每個 verify batch 前進太少。</li>
+  <li><strong>參考檔不在 git 內。</strong><code>Backup/</code> 是 gitignore 的（避免 GB 級二進位入庫），
+      所以新 clone 沒有參考。閘門在參考缺失時會明確報錯並印出重建指令
+      （<code>--write-ref &lt;path&gt;</code>），這是刻意設計而非疏漏。</li>
+  <li><strong>使用者延後項：</strong>replay benchmark 閘門的 stale baseline、48 題品質問題。</li>
+</ol>
+
+<h2>6. 本次異動檔案</h2>
+<table>
+  <tr><th>檔案</th><th>改動</th></tr>
+  <tr><td><code>scripts/check/llama_bench_matrix.py</code></td>
+      <td>生產級 pp/tg × depth 矩陣 harness（新增）。環境一律經
+          <code>run_server.sh CGC_DUMP_ENV=1</code> 取得。修掉兩個自有 bug：
+          <strong>(a)</strong> <code>test_time</code> 是 ISO-8601 字串卻被 <code>:.1f</code> 格式化
+          （llama-bench 已成功之後才炸掉整個 arm）；
+          <strong>(b)</strong> llama-bench 是<strong>串流輸出</strong> JSON 陣列，中途 OOM 時收尾的
+          <code>]</code> 不會到達，<code>json.loads</code> 整體失敗 → 已完成的 instance 被丟棄。
+          第 (b) 點正是本輪 250 認證爭議得以被看見的原因（<code>parse_rows()</code> 以括號深度
+          掃描救回完整物件）；失敗時也不再中止，改記錄 <code>incomplete</code> + 真正的失敗訊息
+          （取含 <code>failed to decode</code> / <code>res = -</code> 等簽名的那一行，而非最後一行的統計）。</td></tr>
+  <tr><td><code>scripts/check/m123_oracle_gate.py</code></td>
+      <td>可比性前置條件（兩側解析配置 + 逐鍵 diff + <code>INVALID COMPARISON</code>）；
+          <code>--write-ref</code> / <code>--ref-note</code> / <code>--allow-incomparable</code>；
+          每次跑留下 <code>cap_&lt;tag&gt;.json</code>。預設參考改為
+          <code>ref_iq3_pool8gb_M2_6144_bitident.jsonl</code>。</td></tr>
+  <tr><td><code>src/llama.cpp/src/llama-context.cpp</code></td>
+      <td>Bug 1 修復：<code>~llama_context</code> 釋放 slab 前 UNREPOINT 還原 M2 重指向的
+          expert tensor（SIGSEGV）。閘門兩個無條件 <code>fprintf</code> 改 env gate
+          （<code>CGC_PREV_PF_DBG</code> / <code>CGC_IDS_MAX_LINES</code>）；
+          MTP fast path 的串行冷填改走 <code>ensure_batch</code>（串行版留
+          <code>CGC_SYNCFILL_SERIAL=1</code> 做 A/B）。</td></tr>
+  <tr><td><code>src/llama.cpp/src/llama-expert-cache.cpp</code><br>
+          <code>src/llama.cpp/src/llama-expert-cache.h</code></td>
+      <td>Bug 2 修復：<code>pick_slot</code> 的 SpAc victim 上界 <code>2.0 → +inf</code>、
+          <code>empty()</code> 守衛、LRU fallback（SIGABRT）；新增
+          <code>n_spac_nonfinite</code> / <code>n_spac_lru_fallback</code> 計數器；
+          <code>ensure_slot</code> / <code>ensure_batch</code> 的 FATAL 加上完整診斷 dump；
+          析構時加 pool 完整性檢查。</td></tr>
+  <tr><td><code>scripts/run_server.sh</code></td>
+      <td><code>CGC_SERVER_EXPERT_CACHE_OFF=1</code>（真正的 cache-free 啟動，省略
+          <code>-expert-cache</code> 而非給 0）；<code>CGC_DUMP_ENV=1</code>；
+          <code>CGC_MM_BITIDENT</code> 納入 allowlist 並預設 1；bit-identical 另兩支柱
+          預設 0 → 1（<code>CGC_MTP_NO_WARMUP</code> / <code>CGC_NO_SEQ_RM_PROBE</code>）；
+          新增 <code>prod25</code> profile；補 <code>CGC_PREFILL_PROTECT</code> /
+          <code>CGC_IDS_MAX_LINES</code> / <code>CGC_PREV_PF_DBG</code> /
+          <code>CGC_SYNCFILL_SERIAL</code> 等 pass-through；<code>CGC_SERVER_WORKERS</code>
+          讓 <code>LLAMA_EXPERT_CACHE_WORKERS</code> 可掃。</td></tr>
+  <tr><td><code>src/llama.cpp/models/templates/Qwen3-nothink-ChatML.jinja</code></td>
+      <td>未帶 <code>prefill_text</code> 時不再輸出空的
+          <code>&lt;think&gt;&lt;/think&gt;</code> scaffold（回顯問題）。註：<code>prefill250</code>
+          profile 會注入 <code>assistant_prefill</code>，因此這項改動<strong>不影響</strong>本白皮書
+          的任何數值 —— 已用 step-0/1/2 逐位元相同驗證。</td></tr>
+  <tr><td><code>Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident.jsonl(.cap)</code></td>
+      <td>新 M2 oracle 基準（含解析後配置 provenance）。</td></tr>
+  <tr><td><code>Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_STALE_pre-mmbitident.jsonl(.cap)</code></td>
+      <td>舊參考退役 + 退役理由與二分證據。</td></tr>
+  <tr><td><code>docs/PREFILL250_DECODE25_WHITEPAPER_20260915_1745.html</code></td>
+      <td>本文件。</td></tr>
+</table>
+
+</div>
+</body>
+</html>

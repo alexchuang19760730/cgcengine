@@ -762,6 +762,68 @@ llama_context::~llama_context() {
     // the wide-union gather path, which includes the default 10 GiB pool. This is the ONLY place
     // they are freed: freeing a superseded slab earlier would leave the tensors of other layers
     // pointing into freed memory until the next graph build restores them.
+    //
+    // [CGC 2026-09-15] UN-REPOINT BEFORE FREEING -- this is a real bug fix, not hygiene.
+    //
+    // The wide-union path mutates the MODEL's FFN expert tensors in place: it saves the original
+    // `data` / `buffer` / `ne[2]` into cache_orig / cache_gather_orig_buf / cache_gather_ne2 and
+    // then points them at the slab (`wt->data = sl->base; wt->buffer = sl->buf;`, see the repoint
+    // above). The restore is performed by the NEXT per-layer hook that visits the same layer --
+    // either the same layer on the following step, or the pool branch that un-repoints whatever
+    // this tensor was left in gather state. After the LAST layer of the LAST wide prefill there is
+    // no further hook, so those tensors stay pointed into the slab with the originals still sitting
+    // unerased in cache_orig. Freeing the slab then leaves every one of them with
+    //
+    //     data   -> freed slab memory
+    //     buffer -> a FREED ggml_backend_buffer_t (dangling pointer)
+    //     ne[2]  -> the union size (256), not the slot count
+    //
+    // The tensors belong to the MODEL, which outlives the context, so the damage is not confined
+    // to this context: the next llama_context built from the same model adopts the L4 pool from
+    // exactly these tensors and reads `wt->buffer` while doing it -- crashing before it emits a
+    // single log line of its own.
+    //
+    // Measured (llama-bench, which creates and frees one context per (p,n,d) instance):
+    //   arm prod25-stream, -p 512 -n 8 -d 0 -r 3   -> pp512 115.84 +- 7.48 t/s, then SIGSEGV
+    //   arm prod25-stream-nodb (DB thread off)     -> pp512  78.33 t/s,      still SIGSEGV
+    //   arm prod25 (pool path, no slab, no repoint)-> two contexts, no crash
+    // The DB thread is therefore not involved; the dangling repoint is. Restoring here also makes
+    // the crash impossible for the server, which today only escapes it because it is one long-lived
+    // context that is never rebuilt from the same loaded model.
+    {
+        size_t n_unrepointed = 0;
+        for (const auto & kv : cache_orig) {
+            const int il = kv.first.first;
+            const int k  = kv.first.second;
+            auto it_ffn = cache_ffn_tensors.find(il);
+            ggml_tensor * wt = (it_ffn != cache_ffn_tensors.end() &&
+                                (size_t) k < it_ffn->second.size())
+                    ? it_ffn->second[(size_t) k] : nullptr;
+            if (wt == nullptr) {
+                continue;
+            }
+            if (wt->data != kv.second) {
+                wt->data = kv.second;
+                n_unrepointed++;
+            }
+            if (auto itb = cache_gather_orig_buf.find(kv.first); itb != cache_gather_orig_buf.end()) {
+                wt->buffer = itb->second;
+            }
+            if (auto itn = cache_gather_ne2.find(kv.first); itn != cache_gather_ne2.end()) {
+                wt->ne[2] = itn->second;
+            }
+        }
+        if (n_unrepointed > 0) {
+            fprintf(stderr, "CGC-M2-UNREPOINT: teardown restored %zu expert tensor(s) to their "
+                    "model storage before freeing %zu slab(s) (a second context built from this "
+                    "model would otherwise read a freed buffer)\n",
+                    n_unrepointed, cache_gather_slab.size());
+        }
+        cache_orig.clear();
+        cache_gather_orig_buf.clear();
+        cache_gather_ne2.clear();
+    }
+
     for (llama_context::cgc_gather_slab & s : cache_gather_slab) {
         if (s.buf != nullptr) {
             ggml_backend_buffer_free(s.buf);
@@ -3908,7 +3970,7 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
         for (int64_t i = 0; i < n_expert_used; ++i) {
             dst[i] = (uint32_t) ids[i];  // j=0 offset is 0
         }
-        if (il <= 1) {
+        if (il <= 1 && getenv("CGC_PREV_PF_DBG") != nullptr) {
             fprintf(stderr, "CGC-PREV-PF: collect il=%d ntok=%lld ids=[%u %u %u %u %u %u %u %u]\n",
                     il, (long long) n_tokens,
                     dst[0], dst[1], dst[2], dst[3], dst[4], dst[5], dst[6], dst[7]);
@@ -3921,12 +3983,16 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
     // [CGC v4] threshold raised 4 -> 8 so the M=8 prefill chunks (present in BOTH paths with
     // identical shapes) are captured too — this is where an early expert flip could hide.
     // Line budget env-tunable (default 4000: ~21 decode calls x 41 layers per path).
+    // [CGC 2026-09-15] Default flipped 4000 -> 0. decode runs with n_tokens = 2 (MTP verify),
+    // so `n_tokens <= 8` was true on every decode call and the whole 4000-line budget was spent
+    // inside a single short request -- ~4000 unbuffered stderr writes per run, on the same hot
+    // path the assertion work is being measured against. Opt back in with CGC_IDS_MAX_LINES=N.
     static int cgc_ids_max_lines = -1;
     if (cgc_ids_max_lines < 0) {
         const char * e = getenv("CGC_IDS_MAX_LINES");
-        cgc_ids_max_lines = e ? atoi(e) : 4000;
+        cgc_ids_max_lines = e ? atoi(e) : 0;
     }
-    if (n_tokens <= 8 && cgc_hook_dbg_n < cgc_ids_max_lines) {
+    if (cgc_ids_max_lines > 0 && n_tokens <= 8 && cgc_hook_dbg_n < cgc_ids_max_lines) {
         cgc_hook_dbg_n++;
         // [CGC bit-bisect] pos_max identifies the batch (async dispatch scrambles the
         // stderr order, so ctx+ntok alone can't attribute a line to a decode call).
@@ -4793,18 +4859,59 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
                     }
                 }
                 if (cgc_cold_before > 0 && cgc_syncfill_cold) {
-                    size_t n_cold_filled = 0;
+                    // [CGC 2026-09-15] This used to be a serial `for` over the cold experts, one
+                    // blocking llama_expert_cache_ensure_slot per expert. Measured on prod25+MTP
+                    // that path is the MTP bottleneck, not the pool:
+                    //
+                    //   prewarm req=22902 hit=0 miss=22902   (ensure_slot with count=false)
+                    //   file_reads=285279 over ~187 decode steps  = 1525 reads/step
+                    //   pread_usec=553.78 s inside a 92.6 s wall  -> fully IO-bound
+                    //   draft accept 0.735 / mean len 3.21 -> 6.48 t/s, WORSE than MTP-off (10.43)
+                    //
+                    // ~122 experts go cold per step and each one costs a blocking ~1.7 ms pread
+                    // on the critical path, serialised across experts. The MTP fast path is
+                    // supposed to hide exactly this behind the FFN dispatch, and ensure_batch is
+                    // built for it: one lock for the whole layer, then ALL misses flattened into
+                    // a single job list onto the persistent worker pool
+                    // (LLAMA_EXPERT_CACHE_WORKERS, default 8) -- see the "L3 Option A batch:
+                    // cross-expert parallel fill" comment in llama-expert-cache.cpp.
+                    //
+                    // Two further consequences of using the batch path, both intended:
+                    //   * it increments n_requests/n_misses, so this cold traffic finally shows
+                    //     up in the headline hit rate instead of hiding in the `prewarm` counters
+                    //     (where hit=0 by construction, because the loop only ever asks for
+                    //     experts whose slot table entry is already -1);
+                    //   * it claims its slots under one lock with batch_owned mid-batch protection,
+                    //     which is what makes concurrent cross-expert fill safe.
+                    //
+                    // CGC_SYNCFILL_SERIAL=1 restores the old serial loop for A/B.
+                    static const bool cgc_syncfill_serial = getenv("CGC_SYNCFILL_SERIAL") != nullptr;
+                    std::vector<uint32_t> cold;
+                    cold.reserve(uni.size());
                     for (size_t i = 0; i < uni.size(); ++i) {
                         const uint32_t e = uni[i];
                         if (e < cache->n_expert && cst[e] < 0) {
-                            llama_expert_cache_ensure_slot(cache, (uint32_t) il, e, /*count=*/false);
-                            n_cold_filled++;
+                            cold.push_back(e);
+                        }
+                    }
+                    const size_t n_cold_filled = cold.size();
+                    if (n_cold_filled > 0) {
+                        if (cgc_syncfill_serial) {
+                            for (uint32_t e : cold) {
+                                llama_expert_cache_ensure_slot(cache, (uint32_t) il, e, /*count=*/false);
+                            }
+                        } else {
+                            // defer_decode_protect=false: this is a decode-phase fill, so the
+                            // slots it installs are decode-reserved and a later prefill must
+                            // defer them (same contract as the normal decode path).
+                            llama_expert_cache_ensure_batch(cache, (uint32_t) il, cold.data(),
+                                                            cold.size(), /*defer_decode_protect=*/false);
                         }
                     }
                     if (n_cold_filled > 0 && il <= 1) {
-                        fprintf(stderr, "CGC-SYNCFILL: %s il=%d cold_filled=%zu\n",
+                        fprintf(stderr, "CGC-SYNCFILL: %s il=%d cold_filled=%zu (%s)\n",
                                 cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP ? "draft" : "verify",
-                                il, n_cold_filled);
+                                il, n_cold_filled, cgc_syncfill_serial ? "serial" : "batch");
                     }
                 }
                 size_t cgc_cold_after = 0;

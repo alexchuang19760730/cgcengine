@@ -88,8 +88,21 @@ SERVER_RUNTIME_PROFILE="${CGC_SERVER_RUNTIME_PROFILE:-auto}"
 SERVER_MTP="${CGC_SERVER_MTP:-1}"
 SERVER_DENSE_IQ4X="${CGC_SERVER_DENSE_IQ4X:-1}"  # denseIQ4X is the production MTP carrier
 SERVER_MTP_CLI_PARITY="${CGC_SERVER_MTP_CLI_PARITY:-0}"  # opt-in: mirror speculative-simple init path
-SERVER_MTP_NO_WARMUP="${CGC_SERVER_MTP_NO_WARMUP:-0}"    # pass-through: skip CLI-style manual warmup
-SERVER_NO_SEQ_RM_PROBE="${CGC_SERVER_NO_SEQ_RM_PROBE:-0}" # pass-through: skip seq_rm probe explicitly
+# [CGC 2026-09-15] DEFAULTS FLIPPED 0 -> 1. These two are two of the three bit-identical
+# pillars, and the whitepaper (moeexpert/doc/CGC_MTP_Bit-Identical_技術白皮書_2026-08-30.html
+# §4.3) is explicit that all three are required, "缺一不可":
+#     CGC_MM_BITIDENT=1  (M-invariant kernel choice)
+#     CGC_MTP_NO_WARMUP=1 + CGC_NO_SEQ_RM_PROBE=1  (专家缓存污染修复)
+# Root cause A in that document is exactly the cache-ON divergence: the MTP context's manual
+# warmup decode and the ctx_tgt can_seq_rm probe decode both run an extra decode through the
+# expert cache BEFORE the first real request, filling/evicting pool slots. The pool then holds a
+# different membership than the no-cache path, the router's near-tie argsort flips, different
+# experts are selected, and the outputs diverge from token 0. With the cache OFF there is no
+# pool to pollute, which is why "no expert cache" always looked like the stable oracle.
+# Both knobs also REMOVE work (they skip two decodes), so this is not a speed/correctness
+# tradeoff -- leaving them off was paying for the bug.
+SERVER_MTP_NO_WARMUP="${CGC_SERVER_MTP_NO_WARMUP:-1}"    # pass-through: skip CLI-style manual warmup
+SERVER_NO_SEQ_RM_PROBE="${CGC_SERVER_NO_SEQ_RM_PROBE:-1}" # pass-through: skip seq_rm probe explicitly
 SERVER_N_CB="${CGC_SERVER_N_CB:-8}"  # §8.93: cb8 sweet spot
 SERVER_GLU_FUSED_DOWN="${CGC_SERVER_GLU_FUSED_DOWN:-1}"  # §8.113: +6.5% speed
 SERVER_WATCHDOG="${CGC_SERVER_WATCHDOG:-1}"  # Metal deadlock watchdog
@@ -232,6 +245,35 @@ case "$SERVER_PROFILE" in
             SERVER_CHAT_TEMPLATE_FILE=""
         fi
         ;;
+    prod25)
+        # [CGC 2026-09-15] 复原 2026-09-07 的生产档 —— 那一版是唯一有实测 25.17 t/s 的配置
+        # （wall 39.7 ms/token，best 25.87，draft_accept 98.2%，3/3 profiles 品质达标）。
+        # 出处：docs/archive/pre-consistency-metrics-2026-09-11/CGC_TPOT_延迟分解与优化路线图_2026-09-07.html §8。
+        #
+        # 与 prefill250 的分工：那个为 prefill 吞吐优化（6144 chunk + whole-layer slab streaming），
+        # 代价是 6144 的 ubatch 把 compute buffer 撑大、加剧 16GB 机器的内存压力，而 decode 只需要
+        # 小 batch。这个 profile 反过来：不碰 batch（用模型默认），把 decode 的 TPOT 当作目标。
+        #
+        # 与当前默认值的差异（就是这两处漂移让 decode 从 25 掉到 5）：
+        #   CGC_SPAC=1/alpha 0.75  —— 09-13 被翻成预设关闭（理由是 placement 上限 +0.2pp），
+        #                             但 SPAC 同时也是 membership 驱动，关掉后 decode 工作集不驻留
+        #   CGC_SERVER_OA_ASYNC=1  —— 09-09 预设改 0（叠加 skip0 时 0/10），生产档是 1（+12.6%）
+        # 其余 (verify/draft fast path, no_prefetch, N_CB=8, DBUF, workers=8, 8GiB pool,
+        # draft_n_max=3, LAYER_CAPS 40-40:256) 已由通用默认值覆盖。
+        [ -z "${CGC_SERVER_MTP+x}" ]            && SERVER_MTP=1
+        [ -z "${CGC_SERVER_DENSE_IQ4X+x}" ]     && SERVER_DENSE_IQ4X=1
+        [ -z "${CGC_SERVER_OA_ASYNC+x}" ]       && SERVER_OA_ASYNC=1
+        [ -z "${CGC_SPAC+x}" ]                  && CGC_SPAC=1
+        [ -z "${CGC_SPAC_ALPHA+x}" ]            && CGC_SPAC_ALPHA=0.75
+        # bit-identical 三支柱（生产档 §8 全部为 1；全局预设已于 2026-09-15 翻成 1）
+        [ -z "${CGC_MM_BITIDENT+x}" ]           && CGC_MM_BITIDENT=1
+        [ -z "${CGC_SERVER_MTP_NO_WARMUP+x}" ]  && SERVER_MTP_NO_WARMUP=1
+        [ -z "${CGC_SERVER_NO_SEQ_RM_PROBE+x}" ] && SERVER_NO_SEQ_RM_PROBE=1
+        # 走 GGUF embedded ChatML（与 qa-zh / coding 一致）
+        if [ -z "${CGC_SERVER_CHAT_TEMPLATE_FILE:-}" ] && [ -z "${CGC_SERVER_CHAT_TEMPLATE:-}" ]; then
+            SERVER_CHAT_TEMPLATE_FILE=""
+        fi
+        ;;
     prefill250)
         # [CGC 2026-09-15] 可復現的 prefill 250+ tok/s 口徑（見 docs/PREFILL250_CONFIGURATION_GUIDE_2026-09-15.html
         # 與 264.78 tok/s 的實測：Backup/cgc_logs/llama_server_20260915_011146.log）。
@@ -251,7 +293,7 @@ case "$SERVER_PROFILE" in
         fi
         ;;
     *)
-        echo "error: CGC_SERVER_PROFILE must be off|qa-zh|longform-zh|coding|legacy-25plus|prefill250 (got $SERVER_PROFILE)" >&2
+        echo "error: CGC_SERVER_PROFILE must be off|qa-zh|longform-zh|coding|legacy-25plus|prod25|prefill250 (got $SERVER_PROFILE)" >&2
         exit 2
         ;;
 esac
@@ -340,6 +382,18 @@ BUDGET="${CGC_SERVER_EXPERT_CACHE_BYTES:-$BUDGET_DEFAULT}"
 # [CGC prefill250 2026-09-15] batch/ubatch 在上面的 case 之後才被定案，所以 profile 的
 # 覆寫必須放在這裡，而不是放進 case（那裡設的值會被 317/318 行蓋掉）。
 # 全部用 ${VAR+x} 守門：顯式給的環境變數永遠贏，profile 只補預設值。
+# [CGC 2026-09-15] prod25：CTX/BUDGET/draft_n_max 都在 case 之後才定案（CTX 在下面幾行、
+# BUDGET 在上面、SPEC_DRAFT_N_MAX 在 case 之前就被讀走），所以必須在這裡覆寫。
+# 顯式環境變數永遠贏：全部用 ${VAR+x} 守門。
+if [ "$SERVER_PROFILE" = "prod25" ]; then
+    # 4096 而非 8192：生產檔的 ctx。decode 的 attention 成本大致與 ctx 成正比，而 8192 是為了
+    # 讓 Claude Code CLI（最小 ~3117 token prompt）不撞 HTTP 400 才加的，一般 decode 不需要。
+    [ -z "${CGC_SERVER_CTX+x}" ]                 && CTX=4096
+    [ -z "${CGC_SERVER_EXPERT_CACHE_BYTES+x}" ]  && BUDGET=8589934592
+    # batch/ubatch 留空 = 模型預設。6144 的 ubatch 只在 prefill250 有意義。
+    [ -z "${CGC_SERVER_MTP_N_MAX+x}" ]           && SPEC_DRAFT_N_MAX=3
+fi
+
 if [ "$SERVER_PROFILE" = "prefill250" ]; then
     [ -z "${CGC_SERVER_BATCH+x}" ]      && SERVER_BATCH=6144
     [ -z "${CGC_SERVER_UBATCH+x}" ]     && SERVER_UBATCH=6144
@@ -745,7 +799,6 @@ fi
 echo "[log]   ${LOG}（tail -f 同路徑）"
 SERVER_ARGS=(
     -m "$MODEL"
-    -expert-cache "$BUDGET"
     -ngl "$SERVER_NGL"
     --load-mode "$SERVER_LOAD_MODE"
     -t 8
@@ -757,6 +810,26 @@ SERVER_ARGS=(
     --port "$PORT"
     --jinja
 )
+# [CGC 2026-09-15] Expert-cache launch switch -- and the only way to get a genuine
+# cache-FREE oracle.
+#
+# Why this matters: -expert-cache used to be written unconditionally in the array above, so
+# EVERY "reference oracle" ever dumped was itself an expert-cache-ON run. That is why
+# knifeedge_matrix.py scored 19/19 for M1/M2/M3: it was comparing a cache-ON run against
+# another cache-ON run. 19/19 proves the engine is deterministic, not that the hook is
+# correct. Without a cache-free reference there is no ground truth to be identical to.
+#
+# `-expert-cache 0` is NOT a substitute. Budget 0 still walks enough of the L4 load-time path
+# (skip_load stays on, tensors are placed on the CPU buffer, ne02 shrinks) for the tensor
+# geometry to disagree with what the hook expects -- measured: every request HTTP 500. So the
+# flag has to be OMITTED, not zeroed. Omitting it is exactly the baseline the NOGATHER A/B
+# compared against (argmax 198 / logit 27.18, matching the no-cache arm).
+if [ "${CGC_SERVER_EXPERT_CACHE_OFF:-0}" = "1" ]; then
+    BUDGET=0
+    echo "[cache]  EXPERT CACHE OFF — cache-free oracle launch (no -expert-cache flag)" >&2
+else
+    SERVER_ARGS+=(-expert-cache "$BUDGET")
+fi
 # [CGC 2026-09-08 KV cache Q8 quantization] reduce KV cache memory by ~45% (FP16 -> Q8_0).
 # For Qwen3.6-35B-A3B at ctx=8192: saves ~0.56GB (1.25GB -> 0.69GB). Quality impact is
 # negligible (<1%) for typical workloads. Set CGC_SERVER_KV_Q8=0 to disable (fall back to FP16).
@@ -843,7 +916,19 @@ SERVER_ENV=(
     # skip-load 但 graph 在 Metal → cross-backend garbage）。甜蜜點（12:44 log
     # 5976 slots = 預設 uniform caps、layer 0 在 pool 內）無 skip0 = 90-100%。
     LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0=0
-    LLAMA_EXPERT_CACHE_WORKERS=8
+    # [CGC 2026-09-15] Was the literal 8, never swept. It is the ONLY concurrency knob on the
+    # expert-fill path, and the 2026-09-15 measurements say concurrency -- not bytes -- is the
+    # binding term: 57363 preads x 1.73 ms = 99.03 s of summed latency inside a 57.5 s decode
+    # wall (MTP off) and 285279 preads = 553.78 s inside a 92.6 s wall (MTP on). The bytes are
+    # cheap: 81.5 GiB at even 2 GB/s is 41 s. So the question is how many preads are in flight,
+    # and 8 workers is an assumption nobody has tested.
+    #
+    # Scope note: this only affects jobs submitted through the persistent pool
+    # (fill_segments_pool, i.e. llama_expert_cache_ensure_batch). The MTP fast path's cold
+    # fixes go through llama_expert_cache_ensure_slot, which spawns its own 3 threads per
+    # expert and does NOT use this pool -- so raising it will under-deliver until that path is
+    # routed through ensure_batch too. Default stays 8, so no existing profile moves.
+    LLAMA_EXPERT_CACHE_WORKERS="${CGC_SERVER_WORKERS:-8}"
     CGC_WAKE_POLL_US=15
     # [CGC 2026-09-13] CGC_PREFETCH_SRC=hist removed: it is a placement/prefetch heuristic
     # (it re-residents LRU-evicted hot experts from a rolling window), and the routing oracle
@@ -856,6 +941,28 @@ SERVER_ENV=(
     CGC_SERVER_AUTO_ANCHOR="$SERVER_AUTO_ANCHOR"
     CGC_SERVER_DEFAULT_MARKER_STOPS="$SERVER_DEFAULT_MARKER_STOPS"
 )
+# [CGC 2026-09-15] Bit-identical arm switches, passed through explicitly.
+#
+# The launch line runs the child through `env "${SERVER_ENV[@]}"`, an ALLOWLIST -- anything not
+# listed is silently dropped, so setting one of these in the shell looks like it worked while
+# the arm quietly becomes a rerun of the control. That is the exact trap the ROUTE_DUMP/MASSCOV
+# comment below warns about, and it is why NOHOOK/NOGATHER were unreachable from run_server.sh
+# even though llama.cpp:381 has honoured them since 2026-09-15.
+#
+#   NOHOOK   = 4th arm: hook+remap+pool+slab repoint OFF, skip_load left as-is.
+#              NOHOOK == cache-free oracle  -> the fault is in remap/pool/slab repoint.
+#              NOHOOK != cache-free oracle  -> the fault is BELOW the hook (CPU residency /
+#                                              buffer type / loader placement).
+#   NOGATHER = 2 variables at once (skip_load AND hook) -- kept for continuity with the
+#              2026-09-14 A/B, but NOHOOK is the one that localises.
+#   L3_NGL   = activate at ngl>0 without the L4 shrink/adoption path.
+for _v in LLAMA_EXPERT_CACHE_NOHOOK LLAMA_EXPERT_CACHE_NOGATHER LLAMA_EXPERT_CACHE_L3_NGL \
+          CGC_LOGITS_ORACLE_TOPN CGC_LOGITS_ORACLE_FIRST_N; do
+    if [ -n "${!_v:-}" ]; then
+        SERVER_ENV+=("$_v=${!_v}")
+    fi
+done
+unset _v
 # [CGC 2026-09-13 FIX] CGC_FORCE_TEMP0 used to be exported unconditionally. The C++ side
 # tests PRESENCE, not value --  static const bool cgc_force_temp0 = getenv("CGC_FORCE_TEMP0") ? true : false;
 # (tools/server/server-common.cpp:1356) -- so exporting the default "0" still ENABLED the
@@ -929,6 +1036,15 @@ if [ -n "${CGC_VERIFY_STRICT:-}" ]; then
 fi
 if [ -n "${CGC_SYNCFILL_COLD:-}" ]; then
     SERVER_ENV+=(CGC_SYNCFILL_COLD="$CGC_SYNCFILL_COLD")
+fi
+# [CGC 2026-09-15] CGC_SYNCFILL_SERIAL=1 restores the pre-fix per-expert serial
+# llama_expert_cache_ensure_slot loop in the MTP fast path (llama-context.cpp). The default is
+# now the batched ensure_batch fill. Without this pass-through the knob would be dropped by the
+# launch line's explicit `env` allowlist, so the A/B that decides whether the batching changed
+# the numerics (it changes which experts are cold at verify read, which changes the ZERO-slot
+# reads) would silently compare the new path against itself.
+if [ -n "${CGC_SYNCFILL_SERIAL:-}" ]; then
+    SERVER_ENV+=(CGC_SYNCFILL_SERIAL="$CGC_SYNCFILL_SERIAL")
 fi
 # CGC pool-path batch cap (C++ default 8): the pool path cannot exceed cap x top_k usable slots,
 # so raising it interacts with the pool size and must be visible to the launcher.
@@ -1004,6 +1120,23 @@ fi
 # on the decode path); it is now opt-in, so it has to be in this allowlist.
 if [ -n "${CGC_SLOT_DBG:-}" ]; then
     SERVER_ENV+=(CGC_SLOT_DBG="$CGC_SLOT_DBG")
+fi
+# [CGC 2026-09-15] P1 prefill-protect. llama-context.cpp:4987 records the measurement: with it
+# on, steady-state decode is 22.2 t/s; with it off (the build default) a generation that follows
+# a prefill runs 8.1-8.9 t/s, because the prefill's fill churns the very slots decode is about
+# to need. `cgc_prefill_protect_on()` is pure env (`getenv(...) != nullptr`), and the launch line
+# has an explicit `env` allowlist -- so without this pass-through the knob can never be set from
+# run_server.sh, which is why every server-profile decode number so far has been the 8 t/s case.
+if [ -n "${CGC_PREFILL_PROTECT:-}" ]; then
+    SERVER_ENV+=(CGC_PREFILL_PROTECT="$CGC_PREFILL_PROTECT")
+fi
+# [CGC 2026-09-15] CGC-IDS / CGC-PREV-PF used to print unconditionally on the decode path
+# (n_tokens=2 <= 8 spent the whole 4000-line budget inside one request). Both are opt-in now.
+if [ -n "${CGC_IDS_MAX_LINES:-}" ]; then
+    SERVER_ENV+=(CGC_IDS_MAX_LINES="$CGC_IDS_MAX_LINES")
+fi
+if [ -n "${CGC_PREV_PF_DBG:-}" ]; then
+    SERVER_ENV+=(CGC_PREV_PF_DBG="$CGC_PREV_PF_DBG")
 fi
 # [CGC M1 Metal slab 2026-09-14] Print the operands of Metal's own buffer range check at every
 # gather-path repoint (CGC-SLAB-CHECK), so a "buffer is nil" is attributable, not guessed.
@@ -1128,6 +1261,16 @@ if [ "$SERVER_MTP" = "1" ]; then
     if [ "$SERVER_MTP_NO_WARMUP" = "1" ]; then
         SERVER_ENV+=(CGC_MTP_NO_WARMUP=1)
     fi
+    # [CGC 2026-09-15] CGC_MM_BITIDENT=1 forces M<=8 matmuls onto the M-invariant mul_mv path
+    # (ggml-metal-ops.cpp:2395). It is bit-identical pillar 1, the production §8 value, and it
+    # was completely absent from this allowlist -- so the "expert cache ON is not bit-identical"
+    # investigation has been running with one of its three required pillars disabled the whole
+    # time. Default 1 to match production; opt out with CGC_MM_BITIDENT=0 for a speed A/B.
+    if [ -z "${CGC_MM_BITIDENT:-}" ]; then
+        SERVER_ENV+=(CGC_MM_BITIDENT=1)
+    elif [ "${CGC_MM_BITIDENT}" != "0" ]; then
+        SERVER_ENV+=(CGC_MM_BITIDENT="$CGC_MM_BITIDENT")
+    fi
     # [CGC MTP sampler parity 2026-09-13] pass through the draft-sampler A/B knob. Without this
     # the explicit `env` allowlist on the launch line drops it and the server silently keeps the
     # legacy {TOP_K=10} draft chain, so an A/B would show "no effect" that is really "no knob".
@@ -1153,6 +1296,39 @@ if [ "$SERVER_MTP" = "1" ]; then
         SERVER_ENV+=(CGC_NO_SEQ_RM_PROBE=1)
     fi
 fi
+# [CGC 2026-09-15] CGC_DUMP_ENV=1 -- print the FULLY-RESOLVED launch environment and argv, then
+# exit without launching anything. Inserted here, after every profile default / override has been
+# applied and immediately before the exec, so what is printed is bit-for-bit what the server would
+# have received.
+#
+# Why this exists: the 25.17 -> 5 t/s regression was a *configuration drift*, not a code or hardware
+# change (CGC_OA_ASYNC 1->0, CGC_SPAC 1->off, CGC_MM_BITIDENT dropped, two bit-identical pillars
+# 1->0). Any benchmark that re-derives the production env from a hand-written list will drift the
+# same way -- llama-bench in particular, which is now the production measuring stick
+# (`scripts/check/llama_bench_matrix.py`). So the bench harness must not have its own copy: it asks
+# this script for the env via CGC_DUMP_ENV=1. One source of truth, one place to change.
+#
+# Format (line-oriented, easy to diff):
+#   CGCENV <KEY> <VALUE>   -- resolved scalars the bench driver needs for its own argv
+#   ENV <K=V>              -- exactly the SERVER_ENV array handed to `env`
+#   ARG <token>            -- exactly the argv handed to the binary (one token per line)
+if [ "${CGC_DUMP_ENV:-}" = "1" ]; then
+    echo "CGCENV PROFILE   $SERVER_PROFILE"
+    echo "CGCENV BIN       $BIN"
+    echo "CGCENV MODEL     $MODEL"
+    echo "CGCENV CTX       $CTX"
+    echo "CGCENV BUDGET    $BUDGET"
+    echo "CGCENV NGL       $SERVER_NGL"
+    echo "CGCENV LOAD_MODE $SERVER_LOAD_MODE"
+    echo "CGCENV BATCH     ${SERVER_BATCH:--}"
+    echo "CGCENV UBATCH    ${SERVER_UBATCH:--}"
+    echo "CGCENV PORT      $PORT"
+    echo "CGCENV LOG       $LOG"
+    for _kv in "${SERVER_ENV[@]}"; do echo "ENV $_kv"; done
+    for _a in "${SERVER_ARGS[@]}"; do echo "ARG $_a"; done
+    exit 0
+fi
+
 env "${SERVER_ENV[@]}" "$BIN" "${SERVER_ARGS[@]}" > "$LOG" 2>&1 &
 SERVER_PID=$!
 

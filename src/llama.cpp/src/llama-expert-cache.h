@@ -361,6 +361,14 @@ struct llama_expert_cache {
     // the pin is a preference, not a capacity reservation).
     size_t n_pin_marked = 0;
     size_t n_pin_yield  = 0;
+    // [CGC 2026-09-15 SpAc victim FIX] engagement counters for the two new guards in pick_slot.
+    // n_spac_nonfinite > 0 means a spac_util row held a non-finite value (a corrupt or
+    // unbounded EMA) and the slot fell back to pure-LRU victim choice; n_spac_lru_fallback > 0
+    // means the SpAc branch selected nothing at all for a pass and the flag-filtered LRU
+    // candidate was used instead of returning -1. Both are expected to be 0 on a healthy run;
+    // either being non-zero is the fingerprint of the pre-fix abort.
+    size_t n_spac_nonfinite    = 0;
+    size_t n_spac_lru_fallback = 0;
     std::atomic<size_t> n_reads{0};
     // [CGC miss-path cost audit 2026-09-13] bytes actually fetched from the file. n_reads counts
     // preadv JOBS (one per file-contiguous run after merge-read), so bytes/jobs is the mean run
