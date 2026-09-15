@@ -287,25 +287,63 @@ ARMS = {
     # Never use this arm for a throughput number: it writes to stderr from inside the hot path.
     "p25-slotgpu-dbg":   {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_DBG": "1",
                           "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
-    # The one experiment that separates the two S1 failure modes that both show up as
-    # CGC-MMID-ASSERT id_oob: CGC_S1_IDENT=1 publishes a constant 0 table. Silence means the host
-    # write does reach the buffer the gather reads (so a diverging ids vector is downstream of the
-    # table), persistence means it does not. The answer is numerically wrong by construction.
-    "p25-slotgpu-ident": {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_IDENT": "1",
-                          "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
-    # Layer-tagged table: every entry is 1000+layer, so CGC-MMID-ASSERT's `first=` names the layer
-    # whose table the GPU actually read. Supersedes p25-slotgpu-ident, whose constant 0 could only
-    # answer "did the write have *some* effect", not "which table was read".
+    # [CGC 2026-09-15 S1 cleanup] p25-slotgpu-ident (CGC_S1_IDENT: constant-0 table) and
+    # p25-slotgpu-tag (CGC_S1_TAG: 1000+layer table) are gone, together with the knobs themselves.
+    # Both were deliberately-WRONG table publishes whose only job was to infer, from whether an
+    # out-of-range assertion fired, whether the host write reaches the buffer the GPU reads. The
+    # kernel-side ids capture (CGC_IDS_CAPTURE, ggml-metal-ops.cpp) answers the same question
+    # directly -- it reads the value mul_mat_id actually consumed -- so both the inference and the
+    # two standing invitations to leave an invalid mapping switched on were removed.
     #
-    # CGC_S1_DBG is on because the 2026-09-15 20:13 run produced a result that cannot be read
-    # without the provenance print now added to CGC-MMID-ASSERT: `ids_name/ids_op/ids_view_op/
-    # ids_data`. Pairing that with the build-time `slots_data=%p` from the graph dump answers
-    # whether mul_mat_id is even consuming the gather result. The `first=` value alone does not:
-    # the assert prints at most 8 lines verbatim and then only every 1000th violation, so its
-    # layer list is a SAMPLE of ~200k events, not the set of affected layers.
-    "p25-slotgpu-tag":   {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_TAG": "1",
-                          "CGC_S1_DBG": "1",
-                          "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    # [CGC 2026-09-15 §9.18 next step] The output-capture pair. Both arms carry CGC_S1_OUT_CAP
+    # identically, because it PINS ffn_moe_down via ggml_set_output and pinning perturbs the
+    # allocator layout: a one-sided pin would make the two arms differ by the pin rather than by the
+    # mechanism under test. Never a gate arm -- see cache_down_out_tensors in llama-context.h.
+    "p25-outcap-base":    {"CGC_SERVER_MTP": "0", "CGC_S1_OUT_CAP": "1",
+                           "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    "p25-slotgpu-outcap": {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_OUT_CAP": "1",
+                           "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    # [CGC 2026-09-15 §9.18 ladder] The prefilling counterpart of the pair above. The decode capture
+    # answered "the arms differ at layer 0 of decode step 0" -- which localizes nothing, because
+    # decode step 0's layer-0 input comes from the KV the PREFILL wrote and the two prefills already
+    # disagree (M1 numeric gate 5/9). In prefill, layer 0's input is the embedding: identical across
+    # arms by construction. So the first layer at which these two arms differ names the carrier
+    # instead of inheriting it. CGC_S1_OUT_LAYERS=0-3 keeps the pin to four layers: a prefill
+    # ffn_moe_down is [2048, 8, ntok], which is 16 MB per layer at a 250-token prompt but 402 MB per
+    # layer at a 6144-token chunk, and an all-layer pin in every graph already blew the Metal
+    # envelope once (kIOGPUCommandBufferCallbackErrorOutOfMemory at warmup, both arms).
+    "p25-outcap-pre-base":   {"CGC_SERVER_MTP": "0", "CGC_S1_OUT_CAP": "pre",
+                              "CGC_S1_OUT_LAYERS": "0-3",
+                              "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    "p25-slotgpu-outcap-pre": {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1",
+                               "CGC_S1_OUT_CAP": "pre", "CGC_S1_OUT_LAYERS": "0-3",
+                               "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    # [CGC 2026-09-15 §9.18 ladder, layer depth] The 0-3 window answered something clean but partial:
+    # on the prefill-stream graphs (182 and 22 tokens, all 256 experts resident) layers 0-3 agree,
+    # and on the pool-path graphs (ntok=2 warmup, ntok=4) layer 0 agrees while layers 1-3 do not. The
+    # 0-3 window cannot tell those apart from "the first pooled layer is 4" or "nothing after 3
+    # diverges", because it stops at 3. These arms are the NEXT rung, 4-7.
+    #
+    # Why the rungs are FOUR layers and not the whole depth in one arm (CONVENTIONS A8): pinning 11
+    # layers on prefill graphs dies at the load-time warmup decode with the same Metal OOM as pinning
+    # 40 on every graph, while 4 layers runs -- and at ntok=2 eleven pinned tensors hold only 1.4 MB,
+    # so the limit is pins-per-graph and not bytes. A sparse all-depth window is therefore NOT a
+    # cheaper alternative to a dense narrow one; it is the variant that aborts.
+    "p25-outcap-depth-base": {"CGC_SERVER_MTP": "0", "CGC_S1_OUT_CAP": "pre",
+                              "CGC_S1_OUT_LAYERS": "4-7",
+                              "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    "p25-slotgpu-outcap-depth": {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1",
+                                 "CGC_S1_OUT_CAP": "pre",
+                                 "CGC_S1_OUT_LAYERS": "4-7",
+                                 "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    # [CGC 2026-09-15 premise B] Does the published table's CONTENT move between decode steps?
+    # Prints a per-graph total on stderr plus a teardown line, and decides whether publication is
+    # redundant work (premise B holds -- the segment boundary has lost its reason to exist) or
+    # inherently per-step (premise B fails, and D3's n_segs collapse does not follow from it).
+    # Only decode steps (n_tokens == 1) are counted; prefill rewrites the table for reasons nobody
+    # is questioning and would drown the answer.
+    "p25-slotgpu-churn":  {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_TABLE_CHURN": "1",
+                           "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
     # [CGC 2026-09-15 S1 localization] CGC_S1_MIN_IL gates which layers get the GPU table, so the
     # arm bisects the divergence instead of arguing about it.
     #

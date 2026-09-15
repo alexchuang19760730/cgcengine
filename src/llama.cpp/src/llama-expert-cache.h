@@ -246,6 +246,47 @@ struct llama_expert_cache {
     // printed instead of being invisible.
     size_t n_verify_strict_refused = 0;
     size_t n_zero_mapped_selected  = 0;
+    // [CGC 2026-09-15 §8.3 gate quantity] S1 slot-table health, counted on EVERY publish (the
+    // counting costs one integer add, so it is unconditional; only the printing is gated).
+    //
+    // n_slot_table_clamped is the landmine §8.3 identified and it MUST stay 0. The host leaf path
+    // and the GPU table are only equivalent while the layer has a reserved ZERO slot: with
+    // zero_slot < 0, a selected expert that is not resident makes the leaf write -1 (loud: the
+    // consumer reports an out-of-range id) while the table write clamps to 0 (SILENT: index 0 is a
+    // legal index, so mul_mat_id reads a DIFFERENT expert's weights and the answer is quietly
+    // wrong). Every S1 arm measured so far is exactly that configuration, because zero_slot is
+    // gated on the MTP fast path and every S1 arm runs CGC_SERVER_MTP=0. The count is currently 0
+    // only because verify-strict keeps every selected expert resident -- an accident of the profile,
+    // not an invariant of the code. Promoting it to a gate quantity is the repair that preserves
+    // bit-identity (reserving a ZERO slot would change pick_slot's arithmetic and therefore the
+    // pool layout, i.e. it would move the very numbers the S1 gate compares).
+    size_t n_slot_table_publishes = 0;
+    size_t n_slot_table_clamped   = 0;
+    // [CGC 2026-09-15 take 2] n_slot_table_clamped is the WHOLE-TABLE count and is 44.1% on this
+    // profile by construction (143 slots, 256 experts -> most experts are non-resident at any
+    // instant), so a nonzero value there is not a finding. n_slot_table_clamped_selected counts the
+    // clamp among the ids the consumer ACTUALLY reads this step -- that is the one that must be 0,
+    // because it means a selected expert silently read slot 0 (someone else's weights) instead of
+    // the -1 the host leaf would have written.
+    size_t n_slot_table_clamped_selected = 0;
+    // The same split for the churn question: n_slot_table_changed counts whole-table entry moves
+    // (informational), while n_slot_table_consumed_changed counts publishes in which an id the
+    // consumer reads differs from the same layer's previous publish. Premise B turns on the latter:
+    // if the consumed mapping never moves between steps, republishing is redundant work and no
+    // per-step host->GPU ordering requirement exists.
+    size_t n_slot_table_consumed_changed = 0;
+    size_t n_slot_table_consumed_same    = 0;
+    // [CGC 2026-09-15 premise B] How often the published table actually CHANGES. §9.17(d) asked for
+    // "publish_slot_table call count per decode step", which is degenerate by construction (both of
+    // its call sites are inside the S1 hook itself, so the answer is 0 on the baseline arm and once
+    // per served layer on S1 -- mechanism presence, not state velocity). The question premise B
+    // really needs is whether the table's CONTENT moves between steps: if it does not, publication
+    // is redundant work and no per-step host->GPU ordering requirement exists, which is exactly the
+    // condition that lets D3 collapse n_segs. n_slot_table_changed counts entries that differed
+    // from the same layer's previous publish; n_slot_table_unchanged counts publishes with no
+    // change at all.
+    size_t n_slot_table_changed   = 0;
+    size_t n_slot_table_unchanged = 0;
     std::vector<std::vector<uint8_t>> ever_loaded;   // [layer][expert] 1 = demanded at least once
     std::vector<uint32_t>             n_distinct_demanded; // [layer] distinct experts ever demanded
     // [CGC MTP fast-path telemetry] decode fast path (touch + ZERO-slot): union members examined

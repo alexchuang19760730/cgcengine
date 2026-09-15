@@ -380,6 +380,33 @@ private:
     // otherwise indistinguishable and they demand opposite fixes.
     // mutable: filled from the const graph_get_cb.
     mutable std::map<int, ggml_tensor *> cache_slots_out_tensors;
+    // [CGC 2026-09-15 S1 output capture] layer -> the `ffn_moe_down` node: the MoE FFN's final
+    // matmul, i.e. the whole layer's expert contribution BEFORE the residual add. Filled only under
+    // CGC_S1_OUT_CAP=1 so the post-synchronize readback can answer the one question §9.18 left open.
+    //
+    // Why this is the right next probe: the kernel-side ids capture proved the ids mul_mat_id
+    // consumes are BIT-IDENTICAL between the host-leaf arm and the GPU-table arm, and layer 1's
+    // router logits are identical on both sides, so the layer-1 MoE output has the same input and
+    // the same index vector. If it still differs, the carrier is neither the ids nor the lookup --
+    // it is the WEIGHT CONTENT those ids point at (pool/slot residency). That is a different repair
+    // (a pool-fill fix) from "the table disagrees with the leaf at consume time" (a publish-order
+    // fix), and only the output tells them apart.
+    //
+    // Unlike cache_slots_out_tensors this one must PIN the tensor with ggml_set_output: ffn_moe_down
+    // is an intermediate, so ggml-alloc may recycle its buffer the moment its consumer has read it,
+    // and a post-synchronize read of a dead buffer reads the next occupant (the mirror of the
+    // encode-time race this file already documents). Pinning perturbs the allocator layout, so this
+    // is a DIAGNOSTIC-arm-only knob: it is applied to EVERY arm of a comparison identically, and
+    // never enabled on a bit-identical gate arm.
+    //
+    // The perturbation is bounded by the NUMBER of pinned tensors on a graph, not by their bytes:
+    // pinning all 40 layers in every graph and pinning 11 layers on prefill graphs only both die at
+    // the load-time warmup decode (kIOGPUCommandBufferCallbackErrorOutOfMemory -> CGC_METAL_FAIL_STOP
+    // abort) even though 11 layers of ffn_moe_down at ntok=2 hold ~1.4 MB, while 4 pinned layers on
+    // prefill and 40 pinned layers on decode both run clean. So a caller must budget pins per GRAPH,
+    // and the safe working number on this machine is between 4 and 11. Not established: why.
+    // mutable: filled from the const graph_get_cb.
+    mutable std::map<int, ggml_tensor *> cache_down_out_tensors;
     // layer -> renormalized-routing mask leaf (F32 [n_expert, 1]; CGC_RN_ROUTING=1 only): the
     // hook rewrites 0.0/-inf per expert from the slot_table before the router softmax reads it
     // (Step-3: cold experts get -inf -> softmax renormalizes over resident experts).

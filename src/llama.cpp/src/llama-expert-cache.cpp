@@ -275,29 +275,12 @@ int64_t llama_expert_cache_publish_slot_table(const llama_expert_cache * cache, 
     if (cache == nullptr || dst == nullptr || layer >= cache->slot_owner.size()) {
         return 0;
     }
-    // [CGC 2026-09-15 S1 diagnostic] Layer-tagged table: every entry becomes 1000+layer, which is
-    // necessarily out of range for any pool capacity, so CGC-MMID-ASSERT fires and its `first=`
-    // reports WHICH layer's table the GPU actually read. That single number separates the three
-    // candidate mechanisms that all surface as the same `id_oob` symptom:
-    //   1000+layer  -> the host write reaches the very buffer the GPU reads, and the order is right;
-    //                  the divergence must then be in the CONTENT the real mapping computes.
-    //   1000+other  -> the GPU read another layer's table (stale/dangling pointer, or the segment
-    //                  was dispatched before the hook published).
-    //   garbage     -> the GPU did not read a table this hook ever wrote.
-    // A plain constant (0) cannot tell these apart, which is why the earlier CGC_S1_IDENT run was
-    // inconclusive: it changed the answer but left the assertion in place.
-    if (getenv("CGC_S1_TAG") != nullptr) {
-        for (uint32_t e = 0; e < n_expert; ++e) {
-            dst[e] = 1000 + (int32_t) layer;
-        }
-        return 0;
-    }
-    if (getenv("CGC_S1_IDENT") != nullptr) {
-        for (uint32_t e = 0; e < n_expert; ++e) {
-            dst[e] = 0;
-        }
-        return 0;
-    }
+    // [CGC 2026-09-15 S1 cleanup] The CGC_S1_TAG (1000+layer) and CGC_S1_IDENT (constant 0)
+    // deliberately-wrong publishes used to sit here. They asked "does the host write reach the very
+    // buffer the GPU reads, and in what order" and answered it indirectly, by whether an
+    // out-of-range assertion fired. The kernel-side ids capture (CGC_IDS_CAPTURE, ggml-metal-ops.cpp)
+    // answers the same question directly -- it reads the value mul_mat_id consumed -- so the two
+    // invalid-mapping knobs were removed rather than kept as a standby. Git history has them.
     const uint32_t ne = n_expert < cache->n_expert ? n_expert : cache->n_expert;
     const int32_t * table = cache->slot_table.data() + (size_t) layer * cache->n_expert;
     const int32_t zs = llama_expert_cache_zero_slot(cache, layer);
@@ -2228,6 +2211,34 @@ llama_expert_cache::~llama_expert_cache() {
         fprintf(stderr, "llama_expert_cache: verify-strict: refused=%zu  zero_mapped_selected=%zu%s\n",
                 n_verify_strict_refused, n_zero_mapped_selected,
                 n_zero_mapped_selected ? "  <-- QUALITY LEAK: selected expert read as zeros" : "");
+        // [CGC 2026-09-15 §8.3 gate quantity] S1 slot-table health. Printed whenever the table was
+        // published at all, so it is absent from runs that do not use S1 and can never be silent on
+        // runs that do -- and "computed then never observed" is precisely the failure this line
+        // exists to prevent: both publish sites used to discard the return value, and the site that
+        // every MTP-off S1 arm actually takes was one of them.
+        //
+        // clamped MUST be 0. Nonzero means the GPU table and the host leaf have stopped being the
+        // same mapping: the leaf writes -1 for a non-resident expert (loud -- the consumer reports
+        // an out-of-range id) while the table clamps it to 0 (SILENT -- index 0 is legal, so
+        // mul_mat_id reads another expert's weights and the answer is quietly wrong). S1 is
+        // admissible only while this is 0; CGC_S1_CLAMP_ABORT=1 promotes it from a report to a hard
+        // precondition.
+        if (n_slot_table_publishes > 0) {
+            char cgc_s1_note[192] = "";
+            if (n_slot_table_clamped_selected) {
+                snprintf(cgc_s1_note, sizeof(cgc_s1_note),
+                        "  <-- CONSUMED IDS WERE CLAMPED: silent expert substitution");
+            } else if (n_slot_table_consumed_changed + n_slot_table_consumed_same == 0) {
+                snprintf(cgc_s1_note, sizeof(cgc_s1_note),
+                        "  (consumed-subset churn not instrumented: set CGC_S1_TABLE_CHURN=1)");
+            }
+            fprintf(stderr, "llama_expert_cache: S1 slot-table: publishes=%zu clamped_selected=%zu"
+                            " clamped_table=%zu changed_entries=%zu consumed_changed=%zu"
+                            " consumed_unchanged_publishes=%zu%s\n",
+                    n_slot_table_publishes, n_slot_table_clamped_selected, n_slot_table_clamped,
+                    n_slot_table_changed, n_slot_table_consumed_changed,
+                    n_slot_table_consumed_same, cgc_s1_note);
+        }
         // [CGC MTP Draft Prefetch 2026-09-07] final stats: how many experts were queued for
         // prefetch from draft predictions, and how many of those predictions were actually selected
         // by the verify step (hit) vs wasted (miss). Hit rate should track draft_accept (~92-98%).

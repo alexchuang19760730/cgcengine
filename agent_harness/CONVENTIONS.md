@@ -57,6 +57,87 @@
   或（更好的）等 `decode_bench.py` 長出逐輪 digest 與定長前綴 digest。
   這是 A2 用同一條邏輯換一個維度（指紋 vs 實際長度）：**先確認兩個數字說的是同一件事，再問它們是否相等。**
 
+**A6｜配對比值要求兩臂量的是同一個窗。** decode t/s 是「已生成 token 數」上的平均，
+所以一個臂提早停，它的 t/s 就是**另一段窗口**的平均（早期 decode 通常較快），配對比值
+於是**不再是同一件事的比值**。**先比 `n_tokens_sample`，不相等就不要引用 paired ratio。**
+- 為什麼：2026-09-15 的交錯 A/B（`p25-gputime` vs `p25-slotgpu`，交錯 3 輪、
+  指紋 `131bc5316ebf` 六列一致）paired per-rep ratio 是 1.403 / 1.243 / **0.834**
+  （median 1.243，`all>1: False`），看似可以給一個結論；但兩臂的 `n_tokens_sample` 是
+  **100 vs 58**——用的是同一個 `--n-predict 120`。那一臂只跑了不到六成的步數，
+  連 miss 數（15760 vs 17954）都因此不可比。
+  這一條與 A5 是同一個病的兩個欄位：A5 擋 digest，A6 擋吞吐。
+- 證據：`Backup/phase_decomp/ab_s1_20260915.json`（`p25-gputime` 8.67/9.55/8.93，
+  md5 恆 `28097996`，n=100；`p25-slotgpu` 12.16/11.87/7.45，md5 集合 2 個，n=58）。
+- 檢查：`ab_interleave.py` 已把 `n_tokens_sample` 印在每一列；引用前逐列對齊。
+- 附帶讀數（同一批、不受上述混淆影響）：**同 build 的重複性帶**——穩定臂 max/min =
+  **1.101（10.1%）**、不穩定臂 **1.632（63.2%）**。所以單輪跨 build 的吞吐差若小於 10%，
+  在這個配置上**不可判別**。
+
+**A7｜閘門量必須在任何配置下都被列印，而且只有「算了卻沒被觀測」才是它真正的失效模式。**
+- 為什麼：S1 的 `publish_slot_table` 有兩個呼叫點，其中**慢路徑那一個把回傳值直接丟棄**——
+  而慢路徑正是每一個 MTP-off 的 S1 臂實際走的那一條：`CGC_SERVER_MTP=0` 讓 `verify_fast`
+  與 `draft_fast` 皆為 false，`(verify_fast || draft_fast) && cgc_fast_eligible` 永不成立。
+  於是 §8.3 認定為「靜默替換」信號的 clamp 計數，在**所有已量測的 S1 臂上都被算出來然後丟掉**。
+- 閘門量清單（現行）：`n_zero_mapped_selected`（選中專家被讀成 0）、`n_fast_cold`（佔比）、
+  `n_slot_table_clamped`（GPU 表與 host leaf 失去等價：表把非 resident 專家夾到 **0**，
+  那是**合法索引**⇒ 讀到**別的專家**的權重，靜默；host leaf 在同樣情形下寫 **−1**，吵）。
+- 檢查：`llama_expert_cache::~llama_expert_cache()` 的 teardown 行——`clamped` 非 0 即標註
+  `TABLE/LEAF EQUIVALENCE BROKEN`；`CGC_S1_CLAMP_ABORT=1` 把它從報告升為硬前置條件。
+- 反例：`llama-context.cpp` 舊的 pool-path 呼叫點（已修；兩條路徑現在都走
+  `cgc_publish_slot_table_counted`，讓兩個量**按構造**一致）。
+- **2026-09-15 修訂（量到了，且量到的不是那個量）**：上列清單裡的 `n_slot_table_clamped`
+  是**全表**計數，在這個配置下等於「143 slot 對 256 expert 的非 resident 比例」——**每次
+  執行都是 113/256**（`clamped_table/publishes = 113/256`，實測），依 B1 **不含資訊**。
+  真正該看的兩個量是：
+  - `clamped_selected`：clamp 只計**被消費的 id**。實測 **0**（兩個臂都是），而它為 0 的
+    原因是**時序**而不是運氣：publish 在 `ensure_batch`/`drain_layer`（`llama-context.cpp:5795`）
+    **之後**（`:5819`），填槽後每個被消費的 id 都已有真實 slot，clamp 分支對被消費的 id
+    **不可達**——它只會碰到這一步沒人選的專家。⇒ §8.3 選擇「把 clamp 升為硬前置條件」而非
+    「強制保留 ZERO slot」在證據上成立：後者會動 `pick_slot` 的算術，也就是動閘門要比的數。
+  - `consumed_changed` / `consumed_unchanged_publishes`：被消費映射是否在步與步之間移動。
+    實測 **389 / 430（47.5%）** ⇒ 發布**不是**冗餘工作，逐步的 host→GPU 排序要求**真實存在**。
+- 檢查：`CGC_S1_TABLE_CHURN=1` 才會啟用 consumed 子集計數；未啟用時 teardown 會明印
+  `(consumed-subset churn not instrumented: ...)`——**預設值 0 與量到的 0 必須長得不一樣**，
+  否則又是一個「算了卻沒被觀測」的反例。
+
+**A8｜擾動型儀器的成本是「每個 graph 釘幾個張量」，不是「釘住幾個位元組」。**
+一個為了讀取而必須改動 allocator/排程的探針（`ggml_set_output`、pin、`ggml_set_output`
+這類），它的安全上限**不能用張量尺寸推算**，只能量。
+- 為什麼：`CGC_S1_OUT_CAP` 用 `ggml_set_output` 釘住 `ffn_moe_down`。實測邊界是：
+  - 所有 graph × 40 層 → 載入期 warmup decode 就 **死**（`kIOGPUCommandBufferCallbackErrorOutOfMemory`
+    → `CGC_METAL_FAIL_STOP` abort），2/2；
+  - 只有 prefill × **11** 層 → **同樣死**，2/2；
+  - 只有 prefill × **4** 層 → 過，2/2；
+  - 只有 decode × **40** 層 → 過，2/2。
+  而失敗的那個 graph 是 `ntok=2`，此時 `ffn_moe_down` 是 `[2048, 8, 2]` F32，11 層共 **1.4 MB**。
+  **1.4 MB 撐不爆任何 Metal 預算** ⇒ 這不是尺寸效應，是「被標為 graph output 的張量個數」
+  改變了排程器的配置與切分。
+- 檢查：探針要有 **per-graph 釘住數量**的上限，且上限用實驗訂（本機在 4 與 11 之間），
+  不要用算式訂。失敗是 fail-stop abort，不是變慢，所以**不能靠逐步加寬去逼近邊界**。
+- 邊界：機制本身**未確立**（只知道 4 可、11 不可）。任何「這些張量很小所以釘住很便宜」的
+  推理在本機已被上面那組配對反駁兩次。
+
+**A9｜測「存在」的旋鈕，它記錄下來的值只代表意圖。** 讀者寫 `getenv(...) != nullptr` 的
+環境變數，`"0"` 是**非空指標** ⇒ **設成 0 等於打開它**。引用任何 knob 的值之前，
+先 grep 它的讀者，確認測的是**存在**還是**值**。
+- 為什麼：`LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0` 的三個讀者
+  （`llama.cpp:396`、`llama-expert-cache.cpp:1708`、`llama-context.cpp:5222`）**全部測存在**，
+  而 profile 在 `run_server.sh:939-945` 把它設成 `0`（註解白紙黑字寫著意圖是
+  「blk.0 **回到 pool 內**」，因為 skip0 是 4/10 品質殺手），並由 `:1493` 的
+  `env "${SERVER_ENV[@]}"` 真正傳進子行程 ⇒ **skip0 一直是開的**，
+  blk.0 落在 pool 之外（`llama-model-loader.cpp:1464` 對 layer 0 強制 `l4_kind = -1`），
+  那條 **2026-09-09 的品質修復六天來從未生效**。
+- 症狀判準：**快照記錄的是意圖，行為卻相反**。所有 `cap_*.json` 與 llama-bench 的 `env` 區塊
+  都印 `LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0: "0"`。這與舊 oracle cap
+  （`dec-20260915-2233`，記錄意圖）**同一個病**，也是本專案 presence-vs-value 家族的第三例
+  （前兩例是 `CGC_OA_ASYNC`，`dec-20260915-2142`／`2215`；後者的值感知修正**靜默改道四個 profile**
+  並迫使閘門重新基線）。
+- 檢查：用**推導量**而不是旋鈕自己來驗行為。本例唯一吐出真相的觀測是
+  `CGC-DECPROF` 的 `layers=39`（同 log 內 19 次，`layers=40` **0 次**）——
+  池服務 39 層而非 40。**任何宣稱 profile 行為的句子都不得引用這個 knob 的值。**
+- 邊界：presence-gating **不是錯的**——本專案大量診斷就是這樣拼「開」。它的代價是
+  **`0` 與 unset 同義** ⇒ 任何「寫 `=0` 期望關掉」的 profile 都寫了一個 no-op。
+
 ---
 
 ## B. 診斷

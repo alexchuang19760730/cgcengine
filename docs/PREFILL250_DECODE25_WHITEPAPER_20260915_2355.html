@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>prefill 250 / decode 25 技術白皮書（2026-09-15 23:55）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  .up{color:var(--red)} .down{color:var(--green)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>prefill 250 tok/s / decode 25 tok/s 技術白皮書</h1>
+<div class="sub">
+  日期 2026-09-15 23:55 · 分支 <code>demo/sweet-spot-windows-fix</code> · 基線 commit <code>03369305b</code>（工作區狀態）<br>
+  模型 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（13.6 GB，256 experts/layer，40 layers）·
+  硬體 MacBook Air Mac16,12 / Apple M4 10 核 / 16 GB unified memory<br>
+  檔名 <code>PREFILL250_DECODE25_WHITEPAPER_20260915_2355.html</code>
+</div>
+
+<div class="box b-amber">
+  <p><strong>一句話結論：S1 的分歧由「服務路徑」決定，與層號無關。</strong>
+  由 whole-layer slab 服務的 graph（256/256 experts resident）<strong>逐位元相同</strong>；
+  由 partial pool 服務的 graph（143/256）<strong>必定分歧，且從第一個池化層起</strong>。
+  這是一條可執行的判別式，不是一個相關性。</p>
+
+  <p><strong>本輪同時翻掉兩條先前的判讀，並挖出一個更重的既有缺陷：</strong></p>
+  <ul>
+    <li><strong>§9.18 的 decode 探針前提是假的。</strong>decode 第 0 步的 layer 0 就已經不同，
+        而它的輸入是 prefill 留下的狀態——「輸入相同 + ids 相同 ⇒ 輸出不同」跑不起來，
+        因為沒有「相同輸入」這個起點。（逐專家列拆分另否證了排列假說。）</li>
+    <li><strong>D3 的前提 B 不成立。</strong>被消費的 expert→slot 映射在 <strong>47.5%</strong> 的
+        decode 步上會動 ⇒ 發布不是冗餘、排序要求真實存在 ⇒
+        <strong>n_segs 由 40 收到 ~1 不由此推出</strong>。</li>
+    <li><strong>（新增，權重最重）一條 2026-09-09 的品質修復六天來從未生效。</strong>
+        <code>LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0</code> 的三個讀者全部測「存在」，
+        而 profile 把它設成 <code>0</code> ⇒ <code>"0"</code> 是非空指標 ⇒
+        <strong>「關掉」等於打開</strong>。blk.0 一直被排除在 pool 之外（<code>CGC-DECPROF</code>
+        報 <code>layers=39</code>，非 40），而 profile 的註解寫的正好相反。見 §2.3。</li>
+  </ul>
+</div>
+
+<h2>1. 分歧由服務路徑決定，與層號無關（本輪核心讀數）</h2>
+
+<h3>1.1 先立前提：探針自身健全</h3>
+<p>在解釋任何跨臂差異之前，必須先證明<strong>這個探針本身是決定性的</strong>——否則跨臂差異可能
+只是探針的抖動。做法是<strong>同一個臂跑兩個獨立 process</strong>：</p>
+
+<table>
+<tr><th>比對</th><th>層數比對</th><th>逐位元不同</th><th>比率</th></tr>
+<tr><td><code>p25-outcap-base</code> 第 1 跑 vs 第 2 跑</td><td class="num">480</td>
+    <td class="num ok">0</td><td class="num ok">0.0%</td></tr>
+<tr><td><code>p25-outcap-base</code> 第 1 跑 vs <code>p25-slotgpu-outcap</code></td><td class="num">480</td>
+    <td class="num bad">480</td><td class="num bad">100%</td></tr>
+<tr><td><code>p25-outcap-base</code> 第 2 跑 vs <code>p25-slotgpu-outcap</code></td><td class="num">480</td>
+    <td class="num bad">480</td><td class="num bad">100%</td></tr>
+</table>
+
+<p>兩次獨立 process 的基準臂<strong>逐位元完全相同</strong>（480/480）⇒
+<code>ggml_set_output</code> 的釘住<strong>沒有引入不確定性</strong>，
+「釘住擾動了讀數」這個疑慮被排除。而 S1 臂在<strong>第一個 decode 步的第一層 MoE</strong>
+就已經不同。</p>
+
+<p class="small">探針形狀：<code>CGC-S1: OUT graph=N il=L ne=[2048 8 1] fnv1a64=…</code>。
+<code>2048</code> = <code>n_embd</code>、<code>8</code> = <code>n_expert_used</code>、<code>1</code> = token
+⇒ <code>graph 0..11</code> 確實是 12 個連續的單 token decode 步。480 行 = 12 graphs × 40 層，兩臂對齊。</p>
+
+<h3>1.2 為什麼 decode 探針不能用，prefill 階梯才行</h3>
+<p>decode 的層序<strong>不可用於定位</strong>：decode 第 0 步的 layer 0 輸入由 prefill 產生的
+KV cache 導出，而兩臂的 prefill 本來就不同（M1 數值閘門 5/9）⇒
+<strong>每一個 decode 層都是「上游早已發生的分歧」的下游</strong>，
+在那裡看到 480/480 不同<strong>不能定位任何東西</strong>。</p>
+<p>prefill 才是乾淨的梯子：<strong>layer 0 的輸入是 embedding，依構造相同</strong>。
+所以「兩臂第一個不同的層」直接命名載體。<code>CGC_S1_OUT_CAP=pre</code> 選它，
+且<strong>只釘 <code>CGC_S1_OUT_LAYERS</code> 指名的層</strong>（見 §2.1，層窗不是便利，是硬需求）。</p>
+
+<h3>1.3 判別式：兩階獨立複現</h3>
+<p>做兩階，各 4 層深：<code>0-3</code> 與 <code>4-7</code>。8 層、6 個 graph、2 個臂 = <strong>96 個配對</strong>，
+結果<strong>完全同構</strong>：</p>
+
+<table>
+<tr><th>graph</th><th>ntok</th><th>服務路徑</th><th>layer 0</th><th>layer 1–7</th></tr>
+<tr><td class="num">0, 1</td><td class="num">2</td><td><strong>partial pool</strong>（143/256 resident）</td>
+    <td class="num ok">EQ</td><td class="num bad">NE</td></tr>
+<tr><td class="num">2</td><td class="num">182</td><td><code>CGC-PREFILL-STREAM</code>（256/256）</td>
+    <td class="num ok">EQ</td><td class="num ok">EQ</td></tr>
+<tr><td class="num">3</td><td class="num">22</td><td><code>CGC-PREFILL-STREAM</code>（256/256）</td>
+    <td class="num ok">EQ</td><td class="num ok">EQ</td></tr>
+<tr><td class="num">4, 5</td><td class="num">4</td><td><strong>partial pool</strong>（143/256）</td>
+    <td class="num ok">EQ</td><td class="num bad">NE</td></tr>
+</table>
+
+<p>關鍵是這條 log 行的分布——它<strong>恰好只出現在 <code>ntok=182</code> 與 <code>ntok=22</code></strong>，
+正是 8 層全同的那兩個 graph：</p>
+<pre><code>CGC-PREFILL-STREAM: il=0 kind=0 ntok=182</code></pre>
+<p><strong>標記與結果在 96 個配對上完全一致，且有兩階獨立複現。</strong>
+layer 0 從不分歧，而原因<strong>不是相關性、是構造</strong>：layer 0 <strong>根本不被池化</strong>
+（<code>CGC-DECPROF</code> 報 <code>layers=39</code>，非 40；同一 log 內 19 次、0 次反例）。
+所以「第一個分歧層 = 第一個池化層」是精確的，而 layer 0 不在那個集合裡。
+這個「非池化」的成因本身是一個<strong>更重的既有缺陷</strong>，見 <strong>§2.3</strong>。</p>
+
+<div class="box b-green">
+  <p><strong>判別式（推理鏈）：</strong></p>
+  <p><strong>slab 服務 ⇒ bit-identical；partial pool 服務 ⇒ 分歧。
+  第一個分歧層 = 第一個池化層。</strong></p>
+  <p>變數是<strong>路徑</strong>，不是索引。所以「開更深的層窗」價值低於表面——
+  它不會改變判別式，只會再確認一次。下一步該量的是<strong>被消費 id 背後的 slot 內容（owner-set）</strong>。</p>
+</div>
+
+<h3>1.4 排列假說被否證</h3>
+<p>decode 對的 480/480 全層不同，但「8 個專家的<strong>排列</strong>」是數值中立的可能解釋
+（對該層加權和無影響，剛好能解釋「router logits 相同」）。加印<strong>逐專家列</strong>雜湊即可分開：</p>
+<table>
+<tr><th>判準</th><th>層數</th><th>結果</th></tr>
+<tr><td>整張張量雜湊相同</td><td class="num">480</td><td class="num bad">0</td></tr>
+<tr><td>列<strong>多重集</strong>相同（僅順序不同）</td><td class="num">480</td><td class="num bad">0</td></tr>
+<tr><td>列多重集不同（<strong>內容</strong>差異）</td><td class="num">480</td><td class="num bad">480</td></tr>
+</table>
+<p><strong>不是排列。</strong>480/480 層的逐專家列值都不同 ⇒ 是內容差異，不是順序假象。</p>
+
+<h2>2. 兩個新教訓（已寫成 CONVENTIONS A8 / 修訂 A7）</h2>
+
+<h3>2.1 A8｜釘住的成本不是它的位元組數</h3>
+<p>四組配對把「用小算盤估釘住成本」這個做法整條否證：</p>
+<table>
+<tr><th>範圍</th><th>結果</th></tr>
+<tr><td>40 層 × <strong>全 graph</strong>（decode + prefill）</td><td class="bad">Metal OOM，fail-stop，連一個請求都服務不了</td></tr>
+<tr><td>11 層 × 僅 prefill</td><td class="bad">Metal OOM，fail-stop</td></tr>
+<tr><td>4 層 × 僅 prefill</td><td class="ok">通過</td></tr>
+<tr><td>40 層 × 僅 decode</td><td class="ok">通過</td></tr>
+</table>
+<p>失敗的那個 graph 是 <code>ntok=2</code>，11 個釘住的層在那裡共約 <strong>1.4 MB</strong>。
+<strong>1.4 MB 撐不爆一個 Metal 預算。</strong>控制變數候選是「<strong>每 graph 被標為 output 的張量個數</strong>」，
+機制尚未確立。</p>
+<div class="box b-amber">
+  <p>我先後寫過<strong>兩個錯的位元組預算</strong>（「50 MB/層 × 40 層 ≈ 2 GB」與
+  「402 MB/層」），兩個都被同一組配對反駁。任何「釘住很便宜，因為這些張量很小」形式的推理，
+  都被這幾跑否證。</p>
+  <p>這也解釋了為何釘住要用<strong>相位</strong>（<code>ubatch.n_tokens &lt;= 8</code>）而不是位元組預算來限範圍：
+  某個小到位元組安全的預算，在每個 ubatch 尺寸下都得重新推導一次。</p>
+</div>
+
+<h3>2.2 A7（修訂）｜工具回報成功 ≠ 改動在樹裡，且並行編輯同一檔會靜默丟失</h3>
+<p>本輪<strong>三個對同一檔案的並行編輯全部回報成功，只有一個落盤</strong>。
+更糟的是同一輪稍早已刪掉那些函式的<strong>定義</strong>，而其中兩個引用沒有被清掉 ⇒
+<strong>檔案一度引用不存在的函式</strong>。</p>
+<p>辨識這個失敗模式的<strong>特徵簽章</strong>是：<strong>探針被編進 binary、卻可證地從未觸發</strong>。
+本次的實例是 <code>CGC-S1: OUT</code> 這個字串在 <code>libllama</code> 裡（證明 binary 已建），
+卻從未印出任何一行。追查方式只能是<strong>專用搜尋 + <code>git diff</code> 作地面真相</strong>。</p>
+<p><strong>操作規則（已固化）：</strong>單一檔案的多處修改<strong>逐一序列化</strong>送出；
+每次編輯後以 <code>git diff -U0 -- &lt;file&gt; | grep '^@@'</code> 核對 hunk 清單。</p>
+
+<h3>2.3 A9｜測「存在」的旋鈕，它記錄下來的值只代表意圖</h3>
+<p>本輪在解釋「layer 0 為何從不分歧」時，挖到一個<strong>與 S1 無關、但權重更重</strong>的缺陷。</p>
+
+<table>
+<tr><th>事實</th><th>證據</th></tr>
+<tr><td>三個讀者<strong>全部測「存在」</strong></td>
+    <td><code>llama.cpp:396</code>、<code>llama-expert-cache.cpp:1708</code>、
+        <code>llama-context.cpp:5222</code> 皆為
+        <code>getenv("LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0") != nullptr</code></td></tr>
+<tr><td>profile 把它設成 <code>0</code>，且<strong>真的傳進子行程</strong></td>
+    <td><code>run_server.sh:939-945</code> 的 <code>SERVER_ENV</code>，由 <code>:1493</code> 的
+        <code>env "${SERVER_ENV[@]}" "$BIN" …</code> 送出 ⇒ <code>getenv</code> 回傳
+        <strong>非空</strong>的 <code>"0"</code></td></tr>
+<tr><td>profile 註解寫的是<strong>相反</strong>的意圖</td>
+    <td><code>2026-09-09 品質修復：L4_SKIP_LAYER0 已證實 4/10 品質殺手（blk.0 走 CPU skip-load
+        但 graph 在 Metal → cross-backend garbage）… 甜蜜點 … layer 0 在 pool 內）無 skip0 = 90-100%</code></td></tr>
+<tr><td>後果：blk.0 真的<strong>不在 pool 內</strong></td>
+    <td><code>llama-model-loader.cpp:1464</code> 對 layer 0 強制 <code>l4_kind = -1</code>；
+        其 FFN 保持讀全寬張量 + 原始 expert id（<code>llama-context.cpp:5222</code> 為它寫
+        <strong>IDENTITY 表</strong>）</td></tr>
+<tr><td><strong>獨立 runtime 確認</strong></td>
+    <td><code>CGC-DECPROF</code> 報 <code>layers=39</code>（19/19 步），<code>layers=40</code>
+        <strong>0 次</strong> ⇒ 池服務 39 層</td></tr>
+</table>
+
+<div class="box b-red">
+  <p><strong>所以那條 2026-09-09 的品質修復，六天來從未生效。</strong>
+  凡是經 <code>run_server.sh</code> 啟動的 profile，都一直在 <strong>skip0 開啟</strong>的狀態下跑。</p>
+  <p>更糟的是<strong>快照記錄的是意圖、行為卻相反</strong>：所有 <code>cap_*.json</code> 與
+  llama-bench 的 <code>env</code> 區塊都印 <code>LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0: "0"</code>。
+  這與舊 oracle cap（<code>dec-20260915-2233</code>，記錄意圖）<strong>同一個病</strong>，
+  也是本專案 presence-vs-value 家族的<strong>第三例</strong>——前兩例是 <code>CGC_OA_ASYNC</code>
+  （<code>dec-20260915-2142</code>／<code>2215</code>；後者的值感知修正<strong>靜默改道四個 profile</strong>
+  並迫使閘門重新基線）。</p>
+</div>
+
+<p><strong>本輪只記錄、不修。</strong>把閘門改成值感知會把 layer 0 拉進 pool ⇒
+<strong>改變 M1/M2/M3 閘門正在比較的數值</strong> ⇒ 會讓本輪的閘門基線當場失效。
+這正是 <code>CGC_OA_ASYNC</code> 那次修正迫使重新基線的同一個形狀。
+修法成本低（3 個站點各一個 predicate），但<strong>必須單獨一輪、附自己的閘門基線</strong>。
+列為下一步第 1 項。</p>
+
+<p class="small"><strong>這也讓判別式從「相關性」升級為「構造」：</strong>
+layer 0 相同是因為兩臂在 layer 0 讀<strong>同一份全寬權重、同一組原始 id</strong>，
+相等是被<strong>強制</strong>的，不是被觀察到的。</p>
+
+<h2>3. 生產數字（llama-bench）</h2>
+<p>arm <code>prod25-stream</code>（profile <code>prod25</code> + <code>CGC_PREFILL_STREAM=1</code> +
+<code>CGC_GATHER_SLAB_CAP=256</code>）。env <strong>由 <code>run_server.sh CGC_DUMP_ENV=1</code> 解析</strong>，
+不是本腳本自己寫的第二份。 <code>-b 512 -ub 512</code>，<code>-p 512 -n 128</code>，<code>-r 3</code>，
+<code>--depths 0,512,1024,2048,4096</code>。</p>
+<table>
+<tr><th>shape</th><th>depth</th><th>22:30 第 1 跑</th><th>23:11 第 2 跑</th><th>23:52 第 3 跑</th><th>三跑極差</th></tr>
+<tr><td>pp</td><td class="num">0</td><td class="num">109.29 ± 3.08</td><td class="num">108.12 ± 0.66</td><td class="num">117.71 ± 2.55</td><td class="num">8.9%</td></tr>
+<tr><td>pp</td><td class="num">512</td><td class="num">97.55 ± 15.25</td><td class="num">103.25 ± 12.65</td><td class="num">107.78 ± 6.34</td><td class="num">10.5%</td></tr>
+<tr><td>pp</td><td class="num">1024</td><td class="num">79.88 ± 3.18</td><td class="num">105.71 ± 2.93</td><td class="num">106.69 ± 3.75</td><td class="num bad">33.6%</td></tr>
+<tr><td>pp</td><td class="num">2048</td><td class="num">95.89 ± 1.54</td><td class="num">101.70 ± 6.02</td><td class="num">105.25 ± 6.96</td><td class="num">9.8%</td></tr>
+<tr><td>pp</td><td class="num">4096</td><td class="num">81.52 ± 10.64</td><td class="num">103.11 ± 0.63</td><td class="num">96.11 ± 11.54</td><td class="num bad">26.5%</td></tr>
+<tr><td>tg</td><td class="num">0</td><td class="num">8.67 ± 1.53</td><td class="num">6.91 ± 1.54</td><td class="num">8.76 ± 0.45</td><td class="num bad">26.8%</td></tr>
+<tr><td>tg</td><td class="num">512</td><td class="num">6.72 ± 0.83</td><td class="num">8.85 ± 0.57</td><td class="num">8.50 ± 0.29</td><td class="num bad">31.8%</td></tr>
+<tr><td>tg</td><td class="num">1024</td><td class="num">8.49 ± 1.27</td><td class="num">8.55 ± 2.55</td><td class="num">8.85 ± 0.44</td><td class="num">4.3%</td></tr>
+<tr><td>tg</td><td class="num">2048</td><td class="num">9.03 ± 0.09</td><td class="num">9.67 ± 0.04</td><td class="num">8.53 ± 0.13</td><td class="num">13.4%</td></tr>
+<tr><td>tg</td><td class="num">4096</td><td class="num">8.33 ± 0.47</td><td class="num">9.10 ± 0.44</td><td class="num">8.44 ± 0.34</td><td class="num">9.3%</td></tr>
+</table>
+<p class="small">第 3 跑另外記錄：cache <code>hit 97.3% / misses 16585 / reads 516453</code>，
+wall 402.6 s。（第 1、2 跑 wall 分別 451.0 s / 415.3 s，見 §3.1。）
+<strong>三跑的 <code>build_commit</code> 全是 <code>e8b85393d</code>、build 239</strong>——
+即使第 3 跑用的是 23:45 重建後的 binary。<strong>這個欄位不追蹤本專案的編輯，不可當指紋用</strong>
+（又一個「記錄下來的值不代表行為」的實例，見 A9）。</p>
+<p class="small">本表白皮書<strong>不宣稱這是一個 regression，也不宣稱它是一個中性結果</strong>。
+理由見下：單一 binary 的重複性帶<strong>遠大於</strong>任何被追蹤的效應。</p>
+
+<h3>3.1 §3 懸案的閉合方式：量儀器的噪聲，不是解釋那個落差</h3>
+<p>先前把「§3 的落差」當成一個待解釋的現象，並打算用<strong>交錯 A/B</strong>（<code>ab_interleave.py</code>）
+去關它。這是<strong>儀器與問題 scope 不匹配</strong>：§3 是<strong>跨 build</strong> 的問題，
+而 <code>ab_interleave.py</code> 是<strong>同 build</strong> 的儀器。正確做法是用 scope 正確的儀器
+（llama-bench matrix）<strong>連跑兩次</strong>，量出<strong>同一個二進制的重複性帶</strong>。</p>
+
+<table>
+<tr><th>shape</th><th>depth</th><th>22:30 第 1 跑</th><th>23:11 第 2 跑</th><th>差</th></tr>
+<tr><td>pp</td><td class="num">0</td><td class="num">109.29 ± 3.08</td><td class="num">108.12 ± 0.66</td><td class="num">−1.1%</td></tr>
+<tr><td>pp</td><td class="num">512</td><td class="num">97.55 ± 15.25</td><td class="num">103.25 ± 12.65</td><td class="num">+5.8%</td></tr>
+<tr><td>pp</td><td class="num">1024</td><td class="num">79.88 ± 3.18</td><td class="num">105.71 ± 2.93</td><td class="num up">+32.3%</td></tr>
+<tr><td>pp</td><td class="num">2048</td><td class="num">95.89 ± 1.54</td><td class="num">101.70 ± 6.02</td><td class="num">+6.1%</td></tr>
+<tr><td>pp</td><td class="num">4096</td><td class="num">81.52 ± 10.64</td><td class="num">103.11 ± 0.63</td><td class="num up">+26.5%</td></tr>
+<tr><td>tg</td><td class="num">0</td><td class="num">8.67 ± 1.53</td><td class="num">6.91 ± 1.54</td><td class="num down">−20.3%</td></tr>
+<tr><td>tg</td><td class="num">512</td><td class="num">6.72 ± 0.83</td><td class="num">8.85 ± 0.57</td><td class="num up">+31.8%</td></tr>
+<tr><td>tg</td><td class="num">1024</td><td class="num">8.49 ± 1.27</td><td class="num">8.55 ± 2.55</td><td class="num">+0.8%</td></tr>
+<tr><td>tg</td><td class="num">2048</td><td class="num">9.03 ± 0.09</td><td class="num">9.67 ± 0.04</td><td class="num">+7.0%</td></tr>
+<tr><td>tg</td><td class="num">4096</td><td class="num">8.33 ± 0.47</td><td class="num">9.10 ± 0.44</td><td class="num">+9.3%</td></tr>
+</table>
+
+<p>上表這一對（22:30 / 23:11）<strong>是同一支 binary、中間無重建</strong>（wall 451.0 s vs 415.3 s），
+所以它是這個論證<strong>最強的形式</strong>：連 binary 都沒變，答案就差了 20–32%。
+23:52 又加了第三次抽樣（見 §3 的三跑表，該次是 23:45 重建後跑的，改動只有 env-gated 診斷
+與一個<strong>已由閘門證明中立的</strong> refactor），三跑合起來把極差推到 <strong>33.6%</strong>。</p>
+<p>結論有兩個層次：</p>
+<ul>
+  <li><strong>跨格範圍 −20.3% ~ +32.3%，且方向不一致</strong>（`tg@0` 掉 20%，`pp@1024` 升 32%）。
+      6–12% 的落差<strong>完全落在這個噪聲帶內</strong>。</li>
+  <li><strong>連 pool 行為都不一致</strong>（hit 97.1% / reads 519501 vs hit 97.3% / misses 16163）。
+      「同一支二進制的重複性」因此<strong>不是一個常數</strong>，而是一個<strong>必須每次重量的量</strong>。</li>
+</ul>
+<p>⇒ 先前那個「−6 ~ −12%」不是 regression，也不是中性結果，而是<strong>不可解析</strong>。
+這比「regression」或「drift」更強：它是一個<strong>關於儀器解析度的主張</strong>，固化成 <code>eng-mh-0010</code>。</p>
+
+<h3>3.2 交錯 A/B 的讀數（同 build，3 輪配對）</h3>
+<p><code>ab_interleave.py</code> 在<strong>同 build</strong> 下把兩臂配對交錯，指紋與 md5 並列：</p>
+<table>
+<tr><th>輪</th><th>p25-gputime t/s</th><th>p25-slotgpu t/s</th><th>配對比 (S1/base)</th></tr>
+<tr><td class="num">r1</td><td class="num">8.67</td><td class="num">12.16</td><td class="num">1.403</td></tr>
+<tr><td class="num">r2</td><td class="num">9.55</td><td class="num">11.87</td><td class="num">1.243</td></tr>
+<tr><td class="num">r3</td><td class="num">8.93</td><td class="num">7.45</td><td class="num bad">0.834</td></tr>
+</table>
+<div class="box b-red">
+  <p><strong><code>all&gt;1: False</code> ⇒ 符號未定。</strong>中位數比 1.243，但第 3 輪是 0.834，
+  且 <strong>S1 最差輪（7.45）低於基準臂最差輪（8.67）</strong> ⇒
+  <strong>任何 S1 吞吐數字不可引用</strong>（<code>dec-20260915-2312</code>）。</p>
+  <p>另有一個<strong>長度混淆</strong>（新判準 A6）：decode t/s 是「<strong>已生成</strong> token」上的平均，
+  同一 <code>--n-predict 120</code> 下基準臂吐 <strong>100</strong>、S1 只吐 <strong>58</strong> ⇒
+  比值是<strong>兩個不同窗口</strong>的比值。（miss 15760 vs 17954 同病：
+  更少步數上的 miss 數不是一個率。）</p>
+</div>
+
+<p><strong>但交錯 A/B 確實建立了三件事</strong>（這些是它可以支持的）：</p>
+<table>
+<tr><th>量</th><th>p25-gputime（base）</th><th>p25-slotgpu（S1）</th></tr>
+<tr><td>答案 md5 集合（單次啟動內）</td><td class="num ok">1 個（<code>28097996</code>）</td>
+    <td class="num bad">2 個（<code>16fc4f00</code>, <code>2d75f29b</code>）</td></tr>
+<tr><td>t/s 極差 / 中位</td><td class="num ok">10.1%</td><td class="num bad">63.2%</td></tr>
+<tr><td>pool 記帳（hits / misses）</td><td class="num ok">181063 / 17954 ×3 相同</td>
+    <td class="num ok">143321 / 15760 ×3 相同</td></tr>
+</table>
+<p><strong>不穩定在「答案」，不在「池」。</strong>兩臂的 pool 記帳各自完全確定（三輪一字不差），
+而 S1 臂<strong>在單次啟動之內就有兩個 md5</strong>。這是 <code>eng-gate-0007</code>「擲骰子」的第二次測量。</p>
+
+<h2>4. M1/M2/M3 與 oracle 判決</h2>
+<p>D5 慣例要求提交前跑完 llama-bench + M1/M2/M3 + 最新 M2 oracle。本輪跑<strong>兩臂</strong>，
+因為重構動到了兩條 publish 路徑：</p>
+
+<table>
+<tr><th>指標</th><th>定義</th><th>預設臂（本輪提交）</th><th>S1 臂 <code>CGC_SLOT_TABLE_GPU=1</code></th></tr>
+<tr><td>M1 數值同一</td><td>同一 <code>row_fnv1a64</code>（逐位元相同 logits）</td>
+    <td class="num ok">9/9（100%）</td><td class="num bad">5/9</td></tr>
+<tr><td>M2 決策一致</td><td>同一 <code>argmax_token</code></td>
+    <td class="num ok">9/9（100%）</td><td class="num bad">7/9</td></tr>
+<tr><td>M3 top-k 集合一致</td><td>同一 top-N id 集合</td>
+    <td class="num ok">9/9（100%）</td><td class="num bad">5/9</td></tr>
+<tr><td>(aux) <code>full_fnv1a64</code></td><td>整列雜湊相同</td>
+    <td class="num ok">9/9（100%）</td><td class="num bad">—</td></tr>
+<tr><td>cross-tab</td><td>—</td><td class="num ok">{eq_eq:9, eq_ne:0, ne_eq:0, ne_ne:0}</td>
+    <td class="num bad">{eq_eq:5, eq_ne:0, ne_eq:2, ne_ne:2}</td></tr>
+<tr><td><code>comparable</code> / <code>config_diffs</code></td><td>相對不變量檢查的前提</td>
+    <td class="num ok">True / []</td><td class="num ok">True / []</td></tr>
+<tr><td>判決</td><td><code>ok == (M1 == 1.0 AND M2 == 1.0)</code></td>
+    <td class="ok"><strong>PASS</strong></td><td class="bad"><strong>FAIL</strong></td></tr>
+</table>
+
+<pre><code>python3 scripts/check/m123_oracle_gate.py --profile prefill250 --tag s1commit_default_20260915
+python3 scripts/check/m123_oracle_gate.py --profile prefill250 --env CGC_SLOT_TABLE_GPU=1 \
+        --tag s1commit_slotgpu_20260915
+RUN_REPLAY_BENCH=0</code></pre>
+
+<div class="box b-green">
+  <p><strong>S1 臂的 cross-tab 與重構前「一字不差」</strong>（<code>{eq_eq:5, eq_ne:0, ne_eq:2, ne_ne:2}</code>，
+  M1 5/9 / M2 7/9 / M3 5/9）。這同時是<strong>§8.3 重構的行為中立性驗證</strong>：
+  把兩個 publish 站點統一收斂到單一計數入口，閘門數字完全沒動。</p>
+  <p><strong>預設臂 9/9 證明了什麼、沒證明什麼：</strong>它是 cache-ON 的<strong>相對</strong>不變量檢查
+  （兩個 dump 是否一致），<strong>不是絕對正確性</strong>。M1 的定義就是「兩個 dump 相同」，
+  所以一個<strong>確定性</strong>的錯誤在兩側完全相同、依構造不可見。
+  絕對 ground truth 在 16 GB 機器上仍不可得
+  （cache-free oracle 需要 256 experts × 40 層常駐 ⇒ Metal OOM）。</p>
+</div>
+
+<h3>4.1 M2 oracle 附件</h3>
+<table>
+<tr><th>項</th><th>值</th></tr>
+<tr><td>reference 檔案</td><td><code>Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident_v3.jsonl</code></td></tr>
+<tr><td>md5</td><td class="num"><code>d2f0b9a01fc5404ebb04dcf3583e133f</code></td></tr>
+<tr><td>建立時間</td><td class="num">2026-09-15T22:33:23</td></tr>
+<tr><td>profile / rows</td><td><code>prefill250</code> / 9 列</td></tr>
+<tr><td><code>expert_cache</code></td><td><code>on</code>（cap 自帶警語：cache-ON dump，永不作為 ground truth）</td></tr>
+<tr><td>config 可比性</td><td class="ok"><code>config_diffs = []</code>，兩臂皆 <code>comparable = True</code></td></tr>
+</table>
+<p class="small"><code>v3</code> 的 cap 記錄了它<strong>修正 CAP 而非數值</strong>：v2（17:21）記的是
+<code>CGC_OA_ASYNC=0</code>，但那份 dump 是在 <strong>presence-based</strong> 閘門（<code>getenv != nullptr</code>）
+下取的，所以 <code>0</code> 與今天的 <code>1</code> 選到同一個 segmented dispatcher。
+本檔的 9 列與 v2 逐位元相同。</p>
+
+<h2>5. 六步清單的逐項判決</h2>
+<table>
+<tr><th>#</th><th>項</th><th>判決</th><th>證據</th></tr>
+<tr><td>1</td><td>跑一次交錯 A/B 關掉 §3 懸案</td><td class="warn"><strong>完成，但以不同方式閉合</strong></td>
+    <td>§3 是跨 build 問題，A/B 是同 build 儀器 ⇒ 改用 llama-bench 連跑兩次量重複性帶（§3.1）。
+        A/B 另給出「符號未定」（§3.2）。</td></tr>
+<tr><td>2</td><td>capture <code>ffn_moe_down</code> 輸出（兩臂）</td><td class="ok"><strong>完成</strong></td>
+    <td>探針自證決定性（480/480）；兩臂 480/480 不同；逐列拆分否證排列假說（§1.1、§1.4）。</td></tr>
+<tr><td>3</td><td>測 <code>publish_slot_table</code> 每 decode step 呼叫次數</td><td class="ok"><strong>完成</strong></td>
+    <td><code>publishes=1014</code> = 39 層 × 26 graphs ⇒ <strong>每步 39 次（每層一次）</strong>。</td></tr>
+<tr><td>4</td><td>S1 過 bit-identical 閘門</td><td class="bad"><strong>仍 FAIL</strong></td>
+    <td>M1 5/9、M2 7/9、M3 5/9，與重構前一字不差（§4）。</td></tr>
+<tr><td>5</td><td>處理 §8.3 地雷</td><td class="ok"><strong>選 clamp-as-hard-precondition</strong></td>
+    <td><code>clamped_selected=0</code>（本次未觸發）；機制是<strong>時序</strong>而非政策（§5.1）。</td></tr>
+<tr><td>6</td><td>清理 S1 臨時診斷</td><td class="ok"><strong>完成</strong></td>
+    <td><code>CGC_S1_IDENT</code> / <code>CGC_S1_TAG</code> / <code>CGC-S1: CAPTURE</code> /
+        <code>CGC-FAST:</code> 全部移除；<code>CGC_S1_DBG</code> 保留為 opt-in。</td></tr>
+</table>
+
+<h3>5.1 §8.3 地雷：為什麼選「clamp 升為硬前置條件」而不是「強制保留 ZERO slot」</h3>
+<p>先釘住前提。有<strong>兩個 publish 呼叫點</strong>，它們<strong>獨立分歧</strong>：</p>
+<table>
+<tr><th>呼叫點</th><th>寫 leaf 用什麼</th><th>非 resident 時 leaf 寫入</th><th>原本是否保留 clamp 返回值</th></tr>
+<tr><td>fast-path（<code>verify_fast || draft_fast</code> 內）</td><td><code>slot_table_safe</code></td>
+    <td>ZERO slot 或 −1</td><td class="bad">丟棄（已修）</td></tr>
+<tr><td>pool / slow-path</td><td>原始 slot table</td><td>永遠 −1</td><td class="bad">丟棄（已修）</td></tr>
+</table>
+<p>而 <code>zero_slot_enabled()</code> 綁在 <strong>MTP fast-path env</strong> 上
+（<code>CGC_VERIFY_DECODE</code> / <code>CGC_DRAFT_DECODE</code>）。
+<strong>所有 S1 臂都是 <code>CGC_SERVER_MTP=0</code></strong> ⇒ <code>zero_slot &lt; 0</code> ⇒
+走到 §8.3 表格的第三列（leaf 寫 −1 吵，table 夾 0 靜默）。
+而 MTP-off 的每個 S1 臂走的正是 <strong>pool-path</strong>——
+這也同時解釋了先前 <code>LLAMA_EXPERT_CACHE_STEP_DBG</code> 的 <strong>0 行</strong>
+（它的 block 就在 fast-path 分支內）。</p>
+
+<div class="box b-blue">
+  <p><strong>實測：<code>clamped_selected = 0</code>。</strong>對<strong>被實際消費的 id</strong>
+  而言，本次 §8.3 地雷<strong>沒有觸發</strong>。原因是<strong>時序</strong>：
+  <code>ensure_batch</code>（填槽）→ <code>publish</code> → 寫 leaf，
+  所以 publish 時看到的是<strong>已填好</strong>的槽。</p>
+  <p><strong>否決的方案：</strong>「強制保留 ZERO slot」會改動 <code>usable_slots</code> /
+  <code>pick_slot</code> 的算術 ⇒ <strong>動 pool 布局 ⇒ 移動 S1 閘門要比較的數值本身</strong>，
+  與 bit-identical 不相容。選 <strong>clamp-as-hard-precondition</strong>（<code>CGC_S1_CLAMP_ABORT</code>）。</p>
+</div>
+<p class="small"><strong>B1 提醒（自己剛寫的規則）：</strong><code>clamped_table = 79326</code> /
+（4251 × 256）= <strong>44.1%</strong> 只是「143 slot vs 256 expert 的非 resident 比例」——
+每次運行都這麼大 ⇒ <strong>不含資訊</strong>。所以計數必須按「<strong>實際被讀取的 id</strong>」拆分：
+<code>n_slot_table_clamped_selected</code>。</p>
+
+<h3>5.2 前提 B（發布是否冗餘）：不成立</h3>
+<p>要回答的不是「全表動幾次」（1976 次 / 77 graphs），也不是「函式被呼叫幾次」
+（退化題：呼叫點全在 hook 內 ⇒ 基準 0 次、S1 每層 1 次），
+而是<strong>「被消費的映射會不會動」</strong>。用 <code>CGC_S1_TABLE_CHURN=1</code> 拆出來：</p>
+<table>
+<tr><th>量</th><th>值</th><th>讀法</th></tr>
+<tr><td><code>publishes</code></td><td class="num">1014</td>
+    <td>= 39 層 × 26 graphs ⇒ <strong>每步每層一次</strong></td></tr>
+<tr><td><code>changed_entries</code></td><td class="num">1423</td>
+    <td>全表變動（不含資訊，見 B1）</td></tr>
+<tr><td><code>consumed_changed</code></td><td class="num">389</td>
+    <td><strong>被消費映射真的變了</strong></td></tr>
+<tr><td><code>consumed_unchanged_publishes</code></td><td class="num">430</td><td>發布了但被消費映射沒變</td></tr>
+<tr><td>比例</td><td class="num">389 / 819 = <strong>47.5%</strong></td>
+    <td class="bad">近一半的 decode 步，被消費映射會動</td></tr>
+</table>
+<p><strong>⇒ 發布不是冗餘的、排序要求真實存在 ⇒ D3 的 n_segs 收縮不由「前提 B」推出。</strong>
+D3 要成立，必須另找理由（或接受 D3 只買到「圖裡沒有 host 寫入」這一項，而不買到段數）。</p>
+
+<h2>6. 誠實的邊界</h2>
+<ul>
+  <li><strong>skip0 的缺陷本輪只記錄、未修</strong>（§2.3）。它對本輪<strong>全部讀數的影響未被評估</strong>：
+      所有 S1 臂與基準臂都在「layer 0 不池化」下量測。判別式不受此影響（兩臂同構），
+      但<strong>任何「這條路徑生產上會更快/更好」的推論都必須先修好它再量</strong>。</li>
+  <li><strong>本輪沒有修，是因為修它會改變閘門正在比較的數值</strong>——
+      這不是保守，是被 <code>CGC_OA_ASYNC</code> 那次「值感知修正靜默改道四個 profile」教訓過的流程約束。</li>
+  <li><strong>S1 的 bit-identical 閘門仍未通過。</strong>本輪把它收斂成一條<strong>判別式</strong>
+      （路徑決定分歧），但<strong>尚未指出機制</strong>：是 slot 內容（owner-set）刷新時序，
+      還是 partial pool 下 down 投影讀到的實際權重不同，兩者都與判別式相容。</li>
+  <li><strong>下一個唯一決定性的測量</strong>：在 prefill 階梯上捕捉<strong>被消費 id 背後的 slot 內容
+      （owner-set）</strong>，以及 <code>ffn_moe_down</code> 在<strong>同一個 pool graph</strong> 上的
+      逐層讀數。<strong>開更深的層窗價值低於表面</strong>——變數是路徑不是索引。</li>
+  <li><strong>§3 的 matrix 讀數不可引用</strong>為 regression 或中性（單次 matrix 的重複性帶
+      −20.3% ~ +32.3%，同 binary）。本輪的貢獻是<strong>量到了那個帶的寬度</strong>，
+      不是把某個數字變成結論。</li>
+  <li><strong>S1 臂的吞吐完全不可引用</strong>：符號未定（1.403 / 1.243 / 0.834）＋長度混淆（100 vs 58）。</li>
+  <li><strong>釘住的成本機制未確立。</strong>知道「不是位元組」，但「是什麼」只有一個候選
+      （每 graph 的 output 張量個數），未證。</li>
+  <li><strong>M1 是相對不變量，不是絕對正確性。</strong>確定性錯誤依構造不可見。</li>
+  <li><strong>內核側 ids 儀器的 stride 限制</strong>：<code>stride=8</code> ⇒
+      <code>n_ids=64</code> 時<strong>只看得到 token 0</strong>。</li>
+  <li><strong>本輪沒有動 E1（<code>git mv</code> 進 <code>tb_loop/</code>）與 E2/E3/E4 的任何檔案。</strong></li>
+</ul>
+
+<h2>7. 本輪隨附的修復與改動</h2>
+<table>
+<tr><th>檔案</th><th>改動</th></tr>
+<tr><td><code>llama-context.h</code></td><td>新增 <code>cache_down_out_tensors</code>（<code>layer → ffn_moe_down</code>），
+    僅 <code>CGC_S1_OUT_CAP</code> 下填充，且在樹裡明文記錄「此釘住使
+    <code>ggml_set_output</code> 成為數值相關 ⇒ <strong>診斷臂專用、閘門臂永不可開</strong>」</td></tr>
+<tr><td><code>llama-expert-cache.h</code></td><td>新增 7 個 slot-table 計數器（含
+    <code>n_slot_table_clamped_selected</code> / <code>n_slot_table_consumed_changed</code> 兩個「被消費子集」拆分）</td></tr>
+<tr><td><code>llama-expert-cache.cpp</code></td><td>移除 <code>CGC_S1_TAG</code> / <code>CGC_S1_IDENT</code>
+    兩個「故意寫錯表」分支；teardown 改用 consumed-subset 判定並在
+    <code>clamped_selected &gt; 0</code> 時印 <strong>SILENT EXPERT SUBSTITUTION</strong> 警語</td></tr>
+<tr><td><code>llama-context.cpp</code></td><td>兩條 publish 路徑統一收斂到
+    <code>cgc_publish_slot_table_counted()</code>（<strong>兩個量按構造一致</strong>）；
+    新增 <code>ffn_moe_down</code> 輸出捕捉（<code>fnv1a64</code> + <code>OUTSET</code> 逐列雜湊）；
+    讀回鎖定 decode 並加 graph 序號；新增 <code>CGC_S1_OUT_CAP=pre</code> +
+    <code>CGC_S1_OUT_LAYERS</code> 層窗；移除 <code>cgc_s1_ident/tag</code>、
+    <code>CGC-S1: CAPTURE</code>、<code>CGC-FAST:</code>、兩處 identity map</td></tr>
+<tr><td><code>scripts/run_server.sh</code></td><td>allowlist 新增
+    <code>CGC_S1_OUT_CAP</code> / <code>CGC_S1_OUT_LAYERS</code> / <code>CGC_S1_TABLE_CHURN</code> /
+    <code>CGC_S1_CLAMP_ABORT</code>（<code>CGC_S1_OUT_LAYERS</code> 原為隱式 env ⇒ 實際不可達）</td></tr>
+<tr><td><code>scripts/check/decode_sweep.py</code></td><td>移除 <code>ident/tag</code> arms；
+    新增 <code>p25-outcap-base</code> / <code>p25-slotgpu-outcap</code> /
+    <code>p25-slotgpu-outcap-pre</code> / <code>p25-outcap-pre-base</code> /
+    <code>p25-outcap-depth-base</code> / <code>p25-slotgpu-outcap-depth</code> / <code>p25-slotgpu-churn</code></td></tr>
+<tr><td><code>agent_harness/CONVENTIONS.md</code></td><td>新增 <strong>A6</strong>（配對比值要求同窗；先比
+    <code>n_tokens_sample</code>；附 10.1% / 63.2% 重複性帶）、<strong>A7 修訂</strong>（閘門量必須被<em>打印</em>；
+    「算了卻沒被觀測」= 沒有這個量）、<strong>A8</strong>（釘住的成本不是位元組，而是每 graph 的 output 張量個數）、
+    <strong>A9</strong>（測「存在」的旋鈕，它記錄下來的值只代表意圖；僅推導量可證行為）</td></tr>
+<tr><td><code>traces/lessons.jsonl</code></td><td><code>eng-mh-0010</code>（先量同 binary 的<strong>重複性下限</strong>）、
+    <code>eng-gate-0009</code>（在一個點算、在另一個點丟棄的量不是閘門量）、
+    <code>eng-mh-0011</code>（有上限的讀回必須綁在<strong>相位</strong>上，否則預算被 warmup 吃掉）、
+    <code>eng-mh-0012</code>（<strong>A8</strong>：擾動型儀器的成本是每 graph 釘幾個張量）、
+    <code>eng-diag-0019</code>（<strong>兩個不相交的切片複現同一結構 ⇒ 那個軸不是變數</strong>）、
+    <code>eng-gate-0010</code>（<strong>測「存在」的旋鈕，值只代表意圖</strong>）、
+    <code>eng-src-0007</code>（工具回報成功 ≠ 改動在樹裡；並行編輯同檔會靜默丟失）</td></tr>
+<tr><td><code>traces/decisions.jsonl</code></td><td><code>dec-20260915-2311</code>（§3 用「量儀器噪聲」閉合）、
+    <code>dec-20260915-2312</code>（交錯 A/B 未建立 S1 的吞吐符號，且該臂是雙峰的）、
+    <code>dec-20260915-2345</code>（decode 探針<strong>未授權</strong>「權重內容是載體」，前提在 decode 為假）、
+    <code>dec-20260915-2346</code>（前提 B 不成立；§8.3 對被消費 id <strong>inert</strong>）、
+    <code>dec-20260915-2350</code>（<strong>載體是服務路徑，不是層號</strong>）、
+    <code>dec-20260915-2352</code>（<strong>skip0 是 presence-gated ⇒ 2026-09-09 品質修復 inert</strong>）</td></tr>
+<tr><td><code>docs/</code>（本檔）</td><td>本白皮書；系列下一版接
+    <code>PREFILL250_DECODE25_WHITEPAPER_20260915_2240.html</code></td></tr>
+</table>
+
+<h3>7.1 指紋（本輪提交時）</h3>
+<table>
+<tr><th>artifact</th><th>md5</th></tr>
+<tr><td><code>src/llama.cpp/build/bin/libllama.0.0.239.dylib</code></td>
+    <td class="num"><code>def47c28033559171ace800fb8090beb</code></td></tr>
+<tr><td><code>src/llama.cpp/build/bin/llama-server</code></td>
+    <td class="num"><code>131bc5316ebff1e980243447424dfe2f</code></td></tr>
+<tr><td><code>src/llama.cpp/build/bin/llama-bench</code></td>
+    <td class="num"><code>d4d5c83a2fbbfd747f1056d74be5a908</code></td></tr>
+<tr><td>M2 oracle <code>ref_iq3_pool8gb_M2_6144_bitident_v3.jsonl</code></td>
+    <td class="num"><code>d2f0b9a01fc5404ebb04dcf3583e133f</code></td></tr>
+</table>
+<p class="small"><strong>注意</strong>：純註解編輯<strong>也會改變 <code>libllama</code> 的雜湊</strong>
+（debug 資訊內嵌），而 <code>llama-server</code> 不變。這是為何<strong>每一列都要記自己的指紋</strong>，
+而不能靠「上次閘門 PASS 過」推論。</p>
+
+<h2>8. 下一步（依槓桿排序）</h2>
+<ol>
+  <li><strong>修 skip0 的 presence 閘門，並重新基線（最高槓桿）。</strong>三個站點各一個 predicate
+      （<code>llama.cpp:396</code>、<code>llama-expert-cache.cpp:1708</code>、<code>llama-context.cpp:5222</code>），
+      外加 <code>run_server.sh</code> 的註解要改成值語意。<strong>但這是數值變更</strong>
+      （layer 0 進入 pool ⇒ 40 層池化）⇒ 必須附自己的 M1/M2/M3 重新基線，
+      且要預期它會像 <code>CGC_OA_ASYNC</code> 那次一樣<strong>移動多個 profile 的數值</strong>。
+      這條品質修復已經空轉六天，是目前投報率最高的一項。</li>
+  <li><strong>量被消費 id 背後的 slot 內容（owner-set）</strong>——判別式已把載體收斂到
+      「partial pool 服務的層」，而映射與排列都已被排除。這是唯一還站著的候選，
+      也是 S1 能否進 S3 的閘門。</li>
+  <li><strong>把 <code>CGC_S1_OUT_CAP</code> 的相位限定寫成不可協商的閘門前置條件</strong>——
+      釘住不是位元組問題，任何「這個窗很小所以安全」的推理都已被否證（A8）。
+      目前靠 <code>&lt;= 8</code> 的相位閘，需要明文記錄。</li>
+  <li><strong>D3 的前提重估</strong>：前提 B 已倒（47.5% 的步會動）。D3 若要繼續，
+      必須把「段邊界失去存在理由」<strong>與 n_segs 收縮解耦</strong>，只主張
+      「圖裡不再有 host 寫入」。這是一次範圍縮減，但讓 S2/S3 的驗收條件變得可證。</li>
+  <li><strong>讓 matrix 可引用</strong>：單次 matrix 的重複性帶 −20.3% ~ +32.3% 太寬。
+      要嘛提高 <code>-r</code> 並改報中位數與 IQR，要嘛定義一個可重複的「同 binary 兩跑」校準步驟，
+      把帶寬寫進每個 matrix 的輸出。</li>
+  <li><strong>E1（<code>git mv</code> 進 <code>tb_loop/</code>）與 E2/E3/E4 仍未批准</strong>，
+      本輪一個檔案都沒動。</li>
+</ol>
+
+<p class="small">
+  相關決策：<code>dec-20260915-2311</code>（§3 以量儀器噪聲閉合）、
+  <code>dec-20260915-2312</code>（交錯 A/B 未建立吞吐符號）、
+  <code>dec-20260915-2345</code>（decode 探針未授權「權重內容」命題）、
+  <code>dec-20260915-2346</code>（前提 B 失敗；§8.3 對被消費 id inert）、
+  <code>dec-20260915-2350</code>（<strong>載體是服務路徑</strong>）、
+  <code>dec-20260915-2352</code>（<strong>skip0 是 presence-gated，品質修復 inert</strong>）。<br>
+  相關教訓：<code>eng-mh-0010</code>、<code>eng-gate-0009</code>、<code>eng-mh-0011</code>、
+  <code>eng-mh-0012</code>（A8）、<code>eng-diag-0019</code>、<code>eng-gate-0010</code>（A9）、
+  <code>eng-gate-0007</code>、<code>eng-src-0007</code>。<br>
+  本次附件：<code>Backup/llama_bench/matrix_s1commit_20260915.{json,md}</code>、
+  <code>Backup/m123_oracle_gate/summary_s1commit_default_20260915.json</code>、
+  <code>Backup/m123_oracle_gate/summary_s1commit_slotgpu_20260915.json</code>、
+  <code>Backup/phase_decomp/ab_s1_20260915.json</code>、
+  <code>Backup/phase_decomp/s1_outpre_20260915.json</code>、
+  <code>Backup/phase_decomp/s1_outpre_depth47_20260915.json</code>、
+  <code>Backup/phase_decomp/s1_churn_depth_20260915.json</code>。<br>
+  （<code>Backup/</code> 為 gitignored，附件不進版控；可引用副本見各檔路徑。）
+</p>
+
+</div>
+</body>
+</html>
