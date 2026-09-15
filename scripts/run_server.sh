@@ -232,8 +232,26 @@ case "$SERVER_PROFILE" in
             SERVER_CHAT_TEMPLATE_FILE=""
         fi
         ;;
+    prefill250)
+        # [CGC 2026-09-15] 可復現的 prefill 250+ tok/s 口徑（見 docs/PREFILL250_CONFIGURATION_GUIDE_2026-09-15.html
+        # 與 264.78 tok/s 的實測：Backup/cgc_logs/llama_server_20260915_011146.log）。
+        # 關鍵不是單一旗幟，而是「大 chunk + M2 prefill streaming + 256-expert slab」三件事同時成立：
+        #   n_batch = n_ubatch = 6144  -> prefill 一次吃 6144 token，不再被切碎
+        #   CGC_PREFILL_STREAM=1      -> 大 chunk 走 whole-layer slab（ne[2]=n_expert）而不是 pool
+        #   CGC_GATHER_SLAB_CAP=256   -> slab 裝得下全部 256 個 expert，否則 streaming 會被拒
+        # 實際的 batch/ubatch/stream 覆寫在下面的 BUDGET 解析之後（那裡 SERVER_BATCH 才被定案）。
+        [ -z "${CGC_SERVER_MTP+x}" ] && SERVER_MTP=1
+        [ -z "${CGC_SERVER_DENSE_IQ4X+x}" ] && SERVER_DENSE_IQ4X=1
+        [ -z "${CGC_SERVER_CHAT_AB+x}" ] && SERVER_CHAT_AB="custom-prefix"
+        [ -z "${CGC_SERVER_CHAT_AB_PREFIX+x}" ] && SERVER_CHAT_AB_PREFIX="巴黎之所以成為法國的政治與文化中心，主要是因為"
+        [ -z "${CGC_SERVER_CHAT_AB_MAX_TOKENS+x}" ] && SERVER_CHAT_AB_MAX_TOKENS="220"
+        [ -z "${CGC_SERVER_CHAT_AB_STOP+x}" ] && SERVER_CHAT_AB_STOP="<|end|>,<|output|>,<|user|>"
+        if [ -z "${CGC_SERVER_CHAT_TEMPLATE_FILE:-}" ] && [ -z "${CGC_SERVER_CHAT_TEMPLATE:-}" ]; then
+            SERVER_CHAT_TEMPLATE_FILE=""
+        fi
+        ;;
     *)
-        echo "error: CGC_SERVER_PROFILE must be off|qa-zh|longform-zh|coding|legacy-25plus (got $SERVER_PROFILE)" >&2
+        echo "error: CGC_SERVER_PROFILE must be off|qa-zh|longform-zh|coding|legacy-25plus|prefill250 (got $SERVER_PROFILE)" >&2
         exit 2
         ;;
 esac
@@ -318,6 +336,36 @@ SERVER_DRAFT_NGL="${CGC_SERVER_DRAFT_NGL:-$DRAFT_NGL_DEFAULT}"
 SERVER_BATCH="${CGC_SERVER_BATCH:-$BATCH_DEFAULT}"
 SERVER_UBATCH="${CGC_SERVER_UBATCH:-$UBATCH_DEFAULT}"
 BUDGET="${CGC_SERVER_EXPERT_CACHE_BYTES:-$BUDGET_DEFAULT}"
+
+# [CGC prefill250 2026-09-15] batch/ubatch 在上面的 case 之後才被定案，所以 profile 的
+# 覆寫必須放在這裡，而不是放進 case（那裡設的值會被 317/318 行蓋掉）。
+# 全部用 ${VAR+x} 守門：顯式給的環境變數永遠贏，profile 只補預設值。
+if [ "$SERVER_PROFILE" = "prefill250" ]; then
+    [ -z "${CGC_SERVER_BATCH+x}" ]      && SERVER_BATCH=6144
+    [ -z "${CGC_SERVER_UBATCH+x}" ]     && SERVER_UBATCH=6144
+    [ -z "${CGC_SERVER_CTX+x}" ]        && CTX=8192
+    [ -z "${CGC_PREFILL_STREAM+x}" ]    && CGC_PREFILL_STREAM=1
+    [ -z "${CGC_GATHER_SLAB_CAP+x}" ]   && CGC_GATHER_SLAB_CAP=256
+    # [CGC 2026-09-15] expert pool 必須是 8GiB，不能用預設的 10GiB。
+    #   264.78 tok/s 那筆量測（Backup/cgc_logs/llama_server_20260915_011146.log）跑的是
+    #   143 slots/layer = 8GiB；profile 若沿用 10GiB（179 slots/layer），多出來的 2GB pool
+    #   會把 6144-token ubatch 的 compute buffer 擠出 GPU，第一個請求就
+    #       ggml_metal_synchronize: command buffer failed with status 5
+    #       Insufficient Memory (kIOGPUCommandBufferCallbackErrorOutOfMemory) ret=-3
+    #   —— 2026-09-15 用 CGC_SERVER_PROFILE=prefill250 實跑就是這樣炸的。
+    #   這是「能在 run_server.sh 復現」的真正門檻：三要素之外還得有第四要素（pool 尺寸）。
+    [ -z "${CGC_SERVER_EXPERT_CACHE_BYTES+x}" ] && BUDGET=8589934592
+    # 8192 是 16GB 機器上 verified 可載入的上限；6144 的 chunk 需要它才不會被截斷
+    if [ -n "${CGC_SERVER_BATCH:-}" ] || [ -n "${CGC_SERVER_UBATCH:-}" ]; then
+        : # 使用者顯式指定，尊重
+    fi
+    # [CGC 2026-09-15] 這個 profile 自帶 MTP，而 MTP verify batch 的 n_tokens = n_draft+1 > 1 ——
+    # 它是唯一一條「remap 必須一次寫滿所有 draft token 的 expert union」的路徑，也是最可疑的一條
+    # （所有已完成的 probe 都沒開 MTP，所以從來沒被檢查過）。要看它就帶 CGC_MMID_MV_DBG=2：
+    #     CGC_SERVER_PROFILE=prefill250 CGC_MMID_MV_DBG=2 ./scripts/run_server.sh
+    # 兩條路徑會在同一個 log 裡交錯出現，用 ne02 分辨：ne02=slots(71/143) 是 pool 路徑，
+    # ne02=256 是 M2 prefill whole-layer slab 路徑。
+fi
 LOG_DIR="$ROOT/Backup/cgc_logs"
 LOG="$LOG_DIR/llama_server_$(date +%Y%m%d_%H%M%S).log"
 
@@ -416,34 +464,147 @@ if [ ! -f "$MODEL" ]; then
 fi
 
 # [防護 1] 清殘留（§4.5：殭屍 server 是 0000 退化與 kernel panic 的共同土壤）
+#
+# [CGC 2026-09-15 preflight-kill] 為什麼這裡從「清殘留」升級成「起跑前必做的 preflight」：
+#   16GB unified-memory 機器上，前一支 llama-server 就算已經被 kill，Metal 端的 GPU buffer
+#   還沒被回收。這時候立刻起新行程，llama-server 會在第一次 command buffer 提交時拿到
+#       kIOGPUCommandBufferCallbackErrorOutOfMemory ret=-3
+#   也就是「GPU 說沒記憶體、但 memory_pressure 看起來還有」的那一種炸法 —— 2026-09-15
+#   第一次跑 prefill250 就是這樣炸的（當下 free 只剩 67MB、swap 6.1GB），而且炸在載入模型
+#   之後，浪費掉整段 load 時間。所以這裡做四件事，缺一不可：
+#     1. SIGTERM 優雅退出（讓 Metal buffer 走正常釋放路徑），等最長 TERM_WAIT
+#     2. 只有「等不到」的才 SIGKILL（直接 -9 會漏：10 次崩潰累積 ~8GB，vramFree 剩 15MB）
+#     3. kill 之後「等」：輪詢 pgrep 真的歸零，而不是 sleep 1 就當沒事
+#     4. 等 free% 回到 SETTLE 門檻（GPU 回收是 async 的，行程消失 ≠ 記憶體回來）
+#   關閉：CGC_PREFLIGHT_KILL=0（只在你確定沒有殘留行程時用，例如 CI 或手動跑第二支）
+#
 # pattern 用「build/bin/llama-*」子字串：行程可能是絕對路徑或相對路徑啟動（sandbox 用相對），
 # 絕對路徑 pattern 比對不到相對路徑行程 → port 衝突 → 新行程秒退（2026-08-30 實測踩過）。
-# [CGC 2026-09-14] 先用 SIGTERM 優雅退出（釋放 Metal GPU buffer），等 3s 後仍殘留才 SIGKILL。
-# 之前直接 pkill -9 導致 GPU 記憶體洩漏：10 次崩潰累積 ~8GB，vramFree 只剩 15MB。
-if [ "${N30CACHE_NO_CLEAN:-0}" != 1 ]; then
-    for pat in "build/bin/llama-server" "build/bin/llama-simple" "build/bin/llama-speculative-simple"; do
-        if pkill -TERM -f "$pat" 2>/dev/null; then
-            echo "  [clean] sent SIGTERM to stale $pat (graceful shutdown, freeing GPU memory)"
-        fi
+# [CGC 2026-09-15] 另外補上 bin/ 下的同名 binary（部分 worktree 會把 binary 複製到 bin/），
+# 以及 llama-cli / llama-bench —— 它們一樣吃 GPU buffer，一樣會把新 server 擠到 OOM。
+CGC_PREFLIGHT_KILL="${CGC_PREFLIGHT_KILL:-1}"
+CGC_PREFLIGHT_TERM_WAIT_SEC="${CGC_PREFLIGHT_TERM_WAIT_SEC:-15}"
+CGC_PREFLIGHT_MIN_FREE_PCT="${CGC_PREFLIGHT_MIN_FREE_PCT:-25}"
+CGC_PREFLIGHT_SETTLE_SEC="${CGC_PREFLIGHT_SETTLE_SEC:-20}"
+CGC_PREFLIGHT_PATTERNS=(
+    "build/bin/llama-server"
+    "build/bin/llama-simple"
+    "build/bin/llama-speculative-simple"
+    "build/bin/llama-cli"
+    "build/bin/llama-bench"
+    "bin/llama-server"
+    "bin/llama-cli"
+)
+
+# 只有這些 binary 才算「殘留的 llama」。ps 拿得到 command 時用它分類，避免誤殺：
+# 2026-09-15 實測，純 pattern 比對會打到「命令列裡剛好出現 llama 路徑」的上層 wrapper
+# shell（一支 Doubao agent 的 `/bin/bash -c ... ./bin/llama-cli ...`），把它 SIGTERM 掉是
+# 純粹的附帶傷害。這裡改成：pgrep 只負責蒐集候選，ps 負責確認「第一個 token 的 basename」
+# 真的是一支 llama binary。ps 拿不到資料時保守放行（寧可多清，不要 OOM）。
+CGC_PREFLIGHT_NAMES=(llama-server llama-simple llama-speculative-simple llama-cli llama-bench)
+if [ -n "${CGC_PREFLIGHT_EXTRA_NAMES:-}" ]; then
+    for _n in ${CGC_PREFLIGHT_EXTRA_NAMES}; do
+        CGC_PREFLIGHT_NAMES+=("$_n")
     done
-    # Wait up to 5s for graceful shutdown
-    for i in $(seq 1 10); do
-        sleep 0.5
-        remaining=0
-        for pat in "build/bin/llama-server" "build/bin/llama-simple" "build/bin/llama-speculative-simple"; do
-            # pgrep returns 1 when no match; with pipefail that would kill the script
-            # under `set -e`. `|| true` makes the count 0 instead of aborting.
-            remaining=$((remaining + $(pgrep -f "$pat" 2>/dev/null | wc -l | tr -d ' ' || true)))
+fi
+
+cgc_preflight_cmd() {
+    ps -o command= -p "$1" 2>/dev/null | head -1 || true
+}
+
+# 去重後的殘留 pid 清單（pgrep 一次一個 pattern，多個 pattern 會重複命中同一支行程）
+cgc_preflight_pids() {
+    local p pid cmd exe base n cands
+    cands=$(
+        for p in "${CGC_PREFLIGHT_PATTERNS[@]}"; do
+            # pgrep 沒命中會回 1；在 pipefail 下會殺掉腳本，所以必須 || true
+            pgrep -f "$p" 2>/dev/null || true
+        done | sort -u
+    ) || true
+    for pid in $cands; do
+        [ -n "$pid" ] || continue
+        cmd="$(cgc_preflight_cmd "$pid")"
+        if [ -z "$cmd" ]; then
+            echo "$pid"                       # ps 不可用 → 保守列入
+            continue
+        fi
+        exe="${cmd%% *}"
+        base="${exe##*/}"
+        for n in "${CGC_PREFLIGHT_NAMES[@]}"; do
+            if [ "$base" = "$n" ]; then
+                echo "$pid"
+                break
+            fi
         done
-        [ "$remaining" -eq 0 ] && break
     done
-    # Force-kill any survivors
-    for pat in "build/bin/llama-server" "build/bin/llama-simple" "build/bin/llama-speculative-simple"; do
-        if pkill -9 -f "$pat" 2>/dev/null; then
-            echo "  [clean] WARNING: force-killed unresponsive $pat (GPU memory may leak)"
+}
+
+cgc_preflight_count() {
+    local n
+    n=$(cgc_preflight_pids | wc -l | tr -d ' ')
+    echo "${n:-0}"
+}
+
+cgc_preflight_signal() {
+    # $1 = signal；逐 pid 送，不用 pkill -f（pattern 會打到 wrapper，見上）
+    local sig="$1" pid
+    cgc_preflight_pids | while read -r pid; do
+        [ -n "$pid" ] || continue
+        kill "$sig" "$pid" 2>/dev/null || true
+    done || true
+}
+
+if [ "$CGC_PREFLIGHT_KILL" = "1" ] && [ "${N30CACHE_NO_CLEAN:-0}" != 1 ]; then
+    PRE_N="$(cgc_preflight_count)"
+    if [ "${PRE_N:-0}" -gt 0 ]; then
+        echo "[preflight] 發現 ${PRE_N} 支殘留 llama 行程，先清乾淨再起 server（避免 GPU OOM ret=-3）"
+        cgc_preflight_pids | while read -r pid; do
+            echo "  [preflight]   pid=${pid}: $(cgc_preflight_cmd "$pid" | cut -c1-120)"
+        done || true
+        cgc_preflight_signal -TERM
+        echo "  [preflight] SIGTERM 已送（graceful，讓 Metal buffer 正常釋放）"
+        # 等 graceful shutdown：TERM_WAIT 秒，每 0.5s 檢查一次
+        TERM_TICKS=$(( CGC_PREFLIGHT_TERM_WAIT_SEC * 2 ))
+        for i in $(seq 1 "${TERM_TICKS:-30}"); do
+            sleep 0.5
+            [ "$(cgc_preflight_count)" -eq 0 ] && break
+        done
+        # 只剩不回應的才 SIGKILL
+        if [ "$(cgc_preflight_count)" -gt 0 ]; then
+            cgc_preflight_signal -9
+            echo "  [preflight] WARNING: SIGKILL 不回應的行程（GPU 記憶體可能漏）"
+            sleep 2
         fi
+    else
+        echo "[preflight] 無殘留 llama 行程"
+    fi
+
+    # kill 之後不等於安全：行程消失後 Metal 還要時間把 buffer 還回來。
+    # 這裡輪詢到 free% >= CGC_PREFLIGHT_MIN_FREE_PCT，最多等 SETTLE_SEC 秒。
+    SETTLE_TICKS=$(( CGC_PREFLIGHT_SETTLE_SEC * 2 ))
+    for i in $(seq 1 "${SETTLE_TICKS:-40}"); do
+        PRE_FREE="$(memory_pressure -Q 2>/dev/null | awk -F': ' '/free percentage/{print int($2)}' || true)"
+        if [ -z "${PRE_FREE:-}" ] || [ "${PRE_FREE:-0}" -ge "$CGC_PREFLIGHT_MIN_FREE_PCT" ]; then
+            break
+        fi
+        if [ "$i" -eq 1 ]; then
+            echo "[preflight] 等 GPU/系統記憶體回穩（free=${PRE_FREE}% < ${CGC_PREFLIGHT_MIN_FREE_PCT}%，最多 ${CGC_PREFLIGHT_SETTLE_SEC}s）"
+        fi
+        sleep 0.5
     done
-    sleep 1
+    [ -n "${PRE_FREE:-}" ] && echo "[preflight] free=${PRE_FREE}%"
+fi
+
+# 硬性攔截：kill/等待都做完了還有殘留，就在這裡停，不要讓它炸在模型載入之後。
+STALE_N="$(cgc_preflight_count)"
+if [ "${STALE_N:-0}" -gt 0 ]; then
+    echo "error: 仍有 ${STALE_N} 支殘留 llama 行程，繼續啟動極可能 GPU OOM (ret=-3)" >&2
+    cgc_preflight_pids | while read -r pid; do
+        echo "  pid=${pid}: $(cgc_preflight_cmd "$pid" | cut -c1-120)" >&2
+    done || true
+    echo "  手動清：pkill -TERM -f llama-server（等它自己退出，不要一開始就 -9）" >&2
+    echo "  或在充分理解風險下跳過：CGC_PREFLIGHT_SKIP_STALE_CHECK=1" >&2
+    [ "${CGC_PREFLIGHT_SKIP_STALE_CHECK:-0}" = "1" ] || exit 1
 fi
 
 # [防護 1b] sudo purge 清理記憶體（2026-09-07：16GB 機器上 35B MoE + 8GB pool 記憶體壓力大，
@@ -828,6 +989,21 @@ if [ -n "${CGC_M2_PROFILE:-}" ]; then
 fi
 if [ -n "${CGC_M2_DB_DISABLE:-}" ]; then
     SERVER_ENV+=(CGC_M2_DB_DISABLE="$CGC_M2_DB_DISABLE")
+fi
+if [ -n "${CGC_MMID_MV_DBG:-}" ]; then
+    SERVER_ENV+=(CGC_MMID_MV_DBG="$CGC_MMID_MV_DBG")
+fi
+# [CGC 2026-09-15] CGC_M2_DBG gates the CGC-M2-DBG per-layer line on the large-batch prefill
+# branch. It used to print unconditionally (10 lines per run); it is now opt-in, so it has to be
+# in this allowlist or the knob is silently dropped (see the note above).
+if [ -n "${CGC_M2_DBG:-}" ]; then
+    SERVER_ENV+=(CGC_M2_DBG="$CGC_M2_DBG")
+fi
+# [CGC 2026-09-15] CGC_SLOT_DBG gates the CGC-SLOT per-layer slot-table/remap line in
+# llama-context.cpp. It used to print unconditionally (40 lines per run, synchronous fprintf
+# on the decode path); it is now opt-in, so it has to be in this allowlist.
+if [ -n "${CGC_SLOT_DBG:-}" ]; then
+    SERVER_ENV+=(CGC_SLOT_DBG="$CGC_SLOT_DBG")
 fi
 # [CGC M1 Metal slab 2026-09-14] Print the operands of Metal's own buffer range check at every
 # gather-path repoint (CGC-SLAB-CHECK), so a "buffer is nil" is attributable, not guessed.

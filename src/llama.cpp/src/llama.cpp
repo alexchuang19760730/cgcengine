@@ -361,14 +361,46 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
             // shrink/adoption path (no ALLOW_NGL => no compute_l4_pool_capacity => tensors keep
             // the full 256 experts; the malloc'd Option-A pool + blocking fills handle residency).
             const char * no_gather = getenv("LLAMA_EXPERT_CACHE_NOGATHER");
+            // [CGC 2026-09-15] LLAMA_EXPERT_CACHE_NOHOOK=1 — the fourth arm.
+            //
+            // NOGATHER turns off TWO variables at once (skip_load AND the hook), so an
+            // "NOGATHER == baseline" result cannot say which of the two was the culprit. NOHOOK
+            // turns off only the hook (remap / pool / gather / slab repoint) and LEAVES
+            // skip_load as it would otherwise be.
+            //
+            // What skip_load actually does: it does not skip reading the weights. It only puts
+            // the expert tensors on a CPU buffer instead of the Metal one (llama-model-loader.cpp
+            // create_tensor: `buft = ggml_backend_cpu_buffer_type()`), i.e. bounded residency.
+            // So NOHOOK is a well-formed arm: correct bytes, full 256 experts, raw ids,
+            // ne02 = n_expert, and NO repoint anywhere. Reading:
+            //   NOHOOK == baseline  -> the streamed/hosted bytes and the CPU residency are fine,
+            //                          so the fault is in remap / pool / slab repoint.
+            //   NOHOOK != baseline  -> the fault is below the hook (residency, buffer type, or
+            //                          the loader's CPU-buffer placement itself).
+            // Numeric parse, so NOHOOK=0 is OFF rather than "present".
+            const char * no_hook_env = getenv("LLAMA_EXPERT_CACHE_NOHOOK");
+            const bool cgc_no_hook = no_hook_env != nullptr && no_hook_env[0] != '\0' && no_hook_env[0] != '0';
             const bool cgc_l3_ngl = getenv("LLAMA_EXPERT_CACHE_L3_NGL") != nullptr;
             ml.expert_cache_skip_load = (params.n_gpu_layers <= 0 || getenv("LLAMA_EXPERT_CACHE_ALLOW_NGL") || cgc_l3_ngl) && !(no_gather && no_gather[0]);
             model->expert_cache_skip_load = ml.expert_cache_skip_load;
+            model->expert_cache_no_hook = cgc_no_hook;
             // CGC expert-cache L4: bounded Metal pool, only on the Metal path (-ngl > 0 + ALLOW_NGL).
             // compute_l4_pool_capacity scans the GGUF metadata (budget -> capacity) and sets
             // expert_cache_pool_capacity; create_tensor then shrinks the expert tensors to it.
+            //
+            // NOHOOK also has to switch the L4 shrink OFF: with l4_path on, create_tensor shrinks
+            // the expert tensor to the pool capacity (143 experts at 8 GiB), and the HOOK is what
+            // fills those slots. Hook off + shrunk tensor = weights that were never written, i.e.
+            // an arm that measures nothing. With l4_path off the tensors keep all 256 experts, so
+            // hook-off is a clean "resident full-width" arm.
             ml.expert_cache_l4_skip_layer0 = getenv("LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0") != nullptr;
-            const bool l4_path = params.n_gpu_layers > 0 && getenv("LLAMA_EXPERT_CACHE_ALLOW_NGL") && !(no_gather && no_gather[0]);
+            const bool l4_path = params.n_gpu_layers > 0 && getenv("LLAMA_EXPERT_CACHE_ALLOW_NGL") && !(no_gather && no_gather[0]) && !cgc_no_hook;
+            if (cgc_no_hook) {
+                LLAMA_LOG_WARN("%s: LLAMA_EXPERT_CACHE_NOHOOK=1 -- hook/remap/pool/slab DISABLED, "
+                        "skip_load left at %d, L4 shrink DISABLED (tensors keep all experts). "
+                        "Diagnostic arm only; do not benchmark with it.\n",
+                        __func__, (int) ml.expert_cache_skip_load);
+            }
             // CGC M1 work item 1: CGC_POOL_SPLIT=1 keeps the expert tensors at full width and gives
             // the pool its own allocation (see llama-model-loader.h). Numeric parse so CGC_POOL_SPLIT=0
             // is OFF rather than "present".
@@ -414,15 +446,22 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
                 // it only runs with the explicit ALLOW_NGL override).
                 const char * no_gather = getenv("LLAMA_EXPERT_CACHE_NOGATHER");
                 const bool cgc_l3_ngl = getenv("LLAMA_EXPERT_CACHE_L3_NGL") != nullptr;
-                model->expert_cache_active = (model->n_gpu_layers() <= 0 || getenv("LLAMA_EXPERT_CACHE_ALLOW_NGL") || cgc_l3_ngl) && !(no_gather && no_gather[0]);
+                // [CGC 2026-09-15] NOHOOK removes the hook only (see the skip_load comment above):
+                // the cache object and the index still exist, but expert_cache_on_topk is never
+                // installed, so no remap is written, no pool/slab fill happens, and no FFN tensor
+                // is repointed. ids stay raw and ne02 stays n_expert.
+                const char * no_hook_env2 = getenv("LLAMA_EXPERT_CACHE_NOHOOK");
+                const bool cgc_no_hook2 = no_hook_env2 != nullptr && no_hook_env2[0] != '\0' && no_hook_env2[0] != '0';
+                model->expert_cache_active = (model->n_gpu_layers() <= 0 || getenv("LLAMA_EXPERT_CACHE_ALLOW_NGL") || cgc_l3_ngl) && !(no_gather && no_gather[0]) && !cgc_no_hook2;
                 // Verify expert_cache_active is correctly set for ngl=99 path
                 const char * allow_ngl = getenv("LLAMA_EXPERT_CACHE_ALLOW_NGL");
-                LLAMA_LOG_INFO("%s: expert_cache_active=%d n_gpu_layers=%d ALLOW_NGL=%s L3_NGL=%d no_gather=%d [CGC_DEBUG]",
+                LLAMA_LOG_INFO("%s: expert_cache_active=%d n_gpu_layers=%d ALLOW_NGL=%s L3_NGL=%d no_gather=%d no_hook=%d [CGC_DEBUG]",
                                __func__, (int) model->expert_cache_active,
                                (int) model->n_gpu_layers(),
                                allow_ngl ? allow_ngl : "(null)",
                                (int) cgc_l3_ngl,
-                               (int) (no_gather && no_gather[0]));
+                               (int) (no_gather && no_gather[0]),
+                               (int) cgc_no_hook2);
                 // CGC expert-cache L4: adopt each expert tensor's Metal storage as the per-layer pool
                 // region (zero copy — the Metal FFN reads the pool directly). Then mark the first
                 // n_slots experts of every layer resident: their bytes were already pre-read into the

@@ -4213,8 +4213,13 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
     // the shrunk pool tensor.
     const bool cgc_prefill_stream = cgc_stream_on;  // validated once in the constructor
     if ((uint64_t) n_tokens > cgc_pool_max_tokens()) {
+        // [CGC 2026-09-15] env-gated: this fired unconditionally on every large-batch step
+        // (10 lines per run, on the hot prefill path) and was committed by accident. Opt-in via
+        // CGC_M2_DBG. Static-initialized once so the getenv cost is paid a single time, not per
+        // layer per step.
+        static const bool cgc_m2_dbg = getenv("CGC_M2_DBG") != nullptr;
         static int dbg_cnt = 0;
-        if (dbg_cnt < 10) {
+        if (cgc_m2_dbg && dbg_cnt < 10) {
             dbg_cnt++;
             fprintf(stderr, "CGC-M2-DBG: il=%d n_tokens=%lld pmax=%u stream=%d\n",
                     il, (long long) n_tokens, cgc_pool_max_tokens(), (int) cgc_prefill_stream);
@@ -5014,8 +5019,16 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
                     rd[i + j * n_expert_used] = (st != nullptr && e < n_expert) ? st[e] : (int32_t) e;
                 }
             }
+            // [CGC 2026-09-15] This used to fire unconditionally for the first 40 layers of every
+            // run -- synchronous fprintf(stderr) from the decode hook, i.e. inside the hot path,
+            // on every single run including production ones. It is now opt-in via CGC_SLOT_DBG
+            // (same treatment CGC-M2-DBG got earlier today): the slot table it prints is the
+            // input to the remap, and the remap itself is now covered by the always-on
+            // CGC-MMID-ASSERT in ggml-metal-ops.cpp, so leaving this on bought nothing that the
+            // assertion does not already give us.
+            static const bool cgc_slot_dbg = getenv("CGC_SLOT_DBG") != nullptr;
             static int cgc_slot_dbg_n = 0;
-            if (cgc_slot_dbg_n < 40) {
+            if (cgc_slot_dbg && cgc_slot_dbg_n < 40) {
                 cgc_slot_dbg_n++;
                 fprintf(stderr, "CGC-SLOT: il=%d st[%d]=%d st[%d]=%d st[%d]=%d st[%d]=%d remap=[%d %d %d %d %d %d %d %d]\n",
                         il, ids[0], st ? st[ids[0]] : -1, ids[1], st ? st[ids[1]] : -1,

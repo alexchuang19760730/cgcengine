@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>prefill 250 / decode 25 技術白皮書（2026-09-15）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>prefill 250 tok/s / decode 25 tok/s 技術白皮書</h1>
+<div class="sub">
+  日期 2026-09-15 · 分支 <code>demo/sweet-spot-windows-fix</code> · 基線 commit <code>41195d5a3</code><br>
+  模型 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（13.6 GB，256 experts/layer）·
+  硬體 Mac 16 GB unified memory
+</div>
+
+<div class="box b-amber">
+  <p><strong>一句話結論：</strong>「跑得動 250 tok/s」和「跑得正確」目前是<strong>兩條不同的路徑</strong>。
+  prefill 250 已在 <code>run_server.sh</code> 復現（實測 254.74 tok/s），但它跑在 M2 slab 路徑上；
+  decode 25 距離目標還差 5–10×（實測 2.1–4.5 tok/s）；而 M1/M2/M3 的 bit identical
+  <strong>尚未解決</strong>，本次把嫌疑從「幾何/ids 錯配」收斂到「layer 1 的 gate/up expert row 全零」。</p>
+</div>
+
+<h2>1. 目標達成現況</h2>
+
+<div class="cards">
+  <div class="card"><div class="k">prefill</div><div class="v ok">254.74 <span style="font-size:13px;font-weight:400">tok/s</span></div>
+    <div class="small">目標 250 · 已達成且可復現 <span class="tag">4443 tokens</span></div></div>
+  <div class="card"><div class="k">decode（server, MTP on）</div><div class="v bad">2.1–4.5 <span style="font-size:13px;font-weight:400">tok/s</span></div>
+    <div class="small">目標 25 · 差 5–10×</div></div>
+  <div class="card"><div class="k">id_oob_vs_ne02</div><div class="v ok">0</div>
+    <div class="small">pool + slab 兩條路徑、含 MTP verify</div></div>
+  <div class="card"><div class="k">全零 expert row</div><div class="v bad">8</div>
+    <div class="small">全部集中在 <code>il=1</code> 的 gate/up</div></div>
+</div>
+
+<table>
+  <tr><th>目標</th><th>狀態</th><th>實測</th><th>證據</th></tr>
+  <tr>
+    <td>prefill ≥ 250 tok/s</td>
+    <td class="ok">達成（有條件）</td>
+    <td class="num">254.74 / 264.78 tok/s</td>
+    <td><code>Backup/cgc_logs/llama_server_20260915_134504.log</code>（本次）、
+        <code>…_011146.log</code>（01:12 那筆 264.78）。條件見 §5「記憶體水位」。</td>
+  </tr>
+  <tr>
+    <td>decode ≥ 25 tok/s</td>
+    <td class="bad">未達成</td>
+    <td class="num">2.12 – 4.45 tok/s</td>
+    <td>同上 log，76-token 生成段。MTP draft acceptance 0.55、mean len 2.66，
+        等於每個 verify batch 只前進 ~2.5 token。</td>
+  </tr>
+  <tr>
+    <td>M1/M2/M3 對 M2 oracle 基準 bit identical</td>
+    <td class="bad">未達成</td>
+    <td class="num">—</td>
+    <td>本次排除了「ids 與 ne02 錯配」這個假說；仍未解決的是 layer 1 全零 row（§4）。</td>
+  </tr>
+  <tr>
+    <td>在 <code>run_server.sh</code> 可復現</td>
+    <td class="ok">達成</td>
+    <td class="num">CGC_SERVER_PROFILE=prefill250</td>
+    <td>本次修正了兩個會讓它炸掉的設定（§3.1 / §3.4）。</td>
+  </tr>
+</table>
+
+<h2>2. 最終設定：prefill250 profile 的四個要素</h2>
+
+<p>250 tok/s 不是單一旗幟的效果，而是<strong>四件事同時成立</strong>。缺任何一個都不會到 250 ——
+這正是它之前「量到過但復現不出來」的原因。</p>
+
+<table>
+  <tr><th>#</th><th>要素</th><th>值</th><th>為什麼</th></tr>
+  <tr>
+    <td class="num">1</td><td>大 chunk</td>
+    <td><code>n_batch = n_ubatch = 6144</code></td>
+    <td>prefill 一次吃 6144 token，不再被切碎成小 ubatch。
+        8192 會 GPU OOM（Insufficient Memory, status 5）。</td>
+  </tr>
+  <tr>
+    <td class="num">2</td><td>M2 prefill streaming</td>
+    <td><code>CGC_PREFILL_STREAM=1</code></td>
+    <td>大 chunk 走 whole-layer slab（<code>ne02 = n_expert = 256</code>）而不是 pool。
+        這條路徑不受 <code>cap=8</code> 限制。</td>
+  </tr>
+  <tr>
+    <td class="num">3</td><td>slab 容量</td>
+    <td><code>CGC_GATHER_SLAB_CAP=256</code></td>
+    <td>必須 = n_expert(256)，否則 streaming 會被拒 / OOB。</td>
+  </tr>
+  <tr>
+    <td class="num">4</td><td><strong>expert pool = 8 GiB</strong></td>
+    <td><code>CGC_SERVER_EXPERT_CACHE_BYTES=8589934592</code></td>
+    <td><strong>本次新增。</strong>264.78 那筆量測跑的是 143 slots/layer（8 GiB）；
+        profile 原本沿用預設 10 GiB（179 slots/layer），多出來的 2 GB 會把 6144-token
+        ubatch 的 compute buffer 擠出 GPU，第一個請求就炸（§3.4）。</td>
+  </tr>
+</table>
+
+<h3>復現命令</h3>
+<pre><code># 起 server（profile 自帶 MTP、denseIQ4X、8 GiB pool）
+CGC_SERVER_PROFILE=prefill250 ./scripts/run_server.sh --detach
+
+# 要看 mul_mat_id 的幾何 vs ids（MTP verify 路徑最可疑）
+CGC_SERVER_PROFILE=prefill250 CGC_MMID_MV_DBG=2 ./scripts/run_server.sh --detach
+
+# prefill 量測：需要 ~4.4k token 的 prompt（< ctx 8192）
+curl -s --noproxy '*' http://127.0.0.1:8080/v1/chat/completions \
+  -H "Content-Type: application/json" -d @/tmp/p250_long.json</code></pre>
+
+<p class="small">其他 profile 預設值：<code>CTX=8192</code>、<code>SERVER_MTP=1</code>、
+<code>SERVER_DENSE_IQ4X=1</code>、<code>ngl=99</code>、<code>n_cb=8</code>、
+<code>glu_fused_down=1</code>、<code>layer_caps=40-40:256</code>。
+全部用 <code>${VAR+x}</code> 守門：顯式給的環境變數永遠蓋過 profile。</p>
+
+<h2>3. 本次的四項改動</h2>
+
+<h3>3.1 run_server.sh：起跑前 preflight pkill（防 GPU OOM ret=-3）</h3>
+
+<p>16 GB unified memory 上，前一支 llama 行程就算已經被 kill，Metal 端的 GPU buffer 還沒回收。
+這時候立刻起新行程，會在第一次 command buffer 提交時拿到：</p>
+
+<pre><code>ggml_metal_synchronize: error: command buffer 8 failed with status 5
+error: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)</code></pre>
+
+<p>也就是「GPU 說沒記憶體、但 memory_pressure 看起來還有」的那一種炸法 —— 而且炸在模型載入<em>之後</em>，
+整段 load 時間白費。今天第一次跑 prefill250 就是這樣炸的（當下 free 只剩 67 MB、swap 6.1 GB）。</p>
+
+<p>原本的「防護 1」只做「清殘留」，現在升級成四步 preflight：</p>
+<ol>
+  <li><strong>SIGTERM 優雅退出</strong>（讓 Metal buffer 走正常釋放路徑），預設等最長 15 s</li>
+  <li><strong>只有等不到的才 SIGKILL</strong>（直接 -9 會漏：10 次崩潰累積 ~8 GB，vramFree 剩 15 MB）</li>
+  <li><strong>kill 之後輪詢 pgrep 真的歸零</strong>，而不是 sleep 1 就當沒事</li>
+  <li><strong>等 free% 回到門檻</strong>（預設 25%，最多 20 s）—— 行程消失 ≠ 記憶體回來</li>
+</ol>
+
+<div class="box b-blue">
+<p><strong>逐 pid 送訊號，不用 <code>pkill -f</code>。</strong>
+純 pattern 比對會打到「命令列裡剛好出現 llama 路徑」的上層 wrapper shell —— 實測就打到一支
+<code>/bin/bash -c … ./bin/llama-cli …</code>，把它 SIGTERM 掉是純粹的附帶傷害。
+現在 <code>pgrep -f</code> 只負責蒐集候選，<code>ps</code> 負責確認「第一個 token 的 basename」
+真的是一支 llama binary；ps 拿不到資料時保守放行（寧可多清，不要 OOM）。</p>
+</div>
+
+<pre><code>CGC_PREFLIGHT_KILL=1              # 0 = 關掉（只在確定沒有殘留時用）
+CGC_PREFLIGHT_TERM_WAIT_SEC=15    # SIGTERM 後等 graceful 的最長秒數
+CGC_PREFLIGHT_MIN_FREE_PCT=25     # kill 後要等到 free% 回到這個值
+CGC_PREFLIGHT_SETTLE_SEC=20       # 最多等這麼久
+CGC_PREFLIGHT_EXTRA_NAMES="…"     # 額外要清的 binary 名（空白分隔）
+CGC_PREFLIGHT_SKIP_STALE_CHECK=1  # 明知有殘留仍要強行啟動（不建議）</code></pre>
+
+<p>另外在 <code>exec</code> 之前加了一道<strong>硬性攔截</strong>：清完還有殘留就直接 exit 1，
+不要讓它炸在模型載入之後。</p>
+
+<h3>3.2 mul_mat_id 常開斷言（id_oob + 全零 row）</h3>
+
+<p>這兩個檢查原本只掛在 <code>CGC_MMID_MV_DBG</code> probe 底下，現在獨立出來、<strong>永遠執行</strong>
+（<code>ggml-metal-ops.cpp</code>，MM/MV 分支判斷之前，pool 與 slab 兩條路都吃得到）。</p>
+
+<table>
+  <tr><th>斷言</th><th>意義</th><th>成本</th></tr>
+  <tr>
+    <td><code>id_oob_vs_ne02 &gt; 0</code></td>
+    <td>ids 必須是「slot index（pool, ne02=143）」或「raw expert id（slab, ne02=256）」。
+        錯配會讀到<em>真實存在但錯誤</em>的 expert —— 不崩、logit 看起來合理，所以能通過所有資料層檢查。</td>
+    <td>每個 id 一次 int32 load + 2 次比較（decode ~2k/token，可忽略）</td>
+  </tr>
+  <tr>
+    <td>全零 expert row</td>
+    <td>pool/slab 裡還是全零 = fill 沒在 read 之前落地，那個 expert 的貢獻被靜默丟掉。</td>
+    <td>word-wise 掃描 + early exit，非零只花一次 8-byte load；每 node 只查前 8 個 row</td>
+  </tr>
+</table>
+
+<pre><code>CGC_MMID_ASSERT=0        # 完全關掉（只在量測極限吞吐時用）
+CGC_MMID_ASSERT_FATAL=1  # 第一次違規直接 abort（CI / oracle gate 用）
+# 預設：檢查開著、印 CGC-MMID-ASSERT、不 abort
+#      （全零 row 是已知缺陷，我們還得在它上面跑吞吐）
+# 輸出前 8 次逐筆印，之後每 1000 次印一行 —— 不要再製造 4000 行的 stderr 洪水</code></pre>
+
+<h4>成本實測 A/B（同一支長 prompt，server warm，76-token 生成段）</h4>
+<table>
+  <tr><th>臂</th><th>decode 樣本 1</th><th>樣本 2</th><th>樣本 3</th></tr>
+  <tr><td>斷言 <strong>開</strong>（預設）</td><td class="num">2.47</td><td class="num">2.67</td><td class="num">2.12 t/s</td></tr>
+  <tr><td>斷言 <strong>關</strong>（<code>CGC_MMID_ASSERT=0</code>）</td><td class="num">2.77</td><td class="num">2.70</td><td class="num">2.13 t/s</td></tr>
+</table>
+<p class="small">差異落在 run-to-run 雜訊內（decode 此刻被 expert cache miss 支配，不是被 CPU 端檢查支配）。
+結論：常開是安全的。</p>
+
+<h3>3.3 llama-context.cpp：CGC-SLOT 改 env gate</h3>
+<p><code>CGC-SLOT</code> 原本是無條件 <code>fprintf</code>（每 run 40 行，而且是同步 fprintf，在 decode hook 的熱路徑上）。
+現在收斂到 <code>CGC_SLOT_DBG</code>，並加進 <code>run_server.sh</code> 的 env allowlist。
+它印的 slot table 現在已經被常開斷言覆蓋，留著沒有額外資訊量。</p>
+
+<h3>3.4 prefill250 的 expert pool 從 10 GiB 降到 8 GiB</h3>
+<div class="box b-red">
+<p>用 <code>CGC_SERVER_PROFILE=prefill250</code> 實跑，第一個請求就炸：</p>
+<pre style="margin:8px 0 0"><code>llama_expert_cache: L4 metal pool: 179 slots/layer   ← 10 GiB
+ggml_metal_synchronize: error: command buffer 8 failed with status 5
+error: Insufficient Memory (kIOGPUCommandBufferCallbackErrorOutOfMemory)
+srv  decode: Compute error. off = 0, n_batch = 6144, ret = -3</code></pre>
+<p style="margin:8px 0 0">對照 264.78 那筆：<code>143 slots/layer</code>（8 GiB）。
+profile 補上第四個要素後變成 <code>143 slots/layer</code>，同樣的請求正常跑完。</p>
+</div>
+
+<h2>4. 用 CGC_MMID_MV_DBG=2 對打兩條路徑（含 MTP verify）</h2>
+
+<p>四個數字 = <code>ne02</code>（src0 的 expert 維度）/ <code>nb02</code>（每 row 的 stride）/
+<code>ne20</code>（top-k）/ <code>ne21</code>（batch tokens）。同一個 log 裡兩條路徑交錯出現，用 <code>ne02</code> 分辨。</p>
+
+<pre><code># pool 路徑（ids = slot index）
+CGC-MMID name=ffn_moe_gate-1 type=iq2_s
+  | src0 ne=[2048,512,143] nb01=656 nb02=335872
+  | ids ne=[8,2] | ids=[3,105,8,10,6,106,2,84,9,1]
+  | id_min=1 id_max=106 id_oob_vs_ne02=0
+  | fp(4096B/row) id3:b74c2cf99ee855f5 id105:80743f721bd57a44 …
+
+# M2 slab 路徑（ids = raw expert id）
+CGC-MMID name=ffn_moe_gate-40 type=q2_K
+  | src0 ne=[2048,512,256] nb01=672 nb02=344064
+  | ids ne=[8,2] | ids=[12,157,82,132,125,151,99,244,168,238]
+  | id_min=12 id_max=250 id_oob_vs_ne02=0
+  | fp(4096B/row) id12:69e812763ca80f64 id157:e8c6ca4f00ec95a9 …</code></pre>
+
+<p>加上 MTP 之後，<strong>MTP verify batch 首次出現在 probe 裡</strong>
+（<code>ids ne=[8,4]</code> = 8 experts × 4 tokens = n_draft+1）：</p>
+
+<pre><code>CGC-MMID-ASSERT name=ffn_moe_gate-1 ne02=256 n_ids=1456
+  | id_oob=0 (first=0, total=0) | zero_row=1 (first_id=214, total=3)
+  | src0 ne=[2048,512,256] nb02=335872 ids ne=[8,182]
+
+CGC-MMID-ASSERT name=ffn_moe_gate-1 ne02=143 n_ids=32
+  | id_oob=0 (first=0, total=0) | zero_row=1 (first_id=14, total=7)
+  | src0 ne=[2048,512,143] nb02=335872 ids ne=[8,4]      ← MTP verify batch</code></pre>
+
+<h3>4.1 假說「ids 與 ne02 錯配」—— 否決</h3>
+<p>整場 run（含 prefill slab、decode pool、MTP verify）<code>id_oob</code> 累計 <strong>0</strong>。
+pool 路徑 ids 全部落在 [0,143)，slab 路徑全部落在 [0,256)，offsets 自洽
+（<code>down → gate → up = slots × nb02</code>）。
+<strong>幾何與 ids 是一致的 —— 壞的不是「選了哪一塊」。</strong></p>
+
+<h3>4.2 新定位：layer 1 的 gate/up expert row 全零</h3>
+<div class="box b-red">
+<p>常開斷言抓到 <strong>8 次全零 row</strong>，<strong>全部</strong>在 <code>ffn_moe_gate-1</code> /
+<code>ffn_moe_up-1</code>（= il=1），<code>down</code> 同一個 slot 卻非零。
+兩條路徑都中（pool 的 slot 14、slab 的 raw expert 214）。</p>
+<p style="margin:6px 0 0">這就是「gate/up 是零、down 不是」的特徵：不是權重檔壞了（GGUF 比對 941/941 全對），
+而是<strong>讀的時候那塊 region 還沒被填</strong> —— fill 與 read 的順序在 layer 1 上被打破。
+它是 0.3% 等級的稀疏事件，這解釋了為什麼它能在所有「抽樣比對」檢查下存活。</p>
+</div>
+<p>下一步該看的不是「數值誤差累積」（0.5% 的 std 差比 FP32 重排誤差 1e-7 大五個數量級，不可能是它），
+而是 <strong>layer 1 的 ensure_batch / dbuf publish 的時序</strong>：誰在 fill 完成之前就把 slot table 發布出去了。</p>
+
+<h2>5. 效能實測與記憶體水位的關係</h2>
+
+<table>
+  <tr><th>場景</th><th>free%（啟動時）</th><th>prefill</th><th>decode</th></tr>
+  <tr><td>prefill250 + DBG=2，短 prompt 先暖機再打長 prompt</td><td class="num">83%</td><td class="num ok">254.74 tok/s</td><td class="num">4.29 / 4.45 t/s</td></tr>
+  <tr><td>prefill250，長 prompt 為第一個請求</td><td class="num">83%</td><td class="num">184.26 / 150.00 tok/s</td><td class="num">2.77 / 2.47 t/s</td></tr>
+  <tr><td>prefill250，pool 已暖、換一個新長 prompt</td><td class="num">~10%</td><td class="num bad">150.69 tok/s</td><td class="num">2.93 t/s</td></tr>
+</table>
+
+<div class="box b-amber">
+<p><strong>250 tok/s 是真的，但它是「乾淨記憶體」下的數字。</strong>
+模型 13.6 GB + 8 GiB pool 載進 16 GB 機器之後，free% 會掉到 ~10%，
+後續請求就掉到 150–185 tok/s。所以「能在 run_server.sh 復現」這句話必須附帶條件：
+<strong>pkill → 等記憶體回穩 → 才起 server</strong>，也就是 §3.1 的 preflight。
+preflight 目前在<em>啟動前</em>把關；載入後的掉水位還沒有對應的保護。</p>
+</div>
+
+<h2>6. 已知限制 / 下一步</h2>
+<ol>
+  <li><strong>bit identical 未解決。</strong>已排除 ids/ne02 錯配；嫌疑收斂到 layer 1 gate/up 的全零 row。
+      下一步：把 <code>CGC_MMID_ASSERT_FATAL=1</code> 開起來，讓它停在第一次違規，
+      再對照 <code>ensure_batch</code> / double-buffer publish 的時序。</li>
+  <li><strong>decode 2.1–4.5 t/s，離 25 還差 5–10×。</strong>MTP draft acceptance 只有 0.55、
+      mean len 2.66，MTP 目前是淨負擔。要提高 decode，先把 gather 路徑修到與基線 bit identical
+      （NOGATHER 那條 27.18 t/s 的臂才是資產）。</li>
+  <li><strong>輸出品質異常。</strong>本次幾個 run 都出現 <code>&lt;think&gt;</code> 開頭的重複英文，
+      即使 <code>reasoning=off</code>。這是 chat template / prefill_text 的問題，與本次改動無關，
+      <code>Qwen3-nothink-ChatML.jinja</code> 有一份未提交的相關修改，需要你確認後再決定去留。</li>
+  <li><strong>prefill 250 的條件要寫進 guard。</strong>目前 preflight 只在啟動前檢查 free%；
+      建議加一個「載入後 free% 低於 X 就警告」的訊號，否則 250 會被當成穩定值。</li>
+</ol>
+
+<h2>7. 本次異動檔案</h2>
+<table>
+  <tr><th>檔案</th><th>改動</th></tr>
+  <tr><td><code>scripts/run_server.sh</code></td><td>preflight pkill 硬化；<code>CGC_MMID_ASSERT</code> /
+      <code>CGC_MMID_ASSERT_FATAL</code> / <code>CGC_SLOT_DBG</code> 進 env allowlist；
+      prefill250 補第 4 要素（8 GiB pool）</td></tr>
+  <tr><td><code>ggml/src/ggml-metal/ggml-metal-ops.cpp</code></td><td>常開斷言（id_oob + 全零 row）</td></tr>
+  <tr><td><code>src/llama-context.cpp</code></td><td><code>CGC-SLOT</code> 改 <code>CGC_SLOT_DBG</code> env gate</td></tr>
+  <tr><td><code>src/llama.cpp</code> / <code>llama-model.h</code></td><td>第四臂 <code>LLAMA_EXPERT_CACHE_NOHOOK=1</code></td></tr>
+  <tr><td><code>scripts/check/knifeedge_matrix.py</code></td><td>Step 0/1：真值 provenance gate（拒 cache-ON / NOHOOK 當真值）</td></tr>
+  <tr><td><code>scripts/check/mmid_geometry_probe.sh</code><br><code>scripts/check/mmid_pool_vs_gguf.py</code></td><td>多臂幾何探針 + fp vs GGUF 比對器（新增）</td></tr>
+</table>
+
+</div>
+</body>
+</html>

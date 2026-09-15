@@ -672,6 +672,9 @@ struct llama_model {
     bool expert_cache_active = false;
     // CGC: loader skips reading expert tensor data (bounded residency; non-mmap and mmap).
     bool expert_cache_skip_load = false;
+    // [CGC 2026-09-15] LLAMA_EXPERT_CACHE_NOHOOK=1: hook disabled, skip_load untouched. Recorded
+    // on the model so provenance/harness can stamp which arm produced an artifact.
+    bool expert_cache_no_hook = false;
     // statically allocated context for assigning
     struct llama_meta_device_get_split_state_userdata get_split_state_ud;
 

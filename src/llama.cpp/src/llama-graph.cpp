@@ -25,6 +25,49 @@
 
 // dedup helpers
 
+// CGC debug: dump tensor stats for MoE intermediate comparison
+static void cgc_moe_dump_stats(struct ggml_tensor * dst, const struct ggml_tensor * a, int ith, int nth, void * userdata) {
+    if (ith != 0) {
+        // non-zero threads: just copy
+        const int64_t n = ggml_nelements(a);
+        memcpy(dst->data, a->data, n * ggml_type_size(a->type));
+        return;
+    }
+    const char * name = (const char *)userdata;
+    const float * data = (const float *)a->data;
+    const int64_t n = ggml_nelements(a);
+    float sum = 0, sum_sq = 0, max_val = -1e30f, min_val = 1e30f;
+    int64_t argmax = 0;
+    for (int64_t i = 0; i < n; i++) {
+        float v = data[i];
+        sum += v;
+        sum_sq += v * v;
+        if (v > max_val) { max_val = v; argmax = i; }
+        if (v < min_val) { min_val = v; }
+    }
+    float mean = sum / (float)n;
+    float var = sum_sq / (float)n - mean * mean;
+    fprintf(stderr, "CGC-MOE-DUMP [%s]: ne=[%ld,%ld,%ld,%ld] n=%ld mean=%.4f std=%.4f min=%.4f max=%.4f argmax=%ld first4=[%.2f,%.2f,%.2f,%.2f]\n",
+            name, (long)a->ne[0], (long)a->ne[1], (long)a->ne[2], (long)a->ne[3], (long)n,
+            mean, sqrtf(var > 0 ? var : 0), min_val, max_val, (long)argmax,
+            data[0], data[1], data[2], data[3]);
+    memcpy(dst->data, a->data, n * sizeof(float));
+}
+
+static const bool cgc_moe_dump = []{
+    const char * e = getenv("CGC_MOE_DUMP");
+    return e != nullptr && e[0] == '1';
+}();
+
+static ggml_tensor * cgc_moe_dump_node(ggml_context * ctx, ggml_tensor * a, const char * name, int layer) {
+    if (!cgc_moe_dump || layer != 0) return a;
+    // use a static buffer for the name (layer 0 only, so safe)
+    static char buf[128];
+    snprintf(buf, sizeof(buf), "%s_L%d", name, layer);
+    ggml_tensor * r = ggml_map_custom1(ctx, a, cgc_moe_dump_stats, 1, (void *)buf);
+    return r;
+}
+
 static ggml_tensor * build_attn_inp_kq_mask(
         ggml_context * ctx,
         const llama_kv_cache_context * mctx,
@@ -2147,6 +2190,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         // merged gate_up path: one mul_mat_id, then split into gate and up views
         ggml_tensor * gate_up = build_lora_mm_id(gate_up_exps, cur, mm_id_ids, up_exps_s); // [n_ff*2, n_expert_used, n_tokens]
         cb(gate_up, "ffn_moe_gate_up", il);
+        gate_up = cgc_moe_dump_node(ctx0, gate_up, "gate_up", il);
 
         if (up_exps_s) {
             cb(gate_up, "ffn_moe_gate_up_scaled", il);
@@ -2225,6 +2269,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             if (has_gate) {
                 cur = ggml_swiglu_split(ctx0, cur, up);
                 cb(cur, "ffn_moe_swiglu", il);
+                cur = cgc_moe_dump_node(ctx0, cur, "swiglu", il);
             } else {
                 cur = ggml_silu(ctx0, cur);
                 cb(cur, "ffn_moe_silu", il);
@@ -2291,6 +2336,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
     experts = build_lora_mm_id(down_exps, cur, mm_id_ids, down_exps_s); // [n_embd, n_expert_used, n_tokens]
     cb(experts, "ffn_moe_down", il);
+    experts = cgc_moe_dump_node(ctx0, experts, "down", il);
 
     if (down_exps_s) {
         cb(experts, "ffn_moe_down_scaled", il);
@@ -2337,6 +2383,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     }
 
     cb(moe_out, "ffn_moe_out", il);
+    moe_out = cgc_moe_dump_node(ctx0, moe_out, "moe_out", il);
 
     return moe_out;
 }

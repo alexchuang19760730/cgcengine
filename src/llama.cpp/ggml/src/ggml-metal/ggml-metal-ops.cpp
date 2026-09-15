@@ -13,6 +13,7 @@
 #include <limits>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 
 static ggml_metal_buffer_id ggml_metal_get_buffer_id(const ggml_tensor * t) {
     if (!t) {
@@ -3248,6 +3249,212 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
 
     const uint32_t r2 = 1;
     const uint32_t r3 = 1;
+
+    // [CGC 2026-09-15] mul_mat_id geometry-vs-ids probe.
+    //
+    // The expert-cache paths install different geometry on src0 (the FFN expert weight tensor):
+    //   - pool mode   : ne02 = slots_per_layer (e.g. 71), ids must be SLOT indices  -> remap
+    //   - M2 slab mode: ne02 = n_expert (256),            ids must be RAW expert ids
+    // The ids themselves are written by a host hook that lives in llama-context.cpp, i.e. in a
+    // different file from the one that sets ne02. When the two disagree the kernel silently reads
+    // a *real but wrong* expert: ne02=slots + raw ids reads out of bounds into a neighbour's
+    // storage, ne02=256 + slot ids reads expert[slot] instead of the routed expert. Both produce
+    // plausible-looking logits instead of a crash, which is why this survived every data-layer
+    // check. Print the quadruple plus the ids on every routed MoE node so the two paths can be
+    // diffed side by side. Opt-in: CGC_MMID_MV_DBG=1 (MoE nodes) or =2 (every mul_mat_id).
+    {
+        static int cgc_mmid_n_max = -1;
+        static int cgc_mmid_n = 0;
+        if (cgc_mmid_n_max < 0) {
+            const char * e = getenv("CGC_MMID_MV_DBG");
+            // 1 = one full pass (40 layers x 3 tensors) -- enough to locate the first divergence
+            // 2 = 512 nodes, 3 = 4096 nodes (multi-step decode)
+            cgc_mmid_n_max = (e == nullptr) ? 0
+                           : (e[0] == '1' ? 150
+                           : (e[0] == '2' ? 512 : 4096));
+        }
+        const bool cgc_mmid_moe = op->name != nullptr && (
+            strstr(op->name, "ffn_moe") != nullptr || strstr(op->name, "moe") != nullptr);
+        if (cgc_mmid_n_max > 0 && cgc_mmid_n < cgc_mmid_n_max && (cgc_mmid_moe || cgc_mmid_n_max > 128)) {
+            const int32_t * ids_p = (const int32_t *) op->src[2]->data;
+            const int64_t n_ids = (int64_t) ne20 * (int64_t) ne21;
+            int32_t mx = -1, mn = 0x7fffffff;
+            int n_oob = 0;
+            if (ids_p != nullptr) {
+                for (int64_t i = 0; i < n_ids && i < 64; ++i) {
+                    const int32_t v = ids_p[i];
+                    if (v > mx) mx = v;
+                    if (v < mn) mn = v;
+                    if (v < 0 || v >= (int32_t) ne02) n_oob++;
+                }
+            }
+            char idsb[160];
+            if (ids_p != nullptr) {
+                int p = 0;
+                for (int64_t i = 0; i < n_ids && i < 10; ++i) {
+                    p += snprintf(idsb + p, (size_t) (sizeof(idsb) - (size_t) p),
+                                  "%s%d", i ? "," : "", (int) ids_p[i]);
+                    if (p >= (int) sizeof(idsb) - 12) break;
+                }
+            } else {
+                snprintf(idsb, sizeof(idsb), "<no-host-ptr>");
+            }
+
+            // Content fingerprints of the expert rows the ids actually select. This is the part
+            // that turns "the outputs differ" into "the bytes differ": the same id must hash the
+            // same on both arms. If the hashes match but the ids differ -> the remap is wrong.
+            // If the ids match but the hashes differ -> the pool contents are wrong.
+            char fbuf[192];
+            int fp = 0;
+            const uint8_t * s0 = (const uint8_t *) op->src[0]->data;
+            if (s0 != nullptr && ids_p != nullptr && nb02 > 0) {
+                for (int64_t i = 0; i < n_ids && i < 4; ++i) {
+                    const int32_t v = ids_p[i];
+                    if (v < 0 || v >= (int32_t) ne02) {
+                        fp += snprintf(fbuf + fp, (size_t) (sizeof(fbuf) - (size_t) fp),
+                                       "%s id%d=OOB", i ? " " : "", (int) v);
+                        continue;
+                    }
+                    const uint8_t * row = s0 + (int64_t) v * (int64_t) nb02;
+                    uint64_t h = 1469598103934665603ull;      // FNV-1a 64
+                    const size_t nbyte = (size_t) (nb02 < 4096 ? nb02 : 4096);
+                    for (size_t b = 0; b < nbyte; ++b) {
+                        h ^= row[b];
+                        h *= 1099511628211ull;
+                    }
+                    fp += snprintf(fbuf + fp, (size_t) (sizeof(fbuf) - (size_t) fp),
+                                   "%sid%d:%016llx", i ? " " : "", (int) v,
+                                   (unsigned long long) h);
+                    if (fp >= (int) sizeof(fbuf) - 24) break;
+                }
+            } else {
+                fp += snprintf(fbuf + fp, sizeof(fbuf), "<no-fingerprint>");
+            }
+
+            cgc_mmid_n++;
+            GGML_LOG_WARN("CGC-MMID name=%s type=%s"
+                          " | src0 ne=[%d,%d,%d] nb01=%llu nb02=%llu"
+                          " | ids ne=[%d,%d] nbi1=%llu"
+                          " | dst ne=[%d,%d]"
+                          " | ids=[%s] id_min=%d id_max=%d id_oob_vs_ne02=%d"
+                          " | fp(%lluB/row) %s"
+                          " | src0_data=%p src0_offs=%lld ids_offs=%lld\n",
+                          op->name, ggml_type_name(op->src[0]->type),
+                          (int) ne00, (int) ne01, (int) ne02,
+                          (unsigned long long) nb01, (unsigned long long) nb02,
+                          (int) ne20, (int) ne21, (unsigned long long) nb21,
+                          (int) ne0, (int) ne1,
+                          idsb, (int) mn, (int) mx, n_oob,
+                          (unsigned long long) (nb02 < 4096 ? nb02 : 4096), fbuf,
+                          op->src[0]->data, (long long) bid_src0.offs, (long long) bid_src2.offs);
+        }
+    }
+
+    // [CGC 2026-09-15] Always-on mul_mat_id invariants -----------------------------------------
+    //
+    // Two failure modes of the expert-cache paths are silent: they produce plausible logits
+    // instead of a crash, so they survived every data-layer check (pool bytes verified against
+    // the GGUF, 941/941 fingerprints matching, id_oob==0 in every probe). Both are cheap to test
+    // at dispatch time, so they are tested at dispatch time -- on every node, on both paths, in
+    // production builds, not just under CGC_MMID_MV_DBG:
+    //
+    //   (a) id out of range vs ne02. ids must be SLOT indices on the pool path (ne02 = slots,
+    //       e.g. 71/143) and RAW expert ids on the M2 slab path (ne02 = n_expert = 256). A
+    //       mismatch reads a real-but-wrong expert: ne02=slots + raw id walks into the next
+    //       tensor's storage, ne02=256 + slot id reads expert[slot] instead of the routed one.
+    //   (b) all-zero expert row. A pooled row that is still zero means the fill did not land
+    //       before the read -- the contribution of that expert is silently dropped. Probe runs
+    //       found ~0.3% of rows zero (4GB: 2/600, 8GB: 6/2048), concentrated at il=1 with
+    //       gate/up zero while the same slot's down was fine: the signature of a first-decode
+    //       read that beat the fill.
+    //
+    // Cost: (a) is one int32 load + 2 compares per id (~2k per decode token, ~49k on a 6144-token
+    // prefill chunk -- a single pass over a buffer we are about to DMA anyway). (b) is a
+    // word-wise scan with early exit, so the 99.7% non-zero case costs one 8-byte load per
+    // checked row and we only check the first 8 rows per node.
+    //
+    //   CGC_MMID_ASSERT=0        -> disable both (only when measuring peak throughput)
+    //   CGC_MMID_ASSERT_FATAL=1  -> abort on the first violation (CI / oracle gate)
+    // Default: detect + log, do not abort -- the zero rows are a known open defect and we still
+    // need to be able to run throughput on top of them.
+    {
+        static int cgc_asrt_on = -1;
+        static int cgc_asrt_fatal = -1;
+        static int cgc_oob_total = 0;
+        static int cgc_zero_total = 0;
+        static int cgc_asrt_prints = 0;
+        if (cgc_asrt_on < 0) {
+            const char * a = getenv("CGC_MMID_ASSERT");
+            cgc_asrt_on    = (a != nullptr && a[0] == '0') ? 0 : 1;
+            cgc_asrt_fatal = (getenv("CGC_MMID_ASSERT_FATAL") != nullptr) ? 1 : 0;
+        }
+        if (cgc_asrt_on) {
+            const int32_t * ids_p = (const int32_t *) op->src[2]->data;
+            const int64_t  n_ids  = (int64_t) ne20 * (int64_t) ne21;
+            const uint8_t * s0    = (const uint8_t *) op->src[0]->data;
+            const uint64_t  rowb  = nb02;
+
+            int n_oob = 0;  int32_t oob_v = 0;
+            int n_zero = 0; int32_t zero_v = -1;
+
+            if (ids_p != nullptr) {
+                for (int64_t i = 0; i < n_ids; ++i) {
+                    const int32_t v = ids_p[i];
+                    if (v < 0 || v >= (int32_t) ne02) {
+                        if (n_oob == 0) { oob_v = v; }
+                        n_oob++;
+                        continue;
+                    }
+                    // (b) zero-row scan: quantized expert weights are never all-zero in their
+                    // first 64 bytes. Word-wise + early exit, capped at the first 8 rows so a
+                    // wide prefill chunk cannot turn this into a real cost.
+                    if (n_zero == 0 && s0 != nullptr && rowb >= 64 && i < 8) {
+                        const uint8_t * row = s0 + (int64_t) v * (int64_t) rowb;
+                        bool allzero = true;
+                        for (int k = 0; k < 8 && allzero; ++k) {
+                            uint64_t w;
+                            memcpy(&w, row + (size_t) k * 8, 8);
+                            if (w != 0) { allzero = false; }
+                        }
+                        for (size_t b = 64; allzero && rowb >= 4096 && b < 4096; b += 8) {
+                            uint64_t w;
+                            memcpy(&w, row + b, 8);
+                            if (w != 0) { allzero = false; }
+                        }
+                        if (allzero) { zero_v = v; n_zero++; }
+                    }
+                }
+            }
+
+            cgc_oob_total  += n_oob;
+            cgc_zero_total += n_zero;
+
+            // Rate limit: the first 8 occurrences verbatim, then one line every 1000th -- enough
+            // to attribute a violation to a layer/token without re-creating the 4000-line stderr
+            // flood that CGC-IDS used to cost every run.
+            if (n_oob > 0 || n_zero > 0) {
+                const bool print = (cgc_asrt_prints < 8) ||
+                                   ((cgc_oob_total + cgc_zero_total) % 1000 == 0);
+                if (print) {
+                    cgc_asrt_prints++;
+                    GGML_LOG_WARN("CGC-MMID-ASSERT name=%s ne02=%d n_ids=%lld"
+                                  " | id_oob=%d (first=%d, total=%d)"
+                                  " | zero_row=%d (first_id=%d, total=%d)"
+                                  " | src0 ne=[%d,%d,%d] nb02=%llu ids ne=[%d,%d]\n",
+                                  op->name, (int) ne02, (long long) n_ids,
+                                  n_oob,  (int) oob_v,  cgc_oob_total,
+                                  n_zero, (int) zero_v,  cgc_zero_total,
+                                  (int) ne00, (int) ne01, (int) ne02,
+                                  (unsigned long long) nb02, (int) ne20, (int) ne21);
+                }
+                if (cgc_asrt_fatal) {
+                    GGML_ABORT("CGC-MMID-ASSERT fatal: name=%s ne02=%d id_oob=%d zero_row=%d "
+                               "(see CGC-MMID-ASSERT lines above)",
+                               op->name, (int) ne02, n_oob, n_zero);
+                }
+            }
+        }
+    }
 
     // find the break-even point where the matrix-matrix kernel becomes more efficient compared
     // to the matrix-vector kernel

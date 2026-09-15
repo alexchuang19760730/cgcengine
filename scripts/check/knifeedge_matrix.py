@@ -514,7 +514,13 @@ def record_provenance(kind, gb, args, cap=None, facts=None, extra_env=None):
     """
     ee = list((args.extra_env if extra_env is None else extra_env) or [])
     env = effective_launch_env(kind, ee)
-    pool = {"gb": int(gb), "bytes": int(gb) * 1024 ** 3, "cap": cap}
+    ec_state = expert_cache_state(ee, launch_pool_bytes(args, gb))
+    pool = {"gb": int(gb), "bytes": launch_pool_bytes(args, gb), "cap": cap,
+            "expert_cache": ec_state}
+    if ec_state in GROUND_TRUTH_STATES:
+        # Say it in the record, not just in the filename: a ground-truth row read out of
+        # context (a glob over combo_*.json) must still be recognisable as a control.
+        pool["ground_truth"] = True
     try:
         cell = feasibility_cell(kind, gb, cap, ee)
         pool.update({"min_layer_slots": cell["min_layer_slots"],
@@ -869,7 +875,7 @@ def probe_pool_cap(kind, gb, args):
         if running_servers():
             rec["tried"].append({"cap": cap, "error": "foreign server would not clear"})
             break
-        launch(model_path(kind), MODELS[kind]["mtp"], gb * 1024 ** 3, args.port,
+        launch(model_path(kind), MODELS[kind]["mtp"], launch_pool_bytes(args, gb), args.port,
                args.kwargs, list(args.extra_env) + [f"CGC_POOL_MAX_TOKENS={cap}"], log_path)
         took = wait_health(args.port, model_path(kind), args.health_timeout,
                            pre_pids=pre)
@@ -1114,7 +1120,41 @@ def _model_guard(ref_path, model_file):
                       f"for this GGUF, or pass --allow-model-mismatch if that is deliberate.")}
 
 
-def _write_oracle_meta(path, cap, model_file=None, launch_sig=None):
+# [CGC 2026-09-15] How the expert cache participates in a dump. This is the field that was
+# missing, and its absence is why the gate could report M1 19/19 for a year while the engine was
+# wrong: every reference on this box was produced by `run_server.sh`, which ALWAYS passes
+# `-expert-cache <budget>` (scripts/run_server.sh:587). So "reference vs candidate" was
+# expert-cache-ON vs expert-cache-ON -- a pool-size invariance check wearing the costume of a
+# correctness check. Only the states in GROUND_TRUTH_STATES may be compared against as truth.
+EXPERT_CACHE_ON = "on"
+EXPERT_CACHE_OFF = "off"                 # no cache object at all (budget 0)
+EXPERT_CACHE_OFF_NOGATHER = "off_nogather"   # cache exists, hook + skip_load both off
+EXPERT_CACHE_NOHOOK = "on_nohook"        # cache exists, skip_load on, hook off (4th arm)
+GROUND_TRUTH_STATES = (EXPERT_CACHE_OFF, EXPERT_CACHE_OFF_NOGATHER)
+
+
+def expert_cache_state(extra_env=None, pool_bytes=None):
+    """Classify how the expert cache participates, from the launch knobs.
+
+    Read from the LAUNCH, not from the label: a dump called `ref_*_NOCACHE*` that was actually
+    launched with a budget is worse than no dump at all, because it looks like a control.
+    """
+    try:
+        if pool_bytes is not None and int(pool_bytes) == 0:
+            return EXPERT_CACHE_OFF
+    except (TypeError, ValueError):
+        pass
+    for kv in extra_env or []:
+        k, _, v = kv.partition("=")
+        k, v = k.strip(), v.strip()
+        if k == "LLAMA_EXPERT_CACHE_NOGATHER" and v not in ("", "0"):
+            return EXPERT_CACHE_OFF_NOGATHER
+        if k == "LLAMA_EXPERT_CACHE_NOHOOK" and v not in ("", "0"):
+            return EXPERT_CACHE_NOHOOK
+    return EXPERT_CACHE_ON
+
+
+def _write_oracle_meta(path, cap, model_file=None, launch_sig=None, expert_cache=None):
     """Write the provenance sidecar: cap + source stamp + weights identity + LAUNCH KNOBS.
 
     `launch_sig` records the launch-time environment that shapes the computation (extra env vars,
@@ -1122,10 +1162,16 @@ def _write_oracle_meta(path, cap, model_file=None, launch_sig=None):
     a dump whose label says only model/pool/cap would be silently reused across, say, MTP on and
     MTP off -- the reuse check would see the same cap, the same engine stamp and the same weights
     and conclude it already had the dump it needed.
+
+    `expert_cache` is the 2026-09-15 addition: on / off / off_nogather / on_nohook. It decides
+    whether this dump may ever be used as GROUND TRUTH (see _truth_guard). Written as "unknown"
+    rather than omitted when the caller does not say, so "never recorded" and "recorded as off"
+    stay distinguishable -- an unlabelled dump must not silently pass as a control.
     """
     meta = {"cap": str(cap) if cap is not None else "default",
             "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "stamp": source_stamp()}
+            "stamp": source_stamp(),
+            "expert_cache": expert_cache if expert_cache is not None else "unknown"}
     if launch_sig is not None:
         meta["launch"] = launch_sig
     m = model_stamp(model_file)
@@ -1190,14 +1236,55 @@ def _stamp_guard(ref_path):
                       f"Any M1/M2 number here describes the code drift, not the pool size. {ask}")}
 
 
+def _truth_guard(ref_path):
+    """Refuse to use an expert-cache-ON dump as ground truth.
+
+    This is the guard that did not exist and whose absence made every "M1 19/19" on this box
+    unfalsifiable. A dump produced with the expert cache active can only ever prove that two
+    cache-ON runs agree with each other; it carries no information about whether either agrees
+    with the model. Measured 2026-09-14/15: the same harness reported M1/M2/M3 = 19/19 for
+    4/6/8 GiB while a hand-run A/B against a cache-OFF baseline disagreed at step 0
+    (argmax 271 / logit 14.22 vs argmax 198 / logit 27.18).
+
+    Deliberately NOT bypassable by --allow-stale-oracle or --allow-model-mismatch: those two
+    flags answer "is this reference old / is it the same file?", which is a different question
+    from "is this reference a control?". Conflating them is exactly how the 19/19 happened.
+    """
+    meta = _oracle_meta(ref_path) or {}
+    ec = meta.get("expert_cache")
+    if ec is None or ec == "unknown":
+        return {"ok": None, "truth_unknown": True, "ref_expert_cache": ec,
+                "error": (f"REFERENCE HAS NO EXPERT-CACHE STATE: {os.path.basename(ref_path)} "
+                          f"does not record whether the expert cache was active, so it cannot be "
+                          f"used as ground truth. Re-dump it with this driver (it now stamps "
+                          f"expert_cache=on|off|off_nogather|on_nohook), or use it only for a "
+                          f"RELATIVE pool-size comparison (omit --oracle-abs).")}
+    if ec not in GROUND_TRUTH_STATES:
+        return {"ok": False, "not_ground_truth": True, "ref_expert_cache": ec,
+                "accepted_states": list(GROUND_TRUTH_STATES),
+                "error": (f"REFERENCE IS NOT GROUND TRUTH: {os.path.basename(ref_path)} was "
+                          f"produced with expert_cache={ec}. Comparing a candidate against a "
+                          f"cache-ON dump measures agreement between two cache-ON runs, not "
+                          f"correctness -- a broken expert cache that is broken the same way in "
+                          f"both runs scores 100%. Produce a control with --no-expert-cache "
+                          f"(budget 0) or LLAMA_EXPERT_CACHE_NOGATHER=1 and point --oracle-ref "
+                          f"at that.")}
+    return None
+
+
 def _oracle_guard(ref_path, dump_path, model_file=None, allow_stale=False,
-                  allow_model_mismatch=False):
+                  allow_model_mismatch=False, absolute=False):
     """Return an error record when the comparison would be meaningless, else None.
 
-    Three independent preconditions, each of which has already produced a large and entirely
+    Four independent preconditions, each of which has already produced a large and entirely
     spurious "the pool broke numerics" verdict on this box: the cap (ubatch shape), the source
-    provenance (engine version) and the weights identity (which model).
+    provenance (engine version), the weights identity (which model), and -- when `absolute` --
+    whether the reference is a CONTROL at all (expert cache off).
     """
+    if absolute:
+        bad = _truth_guard(ref_path)
+        if bad:
+            return bad
     bad = _cap_guard(ref_path, dump_path)
     if bad:
         return bad
@@ -1220,7 +1307,6 @@ def _oracle_guard(ref_path, dump_path, model_file=None, allow_stale=False,
     if bad:
         print(f"[oracle-guard] WARNING -- stale reference accepted via --allow-stale-oracle: "
               f"{bad.get('stale_kind', bad.get('stale_unknown'))}", file=sys.stderr, flush=True)
-    return None
     return None
 
 
@@ -1245,20 +1331,28 @@ def _run_oracle_compare(a_path, b_path, label):
 
 
 def oracle_gate(port, dump_path, ref_path, label, timeout, allow_stale=False,
-                model_file=None, allow_model_mismatch=False):
+                model_file=None, allow_model_mismatch=False, absolute=False):
     """Send the deterministic probe, then compare this combo's logits oracle against a
     reference using the TWO independent metrics (never merged).
 
     M1 numeric identity  = same row hashes (bit-identical logits)
     M2 decision agreement = same argmax token
     Pool sizes may only differ if M1 says so; 'M2 passed' alone does NOT mean 'no difference'.
+
+    `absolute=True` marks the comparison as CORRECTNESS rather than INVARIANCE: the reference
+    must be a control (expert cache off -- see _truth_guard), and the verdict is recorded as
+    `comparison: "absolute"` so the two kinds of 19/19 can never be read as the same number
+    again.
     """
     if not (dump_path and os.path.exists(dump_path)):
         return {"ok": None, "error": "no oracle dump produced"}
     if not (ref_path and os.path.exists(ref_path)):
         return {"ok": None, "error": f"reference oracle missing: {ref_path}"}
-    bad = _oracle_guard(ref_path, dump_path, model_file, allow_stale, allow_model_mismatch)
+    bad = _oracle_guard(ref_path, dump_path, model_file, allow_stale, allow_model_mismatch,
+                        absolute=absolute)
     if bad:
+        if absolute:
+            bad.setdefault("comparison", "absolute")
         return bad
     ask_probe(port, timeout)
     time.sleep(1.0)
@@ -1271,11 +1365,12 @@ def oracle_gate(port, dump_path, ref_path, label, timeout, allow_stale=False,
             "m1_numeric_identity": f"{m1['equal']}/{m1['n']}",
             "m2_decision_agreement": f"{m2['equal']}/{m2['n']}",
             "cross_tab": d["cross_tab"],
+            "comparison": "absolute" if absolute else "relative",
             "report": rep}
 
 
 def oracle_recompare(dump_path, ref_path, label, allow_stale=False, model_file=None,
-                     allow_model_mismatch=False):
+                     allow_model_mismatch=False, absolute=False):
     """Re-compare the COMPLETE dump and print the verdict; returns the report dict or None.
 
     `oracle_gate` deliberately runs first (its comment: the dump's early ubatches must line up
@@ -1288,7 +1383,8 @@ def oracle_recompare(dump_path, ref_path, label, allow_stale=False, model_file=N
     if not (dump_path and os.path.exists(dump_path) and ref_path
             and os.path.exists(ref_path)):
         return None
-    if _oracle_guard(ref_path, dump_path, model_file, allow_stale, allow_model_mismatch):
+    if _oracle_guard(ref_path, dump_path, model_file, allow_stale, allow_model_mismatch,
+                     absolute=absolute):
         return None
     rep = os.path.join(RESULT_DIR, f"oraclecmp_{label}_final.json")
     d = _run_oracle_compare(ref_path, dump_path, f"{label}_final")
@@ -1606,7 +1702,7 @@ def cap_invariance_dump(kind, gb, cap, args, occ=0):
     pre = tuple(running_servers())
     print(f"[capinv] {kind} pool{gb}GB cap={cap}: launching {MODELS[kind]['file']} mtp="
           f"{MODELS[kind]['mtp']} free={free_before}%", flush=True)
-    launch(model_file, MODELS[kind]["mtp"], gb * 1024 ** 3, args.port, args.kwargs,
+    launch(model_file, MODELS[kind]["mtp"], launch_pool_bytes(args, gb), args.port, args.kwargs,
            extra, launch_log)
     took = wait_health(args.port, model_file, args.health_timeout, pre_pids=pre)
     if took is None:
@@ -1624,7 +1720,8 @@ def cap_invariance_dump(kind, gb, cap, args, occ=0):
     # Real traffic: the dump only contains rows for ubatches that actually ran.
     ask_probe(args.port, timeout=min(args.timeout, 240.0))
     time.sleep(1.0)
-    _write_oracle_meta(dump, cap, model_file=model_file, launch_sig=launch_sig)
+    _write_oracle_meta(dump, cap, model_file=model_file, launch_sig=launch_sig,
+                       expert_cache=expert_cache_state(extra, launch_pool_bytes(args, gb)))
     rows = _oracle_rows(dump)
     nil = scan_nil([launch_log, facts.get("log_path")])
     # Record the PREFILL STEP PARTITION, not just the requested cap: the cap's real effect on the
@@ -1897,6 +1994,21 @@ def ask_probe(port, timeout=180.0):
             r.read()
     except Exception:  # noqa: BLE001 - harness
         pass
+
+
+def launch_pool_bytes(args, gb):
+    """Expert-cache budget, in bytes, that `launch()` should hand to run_server.sh.
+
+    `--no-expert-cache` is the ground-truth arm: budget 0 means `-expert-cache 0`, which leaves
+    `model->expert_index` empty, so no cache object is created and no hook is installed -- the
+    stock full-resident forward pass. Every other launch keeps the pool at `gb` GiB.
+    """
+    if getattr(args, "no_expert_cache", False):
+        return 0
+    try:
+        return int(gb) * 1024 ** 3
+    except (TypeError, ValueError):
+        return 0
 
 
 def launch(model_file, mtp, pool_bytes, port, kwargs, extra_env, log_path):
@@ -2274,7 +2386,13 @@ def combo_label(kind, gb, tag):
 
 def run_combo(kind, gb, args):
     model = MODELS[kind]
-    label = combo_label(kind, gb, args.tag)
+    # A ground-truth dump written over the cache-ON dump of the same (model, pool) would destroy
+    # the very evidence it exists to judge -- and the two files have the same default name. So
+    # --no-expert-cache forces a distinct label unless the caller named one explicitly.
+    tag = args.tag
+    if getattr(args, "no_expert_cache", False) and not tag:
+        tag = "nocache"
+    label = combo_label(kind, gb, tag)
     out_json = os.path.join(RESULT_DIR, f"knifeedge_{label}.json")
     # The cap this cell will launch with, resolved up front because the resume check compares the
     # cached record's geometry -- and the cap is part of that geometry (it clamps n_batch).
@@ -2355,7 +2473,15 @@ def run_combo(kind, gb, args):
     # this cap does not produce a pool measurement, so it must not become a table row -- and per
     # the same rule as the low-memory refusal below, a refusal is NOT a result and is not written
     # to out_json (a cached stub would then be SKIPped by later runs).
-    feas_ok, g_feas = feasibility_gate(kind, gb, args, cap, args.extra_env, where=label)
+    if getattr(args, "no_expert_cache", False):
+        # Ground-truth arm: there is no pool to be feasible. The gate's whole question
+        # ("can a cap satisfy capacity AND survival?") is undefined at budget 0, and asking it
+        # would refuse the very cell that has to exist for --oracle-abs to be usable at all.
+        g_feas = {"verdict": "GROUND_TRUTH", "why": "expert cache off (budget 0); no pool "
+                                                    "geometry to validate", "pool_gb": gb}
+        feas_ok = True
+    else:
+        feas_ok, g_feas = feasibility_gate(kind, gb, args, cap, args.extra_env, where=label)
     if not feas_ok:
         return {"label": label, "model": kind, "pool_gb": gb, "up": False,
                 "skipped": "infeasible_" + g_feas["verdict"].lower().replace("-", "_"),
@@ -2374,10 +2500,16 @@ def run_combo(kind, gb, args):
         # and candidate computed under different ubatch shapes, and an expert-cache edit makes
         # an old reference describe an engine that no longer exists -- in both cases the
         # resulting M1 collapse looks exactly like a real pool-induced numeric regression.
+        # expert_cache is part of the computation's identity, not a label: without it a
+        # cache-ON dump can be handed to --oracle-abs and scored as if it were a control.
         _write_oracle_meta(oracle_dump, cap if cap is not None else args.pool_cap_max,
                            model_file=model_path(kind),
                            launch_sig={"extra_env": sorted(args.extra_env or []),
-                                       "mtp": MODELS[kind]["mtp"]})
+                                       "mtp": MODELS[kind]["mtp"],
+                                       "expert_cache": expert_cache_state(
+                                           args.extra_env, launch_pool_bytes(args, gb))},
+                           expert_cache=expert_cache_state(args.extra_env,
+                                                           launch_pool_bytes(args, gb)))
     if args.attach:
         # Shared checkout: someone else's server may already own the port. Measure it
         # read-only (no launch, no kill) instead of fighting over the machine.
@@ -2408,7 +2540,7 @@ def run_combo(kind, gb, args):
             return {"label": label, "model": kind, "pool_gb": gb, "up": False,
                     "skipped": "low_memory", "free_before_pct": free_before}
         pre = tuple(running_servers())
-        launch(model_path(kind), model["mtp"], gb * 1024 ** 3, args.port, args.kwargs,
+        launch(model_path(kind), model["mtp"], launch_pool_bytes(args, gb), args.port, args.kwargs,
                extra, launch_log)
         took = wait_health(args.port, model_path(kind), args.health_timeout, pre_pids=pre)
 
@@ -2446,7 +2578,8 @@ def run_combo(kind, gb, args):
         g_oracle = oracle_gate(args.port, oracle_dump, args.oracle_ref, label, args.timeout,
                                allow_stale=args.allow_stale_oracle,
                                model_file=model_path(kind),
-                               allow_model_mismatch=args.allow_model_mismatch)
+                               allow_model_mismatch=args.allow_model_mismatch,
+                               absolute=getattr(args, "oracle_abs", False))
         print(f"[{label}] gate-oracle  {'PASS' if g_oracle.get('ok') else 'CHECK'}  "
               f"M1(bit-identical)={g_oracle.get('m1_numeric_identity')} "
               f"M2(argmax)={g_oracle.get('m2_decision_agreement')} "
@@ -2506,7 +2639,8 @@ def run_combo(kind, gb, args):
         g_oracle_final = oracle_recompare(oracle_dump, args.oracle_ref, label,
                                          allow_stale=args.allow_stale_oracle,
                                          model_file=model_path(kind),
-                                         allow_model_mismatch=args.allow_model_mismatch)
+                                         allow_model_mismatch=args.allow_model_mismatch,
+                                         absolute=getattr(args, "oracle_abs", False))
         if not pf.get("ok"):
             msg = (f"[{label}] preflight FAILED -- the prompt scaffold is broken, so any "
                    f"quality number from this config would be measuring the template, "
@@ -2540,7 +2674,8 @@ def run_combo(kind, gb, args):
         g_oracle_final = oracle_recompare(oracle_dump, args.oracle_ref, label,
                                          allow_stale=args.allow_stale_oracle,
                                          model_file=model_path(kind),
-                                         allow_model_mismatch=args.allow_model_mismatch)
+                                         allow_model_mismatch=args.allow_model_mismatch,
+                                         absolute=getattr(args, "oracle_abs", False))
 
     if args.gates_only:
         print(f"[{label}] --gates-only: skipping the quality suite", flush=True)
@@ -2907,6 +3042,17 @@ def main():
                     help="reference logits oracle JSONL; enables the M1/M2 numeric-invariance "
                          "gate for every combo (a pool size may differ ONLY in speed, so M1 "
                          "numeric identity must be full -- M2 alone is not proof)")
+    ap.add_argument("--oracle-abs", action="store_true",
+                    help="ABSOLUTE correctness gate: --oracle-ref must be a CONTROL (expert cache "
+                         "OFF), and the verdict is recorded as comparison=absolute. Without this "
+                         "the gate is only a RELATIVE invariance check -- two cache-ON runs "
+                         "agreeing with each other. A cache-ON reference is REFUSED here and "
+                         "--allow-stale-oracle / --allow-model-mismatch do NOT override it.")
+    ap.add_argument("--no-expert-cache", action="store_true",
+                    help="ground-truth arm: launch with -expert-cache 0, so no cache object and "
+                         "no hook exist and the forward pass is the stock full-resident one. "
+                         "Use with --dump-oracle to produce the reference that --oracle-abs "
+                         "demands. Slow (no bounded residency) and NOT a benchmark configuration.")
     ap.add_argument("--dump-oracle", action="store_true",
                     help="write the logits oracle dump WITHOUT comparing it to anything. This is "
                          "how a reference is produced: previously the dump was only written as a "
