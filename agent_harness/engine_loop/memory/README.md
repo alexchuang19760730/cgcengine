@@ -9,7 +9,7 @@
 
 那些檔由 host（其他 WorkBuddy session）在 loop 跑的時候持續寫入。因此本目錄**只放衍生物**。
 
-## 為什麼是索引，不是副本
+## 為什麼是索引，不是副本（2026-09-16 修訂）
 
 複製一份到 `agent_harness/` 會讓同一批 bytes 有第二個權威來源，而第二個來源的失效方式是安靜的：
 原檔改了，副本看起來還是一樣權威。本專案對 `scripts/check/*` 已經有同一條規則（放索引、不複製），
@@ -19,7 +19,30 @@
 - 這裡只有 `INDEX.jsonl`（由腳本產生，可重建、可驗證）；
 - `--check` 會重新推導並在 drift 時**失敗**。
 
-若要把內容實體鏡像進 repo，那是另一個決定（會引入同步義務），目前刻意不做。
+**修訂：本目錄仍然只放索引，但 `agent_harness/memory/` 現在多放了一份 dated 實體快照。**
+
+原先寫的是「若要把內容實體鏡像進 repo，那是另一個決定（會引入同步義務），目前刻意不做」——
+那個決定在 2026-09-16 被做了。理由不是「索引不夠用」，而是一個索引服務不到的需求：
+
+- `agent_harness/scripts/auto_git_push.ps1` 會定時把 `agent_harness/` `git add` 後推到
+  `cgc0907/fusionroutemot`。索引只含 `path` 與 `sha256`，**推上去的是指標、不是內容**——
+  另一台機器拿到索引也讀不到記憶本文。要讓記憶與 skill 真的進到那條推送線上，只能是實體檔。
+
+同步義務是**明確接受**的代價，並用三個手段把「安靜失效」壓住：
+
+| 手段 | 位置 | 擋什麼 |
+| --- | --- | --- |
+| 檔頭 banner | 每個快照檔開頭（frontmatter **之後**） | 讀者以為它是最新版 |
+| `SNAPSHOT.jsonl` | `agent_harness/memory/`、`agent_harness/skills/` | 無法回答「這份快照對應原檔哪一版」 |
+| 這一段 | 本檔 | 兩個機制重疊時不知道誰是權威 |
+
+快照**不是**權威，`--check` 也**不**驗快照——它只驗 `.workbuddy/memory/` 與 `INDEX.jsonl` 的關係。
+所以兩者要**一起**重生，順序固定（先快照、後索引）：
+
+```sh
+python3 Backup/import_harness_snapshot.py                        # 先：更新實體快照 + SNAPSHOT.jsonl
+python3 agent_harness/engine_loop/memory/build_memory_index.py   # 後：更新索引
+```
 
 ## 用法
 
@@ -65,3 +88,6 @@ python3 memory/build_memory_index.py --query "allowlist" --full
 - `sha256` 只取前 16 碼，用途是「是不是同一版」，不是完整性證明。
 - 每日記錄是 append-only 且持續變動，所以索引在**同一天內**會頻繁過期；`--check` 紅燈在這種
   情況下是預期行為，重跑即可。
+- `agent_harness/memory/` 的實體快照是**手動 snapshot，不是同步**。它只在有人跑
+  `Backup/import_harness_snapshot.py` 時更新，且那個腳本住在 `Backup/`（`.gitignore:396`）
+  ⇒ **它不會被提交**。要讓快照跟上，得在本機跑它。

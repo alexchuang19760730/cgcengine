@@ -22,6 +22,15 @@ looking authoritative after the original moved on. The project already has this 
 `scripts/check/*` (index them, never copy them). So the canonical files stay where the host writes
 them, this directory holds only derived data, and `--check` re-derives it and fails on drift.
 
+2026-09-16 AMENDMENT (CONVENTIONS.md D6). The rule is about what the loop READS, and it still holds:
+this index is how a consumer reaches the memory, and the canonical files stay where the host writes
+them. But an index ships *pointers*, not *content*, so there is one consumer it cannot serve at all --
+the periodic pusher on the other machine (`agent_harness/scripts/auto_git_push.ps1`, which does
+`git add agent_harness` and pushes). A dated, banner-marked snapshot therefore also exists at
+`agent_harness/memory/`, with provenance in `SNAPSHOT.jsonl`. This script does not read it and
+`--check` does not verify it: if you want a FACT, read `.workbuddy/memory/`. The snapshot exists to
+be transported, not to be quoted.
+
     build_memory_index.py                    regenerate INDEX.jsonl
     build_memory_index.py --check            re-derive and compare; exit 1 on drift
     build_memory_index.py --query mmid -n 8  sections matching a term, best first

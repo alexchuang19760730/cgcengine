@@ -1,0 +1,15 @@
+model_list:
+  - model_name: qwen3.6-35b-mtp
+    litellm_params:
+      model: openai/qwen3.6-35b-mtp
+      api_base: http://127.0.0.1:8083
+      api_key: dummy
+  - model_name: "*"
+    litellm_params:
+      model: openai/qwen3.6-35b-mtp
+      api_base: http://127.0.0.1:8083
+      api_key: dummy
+
+litellm_settings:
+  master_key: sk-dummy
+  drop_params: true

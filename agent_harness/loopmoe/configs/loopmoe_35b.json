@@ -1,0 +1,51 @@
+{
+  "vocab_size": 152064,
+  "hidden_size": 5120,
+  "max_position_embeddings": 32768,
+  "rms_norm_eps": 1e-6,
+  "rope_theta": 1000000.0,
+  "hidden_act": "silu",
+  "tie_word_embeddings": false,
+  "torch_dtype": "bfloat16",
+
+  "linear_num_key_heads": 16,
+  "linear_num_value_heads": 32,
+  "linear_key_head_dim": 128,
+  "linear_value_head_dim": 128,
+  "linear_conv_kernel_dim": 4,
+  "output_gate_type": "silu",
+  "use_gated_attention_in_loop": false,
+
+  "num_experts": 256,
+  "num_experts_per_tok": 8,
+  "num_shared_experts": 1,
+  "moe_intermediate_size": 1408,
+  "moe_router_loss_coef": 0.01,
+  "moe_aux_loss_coef": 0.001,
+  "moe_z_loss_coef": 0.001,
+  "norm_topk_prob": true,
+
+  "num_prelude_layers": 2,
+  "num_coda_layers": 1,
+  "num_hidden_layers": 28,
+  "max_recurrent_steps": 8,
+  "min_recurrent_steps": 1,
+  "act_epsilon": 0.001,
+  "act_temperature": 1.0,
+
+  "use_lti_constraint": true,
+  "lti_rho_target_recurrent": 0.99,
+  "lti_rho_target_delta": 0.95,
+  "lti_weight_recurrent": 1.0,
+  "lti_weight_delta": 0.5,
+  "lti_warmup_steps": 1000,
+  "delta_decay_max": 0.95,
+
+  "graft_source_model": "Qwen/Qwen3.5-35B-A3B",
+  "graft_deltanet_source_layer": 4,
+  "graft_moe_source_layer": 4,
+
+  "use_cache": true,
+  "output_router_logits": true,
+  "initializer_range": 0.02
+}

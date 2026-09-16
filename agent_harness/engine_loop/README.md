@@ -151,7 +151,9 @@ python3 agent_harness/engine_loop/traces/selftest.py                        # �
 `.workbuddy/memory/` 是這個 repo 資訊密度最高的紀錄，也是最少被用的：當日日誌到 1000+ 行，
 整檔讀取會靜默截斷，而截斷後的「沒查到」與「沒寫過」同形。
 
-`memory/` **只放衍生物**，原檔留在 host 寫入的位置（複製等於製造第二份真相，見 `CONVENTIONS.md` D6）：
+`memory/` **只放衍生物**，原檔留在 host 寫入的位置（複製等於製造第二份真相，見 `CONVENTIONS.md` D6
+與它 **2026-09-16 的修訂**——那個修訂沒有放寬這一條，只是另外承認了一份非權威的 dated 快照
+`agent_harness/memory/`，用途僅限跨機器搬運）：
 
 ```bash
 python3 agent_harness/engine_loop/memory/build_memory_index.py            # 重建 INDEX.jsonl

@@ -904,6 +904,24 @@
   永遠紅的閘門等於沒有閘門）。
 - 邊界：`~/.workbuddy/MEMORY.md`（跨專案個人偏好）與雲端 profile **不在**這條規則內，它們的
   scope 不是這個 repo。
+- **修訂 2026-09-16｜本條對 loop 的約束一字未改，只多承認一份非權威的 dated 快照。**
+  - 新事實：`agent_harness/scripts/auto_git_push.ps1`（來自 remote 0907 的 `fusionroutemot`，
+    commit `1f3b0a78d`）會週期性 `git add agent_harness` 後 push。**索引運送的是指標，不是內容**
+    ⇒ 那條推送線拿不到任何記憶本文。這讓「內容只放 `.workbuddy/memory/`」出現一個具體的失效消費者。
+  - 因此 `agent_harness/memory/`（3 檔）與 `agent_harness/skills/`（3 skill）多了一份 **dated
+    快照**：banner 插在 YAML frontmatter **之後**並標明權威位置；`SNAPSHOT.jsonl` 逐檔記
+    `source` / `source_sha256` / `source_bytes` / `source_mtime` / `snapshot_date`，讓「對應原檔
+    哪一版」可查。
+  - **要引用事實或餵 loop，仍然讀 `.workbuddy/memory/`。** 快照的**唯一**用途是跨機器搬運；
+    `build_memory_index.py --check` 與 `index_assets.py --check` **都不驗**快照（只驗原檔↔索引），
+    所以兩者要一起重生：先 `Backup/import_harness_snapshot.py`，後 `build_memory_index.py`。
+  - **未完成的義務（不可當成已完成）**：本檔是 `engine_loop/sft_pi/` 的 system prompt 與
+    `harness_engine/memories/engine/` 的注入來源，§E 要求「每次改動都要走一次閉環對照」。
+    2026-09-16 當天**這兩個目錄都還不存在**（E2 才建），所以這次修訂改變不到任何執行時行為；
+    但該閉環對照**尚未執行**，義務記在 E2 頭上。
+  - 反向紀錄：`agent_harness/memory/README.md`、`agent_harness/skills/README.md` 與本條一起
+    構成三個防線（banner / `SNAPSHOT.jsonl` / 條文），lesson `eng-bound-0004` 記的是「索引
+    可驗證 ≠ 索引充分」這個一般化的規訓。
 
 ---
 

@@ -212,7 +212,8 @@ CURATED = [
      "1000+ lines and grows all day, so reading it whole is how a consumer silently truncates."),
     (".workbuddy/memory/MEMORY.md", "log", "shared", False, True,
      "the cross-day project facts (model identity, prod25 geometry, build/test entry points, "
-     "measurement hygiene). Same index, same rule: canonical here, never copied into the harness."),
+     "measurement hygiene). Canonical here -- quote THIS path, not the transport snapshot under "
+     "agent_harness/memory/ (D6 as amended 2026-09-16)."),
     ("agent_harness/engine_loop/memory/build_memory_index.py", "index", "engine", True, False,
      "derives INDEX.jsonl from .workbuddy/memory/ (one row per file + one per `##` section) and "
      "answers --query without loading the memory. --check re-derives and fails on drift."),
@@ -220,8 +221,9 @@ CURATED = [
      "the derived section index: path + heading + line range + `###` subheadings, so a consumer "
      "reads .workbuddy/memory/YYYY-MM-DD.md:854-924 instead of the file. Regenerated, not edited."),
     ("agent_harness/engine_loop/memory/README.md", "conclusion", "engine", False, True,
-     "why the memory is indexed rather than mirrored (a copy is a second source of truth whose "
-     "failure mode is silent), and how to query it."),
+     "why the memory is indexed, and the 2026-09-16 revision that ALSO keeps a dated physical "
+     "snapshot (agent_harness/memory/, agent_harness/skills/) because the periodic pusher ships "
+     "content, not pointers. Read it before touching either mechanism."),
     ("docs/REMAP_ROUNDTRIP_REMOVAL_PLAN_2026-09-15.md", "conclusion", "engine", False, True,
      "the D0-D3 ladder and the S1-S3 staging; S1's contract is defined here."),
     ("docs/MMID_GEOMETRY_PROBE_2026-09-15.md", "conclusion", "engine", False, False,
@@ -330,7 +332,9 @@ def build() -> list:
                 continue
             rows.append(row_for(rel, "log", "shared", False, True,
                                 "(auto-indexed daily memory log -- read it section-by-section through "
-                                "engine_loop/memory/INDEX.jsonl, never whole and never as a copy; see D6)"))
+                                "engine_loop/memory/INDEX.jsonl rather than whole. The dated snapshot "
+                                "under agent_harness/memory/ exists only to cross machines and is not "
+                                "the thing to read; see the D6 amendment dated 2026-09-16)"))
     except Exception:
         pass
     rows.sort(key=lambda r: (r["loop"], r["role"], r["path"]))

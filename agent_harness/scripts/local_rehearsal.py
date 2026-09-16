@@ -45,7 +45,7 @@ for p in (TB_LOOP_DIR, TB_LOOP_DIR.parent):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-from tb_loop.agents.codebuff_api_agent import CodebuffApiAgent  # noqa: E402
+from agent_harness.agents.codebuff_api_agent import CodebuffApiAgent  # noqa: E402
 
 COMMAND_TIMEOUT = 120  # 单条命令超时（秒）
 

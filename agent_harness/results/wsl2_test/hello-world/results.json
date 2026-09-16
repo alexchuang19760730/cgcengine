@@ -1,0 +1,14 @@
+{
+  "task_id": "hello-world",
+  "instruction": "Create a file called hello.txt in the current directory. Write \"Hello, world!\" to it. Make sure it ends in a newline. Don't make any other files or folders.",
+  "category": "file-operations",
+  "difficulty": "easy",
+  "is_resolved": false,
+  "failure_mode": "test_failed",
+  "n_steps": 5,
+  "total_input_tokens": 12580,
+  "total_output_tokens": 5450,
+  "duration_sec": 490.2,
+  "test_output": "               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       FileNotFoundError: [Errno 2] No such file or directory: '/mnt/d/alex/flashkv0516/cgcengine_full/agent_harness/results/wsl2_test/hello-world/workspace/hello.txt'\n\n/usr/lib/python3.12/pathlib.py:1015: FileNotFoundError\n=========================== short test summary info ============================\nFAILED _eval/test_outputs.py::test_hello_file_exists - AssertionError: File /...\nFAILED _eval/test_outputs.py::test_hello_file_content - FileNotFoundError: [E...\n2 failed in 0.69s",
+  "sandbox": "git-bash-rehearsal"
+}
