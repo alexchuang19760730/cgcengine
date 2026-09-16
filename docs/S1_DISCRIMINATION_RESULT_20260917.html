@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>S1 裁決：兩個候選都否掉，剩下「排序／狀態」— 2026-09-17 00:30</title>
+<style>
+  :root { color-scheme: light; }
+  body { font: 15px/1.7 -apple-system, "Helvetica Neue", "PingFang TC", sans-serif;
+         max-width: 960px; margin: 40px auto; padding: 0 24px; color: #1c1c1e; background: #fff; }
+  h1 { font-size: 25px; border-bottom: 3px solid #1c1c1e; padding-bottom: 10px; }
+  h2 { font-size: 18px; margin-top: 34px; border-left: 5px solid #0a6; padding-left: 10px; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 13.5px; }
+  th, td { border: 1px solid #d0d0d5; padding: 6px 9px; text-align: left; vertical-align: top; }
+  th { background: #f2f2f7; font-weight: 600; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  .bad { color: #b00; font-weight: 600; } .good { color: #067; font-weight: 600; }
+  .box { background: #eef7f1; border-left: 4px solid #0a6; padding: 12px 16px; margin: 16px 0; }
+  .box.warn { background: #fff8e6; border-left-color: #e0a000; }
+  .meta { color: #666; font-size: 13px; }
+  ul li, ol li { margin: 4px 0; }
+</style>
+</head>
+<body>
+
+<h1>S1 裁決：兩個候選都否掉，剩下「排序／狀態」</h1>
+<p class="meta">2026-09-17 00:30 · 引擎層 · 承接 <code>S1_LAYER1_MOE_GATHER_20260917.html</code> 的 §5 未裁決矛盾
+· 零改碼（只用了既有 env 與一個 <code>ARMS</code> 覆蓋）</p>
+
+<div class="box">
+<strong>結論</strong>：上一步的「未裁決矛盾」已經解除，而且兩個候選<strong>都否掉了</strong>。
+<strong>兩臂真的不是 bit-identical</strong>；分歧<strong>需要 GPU 算出的 slot 向量被真正消費</strong>才會出現，
+而 ids 本身逐層是對的、S1 多出來的四個節點可證惰性 ⇒ 剩下的是<strong>排序／狀態</strong>
+（同一組 ids 讀到不同的池內容），與分梯看到的 <strong>UNSTABLE</strong> 形狀一致。
+</div>
+
+<h2>1. (a) 兩臂是否 bit-identical？——不是，而且是穩定地不同</h2>
+<p>不必另跑 gate：<code>decode_sweep</code> 的 JSON 本來就帶 <code>answer_md5_set</code>。
+拿<strong>四輪獨立擷取</strong>（00:16／00:17／00:19／00:21）比對：</p>
+<table>
+<tr><th>臂</th><th>md5（4 輪）</th><th>臂內</th></tr>
+<tr><td><code>p25-gputime</code>（錨）</td><td><code>2d4e5099</code></td><td class="good">stable</td></tr>
+<tr><td><code>p25-slotgpu</code>（S1 全臂）</td><td><code>f0acf7d2</code></td><td class="good">stable</td></tr>
+<tr><td><strong>跨臂</strong></td><td class="bad">不同</td><td>—</td></tr>
+</table>
+<p><strong>⇒ 前一步用來自我質疑的前提（「token 流一致 ⇒ layer 1 的 MoE 不可能無關」）是錯的</strong>；
+矛盾解除，r10／r11 的讀數不再自相矛盾。</p>
+
+<h3>repo 自己早就記過這件事</h3>
+<p><code>scripts/check/decode_sweep.py:360-440</code>（2026-09-15 的 S1 分梯，<code>s1_bisect2</code>）：</p>
+<table>
+<tr><th>臂</th><th>服務層</th><th>md5</th><th>狀態</th></tr>
+<tr><td><code>p25-gputime</code></td><td>—</td><td><code>dc055e63</code></td><td class="good">stable（錨）</td></tr>
+<tr><td><code>p25-slotgpu-l20 / l38 / l39</code></td><td>20..39 / 38..39 / 39</td><td><code>dc055e63</code></td><td class="good">stable（與錨同）</td></tr>
+<tr><td><code>p25-slotgpu-l2</code></td><td>2..39</td><td><code>{0d472bf5,51548f50}</code></td><td class="bad">UNSTABLE</td></tr>
+<tr><td><code>p25-slotgpu</code></td><td>1..39</td><td><code>{29ca694a,b8c705cc}</code></td><td class="bad">UNSTABLE</td></tr>
+</table>
+<p class="box warn">該檔明寫：naive 讀成「壞的是 18/19」<strong>不被這個實驗授權</strong>。因為
+<code>CGC_S1_MIN_IL</code> 是<strong>前綴閘</strong>，每個臂服務的是一段連續<strong>後綴</strong>，
+所以「≥21 層就分歧」的<strong>門檻／資源效應</strong>與「某一層對映錯」給出同一張表。
+原話：<strong>「Do not add a rung 3 of the same shape.」</strong> 它也指名了正確的裁決臂
+——正是 <code>p25-keepleaf</code>。</p>
+
+<h2>2. (b) <code>p25-keepleaf</code>：兩個候選都關掉</h2>
+<p><code>p25-keepleaf</code> ＝ <strong>S1 的四個額外節點全部照建（per-layer table／CONT／GET_ROWS／VIEW），
+但 <code>mul_mat_id</code> 仍吃 host leaf</strong>。r12（<code>ARMS="p25-gputime,p25-keepleaf"</code>、
+HASH=1、10 名、兩輪）：</p>
+<table>
+<tr><th>臂</th><th>md5</th><th>layer 1 的 MoE 節點</th></tr>
+<tr><td><code>p25-gputime</code></td><td><code>2d4e5099</code></td><td>錨</td></tr>
+<tr><td><strong><code>p25-keepleaf</code></strong></td><td class="good"><code>2d4e5099</code></td><td class="good"><strong>全部 SAME</strong>（"every captured node agreed"）</td></tr>
+<tr><td><code>p25-slotgpu</code></td><td class="bad"><code>f0acf7d2</code></td><td class="bad">全部 DIFF@1</td></tr>
+</table>
+<p><code>p25-keepleaf</code> 與錨<strong>逐位元相同</strong>（md5 ＋ 每一個捕獲張量）
+⇒ <strong>那些額外節點是可證惰性的</strong>，而分歧<strong>需要 GPU 算出的 slot 向量被真正消費</strong>。</p>
+
+<h3>候選的處置</h3>
+<table>
+<tr><th>候選</th><th>處置</th><th>依據</th></tr>
+<tr><td>slot 對映指到錯的專家</td><td class="bad">排除</td><td>repo 的 POST 逐層讀回已證 <code>gather == host mapping at every layer</code>（ids 是對的）</td></tr>
+<tr><td>擷取讀到錯的位置</td><td class="bad">排除</td><td>同一支儀器對 keepleaf 報出<strong>逐位元相同</strong>、對 slotgpu 報出<strong>穩定</strong>的差異，
+而該差異有獨立量測（<code>answer_md5_set</code>）佐證 ⇒ 不是憑空製造差異</td></tr>
+<tr><td>額外節點擾動圖／排程佈局</td><td class="bad">排除</td><td>keepleaf 建了全部節點卻與錨逐位元相同；且 repo 記「all 39 layers' nodes are bit-identical」</td></tr>
+<tr><td><strong>排序／狀態</strong></td><td class="good">剩下</td><td>S1 多了一條 table 依賴，改變了「remap 算好」與「池內容被讀」之間的時序
+⇒ <strong>同一組 ids 讀到不同的權重</strong></td></tr>
+</table>
+
+<div class="box">
+<strong>⇒ S1 的真缺陷是「排序／狀態」，不是錯誤對映，也不是儀器。</strong>
+這與分梯看到的 <strong>UNSTABLE</strong> 形狀（不是穩定地錯）完全一致
+——原檔也已經指出：「the full arm is not stably wrong but UNSTABLE, which rules out a plain
+deterministic mapping error and points at <strong>ordering/state</strong>」。
+§9.18.4（「載體是池／slot 的權重內容」）因此以「<strong>race</strong>」的形式復活，
+而不是以「對映錯了」的形式。
+</div>
+
+<h2>3. 這個結果對既有路線的意義</h2>
+<ul>
+  <li><strong>M1 的閘門前提交好了</strong>：M1 改的是 gather 順序，而現在知道分歧住在
+    「remap 與池內容的時序」上 ⇒ <code>CGC_S1_KEEP_LEAF</code> 與 <code>p25-slotgpu-l20</code>
+    這兩個既有臂，可以直接當成「時序是否被動到」的哨兵（前者應永遠等於錨，後者應永遠等於錨）。</li>
+  <li><strong>下一步的正確問法</strong>不再是「哪一層」（分梯已證明那條路只有一個自由度），
+    而是「哪一段時序」：把 <code>publish_slot_table</code> 與 remap 節點的相對位置當成自變數，
+    用 keepleaf（惰性）與 l20（門檻外）當兩端錨。</li>
+  <li><strong>不要</strong>再加同形狀的分梯（原檔明講）。</li>
+</ul>
+
+<h2>4. 本輪改動</h2>
+<table>
+<tr><th>檔案</th><th>內容</th></tr>
+<tr><td><code>Backup/run_ids_dst_capture.sh</code></td><td>新增 <code>ARMS</code> 覆蓋（原本寫死 <code>--arms p25-gputime,p25-slotgpu</code>）；
+A／B 改為<strong>從該輪自己的 <code>arms.json</code> 依序解析</strong>（原本用寫死 tag 名查找，換臂就抓不到）</td></tr>
+<tr><td>靜態確認</td><td><code>CGC_S1_KEEP_LEAF</code> 在 <code>run_server.sh</code> allowlist（1519 行）⇒ 覆蓋有效（未列出的 <code>CGC_*</code> 會靜默丟棄）</td></tr>
+<tr><td>未改</td><td>引擎源碼本輪未動；未 commit、未重生索引；<code>agent_harness/</code> 一行未動</td></tr>
+</table>
+<p class="meta">證據：<code>Backup/phase_decomp/ids_dst_capture_20260917_0026*.json</code>（r12 兩輪）與
+00:16–00:21 的四輪；log 在 <code>Backup/cgc_logs/ids_dst_capture/</code>。</p>
+
+</body>
+</html>

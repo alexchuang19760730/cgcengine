@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>S1 定位：layer 1 的 MoE gather — 2026-09-17 00:35</title>
+<style>
+  :root { color-scheme: light; }
+  body { font: 15px/1.7 -apple-system, "Helvetica Neue", "PingFang TC", sans-serif;
+         max-width: 1000px; margin: 40px auto; padding: 0 24px; color: #1c1c1e; background: #fff; }
+  h1 { font-size: 26px; border-bottom: 3px solid #1c1c1e; padding-bottom: 10px; }
+  h2 { font-size: 19px; margin-top: 38px; border-left: 5px solid #0a6; padding-left: 10px; }
+  h3 { font-size: 16px; margin-top: 26px; color: #333; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 13.5px; }
+  th, td { border: 1px solid #d0d0d5; padding: 6px 9px; text-align: left; vertical-align: top; }
+  th { background: #f2f2f7; font-weight: 600; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  .bad  { color: #b00; font-weight: 600; }
+  .good { color: #067; font-weight: 600; }
+  .box  { background: #fff8e6; border-left: 4px solid #e0a000; padding: 12px 16px; margin: 16px 0; }
+  .box.serious { background: #fdecec; border-left-color: #c00; }
+  .meta { color: #666; font-size: 13px; }
+  ul li, ol li { margin: 4px 0; }
+</style>
+</head>
+<body>
+
+<h1>S1 定位：layer 1 的 MoE gather</h1>
+<p class="meta">2026-09-17 00:35 · 引擎層 · 兩臂 <code>p25-gputime</code>（host leaf）vs <code>p25-slotgpu</code>（S1 GPU table）
+· r8–r11，每輪兩臂各跑兩次，<strong>兩臂各自的同臂對照皆乾淨</strong></p>
+
+<div class="box serious">
+<strong>先說結論，也先說它的狀態。</strong> 量測顯示：<strong>layer 1 的 MoE 在 pass 0 就讀到與另一臂「無關」的專家權重，
+而同一層的 router（logits 與 top-k 權重）逐位元相同。</strong> 這指向「gather 本身」而不是「合成」。
+但這件事<strong>與專案已知的 bit-identical 前提衝突</strong>（若層 1 的 MoE 在第一步就讀錯權重，token 流不可能
+一致 30 個 pass），所以它是<strong>未裁決的矛盾</strong>，不是已成立的引擎缺陷。裁決方法見 §5。
+</div>
+
+<h2>1. 本輪又找到兩個儀器缺陷（都修了，都有判準）</h2>
+
+<h3>缺陷 #5：<code>mul_mat_id</code> 的擷取把 <code>n_tokens</code> 丟掉了</h3>
+<p>呼叫點寫死 <code>cgc_dst_capture(ctx, bid_dst, op, (int32_t) (ne0 * ne1))</code>（MM 與 MV 各一處）。
+<code>mul_mat_id</code> 的輸出是 3 維 <code>[n_embd, n_expert_used, n_tokens]</code> ⇒
+<strong>只讀 <code>ne0*ne1</code> 個元素＝token 0 的切片</strong>。</p>
+<p>觀測簽名：同一個 <code>n_embd=2048, n_expert_used=8, T=2</code> 下，<code>ffn_moe_down-1</code> 報
+<code>ne=16384</code> 而 <code>ffn_moe_weighted-1</code>（<code>mul</code>，全量）報 <code>ne=32768</code>——正好一半。</p>
+<p><strong>修法</strong>：拿掉 <code>n_words</code> 參數，<code>cgc_dst_capture</code> 一律用 <code>ggml_nelements(op)</code>
+⇒ 呼叫點無法再截斷。修正後 <code>ne</code> 全部自洽（graph 1：gate 8192／down 32768／out 4096／weights_norm 16；
+graph 3：32768／131072／16384／64）。</p>
+<p class="bad">連帶後果：§9.18.6 第一輪對 §9.18.4 的否證（「<code>ffn_moe_down-1</code> 的輸出相同」）是用
+token-0 切片做的 ⇒ 該否證失效。</p>
+
+<h3>缺陷 #6（本輪自己造的）：<code>TAIL=1</code> 對任何 &gt;32 元素的張量只寫哨兵</h3>
+<p>host 把 kargs 的 <code>n_ids</code> 傳成<strong>窗口長度</strong>（32），而內核的界是 <code>j &lt; args.n_ids</code>、
+<code>j = n_skip + i</code> ⇒ 只要 <code>n_skip &gt; 0</code>（TAIL=1 且張量大於字數額度）<strong>每個元素都越界</strong>。</p>
+<table>
+<tr><th>模式</th><th>DST 列</th><th>含真值</th><th>全哨兵</th></tr>
+<tr><td>head（<code>n_skip=0</code>，兩種語意重合）</td><td>533</td><td>533</td><td class="good">0</td></tr>
+<tr><td><strong>tail（<code>TAIL=1</code>）</strong></td><td>205</td><td>17</td><td class="bad">188</td></tr>
+</table>
+<p><strong>修法</strong>：<code>arg_n = n_words</code>——<strong>永遠傳張量元素數</strong>，窗口長度只記在 <code>r.n_ids</code>，
+邊界交給內核（不動 <code>.metal</code>、無 ABI 變更）。修正後 246 列 / 246 含真值 / 0 全哨兵。</p>
+<p class="bad">連帶後果：<strong>r5／r5b（tail 窗口）的讀數全部作廢</strong>。它們當時報「幾乎全部 never」，
+不是因為相同，而是因為整列都是哨兵——而<strong>全哨兵列互相比較是「相等」</strong>，
+一個壞掉的讀數因此出具了一個自信的「相同」。</p>
+
+<h2>2. 兩個讀法更正</h2>
+<ol>
+<li><strong>ids 不是專家選擇。</strong> 走池路徑時（<code>n_tokens &lt;= cgc_pool_max_tokens()</code> = 8），
+<code>ffn_moe_gate-N</code> 的 ids 是 <strong><code>ffn_moe_slots-N</code>＝池 slot 索引</strong>
+（<code>llama-graph.cpp:2170-2180</code>）；且 S1 的 GPU table 只給 <code>il &gt;= CGC_S1_MIN_IL</code>（預設 1），
+<strong>layer 0 仍走 host leaf</strong>。⇒ 跨臂比 ids 不構成「選了不同專家」的證據。
+舊述句「專家選擇相同」要改成「<strong>top-k 權重相同</strong>」。</li>
+<li><strong><code>ffn_moe_gate/up/down/weighted-*</code> 一直可讀</strong>（既有 <code>'*'</code> 列舉各 40 個）。
+先前報 ABSENT 是<strong>我的 NODES 沒請求它們</strong>（分析器 CHAIN 有、NODES 沒有）。
+<code>ffn_moe_gate_up-*</code> 才真的不在列舉裡。</li>
+</ol>
+
+<h2>3. 結果（r10：全張量摘要；r11：窗口真值）</h2>
+<p>r10 與 r11 的同臂對照<strong>兩臂各自皆乾淨</strong>（<code>p25-gputime</code> 與 <code>p25-slotgpu</code> 都
+「every captured node agreed in every compared graph」）⇒ 跨臂差異是可重現的真實差異，不是噪聲。</p>
+
+<h3>3.1 全張量摘要（r10）</h3>
+<p>摘要四字 = <code>[sum, xor, wsum(=Σv·(i+1)), count]</code>。<code>sum</code>／<code>xor</code> 對<strong>置換</strong>不變，
+<code>wsum</code> 會變——這是這一格能裁決「重排 vs 不同的值」的原因。</p>
+<table>
+<tr><th>節點（layer 1，pass 0）</th><th>first_diff</th><th>sum</th><th>xor</th><th>wsum</th><th>判讀</th></tr>
+<tr><td><code>ffn_moe_logits_raw-1</code>（router logits）</td><td>30</td><td>=</td><td>=</td><td>=</td><td class="good">全同</td></tr>
+<tr><td><code>ffn_moe_weights_norm-1</code>（top-k 權重）</td><td>31</td><td>=</td><td>=</td><td>=</td><td class="good">全同</td></tr>
+<tr><td><strong><code>ffn_moe_gate-1</code></strong>（第一個 gather matmul）</td><td class="bad">1</td><td>X</td><td>X</td><td>X</td><td class="bad">值真的不同</td></tr>
+<tr><td><strong><code>ffn_moe_up-1</code></strong></td><td class="bad">1</td><td>X</td><td>X</td><td>X</td><td class="bad">值真的不同</td></tr>
+<tr><td><strong><code>ffn_moe_down-1</code></strong></td><td class="bad">1</td><td>X</td><td>X</td><td>X</td><td class="bad">值真的不同</td></tr>
+<tr><td><strong><code>ffn_moe_weighted-1</code></strong></td><td class="bad">1</td><td>X</td><td>X</td><td>X</td><td class="bad">值真的不同</td></tr>
+<tr><td><strong><code>ffn_moe_out-1</code></strong></td><td class="bad">1</td><td>X</td><td>X</td><td>X</td><td class="bad">值真的不同</td></tr>
+</table>
+<p><strong><code>sum</code> 與 <code>xor</code> 都不相同 ⇒ 不是「同一組專家換了順序」。</strong>
+而 <code>out</code> 是沿專家軸<strong>求和</strong>（置換不變）也不同 ⇒ 不能只用重排解釋。</p>
+
+<h3>3.2 窗口真值與幅度（r11；窗口＝張量最後 32 個元素）</h3>
+<table>
+<tr><th>節點</th><th>位元相同</th><th>平均相對差</th><th>相關係數</th><th>worst A→B</th></tr>
+<tr><td><code>ffn_moe_logits_raw-1</code></td><td class="good">32/32</td><td class="good">0.000</td><td class="good">1.000</td><td>−5.05906 → −5.05906</td></tr>
+<tr><td><code>ffn_moe_weights_norm-1</code></td><td class="good">16/16</td><td class="good">0.000</td><td>—</td><td>0.900541 → 0.900541</td></tr>
+<tr><td><code>ffn_moe_gate-1</code></td><td class="bad">0/32</td><td class="bad">0.82</td><td class="bad">0.18</td><td>−0.351509 → +0.350162</td></tr>
+<tr><td><code>ffn_moe_down-1</code></td><td class="bad">0/32</td><td class="bad">0.92</td><td class="bad">0.16</td><td>+0.00549325 → −0.00553181</td></tr>
+<tr><td><code>ffn_moe_out-1</code></td><td class="bad">0/32</td><td class="bad">0.71</td><td>0.54</td><td>−0.0022599 → +0.00225213</td></tr>
+</table>
+<p><strong>兩臂的 gather 輸出不是彼此的微小擾動，而是彼此無關</strong>（相關係數 0.16–0.18、平均相對差 0.82–0.92）。</p>
+<div class="box">
+<strong>一個讀法陷阱，值得單獨記下。</strong> 只看 <code>max相對差 ≈ 2.0</code> 會以為是「取負」——因為
+<code>b ≈ −a</code> 正好給 2.0。但整條分布否掉了它：<code>b == −a</code> 精確者 <strong>0/32</strong>，
+相關係數 ~0.17。**一個極值可以偽造出一個不存在的形狀**（與 §EN-9.1 同一個教訓的另一面）。
+</div>
+<p class="meta">附帶觀察：<code>ffn_moe_gate-1</code>／<code>down-1</code>／<code>weighted-1</code> 的「值域相近、方向無關」
+正是「讀到同形狀但不同位置的資料」會給出的樣子——這對 §5 的兩個候選很重要。</p>
+
+<h2>4. 分段陷阱（判讀前必讀）</h2>
+<p>段界是 <code>ffn_moe_gate-1</code>；建圖序為
+<code>ffn_moe_logits_raw</code> → <code>ffn_moe_weights_norm</code> → (<code>gate_up</code>) →
+<code>gate</code>／<code>up</code> → <code>down</code> → <code>weighted</code> → <code>out</code>。
+⇒ 段 i ＝ {pass P：<strong>gate 起</strong> → 層 2..40} ＋ {pass P+1：層 0 ＋ 層 1 到 <code>weights_norm</code>}。
+所以 <code>ffn_moe_out-1</code>／<code>l_out-1</code> 屬 <strong>pass P</strong>，而
+<code>ffn_moe_logits_raw-1</code>／<code>weights_norm-1</code> 屬 <strong>pass P+1</strong>。
+<strong>同段不等於同一 pass。</strong></p>
+<p class="meta">（本報告的「pass 0」判讀靠段 0：那是 pass 0 的層 0 ＋ 層 1 的 attention／router，全 SAME。）</p>
+
+<h2>5. 未裁決的矛盾與裁決方法</h2>
+<div class="box serious">
+<strong>矛盾</strong>：若 layer 1 的 MoE 在 <strong>pass 0</strong> 就讀到無關的權重，token 流不可能一致 30 個 pass
+（<code>CGC_MM_BITIDENT=1</code> 三支柱；D5 的 M1/M2/M3 9/9）。兩個候選：
+<ol>
+<li><strong>引擎的真缺陷</strong>：S1 臂的 slot 對映指到錯的專家（池內容／表內容不匹配）。</li>
+<li><strong>擷取位置的問題</strong>：某臂的 <code>op->data</code> 指到的不是 kernel 實際寫入的位置（pool 路徑下
+dst 可能是另一個 view／offset），於是讀到「同形狀但不同位置」的資料——正好符合 §3.2 附帶觀察。</li>
+</ol>
+</div>
+<p><strong>裁決用的現成手段（零改碼）</strong>：</p>
+<ol>
+<li><strong>先用 <code>m123_oracle_gate.py</code> 確認兩臂是否真的 bit-identical。</strong>
+若<em>是</em>，則這份讀數必然是儀器問題——因為下游是確定性的，任何大幅擾動都會傳成不同的 token。
+這是最快、也最省事的仲裁者，應該先跑。</li>
+<li><strong><code>CGC_S1_KEEP_LEAF=1</code></strong>（建 S1 節點但讓 <code>mul_mat_id</code> 仍吃 host leaf）：
+若變 SAME ⇒ 差異確實由 GPU table 造成；若仍 DIFF ⇒ 是擷取位置的問題。</li>
+<li>輔助：把 <code>off</code>／<code>ne</code> 在<strong>兩臂都</strong>印出來對齊（目前 <code>--windows</code> 只印 A 臂），
+排除窗口錯位的可能。</li>
+</ol>
+
+<h2>6. 本輪改動與作廢範圍</h2>
+<table>
+<tr><th>項目</th><th>內容</th></tr>
+<tr><td><code>ggml-metal-ops.cpp</code></td><td><code>cgc_dst_capture</code> 移除 <code>n_words</code> 參數（缺陷 #5）；<code>arg_n = n_words</code>（缺陷 #6）</td></tr>
+<tr><td>作廢</td><td><strong>r5／r5b</strong>（TAIL 全哨兵）、<strong>r8</strong>（元素數未修）、<strong>r9</strong>（TAIL 壞）</td></tr>
+<tr><td>有效</td><td><strong>r6／r7</strong>（hash 分支不看 <code>n_skip</code>，元素數只影響 <code>mul_mat_id</code> 的節點——層 0／層 2 的節點多在 <code>bin</code>／<code>norm</code>／<code>matmul</code>，故其結論方向不變但需重跑確認）、<strong>r10／r11</strong>（本報告的依據）</td></tr>
+<tr><td>未 commit</td><td>未 commit、未重生索引；<code>agent_harness/</code> 一行未動（並行 session 所有）</td></tr>
+</table>
+<p class="meta">證據 log：<code>Backup/cgc_logs/ids_dst_capture/</code>（r10：001608/001654、001742/001828；
+r11：001945/002035 …）。驅動 <code>Backup/run_ids_dst_capture.sh</code>；分析器
+<code>Backup/analyze_capture_nodes.py</code>（<code>--decode-only</code>、<code>--windows</code>）。</p>
+
+</body>
+</html>

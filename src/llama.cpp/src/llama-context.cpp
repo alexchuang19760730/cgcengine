@@ -4361,6 +4361,11 @@ static int64_t cgc_publish_slot_table_counted(llama_expert_cache * cache, int il
     static const bool cgc_churn_on = getenv("CGC_S1_TABLE_CHURN") != nullptr;
     if (cgc_churn_on && n_tokens == 1) {
         static std::map<int, std::vector<int32_t>> cgc_churn_last;
+        // [CGC 2026-09-17 §EN-13] The ids the consumer read at this layer's last publish. Comparing
+        // the published table against the LIVE pool for ALL entries measures the clamp (non-resident
+        // entries, which no consumer reads); restricting the comparison to these ids is what makes the
+        // boundary check a statement about the consumer's ordering.
+        static std::map<int, std::vector<int32_t>> cgc_churn_sel;
         static long long cgc_churn_graph_pub = 0;
         static long long cgc_churn_graph_chg = 0;
         static long long cgc_churn_graph_idx = 0;
@@ -4369,8 +4374,101 @@ static int64_t cgc_publish_slot_table_counted(llama_expert_cache * cache, int il
         // boundary. CGC_S1_MIN_IL defaults to 1 and layer 0 keeps its host leaf, so il == 1 is the
         // first served layer on the default configuration.
         if (il <= 1 && cgc_churn_graph_pub > 0) {
-            fprintf(stderr, "CGC-S1: TABLE-CHURN graph=%lld publishes=%lld changed_entries=%lld\n",
-                    cgc_churn_graph_idx, cgc_churn_graph_pub, cgc_churn_graph_chg);
+            // [CGC 2026-09-17 §EN-13] POST-DRIFT: the ordering question this boundary can answer.
+            //
+            // At publish time the table ALWAYS agrees with the live pool for the consumed experts --
+            // the EQUIV-pool line proves it (1599 publishes, mismatch=0 in every one) -- but that check
+            // compares the two mappings at the SAME instant, so it says nothing about whether the entry
+            // is still true when the GPU reads it.
+            //
+            // At this boundary `cgc_churn_last[layer]` holds the table as LAST PUBLISHED for that layer
+            // in the graph that just finished (the block below assigns it at every publish), while
+            // `slot_table_safe` answers from the LIVE pool. So this counts entries whose mapping moved
+            // AFTER the publish and BEFORE the end of the step -- i.e. inside the window in which a
+            // stale entry turns into "the gather reads another expert's weights".
+            //
+            //   0 everywhere -> the pool is frozen across the consumption window, so the mapping the
+            //                   consumer reads IS the one that was published; the divergence would then
+            //                   have to come from the pool CONTENTS, not from timing.
+            //  >0 somewhere -> the pool moves across that window and the table the GPU read can be
+            //                   stale. That names the segment, and argmax_il names the layer.
+            long long drift_entries = 0, drift_layers = 0, drift_max = 0;
+            int       drift_argmax  = -1;
+            for (const auto & kv : cgc_churn_last) {
+                const int l2 = kv.first % 100000;
+                // No layer upper bound is needed: cgc_churn_last is keyed by layers that were actually
+                // published, and every one of those is a served layer of this model. (`model` is not
+                // in scope in this static helper -- the first version of this loop used
+                // model.hparams.n_layer_all and did not compile.)
+                if (kv.first >= 100000 || l2 <= 0) {
+                    continue;   // draft block, or layer 0 which keeps the host leaf
+                }
+                long long n2 = 0;
+                for (size_t e = 0; e < kv.second.size(); ++e) {
+                    const int32_t live = llama_expert_cache_slot_table_safe(
+                            cache, (uint32_t) l2, (uint32_t) e);
+                    if (kv.second[e] != live) {
+                        n2++;
+                    }
+                }
+                if (n2 > 0) {
+                    drift_layers++;
+                    drift_entries += n2;
+                    if (n2 > drift_max) {
+                        drift_max    = n2;
+                        drift_argmax = l2;
+                    }
+                }
+            }
+            // [CGC 2026-09-17 §EN-13, take 2] The FIRST version of this loop compared ALL 256 entries
+            // per layer and printed ~4410 drifted entries of 39*256 = 9984 -- which is 44.2%, i.e.
+            // exactly the non-resident fraction, and its per-layer maximum (~115) matched the
+            // per-publish clamp count (180687/1599 = 113). So it was measuring the CLAMP: for an
+            // expert nobody selected, `publish` writes 0 while `safe` returns -1, and that difference
+            // exists at publish time already. Comparing entries no consumer reads cannot report
+            // anything about the consumer's ordering.
+            //
+            // The question is "did the mapping of an expert the consumer READS move after the publish",
+            // so the comparison is restricted to the ids snapshotted at publish time. EQUIV-pool
+            // already proves table[e] == safe(e) for those at publish time, so anything found here
+            // moved strictly inside the publish->read window.
+            long long sel_drift = 0, sel_layers = 0, sel_max = 0;
+            int       sel_argmax = -1;
+            for (const auto & kv : cgc_churn_sel) {
+                const int l2 = kv.first % 100000;
+                if (kv.first >= 100000 || l2 <= 0) {
+                    continue;
+                }
+                const auto it = cgc_churn_last.find(kv.first);
+                if (it == cgc_churn_last.end()) {
+                    continue;
+                }
+                const std::vector<int32_t> & pub = it->second;
+                long long n3 = 0;
+                for (const int32_t e : kv.second) {
+                    if (e < 0 || (size_t) e >= pub.size()) {
+                        continue;
+                    }
+                    const int32_t live = llama_expert_cache_slot_table_safe(cache, (uint32_t) l2, (uint32_t) e);
+                    if (pub[(size_t) e] != live) {
+                        n3++;
+                    }
+                }
+                if (n3 > 0) {
+                    sel_layers++;
+                    sel_drift += n3;
+                    if (n3 > sel_max) {
+                        sel_max    = n3;
+                        sel_argmax = l2;
+                    }
+                }
+            }
+            fprintf(stderr, "CGC-S1: TABLE-CHURN graph=%lld publishes=%lld changed_entries=%lld"
+                            "  SEL-DRIFT layers=%lld entries=%lld max_per_layer=%lld argmax_il=%d"
+                            "   (all-entry drift, clamp-dominated, for contrast: layers=%lld entries=%lld)\n",
+                    cgc_churn_graph_idx, cgc_churn_graph_pub, cgc_churn_graph_chg,
+                    sel_layers, sel_drift, sel_max, sel_argmax,
+                    drift_layers, drift_entries);
             cgc_churn_graph_idx++;
             cgc_churn_graph_pub = 0;
             cgc_churn_graph_chg = 0;
@@ -4419,6 +4517,9 @@ static int64_t cgc_publish_slot_table_counted(llama_expert_cache * cache, int il
         cgc_churn_graph_pub++;
         cgc_churn_graph_chg += chg;
         prev.assign(now, now + n_expert);
+        if (ids != nullptr && n_expert_used > 0) {
+            cgc_churn_sel[key].assign(ids, ids + n_tokens * n_expert_used);
+        }
         if (seeded) {
             if (chg > 0) {
                 cache->n_slot_table_changed += (size_t) chg;
@@ -4462,6 +4563,78 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
         fprintf(stderr, "CGC-DRAFT-PF-DBG: on_topk il=%d n_tokens=%lld ctx_type=%s n_expert_used=%lld\n",
                 il, (long long) n_tokens, ctype, (long long) n_expert_used);
         cgc_draft_pf_dbg_count++;
+    }
+
+    // [CGC 2026-09-17 §EN-14] SLOT-OWNER: digest the pool's REVERSE map, per layer per step, so two
+    // arms can be compared on the one quantity no existing instrument covers.
+    //
+    // Why it lives HERE and not in the publish path (where the churn counters are): publish is only
+    // reached by arms that install a GPU slot table. The anchor (`p25-gputime`, host leaf) never
+    // calls it -- the first version of this measurement ran on `p25-gputime-churn` and produced
+    // ZERO SLOT-OWNER lines against 390 from the S1 arm, i.e. one empty side of the comparison.
+    // `expert_cache_on_topk` fires for every routed layer in BOTH arms (the CGC-HOOK trace shows 80
+    // lines in each), so it is the hook that can actually host a cross-arm readout.
+    //
+    // Why this quantity at all: the forward map (expert -> slot) has been cleared on every axis the
+    // existing instruments can see. EQUIV-pool says the published table equals the live pool at the
+    // instant of publish (1599/1599, mismatch=0). SEL-DRIFT says the mapping of the experts the
+    // consumer reads does not move between that publish and the end of the step. Both are statements
+    // about MAPPING. Neither says anything about the pool's CONTENTS -- whether slot s, which both
+    // arms agree belongs to expert e, actually holds e's weights.
+    //
+    // `slot_owner[layer][slot]` is that reverse map, written by a DIFFERENT code path from the table
+    // (`llama-expert-cache.cpp:827` assigns the slot and writes the owner; publish reads
+    // `slot_table`). Two representations of one assignment, two writers -- the shape that produced
+    // the earlier drifts -- so it is the last place where "same ids, same table, different fetched
+    // weights" can originate. It is also the shape r11 measured: the same magnitude range and sign
+    // spread as a real expert's weights, but uncorrelated with the other arm's, i.e. a DIFFERENT
+    // expert's.
+    //
+    // Digest = the same 4-word scheme as the kernel-side tensor capture, for the same reasons:
+    // `sum` and `xor` depend only on the multiset of owners, while the weighted sum depends on
+    // PLACEMENT, so a pool whose owners were merely rearranged is separated from one whose owners
+    // actually differ. `n` is the slot count (a shape change cannot pass for equality) and `owned`
+    // counts occupied slots (`sum` alone can cancel: free slots contribute -1).
+    //
+    // Sampled at the TOP of this hook -- i.e. before this layer's own fill for this step -- because
+    // the comparison only needs both arms at the SAME point in the step, and the top is the one
+    // place that is unambiguous and identical in both. The graph index is derived from the walk
+    // wrapping back to the lowest layer, and printed explicitly rather than inferred from position.
+    // These reads are unlocked, like the rest of this hook; a background fill could tear a digest, so
+    // the same-arm control is the premise, exactly as it is for the kernel-side capture.
+    static const bool cgc_owner_on = getenv("CGC_S1_TABLE_CHURN") != nullptr;
+    static int       s_owner_prev_il = -1;
+    static long long s_owner_graph   = 0;
+    // [CGC 2026-09-17 §EN-16] The gate is `n_tokens <= 2`, not `== 1`. The first divergence on this
+    // build is born in the FIRST 2-TOKEN POOL-PATH pass -- during prompt processing, before any decode
+    // step exists -- so a decode-only gate would leave the interesting pass unmeasured. 2 rather than
+    // `n_tokens <= cgc_pool_max_tokens()` keeps the output readable: the run's chunk sequence is
+    // 2,2,8x21,6,8,2,4,4 and then the T=1 decode steps, so <=2 covers the head of the prompt and every
+    // decode step, and skips the 8-token middle that the kernel-side capture already covers. This
+    // block and the SLOT-SEL block below share the bound so they cannot disagree about which pass a
+    // graph index refers to.
+    if (cgc_owner_on && n_tokens <= 2 && cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP) {
+        if (s_owner_prev_il >= 0 && il <= s_owner_prev_il) {
+            s_owner_graph++;   // the layer walk wrapped round => this is a new pass
+        }
+        s_owner_prev_il = il;
+        if ((size_t) il < cache->slot_owner.size()) {
+            const std::vector<int32_t> & own = cache->slot_owner[(size_t) il];
+            int32_t s_sum = 0, s_xor = 0, s_wsum = 0;
+            long long s_n = 0, s_owned = 0;
+            for (size_t s = 0; s < own.size(); ++s) {
+                const int32_t v = own[s];
+                s_sum  = (int32_t) (s_sum  + v);
+                s_xor  = (int32_t) (s_xor  ^ v);
+                s_wsum = (int32_t) (s_wsum + (int32_t) (v * (int32_t) (s + 1)));
+                s_n++;
+                if (v >= 0) {
+                    s_owned++;
+                }
+            }
+            fprintf(stderr, "CGC-S1: SLOT-OWNER graph=%lld il=%d sum=%d xor=%d wsum=%d n=%lld owned=%lld\n",
+                    s_owner_graph, il, s_sum, s_xor, s_wsum, s_n, s_owned);
+        }
     }
 
     // [CGC DBUF2 full double-buffer 2026-09-06] at the first MoE layer of each VERIFY decode
@@ -4547,6 +4720,39 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
     // read (remap write, debug prints) is stable.
     std::vector<int32_t> ids_snap(ids, ids + (size_t) n_tokens * n_expert_used);
     ids = ids_snap.data();
+
+    // [CGC 2026-09-17 §EN-14b] SLOT-SEL: the same reverse lookup, restricted to the experts the
+    // consumer actually reads THIS step.
+    //
+    // The pool-wide digest above says whether the two arms' pools differ. It cannot say whether the
+    // difference MATTERS, because a 143-slot pool over 256 experts is reshuffled constantly and a
+    // digest over slots nobody reads is precisely the measurement this project already threw away
+    // once (the first POST-DRIFT compared all 256 entries and measured the clamp: "comparing entries
+    // no consumer reads cannot report anything about the consumer's ordering").
+    //
+    // `ids` at this point are the RAW expert ids from the top-k node -- the remap to slot indices is
+    // applied further down (and for the GPU-table arms it happens on the GPU). So
+    // `table[ids[j]]` is the slot the consumer will read, and `slot_owner[il][table[ids[j]]]` is the
+    // expert whose WEIGHTS that slot actually holds. Mapping it back to expert identity is what makes
+    // the reading cross-arm comparable: two arms may lay the same experts out in different slots
+    // without any consequence, and comparing raw slot indices would call that a difference.
+    //
+    //   wrong   > 0 -> for a consumed expert the reverse map disagrees with the forward map, i.e.
+    //                  the gather reads a DIFFERENT expert's weights. Silent by construction: the
+    //                  index is legal, so nothing asserts -- this is the failure the publish-path
+    //                  commentary names ("mul_mat_id reads a different expert's weights and the
+    //                  answer is quietly wrong").
+    //   unowned > 0 -> a consumed expert resolves to a slot the pool does not own (free slot, or the
+    //                  expert is not resident and the table clamped). Also worth seeing.
+    //   sum/xor     -> the multiset of experts the consumer fetches. EQUAL across arms means both
+    //                  arms read the SAME experts, whatever their slot layout; that is the answer to
+    //                  "is the pool the carrier?", and it is not answerable from slot indices.
+    // [CGC 2026-09-17 §EN-14b] SLOT-SEL lives further down, AFTER this layer's experts have been
+    // made resident -- see the note at the pool-path publish. Sampling it here instead (the first
+    // version did) reads the slot table BEFORE the fill, so every expert that is a miss this step
+    // still shows `slot_table[e] == -1` and the readout measures the MISS SET rather than what the
+    // consumer reads. That version reported `unowned` ~= 1 per consumed expert in both arms, i.e.
+    // the ~12% cold rate, and would have been read as corruption.
     static int cgc_hook_dbg_n = 0;
     if (cgc_hook_dbg_n < 80) {
         cgc_hook_dbg_n++;
@@ -5847,6 +6053,69 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
         }
         cgc_s1_expect_dbg("pool", il, n_tokens, n_expert_used, ids, cgc_stable_e);
         cgc_s1_equiv_dbg("pool", cache, il, n_tokens, n_expert_used, ids, cgc_stable_e, false);
+
+        // [CGC 2026-09-17 §EN-14b] SLOT-SEL: the reverse lookup restricted to the experts the
+        // consumer actually reads THIS step, sampled HERE because this is the first point at which
+        // the answer is meaningful -- verify-strict has just made every selected expert resident
+        // (see the note above the publish), so the slot table is no longer reporting this step's
+        // misses.
+        //
+        // Why this readout rather than the whole-pool one: a digest over slots nobody reads cannot
+        // report anything about what is consumed (the project already made that mistake once -- the
+        // first POST-DRIFT compared all 256 entries and measured the clamp). And why mapped back to
+        // EXPERT IDENTITY rather than compared as slot indices: two arms may lay the same experts out
+        // in different slots with no consequence at all, so comparing raw slot indices would call a
+        // benign relayout a difference. `table[ids[j]]` is the slot the consumer reads;
+        // `slot_owner[il][that]` is the expert whose weights it holds.
+        //
+        //   wrong   > 0 -> for a consumed expert the reverse map disagrees with the forward map, i.e.
+        //                  the gather reads a DIFFERENT expert's weights. Silent by construction (the
+        //                  index is legal, nothing asserts) -- this is the failure the publish-path
+        //                  commentary names explicitly.
+        //   unowned > 0 -> a consumed expert resolves to a slot the pool does not own. AFTER the fill
+        //                  this should be 0 on the pool path; a non-zero value here is a real finding,
+        //                  whereas the same number taken BEFORE the fill is just the cold rate.
+        //   sum/xor     -> the multiset of experts the consumer fetches. If it is EQUAL across arms,
+        //                  both arms read the same experts' weights and the pool is not the carrier,
+        //                  whatever the slot layout does.
+        if (cgc_owner_on && n_tokens <= 2 && cparams.ctx_type != LLAMA_CONTEXT_TYPE_MTP) {
+            const int32_t * tab = llama_expert_cache_slot_table(cache, (uint32_t) il);
+            if (tab != nullptr && (size_t) il < cache->slot_owner.size()) {
+                const std::vector<int32_t> & own = cache->slot_owner[(size_t) il];
+                int32_t s_sum = 0, s_xor = 0, s_wsum = 0;
+                int32_t i_sum = 0, i_xor = 0, i_wsum = 0;   // the same digest over `ids` ITSELF
+                long long s_n = 0, s_wrong = 0, s_unowned = 0;
+                for (int64_t j = 0; j < n_tokens * n_expert_used; ++j) {
+                    const int32_t e = ids[j];
+                    const int32_t s = (e >= 0 && (int64_t) e < (int64_t) cache->n_expert) ? tab[e] : -1;
+                    const int32_t o = (s >= 0 && (size_t) s < own.size()) ? own[(size_t) s] : -1;
+                    s_sum  = (int32_t) (s_sum  + o);
+                    s_xor  = (int32_t) (s_xor  ^ o);
+                    s_wsum = (int32_t) (s_wsum + (int32_t) (o * (int32_t) (s_n + 1)));
+                    i_sum  = (int32_t) (i_sum  + e);
+                    i_xor  = (int32_t) (i_xor  ^ e);
+                    i_wsum = (int32_t) (i_wsum + (int32_t) (e * (int32_t) (s_n + 1)));
+                    s_n++;
+                    if (o < 0) {
+                        s_unowned++;
+                    } else if (o != e) {
+                        s_wrong++;
+                    }
+                }
+                // [CGC 2026-09-17 §EN-14c] The `i_*` group is NOT redundant bookkeeping -- it is the
+                // control for this readout's own meaning. Whenever `wrong == 0` and `unowned == 0`,
+                // `o == e` holds elementwise, so the owner digest IS the digest of `ids`: the
+                // readout would then be measuring the top-k ROUTING, not the pool, and quoting it as
+                // a statement about pool contents would be a tautology dressed as a measurement.
+                // Printing both makes that decidable in one line instead of by argument: equal
+                // `i_*` and `s_*` = the readout is degenerate (routing), different = the pool really
+                // does hand the consumer experts the router did not ask for.
+                fprintf(stderr, "CGC-S1: SLOT-SEL graph=%lld il=%d ntok=%lld sum=%d xor=%d wsum=%d"
+                                " n=%lld wrong=%lld unowned=%lld  idsum=%d idsxor=%d idwsum=%d\n",
+                        s_owner_graph, il, (long long) n_tokens, s_sum, s_xor, s_wsum,
+                        s_n, s_wrong, s_unowned, i_sum, i_xor, i_wsum);
+            }
+        }
         // write the remap leaf: selected expert id -> slot index
         ggml_tensor * remap = cache_remap_tensors[il];
         if (remap != nullptr && remap->data != nullptr) {

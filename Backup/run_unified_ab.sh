@@ -25,7 +25,13 @@ cd "$(dirname "$0")/.." || exit 1
 export RUN_REPLAY_BENCH=0
 TAG="$(date +%Y%m%d_%H%M)"
 OUT="Backup/phase_decomp"
-A='prefill250'
+# [CGC 2026-09-16 21:45] A used to be bare `prefill250`, which WAS SPAC-off when this file was
+# written (08:48). Since 20:33 the profile itself sets CGC_SPAC=1 (`run_server.sh` prefill250 block:
+# `[ -z "${CGC_SPAC+x}" ] && CGC_SPAC=1`), so a bare `prefill250` arm is now IDENTICAL to B --
+# an A/B of a knob against itself, which reads exactly like "the knob has no effect".
+# The off arm must say so explicitly. (`run_server.sh:1676` only forwards CGC_SPAC when non-zero,
+# so the literal 0 both disables SpAc and omits CGC_SPAC_ALPHA.)
+A='prefill250:CGC_SPAC=0'
 B='prefill250:CGC_SPAC=1;CGC_SPAC_ALPHA=0.75'
 
 wait_nominal() {  # patient: up to 10 min, and VISIBLE (an invisible wait looks like a hang)

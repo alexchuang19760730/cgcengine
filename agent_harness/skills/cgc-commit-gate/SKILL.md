@@ -6,7 +6,7 @@ agent_created: true
 
 > **這是快照，不是權威副本。**
 > 權威位置：`~/.workbuddy/skills/cgc-commit-gate/SKILL.md`（由 host 持續寫入）。
-> 本檔於 2026-09-16 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
+> 本檔於 2026-09-17 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
 > 底下的內容能被 `agent_harness/scripts/auto_git_push.ps1` 定時推送；原檔改了這裡**不會**自動跟上。
 > 要改 skill 請改原檔，再重跑 `python3 agent_harness/scripts/import_harness_snapshot.py`。
 
@@ -544,7 +544,10 @@ glob 兩個來源目錄，並在**空清單時拒跑**（空的 `SNAPSHOT.jsonl`
 D6 的 dated 修訂留下「改 CONVENTIONS.md 要走一次 §6.3 的閉環對照、義務記在 E2 頭上」。
 它已記在三處：`PLAN_ENGINE_LOOP_2026-09-15.md` §9 的 E2 驗收欄（含認領條件：`distill/` 與
 `harness_engine/` 一落地就跑「修訂前後兩版 CONVENTIONS.md」的同一組待答問題，**沒有差異也是結果**；
-對照跑完並留有產物之前不得聲稱已結清）、`CONVENTIONS.md` D6 修訂段、`.workbuddy/memory/MEMORY.md`。
+對照跑完並留有產物之前不得聲稱已結清）、`CONVENTIONS.md` D6 修訂段、`.workbuddy/memory/MEMORY.md`
+（**2026-09-17 起 `.workbuddy/memory/` 是 1 索引 ＋ 3 主題檔**：`MEMORY.md` 為索引，
+同層 `MEMORY_PERF.md`／`MEMORY_S1.md`／`MEMORY_FACTS.md` 依主題。三支 indexer 都用 **glob**
+而不是白名單 ⇒ **新增／刪除任何 `.md` 都要重生索引**，且 commit body 要一併寫清楚動了哪幾檔）。
 
 ---
 
@@ -639,6 +642,13 @@ EOF
   `source-reading` / `honest-bounds` / `performance` / `smoke`。
   自創 class（曾試 `error-path-integrity`）會被擋下並印出整份可選清單。
   **挑最接近的既值，不要為了語意精確去擴 enum。**
+- **兩個欄位陷阱（2026-09-16 各踩一次）**：
+  (1) **`superseded_by` 是 required（可為 null）**——「打算留 null 所以省略」會直接 FAIL
+  （`missing required field 'superseded_by'`）。用程式 append 時要顯式寫 `"superseded_by": null`。
+  (2) **`applies_to` 的每一項是「檔案路徑」**，不是主題標籤。寫 `"s1-divergence"` 之類會產生
+  `WARN: applies_to path does not exist`（validate 仍回 OK，所以很容易漏掉 12 條 WARN 就交出去）。
+  慣例值是 `agent_harness/CONVENTIONS.md`、`scripts/run_server.sh`、`src/...cpp` 這種真實路徑。
+  **交出去前看一眼 warning 數量**：`-> OK` 不代表乾淨。
 
 ---
 

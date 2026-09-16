@@ -517,15 +517,25 @@ typedef struct {
 // [CGC 2026-09-15 S1 kernel-side ids capture] Shared layout for the post-consumer snapshot
 // kernel. Lives in this header because the .metal shader and the host encoder must agree
 // byte-for-byte, and a silent divergence here would look like a wrong-ids result.
-//   n_ids  : elements in the ids operand (ne20 * ne21)
+//   n_ids  : elements in the ids operand (ne20 * ne21). In hash_mode this is the FULL element count
+//            of the tensor being summarised, not a window length.
 //   slot   : host-assigned destination slot; negative disables the capture
 //   stride : int32 words written per slot
 //   n_skip : index of the first element to snapshot (aims at the tail of a long prefill vector)
+//   hash_mode : [CGC 2026-09-16 r6] 0 = copy `n_ids` words starting at `n_skip`. 1 = reduce the WHOLE
+//            tensor to 4 words (sum, xor, mul-mix, count) and write those. Reason it exists: a
+//            32-word window samples 0.03% of a 90112-element tensor, and because a ggml tensor is
+//            ne0-fastest the window's (token, channel) coordinate DIFFERS PER NODE -- `conv_input`
+//            (ne0 = K-1+T < 32) spans every token, a (2048, T) output spans one. Two windows are then
+//            not two views of one thing, and "SAME" on one while another reports DIFF is not a
+//            contradiction, it is two different measurements. A whole-tensor digest is the only
+//            reading for which "identical" means the tensor, and it costs one reduction.
 typedef struct {
     int32_t n_ids;
     int32_t slot;
     int32_t stride;
     int32_t n_skip;
+    int32_t hash_mode;
 } ggml_metal_kargs_cgc_ids_capture;
 
 typedef struct {

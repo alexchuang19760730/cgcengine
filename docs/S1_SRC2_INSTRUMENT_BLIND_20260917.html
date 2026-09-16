@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>S1：src[2] 那一格 —— 儀器在 S1 臂上是瞎的</title>
+<style>
+  :root { color-scheme: light; }
+  body { font: 15px/1.7 -apple-system, "Helvetica Neue", "PingFang TC", sans-serif;
+         max-width: 960px; margin: 40px auto; padding: 0 24px; color: #1c1c1e; background: #fff; }
+  h1 { font-size: 23px; border-bottom: 3px solid #1c1c1e; padding-bottom: 10px; }
+  h2 { font-size: 18px; margin-top: 30px; border-left: 5px solid #0a6; padding-left: 10px; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 13.5px; }
+  th, td { border: 1px solid #d0d0d5; padding: 6px 9px; text-align: left; vertical-align: top; }
+  th { background: #f2f2f7; font-weight: 600; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  pre { background: #f7f7fa; border: 1px solid #e3e3e8; padding: 10px 12px; overflow-x: auto; font-size: 12px; }
+  .bad { color: #b00; font-weight: 600; } .good { color: #067; font-weight: 600; }
+  .box { background: #fdeeee; border-left: 4px solid #b00; padding: 12px 16px; margin: 16px 0; }
+  .box.ok { background: #eef7f1; border-left-color: #0a6; }
+  .box.warn { background: #fff8e6; border-left-color: #e0a000; }
+  .meta { color: #666; font-size: 13px; }
+  ul li, ol li { margin: 4px 0; }
+</style>
+</head>
+<body>
+
+<h1>S1：<code>src[2]</code> 那一格 —— 儀器在 S1 臂上是瞎的</h1>
+<p class="meta">2026-09-17 03:00 · 引擎層 · 承接 <code>S1_MINIL_TRACKING_20260917.html</code>
+· 跑 r26；另外備好 COLD 交錯 A/B 並排程</p>
+
+<div class="box">
+<strong>這不是答案，是路線被關掉。</strong> 上一輪把盒子收到「同一組 ids、同一池佈局、同一反查，
+gather 讀到的<strong>位元組</strong>不同」⇒ 候選是 expert 權重運算元的指向。
+這一輪去讀那些位元組，發現 <strong>主機側的儀器在 S1 臂上量不到東西</strong>：
+編碼時刻 <code>op->src[2]->data</code> 還沒被填，讀到的是被重用的工作緩衝殘留。
+<br><br>
+<strong>⇒ 「同 ids 讀到不同位元組」仍然未測。</strong> 剩下的路線必須在<strong>裝置上</strong>讀
+（在 capture 內核裡對 ids 所選的 pool row 做摘要），不是在主機讀中間運算元。
+</div>
+
+<h2>1. 儀器早就存在（先別寫新的）</h2>
+<p><code>CGC_MMID_MV_DBG</code>（在 <code>ggml_metal_op_mul_mat_id</code>，已在 <code>run_server.sh</code>
+allowlist）逐 MoE 節點印：權重張量形狀 <code>src0 ne=[…]</code>、ids 運算元、以及 <strong>ids 所選前 4 列
+各前 ≤4096 bytes 的 FNV-1a 指紋</strong>。它自己的註解就是判準：</p>
+<pre>"If the hashes match but the ids differ  -> the remap is wrong.
+ If the ids match     but the hashes differ -> the POOL CONTENTS are wrong."</pre>
+<p>語意陷阱：解析器只看第一個字元 —— <code>=1</code> 是 150 節點（一個完整 pass ＝ 41 層 × 3），
+<code>=2</code> 是 512，<strong>其他任何值（含 <code>0</code>）是 4096</strong>。
+所以 <code>run_ids_dst_capture.sh</code> 新增的 <code>MMID=1|2|3</code> 穿透<strong>會拒收 <code>0</code></strong>。
+新比較器：<code>Backup/compare_mmid_fp.py</code>。</p>
+
+<h2>2. 結果：同一節點，兩臂讀到的完全不是同一種東西</h2>
+<p><code>ffn_moe_gate-1</code>，r26：</p>
+<table>
+<tr><th>臂</th><th><code>ids=</code></th><th><code>id_oob_vs_ne02</code></th><th>指紋</th></tr>
+<tr><td>錨 <code>p25-gputime-churn</code></td>
+    <td><code>[2,105,7,9,5,106,1,84,8,0]</code><br><span class="meta">真的是 slot 索引，&lt;143</span></td>
+    <td class="good">0</td><td class="good">有（<code>id2:b74c2cf9…</code>）</td></tr>
+<tr><td>S1 <code>p25-slotgpu-churn</code></td>
+    <td><code>[1063628079,-1100333772,1016099937,…]</code><br>
+        <span class="bad">這是 float 的位元模式</span></td>
+    <td class="bad">16 / 16</td><td class="bad">印不出來（全部 OOB）</td></tr>
+</table>
+<p>錨臂的 <code>id_max</code> 是 106/112/116/120/123（都是合法 slot），S1 臂是 1001348352 / 1002426846 / …</p>
+<div class="box">
+<strong>⇒ 在 S1 臂，編碼時刻 <code>op->src[2]->data</code> 還沒被填。</strong> 讀到的是被重用的工作緩衝
+殘留（float）。因此這個「主機側、編碼期」讀數<strong>對 S1 臂無效</strong>。
+這與 repo 既有的註記同源：<em>「<code>CGC-MMID-ASSERT</code> 的 <code>id_oob</code> 不是『消費者讀到什麼』
+的證據（編碼期由主機讀 <code>op->src[2]->data</code>）」</em>。
+有效的只有<strong>內核側</strong>讀數（在 command buffer 內、裝置上讀 <code>bid_src2</code>），
+而它說 <strong>ids 兩臂相同</strong>（§EN-16 的 120/120）。
+</div>
+
+<h2>3. 順帶量到的一個新事實（本身不是缺陷，但很有用）</h2>
+<p><strong>同一個 ids 運算元，兩臂的填充時序不同</strong>：錨臂在編碼時它已經是正確的 slot 索引；
+S1 臂在同一個時刻還是殘留。裝置讀到的一致（內核側證明），所以<strong>數值上無害</strong>，
+但這是第一次直接看到「兩條對映以<strong>不同時序</strong>抵達同一個運算元」——
+它也正是這個儀器瞎掉的原因。</p>
+
+<h2>4. 修掉一個自己造的比較器缺陷</h2>
+<p>第一版在 <code>ids</code> 清單不同時<strong>短路</strong>（判 <code>IDS_DIFFER</code> 就跳過後面的比較），
+於是印出來的 <code>BYTES_DIFFER=0</code> 是<strong>空洞的</strong>：
+117 列全被判 IDS_ONLY，<strong>一列的位元組都沒比過</strong>。</p>
+<p>指紋是<strong>按 row id</strong> 配對的，必須獨立比較（同一列 id 在兩臂的 hash 不同 ⇒ 位元組不同，
+與兩臂各自要求的 ids 清單無關）。修好之後它印出「<strong>0 shared rows</strong>」，
+才讓「讀不到」變成看得見。</p>
+<div class="box ok">
+<strong>通則</strong>：<strong>「沒有差異」與「沒有比較」必須印得出來。</strong>
+任何比較器都要能區分這三種狀態：相同 / 不同 / <em>根本沒有可比</em>。
+</div>
+
+<h2>5. 那條路現在長什麼樣</h2>
+<table>
+<tr><th>步驟</th><th>狀態</th></tr>
+<tr><td>ids 是否相同（裝置側）</td><td class="good">相同（120/120，內核側）</td></tr>
+<tr><td>池佈局／被消費集合是否相同</td><td class="good">相同（40/40，那個 pass）</td></tr>
+<tr><td>反查是否一致</td><td class="good">一致（<code>wrong=0</code>、<code>owner==ids</code>）</td></tr>
+<tr><td>權重張量形狀</td><td class="good">相同（兩臂都 <code>src0 ne=[2048,512,143]</code>）</td></tr>
+<tr><td><strong>那些 row 的位元組是否相同</strong></td><td class="bad"><strong>仍未測</strong>（主機側讀不到）</td></tr>
+</table>
+<p><strong>下一步（真正的儀器工作）</strong>：在 capture 內核裡，對 ids 所選的 pool row 做與指紋同構的摘要
+（<code>[sum, xor, wsum, n]</code> 或 FNV），在<strong>裝置上</strong>讀 —— 這樣兩臂的「同一列同一 hash」才有意義。
+這是本輪唯一還沒被排除的敘述。</p>
+
+<h2>6. COLD 交錯 A/B（已備好並排程）</h2>
+<p>新驅動 <code>Backup/run_spac_cold_ab.sh</code>：<strong>SPAC=off / on / off / on</strong> 四臂，
+每臂前自帶一個完整靜置窗（<code>COLD_QUIET=1800</code>），總計約 2 h 08 m。三道 fail-closed：</p>
+<ol>
+  <li><strong>pre-flight 驗兩臂真的是兩個配置</strong>：<code>CGC_DUMP_ENV=1</code> 下 off 臂的
+      <code>CGC_SPAC</code> 行數必須是 0、on 臂是 2，否則 abort。（profile 自己會設 <code>CGC_SPAC=1</code>，
+      忘了覆蓋的 off 臂會<strong>跑兩次同一個配置</strong>然後回報「SPAC 沒有代價」。已驗證：0 / 2。）</li>
+  <li>每臂發射前<strong>必須讀到 thermal = 0</strong>，否則最多再等 900 s 然後 abort（exit 3）——
+      HOT 不得當交付數字。</li>
+  <li>沒產出 report 的臂標為 <strong>MISSING</strong>，不當結果。</li>
+</ol>
+<p>交錯而不是單臂的理由寫在腳本開頭：專案已量到自變數是<strong>累積負載</strong>
+（同序列第幾次啟動主宰結果：安靜 18 s → 289.86、34 s → 166.95）⇒ 任何非交錯的比較都在量那個斜坡。</p>
+<p>已排程一次性自動化：<strong>今天 04:00</strong>（四臂約在 04:30 / 05:05 / 05:40 / 06:15 發射，
+約 06:20 結束）。要改時間或取消，跟我說一聲即可。</p>
+
+<h2>7. 產物與範圍</h2>
+<table>
+<tr><th>類別</th><th>路徑</th></tr>
+<tr><td>新比較器</td><td><code>Backup/compare_mmid_fp.py</code>（含「0 shared rows」的可見化）</td></tr>
+<tr><td>驅動</td><td><code>Backup/run_ids_dst_capture.sh</code>（<code>MMID=1|2|3</code> 穿透、拒收 0）、
+    <code>Backup/run_spac_cold_ab.sh</code>（新）</td></tr>
+<tr><td>排程</td><td>一次性自動化 <code>automation-1789584808814</code>，2026-09-17 04:00</td></tr>
+<tr><td>本輪跑次</td><td>r26（兩臂 × 2 輪；同臂對照 120/120 identical）</td></tr>
+<tr><td>記憶</td><td><code>.workbuddy/memory/2026-09-16.md</code> §EN-17；<code>MEMORY.md</code> S1 節；
+    skill <code>cgc-decode-attribution</code></td></tr>
+</table>
+<p class="meta"><strong>範圍聲明</strong>：本輪<strong>未改引擎源碼</strong>（只用既有 <code>CGC_MMID_MV_DBG</code>）、
+未 commit、未重生索引；<code>agent_harness/</code> 一行未動。</p>
+
+</body>
+</html>

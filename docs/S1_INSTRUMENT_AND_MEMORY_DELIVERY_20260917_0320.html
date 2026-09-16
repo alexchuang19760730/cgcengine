@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>S1 分歧定位的儀器完成度、五個缺陷、與記憶交付鏈的實況（2026-09-17 03:20）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  h4{font-size:14.5px;margin:20px 0 6px;color:#374151}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:#fcfcfd}
+  .toc ol{margin:6px 0 0 20px}
+  .toc a{color:var(--blue);text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>S1 分歧定位的儀器完成度、五個缺陷、與記憶交付鏈的實況</h1>
+<div class="sub">
+  日期 2026-09-17 03:20 · 專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code><br>
+  本次 commit 的主題：<b>S1 輸出擷取儀器（內核側 ＋ 引擎側）＋ 記憶的交付鏈實查</b><br>
+  D5 數值閘門 <code>--tag s1instr-memsplit</code> · 白皮書對應的 commit 由本檔一起提交
+</div>
+
+<div class="toc">
+  <b>目錄</b>
+  <ol>
+    <li><a href="#s0">一頁結論</a></li>
+    <li><a href="#s1">交付範圍，以及為什麼兩件事在同一個 commit</a></li>
+    <li><a href="#s2">S1 儀器的形狀</a></li>
+    <li><a href="#s3">五個儀器缺陷，與它們各自的失效方式</a></li>
+    <li><a href="#s4">S1 的現行結論與已否證的機制</a></li>
+    <li><a href="#s5">記憶交付鏈的實況（三個實查）</a></li>
+    <li><a href="#s6">現場閘門輸出（原文）</a></li>
+    <li><a href="#s7">誠實邊界</a></li>
+    <li><a href="#s8">復現</a></li>
+  </ol>
+</div>
+
+<h2 id="s0">0. 一頁結論</h2>
+
+<div class="cards">
+  <div class="card"><div class="k">第一個分歧跟誰走</div><div class="v ok">CGC_S1_MIN_IL</div>
+    <div class="small">不跟層號走（<code>eng-diag-0028</code>）</div></div>
+  <div class="card"><div class="k">本次修掉的儀器缺陷</div><div class="v">5</div>
+    <div class="small">其中 2 個曾讓整輪讀數作廢</div></div>
+  <div class="card"><div class="k">記憶本體是否在版控內</div><div class="v bad">不在</div>
+    <div class="small"><code>.workbuddy/</code> 被 <code>.gitignore:41</code> 排除</div></div>
+  <div class="card"><div class="k">自動上傳 GitHub</div><div class="v bad">沒有在跑</div>
+    <div class="small">機制在另一台 Windows 機（<code>eng-bound-0005</code>）</div></div>
+</div>
+
+<ol>
+  <li><b>S1 的第一個分歧不是「某一層壞了」。</b>把閘從 <code>CGC_S1_MIN_IL=1</code> 移到 <code>=2</code>、
+      其餘一字不動，第一個分歧的節點就從 <code>l_out-1</code> 換成 <code>ffn_moe_out-2</code>，而
+      <code>l_out-1</code> 從 DIFF 翻回 SAME。同一個層 1，host leaf 服務時逐位元相同、GPU table 服務時就不同。
+      <span class="tag">已寫成 eng-diag-0028</span> 舊的 <code>eng-diag-0027</code>（「在 layer 2 的
+      gated delta-net 核心」）依 <code>CONVENTIONS.md</code> §E 標了 <code>superseded_by</code>，沒有刪。</li>
+  <li><b>五個儀器缺陷</b>（§3），其中「32 詞窗口恆從 element 0 起算」與「<code>--upto 24</code> 只採到 prefill」
+      兩個合起來，使 09-16 那七輪的定位結論全部作廢——它們讀的是 prefill、而且是該 pass 最舊的 token。</li>
+  <li><b>剩下唯一未測的敘述</b>是「同一組 ids、同一個池佈局、同一個反查之下，gather 讀到的位元組不同」。
+      主機側讀中間運算元已經被證明對 S1 臂無效（encode 時刻還沒填），要往裝置側走。</li>
+  <li><b>記憶本體不在版控內。</b><code>.workbuddy/</code> 整棵被 <code>.gitignore:41</code> 排除，
+      <code>git ls-files .workbuddy</code> 是空的。唯一能把內容送到別的機器的路，是
+      <code>agent_harness/memory/</code> 的實體快照——而它當時停在 09-16 19:34。本次已刷新（11 檔、逐檔重算
+      <code>source_sha256</code> 11/11 相符）。</li>
+  <li><b>「定期上傳 GitHub」現在沒有在發生。</b>見 §5：機制是另一台 Windows 機上的 PowerShell 工作，
+      本機沒有 <code>pwsh</code>、沒有排程、連它第一次跑就會建的 log 目錄也不存在。</li>
+</ol>
+
+<h2 id="s1">1. 交付範圍，以及為什麼兩件事在同一個 commit</h2>
+
+<table>
+  <tr><th>類別</th><th>檔案</th><th>內容</th></tr>
+  <tr><td>引擎（內核側儀器）</td>
+      <td class="mono">src/llama.cpp/ggml/src/ggml-metal/ggml-metal-ops.cpp<br>
+          src/llama.cpp/ggml/src/ggml-metal/ggml-metal.metal<br>
+          src/llama.cpp/ggml/src/ggml-metal/ggml-metal-impl.h</td>
+      <td>張量輸出擷取：任意節點的 dst 快照、名字過濾、窗口錨點、全張量摘要；呼叫點擴到 11 個 dispatcher</td></tr>
+  <tr><td>引擎（引擎側儀器）</td>
+      <td class="mono">src/llama.cpp/src/llama-context.cpp</td>
+      <td>四個只印不進 gate 的讀數：<code>TABLE-CHURN</code>／<code>SEL-DRIFT</code>／
+          <code>SLOT-OWNER</code>／<code>SLOT-SEL</code></td></tr>
+  <tr><td>腳本</td>
+      <td class="mono">scripts/run_server.sh<br>scripts/check/decode_sweep.py</td>
+      <td>新旋鈕進 env allowlist；三個帶 churn 的臂</td></tr>
+  <tr><td>報告</td><td class="mono">docs/S1_*.html</td><td>本輪 8 份 dated 報告（見 §8 的清單）</td></tr>
+  <tr><td>記憶交付</td>
+      <td class="mono">agent_harness/memory/<br>agent_harness/skills/<br>agent_harness/engine_loop/{MANIFEST.jsonl,memory/INDEX.jsonl}</td>
+      <td>快照刷新（11 檔）＋ 索引重生；<code>.workbuddy/memory/</code> 拆成 1 索引 ＋ 3 主題檔</td></tr>
+</table>
+
+<div class="box b-blue">
+  <p><b>為什麼同一個 commit。</b>D5 要求「每次 commit 附一份技術白皮書」，而白皮書是那個 commit 的附件。
+      把引擎改動與記憶交付拆成兩個 commit，就要出兩份白皮書——而這兩件事的證據來源不同、讀者卻是同一個
+      （下一個接手這條線的人）。所以本輪採「一個交付 commit ＋ 一個 resync commit」，白皮書一份、涵蓋兩半。</p>
+</div>
+
+<h2 id="s2">S1 儀器的形狀</h2>
+
+<h3>2.1 內核側：<code>CGC_TENSOR_CAPTURE</code> 的四個旋鈕</h3>
+
+<table>
+  <tr><th>旋鈕</th><th>作用</th><th>它回答的問題</th></tr>
+  <tr><td class="mono">CGC_TENSOR_CAPTURE</td><td>逗號分隔的<b>精確</b>節點名，或 <code>*</code></td>
+      <td>要讀哪些節點的輸出</td></tr>
+  <tr><td class="mono">CGC_TENSOR_CAPTURE_WORDS</td><td>視窗寬度（預設 32，上限 32）</td>
+      <td>讀多少個元素</td></tr>
+  <tr><td class="mono">CGC_TENSOR_CAPTURE_TAIL</td><td><code>n_skip = ne - n</code></td>
+      <td><b>視窗錨在張量尾端</b>（新 token），而不是開頭（舊 token）</td></tr>
+  <tr><td class="mono">CGC_TENSOR_CAPTURE_HASH</td><td>內核走<b>完整個張量</b>，寫 4 個字
+      <code>[sum, xor, 加權和(i+1), 元素數]</code></td>
+      <td>整個張量是否相同；<code>sum</code>／<code>xor</code> 對置換不變而加權和會變 ⇒ 能分辨「重排」與「值真的不同」</td></tr>
+</table>
+
+<p>每次 dump 都印出 <code>fuse=</code>、<code>ne=</code>（clamp <b>前</b>的元素數）、<code>off=</code>（視窗起點；
+摘要模式為 <code>-1</code>）。<b>沒有 <code>off=</code> 的視窗讀數無法與「整張量都讀了」區分</b>，這是第 3 節第一個缺陷的直接後果。</p>
+
+<h3>2.2 引擎側：四個只印不進 gate 的讀數</h3>
+
+<table>
+  <tr><th>讀數</th><th>取樣點</th><th>量什麼</th></tr>
+  <tr><td class="mono">TABLE-CHURN</td><td>每次 publish</td><td>每個 graph 發布幾次、被消費的 id 的對映移動幾次</td></tr>
+  <tr><td class="mono">SEL-DRIFT</td><td>圖邊界（<code>prev.assign</code> 讓它正好是「上一張圖最後發布的表」）</td>
+      <td>publish 到讀取之間，<b>被消費的 id</b> 其對映有沒有動</td></tr>
+  <tr><td class="mono">SLOT-OWNER</td><td><code>expert_cache_on_topk</code>（填充之後）</td>
+      <td>整層 slot→expert 反查的摘要</td></tr>
+  <tr><td class="mono">SLOT-SEL</td><td>同上</td><td>只取被消費的 id 反查回專家，附 <code>wrong</code>／<code>unowned</code>，
+      並同列 <code>idsum/idsxor/idwsum</code> 當作它<b>自己意思的對照</b></td></tr>
+</table>
+
+<p>兩臂都必須帶 <code>CGC_S1_TABLE_CHURN=1</code>，否則一側空白——而「沒效果」與「沒設到」在 log 上同形。</p>
+
+<h2 id="s3">3. 五個儀器缺陷，與它們各自的失效方式</h2>
+
+<table>
+  <tr><th>#</th><th>缺陷</th><th>失效方式</th><th>修法</th></tr>
+  <tr><td>1</td><td><b>視窗恆從 element 0 起算</b></td>
+      <td>ggml 張量 ne0 最快 ⇒ 對 <code>(2048,T)</code> 的輸出，head 視窗<b>就是 token 0</b>（該 pass 最舊的）。
+          於是「dense 投影全同、只有 conv 輸入不同」不是矛盾，是兩個不同的視窗；七輪的 SAME 全是「token 0 相同」</td>
+      <td><code>_TAIL=1</code>（<code>n_skip = ne-n</code>）＋ dump 記 <code>off=</code>；分析器 <code>--windows</code> 先印 ne/off</td></tr>
+  <tr><td>2</td><td><b><code>--upto 24</code> 自己變成盲點</b></td>
+      <td>它當初是為了避開尾段槽位溢出造成的併 pass；但它只採 graph 1..23，而那個階段序列
+          <code>g0:T128, g1-2:T2, g3-27:T8, g28:T2, g29-30:T4, g31-35:T1</code> ⇒
+          <b>1..23 是 100% prefill</b>，而專案服務的是 decode</td>
+      <td><code>--decode-only</code>（T 由 <code>ne</code> 自校準推出，不手填數字）、
+          <code>--select-t N</code>（第一個<b>完整</b>該 T 的 stage）、<code>--list-stages</code></td></tr>
+  <tr><td>3</td><td><b><code>dst_filter[256]</code> 靜默截斷</b></td>
+      <td>23 個名字 ＝ 312 字元，只進 19 個、第 20 個<b>切在名字中間</b>（截斷點落在 <code>attn_residu</code>），
+          丟掉的名字裡包含那一輪存在的理由（<code>ffn_moe_logits_raw-2</code>）。更糟的是分析器只列「出現過的名字」
+          ⇒ 被丟掉的根本不顯示</td>
+      <td><code>CGC_DST_FILTER_MAX=2048</code> ＋ 截斷時 WARNING ＋ 啟動時印<b>生效清單</b>；
+          分析器列出「CHAIN 中請求過但從未捕獲」的名字</td></tr>
+  <tr><td>4</td><td><b><code>mul_mat_id</code> 的擷取丟掉 <code>n_tokens</code></b></td>
+      <td>呼叫點寫死 <code>ne0 * ne1</code>，而輸出是三維 <code>[n_embd, n_expert_used, n_tokens]</code>
+          ⇒ <b>只讀 token 0</b>。簽名：同一組幾何下 <code>down-1</code> 報 <code>ne=16384</code>、
+          <code>weighted-1</code> 報 <code>ne=32768</code>（正好一半）</td>
+      <td>拿掉那個參數，一律用 <code>ggml_nelements(op)</code></td></tr>
+  <tr><td>5</td><td><b><code>TAIL=1</code> 對 &gt;32 元素的張量只寫哨兵</b></td>
+      <td>host 把 <code>n_ids</code> 傳成<b>視窗長度</b>（32），而內核的界是 <code>j &lt; n_ids</code>、
+          <code>j = n_skip + i</code> ⇒ 一超過就全哨兵。實測 head <b>0/533</b> 全哨兵、tail <b>188/205</b>。
+          而<b>全哨兵列互比是「相等」</b>——一個壞讀數出具了一個自信的「相同」</td>
+      <td>host 傳<b>完整元素數</b>；修好後 246 列 / 246 含真值 / 0 全哨兵</td></tr>
+</table>
+
+<div class="box b-amber">
+  <p><b>兩個通則。</b>（a）<b>儀器自己的位置也是儀器的一部分</b>：<code>cgc_dst_capture_at</code> 的宣告曾被放在
+  「當前第一個呼叫它的 dispatcher」上面，於是每次把鉤子往前加，就要賠一次編譯失敗——三次之後改成放在檔案最前。
+  （b）<b>「沒有差異」與「沒有比較」必須印得出來</b>：缺陷 3 與 5 都是「讀不到」，而在輸出上都長得像「相同」或
+  「沒人要求」。</p>
+</div>
+
+<h2 id="s4">4. S1 的現行結論與已否證的機制</h2>
+
+<h3>4.1 現行結論</h3>
+
+<ul>
+  <li><b>兩臂不是 bit-identical</b>：錨 <code>2d4e5099</code> vs S1 <code>f0acf7d2</code>（各四輪臂內穩定）。
+      產出文字的分歧在第 1～2 個生成 token。</li>
+  <li><b>分歧＝第一個被 GPU table 服務的層的 MoE gather。</b>該層 router logits 與 top-k 權重逐位元相同，
+      而 <code>gate/up/down/weighted/out</code> 全部 DIFF；<code>sum</code> 與 <code>xor</code> <b>都</b>不同
+      ⇒ 不是重排；窗口真值互相關 0.16–0.18 ⇒ <b>互相無關</b>，不是微小擾動。</li>
+  <li><b>層號由 <code>CGC_S1_MIN_IL</code> 決定</b>（見 §0 第 1 條）。</li>
+  <li>在那個 pass 上，layer 0 的 15 個節點、<code>mul_mat_id</code> 的 ids（120/120）、池佈局與被消費集合（40/40）
+      <b>全部相同</b>。</li>
+</ul>
+
+<h3>4.2 已否證的機制（累積）</h3>
+
+<table>
+  <tr><th>候選</th><th>處置</th><th>證據</th></tr>
+  <tr><td>額外節點擾動圖／排程</td><td class="ok">排除</td>
+      <td><code>p25-keepleaf</code> 與錨 <b>md5 與每個捕獲張量逐位元相同</b>；兩個新讀數也 440/440 SAME ⇒ 光是建出 S1 節點不改變池</td></tr>
+  <tr><td>clamp 成 slot 0 ⇒ 靜默換專家</td><td class="ok">排除</td>
+      <td><code>clamped_selected = 0</code>（兩臂）</td></tr>
+  <tr><td>對映錯誤（table vs leaf 分歧）</td><td class="ok">排除</td>
+      <td><code>EQUIV-pool mismatch = 0</code> × 1599</td></tr>
+  <tr><td>時序／讀到舊表（race）</td><td class="ok">排除</td>
+      <td><code>SEL-DRIFT entries = 0</code>（每一張圖）。第一版量 <b>全部 256 個 entry</b> 得到 44.2%，
+          而那個量級與 publish 的每層 clamp 數（<code>180687/1599 = 113</code>）相同 ⇒ 它量到的是 clamp；
+          <b>比對「沒人讀的 entry」在結構上不能說明消費者的時序</b></td></tr>
+  <tr><td>slot 反查錯（同一 slot 裝不同專家）</td><td class="ok">排除</td>
+      <td><code>wrong = 0</code> 且 <code>owner == ids[j]</code> 在 440/440 格、每個臂成立</td></tr>
+  <tr><td>gather 讀到的<b>位元組</b>不同</td><td class="bad">剩下，未測</td>
+      <td>主機側讀中間運算元對 S1 臂無效：encode 時刻 <code>op->src[2]-&gt;data</code> 還沒被填
+          （<code>id_oob_vs_ne02 = 16/16</code>，值是被重用的工作緩衝殘留）。要往<b>裝置側</b>走</td></tr>
+</table>
+
+<div class="box b-red">
+  <p><b>一個要記的自我修正。</b><code>SLOT-SEL</code> 這個讀數在數學上<b>退化</b>了：因為
+  <code>wrong = 0</code> 且 <code>unowned = 0</code>，<code>owner == ids[j]</code> 逐元素成立，
+  於是「把 slot 反查回身分再摘要」等於摘要 <code>ids</code> 本身。我在同一行加了
+  <code>idsum/idsxor/idwsum</code> 當對照，440/440 格全部相等 ⇒ 退化確認。通則：
+  <b>任何「把 A 反查回 B 再摘要」的讀數，都要同時摘要 B 本身，否則測到的是恆等式。</b></p>
+</div>
+
+<h2 id="s5">5. 記憶交付鏈的實況（三個實查）</h2>
+
+<h3>5.1 記憶本體不在版控內</h3>
+
+<pre><code>$ git check-ignore -v .workbuddy/memory/MEMORY_S1.md
+.gitignore:41:.workbuddy/	.workbuddy/memory/MEMORY_S1.md
+$ git ls-files .workbuddy
+（空）</code></pre>
+
+<p>整個 <code>.workbuddy/</code> 被排除，且<b>沒有任何一個檔案被追蹤</b>。所以 <code>git status</code> 看不到記憶，
+<code>git add</code> 也不會收它。要讓記憶跨機器、或進入推送線，<b>唯一的路是 <code>agent_harness/memory/</code>
+的實體快照</b>（D6 的 dated 修訂）。</p>
+
+<h3>5.2 「定期上傳 GitHub」現在沒有在發生</h3>
+
+<table>
+  <tr><th>檢查</th><th>結果</th></tr>
+  <tr><td><code>pwsh</code> / <code>powershell</code></td><td class="bad">都沒有 ⇒ 那支 <code>.ps1</code> 在這台機器上不可能執行</td></tr>
+  <tr><td>crontab ＋ <code>~/Library/LaunchAgents</code> ＋ <code>launchctl list</code></td><td class="bad">零相關條目</td></tr>
+  <tr><td><code>agent_harness/scripts/logs/</code>（腳本第一次跑就會建）</td><td class="bad">不存在 ⇒ 從未在本機執行過</td></tr>
+  <tr><td>腳本硬編碼</td>
+      <td><code>$RepoDir = "D:\alex\flashkv0516\cgcengine_full"</code>、remote <code>cgc0907</code>、
+          branch <code>fusionroutemot</code> ⇒ <b>另一台 Windows 機</b>的工作</td></tr>
+  <tr><td>GitHub 實況（<code>git ls-remote</code>）</td>
+      <td><code>fusionroutemot</code> ＝ <code>1f3b0a78d</code>，訊息
+          <code>auto(agent_harness): periodic backup 2026-09-16 14:04</code> ——
+          正是該腳本的訊息格式 ⇒ <b>它至少成功跑過一次</b>，之後沒有</td></tr>
+  <tr><td>本線所在分支</td>
+      <td><code>demo/sweet-spot-windows-fix</code>（遠端實況 ＝ <code>8140f06c6</code> ＝ 本地 HEAD）
+          ⇒ <b>與 auto-push 的目標分支不同一條</b></td></tr>
+</table>
+
+<p>三句結論：①機制<b>曾經</b>運作（09-16 14:04 那一筆）；②<b>現在沒有</b>（本機不能跑、遠端 13 小時未動）；
+③<b>而且要推也沒東西可推</b>——快照對應的是 09-16 19:34 的原檔、<code>2026-09-17.md</code> 從未被快照，
+而 09-16 20:30 之後的全部工作在本輪之前都還沒 commit。</p>
+
+<h3>5.3 記憶的形狀改了：1 索引 ＋ 3 主題檔</h3>
+
+<table>
+  <tr><th>檔</th><th class="num">大小</th><th>什麼時候讀</th></tr>
+  <tr><td class="mono">MEMORY.md</td><td class="num">5,660 B（原 19,240）</td><td>每次動手前</td></tr>
+  <tr><td class="mono">MEMORY_PERF.md</td><td class="num">8,312 B</td><td>要引用任何 t/s／profile／幾何／散熱數字之前</td></tr>
+  <tr><td class="mono">MEMORY_S1.md</td><td class="num">6,296 B</td><td>要碰 S1／分歧定位／輸出擷取／池查表之前</td></tr>
+  <tr><td class="mono">MEMORY_FACTS.md</td><td class="num">6,301 B</td><td>動 build／載入／預算、要碰 <code>agent_harness/</code>、或要提交之前</td></tr>
+</table>
+
+<p>理由與驗證寫在 <code>eng-bound-0006</code>。要點：原檔在 session 開始<b>注入時被截斷</b>，尾巴（正是當前線的
+狀態）等於不存在；而三支消費它的工具（記憶索引器、資產 manifest、快照匯入器）<b>全部用 glob 而不是白名單</b>
+——這件事必須先讀出來，否則新增的 3 個檔會同時被三者漏掉。拆分後四檔合計 25,581 B（比原檔多 6.3 KB），
+但<b>只有 <code>MEMORY.md</code> 會被注入</b>，所以被注入的部分小了 3.4 倍。</p>
+
+<h3>5.4 快照與索引的本次處置</h3>
+
+<ul>
+  <li><code>import_harness_snapshot.py</code> → <b>11 檔</b>（7 記憶 ＋ 4 skill）；逐檔重算
+      <code>source_sha256</code> 比對 <b>11/11 相符</b>（不看匯入器印了什麼）。</li>
+  <li>索引重生依固定順序：<code>build_memory_index.py</code> → <code>index_assets.py</code>。</li>
+  <li><code>Backup/</code> 也在 <code>.gitignore:396</code>，但<b>已追蹤的檔案仍會被提交</b>
+      （12 支量測腳本裡 9 支已追蹤）。本輪新增的 3 支驅動（<code>compare_slot_owner.py</code>、
+      <code>compare_mmid_fp.py</code>、<code>run_spac_cold_ab.sh</code>）以 <code>git add -f</code> 納入，
+      使儀器與它的比較器在同一個 commit 裡。</li>
+</ul>
+
+<h2 id="s6">6. 現場閘門輸出（原文）</h2>
+
+<pre><code>$ python3 agent_harness/engine_loop/traces/validate.py
+  episodes.jsonl: 122 records {'episode': 122}
+  -&gt; OK
+  decisions.jsonl: 38 records {'decision': 38}
+  -&gt; OK
+  lessons.jsonl: 120 records {'lesson': 120}
+  -&gt; OK
+（WARN 行數：0）
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  10/10 injected violations rejected
+
+$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  memory index OK: 7 file(s), 85 section(s), no drift
+
+$ cd agent_harness/engine_loop &amp;&amp; python3 index_assets.py --check
+  manifest OK: 80 assets, existence + bytes + mtime all agree
+
+$ python3 scripts/check/m123_oracle_gate.py --tag s1instr-memsplit
+  probe   : '15+27 等於多少？請只輸出答案' -&gt; '42'
+  M1 numeric identity    (bit-identical logits)  : 9/9  (100.0%)
+  M2 decision agreement  (same argmax token)     : 9/9  (100.0%)
+  M3 top-k set agreement (same top-N id set)     : 9/9  (100.0%)
+  (aux) full_fnv1a64 identical                   : 9/9  (100.0%)
+  CROSS-TAB  (n=9)
+    M1 same  &amp; M2 same :     9   no drift, same choice
+    M1 same  &amp; M2 diff :     0
+    M1 diff  &amp; M2 same :     0
+    M1 diff  &amp; M2 diff :     0
+  GATE s1instr-memsplit: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+  cross-tab: {'num_eq_dec_eq': 9, 'num_eq_dec_ne': 0, 'num_ne_dec_eq': 0, 'num_ne_dec_ne': 0}
+</code></pre>
+
+<p><b>引用前先讀的兩欄</b>：<code>comparable = true</code>、<code>config_diffs = []</code>
+（來自 <code>Backup/m123_oracle_gate/summary_s1instr-memsplit.json</code>）。<code>comparable = false</code>
+時那三個 9/9 是 <i>printed for information, NOT a verdict</i>。</p>
+
+<h3>6.1 建置新鮮度與 D5 的時間歸屬</h3>
+
+<pre><code>$ cmake --build build --target llama-server llama-bench -j 8
+[  8%] Built target ggml-metal
+[ 86%] Built target llama
+[100%] Linking CXX shared library ../../bin/libllama-bench-impl.dylib
+[100%] Built target llama-bench
+（零個 "Building CXX" 行 ⇒ 產物由當前原始碼產生）
+
+產物 mtime：libggml-metal 09-17 00:19:26  libllama 09-17 02:32:02
+原始碼 mtime：ggml-metal-ops.cpp 09-17 00:16:54  llama-context.cpp 09-17 02:31:55
+cap_&lt;tag&gt;.json 的 created = 2026-09-17T03:04:50   ← 晚於兩個產物，無重疊
+</code></pre>
+
+<p>D5 的 dump <b>沒有 binary 指紋</b>，所以「gate 是否在重建期間被起動」只能靠時間對照；本次 cap 的
+<code>created</code> 晚於兩個 dylib 的 mtime，PASS 可歸屬。</p>
+
+<h2 id="s7">7. 誠實邊界</h2>
+
+<div class="box b-amber">
+  <p><b>本檔不主張</b>：</p>
+  <ul>
+    <li><b>不主張 S1 已定位完成。</b>剩下唯一未測的敘述是「同一組 ids、同一池佈局、同一反查之下，gather 讀到的
+        位元組不同」。主機側的路已被證明對 S1 臂無效（§4.2 最後一列），要往裝置側走。</li>
+    <li><b>不主張「定期上傳 GitHub」有任何形式的恢復。</b>本輪只是把事實查清並刷新快照；
+        要自動化需要一個決策（推哪條分支、Windows 那份留不留），本輪沒有做。</li>
+    <li><b>不主張 D5 的 9/9 證明了 S1 的儀器「正確」。</b>它證明的是<b>加了這些儀器之後，oracle 配置的 logits
+        沒有變</b>——因為所有新旋鈕預設關閉。它是一條「沒有副作用」的證據，不是功能證據。</li>
+  </ul>
+  <p><b>未跑的東西</b>：<code>RUN_REPLAY_BENCH=0</code>（依 D2：<code>.replay_bench_baseline.json</code>
+  自 2026-09-08 起 stale，跑它等於拿舊基線比新程式）。<code>precommit_e2e_gate.sh</code> 刻意沒有接進 hook
+  （<code>00b70bebc</code>），所以缺少 e2e 是既定決定、不是遺漏。</p>
+  <p><b>本輪沒有動的</b>：引擎的數值路徑一行未改（四個讀數只印、且預設關閉）；<code>agent_harness/</code>
+  只有快照與兩個衍生索引被寫入。</p>
+</div>
+
+<h2 id="s8">8. 復現</h2>
+
+<pre><code>cd /Users/alexchuang/Documents/flashkv-devserver
+
+# 建置（判準是「有沒有 Building CXX 行」，不是 exit code）
+cd src/llama.cpp &amp;&amp; cmake --build build --target llama-server llama-bench -j 8
+
+# D5 數值閘門（自己起 server；先確認 8080 空）
+lsof -nP -iTCP:8080 -sTCP:LISTEN ; pgrep -fl llama-server
+python3 scripts/check/m123_oracle_gate.py --tag &lt;你的標籤&gt;
+
+# 快照 → 索引（順序固定，每一次都要按序）
+python3 agent_harness/scripts/import_harness_snapshot.py
+python3 agent_harness/engine_loop/memory/build_memory_index.py
+cd agent_harness/engine_loop &amp;&amp; python3 index_assets.py &amp;&amp; cd -
+
+# 預演閘門（手動跑要自己帶 BIN_DIR，否則全 SKIP 卻印 OK）
+BIN_DIR='src/llama.cpp/build/bin' RUN_REPLAY_BENCH=0 \
+  bash scripts/check_build_tracked.sh --repo "$PWD"</code></pre>
+
+<h3>本輪的 dated 報告</h3>
+
+<ul class="small">
+  <li><code>docs/S1_WINDOW_ANCHOR_AND_LAYER1_20260917.html</code></li>
+  <li><code>docs/S1_LAYER1_MOE_GATHER_20260917.html</code></li>
+  <li><code>docs/S1_DISCRIMINATION_RESULT_20260917.html</code></li>
+  <li><code>docs/S1_TIMING_SEGMENT_20260917.html</code></li>
+  <li><code>docs/S1_TIMING_REFUTED_20260917.html</code></li>
+  <li><code>docs/S1_SLOT_OWNER_REFUTED_20260917.html</code></li>
+  <li><code>docs/S1_MINIL_TRACKING_20260917.html</code></li>
+  <li><code>docs/S1_SRC2_INSTRUMENT_BLIND_20260917.html</code></li>
+</ul>
+
+<hr>
+<p class="small">
+  本次新增的 lesson：<code>eng-diag-0028</code>（分歧跟著閘走；取代 <code>eng-diag-0027</code>）、
+  <code>eng-gate-0041</code>（濾網緩衝區靜默截斷 ＋ 消費者看不見沒收到的名字）、
+  <code>eng-bound-0005</code>（被宣告為週期性的機制必須重量）、
+  <code>eng-bound-0006</code>（記錄的有效容量由最弱的消費者決定，超限時靜默丟尾巴）。
+</p>
+
+</div>
+</body>
+</html>

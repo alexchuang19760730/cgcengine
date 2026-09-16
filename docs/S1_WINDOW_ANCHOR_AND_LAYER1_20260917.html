@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>S1 定位：窗口錨點缺陷與 layer 1 的 MoE block — 2026-09-17</title>
+<style>
+  :root { color-scheme: light; }
+  body { font: 15px/1.7 -apple-system, "Helvetica Neue", "PingFang TC", sans-serif;
+         max-width: 980px; margin: 40px auto; padding: 0 24px; color: #1c1c1e; background: #fff; }
+  h1 { font-size: 26px; border-bottom: 3px solid #1c1c1e; padding-bottom: 10px; }
+  h2 { font-size: 19px; margin-top: 38px; border-left: 5px solid #0a6; padding-left: 10px; }
+  h3 { font-size: 16px; margin-top: 26px; color: #333; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 13.5px; }
+  th, td { border: 1px solid #d0d0d5; padding: 6px 9px; text-align: left; vertical-align: top; }
+  th { background: #f2f2f7; font-weight: 600; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  .bad  { color: #b00; font-weight: 600; }
+  .good { color: #067; font-weight: 600; }
+  .box  { background: #fff8e6; border-left: 4px solid #e0a000; padding: 12px 16px; margin: 16px 0; }
+  .box.serious { background: #fdecec; border-left-color: #c00; }
+  .meta { color: #666; font-size: 13px; }
+  ol li, ul li { margin: 4px 0; }
+</style>
+</head>
+<body>
+
+<h1>S1 定位：窗口錨點缺陷與 layer 1 的 MoE block</h1>
+<p class="meta">2026-09-17 00:05 · 引擎層 · 兩臂 <code>p25-gputime</code>（host leaf）vs <code>p25-slotgpu</code>（S1 GPU table）
+· 每輪兩臂各跑兩次（同臂對照為強制前提）</p>
+
+<div class="box serious">
+<strong>本輪的結論會讓先前的結論作廢。</strong> 09-16 那七輪（r1–r4 及 r3c/r3d/r3e）所報的「第一個分歧」
+全部不可引用——它們同時踩了兩個盲點，而第三個盲點讓其中一輪連被設計來回答的那一格都沒讀到。
+作廢的是<em>定位</em>，不是引擎：每一輪的讀數對它自己的窗口都是真的，問題出在<strong>窗口不是量測</strong>。
+</div>
+
+<h2>1. 三個儀器缺陷（都已修，都有判準）</h2>
+
+<h3>1.1 32 詞窗口恆從 element 0 起算 ⇒ 不同節點讀到不同 token</h3>
+<p>ggml 張量是 <strong>ne0 最快</strong>，所以「前 32 個 element」的意思取決於張量形狀。實測幾何（T=8）：</p>
+<table>
+<tr><th>節點</th><th>ne</th><th>形狀</th><th>head 窗口實際覆蓋</th></tr>
+<tr><td><code>conv_input-N</code></td><td>90112</td><td><code>(K-1+T, 8192)</code> = <code>(11, 8192)</code></td><td class="good">全部 11 行（state 3 行 + 8 個 token 的 qkv）</td></tr>
+<tr><td><code>conv_output_raw-N</code></td><td>65536</td><td><code>(8192, T)</code></td><td class="bad">只有 token 0 的 channel 0–31</td></tr>
+<tr><td><code>attn_norm-N</code>／<code>z-N</code>／<code>gate-N</code>／<code>linear_attn_out-N</code></td><td>16384</td><td><code>(2048, T)</code></td><td class="bad">只有 token 0</td></tr>
+</table>
+<p>⇒ <strong>r1–r4 的每一個 “SAME” 都是「token 0 相同」</strong>，而 token 0 是那次 pass 裡<strong>最舊</strong>、
+資訊量最低的 token；只有 <code>conv_input</code> 因為 ne0 = K−1+T &lt; 32 而跨全部 token。
+「dense 投影全同、只有 conv 輸入不同」<strong>不是矛盾，是兩個不同的窗口</strong>。</p>
+<p><strong>修法</strong>：內核本來就有 <code>n_skip</code>（恆為 0）。新增 <code>CGC_TENSOR_CAPTURE_TAIL=1</code>
+⇒ <code>n_skip = ne − n</code>，把窗口錨到張量尾端（＝最新的 token）。dump 增加 <code>off=</code> 記錄錨點；
+分析器 <code>--windows</code> 先印 ne/off。<strong>讀任何 SAME/DIFF 之前先跑 <code>--windows</code>。</strong></p>
+
+<h3>1.2 <code>--upto 24</code> 是為了避開偽影，結果變成盲點</h3>
+<p>分析器新增的 <code>--decode-only</code> 由 <code>ne</code> <strong>自校準</strong>推導階段
+（<code>per-graph min(ne) ÷ 全程 min(ne)</code>，不需要任何幾何常數）。它一跑就給出階段序列：</p>
+<table>
+<tr><th>graph</th><th>0</th><th>1–2</th><th>3–27</th><th>28</th><th>29–30</th><th>31–35</th></tr>
+<tr><td>T</td><td>128</td><td>2</td><td>8</td><td>2</td><td>4</td><td class="bad">1（唯一的 decode）</td></tr>
+</table>
+<p>⇒ <code>--upto 24</code> 採的是 graph 1..23，<strong>100% prefill</strong>。
+<strong>通則：一個用來避開偽影的旗標，自己會變成盲點；階段要量出來，不能假設。</strong></p>
+
+<h3>1.3 <code>dst_filter[256]</code> 靜默截斷節點清單</h3>
+<p>23 個節點的清單是 <strong>312 字元</strong>，而 <code>snprintf</code> 的額度是 256 ⇒ 只進去 19 個，
+第 20 個 <code>attn_residual-2</code> 被<strong>切在名字中間</strong>（<code>,attn_residu</code>）。
+丟掉的四個裡有 <code>ffn_moe_logits_raw-2</code>——正是那一輪要讀的那一格。
+<strong>而 r5 仍然印出一張完整、合理、毫無異狀的 19 列表。</strong></p>
+<p><strong>修法</strong>：<code>CGC_DST_FILTER_MAX = 2048</code>、截斷改為 WARNING（判準是
+<code>snprintf</code> 的回傳值 ≥ 緩衝大小，原本被丟棄）、init 時印出生效清單。
+分析器也有同一個病（只列「出現過的名字」⇒ 被丟掉的隱形），已改成以 CHAIN 為種子並明確列出
+<strong>從未捕獲</strong>的名字。</p>
+<p class="meta">影響範圍有界：r4 的清單是 197 字元（15 名全進），r3c/r3d/r3e 更短 ⇒ 只有 r5 受此污染。</p>
+
+<h2>2. 換掉窗口：全張量摘要</h2>
+<p>窗口無論錨在頭或尾都只涵蓋 32 個元素，而<strong>每個節點的 (token, channel) 座標不同</strong>。
+實測同一個張量的兩個窗口給出相反答案（<code>conv_input-2</code>：head 說 DIFF@1、tail 說 never）
+⇒ <strong>兩者都不是量測</strong>。</p>
+<p>新增 <code>CGC_TENSOR_CAPTURE_HASH=1</code>：內核走完整個張量，寫 4 個字</p>
+<p><code>[sum, xor, 加權和(權重 = index+1), 元素數]</code></p>
+<ul>
+<li><strong>加權和是必要的</strong>：純 sum 看不見<strong>置換</strong>，而「不同 gather 順序造成的置換」正是這個 fork 被懷疑的東西。</li>
+<li><strong>元素數是必要的</strong>：形狀改變不能冒充相同張量。這也讓「兩臂形狀是否一致」變成可讀的一格。</li>
+<li><code>r.off = −1</code> 標記「這列是摘要、不是窗口」；分析器印成 <code>DIGEST / WHOLE TENSOR</code>。</li>
+<li>化簡用 threadgroup 記憶體的固定樹（32 lanes），不用 simd intrinsic ⇒ 不依賴 Apple 的 simdgroup 寬度。</li>
+</ul>
+<p><strong>判準：DIFF 是結論性的；SAME 是強證據而非證明</strong>（補償性的多重集改變在原理上可碰撞）
+⇒ 述句只能是「全張量上找不到差異」。</p>
+
+<h2>3. 結果（r7：36 名、全張量摘要、兩臂 × 2）</h2>
+<p><strong>儀器前提已過</strong>：同臂對照全部 <code>never</code>、ids 全 <code>120S/0D</code>；
+逐圖「元素數」兩臂完全相同 ⇒ 差異是<strong>內容</strong>，不是形狀。
+（<code>.metal</code> 的改動另經確認：源碼以 <code>autogenerated/ggml-metal-embed.s</code> 嵌入，
+判準是嵌入 <code>.s.o</code> 的 mtime ≥ 源檔 mtime。）</p>
+
+<table>
+<tr><th>節點</th><th>first_diff</th><th>備註</th></tr>
+<tr><td>層 0 全部 12 個（含 <code>l_out-0</code>）</td><td>30</td><td class="good">pass 0..29 的層 0 逐位元相同</td></tr>
+<tr><td>層 1：<code>attn_norm-1</code>／<code>z-1</code>／<code>gate-1</code>／<code>conv_input-1</code>／<code>conv_output_raw-1</code>／<code>linear_attn_out-1</code>／<code>attn_residual-1</code>／<code>attn_post_norm-1</code>／<strong><code>ffn_moe_logits_raw-1</code></strong>（router logits）</td><td>30</td><td class="good">pass 0 的層 1 輸入與 router 全 SAME</td></tr>
+<tr><td><strong><code>ffn_moe_out-1</code></strong>（層 1 的 MoE 輸出）</td><td class="bad">1</td><td>pass 0 就已 DIFF</td></tr>
+<tr><td><strong><code>l_out-1</code></strong></td><td class="bad">1</td><td>同上</td></tr>
+<tr><td>層 2 全部 11 個（含 <code>ffn_moe_logits_raw-2</code>／<code>l_out-2</code>）</td><td class="bad">1</td><td>被層 1 解釋</td></tr>
+</table>
+
+<div class="box">
+<strong>⇒ 層 1 的 MoE block：輸入相同（含 router logits）、專家 ids 相同（<code>120S/0D</code>）、輸出不同。</strong>
+這是目前最強的一個 S1 述句，而且它是全張量量測 ＋ 同臂對照乾淨。
+</div>
+
+<h3>ids 的層級結構（本來就看得見的那一格）</h3>
+<table>
+<tr><th>graph</th><th>ids</th><th>讀法</th></tr>
+<tr><td>1–3</td><td><code>120S/0D</code></td><td>數值已分歧，top-k 還沒被翻動</td></tr>
+<tr><td>4–29</td><td><code>6S/114D</code></td><td>6 = 層 1、層 2 的 top-k 仍相同；層 3 起全不同</td></tr>
+<tr><td>31–35</td><td><code>0S/120D</code></td><td>token 流本身分叉</td></tr>
+</table>
+<p>且 ids 是<strong>真正的不同集合</strong>，不是表示差異：8 個專家裡 5–7 個不同，<strong>排序後仍不同</strong>
+（排除「同集合不同序」）。</p>
+
+<h3>分段陷阱（判讀前必讀）</h3>
+<p>段界是 <code>ffn_moe_gate-1</code>，所以段 i ＝ {pass P：層 1 的 MoE 出口起 → 層 2..40}
+＋ {pass P+1：層 0 ＋ 層 1 的 attention 到 router}。
+<code>ffn_moe_out-1</code>／<code>l_out-1</code> 屬 <strong>pass P</strong>，
+<code>attn_norm-1</code>…<code>ffn_moe_logits_raw-1</code> 屬 <strong>pass P+1</strong>。
+「同一 pass」的判讀靠段 0（21 列、全 SAME ＝ pass 0 的層 0 ＋ 層 1 attention）。<strong>不要同段當同一 pass。</strong></p>
+
+<h2>4. 未解與下一步</h2>
+<ol>
+<li><strong>摘要看不到幅度。</strong> <code>ffn_moe_out-1</code> 全張量不同，但「差多少」未知。
+下一步用現有窗口模式（<code>TAIL=0/1</code>、<code>WORDS=32</code>）取實際數值比對——零改碼。</li>
+<li><strong>layer 1 的 MoE 內部未掛。</strong> <code>ffn_moe_gate/up/down-*</code> 這些名字<strong>從未出現</strong>
+（推測是 view 或被融合吸收）；要分清「gather 的權重不同」與「gather 之後的合成不同」，得先讓它們可讀。</li>
+<li><strong>decode 段</strong>（graph 31–35）現在 36 個節點全 DIFF，主因是 token 流已分叉 ⇒ decode 的定位
+必須在 token 流分叉<em>之前</em>的段上做（即 graph 1–30），這與 prefill 是同一個問題。</li>
+</ol>
+
+<h2>5. 本輪改動</h2>
+<table>
+<tr><th>檔案</th><th>內容</th></tr>
+<tr><td><code>src/llama.cpp/ggml/src/ggml-metal/ggml-metal-ops.cpp</code></td><td><code>off</code> 欄位；<code>dst_tail</code>／<code>dst_hash</code>；<code>cgc_submit(..., n_skip, hash_mode)</code>；<code>CGC_DST_FILTER_MAX=2048</code> ＋ 截斷 WARNING ＋ 生效清單</td></tr>
+<tr><td><code>.../ggml-metal-impl.h</code></td><td><code>hash_mode</code> 進 <code>ggml_metal_kargs_cgc_ids_capture</code>（.metal 與 host 必須逐位元組一致）</td></tr>
+<tr><td><code>.../ggml-metal.metal</code></td><td><code>kernel_cgc_ids_capture</code> 加全張量摘要分支（threadgroup 樹化簡）</td></tr>
+<tr><td><code>scripts/run_server.sh</code></td><td><code>CGC_TENSOR_CAPTURE_TAIL</code>／<code>_HASH</code> 進 allowlist（未列出的 <code>CGC_*</code> 靜默丟棄）</td></tr>
+<tr><td><code>Backup/analyze_capture_nodes.py</code></td><td><code>--decode-only</code>（T 自校準）、<code>--windows</code>、<code>off=</code> 解析、CHAIN 改因果序（層 0→1→2）、列出「從未捕獲」</td></tr>
+<tr><td><code>Backup/run_ids_dst_capture.sh</code></td><td><code>WORDS</code>／<code>TAIL</code>／<code>HASH</code> 可覆蓋、啟動時宣告、分析段改用 <code>--decode-only</code></td></tr>
+</table>
+<p class="meta">證據 log：<code>Backup/cgc_logs/ids_dst_capture/</code>（r5/r5b/r6/r7，兩臂各兩輪）；
+JSON：<code>Backup/phase_decomp/ids_dst_capture_*.json</code>。未 commit、未重生索引（<code>agent_harness/</code> 為並行 session 所有）。</p>
+
+</body>
+</html>

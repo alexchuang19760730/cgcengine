@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>S1：分歧跟著 S1 的閘走，不跟著層號走</title>
+<style>
+  :root { color-scheme: light; }
+  body { font: 15px/1.7 -apple-system, "Helvetica Neue", "PingFang TC", sans-serif;
+         max-width: 980px; margin: 40px auto; padding: 0 24px; color: #1c1c1e; background: #fff; }
+  h1 { font-size: 24px; border-bottom: 3px solid #1c1c1e; padding-bottom: 10px; }
+  h2 { font-size: 18px; margin-top: 32px; border-left: 5px solid #0a6; padding-left: 10px; }
+  h3 { font-size: 15px; margin-top: 22px; color: #333; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 13.5px; }
+  th, td { border: 1px solid #d0d0d5; padding: 6px 9px; text-align: left; vertical-align: top; }
+  th { background: #f2f2f7; font-weight: 600; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  pre { background: #f7f7fa; border: 1px solid #e3e3e8; padding: 10px 12px; overflow-x: auto; font-size: 12.5px; }
+  .bad { color: #b00; font-weight: 600; } .good { color: #067; font-weight: 600; }
+  .box { background: #eef7f1; border-left: 4px solid #0a6; padding: 12px 16px; margin: 16px 0; }
+  .box.warn { background: #fff8e6; border-left-color: #e0a000; }
+  .meta { color: #666; font-size: 13px; }
+  ul li, ol li { margin: 4px 0; }
+  .dim { color: #666; }
+</style>
+</head>
+<body>
+
+<h1>S1：分歧跟著 S1 的閘走，不跟著層號走</h1>
+<p class="meta">2026-09-17 02:45 · 引擎層 · 承接 <code>S1_SLOT_OWNER_REFUTED_20260917.html</code>
+· 觀測點移到「第一次 2-token 池路徑 pass」的 layer 0；新增 stage 選擇器；跑 r23–r25</p>
+
+<div class="box">
+<strong>結論（三句話）</strong>
+<ol>
+  <li><strong>在那個 pass 上，layer 0 整條鏈逐位元相同</strong>（15 個節點，含 router logits 與
+      <code>gate/up/down/out-0</code>），<strong>被消費的 ids 也相同</strong>（120/120），
+      <strong>池佈局與被消費的專家集合也相同</strong>（40/40）。唯一不同的是 <code>l_out-1</code>。</li>
+  <li><strong>★ 第一個分歧的層跟著 <code>CGC_S1_MIN_IL</code> 走</strong>：閘在 1 → 分歧在
+      <code>l_out-1</code>；閘移到 2 → 分歧變成 <code>ffn_moe_out-2</code>，而
+      <code>l_out-1</code>／<code>ffn_moe_out-1</code> <strong>變回 SAME</strong>。
+      ⇒ <strong>同一個層 1：host leaf 服務時逐位元相同，GPU table 服務時就不同。</strong>
+      「某一層壞了」與「從 layer 0 數值傳染」兩種讀法<strong>全部作廢</strong>。</li>
+  <li>⇒ 盒子裡只剩<strong>「gather 讀到的位元組不同」</strong>（ids 相同 ⇒ 反查相同 ⇒ 讀到的 slot 相同）
+      —— 候選是 expert 權重運算元 <code>src[2]</code> 的指向／repoint。這是<strong>位址類</strong>缺陷，
+      與先前排除的數值／對映／時序不同類別。</li>
+</ol>
+</div>
+
+<h2>1. 先把「哪一個 pass」釘死（上一輪我是用推的）</h2>
+<p>「第一次 2-token 池路徑 pass」必須是<strong>量出來的</strong>，不是猜的。三個坑：</p>
+<table>
+<tr><th>坑</th><th>實情</th></tr>
+<tr><td>stage 標記是什麼</td>
+    <td>分析器的 stage ＝ <strong>模型 pass</strong>，標記是 <strong>ids 列 <code>name=ffn_moe_gate-1</code>
+        （<em>沒有</em> <code>.dst</code>）</strong>。我第一版用 <code>.dst</code> 找，整份 log 被當成
+        一個 stage</td></tr>
+<tr><td>T 怎麼定</td>
+    <td>要用<strong>節點自己的 <code>ne</code></strong>（<code>l_out-0</code> 的 <code>ne / 2048</code>）；
+        「graph 內 min ne 的比值」取決於該 graph 有哪些名字被捕捉到 ⇒ <strong>node set 一換，T 就變</strong>
+        （17 名 與 4 名兩種 node set 給出不同的 T 序列）</td></tr>
+<tr><td>fragment</td>
+    <td>capture 從 pass 中間開始 ⇒ stage 0 可能只有 1 列。選它會把 <code>present=1</code> 讀成
+        「另一臂缺這個節點」</td></tr>
+</table>
+<p><strong>量出來的形狀</strong>（`n_predict=12`、208-token prompt、池路徑 <code>n_batch=8</code>）：
+chunk 序列是 <code>2,2,8×21,6,8,2,4,4</code>，之後 <strong>11 個 T=1 的 decode</strong>；
+引擎側 <code>n_past</code> 的 <code>+6</code> 然後 <code>+8, +8, …</code> 節奏與之一致。
+⇒ <strong>第一次 2-token 池路徑 pass ＝ stage 1</strong>（stage 0 是 fragment）。</p>
+<p>新工具：<strong><code>--select-t N</code></strong>（第一個<em>完整</em>的 T==N stage；「完整」＝列數等於該 T
+的眾數）、<strong><code>--list-stages</code></strong>（先列每個 stage 的 T 與列數再選）。
+判準是「<strong>永遠先 list 再 select</strong>」。</p>
+
+<h2>2. r23：layer 0 的內部（17 個名字，兩臂 × 2）</h2>
+<p>同臂對照：兩個臂都全 <code>never</code>（表內沒有一個節點在自己跟自己比時分歧）。</p>
+<table>
+<tr><th>觀測</th><th>結果</th></tr>
+<tr><td>layer 0 全部 15 個節點<br><span class="dim"><code>attn_norm-0</code>／<code>z-0</code>／
+    <code>gate-0</code>／<code>conv_input-0</code>／<code>conv_output_raw-0</code>／
+    <code>linear_attn_out-0</code>／<code>attn_residual-0</code>／<code>attn_post_norm-0</code>／
+    <code>ffn_moe_logits_raw-0</code>／<code>ffn_moe_weights_norm-0</code>／
+    <code>ffn_moe_gate/up/down-0</code>／<code>ffn_moe_out-0</code>／<code>l_out-0</code></span></td>
+    <td class="good">全部 SAME（全張量摘要）</td></tr>
+<tr><td><code>mul_mat_id</code> 消費的 <strong>ids</strong></td>
+    <td class="good">120 SAME / 0 DIFF</td></tr>
+<tr><td>唯一不同的節點</td><td class="bad"><code>l_out-1</code>（layer 1 的輸出）</td></tr>
+</table>
+<p>也就是說：<strong>輸入到 layer 1 的東西逐位元相同（layer 0 全鏈）、它拿到的 ids 也相同，
+而它的輸出不同。</strong></p>
+
+<h2>3. r24：把引擎側的閘放寬，讓同一個 pass 也被量到</h2>
+<p>引擎側的 <code>SLOT-OWNER</code>／<code>SLOT-SEL</code> 原本閘在 <code>n_tokens == 1</code>，
+那個 pass 根本不被量到。放寬到 <strong><code>n_tokens &lt;= 2</code></strong>（<code>2</code> 而非
+<code>&lt;= pool_max</code>，是為了不讓 8-token 的中段把 log 淹掉）。逐 graph 的跨臂 SAME 數
+（560 格 ＝ 14 個取樣 pass × 40 層）：</p>
+<table>
+<tr><th>graph</th><th>ntok</th><th>SLOT-OWNER</th><th>SLOT-SEL</th></tr>
+<tr><td>g0</td><td>2</td><td class="good">40/40 SAME</td><td class="good">40/40 SAME</td></tr>
+<tr><td>g1</td><td>2</td><td class="good">40/40 SAME</td><td class="good">40/40 SAME</td></tr>
+<tr><td>g2</td><td>2</td><td class="bad">2/40</td><td class="bad">2/40</td></tr>
+<tr><td>g3+</td><td>1</td><td class="bad">0–2/40</td><td class="bad">0/40</td></tr>
+</table>
+<p>同臂對照 560/560 SAME；<code>wrong=0</code>、<code>unowned=0</code>、<code>owner==ids</code> 560/560。
+⇒ <strong>在第一次（與第二次）2-token pass 上，兩臂的池佈局、被消費的專家集合、反查一致性全部相同。</strong></p>
+
+<h2>4. ★ r25：因果測試（零改碼）</h2>
+<p>問題：<code>l_out-1</code> 是「layer 1 壞了」，還是「第一個被 GPU table 服務的層」？
+把閘從 1 移到 2（<code>CGC_S1_MIN_IL=2</code>，臂 <code>p25-slotgpu-l2</code> 本來就存在），
+其餘完全不動，同樣看第一次完整 T=2 pass：</p>
+<table>
+<tr><th>配置</th><th>第一個分歧節點</th><th>它之前</th></tr>
+<tr><td><code>MIN_IL=1</code>（layer 1 是第一個被服務的層）</td>
+    <td class="bad"><code>l_out-1</code></td><td><code>l_out-0</code> SAME</td></tr>
+<tr><td><code>MIN_IL=2</code>（layer 2 才是）</td>
+    <td class="bad"><code>ffn_moe_out-2</code></td>
+    <td><code>ffn_moe_out-0</code>／<code>l_out-0</code>／<strong><code>ffn_moe_out-1</code>／
+        <code>l_out-1</code> 全部 SAME</strong></td></tr>
+</table>
+<p>r25 的同臂對照兩個臂都乾淨（DST DIFF = 0）。</p>
+<div class="box">
+<strong>⇒ 第一個分歧的層跟著閘走，不跟著層號走。</strong> 同一個 build、同一步、<strong>同一個層 1</strong>：
+host leaf 服務時<strong>逐位元相同</strong>，GPU table 服務時<strong>就不同</strong>。
+<br><br>
+因此「某一層壞了」與「分歧由 layer 0 的數值傳染下去」<strong>都作廢</strong>。先前所有「第一個分歧 ＝ 層
+N」的述句都要改寫成「<strong>第一個被 GPU table 服務的層</strong>」——這是一個措辭修正，但它改變了
+下一步該去哪裡找。
+</div>
+
+<h2>5. 盒子裡現在剩什麼</h2>
+<table>
+<tr><th>已排除</th><th>依據</th></tr>
+<tr><td>額外節點／圖形狀</td><td><code>p25-keepleaf</code> 與錨逐位元相同（含兩個新讀數 440/440）</td></tr>
+<tr><td>clamp 成 slot 0</td><td><code>clamped_selected = 0</code>（兩臂）</td></tr>
+<tr><td>對映錯（table vs leaf 分歧）</td><td><code>EQUIV-pool mismatch = 0</code> ×1599</td></tr>
+<tr><td>時序・race（表在讀之前移動）</td><td><code>SEL-DRIFT entries = 0</code>（每圖）</td></tr>
+<tr><td>反查錯（slot 裝了別的專家）</td><td><code>wrong = 0</code>、<code>owner == ids</code> 440/440 與 560/560</td></tr>
+<tr><td>「消費者被餵了不同的 ids」</td><td><strong>ids 120/120 SAME</strong>（本輪新增）</td></tr>
+<tr><td>「池的佈局不同」</td><td><strong>那個 pass 上 40/40 SAME</strong>（本輪新增）</td></tr>
+<tr><td>「某層壞了／數值傳染」</td><td><strong>r25 因果測試</strong>（本輪新增）</td></tr>
+</table>
+<p>⇒ 剩下的唯一敘述：<strong>同一組 ids、同一個池佈局、同一份反查，gather 讀到的位元組不同</strong>。
+在 pool 路徑下 <code>mul_mat_id</code> 的兩個運算元是 ids（對映）與 expert 權重（<code>src[2]</code>）；
+ids 已證相同 ⇒ <strong>差別只能在 <code>src[2]</code> 的指向</strong>（repoint／pool 區域的選擇）。</p>
+
+<h2>6. 下一步（具體、便宜、零推測）</h2>
+<pre>在 ggml_metal_op_mul_mat_id，對 il &lt;= 2 限次印出：
+    op->src[2]->name, op->src[2]->data, ggml_metal_get_buffer_id(op->src[2])
+兩臂比對。不同 ⇒ 找到；相同 ⇒ 「位址」也被排除，盒子會縮到只剩 pool 內容的位元組本身。</pre>
+<p>並沿用它既有的紀律：<strong>先同臂對照</strong>、<strong>先確認名字真的進了濾網（沒被截斷）</strong>、
+<strong>先確認產物新鮮（有編譯行）</strong>。</p>
+
+<h2>7. 產物與範圍</h2>
+<table>
+<tr><th>類別</th><th>路徑 / 內容</th></tr>
+<tr><td>分析器</td><td><code>Backup/analyze_capture_nodes.py</code>：新增 <code>--select-t N</code>／
+    <code>--list-stages</code>（含「完整 pass」判準）</td></tr>
+<tr><td>引擎</td><td><code>src/llama.cpp/src/llama-context.cpp</code>：兩個讀數的閘
+    <code>n_tokens == 1</code> → <code>&lt;= 2</code>（只印、不進 gate）</td></tr>
+<tr><td>本輪跑次</td><td>r23（layer 0 內部）／r24（引擎側涵蓋 2-token pass）／r25（
+    <code>MIN_IL=2</code> 因果測試）；皆兩臂 × 2 輪，同臂對照全乾淨</td></tr>
+<tr><td>記憶</td><td><code>.workbuddy/memory/2026-09-16.md</code> §EN-16；<code>MEMORY.md</code> 的 S1 節
+    （已重寫並壓到 19.3 KB）；<code>2026-09-17.md</code></td></tr>
+</table>
+<p class="meta"><strong>範圍聲明</strong>：本輪<strong>未 commit、未重生索引</strong>；<code>agent_harness/</code>
+一行未動。數字皆為本機當前 build（server <code>054fb22f04a0</code>、metal <code>2b87af2e4db2</code>）、
+MTP=0 的 <code>Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf</code>、<code>n_predict=12</code>。</p>
+
+</body>
+</html>

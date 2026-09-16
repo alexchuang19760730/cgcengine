@@ -272,6 +272,13 @@ ARMS = {
     # 72.56 ms figure, in the same run.
     "p25-gputime":       {"CGC_SERVER_MTP": "0", "CGC_GPU_TIMING": "1",
                           "CGC_DECODE_PROFILE": "1"},
+    # [CGC 2026-09-17 §EN-14] The anchor with the churn/digest diagnostics ON. Two arms can only be
+    # diffed on a stderr stream that BOTH of them print, and CGC_S1_TABLE_CHURN was only carried by
+    # p25-slotgpu-churn -- so the anchor arm was silent and every SLOT-OWNER comparison would have
+    # had one empty side. Keeping it a separate arm rather than adding the flag to p25-gputime means
+    # every earlier measurement taken with the plain anchor stays reproducible as it was.
+    "p25-gputime-churn": {"CGC_SERVER_MTP": "0", "CGC_GPU_TIMING": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_S1_TABLE_CHURN": "1"},
     # MTP-on counterpart (same reason as p25-phase-mtp): a single arm cannot tell a clean 0
     # busy-time from a broken instrument.
     "p25-gputime-mtp":   {"CGC_GPU_TIMING": "1", "CGC_DECODE_PROFILE": "1"},
@@ -443,6 +450,14 @@ ARMS = {
     # Run it with the baseline in the SAME sweep: the whole comparison is a same-fingerprint claim.
     "p25-keepleaf":      {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_KEEP_LEAF": "1",
                           "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    # [CGC 2026-09-17 §EN-14] keepleaf with the churn/digest diagnostics on. This is the arm that
+    # separates "the S1 nodes existing at all" from "the GPU table being CONSUMED": it builds every
+    # S1 node but leaves mul_mat_id eating the host leaf, and it is bit-identical to the anchor. So
+    # if the pool's reverse map matches the anchor here and differs in p25-slotgpu-churn, the pool
+    # difference tracks the consumption, not the graph shape.
+    "p25-keepleaf-churn": {"CGC_SERVER_MTP": "0", "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_KEEP_LEAF": "1",
+                           "CGC_S1_TABLE_CHURN": "1",
+                           "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
     # Same, with the diagnostics on. POST (gather vs leaf, every layer), EXPECT (table[ids] at hook
     # time) and EQUIV (published table vs slot_table_safe) all ride on CGC_S1_DBG. Throughput from
     # this arm is meaningless -- it writes to stderr from inside the hot path -- so it is tagged as a

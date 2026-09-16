@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>S1：時序被否，剩下「池的 slot 內容」— 2026-09-17 00:50</title>
+<style>
+  :root { color-scheme: light; }
+  body { font: 15px/1.7 -apple-system, "Helvetica Neue", "PingFang TC", sans-serif;
+         max-width: 980px; margin: 40px auto; padding: 0 24px; color: #1c1c1e; background: #fff; }
+  h1 { font-size: 24px; border-bottom: 3px solid #1c1c1e; padding-bottom: 10px; }
+  h2 { font-size: 18px; margin-top: 32px; border-left: 5px solid #0a6; padding-left: 10px; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 13.5px; }
+  th, td { border: 1px solid #d0d0d5; padding: 6px 9px; text-align: left; vertical-align: top; }
+  th { background: #f2f2f7; font-weight: 600; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  pre { background: #f7f7fa; border: 1px solid #e3e3e8; padding: 10px 12px; overflow-x: auto; font-size: 12.5px; }
+  .bad { color: #b00; font-weight: 600; } .good { color: #067; font-weight: 600; }
+  .box { background: #eef7f1; border-left: 4px solid #0a6; padding: 12px 16px; margin: 16px 0; }
+  .box.warn { background: #fff8e6; border-left-color: #e0a000; }
+  .meta { color: #666; font-size: 13px; }
+  ul li, ol li { margin: 4px 0; }
+</style>
+</head>
+<body>
+
+<h1>S1：時序被否，剩下「池的 slot 內容」</h1>
+<p class="meta">2026-09-17 00:50 · 引擎層 · 承接 <code>S1_TIMING_SEGMENT_20260917.html</code>
+· 只加一個量測（churn 區塊的圖邊界比對），並用它否掉時序假說</p>
+
+<div class="box">
+<strong>結論</strong>：你提的自變數（「消費點相對 publish 的位置」）已經量了，**答案是這一條路不成立**。
+<code>EQUIV-pool</code> 在 1599 次 publish 全部 <code>mismatch=0</code>（同瞬），而新的
+<strong><code>SEL-DRIFT</code> 在每一張圖都是 <code>entries=0</code></strong>
+⇒ <strong>消費者讀到的每個專家，其對映在「publish → 讀取」之間完全沒動</strong>。
+排除表上只剩<strong>「池的 slot 內容」</strong>。
+</div>
+
+<h2>1. 既有讀數：兩個都在「同一個瞬間」比較，答不了時序</h2>
+<table>
+<tr><th>讀數</th><th>結果</th><th>為什麼答不了</th></tr>
+<tr><td><code>CGC-S1: EQUIV-pool …</code></td><td><strong>1599 次全部 <code>mismatch=0</code></strong></td>
+    <td><code>cgc_stable_e</code> 就是<strong>表張量本身</strong>（<code>cache_slot_table_tensors[il]</code>），
+        且比對發生在 publish 當下 ⇒ 兩個映射來自同一瞬間</td></tr>
+<tr><td><code>TABLE-CHURN graph=N publishes=…</code></td><td><strong>每圖恰好 <code>publishes=39</code></strong></td>
+    <td>只說明「39 個受服務層各發布一次 ⇒ publish 與消費在<strong>同一步內</strong>」，沒有次序資訊</td></tr>
+</table>
+<p>所以 <code>EQUIV-pool</code> 證明的是件好事（<strong>兩個函式在 publish 那一刻對被選中的專家是一致的</strong>），
+但它是「同瞬」的，結構上無法回答「讀的時候還是不是」。要回答它，必須在**另一個時刻**再比一次。</p>
+
+<h2>2. 新儀器：圖邊界的 <code>SEL-DRIFT</code></h2>
+<p>churn 區塊的末尾有 <code>prev.assign(now, now + n_expert)</code> ⇒ <strong>在圖邊界時，
+<code>cgc_churn_last[layer]</code> 正好是「上一張圖該層最後發布的表」</strong>。於是在邊界再問一次
+<code>slot_table_safe()</code>，就能測「publish 之後、這一步結束之前，有沒有人動過」。</p>
+
+<div class="box warn">
+<strong>量測自身的教訓（第一版是錯的，寫下來以免重犯）。</strong> 第一版比對<strong>全部 256 個 entry</strong>，
+得到 <code>entries≈4410</code>／39×256＝<strong>44.2%</strong>、<code>max_per_layer≈115</code>——而 publish 的
+每層 clamp 數是 <code>180687/1599 = 113</code>，<strong>同一個量級</strong>。也就是說它量到的是
+<strong>clamp</strong>（非常駐者：publish 寫 0、<code>safe</code> 回 −1，<strong>在 publish 那一刻就已經不同</strong>），
+不是種族。<strong>比對「沒人讀的 entry」在結構上不可能說明消費者的時序。</strong>
+</div>
+
+<p>第二版只看<strong>「publish 當下被消費的 ids」</strong>（新增 <code>cgc_churn_sel</code> 快照），
+並且把 clamp 主導的全 entry 數字留在同一行列出來當對照：</p>
+<pre>CGC-S1: TABLE-CHURN graph=0 publishes=39 changed_entries=0   SEL-DRIFT layers=0 entries=0 max_per_layer=0 argmax_il=-1
+                                        (all-entry drift, clamp-dominated, for contrast: layers=39 entries=4412)
+CGC-S1: TABLE-CHURN graph=1 publishes=39 changed_entries=78  SEL-DRIFT layers=0 entries=0 …
+…（graph 2..9 同）</pre>
+<p><strong><code>SEL-DRIFT entries=0</code>，每一張圖都是 0。</strong></p>
+<p><strong>⇒ 消費者讀到的每一個專家，其對映在 publish 與讀取之間完全沒有移動。</strong>
+既然 <code>EQUIV-pool</code> 已證「publish 那一刻的表就是池的活狀態」，而讀取前後它也沒動
+⇒ <strong>GPU 讀到的就是那個被正確發布的 entry。時序不是機制。</strong></p>
+
+<h2>3. 累積的排除表（每一條都有量測支撐）</h2>
+<table>
+<tr><th>候選</th><th>處置</th><th>證據</th></tr>
+<tr><td>額外節點擾動圖／排程佈局</td><td class="bad">排除</td><td><code>p25-keepleaf</code> ＝ 錨（md5 <code>2d4e5099</code>＋每個捕獲張量）</td></tr>
+<tr><td>clamp 成 slot 0 ⇒ 靜默換專家</td><td class="bad">排除</td><td><code>clamped_selected=0</code>（兩臂）</td></tr>
+<tr><td>slot 對映錯（table 與 leaf 分歧）</td><td class="bad">排除</td><td><code>EQUIV-pool mismatch=0</code> ×1599</td></tr>
+<tr><td><strong>時序／讀到舊表（種族）</strong></td><td class="bad">排除</td><td><strong><code>SEL-DRIFT entries=0</code>（每圖）</strong></td></tr>
+<tr><td><strong>池的 slot 內容</strong></td><td class="good">剩下</td><td>以上全排除後，唯一還能讓「同 ids、同對映、不動」而 gather 出不同值的來源</td></tr>
+</table>
+<p><code>p25-slotgpu-l20</code> 也已不是「門檻外」哨兵（<code>b84eea28</code> ≠ 錨 <code>2d4e5099</code>），
+所以「禍首在低層」那條推論也不再被支持。</p>
+
+<h2>4. 下一步（問題已換成「哪一個 slot 的內容」）</h2>
+<ul>
+  <li><strong>量「池的 slot→expert 反查」（<code>slot_owner</code>）在兩臂是否相同。</strong>
+    前向對映（expert→slot）已被 <code>EQUIV-pool</code> 證明在 publish 時刻是對的且不動；
+    但若兩臂的<strong>填充</strong>把不同的專家寫進同一個 slot，那麼同一組 ids 就會 gather 到不同的權重
+    ——這正是 r11 那個「值域相近、方向無關」的形狀。</li>
+  <li><strong>具體做法</strong>：在圖邊界（已有現成的掛點）對每個受服務層 dump <code>slot_owner</code> 的一份摘要
+    （例如 <code>[sum, xor, wsum(index+1), count]</code>，與張量摘要同一個思路 ⇒ 可跨臂比對、且看得見置換），
+    再與錨比較。這比逐 slot dump 便宜，且不會被「沒人讀的 entry」混淆。</li>
+  <li><strong>不要</strong>再加同形狀的分梯、不要再用 <code>-l20</code>；錨固定 <code>p25-keepleaf</code>。</li>
+</ul>
+
+<h2>5. 本輪改動</h2>
+<table>
+<tr><th>檔案</th><th>內容</th></tr>
+<tr><td><code>src/llama.cpp/src/llama-context.cpp</code></td><td>churn 區塊新增 <code>cgc_churn_sel</code>（每層「publish 當下被消費的 ids」快照）＋圖邊界的 <code>SEL-DRIFT</code> 列印（同時保留 clamp 主導的全 entry 對照）。只印、不進任何 gate，只在 <code>CGC_S1_TABLE_CHURN=1</code> 時生效。</td></tr>
+<tr><td>編譯坑</td><td><code>model</code> 不在那個 static helper 的範圍 ⇒ 第一次用 <code>model.hparams.n_layer_all</code> 不編譯；改用「只走已發布過的層」即可，不需上限檢查。</td></tr>
+<tr><td>未改</td><td>未 commit、未重生索引；<code>agent_harness/</code> 一行未動</td></tr>
+</table>
+<p class="meta">證據：<code>Backup/cgc_logs/ids_dst_capture/p25-slotgpu-churn_llama_server_20260917_004854.log</code>
+（SEL-DRIFT）、<code>…_004636.log</code>（第一版全 entry，44.2% ＝ clamp）、
+<code>…p25-slotgpu-dbg_…_003136.log</code>（EQUIV-pool ×1599）。</p>
+
+</body>
+</html>

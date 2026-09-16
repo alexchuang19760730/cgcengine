@@ -540,4 +540,14 @@ echo; echo "=== report: $REPORT ==="
 # the NEXT arm can compute its quiet interval and label itself COLD/HOT instead of being believed.
 # Written after the tee so the file's mtime means "this arm is done", which is the interval that
 # matters -- the loading phase is IO/CPU, not the prefill that drives the governor.
+#
+# [CGC 2026-09-16 20:58] `$STATE_FILE` was assigned INSIDE the `{ ... } | tee` grouping, so it lived
+# in that pipeline's SUBSHELL and was unbound out here: `line 543: STATE_FILE: unbound variable`.
+# `2>/dev/null || true` cannot save this -- `set -u` aborts at the expansion, before any redirection
+# applies. Consequence: `.last_arm_end` was never updated, so the state file kept claiming the arm
+# BEFORE last and LIED about the quiet interval (the very thing this block exists to prevent).
+# Re-derive it here instead of depending on a variable whose scope is decided 400 lines away.
+# Same failure family as the lost `thermal_pressure()` definition noted above: two edits to one file.
+STATE_FILE="${CGC_ARM_STATE:-${OUTDIR:-Backup/cgc_logs}/.last_arm_end}"
 date +%s > "$STATE_FILE" 2>/dev/null || true
+echo "[state] .last_arm_end <- $(date '+%F %T')  ($STATE_FILE)"

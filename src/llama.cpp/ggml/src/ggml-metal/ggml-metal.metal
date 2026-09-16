@@ -10539,13 +10539,63 @@ kernel void kernel_cgc_ids_capture(
         constant ggml_metal_kargs_cgc_ids_capture & args,
         device const char * ids,
         device       char * dbg,
-        uint tgpig [[threadgroup_position_in_grid]]) {
+        uint tgpig [[threadgroup_position_in_grid]],
+        uint tiitg [[thread_index_in_threadgroup]]) {
     if (tgpig != 0 || args.slot < 0) {
         return;
     }
 
     device int32_t * out = (device int32_t *) (dbg + (size_t) args.slot * (size_t) args.stride * sizeof(int32_t));
     device const int32_t * in = (const device int32_t *) ids;
+
+    // [CGC 2026-09-16 r6] WHOLE-TENSOR digest. See the note on hash_mode in ggml-metal-impl.h: a
+    // 32-word window is 0.03% of a 90112-element tensor and lands on a DIFFERENT (token, channel)
+    // coordinate per node, so windowed verdicts are not comparable across nodes. This mode reduces
+    // every element instead, and the four words it writes are a fingerprint of the TENSOR:
+    //   out[0] = sum of the bit patterns
+    //   out[1] = xor of the bit patterns
+    //   out[2] = weighted sum, weight = (index + 1)  -- a plain sum cannot see a permutation, and a
+    //            permutation produced by a different gather order is exactly what this fork is
+    //            suspected of, so the position has to enter the digest
+    //   out[3] = element count (a shape change must not be able to pass as an identical tensor)
+    // A DIFF here is conclusive; a SAME is strong evidence, not proof (a compensating multiset change
+    // can in principle collide). Read it as "no difference found over the whole tensor", which is the
+    // strongest statement this instrument can make -- and far stronger than any single window.
+    // One threadgroup of 32 (see the dispatch in cgc_submit), so the reduction below is a fixed tree
+    // over threadgroup memory: no simd intrinsics, nothing that depends on the Apple simdgroup width.
+    if (args.hash_mode != 0) {
+        threadgroup uint32_t psum[32];
+        threadgroup uint32_t pxor[32];
+        threadgroup uint32_t pwts[32];
+
+        uint32_t s = 0, x = 0, w = 0;
+        for (int32_t j = (int32_t) tiitg; j < args.n_ids; j += 32) {
+            const uint32_t v = (uint32_t) in[j];
+            s += v;
+            x ^= v;
+            w += v * (uint32_t) (j + 1);   // uint32 wrap is defined and well behaved here
+        }
+        psum[tiitg] = s;
+        pxor[tiitg] = x;
+        pwts[tiitg] = w;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (tiitg == 0) {
+            for (int32_t k = 1; k < 32; ++k) {
+                s += psum[k];
+                x ^= pxor[k];
+                w += pwts[k];
+            }
+            out[0] = (int32_t) s;
+            out[1] = (int32_t) x;
+            out[2] = (int32_t) w;
+            out[3] = args.n_ids;
+            for (int32_t i = 4; i < args.stride; ++i) {
+                out[i] = 0x7fffffff;
+            }
+        }
+        return;
+    }
 
     for (int32_t i = 0; i < args.stride; ++i) {
         const int32_t j = args.n_skip + i;

@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>S1：slot→expert 反查量完 —— 「同一個 slot 裝了不同專家」被否證</title>
+<style>
+  :root { color-scheme: light; }
+  body { font: 15px/1.7 -apple-system, "Helvetica Neue", "PingFang TC", sans-serif;
+         max-width: 980px; margin: 40px auto; padding: 0 24px; color: #1c1c1e; background: #fff; }
+  h1 { font-size: 24px; border-bottom: 3px solid #1c1c1e; padding-bottom: 10px; }
+  h2 { font-size: 18px; margin-top: 32px; border-left: 5px solid #0a6; padding-left: 10px; }
+  h3 { font-size: 15px; margin-top: 22px; color: #333; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 13.5px; }
+  th, td { border: 1px solid #d0d0d5; padding: 6px 9px; text-align: left; vertical-align: top; }
+  th { background: #f2f2f7; font-weight: 600; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  pre { background: #f7f7fa; border: 1px solid #e3e3e8; padding: 10px 12px; overflow-x: auto; font-size: 12.5px; }
+  .bad { color: #b00; font-weight: 600; } .good { color: #067; font-weight: 600; }
+  .box { background: #eef7f1; border-left: 4px solid #0a6; padding: 12px 16px; margin: 16px 0; }
+  .box.warn { background: #fff8e6; border-left-color: #e0a000; }
+  .box.bad { background: #fdeeee; border-left-color: #b00; }
+  .meta { color: #666; font-size: 13px; }
+  ul li, ol li { margin: 4px 0; }
+  .dim { color: #666; }
+</style>
+</head>
+<body>
+
+<h1>S1：<code>slot→expert</code> 反查量完 —— 「同一個 slot 裝了不同專家」被否證</h1>
+<p class="meta">2026-09-17 01:25 · 引擎層 · 承接 <code>S1_TIMING_REFUTED_20260917.html</code>
+· 新增兩個引擎側讀數（<code>SLOT-OWNER</code> / <code>SLOT-SEL</code>）＋一個比較器；跑 r18–r22</p>
+
+<div class="box">
+<strong>結論（三句話）</strong>
+<ol>
+  <li><strong>你要量的事情量了，答案是否定的</strong>：<code>wrong = 0</code> 且 <code>owner == ids</code>
+      在 <strong>440/440 格、每一個臂</strong>都成立 ⇒ <strong>被消費的專家，它落到的那個 slot 裡裝的就是
+      它自己</strong>。「同一個 slot 裝了不同專家 ⇒ 同一組 ids 讀到不同權重」<strong>不成立</strong>。</li>
+  <li><strong>池的佈局確實不同，但那是後果</strong>：錨 vs S1 臂的 <code>SLOT-OWNER</code> 438/440 不同
+      （且 <code>PERMUTED=0</code> ⇒ 常駐專家的<strong>集合</strong>不同，不只是重排）——因為
+      <strong>兩臂從第一個 1-token 步的 layer 0 起路由就不同</strong>。</li>
+  <li><strong>我自己的讀數有一個設計缺陷，一併說清楚</strong>：因為 <code>wrong=0</code>，
+      「把 slot 反查回專家身分」在數學上<strong>是恆等式</strong> ⇒ <code>SLOT-SEL</code> 的摘要等於 ids 的
+      摘要。它量的是<strong>路由</strong>，不是池。</li>
+</ol>
+</div>
+
+<h2>1. 量了什麼、怎麼量</h2>
+<p>前幾輪已把<strong>前向對映</strong>（expert→slot）在每一個現有儀器能看的軸上清乾淨：</p>
+<table>
+<tr><th>既有讀數</th><th>結果</th><th>它說的是什麼</th></tr>
+<tr><td><code>EQUIV-pool</code></td><td>1599 次全部 <code>mismatch=0</code></td>
+    <td>publish 那一刻，發布的表＝池的活狀態（<strong>同瞬</strong>）</td></tr>
+<tr><td><code>SEL-DRIFT</code></td><td>每一張圖 <code>entries=0</code></td>
+    <td>被消費的 id 其對映在 publish→讀取之間<strong>沒有移動</strong></td></tr>
+</table>
+<p>兩個都是關於<strong>對映</strong>的述句。剩下沒人問的是<strong>池的內容</strong>：兩臂都同意
+「slot <em>s</em> 屬於專家 <em>e</em>」時，<em>s</em> 裡裝的到底是不是 <em>e</em> 的權重。
+<code>slot_owner[layer][slot]</code> 就是那個反查表，而且它由<strong>另一條程式路徑</strong>寫入
+（<code>llama-expert-cache.cpp:827</code> 的 <code>pick_slot</code>／<code>prefetch_slot</code> 寫 owner，
+而 publish 只讀 <code>slot_table</code>）——同一個指派、兩份表示、兩個寫者，正是先前那些漂移的形狀。</p>
+
+<h3>兩個新讀數（都 gated on <code>CGC_S1_TABLE_CHURN=1</code>，只印、不進任何 gate）</h3>
+<table>
+<tr><th>讀數</th><th>取樣</th><th>欄位</th></tr>
+<tr><td><code>CGC-S1: SLOT-OWNER graph=G il=L …</code></td><td>整層 slot 向量</td>
+    <td><code>sum, xor, wsum, n, owned</code></td></tr>
+<tr><td><code>CGC-S1: SLOT-SEL graph=G il=L ntok=T …</code></td><td>只取<strong>被消費的 ids</strong>，反查回專家身分</td>
+    <td><code>sum, xor, wsum, n, wrong, unowned, idsum, idsxor, idwsum</code></td></tr>
+</table>
+<p>摘要沿用內核側張量擷取的四字方案，理由相同：<code>sum</code> 與 <code>xor</code> 只依賴<strong>多重集</strong>，
+而 <code>wsum = Σ v·(i+1)</code> 依賴<strong>位置</strong> ⇒ <strong>「同一組專家換了位置」與「內容真的不同」
+可以分開</strong>；<code>n</code> 是 slot 數（形狀不能冒充相同）；<code>owned</code> 是佔用數
+（<code>sum</code> 會被自由 slot 的 −1 抵銷，單看它看不出佔用）。</p>
+<p>比較器：<code>Backup/compare_slot_owner.py</code>（SAME / <strong>PERMUTED</strong> / DIFFERENT / SHAPE，
+外加 <code>wrong</code> 的<strong>絕對閘</strong>與 degeneracy 控制）。新臂 <code>p25-gputime-churn</code>／
+<code>p25-keepleaf-churn</code>／<code>p25-slotgpu-churn</code>。</p>
+
+<h2>2. 兩個儀器陷阱（都踩到了，都已修）</h2>
+<div class="box warn">
+<strong>① 掛點必須選「兩臂都跑到」的地方。</strong> 第一版掛在 churn 區塊（publish 路徑
+<code>cgc_publish_slot_table_counted</code>）⇒ <strong>錨臂輸出零行</strong>、S1 臂 390 行——因為那個函式
+只有<strong>裝了 GPU table</strong> 的臂才會被呼叫。比較的一側是空的。
+移到 <code>expert_cache_on_topk</code>（兩臂的 <code>CGC-HOOK</code> trace 各 80 行）才可比。
+</div>
+<div class="box warn">
+<strong>② 取樣點必須在「填充之後」。</strong> 第一版在 hook 開頭取，讀到的是<strong>本步尚未填充</strong>的表
+（<code>slot_table[e] = -1</code>），於是 <code>unowned</code> ≈ 每格 1（≈12%，正是冷專家率），
+<strong>會被讀成「讀到沒人擁有的 slot」這種損壞</strong>。移到池路徑 publish 之後（verify-strict 已讓所有
+被選專家常駐）⇒ <code>unowned = 0</code>。
+</div>
+<p class="dim">兩者都是「儀器本身的位置也是儀器的一部分」這個家族：前一個是<em>誰</em>跑到，後一個是<em>何時</em>跑到。</p>
+
+<h2>3. 強制前提：同臂對照（三臂，各兩輪）</h2>
+<p>這些讀取在 hook 裡是<strong>不加鎖</strong>的（背景填充可能撕開一個摘要），所以同臂對照是<strong>前提</strong>，
+不是形式。</p>
+<table>
+<tr><th>同臂配對</th><th>SLOT-OWNER</th><th>SLOT-SEL</th><th><code>wrong</code></th><th><code>unowned</code></th></tr>
+<tr><td>錨（r21）</td><td class="good">440/440 SAME</td><td class="good">440/440 SAME</td><td>0</td><td>0</td></tr>
+<tr><td>keepleaf（r21）</td><td class="good">440/440 SAME</td><td class="good">440/440 SAME</td><td>0</td><td>0</td></tr>
+<tr><td>slotgpu（r21）</td><td class="good">440/440 SAME</td><td class="good">440/440 SAME</td><td>0</td><td>0</td></tr>
+<tr><td>錨 / slotgpu（r22）</td><td class="good">440/440 SAME</td><td class="good">440/440 SAME</td><td>0</td><td>0</td></tr>
+</table>
+<p>⇒ 儀器可重現；<code>wrong</code> 與 <code>unowned</code> 這兩個<strong>絕對閘</strong>在各臂都是 0。</p>
+
+<h2>4. 跨臂結果</h2>
+<table>
+<tr><th>配對</th><th>SLOT-OWNER</th><th>SLOT-SEL</th><th>讀法</th></tr>
+<tr><td><strong>錨 vs keepleaf</strong></td><td class="good">440/440 SAME</td><td class="good">440/440 SAME</td>
+    <td><strong>新的乾淨對照</strong>：keepleaf 把 S1 的四個額外節點<strong>全部建出來</strong>、只讓
+        <code>mul_mat_id</code> 吃 host leaf ⇒ <strong>光是建出 S1 節點不改變池，也不改變路由</strong></td></tr>
+<tr><td><strong>錨 vs slotgpu</strong></td><td class="bad">438/440 DIFFERENT<br><span class="dim">（PERMUTED=0）</span></td>
+    <td class="bad">440/440 DIFFERENT</td>
+    <td>差異綁在「<strong>GPU table 真的被消費</strong>」這件事上。但見下兩節：前者是後果，後者是我的讀數退化</td></tr>
+</table>
+<p><code>PERMUTED = 0</code> 值得單獨指出：如果是<strong>同一組專家換了 slot</strong>，判準會給 PERMUTED；
+現在 <code>sum</code>／<code>xor</code> 都不同 ⇒ <strong>常駐的專家集合本身不同</strong>，不是重排。</p>
+
+<h2>5. ★ 否證：被消費的專家，slot 裝的就是它自己</h2>
+<div class="box">
+<strong><code>wrong = 0</code>，且 <code>owner == ids[j]</code> 在 440/440 格、每一個臂都成立。</strong>
+以 <code>slot_table[e]</code> 取出 slot、再查 <code>slot_owner[il][slot]</code>，得到的<strong>永遠是 <em>e</em> 本身</strong>。
+<br><br>
+⇒ <strong>「同一個 slot 索引在兩臂指向不同的專家權重」這條機制不成立。</strong>
+「gather 靜默讀到另一個專家的權重」（publish 路的註解擔心的那件事）在<strong>被消費的子集上從未發生</strong>。
+§9.18.4 以「池/slot 的權重內容」的形式，<strong>這條路走完了</strong>。
+</div>
+
+<h2>6. ★ 自我修正：<code>SLOT-SEL</code> 的摘要在池自洽時是恆等式</h2>
+<p>邏輯很直白：若 <code>wrong == 0</code> 且 <code>unowned == 0</code>，則 <code>o == e</code> 逐元素成立
+⇒ 對 owner 取摘要，等於<strong>對 <code>ids</code> 取同一個摘要</strong>。所以我在同一行加了
+<code>idsum/idsxor/idwsum</code>（對 <code>ids</code> 本身的摘要）作為<strong>這個讀數自己意思的控制</strong>：</p>
+<pre>CGC-S1: SLOT-SEL graph=0 il=0 ntok=1 sum=1187 xor=217 wsum=4539 n=8 wrong=0 unowned=0  idsum=1187 idsxor=217 idwsum=4539
+                                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                                                                        s_* == i_*  ⇒ 退化</pre>
+<p>比較器的 degeneracy 控制報 <strong>A=440/440、B=440/440</strong> ⇒ <strong>每一格都退化</strong>。
+⇒ <code>SLOT-SEL</code> 唯一有資訊的欄位是 <code>wrong</code>／<code>unowned</code>，而它們是 0。
+<strong>「把 slot 反查回身分」在池自洽時是恆等式</strong>——這條要進 skill，因為它是「測一個自己造出來的恆等式」的典型。</p>
+
+<h2>7. ★ 真正的讀數：路由不同，且從第一個 1-token 步的 layer 0 就不同</h2>
+<p>既然那個摘要等於 ids 的摘要，它的跨臂差異就是<strong>被消費的 top-k 專家不同</strong>。逐項查：</p>
+<table>
+<tr><th>檢查</th><th>結果</th></tr>
+<tr><td>兩臂各自的 ids 摘要多樣性</td><td>各 <strong>440 個互異</strong>（440 格 / 440 格）</td></tr>
+<tr><td>兩臂的 ids 摘要集合交集</td><td><strong>只有 1 個</strong></td></tr>
+<tr><td>A 的 graph 0（40 層整組）是否等於 B 的任何一個 graph</td><td>否 ⇒ <strong>不是圖索引位移</strong></td></tr>
+<tr><td>graph 0 逐層</td><td>il = 0..5 <strong>全部 DIFF</strong></td></tr>
+<tr><td>生成文字（<code>sample</code> 欄）</td><td>錨「巴黎是法国首都…」 vs S1「巴黎并非法国的首都…」⇒ 分歧在<strong>第 1～2 個生成 token</strong></td></tr>
+<tr><td>池統計</td><td><code>miss_capacity</code> 4648 vs 5349、<code>hit_rate</code> 82.8 vs 81.7 ⇒ 填充確實不同</td></tr>
+</table>
+<p>而且 <code>CGC-HOOK</code> 的前 80 行<strong>全部是 <code>ntok=2</code></strong>（兩趟 × 40 層）
+⇒ 那兩趟是 <strong>2-token 的池路徑 prefill chunk</strong>，之後的 1-token 步才被 <code>SLOT-SEL</code> 記到。
+每個 graph 恰好 40 層（il 0..39）、兩臂都是 11 個 graph ⇒ 配對有效。</p>
+<div class="box">
+<strong>⇒ 池不是載體，路由才是；而路由的差異在 prompt 處理階段就已經存在。</strong>
+這與內核側 r5b/r6/r7 的「prefill 的 <code>ffn_moe_*</code> DIFF@1」<strong>方向一致</strong>——
+兩個獨立儀器現在互相支持。
+</div>
+
+<h2>8. 這改變了什麼</h2>
+<ul>
+  <li><strong>排除表再加一格</strong>：額外節點 ／ clamp 成 slot 0 ／ 對映錯誤 ／ 時序・race ／
+      <strong>slot 反查錯（本輪）</strong>。S1 的載體不在池。</li>
+  <li><strong>問題換位置</strong>：不再是「哪一層」也不是「哪一段時序」，而是
+      「<strong>prompt 處理階段的那個 2-token 池路徑 pass 裡，哪個節點先分歧</strong>」。</li>
+  <li><strong>下一步的具體做法</strong>：把內核側觀察點放到<strong>第一次 2-token 池路徑 pass</strong> 的 layer 0
+      ——注意不能再用 <code>--decode-only</code>（T 由 <code>ne</code> 自校準推出），那一步是 T=2。</li>
+  <li><strong>可複用</strong>：<code>Backup/compare_slot_owner.py</code> ＋兩個 <code>*-churn</code> 臂
+      已經是可重跑的哨兵組合（<code>p25-keepleaf-churn</code> 應<strong>永遠</strong>等於錨）。</li>
+</ul>
+
+<h2>9. 產物與範圍</h2>
+<table>
+<tr><th>類別</th><th>路徑</th></tr>
+<tr><td>引擎改動（只印、不進 gate）</td><td><code>src/llama.cpp/src/llama-context.cpp</code>
+    （churn 區塊的 <code>SEL-DRIFT</code>；<code>expert_cache_on_topk</code> 的 <code>SLOT-OWNER</code>／
+    <code>SLOT-SEL</code>；<code>s_owner_*</code> 靜態計數器）</td></tr>
+<tr><td>新臂</td><td><code>scripts/check/decode_sweep.py</code>：<code>p25-gputime-churn</code>／
+    <code>p25-keepleaf-churn</code></td></tr>
+<tr><td>新比較器</td><td><code>Backup/compare_slot_owner.py</code></td></tr>
+<tr><td>本輪跑次</td><td>r18–r22（<code>Backup/cgc_logs/ids_dst_capture/*churn*</code>）；
+    有效：r21／r22。r18 的錨臂零行、r19／r20 的 <code>SLOT-SEL</code> 取樣點錯，皆作廢</td></tr>
+<tr><td>記憶</td><td><code>.workbuddy/memory/2026-09-16.md</code> §EN-15；<code>MEMORY.md</code> 的 S1 節
+    （已壓到 18.4 KB）；新增 <code>.workbuddy/memory/2026-09-17.md</code>（指向 §EN-15）</td></tr>
+</table>
+<p class="meta"><strong>範圍聲明</strong>：本輪<strong>未 commit、未重生索引</strong>；
+<code>agent_harness/</code> 一行未動（另一條線的）。所有數字皆為本機、當前 build
+（server <code>054fb22f04a0</code>、metal <code>2b87af2e4db2</code>）、MTP=0 的
+<code>Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf</code>；<code>n_predict=12</code>、startup thermal 為 MODERATE。</p>
+
+</body>
+</html>

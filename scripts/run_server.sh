@@ -1476,6 +1476,23 @@ fi
 if [ -n "${CGC_TENSOR_CAPTURE_WORDS:-}" ]; then
     SERVER_ENV+=(CGC_TENSOR_CAPTURE_WORDS="$CGC_TENSOR_CAPTURE_WORDS")
 fi
+# [CGC 2026-09-16 §9.18.6 r5] WHICH END of the tensor the window reads: unset/0 = the head (element
+# 0), 1 = the tail. Not a cosmetic knob. A ggml tensor is ne0-fastest, so for a (2048, T) output the
+# default head window is TOKEN 0 -- the OLDEST token of the pass -- while `conv_input`, whose ne0 is
+# K-1+T, has a window that spans every token. Comparing those two as if they were the same window is
+# what produced "dense projections identical, conv input not": the dense verdicts were SAME AT TOKEN 0
+# only. Guarded by the usual allowlist check -- an unlisted CGC_* is dropped SILENTLY, and a dropped
+# tail flag looks exactly like "the tail makes no difference".
+if [ -n "${CGC_TENSOR_CAPTURE_TAIL:-}" ]; then
+    SERVER_ENV+=(CGC_TENSOR_CAPTURE_TAIL="$CGC_TENSOR_CAPTURE_TAIL")
+fi
+# [CGC 2026-09-16 §9.18.6 r6] Digest the WHOLE tensor rather than a 32-word window. Set this when the
+# question is "is this tensor identical between the arms": that is what the localisation is asking,
+# and it is the one thing a window cannot answer, because each node's window lands on its own
+# (token, channel) coordinate and two windows of the SAME tensor give opposite verdicts.
+if [ -n "${CGC_TENSOR_CAPTURE_HASH:-}" ]; then
+    SERVER_ENV+=(CGC_TENSOR_CAPTURE_HASH="$CGC_TENSOR_CAPTURE_HASH")
+fi
 if [ -n "${CGC_S1_IDENT:-}" ]; then
     SERVER_ENV+=(CGC_S1_IDENT="$CGC_S1_IDENT")
 fi

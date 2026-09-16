@@ -15,6 +15,17 @@
 #include <cstdlib>
 #include <cstring>
 
+// [CGC 2026-09-16 §9.18.6] Declared at the TOP of the file, deliberately. Defined with the rest of
+// the capture instrumentation at the foot of this file. It used to sit just above `mul_mat` (then the
+// first dispatcher that used it), was moved above `ssm_conv` when round 3 added the gated delta-net
+// dispatchers, and broke AGAIN at `concat` in r3c -- three placements, three lost builds to
+// `use of undeclared identifier 'cgc_dst_capture_at'`, every one of them because the declaration
+// tracked the CURRENT first caller instead of just going to the front. Put it where it cannot be
+// outrun; a hook that can be added anywhere must be declared everywhere-first.
+namespace {
+void cgc_dst_capture_at(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_dst, int idx, int n_fuse);
+} // namespace
+
 static ggml_metal_buffer_id ggml_metal_get_buffer_id(const ggml_tensor * t) {
     if (!t) {
         return { nullptr, 0 };
@@ -652,6 +663,17 @@ int ggml_metal_op_concat(ggml_metal_op_t ctx, int idx) {
     const int nw0 = (ne1 + nrptg - 1) / nrptg;
 
     ggml_metal_encoder_dispatch_threadgroups(enc, nw0, ne2, ne3, nth, nrptg, 1);
+
+    // [CGC 2026-09-16 §9.18.6 r3c] CONCAT -- and the reason is concrete, not general: the gated
+    // delta-net's short conv takes `conv_input = concat(conv_states, qkv_mixed)` as its operand
+    // (`delta-net-base.cpp:472-473`), and round 3's cross-arm diff put the FIRST divergence on that
+    // conv's OUTPUT (`conv_output_raw-2`, graph 4) while the gate projection was still SAME. Splitting
+    // that interval in two needs the concat's own output. Note it is NOT reached by the `bin` hook --
+    // `GGML_OP_CONCAT` has its own dispatcher (this one), which is why the first attempt at this point
+    // captured nothing and only lengthened the capture list for no gain. Returns a constant 1, so the
+    // named node is `ctx->node(idx)` and the destination is `op`, same shape as the other points.
+    // Placed after the last writer of that destination (the dispatch just above is the only one).
+    cgc_dst_capture_at(ctx, ggml_metal_get_buffer_id(op), idx, /*n_fuse*/ 1);
 
     return 1;
 }
@@ -1719,6 +1741,19 @@ int ggml_metal_op_ssm_conv(ggml_metal_op_t ctx, int idx) {
         ggml_metal_encoder_dispatch_threadgroups(enc, ne01, ne1, ne02, 1, 1, 1);
     }
 
+    // [CGC 2026-09-16 §9.18.6 round 3] The gated delta-net core -- the region §EN-8 left open.
+    // §EN-8 localised the first divergence to `linear_attn_out-2` (DIFF from graph 4) while every
+    // input of it was bit-identical (`attn_norm-2` / `z-2` / `gate-2` all SAME), and layer 2's dense
+    // matrices as a whole were bit-identical. So the divergence sits between the gate projection and
+    // the output projection -- i.e. inside this dispatcher and its two siblings below (SSM_SCAN,
+    // GATED_DELTA_NET). SSM_CONV is the short convolution; GATED_DELTA_NET is the delta-rule scan
+    // and consumes the recurrence `state` as src[5]. SSM_SCAN is the Mamba-path sibling (qwen35moe
+    // does not use it; captured so one list can walk a stack of either kind).
+    // All three return a constant 1, so the named node is `ctx->node(idx)`, the op's own dst --
+    // the same shape as the mul_mat and flash_attn_ext points added in round 2. Placed after the
+    // last writer of that dst on every path (both branches above write it).
+    cgc_dst_capture_at(ctx, ggml_metal_get_buffer_id(op), idx, /*n_fuse*/ 1);
+
     return 1;
 }
 
@@ -1816,6 +1851,9 @@ int ggml_metal_op_ssm_scan(ggml_metal_op_t ctx, int idx) {
     ggml_metal_encoder_set_threadgroup_memory_size(enc, smem, 0);
 
     ggml_metal_encoder_dispatch_threadgroups(enc, d_inner, n_head, n_seqs, d_state, 1, 1);
+
+    // [CGC 2026-09-16 §9.18.6 r3] gated delta-net core -- see the note at the ssm_conv point above.
+    cgc_dst_capture_at(ctx, ggml_metal_get_buffer_id(op), idx, /*n_fuse*/ 1);
 
     return 1;
 }
@@ -1932,6 +1970,12 @@ int ggml_metal_op_gated_delta_net(ggml_metal_op_t ctx, int idx) {
     const int nsg = pipeline.nsg;
 
     ggml_metal_encoder_dispatch_threadgroups(enc, op->src[2]->ne[0]/nsg, op->src[2]->ne[1], op->src[2]->ne[3], 32, nsg, 1);
+
+    // [CGC 2026-09-16 §9.18.6 r3] gated delta-net core -- see the note at the ssm_conv point above.
+    // This is the delta-rule scan itself; it takes `state` as src[5], so a divergence captured here
+    // is upstream of the recurrence state. If the output is SAME while `linear_attn_out-*` is DIFF,
+    // the remaining suspect is the state carried BETWEEN steps, not this dispatch.
+    cgc_dst_capture_at(ctx, ggml_metal_get_buffer_id(op), idx, /*n_fuse*/ 1);
 
     return 1;
 }
@@ -2191,6 +2235,18 @@ int ggml_metal_op_cpy(ggml_metal_op_t ctx, int idx) {
 
     ggml_metal_encoder_dispatch_threadgroups(enc, nw0*(ne01 + nrptg - 1)/nrptg, ne02, ne03, nth, nrptg, 1);
 
+    // [CGC 2026-09-16 §9.18.6 r3d] CPY / DUP / CONT -- aimed at one specific line:
+    // `delta-net-base.cpp:496` runs `ggml_cpy(ctx0, conv_state_last, conv_state_update)`, the write
+    // that persists the per-layer conv RECURRENCE STATE back into the KV cache. r3c put the first
+    // cross-arm divergence on `conv_input-2` (= concat(conv_states, qkv_mixed)) and the differing
+    // words fall inside the `conv_states` half -- i.e. on the state that was READ BACK, which is the
+    // operand of the NEXT step's conv. `conv_states` and `conv_state_last` are views (no kernel, so
+    // nothing to capture); this destination is the only readable point in that cycle. Returns a
+    // constant 1, so the named node is `ctx->node(idx)` and the destination is `op`.
+    // NOTE this dispatcher also serves every other CPY/DUP/CONT in the graph -- the NAME FILTER, not
+    // this hook, is what keeps the capture list short: only `conv_state_update-*` goes into NODES.
+    cgc_dst_capture_at(ctx, ggml_metal_get_buffer_id(op), idx, /*n_fuse*/ 1);
+
     return 1;
 }
 
@@ -2341,12 +2397,6 @@ int ggml_metal_op_pool_2d(ggml_metal_op_t ctx, int idx) {
 
     return 1;
 }
-
-namespace {
-// Defined with the rest of the CGC capture instrumentation at the foot of this file, and declared
-// here because mul_mat -- the first dispatcher that uses it -- is defined before it.
-void cgc_dst_capture_at(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_dst, int idx, int n_fuse);
-} // namespace
 
 int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
     ggml_tensor * op = ctx->node(idx);
@@ -3233,6 +3283,15 @@ constexpr int32_t CGC_IDS_STRIDE = 8;
 // exactly the deeper layers a divergence walk needs.
 constexpr int32_t CGC_DST_SLOTS  = 4096;
 constexpr int32_t CGC_DST_STRIDE = 32;
+// [CGC 2026-09-16 §9.18.6 r5] Was 256, and 256 SILENTLY TRUNCATED a 23-node list. Measured: the list
+// `l_out-1,...,l_out-2` is 312 chars, so the filter kept 19 names and cut the 20th MID-NAME
+// (`,attn_residu`). The four names dropped that way included `ffn_moe_logits_raw-2` -- the router
+// logits, i.e. the one node the run existed to read -- and the run still reported a clean, plausible
+// table for the 19 that survived. `snprintf` returning a length >= the buffer IS the signal, and it
+// was being discarded. The filter now has room, the truncation is a WARNING, and the effective list
+// is printed at init, because this failure is indistinguishable from "the node never ran" -- the same
+// shape as the allowlist trap in run_server.sh, one layer down.
+constexpr int32_t CGC_DST_FILTER_MAX = 2048;
 
 struct cgc_ids_rec {
     char    name[48];
@@ -3241,6 +3300,23 @@ struct cgc_ids_rec {
     int32_t fuse; // DST only: how many nodes the dispatcher covered. >1 means this row is the LAST
                   // node of a fused group (the naming rule in cgc_dst_capture_at), so it is printed.
     int32_t seq;  // global submission order across BOTH streams -- see the dump
+    int32_t ne;   // [CGC 2026-09-16 §9.18.6 r4] DST only: `ggml_nelements(op)` BEFORE the clamp.
+                  // `n_ids` is min(ne, CGC_TENSOR_CAPTURE_WORDS) and therefore saturates at 32, which
+                  // hides the tensor's SHAPE -- and with it the phase. That is exactly how a run can
+                  // be spent reading a T=2 prompt-tail graph while believing it is a decode step:
+                  // for `conv_input`, ne0 = K-1 + T, so T is recoverable from the shape and from
+                  // nothing else that this instrument currently prints. Printed as `ne=` AFTER
+                  // `fuse=`, i.e. after the `ids=[...]` group, so existing readers are unaffected.
+    int32_t off;  // [CGC 2026-09-16 §9.18.6 r5] DST only: the element offset the window starts at.
+                  // ★ THIS IS NOT A DIAGNOSTIC, IT IS PART OF THE MEASUREMENT. The window is a fixed
+                  // 32 CONTIGUOUS elements, and a ggml tensor is ne0-fastest, so for a (ne0, T) output
+                  // with ne0 > 32 the window spans i1 = 0 ONLY -- i.e. it reads TOKEN 0 of the pass,
+                  // the OLDEST token, while `conv_input` (ne0 = K-1+T, always < 32) spans EVERY token.
+                  // Two nodes then look comparable and are not: measured 2026-09-16, T=8 made
+                  // `attn_norm-2`/`z-2`/`gate-2` report SAME (token 0) while `conv_input-2` reported
+                  // DIFF (tokens 1..7). Every "SAME" in rounds r1..r4 is a SAME-AT-TOKEN-0, and token
+                  // 0 is the one token guaranteed to be the least informative. Printed as `off=`
+                  // after `ne=`, so existing readers are unaffected.
 };
 
 struct cgc_ids_state {
@@ -3254,8 +3330,10 @@ struct cgc_ids_state {
 
     // tensor-output side
     bool                dst_enabled = false;
-    char                dst_filter[256] = { 0 };  // comma-separated list of EXACT node names, or `*`
+    char                dst_filter[CGC_DST_FILTER_MAX] = { 0 };  // comma-separated EXACT names, or `*`
     int32_t             dst_words   = CGC_DST_STRIDE;
+    bool                dst_tail    = false;      // anchor the window at the END of the tensor
+    bool                dst_hash    = false;      // digest the WHOLE tensor instead of a window
     ggml_metal_buffer_t buf_dst     = nullptr;
     int32_t *           base_dst    = nullptr;
     int32_t             slots_dst   = 0;
@@ -3287,8 +3365,22 @@ bool cgc_capture_init(ggml_metal_device_t dev) {
     // come first. `*` matches every node -- use it to enumerate names, never to produce a number.
     const char * f = getenv("CGC_TENSOR_CAPTURE");
     if (f != nullptr && f[0] != '\0' && f[0] != '0') {
-        snprintf(g_cgc_ids.dst_filter, sizeof(g_cgc_ids.dst_filter), "%s", f);
+        const int wrote = snprintf(g_cgc_ids.dst_filter, sizeof(g_cgc_ids.dst_filter), "%s", f);
         g_cgc_ids.dst_enabled = true;
+        // Trust `wrote`, not the buffer: snprintf returns the length it WOULD have written, so
+        // `wrote >= sizeof` is the only evidence that names were dropped. Without this the failure is
+        // WRONG ANSWERS, not a missing feature -- the surviving names still produce a complete, tidy,
+        // entirely plausible table, and the dropped ones simply never appear (which reads as ABSENT,
+        // i.e. as "that node is not capturable in this build" -- a conclusion drawn from a bug).
+        if (wrote >= (int) sizeof(g_cgc_ids.dst_filter)) {
+            GGML_LOG_WARN("CGC-IDS-CAP: CGC_TENSOR_CAPTURE is %d chars but the filter holds %d -- "
+                          "the list was TRUNCATED and the names past that point are dropped. The cut "
+                          "lands MID-NAME, so the last name that survives is unusable too. Shorten the "
+                          "list (or raise CGC_DST_FILTER_MAX) before drawing any conclusion from the "
+                          "nodes that did appear.\n", wrote, (int) sizeof(g_cgc_ids.dst_filter) - 1);
+        }
+        GGML_LOG_WARN("CGC-IDS-CAP: CGC_TENSOR_CAPTURE effective (%d chars, matches EXACT names): %s\n",
+                      wrote, g_cgc_ids.dst_filter);
 
         const char * w = getenv("CGC_TENSOR_CAPTURE_WORDS");
         if (w != nullptr && w[0] != '\0') {
@@ -3297,6 +3389,27 @@ bool cgc_capture_init(ggml_metal_device_t dev) {
             if (v > CGC_DST_STRIDE) v = CGC_DST_STRIDE;
             g_cgc_ids.dst_words = v;
         }
+
+        // [CGC 2026-09-16 §9.18.6 r5] WHICH END of the tensor the 32-word window reads. Default is
+        // the head (element 0), and that default is why rounds r1..r4 kept reading TOKEN 0: a ggml
+        // tensor is ne0-fastest, so for a (2048, T) output the first 32 elements are token 0's first
+        // 32 channels, and token 0 is the OLDEST token of the pass. `conv_input` is (K-1+T, 8192),
+        // so its window happens to span every token -- the two were being compared as if comparable,
+        // and the result read as "the dense projections are identical while the conv input is not".
+        // Set this to anchor on the LAST n elements instead, which for the same tensors is the
+        // NEWEST token, i.e. the one whose value the recurrence chain carries into the next step.
+        const char * t = getenv("CGC_TENSOR_CAPTURE_TAIL");
+        g_cgc_ids.dst_tail = (t != nullptr && t[0] != '\0' && t[0] != '0');
+
+        // [CGC 2026-09-16 §9.18.6 r6] Digest the WHOLE tensor instead of a 32-word window. Set this
+        // when the question is "is this tensor identical between the arms" -- which is the question
+        // the localisation is actually asking, and the one a window cannot answer: two windows of the
+        // same tensor at different offsets give different verdicts (measured r5: head says DIFF from
+        // graph 1, tail says never), because each node's window lands on its own (token, channel)
+        // coordinate. A digest makes SAME mean the tensor, at the cost of losing "which element".
+        // Use the windowed modes for the follow-up question "where".
+        const char * hsh = getenv("CGC_TENSOR_CAPTURE_HASH");
+        g_cgc_ids.dst_hash = (hsh != nullptr && hsh[0] != '\0' && hsh[0] != '0');
 
         // The dump merges the two streams in submission order, and the graph boundaries the
         // comparator segments by live in the IDS rows. Enabling the dst side without the ids side
@@ -3354,12 +3467,13 @@ bool cgc_capture_init(ggml_metal_device_t dev) {
 // graph, the allocator layout or the dispatch order (eng-diag-0018). No host-side probe has that
 // property -- that is what eng-mh-0008 is about.
 static void cgc_submit(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_src, ggml_metal_buffer_id bid_dst,
-                       int32_t slot, int32_t stride, int32_t n_words) {
+                       int32_t slot, int32_t stride, int32_t n_words, int32_t n_skip, int32_t hash_mode) {
     ggml_metal_kargs_cgc_ids_capture args = {
-        /*.n_ids  =*/ n_words,
-        /*.slot   =*/ slot,
-        /*.stride =*/ stride,
-        /*.n_skip =*/ 0,
+        /*.n_ids     =*/ n_words,
+        /*.slot      =*/ slot,
+        /*.stride    =*/ stride,
+        /*.n_skip    =*/ n_skip,
+        /*.hash_mode =*/ hash_mode,
     };
 
     ggml_metal_encoder_t enc = ctx->enc;
@@ -3381,7 +3495,7 @@ void cgc_ids_capture(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_ids,
 
     const int32_t slot = g_cgc_ids.slots++;
 
-    cgc_submit(ctx, bid_ids, ggml_metal_buffer_get_id_whole(g_cgc_ids.buf), slot, CGC_IDS_STRIDE, n_ids);
+    cgc_submit(ctx, bid_ids, ggml_metal_buffer_get_id_whole(g_cgc_ids.buf), slot, CGC_IDS_STRIDE, n_ids, 0, 0);
 
     cgc_ids_rec & r = g_cgc_ids.recs[slot];
     // op->name is a fixed-size array, never a null pointer -- compare the first byte instead, which
@@ -3456,21 +3570,57 @@ void cgc_dst_capture_common(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_dst,
     const int32_t slot = g_cgc_ids.slots_dst++;
     const int32_t n    = n_words < g_cgc_ids.dst_words ? n_words : g_cgc_ids.dst_words;
 
-    cgc_submit(ctx, bid_dst, ggml_metal_buffer_get_id_whole(g_cgc_ids.buf_dst), slot, CGC_DST_STRIDE, n);
+    // [CGC 2026-09-16 §9.18.6 r5] Window anchor. Default 0 = the HEAD of the tensor; with
+    // CGC_TENSOR_CAPTURE_TAIL=1 it is ne - n = the TAIL. Which one is right depends on what is being
+    // asked, and the difference is not cosmetic: for a (2048, T) output the head window is token 0 of
+    // the pass, while the tail window is the newest token -- and it is the newest token, not the
+    // oldest, whose divergence the recurrence chain propagates. Both are recorded (r.off), because a
+    // window whose offset is not printed cannot be told apart from a full-tensor read.
+    // [CGC 2026-09-16 §9.18.6 r6] ...and BOTH are still windows. CGC_TENSOR_CAPTURE_HASH=1 replaces
+    // the window with a digest over the whole tensor (see hash_mode in ggml-metal-impl.h), which is
+    // the only reading where "identical" is a statement about the tensor rather than about 32 of its
+    // elements. In that mode n_words is passed through unclamped as the element count, n_skip must be
+    // 0 (the kernel walks the tensor itself), and only the first 4 words of the slot are meaningful.
+    const int32_t hash    = g_cgc_ids.dst_hash ? 1 : 0;
+    // [CGC 2026-09-17 00:30] `arg_n` becomes the kargs' `n_ids`, and it is the TENSOR's element count
+    // in EVERY mode -- not the window length. It used to be the window length (`hash ? n_words : n`),
+    // and the kernel bounds its source read with `j < args.n_ids` where `j = args.n_skip + i`. As soon
+    // as n_skip > 0 -- i.e. TAIL=1 on any tensor larger than the word budget -- every element failed
+    // that bound and the row was written as pure 0x7fffffff sentinel. Measured: tail mode produced
+    // 188 all-sentinel rows out of 205; head mode (n_skip = 0, where the two meanings coincide)
+    // produced 0 out of 533. The failure was silent in the worst possible way -- all-sentinel rows
+    // compare EQUAL, so the verdict was a confident "identical" for tensors nobody had looked at, and
+    // two rounds were read off it. The window length is still recorded (r.n_ids), and the kernel's own
+    // bound does the clamping, so head and tail now agree by construction.
+    const int32_t arg_n   = n_words;
+    const int32_t n_skip  = (!hash && g_cgc_ids.dst_tail && n_words > n) ? n_words - n : 0;
+
+    cgc_submit(ctx, bid_dst, ggml_metal_buffer_get_id_whole(g_cgc_ids.buf_dst), slot, CGC_DST_STRIDE,
+               arg_n, n_skip, hash);
 
     cgc_ids_rec & r = g_cgc_ids.recs_dst[slot];
     snprintf(r.name, sizeof(r.name), "%s.dst", op->name);
-    r.n_ids = n;
+    r.n_ids = hash ? 4 : n;   // meaningful words in the slot: 4 digest words, or the window length
     r.kind  = 2;
     r.fuse  = fuse;
     r.seq   = g_cgc_ids.seq++;
+    r.ne    = n_words;   // pre-clamp size: see the note on `ne` in cgc_ids_rec
+    // off = -1 is the "this row is a whole-tensor DIGEST, not a window" marker: without it a digest
+    // row (4 real words + sentinels) is indistinguishable from a 4-element tensor's window.
+    r.off   = hash ? -1 : n_skip;
 }
 
-// The mid-dispatcher call site: there the tensor being read is the one whose ids operand was just
-// consumed, so it is in hand and is passed in directly.
+// The mid-dispatcher call site. `n_words` is GONE as a parameter on purpose: it used to be supplied
+// by the caller as `ne0 * ne1`, which silently dropped ne2/ne3. A `mul_mat_id` output is
+// `[n_embd, n_expert_used, n_tokens]`, so for a T=2 prefill chunk that read 16384 of the tensor's
+// 32768 elements -- TOKEN 0 ONLY. Measured 2026-09-17 00:20: `ffn_moe_down-1` reported ne=16384 while
+// `ffn_moe_weighted-1` (a `mul`, captured with the full count) reported ne=32768 for the SAME
+// `n_embd=2048, n_expert_used=8, T=2`. That is the same failure mode as the window anchor, one layer
+// down and harder to see, because the truncated count was not a knob -- it was arithmetic in the
+// caller. The element count is now the tensor's own, so no call site can narrow the reading.
 void cgc_dst_capture(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_dst,
-                     const struct ggml_tensor * op, int32_t n_words) {
-    cgc_dst_capture_common(ctx, bid_dst, op, n_words, 1);
+                     const struct ggml_tensor * op) {
+    cgc_dst_capture_common(ctx, bid_dst, op, (int32_t) ggml_nelements(op), 1);
 }
 
 // Dispatcher-TAIL variant. Every dispatcher that can fuse ends by writing the destination of the LAST
@@ -3555,8 +3705,8 @@ extern "C" void ggml_metal_cgc_ids_dump(void) {
         // `fuse` is appended for DST rows only, and AFTER the ids=[...] group, so every reader that
         // regexes out `name=(\S+) ids=\[([^\]]*)\]` keeps working unchanged.
         if (r.kind == 2) {
-            GGML_LOG_WARN("CGC-IDS-CAP slot=%d path=%s n_ids=%d name=%s ids=[%s] fuse=%d\n",
-                          sl, path, (int) r.n_ids, r.name, b, (int) r.fuse);
+            GGML_LOG_WARN("CGC-IDS-CAP slot=%d path=%s n_ids=%d name=%s ids=[%s] fuse=%d ne=%d off=%d\n",
+                          sl, path, (int) r.n_ids, r.name, b, (int) r.fuse, (int) r.ne, (int) r.off);
         } else {
             GGML_LOG_WARN("CGC-IDS-CAP slot=%d path=%s n_ids=%d name=%s ids=[%s]\n",
                           sl, path, (int) r.n_ids, r.name, b);
@@ -3986,7 +4136,10 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
         // is the reading §9.18.4 could only infer by elimination: if this tensor differs while the
         // input and the ids are known identical (§9.18.3), then the ids point at different WEIGHTS,
         // i.e. the pool/slot contents are the carrier and the mapping layer is exonerated.
-        cgc_dst_capture(ctx, bid_dst, op, (int32_t) (ne0 * ne1));
+        // [CGC 2026-09-17 §9.18.6 r10] No element count is passed any more -- the earlier
+        // `(int32_t) (ne0 * ne1)` dropped n_tokens and made this a token-0-only reading. See the
+        // note on cgc_dst_capture.
+        cgc_dst_capture(ctx, bid_dst, op);
 
         // this barrier is always needed because the next kernel has to wait for the id maps to be computed
         ggml_metal_op_concurrency_reset(ctx);
@@ -4100,7 +4253,9 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
         // [CGC 2026-09-16 §9.18.6] The MV path is the one every decode step takes (ne21 <
         // ne21_mm_id_min => the whole S1 experiment runs MV), so this is the site that produces the
         // decisive reading. Same encoder, same submission point as the ids snapshot above.
-        cgc_dst_capture(ctx, bid_dst, op, (int32_t) (ne0 * ne1));
+        // [CGC 2026-09-17 §9.18.6 r10] Element count now comes from the tensor -- the previous
+        // `(int32_t) (ne0 * ne1)` was a token-0-only read for any T > 1.
+        cgc_dst_capture(ctx, bid_dst, op);
     }
 
     return 1;

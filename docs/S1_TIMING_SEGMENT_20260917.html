@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>S1：時序段落的偵察與量測，以及哨兵複驗 — 2026-09-17 00:40</title>
+<style>
+  :root { color-scheme: light; }
+  body { font: 15px/1.7 -apple-system, "Helvetica Neue", "PingFang TC", sans-serif;
+         max-width: 960px; margin: 40px auto; padding: 0 24px; color: #1c1c1e; background: #fff; }
+  h1 { font-size: 24px; border-bottom: 3px solid #1c1c1e; padding-bottom: 10px; }
+  h2 { font-size: 18px; margin-top: 32px; border-left: 5px solid #0a6; padding-left: 10px; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 13.5px; }
+  th, td { border: 1px solid #d0d0d5; padding: 6px 9px; text-align: left; vertical-align: top; }
+  th { background: #f2f2f7; font-weight: 600; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  pre { background: #f7f7fa; border: 1px solid #e3e3e8; padding: 10px 12px; overflow-x: auto; font-size: 12.5px; }
+  .bad { color: #b00; font-weight: 600; } .good { color: #067; font-weight: 600; }
+  .box { background: #eef7f1; border-left: 4px solid #0a6; padding: 12px 16px; margin: 16px 0; }
+  .box.warn { background: #fff8e6; border-left-color: #e0a000; }
+  .meta { color: #666; font-size: 13px; }
+  ul li, ol li { margin: 4px 0; }
+</style>
+</head>
+<body>
+
+<h1>S1：時序段落的偵察與量測，以及哨兵複驗</h1>
+<p class="meta">2026-09-17 00:40 · 引擎層 · 承接 <code>S1_DISCRIMINATION_RESULT_20260917.html</code>
+· 零改碼（只用既有 env 與 <code>ARMS</code> 覆蓋）</p>
+
+<div class="box">
+<strong>三句話</strong>：① 機制就在原始碼註解裡——<strong>兩臂的 slot 值來自兩個不同函式</strong>；
+② repo 指定的閘門量 <code>clamped_selected</code> 兩臂皆 <strong>0</strong> ⇒「夾成 slot 0 ⇒ 靜默換專家」<strong>被否掉</strong>；
+③ 真正的量 <code>consumed_changed = 192/390 (49%)</code> ⇒ <strong>種族條件被量到</strong>。
+另外：<strong><code>-l20</code> 這個「門檻外」哨兵已經不成立</strong>（與 09-15 記錄衝突）。
+</div>
+
+<h2>1. 兩臂的 slot 值來自兩個不同函式</h2>
+<table>
+<tr><th>函式</th><th>誰吃</th><th>形狀</th></tr>
+<tr><td><code>llama_expert_cache_publish_slot_table()</code></td><td><strong>GPU table</strong></td><td>一次<strong>掃整層</strong></td></tr>
+<tr><td><code>llama_expert_cache_slot_table_safe()</code></td><td><strong>host leaf</strong>（＝參考檔的來源）</td><td><strong>逐專家</strong>查</td></tr>
+</table>
+<p><code>llama-context.cpp:4245</code> 的註解開頭就寫：「They are deliberately separate code paths —
+a bulk export and a per-lookup — <strong>so they can drift</strong>, and a drift is invisible in the
+logits oracle until it changes which slot a cold expert reads.」</p>
+<p>它同時指名了兩者「were written to disagree on」的情形：<strong>非常駐專家在沒有保留 ZERO slot 的層上</strong>，
+<code>publish</code> 把它<strong>夾成 0</strong>（合法索引 ⇒ 指向<strong>另一個專家的權重</strong>，**靜默**），
+而 <code>safe</code> 回傳原始的 <strong>−1</strong>（大聲，id_oob）。並寫死閘門：
+「<strong>clamped MUST be 0</strong> … S1 is admissible only while this is 0」。</p>
+
+<h2>2. clamp 假說：在「被消費的子集」上被否掉</h2>
+<pre>p25-slotgpu-dbg   : publishes=1599  clamped_selected=0  clamped_table=180687  changed_entries=0
+p25-keepleaf-dbg  : publishes=1599  clamped_selected=0  clamped_table=180687  changed_entries=0</pre>
+<p><strong><code>clamped_selected = 0</code> 兩臂皆然</strong> ⇒ 被讀到的 ids 沒有任何一個被夾成 slot 0。
+（<code>clamped_table = 180687</code> 是整表量；repo 自己註明它「large in EVERY run carries no
+information」，那 16 行 <code>CGC-SLOT-TABLE-CLAMP … EQUIVALENCE BROKEN</code> 印的就是它，屬預期。）
+<code>changed_entries = 0</code> 也說明**同一輪內整表內容不移動**。</p>
+
+<h2>3. ★ 種族條件被量到：<code>consumed_changed = 192</code></h2>
+<pre>p25-slotgpu-churn : publishes=1599  clamped_selected=0  changed_entries=572
+                    consumed_changed=192   consumed_unchanged_publishes=198      ⇒ 192/390 = 49%</pre>
+<p>這個計數器的定義（<code>llama-context.cpp:4390-4415</code>）：**每次 publish 時，比對「本步被消費的
+每一個 id」的對映是否自上次 publish 起移動過**。註解原文：</p>
+<p class="box">「Premise B needs <em>“does the mapping of an id the consumer actually READS move”</em>, because
+<strong>only a consumed move can create a per-step host→GPU ordering requirement</strong>.」</p>
+<p><strong>⇒ 一半的 publish 事件中，消費者讀得到的 id 其對映已經移動。</strong></p>
+<p><strong>旗標是純量測，不是擾動</strong>：它只讀快照比對；而且該臂的 <code>answer_md5_set</code> 與
+純 <code>p25-slotgpu</code> <strong>完全相同</strong>（<code>f0acf7d2</code>）⇒ 打開它不改變答案。</p>
+<p><strong>⇒ 這正好解釋 r10／r11 的簽名</strong>：消費者在**錯的時刻**讀到**舊對映** ⇒ 讀到**另一個專家的權重**
+⇒ 值域相近、方向無關；router 逐位元相同（選擇是對的）；md5 **UNSTABLE**（取決於當下誰常駐）。</p>
+
+<h2>4. ★ 哨兵複驗：<code>-l20</code> 已經不等於錨</h2>
+<table>
+<tr><th>臂</th><th>本機當前 build</th><th>09-15 記錄</th><th>可否當哨兵</th></tr>
+<tr><td><code>p25-gputime</code>（錨）</td><td><code>2d4e5099</code></td><td><code>dc055e63</code></td><td>—</td></tr>
+<tr><td><strong><code>p25-keepleaf</code></strong></td><td class="good"><code>2d4e5099</code>（兩輪）</td><td>未記</td><td class="good">可以（＝錨）</td></tr>
+<tr><td><strong><code>p25-slotgpu-l20</code></strong></td><td class="bad"><code>b84eea28</code></td><td><code>dc055e63</code>（＝錨）</td><td class="bad">不可以（≠ 錨）</td></tr>
+</table>
+<p>⇒ <strong><code>p25-slotgpu-l20</code> 不能當「門檻外」哨兵</strong>；而 09-15 那份「l20/l38/l39 皆等於錨」
+⇒「禍首在 1..19」的推論，<strong>在當前 build 上不成立</strong>（期間變了 <code>CGC_SPAC=1</code>（09-16）
+與 layer-0 池化修復）。**剩下的乾淨哨兵只有 <code>p25-keepleaf</code>。</strong>
+這也正是哨兵概念的價值：它把一條**過期的推論**變成一個當場可見的紅燈。</p>
+
+<h2>5. 操作紀律（本輪我自己踩到）</h2>
+<div class="box warn">
+<strong>不要讓兩輪 <code>decode_sweep</code> 重疊。</strong> 本輪我讓 churn 與 sentinel 兩輪並行 ⇒ 兩者搶
+8080 與 GPU ⇒ 其中一臂 <code>n_rounds=0</code>（<code>rounds: []</code>、<code>answer_md5_set: []</code>，
+而 <code>thermal_sweep</code> 仍有 launch／teardown ⇒ <strong>看起來像跑過了</strong>）。
+<strong>判準：<code>n_rounds ≥ 1</code> 且 <code>answer_md5_set</code> 非空</strong>，否則該列無效。已單獨重跑。
+</div>
+
+<h2>6. 現在的位置與下一步</h2>
+<ul>
+  <li><strong>問題已經從「哪一層」換成「哪一段時序」</strong>，而且第一段時序已經有了數字：
+    <code>consumed_changed / (consumed_changed + consumed_unchanged_publishes) = 49%</code>。</li>
+  <li><strong>下一個要當自變數的是「消費點相對 publish 的位置」</strong>：目前只知道「消費得到的 id 有一半會動」，
+    還不知道**消費實際發生在 publish 之前還是之後**。能裁決的讀數是**同一 graph 內 per-layer 的
+    <code>CGC-S1: TABLE-CHURN graph=N publishes=.. changed_entries=..</code> 行**（已有，churn 旗標會逐 graph 印）
+    ——把某一層的「消費時看到的對映」與「該層最後一次 publish 的對映」對齊即可。</li>
+  <li><strong>錨固定為</strong> <code>p25-keepleaf</code>（＝<code>2d4e5099</code>，可重複）。<strong>不要</strong>再用
+    <code>-l20</code>，也<strong>不要</strong>再加同形狀的分梯（原檔明講）。</li>
+</ul>
+
+<p class="meta">證據：<code>Backup/phase_decomp/ids_dst_capture_20260917_0033*.json</code>（sentinel）、
+<code>…_0034*.json</code>（churn）、<code>…_003803.json</code>（l20 單獨重跑）；
+log 在 <code>Backup/cgc_logs/ids_dst_capture/</code>。
+本輪未改引擎源碼；未 commit、未重生索引；<code>agent_harness/</code> 一行未動。</p>
+
+</body>
+</html>

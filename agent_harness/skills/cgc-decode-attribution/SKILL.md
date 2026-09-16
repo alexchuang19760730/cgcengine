@@ -6,7 +6,7 @@ agent_created: true
 
 > **這是快照，不是權威副本。**
 > 權威位置：`~/.workbuddy/skills/cgc-decode-attribution/SKILL.md`（由 host 持續寫入）。
-> 本檔於 2026-09-16 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
+> 本檔於 2026-09-17 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
 > 底下的內容能被 `agent_harness/scripts/auto_git_push.ps1` 定時推送；原檔改了這裡**不會**自動跟上。
 > 要改 skill 請改原檔，再重跑 `python3 agent_harness/scripts/import_harness_snapshot.py`。
 
@@ -147,8 +147,10 @@ PREFILL_STREAM 的臂有**。⇒ 三個臂裡潛力最低的是 `prod25`，最�
    `avg_ts` 把冷 rep 平均進去，`decode_bench --warmup 1` 恰好丟掉對應輪。
    n=128 的 rep1/平台 ＝ **1.35×**（120 vs 89 ms）。**丟掉後 11.3 vs 12.4 ＝ 1.10×。**
    ⇒ 報 llama-bench 一律附 rep 數與 warmup 規則；報 decode_bench 一律附 round 數與 `--warmup`。
-2. **它對 MTP 是瞎的。** `sampler|speculat|draft|MTP` 在 `llama-bench.cpp` **零命中**，
-   token 是 `std::rand() % n_vocab` ⇒ 沒有取樣器就沒有投機迴圈。
+2. **它對 MTP 是瞎的。** `sampler|speculat|draft|MTP` 在 `llama-bench.cpp` **零命中**
+   （2026-09-16 二次核實，2507 行仍為 0），tg 迴圈是 `test_gen()`（`:2167-2186`）＝
+   `llama_decode(llama_batch_get_one(&token, 1))` ＋ `llama_synchronize()`
+   ＋ `token = std::rand() % n_vocab`（首 token 若 `add_bos` 則是 BOS）⇒ 沒有取樣器就沒有投機迴圈。
    **但 MTP 不是量不到**，只是要用另一支工具 —— 見下面「要量 MTP 時」那一節。
 3. **兩個 token 流給池的壓力結構不同**：隨機 id → 超訂 **7/40** 層、miss **85.4% compulsory**；
    連貫文本 → **40/40** 層、**51% compulsory / 49% capacity**。所以
@@ -167,7 +169,12 @@ PREFILL_STREAM 的臂有**。⇒ 三個臂裡潛力最低的是 `prod25`，最�
 llama-server 的），**內建無投機的基線臂**（原始碼註解 `C0 baseline arm`），本專案已把兩筆 MTP
 修復提交給它（`b7364f886` bit-identical spec vs non-spec／`eb16bd129` chunked prefill），而
 `check_build_tracked.sh` 早把它列為關鍵 exe。llama-bench 用的是**自己的**解析器
-（`llama-bench.cpp:514` 的 `--` 迴圈），所以 `--spec-*` 對它無效——**改 llama-bench 不必要**。
+（`llama-bench.cpp:509` 的 `parse_cmd_params()`，內部 `arg_prefix = "--"`），所以 `--spec-*` 對它無效。
+**「不要動 llama-bench」的判準不是「做不到」**：`libllama-bench-impl` 已經 link `llama-common`
+（`tools/llama-bench/CMakeLists.txt`），`common/speculative.h` 就在手邊，要加也只是三處——參數解析、
+`test_gen()` 的 token 來源、以及 `avg_ts` 的 token 定義（投機下應該是含接受的 `n_predict`，不是 `n_gen`）。
+真正的理由是**做完會多出第三套不可並排的口徑**（本節開頭那條）。除非目標改成「llama-bench 當唯一的
+instrument of record」，否則不要動它。
 
 ```sh
 bash Backup/run_spec_simple.sh                 # MTP 臂
@@ -195,6 +202,104 @@ SPEC_TYPE=off bash Backup/run_spec_simple.sh   # 基線臂（同一支工具、�
 （llama-bench −7%、decode_bench −14%），於是「加長會變快」那條預測**無法判讀**。
 滿載後約 **35–47 s** 回 NOMINAL。**不要**用 `--no-warmup` 去對照：它在 `-p 0` 上是 no-op
 （9.40 vs 9.38），因為 warmup 只有一個 token。
+
+## 輸出擷取（kernel-side tensor capture）：四條規則，缺一條就會讀到假結果
+
+`CGC_TENSOR_CAPTURE=<逗號分隔的節點名清單，或 `*`>`（＋`CGC_TENSOR_CAPTURE_WORDS`，預設 32）
+把指定節點的**輸出張量**快照進一個不受 allocator 管理的 shared buffer，**在 synchronize 點**才印出。
+`CGC_IDS_CAPTURE=1` 會被自動帶上，因為 ids 列是比較器切 graph 的標記。
+實作在 `src/llama.cpp/ggml/src/ggml-metal/ggml-metal-ops.cpp`；分析器 `Backup/analyze_capture_nodes.py`；
+驅動 `Backup/run_ids_dst_capture.sh`。
+
+1. **同臂對照是引用任何跨臂結果的前提。** 同一個臂跑兩次、互相比對自己。
+   第一版沒有記憶體屏障時，同臂**每個 graph 都 DIFF**——而跨臂跑出來的结果**看起來正好證實**
+   正在測的假說（一個自信的假陽性）。屏障在儀器裡（`ggml_metal_encoder_memory_barrier`），
+   但每次擴大節點清單都要重跑對照。成本：兩趟約四分鐘。
+2. **命名規則是 `node(idx + n_fuse - 1)`，不是 `node(idx)`。** 可融合的 dispatcher 結尾會把
+   `bid_dst` 重新指向**融合群的最後一個節點**；不可融合的以常數 `return 1;` 收尾。同一個運算式兩種都對。
+   沒有這條就得追每條內部路徑（`mul_mat` 一個有八處 `set_buffer(..., bid_dst, ...)`）。
+3. **`ABSENT` 不是 `SAME`。** 節點只有在融合群結束於它時才被擷取，而融合狀態取決於節點順序
+   （不穩定）。實測：`norm-2` 在一個臂 41/41、在另一個臂 **0/41**。分析器把 `ABSENT`（附 `present=N`）
+   與 `never` 分開印——**一個名字在其中一份日誌裡不存在，永遠不可讀成「相同」**。
+4. **★ 32 詞的窗口從 element 0 起算 ⇒ 不同節點讀到不同 token，不能互相對照。**
+   ggml 張量是 **ne0 最快**，所以「前 32 個 element」的意思取決於張量形狀。實測幾何（T=8）：
+
+   | 節點 | ne | 形狀 | head 窗口覆蓋 |
+   |---|---|---|---|
+   | `conv_input-N` | 90112 | `(K-1+T, 8192)` = `(11, 8192)` | **全部 11 行**（state 3 行 + 8 個 token 的 qkv） |
+   | `conv_output_raw-N` | 65536 | `(8192, T)` | **只有 token 0** 的 channel 0–31 |
+   | `attn_norm-N`／`z-N`／`gate-N`／`linear_attn_out-N` | 16384 | `(2048, T)` | **只有 token 0** |
+
+   ⇒ **所有 “SAME” 其實是「token 0 相同」**，而 token 0 是那次 pass 裡**最舊**、資訊量最低的 token。
+   2026-09-16 為此白走了 r1–r4 七輪：整條定位鏈讀的是 prompt chunk 的第一個 token，
+   而「dense 投影全同、只有 `conv_input` 不同」**不是矛盾，是兩個不同的窗口**。
+   修法：內核本來就有 `n_skip`（恆為 0）⇒ **`CGC_TENSOR_CAPTURE_TAIL=1`** 令 `n_skip = ne - n`，
+   把窗口錨到**張量尾端 ＝ 最新的 token**（遞歸鏈真正往下傳的那一個）；dump 加 `off=` 記錄錨點，
+   分析器 `--windows` 先印 ne/off。**在讀任何 SAME/DIFF 之前先跑 `--windows`**：
+   兩個節點的 `ne` 不同就代表量的不是同一個東西。**每個節點都補了 `off`，是因為一個沒印出錨點的
+   窗口，與一次全張量讀取無法區分。**
+
+**兩個比對時的陷阱**（都量到過）：
+
+- **發射順序不是計算順序，而且不穩定**：同一個臂跑兩次，同樣的值以不同順序送出
+  （`linear_attn_out-2` 有時在 `attn_residual-2` 之前、有時在之後）。localisation 要用**原始碼層鏈**排序，
+  不是流的順序。
+- **尾段 graph 邊界不可信**：ids 目的地上限 4096、一個 pass 約 114 列 ⇒ 尾端 chunk 把數個 pass 併在一起，
+  按名字配對＝拿不同 pass 的列相比。**但 `--upto 24` 這個「解法」自己成了第二個盲點**：
+  2026-09-16 實測一次 36 圖的捕獲，階段序列是
+  `g0:T128, g1-2:T2, g3-27:T8, g28:T2, g29-30:T4, g31-35:T1`
+  ⇒ graph 1..23 **100% 是 prefill**，而 `--upto 24` 恰好採了它。**r1–r5 的所有定位結論因此
+  都是 prefill 的結論**。正法是用 **`--decode-only`**（由 `ne` 推導 T，選 T=1），不要手填數字。
+  **通則：一個用來避開偽影的旗標，會變成一個盲點 —— 凡是「只看前 N 個」的預設，都必須先回答
+  「這 N 個裡面有幾個是 decode」。** 階段要**量**出來，不是假設。
+
+**先列舉再量測**：`CGC_TENSOR_CAPTURE='*'` 跑一次列出**全部節點名與 fuse 值**（本機 1021 個）。
+猜名字的代價是一整輪跑。**匿名節點是 `node_NNN`，不可跨臂比對**（名字來自 ggml 計數器，
+而兩臂的圖不同 ⇒ 同名不同物）。只有 builder 明確命名的節點能用。
+
+**★ 找出「一個新鉤子貢獻了哪些名字」的正法：兩次列舉的差集。** 掛鉤子**之前**先存一份 `'*'` 列舉
+（名字集合 ＋ 那份 log 的路徑），掛完再跑一次，取差集 ⇒ **新增的名字就正好是那個 dispatcher 的 dst**。
+2026-09-16 實測：掛上 `ssm_conv` / `ssm_scan` / `gated_delta_net` 後差集是 **60 個**——
+30 個 `conv_output_raw-N` ＋ 30 個匿名 `node_NNN`，而層號是 `0,1,2,4,5,6,8,…`，**正好跳過 3,7,11**
+（`full_attention_interval=4`）⇒ 順帶證明了鉤子落在對的位置；**`ssm_scan` 零命中**（模型沒有 Mamba 路徑）。
+這比猜名字強，也比逐個鉤子加 debug 打印便宜——而且它同時回答了「鉤子有沒有被觸發」這個獨立問題。
+
+**★ dispatcher 的歸屬要查 `switch (node->op)`，不要猜。** 我猜 `ggml_concat` 走 `bin` ⇒ **錯**：
+`GGML_OP_CONCAT` 有自己的 `ggml_metal_op_concat`；`GGML_OP_CPY`/`DUP`/`CONT` 共用
+`ggml_metal_op_cpy`。猜錯的形狀是「名單裡加了一個永遠不會出現的名字」——**安靜無效**，
+與「鉤子根本沒生效」同形。查表 5 秒。
+
+**★ 鉤子自己的位置也是儀器的一部分：`cgc_dst_capture_at` 的宣告要放檔案最前**（`#include` 之後）。
+宣告若跟著「當前第一個呼叫者」跑，每次把鉤子往前移就會 `use of undeclared identifier` 丟一個 build
+（實測三次：`mul_mat` → `ssm_conv` → `concat`）。**一個可以被加在任何位置的鉤子，必須宣告在最前面。**
+
+**這一層的模型事實會決定「attention」是什麼**：Qwen3.6-35B-A3B 是混合堆疊，
+`qwen35moe.full_attention_interval = 4` ⇒ **layers 0,1,2 是 gated delta-net，layer 3 才是第一個
+full attention**。所以「layer 2 的 attention」的輸出投影是普通 `mul_mat`，不是 `flash_attn_ext`。
+**已掛 10 個 dispatcher**（`src/.../ggml-metal-ops.cpp`）：`mul_mat`、`mul_mat_id`、`flash_attn_ext`、
+`bin`、`norm`、`ssm_conv`、`ssm_scan`、`gated_delta_net`、`concat`、`cpy`。
+**CPY/DUP/CONT 共用一個 dispatcher** ⇒ 擋住捕獲量的是**名字過濾器**，不是鉤子；不要配寬泛的名字。
+
+**gated delta-net 的鏈條**（`src/models/qwen35moe.cpp:415-425` ＋ `src/models/delta-net-base.cpp:449-496`）
+——這是 2026-09-16 用來把分歧往裡推的骨架：
+
+```
+cur = attn_norm(inp)
+ ├ z / beta / alpha→softplus→gate              （投影，與 conv 並行）
+ └ conv_input = ggml_concat(conv_states, qkv_mixed)      ← 前段是 recurrence state
+     conv_output_raw = ggml_ssm_conv(conv_input, kernel)
+     … → conv_state_update = ggml_cpy(conv_state_last)   ← state 寫回 KV cache，下一步再讀
+     → q/k/v_conv → l2_norm → ggml_gated_delta_net → norm → linear_attn_out
+```
+
+**`conv_states` / `conv_state_last` 是 view（無 kernel）⇒ 擷取不到**；那個循環裡唯一能讀的一格是
+`conv_state_update`（`ggml_cpy` 的目的地）。
+
+**新判準：比對前先看「逐 graph 的 DST 列數」，不是總數。** 總數不等**未必**致命：實測
+`gputime 533` vs `slotgpu 492`，但被測節點在**每個 graph 都是 1/1** ⇒ 那個差是**別的**節點被融合吸收
+（局部、無害——配對是按 `(graph, name)`，不是列序號）。**致命的是圖標記（`GRAPH_START`）缺席**，
+那會把兩個 pass 併成一個、之後每個 graph 整體錯位。⇒ 分析器現在印**逐 graph 的行數**並列出不一致的
+graph；**最強的保證是「你要的節點在兩份日誌的每個 graph 都恰好出現一次」**（比總數相等更強）。
 
 ## 陷阱（都踩過）
 
@@ -366,6 +471,11 @@ prefill 用 profile 的 5632；decode／depth 矩陣用 **512**（5632 在 16 GB
 
 ## 現況結論（2026-09-15 收盤，供後續對照）
 
+> **記憶位置（2026-09-17 拆分後）**：專案長期記憶已拆成 **1 索引 ＋ 3 主題檔**
+> （`.workbuddy/memory/MEMORY.md` ＋ `_PERF`／`_S1`／`_FACTS`；原 ~19 KB 的單檔會被 session 注入截斷）。
+> **S1／分歧定位的權威檔是 `.workbuddy/memory/MEMORY_S1.md`** —— 本節與下面的 S1 段是**摘要**，
+> 兩者不一致時**以記憶檔為準**（舊報告寫的「`MEMORY.md` 的 S1 節」也是指它）。
+
 - decode 步 ≈ 80 ms；`wait` 佔 83–90%，`cb` 7–15%，`submit` 4%；`fill_wait = 0`（fast path 不 fill）。
 - `n_cb` 1→16 對 decode **完全無影響**；`CGC_MMV_FUSE` 現配置下**輸出損壞**且更慢。
 - `gap` = 12–22 ms/步（wait 的 17–35%），**大於** CPU 側窗口（cb+submit = 8.5–15 ms）。
@@ -392,6 +502,169 @@ prefill 用 profile 的 5632；decode／depth 矩陣用 **512**（5632 在 16 GB
   （`slot_owner`/`slot_table`/`batch_owned`），不是 loader。
 - **S1（GPU 側 slot 查表）仍未通過 bit-identical 閘門（M1 5/9、M2 7/9、M3 5/9），
   但分歧的「形狀」已定案（2026-09-15 23:5x，`dec-20260915-2350`）。**
+  **★★★★ 2026-09-17 02:55 再往下一格（§EN-17）：`src[2]` 那條路線的儀器在 S1 臂上是瞎的。**
+
+  想驗「同一組 ids 讀到不同位元組」時，**先別寫新儀器** —— `CGC_MMID_MV_DBG`（`ggml_metal_op_mul_mat_id`，
+  已在 `run_server.sh` allowlist）逐 MoE 節點印 `src0 ne`、ids 運算元與 **ids 所選前 4 列各前 ≤4096 bytes
+  的 FNV-1a 指紋**，它自己的註解就是判準：「ids 同而 hash 不同 ⇒ 池的內容錯了」。
+  `=1` → 150 節點（一個完整 pass ＝ 41 層 × 3）；**`=0` 會被讀成 4096 節點**（解析器只看第一個字元），
+  所以 `run_ids_dst_capture.sh` 的 `MMID=1|2|3` 穿透會拒收 `0`。比較器 `Backup/compare_mmid_fp.py`。
+
+  **但它對 S1 臂無效**：同一節點 `ffn_moe_gate-1`，錨臂 `ids=[2,105,7,9,5,106,…]`、`id_oob_vs_ne02=0`、
+  指紋完整；S1 臂 `ids=[1063628079,-1100333772,…]`（**float 位元模式**）、**`id_oob_vs_ne02=16/16`**、
+  **一列指紋都印不出來** ⇒ **S1 臂在 encode 時刻 `op->src[2]->data` 還沒被填**，讀到的是被重用的工作緩衝
+  殘留。**「主機側、encode 期」讀中間運算元不是「消費者讀到什麼」的證據**（repo 對 `CGC-MMID-ASSERT`
+  的 `id_oob` 已有同樣註記）。有效的只有**內核側**讀數（在 command buffer 內、裝置上讀）。
+  順帶量到：同一個 ids 運算元，兩臂的**填充時序不同**（錨臂 encode 時已正確、S1 臂仍殘留）。
+
+  **附帶的通用教訓（比較器）**：指紋要**按 row id 獨立配對**，不能因為 ids 清單不同就短路 ——
+  第一版短路後 `BYTES_DIFFER=0` 是**空洞的**（117 列全被判 IDS_ONLY，一列的位元組都沒比過）。
+  修好後它印「0 shared rows」，把「讀不到」變成看得見。**「沒有差異」與「沒有比較」必須印得出來。**
+
+  **★★★ 2026-09-17 02:40 取代下面全部（r23–r25）。分歧跟著 `CGC_S1_MIN_IL` 走，不跟著層號走。**
+
+  **先講「哪一個 pass」怎麼定**（上一輪我是用推的，這輪直接量）：
+  - 分析器的 **stage ＝ 模型 pass**，標記是 **ids 列 `name=ffn_moe_gate-1`（沒有 `.dst`）**。
+    用 `.dst` 去找標記會讓整份 log 被當成一個 stage（我第一版就是這樣）。
+  - T 要**用節點自己的 `ne` 直接讀**（`l_out-0` 的 `ne / 2048`），不要用「graph 內 min ne 的比值」——
+    後者取決於該 graph 哪些名字被捕捉到，node set 一換就會給出不同的 T。
+  - 本 run 形狀（`n_predict=12`、208-token prompt、`n_batch=8` 的池路徑）：chunk 序列是
+    **`2,2,8×21,6,8,2,4,4`，之後 11 個 T=1 的 decode**，與引擎側 `n_past` 的 +8 節奏一致。
+  - 新選項：**`--select-t N`** = 第一個**完整**的 T==N stage（「完整」＝列數等於該 T 的眾數；capture
+    起始的 stage 0 只有 1 列，是 fragment，選它會把 `present=1` 讀成「另一臂缺這個節點」）；
+    **`--list-stages`** 先列出每個 stage 的 T 與列數再選。**永遠先 list 再 select。**
+
+  **r23／r24（17 個 layer-0 名字、兩臂 × 2；同臂對照全乾淨）——在第一次完整 T=2 pass 上**
+
+  | 觀測 | 結果 |
+  |---|---|
+  | layer 0 全部 15 節點（含 `ffn_moe_logits_raw-0` 與 `gate/up/down/out-0`） | **SAME** |
+  | `mul_mat_id` 消費的 **ids** | **120 SAME / 0 DIFF** |
+  | 池佈局（SLOT-OWNER）與被消費專家集合（SLOT-SEL） | **40/40 SAME**（g0、g1 兩個 2-token pass） |
+  | `wrong` / `unowned` / `owner==ids` | 0 / 0 / 560–560（degeneracy 同上一段） |
+  | 唯一不同的節點 | **`l_out-1`** |
+
+  ⇒ 引擎側的 SLOT-OWNER／SLOT-SEL 閘要放寬到 **`n_tokens <= 2`**，否則那個 pass 根本不被量到
+  （decode-only 的閘會讓最關鍵的一步空白）。
+
+  **★ r25 因果測試（零改碼，本輪最關鍵）**：把閘從 layer 1 移到 layer 2（`CGC_S1_MIN_IL=2`，臂
+  `p25-slotgpu-l2` 已存在）：
+
+  | 配置 | 第一個分歧節點 | 它之前 |
+  |---|---|---|
+  | `MIN_IL=1` | **`l_out-1`** | `l_out-0` SAME |
+  | `MIN_IL=2` | **`ffn_moe_out-2`** | `l_out-0`／**`ffn_moe_out-1`／`l_out-1` 全部 SAME** |
+
+  ⇒ **第一個分歧的層跟著閘走。同一個層 1：host leaf 服務時逐位元相同，GPU table 服務時就不同。**
+  「某一層壞了」與「從 layer 0 數值傳染」**兩種讀法全部作廢**——之前所有「第一個分歧＝層 N」的述句都要
+  改寫成「第一個被 GPU table 服務的層」。
+
+  **⇒ 盒子裡剩什麼**：那個 pass 上 layer 0 整條鏈、ids、池佈局、被消費集合、反查一致性**全部相同**，
+  而第一個被服務的層的 gather 輸出不同 ⇒ ids 相同 ⇒ 讀到的 slot 相同 ⇒ **唯一剩下的是 gather 讀到的
+  「位元組」不同**，即 expert 權重運算元（`src[2]`）的指向／repoint 在兩種對映下不同。
+  **這是「位址類」缺陷**，與先前排除的數值／對映／時序**不同類別**。
+  **下一步**：在 `ggml_metal_op_mul_mat_id` 對 `il <= 2` 限次印 `op->src[2]->data` 與其 buffer id。
+
+  **★★ 2026-09-17 01:25 取代下面的 r10/r11 段（r21/r22）。載體不在池；而且我自己的讀數退化了。**
+
+  **問題**：前向對映（expert→slot）已被 `EQUIV-pool`（1599/1599 `mismatch=0`，同瞬）與 `SEL-DRIFT`
+  （每圖 `entries=0`）清乾淨。剩下的是**反查**：兩臂都同意「slot *s* 屬於專家 *e*」時，*s* 裡裝的是不是
+  *e* 的權重。`slot_owner[layer][slot]` 由**另一條路徑**寫入（`llama-expert-cache.cpp:827` 的
+  `pick_slot`／`prefetch_slot`），publish 只讀 `slot_table` —— 同一指派、兩份表示、兩個寫者。
+
+  **兩個新讀數**（gated on `CGC_S1_TABLE_CHURN=1`、只印不進 gate）：
+  `CGC-S1: SLOT-OWNER graph=G il=L sum=… xor=… wsum=… n=… owned=…`（整層）；
+  `CGC-S1: SLOT-SEL graph=G il=L ntok=T sum=… wrong=… unowned=… idsum=… idsxor=… idwsum=…`（只取被消費的 ids）。
+  比較器 **`Backup/compare_slot_owner.py`**；新臂 **`p25-gputime-churn`／`p25-keepleaf-churn`**。
+
+  **★ 兩條新的儀器規則（都踩過，比先前那三條更前置）**
+  1. **掛點必須是「兩臂都跑到」的地方**。第一版掛在 publish 路徑
+     （`cgc_publish_slot_table_counted`）——而它**只有裝了 GPU table 的臂才會被呼叫** ⇒ 錨臂輸出
+     **零行**、S1 臂 390 行，比較的一側是空的。要跨臂比，就得選兩臂都經過的 hook
+     （這裡是 `expert_cache_on_topk`；判準是兩臂的 `CGC-HOOK` trace 行數相等）。
+  2. **取樣點必須在「填充之後」**。在 hook 開頭取會讀到**本步尚未填充**的表
+     （`slot_table[e] = -1`）⇒ `unowned` ≈ 每格 1（≈12%，正是冷專家率），**會被讀成損壞**。
+
+  **★ 第三條（這輪最貴的一條）：反查回身分的摘要，在池自洽時是恆等式。**
+  若 `wrong == 0` 且 `unowned == 0`，則 `owner == ids[j]` 逐元素成立 ⇒ **owner 的摘要就等於 ids 的摘要**，
+  讀數量的是**路由**不是池。修法是**在同一行印出對 `ids` 本身的摘要**（`idsum/idsxor/idwsum`）當作這個
+  讀數自己意思的控制：相等 ⇒ 退化，把結論寫成「路由不同」而不是「池給了不同的專家」。
+  **通則：任何「把 A 反查回 B 再摘要」的讀數，都要同時摘要 B 本身，否則測到的是恆等式。**
+
+  **結果（r21/r22，三臂 × 兩輪；同臂對照 440/440 全 SAME、兩個絕對閘皆 0）**
+
+  | 配對 | SLOT-OWNER | SLOT-SEL | 讀法 |
+  |---|---|---|---|
+  | 錨 vs `p25-keepleaf-churn` | **440/440 SAME** | 440/440 SAME | 光是**建出** S1 節點不改變池、也不改變路由 |
+  | 錨 vs `p25-slotgpu-churn` | **438/440 DIFFERENT**（`PERMUTED=0`） | 440/440 DIFFERENT | 差異綁在「GPU table 真的被消費」上 |
+
+  - **★ 否證**：`wrong = 0` 且 `owner == ids` 在 **440/440 格、每個臂**成立 ⇒ **被消費的專家，它落到的
+    slot 裝的就是它自己**。「同一個 slot 裝了不同專家 ⇒ 同一組 ids 讀到不同權重」**不成立**；
+    「gather 靜默讀到另一個專家的權重」在被消費子集上從未發生。**§9.18.4（池/slot 權重內容）這條走完。**
+  - `PERMUTED = 0` 要單獨讀：若是同一組專家換 slot，判準會給 PERMUTED；現在 `sum`／`xor` 都不同
+    ⇒ **常駐的專家集合本身不同**，不是重排 —— 但那是**後果**（見下）。
+  - **★ 真正的讀數**：兩臂的 ids 摘要**各自 440 個互異、交集只有 1**；A 的 graph 0（40 層整組）不曾在
+    B 的任何 graph 出現（⇒ 不是圖索引位移）；graph 0 逐層 il=0..5 全 DIFF；`sample` 欄
+    錨「巴黎是法国首都…」vs S1「巴黎并非法国的首都…」⇒ 分歧在**第 1～2 個生成 token**；池統計也分岔
+    （`miss_capacity` 4648 vs 5349）。而 `CGC-HOOK` 前 80 行**全是 `ntok=2`** ⇒ 那兩趟是
+    **2-token 的池路徑 prefill chunk**，之後的 1-token 步才被記到。
+    **⇒ 池不是載體，路由才是，且差異在 prompt 處理階段已存在**（與內核側 r5b/r6/r7 的
+    「prefill `ffn_moe_*` DIFF@1」方向一致 —— 兩個獨立儀器互相支持）。
+  - **下一步**：觀察點放到**第一次 2-token 池路徑 pass** 的 layer 0；**注意不能再用 `--decode-only`**
+    （T 由 `ne` 自校准推出），那一步是 T=2。
+
+  **★ 2026-09-17 00:35 取代下面的 r7 段（r10/r11）。又兩個儀器缺陷，然後是一個未裁決的矛盾。**
+  **缺陷 #5**：`mul_mat_id` 的擷取點寫死 `cgc_dst_capture(..., (int32_t)(ne0*ne1))`，而該輸出是 3 維
+  `[n_embd, n_expert_used, n_tokens]` ⇒ **只讀 token 0 切片**。簽名：同一 `n_embd=2048, n_expert_used=8, T=2`
+  下 `ffn_moe_down-1` 報 `ne=16384` 而 `ffn_moe_weighted-1`（`mul`，全量）報 `ne=32768`。修法：拿掉 `n_words`
+  參數，一律用 `ggml_nelements(op)`。**這讓 §9.18.6 第一輪對 §9.18.4 的否證失效。**
+  **缺陷 #6（自己造的）**：`TAIL=1` 對任何 >32 元素的張量只寫哨兵——host 把 kargs 的 `n_ids` 傳成**窗口長度**，
+  而內核的界是 `j < n_ids`、`j = n_skip + i`。實測 head 0/533 全哨兵、tail **188/205** 全哨兵。
+  **⇒ r5／r5b 作廢**（它們的「幾乎全部 never」是哨兵，而全哨兵列互比是「相等」）。修法：`arg_n = n_words`。
+  **讀法更正**：ids 在池路徑是 **`ffn_moe_slots-N`＝池 slot 索引**，不是專家 id；`ffn_moe_gate/up/down/weighted-*`
+  **一直可讀**（`'*'` 列舉各 40 個），先前的 ABSENT 是 NODES 沒請求。
+  **r10/r11 結果（兩臂各自的同臂對照皆乾淨）**：pass 0 的層 1 —— `ffn_moe_logits_raw-1`（router logits）
+  **逐位元相同**（窗口 32/32、摘要四字全同），`ffn_moe_weights_norm-1` **逐位元相同**，而
+  `ffn_moe_gate-1`／`up-1`／`down-1`／`weighted-1`／`out-1` **全部 DIFF@1**，且 **`sum` 與 `xor` 都不同**
+  ⇒ **不是重排**（`sum`/`xor` 對置換不變），窗口真值顯示兩臂**相關係數 0.16–0.18、平均相對差 0.82–0.92
+  ＝互相無關**。**⇒ 分歧在 gather 本身，不在之後的合成。§9.18.4 復活。**
+  **★ 但這是未裁決的矛盾**：若層 1 的 MoE 在 pass 0 就讀到無關權重，token 流不可能一致 30 個 pass
+  ⇒ 要嘛是引擎真缺陷，要嘛是**擷取位置**讀到「同形狀但不同位置」的資料（§3.2 的附帶觀察支持後者）。
+  **裁決（零改碼）**：先跑 `m123_oracle_gate.py` 確認兩臂是否真 bit-identical；再用 `CGC_S1_KEEP_LEAF=1`
+  看是否變 SAME。**陷阱**：`max相對差 ≈ 2.0` 看起來像「取負」，但整條分布否掉它（`b == -a` 精確 0/32）
+  ——**一個極值可以偽造出一個不存在的形狀**。
+
+  **★ 2026-09-17 00:05 更新（r7，全張量摘要）：分歧落在 layer 1 的 MoE block。**（**已被上面取代**）
+  **先前 09-16 那幾輪的結論（「第一個分歧 = `conv_input-2` 的 recurrence state」等）全部作廢**，
+  因為它們有兩個盲點，都在當晚被證實：**（1）32 詞窗口恆從 element 0 起算** ⇒ 對 `(2048, T)` 的輸出，
+  窗口**就是 token 0**（該 pass 最舊的 token），只有 `conv_input`（ne0 = K-1+T < 32）跨全部 token
+  ⇒ 那些 “SAME” 只是「token 0 相同」；**（2）`--upto 24` 只採 graph 1..23，而那 100% 是 prefill**。
+  另外 `dst_filter[256]` 曾**靜默截斷**清單（23 名 = 312 字元 ⇒ 只進 19 名、第 20 名切在名字中間），
+  丟掉的包含 `ffn_moe_logits_raw-2`，而分析器只列「出現過的名字」⇒ 截斷是隱形的。
+
+  現行儀器是 **`CGC_TENSOR_CAPTURE_HASH=1`**：內核走**完整個張量**，寫 4 字
+  `[sum, xor, 加權和(index+1), 元素數]`（加權和看得見**置換**；元素數讓形狀不能冒充相同）。
+  **DIFF 是結論性的，SAME 是強證據而非證明。**
+  r7（兩臂 × 2、同臂對照全 `never`、逐圖元素數兩臂相同 ⇒ 非形狀假象）在**同一個 pass** 內：
+
+  | 節點 | first_diff |
+  |---|---|
+  | 層 1：`attn_norm-1`／`z-1`／`gate-1`／`conv_input-1`／`conv_output_raw-1`／`linear_attn_out-1`／`attn_residual-1`／`attn_post_norm-1`／**`ffn_moe_logits_raw-1`（router logits）** | 30（即 pass 0 全 SAME） |
+  | **`ffn_moe_out-1`（層 1 的 MoE 輸出）** | **1** |
+  | **`l_out-1`** | **1** |
+  | 層 2 全部 11 個（含 `ffn_moe_logits_raw-2`／`l_out-2`） | 1 |
+  | 層 0 全部 12 個（含 `l_out-0`） | 30 |
+
+  ⇒ **層 1 的 MoE block：輸入相同（含 router logits）、專家 ids 相同（`120S/0D`）、輸出不同。**
+  （ids 要到 graph 4 才開始不同：`6S/114D`，6 = 層 1、2 的 top-k 仍相同；graph 31 起 `0S/120D`，
+  即 token 流本身分叉。）
+  **分段陷阱**：段界是 `ffn_moe_gate-1`，所以段 i ＝ {pass P：層 1 的 MoE 出口起 → 層 2..40}
+  ＋ {pass P+1：層 0 ＋ 層 1 的 attention 到 router}。`ffn_moe_out-1`／`l_out-1` 屬 **pass P**，
+  `attn_norm-1`…`ffn_moe_logits_raw-1` 屬 **pass P+1**；「同一 pass」的判讀要靠段 0（21 列、全 SAME
+  ＝ pass 0 的層 0 ＋ 層 1 attention），別把同段當同一 pass。
+  **下一步**：摘要看不到**幅度** ⇒ 在 `ffn_moe_out-1` 上用窗口模式取實際數值比對。
+  細節：`docs/S1_CAPTURE_ROUND2_20260916_2035.html`（已過時）／`docs/INSTRUMENT_COMPARE_20260916_1821.html`。
+
   **判別式：分歧由「服務路徑」決定，與層號無關。**
   - prefill 階梯做兩階（層 0-3、層 4-7；8 層 × 6 graph × 2 臂 = **96 個配對**），
     兩階**同構**：**slab 服務**的 graph（256/256 experts resident）**逐位元相同**；
