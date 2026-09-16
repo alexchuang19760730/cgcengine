@@ -408,3 +408,37 @@ commit message 草稿放那裡是安全的（它本來就不會被提交），�
 推送前務必先 `ls-remote <remote> 'refs/heads/<branch>'` 取**真實 SHA** 再
 `merge-base --is-ancestor`，不要拿 `<remote>/<branch>`（那個 ref 可能沒被 fetch 更新）。
 本輪兩次都是純 fast-forward：`efeade7e2..89dd85b23`、`89dd85b23..2a71b332f`。
+
+## 實測補充（2026-09-16 第七輪，`e688f346e` + `6b5c7d9f1`）
+
+**D6 是「不要把記憶複製進 `agent_harness/`」的條文——很反直覺，因為那正是常被要求做的事。**
+`CONVENTIONS.md` D6 明寫「專案記憶只由索引進入 loop，不複製」，`index_assets.py` 的 `CURATED`
+note 甚至硬寫 "never copied into the harness"。所以當要求是「把 memory/skill 匯入 agent_harness」
+時，**不要默默做、也不要默默拒絕**：依憲章 §E（「條文被推翻要標 `superseded_by` 而不是刪掉」）
+寫一份 **dated 修訂**——D6 對 loop 的約束不動，只多承認一份非權威快照，並**明寫未完成的義務**
+（§E 要求改 CONVENTIONS.md 走一次 PLAN §6.3 的閉環對照；若 `engine_loop/sft_pi/` 與
+`harness_engine/` 還不存在，就照實說它們不存在、義務尚未執行，不可寫成已完成）。
+
+**改 CONVENTIONS.md 時，同輪要一起修這些會變成假話的敘述**（實測每一處都會讓 `--check` 紅）：
+`index_assets.py` 的 `CURATED` note、同一檔的 auto-indexed note、
+`build_memory_index.py` docstring 的 "WHY AN INDEX AND NOT A MIRROR" 段、`engine_loop/README.md` §8。
+`grep` 抓不到就換內建 Grep——搜 `不複製|never copied|never as a copy|第二個權威` 一次掃完。
+
+**快照與索引的重生順序（多一層）**：改記憶 → `Backup/import_harness_snapshot.py`（刷新快照）
+→ `build_memory_index.py` → `index_assets.py` → resync commit。
+**`index_assets.py` 的掃描範圍不含 `agent_harness/memory/` 與 `agent_harness/skills/`**
+（只有 `scripts/check/*` + `docs/*` + `agent_harness/engine_loop/*` + `.workbuddy/memory/*`），
+所以在那裡新增目錄**不會**讓 manifest 漂移，也不會出現 "auto-indexed … need a role and a note"。
+要驗的是 `build_memory_index.py --check`，不是 `index_assets.py --check`。
+
+**`agent_harness/` 刻意不自足，不要把它拆成獨立 git repo。** `index_assets.py` 是
+`REPO = HERE/../..`、`build_memory_index.py` 是 `HERE/../../..`、`emit_episodes.py` 用
+`find_repo()` 往上找 `.git`——它索引的東西（`scripts/check/*`、`docs/*`、`Backup/cgc_logs`、
+`.workbuddy/memory/*`）**全在它外面**。巢狀 `.git` 會讓 `find_repo()` 停在那一層，從此看不到
+`Backup/`；submodule 的 gitlink 則讓主 repo 看不到檔案層變動（＝本專案最厭惡的安靜漂移）。
+要一條乾淨的同步線就開一條只提交 `agent_harness/` 的 subtree 分支。
+
+**「檔案層整併 ≠ merge」要寫進 message。** `git checkout <remote-tree> -- agent_harness/` 只搬檔案，
+**不記錄 ancestry**（`git log HEAD..<remote> -- agent_harness` 之後照樣列出那幾筆）。
+先驗「共同檔只有遠端改過」（`git diff --stat <merge-base> HEAD -- <那些檔>` 空 = 依構造無衝突），
+並在 message 明寫「將來真 merge 會再引一次、需人工解衝突」。
