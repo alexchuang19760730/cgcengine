@@ -55,9 +55,11 @@ CURATED = [
      "thermal pressure level on both sides of every round (thermal_pressure.py)."),
     ("scripts/check/thermal_pressure.py", "measure", "engine", True, False,
      "the ONE reader of com.apple.system.thermalpressurelevel (~2 ms, no root, the same notify(3) "
-     "key powermetrics samples). Imported by decode_bench/decode_sweep rather than copied. Read its "
-     "docstring before trusting a level: `notifyutil -g` answers 0 for a key that DOES NOT EXIST, "
-     "so an absent instrument is indistinguishable in band from a cool machine."),
+     "key powermetrics samples), plus `Sampler` -- the 2 Hz background series a llama-bench arm "
+     "needs because that child process emits nothing to hang a per-request reading on. Imported by "
+     "decode_bench/decode_sweep/llama_bench_matrix rather than copied. Read its docstring before "
+     "trusting a level: `notifyutil -g` answers 0 for a key that DOES NOT EXIST, so an absent "
+     "instrument is indistinguishable in band from a cool machine."),
     ("scripts/check/ab_interleave.py", "compare", "engine", True, True,
      "the only quotable A/B: interleaves arms, reports the paired per-rep ratio median, pins the "
      "build fingerprint, supports --report-only."),
@@ -68,7 +70,10 @@ CURATED = [
      "the gate matrix (181 KB). Large; candidate for splitting in E4. Call it, do not copy it."),
     ("scripts/check/llama_bench_matrix.py", "measure", "engine", True, True,
      "llama-bench across context lengths; records build_commit, which is the only build identity a "
-     "bench run leaves behind."),
+     "bench run leaves behind. Also records a thermal launch+series reading per arm. NOT the "
+     "instrument of record for decode: llama-bench has no sampler (zero matches for "
+     "sampler|speculat|draft|MTP) and advances the sequence with `std::rand() % n_vocab`, so it "
+     "cannot execute the MTP path and does not measure a served token stream (eng-mh-0040)."),
     ("scripts/check/oracle_truth_gate_selftest.py", "gate", "engine", True, False,
      "proves the gate REJECTS a wrong input. A gate that has never been shown to fail is not a gate."),
     ("scripts/check/feasibility_gate_selftest.py", "gate", "engine", True, False,

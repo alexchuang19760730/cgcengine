@@ -1,0 +1,112 @@
+feat(measure): 兩個 decode 儀器的差距被量出來了，而它大半不是「引擎快慢」——是「第一個 rep 是冷的」
+
+起因：路線圖 §1 把 9.16 / 9.45 t/s 標成「llama-bench decode」，而 12.95 出自 decode_bench
+（HTTP）。在同一個專案裡把兩個儀器的數字並排，正是這個專案反覆踩到的錯，所以直接量。
+
+## 配對的前提：env 逐字相同，而且是解析出來的
+
+`llama_bench_matrix.py` 已支援 `PROFILE:ENV=VAL` 形式，所以
+
+    --arms 'prod25:CGC_SERVER_MTP=0;CGC_GPU_TIMING=1;CGC_DECODE_PROFILE=1'
+
+就是 `decode_sweep --arms p25-gputime` 那一臂的 env，兩邊都經
+`run_server.sh CGC_DUMP_ENV=1` 解析（單一真相，不是手抄第二份）。順序 ABABAB 交錯，因為
+prefill 的工作已證明自變數是累積負載（序列裡第幾次啟動），不是靜置時間。
+
+## 量到的（同場、交錯、每臂帶發射前散熱讀數）
+
+    llama-bench  n=24   7.21 ± 1.29   NOMINAL
+    decode_bench n=24  18.74 (min 7.13)  NOMINAL
+    llama-bench  n=128  9.42 / 9.32 / 9.38（三次，離散 1.1%）  NOMINAL
+    decode_bench n=128 12.36  NOMINAL     10.64  MODERATE（全程 HEAVY）
+    llama-bench  n=128 8.75（MTP 模型）HEAVY ｜ --no-warmup 9.40 HEAVY ｜ n=256 9.45 HEAVY
+
+## 差距的大半：第一個 rep 是冷的
+
+llama-bench 的 tg warmup 原始碼上是 `test_gen(ctx, 1, ...)`——**一個 token**（llama-bench.cpp:2392），
+而 context／`-expert-cache` 池每 instance 建一次 ⇒ 池從空開始，第一個 rep 付 compulsory 冷填
+（它自己的 miss 歸因：compulsory 4437/5195 = 85.4%）。`avg_ts` 把那個 rep 平均進去；
+`decode_bench --warmup 1` 恰好丟掉對應的那一輪。
+
+逐 rep（DECPROF，只取 ntok=1）：
+
+    n=128 r=3   r1=120  r2=86  r3=93  -> 平台 89 ms  (rep1/平台 = 1.35x)
+    n=256 r=3   r1=116  r2=87  r3=87  -> 平台 87 ms  (1.34x)
+    n=24  r=8   r1=181  r2=132 r3=97  -> 平台 104 ms (1.73x，要 ~4 個 rep)
+
+⇒ 平台值 87–90 ms/token = 11.1–11.5 t/s，對 decode_bench 的暖值 80 ms / 12.36 t/s 是
+**1.10×**，不是標題的 1.32×。（自我修正：先前用四個桶的中位數說這是「單調暖機曲線」，
+那個說法太強——逐樣本散佈 68–125 ms、±30%，可支持的只有「rep1 明顯慢、rep2 進平台」。）
+
+## 三個寫下來的預測，兩個死掉
+
+1. `-n 24 -r 8` 會把均值推上去 —— 只 +9%（7.21→7.88），且該臂在 HEAVY 下跑 ⇒ 不算證實。
+2. `-n 128 --no-warmup` 會掉到 ~7 —— **9.40 vs 9.38 ＝ 0.2%**：no-op。它證實了原始碼讀到的
+   「warmup 只有 1 個 token」，同時**推翻 harness 自己 `--no-warmup` 說明**那句「warmup 讓池變熱、
+   所以預設更接近被服務的請求」。
+3. `-n 256` 會升向 12.4 —— **9.45 vs 9.38 ＝ +0.7%**：**否證**。reps／warmup／長度三個旋鈕
+   都動不了 9.4 ⇒ 殘差**不是攤銷問題**，而是「兩個儀器在量不同的工作」。
+
+## 結構性事實（讀原始碼，可證）
+
+- **llama-bench 對 MTP 是瞎的**：`sampler|speculat|draft|MTP` 在 llama-bench.cpp **零命中**，
+  token 是 `std::rand() % n_vocab`，且每 token 一道 `llama_synchronize`（伺服器產生迴圈
+  `server-context.cpp:3892` 沒有）。沒有取樣器就沒有投機迴圈 ⇒ 25 t/s 唯一剩下的乘數來源
+  只能用 HTTP 路徑量 ⇒ llama-bench **不能當 decode 目標的 instrument of record**。
+- **兩個 token 流給池的壓力結構不同**：隨機 id → hit 96.0%、**compulsory 85.4%**、超訂層 **7/40**、
+  讀 5.48 GiB；連貫文本 → hit 92.6%、**compulsory 51.0% / capacity 49.0%**、超訂層 **40/40**、
+  讀 **18.35 GiB**。**命中率高的那一邊反而慢** ⇒ 「hit% 解釋差距」被殺掉，也說明計數器
+  不能跨行程比（生命週期累加器，累加的工作不同）。
+- **`predicted_ms` 的視窗起點是第一個「取樣完成」的 token**（server-context.cpp:4092 在
+  `n_decoded == 1` 內）⇒ 用 N 除以 N−1 步 ⇒ 樂觀 N/(N−1)（n=24 時 +4.3%）。
+- llama-bench 的 `n_ctx = n_prompt + n_gen + n_depth` ⇒ 這批 128，伺服器 4096。
+
+## 附帶：decode 的散熱分離（上午白皮書說「還沒量到」的那一項）
+
+同 env、同模型、同 n：**NOMINAL 12.36 → HEAVY 10.64（−14%）**，遠小於 prefill（250 vs <212）。
+llama-bench 側 9.32 → 8.75 同時換了模型 ⇒ 不可歸因，不引用。每個等級 n=1 ⇒ 仍只記錄、不閘門。
+
+## 修掉的一個真缺陷
+
+`llama_bench_matrix.py` 把 stderr 日誌寫成 `llama_bench_<tag>.stderr.log`，而 `PROFILE:ENV=...`
+形式下 tag 就是整個 spec 字串 ⇒ `-n 24` 與 `-n 128` 撞同一個檔名，先跑的那份**被靜默覆蓋**
+（那正是專家池自己計數器的唯一落點）。已改成 tag 淨化 ＋ 形狀後綴。`--json` 每臂路徑不同，
+所以 JSON 證據沒受影響——這正是它沒被提早發現的原因。
+
+## 改了什麼（25 檔；`src/` 零變更）
+
+- `scripts/check/thermal_pressure.py`：新增 `Sampler`（2 Hz 背景序列，發射前先取一個讀數），
+  selftest 10→**15** 條，新增的五條專測「launch 一定在工作之前取」與「histogram 覆蓋每個樣本」。
+- `scripts/check/llama_bench_matrix.py`：接上 Sampler（`thermal` 欄進 JSON／md／表格）、修上述檔名碰撞。
+- `agent_harness/engine_loop/index_assets.py`：兩條 CURATED note 跟上（thermal_pressure 多了 Sampler；
+  llama-bench 那條補上「不是 decode 的 instrument of record」及其理由）。
+- `agent_harness/engine_loop/traces/lessons.jsonl`：4 條 — eng-mh-0039／0040／0041／eng-src-0013。
+- `docs/INSTRUMENT_COMPARE_20260916_1821.html`：D5 白皮書那一半。
+- `Backup/`：兩個驅動、逐 rep 分桶工具（複用 `prefill_certifiability.harvest_decprof`，不另寫解析器）、
+  lesson 追加器、白皮書自檢器、10 個量測 JSON、分桶 TSV。
+
+## D5
+
+    GATE instrcompare: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+    comparable = True | config_diffs = []
+
+本 commit 有 0 個 `src/` 檔案，仍照跑（`eng-gate-0016`：省下 23 秒然後在 message 裡解釋為何不跑
+是本 repo 已判為錯的做法）。產物 mtime 10:29–17:08，跑程 18:07–18:17 之間**沒有任何 `Building …` 行**
+
+⇒ 本文所有數字屬於同一份產物。
+
+## 驗證
+
+    thermal_pressure.py --selftest          -> 15/15
+    validate.py                             -> OK (122 / 38 / 106)
+    selftest.py                             -> 10/10
+    build_memory_index.py --check           -> memory index OK: 3 file(s), 58 section(s), no drift
+    index_assets.py --check                 -> manifest OK: 76 assets, existence + bytes + mtime agree
+    check_build_tracked.sh                  -> 0 FAIL, 4 SKIP（各有理由）
+    whitepaper_selfcheck.py <白皮書>        -> OK (0 findings)
+
+## 未歸因（本文不主張）
+
+n=128 的穩態殘差 1.10×、n=24 的穩態殘差約 2× 都未歸因。候選：每 token 的 `llama_synchronize`、
+隨機 token 造成的不可預取存取、`n_ctx` 128 vs 4096。能裁決它們的實驗是讓其中一邊換成另一邊的
+token 流（餵 llama-bench 連貫 token，或讓伺服器吃隨機 token），本輪沒做。

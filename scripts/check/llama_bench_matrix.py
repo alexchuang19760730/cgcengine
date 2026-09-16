@@ -67,6 +67,13 @@ ROOT = Path(__file__).resolve().parents[2]
 RUN_SERVER = ROOT / "scripts" / "run_server.sh"
 LLAMA_BENCH = ROOT / "src" / "llama.cpp" / "build" / "bin" / "llama-bench"
 
+# The thermal reading is a single implementation shared with the HTTP harnesses
+# (`decode_sweep.py` / `decode_bench.py` import it from this same directory). Growing a second
+# parser here is how the two instruments would drift apart on the one axis that has to agree
+# before their numbers can be put side by side at all (eng-mh-0038).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import thermal_pressure as thermal  # noqa: E402
+
 # --- profile / arm definitions -------------------------------------------------------------
 # Each arm = (profile, extra env). The extra env is merged into the run_server.sh invocation so the
 # dump we receive is the resolved truth for *that* arm, not a base profile plus our own arithmetic.
@@ -299,11 +306,26 @@ def run_arm(tag: str, profile: str, extra_env: dict[str, str], args) -> dict:
 
     run_env = dict(os.environ)
     run_env.update(env)
+    # A llama-bench arm is ONE child process holding the GPU for minutes with no per-request
+    # boundary to hang a reading on, so the series has to come from a thread. The launch
+    # reading is taken before the spawn (thermal_pressure.Sampler.start), which is the reading
+    # the prefill separation is defined on -- taking it after would silently redefine it.
+    sampler = thermal.Sampler()
     t0 = time.time()
-    proc = subprocess.run(cmd, cwd=str(ROOT), env=run_env, capture_output=True, text=True)
+    with sampler:
+        proc = subprocess.run(cmd, cwd=str(ROOT), env=run_env, capture_output=True, text=True)
     wall = time.time() - t0
-    (Path(args.workdir) / f"llama_bench_{tag}.stderr.log").write_text(proc.stderr, errors="replace")
-    (Path(args.workdir) / f"llama_bench_{tag}.json").write_text(proc.stdout, errors="replace")
+    # The filename has to carry the SHAPE. `tag` alone collides for every arm that sets its env
+    # through the `PROFILE:ENV=...` form, because there the spec string *is* the tag -- so
+    # `-n 24` and `-n 128` wrote to one path and the first run's stderr (the only place the
+    # expert cache's own counters land) was silently overwritten. Hit on 2026-09-16 while running
+    # Backup/run_instrument_compare.sh. Distinct `--json` paths hid it: the JSON evidence of both
+    # runs survived while only the last stderr did.
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", tag)[:80]
+    shape = re.sub(r"[^A-Za-z0-9._-]", "-", f"p{args.prompt}_n{args.gen}_d{args.depths}_r{args.reps}")
+    stem = Path(args.workdir) / f"llama_bench_{safe}_{shape}"
+    stem.with_suffix(".stderr.log").write_text(proc.stderr, errors="replace")
+    stem.with_suffix(".json").write_text(proc.stdout, errors="replace")
 
     # Tolerate a mid-arm failure. `llama-bench` runs every (p,n,d) as its own llama_context and
     # exits non-zero on the first one that dies (usually GPU OOM at a large ubatch), so a single
@@ -328,7 +350,8 @@ def run_arm(tag: str, profile: str, extra_env: dict[str, str], args) -> dict:
     stats = harvest_bench_stats(proc.stderr)
     out = {"tag": tag, "profile": profile, "extra_env": extra_env, "batch": b, "ubatch": ub,
            "batch_why": why, "wall_s": round(wall, 1), "env": env, "scalars": scalars,
-           "rows": rows, "cache": stats, "incomplete": incomplete, "error": err}
+           "rows": rows, "cache": stats, "incomplete": incomplete, "error": err,
+           "thermal": sampler.result}
     for r in rows:
         shape = ("pp" if r["n_prompt"] > 0 else "tg")
         # llama-bench emits `test_time` as an ISO-8601 STRING, not a duration -- formatting it
@@ -342,24 +365,32 @@ def run_arm(tag: str, profile: str, extra_env: dict[str, str], args) -> dict:
         print(f"  cache: hit {stats.get('hit_rate_pct')}%  misses {stats.get('misses')}  "
               f"reads {stats.get('file_reads')}  us/job {stats.get('io_us_per_job')}  "
               f"cap% {stats.get('capacity_pct')}", flush=True)
+    th = sampler.result
+    launch = th.get("launch") or {}
+    print(f"  thermal: launch {launch.get('label')}@{launch.get('t')}  "
+          f"worst {th.get('worst', {}).get('label')}  hist {th.get('hist')}  "
+          f"n={th.get('n')} @{th.get('interval_s')}s", flush=True)
     return out
 
 
 def report(results: list[dict], args) -> None:
     print(f"\n{'='*96}\n  llama-bench matrix -- pp/tg x depth  (production metric)\n{'='*96}")
-    hdr = f"{'arm':16s} {'shape':>5s} {'depth':>6s} {'t/s':>9s} {'±':>6s} {'n_batch':>8s} {'hit%':>6s}"
+    hdr = (f"{'arm':16s} {'shape':>5s} {'depth':>6s} {'t/s':>9s} {'±':>6s} {'n_batch':>8s} "
+           f"{'hit%':>6s} {'thermal':>10s}")
     print(hdr)
     print("-" * len(hdr))
     for r in results:
         if r.get("dry_run"):
             continue
         mark = "  [INCOMPLETE]" if r.get("incomplete") else ""
+        launch = (r.get("thermal") or {}).get("launch") or {}
         for row in r["rows"]:
             shape = "pp" if row["n_prompt"] > 0 else "tg"
             c = r["cache"]
             print(f"{r['tag']:16s} {shape:>5s} {row['n_depth']:>6d} {row['avg_ts']:>9.2f} "
                   f"{row['stddev_ts']:>6.2f} {str(row['n_batch']):>8s} "
-                  f"{('%.1f' % c['hit_rate_pct']) if c.get('hit_rate_pct') is not None else '-':>6s}"
+                  f"{('%.1f' % c['hit_rate_pct']) if c.get('hit_rate_pct') is not None else '-':>6s} "
+                  f"{launch.get('label', '-'):>10s}"
                   f"{mark}")
         if r.get("incomplete"):
             print(f"  (arm stopped early: {r.get('error')}) -- rows above are the instances that "
@@ -368,19 +399,20 @@ def report(results: list[dict], args) -> None:
     if args.md:
         lines = ["# llama-bench pp/tg x depth — production metric", "",
                  f"machine measured by `llama-bench`; arms resolved through `run_server.sh CGC_DUMP_ENV=1`.",
-                 "", "| arm | shape | prompt | gen | depth | t/s | ± | n_batch | hit% | reads | us/job |",
-                 "|---|---|---|---|---|---|---|---|---|---|---|"]
+                 "", "| arm | shape | prompt | gen | depth | t/s | ± | n_batch | hit% | reads | us/job | thermal |",
+                 "|---|---|---|---|---|---|---|---|---|---|---|---|"]
         for r in results:
             if r.get("dry_run"):
                 continue
             c = r["cache"]
+            launch = (r.get("thermal") or {}).get("launch") or {}
             for row in r["rows"]:
                 shape = "pp" if row["n_prompt"] > 0 else "tg"
                 lines.append(
                     f"| {r['tag']} | {shape} | {row['n_prompt']} | {row['n_gen']} | {row['n_depth']} | "
                     f"{row['avg_ts']:.2f} | {row['stddev_ts']:.2f} | {row['n_batch']} | "
                     f"{c.get('hit_rate_pct', '-')} | {c.get('file_reads', '-')} | "
-                    f"{c.get('io_us_per_job', '-')} |")
+                    f"{c.get('io_us_per_job', '-')} | {launch.get('label', '-')} |")
             if r.get("incomplete"):
                 lines += ["", f"> **{r['tag']}: arm stopped early** — {r.get('error')}. "
                               f"The rows above are the instances that completed before it died; "

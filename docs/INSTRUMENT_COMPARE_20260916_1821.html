@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>兩個 decode 儀器的差距是什麼（2026-09-16）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  h4{font-size:14.5px;margin:20px 0 6px;color:#374151}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:#fcfcfd}
+  .toc ol{margin:6px 0 0 20px}
+  .toc a{color:var(--blue);text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>兩個 decode 儀器的差距<strong>是什麼</strong></h1>
+<p class="sub">llama-bench vs decode_bench，同一個引擎環境、交錯、每臂帶散熱讀數　|　2026-09-16 18:21　|　
+引擎層（<code>scripts/check/</code>），非 <code>agent_harness/</code></p>
+
+<div class="toc">
+<ol>
+<li><a href="#s0">一頁結論</a></li>
+<li><a href="#s1">實驗設計：怎樣才算「同一個 env」</a></li>
+<li><a href="#s2">量到的：十個臂</a></li>
+<li><a href="#s3">差距的大半：第一個 rep 是冷的</a></li>
+<li><a href="#s4">三個預測，兩個死掉</a></li>
+<li><a href="#s5">結構性事實（讀原始碼）</a></li>
+<li><a href="#s6">decode 的散熱分離：本專案第一次量到</a></li>
+<li><a href="#s7">對路線圖那張表、以及對 25 t/s 的意義</a></li>
+<li><a href="#s8">誠實邊界：本文不主張什麼</a></li>
+<li><a href="#s9">現場閘門輸出（原文）</a></li>
+<li><a href="#s10">復現</a></li>
+</ol>
+</div>
+
+<h2 id="s0">0. 一頁結論</h2>
+
+<div class="cards">
+  <div class="card"><div class="k">n=128，報出來的</div><div class="v">9.4 <span class="small">vs</span> 12.4</div>
+    <div class="small">llama-bench vs decode_bench　= 1.32×</div></div>
+  <div class="card"><div class="k">n=128，各自的穩態</div><div class="v">11.3 <span class="small">vs</span> 12.4</div>
+    <div class="small">丟掉第一個冷 rep／冷輪之後　= <strong>1.10×</strong></div></div>
+  <div class="card"><div class="k">n=24</div><div class="v">7.2 <span class="small">vs</span> 18.7</div>
+    <div class="small">2.6×；丟掉冷 rep 後仍約 2×（<span class="warn">未歸因</span>）</div></div>
+  <div class="card"><div class="k">llama-bench 的結構盲點</div><div class="v">MTP</div>
+    <div class="small">原始碼裡 <code>sampler|speculat|draft|MTP</code> 零命中</div></div>
+</div>
+
+<div class="box b-blue">
+<p><strong>三句話：</strong></p>
+<ol>
+<li>兩個儀器在 n≈128 上報 9.4 與 12.4，而同 env、同模型、同場交錯。<strong>不能互相引用。</strong></li>
+<li>那 1.32× 的<strong>大部分是「第一個 rep 是冷的」</strong>：llama-bench 的 tg warmup 原始碼上是
+<code>test_gen(ctx, 1, ...)</code>——<strong>一個 token</strong>——而 context／專家池每 instance 建一次 ⇒ 池從空開始。
+<code>avg_ts</code> 把那個 rep 平均進去，而 <code>decode_bench --warmup 1</code> 恰好<strong>丟掉</strong>對應的那一輪。
+丟掉之後兩邊是 <strong>11.3 vs 12.4 ＝ 1.10×</strong>。</li>
+<li><strong>殘差不是攤銷問題</strong>：三個能調的旋鈕（reps 3→8、warmup 開→關、長度 128→256）都<strong>動不了</strong>
+llama-bench 的 9.4。所以 n=24 那 2× 與 n=128 剩下的 10% 是<strong>兩個儀器在量不同的工作</strong>，
+不是同一個量的兩種精度。</li>
+</ol>
+</div>
+
+<h2 id="s1">1. 實驗設計：怎樣才算「同一個 env」</h2>
+
+<p>問題起點：路線圖把 <code>9.16 / 9.45 t/s</code> 標成「llama-bench decode」，而
+<code>12.95 t/s</code> 出自 <code>decode_bench</code>（HTTP）。在同一個專案裡把兩個儀器的數字並排，
+正是這個專案反覆踩到的錯。所以要量的不是「哪個對」，而是<strong>差距有多大、由什麼構成</strong>。</p>
+
+<p>配對的前提是 env 逐字相同，而 env <strong>不是手寫的</strong>：<code>llama_bench_matrix.py</code> 支援
+<code>PROFILE:ENV=VAL</code> 形式，於是</p>
+
+<pre><code>--arms 'prod25:CGC_SERVER_MTP=0;CGC_GPU_TIMING=1;CGC_DECODE_PROFILE=1'</code></pre>
+
+<p>就是 <code>decode_sweep --arms p25-gputime</code> 那一臂的 env，兩邊都經
+<code>run_server.sh CGC_DUMP_ENV=1</code> 解析（單一真相）。乾跑確認兩邊的 model／
+<code>-expert-cache</code>／<code>-ngl</code>／KV 型別完全一致：</p>
+
+<pre><code>llama-bench  -m …/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf -ngl 99 --load-mode none -t 8 \
+             -expert-cache 8589934592 --cache-type-k q8_0 --cache-type-v q8_0 -b 8 -ub 8 …
+llama-server -m …/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf -ngl 99 --load-mode none -t 8 -c 4096 \
+             -np 1 --no-kv-unified -sps 0 --jinja -expert-cache 8589934592 --cache-type-k q8_0 …
+</code></pre>
+
+<div class="box b-amber">
+<p><strong>一個必須先講清楚的副作用：<code>MTP=0</code> 會讓 profile 換模型。</strong>
+<code>run_server.sh:154</code> 的 <code>if [ "$SERVER_MTP" = "1" ]</code> 才選 MTP 家族，
+所以配對臂載入的是<strong>非 MTP 的</strong> <code>Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf</code>，不是
+<code>Nail-…-denseIQ4X.gguf</code>。兩邊一致 ⇒ 配對公平，但這意味著「prod25 的 decode 數字」
+在本專案裡一直有<strong>兩個不同的模型</strong>在背後（MTP 開／關各一），引用時必須指名。</p>
+</div>
+
+<p>順序設計成 <strong>ABABAB</strong>（llama-bench → decode_bench → …），因為 prefill 的工作已證明
+自變數是<strong>累積負載（序列裡第幾次啟動）</strong>而不是靜置時間，所以交錯比「先跑完 A 再跑 B」重要。
+每一臂的發射前讀數由新增的 <code>thermal_pressure.Sampler</code>（2 Hz 背景執行緒）記錄；
+llama-bench 是一個獨佔 GPU 數分鐘的子行程，沒有「每個請求」可以掛讀數，這是它需要執行緒的原因。</p>
+
+<h2 id="s2">2. 量到的：十個臂</h2>
+
+<table>
+<tr><th>#</th><th>儀器</th><th>形狀</th><th>t/s</th><th>發射前散熱</th><th>備註</th></tr>
+<tr><td class="num">1</td><td>llama-bench</td><td class="num">-p 0 -n 24 -r 3</td><td class="num">7.21 ± 1.29</td><td class="num">NOMINAL</td><td>37 個讀數全 NOMINAL</td></tr>
+<tr><td class="num">2</td><td>decode_bench</td><td class="num">n=24 warmup 0</td><td class="num">18.74</td><td class="num">NOMINAL</td><td>min 7.13／max 20.83</td></tr>
+<tr><td class="num">3</td><td>llama-bench</td><td class="num">-p 0 -n 128 -r 3</td><td class="num">9.42 ± 0.96</td><td class="num">NOMINAL</td><td>pass 1</td></tr>
+<tr><td class="num">4</td><td>decode_bench</td><td class="num">n=128 warmup 1</td><td class="num">12.36</td><td class="num">NOMINAL</td><td>12.06–12.95</td></tr>
+<tr><td class="num">5</td><td>llama-bench</td><td class="num">-p 0 -n 128 -r 3</td><td class="num">9.32 ± 0.76</td><td class="num">NOM→MOD</td><td>pass 2</td></tr>
+<tr><td class="num">6</td><td>decode_bench</td><td class="num">n=128 warmup 1</td><td class="num">10.64</td><td class="num"><strong>MODERATE</strong></td><td>全程 HEAVY</td></tr>
+<tr><td class="num">7</td><td>llama-bench</td><td class="num">-p 0 -n 128 -r 3</td><td class="num">8.75 ± 0.95</td><td class="num"><strong>HEAVY</strong></td><td><code>prod25</code>（MTP 模型，兩個變數同時動）</td></tr>
+<tr><td class="num">8</td><td>llama-bench</td><td class="num">-p 0 -n 128 -r 3 <strong>--no-warmup</strong></td><td class="num">9.40 ± 1.19</td><td class="num"><strong>HEAVY</strong></td><td><strong>陽性對照</strong>（§4）</td></tr>
+<tr><td class="num">9</td><td>llama-bench</td><td class="num">-p 0 -n 24 <strong>-r 8</strong></td><td class="num">7.88 ± 1.12</td><td class="num">MOD→HEAVY</td><td>只 +9%（§4）</td></tr>
+<tr><td class="num">10</td><td>llama-bench</td><td class="num">-p 0 <strong>-n 256</strong> -r 3</td><td class="num">9.45 ± 1.15</td><td class="num"><strong>HEAVY</strong></td><td>+0.7%（§4）</td></tr>
+</table>
+
+<p>llama-bench 在 n=128 上量了<strong>三次</strong>：9.42／9.32／9.38 ⇒ 離散 <strong>1.1%</strong>。
+decode_bench 在同一形狀上是 12.36／12.95（前次）／10.64（熱態）⇒ 離散大得多，且與散熱同向。</p>
+
+<h2 id="s3">3. 差距的大半：第一個 rep 是冷的</h2>
+
+<h3>3.1 原始碼：warmup 只有一個 token</h3>
+
+<pre><code>// llama-bench.cpp:2392 -- 這是整個 tg warmup
+if (t.n_gen > 0) {
+    bool res = test_gen(ctx, 1, t.n_threads);     // &lt;-- 1，不是 n
+}
+
+// llama-bench.cpp:2400 -- 每個 rep 之前
+for (int i = 0; i &lt; params.reps; i++) {
+    llama_memory_clear(llama_get_memory(ctx), false);   // 清 KV，不是清專家池
+    …
+}</code></pre>
+
+<p>context（連同 <code>-expert-cache</code> 的池）是<strong>每個 instance 建一次</strong>，所以池從空開始，
+而 warmup 只碰了 1 個 token。這在日誌上有一個可對帳的指紋：warmup 1 個圖 ＋ 3×128 個 rep 圖 ＝ 385，
+而 DECPROF 的閘門是 <code>step%8==0 || step==1 || ntok&gt;1</code> ⇒ 應印
+<code>385/8 + 1 = 49</code> 行，實際<strong>正好 49</strong>。</p>
+
+<h3>3.2 逐 rep（DECPROF，只取 <code>ntok=1</code>，每 8 步印一次）</h3>
+
+<table>
+<tr><th>形狀</th><th>rep1</th><th>rep2</th><th>rep3</th><th>平台（rep≥2）</th><th>rep1／平台</th></tr>
+<tr><td class="num">n=128 r=3</td><td class="num">120</td><td class="num">86</td><td class="num">93</td><td class="num"><strong>89</strong></td><td class="num">1.35×</td></tr>
+<tr><td class="num">n=128 r=3（另一跑）</td><td class="num">113</td><td class="num">89</td><td class="num">90</td><td class="num"><strong>90</strong></td><td class="num">1.26×</td></tr>
+<tr><td class="num">n=256 r=3</td><td class="num">116</td><td class="num">87</td><td class="num">87</td><td class="num"><strong>87</strong></td><td class="num">1.34×</td></tr>
+<tr><td class="num">n=24 r=8</td><td class="num">181</td><td class="num">132</td><td class="num">97</td><td class="num"><strong>104</strong>（r4–r8）</td><td class="num">1.73×</td></tr>
+</table>
+<p class="small">單位 ms/token。n=128/n=256 的平台是 87–90 ms ⇒ <strong>11.1–11.5 t/s</strong>，
+decode_bench 的暖值是 80 ms ⇒ 12.36 t/s。<strong>11.3 vs 12.4 ＝ 1.10×</strong>。</p>
+
+<div class="box b-amber">
+<p><strong>自我修正。</strong>我先前用「四個桶的中位數 103→94→89→85」說這是
+「單調的暖機曲線」。<strong>那個說法太強。</strong>把 49 個樣本按序印出來看，樣本間散佈是
+68–125 ms（±30%），桶中位數的 18% 落差大約只有 2 個標準誤。可用序列支持的是比較窄的一句：
+<strong>rep1 明顯慢（1.26–1.35×），第 2 個 rep 就進入平台</strong>，而 n=24 需要約 4 個 rep。
+「池是不是每個 rep 重置」這件事，<strong>本文沒有解決</strong>（見 §4 第 1 列與 §8）。</p>
+</div>
+
+<h2 id="s4">4. 三個預測，兩個死掉</h2>
+
+<p>動手前寫下三個可以失敗的預測（寫在 <code>Backup/run_instrument_compare_p2.sh</code> 的檔頭）。</p>
+
+<table>
+<tr><th>預測</th><th>結果</th><th>判定</th></tr>
+<tr>
+<td><code>-n 24 -r 8</code>：若 reps 會把池養熱，8 個 rep 的均值必須<strong>高於</strong> 7.21</td>
+<td class="num">7.88 ± 1.12（+9%），且該臂在 HEAVY 下跑（本該更低）</td>
+<td class="warn">不算證實</td>
+</tr>
+<tr>
+<td><code>-n 128 --no-warmup</code>：若 warmup 在養池，拿掉必須<strong>掉到 ~7</strong></td>
+<td class="num"><strong>9.40 vs 9.38 ＝ 0.2%</strong>（且在 HEAVY）</td>
+<td class="ok">no-op：證實「warmup 只有 1 個 token」，並<strong>推翻 harness 自己 <code>--no-warmup</code> 說明</strong>那句「warmup 讓池變熱、所以預設更接近被服務的請求」</td>
+</tr>
+<tr>
+<td><code>-n 256</code>：若殘差是攤銷問題，加長必須<strong>升向 12.4</strong></td>
+<td class="num"><strong>9.45 vs 9.38 ＝ +0.7%</strong>（且在 HEAVY）</td>
+<td class="bad"><strong>否證</strong>：殘差不是攤銷</td>
+</tr>
+</table>
+
+<p>第二列是這輪最有價值的一個：它原本是要<strong>殺掉</strong>「冷池」故事的，結果反過來
+<strong>證實了原始碼</strong>、同時把 harness 說明文件裡的一句話變成假話。
+第三列則把「再加長就會追上」這條退路關掉：<strong>reps／warmup／長度三個旋鈕都動不了 9.4</strong>。</p>
+
+<h2 id="s5">5. 結構性事實（讀原始碼）</h2>
+
+<h3>5.1 llama-bench 對 MTP 是瞎的</h3>
+<pre><code>$ grep -c 'sampler\|speculat\|draft\|MTP' tools/llama-bench/llama-bench.cpp
+0
+
+// 所以下一個 token 是這樣來的（llama-bench.cpp:2168-2183）
+llama_token token = … llama_vocab_bos(vocab) … ;
+for (int i = 0; i &lt; n_gen; i++) {
+    llama_decode(ctx, llama_batch_get_one(&amp;token, 1));
+    llama_synchronize(ctx);            // 每 token 一道硬柵欄
+    token = std::rand() % n_vocab;     // 沒有取樣器
+}</code></pre>
+<p>沒有取樣器 ⇒ 沒有 draft／verify／accept ⇒ <strong>不可能執行投機解碼</strong>。
+而 25 t/s 唯一剩下的乘數來源就是 MTP（<code>draft_accept</code> 只有 19.9%，MTP-on 目前是 1.8× 淨損失）。
+第 7 臂量到的 8.75 只是「MTP 模型在不跑投機的情況下」，<strong>不是 MTP 的能力</strong>。
+⇒ <strong>llama-bench 不能當這個目標的 instrument of record。</strong></p>
+<p>另外那道<strong>每 token <code>llama_synchronize</code></strong> 是伺服器產生迴圈
+（<code>server-context.cpp:3892</code> 無同步點）沒有的，方向上是讓 llama-bench 偏慢——
+但它的量級本文<strong>沒有隔離</strong>（§8）。</p>
+
+<h3>5.2 兩個 token 流給專家池的壓力結構不同</h3>
+<table>
+<tr><th>同引擎、同池、同 env</th><th>llama-bench（<code>rand()%n_vocab</code>）</th><th>伺服器（連貫文本）</th></tr>
+<tr><td>命中率</td><td class="num">96.0%</td><td class="num">92.6%</td></tr>
+<tr><td>miss 組成</td><td class="num"><strong>compulsory 4437 / capacity 758（85.4% / 14.6%）</strong></td><td class="num"><strong>compulsory 8874 / capacity 8522（51.0% / 49.0%）</strong></td></tr>
+<tr><td>超訂（distinct &gt; slots）的層數</td><td class="num"><strong>7 / 40</strong>（worst: layer 2, 218 vs 143）</td><td class="num"><strong>40 / 40</strong>（worst: layer 0, 250 vs 143）</td></tr>
+<tr><td>讀入量</td><td class="num">5.48 GiB（15,516 jobs, 309 MiB/s）</td><td class="num"><strong>18.35 GiB</strong>（49,320 jobs, 217 MiB/s）</td></tr>
+</table>
+
+<div class="box b-red">
+<p><strong>「命中率解釋差距」已被這組數字殺掉</strong>：命中率<strong>高的那一邊反而慢</strong>
+（96.0% → 9.4 t/s；92.6% → 12.4 t/s）。同時它也說明<strong>計數器不能跨行程比</strong>——
+它們是行程生命週期的累加器，而兩個行程累加的工作不同（一邊是自己的 warmup＋reps 的 tg，
+另一邊是模型載入＋warmup 請求＋n_batch=8 的 prefill 分塊＋每一輪）。可比的只有行程<em>內部</em>
+定義的比例（miss 歸因組成、超訂層數）。</p>
+</div>
+
+<h3>5.3 兩個「生成」的視窗界線不一樣</h3>
+<pre><code>// server-context.cpp:4085-4099
+common_sampler_accept(slot.smpl.get(), id, true);
+// here we have synchronized the llama_context (due to the sampling above), so we can do time measurement
+const int64_t t_now = ggml_time_us();
+slot.n_decoded += 1;
+if (slot.n_decoded == 1) {
+    slot.t_start_generation = t_now;      // &lt;-- 視窗從「第一個取樣完成」才開始
+}</code></pre>
+<p>於是 <code>predicted_ms</code> 跨的是 <strong>N−1 步</strong>，而 <code>predicted_n</code> 是 <strong>N</strong> ⇒
+系統性樂觀 <code>N/(N−1)</code>：n=24 時 <strong>+4.3%</strong>、n=124 時 <strong>+0.8%</strong>。
+方向是讓 decode_bench 偏快，但量級不足以解釋 1.32×。另外 llama-bench 的
+<code>n_ctx = n_prompt + n_gen + n_depth</code> ⇒ 這批是 <strong>128</strong>，伺服器是 <strong>4096</strong>。</p>
+
+<h2 id="s6">6. decode 的散熱分離：本專案第一次量到</h2>
+
+<p>上午的白皮書（<code>docs/DECODE_THERMAL_INBAND_20260916_1755.html</code>）寫的是
+「熱態樣本還沒取得 ⇒ 等級→吞吐的分離在 decode 端尚未量到，這支儀器現在只記錄、不閘門」。
+本輪的交錯順序<strong>意外地補上了那筆</strong>：第 4 臂與第 6 臂是同 env、同模型、同 n，
+只差發射時的讀數。</p>
+
+<table>
+<tr><th>臂</th><th>發射讀數</th><th>過程</th><th>decode t/s</th><th>相對</th></tr>
+<tr><td>#4 decode_bench n=128</td><td class="num">NOMINAL (0)</td><td class="num">8/8 NOMINAL</td><td class="num">12.36</td><td>基準</td></tr>
+<tr><td>#6 decode_bench n=128</td><td class="num"><strong>MODERATE (1)</strong></td><td class="num">8/8 HEAVY</td><td class="num">10.64</td><td class="bad"><strong>−13.9%</strong></td></tr>
+</table>
+
+<p>llama-bench 側（#5 → #7）是 9.32 → 8.75，<strong>但同時換了模型</strong>（MTP=1 ⇒ denseIQ4X）
+⇒ <strong>兩個變數同時動，不可歸因</strong>，本文不引用那 −6%。</p>
+<p>與 prefill 的分離（發射讀 0 ⇒ 6/6 ≥250；讀 1 或 2 ⇒ 0/21）相比，decode 對熱壓的反應
+<strong>小一個量級</strong>。每個等級 n=1 ⇒ <strong>仍然只記錄、不閘門</strong>。</p>
+
+<h2 id="s7">7. 對路線圖那張表、以及對 25 t/s 的意義</h2>
+
+<h3>7.1 路線圖 §1 的標籤無法稽核</h3>
+<p><code>docs/REMAP_ROUNDTRIP_REMOVAL_PLAN_2026-09-15.md</code> §1 的<strong>指令欄</strong>寫的是
+<code>decode_sweep.py --profile prod25 --arms p25-gputime,p25-submit-ahead --n-predict 120</code>，
+但表格那一列標成 <strong>「llama-bench decode　9.16 / 9.45 t/s」</strong>——表格與它自己的指令互相矛盾。</p>
+<ul>
+<li>今日 llama-bench n=128 的三次量測 <strong>9.42／9.32／9.38 把 9.45 夾在中間</strong>；
+decode_bench 讀 12.36–18.74。</li>
+<li>⇒ 那兩個值<strong>可重現為 llama-bench，不可重現為 decode_bench</strong>，所以標籤大概對；
+但<strong>那份文件本身無法稽核這個歸屬</strong>（<code>llama_bench_matrix.py</code> 是 09-15 17:42
+<code>d3cbe9744</code> 才引入的，文件沒記載用過它，也沒記儀器）。</li>
+<li>我上午的白皮書引用「那組出自 llama-bench」<strong>繼承了一個無法稽核的標籤</strong>。本文修正它。</li>
+</ul>
+
+<h3>7.2 對 decode 25 t/s</h3>
+<ul>
+<li>本輪<strong>沒有動任何引擎程式碼</strong>（<code>src/</code> 零變更），所以「距離 25 t/s 多遠」不變：
+以 decode_bench 的可持續值 12.36–12.95 算，距離約 <strong>2.0×</strong>。</li>
+<li>但「要拿哪個數字去說距離」現在有規則了：<strong>報 llama-bench 必須附 rep 數與 warmup 規則，
+報 decode_bench 必須附 round 數與 <code>--warmup</code>；兩者不得並排。</strong></li>
+<li>MTP 仍然是唯一的乘數來源，而<strong>它只能用 HTTP 路徑量</strong>（§5.1）。這一點讓
+「llama-bench 是生產標準」（<code>d3cbe9744</code> 的標題）對 decode 而言<strong>不成立</strong>。</li>
+</ul>
+
+<h2 id="s8">8. 誠實邊界：本文不主張什麼</h2>
+<ul>
+<li><strong>不主張</strong>差距已被完全解釋。n=128 的穩態殘差是 <strong>1.10×</strong>、
+n=24 的穩態殘差約 <strong>2×</strong>，兩者都<strong>未歸因</strong>。候選有：每 token 的
+<code>llama_synchronize</code>（§5.1）、隨機 token 造成的不可預取存取、<code>n_ctx</code> 128 vs 4096。
+能裁決它們的實驗是<strong>讓其中一邊換成另一邊的 token 流</strong>（餵 llama-bench 連貫 token，
+或讓伺服器吃隨機 token），本文沒做。</li>
+<li><strong>不主張</strong>「池每個 rep 是否重置」已解決。第 1 列的 +9% 與 HEAVY 混淆，
+而 <code>llama_memory_clear</code> 清的是 KV；逐樣本序列的雜訊 ±30% 不足以判定鋸齒或單調。</li>
+<li><strong>不主張</strong>任何跨儀器的 hit%／miss／reads 比較（§5.2）。</li>
+<li><strong>不主張</strong>熱壓對 decode 的係數已定：每個等級 n=1。</li>
+<li><strong>不主張</strong> 09-15 的 9.16/9.45 與今日的 9.42 之間有任何改進或退步——不同日、不同 n、
+不同文件記載程度 ⇒ <strong>未歸因</strong>。</li>
+</ul>
+
+<h2 id="s9">9. 現場閘門輸出（原文）</h2>
+
+<pre><code>$ python3 scripts/check/m123_oracle_gate.py --tag instrcompare
+CROSS-TAB  (n=9) -- read BOTH axes or you will draw the wrong conclusion
+  M1 same  &amp; M2 same :     9   no drift, same choice
+  M1 same  &amp; M2 diff :     0   should be 0; non-zero = tie-break bug
+  M1 diff  &amp; M2 same :     0   drift only; M1 says 'differs', M2 says 'same'
+  M1 diff  &amp; M2 diff :     0   real divergence
+VERDICT M1 (numeric identity)   : PASS (9/9)
+VERDICT M2 (decision agreement) : PASS (9/9)
+GATE instrcompare: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+summary  : Backup/m123_oracle_gate/summary_instrcompare.json
+</code></pre>
+
+<pre><code>comparable = True | config_diffs = [] | created = None
+</code></pre>
+
+<pre><code>$ python3 scripts/check/thermal_pressure.py --selftest
+  ok   Sampler refuses an unsupported key rather than recording a series
+  ok   Sampler takes its launch reading BEFORE the work (not a post-spawn reading)
+  ok   Sampler samples during the run, not only at the ends  n=8
+  ok   Sampler's histogram accounts for every sample  {'NOMINAL': 8}
+  ok   Sampler's worst() is the max over the series
+
+  15/15 checks passed
+</code></pre>
+
+<pre><code>$ python3 agent_harness/engine_loop/traces/validate.py
+  episodes.jsonl: 122 records {'episode': 122}
+  -&gt; OK
+  decisions.jsonl: 38 records {'decision': 38}
+  -&gt; OK
+  lessons.jsonl: 106 records {'lesson': 106}
+  -&gt; OK
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  10/10 injected violations rejected
+
+$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  memory index OK: 3 file(s), 58 section(s), no drift
+
+$ (cd agent_harness/engine_loop &amp;&amp; python3 index_assets.py --check)
+  manifest OK: 76 assets, existence + bytes + mtime all agree
+</code></pre>
+
+<h2 id="s10">10. 復現</h2>
+
+<pre><code># 交錯配對（十臂中的 1-7）
+bash Backup/run_instrument_compare.sh                      # -> /tmp/instr_compare.log
+
+# 三個預測（第 8-10 臂）；跑之前先等讀數回 0（滿載後約 35-47 s）
+python3 scripts/check/thermal_pressure.py                  # 要看到 NOMINAL (0)
+bash Backup/run_instrument_compare_p2.sh                   # -> /tmp/instr_p2.log
+
+# 逐 rep／分桶（複用 prefill_certifiability.harvest_decprof，不另寫解析器）
+python3 Backup/instr_step_profile.py /tmp/llama_bench_prod25*.stderr.log \
+        Backup/cgc_logs/llama_server_20260916_180910.log \
+        --tsv Backup/cgc_logs/instr_compare/step_buckets_20260916_1807.tsv
+</code></pre>
+
+<h3>產物指紋（這批數字屬於哪份建置）</h3>
+<pre><code>libggml-metal.0.19.0.dylib   f2d1c9619393   954,920 B   2026-09-16 17:08:55
+llama-server                 054fb22f04a0    49,984 B   2026-09-16 17:08:56
+llama-bench                  (12:44:52)      33,464 B
+libllama.0.0.239.dylib       233a172afb2e 3,153,104 B   2026-09-16 10:29:37
+</code></pre>
+<p class="small">全部建置產物在 18:07 開跑之前就已存在，跑程中<strong>沒有任何 <code>Building …</code> 行</strong>
+⇒ 本文所有數字屬於同一份產物。</p>
+
+<hr>
+<p class="small">相關：<code>docs/DECODE_THERMAL_INBAND_20260916_1755.html</code>（散熱讀數接進 decode）、
+lesson <code>eng-mh-0039</code>／<code>eng-mh-0040</code>／<code>eng-mh-0041</code>／<code>eng-src-0013</code>、
+記憶 <code>.workbuddy/memory/2026-09-16.md</code> §W。</p>
+
+</div>
+</body>
+</html>

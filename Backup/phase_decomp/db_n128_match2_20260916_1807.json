@@ -1,0 +1,172 @@
+[
+  {
+    "tag": "p25-gputime",
+    "env": {
+      "CGC_SERVER_MTP": "0",
+      "CGC_GPU_TIMING": "1",
+      "CGC_DECODE_PROFILE": "1"
+    },
+    "log": "/Users/alexchuang/Documents/flashkv-devserver/Backup/cgc_logs/llama_server_20260916_181125.log",
+    "thermal_sweep": {
+      "pre_kill": {
+        "level": 1,
+        "label": "MODERATE",
+        "t": "18:11:17"
+      },
+      "launch": {
+        "level": 1,
+        "label": "MODERATE",
+        "t": "18:11:25"
+      },
+      "post_bench": {
+        "level": 2,
+        "label": "HEAVY",
+        "t": "18:12:47"
+      },
+      "teardown": {
+        "level": 2,
+        "label": "HEAVY",
+        "t": "18:12:49"
+      },
+      "worst": {
+        "level": 2,
+        "label": "HEAVY",
+        "t": ""
+      }
+    },
+    "n_rounds": 3,
+    "decode_tps_median": 10.64,
+    "decode_tps_min": 10.63,
+    "decode_tps_max": 11.44,
+    "prefill_tps_median": 14.0,
+    "n_tokens_sample": 124,
+    "answer_stable": true,
+    "answer_md5_set": [
+      "6ba22d9d"
+    ],
+    "sample": "巴黎是法国首都，这一地位源于其历史、政治、经济与文化核心作用。自中世纪起，巴黎便是法兰西王国的政治中心；1789年大革命后，它成为国家权力象征。1804年拿破仑加冕确立其首都地位，此后历次宪法均确认巴黎为法国政府所在地。如今，巴黎集中了总统府（爱丽舍宫）、议会、最高法院及主要经济机构，是法国行政、文化与交通中枢。这一地",
+    "rounds": [
+      {
+        "round": 0,
+        "decode_tps": 8.315341906406132,
+        "prefill_tps": 9.804177116796078,
+        "predicted_n": 124,
+        "predicted_ms": 14912.195,
+        "wall_s": 36.19,
+        "thermal_before": {
+          "level": 2,
+          "label": "HEAVY",
+          "t": "18:11:35"
+        },
+        "thermal_after": {
+          "level": 2,
+          "label": "HEAVY",
+          "t": "18:12:12"
+        }
+      },
+      {
+        "round": 1,
+        "decode_tps": 10.627792259573196,
+        "prefill_tps": 13.99702563205319,
+        "predicted_n": 124,
+        "predicted_ms": 11667.522,
+        "wall_s": 12.19,
+        "thermal_before": {
+          "level": 2,
+          "label": "HEAVY",
+          "t": "18:12:12"
+        },
+        "thermal_after": {
+          "level": 2,
+          "label": "HEAVY",
+          "t": "18:12:24"
+        }
+      },
+      {
+        "round": 2,
+        "decode_tps": 10.640663174183624,
+        "prefill_tps": 13.665495989176925,
+        "predicted_n": 124,
+        "predicted_ms": 11653.409,
+        "wall_s": 12.04,
+        "thermal_before": {
+          "level": 2,
+          "label": "HEAVY",
+          "t": "18:12:24"
+        },
+        "thermal_after": {
+          "level": 2,
+          "label": "HEAVY",
+          "t": "18:12:36"
+        }
+      },
+      {
+        "round": 3,
+        "decode_tps": 11.438566732828935,
+        "prefill_tps": 17.0426705864809,
+        "predicted_n": 124,
+        "predicted_ms": 10840.519,
+        "wall_s": 11.15,
+        "thermal_before": {
+          "level": 2,
+          "label": "HEAVY",
+          "t": "18:12:36"
+        },
+        "thermal_after": {
+          "level": 2,
+          "label": "HEAVY",
+          "t": "18:12:47"
+        }
+      }
+    ],
+    "thermal_launch": {
+      "level": 2,
+      "label": "HEAVY",
+      "t": "18:11:35"
+    },
+    "thermal_worst": {
+      "level": 2,
+      "label": "HEAVY",
+      "t": ""
+    },
+    "thermal_hist": {
+      "HEAVY": 8
+    },
+    "loopiness": 0.0,
+    "requests": 234840,
+    "hits": 217444,
+    "misses": 17396,
+    "hit_rate_pct": 92.6,
+    "prewarm_req": 0,
+    "prewarm_miss": 0,
+    "resident_mib": 6197.04,
+    "file_reads": 49320,
+    "pread_usec": 92128193,
+    "fill_batch_usec": 0,
+    "per_miss_us": 5295.9,
+    "miss_compulsory": 8874,
+    "miss_capacity": 8522,
+    "capacity_pct": 49.0,
+    "evictions": 17396,
+    "layers_over_slots": 40,
+    "worst_layer": 0,
+    "worst_distinct": 250,
+    "worst_slots": 143,
+    "io_jobs": 49320,
+    "io_bytes": 19700645888,
+    "io_us_per_job": 1868,
+    "io_effective_mib_s": 214.0,
+    "n_decoded_server": 100,
+    "tg_server": 11.6,
+    "build": {
+      "server": "054fb22f04a0",
+      "libggml-base": "d2099fb798e7",
+      "libggml-blas": "52de23d5c405",
+      "libggml-cpu": "70ebbd7c709a",
+      "libggml-metal": "f2d1c9619393",
+      "libggml": "8f4abce76052",
+      "libllama-common": "7bceb3bd5320",
+      "libllama": "233a172afb2e"
+    }
+  }
+]

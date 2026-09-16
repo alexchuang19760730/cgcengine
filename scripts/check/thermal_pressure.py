@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
 import time
 
 KEY = "com.apple.system.thermalpressurelevel"
@@ -139,6 +140,79 @@ def histogram(stamps) -> dict:
     return out
 
 
+class Sampler:
+    """Read the level on a background thread while a child process owns the GPU.
+
+    WHY IT HAS TO BE A THREAD AND NOT BOOKENDS. A llama-bench arm is one child process that
+    holds the GPU for minutes and prints nothing we can key on, so per-request bookends --
+    the shape `decode_bench.py` uses -- are not available. Bookends alone would also record
+    the wrong thing here: the interesting question is what the level did *during* the arm,
+    because an arm that starts at 0 and ends at 0 can still have spent its middle at 2.
+
+    Cost is the same ~2 ms per reading as `level()`, so at the default 0.5 s interval the
+    sampler is ~0.4% of one core -- cheaper than the thing it is watching.
+
+    The FIRST sample is taken in `start()`, i.e. before the caller spawns the child, so
+    `launch` really is the level the child was launched into. That is the reading the
+    prefill separation is defined on (see the module docstring), and taking it after the
+    spawn instead would silently redefine it.
+    """
+
+    def __init__(self, interval: float = 0.5, key: str = KEY):
+        if key not in SUPPORTED_KEYS:
+            # Same refusal as level(): a typo must not produce a plausible-looking series.
+            raise ValueError(f"unsupported key {key!r}; see SUPPORTED_KEYS")
+        self.interval = interval
+        self.key = key
+        self._samples: list = []
+        self._stop = threading.Event()
+        self._thread = None
+        self.result: dict = {}
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            self._samples.append(stamp(self.key))
+            self._stop.wait(self.interval)
+
+    def start(self) -> "Sampler":
+        self._samples.append(stamp(self.key))  # <-- the launch reading; before the child exists
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self) -> dict:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+        self._samples.append(stamp(self.key))  # and the reading after the child is gone
+        self.result = {
+            "interval_s": self.interval,
+            "n": len(self._samples),
+            "launch": self._samples[0] if self._samples else None,
+            "worst": worst(self._samples),
+            "hist": histogram(self._samples),
+            "samples": list(self._samples),
+        }
+        return self.result
+
+    def __enter__(self) -> "Sampler":
+        return self.start()
+
+    def __exit__(self, *exc) -> bool:
+        self.stop()
+        return False
+
+
+def _raises(fn) -> bool:
+    """True when `fn` raises -- used to assert a refusal actually refuses."""
+    try:
+        fn()
+    except Exception:  # noqa: BLE001
+        return True
+    return False
+
+
 def _selftest() -> int:
     """Prove the failure mode: an unreadable key must NOT come back as 0.
 
@@ -147,9 +221,11 @@ def _selftest() -> int:
     2.4x decode spread became invisible in the first place.
     """
     bad = 0
+    n = 0
 
     def check(name, ok, detail=""):
-        nonlocal bad
+        nonlocal bad, n
+        n += 1
         print(f"  {'ok  ' if ok else 'FAIL'} {name}{('  ' + detail) if detail else ''}")
         if not ok:
             bad += 1
@@ -183,8 +259,23 @@ def _selftest() -> int:
           live is None or 0 <= live <= 4,
           f"read {label(live)}" + (f" ({live})" if live is not None else ""))
 
+    # --- Sampler: the bookend-vs-during distinction is the whole reason it exists ---------
+    pre = stamp()
+    with Sampler(interval=0.05) as s:
+        time.sleep(0.3)
+    r = s.result
+    check("Sampler refuses an unsupported key rather than recording a series",
+          _raises(lambda: Sampler(key=bogus)))
+    check("Sampler takes its launch reading BEFORE the work (not a post-spawn reading)",
+          r["launch"] == pre, f"launch {r['launch']} vs pre {pre}")
+    check("Sampler samples during the run, not only at the ends", r["n"] >= 4, f"n={r['n']}")
+    check("Sampler's histogram accounts for every sample",
+          sum(r["hist"].values()) == r["n"], repr(r["hist"]))
+    check("Sampler's worst() is the max over the series",
+          r["worst"]["level"] == max(x["level"] for x in r["samples"] if x["level"] is not None))
+
     print()
-    print(f"  {10 - bad}/10 checks passed")
+    print(f"  {n - bad}/{n} checks passed")
     return 1 if bad else 0
 
 
