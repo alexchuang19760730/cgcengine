@@ -547,6 +547,35 @@ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
 git status --porcelain --untracked-files=all                    # 必須空（例外見 §1.7）
 ```
 
+**快照的忠實度要逐檔複核，不能看匯入器印了什麼。** 「`imported 7 file(s)`」只證明它寫了 7 個檔，
+不證明那 7 個檔的內容對得上原檔（橫幅插入、編碼、截斷都可能走樣）。判準是重算
+`source_sha256` 比對——這也是唯一能證明「快照對應原檔哪一版」的方法：
+
+```sh
+python3 - <<'EOF'
+import json, hashlib
+tot = ok = 0
+for s in ('agent_harness/memory/SNAPSHOT.jsonl', 'agent_harness/skills/SNAPSHOT.jsonl'):
+    for l in open(s, encoding='utf-8'):
+        if not l.strip(): continue
+        d = json.loads(l); tot += 1
+        ok += hashlib.sha256(open(d['source'], 'rb').read()).hexdigest() == d['source_sha256']
+print(f'{ok}/{tot} 相符')
+EOF
+```
+
+（2026-09-16 實測：兩次刷新各 7/7 相符。若不符，第一個要問的是「那份快照是哪一輪寫的」——
+`snapshot_date` 欄位就是為此存在的。）
+
+**改到快照的來源時，順序是「改原檔 → 匯入 → 索引」，而且不能手改副本。**
+具體地：`~/.workbuddy/skills/*/SKILL.md` 與 `.workbuddy/memory/*.md` 是權威，
+`agent_harness/skills/` 與 `agent_harness/memory/` 底下的都是**衍生物**——手改副本會在
+下一次匯入時被靜默蓋掉，而那次匯入看起來完全正常。
+**`.workbuddy/memory/YYYY-MM-DD.md` 的歷史條目不要改寫**：它們描述的是*當時*的狀態
+（例如「腳本住在 `Backup/`」），改寫等於篡改觀測。要更正就在**同一個檔案追加新的一節**
+（`## §X.`），並在新節裡說明它取代了哪一節——本 repo 的 §E 對條文就是這個規定，
+對日誌同樣適用。
+
 ---
 
 ## 7. commit 風格（從 body 讀出來的）
