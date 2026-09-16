@@ -95,6 +95,11 @@ exit code 在 0/1 之間不一致，而檔案裡**明明有**那些字串（`sed
 `fatal: Not a valid object name`，看起來像「那個 SHA 不存在」——**是 shell 把參數吃掉了，不是 git 的問題**。
 直接寫成兩個獨立命令，別用迴圈拆字串。
 
+**同一族：`cd` 寫在 `if` 區塊（或 `&&` 串）裡面會外洩到後續指令。** 實測
+`if [ -d X ]; then cd X && ... ; fi; ls agent_harness/scripts/` ⇒ 那個 `ls` 跑在 `X` 底下，
+於是列出**另一個 repo** 的內容，看起來像「本 repo 的檔案不見了」。診斷腳本時要用**絕對路徑**，
+不要把 `cd` 放進條件區塊——它產出的是一份**自信的錯誤清單**，而不是報錯。
+
 ### 1.5 macOS 沒有 `timeout`／`gtimeout`；`ps` 被擋但 `pgrep` 可用
 
 要做「啟動 30 秒後自動收掉」的 smoke，用背景 PID ＋ 有界 sleep：
@@ -123,6 +128,14 @@ echo 去載 13 GB 的模型**。
 ⇒ **message 草稿放 `Backup/` 是安全的**（它本來就不會被提交），但它不會被提交——message 內容要真的
 寫進 commit。**同理：在 `Backup/` 裡修好的量測腳本不算交付**（要嘛搬進 `scripts/`，要嘛在 final reply
 明說它只存在於本機）。
+
+**`Backup/` 底下是「已追蹤」與「被忽略」混在一起的，要先分清（2026-09-17 實查）。** `.gitignore`
+只影響**未追蹤**的檔案：`Backup/` 底下有 9 支量測腳本是**已追蹤**的，它們的修改會被 `git add -A`
+正常收進去（也會出現在 `git status`）；只有**新增**的才需要 `git add -f`。實測的形狀是
+`Backup/analyze_capture_nodes.py` 之類顯示 ` M`，而同一目錄的 `compare_slot_owner.py` 完全不顯示。
+⇒ 判準：`git ls-files Backup/ | head` 看它是不是已追蹤。一個**已經存在的**驅動改了會被提交、
+一個**新寫的**不會——所以「我在 Backup/ 修好了腳本」與「它進得了 commit」是兩件事。
+（本 repo 的慣例是儀器驅動要進版控，所以新的那幾支就用 `git add -f` 收進來，並在 message 揭露。）
 
 ### 1.7 新增 C++ 測試編譯產物會讓 `git status` 不空
 
@@ -522,6 +535,17 @@ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
 而**索引運送的指標到不了那條線**）。banner 插在 YAML frontmatter **之後**；`SNAPSHOT.jsonl` 記
 `source_sha256` / `source_bytes` / `source_mtime`。**兩個 `--check` 都不驗快照。**
 
+**★ 為什麼非有這份快照不可（2026-09-17 實查）：`.workbuddy/` 整棵在 `.gitignore:41` 內，而
+`git ls-files .workbuddy` 是空的** ⇒ 記憶的**權威本體從來不在版控內**（`git status` 看不到它、
+`git add` 也不收它）。所以「把記憶帶去別台機器」與「把記憶推上 GitHub」的唯一通道就是這份快照。
+三個推論：(a) 快照刷新不是美化動作，它是唯一的搬運手段，沒跑它就等於記憶沒有離開本機；
+(b) 一個**宣稱會定期推送**的機制不等於它在跑——`auto_git_push.ps1` 硬編碼
+`D:\alex\flashkv0516\cgcengine_full` / remote `cgc0907` / branch `fusionroutemot`，本機沒有
+`pwsh`、crontab 與 LaunchAgents 都無相關條目、連它第一次跑就會建的 `agent_harness/scripts/logs/`
+都不存在 ⇒ 它在本機**從未執行**；引用那條推送線之前先重量它（GitHub 上 `fusionroutemot` 停在
+`1f3b0a78d`，訊息 `auto(agent_harness): periodic backup 2026-09-16 14:04`）；
+(c) **要真的把記憶送上去，就得手動走一次**：`import_harness_snapshot.py` → 重生索引 → commit → push。
+
 **重生順序（比 §3.1 多一層）**：
 改記憶／skill 原檔 → `agent_harness/scripts/import_harness_snapshot.py`（刷新快照）→ `build_memory_index.py`
 → `index_assets.py` → commit。
@@ -569,6 +593,15 @@ git add -A && RUN_REPLAY_BENCH=0 git commit -m 'docs(index): resync ...'
 （下一個人會被 `--check` 的紅字誤導成「上一輪沒重生索引」）。**多一個 3 行的 resync commit 是正確答案。**
 它只動 `MANIFEST.jsonl` + `INDEX.jsonl`，沒有 `src/` ⇒ **D5 不必重跑**（`271538f2f`／`e0152777d` 前例），
 但 message 要寫明這一點。
+
+**但「寫明」的措辭有對錯，這條與 §2.4／`eng-gate-0016` 的界線很容易踩（2026-09-17 實測）。**
+§2.4 判為錯的做法是「**省下 23 秒，然後在 message 裡用一段話解釋為何不跑**」——因為那時**沒有**證據，
+理由只能是省時間。resync 不屬於那一類，差別在**同一棵樹上已經有一份完整證據，而且與它同一次推送**：
+把理由寫成「本 commit 無 `src/`；它所對應的那棵樹（同一組二進位、同一份 profile）的完整 D5 已在
+`<交付 commit>` 上跑過並寫進那個 commit 的 message（附 `--tag`、`comparable`、M1/M2/M3），兩者一起
+推上去，可查 `Backup/m123_oracle_gate/summary_<tag>.json`」。
+**判準：理由裡必須出現「哪個 commit、哪個 tag、哪些數字」；只能出現「省時間」的說法就是 §2.4 的那一種。**
+（若 resync 之前又動了 `agent_harness/` 的快照原檔，那仍不算 `src/`，結論不變。）
 
 **第三個什麼時候出現**：交付 commit 之後又發生了「必須進版控的事」，例如 skill 原檔被改 ⇒ 快照要跟上；
 或補寫記憶（§5.2）。**遞迴終止點是「最後那個 resync commit 自己的 hash 是唯一沒被記錄的事實」**，
