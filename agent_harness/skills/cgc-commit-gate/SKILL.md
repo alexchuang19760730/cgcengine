@@ -442,3 +442,70 @@ note 甚至硬寫 "never copied into the harness"。所以當要求是「把 mem
 **不記錄 ancestry**（`git log HEAD..<remote> -- agent_harness` 之後照樣列出那幾筆）。
 先驗「共同檔只有遠端改過」（`git diff --stat <merge-base> HEAD -- <那些檔>` 空 = 依構造無衝突），
 並在 message 明寫「將來真 merge 會再引一次、需人工解衝突」。
+
+## 併行的第二個 session：索引會被寫成對方的中間狀態（2026-09-16 實測）
+
+**這個 repo 會同時有多個 WorkBuddy session 在寫。** 實例：17:10:28／17:10:39 一個 session
+連續寫入 `traces/lessons.jsonl`（新增 `eng-mh-0037`：`binary_stamp()` 的 64 KiB 視窗陽性對照）
+與 `agent_harness/PLAN_ENGINE_LOOP_2026-09-15.md`（E2 承接 D6 欠帳那一段），
+而另一個 session 為了「看一下 by-role 分佈」跑了**不帶 `--check` 的 `index_assets.py`**
+⇒ 後者在 17:10:59 把對方**尚未定稿**的狀態（那兩檔的 bytes/mtime）寫進了 `MANIFEST.jsonl`。
+
+**為什麼要獨立一條**：它的失效是**安靜的**。`--check` 在下一次重生之前都會說
+`manifest OK`，而 manifest 已經記著一組對方還沒打算停下來的 bytes。
+此時若直接 `git add -A`，manifest 會被提交在一個**既不是前一版、也不是對方完成版**的狀態上。
+
+規則：
+
+1. **動手前跑一次 `git status --porcelain --untracked-files=all`，收尾前再跑一次**。
+   出現**不是你改的** modified 檔 ⇒ 有別的 writer。
+2. 此時**只新增不修改**：新增 `docs/*.html` 是安全的（見下一條）；**不要重生索引、不要 commit**。
+3. **不要為了「看一眼」而跑不帶 flag 的 `index_assets.py`**——那就是重建，會覆寫 manifest。
+4. 確認對方靜止（`sessions` 表裡它的 `status` 不再是 `working`、相關檔 mtime 不再動）再重生。
+
+**推論**：`PLAN_ENGINE_LOOP_2026-09-15.md` 與 `CONVENTIONS.md` 都在 `CURATED` 裡，
+所以它們一被別人改，`--check` 就會紅——**紅燈不是你的錯時，不要急著重生把它消掉**，
+先把 owner 找出來。（查法：`~/.workbuddy/workbuddy.db` 的 `sessions` 表有 `cwd` / `title` / `status` / `last_activity_at`；
+`~/.workbuddy/projects/<cwd 轉義>/<sessionId>.jsonl` 是對話本體。）
+
+## `docs/` 底下的新增不會紅，`CURATED` 裡的 docs 條目才會
+
+`index_assets.py` 的自動 glob **只掃 `scripts/check/*`**（`index_assets.py:314`），
+`docs/` **只由 `CURATED` 逐條列出**（`:227` 起）——所以「掃描範圍含 `docs/*`」這個讀法不準確，
+差別在**新增 vs 修改已列出者**：
+
+- 新增一份 `docs/*.html`（D5 的白皮書附件）⇒ **不漂移**，不必重生。
+  實測：新增後 `--check` 仍印 `manifest OK: 73 assets, existence + bytes + mtime all agree`。
+- 編輯 `CURATED` 裡**已列出的** docs 條目（如 `docs/PREFILL250_THERMAL_TRANSIENT_20260916.html`
+  的 note）⇒ 會紅，要重生。
+
+⇒ 省掉一輪「我加了檔案，先重跑索引吧」的無用重生。
+白皮書本身的版式、取材清單、現場閘門輸出要求與自檢清單見 skill **`cgc-whitepaper-delivery`**
+（含「同批檔名要指名到 `_HHMM`」這條）。
+
+## 在 `src/` 上做實驗之後，「還原」必須是可證的（2026-09-16 第八輪，`18fa0e19b`）
+
+陽性對照、A/B 探針這類實驗會**改動 `src/`**，而檢查 8 只看「staged 的原始碼與產物同不同步」
+——它看不出「你改了又改回來，但中間那棵樹的產物還留著」。所以收尾要自己證，三步都要有輸出：
+
+```sh
+git checkout -- <動過的檔案>          # 還原原始碼
+cmake --build build --target llama-server -j8
+md5 <產物>                            # 必須與實驗前逐位元相同
+git status --short -- src/            # 必須空
+```
+
+本輪實測：`ggml-metal.metal` 的同長度改動（`1.0f`→`1.1f`）重建後，`libggml-metal` 的 md5
+`f2d1c96193939bd15404ba713a6fa85d`、size 954,920 **逐位元還原** ⇒ 該 commit 因此可以合法地
+**不重跑 D5**（0 個 `src/`、二進位沒變），並在 message 寫明理由。
+**反過來：若還原後 md5 不同，那不只是「還原失敗」——你這一輪建立在該產物上的所有結論全部作廢。**
+
+找「差異到底在哪」的標準工具是 `cmp -l` ＋ `otool -l`（本輪：兩份產物差 80 個位元組、15 個 ≤64 KiB、
+元兇是 ld64 的**內容衍生 `LC_UUID`**，它讓「只雜湊前 64 KiB」的戳記意外地有效）。
+一般化規訓在 `traces/lessons.jsonl` 的 **`eng-mh-0037`**：**便宜戳記（取樣視窗／人工列舉清單／
+抽樣 digest）的判別力只能用陽性對照決定，不能由「它涵蓋了什麼」推論；否證本身有價值，
+因為它會指名偵測力來自誰。**
+
+**D5 有兩半，別只讀到後半。** 原文是「每次 commit 附一份技術白皮書，**並**在提交前跑完
+llama-bench + M1/M2/M3 + 最新 M2 oracle」。純 doc/腳本的 commit 在 `src/` 那一半可以不跑，
+但**白皮書那一半沒有豁免**；而且要出**新日期的檔**，不要就地改既有的（本 repo `docs/` 的慣例）。
