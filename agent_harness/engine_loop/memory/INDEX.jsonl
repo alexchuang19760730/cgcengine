@@ -20,7 +20,7 @@
 {"row": "section", "path": ".workbuddy/memory/MEMORY.md", "level": 2, "title": "入口（照抄）", "line_start": 40, "line_end": 48, "lines": 8, "body_bytes": 407, "subs": []}
 {"row": "section", "path": ".workbuddy/memory/MEMORY.md", "level": 2, "title": "量測衛生", "line_start": 62, "line_end": 78, "lines": 16, "body_bytes": 1367, "subs": []}
 {"row": "section", "path": ".workbuddy/memory/MEMORY.md", "level": 2, "title": "Skill（動手前先讀）", "line_start": 79, "line_end": 83, "lines": 4, "body_bytes": 379, "subs": []}
-{"row": "file", "path": ".workbuddy/memory/2026-09-17.md", "abs": "/Users/alexchuang/Documents/flashkv-devserver/.workbuddy/memory/2026-09-17.md", "bytes": 17069, "sha256": "4334620bc4427ad2", "lines": 203, "mtime": "2026-09-17T03:23:14"}
+{"row": "file", "path": ".workbuddy/memory/2026-09-17.md", "abs": "/Users/alexchuang/Documents/flashkv-devserver/.workbuddy/memory/2026-09-17.md", "bytes": 18404, "sha256": "368ddbe775cb44db", "lines": 217, "mtime": "2026-09-17T03:26:49"}
 {"row": "section", "path": ".workbuddy/memory/2026-09-17.md", "level": 2, "title": "本日新增（09-17 00:00–01:30，全部記在 2026-09-16.md 的 §EN-15）", "line_start": 6, "line_end": 16, "lines": 10, "body_bytes": 765, "subs": []}
 {"row": "section", "path": ".workbuddy/memory/2026-09-17.md", "level": 2, "title": "01:40–02:45 第二輪（§EN-16，記在 2026-09-16.md）", "line_start": 17, "line_end": 26, "lines": 9, "body_bytes": 622, "subs": []}
 {"row": "section", "path": ".workbuddy/memory/2026-09-17.md", "level": 2, "title": "02:47–03:05 第三輪（§EN-17，記在 2026-09-16.md）", "line_start": 27, "line_end": 38, "lines": 11, "body_bytes": 926, "subs": []}
@@ -28,7 +28,8 @@
 {"row": "section", "path": ".workbuddy/memory/2026-09-17.md", "level": 2, "title": "03:0x 查證：「skill/memory 定期上傳 GitHub」現在有沒有在發生 ⇒ **沒有**", "line_start": 80, "line_end": 106, "lines": 26, "body_bytes": 2225, "subs": []}
 {"row": "section", "path": ".workbuddy/memory/2026-09-17.md", "level": 2, "title": "03:05–03:40 第五輪：一次性手動閉環（選項 (a)）——**已提交並推送**", "line_start": 107, "line_end": 143, "lines": 36, "body_bytes": 2750, "subs": []}
 {"row": "section", "path": ".workbuddy/memory/2026-09-17.md", "level": 2, "title": "03:15 查證：M3 里程碑的狀態 ⇒ **沒開始，decode 也還沒動**", "line_start": 144, "line_end": 161, "lines": 17, "body_bytes": 1429, "subs": []}
-{"row": "section", "path": ".workbuddy/memory/2026-09-17.md", "level": 2, "title": "03:20 ★ M1／M3 狀態**更正**（上一節「M1 未開始」作廢）", "line_start": 162, "line_end": 203, "lines": 41, "body_bytes": 3832, "subs": []}
+{"row": "section", "path": ".workbuddy/memory/2026-09-17.md", "level": 2, "title": "03:20 ★ M1／M3 狀態**更正**（上一節「M1 未開始」作廢）", "line_start": 162, "line_end": 204, "lines": 42, "body_bytes": 3833, "subs": []}
+{"row": "section", "path": ".workbuddy/memory/2026-09-17.md", "level": 2, "title": "03:25 我自己造的一個 hazard：跑飛的 `grep -rn` 把機器加熱到 HEAVY", "line_start": 205, "line_end": 217, "lines": 12, "body_bytes": 1247, "subs": []}
 {"row": "file", "path": ".workbuddy/memory/2026-09-16.md", "abs": "/Users/alexchuang/Documents/flashkv-devserver/.workbuddy/memory/2026-09-16.md", "bytes": 284362, "sha256": "78ea00fb9b75ce1d", "lines": 3791, "mtime": "2026-09-17T02:52:33"}
 {"row": "section", "path": ".workbuddy/memory/2026-09-16.md", "level": 2, "title": "skip0 值語意修復 + 重新基線（最高槓桿項目落地）", "line_start": 3, "line_end": 89, "lines": 86, "body_bytes": 6879, "subs": ["修法（三個站點 → 一個 predicate）", "兩臂證據（同一 binary，只換 skip0）", "兩條必須記住的教訓", "未結案（下一輪第一優先）", "環境注意", "提交與同族旋鈕（00:40 之後）"]}
 {"row": "section", "path": ".workbuddy/memory/2026-09-16.md", "level": 2, "title": "--install-hook 路徑修復（01:00，commit `00b70bebc` + `bd2ca8a82`）", "line_start": 90, "line_end": 137, "lines": 47, "body_bytes": 3257, "subs": ["缺陷不是理論風險，有活體證據", "關鍵陷阱：「一行改動」按字面做會更糟", "修法（連帶兩件必要事）", "驗證（四臂都實跑）", "文件與慣例"]}
