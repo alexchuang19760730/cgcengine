@@ -3606,6 +3606,25 @@ comparable: True    config_diffs: []</code></pre>
   閘門因此不能「強制」條件，只能<strong>分類這一臂的宣稱</strong>——見 §11.14.8。
   這個區別不是措辭：一個會宣稱「已滿足前提」而其實讀不到的閘門，比沒有閘門更糟。
 </p>
+<p class="warn">
+  <strong>[2026-09-16 15:2x 更正 —— 本節的結論已被推翻，原文保留不刪（CONVENTIONS E）]</strong>
+  「沒有任何非 root 的即時儀器可以回答 governor 選了哪一階」是<strong>錯的</strong>。存在這樣一個儀器，
+  而且一直是同一個 key：
+</p>
+<pre><code>notifyutil -g com.apple.system.thermalpressurelevel
+# 0 = Nominal   1 = Moderate   2 = Heavy   3 = Trapping   4 = Sleeping
+# 這正是 powermetrics 的 thermal sampler 用來印 `Current pressure level` 的那一條 notify(3) key</code></pre>
+<p>
+  不需要 root、不需要擷取行程、單次讀取約 <strong>11 ms</strong>（實測 20 次 0.225 s），
+  可以 2 Hz 取樣而不擾動被測量。所以閘門<strong>可以強制</strong>，不必只分類。詳見 §11.15。
+</p>
+<p>
+  這一段錯在哪裡值得寫下來：它不是觀測錯誤，是<strong>把關於一個工具的推論寫成了關於系統的事實</strong>。
+  搜尋停在「<code>powermetrics</code> 要 root」，於是結論變成「沒有儀器」，而正確的結論只是
+  「這個儀器要 root」。同場加映一個<em>真的</em>沒有區辨力的候選：
+  <code>NSProcessInfo.thermalState</code>（JXA、同樣非 root）在 367 個樣本裡、跨越滿載與 4 分鐘閒置，
+  <strong>全部讀到 <code>1/fair</code></strong>，而同一時間 <code>notifyutil</code> 從 2 走到 0。
+</p>
 
 <h4>11.14.8 儀器改動：把「這一臂是什麼」變成機器判定</h4>
 <p>
@@ -3646,6 +3665,9 @@ comparable: True    config_diffs: []</code></pre>
 </p>
 <p>
   (5) <strong>不能說</strong>條件可由非 root 儀器觀測（§11.14.7）。
+  <strong>[2026-09-16 15:2x 更正]</strong> 這一條<strong>已失效</strong>：條件可由
+  <code>notifyutil -g com.apple.system.thermalpressurelevel</code> 觀測，不需要 root。
+  原文保留（CONVENTIONS E），但引用時請改用 §11.15。
 </p>
 <p>
   (6) <strong>不能說</strong> req2/req3 一定也 ≥ 250：第 2 臂的 req3 是 233.51。
@@ -3673,6 +3695,172 @@ for i in 1 2 3; do IDLE_BEFORE=0 OUTDIR=Backup/cgc_logs/cold_accept bash Backup/
   伺服器 log 的安靜間隔由
   <code>ls -t Backup/cgc_logs/llama_server_[0-9]*.log</code> 的創建時間與 mtime 相減算出
   （<code>llama_server_latest.log</code> 是 symlink 會排最後，所以用 <code>[0-9]*</code>）。
+</p>
+
+<h3 id="s1115">11.15 追加（2026-09-16 15:0x–15:3x）：條件<strong>可以量測</strong> ——
+一個 11 ms、不需要 root 的讀數，把「協議」變成「判準」</h3>
+
+<p>
+  §11.14 的結論是：250 的條件只能寫成協議（我們控制的安靜期），因為沒有非 root 儀器能看見 governor。
+  <strong>那個結論是錯的</strong>（§11.14.7 已就地更正）。
+  使用者把 <code>powermetrics</code> 打開之後要做的事本來是「用 root 擷取把條件升級成量測」，
+  但真正的儀器不在那裡 —— 它是一個 notify(3) 的 key：
+</p>
+
+<pre><code>notifyutil -g com.apple.system.thermalpressurelevel
+# 0 = Nominal   1 = Moderate   2 = Heavy   3 = Trapping   4 = Sleeping
+# 這正是 powermetrics 的 thermal sampler 用來印 `Current pressure level` 的那一條</code></pre>
+
+<p>
+  不需要 root、不需要擷取行程、<strong>約 11 ms/次</strong>（實測 20 次 0.225 s），
+  可以 2 Hz 取樣而不擾動被測量。而且它<strong>會動</strong>：滿載時讀 2、停止後約 47 秒回到 0。
+</p>
+
+<h4>11.15.1 判準：發射時讀到 0</h4>
+<p>
+  <strong>「發射驗收臂之前，<code>thermalpressurelevel == 0</code>」</strong>。
+  實測分離度（request 級）：
+</p>
+<table>
+  <thead><tr><th>發射時等級</th><th>樣本（pp t/s）</th><th>≥250</th></tr></thead>
+  <tbody>
+    <tr><td><code>0</code> Nominal</td>
+        <td class="num">266.81、269.35、271.64、257.41、253.42、262.64</td>
+        <td class="ok"><strong>6/6</strong>（最低 253.42）</td></tr>
+    <tr><td><code>1</code> Moderate / <code>2</code> Heavy</td>
+        <td class="num">211.65、196.42、189.49、169.09、167.91、155.23、152.50、150.27、150.25、
+            144.36、143.89、142.14、141.75、129.02、127.43、125.46、124.33、120.74、120.60、117.53、104.88</td>
+        <td class="bad"><strong>0/21</strong>（最高 211.65）</td></tr>
+  </tbody>
+</table>
+<p>
+  間隙 <code>253.42 − 211.65 = 41.77 t/s</code>，<strong>零重疊</strong> ⇒ 這是決策規則，不是相關。
+  母數小（主動臂 6 個，兩個正向臂），如實計數。
+</p>
+
+<h4>11.15.2 條件是「發射時」，不是「全程」</h4>
+<p>
+  兩個正向臂的行為不同，這件事不能含糊：
+</p>
+<ul>
+  <li><strong>臂 A（15:31:04）</strong>：<code>before launch / req1 / req2 / req3</code> 全部 <code>0/NOMINAL</code>，
+      <code>after req3</code> 才翻 <code>1/MODERATE</code>。讀數 <strong>266.81 / 269.35 / 271.64</strong>。</li>
+  <li><strong>臂 B（15:18:46）</strong>：發射時 <code>0/NOMINAL</code>，但臂中途
+      <code>15:19:13 → 1</code>、<code>15:19:24 → 2</code>。讀數仍是
+      <strong>257.41 / 253.42 / 262.64</strong>（全部 ≥250）。</li>
+</ul>
+<p>
+  ⇒ <strong>臂中途的等級上升不會撤回該臂的數字</strong>，所以閘門讀發射前那一刻。
+  合理機制是 governor 的反應對熱壓訊號有落後，但<strong>那是假設</strong>：
+  HTTP 路徑上沒有 per-request 的 DVFS 證據。驗收腳本仍印出每個 request 邊界的讀數，
+  因為它們是<strong>證據</strong>（顯示該臂處在哪個過程），而閘門只有一個。
+</p>
+
+<h4>11.15.3 一個被否證的候選儀器：<code>NSProcessInfo.thermalState</code></h4>
+<p>
+  同樣非 root、看起來更「官方」的選擇是 Foundation 的
+  <code>NSProcessInfo.thermalState</code>（0 nominal / 1 fair / 2 serious / 3 critical）。
+  <strong>它在這台機器上沒有區辨力</strong>：367 個樣本、跨越 ABBA 滿載與 4 分鐘閒置，
+  <strong>全部讀到 <code>1/fair</code></strong>；同一時間 <code>notifyutil</code> 從 2 走到 0。
+  所以刻度的相似性不是證據，讀數的移動才是。
+</p>
+
+<h4>11.15.4 powermetrics 的獨立佐證（block 級）</h4>
+<table>
+  <thead><tr><th>擷取</th><th>block</th><th>熱壓</th><th>有效時脈</th><th>pp t/s</th><th>≥250</th></tr></thead>
+  <tbody>
+    <tr><td>09:08（b=6144）</td><td>cold</td><td>Nominal ×55</td><td class="num">1400 MHz</td><td class="num">276.25</td><td class="ok">✓</td></tr>
+    <tr><td>09:08</td><td>hot</td><td>Heavy48+Mod20</td><td class="num">1082 MHz</td><td class="num">227.27</td><td class="bad">✗</td></tr>
+    <tr><td>09:08</td><td>hot2</td><td>Heavy ×104</td><td class="num">700 MHz</td><td class="num">151.28</td><td class="bad">✗</td></tr>
+    <tr><td>14:55（b=5632）</td><td>cold</td><td>Nominal ×52</td><td class="num">1387 MHz</td><td class="num">300.43</td><td class="ok">✓</td></tr>
+    <tr><td>14:55</td><td>hot</td><td>Heavy ×86</td><td class="num">843 MHz</td><td class="num">182.39</td><td class="bad">✗</td></tr>
+    <tr><td>14:55</td><td>hot2</td><td>Heavy ×109</td><td class="num">649 MHz</td><td class="num">145.79</td><td class="bad">✗</td></tr>
+  </tbody>
+</table>
+<p>
+  兩個獨立入口（llama-bench 與 HTTP）給出同一個分離。連續形式也吻合：以
+  <code>t(ms/token) = a + b/f_eff</code> 擬合，250 t/s 對應的有效時脈是
+  <strong>1154–1227 MHz</strong>（09:08 → 1227、14:55 → 1154、合併 → 1195）；
+  組內殘差 ±3.8 t/s，合併 ±15.6 t/s（兩次擷取的 <code>n_batch</code> 不同：6144 vs 5632）。
+</p>
+
+<h4>11.15.5 §11.13 那 2.25× 已歸因 —— 用否證的方式</h4>
+<p>
+  §11.13 留下的未歸因 2.25×（12:44 產物 <code>268.09/273.55/256.61</code> vs
+  最終產物 <code>118.30–154.77</code>，同 A11 指紋），唯一內容差異是 <code>libggml-metal</code>。
+  做了 <strong>ABBA 交錯</strong>（<code>Backup/run_lib_ab.sh</code>，檔案互換、一臂暖機丟棄、共 5 臂）：
+</p>
+<table>
+  <thead><tr><th>臂</th><th>庫</th><th>md5</th><th>req1</th><th>req2</th><th>req3</th></tr></thead>
+  <tbody>
+    <tr><td>0（暖機，丟棄）</td><td>A</td><td class="num">dd4d1bc4</td><td class="num">248.18</td><td class="num">201.94</td><td class="num">210.46</td></tr>
+    <tr><td>1</td><td>B</td><td class="num">f2d1c961</td><td class="num">124.33</td><td class="num">129.02</td><td class="num">152.50</td></tr>
+    <tr><td>2</td><td>A</td><td class="num">dd4d1bc4</td><td class="num">117.53</td><td class="num">150.27</td><td class="num">167.91</td></tr>
+    <tr><td>3</td><td>A</td><td class="num">dd4d1bc4</td><td class="num">125.46</td><td class="num">169.09</td><td class="num">141.75</td></tr>
+    <tr><td>4</td><td>B</td><td class="num">f2d1c961</td><td class="num">120.60</td><td class="num">144.36</td><td class="num">155.23</td></tr>
+  </tbody>
+</table>
+<p>
+  <code>req1</code>：A=121.50 / B=122.47（+0.8%）；<code>req2</code>：A=159.68 / B=136.69（−14.4%）；
+  <code>req3</code>：A=154.83 / B=153.87（−0.6%）。
+  <strong>方向不一致，且組內散佈大於組間差</strong>（A span 51.56、B span 34.63、組間均差 7.66
+  ⇒ 散佈是組間差的 6.7 倍）⇒ <strong>庫的假設被否證</strong>。
+  剩下的解釋是機器狀態，而 §11.15.1 的帶提供了第二條線索：<code>268.09/273.55/256.61</code>
+  落在 Nominal 帶，<code>118.30–154.77</code> 落在 Heavy 帶，兩組<strong>分屬分離的兩個帶</strong>。
+  <strong>這是一致，不是直接觀測</strong> —— 那些臂當時沒有等級讀數（儀器是 15:2x 才找到的）。
+  附帶：<code>load_mode=none</code> 下兩版庫統計上無差別，正是設計預測
+  （<code>_Pool</code> buft 只在 <code>use_mmap</code> 時被選中），所以該改動對出廠路徑中性。
+</p>
+
+<h4>11.15.6 交付形式</h4>
+<pre><code># 閘門：條件不成立就不跑臂（exit 3，fail closed）
+ARMS=2 OUTDIR=Backup/cgc_logs/thermal_gate bash Backup/run_thermal_gate.sh
+
+# 驗收臂自帶證據（in-band 讀數寫進報告）
+IDLE_BEFORE=0 OUTDIR=Backup/cgc_logs/x bash Backup/run_req2_retest.sh</code></pre>
+<p>
+  可操作摘要另見 <code>docs/PREFILL250_CONDITIONAL_DELIVERY_20260916.html</code>
+  （與其 Markdown 版 <code>…_20260916.md</code>）。
+</p>
+
+<h4>11.15.7 能說與不能說</h4>
+<p>
+  (1) 能說條件是 <strong>可量測的</strong>：<code>thermalpressurelevel == 0</code>，
+  非 root、11 ms、可 2 Hz 取樣。
+</p>
+<p>
+  (2) 能說 Nominal 帶 <strong>6/6 ≥250</strong>（最低 253.42）、非 Nominal 帶
+  <strong>0/21 ≥250</strong>（最高 211.65），零重疊。
+</p>
+<p>
+  (3) 能說 §11.13 的 2.25× <strong>不是 <code>libggml-metal</code></strong>（ABBA 否證），
+  且與熱帶的分屬一致。
+</p>
+<p>
+  (4) <strong>不能說</strong>條件是「靜置 N 秒」、也不能說「安靜夠久 ⇒ 等級一定回 0」
+  —— 等級回到 0 是讀出來的（§11.14.2 的 18 s 反例仍在）。
+</p>
+<p>
+  (5) <strong>不能說</strong><code>NSProcessInfo.thermalState</code> 可以用（367/367 讀到 fair）。
+</p>
+<p>
+  (6) <strong>不能說</strong>閘門驗證了機制。它驗證的是判準；HTTP 路徑上沒有 per-request 的 DVFS 讀數。
+</p>
+<p>
+  (7) <strong>不能說</strong>「250 隨時可重現」。可交付的是「讀到 0 的那一臂，其 req1–req3 全部 ≥250」。
+</p>
+
+<h4>11.15.8 複現</h4>
+<pre><code>notifyutil -g com.apple.system.thermalpressurelevel          # 讀條件
+grep -E 'before launch|pp_t/s' Backup/cgc_logs/thermal_gate2/req2retest_20260916_15310{4,7}.txt
+cat Backup/cgc_logs/libab/summary_20260916_150641.tsv         # ABBA
+ARMS=2 OUTDIR=Backup/cgc_logs/thermal_gate bash Backup/run_thermal_gate.sh</code></pre>
+<p class="small">
+  證據：<code>Backup/cgc_logs/thermal_gate2/{req2retest_20260916_153104.txt, req2retest_20260916_153207.txt,
+  pressure_20260916_153102.tsv, gate_20260916_153102.txt}</code>、
+  <code>Backup/cgc_logs/thermal_gate/{req2retest_20260916_151846.txt, …_151949.txt, …_152126.txt, pressure.tsv}</code>、
+  <code>Backup/cgc_logs/libab/summary_20260916_150641.tsv</code>、
+  <code>Backup/cgc_logs/powermetrics_parse_145506.json</code>。
 </p>
 
 </div>

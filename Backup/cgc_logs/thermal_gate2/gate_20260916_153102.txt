@@ -1,0 +1,53 @@
+=== thermal gate (stamp 20260916_153102) ===
+  condition : com.apple.system.thermalpressurelevel == 0 (Nominal)
+  max wait  : 900s, polling every 10s
+  outdir    : Backup/cgc_logs/thermal_gate2
+  [15:31:02] level=0 (NOMINAL)  waited=0s
+  gate OPEN: level 0/NOMINAL after 0s -- the next arm is a delivery-grade sample
+
+########## arm 1 (positive (gate open))  launch_level=0/NOMINAL  15:31:03 ##########
+# [thermal label] UNKNOWN-STATE -- quiet since previous arm ended = 0s (COLD needs >= 1800s)
+# [thermal pressure] before launch = 0/NOMINAL   (notifyutil -g com.apple.system.thermalpressurelevel)
+  health OK after 9s
+  [thermal pressure] before req1 = 0/NOMINAL
+  req1: OK wall=15.4s prompt_n=2873 prompt_ms=10768.1 pp_t/s=266.81
+  [thermal pressure] after  req1 = 0/NOMINAL
+  [thermal pressure] before req2 = 0/NOMINAL
+  req2: OK wall=13.9s prompt_n=2873 prompt_ms=10666.6 pp_t/s=269.35
+  [thermal pressure] after  req2 = 0/NOMINAL
+  [thermal pressure] before req3 = 0/NOMINAL
+  req3: OK wall=12.2s prompt_n=2873 prompt_ms=10576.6 pp_t/s=271.64
+  [thermal pressure] after  req3 = 1/MODERATE
+  ===== RESULT: ready=yes last_request=req3 survived=yes =====
+  new crash report: none
+=== report: Backup/cgc_logs/thermal_gate2/req2retest_20260916_153104.txt ===
+
+########## arm 2 (negative control (immediately after))  launch_level=2/HEAVY  15:32:07 ##########
+# [thermal label] UNKNOWN-STATE -- quiet since previous arm ended = 0s (COLD needs >= 1800s)
+# [thermal pressure] before launch = 2/HEAVY   (notifyutil -g com.apple.system.thermalpressurelevel)
+  health OK after 9s
+  [thermal pressure] before req1 = 2/HEAVY
+  req1: OK wall=19.6s prompt_n=2873 prompt_ms=14626.5 pp_t/s=196.42
+  [thermal pressure] after  req1 = 2/HEAVY
+  [thermal pressure] before req2 = 2/HEAVY
+  req2: OK wall=16.0s prompt_n=2873 prompt_ms=13574.2 pp_t/s=211.65
+  [thermal pressure] after  req2 = 2/HEAVY
+  [thermal pressure] before req3 = 2/HEAVY
+  req3: OK wall=18.3s prompt_n=2873 prompt_ms=15162.1 pp_t/s=189.49
+  [thermal pressure] after  req3 = 2/HEAVY
+  ===== RESULT: ready=yes last_request=req3 survived=yes =====
+  new crash report: none
+=== report: Backup/cgc_logs/thermal_gate2/req2retest_20260916_153207.txt ===
+
+=== out-of-band pressure series (Backup/cgc_logs/thermal_gate2/pressure_20260916_153102.tsv) ===
+samples	262
+  level Moderate	15	5.7%
+  level Heavy	159	60.7%
+  level Nominal	88	33.6%
+
+=== summary (Backup/cgc_logs/thermal_gate2/summary_20260916_153102.tsv) ===
+# columns:	arm	launch_level	req1	req2	req3	survived	crash	report
+1	positive (gate open)	0	266.81	269.35	271.64	yes	none	req2retest_20260916_153104.txt
+2	negative control (immediately after)	2	196.42	211.65	189.49	yes	none	req2retest_20260916_153207.txt
+
+gate log: Backup/cgc_logs/thermal_gate2/gate_20260916_153102.txt

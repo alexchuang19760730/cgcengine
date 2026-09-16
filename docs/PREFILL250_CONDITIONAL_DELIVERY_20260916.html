@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>prefill 250 的可量測交付條件（2026-09-16）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  h4{font-size:14.5px;margin:20px 0 6px;color:#374151}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:#fcfcfd}
+  .toc ol{margin:6px 0 0 20px}
+  .toc a{color:var(--blue);text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>prefill 250 的<strong>可量測</strong>交付條件</h1>
+<div class="sub">
+  日期 2026-09-16 · 專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code><br>
+  模型 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（<code>CGC_SERVER_PROFILE=prefill250</code>，出廠預設）<br>
+  硬體 <code>Mac16,12</code> MacBook Air · Apple M4 · 8 核 GPU · 16 GB unified · <strong>無風扇</strong><br>
+  新儀器 <code>Backup/thermal_pressure_probe.sh</code>、<code>Backup/run_thermal_gate.sh</code>、
+  <code>Backup/run_lib_ab.sh</code>、<code>run_req2_retest.sh</code> 的 in-band 讀數<br>
+  權威版本 <code>docs/PREFILL250_THERMAL_TRANSIENT_20260916.html</code> §11.15（本文是它的可操作摘要）
+</div>
+
+<div class="box b-green">
+  <p><strong>一句話結論：</strong>條件是<strong>可量測的</strong>，而且不需要 root。在發射驗收臂之前讀一次</p>
+<pre><code>notifyutil -g com.apple.system.thermalpressurelevel</code></pre>
+  <p>必須是 <code>0</code>（Nominal）。<strong>Nominal 6/6 個請求全部 ≥250（最低 253.42）；
+  非 Nominal 0/21（最高 211.65）。零重疊</strong> ⇒ 這不是相關，是一條決策規則。</p>
+</div>
+
+<div class="toc">
+  <strong>目錄</strong>
+  <ol>
+    <li><a href="#s0">一頁結論</a></li>
+    <li><a href="#s1">儀器：為什麼是這個鍵</a></li>
+    <li><a href="#s2">條件是「發射時」，不是「全程」</a></li>
+    <li><a href="#s3">powermetrics 的獨立佐證（block 級）</a></li>
+    <li><a href="#s4">怎麼跑</a></li>
+    <li><a href="#s5">不能說的話</a></li>
+    <li><a href="#s6">副產物：(c) 那 2.25× 已歸因 —— 用否證的方式</a></li>
+    <li><a href="#s7">復現</a></li>
+  </ol>
+</div>
+
+<h2 id="s0">0. 一頁結論</h2>
+
+<div class="cards">
+  <div class="card"><div class="k">條件</div><div class="v">level == 0</div>
+    <div class="small"><code>com.apple.system.thermalpressurelevel</code></div></div>
+  <div class="card"><div class="k">Nominal 帶</div><div class="v ok">6/6 ≥250</div>
+    <div class="small">最低 253.42 t/s</div></div>
+  <div class="card"><div class="k">非 Nominal 帶</div><div class="v bad">0/21 ≥250</div>
+    <div class="small">最高 211.65 t/s</div></div>
+  <div class="card"><div class="k">間隙</div><div class="v">41.77</div>
+    <div class="small">t/s，無重疊</div></div>
+</div>
+
+<p><strong>判準的實測分離度（request 級，零重疊）</strong></p>
+
+<table>
+  <thead><tr><th>發射時等級</th><th>樣本（t/s）</th><th>是否 ≥250</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>0</code> Nominal</td>
+      <td class="num">266.81、269.35、271.64、257.41、253.42、262.64</td>
+      <td class="ok"><strong>6/6 全部 ≥250</strong>（最低 253.42）</td>
+    </tr>
+    <tr>
+      <td><code>1</code> Moderate / <code>2</code> Heavy</td>
+      <td class="num">211.65、196.42、189.49、169.09、167.91、155.23、152.50、150.27、
+        150.25、144.36、143.89、142.14、141.75、129.02、127.43、125.46、124.33、
+        120.74、120.60、117.53、104.88</td>
+      <td class="bad"><strong>0/21 ≥250</strong>（最高 211.65）</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>間隙：<code>253.42 − 211.65 = 41.77 t/s</code>，<strong>沒有重疊</strong>。
+所以讀到 <code>0</code> 就可以交付，讀到非 <code>0</code> 就不行。</p>
+
+<h2 id="s1">1. 儀器：為什麼是這個鍵</h2>
+
+<p><code>com.apple.system.thermalpressurelevel</code> 是 notify(3) 的 key，
+<strong>就是 <code>powermetrics</code> 的 thermal sampler 用來印 <code>Current pressure level</code> 的那一條</strong>。
+刻度直接用 IOKit 常數：</p>
+
+<table>
+  <thead><tr><th>值</th><th>意義</th></tr></thead>
+  <tbody>
+    <tr><td class="num">0</td><td>Nominal</td></tr>
+    <tr><td class="num">1</td><td>Moderate</td></tr>
+    <tr><td class="num">2</td><td>Heavy</td></tr>
+    <tr><td class="num">3</td><td>Trapping</td></tr>
+    <tr><td class="num">4</td><td>Sleeping</td></tr>
+  </tbody>
+</table>
+
+<p>成本：20 次讀取 <code>0.225 s</code> ⇒ <strong>約 11 ms/次</strong>，
+可以 2 Hz 取樣而不擾動被測量本身。</p>
+
+<h3>不是這個儀器（都實測過）</h3>
+
+<table>
+  <thead><tr><th>候選</th><th>結論</th></tr></thead>
+  <tbody>
+    <tr><td><code>powermetrics --samplers gpu_power,thermal</code></td>
+        <td>需要 root。本機 <code>sudo</code> 對 agent 是硬封鎖（<code>operation not permitted</code>，
+        關閉沙箱亦同）⇒ 只能由人啟動，不能當每臂的閘門。</td></tr>
+    <tr><td><code>pmset -g therm</code></td>
+        <td>只回 <code>No thermal warning level has been recorded</code>。無資訊。</td></tr>
+    <tr><td><code>sysctl -a | grep -i thermal</code></td><td>沒有相關鍵。</td></tr>
+    <tr><td><code>ioreg -c IOAccelerator</code></td>
+        <td>有 <code>Device Utilization %</code>（即時值），但<strong>沒有時脈</strong>；
+        <code>GPU Performance States</code> 只暴露 IOReport 的 channel id 與 unit，<strong>不是讀數</strong>。</td></tr>
+    <tr><td><code>NSProcessInfo.thermalState</code>（JXA，非 root）</td>
+        <td class="bad"><strong>不具區辨力，已否證。</strong>367 個樣本、跨越 ABBA 滿載與 4 分鐘閒置，
+        <strong>全部讀到 <code>1/fair</code></strong>；同一時間 <code>notifyutil</code> 從 2 → 0。
+        ⇒ 不要用它當閘門。</td></tr>
+  </tbody>
+</table>
+
+<div class="box b-amber">
+  <p><strong>教訓：</strong>「沒有非 root 儀器可讀」這句話是<strong>關於某個工具的推論</strong>，
+  被寫成了<strong>關於系統的事實</strong>。儀器一直在那裡，只是搜尋停在
+  「<code>powermetrics</code> 要 root」就結束了。這條原句在
+  <code>docs/PREFILL250_THERMAL_TRANSIENT_20260916.html</code> §11.14.7，
+  已就地標為推翻並保留（CONVENTIONS E）。</p>
+</div>
+
+<h2 id="s2">2. 條件是「發射時」，不是「全程」</h2>
+
+<p>兩次正向臂的行為不同，這件事必須說清楚。</p>
+
+<h3>臂 A（15:31:04，乾淨）—— 等級全程 0</h3>
+<pre><code>before launch = 0/NOMINAL
+before req1   = 0/NOMINAL   req1 266.81 t/s
+after  req1   = 0/NOMINAL
+before req2   = 0/NOMINAL   req2 269.35 t/s
+after  req2   = 0/NOMINAL
+before req3   = 0/NOMINAL   req3 271.64 t/s
+after  req3   = 1/MODERATE   &lt;- 三個 prefill 都跑完之後才翻</code></pre>
+
+<h3>臂 B（15:18:46）—— 等級在臂中途上升</h3>
+<pre><code>15:18:46 launch      0/NOMINAL
+15:19:13 (req1 之後) 1/Moderate
+15:19:24 (req2 期間) 2/Heavy
+req1 257.41 / req2 253.42 / req3 262.64   &lt;- 仍然全部 ≥250</code></pre>
+
+<div class="box b-red">
+  <p><strong>⇒ 臂中途的等級上升不會撤回該臂的數字。</strong>
+  所以閘門讀的是<strong>發射前那一刻</strong>，而不是要求全程為 0。</p>
+  <p>機制上合理的解釋是 governor 的反應對熱壓訊號有落後（該臂的熱累積尚未追上讀數），
+  但<strong>這是假設</strong>：HTTP 路徑上沒有 per-request 的 DVFS 證據，所以不寫成機制結論。</p>
+</div>
+
+<p><code>run_req2_retest.sh</code> 仍然把 <code>before launch</code> 與每個 request 邊界的讀數都印出來，
+因為它們是<strong>證據</strong>（顯示該臂處在哪個過程），而閘門只有一個：發射時。</p>
+
+<h2 id="s3">3. powermetrics 的獨立佐證（block 級）</h2>
+
+<p>兩次擷取（<code>prefill_certifiability.py</code> / llama-bench <code>-p 2048</code>），配對的 pp t/s：</p>
+
+<table>
+  <thead><tr><th>擷取</th><th>block</th><th>熱壓</th><th>有效時脈</th><th>pp t/s</th><th>≥250</th></tr></thead>
+  <tbody>
+    <tr><td>09:08（b=6144）</td><td>cold</td><td>Nominal ×55</td><td class="num">1400 MHz</td><td class="num">276.25</td><td class="ok">✓</td></tr>
+    <tr><td>09:08</td><td>hot</td><td>Heavy48+Mod20</td><td class="num">1082 MHz</td><td class="num">227.27</td><td class="bad">✗</td></tr>
+    <tr><td>09:08</td><td>hot2</td><td>Heavy ×104</td><td class="num">700 MHz</td><td class="num">151.28</td><td class="bad">✗</td></tr>
+    <tr><td>14:55（b=5632）</td><td>cold</td><td>Nominal ×52</td><td class="num">1387 MHz</td><td class="num">300.43</td><td class="ok">✓</td></tr>
+    <tr><td>14:55</td><td>hot</td><td>Heavy ×86</td><td class="num">843 MHz</td><td class="num">182.39</td><td class="bad">✗</td></tr>
+    <tr><td>14:55</td><td>hot2</td><td>Heavy ×109</td><td class="num">649 MHz</td><td class="num">145.79</td><td class="bad">✗</td></tr>
+  </tbody>
+</table>
+
+<p><strong>Nominal 2/2 → ≥250；非 Nominal 4/4 → &lt;250。</strong>
+與 HTTP 路徑的結論一致，且是兩個獨立的入口（llama-bench vs HTTP）。</p>
+
+<p>連續形式（時脈 → 吞吐）也吻合：以 <code>t(ms/token) = a + b/f_eff</code> 擬合，
+250 t/s 對應的有效時脈是 <strong>1154–1227 MHz</strong>
+（三組擬合：09:08 → 1227、14:55 → 1154、合併 → 1195）。
+殘差 ±3.8 t/s（組內），合併時 ±15.6 t/s（因為兩次擷取的 <code>n_batch</code> 不同：6144 vs 5632）。</p>
+
+<h2 id="s4">4. 怎麼跑</h2>
+
+<h3>4.1 閘門（交付樣本的唯一入口）</h3>
+<pre><code>cd /Users/alexchuang/Documents/flashkv-devserver
+
+# 等閘門打開，然後跑一個正向臂 + 一個負向對照
+ARMS=2 OUTDIR=Backup/cgc_logs/thermal_gate bash Backup/run_thermal_gate.sh</code></pre>
+<ul>
+  <li>條件不成立就<strong>不跑臂，<code>exit 3</code></strong>（fail closed）。要刻意產熱態樣本才用 <code>GATE_FORCE=1</code>。</li>
+  <li><code>MAX_WAIT</code>（預設 1800 s）是等待上限。實測：滿載停止後等級約 <strong>47 秒</strong>就回到 0 ⇒ 等待通常很短。</li>
+  <li>腳本同時起 2 Hz 的外掛探針（<code>Backup/thermal_pressure_probe.sh</code>），所以臂中途的等級變化事後看得見。</li>
+</ul>
+
+<h3>4.2 驗收臂本身帶證據</h3>
+<pre><code>IDLE_BEFORE=0 OUTDIR=Backup/cgc_logs/x bash Backup/run_req2_retest.sh</code></pre>
+<p>報告會出現：</p>
+<pre><code># [thermal pressure] before launch = 0/NOMINAL   (notifyutil -g com.apple.system.thermalpressurelevel)
+  [thermal pressure] before req1 = 0/NOMINAL
+...
+  --- thermal condition for this arm (in-band) ---
+    high-water : 0/NOMINAL -- condition SATISFIED across this arm
+    -&gt; a 250-class t/s reading from this arm is licensed by whitepaper 11.15.</code></pre>
+<p>讀不到時印 <code>?/UNREADABLE</code>，<strong>不會</strong>靜默當成 0
+（「讀不到」與「條件成立」同形是這個變數最糟的混淆）。</p>
+
+<h3>4.3 DVFS 的權威版本（有 root 時）</h3>
+<pre><code>sudo scripts/check/powermetrics_gpu_freq.sh
+python3 scripts/check/powermetrics_gpu_freq_parse.py Backup/cgc_logs/powermetrics_prefill_*.log</code></pre>
+<p>這是升級版的佐證（會給時脈與 DVFS 駐留分佈），但<strong>不是閘門</strong>：
+閘門要能在每一臂前跑，且不需要人。</p>
+
+<h2 id="s5">5. 不能說的話</h2>
+<ol>
+  <li><strong>不能說條件是「靜置 ≥150 s」。</strong>已推翻：安靜 18 s 的臂 req1 = 289.86，
+      安靜 34 s 的臂只有 166.95。安靜長度本身不預測吞吐。</li>
+  <li><strong>不能說「安靜夠久 ⟹ 等級一定回到 0」。</strong>等級回到 0 是<strong>讀出來的</strong>，
+      不是推出來的。反例就在 §2 臂 B：發射時是 0，但該臂中途就翻了。</li>
+  <li><strong>不能說 <code>swap</code> 高低是條件。</strong>反例順序相反
+      （289.86 t/s @ <code>used 4975.06M</code>、188.35 t/s @ <code>4549.69M</code>、
+      13:51 慢臂 @ <code>5066.06M</code>），而且它在安靜期間自己從 5066.06M 回到 2743.00M ⇒ 它是果。</li>
+  <li><strong>不能說 <code>NSProcessInfo.thermalState</code> 可以用。</strong>367/367 讀到 <code>fair</code>。</li>
+  <li><strong>不能說「250 隨時可重現」。</strong>可交付的是「<strong>讀到 0 的那一臂</strong>，
+      其 req1–req3 全部 ≥250」——本輪 2/2 臂成立（6/6 request）。母數小，如實計數。</li>
+  <li><strong>不能說閘門驗證了機制。</strong>它驗證的是<strong>判準</strong>。
+      時脈 → 吞吐的定量關係來自 <code>powermetrics</code>（§3），但 HTTP 路徑上沒有 per-request 的 DVFS 讀數。</li>
+</ol>
+
+<h2 id="s6">6. 副產物：(c) 那 2.25× 已歸因 —— 用<strong>否證</strong>的方式</h2>
+
+<p><code>docs/PREFILL250_THERMAL_TRANSIENT_20260916.html</code> §11.13 留下一個未歸因的 2.25×
+（12:44 產物 <code>268.09/273.55/256.61</code> vs 最終產物 <code>118.30–154.77</code>，同 A11 指紋），
+唯一內容差異是 <code>libggml-metal</code>。</p>
+
+<p><strong>做了 ABBA 交錯</strong>（<code>Backup/run_lib_ab.sh</code>，檔案互換 + 一臂暖機丟棄，共 5 臂）：</p>
+
+<table>
+  <thead><tr><th>臂</th><th>庫</th><th>md5</th><th>req1</th><th>req2</th><th>req3</th></tr></thead>
+  <tbody>
+    <tr><td>0（暖機，丟棄）</td><td>A</td><td class="num">dd4d1bc4</td><td class="num">248.18</td><td class="num">201.94</td><td class="num">210.46</td></tr>
+    <tr><td>1</td><td>B</td><td class="num">f2d1c961</td><td class="num">124.33</td><td class="num">129.02</td><td class="num">152.50</td></tr>
+    <tr><td>2</td><td>A</td><td class="num">dd4d1bc4</td><td class="num">117.53</td><td class="num">150.27</td><td class="num">167.91</td></tr>
+    <tr><td>3</td><td>A</td><td class="num">dd4d1bc4</td><td class="num">125.46</td><td class="num">169.09</td><td class="num">141.75</td></tr>
+    <tr><td>4</td><td>B</td><td class="num">f2d1c961</td><td class="num">120.60</td><td class="num">144.36</td><td class="num">155.23</td></tr>
+  </tbody>
+</table>
+
+<ul>
+  <li><code>req1</code>：A=121.50 / B=122.47（<strong>+0.8%</strong>）</li>
+  <li><code>req2</code>：A=159.68 / B=136.69（−14.4%）</li>
+  <li><code>req3</code>：A=154.83 / B=153.87（<strong>−0.6%</strong>）</li>
+</ul>
+
+<div class="box b-blue">
+  <p><strong>組間差無一致方向，且組內散佈大於組間差</strong>
+  （A 的 span = 51.56 t/s，B 的 span = 34.63，組間均差 = 7.66 ⇒ 散佈是組間差的 <strong>6.7 倍</strong>）。</p>
+  <p>⇒ <strong>庫的假設被否證。</strong></p>
+</div>
+
+<p>剩下的解釋是機器狀態，而 §0 的判準提供了第二條獨立線索：
+<code>268.09/273.55/256.61</code> 落在 Nominal 帶（≥253.42），
+<code>118.30–154.77</code> 落在 Heavy 帶（≤211.65），<strong>兩組分屬分離的兩個帶</strong>。
+這是<strong>一致的歸因</strong>，不是直接觀測 —— 那些臂當時沒有等級讀數
+（儀器是今天 15:2x 才找到的），如實標記。</p>
+
+<p><strong>附帶驗證</strong>：<code>load_mode=none</code> 下兩版庫統計上無差別，
+正是設計的預測（<code>_Pool</code> buft 只在 <code>use_mmap</code> 時被選中），
+所以那個改動對出廠路徑是中性的。</p>
+
+<h2 id="s7">7. 復現</h2>
+
+<pre><code>cd /Users/alexchuang/Documents/flashkv-devserver
+
+# 檔案互換前的 ABI 安全檢查（install name / deps / imports / 簽章）
+otool -D  Backup/pre_flagalign_20260916/libggml-metal.0.19.0.dylib
+nm -u     Backup/pre_flagalign_20260916/libggml-metal.0.19.0.dylib | wc -l   # 135，與最終版相同
+
+# 判準的證據：兩組分離
+grep -E 'before launch|pp_t/s' Backup/cgc_logs/thermal_gate2/req2retest_20260916_15310{4,7}.txt
+grep -E 'before launch|pp_t/s' Backup/cgc_logs/thermal_gate/req2retest_20260916_151846.txt \
+                                                   Backup/cgc_logs/thermal_gate/req2retest_20260916_151949.txt
+
+# ABBA
+cat Backup/cgc_logs/libab/summary_20260916_150641.tsv
+
+# 閘門
+ARMS=2 OUTDIR=Backup/cgc_logs/thermal_gate bash Backup/run_thermal_gate.sh</code></pre>
+
+<h3>證據檔</h3>
+<ul class="small">
+  <li><code>Backup/cgc_logs/thermal_gate2/{req2retest_20260916_153104.txt, req2retest_20260916_153207.txt, pressure_20260916_153102.tsv, gate_20260916_153102.txt, summary_20260916_153102.tsv}</code></li>
+  <li><code>Backup/cgc_logs/thermal_gate/{req2retest_20260916_151846.txt, …_151949.txt, …_152126.txt, pressure.tsv}</code></li>
+  <li><code>Backup/cgc_logs/libab/summary_20260916_150641.tsv</code></li>
+  <li><code>Backup/cgc_logs/powermetrics_parse_145506.json</code></li>
+  <li><code>Backup/cgc_logs/powermetrics_prefill_20260916_090808.parse.txt</code></li>
+</ul>
+
+<hr>
+<p class="small">
+  姊妹文件：<code>docs/PREFILL250_THERMAL_TRANSIENT_20260916.html</code>（§10 powermetrics 因果鏈、§11.14 條件式交付、
+  <strong>§11.15 本條件</strong>）；<code>docs/PREFILL250_CONDITIONAL_DELIVERY_20260916.md</code>（本文的 Markdown 版）。
+</p>
+
+</div>
+</body>
+</html>

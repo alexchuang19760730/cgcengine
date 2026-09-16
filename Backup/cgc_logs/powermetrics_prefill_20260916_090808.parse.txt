@@ -1,0 +1,56 @@
+=== powermetrics summary: Backup/cgc_logs/powermetrics_prefill_20260916_090808.log ===
+samples                : 5992  (with a frequency reading: 5992)
+sample interval        : 505 ms  (capture spans ~50.4 min)
+
+block threshold        : 2170 mW  (0.15 x p99.5 of power)
+duty cycle above it    : 228/5992 samples = 3.8%   (a low duty cycle is expected for an idling capture)
+
+--- activity blocks (segmented on GPU Power, not on the clock under test) ---
+   # label samples freq MHz  resid %  power mW  eff MHz     plateau MHz  thermal                start   
+   0 cold       55     1394    83.73     12713     1400      1470 (71%)  Nominalx55             09:11:20
+   1 hot        68     1085    97.63      8566     1082       928 (43%)  Heavyx48 Moderatex20   09:12:11
+   2 hot2      104      705    97.61      3778      700       618 (62%)  Heavyx104              09:13:05
+  eff MHz     = residency-weighted clock while active; the fair cold-vs-hot clock number
+  plateau MHz = the DVFS step the run actually settled on, and its share of active time
+  thermal     = `Current pressure level` counts, from the thermal sampler
+
+--- DVFS step residency (%), per block ---
+    this is the field `GPU HW active frequency` collapses away:
+     MHz     cold      hot     hot2  spread pp
+    1470    71.10    15.94     1.29      69.81   <-- moved
+    1338    10.53     4.51     0.68       9.84   <-- moved
+    1278    10.55     5.70     0.67       9.89   <-- moved
+    1170     5.39     8.21     0.69       7.52   <-- moved
+    1056     0.31    15.23     0.68      14.92   <-- moved
+     928     1.00    43.09     1.52      42.08   <-- moved
+     796     0.00     7.21    30.63      30.63   <-- moved
+     618     0.00     0.00    62.45      62.45   <-- moved
+     338     1.13     0.11     1.39       1.28
+  effective clock while active:  cold 1400 MHz   hot 1082 MHz   hot2 700 MHz
+  (effective = residency-weighted mean over the parenthetical; it is the number to
+   compare when the states occupy DIFFERENT steps, which the single `GPU HW active
+   frequency` value cannot show. Steps that are 0.00 everywhere are omitted.)
+
+--- thermal pressure per block (from the thermal sampler) ---
+  cold    55 samples   Nominalx55
+  hot     68 samples   Heavyx48 Moderatex20
+  hot2   104 samples   Heavyx104
+  -> pressure ESCALATED from the cold block to the hot ones. That is a thermal
+     ceiling rather than a fixed power budget: a fixed cap holds power flat while
+     the clock falls, whereas here power falls WITH the clock.
+
+--- verdict ---
+  CLOCK (same work, lower clock -- thermally driven)
+    clock       : 1394 -> 895 MHz  (-35.8%)
+    residency   : 83.73 -> 97.62 %  (+13.89 pp)
+    power       : 12713 -> 6172 mW (-51.5%)
+    thermal     : Nominalx55 -> Heavyx152 Moderatex20   <- PRESSURE ESCALATED across the pair
+    the clock falls while residency holds -> the SAME work is executing SLOWER
+    and thermal pressure escalated across the same window, so the ceiling that holds the clock
+    down is a THERMAL one -- the operating point is being chosen by the thermal governor,
+    not by the workload and not by a fixed power budget.
+    and power falls -51.5% with it -> the clock is being held down and the
+    lower power is the consequence, not the constraint
+
+  (the FIRST block is the cold one by construction: the harness idles before run 1)
+  (segmentation is on power, so a mis-split shows up as an odd block count above)

@@ -811,6 +811,40 @@
 
 ---
 
+**B31｜不要在同一則訊息裡對同一個檔案送出兩個編輯 —— 它們會 race，其中一組會靜默消失。**
+- 為什麼（我自己犯的，2026-09-16 15:15）：對 `Backup/run_req2_retest.sh` 同時送出
+  「加更正註解 + 加 `_thermal_level()` 函式」與「加機器狀態讀數」兩個 Edit，
+  兩個都回報成功，但**只有第二個的內容在磁碟上**。呼叫點（`T_PRELAUNCH="$(_thermal_level)"`、
+  `_L0=`、`_L1=`）都落地了，函式定義沒有。
+- 後果是**假陰性**，不是崩潰：腳本沒有 `set -e`，未定義函式在 `$( )` 裡只讓 stderr 多一行，
+  而 stdout 是空字串 ⇒ 報告印出 `[thermal pressure] before req1 = `（空白），
+  看起來像「這個儀器讀不到」，而不是「這個儀器不存在」。
+  三臂的**發射時等級**由外層 shell 印出，所以那些臂的判決仍然有效；
+  **in-band 讀數**則完全無效。
+- 怎麼做：同一個檔案的多處修改一律**逐次送出**（一次一個 Edit，等結果再送下一個）。
+  若已經平行送出，收尾前用 `grep -n` 確認**定義與呼叫都在**——
+  「呼叫點存在」不等於「定義存在」，而兩者在畫面上長得很像。
+- 題外但相關：未定義指令的錯誤在 `{ ... } 2>&1 | tee` 裡會被寫進報告，
+  但**替換後的字串是空的**，所以只看 `grep 'thermal pressure'` 會漏掉它。
+
+**B32｜「沒有儀器可以讀」是關於**某個工具**的推論，不是關於**系統**的事實。**
+- 為什麼（我自己犯的，寫進了白皮書 §11.14.7）：我寫下「沒有任何非 root 的即時儀器可以回答
+  governor 選了哪一階」，理由是 `pmset -g therm` 回 `No thermal warning level has been recorded`、
+  而 DVFS 駐留要 root `powermetrics`。兩句話都對，結論是錯的。真正的儀器是
+  `notifyutil -g com.apple.system.thermalpressurelevel` —— 就是 `powermetrics` 讀的那條
+  notify(3) key，**不需要 root、約 11 ms/次、可 2 Hz 取樣**。
+- 搜尋停在「這個工具要 root」，於是「**這個**工具不可用」變成「**沒有**工具可用」。
+  一個不存在的儀器與一個沒找到的儀器，在結論的措辭上長得一模一樣。
+- 怎麼做：要寫「不可觀測」之前，先把介面列一遍再下結論 ——
+  notify(3) key、Foundation/AppKit API（`NSProcessInfo.thermalState` 就是這樣找到的）、
+  `sysctl`、`ioreg`（IOReport 的 channel **id** 在，讀數不在）、`pmset`、`powermetrics`。
+  **正確的措辭是「這些介面都試過了，以下是各自的結果」，不是「沒有儀器」。**
+- 反面教材同樣要記：`NSProcessInfo.thermalState` **看起來**是那個缺失的儀器
+  （非 root、Foundation、四級刻度），但 367 個樣本跨越滿載與 4 分鐘閒置**全部讀到 `1/fair`**
+  ⇒ 它沒有區辨力。**找到一個介面不等於找到一個儀器；要用它與被解釋的量之間的實際分離度來認證。**
+
+---
+
 ## C. 讀原始碼
 
 **C1｜變數名稱不等於語意。**

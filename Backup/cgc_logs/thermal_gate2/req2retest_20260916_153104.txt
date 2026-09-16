@@ -1,0 +1,106 @@
+# prefill250 req2 retest  -- HEAD=a2fd87604
+# started 2026-09-16 15:31:04   report=Backup/cgc_logs/thermal_gate2/req2retest_20260916_153104.txt
+# binary under test:
+# binary under test (resolved through the symlink chain the loader uses):
+#   054fb22f04a01c5cb93b362883dd3f82  2026-09-16 12:44:53  llama-server
+#   27f7df4520120f5aa8d2e6fd8eff2d75  2026-09-16 12:44:53  libllama-server-impl.dylib
+#   7bceb3bd5320b3b312f040aacacfd7e9  2026-09-16 12:44:51  libllama-common.0.0.279.dylib  (symlink libllama-common.0.dylib)
+#   cbb7617b9e0f45854116edbb6e946239  2026-09-16 12:44:51  libmtmd.0.0.279.dylib  (symlink libmtmd.0.dylib)
+#   233a172afb2e91b77a355a521bdc6585  2026-09-16 13:50:59  libllama.0.0.279.dylib  (symlink libllama.0.dylib)
+#   8f4abce760528e37fcdad2cd6d7c3099  2026-09-16 13:50:58  libggml.0.19.0.dylib  (symlink libggml.0.dylib)
+#   70ebbd7c709af4d4cfd820df0e003bbf  2026-09-16 12:44:48  libggml-cpu.0.19.0.dylib  (symlink libggml-cpu.0.dylib)
+#   f2d1c96193939bd15404ba713a6fa85d  2026-09-16 13:50:58  libggml-metal.0.19.0.dylib  (symlink libggml-metal.0.dylib)
+#   d2099fb798e7ed0ede79bc10d7e7f1fc  2026-09-16 12:44:44  libggml-base.0.19.0.dylib  (symlink libggml-base.0.dylib)
+# MTP_SUPPORT evidence (strings -a on the common lib the loader maps):
+#   present  UNGUARDED  (control, must be present) adding speculative implementation 'draft-mtp'
+#   present  GUARDED by MTP_SUPPORT             MTPDBG mtp_ctor: BEFORE set_nextn
+#   present  GUARDED by MTP_SUPPORT             MTPDBG process: n_tokens=
+#   present  GUARDED by MTP_SUPPORT             MTPDBG mtp_ctor: AFTER set_nextn
+#   => guarded 3/3, control present  => MTP_SUPPORT=ON (compiled in)
+# arm: profile=prefill250 (nothing else set), requests req1..req3, gate unset
+# ZOMBIE=0  (1 => NSZombieEnabled=YES + MallocStackLogging=1)
+
+  [mode]  MTP ON (draft-mtp, n_max=3, denseIQ4X=1)
+  [perf]  layer_caps=40-40:256 (default)
+  [perf]  batch=5632 ubatch=5632
+  [perf]  n_cb=8 glu_fused_down=1(mm_fuse=off) watchdog=1 oa_async=1 load_mode=none
+  [perf]  runtime_profile=auto model_root=/Users/alexchuang/Documents/flashkv-devserver/models/gguf
+  CGCENV PROFILE   prefill250
+  CGCENV MODEL     /Users/alexchuang/Documents/flashkv-devserver/models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf
+  CGCENV CTX       8192
+  CGCENV BUDGET    8589934592
+  CGCENV BATCH     5632
+  CGCENV UBATCH    5632
+  ENV CGC_GATHER_SLAB_CAP=256
+  ENV CGC_PREFILL_STREAM=1
+  ENV CGC_MTP_NO_WARMUP=1
+  ARG /Users/alexchuang/Documents/flashkv-devserver/models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf
+  [argv] -m /Users/alexchuang/Documents/flashkv-devserver/models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf -ngl 99 --load-mode none -t 8 -c 8192 -np 1 --no-kv-unified -sps 0 --host 0.0.
+  [A11 fingerprint] a9c9dc104f057bf640e0132a83e01c12
+
+# [thermal label] UNKNOWN-STATE -- quiet since previous arm ended = 0s (COLD needs >= 1800s)
+#   ?? no state file at Backup/cgc_logs/thermal_gate2/.last_arm_end -- the quiet interval is UNKNOWN, so this arm makes no
+#      thermal claim in either direction. Start a known sequence by removing the guesswork:
+#      the harness writes this file at the end of every arm, so a second arm will be labelled.
+# [thermal precondition] IDLE_BEFORE=0 -- protocol wait NOT APPLIED.
+#   (Note: a 0 s wait does NOT by itself make a hot sample -- and it does not make a cold
+#    one either: measured 289.86 t/s on req1 with ZERO quiet. The label above is the claim.)
+# [machine state] total = 5120.00M  used = 4080.88M  free = 1039.12M  (encrypted)
+# [machine state] load:{ 2.43 4.10 4.16 }
+# [thermal pressure] before launch = 0/NOMINAL   (notifyutil -g com.apple.system.thermalpressurelevel)
+
+  log=/Users/alexchuang/Documents/flashkv-devserver/Backup/cgc_logs/llama_server_20260916_153105.log  driver=10278
+  health OK after 9s
+  [thermal pressure] before req1 = 0/NOMINAL
+  req1: OK wall=15.4s prompt_n=2873 prompt_ms=10768.1 pp_t/s=266.81
+  [thermal pressure] after  req1 = 0/NOMINAL
+  alive after req1: yes
+  [thermal pressure] before req2 = 0/NOMINAL
+  req2: OK wall=13.9s prompt_n=2873 prompt_ms=10666.6 pp_t/s=269.35
+  [thermal pressure] after  req2 = 0/NOMINAL
+  alive after req2: yes
+  [thermal pressure] before req3 = 0/NOMINAL
+  req3: OK wall=12.2s prompt_n=2873 prompt_ms=10576.6 pp_t/s=271.64
+  [thermal pressure] after  req3 = 1/MODERATE
+  alive after req3: yes
+
+  ===== RESULT: ready=yes last_request=req3 survived=yes =====
+  new crash report: none
+
+  --- zombie / objc diagnostics found in the server log ---
+    0.00.661.147 W common_fit_params: failed to fit params to free device memory: n_gpu_layers already set by user to 99, abort
+    CGC-SYNCFILL: verify il=0 cold_filled=9 (batch)
+    CGC-SYNCFILL: verify il=1 cold_filled=9 (batch)
+    CGC-SYNCFILL: verify il=0 cold_filled=7 (batch)
+    CGC-SYNCFILL: verify il=0 cold_filled=6 (batch)
+    llama_expert_cache: blocker-B stats: batch_evict_batches=325 adopted_queued=0 batch_invariant_checks=0 batch_invariant_violations=0
+  --- last 5 log lines ---
+    llama_expert_cache: miss attribution: compulsory=2604 capacity=0 (100.0% / 0.0% of 2604)  evictions=2492  layers_distinct_over_slots=0  worst=layer 40 distinct=113 slots=
+    llama_expert_cache: read shape: jobs=47991 bytes=2784305152 (0.06 MiB/job as one contiguous run)  us/job=26679  effective_rate=2 MiB/s  total_bytes=2.59 GiB
+    llama_expert_cache: decode/pool (ensure_slot+batch) hits=9913/12517 (79.2%)  gather (ensure) hits=0/0
+    llama_expert_cache: MTP fast path: calls=632 union=17992 cold(ZERO)=0 (0.0%)   verify: calls=578 union=17560 cold=0 (0.0%)   draft: calls=54 union=432 cold=0 (0.0%)
+    llama_expert_cache: verify-strict: refused=47  zero_mapped_selected=0
+
+  --- server log request timeline ---
+       76 | 0.09.187.459 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+       84 | CGC-PREFILL-STREAM: il=0 kind=0 ntok=2873 experts=256 slab=110.00 MiB filled=115343360 bytes db=1
+       86 | CGC-PREFILL-STREAM: il=1 kind=0 ntok=2873 experts=256 slab=110.00 MiB filled=115343360 bytes db=1
+      210 | 0.24.500.120 I slot print_timing: id  0 | task 0 | prompt eval time =   10768.07 ms /  2873 tokens (    3.75 ms per token,   266.81 tokens per second)
+      211 | 0.24.500.121 I slot print_timing: id  0 | task 0 |        eval time =    4544.50 ms /    24 tokens (  189.35 ms per token,     5.28 tokens per second)
+      212 | 0.24.500.122 I slot print_timing: id  0 | task 0 |       total time =   15312.57 ms /  2897 tokens
+      213 | 0.24.500.124 I slot print_timing: id  0 | task 0 |    graphs reused =          4
+      214 | 0.24.500.340 I slot print_timing: id  0 | task 0 | draft acceptance = 1.00000 (   17 accepted /    17 generated), mean len =  3.83
+      217 | 0.24.812.239 I slot launch_slot_: id  0 | task 8 | processing task, is_child = 0
+      218 | CGC-PREFILL-STREAM: il=0 kind=0 ntok=2873 experts=256 slab=110.00 MiB filled=115343360 bytes db=1
+      219 | CGC-PREFILL-STREAM: il=1 kind=0 ntok=2873 experts=256 slab=110.00 MiB filled=115343360 bytes db=1
+      252 | 0.38.456.759 I slot print_timing: id  0 | task 8 | prompt eval time =   10666.60 ms /  2873 tokens (    3.71 ms per token,   269.35 tokens per second)
+      253 | 0.38.456.761 I slot print_timing: id  0 | task 8 |        eval time =    2976.78 ms /    24 tokens (  124.03 ms per token,     8.06 tokens per second)
+      254 | 0.38.456.761 I slot print_timing: id  0 | task 8 |       total time =   13643.38 ms /  2897 tokens
+      255 | 0.38.457.168 I slot print_timing: id  0 | task 8 |    graphs reused =          8
+      256 | 0.38.457.478 I slot print_timing: id  0 | task 8 | draft acceptance = 1.00000 (   17 accepted /    17 generated), mean len =  3.83
+      259 | 0.39.440.818 I slot launch_slot_: id  0 | task 16 | processing task, is_child = 0
+      281 | 0.51.236.274 I slot print_timing: id  0 | task 16 | prompt eval time =   10576.59 ms /  2873 tokens (    3.68 ms per token,   271.64 tokens per second)
+      282 | 0.51.236.275 I slot print_timing: id  0 | task 16 |        eval time =    1218.79 ms /    24 tokens (   50.78 ms per token,    19.69 tokens per second)
+      283 | 0.51.236.276 I slot print_timing: id  0 | task 16 |       total time =   11795.38 ms /  2897 tokens
+      284 | 0.51.236.277 I slot print_timing: id  0 | task 16 |    graphs reused =         12
+      285 | 0.51.236.448 I slot print_timing: id  0 | task 16 | draft acceptance = 1.00000 (   17 accepted /    17 generated), mean len =  3.83

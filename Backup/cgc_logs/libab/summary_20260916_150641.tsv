@@ -1,0 +1,6 @@
+# columns:	idx	lib	md5	req1	req2	req3	survived	crash	report
+0	A(warmup-discard)	dd4d1bc4fbd8b1528eb73d813aae8dd4	248.18	201.94	210.46	yes	none	req2retest_20260916_150642.txt	
+1	B	f2d1c96193939bd15404ba713a6fa85d	124.33	129.02	152.5	yes	none	req2retest_20260916_150756.txt	
+2	A	dd4d1bc4fbd8b1528eb73d813aae8dd4	117.53	150.27	167.91	yes	none	req2retest_20260916_150937.txt	
+3	A	dd4d1bc4fbd8b1528eb73d813aae8dd4	125.46	169.09	141.75	yes	none	req2retest_20260916_151112.txt	
+4	B	f2d1c96193939bd15404ba713a6fa85d	120.6	144.36	155.23	yes	none	req2retest_20260916_151247.txt	
