@@ -22,7 +22,8 @@ mkdir -p "$(dirname "$OUT")"
 
 echo "==> [1/2] tb run: codebuff-api agent, n_tasks=$SFT_N_TASKS, model=$SFT_MODEL"
 # shellcheck disable=SC2086
-PYTHONPATH="$TB_LOOP_DIR" "$TB_TB_BIN" run \
+# PYTHONPATH 必须是 tb_loop 的父目录（见 run_round.sh 同处的注释）
+PYTHONPATH="$TB_HARNESS_ROOT" "$TB_TB_BIN" run \
     -d "$TB_DATASET" \
     --agent-import-path "tb_loop.agents.codebuff_api_agent:CodebuffApiAgent" \
     -m "openai/$SFT_MODEL" \

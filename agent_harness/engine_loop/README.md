@@ -105,8 +105,17 @@ python3 agent_harness/engine_loop/traces/selftest.py                        # �
   沒有 build 指紋、`n_rounds` 不足 3、或臂本身是探針。門檻是刻意設在那裡的。
   注意這個欄位擋的是**引用數字**，不是「能不能被引用」：層梯二分最關鍵的那一列
   （全臂、跨輪不穩定）正是 `usable_as_evidence == false`，而 `decisions.jsonl` 照樣用它。
-- **`tb_loop` 的三個入口腳本目前跑不起來**（`import tb_loop` → `ModuleNotFoundError`，見
-  `CONVENTIONS.md` D1）。E1 修，`bash -n` 抓不到。
+- **`tb_loop` 的三個入口腳本曾經跑不起來——E1 已修（套件解析層面）。**
+  原本 `import tb_loop` → `ModuleNotFoundError`：三支入口都寫 `--agent-import-path "tb_loop.agents.…"`，
+  而 `PYTHONPATH` 指向 `agent_harness/` 自己（那時它就是 `tb_loop`），所以解譯器看不到名為
+  `tb_loop` 的套件。E1 把資產搬進 `agent_harness/tb_loop/`，並讓 `PYTHONPATH` 指向其**父目錄**，
+  import 字串一行未改。**已驗證**：`tb_loop` 現在是**正規套件**（`__init__.py`），
+  `tb_loop.agents.{prime_agent_adapter,codebuff_api_agent,loopmoe_agent_adapter}` 與
+  `tb_loop.learning.attribution` 四個模組都解析到搬遷後的位置；對照組
+  （`PYTHONPATH=agent_harness/tb_loop`）仍正確地報 `No module named 'tb_loop'`。
+  **仍未驗的**：`tb run --n-tasks 1` 的 smoke 沒跑——`tb_loop/.venv` 不存在、`terminal-bench`
+  未安裝，且 Docker daemon 未執行。**`bash -n` 抓不到套件解析問題**，這一條靠真的 `import` 才成立。
+  詳見 `docs/AGENT_HARNESS_E1_RESTRUCTURE_20260916.html`。
 - **S1 的 bit-identical 閘門尚未通過。** 值層面的解釋已全部排除，但今天的兩個決定性配對把問題**重新定型**：
   - 層梯二分：`min_il=20`（20 層、約 80 個多出節點）與基準**逐位元相同且穩定**；`min_il=18/14/10/6`
     **穩定地不同**；`min_il=2` 與全臂**跨輪不穩定**（3 個值）。

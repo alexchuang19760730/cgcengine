@@ -59,8 +59,8 @@ if command -v python3 >/dev/null 2>&1 && python3 -c 'pass' >/dev/null 2>&1; then
     PY=python3
 elif command -v python >/dev/null 2>&1 && python -c 'pass' >/dev/null 2>&1; then
     PY=python
-elif [[ -x "$TB_LOOP_DIR/../.tb-loop-venv/Scripts/python" ]]; then
-    PY="$TB_LOOP_DIR/../.tb-loop-venv/Scripts/python"
+elif [[ -x "$TB_LOOP_DIR/.tb-loop-venv/Scripts/python" ]]; then
+    PY="$TB_LOOP_DIR/.tb-loop-venv/Scripts/python"
 else
     echo "error: 找不到可用的 python（尝试 python3 / python / .tb-loop-venv）" >&2
     exit 2

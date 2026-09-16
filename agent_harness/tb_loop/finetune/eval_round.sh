@@ -29,7 +29,8 @@ mkdir -p "$(dirname "$RUN_OUT")"
 echo "== [$ROUND_NAME] tb run: n_tasks=$TB_N_TASKS model=$TB_GEMMA4_MODEL @ $BASE_URL"
 
 # shellcheck disable=SC2086
-PYTHONPATH="$TB_LOOP_DIR" "$TB_TB_BIN" run \
+# PYTHONPATH 必须是 tb_loop 的父目录（见 run_round.sh 同处的注释）
+PYTHONPATH="$TB_HARNESS_ROOT" "$TB_TB_BIN" run \
     -d "$TB_DATASET" \
     --agent-import-path "tb_loop.agents.prime_agent_adapter:PrimeAgentAgent" \
     -m "openai/$TB_GEMMA4_MODEL" \

@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Harness E1：把 tb_loop 收進自己的目錄（2026-09-16）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --purple:#7c3aed; --purple-bg:#f5f3ff;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.78 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,"Noto Sans TC",sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:27px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16.5px;margin:26px 0 8px;color:#1f2937}
+  h4{font-size:14.5px;margin:20px 0 6px;color:#374151}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:24px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.4px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.4px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  tr:nth-child(even) td{background:#fcfcfd}
+  .box{border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:0 8px 8px 0;
+       padding:12px 16px;margin:16px 0;background:var(--blue-bg)}
+  .box.warn{border-left-color:var(--amber);background:var(--amber-bg)}
+  .box.bad{border-left-color:var(--red);background:var(--red-bg)}
+  .box.ok{border-left-color:var(--green);background:var(--green-bg)}
+  .box .lbl{font-weight:700;font-size:13px;letter-spacing:.3px}
+  .box p:last-child{margin-bottom:0}
+  ul,ol{margin:8px 0 8px 22px}
+  li{margin:4px 0}
+  .tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11.5px;font-weight:600;
+       border:1px solid transparent;margin-right:4px;white-space:nowrap}
+  .t-green{background:var(--green-bg);color:var(--green);border-color:#a7f3d0}
+  .t-red{background:var(--red-bg);color:var(--red);border-color:#fecaca}
+  .t-amber{background:var(--amber-bg);color:var(--amber);border-color:#fde68a}
+  .t-gray{background:#f3f4f6;color:#4b5563;border-color:#e5e7eb}
+  .ck{font-family:ui-monospace,Menlo,monospace;font-size:12.2px;color:#065f46}
+  .foot{margin-top:40px;color:var(--muted);font-size:12.3px;border-top:1px solid var(--line);padding-top:14px}
+  .center{text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Agent Harness E1：把 <code>tb_loop</code> 收進自己的目錄</h1>
+<p class="sub">
+  專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code> ·
+  分支 <code>demo/sweet-spot-windows-fix</code> · 產出日期 2026-09-16 ·
+  這一輪的前一個 commit 是 <code>3155e7c9a</code>（引擎側：<code>binary_stamp()</code> 陽性對照）
+</p>
+
+<div class="box">
+  <p><span class="lbl">一句話</span></p>
+  <p>E1 做的事情只有一句：<b>讓「套件名 <code>tb_loop</code>」與「<code>tb_loop/</code> 這個目錄」
+  第一次同時為真。</b>在那之前兩者都不存在——<code>--agent-import-path "tb_loop.agents.…"</code> 指的是一個
+  從來沒有被創建過的套件，而三支入口腳本靠一個「恰好指對」的變數掩蓋了這件事六天。</p>
+</div>
+
+<h2>1. 為什麼是現在、為什麼是這一步</h2>
+
+<p>三個獨立的地方都指向同一個缺陷，它們互相印證：</p>
+
+<table>
+<tr><th style="width:250px">出處</th><th>它說了什麼</th></tr>
+<tr><td><code>PLAN_ENGINE_LOOP_2026-09-15.md</code> §9</td>
+    <td>E1 的驗收是「<code>python -c "import tb_loop.agents.prime_agent_adapter"</code> 成功；
+        <code>tb run --n-tasks 1</code> smoke 過」——也就是說這一步的存在理由就是修掉一個<b>跑不起來</b>的東西。</td></tr>
+<tr><td><code>PLAN</code> §10 R2</td>
+    <td>「tb_loop 的 import 已經是壞的（實測，不是假設）……<b>也就是說三個入口腳本現在都跑不起來</b>」，
+        並給出兩條修法，推薦 (a) <code>git mv</code> 進 <code>agent_harness/tb_loop/</code>。</td></tr>
+<tr><td><code>agent_harness/engine_loop/README.md</code> §7</td>
+    <td>在「已知的誠實邊界」裡列著它：「<code>tb_loop</code> 的三個入口腳本目前跑不起來……
+        E1 修，<code>bash -n</code> 抓不到。」</td></tr>
+</table>
+
+<p>
+換句話說：這一輪<b>沒有新增任何功能</b>，它把一個已經被三處記錄、但從未被處置的缺陷結清。
+在它完成之前，<code>agent_harness/</code> 是一個「有兩個迴圈」的宣稱——其中一個迴圈的入口
+從來沒有被執行過。
+</p>
+
+<h2>2. 邊界：什麼進去了、什麼刻意留在原地</h2>
+
+<p>
+<code>agent_harness/</code> 底下住著的不全是 tb_loop。把「所有東西搬進 <code>tb_loop/</code>」
+是錯的——<code>pd/</code>、<code>loopmoe/</code>、CGC proxy 那一批都不屬於它。所以第一步是決定邊界，
+而邊界的判準是<b>「誰在 <code>tb_loop/README.md</code> 與三支入口腳本的生命週期裡」</b>。
+</p>
+
+<h3>2.1 搬進 <code>agent_harness/tb_loop/</code>（642 個檔案，全部走 <code>git mv</code>）</h3>
+
+<table>
+<tr><th style="width:210px">條目</th><th>為什麼是 tb_loop 的</th></tr>
+<tr><td><code>README.md</code></td><td>第一行就是「tb_loop — Terminal-Bench × gemma4 × prime-agent 评估-学习循环」</td></tr>
+<tr><td><code>config.env</code>、<code>run_round.sh</code>、<code>gen_sft.sh</code></td><td>主入口與全部參數</td></tr>
+<tr><td><code>agents/</code>、<code>learning/</code>、<code>harness/</code></td><td>tb 的 installed agent、學習迴圈、<b>跨輪 harness 狀態</b></td></tr>
+<tr><td><code>results/</code>、<code>datasets/</code>、<code>sft_data*/</code>（6 個）</td><td>每輪輸出、Terminal-Bench 資料集、產出的 SFT 資料</td></tr>
+<tr><td><code>finetune/</code>、<code>scripts/</code>（5 支中的 5 支）</td><td>MLX LoRA 與環境準備／彩排</td></tr>
+<tr><td><code>agent_harness/tb_loop/docs/whittle-moe-whitepaper.md</code></td><td>唯一的 tb_loop 文件（<code>agent_harness/docs/</code> 底下另三份是 PD 的，留在原地）</td></tr>
+</table>
+
+<h3>2.2 刻意留在 <code>agent_harness/</code>（並寫進新 README 的「未分類」清單）</h3>
+
+<table>
+<tr><th style="width:250px">條目</th><th>為什麼不動</th></tr>
+<tr><td><code>pd/</code>、<code>loopmoe/</code>、<code>qwen36/</code>、<code>dsh_config/</code></td>
+    <td>四個獨立子系統。<b>PLAN §3 的目標結構只安排了 <code>tb_loop/</code>、<code>engine_loop/</code>、
+        <code>shared/</code>——它沒有替這些條目安排位置。</b>「計畫沒說」不等於「我可以自己發明一個家」，
+        所以它們原地不動，並被明確列為未分類。</td></tr>
+<tr><td><code>agent_harness/scripts/auto_git_push.ps1</code></td>
+    <td><b>搬它換不到任何東西，只會製造引用漂移。</b>它的路徑被五處引用，而其中三處<b>不能手改</b>：
+        <code>CONVENTIONS.md</code> D6 的 dated 修訂、lesson <code>eng-bound-0004</code> 的
+        <code>applies_to</code>（<code>traces/</code> 裡的已定稿 record）、以及
+        <code>agent_harness/memory/</code> 與 <code>skills/</code> 底下的 <b>快照</b>
+        （依 D6，改快照等於改副本，下次匯入就被蓋掉——要改得改 <code>.workbuddy/memory/</code> 與
+        <code>~/.workbuddy/skills/</code> 的原檔，而那兩處此刻正被另一個 session 寫）。
+        它對「住在哪」也沒有任何需求：推送線是 <code>git add agent_harness</code>，路徑在樹裡就成立。</td></tr>
+<tr><td>CGC proxy 家族（<code>cgc_proxy.*</code>、<code>cgc_anthropic_proxy.py</code>、
+        <code>openai_cgc_bridge.*</code>、<code>litellm_config.yaml</code>、<code>_gen.js</code>）</td>
+    <td>edge proxy / 轉接層，與 terminal-bench 無關</td></tr>
+<tr><td><code>docs/</code> 底下三份 PD 文件</td><td>歸屬 PD 那一支</td></tr>
+</table>
+
+<div class="box ok">
+  <p><span class="lbl">這一段的價值不在搬了什麼，而在沒搬什麼被寫下來了</span></p>
+  <p>「未分類」是一份<b>可以過期的清單</b>，而不是沉默。它被放進
+  <code>agent_harness/README.md</code>，所以下一個讀者會看到「這四個子系統還沒被安排位置」，
+  而不是在頂層看到四個不知道該不該動的目錄。</p>
+</div>
+
+<h2>3. 搬遷的真正成本：4 個檔案裡的 9 處</h2>
+
+<p>
+642 個檔案是用 <code>git mv</code> 搬的，所以歷史是連續的（<code>git log --follow</code> 走得通）。
+但<b>真正的成本不在 642 個搬動，而在 9 處「假設了舊位置」的字串</b>。
+它們分三類，其中一類是搬遷<b>才讓它現形</b>的。
+</p>
+
+<h3>3.1 三個路徑錨點（<code>tb_loop/config.env</code>）</h3>
+
+<p>
+<code>config.env</code> 有 4 條路徑不是相對「自己」算的，而是相對「自己所在目錄」的<b>鄰居</b>算的。
+搬動之後那些鄰居換了：
+</p>
+
+<table>
+<tr><th style="width:230px">原本寫法</th><th style="width:220px">搬遷前解析到</th><th>搬遷後若不改</th></tr>
+<tr><td class="num">${TB_LOOP_DIR}/../app/cloud/…</td><td class="num">flashkv-devserver/app/…</td>
+    <td class="num">agent_harness/tb_loop/../app → <span style="color:#dc2626">agent_harness/app</span>（不存在）</td></tr>
+<tr><td class="num">${TB_LOOP_DIR}/loopmoe/configs/…</td><td class="num">agent_harness/loopmoe/…</td>
+    <td class="num"><span style="color:#dc2626">agent_harness/tb_loop/loopmoe/…</span>（不存在）</td></tr>
+<tr><td class="num">${TB_LOOP_DIR}/loopmoe_output</td><td class="num">agent_harness/loopmoe_output</td>
+    <td class="num"><span style="color:#dc2626">agent_harness/tb_loop/loopmoe_output</span></td></tr>
+<tr><td class="num">${TB_LOOP_DIR}/pd_data</td><td class="num">agent_harness/pd_data</td>
+    <td class="num"><span style="color:#dc2626">agent_harness/tb_loop/pd_data</span></td></tr>
+</table>
+
+<p>處置：把三個「代表不同事物」的錨點顯式分開，而不是繼續用一個變數加 <code>..</code> 推：</p>
+
+<pre><code>TB_LOOP_DIR     = agent_harness/tb_loop      # 屬於 tb_loop：harness/ results/ sft_data*/ .venv/
+TB_HARNESS_ROOT = agent_harness              # 不隨 tb_loop 移動：loopmoe/ loopmoe_output/ pd_data/
+TB_REPO_ROOT    = &lt;repo root&gt;                # 跨過 harness 根：app/cloud/freebuff2api/.env</code></pre>
+
+<h3>3.2 三處 <code>PYTHONPATH</code>（三個入口各一）</h3>
+
+<p>
+<code>run_round.sh</code>、<code>gen_sft.sh</code>、<code>finetune/eval_round.sh</code> 都寫
+<code>PYTHONPATH="$TB_LOOP_DIR"</code>，而 import 字串是 <code>tb_loop.agents.…</code>。
+解譯器要的是<b>套件的父目錄</b>。改法只有一個字串替換，<b>import 字串一行都沒改</b>
+（這正是 PLAN R2 推薦 (a) 的理由）：
+</p>
+
+<pre><code>- PYTHONPATH="$TB_LOOP_DIR"      # 搬遷前＝ agent_harness/（恰好對）
++ PYTHONPATH="$TB_HARNESS_ROOT"  # 搬遷後＝ tb_loop/ 的父目錄（依定義對）</code></pre>
+
+<h3>3.3 兩處 <code>.tb-loop-venv</code>：一個我選的<b>行為變更</b>，明寫在這裡</h3>
+
+<p>
+<code>learning/refine_harness.sh</code> 與 <code>learning/rollback_harmful.sh</code> 用
+<code>"$TB_LOOP_DIR/../.tb-loop-venv/Scripts/python"</code> 找 Windows 彩排用的 venv。
+這個路徑在搬遷前解析到<b>倉庫根</b>的 <code>.tb-loop-venv</code>，而
+<code>tb_loop/README.md</code> 的 Windows 彩排段把 venv 建在 <b>tb_loop/ 裡面</b>——
+<b>腳本與文件的敘述從來就沒有一致過。</b>
+</p>
+
+<p>
+我把它改成 <code>"$TB_LOOP_DIR/.tb-loop-venv/Scripts/python"</code>，讓它<b>與文件一致</b>。
+這是行為變更（原本找 A 地點，現在找 B 地點），而它<b>在本機無法驗證</b>：
+venv 從未被創建過，這一支只對 Windows 彩排有意義。
+選擇「與文件一致」而不是「維持現狀」，理由是現狀本身沒有依據；把它記在這裡、
+記在 commit message 裡，而不是讓它靜默地跟著搬遷漂一格。
+</p>
+
+<h3>3.4 三條懸空指標（<code>eng-smoke-0002</code>）——搬遷讓一條已定稿的 lesson 說謊</h3>
+
+<p>
+<code>traces/validate.py</code> 會檢查 <code>lesson.applies_to</code> 的每個路徑是否存在。
+搬遷之後它首次發出警告：
+</p>
+
+<pre><code>lessons.jsonl: 99 records {'lesson': 99}
+  WARN  eng-smoke-0002: applies_to path does not exist: agent_harness/run_round.sh
+  WARN  eng-smoke-0002: applies_to path does not exist: agent_harness/gen_sft.sh
+  WARN  eng-smoke-0002: applies_to path does not exist: agent_harness/finetune/eval_round.sh
+-> OK, 3 warning(s)</code></pre>
+
+<p>
+處置：<b>只修指標，不改內容。</b><code>rule</code> / <code>because</code> /
+<code>counterexample_observed</code> 一字未動——那是這條 lesson 的<b>觀測</b>，
+而 <code>applies_to</code> 是<b>指標</b>。指標必須指向存在的東西，觀測必須保持原樣。
+（lesson schema 是 <code>additionalProperties: false</code>，所以不能在 record 裡加一個
+「已於某日修復」的欄位；那個說明屬於 commit message 與本文件。）
+</p>
+
+<h3>3.5 一個補上的檔案：<code>tb_loop/__init__.py</code></h3>
+
+<p>
+<code>agents/__init__.py</code> 與 <code>learning/__init__.py</code> 都是 0 bytes 的慣例標記，
+但 <code>tb_loop/</code> 沒有——它原本靠 PEP 420 的 <b>namespace package</b> 被解析
+（實測 <code>tb_loop.__file__</code> 是 <code>None</code>）。補上之後它是正規套件，
+解析不再依賴 <code>sys.path</code> 上的隱式掃描。這是與 codebase 既有慣例對齊，不是新設計。
+</p>
+
+<h2>4. 驗收（原文貼）</h2>
+
+<h3>4.1 <code>bash -n</code>：必要，但不是驗收</h3>
+
+<pre><code>$ for f in $(find agent_harness/tb_loop -name "*.sh"); do bash -n "$f"; done
+  all shell scripts OK (133 支)</code></pre>
+
+<p>注意這一條<b>通過了兩次</b>：一次是搬遷前（缺陷還在那裡時），一次是搬遷後。它對套件解析完全盲。</p>
+
+<h3>4.2 <code>config.env</code> 獨立 source 後的路徑解析（<code>bash -c</code>，見 §5）</h3>
+
+<pre><code>TB_LOOP_DIR         = /Users/alexchuang/Documents/flashkv-devserver/agent_harness/tb_loop  (存在: yes)
+TB_HARNESS_ROOT     = /Users/alexchuang/Documents/flashkv-devserver/agent_harness        (存在: yes)
+TB_REPO_ROOT        = /Users/alexchuang/Documents/flashkv-devserver                     (存在: yes)
+TB_HARNESS_DIR      = .../agent_harness/tb_loop/harness        (存在: yes)
+TB_RESULTS_DIR      = .../agent_harness/tb_loop/results        (存在: yes)
+SFT_DATA_DIR        = .../agent_harness/tb_loop/sft_data       (存在: yes)
+LOOPMOE_CONFIG_PATH = .../agent_harness/loopmoe/configs/loopmoe_35b.json  (存在: yes)
+LOOPMOE_OUTPUT_DIR  = .../agent_harness/loopmoe_output
+PD_DATA_DIR         = .../agent_harness/pd_data
+TB_VENV_PY          = .../agent_harness/tb_loop/.venv/bin/python           (存在: NO)
+_FREEBUFF_ENV       = /Users/alexchuang/Documents/flashkv-devserver/app/cloud/freebuff2api/.env</code></pre>
+
+<p>
+<b>關鍵讀數是 <code>LOOPMOE_CONFIG_PATH</code> 與 <code>_FREEBUFF_ENV</code>「存在: yes」</b>——
+它們是 §3.1 那四條路徑裡最容易指錯的兩條，而它們回到了<b>與搬遷前相同的位置</b>，
+不是被指進 <code>tb_loop/</code>。這是「錨點對了」的證據，不是「檔案剛好在那」。
+</p>
+
+<h3>4.3 判別性的 import 測試</h3>
+
+<pre><code>=== A) 正確的 PYTHONPATH（tb_loop 的父目錄）===
+  import tb_loop                     -> OK（補 __init__.py 後為正規套件）
+  import tb_loop.agents              -> OK  .../agent_harness/tb_loop/agents/__init__.py
+  import tb_loop.learning            -> OK  .../agent_harness/tb_loop/learning/__init__.py
+  import tb_loop.agents.prime_agent_adapter -> ModuleNotFoundError: No module named 'terminal_bench'
+
+=== B) 對照組：錯誤的 PYTHONPATH（指向 tb_loop 自己）—— 必須失敗 ===
+  import tb_loop -> ModuleNotFoundError: No module named 'tb_loop'
+
+=== C) 子模組真正被解析到搬遷後的位置 ===
+  tb_loop.__file__                       = .../agent_harness/tb_loop/__init__.py
+  tb_loop.agents.prime_agent_adapter     -> .../tb_loop/agents/prime_agent_adapter.py
+  tb_loop.agents.codebuff_api_agent      -> .../tb_loop/agents/codebuff_api_agent.py
+  tb_loop.agents.loopmoe_agent_adapter   -> .../tb_loop/agents/loopmoe_agent_adapter.py
+  tb_loop.learning.attribution           -> .../tb_loop/learning/attribution.py</code></pre>
+
+<div class="box warn">
+  <p><span class="lbl">怎麼讀 A 的最後一列</span></p>
+  <p><code>ModuleNotFoundError: No module named 'terminal_bench'</code> <b>不是失敗</b>，它是
+  <b>進度</b>：錯誤訊息裡的模組名從 <code>tb_loop</code> 換成了 <code>terminal_bench</code>，
+  證明套件解析這一關已經過了，下一個阻塞是環境（沒裝 terminal-bench）。
+  一個測試的判讀方式是「它報的是不是我正在修的那個名字」。</p>
+  <p><b>B 是這個測試成立的原因。</b>沒有 B，「A 通過」可能只是因為當前工作目錄剛好也在
+  <code>sys.path</code> 上。有了 B，A 通過才有資訊量。</p>
+</div>
+
+<h3>4.4 四條索引與痕跡閘門</h3>
+
+<pre><code>episodes.jsonl: 122 records {'episode': 122}   -> OK
+decisions.jsonl: 38 records {'decision': 38}   -> OK
+lessons.jsonl: 100 records {'lesson': 100}     -> OK          （99 → 100；3 個 WARN 已消）
+10/10 injected violations rejected
+memory index OK: 3 file(s), 50 section(s), no drift
+manifest OK: 75 assets, existence + bytes + mtime all agree   （73 → 75，新增兩筆 CURATED）</code></pre>
+
+<h2>5. 一個我自己犯的測量錯誤（比 §3 的任何一處都值得記）</h2>
+
+<p>
+第一次驗證 <code>config.env</code> 時，我得到一組<b>看起來像重大缺陷</b>的輸出：
+</p>
+
+<pre><code>TB_LOOP_DIR    = /Users/alexchuang/Documents/flashkv-devserver        ← 倉庫根！
+TB_HARNESS_ROOT= /Users/alexchuang/Documents
+LOOPMOE_CONFIG = /Users/alexchuang/Documents/loopmoe/configs/…        ← 完全錯的地方</code></pre>
+
+<p>
+它看起來像「搬遷把三個錨點全部算錯」。真相是：<b>我的測試跑在 zsh 下，而 <code>BASH_SOURCE</code>
+在 zsh 裡是空的</b>——<code>${BASH_SOURCE[0]}</code> 求值成空字串，<code>dirname ""</code> 是
+<code>.</code>，於是 <code>cd . &amp;&amp; pwd</code> 回報當前工作目錄（倉庫根）。
+錯的不是 <code>config.env</code>，是儀器。用 <code>bash -c</code> 重跑之後得到 §4.2 那組正確結果。
+</p>
+
+<div class="box bad">
+  <p><span class="lbl">這一節為什麼要獨立寫出來</span></p>
+  <p>它的形狀與本專案既有的 lesson 家族同源（<code>eng-diag-0013</code>「診斷要先被證明會印」、
+  <code>eng-gate-0016</code>）——<b>一個壞掉的儀器會產生一個看起來完全合理的缺陷</b>。
+  這一次它剛好是保守方向的（報錯比實情糟），所以沒有造成損失；
+  但同一個錯誤若發生在「驗證通過」的方向，就會把一個壞缺陷標成綠燈。
+  <b>規則：驗證一個「靠 shell 語意求值」的東西時，要確認你用對 shell。</b>
+  <code>#!/usr/bin/env bash</code> 的腳本要用 <code>bash</code> 跑，不是用你的互動 shell 跑它。</p>
+</div>
+
+<h2>6. 新知識落成 lesson（<code>eng-smoke-0003</code>）</h2>
+
+<p>
+依本 repo 的慣例，新知識要在<b>同一個 commit</b> 進 <code>traces/lessons.jsonl</code>。
+這一輪的產物是一條 <code>smoke</code> 類的規訓，它比 <code>eng-smoke-0002</code> 更一般化
+（0002 記錄的是「這個缺陷存在」，0003 記錄的是「這類缺陷為什麼無法在移動前被觀測」）：
+</p>
+
+<pre><code>rule: 当一个路径变量「恰好」等于另一个时，任何挂在它底下的派生都是定时炸弹：
+      它在被移动之前无法被区分（两个名字指向同一个目录，所以两种写法都对），
+      移动之后则静默指错。锚点要按「它代表什么」显式命名，不是按「它现在等于什么」；
+      而 import 的验证必须带一组对照组，否则「通过」可能只是因为当前工作目录刚好也在
+      sys.path 上。</code></pre>
+
+<p>
+它的 <code>counterexample_observed</code> 記下了同一次搬遷裡最有說明力的一組對照：
+<b>用 <code>$(dirname "${BASH_SOURCE[0]}")/..</code> 這類「自帶錨點」寫法的腳本
+（<code>local_rehearsal.py</code>、<code>batch_run.sh</code>、<code>refine_harness.sh</code> 的
+<code>TB_LOOP_DIR</code> 推導）在搬遷後<b>一行都不用改</b>；而共享一個變數的腳本全部要改。</b>
+同一次搬動，兩種寫法的成本差是 0 比 9。
+</p>
+
+<h2>7. 未做的事與待決</h2>
+
+<ol>
+  <li><b><code>tb run --n-tasks 1</code> 的 smoke 未跑。</b>
+      三個前置全部缺失：<code>tb_loop/.venv</code> 不存在、<code>terminal-bench</code> 未安裝、
+      Docker CLI 在 PATH 上但 <b>daemon 未執行</b>。所以 E1 的驗收
+      <b>只結清了一半</b>——套件解析層面通過，執行層面未驗。
+      <b>不得寫成「E1 完成」</b>；<code>agent_harness/README.md</code>、
+      <code>engine_loop/README.md</code>、<code>CONVENTIONS.md</code> D1 與 <code>PLAN</code> §9
+      四處都已按「一半」的措辭更新。</li>
+
+  <li><b>四個未分類子系統（<code>pd/</code>、<code>loopmoe/</code>、<code>qwen36/</code>、
+      <code>dsh_config/</code>）仍未被安排位置。</b>它們被寫進傘狀 README 的誠實清單，
+      但「誰擁有它們、它們該不該有自己的目錄」是下一個決策，不在 E1。</li>
+
+  <li><b>既有的重複未被處理</b>：<code>agent_harness/docs/CGC_PD_Whitepaper.md</code> 與
+      <code>agent_harness/pd/CGC_PD_Whitepaper.md</code> <b>位元組完全相同</b>
+      （<code>md5 e1a34fac72c958ef2d688b5184a4a943</code>）；<code>DOPD_UPGRADE_PLAN.md</code> 亦然
+      （<code>md5 cc6292251e904be9bfc395a2f87136c6</code>）。這是本專案最厭惡的「兩份真相」，
+      但歸屬在 PD 那一支，E1 不動它，只記錄。</li>
+
+  <li><b><code>agents/loopmoe-agent-setup.sh</code> 是懸空引用</b>（既有，非本次造成）：
+      <code>loopmoe_agent_adapter.py:117</code> 指向它，而該檔不存在；
+      同層的 <code>prime-agent-setup.sh</code> 存在。這一條在 E1 之前就壞了。</li>
+
+  <li><b><code>refine_harness.sh</code> 的 <code>.tb-loop-venv</code> 修正無法在本機驗證</b>
+      （§3.3）——沒有 venv，且它只對 Windows 彩排有意義。</li>
+
+  <li><b>E2 未開始</b>：<code>sft_pi/</code>、<code>sft_prime/</code>、<code>harness_engine/</code>、
+      <code>distill/refine_engine.sh</code> 都還不存在。因此
+      <code>CONVENTIONS.md</code> 目前仍<b>不是</b>任何執行時行為的來源，
+      而 D6 的那筆閉環欠帳（PLAN §9 已把它認領到 E2）仍未結清。</li>
+</ol>
+
+<h2>8. 這一輪改變了什麼、沒改變什麼</h2>
+
+<table>
+<tr><th style="width:150px"></th><th>改了</th><th>沒改</th></tr>
+<tr><td><b>程式行為</b></td>
+    <td>0 個 <code>src/</code> 檔案。<code>bash -n</code> 133 支全過；
+        <code>config.env</code> 的路徑解析結果與搬遷前相同（除 <code>TB_LOOP_DIR</code> 本身，
+        那是目的）。<code>.tb-loop-venv</code> 一處是刻意的行為變更（§3.3）</td></tr>
+<tr><td><b>數字</b></td>
+    <td>沒有動任何量測。這一輪不產生新的吞吐或數值讀數——
+        <b>因此 D5 的 M1/M2/M3 不在這裡報告</b>，理由與既有前例一致
+        （<code>a22ebe88e</code>／<code>6ceeb281b</code>／<code>57bd90801</code>／
+        <code>e0152777d</code> 四個 commit 也是 0 個 <code>src/</code> 檔案、也都沒有報告）。
+        另有一個當下的理由：引擎側正由另一個 session 處理，
+        而 <code>m123_oracle_gate.py</code> 會自己起 server 載入模型，
+        在那個時間窗跑它會與對方的量測互相干擾</td></tr>
+<tr><td><b>record</b></td>
+    <td><code>lessons.jsonl</code> 99 → 100（新增 <code>eng-smoke-0003</code>）；
+        <code>eng-smoke-0002</code> 的 3 條懸空指標修好</td>
+    <td><code>episodes.jsonl</code>（122）與 <code>decisions.jsonl</code>（38）未動。
+        <b>這一輪沒有產生任何 episode</b>，因為它沒有跑引擎</td></tr>
+<tr><td><b>索引</b></td>
+    <td><code>MANIFEST.jsonl</code> 73 → 75（新增 <code>tb_loop/README.md</code> 與
+        <code>tb_loop/config.env</code> 兩筆 CURATED，後者的 note 就是三個錨點的理由）；
+        <code>INDEX.jsonl</code> 依序重生</td>
+    <td>索引的重生順序未改（先 <code>build_memory_index.py</code> 後 <code>index_assets.py</code>）</td></tr>
+</table>
+
+<div class="box ok">
+  <p><span class="lbl">這次交付的判準</span></p>
+  <p>判準不是「642 個檔案搬到對的位置」，而是<b>「那個一直是假話的 import 現在是真話，
+  而且有一組對照組能證明它」</b>。<code>bash -n</code> 在缺陷存在與不存在時都通過，
+  所以它從頭到尾都不曾是這件事的證據。</p>
+</div>
+
+<div class="foot">
+  Agent Harness E1 交付文件 · 2026-09-16 ·
+  全文所有指令輸出皆為產出當時的實測值，未經平滑或估計 ·
+  被本文取代的敘述見
+  <a href="AGENT_HARNESS_TECH_ARCH_MILESTONE_WHITEPAPER_20260916.html"><code>AGENT_HARNESS_TECH_ARCH_MILESTONE_WHITEPAPER_20260916.html</code></a>
+  （該文件的 §2.2／§7 引用索引與 §4.2 的 E1 列已由本文取代，原文保留）。
+</div>
+
+</div>
+</body>
+</html>

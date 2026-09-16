@@ -316,6 +316,7 @@ prime-agent 的 Continual Harness 狀態是一個目錄（`PRIME_AGENT_CODING_AG
 |---|---|---|
 | **E0**（零風險，今天可做） | 只做索引 + 第一版 episode 匯出：`engine_loop/README.md`、`MANIFEST.jsonl`、`traces/emit_episodes.py`、`traces/schema/*` | `emit_episodes.py --from Backup --out traces/episodes.jsonl --validate` 全綠；≥30 筆；**每筆都有 `build` fingerprint**；`git status` 除新檔外無變化 |
 | **E1** | 結構 + 憲章：`git mv` 既有內容進 `tb_loop/`；修掉 import 路徑；寫 `CONVENTIONS.md` | `python -c "import tb_loop.agents.prime_agent_adapter"` 成功；`tb run --n-tasks 1` smoke 過；`CONVENTIONS.md` 每條都能指到今天的具體證據檔／log 行 |
+| ↳ E1 實際結清狀況（2026-09-16 17:2x，`docs/AGENT_HARNESS_E1_RESTRUCTURE_20260916.html`） | `git mv` 完成（642 個 rename）；`PYTHONPATH` 改指 `tb_loop` 的父目錄；`tb_loop/__init__.py` 補上；`config.env` 新增 `TB_HARNESS_ROOT`／`TB_REPO_ROOT` 兩個錨點 | ✅ **套件解析通過**：`tb_loop` 為正規套件，四個模組解析到新位置，且對照組（`PYTHONPATH=tb_loop` 自己）仍正確報 `No module named 'tb_loop'`。⚠️ **smoke 未跑**：`tb_loop/.venv` 不存在、`terminal-bench` 未安裝、Docker daemon 未執行 ⇒ **驗收只結清一半**，`import tb_loop.agents.prime_agent_adapter` 目前止於 `No module named 'terminal_bench'` |
 | **E2** | T1 蒸餾 + 兩個投影：`distill/refine_engine.sh`、`build_sft_pi.py`、`build_sft_prime.py`、`harness_engine/` | 跑一次 refine → `decisions.jsonl` 過 validate；`sft_prime/train.jsonl` ≥ 50 條；注入 `harness_engine` 前後同一臂的決策差異可讀；**＋ 結清 D6 的閉環欠帳（見本表下方）** |
 | **E3** | 閉環：round1（無 lesson）vs round2（8 條 lesson）在同一組待答問題上 | 至少 1 條 lesson 被證明改善且可重現；否則如實記為 negative（不美化） |
 | **E4**（可選治理） | log 政策落地、`knifeedge_matrix.py`（181 KB）拆分、`scripts/check/` 40+ 檔分層、標記 stale（`replay_bench_*` 已 stale，`RUN_REPLAY_BENCH=0`） | `pack_evidence.py` 產物總量 < 20 MB；stale 資產有明確 banner |
@@ -352,6 +353,15 @@ prime-agent 的 Continual Harness 狀態是一個目錄（`PRIME_AGENT_CODING_AG
   - **(b) 最小改動**：不動目錄，把 `PYTHONPATH` 從 `$TB_LOOP_DIR` 改成 repo 根，並把 `agent_harness`
     改名為 `tb_loop`（或加一個 `tb_loop -> .` 的符號連結）。不推薦：符號連結在打包／rsync 時容易斷。
   驗收必須是「真的 import 成功 ＋ 一次 `--n-tasks 1` smoke」，`bash -n` 抓不到這個。
+  **已處置（2026-09-16 17:2x，E1 採路線 (a)）**：642 個 rename 完成；`PYTHONPATH` 改指
+  `TB_HARNESS_ROOT`（= `tb_loop` 的父目錄）；補 `tb_loop/__init__.py` 讓它是**正規套件**
+  而不是靠 PEP 420 的 namespace package。**套件解析層面已通過**（含一組對照組），
+  但 **smoke 仍未跑**（`.venv`／`terminal-bench`／Docker 三者皆缺）⇒ 這條風險**只結清一半**。
+  **本條不刪除**：它記錄的推理（「套件名與檔案所在地由同一次搬動決定 ⇒ 兩者會一起對、也一起錯」）
+  在 E2 建 `sft_pi/`、`harness_engine/` 時會再被用到。
+  另一個推論：`TB_LOOP_DIR` 這種「恰好等於另一個路徑」的定義是**定時炸彈**——
+  它讓 `PYTHONPATH="$TB_LOOP_DIR"` 同時是對的又是錯的，只是在被移動之前無法區分。
+  E1 因此把三個錨點（`TB_LOOP_DIR`／`TB_HARNESS_ROOT`／`TB_REPO_ROOT`）顯式分開。
 - **R3 把已被推翻的結論寫進訓練集**：今天的「雙緩衝 remap 就能拿到 ×1.78」是**被推翻**的假設，若當正例訓練
   等於教模型重犯。→ `decision.judgement` 必填，`superseded_by` 由 `validate.py` 強制檢查。
 - **R4 負樣本只做 SFT 會教壞模型**（`tb_loop/README.md` 已明確警告）：`--include-failed` 的 SFT 會讓模型

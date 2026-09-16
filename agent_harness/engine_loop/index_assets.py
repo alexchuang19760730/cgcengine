@@ -188,9 +188,21 @@ CURATED = [
     ("agent_harness/CONVENTIONS.md", "conclusion", "shared", False, True,
      "the charter. Also the system prompt for sft_pi, so editing it changes runtime behaviour."),
     ("agent_harness/PLAN_ENGINE_LOOP_2026-09-15.md", "conclusion", "shared", False, False,
-     "the plan this stage executes. E0 = indexes + first episode export."),
-    ("agent_harness/README.md", "conclusion", "tb_loop", False, False,
-     "the pre-existing tb_loop README (Terminal-Bench x gemma4 x prime-agent)."),
+     "the plan this stage executes. E0 = indexes + first episode export. Its section 9 table now "
+     "carries the E1 actual-closure status (package resolution GREEN, the tb run smoke NOT RUN)."),
+    ("agent_harness/README.md", "conclusion", "shared", False, False,
+     "the UMBRELLA entry (E1): the two loops, the three record types, the red line, the three path "
+     "anchors, and the honest list of entries that belong to neither loop. It used to BE the tb_loop "
+     "README; that content moved to agent_harness/tb_loop/README.md at E1."),
+    ("agent_harness/tb_loop/README.md", "conclusion", "tb_loop", False, False,
+     "the tb_loop README (Terminal-Bench x gemma4 x prime-agent): install, Windows rehearsal, SFT "
+     "data generation, MLX LoRA, the /refine evidence sources. Read it before touching tb_loop/."),
+    ("agent_harness/tb_loop/config.env", "runner", "tb_loop", True, False,
+     "every tb_loop parameter, and the THREE PATH ANCHORS: TB_LOOP_DIR (tb_loop itself), "
+     "TB_HARNESS_ROOT (agent_harness/, for assets that do NOT move with tb_loop: loopmoe/, "
+     "loopmoe_output/, pd_data/), TB_REPO_ROOT (for app/cloud/freebuff2api/.env). E1 split them "
+     "because a path that merely HAPPENS to equal another is a time bomb: "
+     "PYTHONPATH=\"$TB_LOOP_DIR\" was simultaneously right and wrong until something moved."),
 
     # ---- evidence roots --------------------------------------------------------------------
     ("Backup/phase_decomp", "evidence", "engine", False, True,

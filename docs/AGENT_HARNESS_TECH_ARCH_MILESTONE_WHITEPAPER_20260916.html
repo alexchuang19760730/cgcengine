@@ -75,6 +75,21 @@
   產出日期 2026-09-16
 </p>
 
+<div class="box warn">
+  <p><span class="lbl">部分敘述已被後續 commit 取代（2026-09-16 17:3x 加註，原文保留不刪）</span></p>
+  <p>本文的架構、七＋三個守護機制、里程碑表與誠實邊界<b>仍然成立</b>，但有 <b>兩處</b>已被 E1 重構取代：</p>
+  <ul>
+    <li><b>§2.2 的架構圖與 §7 的引用索引</b>把 <code>agent_harness/README.md</code> 標成「既有的 tb_loop README」。
+      E1 之後那份內容在 <code>agent_harness/tb_loop/README.md</code>，而 <code>agent_harness/README.md</code>
+      已改寫成<b>傘狀入口</b>（兩個 loop、三種 record、紅線、三個路徑錨點、未分類清單）。</li>
+    <li><b>§4.2 的 E1 列</b>與 <b>§7 第 2 條</b>寫「<code>tb_loop</code> 的三個入口腳本目前跑不起來」。
+      那一條在當時為真；E1 已在<b>套件解析層面</b>修好，但 <code>tb run --n-tasks 1</code> 的 smoke
+      <b>仍未跑</b>（<code>.venv</code>／<code>terminal-bench</code>／Docker daemon 三者皆缺）。</li>
+  </ul>
+  <p>取代本文這兩處的是 <a href="AGENT_HARNESS_E1_RESTRUCTURE_20260916.html"><code>docs/AGENT_HARNESS_E1_RESTRUCTURE_20260916.html</code></a>。
+  依 <code>CONVENTIONS.md</code> §E 的規定，被推翻的敘述標註 <code>superseded_by</code> 而不是刪掉——刪掉會讓後人重新踩一次。</p>
+</div>
+
 <div class="box pur">
   <p><span class="lbl">一句話定位</span></p>
   <p>這個 harness 不是「跑 agent 的框架」，而是一台<b>判斷「一個數字什麼時候可以引用」的機器</b>。

@@ -867,10 +867,22 @@
 ## D. 流程與入口
 
 **D1｜入口腳本不能只做 `bash -n`。**
-- 為什麼：`agent_harness/` 的三個入口（`run_round.sh:37`、`gen_sft.sh:27`、`finetune/eval_round.sh:34`）
-  都寫 `--agent-import-path "tb_loop.agents.…"`，而 `PYTHONPATH=$TB_LOOP_DIR`（＝ `agent_harness/` 本身）
-  → 實測 `ModuleNotFoundError: No module named 'tb_loop'`。**三個都跑不起來**，`bash -n` 抓不到。
+- 為什麼：`tb_loop/` 的三個入口（`run_round.sh:39`、`gen_sft.sh:27`、`finetune/eval_round.sh:34`）
+  都寫 `--agent-import-path "tb_loop.agents.…"`，所以解譯器必須看得見名為 `tb_loop` 的**套件**——
+  而 `PYTHONPATH` 必須是它的**父目錄**。E1 之前三者都指向 `$TB_LOOP_DIR`，而 `TB_LOOP_DIR`
+  當時恰好就是 `agent_harness/` 本身（因為 `tb_loop/` 這個目錄還不存在）⇒ 實測
+  `ModuleNotFoundError: No module named 'tb_loop'`，**三個都跑不起來**，`bash -n` 抓不到。
+- **一般化的那一條**（比這個實例重要）：`PYTHONPATH` 指向的目錄與 import 字串的**第一段**
+  必須是同一件事的兩個名字。當「套件名」與「檔案所在地」由同一次搬動決定時，
+  兩者會一起對、也一起錯——所以**搬動之後要重驗的是 import，不是路徑字串**。
 - 驗收方式：一次真的 `import` ＋ 一次 `--n-tasks 1` 的 smoke，不是語法檢查。
+  而且 `import` 測試要有**對照組**：把 `PYTHONPATH` 指回套件自己，必須仍然報
+  `No module named 'tb_loop'`；否則「通過」可能只是因為當前工作目錄剛好也在 `sys.path` 上。
+- 現況（2026-09-16，E1）：三個入口的 `PYTHONPATH` 已改為 `$TB_HARNESS_ROOT`（= `tb_loop` 的父目錄），
+  `tb_loop/` 補了 `__init__.py`。**`import` 層面已通過**（四個模組都解析到新位置、對照組正確失敗）；
+  **smoke 未跑**（`tb_loop/.venv` 不存在、`terminal-bench` 未安裝、Docker daemon 未執行），
+  所以這一條的驗收**只結清一半**，不得寫成「已通過」。
+  見 `docs/AGENT_HARNESS_E1_RESTRUCTURE_20260916.html`。
 
 **D2｜`RUN_REPLAY_BENCH=0` 一律預設。**
 - 為什麼：`.replay_bench_baseline.json` 是 stale 的，跑它等於拿舊基線比新程式。

@@ -32,7 +32,11 @@ for ((round = FIRST_ROUND; round <= TB_ROUNDS; round++)); do
     # 1) 评估 ------------------------------------------------------------
     echo "[round $round] tb run: dataset=$TB_DATASET n_tasks=$TB_N_TASKS model=$TB_MODEL_PATTERN"
     # shellcheck disable=SC2086
-    PYTHONPATH="$TB_LOOP_DIR" "$TB_TB_BIN" run \
+    # PYTHONPATH 必须是 tb_loop 的**父目录**（= agent_harness/），不是 tb_loop 自己：
+    # --agent-import-path 要的是套件 "tb_loop.agents.…"，所以解譯器得看得到 tb_loop/ 这一层。
+    # （E1 之前这里写 $TB_LOOP_DIR，而 TB_LOOP_DIR 当时就是 agent_harness/，所以两者同值；
+    #   内容搬进 tb_loop/ 之后它们分开了，写错会得到 ModuleNotFoundError: tb_loop。）
+    PYTHONPATH="$TB_HARNESS_ROOT" "$TB_TB_BIN" run \
         -d "$TB_DATASET" \
         --agent-import-path "tb_loop.agents.prime_agent_adapter:PrimeAgentAgent" \
         -m "openai/$TB_GEMMA4_MODEL" \
