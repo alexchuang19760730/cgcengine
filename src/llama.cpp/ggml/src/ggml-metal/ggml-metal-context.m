@@ -150,6 +150,42 @@ struct ggml_metal {
     bool    fail_stop;
 };
 
+// [CGC 2026-09-16 command-buffer lifetime] cmd_buf_last exists so that synchronization can wait on
+// "the last buffer this context queued" without having to know which of cmd_bufs[] / cmd_bufs_ext it
+// landed in. It used to be a BORROWED pointer: every assignment stored a pointer it did not own
+// (graph_compute's per-segment buffers, the get/set/copy async paths) while the owner released it
+// underneath -- cmd_bufs[cb_idx].obj is released and replaced on every graph_compute (:1039-1042 and
+// :1067-1070) and cmd_bufs_ext is drained with removeAllObjects (:796) -- leaving a window in which
+// the pointer refers to a deallocated object and the three readers (synchronize :711, the capture
+// path :1001, the drain hook :1175) would message it.
+//
+// The window is narrow -- the calling thread is both the only mutator and the only reader, and it
+// re-points cmd_buf_last later in the same call. Checked, not assumed: the watchdog queue is the
+// only other thread that can reach this struct, and it never reads this field (cgc_watchdog_tick /
+// _dump / _probe touch cgc_watchdog_* and the per-cb timestamp arrays only). But "narrow" is not an
+// ownership argument, and its failure mode is the class this file was already bitten by on
+// 2026-09-16 -- ggml_metal_synchronize released a command buffer and *then* read [cmd_buf error],
+// turning a nameable GPU OOM into an unreadable SIGSEGV.
+//
+// Consequence worth stating, because it bounds the fix: since every reader runs on the mutating
+// thread, owning the reference is *sufficient* here. A cross-thread reader would additionally need
+// its own retain across the read, and any future one has to add it.
+//
+// So make it owned: retain on assignment, release on re-point. Balanced by cgc_clear_cmd_buf_last,
+// by the next cgc_set_cmd_buf_last, and by ggml_metal_free.
+static void cgc_set_cmd_buf_last(ggml_metal_t ctx, id<MTLCommandBuffer> cmd_buf) {
+    if (ctx->cmd_buf_last == cmd_buf) {
+        return;
+    }
+    [ctx->cmd_buf_last release];
+    ctx->cmd_buf_last = [cmd_buf retain];
+}
+
+static void cgc_clear_cmd_buf_last(ggml_metal_t ctx) {
+    [ctx->cmd_buf_last release];
+    ctx->cmd_buf_last = nil;
+}
+
 // [CGC-METAL-FAIL] record the first command-buffer failure. Idempotent: only the
 // first failure is kept, so the original cause is never overwritten by cascades.
 static void cgc_metal_record_error(ggml_metal_t ctx, int cb_idx, int status, id<MTLCommandBuffer> cmd_buf) {
@@ -358,6 +394,11 @@ void ggml_metal_free(ggml_metal_t ctx) {
         dispatch_release(ctx->cgc_watchdog_queue);
         ctx->cgc_watchdog_queue = NULL;
     }
+
+    // [CGC 2026-09-16 command-buffer lifetime] drop the owned reference before the arrays it may
+    // alias are torn down. cmd_buf_last holds its own retain (cgc_set_cmd_buf_last), so this is not
+    // a use-after-free guard -- it is the release that balances it.
+    cgc_clear_cmd_buf_last(ctx);
 
     for (int i = 0; i < GGML_METAL_MAX_COMMAND_BUFFERS; ++i) {
         if (ctx->cmd_bufs[i].obj) {
@@ -710,7 +751,7 @@ void ggml_metal_synchronize(ggml_metal_t ctx) {
     // wait for any backend operations to finish
     if (ctx->cmd_buf_last) {
         cgc_wait_cmd_buf(ctx->cmd_buf_last);
-        ctx->cmd_buf_last = nil;
+        cgc_clear_cmd_buf_last(ctx);
         if (cgc_dbg) fprintf(stderr, "CGC-SYNC: wait_last=%dus\n", (int)(ggml_time_us() - s0));
     }
 
@@ -852,7 +893,7 @@ void ggml_metal_set_tensor_async(ggml_metal_t ctx, struct ggml_tensor * tensor, 
 
         // instead, remember a reference to the command buffer and wait for it later if needed
         [ctx->cmd_bufs_ext addObject:cmd_buf];
-        ctx->cmd_buf_last = cmd_buf;
+        cgc_set_cmd_buf_last(ctx, cmd_buf);
 
         [cmd_buf retain];
     }
@@ -899,7 +940,7 @@ void ggml_metal_get_tensor_async(ggml_metal_t ctx, const struct ggml_tensor * te
 
         // instead, remember a reference to the command buffer and wait for it later if needed
         [ctx->cmd_bufs_ext addObject:cmd_buf];
-        ctx->cmd_buf_last = cmd_buf;
+        cgc_set_cmd_buf_last(ctx, cmd_buf);
 
         [cmd_buf retain];
 
@@ -940,7 +981,7 @@ bool ggml_metal_cpy_tensor_async(ggml_metal_t ctx_src, ggml_metal_t ctx_dst, con
 
         // instead, remember a reference to the command buffer and wait for it later if needed
         [ctx_src->cmd_bufs_ext addObject:cmd_buf];
-        ctx_src->cmd_buf_last = cmd_buf;
+        cgc_set_cmd_buf_last(ctx_src, cmd_buf);
 
         [cmd_buf retain];
 
@@ -1000,7 +1041,7 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
             // make sure all previous computations have finished before starting the capture
             if (ctx->cmd_buf_last) {
                 [ctx->cmd_buf_last waitUntilCompleted];
-                ctx->cmd_buf_last = nil;
+                cgc_clear_cmd_buf_last(ctx);
             }
 
             if (!ctx->capture_started) {
@@ -1056,7 +1097,7 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
         }
 
         // remember the command buffer for the next iteration
-        ctx->cmd_buf_last = ctx->cmd_bufs[n_cb].obj;
+        cgc_set_cmd_buf_last(ctx, ctx->cmd_bufs[n_cb].obj);
 
         // prepare the rest of the command buffers asynchronously (optional)
         // cmd_buf[0.. n_cb)
@@ -1087,7 +1128,7 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
 
                 // update the pointer to the last queued command buffer
                 // this is needed to implement synchronize()
-                ctx->cmd_buf_last = cmd_buf;
+                cgc_set_cmd_buf_last(ctx, cmd_buf);
             }
         }
 
@@ -1214,7 +1255,7 @@ void ggml_metal_event_record(ggml_metal_t ctx, ggml_metal_event_t ev) {
         [cmd_buf commit];
 
         [ctx->cmd_bufs_ext addObject:cmd_buf];
-        ctx->cmd_buf_last = cmd_buf;
+        cgc_set_cmd_buf_last(ctx, cmd_buf);
 
         [cmd_buf retain];
     }
@@ -1230,7 +1271,7 @@ void ggml_metal_event_wait(ggml_metal_t ctx, ggml_metal_event_t ev) {
         [cmd_buf commit];
 
         [ctx->cmd_bufs_ext addObject:cmd_buf];
-        ctx->cmd_buf_last = cmd_buf;
+        cgc_set_cmd_buf_last(ctx, cmd_buf);
 
         [cmd_buf retain];
     }

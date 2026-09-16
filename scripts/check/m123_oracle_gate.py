@@ -127,6 +127,22 @@ COMPARE = ROOT / "scripts" / "check" / "cgc_logits_oracle_compare.py"
 DEFAULT_REF = ROOT / "Backup" / "knifeedge_matrix" / "ref_iq3_pool8gb_M2_6144_bitident_v4_skip0off.jsonl"
 RESULT_DIR = ROOT / "Backup" / "m123_oracle_gate"
 
+# ★ The oracle's batch/ubatch are part of THE ORACLE'S IDENTITY, not a property of the profile.
+#
+# The `prefill250` profile used to carry batch=ubatch=6144 as its production default, which made
+# "--profile prefill250" happen to reproduce the reference. On 2026-09-16 that default moved to
+# 5632 for a production reason (measured: 6144 died on req2 0/5, 5632 survived 4/4) -- and the
+# gate immediately reported INVALID COMPARISON on a 4-row diff (CGCENV.BATCH, CGCENV.UBATCH,
+# ARG[27], ARG[29]) that was 100% my own default changing, while M1/M2/M3 sat at 9/9. Two things
+# were wrong with that: (a) a production tuning silently redefined what the reference means, and
+# (b) the fix "just pass --env CGC_SERVER_BATCH=6144" lives in a human's memory, which is exactly
+# the kind of hand-written copy this file's docstring says must not exist.
+#
+# So the oracle's numerics-determining knobs are pinned HERE, once, next to DEFAULT_REF. A future
+# production tuning cannot move the reference again. Re-baselining at a different config is still
+# possible and still deliberate: `--write-ref` + `--no-pin-oracle-env` (see the flags in main()).
+ORACLE_PINNED_ENV = ("CGC_SERVER_BATCH=6144", "CGC_SERVER_UBATCH=6144")
+
 # knifeedge_matrix.PROBE_PROMPT, verbatim. The oracle dump is keyed on
 # (step, token_idx, ctx_type), so a different prompt produces a different token sequence and the
 # keys stop lining up -- the comparison would then report "0 common keys" instead of a verdict.
@@ -381,14 +397,24 @@ def main() -> int:
                     help="CGC_SERVER_PROFILE for the launch. The default reproduces the "
                          "configuration the M2 reference oracle was dumped under "
                          "(ctx 8192 / batch 6144 / oa_async=0 / PREFILL_STREAM=1 / SLAB_CAP=256), "
-                         "which is a precondition for the comparison to mean anything.")
+                         "which is a precondition for the comparison to mean anything. The "
+                         "batch/ubatch half of that is not left to the profile -- it is pinned by "
+                         "ORACLE_PINNED_ENV, so a production default change cannot move the "
+                         "reference out from under the gate.")
     ap.add_argument("--ref", default=str(DEFAULT_REF))
     ap.add_argument("--dump", default="/tmp/m123_oracle_gate.jsonl")
     ap.add_argument("--tag", default="")
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--env", action="append", default=[],
                     help="extra KEY=VAL handed to run_server.sh (its allowlist still applies; "
-                         "a dropped variable prints nothing, so pass only documented knobs)")
+                         "a dropped variable prints nothing, so pass only documented knobs). "
+                         "These WIN over ORACLE_PINNED_ENV, but the effective set is resolved and "
+                         "printed before anything launches -- changing a pinned knob without "
+                         "re-baselining will show up as INVALID COMPARISON, not as a silent pass.")
+    ap.add_argument("--no-pin-oracle-env", action="store_true",
+                    help=f"do not force {ORACLE_PINNED_ENV} -- take the profile's current defaults "
+                         "instead. Only meaningful together with --write-ref, i.e. when you are "
+                         "deliberately re-baselining the reference at a new configuration.")
     ap.add_argument("--write-ref", default=None,
                     help="after a successful probe, copy the fresh dump to this path and write "
                          "its .cap. This is how you re-baseline; the copied dump is the run that "
@@ -429,16 +455,31 @@ def main() -> int:
                   "(the verdict will be meaningless).", file=sys.stderr)
             return 2
 
+    # Merge the oracle pin with the caller's --env BEFORE anything is printed or resolved, so the
+    # line below reports the EFFECTIVE set. A pin that was silently overridden and a pin that was
+    # silently dropped would otherwise look identical in the transcript -- and the second one is
+    # the failure mode this whole knob exists to prevent.
+    merged_env: dict[str, str] = {}
+    if not args.no_pin_oracle_env:
+        for kv in ORACLE_PINNED_ENV:
+            k, _, v = kv.partition("=")
+            merged_env[k] = v
+    for kv in args.env:
+        k, _, v = kv.partition("=")
+        merged_env[k] = v
+    extra_env = [f"{k}={v}" for k, v in merged_env.items()]
+
     print(f"=== M1/M2/M3 oracle gate (tag {tag}) ===", flush=True)
     print(f"  profile : {args.profile}", flush=True)
     print(f"  ref     : {ref.relative_to(ROOT)}  ({sum(1 for _ in ref.open())} records)", flush=True)
-    if args.env:
-        print(f"  extra   : {args.env}", flush=True)
+    if extra_env:
+        pin = "" if args.no_pin_oracle_env else f"  (oracle pin: {list(ORACLE_PINNED_ENV)})"
+        print(f"  extra   : {extra_env}{pin}", flush=True)
 
     # (1) resolve the launch config FIRST -- before anything is launched, and before kill_servers()
     # so the pkill this incurs cannot race our own server.
     try:
-        now_cfg = resolve_launch(args.profile, args.env)
+        now_cfg = resolve_launch(args.profile, extra_env)
     except Exception as e:  # noqa: BLE001 - harness
         print(f"ERROR: could not resolve the launch configuration: {e}", file=sys.stderr)
         return 2
@@ -487,7 +528,7 @@ def main() -> int:
     # exits 0 (run_server.sh:43 / :1373). Without this the launcher would block until teardown --
     # and with stdout on a pipe it would block forever, because the server inherits the fd.
     env["CGC_DETACHED"] = "1"
-    for kv in args.env:
+    for kv in extra_env:
         k, _, v = kv.partition("=")
         env[k] = v
 

@@ -1070,6 +1070,33 @@ static ggml_backend_buffer_type_t select_weight_buft(const llama_hparams & hpara
     return nullptr;
 }
 
+// [CGC 2026-09-16 L4 expert-cache pool / mmap]
+//
+// The L4 pool regions are adopted from the expert tensors' own storage and are written from the CPU
+// by the fill preads (llama_expert_cache_adopt_pool_region + fill_pool_direct -> fill_slot). With
+// --load-mode mmap, llama-model.cpp:1595 puts those tensors in a Metal buffer created with
+// buffer_from_host_ptr on top of the read-only model mapping, so the first fill writes a read-only
+// page -> EXC_BAD_ACCESS (SIGBUS) KERN_PROTECTION_FAILURE inside memset(), during load, before the
+// server ever reports health ok.
+//
+// A backend can advertise an extra buffer type for exactly this case: one that is otherwise
+// identical to its device default but is a distinct ggml_backend_buffer_type object, which makes
+// llama-model.cpp:1595's `is_default_buft` check decline and allocates a real buffer instead. The
+// Metal backend advertises it as "<name>_Pool" (ggml-metal.cpp:ggml_backend_metal_buffer_type_pool);
+// the name is the only contract, which keeps this file backend-agnostic.
+static ggml_backend_buffer_type_t select_pool_buft(const buft_list_t * buft_list) {
+    if (buft_list == nullptr) {
+        return nullptr;
+    }
+    for (const auto & cur : *buft_list) {
+        const char * name = ggml_backend_buft_name(cur.second);
+        if (name != nullptr && strstr(name, "_Pool") != nullptr) {
+            return cur.second;
+        }
+    }
+    return nullptr;
+}
+
 // CGC expert-cache L4: compute the bounded Metal pool capacity in slots/layer.
 //   per_slot = max over layers of (sum over the 4 FFN kinds of one (layer, expert) blob)
 //   base     = clamp(budget / (n_layers * per_slot), 8, 256)
@@ -1317,9 +1344,23 @@ struct ggml_tensor * llama_model_loader::create_tensor(
             // keeps its normal buft (Metal at -ngl>0). Its own storage IS the pool region, adopted
             // via llama_expert_cache_adopt_pool_region after load — the Metal FFN reads it zero-copy.
             if (l4_kind >= 0) {
-                buft = select_weight_buft(hparams, t_meta, op, buft_list);
-                LLAMA_LOG_INFO("llama_model_loader: %s -> GPU pool buffer (L4 zero-copy, buft=%s host=%d)\n",
-                        t_meta->name, ggml_backend_buft_name(buft), ggml_backend_buft_is_host(buft) ? 1 : 0);
+                // [CGC 2026-09-16 L4 pool / mmap] Under --load-mode mmap the device-default buft
+                // would put this tensor in a read-only file mapping, and the pool fill (which
+                // preads INTO this storage) would fault on the first write. Take the backend's
+                // dedicated pool buft instead, so the ctx gets a real -- writable -- allocation
+                // while every other weight keeps the zero-copy mapping. Not selected when mmap is
+                // off: the load-mode=none path stays exactly as it was.
+                ggml_backend_buffer_type_t pool_buft = use_mmap ? select_pool_buft(buft_list) : nullptr;
+                if (pool_buft != nullptr) {
+                    buft = pool_buft;
+                    LLAMA_LOG_INFO("llama_model_loader: %s -> GPU pool buffer (L4 pool, load_mode=mmap: "
+                            "own %s allocation so the pool fill writes writable pages)\n",
+                            t_meta->name, ggml_backend_buft_name(buft));
+                } else {
+                    buft = select_weight_buft(hparams, t_meta, op, buft_list);
+                    LLAMA_LOG_INFO("llama_model_loader: %s -> GPU pool buffer (L4 zero-copy, buft=%s host=%d)\n",
+                            t_meta->name, ggml_backend_buft_name(buft), ggml_backend_buft_is_host(buft) ? 1 : 0);
+                }
             } else if (expert_cache_skip_load && strstr(t_meta->name, "_exps") && strstr(t_meta->name, "blk.")) {
                 // CGC expert-cache (L4 skip-load / L4_SKIP_LAYER0): keep expert tensors on the CPU.
                 // Active experts are staged onto the GPU pool via llama_expert_cache_adopt_pool_region

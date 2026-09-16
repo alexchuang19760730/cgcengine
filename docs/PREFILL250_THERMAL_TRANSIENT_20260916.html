@@ -2691,6 +2691,724 @@ comparable: True    config_diffs: []</code></pre>
   旗標快照與對照見 <code>Backup/pre_flagalign_20260916/MANIFEST.txt</code>。
 </p>
 
+<h3 id="s1112">11.12 追加（2026-09-16 12:5x–13:5x）：五項「仍未解」逐條處置，並讓 prefill250 在出廠預設上真的生效</h3>
+
+<p>
+  這一節<strong>取代 §11.11.8 的四句「不能說」</strong>，因為其中兩句已被本節的實驗推翻：
+  (a)「<code>mmap</code> 的缺陷只是被擋住、修它要動 expert cache 的儲存所有權」—— 缺陷本體已修，
+  而且<strong>不必動 expert cache</strong>；(b)「<code>-ub 4096</code> 的繞道要付 prefill 約 −22%」
+  —— 那個 −22% 是在別的 binary 上量的，今天同 binary 的差距是另一個形狀。
+  依 CONVENTIONS E，舊句<strong>不刪</strong>，改以本節取而代之。
+</p>
+
+<h4>11.12.0 一頁結論</h4>
+
+<table>
+  <tr><th>項</th><th>這是什麼</th><th>本輪處置</th><th>能說／不能說</th></tr>
+  <tr>
+    <td>(2) <code>mmap</code> 缺陷本體</td>
+    <td>相容性缺陷（唯讀映射被寫）</td>
+    <td><strong>已修</strong>：L4 pool tensor 改走一個非 device-default 的 <code>_Pool</code> buft</td>
+    <td>能說：載入階段 SIGBUS 消失。不能說：<code>mmap</code> 因此可用 —— 它 0/5。</td>
+  </tr>
+  <tr>
+    <td>(1) OOM 機制本體</td>
+    <td>資源邊界，不是程式缺陷</td>
+    <td><strong>已定位成算式</strong>，未被「修好」</td>
+    <td>能說：邊界 = (pool + compute buffer) 的和，可用旋鈕移動。不能說：它被修好了。</td>
+  </tr>
+  <tr>
+    <td>(5) <code>cmd_buf_last</code></td>
+    <td>所有權缺陷（borrowed pointer）</td>
+    <td><strong>已改為 owned</strong>（7 個 set、2 個 clear、1 個 free）</td>
+    <td>能說：讀者全在變更的那條執行緒上 ⇒ retain 充分。不能說：它被觀察到真的踩過。</td>
+  </tr>
+  <tr>
+    <td>(4) <code>newest_ips</code></td>
+    <td>證據歸因缺陷（ordering test 冒充 difference test）</td>
+    <td><strong>已改為 identity + time 雙網</strong>，並修好<strong>同一隻檔案裡另外兩個同型缺陷</strong></td>
+    <td>能說：已知的三個坑都補了。不能說：這條路徑上沒有第四個。</td>
+  </tr>
+  <tr>
+    <td>(3) <code>build_fork_llama.sh</code></td>
+    <td>政策漂移 ＋ 不可驗的契約</td>
+    <td><strong>已改成 profile 契約 ＋ build stamp</strong>，<code>--check</code> 一命令裁決</td>
+    <td>能說：<code>devserver</code> 10/10 PASS、<code>prod</code> 的 4 列差異是刻意的。不能說：它等於上游 Release 設定。</td>
+  </tr>
+</table>
+
+<p>
+  加上交付條件本身：<strong><code>CGC_SERVER_PROFILE=prefill250</code> 的出廠預設原本是 <code>ub=6144</code>，
+  而它在今天的 binary 上 0/5 死在 req2。</strong>本輪把預設改成 <code>5632</code>（量到的最高存活寬度），
+  並在出廠預設上跑出 <strong>268.09 / 273.55 / 256.61 t/s</strong>（§11.12.7）。
+</p>
+
+<p class="small">
+  <strong>⚠ 這一句的 t/s 讀數已被 §11.13 部分取代（述句保留，不刪）。</strong>
+  那三個數字是真的，但它們屬於 <strong>12:44 的產物</strong>（<code>libggml-metal</code>
+  <code>968c36cf…</code>）與 13:4x 的機器狀態。13:50 重建之後，<strong>最終產物</strong>
+  （<code>libggml-metal</code> <code>f2d1c961…</code>）上的四臂 prefill 落在
+  <strong>118.30–154.77 t/s</strong>，沒有任何一臂回到 250 以上。
+  差距 2.25× 未被歸因（候選：產物 vs 機器狀態，swap 已用 5066/6144 MB）。
+  可交付的述句因此是「<strong>存活與數值</strong>」而不是「250 t/s 可重現」——
+  詳見 §11.13.4 與 §11.13.5。
+</p>
+
+<h4>11.12.1 item 2｜<code>mmap</code> × expert cache：修在張量落點，不是修在 expert cache</h4>
+
+<p>
+  原缺陷（12:02 量測）不是「pool 不能是唯讀映射」這種模糊描述，而是一條寫死的假設：
+  expert cache 的 L4 pool 是 <code>regions adopted from expert tensors</code>（log 原句），
+  它<strong>直接寫進模型張量的儲存</strong>。而 <code>src/llama-expert-cache.cpp:693-710</code> 的
+  <code>fill_pool_direct</code> 有一條復原路徑「短讀取 → <code>memset</code> 清零」，
+  這條路徑預設了 <code>dst</code> 可寫。<code>--load-mode none</code> 時那是可寫的堆積，所以假設成立；
+  <code>mmap</code> 時那是唯讀的 file-backed 映射，於是 <code>__bzero</code> 觸發
+  <code>KERN_PROTECTION_FAILURE</code>。log 第 17 行那句「short read … zeroing slot」是誤導：
+  <strong>pread 成功，fault 的是那個 memset</strong>。
+</p>
+
+<p>
+  修法是換張量的<em>身分</em>，不是換它的家。關鍵在
+  <code>src/llama-model.cpp:1595</code>：mmap fast path 只在
+  <code>is_default_buft</code>（<code>buft == ggml_backend_dev_buffer_type(dev)</code>）時成立。
+  於是新增一個<strong>與 shared buft 逐項相同、但物件身分不同</strong>的 buft：
+  Metal 後端廣告 <code>MTL&lt;i&gt;_Pool</code>（<code>ggml-metal.cpp</code>，
+  <code>get_alloc_size</code> 也照抄，因為 <code>GGML_OP_MUL_MAT_ID</code> 的
+  <code>extra_tpe</code>/<code>extra_ids</code> 不可省），loader 在 <code>use_mmap</code> 時為 L4 pool tensor
+  選它（<code>llama-model-loader.cpp:select_pool_buft</code>，<strong>名字是唯一契約</strong>）。
+  其餘權重照樣走 zero-copy 檔案映射 —— 這正是修復的價值：模型頁仍然可回收。
+  條件式選取 ⇒ <code>load_mode=none</code> 的 buft 選擇與以前逐位元相同。
+</p>
+
+<p>
+  <strong>閘門五面對照（13:5x 重跑，同一台機器）。</strong>四種寫法都要量，因為 fail-closed 的假陰性
+  比漏擋更危險（CONVENTIONS B20/B22）：
+</p>
+
+<table>
+  <tr><th>面</th><th>設定</th><th>rc</th><th><code>[mmap]</code> 行</th><th><code>mmap_pool_fix</code></th><th>error</th></tr>
+  <tr><td>0</td><td>自動偵測指向哪個檔</td><td>—</td><td>—</td><td>—</td><td>新 lib 的 <code>_Pool</code> count=<strong>1</strong>；舊產物 count=<strong>0</strong></td></tr>
+  <tr><td>1</td><td><code>mmap</code> ＋ 含修復的 binary</td><td><strong>0</strong></td><td>3</td><td><strong>1</strong></td><td>0（放行）</td></tr>
+  <tr><td>2</td><td><code>mmap</code> ＋ <code>CGC_METAL_LIB=</code>舊產物</td><td><strong>1</strong></td><td>2</td><td>0</td><td>1（拒跑，訊息含判定用的檔名）</td></tr>
+  <tr><td>3</td><td>＝面 2 ＋ <code>ALLOW_MMAP_EXPERT_CACHE=1</code></td><td><strong>0</strong></td><td>3</td><td>0</td><td>0（warning）</td></tr>
+  <tr><td>4</td><td><code>mmap</code> ＋ <code>EXPERT_CACHE_OFF=1</code></td><td><strong>0</strong></td><td>2</td><td>1</td><td>0（豁免：沒有池就沒有這個衝突）</td></tr>
+  <tr><td>5</td><td>對照：<code>load_mode=none</code></td><td><strong>0</strong></td><td><strong>0</strong></td><td>1</td><td>0（<code>[mmap]</code> 行一行都不印）</td></tr>
+</table>
+
+<p class="small">
+  <strong>一個必須附上的證據限制。</strong>修復的<em>正向</em>證據是<strong>行為的</strong>，不是 log 行的：
+  修復前死在載入中的 fill pool，修復後載完 40 層、進到 warmup。
+  這條路徑上找不到第二種證據可用 —— 我加的那行 loader INFO
+  （<code>… -&gt; GPU pool buffer (L4 pool, load_mode=mmap …)</code>）
+  <strong>沒有被任何 server log 捕獲</strong>：全庫 1414 份 server log 裡 <code>0</code> 份含它，
+  而且連 <code>none</code> 臂的 <code>llama_model_loader:</code> 行也是 <code>0</code> 行。
+  所以「loader 選了新 buft」這件事<strong>不可引用</strong>，只能引用載入行為的差異。
+</p>
+
+<h4>11.12.2 修好之後才顯形的新限制 —— 以及「<code>mmap</code> 是 OOM 的機制解」這個假設的推翻</h4>
+
+<p>
+  上一輪我寫下「那個修復正是 req2 OOM 的機制解：唯一改變的是模型頁變成可回收的」。
+  <strong>這句被本輪的實驗推翻了。</strong>它錯在把「host 頁可回收」當成「GPU 工作集變小」——
+  在 unified memory 上這兩件事不是同一件，而這台機器撞的是後者。
+</p>
+
+<table>
+  <tr><th>面</th><th>設定（同 profile、同 <code>ub=4096</code>）</th><th>死在哪</th><th>訊號</th></tr>
+  <tr>
+    <td>修復前 12:02</td><td><code>mmap</code>，舊 binary</td><td>載入中的 fill pool</td>
+    <td><code>KERN_PROTECTION_FAILURE</code>（<code>__bzero ← fill_pool_direct</code>），SIGBUS</td>
+  </tr>
+  <tr>
+    <td>修復後 12:46</td><td><code>mmap</code>，新 binary</td><td>載完 40 層、第一個 <code>synchronize</code></td>
+    <td><code>status 5</code> <code>kIOGPUCommandBufferCallbackErrorOutOfMemory</code>，<code>compute #41</code>，SIGABRT</td>
+  </tr>
+</table>
+
+<p>
+  SIGBUS 消失了（修復成立），但<strong>第一失敗點從「負載下」提前到「warmup」</strong>，
+  因果正確：pool 現在要真配置，載入期的壓力不再被可回收的映射吸收。
+  然後本輪把 <code>mmap</code> 在三個寬度各跑一次：
+</p>
+
+<table>
+  <tr><th>臂</th><th>load_mode</th><th>ub</th><th>pool</th><th>結果</th></tr>
+  <tr><td>13:23:37</td><td>mmap</td><td>4096</td><td>8 GiB</td><td><code>ready=no</code>，1 crash report</td></tr>
+  <tr><td>13:24:29</td><td>mmap</td><td>5120</td><td>8 GiB</td><td><code>ready=no</code>，1 crash report</td></tr>
+  <tr><td>13:26:02</td><td>mmap</td><td>6144</td><td>8 GiB</td><td><code>ready=no</code>，1 crash report</td></tr>
+</table>
+
+<p>
+  也就是說 <code>mmap</code> 在<strong>任何量過的寬度都不存活（本日 5 次啟動全部沒有 ready）</strong>。
+  而它為什麼更差，有一個可數的旁證：Metal 的
+  <code>current allocated size is greater than the recommended max working set size</code> 警告 ——
+  全庫 1414 份 server log 裡 18 份有；其中
+  <strong>119 次有紀錄的 <code>load_mode=none</code> 啟動出現 0 次</strong>，
+  而<strong>5 份可判定 load mode 的警告日誌是 5/5 <code>mmap</code></strong>
+  （<code>120058</code>、<code>124605</code>、<code>130557</code>、<code>130755</code>、
+  以及 09-15 15:21 那筆，它的兄弟檔名就叫 <code>arm_p25-mmap-mtpoff_*.ctrl.log</code>）。
+  剩下 13 份（09-12／09-14）沒有 load-mode 證據，所以<strong>不能</strong>反過來說「警告 ⇒ mmap」。
+  結論只到這裡：<code>mmap</code> ⇒ 警告（5/5 有紀錄的），而 <code>none</code> ⇒ 不警告（0/119）。
+</p>
+
+<h4>11.12.3 item 1｜OOM 機制本體：它是一個和，不是一個旋鈕</h4>
+
+<p>
+  本輪最重要的是這一張表。所有臂同 profile、同 <code>load_mode=none</code>、同 binary
+  （<code>common_md5 7bceb3bd5320</code>），交錯執行：
+</p>
+
+<table>
+  <tr><th>ub</th><th>pool</th><th>存活</th><th>備註</th></tr>
+  <tr><td>4096</td><td>8 GiB</td><td><strong>5/5</strong></td><td>最低，也最慢（不在必要時不值得）</td></tr>
+  <tr><td>5120</td><td>8 GiB</td><td><strong>3/3</strong></td><td></td></tr>
+  <tr><td><strong>5632</strong></td><td>8 GiB</td><td><strong>4/4</strong></td><td>profile 的新預設（§11.12.7）</td></tr>
+  <tr><td>6144</td><td>8 GiB</td><td><strong>0/5</strong></td><td>12:05、13:15、13:17、13:32、13:33；全部 <code>status 5</code> 死在 req2</td></tr>
+  <tr><td>6144</td><td><strong>6 GiB</strong></td><td><strong>3/3</strong></td><td>同一個 ub，只把池縮 2 GiB ⇒ 活了</td></tr>
+  <tr><td>6144</td><td>8 GiB，<code>MTP=0</code></td><td>1/1</td><td>活了，但 req2/req3 掉到 <strong>25.89 / 19.02 t/s</strong> ⇒ 不是可用的槓桿</td></tr>
+</table>
+
+<p>
+  兩個方向都指向同一件事：<strong>OOM 的邊界不是 <code>ub</code>，而是
+  (pool + compute buffer) 的和</strong>。把 2 GiB 從池搬到 compute 就讓 <code>ub=6144</code> 活過來；
+  往另一個方向走（<code>ub</code> 到 5632）也活。這正好是 <code>[budget]</code> 一開始就在算的那條算式
+  （<code>21222 MiB vs 16384 MiB</code>，<code>OVERSUBSCRIBED by 4838 MiB</code>）——
+  它算對了，只是我之前把它當成「背景說明」而不是「邊界條件」。
+</p>
+
+<p>
+  <strong>所以這一項的誠實定位是：機制已定位，但沒有被修好。</strong>
+  任何一顆旋鈕只是在重新分配同一個超額預算；真正的解要讓 resident footprint 低於實體記憶體，
+  而那要動模型側（更多層走 SSD streaming），不是動 <code>ub</code> 或池。
+  <code>MTP</code> 也吃同一個預算（它多一層 nextn ＋ draft graph），但關掉它的代價
+  （prefill 掉到 20-26 t/s）使它不構成選項。
+</p>
+
+<h4>11.12.4 item 5｜<code>cmd_buf_last</code>：從借用改成持有</h4>
+
+<p>
+  <code>cmd_buf_last</code> 是「這個 context 佇列的最後一個 buffer」，讓
+  <code>synchronize</code> 不必知道它落在 <code>cmd_bufs[]</code> 還是 <code>cmd_bufs_ext</code>。
+  它原本是<strong>借用指標</strong>：每個賦值站都存一個自己不擁有的指標，而所有者在其腳下釋放它
+  （<code>cmd_bufs[cb_idx].obj</code> 每次 <code>graph_compute</code> 都 release+replace；
+  <code>cmd_bufs_ext</code> 會被 <code>removeAllObjects</code> 清空），
+  於是存在一個窗口：指標指向已解構的物件，而三個讀者
+  （<code>synchronize</code>、capture 路徑、drain hook）會對它發訊息。
+</p>
+
+<p>
+  改成持有：<code>cgc_set_cmd_buf_last</code>（相同物件則 no-op，否則 release 舊的、retain 新的）
+  與 <code>cgc_clear_cmd_buf_last</code>。<strong>7 個賦值站全部改走前者</strong>
+  （<code>set_tensor_async</code>、<code>get_tensor_async</code>、<code>cpy_tensor_async</code>、
+  <code>graph_compute</code> 的主 buffer 與其餘 buffer、<code>event_record</code>、<code>event_wait</code>），
+  <strong>2 個清除站</strong>（<code>synchronize</code> 的 wait 之後、capture 路徑）與
+  <code>ggml_metal_free</code> 各改走後者。
+</p>
+
+<p>
+  <strong>並且我把「夠不夠」查了，而不是假設。</strong>
+  <code>cmd_buf_last</code> 的<em>每一個</em>讀者都在那條變更它的執行緒上（drain hook 在
+  <code>graph_compute</code> 之內，不是 watchdog queue）；
+  watchdog queue 是唯一另一個能碰到這個 struct 的執行緒，而它<strong>從不讀這個欄位</strong>
+  （只碰 <code>cgc_watchdog_*</code> 與 per-cb 時間戳）。所以持有參照<strong>在這裡是充分的</strong>；
+  跨執行緒的讀者會額外需要自己的 retain —— 這一點寫進註解，因為未來的人加一個讀者時就會踩到。
+</p>
+
+<h4>11.12.5 item 4｜最快的證據路徑上有三個缺陷，不是一個</h4>
+
+<p>
+  <strong>(a) <code>newest_ips</code>（原本要修的那個）。</strong>
+  舊寫法是 <code>ls -t … | head -1</code> 再與 before 值比較：看起來是 difference test，
+  實際是 <strong>ordering test</strong>，分不出「這一臂當了」與「磁碟上最新那個檔換了」。
+  實測失敗（12:05）：6144 對照臂把 29 分鐘前<em>別的臂</em>寫的
+  <code>llama-server-2026-09-16-113649.ips</code> 報成自己的。改成
+  <strong>「臂前快照集合 + 差集 + <code>mtime ≥ 臂起始時間</code>（第二張網，因為
+  ReportCrash 會在行程死後才發布）」</strong>。修後的真陽性驗證：12:46 那臂正確列出自己的
+  <code>llama-server-2026-09-16-124700.ips</code>；13:23–13:26 四個會當的臂各列出自己的那一個。
+</p>
+
+<p>
+  <strong>(b) <code>newest_server_log</code>（修 (a) 的路上發現的）。</strong>
+  它 glob 的是 <code>$PWD/$OUTDIR</code>，但 server log 住在
+  <code>$ROOT/Backup/cgc_logs</code>（<code>run_server.sh:466-467</code> 是<strong>硬編</strong>目錄）。
+  於是<strong>每一個自訂 <code>OUTDIR</code> 的臂都空轉完整的 240 秒</strong>，
+  然後在報告裡寫 <code>log=&lt;none&gt;</code> —— 那讀起來像「server 沒有產生 log」，
+  而不是「這隻腳本看錯目錄」。修後單臂時間 <strong>5m15s → 1m33s</strong>，
+  而且 <code>log=</code> 欄現在指向真正的檔案。
+</p>
+
+<p>
+  <strong>(c) <code>OUTDIR</code> 從來沒有被建立（在 (b) 修完之後才暴露）。</strong>
+  <code>env … run_server.sh &gt; "$OUTDIR/&lt;x&gt;.driver.log" 2&gt;&amp;1 &amp;</code> 在目錄不存在時
+  <strong>失敗在重導向、因此根本沒有執行 <code>run_server.sh</code></strong>：沒有 server、沒有 server log，
+  而報告印出 <code>ready=no last_request=0 survived=n/a</code> —— 與「server 起來然後死了」
+  <em>完全同形</em>。實測：13:39:34 的驗收臂就是這樣（<code>OUTDIR=Backup/cgc_logs/prod_accept</code> 不存在），
+  連它自己的報告都寫不出來（<code>tee: … No such file or directory</code>）。
+  修法：開頭 <code>mkdir -p "$OUTDIR" || exit 2</code>。
+</p>
+
+<p>
+  <strong>(d) 同一次暴露出來的第四件事：沒有 before-set 時，它宣稱了 8 個不屬於它的報告。</strong>
+  因為 <code>new_ips</code> 在快照檔不存在時把 before 當成空集合 ⇒ 磁碟上<em>每一個</em>報告都變成「新的」。
+  13:39:34 那一跑因此把 12:47 到 13:35 之間<strong>別的臂</strong>寫的 8 份報告列成自己的。
+  修法：快照檔不存在時<strong>拒絕歸因</strong>（明印
+  <code>crash-report attribution: UNAVAILABLE</code>），因為「不能分辨」與「沒有」是不同的斷言。
+  驅動腳本的 parser 也跟著把這種臂的 <code>crashes</code> 記成 <code>?</code>，不是 <code>0</code>。
+</p>
+
+<p class="small">
+  另外補了一個真正的競態：ReportCrash 的發布延遲。12:46 那臂約在 12:46:56 死，它的
+  <code>.ips</code> mtime 是 12:47:00 —— 約 4 秒，而腳本只 <code>sleep 3</code>。
+  那個臂之所以還是列對了，部分是因為當時還有一個 240 秒的空轉墊在後面（即 (b)）。
+  移除 (b) 之後這條競態就露出來了，所以改成「只在臂看起來當掉時」有界地輪詢（最多 60 秒，
+  一有報告就停），健康的臂仍然只付 3 秒。<strong>目前還沒有觀察到漏抓</strong>（移除空轉後 4/4 個會當的臂都歸因正確）
+  —— 這是預防，不是修一個已觀察到的失敗。
+</p>
+
+<h4>11.12.6 item 3｜<code>build_fork_llama.sh</code>：政策漂移改成可驗的契約</h4>
+
+<p>
+  原本的問題不是「腳本與 live build dir 不一致」而已 —— 是<strong>那些差異是刻意的，而且無法事後歸屬</strong>。
+  改動前的 6 列漂移裡，4 個 <code>GGML_*</code> 是真正的政策漂移，
+  <code>LLAMA_BUILD_SERVER</code>/<code>LLAMA_BUILD_TESTS</code> 則是 devserver 為了要 server target 刻意要的。
+  所以修法不是「讓它們一致」，而是<strong>讓選擇顯式且可檢查</strong>：
+</p>
+
+<ul>
+  <li><code>CGC_BUILD_PROFILE=prod|devserver</code>（<code>prod</code>＝SERVER/TESTS=OFF、
+      <code>devserver</code>＝ON；未知值 <code>exit 2</code>）。</li>
+  <li><strong>移除 <code>LLAMA_CURL</code></strong>：<code>llama_option_depr(WARNING LLAMA_CURL)</code>
+      （<code>CMakeLists.txt:186</code>）只在傳 <code>ON</code> 時才建立 cache 條目，
+      所以傳 <code>OFF</code> 是死旗標，只會讓腳本的旗標集與 live dir永遠差一列。</li>
+  <li><code>--check</code> 一命令給裁決：<code>devserver</code> <strong>10/10 PASS</strong>；
+      <code>prod</code> <strong>4 列 FAIL</strong>（1 列 profile ＋ 3 列刻意的 SERVER/APP/TESTS）。</li>
+  <li>build dir stamp <code>build/CGC_BUILD_PROFILE.txt</code>：profile、built_at、git_head、
+      dirty 檔數、各旗標、MTP_SUPPORT ⇒ <strong>哪個 profile 產生這個 binary 事後可答</strong>。</li>
+  <li><code>REBUILD=1</code> 在 stamp 顯示<strong>不同</strong> profile 時拒絕 <code>rm -rf</code>
+      （<code>CGC_BUILD_FORCE=1</code> 放行）—— 防止用 <code>prod</code> 預設把 devserver 的 build dir 洗掉。</li>
+  <li>順手修 <code>--check</code> 的預設：裸跑時改成<strong>對這個目錄自己的 stamp 檢查</strong>
+      （沒有要求 profile 就沒有理由用 <code>prod</code> 去比），否則每一次裸跑都會印 4 列差異，
+      訓練讀者忽略整份報告。</li>
+</ul>
+
+<p>
+  重建後的產物副作用要一起記：SONAME 由 <code>0.0.277</code> 走到 <strong><code>0.0.279</code></strong>，
+  新的 <code>libllama-common/libllama/libmtmd</code> 三個 <code>.0.0.279.dylib</code>
+  <strong>必須與 symlink 重指同一個 commit</strong>（<code>check_build_tracked.sh</code> 會把六個
+  symlink 目標逐列印成 tracked）。
+</p>
+
+<h4>11.12.7 prefill250 的生產級交付：出廠預設 <code>ub</code> 6144 → 5632</h4>
+
+<p>
+  這是本輪唯一一個「改行為」的變更，而它改的正是交付條件本身：
+  <code>CGC_SERVER_PROFILE=prefill250</code> 的 <code>BATCH</code>/<code>UBATCH</code> 預設
+  由 <code>6144</code> 改成 <code>5632</code>。<strong>理由是 6144 已經死了，不是它比較慢</strong>
+  —— 它在同 binary 上 0/5（§11.12.3），而 5632 是量到的最高存活寬度（4/4）。
+  而且 5632 不是速度上的讓步：在兩個交錯輪次裡，它對上「<code>ub=6144</code> ＋ 池 6 GiB」這個替代方案
+  都是<em>更快</em>的那一邊（req2 <code>170.6 vs 153.2</code>，然後 <code>167.2 vs 158.0</code>）。
+</p>
+
+<p>
+  <strong>出廠預設上的驗收臂</strong>（13:45:10，不帶任何 override，只帶
+  <code>CGC_SERVER_PROFILE=prefill250</code>）：
+</p>
+
+<table>
+  <tr><th>請求</th><th>prompt</th><th>prompt eval</th><th>prefill t/s</th><th>之後還活著</th></tr>
+  <tr><td>req1</td><td>2873 tok</td><td>10716.4 ms</td><td><strong>268.09</strong></td><td>yes</td></tr>
+  <tr><td>req2</td><td>2873 tok</td><td>10502.7 ms</td><td><strong>273.55</strong></td><td>yes</td></tr>
+  <tr><td>req3</td><td>2873 tok</td><td>11195.9 ms</td><td><strong>256.61</strong></td><td>yes</td></tr>
+</table>
+
+<p>
+  <code>health OK after 10s</code>、<code>new crash report: none</code>、A11 指紋
+  <code>a9c9dc104f057bf640e0132a83e01c12</code>（與階梯裡 4/4 存活的那個指紋相同）。
+  <em>（指紋先前在本節誤植為少一個字元的 <code>a9c9dc10f05…</code>，於 §11.13 更正——指紋寫錯等於假證據。）</em>
+  log 裡 <code>CGC-PREFILL-STREAM: il=0 kind=0 ntok=2873 experts=256 slab=110.00 MiB</code>
+  確認走的是 M2 whole-layer slab 那條路，<code>draft acceptance = 1.00000</code> 表示 MTP 在有作用。
+</p>
+
+<p class="small">
+  <strong>吞吐要附著機器狀態才引用。</strong>同一份 A11 指紋在交錯輪次裡給的是 147–180 t/s，
+  在驗收臂給的是 257–274 t/s —— 差距是環境的（這一輪最極端的一對是同指紋 2.17 倍：
+  <code>none:5120</code> 三次 req1 = 284.58 / 157.95 / 130.88）。
+  所以這一節的立場是：<strong>存活是二元的、可重現的（5/5 vs 0/5）；t/s 只在附上機器狀態時引用。</strong>
+  另外我自己犯了一個方法錯誤並記在這裡：階梯跑到一半時我在同一台機器上跑了
+  「掃 1414 份 log」的分析，那會污染當時的臂 —— 之後的驗收臂是在安靜的機器上跑的。
+</p>
+
+<h4>11.12.8 這一節能說與不能說</h4>
+
+<p>
+  <strong>能說：</strong>(1) <code>mmap</code> × expert cache 的缺陷本體已修，修在張量落點
+  （一個非 device-default 的 <code>_Pool</code> buft），而且<strong>沒有動 expert cache 一行</strong>；
+  載入階段的 SIGBUS 消失，閘門五面對照全部逐字符合預期。
+  (2) OOM 的邊界是 (pool + compute) 的和，兩個方向都量到了（<code>ub</code>↓ 或 池↓ 都能救），
+  這讓它從形容詞變成一個可以用旋鈕移動的邊界。
+  (3) <code>cmd_buf_last</code> 已改成持有，而且「所有讀者都在變更的那條執行緒上」是查過的。
+  (4) 那一隻證據腳本裡三個同型缺陷（ordering test、看錯目錄、沒建 OUTDIR）都已修，
+  單臂時間 5m15s → 1m33s。
+  (5) build profile 契約與 stamp 落地，<code>--check</code> 可裁決。
+  (6) <strong>出廠預設從 0/5 死的 6144 改成 4/4 活的 5632，並在出廠預設上量到 256–274 t/s prefill。</strong>
+</p>
+
+<p>
+  <strong>不能說：</strong>(1) <del>不能說 <code>mmap</code> 的缺陷只是被擋住、修它要動 expert cache</del>
+  —— 已被本節推翻。(2) <del>不能說 ≤6144 的繞道要付 −22%</del> —— 那個數字來自別的 binary。
+  (3) <strong>不能說 OOM 被修好了</strong> —— 它只是被一個旋鈕移開；真正的解要讓 resident footprint
+  低於實體記憶體，那要動模型側。
+  (4) <strong>不能說 <code>mmap</code> 可用</strong> —— 它在任何量過的寬度都 0/5，而且會把
+  Metal 工作集撐大。
+  (5) 不能說 prefill 250 是<strong>隨時</strong>可重現的 —— 它是這個設定在有餘裕的機器狀態下的表現，
+  同指紋可以差到 2 倍。
+  (6) 不能說 <code>_Pool</code> 這件事有 log 行可引用 —— 沒有，證據是行為的。
+  (7) 不能說 <code>5632</code> 是邊界<em>值</em> —— 它是量到的最高<strong>存活</strong>樣本，
+  邊界落在 (5632, 6144]；<code>5888</code> 沒量過。
+</p>
+
+<p class="small">
+  <strong>複現。</strong>階梯／生產選擇（交錯、每輪反序）：
+  <code>OUTDIR=Backup/cgc_logs/ub_ladder ROUNDS=2 ARMS_R1="none:4096 none:5120 none:5632 none:6144" ARMS_R2="none:6144 none:5632 none:5120 none:4096" bash Backup/run_mmap_ab.sh</code>；
+  <code>OUTDIR=Backup/cgc_logs/prod_choice ROUNDS=2 ARMS_R1="none:6144:CGC_SERVER_EXPERT_CACHE_BYTES=6442450944 none:5632 none:6144" ARMS_R2="none:6144 none:5632 none:6144:CGC_SERVER_EXPERT_CACHE_BYTES=6442450944" bash Backup/run_mmap_ab.sh</code>；
+  <code>mmap</code> 軸：<code>OUTDIR=Backup/cgc_logs/mmap_axis ROUNDS=1 ARMS_R1="mmap:4096 mmap:5120 mmap:6144" bash Backup/run_mmap_ab.sh</code>；
+  出廠驗收：<code>OUTDIR=Backup/cgc_logs/prod_accept bash Backup/run_req2_retest.sh</code>；
+  閘門五面：<code>CGC_SERVER_PROBE_ONLY=1 CGC_SERVER_PROFILE=prefill250 [CGC_METAL_LIB=… | CGC_SERVER_ALLOW_MMAP_EXPERT_CACHE=1 | CGC_SERVER_LOAD_MODE=mmap] bash scripts/run_server.sh</code>；
+  profile 契約：<code>bash scripts/build_fork_llama.sh --check</code>。
+  證據：<code>Backup/cgc_logs/{ub_ladder,prod_choice,pool_axis,mmap_axis,prod_accept}/summary.tsv</code>、
+  <code>Backup/cgc_logs/prod_accept/req2retest_20260916_134510.txt</code>、
+  <code>Backup/cgc_logs/llama_server_20260916_134511.log</code>、
+  <code>Backup/cgc_logs/llama_server_20260916_124605.log</code>（<code>compute #41</code>）、
+  <code>…/_130557.log</code> 與 <code>…/_130755.log</code>（mmap 工作集警告）、
+  <code>Backup/pre_flagalign_20260916/libggml-metal.0.19.0.dylib</code>（<code>_Pool</code> count=0 的對照）、
+  <code>src/llama.cpp/build/CGC_BUILD_PROFILE.txt</code>。
+</p>
+
+<h3 id="s1113">11.13 追加（2026-09-16 13:4x–14:0x）：交付驗證本身有兩個洞 —— 一個在閘門的「參考身分」，一個在「改了沒重建」</h3>
+
+<p>
+  這一節是 §11.12 的驗收段。它<strong>不改 §11.12 的任何機制結論</strong>（<code>_Pool</code> buft 的修法、
+  OOM 的算式、<code>cmd_buf_last</code> 的所有權、<code>newest_ips</code> 的三個同型缺陷全部成立），
+  改的是<strong>那些結論被量在哪一份產物上</strong>。會需要這一節，是因為我在收尾時撞到兩個洞，
+  而兩個都是「閘門自己」的洞。
+</p>
+
+<h4>11.13.0 一頁結論</h4>
+
+<table>
+  <tr><th>項目</th><th>狀態</th><th>證據／述句</th></tr>
+  <tr>
+    <td>洞一：D5 的預設配置被生產調參移動</td>
+    <td><strong>已修</strong></td>
+    <td><code>ORACLE_PINNED_ENV</code> 把 oracle 的 batch/ubatch 釘在參考檔旁邊；
+        13:49 的 4 列差異（全是我的 6144→5632）不再出現，14:02 的 gate
+        <code>comparable=True</code>、<code>resolved BATCH/UBATCH = 6144/6144</code>（釘子生效）</td>
+  </tr>
+  <tr>
+    <td>洞二：13:00 對 <code>.m</code> 的編輯沒有進 binary</td>
+    <td><strong>已修，且代價已量</strong></td>
+    <td>判準是建置輸出的 <code>Building C object … ggml-metal-context.m.o</code> 那一行；
+        <code>libggml-metal</code> md5 <code>968c36cf…</code> → <code>f2d1c961…</code>。
+        <strong>12:44–13:50 之間的所有量測都屬於舊產物</strong>（含 13:45 的驗收、13:50 的 PASS）</td>
+  </tr>
+  <tr>
+    <td>最終產物上的 D5</td>
+    <td><strong>PASS（合法）</strong></td>
+    <td>tag <code>poolfix_final</code>（14:02:04，晚於產物 mtime ⇒ 可歸屬）：
+        <code>M1 9/9 · M2 9/9 · M3 9/9 · fnv1a64 9/9 · cross-tab 9/0/0/0 · comparable=true</code></td>
+  </tr>
+  <tr>
+    <td>最終產物上的出廠驗收（存活）</td>
+    <td><strong>4/4 臂存活</strong></td>
+    <td>13:51:31 / 13:53:22 / 13:54:56 / 13:57:20，四臂皆
+        <code>ready=yes last_request=req3 survived=yes</code>、<code>new crash report: none</code>、
+        0 份 crash report</td>
+  </tr>
+  <tr>
+    <td>最終產物上的 prefill t/s</td>
+    <td><strong>118.30–154.77</strong></td>
+    <td>四臂 12 個樣本全落在這個帶；<strong>沒有任何一臂回到 250 以上</strong>。
+        13:45 那組 256.61–273.55 屬於 12:44 的產物</td>
+  </tr>
+  <tr>
+    <td>2.25× 差距的歸因</td>
+    <td><strong>未歸因（不能說）</strong></td>
+    <td>兩個候選（產物 vs 機器狀態）都無法排除：沒有交錯 A/B，且本 repo 已量過
+        <strong>同一份 binary</strong> 的 2.17× 散佈。見 §11.13.4</td>
+  </tr>
+</table>
+
+<h4>11.13.1 洞一：D5 閘門的「預設會重現 oracle 配置」寄生在生產預設值上</h4>
+
+<p>
+  <code>scripts/check/m123_oracle_gate.py</code> 的 <code>--profile</code> 預設是 <code>prefill250</code>，
+  而它的說明文字寫著「預設會重現 M2 oracle 被 dump 時的配置（ctx 8192 / batch 6144 / …）」。
+  這句話當時是<strong>真的</strong>——但它是靠 <code>prefill250</code> 這個 profile 的
+  <strong>生產預設值恰好等於 6144</strong> 才成立的。§11.12.7 把生產預設改成 <code>5632</code>
+  （6144 在 req2 上 0/5 死），這條性質就斷了，而我<em>沒有</em>在改的時候查它。
+</p>
+
+<p>
+  後果是可量且可讀成兩種相反結論的。13:49:11 的 gate：
+</p>
+
+<table>
+  <tr><th>欄位</th><th>值</th></tr>
+  <tr><td><code>comparable</code></td><td><strong>False</strong></td></tr>
+  <tr><td><code>config_diffs</code></td><td><code>CGCENV.BATCH: ref='6144' now='5632'</code>、
+      <code>CGCENV.UBATCH: …</code>、<code>ARG[27]: …</code>、<code>ARG[29]: …</code></td></tr>
+  <tr><td><code>M1 / M2 / M3</code></td><td><strong>9/9 ・ 9/9 ・ 9/9</strong>（閘門原句：
+      <em>printed for information, NOT a verdict</em>）</td></tr>
+  <tr><td><code>ok</code></td><td><strong>False</strong></td></tr>
+</table>
+
+<p>
+  也就是說：四列差異<strong>全部是我自己的預設變動</strong>，而數值指標同時是 9/9。
+  同一次輸出裡「讀成 PASS」與「讀成 FAIL」都能各自找到支持——這正是閘門的意義變成可變的那一刻。
+  修法是把 oracle 的 numerics-determining 旋鈕<strong>釘在參考檔旁邊</strong>而不是寄生在 profile：
+  <code>ORACLE_PINNED_ENV = ("CGC_SERVER_BATCH=6144", "CGC_SERVER_UBATCH=6144")</code>，
+  在 resolve 之前併進 env；<code>--env</code> 仍然可以覆蓋，但<strong>有效集合必須在啟動前印出來</strong>
+  ——「被靜默覆蓋」與「被靜默丟棄」在 transcript 上同形，而後者正是這個釘子存在的理由。
+  重新基線則要顯式：<code>--write-ref</code> ＋ <code>--no-pin-oracle-env</code>。
+</p>
+
+<p class="small">
+  <strong>殘留（不可省略）：</strong>這樣一來 gate 證明的是 <strong>oracle 配置（6144）</strong>的數值。
+  出廠預設 <code>5632</code> 沒有自己的參考檔，所以它只量得到「M1/M2/M3 都 9/9（跨配置）」，
+  <strong>不能被 gate 認證</strong>——跨配置的比較依法只能當 diff 讀，不能當裁決。
+  要認證就得為 5632 重新基線一份參考（而 <code>cap</code> 註記已經說明 cache-ON 的 dump
+  不能當 ground truth，所以那是另一件要自覺去做的事）。
+</p>
+
+<h4>11.13.2 洞二（本輪最貴）：改了 <code>.m</code>，沒重建，於是量測全部屬於上一份產物</h4>
+
+<p>
+  12:44:53 有一次全量重建。之後 13:00:34 我編輯了
+  <code>src/llama.cpp/ggml/src/ggml-metal/ggml-metal-context.m</code>——把
+  <code>cmd_buf_last</code> 的所有權註解從「窗口很窄」改寫成<em>查過的事實</em>
+  （watchdog queue 是唯一另一條能碰到這個 struct 的執行緒，而它從不讀這個欄位）。
+  然後<strong>沒有重建</strong>。
+</p>
+
+<p>
+  於是 12:44 到 13:50 之間<strong>每一筆</strong>量測都跑在不含那個檔的產物上：
+  13:45:10 的出廠驗收（<code>268.09 / 273.55 / 256.61</code>）與 13:50:16 那個
+  <strong>D5 PASS</strong> 都是。它們不是假的，是<strong>屬於另一份產物</strong>的。
+</p>
+
+<p>
+  這一格是怎麼被發現的：我在收尾時跑 <code>cmake --build build --target …</code> 作為 check 8 的證據，
+  而它印出了
+  <code>Building C object ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/ggml-metal-context.m.o</code>。
+  <strong>唯一的判準就是這一行</strong>——exit code 兩種情況都是 0，
+  而磁碟上有一份產物這件事本身<em>看起來</em>就是權威的。
+  重建後 <code>libggml-metal</code> md5 <code>968c36cf45742bb1667d5a02629c67be</code> →
+  <code>f2d1c96193939bd15404ba713a6fa85d</code>；同一批重建後
+  <code>libggml-base</code>、<code>libggml-cpu</code> md5 <strong>不變</strong>
+  （所以那兩個沒有被重新編譯，也就證明「有沒有編譯行」確實只是關於變動的目標）。
+</p>
+
+<p class="small">
+  這一格閘門本來是有的，錯的是<strong>時序</strong>：check 8（原始碼 ↔ binary 同步）用的是 mtime，
+  <code>libggml-metal</code> 12:44 &lt; <code>.m</code> 13:00 ⇒ 它會 FAIL。
+  但 check 8 在 <strong>commit 前</strong>才跑，而量測在 commit 前更早就發生。
+  <strong>中間那段空窗裡只有建置輸出能擋</strong>——所以「跑完 build 要看它印了什麼」是紀律，不是禮貌。
+</p>
+
+<h4>11.13.3 最終產物：D5 與四臂出廠驗收</h4>
+
+<p>
+  最終產物的指紋（由 <code>run_req2_retest.sh</code> 走 <code>otool -L</code> 解 symlink 鏈後雜湊，
+  不是手寫檔名）：
+</p>
+
+<table>
+  <tr><th>產物</th><th>md5</th><th>與 HEAD 的關係</th></tr>
+  <tr><td><code>llama-server</code></td><td><code>054fb22f…</code></td>
+      <td><strong>逐位元相同</strong>（12:44 被重寫但內容不變——install name 沒動就不需 relink）</td></tr>
+  <tr><td><code>libllama-server-impl.dylib</code></td><td><code>27f7df45…</code></td>
+      <td><strong>逐位元相同</strong>（同上）</td></tr>
+  <tr><td><code>libllama.0.0.279.dylib</code></td><td><code>233a172a…</code></td>
+      <td>內容相同，mtime 13:50:59（relink 是決定性的）</td></tr>
+  <tr><td><code>libggml.0.19.0.dylib</code></td><td><code>8f4abce7…</code></td><td>內容相同</td></tr>
+  <tr><td><code>libggml-metal.0.19.0.dylib</code></td><td><code>f2d1c961…</code></td>
+      <td><strong>變了</strong>：含 13:00 的 <code>.m</code></td></tr>
+  <tr><td><code>libggml-base.0.19.0.dylib</code></td><td><code>d2099fb7…</code></td>
+      <td>大小相同（771480 B）、內容不同：<strong>只差內嵌的建置戳記</strong>
+          （<code>strings</code> 差集恰好是 <code>8af8c99bd</code> → <code>efeade7e2-dirty</code>）</td></tr>
+  <tr><td><code>libggml-cpu.0.19.0.dylib</code></td><td><code>70ebbd7c…</code></td>
+      <td>同上（80 bytes 差異，<code>strings</code> 差集為空）</td></tr>
+</table>
+
+<p class="small">
+  一個容易讀錯的數字：<code>cmp -l</code> 說 <code>libggml-base</code> 有 <strong>47940</strong> 個位元組不同。
+  那不是程式碼差異——戳記字串從 9 個字元變成 15 個字元，<strong>它後面的所有位元組整體位移</strong>，
+  於是 <code>cmp</code> 把整段尾巴都算成「不同」。判準是 <code>strings</code> 的差集（一行），
+  加上 <code>__text</code> 的區段位移是否為同一位移量。
+</p>
+
+<p>最終產物上的 D5（唯一該引用的一份）：</p>
+
+<table>
+  <tr><th>tag</th><th>產物</th><th>comparable</th><th>M1</th><th>M2</th><th>M3</th><th>裁決</th></tr>
+  <tr><td><code>poolfix5632</code> (13:49:11)</td><td>12:44</td><td><strong>False（4 列）</strong></td>
+      <td>9/9</td><td>9/9</td><td>9/9</td><td><strong>INVALID COMPARISON</strong>（不可引用）</td></tr>
+  <tr><td><code>poolfix_pinned</code> (13:50:16)</td><td>12:44</td><td>True</td>
+      <td>9/9</td><td>9/9</td><td>9/9</td><td>PASS（<strong>但產物已被取代</strong>）</td></tr>
+  <tr><td><code>poolfix_final</code> (14:02:04)</td><td><strong>最終</strong></td><td>True</td>
+      <td>9/9</td><td>9/9</td><td>9/9</td><td><strong>PASS ← 引用這一份</strong></td></tr>
+</table>
+
+<p class="small">
+  <code>poolfix_pinned</code> 這一份的處置與 §11.12 之前處理 <code>flagalign</code> 的方式相同：
+  <strong>不引用、也不刪</strong>，留在 <code>Backup/m123_oracle_gate/</code>。
+  它的 <code>cap</code> 記的是 13:50:16，而 <code>libggml-metal</code> 的 mtime 是 13:50:58
+  ——<strong>重疊</strong>，所以「這份 PASS 是哪個 build 跑的」事後不可證明（這是第五輪就記下的洞：
+  <code>cap</code> 沒有 binary 指紋）。<code>poolfix_final</code> 的 <code>created=14:02:04</code>
+  晚於全部產物 mtime，所以它可歸屬。
+</p>
+
+<p>四臂出廠驗收（不帶任何 override，只帶 <code>CGC_SERVER_PROFILE=prefill250</code>）：</p>
+
+<table>
+  <tr><th>臂</th><th>產物</th><th>req1</th><th>req2</th><th>req3</th><th>存活</th><th>crash report</th></tr>
+  <tr><td>13:45:10</td><td>12:44</td><td><strong>268.09</strong></td><td><strong>273.55</strong></td><td><strong>256.61</strong></td>
+      <td>3/3</td><td>none</td></tr>
+  <tr><td>13:51:31</td><td><strong>最終</strong></td><td>118.96</td><td>135.21</td><td>138.47</td><td>3/3</td><td>none</td></tr>
+  <tr><td>13:53:22</td><td><strong>最終</strong></td><td>127.03</td><td>139.59</td><td>133.64</td><td>3/3</td><td>none</td></tr>
+  <tr><td>13:54:56</td><td><strong>最終</strong></td><td>154.77</td><td>128.31</td><td>118.30</td><td>3/3</td><td>none</td></tr>
+  <tr><td>13:57:20</td><td><strong>最終</strong></td><td>126.66</td><td>123.79</td><td>125.83</td><td>3/3</td><td>none</td></tr>
+</table>
+
+<p>
+  四臂的 A11 指紋與 13:45 那臂<strong>完全相同</strong>：
+  <code>a9c9dc104f057bf640e0132a83e01c12</code>。
+  13:57:20 那一臂是在機器靜置 4 分鐘以上之後跑的（<code>pgrep</code> 沒有重行程），
+  仍然回到 126.66/123.79/125.83——<strong>閒置沒有讓它恢復</strong>。
+</p>
+
+<h4>11.13.4 未被歸因的 2.25×：兩個候選，以及為什麼不能挑一個</h4>
+
+<p>
+  唯一的內容差異是 <code>libggml-metal</code>（<code>968c36cf</code> → <code>f2d1c961</code>），
+  而那個差異按當時的記錄<strong>是一段註解</strong>。這讓「產物」這個候選看起來很弱，但弱不等於排除：
+</p>
+
+<table>
+  <tr><th>候選</th><th>支持</th><th>反對／未驗</th></tr>
+  <tr>
+    <td>產物（<code>libggml-metal</code> 變了）</td>
+    <td>時間上唯一的內容差異；時間點吻合（13:50:58 重建，13:51:31 起變慢）</td>
+    <td>差異按記錄是註解；<code>retain</code>/<code>release</code> 一對沒有 2× 的機制；
+        註解改動不影響 codegen（只位移行號 ⇒ md5 變、<code>__text</code> 不變）。
+        <strong>但舊位元組沒有備份，事後無法重驗</strong></td>
+  </tr>
+  <tr>
+    <td>機器狀態（頻率／swap）</td>
+    <td>本 repo 已量過<strong>同一份 binary</strong> 的 2.17× 散佈
+        （<code>none:5120</code> 三次 req1 = <code>284.58 / 157.95 / 130.88</code>，同一交錯輪次）；
+        13:58 的 <code>sysctl vm.swapusage</code> 是 <code>used = 5066.06M / total = 6144M</code>（82%），
+        <code>free 1078M</code>，而 swap 用量在一個 session 內<strong>單調成長</strong>
+        —— 這是「越晚跑越慢」的形狀</td>
+    <td>13:45 那臂的 swap 用量<strong>沒有被記錄</strong>（兩份報告都沒有 swap 欄位），
+        所以無法證明 13:45 的狀態比較好</td>
+  </tr>
+</table>
+
+<p>
+  兩邊都不成立，而有一件事是確定的：<strong>兩份報告的 IO 統計逐位元相同</strong>——
+  <code>read shape: jobs=47991 bytes=2784305152 (0.06 MiB/job as one contiguous run)
+  us/job=25043 / 24510 effective_rate=2 MiB/s total_bytes=2.59 GiB</code>。
+  所以慢的<strong>不是</strong> streaming／pool 那條路，是 GPU 端。這與「頻率」候選一致，
+  但一致不是證明。
+</p>
+
+<p class="small">
+  <strong>能裁決它的實驗（未做，明確記下）：</strong>把 <code>Backup/pre_flagalign_20260916/</code>
+  那份 <code>libggml-metal.0.19.0.dylib</code>（<code>dd4d1bc4…</code>，11:46，<code>_Pool</code> count=0，
+  即<strong>同時早於</strong> <code>_Pool</code> 與 <code>.m</code> 兩筆改動）與最終產物
+  <strong>互換檔案</strong>後交錯 ×2 輪。注意 <code>CGC_METAL_LIB</code> <em>不能</em>做這件事——
+  它只被用在閘門的 <code>_Pool</code> 偵測（<code>run_server.sh:809-812,943</code>），
+  <strong>不會改變載入器實際映射的庫</strong>；我一度以為它是載入覆蓋，查了行號才知道不是。
+  另一個便宜的前置：在每個臂前後記 <code>sysctl vm.swapusage</code>，把「狀態變數」變成可觀測的欄位。
+</p>
+
+<h4>11.13.5 更正清單</h4>
+
+<table>
+  <tr><th>位置</th><th>原文</th><th>更正</th></tr>
+  <tr>
+    <td>§11.12 導言（<code>#s1112</code> 之前那段）</td>
+    <td>「並在出廠預設上跑出 268.09 / 273.55 / 256.61 t/s」</td>
+    <td>那三個數字<strong>屬於 12:44 的產物</strong>與 13:4x 的機器狀態；最終產物上是
+        <strong>118.30–154.77</strong>。述句保留、加註，不刪（CONVENTIONS E）</td>
+  </tr>
+  <tr>
+    <td>§11.12.7 驗收段</td>
+    <td>A11 指紋 <code>a9c9dc10f057bf640e0132a83e01c12</code></td>
+    <td>誤植（少一個字元）：正確是 <code>a9c9dc104f057bf640e0132a83e01c12</code>。
+        <strong>指紋寫錯等於假證據</strong>，因為它的用途正是「這兩次是同一個狀態」</td>
+  </tr>
+  <tr>
+    <td>§11.12.7 的「5632 不是速度上的讓步」</td>
+    <td>它在兩個交錯輪次裡都比「6144 + 池 6 GiB」快</td>
+    <td><strong>仍然成立</strong>——那兩輪是同一份產物內的交錯比較（這是 5632 作為預設的正當理由）。
+        但它<em>不能</em>推廣成「5632 會給 250+ t/s」</td>
+  </tr>
+</table>
+
+<h4>11.13.6 能說與不能說</h4>
+
+<p>
+  (1) 能說 <strong><code>prefill250</code> 的出廠預設在最終產物上生效</strong>——
+  四臂全部 <code>survived=yes</code> 到 req3、0 份 crash report、數值閘門合法 PASS。
+  這是「生效」的意思：<strong>設定不會在 req2 上死掉</strong>。
+</p>
+
+<p>
+  (2) 能說 <strong>13:00 之後的量測屬於舊產物</strong>，而這件事有判準可查
+  （建置輸出的編譯行、產物 md5），不是靠記憶。
+</p>
+
+<p>
+  (3) <strong>不能說「prefill 250 已交付 250 t/s」。</strong>最終產物上的四臂是 118.30–154.77 t/s，
+  沒有任何一臂回到 250 以上；256.61–273.55 那一組屬於已被取代的產物。
+  「250」目前是一個<strong>目標</strong>，不是一個在最終產物上可重現的讀數。
+</p>
+
+<p>
+  (4) <strong>不能說那 2.25× 是或不是我的改動造成的</strong>——兩個候選都沒有排除，
+  而且其中一個（機器狀態）已經在本 repo 有 2.17× 的同產物先例。
+</p>
+
+<p>
+  (5) <strong>不能說 gate 認證了 5632。</strong>它認證的是 oracle 配置（6144）的數值不變；
+  5632 只量到跨配置的 9/9，那依法不是裁決。
+</p>
+
+<p>
+  (6) 能說 <code>llama-server</code> 與 <code>libllama-server-impl.dylib</code>
+  雖然在 12:44 被重寫，但<strong>與 HEAD 逐位元相同</strong>——所以「check 8 要求產物比原始碼新」
+  這一條不是靠 mtime 過關的，是靠「它根本沒變」。
+</p>
+
+<h4>11.13.7 複現</h4>
+
+<p class="small">
+  最終產物上的 D5（唯一該引用的）：
+  <code>python3 scripts/check/m123_oracle_gate.py --tag poolfix_final</code>
+  （釘子自動生效，輸出應含 <code>resolved BATCH/UBATCH = 6144/6144</code> 與 <code>comparable=true</code>）；
+  對照「未釘」的舊行為：<code>--tag poolfix5632 --no-pin-oracle-env</code>（會得到 4 列差異）；
+  四臂出廠驗收：<code>for i in 1 2 3 4; do OUTDIR=Backup/cgc_logs/prod_accept bash Backup/run_req2_retest.sh; done</code>；
+  建置判準：<code>cd src/llama.cpp &amp;&amp; cmake --build build --target ggml-base ggml-cpu ggml-metal llama -j8</code>
+  ——<strong>看它有沒有印 <code>Building …</code>；exit code 不算</strong>。
+  證據：<code>Backup/m123_oracle_gate/summary_poolfix{5632,pinned,final}.json</code> 與
+  <code>cap_poolfix_final.json</code>（<code>created=2026-09-16T14:02:04</code>）、
+  <code>Backup/cgc_logs/prod_accept/req2retest_20260916_{134510,135131,135322,135456,135720}.txt</code>、
+  <code>Backup/pre_flagalign_20260916/libggml-metal.0.19.0.dylib</code>（<code>dd4d1bc4…</code>，
+  未做的那個 A/B 要用它）。
+</p>
+
 </div>
 </body>
 </html>

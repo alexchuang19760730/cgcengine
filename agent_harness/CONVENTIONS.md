@@ -663,6 +663,114 @@
 
 ---
 
+**B22｜`set -o pipefail` 下 `… | grep -q` 會因為上游的 `SIGPIPE` 回報失敗 —— 閘門的判定要用 `grep -c`。**
+- 為什麼：`grep -q` 一命中就關閉 pipe，上游（`strings`、`otool`、`nm`）在寫入時收到 `SIGPIPE`，
+  以 `141` 結束；`pipefail` 把整條 pipeline 的 rc 判成非零。於是**條件成立的那一面回報失敗**。
+  這是 fail-closed 的假陰性，也就是最危險的方向：閘門在「已修好」的 binary 上 `exit 1`。
+- 實測（同一台機器、同一個含修復的 `libggml-metal`，三面）：
+  | 寫法 | rc | 觀察 |
+  |---|---|---|
+  | `pipefail` + `grep -q '_Pool'` | **1** | `strings: failed to flush output` ⇒ 修好的binary被判成沒修 |
+  | `pipefail` + `grep -c '_Pool'` | 0 | `n=1`，正確 |
+  | 無 `pipefail` + `grep -q` | 0 | 正確（但別靠這個） |
+- 怎麼做：判定式寫成 `n="$(strings -a "$f" \| grep -c 'needle' \|\| true)"`，再 `[ "$n" -gt 0 ]`。
+  `grep -c` 會讀完輸入，所以上游不會拿到 `SIGPIPE`。
+- 檢查：閘門的**兩面**都要跑（含修復／不含修復）。只跑失敗的那一面永遠不會發現這個 bug。
+- 見 `scripts/run_server.sh` 的 `CGC_MMAP_POOL_FIX` 判定；同一條也適用於
+  `Backup/run_req2_retest.sh` 的 `strings -a | grep` 診斷。
+- 同一族、另一半（自己踩的）：**`grep` 的 rc 不只在 pipeline 裡有意義，它會短路 `&&` 串。**
+  `cat summary.tsv | grep -v '^#' && date && pgrep …` 對一個「只有註解行」的檔案回報 rc=1
+  （沒有任何行被選中），於是 `date` 與 `pgrep` 從來沒跑，`||` 分支印出「runner: done」——
+  而那個實驗其實正在跑。**用 `grep` 的 rc 當「有沒有東西」的判準時，要明說你要的是
+  「有不符合的行」還是「有選中的行」**，並且不要讓它去串控制流；要串就加 `|| true`。
+
+**B26｜`${VAR:-default}` 把「空字串」當成「沒給」——用空值去關掉一個有預設的參數，會拿到預設。**
+- 為什麼：`ARMS_R1="${ARMS_R1:-none:4096 mmap:4096 mmap:6144 none:6144}"` 對 `ARMS_R1=""`
+  會套用預設。所以「我想跑一個不啟動任何臂的測試」實際上啟動了那個 4 臂、兩輪的實驗。
+- 怎麼做：要一個「什麼都不做」的值，用一個真的會被解讀成空集合的值（例如 `ARMS_R1=" "`
+  再在迴圈裡跳過空字串），或加一個顯式的 `DRY_RUN=1` 分支；**不要用空字串當 sentinel**。
+  反過來，要「沒給就用預設」，`:-` 是對的；**但要意識到它同時吃掉了空字串**。
+- 實測（2026-09-16 13:04）：`OUTDIR=… ROUNDS=1 ARMS_R1="" ARMS_R2="" bash Backup/run_mmap_ab.sh`
+  的本意只是測摘要表的列印，結果啟動了預設 4 臂；而且它在前景被工具切斷後**變成孤兒繼續跑**，
+  三個連續的呼叫各自「完成第一臂、開始第二臂、被切斷」，於是在 `summary.tsv` 裡留下三個
+  獨立的 run header 與三列 `none:4096`——看起來像三次實驗，實際上是三次被截斷的同一次。
+  副產物是好的（三列同指紋的 `none:4096` 給了噪聲估計），但那是運氣，不是方法。
+- 推論（同一件事的另一面）：**長時間的實驗一律用 `nohup` 起、不要掛在會被收回的前景呼叫上。**
+  同一輪裡 `nohup` 起來的 8 臂階梯就沒有這個問題。
+
+**B23｜不要編輯**正在執行**的 shell 腳本：bash 以位元組位移增量讀取腳本，改檔會讓它從錯位處繼續讀。**
+- 為什麼：bash 不會把腳本整個讀進記憶體再執行，而是邊執行邊 `read` 下一段。檔案在執行中被改動後，
+  bash 用它手上的舊位移去讀新檔，於是讀到的是別的東西——症狀是「既有的行突然變成 `command not found`
+  或 `syntax error`」，而且錯誤行號指向**已經修正過、語法完全正確**的行。
+- 實測（2026-09-16 12:53–12:57）：`Backup/run_mmap_ab.sh` 正在跑 `none:5120` 這一臂時，
+  我對它連發四個 `Edit`。該臂**本身完整跑完並印出結果**（子行程 python 已把 summary 列寫入），
+  但父行程接著從錯位的位移讀到 python 的 `"common_md5": common[:12],` 與 `(`，
+  報 `line 156: n[:12],: command not found` / `line 157: syntax error near unexpected token '('`。
+- 怎麼做：實驗跑完之前，`Edit` 只碰**執行鏈之外**的檔案。要改執行鏈上的腳本，
+  先等它結束（或先 `kill` 再改）。同一條也適用於 `scripts/run_server.sh`：它會被每一臂重新
+  `bash` 起來，中途改它等於**在同一輪實驗裡換掉受測配置**。
+- 檢查：改動執行鏈上的檔案前，先確認 `pgrep -f <腳本名>` 是空的；實驗進行中只讀不寫。
+
+**B24｜修好一個缺陷之後，要重新量**它原本蓋住的限制**。**
+- 為什麼：缺陷會把下游的行為遮住。SIGBUS 讓「pool 真的配置」這件事在載入階段就死，
+  所以沒人看得到「pool 真配置之後，`ub` 的上限變成多少」。修好之後那條限制才會顯形，
+  而且它與缺陷本身無關。
+- 實測（2026-09-16 12:02 vs 12:46，同 profile、同 `ub=4096`）：
+  | 面 | 死在哪 | 訊號 |
+  |---|---|---|
+  | 修復前 | 載入中的 fill pool | `KERN_PROTECTION_FAILURE`（`__bzero ← fill_pool_direct`），SIGBUS |
+  | 修復後 | 載入完 40 層、第一個 `synchronize` | `status 5` `kIOGPUCommandBufferCallbackErrorOutOfMemory`，SIGABRT |
+  SIGBUS **消失**（修復成立），但換成 GPU OOM 在 warmup —— **位置從「負載下」提前到「warmup」**，
+  因果正確：pool 現在要真配置，載入期的壓力不再被可回收的檔案映射吸收。
+- 怎麼做：修復的驗收條件寫成「X 的訊號消失」**加上**「新的第一失敗點在哪、它是什麼」。
+  只寫前半句，會把一個退步（更早死）記成一個進步。
+- 檢查：新失敗點必須指到具體的 `status`/`errno` 與堆疊行，不能寫「還是會當」。
+
+**B25｜macOS 的 BSD `grep` 不支援 `\|` 交替 —— 它會**安靜地**比對字面上的一根直線，rc=1。**
+- 為什麼：`grep -n 'a\|b' f` 在 GNU grep 是交替，在 BSD grep 是**字面** `a|b` ⇒ 找不到 ⇒ 空輸出、rc=1。
+  「沒有符合的行」與「這個字串不存在」在輸出上同形。
+- 實測（2026-09-16 13:0x）：`grep -n 'id="s1111"\|id="s1110"' docs/*.html` 空輸出，
+  而同一組 id 用 ripgrep 立刻命中（`:2081`、`:2128`、`:2356`、`:2372`）。
+- 怎麼做：需要交替就用 `grep -E 'a|b'`，或直接用 ripgrep（本 repo 的 `Grep` 工具即是）。
+  `grep -c`/`grep -q` 這種單一固定字串不受影響（B22 的修法仍然是對的）。
+
+**B27｜`cmake --build` 的 exit code 0 不代表產物是最新的 —— 唯一的判準是它有沒有印出編譯行。**
+- 為什麼：cmake 只在目標比來源舊時才編譯，所以 `0` 這個 exit code 同時代表「已經最新」與
+  「剛剛編好」兩件事。看 mtime 也一樣看不見：磁碟上有一份產物，它看起來就是權威的。
+  於是「改完原始碼、還沒重建、直接開始量測」會產生一整套數字，而它描述的是**上一份**二進位。
+- 實測（2026-09-16）：12:44 全量重建之後，13:00:34 又編輯了
+  `ggml/src/ggml-metal/ggml-metal-context.m`（把 `cmd_buf_last` 的註解從「窗口很窄」改寫成
+  查過的事實）。沒有重建。於是 12:44–14:0x 之間**每一筆**量測都跑在不含該檔的產物上：
+  13:45 的生產驗收（268.09/273.55/256.61 t/s）與 13:50 那個 **D5 PASS** 都是。
+  判準是 `cmake --build` 印出的那一行
+  `Building C object ggml/src/ggml-metal/CMakeFiles/ggml-metal.dir/ggml-metal-context.m.o`；
+  重建後 `libggml-metal` md5 `968c36cf45742bb1667d5a02629c67be` → `f2d1c96193939bd15404ba713a6fa85d`。
+- 怎麼做：原始碼改過就在跑**任何**測試之前對該 target 跑 `cmake --build`，並把「有沒有編譯行」
+  當成驗收條件（印出編譯行 ⇒ 先前在同一棵樹上取得的所有數字全部失效，要重跑）；
+  追求更強證據時比對重建前後的產物 md5，把兩個值都貼進 commit body。
+- 與 B7 同族但更便宜：**exit code 是 0，錯的是沒有人讀輸出。**
+- 這一格閘門本來是有的，錯的是時序：check 8（原始碼 ↔ binary 同步）用的是 mtime
+  （`binary 12:44` < `source 13:00` ⇒ 會 FAIL），但它在 **commit 前**才跑，而量測在 commit 前
+  更早就發生。**中間那段空窗裡只有建置輸出能擋。**
+
+**B28｜gate 的「參考身分」不能寄生在生產調參上：oracle 的 numerics-determining 旋鈕要釘在參考檔旁邊。**
+- 為什麼：`scripts/check/m123_oracle_gate.py` 的 `--profile` 預設 `prefill250`，而它「預設會重現
+  oracle 的配置」這個性質，**寄生在那個 profile 的生產預設值上**（batch=ubatch=6144）。
+  2026-09-16 把生產預設改成 5632（6144 在 req2 上 0/5 死、5632 4/4 活）之後，gate 立刻對
+  `CGCENV.BATCH` / `CGCENV.UBATCH` / `ARG[27]` / `ARG[29]` 四列差異報 **INVALID COMPARISON**，
+  而那些差異 100% 是我自己的預設變動。當下 M1/M2/M3 都是 9/9 —— 於是「讀成 PASS」與
+  「讀成 FAIL」都能各自找到支持。一個閘門的預設值被無關的生產決定移動，等於這個閘門的
+  意義是可變的。
+- 怎麼做：把 oracle 的 numerics-determining 旋鈕寫成常數放在 `DEFAULT_REF` 旁邊
+  （`ORACLE_PINNED_ENV`），由 gate 在 resolve 之前併進 `--env`；重新基線要**顯式**
+  （`--write-ref` ＋ `--no-pin-oracle-env`）。CLI 覆蓋仍然允許，但**有效集合必須在啟動前印出來**：
+  「被靜默覆蓋」與「被靜默丟棄」在 transcript 上同形，而後者正是這個旋鈕存在的理由。
+- 殘留（不可省略）：這樣一來 gate 證明的是 **oracle 配置（6144）**的數值不變。出廠預設 5632
+  沒有自己的參考檔，所以它只量得到「M1/M2/M3 都 9/9」（跨配置，gate 依法不裁決），
+  **不能被 gate 認證**。要認證就得為 5632 重新基線一份參考。
+
+---
+
 ## C. 讀原始碼
 
 **C1｜變數名稱不等於語意。**

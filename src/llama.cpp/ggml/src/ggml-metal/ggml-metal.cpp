@@ -473,6 +473,133 @@ static ggml_backend_buffer_type_t ggml_backend_metal_buffer_type_mapped(int devi
     return &bufts[device];
 }
 
+// [CGC 2026-09-16 L4 expert-cache pool buffer type -- the mmap fix]
+//
+// One defect, two symptoms. The L4 expert cache adopts each expert tensor's own storage as the
+// per-layer pool region (llama_expert_cache_adopt_pool_region) and then preads expert blobs
+// straight into it from the CPU, so that storage must be WRITABLE. With --load-mode none it is:
+// llama-model.cpp:1624 allocates the tensors from the buft and the MTLBuffer is shared memory.
+// With --load-mode mmap, llama-model.cpp:1595 takes the buffer_from_host_ptr fast path and builds
+// the Metal buffer on top of the *read-only* model mapping, so the first fill writes a read-only
+// page and the process dies during load:
+//
+//   EXC_BAD_ACCESS (SIGBUS) KERN_PROTECTION_FAILURE
+//   __bzero <- memset(dsts[i], 0, segs[i].bytes) <- fill_pool_direct <- llama_expert_cache_ensure_slot
+//   <- llama_expert_cache_prewarm_hot <- llama_context::process_ubatch <- common_init_from_params
+//
+// (Backup/cgc_logs/req2retest_20260916_120057.txt: health never became ok; the .ips is
+// llama-server-2026-09-16-120239.ips, and log line 17 is `fill_pool_direct short read key=142 --
+// zeroing slot`. "short read" is a red herring: the pread succeeded, the *memset* faulted.)
+//
+// The fix is not in the expert cache. It is to make these tensors land in a buffer type that is NOT
+// the device default, because llama-model.cpp:1595 only takes the mmap fast path when
+// `is_default_buft` (buft == ggml_backend_dev_buffer_type(dev)). This buft is otherwise identical to
+// the shared Metal buft -- same allocator, same iface traits -- but a distinct object, so its
+// context gets a REAL MTLBuffer while every other weight keeps the zero-copy file mapping.
+//
+// It is selected only when the model is mmap-backed AND the L4 pool path is active (see
+// llama-model-loader.cpp:select_pool_buft), so the load-mode=none path is bit-for-bit unchanged.
+static const char * ggml_backend_metal_buffer_type_pool_get_name(ggml_backend_buffer_type_t buft) {
+    ggml_backend_metal_buffer_type * ctx = (ggml_backend_metal_buffer_type *)buft->context;
+
+    return ctx->name.c_str();
+}
+
+static ggml_backend_buffer_t ggml_backend_metal_buffer_type_pool_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
+    // identical to the shared buft: a host-visible MTLBuffer the CPU fill path can pread into
+    return ggml_backend_metal_buffer_type_alloc_buffer(buft, size, true);
+}
+
+static size_t ggml_backend_metal_buffer_type_pool_get_alignment(ggml_backend_buffer_type_t buft) {
+    return 32;
+
+    GGML_UNUSED(buft);
+}
+
+static size_t ggml_backend_metal_buffer_type_pool_get_max_size(ggml_backend_buffer_type_t buft) {
+    ggml_metal_device_t ctx_dev = (ggml_metal_device_t)buft->device->context;
+
+    return ggml_metal_device_get_props(ctx_dev)->max_buffer_size;
+}
+
+static size_t ggml_backend_metal_buffer_type_pool_get_alloc_size(ggml_backend_buffer_type_t buft, const ggml_tensor * tensor) {
+    return ggml_backend_metal_buffer_type_get_alloc_size(buft, tensor);
+}
+
+static bool ggml_backend_metal_buffer_type_pool_is_host(ggml_backend_buffer_type_t buft) {
+    return false;
+
+    GGML_UNUSED(buft);
+}
+
+static ggml_backend_buffer_type_t ggml_backend_metal_buffer_type_pool(int device) {
+    static std::mutex mutex;
+    std::lock_guard<std::mutex> lock(mutex);
+
+    static std::vector<ggml_backend_buffer_type> bufts;
+    static std::vector<ggml_backend_metal_buffer_type_ptr> ctxs;
+
+    static bool initialized = false;
+    if (!initialized) {
+        bufts.reserve(g_devices);
+        ctxs.reserve(g_devices);
+
+        for (int i = 0; i < g_devices; ++i) {
+            ggml_backend_metal_buffer_type * raw_ctx = new ggml_backend_metal_buffer_type{
+                /* .device = */ i,
+                /* .name   = */ GGML_METAL_NAME + std::to_string(i) + "_Pool"
+            };
+            ctxs.emplace_back(raw_ctx);
+
+            ggml_backend_buffer_type buft = {
+                /* .iface = */ {
+                    /* .get_name         = */ ggml_backend_metal_buffer_type_pool_get_name,
+                    /* .alloc_buffer     = */ ggml_backend_metal_buffer_type_pool_alloc_buffer,
+                    /* .get_alignment    = */ ggml_backend_metal_buffer_type_pool_get_alignment,
+                    /* .get_max_size     = */ ggml_backend_metal_buffer_type_pool_get_max_size,
+                    /* .get_alloc_size   = */ ggml_backend_metal_buffer_type_pool_get_alloc_size,
+                    /* .is_host          = */ ggml_backend_metal_buffer_type_pool_is_host,
+                },
+                /* .device  = */ ggml_backend_reg_dev_get(ggml_backend_metal_reg(), i),
+                /* .context = */ raw_ctx,
+            };
+
+            bufts.emplace_back(buft);
+        }
+
+        initialized = true;
+    }
+
+    return &bufts[device];
+}
+
+#define CGC_METAL_MAX_POOL_DEVICES 8
+
+// Advertised through ggml_backend_reg_get_proc_address so that make_gpu_buft_list() appends it to
+// the GPU candidate list (llama-model.cpp:1004-1010). select_weight_buft() walks that list in order
+// and the device default is ahead of the extras, so this buft is never picked for a tensor unless
+// llama_model_loader::create_tensor selects it explicitly.
+static ggml_backend_buffer_type_t * ggml_backend_metal_device_get_extra_bufts(ggml_backend_dev_t dev) {
+    static ggml_backend_buffer_type_t bufts[CGC_METAL_MAX_POOL_DEVICES + 1];
+
+    static std::mutex mutex;
+    std::lock_guard<std::mutex> lock(mutex);
+
+    static bool initialized = false;
+    if (!initialized) {
+        const int n = g_devices < CGC_METAL_MAX_POOL_DEVICES ? g_devices : CGC_METAL_MAX_POOL_DEVICES;
+        for (int i = 0; i < n; ++i) {
+            bufts[i] = ggml_backend_metal_buffer_type_pool(i);
+        }
+        bufts[n] = NULL;
+        initialized = true;
+    }
+
+    return bufts;
+
+    GGML_UNUSED(dev);
+}
+
 // backend
 
 static const char * ggml_backend_metal_name(ggml_backend_t backend) {
@@ -769,7 +896,11 @@ static bool ggml_backend_metal_device_supports_buft(ggml_backend_dev_t dev, ggml
         buft->device == dev && (
         buft->iface.get_name == ggml_backend_metal_buffer_type_shared_get_name ||
         buft->iface.get_name == ggml_backend_metal_buffer_type_private_get_name ||
-        buft->iface.get_name == ggml_backend_metal_buffer_type_mapped_get_name);
+        buft->iface.get_name == ggml_backend_metal_buffer_type_mapped_get_name ||
+        // [CGC 2026-09-16] the L4 expert-cache pool buft. Without this entry the scheduler would
+        // treat every tensor in it as unsupported by the Metal device and the FFN mul_mat_id would
+        // silently leave the GPU.
+        buft->iface.get_name == ggml_backend_metal_buffer_type_pool_get_name);
 
     GGML_UNUSED(dev);
 }
@@ -915,6 +1046,10 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const 
     }
     if (strcmp(name, "ggml_metal_get_cgc_gpu_take") == 0) {
         return (void *)ggml_backend_metal_get_cgc_gpu_take;
+    }
+    // [CGC 2026-09-16] the L4 expert-cache pool buffer type (see ggml_backend_metal_buffer_type_pool)
+    if (strcmp(name, "ggml_backend_dev_get_extra_bufts") == 0) {
+        return (void *)ggml_backend_metal_device_get_extra_bufts;
     }
 
     return NULL;

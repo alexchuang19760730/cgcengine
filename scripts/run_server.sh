@@ -438,8 +438,36 @@ if [ "$SERVER_PROFILE" = "prod25" ]; then
 fi
 
 if [ "$SERVER_PROFILE" = "prefill250" ]; then
-    [ -z "${CGC_SERVER_BATCH+x}" ]      && SERVER_BATCH=6144
-    [ -z "${CGC_SERVER_UBATCH+x}" ]     && SERVER_UBATCH=6144
+    # [CGC 2026-09-16 13:3x] 6144 -> 5632. The 6144 chunk was this profile's defining number, and on
+    # the current build it does not survive: at the profile's own 8 GiB pool, `ub=6144` died at req2
+    # in 5 of 5 independent launches today (12:05, 13:15, 13:17, 13:32, 13:33; two were 12+ min
+    # apart, three A11 fingerprints involved), every time with the same nameable cause --
+    # `status 5 kIOGPUCommandBufferCallbackErrorOutOfMemory` on the second request.
+    #
+    # 5632 is the highest width MEASURED to survive, at the profile's own pool size, with the
+    # measurement interleaved against the failing control so machine drift cannot explain it:
+    #     none ub=4096 pool 8GiB  survived 5/5
+    #     none ub=5120 pool 8GiB  survived 3/3
+    #     none ub=5632 pool 8GiB  survived 4/4   <- this default
+    #     none ub=6144 pool 8GiB  survived 0/5   <- the old default
+    #     none ub=6144 pool 6GiB  survived 3/3   (the alternative; see [budget] below)
+    #     mmap ub=4096/5120/6144  survived 0/3   (load-mode mmap, any width)
+    # Evidence: Backup/cgc_logs/{ub_ladder,prod_choice,pool_axis,mmap_axis}/summary.tsv, all arms on
+    # common_md5 7bceb3bd5320. 5632 also ranked faster than the 6 GiB-pool alternative in BOTH
+    # interleaved rounds (req2 170.6 vs 153.2, then 167.2 vs 158.0), so it is not a speed sacrifice.
+    #
+    # It is NOT claimed to reproduce the profile's name on demand, and it does not need to: what
+    # changed is that it now SURVIVES. The acceptance run on this default (13:45:10, no overrides,
+    # OUTDIR=Backup/cgc_logs/prod_accept) passed all three requests at prefill
+    #     268.09 / 273.55 / 256.61 t/s   (A11 a9c9dc10f057bf640e0132a83e01c12)
+    # with 0 crash reports -- i.e. the profile's own target, on the shipped default, measured. But
+    # the SAME fingerprint in the interleaved rounds above gave 147-180 t/s, so quote throughput
+    # only with the machine state attached: the spread is environmental (identical A11 fingerprints
+    # differ by up to 2x), whereas survival is binary and reproduced 5/5 across two rounds.
+    # 250+ tok/s was also measured on 2026-09-15 (264.78 t/s) and once today (284.58 t/s at 12:51).
+    # Keep the old width explicitly if you need it: CGC_SERVER_UBATCH=6144 CGC_SERVER_BATCH=6144.
+    [ -z "${CGC_SERVER_BATCH+x}" ]      && SERVER_BATCH=5632
+    [ -z "${CGC_SERVER_UBATCH+x}" ]     && SERVER_UBATCH=5632
     [ -z "${CGC_SERVER_CTX+x}" ]        && CTX=8192
     [ -z "${CGC_PREFILL_STREAM+x}" ]    && CGC_PREFILL_STREAM=1
     [ -z "${CGC_GATHER_SLAB_CAP+x}" ]   && CGC_GATHER_SLAB_CAP=256
@@ -763,6 +791,28 @@ if [ "$PHYS_MEM_GB" -lt "$MEM_REQ_PHYS_GB" ] || [ "$FREE_PCT" -lt "$MEM_REQ_FREE
     exit 1
 fi
 
+# ── 判定：這個 binary 有沒有 pool/mmap 修復？（[防護 2d] 與 [防護 2e] 都用它）
+# 不用版本號、也不用腳本自己的記憶，而是問 binary：修復會讓 L4 pool 走到一個名字含 "_Pool" 的
+# buffer type（ggml-metal.cpp:ggml_backend_metal_buffer_type_pool），而那個字串常數就在
+# libggml-metal 裡。所以 `strings libggml-metal*.dylib | grep -q '_Pool'` 是「含/不含修復」的
+# 可檢查判準。四面對照：有修復的 lib -> 1；改旗標前的舊產物
+# （Backup/pre_flagalign_20260916/libggml-metal.0.19.0.dylib）-> 0。
+# 可覆寫是為了讓閘門的「不含修復」那一面可以被證明：指到改旗標前的舊產物
+# （Backup/pre_flagalign_20260916/libggml-metal.0.19.0.dylib）就必須拒跑。
+#
+# 用 `grep -c` 而不是 `grep -q`：本腳本第 34 行是 `set -euo pipefail`，而 grep -q 一命中就
+# 立刻關閉 pipe，上游 strings 收 SIGPIPE（`strings: failed to flush output`，rc=141），
+# pipefail 於是把整條 pipeline 判成失敗 —— 也就是說 `grep -q` 在這裡會讓**含修復的 binary
+# 被判成不含修復**（實測：pipefail+grep -q rc=1、pipefail+grep -c rc=0 n=1、
+# 無 pipefail+grep -q rc=0）。這是「閘門 fail-closed 的假陰性」，比漏擋更危險，因為它會讓人
+# 把修好的路逕判成不可用。grep -c 讀完整條流，沒有 SIGPIPE 問題。
+CGC_METAL_LIB="${CGC_METAL_LIB:-$(ls "$(dirname "$BIN")"/libggml-metal*.dylib 2>/dev/null | head -1)}"
+CGC_MMAP_POOL_FIX=0
+if [ -n "$CGC_METAL_LIB" ]; then
+    _n_pool="$(strings -a "$CGC_METAL_LIB" 2>/dev/null | grep -c '_Pool' || true)"
+    [ "${_n_pool:-0}" -gt 0 ] && CGC_MMAP_POOL_FIX=1
+fi
+
 # [防護 2d / 2026-09-16] 啟動預算：把 OOM 從形容詞變成算式。
 #
 # 為什麼要有這一塊：req2 的 OOM（白皮書 §11.10.5）炸在 prefill 開頭，log 只留
@@ -771,8 +821,15 @@ fi
 #
 #   1. 模型檔位元組（stat -f%z）。--load-mode none（= --no-mmap）把它讀成匿名頁，**不可回收**；
 #      mmap 則是 file-backed 的 clean page，OS 隨時可回收。所以「算不算進需求」取決於 load mode。
-#      （mmap 這一側目前走不通：它與 expert cache 不相容，載入階段就 SIGBUS，見下面 [防護 2e]。
-#       算式仍然把它分開算，因為一旦那個缺陷被修，這個分類就是對的。）
+#      [CGC 2026-09-16 13:3x，修正] 這一條原本接著寫「而且那個修復正是 req2 OOM 的機制解」。
+#      **那句被實測推翻了。** mmap × expert cache 的唯讀映射缺陷確實修好了（載入不再 SIGBUS，
+#      見 [防護 2e]），但修好之後 mmap 在任何量過的寬度都不存活：
+#          mmap ub=4096 / 5120 / 6144 各 1 次 → 全部 ready=no、0/3
+#      （死法：載完 40 層後在第一個 ggml_metal_synchronize 以 status 5 OOM 死）。
+#      而 `recommended max working set` 這條警告在 119 次有紀錄的 load_mode=none 啟動裡出現
+#      **0 次**，在 5 份可判定 load_mode 的警告日誌裡是 **5/5 mmap** ⇒ mmap 讓 Metal 的工作集
+#      變大。可回收的是 host 頁，被撐大的是 GPU 工作集，而這台機器撞的是後者。
+#      所以：mmap 不是 OOM 的槓桿，下面也不再把它列為槓桿。
 #   2. expert pool 的上限（BUDGET）。**它是上限、不是實配**：實際槽數另受
 #      LLAMA_EXPERT_CACHE_LAYER_CAPS 限制（prefill250 走 "40-40:256"，載入時實測 5976 槽）。
 #      實測換算：M2 whole-layer slab 在 256 experts 時是 110 MiB/層
@@ -783,7 +840,8 @@ fi
 #      is_recr_impl[i] = ((i + 1) % full_attn_interval != 0)，帶 full_attention_interval=4
 #      ⇒ 41 層裡只有 i=3,7,11,…,39 這 **10 層**帶 KV，其餘 31 層是 recurrent（線性注意力）。
 #      KV/token = 10 層 × n_head_kv(2) × (key 256 + value 256) × 2B = 20 KiB/token
-#      ⇒ KV@ctx=8192 ≈ 164 MiB。**它不是瓶頸**；算進來只是為了不讓「先怪 KV」取代算術。
+#      ⇒ KV@ctx=8192 ≈ 160 MiB。**它不是瓶頸**；算進來只是為了不讓「先怪 KV」取代算術。
+#      （§11.11.7 裁決過：這裡原本寫 164 MiB，是 KiB/MiB 換算算錯；正確是 160 MiB。）
 #      注意：recurrent 快取（rs_size）**不在**這個數字裡，而且它隨 n_ubatch 成長（不是隨 ctx），
 #      所以 ub=6144 除了撐大 compute buffer 之外還有這一項成本。本行不列入總和。
 #
@@ -811,12 +869,26 @@ echo "[budget] 靜態需求    ${_b_dem} MiB（model resident ${_b_res} + pool $
 if [ "$_b_phys" -gt 0 ] && [ "$_b_dem" -gt "$_b_phys" ]; then
     echo "[budget] OVERSUBSCRIBED by $(( _b_dem - _b_phys )) MiB：這個啟動只能在 macOS 記憶體壓縮 + swap 之上執行。"
     echo "[budget] 槓桿：CGC_SERVER_EXPERT_CACHE_BYTES（池上限）／CGC_SERVER_UBATCH（compute buffer 與 recurrent 快取都隨 ub 成長）／CGC_SERVER_CTX（影響很小：KV@8192 只有約 160 MiB）"
-    echo "[budget] 注意：load_mode=mmap 看起來是最直接的那一根（模型頁變可回收），但**目前不能用** —— 它與 expert cache 不相容，見下面的 [防護 2e]。"
+    # [CGC 2026-09-16 13:3x，修正] 這裡原本把 mmap 列為「最直接的一根」。實測推翻了：修好之後
+    # mmap 在 4096/5120/6144 三個寬度全部不存活（0/3，見 [防護 2d] 第 1 條與 §11.12）。
+    # 它現在的正確定位是「一個已修好的缺陷，但代價是 Metal 工作集變大」——不是槓桿。
+    # 保留 CGC_MMAP_POOL_FIX 的判定，是為了讓訊息說得出「你這個 binary 有沒有那個修復」。
+    if [ "${CGC_MMAP_POOL_FIX:-0}" = "1" ]; then
+        echo "[budget] mmap（**不是**槓桿，不要再試）：這個 binary 含 pool/mmap 修復（[防護 2e]），所以載入不會 SIGBUS，"
+        echo "[budget]   但修好之後它在 4096/5120/6144 全部不存活（0/3），而且工作集警告只在 mmap 出現 ⇒ 它把 GPU 工作集撐大。"
+    else
+        echo "[budget] mmap（**不是**槓桿）：這個 binary **不含** pool/mmap 修復（[防護 2e]）—— 那條路會在載入階段硬崩。"
+    fi
     echo "[budget] 這一項沒有任何自動補救：-ngl 是顯式指定的，-fit 不會介入（見上面的 [防護 2c]）。"
-    echo "[budget] 已量測的存活設定（2026-09-16 12:04，同 profile、同 load_mode=none）：CGC_SERVER_UBATCH=4096 CGC_SERVER_BATCH=4096"
-    echo "[budget]   該臂 req1..req3 全過（130.3 / 134.0 / 151.6 t/s），log 0 錯誤行、無 crash report；"
-    echo "[budget]   同機的 6144 對照臂 req1 過（166.8 t/s）但 req2 以同一組 status 5 OOM 死。"
-    echo "[budget]   代價：prefill 約 130-152 t/s vs 6144 臂的 166.8 t/s（約 -22%）。預設仍是 6144 —— 改不改是配置決策，這裡不替你改。"
+    echo "[budget] 已量測的存活設定（2026-09-16 13:0x-13:3x，同 profile、同 load_mode=none、同 binary）："
+    echo "[budget]   ub=4096 pool 8GiB 存活 5/5；ub=5120 存活 3/3；ub=5632 存活 4/4（profile 現在的預設）；"
+    echo "[budget]   ub=6144 pool 8GiB 存活 0/5（12:05/13:15/13:17/13:32/13:33 五次都以 status 5 OOM 死在 req2）；"
+    echo "[budget]   ub=6144 pool 6GiB（CGC_SERVER_EXPERT_CACHE_BYTES=6442450944）存活 3/3。"
+    echo "[budget]   機制：OOM 的邊界不是 ub 一個旋鈕，而是 (pool + compute buffer) 的和 —— 詳見 §11.12。"
+    echo "[budget]   mmap 在任何量過的寬度（4096/5120/6144）都不存活 0/3：缺陷已修（載入不再 SIGBUS，"
+    echo "[budget]   見 [防護 2e]），但它把 Metal 的工作集撐大（工作集警告只在 mmap 出現），所以它不是 OOM 的解。"
+    echo "[budget]   吞吐不在此列，因為它不可重現：同一個 A11 指紋的兩臂可差到 2 倍（記憶體/swap 的殘留狀態），"
+    echo "[budget]   存活是二元的、可重現；t/s 要引用就得在安靜的機器上做交錯 A/B。"
     if [ "$CGC_SERVER_STRICT_BUDGET" = "1" ]; then
         echo "error: CGC_SERVER_STRICT_BUDGET=1 且靜態需求 ${_b_dem} MiB 超過實體 ${_b_phys} MiB -> 拒跑。" >&2
         exit 1
@@ -825,9 +897,10 @@ else
     echo "[budget] OK：靜態需求 ${_b_dem} MiB <= 實體 ${_b_phys} MiB。"
 fi
 
-# [防護 2e / 2026-09-16] load_mode=mmap 與 expert cache 目前**不相容**，而且是硬崩，不是變慢。
+# [防護 2e / 2026-09-16] load_mode=mmap × expert cache：一個**已經修好的缺陷**，而閘門要能分辨
+# 「含修復的 binary」與「不含修復的 binary」，不能一句話禁掉整條路。
 #
-# 量測（Backup/cgc_logs/req2retest_20260916_120057.txt，profile=prefill250 + CGC_SERVER_LOAD_MODE=mmap）：
+# ── 原缺陷（2026-09-16 12:02 量測，profile=prefill250 + CGC_SERVER_LOAD_MODE=mmap）
 # 行程在**載入階段**就死，health 從未轉 ok，crash report
 # ~/Library/Logs/DiagnosticReports/llama-server-2026-09-16-120239.ips：
 #
@@ -846,21 +919,31 @@ fi
 # （log 第 17 行正是這句）-> 走 :704-706 的 memset 把 slot 清零 -> SIGBUS。
 # 也就是說那條「短讀取就清零」的復原路徑預設了 dst 可寫，這個預設只在 none 模式下成立。
 #
-# 因此這不是「值得一試的槓桿」：[防護 2d] 在超額時原本把 mmap 列為選項，這裡把它拿掉。
-# 要真的走 mmap，得先讓 pool 在 mmap 模式下配置自己的可寫儲存（而不是沿用張量儲存），
-# 在那之前這兩個開關的組合一律當成不合法。要硬闖（例如正在修那個缺陷）：
-# CGC_SERVER_ALLOW_MMAP_EXPERT_CACHE=1。
+# ── 修復（同日）：不動 expert cache，改動張量落點
+# 讓這些張量落到一個**不是 device default** 的 buft（ggml-metal.cpp:
+# ggml_backend_metal_buffer_type_pool，名字含 "_Pool"）。理由是 llama-model.cpp:1595 的 mmap
+# fast path 只在 `is_default_buft`（buft == ggml_backend_dev_buffer_type(dev)）時成立：換一個
+# 身分就自動落到「真的配置一個 buffer」的分支，於是 pool 的 ctx 拿到可寫的 MTLBuffer，
+# 而其餘權重照樣走 zero-copy file mapping（這正是修復的價值：模型頁仍然可回收）。
+# 只在 use_mmap 時選它（llama-model-loader.cpp: select_pool_buft），所以 load_mode=none 路徑
+# 的 buft 選擇與以前逐位元相同。
+#
+# 判準（CONVENTIONS B20：相容性缺陷要用閘門擋住，而閘門要能分辨修好與沒修好）用的是上面
+# 那兩行算出來的 CGC_MMAP_POOL_FIX（在 [防護 2d] 之前就判定了）。
+# 要硬闖（例如就是要重現原缺陷）：CGC_SERVER_ALLOW_MMAP_EXPERT_CACHE=1。
 case "$SERVER_LOAD_MODE" in
     mmap|mmap+mlock)
         if [ "${CGC_SERVER_EXPERT_CACHE_OFF:-0}" != "1" ]; then
-            if [ "${CGC_SERVER_ALLOW_MMAP_EXPERT_CACHE:-0}" = "1" ]; then
-                echo "warning: load_mode=$SERVER_LOAD_MODE + expert cache 是已知會 SIGBUS 的組合（llama-expert-cache.cpp:704，__bzero 寫唯讀映射）；已由 CGC_SERVER_ALLOW_MMAP_EXPERT_CACHE=1 放行。" >&2
+            if [ "$CGC_MMAP_POOL_FIX" = "1" ]; then
+                echo "[mmap]  load_mode=$SERVER_LOAD_MODE + expert cache：pool tensor 走自己的 '_Pool' buft（真的 MTLBuffer），不是唯讀映射；其餘權重仍是 file-backed。" >&2
+            elif [ "${CGC_SERVER_ALLOW_MMAP_EXPERT_CACHE:-0}" = "1" ]; then
+                echo "warning: 這個 binary 不含 pool/mmap 修復，load_mode=$SERVER_LOAD_MODE + expert cache 是已知會 SIGBUS 的組合（llama-expert-cache.cpp:704，__bzero 寫唯讀映射）；已由 CGC_SERVER_ALLOW_MMAP_EXPERT_CACHE=1 放行。" >&2
             else
-                echo "error: load_mode=$SERVER_LOAD_MODE 與 expert cache 不相容 -> 載入階段就會 SIGBUS。" >&2
+                echo "error: 這個 binary 不含 pool/mmap 修復（libggml-metal 裡找不到 '_Pool' buft），load_mode=$SERVER_LOAD_MODE 與 expert cache 併用會在載入階段 SIGBUS -> 拒跑。" >&2
+                echo "  判定用的檔案：${CGC_METAL_LIB:-<找不到 libggml-metal*.dylib>}" >&2
                 echo "  證據：llama-server-2026-09-16-120239.ips，__bzero <- fill_pool_direct <- prewarm_hot（見腳本內註解）。" >&2
-                echo "  pool 的儲存是 adopted from expert tensors，mmap 下那塊是唯讀的。" >&2
                 echo "  選項：改回 CGC_SERVER_LOAD_MODE=none，或加 CGC_SERVER_EXPERT_CACHE_OFF=1（cache-free），" >&2
-                echo "        或（只在修那個缺陷時）CGC_SERVER_ALLOW_MMAP_EXPERT_CACHE=1 硬闖。" >&2
+                echo "        或重建含修復的樹（scripts/build_fork_llama.sh），或 CGC_SERVER_ALLOW_MMAP_EXPERT_CACHE=1 硬闖。" >&2
                 exit 1
             fi
         fi
@@ -869,6 +952,16 @@ esac
 
 mkdir -p "$LOG_DIR"
 ln -sf "$LOG" "$LOG_DIR/llama_server_latest.log"
+
+# [probe] 只印前檢階段的判定就退出，不載入模型。
+# 為什麼需要它：到這裡為止的四道防護（1/2/2b/2d/2e）全部在載入之前跑完，而「放行」的那幾面
+# （修復存在時的 mmap、EXPERT_CACHE_OFF 的豁免、ALLOW 的硬闖）原本只能靠真的載入 13 GB 模型
+# 才看得到 rc。要量「閘門有沒有在該擋的時候擋、該放的時候放」，得能在零載入成本下逐面驗。
+# 注意：[fit]/[kv] 在更後面（argv 組裝段），這個探針不覆蓋它們。
+if [ "${CGC_SERVER_PROBE_ONLY:-0}" = "1" ]; then
+    echo "[probe] pre-flight OK (load_mode=$SERVER_LOAD_MODE, mmap_pool_fix=$CGC_MMAP_POOL_FIX) -> exit before launch (CGC_SERVER_PROBE_ONLY=1)"
+    exit 0
+fi
 
 # [防護 3] 單 slot + 非 unified KV：與 llama-simple 行為對齊（np=auto 的 4 slots 會把 context 切 512/流）
 # -expert-cache 是單刮號參數（common args 註冊形式，--expert-cache 不認）
