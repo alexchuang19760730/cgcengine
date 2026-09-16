@@ -1,0 +1,873 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Harness 技術架構里程碑白皮書（2026-09-16）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --purple:#7c3aed; --purple-bg:#f5f3ff;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 90px;background:var(--bg);color:var(--fg);
+       font:15px/1.78 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,"Noto Sans TC",sans-serif;}
+  .wrap{max-width:1060px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:46px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16.5px;margin:28px 0 8px;color:#1f2937}
+  h4{font-size:14.5px;margin:20px 0 6px;color:#374151}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:22px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.62}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.4px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  tr:nth-child(even) td{background:#fcfcfd}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:#fff}
+  .card .k{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+  .card .v{font-size:22px;font-weight:650;margin:4px 0 2px;font-family:ui-monospace,Menlo,monospace}
+  .card .n{font-size:12.3px;color:var(--muted);line-height:1.5}
+  .box{border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:0 8px 8px 0;
+       padding:12px 16px;margin:16px 0;background:var(--blue-bg)}
+  .box.warn{border-left-color:var(--amber);background:var(--amber-bg)}
+  .box.bad{border-left-color:var(--red);background:var(--red-bg)}
+  .box.ok{border-left-color:var(--green);background:var(--green-bg)}
+  .box.pur{border-left-color:var(--purple);background:var(--purple-bg)}
+  .box p:last-child{margin-bottom:0}
+  .box .lbl{font-weight:700;font-size:13px;letter-spacing:.3px}
+  ul,ol{margin:8px 0 8px 22px}
+  li{margin:4px 0}
+  .tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11.5px;font-weight:600;
+       border:1px solid transparent;margin-right:4px;white-space:nowrap}
+  .t-blue{background:var(--blue-bg);color:var(--blue);border-color:#bfdbfe}
+  .t-green{background:var(--green-bg);color:var(--green);border-color:#a7f3d0}
+  .t-red{background:var(--red-bg);color:var(--red);border-color:#fecaca}
+  .t-amber{background:var(--amber-bg);color:var(--amber);border-color:#fde68a}
+  .t-purple{background:var(--purple-bg);color:var(--purple);border-color:#ddd6fe}
+  .t-gray{background:#f3f4f6;color:#4b5563;border-color:#e5e7eb}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:14px 18px;background:#fcfcfd;margin:22px 0}
+  .toc ol{margin:6px 0 0 20px;font-size:13.6px}
+  .toc a{color:var(--blue);text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  hr{border:0;border-top:1px solid var(--line);margin:34px 0}
+  .center{text-align:center}
+  .flow{margin:20px 0;border:1px solid var(--line);border-radius:10px;padding:10px;background:#fcfcfd;overflow-x:auto}
+  .foot{margin-top:40px;color:var(--muted);font-size:12.3px;border-top:1px solid var(--line);padding-top:14px}
+  .ck{font-family:ui-monospace,Menlo,monospace;font-size:12.2px;color:#065f46}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Agent Harness 技術架構里程碑白皮書</h1>
+<p class="sub">
+  以 <code>/Users/alexchuang/Documents/flashkv-devserver</code> 現有目錄內容為唯一事實來源 ·
+  分支 <code>demo/sweet-spot-windows-fix</code>（tip <code>2c343979e</code>，領先 <code>main</code> 187 個 commit） ·
+  產出日期 2026-09-16
+</p>
+
+<div class="box pur">
+  <p><span class="lbl">一句話定位</span></p>
+  <p>這個 harness 不是「跑 agent 的框架」，而是一台<b>判斷「一個數字什麼時候可以引用」的機器</b>。
+  模型權重不動一個位元；被訓練的是 harness 自身的狀態（<code>CONVENTIONS.md</code> ＋ <code>traces/*.jsonl</code> ＋
+  <code>memory/</code>）。它把「引擎量到的一個 t/s」轉換成「一個帶身分的、可被守住的可交付物」，
+  而守住它的東西有 <b>7＋3</b> 個：七個指紋／戳記函式，加上檔案層的三個索引資產。</p>
+</div>
+
+<div class="toc">
+  <b>目錄</b>
+  <ol>
+    <li><a href="#s1">可參考性的定義：為什麼「demo 分支上 M1/M2/M3 之後的 commit」才成立</a></li>
+    <li><a href="#s2">技術架構：兩個同構迴圈、十二層資產、一條單向資料流</a></li>
+    <li><a href="#s3">守護矩陣：7 個指紋／戳記 ＋ 3 個檔案層索引</a></li>
+    <li><a href="#s4">里程碑：M1／M2／M3 與 E0–E4 的驗收表</a></li>
+    <li><a href="#s5">三大交付目標：可驗收可測試 ／ 可探索落地 ／ 記憶與技能</a></li>
+    <li><a href="#s6">守護清單：可執行的檢查序列（含現場實測輸出）</a></li>
+    <li><a href="#s7">誠實邊界：這份文件不主張什麼</a></li>
+  </ol>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s1">1. 可參考性的定義：為什麼「demo 分支上 M1/M2/M3 之後的 commit」才成立</h2>
+
+<p>
+「demo 分支上，<b>M1/M2/M3 生成以後</b>的 commit 才是可以參考的 commit」——這句話在這個 repo 裡有兩個
+互相咬合的指涉，兩者由同一組守護機制保護。先把兩者分開講清楚，否則「守護」會守錯東西。
+</p>
+
+<table>
+<tr><th style="width:96px">指涉</th><th>是什麼</th><th>在哪裡</th><th>被誰守</th></tr>
+<tr>
+  <td><b>(a) 里程碑</b><br><span class="tag t-gray">m1 / m2 / m3</span></td>
+  <td>引擎調校的三個階段標記。M1＝池幾何與 <code>CGC_POOL_SPLIT</code> 的成本；M2＝
+      prefill 全層流式（<code>CGC_PREFILL_STREAM</code>）與 <code>--m2</code> oracle 模式；
+      M3＝把 oracle 閘門的三個指標定稿。</td>
+  <td><code>docs/M1_POOL_SPLIT_COST_2026-09-14.md</code>、<code>docs/M2_PREFILL_延遲分解_2026-09-14.html</code>；
+      git <code>fe6c0fbf2 feat(m2): prefill whole-layer streaming + --m2 oracle mode</code></td>
+  <td><code>source_stamp()</code> 的 <code>last_commit</code>／<code>head</code>／<code>dirty</code> 三個欄位，
+      以及 <code>pool_geometry_stamp()</code></td>
+</tr>
+<tr>
+  <td><b>(b) 判決指標</b><br><span class="tag t-red">M1</span><span class="tag t-amber">M2</span><span class="tag t-green">M3</span></td>
+  <td>每次 commit 前 D5 要求跑的三個數值判決，<b>刻意永不合併</b>：<br>
+      M1 數值同一性（同 <code>row_fnv1a64</code> ⇒ logits 逐位元相同）<br>
+      M2 決策一致（同 <code>argmax_token</code> ⇒ 選出的 token 沒變）<br>
+      M3 top-k 集合一致（同 top-N id 集合 ⇒ 候選集沒變）</td>
+  <td><code>scripts/check/m123_oracle_gate.py</code> → <code>cgc_logits_oracle_compare.py</code></td>
+  <td><code>DEFAULT_REF</code>（v4 <code>skip0off</code>）＋ <code>ORACLE_PINNED_ENV</code></td>
+</tr>
+</table>
+
+<h3>1.1 一條 commit 什麼時候進入「可參考窗口」</h3>
+
+<p>
+判準不是時間，是<b>這條 commit 有沒有把判決與身分一起帶上</b>。四個條件同時成立才算：
+</p>
+
+<ol>
+  <li><b>帶身分</b>：build 指紋非空。<code>traces/schema/episode.schema.json</code> 把它寫成硬閘門——
+      <code>build == null ⇒ usable_as_evidence == false</code>。理由不是「比較不準」，是<b>不可比</b>：
+      重建之後「兩個數字不同」有三種解釋（程式改了／環境變了／量測漂移），指紋缺席時無法收斂。</li>
+  <li><b>帶判決</b>：message 裡報告 M1/M2/M3 的實際數字，而不是「應該不影響數值」。
+      這是可從 git body 讀出來的行為慣例：動到 <code>src/</code> 的
+      <code>2b284667f</code>、<code>2162e8cbd</code> 都報告了；純 doc ／腳本的
+      <code>a22ebe88e</code>／<code>6ceeb281b</code>／<code>57bd90801</code>／<code>e0152777d</code>
+      <b>0 個 <code>src/</code> 檔案</b>，因此不報告。</li>
+  <li><b>可比性先於數值</b>：讀 M1/M2/M3 之前先讀 gate 的 <code>comparable</code> 欄位。
+      <code>comparable=False</code>（配置不同）時，那三個 9/9 是
+      <em>printed for information, NOT a verdict</em>；gate 會 <code>exit 2</code>（INVALID COMPARISON）
+      而不是 <code>exit 1</code>——<b>跨配置的差異不是回歸，不得被報成回歸</b>。</li>
+  <li><b>索引不漂移</b>：<code>index_assets.py --check</code> 與
+      <code>build_memory_index.py --check</code> 同時綠。索引是 <b>byte 級快照，不是內容摘要</b>，
+      改一個字就漂移。</li>
+</ol>
+
+<div class="box warn">
+  <p><span class="lbl">最貴的一個反例（此 window 為何必須被守）</span></p>
+  <p><code>build_fingerprint()</code> v1 只手動雜湊三個檔（<code>llama-server</code> ＋
+  <code>libggml-metal</code> ＋ <code>libllama</code>），<b>漏了 <code>libggml-base</code></b>——
+  而 <code>ggml-backend.cpp</code>（排程器與 <code>CGC_OA_ASYNC</code> 閘門）就編在裡面。
+  後果：21:34（閘門讀「存在」）與 21:41（閘門已讀「值」）兩次跑帶<b>完全相同</b>的指紋，
+  被標成可比較。現改為 glob <code>libggml*.dylib</code>／<code>libllama*.dylib</code>，
+  <b>8 鍵、鍵名不含版本號</b>。⇒ <b>v1（3 鍵）的歷史列在這一維上不可比</b>，而這正是該改動存在的目的。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s2">2. 技術架構：兩個同構迴圈、十二層資產、一條單向資料流</h2>
+
+<h3>2.1 雙迴圈：形狀相同，獎勵不同</h3>
+
+<table>
+<tr><th></th><th><code>tb_loop/</code>（任務迴圈）</th><th><code>engine_loop/</code>（引擎迴圈）</th></tr>
+<tr><td>任務</td><td>Terminal-Bench 題目</td><td>引擎的一個調校假設（例：「S1 應該 bit-identical」）</td></tr>
+<tr><td>環境</td><td>Terminal-Bench 容器</td><td><code>prod25</code>／<code>prefill250</code> profile × 臂</td></tr>
+<tr><td>觀測</td><td>測試 pass/fail</td><td>吞吐、bit-identical 閘門、池計數不變量、logits oracle</td></tr>
+<tr><td>學習</td><td>失敗軌跡 → <code>/refine</code> → harness 狀態</td><td>判準數字的方法論 → <code>CONVENTIONS.md</code> ＋ <code>traces/lessons.jsonl</code></td></tr>
+<tr><td>階段</td><td>evaluate → extract → refine → compare</td><td><b>同構</b></td></tr>
+</table>
+
+<p><b>共同點（整個架構的唯一命題）</b>：學習發生在 harness 的狀態（文本），<b>不在模型權重</b>。
+這是 <code>tb_loop/README.md</code> 已驗證過的原則，engine_loop 直接沿用。</p>
+
+<h3>2.2 分層架構（十二層，全部已存在）</h3>
+
+<div class="flow">
+<svg viewBox="0 0 1020 620" width="100%" height="auto" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,monospace">
+  <defs>
+    <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+
+  <!-- column A: production assets (outside harness) -->
+  <rect x="12" y="12" width="470" height="596" rx="10" fill="#fcfcfd" stroke="#e5e7eb"/>
+  <text x="28" y="36" font-size="13" font-weight="700" fill="#111827">生產層（紅線：不得複製進 device_loop）</text>
+
+  <rect x="32" y="52" width="430" height="42" rx="7" fill="#fff" stroke="#bfdbfe"/>
+  <text x="46" y="70" font-size="12" fill="#1f2937">scripts/run_server.sh  — profile ＋ CGC_* env ALLOWLIST</text>
+  <text x="46" y="86" font-size="11" fill="#6b7280">未列出的變數靜默丟棄（＝「沒效果」與「沒設到」不可區分）</text>
+
+  <rect x="32" y="102" width="430" height="42" rx="7" fill="#fff" stroke="#bfdbfe"/>
+  <text x="46" y="120" font-size="12" fill="#1f2937">scripts/check/decode_sweep.py — ARMS 表（臂＝env ＋ 一句證明意圖）</text>
+  <text x="46" y="136" font-size="11" fill="#6b7280">→ build_fingerprint()　8 鍵 glob、全檔 md5</text>
+
+  <rect x="32" y="152" width="430" height="42" rx="7" fill="#fff" stroke="#bfdbfe"/>
+  <text x="46" y="170" font-size="12" fill="#1f2937">scripts/check/ab_interleave.py — 唯一可引用的 A/B</text>
+  <text x="46" y="186" font-size="11" fill="#6b7280">交錯 ×N、paired per-rep ratio 中位數、委派同一份指紋實作</text>
+
+  <rect x="32" y="202" width="430" height="42" rx="7" fill="#fff" stroke="#e5e7eb"/>
+  <text x="46" y="220" font-size="12" fill="#1f2937">scripts/check/m123_oracle_gate.py — M1/M2/M3 判決（~40–60 s）</text>
+  <text x="46" y="236" font-size="11" fill="#6b7280">DEFAULT_REF v4 ＋ ORACLE_PINNED_ENV；exit 0 / 1 / 2</text>
+
+  <rect x="32" y="252" width="430" height="42" rx="7" fill="#fff" stroke="#e5e7eb"/>
+  <text x="46" y="270" font-size="12" fill="#1f2937">scripts/check/knifeedge_matrix.py（181 KB 閘門矩陣）</text>
+  <text x="46" y="286" font-size="11" fill="#6b7280">binary_stamp ／ source_stamp ／ pool_geometry_stamp ／ model_stamp</text>
+
+  <rect x="32" y="302" width="430" height="42" rx="7" fill="#fff" stroke="#e5e7eb"/>
+  <text x="46" y="320" font-size="12" fill="#1f2937">scripts/check/mtp_head_identity.py — MTP head 身分</text>
+  <text x="46" y="336" font-size="11" fill="#6b7280">fingerprint()：逐張量 type/shape/nbytes/sha256 → identity</text>
+
+  <rect x="32" y="352" width="430" height="42" rx="7" fill="#fff" stroke="#e5e7eb"/>
+  <text x="46" y="370" font-size="12" fill="#1f2937">scripts/check_build_tracked.sh — pre-commit 閘門本體</text>
+  <text x="46" y="386" font-size="11" fill="#6b7280">檢查 1–11；缺 BIN_DIR 會全 SKIP 卻仍印 OK（B7 實例）</text>
+
+  <rect x="32" y="402" width="430" height="42" rx="7" fill="#fff" stroke="#e5e7eb"/>
+  <text x="46" y="420" font-size="12" fill="#1f2937">Backup/** — 證據根（phase_decomp／m123_oracle_gate／knifeedge_matrix／llama_bench／cgc_logs）</text>
+  <text x="46" y="436" font-size="11" fill="#6b7280">cgc_logs 463 MB／~1400 檔，不進版控，只記路徑與摘要</text>
+
+  <rect x="32" y="452" width="430" height="42" rx="7" fill="#fff" stroke="#fde68a"/>
+  <text x="46" y="470" font-size="12" fill="#1f2937">.workbuddy/memory/ — 決策日誌（權威）</text>
+  <text x="46" y="486" font-size="11" fill="#6b7280">MEMORY.md 24.5 KB ＋ 當日日誌 100 KB+（append-only）</text>
+
+  <rect x="32" y="502" width="430" height="42" rx="7" fill="#fff" stroke="#ddd6fe"/>
+  <text x="46" y="520" font-size="12" fill="#1f2937">~/.workbuddy/skills/ — 3 個 skill（權威）</text>
+  <text x="46" y="536" font-size="11" fill="#6b7280">cgc-commit-gate ／ cgc-decode-attribution ／ cgc-prefill-thermal-delivery</text>
+
+  <rect x="32" y="552" width="430" height="42" rx="7" fill="#fff" stroke="#e5e7eb"/>
+  <text x="46" y="570" font-size="12" fill="#1f2937">docs/*.html — 對外結論（白皮書族）</text>
+  <text x="46" y="586" font-size="11" fill="#6b7280">引用只以此為準；traces/ 內的數字不是對外數字</text>
+
+  <!-- arrow -->
+  <line x1="482" y1="310" x2="536" y2="310" stroke="#6b7280" stroke-width="1.6" marker-end="url(#ar)"/>
+  <text x="486" y="300" font-size="10.5" fill="#6b7280">索引</text>
+  <text x="486" y="330" font-size="10.5" fill="#6b7280">不複製</text>
+
+  <!-- column B: the harness -->
+  <rect x="542" y="12" width="466" height="596" rx="10" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="558" y="36" font-size="13" font-weight="700" fill="#1d4ed8">agent_harness/（索引層 ＋ 痕跡層）</text>
+
+  <rect x="562" y="52" width="426" height="40" rx="7" fill="#fff" stroke="#93c5fd"/>
+  <text x="576" y="70" font-size="12" fill="#1f2937">CONVENTIONS.md — 判準憲章 A1–A20 / B / C / D1–D6 / E</text>
+  <text x="576" y="86" font-size="11" fill="#6b7280">同時是 sft_pi 的 system prompt（改它＝改 runtime 行為）</text>
+
+  <rect x="562" y="100" width="426" height="40" rx="7" fill="#fff" stroke="#93c5fd"/>
+  <text x="576" y="118" font-size="12" fill="#1f2937">PLAN_ENGINE_LOOP_2026-09-15.md — E0–E4 與驗收</text>
+  <text x="576" y="134" font-size="11" fill="#6b7280">兩份 SFT 投影（sft_pi tool-call ／ sft_prime 證據→教訓）</text>
+
+  <rect x="562" y="148" width="426" height="40" rx="7" fill="#fff" stroke="#93c5fd"/>
+  <text x="576" y="166" font-size="12" fill="#1f2937">engine_loop/MANIFEST.jsonl — 資產清單（role/loop/replayable）</text>
+  <text x="576" y="182" font-size="11" fill="#6b7280">73 assets；role 為人工判斷，其餘全部自動推導</text>
+
+  <rect x="562" y="196" width="426" height="40" rx="7" fill="#fff" stroke="#93c5fd"/>
+  <text x="576" y="214" font-size="12" fill="#1f2937">engine_loop/memory/INDEX.jsonl — 段落級定位索引</text>
+  <text x="576" y="230" font-size="11" fill="#6b7280">3 檔 / 54 段；讀 path:line_start 而非整檔（整檔會靜默截斷）</text>
+
+  <rect x="562" y="244" width="426" height="40" rx="7" fill="#fff" stroke="#34d399"/>
+  <text x="576" y="262" font-size="12" fill="#1f2937">traces/episodes.jsonl — 原子觀測（122 筆，27 可為證據）</text>
+  <text x="576" y="278" font-size="11" fill="#6b7280">不含任何詮釋；無指紋即不可比</text>
+
+  <rect x="562" y="292" width="426" height="40" rx="7" fill="#fff" stroke="#34d399"/>
+  <text x="576" y="310" font-size="12" fill="#1f2937">traces/decisions.jsonl — 判斷點（38 筆，ruled_out 共 99 條）</text>
+  <text x="576" y="326" font-size="11" fill="#6b7280">最高價值：負面知識最常被重用</text>
+
+  <rect x="562" y="340" width="426" height="40" rx="7" fill="#fff" stroke="#34d399"/>
+  <text x="576" y="358" font-size="12" fill="#1f2937">traces/lessons.jsonl — 可重用規訓（98 筆）</text>
+  <text x="576" y="374" font-size="11" fill="#6b7280">＝harness 狀態；class 是封閉 enum</text>
+
+  <rect x="562" y="388" width="426" height="40" rx="7" fill="#fff" stroke="#fbbf24"/>
+  <text x="576" y="406" font-size="12" fill="#1f2937">traces/validate.py ＋ selftest.py ＋ schema/*.json — 驗證器與自證</text>
+  <text x="576" y="422" font-size="11" fill="#6b7280">selftest 注入 10 種違規，10/10 必須被拒</text>
+
+  <rect x="562" y="436" width="426" height="40" rx="7" fill="#fff" stroke="#a78bfa"/>
+  <text x="576" y="454" font-size="12" fill="#1f2937">memory/ ＋ skills/ — dated 快照（非權威）＋ SNAPSHOT.jsonl</text>
+  <text x="576" y="470" font-size="11" fill="#6b7280">唯一用途：跨機器搬運（推送腳本運送內容，不運送指標）</text>
+
+  <rect x="562" y="484" width="426" height="40" rx="7" fill="#fff" stroke="#e5e7eb"/>
+  <text x="576" y="502" font-size="12" fill="#1f2937">index_assets.py ／ memory/build_memory_index.py — 索引產生器</text>
+  <text x="576" y="518" font-size="11" fill="#6b7280">--check 重新推導，drift 則 exit 1</text>
+
+  <rect x="562" y="532" width="426" height="62" rx="7" fill="#fffbeb" stroke="#fde68a"/>
+  <text x="576" y="552" font-size="12" font-weight="700" fill="#92400e">兩個 loop 共用同一份判準</text>
+  <text x="576" y="569" font-size="11" fill="#92400e">tb_loop（任務）　＋　engine_loop（引擎）</text>
+  <text x="576" y="585" font-size="11" fill="#92400e">獎勵不同、形狀相同、學習都不在權重裡</text>
+</svg>
+</div>
+
+<p class="center" style="color:#6b7280;font-size:12.3px;margin-top:-6px">
+  左：生產層（紅線——不得複製）。右：harness 只放<b>索引</b>與<b>痕跡</b>；箭頭是單向的。
+</p>
+
+<h3>2.3 唯一出口：三種 record</h3>
+
+<table>
+<tr><th style="width:120px">類型</th><th>是什麼</th><th>為什麼值錢</th><th class="num">目前</th></tr>
+<tr><td><code>episode</code></td><td>一次 run、一個臂：build 指紋 ＋ 量測 ＋ artifact</td><td>觀測本身，<b>不含任何詮釋</b></td><td class="num">122（27 可為證據）</td></tr>
+<tr><td><code>decision</code></td><td>一個判斷點：問題 ＋ 證據 ＋ 推理 ＋ <b>排除掉什麼</b></td><td>最高價值。<code>ruled_out</code> 是負面知識</td><td class="num">38（<code>ruled_out</code> 99 條）</td></tr>
+<tr><td><code>lesson</code></td><td>可重用的規訓（＝harness 狀態）</td><td>換一個問題也適用，能注入回 agent</td><td class="num">98</td></tr>
+</table>
+
+<h4>三條硬規則（<code>traces/validate.py</code> 強制）</h4>
+<ol>
+  <li><b><code>build == null ⇒ usable_as_evidence == false</code></b>。不知道二進位檔的數字不能比。</li>
+  <li><b>有生成 ⇒ <code>answer_md5</code> 不得為空</b>，否則「答案穩定」是空真。</li>
+  <li><b><code>judgement == refuted ⇒ superseded_by</code> 非空</b>。被推翻的假設不得當正例訓練。</li>
+</ol>
+
+<p>
+lesson 的 class 是<b>封閉 enum</b>：<code>measurement-hygiene</code>(35)、<code>gate-integrity</code>(31)、
+<code>diagnosis</code>(15)、<code>source-reading</code>(8)、<code>honest-bounds</code>(5)、
+<code>log-forensics</code>(3)、<code>smoke</code>(1)。前兩類合計佔 67%——這個 harness 累積最厚的知識，
+不是「怎麼調快」，是<b>「什麼樣的數字不算數」</b>。
+</p>
+
+<!-- ============================================================ -->
+<h2 id="s3">3. 守護矩陣：7 個指紋／戳記 ＋ 3 個檔案層索引</h2>
+
+<p>
+這是本白皮書的核心。以下每一個機制都存在，都指得到具體行號或函式，而且<b>每一個都是為了揭露某一種
+特定的失效</b>而存在的——「它存在就是為了讓某件事不能被靜默地做」。
+</p>
+
+<h3>3.1 七個指紋／戳記</h3>
+
+<table>
+<tr><th style="width:200px">機制</th><th style="width:150px">位置</th><th>覆蓋什麼 / 形狀</th><th>它的存在是為了揭露</th></tr>
+
+<tr>
+  <td><b>1. <code>decode_sweep.build_fingerprint()</code></b><br><span class="tag t-blue">8 鍵</span><span class="tag t-blue">全檔 md5</span></td>
+  <td><code>scripts/check/decode_sweep.py:34</code><br><span style="color:#6b7280">ab_interleave 委派同一份</span></td>
+  <td>glob <code>libggml*.dylib</code> ＋ <code>libllama*.dylib</code> ＋ <code>llama-server</code>；
+      對每個檔取 <code>md5[:12]</code>。<b>鍵名不含版本號</b>（<code>libggml-base</code>，不是
+      <code>libggml-base.0.19.0</code>），只取真實的版本化檔，跳過三份同內容的 symlink。<br>
+      <b>鍵集合本身就是指紋的形狀</b>：舊列 3 鍵、新列 8 鍵。</td>
+  <td>「同一個臂、同一台機器、同一份設定，重建後數字可以不一樣」。<br>
+      <b>已修缺陷</b>：v1 漏 <code>libggml-base</code>，害 21:34 與 21:41 兩次排程器不同的跑帶同一指紋、
+      被標成可比較（lesson <code>eng-mh-0007</code>）。</td>
+</tr>
+
+<tr>
+  <td><b>2. <code>knifeedge.binary_stamp()</code></b><br><span class="tag t-blue">size ＋ head</span></td>
+  <td><code>scripts/check/knifeedge_matrix.py:469</code></td>
+  <td>對 <code>llama-server</code> ＋ <code>libllama*</code> ＋ <code>libggml*</code> 記
+      <code>{size, sha256(head 64 KiB)[:16]}</code>。<b>刻意不用 mtime</b>：重建但位元不變會產生新 mtime，
+      把那個叫做「不同」會拒絕掉完全合法的比較。<br>
+      刻意窄化：不含 <code>*-impl.dylib</code> 的其餘工具（bench/quantize/perplexity）。</td>
+  <td>「一個不相關的工具被重新連結」時把幾何分組拆開。<br>
+      同時守住：<b>mtime 不是 build 一致性證據</b>（增量 <code>cmake --build</code> 只重編 CMake 判定 stale 的 TU）。</td>
+</tr>
+
+<tr>
+  <td><b>3. <code>source_stamp()</code></b><br><span class="tag t-green">內容＋提交</span><span class="tag t-green">dirty</span></td>
+  <td><code>scripts/check/knifeedge_matrix.py:974</code></td>
+  <td>對 <code>NUMERIC_SOURCES</code>（<code>llama-expert-cache.cpp/.h</code>、
+      <code>llama-context.cpp</code>、<code>llama-graph.cpp</code>）逐檔 <code>sha256[:16]</code>，
+      合成一個 <code>source_digest</code>，<b>再加</b> <code>last_commit</code>（該路徑最新 commit）、
+      <code>head</code>、<code>dirty</code>。<br>
+      <b>兩半都承重</b>：只有 commit 會漏掉未提交的工作；只有內容說不出是哪個 commit 引進的。</td>
+  <td>「commit-only 會把改了的工作區判成未變」——2026-09-13 的實際狀態就是：HEAD 在這些路徑上的最新
+      commit 是 09-11 22:54，而三個檔案在 09-13 00:31–01:35 被編輯、01:36 重建。</td>
+</tr>
+
+<tr>
+  <td><b>4. <code>pool_geometry_stamp()</code></b></td>
+  <td><code>scripts/check/knifeedge_matrix.py:447</code></td>
+  <td>對「決定一個 (model, pool) cell 有幾個 slot」的<b>三份原始碼</b>取樣：
+      <code>llama-model-loader.cpp</code>（<code>compute_l4_pool_capacity</code> → slot 數）、
+      <code>llama-expert-cache.cpp/.h</code>（<code>cgc_layer_cap</code>／
+      <code>LAYER_CAPS</code> 解析）。回傳 <code>source_digest</code> ＋ 逐檔 digest ＋ 同上的 git 三欄。</td>
+  <td>「一個快取的 cap 描述的是更舊的 loader」（106 vs 143 slots 被靜默重用）。
+      它是 <code>record_provenance()</code> 裡 <code>engine.geometry_digest</code> 的來源，
+      也是 <code>geometry_mismatch</code>（預測 slot 數 vs 引擎啟動時實際回報）的判準。</td>
+</tr>
+
+<tr>
+  <td><b>5. <code>model_stamp()</code></b><br><span class="tag t-amber">免 13 GB</span></td>
+  <td><code>scripts/check/knifeedge_matrix.py:1051</code></td>
+  <td><code>realpath ＋ size ＋ inode ＋ mtime</code>（免費，且已足以抓下例）<b>＋</b>
+      <code>sha256(head 4 MiB ＋ tail 4 MiB)</code>（讓<b>同尺寸換檔</b>可被偵測，因為重新量化會改 GGUF 標頭／KV 區與尾端）。<br>
+      全檔 sha256 是 opt-in（<code>CGC_ORACLE_MODEL_DIGEST=full</code>），<b>不是預設</b>：讀 13.7 GB 會把
+      page cache 趕掉，而 page cache 狀態（7721 MiB/s 熱 vs 1225 MiB/s 冷）正是這些量測所依賴的東西。</td>
+  <td>「dumps 身分」的整個維度。實際失效：矩陣的 <code>iq3</code> 欄曾靜默解析到 IQ4_XS 檔
+      ⇒ 兩欄量的是同一個模型，而 record 裡看不出來（IQ4_XS 18.2 GB vs IQ3 13.66 GB）。</td>
+</tr>
+
+<tr>
+  <td><b>6. <code>mtp_head_identity.fingerprint()</code></b><br><span class="tag t-purple">權重級身分</span></td>
+  <td><code>scripts/check/mtp_head_identity.py:198</code></td>
+  <td>schema <code>cgc.mtp_head_identity/1</code>。逐張量記
+      <code>{type, shape, nbytes, sha256}</code>，逐行 <code>name|type|nbytes|sha256</code>
+      → 合成 <code>identity</code>。<br>
+      <b>兩個拒絕</b>：(a) 該層沒有 <code>blk.N.*</code> ⇒ 直接失敗（這個檔沒帶 MTP head）；
+      (b) 全部解析到共用 <code>lm_head</code> ⇒ 拒絕輸出（那個閘門永遠不可能失敗）。<br>
+      <b>退化偵測</b>：<code>all-zero</code>／<code>collapsed (peak |v| &lt; 1e-6)</code>；
+      若疑似 16-bit tag swap，<b>換 label 重讀</b>並回報「宣告型別與儲存編碼不符（跑 fix-encoding）」。</td>
+  <td>「檔案大小、張量數、型別表都看不出來的塌陷」。實際失效：zero router 讓每個 expert 打平，
+      MTP draft 不再跟隨 target，accept 崩到 <b>0.81%</b>。這是<b>唯一一個深入到權重層</b>的身分機制。</td>
+</tr>
+
+<tr>
+  <td><b>7. A11 啟動環境指紋</b><br><span class="tag t-green">11 ms / 不需 root</span></td>
+  <td><code>CONVENTIONS.md:178</code><br><code>run_server.sh:1497</code></td>
+  <td><pre style="margin:6px 0"><code>CGC_DUMP_ENV=1 CGC_SERVER_PROFILE=&lt;p&gt; [旋鈕=值] \
+  bash scripts/run_server.sh 2>/dev/null \
+  | grep -E '^(ENV |ARG |CGCENV )' \
+  | grep -vE '^CGCENV LOG|\.log$' | md5 -q</code></pre>
+      在啟動任何東西<b>之前</b>印出逐項 <code>ENV</code>／<code>ARG</code>／<code>CGCENV</code> 然後 exit。<br>
+      <b>必須濾掉 <code>CGCENV LOG</code>（含時間戳）與 <code>free=NN%</code></b>，否則同一配置兩跑就不同
+      md5（實測：不濾時 <code>prefill250</code> 連跑兩次不同、<code>prod25</code> 恰好相同 ⇒ 會誤判為穩定）。</td>
+  <td>「旋鈕之間的互動只在你那個配置下顯形」。實際失效：2026-09-16 就是這樣抓到
+      <code>CGC_SOFT_POOL_L1</code> 的 <code>else</code> 分支裡夾著 phrase-loop guard（少一個 <code>fi</code>）
+      ⇒ 設了 L1 會<b>靜默丟掉 <code>CGC_LOOP_GUARD</code></b>，而預設 profile 不設 L1，
+      只看預設永遠看不到。<br>
+      <b>邊界</b>：指紋只涵蓋啟動環境，<b>不涵蓋程式碼路徑</b>——不變仍要跑閘門。</td>
+</tr>
+</table>
+
+<h3>3.2 三個檔案層索引資產</h3>
+
+<table>
+<tr><th style="width:170px">資產</th><th>內容</th><th>它守住什麼</th><th class="num">現況</th></tr>
+
+<tr>
+  <td><b>8. <code>MANIFEST.jsonl</code></b><br><span class="tag t-blue">資產清單</span></td>
+  <td>一列一資產：<code>asset_id / path / role / loop / exists / bytes / mtime / volatile /
+      replayable / produces_record / authority / notes</code>。
+      <b>role 是人工判斷</b>（腳本給不出的那一欄），其餘全部自動推導；<code>role</code> 十值：
+      <code>runner</code>／<code>arms</code>／<code>measure</code>／<code>compare</code>／<code>gate</code>／
+      <code>probe</code>／<code>evidence</code>／<code>conclusion</code>／<code>log</code>／<code>index</code>。</td>
+  <td>「一份人工維護的清單會在第一個人改檔名時過期，而<b>過期的清單比沒有清單更糟，因為它被信任</b>」。<br>
+      <code>--check</code> 驗存在 ＋ bytes ＋ mtime；<code>VOLATILE_PREFIXES</code>（<code>Backup/</code>、
+      <code>.workbuddy/memory/</code>）只驗存在——<b>永遠紅的閘門等於沒有閘門</b>。</td>
+  <td class="num">73 assets<br>—check 綠</td>
+</tr>
+
+<tr>
+  <td><b>9. <code>INDEX.jsonl</code></b><br><span class="tag t-amber">段落級定位</span></td>
+  <td>由 <code>.workbuddy/memory/</code> 推導：<b>一檔一列 ＋ 每個 <code>##</code> 一列</b>，
+      記 <code>path / level / title / line_start / line_end / lines / body_bytes / subs[]</code>。
+      <code>--query TERM</code> 回報 <code>path:line_start-line_end</code> 與該節的 <code>###</code> 子標題，
+      所以下一步是精準 <code>Read(offset=line_start)</code>。<br>
+      <b>它是衍生物，不是副本</b>（D6）。</td>
+  <td>「當日日誌到 1000+ 行，整檔讀取會靜默截斷，而截斷後的『沒查到』與『沒寫過』同形」。
+      引用方式是引 <code>path:line_start</code>，<b>不要複述內容</b>——複述會漂移且無從察覺。</td>
+  <td class="num">3 檔 / 54 段<br>—check 綠</td>
+</tr>
+
+<tr>
+  <td><b>10. <code>SNAPSHOT.jsonl</code></b><br><span class="tag t-purple">跨機器搬運</span></td>
+  <td>逐檔記 <code>snapshot / source / source_sha256 / source_bytes / source_mtime / snapshot_date /
+      authority</code>。涵蓋 <code>agent_harness/memory/</code>（3 檔）與
+      <code>agent_harness/skills/</code>（3 skill）。<br>
+      <b>三條防線</b>：banner 插在 YAML frontmatter <b>之後</b>（不弄壞 frontmatter）／
+      <code>SNAPSHOT.jsonl</code> 可查「對應原檔哪一版」／條文（D6 的 2026-09-16 dated 修訂）。</td>
+  <td>「索引運送的是<b>指標</b>，不是內容」。實際的失效消費者：
+      <code>agent_harness/scripts/auto_git_push.ps1</code> 週期性 <code>git add agent_harness</code> 後 push
+      ⇒ 那條推送線拿不到任何記憶本文。<br>
+      <b>要引用事實仍然讀 <code>.workbuddy/memory/</code></b>；快照的唯一用途是跨機器搬運。</td>
+  <td class="num">3 ＋ 3 檔<br>非權威</td>
+</tr>
+</table>
+
+<div class="box ok">
+  <p><span class="lbl">為什麼是「7＋3」而不是 10 個同質的東西</span></p>
+  <p>前七個覆蓋的是<b>計算的身分</b>（二進位／原始碼／池幾何／權重／MTP 頭／啟動配置），
+  量的是「這次跑的到底是什麼」；後三個覆蓋的是<b>敘述的身分</b>（資產清單／段落定位／快照版本），
+  量的是「我引用的這句話是哪一版」。缺前者，數字不可比；缺後者，數字可比的<b>結論</b>無法被追溯。
+  兩者一起，才使「可複現」與「可複盤」成為兩個不同的、都被滿足的要求。</p>
+</div>
+
+<h3>3.3 兩個「閘門的閘門」</h3>
+
+<p>七＋三之外，還有兩類機制專門守護閘門自己——因為<b>一個從未被證明會失敗的閘門不是閘門</b>（B7）。</p>
+
+<table>
+<tr><th style="width:210px">機制</th><th>做法</th><th class="num">現況</th></tr>
+<tr>
+  <td><code>traces/selftest.py</code></td>
+  <td>對 <code>validate.py</code> 注入 10 種違規，全部必須被拒：<code>build_null_but_usable</code>／
+      <code>missing_required_field</code>／<code>bad_episode_id_pattern</code>／
+      <code>generation_without_digest</code>／<code>refuted_without_supersede</code>／
+      <code>evidence_unknown_episode</code>／<code>unknown_extra_field</code>／
+      <code>bad_lesson_class</code>／<code>duplicate_lesson_id</code>／<code>duplicate_decision_id</code></td>
+  <td class="num"><span class="ck">10/10 rejected</span></td>
+</tr>
+<tr>
+  <td><code>oracle_truth_gate_selftest.py</code><br><code>feasibility_gate_selftest.py</code></td>
+  <td>證明 oracle 閘門與可行性閘門<b>會拒絕錯誤輸入</b>。</td>
+  <td class="num">已存在</td>
+</tr>
+<tr>
+  <td><code>index_assets.py --check</code></td>
+  <td>自我證明的具體案例：第一版只問「記錄的路徑還在不在」，於是<b>編輯一個被索引的檔案是隱形的</b>——
+      它印 <code>0 drift</code> 而 manifest 仍帶著舊 bytes。這個缺陷是<b>靠編輯 <code>decode_sweep.py</code>
+      並看著 <code>--check</code> 保持綠色</b>而發現的。</td>
+  <td class="num">已修</td>
+</tr>
+<tr>
+  <td><code>check_build_tracked.sh</code> 檢查 1–11</td>
+  <td>1 dylib 被追蹤／2 必要前綴／3 symlink 解析／4 關鍵 exe／5 <code>@rpath</code>／6 <code>main⊆dev</code>／
+      7 CGC 死鎖防護／<b>8 原始碼↔產物同步</b>／9 重型生產驗收／10 deploy bundle／11 replay regression。<br>
+      <b>SKIP ≠ PASS</b>：結論行會明印「本次有 N 個區段被 SKIP，所以『OK』只代表『沒有失敗』」。
+      檢查 8 曾<b>獨漏 <code>.m</code></b>，害改 <code>ggml-metal-context.m</code> 被判成假 PASS。</td>
+  <td class="num">11 項</td>
+</tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="s4">4. 里程碑：M1／M2／M3 與 E0–E4</h2>
+
+<h3>4.1 引擎側里程碑（m1 → m2 → m3）</h3>
+
+<table>
+<tr><th style="width:70px">標記</th><th>主題</th><th>落點</th><th>帶出的守護機制</th></tr>
+<tr>
+  <td><b>M1</b></td>
+  <td>池幾何與 <code>CGC_POOL_SPLIT</code> 的成本；「池算不算 regression」的可判性</td>
+  <td><code>docs/M1_POOL_SPLIT_COST_2026-09-14.md</code>；
+      <code>scripts/check/expert_cache_ensure_batch_order.cpp</code>（2/2 PASS）</td>
+  <td><code>pool_geometry_stamp()</code>、<code>record_provenance()</code> 的
+      <code>geometry_mismatch</code>／<code>ground_truth</code> 標記</td>
+</tr>
+<tr>
+  <td><b>M2</b></td>
+  <td>prefill 全層流式（<code>CGC_PREFILL_STREAM</code>）＋ <code>--m2</code> oracle 模式</td>
+  <td>git <code>fe6c0fbf2 feat(m2): prefill whole-layer streaming + --m2 oracle mode</code>；
+      <code>docs/M2_PREFILL_延遲分解_2026-09-14.html</code></td>
+  <td><code>model_stamp()</code>（M2 的 <code>CGC_ORACLE_MODEL_DIGEST</code>）、
+      池 <code>launched_min_layer_slots</code> vs 預測值</td>
+</tr>
+<tr>
+  <td><b>M3</b></td>
+  <td>oracle 閘門三指標定稿；<code>llama-bench</code> 成為生產標準並重新基線 M1 oracle</td>
+  <td>git <code>d3cbe9744 feat(metric): llama-bench as the production standard + fix two
+      multi-context crashes + re-baseline the M1 oracle</code></td>
+  <td><code>DEFAULT_REF</code>（v4 <code>skip0off</code>）＋ <code>ORACLE_PINNED_ENV</code> ＋
+      <code>comparable</code> 欄位；此後每一條 commit 都必須報告 M1/M2/M3</td>
+</tr>
+</table>
+
+<p>
+<b>M1/M2/M3 生成之後的 commit 才可參考</b>，機制上的理由是：從那個點起，
+「改動 → 判決 → 身分」三者第一次被綁進同一條 commit——message 帶數字、<code>cap_&lt;tag&gt;.json</code>
+帶解析後配置、manifest 帶資產 bytes。在那之前，數字缺指紋、參考檔缺 sidecar，二者的關係只能靠記憶維持。
+</p>
+
+<div class="box bad">
+  <p><span class="lbl">這個窗口有兩個已知破口，必須一起說出來</span></p>
+  <p>(a) <b>D5 的 dump 沒有 binary 指紋</b>。<code>cap_&lt;tag&gt;.json</code> 只記
+  <code>created</code>／<code>profile</code>／<code>resolved.{ARG,ENV,CGCENV}</code>——沒有 md5、沒有 UUID。
+  若 gate 在 <code>cmake --build</code> 收尾期間起跑，那份 PASS <b>不可歸屬</b>。
+  處置：重建完成後才跑 gate，並比對 <code>created</code> 與最新產物 mtime；重疊就換 tag 重跑。</p>
+  <p>(b) <b>env 字串相同、語意不同，閘門看不出來。</b>
+  <code>LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0</code> 的三個讀者原本測「存在」，
+  所以 profile 的 <code>=0</code> 等於 ON，v3 是在 layer 0 不在池裡的狀態下 dump 的。
+  改成讀「值」之後 <code>=0</code> 首次真的生效（layer 0 進池、<code>+142</code> resident slots、
+  <code>+152 MiB</code>），而<b>解析後的 env 字串前後都是 <code>"0"</code></b> ⇒
+  可比性檢查是字串比對 ⇒ 它會報一個普通的 M1 FAIL，<b>而那是 category error，不是 regression</b>。
+  對照組 <code>CGC_SERVER_SKIP0=1</code> 對 v3 得 M1/M2/M3/整列 fnv1a64 <b>全部 9/9</b>
+  ⇒ 同時證明 (i) v3 是 skip0 開啟時 dump 的，(ii) predicate 改動在其餘維度數值中性。
+  規則：<b>凡是「env 相同、意義不同」的變更，一律主動換參照檔（<code>--write-ref</code>），不得沿用舊參照。</b></p>
+</div>
+
+<h3>4.2 Harness 側里程碑（E0–E4）與可機檢驗收</h3>
+
+<table>
+<tr><th style="width:56px">階段</th><th>內容</th><th>驗收（可機檢）</th><th>狀態</th></tr>
+<tr><td><b>E0</b></td><td>零風險：索引 ＋ 第一版 episode 匯出
+    （<code>engine_loop/README.md</code>、<code>MANIFEST.jsonl</code>、<code>traces/emit_episodes.py</code>、
+    <code>traces/schema/*</code>）</td>
+    <td><code>emit_episodes.py --validate</code> 全綠；≥30 筆；<b>每筆都有 <code>build</code> 指紋</b>；
+        <code>git status</code> 除新檔外無變化</td>
+    <td><span class="tag t-green">完成</span>122 筆</td></tr>
+<tr><td><b>E1</b></td><td>結構 ＋ 憲章：<code>git mv</code> 既有內容進 <code>tb_loop/</code>；修 import 路徑；
+    寫 <code>CONVENTIONS.md</code></td>
+    <td><code>python -c "import tb_loop.agents.prime_agent_adapter"</code> 成功；<code>tb run --n-tasks 1</code>
+        smoke 過；憲章每條都能指到具體證據檔／log 行</td>
+    <td><span class="tag t-amber">部分</span>憲章已成（A1–A20、87 KB）；<b>三個入口腳本仍跑不起來</b></td></tr>
+<tr><td><b>E2</b></td><td>T1 蒸餾 ＋ 兩個投影：<code>distill/refine_engine.sh</code>、
+    <code>build_sft_pi.py</code>、<code>build_sft_prime.py</code>、<code>harness_engine/</code></td>
+    <td>跑一次 refine → <code>decisions.jsonl</code> 過 validate；<code>sft_prime/train.jsonl</code> ≥ 50 條；
+        注入 <code>harness_engine</code> 前後同一臂的決策差異可讀</td>
+    <td><span class="tag t-red">未開始</span><code>sft_pi/</code> 與 <code>harness_engine/</code> 尚不存在</td></tr>
+<tr><td><b>E3</b></td><td>閉環：round1（無 lesson）vs round2（注入 lesson）在同一組待答問題上</td>
+    <td>至少 1 條 lesson 被證明改善且可重現；<b>否則如實記為 negative（不美化）</b></td>
+    <td><span class="tag t-gray">待 E2</span></td></tr>
+<tr><td><b>E4</b></td><td>治理（可選）：log 政策落地、<code>knifeedge_matrix.py</code> 拆分、
+    <code>scripts/check/</code> 分層、標記 stale</td>
+    <td><code>pack_evidence.py</code> 產物總量 &lt; 20 MB；stale 資產有明確 banner</td>
+    <td><span class="tag t-gray">可選</span></td></tr>
+</table>
+
+<div class="box warn">
+  <p><span class="lbl">未完成的義務（不可當成已完成）</span></p>
+  <p><code>CONVENTIONS.md</code> §E 規定：改動它等於改動兩個 loop 的行為，每次改動都要走一次
+  PLAN §6.3 的閉環對照（因為它同時是 <code>engine_loop/sft_pi/</code> 的 system prompt 與
+  <code>harness_engine/memories/engine/</code> 的注入來源）。2026-09-16 的 D6 dated 修訂
+  <b>改變不到任何執行時行為</b>，因為那兩個目錄都還不存在——但該閉環對照<b>尚未執行</b>，
+  義務記在 E2 頭上。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s5">5. 三大交付目標</h2>
+
+<h3>5.1 目標一：可驗收可測試交付（可視化／可解釋／可複現／可複盤）</h3>
+
+<p>四個性質不是口號，各有對應的具體機制與可執行指令：</p>
+
+<table>
+<tr><th style="width:88px">性質</th><th>載體（在哪）</th><th>怎麼驗（指令）</th></tr>
+<tr><td><b>可視化</b></td><td><code>docs/*.html</code> 白皮書族（本文件即其一）；<code>MANIFEST.jsonl</code>
+    的 <code>role</code> 十值本身就是一張資產地圖</td>
+    <td><code>python3 agent_harness/engine_loop/index_assets.py</code>（印 by-role 分佈）</td></tr>
+<tr><td><b>可解釋</b></td><td><code>decisions.jsonl</code> 的 <code>ruled_out[]</code>
+    （<b>目前 99 條</b>）＋ <code>reasoning</code> ＋ <code>confidence</code>；
+    <code>lessons.jsonl</code> 的 <code>because</code> ＋ <code>counterexample_observed</code></td>
+    <td><code>validate.py</code> 檢查 <code>evidence[].episode_id</code> 必須指向真實存在的 run</td></tr>
+<tr><td><b>可複現</b></td><td>七個指紋／戳記；<code>ORACLE_PINNED_ENV</code>；
+    <code>emit_episodes.py</code> <b>從不啟動引擎</b>（純讀，避免變成第二份會分叉的 harness）</td>
+    <td>四條 <code>--check</code>／selftest 全綠（見 §6）</td></tr>
+<tr><td><b>可複盤</b></td><td><code>INDEX.jsonl</code> 段落級定位；<code>--check</code> 的 drift 簽名；
+    <b>resync commit</b> 模式</td>
+    <td><code>build_memory_index.py --query &lt;TERM&gt;</code> → 拿到
+    <code>path:line_start-line_end</code> → 精準 <code>Read</code></td></tr>
+</table>
+
+<h4>「資產測試交付」的具體形狀：不是測試程式，是被測試的資產本身有判決</h4>
+<ul>
+  <li><b>閘門自證</b>：<code>selftest.py</code> 注入 10 種違規必須 10/10 被拒。</li>
+  <li><b>閘門互證</b>：<code>index_assets.py --check</code> 與 <code>build_memory_index.py --check</code>
+      <b>不驗快照</b>（只驗原檔↔索引），所以兩者要一起重生；
+      而 <code>MANIFEST</code> 又記錄 <code>INDEX</code> 的 bytes/mtime ⇒ 順序固定為
+      <b>先 <code>build_memory_index.py</code>，後 <code>index_assets.py</code></b>。</li>
+  <li><b>產物新鮮度</b>：判準是「建置輸出有沒有編譯行」，不是 exit code、不是 mtime。
+      <code>cmake --build</code> 在「已最新」與「剛編好」兩種情況都回 0；一旦印出
+      <code>Building …</code>，同一棵樹上先前的所有數字<b>全部失效</b>。</li>
+  <li><b>單變數的最便宜證明</b>：用 crash report 的 <code>usedImages</code> UUID 做 diff
+      （配 <code>dwarfdump --uuid</code>），而不是靠推理。</li>
+</ul>
+
+<h3>5.2 目標二：可探索新功能能落地</h3>
+
+<p>架構對「新功能」的態度是<b>讓它可被否證，而不是讓它可被相信</b>。落地的路徑是固定的四段，每一步都有出口：</p>
+
+<pre><code>evaluate  →  extract  →  refine  →  compare
+（跑一個臂）  （記錄觀測）  （蒸餾成決策/教訓） （對照前後）
+   │             │              │                │
+index_assets  episodes.jsonl  decisions.jsonl  round1 vs round2
+   │             │            lessons.jsonl    （決策品質，不是分數）
+   └─ 指到臂與 profile，由 scripts/check/decode_sweep.py 執行</code></pre>
+
+<h4>目前正在被探索、且已有落地形狀的三條線</h4>
+<table>
+<tr><th style="width:150px">線</th><th>狀態</th><th>落地的守護</th></tr>
+<tr><td><b>S1 的 bit-identical 閘門</b></td>
+    <td><span class="tag t-red">尚未通過</span>值層面的解釋已全部排除；唯一剩下的候選是「消費的那一刻那個 buffer 裡是什麼」</td>
+    <td>三個既有儀器都答不了這個問題，而它們的共同病是<b>「量的東西與宣稱量的東西不同一個」</b>
+        ⇒ 這本身就是一條可重用的 lesson 形狀</td></tr>
+<tr><td><b>prefill 250 的條件式交付</b></td>
+    <td><span class="tag t-green">已交付（有條件）</span>冷態臂 <code>254.29 / 282.38 / 265.27</code> t/s
+        （req1–req3 全部 ≥250、<code>survived=yes</code>、0 crash report）</td>
+    <td>可交付的述句是「<b>req1 ≥250 且該臂全程存活</b>」；不能說「250 隨時可重現」。
+        條件變成可量測：<code>notifyutil -g com.apple.system.thermalpressurelevel</code>，
+        <b>不需 root、11 ms/次</b>，發射讀 0 → <code>6/6 ≥250</code>；發射 1 或 2 → <code>0/21</code></td></tr>
+<tr><td><b>MoE expert streaming（mmap 路線）</b></td>
+    <td><span class="tag t-red">已 ruled out</span>缺陷本體已修（L4 pool tensor 落到非 device default 的
+        <code>_Pool</code> buft），SIGBUS 消失，但 mmap 在任何量過的寬度仍是 <code>0/5</code></td>
+    <td>「一個被推翻的假設」被保存成 <code>decision.ruled_out</code>（<code>superseded_by</code> 非空）
+        而不是刪掉——<b>刪掉會讓後人重新踩一次</b></td></tr>
+</table>
+
+<div class="box">
+  <p><span class="lbl">新功能能落地的判準（本架構的一句話版本）</span></p>
+  <p>一個新功能「落地」＝ 它能被寫成一個 <code>episode</code>（帶指紋）、一條 <code>decision</code>
+  （帶 <code>ruled_out</code>）、以及至少一條 <code>lesson</code>（換一個問題也適用）。
+  做不到這三件事的功能，在這個架構裡不算落地——它只是一個還沒被否證的相信。</p>
+</div>
+
+<h3>5.3 目標三：產生 memory／與技能，並顯示記憶與隱式記憶</h3>
+
+<p>這個 harness 區分<b>三種記憶</b>，而它們的權威性與失效方式完全不同。</p>
+
+<table>
+<tr><th style="width:110px">種類</th><th>載體</th><th>權威性</th><th>失效方式</th></tr>
+<tr><td><b>顯式記憶</b><br><span class="tag t-green">敘述</span></td>
+    <td><code>.workbuddy/memory/MEMORY.md</code>（跨日事實）＋ <code>YYYY-MM-DD.md</code>（append-only 決策日誌）
+        ＋ <code>agent_harness/engine_loop/memory/INDEX.jsonl</code>（段落級索引）</td>
+    <td><b>權威</b>。要引用事實讀這裡</td>
+    <td>整檔讀取<b>靜默截斷</b> ⇒ 截斷後的「沒查到」與「沒寫過」同形（這正是 INDEX 存在的理由）</td></tr>
+<tr><td><b>技能</b><br><span class="tag t-purple">可執行</span></td>
+    <td><code>~/.workbuddy/skills/</code> 三個：<br>
+        <code>cgc-commit-gate</code>（30.9 KB）— 提交閘門流程與七輪實測陷阱<br>
+        <code>cgc-decode-attribution</code>（38.2 KB）— decode 相位歸因的儀器清單與判準<br>
+        <code>cgc-prefill-thermal-delivery</code>（8.0 KB）— prefill t/s 的條件式交付
+        ＋ <code>agent_harness/skills/</code> 的 dated 快照</td>
+    <td>權威在原檔；快照<b>非權威</b>（YAML frontmatter 完整保留在最前面，banner 插在其後，
+        所以副本仍可被 skill loader 解析）</td>
+    <td>改副本下次匯入就被蓋掉 ⇒ <b>要改 skill 請改原檔</b></td></tr>
+<tr><td><b>隱式記憶</b><br><span class="tag t-amber">數值</span></td>
+    <td>活在<b>權重與產物裡</b>：<code>model_stamp()</code> 的 <code>sha256(head+tail 4 MiB)</code>、
+        <code>mtp_head_identity.fingerprint()</code> 的 <code>identity</code>、
+        <code>binary_stamp()</code> 的 <code>{size, sha256(head 64 KiB)}</code>、
+        <code>build_fingerprint()</code> 的 8 鍵</td>
+    <td><b>不可敘述、只可量測</b></td>
+    <td>沒有人讀它 ⇒ 它不會漂移，但也<b>不會自己說話</b>。要靠 §3 的機制把它拉進可引用的世界</td></tr>
+</table>
+
+<h4>為什麼「權重等隱式記憶」需要被顯式化</h4>
+<p>
+模型權重是最容易靜默改變的量：一個重新量化過的 GGUF、一個塌陷的 MTP head、
+一個被換掉但同尺寸的檔案——它們<b>不會出現在任何 diff 裡</b>。所以本架構對權重的處理不是「記錄它」，
+而是<b>給它一個必須被引用才能使用數字的閘門</b>：
+</p>
+<ul>
+  <li>取了 <code>model_stamp()</code> 才敢說「兩欄量的是同一個模型」；</li>
+  <li>取了 <code>mtp_head_identity.fingerprint()</code> 才敢說「draft 有跟上 target」；</li>
+  <li>取了 <code>build_fingerprint()</code> 才敢把兩個 t/s 放在同一張表上。</li>
+</ul>
+<p>
+反過來，<code>SNAPSHOT.jsonl</code> 是<b>顯式記憶的隱式化</b>：它把「這句話對應原檔哪一版」
+變成 <code>source_sha256</code> ＋ <code>source_mtime</code>——不靠猜、不靠人記得。
+這兩個方向合起來，才是完整的「顯示記憶」：<b>把敘述變成可驗證的數值，把數值變成可引用的敘述</b>。
+</p>
+
+<!-- ============================================================ -->
+<h2 id="s6">6. 守護清單：可執行的檢查序列</h2>
+
+<p>以下每條都在本文件產出時<b>實際跑過</b>，輸出貼在後面。這是「可驗收」的具體含義。</p>
+
+<pre><code>cd /Users/alexchuang/Documents/flashkv-devserver
+
+# ── 層 1：痕跡層完整性（不需要引擎，秒級）────────────────────────
+python3 agent_harness/engine_loop/traces/validate.py
+python3 agent_harness/engine_loop/traces/selftest.py
+
+# ── 層 2：索引層不漂移 ──────────────────────────────────────────
+python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+python3 agent_harness/engine_loop/index_assets.py --check
+
+# ── 層 3：索引重生（改過任何被索引的檔案之後；順序不可顛倒）────────
+python3 agent_harness/engine_loop/memory/build_memory_index.py   # 先
+cd agent_harness/engine_loop && python3 index_assets.py && cd -  # 後（不要加 --out）
+
+# ── 層 4：記憶快照（跨機器搬運用；先快照後索引）──────────────────
+python3 Backup/import_harness_snapshot.py                        # 先
+python3 agent_harness/engine_loop/memory/build_memory_index.py   # 後
+
+# ── 層 5：提交閘門（引擎改動；~40–60 s，自己起 server）────────────
+lsof -nP -iTCP:8080 -sTCP:LISTEN && pgrep -fl llama-server   # 必須都空
+python3 scripts/check/m123_oracle_gate.py --tag &lt;標籤&gt;
+BIN_DIR='src/llama.cpp/build/bin' RUN_REPLAY_BENCH=0 \
+  bash scripts/check_build_tracked.sh --repo "$PWD"
+RUN_REPLAY_BENCH=0 git commit -F &lt;message 檔&gt;
+
+# ── 層 6：收尾 ─────────────────────────────────────────────────
+git status --porcelain --untracked-files=all                 # 必須空</code></pre>
+
+<h4>本文件產出時的實測輸出</h4>
+<table>
+<tr><th style="width:300px">指令</th><th>輸出</th></tr>
+<tr><td><code>traces/validate.py</code></td>
+    <td class="num ck">episodes.jsonl: 122 records → OK<br>decisions.jsonl: 38 records → OK<br>lessons.jsonl: 98 records → OK</td></tr>
+<tr><td><code>traces/selftest.py</code></td>
+    <td class="num ck">10/10 injected violations rejected</td></tr>
+<tr><td><code>memory/build_memory_index.py --check</code></td>
+    <td class="num ck">memory index OK: 3 file(s), 54 section(s), no drift</td></tr>
+<tr><td><code>index_assets.py --check</code></td>
+    <td class="num ck">manifest OK: 73 assets, existence + bytes + mtime all agree</td></tr>
+</table>
+
+<div class="box warn">
+  <p><span class="lbl">三個操作陷阱（違反會產生假綠燈）</span></p>
+  <p><b>1. <code>index_assets.py --check</code> 的結論行會被尾端那段 <code>--out</code> 說明包住</b>——
+  直接 <code>tail</code> 只看到說明文字。要濾 <code>OK:</code>／<code>error</code> 這兩類行。</p>
+  <p><b>2. <code>INDEX.jsonl</code> 的 drift 簽名是 mtime 而不是 bytes。</b>
+  <code>build_memory_index.py</code> 每次都會重寫該檔（即使內容一字不變）；
+  看到 mtime 漂移就是順序問題，<b>重跑一次「先 build_memory_index 再 index_assets」即可</b>，
+  不要去找內容差異。</p>
+  <p><b>3. 收尾永遠是兩個 commit。</b> commit 的結果（hash、推送成敗、gate 實際輸出）
+  <b>只有 commit 之後才知道</b>，所以「把本輪收尾寫進當日日誌」結構上不可能塞進被提交的那個 commit。
+  第二個 resync commit 只動 <code>MANIFEST.jsonl</code> ＋ <code>INDEX.jsonl</code>，
+  沒有 <code>src/</code>，所以 D5 不必重跑——但 message 要寫明這一點。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s7">7. 誠實邊界：這份文件不主張什麼</h2>
+
+<ol>
+  <li><b>E0 的 122 筆裡只有 27 筆 <code>usable_as_evidence == true</code>（22.1%）。</b>
+      這不是匯出失敗，是今天之前的資料沒有 build 指紋、<code>n_rounds</code> 不足 3、或臂本身是探針。
+      門檻是刻意設在那裡的。注意這個欄位擋的是<b>引用數字</b>，不是「能不能被引用」——
+      層梯二分最關鍵的那一列正是 <code>usable_as_evidence == false</code>，
+      而 <code>decisions.jsonl</code> 照樣用它。</li>
+
+  <li><b><code>tb_loop</code> 的三個入口腳本目前跑不起來。</b>
+      <code>run_round.sh:37</code>／<code>gen_sft.sh:27</code>／<code>finetune/eval_round.sh:34</code>
+      都寫 <code>--agent-import-path "tb_loop.agents.…"</code>，而 <code>PYTHONPATH=$TB_LOOP_DIR</code>
+      且 <code>TB_LOOP_DIR</code> ＝ <code>agent_harness/</code> 本身 ⇒ 實測
+      <code>ModuleNotFoundError: No module named 'tb_loop'</code>。
+      <b><code>bash -n</code> 抓不到這個</b>——驗收必須是真的 <code>import</code> ＋ 一次
+      <code>--n-tasks 1</code> smoke。</li>
+
+  <li><b>A11 指紋不變 ≠ 行為不變。</b> 指紋只涵蓋啟動環境，不涵蓋程式碼路徑。
+      指紋不變仍要跑閘門（實際案例：指紋不變 <code>e68a5dc5…</code>，且 M1/M2/M3/fnv1a64 = 9/9/9/9——
+      兩者都要有才成立）。</li>
+
+  <li><b>索引可驗證 ≠ 索引充分。</b> <code>--check</code> 只證明索引與原檔一致，
+      不證明索引涵蓋了讀者需要的東西；而 <code>agent_harness/memory/</code> 與
+      <code>agent_harness/skills/</code> 的快照<b>刻意不被任何 --check 驗證</b>
+      （只驗原檔↔索引），所以兩者要一起重生。</li>
+
+  <li><b>E2／E3 尚未開始。</b> <code>sft_pi/</code> 與 <code>harness_engine/</code> 不存在，
+      因此 <code>CONVENTIONS.md</code> 目前<b>不是</b>任何執行時行為的來源——
+      改它不會改變當下任何東西，但依 §E 它仍欠一次閉環對照。</li>
+
+  <li><b>prefill 250 的交付是條件式的、且條件本身還在收緊。</b>
+      可交付述句只有「req1 ≥250 且該臂全程存活」。
+      「距上次持續 prefill ≥150 s」作為<b>充分</b>條件已被推翻（安靜 18 s → 289.86 t/s；
+      安靜 34 s → 166.95 t/s：安靜最長的最慢、最短的最快）⇒ 自變數是同一序列裡的累積負載，不是間隔長度。
+      13:45–13:57 那個平台（118.30–154.77）與 14:31 那個平台（254–282）
+      <b>差 55 t/s 且未歸因</b>。</li>
+
+  <li><b>「兩次量測之間只有一個產物不同」≠ 單變數實驗。</b>
+      單變數的前提是<b>交錯</b>：機器狀態（頻率／swap／壓縮器）不在任何一方的日誌裡。
+      兩個候選都無法排除時，述句是「未歸因」。</li>
+
+  <li><b>本文件是對外結論，但只以 <code>docs/</code> 為準這一點要反過來讀。</b>
+      <code>traces/</code> 裡的 ×1.78、<code>id_oob first=2143289344</code> 都是<b>未定案或已知錯誤</b>的觀測；
+      對外引用一律以 <code>docs/*.html</code> 白皮書為準，且每筆 record 都保留
+      <code>usable_as_evidence</code> 欄位。</li>
+</ol>
+
+<hr>
+
+<h3>附：本文的引用索引（要複盤請從這些位置進）</h3>
+<table>
+<tr><th style="width:330px">主題</th><th>位置</th></tr>
+<tr><td>判準憲章 A（數字什麼時候可以引用，A1–A20）</td><td><code>agent_harness/CONVENTIONS.md:12</code></td></tr>
+<tr><td>判準憲章 B（診斷）／C（讀原始碼）</td><td><code>agent_harness/CONVENTIONS.md:376</code>／<code>:848</code></td></tr>
+<tr><td>判準憲章 D（流程與入口，D1–D6）／E（自我約束）</td><td><code>agent_harness/CONVENTIONS.md:867</code>／<code>:928</code></td></tr>
+<tr><td>A11 啟動環境指紋（完整配方與陷阱）</td><td><code>agent_harness/CONVENTIONS.md:178</code></td></tr>
+<tr><td>D6 記憶不複製 ＋ 2026-09-16 dated 修訂</td><td><code>agent_harness/CONVENTIONS.md:892</code>／<code>:907</code></td></tr>
+<tr><td>三種 record 的三條硬規則</td><td><code>agent_harness/engine_loop/README.md:51</code></td></tr>
+<tr><td>建置指紋漏 <code>libggml-base</code> 的完整教訓</td><td><code>agent_harness/engine_loop/README.md:132</code></td></tr>
+<tr><td>E0–E4 規劃與驗收表</td><td><code>agent_harness/PLAN_ENGINE_LOOP_2026-09-15.md:313</code></td></tr>
+<tr><td>紅線：<code>scripts/check/*</code> 不得複製</td><td><code>agent_harness/engine_loop/README.md:17</code></td></tr>
+<tr><td>為什麼是索引而非副本（三個防線）</td><td><code>agent_harness/engine_loop/memory/README.md</code></td></tr>
+<tr><td>快照同步義務與 <code>SNAPSHOT.jsonl</code> 語意</td><td><code>agent_harness/memory/README.md</code>／<code>agent_harness/skills/README.md</code></td></tr>
+<tr><td>提交閘門的七輪實測陷阱</td><td><code>~/.workbuddy/skills/cgc-commit-gate/SKILL.md</code></td></tr>
+<tr><td>prefill t/s 的三態標籤與散熱條件</td><td><code>~/.workbuddy/skills/cgc-prefill-thermal-delivery/SKILL.md</code></td></tr>
+<tr><td>M1/M2/M3 判決的定義與不可合併的理由</td><td><code>scripts/check/m123_oracle_gate.py:1</code></td></tr>
+<tr><td><code>ORACLE_PINNED_ENV</code> 與 oracle 配置不可寄生的理由</td><td><code>scripts/check/m123_oracle_gate.py:105</code></td></tr>
+<tr><td>7 個指紋／戳記的原始碼與 docstring</td><td><code>scripts/check/decode_sweep.py:34</code>／<code>knifeedge_matrix.py:447,469,974,1051</code>／<code>mtp_head_identity.py:198</code></td></tr>
+<tr><td>三個索引資產的產生器與 <code>--check</code> 語意</td><td><code>agent_harness/engine_loop/index_assets.py</code>／<code>engine_loop/memory/build_memory_index.py</code></td></tr>
+</table>
+
+<div class="foot">
+  Agent Harness 技術架構里程碑白皮書 · 產出於 2026-09-16 ·
+  事實來源：<code>/Users/alexchuang/Documents/flashkv-devserver</code> 的 <code>agent_harness/</code>、
+  <code>scripts/check/</code>、<code>.workbuddy/memory/</code>、<code>~/.workbuddy/skills/</code> ·
+  文中所有計數與閘門輸出皆為產出當時的實測值，未經平滑或估計。
+</div>
+
+</div>
+</body>
+</html>

@@ -316,9 +316,21 @@ prime-agent 的 Continual Harness 狀態是一個目錄（`PRIME_AGENT_CODING_AG
 |---|---|---|
 | **E0**（零風險，今天可做） | 只做索引 + 第一版 episode 匯出：`engine_loop/README.md`、`MANIFEST.jsonl`、`traces/emit_episodes.py`、`traces/schema/*` | `emit_episodes.py --from Backup --out traces/episodes.jsonl --validate` 全綠；≥30 筆；**每筆都有 `build` fingerprint**；`git status` 除新檔外無變化 |
 | **E1** | 結構 + 憲章：`git mv` 既有內容進 `tb_loop/`；修掉 import 路徑；寫 `CONVENTIONS.md` | `python -c "import tb_loop.agents.prime_agent_adapter"` 成功；`tb run --n-tasks 1` smoke 過；`CONVENTIONS.md` 每條都能指到今天的具體證據檔／log 行 |
-| **E2** | T1 蒸餾 + 兩個投影：`distill/refine_engine.sh`、`build_sft_pi.py`、`build_sft_prime.py`、`harness_engine/` | 跑一次 refine → `decisions.jsonl` 過 validate；`sft_prime/train.jsonl` ≥ 50 條；注入 `harness_engine` 前後同一臂的決策差異可讀 |
+| **E2** | T1 蒸餾 + 兩個投影：`distill/refine_engine.sh`、`build_sft_pi.py`、`build_sft_prime.py`、`harness_engine/` | 跑一次 refine → `decisions.jsonl` 過 validate；`sft_prime/train.jsonl` ≥ 50 條；注入 `harness_engine` 前後同一臂的決策差異可讀；**＋ 結清 D6 的閉環欠帳（見本表下方）** |
 | **E3** | 閉環：round1（無 lesson）vs round2（8 條 lesson）在同一組待答問題上 | 至少 1 條 lesson 被證明改善且可重現；否則如實記為 negative（不美化） |
 | **E4**（可選治理） | log 政策落地、`knifeedge_matrix.py`（181 KB）拆分、`scripts/check/` 40+ 檔分層、標記 stale（`replay_bench_*` 已 stale，`RUN_REPLAY_BENCH=0`） | `pack_evidence.py` 產物總量 < 20 MB；stale 資產有明確 banner |
+
+**E2 承接一筆已認領的欠帳（2026-09-16 加入；來源：`CONVENTIONS.md` D6 的 dated 修訂）。**
+
+`CONVENTIONS.md` §E 規定「改動它等於改動兩個 loop 的行為，每次改動都要走一次 §6.3 的閉環對照」，
+因為它同時是 `engine_loop/sft_pi/` 的 system prompt 與 `harness_engine/memories/engine/` 的注入來源。
+2026-09-16 對 D6 的修訂**改變不到任何執行時行為**（`sft_pi/` 與 `harness_engine/` 當時都還不存在），
+但該閉環對照**尚未執行**。E2 一建立這兩個目錄，欠帳就變成**有消費者、可執行、可失敗**的檢查：
+
+- **認領條件**：`distill/` 與 `harness_engine/` 一落地，就對「D6 修訂前後兩版 `CONVENTIONS.md`」
+  各跑一次同一組待答問題，並如實記錄差異。**沒有差異也是結果**，不可美化成「通過」。
+- **在對照跑過並留有產物之前，不得聲稱 D6 修訂已結清。**
+- 這筆欠帳同時記在三處：本表、`CONVENTIONS.md` D6 修訂段、`.workbuddy/memory/MEMORY.md`。
 
 **E0 是唯一今天就能做完且不會弄壞任何東西的一步。** 建議先只做 E0，看匯出的 episode 品質再決定 E1。
 
