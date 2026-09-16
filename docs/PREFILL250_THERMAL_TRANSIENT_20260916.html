@@ -2069,6 +2069,18 @@ PY</code></pre>
 
 <h4>11.9.5 一個獨立發現：出貨的 <code>libllama-common</code> 沒有編 <code>MTP_SUPPORT</code></h4>
 
+<p class="small">
+  <strong>時間範圍（2026-09-16 11:55 補記）。</strong>這一節描述的是<strong>當時的產物</strong>：
+  <code>libllama-common.0.0.239.dylib</code>（UUID <code>3e23c1e0…</code>，即
+  <code>llama-server-2026-09-16-103648.ips</code> 與 <code>…-111232.ips</code> 兩份報告載入的那個）。
+  <strong>自 2026-09-16 11:30 起，載入器映射的是 <code>libllama-common.0.0.275.dylib</code>
+  （UUID <code>4ddc4e5d…</code>），它是帶 <code>-DMTP_SUPPORT</code> 重建的，三個受 guard 的
+  <code>MTPDBG</code> 字串 3/3 存在</strong>，所以「出貨的 <code>libllama-common</code> 沒有編
+  <code>MTP_SUPPORT</code>」這句<strong>不再適用於現況</strong>。下面三條證據對當時的產物仍然成立——
+  尤其是 <code>CMakeCache.txt</code> 的 <code>CMAKE_CXX_FLAGS</code> 當時是空的——但它們不是對現行產物的描述。
+  重建與後續見 <a href="#s1110">§11.10</a>，特別是 §11.10.2（假陰性）與 §11.10.7(4)。
+</p>
+
 <p>
   追這一條線時撞到另一個問題，它<strong>與上面的崩潰沒有已建立的因果關係</strong>，但本身該被記錄：
   這台機器實際載入的 <code>libllama-common.0.0.239.dylib</code>，是用<strong>沒有
@@ -2340,6 +2352,13 @@ PY</code></pre>
 </p>
 
 <p class="small">
+  <strong>後續（2026-09-16 12:2x）：上面的 (1)(3)(4) 已在
+  <a href="#s1111">§11.11</a> 逐條處置</strong> —— (1) <code>-ub 4096</code> 是單變數繞道（代價 −22%，
+  OOM 的機制仍在）、(3) 四個 <code>GGML_*</code> 已對齊且 D5 <code>flagalign2</code> 四軸 9/9 PASS、
+  (4) §11.9.5 已加時間範圍註記。本段保留原樣，因為它記錄的是<strong>當時</strong>知道什麼。
+</p>
+
+<p class="small">
   複現：<code>bash Backup/run_req2_retest.sh</code>（單臂 prefill250，約 1.5 分鐘）。
   證據：<code>Backup/cgc_logs/req2retest_20260916_113028.txt</code>（修前）、
   <code>…_113517.txt</code>（修後）、<code>llama_server_20260916_113029.log</code>、
@@ -2348,6 +2367,328 @@ PY</code></pre>
   <code>…-113649.ips</code>、<code>Backup/m123_oracle_gate/summary_metalerrfix.json</code>；
   反組譯對象保留在 <code>Backup/pre_mtp_rebuild_20260916/libggml-metal.0.19.0.dylib</code>
   （md5 <code>b28c011055fa2113ddce56453105c71a</code>）。
+</p>
+
+<h3 id="s1111">11.11 追加（2026-09-16 12:00–12:2x）：把 §11.10.7 剩下的三條「仍未解」各自歸類並收尾 —— 一條繞道、一條可見性、一條政策漂移，加一條過期述句</h3>
+
+<p>
+  §11.10.7 誠實地留下了 (1)(3)(4) 三條未解，加上一條我自己標為「未裁決」的 KV 數字矛盾。
+  這一節把它們四個各自做完，並且<strong>先分類再動手</strong> —— 因為這四條不是同一種東西，
+  而「把一個『仍未解』當成 bug 去修」正是這一輪最容易犯的錯：
+</p>
+
+<table>
+  <thead>
+    <tr><th>#</th><th>它是什麼</th><th>處置</th><th>證據</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>(1)</td>
+      <td><strong>缺陷</strong>（真的壞了）：req2 的 OOM</td>
+      <td>沒有修好機制。<strong>用一個設定繞過</strong>（<code>-ub 4096</code>），並把算術印出來</td>
+      <td>§11.11.2、§11.11.3</td>
+    </tr>
+    <tr>
+      <td>(2)</td>
+      <td><strong>缺失的可見性</strong>（不是 bug）：<code>-fit</code> 從來沒跑過，而且沒人講</td>
+      <td>啟動訊息永遠印它、並提供一個能真讓它跑的開關</td>
+      <td>§11.11.4</td>
+    </tr>
+    <tr>
+      <td>(3)</td>
+      <td><strong>政策漂移</strong>：build dir 與 <code>build_fork_llama.sh</code> 不一致</td>
+      <td>對齊四個 <code>GGML_*</code> 旗標 + 全量重建 + 重跑 D5</td>
+      <td>§11.11.5</td>
+    </tr>
+    <tr>
+      <td>(4)</td>
+      <td><strong>已過期的述句</strong>：§11.9.5 說的是 11:30 之前的產物</td>
+      <td>只能改文字（已於本輪完成）</td>
+      <td>§11.11.6</td>
+    </tr>
+  </tbody>
+</table>
+
+<h4>11.11.1 先講結論（因為它有部分是壞消息）</h4>
+
+<p>
+  <strong>OOM 本身沒有被修好。</strong>被修好的是兩件別的事：它<strong>可以被歸因</strong>了
+  （錯誤路徑不再把 OOM 偽裝成不可讀的 SIGSEGV，見 §11.10.4），以及它<strong>有一個代價明確的繞道</strong>
+  （<code>-ub 4096</code>，prefill 約 <strong>−22%</strong>）。這一節把繞道做成單變數證據，
+  並把它寫成啟動時的算式，但<strong>不動 <code>prefill250</code> 的預設值</strong> ——
+  改預設是配置決策，不是修 bug。
+</p>
+
+<h4>11.11.2 item 1：<code>-ub 4096</code> 是單變數、可複現的繞道，代價 −22%</h4>
+
+<p>
+  三臂，同 profile（<code>prefill250</code>）、同 <code>load_mode=none</code>、同模型、同樣三次請求：
+</p>
+
+<table>
+  <thead>
+    <tr><th>臂</th><th><code>-b</code> / <code>-ub</code></th><th>req1</th><th>req2</th><th>req3</th><th>log 錯誤行</th><th>崩潰報告</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>4096</td>
+      <td class="num">4096 / 4096</td>
+      <td class="num">130.29 t/s</td>
+      <td class="num">133.95 t/s</td>
+      <td class="num">151.63 t/s</td>
+      <td class="num"><strong>0</strong></td>
+      <td>none</td>
+    </tr>
+    <tr>
+      <td>4096（暖機後重跑）</td>
+      <td class="num">4096 / 4096</td>
+      <td class="num">130.49 t/s</td>
+      <td class="num">125.18 t/s</td>
+      <td class="num">148.05 t/s</td>
+      <td class="num"><strong>0</strong></td>
+      <td>none</td>
+    </tr>
+    <tr>
+      <td>6144（對照）</td>
+      <td class="num">6144 / 6144</td>
+      <td class="num">166.83 t/s</td>
+      <td class="num"><strong>DIED</strong> 28.5s</td>
+      <td>—</td>
+      <td class="num">4</td>
+      <td><code>113649.ips</code>（舊）／<code>ggml_abort</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<p>
+  <strong>單變數是量出來的，不是宣稱的。</strong>把兩臂的 <code>envdump</code> 逐行比對，
+  4096 與 6144 之間只有 <strong>9</strong> 行不同，而其中唯一有語意的是
+  <code>batch/ubatch</code>（<code>CGCENV BATCH/UBATCH</code>、<code>[perf] batch=</code>、
+  <code>ARG</code> 的兩個值格）；其餘是 <code>free=83%/82%</code>（環境）與 log 檔名。
+  <code>A11</code> 指紋 <code>ee265c18…</code>（兩次 4096 完全相同）vs <code>749ce190…</code>（6144）——
+  而 <code>749ce190…</code> 與 §11.9 那個致命的 6144 臂<strong>是同一個啟動環境</strong>。
+</p>
+
+<p>
+  6144 臂的死法是一個<strong>有名字的 OOM</strong>，不是 SIGSEGV
+  （<code>llama_server_20260916_120538.log</code>，四行）：
+</p>
+
+<pre><code>:220 1.21.129.464 E ggml_metal_synchronize: error: command buffer 1 failed with status 5
+:221 ggml-metal-context.m:788: CGC-METAL-FAIL: extra command buffer 1 failed (status 5,
+     Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory))
+:226 E error: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)
+:227 E CGC-METAL-FAIL: command buffer 1 failed with status 5 (compute #369, fail-stop)</code></pre>
+
+<p class="small">
+  這四行就是 §11.10.4 那個修正的直接紅利：錯誤路徑不再釋放 command buffer 之後才記錄，
+  所以 OOM 以它自己的名字浮出來。<code>:229</code> 的 <code>ggml_abort</code> 是 fail-stop
+  的結果，不是崩潰。<code>il=0/1</code> 的 <code>CGC-PREFILL-STREAM</code> 兩行（<code>:218-219</code>）
+  表明它死在 req2 的 prefill 開頭。
+</p>
+
+<h4>11.11.3 item 1 的另一半：<code>mmap</code> 看起來是最直接的槓桿，而它是一顆硬崩</h4>
+
+<p>
+  要把 13030 MiB 的模型從「匿名頁、不可回收」變成「file-backed、OS 可回收」，
+  <code>--load-mode mmap</code> 是教科書答案。它在這裡<strong>不能用</strong>，
+  原因是 expert cache 的 L4 pool 是「regions adopted from expert tensors」
+  —— 它直接寫進模型張量的儲存；<code>none</code> 模式下那是可寫堆積，<code>mmap</code> 模式下是
+  <strong>唯讀 file-backed 映射</strong>。於是 <code>fill_pool_direct</code> 的 zeroing 寫進唯讀頁：
+</p>
+
+<pre><code>llama_expert_cache: fill_pool_direct short read key=142 — zeroing slot
+EXC_BAD_ACCESS / SIGBUS / KERN_PROTECTION_FAILURE at 0x00000003332f5ae0
+  __bzero + 32 ← fill_pool_direct + 172 ← llama_expert_cache_ensure_slot + 652
+              ← llama_expert_cache_prewarm_hot + 880 ← llama_context::process_ubatch
+              ← llama_context::decode ← common_init_from_params ← load_model</code></pre>
+
+<p>
+  參考 <code>llama-server-2026-09-16-120239.ips</code>、<code>Backup/cgc_logs/req2retest_20260916_120057.txt</code>
+  （<code>health</code> 從未轉 <code>ok</code>，<code>driver exited early</code>）。
+  <code>KERN_PROTECTION_FAILURE</code> 就是「唯讀映射被寫」的指紋，<code>__bzero</code> 是那個寫。
+</p>
+
+<p>
+  <strong>缺陷本身沒有修</strong>（修它要動 expert cache 的儲存所有權，那是另一輪）。
+  我做的是把它變成一個<strong>硬閘門</strong>，而閘門的四面都量過 —— 只量一面等於沒量：
+</p>
+
+<table>
+  <thead>
+    <tr><th>面</th><th>指令</th><th>rc</th><th>行為</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>單獨</td><td><code>CGC_SERVER_LOAD_MODE=mmap</code></td><td class="num">1</td><td>拒跑，印出缺陷、<code>.ips</code> 檔名、<code>:704</code> 那一行</td></tr>
+    <tr><td>豁免</td><td>… <code>+ CGC_SERVER_EXPERT_CACHE_OFF=1</code></td><td class="num">0</td><td>放行（cache-free 啟動，不寫張量儲存 ⇒ mmap 安全）</td></tr>
+    <tr><td>強制放行</td><td>… <code>+ CGC_SERVER_ALLOW_MMAP_EXPERT_CACHE=1</code></td><td class="num">0</td><td>放行 + warning（只在修那個缺陷時用）</td></tr>
+    <tr><td>對照</td><td><code>load_mode=none</code></td><td class="num">0</td><td>照常走預算判讀（<code>OVERSUBSCRIBED by 4838 MiB</code>）</td></tr>
+  </tbody>
+</table>
+
+<p class="small">
+  同時把 <code>[budget]</code> 超額段的槓桿清單裡的 <code>mmap</code> <strong>拿掉</strong> ——
+  一個會 SIGBUS 的選項不該被列為建議。這是一次自我更正：我第一版把它列上去了。
+</p>
+
+<h4>11.11.4 item 2：<code>-fit</code> 是 no-op，而現在這件事會出現在啟動訊息裡</h4>
+
+<p>
+  完整機制在 <code>scripts/run_server.sh</code> 的 <code>[防護 2c]</code> 註解裡，三行引用：
+  <code>common/common.h:477</code> 讓 <code>params.fit_params</code> 預設 true（等同 <code>-fit on</code>）；
+  <code>common/fit.cpp:377-379</code> 在「使用者已經給過 <code>n_gpu_layers</code>」時
+  <code>throw common_params_fit_exception(... "abort")</code>；
+  <code>llama-model.cpp:2479</code> 的預設值是 <code>-1</code>。
+  而本腳本<strong>一律顯式帶 <code>-ngl</code></strong> ⇒ fit 每次都 abort 成一行 warning，
+  且它只出現在 server log 第 10 行：
+</p>
+
+<pre><code>0.00.784.719 W common_fit_params: failed to fit params to free device memory:
+              n_gpu_layers already set by user to 99, abort</code></pre>
+
+<p>
+  修正不是去改 fit 的行為（那會改變記憶體與效能剖面），而是讓它<strong>不再隱形</strong>：
+</p>
+
+<ul>
+  <li>啟動時永遠印 <code>[fit]   -fit 是 no-op：-ngl=99 是本腳本顯式指定的，fit 會 abort（fit.cpp:377）</code>。</li>
+  <li><code>CGC_SERVER_FIT=1</code> 會把 <code>-ngl</code> 從 argv 拿掉，讓 fit 真的決定
+      <code>n_gpu_layers</code>。預設關 —— 它只會「縮到裝得下」，會改掉與既有 oracle 的可比性。</li>
+  <li><code>[budget]</code> 超額時多印一行：<strong>這一項沒有任何自動補救</strong>（<code>-ngl</code> 是顯式指定的，
+      <code>-fit</code> 不會介入）。</li>
+</ul>
+
+<p>
+  <strong>一個實作細節值得記下來</strong>：argv 是<strong>兩段式</strong> append 而不是重排 ——
+  D5 閘門的 config stamp 是<strong>位置比對</strong> <code>ARG[i]</code>，
+  所以 <code>FIT=0</code> 時 <code>-ngl</code> 必須留在原索引。<code>cap_flagalign.json</code> 與
+  <code>cap_metalerrfix.json</code> 的 <code>resolved.ARG</code> 逐位相同（56/56，無位移）。
+  四個 profile（<code>off</code> / <code>coding</code> / <code>qa-zh</code> / <code>legacy-25plus</code>、
+  <code>prod25</code> / <code>prefill250</code>）的 dump 回歸 rc 全 0。
+</p>
+
+<h4>11.11.5 item 3：政策漂移 —— 對齊四個旗標，重跑 D5</h4>
+
+<p>
+  現行 build dir 與 <code>scripts/build_fork_llama.sh</code> 之間有 <strong>6</strong> 處不同，而它們不是同一類：
+</p>
+
+<table>
+  <thead><tr><th>項</th><th>build dir（當時）</th><th>腳本</th><th>性質</th></tr></thead>
+  <tbody>
+    <tr><td><code>GGML_BLAS</code></td><td>ON</td><td>OFF</td><td rowspan="4"><strong>政策</strong>：<code>BLAS</code>/<code>ACCELERATE</code> 會讓 IQ3_XXS 出亂碼、<code>CPU_REPACK</code> 踩 IQ3 tensor boundary、<code>OPENMP</code> 穩定性 —— 這四個是<strong>已裁決的</strong>，所以要對齊</td></tr>
+    <tr><td><code>GGML_ACCELERATE</code></td><td>ON</td><td>OFF</td></tr>
+    <tr><td><code>GGML_CPU_REPACK</code></td><td>ON</td><td>OFF</td></tr>
+    <tr><td><code>GGML_OPENMP</code></td><td>ON</td><td>OFF</td></tr>
+    <tr><td><code>CURL</code></td><td>未開</td><td>開</td><td rowspan="2"><strong>刻意差異</strong>：伺服器需要 <code>LLAMA_BUILD_SERVER=ON</code> 與 <code>LLAMA_BUILD_TESTS=ON</code>，而腳本把它們關掉；也因為 <code>:53</code> 的 <code>REBUILD=1</code> 會 <code>rm -rf build</code>，所以<strong>不跑 <code>REBUILD=1</code></strong></td></tr>
+    <tr><td><code>LLAMA_BUILD_SERVER</code> / <code>TESTS</code></td><td>ON / ON</td><td>OFF / OFF</td></tr>
+  </tbody>
+</table>
+
+<p>
+  對齊那四個 <code>GGML_*</code> 之後<strong>全量重建 2m23s、0 error</strong>，
+  SONAME 內嵌的 commit 數由 <code>0.0.275</code> 升為 <code>0.0.277</code>
+  （<code>libllama-common.0.0.277.dylib</code>、<code>libllama.0.0.277.dylib</code>、
+  <code>libmtmd.0.0.277.dylib</code> 是新檔名，<code>lib*.0.dylib</code> 的 symlink 跟著重指）
+  —— 而<code>check_build_tracked.sh</code> 的檢查 2 用<strong>前綴</strong>比對，
+  所以它會放行新檔名，但<strong>檢查 1</strong>（<code>build/bin</code> 裡每個 <code>*.dylib</code> 都要被追蹤）
+  會 FAIL ⇒ 那三個檔案必須與 symlink 一起 commit。
+</p>
+
+<p>
+  <strong>D5 為什麼必須重跑</strong>：<code>libggml-metal</code> 的 md5 在重建後<strong>沒變</strong>
+  （<code>dd4d1bc4…</code>），但 <code>libggml</code>、<code>libggml-cpu</code>、<code>libggml-base</code>、
+  <code>libllama-server-impl</code>、<code>llama-server</code> 都變了 —— 「只有一個檔案沒變」不是不重跑的藉口。
+  重跑的結果（同一份既有 ref，<code>--tag flagalign2</code>，在<strong>完整重建後</strong>的樹上）：
+</p>
+
+<pre><code>GATE flagalign2: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+cross-tab: {'num_eq_dec_eq': 9, 'num_eq_dec_ne': 0, 'num_ne_dec_eq': 0, 'num_ne_dec_ne': 0}
+comparable: True    config_diffs: []</code></pre>
+
+<p>
+  ⇒ 對這個工作負載，這四個旗標的改動是<strong>數值 no-op</strong>（bit-identical logits），
+  四軸都乾淨。<code>config_diffs</code> 為空也順帶證明了 §11.11.4 的「argv 沒有位移」。
+  <strong>但 <code>build_fork_llama.sh</code> 的 <code>LLAMA_BUILD_SERVER=OFF</code> 與 devserver 需要的
+  <code>ON</code> 仍是結構性差異</strong> —— 我只對齊了那四個 <code>GGML_*</code>，沒有去改腳本。
+</p>
+
+<h4>11.11.6 item 4：§11.9.5 的時間範圍（已完成）</h4>
+
+<p>
+  §11.9.5 描述的是<strong>當時的產物</strong> <code>libllama-common.0.0.239.dylib</code>
+  （UUID <code>3e23c1e0…</code>）。自 11:30 起載入的是 <code>0.0.275</code>（<code>4ddc4e5d…</code>，MTP 開、
+  三個 <code>MTPDBG</code> guard 字串 3/3 存在），所以那句述句不再適用於現況。
+  已在 §11.9.5 的開頭加上<strong>時間範圍註記</strong>，並且連到 §11.10.2 與 §11.10.7(4)。
+  這一條的處置方式只有一個：<strong>改文字，不要偷偷改數字</strong>。
+</p>
+
+<h4>11.11.7 順手裁決一條矛盾：KV 的「<code>~0.56GB</code>」</h4>
+
+<p>
+  這是我自己上一輪標為「未裁決」的：<code>run_server.sh</code> 的註解聲稱
+  <code>--cache-type-k q8_0</code> 在 ctx=8192 省下 <code>~0.56GB (1.25GB -&gt; 0.69GB)</code>，
+  而我算出的量級只有 0.16 GiB，差 3 倍以上。<strong>裁決方式不是量測，是追到配置點</strong>：
+</p>
+
+<ol>
+  <li>主 context 走的是 <code>llama_memory_hybrid</code>（<code>llm_arch_is_hybrid</code> 含
+      <code>LLM_ARCH_QWEN35MOE</code>，<code>llama-arch.cpp:979</code>），
+      而它傳給 KV cache 的 filter 是 <code>il &lt; n_layer() &amp;&amp; !is_recr(il)</code>
+      （<code>llama-model.cpp:2292-2295</code> → <code>llama-memory-hybrid.cpp:48-50</code>）。</li>
+  <li><code>full_attention_interval=4</code> ⇒ 只有 <code>i=3,7,…,39</code> 這 <strong>10</strong> 層非 recurrent
+      （<code>qwen35moe.cpp:24-30</code>；<code>n_layer()=40</code> 而 <code>block_count=41</code>，
+      差的那一層是 <code>n_layer_nextn=1</code> 的 MTP 層）。</li>
+  <li>每層每 token：<code>2 kv-head × (key 256 + value 256) × 2B = 2 KiB</code> ⇒
+      10 層 = <strong>20 KiB/token</strong> ⇒ fp16 @8192 = <strong>160 MiB</strong>；
+      q8_0（1.0625 B/weight）≈ <strong>85 MiB</strong> ⇒ 實際省下約 <strong>75 MiB</strong>。</li>
+  <li>舊註解的 <code>0.69GB</code> 對應的是<strong>全 41 層 dense attention</strong>
+      （<code>41 × 1024 × 8192 × 2B = 688 MB</code>）—— 那是別的模型的形狀，不是這個的。</li>
+</ol>
+
+<p class="small">
+  <strong>兩個誠實標記。</strong>(a) 這是<strong>算術</strong>，不是實測：這個 fork 在 <code>-lv 3</code>
+  不印 KV 大小，所以 §11.11.7 的數字標為「算術，未實測」。(b) 我第一版把 10 層算成
+  <code>164 MiB</code>（把 20 KiB/token × 8192 的 KiB/MiB 換算算錯），已改為 <code>160 MiB</code>
+  —— 兩處都改了（<code>[budget]</code> 的 KV 行與 <code>[kv]</code> 註解）。
+  這條與 OOM 的槓桿無關（75 MiB vs 超額 4838 MiB），所以它不改變任何結論；
+  它被裁決的價值在於<strong>不要讓一個沒量過的數字留在腳本裡當事實</strong>。
+</p>
+
+<h4>11.11.8 這一節能說與不能說</h4>
+
+<p>
+  <strong>能說：</strong>(1) <code>-ub 4096</code> 是同 profile、同 <code>load_mode</code> 下的單變數繞道，
+  兩次獨立啟動共 6 次請求全過、0 錯誤行；6144 對照臂以 status 5 OOM 死在 req2 的 prefill 開頭，
+  且它的錯誤現在以 OOM 自己的名字出現。(2) <code>mmap</code> × expert cache 是<strong>載入階段</strong>的
+  SIGBUS（<code>KERN_PROTECTION_FAILURE</code> 在 <code>__bzero</code>），已被硬閘門擋住，四面對照都量了。
+  (3) <code>-fit</code> 在這條路徑上是 no-op、且這件事現在會出現在啟動訊息裡，
+  <code>CGC_SERVER_FIT=1</code> 可以讓它真跑。(4) 四個 <code>GGML_*</code> 已對齊，
+  重建後 <code>libggml-metal</code> 的 md5 未變、D5 <code>flagalign2</code> 四軸 9/9 PASS。
+</p>
+
+<p>
+  <strong>不能說：</strong>(1) 不能說 req2 的 OOM 被修好了 —— 它<strong>還在</strong>，
+  只是被一個設定繞過，而且繞道要付 prefill 約 <strong>−22%</strong>（130-152 vs 166.8 t/s）。
+  預設<strong>仍是 6144</strong>。(2) 不能說 <code>mmap</code> 的缺陷被修好了 —— 它只是被擋住，
+  修它要動 expert cache 的儲存所有權。(3) 不能說 build dir 已經等於專案自己的 Release 設定
+  —— <code>build_fork_llama.sh</code> 的 <code>LLAMA_BUILD_SERVER=OFF</code> 與 CURL 的差異還在，
+  而且它是刻意的（devserver 需要 server target）。
+  (4) 不能說 KV 的數字是量出來的（是算術），也不能說 <code>ub</code> 是唯一可能的繞道
+  —— 它是<strong>目前量到會過</strong>的那一個；池上限、<code>ctx</code> 也都還在未測清單上。
+</p>
+
+<p class="small">
+  複現：<code>bash Backup/run_req2_retest.sh</code>（單臂，約 1.5 分鐘；用
+  <code>CGC_SERVER_UBATCH= CGC_SERVER_BATCH= OUTDIR=…</code> 驅動）；
+  <code>python3 scripts/check/m123_oracle_gate.py --tag flagalign2</code>（D5，約 25 秒）。
+  證據：<code>Backup/cgc_logs/req2retest_20260916_120405.txt</code>（4096）、
+  <code>…_120747.txt</code>（4096 重跑）、<code>…_120537.txt</code>（6144，死）、
+  <code>…_120057.txt</code>（mmap，載入階段死）、<code>llama_server_20260916_120538.log</code>（四行 OOM）、
+  <code>llama_server_20260916_121252.log</code>（<code>fit</code> 那一行）、
+  <code>Backup/m123_oracle_gate/summary_flagalign2.json</code>、
+  <code>~/Library/Logs/DiagnosticReports/llama-server-2026-09-16-120239.ips</code>；
+  旗標快照與對照見 <code>Backup/pre_flagalign_20260916/MANIFEST.txt</code>。
 </p>
 
 </div>

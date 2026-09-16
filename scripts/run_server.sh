@@ -763,6 +763,110 @@ if [ "$PHYS_MEM_GB" -lt "$MEM_REQ_PHYS_GB" ] || [ "$FREE_PCT" -lt "$MEM_REQ_FREE
     exit 1
 fi
 
+# [防護 2d / 2026-09-16] 啟動預算：把 OOM 從形容詞變成算式。
+#
+# 為什麼要有這一塊：req2 的 OOM（白皮書 §11.10.5）炸在 prefill 開頭，log 只留
+#   Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)
+# —— 那句話不含任何數字。而真正可算的三項，在載入模型之前就全部已知：
+#
+#   1. 模型檔位元組（stat -f%z）。--load-mode none（= --no-mmap）把它讀成匿名頁，**不可回收**；
+#      mmap 則是 file-backed 的 clean page，OS 隨時可回收。所以「算不算進需求」取決於 load mode。
+#      （mmap 這一側目前走不通：它與 expert cache 不相容，載入階段就 SIGBUS，見下面 [防護 2e]。
+#       算式仍然把它分開算，因為一旦那個缺陷被修，這個分類就是對的。）
+#   2. expert pool 的上限（BUDGET）。**它是上限、不是實配**：實際槽數另受
+#      LLAMA_EXPERT_CACHE_LAYER_CAPS 限制（prefill250 走 "40-40:256"，載入時實測 5976 槽）。
+#      實測換算：M2 whole-layer slab 在 256 experts 時是 110 MiB/層
+#      （log：CGC-PREFILL-STREAM ... experts=256 slab=110.00 MiB），
+#      因此 5976 槽 ≈ 5976/256 × 110 MiB ≈ 2.5 GiB —— 也就是說 8 GiB 的 BUDGET 對這台機器是
+#      「喊出來的數字」，真正的池子比它小。所以下面**不**把兩者混成單一結論，兩個數都印。
+#   3. KV cache。這顆是 qwen35moe，而 src/models/qwen35moe.cpp:28 是
+#      is_recr_impl[i] = ((i + 1) % full_attn_interval != 0)，帶 full_attention_interval=4
+#      ⇒ 41 層裡只有 i=3,7,11,…,39 這 **10 層**帶 KV，其餘 31 層是 recurrent（線性注意力）。
+#      KV/token = 10 層 × n_head_kv(2) × (key 256 + value 256) × 2B = 20 KiB/token
+#      ⇒ KV@ctx=8192 ≈ 164 MiB。**它不是瓶頸**；算進來只是為了不讓「先怪 KV」取代算術。
+#      注意：recurrent 快取（rs_size）**不在**這個數字裡，而且它隨 n_ubatch 成長（不是隨 ctx），
+#      所以 ub=6144 除了撐大 compute buffer 之外還有這一項成本。本行不列入總和。
+#
+# 判準（CONVENTIONS B7）：這一段永遠印，並且在 demand > 實體記憶體 時多印 OVERSUBSCRIBED。
+# 預設只警告不拒跑 —— prefill250 本來就是以這種方式在跑，硬擋會讓 D5 閘門與所有既有量測都起不來。
+# 要它在超額時直接拒跑：CGC_SERVER_STRICT_BUDGET=1。
+CGC_SERVER_STRICT_BUDGET="${CGC_SERVER_STRICT_BUDGET:-0}"
+_MIB=1048576
+MODEL_BYTES="$(stat -f%z "$MODEL" 2>/dev/null || echo 0)"
+case "$SERVER_LOAD_MODE" in
+    mmap|mmap+mlock) _MODEL_RESIDENT=0; _MODEL_KIND="file-backed、OS 可回收" ;;
+    *)               _MODEL_RESIDENT="$MODEL_BYTES"; _MODEL_KIND="匿名頁、不可回收" ;;
+esac
+_b_model=$(( MODEL_BYTES    / _MIB ))
+_b_res=$(( _MODEL_RESIDENT / _MIB ))
+_b_pool=$(( BUDGET         / _MIB ))
+_b_phys=$(( PHYS_MEM_BYTES / _MIB ))
+_b_dem=$(( _b_res + _b_pool ))
+echo "[budget] model       ${_b_model} MiB（load_mode=$SERVER_LOAD_MODE => ${_MODEL_KIND}）"
+echo "[budget] expert pool ${_b_pool} MiB（BUDGET 是上限，實配另受 LAYER_CAPS 限制；實測 110 MiB/層@256 experts ≈ 2.5 GiB@5976 槽）"
+echo "[budget] KV          ctx=${CTX}；主 context 走 hybrid memory，filter_attn = (il<40 && !is_recr(il))" >&2
+echo "[budget]             （llama-model.cpp:2292-2295 + llama-memory-hybrid.cpp:48-50）=> 只有 10 層帶 K/V（i=3,7,…,39，full_attention_interval=4）；" >&2
+echo "[budget]             每層 2 kv-head × (256k+256v) × 2B = 2 KiB/token => fp16 KV@8192 = 160 MiB，q8_0 ≈ 85 MiB —— 非瓶頸（算術，未實測）" >&2
+echo "[budget] 靜態需求    ${_b_dem} MiB（model resident ${_b_res} + pool ${_b_pool}） vs 實體 ${_b_phys} MiB"
+if [ "$_b_phys" -gt 0 ] && [ "$_b_dem" -gt "$_b_phys" ]; then
+    echo "[budget] OVERSUBSCRIBED by $(( _b_dem - _b_phys )) MiB：這個啟動只能在 macOS 記憶體壓縮 + swap 之上執行。"
+    echo "[budget] 槓桿：CGC_SERVER_EXPERT_CACHE_BYTES（池上限）／CGC_SERVER_UBATCH（compute buffer 與 recurrent 快取都隨 ub 成長）／CGC_SERVER_CTX（影響很小：KV@8192 只有約 160 MiB）"
+    echo "[budget] 注意：load_mode=mmap 看起來是最直接的那一根（模型頁變可回收），但**目前不能用** —— 它與 expert cache 不相容，見下面的 [防護 2e]。"
+    echo "[budget] 這一項沒有任何自動補救：-ngl 是顯式指定的，-fit 不會介入（見上面的 [防護 2c]）。"
+    echo "[budget] 已量測的存活設定（2026-09-16 12:04，同 profile、同 load_mode=none）：CGC_SERVER_UBATCH=4096 CGC_SERVER_BATCH=4096"
+    echo "[budget]   該臂 req1..req3 全過（130.3 / 134.0 / 151.6 t/s），log 0 錯誤行、無 crash report；"
+    echo "[budget]   同機的 6144 對照臂 req1 過（166.8 t/s）但 req2 以同一組 status 5 OOM 死。"
+    echo "[budget]   代價：prefill 約 130-152 t/s vs 6144 臂的 166.8 t/s（約 -22%）。預設仍是 6144 —— 改不改是配置決策，這裡不替你改。"
+    if [ "$CGC_SERVER_STRICT_BUDGET" = "1" ]; then
+        echo "error: CGC_SERVER_STRICT_BUDGET=1 且靜態需求 ${_b_dem} MiB 超過實體 ${_b_phys} MiB -> 拒跑。" >&2
+        exit 1
+    fi
+else
+    echo "[budget] OK：靜態需求 ${_b_dem} MiB <= 實體 ${_b_phys} MiB。"
+fi
+
+# [防護 2e / 2026-09-16] load_mode=mmap 與 expert cache 目前**不相容**，而且是硬崩，不是變慢。
+#
+# 量測（Backup/cgc_logs/req2retest_20260916_120057.txt，profile=prefill250 + CGC_SERVER_LOAD_MODE=mmap）：
+# 行程在**載入階段**就死，health 從未轉 ok，crash report
+# ~/Library/Logs/DiagnosticReports/llama-server-2026-09-16-120239.ips：
+#
+#   EXC_BAD_ACCESS / SIGBUS / KERN_PROTECTION_FAILURE at 0x00000003332f5ae0
+#     0 __bzero + 32
+#     1 fill_pool_direct(llama_expert_cache*, unsigned int, int, unsigned int) + 172
+#     2 llama_expert_cache_ensure_slot(...) + 652
+#     3 llama_expert_cache_prewarm_hot(llama_expert_cache*) + 880
+#     4 llama_context::process_ubatch(...)
+#     5 llama_context::decode(...)      <- 由 load_model 的 warmup 走進來
+#
+# 機制：expert cache 的 L4 pool 是「regions adopted from expert tensors」（log 原句），也就是說
+# 它直接寫進模型張量的儲存。--load-mode none（=--no-mmap）時那是可寫的堆積；--load-mode mmap
+# 時那是**唯讀的 file-backed 映射**。於是 src/llama-expert-cache.cpp:693-710 的 fill_pool_direct：
+# pread 寫不進去 -> fill_segments_concurrent 回報失敗 -> 印「short read ... zeroing slot」
+# （log 第 17 行正是這句）-> 走 :704-706 的 memset 把 slot 清零 -> SIGBUS。
+# 也就是說那條「短讀取就清零」的復原路徑預設了 dst 可寫，這個預設只在 none 模式下成立。
+#
+# 因此這不是「值得一試的槓桿」：[防護 2d] 在超額時原本把 mmap 列為選項，這裡把它拿掉。
+# 要真的走 mmap，得先讓 pool 在 mmap 模式下配置自己的可寫儲存（而不是沿用張量儲存），
+# 在那之前這兩個開關的組合一律當成不合法。要硬闖（例如正在修那個缺陷）：
+# CGC_SERVER_ALLOW_MMAP_EXPERT_CACHE=1。
+case "$SERVER_LOAD_MODE" in
+    mmap|mmap+mlock)
+        if [ "${CGC_SERVER_EXPERT_CACHE_OFF:-0}" != "1" ]; then
+            if [ "${CGC_SERVER_ALLOW_MMAP_EXPERT_CACHE:-0}" = "1" ]; then
+                echo "warning: load_mode=$SERVER_LOAD_MODE + expert cache 是已知會 SIGBUS 的組合（llama-expert-cache.cpp:704，__bzero 寫唯讀映射）；已由 CGC_SERVER_ALLOW_MMAP_EXPERT_CACHE=1 放行。" >&2
+            else
+                echo "error: load_mode=$SERVER_LOAD_MODE 與 expert cache 不相容 -> 載入階段就會 SIGBUS。" >&2
+                echo "  證據：llama-server-2026-09-16-120239.ips，__bzero <- fill_pool_direct <- prewarm_hot（見腳本內註解）。" >&2
+                echo "  pool 的儲存是 adopted from expert tensors，mmap 下那塊是唯讀的。" >&2
+                echo "  選項：改回 CGC_SERVER_LOAD_MODE=none，或加 CGC_SERVER_EXPERT_CACHE_OFF=1（cache-free），" >&2
+                echo "        或（只在修那個缺陷時）CGC_SERVER_ALLOW_MMAP_EXPERT_CACHE=1 硬闖。" >&2
+                exit 1
+            fi
+        fi
+        ;;
+esac
+
 mkdir -p "$LOG_DIR"
 ln -sf "$LOG" "$LOG_DIR/llama_server_latest.log"
 
@@ -849,9 +953,39 @@ if [ -n "$SERVER_REASONING" ] || [ -n "$SERVER_REASONING_FORMAT" ] || [ "$SERVER
     echo "[chat]  reasoning=${SERVER_REASONING:-auto} format=${SERVER_REASONING_FORMAT:-auto} skip_chat_parsing=$SERVER_SKIP_CHAT_PARSING"
 fi
 echo "[log]   ${LOG}（tail -f 同路徑）"
+
+# [防護 2c / 2026-09-16] 「-fit 會幫我們挑一組裝得下的參數」是錯的 —— 在這一條路徑上它從來沒跑過，
+# 而啟動訊息完全不提。這一段把它的實際狀態印出來，並且提供一個能真的讓它跑起來的開關。
+#
+#   common/common.h:477 讓 params.fit_params 預設 true（等同 -fit on），但
+#   src/llama.cpp/common/fit.cpp:377-379 是：
+#       if (mparams->n_gpu_layers != default_mparams.n_gpu_layers) {
+#           throw common_params_fit_exception("n_gpu_layers already set by user to " + ... + ", abort");
+#       }
+#   而 llama_model_default_params().n_gpu_layers 是 -1（src/llama-model.cpp:2479），這個腳本卻一律
+#   顯式帶 -ngl（見下面的 SERVER_ARGS）。所以 fit 每次都 abort 成一行 warning，而它只出現在
+#   server log 的第 9 行：
+#       W common_fit_params: failed to fit params to free device memory:
+#                            n_gpu_layers already set by user to 99, abort
+#   ⇒ 真正在做記憶體判斷的是 [防護 1]（清殘留）＋ [防護 2/2b]（free% 水位）＋ [防護 2d]（啟動預算）。
+#     不要把「裝不裝得下」記在 fit 頭上；它沒有參與過。
+#
+#   CGC_SERVER_FIT=1 會把 -ngl 從 argv 拿掉，讓 fit 真的能決定 n_gpu_layers。但 fit 只會「縮」到
+#   裝得下（它不會維持 ngl=99 的形狀），那會直接改變記憶體與效能剖面，也會改掉與既有 oracle 抓
+#   下來的 config stamp 的可比性 —— 所以預設關閉。注意 argv 順序：D5 閘門的 config stamp 是
+#   「位置比對」ARG[i]，所以 FIT=0 時 -ngl 必須留在原本的索引上（下面用兩段 append 而不是重新排序）。
+CGC_SERVER_FIT="${CGC_SERVER_FIT:-0}"
+
 SERVER_ARGS=(
     -m "$MODEL"
-    -ngl "$SERVER_NGL"
+)
+if [ "$CGC_SERVER_FIT" = "1" ]; then
+    echo "[fit]   -ngl 不帶 -> common_fit_params 會自己決定 n_gpu_layers（會改變記憶體／效能剖面）" >&2
+else
+    echo "[fit]   -fit 是 no-op：-ngl=$SERVER_NGL 是本腳本顯式指定的，fit 會 abort（fit.cpp:377）" >&2
+    SERVER_ARGS+=(-ngl "$SERVER_NGL")
+fi
+SERVER_ARGS+=(
     --load-mode "$SERVER_LOAD_MODE"
     -t 8
     -c "$CTX"
@@ -882,13 +1016,22 @@ if [ "${CGC_SERVER_EXPERT_CACHE_OFF:-0}" = "1" ]; then
 else
     SERVER_ARGS+=(-expert-cache "$BUDGET")
 fi
-# [CGC 2026-09-08 KV cache Q8 quantization] reduce KV cache memory by ~45% (FP16 -> Q8_0).
-# For Qwen3.6-35B-A3B at ctx=8192: saves ~0.56GB (1.25GB -> 0.69GB). Quality impact is
-# negligible (<1%) for typical workloads. Set CGC_SERVER_KV_Q8=0 to disable (fall back to FP16).
+# [CGC 2026-09-08 KV cache Q8 quantization] -- numbers re-derived 2026-09-16 (the old
+# "saves ~0.56GB (1.25GB -> 0.69GB)" was wrong for this model; see below).
+# For Qwen3.6-35B-A3B at ctx=8192 the KV cache holds K/V for 10 of the 40 layers only:
+# the main context is a hybrid memory whose attn filter is `il < n_layer() && !is_recr(il)`
+# (llama-model.cpp:2292-2295 -> llama-memory-hybrid.cpp:48-50), and full_attention_interval=4
+# makes exactly i=3,7,...,39 non-recurrent. Per layer per token: 2 kv-heads x (key 256 +
+# value 256) x 2B = 2 KiB.  =>  fp16 160 MiB  ->  q8_0 ~85 MiB  =>  saving ~75 MiB.
+# NOTE the old text counted all 41 blocks as dense-attention layers (41 x 1024 x 8192 x 2B
+# = 0.69 GB) and paired it with an f32 figure; that is a dense model's shape, not this one's.
+# Arithmetic only -- this fork prints no KV-size line at -lv 3, so it is not measured.
+# Quality impact is negligible (<1%) for typical workloads. Set CGC_SERVER_KV_Q8=0 to
+# disable (fall back to FP16).
 SERVER_KV_Q8="${CGC_SERVER_KV_Q8:-1}"
 if [ "$SERVER_KV_Q8" = "1" ]; then
     SERVER_ARGS+=(--cache-type-k q8_0 --cache-type-v q8_0)
-    echo "[kv]     cache-type-k=q8_0 cache-type-v=q8_0 (saves ~0.56GB at ctx=8192)"
+    echo "[kv]     cache-type-k=q8_0 cache-type-v=q8_0 (saves ~75 MiB at ctx=8192, not 0.56GB -- see comment)"
 fi
 if [ -n "$SERVER_BATCH" ]; then
     SERVER_ARGS+=(-b "$SERVER_BATCH")

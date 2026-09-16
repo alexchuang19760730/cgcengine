@@ -617,6 +617,50 @@
 - 見 lesson `eng-gate-0032`；`Backup/run_req2_retest.sh` 的證據頭、`scripts/run_server.sh:325-341`、
   `scripts/check_build_tracked.sh:384-397`。
 
+**B19｜交回來的「仍未解」清單，先分類再動手：缺陷／缺失的可見性／政策漂移／已過期的述句。**
+- 為什麼：這四類的「修好」是不同的動作，而且只有第一類需要改行為。
+  2026-09-16 一次交回來四條，其中
+  (a) `req2` 的 OOM 是**真缺陷**（只能繞道或修機制）；
+  (b) `--ngl 99` 讓 `common_fit_params` 被跳過**不是 bug** —— `-ngl` 是本腳本顯式帶的，
+  `fit.cpp:377-379` 因此 throw，`-fit` 在這條路徑上**從來沒跑過**。要修的是「啟動訊息完全不提它」，
+  改 fit 的行為反而會改掉記憶體／效能剖面與 oracle 的可比性；
+  (c) build dir 與 `build_fork_llama.sh` 不一致是**政策漂移**（其中的 `GGML_*` 四個是已裁決的，要對齊；
+  `LLAMA_BUILD_SERVER` 的差異是刻意的，不要對齊）；
+  (d) §11.9.5 的述句是**已過期的述句** —— 只能加時間範圍，不能偷偷改數字。
+- 怎麼做：每一條先寫下「它是哪一類」再動手；把 (b) 這種當 bug 去修，會把一個**可見性問題**
+  換成一個**配置變更**（更貴、且會污染既有閘門的可比性）。
+- 檢查：白皮書那一節要有一張「類別／處置／證據」表；說不出類別的那一條，代表還沒想清楚。
+
+**B20｜相容性缺陷（唯讀映射被寫）要用**硬閘門**擋住，而閘門要四面都量。**
+- 為什麼：`CGC_SERVER_LOAD_MODE=mmap` 與 expert cache 不相容 —— 後者的 L4 pool 是
+  「regions adopted from expert tensors」，直接寫進模型張量儲存；`mmap` 下那是唯讀 file-backed 映射，
+  於是 `fill_pool_direct` 的 zeroing（`llama-expert-cache.cpp:704`）寫進唯讀頁 →
+  `SIGBUS` / `KERN_PROTECTION_FAILURE` 在 `__bzero`，**載入階段**就死。
+  這種缺陷的「修」要動儲存所有權（另一輪的事），所以本輪的正確產物是**閘門**，不是一個
+  「試試看」的建議。
+- 怎麼做：閘門四面對照 —— ① 單獨（拒跑，rc=1）、② 合法豁免（`EXPERT_CACHE_OFF=1`，rc=0）、
+  ③ 強制放行（`ALLOW_…=1`，rc=0 + warning）、④ 對照（原路徑不受影響）。
+  只量①等於沒有量：你不知道豁免路徑是否也被誤擋。
+- 另外：**閘門一旦成立，就要回頭把它從「建議槓桿」清單裡拿掉**。同一次改動裡
+  `[budget]` 超額段原本把 `mmap` 列為槓桿 —— 一個會 SIGBUS 的選項不是槓桿。
+- 見 `scripts/run_server.sh` 的 `[防護 2e]`、`Backup/cgc_logs/req2retest_20260916_120057.txt`、
+  `~/Library/Logs/DiagnosticReports/llama-server-2026-09-16-120239.ips`。
+
+**B21｜OOM 要寫成算式，不要寫成形容詞；而且「池的上限」不等於「實配」。**
+- 為什麼：`-expert-cache $BUDGET` 的 8192 MiB 是**上限**，實配是 `5976 槽 ÷ 40 層`
+  （`LAYER_CAPS per-layer caps: total 5976 slots`），每層 `110 MiB@256 experts`
+  （`CGC-PREFILL-STREAM … slab=110.00 MiB`）⇒ 約 2.5 GiB。
+  把上限當實配，會把 `21222 MiB vs 16384 MiB`（OVERSUBSCRIBED 4838 MiB）算成別的東西。
+  同理 `KV` 不能靠直覺：主 context 是 hybrid memory，filter 是 `!is_recr(il)`
+  （`llama-model.cpp:2292-2295`），`full_attention_interval=4` ⇒ 只有 10 層帶 K/V ⇒
+  fp16 @8192 = 160 MiB（本模型；全 40 層 dense 才是 0.64 GiB）。
+- 怎麼做：啟動時把算式印出來（`[budget]` 五～九行），並且**每一項都標明是算術還是實測**。
+  沒量過就標「算術，未實測」——寫成既成事實的估計值，比沒有這個數字更糟。
+- 檢查：算式要能指到它的兩個來源（此處：`llama-model.cpp:2292-2295`／`llama-memory-hybrid.cpp:48-50`
+  與 `LAYER_CAPS` 的 log 行）。指不到的項不要印。
+- 反例（自己踩的）：第一版把 10 層算成 `164 MiB`（`20 KiB/token × 8192` 的 KiB/MiB 換算算錯，
+  正確是 `160 MiB`）。**算術也要複核**，尤其是單位換算。
+
 ---
 
 ## C. 讀原始碼
