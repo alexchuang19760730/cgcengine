@@ -433,6 +433,37 @@
   （`--selftest`）——那是契約的另一半。`nargs="+"` 讓 `--selftest` 直接被 argparse 拒絕，
   是 selftest 自己抓到的。
 
+**B9｜在同一個 dylib 兩側以指標傳遞的 struct，新增成員是一次連結器看不見的 ABI 破壞。**
+- 為什麼：2026-09-16 為斷言 `ensure_batch` 的兩趟指派，在 `llama_expert_cache` 加了
+  `n_hit_adopted_queued`（8 bytes），把 `ever_loaded` 的偏移從 `0x608` 推到 `0x610`。
+  A/B 用 `git stash` 換臂建的舊 dylib 留在 `build/bin`，`stash pop` 之後**沒重建**，
+  於是「照新標頭編的測試」連上「照舊佈局編的庫」。症狀是
+  `SIGSEGV / KERN_INVALID_ADDRESS at 0x0` **崩在函式庫裡**
+  （`llama_expert_cache_ensure_batch +1068`），**不是連結失敗**——連結器只看見符號，
+  看不見成員偏移。反組譯那條指令（`ldr x9, [x10, x9]`，x10 來自 `[x8, #0x608]`）
+  對照 `offsetof` 印出的兩套偏移即可確認：`0x608` 在新佈局是 `n_slot_table_unchanged`
+  （`size_t`，值 0，被當成 data pointer 索引 ⇒ 空指標），在舊佈局才是 `ever_loaded._M_start`。
+- 規則：(a) 動到跨 dylib 邊界的 struct ⇒ 與該標頭連結的測試／工具要與**它所連的樹同狀態重建**；
+  (b) `git stash` 換臂之後 build tree 屬於**另一臂**，pop 後第一件事是重建、不是跑測試；
+  (c) 診斷順序 `nm -gU`（符號在不在）→ `offsetof` 探針（兩套偏移）→
+  `strings` 找新增字串（本例該 dylib 完全不含 `CGC-BATCH-INVARIANT` ⇒ 它是舊碼）→
+  `stat` 兩個 mtime。四步一分鐘內收斂。
+- 附帶：錯誤的直覺是去改測試（第一反應是回頭審測試的 `key_segs`/`slot_owner` 初始化）。
+  判準是「庫和標頭是不是同一棵樹」。見 lesson `eng-gate-0019`；
+  `scripts/check/expert_cache_ensure_batch_order.cpp` 檔頭已寫入 ABI 警告與編譯指令。
+
+**B10｜把一次 A/B 當成驗證之前，先確認修法的前提在該配置下<em>可達</em>。**
+- 為什麼：`ensure_batch` 的兩趟指派只在「池填滿、且 LRU 淘汰真的觸發」時才改變行為。
+  出貨預設（非 `CGC_POOL_SPLIT`）的池在 warmup 期間**從不填滿** ⇒ miss 落在空槽
+  ⇒ 淘汰不觸發 ⇒ 兩趟是 no-op。2026-09-16 把修法 stash 掉、同一 4 GiB 配置重跑，
+  新舊二進位吐出的 `CGC-PRE`/`CGC-POST`/`CGC-SLOT` **逐位元相同**。
+- 規則：逐位元相同的 A/B 要讀成兩句話——「**沒壞的地方沒有變**」（有價值的安全確認）
+  與「**修法被檢驗了**」（沒有）。當前提取不到鑑別性訊號時，去找**能把前提做到的最小實驗**
+  （本例：不需模型、不需 IO 的單元測試，直接連 dylib 裡真正的函式），
+  不要把 no-op 的 A/B 寫成通過。
+- 見 lesson `eng-gate-0022`；`scripts/check/expert_cache_ensure_batch_order.cpp`
+  （HEAD 逐字重現 09-14 日誌的映射 ⇒ FAIL；兩趟之後 ⇒ PASS）。
+
 ---
 
 ## C. 讀原始碼

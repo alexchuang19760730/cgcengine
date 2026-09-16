@@ -67,6 +67,17 @@ CURATED = [
      "proves the gate REJECTS a wrong input. A gate that has never been shown to fail is not a gate."),
     ("scripts/check/feasibility_gate_selftest.py", "gate", "engine", True, False,
      "same, for the feasibility gate."),
+    ("scripts/check/expert_cache_ensure_batch_order.cpp", "gate", "engine", True, False,
+     "order-dependence test for llama_expert_cache_ensure_batch, and the discriminating evidence "
+     "for the Blocker B fix (docs/M1_POOL_SPLIT_COST_2026-09-14.md §4.1). No model, no server, no "
+     "IO: it links the REAL ensure_batch out of libllama and hands a synthetic cache the state "
+     "prepopulate leaves behind (pool full, slot_last_use all 0, one cold member whose slot an "
+     "in-flight fill holds). HEAD -> st[0]=1 .. st[15]=16, 0 hit / 16 miss, FAIL, which is the "
+     "09-14 capture's mapping reproduced word for word; two-pass -> 15 hit / 1 miss, PASS. This "
+     "is the test the live configuration could not be: both 10 GiB and 4 GiB split runs die in "
+     "warmup with Metal Insufficient Memory before serving a request. Rebuild the LIBRARY from the "
+     "same tree state first - llama_expert_cache crosses the dylib boundary by pointer, so a "
+     "stale-dylib/fresh-header pair crashes inside ensure_batch instead of failing to link."),
     ("scripts/check/mmid_geometry_probe.sh", "probe", "engine", True, False,
      "explores the mul_mat_id geometry (pool slots vs full width)."),
     ("scripts/check/mmid_pool_vs_gguf.py", "probe", "engine", True, False,

@@ -870,10 +870,52 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
             for (uint32_t i = 0; i < slots_l(cache, layer); ++i) if (cache->slot_owner[layer][i] >= 0) busy0++;
             fprintf(stderr, "PFDBG batch l=%u n=%zu busy_before=%u\n", layer, n, busy0);
         }
+        // [CGC 2026-09-16 Blocker B] TWO PASSES, and the split is the fix, not a tidy-up.
+        // batch_owned used to be filled INCREMENTALLY by one loop: a miss visited at i evicted
+        // by LRU while only the members visited BEFORE i were protected. A member visited AFTER
+        // i was still evictable. When every usable slot is owned -- which is exactly the state
+        // the identity prepopulate leaves behind, and CGC_POOL_SPLIT makes that state reachable
+        // for every layer whose cap equals the pool capacity -- a batch that ascends through
+        // expert ids makes each miss evict the NEXT member's slot, turning that member into a
+        // miss as well. Measured on the owned pool (Backup/cgc_logs/llama_server_20260914_094821.log):
+        // table went st[e]=e -> st[e]=e+1 for e=0..7, i.e. ONE cold expert converted a
+        // hits-only batch into eight misses and shifted the whole layer's expert->slot map by
+        // one. The batch_owned comment above has always claimed the exact-set invariant ("hit
+        // slots + assigned miss slots"); "already visited" does not implement it.
+        // Pass 1 claims the slot of every RESIDENT member. Pass 2 assigns the misses, and can
+        // therefore only ever evict a slot no member of this batch is reading.
         for (size_t i = 0; i < n; ++i) {
             const uint32_t e = experts[i];
             if (e >= cache->n_expert) {
                 continue;
+            }
+            // [CGC 2026-09-16 Blocker B] An expert can already OWN a slot whose table entry is
+            // not published yet: prefetch_slot sets slot_owner[s] = e and slot_queued[s] = 1 at
+            // QUEUE time, and bg_loop publishes slot_table[e] only once the bytes land. The hit
+            // test below looks at table[e] alone, so such an expert reads as COLD and pass 2
+            // would hand it a SECOND slot (two slots, one expert: a leaked slot, and the bg
+            // publish then overwrites the second assignment). Adopt the in-flight fill instead -
+            // the same wait the hit path already performs for a resident expert.
+            if (table[e] < 0 && cache->pool_active) {
+                int32_t owned = -1;
+                for (uint32_t s = 0; s < slots_l(cache, layer); ++s) {
+                    if (cache->slot_owner[layer][s] == (int32_t) e &&
+                        (cache->slot_queued[layer][s] || cache->slot_loading[layer][s])) {
+                        owned = (int32_t) s;
+                        break;
+                    }
+                }
+                if (owned >= 0) {
+                    const int64_t fw0 = ggml_time_us();
+                    cache->bg_cv.wait(lk, [&]{
+                        return !cache->slot_loading[layer][owned] && !cache->slot_queued[layer][owned];
+                    });
+                    cache->fill_wait_us.fetch_add((uint64_t) (ggml_time_us() - fw0), std::memory_order_relaxed);
+                    cache->n_hit_adopted_queued++;
+                    // the fill either published table[e] (adopted by the hit path below) or was
+                    // dropped/superseded, in which case the slot is free again and we fall
+                    // through to the miss path with no double ownership.
+                }
             }
             if (table[e] >= 0) {
                 const int32_t slot = table[e];
@@ -891,6 +933,18 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
                 }
                 batch_owned[slot] = 1; // this batch reads it via the remap: never evict mid-batch
                 slots[i] = slot;
+                continue;
+            }
+        }
+        // [CGC 2026-09-16 Blocker B] PASS 2: every resident member is now claimed, so a victim
+        // chosen here cannot be a slot this batch reads. Before this split the two phases were
+        // interleaved and a miss could free a slot a later member already held.
+        for (size_t i = 0; i < n; ++i) {
+            if (slots[i] >= 0) {
+                continue; // claimed as a hit (or adopted from an in-flight fill) in pass 1
+            }
+            const uint32_t e = experts[i];
+            if (e >= cache->n_expert) {
                 continue;
             }
             cache->n_misses++;
@@ -1056,6 +1110,48 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
                     cache->slot_pinned_static[layer][s] = 1;
                     cache->n_pin_marked++;
                 }
+            }
+        }
+        // [CGC 2026-09-16 Blocker B] Post-conditions of the two-pass assignment, checked where
+        // they actually hold: table[e] is published by the loop ABOVE, after the fills land, so
+        // this cannot sit inside the assignment block (a first draft did, and reported four
+        // violations per layer for misses whose publish had simply not happened yet). The
+        // failure this split fixes was SILENT -- every selected expert still had a slot, just the
+        // wrong one -- so the invariant is verified, not assumed.
+        if (getenv("LLAMA_EXPERT_CACHE_BATCH_INVARIANT") != nullptr) {
+            const uint32_t ns_l = slots_l(cache, layer);
+            size_t violations = 0;
+            for (size_t i = 0; i < n; ++i) {
+                const uint32_t e = experts[i];
+                if (e >= cache->n_expert) {
+                    continue;
+                }
+                const int32_t s = slots[i];
+                const bool in_range = s >= 0 && s < (int32_t) ns_l;
+                if (!in_range || table[e] != s || cache->slot_owner[layer][s] != (int32_t) e) {
+                    if (violations < 8) {
+                        fprintf(stderr, "CGC-BATCH-INVARIANT: il=%u i=%zu expert=%u slot=%d table=%d owner=%d\n",
+                                layer, i, e, s, table[e], in_range ? cache->slot_owner[layer][s] : -9);
+                    }
+                    violations++;
+                }
+                for (size_t j = i + 1; in_range && j < n; ++j) {
+                    if (slots[j] == s) {
+                        if (violations < 8) {
+                            fprintf(stderr, "CGC-BATCH-INVARIANT: il=%u experts %u and %u share slot %d\n",
+                                    layer, e, experts[j], s);
+                        }
+                        violations++;
+                    }
+                }
+            }
+            if (violations > 0) {
+                fprintf(stderr, "CGC-BATCH-INVARIANT: il=%u n=%zu VIOLATIONS=%zu "
+                                "(distinct slots / table reads back / owner agrees)\n",
+                        layer, n, violations);
+            } else if (layer <= 2) {
+                fprintf(stderr, "CGC-BATCH-INVARIANT: il=%u n=%zu OK (distinct slots, table reads back, owner agrees)\n",
+                        layer, n);
             }
         }
         // [CGC WIN_PIN] roll this batch's union into the layer's window and repin the LRU-exempt

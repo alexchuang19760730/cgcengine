@@ -647,7 +647,10 @@ slow: 4 prefill graph(s), per-graph shape:
   <li><strong>不改變 decode。</strong>S3 六次與 S4 三次的 tg：冷態 6.46 / 7.14 / 7.23，熱態
       6.45 / 6.92 / 6.55 / 6.54 / 6.84 t/s——<strong>沒有趨勢</strong>。decode 對這個熱狀態不敏感，
       所以這個發現對 <strong>25 tok/s 那條路沒有任何幫助</strong>：它的障礙仍是已實作、已量測、
-      已被否決的 M1/W3（<code>docs/M1_POOL_SPLIT_COST_2026-09-14.md</code>）。</li>
+      已被否決的 M1/W3（<code>docs/M1_POOL_SPLIT_COST_2026-09-14.md</code>）。
+      <span class="small">（2026-09-16 追加：M1/W3 的<strong>否決不變</strong>，但它的<strong>兩個</strong>
+      blocker 已經少了一個——blocker B 已根因定位並修在出貨碼上，只剩 wide 路徑那條結構性限制。
+      詳見 §9。）</span></li>
   <li><strong>不指認頻率。</strong><code>gpu_union/wait ≈ 100%</code> 只說明「等待期間 GPU 在忙」。
       頻率／功耗上限／記憶體子系統三者在這裡未被分離。</li>
   <li><strong>不是絕對 oracle。</strong>250 與 165 都是這台機器、這個 <code>prefill250</code> shape、
@@ -899,6 +902,102 @@ scripts/check/powermetrics_gpu_freq.sh --parse Backup/cgc_logs/powermetrics_pref
       <code>slot_owner</code>）、以及「zero slot 就是 slot 0」（它是 <code>slots_l - 1</code>）。
       <strong>在重擷取之前不要改 <code>pick_slot</code> 或 <code>prepopulate</code>。</strong></li>
 </ol>
+
+<h2>9. 追加（2026-09-16）：§8 第 4 項的決議 —— blocker B 已解掉，verdict 不變</h2>
+
+<div class="box b-green">
+  <p><strong>上表第 4 項的「引文自相矛盾」判斷是對的，但矛盾不在快照，在引文本身被抄錯。</strong>
+  原始日誌 <code>Backup/cgc_logs/llama_server_20260914_094821.log:324</code> 寫的是
+  <code>st[1]=2</code>，不是 <code>st[1]=1</code>。改成 <code>st[1]=2</code> 之後三行逐格自洽
+  （<code>remap[i] == st[ids[i]]</code>，<code>CGC-SLOT</code> 印的四個值就是 <code>st[0..3]</code>），
+  所以「同一次列印互相矛盾」的推論不成立——
+  <strong>沒有任何一行顯示兩個 expert 共用一個 slot</strong>。白皮書 §4 的那句
+  <code>&lt;- expert 0 and expert 1 share slot 1</code> 是誤讀，已在
+  <code>docs/M1_POOL_SPLIT_COST_2026-09-14.md</code> 以 errata 更正。</p>
+</div>
+
+<p><strong>真正的異常</strong>：整層的 expert→slot 映射<strong>整體 +1 位移</strong>，而且被重配的是
+<strong>8/8 而不是 1/8</strong> —— <strong>一個冷 expert 把一個全 hit 的 batch 變成全 miss 的 batch。</strong>
+機制是三件事疊起來的，單獨看每一件都不算錯：</p>
+
+<ul>
+  <li><code>prepopulate</code> 的 identity 填充把池<strong>填滿</strong>，且每個
+      <code>slot_last_use</code> 都是 <strong>0</strong> ⇒ LRU 犧牲者就是「最低且未被跳過」的那一格。</li>
+  <li><code>pick_slot</code> 的淘汰<strong>會清掉被犧牲者的 slot 表條目</strong>
+      （<code>slot_table[layer*n_expert + evicted] = -1</code>，<code>llama-expert-cache.cpp:~555</code>）⇒
+      淘汰對<em>同一個 batch 的其餘成員是可見的</em>，一次 eviction 會把一個 resident 成員變成 miss。</li>
+  <li><code>ensure_batch</code> 的 <code>batch_owned</code>（註解自稱「本 batch 讀的 slot，批次中永不淘汰」）
+      是<strong>和 miss 指派同一個迴圈裡增量填入</strong>的 ⇒ 只有<em>已經走過</em>的成員被保護，
+      還沒走到的仍然可被淘汰。</li>
+</ul>
+
+<p>於是 <code>ids=[0..7]</code> 對上一個滿池：expert 0 冷 ⇒ miss ⇒ 淘汰掉下一個成員的 slot ⇒
+那個成員變冷 ⇒ miss ⇒ 再淘汰下一個 ⇒ 連鎖。每個成員拿到的是<em>後面那個</em>的 slot，
+這正是日誌裡的 <code>st[e] = e+1</code>。（第一個犧牲者為何是 slot 1 而不是 slot 0：
+那一刻 slot 0 不是候選（busy 或 pinned），日誌單獨看不出是哪條 skip 規則生效；但連鎖不依賴它——
+任何 index <code>k</code> 的第一個犧牲者，都給 <code>k</code> 之後的所有成員同樣的 +1 位移。）
+<code>il=2</code> 的 NaN 是<strong>下游簽名、不是因</strong>：映射位移一格 ⇒ 每個 expert 讀到別人的權重，
+而位移會把池的 residency 上緣推過最後一個可用 slot ⇒ 池區 OOB 讀，這是會產生 NaN 而不只是「算錯」的那一類。</p>
+
+<div class="box b-amber">
+  <p><strong>修法（已實作）：<code>ensure_batch</code> 改兩趟指派。</strong>
+  pass 1 先認領<em>每個 resident 成員</em>的 slot，pass 2 才配 miss ⇒ pass 2 挑的犧牲者
+  不可能是本 batch 要讀的格。pass 1 另外<strong>收養 in-flight fill</strong>：
+  <code>slot_owner[s] = e</code> 且 <code>slot_queued/loading</code> 已設、但
+  <code>slot_table[e]</code> 尚未發布時，舊的 hit 判定只看 <code>slot_table[e]</code> ⇒ 會把它判成冷的
+  ⇒ pass 2 會給它<em>第二個</em> slot（一個 expert 兩個 slot）。新增計數器
+  <code>n_hit_adopted_queued</code> 讓這條路徑可見而不是靜默。
+  另加閘門 <code>LLAMA_EXPERT_CACHE_BATCH_INVARIANT=1</code>（並接進 <code>run_server.sh</code> 的
+  <code>SERVER_ENV</code> 白名單，否則生產入口設不到它），在每個分層 batch 上重驗
+  「slot 互異 / <code>slot_table[e]</code> 讀得回來 / <code>slot_owner</code> 相符」——
+  原本的失敗是<strong>靜默的</strong>（每個被選中的 expert 都有一個 slot，只是錯的），所以這裡是驗證、不是假設。</p>
+</div>
+
+<p><strong>證據是鑑別性的：<code>scripts/check/expert_cache_ensure_batch_order.cpp</code></strong>，
+不需要模型、不需要伺服器、不做 IO（<code>key_segs</code> 空 ⇒ 每個 fill 都是 no-op），
+而且<strong>直接連 <code>libllama</code> 裡真正的 <code>ensure_batch</code></strong>，不是副本。
+它把合成快取擺在 <code>prepopulate</code> 剛結束的狀態（池滿、<code>slot_last_use</code> 全 0、
+一個冷成員的 slot 被 in-flight fill 佔著），餵一個 16 成員的 batch：</p>
+
+<table>
+  <tr><th>臂</th><th>batch 之後的 <code>st[e]</code></th><th>hit/miss</th><th>結果</th></tr>
+  <tr><td>HEAD（單迴圈）</td><td class="bad"><code>1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16</code></td>
+      <td class="bad">0 / 16</td><td class="bad">FAIL</td></tr>
+  <tr><td>修好（兩趟）</td><td class="ok"><code>16 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15</code></td>
+      <td class="ok">15 / 1</td><td class="ok">PASS</td></tr>
+</table>
+
+<p>HEAD 那一列與 09-14 日誌的映射<strong>逐字相同</strong>（<code>st[0]=1 st[1]=2 … st[7]=8</code>），
+它的 0/16 就是「一個冷 expert 變成整批 miss」那句話。兩條誠實界線：</p>
+
+<ul>
+  <li>這是<strong>單元</strong>證據，不是 served request。事後在真機上補不到：split 配置用
+      <strong>10 GiB 與 4 GiB 兩種池預算</strong>都會在 warmup 掛
+      <code>CGC-METAL-FAIL: ... status 5 (Insufficient Memory)</code>，
+      服務不到任何請求。4 GiB 的修好臂跑到 <strong>il=39</strong>（09-14 在 il=2 就掛）
+      並在途中報 <code>CGC-BATCH-INVARIANT: il=1/il=2 OK</code>，但那趟同樣在 warmup OOM，
+      所以那是<strong>存活度改善，不是品質結果</strong>。</li>
+  <li>在<strong>非 split</strong>（出貨預設）下，池在 warmup 期間從不填滿 ⇒ miss 落在空槽
+      ⇒ LRU 淘汰不觸發 ⇒ 這個修法在該配置下是 <strong>no-op</strong>。這點直接量過：
+      把修法 stash 掉、同一個 4 GiB 配置重跑，新舊二進位吐出的
+      <code>CGC-PRE</code>/<code>CGC-POST</code>/<code>CGC-SLOT</code> <strong>逐位元相同</strong>。
+      那是「沒壞的地方不變」的安全確認，<em>不是</em>對修法的檢驗；檢驗是上表。</li>
+</ul>
+
+<p><strong>verdict 不變，而且現在站在一個 blocker 上而不是兩個。</strong>
+Blocker A（wide 路徑）完全未動，而且它是結構性的：clamp 一恢復，prefill chunk 大小在兩種模式下
+都被池容量綁住，所以 work item 1 真正想要的 512/2048 chunk <em>不存在</em>——
+就算 split 修好了也一樣。§5 的否決照舊；另外兩條 errata：白皮書 §2/§6 用的
+<code>CGC_IDENT_VERIFY</code> <strong>在原始碼裡不存在</strong>（真名是
+<code>LLAMA_EXPERT_CACHE_VERIFY_IDENTITY=1</code>），以及產生 §3/§4 數字的探針
+<code>/tmp/m1split_probe.py</code> 從未入庫、已隨 <code>/tmp</code> 清空而遺失，
+這兩點都已在 <code>M1_POOL_SPLIT_COST_2026-09-14.md</code> 修正。</p>
+
+<p><strong>對 decode 25 的淨影響：</strong>原本「M1/W3 已否決」是因為<em>兩個</em> blocker；
+現在 blocker B 已解（而且是解在出貨碼上，不是解在分支上），只剩 wide 路徑那條結構性限制。
+25 tok/s 這條路與 M1/W3 的關係，因此從「被兩個 blocker 擋住」變成「被一個設計不變量擋住」——
+那不是進展被取消，是<strong>障礙被數清楚了</strong>：下一步要動的是 wide 路徑，
+而不再是槽位配置。</p>
 
 </div>
 </body>

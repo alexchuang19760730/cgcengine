@@ -1292,6 +1292,15 @@ fi
 if [ -n "${CGC_SLOT_DBG:-}" ]; then
     SERVER_ENV+=(CGC_SLOT_DBG="$CGC_SLOT_DBG")
 fi
+# [CGC 2026-09-16] Blocker B / the two-pass ensure_batch. The invariant gate
+# (llama-expert-cache.cpp: assert every batch member got a slot, slots are distinct, and the
+# slot table reads back the slot that was assigned) is useless if the production entry point
+# cannot set it -- the defect it detects was silent for exactly that reason: the mapping stayed
+# "valid", just shifted, and only surfaced two layers later as NaN. Same argument as
+# CGC_SLOT_DBG above.
+if [ -n "${LLAMA_EXPERT_CACHE_BATCH_INVARIANT:-}" ]; then
+    SERVER_ENV+=(LLAMA_EXPERT_CACHE_BATCH_INVARIANT="$LLAMA_EXPERT_CACHE_BATCH_INVARIANT")
+fi
 # [CGC 2026-09-15] P1 prefill-protect. llama-context.cpp:4987 records the measurement: with it
 # on, steady-state decode is 22.2 t/s; with it off (the build default) a generation that follows
 # a prefill runs 8.1-8.9 t/s, because the prefill's fill churns the very slots decode is about

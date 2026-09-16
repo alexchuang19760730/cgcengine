@@ -259,6 +259,11 @@ struct llama_expert_cache {
     size_t n_requests = 0;
     size_t n_hits     = 0;
     size_t n_misses   = 0;
+    // [CGC 2026-09-16 Blocker B] hits that had to ADOPT an in-flight bg fill: the expert already
+    // owned a slot (slot_owner set, slot_queued/loading set) but had not been published to the
+    // slot table yet, so the miss test alone would have given it a second slot. Nonzero here is
+    // the count of double-ownership events that used to happen silently.
+    size_t n_hit_adopted_queued = 0;
     // [CGC miss attribution 2026-09-13] Split every pooled miss by whether this (layer, expert)
     // has ever been DEMANDED before in this session:
     //   compulsory = first demand touch. No amount of slots removes it; only a workload with
