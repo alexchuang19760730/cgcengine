@@ -1,0 +1,30 @@
+# 三個 decode 相關的「臂」不是同一個東西（2026-09-16）
+
+由 run_server.sh CGC_DUMP_ENV=1 現場解析，不是手抄。
+
+| arm | profile | extra env | CTX | -b/-ub | PREFILL_STREAM | SLAB_CAP | **SPAC** | alpha |
+|---|---|---|---|---|---|---|---|---|
+| `prod25`（decode sweep 基準 `p25-gputime` 的 profile；本輪 §W 配對臂） | prod25 | `CGC_SERVER_MTP=0;CGC_GPU_TIMING=1;CGC_DECODE_PROFILE=1` | 4096 | -/-（llama-bench 推 8/8） | - | - | **1** | 0.75 |
+| `prod25-stream`（歷史 depth 矩陣的家；「10–13 t/s」出自此） | prod25 | `CGC_PREFILL_STREAM=1;CGC_GATHER_SLAB_CAP=256` | 4096 | 512/512 | 1 | 256 | **1** | 0.75 |
+| `prefill250`（prefill 250 交付用的 profile） | prefill250 | （profile 自帶） | 8192 | 5632/5632 | 1 | 256 | **-（＝全域預設關）** | - |
+
+## 差異只有 6 項，但其中一項是機制級的
+
+- `CGC_SPAC` **只在 prod25 血統裡是 1**；全域預設是關的（`run_server.sh:1635-1637`：
+  `if [ "${CGC_SPAC:-0}" != "0" ]`）。prod25 自己的註解寫「SPAC 同時是 membership 驅動，
+  關掉後 decode 工作集不駐留」⇒ **prefill250 缺的是 decode 的駐留機制，不只是 batch 大小。**
+- `CTX` 8192 vs 4096；`-b/-ub` 5632 vs 模型預設（llama-bench 推 8/8）vs 512。
+- 其餘完全相同：N_CB=8、OA_ASYNC=1、DBUF=1、NO_PREFETCH=1、WORKERS=8、
+  LAYER_CAPS 40-40:256、三支柱（MM_BITIDENT／MTP_NO_WARMUP／NO_SEQ_RM_PROBE）、pool 8 GiB、同一模型。
+
+## prefill250 從來沒有產出過任何 decode 數字
+
+- 唯一一次嘗試：`Backup/llama_bench/llama_bench_prefill250.json`（`-b 6144 -ub 6144`）
+  —— **零列**。它死在第一個 prompt warmup：
+  `test_prompt: failed to decode prompt batch, res = -3`（GPU OOM），
+  而 `-b 6144` 正是 prefill250 要的形狀（大 chunk 一次吃完）。
+- ⇒ 在 16 GB 機器上，**prefill250 的 batch 與 llama-bench 的 depth 矩陣不相容**
+  （`-d≥512` 會跑 `test_prompt(ctx, n_depth, n_batch)`，寬 compute buffer 撐不住）。
+- ⇒ 要一個 profile 同時服務 prefill 與 decode，那是一個**新配置**：至少要 `CGC_SPAC=1`，
+  並且需要自己的 decode 基準；不能借用 prod25 的。
+
