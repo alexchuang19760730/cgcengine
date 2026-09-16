@@ -305,6 +305,35 @@ case "$SERVER_PROFILE" in
         # 它塞進 SERVER_ENV ⇒ 那個 `0` 選的是**分段**分支，與今天的 `1` 同一條路。獨立證據：
         # 同一份 dump 對 v2 量到 M1 9/9 bit-identical，而非分段路徑的 digest 是 `ff68c5a2`，
         # 不是錨點 `dc055e63`——所以兩邊跑的確實是同一條路。詳見 dec-20260915-2215。
+        #
+        # [CGC 2026-09-16] 統一：prefill250 也開 SpAc（CGC_SPAC=1 / alpha 0.75）。
+        # 在這之前 SPAC 只存在於 prod25 血統，於是「prefill 的臂」與「decode 的臂」是兩個
+        # profile —— 而 decode 剩下的槓桿（M1 batched-union gather、M4 verify 真批次）需要
+        # whole-layer slab，那只有這個 profile 有；prod25 的池路徑被 cgc_pool_max_tokens()
+        # 夾在 n_batch<=8（llama-graph.h:18-37 的註解自己把它綁在 MTP 上）。所以「decode 用
+        # prod25」等於把槓桿鎖在一個結構上走不遠的形狀裡。反過來，prefill 這邊只缺 SPAC 一個旋鈕。
+        #
+        # 依據（否證實驗，不是印象）：交錯 A/B/A/B、每臂等讀數回 NOMINAL、
+        # `-b 512 -p 0 -n 128 -d 0,512 -r 3`（Backup/run_unified_ab.sh）：
+        #   d512 配對中位 +17.2%（+1.53 / +1.66，兩次同向 10.78/10.91 vs 9.25/9.25）
+        #   而且 d512 的離散由 ±2.97 崩到 ±0.04/±0.47（逐 rep 反推 1.94x 擺動 -> 0.7%）
+        # ⇒ SPAC 的主要效果不是把均值推上去，是把「decode 工作集不駐留」造成的不穩定拿掉。
+        # d0 上兩臂重疊（SPAC 關的那一臂自己的 reps 就跨 5.95-10.58），所以只有 d512 是決定性的。
+        # 09-13 把 SPAC 翻成全域預設關的理由是「placement 上限 +0.2pp」（見 docs 的 placement 量測）
+        # —— 那個論證只界定了 *placement* 的增益上限，對「decode 工作集是否駐留」不置一詞。
+        #
+        # 成本，以及為什麼 prefill 必須重量（這是這次修改唯一真正的風險）：
+        #   (1) cgc_spac_on() 的 EMA 更新在**每個 routed step** 都跑，註解自承含大 prefill
+        #       （llama-context.cpp:4736-4741「Fires on every path that reaches here — large
+        #       prefill, MTP draft and trunk verify alike」），且每次取 cache->m 這把鎖；
+        #   (2) spac_prefetch 預設 CGC_SPAC_REFRESH=1，即**每步**對每層的非駐留專家做 partial
+        #       sort 並排入 prefetch。
+        #   ⇒ 兩者都在 prefill 的熱路徑上。所以 prefill 250 的交付數字必須在**同一個 commit**
+        #     內重新量過（熱閘門），而不是假定不變。
+        #
+        # 要回到 09-15 GA 的形狀：CGC_SPAC=0 ./scripts/run_server.sh（profile 只補預設，不寫死）。
+        [ -z "${CGC_SPAC+x}" ]                  && CGC_SPAC=1
+        [ -z "${CGC_SPAC_ALPHA+x}" ]            && CGC_SPAC_ALPHA=0.75
         [ -z "${CGC_SERVER_OA_ASYNC+x}" ] && SERVER_OA_ASYNC=1
         [ -z "${CGC_SERVER_MTP+x}" ] && SERVER_MTP=1
         [ -z "${CGC_SERVER_DENSE_IQ4X+x}" ] && SERVER_DENSE_IQ4X=1
@@ -1435,6 +1464,17 @@ fi
 # allowlist drops anything else, which is indistinguishable from "the instrument did nothing".
 if [ -n "${CGC_IDS_CAPTURE:-}" ]; then
     SERVER_ENV+=(CGC_IDS_CAPTURE="$CGC_IDS_CAPTURE")
+fi
+# [CGC 2026-09-16 §9.18.6] The same instrument pointed at a node's OUTPUT instead of its ids
+# operand: CGC_TENSOR_CAPTURE=<exact node name> (e.g. ffn_moe_down-1) snapshot the tensor that node
+# produced, into a second destination with a wider stride. It is what turns §9.18.4's elimination
+# argument into a measurement. Same allowlist trap as above -- and note the value is a node NAME, so
+# a silent drop here would look exactly like "the node never ran".
+if [ -n "${CGC_TENSOR_CAPTURE:-}" ]; then
+    SERVER_ENV+=(CGC_TENSOR_CAPTURE="$CGC_TENSOR_CAPTURE")
+fi
+if [ -n "${CGC_TENSOR_CAPTURE_WORDS:-}" ]; then
+    SERVER_ENV+=(CGC_TENSOR_CAPTURE_WORDS="$CGC_TENSOR_CAPTURE_WORDS")
 fi
 if [ -n "${CGC_S1_IDENT:-}" ]; then
     SERVER_ENV+=(CGC_S1_IDENT="$CGC_S1_IDENT")

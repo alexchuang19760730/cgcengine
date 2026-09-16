@@ -124,7 +124,26 @@ COMPARE = ROOT / "scripts" / "check" / "cgc_logits_oracle_compare.py"
 # raised INVALID COMPARISON on its own), this class of change only ever gets caught by a human
 # re-baselining on purpose. If a future knob change is described as "same env, different meaning",
 # write a new reference; do not re-read the old one.
-DEFAULT_REF = ROOT / "Backup" / "knifeedge_matrix" / "ref_iq3_pool8gb_M2_6144_bitident_v4_skip0off.jsonl"
+#
+# v5 (ref_iq3_pool8gb_M2_6144_bitident_v5_spac.jsonl), dumped 2026-09-16 19:12. `prefill250`
+# pinned CGC_SPAC=1 + CGC_SPAC_ALPHA=0.75 to unify the prefill and decode arms (run_server.sh:286),
+# so "--profile prefill250" gained two ENV keys the v4 cap does not carry, and the gate went dark
+# exactly like the CGC_OA_ASYNC round: `ENV.CGC_SPAC: ref='<absent>' now='1'` plus the same for
+# _ALPHA, on every run.
+#
+# This is a NOMINAL re-baseline, and the evidence is not "M1 was 9/9 when I looked" -- it is that
+# v5's file is BYTE-IDENTICAL to v4's (md5 a0a0ca742ca94e843c54b39981742738 for both), so the
+# oracle rows were not re-derived, merely re-stamped. It also makes SPAC's claim precise: it
+# changes WHICH experts are resident (victim choice + prefetch target) and demonstrably not the
+# numbers, on this 9-row probe at this pool geometry. If SPAC ever does move the numerics, the gate
+# now fails on M1 against v5 -- which is where it should fail.
+#
+# Note what is deliberately NOT done: CGC_SPAC is not added to DIAGNOSTIC_KEYS. That set suppresses
+# a key from the comparability stamp, so putting it there would make the .cap stop recording it --
+# i.e. the next reader could not tell a SPAC-on baseline from a SPAC-off one. The SLOT_TABLE_GPU
+# precedent does not transfer: that knob is an experiment whose whole claim is bit-identity, and it
+# is not a production default.
+DEFAULT_REF = ROOT / "Backup" / "knifeedge_matrix" / "ref_iq3_pool8gb_M2_6144_bitident_v5_spac.jsonl"
 RESULT_DIR = ROOT / "Backup" / "m123_oracle_gate"
 
 # ★ The oracle's batch/ubatch are part of THE ORACLE'S IDENTITY, not a property of the profile.

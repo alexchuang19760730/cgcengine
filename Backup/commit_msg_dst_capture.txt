@@ -1,0 +1,137 @@
+feat(s1): §9.18.6 輸出擷取 —— 儀器先用對照證明自己，然後推翻了 §9.18.4
+
+同一個 commit 也落地「統一 profile = prefill250 + CGC_SPAC=1」與 D5 的名目重基線 v5；兩件事
+分開是可能的（check 8 只看 staged 檔），但共用同一份 build 的 D5，分開只會多跑一次閘門。
+
+================================================================================
+① §9.18.6：把一個「排除法」變成量測，結果推翻了那個論證
+================================================================================
+
+§9.18.4 的推理是：layer 1 的 gate/up/down ids 相同 + layer 2 的 router ids 不同 ⇒ layer 1 的
+MoE 輸出不同 ⇒ ids 指向的權重內容不同 ⇒ 載體是池／slot 的內容（§9.18.7 因此主張「要修的是
+residency」）。整條掛在第三步上，而第三步從來沒被量過。本 commit 把它量出來。
+
+儀器：`CGC_TENSOR_CAPTURE=<精確節點名>`（＋`_WORDS`，預設 32）。
+  讀 kernel_cgc_ids_capture 的原始碼會發現它與 ids 無關，就是「把 stride 個 int32 從 buffer 1
+  抄進 buffer 2 的第 N 個 slot」的通用內核 ⇒ 指向另一個 buffer 不需要新內核、新 kargs、新 pipeline。
+  改到的：ggml-metal-ops.cpp（cgc_submit 共用提交體、cgc_dst_capture、init 擴充、seq 合併）、
+  ggml-metal-ops.h（註解）、scripts/run_server.sh（allowlist 三行）。
+  沒改到：ggml-metal.metal、ggml-metal-impl.h、ggml-metal-device.{h,cpp,m}、ggml-metal-context.m。
+  比較器 scripts/check/ids_capture_diff.py 原封不動可用。
+  設計要點：精確名稱比對（substring 會命中 ffn_moe_down-10..-19）；獨立 slot 空間（ids 那條正好
+  在 4096 上限，且它是比較器切 graph 的依據）；依提交序合併兩條流（否則 dst 列會落進最後一個偽
+  graph，與什麼都比不到而被報成 IDENTICAL）。
+
+★ 證據與結論
+  同臂對照（同一臂跑兩次、互比）:
+      無屏障  ids 120 SAME / 0 DIFF   ffn_moe_down-1.dst  每個 graph 都 DIFF
+      有屏障  ids 120 SAME / 0 DIFF   ffn_moe_down-1.dst  每個 graph都 SAME（兩臂各一組）
+  機制：ids 運算元的生產者在很多節點之前（早已沉降），dst 的生產者是緊鄰的前一個 kernel，而這個
+  fork 支援內核併發（ggml_metal_op_concurrency_reset → ggml_metal_encoder_memory_barrier）⇒
+  copy 可能讀到該 buffer 的前一位佔用者。修法＝在診斷路徑上插一個屏障（不改任何數值）。
+
+  跨臂（有屏障，兩次獨立重跑結論相同）:
+      graph 1-3    ids 120 SAME / 0 DIFF     dst SAME
+      graph 4-30   ids   6 SAME / 114 DIFF   dst SAME     <-- 6 個 SAME 正好是 layer 0 與 layer 1
+      graph 31-35  ids   0 SAME / 120 DIFF   dst DIFF
+
+  ⇒ layer 0 的 router ids 相同 ⇒ 兩臂處理的是同一個 token（排除「token 流分歧」的平凡解釋）。
+  ⇒ layer 1 的 ids 與它的 MoE 輸出都逐位元相同。
+  ⇒ §9.18.4 的前提是錯的，它的結論被推翻；§9.18.7「要修的是 residency」失去唯一的直接證據，
+     降級為「未受支持」。
+  ⇒ 新的定位：分歧在 layer 1 的 MoE 輸出之後、layer 2 的 router 之前。而 layer 1 的 MoE 輸出
+     逐位元相同也意味著 layer 1 的 attention 輸出相同 ⇒ 候選收斂到 layer 2 的 attention 路徑
+     （q/k/v、rope、KV 讀取）或 layer 1→2 之間的 norm／殘差。專家池的權重內容不再是候選。
+
+  儀器的已知限制（白皮書 §6 有完整表）：cgc_dst_capture 只掛在 ggml_metal_op_mul_mat_id ⇒
+  只能擷取 mul_mat_id 節點的輸出；固定 stride 32 words（輸出列是 2048 words）；
+  屏障是唯一偏離「純觀察者」的地方。
+
+================================================================================
+② 統一 profile：prefill250 現在 pin CGC_SPAC=1（規格，不只是建議）
+================================================================================
+
+`scripts/run_server.sh:335-336`
+
+    [ -z "${CGC_SPAC+x}" ]       && CGC_SPAC=1
+    [ -z "${CGC_SPAC_ALPHA+x}" ] && CGC_SPAC_ALPHA=0.75
+
+其餘一字未動。CGC_DUMP_ENV=1 實測兩個鍵都進 resolved env；CGC_SPAC=0 覆寫有效（回到 09-15 GA
+形狀）；qa-zh / off 不受影響。判準寫進註解（不是 t/s，是「剩下的槓桿有沒有地方跑」）：
+llama-graph.h:18-37 的 `Default 8 covers MTP n_max up to 7` ＋ llama-context.cpp:286-291 的
+`!cgc_prefill_stream` 才夾 ⇒ prod25 的池路徑鎖在 n_batch<=8，而 M1/M4 需要 whole-layer slab。
+
+D5：這是一次「名目重基線」，而證據是 md5 逐位元相同，不是「M1 = 9/9」。
+    --tag spac_unified      INVALID COMPARISON (2 diffs)：ENV.CGC_SPAC / _ALPHA，ref='<absent>'
+                            同一次輸出裡 M1/M2/M3/fnv1a64 全 9/9
+    --write-ref ..._v5_spac.jsonl      md5 v5 == md5 v4 == a0a0ca742ca94e843c54b39981742738
+                                       v5 .cap 的 resolved.ENV 記下 CGC_SPAC=1（v4 是 absent）
+    --tag spac_unified_v5   PASS   comparable=True  config_diffs=[]
+  刻意沒做：沒把 CGC_SPAC 塞進 DIAGNOSTIC_KEYS（那會讓 .cap 不再記錄它；SLOT_TABLE_GPU 的前例
+  不適用，那是「整條主張就是 bit-identity」的實驗旋鈕）。DEFAULT_REF 改指 v5 並附 dated 註解。
+
+副作用盤點（pin 一個 env 鍵會靜默重解析每一個「預設 profile 就是它」的工具）：
+    scripts/check/ 帶 --profile 的只有 3 支 —— decode_sweep.py（預設 prefill250）、
+    m123_oracle_gate.py（同）、ab_interleave.py（prod25，不受影響）。
+    ⇒ 不帶 --profile 的 decode sweep 從此取得 SPAC=1；而 decode_sweep 的 `spac-on` 臂在新 base 上
+      與 `baseline` 同義（退化）。它的 ARMS 註解原本還自相矛盾（第 93 行說 every arm 的 base 是
+      prefill250，第 119 行說那一段是 tested on the prod25 base），一併修正。
+
+================================================================================
+③ prefill 的代價：尚未定案，而且閘門自己否決了協定
+================================================================================
+
+v1（單次讀到 0 就發射）作廢 —— 自變數不是 SPAC，是「發射前靜置多久」：
+    r1_off  靜置   0 s   263.03 / 264.68 / 247.93
+    r1_on   靜置  40 s   232.29 / 213.70 / 203.03
+    r2_off  靜置  40 s   258.95 / 258.10 / 220.19
+    r2_on   靜置 105 s   264.87 / 273.21 / 248.66     <-- SPAC 的兩輪符號相反
+  兩個發射前只靜置 40 s 的臂正是最慢的兩個；靜置 105 s 的那臂最快。證據保留在
+  Backup/cgc_logs/spac_prefill_ab/v1_read0once/，不得當 SPAC 結果引用。
+
+v2（連續 120 s 讀到 0）跑到第二臂就停：閘門吐出一行先前沒出現過的分類
+（run_req2_retest.sh:327-350）——COLD-STATE 需要安靜 >= 1800 s，否則一律 HOT-STATE，而它明寫
+「do NOT quote it as the delivery number」（實測同 binary/配置：COLD 254.29/282.38/265.27、
+HOT 167.41-200.58）。v2 的 r1_off 的 req2/req3（179.64／169.57）正落在 HOT 帶裡。
+⇒ 交付級認證需要一條 >=1800 s 靜置的 COLD 臂；on/off 的比較是第二個問題，不與它混在一起問。
+⇒ 協定另有兩個不對稱必須修：靜置是下限而非固定值（r1_off 得 120 s、r1_on 得 195 s），
+   同一輪的兩臂因此沒有配對在相同靜置上。
+
+depth 矩陣與 alpha 重掃：驅動已寫好但**尚未產出資料**，而且是刻意延後——它們是吞吐量測，
+需要一個冷箱；同一晚的 §9.18.6 是 bit-identity 比較（對熱不敏感），所以先做它。
+另外修掉一個真 bug：run_unified_depth_matrix.sh 的 run() 收 3 參數而 run asc "0,512,..." 只給 2 個，
+set -u 之下 $3: unbound variable 直接終止，而整條鏈用 && 串接 ⇒ 後兩個階段連一行都沒執行
+（「沒有產物」與「跑了但沒結果」在這種鏈裡同形）。
+
+================================================================================
+D5、指紋與驗證
+================================================================================
+
+D5 (--tag dstcapture)   PASS  M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+                        comparable=True  config_diffs=[]
+產物                    libggml-metal.0.19.0.dylib 19:49:39 / llama-server 19:49:40（閘門在之後跑）
+8 鍵指紋                server=054fb22f04a0  libggml-metal=e34011c6562f  libggml-base=d2099fb798e7
+                        libllama=233a172afb2e  libllama-common=7bceb3bd5320  libggml=8f4abce76052
+                        libggml-cpu=70ebbd7c709a  libggml-blas=52de23d5c405
+validate.py             122 episodes / 38 decisions / 111 lessons -> OK
+selftest.py             10/10 injected violations rejected
+index_assets --check    manifest OK: 76 assets, existence + bytes + mtime all agree
+memory index --check    OK: 3 file(s), 65 section(s), no drift
+thermal_pressure        15/15 checks passed
+check_build_tracked     0 FAIL / 4 SKIP（各有理由）；check 8「build 產物隨原始碼 staged」+「binary
+                        比 staged 原始碼新」兩半都 PASS
+
+新增 lesson：eng-diag-0024（新儀器在跨臂 diff 前必須先做同臂對照）、eng-diag-0025（第二條流要按
+提交序合併；讀緊鄰前一個 kernel 的輸出需要屏障）、eng-diag-0026（S1 的載體不是 layer 1 的 MoE
+權重；§9.18.4/§9.18.7 更正）、eng-mh-0042（節點名篩選必須精確比對）、eng-src-0014（通用拷貝內核
+的重用）。
+
+白皮書：docs/S1_OUTPUT_CAPTURE_20260916_1955.html、docs/UNIFIED_PROFILE_SPAC_20260916_1955.html
+
+================================================================================
+並行 writer
+================================================================================
+本 commit 只 stage 自己的檔案：agent_harness/engine_loop 的 distill/** 與 harness_engine/**
+屬於另一條 session（它的 mtime 在 commit 前一分鐘仍在更新，且 harness_engine/build_memories.py
+正在從 traces/lessons.jsonl 產生 memories/engine/*.md —— 本 commit 的那 5 條 lesson 就是它的輸入）。
+未 stage、未修改它們的檔案。

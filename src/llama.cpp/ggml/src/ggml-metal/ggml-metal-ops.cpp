@@ -3205,10 +3205,23 @@ namespace {
 constexpr int32_t CGC_IDS_SLOTS  = 4096;
 constexpr int32_t CGC_IDS_STRIDE = 8;
 
+// [CGC 2026-09-16 S1 residency, §9.18.6] Tensor-OUTPUT capture: the SAME kernel, a second
+// destination. A separate buffer rather than a second stream inside the existing one, for two
+// independent reasons:
+//   (1) the ids destination is already exactly at its cap (36 graphs x 117 nodes = 4096 slots), and
+//       the ids rows are what carries the graph boundaries the comparator segments by -- sharing a
+//       cursor would silently drop the tail of the stream the whole diff depends on;
+//   (2) the useful width differs by an order of magnitude. An ids operand is 8 words per token; a
+//       MoE output row is ne0 wide (2048 in this model), and 8 words of an output tensor is too
+//       narrow to call a divergence.
+constexpr int32_t CGC_DST_SLOTS  = 1024;
+constexpr int32_t CGC_DST_STRIDE = 32;
+
 struct cgc_ids_rec {
     char    name[48];
     int32_t n_ids;
-    int32_t kind; // 0 = MV (src2 is consumed directly), 1 = MM (src2 is consumed by map0)
+    int32_t kind; // 0 = MV (src2 is consumed directly), 1 = MM (src2 is consumed by map0), 2 = DST
+    int32_t seq;  // global submission order across BOTH streams -- see the dump
 };
 
 struct cgc_ids_state {
@@ -3219,55 +3232,113 @@ struct cgc_ids_state {
     int32_t             slots   = 0;
     int32_t             printed = 0;
     cgc_ids_rec *       recs    = nullptr;
+
+    // tensor-output side
+    bool                dst_enabled = false;
+    char                dst_filter[64] = { 0 };
+    int32_t             dst_words   = CGC_DST_STRIDE;
+    ggml_metal_buffer_t buf_dst     = nullptr;
+    int32_t *           base_dst    = nullptr;
+    int32_t             slots_dst   = 0;
+    int32_t             printed_dst = 0;
+    cgc_ids_rec *       recs_dst    = nullptr;
+
+    int32_t             seq = 0;
 };
 
 cgc_ids_state g_cgc_ids;
 
-bool cgc_ids_init(ggml_metal_device_t dev) {
+// Initialises whichever of the two capture sides the environment asks for and reports whether ANY
+// side is live. The two are independent: CGC_IDS_CAPTURE alone keeps the 09-15 instrument exactly
+// as it was, CGC_TENSOR_CAPTURE alone forces the ids side on (see the comment below), and both
+// together are the §9.18.6 configuration.
+bool cgc_capture_init(ggml_metal_device_t dev) {
     if (g_cgc_ids.inited) {
-        return g_cgc_ids.enabled;
+        return g_cgc_ids.enabled || g_cgc_ids.dst_enabled;
     }
     g_cgc_ids.inited = true;
 
     const char * e = getenv("CGC_IDS_CAPTURE");
     g_cgc_ids.enabled = (e != nullptr && e[0] != '0');
-    if (!g_cgc_ids.enabled) {
-        return false;
+
+    // Exact match, deliberately NOT a substring: `ffn_moe_down-1` is a substring of
+    // `ffn_moe_down-10`..`ffn_moe_down-19`, so a substring filter for layer 1 would quietly capture
+    // ten layers, and ids_capture_diff.py pairs nodes BY NAME (keeping the first occurrence), so the
+    // comparison would then depend on which layer happened to come first.
+    const char * f = getenv("CGC_TENSOR_CAPTURE");
+    if (f != nullptr && f[0] != '\0' && f[0] != '0') {
+        snprintf(g_cgc_ids.dst_filter, sizeof(g_cgc_ids.dst_filter), "%s", f);
+        g_cgc_ids.dst_enabled = true;
+
+        const char * w = getenv("CGC_TENSOR_CAPTURE_WORDS");
+        if (w != nullptr && w[0] != '\0') {
+            int v = atoi(w);
+            if (v < 1)              v = 1;
+            if (v > CGC_DST_STRIDE) v = CGC_DST_STRIDE;
+            g_cgc_ids.dst_words = v;
+        }
+
+        // The dump merges the two streams in submission order, and the graph boundaries the
+        // comparator segments by live in the IDS rows. Enabling the dst side without the ids side
+        // would leave every dst row in one final pseudo-graph, silently compared against nothing and
+        // reported as IDENTICAL -- so the ids side is forced on here rather than left to the caller.
+        if (!g_cgc_ids.enabled) {
+            GGML_LOG_WARN("CGC-IDS-CAP: enabled implicitly -- CGC_TENSOR_CAPTURE needs the ids rows "
+                          "to carry the graph boundaries\n");
+            g_cgc_ids.enabled = true;
+        }
     }
 
-    const size_t bytes = (size_t) CGC_IDS_SLOTS * (size_t) CGC_IDS_STRIDE * sizeof(int32_t);
+    if (g_cgc_ids.enabled) {
+        const size_t bytes = (size_t) CGC_IDS_SLOTS * (size_t) CGC_IDS_STRIDE * sizeof(int32_t);
 
-    g_cgc_ids.buf  = ggml_metal_buffer_init(dev, bytes, /*shared*/ true);
-    g_cgc_ids.base = g_cgc_ids.buf != nullptr ? (int32_t *) ggml_metal_buffer_get_base(g_cgc_ids.buf) : nullptr;
-    g_cgc_ids.recs = (cgc_ids_rec *) calloc((size_t) CGC_IDS_SLOTS, sizeof(cgc_ids_rec));
+        g_cgc_ids.buf  = ggml_metal_buffer_init(dev, bytes, /*shared*/ true);
+        g_cgc_ids.base = g_cgc_ids.buf != nullptr ? (int32_t *) ggml_metal_buffer_get_base(g_cgc_ids.buf) : nullptr;
+        g_cgc_ids.recs = (cgc_ids_rec *) calloc((size_t) CGC_IDS_SLOTS, sizeof(cgc_ids_rec));
 
-    if (g_cgc_ids.buf == nullptr || g_cgc_ids.base == nullptr || g_cgc_ids.recs == nullptr) {
-        GGML_LOG_WARN("CGC-IDS-CAP disabled: allocation failed\n");
-        g_cgc_ids.enabled = false;
-        return false;
+        if (g_cgc_ids.buf == nullptr || g_cgc_ids.base == nullptr || g_cgc_ids.recs == nullptr) {
+            GGML_LOG_WARN("CGC-IDS-CAP disabled: allocation failed\n");
+            g_cgc_ids.enabled = false;
+        } else {
+            GGML_LOG_WARN("CGC-IDS-CAP enabled: slots=%d stride=%d bytes=%zu shared=%d "
+                          "(destination is NOT allocator-managed)\n",
+                          CGC_IDS_SLOTS, CGC_IDS_STRIDE, bytes,
+                          (int) ggml_metal_buffer_is_shared(g_cgc_ids.buf));
+        }
     }
 
-    GGML_LOG_WARN("CGC-IDS-CAP enabled: slots=%d stride=%d bytes=%zu shared=%d "
-                  "(destination is NOT allocator-managed)\n",
-                  CGC_IDS_SLOTS, CGC_IDS_STRIDE, bytes,
-                  (int) ggml_metal_buffer_is_shared(g_cgc_ids.buf));
+    if (g_cgc_ids.dst_enabled) {
+        const size_t bytes = (size_t) CGC_DST_SLOTS * (size_t) CGC_DST_STRIDE * sizeof(int32_t);
 
-    return true;
+        g_cgc_ids.buf_dst  = ggml_metal_buffer_init(dev, bytes, /*shared*/ true);
+        g_cgc_ids.base_dst = g_cgc_ids.buf_dst != nullptr ? (int32_t *) ggml_metal_buffer_get_base(g_cgc_ids.buf_dst) : nullptr;
+        g_cgc_ids.recs_dst = (cgc_ids_rec *) calloc((size_t) CGC_DST_SLOTS, sizeof(cgc_ids_rec));
+
+        if (g_cgc_ids.buf_dst == nullptr || g_cgc_ids.base_dst == nullptr || g_cgc_ids.recs_dst == nullptr) {
+            GGML_LOG_WARN("CGC-TENSOR-CAP disabled: allocation failed\n");
+            g_cgc_ids.dst_enabled = false;
+        } else {
+            GGML_LOG_WARN("CGC-TENSOR-CAP enabled: node=%s words=%d slots=%d stride=%d bytes=%zu "
+                          "(destination is NOT allocator-managed)\n",
+                          g_cgc_ids.dst_filter, g_cgc_ids.dst_words, CGC_DST_SLOTS, CGC_DST_STRIDE, bytes);
+        }
+    }
+
+    return g_cgc_ids.enabled || g_cgc_ids.dst_enabled;
 }
 
-// Submit the snapshot into the SAME encoder, immediately after the kernel that consumes `ids`.
-void cgc_ids_capture(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_ids,
-                     const struct ggml_tensor * op, int32_t n_ids, int32_t kind) {
-    if (!cgc_ids_init(ctx->dev) || g_cgc_ids.slots >= CGC_IDS_SLOTS) {
-        return;
-    }
-
-    const int32_t slot = g_cgc_ids.slots++;
-
+// Shared submission body: bind one source buffer and copy up to `stride` words into a fresh slot of
+// the destination. Both streams use the identical kernel; only the destination, the stride and the
+// record differ. Submitting into the SAME encoder, immediately after the kernel that produced or
+// consumed the operand, is the whole point: it makes the value observable without touching the
+// graph, the allocator layout or the dispatch order (eng-diag-0018). No host-side probe has that
+// property -- that is what eng-mh-0008 is about.
+static void cgc_submit(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_src, ggml_metal_buffer_id bid_dst,
+                       int32_t slot, int32_t stride, int32_t n_words) {
     ggml_metal_kargs_cgc_ids_capture args = {
-        /*.n_ids  =*/ n_ids,
+        /*.n_ids  =*/ n_words,
         /*.slot   =*/ slot,
-        /*.stride =*/ CGC_IDS_STRIDE,
+        /*.stride =*/ stride,
         /*.n_skip =*/ 0,
     };
 
@@ -3275,10 +3346,22 @@ void cgc_ids_capture(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_ids,
 
     ggml_metal_encoder_set_pipeline(enc, ggml_metal_library_get_pipeline_cgc_ids_capture(ctx->lib));
     ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
-    ggml_metal_encoder_set_buffer  (enc, bid_ids, 1);
-    ggml_metal_encoder_set_buffer  (enc, ggml_metal_buffer_get_id_whole(g_cgc_ids.buf), 2);
+    ggml_metal_encoder_set_buffer  (enc, bid_src, 1);
+    ggml_metal_encoder_set_buffer  (enc, bid_dst, 2);
 
     ggml_metal_encoder_dispatch_threadgroups(enc, 1, 1, 1, 32, 1, 1);
+}
+
+// Submit the snapshot into the SAME encoder, immediately after the kernel that consumes `ids`.
+void cgc_ids_capture(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_ids,
+                     const struct ggml_tensor * op, int32_t n_ids, int32_t kind) {
+    if (!cgc_capture_init(ctx->dev) || !g_cgc_ids.enabled || g_cgc_ids.slots >= CGC_IDS_SLOTS) {
+        return;
+    }
+
+    const int32_t slot = g_cgc_ids.slots++;
+
+    cgc_submit(ctx, bid_ids, ggml_metal_buffer_get_id_whole(g_cgc_ids.buf), slot, CGC_IDS_STRIDE, n_ids);
 
     cgc_ids_rec & r = g_cgc_ids.recs[slot];
     // op->name is a fixed-size array, never a null pointer -- compare the first byte instead, which
@@ -3286,37 +3369,113 @@ void cgc_ids_capture(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_ids,
     snprintf(r.name, sizeof(r.name), "%s", op->name[0] != '\0' ? op->name : "(anon)");
     r.n_ids = n_ids;
     r.kind  = kind;
+    r.seq   = g_cgc_ids.seq++;
+}
+
+// [CGC 2026-09-16 S1 residency §9.18.6] Snapshot a chosen node's OUTPUT tensor. Same kernel, same
+// encoder, same moment; the only differences are the source (the node's dst), the stride and the
+// record's name suffix. Named `<node>.dst` so the comparator -- which pairs nodes by NAME -- cannot
+// confuse this row with the ids row of the same node.
+void cgc_dst_capture(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_dst,
+                     const struct ggml_tensor * op, int32_t n_words) {
+    if (!cgc_capture_init(ctx->dev) || !g_cgc_ids.dst_enabled || g_cgc_ids.slots_dst >= CGC_DST_SLOTS) {
+        return;
+    }
+    if (op->name[0] == '\0' || strcmp(op->name, g_cgc_ids.dst_filter) != 0) {
+        return;
+    }
+
+    // ★ THE BARRIER IS NOT OPTIONAL, and it is the one place this instrument does NOT get to be a
+    //   pure observer. Measured (2026-09-16, same-arm control: the same arm captured twice and
+    //   diffed against itself): WITHOUT this barrier every graph's `.dst` row DIFFERS from its own
+    //   repeat, while the ids rows are SAME 120/120. The asymmetry is the tell. An ids operand is
+    //   produced many nodes upstream and has long settled by the time mul_mat_id runs; the dst is
+    //   produced by the IMMEDIATELY PRECEDING kernel, and this fork supports kernel concurrency
+    //   (see ggml_metal_op_concurrency_reset -> ggml_metal_encoder_memory_barrier), so the copy can
+    //   read the buffer's previous occupant.
+    //   Consequence if you remove it: the readout is not reproducible, and the naive reading of a
+    //   cross-arm run is a CONFIDENT FALSE POSITIVE -- "identical ids, different output, therefore
+    //   the pool contents are the carrier", which is exactly the hypothesis §9.18.6 exists to test.
+    //   A memory barrier cannot change any value; it only orders the diagnostic copy after the
+    //   producer. Re-run the same-arm control before believing any cross-arm result.
+    ggml_metal_encoder_memory_barrier(ctx->enc);
+
+    const int32_t slot = g_cgc_ids.slots_dst++;
+    const int32_t n    = n_words < g_cgc_ids.dst_words ? n_words : g_cgc_ids.dst_words;
+
+    cgc_submit(ctx, bid_dst, ggml_metal_buffer_get_id_whole(g_cgc_ids.buf_dst), slot, CGC_DST_STRIDE, n);
+
+    cgc_ids_rec & r = g_cgc_ids.recs_dst[slot];
+    snprintf(r.name, sizeof(r.name), "%s.dst", op->name);
+    r.n_ids = n;
+    r.kind  = 2;
+    r.seq   = g_cgc_ids.seq++;
 }
 
 } // namespace
 
-// [CGC 2026-09-15 S1 kernel-side ids capture] Print every slot not printed before. Called at a
-// synchronize point, so the bytes are guaranteed to be on the host side. Slots are never rewritten
-// (each encode takes a new one), which is what makes a cursor sufficient and makes the emission
-// monotone across the many synchronize calls a segmented dispatch performs.
+// [CGC 2026-09-15 S1 kernel-side ids capture; extended 2026-09-16 for the tensor-output side]
+// Print every slot not printed before. Called at a synchronize point, so the bytes are guaranteed to
+// be on the host side. Slots are never rewritten (each encode takes a new one), which is what makes a
+// cursor sufficient and makes the emission monotone across the many synchronize calls a segmented
+// dispatch performs.
 // extern "C" because ggml-metal-context.m is ObjC and includes ggml-metal-ops.h: without it the
 // declaration there and this definition here would disagree on linkage and fail to link.
+//
+// The two streams are merged in SUBMISSION order, and that is not cosmetic. ids_capture_diff.py
+// finds graph boundaries at `ffn_moe_gate-1`, which is an IDS row: appending every dst row after
+// every ids row would drop them all into one final pseudo-graph, compared against nothing and
+// reported as IDENTICAL. A silent false negative is the single outcome this instrument exists to
+// rule out, so the merge is done here rather than left to the reader.
 extern "C" void ggml_metal_cgc_ids_dump(void) {
-    if (!g_cgc_ids.enabled) {
+    if (!g_cgc_ids.enabled && !g_cgc_ids.dst_enabled) {
         return;
     }
-    for (int32_t s = g_cgc_ids.printed; s < g_cgc_ids.slots; ++s) {
-        const cgc_ids_rec & r = g_cgc_ids.recs[s];
-        const int32_t * v = g_cgc_ids.base + (size_t) s * CGC_IDS_STRIDE;
+    for (;;) {
+        const bool ids_ok = g_cgc_ids.printed     < g_cgc_ids.slots;
+        const bool dst_ok = g_cgc_ids.printed_dst < g_cgc_ids.slots_dst;
+        if (!ids_ok && !dst_ok) {
+            break;
+        }
 
-        char b[128];
+        bool take_ids;
+        if (!dst_ok) {
+            take_ids = true;
+        } else if (!ids_ok) {
+            take_ids = false;
+        } else {
+            take_ids = g_cgc_ids.recs[g_cgc_ids.printed].seq <
+                       g_cgc_ids.recs_dst[g_cgc_ids.printed_dst].seq;
+        }
+
+        const cgc_ids_rec & r  = take_ids ? g_cgc_ids.recs[g_cgc_ids.printed]
+                                          : g_cgc_ids.recs_dst[g_cgc_ids.printed_dst];
+        const int32_t       sl = take_ids ? g_cgc_ids.printed : g_cgc_ids.printed_dst;
+        const int32_t       st = take_ids ? CGC_IDS_STRIDE  : CGC_DST_STRIDE;
+        // for the ids stream sl is both the slot index and the cursor, so the printed `slot=`
+        // numbering of the 09-15 rows is unchanged.
+        const int32_t *     v  = take_ids ? g_cgc_ids.base     + (size_t) sl * (size_t) st
+                                          : g_cgc_ids.base_dst + (size_t) sl * (size_t) st;
+
+        char b[512];
         int p = 0;
-        for (int32_t i = 0; i < CGC_IDS_STRIDE; ++i) {
+        for (int32_t i = 0; i < st; ++i) {
             p += snprintf(b + p, sizeof(b) - (size_t) p, "%s%d", i ? "," : "", (int) v[i]);
             if (p >= (int) sizeof(b) - 12) {
                 break;
             }
         }
 
+        const char * path = r.kind == 0 ? "MV" : (r.kind == 1 ? "MM" : "DST");
         GGML_LOG_WARN("CGC-IDS-CAP slot=%d path=%s n_ids=%d name=%s ids=[%s]\n",
-                      s, r.kind == 0 ? "MV" : "MM", (int) r.n_ids, r.name, b);
+                      sl, path, (int) r.n_ids, r.name, b);
+
+        if (take_ids) {
+            g_cgc_ids.printed++;
+        } else {
+            g_cgc_ids.printed_dst++;
+        }
     }
-    g_cgc_ids.printed = g_cgc_ids.slots;
 }
 
 int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
@@ -3731,6 +3890,12 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
         // deterministic function of src2, so capturing src2 covers the MM path as well.
         cgc_ids_capture(ctx, bid_src2, op, (int32_t) (ne20 * ne21), /*kind*/ 1);
 
+        // [CGC 2026-09-16 §9.18.6] Same moment, the node's OUTPUT instead of its ids operand. This
+        // is the reading §9.18.4 could only infer by elimination: if this tensor differs while the
+        // input and the ids are known identical (§9.18.3), then the ids point at different WEIGHTS,
+        // i.e. the pool/slot contents are the carrier and the mapping layer is exonerated.
+        cgc_dst_capture(ctx, bid_dst, op, (int32_t) (ne0 * ne1));
+
         // this barrier is always needed because the next kernel has to wait for the id maps to be computed
         ggml_metal_op_concurrency_reset(ctx);
 
@@ -3839,6 +4004,11 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
         // [CGC 2026-09-15 S1 kernel-side ids capture] The MV kernel consumes bid_src2 directly
         // (bound as buffer 4 above), so this snapshot sees exactly what the GEMV read.
         cgc_ids_capture(ctx, bid_src2, op, (int32_t) (ne20 * ne21), /*kind*/ 0);
+
+        // [CGC 2026-09-16 §9.18.6] The MV path is the one every decode step takes (ne21 <
+        // ne21_mm_id_min => the whole S1 experiment runs MV), so this is the site that produces the
+        // decisive reading. Same encoder, same submission point as the ids snapshot above.
+        cgc_dst_capture(ctx, bid_dst, op, (int32_t) (ne0 * ne1));
     }
 
     return 1;

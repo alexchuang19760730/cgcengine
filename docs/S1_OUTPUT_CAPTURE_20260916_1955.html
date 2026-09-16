@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>§9.18.6 輸出擷取：儀器先用對照證明自己，然後推翻了 §9.18.4（2026-09-16）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft JhengHei",sans-serif}
+  .wrap{max-width:980px;margin:0 auto;padding:40px 28px 80px}
+  h1{font-size:27px;line-height:1.35;margin:0 0 6px}
+  h2{font-size:20px;margin:38px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  h3{font-size:16.5px;margin:24px 0 8px}
+  p{margin:10px 0}
+  code{background:var(--code-bg);border:1px solid var(--line);border-radius:4px;
+       padding:1px 5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:13px 15px;overflow-x:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+      font-size:12.8px;line-height:1.6}
+  pre code{background:none;border:0;padding:0}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.6px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  .meta{color:var(--muted);font-size:13px;margin:0 0 22px}
+  .box{border-left:4px solid var(--blue);background:var(--blue-bg);padding:12px 16px;border-radius:0 8px 8px 0;margin:16px 0}
+  .box.warn{border-color:var(--amber);background:var(--amber-bg)}
+  .box.bad{border-color:var(--red);background:var(--red-bg)}
+  .box.ok{border-color:var(--green);background:var(--green-bg)}
+  .kv{display:grid;grid-template-columns:minmax(240px,auto) 1fr;gap:4px 16px;font-size:13.8px;margin:10px 0}
+  .kv div:nth-child(odd){color:var(--muted)}
+  .small{font-size:12.5px;color:var(--muted)}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:#fcfcfd}
+  .toc ol{margin:6px 0 0 20px}
+  .toc a{color:var(--blue);text-decoration:none}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>§9.18.6 輸出擷取：儀器先用對照證明自己，然後推翻了 §9.18.4</h1>
+<p class="meta">CGC MoE Engine · 2026-09-16 19:43–19:55 · 這份文件同時是「新儀器的交付」與「一個既有結論的更正」。
+建置 <code>libggml-metal</code> <code>e34011c6562f</code>（19:49:39）。</p>
+
+<div class="box">
+<strong>三句話：</strong>
+(1) §9.18.6 要的儀器做好了——而且它只是把既有那個通用拷貝內核指向<strong>另一個 buffer</strong>，<code>.metal</code> 一行未改。
+(2) 第一版<strong>沒有記憶體屏障</strong>，同臂對照顯示它的讀數<strong>不可重現</strong>，而跨臂跑出來的结果<strong>看起來正好證實</strong>
+    正在測的假說 ⇒ 一個<strong>自信的假陽性</strong>。加上屏障後對照全綠。
+(3) 有了可用的讀數：<strong>layer 1 的 MoE 輸出在兩臂之間逐位元相同</strong>，而 layer 0/1 的 ids 相同、layers 2–39 不同
+    ⇒ <strong>§9.18.4「缺陷在 ids 指向的權重內容（池／slot 內容）」被直接量測推翻</strong>，
+    分歧在 <strong>layer 1 的 MoE 輸出之後、layer 2 的 router 之前</strong>。
+</div>
+
+<div class="toc">
+<strong>目錄</strong>
+<ol>
+<li><a href="#ask">§9.18.6 問的是什麼，以及為什麼它是決定性的</a></li>
+<li><a href="#ins">儀器：重用通用內核，不是第二套實作</a></li>
+<li><a href="#ctl">★ 那個改變答案的對照</a></li>
+<li><a href="#res">跨臂結果</a></li>
+<li><a href="#refute">推翻了什麼、重新定位到哪裡</a></li>
+<li><a href="#limit">儀器的已知限制</a></li>
+<li><a href="#gates">現場閘門原文</a></li>
+<li><a href="#honest">誠實邊界</a></li>
+</ol>
+</div>
+
+<h2 id="ask">1. §9.18.6 問的是什麼</h2>
+
+<p>§9.18.3 用內核側 ids 讀數建立了兩件事：ids 在兩臂之間<strong>逐位元相同</strong>（39 層 × 117 node × 連續 3 個 graph），
+以及第一個分歧節點是 <code>ffn_moe_gate-2</code>（layer 2 的 router）。§9.18.4 接著做了一個<strong>排除法論證</strong>：</p>
+
+<pre><code>layer 1 的 gate/up/down ids 相同    （量到的）
+layer 2 的 router ids 不同          （量到的）
+⇒ layer 1 的 MoE 輸出不同           （推理）
+⇒ 「輸入相同 + ids 相同 ⇒ 輸出不同」＝ ids 指向的權重內容不同
+⇒ 載體是池／slot 的內容本身        （§9.18.7 因此主張「要修的是 residency」）</code></pre>
+
+<p>整個結論掛在第三步上，而第三步<strong>從來沒被量過</strong>。§9.18.6 就是把它量出來：
+擷取 <code>ffn_moe_down-1</code>（layer 1 的 down projection）的<strong>輸出張量</strong>，兩臂比對。</p>
+
+<h2 id="ins">2. 儀器：重用通用內核，不是第二套實作</h2>
+
+<p>讀 <code>kernel_cgc_ids_capture</code> 的原始碼會發現它<strong>與 ids 無關</strong>——它就是一個
+「把 stride 個 int32 從 buffer 1 抄進 buffer 2 的第 N 個 slot」的內核：</p>
+
+<pre><code>kernel void kernel_cgc_ids_capture(
+        constant ggml_metal_kargs_cgc_ids_capture &amp; args,
+        device const char * ids,      // buffer 1：來源
+        device       char * dbg,      // buffer 2：目的地
+        uint tgpig [[threadgroup_position_in_grid]]) {
+    if (tgpig != 0 || args.slot &lt; 0) { return; }
+    device int32_t * out = (device int32_t *) (dbg + (size_t) args.slot * (size_t) args.stride * sizeof(int32_t));
+    device const int32_t * in = (const device int32_t *) ids;
+    for (int32_t i = 0; i &lt; args.stride; ++i) {
+        const int32_t j = args.n_skip + i;
+        out[i] = (j &lt; args.n_ids) ? in[j] : 0x7fffffff;   // sentinel
+    }
+}</code></pre>
+
+<p>所以「指向另一個 buffer」不需要新內核、新 kargs、新 pipeline。實際改動：</p>
+
+<div class="kv">
+<div>新增的 env</div><div><code>CGC_TENSOR_CAPTURE=&lt;精確節點名&gt;</code>、<code>CGC_TENSOR_CAPTURE_WORDS=N</code>（預設 32，上限 32）</div>
+<div>改到的檔案</div><div><code>ggml-metal-ops.cpp</code>（<code>cgc_submit()</code> 共用提交體、<code>cgc_dst_capture()</code>、init 擴充、<code>seq</code> 合併）、<code>ggml-metal-ops.h</code>（註解）、<code>scripts/run_server.sh</code>（allowlist 三行）</div>
+<div>沒改到的</div><div><code>ggml-metal.metal</code>、<code>ggml-metal-impl.h</code>、<code>ggml-metal-device.{h,cpp,m}</code>、<code>ggml-metal-context.m</code></div>
+<div>比較器</div><div><code>scripts/check/ids_capture_diff.py</code> <strong>原封不動可用</strong>（列格式相同，<code>path=DST</code>）</div>
+</div>
+
+<p>三個設計要點（都寫在原始碼註解裡）：</p>
+<ol>
+<li><strong>精確名稱比對</strong>，不是 substring：<code>ffn_moe_down-1</code> 是 <code>ffn_moe_down-10</code>..<code>-19</code>
+的子字串，substring 會一次擷取十層，而比較器<strong>按名字配對並保留第一個出現</strong>⇒ 會變成一個安靜的錯誤比較。</li>
+<li><strong>獨立的 slot 空間與 buffer</strong>：ids 那條已經正好在 4096 上限（36 graphs × 117 nodes），共用 cursor 會
+悄悄吃掉「比較器用來切 graph 的那條流」。寬度也不同：ids 運算元 8 words，MoE 輸出一列 2048（此模型）。</li>
+<li><strong>兩條流按提交序合併印出</strong>：<code>ids_capture_diff.py</code> 在 <code>ffn_moe_gate-1</code>（一個 ids 列）切 graph。
+若把 dst 列全部接在 ids 列之後，它們會落進最後一個偽 graph、<strong>跟什麼都比不到、被報成 IDENTICAL</strong>——一個假陰性。</li>
+</ol>
+
+<h2 id="ctl">3. ★ 那個改變答案的對照</h2>
+
+<p>第一版（無屏障）跑出來的跨臂結果長這樣——<strong>它看起來正好是 §9.18.4 的證實</strong>：</p>
+
+<pre><code>graph 1: ids SAME 120 / DIFF 0   ->   ffn_moe_down-1.dst  DIFF
+graph 2: ids SAME 120 / DIFF 0   ->   ffn_moe_down-1.dst  DIFF
+graph 3: ids SAME 120 / DIFF 0   ->   ffn_moe_down-1.dst  DIFF
+...
+「ids 相同、輸出不同」⇒ 池的內容是載體   ← 看起來是結論，其實是儀器假象</code></pre>
+
+<div class="box bad">
+<strong>同臂對照（同一臂跑兩次、互比）拆穿了它：</strong>
+
+<table>
+<tr><th>對照</th><th>ids</th><th><code>ffn_moe_down-1.dst</code></th></tr>
+<tr><td><strong>同臂</strong> p25-gputime × 2（無屏障）</td><td>120 SAME / 0 DIFF</td><td><strong>每個 graph 都 DIFF</strong></td></tr>
+<tr><td><strong>同臂</strong> p25-slotgpu × 2（無屏障）</td><td>120 SAME / 0 DIFF</td><td>幾乎每個 graph 都 DIFF</td></tr>
+<tr><td><strong>同臂</strong> p25-gputime × 2（<u>有</u>屏障）</td><td>120 SAME / 0 DIFF</td><td><strong>每個 graph 都 SAME</strong></td></tr>
+<tr><td><strong>同臂</strong> p25-slotgpu × 2（<u>有</u>屏障）</td><td>120 SAME / 0 DIFF</td><td><strong>每個 graph 都 SAME</strong></td></tr>
+</table>
+
+<strong>同一個臂、同一個 prompt、同一個 binary，dst 讀數自己跟自己不一樣。那它不是量測。 </strong>
+如果沒有這個對照，上面那段就會被當成 §9.18.4 的證實寫進紀錄——而它剛好迎合被測的假說。
+</div>
+
+<h3>3.1 機制：不對稱就是簽名</h3>
+
+<p>為什麼 ids 可重現而 dst 不可？</p>
+
+<div class="kv">
+<div>ids 運算元</div><div>生產者在 <code>mul_mat_id</code> <strong>很多節點之前</strong>（router／add），早已沉降 ⇒ 讀它安全</div>
+<div>dst 輸出</div><div>生產者是<strong>緊鄰的前一個 kernel</strong>，而這個 fork 支援內核併發（見 <code>ggml_metal_op_concurrency_reset</code> → <code>ggml_metal_encoder_memory_barrier</code>）⇒ copy 可能讀到該 buffer 的<strong>前一位佔用者</strong></div>
+</div>
+
+<p>修法是在<strong>診斷路徑</strong>上插一個屏障：</p>
+
+<pre><code>// ggml-metal-ops.cpp, cgc_dst_capture()
+// ★ THE BARRIER IS NOT OPTIONAL, and it is the one place this instrument does NOT get to be a
+//   pure observer. ... An ids operand is produced many nodes upstream ... the dst is produced by
+//   the IMMEDIATELY PRECEDING kernel ...
+ggml_metal_encoder_memory_barrier(ctx->enc);</code></pre>
+
+<p>屏障不改變任何數值，只把診斷 copy 排在生產者之後；它同時是這支儀器唯一偏離
+「不動 graph／allocator／dispatch 順序」這條原則的地方，所以在原始碼裡明寫出來。</p>
+
+<div class="box ok">
+<strong>可移植的規則：</strong>任何新儀器在跨臂 diff 之前，<strong>必須先做「同臂兩跑、互比」的對照</strong>。
+一個不可重現的讀數不會表現成雜訊——它會表現成一個<strong>看起來很確定、而且方向迎合假說</strong>的答案。
+</div>
+
+<h2 id="res">4. 跨臂結果（有屏障；兩次獨立重跑結論相同）</h2>
+
+<table>
+<tr><th>graph</th><th>ids SAME</th><th>ids DIFF</th><th><code>ffn_moe_down-1.dst</code></th></tr>
+<tr><td>1–3</td><td>120</td><td>0</td><td>SAME</td></tr>
+<tr><td><strong>4–30</strong></td><td><strong>6</strong></td><td><strong>114</strong></td><td><strong>SAME</strong></td></tr>
+<tr><td>31–35</td><td>0</td><td>120</td><td>DIFF</td></tr>
+</table>
+
+<p>而 graph 4／5 的那「6 個 SAME」正好就是 layer 0 與 layer 1：</p>
+
+<pre><code>SAME = [ ffn_moe_down-0, ffn_moe_down-1, ffn_moe_gate-0, ffn_moe_gate-1, ffn_moe_up-0, ffn_moe_up-1 ]
+DIFF = layers 2..39（114 個節點）
+ffn_moe_gate-0: SAME     ← layer 0 的 router 看的是輸入 token 的 embedding
+ffn_moe_down-1.dst: SAME ← layer 1 的 MoE 輸出</code></pre>
+
+<h3>4.1 兩個必須一起讀的推論</h3>
+
+<ul>
+<li><strong>layer 0 的 router ids 相同 ⇒ 兩臂處理的是同一個 token。</strong>這排除了「只是 token 流分歧」這個
+平凡解釋——否則 layers 2–39 的分歧就不需要任何缺陷來解釋。</li>
+<li><strong>layer 1 的 ids 與它的 MoE 輸出都相同。</strong>而 layer 1 的 MoE 輸出逐位元相同<strong>也</strong>意味著
+layer 1 的 attention 輸出相同（出入不同的 attention 不會產生逐位元相同的 MoE 輸出）。</li>
+</ul>
+
+<h2 id="refute">5. 推翻了什麼、重新定位到哪裡</h2>
+
+<div class="box bad">
+<strong>§9.18.4 被推翻。它的前提是錯的。</strong>它推理「輸入相同 + ids 相同 ⇒ layer 1 的 MoE 輸出不同」，
+而<strong>直接量測說它相同</strong>。連帶 <strong>§9.18.7 的「要修的是 residency」失去唯一的直接證據</strong>，
+應降級為「未受支持」（它整條建立在 §9.18.4 上）。
+</div>
+
+<p><strong>新的定位</strong>：分歧出現在 <strong>layer 1 的 MoE 輸出之後、layer 2 的 router 之前</strong>。
+由 4.1 的兩點，候選收斂到：</p>
+
+<ol>
+<li><strong>layer 2 的 attention 路徑</strong>（q/k/v 投影、rope、KV 讀取）；</li>
+<li><strong>layer 1 → layer 2 之間的 norm／殘差</strong>。</li>
+</ol>
+
+<p>而<strong>專家池的權重內容不再是候選</strong>——至少 layer 1 讀池讀到的東西是對的。</p>
+
+<div class="box warn">
+<strong>不要過度延伸。</strong>這只否證了「載體是 layer 1 的 MoE 權重內容」。它<strong>沒有</strong>說池在別的層沒問題，
+也沒有說 S1 是安全的——只說 §9.18.4 用來指控池的那一步推理不成立。
+</div>
+
+<h2 id="limit">6. 儀器的已知限制（不假裝沒有）</h2>
+
+<table>
+<tr><th>限制</th><th>後果</th></tr>
+<tr><td><code>cgc_dst_capture()</code> 只掛在 <code>ggml_metal_op_mul_mat_id</code> 裡</td>
+    <td><strong>只能擷取 <code>mul_mat_id</code> 節點的輸出</strong>（gate／up／down）。要擷取 attention 的輸出，
+        需要掛在別的 dispatcher 上——那正是 §5 指出的方向，也是下一個 probe 的前提。</td></tr>
+<tr><td>固定 <code>CGC_DST_STRIDE=32</code> words（128 B）</td><td>輸出張量的一列是 2048 words ⇒ 只看到前 32 個。
+        「前 32 個相同」不等於「整列相同」；要更寬得改 stride（連帶改 buffer 大小）。</td></tr>
+<tr><td>需要 <code>ggml_metal_encoder_memory_barrier</code></td><td>這是唯一偏離「純觀察者」的地方（見 §3.1）。</td></tr>
+<tr><td>ids 那條仍是 4096 slots 上限</td><td>跑長一點的 run 會截斷 ids 流 ⇒ 比較器切不出後面的 graph。本次用
+        <code>--rounds 1 --warmup 0 --n-predict 24</code>（36 graphs）。</td></tr>
+</table>
+
+<h2 id="gates">7. 現場閘門原文</h2>
+
+<pre><code>D5 (--tag dstcapture)         comparable=True  config_diffs=[]  ok=True
+                              GATE dstcapture: PASS  M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+build products                libggml-metal.0.19.0.dylib  2026-09-16 19:49:39
+                              llama-server                2026-09-16 19:49:40   (gate ran after -> attributable)
+build fingerprint             8 keys: server=054fb22f04a0  libggml-metal=e34011c6562f  libggml-base=d2099fb798e7
+                                     libllama=233a172afb2e  libllama-common=7bceb3bd5320  libggml=8f4abce76052
+                                     libggml-cpu=70ebbd7c709a  libggml-blas=52de23d5c405
+
+validate.py                   122 episodes / 38 decisions / 111 lessons  -> OK
+selftest.py                   10/10 injected violations rejected
+index_assets.py --check       manifest OK: 76 assets, existence + bytes + mtime all agree
+build_memory_index.py --check memory index OK: 3 file(s), 65 section(s), no drift
+thermal_pressure.py --selftest 15/15 checks passed
+
+instrument (both arms)        CGC-IDS-CAP enabled: slots=4096 stride=8 bytes=131072 shared=1
+                              CGC-TENSOR-CAP enabled: node=ffn_moe_down-1 words=32 slots=1024 stride=32 bytes=131072
+dst rows per arm              53</code></pre>
+
+<h2 id="honest">8. 誠實邊界</h2>
+
+<ul>
+<li><strong>不主張 S1 是安全的。</strong>只主張 §9.18.4 的指控（池的內容）沒有證據。</li>
+<li><strong>不主張「layer 2 的 attention 就是缺陷所在」</strong>——那是候選集合，不是結論。要裁決它得把擷取點
+    移到 attention 的輸出（見 §6 的第一條限制）。</li>
+<li><strong>graph 31+ 的 dst DIFF 不能當證據</strong>：那裡 ids 也已經 DIFF，輸出不同已被上游解釋。</li>
+<li><strong>「同臂對照 SAME」是在這台機器、這份 build、這個 prompt 上量到的。</strong>
+    換 build 或換 run 形狀要重量——對照很便宜（~3 分鐘），沒有理由省。</li>
+<li>第 3 節那段「看起來像證實」的輸出<strong>保留在紀錄裡</strong>（<code>Backup/cgc_logs/ids_dst_capture/</code>
+    的無屏障那批），因為它正是這條教訓的證據。不要引用它當結果。</li>
+</ul>
+
+<hr>
+<p class="small">相關：<code>docs/REMAP_ROUNDTRIP_REMOVAL_PLAN_2026-09-15.md</code> §9.18（本文件的起點；§9.18.4 已被本文件更正）、
+<code>scripts/check/ids_capture_diff.py</code>（比較器）、<code>Backup/analyze_dst_capture.py</code>（逐 graph 分析）、
+<code>Backup/run_ids_dst_capture.sh</code>（驅動）。lessons：<code>eng-diag-0024/0025/0026</code>、<code>eng-mh-0042</code>、<code>eng-src-0014</code>。</p>
+
+</div>
+</body>
+</html>

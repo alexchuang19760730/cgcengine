@@ -90,8 +90,17 @@ def build_fingerprint():
     return fp
 
 
-# tag -> extra env. Base is CGC_SERVER_PROFILE=prefill250 for every arm so the only
-# difference between arms is the variable under test.
+# tag -> extra env. Base = whatever `--profile` says (default `prefill250`), so the arms below are
+# only "the variable under test" RELATIVE TO THAT PROFILE -- and the profile is not a passive
+# default, it pins knobs. Two consequences worth stating, because both have already bitten:
+#
+#   * The `p25-*` arms and the block from `p25-mmap` down assume you passed `--profile prod25`.
+#     Run them on the default and they test prod25-ish knobs on a prefill250 base (ctx 8192,
+#     -b 5632, SLAB_CAP 256) -- a different experiment, not a wrong one, but not the recorded one.
+#   * `spac-on` is degenerate on BOTH bases now: `prod25` has always pinned CGC_SPAC=1, and from
+#     2026-09-16 `prefill250` pins it too (run_server.sh:335, the prefill/decode unification). For
+#     a real SPAC A/B use `--profile prod25 --arms p25-nospac,baseline`, or the equivalently named
+#     `prefill250:CGC_SPAC=0` arm that `llama_bench_matrix.py` accepts.
 ARMS = {
     "baseline":      {},
     "mtp-off":       {"CGC_SERVER_MTP": "0"},

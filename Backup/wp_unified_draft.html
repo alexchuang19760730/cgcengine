@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>統一 profile：prefill250 + CGC_SPAC=1 落地與 prefill 代價（2026-09-16）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft JhengHei",sans-serif}
+  .wrap{max-width:980px;margin:0 auto;padding:40px 28px 80px}
+  h1{font-size:27px;line-height:1.35;margin:0 0 6px}
+  h2{font-size:20px;margin:38px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  h3{font-size:16.5px;margin:24px 0 8px}
+  p{margin:10px 0}
+  code{background:var(--code-bg);border:1px solid var(--line);border-radius:4px;
+       padding:1px 5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:13px 15px;overflow-x:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+      font-size:12.8px;line-height:1.6}
+  pre code{background:none;border:0;padding:0}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.6px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  .meta{color:var(--muted);font-size:13px;margin:0 0 22px}
+  .box{border-left:4px solid var(--blue);background:var(--blue-bg);padding:12px 16px;border-radius:0 8px 8px 0;margin:16px 0}
+  .box.warn{border-color:var(--amber);background:var(--amber-bg)}
+  .box.bad{border-color:var(--red);background:var(--red-bg)}
+  .box.ok{border-color:var(--green);background:var(--green-bg)}
+  .kv{display:grid;grid-template-columns:minmax(220px,auto) 1fr;gap:4px 16px;font-size:13.8px;margin:10px 0}
+  .kv div:nth-child(odd){color:var(--muted)}
+  .pill{display:inline-block;font-size:11.5px;padding:1px 8px;border-radius:999px;
+        border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:#fcfcfd}
+  .toc ol{margin:6px 0 0 20px}
+  .toc a{color:var(--blue);text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>統一 profile：<code>prefill250</code> + <code>CGC_SPAC=1</code> 落地，以及它的 prefill 代價</h1>
+<p class="meta">CGC MoE Engine · 2026-09-16 · 這份文件同時是「規格變更」與「變更後的重量結果」。
+<strong>規格已改</strong>（<code>scripts/run_server.sh:335</code>）；量測結果見 §4–§7。</p>
+
+<div class="box">
+<strong>一句話：</strong>把 <code>CGC_SPAC=1</code> / <code>CGC_SPAC_ALPHA=0.75</code> 寫進 <code>prefill250</code>，
+於是一個 profile 同時服務 prefill 與 decode。原則是「剩下的槓桿住在哪個形狀裡」，不是現在的 t/s
+（§2）。加了之後 D5 對 v4 報名目上的 INVALID COMPARISON，處置是重新基線 v5，而<strong>證據是
+jsonl 逐位元相同、不是「M1 = 9/9」</strong>（§3）。SPAC 的兩個作用點都在 prefill 的熱路徑上
+（§1），所以 prefill 250 必須在<strong>同一個 commit</strong> 內重量（§4）。
+</div>
+
+<div class="toc">
+<strong>目錄</strong>
+<ol>
+<li><a href="#chg">這次改了什麼（一行 diff 的實質）</a></li>
+<li><a href="#why">判準：不是 t/s，是「剩下的槓桿有沒有地方跑」</a></li>
+<li><a href="#d5">D5：名目上不Comparable、行為上逐位元相同 ⇒ 重新基線 v5</a></li>
+<li><a href="#cost">SPAC 的成本路徑（為什麼 prefill 必須重量）</a></li>
+<li><a href="#prefill">prefill 250 的重量：交錯 A/B/A/B</a></li>
+<li><a href="#depth">完整 depth 矩陣（0 / 512 / 1024 / 2048），含順序效應控制</a></li>
+<li><a href="#alpha">ctx 8192 上的 <code>CGC_SPAC_ALPHA</code> 重掃</a></li>
+<li><a href="#blast">副作用盤點：pin 一個 env 鍵會靜默重解析誰</a></li>
+<li><a href="#gates">現場閘門原文</a></li>
+<li><a href="#honest">誠實邊界：這份文件不主張什麼</a></li>
+</ol>
+</div>
+
+<h2 id="chg">1. 這次改了什麼</h2>
+
+<p><code>scripts/run_server.sh</code> 的 <code>prefill250</code> 區塊加了兩行（其餘一字未動）：</p>
+
+<pre><code>[ -z "${CGC_SPAC+x}" ]       &amp;&amp; CGC_SPAC=1
+[ -z "${CGC_SPAC_ALPHA+x}" ] &amp;&amp; CGC_SPAC_ALPHA=0.75</code></pre>
+
+<div class="kv">
+<div>解析後（<code>CGC_DUMP_ENV=1</code> 實測）</div><div><code>CGC_SPAC=1</code>、<code>CGC_SPAC_ALPHA=0.75</code>，其餘與 v4 參考檔一致</div>
+<div>可覆寫</div><div><code>CGC_SPAC=0 ./scripts/run_server.sh</code> 回到 09-15 GA 的形狀（profile 只補預設，不寫死）</div>
+<div>其他 profile</div><div><code>prod25</code> 本來就有（不變）；<code>qa-zh</code> / <code>off</code> 仍然沒有 SPAC</div>
+</div>
+
+<p>SPAC（<code>llama-expert-cache.h:605-619</code>）不是一個新的快取，而是<strong>三個既有機制的來源切換</strong>：</p>
+<ul>
+<li>每個 routed step 更新每層的 EMA 專家效用向量（<code>llama-context.cpp:4739</code>）；</li>
+<li>逐出時改用「效用最低」選受害者，而不是 LRU（<code>llama-expert-cache.cpp:473, 789, 1306</code>）；</li>
+<li>步與步之間把池重新瞄準 EMA top-K 的非駐留專家（<code>llama_expert_cache_spac_prefetch</code>）。</li>
+</ul>
+
+<p>換句話說，SPAC 決定的是 <strong>哪些專家駐留</strong>，不是「數值怎麼算」。§3 把這句話量成了可稽核的事實。</p>
+
+<h2 id="why">2. 判準：不是 t/s，是「剩下的槓桿有沒有地方跑」</h2>
+
+<p>三個候選臂（<code>prod25</code> / <code>prod25-stream</code> / <code>prefill250</code>）的 resolved env
+只差 6 項，其中 4 項只是「寬 prefill 走哪條路」，真正有語意的只有兩項：<code>CGC_SPAC</code> 與 <code>CTX</code>。
+所以選誰的問題可以化簡成「哪個形狀裝得下還沒做的優化」。</p>
+
+<p>而那個判準在原始碼裡，不在數字裡。池路徑的批寬被夾住，夾具的註解自己把它綁在 MTP 上：</p>
+
+<pre><code>// llama.cpp/src/llama-graph.h:18-37
+// Default 8 covers MTP n_max up to 7 (verify = n_max+1).
+// Tunable via CGC_POOL_MAX_TOKENS (clamped to [2, 64]).
+// Note: larger values may increase memory pressure.</code></pre>
+
+<pre><code>// llama.cpp/src/llama-context.cpp:286-291
+if (pool_capacity &gt; 0 &amp;&amp; n_batch &gt; 1 &amp;&amp; !cgc_prefill_stream) n_batch = pmax;
+//   ... so speculative/MTP verify batches (n_max+1 &lt;= cap) flow through the pool path
+//   The clamp is NOT lifted for an owned pool.</code></pre>
+
+<p>⇒ <code>prod25</code>（不帶 <code>CGC_PREFILL_STREAM</code>）把池路徑鎖在 <code>n_batch &lt;= 8</code>；
+放寬它就要在 <strong>143 slots/layer</strong> 裡裝下更寬的 expert union（容量壓力熱點：
+worst layer 248 distinct vs 143 slots）。而 <strong>M1（batched-union gather）與 M4（MTP verify 真批次）
+住在「寬 batch」的世界，需要 whole-layer slab（<code>ne[2]=n_expert</code>，裝得下 256 個）</strong>
+——只有帶 <code>CGC_PREFILL_STREAM</code> 的臂有。</p>
+
+<table>
+<tr><th>臂</th><th>whole-layer slab<br><span class="small">M1/M4 的住處</span></th><th>decode 駐留<br><span class="small">SPAC</span></th><th>prefill</th><th>decode 歷史</th></tr>
+<tr><td><code>prod25</code></td><td>✗（夾在 8）</td><td>✓</td><td>差（被夾）</td><td>9.4（d0）</td></tr>
+<tr><td><code>prod25-stream</code></td><td>✓</td><td>✓</td><td>111–120</td><td>9.65 → 13.18</td></tr>
+<tr><td><code>prefill250</code></td><td>✓</td><td>✗ ← 唯一缺的</td><td><strong>250+（已交付）</strong></td><td>從未量到</td></tr>
+</table>
+
+<p><code>prod25-stream</code> 是「為了 decode 的 ~15% 放棄 2.2× 的 prefill」，那個交易不對稱；
+<code>prefill250</code> 只缺一個旋鈕。所以選後者 —— 但那個旋鈕不是免費的，見 §4。</p>
+
+<h2 id="d5">3. D5：名目上不Comparable、行為上逐位元相同 ⇒ 重新基線 v5</h2>
+
+<p>第一次跑閘門（<code>--tag spac_unified --allow-incomparable</code>）的輸出：</p>
+
+<pre><code>GATE spac_unified: INVALID COMPARISON -- reference was dumped under a different
+  numerics-determining configuration (2 diffs).
+config_diffs:
+    ENV.CGC_SPAC:       ref='&lt;absent&gt;'  now='1'
+    ENV.CGC_SPAC_ALPHA: ref='&lt;absent&gt;'  now='0.75'
+  observed M1=9/9  M2=9/9  M3=9/9  n=9 (printed for information, NOT a verdict)</code></pre>
+
+<p>這是<strong>預期</strong>的：<code>CGC_SPAC</code> 不在 <code>DIAGNOSTIC_KEYS</code> 裡，而 gate 的
+可比較性檢查是「resolved env 的字串差」。它與 2026-09-15 的 <code>CGC_OA_ASYNC</code> 那一輪是
+同一個形狀（見 gate 檔頭 v3/v4 的記載）。</p>
+
+<h3>3.1 證據是逐位元相同，不是「M1 = 9/9」</h3>
+
+<p>閘門自己 2026-09-16 的檔案說明寫得很清楚：一致性必須由 logits 建立，而「同一條路徑會落在同一個
+錨點 digest 上」才是可稽核的。這裡有更強的一條：重新基線完的 <code>v5</code> 與舊的 <code>v4</code>
+<strong>md5 完全相同</strong>。</p>
+
+<pre><code>$ md5 -q Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident_v5_spac.jsonl
+a0a0ca742ca94e843c54b39981742738
+$ md5 -q Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident_v4_skip0off.jsonl
+a0a0ca742ca94e843c54b39981742738</code></pre>
+
+<div class="box warn">
+「M1 = 9/9」是弱述句（「我看的時候是 9/9」）；<strong>md5 相同</strong>才是強述句（「這份檔案沒有被
+重推導，只是被重新蓋章」）。兩者的差別在於：前者允許「剛好這次一樣」，後者排除了它。
+</div>
+
+<h3>3.2 做了什麼、沒做什麼</h3>
+
+<table>
+<tr><th>步驟</th><th>指令／產物</th></tr>
+<tr><td>1. 讀 diff 與 M1/M2/M3</td><td><code>m123_oracle_gate.py --tag spac_unified --allow-incomparable</code></td></tr>
+<tr><td>2. 重新基線</td><td><code>--tag spac_v5 --write-ref Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident_v5_spac.jsonl --ref-note "…"</code></td></tr>
+<tr><td>3. 逐位元對照</td><td><code>md5 -q</code> 兩份 jsonl（相同）＋ 確認新 <code>.cap</code> 的 <code>resolved.ENV</code> <strong>有</strong>記下 <code>CGC_SPAC</code> / <code>CGC_SPAC_ALPHA</code></td></tr>
+<tr><td>4. 改 <code>DEFAULT_REF</code></td><td>指到 v5，旁邊寫 dated 註解說明這是名目重基線</td></tr>
+<tr><td>5. 重跑</td><td><code>--tag spac_unified_v5</code> → <code>comparable=True</code>、M1/M2/M3 = 9/9</td></tr>
+</table>
+
+<p><strong>刻意沒有做的事</strong>：沒有把 <code>CGC_SPAC</code> 塞進 <code>DIAGNOSTIC_KEYS</code>。
+那個集合會把鍵從 <code>config_stamp</code> 濾掉 ⇒ <code>.cap</code> 從此不再記錄它 ⇒ 下一個讀者
+分不出 SPAC-on 與 SPAC-off 的基線。<code>CGC_SLOT_TABLE_GPU</code> 的前例不適用：那是「整條主張
+就是 bit-identity」的<strong>實驗</strong>旋鈕，不是生產預設。</p>
+
+<div class="box ok">
+<strong>副產品：SPAC 的主張被量化了。</strong>它改變「哪些專家駐留」，而在這個 pool 幾何、
+這 9 列探針上<strong>不改變數值</strong>。若哪一天它真的動了數值，閘門會在 M1 對 v5 失敗 —— 正是它該失敗的地方。
+</div>
+
+<h2 id="cost">4. SPAC 的成本路徑（為什麼 prefill 必須重量）</h2>
+
+<p>這一節是這次修改唯一真正的風險，而它由引擎自己的註解指出，不是我推測的：</p>
+
+<pre><code>// llama.cpp/src/llama-context.cpp:4736-4741
+if (cgc_spac_on()) {
+    llama_expert_cache_spac_update(cache, (uint32_t) il, routes.data(), routes.size());
+}
+// "Fires on every path that reaches here -- large prefill, MTP draft (ctx MTP) and
+//  trunk verify alike ... Unpooled layers update a row spac_prefetch never reads."</code></pre>
+
+<ol>
+<li><strong>EMA 更新在每個 routed step 都跑，而且含大 prefill</strong>；每次呼叫取 <code>cache-&gt;m</code> 這把鎖
+（<code>llama_expert_cache_spac_update</code> 內），因此與 8 個 worker 的填充分執行有競爭可能。</li>
+<li><strong><code>spac_prefetch</code> 的預設節奏是 <code>CGC_SPAC_REFRESH=1</code></strong>，即<strong>每一步</strong>對每一層的
+非駐留專家做 partial sort 並排入 prefetch（<code>llama-expert-cache.cpp:1739+</code>）。</li>
+</ol>
+
+<p>兩者都在 prefill 的熱路徑上。所以「prefill 250 還在」是<strong>量測</strong>，不是假定 —— §5 就是那個量測。</p>
+
+<h2 id="prefill">5. prefill 250 的重量：交錯 A/B/A/B</h2>
+
+<!--PREFILL_AB-->
+
+<h2 id="depth">6. 完整 depth 矩陣（0 / 512 / 1024 / 2048），含順序效應控制</h2>
+
+<p><code>-d N</code> 讓 llama-bench 在 <code>t_start</code> <strong>之前</strong>先把 context 填 N 個 token
+（<code>test_prompt</code> 在 <code>t_start</code> 之前），所以它量到的是「池被那 N 個 token 弄成什麼狀態之後」
+的 decode。它是唯一讓「同儀器、同臂」從 9.5 走到 13.2 t/s 的軸，所以不是細節。</p>
+
+<p>但歷史協定（09-15）把 0,512,1024,2048,4096 全放在<strong>同一個行程</strong>的<strong>遞增</strong>順序裡，
+而池是行程級的 ⇒ <strong>depth 效應與序列位置混淆</strong>。這份文件因此跑三種形狀：</p>
+
+<table>
+<tr><th>形狀</th><th>它回答的問題</th></tr>
+<tr><td>單行程、遞增 <span class="small">（歷史可比）</span></td><td>與 09-15 那組能不能對照</td></tr>
+<tr><td>單行程、遞減</td><td><code>asc − desc</code> 就是順序／累積效應的大小</td></tr>
+<tr><td>每個 depth 各自一個行程</td><td>移除行程內的預熱 ⇒ depth 軸本身</td></tr>
+</table>
+
+<!--DEPTH_MATRIX-->
+
+<h2 id="alpha">7. ctx 8192 上的 <code>CGC_SPAC_ALPHA</code> 重掃</h2>
+
+<p><code>alpha = 0.75</code> 是 2026-09-06 用 11 點掃描在 <strong>ctx 4096 / 8 GiB pool / DBUF+SPAC</strong> 調出來的
+（<code>llama-expert-cache.h:620-625</code>：alpha 0.75 給最佳中位 25.87 t/s、2/3 跑次 &gt; 25）。
+但 alpha 是「每層專家效用」的 EMA 衰減率，而填進那個 EMA 的是每一步 routed 的專家集合 ——
+context 長度改變會改變它（駐留歷史不同 ⇒ router 統計不同；暖池的 depth prefill 大小也不同）。
+所以「0.75 在 8192 還是對的」在被量之前只是假定。</p>
+
+<!--ALPHA_SWEEP-->
+
+<h2 id="blast">8. 副作用盤點：pin 一個 env 鍵會靜默重解析誰</h2>
+
+<p>這是這次改動<strong>最容易被忽略</strong>的部分：<code>--profile</code> 不是被動預設，它 pin 旋鈕。
+把鍵加進 <code>prefill250</code> 之後，<strong>每一個「預設 profile 就是它」的工具都被重新解析</strong>。</p>
+
+<div class="kv">
+<div>盤點指令</div><div><code>grep -rn '"--profile", default=' scripts/check/*.py</code></div>
+<div>實際清單</div><div><code>decode_sweep.py</code>（<strong>預設 prefill250</strong>）、<code>m123_oracle_gate.py</code>（同）、<code>ab_interleave.py</code>（<code>prod25</code>，不受影響）</div>
+<div>不吃 <code>--profile</code> 但寫死 profile</div><div><code>llama_bench_matrix.py</code> 的 <code>prefill250</code> 臂、<code>prefill_certifiability.py</code> 的 <code>--arm prefill250</code>、<code>run_thermal_gate.sh → run_req2_retest.sh</code>（交付數字那條路）</div>
+<div>不受影響</div><div><code>run_native_baseline.sh</code>（直接 <code>exec</code> 二進位，不經 profile）</div>
+</div>
+
+<p>最需要指名的兩條：</p>
+<ul>
+<li><strong><code>decode_sweep.py</code> 不帶 <code>--profile</code> 的跑次，從此取得 SPAC=1</strong>。先前記錄的
+decode 散佈（6.6–16.17 t/s）用的是 <code>--profile prod25</code>，那個本來就是 SPAC=1，所以那些數字不受影響；
+但「下一跑」與「那一跑」若一個帶 <code>--profile</code> 一個不帶，就會悄悄變成兩個配置。已在
+<code>decode_sweep.py</code> 的 <code>ARMS</code> 註解寫明。</li>
+<li><strong><code>spac-on</code> 這個臂退化了。</strong>它在新基準上與 <code>baseline</code> 同義
+（<code>prod25</code> 一向 pin SPAC=1，<code>prefill250</code> 從今天起也是）。真正的 SPAC A/B 要用
+<code>--profile prod25 --arms baseline,p25-nospac</code>，或 <code>prefill250:CGC_SPAC=0</code>。</li>
+</ul>
+
+<h2 id="gates">9. 現場閘門原文</h2>
+
+<!--GATES-->
+
+<h2 id="honest">10. 誠實邊界：這份文件不主張什麼</h2>
+
+<ul>
+<li><strong>不主張「SPAC 不改變數值」是一條普適定理。</strong>它是在<strong>這個 pool 幾何、這 9 列探針、
+這份 build</strong> 上量到的（md5 逐位元相同）。換幾何要重量。</li>
+<li><strong>不主張 prefill 250 的條件式交付被推翻。</strong>交付述句一直是「<strong>發射時讀到 0 的那一臂</strong>，
+其 req1–req3 全部 ≥250」，不是「250 隨時可重現」。改了 profile 就要在新的 profile 上重新建立這個述句（§5）。</li>
+<li><strong>不引用不同 depth 的數字互比。</strong>「10–13 t/s」與 9.4 是同儀器、同臂、不同 depth，
+不是矛盾也不是進步（<code>Backup/cgc_logs/instr_compare/decode_tps_provenance.tsv</code>）。</li>
+<li><strong>不主張這件事讓 decode 更接近 25 t/s。</strong>它改變的是「剩下的槓桿有沒有地方跑」，
+不是把現有的 t/s 推上去；decode 距離仍未歸因的殘差保留在 §6 的表裡。</li>
+<li><code>docs/PREFILL250_CONFIGURATION_GUIDE_2026-09-15.html</code> §2.1 列的是 09-15 的 8 個旋鈕
+（<code>BATCH=6144</code>、無 SPAC），<strong>與現在的 profile 預設不同</strong>（5632 ＋ SPAC）。
+那份文件是 dated 快照，<strong>依慣例不就地改版</strong>；這裡只指出它的落差。</li>
+</ul>
+
+<hr>
+<p class="small">相關：<code>docs/PREFILL250_CONDITIONAL_DELIVERY_20260916.html</code>（條件式交付的述句）、
+<code>docs/INSTRUMENT_COMPARE_20260916_1821.html</code>（兩個 decode 儀器不能並排）、
+<code>docs/DECODE_THERMAL_INBAND_20260916_1755.html</code>（散熱讀數與逐輪配對）。
+skill：<code>cgc-decode-attribution</code>、<code>cgc-commit-gate</code> §2.5。</p>
+
+</div>
+</body>
+</html>
