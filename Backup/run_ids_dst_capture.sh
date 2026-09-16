@@ -1,67 +1,76 @@
 #!/usr/bin/env bash
-# [CGC 2026-09-16] §9.18.6: capture `ffn_moe_down-1`'s OUTPUT on both arms and diff it.
+# [CGC 2026-09-16] §9.18.6: capture a LIST of nodes' OUTPUT tensors on both arms, then localise the
+# first divergence by submission order.
 #
-# THE QUESTION THIS ANSWERS (and why it is the decisive one)
-#   §9.18.3 established, with the kernel-side ids capture, that the ids `mul_mat_id` consumes are
-#   BIT-IDENTICAL between the baseline arm and the S1 arm (39 layers x 117 nodes x 3 graphs), and
-#   that the first divergence is `ffn_moe_gate-2` -- i.e. the *next* layer's router.
-#   §9.18.4 then argued by elimination: on graph 3, layer 1's gate/up/down ids are identical and
-#   layer 2's router differs, so under identical input AND identical ids, layer 1's MoE OUTPUT
-#   differs => the carrier is the weight CONTENT the ids point at (the pool / slot contents), not
-#   the ids and not the expert->slot mapping.
+# HISTORY, because the shape of this file is a record of what went wrong
+#   1st version captured ONE node (`ffn_moe_down-1`) and reported "identical ids, DIFFERENT output",
+#   which read exactly like a confirmation of §9.18.4. It was an instrument artefact: the copy had no
+#   memory barrier, so it read the buffer's previous occupant. The SAME-ARM control (one arm captured
+#   twice, diffed against itself) is what caught it -- without that control the false positive would
+#   have been published. The barrier is now in the instrument, and the control below is MANDATORY.
+#   The result after the fix: layer 1's MoE output is bit-identical, which REFUTES §9.18.4.
 #
-#   That argument is an inference from an absence. §9.18.6 turns it into a measurement: capture the
-#   output tensor itself. If `ffn_moe_down-1`'s output differs while its input and its ids are the
-#   same, residency is proven to be the carrier and the investigation moves from the mapping layer
-#   to the residency / publish layer. Inputs and ids are already known to be identical from §9.18.3,
-#   so this single reading closes it.
+# WHAT IT DOES NOW
+#   The filter takes a comma-separated list (CGC_TENSOR_CAPTURE), and four more dispatchers are
+#   instrumented (mul_mat, flash_attn_ext, bin, norm) so one run can walk a layer's chain: the router
+#   INPUT, the router LOGITS, the attention output and the MoE output, in submission order.
 #
-# WHAT IT REUSES (no second instrument, no second comparator)
-#   kernel_cgc_ids_capture is a generic "copy up to `stride` int32 words into slot N" kernel -- it
-#   has nothing ids-specific in it. The new host entry `cgc_dst_capture()` submits the SAME kernel
-#   into the same command buffer with the node's DST buffer bound instead of its ids operand, at a
-#   wider stride (32 words vs 8), into its OWN destination buffer. Rows are emitted in submission
-#   order through a shared sequence number, so `scripts/check/ids_capture_diff.py` -- which segments
-#   graphs by the ids rows and pairs nodes BY NAME -- keeps working untouched. The dst row is named
-#   `<node>.dst` so it cannot collide with the ids row of the same node.
-#
-#   READ THIS BEFORE CHANGING THE RUN SHAPE: the ids destination is exactly at its cap in §9.18
-#   (36 graphs x 117 nodes = 4096 slots), so this runner uses a SHORT run (1 request, 24 tokens
-#   -> ~25 graphs) and still enables the ids capture, because the ids rows are what carry the graph
-#   boundaries. Without them every dst row lands in one pseudo-graph and the comparator would
-#   silently compare nothing (a false IDENTICAL -- the worst outcome this project knows).
+#   NOTE ON THIS MODEL (it changes what "attention" means): Qwen3.6-35B-A3B is a HYBRID stack with
+#   `full_attention_interval = 4`, so layers 0,1,2 are gated delta-net (linear attention) and layer 3
+#   is the first full-attention layer. The layer the divergence is localised to, layer 2, has NO
+#   flash attention: its attention output projection is an ordinary mul_mat (`linear_attn_out-2`).
+#   Reaching "layer 2's attention" is therefore the mul_mat hook, not the flash_attn one.
 #
 # Usage:  bash Backup/run_ids_dst_capture.sh
-#         NODE=ffn_moe_down-1 N_PREDICT=24 bash Backup/run_ids_dst_capture.sh
+#         NODES=a,b,c N_PREDICT=12 bash Backup/run_ids_dst_capture.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT" || exit 2
-NODE="${NODE:-ffn_moe_down-1}"
-N_PREDICT="${N_PREDICT:-24}"
+
+# The names are the AUTHORITATIVE ones: they were enumerated once with CGC_TENSOR_CAPTURE='*' (the
+# documented use of that mode), because guessing them from the builder costs a whole run and two of my
+# guesses were wrong (`ffn_out-*` and `post_moe-*` do not exist; the real names are `ffn_moe_out-*`
+# and `l_out-*`, which is what `build_cvec` renaming the residual produces).
+#
+# Layer 2 is the layer the divergence is localised to, layer 1 is the last one known identical, and
+# `l_out-1` is the boundary between them. `ffn_moe_logits_raw-2` is the last numerical value before
+# the top-k that picks the experts, and `attn_post_norm-2` is the value the router consumes -- those
+# two together split layer 2 at its most informative point.
+# `norm-2` is in the default list even though it is NOT comparable across these two arms: it is the
+# gated norm inside layer 2's delta-net, and whether it is capturable depends on whether the norm
+# dispatcher fused the following MUL -- which depends on node ORDER, and the S1 arm puts it a
+# different way round, so the name is absent from that arm entirely. Kept in the list because
+# absence is visible (the analyzer prints ABSENT, never "identical") and because the fix for it is
+# to instrument the delta-net's own dispatchers, not to drop the node.
+NODES="${NODES:-l_out-0,l_out-1,attn_norm-2,z-2,gate-2,norm-2,linear_attn_out-2,attn_residual-2,attn_post_norm-2,ffn_moe_logits_raw-2,l_out-2}"
+# 12, not 24: the IDS destination is 4096 slots and a full forward pass costs ~114 of them, so 36
+# graphs would silently truncate the tail of the ids stream -- and the ids rows are what carry the
+# graph boundaries. Fewer, complete graphs beat more, truncated ones.
+N_PREDICT="${N_PREDICT:-12}"
 OUT="$ROOT/Backup/phase_decomp"
 LOG="$ROOT/Backup/cgc_logs/ids_dst_capture"
 mkdir -p "$OUT" "$LOG"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 JSON="$OUT/ids_dst_capture_${STAMP}.json"
 
-echo "=== §9.18.6 output capture: node=$NODE  n_predict=$N_PREDICT  $(date '+%Y-%m-%d %H:%M:%S') ==="
-echo "  arms: p25-gputime (host leaf) vs p25-slotgpu (S1 GPU table), both with the capture on"
+echo "=== §9.18.6 output capture: n_predict=$N_PREDICT  $(date '+%Y-%m-%d %H:%M:%S') ==="
+echo "  nodes: $NODES"
+echo "  arms : p25-gputime (host leaf) vs p25-slotgpu (S1 GPU table), both with the capture on"
 echo "  thermal at launch: $(python3 scripts/check/thermal_pressure.py)"
 echo
 
 # CGC_IDS_CAPTURE must stay 1: its rows carry the graph boundaries the comparator segments by.
 CGC_IDS_CAPTURE=1 \
-CGC_TENSOR_CAPTURE="$NODE" \
+CGC_TENSOR_CAPTURE="$NODES" \
 CGC_TENSOR_CAPTURE_WORDS=32 \
 RUN_REPLAY_BENCH=0 \
 python3 scripts/check/decode_sweep.py \
     --profile prod25 \
     --arms p25-gputime,p25-slotgpu \
     --rounds 1 --warmup 0 --n-predict "$N_PREDICT" \
-    --json "$JSON" --force 2>&1 | tail -25
+    --json "$JSON" --force 2>&1 | tail -12
 echo
 
-# Lift each arm's server log out of the row, then diff.
 python3 - "$JSON" "$LOG" <<'PY'
 import json, shutil, sys
 from pathlib import Path
@@ -74,9 +83,9 @@ for r in rows:
         tgt = dest / f"{r['tag'].replace(':', '_').replace(';', '_')}_{Path(log).name}"
         shutil.copyfile(log, tgt)
         paths[r["tag"]] = tgt
-        n_ids_rows = sum(1 for line in open(tgt, errors="replace") if "CGC-IDS-CAP" in line)
-        n_dst_rows = sum(1 for line in open(tgt, errors="replace") if ".dst" in line and "CGC-IDS-CAP" in line)
-        print(f"  {r['tag']:<14} ids_rows={n_ids_rows:<6} dst_rows={n_dst_rows:<5} -> {tgt.name}")
+        n_ids = sum(1 for l in open(tgt, errors="replace") if "CGC-IDS-CAP" in l and ".dst" not in l)
+        n_dst = sum(1 for l in open(tgt, errors="replace") if ".dst" in l and "CGC-IDS-CAP" in l)
+        print(f"  {r['tag']:<14} ids_rows={n_ids:<6} dst_rows={n_dst:<5} -> {tgt.name}")
 Path(dest / "arms.json").write_text(json.dumps({k: str(v) for k, v in paths.items()}, indent=1))
 for p in paths.values():
     shutil.copyfile(p, dest / "latest_" + p.name)
@@ -89,15 +98,15 @@ if [ -z "$A" ] || [ -z "$B" ]; then
     exit 1
 fi
 
-echo "=== ids diff (re-confirms 9.18.3 in the same run) ==="
-python3 scripts/check/ids_capture_diff.py "$A" "$B" --all-graphs --max 4 2>&1 | head -20 || true
+echo "=== ids diff (re-derives §9.18.3 in the same run) ==="
+python3 scripts/check/ids_capture_diff.py "$A" "$B" --all-graphs --max 4 2>&1 | head -16 || true
 echo
-echo "=== the new reading: $NODE.dst, graph by graph ==="
-python3 Backup/analyze_dst_capture.py "$A" "$B" "$NODE"
+echo "=== localisation (graphs 1..23 only -- see --upto) ==="
+python3 Backup/analyze_capture_nodes.py "$A" "$B" --upto 24 --graphs 6
 echo
-echo "=== INSTRUMENT CONTROL (read this before believing anything above) ==="
-echo "  The same-arm control must be run separately: capture the SAME arm twice and diff it against"
-echo "  itself. Until that shows SAME on every graph, a dst DIFF is not evidence of a value"
-echo "  difference -- it is evidence about the readout. See Backup/analyze_dst_capture.py."
-echo "  Command: bash Backup/run_ids_dst_capture.sh   # twice, then diff the two p25-gputime logs"
+echo "=== INSTRUMENT CONTROL (mandatory; read this before believing anything above) ==="
+echo "  A dst DIFF is only evidence of a VALUE difference if the same arm, captured twice, agrees with"
+echo "  itself. Run this script TWICE and diff the two p25-gputime logs:"
+echo "    python3 Backup/analyze_capture_nodes.py <run1>-p25-gputime*.log <run2>-p25-gputime*.log"
+echo "  If that reports anything other than SAME, the readout is the finding, not the engine."
 echo "=== done $(date '+%H:%M:%S') ==="

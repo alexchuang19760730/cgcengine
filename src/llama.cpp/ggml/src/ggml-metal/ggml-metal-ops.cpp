@@ -2342,6 +2342,12 @@ int ggml_metal_op_pool_2d(ggml_metal_op_t ctx, int idx) {
     return 1;
 }
 
+namespace {
+// Defined with the rest of the CGC capture instrumentation at the foot of this file, and declared
+// here because mul_mat -- the first dispatcher that uses it -- is defined before it.
+void cgc_dst_capture_at(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_dst, int idx, int n_fuse);
+} // namespace
+
 int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
     ggml_tensor * op = ctx->node(idx);
 
@@ -2621,6 +2627,13 @@ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
             ggml_metal_encoder_dispatch_threadgroups(enc, ((ne01 + nr0*nsg - 1)/(nr0*nsg)), ((ne11 + nr1 - 1)/nr1), ne12*ne13, 32, nsg, 1);
         }
     }
+
+    // [CGC 2026-09-16 §9.18.6] One line covers every path above, because all of them write the same
+    // destination: `op`'s. This dispatcher never fuses (it returns a constant 1), so the node named by
+    // the helper is `ctx->node(idx)` -- the dense projection itself. What this buys: the MoE ROUTER's
+    // logits of a chosen layer, which is the last numerical value before the top-k that selects the
+    // experts, and the attention output projections (`linear_attn_out-*` on the hybrid layers).
+    cgc_dst_capture_at(ctx, ggml_metal_get_buffer_id(op), idx, /*n_fuse*/ 1);
 
     return 1;
 }
@@ -3214,13 +3227,19 @@ constexpr int32_t CGC_IDS_STRIDE = 8;
 //   (2) the useful width differs by an order of magnitude. An ids operand is 8 words per token; a
 //       MoE output row is ne0 wide (2048 in this model), and 8 words of an output tensor is too
 //       narrow to call a divergence.
-constexpr int32_t CGC_DST_SLOTS  = 1024;
+// 4096, not 1024: the filter takes a LIST, so one run now covers a whole neighbourhood of the graph
+// (a layer's router input, its attention output and its MoE output, in one pass). Overflow is
+// reported -- see the warn in cgc_dst_capture_common -- because a silently truncated tail would drop
+// exactly the deeper layers a divergence walk needs.
+constexpr int32_t CGC_DST_SLOTS  = 4096;
 constexpr int32_t CGC_DST_STRIDE = 32;
 
 struct cgc_ids_rec {
     char    name[48];
     int32_t n_ids;
     int32_t kind; // 0 = MV (src2 is consumed directly), 1 = MM (src2 is consumed by map0), 2 = DST
+    int32_t fuse; // DST only: how many nodes the dispatcher covered. >1 means this row is the LAST
+                  // node of a fused group (the naming rule in cgc_dst_capture_at), so it is printed.
     int32_t seq;  // global submission order across BOTH streams -- see the dump
 };
 
@@ -3235,7 +3254,7 @@ struct cgc_ids_state {
 
     // tensor-output side
     bool                dst_enabled = false;
-    char                dst_filter[64] = { 0 };
+    char                dst_filter[256] = { 0 };  // comma-separated list of EXACT node names, or `*`
     int32_t             dst_words   = CGC_DST_STRIDE;
     ggml_metal_buffer_t buf_dst     = nullptr;
     int32_t *           base_dst    = nullptr;
@@ -3261,10 +3280,11 @@ bool cgc_capture_init(ggml_metal_device_t dev) {
     const char * e = getenv("CGC_IDS_CAPTURE");
     g_cgc_ids.enabled = (e != nullptr && e[0] != '0');
 
-    // Exact match, deliberately NOT a substring: `ffn_moe_down-1` is a substring of
-    // `ffn_moe_down-10`..`ffn_moe_down-19`, so a substring filter for layer 1 would quietly capture
-    // ten layers, and ids_capture_diff.py pairs nodes BY NAME (keeping the first occurrence), so the
-    // comparison would then depend on which layer happened to come first.
+    // A comma-separated list of EXACT names (matched by cgc_dst_match), deliberately NOT substrings:
+    // `ffn_moe_down-1` is a substring of `ffn_moe_down-10`..`ffn_moe_down-19`, so a substring filter
+    // for layer 1 would quietly capture ten layers, and ids_capture_diff.py pairs nodes BY NAME
+    // (keeping the first occurrence), so the comparison would then depend on which layer happened to
+    // come first. `*` matches every node -- use it to enumerate names, never to produce a number.
     const char * f = getenv("CGC_TENSOR_CAPTURE");
     if (f != nullptr && f[0] != '\0' && f[0] != '0') {
         snprintf(g_cgc_ids.dst_filter, sizeof(g_cgc_ids.dst_filter), "%s", f);
@@ -3372,16 +3392,49 @@ void cgc_ids_capture(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_ids,
     r.seq   = g_cgc_ids.seq++;
 }
 
+// Does `name` match the filter list? Tokens are compared EXACTLY (see the init comment) and a token
+// of `*` matches anything.
+bool cgc_dst_match(const char * name) {
+    if (name == nullptr || name[0] == '\0') {
+        return false;
+    }
+    const size_t nl = strlen(name);
+    for (const char * p = g_cgc_ids.dst_filter; ; ) {
+        const char * comma = strchr(p, ',');
+        const size_t len   = comma != nullptr ? (size_t) (comma - p) : strlen(p);
+        if (len == 1 && p[0] == '*') {
+            return true;
+        }
+        if (nl == len && strncmp(name, p, len) == 0) {
+            return true;
+        }
+        if (comma == nullptr) {
+            return false;
+        }
+        p = comma + 1;
+    }
+}
+
 // [CGC 2026-09-16 S1 residency §9.18.6] Snapshot a chosen node's OUTPUT tensor. Same kernel, same
 // encoder, same moment; the only differences are the source (the node's dst), the stride and the
 // record's name suffix. Named `<node>.dst` so the comparator -- which pairs nodes by NAME -- cannot
 // confuse this row with the ids row of the same node.
-void cgc_dst_capture(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_dst,
-                     const struct ggml_tensor * op, int32_t n_words) {
-    if (!cgc_capture_init(ctx->dev) || !g_cgc_ids.dst_enabled || g_cgc_ids.slots_dst >= CGC_DST_SLOTS) {
+void cgc_dst_capture_common(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_dst,
+                            const struct ggml_tensor * op, int32_t n_words, int fuse) {
+    if (!cgc_capture_init(ctx->dev) || !g_cgc_ids.dst_enabled) {
         return;
     }
-    if (op->name[0] == '\0' || strcmp(op->name, g_cgc_ids.dst_filter) != 0) {
+    if (g_cgc_ids.slots_dst >= CGC_DST_SLOTS) {
+        if (g_cgc_ids.slots_dst == CGC_DST_SLOTS) {
+            g_cgc_ids.slots_dst++;  // so the warning is emitted exactly once
+            GGML_LOG_WARN("CGC-IDS-CAP: DST slots exhausted (%d) -- the TAIL of the stream is NOT "
+                          "captured. Narrow CGC_TENSOR_CAPTURE (or lower CGC_TENSOR_CAPTURE_WORDS) "
+                          "before believing any 'no difference' in the deeper layers\n",
+                          CGC_DST_SLOTS);
+        }
+        return;
+    }
+    if (!cgc_dst_match(op->name)) {
         return;
     }
 
@@ -3409,7 +3462,39 @@ void cgc_dst_capture(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_dst,
     snprintf(r.name, sizeof(r.name), "%s.dst", op->name);
     r.n_ids = n;
     r.kind  = 2;
+    r.fuse  = fuse;
     r.seq   = g_cgc_ids.seq++;
+}
+
+// The mid-dispatcher call site: there the tensor being read is the one whose ids operand was just
+// consumed, so it is in hand and is passed in directly.
+void cgc_dst_capture(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_dst,
+                     const struct ggml_tensor * op, int32_t n_words) {
+    cgc_dst_capture_common(ctx, bid_dst, op, n_words, 1);
+}
+
+// Dispatcher-TAIL variant. Every dispatcher that can fuse ends by writing the destination of the LAST
+// node it covered -- ggml_metal_op_norm does literally
+//     bid_dst = ggml_metal_get_buffer_id(ctx->node(idx + n_fuse - 1));
+// when n_fuse > 1 -- and every dispatcher that cannot fuse ends in a constant `return 1;` (mul_mat
+// and flash_attn_ext both do). So a call placed after the terminal dispatch, naming
+// `node(idx + n_fuse - 1)`, is right in both cases, and it cannot be fooled by a fused consumer: the
+// buffer it reads IS that node's output, by construction. That is what makes it safe to instrument a
+// dispatcher with ONE line at its end instead of chasing each of its internal paths -- for mul_mat
+// alone that would mean eight `set_buffer(..., bid_dst, ...)` sites, not all of them on any given
+// call's path.
+//
+// The observer cost is bounded but real, and it is the reason the filter is a short curated list: the
+// match test happens BEFORE the barrier, so a matched node costs one memory barrier per graph. A wide
+// list would serialize the graph, and serialization could MASK a concurrency-dependent defect -- the
+// exact class of defect this instrument exists to find. The same-arm control is the standing guard
+// against that: it is what caught the missing barrier, and it must be re-run whenever the list grows.
+void cgc_dst_capture_at(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_dst, int idx, int n_fuse) {
+    const struct ggml_tensor * op = ctx->node(idx + n_fuse - 1);
+    if (!cgc_capture_init(ctx->dev) || !g_cgc_ids.dst_enabled || !cgc_dst_match(op->name)) {
+        return;
+    }
+    cgc_dst_capture_common(ctx, bid_dst, op, (int32_t) ggml_nelements(op), n_fuse);
 }
 
 } // namespace
@@ -3467,8 +3552,15 @@ extern "C" void ggml_metal_cgc_ids_dump(void) {
         }
 
         const char * path = r.kind == 0 ? "MV" : (r.kind == 1 ? "MM" : "DST");
-        GGML_LOG_WARN("CGC-IDS-CAP slot=%d path=%s n_ids=%d name=%s ids=[%s]\n",
-                      sl, path, (int) r.n_ids, r.name, b);
+        // `fuse` is appended for DST rows only, and AFTER the ids=[...] group, so every reader that
+        // regexes out `name=(\S+) ids=\[([^\]]*)\]` keeps working unchanged.
+        if (r.kind == 2) {
+            GGML_LOG_WARN("CGC-IDS-CAP slot=%d path=%s n_ids=%d name=%s ids=[%s] fuse=%d\n",
+                          sl, path, (int) r.n_ids, r.name, b, (int) r.fuse);
+        } else {
+            GGML_LOG_WARN("CGC-IDS-CAP slot=%d path=%s n_ids=%d name=%s ids=[%s]\n",
+                          sl, path, (int) r.n_ids, r.name, b);
+        }
 
         if (take_ids) {
             g_cgc_ids.printed++;
@@ -4708,6 +4800,14 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
 #undef FATTN_SMEM
     }
 
+    // [CGC 2026-09-16 §9.18.6] The full-attention layers of the hybrid stack (every 4th one -- see
+    // `full_attention_interval`). Note that the layer where the divergence is currently localised,
+    // layer 2, is NOT one of them: it is a gated delta-net layer, and its attention output projection
+    // is an ordinary mul_mat, so the instrument that reaches it is the mul_mat one, not this. Both
+    // are here so the same list can walk a layer of either kind.
+    // Placed after the last writer of bid_dst on every path (the vec path's reduce at the very end).
+    cgc_dst_capture_at(ctx, bid_dst, idx, /*n_fuse*/ 1);
+
     return 1;
 }
 
@@ -4914,6 +5014,11 @@ int ggml_metal_op_bin(ggml_metal_op_t ctx, int idx) {
 
         ggml_metal_encoder_dispatch_threadgroups(enc, ne01, ne02, ne03, nth, 1, 1);
     }
+
+    // [CGC 2026-09-16 §9.18.6] Residual adds (`attn_residual-<il>`, `post_moe-<il>`, `l_out-<il>`).
+    // When this dispatcher fuses, bid_dst was already repointed at the LAST covered node -- see the
+    // `n_fuse > 1` block at the head of this function -- which is exactly the node the helper names.
+    cgc_dst_capture_at(ctx, bid_dst, idx, n_fuse);
 
     return n_fuse;
 }
@@ -5201,6 +5306,12 @@ int ggml_metal_op_norm(ggml_metal_op_t ctx, int idx) {
     ggml_metal_encoder_set_threadgroup_memory_size(enc, smem, 0);
 
     ggml_metal_encoder_dispatch_threadgroups(enc, ne01, ne02, ne03, nth, 1, 1);
+
+    // [CGC 2026-09-16 §9.18.6] The norms (`attn_norm-<il>`, `attn_post_norm-<il>`). When the
+    // norm+mul(+add) fusion fires, bid_dst is the LAST fused node -- which is the one that carries
+    // the name, because build_norm names the scaled tensor, not the raw rms_norm. So `attn_post_norm`
+    // read here is the value the router actually consumes, not its input.
+    cgc_dst_capture_at(ctx, bid_dst, idx, n_fuse);
 
     return n_fuse;
 }

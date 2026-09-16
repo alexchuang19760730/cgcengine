@@ -1,0 +1,21 @@
+{
+  "tag": "capround2",
+  "profile": "prefill250",
+  "ref": "/Users/alexchuang/Documents/flashkv-devserver/Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident_v5_spac.jsonl",
+  "dump": "/tmp/m123_oracle_gate.jsonl",
+  "probe_answer": "42",
+  "m1_numeric_identity": "9/9",
+  "m2_decision_agreement": "9/9",
+  "m3_topk_set_agreement": "9/9",
+  "n_compared": 9,
+  "cross_tab": {
+    "num_eq_dec_eq": 9,
+    "num_eq_dec_ne": 0,
+    "num_ne_dec_eq": 0,
+    "num_ne_dec_ne": 0
+  },
+  "comparable": true,
+  "config_diffs": [],
+  "ok": true,
+  "report": "/Users/alexchuang/Documents/flashkv-devserver/Backup/m123_oracle_gate/oraclecmp_capround2.json"
+}

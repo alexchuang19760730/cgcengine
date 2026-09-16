@@ -1,0 +1,116 @@
+[
+  {
+    "tag": "p25-gputime",
+    "env": {
+      "CGC_SERVER_MTP": "0",
+      "CGC_GPU_TIMING": "1",
+      "CGC_DECODE_PROFILE": "1"
+    },
+    "log": "/Users/alexchuang/Documents/flashkv-devserver/Backup/cgc_logs/llama_server_20260916_201027.log",
+    "thermal_sweep": {
+      "pre_kill": {
+        "level": 2,
+        "label": "HEAVY",
+        "t": "20:10:19"
+      },
+      "launch": {
+        "level": 2,
+        "label": "HEAVY",
+        "t": "20:10:27"
+      },
+      "post_bench": {
+        "level": 2,
+        "label": "HEAVY",
+        "t": "20:11:11"
+      },
+      "teardown": {
+        "level": 2,
+        "label": "HEAVY",
+        "t": "20:11:13"
+      },
+      "worst": {
+        "level": 2,
+        "label": "HEAVY",
+        "t": ""
+      }
+    },
+    "n_rounds": 1,
+    "decode_tps_median": 9.19,
+    "decode_tps_min": 9.19,
+    "decode_tps_max": 9.19,
+    "prefill_tps_median": 9.33,
+    "n_tokens_sample": 6,
+    "answer_stable": true,
+    "answer_md5_set": [
+      "4c9fd966"
+    ],
+    "sample": "巴黎是",
+    "rounds": [
+      {
+        "round": 0,
+        "decode_tps": 9.193852377376993,
+        "prefill_tps": 9.329913919881697,
+        "predicted_n": 6,
+        "predicted_ms": 652.61,
+        "wall_s": 23.0,
+        "thermal_before": {
+          "level": 2,
+          "label": "HEAVY",
+          "t": "20:10:48"
+        },
+        "thermal_after": {
+          "level": 2,
+          "label": "HEAVY",
+          "t": "20:11:11"
+        }
+      }
+    ],
+    "thermal_launch": {
+      "level": 2,
+      "label": "HEAVY",
+      "t": "20:10:48"
+    },
+    "thermal_worst": {
+      "level": 2,
+      "label": "HEAVY",
+      "t": ""
+    },
+    "thermal_hist": {
+      "HEAVY": 2
+    },
+    "loopiness": 0.0,
+    "requests": 75160,
+    "hits": 62196,
+    "misses": 12964,
+    "hit_rate_pct": 82.8,
+    "prewarm_req": 0,
+    "prewarm_miss": 0,
+    "resident_mib": 6197.04,
+    "file_reads": 36147,
+    "pread_usec": 79867648,
+    "fill_batch_usec": 0,
+    "per_miss_us": 6160.7,
+    "miss_compulsory": 8529,
+    "miss_capacity": 4435,
+    "capacity_pct": 34.2,
+    "evictions": 12964,
+    "layers_over_slots": 40,
+    "worst_layer": 2,
+    "worst_distinct": 246,
+    "worst_slots": 143,
+    "io_jobs": 36147,
+    "io_bytes": 14711611392,
+    "io_us_per_job": 2210,
+    "io_effective_mib_s": 184.0,
+    "build": {
+      "server": "054fb22f04a0",
+      "libggml-base": "d2099fb798e7",
+      "libggml-blas": "52de23d5c405",
+      "libggml-cpu": "70ebbd7c709a",
+      "libggml-metal": "ec3ece90cf1c",
+      "libggml": "8f4abce76052",
+      "libllama-common": "7bceb3bd5320",
+      "libllama": "233a172afb2e"
+    }
+  }
+]

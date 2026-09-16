@@ -1466,10 +1466,10 @@ if [ -n "${CGC_IDS_CAPTURE:-}" ]; then
     SERVER_ENV+=(CGC_IDS_CAPTURE="$CGC_IDS_CAPTURE")
 fi
 # [CGC 2026-09-16 §9.18.6] The same instrument pointed at a node's OUTPUT instead of its ids
-# operand: CGC_TENSOR_CAPTURE=<exact node name> (e.g. ffn_moe_down-1) snapshot the tensor that node
-# produced, into a second destination with a wider stride. It is what turns §9.18.4's elimination
-# argument into a measurement. Same allowlist trap as above -- and note the value is a node NAME, so
-# a silent drop here would look exactly like "the node never ran".
+# operand: CGC_TENSOR_CAPTURE=<a comma-separated list of EXACT node names, or `*`> snapshots the
+# tensors those nodes produced, into a second destination with a wider stride. It is what turns
+# §9.18.4's elimination argument into a measurement. Same allowlist trap as above -- and note the
+# value is a node NAME, so a silent drop here would look exactly like "the node never ran".
 if [ -n "${CGC_TENSOR_CAPTURE:-}" ]; then
     SERVER_ENV+=(CGC_TENSOR_CAPTURE="$CGC_TENSOR_CAPTURE")
 fi

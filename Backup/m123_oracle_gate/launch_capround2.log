@@ -1,0 +1,64 @@
+[detach] forking via Python os.setsid() (immune to parent SIGHUP)
+warning: MTP=1 但 libllama-common.0.dylib 沒有 -DMTP_SUPPORT 編出來的程式碼。
+         MTP 路徑的 [CGC MTP fix] 與 qwen35moe 的 t_embd 都會被編掉，產物與原始碼不一致。
+         重建：cmake -B src/llama.cpp/build -DLLAMA_BUILD_SERVER=ON -DCMAKE_CXX_FLAGS=-DMTP_SUPPORT
+               cmake --build src/llama.cpp/build -j8
+[preflight] 無殘留 llama 行程
+[preflight] free=85%
+[budget] model       13030 MiB（load_mode=none => 匿名頁、不可回收）
+[budget] expert pool 8192 MiB（BUDGET 是上限，實配另受 LAYER_CAPS 限制；實測 110 MiB/層@256 experts ≈ 2.5 GiB@5976 槽）
+[budget] KV          ctx=8192；主 context 走 hybrid memory，filter_attn = (il<40 && !is_recr(il))
+[budget]             （llama-model.cpp:2292-2295 + llama-memory-hybrid.cpp:48-50）=> 只有 10 層帶 K/V（i=3,7,…,39，full_attention_interval=4）；
+[budget]             每層 2 kv-head × (256k+256v) × 2B = 2 KiB/token => fp16 KV@8192 = 160 MiB，q8_0 ≈ 85 MiB —— 非瓶頸（算術，未實測）
+[budget] 靜態需求    21222 MiB（model resident 13030 + pool 8192） vs 實體 16384 MiB
+[budget] OVERSUBSCRIBED by 4838 MiB：這個啟動只能在 macOS 記憶體壓縮 + swap 之上執行。
+[budget] 槓桿：CGC_SERVER_EXPERT_CACHE_BYTES（池上限）／CGC_SERVER_UBATCH（compute buffer 與 recurrent 快取都隨 ub 成長）／CGC_SERVER_CTX（影響很小：KV@8192 只有約 160 MiB）
+[budget] mmap（**不是**槓桿，不要再試）：這個 binary 含 pool/mmap 修復（[防護 2e]），所以載入不會 SIGBUS，
+[budget]   但修好之後它在 4096/5120/6144 全部不存活（0/3），而且工作集警告只在 mmap 出現 ⇒ 它把 GPU 工作集撐大。
+[budget] 這一項沒有任何自動補救：-ngl 是顯式指定的，-fit 不會介入（見上面的 [防護 2c]）。
+[budget] 已量測的存活設定（2026-09-16 13:0x-13:3x，同 profile、同 load_mode=none、同 binary）：
+[budget]   ub=4096 pool 8GiB 存活 5/5；ub=5120 存活 3/3；ub=5632 存活 4/4（profile 現在的預設）；
+[budget]   ub=6144 pool 8GiB 存活 0/5（12:05/13:15/13:17/13:32/13:33 五次都以 status 5 OOM 死在 req2）；
+[budget]   ub=6144 pool 6GiB（CGC_SERVER_EXPERT_CACHE_BYTES=6442450944）存活 3/3。
+[budget]   機制：OOM 的邊界不是 ub 一個旋鈕，而是 (pool + compute buffer) 的和 —— 詳見 §11.12。
+[budget]   mmap 在任何量過的寬度（4096/5120/6144）都不存活 0/3：缺陷已修（載入不再 SIGBUS，
+[budget]   見 [防護 2e]），但它把 Metal 的工作集撐大（工作集警告只在 mmap 出現），所以它不是 OOM 的解。
+[budget]   吞吐不在此列，因為它不可重現：同一個 A11 指紋的兩臂可差到 2 倍（記憶體/swap 的殘留狀態），
+[budget]   存活是二元的、可重現；t/s 要引用就得在安靜的機器上做交錯 A/B。
+[start] /Users/alexchuang/Documents/flashkv-devserver/models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf  port=8080  ctx=8192  ngl=99  budget=8589934592B
+[mode]  MTP ON (draft-mtp, n_max=3, denseIQ4X=1)
+[perf]  layer_caps=40-40:256 (default)
+[perf]  batch=6144 ubatch=6144
+[perf]  n_cb=8 glu_fused_down=1(mm_fuse=off) watchdog=1 oa_async=1 load_mode=none
+[perf]  runtime_profile=auto model_root=/Users/alexchuang/Documents/flashkv-devserver/models/gguf
+[guard] memory_mode=dev class=full-mtp phys=16GB free=85% other_llama_servers=0
+[chat]  profile=prefill250
+[chat]  template_kwargs={"assistant_prefill":"巴黎之所以成為法國的政治與文化中心，主要是因為","assistant_prefill_mode":"always"}
+[chat]  ab_mode=custom-prefix prefix=巴黎之所以成為法國的政治與文化中心，主要是因為 max_tokens=220 stop=<|end|>,<|output|>,<|user|>
+[chat]  reasoning=off format=none skip_chat_parsing=0
+[log]   /Users/alexchuang/Documents/flashkv-devserver/Backup/cgc_logs/llama_server_20260916_202417.log（tail -f 同路徑）
+[fit]   -fit 是 no-op：-ngl=99 是本腳本顯式指定的，fit 會 abort（fit.cpp:377）
+[kv]     cache-type-k=q8_0 cache-type-v=q8_0 (saves ~75 MiB at ctx=8192, not 0.56GB -- see comment)
+[wait]  模型載入中（首次 ~1min）...
+[detach] child PID=85763, waiting for health...
+[detach] server ready (PID=85763)
+
+================ 連線卡（給夥伴） ================
+  Base URL   : http://192.168.101.90:8080/v1（OpenAI 相容）
+  測試       : curl --noproxy '*' http://127.0.0.1:8080/v1/models
+  Windows 伙伴 : 程式內直接指 http://192.168.101.90:8080/v1/chat/completions
+  Runtime    : CGC_SERVER_RUNTIME_PROFILE=mtp|non-mtp (current=auto)
+  Regression : bash scripts/check/check_server.sh --base-url http://127.0.0.1:8080/v1
+  Benchmark  : python3 scripts/check/replay_server_profile.py --base-url http://127.0.0.1:8080/v1 --profile longform-zh
+  Chat A/B   : custom-prefix（prefill=巴黎之所以成為法國的政治與文化中心，主要是因為）
+  注意       : 本機 curl 測 localhost 必帶 --noproxy '*'（代理 7897 攔截）
+  停止       : pkill -INT -f llama-server（或 kill 85831）
+  服務模式   : MTP / draft-mtp（目標 = 25+ t/s）
+  0000 防護  : CGC_NO_PREFETCH=1 CGC_VERIFY_DECODE=1 CGC_DRAFT_DECODE=1 (1=set, 0=unset)
+  OA_ASYNC   : 1（+12.6% speed, 0000 bug fixed in C++）
+  Layer Caps : 40-40:256（MTP draft layer full residency）
+==================================================
+
+[detach] server PID=85831（已脫離父 shell，不受 SIGHUP 影響）
+         停止: kill -INT 85831 或 pkill -INT -f llama-server
+         log: tail -f /Users/alexchuang/Documents/flashkv-devserver/Backup/cgc_logs/llama_server_20260916_202417.log

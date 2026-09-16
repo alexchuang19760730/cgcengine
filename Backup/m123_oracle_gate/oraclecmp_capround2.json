@@ -1,0 +1,42 @@
+{
+  "a_path": "/Users/alexchuang/Documents/flashkv-devserver/Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident_v5_spac.jsonl",
+  "b_path": "/tmp/m123_oracle_gate.jsonl",
+  "n_a": 9,
+  "n_b": 9,
+  "n_common": 9,
+  "n_only_a": 0,
+  "n_only_b": 0,
+  "row_hash_equal": 9,
+  "full_hash_equal": 9,
+  "argmax_equal": 9,
+  "top_equal": 9,
+  "metrics": {
+    "numeric_identity": {
+      "equal": 9,
+      "n": 9,
+      "rate": 1.0,
+      "definition": "M1: same row_fnv1a64 for every step (= bit-identical logits)"
+    },
+    "decision_agreement": {
+      "equal": 9,
+      "n": 9,
+      "rate": 1.0,
+      "definition": "M2: same argmax_token for every step (= same chosen token)"
+    },
+    "topk_set_agreement": {
+      "equal": 9,
+      "n": 9,
+      "rate": 1.0,
+      "definition": "M3: same top-N token id set (= same candidate set)"
+    }
+  },
+  "cross_tab": {
+    "num_eq_dec_eq": 9,
+    "num_eq_dec_ne": 0,
+    "num_ne_dec_eq": 0,
+    "num_ne_dec_ne": 0
+  },
+  "cross_tab_note": "num_eq_dec_eq = no drift, same choice | num_eq_dec_ne = impossible without a tie-break bug | num_ne_dec_eq = drift but same choice (M1 says 'differs', M2 says 'identical') | num_ne_dec_ne = real divergence",
+  "fail_on": "both",
+  "diff_examples": []
+}

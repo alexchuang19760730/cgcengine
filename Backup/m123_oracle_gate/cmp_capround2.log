@@ -1,0 +1,19 @@
+==========================================================================
+oracle A: /Users/alexchuang/Documents/flashkv-devserver/Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident_v5_spac.jsonl  (9 entries)
+oracle B: /tmp/m123_oracle_gate.jsonl  (9 entries)
+common: 9    only_A: 0    only_B: 0
+--------------------------------------------------------------------------
+INDEPENDENT METRICS  (never merge these into one verdict)
+  M1 numeric identity    (bit-identical logits)  : 9/9  (100.0%)
+  M2 decision agreement  (same argmax token)     : 9/9  (100.0%)
+  M3 top-k set agreement (same top-N id set)     : 9/9  (100.0%)
+  (aux) full_fnv1a64 identical                   : 9/9  (100.0%)
+--------------------------------------------------------------------------
+CROSS-TAB  (n=9) -- read BOTH axes or you will draw the wrong conclusion
+  M1 same  & M2 same :     9   no drift, same choice
+  M1 same  & M2 diff :     0   should be 0; non-zero = tie-break bug
+  M1 diff  & M2 same :     0   drift only; M1 says 'differs', M2 says 'same'
+  M1 diff  & M2 diff :     0   real divergence
+==========================================================================
+VERDICT M1 (numeric identity)   : PASS (9/9)
+VERDICT M2 (decision agreement) : PASS (9/9)

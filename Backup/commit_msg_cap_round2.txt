@@ -1,0 +1,98 @@
+feat(s1): §9.18.6 第二輪 -- 擷取擴到 5 個 dispatcher；第一個分歧定位到 layer 2 的 gated delta-net 核心
+
+使用者要求 (a)：把擷取點換成 `ffn_moe_down-2` 做同構的第二個讀數，並**擴到 attention**
+（「要擴到 attention 就得先掛上另一個 dispatcher，那才是真正裁決 layer 2 的 attention 的那一步」）。
+
+## 儀器：三個改動
+
+1. **`CGC_TENSOR_CAPTURE` 變成逗號分隔清單**（或 `*`），每個 token 仍精確比對。`dst_filter` 64→256、
+   `CGC_DST_SLOTS` 1024→4096，且**槽位用完會印一次 WARN**（原本靜默截斷＝安靜的假陰性）。
+2. **四個新的 dispatcher 尾端擷取點**：`mul_mat`、`flash_attn_ext`、`bin`、`norm`。加既有的
+   `mul_mat_id` 共 **5 個**，一次跑就能走完一層的鏈。
+3. **命名規則 `node(idx + n_fuse - 1)`（本輪真正的技術發現）**：可融合的 dispatcher 結尾會把
+   `bid_dst` 重新指向**融合群的最後一個節點**（`ggml_metal_op_norm` 就是
+   `bid_dst = ggml_metal_get_buffer_id(ctx->node(idx + n_fuse - 1))`），不可融合的以常數
+   `return 1;` 收尾（`mul_mat`、`flash_attn_ext` 都是），所以同一個運算式兩種情況都對。
+   這也是「一行接一個 dispatcher」之所以安全：讀到的 buffer 依構造就是被命名節點的輸出。
+   否則得追每條內部路徑——`mul_mat` 一個就有八處 `set_buffer(..., bid_dst, ...)`。
+   `fuse` 寫進列尾（在 `ids=[...]` 之後，既有 reader 的 regex 不受影響）。
+
+### 先列舉再量測
+
+`CGC_TENSOR_CAPTURE='*'` 跑一次列出 **1021 個節點名 + fuse 值**。**我從 builder 猜的名字有兩個不存在**
+（`ffn_out-*`、`post_moe-*`；真名是 `ffn_moe_out-*`、`l_out-*`，`build_cvec` 重新命名的結果）。
+猜名字的代價是一整輪跑，列舉只要一次。匿名節點是 `node_NNN`，**不可跨臂比對**（名字來自 ggml 計數器，
+而兩臂的圖不同）。名稱清單存成 `Backup/cgc_logs/instr_compare/cgc_node_names_20260916.tsv`。
+
+## 三個必須先知道的儀器事實
+
+- **發射順序不是計算順序，而且不穩定**：同一個臂跑兩次，同樣的值以不同順序送出
+  （`linear_attn_out-2` 有時在 `attn_residual-2` 之前、有時在之後）。⇒ 分析器改用**原始碼層鏈**排序。
+- **`ABSENT` 不是 `SAME`**：節點只有在融合群結束於它時才被擷取，而融合狀態取決於節點順序。
+  實測：`norm-2` 在 baseline 臂 41/41、在 S1 臂 **0/41**。分析器現在把 `ABSENT`（附 `present=N`）
+  與 `never` 分開印；「一個名字在其中一份日誌裡不存在」永遠不可讀成「相同」。
+- **尾段 graph 邊界不可信**：ids 上限 4096 而一個 pass 約 114 列 ⇒ 尾端 chunk 把數個 pass 併在一起。
+  一律 `--upto 24`（graph 1..23）。這解釋了不限定時 graph 27/30/31 的假訊號。
+
+## 結果（兩個同臂對照乾淨之後；兩個獨立跨臂對逐項相同）
+
+同臂對照：2 臂 × 2 行程 × 23 graph × 11 節點 = **零差異**。
+
+| 鏈序 | 節點 | run1 | run2 |
+|---|---|---|---|
+| 1 | `l_out-0`（layer 0 輸出） | SAME | SAME |
+| 2 | `l_out-1`（layer 1 輸出） | SAME | SAME |
+| 3 | `attn_norm-2`（layer 2 attention 的輸入） | SAME | SAME |
+| 4 | `z-2`（z 投影，mul_mat） | SAME | SAME |
+| 5 | `gate-2`（alpha/gate 投影） | SAME | SAME |
+| 6 | `norm-2`（gated norm） | ABSENT | ABSENT |
+| 7 | **`linear_attn_out-2`（attention 輸出投影）** | **DIFF@4** | **DIFF@4** |
+| 8-11 | `attn_residual-2` / `attn_post_norm-2` / `ffn_moe_logits_raw-2` / `l_out-2` | DIFF@4 | DIFF@4 |
+
+第 8-11 項在下游，已被第 7 項解釋，不攜帶資訊。
+
+**⇒ 第一個分歧在 layer 2 的 gated delta-net 核心（conv1d／delta-rule scan／state），
+不在任何 dense 矩陣裡，也不在 layer 2 之前。**
+
+**模型事實（改變「attention」是什麼）**：`qwen35moe.full_attention_interval = 4`
+⇒ layers 0,1,2 是 gated delta-net，layer 3 才是第一個 full attention。**layer 2 沒有 flash attention**，
+它的「attention 輸出投影」是普通 `mul_mat`。所以對這一層，那個「另一個 dispatcher」是 `mul_mat`
+而不是 `flash_attn_ext`。兩個都掛了，同一份名單走任何一種層都成立。
+
+## 推翻了什麼
+
+- 上一輪的候選「layer 1→2 之間的 norm／殘差」**被排除**（`l_out-1` 與 `attn_norm-2` 都逐位元相同）。
+- 「layer 2 的 attention 路徑（q/k/v、rope、KV）」**收窄成它的遞迴核心**（那些投影都是普通 mul_mat，都同）。
+- §9.18.4 的「載體是池／slot 權重內容」在 layer 2 attention 上的變體一併排除。
+- **不過度外推**：只說「第一個分歧」在哪；池在其他地方有無問題，本 commit 沒有回答。
+
+## 改了什麼（34 檔；`src/` 3 檔含重建產物）
+
+- `src/.../ggml-metal-ops.cpp`：清單過濾、`cgc_dst_capture_at`、四個尾端擷取點、槽位 WARN、`fuse` 欄位。
+- `src/llama.cpp/build/bin/libggml-metal.0.19.0.dylib`：重建產物（20:09:32）。
+- `scripts/run_server.sh`：allowlist 註解改成「清單」。
+- `docs/S1_CAPTURE_ROUND2_20260916_2035.html`：D5 白皮書（現場閘門原文、三道守門、結果表、誠實邊界）。
+- `Backup/run_ids_dst_capture.sh`（預設名單＝本輪驗證過的那 11 個）、`Backup/analyze_capture_nodes.py`
+  （逐節點定位、`ABSENT`、`--upto`、層鏈排序）。
+- `Backup/cgc_logs/ids_dst_capture/`：8 個臂日誌（兩輪 × 兩臂 × 兩次）＋ `arms*.json`。
+- `agent_harness/engine_loop/traces/lessons.jsonl`：`eng-diag-0027`、`eng-src-0015`、`eng-mh-0043`、`eng-mh-0044`。
+- 兩個索引重生（116 lessons、76 assets、67 節）。
+
+## 驗證
+
+    D5 (--tag capround2)         comparable=True  config_diffs=[]  ref=...v5_spac.jsonl
+                                 GATE capround2: PASS  M1/M2/M3 = 9/9  n=9
+    build products               libggml-metal.0.19.0.dylib 20:09:32 / llama-server 20:09:33 (閘門在其後)
+    build fingerprint            libggml-metal=ec3ece90cf1c  (8 鍵)
+    validate.py                  122 episodes / 38 decisions / 116 lessons -> OK
+    selftest.py                  10/10
+    index_assets.py --check      manifest OK: 76 assets
+    build_memory_index.py --check memory index OK: 3 file(s), 67 section(s)
+    thermal_pressure.py --selftest 15/15
+    check_build_tracked.sh       0 FAIL；4 SKIP 各有理由；check 8 兩半 PASS
+
+## 未做（下一步，已被本輪界定）
+
+path 上還缺兩個 dispatcher：`ggml_metal_op_ssm_conv` 與 `ggml_metal_op_gated_delta_net`。
+另外要修融合造成的 `ABSENT`（群末為匿名節點時改成「群首名 ＋ `+fuseN`」的合成名），否則 `norm-2`
+永遠只能在一臂看到。也還沒做 layer 3（第一個 full attention 層）的同型檢查。
