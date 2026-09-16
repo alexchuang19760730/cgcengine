@@ -46,15 +46,19 @@
 // rebuild this test from the same tree state it was linked against.
 #include "llama-expert-cache.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 static int32_t slot_of(const llama_expert_cache & c, uint32_t layer, uint32_t expert) {
     return c.slot_table[(size_t) layer * c.n_expert + expert];
 }
 
-int main() {
+// CASE 1: the ORDER defect (pool full, one cold member, no bg thread).
+static int run_order_case() {
     // zero_slot_enabled() is env-gated (CGC_VERIFY_DECODE / CGC_DRAFT_DECODE); the 09-14 probe ran
     // without either, so usable_slots == n_slots and the identity prepopulate fills every slot.
     if (getenv("CGC_VERIFY_DECODE") != nullptr || getenv("CGC_DRAFT_DECODE") != nullptr) {
@@ -144,5 +148,130 @@ int main() {
         return 1;
     }
     printf("PASS: every resident member kept its slot; the one cold expert took an unread slot\n");
+    printf("      counters: batch_evict_batches=%zu adopted_queued=%zu  "
+           "(an eviction during assignment is what makes the two-pass ORDER load-bearing)\n",
+           c.n_batch_evict_batches, c.n_hit_adopted_queued);
     return 0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// CASE 2: the ADOPTION path -- the half of the fix that case 1 cannot reach.
+//
+// Case 1 sets pool_active = false, so pass 1 claims residents and pass 2 assigns misses, but the
+// branch that ADOPTS an in-flight fill never runs. That branch is the one the SHIPPING (non-split)
+// configuration can actually reach, and it needs no full pool: any expert whose bg prefetch is
+// queued but whose slot_table entry is not published yet is in exactly this state. Measured before
+// this case existed: n_hit_adopted_queued was WRITTEN by the fix and READ BY NOTHING in the whole
+// tree, so the claim "the adoption path makes double ownership visible" had no coverage at all.
+//
+// Without a publisher the wait inside ensure_batch would block forever, which is why the original
+// test skipped this case. The bg thread is therefore simulated by one helper thread that publishes
+// the fill the way bg_loop does: clear slot_queued, set slot_table[e], notify.
+//
+// expected: expert 0 ADOPTS slot 0 (the fill it already owned) instead of being handed a second
+//           slot; every member keeps its own slot; 0 misses; adopted_queued == 1.
+// ---------------------------------------------------------------------------------------------
+static int run_adoption_case() {
+    const uint32_t NL = 1, NE = 256, NS = 24, NMEM = 8;
+
+    llama_expert_cache c;
+    c.n_expert = NE;
+    c.n_slots  = NS;
+    c.pool_active = true;  // <- the difference from case 1: the adoption branch is reachable
+    c.slot_owner.assign(NL, std::vector<int32_t>(NS, -1));
+    c.slot_last_use.assign(NL, std::vector<uint64_t>(NS, 0));
+    c.slot_queued.assign(NL, std::vector<uint8_t>(NS, 0));
+    c.slot_loading.assign(NL, std::vector<uint8_t>(NS, 0));
+    c.slot_decode_reserved.assign(NL, std::vector<uint8_t>(NS, 0));
+    c.slot_pinned.assign(NL, std::vector<uint8_t>(NS, 0));
+    c.slot_pinned_static.assign(NL, std::vector<uint8_t>(NS, 0));
+    c.slot_table.assign((size_t) NL * NE, -1);
+    c.ever_loaded.assign(NL, std::vector<uint8_t>(NE, 0));
+    c.n_distinct_demanded.assign(NL, 0);
+    c.spac_util.assign(NL, {});
+
+    for (uint32_t s = 0; s < NS; ++s) {
+        c.slot_owner[0][s] = (int32_t) s;
+        c.slot_table[s]     = (int32_t) s;
+    }
+    // expert 0: unpublished, but slot 0 is ALREADY its own because a bg prefetch owns it.
+    c.slot_table[0]     = -1;
+    c.slot_queued[0][0] = 1;
+
+    for (uint32_t e = 0; e < NMEM; ++e) {
+        c.key_segs[((uint64_t) 0 << 32) | e] = {}; // empty -> any fill would be a no-op
+    }
+    std::vector<uint32_t> experts(NMEM);
+    for (uint32_t i = 0; i < NMEM; ++i) {
+        experts[i] = i;
+    }
+
+    // The bg thread. 80 ms is orders of magnitude more than ensure_batch needs to reach its wait,
+    // so the adoption is deterministic rather than a race: if the publisher were faster than the
+    // waiter, the expert would read as an ordinary hit and this case would silently stop testing
+    // anything -- a test that passes because its premise stopped holding.
+    std::thread publisher([&]{
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        std::lock_guard<std::mutex> lk(c.m);
+        c.slot_queued[0][0] = 0;
+        c.slot_last_use[0][0] = 1;
+        c.slot_table[0] = 0;      // bg_loop publishes the table entry once the bytes land
+        c.bg_cv.notify_all();
+    });
+
+    llama_expert_cache_ensure_batch(&c, 0, experts.data(), experts.size(), false);
+    publisher.join();
+
+    printf("post :");
+    for (uint32_t e = 0; e < NMEM; ++e) {
+        printf(" st[%u]=%d", e, slot_of(c, 0, e));
+    }
+    printf("\n");
+    printf("misses: %zu  hits: %zu  adopted_queued: %zu  batch_evict_batches: %zu\n",
+           c.n_misses, c.n_hits, c.n_hit_adopted_queued, c.n_batch_evict_batches);
+
+    int violations = 0;
+    if (c.n_hit_adopted_queued != 1) {
+        printf("VIOLATION: adopted_queued = %zu, expected 1 -- the in-flight fill was NOT adopted, "
+               "so the expert was handed a SECOND slot (one expert, two slots)\n",
+               c.n_hit_adopted_queued);
+        violations++;
+    }
+    if (c.n_misses != 0) {
+        printf("VIOLATION: misses = %zu, expected 0 -- an expert that already owned a slot in flight "
+               "was treated as cold\n", c.n_misses);
+        violations++;
+    }
+    for (uint32_t e = 0; e < NMEM; ++e) {
+        const int32_t s = slot_of(c, 0, e);
+        if (s != (int32_t) e) {
+            printf("VIOLATION: expert %u -> slot %d, expected %u\n", e, s, e);
+            violations++;
+        }
+    }
+    // one expert must not own two slots: every owner in 0..NMEM-1 must read its own slot back
+    for (uint32_t s = 0; s < NS; ++s) {
+        const int32_t o = c.slot_owner[0][s];
+        if (o >= 0 && o < (int32_t) NMEM && slot_of(c, 0, (uint32_t) o) != (int32_t) s) {
+            printf("VIOLATION: slot %u is owned by expert %d, but that expert reads slot %d "
+                   "(leaked slot)\n", s, o, slot_of(c, 0, (uint32_t) o));
+            violations++;
+        }
+    }
+
+    if (violations > 0) {
+        printf("FAIL: %d violation(s) in the adoption path\n", violations);
+        return 1;
+    }
+    printf("PASS: the in-flight fill was adopted; one expert, one slot; no second assignment\n");
+    return 0;
+}
+
+int main() {
+    printf("=== CASE 1: order dependence (pool full, one cold member) ===\n");
+    const int rc1 = run_order_case();
+    printf("\n=== CASE 2: in-flight fill adoption (the half the shipping config can reach) ===\n");
+    const int rc2 = run_adoption_case();
+    printf("\n%s\n", (rc1 == 0 && rc2 == 0) ? "ALL PASS (2/2)" : "FAILED");
+    return (rc1 == 0 && rc2 == 0) ? 0 : 1;
 }

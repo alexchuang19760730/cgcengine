@@ -264,6 +264,22 @@ struct llama_expert_cache {
     // slot table yet, so the miss test alone would have given it a second slot. Nonzero here is
     // the count of double-ownership events that used to happen silently.
     size_t n_hit_adopted_queued = 0;
+    // [CGC 2026-09-16 Blocker B -- is the fix even REACHABLE where we ship?] The two-pass split
+    // changes nothing unless a batch has to EVICT a resident slot while assigning its misses: with
+    // no eviction during assignment, pass 1/pass 2 and the old interleaved loop produce identical
+    // assignments. The claim "in the non-split shipping configuration this is a no-op" was measured
+    // on WARMUP (docs/M1_POOL_SPLIT_COST_2026-09-14.md §4.1), and warmup never fills the pool --
+    // but a served prefill chunk against the 8 GiB pool may. This counts the batches where it did,
+    // so "no-op there" stops being an assumption carried over from a different workload.
+    // Nonzero = the assignment ORDER is load-bearing in that run.
+    size_t n_batch_evict_batches = 0;
+    // [CGC 2026-09-16 Blocker B] Totals for the LLAMA_EXPERT_CACHE_BATCH_INVARIANT gate. Without
+    // them, "no VIOLATIONS line in the log" is the only signal available, and an instrument that
+    // reports health by printing nothing cannot be told apart from one that never ran (B12). The
+    // gate prints a per-layer OK line only for il<=2, so n_batch_inv_checks is what proves it ran
+    // on all 40 layers rather than that it ran on three.
+    size_t n_batch_inv_checks     = 0;
+    size_t n_batch_inv_violations = 0;
     // [CGC miss attribution 2026-09-13] Split every pooled miss by whether this (layer, expert)
     // has ever been DEMANDED before in this session:
     //   compulsory = first demand touch. No amount of slots removes it; only a workload with

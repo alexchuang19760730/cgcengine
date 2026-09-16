@@ -1166,17 +1166,26 @@ wide 路徑同理——就算通了，那也只是一句「現在可以量了」
 這句話的依據是<em>排除法 + 原始碼</em>（槽位配置已被證明可以在單元層修好並回歸，
 而 wide 路徑有明示的結構障礙），不是一次端到端的成功。</p>
 
-<div class="box b-amber">
-  <p><strong>一則本輪<em>沒有</em>做的事，以及為什麼。</strong>
-  <code>llama.cpp:420-423</code> 的警告註解仍然記載著<strong>已被取代的診斷</strong>：
-  <code>"degenerate routing at il=1 (the remap maps two experts to one slot)"</code>。
-  日誌寫的是 <code>st[1]=2</code>，<strong>擷取裡沒有任何一行顯示兩個 expert 共用一個 slot</strong>
-  （§9 上面那條 errata）。那行註解是這個配置「為什麼壞」在原始碼裡<em>唯一</em>的記載，
-  所以它應該被更正成 blocker A（wide 路徑）——否則下一個人讀到的是已經被推翻的那個原因。
-  <strong>本輪刻意沒動它</strong>：這個 repo 的檢查 8 要求任何 <code>src/</code> 改動都要把對應的
-  建置產物一起 stage（這裡是 <code>libllama.0.0.239.dylib</code>），為了一行註解重建整個庫
-  不該塞進一個「頻率／散熱」的 commit 裡。已記在 <code>M1_POOL_SPLIT_COST_2026-09-14.md</code> 的 errata，
-  原始碼註解留給獨立的一輪。</p>
+<div class="box b-green">
+  <p><strong>那件事後來做掉了（<code>0a4bfd73c</code>）——而且它比「一行註解」大。</strong>
+  原本這裡記著：<code>llama.cpp:420-423</code> 的警告註解仍記載著<strong>已被取代的診斷</strong>
+  （<code>"degenerate routing at il=1 (the remap maps two experts to one slot)"</code>），
+  而日誌寫的是 <code>st[1]=2</code>、擷取裡沒有任何一行顯示兩個 expert 共用一個 slot。
+  當時刻意沒動它，理由是檢查 8 要求 <code>src/</code> 改動要一起 stage dylib，
+  為一行註解重建整個庫不該塞進「頻率／散熱」那個 commit。</p>
+  <p><strong>實際動手時才發現的第二個問題</strong>：<em>不只</em>那行註解該更正。
+  同一段落的 <code>LLAMA_LOG_WARN</code> 把同一個被推翻的診斷<strong>當成出貨字串</strong>在印
+  （<code>"EXPERIMENTAL, KNOWN-BROKEN configuration (degenerate routing + SIGSEGV)"</code>）。
+  所以 <code>2b284667f</code> 之後的那棵樹裡，<strong>文件說「那不是原因」、binary 說「那是原因」</strong>——
+  而且讀者不同：文件是維護者讀的，這個 WARN 是操作者讀的。
+  更正後的新字串已用 <code>strings -a … | grep -F</code> 確認<strong>進了二進位，而舊字串消失</strong>
+  （「消失」那一半比「出現」那一半重要：改了註解卻把舊字串留在 string table 裡，
+  是同一個缺陷往下一層）。</p>
+  <p>順帶更正了那段註解的兩個事實錯誤：它宣稱的原因是 blocker A（wide 張量／
+  <code>Metal buffer is nil</code>），而 blocker A 是<strong>靜默</strong>失敗
+  （0 次 abort、234 次 buffer-is-nil、M1 2/42）——這正是警告必須留在大聲的原因。
+  D5：<strong>RUN, PASS</strong>（M1/M2/M3 各 9/9、fnv1a64 9/9、cross-tab 9/0/0/0）。
+  見 lesson <code>eng-gate-0028</code>。</p>
 </div>
 
 <h2>10. 追加（2026-09-16 上午）：§3／§5 的開放問題有答案了 —— 是時脈，而且是熱壓選的</h2>
@@ -1727,8 +1736,216 @@ CGC_SERVER_PROFILE=prefill250 ./scripts/run_server.sh --detach</code></pre>
   三層裡有兩層不在程式裡。<br>
   <span class="small">而 250 不是這台機器的上限：最高階 1470 MHz 的純階預測是 <strong>291.3 t/s</strong>，
   §3.3 也真的量到 294–308。250 只是那一階之上的一道檻；真正的天花板是
+<div class="box b-green">
+  <p><strong>一句話：</strong>要 250，就是 <code>CGC_SERVER_PROFILE=prefill250</code>
+  <strong>加上</strong>機器安靜 150 秒以上，<strong>加上</strong>只採信每個 session 的第一筆。
+  三層裡有兩層不在程式裡。<br>
+  <span class="small">而 250 不是這台機器的上限：最高階 1470 MHz 的純階預測是 <strong>291.3 t/s</strong>，
+  §3.3 也真的量到 294–308。250 只是那一階之上的一道檻；真正的天花板是
   §10.6 那個不隨時脈縮放的 0.558 ms／token 地板（冷態佔 15.4%）。</span></p>
 </div>
+
+<h2>11. 追加（2026-09-16 下午）：把 §10.10.4 的三層拿到 tip 上真的跑一次</h2>
+
+<p>
+  §10.10.4 給的是一組<strong>設定</strong>，§8 的決議是一份<strong>判決</strong>。兩者都還沒被回答的是
+  一個更窄的問題：<strong>那組設定在 demo branch 的<em>最新</em> tip 上，是不是真的跑得起來、真的到得了 250？</strong>
+  這一節就是那次跑，連同它量到的、以及它撞到的那面牆。
+</p>
+
+<div class="box b-amber">
+  <p><strong>先講結論，因為結論有兩半。</strong>
+  ① 第一半成立：<code>prefill250</code> 在 tip 上跑得起來，冷態第一次請求量到
+  <strong class="ok">292.07 t/s</strong>——<strong>超過 250</strong>，而且是同一顆模型、同一份 profile。
+  ② 第二半不成立，而且是硬的：<strong>第二個請求會讓 server 崩掉</strong>（SIGSEGV）。
+  崩點不在本輪任何改動的堆疊上，而且<strong>閘門開著、關著都一樣崩</strong>。</p>
+</div>
+
+<h3 id="s111">11.1 這一跑是什麼</h3>
+<table>
+  <tr><th>項目</th><th>值</th></tr>
+  <tr><td>引擎</td><td><code>HEAD=0a4bfd73c</code>、branch <code>demo/sweet-spot-windows-fix</code>、
+      <code>libllama</code> 239</td></tr>
+  <tr><td>模型</td><td><code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>
+      （256 experts、40 layers，與 §10.1 同一顆）</td></tr>
+  <tr><td>服務模式</td><td><code>MTP ON</code>（<code>draft-mtp</code>、<code>n_max=3</code>、
+      <code>denseIQ4X=1</code>）</td></tr>
+  <tr><td>引擎設定</td><td><code>CGC_SERVER_PROFILE=prefill250</code>
+      <span class="small">（§10.10.4 第 1 層；<code>-b/-ub 6144</code>、8 GiB 池、ctx 8192、
+      <code>CGC_PREFILL_STREAM=1</code>、slab cap 256）</span></td></tr>
+  <tr><td>額外開的儀器</td><td><code>LLAMA_EXPERT_CACHE_BATCH_INVARIANT=1</code>（不變量閘門；
+      它<em>不改</em>吞吐，只多印覆蓋與違規計數）</td></tr>
+  <tr><td>健康判準</td><td>要求 <code>/health</code> 的 <strong>body 是 <code>"status":"ok"</code></strong>。
+      <span class="small">只看 HTTP 200 會誤判：模型載入期間它就回 200，body 是
+      <code>{"status":"loading model"}</code>。實測載入 8–9 s。</span></td></tr>
+</table>
+<p class="small">
+  三層裡的第 2 層（散熱前提）用 <code>--idle-before 180</code> 做到；第 3 層（量測紀律）由
+  「每個 session 只採第一次請求」做到。換句話說，<strong>這一跑刻意把三層全部擺到位</strong>，
+  否則量到的會是 §10 的「熱態 185」而不是 250。
+</p>
+
+<h3 id="s112">11.2 量到的：第一個請求，冷態與暖態各一次</h3>
+<table>
+  <tr><th>session</th><th>距上次持續 prefill</th><th>第一次請求</th><th>對應 §10.10.4 的哪一層</th></tr>
+  <tr class="hl"><td><strong>冷態</strong></td><td class="num">180 s</td>
+      <td class="num ok"><strong>292.07 t/s</strong><br><span class="small">9836.71 ms / 2873 tokens</span></td>
+      <td>三層<strong>全部到位</strong> ⇒ 這就是要找的那個數字</td></tr>
+  <tr><td>暖態（短 idle）</td><td class="num">≈ 0 s</td>
+      <td class="num warn">227.62 t/s<br><span class="small">12622.1 ms / 2873 tokens</span></td>
+      <td>第 2 層<strong>沒</strong>到位 ⇒ 落回 §10.2 run 2 的水位（227.27 t/s）</td></tr>
+  <tr><td>暖態（零 idle）</td><td class="num">0 s</td>
+      <td class="num bad">185.01 t/s<br><span class="small">15528.6 ms / 2873 tokens</span></td>
+      <td>更熱 ⇒ 更下一階，與 §3.3 的 122–134 同一方向</td></tr>
+</table>
+
+<div class="box b-green">
+  <p><strong>292.07 這個數字同時回答了三個懸著的問題：</strong></p>
+  <ul>
+    <li>「250 是不是只在舊 build 上存在？」——不是。它在 <code>0a4bfd73c</code> 上重現，而且是冷態<strong>單次</strong>請求。</li>
+    <li>「§10 的機制（時脈／熱壓）在 tip 上還成立嗎？」——成立。三個水位
+        <code class="ok">292.07 → 227.62 → 185.01</code> 對應 180 s／短／0 s 的 idle，
+        單調且與 §10.2 的 <code>276 → 227 → 151</code> 同構。</li>
+    <li>「profile 在 tip 上解析得出來嗎？」——解析得出來，頁面上的連線卡逐字相同：
+        <code>batch=6144 ubatch=6144</code>、<code>profile=prefill250</code>、
+        <code>budget=8589934592B</code>、<code>MTP ON (draft-mtp, n_max=3)</code>。</li>
+  </ul>
+</div>
+
+<h3 id="s113">11.3 疑點被排除：閘門不是嫌疑犯，但閘門給了覆蓋率</h3>
+<p>
+  冷態那一跑是把閘門開著的。所以崩潰的第一嫌疑犯就是閘門——於是加了一跑
+  <strong>同一個 tip、同一份 profile、只把閘門關掉</strong>的對照：
+</p>
+<table>
+  <tr><th>session</th><th>閘門</th><th>req 1</th><th>req 2</th><th>行程</th></tr>
+  <tr class="hl"><td>冷態</td><td><span class="ok">ON</span></td>
+      <td class="num ok">292.07 t/s ✅<br><span class="small">release: n_tokens = 2896</span></td>
+      <td class="num bad">✗ 死在啟動處<br><span class="small">task 8 才印完兩行 <code>CGC-PREFILL-STREAM</code></span></td>
+      <td class="bad">SIGSEGV</td></tr>
+  <tr class="hl"><td>PHASE A（單一請求＋優雅停止）</td><td><span class="ok">ON</span></td>
+      <td class="num warn">227.62 t/s ✅</td>
+      <td class="num">（未發出）</td>
+      <td class="warn">SIGTERM，正常</td></tr>
+  <tr class="hl"><td>PHASE B（連發兩次）</td><td><span class="bad">OFF</span></td>
+      <td class="num bad">185.01 t/s ✅</td>
+      <td class="num bad">✗ <code>RemoteDisconnected</code></td>
+      <td class="bad">SIGSEGV</td></tr>
+</table>
+<p>
+  兩個閘門狀態、兩個不同 idle、兩個不同 session，<strong>第二次請求一律把行程帶走</strong>。
+  所以它不是閘門造成的，是 tip 上既有的。
+</p>
+
+<h3 id="s114">11.4 崩在哪：不在本輪改動的堆疊上</h3>
+<p>
+  兩份 macOS 崩潰報告（<code>.ips</code>）的觸發堆疊<strong>逐格相同</strong>：
+</p>
+<pre><code>EXC_BAD_ACCESS (SIGSEGV) · KERN_INVALID_ADDRESS at 0x10
+  objc_msgSend                                   &lt; libobjc.A.dylib
+  ggml_metal_synchronize                         &lt; libggml-metal.0.19.0.dylib
+  ggml_backend_sched_synchronize                 &lt; libggml-base.0.19.0.dylib
+  llama_context::synchronize()                   &lt; libllama.0.0.239.dylib
+  llama_get_embeddings_nextn(llama_context*)     &lt; libllama.0.0.239.dylib
+  common_speculative_impl_draft_mtp::process(...)  &lt; libllama-common.0.0.239.dylib
+  common_speculative_process(...)                &lt; libllama-common.0.0.239.dylib
+  server_context_impl::decode(...)               &lt; libllama-server-impl.dylib
+  server_context_impl::update_slots()            &lt; libllama-server-impl.dylib</code></pre>
+<div class="box b-red">
+  <p><strong>這條堆疊上沒有 <code>ensure_batch</code>，也沒有任何本輪碰過的函式。</strong>
+  它在 <code>llama_get_embeddings_nextn</code>（MTP draft 取 embedding）→
+  <code>ggml_metal_synchronize</code> 的路上，對著一個已經無效的 Metal 物件發訊息
+  （<code>objc_msgSend</code> 在 <code>0x10</code> 上取址失敗）——是物件生命週期問題，不是池、不是 expert cache。</p>
+  <p><strong>與上午那三份崩潰報告也不同。</strong>09:19／09:22／09:25 那三份是
+  <code>SIGABRT</code>、<code>ggml_abort</code>，且發生在 <code>load_model</code> 裡
+  （<code>common_init_from_params</code> → <code>llama_context::synchronize()</code>），
+  是載入期的斷言，不是服務期的存取違規。兩組是不同缺陷。</p>
+</div>
+
+<h3 id="s115">11.5 這一跑順帶把 §4.1 的一個錯誤述句結掉了</h3>
+<p>
+  <code>M1_POOL_SPLIT_COST_2026-09-14.md</code> §4.1 原本寫：blocker B 的兩趟式在
+  <strong>非 split（出貨預設）配置下是 no-op</strong>。那個結論是量 <em>warmup</em> 得到的
+  （warmup 期間池子不滿、淘汰不觸發、修與未修逐位元相同）。但這台機器真正服務的負載不是 warmup。
+  這一跑把它量在<strong>出貨配置的 served request</strong> 上：
+</p>
+<table>
+  <tr><th>計數</th><th>量到</th><th>它結掉什麼</th></tr>
+  <tr><td><code>batch_evict_batches</code></td><td class="num bad"><strong>325</strong></td>
+      <td>pass 2 在 served request 上<strong>會</strong>淘汰 ⇒ 兩趟式的「順序」在這裡是 load-bearing，<strong>不是</strong> no-op</td></tr>
+  <tr><td><code>batch_invariant_checks</code></td><td class="num">331</td>
+      <td>閘門在<strong>每一個</strong> layered batch 上跑過（含零 miss 的 decode batch，舊位置的閘門整批跳過）</td></tr>
+  <tr><td><code>batch_invariant_violations</code></td><td class="num ok"><strong>0</strong></td>
+      <td>它的三條後置條件（槽互異、<code>slot_table[e]</code> 讀得回、<code>slot_owner</code> 一致）全數成立</td></tr>
+  <tr><td><code>CGC-BATCH-INVARIANT</code> 行數</td><td class="num">24 OK / 0 VIOLATIONS</td>
+      <td>閘門自己的輸出與計數一致。<span class="small">24 行<strong>只涵蓋 <code>il&lt;=2</code></strong>（那是給讀者的抽樣，
+          不是覆蓋範圍——覆蓋範圍由 <code>batch_invariant_checks=331</code> 承載），且每行的 <code>n</code> 從 3 到 32 不等。</span></td></tr>
+  <tr><td>final cache stats</td><td class="num">hits 9545/12149 (78.6%)<br>resident 6430.62 MiB</td>
+      <td>這一跑是<strong>真的工作</strong>，不是 stub</td></tr>
+</table>
+<p class="small">
+  三個計數只在 <strong>優雅退出</strong>（destructor）時印出——所以 PHASE A 刻意只發一個請求然後送
+  SIGTERM。PHASE B 崩掉時那三個計數<strong>一行都沒有</strong>，這本身就是證據：
+  它不是被閘門的輸出否證，是行程沒走到能印的地方。
+</p>
+
+<h3 id="s116">11.6 所以「prefill 250 在 demo branch 最新配置上生效」目前的正確述句</h3>
+<div class="box b-green">
+  <p><strong>可以說：</strong>在 <code>0a4bfd73c</code> 上，用
+  <code>CGC_SERVER_PROFILE=prefill250</code> ＋ 冷態 180 s，<strong>第一次</strong>請求量到
+  <strong>292.07 t/s</strong>（>250），引擎搬的位元組數與 §10 同級，blocker B 的不變量閘門在
+  331 個 batch 上<strong>全綠</strong>。三層設定<strong>在 tip 上成立</strong>。</p>
+</div>
+<div class="box b-red">
+  <p><strong>不能說：</strong>「無誤」。<strong>第二個請求會讓 server 崩在 MTP draft 路徑上</strong>
+  （§11.4），閘門開著關著都一樣。在修掉那個物件生命週期問題之前，
+  prefill250 在 tip 上的正確描述是<strong>「單請求成立」</strong>，不是「已驗證的服務配置」。</p>
+</div>
+<p>
+  這兩半<strong>不互相牴觸</strong>，而且第二半不動搖第一半：崩潰發生在 req 2 的<em>開始</em>，
+  而 req 1 已經完整跑完並 <code>release</code>（<code>n_tokens = 2896</code>）。
+  292.07 這個數字是 req 1 自己的 <code>print_timing</code>，不是補值、不是外插。
+</p>
+
+<h3 id="s117">11.7 這一節<strong>不</strong>說</h3>
+<ul>
+  <li><strong>不主張 250 是穩定的。</strong>292.07 是<em>單次</em>冷態樣本，n=1。
+      §10 已經說明這種樣本每個 session 只有一次，所以「穩定」這件事<strong>無法</strong>用同一 session 的連續請求證明。</li>
+  <li><strong>不主張崩潰與熱／時脈有關。</strong>冷態那一跑（最冷、最快的那次）也崩，且崩在第二個請求；
+      崩潰的觸發條件是「第二次」而不是「熱」。</li>
+  <li><strong>不主張本輪的計數器改動是已提交的。</strong>量測用的 <code>libllama</code> 是含三個計數器的建置，
+      與 <code>0a4bfd73c</code> 內附的 dylib 不同（後者沒有計數器）。跑出來的行為差異<strong>只可能是輸出</strong>，
+      因為計數器唯寫於觀測路徑、不參與決策——但這仍是需要在 commit 訊息裡講清楚的邊界。</li>
+  <li><strong>不主張修好了崩潰。</strong>本輪沒有動 MTP draft 路徑的任何一行。</li>
+</ul>
+
+<h3 id="s118">11.8 複現</h3>
+<pre><code># 三層到位：profile（第 1 層）＋ idle 180（第 2 層）＋ 每個 session 只採第一次（第 3 層）
+CGC_SERVER_PROFILE=prefill250 LLAMA_EXPERT_CACHE_BATCH_INVARIANT=1 ./scripts/run_server.sh
+# 健康判準必須看 body，不是 status code：
+curl -s --noproxy '*' http://127.0.0.1:8080/health   # 要看到 {"status":"ok"}
+# 一個請求，然後優雅停止（三個計數只在 destructor 印）：
+pkill -TERM -f llama-server
+
+# 崩潰要在 macOS 崩潰報告裡讀堆疊（.ips = 標頭一行 JSON + body JSON）：
+python3 - &lt;&lt;'PY'
+import json, glob
+f = sorted(glob.glob('~/Library/Logs/DiagnosticReports/llama-server-*.ips'))[-1]
+raw = open(f, encoding='utf-8', errors='replace').read()
+nl = raw.index('\n'); body = json.loads(raw[nl:]); imgs = body['usedImages']
+for t in body['threads']:
+    if t.get('triggered'):
+        for fr in t['frames'][:10]:
+            i = fr.get('imageIndex')
+            print(' ', fr.get('symbol') or hex(fr.get('imageOffset', 0)),
+                  ' &lt;', imgs[i]['name'] if i is not None else '?')
+PY</code></pre>
+<p class="small">
+  兩次請求的形狀在 <code>Backup/cgc_logs/llama_server_20260916_103408.log</code>（冷態、閘門 ON：
+  req 1 的 <code>292.07 t/s</code> 在第 234 行、<code>release</code> 在第 239 行、req 2 在第 241 行後中止）
+  與 <code>prefill250_e2e2_20260916_103810.txt</code>（PHASE A／B 的彙整）。
+  <code>Backup/</code> 是 gitignored，所以上面引的數字是抽取件，原始行只存在本機。
+</p>
 
 </div>
 </body>

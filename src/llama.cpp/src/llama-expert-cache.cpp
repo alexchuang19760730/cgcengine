@@ -852,6 +852,55 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
     std::vector<int32_t>  slots(n, -1);
     std::vector<uint32_t> miss_exps;   // (expert) to fill concurrently
     std::vector<int32_t>  miss_slots;  // slot assigned to each miss
+    // [CGC 2026-09-16 Blocker B] The post-condition gate used to live INSIDE the `if (!miss_exps
+    // .empty())` branch, so a hits-only batch was never checked -- and "one cold expert turns a
+    // hits-only batch into a full batch of misses" is precisely the failure it guards. It also
+    // only printed an OK line for il<=2, so "the log has no VIOLATIONS" was indistinguishable from
+    // "the gate never ran" (B12). It is now a lambda that takes its own lock and is called ONCE per
+    // call, after every fill has published, so it covers every batch on every layer and its totals
+    // are reported in the shutdown stats.
+    auto cgc_check_batch_invariant = [&]() {
+        if (getenv("LLAMA_EXPERT_CACHE_BATCH_INVARIANT") == nullptr) {
+            return;
+        }
+        std::unique_lock<std::mutex> lk(cache->m);
+        cache->n_batch_inv_checks++;
+        const uint32_t ns_l = slots_l(cache, layer);
+        size_t violations = 0;
+        for (size_t i = 0; i < n; ++i) {
+            const uint32_t e = experts[i];
+            if (e >= cache->n_expert) {
+                continue;
+            }
+            const int32_t s = slots[i];
+            const bool in_range = s >= 0 && s < (int32_t) ns_l;
+            if (!in_range || table[e] != s || cache->slot_owner[layer][s] != (int32_t) e) {
+                if (violations < 8) {
+                    fprintf(stderr, "CGC-BATCH-INVARIANT: il=%u i=%zu expert=%u slot=%d table=%d owner=%d\n",
+                            layer, i, e, s, table[e], in_range ? cache->slot_owner[layer][s] : -9);
+                }
+                violations++;
+            }
+            for (size_t j = i + 1; in_range && j < n; ++j) {
+                if (slots[j] == s) {
+                    if (violations < 8) {
+                        fprintf(stderr, "CGC-BATCH-INVARIANT: il=%u experts %u and %u share slot %d\n",
+                                layer, e, experts[j], s);
+                    }
+                    violations++;
+                }
+            }
+        }
+        cache->n_batch_inv_violations += violations;
+        if (violations > 0) {
+            fprintf(stderr, "CGC-BATCH-INVARIANT: il=%u n=%zu VIOLATIONS=%zu "
+                            "(distinct slots / table reads back / owner agrees)\n",
+                    layer, n, violations);
+        } else if (layer <= 2) {
+            fprintf(stderr, "CGC-BATCH-INVARIANT: il=%u n=%zu OK (distinct slots, table reads back, owner agrees)\n",
+                    layer, n);
+        }
+    };
     {
         std::unique_lock<std::mutex> lk(cache->m);
         cache->n_requests += n;
@@ -936,6 +985,12 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
                 continue;
             }
         }
+        // [CGC 2026-09-16 Blocker B] Did this batch have to EVICT a resident to place its misses?
+        // n_evictions is bumped by pick_slot under this same lock, so sampling it around pass 2 is
+        // an exact count of evictions performed BY this batch's assignment -- the precondition
+        // under which the pass1/pass2 ORDER is load-bearing rather than cosmetic. See the counter's
+        // declaration for why this had to become measurable rather than assumed.
+        const size_t cgc_evict_before = cache->n_evictions;
         // [CGC 2026-09-16 Blocker B] PASS 2: every resident member is now claimed, so a victim
         // chosen here cannot be a slot this batch reads. Before this split the two phases were
         // interleaved and a miss could free a slot a later member already held.
@@ -1049,6 +1104,9 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
             miss_exps.push_back(e);
             miss_slots.push_back(slot);
         }
+        if (cache->n_evictions > cgc_evict_before) {
+            cache->n_batch_evict_batches++;
+        }
     }
     if (getenv("LLAMA_EXPERT_CACHE_BATCH_DBG") != nullptr && !miss_exps.empty()) {
         fprintf(stderr, "BATCHDBG layer=%u misses=%zu slots:", layer, miss_exps.size());
@@ -1112,48 +1170,10 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
                 }
             }
         }
-        // [CGC 2026-09-16 Blocker B] Post-conditions of the two-pass assignment, checked where
-        // they actually hold: table[e] is published by the loop ABOVE, after the fills land, so
-        // this cannot sit inside the assignment block (a first draft did, and reported four
-        // violations per layer for misses whose publish had simply not happened yet). The
-        // failure this split fixes was SILENT -- every selected expert still had a slot, just the
-        // wrong one -- so the invariant is verified, not assumed.
-        if (getenv("LLAMA_EXPERT_CACHE_BATCH_INVARIANT") != nullptr) {
-            const uint32_t ns_l = slots_l(cache, layer);
-            size_t violations = 0;
-            for (size_t i = 0; i < n; ++i) {
-                const uint32_t e = experts[i];
-                if (e >= cache->n_expert) {
-                    continue;
-                }
-                const int32_t s = slots[i];
-                const bool in_range = s >= 0 && s < (int32_t) ns_l;
-                if (!in_range || table[e] != s || cache->slot_owner[layer][s] != (int32_t) e) {
-                    if (violations < 8) {
-                        fprintf(stderr, "CGC-BATCH-INVARIANT: il=%u i=%zu expert=%u slot=%d table=%d owner=%d\n",
-                                layer, i, e, s, table[e], in_range ? cache->slot_owner[layer][s] : -9);
-                    }
-                    violations++;
-                }
-                for (size_t j = i + 1; in_range && j < n; ++j) {
-                    if (slots[j] == s) {
-                        if (violations < 8) {
-                            fprintf(stderr, "CGC-BATCH-INVARIANT: il=%u experts %u and %u share slot %d\n",
-                                    layer, e, experts[j], s);
-                        }
-                        violations++;
-                    }
-                }
-            }
-            if (violations > 0) {
-                fprintf(stderr, "CGC-BATCH-INVARIANT: il=%u n=%zu VIOLATIONS=%zu "
-                                "(distinct slots / table reads back / owner agrees)\n",
-                        layer, n, violations);
-            } else if (layer <= 2) {
-                fprintf(stderr, "CGC-BATCH-INVARIANT: il=%u n=%zu OK (distinct slots, table reads back, owner agrees)\n",
-                        layer, n);
-            }
-        }
+        // [CGC 2026-09-16 Blocker B] The post-condition gate is NOT here any more: it was nested in
+        // this branch (so hits-only batches were skipped) and printed an OK line only for il<=2 (so
+        // its absence was unreadable). It is now cgc_check_batch_invariant(), called once at the end
+        // of every ensure_batch, with its totals reported in the shutdown stats.
         // [CGC WIN_PIN] roll this batch's union into the layer's window and repin the LRU-exempt
         // set. Runs AFTER table[] is updated so this step's union (hits + just-filled misses) is
         // fully resident and gets pinned. pick_slot skips pinned slots, so evictions now only
@@ -1192,6 +1212,11 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
             }
         }
     }
+    // [CGC 2026-09-16 Blocker B] Always, for EVERY batch -- hits-only included. The gate used to be
+    // nested in the miss branch above, which excluded exactly the batch shape the defect corrupted
+    // ("one cold expert turned a hits-only batch into a full batch of misses"). Runs after every
+    // fill has published and after WIN_PIN, so it sees the final state; takes its own lock.
+    cgc_check_batch_invariant();
 }
 
 // L3 Option A: stabilize a layer's pool region before its FFN dispatches (see header).
@@ -2132,6 +2157,21 @@ llama_expert_cache::~llama_expert_cache() {
                 (unsigned long long) fill_batch_usec.load(std::memory_order_relaxed),
                 (unsigned long long) fill_wait_us.load(std::memory_order_relaxed),
                 n_prefetch, n_prefetch_dropped);
+        // [CGC 2026-09-16 Blocker B] Make the fix's ACTIVITY and its gate's COVERAGE readable in the
+        // shipping configuration. Both halves were unreadable before: n_hit_adopted_queued was
+        // written and never read anywhere in the tree, and the gate's per-layer OK line is printed
+        // only for il<=2. So "the log looks clean" could not distinguish "nothing to report" from
+        // "nothing ran" -- and the claim that the fix is a no-op in the non-split configuration came
+        // from warmup, where the pool never fills.
+        //   batch_evict_batches : batches whose miss assignment had to evict a resident. Nonzero =>
+        //                         the pass1/pass2 ORDER is load-bearing in this run.
+        //   adopted_queued      : hits that adopted an in-flight fill instead of being handed a
+        //                         second slot.
+        //   violations          : must be 0. checks is what proves the gate ran on all layers.
+        fprintf(stderr, "llama_expert_cache: blocker-B stats: batch_evict_batches=%zu adopted_queued=%zu "
+                        "batch_invariant_checks=%zu batch_invariant_violations=%zu\n",
+                n_batch_evict_batches, n_hit_adopted_queued,
+                n_batch_inv_checks, n_batch_inv_violations);
         // [CGC 2026-09-15] Pool integrity at teardown. The always-on mul_mat_id assertion in
         // ggml-metal-ops fires ~8x/run and ALWAYS as a gate+up pair on il=1 (pool slot 14 / slab
         // expert 214). That assertion reads at graph-BUILD time, so on its own it cannot separate

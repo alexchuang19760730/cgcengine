@@ -177,18 +177,62 @@ Two honest limits on this evidence:
   16 GB machine, before any request is served. A 4 GiB fixed-arm run did reach **layer 39** (the
   09-14 run died at il=2) and reported `CGC-BATCH-INVARIANT: il=1/il=2 OK` on the way, but that run
   also OOM'd in warmup, so it is a liveness improvement, not a quality result.
-* In a **non-split** run (the shipping default) the pool is never full during warmup, misses land in
-  free slots and LRU eviction never fires — so under that configuration the two-pass split is a
-  no-op. This was checked directly: with the fix stashed and the same 4 GiB configuration re-run,
-  the old and new binaries produced **bit-identical** `CGC-PRE`/`CGC-POST`/`CGC-SLOT` output. That is
-  a safe-keeping result (no behaviour change where nothing was broken) and it is *not* a test of the
-  fix; the unit test above is.
+* **Corrected 2026-09-16 — see §4.2.** An earlier version of this section claimed that in a
+  **non-split** run (the shipping default) the two-pass split is a **no-op**, on the grounds that the
+  pool is never full during *warmup*: misses land in free slots and LRU eviction never fires. The
+  observation itself is real — with the fix stashed and the same 4 GiB configuration re-run, the old
+  and new binaries produced **bit-identical** `CGC-PRE`/`CGC-POST`/`CGC-SLOT` output — but it was
+  measured on **warmup**, which is not the workload this code serves. A served prefill chunk against
+  the 8 GiB pool touches 256 experts, the pool *does* fill, and pass 2 *does* evict; §4.2 counts
+  exactly that. What the bit-identical result establishes is only that nothing was broken where
+  nothing was full — it is *not* a test of the fix, and it is not a statement about the configuration.
 
 A gate (`LLAMA_EXPERT_CACHE_BATCH_INVARIANT=1`, plumbed through `run_server.sh`'s `SERVER_ENV`
 allow-list so a production launch can actually set it) now re-checks the post-conditions it used to
 assume — distinct slots, `slot_table[e]` reads back, `slot_owner` agrees — on every layered batch.
 It is verified, not assumed, because the original failure was **silent**: every selected expert still
 had a slot, just the wrong one.
+
+### 4.2 The reordering, measured on the configuration we actually ship (2026-09-16)
+
+Everything §4.1 could say about the *live* path was on the **split** configuration — the one that
+cannot finish warmup on this 16 GB box. That made the live evidence circular: the only workload that
+could exercise the fix was a workload that does not run. This round moved the observation onto the
+**shipping default** by adding three counters to the cache and printing them from its destructor, then
+running the production entry point on the branch tip (`HEAD=0a4bfd73c`,
+`Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf`, 256 experts, 40 layers):
+
+```bash
+CGC_SERVER_PROFILE=prefill250 LLAMA_EXPERT_CACHE_BATCH_INVARIANT=1 ./scripts/run_server.sh
+# then one chat request, then SIGTERM -- the destructor is the only place these stats are printed
+```
+
+| quantity | measured | what it settles |
+|---|---|---|
+| prefill, 2873 tokens | **227.62 t/s** (12622.1 ms) | the profile runs at the tip |
+| `batch_evict_batches` | **325** | pass 2 **does** evict on a served request ⇒ the two-pass *order* is load-bearing here, not a no-op |
+| `batch_invariant_checks` | **331** | the gate ran on every layered batch, not only during warmup |
+| `batch_invariant_violations` | **0** | none of its post-conditions (distinct slots, `slot_table[e]` reads back, `slot_owner` agrees) was violated |
+| `CGC-BATCH-INVARIANT` OK / VIOLATIONS | 24 / **0** | the gate's own output agrees with the counters |
+| final cache stats | `hits=9545/12149 (78.6%)`, `resident=6430.62 MiB` | the run did real work, not a stub |
+
+Why the two counts differ is part of the point: `batch_evict_batches` (325) counts `ensure_batch`
+calls that evicted, the OK log line is throttled to `il<=2` (hence only 24 lines, with a per-line `n`
+ranging 3–32), and `batch_invariant_checks` (331) counts **all** `ensure_batch` calls — including the
+zero-miss decode batches that the gate's previous placement skipped entirely. Read together they say:
+evictions happen, and every batch that could have been checked was. The 24 lines are a *sample* for
+the reader; the 331 is the coverage claim.
+
+That retires the "no-op on the shipping configuration" reading. The reordering is exercised **and**
+verified green on the configuration we actually ship — the two claims §4.1 could only make for the
+configuration that OOMs. The unit test above still matters for the opposite reason: it is the only arm
+where the *unfixed* behaviour is observable side by side.
+
+**Boundary this measurement exposed, and does not cover.** The **second** request on this build kills
+the server with a SIGSEGV that is not in this code path — it is in the MTP draft path
+(`llama_get_embeddings_nextn` → `ggml_metal_synchronize`), and it reproduces with the
+batch-invariant gate both on and off. The first request is unaffected (292.07 t/s cold, 227.62 t/s
+warm). Full evidence in `docs/PREFILL250_THERMAL_TRANSIENT_20260916.html` §11.
 
 ## 5. Conclusion and recommendation
 
@@ -238,8 +282,19 @@ clang++ -std=c++17 -O1 -I include -I ggml/include -I src \
   -L build/bin -lllama -Wl,-rpath,$PWD/build/bin \
   -o ../../scripts/check/expert_cache_ensure_batch_order
 DYLD_LIBRARY_PATH=build/bin ../../scripts/check/expert_cache_ensure_batch_order
+# case 2 was added 2026-09-16; the test now runs both and prints ALL PASS (2/2)
+#
+# === CASE 1: order dependence (pool full, one cold member) ===
+# post   : st[0]=16 st[1]=1 st[2]=2 ... st[15]=15
+# misses : 1  hits: 15
+# counters: batch_evict_batches=1 adopted_queued=0
+#   (an eviction during assignment is what makes the two-pass ORDER load-bearing)
+# === CASE 2: in-flight fill adoption ===
+# post   : st[0]=0 st[1]=1 ... st[7]=7       misses: 0  hits: 8  adopted_queued: 1
+#   (the in-flight fill was adopted; one expert, one slot; no second assignment)
+#
+# The one-loop arm is the historical comparison for CASE 1:
 # HEAD   -> post: st[0]=1 st[1]=2 ... st[15]=16   misses: 16  hits: 0   FAIL
-# fixed  -> post: st[0]=16 st[1]=1 ... st[15]=15  misses: 1   hits: 15  PASS
 ```
 
 It links `llama_expert_cache_ensure_batch` out of the built dylib, so it exercises the shipped
