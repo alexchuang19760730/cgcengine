@@ -1,0 +1,19 @@
+# unified-AB: prefill250 + CGC_SPAC=1 vs prefill250, interleaved A/B/A/B, NOMINAL-gated
+# driver Backup/run_unified_ab.sh   -b 512 -ub 512 -p 0 -n 128 -d 0,512 -r 3
+# raw: Backup/phase_decomp/unified_ab_{A1,A2,B1,B2}_20260916_1848.json  (kept as a summary)
+
+arm	SPAC	depth	avg_ts	stddev_ts	rep_lo	rep_hi
+A1	OFF	0	9.56	0.84	8.72	10.40
+A2	OFF	0	8.27	2.31	5.95	10.58
+B1	ON	0	9.79	1.02	8.77	10.81
+B2	ON	0	9.60	1.00	8.61	10.60
+A1	OFF	512	9.25	2.97	6.28	12.21
+A2	OFF	512	9.25	2.97	6.28	12.23
+B1	ON	512	10.78	0.04	10.74	10.82
+B2	ON	512	10.91	0.47	10.44	11.39
+
+# d=0: SPAC OFF median 8.92  ->  ON median 9.69   = +0.78 (+8.7%)
+#   dispersion: OFF ['0.84', '2.31']  ON ['1.02', '1.00']
+
+# d=512: SPAC OFF median 9.25  ->  ON median 10.85   = +1.60 (+17.2%)
+#   dispersion: OFF ['2.97', '2.97']  ON ['0.04', '0.47']
