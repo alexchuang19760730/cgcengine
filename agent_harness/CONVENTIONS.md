@@ -933,6 +933,11 @@
     `harness_engine/memories/engine/` 的注入來源，§E 要求「每次改動都要走一次閉環對照」。
     2026-09-16 當天**這兩個目錄都還不存在**（E2 才建），所以這次修訂改變不到任何執行時行為；
     但該閉環對照**尚未執行**，義務記在 E2 頭上。
+    ★ **19:4x 更新（E2 已落地，這一段的前半現在是錯的）**：那兩個目錄**現在存在**，
+    所以「改變不到任何執行時行為」這句話不再能靠「沒有消費者」成立——它變成一個**待驗證的斷言**。
+    對照器與四臂已建（見 §E 的最後一條），**模型半仍未跑**，所以這句話目前**沒有產物支撐**。
+    在它跑過之前，本條的措辭應讀成「**預期**改變不到任何執行時行為（D6 動的是搬運管道，
+    不是判準），但未經對照」。
   - 反向紀錄：`agent_harness/memory/README.md`、`agent_harness/skills/README.md` 與本條一起
     構成三個防線（banner / `SNAPSHOT.jsonl` / 條文），lesson `eng-bound-0004` 記的是「索引
     可驗證 ≠ 索引充分」這個一般化的規訓。
@@ -946,3 +951,14 @@
   （刪掉會讓後人重新踩一次）。
 - 這份文件是 `engine_loop/sft_pi/` 的 system prompt 與 `harness_engine/memories/engine/` 的注入來源，
   所以**改動它等於改動兩個 loop 的行為**，每次改動都要走一次閉環對照（見 `PLAN_ENGINE_LOOP_2026-09-15.md` §6.3）。
+- **2026-09-16 19:4x：上一條的「注入來源」現在是真的了，因此閉環對照的義務從「未到期的條件」變成「已到期的欠帳」。**
+  E2 建立了 `engine_loop/sft_pi/` 與 `engine_loop/harness_engine/memories/engine/`（106 條），
+  所以 `sft_common.charter()` 現在真的把這份檔案讀成 system prompt 的位元組。
+  對照器是 `engine_loop/distill/closed_loop.py`（四臂：A_preD6／B_postD6／C_head／D_head_mem，
+  **只有 A→B 回答 D6 的欠帳**，另兩對是反歸因用的；`--dry-run` 已證實每對只隔離一件事）。
+  **狀態：機制已建並離線驗證；模型半未跑。**
+  未跑的理由是具體的、不是「做不到」：本機無模型端點，而 `llama-server` 與 13.6 GB 的模型都在
+  ⇒ 起 server 會與另一個 session 正在進行的 prefill/decode 量測互相干擾（那些量測對 GPU 時脈
+  與記憶體狀態極敏感，見 A16）。**為了結清一條欠帳而弄壞另一條線的資料不算結清。**
+  ⇒ **在 `closed_loop.py` 真的跑過、且 `closed_loop_questions.md` 的承重點逐題核對過之前，
+  不得聲稱 D6 的修訂「改變不到任何執行時行為」。**

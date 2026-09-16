@@ -34,8 +34,36 @@ evaluate  →  extract  →  refine  →  compare
 |---|---|---|
 | **evaluate** | `index_assets.py` 指到的臂與 profile，由 `scripts/check/decode_sweep.py` 執行 | 已存在（今天就在跑） |
 | **extract** | `traces/episodes.jsonl`（T0，純腳本，**已完成**） | ✅ E0 |
-| **refine** | `distill/refine_engine.sh` → `traces/decisions.jsonl` / `lessons.jsonl` | ⏳ E2（`decisions.jsonl` / `lessons.jsonl` 已有人工定稿的第一版） |
-| **compare** | `sft_pi/` / `sft_prime/` 兩份投影 + 閉環對照 | ⏳ E2/E3 |
+| **refine** | `distill/refine_engine.sh` ＋ `distill/collect_evidence.py` ＋ `distill/prompt/refine_engine.md` → `distill/out/<ts>/*.candidate.jsonl`（人審後 `--accept`） | ✅ E2（機制已建並通過離線自測；**未接真實模型跑過**） |
+| **compare** | `harness_engine/`（注入用的 harness 狀態）＋ `sft_pi/` `sft_prime/`（兩份投影）＋ `distill/closed_loop.py`（閉環對照） | ✅ E2（投影已產出並可重生）；閉環對照的**模型半未跑**，見 §9 |
+
+### 2.1 E2 新增的四個目錄
+
+```
+engine_loop/
+├── harness_engine/            prime-agent 的第二份狀態（PLAN §6.1）
+│   ├── extensions -> ../../tb_loop/harness/extensions   ← 符號連結，**不是複本**（R1）
+│   ├── build_memories.py      lessons.jsonl -> memories/engine/<id>.md（可重生、有 --check）
+│   └── memories/engine/       106 檔；第一行固定 `[engine] <rule>`（/refine --global 的 scope 標記）
+├── sft_pi/                    工具軌跡投影（messages + tool_calls）
+│   ├── build_sft_pi.py        episode 序列 + decision.action -> train/valid.jsonl
+│   └── {train,valid}.jsonl
+├── sft_prime/                 (證據→教訓) 與 (狀態→下一個動作)
+│   ├── build_sft_prime.py
+│   └── {train,valid}.jsonl
+├── distill/                   T1 蒸餾（半自動）
+│   ├── collect_evidence.py    可單獨跑：--stats / --next-ids / 證據區塊
+│   ├── refine_engine.sh       --dry-run（離線可驗）/ 真跑 / --accept
+│   ├── prompt/refine_engine.md
+│   ├── selftest.py            假 prime-agent，驗 prompt 的手遞與 --accept 路徑
+│   ├── closed_loop.py         四臂閉環對照（D6 欠帳的執行器）
+│   └── closed_loop_questions.md  8 題 + 每題的承重點
+└── sft_common.py              兩份投影共用的載入／渲染／切分（**只有一份渲染器**）
+```
+
+「能推導就不要維護」在這四個目錄上是貫徹的：`memories/engine/` 由 `lessons.jsonl` 產生、
+兩份 SFT 由 `traces/*.jsonl` 產生、`extensions/` 是指向而不是複本。**手改衍生物會被下一次
+重生蓋掉，而那次重生看起來完全正常。**
 
 ## 3. 三種 record
 
@@ -172,3 +200,50 @@ python3 agent_harness/engine_loop/memory/build_memory_index.py --query mmid -n 8
 
 `--query` 回報 `path:line_start-line_end` 與該節的 `###` 子標題，所以下一步是精準讀取
 （`Read(offset=line_start)`）。record 的 `action` / `evidence` 要引 `path:line_start`，不要複述內容。
+
+---
+
+## 9. E2 的驗收與兩件**沒有結清**的事（2026-09-16）
+
+### 9.1 已建並通過離線驗證
+
+| 產物 | 驗證方式 | 結果 |
+|---|---|---|
+| `harness_engine/memories/engine/` | `build_memories.py --check` | 106 檔、無漂移；第一行都是 `[engine] <rule>` |
+| `harness_engine/extensions` | 符號連結解析 ＋ `--check` 會擋「變成真目錄」 | 指向 `tb_loop/harness/extensions`（單一複本） |
+| `sft_pi/` | 由 `traces/*.jsonl` 產生，seed 固定可 diff | 14 條軌跡 / 38 個 tool call；每筆帶 `_provenance.reconstructed` |
+| `sft_prime/` | 同上 | 141 筆（105 evidence→lesson ＋ 36 state→next-arm）；排除 2 條 refuted、1 條 superseded |
+| `distill/` | `distill/selftest.py`（假 prime-agent） | 27 項檢查全過 |
+| `distill/closed_loop.py` | `--dry-run`（不需模型） | 四臂的 prompt 大小／sha256／逐對 diff |
+
+`distill/selftest.py` 抓到一個**真的 prompt 設計缺陷**並留下回歸斷言：v1 的 prompt 把
+「下一個可用 id」放在最末，而證據區先列了 106 個**已在使用**的 id ⇒ 從文件中第一個看到的
+id 取用就會撞號（`validate.py` 報 `duplicate lesson_id`）。修法是把可用 id 用哨兵包起來
+並明文禁止重用，**並且把「文件中第一個 id ≠ 可用 id」變成一條斷言**——否則這個缺陷會在下一次
+改 prompt 時無聲復發。
+
+### 9.2 **閉環對照的模型半沒有跑**（D6 的欠帳仍然開著）
+
+`CONVENTIONS.md` §E 要求「每次改 `CONVENTIONS.md` 都要走一次閉環對照」，
+而 D6 的 2026-09-16 修訂聲稱「改變不到任何執行時行為」。那句話**目前仍然沒有產物支撐**。
+
+- **執行器已建**：`distill/closed_loop.py`，四臂（A_preD6 / B_postD6 / C_head / D_head_mem），
+  只有 A→B 回答欠帳，另兩對是反歸因用的。`--dry-run` 已證實三對各自只隔離一件事
+  （A→B ＋18/−0 行、B→C ＋18/−4 行、C→D 章程 0 行／memories ＋23,785 B）。
+  **第一版把 `e688f346e^` 直接對上 HEAD，結果那一對同時量了 D6 與後來的 E1 D1 更新——
+  是 `--dry-run` 的逐對 diff 把它抓出來的。**
+- **模型半未跑**，原因不是「做不到」，而是兩個必須先解決的條件：
+  1. 本機沒有可用的模型端點（1234/1235/8080/11434/8000/5000/9000 全部無回應，
+     `~/.workbuddy/models.json` 是空的）。
+  2. `llama-server` 與本 repo 的 13.6 GB 模型**都在**，所以技術上可以起一個。
+     **但那會與另一個 session 正在進行的 prefill/decode 量測互相干擾**——
+     那些量測對 GPU 時脈與記憶體狀態極敏感（見 A16 的 τ 與熱暫態），
+     起一個 13.6 GB 的 server 去回答 32 個問題，代價可能是對方整輪的數字作廢。
+     **「為了結清一條欠帳而弄壞另一條線的資料」不是結清。**
+- **要跑它的指令**（在沒有併行量測的時間窗）：
+  ```sh
+  CLOSED_LOOP_MODEL_CMD='<讀 stdin 寫 stdout 的任何模型命令>' \
+    python3 agent_harness/engine_loop/distill/closed_loop.py
+  ```
+  然後**人工核對** `closed_loop_questions.md` 的承重點表格——字串相同只是自動部分。
+- **不得宣稱 D6 修訂已結清**（PLAN §9 的 E2 欄原文即如此要求）。

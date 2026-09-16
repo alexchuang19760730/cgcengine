@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Harness E2：把 traces 投影成可訓練的東西（2026-09-16）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --purple:#7c3aed; --purple-bg:#f5f3ff;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.78 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,"Noto Sans TC",sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:27px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16.5px;margin:26px 0 8px;color:#1f2937}
+  h4{font-size:14.5px;margin:20px 0 6px;color:#374151}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:24px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.4px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.4px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  tr:nth-child(even) td{background:#fcfcfd}
+  .box{border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:0 8px 8px 0;
+       padding:12px 16px;margin:16px 0;background:var(--blue-bg)}
+  .box.warn{border-left-color:var(--amber);background:var(--amber-bg)}
+  .box.bad{border-left-color:var(--red);background:var(--red-bg)}
+  .box.ok{border-left-color:var(--green);background:var(--green-bg)}
+  .box.pur{border-left-color:var(--purple);background:var(--purple-bg)}
+  .box .lbl{font-weight:700;font-size:13px;letter-spacing:.3px}
+  .box p:last-child{margin-bottom:0}
+  ul,ol{margin:8px 0 8px 22px}
+  li{margin:4px 0}
+  .tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11.5px;font-weight:600;
+       border:1px solid transparent;margin-right:4px;white-space:nowrap}
+  .t-green{background:var(--green-bg);color:var(--green);border-color:#a7f3d0}
+  .t-red{background:var(--red-bg);color:var(--red);border-color:#fecaca}
+  .t-amber{background:var(--amber-bg);color:var(--amber);border-color:#fde68a}
+  .t-gray{background:#f3f4f6;color:#4b5563;border-color:#e5e7eb}
+  .ck{font-family:ui-monospace,Menlo,monospace;font-size:12.2px;color:#065f46}
+  .foot{margin-top:40px;color:var(--muted);font-size:12.3px;border-top:1px solid var(--line);padding-top:14px}
+  .flow{margin:20px 0;border:1px solid var(--line);border-radius:10px;padding:10px;background:#fcfcfd;overflow-x:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Agent Harness E2：把 traces 投影成可訓練的東西</h1>
+<p class="sub">
+  專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code> ·
+  分支 <code>demo/sweet-spot-windows-fix</code> · 產出日期 2026-09-16 ·
+  前一個 agent_harness 線的 commit 是 <code>af676c9cc</code>（E1）
+</p>
+
+<div class="box pur">
+  <p><span class="lbl">一句話</span></p>
+  <p>E0 把「觀測」寫成了 record，E1 讓那個 record 的產生者能被執行，<b>E2 把 record 變成三個
+  別的 agent 真的能吃的東西</b>：prime-agent 的記憶（<code>harness_engine/</code>）、
+  工具軌跡（<code>sft_pi/</code>）、判斷力（<code>sft_prime/</code>），
+  以及把「下一輪的證據」蒸餾成新 record 的管道（<code>distill/</code>）。</p>
+</div>
+
+<h2>1. 交付了什麼</h2>
+
+<div class="flow">
+<svg viewBox="0 0 1000 300" width="100%" height="auto" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,monospace">
+  <defs>
+    <marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+  <rect x="10" y="40" width="200" height="86" rx="8" fill="#f9fafb" stroke="#e5e7eb"/>
+  <text x="24" y="62" font-size="12.5" font-weight="700" fill="#111827">traces/*.jsonl</text>
+  <text x="24" y="82" font-size="11" fill="#6b7280">episodes 122</text>
+  <text x="24" y="98" font-size="11" fill="#6b7280">decisions 38</text>
+  <text x="24" y="114" font-size="11" fill="#6b7280">lessons 106</text>
+
+  <line x1="210" y1="83" x2="250" y2="83" stroke="#6b7280" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <rect x="252" y="20" width="230" height="56" rx="8" fill="#fff" stroke="#bfdbfe"/>
+  <text x="264" y="40" font-size="12" font-weight="700" fill="#1d4ed8">harness_engine/</text>
+  <text x="264" y="58" font-size="10.5" fill="#6b7280">build_memories.py → 106 檔 memory</text>
+  <text x="264" y="71" font-size="10.5" fill="#6b7280">第一行 [engine] &lt;rule&gt;</text>
+
+  <rect x="252" y="86" width="230" height="56" rx="8" fill="#fff" stroke="#bfdbfe"/>
+  <text x="264" y="106" font-size="12" font-weight="700" fill="#1d4ed8">sft_pi/</text>
+  <text x="264" y="124" font-size="10.5" fill="#6b7280">14 軌跡 / 38 tool call</text>
+  <text x="264" y="137" font-size="10.5" fill="#6b7280">messages + tool_calls</text>
+
+  <rect x="252" y="152" width="230" height="56" rx="8" fill="#fff" stroke="#bfdbfe"/>
+  <text x="264" y="172" font-size="12" font-weight="700" fill="#1d4ed8">sft_prime/</text>
+  <text x="264" y="190" font-size="10.5" fill="#6b7280">141 筆（105 證據→教訓</text>
+  <text x="264" y="203" font-size="10.5" fill="#6b7280">＋ 36 狀態→下一動作）</text>
+
+  <line x1="482" y1="83" x2="522" y2="83" stroke="#6b7280" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <rect x="524" y="20" width="212" height="56" rx="8" fill="#fff" stroke="#ddd6fe"/>
+  <text x="536" y="40" font-size="12" font-weight="700" fill="#6d28d9">distill/</text>
+  <text x="536" y="58" font-size="10.5" fill="#6b7280">collect_evidence.py</text>
+  <text x="536" y="71" font-size="10.5" fill="#6b7280">refine_engine.sh ＋ prompt/</text>
+
+  <rect x="524" y="86" width="212" height="56" rx="8" fill="#fff" stroke="#ddd6fe"/>
+  <text x="536" y="106" font-size="12" font-weight="700" fill="#6d28d9">closed_loop.py</text>
+  <text x="536" y="124" font-size="10.5" fill="#6b7280">四臂對照（D6 欠帳）</text>
+  <text x="536" y="137" font-size="10.5" fill="#6b7280">＋ 8 題問題集</text>
+
+  <rect x="524" y="152" width="212" height="56" rx="8" fill="#fff" stroke="#fde68a"/>
+  <text x="536" y="172" font-size="12" font-weight="700" fill="#92400e">selftest.py</text>
+  <text x="536" y="190" font-size="10.5" fill="#92400e">假 prime-agent：27 項檢查</text>
+
+  <line x1="736" y1="83" x2="776" y2="83" stroke="#6b7280" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <rect x="778" y="46" width="212" height="76" rx="8" fill="#ecfdf5" stroke="#a7f3d0"/>
+  <text x="790" y="68" font-size="12" font-weight="700" fill="#065f46">下游</text>
+  <text x="790" y="88" font-size="10.5" fill="#065f46">prime-agent（記憶）</text>
+  <text x="790" y="104" font-size="10.5" fill="#065f46">pi-coding-agent（軌跡）</text>
+  <text x="790" y="118" font-size="10.5" fill="#065f46">決策品質（判斷）</text>
+
+  <text x="24" y="248" font-size="11" fill="#6b7280">紅線（不變）：</text>
+  <text x="24" y="266" font-size="11" fill="#6b7280">scripts/check/* 不得複製；extensions 是符號連結不是複本；</text>
+  <text x="24" y="282" font-size="11" fill="#6b7280">memories 與兩份 SFT 都是衍生物，手改會被下一次重生蓋掉。</text>
+</svg>
+</div>
+
+<table>
+<tr><th style="width:210px">產物</th><th>驗證方式</th><th>結果</th></tr>
+<tr><td><code>harness_engine/memories/engine/</code></td><td><code>build_memories.py --check</code></td>
+    <td class="ck">106 檔、無漂移、第一行皆 <code>[engine] &lt;rule&gt;</code></td></tr>
+<tr><td><code>harness_engine/extensions</code></td><td>符號連結解析 ＋ <code>--check</code> 擋「變成真目錄」</td>
+    <td class="ck">指向 <code>tb_loop/harness/extensions</code>（單一複本）</td></tr>
+<tr><td><code>sft_pi/</code></td><td>由 <code>traces</code> 產生，seed 固定可 diff</td>
+    <td class="ck">14 軌跡 / 38 tool call；每筆帶 <code>_provenance.reconstructed</code></td></tr>
+<tr><td><code>sft_prime/</code></td><td>同上</td>
+    <td class="ck">141 筆；排除 2 條 refuted ＋ 1 條 superseded</td></tr>
+<tr><td><code>distill/</code></td><td><code>distill/selftest.py</code>（假 prime-agent）</td>
+    <td class="ck">27 項檢查全過</td></tr>
+<tr><td><code>distill/closed_loop.py</code></td><td><code>--dry-run</code>（不需模型）</td>
+    <td class="ck">四臂 prompt 大小／sha256／逐對 diff</td></tr>
+</table>
+
+<h2>2. 三個設計決定，與它們拒絕掉的更簡單做法</h2>
+
+<h3>2.1 「能推導就不要維護」——這裡有四處是推導的</h3>
+
+<p>
+<code>harness_engine/memories/engine/</code> 不是手寫的目錄，是 <code>build_memories.py</code>
+從 <code>traces/lessons.jsonl</code> 產生的；兩份 SFT 從 <code>traces/*.jsonl</code> 產生；
+<code>extensions</code> 是指向而不是複本。理由是同一條：<b>手寫的集合會在下一次有人新增 record
+時被忘記</b>，而「忘記」的失效方式是安靜的——一個沒被注入的 memory 與一個從沒寫過的 memory，
+從外面看一模一樣。
+</p>
+
+<p>
+同一輪稍早在 <code>import_harness_snapshot.py</code> 上已經量過代價：它的 <code>SKILL_NAMES</code>
+與 <code>MEM_FILES</code> 是硬編碼清單，於是「新增一個 skill」與「單純過了一天」都會靜默漏掉。
+那是同一條原則的另一個實例，所以這裡一開始就用推導。
+</p>
+
+<h3>2.2 兩份投影共用<b>一個</b>渲染器</h3>
+
+<p>
+<code>sft_common.render_obs()</code> 是唯一把 episode 印成文字的地方。
+兩份投影若各自渲染，第一次改動就會分叉——而分叉之後兩份資料集都還是能建、都還是看起來對，
+只有被訓練出來的模型是錯的。這與 PLAN §6.2 的原始要求（推論時看到的判準與訓練時逐字一致）
+是同一件事。
+</p>
+
+<p>
+渲染時<b>把閘門一起印出來</b>：<code>usable_as_evidence</code> 與 <code>caveats</code> 就在數字旁邊。
+省掉它們等於教模型去引用那些 harness 自己拒絕引用的列。
+</p>
+
+<h3>2.3 「重建」而不是「重播」——而且每一筆都自己說出來</h3>
+
+<p>
+traces 裡沒有 tool call。<code>episode</code> 記的是某個臂產出了什麼，而它的 <code>arm.env</code>
+足以<b>重新生成</b>產生它的那條命令；但「會產生這個的命令」不等於「當時跑的命令」。
+所以每一筆 sample 都帶：
+</p>
+
+<pre><code>"_provenance": {"reconstructed": true, "from": "dec-20260915-…", "episodes": [...],
+                 "note": "the tool call is regenerated from the episode's arm.env; it is not a recorded command"}</code></pre>
+
+<p>
+一個把重建悄悄當成逐字稿呈現的資料集，與一個沒有附 build 指紋的數字是同一類錯誤。
+</p>
+
+<h2>3. 自測抓到的一個真缺陷（這一輪最有價值的產物）</h2>
+
+<p>
+<code>distill/selftest.py</code> 用一個假的 prime-agent 跑完整條蒸餾路徑。第一次跑，它在
+「追加後仍通過驗證」那一項失敗：
+</p>
+
+<pre><code>ERROR duplicate lesson_id eng-src-0009</code></pre>
+
+<p>
+根因不是測試寫壞。prompt 的證據區<b>先列出 106 個已經在使用的 lesson id</b>，而「你可以取用的
+下一個 id」被放在文件最末。假的 agent 從文件中第一個看到的 id 取用——<b>那正是任何讀者（模型或人）都會做的事</b>。所以真實情況不是「偶爾撞號」，是<b>撞號被設計成很可能</b>。
+</p>
+
+<table>
+<tr><th style="width:150px">版本</th><th>prompt 的手遞方式</th><th>後果</th></tr>
+<tr><td>v1</td><td>證據區列 106 個既有 id；可用 id 在文件最末，無標記</td>
+    <td><span class="tag t-red">實測撞號</span><code>duplicate lesson_id</code>，整批輸出被 validate 擋掉</td></tr>
+<tr><td>v2</td><td>可用 id 用 <code>NEXT-FREE-IDS</code> 哨兵包起來；明文禁止重用證據區的 id；
+        且指示文字<b>不得複製哨兵字面</b></td>
+    <td><span class="tag t-green">通過</span>；並留下回歸斷言</td></tr>
+</table>
+
+<p>
+留下的斷言裡有一條是<b>負向對照</b>：<em>文件中第一個出現的 id 必須不等於可用 id</em>。
+它把「這個 prompt 的設計缺陷」變成一個會自己復發警報的性質——否則下一次有人重排 prompt 的
+章節順序時，同一個缺陷會無聲回來。
+</p>
+
+<div class="box warn">
+  <p><span class="lbl">順帶抓到的第二個問題：儀器本身沒有隔離變數</span></p>
+  <p><code>closed_loop.py</code> 的第一版把「<code>e688f346e^</code> 的章程」對上「HEAD 的章程」，
+  而 <code>--dry-run</code> 的逐對 diff 顯示那一對是 <b>+35/−3 行</b>，其中大部分<b>不是</b>
+  D6 修訂，而是後來 E1 對 D1 的更新。⇒ 那一對同時量了兩件事。
+  <b>沒有隔離變數的一對不是比較，是兩個改動穿著同一個標籤。</b>
+  改成四臂後：A→B 是 <b>+18/−0 行</b>（D6 本體）、B→C 是 <b>+18/−4 行</b>（E1 的 D1）、
+  C→D 章程 <b>0 行</b>／memories <b>+23,785 B</b>。只有 A→B 回答欠帳。</p>
+</div>
+
+<h2>4. 環境：E1 欠的 smoke 現在跑到哪裡</h2>
+
+<p>
+E1 的驗收有兩項，當時都停在環境上。這一輪把環境備起來了：
+</p>
+
+<table>
+<tr><th style="width:230px">項目</th><th>結果</th></tr>
+<tr><td><code>tb_loop/.venv</code> ＋ <code>terminal-bench</code></td>
+    <td class="ck">✅ 裝好（Python 3.13.12）；<code>tb</code> CLI 存在</td></tr>
+<tr><td><b>驗收 1</b>：真的 <code>import</code></td>
+    <td class="ck">✅ <b>完全通過</b>。用真 venv 跑：<br>
+        <code>tb_loop.agents.{prime_agent_adapter,codebuff_api_agent,loopmoe_agent_adapter}</code>
+        全部 import 成功（<code>PrimeAgentAgent</code> 類別在）；<br>
+        對照組 <code>PYTHONPATH=tb_loop/自己</code> 仍正確報 <code>No module named 'tb_loop'</code></td></tr>
+<tr><td><b>驗收 2</b>：<code>tb run --n-tasks 1</code> smoke</td>
+    <td><span class="tag t-amber">跑到一個精確的點就停</span>。管線全程跑完（任務
+        <code>configure-git-webserver</code>、results.json 產出），卡在 Docker：
+        <code>RuntimeError: Error creating docker client … ConnectionRefusedError(61)</code>
+        at <code>docker_compose_manager.py:46</code>；紀錄裡 <code>failure_mode:
+        unknown_agent_error</code></td></tr>
+<tr><td>Docker 前置</td>
+    <td><span class="tag t-red">Docker.app 不存在</span>。只有 Homebrew 的 <code>docker</code>
+        client 本體。已改用 <code>colima</code> 起 daemon（<code>colima</code>／<code>lima</code>
+        都裝了），VM 映像下載中——這一輪結束時仍未完成</td></tr>
+<tr><td>模型端點</td>
+    <td><span class="tag t-red">無</span>。1234/1235/8080/11434/8000/5000/9000 全部無回應；
+        <code>~/.workbuddy/models.json</code> 是空的</td></tr>
+</table>
+
+<p>
+所以 E1 的驗收從「<b>沒跑，缺三個前置</b>」變成
+「<b>跑了，缺一個前置，而且它精確定位在 <code>docker_compose_manager.py:46</code></b>」。
+第二種說法可以被處理；第一種只能被等待。
+</p>
+
+<h2>5. 沒結清的兩件事（這是本文最重要的一節）</h2>
+
+<h3>5.1 D6 的閉環欠帳：機制已建，<b>模型半沒跑</b></h3>
+
+<p>
+<code>CONVENTIONS.md</code> §E 規定「改動憲章等於改動兩個 loop 的行為，每次改動都要走一次閉環對照」。
+D6 的 2026-09-16 修訂聲稱「改變不到任何執行時行為」——而 §E 自己就是那個主張的檢驗條款。
+</p>
+
+<div class="box bad">
+  <p><span class="lbl">不得宣稱已結清</span></p>
+  <p><code>closed_loop.py</code> 已建、四臂已驗、<code>--dry-run</code> 已通過。
+  但<strong>模型半沒有跑</strong>，所以那句「改變不到任何執行時行為」<strong>目前仍然沒有產物支撐</strong>。
+  PLAN §9 的原文要求是「在對照跑過並留有產物之前，不得聲稱 D6 修訂已結清」。</p>
+</div>
+
+<p>未跑的理由是具體的，而且它不是「做不到」：</p>
+
+<ol>
+  <li><b>本機沒有模型端點</b>（見 §4 的探測結果）。</li>
+  <li><b>而 <code>llama-server</code> 與本 repo 的 13.6 GB 模型都在</b>，所以技術上可以起一個。</li>
+  <li><b>但那會與另一個 session 正在進行的 prefill/decode 量測互相干擾。</b>
+      那個 session 此刻正在改 <code>src/llama.cpp/ggml/src/ggml-metal/*</code>，
+      而它的量測對 GPU 時脈與記憶體狀態極敏感（見 <code>CONVENTIONS</code> A16 的 τ 與熱暫態）。
+      起一個 13.6 GB 的 server 去回答 32 個問題，代價可能是對方整輪的數字作廢。</li>
+</ol>
+
+<p>
+<b>為了結清一條欠帳而弄壞另一條線的資料，不是結清。</b>
+要跑它的指令（在沒有併行量測的時間窗）：
+</p>
+
+<pre><code>CLOSED_LOOP_MODEL_CMD='&lt;讀 stdin 寫 stdout 的任何模型命令&gt;' \
+  python3 agent_harness/engine_loop/distill/closed_loop.py</code></pre>
+
+<p>
+跑完之後<b>還要人工核對</b> <code>closed_loop_questions.md</code> 的承重點表格——
+字串相同只是自動部分；兩份答案可以字面不同而判準相同，也可以字面相同而都漏掉承重點。
+</p>
+
+<p>
+另外一件事也因為 E2 而變了：§E 說「這份文件是 <code>sft_pi/</code> 的 system prompt 與
+<code>harness_engine/memories/engine/</code> 的注入來源」——<b>那兩個目錄以前不存在，現在存在了</b>。
+所以 D6 那句「改變不到任何執行時行為」不再能靠「沒有消費者」成立，它變成一個待驗證的斷言。
+</p>
+
+<h3>5.2 T1 沒接真實模型跑過</h3>
+
+<p>
+<code>refine_engine.sh</code> 的三條路徑（<code>--dry-run</code>、真跑、<code>--accept</code>）
+都在假 prime-agent 下驗過，但<strong>沒有任何一次輸出是模型產生的</strong>。
+<code>REFINE_ENGINE_MODEL</code> 刻意不給預設值——「用哪個模型蒸餾」是一個判斷，
+腳本猜一個會把一個沒被檢驗過的選擇偽裝成慣例。
+</p>
+
+<h2>6. 與另一個 session 的併行（這一輪的實際工作條件）</h2>
+
+<p>
+這一輪開始時另一個 session（<code>d3b97a6a</code>，<code>flashkv-devserver</code>）是
+<code>completed</code>；中途它回到 <code>working</code>，並在我工作期間推了三個 commit、
+改了 <code>scripts/check/decode_sweep.py</code>、<code>m123_oracle_gate.py</code>、
+<code>run_server.sh</code>，最後連 <code>src/llama.cpp/ggml/src/ggml-metal/*</code> 也在改。
+</p>
+
+<p>因此這一輪的 commit 只 stage 自己的路徑，不用 <code>git add -A</code>。兩件必須揭露的事：</p>
+
+<ul>
+  <li><b><code>MANIFEST.jsonl</code> 會吸收對方未提交的位元組。</b>它的 drift 是
+      <code>bytes</code>／<code>mtime</code> 逐檔比對，而對方那三個 CURATED 檔案（
+      <code>scripts/check/decode_sweep.py</code> 58,186→58,990 B、
+      <code>m123_oracle_gate.py</code> 37,418→38,802 B、
+      <code>run_server.sh</code> 115,956→118,540 B）此刻是髒的。
+      重生 manifest 就等於把它們的<b>中間狀態</b>寫進去。對方的收尾一向會再重生一次，
+      所以它會自我修正——但<b>這件事必須寫出來</b>，不然它看起來像是我的資料。</li>
+  <li><b>沒有起模型 server</b>，理由見 §5.1；這是刻意的，不是遺漏。</li>
+</ul>
+
+<h2>7. 為什麼值得做（而不是「又多了一個目錄」）</h2>
+
+<p>
+E2 之前，這個 harness 累積了 122 筆觀測、38 個判斷點、106 條規訓——而它們<b>只有人讀得懂</b>。
+E2 之後，同一批東西有三種機器可讀的形態，而三者都由 record 推導、都可 <code>--check</code>。
+</p>
+
+<p>
+更關鍵的是 §3：這一輪的產物裡最有價值的不是那 121 個檔案，是<b>一個被測試抓到的設計缺陷，
+以及把它變成回歸斷言的那一行</b>。如果沒有 <code>selftest.py</code>，那個 prompt 會一直
+「看起來能用」——它會跑、會 exit 0，只是蒸餾出來的東西每次都被 validate 擋掉，
+而人會以為是模型不好。
+</p>
+
+<div class="foot">
+  Agent Harness E2 交付文件 · 2026-09-16 ·
+  全文所有指令輸出皆為產出當時的實測值，未經平滑或估計 ·
+  E0／E1 的脈絡見 <a href="AGENT_HARNESS_TECH_ARCH_MILESTONE_WHITEPAPER_20260916.html"><code>AGENT_HARNESS_TECH_ARCH_MILESTONE_WHITEPAPER_20260916.html</code></a>
+  與 <a href="AGENT_HARNESS_E1_RESTRUCTURE_20260916.html"><code>AGENT_HARNESS_E1_RESTRUCTURE_20260916.html</code></a>。
+</div>
+
+</div>
+</body>
+</html>
