@@ -758,14 +758,30 @@ void ggml_metal_synchronize(ggml_metal_t ctx) {
                     GGML_LOG_ERROR("error: %s\n", [[cmd_buf error].localizedDescription UTF8String]);
                 }
 
+                // [CGC 2026-09-16] Record the failure BEFORE releasing anything. This call must stay
+                // above the release loop: cgc_metal_record_error() reads [cmd_buf error] to fill
+                // err_desc, and `cmd_buf` is released on BOTH lanes below -- explicitly as
+                // cmd_bufs_ext[i] (j == i) and again by removeAllObjects, which is exactly the two
+                // retains this array holds (addObject + the explicit retain at the add site). So by
+                // the time the old code reached it, cmd_buf was already deallocated and [cmd_buf error]
+                // was a use-after-free.
+                //
+                // Measured, not inferred: llama-server-2026-09-16-113207.ips says objc_msgSend <-
+                // ggml_metal_synchronize + 0x13e04 (= imageOffset 81412), and that offset is the cbz
+                // right after `bl _objc_msgSend$error`; disassembling the pre-fix lib shows the
+                // releases at 0x13d7c (loop) and 0x13db8 (removeAllObjects), that msgSend at 0x13e00.
+                // The damage was asymmetric: a command buffer failing with kIOGPU...OutOfMemory
+                // (status 5) during req2 of prefill250 killed the process with EXC_BAD_ACCESS instead
+                // of the intended CGC-METAL-FAIL abort, so the one fact -- GPU OOM -- never printed.
+                ctx->has_error = true;
+                cgc_metal_record_error(ctx, (int) i, (int) status, cmd_buf);
+
                 // release this and all remaining command buffers before returning
                 for (size_t j = i; j < ctx->cmd_bufs_ext.count; ++j) {
                     [ctx->cmd_bufs_ext[j] release];
                 }
                 [ctx->cmd_bufs_ext removeAllObjects];
 
-                ctx->has_error = true;
-                cgc_metal_record_error(ctx, (int) i, (int) status, cmd_buf);
                 if (ctx->fail_stop) {
                     GGML_ABORT("CGC-METAL-FAIL: extra command buffer %d failed (status %d, %s) - refusing to return stale output; "
                                "set CGC_METAL_FAIL_STOP=0 to override\n",

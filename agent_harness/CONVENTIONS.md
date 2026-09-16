@@ -575,6 +575,50 @@
 
 ---
 
+**B17｜錯誤處理路徑不得「先釋放、後記錄」。** 錯誤路徑裡任何用來填寫診斷資訊的物件，
+都必須在**任何** release 之前讀完。
+- 為什麼：`ggml-metal-context.m` 的 `cmd_bufs_ext` 失敗路徑舊碼是
+  「印 log → 釋放迴圈 → `removeAllObjects` → **才**呼叫 `cgc_metal_record_error(ctx, i, status, cmd_buf)`」，
+  而那個函式在 `status == 5` 時會讀 `[cmd_buf error]`。於是 Metal OOM 的結局不是它該有的
+  `CGC-METAL-FAIL` abort，而是 `EXC_BAD_ACCESS SIGSEGV`／`KERN_INVALID_ADDRESS at 0x10`
+  —— **唯一的線索（GPU out of memory）被自己的錯誤處理吃掉了**。
+- 這件事是**機械可證**的，不要停在「原始碼看起來是這樣」：崩潰報告的 `imageOffset` 就是位址。
+  `llama-server-2026-09-16-113207.ips` 的第 1 格是 `ggml_metal_synchronize + 612`、
+  `imageOffset = 81412 = 0x13E04`；把**當時那份二進位**（不是現在這份）反組譯，`0x13d7c`／`0x13db8`
+  是兩個 release、`0x13e00` 才是 `bl _objc_msgSend$error`、`0x13e04` 是它的返回位址。指令序即證據。
+- 檢查：(a) 錯誤路徑裡「讀物件」的每一行都要能指出它排在所有 release 之前；
+  (b) 保留**當時的二進位**當證據的前提 —— 重建會換檔名（見 B18），不保留就再也證不了；
+  (c) `EXC_BAD_ACCESS` 出現在錯誤處理裡時，先問「它遮蔽了什麼」，不要先問「什麼壞了」。
+- 見 lesson `eng-gate-0031`；`docs/PREFILL250_THERMAL_TRANSIENT_20260916.html` §11.10.4。
+
+**B18｜稽核「編譯期開關」要量**載入器實際映射的那個檔案**的字串存在性；不要量 mtime，也不要把檔名寫死。**
+- 為什麼：SONAME 內嵌 commit 數（`libllama-common.0.0.<N>.dylib`），**每次全量重建都會換檔名**，
+  舊檔留在原地變成孤兒；而載入器走的是 symlink 鏈
+  （`libllama-common.dylib → .0.dylib → .0.0.<N>.dylib`，用 `otool -L` 可查）。
+  一份把檔名寫死成 `0.0.239` 的證據頭，在重建後量到的是**沒有被載入的那個檔案**：
+  兩份報告都印「`MTP_SUPPORT` 字串 ABSENT」—— 與事實相反，而且錯誤方向剛好是「開關沒開」。
+- 另外：**mtime 不是一致性證據**。增量 `cmake --build` 只重編 CMake 自己判定為 stale 的 TU，
+  所以「A 的 `.o` 比 B 的原始碼舊」可以同時成立於一個完全一致的 build。
+  要判斷 stale 就去問 CMake，不要用 mtime 推。
+- 怎麼做：從 `otool -L` 反推 `@rpath` 載入集 → 逐一 `realpath` → 對**那個**檔案做 `strings -a`，
+  並印出**判準句**（`=> guarded 3/3, control present => MTP_SUPPORT=ON (compiled in)`）。
+  **control 字串（不受 guard 保護的那個）必須一起印**：control 也不在時，那是 artifact 壞了，
+  不是開關的判準。
+- 檢查：任何「開關是開／關」的結論，都要附上被量檔案的**解析後檔名**與 control 的結果；
+  缺任一個就不算量過。
+- **同族的第二個實例（2026-09-16 實測）：閘門的**檔案比對樣式**漏一種副檔名，等於對那個類別完全無效。**
+  `scripts/check_build_tracked.sh` 的檢查 8 用一個 `case` 樣式挑出「會被編進 binary 的 llama 原始碼」，
+  原本列了 `*src/*.cpp|*.h|*.c|*.mm|*.metal`——**獨漏 `.m`**（只列了 Objective-C++ 的 `.mm`）。
+  後果：改 `ggml/src/ggml-metal/ggml-metal-context.m`（本 repo 的 Metal 工作幾乎都在這個檔型裡）
+  會被判成 `8 無 llama 原始碼變更（僅 doc/腳本/產物）`——一個**假 PASS**，
+  而且它同時跳掉了「產物有沒有一起 staged」與「binary 是否比原始碼新」兩條。已補上 `*src/*.m`
+  （該 repo 只有 2 個 `.m`，都在 `ggml/src/ggml-metal/`，都編進 `libggml-metal`，所以樣式是精確的），
+  陽性對照：餵它一份含 `.m` 的假 staged 清單，`staged_src` 由 0 → 1。
+- 見 lesson `eng-gate-0032`；`Backup/run_req2_retest.sh` 的證據頭、`scripts/run_server.sh:325-341`、
+  `scripts/check_build_tracked.sh:384-397`。
+
+---
+
 ## C. 讀原始碼
 
 **C1｜變數名稱不等於語意。**

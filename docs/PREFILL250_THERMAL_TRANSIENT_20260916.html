@@ -2113,6 +2113,243 @@ PY</code></pre>
   複現：<code>bash Backup/run_mtp_crash_triage.sh</code>（約 15 分鐘，三臂共 9 次請求）。
 </p>
 
+<h3 id="s1110">11.10 追加（2026-09-16 11:2x–11:37）：① 開關 → ② 重建 → ③ 簿記。找到的是錯誤路徑裡的 use-after-free，不是 MTP</h3>
+
+<p>
+  §11.9 把範圍收斂到「崩潰要的是 <code>batch=ubatch=6144</code> 那一格」，並留下三件該做的事。
+  本節按①→②→③ 執行完，過程中<strong>三次推翻自己先前的讀法</strong>。
+  結論先講：<strong>崩潰的成因是 Metal 錯誤路徑裡的 use-after-free；它把「GPU out of memory」這個唯一可診斷的事實
+  遮蔽成不可診斷的 SIGSEGV。</strong>這個缺陷已修，<strong>OOM 本身沒有解</strong>。
+</p>
+
+<h4>11.10.1 ① <code>MTP_SUPPORT</code> 是編譯期開關，而它必須被打開（比 §11.9.5 的措辭更重）</h4>
+
+<p>
+  §11.9.5 只說「它沒被編進去」。往下追之後要說得更重：<code>MTP_SUPPORT</code> 在 macOS 上
+  <strong>沒有預設值</strong> —— <code>src/llama.cpp/CMakeLists.txt:63-72</code> 只在 <code>WIN32</code> 下
+  <code>add_compile_definitions(MTP_SUPPORT)</code>，macOS 這邊刻意不給，必須靠
+  <code>scripts/build_fork_llama.sh:34</code> 的 <code>MTP_SUPPORT="${MTP_SUPPORT:-ON}"</code>
+  與 <code>:57-58</code>／<code>:79</code> 把它傳進 CMake。
+  而 <code>run_server.sh:550-551</code> 的建置提示（<code>cmake -DLLAMA_BUILD_SERVER=ON</code>）正是<strong>漏掉它</strong>的那條路；
+  同一個 <code>CMakeCache.txt</code> 的 <code>GGML_BLAS</code>／<code>GGML_ACCELERATE</code>／
+  <code>GGML_CPU_REPACK</code>／<code>GGML_OPENMP</code> 全為 <code>ON</code>、<code>CMAKE_CXX_FLAGS</code> 為空，
+  與 <code>build_fork_llama.sh</code> 的要求不符 —— 這證明該 build dir 不是那支腳本的產物。
+</p>
+
+<p>少了它被編掉的<strong>不是除錯，是修正</strong>。受 <code>#ifdef MTP_SUPPORT</code> 保護的至少五處：</p>
+
+<ul>
+  <li><code>src/models/qwen35moe.cpp:733-738</code> —— <code>res-&gt;t_embd = cur;</code>，
+      把 post-<code>get_rows</code> 的隱藏狀態發佈成 <code>t_embd</code> 供 MTP draft head 讀。
+      <strong>我們跑的就是 Qwen3.6 MoE 的 MTP 路徑。</strong></li>
+  <li><code>common/speculative.cpp:1523-1531</code> —— M-RoPE catch-up 前的 <code>seq_rm</code>
+      （M-RoPE 不允許 <code>Y &lt;= X</code>）。</li>
+  <li><code>common/speculative.cpp:1544-1560</code> —— 標著 <code>[CGC MTP fix]</code> 的<strong>逐列安全讀取</strong>
+      （<code>llama_get_embeddings_nextn_ith</code> ＋ null 檢查）；<code>:1562</code> 的 <code>#else</code>
+      換成單次 bulk <code>memcpy</code>。</li>
+  <li><code>common/speculative.cpp:1692-1700</code>（draft 的 <code>seq_rm</code>）、
+      <code>:2561-2566</code>（<code>release_context()</code>）；<code>:1640-1642</code> 的 <code>#else</code> 拿掉 null 檢查。</li>
+</ul>
+
+<p>
+  正對照（<code>strings -a</code>）：未被 guard 的對照字串
+  <code>adding speculative implementation 'draft-mtp'</code> 兩次都在；
+  三個受 guard 的 <code>MTPDBG</code> 字串由 <strong>0/3 → 3/3</strong>。
+  另外 <code>scripts/run_server.sh:325-341</code> 新增了一道<strong>可見性守門</strong>：當 <code>MTP=1</code>
+  而載入的 <code>libllama-common.0.dylib</code> 缺少 <code>MTPDBG mtp_ctor</code> 標記時出 warning。
+  判準刻意做成兩面都能分辨（可以區分「閘門沒跑」與「跑過且合格」）：好 build 上 <strong>0 warning</strong>，
+  對舊 dylib 標記數為 <strong>0</strong>（會 warning）、對現行 dylib 為 <strong>3</strong>（不 warning）。
+</p>
+
+<h4>11.10.2 ② 全量重建 —— 以及 SONAME 內嵌 commit 數造成的一次假陰性</h4>
+
+<p>
+  重建只改一個變數：<code>cmake -B build -DCMAKE_CXX_FLAGS="-DMTP_SUPPORT"</code>（其餘 cache 值全部保留），
+  再全量重建 <strong>411 個 TU／117 次 link／0 error／約 2 分 02 秒</strong>。
+  <strong>沒有</strong>動 <code>build_fork_llama.sh</code> 的其餘設定（BLAS/ACCELERATE/REPACK 仍 <code>ON</code>），
+  所以不能宣稱這個 build 等於專案自己的 Release 設定。
+</p>
+
+<p>
+  這裡踩到一個會直接產生<strong>假陰性</strong>的陷阱：SONAME 內嵌了 commit 數
+  （<code>libllama-common.0.0.&lt;N&gt;.dylib</code>），所以<strong>每次全量重建都會換檔名</strong>，
+  舊檔留在原地變成孤兒；而載入器走的是 symlink 鏈
+  （<code>libllama-common.dylib → libllama-common.0.dylib → libllama-common.0.0.275.dylib</code>，
+  已用 <code>otool -L</code> 確認）。重測腳本第一版的證據頭<strong>把檔名寫死</strong>成 <code>0.0.239</code>，
+  於是量到的是<strong>沒有被載入的那個檔案</strong>：兩份報告都印
+  <code>ABSENT  GUARDED by MTP_SUPPORT</code>，而這個讀法正好是「MTP 還是沒編進去」——
+  與事實相反。已改成從 <code>otool -L</code> 反推真實載入集、逐一 realpath，並印出
+  <code>=&gt; guarded 3/3, control present  =&gt; MTP_SUPPORT=ON (compiled in)</code> 這種判準句。
+</p>
+
+<h4>11.10.3 ③ 簿記稽核：<code>cmd_bufs_ext</code> 與 <code>cmd_bufs[]</code> 在紙上是平衡的（因此沒有改動簿記）</h4>
+
+<p>逐一複查兩個容器的 retain/release 配對，結果<strong>全部平衡</strong>，所以本輪<strong>沒有</strong>改動簿記：</p>
+
+<ul>
+  <li><code>cmd_bufs_ext</code> 有五個 add 點（<code>:841</code>、<code>:888</code>、<code>:929</code>、<code>:1203</code>、<code>:1219</code>）。
+      每個 add 點都同時有 <code>addObject:</code>（retain #1）與顯式 <code>[cmd_buf retain]</code>（retain #2）；
+      正常路徑的解構也正好是每個元素一次 <code>[cmd_buf release]</code>（<code>:793</code>）
+      ＋ 一次 <code>removeAllObjects</code>（<code>:796</code>）＝ 2 次。</li>
+  <li><code>cmd_bufs[]</code> 的槽位在 <code>:1018-1076</code> 賦值：<code>:1020/:1021</code>（<code>n_cb</code> 槽）
+      與 <code>:1048/:1049</code>（<code>0..n_cb-1</code>）都是「先 retain、再 release 舊值、再存」。
+      編碼<strong>先於</strong>賦值，所以 slot 0 的 <code>encode_async</code>（<code>:1025-1026</code>）讀到
+      <strong>上一段的</strong> <code>obj</code>；這與 ext 陣列錯開，方向是只會 under-wait（安全側）。
+      於是「某一格在釋放後沒歸零」這個假設在紙上<strong>不成立</strong>。</li>
+</ul>
+
+<p>
+  仍<strong>未修</strong>的一項（本輪只做稽核，刻意不動它）：<code>cmd_buf_last</code> 的懸置窗口。
+  <code>ggml_metal_graph_compute</code> 開頭 <code>:985-988</code> 的「先 <code>waitUntilCompleted</code>
+  再把 <code>cmd_buf_last = nil</code>」被關在 <code>if (use_capture)</code>（<code>:981</code>）裡，正常路徑不執行；
+  而 <code>ggml_metal_synchronize</code> 的 <code>:711-714</code> 會呼叫
+  <code>cgc_wait_cmd_buf(ctx-&gt;cmd_buf_last)</code>，內部對它送 <code>[cmd_buf status]</code>／
+  <code>[cmd_buf waitUntilCompleted]</code>。它是 <code>static</code>（會被內聯），所以堆疊上顯示成 <code>+0</code>。
+</p>
+
+<h4>11.10.4 根因：錯誤處理裡「先釋放、後記錄」，而崩潰位址就在那一行</h4>
+
+<p>
+  §11.9.4 猜的是 <code>cmd_bufs[]</code> 某一格；<strong>猜錯了</strong>。真正的崩潰點在
+  <code>ggml-metal-context.m</code> 的 <code>cmd_bufs_ext</code> <strong>失敗路徑</strong>：
+  舊碼的順序是「印 log →釋放迴圈（每個元素一次 <code>release</code>）→ <code>removeAllObjects</code>（第二次）
+  →<strong>才</strong>呼叫 <code>cgc_metal_record_error(ctx, i, status, cmd_buf)</code>」，
+  而 <code>cgc_metal_record_error</code>（<code>:155-178</code>）在 <code>status == 5</code> 時會讀
+  <code>[cmd_buf error]</code> —— 也就是<strong>對一個已經被釋放兩次的 ObjC 物件送訊息</strong>。
+</p>
+
+<p>
+  這是<strong>機械證據</strong>，不是從原始碼推的。崩潰報告 <code>113207</code> 的第 0／1 格是
+  <code>objc_msgSend + 32</code> ← <code>ggml_metal_synchronize + 612</code>，
+  其 <code>imageOffset = 81412 = 0x13E04</code>；把<strong>當時那份舊 <code>libggml-metal</code></strong>
+  （保留在 <code>Backup/pre_mtp_rebuild_20260916/</code>）拿去反組譯，那一段是：
+</p>
+
+<pre><code>0x13d5c  bl   _objc_msgSend$error                 ; 分支 (A)：印 [cmd_buf error].localizedDescription
+0x13d7c  ...  release loop over cmd_bufs_ext       ; (B) objectAtIndexedSubscript: + _objc_release ×N
+0x13db8  bl   _objc_msgSend$removeAllObjects       ; (C) 每個元素的第二次 release
+0x13dc0  strb w8, [x19, #0x5b0]                    ; (D) 內聯進來的 cgc_metal_record_error 起點：
+0x13de8  str  x8, [x19, #0x5c8]                    ;     寫 has_error / err_* 簿記
+0x13e00  bl   _objc_msgSend$error                  ;     第二次 [cmd_buf error]  &lt;-- 已經太晚
+0x13e04  cbz  x0, 0x13e28                          ; &lt;-- 崩潰返回位址（KERN_INVALID_ADDRESS at 0x10）</code></pre>
+
+<p>
+  也就是說：<strong>在舊二進位的指令順序裡，(B)(C) 兩個 release 確實排在 (D) 的
+  <code>[cmd_buf error]</code> 之前</strong>。這讓「先釋放、後記錄」從假設變成事實。
+  修正把記錄移到釋放之前（也把 <code>ctx-&gt;has_error = true;</code> 一起前移），
+  使這條路徑能走到 <code>:785-789</code> 的 <code>GGML_ABORT</code>。
+</p>
+
+<h4>11.10.5 修前／修後：同一份 6144 臂，而且是一對<strong>單變數</strong>對照</h4>
+
+<p>
+  兩次 run 用同一個 profile（<code>prefill250</code>，其他都不設），A11 配置指紋
+  <code>749ce190c3d2f47727080efb7467fd49</code> 相同。崩潰報告自己記錄了每個 image 的 UUID，
+  逐一比對 <code>113207</code>（修前）與 <code>113649</code>（修後）：
+</p>
+
+<table>
+  <tr><th>image</th><th>修前 <code>113207</code></th><th>修後 <code>113649</code></th></tr>
+  <tr><td><code>llama-server</code></td><td>相同</td><td>相同</td></tr>
+  <tr><td><code>libllama-server-impl</code></td><td>相同</td><td>相同</td></tr>
+  <tr><td><code>libllama-common.0.0.275</code></td><td><code>4ddc4e5d…</code></td><td><code>4ddc4e5d…</code></td></tr>
+  <tr><td><code>libllama.0.0.275</code>／<code>libmtmd.0.0.275</code></td><td>相同</td><td>相同</td></tr>
+  <tr><td><code>libggml-base</code>／<code>libggml</code>／<code>-cpu</code>／<code>-blas</code></td><td>相同</td><td>相同</td></tr>
+  <tr><td><strong><code>libggml-metal.0.19.0</code></strong></td>
+      <td><code>a2188b93…</code>（舊 <code>.m</code>）</td>
+      <td><strong><code>4cc6f293…</code>（新 <code>.m</code>）</strong></td></tr>
+</table>
+
+<p>
+  <strong>兩個 run 之間唯一不同的程式碼 image 就是 <code>libggml-metal</code>。</strong>
+  這是本節第二個自我更正：跑之前我以為這一對混淆了「<code>.m</code> 的修正」與
+  「<code>MTP_SUPPORT</code> 被打開」兩個變數；UUID 比對顯示 <code>MTP_SUPPORT</code>
+  <strong>兩次都是開的</strong>（兩次都載入 <code>4ddc4e5d…</code>），所以<strong>沒有混淆</strong>。
+  順帶把 11.10.2 的假陰性範圍講清楚：那份寫死檔名的證據頭不只是「修後」那一份錯，
+  <strong>修前那一份也錯</strong> —— 它當時就宣稱 MTP 沒編，而事實是已經編了。
+</p>
+
+<p>
+  這也解釋了一件看起來矛盾的事：修前那次的呼叫端是
+  <code>llama_get_embeddings_nextn_ith</code>（<code>speculative.cpp:1548</code>，
+  <strong>受 guard 保護的那條「安全」路徑</strong>；反組譯可確認 <code>draft_mtp::process</code> 內對
+  <code>_ith</code> 的呼叫在 <code>+680</code>、返回位址 <code>+684</code>，與堆疊相符）。
+  對照之下 §11.9 的三臂崩潰走的是 <code>+412</code>，即 <code>#else</code> 的 bulk <code>:1562</code>。
+  兩者都崩在同一個地方（<code>ggml_metal_synchronize</code> 的錯誤路徑），
+  所以 <strong>MTP 的修正有沒有編進去，都不影響這次崩潰 —— 它崩在錯誤處理，不在讀取。</strong>
+</p>
+
+<table>
+  <tr><th></th><th>修前 <code>113207</code></th><th>修後 <code>113649</code></th></tr>
+  <tr><td>exception</td>
+      <td><code>EXC_BAD_ACCESS SIGSEGV</code>／<code>KERN_INVALID_ADDRESS at 0x10</code></td>
+      <td><code>EXC_CRASH SIGABRT</code>／<code>Abort trap: 6</code></td></tr>
+  <tr><td>頂端堆疊</td><td><code>objc_msgSend ← ggml_metal_synchronize</code></td>
+      <td><code>abort ← ggml_abort ← ggml_metal_synchronize + 1168</code></td></tr>
+  <tr><td>失敗簽名</td><td colspan="2"><code>command buffer 1 failed with status 5</code> ＋
+      <code>Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)</code>（兩次逐字相同）</td></tr>
+  <tr><td>日誌</td><td>只有上面兩行，<strong>沒有</strong> <code>CGC-METAL-FAIL</code></td>
+      <td>多出 <code>CGC-METAL-FAIL: command buffer 1 failed with status 5 (compute #369, fail-stop) desc=Insufficient Memory (…OutOfMemory)</code>
+      與 <code>ggml-metal-context.m:788: CGC-METAL-FAIL: extra command buffer 1 failed (status 5, …)</code></td></tr>
+  <tr><td>req1</td><td><code>141.95 t/s</code>（<code>20239.0 ms</code>）</td><td><code>140.26 t/s</code>（<code>20483.4 ms</code>）</td></tr>
+  <tr><td>req2</td><td>27.3 s 後連線中斷</td><td>30.2 s 後連線中斷</td></tr>
+</table>
+
+<p>
+  值得注意的是兩次的請求形狀完全一樣：<code>req1</code> 跑完並 <code>release</code>，
+  <code>req2</code> 在印出兩行 <code>CGC-PREFILL-STREAM</code> 之後<strong>沒有任何 <code>print_timing</code></strong>
+  就死。死點仍在 req2 的 prefill 開頭；本節<strong>沒有</strong>解釋 OOM 為什麼是 req2 而不是 req1。
+</p>
+
+<h4>11.10.6 D5 數值閘門：這個修正對成功路徑是 no-op</h4>
+
+<p>
+  <code>--tag metalerrfix</code>（11:37，與修後那一臂同一組產物）：M1 數值等同 <strong>9/9</strong>、
+  M2 argmax 一致 <strong>9/9</strong>、M3 top-k 集合一致 <strong>9/9</strong>、<code>fnv1a64</code> <strong>9/9</strong>、
+  cross-tab <code>9/0/0/0</code>、<code>common: 9  only_A: 0  only_B: 0</code>。
+  改了錯誤路徑而沒有動到任何成功的 decode 結果，正是這個修正該有的性質。
+</p>
+
+<h4>11.10.7 這一節能說與不能說</h4>
+
+<p class="small">
+  <strong>能說。</strong>(1) 少了 <code>-DMTP_SUPPORT</code> 被編掉的是修正（<code>qwen35moe.cpp:737</code> 的
+  <code>t_embd</code> 發佈與四處 <code>[CGC MTP fix]</code>），不只是除錯；現在它是開的，
+  而且「沒開」不會再靜默通過（11.10.1 的守門，兩面都量過）。
+  (2) Metal 錯誤路徑裡的 use-after-free 是真的：舊二進位的指令序（<code>0x13d7c-0x13db8</code> 先釋放、
+  <code>0x13e00</code> 才 <code>[cmd_buf error]</code>）與崩潰返回位址 <code>0x13e04</code> 指向同一處。
+  (3) 修好之後失敗簽名逐字相同而結局不同：不可診斷的 SIGSEGV 變成精確、可在原始碼定位的
+  <code>CGC-METAL-FAIL … ggml-metal-context.m:788</code>；而且這一對是單變數對照（UUID 比對）。
+  (4) 這個修正對成功路徑是 no-op（D5 9/9）。
+</p>
+
+<p class="small">
+  <strong>不能說。</strong>(1) <strong>OOM 本身沒有解。</strong>本節只讓它變得可診斷；
+  <code>req2</code> 依然死在 prefill 開頭，OOM 的成因本節沒有處理。測試期間機器本來就有記憶體壓力：
+  <code>sysctl vm.swapusage</code> 在 11:20 為 <code>4096M total / 2955M used</code>、11:35 為
+  <code>5120M total / 3900M used</code>，<code>vm_stat</code> 的 free 曾降到 <code>1141M</code>；
+  CGC 自己的診斷也指向「lower Metal memory pressure (expert cache / -ub)」，
+  而 <code>--ngl 99</code> 讓 <code>common_fit_params</code> 的 fit 被跳過
+  （日誌：<code>failed to fit params to free device memory: n_gpu_layers already set by user to 99</code>）。
+  (2) 不能把 <code>cmd_buf_last</code> 的懸置窗口算成已處理（11.10.3 只稽核、未改）。
+  (3) 不能說這個 build 等於專案自己的 Release 設定（<code>GGML_BLAS/ACCELERATE/CPU_REPACK</code>
+  未依 <code>build_fork_llama.sh</code> 的要求關掉）。
+  (4) §11.9.5 的述句有<strong>時間範圍</strong>：它對當時的產物（<code>libllama-common.0.0.239</code>、
+  UUID <code>3e23c1e0…</code>，即 <code>103648</code>／<code>111232</code> 兩份報告載入的那個）成立；
+  自 11:30 起載入的是 <code>0.0.275</code>（<code>4ddc4e5d…</code>，MTP 開），該述句<strong>不再適用於現況</strong>。
+</p>
+
+<p class="small">
+  複現：<code>bash Backup/run_req2_retest.sh</code>（單臂 prefill250，約 1.5 分鐘）。
+  證據：<code>Backup/cgc_logs/req2retest_20260916_113028.txt</code>（修前）、
+  <code>…_113517.txt</code>（修後）、<code>llama_server_20260916_113029.log</code>、
+  <code>llama_server_20260916_113518.log</code>、
+  <code>~/Library/Logs/DiagnosticReports/llama-server-2026-09-16-113207.ips</code>、
+  <code>…-113649.ips</code>、<code>Backup/m123_oracle_gate/summary_metalerrfix.json</code>；
+  反組譯對象保留在 <code>Backup/pre_mtp_rebuild_20260916/libggml-metal.0.19.0.dylib</code>
+  （md5 <code>b28c011055fa2113ddce56453105c71a</code>）。
+</p>
+
 </div>
 </body>
 </html>

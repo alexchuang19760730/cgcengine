@@ -322,6 +322,25 @@ case "$SERVER_PROFILE" in
         ;;
 esac
 
+# [2026-09-16] MTP_SUPPORT 是**編譯期**開關，不是執行期選項，所以「MTP 跑得起來」推不出
+# 「MTP 是照原始碼那條路在跑」。少了 -DMTP_SUPPORT 時照樣會載入 draft context、draft acceptance
+# 照樣可以是 1.00000，但被編掉的是三處 [CGC MTP fix]（M-RoPE 的 seq_rm、逐列安全讀取）與
+# src/models/qwen35moe.cpp 的 res->t_embd 發佈 —— 也就是我們會在原始碼描述之外的路徑上除錯。
+# 實測（同一個 tree，只差這一個 define）：MTP_SUPPORT 專屬字串 0/3 → 3/3。
+# 這裡把「產物與原始碼不一致」變成看得見的：MTP 開著就檢查載入中的那份 libllama-common。
+# 判準刻意選在「閘門能不能分辨自己有沒有效」上（CONVENTIONS B13）：不只看得到 absent，
+# 也要在不該 warning 的時候不 warning，否則它會被當成背景噪音而失效。
+if [ "$SERVER_MTP" = "1" ]; then
+    _cgc_common="$(dirname "$BIN")/libllama-common.0.dylib"
+    if [ -e "$_cgc_common" ] && ! strings -a "$_cgc_common" 2>/dev/null | grep -q 'MTPDBG mtp_ctor'; then
+        echo "warning: MTP=1 但 $(basename "$_cgc_common") 沒有 -DMTP_SUPPORT 編出來的程式碼。" >&2
+        echo "         MTP 路徑的 [CGC MTP fix] 與 qwen35moe 的 t_embd 都會被編掉，產物與原始碼不一致。" >&2
+        echo "         重建：cmake -B src/llama.cpp/build -DLLAMA_BUILD_SERVER=ON -DCMAKE_CXX_FLAGS=-DMTP_SUPPORT" >&2
+        echo "               cmake --build src/llama.cpp/build -j8" >&2
+    fi
+    unset _cgc_common
+fi
+
 case "$SERVER_CHAT_AB" in
     ''|off) ;;
     healthy-prefix)
@@ -526,7 +545,13 @@ cgc_apply_prod_memory_fallback() {
     fi
 }
 
-[ -x "$BIN" ] || { echo "error: llama-server 不存在：${BIN}（cmake -DLLAMA_BUILD_SERVER=ON 後構建）" >&2; exit 1; }
+[ -x "$BIN" ] || {
+    echo "error: llama-server 不存在：${BIN}" >&2
+    echo "  構建（MTP 要開就必須帶 -DMTP_SUPPORT；少了它 MTP 仍能跑，但被編掉的是修正，不是除錯）：" >&2
+    echo "    cmake -B src/llama.cpp/build -DLLAMA_BUILD_SERVER=ON -DCMAKE_CXX_FLAGS=-DMTP_SUPPORT" >&2
+    echo "    cmake --build src/llama.cpp/build -j8" >&2
+    exit 1
+}
 if [ ! -f "$MODEL" ]; then
     echo "error: model not found: $MODEL" >&2
     echo "" >&2

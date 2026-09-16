@@ -381,11 +381,16 @@ if [ "$HAVE_BIN_DIR" = 1 ]; then
     if [ -z "$STAGED_FILES" ]; then
         skip "無 staged 檔案（手動跑 hook 時屬正常；commit 時必有 staged）"
     else
-        # staged 的 llama 原始碼（src/ 與 examples/ 下的 .cpp/.h/.c/.mm/.metal — 都編進 binary）
+        # staged 的 llama 原始碼（src/ 與 examples/ 下的 .cpp/.h/.c/.m/.mm/.metal — 都編進 binary）
+        # [CGC 2026-09-16] `.m` 原本漏了，只列了 `.mm`。Objective-C（不是 ++）在這裡不是特例：
+        # ggml/src/ggml-metal/ 的 ggml-metal-context.m 與 ggml-metal-device.m 都編進 libggml-metal，
+        # 而這個 repo 的 Metal 工作幾乎都落在 .m 裡。漏掉的後果是改了 .m 會被判成
+        # 「8 無 llama 原始碼變更（僅 doc/腳本/產物）」—— 一個 PASS，但那個 PASS 是假的，
+        # 而且正好把「有沒有重建產物」與「binary 是否比原始碼新」兩條一起跳過（B7 同族）。
         staged_src=()
         while IFS= read -r f; do
             case "$f" in
-                *src/*.cpp|*src/*.h|*src/*.c|*src/*.mm|*src/*.metal|*examples/*.cpp|*examples/*.h)
+                *src/*.cpp|*src/*.h|*src/*.c|*src/*.m|*src/*.mm|*src/*.metal|*examples/*.cpp|*examples/*.h)
                     [ -f "$REPO_ROOT/$f" ] && staged_src+=("$f") ;;
             esac
         done <<< "$STAGED_FILES"
