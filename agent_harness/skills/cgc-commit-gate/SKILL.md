@@ -6,9 +6,9 @@ agent_created: true
 
 > **這是快照，不是權威副本。**
 > 權威位置：`~/.workbuddy/skills/cgc-commit-gate/SKILL.md`（由 host 持續寫入）。
-> 本檔於 2026-09-16 手動複製進 repo，唯一目的是讓 `agent_harness/` 底下的內容
-> 能被 `agent_harness/scripts/auto_git_push.ps1` 定時推送；原檔改了這裡**不會**自動跟上。
-> 要改 skill 請改原檔，再重跑 `Backup/import_harness_snapshot.py`。
+> 本檔於 2026-09-16 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
+> 底下的內容能被 `agent_harness/scripts/auto_git_push.ps1` 定時推送；原檔改了這裡**不會**自動跟上。
+> 要改 skill 請改原檔，再重跑 `python3 agent_harness/scripts/import_harness_snapshot.py`。
 
 # flashkv-devserver 提交閘門
 
@@ -474,8 +474,18 @@ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
 `source_sha256` / `source_bytes` / `source_mtime`。**兩個 `--check` 都不驗快照。**
 
 **重生順序（比 §3.1 多一層）**：
-改記憶／skill 原檔 → `Backup/import_harness_snapshot.py`（刷新快照）→ `build_memory_index.py`
+改記憶／skill 原檔 → `agent_harness/scripts/import_harness_snapshot.py`（刷新快照）→ `build_memory_index.py`
 → `index_assets.py` → commit。
+
+**匯入器已在版控裡，而且清單是推導的（2026-09-16 改）。** 它原本叫
+`Backup/import_harness_snapshot.py`——`Backup/` 被 `.gitignore:396` 排除，所以**clone 出來的機器上
+根本沒有這支腳本**；而且它用兩個硬編碼清單（`SKILL_NAMES`、`MEM_FILES`）決定要匯入什麼，
+所以新增一個 skill、或**單純過了一天**，那份快照都會被**靜默**漏掉（不是報錯，是
+「它不在 `SNAPSHOT.jsonl` 裡」，與「那個檔案不存在」同形）。
+現在它住 `agent_harness/scripts/`（與 `auto_git_push.ps1` 同目錄——整條線就是「跨機器搬運」），
+glob 兩個來源目錄，並在**空清單時拒跑**（空的 `SNAPSHOT.jsonl` 與「探索步驟壞了」同形）。
+⇒ 新增 skill **不需要改任何清單**；但若你看到它印出的 `discovered N skill(s)` 少了誰，
+那才是訊號。
 
 **skill 原檔一改，快照就 stale ⇒ 不要讓它變成第二個 commit。** 把「改 skill」與「刷新快照」放在
 **同一個** commit。（若 skill 是在交付 commit **之後**才被改的，那就難免要多一個 snapshot commit。）

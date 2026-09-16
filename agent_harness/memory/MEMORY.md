@@ -2,8 +2,8 @@
 
 > **這是快照，不是權威副本。**
 > 權威位置：`.workbuddy/memory/MEMORY.md`（由 host 持續寫入）。
-> 本檔於 2026-09-16 手動複製進 repo，唯一目的是讓 `agent_harness/` 底下的內容
-> 能被 `agent_harness/scripts/auto_git_push.ps1` 定時推送；原檔改了這裡**不會**自動跟上。
+> 本檔於 2026-09-16 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
+> 底下的內容能被 `agent_harness/scripts/auto_git_push.ps1` 定時推送；原檔改了這裡**不會**自動跟上。
 > 索引與漂移檢查見 `agent_harness/engine_loop/memory/INDEX.jsonl`。
 
 llama.cpp 的 CGC fork：Metal + **expert cache pool**（專家權重常駐 SSD→池，decode 為 IO-bound）。
@@ -58,8 +58,12 @@ python3 scripts/check/m123_oracle_gate.py --tag <標籤>          # D5，自己�
 - **D6 修訂（2026-09-16）**：原 D6「記憶只由索引進入 loop，不複製」仍管 **loop 讀什麼**；另承認
   `agent_harness/memory/`（3 檔）＋ `agent_harness/skills/`（3 skill）是**非權威 dated 快照**，
   唯一用途是跨機器搬運——`agent_harness/scripts/auto_git_push.ps1` 會 `git add agent_harness` 後 push，
-  而**索引運送的是指標、到不了那條線**。兩者要一起重生：先 `Backup/import_harness_snapshot.py`，後索引。
+  而**索引運送的是指標、到不了那條線**。兩者要一起重生：先
+  `agent_harness/scripts/import_harness_snapshot.py`，後索引。
   **兩個 `--check` 都不驗快照。** `eng-bound-0004`。
+  （匯入器 2026-09-16 從 `Backup/import_harness_snapshot.py` 搬進版控——它原本在 `.gitignore:396`
+  排除的 `Backup/` 底下，而「一個要跨機器的機制，自己得先能跨機器」；同時兩個硬編碼清單
+  `SKILL_NAMES`／`MEM_FILES` 改成 glob，所以新增 skill 或新的一天都不必改清單。）
 - **E2 欠帳（已認領，別讓它變無主）**：§E 要求改 CONVENTIONS.md 走一次 §6.3 閉環對照；D6 修訂當天
   `sft_pi/` 與 `harness_engine/` **都還不存在** ⇒ 改不到任何執行時行為，但對照**尚未執行**。
   E2 一建立那兩個目錄，欠帳就變成可執行、可失敗的檢查。記在三處：**PLAN §9 E2 欄** ＋

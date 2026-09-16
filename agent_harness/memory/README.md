@@ -24,7 +24,7 @@
 快照**不會自動更新**。要更新就重跑：
 
 ```sh
-python3 Backup/import_harness_snapshot.py                        # 先：更新快照 + SNAPSHOT.jsonl
+python3 agent_harness/scripts/import_harness_snapshot.py          # 先：更新快照 + SNAPSHOT.jsonl
 python3 agent_harness/engine_loop/memory/build_memory_index.py   # 後：更新索引
 ```
 

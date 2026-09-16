@@ -6,9 +6,9 @@ agent_created: true
 
 > **這是快照，不是權威副本。**
 > 權威位置：`~/.workbuddy/skills/cgc-whitepaper-delivery/SKILL.md`（由 host 持續寫入）。
-> 本檔於 2026-09-16 手動複製進 repo，唯一目的是讓 `agent_harness/` 底下的內容
-> 能被 `agent_harness/scripts/auto_git_push.ps1` 定時推送；原檔改了這裡**不會**自動跟上。
-> 要改 skill 請改原檔，再重跑 `Backup/import_harness_snapshot.py`。
+> 本檔於 2026-09-16 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
+> 底下的內容能被 `agent_harness/scripts/auto_git_push.ps1` 定時推送；原檔改了這裡**不會**自動跟上。
+> 要改 skill 請改原檔，再重跑 `python3 agent_harness/scripts/import_harness_snapshot.py`。
 
 # flashkv-devserver 技術白皮書交付
 
@@ -190,9 +190,13 @@ PREFILL250_DECODE25_WHITEPAPER_20260915_2355.html
 
 - 寫進 `.workbuddy/memory/` 會觸發 INDEX/MANIFEST 的重生義務（D6）。
 - `agent_harness/memory/` 與 `agent_harness/skills/` 的 dated 快照**只能**由
-  `python3 Backup/import_harness_snapshot.py` 產生——手動新增會造出一份沒有
+  `python3 agent_harness/scripts/import_harness_snapshot.py` 產生——手動新增會造出一份沒有
   `SNAPSHOT.jsonl` 對應列的檔案，那正是 D6 要防的「第二個權威來源」。
 - 要讓白皮書／筆記跟 repo 走，就放 `docs/`（會被 commit）；要跨機器帶記憶，跑匯入腳本。
+- 那支腳本 2026-09-16 從 `Backup/import_harness_snapshot.py` 搬到版控裡（`Backup/` 被
+  `.gitignore:396` 排除 ⇒ 舊位置上的東西**進不了 commit**，clone 出來的機器上沒有它）。
+  同一輪把它的兩個硬編碼清單改成 glob：**新增 skill 或新增一天的日誌都不需要改任何清單**。
+  **寫白皮書時要引用正確的路徑**，否則你就成了那個「把死路徑抄進文件」的人。
 
 ### 陷阱四：`index_assets.py --check` 的結論行會被說明文字包住
 
@@ -299,6 +303,24 @@ EOF
 grep -oE '(docs|scripts|agent_harness|Backup)/[A-Za-z0-9_./-]+' docs/<你的檔名>.html | sort -u | while read f; do [ -e "$f" ] || echo "MISSING: $f"; done
 
 # c) 現場閘門四條（見 §3），把輸出原文貼進白皮書
+
+# d) markdown 殘留掃描（2026-09-16 實測：三處 **粗體** 與四處 `反引號` 直接寫進了 HTML，
+#    會原樣顯示。這是「用 markdown 的習慣寫 HTML」的必然產物，不是粗心。）
+python3 - <<'EOF'
+import re
+p='docs/<你的檔名>.html'; s=open(p,encoding='utf-8').read()
+chk=re.sub(r'<(pre|code)\b[^>]*>.*?</\1>','',s,flags=re.S)   # pre/code 內原樣，不看
+print('markdown 殘留:', re.findall(r'\*\*[^*\n]{1,80}\*\*|`[^`\n]{1,80}`', chk) or '無')
+EOF
+# 修法（保留 pre/code 區塊，其餘把 **X** -> <b>X</b>、`X` -> <code>X</code>）：
+#   逐段掃 <(pre|code)\b[^>]*>.*?</\1>，只對「區塊外」的文字做替換。
+#   注意：**「含 <code> 的長句」** 這種巢狀情況正則抓不到（我在 E1 漏了一個），
+#   所以掃完要人工看一眼殘留清單，不要只看它印「無」。
+
+# e) `<pre>` 區塊內的 `<` 與 `>` 必須轉義
+#    實測：`TB_REPO_ROOT = <repo>` 讓解析器把 <repo> 當成一個永不閉合的標籤，
+#    (a) 會回報 unclosed [html, body, div, pre, code] —— 症狀與「標籤真的少了一個」一模一樣。
+#    寫成 &lt;repo root&gt;。
 ```
 
 自檢清單：
@@ -311,6 +333,24 @@ grep -oE '(docs|scripts|agent_harness|Backup)/[A-Za-z0-9_./-]+' docs/<你的檔�
 - [ ] 沒有寫進 `.workbuddy/memory/`、沒有手動加快照（陷阱三）
 - [ ] 淺色主題、`lang="zh-Hant"`、無 CDN 依賴
 - [ ] 引用索引時用 `path:line_start`，**不複述內容**
+- [ ] markdown 殘留掃過（d）；`<pre>` 內的 `<`/`>` 已轉義（e）
+- [ ] **路徑引用檢查的「MISSING」清單逐條看過**——白皮書會刻意引用「不存在的那個路徑」
+      （搬遷後指錯的位置、懸空指標），那些是內容不是錯誤。要看的是**沒打算缺失卻缺失**的那些
+
+## 6.1 已提交的白皮書：修訂它，還是取代它
+
+白皮書是 D5 的附件，所以它與**它所屬的那個 commit** 綁定。當後續的一個 commit 讓它的某幾句
+變成假話時（E1 就讓上一份的「tb_loop 三個入口跑不起來」與 README 路徑兩處過期）：
+
+- **不要重寫已提交的文件**——那會讓它不再是那個 commit 的附件，而讀者無法分辨哪一版屬於哪一輪。
+- **也不要留著不處理**——那會讓後人照著一份已知是假話的文件工作。
+- **做法**：在原文**最前面加一個標註框**，逐條列出「哪幾處被取代、被誰取代」，
+  並**明說哪些部分仍然成立**；原文一個字不刪。新內容寫進新的一份白皮書，
+  用相對路徑互相連結（`AGENT_HARNESS_E1_RESTRUCTURE_20260916.html`）。
+- 依據是 `CONVENTIONS.md` §E：「條文本身可以被推翻：若某條的證據被後續實驗推翻，該條標
+  `superseded_by` 而不是刪掉——刪掉會讓後人重新踩一次。」文件同理。
+- 同一個 commit 內若另一份白皮書的 note 也過期（`index_assets.py` 的 `CURATED` note
+  就有這個毛病），**一起改**，因為編輯 `CURATED` 會讓 `--check` 紅。
 
 ---
 

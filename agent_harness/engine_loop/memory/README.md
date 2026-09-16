@@ -40,7 +40,7 @@
 所以兩者要**一起**重生，順序固定（先快照、後索引）：
 
 ```sh
-python3 Backup/import_harness_snapshot.py                        # 先：更新實體快照 + SNAPSHOT.jsonl
+python3 agent_harness/scripts/import_harness_snapshot.py          # 先：更新實體快照 + SNAPSHOT.jsonl
 python3 agent_harness/engine_loop/memory/build_memory_index.py   # 後：更新索引
 ```
 
@@ -89,5 +89,9 @@ python3 memory/build_memory_index.py --query "allowlist" --full
 - 每日記錄是 append-only 且持續變動，所以索引在**同一天內**會頻繁過期；`--check` 紅燈在這種
   情況下是預期行為，重跑即可。
 - `agent_harness/memory/` 的實體快照是**手動 snapshot，不是同步**。它只在有人跑
-  `Backup/import_harness_snapshot.py` 時更新，且那個腳本住在 `Backup/`（`.gitignore:396`）
-  ⇒ **它不會被提交**。要讓快照跟上，得在本機跑它。
+  `agent_harness/scripts/import_harness_snapshot.py` 時更新。
+  2026-09-16 之前那支腳本住在 `Backup/`（`.gitignore:396` ⇒ 不受版控，clone 出來的機器上
+  **根本沒有它**），而且用硬編碼清單決定要匯入哪些檔——新增 skill 或**單純過了一天**都會被
+  靜默漏掉。現在它進了版控，且清單改成 glob（`~/.workbuddy/skills/*/SKILL.md`、
+  `.workbuddy/memory/*.md`），所以「被漏掉」這個模態不再存在。見
+  `agent_harness/skills/README.md` 的「待匯入清單是推導出來的」。

@@ -926,7 +926,9 @@
     哪一版」可查。
   - **要引用事實或餵 loop，仍然讀 `.workbuddy/memory/`。** 快照的**唯一**用途是跨機器搬運；
     `build_memory_index.py --check` 與 `index_assets.py --check` **都不驗**快照（只驗原檔↔索引），
-    所以兩者要一起重生：先 `Backup/import_harness_snapshot.py`，後 `build_memory_index.py`。
+    所以兩者要一起重生：先 `agent_harness/scripts/import_harness_snapshot.py`，後 `build_memory_index.py`。
+    （該腳本 2026-09-16 從 `Backup/import_harness_snapshot.py` 移進來——它原本不受版控，
+    而「一個要跨機器的機制，自己得先能跨機器」。同時它的兩個硬編碼清單改成 glob。）
   - **未完成的義務（不可當成已完成）**：本檔是 `engine_loop/sft_pi/` 的 system prompt 與
     `harness_engine/memories/engine/` 的注入來源，§E 要求「每次改動都要走一次閉環對照」。
     2026-09-16 當天**這兩個目錄都還不存在**（E2 才建），所以這次修訂改變不到任何執行時行為；
