@@ -1941,6 +1941,178 @@ PY</code></pre>
   <code>Backup/</code> 是 gitignored，所以上面引的數字是抽取件，原始行只存在本機。
 </p>
 
+<h3 id="s119">11.9 追加（2026-09-16 中午）：blast radius —— 崩潰要的是 <code>6144</code> 那一格，不是 MTP，也不是 slab</h3>
+
+<p>
+  §11.4 把 <code>req2</code> 的 SIGSEGV 定位到 MTP draft 路徑，但沒有回答<strong>下一個問題</strong>，
+  而下一個問題才是決定要不要動它的那個：這是「MTP 壞了」還是「這個 profile 壞了」？兩者的嚴重度
+  差一個數量級 —— 前者擋住整個出貨預設（<code>SERVER_MTP="${CGC_SERVER_MTP:-1}"</code>，
+  <code>scripts/run_server.sh:88</code>），後者只擋住一個為 prefill 吞吐而存在的 profile。
+</p>
+
+<div class="box b-green">
+  <p><strong>答案：</strong>崩潰需要 <code>batch = ubatch = 6144</code> 這一格。把它調成 2048，
+  其餘逐項相同，同一個 session 連發三次請求**全過**。<br>
+  <span class="small">所以 blast radius 是「<code>prefill250</code> 的 6144 chunk」，不是 MTP 這個功能本身。</span></p>
+</div>
+
+<h4>11.9.1 方法：三臂單變數階梯，而且標籤由 dump 產生</h4>
+
+<p>
+  儀器 <code>Backup/run_mtp_crash_triage.sh</code>（<code>Backup/</code> 為 gitignored）。三臂，
+  每一臂都對<strong>同一份 ~2.7–2.9k token 的 prompt</strong> 連發請求（最多 3 次），
+  <code>LLAMA_EXPERT_CACHE_BATCH_INVARIANT</code> 一律不設。
+</p>
+
+<p>
+  每一臂在啟動前先跑 <code>CGC_DUMP_ENV=1 &lt;arm env&gt; scripts/run_server.sh</code>
+  （依 CONVENTIONS A11），它印出<strong>已解析</strong>的 <code>CGCENV</code>/<code>ENV</code>/<code>ARG</code>
+  之後<strong>不啟動任何東西就退出</strong>。表中「解析出來的」那一欄是從這份 dump 抓的，
+  <strong>不是從臂的名字抓的</strong>。
+</p>
+
+<div class="box b-amber">
+  <p><strong>為什麼要這樣做 —— 這條規則來自本節自己踩的坑。</strong>這支腳本的第一版把第一臂寫成
+  <code>run_arm prod25</code>，卻<strong>沒有傳任何環境變數</strong>給它，所以那一臂實際跑的是
+  <code>CGC_SERVER_PROFILE</code> 的預設值 <code>off</code>。跑出來的數字是真的、有用的，
+  但<strong>標籤是假的</strong>。加上 dump 前置檢查之後，這種錯在第一秒就會被印出來
+  （<code>CGCENV PROFILE   off</code> 當場否決 <code>prod25</code>）。
+  這件事本身就是 CONVENTIONS <strong>eng-gate-0006</strong>（「profile 不寫的那一格，就是會漂移的那一格」）
+  的同一個形狀，只是發生在<em>證據的標籤</em>上而不是設定上。</p>
+</div>
+
+<h4>11.9.2 量到的</h4>
+
+<table>
+  <thead>
+    <tr><th>臂</th><th>dump 解析出來（不是臂名）</th><th>結果</th><th>崩潰報告</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>OFF</code></td>
+      <td><code>PROFILE off</code>、<code>BATCH -</code>、<code>UBATCH -</code>（模型預設）、
+          無 <code>PREFILL_STREAM</code>、pool 10 GiB、<code>MTP ON</code></td>
+      <td class="num">req1–3 <strong>全過</strong><br><span class="small">pp 11.82 / 11.98 / 11.87 t/s</span></td>
+      <td>none</td>
+    </tr>
+    <tr>
+      <td><code>P250_ub2048</code></td>
+      <td><code>PROFILE prefill250</code>、<code>BATCH 2048</code>、<code>UBATCH 2048</code>、
+          <code>PREFILL_STREAM=1</code>、<code>GATHER_SLAB_CAP=256</code>、pool 8 GiB、<code>MTP ON</code></td>
+      <td class="num">req1–3 <strong>全過</strong><br><span class="small">pp 160.38 / 149.34 / 154.68 t/s</span></td>
+      <td>none</td>
+    </tr>
+    <tr>
+      <td><code>P250</code></td>
+      <td><code>PROFILE prefill250</code>、<code>BATCH 6144</code>、<code>UBATCH 6144</code>、
+          其餘與上一列逐項相同</td>
+      <td class="num">req1 過，<strong>req2 死</strong><br><span class="small">pp 161.69 t/s（req1）</span></td>
+      <td><code>llama-server-<br>2026-09-16-111232.ips</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<p>
+  <code>A11</code> 指紋（<code>ENV</code>/<code>ARG</code>/<code>CGCENV</code> 正規化後 md5，
+  濾掉 <code>CGCENV LOG</code> 與 <code>free=</code>）分別是
+  <code>176c96e7…</code>（OFF）、<code>795453ab…</code>（ub2048）、<code>749ce190…</code>（6144）
+  —— 三臂確實是三個不同的啟動環境，且 <code>ub2048</code> 與 <code>6144</code> 的差別只在 batch/ubatch。
+</p>
+
+<h4>11.9.3 讀法：三個嫌疑犯被逐個排除，剩下一個</h4>
+
+<ul>
+  <li><strong>MTP 本身不足以觸發。</strong><code>OFF</code> 臂也是 <code>MTP ON (draft-mtp, n_max=3, denseIQ4X=1)</code>，
+      同一顆 <code>-MTP-...-denseIQ4X.gguf</code> 模型，三次請求全過並印出
+      <code>MTP fast path: calls=243</code>、<code>draft=27</code>。所以「MTP 在 macOS 上會崩」是<strong>錯的述句</strong>。</li>
+  <li><strong>slab／stream 路徑不足以觸發。</strong><code>P250_ub2048</code> 臂照樣帶
+      <code>CGC_PREFILL_STREAM=1</code> 與 <code>CGC_GATHER_SLAB_CAP=256</code>、同樣 8 GiB pool，
+      三次請求全過。所以 §11.4 的「死在 MTP draft 路徑上」是<em>症狀位置</em>，
+      不是<em>觸發條件</em>。</li>
+  <li><strong>剩下的是 <code>6144</code> 那一格。</strong><code>P250_ub2048</code> 與 <code>P250</code>
+      之間只差 <code>batch/ubatch</code>（2048 → 6144），其他每一項都相同。</li>
+</ul>
+
+<p>
+  崩潰簽名第三次<strong>逐格相同</strong>（<code>objc_msgSend ← ggml_metal_synchronize ←
+  ggml_backend_sched_synchronize ← llama_context::synchronize() ← llama_get_embeddings_nextn
+  ← common_speculative_impl_draft_mtp::process</code>，<code>EXC_BAD_ACCESS SIGSEGV</code>、
+  <code>KERN_INVALID_ADDRESS at 0x10</code>）。<code>P250</code> 臂的請求序列也再一次說明形狀：
+  req1（<code>task 0</code>）跑完並 <code>release</code>，req2（<code>task 8</code>）印出兩行
+  <code>CGC-PREFILL-STREAM</code> 之後<strong>沒有任何 <code>print_timing</code></strong> 就死了
+  —— 死點在 req2 的 prefill 開頭，也就是「req1 留下的狀態被 req2 的第一個 <code>synchronize</code> 踩到」，
+  這是 use-after-free 的形狀，不是「某個輸入算錯」的形狀。
+</p>
+
+<h4>11.9.4 嫌疑點收斂到一個檔案（<strong>假設</strong>，本節沒有證明它）</h4>
+
+<pre><code>ggml/src/ggml-metal/ggml-metal-context.m:721-727
+
+    for (int cb_idx = 0; cb_idx &lt;= n_cb; ++cb_idx) {
+        id&lt;MTLCommandBuffer&gt; cmd_buf = ctx-&gt;cmd_bufs[cb_idx].obj;
+        if (!cmd_buf) continue;
+        MTLCommandBufferStatus status = [cmd_buf status];   &lt;-- SIGSEGV（拿不到）
+    }</code></pre>
+
+<p>
+  <code>ctx-&gt;cmd_bufs[]</code> 的每一格只在 <code>ggml_metal_graph_compute</code> 被指派
+  （<code>:1026</code>、<code>:1054</code>，指派前先 <code>release</code> 舊的、建立時
+  <code>[cmd_buf retain]</code>），並在 destructor（<code>:364</code>）與該兩處釋放；
+  <code>cmd_buf_last</code> 在 <code>:711-713</code> 已被歸零，所以不是它。
+  因此「某一格在釋放後沒有歸零」需要在<strong>別的地方</strong>有一次多餘的釋放，
+  或有一段寫入越過了那格。本節<strong>沒有</strong>找到那一次多餘的釋放
+  （<code>:364</code>、<code>:1024</code>、<code>:1052</code> 與建立時的 retain 是平衡的），
+  所以這是<strong>下一步要證的假設</strong>，不是結論。
+  唯一能確定的是：<code>:727</code> 的崩潰點讀的是一個<strong>已經被釋放的 ObjC 物件</strong>，
+  而 <code>KERN_INVALID_ADDRESS at 0x10</code> 與「isa 已被清掉」的形狀一致。
+</p>
+
+<h4>11.9.5 一個獨立發現：出貨的 <code>libllama-common</code> 沒有編 <code>MTP_SUPPORT</code></h4>
+
+<p>
+  追這一條線時撞到另一個問題，它<strong>與上面的崩潰沒有已建立的因果關係</strong>，但本身該被記錄：
+  這台機器實際載入的 <code>libllama-common.0.0.239.dylib</code>，是用<strong>沒有
+  <code>-DMTP_SUPPORT</code></strong> 的設定編出來的。三條獨立證據：
+</p>
+
+<ol>
+  <li><code>build/common/CMakeFiles/llama-common.dir/flags.make</code> 的 <code>CXX_DEFINES</code>
+      不含 <code>-DMTP_SUPPORT</code>；<code>build/CMakeCache.txt</code> 的
+      <code>CMAKE_CXX_FLAGS:STRING=</code> 是<strong>空的</strong>。而專案自己的 Mac 建置腳本
+      <code>scripts/build_fork_llama.sh:34</code> 預設 <code>MTP_SUPPORT=ON</code>、
+      <code>:58</code> 組出 <code>-DMTP_SUPPORT</code>、<code>:79</code> 以
+      <code>-DCMAKE_CXX_FLAGS="$CXX_FLAGS_MTP"</code> 傳進去，並且在 <code>:31-33</code> 寫明
+      「沒有這個旗標，MTP-only 的程式碼就會被排除（non-MTP builds）」。</li>
+  <li><code>strings -a</code> 的正對照：<strong>未</strong>被 guard 的字串（
+      <code>adding speculative implementation 'draft-mtp'</code>、
+      <code>MTP input row width must match…</code>）找得到，而三個在
+      <code>#ifdef MTP_SUPPORT</code> <em>內部</em>的字串
+      （<code>MTPDBG mtp_ctor: BEFORE set_nextn</code>、<code>MTPDBG process: n_tokens=</code>、
+      <code>MTPDBG mtp_ctor: AFTER set_nextn</code>）全部<strong>找不到</strong>。</li>
+  <li>執行期堆疊本身：第 4 格是 <code>llama_get_embeddings_nextn(llama_context*)</code>，
+      而 MTP 區塊裡唯一呼叫它的是 <code>common/speculative.cpp:1562</code>，
+      位在 <code>#ifdef MTP_SUPPORT</code> 的 <code>#else</code> 分支裡。</li>
+</ol>
+
+<p>
+  直接後果：原始碼 <code>common/speculative.cpp:1544-1554</code> 那段標著
+  <code>[CGC MTP fix] use get_embeddings_nextn_ith to safely access each row</code> 的<strong>逐列安全讀取</strong>
+  不在執行中的二進位裡；跑的是 <code>#else</code> 的單次 bulk <code>memcpy</code>。
+  同時 <code>src/models/qwen35moe.cpp:733-737</code>（把 post-<code>get_rows</code> 隱藏狀態暴露成
+  <code>t_embd</code>，供 MTP draft head 讀）也被編掉。
+</p>
+
+<p class="small">
+  <strong>這一節能說與不能說。</strong>能說：「MTP 在 macOS 上會崩」是錯的（<code>OFF</code> 臂三次全過）；
+  崩潰需要 <code>batch=ubatch=6144</code>，其餘逐項相同時 2048 不會崩；<code>prefill250</code> 配
+  <code>2048</code> 仍可跑（160 t/s 等級）且連三次不崩，這是一條可用的退路。
+  不能說：崩潰的機制已被證明（§11.9.4 是假設）；也不能說 <code>MTP_SUPPORT</code> 沒編與崩潰有因果關係
+  —— 這一節只建立了「它沒被編進去」這個事實，以及它讓<strong>執行中的 MTP 路徑不是原始碼描述的那一條</strong>。
+  另外，<code>OFF</code> 臂的 11.8 t/s 與 prefill250 的 160/161 t/s 不是乾淨的吞吐對照（前者 ubatch 是模型預設、
+  且機器在前兩臂之間已經熱了）；這一節<strong>不用</strong>它做任何關於 6144 是否值得的推論。
+  複現：<code>bash Backup/run_mtp_crash_triage.sh</code>（約 15 分鐘，三臂共 9 次請求）。
+</p>
+
 </div>
 </body>
 </html>
