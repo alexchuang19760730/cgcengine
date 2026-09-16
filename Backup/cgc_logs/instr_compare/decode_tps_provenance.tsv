@@ -1,0 +1,44 @@
+instrument	arm	n_gen	depth	avg_ts	stddev_ts	n_batch	source_file	auditable
+llama-bench	prod25-stream	128	0	9.58	1.37	512	Backup/llama_bench/matrix_longprompt_20260915.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	0	9.79	1.07	512	Backup/llama_bench/matrix_post_triage_20260915.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	0	9.65	0.83	512	Backup/llama_bench/matrix_prod25-stream_20260915_1659.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	0	8.76	0.45	512	Backup/llama_bench/matrix_s1commit_20260915.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	0	8.67	1.53	512	Backup/llama_bench/matrix_s1kernel_20260915.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	0	6.91	1.54	512	Backup/llama_bench/matrix_s1kernel_rerun_20260915.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	0	9.05	0.79	512	Backup/llama_bench/matrix_skip0valued_20260916.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	512	10.79	0.31	512	Backup/llama_bench/matrix_post_triage_20260915.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	512	12.83	1.87	512	Backup/llama_bench/matrix_prod25-stream_20260915_1659.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	512	8.50	0.29	512	Backup/llama_bench/matrix_s1commit_20260915.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	512	6.72	0.83	512	Backup/llama_bench/matrix_s1kernel_20260915.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	512	8.85	0.57	512	Backup/llama_bench/matrix_s1kernel_rerun_20260915.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	512	8.74	0.53	512	Backup/llama_bench/matrix_skip0valued_20260916.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	1024	13.18	0.46	512	Backup/llama_bench/matrix_post_triage_20260915.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	1024	10.14	0.18	512	Backup/llama_bench/matrix_prod25-stream_20260915_1659.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	1024	8.85	0.44	512	Backup/llama_bench/matrix_s1commit_20260915.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	1024	8.49	1.27	512	Backup/llama_bench/matrix_s1kernel_20260915.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	1024	8.55	2.55	512	Backup/llama_bench/matrix_s1kernel_rerun_20260915.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	1024	9.81	0.73	512	Backup/llama_bench/matrix_skip0valued_20260916.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	2048	7.96	2.03	512	Backup/llama_bench/matrix_post_triage_20260915.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	2048	10.34	0.28	512	Backup/llama_bench/matrix_prod25-stream_20260915_1659.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	2048	8.53	0.13	512	Backup/llama_bench/matrix_s1commit_20260915.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	2048	9.03	0.09	512	Backup/llama_bench/matrix_s1kernel_20260915.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	2048	9.67	0.04	512	Backup/llama_bench/matrix_s1kernel_rerun_20260915.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	2048	10.02	0.42	512	Backup/llama_bench/matrix_skip0valued_20260916.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	4096	10.00	0.18	512	Backup/llama_bench/matrix_longprompt_20260915.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	4096	9.90	0.13	512	Backup/llama_bench/matrix_post_triage_20260915.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	4096	10.13	0.21	512	Backup/llama_bench/matrix_prod25-stream_20260915_1659.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	4096	8.44	0.34	512	Backup/llama_bench/matrix_s1commit_20260915.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	4096	8.33	0.47	512	Backup/llama_bench/matrix_s1kernel_20260915.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	4096	9.10	0.44	512	Backup/llama_bench/matrix_s1kernel_rerun_20260915.json	yes (raw json in repo)
+llama-bench	prod25-stream	128	4096	9.50	0.30	512	Backup/llama_bench/matrix_skip0valued_20260916.json	yes (raw json in repo)
+decode_bench (HTTP)	p25-gputime (MTP off)	128	0	10.19	-	-	docs/PREFILL250_DECODE25_WHITEPAPER_20260915_1900.html (§2.2 baseline, md5 28097996)	yes (md5 matches the REMAP baseline row)
+decode_bench (HTTP)	p25-gputime (MTP off)	24	0	18.74	-	-	Backup/phase_decomp/db_n24_match_20260916_1807.json (2026-09-16)	yes
+decode_bench (HTTP)	p25-gputime (MTP off)	124	0	12.95	-	-	Backup/phase_decomp/decode_thermal_sustain_20260916.json (2026-09-16)	yes
+llama-bench	prod25 (MTP off, matched)	128	0	9.42 / 9.32 / 9.38	-	8	Backup/phase_decomp/lb_n128_match*_20260916_1807.json	yes
+llama-bench	prod25-stream	128	0,512,1024	9.52 / 10.89 / (7.26 spolied)	-	512	Backup/phase_decomp/lb_depth_repro_20260916.json	yes (d=1024 spoiled: HEAVY)
+llama-speculative-simple	no spec (flag omitted)	48	0	7.483	-	-	Backup/cgc_logs/instr_compare/spec_simple_arms_20260916.tsv	yes (demo, n=1)
+llama-speculative-simple	draft-mtp n_max=3	48	0	6.517 (NOMINAL) / 5.927 (MOD)	-	-	Backup/cgc_logs/instr_compare/spec_simple_arms_20260916.tsv	yes (demo, n=1)
+UNPINNED	MTP-off vs MTP-on	?	?	10.43 vs 6.48	-	-	docs/PREFILL250_DECODE25_WHITEPAPER_20260915_1810.html (§未解清單)	NO - instrument not named
+UNPINNED (source comment)	CGC_PREFILL_PROTECT=1	?	?	22.2 vs 8.1-8.9	-	-	src/llama.cpp/src/llama-context.cpp:5817-5819	NO - a code comment; flag was not in the launcher allowlist
+server (production, older)	prod25 lineage 2026-09-07	?	?	25.17	-	-	scripts/run_server.sh:259 (wall 39.7 ms/token, draft_accept 98.2%)	NO - different day/config
+server (production, older)	2026-09-04 log	?	?	27.71	-	-	scripts/check/llama_bench_matrix.py docstring	NO - different day/config
