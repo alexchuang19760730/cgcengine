@@ -19,12 +19,22 @@ modified／staged 檔就停手（對方可能正在做 E1 的 `git mv`，600+ re
 
 ## 模型與 profile
 
-- `prod25` 用 `models/gguf/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`（→ `Nail-…-MTP-…-denseIQ4X.gguf`，
-  13.6 GB，含 MTP）。**不是 Gemma 4 26B-A4B**（那是更早的設定；舊筆記寫 Gemma 要忽略）。
-- 幾何：pool 8 GiB → 143 slots/layer；`LAYER_CAPS 40-40:256`；CTX 4096；`SPEC_DRAFT_N_MAX=3`；
-  sweep 一律 `CGC_SERVER_MTP=0`。三支柱 bit-identical：`CGC_MM_BITIDENT=1` /
+- **統一目標（2026-09-16 定案）**：一個 profile ＝ **`prefill250` ＋ `CGC_SPAC=1`（alpha 0.75）**，
+  同時服務 prefill 與 decode。依據：三個 decode 臂只差 6 項 env，真正有語意的只有 `CGC_SPAC`
+  與 CTX；而 `CGC_POOL_MAX_TOKENS`（`llama-graph.h:18-37`，預設 8、可調 [2,64]）的註解自己把
+  「MTP verify batch（n_max+1 ≤ cap）」綁在它上面 ⇒ `prod25`（無 PREFILL_STREAM）把池路徑鎖在 8，
+  而 **M1／M4 的槓桿住在寬 batch（whole-layer slab）的世界**。
+  否證實驗（`Backup/run_unified_ab.sh`，交錯 A/B/A/B、每臂等 NOMINAL）：SPAC=1 在 d512
+  **均值 +17%（9.25 → 10.79）且離散從 ±2.97 崩到 ±0.04**（逐 rep 6.28–12.21 → 10.74–10.82）。
+  **量測形狀**：prefill 用 profile 的 `-b/-ub 5632`；decode/depth 矩陣用 `-b 512`
+  （5632 在 16 GB 上於 `-d≥512` 會 OOM）。細節見日誌 §EN-4／§EN-5。
+- `prod25` 用 `models/gguf/Nail-…-MTP-…-denseIQ4X.gguf`（13.6 GB，含 MTP）；**`CGC_SERVER_MTP=0`
+  會換成非 MTP 的 `Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`**（`run_server.sh:154`）⇒ 引用「prod25 的數字」
+  必須指名是哪一個模型。**不是 Gemma 4 26B-A4B**（那是更早的設定；舊筆記寫 Gemma 要忽略）。
+- 幾何：pool 8 GiB → 143 slots/layer；`LAYER_CAPS 40-40:256`；CTX 4096（prefill250 是 8192）；
+  `SPEC_DRAFT_N_MAX=3`；sweep 一律 `CGC_SERVER_MTP=0`。三支柱 bit-identical：`CGC_MM_BITIDENT=1` /
   `SERVER_MTP_NO_WARMUP=1` / `SERVER_NO_SEQ_RM_PROBE=1`。
-  `worst_layer=2`（248 distinct 專家 vs 143 slots）是池壓力熱點，但**已被排除**為 S1 分歧原因。
+  池壓力熱點的層**會變**（觀察到 layer 0（250 distinct）與 layer 2（218–248）），不是固定的 layer 2。
 
 ## 入口（照抄）
 
@@ -146,24 +156,50 @@ python3 scripts/check/m123_oracle_gate.py --tag <標籤>          # D5，自己�
 
 ## decode 25 t/s 的現況（2026-09-16 盤點；細節在 `.workbuddy/memory/2026-09-16.md` §U）
 
-- **基線不穩定，這是第一個 blocker：同一天、同一設定（`p25-gputime`、MTP=0、n=24、r=3）
-  量到 6.6 / 9.75 / 10.24 / 16.17 / 6.95 t/s —— 2.4× 散佈。**
-  而 **`decode_sweep.py` 沒有任何散熱儀器**（grep `thermal|notifyutil` 零命中）
-  ⇒ decode 上任何「快了 N×」都無法與散熱分開。
-  **把 prefill 那條 11 ms、非 root 的 `notifyutil -g com.apple.system.thermalpressurelevel`
-  讀數接進 decode 量測，是 decode 工作的第一步。**
+- **基線的 2.4× 散佈已被歸因**（2026-09-16，§V）：同一天、同一設定（`p25-gputime`、MTP=0、n=24、r=3）
+  量到 6.6 / 9.75 / 10.24 / 16.17 / 6.95 t/s。散熱讀數（`scripts/check/thermal_pressure.py`，
+  **唯一實作**，`decode_sweep`／`decode_bench`／`llama_bench_matrix` 都匯入它）接進之後，
+  20 個等級讀數**全 NOMINAL** ⇒ **不是散熱**；真來源是**生成長度**（n=24 短爆 vs n=124 可持續）
+  與**被計分的暖機輪**（第 1 個請求 wall 23.83 s vs 穩態 1.4 s）。
+  **可交付述句**：`p25-gputime`、n=124、全程 NOMINAL ⇒ 可持續 **12.95 t/s**；**不要引用 20.3**。
 - 病因已證明是**序列化**（`CGC_SUBMIT_AHEAD=1`：每步 82.5 → 31–44 ms；`gap` 12.3–22.4 ms/步
   是可證的 GPU 閒置；~44% 步時間可移除）。**該探針輸出損壞**（`文摘文摘…`），
   所以它的 16.82 t/s 不可引用；正道是 **D3／S1：expert→slot 查表搬到 GPU**。
-- **M1/M2/M3 現在不能說「保持」**：(a) S1 不過 M1（5/9；缺陷在 layer 18/19，POST 顯示
-  **token 0 相同、row ≥1 每層 6/6 不同**）；(b) **MTP ON 不過 `plain_match`**，
+- **M1/M2/M3 不能說「保持」**：(a) **S1 不過 M1，但原因不是 ids。** §9.18 的**內核側**讀數
+  （`kernel_cgc_ids_capture` ＋ `scripts/check/ids_capture_diff.py`）量到 **39 層 × 117 node × 連續 3 個
+  graph 逐位元相同**，第一個 DIFF 是 graph 3 的 `ffn_moe_gate-2`；而 **layer 1 的 gate/up/down ids 相同、
+  layer 2 的 router 不同 ⇒ 在「輸入相同 ＋ ids 相同」之下 layer 1 的 MoE 輸出不同 ⇒ 缺陷在 ids
+  <u>指向的權重內容</u>（池／slot 內容）**。⚠️ **不要**再引用「缺陷在 layer 18/19」或
+  「POST row ≥1 每層 6/6 不同」：前者被 §9.8 的 KEEP_LEAF 排除法取代（§9.2 的層梯**結構上**分不開層別
+  與計數），後者 §9.8 已證明是 **padding 且無害**（每層都有 ⇒ 不是層別缺陷的形態）。
+  ⇒ **S1 是探針，不是缺陷；要修的是 residency**，而**任何**把查表搬到 GPU 的方案（含 D3）都會踩到同一個
+  缺陷（§9.18.7）。**§9.18.6 的唯一決定性測量：capture `ffn_moe_down-1` 的<u>輸出</u>（兩臂、graph 3）。**
+  (b) **MTP ON 不過 `plain_match`**，
   而 MTP 是 25 t/s 最可能的乘數。守護不變量只有三條：**ids 相同／canonical gather order
-  （按 expert id 排序）／`cap` 是常數**。
+  （按 expert id 排序，2026-09-16 確認**只在 M1 的 compaction 適用、S1 不適用**）／`cap` 是常數**。
+- **兩個 decode 儀器不能並排引用（2026-09-16 實測，§W）**：同 env、同模型、同 n、同場交錯，
+  llama-bench 讀 **9.4** 而 decode_bench 讀 **12.4**（n≈128，1.32×）／**7.2 vs 18.7**（n=24，2.6×）。
+  大半是「**第一個 rep 是冷的**」：llama-bench 的 tg warmup 原始碼上是 `test_gen(ctx, 1, …)`
+  ＝**1 個 token**，而 context／池每 instance 建一次；`avg_ts` 把冷 rep 平均進去，
+  `decode_bench --warmup 1` 恰好丟掉對應輪。**丟掉後 11.3 vs 12.4 ＝ 1.10×**。
+  殘差**未歸因**（候選：llama-bench 每 token 的 `llama_synchronize`、`rand()%n_vocab` 的
+  不可預取存取、`n_ctx` 128 vs 4096）。
+- **llama-bench 沒有取樣器**：`llama-bench.cpp` 裡 `sampler|speculat|draft|MTP` **零命中**，token 是
+  `std::rand() % n_vocab` ⇒ **它自己**量不到投機加速。**但這不等於 MTP 量不到**（更正先前的
+  「只能走 HTTP 路徑」）：**`llama-speculative-simple`** 才是本專案的 MTP 驅動器——它用
+  `common_params_parse` ⇒ 吃**逐字相同**的 `--spec-type draft-mtp --spec-draft-n-max 3`、
+  **內建無投機的基線臂**（省略 `--spec-type`；`--spec-type none` 反而會去載空路徑的 draft model
+  並 exit 1）、`check_build_tracked.sh` 已列為關鍵 exe、git 歷史有兩筆本專案的 MTP 修復直接提交給它。
+  實測（示範、每臂 n=1）：基線 **7.483** vs draft-mtp **6.517**（同 NOMINAL）⇒ **MTP 現在比 no-spec
+  慢 1.15×**。`Backup/run_spec_simple.sh`（env 由 `run_server.sh CGC_DUMP_ENV=1` 取，不手抄）。
+- **decode 的散熱分離已有第一個數**：decode_bench 同 env／同模型／同 n，**NOMINAL 12.36 →
+  HEAVY 10.64（−14%）**——遠小於 prefill（250 vs <212），且每個等級 n=1 ⇒ **只記錄、不閘門**。
 - 到 25 的算術：9–10 × 1.78（D3 上界）≈ **16–18**，**還缺 ~1.5×**，只能來自 M4
   （MTP 拒絕取樣 ＋ verify 真批次；accept 現 **19.9%**，MTP-on 是 **1.8× 淨損失**；M4 依賴 M1/M3）。
 - 相關文件：`docs/ROADMAP_PREFILL250_DECODE25_2026-09-13.md`（W1/W2/W3、M0–M6）、
-  `docs/REMAP_ROUNDTRIP_REMOVAL_PLAN_2026-09-15.md`（D0–D3、S1 診斷）、
-  `docs/M1_POOL_SPLIT_COST_2026-09-14.md`。
+  `docs/REMAP_ROUNDTRIP_REMOVAL_PLAN_2026-09-15.md`（D0–D3、S1 診斷；**其 §1 的「llama-bench」標籤
+  無法從該文件稽核**）、`docs/M1_POOL_SPLIT_COST_2026-09-14.md`、
+  `docs/INSTRUMENT_COMPARE_20260916_1821.html`（兩儀器對比）。
 
 ## 長期事實（踩過就不該再踩）
 

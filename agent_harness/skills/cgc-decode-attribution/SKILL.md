@@ -73,6 +73,127 @@ agent_created: true
   「第二個在飛的東西不可能讓真實計算變快」⇒ 若步時間下降 X%，就有 X% 是序列化。
   這比任何相位分解都決定性。輸出損壞是**預期**的，md5 必須變，否則代表旗標沒生效。
 
+## 兩個 decode 儀器不能並排（2026-09-16 實測；細節 `docs/INSTRUMENT_COMPARE_20260916_1821.html`）
+
+**`llama-bench` 與 `decode_bench` 的數字不得互相引用，也不得放在同一句話裡比大小。**
+同 env、同模型、同 n、同場交錯量到的是 **9.4 vs 12.4**（n≈128）與 **7.2 vs 18.7**（n=24）。
+
+要配對，env 必須是解析出來的而不是手抄的——`llama_bench_matrix.py` 支援
+`PROFILE:ENV=VAL`，所以
+
+```sh
+python3 scripts/check/llama_bench_matrix.py \
+  --arms 'prod25:CGC_SERVER_MTP=0;CGC_GPU_TIMING=1;CGC_DECODE_PROFILE=1' \
+  --prompt 0 --gen 128 --depths 0 --reps 3 --json Backup/phase_decomp/lb_x.json
+```
+
+逐字就是 `decode_sweep --arms p25-gputime` 的 env（兩邊都經 `run_server.sh CGC_DUMP_ENV=1`）。
+
+**`--depths 0` 是最冷的格子，不要拿它當標準。** 歷史上的「llama-bench tg 10–13 t/s」是
+**depth 512–2048**，而 depth 0 一直是 **8.7–9.8**（2026-09-16 重跑：d0 **9.52**、
+d512 **10.89**，重現 09-15 的 9.65/9.79 與 12.83/10.79，誤差 1.5–3%）。
+`-d` 的前置填充在 `t_start`（`llama-bench.cpp:2444`）**之前**完成、不計時，所以 depth ≥512 的
+實例自帶一份前置填充，d=0 沒有。**機制未確立**——同協定下 `tg@d0` 前面也有一個 `pp 512`，
+所以不是單純的前置填充，也不能只歸給池。**報 decode 一律附 depth**，而且 `0,512,1024` 起跳。
+
+**也要附「哪個臂」——本專案有三個 decode 相關的臂，只差 6 項 env，但其中一項是機制級的**
+（見 `Backup/cgc_logs/instr_compare/arms_matrix_20260916.tsv`，由 `CGC_DUMP_ENV=1` 現場解析）：
+
+| arm | CTX | -b/-ub | PREFILL_STREAM | **SPAC** |
+|---|---|---|---|---|
+| `prod25`（decode sweep 基準 `p25-gputime`） | 4096 | 模型預設（llama-bench 推 8/8） | - | **1** |
+| `prod25-stream`（歷史 depth 矩陣；「10–13」出自此） | 4096 | 512/512 | 1 | **1** |
+| `prefill250`（prefill 250 交付用） | **8192** | **5632/5632** | 1 | **-（全域預設關）** |
+
+`CGC_SPAC` 全域預設關（`run_server.sh:1635-1637`），只有 prod25 血統自己開；而 prod25 的註解寫
+「SPAC 同時是 membership 驅動，**關掉後 decode 工作集不駐留**」⇒ **prefill250 缺的是 decode 的
+駐留機制，不只是 batch**。**prefill 的 profile 不能當 decode 的標準，也不該用 prefill 的 t/s 講 decode。**
+`prefill250` 至今**沒有任何 decode 數字**：唯一嘗試（`llama_bench_prefill250.json`，`-b 6144`）是零列殘檔，
+死於 `test_prompt: failed to decode prompt batch, res = -3`（GPU OOM）——**它的 batch 與 depth 矩陣不相容**。
+要一個 profile 同時服務兩者，那是**新配置**（至少 `CGC_SPAC=1`），需要自己的基準。
+
+**要選「哪個臂最有潛力」，判準是「剩下來的槓桿有沒有地方跑」，不是現在的 t/s。**
+`CGC_POOL_MAX_TOKENS`（`src/llama.cpp/src/llama-graph.h:18-37`）預設 **8**、可調 **[2,64]**，
+而它的註解自己把用途寫成「**Default 8 covers MTP n_max up to 7 (verify = n_max+1)**」；
+`llama-context.cpp:286-291` 則寫「**The clamp is NOT lifted for an owned pool**」。
+⇒ `prod25`（無 PREFILL_STREAM）把池路徑的批寬鎖在 8；放寬它就要在 **143 slots/layer** 裡裝下更寬的
+expert union（worst layer 248 distinct vs 143 slots）。而 **M1（batched-union gather）與 M4（verify 真批次）
+住在「寬 batch」的世界，那需要 whole-layer slab（`ne[2]=n_expert`，裝得下 256 個）——只有
+PREFILL_STREAM 的臂有**。⇒ 三個臂裡潛力最低的是 `prod25`，最高的是 `prefill250`＋`CGC_SPAC=1`。
+
+**已定案（2026-09-16）：統一在 `prefill250` ＋ `CGC_SPAC=1`（alpha 0.75）。**
+否證實驗是 `Backup/run_unified_ab.sh`（交錯 A/B/A/B、每臂等 NOMINAL、
+`-b 512 -p 0 -n 128 -d 0,512 -r 3`）；結果在 **d512**：
+
+    SPAC 關  9.25 ±2.97  逐 rep 6.28–12.21（1.94×）
+    SPAC 開 10.78 ±0.04 / 10.91 ±0.47  逐 rep 10.74–10.82（0.7%）   配對中位 +1.60（+17%）
+
+**SPAC 主要不是把均值推上去，是把「decode 工作集不駐留」造成的不穩定拿掉。在 d0 上兩臂重疊**
+（A 的 reps 自己就跨 5.95–10.58）⇒ **只有 d512 是決定性的。**
+暖值交叉驗證：09-15 `prod25-stream` 10.79、今天 `prod25-stream` 10.89、今天 `prefill250+SPAC` 10.78／10.91
+⇒ **本機 llama-bench 暖 decode ≈ 10.8–10.9 t/s**（拿它當 25 t/s 的分母，不是 d0 的 9.4）。
+量測形狀：prefill 用 profile 的 `-b/-ub 5632`；decode/depth 矩陣用 `-b 512`（5632 會 OOM）。
+
+**llama-bench 的 tg 沒有 `srand`**（`llama-bench.cpp` 只有 `std::rand()`）⇒ **每次跑餵的 token 流逐位相同**
+（指紋：同 config 兩跑的 avg 與 stddev 可以逐位相同）。好處是 A/B 的工作負載完全相同、只剩時序；
+壞處是它不是「一個隨機流」而是**一個固定的偽隨機流**，所以它與被服務請求的差異是**系統性**的。
+
+**四個讓差距看起來像引擎快慢、其實不是的東西（按重要性）**
+
+1. **第一個 rep 是冷的。** llama-bench 的 tg warmup 是 `test_gen(ctx, 1, ...)`（**1 個 token**，
+   `llama-bench.cpp:2392`），而 context／池每 instance 建一次 ⇒ 池從空開始；
+   `avg_ts` 把冷 rep 平均進去，`decode_bench --warmup 1` 恰好丟掉對應輪。
+   n=128 的 rep1/平台 ＝ **1.35×**（120 vs 89 ms）。**丟掉後 11.3 vs 12.4 ＝ 1.10×。**
+   ⇒ 報 llama-bench 一律附 rep 數與 warmup 規則；報 decode_bench 一律附 round 數與 `--warmup`。
+2. **它對 MTP 是瞎的。** `sampler|speculat|draft|MTP` 在 `llama-bench.cpp` **零命中**，
+   token 是 `std::rand() % n_vocab` ⇒ 沒有取樣器就沒有投機迴圈。
+   **但 MTP 不是量不到**，只是要用另一支工具 —— 見下面「要量 MTP 時」那一節。
+3. **兩個 token 流給池的壓力結構不同**：隨機 id → 超訂 **7/40** 層、miss **85.4% compulsory**；
+   連貫文本 → **40/40** 層、**51% compulsory / 49% capacity**。所以
+   **hit%／miss／reads 不可跨行程比**（生命週期累加器，累加的工作不同）；
+   可比的只有行程內部定義的比例。命中率高的那一邊反而慢（96.0% → 9.4；92.6% → 12.4）。
+4. **`MTP=0` 會換模型。** `run_server.sh:154` 的 `if [ "$SERVER_MTP" = "1" ]` 才選 MTP 家族
+   ⇒ MTP=0 的臂載入 `Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`，不是 `Nail-…denseIQ4X.gguf`。
+   引用「prod25 的 decode」時必須指名是哪一個。
+
+### 要量 MTP 時：`llama-speculative-simple`，不要動 llama-bench，也不必開伺服器
+
+投機迴圈在 `common/speculative.{h,cpp}`（`_init/_draft/_process/_accept/_print_stats`，另有
+`common_speculative_need_embd_nextn`），全 repo **只有兩個呼叫者**：`server-context.cpp` 與
+`examples/speculative-simple/speculative-simple.cpp`。後者用 `common_params_parse` ⇒ 吃
+**逐字相同**的 `--spec-type draft-mtp --spec-draft-n-max 3`（`run_server.sh:1137` 就是這樣餵
+llama-server 的），**內建無投機的基線臂**（原始碼註解 `C0 baseline arm`），本專案已把兩筆 MTP
+修復提交給它（`b7364f886` bit-identical spec vs non-spec／`eb16bd129` chunked prefill），而
+`check_build_tracked.sh` 早把它列為關鍵 exe。llama-bench 用的是**自己的**解析器
+（`llama-bench.cpp:514` 的 `--` 迴圈），所以 `--spec-*` 對它無效——**改 llama-bench 不必要**。
+
+```sh
+bash Backup/run_spec_simple.sh                 # MTP 臂
+SPEC_TYPE=off bash Backup/run_spec_simple.sh   # 基線臂（同一支工具、同 env）
+```
+
+三個坑（2026-09-16 實測，都已寫進 runner 的註解）：
+- **`-c 0` 會 OOM**（模型預設 32768 × 13.66 GiB 模型 ＋ 8 GiB 池）⇒ 用 profile 的 4096。
+- **profile 的 CGC 旋鈕是必需的**（`CGC_N_CB=8`／`DBUF`／`NO_PREFETCH`／`OA_ASYNC` 是記憶體形狀）；
+  一個都不給 → 連 `-c 4096` 都在 t=16.7 s OOM。**env 一律從 `run_server.sh CGC_DUMP_ENV=1` 取。**
+- **`--spec-type none` 不是基線**：它會去載空路徑的 draft model（`failed to load draft model, ''`，
+  exit 1）。基線是**完全省略** `--spec-type`。
+
+輸出是 `decoded N tokens in X seconds, speed: Y t/s` ＋ `n_drafted/n_accept/accept%` ＋
+`common_perf_print`。**這是第三個儀器**（視窗含 sampling 與 draft/verify）⇒ 不可與 llama-bench
+或伺服器的數字並排。首測（n≈48、單樣本、示範非 A/B）：no-spec **7.483** vs MTP **6.517**
+（同 NOMINAL；accept 36–53%）⇒ MTP 目前慢 **1.15×**，方向與伺服器結論一致但幅度不可互引。
+
+**設計這種矩陣時**：`ARMS["prod25"]` 裸臂**不帶** `CGC_DECODE_PROFILE`，所以它只有 t/s、
+沒有每步分解；要分解得用 `prod25:CGC_GPU_TIMING=1;CGC_DECODE_PROFILE=1`（不要加 `MTP=0`）。
+`llama-bench` 側的散熱讀數用 `thermal_pressure.Sampler`（2 Hz 背景執行緒）——
+它是一個獨佔 GPU 數分鐘的子行程，沒有「每個請求」可以掛讀數。
+
+**跑多臂時，每臂之間要等讀數回 0。** 本輪的教訓：四個臂連續跑，第 2 臂起就是 HEAVY
+（llama-bench −7%、decode_bench −14%），於是「加長會變快」那條預測**無法判讀**。
+滿載後約 **35–47 s** 回 NOMINAL。**不要**用 `--no-warmup` 去對照：它在 `-p 0` 上是 no-op
+（9.40 vs 9.38），因為 warmup 只有一個 token。
+
 ## 陷阱（都踩過）
 
 1. **`union > gpu_busy_sum` 是數學上不可能的指紋** ⇒ 取樣有 ABA 競爭。
@@ -222,6 +343,24 @@ agent_created: true
     - 規則：**輸出「可重複的帶」＋「越過目標的次數 k/N」**，不是範圍也不是目標（CONVENTIONS **A15**）。
     - `Pages free` 低可以是 cache 大（快）也可以是別的行程佔住（慢），**方向相反而不可加總**
       （CONVENTIONS **A14**）。要宣稱記憶體機制，先指名**哪一個**資源並強制它到兩個極端。
+
+## 統一 profile（2026-09-16 定案，已落進 `run_server.sh`，不只是建議）
+
+`prefill250` 現在 pin `CGC_SPAC=1` ＋ `CGC_SPAC_ALPHA=0.75`（`run_server.sh:335`），所以
+**一個 profile 同時是 prefill 與 decode 的臂**。`-b/-ub` 是**量測形狀、不是 profile 差異**：
+prefill 用 profile 的 5632；decode／depth 矩陣用 **512**（5632 在 16 GB 上於 `-d≥512` 會 OOM，
+`Backup/llama_bench/llama_bench_prefill250.json` 就是那個零列殘檔）。
+
+**判準不是現在的 t/s，是「剩下的槓桿有沒有地方跑」**：池夾制把 `prod25` 的池路徑批寬鎖在 8
+（`llama-graph.h:18-37` 的註解自己把它綁在 MTP 上），而 M1（batched-union gather）與 M4（verify
+真批次）需要 **whole-layer slab（ne[2]=n_expert，裝得下 256 個）**——只有本 profile 有。
+
+**pin 一個 env 鍵的代價（每次都要盤點，兩個都真的發生了）**：
+- D5 會對該鍵報 INVALID COMPARISON ⇒ **重新基線**，而**證據是 jsonl md5 相同**（v4/v5 都是
+  `a0a0ca742ca94e843c54b39981742738`），不是「M1 9/9」。流程見 skill `cgc-commit-gate` §2.5。
+- `decode_sweep.py` 的 `--profile` **預設就是 prefill250** ⇒ 不帶 `--profile` 的 sweep 會靜默取得
+  SPAC=1，而它的 `spac-on` 臂從此與 `baseline` **同義**（退化）。要真正的 SPAC A/B 用
+  `--profile prod25 --arms baseline,p25-nospac`，或 `prefill250:CGC_SPAC=0`。
 
 ## 現況結論（2026-09-15 收盤，供後續對照）
 

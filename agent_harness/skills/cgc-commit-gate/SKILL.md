@@ -204,6 +204,30 @@ message 講清楚三件事：(a) 不是這個 session 寫的（附 mtime 與它�
 覆蓋之後 INVALID 會再出現一次，**那是訊號不是故障**。
 **殘留**：gate 認證的是 oracle 配置的數值；出廠預設 5632 沒有自己的參考檔，只量得到跨配置的 9/9。
 
+**第二個實例（2026-09-16，把 `CGC_SPAC=1` pin 進 `prefill250`）**：2 個 diff，形狀是
+`ENV.CGC_SPAC: ref='<absent>' now='1'` ＋ `_ALPHA` 同款。這一次的處置是**重新基線 v5**，而
+**證據標準是「逐位元相同」，不是「M1 = 9/9」** —— v5 與 v4 的 jsonl **md5 相同**
+（`a0a0ca742ca94e843c54b39981742738`），代表 oracle rows 沒有被重推導、只是被重新蓋章；用 M1 9/9
+當證據是弱述句（「我看的時候是 9/9」），用 md5 相同才是「數字沒有動，動的是戳記」。
+
+固定順序（照抄，一次跑完不要跳）：
+1. `m123_oracle_gate.py --tag <t> --allow-incomparable` → 讀 INVALID 的 diff 與 M1/M2/M3；
+2. `m123_oracle_gate.py --tag <t5> --write-ref Backup/knifeedge_matrix/ref_..._v5_<why>.jsonl
+   --ref-note "<為什麼、以及證據>"` → 同時給出 v5-vs-v4 的比對；
+3. `md5 -q` 兩份 jsonl 對一眼（相同 ⇒ 名目重基線）；再確認新 `.cap` 的 `resolved.ENV` **有**記下新鍵；
+4. 改 `DEFAULT_REF` 並在旁邊寫 dated 註解；5. **再跑一次 gate，要求 `comparable=True`**。
+
+**不要把新鍵塞進 `DIAGNOSTIC_KEYS`。** 那個集合會把鍵從 `config_stamp` 濾掉 ⇒ `.cap` 從此不再記錄
+它，下一個讀者分不出 SPAC-on 與 SPAC-off 的基線。`CGC_SLOT_TABLE_GPU` 的前例**不適用**：那是「整條
+主張就是 bit-identity」的實驗旋鈕，不是生產預設。
+
+**盤點副作用（pin 一個 env 鍵會靜默重解析每一個「預設 profile 就是它」的工具）**：
+動手前跑 `grep -rn '"--profile", default=' scripts/check/*.py`。2026-09-16 的實際清單：
+`decode_sweep.py`（**預設 `prefill250`**）、`m123_oracle_gate.py`（同）、`ab_interleave.py`（`prod25`，不受影響），
+外加不吃 `--profile` 的 `llama_bench_matrix.py`（`prefill250` 臂）、`prefill_certifiability.py`（`--arm prefill250`）、
+`run_thermal_gate.sh → run_req2_retest.sh`（交付數字那條路）。附帶：`decode_sweep` 的 `spac-on` 臂在新
+base 上與 `baseline` **同義**（退化了），已在 ARMS 的註解寫明。
+
 ### 2.6 D5 的 dump 沒有 binary 指紋 ⇒ 重建完成後才跑，並對一眼時間
 
 `Backup/m123_oracle_gate/cap_<tag>.json` 只記 `created` / `profile` / `resolved.{ARG,ENV,CGCENV}`
