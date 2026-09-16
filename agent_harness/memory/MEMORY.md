@@ -10,6 +10,13 @@ llama.cpp 的 CGC fork：Metal + **expert cache pool**（專家權重常駐 SSD�
 專案根 `/Users/alexchuang/Documents/flashkv-devserver`（**是 git worktree**，`.git` 是一個檔案）。
 細節與逐日經過在 `.workbuddy/memory/2026-09-1{5,6}.md`（append-only）；本檔只留長期可引用的部分。
 
+## 分工（2026-09-16 起）
+
+**`agent_harness/` 歸另一個 WorkBuddy session；引擎層（`src/`、`scripts/check/`、decode／prefill 量測）
+歸本 session。** 動手前後各跑一次 `git status --porcelain -uall`；看到**不是自己的**
+modified／staged 檔就停手（對方可能正在做 E1 的 `git mv`，600+ rename）。
+**不要在對方 working 時重生索引或 commit**，也不要改 `agent_harness/` 底下的東西。
+
 ## 模型與 profile
 
 - `prod25` 用 `models/gguf/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`（→ `Nail-…-MTP-…-denseIQ4X.gguf`，
@@ -132,6 +139,27 @@ python3 scripts/check/m123_oracle_gate.py --tag <標籤>          # D5，自己�
 - 閘門 `ARMS=2 bash Backup/run_thermal_gate.sh`（不成立 exit 3，fail closed）；2 Hz 序列
   `Backup/thermal_pressure_probe.sh`；in-band 讀數已做進 `Backup/run_req2_retest.sh`。
   見 `docs/PREFILL250_CONDITIONAL_DELIVERY_20260916.html`（＋ `.md`）。
+
+## decode 25 t/s 的現況（2026-09-16 盤點；細節在 `.workbuddy/memory/2026-09-16.md` §U）
+
+- **基線不穩定，這是第一個 blocker：同一天、同一設定（`p25-gputime`、MTP=0、n=24、r=3）
+  量到 6.6 / 9.75 / 10.24 / 16.17 / 6.95 t/s —— 2.4× 散佈。**
+  而 **`decode_sweep.py` 沒有任何散熱儀器**（grep `thermal|notifyutil` 零命中）
+  ⇒ decode 上任何「快了 N×」都無法與散熱分開。
+  **把 prefill 那條 11 ms、非 root 的 `notifyutil -g com.apple.system.thermalpressurelevel`
+  讀數接進 decode 量測，是 decode 工作的第一步。**
+- 病因已證明是**序列化**（`CGC_SUBMIT_AHEAD=1`：每步 82.5 → 31–44 ms；`gap` 12.3–22.4 ms/步
+  是可證的 GPU 閒置；~44% 步時間可移除）。**該探針輸出損壞**（`文摘文摘…`），
+  所以它的 16.82 t/s 不可引用；正道是 **D3／S1：expert→slot 查表搬到 GPU**。
+- **M1/M2/M3 現在不能說「保持」**：(a) S1 不過 M1（5/9；缺陷在 layer 18/19，POST 顯示
+  **token 0 相同、row ≥1 每層 6/6 不同**）；(b) **MTP ON 不過 `plain_match`**，
+  而 MTP 是 25 t/s 最可能的乘數。守護不變量只有三條：**ids 相同／canonical gather order
+  （按 expert id 排序）／`cap` 是常數**。
+- 到 25 的算術：9–10 × 1.78（D3 上界）≈ **16–18**，**還缺 ~1.5×**，只能來自 M4
+  （MTP 拒絕取樣 ＋ verify 真批次；accept 現 **19.9%**，MTP-on 是 **1.8× 淨損失**；M4 依賴 M1/M3）。
+- 相關文件：`docs/ROADMAP_PREFILL250_DECODE25_2026-09-13.md`（W1/W2/W3、M0–M6）、
+  `docs/REMAP_ROUNDTRIP_REMOVAL_PLAN_2026-09-15.md`（D0–D3、S1 診斷）、
+  `docs/M1_POOL_SPLIT_COST_2026-09-14.md`。
 
 ## 長期事實（踩過就不該再踩）
 

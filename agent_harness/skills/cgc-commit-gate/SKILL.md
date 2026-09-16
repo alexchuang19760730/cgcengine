@@ -10,36 +10,71 @@ agent_created: true
 > 能被 `agent_harness/scripts/auto_git_push.ps1` 定時推送；原檔改了這裡**不會**自動跟上。
 > 要改 skill 請改原檔，再重跑 `Backup/import_harness_snapshot.py`。
 
-# flashkv-devserver 提交閘門（流程與陷阱）
+# flashkv-devserver 提交閘門
 
 專案：`/Users/alexchuang/Documents/flashkv-devserver`
 （**是 git worktree**，`.git` 是一個檔案 → `.../flashkv0516/.git/worktrees/flashkv-devserver`）
 
-## 30 秒版：標準提交指令
+**本檔按主題編排**：§1 環境陷阱 ／ §2 閘門鏈 ／ §3 索引 ／ §4 併行 writer ／ §5 憲章（D6 與快照）
+／ §6 收尾與 push ／ §7 commit 風格 ／ §8 附錄（歷史輪次索引）。
+**要動手就從 §0 的指令區塊開始，卡住再查對應主題。**
+
+### 動手前必記（只有這 8 條會真的弄壞 commit；細節在後面對應節）
+
+1. 手動預演要自己帶 `BIN_DIR='src/llama.cpp/build/bin'`，否則閘門全 SKIP 卻印 `OK`（§1.1）。
+2. 提交要 `RUN_REPLAY_BENCH=0`——這是**依 D2**（基線 stale），不是腳本預設（§2.3）。
+3. 有動 `src/` ⇒ 跑 `m123_oracle_gate.py`，且**先看 `comparable` 再讀 M1/M2/M3**；
+   **D5 的白皮書那一半沒有豁免**（§2.4 §2.5）。
+4. 建置新鮮度看**建置輸出有沒有編譯行**，不是 exit code 或 mtime（§2.9）。
+5. 索引重生順序固定、**每一次**都要：先 `build_memory_index.py`、後 `index_assets.py`（§3.1）。
+6. 「commit 之後才知道的事」（hash／push／gate 輸出）⇒ 收尾通常是**兩個 commit**（§6.1）。
+7. 在 `src/` 上做過實驗 ⇒ 還原要證到**產物 md5 逐位元相同** ＋ `git status --short -- src/` 空（§2.10）。
+8. 動手前後各跑一次 `git status --porcelain -uall`；看到**不是你改的** modified／staged 檔
+   ⇒ 停下找 owner，只新增不修改、不重生索引、不 commit（§4）。**`agent_harness/` 目前歸另一個
+   session（他在做 E1），引擎層（`src/`、`scripts/check/`）歸這個 session。**
+
+---
+
+## 0. 30 秒版：標準提交指令
 
 ```sh
 cd /Users/alexchuang/Documents/flashkv-devserver
-# 0) 引擎改動 → 先跑 D5 的數值閘門（~23 s，自己起 server）
-python3 scripts/check/m123_oracle_gate.py --tag <標籤>
-# 0b) 這一輪若做過 git stash 換臂的 A/B，或動過跨 dylib 邊界的 struct：
-#     build tree 現在屬於「另一臂」——先重建，再跑任何測試（見陷阱五）
-# 1) 若有動任何被索引的檔案 → 依序重生索引（不確定就先跑 --check，它會印出漂移）
-python3 agent_harness/engine_loop/memory/build_memory_index.py   # 先：寫 INDEX.jsonl
-cd agent_harness/engine_loop && python3 index_assets.py && cd -   # 後：MANIFEST 記錄 INDEX 的 bytes/mtime
-# 2) 預演閘門（不要盲目提交）
+
+# (a) 若有動 src/ → 先跑 D5 數值閘門（自己起 server，所以先確認 8080 空）
+lsof -nP -iTCP:8080 -sTCP:LISTEN ; pgrep -fl llama-server     # 兩者都要空
+python3 scripts/check/m123_oracle_gate.py --tag <標籤>        # ~40–60 s（含載入模型 8–9 s）
+#     重建完成後才能跑（dump 沒有 binary 指紋，見 §2.6）
+
+# (b) 若做過 git stash 換臂，或動過跨 dylib 邊界的 struct → 先重建再跑任何測試（§2.12）
+
+# (c) 有動被索引的檔案 → 依序重生索引（順序固定，見 §3.1）
+python3 agent_harness/engine_loop/memory/build_memory_index.py    # 先：寫 INDEX.jsonl
+cd agent_harness/engine_loop && python3 index_assets.py && cd -   # 後：MANIFEST 記 INDEX 的 bytes/mtime
+
+# (d) 預演閘門（不要盲目提交）
 BIN_DIR='src/llama.cpp/build/bin' RUN_REPLAY_BENCH=0 bash scripts/check_build_tracked.sh --repo "$PWD"
-# 3) 提交（RUN_REPLAY_BENCH=0 必須在 commit 指令的環境裡 —— hook 繼承環境）
-RUN_REPLAY_BENCH=0 git commit -F <message 檔>
+
+# (e) 提交（RUN_REPLAY_BENCH=0 必須在 commit 指令的環境裡 —— hook 繼承環境）
+RUN_REPLAY_BENCH=0 git commit -F Backup/commit_msg_*.txt
+
+# (f) 推兩個遠端，並用 ls-remote 的真實 SHA 驗三處相同（§6.2）
 ```
 
-## 陷阱一：`BIN_DIR` 沒指定 → 閘門全 SKIP 卻印 OK
+**定調兩句**：D5 的閘門很便宜（~25 s），**不要用結構論證取代它**；「commit 之後才知道的事實」
+結構上塞不進被提交的 commit，所以**收尾常常是兩個 commit**（§6.1）。
+
+---
+
+## 1. 環境陷阱（sandbox ／ shell ／ 工具）
+
+### 1.1 `BIN_DIR` 沒指定 → 閘門全 SKIP 卻印 OK
 
 `check_build_tracked.sh` 預設看 `build/bin`，**本 repo 的產物在 `src/llama.cpp/build/bin`**，
-所以預設會讓追蹤／rpath／deadlock／原始碼↔binary 同步／replay 全部 SKIP，最後仍印一句
-無條件的 `OK`。這是 B7（可被跳過的閘門不是閘門）的實例。
-**`pre-commit` hook 已經幫你帶了 `BIN_DIR='src/llama.cpp/build/bin'`**，所以你手動跑要自己帶。
+所以預設會讓追蹤／rpath／deadlock／原始碼↔binary 同步／replay 全部 SKIP，最後仍印一句無條件的 `OK`。
+這是 B7（可被跳過的閘門不是閘門）的實例。**`pre-commit` hook 已經幫你帶了
+`BIN_DIR='src/llama.cpp/build/bin'`**，手動跑要自己帶。
 
-## 陷阱二：hook 落點在 worktree 之外，寫死路徑會偽 PASS
+### 1.2 hook 落點在 worktree 之外，寫死路徑會偽 PASS
 
 `git rev-parse --git-dir` → `/Users/alexchuang/Documents/flashkv0516/.git/worktrees/flashkv-devserver`，
 而 hook 在 **common dir**：`/Users/alexchuang/Documents/flashkv0516/.git/hooks/pre-commit`。
@@ -47,23 +82,90 @@ RUN_REPLAY_BENCH=0 git commit -F <message 檔>
 `REPO_ROOT="$(git rev-parse --show-toplevel)"` **在執行時解析**——刻意不寫死，否則從別的 worktree
 commit 時會去驗錯的 repo（偽 PASS）。自己重裝 hook 時要保留這個特性。
 
-## 陷阱三：`RUN_REPLAY_BENCH` 的預設有兩層，不要搞混
+### 1.3 `grep` 在這個 sandbox 會靜默失效 ⇒ 用內建 Grep 工具
 
-- 腳本自身預設：`check_build_tracked.sh:559` 是 `RUN_REPLAY_BENCH:-1` → **會跑**（然後因為沒有
-  8080 上的活 server 而 FAIL）。
+實測：`grep -n "SIGTERM\|SIGINT" <file>`（BSD BRE 把 `\|` 當字面）與 `grep -n "^## "` **都回空**，
+exit code 在 0/1 之間不一致，而檔案裡**明明有**那些字串（`sed -n` 與內建 Grep 都看得到）。
+**一個「查不到＝沒有」的假陰性會直接變成結論**，這與 B7／B12 同族。
+例外（已雙向量過，可用）：`strings -a <file> | grep -q <str>` 這種用法是好的（MTP-on rc=0、MTP-off rc=1）。
+
+### 1.4 zsh 不對未加引號的參數做 word-split
+
+`for pair in "a b"; do set -- $pair; echo $2; done` 在 zsh 下 **`$2` 是空的**，會得到
+`fatal: Not a valid object name`，看起來像「那個 SHA 不存在」——**是 shell 把參數吃掉了，不是 git 的問題**。
+直接寫成兩個獨立命令，別用迴圈拆字串。
+
+### 1.5 macOS 沒有 `timeout`／`gtimeout`；`ps` 被擋但 `pgrep` 可用
+
+要做「啟動 30 秒後自動收掉」的 smoke，用背景 PID ＋ 有界 sleep：
+
+```sh
+bash -c 'CGC_SERVER_PROFILE=prefill250 CGC_SERVER_UBATCH=4096 bash scripts/run_server.sh \
+           >/tmp/p3.txt 2>&1 & P=$!; sleep 32; kill -TERM $P; sleep 5;
+         kill -0 $P 2>/dev/null && echo STILL_ALIVE || echo EXITED'
+pgrep -fl llama-server      # 必須空
+```
+
+判準是 log 裡同時有 `model loaded` 與 `listening on http://0.0.0.0:8080`，而且 `SIGTERM`／`SIGINT`
+走優雅關閉（`[CGC] Received SIGINT — initiating graceful shutdown` ⇒ 不洩漏 Metal buffer；
+`kill -9` 才會）。
+
+**要知道「哪些行只印在真實啟動路徑」的話，先確認探針有沒有走到那裡。** `run_server.sh` 的零成本探針
+有兩個，但**都在 `[fit]` 之前就退出**：`CGC_SERVER_STRICT_BUDGET=1` 在 `[防護 2d]` 印完預算段就 `exit 1`；
+`CGC_SERVER_LOAD_MODE=mmap` 在 `[防護 2e]` 就 `exit 1`。所以 `[fit]`／`[kv]` 這兩行**只能用真實啟動驗**。
+反過來說，只改 `[budget]` 那一段時，這兩個探針就能在零載入成本下把四種情境都印出來——**不要為了看一行
+echo 去載 13 GB 的模型**。
+
+### 1.6 `Backup/` 與 `.workbuddy/` 進不了 commit（別浪費時間找）
+
+`.gitignore:396` 排除 `Backup/`（含所有證據檔與 commit message 草稿）、`.workbuddy/`（含 `memory/`）、
+`bin/`（`TurboFieldfareCLI-*`）、`__pycache__/`。
+⇒ **message 草稿放 `Backup/` 是安全的**（它本來就不會被提交），但它不會被提交——message 內容要真的
+寫進 commit。**同理：在 `Backup/` 裡修好的量測腳本不算交付**（要嘛搬進 `scripts/`，要嘛在 final reply
+明說它只存在於本機）。
+
+### 1.7 新增 C++ 測試編譯產物會讓 `git status` 不空
+
+`scripts/check/*.cpp` 若會被編成同名無副檔名的執行檔（目前只有 `expert_cache_ensure_batch_order.cpp`），
+要在 `.gitignore` 加**該檔的絕對路徑**（`/scripts/check/<name>`），
+**不要用 `scripts/check/*` 這種會吞掉 source 的樣式**。`.gitignore` 本身**不在**索引裡（改它不會讓
+`--check` 紅）。
+
+---
+
+## 2. 閘門鏈
+
+### 2.1 誰在守著 commit：`check_build_tracked.sh`，不是 e2e gate
+
+`precommit_e2e_gate.sh` **刻意沒有**接進 hook（`00b70bebc` 明載「Deliberately NOT done here: whether
+the hook should invoke precommit_e2e_gate.sh … It needs an explicit decision」）。
+所以缺少 e2e 是**既定決定**，不是遺漏——commit message 要這樣寫。
+
+### 2.2 預演與 SKIP 的報法
+
+預演指令見 §0(d)。判準是 **0 FAIL，且每一個 SKIP 都逐列有理由**；
+`OK: 沒有 FAIL —但本次有 4 個區段被 SKIP…` 這句是腳本自己提醒你「OK 只代表沒有失敗」。
+最常見的 4 個 SKIP：非 dev 分支的 @rpath、`RUN_CGC_PROD_ACCEPT`、`RUN_DEPLOY_HARMONYOS_ACCEPT`、
+以及 `RUN_REPLAY_BENCH=0`。
+
+### 2.3 `RUN_REPLAY_BENCH` 的預設有兩層，不要搞混
+
+- 腳本自身預設 `check_build_tracked.sh:559` 是 `RUN_REPLAY_BENCH:-1` → **會跑**（然後因為沒有 8080 上
+  的活 server 而 FAIL）。
 - 專案慣例 **D2**（`agent_harness/CONVENTIONS.md:447`）：**`RUN_REPLAY_BENCH=0` 一律預設**。
-  D2 給的理由是 **`.replay_bench_baseline.json` 已 stale**（2026-09-08，commit `37305dbc6` 起沒動），
+  D2 的理由是 **`.replay_bench_baseline.json` 已 stale**（2026-09-08、commit `37305dbc6` 起沒動），
   跑它等於拿舊基線比新程式。
 
-⇒ 提交時要 `RUN_REPLAY_BENCH=0 git commit ...`（hook 繼承環境）。
-引用時要說是「依 D2」，不可說成「腳本預設」。
+⇒ 提交要 `RUN_REPLAY_BENCH=0 git commit ...`（hook 繼承環境）。**引用時要說「依 D2」，
+不可說成「腳本預設」。**
 
-## 陷阱四（最貴的）：D5 的閘門很便宜，別用結構論證取代它
+### 2.4 D5：它其實有**兩半**
 
-`D5` 要求每次 commit 前跑 **llama-bench + M1/M2/M3 + 最新 M2 oracle**。
-`scripts/check/m123_oracle_gate.py` **只花約 23 秒**，而且會**自己**透過 `run_server.sh` 起 server
-（所以 profile／env allowlist／load path 都是生產那套，不是會漂移的手寫 argv），
-送同一個決定性 probe，與最新 M2 oracle 比對 logits：
+原文是「每次 commit 附一份技術白皮書，**並**在提交前跑完 `llama-bench` + M1/M2/M3 + 最新 M2 oracle」。
+
+**數值那一半**：`scripts/check/m123_oracle_gate.py` 只花約 23 s（含載入模型 8–9 s 時全程 40–60 s），
+而且會**自己**透過 `run_server.sh` 起 server（所以 profile／env allowlist／load path 都是生產那套，
+不是會漂移的手寫 argv），送同一個決定性 probe，與最新 M2 oracle 比對 logits：
 
 ```
 M1 numeric identity 9/9   M2 decision agreement 9/9   M3 top-k set 9/9
@@ -71,223 +173,80 @@ M1 numeric identity 9/9   M2 decision agreement 9/9   M3 top-k set 9/9
 comparable=true  config_diffs=[]   ← 兩端配置由 run_server.sh CGC_DUMP_ENV=1 解析
 ```
 
-它把「這個改動應該不影響數值」從推論變成測量。**判斷「這個 repo 的慣例要不要跑它，
-要讀前幾個 commit 的 body，不是讀 CONVENTIONS.md。** 動到 engine 的前幾個 commit
-（`53b7df693`、`25d61278f`）都在 message 裡報告了 M1/M2/M3 數字 ⇒ 跳過＝打破一個正在被遵守的慣例。
-（教訓：`eng-gate-0016`。）
+summary 落在 `Backup/m123_oracle_gate/summary_<tag>.json`，**tag 自己取**。
 
-## 陷阱五：`git stash` 換臂之後，build tree 屬於**另一臂**；而 struct 加成員是連結器看不見的 ABI 破壞
+**白皮書那一半沒有豁免。** 純 doc/腳本的 commit 在「`src/`」那一半可以不跑，但白皮書要出
+**新日期的檔**，不要就地改既有的（本 repo `docs/` 的慣例：`PREFILL250_DECODE25_WHITEPAPER_*` 有
+1745／1810／1900／2240／2355 多個版本）。**白皮書可以由別的 session 產出**；納入你的 commit 時要在
+message 講清楚三件事：(a) 不是這個 session 寫的（附 mtime 與它引用的 commit）、(b) 你核對過哪些數字、
+(c) 你**沒有**逐字審閱。版式與取材清單見 skill **`cgc-whitepaper-delivery`**（含「同批檔名要指名到
+`_HHMM`」）。
 
-做 A/B 的常見手法是 `git stash` 掉修法 → 重建 → 跑舊臂 → `git stash pop`。**pop 不會重建**，
-所以 `src/llama.cpp/build/bin` 留著舊臂的產物。若這一輪又在跨 dylib 邊界的 struct 加了成員，
-那就同時中了第二層：`llama_expert_cache` 這種以**指標**傳遞的 struct，新增 8 bytes 會把後續每個
-成員的偏移整體推移，而**連結器只看得見符號、看不見成員偏移**——不會是連結錯誤，而是
-「照新標頭編的 harness 連上照舊佈局編的庫」，症狀是**崩在函式庫裡**：
+**實務判準**：D5 的數值那一半看「有沒有動 `src/`」，不是「有沒有動 engine 邏輯」。逐個 commit 數過
+`a22ebe88e` / `6ceeb281b` / `57bd90801` / `e0152777d` 全部 **0 個 `src/` 檔**，四者 message 都**沒有**
+報告 M1/M2/M3；報告它的是動到 `src/` 的 `2b284667f` 與 `2162e8cbd`。
+注意 `e0152777d`（subject 就叫 *the D5 gate is cheap -- run it*）本身 0 個 src 檔——它是 `2162e8cbd`
+的補記 commit。⇒ **一個純 doc/腳本的 commit 技術上可以不跑，但跑它只花 23 秒**，而「省下 23 秒然後
+在 message 裡用一段話解釋為何不跑」是這個 repo 已經明確判為錯的做法（`eng-gate-0016`）。**跑了就寫出來。**
 
-```
-SIGSEGV / EXC_BAD_ACCESS (KERN_INVALID_ADDRESS at 0x0)
-  libllama.0.0.239.dylib  llama_expert_cache_ensure_batch + 1068
-```
+### 2.5 D5 的 oracle 旋鈕是「釘住的」——它會擋下一種你以為沒事的改動
 
-2026-09-16 實例：新增 `n_hit_adopted_queued` 讓 `ever_loaded` 從 `0x608` 移到 `0x610`；
-舊庫把 `0x608` 讀成 `n_slot_table_unchanged`（`size_t`，值 0）當成 data pointer 去索引。
+`m123_oracle_gate.py` 有 `ORACLE_PINNED_ENV = ("CGC_SERVER_BATCH=6144", "CGC_SERVER_UBATCH=6144")`
+（放在 `DEFAULT_REF` 旁邊），在 `resolve_launch` 之前併入，並把**有效集合印在啟動前**。
+這必要，因為 gate 說明文字原本宣稱「預設會重現 oracle 配置（batch 6144）」，而那句話**寄生在
+`prefill250` 的生產預設值上**：把生產預設改成 5632 之後，gate 立刻對 `CGCENV.BATCH` / `CGCENV.UBATCH` /
+`ARG[27]` / `ARG[29]` 四列差異報 **INVALID COMPARISON**，而同一份輸出裡 M1/M2/M3 都是 9/9
+（印著 *printed for information, NOT a verdict*）。
 
-**診斷四步，一分鐘內收斂（不要先去改測試——我的第一反應就是回頭審測試的初始化，
-那條路會一路改到看不出問題，因為測試本身沒錯，錯的是它連到的庫）：**
+⇒ **改了 `prefill250` 的生產預設（或任何被 gate 預設 profile 帶上的 knob），先看 `comparable` 欄位
+再讀 M1/M2/M3**；`comparable=False` 時那三個 9/9 不是裁決。
+要比另一個配置就顯式覆蓋（`--env`）並**重新基線**（`--write-ref` ＋ `--no-pin-oracle-env`）——
+覆蓋之後 INVALID 會再出現一次，**那是訊號不是故障**。
+**殘留**：gate 認證的是 oracle 配置的數值；出廠預設 5632 沒有自己的參考檔，只量得到跨配置的 9/9。
 
-```sh
-# a) 符號有沒有被導出（有 = 不是連結問題）
-nm -gU src/llama.cpp/build/bin/libllama.0.0.239.dylib | grep expert_cache
-# b) 兩套偏移：寫個 offsetof 探針，與反組譯回推的偏移對照
-#    otool -tvV <dylib>，故障位址 = 符號起始 + symbolLocation（.ips 的 symbolLocation 就是它）
-# c) 這份 dylib 是新碼還是舊碼：找一個本輪新增的字串
-strings src/llama.cpp/build/bin/libllama.0.0.239.dylib | grep "CGC-BATCH-INVARIANT"   # 空 = 舊碼
-# d) mtime 一眼看完
-stat -f "%Sm %N" -t "%Y-%m-%d %H:%M:%S" src/llama.cpp/build/bin/libllama.0.0.239.dylib
-```
+### 2.6 D5 的 dump 沒有 binary 指紋 ⇒ 重建完成後才跑，並對一眼時間
 
-**規則**：動到跨 dylib 邊界的 struct ⇒ 與該標頭連結的測試／工具要和**它所連的樹同狀態重建**；
-`stash pop` 之後的第一件事是重建，不是跑測試。做負對照時要**兩臂都重建庫與 harness**
-（否則兩臂的 harness 會各自連錯），這樣才拿得到 HEAD 的 FAIL / 修好的 PASS。
+`Backup/m123_oracle_gate/cap_<tag>.json` 只記 `created` / `profile` / `resolved.{ARG,ENV,CGCENV}`
+—— **沒有 md5、沒有 UUID**。所以若 gate 是在 `cmake --build` 收尾期間起的，那份 PASS **不可歸屬**
+（實例：12:12 的 `flagalign` 與 `libllama-*-impl.dylib` 的 12:12 寫入重疊）。
+處置：重建完成後才跑 gate，把 `cap_<tag>.json` 的 `created` 與最新產物 mtime 對一眼；一旦重疊就
+**換新 tag 重跑，只引用新的那一份**（改用 12:18 的 `flagalign2`，舊的不引用也不刪，留在 `Backup/`）。
+成本 25 s，比事後解釋便宜。
 
-## 誰在守著 commit：`check_build_tracked.sh`，不是 e2e gate
+### 2.7 check 8：原始碼 ↔ 產物同步
 
-`precommit_e2e_gate.sh` **刻意沒有**接進 hook（`00b70bebc` 明載
-「Deliberately NOT done here: whether the hook should invoke precommit_e2e_gate.sh …
-It needs an explicit decision」）。所以缺少 e2e 是**既定決定**，不是遺漏——commit message 要這樣寫。
-
-## 索引重生順序（同輪踩過兩次）
-
-`INDEX.jsonl` 與 `MANIFEST.jsonl` 是 **byte 級快照，不是內容摘要**，改一個字就漂移。
-
-1. **先** `memory/build_memory_index.py`（寫 `memory/INDEX.jsonl`）
-2. **後** `agent_harness/engine_loop/index_assets.py`（`MANIFEST.jsonl` 會記錄 `INDEX.jsonl` 的
-   bytes/mtime）
-
-順序顛倒 → `index_assets --check` 報漂移；而且**只重生 manifest 不會修**，必須兩者都重跑。
-推論：**memory 寫完要放在索引重生之前**，否則會在最後一刻把已提交的索引弄成 stale。
-`index_assets.py` **不要加 `--out`**（相對路徑會寫出第二份 manifest）。
-
-**這條要在「每一次」重生時按序跑，不是只有第一輪（2026-09-16 第四次踩）。** 最常見的犯法是在同一輪裡
-**第二次**重生時把兩個指令的順序寫反（本輪：改完 `lessons.jsonl` 的路徑後，先跑 `index_assets.py`
-才跑 `build_memory_index.py`）。漂移的**簽名很好認**——是 **mtime** 而不是 bytes：
-
-```
-agent_harness/engine_loop/memory/INDEX.jsonl: mtime: manifest '2026-09-16T11:15:00' vs disk '2026-09-16T11:15:15'
-```
-
-因為 `build_memory_index.py` **每次都會重寫 `INDEX.jsonl`，即使內容一字不變**（所以 bytes 相同、
-只有 mtime 動）。看到 `INDEX.jsonl` 的 mtime 漂移，就是這一條，不是內容問題：
-**重跑一次「先 `build_memory_index.py` 再 `index_assets.py`」即可**，不要去找內容差異。
-檢查的收尾永遠是兩條 `--check` 都跑（`index_assets.py --check` 的錯誤訊息會被尾端那段
-`--out` 說明包住，直接 `tail` 會只看到說明文字而看不到結論——要濾 `OK:` / `error` 這兩類行）。
-
-**推論的推論（2026-09-16 第三輪實測）：commit 之後才寫的 memory，會需要第二個「resync」commit。**
-commit 的結果（hash、推送成功與否、gate 的實際輸出）**只有 commit 之後才知道**，
-所以「把本輪收尾寫進 `memory/YYYY-MM-DD.md`」這句話**結構上不可能**滿足上面那條順序。走過的實際序列：
-
-```
-RUN_REPLAY_BENCH=0 git commit ...      # fd246c756
-# 此時把 commit hash / D5 / gate / push 結果 append 進 .workbuddy/memory/2026-09-16.md
-python3 memory/build_memory_index.py && (cd .. && python3 index_assets.py)   # 順序照舊
-git add -A && RUN_REPLAY_BENCH=0 git commit -m 'docs(index): resync ...'     # a22328adb
-```
-
-不要試圖把收尾 memory 塞進被提交的那個 commit（做不到），也不要把漂移留到下一輪
-（下一個人會被 `--check` 的紅字誤導成「上一輪沒重生索引」）。**多一個 3 行的 resync commit 是正確答案。**
-它只動 `MANIFEST.jsonl` + `INDEX.jsonl` 兩個檔，沒有 `src/`，所以 **D5 不必重跑**（`271538f2f`／
-`e0152777d` 的前例），但 message 要寫明這一點。
-
-**哪些檔案被索引（`--check` 會紅的）** —— 不只 `traces/*.jsonl` 與 `.workbuddy/memory/*.md`：
-2026-09-16 那一輪改了 `docs/PREFILL250_THERMAL_TRANSIENT_20260916.html`、
-`agent_harness/CONVENTIONS.md`、`scripts/check/powermetrics_gpu_freq.sh` 與 `..._parse.py`，
-**以及 `index_assets.py` 自己**（改策展列也會改自己的 bytes），每一個都讓 `--check` 紅。
-**不確定就跑 `index_assets.py --check`，它會直接印出漂移的 path 與 bytes 變化** —— 它就是為此存在的，
-比猜便宜。
-
-**新增 `scripts/check/` 底下的腳本時，要一併加進 `index_assets.py` 的 `CURATED` 列**，
-否則它只會被自動索引、並讓 `index_assets.py` 一直印
-`[info] N auto-indexed script(s) still need a role and a note`。
-格式是 `(path, role, loop, replayable, produces_record, note)`；
-`role` 用該檔的分類詞（`gate` / `probe` / `measure` / `evidence` / `log` / `compare` / `arms` /
-`runner` / `conclusion` / `index`），`note` 寫成「它做什麼 + 讀者該拿它做什麼」。
-改完 `CURATED` 要**再重生一次 manifest**（它改了 `index_assets.py` 自己的 bytes）。
-
-## 檢查 8：原始碼 ↔ binary 同步
-
-含 `src/` 原始碼的 commit，必須把對應的 build 產物一起 staged，且**binary 比 staged 原始碼新**。
-例：改 `src/llama.cpp/ggml/src/ggml-backend.cpp` → 要 stage
-`src/llama.cpp/build/bin/libggml-base.0.19.0.dylib`（`libggml-base` 是 backend registry／排程器
-所在，`ggml-backend.cpp` 編在裡面）。
-注意 `llama-server` 的 mtime **不必**更新：它動態連 `libggml-base.dylib`，
-install name 不變就不需 relink。
-
-已知對應（2026-09-16 實測）：
+含 `src/` 原始碼的 commit，必須把對應 build 產物一起 staged，且**binary 比 staged 原始碼新**。
+注意 `llama-server` 的 mtime **不必**更新：它動態連 `libggml-base.dylib`，install name 不變就不需 relink。
+只改 `.h` 也要重建並 stage 同一個 dylib（成員偏移變了，見 §2.12）。
+`git status --short` 有時因為 stat cache 沒把它列出來——**用 `git diff --stat` 確認**，它會直接印
+`Bin 3136592 -> 3136592 bytes`。
 
 | 改到的原始碼 | 要一起 staged 的產物 |
 |---|---|
 | `src/llama.cpp/ggml/src/ggml-backend.cpp` | `src/llama.cpp/build/bin/libggml-base.0.19.0.dylib` |
 | `src/llama.cpp/src/llama-expert-cache.cpp` / `.h` | `src/llama.cpp/build/bin/libllama.0.0.239.dylib` |
 
-只改 `.h` 也要重建並 stage 同一個 dylib（成員偏移變了，見陷阱五）。
-`git status --short` 有時因為 stat cache 沒把它列出來——用 `git diff --stat` 確認，
-它會直接印 `Bin 3136592 -> 3136592 bytes`。
+**check 8 曾經獨漏 `.m`。** 它的 case 樣式列了 `*src/*.cpp|*.h|*.c|*.mm|*.metal`——沒有 `.m`。
+後果：改 `ggml/src/ggml-metal/ggml-metal-context.m` 會被判成「8 無 llama 原始碼變更（僅 doc/腳本/產物）」
+＝**假 PASS**，並同時跳掉「產物有沒有 staged」與「binary 比原始碼新」兩條。已補 `*src/*.m`。
+**新增任何會被編進 binary 的副檔名時要同步這個樣式**，並用陽性對照驗它（餵一份含該副檔名的假
+staged 清單，看 `staged_src` 是不是 0）。
 
-## 不會進 commit 的東西（別浪費時間找）
+**check 8 會被「建置戳記」誤導。** `libggml-base` / `libggml-cpu` 內嵌 build stamp
+（`strings` 差集恰好是 `8af8c99bd` → `efeade7e2-dirty`）：`git diff --stat` 印
+`Bin 771480 -> 771480 bytes`（同大小不同內容），而 `cmp -l | wc -l` 可能報到 **47940** 個位元組不同
+——那是戳記字串變長造成的**整體位移**，不是程式碼改動。**判準是 `strings` 的差集，不是 `cmp` 的計數。**
+同族的另一個誤讀：`llama-server` 與 `libllama-server-impl.dylib` 被重寫（mtime 更新）但可以與 HEAD
+**逐位元相同**（install name 沒動就不需 relink）⇒ `git diff --stat` 是空的，不要因為「它被重建過」
+就預期它會出現在 staged 清單裡。
 
-`.gitignore`：`.workbuddy/`（含 `memory/`）、`Backup/`（commit message 草稿與所有證據檔）、`bin/`
-（`TurboFieldfareCLI-*`）、`__pycache__/`。所以 **commit message 草稿放 `Backup/` 是安全的**，
-但它不會被提交——message 內容要真的寫進 commit。
+### 2.8 「改了註解要不要重跑 D5」有確定答案：看產物 md5，不要靠推理
 
-## 提交後驗證收尾狀態
-
-```sh
-python3 agent_harness/engine_loop/traces/validate.py            # episodes/decisions/lessons，無重複 id
-python3 agent_harness/engine_loop/traces/selftest.py            # 必須 10/10
-python3 agent_harness/engine_loop/index_assets.py --check       # <N> assets
-python3 agent_harness/engine_loop/memory/build_memory_index.py --check
-git status --porcelain --untracked-files=all                    # 必須空
-```
-
-**最後那條會因為新增的 C++ 測試編譯產物而不空。** `scripts/check/*.cpp` 若會被編成同名無副檔名的
-執行檔（目前只有 `expert_cache_ensure_batch_order.cpp`），要在 `.gitignore` 加**該檔的絕對路徑**
-（`/scripts/check/<name>`），不要用 `scripts/check/*` 這種會吞掉 source 的樣式。
-`.gitignore` 本身**不在**索引裡（改它不會讓 `--check` 紅）。
-
-## 本 repo 的 commit 風格（從 body 讀出來的）
-
-- subject 很長（常 90+ 字元，用 `--` 分兩段），型別前綴如 `engine(diag):`、`perf(prefill):`、`fix(ci):`。
-- body 逐項列出「為什麼原本是錯的」與量到的數字，並**明寫未跑什麼、為何未跑**，
-  不把 SKIP 折進「通過」。
-- 新知識要落成 `traces/lessons.jsonl` 的 lesson，**並放進同一個 commit**（`a22ebe88e`、`2b284667f`
-  都是這樣）。欄位固定為 `type/lesson_id/class/rule/because/counterexample_observed/applies_to/superseded_by`，
-  `lesson_id` 取 `eng-gate-NNNN` 續號（`validate.py` 會擋重複 id，`selftest.py` 要有 10/10）。
-  `class` 的既有詞表：`gate-integrity` / `measurement-hygiene` / `diagnosis` / `log-forensics` /
-  `source-reading` / `honest-bounds` / `smoke`。
-
-## 實測補充（2026-09-16 第二輪，`271538f2f`）
-
-**D5 的實務判準是「有沒有動 `src/`」，不是「有沒有動 engine 邏輯」。** 逐個 commit 數過：
-`a22ebe88e` / `6ceeb281b` / `57bd90801` / `e0152777d` 全部 **0 個 `src/` 檔案**，四者的 message
-都**沒有**報告 M1/M2/M3；報告它的是動到 `src/` 的 `2b284667f` 與 `2162e8cbd`。
-注意 `e0152777d`（subject 就叫 *the D5 gate is cheap -- run it*）本身 0 個 src 檔——它是
-`2162e8cbd` 的補記 commit，src 改動在前一個。
-⇒ 一個純 doc/腳本的 commit 技術上可以不跑，但**跑它只花 23 秒**，而「省下 23 秒然後在 message 裡
-用一段話解釋為何不跑」是這個 repo 已經明確判為錯的做法（`eng-gate-0016`）。跑了就寫出來。
-
-**`index_assets.py` 的 `CURATED` note 會腐爛，不是只有新腳本要加。** 本輪發現
-`powermetrics_gpu_freq_parse.py` 的 note 寫著`--selftest: 6/6`（實際 9/9）而且**沒提它已經會讀
-thermal sampler**——也就是索引在對讀者說「這支不會答散熱」。能力變動時要回頭改 note，
-而且**改完要再重生一次 manifest**（`index_assets.py` 索引自己）。
-另外 `[info] N auto-indexed script(s) still need a role and a note` 是**既有欠帳**（本輪 25 支），
-不是你那一次的錯，別為了消掉它去亂填 role。
-
-**`grep` 在這個 sandbox 會靜默失效——用內建 Grep 工具，不要用 bash 的 `grep`。**
-本輪實測：`grep -n "SIGTERM\|SIGINT" <file>`（BSD BRE 把 `\|` 當字面）與 `grep -n "^## "` 都回空，
-exit code 在 0/1 之間不一致，而檔案裡**明明有**那些字串（`sed -n` 與內建 Grep 都看得到）。
-一個「查不到＝沒有」的假陰性會直接變成結論，這與 B7／B12 同族。要搜內容就呼叫 Grep 工具。
-
-## 實測補充（2026-09-16 第三輪，`fd246c756` + `a22328adb`）
-
-**D5 的兩個實務細節：**
-- 它會**自己起 server**（`run_server.sh`），所以**先確認 8080 沒人**：
-  `lsof -nP -iTCP:8080 -sTCP:LISTEN` 與 `pgrep -fl llama-server` 都要空。
-- summary 落在 `Backup/m123_oracle_gate/summary_<tag>.json`，**tag 自己取**（本輪 `blockerstats`）。
-  輸出是 `M1 9/9 · M2 9/9 · M3 9/9 · fnv1a64 9/9 · cross-tab 9/0/0/0 · comparable=true`，
-  全程約 40–60 s（含載入模型 8–9 s，不是純 23 s）。
-
-**驗證 fast-forward 要用 `ls-remote` 的**真實 SHA**，不要用 tracking ref。**
-`git fetch <remote> <branch>` **只寫 `FETCH_HEAD`，不更新 `<remote>/<branch>`**，
-所以拿 `<remote>/demo/...` 去算 ahead/behind 可能在拿舊快照下結論。正確做法：
-
-```sh
-git ls-remote <remote> 'refs/heads/demo/sweet-spot-windows-fix'   # 拿遠端的真實 SHA
-git merge-base --is-ancestor <sha> HEAD && echo FF   # 是祖先 = 純 FF，不需要 force
-git rev-list --count <sha>..HEAD                     # 會推上去幾個
-# 推完再驗一次：三個 hash 應該完全相同
-```
-
-**zsh 的陷阱**：`for pair in "a b"; do set -- $pair; echo $2; done` 在 zsh 下 **`$2` 是空的**
-（zsh 不對未加引號的參數做 word-split），會得到 `fatal: Not a valid object name` 而看起來像
-「那個 SHA 不存在」——**是 shell 把參數吃掉了，不是 git 的問題**。直接寫成兩個獨立命令，別用迴圈拆字串。
-
-**`cmake --build` 是驗證 check 8 的最省事方法**：`cd src/llama.cpp && cmake --build build --target llama -j8`，
-若印 `Built target llama` 而**沒有任何編譯行**，就證明磁碟上的 dylib 確實由當前原始碼產生
-（比對 mtime 更強，且訊息可貼進 commit body）。本輪 md5 `4c4d811ae66c69ea1d794b95a54c5ecc`。
-
-## 實測補充（2026-09-16 第四輪，`bc9a184e2` + `8af8c99bd`）
-
-**「改了註解要不要重跑 D5」有確定答案：看產物 md5，不要靠推理。**
 註解改動不影響 codegen，但會**位移行號**，而 `__LINE__` 與 DWARF 行表都在二進位裡 ⇒ md5 會變、
-D5 就必須重跑。反過來，只要重建後 md5 與 D5 當時那份相同，就可以合法地不重跑並在 message 寫明理由。
-做法：**先把註解壓回原本的行數**再重建，然後比對 md5。本輪結果：
-
-```
-md5 before/after comment-restore rebuild = dd4d1bc4fbd8b1528eb73d813aae8dd4   (byte-identical)
-```
-
-⇒ message 寫「D5 未重跑，理由是產物逐位元相同」＋貼出 md5。這比「重跑一次然後說它 pass」
-資訊量更高，因為它同時證明了**沒有東西改變**。
+D5 就必須重跑。做法：**先把註解壓回原本的行數**再重建，然後比對 md5。實測：
+`md5 before/after comment-restore rebuild = dd4d1bc4fbd8b1528eb73d813aae8dd4`（byte-identical）。
+⇒ message 寫「D5 未重跑，理由是產物逐位元相同」＋貼 md5。這比「重跑一次然後說它 pass」資訊量更高，
+因為它同時證明了**沒有東西改變**。
 
 **clang 對多行巨集的 `__LINE__` 取「收尾括號」那一行，不是巨集名那一行。**
 `GGML_ABORT(...)` 的 invocation 從第 786 行開始、`);` 收在第 788 行 ⇒ 執行時印 `file:788`。
@@ -304,189 +263,21 @@ M("a",
 靜態查二進位內嵌行號：反組譯後找 `bl _ggml_abort`，往前找 `mov w1, #imm`
 （`ggml_abort(file, line, fmt, ...)` ⇒ x0=file、w1=line、x2=fmt）。
 
-**判斷「兩臂之間到底換了哪幾個 image」要用 crash report 的 `usedImages` UUID。**
-每份 `.ips` 都記錄了當次載入的每個 image 的路徑與 UUID（本地檔用 `dwarfdump --uuid` 對照）。
-把兩份報告的 `usedImages` 做 diff，就能證明一次 A/B 是不是單變數——這是**最便宜**的單變數證明，
-而且它在本輪推翻了我兩次直覺（一次把沒改的庫當成變了，一次把其實沒變的庫當成混淆項）。
-注意 `libobjc.A.dylib` 會因為 faulting thread 停在 `objc_msgSend` 內而出現／消失，
-那是清單呈現差異，不是載入差異。
+### 2.9 建置新鮮度的判準＝「建置輸出有沒有編譯行」
 
-**`imageOffset` 才是反組譯要用的偏移，而且前提是「當時那份二進位」還在。**
-`.ips` 的 `symbolLocation` 是相對**符號起點**，`imageOffset` 才是相對 **image base**。
-所以**重建前先備份舊產物**（本輪 `Backup/pre_mtp_rebuild_<date>/` ＋ `MANIFEST.txt` 記 md5/size/mtime），
-否則事後無法證明根因。這是 B17 的實務前提。
+`cmake --build` 的 exit code 在「已經最新」與「剛剛編好」**兩種情況都回 0**。
+⇒ check 8 的證據推薦 `cd src/llama.cpp && cmake --build build --target llama -j8`：
+印 `Built target llama` 且**沒有任何編譯行**＝產物由當前原始碼產生（比對 mtime 更強，訊息可貼進 body）。
+**反過來也成立：一旦它印出 `Building …`，就證明磁碟上的產物不是當前原始碼產生的，且先前在同一棵樹上
+取得的所有數字全部失效。** 實例：12:44 全量重建後，13:00 又編輯了 `ggml-metal-context.m`（只改註解）
+而沒有重建 ⇒ 12:44–13:50 之間每一筆量測（含出廠驗收與一份 D5 PASS）都屬於舊產物；
+`libggml-metal` md5 `968c36cf…` → `f2d1c961…`。check 8 的 mtime 規則會擋這一格（binary < source），
+但**它在 commit 前才跑，而量測更早發生**。
 
-**check 8 原本漏了 `.m`（本輪已修，但要知道它曾經長什麼樣）。**
-`check_build_tracked.sh` 的 case 樣式列了 `*src/*.cpp|*.h|*.c|*.mm|*.metal`——**獨漏 `.m`**。
-後果：改 `ggml/src/ggml-metal/ggml-metal-context.m` 會被判成
-「8 無 llama 原始碼變更（僅 doc/腳本/產物）」＝假 PASS，並同時跳掉「產物有沒有 staged」與
-「binary 比原始碼新」兩條。已補 `*src/*.m`。**新增任何會被編進 binary 的副檔名時要同步這個樣式**，
-並用陽性對照驗它（餵一份含該副檔名的假 staged 清單，看 `staged_src` 是不是 0）。
-
-**`traces/validate.py` 的 `class` 是封閉 enum。**
-可用值：`measurement-hygiene` / `log-forensics` / `diagnosis` / `gate-integrity` /
-`source-reading` / `honest-bounds` / `performance` / `smoke`。
-自創 class（本輪 `error-path-integrity`）會被擋下並印出整份可選清單。挑最接近的既值
-（「錯誤路徑的診斷判準」→ `diagnosis`），不要為了語意精確去擴 enum。
-
-**收尾永遠是兩個 commit。** 第二個是 resync（只動 `MANIFEST.jsonl` + `INDEX.jsonl`），
-因為「commit 之後才知道的事實」結構上不可能塞進被提交的那個 commit（`8af8c99bd` 是本輪實例）。
-
-## 實測補充（2026-09-16 第五輪，`b1c3f75c1` + `efeade7e2`）
-
-**D5 的 dump 沒有 binary 指紋，所以「這份 PASS 是哪個 build 跑的」事後無法證明。**
-`Backup/m123_oracle_gate/cap_<tag>.json` 只記 `created` / `profile` / `resolved.{ARG,ENV,CGCENV}`
-—— **沒有 md5、沒有 UUID**。因此若 gate 是在 `cmake --build` 收尾期間起的，那份 PASS
-就不可歸屬（本輪 12:12 的 `flagalign` 與 `libllama-*-impl.dylib` 的 12:12 寫入重疊）。
-處置：**重建完成後才跑 gate**，並把 `cap_<tag>.json` 的 `created` 與最新產物的 mtime 對一眼；
-一旦重疊就**換一個新 tag 重跑，只引用新的那一份**（本輪改用 12:18 的 `flagalign2`，
-舊的那份不引用也不刪，留在 `Backup/`）。成本 25 s，比事後解釋便宜。
-
-**macOS 沒有 `timeout`，也沒有 `gtimeout`（實測 `command not found`）。**
-要做「啟動 30 秒後自動收掉」的 smoke，用背景 PID + 有界 sleep：
-```sh
-bash -c 'CGC_SERVER_PROFILE=prefill250 CGC_SERVER_UBATCH=4096 bash scripts/run_server.sh \
-           >/tmp/p3.txt 2>&1 & P=$!; sleep 32; kill -TERM $P; sleep 5;
-         kill -0 $P 2>/dev/null && echo STILL_ALIVE || echo EXITED'
-pgrep -fl llama-server      # 必須空
-```
-判準是 log 裡同時有 `model loaded` 與 `listening on http://0.0.0.0:8080`，而且
-`SIGTERM`/`SIGINT` 走優雅關閉（`[CGC] Received SIGINT — initiating graceful shutdown`
-⇒ 不洩漏 Metal buffer；`kill -9` 才會）。
-
-**要知道「哪些行只印在真實啟動路徑」的話，先確認探針有沒有走到那裡。**
-`run_server.sh` 的零成本探針有兩個，但它們**都在 `[fit]` 之前就退出**：
-`CGC_SERVER_STRICT_BUDGET=1` 在 `[防護 2d]` 印完預算段就 `exit 1`；
-`CGC_SERVER_LOAD_MODE=mmap` 在 `[防護 2e]` 就 `exit 1`。所以 `[fit]`／`[kv]` 這兩行
-**只能用真實啟動驗**（上一個 recipe）。反過來說，只改 `[budget]` 那一段時，
-這兩個探針就能在零載入成本下把四種情境（超額 OK/拒跑、mmap 拒跑）都印出來
-——不要為了看一行 echo 去載 13 GB 的模型。
-
-**`--check` 的收尾是「兩條都跑」且要濾行：**`index_assets.py --check` 的結論行被尾端的
-`--out` 說明包住，直接 `tail` 只會看到說明文字；要濾 `OK:` / `error` 這類行才看得到結論。
-
-## 實測補充（2026-09-16 第六輪，`89dd85b23` + `2a71b332f`）
-
-**D5 的 oracle 旋鈕現在是「釘住的」，而且它會擋下一種你以為沒事的改動。**
-`m123_oracle_gate.py` 新增了 `ORACLE_PINNED_ENV = ("CGC_SERVER_BATCH=6144", "CGC_SERVER_UBATCH=6144")`
-（放在 `DEFAULT_REF` 旁邊），在 `resolve_launch` 之前併入，並把**有效集合印在啟動前**。
-這件事是必要的，因為 gate 說明文字原本宣稱「預設會重現 oracle 配置（batch 6144）」，
-而那句話**寄生在 `prefill250` 的生產預設值上**：把生產預設改成 5632 之後，gate 立刻對
-`CGCENV.BATCH` / `CGCENV.UBATCH` / `ARG[27]` / `ARG[29]` 四列差異報 **INVALID COMPARISON**，
-而同一份輸出裡 M1/M2/M3 都是 9/9（印著 *printed for information, NOT a verdict*）。
-⇒ 實務規則：**改了 `prefill250` 的生產預設（或任何被 gate 預設 profile 帶上的 knob），
-先看 gate 的 `comparable` 欄位再讀 M1/M2/M3**；`comparable=False` 時那三個 9/9 不是裁決。
-要比另一個配置就得顯式覆蓋（`--env`）並**重新基線**（`--write-ref` ＋ `--no-pin-oracle-env`）——
-覆蓋之後 INVALID 會再出現一次，那是訊號不是故障。
-**殘留**：gate 認證的是 oracle 配置的數值；出廠預設 5632 沒有自己的參考檔，只量得到跨配置的 9/9。
-
-**`cmake --build` 的輸出必須讀；`Building …` 那一行是「先前所有數字作廢」的通知。**
-check 8 的證據推薦用 `cmake --build --target …`（印 `Built target` 且**沒有任何編譯行**＝產物
-由當前原始碼產生），但反過來也一樣成立：**一旦它印出編譯行，就證明磁碟上的產物不是當前原始碼
-產生的**。實例：12:44 全量重建後，13:00 又編輯了 `ggml-metal-context.m`（只改註解）而沒有重建，
-於是 12:44–13:50 之間每一筆量測（含出廠驗收與一份 D5 PASS）都屬於舊產物；
-`libggml-metal` md5 `968c36cf…` → `f2d1c961…`。**exit code 兩種情況都是 0。**
-check 8 的 mtime 規則會擋這一格（binary < source），但它在 commit 前才跑，而量測更早發生。
-
-**check 8 會因為「建置戳記」把 `libggml-base` / `libggml-cpu` 列成 modified，那不是程式碼差異。**
-這兩個庫內嵌 build stamp（`strings` 差集恰好是 `8af8c99bd` → `efeade7e2-dirty`）。
-`git diff --stat` 會印 `Bin 771480 -> 771480 bytes`（同大小不同內容），而
-`cmp -l | wc -l` 可能報到 **47940** 個位元組不同——那是戳記字串變長造成的**整體位移**，
-不是 47940 個位元組的程式碼改動。判準是 `strings` 的差集。
-另一個同族的誤讀：`llama-server` 與 `libllama-server-impl.dylib` 被重寫（mtime 更新）
-但可以與 HEAD **逐位元相同**（install name 沒動就不需 relink）⇒ `git diff --stat` 是空的，
-不要因為「它被重建過」就預期它會出現在 staged 清單裡。
-
-**`Backup/` 底下的東西進不了 commit（`.gitignore:396`），所以那裡修好的 harness 不算交付。**
-`run_req2_retest.sh`、`run_mmap_ab.sh`、`commit_msg_*.txt` 全部在 `Backup/`。
-commit message 草稿放那裡是安全的（它本來就不會被提交），但**修好的量測腳本不會跟著上線**——
-要嘛把腳本搬進 `scripts/`，要嘛在 final reply 明說它只存在於本機。
-
-**本輪的 commit 形狀（照抄）**：`git add -A` → 預演（0 FAIL、4 SKIP 逐列有理由、check 8 兩條 PASS）
-→ `RUN_REPLAY_BENCH=0 git commit -F Backup/commit_msg_*.txt` → 推兩個遠端 →
-`ls-remote` 驗三處相同 → 收尾驗證 → **第二個 resync commit**（只動 `INDEX.jsonl` + `MANIFEST.jsonl`）。
-推送前務必先 `ls-remote <remote> 'refs/heads/<branch>'` 取**真實 SHA** 再
-`merge-base --is-ancestor`，不要拿 `<remote>/<branch>`（那個 ref 可能沒被 fetch 更新）。
-本輪兩次都是純 fast-forward：`efeade7e2..89dd85b23`、`89dd85b23..2a71b332f`。
-
-## 實測補充（2026-09-16 第七輪，`e688f346e` + `6b5c7d9f1`）
-
-**D6 是「不要把記憶複製進 `agent_harness/`」的條文——很反直覺，因為那正是常被要求做的事。**
-`CONVENTIONS.md` D6 明寫「專案記憶只由索引進入 loop，不複製」，`index_assets.py` 的 `CURATED`
-note 甚至硬寫 "never copied into the harness"。所以當要求是「把 memory/skill 匯入 agent_harness」
-時，**不要默默做、也不要默默拒絕**：依憲章 §E（「條文被推翻要標 `superseded_by` 而不是刪掉」）
-寫一份 **dated 修訂**——D6 對 loop 的約束不動，只多承認一份非權威快照，並**明寫未完成的義務**
-（§E 要求改 CONVENTIONS.md 走一次 PLAN §6.3 的閉環對照；若 `engine_loop/sft_pi/` 與
-`harness_engine/` 還不存在，就照實說它們不存在、義務尚未執行，不可寫成已完成）。
-
-**改 CONVENTIONS.md 時，同輪要一起修這些會變成假話的敘述**（實測每一處都會讓 `--check` 紅）：
-`index_assets.py` 的 `CURATED` note、同一檔的 auto-indexed note、
-`build_memory_index.py` docstring 的 "WHY AN INDEX AND NOT A MIRROR" 段、`engine_loop/README.md` §8。
-`grep` 抓不到就換內建 Grep——搜 `不複製|never copied|never as a copy|第二個權威` 一次掃完。
-
-**快照與索引的重生順序（多一層）**：改記憶 → `Backup/import_harness_snapshot.py`（刷新快照）
-→ `build_memory_index.py` → `index_assets.py` → resync commit。
-**`index_assets.py` 的掃描範圍不含 `agent_harness/memory/` 與 `agent_harness/skills/`**
-（只有 `scripts/check/*` + `docs/*` + `agent_harness/engine_loop/*` + `.workbuddy/memory/*`），
-所以在那裡新增目錄**不會**讓 manifest 漂移，也不會出現 "auto-indexed … need a role and a note"。
-要驗的是 `build_memory_index.py --check`，不是 `index_assets.py --check`。
-
-**`agent_harness/` 刻意不自足，不要把它拆成獨立 git repo。** `index_assets.py` 是
-`REPO = HERE/../..`、`build_memory_index.py` 是 `HERE/../../..`、`emit_episodes.py` 用
-`find_repo()` 往上找 `.git`——它索引的東西（`scripts/check/*`、`docs/*`、`Backup/cgc_logs`、
-`.workbuddy/memory/*`）**全在它外面**。巢狀 `.git` 會讓 `find_repo()` 停在那一層，從此看不到
-`Backup/`；submodule 的 gitlink 則讓主 repo 看不到檔案層變動（＝本專案最厭惡的安靜漂移）。
-要一條乾淨的同步線就開一條只提交 `agent_harness/` 的 subtree 分支。
-
-**「檔案層整併 ≠ merge」要寫進 message。** `git checkout <remote-tree> -- agent_harness/` 只搬檔案，
-**不記錄 ancestry**（`git log HEAD..<remote> -- agent_harness` 之後照樣列出那幾筆）。
-先驗「共同檔只有遠端改過」（`git diff --stat <merge-base> HEAD -- <那些檔>` 空 = 依構造無衝突），
-並在 message 明寫「將來真 merge 會再引一次、需人工解衝突」。
-
-## 併行的第二個 session：索引會被寫成對方的中間狀態（2026-09-16 實測）
-
-**這個 repo 會同時有多個 WorkBuddy session 在寫。** 實例：17:10:28／17:10:39 一個 session
-連續寫入 `traces/lessons.jsonl`（新增 `eng-mh-0037`：`binary_stamp()` 的 64 KiB 視窗陽性對照）
-與 `agent_harness/PLAN_ENGINE_LOOP_2026-09-15.md`（E2 承接 D6 欠帳那一段），
-而另一個 session 為了「看一下 by-role 分佈」跑了**不帶 `--check` 的 `index_assets.py`**
-⇒ 後者在 17:10:59 把對方**尚未定稿**的狀態（那兩檔的 bytes/mtime）寫進了 `MANIFEST.jsonl`。
-
-**為什麼要獨立一條**：它的失效是**安靜的**。`--check` 在下一次重生之前都會說
-`manifest OK`，而 manifest 已經記著一組對方還沒打算停下來的 bytes。
-此時若直接 `git add -A`，manifest 會被提交在一個**既不是前一版、也不是對方完成版**的狀態上。
-
-規則：
-
-1. **動手前跑一次 `git status --porcelain --untracked-files=all`，收尾前再跑一次**。
-   出現**不是你改的** modified 檔 ⇒ 有別的 writer。
-2. 此時**只新增不修改**：新增 `docs/*.html` 是安全的（見下一條）；**不要重生索引、不要 commit**。
-3. **不要為了「看一眼」而跑不帶 flag 的 `index_assets.py`**——那就是重建，會覆寫 manifest。
-4. 確認對方靜止（`sessions` 表裡它的 `status` 不再是 `working`、相關檔 mtime 不再動）再重生。
-
-**推論**：`PLAN_ENGINE_LOOP_2026-09-15.md` 與 `CONVENTIONS.md` 都在 `CURATED` 裡，
-所以它們一被別人改，`--check` 就會紅——**紅燈不是你的錯時，不要急著重生把它消掉**，
-先把 owner 找出來。（查法：`~/.workbuddy/workbuddy.db` 的 `sessions` 表有 `cwd` / `title` / `status` / `last_activity_at`；
-`~/.workbuddy/projects/<cwd 轉義>/<sessionId>.jsonl` 是對話本體。）
-
-## `docs/` 底下的新增不會紅，`CURATED` 裡的 docs 條目才會
-
-`index_assets.py` 的自動 glob **只掃 `scripts/check/*`**（`index_assets.py:314`），
-`docs/` **只由 `CURATED` 逐條列出**（`:227` 起）——所以「掃描範圍含 `docs/*`」這個讀法不準確，
-差別在**新增 vs 修改已列出者**：
-
-- 新增一份 `docs/*.html`（D5 的白皮書附件）⇒ **不漂移**，不必重生。
-  實測：新增後 `--check` 仍印 `manifest OK: 73 assets, existence + bytes + mtime all agree`。
-- 編輯 `CURATED` 裡**已列出的** docs 條目（如 `docs/PREFILL250_THERMAL_TRANSIENT_20260916.html`
-  的 note）⇒ 會紅，要重生。
-
-⇒ 省掉一輪「我加了檔案，先重跑索引吧」的無用重生。
-白皮書本身的版式、取材清單、現場閘門輸出要求與自檢清單見 skill **`cgc-whitepaper-delivery`**
-（含「同批檔名要指名到 `_HHMM`」這條）。
-
-## 在 `src/` 上做實驗之後，「還原」必須是可證的（2026-09-16 第八輪，`18fa0e19b`）
+### 2.10 在 `src/` 上做實驗之後，「還原」必須是可證的
 
 陽性對照、A/B 探針這類實驗會**改動 `src/`**，而檢查 8 只看「staged 的原始碼與產物同不同步」
-——它看不出「你改了又改回來，但中間那棵樹的產物還留著」。所以收尾要自己證，三步都要有輸出：
+——**它看不出「你改了又改回來，但中間那棵樹的產物還留著」**。所以收尾要自己證，三步都要有輸出：
 
 ```sh
 git checkout -- <動過的檔案>          # 還原原始碼
@@ -495,17 +286,287 @@ md5 <產物>                            # 必須與實驗前逐位元相同
 git status --short -- src/            # 必須空
 ```
 
-本輪實測：`ggml-metal.metal` 的同長度改動（`1.0f`→`1.1f`）重建後，`libggml-metal` 的 md5
+實測：`ggml-metal.metal` 的同長度改動（`1.0f`→`1.1f`）重建後，`libggml-metal` 的 md5
 `f2d1c96193939bd15404ba713a6fa85d`、size 954,920 **逐位元還原** ⇒ 該 commit 因此可以合法地
 **不重跑 D5**（0 個 `src/`、二進位沒變），並在 message 寫明理由。
 **反過來：若還原後 md5 不同，那不只是「還原失敗」——你這一輪建立在該產物上的所有結論全部作廢。**
 
-找「差異到底在哪」的標準工具是 `cmp -l` ＋ `otool -l`（本輪：兩份產物差 80 個位元組、15 個 ≤64 KiB、
+找「差異到底在哪」的標準工具是 `cmp -l` ＋ `otool -l`（實測：兩份產物差 80 個位元組、15 個 ≤64 KiB，
 元兇是 ld64 的**內容衍生 `LC_UUID`**，它讓「只雜湊前 64 KiB」的戳記意外地有效）。
-一般化規訓在 `traces/lessons.jsonl` 的 **`eng-mh-0037`**：**便宜戳記（取樣視窗／人工列舉清單／
-抽樣 digest）的判別力只能用陽性對照決定，不能由「它涵蓋了什麼」推論；否證本身有價值，
-因為它會指名偵測力來自誰。**
+一般化規訓在 `traces/lessons.jsonl` 的 **`eng-mh-0037`**：**便宜戳記（取樣視窗／人工列舉清單／抽樣
+digest）的判別力只能用陽性對照決定，不能由「它涵蓋了什麼」推論；否證本身有價值，因為它會指名
+偵測力來自誰。**
 
-**D5 有兩半，別只讀到後半。** 原文是「每次 commit 附一份技術白皮書，**並**在提交前跑完
-llama-bench + M1/M2/M3 + 最新 M2 oracle」。純 doc/腳本的 commit 在 `src/` 那一半可以不跑，
-但**白皮書那一半沒有豁免**；而且要出**新日期的檔**，不要就地改既有的（本 repo `docs/` 的慣例）。
+### 2.11 崩潰取證（`imageOffset` / `usedImages` / 保留舊產物）
+
+**判斷「兩臂之間到底換了哪幾個 image」要用 crash report 的 `usedImages` UUID。** 每份 `.ips` 都記錄了
+當次載入的每個 image 的路徑與 UUID（本地檔用 `dwarfdump --uuid` 對照）。把兩份報告的 `usedImages`
+做 diff，就能證明一次 A/B 是不是單變數——**這是最便宜的單變數證明**，而且它推翻過兩次直覺
+（一次把沒改的庫當成變了，一次把其實沒變的庫當成混淆項）。注意 `libobjc.A.dylib` 會因為 faulting
+thread 停在 `objc_msgSend` 內而出現／消失，那是**清單呈現**差異，不是載入差異。
+
+**`imageOffset` 才是反組譯要用的偏移，而且前提是「當時那份二進位」還在。** `.ips` 的 `symbolLocation`
+是相對**符號起點**，`imageOffset` 才是相對 **image base**。所以**重建前先備份舊產物**
+（`Backup/pre_mtp_rebuild_<date>/` ＋ `MANIFEST.txt` 記 md5/size/mtime），否則事後無法證明根因
+（B17 的實務前提）。
+
+### 2.12 `git stash` 換臂之後：build tree 屬於**另一臂**；struct 加成員是連結器看不見的 ABI 破壞
+
+做 A/B 的常見手法是 `git stash` 掉修法 → 重建 → 跑舊臂 → `git stash pop`。**pop 不會重建**，
+所以 `src/llama.cpp/build/bin` 留著舊臂的產物。若這一輪又在跨 dylib 邊界的 struct 加了成員，
+那就同時中了第二層：`llama_expert_cache` 這種以**指標**傳遞的 struct，新增 8 bytes 會把後續每個成員
+的偏移整體推移，而**連結器只看得見符號、看不見成員偏移**——不會是連結錯誤，而是「照新標頭編的
+harness 連上照舊佈局編的庫」，症狀是**崩在函式庫裡**：
+
+```
+SIGSEGV / EXC_BAD_ACCESS (KERN_INVALID_ADDRESS at 0x0)
+  libllama.0.0.239.dylib  llama_expert_cache_ensure_batch + 1068
+```
+
+實例（2026-09-16）：新增 `n_hit_adopted_queued` 讓 `ever_loaded` 從 `0x608` 移到 `0x610`；
+舊庫把 `0x608` 讀成 `n_slot_table_unchanged`（`size_t`，值 0）當成 data pointer 去索引。
+
+**診斷四步，一分鐘內收斂（不要先去改測試——第一反應常是回頭審測試的初始化，那條路會一路改到
+看不出問題，因為測試本身沒錯，錯的是它連到的庫）：**
+
+```sh
+# a) 符號有沒有被導出（有 = 不是連結問題）
+nm -gU src/llama.cpp/build/bin/libllama.0.0.239.dylib | grep expert_cache
+# b) 兩套偏移：寫個 offsetof 探針，與反組譯回推的偏移對照
+#    otool -tvV <dylib>，故障位址 = 符號起始 + symbolLocation（.ips 的 symbolLocation 就是它）
+# c) 這份 dylib 是新碼還是舊碼：找一個本輪新增的字串
+strings src/llama.cpp/build/bin/libllama.0.0.239.dylib | grep "CGC-BATCH-INVARIANT"   # 空 = 舊碼
+# d) mtime 一眼看完
+stat -f "%Sm %N" -t "%Y-%m-%d %H:%M:%S" src/llama.cpp/build/bin/libllama.0.0.239.dylib
+```
+
+**規則**：動到跨 dylib 邊界的 struct ⇒ 與該標頭連結的測試／工具要和**它所連的樹同狀態重建**；
+`stash pop` 之後的第一件事是重建，不是跑測試。做負對照時要**兩臂都重建庫與 harness**
+（否則兩臂的 harness 會各自連錯），這樣才拿得到 HEAD 的 FAIL / 修好的 PASS。
+
+---
+
+## 3. 索引（`INDEX.jsonl` / `MANIFEST.jsonl` / `CURATED`）
+
+### 3.1 重生順序固定，而且**每一次**重生都要按序
+
+兩者是 **byte 級快照，不是內容摘要**，改一個字就漂移。
+
+1. **先** `memory/build_memory_index.py`（寫 `memory/INDEX.jsonl`）
+2. **後** `agent_harness/engine_loop/index_assets.py`（`MANIFEST.jsonl` 記錄 `INDEX.jsonl` 的 bytes/mtime）
+
+順序顛倒 → `index_assets --check` 報漂移；而且**只重生 manifest 不會修**，必須兩者都重跑。
+推論：**memory 寫完要放在索引重生之前**。`index_assets.py` **不要加 `--out`**
+（相對路徑會寫出第二份 manifest）。
+
+**最常見的犯法是在同一輪裡的「第二次」重生把順序寫反。** 漂移的**簽名很好認——是 mtime 而不是 bytes**：
+
+```
+agent_harness/engine_loop/memory/INDEX.jsonl: mtime: manifest '2026-09-16T11:15:00' vs disk '2026-09-16T11:15:15'
+```
+
+因為 `build_memory_index.py` **每次都會重寫 `INDEX.jsonl`，即使內容一字不變**（bytes 相同、只有 mtime 動）。
+看到這個簽名就**重跑一次「先 `build_memory_index.py` 再 `index_assets.py`」即可**，不要去找內容差異。
+
+### 3.2 哪些檔案被索引、掃描範圍在哪
+
+- **自動索引**：`scripts/check/*`（`index_assets.py:314` 的 glob）、`agent_harness/engine_loop/*`。
+- **`CURATED` 逐條列出**：`docs/*`、`agent_harness/CONVENTIONS.md`、`PLAN_ENGINE_LOOP_*.md`、
+  `traces/*.jsonl`、`.workbuddy/memory/*.md`、以及 **`index_assets.py` 自己**（改策展列也會改自己的 bytes）。
+  所以**改了 `CONVENTIONS.md`、`PLAN_ENGINE_LOOP`、白皮書的 note、或 `index_assets.py` 自己都會讓
+  `--check` 紅**。
+- **不在範圍內**：`agent_harness/memory/`、`agent_harness/skills/`（§5.3 的快照）。
+  在那裡新增目錄**不會**讓 manifest 漂移，要驗的是 `build_memory_index.py --check`。
+- **不確定就跑 `index_assets.py --check`**，它會直接印出漂移的 path 與 bytes 變化——它就是為此存在的，
+  比猜便宜。
+
+**`docs/` 的「新增」與「修改」差別很大**：新增一份 `docs/*.html`（D5 的白皮書附件）⇒ **不漂移**，
+不必重生（實測新增後 `--check` 仍印 `manifest OK: 73 assets`）；但編輯 `CURATED` 裡**已列出的** docs 條目
+（例如改某份白皮書的 note）⇒ 會紅，要重生。⇒ 省掉一輪「我加了檔案，先重跑索引吧」的無用重生。
+
+### 3.3 `CURATED` 的維護
+
+**新增 `scripts/check/` 底下的腳本時要一併加進 `CURATED`**，否則它只會被自動索引、並讓
+`index_assets.py` 一直印 `[info] N auto-indexed script(s) still need a role and a note`。
+格式 `(path, role, loop, replayable, produces_record, note)`；`role` 用既有分類詞
+（`gate` / `probe` / `measure` / `evidence` / `log` / `compare` / `arms` / `runner` / `conclusion` / `index`），
+`note` 寫成「它做什麼 ＋ 讀者該拿它做什麼」。**改完要再重生一次 manifest**（它改了 `index_assets.py`
+自己的 bytes）。
+
+**`note` 會腐爛，不是只有新腳本要加。** 實例：`powermetrics_gpu_freq_parse.py` 的 note 寫著
+`--selftest: 6/6`（實際 9/9）而且**沒提它已經會讀 thermal sampler**——索引在對讀者說「這支不會答散熱」。
+**能力變動時要回頭改 note**，並重生 manifest。
+另外 `[info] N auto-indexed … need a role and a note` 是**既有欠帳**（某輪 25 支），不是你那一次的錯，
+**別為了消掉它去亂填 role**。
+
+### 3.4 `--check` 的收尾：兩條都跑，而且要濾行
+
+`index_assets.py --check` 的結論行被尾端的 `--out` 說明包住，**直接 `tail` 只會看到說明文字**——
+要濾 `OK:` / `error` 這類行才看得到結論。兩條都要跑：
+
+```sh
+cd agent_harness/engine_loop && python3 index_assets.py --check 2>&1 | grep -E "OK:|error"
+python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+```
+
+---
+
+## 4. 併行 writer（這個 repo 會同時有多個 session 在寫）
+
+**症狀**：`git status --porcelain --untracked-files=all` 出現**不是你改的** modified／staged 檔。
+實例：一個 session 連續寫入 `traces/lessons.jsonl` 與 `PLAN_ENGINE_LOOP_*.md`，而另一個 session 為了
+「看一下 by-role 分佈」跑了**不帶 `--check` 的 `index_assets.py`** ⇒ 後者把對方**尚未定稿**的狀態
+寫進了 `MANIFEST.jsonl`。另一個實例：某 session 正在執行 E1 的 `git mv`（600+ 個 rename 已 staged）。
+
+**為什麼要獨立一條：失效是安靜的。** `--check` 在下一次重生之前都會說 `manifest OK`，
+而 manifest 已經記著一組對方還沒打算停下來的 bytes。此時若直接 `git add -A`，manifest 會被提交在一個
+**既不是前一版、也不是對方完成版**的狀態上。
+
+**規則**
+
+1. **動手前跑一次 `git status --porcelain --untracked-files=all`，收尾前再跑一次。**
+   出現**不是你改的** modified／staged 檔 ⇒ 有別的 writer。
+2. 此時**只新增不修改**：新增 `docs/*.html` 是安全的（見 §3.2）；**不要重生索引、不要 commit**。
+   連「刷新 skill 快照」都先擱著——它的 banner 已經聲明不會自動跟上，`SNAPSHOT.jsonl` 也記了 provenance，
+   所以延後是**被設計允許**的。
+3. **不要為了「看一眼」而跑不帶 flag 的 `index_assets.py`**——那就是重建，會覆寫 manifest。
+4. 確認對方靜止（`sessions` 表裡它的 `status` 不再是 `working`、相關檔 mtime 不再動）再重生。
+
+**推論**：`PLAN_ENGINE_LOOP_*.md` 與 `CONVENTIONS.md` 都在 `CURATED` 裡，所以它們一被別人改，
+`--check` 就會紅——**紅燈不是你的錯時，不要急著重生把它消掉**，先把 owner 找出來。
+
+**owner 查法**（唯讀查詢，不要寫）：
+
+| 位置 | 內容 |
+|---|---|
+| `~/.workbuddy/workbuddy.db`（SQLite） | `sessions` 表：`id / cwd / title / status / created_at / updated_at / last_activity_at / deleted_at`。`status` 會是 `working` / `completed` / `archived` |
+| `~/.workbuddy/projects/<cwd 轉義>/<sessionId>.jsonl` | 對話本體 |
+| `~/.workbuddy/sessions/<pid>.json` | 目前在跑的 session 程序（含 heartbeat） |
+| `~/.workbuddy/logs/<日期>/<目錄名>__<hash>.log` | 依目錄分檔的執行日誌 |
+
+**⚠️ 一個實際會咬人的細節**：`last_activity_at` 對**自己**這個 session 而言是「使用者最後送訊息的時間」，
+不是「我剛剛做了什麼」。所以別把自己的 session 誤判成別人。判別法：先看 `cwd`，再看
+`last_activity_at` 對不對得上你這個 turn 的開始時間。
+
+---
+
+## 5. 憲章層級：D6 與快照
+
+### 5.1 D6 說「不要把記憶複製進 `agent_harness/`」——很反直覺，因為那正是常被要求做的事
+
+`CONVENTIONS.md` D6 明寫「專案記憶只由索引進入 loop，不複製」，`index_assets.py` 的 `CURATED` note
+甚至硬寫 "never copied into the harness"。所以當要求是「把 memory/skill 匯入 agent_harness」時，
+**不要默默做、也不要默默拒絕**：依憲章 §E（「條文被推翻要標 `superseded_by` 而不是刪掉」）
+寫一份 **dated 修訂**——D6 對 loop 的約束不動，只多承認一份非權威快照，並**明寫未完成的義務**
+（§E 要求改 CONVENTIONS.md 走一次 PLAN §6.3 的閉環對照；若 `engine_loop/sft_pi/` 與
+`harness_engine/` 還不存在，就照實說它們不存在、義務尚未執行，**不可寫成已完成**）。
+
+**改 `CONVENTIONS.md` 時同輪要一起修這些會變成假話的敘述**（實測每一處都會讓 `--check` 紅）：
+`index_assets.py` 的 `CURATED` note、同一檔的 auto-indexed note、`build_memory_index.py` docstring 的
+"WHY AN INDEX AND NOT A MIRROR" 段、`engine_loop/README.md` §8。
+搜法：用**內建 Grep**（不是 bash `grep`）搜 `不複製|never copied|never as a copy|第二個權威`，一次掃完。
+
+### 5.2 快照機制與重生順序
+
+`agent_harness/memory/`（3 檔）與 `agent_harness/skills/`（3 skill）是**非權威 dated 快照**，
+唯一用途是跨機器搬運（`agent_harness/scripts/auto_git_push.ps1` 會 `git add agent_harness` 後 push，
+而**索引運送的指標到不了那條線**）。banner 插在 YAML frontmatter **之後**；`SNAPSHOT.jsonl` 記
+`source_sha256` / `source_bytes` / `source_mtime`。**兩個 `--check` 都不驗快照。**
+
+**重生順序（比 §3.1 多一層）**：
+改記憶／skill 原檔 → `Backup/import_harness_snapshot.py`（刷新快照）→ `build_memory_index.py`
+→ `index_assets.py` → commit。
+
+**skill 原檔一改，快照就 stale ⇒ 不要讓它變成第二個 commit。** 把「改 skill」與「刷新快照」放在
+**同一個** commit。（若 skill 是在交付 commit **之後**才被改的，那就難免要多一個 snapshot commit。）
+
+### 5.3 E2 的閉環欠帳（已認領，別讓它變無主）
+
+D6 的 dated 修訂留下「改 CONVENTIONS.md 要走一次 §6.3 的閉環對照、義務記在 E2 頭上」。
+它已記在三處：`PLAN_ENGINE_LOOP_2026-09-15.md` §9 的 E2 驗收欄（含認領條件：`distill/` 與
+`harness_engine/` 一落地就跑「修訂前後兩版 CONVENTIONS.md」的同一組待答問題，**沒有差異也是結果**；
+對照跑完並留有產物之前不得聲稱已結清）、`CONVENTIONS.md` D6 修訂段、`.workbuddy/memory/MEMORY.md`。
+
+---
+
+## 6. 收尾序列與 push
+
+### 6.1 收尾常常是兩個（有時三個）commit
+
+**第二個是 resync**：commit 的結果（hash、推送成功與否、gate 的實際輸出）**只有 commit 之後才知道**，
+所以「把本輪收尾寫進 `memory/YYYY-MM-DD.md`」結構上不可能滿足 §3.1 的順序。走過的實際序列：
+
+```
+RUN_REPLAY_BENCH=0 git commit ...      # 交付本身
+# 此時把 commit hash / D5 / gate / push 結果 append 進 .workbuddy/memory/YYYY-MM-DD.md
+python3 memory/build_memory_index.py && (cd .. && python3 index_assets.py)   # 順序照舊
+git add -A && RUN_REPLAY_BENCH=0 git commit -m 'docs(index): resync ...'
+```
+
+**不要**試圖把收尾 memory 塞進被提交的那個 commit（做不到），也**不要把漂移留到下一輪**
+（下一個人會被 `--check` 的紅字誤導成「上一輪沒重生索引」）。**多一個 3 行的 resync commit 是正確答案。**
+它只動 `MANIFEST.jsonl` + `INDEX.jsonl`，沒有 `src/` ⇒ **D5 不必重跑**（`271538f2f`／`e0152777d` 前例），
+但 message 要寫明這一點。
+
+**第三個什麼時候出現**：交付 commit 之後又發生了「必須進版控的事」，例如 skill 原檔被改 ⇒ 快照要跟上；
+或補寫記憶（§5.2）。**遞迴終止點是「最後那個 resync commit 自己的 hash 是唯一沒被記錄的事實」**，
+那是固有的，不必再追一輪。
+
+### 6.2 推送與 FF 驗證
+
+**驗 fast-forward 要用 `ls-remote` 的*真實 SHA*，不要用 tracking ref。**
+`git fetch <remote> <branch>` **只寫 `FETCH_HEAD`，不更新 `<remote>/<branch>`**，
+所以拿 `<remote>/demo/...` 去算 ahead/behind 可能在拿舊快照下結論。
+
+```sh
+git ls-remote <remote> 'refs/heads/demo/sweet-spot-windows-fix'   # 拿遠端真實 SHA
+git merge-base --is-ancestor <sha> HEAD && echo FF   # 是祖先 = 純 FF，不需 force
+git rev-list --count <sha>..HEAD                     # 會推上去幾個
+git push origin demo/sweet-spot-windows-fix
+git push cgcengine0907 demo/sweet-spot-windows-fix
+# 推完再驗一次：local / origin / cgcengine0907 三個 hash 應該完全相同
+```
+
+### 6.3 提交後驗證收尾狀態
+
+```sh
+python3 agent_harness/engine_loop/traces/validate.py            # 無重複 id
+python3 agent_harness/engine_loop/traces/selftest.py            # 必須 10/10
+cd agent_harness/engine_loop && python3 index_assets.py --check 2>&1 | grep -E "OK:|error"
+python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+git status --porcelain --untracked-files=all                    # 必須空（例外見 §1.7）
+```
+
+---
+
+## 7. commit 風格（從 body 讀出來的）
+
+- subject 很長（常 90+ 字元，用 `--` 分兩段），型別前綴如 `engine(diag):`、`perf(prefill):`、`fix(ci):`。
+- body 逐項列出「為什麼原本是錯的」與量到的數字，並**明寫未跑什麼、為何未跑**，不把 SKIP 折進「通過」。
+- **新知識要落成 `traces/lessons.jsonl` 的 lesson 並放進同一個 commit。** 欄位固定
+  `type/lesson_id/class/rule/because/counterexample_observed/applies_to/superseded_by`；
+  `lesson_id` 取續號（`eng-mh-NNNN` / `eng-gate-NNNN` / `eng-bound-NNNN` / …），
+  `validate.py` 會擋重複 id，`selftest.py` 要 10/10。
+- **`class` 是封閉 enum**：`measurement-hygiene` / `log-forensics` / `diagnosis` / `gate-integrity` /
+  `source-reading` / `honest-bounds` / `performance` / `smoke`。
+  自創 class（曾試 `error-path-integrity`）會被擋下並印出整份可選清單。
+  **挑最接近的既值，不要為了語意精確去擴 enum。**
+
+---
+
+## 8. 附錄：歷史輪次索引
+
+日期化的實測紀錄已按主題併入上文；這裡只留「哪一輪 ＝ 哪個 commit ＝ 主題」的對照。
+
+| 輪 | commit | 主題（本檔對應節） |
+|---|---|---|
+| 二 | `271538f2f` | D5 看 `src/`；`CURATED` note 腐爛；bash `grep` 靜默失效 → §2.4 §3.3 §1.3 |
+| 三 | `fd246c756` `a22328adb` | resync commit 的誕生；`ls-remote` FF；zsh word-split；`cmake --build` 驗 check 8 → §6.1 §6.2 §1.4 §2.9 |
+| 四 | `bc9a184e2` `8af8c99bd` | 註解 vs D5；多行巨集 `__LINE__`；`usedImages`；`imageOffset`；check 8 漏 `.m`；class enum → §2.8 §2.11 §2.7 §7 |
+| 五 | `b1c3f75c1` `efeade7e2` | D5 dump 無指紋；沒有 `timeout`；零成本探針的界線 → §2.6 §1.5 |
+| 六 | `89dd85b23` `2a71b332f` | `ORACLE_PINNED_ENV`；建置戳記造成的假 modified；`Backup/` 不算交付 → §2.5 §2.7 §1.6 |
+| 七 | `e688f346e` … | D6 修訂；快照機制；`agent_harness/` 刻意不自足；檔案層整併 ≠ merge → §5 §4 |
+| 八 | `18fa0e19b` `3155e7c9a` | `src/` 實驗的可證還原；D5 的兩半 → §2.10 §2.4 |
+
+**相關 skill**：`cgc-decode-attribution`（decode 相位歸因）、`cgc-prefill-thermal-delivery`
+（prefill t/s 的條件式交付）、`cgc-whitepaper-delivery`（white paper 版式與交付）。
