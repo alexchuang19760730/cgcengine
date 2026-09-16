@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>decode 的散熱讀數與可歸因基線（2026-09-16）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  h4{font-size:14.5px;margin:20px 0 6px;color:#374151}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:#fcfcfd}
+  .toc ol{margin:6px 0 0 20px}
+  .toc a{color:var(--blue);text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>decode 的<strong>散熱讀數</strong>與可歸因基線</h1>
+<div class="sub">
+  日期 2026-09-16 · 專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code><br>
+  臂 <code>p25-gputime</code>（<code>CGC_SERVER_PROFILE=prod25</code>、<code>CGC_SERVER_MTP=0</code>、
+  <code>CGC_GPU_TIMING=1</code>、<code>CGC_DECODE_PROFILE=1</code>）·
+  模型 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（13.6 GB）<br>
+  硬體 Mac16,12 MacBook Air · Apple M4 · 8 核 GPU · 16 GB unified · <strong>無風扇</strong><br>
+  新儀器 <code>scripts/check/thermal_pressure.py</code>（唯一實作）·
+  呼叫點 <code>scripts/check/decode_sweep.py</code>、<code>scripts/check/decode_bench.py</code><br>
+  前一份同族文件 <code>docs/PREFILL250_CONDITIONAL_DELIVERY_20260916.html</code>（prefill 端的分離證據）
+</div>
+
+<div class="box b-green">
+  <p><strong>一句話結論：</strong>decode 的散熱讀數已經接進量測（發射前 ＋ 每一輪兩側），成本
+  <strong>約 1.7 ms/次</strong>、不需要 root。接上去之後它<strong>立刻否證了它自己被派去驗的那個假設</strong>：
+  decode 基線那 2.4× 的散佈<strong>不是散熱造成的</strong>——三次跑共 20 個讀數
+  <strong>全部是 NOMINAL(0)</strong>，而散佈仍在。真正的兩個來源是
+  <strong>(a) 生成長度</strong>（n=24 的短爆 20.31 t/s vs n=124 的可持續 12.95 t/s）與
+  <strong>(b) 暖機輪被計分</strong>（<code>--warmup 0</code> 讓第一個請求的 23.83 s 落進一個評分輪）。</p>
+</div>
+
+<div class="toc">
+  <strong>目錄</strong>
+  <ol>
+    <li><a href="#s0">一頁結論</a></li>
+    <li><a href="#s1">儀器接在哪、為什麼是那兩個位置</a></li>
+    <li><a href="#s2">儀器自己的洞：<code>notifyutil</code> 對不存在的 key 回 0</a></li>
+    <li><a href="#s3">量到的東西（三次跑，全 NOMINAL）</a></li>
+    <li><a href="#s4">被否證的假設，與兩個真正的來源</a></li>
+    <li><a href="#s5">對 decode 25 t/s 的意義</a></li>
+    <li><a href="#s6">誠實邊界：本文不主張什麼</a></li>
+    <li><a href="#s7">現場閘門輸出（原文）</a></li>
+    <li><a href="#s8">復現</a></li>
+  </ol>
+</div>
+
+<h2 id="s0">0. 一頁結論</h2>
+
+<div class="cards">
+  <div class="card"><div class="k">可持續 decode（n=124）</div><div class="v">12.95</div>
+    <div class="small">t/s，median · 逐輪 12.39 / 12.95 / 13.67</div></div>
+  <div class="card"><div class="k">短爆 decode（n=24）</div><div class="v">20.31</div>
+    <div class="small">t/s，median · 但第 0 輪是 7.98</div></div>
+  <div class="card"><div class="k">等級讀數</div><div class="v ok">20/20</div>
+    <div class="small">全部 NOMINAL(0)，零個非 0</div></div>
+  <div class="card"><div class="k">基線散佈（同日同設定）</div><div class="v bad">6.6–16.17</div>
+    <div class="small">t/s（09-15 舊資料，無等級）</div></div>
+</div>
+
+<table>
+  <tr><th>問題</th><th>量到什麼</th><th>出處</th></tr>
+  <tr>
+    <td>decode 的散佈是散熱嗎？</td>
+    <td><strong>不是（在本日的樣本上）</strong>：三次跑共 20 個讀數全 NOMINAL，而散佈仍在</td>
+    <td class="num">decode_thermal_{cold,hot,sustain}_20260916.json</td>
+  </tr>
+  <tr>
+    <td>那散佈是什麼？</td>
+    <td><strong>(a) 生成長度</strong> 20.31 → 12.95（1.57×）；
+        <strong>(b) 首請求的一次性成本被計分</strong>（wall 23.83 s vs 1.35 s）</td>
+    <td class="num">同左，<code>rounds[]</code></td>
+  </tr>
+  <tr>
+    <td>儀器本身可靠嗎？</td>
+    <td>它的 <code>--selftest</code> <strong>當場抓到工具層級的洞</strong>（見 §2）：回 0 是一種
+        「合理值」，不能證明儀器存在</td>
+    <td class="num">scripts/check/thermal_pressure.py --selftest</td>
+  </tr>
+</table>
+
+<h2 id="s1">1. 儀器接在哪、為什麼是那兩個位置</h2>
+
+<p>唯一的實作是 <code>scripts/check/thermal_pressure.py</code>（<code>level()</code> /
+<code>label()</code> / <code>stamp()</code> / <code>worst()</code> / <code>histogram()</code>），
+由 <code>decode_sweep.py</code> 與 <code>decode_bench.py</code> <strong>匯入</strong>，不是各自抄一份
+（本專案對「第二份會分叉的實作」有硬規則，見 <code>agent_harness/CONVENTIONS.md</code>）。</p>
+
+<table>
+  <tr><th>位置</th><th>讀什麼</th><th>為什麼是這裡</th></tr>
+  <tr>
+    <td class="num">decode_sweep.py<br>（每臂）</td>
+    <td><code>pre_kill</code> / <code>launch</code> / <code>post_bench</code> / <code>teardown</code></td>
+    <td><code>launch</code> 是<strong>發射前那一刻</strong>——prefill 端已證明「讀發射那一刻」才攜帶裁決
+        （讀 0 → 6/6 ≥250；讀 1 或 2 → 0/21）。刻意讀在<strong>模型載入之前</strong>：載入 13 GB 本身就是一次熱事件。</td>
+  </tr>
+  <tr>
+    <td class="num">decode_bench.py<br>（每一輪）</td>
+    <td>請求的<strong>兩側</strong> <code>thermal_before</code> / <code>thermal_after</code></td>
+    <td>一輪本身會把機器加熱，於是後面的輪次繼承前面的熱——只讀一次分不出「這輪冷」與「這輪熱」。</td>
+  </tr>
+</table>
+
+<p>成本量測：<code>notifyutil -g</code> 呼叫 12 次共 <code>0.02 s</code>
+⇒ <strong>約 1.7 ms/次</strong>，比向 server 問一次還便宜，所以放進每輪迴圈是免費的。
+輸出另存 <code>rounds[]</code>（每輪的 t/s 與兩側等級配對）與
+<code>thermal_hist</code>（等級計數）——因為<strong>等級的中位數會藏住形狀</strong>：
+「3 輪冷 + 3 輪熱」與「6 輪溫」的中位數相同，但它們不是同一個實驗。</p>
+
+<h2 id="s2">2. 儀器自己的洞：<code>notifyutil</code> 對不存在的 key 回 0</h2>
+
+<div class="box b-red">
+  <p><strong>實測（本機 macOS）：</strong></p>
+<pre><code>$ notifyutil -g com.apple.system.thermalpressurelevel
+com.apple.system.thermalpressurelevel 0          # exit 0
+$ notifyutil -g com.apple.system.this.key.does.not.exist
+com.apple.system.this.key.does.not.exist 0       # exit 0，形狀完全相同</code></pre>
+  <p><code>-v</code> 與 <code>-q</code> 都不改變這個行為（實測）。所以<strong>exit code 與輸出形狀
+  都無法區分「存在且為 0」與「不存在」</strong>。一個信任它們的解析器會在<strong>儀器整個缺席</strong>的機器上
+  回報 <code>NOMINAL</code>——那是「我們沒量到」穿著「一切正常」的衣服。</p>
+</div>
+
+<p>這一條是被 <code>--selftest</code> <strong>當場抓到的</strong>（第一版把它寫成「未知 key → None」，
+跑下去得到 <code>0</code>）。處置分三層，並且<strong>不假裝偵測得到偵測不到的東西</strong>：</p>
+
+<ol>
+  <li>模組只接受 <code>SUPPORTED_KEYS</code>（已實測過的 key）並拒絕其他 ⇒ 擋掉 typo 那一類，
+      那正是它擋得掉的。</li>
+  <li>把「<strong>無法偵測缺席</strong>」寫進 docstring，而不是用解析器掩蓋。</li>
+  <li>殘留的緩解在<strong>別處</strong>：這個 key 的活性是由它對負載的實測反應建立的
+      （靜止 0、持續負載 2、停後約 47 s 回 0）。所以<strong>「一條永遠是 0 的序列」是該起疑的簽名</strong>，
+      而檢驗它是<strong>負載測試</strong>，不是解析器。</li>
+</ol>
+
+<p>它的 <code>--selftest</code> 有 10 條，其中三條就是為這個失效模式寫的
+（<code>unsupported key -&gt; None (never 0)</code>、<code>stamp() of a refused key is labelled
+UNREADABLE</code>、<code>worst() of only-unreadable is UNREADABLE, not 0</code>）。
+固化為 lesson <code>eng-gate-0039</code>。</p>
+
+<h2 id="s3">3. 量到的東西（三次跑，全 NOMINAL）</h2>
+
+<h3>3.1 三次跑的匯總</h3>
+
+<table>
+  <tr><th>跑</th><th>n_predict</th><th>warmup</th><th>median</th><th>min</th><th>max</th>
+      <th>等級</th><th>證據</th></tr>
+  <tr><td>A（冷）</td><td class="num">24</td><td class="num">0</td><td class="num">20.32</td>
+      <td class="num">8.48</td><td class="num">21.10</td><td>6/6 NOMINAL</td>
+      <td class="num">decode_thermal_cold_20260916.json</td></tr>
+  <tr><td>B（A 之後 1 分鐘）</td><td class="num">24</td><td class="num">0</td><td class="num">20.31</td>
+      <td class="num">7.98</td><td class="num">20.76</td><td>6/6 NOMINAL</td>
+      <td class="num">decode_thermal_hot_20260916.json</td></tr>
+  <tr><td>C（可持續）</td><td class="num">160 → 124</td><td class="num">1（丟棄）</td>
+      <td class="num">12.95</td><td class="num">12.39</td><td class="num">13.67</td>
+      <td>8/8 NOMINAL</td><td class="num">decode_thermal_sustain_20260916.json</td></tr>
+</table>
+
+<p>A 與 B 相隔約 1 分鐘、中位數幾乎相同（20.32 / 20.31）⇒ <strong>在這個狀態下是重現的</strong>。
+兩跑的 <code>dec_min</code>（8.48 / 7.98）則來自同一件事，見下節。</p>
+
+<h3>3.2 B 的逐輪配對（這是全文最關鍵的一張表）</h3>
+
+<table>
+  <tr><th>輪</th><th>decode t/s</th><th>prefill t/s</th><th>n</th><th>predicted_ms</th>
+      <th>client wall</th><th>溫度等級</th></tr>
+  <tr><td class="num">0（<strong>被計分</strong>）</td><td class="num bad">7.98</td><td class="num">10.02</td>
+      <td class="num">24</td><td class="num">3007</td><td class="num bad">23.83 s</td><td>NOMINAL</td></tr>
+  <tr><td class="num">1</td><td class="num ok">20.31</td><td class="num">24.48</td>
+      <td class="num">24</td><td class="num">1182</td><td class="num">1.44 s</td><td>NOMINAL</td></tr>
+  <tr><td class="num">2</td><td class="num ok">20.76</td><td class="num">25.79</td>
+      <td class="num">24</td><td class="num">1156</td><td class="num">1.35 s</td><td>NOMINAL</td></tr>
+</table>
+
+<p>同一個 server session、同樣 24 個 token、<strong>同一種溫度等級</strong>，第 0 輪的 client wall
+是新穩定態的 <strong>17 倍</strong>（23.83 s vs 1.35 s）。而 server 自報的 <code>predicted_ms</code>
+只差 2.6×（3007 vs 1156）⇒ 差額不在生成，在<strong>該行程的第一次請求</strong>（圖建構／管線建立／
+池的強制填充）。<code>--warmup 0</code> 讓這一輪<strong>進了分數</strong>。</p>
+
+<h3>3.3 C 的逐輪（可持續值）</h3>
+
+<table>
+  <tr><th>輪</th><th>decode t/s</th><th>wall</th><th>備註</th></tr>
+  <tr><td class="num">0</td><td class="num">8.98</td><td class="num">34.93 s</td>
+      <td>warmup，<strong>已丟棄</strong>（同樣的一次性成本，這次不計分）</td></tr>
+  <tr><td class="num">1</td><td class="num">12.39</td><td class="num">10.44 s</td><td>—</td></tr>
+  <tr><td class="num">2</td><td class="num">12.95</td><td class="num">9.83 s</td><td>—</td></tr>
+  <tr><td class="num">3</td><td class="num">13.67</td><td class="num">9.33 s</td><td>—</td></tr>
+</table>
+
+<p>逐輪<strong>單調上升</strong>（12.39 → 12.95 → 13.67）⇒ 這個長度下<strong>看不到熱衰退</strong>，
+機器還在暖。所以「decode 變慢」在這批樣本上不是散熱的形狀。</p>
+
+<h2 id="s4">4. 被否證的假設，與兩個真正的來源</h2>
+
+<div class="box b-amber">
+  <p><strong>被否證的假設：</strong>「decode 基線那 2.4× 的散佈（6.6 / 9.75 / 10.24 / 16.17 /
+  6.95 t/s，09-15 同日同設定）是散熱造成的。」</p>
+  <p><strong>為什麼它看起來像真的：</strong>prefill 端確實有這種分離（Nominal 6/6 ≥250、
+  非 Nominal 0/21），而 decode 的散佈同樣大。</p>
+  <p><strong>實測推翻了它——至少在本日的樣本上：</strong>三次跑共 <strong>20 個等級讀數全部是
+  NOMINAL(0)</strong>，而散佈仍在（同一臂內 7.98 → 20.76）。⇒ 散熱<strong>不能</strong>解釋
+  日內的散佈。</p>
+</div>
+
+<p>真正的兩個來源：</p>
+
+<ol>
+  <li><strong>生成長度。</strong>同一臂、同一 session、同 NOMINAL：n=24 讀 <strong>20.31</strong>，
+      n=124 讀 <strong>12.95</strong>（1.57×）。短生成是<strong>短爆</strong>，長生成才是可持續值。
+      ⇒ 引用 decode t/s<strong>必須同時說出生成長度</strong>。</li>
+  <li><strong>暖機輪被計分。</strong><code>--warmup 0</code> 讓第一個請求的一次性成本落進一個評分輪
+      （§3.2）。⇒ <code>decode_tps_min</code> 在這種設定下不是機器狀態的訊號，而是<strong>製程暖機</strong>的訊號；
+      而 <code>median</code> 會把它吞掉（3 輪取中位 ⇒ 首輪隱形）。</li>
+</ol>
+
+<p>固化為 lesson <code>eng-mh-0038</code>。</p>
+
+<h2 id="s5">5. 對 decode 25 t/s 的意義</h2>
+
+<table>
+  <tr><th>量</th><th>值</th><th>怎麼讀</th></tr>
+  <tr><td>可持續 decode（n=124、NOMINAL）</td><td class="num">12.95 t/s</td>
+      <td>本日、本 build、本臂下的<strong>可交付</strong>基準</td></tr>
+  <tr><td>距 25 t/s</td><td class="num">1.93×</td><td>以 12.95 為分母</td></tr>
+  <tr><td>序列化上界（D0 探針）</td><td class="num">×1.78</td>
+      <td>該探針輸出損壞，只可引用<strong>上界性質</strong>與每步 ms，不可引用它的 t/s</td></tr>
+</table>
+
+<div class="box b-blue">
+  <p><strong>不要</strong>把 §0 那個 <strong>20.31 t/s</strong> 當成「已經快到 25」——它是
+  <strong>n=24 的短爆</strong>，且 median 掩蓋了首輪的一次性成本。以可持續值讀，今天的距離是
+  <strong>1.93×</strong>，不是 1.23×。這也是為什麼這支儀器的第一件產出不是「一個更好的數字」，
+  而是「一組不會被誤讀的數字」。</p>
+</div>
+
+<h2 id="s6">6. 誠實邊界：本文不主張什麼</h2>
+
+<ul>
+  <li><strong>不主張「decode 的散佈與散熱無關」。</strong>本日在 NOMINAL 下取樣，所以
+      <strong>沒有取得任何熱態樣本</strong>——「等級 → decode 吞吐」的<strong>分離</strong>在 decode 端
+      尚未量到。要取得它，得刻意把機器推熱（prefill 端是用 <code>ARMS=2 bash Backup/run_thermal_gate.sh</code>
+      與 2 Hz 序列做的）。<strong>在量到之前，不要用等級去放行或拒絕任何 decode 數字。</strong></li>
+  <li><strong>不主張 09-15 的 6.6–16.17 與今天的 20.3 之間有改進。</strong>兩者同儀器（<code>decode_bench</code>）、
+      同長度（n=24）、同 <code>--warmup 0</code>，所以<strong>形狀上</strong>可比；但不同日、不同 build、
+      且當日沒有等級讀數 ⇒ 差異<strong>未歸因</strong>。今天的等級讀數讓下一次可以歸因，這一次不行。</li>
+  <li><strong>不主張與 <code>docs/ROADMAP_PREFILL250_DECODE25_2026-09-13.md</code> 的 9.3–10.5 t/s 可比。</strong>
+      那組數字出自 <strong>llama-bench</strong>（見 <code>docs/REMAP_ROUNDTRIP_REMOVAL_PLAN_2026-09-15.md</code> §1：
+      <code>llama-bench decode 9.16 / 9.45</code>），本文出自 <strong>decode_bench（client 側）</strong>。
+      不同儀器的兩個數字放在一起比大小，正是本專案最常踩的那一類錯。</li>
+  <li><strong>不主張 <code>predicted_n=124</code> 是 160。</strong>請求 <code>n_predict=160</code>，
+      實際生成 124 個 token（提早結束）⇒ 上表所有長度都以 <strong>124</strong> 為準。</li>
+  <li><strong>沒有動 <code>binary_stamp()</code>、<code>NUMERIC_SOURCES</code>，也沒有動 <code>src/</code>。</strong>
+      本文的 D5 閘門是對<strong>既有 build</strong> 的認證，不是對新 build 的。</li>
+</ul>
+
+<h2 id="s7">7. 現場閘門輸出（原文）</h2>
+
+<pre><code>$ python3 agent_harness/engine_loop/traces/validate.py
+  episodes.jsonl: 122 records {'episode': 122}
+  -> OK
+  decisions.jsonl: 38 records {'decision': 38}
+  -> OK
+  lessons.jsonl: 102 records {'lesson': 102}
+  -> OK
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  10/10 injected violations rejected
+
+$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  memory index OK: 3 file(s), 56 section(s), no drift
+
+$ cd agent_harness/engine_loop &amp;&amp; python3 index_assets.py --check
+  manifest OK: 76 assets, existence + bytes + mtime all agree
+
+$ python3 scripts/check/thermal_pressure.py --selftest
+  ok   label(None) is UNREADABLE  UNREADABLE
+  ok   every documented level has a label
+  ok   label() does not invent a label for out-of-range  UNKNOWN-9
+  ok   unsupported key -&gt; None (never 0)  None
+  ok   a supported-shape key is still read
+  ok   stamp() of a refused key is labelled UNREADABLE  {'level': None, 'label': 'UNREADABLE', ...}
+  ok   worst() of only-unreadable is UNREADABLE, not 0  {'level': None, 'label': 'UNREADABLE', 't': ''}
+  ok   worst() takes the max of known readings
+  ok   histogram() counts every reading including unreadable
+  ok   the real key reads an int 0..4 on this machine (or is honestly unreadable)  read NOMINAL (0)
+
+  10/10 checks passed
+
+$ python3 scripts/check/m123_oracle_gate.py --tag decodeinband
+GATE decodeinband: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+cross-tab: {'num_eq_dec_eq': 9, 'num_eq_dec_ne': 0, 'num_ne_dec_eq': 0, 'num_ne_dec_ne': 0}
+summary  : Backup/m123_oracle_gate/summary_decodeinband.json
+  （comparable = True，config_diffs = []）</code></pre>
+
+<h3>這批數字屬於哪一份 build</h3>
+
+<p><code>build_fingerprint()</code>（8 鍵、鍵名不含版本號，見 <code>scripts/check/decode_sweep.py:34</code>）：</p>
+
+<pre><code>{"server": "054fb22f04a0", "libggml-base": "d2099fb798e7", "libggml-blas": "52de23d5c405",
+ "libggml-cpu": "70ebbd7c709a", "libggml-metal": "f2d1c9619393", "libggml": "8f4abce76052",
+ "libllama-common": "7bceb3bd5320", "libllama": "233a172afb2e"}</code></pre>
+
+<p>其中 <code>libggml-metal</code> = <code>f2d1c9619393</code> 與同日稍早的陽性對照實驗還原後的產物
+一致（<code>f2d1c96193939bd15404ba713a6fa85d</code>，size 954,920，byte-identical）⇒
+本日的 decode 數字與那次實驗<strong>共用同一份產物</strong>，實驗沒有污染這批量測。</p>
+
+<h2 id="s8">8. 復現</h2>
+
+<pre><code>cd /Users/alexchuang/Documents/flashkv-devserver
+lsof -nP -iTCP:8080 -sTCP:LISTEN ; pgrep -fl llama-server      # 兩者都要空
+
+# 儀器自測（會證明「讀不到 ≠ 0」）
+python3 scripts/check/thermal_pressure.py --selftest
+
+# 短爆樣本（注意 --warmup 0 會把首輪計分；看 dec_min 就知道）
+RUN_REPLAY_BENCH=0 python3 scripts/check/decode_sweep.py --profile prod25 \
+  --arms p25-gputime --rounds 3 --warmup 0 --n-predict 24 \
+  --json Backup/phase_decomp/decode_thermal_short_$(date +%Y%m%d).json --force
+
+# 可持續樣本（丟棄暖機輪）
+RUN_REPLAY_BENCH=0 python3 scripts/check/decode_sweep.py --profile prod25 \
+  --arms p25-gputime --rounds 3 --warmup 1 --n-predict 160 \
+  --json Backup/phase_decomp/decode_thermal_sustain_$(date +%Y%m%d).json --force
+
+# 逐輪配對（t/s × 等級）在 rows[].rounds[]
+python3 -c "import json,sys; r=json.load(open(sys.argv[1]))[0]; [print(x['round'], x['decode_tps'], (x['thermal_before'] or {}).get('label')) for x in r['rounds']]" \
+  Backup/phase_decomp/decode_thermal_sustain_20260916.json</code></pre>
+
+<hr>
+<p class="small">
+  本文件的事實來源：<code>Backup/phase_decomp/decode_thermal_{cold,hot,sustain}_20260916.json</code>、
+  <code>Backup/m123_oracle_gate/summary_decodeinband.json</code>、
+  <code>scripts/check/thermal_pressure.py</code> 的 docstring 與 <code>--selftest</code>,
+  <code>scripts/check/decode_sweep.py</code>、<code>scripts/check/decode_bench.py</code>,
+  lesson <code>eng-mh-0038</code>／<code>eng-gate-0039</code>。
+  未跑或未量到的部分在 §6 逐條列出。
+</p>
+
+</div>
+</body>
+</html>

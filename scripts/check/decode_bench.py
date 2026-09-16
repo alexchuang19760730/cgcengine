@@ -29,6 +29,11 @@ import urllib.request
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 DEFAULT_URL = "http://127.0.0.1:8080/v1/chat/completions"
 
+# In-band thermal reading. IMPORTED, not re-implemented: one parser, and one place where the
+# "unreadable is not zero" rule lives (thermal_pressure.py documents the notifyutil trap).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import thermal_pressure as tp  # noqa: E402
+
 # ~30-token Chinese prompt. Short on purpose: the point is to measure decode under a small
 # KV cache, which is the regime the 25 tok/s target was written for.
 SHORT_PROMPT = "請用繁體中文簡短說明巴黎為什麼是法國的首都。"
@@ -84,14 +89,21 @@ def main():
 
     rows = []
     for i in range(args.warmup + args.rounds):
+        # Read the level on BOTH sides of the request. `before` is the one that carries the
+        # claim -- it is the state the round was launched into; `after` shows whether the
+        # round itself pushed the box past it (a 3-round arm can heat its own later rounds).
+        th_before = tp.stamp()
         try:
             d, wall = ask(args.url, args.prompt, args.n_predict)
         except Exception as e:  # noqa: BLE001
             print(f"  round {i}: REQUEST FAILED {e}", file=sys.stderr)
             continue
+        th_after = tp.stamp()
         m = extract(d)
         m["wall_s"] = round(wall, 2)
         m["round"] = i
+        m["thermal_before"] = th_before
+        m["thermal_after"] = th_after
         rows.append(m)
         kind = "warmup" if i < args.warmup else "round"
         if "error" in m:
@@ -99,7 +111,8 @@ def main():
         else:
             print(f"  [{kind} {i}] decode {m['decode_tps']:6.2f} t/s  "
                   f"prefill {m['prefill_tps']:7.2f} t/s  "
-                  f"(n={m.get('predicted_n')}, {m.get('predicted_ms', 0):.0f} ms)")
+                  f"(n={m.get('predicted_n')}, {m.get('predicted_ms', 0):.0f} ms)  "
+                  f"thermal {th_before['label']}->{th_after['label']}")
 
     scored = rows[args.warmup:]
     tps = [r["decode_tps"] for r in scored if r.get("decode_tps")]
@@ -117,6 +130,26 @@ def main():
         "answer_md5_set": sorted({__import__("hashlib").md5(t.encode()).hexdigest()[:8]
                                   for t in texts}),
         "sample": texts[0][:160] if texts else "",
+        # Per-round detail, because the aggregate hides the thing worth knowing. Measured
+        # 2026-09-16: one arm under a uniformly NOMINAL reading still spanned 8.48 .. 20.32
+        # t/s across three rounds -- so "median 20.32" and "min 8.48" are two facts about
+        # the same server session, and only the per-round pairs say which round was which.
+        "rounds": [{"round": r.get("round"),
+                    "decode_tps": r.get("decode_tps"),
+                    "prefill_tps": r.get("prefill_tps"),
+                    "predicted_n": r.get("predicted_n"),
+                    "predicted_ms": r.get("predicted_ms"),
+                    "wall_s": r.get("wall_s"),
+                    "thermal_before": r.get("thermal_before"),
+                    "thermal_after": r.get("thermal_after")} for r in rows],
+        # The level the run was LAUNCHED into, the worst seen anywhere in it, and the shape.
+        # A median level would hide "3 rounds cold then 3 hot" behind "6 rounds warm", and
+        # those are not the same experiment (lesson eng-mh-0036).
+        "thermal_launch": rows[0].get("thermal_before") if rows else None,
+        "thermal_worst": tp.worst(
+            [r.get("thermal_before") for r in rows] + [r.get("thermal_after") for r in rows]),
+        "thermal_hist": tp.histogram(
+            [r.get("thermal_before") for r in rows] + [r.get("thermal_after") for r in rows]),
     }
     print()
     print(json.dumps(result, ensure_ascii=False, indent=2))

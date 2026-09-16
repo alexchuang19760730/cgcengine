@@ -30,6 +30,12 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 LOG_DIR = os.path.join(ROOT, "Backup", "cgc_logs")
 SERVER_MATCH = "build/bin/llama-server"
 
+# In-band thermal reading, imported so there is ONE parser and one "unreadable is not zero"
+# rule (thermal_pressure.py). Decode had none of this until now, which is why the same arm on
+# the same day read 6.6 / 9.75 / 10.24 / 16.17 / 6.95 t/s with nothing to attribute it to.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import thermal_pressure as tp  # noqa: E402
+
 
 def build_fingerprint():
     """The exact binaries a row's numbers belong to, discovered by GLOB over every shared library
@@ -748,18 +754,28 @@ def main():
         rows = json.load(open(args.report))
         print(f"{'tag':16s} {'decode':>7s} {'dec_min':>8s} {'prefill':>8s} {'hit%':>6s} "
               f"{'miss':>7s} {'us/miss':>8s} {'MiB/s':>7s} {'reads':>7s} {'acc':>6s} "
-              f"{'mlen':>5s} {'loop':>5s} {'stable':>6s}")
+              f"{'mlen':>5s} {'loop':>5s} {'stable':>6s} {'thermal':>15s}")
         for r in rows:
             ml = r.get('draft_mean_len')
             acc = r.get('draft_accept')
             acc_s = f"{acc:.3f}" if acc is not None else "-"
             ml_s = f"{ml:.2f}" if ml is not None else "-"
+            # `launch/worst` from the measured rounds themselves, falling back to the sweep
+            # bookends for rows recorded before this instrumentation existed. A row with no
+            # level at all prints `--`, so an unattributed number looks unattributed instead
+            # of looking merely terse.
+            th_l = (r.get('thermal_launch') or {}).get('label') \
+                or ((r.get('thermal_sweep') or {}).get('launch') or {}).get('label')
+            th_w = (r.get('thermal_worst') or {}).get('label') \
+                or ((r.get('thermal_sweep') or {}).get('worst') or {}).get('label')
+            th_s = f"{str(th_l)[:3]}/{str(th_w)[:3]}" if (th_l or th_w) else "--"
             print(f"{r['tag']:16s} {r.get('decode_tps_median', 0):7.2f} "
                   f"{r.get('decode_tps_min', 0):8.2f} {r.get('prefill_tps_median', 0):8.2f} "
                   f"{r.get('hit_rate_pct', 0):6.1f} {r.get('misses', 0):7d} "
                   f"{r.get('per_miss_us', 0):8.1f} {r.get('io_effective_mib_s', 0):7.1f} "
                   f"{r.get('file_reads', 0):7d} {acc_s:>6s} {ml_s:>5s} "
-                  f"{r.get('loopiness', 0):5.2f} {str(r.get('answer_stable')):>6s}")
+                  f"{r.get('loopiness', 0):5.2f} {str(r.get('answer_stable')):>6s} "
+                  f"{th_s:>15s}")
         return
 
     rows = []
@@ -782,7 +798,15 @@ def main():
             continue
 
         print(f"\n===== arm {tag}  env={ARMS[tag]} =====", flush=True)
+        # Thermal bookends for the whole arm. `pre_kill` is the state we carried in;
+        # `launch` is the state the arm is launched into -- the moment the prefill work
+        # showed to be the one that carries the claim (read 0 -> 6/6 runs >= 250 t/s;
+        # read 1 or 2 -> 0/21). Read BEFORE the model loads, because loading 13 GB is
+        # itself a thermal event. Per-round readings come from decode_bench, which stamps
+        # both sides of every request.
+        thermal_sweep = {"pre_kill": tp.stamp()}
         killed()
+        thermal_sweep["launch"] = tp.stamp()
         stamp = time.strftime("%Y%m%d_%H%M%S")
         ctrl_path = os.path.join(LOG_DIR, f"arm_{tag}_{stamp}.ctrl.log")
         if not start(ARMS[tag], ctrl_path, args.profile):
@@ -800,6 +824,7 @@ def main():
                         "--json", bench_json],
                        cwd=ROOT)
         bench = json.load(open(bench_json))[-1] if os.path.exists(bench_json) else {}
+        thermal_sweep["post_bench"] = tp.stamp()
 
         # SIGINT (not -9) so the teardown stats are printed, then wait for them to land.
         subprocess.run(["pkill", "-INT", "-f", SERVER_MATCH],
@@ -811,8 +836,11 @@ def main():
                 break
         subprocess.run(["pkill", "-9", "-f", SERVER_MATCH],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        thermal_sweep["teardown"] = tp.stamp()
+        thermal_sweep["worst"] = tp.worst(list(thermal_sweep.values()))
 
-        row = {"tag": tag, "env": ARMS[tag], "log": srv_log}
+        row = {"tag": tag, "env": ARMS[tag], "log": srv_log,
+               "thermal_sweep": thermal_sweep}
         row.update({k: v for k, v in bench.items() if k != "tag"})
         row["loopiness"] = loopiness(bench.get("sample", "") or "")
         row.update(harvest(srv_log))
@@ -824,6 +852,11 @@ def main():
               f"us/miss {row.get('per_miss_us')}  io {row.get('io_effective_mib_s')} MiB/s  "
               f"accept {row.get('draft_accept')} / mean_len {row.get('draft_mean_len')}  "
               f"loop {row.get('loopiness')}",
+              flush=True)
+        print(f"     thermal: launch={thermal_sweep['launch']['label']}"
+              f"({thermal_sweep['launch']['level']})  "
+              f"worst={thermal_sweep['worst']['label']}  "
+              f"rounds={row.get('thermal_hist') or '{} (bench not reached)'}",
               flush=True)
 
     print(f"\nsaved -> {args.json}")

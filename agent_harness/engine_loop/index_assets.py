@@ -51,7 +51,13 @@ CURATED = [
      "the ARMS table: each arm = env dict + a comment block stating what it is for. Also parses the "
      "server log into the row (tps, md5 set, pool counters, phase)."),
     ("scripts/check/decode_bench.py", "measure", "engine", True, True,
-     "runs N rounds against a live server and returns the sample + per-round md5."),
+     "runs N rounds against a live server and returns the sample + per-round md5. Reads the "
+     "thermal pressure level on both sides of every round (thermal_pressure.py)."),
+    ("scripts/check/thermal_pressure.py", "measure", "engine", True, False,
+     "the ONE reader of com.apple.system.thermalpressurelevel (~2 ms, no root, the same notify(3) "
+     "key powermetrics samples). Imported by decode_bench/decode_sweep rather than copied. Read its "
+     "docstring before trusting a level: `notifyutil -g` answers 0 for a key that DOES NOT EXIST, "
+     "so an absent instrument is indistinguishable in band from a cool machine."),
     ("scripts/check/ab_interleave.py", "compare", "engine", True, True,
      "the only quotable A/B: interleaves arms, reports the paired per-rep ratio median, pins the "
      "build fingerprint, supports --report-only."),
