@@ -1,0 +1,231 @@
+[
+  {
+    "tag": "p25-gputime",
+    "env": {
+      "CGC_SERVER_MTP": "0",
+      "CGC_GPU_TIMING": "1",
+      "CGC_DECODE_PROFILE": "1"
+    },
+    "log": "/Users/alexchuang/Documents/flashkv-devserver/Backup/cgc_logs/llama_server_20260916_195857.log",
+    "thermal_sweep": {
+      "pre_kill": {
+        "level": 1,
+        "label": "MODERATE",
+        "t": "19:58:49"
+      },
+      "launch": {
+        "level": 2,
+        "label": "HEAVY",
+        "t": "19:58:57"
+      },
+      "post_bench": {
+        "level": 2,
+        "label": "HEAVY",
+        "t": "19:59:37"
+      },
+      "teardown": {
+        "level": 2,
+        "label": "HEAVY",
+        "t": "19:59:39"
+      },
+      "worst": {
+        "level": 2,
+        "label": "HEAVY",
+        "t": ""
+      }
+    },
+    "n_rounds": 1,
+    "decode_tps_median": 5.72,
+    "decode_tps_min": 5.72,
+    "decode_tps_max": 5.72,
+    "prefill_tps_median": 9.61,
+    "n_tokens_sample": 24,
+    "answer_stable": true,
+    "answer_md5_set": [
+      "27cf6cad"
+    ],
+    "sample": "巴黎是法国首都，这一地位源于其历史、政治、经济与文化核心作用。自中",
+    "rounds": [
+      {
+        "round": 0,
+        "decode_tps": 5.722519329597323,
+        "prefill_tps": 9.611332056227587,
+        "predicted_n": 24,
+        "predicted_ms": 4193.957,
+        "wall_s": 25.92,
+        "thermal_before": {
+          "level": 2,
+          "label": "HEAVY",
+          "t": "19:59:11"
+        },
+        "thermal_after": {
+          "level": 2,
+          "label": "HEAVY",
+          "t": "19:59:37"
+        }
+      }
+    ],
+    "thermal_launch": {
+      "level": 2,
+      "label": "HEAVY",
+      "t": "19:59:11"
+    },
+    "thermal_worst": {
+      "level": 2,
+      "label": "HEAVY",
+      "t": ""
+    },
+    "thermal_hist": {
+      "HEAVY": 2
+    },
+    "loopiness": 0.0,
+    "requests": 80920,
+    "hits": 67283,
+    "misses": 13637,
+    "hit_rate_pct": 83.1,
+    "prewarm_req": 0,
+    "prewarm_miss": 0,
+    "resident_mib": 6197.04,
+    "file_reads": 38163,
+    "pread_usec": 83536473,
+    "fill_batch_usec": 0,
+    "per_miss_us": 6125.7,
+    "miss_compulsory": 8648,
+    "miss_capacity": 4989,
+    "capacity_pct": 36.6,
+    "evictions": 13637,
+    "layers_over_slots": 40,
+    "worst_layer": 2,
+    "worst_distinct": 247,
+    "worst_slots": 143,
+    "io_jobs": 38163,
+    "io_bytes": 15469600768,
+    "io_us_per_job": 2189,
+    "io_effective_mib_s": 185.0,
+    "build": {
+      "server": "054fb22f04a0",
+      "libggml-base": "d2099fb798e7",
+      "libggml-blas": "52de23d5c405",
+      "libggml-cpu": "70ebbd7c709a",
+      "libggml-metal": "e34011c6562f",
+      "libggml": "8f4abce76052",
+      "libllama-common": "7bceb3bd5320",
+      "libllama": "233a172afb2e"
+    }
+  },
+  {
+    "tag": "p25-slotgpu",
+    "env": {
+      "CGC_SERVER_MTP": "0",
+      "CGC_SLOT_TABLE_GPU": "1",
+      "CGC_DECODE_PROFILE": "1",
+      "CGC_GPU_TIMING": "1"
+    },
+    "log": "/Users/alexchuang/Documents/flashkv-devserver/Backup/cgc_logs/llama_server_20260916_195947.log",
+    "thermal_sweep": {
+      "pre_kill": {
+        "level": 2,
+        "label": "HEAVY",
+        "t": "19:59:39"
+      },
+      "launch": {
+        "level": 2,
+        "label": "HEAVY",
+        "t": "19:59:47"
+      },
+      "post_bench": {
+        "level": 2,
+        "label": "HEAVY",
+        "t": "20:00:27"
+      },
+      "teardown": {
+        "level": 2,
+        "label": "HEAVY",
+        "t": "20:00:29"
+      },
+      "worst": {
+        "level": 2,
+        "label": "HEAVY",
+        "t": ""
+      }
+    },
+    "n_rounds": 1,
+    "decode_tps_median": 7.67,
+    "decode_tps_min": 7.67,
+    "decode_tps_max": 7.67,
+    "prefill_tps_median": 9.46,
+    "n_tokens_sample": 24,
+    "answer_stable": true,
+    "answer_md5_set": [
+      "d0464999"
+    ],
+    "sample": "巴黎並非法國的首都，而是法國的首都。\n\n（註：問題本身有誤，巴黎就是法國的首",
+    "rounds": [
+      {
+        "round": 0,
+        "decode_tps": 7.670660204135445,
+        "prefill_tps": 9.462741048542679,
+        "predicted_n": 24,
+        "predicted_ms": 3128.805,
+        "wall_s": 25.22,
+        "thermal_before": {
+          "level": 2,
+          "label": "HEAVY",
+          "t": "20:00:01"
+        },
+        "thermal_after": {
+          "level": 2,
+          "label": "HEAVY",
+          "t": "20:00:27"
+        }
+      }
+    ],
+    "thermal_launch": {
+      "level": 2,
+      "label": "HEAVY",
+      "t": "20:00:01"
+    },
+    "thermal_worst": {
+      "level": 2,
+      "label": "HEAVY",
+      "t": ""
+    },
+    "thermal_hist": {
+      "HEAVY": 2
+    },
+    "loopiness": 0.0,
+    "requests": 80920,
+    "hits": 66596,
+    "misses": 14324,
+    "hit_rate_pct": 82.3,
+    "prewarm_req": 0,
+    "prewarm_miss": 0,
+    "resident_mib": 6197.04,
+    "file_reads": 39954,
+    "pread_usec": 87433402,
+    "fill_batch_usec": 0,
+    "per_miss_us": 6104.0,
+    "miss_compulsory": 8760,
+    "miss_capacity": 5564,
+    "capacity_pct": 38.8,
+    "evictions": 14324,
+    "layers_over_slots": 40,
+    "worst_layer": 2,
+    "worst_distinct": 247,
+    "worst_slots": 143,
+    "io_jobs": 39954,
+    "io_bytes": 16245129216,
+    "io_us_per_job": 2188,
+    "io_effective_mib_s": 186.0,
+    "build": {
+      "server": "054fb22f04a0",
+      "libggml-base": "d2099fb798e7",
+      "libggml-blas": "52de23d5c405",
+      "libggml-cpu": "70ebbd7c709a",
+      "libggml-metal": "e34011c6562f",
+      "libggml": "8f4abce76052",
+      "libllama-common": "7bceb3bd5320",
+      "libllama": "233a172afb2e"
+    }
+  }
+]
