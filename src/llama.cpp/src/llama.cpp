@@ -417,13 +417,35 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
                     LLAMA_LOG_WARN("%s: CGC_POOL_SPLIT ignored: the L4 pool path is not active\n", __func__);
                 }
                 if (ml.expert_cache_pool_split) {
-                    // EXPERIMENTAL and NOT WORKING: measured 2026-09-14 (docs/M1_POOL_SPLIT_COST_2026-09-14.md),
-                    // this configuration produces degenerate routing at il=1 (the remap maps two experts to
-                    // one slot) and a NaN cascade -> SIGSEGV in the Metal encoder at il=2. Kept for the
-                    // experiment's reproducibility, but nothing should ship or benchmark on it.
-                    LLAMA_LOG_WARN("%s: CGC_POOL_SPLIT is an EXPERIMENTAL, KNOWN-BROKEN configuration "
-                            "(degenerate routing + SIGSEGV) - see docs/M1_POOL_SPLIT_COST_2026-09-14.md; "
-                            "do not benchmark or ship with it\n", __func__);
+                    // EXPERIMENTAL and NOT USABLE. See docs/M1_POOL_SPLIT_COST_2026-09-14.md §4/§4.1.
+                    //
+                    // This comment used to blame "the remap maps two experts to one slot". That was a
+                    // TRANSCRIPTION ERROR IN THE RECORD, not a finding: the 09-14 capture says st[1]=2,
+                    // and with that correction the logged lines are consistent term by term
+                    // (remap[i] == st[ids[i]]). The real anomaly was ensure_batch filling its batch mask
+                    // INCREMENTALLY, so a miss could evict a slot a LATER member of the same batch was
+                    // about to read -- one cold expert turned a hits-only batch into a full batch of
+                    // misses and shifted the whole layer's expert->slot map by one. That was Blocker B,
+                    // and it is FIXED (2026-09-16, commit "fix(pool): ensure_batch's batch mask was
+                    // order-dependent", which added scripts/check/expert_cache_ensure_batch_order.cpp).
+                    // Do not re-derive Blocker B from the old wording.
+                    //
+                    // What remains is Blocker A alone, and it is structural, not a defect to hunt:
+                    // CGC_POOL_SPLIT keeps the expert tensors at full width (ne[2] = n_expert), so the
+                    // Metal backend has to read a 256-expert tensor through the MODEL's weight buffer.
+                    // Shrinking ne[2] is exactly why this engine's loader step exists (see the CGC M1
+                    // block in llama-context.cpp: it keeps the n_batch clamp in place for an owned pool
+                    // precisely because the wide path was measured to fault). The gather path re-points
+                    // tensors that live in Metal buffers to host pointers Metal was never told about ->
+                    // "tensor buffer is nil" in ggml-metal-device.m. It fails SILENTLY (measured: 0
+                    // aborts, 234 buffer-is-nil, M1 2/42), which is why this warning stays loud.
+                    //
+                    // Nor can it even be started on a 16 GB box: warmup OOM (CGC-METAL-FAIL status 5,
+                    // Insufficient Memory) at both 10 GiB and 4 GiB pool budgets, serving no request.
+                    LLAMA_LOG_WARN("%s: CGC_POOL_SPLIT is an EXPERIMENTAL, NOT USABLE configuration "
+                            "(Blocker A: wide expert tensors a Metal buffer cannot read correctly; "
+                            "Blocker B is fixed) - see docs/M1_POOL_SPLIT_COST_2026-09-14.md; do not "
+                            "benchmark or ship with it\n", __func__);
                 }
             }
             if (l4_path) {
