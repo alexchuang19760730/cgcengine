@@ -1736,12 +1736,6 @@ CGC_SERVER_PROFILE=prefill250 ./scripts/run_server.sh --detach</code></pre>
   三層裡有兩層不在程式裡。<br>
   <span class="small">而 250 不是這台機器的上限：最高階 1470 MHz 的純階預測是 <strong>291.3 t/s</strong>，
   §3.3 也真的量到 294–308。250 只是那一階之上的一道檻；真正的天花板是
-<div class="box b-green">
-  <p><strong>一句話：</strong>要 250，就是 <code>CGC_SERVER_PROFILE=prefill250</code>
-  <strong>加上</strong>機器安靜 150 秒以上，<strong>加上</strong>只採信每個 session 的第一筆。
-  三層裡有兩層不在程式裡。<br>
-  <span class="small">而 250 不是這台機器的上限：最高階 1470 MHz 的純階預測是 <strong>291.3 t/s</strong>，
-  §3.3 也真的量到 294–308。250 只是那一階之上的一道檻；真正的天花板是
   §10.6 那個不隨時脈縮放的 0.558 ms／token 地板（冷態佔 15.4%）。</span></p>
 </div>
 
