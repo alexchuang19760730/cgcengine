@@ -697,10 +697,23 @@ slow: 4 prefill graph(s), per-graph shape:
   <tr><td><code>powermetrics</code></td>
       <td><strong>失敗卻留下了看起來像成功的檔名</strong>：<code>Backup/cgc_logs/powermetrics_prefill_paired_20260916.log</code>
           存在（所以「有這個檔」會被誤讀成「跑過了」），內容卻只有一行
-          <code>(eval):1: operation not permitted: sudo</code>。沙箱封鎖 <code>sudo</code>，
-          重試與 <code>dangerouslyDisableSandbox</code> 都無效。</td>
+          <code>(eval):1: operation not permitted: sudo</code>。封鎖的<b>不是沙箱</b>：
+          <code>/usr/bin/sudo</code> 帶 setuid，但 exec 被拒，且
+          <code>dangerouslyDisableSandbox</code> 下重現同樣的錯誤。</td>
       <td>明確記為<strong>未執行</strong>（§8 第 2 項列出要人工跑的命令），
           並改用不需 root 的 <code>Device Utilization %</code> 作為替代證據（§3.1）。</td></tr>
+  <tr><td><code>powermetrics_gpu_freq.sh --parse</code></td>
+      <td><strong>有在跑，卻沒量到要量的東西</strong>：它 <code>grep -o</code> 的四個標籤是對的，
+          但<b>丟掉了 <code>GPU HW active residency</code> 後面括號裡的 DVFS 逐檔位分佈</b>——
+          而那正是「時脈限制 vs 功耗上限」唯一能分辨的地方（單一 <code>active frequency</code>
+          把分佈壓成一個數）。它又把每條約 480 個樣本原樣印出，而問題本質是<b>冷熱對比</b>。
+          更根本的是：那四個標籤字串<b>從未對真實輸出驗證過</b>——在整個 repo 內只出現在一句
+          敘述性註解裡，所以格式若不符，它會<b>安靜印出四條空序列</b>，與「量到零」同形。</td>
+      <td>本輪重寫為 <code>scripts/check/powermetrics_gpu_freq_parse.py</code>：以 GPU <b>功率</b>
+          分段活動區塊（不以頻率／residency 分段，免於竊取結論）、標區塊 0 為冷、印逐檔位冷熱表與
+          residency 加權有效時脈、給三選一判準；標籤不符時 <code>exit 2</code> 並列出實際看到的 GPU 行；
+          空檔明說「看起來是空的或截斷了」。合成真實格式樣本 + <code>--selftest</code> 4/4 已驗。
+          教訓 <code>eng-gate-0017</code>。</td></tr>
   <tr><td><code>gpu_util_prefill_paired_20260916.log</code></td>
       <td><strong>不是缺陷，是漏用</strong>：這份 300 筆的 1 Hz 利用率時序在同一輪就產出了，
           但報告初版只引用 Metal 時戳、沒發現它，導致「獨立第二儀器」這條佐證被擱置。</td>
@@ -825,20 +838,33 @@ slow: 4 prefill graph(s), per-graph shape:
       <code>1.60×（CV 8.7%）</code> 對吞吐 <code>1.62×</code>，指向時脈／功耗上限而不是實作熱點。
       <span class="small">這一項在做的過程中反而先推翻了自己第一次的證據（8 層子集 + 單圖；
       §3.2 陷阱 A/B），結論沒變但證據重做了。</span></li>
-  <li><strong>物理確認：頻率（需要你人工跑，沙箱內 <code>sudo</code> 被封鎖）</strong>：
-    本輪<b>已嘗試但失敗</b>——<code>Backup/cgc_logs/powermetrics_prefill_paired_20260916.log</code>
-    只有一行 <code>operation not permitted: sudo</code>。也試過繞過 root 的路：
-    <code>scripts/check/ioreport_gpu_pstate_probe.py</code> 以 <code>ctypes</code> 直接讀
-    <code>/usr/lib/libIOReport.dylib</code>，結果是一個<strong>可證的否定</strong>——
-    channel 能列舉，但 <code>IOReportCreateSubscription</code> 回傳 NULL（用可變 dict 時直接
-    拋 <code>-[__NSDictionaryM objectAtIndex:]</code>），<strong>所以無特權路徑是關的</strong>，
-    這一步只能人工。現成指令：
-    <pre><code>scripts/check/powermetrics_gpu_freq.sh --seconds 180 --out ~/Desktop/pm_prefill.log
-scripts/check/powermetrics_gpu_freq.sh --parse ~/Desktop/pm_prefill.log</code></pre>
-    <span class="small">（<code>--parse</code> 只是把抓到的日誌整理成頻率／residency／功率序列，其機制已用合成樣本驗過，
-    尚未用真實日誌驗過。）</span>
-    要看的欄位是 <strong>GPU HW active frequency</strong> 與 <strong>GPU active residency</strong>
-    在冷態首跑與後續跑之間的差別。若頻率下降而 residency 都在 ~100%，頻率就是答案。
+  <li><strong>物理確認：頻率（需要你人工跑；<code>sudo</code> 的封鎖在沙箱之外也成立）</strong>：
+    本輪<b>再次嘗試仍失敗，但這次把「為什麼」釘死了</b>。<code>/usr/bin/sudo</code> 存在且帶 setuid
+    （<code>-r-s--x--x</code>），但它的 <b>exec 被拒</b>：<code>operation not permitted: /usr/bin/sudo</code>，
+    且<b>關掉工作區沙箱（<code>dangerouslyDisableSandbox</code>）也一樣</b> ⇒ 特權升級被封在更外層，
+    不是本 session 能觸及的那一層。另外三條路本輪逐一實測關閉：
+    <code>powermetrics</code> 無 root 直接回 <code>must be invoked as the superuser</code>；
+    <code>ioreg -c IOAccelerator</code> 的 <code>PerformanceStatistics</code> 只有
+    <code>Device/Renderer Utilization %</code>、<b>沒有 clock 鍵</b>；<code>sysctl *iogpu*</code>
+    只有記憶體水位。（<code>ioreport_gpu_pstate_probe.py</code> 的 IOReport 路徑是既有的可證否定。）
+    現成指令（<code>IDLE</code>／<code>OUT</code>／<code>RUNS</code> 是<b>環境變數</b>——
+    腳本只認 <code>--parse</code>，寫 <code>--seconds</code>／<code>--out</code> 會被<b>靜默忽略</b>而跑預設值）：
+    <pre><code>cd /Users/alexchuang/Documents/flashkv-devserver
+sudo -v                                        # 先快取憑證
+scripts/check/powermetrics_gpu_freq.sh         # cold/hot 對，約 4 分鐘
+# 跑完會自動 parse；事後也可補看：
+scripts/check/powermetrics_gpu_freq.sh --parse Backup/cgc_logs/powermetrics_prefill_*.log</code></pre>
+    <b>要看的欄位是 <code>GPU HW active residency</code> 後面括號裡的 DVFS 逐檔位分佈</b>，不是
+    <code>GPU HW active frequency</code> 那個<b>單一數字</b>：後者把分佈壓縮成一個值，所以兩個狀態可以
+    報同一個 <code>active frequency</code> 卻佔用不同的檔位組合。「時脈被壓」的指紋是
+    <b>質量整片移出最高檔</b>，而那個被壓縮的數字看不出這件事。
+    <code>--parse</code> 現在會把擷取切成活動區塊（<b>以 GPU 功率分段，不以頻率／residency 分段</b>——
+    那正是待測量，用它定義「一次跑」等於竊取結論）、標區塊 0 為冷、印出冷熱對比與逐檔位表，並給出三選一判準：
+    <b>CLOCK</b> / <b>POWER CEILING</b> / <b>GPU KEPT OFF THE WORK</b>。
+    <span class="small">（此改動的起點是一個真缺陷：舊 <code>--parse</code> 丟掉的正是那個括號，見 §6。
+    四個標籤字串本輪已對三個獨立來源的真實擷取核對無誤，但仍<b>未對本機自己的擷取跑過</b>——
+    因為那份擷取還不存在。<code>--selftest</code> 4/4。）</span>
+    若頻率下降而 residency 都在 ~100%，時脈就是答案。
     <span class="small">（本輪已有 <code>Device Utilization %</code> 的 91–97%／峰值 99%，見 §3.1，
     所以期待的形狀就是「residency 不變、frequency 下降」。）</span></li>
   <li><strong>（已完成）恢復時間常數</strong>：直接量到折點 —— <strong><code>120 s &lt; τ ≤ 150 s</code></strong>（§3.3）。
