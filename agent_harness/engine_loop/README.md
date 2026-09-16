@@ -35,7 +35,7 @@ evaluate  →  extract  →  refine  →  compare
 | **evaluate** | `index_assets.py` 指到的臂與 profile，由 `scripts/check/decode_sweep.py` 執行 | 已存在（今天就在跑） |
 | **extract** | `traces/episodes.jsonl`（T0，純腳本，**已完成**） | ✅ E0 |
 | **refine** | `distill/refine_engine.sh` ＋ `distill/collect_evidence.py` ＋ `distill/prompt/refine_engine.md` → `distill/out/<ts>/*.candidate.jsonl`（人審後 `--accept`） | ✅ E2（機制已建並通過離線自測；**未接真實模型跑過**） |
-| **compare** | `harness_engine/`（注入用的 harness 狀態）＋ `sft_pi/` `sft_prime/`（兩份投影）＋ `distill/closed_loop.py`（閉環對照） | ✅ E2（投影已產出並可重生）；閉環對照的**模型半未跑**，見 §9 |
+| **compare** | `harness_engine/`（注入用的 harness 狀態）＋ `sft_pi/` `sft_prime/`（兩份投影）＋ `distill/closed_loop.py`（四臂閉環對照） | ✅ E2（投影已產出並可重生）；執行器與實驗設計 ✅（`closed_loop_selftest.py` 33 項全過），但**模型半仍未跑** ⇒ **E3 本體未結清**，見 §9 |
 
 ### 2.1 E2 新增的四個目錄
 
@@ -44,7 +44,7 @@ engine_loop/
 ├── harness_engine/            prime-agent 的第二份狀態（PLAN §6.1）
 │   ├── extensions -> ../../tb_loop/harness/extensions   ← 符號連結，**不是複本**（R1）
 │   ├── build_memories.py      lessons.jsonl -> memories/engine/<id>.md（可重生、有 --check）
-│   └── memories/engine/       106 檔；第一行固定 `[engine] <rule>`（/refine --global 的 scope 標記）
+│   └── memories/engine/       一 lesson 一檔（現 111）；第一行固定 `[engine] <rule>`（/refine --global 的 scope 標記）
 ├── sft_pi/                    工具軌跡投影（messages + tool_calls）
 │   ├── build_sft_pi.py        episode 序列 + decision.action -> train/valid.jsonl
 │   └── {train,valid}.jsonl
@@ -56,7 +56,8 @@ engine_loop/
 │   ├── refine_engine.sh       --dry-run（離線可驗）/ 真跑 / --accept
 │   ├── prompt/refine_engine.md
 │   ├── selftest.py            假 prime-agent，驗 prompt 的手遞與 --accept 路徑
-│   ├── closed_loop.py         四臂閉環對照（D6 欠帳的執行器）
+│   ├── closed_loop.py         四臂閉環對照（A/B = D6 欠帳、C/D = E3）
+│   ├── closed_loop_selftest.py  33 項離線自測（含「儀器必須說得出『沒有差異』」的陰性對照）
 │   └── closed_loop_questions.md  8 題 + 每題的承重點
 └── sft_common.py              兩份投影共用的載入／渲染／切分（**只有一份渲染器**）
 ```
@@ -64,6 +65,38 @@ engine_loop/
 「能推導就不要維護」在這四個目錄上是貫徹的：`memories/engine/` 由 `lessons.jsonl` 產生、
 兩份 SFT 由 `traces/*.jsonl` 產生、`extensions/` 是指向而不是複本。**手改衍生物會被下一次
 重生蓋掉，而那次重生看起來完全正常。**
+
+### 2.2 E3 的執行器怎麼用（`distill/closed_loop.py`）
+
+```sh
+python3 agent_harness/engine_loop/distill/closed_loop.py --dry-run    # 不需要模型
+python3 agent_harness/engine_loop/distill/closed_loop_selftest.py     # 33 項離線自測
+
+# 真跑。需要一個 OpenAI 兼容端點；「用哪個模型」是實驗的一部分，所以腳本不給預設值。
+CLOSED_LOOP_MODEL_CMD='llm -m <model>' \
+  python3 agent_harness/engine_loop/distill/closed_loop.py --memories-scope first:8
+```
+
+| 參數 | 意思 |
+|---|---|
+| `--memories-scope all`（預設） | 注入全部 live lesson |
+| `--memories-scope first:8` | `lessons.jsonl` 的**前 8 筆**（PLAN §6.3 的「那 8 條」） |
+| `--memories-scope class:mh` | 單一 class（縮寫或全名） |
+| `--memories-scope none` | 空。**陰性對照**：C 與 D 的 prompt 必須位元組相同 |
+| `--memories-scope ids:<path>` | 明確清單，一行一個 id，`#` 可註解 |
+| `--reps N`（預設 3） | 每個（題, 臂）呼叫幾次。**1 次證明不了「可重現」**，而 §9 的驗收要求的是後者 |
+| `--only Q3` | 只跑一題 |
+
+產物在 `distill/closed_loop_out/<ts>/`：
+
+- `answers.jsonl` —— 每次呼叫一筆
+- `compare.json` —— 每題的**臂內一致性** ＋ 跨臂判斷
+- `manifest.json` —— 注入了哪些 id、每個 rep 的臂順序、charter 與 memories 的 sha256。
+  **model cmd 只記 sha256、不記原文**：manifest 會被 commit，而命令列可能帶著 API key。
+
+**讀 `compare.json` 的先後是固定的**：先看 `comparable`，再看跨臂欄位。`comparable: false`
+（某個臂自己前後不一致）的題目，其跨臂判斷一律無效。而**「不同」不等於「改善」**——
+承重點在 `closed_loop_questions.md` 的表裡，要人工核對。
 
 ## 3. 三種 record
 

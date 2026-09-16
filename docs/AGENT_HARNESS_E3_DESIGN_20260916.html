@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Harness E3：閉環的執行器與實驗設計（2026-09-16）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --purple:#7c3aed; --purple-bg:#f5f3ff;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.78 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,"Noto Sans TC",sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:27px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16.5px;margin:26px 0 8px;color:#1f2937}
+  h4{font-size:14.5px;margin:20px 0 6px;color:#374151}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:24px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.4px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.4px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  tr:nth-child(even) td{background:#fcfcfd}
+  .box{border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:0 8px 8px 0;
+       padding:12px 16px;margin:16px 0;background:var(--blue-bg)}
+  .box.warn{border-left-color:var(--amber);background:var(--amber-bg)}
+  .box.bad{border-left-color:var(--red);background:var(--red-bg)}
+  .box.ok{border-left-color:var(--green);background:var(--green-bg)}
+  .box.pur{border-left-color:var(--purple);background:var(--purple-bg)}
+  .box .lbl{font-weight:700;font-size:13px;letter-spacing:.3px}
+  .box p:last-child{margin-bottom:0}
+  ul,ol{margin:8px 0 8px 22px}
+  li{margin:4px 0}
+  .tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11.5px;font-weight:600;
+       border:1px solid transparent;margin-right:4px;white-space:nowrap}
+  .t-green{background:var(--green-bg);color:var(--green);border-color:#a7f3d0}
+  .t-red{background:var(--red-bg);color:var(--red);border-color:#fecaca}
+  .t-amber{background:var(--amber-bg);color:var(--amber);border-color:#fde68a}
+  .t-gray{background:#f3f4f6;color:#4b5563;border-color:#e5e7eb}
+  .foot{margin-top:40px;color:var(--muted);font-size:12.3px;border-top:1px solid var(--line);padding-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Agent Harness E3：閉環的執行器與實驗設計</h1>
+<p class="sub">
+  專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code> ·
+  分支 <code>demo/sweet-spot-windows-fix</code> · 產出日期 2026-09-16 ·
+  前一個 agent_harness 線的 commit 是 <code>812a3e77a</code>（E2 resync）
+</p>
+
+<div class="box pur">
+  <p><span class="lbl">一句話</span></p>
+  <p>E3 的題目是「注入 lesson 有沒有改善決策品質，而且<b>可重現</b>」。這一輪沒有跑那個實驗
+  —— 它需要的模型端點會干擾另一條線正在進行的量測。這一輪做的是<b>讓那個實驗一旦能跑，
+  它的輸出就不可辯駁</b>：注入範圍變成一個明確的參數（因為計畫寫的「8 條」與它自己的 §4.3
+  列出的十條不一致）、<code>--reps</code> 預設 3 且交錯輪轉（因為單次採樣證明不了「可重現」）、
+  <b>臂內不一致的題目其跨臂判斷一律作廢</b>、以及一份 33 項的離線自測 ——
+  其中最重要的一對是「同一個假模型、同一組題目，只換注入範圍，一次必須答『相同』、
+  一次必須答『不同』」。</p>
+</div>
+
+<h2>1. 這一輪實際改了什麼</h2>
+
+<table>
+<tr><th>檔案</th><th>變化</th></tr>
+<tr><td><code>distill/closed_loop.py</code></td>
+    <td>新增 <code>--memories-scope</code>（5 種形式）與 <code>--reps</code>（預設 3）；
+        執行改為<b>交錯 ＋ 每個 rep 輪轉臂序</b>；輸出新增 <code>manifest.json</code>；
+        <code>compare.json</code> 新增<b>逐臂穩定度</b>與 <code>comparable</code> 欄</td></tr>
+<tr><td><code>distill/closed_loop_selftest.py</code></td>
+    <td><b>新增</b>。33 項離線檢查，含守衛、陰性對照、陽性對照、輪轉、以及 manifest 的紅線</td></tr>
+<tr><td><code>distill/closed_loop_questions.md</code></td>
+    <td>三臂表改成四臂（舊表還寫著 <code>C_postD6_mem</code> 這個已不存在的臂名與
+        88,988 B 這個已過期的 charter 大小）；補上注入範圍、<code>--reps</code>、
+        與「判準不是『不同』而是承重點」</td></tr>
+<tr><td><code>PLAN_ENGINE_LOOP_2026-09-15.md</code></td>
+    <td>§6.3 加註記說明「8」與 §4.3 的十條不一致、以及忠實讀法；§9 的 E3 欄補一列實作狀況</td></tr>
+<tr><td><code>engine_loop/README.md</code></td>
+    <td>新增 §2.2「E3 的執行器怎麼用」；修正兩個會漂的數字（<code>106 檔</code>、臂名）</td></tr>
+</table>
+
+<div class="box warn">
+  <p><span class="lbl">一個刻意的非改動</span></p>
+  <p>「8 條」這個數字<b>沒有被我改成 10</b>。§4.3 的表格列了十條、§6.3 與 §11 寫「8 條」——
+  這是計畫的內部不一致，處置方式是<b>在兩處都加註記說明它不一致、以及「那 8 條」的可執行定義
+  是什麼</b>，而不是替它選一個數字。選一個數字會讓一個未決的編輯決定看起來像既成事實。</p>
+</div>
+
+<h2>2. 典籍說「8 條」，而典籍自己有十條</h2>
+
+<p>PLAN §9 的 E3 原始驗收句是「閉環：round1（無 lesson）vs round2（8 條 lesson）在同一個待答問題上」。
+那句裡的 8 出現在三個地方，而其中一個地方已經不再是 8：</p>
+
+<table>
+<tr><th>位置</th><th>寫什麼</th><th>現在的實況</th></tr>
+<tr><td>§6.3</td><td>「注入今天定稿的 8 條 lesson」</td><td class="num">—</td></tr>
+<tr><td>§9 的 E3 欄</td><td>「round2（8 條 lesson）」</td><td class="num">—</td></tr>
+<tr><td>§11</td><td>「§4.3 那 8 條 lesson 直接搬成憲章條文」</td>
+    <td><b>§4.3 的表格現在列了 10 列</b></td></tr>
+</table>
+
+<p>所以「那 8 條」需要一個<b>可執行的定義</b>。<code>lessons.jsonl</code> 是 append-only 的，
+它的檔案順序就是那些 lesson 被寫下的先後；而它的<b>前八筆正好是 §4.3 的前八列</b>：</p>
+
+<pre><code>  scope: first:8 -- 8 lessons, in file order (the k-th is eng-bound-0001)
+    ids: eng-mh-0003, eng-lf-0007, eng-diag-0011, eng-diag-0012, eng-gate-0002,
+         eng-src-0005, eng-src-0006, eng-bound-0001</code></pre>
+
+<p>這八筆橫跨六個 class，所以<b>依 id 排序會選到一組不同的集合</b>——這是為什麼
+<code>first:k</code> 取的是檔案順序而不是序號順序，也為什麼這件事在程式裡留了註解。</p>
+
+<h2>3. 注入範圍是一個參數，不是一個常數</h2>
+
+<table>
+<tr><th>scope</th><th>注入</th><th>什麼時候用</th></tr>
+<tr><td class="num">all（預設）</td><td>全部 live lesson</td><td>問「harness 現在知道什麼」</td></tr>
+<tr><td class="num">none</td><td>空</td><td><b>陰性對照</b>：D 臂的 prompt 必須與 C 臂位元組相同</td></tr>
+<tr><td class="num">first:&lt;k&gt;</td><td><code>lessons.jsonl</code> 的前 k 筆</td><td>PLAN §6.3 的實驗臂</td></tr>
+<tr><td class="num">class:&lt;abbr&gt;</td><td>單一 class</td><td>隔離某一類規訓的影響</td></tr>
+<tr><td class="num">ids:&lt;path&gt;</td><td>明確清單（一行一個，<code>#</code> 可註解）</td><td>逐條列舉，可重現性最高</td></tr>
+</table>
+
+<div class="box">
+  <p><span class="lbl">為什麼它不能是寫死的</span></p>
+  <p>注入全部時，一個觀察到的改善可能來自任何一條 —— <b>因果被抹平</b>。注入 8 條時與計畫一致，
+  但丟掉後來寫的近百條。兩者都有道理，所以它是一個要<b>明確做</b>的決定；
+  腳本偷偷選一個，就把一個決定變成一個習慣。</p>
+</div>
+
+<h3>3.1 選取用權威，內容用投影</h3>
+
+<p>這兩個來源是分開的，而且是刻意的：<b>id 從 <code>traces/lessons.jsonl</code> 選</b>（那是權威），
+<b>文字從 <code>harness_engine/memories/engine/</code> 取</b>（那是注入的形態）。
+中間的接縫是「選到的 id 必須有對應的 memory 檔」，而它是一個<b>硬錯誤</b>：</p>
+
+<pre><code>5 selected lesson(s) have no memory file under
+  agent_harness/engine_loop/harness_engine/memories/engine:
+  ['eng-diag-0024', 'eng-diag-0025', 'eng-src-0014', 'eng-mh-0042', 'eng-diag-0026']
+  Run `harness_engine/build_memories.py` first. Refusing to run an arm that
+  silently drops lessons: a filter out of sync with the projection is
+  indistinguishable from 'those lessons do not apply'.</code></pre>
+
+<h3>3.2 這個守衛在真實情況下被觸發了（不是測試造的）</h3>
+
+<p>上面那段輸出不是設計文件裡的範例。寫這一輪的時候，另一個 session 在
+<b>19:54:58</b> 往 <code>traces/lessons.jsonl</code> 追加了 5 筆 lesson（<code>eng-diag-0024</code>、
+<code>eng-diag-0025</code>、<code>eng-diag-0026</code>、<code>eng-src-0014</code>、<code>eng-mh-0042</code>，
+內容是他們那條線的 Metal 診斷），而 <code>memories/</code> 投影還是 106 檔。
+於是預設的 <code>all</code> 拒跑了。</p>
+
+<table>
+<tr><th>檢查</th><th>結果</th><th>為什麼這是有用的訊息</th></tr>
+<tr><td>那 5 筆是否合法</td><td><span class="tag t-green">通過</span> <code>validate.py</code>：111 records，<code>applies_to</code> 無懸空</td>
+    <td>合法的 record ⇒ 是權威前進，不是壞資料</td></tr>
+<tr><td><code>build_memories.py --check</code></td><td>報 5 個 drift 並給出重生指令</td>
+    <td>投影落後於權威，而這<b>兩份檢查工具都各自說得出來</b></td></tr>
+<tr><td>重生後</td><td><span class="tag t-green">111 檔</span>，<code>--check</code> OK，<code>all</code> 恢復</td>
+    <td>訊息是可執行的：照著跑就好</td></tr>
+<tr><td><code>first:8</code></td><td><span class="tag t-green">不受影響</span></td>
+    <td><b>明確 id 選取對權威前進是免疫的</b>——它問的是「那 8 條」，不隨倉庫長大而移動</td></tr>
+</table>
+
+<div class="box ok">
+  <p><span class="lbl">這一節真正的重點</span></p>
+  <p>如果守衛是「靜默跳過缺檔的 id」，那麼這一輪會照常跑完、照常產出一份報告，
+  而那份報告的 D 臂少了 5 條 lesson —— <b>它與正確的 D 臂在輸出上長得一模一樣</b>。
+  守衛的價值不在於它擋下了什麼，而在於它讓「少注入幾條」無法偽裝成「本來就只有這些」。</p>
+</div>
+
+<h2>4. 「可重現」的實作：<code>--reps</code> 與臂內一致性</h2>
+
+<p>PLAN §9 的驗收寫的是「至少 1 條 lesson 被證明改善<b>且可重現</b>」。
+單次採樣做不到後半句：兩個臂各答一次而答案不同，與「這個差異是雜訊」在觀察上無法區分。
+所以預設是每個（題, 臂）呼叫 3 次 —— 這與 <code>eng-mh-0003</code> 對吞吐數字要求的
+「交錯 ≥3 輪」是同一個標準，只是把它用在<b>量 harness 自己的那個儀器</b>上。</p>
+
+<table>
+<tr><th>機制</th><th>防的是什麼</th></tr>
+<tr><td><b>交錯</b>（題／臂輪流，不是每個臂連續跑完）</td>
+    <td>與序列位置相關的漂移不會整個落在同一個臂上</td></tr>
+<tr><td><b>輪轉</b>（每個 rep 的臂序往前移一位）</td>
+    <td>「總是最先被問」或「總是最後被問」不再是任何一個臂的固有性質</td></tr>
+<tr><td><b>臂內一致性</b>（同臂的 reps 是否給同一答案）</td>
+    <td><b>雜訊穿著效果的標籤</b>：一個臂自己前後不一致時，跨臂的差異不是效果</td></tr>
+</table>
+
+<pre><code>  arm_order_by_rep         =        &lt;-- manifest.json 記下實際順序
+      rep1: A_preD6 -> B_postD6 -> C_head -> D_head_mem
+      rep2: B_postD6 -> C_head -> D_head_mem -> A_preD6
+      rep3: C_head -> D_head_mem -> A_preD6 -> B_postD6</code></pre>
+
+<p>而當某個臂自己不一致時，<code>compare.json</code> 不是把它記成「不同」，而是記成
+<b>不能比</b>：</p>
+
+<pre><code>{
+  "arm_stability": { "A_preD6": {"n": 3, "distinct": 3, "stable": false}, ... },
+  "comparable": false,
+  "note": "至少一個臂自己前後不一致 ⇒ 這一題的跨臂判斷無效（先看是哪個臂、
+           以及不一致的是不是『承重點』本身）",
+  "A_vs_B_identical": null,          &lt;-- null，不是 false
+  "A_vs_B_verdict": "無法判斷（臂內不穩定）"
+}</code></pre>
+
+<div class="box pur">
+  <p><span class="lbl">null 與 false 的差別是這一節的全部</span></p>
+  <p><b>「不能比」與「比過了，相同」必須長得不同。</b>把前者記成 <code>false</code>，
+  就是在一個沒有資訊的題目上產生一個看起來有資訊的欄位 —— 而那正是這整個 E3 要防的錯。</p>
+</div>
+
+<h2>5. 自測：33 項，其中最重要的是「儀器必須說得出沒有差異」</h2>
+
+<p><code>closed_loop_selftest.py</code> 不碰真模型、也不碰真實的投影目錄或輸出目錄。</p>
+
+<h3>5.1 核心的那一對</h3>
+
+<p>同一個假模型、同一組題目，<b>只換注入範圍</b>：</p>
+
+<pre><code>C. 陰性對照：scope=none ⇒ C 與 D 的 prompt 位元組相同 ⇒ 必須回報「相同」
+  [ok] C vs D 相同（儀器說得出『沒有差異』）   verdict=注入 lesson 在這一題上沒有改變答案
+  [ok] 同一輪裡 A vs B 仍不同 ⇒ 不是全盤說『相同』的假順從
+
+D. 陽性：scope=first:8 ⇒ D 帶著 lesson ⇒ 必須回報「不同」
+  [ok] C vs D 不同（lesson 真的進了 prompt）   verdict=注入 lesson 改變了這一題的答案
+  [ok] 四臂各自穩定 ⇒ comparable=true</code></pre>
+
+<p><b>一個只會回答「不同」的比較器不叫比較器</b> —— 它是一個同意你的裝置。
+C 那一組證明了它有能力說出「沒有差異」，D 那一組證明了它不會對所有東西都說「沒有差異」。</p>
+
+<h3>5.2 假模型為什麼用 sha256 當答案</h3>
+
+<p>假模型的答案是 <code>sha256(prompt)[:16]</code>：確定性、對 prompt 的每一個位元組敏感，
+而且 —— 重點 —— <b>與 prompt 的內容無關</b>。一個「看到某段文字就回某個答案」的假模型，
+會在有人編輯那段文字的當天開始說謊，而且會繼續通過測試。雜湊沒有能力在乎文字的意思，
+它只能報告位元組有沒有變 —— 那正是這些檢查要問的問題。</p>
+
+<h3>5.3 全部 33 項</h3>
+
+<table>
+<tr><th>組</th><th>項數</th><th>內容</th></tr>
+<tr><td>A</td><td class="num">5</td><td><code>first:8</code> 等於檔案前 8 筆（檔案順序，不是序號順序）；<code>all</code> 的總數取自描述行；<code>none</code> 為空；<code>class:mh</code> 只選 mh；<code>ids:</code> 精確等於檔案內容</td></tr>
+<tr><td>A'</td><td class="num">8</td><td>七種壞掉的 scope 全部拒跑（未知 class／<code>first:0</code>／<code>first</code> 超界／ids 檔不存在／未識別形式／<b>ids 有錯字且點名是哪一個</b>／ids 空檔）＋ <code>--reps 0</code></td></tr>
+<tr><td>B</td><td class="num">3</td><td>缺投影檔 ⇒ 硬錯誤、訊息含修復指令，且<b>真實投影沒被測試動到</b></td></tr>
+<tr><td>C / D</td><td class="num">4</td><td>陰性與陽性對照（上表）</td></tr>
+<tr><td>E</td><td class="num">4</td><td>臂內不穩定 ⇒ <code>comparable=false</code>、跨臂欄位是 <code>null</code> 不是 <code>false</code>、verdict 明說無法判斷、摘要點名</td></tr>
+<tr><td>F</td><td class="num">6</td><td>輪轉（每個臂在四個位置各出現恰好一次）、呼叫數、注入的 id 清單、<b>model cmd 只記 sha256</b></td></tr>
+<tr><td>G</td><td class="num">3</td><td>隔離自檢印對了三對，且 C→D 那行把 charter 與 memories 分開報</td></tr>
+</table>
+
+<h2>6. 兩個我自己造成的 bug，以及它們為什麼值得寫下來</h2>
+
+<p>自測第一次跑出 <b>5 個 FAIL，而它們的症狀互相矛盾</b>：該拒跑的沒拒跑、該成功的沒成功。</p>
+
+<table>
+<tr><th>症狀</th><th>根因</th></tr>
+<tr><td>守衛沒有拒跑</td>
+    <td rowspan="2">同一個 bug，在兩處：<code>Path.relative_to(REPO)</code> 對
+    <b>repo 之外</b>的路徑會<b>拋例外</b>。而自測為了不污染真實目錄，
+    正是把投影目錄與輸出目錄重導到 repo 外的暫存目錄。</td></tr>
+<tr><td>該成功的執行反而 rc=1（但產物是對的）</td></tr>
+</table>
+
+<div class="box bad">
+  <p><span class="lbl">值得記下來的形狀</span></p>
+  <p>第二個 bug 崩在 <code>print(f"  out: {out.relative_to(REPO)}")</code> —— 那是
+  <b>執行完所有產物之後</b>的一行裝飾性輸出。產物完全正確，程式卻以 rc=1 結束。</p>
+  <p>第一個 bug 更糟：<b>守衛確實偵測到了缺檔，它是在渲染自己的訊息時崩的</b>。所以從外面看，
+  「守衛擋下了壞輸入」與「這支程式有 bug」是同一個事件：一個 traceback ＋ 一個非零結束碼。</p>
+  <p><b>一個訊息送不出去的守衛不是守衛。</b>而錯誤路徑之所以會壞，正是因為它平常不會被執行 ——
+  這與 E2 那次「<code>validate.py</code> 只被跑在正確輸入上」是同一個形狀。</p>
+</div>
+
+<p>修法是 <code>rel(p)</code>：在 repo 內就顯示相對路徑，不在就顯示絕對路徑。
+修正後 33/33 全過。</p>
+
+<h2>7. 現場跑過的指令與輸出原文</h2>
+
+<pre><code># 不需要模型
+python3 agent_harness/engine_loop/distill/closed_loop.py --dry-run
+python3 agent_harness/engine_loop/distill/closed_loop.py --dry-run --memories-scope first:8
+python3 agent_harness/engine_loop/distill/closed_loop_selftest.py
+
+# 需要一個 OpenAI 兼容端點（沒有預設值：用哪個模型是實驗的一部分）
+CLOSED_LOOP_MODEL_CMD='llm -m &lt;model&gt;' \
+  python3 agent_harness/engine_loop/distill/closed_loop.py --memories-scope first:8</code></pre>
+
+<pre><code>  scope: all -- 110 live lessons (1 superseded)
+    ids: eng-mh-0003, eng-lf-0007, eng-diag-0011, eng-diag-0012, eng-gate-0002, ...
+  questions: 8  (Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8)
+  reps: 3  -> total model calls = 96
+  arm A_preD6      charter=  85638 B sha256[:16]=26d1f890174e27f1  memories=      0 B
+  arm B_postD6     charter=  87484 B sha256[:16]=e00acaff6352428d  memories=      0 B
+  arm C_head       charter=  90757 B sha256[:16]=1964505b461e5b23  memories=      0 B
+  arm D_head_mem   charter=  90757 B sha256[:16]=1964505b461e5b23  memories=  37830 B
+  --- 每一對只隔離一件事（這一節是儀器自檢）---
+    A_preD6     -> B_postD6     charter + 18/-  0 行 ( +1846 B)  memories      +0 B
+    B_postD6    -> C_head       charter + 34/-  4 行 ( +3273 B)  memories      +0 B
+    C_head      -> D_head_mem   charter +  0/-  0 行 (    +0 B)  memories  +37830 B
+  --- 隔離自檢：3 對，每一對都只隔離一件事 [ok] ---
+
+# scope 只換成 first:8 時，D 臂的 memories 從 37,830 B 變成 1,549 B（23 倍）</code></pre>
+
+<pre><code>  fixtures: 111 lesson records (110 live), 111 memory files
+  ...
+  all 33 checks passed</code></pre>
+
+<h3>7.1 一個被順手修掉的標籤錯誤</h3>
+
+<p>自檢那一節原本只比 charter，於是 C→D 那一行印出 <code>charter + 0/- 0 行 (+0 B)</code> ——
+看起來像「這一對沒有差異」。但 C→D 的差異<b>全部在 memories 上</b>（37,830 B）。
+一個說「沒有差異」的欄位比沒有欄位更糟，所以現在那行把兩者分開報，並且
+<b>「同時動了兩件事」與「兩邊完全一樣」都會被點名</b>：</p>
+
+<pre><code>C_head -> D_head_mem  charter +  0/-  0 行 (    +0 B)  memories  +37830 B   注入 harness_engine 的 lesson</code></pre>
+
+<h2>8. 誠實邊界：E3 本體沒有被結清</h2>
+
+<div class="box bad">
+  <p><span class="lbl">不主張什麼</span></p>
+  <ul>
+    <li><b>E3 本體未結清。</b>本文件交付的是執行器與實驗設計。PLAN §9 的驗收句是
+        「至少 1 條 lesson 被證明改善且可重現」—— <b>沒有一條 lesson 被證明任何事</b>，
+        因為模型半沒有跑。</li>
+    <li><b>未跑的理由是具體的</b>：本機沒有模型端點（<code>1234/1235/8080/11434/8000/5000/9000</code>
+        全無回應）。<code>llama-server</code> 與 13.6 GB 的模型都在，所以技術上可以起 ——
+        但另一個 session 當時正在改 <code>ggml-metal-ops.{cpp,h}</code> 並重建 dylib，
+        而他們的 prefill/decode 量測對 GPU 時脈極敏感。<b>為了結清一條欠帳而弄壞另一條線的
+        資料不算結清。</b></li>
+    <li><b>D6 的欠帳也仍然開著</b>（同一個 blocker）：<code>A vs B</code> 需要同一個模型端點。
+        措辭已在 <code>CONVENTIONS.md</code> §E 與 D6 段、以及 PLAN §9 的 E2 欄改成
+        「預期改變不到」（而非「改變不到」）。</li>
+    <li><b>33 項自測只證明機械。</b>它對「lesson 有沒有用」沒有任何主張 ——
+        它連一次真實模型都沒看過。</li>
+    <li><b><code>--reps 3</code> 不是一個統計主張</b>，它是「能否區分穩定與不穩定」的下限。
+        需要信賴區間時要調高，而那會是另一個決定。</li>
+  </ul>
+</div>
+
+<h3>8.1 一個競態，以及它如何自行消解</h3>
+
+<p>動筆的時候，另一個 session 在 <b>19:54:58</b> 往 <code>traces/lessons.jsonl</code> 追加了 5 筆
+lesson（見 §3.2 —— 那正是守衛被觸發的原因）。當時它們<b>還沒被提交</b>，所以重生
+<code>harness_engine/memories/engine/</code> 會把另一個 session 的<b>工作區位元組</b>寫進我的 commit。
+<b>別人的資料不該看起來像我的資料</b>，所以那一版白皮書把它寫成一節「必須揭露的副作用」。</p>
+
+<p>收尾前再查一次，情況變了：他們在 <code>cd91aab01</code> 把<b>同一組</b> 5 筆提交了，而那個
+commit 的訊息自己寫著「本 commit 的那 5 條 lesson 就是它（<code>build_memories.py</code>）的輸入」。
+也就是說<b>他們刻意只 append 權威，把衍生物的重生留給這條線</b>。於是：</p>
+
+<table>
+<tr><th>收尾前的檢查</th><th>結果</th></tr>
+<tr><td><code>git show HEAD:…/lessons.jsonl | wc -l</code></td><td class="num">111</td></tr>
+<tr><td><code>git status</code> 裡的 <code>scripts/</code> 與 <code>src/</code></td><td>不見了（他們 commit 掉了）</td></tr>
+<tr><td><code>git diff HEAD -- …/lessons.jsonl</code></td><td><b>空</b> ⇒ 重生是對<b>已提交的權威</b>做的</td></tr>
+<tr><td>我的 commit 將包含</td><td>只有我自己改的檔案 ＋ 5 個<b>衍生物</b>（其權威已在 HEAD 裡）</td></tr>
+</table>
+
+<p>所以那一節本來會是一個副作用，結果是一個<b>被正確分工吸收掉的競態</b>。
+但讓它變成後者的不是運氣：<b>動筆前查一次、收尾前再查一次</b>。只查第一次，這份文件就會留下
+一段在收尾時已經不成立的話 —— 而它會讀起來像事實。</p>
+
+<h2>9. 下一步</h2>
+
+<table>
+<tr><th>#</th><th>做什麼</th><th>前置</th></tr>
+<tr><td>1</td><td>跑 D6 欠帳的 <code>A vs B</code>，人工核對 8 題的承重點</td><td rowspan="2">一個 OpenAI 兼容端點，且在沒有併行量測的時間窗</td></tr>
+<tr><td>2</td><td>跑 E3 的 <code>C vs D</code>（<code>--memories-scope first:8</code>），目標是「至少 1 條 lesson 改善且可重現」；<b>沒有改善就記 negative</b></td></tr>
+<tr><td>3</td><td>把「注入範圍」的選擇正式記成一條 decision record（現在它只存在於參數與註記裡）</td><td>—</td></tr>
+<tr><td>4</td><td>E1 的 <code>tb run --n-tasks 1</code> smoke（缺 Docker daemon ＋ 模型端點）</td><td>colima 的 VM 映像下載完成</td></tr>
+</table>
+
+<div class="foot">
+  <p>產出於 2026-09-16。對應的程式：<code>agent_harness/engine_loop/distill/closed_loop.py</code>、
+  <code>closed_loop_selftest.py</code>、<code>closed_loop_questions.md</code>。
+  相關前作：<code>docs/AGENT_HARNESS_E1_RESTRUCTURE_20260916.html</code>、
+  <code>docs/AGENT_HARNESS_E2_TRAINING_PROJECTIONS_20260916.html</code>。</p>
+  <p>本文件的所有數字都有出處（指令輸出或檔案），且所有「未跑」都寫成未跑。</p>
+</div>
+
+</div>
+</body>
+</html>

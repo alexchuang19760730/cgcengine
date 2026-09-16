@@ -427,3 +427,13 @@ data/replay_bench/
 #   它產生的同名無副檔名執行檔由測試檔頭那條 clang++ 指令寫出，機器相依，不入庫。
 #   只忽略這一個路徑，不要用 scripts/check/* 這種會吞掉 source 的樣式。
 /scripts/check/expert_cache_ensure_batch_order
+
+
+# ---- 2026-09-16: engine_loop/distill 的暫存候選 (不入庫) ----
+#   refine_engine.sh 把蒸餾出的候選寫進 distill/out/<ts>/，人審後才 --accept 追加到
+#   traces/*.jsonl。所以 out/ 是「還沒被接受的東西」—— 它不該入庫，否則會出現
+#   第二份真相（一份未經人審的 decision/lesson）。
+#   ★ 只忽略這一個路徑。closed_loop_out/ 刻意不在這裡：那是閉環實驗的產物
+#   （每次呼叫一筆 + compare.json + manifest.json），它是證據，要不要提交是使用者的
+#   決定 —— 不該被一個萬用樣式悄悄吃掉。
+/agent_harness/engine_loop/distill/out/

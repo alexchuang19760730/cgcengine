@@ -280,10 +280,25 @@ prime-agent 的 Continual Harness 狀態是一個目錄（`PRIME_AGENT_CODING_AG
 用同一組「待答問題」（例如 S2 / S3 該先跑哪個臂、`n_segs` 該怎麼塌陷）跑兩次：
 
 - **round1**：`harness_engine/memories/` 空的
-- **round2**：注入今天定稿的 8 條 lesson
+- **round2**：注入 lesson
 
 比較維度不是分數而是**決策品質**：是否先跑對照臂、是否標註 fingerprint、是否避開已知陷阱
 （例如是否重犯「單輪就引用」）。`compare_rounds.py` 的形狀可直接沿用。
+
+> **2026-09-16 19:5x 註記（E3 的執行器落地時）**：上面那個「8 條」是手寫的數字，而本計畫自己
+> 已經不一致 —— §4.3（§11 指明它是那 8 條的來源）**現在列了十條**。「那 8 條」的忠實讀法是
+> `lessons.jsonl` 的**檔案前 8 筆**（append-only 的寫入順序；它的前八筆正好是 §4.3 的前八列），
+> 而 `lessons.jsonl` 現在有 110+ 條 live lesson。所以注入範圍做成了參數：
+> `--memories-scope all|none|first:<k>|class:<abbr>|ids:<path>`（預設 `all`）。
+> 選取**用權威的 `traces/lessons.jsonl`**、內容**用衍生的 `harness_engine/memories/engine/`**；
+> 選到的 id 若沒有對應的 memory 檔，執行器**硬錯誤**而不是靜默跳過
+> （「篩選與投影不同步」不可與「那些 lesson 不適用」同形）。
+>
+> 另兩個實作決定：`--reps` 預設 **3**（本表的驗收寫著「可重現」，單次採樣證明不了；reps 之間
+> **交錯**、且每個 rep 的臂順序**輪轉**，避免序列中的位置成為候選原因），且**臂內不一致的題目，
+> 其跨臂判斷在 `compare.json` 裡被標成 `comparable: false`**。
+> 執行器：`distill/closed_loop.py`；離線自測：`distill/closed_loop_selftest.py`
+> （33 項，含「儀器必須說得出『沒有差異』」的陰性對照）。
 
 ---
 
@@ -319,7 +334,8 @@ prime-agent 的 Continual Harness 狀態是一個目錄（`PRIME_AGENT_CODING_AG
 | ↳ E1 實際結清狀況（2026-09-16 17:2x，`docs/AGENT_HARNESS_E1_RESTRUCTURE_20260916.html`） | `git mv` 完成（642 個 rename）；`PYTHONPATH` 改指 `tb_loop` 的父目錄；`tb_loop/__init__.py` 補上；`config.env` 新增 `TB_HARNESS_ROOT`／`TB_REPO_ROOT` 兩個錨點 | ✅ **套件解析通過**：`tb_loop` 為正規套件，四個模組解析到新位置，且對照組（`PYTHONPATH=tb_loop` 自己）仍正確報 `No module named 'tb_loop'`。⚠️ **smoke 未跑**：`tb_loop/.venv` 不存在、`terminal-bench` 未安裝、Docker daemon 未執行 ⇒ **驗收只結清一半**，`import tb_loop.agents.prime_agent_adapter` 目前止於 `No module named 'terminal_bench'` |
 | **E2** | T1 蒸餾 + 兩個投影：`distill/refine_engine.sh`、`build_sft_pi.py`、`build_sft_prime.py`、`harness_engine/` | 跑一次 refine → `decisions.jsonl` 過 validate；`sft_prime/train.jsonl` ≥ 50 條；注入 `harness_engine` 前後同一臂的決策差異可讀；**＋ 結清 D6 的閉環欠帳（見本表下方）** |
 | ↳ E2 實際結清狀況（2026-09-16 19:4x，`docs/AGENT_HARNESS_E2_TRAINING_PROJECTIONS_20260916.html`） | 四個目錄都建了：`harness_engine/`（106 條 memory，由 lessons 推導、`--check` 可驗；`extensions` 是符號連結不是複本）、`sft_pi/`（14 條軌跡／38 tool call）、`sft_prime/`（141 筆）、`distill/`（證據收集器 ＋ 驅動 ＋ prompt ＋ 假 prime-agent 自測 27 項全過 ＋ 四臂閉環對照器） | ✅ **機制層面通過**：`sft_prime/train.jsonl` = 120 條 ≥ 50；`sft_pi` 每筆帶 `_provenance.reconstructed`；`distill/selftest.py` 全過且抓到一個真的 prompt 設計缺陷（可用 id 被證據區的既有 id 撞掉）。⚠️ **兩件未結清**：① **T1 沒接真實模型跑過**（`REFINE_ENGINE_MODEL` 不給預設值，本機無端點）；② **D6 的閉環欠帳仍未結清**——對照器已建且 `--dry-run` 通過，但**模型半未跑**（跑它要起 13.6 GB 的 server，會與另一個 session 的 prefill/decode 量測互相干擾）。**依原文要求：在對照跑過並留有產物之前，不得聲稱 D6 修訂已結清。** |
-| **E3** | 閉環：round1（無 lesson）vs round2（8 條 lesson）在同一組待答問題上 | 至少 1 條 lesson 被證明改善且可重現；否則如實記為 negative（不美化） |
+| **E3** | 閉環：round1（無 lesson）vs round2（注入 lesson）在同一組待答問題上 | 至少 1 條 lesson 被證明改善且可重現；否則如實記為 negative（不美化） |
+| ↳ E3 的執行器與實驗設計（2026-09-16 19:5x，`docs/AGENT_HARNESS_E3_DESIGN_20260916.html`） | 注入範圍做成參數（`--memories-scope`，預設 `all`；`first:8` 才是計畫原文的「那 8 條」）、`--reps` 預設 3 且**交錯＋輪轉**、臂內不一致的題目標 `comparable: false`、`manifest.json` 記下注入了哪些 id 與每個 rep 的臂順序 | ✅ **機械面通過**：`distill/closed_loop_selftest.py` **33 項全過**，含「同一個假模型、同一組題目，只換 scope ⇒ 一次必須答『相同』、一次必須答『不同』」的陰性／陽性對照。⚠️ **模型半未跑**（與 D6 欠帳同一個 blocker：本機無端點，而起 server 會干擾另一條線的量測）⇒ **E3 本體仍未結清** |
 | **E4**（可選治理） | log 政策落地、`knifeedge_matrix.py`（181 KB）拆分、`scripts/check/` 40+ 檔分層、標記 stale（`replay_bench_*` 已 stale，`RUN_REPLAY_BENCH=0`） | `pack_evidence.py` 產物總量 < 20 MB；stale 資產有明確 banner |
 
 **E2 承接一筆已認領的欠帳（2026-09-16 加入；來源：`CONVENTIONS.md` D6 的 dated 修訂）。**
