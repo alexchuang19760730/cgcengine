@@ -34,6 +34,9 @@ llama.cpp 的 CGC fork：Metal ＋ **expert cache pool**（專家權重常駐 SS
 - **prefill**：COLD 下 254–282 t/s 有紀錄；最近一臂 req1 ＝ **244.96（未達 250）**，未結清。
 - **S1**：分歧 ＝ **第一個被 GPU table 服務的層**的 MoE gather（層號由 `CGC_S1_MIN_IL` 決定，不是固定層）；
   唯一未測的敘述是「**同 ids、同池佈局、同反查，gather 讀到的位元組不同**」。→ `MEMORY_S1.md`
+- **里程碑**：**M1 做了一半卡住**（數值閘門 09-14 已達 117/117，但 decode 退步 **0.72×**、工作項 2 未實作）；
+  **M2 核心已落地**；**M3／M4 未開始** ⇒ decode 25 沒有進展。→ `MEMORY_PERF.md`
+  ⚠️ 「M1/M2/M3」另有 **D5 三個判決指標**的意思，先確認問的是哪一個。
 
 ## 分工
 

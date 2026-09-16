@@ -33,6 +33,31 @@
   `SPEC_DRAFT_N_MAX=3`。三支柱 bit-identical：`CGC_MM_BITIDENT=1`／`SERVER_MTP_NO_WARMUP=1`／
   `SERVER_NO_SEQ_RM_PROBE=1`。**池壓力熱點層會變**（layer 0 與 layer 2 都出現過）。
 
+## 里程碑現況（M0–M6；**09-17 查證**，不是憑記憶）
+
+- **M0 量測能力：完成。**
+- **M1 解耦 pool 與圖：做了一半以上、卡住**（不是「未開始」——這個錯誤我犯過一次）。
+  數值那一半 **09-14 已達成**：2/4/6/8/10 GiB 全部 **M1 = M2 = M3 = 117/117**，2 GiB 是唯一
+  `union > slots` 那格（compacted gather），`union-routable` PASS，RSS 達標。**兩條沒過**：
+  ① `decode 不得退步` ⇒ 2 GiB（gather＋slab）**6.36** vs 8 GiB（pool）**8.87 t/s** ＝ **0.72×**；
+  ② `prefill chunk 2048` ⇒ 缺工作項 2。**工作項 1**（`CGC_POOL_SPLIT=1`，保持 expert tensor 全寬）
+  實作了但被判 **EXPERIMENTAL, NOT USABLE**：Blocker A（寬 tensor 讓 gather 把 Metal buffer 的指標
+  重指到 Metal 不知道的 host 指標 ⇒ **靜默** `tensor buffer is nil`、**M1 2/42**；且 16 GB 上
+  warmup OOM），Blocker B 已於 **09-16** 修好。**工作項 2（phase split）未實作**（src 無
+  `T_prefill`／`PREFILL_GRAPH`／`DECODE_GRAPH`）。
+- **M2 prefill 整層串流：核心機制已落地**（`CGC_PREFILL_STREAM=1` ＋ `CGC_GATHER_SLAB_CAP=256`，
+  `prefill250` 用它跑到 250+）。**它的五條離開條件未逐條核對。**
+- **M3 decode 的 compute 削減：未開始**（依賴 M1）。兩個探針試過且**不可引用**：`CGC_MMV_FUSE`
+  （MoE gather 融合）輸出損壞且更慢；`CGC_SUBMIT_AHEAD`（序列化）天花板 ×1.711 但輸出損壞。
+  離開條件「decode（MTP off）≥ 15 t/s」未達。
+- **M4 MTP 拒絕取樣 ＋ verify 真批次：未開始**（accept 19.9%）。
+- 文件：`docs/ROADMAP_PREFILL250_DECODE25_2026-09-13.md`（M0–M6 定義）；
+  **`docs/roadmap-2026-09-14/ROADMAP_PREFILL250_DECODE25_2026-09-14.html`**（M1 的實作與量測結果、
+  「M1 還沒完成的離開條件」、「M2 的狀態」，**09-14 之後未更新**）；
+  `docs/M1_POOL_SPLIT_COST_2026-09-14.md`（Blocker A/B 的成本分析）。
+- ⚠️ **`M1/M2/M3` 在本 repo 有兩個意思**：roadmap 的里程碑 vs **D5 的三個判決指標**
+  （今天跑是 M1/M2/M3 各 9/9、`comparable=true`）。被問「M1/M2 狀態」時先確認是哪一個。
+
 ## decode 速度：現在到底多少（09-16 20:36 盤點）
 
 「decode 速度」有四個互不相容的定義，引用必須指名：
