@@ -854,6 +854,13 @@ sudo -v                                        # 先快取憑證
 scripts/check/powermetrics_gpu_freq.sh         # cold/hot 對，約 4 分鐘
 # 跑完會自動 parse；事後也可補看：
 scripts/check/powermetrics_gpu_freq.sh --parse Backup/cgc_logs/powermetrics_prefill_*.log</code></pre>
+    <span class="small">注意那個 glob <b>也會選中</b>
+    <code>Backup/cgc_logs/powermetrics_prefill_paired_20260916.log</code>——40 bytes，唯一內容是
+    <code>(eval):1: operation not permitted: sudo</code>，<b>它不是擷取</b>。
+    所以若輸出是 <code>samples : 0</code>，先看它印出的「該檔實際內容」：<code>--parse</code> 現在會逐一列出
+    每個檔的樣本數並跳過無樣本者（不會靜默丟掉參數），且無樣本時會印出<b>檔案自己的錯誤行</b>，
+    讓「跑失敗」與「量到零」不再同形。真正的擷取只有一個生法：跑上面那條<b>不帶</b>
+    <code>--parse</code> 的指令。</span>
     <b>要看的欄位是 <code>GPU HW active residency</code> 後面括號裡的 DVFS 逐檔位分佈</b>，不是
     <code>GPU HW active frequency</code> 那個<b>單一數字</b>：後者把分佈壓縮成一個值，所以兩個狀態可以
     報同一個 <code>active frequency</code> 卻佔用不同的檔位組合。「時脈被壓」的指紋是

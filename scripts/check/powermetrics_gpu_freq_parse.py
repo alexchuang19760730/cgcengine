@@ -29,9 +29,16 @@ three independent sources, but this parser still degrades LOUDLY. If the labels 
 prints the GPU-looking lines it did see instead of four empty series -- an instrument that
 silently prints nothing is indistinguishable from one that measured nothing.
 
+A capture that failed leaves a file too, and it is NOT a short capture: on 2026-09-16 a 40-byte
+file containing exactly `(eval):1: operation not permitted: sudo` was reported only as "the
+capture looks empty or was truncated", which is true and useless. The file's own content is the
+diagnosis, so it is now printed. Several logs may be given at once (a shell glob is the natural
+way to call this after a few captures); every file gets a verdict line, including the ones being
+skipped, because a silently-dropped argument is how a failed capture gets mistaken for a good one.
+
 Usage:
-  powermetrics_gpu_freq_parse.py <capture.log>
-  powermetrics_gpu_freq_parse.py <capture.log> --json out.json
+  powermetrics_gpu_freq_parse.py <capture.log> [more.log ...]
+  powermetrics_gpu_freq_parse.py --json out.json <capture.log> [more.log ...]
   powermetrics_gpu_freq_parse.py --selftest
 
 Exit: 0 parsed, 2 nothing parsed, 3 bad usage.
@@ -204,10 +211,47 @@ def verdict(cold, hot):
     return ("INCONCLUSIVE", why)
 
 
-def report(path, as_json=None):
-    recs, elapsed_ms = parse(path)
+def first_lines(path, n=6):
+    """The non-blank lines as they appear. An empty capture's own content IS the diagnosis."""
+    out = []
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            if line.strip():
+                out.append(line.rstrip())
+                if len(out) >= n:
+                    break
+    return out
+
+
+def report(paths, as_json=None):
+    if isinstance(paths, str):
+        paths = [paths] if paths else []
+    if not paths:
+        print("no capture given", file=sys.stderr)
+        return 3
+
+    parsed = []
+    for p in paths:
+        recs, elapsed_ms = parse(p)
+        parsed.append({"path": p, "recs": recs, "elapsed_ms": elapsed_ms,
+                       "freq_n": sum(1 for r in recs if r["freq"] is not None)})
+    usable = [x for x in parsed if x["freq_n"] > 0]
+
+    if len(paths) == 1:
+        print(f"=== powermetrics summary: {paths[0]} ===")
+    else:
+        # A glob is the natural way to call this once several captures exist, so every file gets a
+        # verdict line, including the ones being skipped: a silently-dropped argument is how a
+        # failed capture gets mistaken for a successful one.
+        print(f"=== powermetrics summary: {len(paths)} captures, {len(usable)} with data ===")
+        print(f"  {'capture':<58} {'samples':>8}  note")
+        for x in parsed:
+            note = "ok" if x["freq_n"] else "SKIPPED -- no GPU samples"
+            print(f"  {x['path']:<58} {len(x['recs']):>8}  {note}")
+
+    recs = [r for x in usable for r in x["recs"]]
+    elapsed_ms = usable[0]["elapsed_ms"] if usable else None
     freq_n = sum(1 for r in recs if r["freq"] is not None)
-    print(f"=== powermetrics summary: {path} ===")
     print(f"samples                : {len(recs)}  (with a frequency reading: {freq_n})")
     if elapsed_ms:
         print(f"sample interval        : {elapsed_ms:.0f} ms  "
@@ -215,18 +259,38 @@ def report(path, as_json=None):
     if freq_n == 0:
         print()
         print("NOTHING PARSED -- no sample carried a `GPU HW active frequency` label.")
-        print("The GPU-looking lines actually present (so a label change is diagnosable):")
-        shown = 0
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                if RE_GPULINE.search(line) and line.strip():
-                    print("    " + line.rstrip())
-                    shown += 1
-                    if shown >= 25:
-                        print("    ... (truncated)")
-                        break
-        if shown == 0:
-            print("    (none -- the capture looks empty or was truncated)")
+        for x in parsed:
+            print(f"  {x['path']}:")
+            gpu, shown = [], 0
+            with open(x["path"], "r", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if RE_GPULINE.search(line) and line.strip():
+                        gpu.append(line.rstrip())
+                        shown += 1
+                        if shown >= 25:
+                            gpu.append("      ... (truncated)")
+                            break
+            if gpu:
+                print("    GPU-looking lines present:")
+                for l in gpu:
+                    print("      " + l)
+            else:
+                print("    GPU-looking lines present: none")
+            # THE POINT. A capture whose powermetrics never started leaves an error line, not a
+            # short capture, and "0 samples" cannot tell those apart. 2026-09-16: a 40-byte file
+            # holding exactly `(eval):1: operation not permitted: sudo` was reported only as
+            # "looks empty or was truncated" -- true, and useless.
+            head = first_lines(x["path"], 6)
+            print("    first non-blank lines actually in the file:")
+            if head:
+                for l in head:
+                    print("      " + l)
+            else:
+                print("      (the file is completely empty)")
+        print()
+        print("A file with no samples AND no GPU lines is not a capture at all -- read its error")
+        print("line above. The capture needs root: `sudo -v`, then run")
+        print("`scripts/check/powermetrics_gpu_freq.sh` with NO arguments to produce one.")
         return 2
 
     blocks = blocks_of(recs)
@@ -293,7 +357,10 @@ def report(path, as_json=None):
 
     if as_json:
         with open(as_json, "w", encoding="utf-8") as fh:
-            json.dump({"path": path, "samples": len(recs), "interval_ms": elapsed_ms,
+            json.dump({"path": paths[0] if len(paths) == 1 else None,
+                       "paths": paths,
+                       "skipped": [x["path"] for x in parsed if x["freq_n"] == 0],
+                       "samples": len(recs), "interval_ms": elapsed_ms,
                        "blocks": summaries,
                        "cold": cold, "hot": hot,
                        "verdict": verdict(cold, hot)[0] if hot else "INCONCLUSIVE"},
@@ -325,7 +392,7 @@ def selftest():
         s += mk(hot_f, hot_idle, hot_p) * 40
         return s
 
-    import tempfile, os
+    import tempfile, os, io, contextlib
     cases = [
         ("clock with power ceiling", cap(6, 40500, 5, 40000), "CLOCK"),
         ("clock with power released", cap(6, 40500, 5, 33000), "CLOCK"),
@@ -352,14 +419,45 @@ def selftest():
         hit = got.startswith(want)
         ok += hit
         print(f"  {'ok  ' if hit else 'FAIL'}  {name:<26} -> {got:<26} want {want}")
-    print(f"\n  {ok}/{len(cases)} verdicts match")
-    return 0 if ok == len(cases) else 1
+
+    # A capture that failed is still a file, and a glob will hand it to this parser alongside real
+    # captures. The failure must be reported per file and must NOT suppress the good file.
+    fd, bad = tempfile.mkstemp(suffix=".log")
+    os.close(fd)
+    with open(bad, "w") as fh:
+        fh.write("(eval):1: operation not permitted: sudo\n")
+    fd, good = tempfile.mkstemp(suffix=".log")
+    os.close(fd)
+    with open(good, "w") as fh:
+        fh.write(cap(6, 40500, 5, 33000))
+    multi = [
+        ("a dead capture first, a good one after", [bad, good], 0, True),
+        ("only dead captures",                     [bad],        2, False),
+    ]
+    for name, paths, want_rc, want_body in multi:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = report(paths)
+        out = buf.getvalue()
+        hit = rc == want_rc and ("CLOCK" in out) == want_body
+        if hit and not want_body:
+            # the dead file's own content must be shown, not just "looks empty"
+            hit = "operation not permitted: sudo" in out
+        ok += hit
+        n = len(cases) + multi.index((name, paths, want_rc, want_body))
+        print(f"  {'ok  ' if hit else 'FAIL'}  {name:<26} -> rc={rc:<3} "
+              f"{'parsed' if want_body else 'loud-fail w/ file content'}")
+    total = len(cases) + len(multi)
+    print(f"\n  {ok}/{total} cases match")
+    return 0 if ok == total else 1
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("capture", nargs="?", help="powermetrics text capture")
+    # "*", not "+": --selftest takes no capture, and a required positional would reject it before
+    # main() ever gets to look at the flag.
+    ap.add_argument("capture", nargs="*", help="powermetrics text capture(s)")
     ap.add_argument("--json", default=None)
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()

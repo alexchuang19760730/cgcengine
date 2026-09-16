@@ -115,9 +115,10 @@ CURATED = [
      "Turnkey root capture for the hardware-frequency half of the GPU ceiling claim: GPU active "
      "RESIDENCY is already proven (100-101% busy/wait), but frequency is not, and residency alone "
      "cannot separate 'the clock dropped' from 'the work grew'. --parse now delegates to "
-     "powermetrics_gpu_freq_parse.py. Must be run by the user with sudo: the privilege escalation "
-     "is refused even with the workspace sandbox off (/usr/bin/sudo is setuid and its exec is "
-     "denied), so this is the one next step that cannot be automated."),
+     "powermetrics_gpu_freq_parse.py and takes SEVERAL logs (a glob is the natural call once more "
+     "than one capture exists). Must be run by the user with sudo: the privilege escalation is "
+     "refused even with the workspace sandbox off (/usr/bin/sudo is setuid and its exec is denied), "
+     "so this is the one next step that cannot be automated."),
     ("scripts/check/powermetrics_gpu_freq_parse.py", "probe", "engine", True, False,
      "Turns a powermetrics capture into the cold-vs-hot answer instead of two 480-number series. "
      "Segments activity blocks on GPU POWER -- deliberately not on frequency or residency, which "
@@ -125,9 +126,13 @@ CURATED = [
      "block 0 cold and the rest hot, and reports the DVFS step-residency distribution that the "
      "single 'GPU HW active frequency' value collapses away (a clock cap shows as mass leaving the "
      "top step, which the collapsed number cannot show). Verdict is one of CLOCK / POWER CEILING / "
-     "GPU KEPT OFF THE WORK, with the numbers behind each test printed. Fails LOUDLY (exit 2 + the "
-     "GPU lines it did see) if the labels change, so an empty result cannot be mistaken for a "
-     "measurement of zero. --selftest exercises all four verdicts (4/4)."),
+     "GPU KEPT OFF THE WORK, with the numbers behind each test printed. Fails LOUDLY on BOTH kinds "
+     "of empty: if the labels change it prints the GPU lines it did see, and if the file is not a "
+     "capture at all -- a run that died before powermetrics started leaves an error line behind, "
+     "which is exactly what the 2026-09-16 attempt did -- it prints the file's own first lines, so "
+     "'the capture never ran' cannot be misread as 'the capture measured zero'. Several logs at "
+     "once; a file with no samples is listed as SKIPPED rather than silently dropped from the "
+     "argument list. --selftest: four verdicts plus two multi-file cases (6/6)."),
     ("scripts/check/flip_rate.py", "probe", "engine", True, False,
      "route-flip rate; the measurement behind the 'which experts change' question."),
     ("scripts/check/mtp_accept_ab.py", "compare", "engine", True, False,

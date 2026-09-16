@@ -60,17 +60,28 @@ CERT="$ROOT/scripts/check/prefill_certifiability.py"
 PY="${PY:-/opt/homebrew/bin/python3}"
 
 if [ "${1:-}" = "--parse" ]; then
-    F="${2:?usage: $0 --parse <powermetrics log>}"
-    [ -f "$F" ] || { echo "no such file: $F" >&2; exit 1; }
+    shift
+    if [ "$#" -lt 1 ]; then
+        echo "usage: $0 --parse <powermetrics log> [more logs ...]" >&2
+        echo "       a glob is fine; a file with no samples is reported and skipped, never ignored." >&2
+        exit 3
+    fi
+    for F in "$@"; do
+        [ -f "$F" ] || { echo "no such file: $F" >&2; exit 1; }
+    done
     # Delegated on 2026-09-16. The grep/paste that used to live here printed ~480 raw numbers per
     # series -- the question is a cold-vs-hot comparison, not a series -- and it silently discarded
     # the DVFS residency distribution, which is the only field that separates a clock cap from a
-    # power cap. The parser also fails LOUDLY: if the labels ever change it prints the GPU lines it
-    # did see, instead of four empty series that look like a measurement of nothing.
+    # power cap. It also fails LOUDLY: if the labels ever change it prints the GPU lines it did see,
+    # instead of four empty series that look like a measurement of nothing, and if a file is not a
+    # capture at all -- a run that died before powermetrics started leaves an error line behind --
+    # it prints that line. Several captures at once, because
+    # `Backup/cgc_logs/powermetrics_prefill_*.log` is the natural way to call this once more than
+    # one capture exists, and a silently-dropped argument is how a dead file passes for a good one.
     if [ -n "${PARSE_JSON:-}" ]; then
-        exec "$PY" "$ROOT/scripts/check/powermetrics_gpu_freq_parse.py" "$F" --json "$PARSE_JSON"
+        exec "$PY" "$ROOT/scripts/check/powermetrics_gpu_freq_parse.py" --json "$PARSE_JSON" "$@"
     fi
-    exec "$PY" "$ROOT/scripts/check/powermetrics_gpu_freq_parse.py" "$F"
+    exec "$PY" "$ROOT/scripts/check/powermetrics_gpu_freq_parse.py" "$@"
 fi
 
 # ---- run mode -------------------------------------------------------------------------------
