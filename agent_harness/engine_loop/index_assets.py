@@ -129,21 +129,33 @@ CURATED = [
      "powermetrics_gpu_freq_parse.py and takes SEVERAL logs (a glob is the natural call once more "
      "than one capture exists). Must be run by the user with sudo: the privilege escalation is "
      "refused even with the workspace sandbox off (/usr/bin/sudo is setuid and its exec is denied), "
-     "so this is the one next step that cannot be automated."),
+     "so this is the one next step that cannot be automated. Stops via a root watcher + sentinel + "
+     "`-n` ceiling + SIGTERM (NOT `kill $!`: that pid is root's, and background jobs ignore SIGINT). "
+     "If a run is ever left behind, `pgrep -fl powermetrics` shows TWO pids -- the `sudo` WRAPPER is "
+     "yours and signalling it takes both down; see eng-gate-0027."),
     ("scripts/check/powermetrics_gpu_freq_parse.py", "probe", "engine", True, False,
      "Turns a powermetrics capture into the cold-vs-hot answer instead of two 480-number series. "
      "Segments activity blocks on GPU POWER -- deliberately not on frequency or residency, which "
      "are the quantities under test, so defining 'one run' by them would beg the question -- labels "
      "block 0 cold and the rest hot, and reports the DVFS step-residency distribution that the "
      "single 'GPU HW active frequency' value collapses away (a clock cap shows as mass leaving the "
-     "top step, which the collapsed number cannot show). Verdict is one of CLOCK / POWER CEILING / "
+     "top step, which the collapsed number cannot show). ALSO reads `Current pressure level` from the "
+     "thermal sampler, per block: that is the field that says WHETHER the ceiling holding the clock "
+     "down is thermal, and it was missing until 2026-09-16 -- the instrument had been answering only "
+     "half of the question it was written for (eng-gate-0025). The block threshold is a HIGH "
+     "percentile (0.15 x p99.5 of power) on purpose: a whole-capture p95 collapses into the idle "
+     "distribution once the capture has a long tail, which turned 3 launches into 25-31 blocks "
+     "(eng-gate-0024 / A20). Verdict is one of CLOCK / POWER CEILING / "
      "GPU KEPT OFF THE WORK, with the numbers behind each test printed. Fails LOUDLY on BOTH kinds "
      "of empty: if the labels change it prints the GPU lines it did see, and if the file is not a "
      "capture at all -- a run that died before powermetrics started leaves an error line behind, "
      "which is exactly what the 2026-09-16 attempt did -- it prints the file's own first lines, so "
      "'the capture never ran' cannot be misread as 'the capture measured zero'. Several logs at "
      "once; a file with no samples is listed as SKIPPED rather than silently dropped from the "
-     "argument list. --selftest: four verdicts plus two multi-file cases (6/6)."),
+     "argument list. --selftest: nine cases -- the four verdicts, two thermal cases (escalation vs "
+     "flat), two multi-file cases, and a REGRESSION for the threshold drift whose first version "
+     "passed for the wrong reason (a flat synthetic tail merges into the last launch; the real idle "
+     "is spiky, and the old rule then reports 401 blocks against the new rule's 2)."),
     ("scripts/check/flip_rate.py", "probe", "engine", True, False,
      "route-flip rate; the measurement behind the 'which experts change' question."),
     ("scripts/check/mtp_accept_ab.py", "compare", "engine", True, False,

@@ -57,7 +57,8 @@
   模型 Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf（13.66 GB · 256 experts · 40 layers）·
   命令 <code>llama-bench -b 6144 -ub 6144 -p 2048 -n 16 -r 3</code>（profile <code>prefill250</code>）<br>
   硬體 <code>Mac16,12</code> MacBook Air · Apple M4 · 8 核 GPU · 16 GB unified · <strong>無風扇</strong><br>
-  新增儀器 <code>prefill_certifiability.py --logdir</code> / <code>--idle-before</code>、<code>prefill_gputime_report.py</code><br>
+  新增儀器 <code>prefill_certifiability.py --logdir</code> / <code>--idle-before</code>、<code>prefill_gputime_report.py</code>、
+  <code>powermetrics_gpu_freq_parse.py</code><br>
   取代 <code>docs/PREFILL250_CERTIFIABILITY_20260916.html</code> 的「抽獎」判決（decision
   <code>dec-20260916-0225</code> supersedes <code>dec-20260916-0142</code>）
 </div>
@@ -71,6 +72,11 @@
   兩態之間，引擎搬的位元組<strong>逐位元相同</strong>、分段數相同、IO 等待同級，
   唯一移動的是 <strong>GPU 自己的忙碌時間（1.44×）</strong>，而吞吐比是 1.42×。
   障礙是這台無風扇機體的 GPU 執行速率，不是引擎。</p>
+  <p><strong>（2026-09-16 追加，§10：那個「執行速率」已經直接量到了。</strong>
+  <code>powermetrics</code> 顯示冷態全程坐在最高 DVFS 檔位 <code>1470 MHz</code>、
+  熱態被移到 <code>928</code> ／ <code>618 MHz</code>（<code>276 → 227 → 151 t/s</code>），
+  而熱壓等級 <code>Nominal → Moderate → Heavy</code> 與時脈下降<strong>逐樣本同步</strong>、駐留全程 100%。
+  判準是 <strong>CLOCK</strong>，不是功耗上限、也不是 GPU 被閒置。<strong>）</strong></p>
 </div>
 
 <h2>1. 問題與前情</h2>
@@ -338,6 +344,8 @@
   「GPU 忙著」與「GPU 為什麼變慢」是兩個問題。上表只證明前者——等待期間 GPU 沒有在發呆，
   所以問題不在啟動路徑、不在分段結構、不在 CPU 編碼。要指認<em>後者</em>是頻率、功耗上限
   還是記憶體子系統，需要 root 的 <code>powermetrics</code>（見 §6）。</p>
+  <p><strong>（2026-09-16 追加：這一題已在 §10 回答——是頻率，而且是熱壓選的。
+  冷態坐在最高 DVFS 檔位 1470 MHz，熱態被移到 618 MHz。）</strong></p>
 </div>
 
 <h3 id="s31">3.1 第二個獨立儀器的同向結果：IOAccelerator 的裝置利用率</h3>
@@ -375,7 +383,9 @@
   既然三次都飽和，快慢之別只能是 GPU 的<strong>工作速率</strong>，不是「有沒有在跑」。</p>
   <p><span class="small">注意邊界：利用率是<em>佔用比例</em>，不是頻率。同一份證據<strong>不能</strong>推出時脈。
   要指認頻率／功耗上限仍須 root 的 <code>powermetrics</code>；且 run 1 的區塊在時序起點被截斷，
-  其平均值只涵蓋部分窗口，不宜與 run 2/3 直接比大小。</span></p>
+  其平均值只涵蓋部分窗口，不宜與 run 2/3 直接比大小。
+  <strong>（2026-09-16 追加：那份 <code>powermetrics</code> 擷取已到手，見 §10——
+  它給出的結論與本節同向且更強：時脈掉到 42% 的同時，硬體駐留反而<em>上升</em> 13.9 pp。）</strong></span></p>
 </div>
 
 <h3 id="s32">3.2 逐層歸因：把 <code>CGC-DECPROF</code> 打開之後，答案是「全層等比」</h3>
@@ -652,7 +662,13 @@ slow: 4 prefill graph(s), per-graph shape:
       blocker 已經少了一個——blocker B 已根因定位並修在出貨碼上，只剩 wide 路徑那條結構性限制。
       詳見 §9。）</span></li>
   <li><strong>不指認頻率。</strong><code>gpu_union/wait ≈ 100%</code> 只說明「等待期間 GPU 在忙」。
-      頻率／功耗上限／記憶體子系統三者在這裡未被分離。</li>
+      頻率／功耗上限／記憶體子系統三者在這裡未被分離。
+      <span class="small">（<strong>2026-09-16 追加：本條已由 §10 解決。</strong><code>powermetrics</code>
+      的直接量測把三者分開了——時脈 <code>1470 → 618 MHz</code>、駐留 <code>83.7 → 97.6%</code>
+      （<em>上升</em>）、功率 <code>12.7 → 3.8 W</code>（<em>跟著時脈下降</em>），
+      且熱壓等級 <code>Nominal → Heavy</code> 與時脈下降逐樣本同步。判準：
+      <strong>CLOCK，且由熱壓驅動</strong>，不是功耗上限、也不是 GPU 被閒置。
+      本條保留於此的目的是記錄它曾經是<em>未分離</em>的。）</span></li>
   <li><strong>不是絕對 oracle。</strong>250 與 165 都是這台機器、這個 <code>prefill250</code> shape、
       這個 commit 下的讀數；M1/M2/M3 閘門仍只是相對不變量。</li>
   <li><strong>樣本仍小。</strong>冷態 n=4、最深平台 n=4。四次全中是很強的訊號。
@@ -704,7 +720,12 @@ slow: 4 prefill graph(s), per-graph shape:
           <code>/usr/bin/sudo</code> 帶 setuid，但 exec 被拒，且
           <code>dangerouslyDisableSandbox</code> 下重現同樣的錯誤。</td>
       <td>明確記為<strong>未執行</strong>（§8 第 2 項列出要人工跑的命令），
-          並改用不需 root 的 <code>Device Utilization %</code> 作為替代證據（§3.1）。</td></tr>
+          並改用不需 root 的 <code>Device Utilization %</code> 作為替代證據（§3.1）。
+          <br><strong>（2026-09-16 追加：已人工跑成，見 §10。）</strong>擷取
+          <code>Backup/cgc_logs/powermetrics_prefill_20260916_090808.log</code>：三次啟動、
+          熱壓 <code>Nominal → Moderate → Heavy</code>、時脈檔位 <code>1470 → 928 → 618 MHz</code>、
+          吞吐 <code>276.25 → 227.27 → 151.28 t/s</code>。§3.1 的替代證據因此完成了它的任務——
+          它先把範圍縮到「時脈」，而 <code>powermetrics</code> 把它釘死。</td></tr>
   <tr><td><code>powermetrics_gpu_freq.sh --parse</code></td>
       <td><strong>有在跑，卻沒量到要量的東西</strong>：它 <code>grep -o</code> 的四個標籤是對的，
           但<b>丟掉了 <code>GPU HW active residency</code> 後面括號裡的 DVFS 逐檔位分佈</b>——
@@ -716,7 +737,10 @@ slow: 4 prefill graph(s), per-graph shape:
           分段活動區塊（不以頻率／residency 分段，免於竊取結論）、標區塊 0 為冷、印逐檔位冷熱表與
           residency 加權有效時脈、給三選一判準；標籤不符時 <code>exit 2</code> 並列出實際看到的 GPU 行；
           空檔明說「看起來是空的或截斷了」。合成真實格式樣本 + <code>--selftest</code> 4/4 已驗。
-          教訓 <code>eng-gate-0017</code>。</td></tr>
+          教訓 <code>eng-gate-0017</code>。
+          <br><strong>（2026-09-16 追加：第一次對本機自己的擷取跑，就抓到兩個新缺陷並修掉——
+          熱壓取樣器<em>完全沒有被讀取</em>（本節問的「頻率<em>還是</em>功耗上限」，少了熱壓就答不了第二半），
+          以及分段門檻在長閒置尾巴上塌掉。詳細在 §10.8，<code>--selftest</code> 現為 9/9。）</strong></td></tr>
   <tr><td><code>gpu_util_prefill_paired_20260916.log</code></td>
       <td><strong>不是缺陷，是漏用</strong>：這份 300 筆的 1 Hz 利用率時序在同一輪就產出了，
           但報告初版只引用 Metal 時戳、沒發現它，導致「獨立第二儀器」這條佐證被擱置。</td>
@@ -752,6 +776,32 @@ slow: 4 prefill graph(s), per-graph shape:
           <code>1.60×／CV 8.7%</code>。<strong>「層間 CV」本身會被讀法放大約 3 倍。</strong></td>
       <td>新增 <code>--graph first|last|mean</code>（預設 <code>mean</code>），並在配對前先印出每個圖的形狀
           （<code>worst layer</code> 若在圖之間漂移，就是暫態）。§3.2 陷阱 B、lesson <code>eng-mh-0027</code>。</td></tr>
+  <tr class="hl"><td><code>powermetrics_gpu_freq.sh</code> 的停止路徑</td>
+      <td><strong>壓測結束了，擷取卻變成孤兒</strong>：<code>powermetrics</code> 在 09:14 之後
+          繼續寫了 <strong>32 分鐘</strong>（多出約 4 000 筆純閒置樣本），而腳本卡在 <code>wait</code> 上，
+          所以它最後那行「跑完會自動 parse」<strong>從未執行</strong>。
+          兩個獨立原因，而且<em>兩個都被靜默吞掉</em>：
+          (a) <code>sudo … &amp;</code> 之後 <code>$!</code> 是 <em>root</em> 的 pid，非特權 shell
+          <code>kill -INT</code> 得 <code>EPERM</code>，而原碼是 <code>kill -INT "$PM" 2>/dev/null</code>；
+          (b) POSIX 規定非互動 shell 的<em>背景</em>工作把 <code>SIGINT/SIGQUIT</code> 設為
+          <code>SIG_IGN</code>——實測 <code>sh -c 'sleep 30 &amp; P=$!; kill -INT $P; sleep .5;
+          kill -0 $P &amp;&amp; echo alive'</code> 印 <code>alive</code>，
+          所以<strong>即使有權限也殺不掉</strong>。</td>
+      <td>停止委託給一個 root 守護（哨兵檔通訊，父行程不需特權）＋訊號換 <code>-TERM</code>＋
+          <code>-n</code> 樣本上限自我終止＋<code>-b 1</code> 行緩衝。<strong>三層</strong>，因為進度不該
+          取決於單一機制。停止後<em>驗證檔案是否凍結</em>（而不是問 pid 還活著沒——那會與訊號投遞競態、
+          在正常的停止之後誤報）。不需 root 的路徑以 stub <code>sudo</code>/<code>powermetrics</code>
+          實跑驗過。lesson <code>eng-gate-0023</code>、§10.8。</td></tr>
+  <tr class="hl"><td><code>powermetrics_gpu_freq_parse.py</code> 的區塊門檻（我寫的那版）</td>
+      <td><strong>儀器回報「沒事」的方法，正好是它失去能力的方法。</strong>門檻是
+          <code>0.15 × p95(功率)</code>，而 p95 是<em>整份擷取</em>的百分位：閒置尾巴一長，
+          p95 滑進閒置分佈、門檻塌到 200 mW 的地板，於是 240–300 mW 的閒置毛刺被當成啟動。
+          同一份擷取因此報出 <strong>25–31 個活動區塊</strong>而不是 3 個，「冷」被配到 09:09:30
+          一筆 237 mW 的毛刺。</td>
+      <td>改為 <code>0.15 × p99.5</code>（在約 0.5% 工作週期下仍留在活躍模態）；
+          尾巴長 0／10／32／90 分鐘時舊規則給 3／6／22／31 塊、新規則給 3／3／3／3 塊，
+          且邊界 ±1 樣本。門檻與工作週期<strong>每次印出</strong>。已入 <code>--selftest</code> 回歸項
+          （合成尾巴：新 2 塊、舊 <strong>401</strong> 塊）。§10.8。</td></tr>
 </table>
 
 <h3 id="s61">6.1 <code>CGC-DECPROF</code> 為什麼答不了 prefill：三個獨立閘門（全部可證）</h3>
@@ -830,6 +880,19 @@ slow: 4 prefill graph(s), per-graph shape:
       便宜的驗證：印出每個圖的 <code>worst layer</code>——在圖之間漂移就是暫態。</li>
   <li><strong>一個統計量若由「讀法」決定，就要在結論裡標明讀法。</strong>本輪「層間 CV」
       在 6.5% / 8.7% / 30.1% 三個值之間移動，差別全來自樣本選擇與圖的選擇，不是來自機器。</li>
+  <li><strong>報 prefill 的「快」，要報它坐在哪個 DVFS 檔位，不要只報 t/s。</strong>
+      本機最高檔是 <code>1470 MHz</code>，而「250」這個數字<strong>就是</strong>「整個 prefill 期間 GPU 都在最高檔」。
+      熱態把它移下去（本輪量到 928、618 兩個平台），於是 151 t/s。
+      所以「快／慢」不是引擎的性質，是<em>散熱器當下允許的操作點</em>（§10.6）。
+      副產品：操作點是<strong>階梯</strong>、由 governor 選定後鎖住數十秒，不是連續值——
+      這與「要 250 就等 150 秒」（第 2 條）是同一個機制的兩面。</li>
+  <li><strong>要停一個「用特權啟動」的採集，不要用 <code>kill $!</code>。</strong>
+      兩個獨立的理由會讓它<em>回傳 0 卻什麼都沒做</em>：<code>$!</code> 是 root 的 pid
+      （非特權 <code>kill</code> 得 <code>EPERM</code>），而且 POSIX 讓非互動 shell 的<em>背景</em>工作
+      忽略 <code>SIGINT</code>（實測 <code>kill -INT</code> 後行程仍 <code>alive</code>）。
+      正確做法是委託給一個 root 守護（哨兵檔）並改送 <code>-TERM</code>，再加一個自我終止的樣本上限。
+      <strong>而且停止後要驗證「檔案凍結」，不是驗證「pid 還活著」</strong>——後者與訊號投遞競態，
+      會在<em>正常</em>停止之後誤報，而會誤報的警告等於沒有警告（§10.8）。</li>
 </ol>
 
 <h2>8. 下一步</h2>
@@ -841,7 +904,14 @@ slow: 4 prefill graph(s), per-graph shape:
       <code>1.60×（CV 8.7%）</code> 對吞吐 <code>1.62×</code>，指向時脈／功耗上限而不是實作熱點。
       <span class="small">這一項在做的過程中反而先推翻了自己第一次的證據（8 層子集 + 單圖；
       §3.2 陷阱 A/B），結論沒變但證據重做了。</span></li>
-  <li><strong>物理確認：頻率（需要你人工跑；<code>sudo</code> 的封鎖在沙箱之外也成立）</strong>：
+  <li><strong>（已完成）物理確認：頻率</strong>（需要人工跑；<code>sudo</code> 的封鎖在沙箱之外也成立）。
+    <strong>答案：是時脈，且由熱壓選定</strong>——冷態全程坐在最高 DVFS 檔位 <code>1470 MHz</code>，
+    熱態被移到 <code>928</code> 與 <code>618 MHz</code>，吞吐 <code>276.25 → 227.27 → 151.28 t/s</code>，
+    而熱壓等級 <code>Nominal → Moderate → Heavy</code> 與時脈下降<strong>逐樣本同步</strong>。
+    完整分析見 <strong>§10</strong>。
+    <span class="small">（註：時脈掉 58% 而吞吐只掉 45%——兩者不是 1:1，因為約 15.4% 的每 token 時間
+    不隨時脈縮放。§10.6。）</span>
+    <br>以下是本項的歷史記錄（當時為什麼跑不成、以及後來怎麼修掉停止路徑）：
     本輪<b>再次嘗試仍失敗，但這次把「為什麼」釘死了</b>。<code>/usr/bin/sudo</code> 存在且帶 setuid
     （<code>-r-s--x--x</code>），但它的 <b>exec 被拒</b>：<code>operation not permitted: /usr/bin/sudo</code>，
     且<b>關掉工作區沙箱（<code>dangerouslyDisableSandbox</code>）也一樣</b> ⇒ 特權升級被封在更外層，
@@ -873,7 +943,10 @@ scripts/check/powermetrics_gpu_freq.sh --parse Backup/cgc_logs/powermetrics_pref
     <b>CLOCK</b> / <b>POWER CEILING</b> / <b>GPU KEPT OFF THE WORK</b>。
     <span class="small">（此改動的起點是一個真缺陷：舊 <code>--parse</code> 丟掉的正是那個括號，見 §6。
     四個標籤字串本輪已對三個獨立來源的真實擷取核對無誤，但仍<b>未對本機自己的擷取跑過</b>——
-    因為那份擷取還不存在。<code>--selftest</code> 4/4。）</span>
+    因為那份擷取還不存在。<code>--selftest</code> 4/4。）
+    <strong>（2026-09-16 追加：擷取已到手，<code>--parse</code> 已對它跑過，而且立刻抓到兩個缺陷——
+    熱壓取樣器沒被讀取、分段門檻在長尾巴上塌掉——兩者都已修掉，<code>--selftest</code> 現為 9/9。
+    見 §10.8／§10.9。）</strong></span>
     若頻率下降而 residency 都在 ~100%，時脈就是答案。
     <span class="small">（本輪已有 <code>Device Utilization %</code> 的 91–97%／峰值 99%，見 §3.1，
     所以期待的形狀就是「residency 不變、frequency 下降」。）</span></li>
@@ -998,6 +1071,664 @@ Blocker A（wide 路徑）完全未動，而且它是結構性的：clamp 一恢
 25 tok/s 這條路與 M1/W3 的關係，因此從「被兩個 blocker 擋住」變成「被一個設計不變量擋住」——
 那不是進展被取消，是<strong>障礙被數清楚了</strong>：下一步要動的是 wide 路徑，
 而不再是槽位配置。</p>
+
+<h3 id="s91">9.1 「被一個設計不變量擋住」是什麼意思，以及為什麼那<em>不</em>等於「沒辦法」</h3>
+
+<p class="small">
+  <strong>先釘「解在出貨碼上」這句話的位置。</strong>blocker B 的修法在 <code>2b284667f</code>，
+  它<strong>就是 <code>demo/sweet-spot-windows-fix</code> 的尖端</strong>（不是側分支），
+  改的是 <code>src/llama.cpp/src/llama-expert-cache.cpp</code>——出貨路徑，不是實驗分支，
+  且與 <code>libllama.0.0.239.dylib</code> 同一個 commit（檢查 8）。兩個保守的補充：
+  (a) 它<strong>還沒有推到任何遠端</strong>——最新的遠端副本 <code>cgcengine0907/demo/sweet-spot-windows-fix</code>
+  是它的<em>祖先</em>，落後 7 個 commit；(b) 「在出貨碼上」不等於「在出貨<em>配置</em>上生效」，
+  對預設（非 split）配置它是量到的 <strong>no-op</strong>，見本節下方的界線。
+</p>
+
+<p>
+  上面那句話值得展開，因為它很容易被讀成一句安慰。它不是——它是一個<strong>可查核的述句</strong>，
+  而且它改變的是<em>下一件工作的種類</em>。先把兩個詞釘在原始碼上。
+</p>
+
+<p><strong>「wide 路徑」是什麼。</strong><code>CGC_POOL_SPLIT=1</code>（預設 OFF，開啟時會大聲警告）
+做的是三件事同時發生：載入器<strong>不再把 expert 張量的 <code>ne[2]</code> 縮到池容量</strong>、
+池<strong>自有</strong>一塊 buffer、以及<strong>解除 <code>n_batch</code> 的夾制</strong>。
+解除夾制之後，一個 16 成員的 batch 就會以
+<code>ntok=16 mode=wide ne2=256</code> 出發——也就是 <strong>Metal 要隔著「模型的權重 buffer」
+去讀一個 256-expert 的張量</strong>。原碼明寫這就是載入器縮張量<em>存在的原因</em>：</p>
+<pre><code>llama-context.cpp:268  [CGC M1 work item 1 CGC_POOL_SPLIT, 2026-09-14] The clamp is NOT lifted for an owned pool.
+                       ... lifting it produced a `ntok=16 mode=wide ne2=256` build whose Metal encoder faulted,
+                       and the hook at il=2 then reported router ids that are the bit pattern of a NaN.
+                       The wide path means Metal reading a 256-expert tensor through the model's weight buffer,
+                       which is the exact configuration this engine's loader shrink exists to avoid.</code></pre>
+
+<p><strong>它為什麼是「不變量」而不是「難度」——機制在另一份文件裡，而且它不是數值問題。</strong>
+<code>M1_POOL_GRAPH_DECOUPLE_PLAN_2026-09-14.md</code> §2 把機制寫成一句：
+<em>gather 路徑把一個住在 <strong>Metal buffer</strong> 裡的 expert 張量重新指向一個
+<strong>Metal 從未被通知過的 host 指標</strong></em>。於是 Metal 找不到那塊 buffer、什麼都不讀：</p>
+<pre><code>ggml-metal-device.m:2026: error: tensor '%s' buffer is nil</code></pre>
+<p>
+  而在 2 GiB／<code>n_slots=35</code> 的實測裡，這件事的形狀是<strong>整份文件最該記住的一行</strong>：
+</p>
+<table>
+  <tr><th>量到什麼</th><th>值</th></tr>
+  <tr><td><code>abort()</code> 次數（早先的測試預測會 abort）</td><td class="num ok"><strong>0</strong></td></tr>
+  <tr class="hl"><td><code>buffer is nil</code> 次數</td><td class="num bad"><strong>234</strong>（另一次整輪計數 468）</td></tr>
+  <tr><td>M1 數值一致</td><td class="num bad">2 / 42</td></tr>
+  <tr><td>第一次分歧</td><td class="num bad">step 2，<code>sum</code> 相差 <strong>55%</strong></td></tr>
+  <tr><td>因果鏈（同一輪內）</td><td class="mono">union = 64 &gt; usable 34 → gather 路徑 → host cache_gather_buf → Metal nil → 錯的值</td></tr>
+</table>
+<div class="box b-red">
+  <p><strong>0 次 abort。</strong>這是不變量與 bug 的分界線。它<em>不報錯</em>，它<strong>靜默地算錯</strong>——
+  而那比 abort 嚴格更糟：abort 會被看見，錯的值會一路流下去（這正是本專案 §6 那條
+  「印四條空序列與量到零同形」的同一個家族）。計畫文件對它的判語是
+  <em>「the union&gt;slots region is broken by construction: there is no legal place to put the weights」</em>
+  ——<strong>沒有合法的位置放權重</strong>，而這是幾何問題，不是找 bug 能解決的問題。</p>
+</div>
+
+<p><strong>所以「設計不變量」的準確意思是：三個部件互相扣住，而拆掉任一個<em>不會</em>得到部分進展。</strong></p>
+<table>
+  <tr><th>部件</th><th>它保證什麼</th><th>單獨拆掉會怎樣</th></tr>
+  <tr><td>載入器把 <code>ne[2]</code> 縮到池容量</td><td>池區的權重一定在 Metal 認得的 buffer 裡</td>
+      <td>gather 路徑把張量指向未知 host 指標 ⇒ <code>buffer is nil</code> ⇒ 靜默錯值（上表）</td></tr>
+  <tr><td>池以「收養既有區域」的方式取得儲存</td><td>不需要第二份 allocation，16 GB 放得下</td>
+      <td>池自有的新配置沒有 Metal 認得的 buffer ⇒ 同上</td></tr>
+  <tr><td><code>n_batch</code> 夾到池容量（<code>llama-context.cpp:263</code>）</td>
+      <td>每個 step（decode／MTP verify／prefill chunk）都走<strong>唯一已知正確</strong>的 expert 權重路徑</td>
+      <td>夾制解除 ⇒ 出現 wide 張量 ⇒ Metal encoder fault + NaN 位元pattern</td></tr>
+</table>
+<p>
+  <strong>這就是「被難度擋住」與「被不變量擋住」的差別。</strong>被難度擋住時，投入更多努力（更多搜尋、更多假設）
+  會被回報，因為某處有一個 bug；被不變量擋住時，努力施加在單一部件上會讓狀態<em>變壞</em>
+  （從報錯變成靜默算錯），而<strong>出口是可以列舉的</strong>——這裡恰好兩條，而且兩條都是明示的：
+</p>
+<ol>
+  <li><strong>讓 Metal 正確地讀 wide 張量</strong>：後端問題，動的是 Metal kernel 與 buffer 綁定。</li>
+  <li><strong>讓 wide 路徑<em>不需要</em>存在</strong>：給常駐的 wide 區域<strong>一塊真的記憶體</strong>，
+      而不是把 Metal 已知的 buffer 重指向一個未知的 host 指標。</li>
+</ol>
+<div class="box b-green">
+  <p><strong>而第 2 條不是願望——它已經實作過一次，而且正在跑。</strong>
+  <code>CGC_PREFILL_STREAM=1</code>（M2 prefill streaming）服務 6144-token chunk 的方法，
+  就是把 expert 權重<strong>從 GGUF 直接讀進一塊<em>暫時的</em> Metal slab</strong>，<code>ne[2] = n_expert</code>、
+  remap id 用原始 expert id。那<strong>就是</strong> wide 幾何，而它<em>能正確讀</em>——
+  §3.3／§10 那些 276–308 t/s 的數字全部跑在這條路上；計畫文件也已經把它寫成下一步：
+  「<em>that is exactly why the region needs a real slab</em>」，且早先的測試 3 證明
+  Metal <em>可以</em>配置 280 MB+ 的連續 buffer 並整層 batch-matmul 一個 768 MB 的 layer。</p>
+</div>
+
+<p><strong>那為什麼還要說「verdict 不變」——兩條誠實界線。</strong>
+第一，<strong>修好 wide 路徑是 M1/W3 的<em>前提</em>，不是吞吐結果</strong>：
+blocker B 的修法在出貨預設（非 split）配置下量到是 <strong>no-op</strong>（逐位元相同），
+wide 路徑同理——就算通了，那也只是一句「現在可以量了」，數字仍要另一次量測才會出現。
+第二，唯一能證明「下一步真的是 wide 路徑」的那個實驗（split 配置的真機 served request）
+<strong>做不了</strong>：10 GiB 與 4 GiB 兩種池預算都在 warmup 掛
+<code>CGC-METAL-FAIL ... status 5 (Insufficient Memory)</code>。所以「下一步是 wide 路徑」
+這句話的依據是<em>排除法 + 原始碼</em>（槽位配置已被證明可以在單元層修好並回歸，
+而 wide 路徑有明示的結構障礙），不是一次端到端的成功。</p>
+
+<div class="box b-amber">
+  <p><strong>一則本輪<em>沒有</em>做的事，以及為什麼。</strong>
+  <code>llama.cpp:420-423</code> 的警告註解仍然記載著<strong>已被取代的診斷</strong>：
+  <code>"degenerate routing at il=1 (the remap maps two experts to one slot)"</code>。
+  日誌寫的是 <code>st[1]=2</code>，<strong>擷取裡沒有任何一行顯示兩個 expert 共用一個 slot</strong>
+  （§9 上面那條 errata）。那行註解是這個配置「為什麼壞」在原始碼裡<em>唯一</em>的記載，
+  所以它應該被更正成 blocker A（wide 路徑）——否則下一個人讀到的是已經被推翻的那個原因。
+  <strong>本輪刻意沒動它</strong>：這個 repo 的檢查 8 要求任何 <code>src/</code> 改動都要把對應的
+  建置產物一起 stage（這裡是 <code>libllama.0.0.239.dylib</code>），為了一行註解重建整個庫
+  不該塞進一個「頻率／散熱」的 commit 裡。已記在 <code>M1_POOL_SPLIT_COST_2026-09-14.md</code> 的 errata，
+  原始碼註解留給獨立的一輪。</p>
+</div>
+
+<h2>10. 追加（2026-09-16 上午）：§3／§5 的開放問題有答案了 —— 是時脈，而且是熱壓選的</h2>
+
+<p>
+  §3 的藍框把問題切成兩半：Metal 時戳證明「等待期間 GPU 沒有在發呆」，但「為什麼變慢」<strong>故意沒有指認</strong>
+  ——因為 <code>頻率</code>、<code>功耗上限</code>、<code>記憶體子系統</code> 是三個不同的解釋、三種不同的修法，
+  而分開它們需要 root 的 <code>powermetrics</code>（§8 第 2 項）。§5 也明文寫著「<strong>不指認頻率</strong>」。
+  §3.1 還額外劃了一條界線：「利用率是<em>佔用比例</em>，不是頻率，同一份證據<strong>不能</strong>推出時脈。」
+</p>
+<p>
+  <strong>這一節把那兩個留白補上。</strong>有一份真的擷取了，而且它不只回答了「是不是頻率」，
+  還回答了「誰把頻率壓下去的」——答案是熱壓，而且證據是逐樣本鎖死的。
+</p>
+<p>
+  <strong>§10.10 再把這一節的「時脈階梯」與 §3.3 的「閒置時間軸」接成同一條因果鏈</strong>
+  （兩份資料本來各自都對，但誰也沒把對方寫出來），並回答「那 prefill 250 的設定到底是什麼」——
+  答案有三層，其中只有一層在<code>run_server.sh</code>裡。
+</p>
+
+<h3 id="s101">10.1 擷取本身</h3>
+<table>
+  <tr><th>項目</th><th>值</th></tr>
+  <tr><td>檔案</td><td><code>Backup/cgc_logs/powermetrics_prefill_20260916_090808.log</code></td></tr>
+  <tr><td>機器／OS</td><td class="mono">Mac16,12 · MacBook Air · Apple M4 · 16 GB · 無風扇 · 24C2101</td></tr>
+  <tr><td>取樣器</td><td><code>--samplers gpu_power,thermal</code>，<code>-i 500</code>（約 505 ms／樣本）</td></tr>
+  <tr><td>負載</td><td><strong>同一道命令</strong>：<code>prefill_certifiability.py --arm prefill250-decprof --runs 3 --idle-before 180</code>
+      （所以擷取與報告的 t/s 表可直接對照，不需任何換算）</td></tr>
+  <tr><td>引擎</td><td>build <code>e8b85393d</code> · <code>libllama</code> 239 ·
+      <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（13.65 GB，256 experts，40 layers）</td></tr>
+  <tr><td>三次啟動</td><td class="mono">09:11:20–09:11:51 · 09:12:11–09:12:45 · 09:13:05–09:13:57</td></tr>
+  <tr><td>遊戲機的檔位表</td><td class="mono">338 / 618 / 796 / 836 / 928 / 952 / 1056 / 1053 / 1170 / 1152 /
+      1278 / 1204 / 1338 / 1326 / <strong>1470</strong> MHz（15 階，最高階 1470）</td></tr>
+</table>
+<p class="small">
+  註：<code>powermetrics</code> 的手冊明說它報的功率是<strong>估計值</strong>，不可用於跨機比較。
+  本節只用它做兩件事：<strong>分段</strong>（閒置與負載差三個數量級）與<strong>看變化方向</strong>。
+  時脈與駐留是硬體計數器，不受這條限制；<code>GPU HW active frequency</code> 與括號內的分佈都是。
+</p>
+
+<h3 id="s102">10.2 三次啟動：時脈、駐留、功率、吞吐</h3>
+<table>
+  <tr><th>啟動</th><th>熱壓等級</th><th>穩定檔位（佔活躍時間）</th><th>有效時脈</th><th>活躍駐留</th>
+      <th>平均功率</th><th>吞吐</th></tr>
+  <tr class="hl"><td><strong>run 1</strong><br><span class="small">09:11:20</span></td>
+      <td><span class="ok">Nominal ×55</span></td><td class="num ok">1470 MHz（71%）</td><td class="num ok">1400 MHz</td>
+      <td class="num">83.73%</td><td class="num">12 713 mW</td><td class="num ok"><strong>276.25 t/s</strong></td></tr>
+  <tr><td><strong>run 2</strong><br><span class="small">09:12:11</span></td>
+      <td><span class="warn">Heavy ×48 · Moderate ×20</span></td><td class="num">928 MHz（43%）</td><td class="num">1082 MHz</td>
+      <td class="num">97.63%</td><td class="num">8 566 mW</td><td class="num">227.27 t/s</td></tr>
+  <tr><td><strong>run 3</strong><br><span class="small">09:13:05</span></td>
+      <td><span class="bad">Heavy ×104</span></td><td class="num bad">618 MHz（62%）</td><td class="num bad">700 MHz</td>
+      <td class="num">97.61%</td><td class="num">3 778 mW</td><td class="num bad"><strong>151.28 t/s</strong></td></tr>
+</table>
+<p class="small">
+  吞吐是 <code>llama-bench</code> 的 <code>avg_ts</code>（<code>pm_pair/20260916_090810_run0*/</code>）；
+  逐樣本為 run 1 <code>290.76 / 281.82 / 256.17</code>、run 2 <code>258.08 / 220.19 / 203.53</code>、
+  run 3 <code>155.93 / 151.10 / 146.82</code>。區塊邊界由
+  <code>powermetrics_gpu_freq_parse.py</code> 以 GPU <strong>功率</strong>分段得到（不以頻率／駐留分段——那正是待測量）。
+</p>
+
+<div class="box b-green">
+  <p><strong>三個獨立的儀器現在都說同一件事：GPU 忙著，只是變慢。</strong></p>
+  <table>
+    <tr><th>儀器</th><th>量到什麼</th><th>冷 → 熱</th><th>來源</th></tr>
+    <tr><td>Metal <code>GPUStartTime/GPUEndTime</code></td><td>忙碌／等待比</td>
+        <td class="num">100–101% → 100–101%</td><td>§3</td></tr>
+    <tr><td><code>ioreg</code> IOAccelerator 利用率</td><td>裝置佔用比例</td>
+        <td class="num">91.3% → 94.2%（三次都觸 99%）</td><td>§3.1</td></tr>
+    <tr><td><code>powermetrics</code> 活躍駐留</td><td>硬體計數器的佔用比例</td>
+        <td class="num ok">83.73% → <strong>97.61%</strong></td><td><strong>§10（本節）</strong></td></tr>
+  </table>
+  <p>第三個儀器不只同向，還<strong>更極端</strong>：時脈掉到 42% 的同時，駐留反而<em>上升</em> 13.9 pp。
+  熱的那兩次，GPU 幾乎沒有閒置時間——它被<strong>佔滿</strong>了，只是每一拍跑得更慢。
+  「慢的那次是因為 GPU 在發呆」這個解釋，現在被三套互不相干的計數器同時排除。</p>
+</div>
+
+<h3 id="s103">10.3 DVFS 逐階分佈：熱節流的階梯</h3>
+<p>
+  這是 <code>GPU HW active frequency</code> 那個<strong>單一數字把它壓掉</strong>的欄位。兩次跑可以報同一個
+  「active frequency」卻佔用完全不同的檔位組合；「時脈被壓」的指紋是<strong>質量整片移出最高檔</strong>，
+  而那個被壓縮的數字看不出這件事。
+</p>
+<table>
+  <tr><th>檔位</th><th>run 1（Nominal）</th><th>run 2（Moderate→Heavy）</th><th>run 3（Heavy）</th><th>極差</th></tr>
+  <tr class="hl"><td class="num">1470 MHz</td><td class="num ok"><strong>71.10%</strong></td><td class="num">15.94%</td>
+      <td class="num bad">1.29%</td><td class="num">69.81 pp</td></tr>
+  <tr><td class="num">1338 MHz</td><td class="num">10.53%</td><td class="num">4.51%</td><td class="num">0.68%</td><td class="num">9.84</td></tr>
+  <tr><td class="num">1278 MHz</td><td class="num">10.55%</td><td class="num">5.70%</td><td class="num">0.67%</td><td class="num">9.89</td></tr>
+  <tr><td class="num">1170 MHz</td><td class="num">5.39%</td><td class="num">8.21%</td><td class="num">0.69%</td><td class="num">7.52</td></tr>
+  <tr><td class="num">1056 MHz</td><td class="num">0.31%</td><td class="num">15.23%</td><td class="num">0.68%</td><td class="num">14.92</td></tr>
+  <tr><td class="num">928 MHz</td><td class="num">1.00%</td><td class="num warn"><strong>43.09%</strong></td>
+      <td class="num">1.52%</td><td class="num">42.08</td></tr>
+  <tr><td class="num">796 MHz</td><td class="num">0.00%</td><td class="num">7.21%</td><td class="num warn"><strong>30.63%</strong></td><td class="num">30.63</td></tr>
+  <tr><td class="num">618 MHz</td><td class="num">0.00%</td><td class="num">0.00%</td><td class="num bad"><strong>62.45%</strong></td><td class="num">62.45</td></tr>
+  <tr><td class="num">338 MHz</td><td class="num">1.13%</td><td class="num">0.11%</td><td class="num">1.39%</td><td class="num">1.28</td></tr>
+</table>
+<figure>
+<svg viewBox="0 0 1000 250" role="img" aria-label="三次啟動的 DVFS 檔位分佈：質量整片移出最高檔">
+  <rect x="0" y="0" width="1000" height="250" fill="#ffffff"/>
+  <g font-size="12" fill="#374151">
+    <text x="16" y="55">run 1</text><text x="16" y="70" font-size="10.5" fill="#059669">Nominal</text>
+    <text x="16" y="115">run 2</text><text x="16" y="130" font-size="10.5" fill="#d97706">Moderate→Heavy</text>
+    <text x="16" y="175">run 3</text><text x="16" y="190" font-size="10.5" fill="#dc2626">Heavy</text>
+  </g>
+  <!-- x = 150 + cum% * 6.5 ; bar height 34 -->
+  <g>
+    <rect x="150.0" y="40"  width="462.2" height="34" fill="#059669"/>
+    <rect x="612.2" y="40"  width="68.4"  height="34" fill="#10b981"/>
+    <rect x="680.6" y="40"  width="68.6"  height="34" fill="#34d399"/>
+    <rect x="749.2" y="40"  width="35.0"  height="34" fill="#6ee7b7"/>
+    <rect x="784.2" y="40"  width="2.0"   height="34" fill="#fbbf24"/>
+    <rect x="786.2" y="40"  width="6.5"   height="34" fill="#f59e0b"/>
+    <rect x="792.7" y="40"  width="7.3"   height="34" fill="#9ca3af"/>
+    <text x="168" y="62" font-size="12.5" fill="#ffffff">1470 MHz · 71.1%</text>
+
+    <rect x="150.0" y="100" width="103.6" height="34" fill="#059669"/>
+    <rect x="253.6" y="100" width="29.3"  height="34" fill="#10b981"/>
+    <rect x="282.9" y="100" width="37.1"  height="34" fill="#34d399"/>
+    <rect x="320.0" y="100" width="53.4"  height="34" fill="#6ee7b7"/>
+    <rect x="373.4" y="100" width="99.0"  height="34" fill="#fbbf24"/>
+    <rect x="472.4" y="100" width="280.1" height="34" fill="#f59e0b"/>
+    <rect x="752.5" y="100" width="46.9"  height="34" fill="#f97316"/>
+    <rect x="799.4" y="100" width="0.7"   height="34" fill="#9ca3af"/>
+    <text x="545" y="122" font-size="12.5" fill="#ffffff">928 MHz · 43.1%</text>
+
+    <rect x="150.0" y="160" width="8.4"   height="34" fill="#059669"/>
+    <rect x="158.4" y="160" width="4.4"   height="34" fill="#10b981"/>
+    <rect x="162.8" y="160" width="4.4"   height="34" fill="#34d399"/>
+    <rect x="167.2" y="160" width="4.5"   height="34" fill="#6ee7b7"/>
+    <rect x="171.7" y="160" width="4.4"   height="34" fill="#fbbf24"/>
+    <rect x="176.1" y="160" width="9.9"   height="34" fill="#f59e0b"/>
+    <rect x="186.0" y="160" width="199.1" height="34" fill="#f97316"/>
+    <rect x="385.1" y="160" width="405.9" height="34" fill="#dc2626"/>
+    <rect x="791.0" y="160" width="9.0"   height="34" fill="#9ca3af"/>
+    <text x="486" y="182" font-size="12.5" fill="#ffffff">618 MHz · 62.5%</text>
+  </g>
+  <g font-size="11.5" fill="#374151">
+    <text x="816" y="62">276.25 t/s</text>
+    <text x="816" y="122">227.27 t/s</text>
+    <text x="816" y="182">151.28 t/s</text>
+  </g>
+  <!-- legend -->
+  <g font-size="10.5" fill="#374151">
+    <rect x="150" y="214" width="12" height="10" fill="#059669"/><text x="167" y="223">1470</text>
+    <rect x="203" y="214" width="12" height="10" fill="#34d399"/><text x="220" y="223">1278</text>
+    <rect x="256" y="214" width="12" height="10" fill="#fbbf24"/><text x="273" y="223">1056</text>
+    <rect x="309" y="214" width="12" height="10" fill="#f59e0b"/><text x="326" y="223">928</text>
+    <rect x="362" y="214" width="12" height="10" fill="#f97316"/><text x="379" y="223">796</text>
+    <rect x="415" y="214" width="12" height="10" fill="#dc2626"/><text x="432" y="223">618</text>
+    <rect x="468" y="214" width="12" height="10" fill="#9ca3af"/><text x="485" y="223">338</text>
+    <text x="545" y="223" fill="#6b7280">條寬 = 該檔位佔活躍時間的比例（x 軸 6.5 px/%）</text>
+  </g>
+</svg>
+<figcaption>圖 4：三次啟動的 DVFS 檔位分佈。run 1 有 71% 的活躍時間坐在<strong>最高檔</strong>；
+run 3 有 62% 坐在 618 MHz（＝最高檔的 42%）。這不是雜訊，是質量整片從最高檔移到下面——單一的
+<code>GPU HW active frequency</code> 值會把這整張圖壓成「1394 / 1085 / 705 MHz」三個數。</figcaption>
+</figure>
+
+<h3 id="s104">10.4 熱壓翻轉與時脈崩塌是<strong>同一秒</strong></h3>
+<p>
+  這是本節最硬的一條證據：不是「熱的那次比較慢」，而是<strong>熱壓等級改變的那一個樣本，就是時脈開始下降的那一個樣本</strong>。
+  run 2 於 09:12:11 起跑，前 10 秒還在 1470 MHz（Moderate）；以下每個樣本間隔 505 ms：
+</p>
+<table>
+  <tr><th>時刻</th><th>GPU active frequency</th><th>功率</th><th>活躍駐留</th><th>熱壓等級</th></tr>
+  <tr><td class="mono">09:12:20</td><td class="num">1332 MHz</td><td class="num">13 206 mW</td><td class="num">100.00%</td><td>Moderate</td></tr>
+  <tr><td class="mono">09:12:21</td><td class="num">1300 MHz</td><td class="num">12 831 mW</td><td class="num">100.00%</td><td>Moderate</td></tr>
+  <tr class="hl"><td class="mono">09:12:21</td><td class="num warn">1236 MHz</td><td class="num">11 409 mW</td>
+      <td class="num">100.00%</td><td><span class="bad"><strong>Heavy</strong></span> ← 翻轉</td></tr>
+  <tr><td class="mono">09:12:22</td><td class="num">1180 MHz</td><td class="num">10 079 mW</td><td class="num">100.00%</td><td>Heavy</td></tr>
+  <tr><td class="mono">09:12:22</td><td class="num">1137 MHz</td><td class="num">9 137 mW</td><td class="num">100.00%</td><td>Heavy</td></tr>
+  <tr><td class="mono">09:12:23</td><td class="num">1092 MHz</td><td class="num">8 501 mW</td><td class="num">100.00%</td><td>Heavy</td></tr>
+  <tr><td class="mono">09:12:23</td><td class="num">1045 MHz</td><td class="num">7 374 mW</td><td class="num">100.00%</td><td>Heavy</td></tr>
+  <tr><td class="mono">09:12:24</td><td class="num">1008 MHz</td><td class="num">7 040 mW</td><td class="num">100.00%</td><td>Heavy</td></tr>
+  <tr><td class="mono">09:12:24</td><td class="num">980 MHz</td><td class="num">6 574 mW</td><td class="num">100.00%</td><td>Heavy</td></tr>
+  <tr><td class="mono">09:12:25</td><td class="num bad">967 MHz</td><td class="num">6 498 mW</td><td class="num">100.00%</td><td>Heavy（續降，最後穩定在 928）</td></tr>
+</table>
+<p>
+  注意最後一欄的駐留：<strong>整段都是 100.00%</strong>。時脈在 10 個樣本（約 5 秒）內從 1332 掉到 967，
+  而 GPU <em>沒有閒置過任何一拍</em>。同一道工作被送進去，同一個 GPU 用更低的時脈把它跑完。
+  run 3 更乾淨：它<strong>起跑時就已經是 Heavy</strong>，於是一路是 1470 → 1338 → 1278 → 1056 → 928 → 618，
+  之後 104 個樣本裡有 62% 的時間坐在 618 MHz，再也沒有回到上面。
+</p>
+
+<h3 id="s105">10.5 判準：為什麼不是功耗上限、也不是記憶體</h3>
+<p>
+  <code>powermetrics_gpu_freq_parse.py</code> 對冷／熱對輸出三個候選，並<strong>印出理由而不是只印結論</strong>：
+</p>
+<pre><code>--- verdict ---
+  CLOCK (same work, lower clock -- thermally driven)
+    clock       : 1394 -> 895 MHz  (-35.8%)
+    residency   : 83.73 -> 97.62 %  (+13.89 pp)
+    power       : 12713 -> 6172 mW (-51.5%)
+    thermal     : Nominalx55 -> Heavyx152 Moderatex20   &lt;- PRESSURE ESCALATED across the pair
+    the clock falls while residency holds -> the SAME work is executing SLOWER
+    and thermal pressure escalated across the same window, so the ceiling that holds the clock
+    down is a THERMAL one -- the operating point is being chosen by the thermal governor,
+    not by the workload and not by a fixed power budget.
+    and power falls -51.5% with it -> the clock is being held down and the
+    lower power is the consequence, not the constraint</code></pre>
+<table>
+  <tr><th>候選</th><th>判準</th><th>實測</th><th>結論</th></tr>
+  <tr><td><strong>GPU KEPT OFF THE WORK</strong></td><td>活躍駐留掉 ≥ 10 pp</td>
+      <td class="num ok">83.73 → 97.61%（<strong>上升</strong> 13.9 pp）</td><td class="ok">排除</td></tr>
+  <tr><td><strong>POWER CEILING</strong>（固定功耗上限）</td><td>時脈掉、而功率持平</td>
+      <td class="num">功率<strong>跟著掉</strong> 51.5%（12.7 → 3.8 W）</td>
+      <td class="ok">排除——固定上限會把功率<em>壓平</em>，這裡是功率被時脈帶著下來</td></tr>
+  <tr><td><strong>CLOCK</strong></td><td>時脈掉、駐留持有</td>
+      <td class="num">−35.8%（有效時脈）／−58%（最高檔→穩定檔）</td>
+      <td class="bad"><strong>成立</strong></td></tr>
+  <tr><td>誰選了這個操作點</td><td>熱壓等級是否在冷熱之間升級</td>
+      <td class="num">Nominal → Heavy（+ Moderate 過渡）</td>
+      <td class="bad"><strong>熱壓</strong>（見 §10.4 的逐樣本鎖定）</td></tr>
+</table>
+<p class="small">
+  「記憶體子系統」這一項沒有獨立的否證，原因是它<em>無法</em>從這份擷取分離——但它是<strong>不需要</strong>的：
+  時脈在熱壓翻轉的同一個樣本開始下降、而駐留全程 100%，單一時脈解釋已經足以承載全部觀測。
+  若是記憶體瓶頸，時脈不會<em>因為熱壓等級改變</em>而階梯式下移。
+</p>
+
+<h3 id="s106">10.6 對 prefill 250 的意義</h3>
+<div class="box b-green">
+  <p><strong>250 之所以是「冷態的數字」，不是因為冷態有什麼魔法，是因為冷態坐在<em>最高檔</em>上。</strong>
+  這台機器的 GPU 最高 DVFS 檔位是 <code>1470 MHz</code>，而<span class="ok">冷態有 71% 的活躍時間就坐在那一階</span>。
+  熱態把整個操作點移下去（928 → 618 MHz），於是吞吐跟著掉到 151 t/s。
+  「250」與「151」因此在同一個座標軸上：<strong>它們是同一份工作的兩個操作點，差別是散熱器讓 GPU 能跑哪一階</strong>，
+  不是引擎換了路徑。</p>
+  <p><strong>而且障礙已經被量化：</strong>最高檔 → 穩定檔是 <code>1470 → 618 MHz</code>，掉 58%；
+  吞吐是 <code>276.25 → 151.28 t/s</code>，掉 45%。<strong>兩者不是 1:1。</strong></p>
+</div>
+<p>把三次啟動的「每 token 時間」對「有效時脈」做最小平方：</p>
+<table>
+  <tr><th>啟動</th><th>有效時脈</th><th>每 token 實測</th><th>模型預測</th><th>誤差</th></tr>
+  <tr><td>run 1</td><td class="num">1400 MHz</td><td class="num">3.620 ms</td><td class="num">3.575 ms</td><td class="num">−1.24%</td></tr>
+  <tr><td>run 2</td><td class="num">1082 MHz</td><td class="num">4.400 ms</td><td class="num">4.464 ms</td><td class="num">+1.44%</td></tr>
+  <tr><td>run 3</td><td class="num">700 MHz</td><td class="num">6.610 ms</td><td class="num">6.592 ms</td><td class="num">−0.28%</td></tr>
+</table>
+<pre><code>t(token) = 0.5575 ms + 4226 / f_eff(MHz)        R² = 0.9987</code></pre>
+<p>
+  那個常數項是<strong>不隨時脈縮放的地板</strong>：0.558 ms／token，佔冷態 3.620 ms 的 <strong>15.4%</strong>、
+  佔熱態 6.610 ms 的 8.4%。這正是「時脈掉 58% 而吞吐只掉 45%」的來源，也是為什麼
+  <strong>純時脈模型被資料否證</strong>：若 t ∝ 1/f，run 3 應該慢 <code>2.000×</code>，實際只慢 <code>1.826×</code>
+  （差 9.5%）；run 2 應慢 1.294×，實際 1.216×（差 6.5%）。
+  這塊地板是目前唯一已知<em>不會</em>被散熱改善的部分——要抬升持續負載的上限，它是要動的地方（§7 第 4 條）。
+</p>
+<div class="box b-amber">
+  <p><strong>邊界：R² 0.9987 是三個點配兩個參數，只剩 1 個自由度。</strong>
+  它證明「這個形式能容納資料」，<strong>不</strong>證明那個 0.558 ms 是精確值——樣本數只有 3。
+  可被引用的是<em>方向性</em>的兩個述句：(1) 純 1/f 縮放與資料不符（上面那兩個差值），
+  這不需要任何擬合就成立；(2) 因此存在一個不隨時脈縮放的成分。它的<em>量級</em>需要更多時脈台階才敢定。</p>
+</div>
+<p>
+  另外一個可以立刻使用的結論：<strong>散熱狀態的操作點是<em>階梯</em>，不是連續值</strong>。
+  本輪量到兩個清楚的平台（928 與 618 MHz），各自由 governor 選定後<em>鎖住</em>數十秒不動。
+  這對「要 250 就等 150 秒」（§7 第 2 條）是同一個機制的另一面：
+  冷的判準是「回到最高檔」，而不是「降了幾度」。
+</p>
+
+<h3 id="s107">10.7 這一節<strong>不</strong>說</h3>
+<ul>
+  <li><strong>不改變 decode。</strong>本節從頭到尾是 <code>n_gen=0</code> 的 prefill 擷取。
+      decode 對熱狀態不敏感這件事（§5 第 1 條）完全未動——<strong>25 tok/s 那條路仍與本節無關。</strong></li>
+  <li><strong>不指認「哪個感測器」或「幾度」。</strong>熱壓等級是 macOS 的<em>綜合</em>分級，
+      本節證明它與時脈同步、且領先時脈，但沒有拿到溫度讀數，也沒有做熱模型。
+      「Nominal→Heavy」到此為止是<strong>一個因果相鄰的觀測</strong>，不是完整的熱力學解釋。</li>
+  <li><strong>不宣稱 151 t/s 是熱態下限。</strong>§3.3 在同一台機器上量過 <code>122.39 t/s</code>；
+      本輪最深只到 151.28，所以這道階梯下面還有階。</li>
+  <li><strong>不宣稱 250 是硬體極限。</strong>250 只是<em>最高檔</em>給出的值。真正未被回答的是
+      「那些不隨時脈縮放的 15.4% 是什麼」——那是下一個可動的目標。</li>
+  <li><strong>樣本仍小。</strong>一個 session、三次啟動、一份擷取。
+      但熱壓翻轉與時脈下降的<strong>逐樣本鎖定</strong>（§10.4）不是統計推論，是那 10 行的原文。</li>
+</ul>
+
+<h3 id="s108">10.8 本輪修掉的兩個儀器缺陷</h3>
+<table>
+  <tr><th>#</th><th>缺陷</th><th>為什麼會這樣</th><th>處置</th></tr>
+  <tr class="hl"><td>1</td>
+      <td><strong>擷取變孤兒</strong>：壓測 09:14 就結束了，<code>powermetrics</code> 卻一直寫到 09:46 之後
+          （多出 32 分鐘的閒置尾巴），而「跑完會自動 parse」<strong>從來沒有發生</strong>——
+          腳本卡在 <code>wait</code> 上。</td>
+      <td>兩個獨立原因疊在一起，而且兩個都被<strong>靜默吞掉</strong>：
+          <br>(a) <strong>權限</strong>：<code>sudo powermetrics … &amp;</code> 之後 <code>$!</code> 是
+          <em>root 的 sudo</em> pid，非特權 shell 對它 <code>kill -INT</code> 得 <code>EPERM</code>——
+          而原碼寫成 <code>kill -INT "$PM" 2>/dev/null</code>，把唯一的證據丟掉；
+          <br>(b) <strong>訊號被忽略</strong>：POSIX 規定非互動 shell 的<em>背景</em>工作把
+          <code>SIGINT/SIGQUIT</code> 設為 <code>SIG_IGN</code>。實測
+          <code>sh -c 'sleep 30 &amp; P=$!; kill -INT $P; sleep .5; kill -0 $P &amp;&amp; echo alive'</code>
+          印出 <code>alive</code>——<code>kill</code> 回 0，行程不死。所以<strong>就算權限沒問題也殺不掉</strong>。</td>
+      <td>停止改為委託給一個 root 守護（哨兵檔通訊，父行程不需要特權），訊號換成 <code>-TERM</code>，
+          再加 <code>-n</code> 樣本上限自我終止與 <code>-b 1</code> 行緩衝（硬停不掉最後一條記錄）。
+          <strong>三層</strong>，因為進度不該取決於單一機制。以 stub <code>sudo</code>/<code>powermetrics</code>
+          對哨兵路徑與 <code>-TERM</code> 路徑做過實跑驗證（不需要 root 的部分全部測過）。
+          <br><strong>當天稍晚補記：那次留下的孤兒行程也收掉了</strong>——而且本節原本寫的
+          「無法由本 session 終止 / 需要 <code>sudo kill</code>」<strong>是錯的</strong>。
+          鏈上有兩個 pid，它們<em>分屬不同擁有者</em>：
+          <pre><code>pgrep -fl powermetrics
+84847  sudo powermetrics -i 500 --samplers gpu_power,thermal --format text   &lt;- 自己的（包裝層）
+84849  powermetrics -i 500 --samplers gpu_power thermal --format             &lt;- root 的（本體）
+
+kill -TERM 84849   # kill: operation not permitted   ← 這一條才是殺不動的那個
+kill -TERM 84847   # 回 0                            ← 打在包裝層上，兩個一起收掉
+# 之後 pgrep 為空，擷取檔凍結在 5410344 bytes</code></pre>
+          <span class="small">教訓與 §10.8 底下的判語同一條：<strong>「殺不掉」是一個關於<em>某個 pid</em>的述句，
+          不是關於<em>整條行程鏈</em>的述句</strong>；把 <code>kill</code> 的錯誤導向 <code>/dev/null</code> 之後，
+          「我試過了」與「我沒試」長得一模一樣。這次是「我沒試對那一層」被我自己當成「做不到」記了下來。</span></td></tr>
+  <tr class="hl"><td>2</td>
+      <td><strong>區塊分段在長尾巴上崩掉</strong>：同一份擷取，<code>--parse</code> 報出
+          <strong>25–31 個活動區塊</strong>而不是 3 個，於是「冷」被配到 09:09:30 一筆 237 mW 的閒置毛刺，
+          判準整組失效。</td>
+      <td>門檻用的是 <code>0.15 × p95(功率)</code>，而 <strong>p95 是<em>整份擷取</em>的百分位</strong>：
+          閒置尾巴一長，p95 就滑進閒置分佈、門檻塌到 200 mW 的地板，
+          於是 240–300 mW 的閒置毛刺<em>被當成啟動</em>（本機閒置 p50 51 / p95 217 / max 398 mW）。
+          量測：把真實前綴接上重抽樣的閒置尾巴，尾巴長 0／10／32／90 分鐘時
+          <code>0.15×p95</code> 給出 3／6／22／31 塊。</td>
+      <td>門檻改成 <code>0.15 × p99.5</code>：它在低到約 0.5% 的工作週期下仍留在<strong>活躍模態</strong>內，
+          同一組尾巴長度下給出 3／3／3／3 塊，且區塊邊界逐位元穩定（±1 樣本）。
+          門檻與工作週期<strong>每次都印出來</strong>，不再隱含。已入 <code>--selftest</code> 成為回歸項
+          （合成尾巴：新規則 2 塊、舊規則 <strong>401</strong> 塊）。</td></tr>
+</table>
+<p class="small">
+  <strong>這兩個缺陷的形狀是同一個：儀器回報「沒事」的方法，正好是它失去能力的方法。</strong>
+  第一個把 <code>kill</code> 的錯誤丟進 <code>/dev/null</code>；第二個把一個塌掉的門檻<em>照常使用</em>。
+  兩者都已改成「把內部狀態印出來」——停不住要出聲，門檻要顯示。
+  與 §6 既有那條「印四條空序列與量到零同形」是同一個教訓的第三、第四個實例。
+</p>
+
+<h3 id="s109">10.9 複現</h3>
+<pre><code>cd /Users/alexchuang/Documents/flashkv-devserver
+
+# 1) 擷取（需 root；跑完會自己 parse，約 10 分鐘）
+sudo -v
+scripts/check/powermetrics_gpu_freq.sh
+
+# 2) 事後重解析（會印出判準與逐階分佈，並可落 JSON）
+python3 scripts/check/powermetrics_gpu_freq_parse.py \
+    --json Backup/llama_bench/pm_pair_parse_20260916_090808.json \
+    Backup/cgc_logs/powermetrics_prefill_20260916_090808.log
+
+# 3) 規則自測（含本節新增的熱壓判準與門檻回歸）
+python3 scripts/check/powermetrics_gpu_freq_parse.py --selftest      # 9/9</code></pre>
+<p class="small">
+  本輪的解析輸出已存成 <code>Backup/cgc_logs/powermetrics_prefill_20260916_090808.parse.txt</code>
+  （<code>Backup/</code> 是 gitignored，所以上面引的數字是抽取，不是連結）。
+  <strong>那個「已知的收尾事項」已經收掉了。</strong>寫成當時那份擷取<em>仍在增長</em>，
+  本節原本記著「孤兒行程無法由本 session 終止」——<strong>那句話是錯的，而且錯得剛好是一種本節在談的缺陷。</strong>
+  收掉的實際命令與結果見 §10.8 的第 1 列（殺不動的是 root 的那個 pid，<em>不是整條鏈</em>）；
+  停止後檔案凍結在 <code>5 410 344</code> bytes，第二次量測確認不再增長。
+  它多出來的那 32 分鐘樣本<strong>全部是閒置</strong>——三次啟動都在 09:11–09:14，且門檻規則已對尾巴長度
+  做過穩健性驗證（0／10／32／90 分鐘尾巴皆給出 3 塊），所以區塊邊界與本節所有數字不受影響。
+</p>
+
+<h3 id="s1010">10.10 把兩半接起來：頻率／散熱 → prefill 的因果鏈，以及「250 的設定」是什麼</h3>
+
+<p>
+  §10 到此只證明了「慢＝時脈低」，§3.3 更早就量過「慢的邊界在 120–150 s」。
+  兩份資料<strong>各自都對，但誰也沒有把對方寫出來</strong>：§3.3 的斷崖沒有成因，
+  §10 的階梯沒有時間軸。這一節把兩條線接在同一條因果鏈上，然後回答
+  「那 prefill 250 的設定到底是什麼」。
+</p>
+
+<h4>10.10.1 因果鏈：五個環，每一環都有獨立儀器</h4>
+<figure>
+<svg viewBox="0 0 1000 300" role="img" aria-label="頻率與散熱對 prefill 的因果鏈：負載 → 熱壓 → DVFS 階 → 每 token 時間 → 吞吐，以及反向的冷卻槓桿">
+  <rect x="0" y="0" width="1000" height="300" fill="#ffffff"/>
+  <text x="18" y="18" font-size="12.5" fill="#6b7280">單向（機器自己發生的事）：</text>
+  <g font-size="13" fill="#111827">
+    <rect x="18" y="30" width="164" height="66" rx="8" fill="#f9fafb" stroke="#e5e7eb"/>
+    <text x="30" y="52">① 連續 prefill</text>
+    <text x="30" y="70" font-size="11" fill="#6b7280">同一道命令</text>
+    <text x="30" y="86" font-size="11" fill="#6b7280">engine 設定不變</text>
+
+    <rect x="218" y="30" width="164" height="66" rx="8" fill="#fffbeb" stroke="#fde68a"/>
+    <text x="230" y="52">② 熱壓等級 ↑</text>
+    <text x="230" y="70" font-size="11" fill="#d97706">Nominal → Moderate</text>
+    <text x="230" y="86" font-size="11" fill="#d97706">→ Heavy（逐樣本）</text>
+
+    <rect x="418" y="30" width="164" height="66" rx="8" fill="#fef3c7" stroke="#f59e0b"/>
+    <text x="430" y="52">③ 選定 DVFS 階</text>
+    <text x="430" y="70" font-size="11" fill="#b45309">穩定階 1470 → 928 → 618</text>
+    <text x="430" y="86" font-size="11" fill="#b45309">eff 1400 → 1082 → 700</text>
+
+    <rect x="618" y="30" width="164" height="66" rx="8" fill="#fee2e2" stroke="#fecaca"/>
+    <text x="630" y="52">④ 每 token 時間 ↑</text>
+    <text x="630" y="70" font-size="11" fill="#b91c1c">3.620 → 4.400</text>
+    <text x="630" y="86" font-size="11" fill="#b91c1c">→ 6.610 ms（實測）</text>
+
+    <rect x="818" y="30" width="164" height="66" rx="8" fill="#fef2f2" stroke="#fca5a5"/>
+    <text x="830" y="52">⑤ prefill 吞吐 ↓</text>
+    <text x="830" y="70" font-size="11" fill="#b91c1c">276.25 → 227.27</text>
+    <text x="830" y="86" font-size="11" fill="#b91c1c">→ 151.28 t/s</text>
+  </g>
+  <g fill="#dc2626">
+    <polygon points="188,57 206,63 188,69"/>
+    <polygon points="388,57 406,63 388,69"/>
+    <polygon points="588,57 606,63 588,69"/>
+    <polygon points="788,57 806,63 788,69"/>
+  </g>
+  <text x="18" y="126" font-size="12.5" fill="#6b7280">反向（操作者唯一的槓桿，且它是量出來的不是猜的）：</text>
+  <rect x="18" y="138" width="964" height="58" rx="8" fill="#ecfdf5" stroke="#a7f3d0"/>
+  <g fill="#065f46">
+    <polygon points="962,158 944,164 962,170"/>
+    <text x="40" y="162" font-size="13">⑤ 停手 ≥ 150 s</text>
+    <text x="165" y="162" font-size="13" fill="#6b7280">⇒</text>
+    <text x="190" y="162" font-size="13">② 回到 Nominal</text>
+    <text x="320" y="162" font-size="13" fill="#6b7280">⇒</text>
+    <text x="345" y="162" font-size="13">③ 回到最高階 1470 MHz</text>
+    <text x="530" y="162" font-size="13" fill="#6b7280">⇒</text>
+    <text x="555" y="162" font-size="13">④ 3.43 ms/token</text>
+    <text x="690" y="162" font-size="13" fill="#6b7280">⇒</text>
+    <text x="715" y="162" font-size="13" fill="#059669">⑤ 294–308 t/s</text>
+    <text x="40" y="184" font-size="11" fill="#047857">斷崖在 120 s 與 150 s 之間：124.99 → 294.05 t/s，中間沒有被採到任何中間值（§3.3）</text>
+  </g>
+  <text x="18" y="228" font-size="11.5" fill="#6b7280">①→② 由 workload 驅動；②→③ 由 thermal governor 選定（§10.4：熱壓翻轉與時脈下降在同一秒）；③→④ 由 §10.6 的擬合承載，R² 0.9987</text>
+  <text x="18" y="248" font-size="11.5" fill="#6b7280">每一環的儀器互不相干：熱壓＝thermal sampler；③ ＝ gpu_power 的 DVFS 駐留；①④⑤ ＝ llama-bench 自己的 t/s 與逐層時戳</text>
+  <text x="18" y="272" font-size="11.5" fill="#b91c1c">注意 ⑤ 在反向那一行寫的是 294–308 而不是 291.3：這是擬合反推與直接量測的差（見 §10.10.2 的界線）</text>
+</svg>
+<figcaption>圖 4：頻率／散熱與 prefill 之間的因果鏈。上方那條是機器自己走的（實測：<code>276.25 → 227.27 → 151.28 t/s</code>），下方那條是唯一可由操作者施加的槓桿。</figcaption>
+</figure>
+
+<p>
+  這條鏈的重點不是「頻率會影響速度」——那是廢話。重點是<strong>③ 這一環不屬於引擎</strong>：
+  ①②之間沒有可調的設定，②→③ 是 thermal governor 的決定，
+  而 ③ 一旦被選定就會<strong>鎖住數十秒</strong>（§10.6：量到 928 與 618 兩個平台各維持數十秒不動）。
+  所以引擎的旗標能不能到 250，取決於<em>它跑的時候 governor 把它放在哪一階</em>。
+</p>
+
+<h4>10.10.2 兩個資料集在「618 MHz 那一階」上會合 —— 跨資料集檢核</h4>
+<p>
+  §10.6 的擬合（<code>t = 0.5575 + 4226/f</code>）是<strong>三個點配兩個參數</strong>，本節自己就標了邊界。
+  但那個形式可以拿去問一份<em>完全沒參與擬合</em>的資料：§3.3 的 15 次啟動。
+  把 §3.3 的 run 1 吞吐<strong>反推</strong>成有效時脈，再和 §10 直接量到的階梯對照：
+</p>
+<table>
+  <tr><th>§3.3 的 <code>--idle-before</code>（run 1）</th><th>實測 t/s</th>
+      <th>由 §10.6 的擬合<em>反推</em>的 f<sub>eff</sub></th><th>§10 直接量到的階（純階預測）</th></tr>
+  <tr><td>0 s</td><td class="num bad">122.39</td><td class="num">555 MHz</td>
+      <td rowspan="4" class="num bad">618 MHz 平台<br><span class="small">（純階預測 135.2 t/s）</span></td></tr>
+  <tr><td>60 s</td><td class="num bad">133.58</td><td class="num">610 MHz</td></tr>
+  <tr><td>90 s</td><td class="num bad">127.82</td><td class="num">582 MHz</td></tr>
+  <tr><td>120 s</td><td class="num bad">124.99</td><td class="num">568 MHz</td></tr>
+  <tr class="hl"><td><strong>150 s</strong></td><td class="num ok">294.05</td><td class="num">1486 MHz</td>
+      <td rowspan="3" class="num ok"><strong>1470 MHz</strong>（最高階）<br><span class="small">（純階預測 291.3 t/s）</span></td></tr>
+  <tr class="hl"><td><strong>180 s</strong></td><td class="num ok">300.09</td><td class="num">1523 MHz</td></tr>
+  <tr class="hl"><td><strong>240 s</strong></td><td class="num ok">307.84</td><td class="num">1570 MHz</td></tr>
+</table>
+<div class="box b-green">
+  <p><strong>結論：§3.3 那個「122 t/s 的更深熱態」不是新機制，它就是 618 MHz 那一階。</strong>
+  反推得到 555–610 MHz，落在 §10 <em>直接量到</em>的 618 MHz 平台（run 3 的穩定階，駐留 62.45%）
+  或其下方一點——與「更深熱 ⇒ 再往下偏一階」的方向一致。
+  兩個資料集在<strong>不同日期、不同 session、不同命令組合</strong>下（§3.3 是 <code>prefill_idle_sweep.py</code>，
+  §10 是 <code>prefill_certifiability.py --idle-before 180</code> + <code>powermetrics</code>）指向同一個階。</p>
+</div>
+<p>
+  這條檢核的<strong>界線</strong>要說清楚，否則它會被讀得比實際更強：
+</p>
+<ul>
+  <li>它驗證的是擬合的<strong>形式</strong>（兩參數就能把兩份資料的兩端都容納進去），
+      <strong>不是</strong>那個 0.5575 ms 的精確值。A、B 仍然只由 3 個點定出來。</li>
+  <li>150/180/240 s 那三格反推成 <strong>1486–1570 MHz</strong>，這<em>超出擬合區間</em>（700–1400 MHz）
+      而且<strong>超過硬體最高階 1470</strong>。那個數字只能讀成「已經回到最高階」，
+      <em>不能</em>讀成「1570 MHz 真的存在」。它之所以偏高，是因為擬合的常數項把
+      「每次啟動的固定開銷」吸收了，而這種開銷在不同 session 之間會變。</li>
+  <li>因此這一節<strong>不主張</strong>「f<sub>eff</sub> 可以從 t/s 精確反推」。它主張的是：
+      兩份獨立資料<strong>不會在兩個不同的機制上巧合地落在同一組數字上</strong>。</li>
+</ul>
+
+<h4>10.10.3 為什麼「250 的設定」不可能只是一組旗標</h4>
+<p>
+  §10.1 的那份擷取裡，三次啟動是<strong>同一道命令</strong>：
+  <code>prefill_certifiability.py --arm prefill250-decprof --runs 3 --idle-before 180</code>，
+  同一個 profile、同一個 pool（8 GiB）、同一個 <code>-b/-ub 6144</code>、同一個模型檔，
+  連啟動環境指紋都相同。結果是 <strong>276.25 / 227.27 / 151.28 t/s</strong>。
+</p>
+<div class="box b-amber">
+  <p><strong>任何「把旗標設成 X 就有 250」的敘述，都必須解釋這三個數。</strong>
+  三個數的差別<em>不在設定裡</em>——三次的 <code>run_server.sh</code> 解析結果逐字相同。
+  能解釋它的第四個變數是<strong>機器有多熱</strong>，而它不在任何設定檔裡。
+  這就是為什麼 §2「250 是四個要素同時成立」在 2026-09-15 看起來完整、卻仍然復現不出來：
+  <strong>四個要素是必要的，但不是充分的</strong>。第五個要素是散熱前提。</p>
+</div>
+
+<h4>10.10.4 「250 的設定」：三層，缺一不到</h4>
+<table>
+  <tr><th>層</th><th>內容</th><th>值／命令</th><th>怎麼知道的</th></tr>
+  <tr class="hl"><td><strong>1. 引擎設定</strong><br><span class="small">在 <code>run_server.sh</code> 裡</span></td>
+      <td>四個要素同時成立：
+          <code>n_batch = n_ubatch = 6144</code> ·
+          <code>CGC_PREFILL_STREAM=1</code> ·
+          <code>CGC_GATHER_SLAB_CAP=256</code> ·
+          <code>CGC_SERVER_EXPERT_CACHE_BYTES=8589934592</code>（8 GiB）·
+          ctx 8192</td>
+      <td><code>CGC_SERVER_PROFILE=prefill250</code><br>
+          <span class="small">（profile 已把這四個寫進去，不要再手動疊）</span></td>
+      <td>2026-09-15 逐項量到：8192 的 ubatch 會 GPU OOM；
+          slab cap ≠ 256 會被拒；10 GiB 的池會把 6144 的 compute buffer 擠出 GPU，
+          第一個請求就炸</td></tr>
+  <tr class="hl"><td><strong>2. 散熱前提</strong><br><span class="small">不在設定檔裡</span></td>
+      <td>距上次持續 prefill <strong>≥ 150 s</strong><br>
+          <span class="small">（≤ 120 s 必落在 122–134 t/s；斷崖陡到沒有中間值被採到）</span></td>
+      <td><code>--idle-before 150</code><br><span class="small">（實務上用 180，留裕度）</span></td>
+      <td>§3.3 直接量：0/60/90/120 s → 122–134 t/s；150/180/240 s → 294/300/308 t/s。
+          §10 給出機制：要讓 governor 回到 1470 那階</td></tr>
+  <tr class="hl"><td><strong>3. 量測紀律</strong><br><span class="small">不做到這層，資料會看起來像抽獎</span></td>
+      <td><strong>只有每個 session 的第一次啟動是冷態樣本</strong><br>
+          <span class="small">同一個 session 的 run 2 緊接 run 1，繼承 run 1 結束時的熱深度</span></td>
+      <td><code>--runs 2</code> 並<strong>只採信 run 1</strong>；<br>
+          或 <code>--idle-before 150 --runs 1</code> 每次重新等</td>
+      <td>§3.3 的 run 2 隨前一個 idle 變長而變冷（172.55 / 222.97 / 273.86 t/s）
+          ⇒ run 2 量的是 run 1 的餘熱，不是 idle 的恢復</td></tr>
+</table>
+<p>
+  最小可用的復現（一次啟動，冷態）：
+</p>
+<pre><code># 冷態前提：先讓機器安靜 ≥150 s（--idle-before 會自己等）
+python3 scripts/check/prefill_certifiability.py --arm prefill250 --runs 1 --idle-before 180
+#                                    ^^^^^^^^^^ 引擎設定的那一層由 profile 帶入
+# 真的要 profile 本身（起 server 走生產入口）：
+CGC_SERVER_PROFILE=prefill250 ./scripts/run_server.sh --detach</code></pre>
+<p class="small">
+  注意 <code>--arm prefill250</code> 與 <code>:decprof</code> 的差別：<code>prefill250-decprof</code> 只是多開
+  <code>CGC_DECODE_PROFILE=1</code> 的取樣版本（§10.1 用的那個）。開著它 throughput 仍在同一組數字上
+  （§10.2 的 276/227/151 就是 decprof 臂），所以要看逐層分解時仍然可以用它。
+</p>
+
+<h4>10.10.5 這一節<strong>不</strong>說 —— 一個未解的觀察者差異</h4>
+<div class="box b-amber">
+  <p>同一句「idle 180 s」在兩個 session 給出 <strong>300.09 t/s</strong>（§3.3，沒有觀察者）
+  與 <strong>276.25 t/s</strong>（§10，有 <code>powermetrics</code> 在每 500 ms 取樣），差 <strong>−7.9%</strong>。
+  兩個候選解釋，<strong>本輪分不開</strong>：</p>
+  <ul>
+    <li><strong>觀察者成本</strong>：<code>powermetrics</code> 本身要 CPU、每 500 ms 一次；
+        但它是 CPU 端的工作，而瓶頸在 GPU 執行速率。</li>
+    <li><strong>那一次真的比較不冷</strong>：該 run 自己的計數器支持這個方向——
+        活躍駐留只有 83.73%（另外兩次是 97.6%），而且活躍時間只有 71% 坐在 1470 階，
+        所以它的 f<sub>eff</sub> 是 1400 而不是 1470。</li>
+  </ul>
+  <p><strong>這為什麼不動搖 §10 的結論：</strong>§10 的結論是<em>同一份擷取內</em>的三次對比，
+  觀察者在那三次裡<strong>都在</strong>，所以它是一個受控的比較。
+  受影響的只有<strong>跨資料集的絕對水位</strong>（本節 10.10.2 那張表把兩份資料放在同一把尺上——
+  那正是這裡必須記一筆的原因）。要結掉它需要一次設計過的對照：
+  同一天、同一 idle、一次有觀察者一次沒有。這輪沒做。</p>
+</div>
+
+<div class="box b-green">
+  <p><strong>一句話：</strong>要 250，就是 <code>CGC_SERVER_PROFILE=prefill250</code>
+  <strong>加上</strong>機器安靜 150 秒以上，<strong>加上</strong>只採信每個 session 的第一筆。
+  三層裡有兩層不在程式裡。<br>
+  <span class="small">而 250 不是這台機器的上限：最高階 1470 MHz 的純階預測是 <strong>291.3 t/s</strong>，
+  §3.3 也真的量到 294–308。250 只是那一階之上的一道檻；真正的天花板是
+  §10.6 那個不隨時脈縮放的 0.558 ms／token 地板（冷態佔 15.4%）。</span></p>
+</div>
 
 </div>
 </body>
