@@ -26,14 +26,25 @@
 #                                being kept *off* the work, which is a different finding.
 #   GPU Power                 -- if power is pinned at a ceiling in both while frequency falls, the
 #                                ceiling is the mechanism, not thermal throttling of the clock.
+#   DVFS step residency       -- the parenthetical after the residency percentage lists how much
+#                                active time sat at EACH clock step. `GPU HW active frequency`
+#                                collapses that to one number, so two runs can report the same
+#                                "active frequency" while occupying different mixtures of steps.
+#                                This is the field that actually distinguishes the three causes.
+#                                `--parse` reports it as a cold/hot table; do not read the single
+#                                active-frequency number alone.
 #
 # USAGE
 # -----
 #   sudo -v                                     # cache credentials once, then:
 #   scripts/check/powermetrics_gpu_freq.sh      # cold/hot pair, ~4 minutes
 #
-#   scripts/check/powermetrics_gpu_freq.sh --parse ~/Desktop/pm_prefill_*.log
-#                                               # summarise a capture that already exists
+#   scripts/check/powermetrics_gpu_freq.sh --parse Backup/cgc_logs/powermetrics_prefill_*.log
+#                                               # segment the capture into launches and compare
+#                                               # cold vs hot (PARSE_JSON=out.json also dumps it)
+#
+#   python3 scripts/check/powermetrics_gpu_freq_parse.py --selftest
+#                                               # exercise the verdict rules on synthetic captures
 #
 # ENV: IDLE (default 180)  RUNS (default 3)  INTERVAL_MS (default 500)  OUT (output path)
 set -uo pipefail
@@ -42,32 +53,24 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 IDLE="${IDLE:-180}"
 RUNS="${RUNS:-3}"
 INTERVAL_MS="${INTERVAL_MS:-500}"
-OUT="${OUT:-$HOME/Desktop/pm_prefill_$(date +%Y%m%d_%H%M%S).log}"
+# Evidence lands with the other evidence (and Backup/ is gitignored, so it cannot dirty the tree);
+# ~/Desktop was the old default and is a personal directory, not a project one.
+OUT="${OUT:-$ROOT/Backup/cgc_logs/powermetrics_prefill_$(date +%Y%m%d_%H%M%S).log}"
 CERT="$ROOT/scripts/check/prefill_certifiability.py"
 PY="${PY:-/opt/homebrew/bin/python3}"
 
 if [ "${1:-}" = "--parse" ]; then
     F="${2:?usage: $0 --parse <powermetrics log>}"
     [ -f "$F" ] || { echo "no such file: $F" >&2; exit 1; }
-    echo "=== powermetrics summary: $F ==="
-    echo "samples              : $(grep -c 'GPU HW active frequency' "$F")"
-    echo
-    echo "--- GPU HW active frequency (MHz), in order ---"
-    grep -o 'GPU HW active frequency: *[0-9.]* MHz' "$F" | grep -o '[0-9.]*' | paste -sd' ' -
-    echo
-    echo "--- GPU HW active residency (%) ---"
-    grep -o 'GPU HW active residency: *[0-9.]*%' "$F" | grep -o '[0-9.]*' | paste -sd' ' -
-    echo
-    echo "--- GPU idle residency (%) ---"
-    grep -o 'GPU idle residency: *[0-9.]*%' "$F" | grep -o '[0-9.]*' | paste -sd' ' -
-    echo
-    echo "--- GPU Power (mW) ---"
-    grep -oE 'GPU Power: *[0-9.]+ mW' "$F" | grep -o '[0-9.]*' | paste -sd' ' -
-    echo
-    echo "read: the FIRST run of the pair is the cold one. A frequency series that starts high and"
-    echo "      settles low, with residency near 100% throughout, names the clock. If the frequency"
-    echo "      series is flat and the power series is pinned, the cap is the mechanism."
-    exit 0
+    # Delegated on 2026-09-16. The grep/paste that used to live here printed ~480 raw numbers per
+    # series -- the question is a cold-vs-hot comparison, not a series -- and it silently discarded
+    # the DVFS residency distribution, which is the only field that separates a clock cap from a
+    # power cap. The parser also fails LOUDLY: if the labels ever change it prints the GPU lines it
+    # did see, instead of four empty series that look like a measurement of nothing.
+    if [ -n "${PARSE_JSON:-}" ]; then
+        exec "$PY" "$ROOT/scripts/check/powermetrics_gpu_freq_parse.py" "$F" --json "$PARSE_JSON"
+    fi
+    exec "$PY" "$ROOT/scripts/check/powermetrics_gpu_freq_parse.py" "$F"
 fi
 
 # ---- run mode -------------------------------------------------------------------------------

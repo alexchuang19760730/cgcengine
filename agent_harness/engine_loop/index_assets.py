@@ -114,9 +114,20 @@ CURATED = [
     ("scripts/check/powermetrics_gpu_freq.sh", "probe", "engine", True, False,
      "Turnkey root capture for the hardware-frequency half of the GPU ceiling claim: GPU active "
      "RESIDENCY is already proven (100-101% busy/wait), but frequency is not, and residency alone "
-     "cannot separate 'the clock dropped' from 'the work grew'. --parse summarises a captured log "
-     "into frequency / residency / power series. Must be run by the user with sudo: the sandbox "
-     "refuses sudo, so this is the one next step that cannot be automated."),
+     "cannot separate 'the clock dropped' from 'the work grew'. --parse now delegates to "
+     "powermetrics_gpu_freq_parse.py. Must be run by the user with sudo: the privilege escalation "
+     "is refused even with the workspace sandbox off (/usr/bin/sudo is setuid and its exec is "
+     "denied), so this is the one next step that cannot be automated."),
+    ("scripts/check/powermetrics_gpu_freq_parse.py", "probe", "engine", True, False,
+     "Turns a powermetrics capture into the cold-vs-hot answer instead of two 480-number series. "
+     "Segments activity blocks on GPU POWER -- deliberately not on frequency or residency, which "
+     "are the quantities under test, so defining 'one run' by them would beg the question -- labels "
+     "block 0 cold and the rest hot, and reports the DVFS step-residency distribution that the "
+     "single 'GPU HW active frequency' value collapses away (a clock cap shows as mass leaving the "
+     "top step, which the collapsed number cannot show). Verdict is one of CLOCK / POWER CEILING / "
+     "GPU KEPT OFF THE WORK, with the numbers behind each test printed. Fails LOUDLY (exit 2 + the "
+     "GPU lines it did see) if the labels change, so an empty result cannot be mistaken for a "
+     "measurement of zero. --selftest exercises all four verdicts (4/4)."),
     ("scripts/check/flip_rate.py", "probe", "engine", True, False,
      "route-flip rate; the measurement behind the 'which experts change' question."),
     ("scripts/check/mtp_accept_ab.py", "compare", "engine", True, False,
