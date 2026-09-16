@@ -3375,6 +3375,14 @@ comparable: True    config_diffs: []</code></pre>
   沒有任何一臂回到 250 以上；256.61–273.55 那一組屬於已被取代的產物。
   「250」目前是一個<strong>目標</strong>，不是一個在最終產物上可重現的讀數。
 </p>
+<p class="small">
+  <strong>2026-09-16 14:5x 追加（本句的範圍收窄了，不是被刪）。</strong>本句成立的前提是「無條件交付」。
+  條件式交付在最終產物上已經量到了：14:31:36 起的那一臂（同一顆 binary、同一組
+  <code>[perf]</code>、同一指紋 <code>a9c9dc104f057bf640e0132a83e01c12</code>）是
+  <strong>254.29 / 282.38 / 265.27 t/s</strong>——三個請求全部 ≥ 250。
+  所以「沒有任何一臂回到 250 以上」要改成「沒有<em>任何熱態臂</em>回到 250 以上」。
+  條件是什麼、為什麼它不是我原先寫的那一條，見 <a href="#s1114">§11.14</a>。
+</p>
 
 <p>
   (4) <strong>不能說那 2.25× 是或不是我的改動造成的</strong>——兩個候選都沒有排除，
@@ -3407,6 +3415,264 @@ comparable: True    config_diffs: []</code></pre>
   <code>Backup/cgc_logs/prod_accept/req2retest_20260916_{134510,135131,135322,135456,135720}.txt</code>、
   <code>Backup/pre_flagalign_20260916/libggml-metal.0.19.0.dylib</code>（<code>dd4d1bc4…</code>，
   未做的那個 A/B 要用它）。
+</p>
+
+<h3 id="s1114">11.14 追加（2026-09-16 14:3x–14:4x）：條件式交付 —— 條件是什麼、以及它<strong>不是</strong>什麼</h3>
+
+<p>
+  問題來自 §11.13.6(3)：「不能說 prefill 250 已交付 250 t/s」。但同一份白皮書的 §10 已經用
+  <code>powermetrics</code> 逐樣本證明吞吐由 <strong>DVFS 檔位</strong>決定，而檔位由熱壓選定；
+  §3.3 更直接量出「安靜 0/60/90/120 s → 122–134 t/s、150/180/240 s → 294–308 t/s」。
+  如果「250」是<strong>熱預算復原狀態下的性質</strong>，那正確的交付形式是<strong>條件式</strong>，
+  不是「未達成」。本節把條件量出來——並且，這是本節真正的內容，<strong>推翻我自己在 §10.10.4
+  第二層寫的那條條件</strong>。
+</p>
+
+<h4>11.14.1 量到的：最終產物上連續五臂（出廠預設，無任何 override）</h4>
+
+<table>
+  <thead>
+    <tr><th>臂</th><th>啟動</th><th>距上一臂<em>持續 prefill 結束</em>的安靜</th>
+        <th>啟動時 swap used</th><th>req1</th><th>req2</th><th>req3</th></tr>
+  </thead>
+  <tbody>
+    <tr class="hl"><td>1</td><td class="mono">14:31:36</td><td class="num ok"><strong>32 分 13 秒</strong></td>
+        <td class="num">2743.00M</td><td class="num ok"><strong>254.29</strong></td>
+        <td class="num ok"><strong>282.38</strong></td><td class="num ok"><strong>265.27</strong></td></tr>
+    <tr><td>2</td><td class="mono">14:35:50</td><td class="num">18 s</td><td class="num">4975.06M</td>
+        <td class="num ok">289.86</td><td class="num ok">261.94</td><td class="num">233.51</td></tr>
+    <tr><td>3</td><td class="mono">14:37:19</td><td class="num">34 s</td><td class="num">4549.69M</td>
+        <td class="num">188.35</td><td class="num">200.58</td><td class="num bad">166.95</td></tr>
+    <tr><td>4</td><td class="mono">14:38:35</td><td class="num">7 s</td><td class="num">5477.38M</td>
+        <td class="num bad">167.41</td><td class="num">186.60</td><td class="num">187.52</td></tr>
+    <tr><td>5</td><td class="mono">14:39:56</td><td class="num">7 s</td><td class="num">6054.12M</td>
+        <td class="num">180.43</td><td class="num">188.17</td><td class="num">187.56</td></tr>
+  </tbody>
+</table>
+
+<p class="small">
+  五臂的 <code>A11</code> 指紋全部是 <code>a9c9dc104f057bf640e0132a83e01c12</code>，
+  <code>[perf]</code> 全部是 <code>batch=5632 ubatch=5632 … oa_async=1 load_mode=none</code>、
+  <code>[mode] MTP ON</code>；<strong>5/5 <code>survived=yes</code> 到 req3、0 份 crash report</strong>。
+  「安靜」由<strong>伺服器 log</strong>算出（下一臂 log 的創建時間 − 上一臂 log 的 mtime），
+  不是由報告戳記相減——理由見 §11.14.3(b)。第一臂的上一臂是 14:02:24 死亡的
+  <code>llama_server_20260916_140204.log</code>（D5 <code>poolfix_final</code> 那一跑）。
+</p>
+
+<div class="box b-green">
+  <p><strong>第一臂就是交付樣本：254.29 / 282.38 / 265.27 t/s，三個請求全部 ≥ 250。</strong>
+  這是<em>最終產物</em>（<code>libggml-metal f2d1c961…</code>）、<em>出廠預設</em>（
+  <code>CGC_SERVER_PROFILE=prefill250</code>，唯一設定是這個 profile 自己帶的）、
+  <em>無任何 override</em>。§11.13.6(3) 的「沒有任何一臂回到 250 以上」因此要收窄成
+  「沒有任何<strong>熱態</strong>臂回到 250 以上」。</p>
+</div>
+
+<h4>11.14.2 被推翻的兩句話：一句是白皮書的，一句是我自己的</h4>
+
+<p>
+  <strong>(a) §10.10.4 第二層「距上次持續 prefill ≥ 150 s」作為<em>充分</em>條件——被第 2 臂推翻。</strong>
+  第 2 臂的安靜是 <strong>18 秒</strong>（由 log 算出），而它的 req1 是 <strong>289.86 t/s</strong>，
+  比第 1 臂（安靜 32 分鐘）的 254.29 還快。§3.3 的「0 s → 122.39 t/s」在本輪沒有被複現；
+  兩者的差別是<em>前一個狀態</em>：§3.3 的 0 s 樣本繼承的是已經熱浸透的機器，本輪第 2 臂繼承的是剛被
+  32 分鐘安靜冷卻過的機器。<strong>所以「靜置多久」不是條件本身，靜置是哪一段的靜置才是。</strong>
+</p>
+
+<p>
+  <strong>(b) 我自己寫的四臂間隔「111 / 94 / 144 s」——算錯了。</strong>
+  那是報告戳記相減，而每臂自己的執行約 90 秒，所以它把「上一臂在跑」也算成了「上一臂在休息」。
+  用伺服器 log 重算，那四臂的真實安靜是 <strong>21 / 8 / 55 秒</strong>。
+  兩者相差一個量級，而它們支持相反的讀法（前者像「有休息但沒用」，後者像「幾乎沒休息」）。
+  這一條寫在這裡是因為它與本節的結論互相牽制：如果沿用錯的數字，就很難看出第 2 臂的反例。
+</p>
+
+<h4>11.14.3 安靜長度<em>不</em>預測吞吐：三臂的反例</h4>
+
+<table>
+  <thead><tr><th>臂</th><th>安靜（log 實算）</th><th>req3 t/s</th><th>累積啟動序</th></tr></thead>
+  <tbody>
+    <tr><td>2</td><td class="num">18 s</td><td class="num ok">265.27</td><td>序列中第 2 次</td></tr>
+    <tr><td>3</td><td class="num">34 s</td><td class="num bad">166.95</td><td>第 3 次</td></tr>
+    <tr><td>4</td><td class="num">7 s</td><td class="num">187.52</td><td>第 4 次</td></tr>
+  </tbody>
+</table>
+<p>
+  <strong>安靜最長的那一臂最慢，安靜最短的那一臂最快。</strong>一致的解釋不是「休息了多久」，
+  而是「已經被操了多久」：一次啟動（約 40 s prefill）不足以耗盡熱預算，三次以上會，
+  而之後的安靜在秒級尺度上買不回多少。這與 §10.4 的機制一致——governor 的選擇會<em>鎖住數十秒</em>，
+  但機殼的熱質量是比數十秒長得多的時間常數。
+</p>
+
+<h4>11.14.4 <code>swap</code> 被排除（而且它是果，不是因）</h4>
+
+<table>
+  <thead><tr><th>臂</th><th>啟動時 swap used</th><th>req1 t/s</th><th>讀法</th></tr></thead>
+  <tbody>
+    <tr><td>14:35:50（快）</td><td class="num">4975.06M</td><td class="num ok">289.86</td>
+        <td rowspan="2">幾乎相同的 swap，相反的吞吐 ⇒ swap 不是驅動者</td></tr>
+    <tr><td>13:51:31（慢）</td><td class="num">5066.06M</td><td class="num bad">118.96</td></tr>
+    <tr><td>14:37:19（慢）</td><td class="num">4549.69M</td><td class="num">188.35</td>
+        <td rowspan="2">順序<em>相反</em>：swap 較低的那一臂較慢</td></tr>
+    <tr><td>14:35:50（快）</td><td class="num">4975.06M</td><td class="num ok">289.86</td></tr>
+  </tbody>
+</table>
+<p>
+  更決定性的是時間軸本身：在 14:02–14:31 那 32 分鐘的安靜裡，<code>swap</code> 自己從
+  <code>used=5066.06M</code> 掉到 <code>used=2743.00M</code>（<code>free</code> 由 1078M 回到 1353M）。
+  同一個安靜期間同時讓<em>熱預算</em>與 <em>swap</em> 復原，而吞吐也復原——
+  但接下來五臂的相關性只與<strong>累積啟動序</strong>單調，與 swap 不單調。
+  <strong>swap 是被「機器最近有多忙」同時決定的另一個果，不是因。</strong>
+</p>
+<p class="small">
+  這與 §11.13 的「未歸因 2.25×」不衝突：那裡列了兩個候選，其中「機器狀態」這一項現在
+  收窄到<strong>熱</strong>，而「產物內容差異」那一項的狀態不變（仍未排除、仍缺舊位元組的
+  交錯 A/B）。
+</p>
+
+<h4>11.14.5 仍未建模的那一階：兩個 soak 序列的平台不同</h4>
+
+<table>
+  <thead><tr><th>序列</th><th>產物</th><th>第一臂</th><th>後續平台</th><th>中間夾了什麼</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">13:45–13:57</td><td>12:44 產物</td>
+        <td class="num ok">268.09 / 273.55 / 256.61</td>
+        <td class="num bad">118.30 – 154.77（≈130）</td>
+        <td>13:49:11 與 13:50:16 兩次 D5 閘門、12:44:53 的 8 核 CPU 重建</td></tr>
+    <tr class="hl"><td class="mono">14:31–14:40</td><td><strong>最終產物</strong></td>
+        <td class="num ok">254.29 / 282.38 / 265.27</td>
+        <td class="num warn">167.41 – 200.58（≈185）</td>
+        <td>只有臂與臂之間 7–34 s 的安靜</td></tr>
+  </tbody>
+</table>
+<p>
+  兩個序列在同一份 binary、同一指紋、同一配置下，平台相差約 <strong>55 t/s</strong>。
+  <code>m123_oracle_gate.py:187-188</code> 會 <code>pkill llama-bench</code> 與
+  <code>llama-server</code>，所以那兩次閘門<em>自己有</em>推論負載，但本輪
+  <strong>沒有量化它</strong>；12:44 的 CPU 重建也沒有被量化。
+  因此本節<strong>不主張</strong>單一的「累積 prefill 秒數 → t/s」定律。能說的是：
+  <strong>一次啟動不足以耗盡熱預算，三次以上會；而平台高度不只由本序列的累積量決定。</strong>
+  這一階的候選（CPU 重建的殘熱、D5 閘門的負載、室溫、背景 Electron 應用）本輪都沒被分離。
+</p>
+<p class="small">
+  背景負載必須點名：量測期間機器上有兩個 <code>Xcasca</code>（Electron）renderer 常駐，
+  idle 的 1 分鐘 load 在 <strong>1.71 – 6.47</strong> 之間（本節五臂逐臂記錄）。
+  無風扇 M4 是共享熱包絡，所以這是<strong>未被歸零的混淆項</strong>，不是可忽略的美化細節。
+</p>
+
+<h4>11.14.6 交付述句與驗收協議</h4>
+
+<div class="box b-green">
+  <p><strong>可交付的述句（條件式）：</strong>
+  <code>CGC_SERVER_PROFILE=prefill250</code>（出廠預設：<code>-b/-ub 5632</code>、
+  <code>load_mode=none</code>、<code>MTP ON</code>、expert pool 8 GiB、ctx 8192）
+  在<strong>熱預算復原的機器上</strong>達到 <strong>254.29 / 282.38 / 265.27 t/s</strong>
+  （req1–req3），且該臂全程存活、0 份 crash report。</p>
+</div>
+
+<p>
+  <strong>不可交付的述句（三條，逐條有反例）：</strong>
+</p>
+<ul>
+  <li>「任何時候起 server 都有 250」——同一個小時內的第 3–5 臂是 167.41–200.58。</li>
+  <li>「啟動前靜置 ≥150 s 就有 250」——§11.14.2(a)：安靜 18 s 的臂有 289.86。</li>
+  <li>「swap 低就會快」——§11.14.4：swap 順序與吞吐相反。</li>
+</ul>
+
+<p>
+  因為條件<strong>不可由非 root 儀器觀測</strong>（§11.14.7），驗收協議必須自己帶證據：
+</p>
+<table>
+  <thead><tr><th>#</th><th>步驟</th><th>理由（本輪量到的）</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>量測前 ≥ 30 分鐘沒有持續 prefill、沒有 CPU 密集建置</td>
+        <td>本輪的復原樣本（32 分 13 秒）是 3/3 ≥ 250</td></tr>
+    <tr class="hl"><td>2</td><td>只採信該安靜期後的<strong>第一次啟動</strong></td>
+        <td>§10.10.4 第三層；本輪第 3–5 臂就是反例</td></tr>
+    <tr><td>3</td><td>樣本是該臂的 <code>req1</code>，且 t/s 必須與機器狀態（安靜／swap／load）一起報</td>
+        <td>吞吐不可重現（§11.13）；第 2 臂的 req3 只有 233.51</td></tr>
+    <tr class="hl"><td>4</td><td><strong>同時</strong>跑 <code>scripts/check/powermetrics_gpu_freq.sh</code>（需 root），
+        判準取 <code>powermetrics_gpu_freq_parse.py</code> 的 verdict</td>
+        <td>把條件從「協議」升級成「量測」：判準是 DVFS 駐留由 1470 MHz 主導，不是 t/s 的絕對值</td></tr>
+    <tr><td>5</td><td>用 §10.6 的 <code>t = 0.5575 + 4226/f</code> 反讀機器在哪一階</td>
+        <td>1470 MHz → 291 t/s、928 → 227、618 → 135；本節的平台 ≈185 對應「兩階之間」，尚未有 DVFS 證據</td></tr>
+  </tbody>
+</table>
+
+<h4>11.14.7 為什麼閘門只能「分類」而不能「強制」</h4>
+<p>
+  <code>pmset -g therm</code> 在本機只回
+  <code>Note: No thermal warning level has been recorded</code>（非 root 讀不到等級）；
+  讀 DVFS 駐留與有效時脈需要 root 的 <code>powermetrics</code>（§3.5、§10.1）。
+  所以<strong>沒有任何非 root 的即時儀器可以回答「governor 現在選了哪一階」</strong>。
+  閘門因此不能「強制」條件，只能<strong>分類這一臂的宣稱</strong>——見 §11.14.8。
+  這個區別不是措辭：一個會宣稱「已滿足前提」而其實讀不到的閘門，比沒有閘門更糟。
+</p>
+
+<h4>11.14.8 儀器改動：把「這一臂是什麼」變成機器判定</h4>
+<p>
+  <code>Backup/run_req2_retest.sh</code>（gitignored）新增三態標籤：
+</p>
+<table>
+  <thead><tr><th>標籤</th><th>條件</th><th>對應的宣稱權</th></tr></thead>
+  <tbody>
+    <tr class="hl"><td><code>COLD-STATE</code></td><td>距上一臂結束 ≥ <code>COLD_QUIET</code>（預設 1800 s）</td>
+        <td>交付級：它的 prefill t/s 可以被引用</td></tr>
+    <tr><td><code>HOT-STATE</code></td><td>距上一臂結束 &lt; <code>COLD_QUIET</code></td>
+        <td>只能當熱態觀察；報告就地印出「不要當成出貨數字」並附冷／熱對照</td></tr>
+    <tr><td><code>UNKNOWN-STATE</code></td><td>狀態檔 <code>$OUTDIR/.last_arm_end</code> 不存在</td>
+        <td><strong>兩邊都不宣稱</strong>（新增態：先前版本在無狀態時會靜默當成 0，那是沒有證據的斷言）</td></tr>
+  </tbody>
+</table>
+<p>
+  狀態檔在每臂結束時寫入 epoch。誤標的代價本節已經量到兩次：
+  把熱態臂當交付數字，會得到「250 是抽獎」；把冷態臂當常態，會得到「已經交付」。
+  <strong>兩者都是同一個錯誤：讓機器狀態冒充產物性質。</strong>
+</p>
+
+<h4>11.14.9 能說與不能說</h4>
+<p>
+  (1) 能說 <strong>條件式交付成立</strong>，且已在最終產物上量到 254.29 / 282.38 / 265.27 t/s
+  （req1–req3 全部 ≥ 250、全程存活、0 crash report）。
+</p>
+<p>
+  (2) 能說 條件<strong>不是</strong>「啟動前靜置 N 秒」——安靜最長（34 s）的那一臂最慢（166.95），
+  安靜最短（18 s）的那一臂最快（265.27）。
+</p>
+<p>
+  (3) 能說 <code>swap</code> 被排除，且它是果不是因（32 分鐘安靜中它自己從 5066.06M 回到 2743.00M）。
+</p>
+<p>
+  (4) 能說 熱態平台的<strong>高度</strong>在兩個序列不同（≈130 vs ≈185，差 55 t/s），
+  而本輪<strong>沒有</strong>歸因它。
+</p>
+<p>
+  (5) <strong>不能說</strong>條件可由非 root 儀器觀測（§11.14.7）。
+</p>
+<p>
+  (6) <strong>不能說</strong> req2/req3 一定也 ≥ 250：第 2 臂的 req3 是 233.51。
+  安全的述句是「<code>req1</code> ≥ 250 且該臂全程存活」。
+</p>
+<p>
+  (7) <strong>不能說</strong>本節的五臂是單變數實驗。它們共享同一份產物與同一組設定，
+  但機器狀態（累積熱、swap、背景 load）逐臂不同，而這正是本節要量的東西。
+</p>
+
+<h4>11.14.10 複現</h4>
+<pre><code># 條件式交付樣本（需要先讓機器安靜 ≥ 30 分鐘，且期間沒有 CPU 密集建置）
+IDLE_BEFORE=180 OUTDIR=Backup/cgc_logs/cold_accept bash Backup/run_req2_retest.sh
+#   看它印的 [thermal label]：要的是 COLD-STATE；UNKNOWN-STATE 不算，
+#   HOT-STATE 的 t/s 只能當熱態觀察（見 §11.14.8）
+
+# 有 root 時的 DVFS 證據（把條件從「協議」變成「量測」）
+sudo scripts/check/powermetrics_gpu_freq.sh
+python3 scripts/check/powermetrics_gpu_freq_parse.py Backup/cgc_logs/powermetrics_prefill_*.log
+
+# 對照：熱態平台（連跑，安靜 7–34 s）
+for i in 1 2 3; do IDLE_BEFORE=0 OUTDIR=Backup/cgc_logs/cold_accept bash Backup/run_req2_retest.sh; done</code></pre>
+<p class="small">
+  證據：<code>Backup/cgc_logs/cold_accept/req2retest_20260916_{143136,143550,143719,143835,143956}.txt</code>；
+  伺服器 log 的安靜間隔由
+  <code>ls -t Backup/cgc_logs/llama_server_[0-9]*.log</code> 的創建時間與 mtime 相減算出
+  （<code>llama_server_latest.log</code> 是 symlink 會排最後，所以用 <code>[0-9]*</code>）。
 </p>
 
 </div>
