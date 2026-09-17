@@ -657,6 +657,16 @@ graph；**最強的保證是「你要的節點在兩份日誌的每個 graph 都
 
 ## 陷阱（都踩過）
 
+**★ 陷阱 0（2026-09-18）：`ls -t | head -1` 取到的「最新產物」可能還沒寫完。**
+驗證一次跑完的結果時，若 driver 還在跑，最新的 log／json **只寫到一半**，而計數會少。
+實例：IQ3_S 融合的首次驗證，我用 `ls -t Backup/cgc_logs/llama_server_*.log | head -1` 讀，
+只看到 **10 行** `CGC-DCFUSED`（全是 il=40）⇒ 我寫下「trunk 仍然沒融合」並開始找原因；
+等 driver 結束後同一份 log 是 **每層 24 行 × 40 層**，逐層與 audit 的 `fuse=1` **完全吻合**。
+**判別式**：讀之前先 `pgrep -f '[d]ecode_sweep'`（或 `[l]lama-server`）。還在跑 ⇒ 要嘛等，
+要嘛把「看到的行數」與「你預期的行數」對一眼（差一個數量級就是這條）。
+⇒ 通則：**「取到最新產物」與「產物已經寫完」是兩件事**；前者是 `ls -t`，後者要問 driver。
+（同一族：`grep -c` 對一個還在成長的檔案，數字沒有意義。）
+
 1. **`union > gpu_busy_sum` 是數學上不可能的指紋** ⇒ 取樣有 ABA 競爭。
    在 completion handler 裡累加 atomics、再由 reader `atomic_exchange` 歸零，
    handler 的 min/max CAS 會在歸零後把舊值寫回。

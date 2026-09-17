@@ -406,6 +406,22 @@ ARMS = {
     "en-dc-ctl":         {"CGC_DOWN_COMBINE": "0", "CGC_DOWN_COMBINE_AUDIT": "1",
                           "CGC_GPU_NODES": "1", "CGC_GPU_OPS": "1", "CGC_DECODE_PROFILE": "1",
                           "CGC_GPU_TIMING": "1"},
+    # [CGC 2026-09-18] The IQ3_S / IQ4_XS variants (40/40 coverage on the flagship) + the
+    # multi-token shape. Two things changed under these arms:
+    #   * the fused kernel now has three type variants -- Q3_K was the only one, while the model's
+    #     ffn_down_exps is IQ3_S x37 + IQ4_XS x3 -- dispatched by ggml_type_name in the pipeline
+    #     getter (the smem differs per type and is not cosmetic: 0 / 512*4 / 32*4);
+    #   * CGC_DC_MULTITOK admits the VERIFY shape (n_tokens 2/4), which is what every trunk graph
+    #     is under MTP. Without it the fused path is structurally unreachable in production even
+    #     with the type gate open. It is read in BOTH llama-graph.cpp and ggml-metal-ops.cpp.
+    # So the expected signature of `en-dc-mt` is CGC-DCFUSED on il 0..39 (the IQ layers), whereas
+    # `en-dc-ctl` (single-token, Q3_K-only) could only ever fire on il=40. Compare the two.
+    "en-dc-mt":          {"CGC_DOWN_COMBINE": "1", "CGC_DC_MULTITOK": "1",
+                          "CGC_DOWN_COMBINE_AUDIT": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_GPU_TIMING": "1"},
+    "en-dc-mt-ctl":      {"CGC_DOWN_COMBINE": "0", "CGC_DC_MULTITOK": "1",
+                          "CGC_DOWN_COMBINE_AUDIT": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_GPU_TIMING": "1"},
     # [CGC 2026-09-18 down-combine REAL benefit] The shipped model is the WRONG SUBJECT for this
     # A/B. Its audit says trunk = iq3_s/iq4_xs with ZERO of 1120 trunk rows being Q3_K, so the
     # fused path can only ever serve the MTP draft head (il=40) -- one layer out of 41. Any t/s

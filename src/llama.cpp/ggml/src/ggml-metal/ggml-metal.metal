@@ -11898,6 +11898,245 @@ kernel void kernel_mul_mv_id_down_combine_q3_K_f32(
     kernel_mul_mv_id_down_combine_q3_K_impl(args, src0, src1, ids, weights, dst, shmem, tgpig, tiisg, sgitg);
 }
 
+// [CGC 2026-09-18] IQ3_S / IQ4_XS variants of the fused down-combine. Same contract as the Q3_K
+// one above -- one kernel replaces 8 down GEMVs + 7 adds -- different quant. The expert loop, the
+// weighted accumulation and the output store are the Q3_K skeleton; the inner dequant is the same
+// arithmetic as kernel_mul_mv_iq3_s_f32_impl / kernel_mul_mv_iq4_xs_f32_impl, which is what these
+// experts already run through the generic MUL_MAT_ID path.
+//
+// The one structural difference from Q3_K: both IQ types need a table in threadgroup memory
+// (iq3s_grid / kvalues_iq4nl). That is exactly why the Q3_K pipeline has smem = 0 and these two
+// do not (ggml-metal-device.cpp: their cases carry 512*4 and 32*sizeof(float)).
+//
+// The Q3_K variant's `sumf1 / sumf2` pair exists only because Q3_K splits its 32 lanes into
+// 8 groups x 4 sub-blocks; IQ3_S and IQ4_XS do not, so they accumulate into a single sumf[].
+template<int NR0, typename args_t>
+void kernel_mul_mv_id_down_combine_iq3_s_impl(
+        args_t args,
+        device const char * src0,       // down weights [K, N, n_expert] (IQ3_S)
+        device const char * src1,       // swiglu output [K, n_expert_used, n_tokens] (F32)
+        device const int32_t * ids,     // expert ids [n_expert_used, n_tokens]
+        device const float * weights,   // routing weights [n_expert_used, n_tokens]
+        device       float * dst,       // output [N, n_tokens]
+        threadgroup  char * shmem,
+        uint3  tgpig,
+        ushort tiisg,
+        ushort sgitg) {
+    const short NSG = FC_mul_mv_nsg;
+    const short nr0 = args.nr0;
+
+    const int nb = args.ne00 / QK_K;
+    const int r0 = tgpig.x;
+    const int token = tgpig.y;
+
+    const int first_row = (r0 * NSG + sgitg) * nr0;
+
+    threadgroup uint32_t * svalues = (threadgroup uint32_t *) shmem;
+    {
+        const int nval = 8;
+        const int pos  = (32*sgitg + tiisg)*nval;
+        for (int i = 0; i < nval; ++i) svalues[pos + i] = iq3s_grid[pos + i];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    float sumf[8] = {0.f};
+
+    const int ix   = tiisg;
+    const int nb32 = nb * (QK_K / 32);
+
+    for (int e = 0; e < args.nei0; ++e) {
+        const int32_t expert_id = ids[e + token * args.nei0];
+        const float   weight    = weights[e + token * args.nei0];
+
+        if (weight == 0.0f) continue;
+
+        const uint64_t offset0 = (uint64_t)expert_id * args.nb02 + (uint64_t)first_row * args.nb01;
+        device const block_iq3_s * x = (device const block_iq3_s *)(src0 + offset0);
+
+        const uint64_t offset1 = (uint64_t)e * args.nb11 + (uint64_t)token * args.nb12;
+        device const float * y4 = (device const float *)(src1 + offset1) + 32 * ix;
+
+        for (int ib32 = ix; ib32 < nb32; ib32 += 32) {
+            float yl[32];
+            for (short i = 0; i < 32; ++i) {
+                yl[i] = y4[i];
+            }
+
+            const int ibl = ib32 / (QK_K / 32);
+            const int ib  = ib32 % (QK_K / 32);
+
+            device const block_iq3_s * xr = x + ibl;
+            device const uint8_t * qs    = xr->qs + 8 * ib;
+            device const uint8_t * qh    = xr->qh + ib;
+            device const uint8_t * sc    = xr->scales + (ib/2);
+            device const uint8_t * signs = xr->signs + 4 * ib;
+            device const half    * dh    = &xr->d;
+
+            for (short row = 0; row < nr0 && first_row + row < args.ne01; ++row) {
+                const float db = dh[0];
+                const float d  = db * (1 + 2*((sc[0] >> 4*(ib%2)) & 0xf));
+
+                float2 sum = {0};
+                for (short l = 0; l < 4; ++l) {
+                    const threadgroup uint32_t * table1 = qh[0] & kmask_iq2xs[2*l+0] ? svalues + 256 : svalues;
+                    const threadgroup uint32_t * table2 = qh[0] & kmask_iq2xs[2*l+1] ? svalues + 256 : svalues;
+                    const threadgroup uint8_t * grid1 = (const threadgroup uint8_t *)(table1 + qs[2*l+0]);
+                    const threadgroup uint8_t * grid2 = (const threadgroup uint8_t *)(table2 + qs[2*l+1]);
+                    for (short j = 0; j < 4; ++j) {
+                        sum[0] += yl[8*l + j + 0] * grid1[j] * select(1, -1, signs[l] & kmask_iq2xs[j+0]);
+                        sum[1] += yl[8*l + j + 4] * grid2[j] * select(1, -1, signs[l] & kmask_iq2xs[j+4]);
+                    }
+                }
+                sumf[row] += weight * d * (sum[0] + sum[1]);
+
+                dh    += args.nb01/2;
+                qs    += args.nb01;
+                qh    += args.nb01;
+                sc    += args.nb01;
+                signs += args.nb01;
+            }
+
+            y4 += 32 * 32;
+        }
+    }
+
+    device float * dst_f32 = (device float *)dst + (uint64_t)token * args.nb1 / sizeof(float);
+    for (int row = 0; row < nr0 && first_row + row < args.ne01; ++row) {
+        const float sum_all = simd_sum(sumf[row]);
+        if (tiisg == 0) {
+            dst_f32[first_row + row] = sum_all;
+        }
+    }
+}
+
+[[host_name("kernel_mul_mv_id_down_combine_iq3_s_f32")]]
+kernel void kernel_mul_mv_id_down_combine_iq3_s_f32(
+        constant ggml_metal_kargs_mul_mv_id_down_combine & args,
+        device const char * src0,
+        device const char * src1,
+        device const int32_t * ids,
+        device const float * weights,
+        device       float * dst,
+        threadgroup  char * shmem [[threadgroup(0)]],
+        uint3  tgpig [[threadgroup_position_in_grid]],
+        ushort tiisg [[thread_index_in_simdgroup]],
+        ushort sgitg [[simdgroup_index_in_threadgroup]]) {
+    kernel_mul_mv_id_down_combine_iq3_s_impl<N_R0_IQ3_S, constant ggml_metal_kargs_mul_mv_id_down_combine &>(
+            args, src0, src1, ids, weights, dst, shmem, tgpig, tiisg, sgitg);
+}
+
+template<int NR0, typename args_t>
+void kernel_mul_mv_id_down_combine_iq4_xs_impl(
+        args_t args,
+        device const char * src0,       // down weights [K, N, n_expert] (IQ4_XS)
+        device const char * src1,       // swiglu output [K, n_expert_used, n_tokens] (F32)
+        device const int32_t * ids,     // expert ids [n_expert_used, n_tokens]
+        device const float * weights,   // routing weights [n_expert_used, n_tokens]
+        device       float * dst,       // output [N, n_tokens]
+        threadgroup  char * shmem,
+        uint3  tgpig,
+        ushort tiisg,
+        ushort sgitg) {
+    const short NSG = FC_mul_mv_nsg;
+    const short nr0 = args.nr0;
+
+    threadgroup float * shmem_f32 = (threadgroup float *) shmem;
+    shmem_f32[tiisg] = kvalues_iq4nl_f[tiisg%16];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    const int nb   = args.ne00 / QK_K;
+    const int ns01 = args.nb01 / args.nb00;
+    const int r0   = tgpig.x;
+    const int token = tgpig.y;
+
+    const int first_row = (r0 * NSG + sgitg) * nr0;
+
+    const short ix = tiisg/16;  // 0 or 1
+    const short it = tiisg%16;  // 0...15
+    const short ib = it/2;
+    const short il = it%2;
+
+    float sumf[8] = {0.f};
+
+    uint32_t aux32[2];
+    thread const uint8_t * q8 = (thread const uint8_t *)aux32;
+
+    for (int e = 0; e < args.nei0; ++e) {
+        const int32_t expert_id = ids[e + token * args.nei0];
+        const float   weight    = weights[e + token * args.nei0];
+
+        if (weight == 0.0f) continue;
+
+        const uint64_t offset0 = (uint64_t)expert_id * args.nb02 + (uint64_t)first_row * args.nb01;
+        device const block_iq4_xs * x = (device const block_iq4_xs *)(src0 + offset0);
+
+        const uint64_t offset1 = (uint64_t)e * args.nb11 + (uint64_t)token * args.nb12;
+        device const float * yb = (device const float *)(src1 + offset1) + ix * QK_K + ib * 32 + il * 8;
+
+        for (int ibl = ix; ibl < nb; ibl += 2) {
+            device const float4 * y4 = (device const float4 *)yb;
+            float4 yl[4];
+            yl[0] = y4[0];
+            yl[1] = y4[4];
+            yl[2] = y4[1];
+            yl[3] = y4[5];
+
+            for (short row = 0; row < nr0 && first_row + row < args.ne01; ++row) {
+                device const block_iq4_xs & xb = x[row*ns01 + ibl];
+                device const uint32_t * q4 = (device const uint32_t *)(xb.qs + 16*ib + 8*il);
+
+                float4 acc1 = {0.f}, acc2 = {0.f};
+                float4 qf1, qf2;
+
+                aux32[0] = (q4[0]     ) & 0x0f0f0f0f;
+                aux32[1] = (q4[0] >> 4) & 0x0f0f0f0f;
+                qf1 = {shmem_f32[q8[0]], shmem_f32[q8[1]], shmem_f32[q8[2]], shmem_f32[q8[3]]};
+                qf2 = {shmem_f32[q8[4]], shmem_f32[q8[5]], shmem_f32[q8[6]], shmem_f32[q8[7]]};
+                acc1 += yl[0] * qf1;
+                acc2 += yl[1] * qf2;
+
+                aux32[0] = (q4[1]     ) & 0x0f0f0f0f;
+                aux32[1] = (q4[1] >> 4) & 0x0f0f0f0f;
+                qf1 = {shmem_f32[q8[0]], shmem_f32[q8[1]], shmem_f32[q8[2]], shmem_f32[q8[3]]};
+                qf2 = {shmem_f32[q8[4]], shmem_f32[q8[5]], shmem_f32[q8[6]], shmem_f32[q8[7]]};
+                acc1 += yl[2] * qf1;
+                acc2 += yl[3] * qf2;
+
+                acc1 += acc2;
+
+                const int ls = (((xb.scales_l[ib/2] >> 4*(ib%2)) & 0xf) | (((xb.scales_h >> 2*ib) & 3) << 4)) - 32;
+                sumf[row] += weight * (float)xb.d * ls * (acc1[0] + acc1[1] + acc1[2] + acc1[3]);
+            }
+
+            yb += 2 * QK_K;
+        }
+    }
+
+    device float * dst_f32 = (device float *)dst + (uint64_t)token * args.nb1 / sizeof(float);
+    for (int row = 0; row < nr0 && first_row + row < args.ne01; ++row) {
+        const float sum_all = simd_sum(sumf[row]);
+        if (tiisg == 0) {
+            dst_f32[first_row + row] = sum_all;
+        }
+    }
+}
+
+[[host_name("kernel_mul_mv_id_down_combine_iq4_xs_f32")]]
+kernel void kernel_mul_mv_id_down_combine_iq4_xs_f32(
+        constant ggml_metal_kargs_mul_mv_id_down_combine & args,
+        device const char * src0,
+        device const char * src1,
+        device const int32_t * ids,
+        device const float * weights,
+        device       float * dst,
+        threadgroup  char * shmem [[threadgroup(0)]],
+        uint3  tgpig [[threadgroup_position_in_grid]],
+        ushort tiisg [[thread_index_in_simdgroup]],
+        ushort sgitg [[simdgroup_index_in_threadgroup]]) {
+    kernel_mul_mv_id_down_combine_iq4_xs_impl<N_R0_IQ4_XS, constant ggml_metal_kargs_mul_mv_id_down_combine &>(
+            args, src0, src1, ids, weights, dst, shmem, tgpig, tiisg, sgitg);
+}
+
 kernel void kernel_pool_2d_max_f32(
         constant    ggml_metal_kargs_pool_2d & args,
         device  const float * src0,

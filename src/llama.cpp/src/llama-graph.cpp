@@ -2680,6 +2680,47 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         return e != nullptr && e[0] == '1';
     }();
 
+    // [CGC 2026-09-18] ONE predicate, used by both the audit print and the branch below. It used
+    // to be written twice (once as `fuse` inside the audit, once as the `if` condition) -- a
+    // latent way for an instrument to describe a decision that the code does not actually make.
+    //
+    // Two changes from the original, both required for this to fire on the shipped model:
+    //   * the type test accepts the three types the model actually uses for ffn_down_exps
+    //     (IQ3_S x37 + IQ4_XS x3 on the flagship; the audit prints the per-layer truth);
+    //   * `n_tokens == 1` becomes overridable, because under MTP every trunk graph is a VERIFY
+    //     graph (n_tokens = 2 or 4) -- with the type gate open but this one closed, the fused
+    //     path would still be structurally unreachable.
+    // ⚠️ CGC_DC_MULTITOK is read in BOTH this file and ggml-metal-ops.cpp, and the two must stay
+    // in step: if this gate admits a shape that the Metal op then rejects, the node ends up in
+    // the graph with no implementation behind it.
+    static const bool cgc_dc_multitok = []{
+        const char * e = getenv("CGC_DC_MULTITOK");
+        return e != nullptr && e[0] == '1';
+    }();
+
+    // [CGC 2026-09-18] How wide a multi-token shape may be and still take the fused path.
+    // 8 is the pool path's own bound (CGC_POOL_MAX_TOKENS, default 8) and covers the two shapes
+    // that matter: verify under MTP is n_tokens = 2 or 4. It deliberately EXCLUDES prefill
+    // (16 / 2048 / 5632).
+    //
+    // Measured, and the reason this constant exists: with the bound absent, the audit showed
+    // fuse=1 on 37 rows of n_tokens=16 and 74 rows of n_tokens=5632 per run -- i.e. prefill was
+    // taking the fused path -- and the A/B's answer_md5_set then DIFFERED between the two arms
+    // (87647aec vs 72ca6608), while the single-token pair produced the same digest
+    // (72ca6608 == 72ca6608). So the single-token kernel is right and the wide shape is not.
+    static constexpr int CGC_DC_MAX_TOKENS = 8;
+    const bool cgc_dc_shape_ok = (n_tokens == 1) ||
+                                 (cgc_dc_multitok && n_tokens <= CGC_DC_MAX_TOKENS);
+    const bool cgc_dc_fuse = cgc_down_combine &&
+        cgc_dc_shape_ok &&
+        down_exps != nullptr &&
+        (down_exps->type == GGML_TYPE_Q3_K ||
+         down_exps->type == GGML_TYPE_IQ3_S ||
+         down_exps->type == GGML_TYPE_IQ4_XS) &&
+        down_exps_s == nullptr && down_exps_b == nullptr &&
+        !weight_before_ffn &&
+        mm_id_ids != nullptr;
+
     // [CGC 2026-09-18 DOWN-COMBINE AUDIT] CGC_DOWN_COMBINE_AUDIT=1 prints, once per MoE layer per
     // built graph, the value of every one of the six gate conditions and the resulting decision.
     // Read-only: it does not change the decision below.
@@ -2688,12 +2729,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // (ggml-metal.metal:11886 "kernel_mul_mv_id_down_combine_q3_K_f32") is Q3_K-only. This prints
     // what the loader actually produced, per layer, instead of what the file nominally contains.
     if (getenv("CGC_DOWN_COMBINE_AUDIT") != nullptr) {
-        const bool fuse = cgc_down_combine &&
-            n_tokens == 1 &&
-            down_exps != nullptr && down_exps->type == GGML_TYPE_Q3_K &&
-            down_exps_s == nullptr && down_exps_b == nullptr &&
-            !weight_before_ffn &&
-            mm_id_ids != nullptr;
+        const bool fuse = cgc_dc_fuse;   // the SAME predicate the branch below uses, by construction
         fprintf(stderr,
                 "CGC-DCAUDIT il=%d flag=%d n_tokens=%lld down_type=%s has_scale=%d has_bias=%d "
                 "weight_before_ffn=%d ids=%d => fuse=%d\n",
@@ -2703,12 +2739,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 (int) weight_before_ffn, (int) (mm_id_ids != nullptr), (int) fuse);
     }
 
-    if (cgc_down_combine &&
-        n_tokens == 1 &&
-        down_exps != nullptr && down_exps->type == GGML_TYPE_Q3_K &&
-        down_exps_s == nullptr && down_exps_b == nullptr &&
-        !weight_before_ffn &&
-        mm_id_ids != nullptr) {
+    if (cgc_dc_fuse) {
         // weights is [1, n_expert_used, n_tokens] → reshape to [n_expert_used, n_tokens]
         ggml_tensor * weights_2d = ggml_reshape_2d(ctx0, weights, n_expert_used, n_tokens);
         cb(weights_2d, "ffn_moe_weights_2d", il);

@@ -1349,6 +1349,12 @@ fi
 if [ -n "${CGC_DOWN_COMBINE_AUDIT:-}" ]; then
     SERVER_ENV+=(CGC_DOWN_COMBINE_AUDIT="$CGC_DOWN_COMBINE_AUDIT")
 fi
+# 2026-09-18: admit the MULTI-TOKEN verify shape (n_tokens 2/4) to the fused down-combine. Read in
+# BOTH llama-graph.cpp and ggml-metal-ops.cpp -- the graph-side gate and the Metal-side dispatch
+# must agree, or the node lands in the graph with nothing to execute it.
+if [ -n "${CGC_DC_MULTITOK:-}" ]; then
+    SERVER_ENV+=(CGC_DC_MULTITOK="$CGC_DC_MULTITOK")
+fi
 # CGC hook profiling (diagnostic only, default off)
 if [ -n "${CGC_HOOK_PROFILE:-}" ]; then
     SERVER_ENV+=(CGC_HOOK_PROFILE="$CGC_HOOK_PROFILE")

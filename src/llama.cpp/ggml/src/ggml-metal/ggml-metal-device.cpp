@@ -1287,10 +1287,45 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_id_down_c
     char base[256];
     char name[256];
 
-    // Q3_K uses fixed constants, not ggml_metal_nsg_env (which returns -1 for Q3_K)
+    // [CGC 2026-09-18] WAS Q3_K-only: the constants and the kernel name were both hard-coded.
+    // Now dispatches on the operand type, reusing exactly the constants and the smem that the
+    // generic MUL_MAT_ID getter uses for the same types (see the switch around :1216-1248).
+    // The name follows from the type because every variant is registered as
+    // "kernel_mul_mv_id_down_combine_<ggml_type_name>_f32".
+    //
+    // smem matters and is not cosmetic: Q3_K needs no lookup table (0), IQ3_S carries the
+    // 512-entry iq3s_grid and IQ4_XS the 16-entry kvalues table. Passing the wrong smem makes
+    // the kernel read uninitialised threadgroup memory instead of failing.
     int nsg = N_SG_Q3_K;
     int nr0 = N_R0_Q3_K;
     int nr1 = 1;
+    size_t smem = 0;
+
+    switch (op->src[0]->type) {
+        case GGML_TYPE_Q3_K:
+            {
+                nsg  = N_SG_Q3_K;
+                nr0  = N_R0_Q3_K;
+                smem = 0;
+            } break;
+        case GGML_TYPE_IQ3_S:
+            {
+                nsg  = N_SG_IQ3_S;
+                nr0  = N_R0_IQ3_S;
+                smem = 512*4;
+            } break;
+        case GGML_TYPE_IQ4_XS:
+            {
+                nsg  = N_SG_IQ4_XS;
+                nr0  = N_R0_IQ4_XS;
+                smem = 32*sizeof(float);
+            } break;
+        default:
+            {
+                GGML_LOG_ERROR("%s: unsupported down-combine type %d\n", __func__, (int) op->src[0]->type);
+                GGML_ABORT("unsupported down-combine type");
+            }
+    }
 
     // Allow nsg override via CGC_DC_NSG env var (for tuning)
     {
@@ -1303,10 +1338,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_id_down_c
         }
     }
 
-    // Q3_K does not need lookup table in threadgroup memory
-    size_t smem = 0;
-
-    snprintf(base, 256, "kernel_mul_mv_id_down_combine_q3_K_f32");
+    snprintf(base, 256, "kernel_mul_mv_id_down_combine_%s_f32", ggml_type_name(op->src[0]->type));
     snprintf(name, 256, "%s_nsg=%d", base, nsg);
 
     ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);

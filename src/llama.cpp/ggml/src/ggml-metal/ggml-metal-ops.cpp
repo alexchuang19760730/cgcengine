@@ -4793,7 +4793,19 @@ int ggml_metal_op_mul_mat_id_down_combine(ggml_metal_op_t ctx, int idx) {
     // src1 = swiglu output [K, n_expert_used, n_tokens] (F32)
     // src2 = expert ids [n_expert_used, n_tokens] (I32)
     // src3 = routing weights [n_expert_used, n_tokens] (F32)
-    GGML_ASSERT(op->src[0]->type == GGML_TYPE_Q3_K);
+    // [CGC 2026-09-18] WAS `GGML_ASSERT(op->src[0]->type == GGML_TYPE_Q3_K)`. The three types
+    // listed are the ones the model on disk actually uses for ffn_down_exps (IQ3_S x37 +
+    // IQ4_XS x3 on the flagship, and the audit instrument prints the per-layer truth). Anything
+    // else falls back to the unfused path instead of aborting: the conservative decision belongs
+    // to the gate in llama-graph.cpp, not to an assert here.
+    switch (op->src[0]->type) {
+        case GGML_TYPE_Q3_K:
+        case GGML_TYPE_IQ3_S:
+        case GGML_TYPE_IQ4_XS:
+            break;
+        default:
+            return 0;   // fallback: the graph builder's original path
+    }
     GGML_ASSERT(op->src[1]->type == GGML_TYPE_F32);
     GGML_ASSERT(op->src[2]->type == GGML_TYPE_I32);
     GGML_ASSERT(op->src[3]->type == GGML_TYPE_F32);
@@ -4809,8 +4821,25 @@ int ggml_metal_op_mul_mat_id_down_combine(ggml_metal_op_t ctx, int idx) {
     GGML_TENSOR_LOCALS( int32_t, ne,  op,         ne);
     GGML_TENSOR_LOCALS(uint64_t, nb,  op,         nb);
 
-    // only support decode (single token)
-    if (ne12 != 1) {
+    // [CGC 2026-09-18] WAS an unconditional `if (ne12 != 1) return 0;`. The kernel is per-token
+    // by construction -- it reads `token = tgpig.y`, the dispatch passes ne12 as the grid's
+    // second dimension, and the args carry nei1 (n_tokens) plus the ids/weights strides -- so
+    // that early return was a POLICY ("decode only"), not a kernel limitation. Under MTP the
+    // policy made the fused path unreachable in production even when the type matched, because
+    // every trunk graph is then a verify graph (ne12 = 2 or 4).
+    // Kept behind a flag rather than deleted outright: single-token is the only shape this
+    // kernel has ever been exercised on, and the two shapes must be comparable.
+    // ⚠️ The graph-side gate (llama-graph.cpp, `n_tokens == 1`) reads the SAME variable, and the
+    // two must stay in step -- if the gate admits a shape that this function then rejects, the
+    // node exists in the graph with no implementation behind it.
+    static const bool cgc_dc_multitok = []{
+        const char * e = getenv("CGC_DC_MULTITOK");
+        return e != nullptr && e[0] == '1';
+    }();
+    // 8 = the pool path's own bound (CGC_POOL_MAX_TOKENS, default 8); it covers verify (2 or 4)
+    // and deliberately EXCLUDES prefill. See the note in llama-graph.cpp for the measurement:
+    // without the bound, prefill took the fused path and the two arms' answer digests differed.
+    if (ne12 != 1 && !(cgc_dc_multitok && ne12 <= 8)) {
         return 0;  // fallback
     }
 
