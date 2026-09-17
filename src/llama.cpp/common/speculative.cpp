@@ -1794,6 +1794,29 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
                 result.push_back(id);
 
+                // [CGC M4 rejection sampling 2026-09-17] Record the distribution this token was
+                // drawn from, so the accept step can run min(1, p_t/q) instead of comparing token
+                // ids. Kept in lockstep with `result`: this is the only place either grows, and the
+                // p_min filter above `continue`s before both.
+                //
+                // What is copied is the DRAFT's post-chain candidate array -- the same kind of
+                // restricted set the target's chain produces -- not an n_vocab-sized vector. The
+                // copy only happens when the caller passed storage, so a default run does nothing.
+                //
+                // Scope note: only the MTP draft implementation fills this. draft-simple and the
+                // ngram drafts leave `dist` null, so their verify runs keep the exact-match rule --
+                // an asymmetry that is disclosed rather than hidden, because M4's own numbers are
+                // measured on the MTP path.
+                if (dp.dist != nullptr) {
+                    auto & d = dp.dist->emplace_back();
+                    d.ids.reserve(cur_p->size);
+                    d.probs.reserve(cur_p->size);
+                    for (size_t k = 0; k < cur_p->size; ++k) {
+                        d.ids.push_back(cur_p->data[k].id);
+                        d.probs.push_back(cur_p->data[k].p);
+                    }
+                }
+
                 if (params.n_max <= (int) result.size()) {
                     drafting[seq_id] = false;
                     n_drafting--;
@@ -2964,14 +2987,38 @@ void common_speculative_print_stats(const common_speculative * spec) {
         //   t_accept = accept bookkeeping (counters only, expected ~0)
         // The TARGET's verify forward is NOT here; take it from llama_print_timings' eval time,
         // which covers everything ctx_tgt evaluated.
+        // [CGC M4 work item 3, 2026-09-17] The roadmap asks for "accept, tokens/forward,
+        // ms/forward" as a three-way split. "tokens/forward" is ambiguous -- a round drafts N
+        // tokens and emits the accepted ones PLUS the bonus token the target produced -- so both
+        // readings are printed with their denominators spelled out rather than one being picked
+        // silently. All are cumulative totals, so the last line of a run is the run total.
+        //   acc_rate             = acc_tokens / gen_tokens      <- the roadmap's "accept"
+        //   gen_tok_per_round    = gen_tokens / calls_draft     <- tokens DRAFTED per round
+        //   acc_tok_per_round    = acc_tokens / calls_draft     <- tokens ACCEPTED per round
+        //   emit_tok_per_round   = (acc_tokens + calls_draft) / calls_draft
+        //                                                       <- tokens EMITTED per round, i.e.
+        //                                                          the one that maps to throughput
+        //   ms_per_round         = t_draft_ms / calls_draft     <- the head's cost per round
+        // The last two are the pair to read together: throughput is emit_tok_per_round divided by
+        // (ms_per_round + the target verify forward, which is NOT in this line -- take it from
+        // llama_print_timings' eval time, as the note above says).
         if (getenv("CGC_MTP_PERF") != nullptr) {
+            const double cd = (double) impl->n_call_draft;
+            const double acc_rate  = impl->n_gen_tokens ? (double) impl->n_acc_tokens / (double) impl->n_gen_tokens : 0.0;
+            const double gen_pr    = cd > 0.0 ? (double) impl->n_gen_tokens / cd : 0.0;
+            const double acc_pr    = cd > 0.0 ? (double) impl->n_acc_tokens / cd : 0.0;
+            const double emit_pr   = cd > 0.0 ? ((double) impl->n_acc_tokens + cd) / cd : 0.0;
+            const double ms_pr     = cd > 0.0 ? (impl->t_draft_us / 1000.0) / cd : 0.0;
             fprintf(stderr, "CGC-MTP-PERF type=%s calls_begin=%zu calls_draft=%zu calls_accept=%zu "
-                    "gen_tokens=%zu acc_tokens=%zu t_begin_ms=%.1f t_draft_ms=%.1f t_accept_ms=%.1f\n",
+                    "gen_tokens=%zu acc_tokens=%zu t_begin_ms=%.1f t_draft_ms=%.1f t_accept_ms=%.1f "
+                    "acc_rate=%.4f gen_tok_per_round=%.3f acc_tok_per_round=%.3f "
+                    "emit_tok_per_round=%.3f ms_per_round=%.3f\n",
                     common_speculative_type_to_str(impl->type).c_str(),
                     impl->n_call_begin, impl->n_call_draft, impl->n_call_accept,
                     impl->n_gen_tokens, impl->n_acc_tokens,
                     impl->t_begin_us / 1000.0, impl->t_draft_us / 1000.0,
-                    impl->t_accept_us / 1000.0);
+                    impl->t_accept_us / 1000.0,
+                    acc_rate, gen_pr, acc_pr, emit_pr, ms_pr);
         }
     }
 }

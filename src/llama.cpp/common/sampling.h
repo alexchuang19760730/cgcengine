@@ -95,6 +95,42 @@ std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sample
 // external_logits[i] must point to a buffer of n_vocab floats (n_vocab taken from ctx's model).
 std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sampler * gsmpl, struct llama_context * ctx, const std::vector<int> & idxs, const llama_tokens & draft, const std::vector<const float *> & external_logits, bool grammar_first = false);
 
+// [CGC M4 rejection sampling 2026-09-17] The draft's own distribution at one drafted position.
+//
+// WHY THIS EXISTS: the accept rule used to be `draft[i] == id` -- exact token equality. Under that
+// rule P(accept) = sum_e p_t(e)*p_d(e), which is MAXIMISED when p_d is one-hot (the argmax). So no
+// amount of draft-sampler tuning could raise accept, and the 2026-09-13 sampler-parity work (which
+// made the draft actually DRAW from its own distribution instead of forcing the argmax) correctly
+// LOWERED it -- the comment at that site already said parity is "a prerequisite for rejection
+// sampling, not a speedup on its own". This is the other half: accept x with probability
+// min(1, p_t(x)/q(x)); on rejection, emit a draw from the residual max(0, p_t - q).
+//
+// The MTP draft's sampler chain is mirrored from the target's, so p_t and q are restricted the same
+// way (both are post-chain candidate arrays, not full model softmaxes). The ratio below is therefore
+// a ratio of two comparable quantities -- it is NOT a ratio of full distributions, and this note
+// says so rather than letting a later reader assume it.
+struct common_draft_dist {
+    std::vector<llama_token> ids;
+    std::vector<float>       probs;   // same length as ids; need not be normalised
+};
+
+// True when CGC_MTP_REJECTION is set. Exposed so a caller can decline to populate the draft
+// distributions at all when the rule is off: the copy is small, but a small NONZERO cost in the
+// default path is precisely how a "no-op" change stops being a no-op.
+bool common_sampler_mtp_rejection_on();
+
+// Rejection-sampling variant. `draft_dist` may be nullptr or partial: any position without a usable
+// draft distribution falls back to the exact-match rule, so a caller that carries distributions for
+// only some positions still gets a well-defined answer. Everything is additionally gated on
+// CGC_MTP_REJECTION so a default run cannot reach any of it.
+//
+// Both the ctx-logits path and the external-logits path have one of these, so the rule is the same
+// wherever a draft is verified -- an asymmetry between the two would make the two instruments
+// incomparable for exactly the reason M4 is trying to fix.
+std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sampler * gsmpl, struct llama_context * ctx, const std::vector<int> & idxs, const llama_tokens & draft, const std::vector<common_draft_dist> * draft_dist, bool grammar_first = false);
+
+std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sampler * gsmpl, struct llama_context * ctx, const std::vector<int> & idxs, const llama_tokens & draft, const std::vector<const float *> & external_logits, const std::vector<common_draft_dist> * draft_dist, bool grammar_first = false);
+
 uint32_t common_sampler_get_seed(const struct common_sampler * gsmpl);
 
 // force the reasoning budget sampler (if any) to begin forcing its end sequence now.

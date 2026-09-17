@@ -209,6 +209,11 @@ struct server_slot {
     common_speculative * spec;
 
     llama_tokens spec_draft;
+    // [CGC M4 rejection sampling 2026-09-17] The draft's own distribution at each drafted position,
+    // parallel to spec_draft and cleared with it. Passed to the accept step only when
+    // CGC_MTP_REJECTION is set; the accept step falls back to exact-match when it is empty, so a
+    // default run's behaviour does not depend on this being populated.
+    std::vector<common_draft_dist> spec_draft_dist;
     llama_tokens spec_prompt;
     std::vector<int32_t> spec_i_batch;
     common_prompt_checkpoint spec_ckpt;
@@ -353,6 +358,9 @@ struct server_slot {
 
         if (can_speculate()) {
             spec_draft.clear();
+            // [CGC M4] Cleared exactly where spec_draft is: the two are parallel arrays, and a
+            // leftover entry here would be a distribution for a position that no longer exists.
+            spec_draft_dist.clear();
             spec_i_batch.clear();
             spec_ckpt.clear();
             // [CGC §8.108] clear L4-pool sub-batch accumulation cache
@@ -3203,6 +3211,11 @@ private:
                             /* .id_last  = */ slot.sampled,
                             /* .prompt   = */ &slot.spec_prompt,
                             /* .result   = */ &slot.spec_draft,
+                            // [CGC M4 rejection sampling 2026-09-17] Only hand over storage when
+                            // the rule is on: with the env unset the draft step then skips the copy
+                            // entirely, so the default path stays zero-cost rather than
+                            // "costs a little but is ignored".
+                            /* .dist     = */ common_sampler_mtp_rejection_on() ? &slot.spec_draft_dist : nullptr,
                         };
 
                         drafting.push_back(&slot);
@@ -4152,7 +4165,12 @@ private:
                     external_logits.push_back(v.data());
                 }
 
-                auto accepted = common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft, external_logits);
+                // [CGC M4 rejection sampling 2026-09-17] Pass the draft's own distributions so the
+                // accept step can run min(1, p_t/q) instead of comparing token ids. When
+                // CGC_MTP_REJECTION is unset this argument is ignored by the accept step AND the
+                // vector is empty (the draft step never filled it), so there is no path on which a
+                // default run reads it.
+                auto accepted = common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft, external_logits, &slot.spec_draft_dist);
                 slot.spec_i_batch.clear();
                 slot.spec_logits_cache.clear();
                 slot.spec_logits_filled = 0;
@@ -4175,6 +4193,14 @@ private:
                         // partial acceptance is not supported by the context -> truncate the draft and restore the state
                         slot.spec_is_replay = true;
                         slot.spec_draft = std::move(accepted);
+                        // [CGC M4] Deliberately cleared rather than truncated. This replay path hands
+                        // the retained tokens to a LATER verify without calling draft() again, so the
+                        // distributions recorded a round earlier no longer describe the positions
+                        // being verified (the last retained token was never drafted at all). Clearing
+                        // makes those positions fall back to the exact-match rule -- conservative and,
+                        // more importantly, impossible to misalign. The rejection rule then applies to
+                        // genuinely fresh drafts, which is where M4's accept is measured.
+                        slot.spec_draft_dist.clear();
 
                         const auto & ckpt = slot.spec_ckpt;
 
@@ -4202,6 +4228,10 @@ private:
                 common_speculative_accept(spec.get(), slot.id, accepted.size() - 1);
 
                 slot.spec_draft = std::move(accepted);
+                // [CGC M4] Same reasoning as the replay branch above: cleared with spec_draft so the
+                // two can never drift apart. spec_draft is moved out immediately below, so the next
+                // round takes the fresh-draft path and repopulates both in lockstep.
+                slot.spec_draft_dist.clear();
             }
 
             const int64_t t_now = ggml_time_us();

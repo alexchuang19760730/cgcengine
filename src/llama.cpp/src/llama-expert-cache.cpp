@@ -1419,6 +1419,91 @@ int32_t llama_expert_cache_prefetch_slot(llama_expert_cache * cache, uint32_t la
     return 0;
 }
 
+// [CGC M5 prerouter 2026-09-17] PREFETCH-ONLY expert predictor. The header states what this
+// deliberately cannot do (no reservation, no slot_owner/slot_table writes, no routing input).
+//
+// LOCKING: this reads `freq` unlocked (the same way llama_expert_cache_prewarm_hot does) and must
+// NOT hold cache->m while calling prefetch_slot, which takes cache->m itself -- std::mutex is not
+// recursive, so holding it here would self-deadlock. Nothing below takes the lock.
+int32_t llama_expert_cache_prerouter_predict(llama_expert_cache * cache, uint32_t layer, uint32_t top_k) {
+    static const bool prerouter_on = getenv("CGC_PREROUTER") != nullptr;
+    if (!prerouter_on || cache == nullptr || !cache->pool_active) {
+        return -1;
+    }
+    if (layer >= cache->freq.size() || cache->freq[layer].empty() || top_k == 0) {
+        cache->n_prerouter_nodata++;
+        return 0;
+    }
+    cache->n_prerouter_calls++;
+
+    // Rank by recorded route count. Tie-break by expert id so the ranking -- and therefore the
+    // counters and the prefetch order -- is deterministic across runs; an unstable order here would
+    // make the M5 measurement non-reproducible without changing any real behaviour.
+    // Zero-count experts are skipped: "predict the 8 most frequent" must not turn into "queue 8
+    // arbitrary experts" when only 3 have ever been routed.
+    const auto & f = cache->freq[layer];
+    std::vector<std::pair<uint64_t, uint32_t>> ranked;
+    ranked.reserve(f.size());
+    for (uint32_t e = 0; e < (uint32_t) f.size(); ++e) {
+        if (f[e] != 0) {
+            ranked.emplace_back(f[e], e);
+        }
+    }
+    std::sort(ranked.begin(), ranked.end(), [](const std::pair<uint64_t, uint32_t> & a,
+                                               const std::pair<uint64_t, uint32_t> & b) {
+        return a.first != b.first ? a.first > b.first : a.second < b.second;
+    });
+
+    if (cache->prerouter_pred.size() <= layer) {
+        cache->prerouter_pred.resize(layer + 1);
+    }
+    auto & pred = cache->prerouter_pred[layer];
+    pred.clear();
+
+    int32_t queued = 0;
+    const size_t n_take = std::min<size_t>(ranked.size(), (size_t) top_k);
+    for (size_t i = 0; i < n_take; ++i) {
+        // Recorded regardless of the prefetch outcome: the prediction is what we score, and a
+        // prediction that could not be queued (no free slot / already resident) is still a correct
+        // prediction. Conflating the two would make the predictor's precision unmeasurable.
+        pred.push_back(ranked[i].second);
+        if (llama_expert_cache_prefetch_slot(cache, layer, ranked[i].second) == 0) {
+            queued++;
+        }
+    }
+    cache->n_prerouter_queued += (size_t) queued;
+    return queued;
+}
+
+// [CGC M5 prerouter 2026-09-17] Compare the prediction made FOR `layer` against what `layer`
+// actually selected. Called at the layer's own hook, so the prediction was made one layer earlier.
+// Consumes the record (clears it) so a stale prediction can never be scored twice.
+uint32_t llama_expert_cache_prerouter_score(llama_expert_cache * cache, uint32_t layer,
+                                            const uint32_t * selected, size_t n_selected) {
+    static const bool prerouter_on = getenv("CGC_PREROUTER") != nullptr;
+    if (!prerouter_on || cache == nullptr || layer >= cache->prerouter_pred.size()) {
+        return 0;
+    }
+    auto & pred = cache->prerouter_pred[layer];
+    if (pred.empty() || selected == nullptr || n_selected == 0) {
+        return 0;
+    }
+    uint32_t hit = 0;
+    for (const uint32_t e : pred) {
+        for (size_t i = 0; i < n_selected; ++i) {
+            if (selected[i] == e) {
+                hit++;
+                break;
+            }
+        }
+    }
+    cache->n_prerouter_scored++;
+    cache->n_prerouter_pred_total += pred.size();
+    cache->n_prerouter_hit += hit;
+    pred.clear();
+    return hit;
+}
+
 // [CGC DBUF spike 2026-09-06] step-ahead cold-expert refill (see cgc_dbuf_on() in the header).
 // Called from the decode fast-path hook AFTER the remap leaf was written (GPU idle between
 // segments; seg il+1 = this layer's FFN is submitted only after the hook returns and its remap
@@ -2203,6 +2288,29 @@ llama_expert_cache::~llama_expert_cache() {
                 (unsigned long long) fill_batch_usec.load(std::memory_order_relaxed),
                 (unsigned long long) fill_wait_us.load(std::memory_order_relaxed),
                 n_prefetch, n_prefetch_dropped);
+        // [CGC M5 prerouter 2026-09-17] Print the predictor's counters, but ONLY when it was on --
+        // a line that always appears would make "the predictor ran and queued nothing" look like
+        // "the predictor was never armed", which is the silent-drop failure shape this repo keeps
+        // paying for. If you set CGC_PREROUTER and do NOT see this line, the env did not reach the
+        // process (run_server.sh allowlist) -- that is the first thing to check, not the last.
+        //
+        // The two numbers that decide whether M5 could help at all: `hit/pred_total` is prediction
+        // precision, and `queued` counts predictions that found a non-resident expert and a free
+        // slot. A prefetch of an expert nobody selects buys nothing; one of an expert that IS
+        // selected is the only case where a synchronous pread could have been avoided. Whether that
+        // shows up as wall-clock is decided by the miss attribution (compulsory vs capacity) and
+        // CGC-PHASE's fill_wait -- NOT by this line.
+        {
+            static const bool prerouter_on = getenv("CGC_PREROUTER") != nullptr;
+            if (prerouter_on) {
+                fprintf(stderr, "CGC-PREROUTER: calls=%zu queued=%zu nodata=%zu "
+                                "scored=%zu pred_total=%zu hit=%zu (precision %.1f%%)\n",
+                        n_prerouter_calls, n_prerouter_queued, n_prerouter_nodata,
+                        n_prerouter_scored, n_prerouter_pred_total, n_prerouter_hit,
+                        n_prerouter_pred_total ? 100.0 * (double) n_prerouter_hit /
+                                                 (double) n_prerouter_pred_total : 0.0);
+            }
+        }
         // [CGC 2026-09-16 Blocker B] Make the fix's ACTIVITY and its gate's COVERAGE readable in the
         // shipping configuration. Both halves were unreadable before: n_hit_adopted_queued was
         // written and never read anywhere in the tree, and the gate's per-layer OK line is printed

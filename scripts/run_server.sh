@@ -1376,6 +1376,41 @@ fi
 if [ -n "${CGC_MASSCOV:-}" ]; then
     SERVER_ENV+=(CGC_MASSCOV="$CGC_MASSCOV")
 fi
+# [CGC M5 prerouter 2026-09-17] PREFETCH-ONLY decode predictor. Roadmap M5 ("only decode, only
+# L+1, only the 8, only time"). Three claims the FIRST version of this comment got wrong; they
+# were measured/read on 2026-09-17 and they are why the default stays OFF:
+#   * `llama_expert_cache_prefetch_slot` is NOT free-slot-only. Its own header comment still says
+#     "never evicts for a prediction", but the body (llama-expert-cache.cpp:1341-1381) falls back
+#     to evicting the layer's LRU / lowest-utility slot when no free slot exists. A prediction can
+#     therefore DISPLACE a resident expert -- which is precisely what "prefetch only, never decide
+#     routing" is supposed to forbid. Not reachable in the run below (queued=0), but reachable in
+#     principle, and it is the first thing to fix if M5 is ever switched on.
+#   * `freq` does NOT require LLAMA_EXPERT_CACHE_ROUTE_RECORD. record_routes -- the only writer of
+#     freq -- is called unconditionally at llama-context.cpp:5610; the ROUTE_RECORD flag controls
+#     the route *dump*, not the accumulation. (Verified: a CGC_PREROUTER-only run reported
+#     nodata=0, i.e. freq was populated.)
+#   * it predicts from `freq`, and `prewarm_hot` already fills each layer's pool from the SAME
+#     freq top-K before the first decode step (llama-context.cpp:1928). Predictor and prewarm read
+#     the same ranking, so the prediction is already resident BY CONSTRUCTION. Measured:
+#     `CGC-PREROUTER: calls=80 queued=0 scored=40 pred_total=320 hit=41 (precision 12.8%)` --
+#     prefetch_slot rejected all 320. Set LLAMA_EXPERT_CACHE_PREFETCH_DBG to see which reject.
+#   * the roadmap's own placement measurement gives this a 0.2pp ceiling and notes the head it
+#     does have starts at layer 7, i.e. it has no head for the churn-heaviest layers 1/2. The
+#     expected outcome is "recorded as an excluded dead end", so the default stays OFF.
+# Without these blocks the explicit `env` allowlist on the launch line silently drops them, so
+# setting them in the shell would appear to do nothing.
+if [ -n "${CGC_PREROUTER:-}" ]; then
+    SERVER_ENV+=(CGC_PREROUTER="$CGC_PREROUTER")
+fi
+# Attribution for the line above: prefetch_slot's three exit classes (guard-reject vs already
+# resident vs no-free-slot) print `PFDBG guard-reject ...` / `PFDBG drop: resident ...` per call.
+# Not in the allowlist before 2026-09-17, so "queued=0" had no readable cause.
+if [ -n "${LLAMA_EXPERT_CACHE_PREFETCH_DBG:-}" ]; then
+    SERVER_ENV+=(LLAMA_EXPERT_CACHE_PREFETCH_DBG="$LLAMA_EXPERT_CACHE_PREFETCH_DBG")
+fi
+if [ -n "${CGC_PREROUTER_TOP_K:-}" ]; then
+    SERVER_ENV+=(CGC_PREROUTER_TOP_K="$CGC_PREROUTER_TOP_K")
+fi
 # CGC Fast-Path Wait: wait for in-flight fills instead of ZERO-mapping (default off)
 if [ -n "${CGC_FAST_WAIT:-}" ]; then
     SERVER_ENV+=(CGC_FAST_WAIT="$CGC_FAST_WAIT")
@@ -1879,6 +1914,15 @@ if [ "$SERVER_MTP" = "1" ]; then
     # the existing line is LOG_TRC and the server runs at INFO.
     if [ -n "${CGC_MTP_PERF:-}" ]; then
         SERVER_ENV+=(CGC_MTP_PERF="$CGC_MTP_PERF")
+    fi
+    # [CGC M4 rejection sampling 2026-09-17] The accept rule for the MTP verify step. OFF by
+    # default, and that default matters: with the greedy/gate configuration the draft and target
+    # distributions are one-hot at the same token, so min(1, p_t/q) is 1 or 0 and the rule
+    # degenerates to the exact-match test it replaces -- i.e. a gate arm is unaffected either way.
+    # The rule only bites under sampling (temperature > 0), which is where accept was being
+    # mis-measured. Nothing reaches the rejection path unless this is set.
+    if [ -n "${CGC_MTP_REJECTION:-}" ]; then
+        SERVER_ENV+=(CGC_MTP_REJECTION="$CGC_MTP_REJECTION")
     fi
     # [CGC 2026-09-13] CGC-IDS / CGC-HOOK dumping has NO env gate -- it fires for every batch
     # with n_tokens <= 8 (i.e. every decode step, every verify/draft batch) until a 4000-line

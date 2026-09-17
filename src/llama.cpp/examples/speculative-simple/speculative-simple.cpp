@@ -399,6 +399,10 @@ int main(int argc, char ** argv) {
     bool cgc_layer_first = cgc_layer_bin;
 
     llama_tokens draft;
+    // [CGC M4 rejection sampling 2026-09-17] Parallel to `draft`: the distribution each drafted
+    // token was drawn from, consumed by the accept step when CGC_MTP_REJECTION is set. Kept
+    // strictly in lockstep with `draft` (same clear site, filled only by common_speculative_draft).
+    std::vector<common_draft_dist> draft_dist;
     common_prompt_checkpoint ckpt;
 
     const auto t_enc_end = ggml_time_us();
@@ -432,6 +436,8 @@ int main(int argc, char ** argv) {
                     /* .id_last    = */ id_last,
                     /* .prompt     = */ &prompt_tgt,
                     /* .result     = */ &draft, // output
+                    // only handed over when the rule is on, so the default path skips the copy
+                    /* .dist       = */ common_sampler_mtp_rejection_on() ? &draft_dist : nullptr,
                 };
                 common_speculative_draft(spec);
             }
@@ -542,7 +548,17 @@ int main(int argc, char ** argv) {
         // available logits from the batch and sample the next token until we run out of logits or the sampler
         // disagrees with the draft
         //
-        auto ids = common_sampler_sample_and_accept_n(smpl.get(), ctx_tgt, draft);
+        // [CGC M4] Pass the draft's own distributions so the accept step can run min(1, p_t/q)
+        // instead of comparing token ids. This file reads logits straight from ctx_tgt, so it has no
+        // external-logits cache; `idxs` is the identity mapping, built exactly the way the 3-arg
+        // overload builds it internally. The `draft_dist` argument is ignored unless
+        // CGC_MTP_REJECTION is set, and the vector is empty in that case (the draft step only fills
+        // it when the rule is on), so a default run behaves identically to before.
+        std::vector<int> spec_idxs(draft.size() + 1);
+        for (size_t i = 0; i < spec_idxs.size(); ++i) {
+            spec_idxs[i] = (int) i;
+        }
+        auto ids = common_sampler_sample_and_accept_n(smpl.get(), ctx_tgt, spec_idxs, draft, &draft_dist);
 
         //LOG_DBG("ids: %s\n", string_from(ctx_tgt, ids).c_str());
 
@@ -614,6 +630,7 @@ int main(int argc, char ** argv) {
 
         // clear the draft since it has been consumed
         draft.clear();
+        draft_dist.clear();   // [CGC M4] parallel array: cleared with `draft`, never separately
 
         {
             LOG_DBG("clear kv cache from any extra tokens, n_past = %d\n", n_past);

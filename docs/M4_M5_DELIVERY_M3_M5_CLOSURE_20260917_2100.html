@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>M4／M5 的交付與 M3／M5 的結案（2026-09-17）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  h4{font-size:14.5px;margin:20px 0 6px;color:#374151}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:#fcfcfd}
+  .toc ol{margin:6px 0 0 20px}
+  .toc a{color:var(--blue);text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>M4／M5 的交付與 M3／M5 的結案</h1>
+<div class="sub">
+  日期 2026-09-17 · 專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code><br>
+  binary <code>src/llama.cpp/build/bin</code>（19:35 建置；<code>libllama.0.0.279.dylib</code> <code>0dd3a4b7</code>、
+  <code>libllama-common.0.0.279.dylib</code> <code>bda161fa</code>、<code>llama-server</code> <code>054fb22f</code>）<br>
+  profile <code>prefill250</code> · 池 8 GiB · MTP <b>ON</b> · 硬體 MacBook Air M4 16 GB<br>
+  結案文件 <code>docs/M3_M5_CLOSURE_2026-09-17.md</code>（本文是它的白皮書版）<br>
+  前置 <code>docs/M3_VERDICT_2026-09-17.md</code>、<code>docs/M1_WORKITEM2_PHASE_SPLIT_STATUS_2026-09-17.md</code>
+</div>
+
+<div class="box b-green">
+  <p><b>一句話：</b>M4 在<strong>改寫後</strong>判準下通過（MTP-on 12.57 ≥ MTP-off 9.59）；
+  M3 未達標但失敗分支已交付；M5 結案為<strong>已排除的死路</strong>。
+  三個里程碑的「目標」與「離開條件」都不是同一個數字 —— 這是本輪最貴的一課。</p>
+</div>
+
+<div class="toc">
+  <strong>目錄</strong>
+  <ol>
+    <li><a href="#s0">一頁結論</a></li>
+    <li><a href="#s1">三個里程碑的判定</a></li>
+    <li><a href="#s2">M4：交付了什麼、怎麼判的</a></li>
+    <li><a href="#s3">M5：交付了什麼、為什麼結案為死路</a></li>
+    <li><a href="#s4">一個不能讀成增益的 A/B</a></li>
+    <li><a href="#s5">M3：失敗分支的結案</a></li>
+    <li><a href="#s6">D5 與現場閘門（原文）</a></li>
+    <li><a href="#s7">不能說的話</a></li>
+  </ol>
+</div>
+
+<h2 id="s0">0. 一頁結論</h2>
+
+<div class="cards">
+  <div class="card"><div class="k">M4 離開條件 ①②</div><div class="v ok">通過</div>
+    <div class="small">12.57 ≥ 9.59（+31%）；M1/M2 9/9</div></div>
+  <div class="card"><div class="k">M5 overlap 增益</div><div class="v bad">&lt; 10%</div>
+    <div class="small">判 ≈ 0；旗標維持預設關</div></div>
+  <div class="card"><div class="k">M3 decode（MTP off）</div><div class="v bad">10.78 t/s</div>
+    <div class="small">離開條件 15 t/s</div></div>
+  <div class="card"><div class="k">D5</div><div class="v ok">M1 9/9</div>
+    <div class="small">M2 9/9 · M3 9/9</div></div>
+</div>
+
+<h2 id="s1">1. 三個里程碑的判定</h2>
+
+<table>
+  <tr><th>里程碑</th><th>目標（roadmap 原文）</th><th>離開條件</th><th>判定</th></tr>
+  <tr>
+    <td><b>M3</b> decode compute 削減</td>
+    <td class="num">100 → 40 ms/token（2.32×）</td>
+    <td class="num">decode(MTP off) ≥ 15 t/s</td>
+    <td><span class="bad">未達</span> —— 10.78 t/s；且今天沒有可執行的路徑</td>
+  </tr>
+  <tr>
+    <td><b>M4</b> MTP 拒絕取樣</td>
+    <td>accept 60–80% <b>＋</b> 讓 verify 吃到批量紅利</td>
+    <td>① MTP-on ≥ MTP-off ② M1/M2=100% ③ accept 不當閘門</td>
+    <td><span class="ok">①② 達到</span> —— 目標的後半（工作項 2）仍未做</td>
+  </tr>
+  <tr>
+    <td><b>M5</b> prerouter 預取提示</td>
+    <td class="num">—（roadmap 自述期望值低）</td>
+    <td class="num">overlap ≥ 10%</td>
+    <td><span class="bad">結案為死路</span> —— 判 ≈ 0</td>
+  </tr>
+</table>
+
+<div class="box b-amber">
+  <p><b>★ 引用前必讀：</b>M4 的 <code>accept ≥ 60%</code> 這一條已在
+  <code>docs/M1_WORKITEM4_CANON_ORDER_STATUS_2026-09-17.md</code> §6 <b>明文作廢</b>，改成上表那三條。
+  作廢理由：修前 verify 批次的 <code>token ≥ 1</code> 是<b>用別的 token 的專家</b>算的，
+  「accepted」是跟<b>錯的分布</b>比出來的，而且它<b>抬高</b>了這個數字（73.81% → 修後 58.25%，
+  同時 decode 8.62 → 12.62 t/s）。<b>任何修前記錄的 accept（含 roadmap 的 19.9%、09-14 的 70.4%）
+  不可作為 before/after 的一側。</b></p>
+</div>
+
+<h2 id="s2">2. M4：交付了什麼、怎麼判的</h2>
+
+<h3>2.1 交付（三個工作項）</h3>
+
+<table>
+  <tr><th>#</th><th>工作項</th><th>狀態</th><th>位置</th></tr>
+  <tr><td>1</td><td>拒絕取樣：<code>min(1, p_t/p_d)</code> 接受、被拒時從殘差 <code>max(0, p_t − p_d)</code> 重抽</td>
+      <td><span class="ok">已實作</span></td>
+      <td><code>common/sampling.cpp</code> 的 <code>cgc_rejection_accept()</code></td></tr>
+  <tr><td>2</td><td>batched-union gather 套進 verify</td>
+      <td><span class="bad">未做</span>（依賴已具備，非被擋）</td><td>—</td></tr>
+  <tr><td>3</td><td>三段拆解：accept／tokens/forward／ms/forward</td>
+      <td><span class="ok">已實作</span></td>
+      <td><code>common/speculative.cpp</code> 的 <code>CGC-MTP-PERF</code></td></tr>
+</table>
+
+<h3>2.2 兩個設計要點（寫在 code 裡，不是事後解釋）</h3>
+
+<ul>
+  <li><b>RNG 隔離：</b>接受判定用 <code>common_sampler_get_seed()</code> 另起一條<b>確定性</b>流，
+      <b>不碰 sampler chain 的流</b>。否則每一步 verify 都會推進鏈的 RNG，A/B 就從「比接受規則」
+      變成「比兩條不同的隨機軌跡」。</li>
+  <li><b>殘差抽樣前按 token id 排序：</b><code>unordered_map</code> 的迭代序未定，
+      未定的抽取序會讓這條路徑不可重現。</li>
+</ul>
+
+<div class="box b-blue">
+  <p><b>一個可證的性質：</b>在 greedy／gate 配置下 <code>p</code> 與 <code>q</code> 都是 one-hot 且同點
+  ⇒ <code>min(1, p/q)</code> 非 1 即 0 ⇒ <b>規則退化成正被它取代的精確相等</b>。
+  所以 gate 臂不論開關都逐位元相同 —— 這正是 D5 兩臂都 9/9 的原因，
+  而機制只在取樣（temperature &gt; 0）時咬人。</p>
+</div>
+
+<h3>2.3 本輪量到的讀數（temperature 0.8、n-predict 64 × 2 輪、兩個獨立 server 會話）</h3>
+
+<table>
+  <tr><th>臂</th><th class="num">acc_rate</th><th class="num">gen_tok/round</th>
+      <th class="num">acc_tok/round</th><th class="num">emit_tok/round</th><th class="num">ms/round</th></tr>
+  <tr><td>off（精確相等）</td><td class="num">0.3941</td><td class="num">2.931</td>
+      <td class="num">1.155</td><td class="num"><b>2.155</b></td><td class="num">44.045</td></tr>
+  <tr><td>on（<code>min(1,p/q)</code>）</td><td class="num"><b>0.4800</b></td><td class="num">3.000</td>
+      <td class="num">1.440</td><td class="num"><b>2.440</b></td><td class="num">81.705</td></tr>
+</table>
+
+<p><b>交叉驗證（兩個獨立儀器一致）：</b><code>CGC-MTP-PERF.emit_tok_per_round</code> 2.440 ≈
+<code>slot print_timing</code> 的 <code>mean len 2.40</code>（on）；2.155 ≈ 2.14／2.17（off）。
+<code>acc_rate</code> 也對得上（0.4800 vs 0.49333／0.46667）。</p>
+
+<div class="box b-amber">
+  <p><b>誠實標註：這不是判決。</b>n = 2 輪、兩臂的 <code>gen_tokens</code> 分母不同（170 vs 150）、
+  <b>不同 server 啟動</b> ⇒ 不是配對實驗。<code>ms_per_round</code>（44.0 vs 81.7）<b>不可比</b>
+  （累計值 ＋ 首輪含冷啟動），不要引用。
+  <b>這一節只能說方向與理論一致（<code>min(1,p/q)</code> 的接受率必然 ≥ 精確相等），不能說「增益已證」。</b></p>
+</div>
+
+<h3>2.4 離開條件的判定依據</h3>
+
+<p>條件 ① 與 ② 的數字來自 <code>docs/M1_WORKITEM4_CANON_ORDER_STATUS_2026-09-17.md</code> §6 所列的
+<b>同一顆 16:00 binary</b> 的量測（<code>mtp_accept_ab.py --arms nail,nail_nomtp --pool-gb 8 --n-predict 96</code>，
+每臂 3 請求）：</p>
+
+<table>
+  <tr><th>臂</th><th class="num">accept</th><th class="num">acc/gen</th><th class="num">decode t/s</th></tr>
+  <tr><td><code>nail</code>（MTP on）</td><td class="num">58.25%</td><td class="num">180/309</td><td class="num"><b>12.57</b></td></tr>
+  <tr><td><code>nail_nomtp</code>（MTP off）</td><td class="num">n/a</td><td class="num">0/0</td><td class="num"><b>9.59</b></td></tr>
+</table>
+
+<p>⇒ <b>12.57 ≥ 9.59（+31%）</b>。<span class="small">（誠實標註：每臂 3 請求、單 carrier、單池、熱未控制。）</span></p>
+
+<h2 id="s3">3. M5：交付了什麼、為什麼結案為死路</h2>
+
+<h3>3.1 交付</h3>
+
+<p>新增 <code>llama_expert_cache_prerouter_predict()</code>／<code>_score()</code>（<code>CGC_PREROUTER=1</code>、
+<code>CGC_PREROUTER_TOP_K</code> 預設 8），呼叫點在 <code>llama-context.cpp:5373</code>（score）與
+<code>:5377</code>（predict 下一層）。它排序既有的 <code>freq[layer]</code> 並呼叫<b>既有</b>的
+<code>llama_expert_cache_prefetch_slot()</code>。</p>
+
+<h3>3.2 判定的三個讀數 ＋ 一個機制</h3>
+
+<table>
+  <tr><th>依據</th><th>讀數</th><th>出處</th></tr>
+  <tr><td><code>fill_wait</code></td><td class="num"><b>0.000 ms</b></td>
+      <td><code>docs/M3_VERDICT_2026-09-17.md</code> §3（池填充不在關鍵路徑）</td></tr>
+  <tr><td><code>queued / pred_total</code></td><td class="num">1062 / 64320 = <b>1.65%</b></td>
+      <td>本輪 B 臂（4 個請求）</td></tr>
+  <tr><td><code>precision</code></td><td class="num"><b>4.2%</b></td><td>同上</td></tr>
+  <tr><td>機制</td><td colspan="2">predictor 排序 <code>freq</code> 的 top-K，而 <code>prewarm_hot</code>
+      （<code>llama-context.cpp:1928</code>）在<b>第一步 decode 之前</b>就用<b>同一個 <code>freq</code></b>
+      把池填好 ⇒ 預測的專家<b>按構造</b>已 resident，<code>prefetch_slot</code> 對 resident 直接 <code>return -1</code>
+      （<code>llama-expert-cache.cpp:1326-1331</code>）</td></tr>
+</table>
+
+<p>兩次長度不同的觀測（同一顆 binary、同一 profile）：</p>
+
+<table>
+  <tr><th>序列長度</th><th class="num">calls</th><th class="num">queued</th><th class="num">pred_total</th>
+      <th class="num">hit</th><th class="num">precision</th></tr>
+  <tr><td>gate 的 3-token probe</td><td class="num">80</td><td class="num"><b>0</b></td>
+      <td class="num">320</td><td class="num">41</td><td class="num">12.8%</td></tr>
+  <tr><td>n-predict 200</td><td class="num">1840</td><td class="num"><b>233</b></td>
+      <td class="num">14400</td><td class="num">547</td><td class="num">3.8%</td></tr>
+</table>
+
+<div class="box b-red">
+  <p><b>⚠️ 實作缺陷（若要重開，必須先修）：</b>呼叫點<b>沒有 <code>cgc_is_decode_graph()</code> gate</b>
+  ⇒ prefill／MTP draft／trunk verify <b>都會跑</b> predictor，<b>違反 M5 工作項的「只做 decode」</b>。
+  （同一位置的 SpAc 註解明寫它 fires on every path that reaches here。）
+  所以上表的 <code>calls</code>／<code>queued</code> 是 <b>prefill 與 decode 混合</b>的數字。</p>
+</div>
+
+<h3>3.3 重開條件（三個都要）</h3>
+<ol>
+  <li>先修 <code>decode-only</code> gate；</li>
+  <li>換一個<b>與 <code>prewarm</code> 不同源</b>的預測器；</li>
+  <li>在 <b><code>fill_wait &gt; 0</code></b> 的配置上量 —— 那才是預取有空間的 regime。</li>
+</ol>
+<p>並且任何重開的量測都要走 <code>M1_WORKITEM4_…</code> §6 改寫後的那套紀律
+（交錯 ≥ 3 輪、配對中位與 IQR、同 build／同池／同 profile、只有 COLD-STATE 可作交付數字）。</p>
+
+<h2 id="s4">4. 一個不能讀成增益的 A/B</h2>
+
+<p><code>CGC_PREROUTER</code> 開／關，各 4 個請求（prompt 208 token、decode 96–112 token）、
+<code>temperature = 0</code>、同一顆 binary、池 8 GiB、<b>開跑前熱狀態是 COLD
+（<code>notifyutil -g com.apple.system.thermalpressurelevel</code> = 0）</b>、無其他量測行程：</p>
+
+<table>
+  <tr><th></th><th>A（<code>CGC_PREROUTER</code> 未設）</th><th>B（<code>=1</code>）</th></tr>
+  <tr><td>decode t/s（按順序）</td>
+      <td class="num">3.64 / 5.25 / 9.30 / 7.30</td><td class="num">7.59 / 7.33 / 7.66 / 3.97</td></tr>
+  <tr><td>decode t/s 中位</td><td class="num">6.28</td><td class="num"><b>7.50（+19%）</b></td></tr>
+  <tr><td>prefill t/s（按順序）</td>
+      <td class="num">17.6 / 24.2 / 22.0 / 31.6</td><td class="num">28.9 / 39.6 / 41.7 / 38.3</td></tr>
+</table>
+
+<div class="box b-red">
+  <p><b>這組數字不能用來判 overlap，而且它的結論是「功效不足」，不是「無差異」：</b></p>
+  <ul>
+    <li><b>A 臂自己的散佈是 2.6×</b>（3.64 → 9.30），而判準是 <b>10%</b> ⇒ 功效不足。</li>
+    <li><b>B 跑在 A 之後、環境更暖</b>（prefill 17.6→31.6 對 28.9→41.7）⇒ 「+19%」與暖機方向一致，
+        是<b>混淆</b>不是增益。</li>
+    <li>因此「B 的中位比 A 高 19%」<b>沒有證據價值</b>。寫在這裡的唯一目的是<b>防止它日後被引成
+        「M5 有 +19%」</b>。</li>
+  </ul>
+</div>
+
+<p class="small">原始讀數：<code>Backup/cgc_logs/en_probe_m5ab-off1.json</code>、
+<code>Backup/cgc_logs/en_probe_m5ab-on1.json</code>（<code>Backup/</code> 是 gitignored）。
+驅動 <code>/tmp/en_m4m5_probe.py</code> 是一次性探針，<b>不在版控內、也不適合當交付儀器</b>：
+它不交錯兩臂、每臂只起一次 server、也不報中位與 IQR —— 正好是本文判定為「功效不足」的那個形狀。</p>
+
+<h2 id="s5">5. M3：失敗分支的結案</h2>
+
+<p>離開條件（<code>docs/ROADMAP_PREFILL250_DECODE25_2026-09-13.md</code> §M3 原文）：
+<b>成功</b> ⇒ decode（MTP off）≥ 15 t/s 且 M1/M2 = 100%；<b>失敗</b> ⇒ 寫一份「找不到路」的結論，
+<b>附上 M0 的剖面表當證據</b>。</p>
+
+<p><b>判定未達</b>（可引用值 <b>10.78 t/s</b>，16:49 的 NOMINAL 剖面，與 09-16 逐字吻合；15 需要 1.39×）。
+失敗分支的交付物即 <code>docs/M3_VERDICT_2026-09-17.md</code>，它比 roadmap 要求的多做了三件事：</p>
+
+<ol>
+  <li><b>附了剖面證據</b>（<code>CGC-PHASE</code> 的相位拆解 ＋ <code>CGC-GPUTIME</code> ＋ <code>CGC-DECPROF</code>）。</li>
+  <li><b>把三條路正式關閉</b>：圖建構／alloc／inputs = <b>0.07%</b>（0.023／0.037／0.026 ms 對比
+      <code>compute</code> 118.5 ms —— 差三個數量級，熱不可能改變）；IO／填槽 = <code>fill_wait 0.000 ms</code>。</li>
+  <li><b>把兩個儀器正式關閉</b>：<code>CGC_PHASE_TIMING</code>（<code>compute == gpu</code> 逐位相同 ⇒ 拆不開）；
+      <code>CGC_VERIFY_OP_TIMING</code>（目標判定含 <code>node-&gt;src[2]-&gt;ne[1] &gt; 1</code> ⇒
+      <b>只在 T&gt;1 生效</b>，而 M3 的判準是 T=1 ⇒ <b>對 M3 零輸出</b>）</li>
+</ol>
+
+<p>⇒ <code>debug-verify-path-breakdown.md</code> 那組逐型別數字（gate／up／down ≈ 0.8／0.8／1.0 ms）
+<b>不能移植到 T=1 的 decode</b>。唯一活路是<b>逐節點 GPU 時間（Metal counter sample buffer）</b>，
+因為 <code>CGC-GPUTIME</code> 的粒度只到 segment（＝層）。</p>
+
+<div class="box b-blue">
+  <p><b>正確述句：</b>「M3 未達標，但失敗已按離開條件的另一支記錄成<b>可稽核的結論</b>，
+  並指名了能裁決它的量測。」<b>不要</b>把「M3 今天關掉了三條路」讀成「M3 有進展所以快達標」。</p>
+</div>
+
+<h2 id="s6">6. D5 與現場閘門（原文）</h2>
+
+<h3>6.1 D5 數值閘門（<code>scripts/check/m123_oracle_gate.py</code>）</h3>
+
+<pre><code>GATE en-m4m5-inert: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+cross-tab: {'num_eq_dec_eq': 9, 'num_eq_dec_ne': 0, 'num_ne_dec_eq': 0, 'num_ne_dec_ne': 0}
+oracle A: Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident_v6_nbaware.jsonl  (9 entries)
+summary  : Backup/m123_oracle_gate/summary_en-m4m5-inert.json</code></pre>
+
+<p>⇒ <b>M4／M5 的程式碼在預設關閉下對數值零影響</b>（<code>comparable = true</code>、gate 蓋章的 PASS）。</p>
+
+<div class="box b-amber">
+  <p><b>這份 D5 的歸屬與「commit 前重跑失敗」的交代（照實寫，不摺進「通過」）：</b></p>
+  <ul>
+    <li><b>歸屬：</b>gate 的 cap 是 <code>19:36</code>，而 <code>libllama.0.0.279.dylib</code> 的 mtime 是
+        <code>19:35:52</code>、<code>libllama-common.0.0.279.dylib</code> 是 <code>19:35:59</code>
+        —— <b>cap 晚於產物，兩者不重疊</b>，所以這份 PASS 可歸屬
+        （<code>cgc-commit-gate</code> §2.6 要的就是這個對眼）。該 build 之後<b>沒有再建置</b>。</li>
+    <li><b>commit 前的重跑失敗：</b>以 <code>--tag en-m4m5-commit</code> 重跑時，server 在
+        <b>載入模型階段</b>被 SIGTERM（<code>run_server.sh: line 1992: … Terminated: 15</code>），
+        未寫出 summary、未取得判定。<b>原因是記憶體壓力</b>：<code>vm_stat</code> 的
+        <code>Pages free</code> 只剩 <b>82 MB</b>（<code>5009 × 16384</code>），
+        而 <code>vm.swapusage</code> 是 <b>used 10351.69 MB / 11264 MB</b>、
+        Swapins 111695859 / Swapouts 131502717 —— 那是本輪連跑兩次探針（各載入一次 13 GB）
+        與兩次 gate 疊出來的 <b>carried swap</b>，正是 <code>M3_VERDICT</code> §D 記載的那個序列效應。</li>
+    <li><b>它能不能代替？</b>重跑晚於 <code>run_server.sh</code> 的兩處修正（<code>19:39</code>）。
+        那兩處是<b>註解</b>與<b>兩個條件式 allowlist 塊</b>（條件皆為 <code>-n "${VAR:-}"</code>，
+        分別是 <code>CGC_PREROUTER</code>／<code>CGC_PREROUTER_TOP_K</code>／<code>CGC_MTP_REJECTION</code>
+        與 <code>LLAMA_EXPERT_CACHE_PREFETCH_DBG</code>）⇒ 在 gate 的跑法（不設這些變數）下，
+        <code>SERVER_ENV</code> <b>逐項不變</b>。這是<b>讀 diff 可確認</b>的，不是推理的省略。</li>
+  </ul>
+  <p class="small">⇒ 本 commit 引用的 D5 是 <code>en-m4m5-inert</code>；它<b>不是</b>「當前 run_server.sh 上跑出來的」，
+  而是「同一顆 binary、gate 跑法下等價的 run_server.sh 上跑出來的」。兩者的差距已逐條列在上面。</p>
+</div>
+
+<p>第二臂（顯式開 M5）的數值也全是 9/9，但 gate 判 <code>INVALID COMPARISON</code>，
+唯一的 config diff 是 <code>ENV.CGC_PREROUTER: ref='&lt;absent&gt;' now='1'</code>：</p>
+
+<pre><code>GATE en-m5-pre: INVALID COMPARISON -- reference was dumped under a different
+  numerics-determining configuration (1 diffs).
+  observed M1=9/9  M2=9/9  M3=9/9  n=9 (printed for information, NOT a verdict)</code></pre>
+
+<div class="box b-amber">
+  <p><b>讀法：</b>gate 的「可比性」是 <b>env-stamp 級</b>的保守判定，不是數值判定 —— 它分不清
+  「這個 env 中性」與「這個 env 改了數值」，而保守是它該做的。
+  <b>「逐位元相同」的證據在 M1 那行，不在 VERDICT 那行。</b></p>
+</div>
+
+<h3>6.2 現場閘門（<code>cgc-commit-gate</code> §3 的四條 ＋ 兩條相關的）</h3>
+
+<pre><code>python3 agent_harness/engine_loop/traces/validate.py
+  -> OK
+  lessons.jsonl: 159 records {'lesson': 159}
+  -> OK
+
+python3 agent_harness/engine_loop/traces/selftest.py
+  10/10 injected violations rejected
+
+python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  memory index OK: 7 file(s), 170 section(s), no drift
+
+python3 agent_harness/engine_loop/index_assets.py --check
+  manifest OK: 106 assets, existence + bytes + mtime all agree
+
+python3 agent_harness/engine_loop/wrappers/classify.py --check
+error: scripts/check/ 與分類表不一致 —— 磁碟上有但沒被分類：['phase_split_ab.py']
+
+python3 agent_harness/shared/check_shell_cjk.py --root "$PWD"
+    scripts/check/m1_early_verification/test_union_slots.sh   L62: $PORT 後接 '）'
+    scripts/run_native_baseline.sh                            L30: $QUANT 後接 '（'</code></pre>
+
+<div class="box b-amber">
+  <p><b>兩條紅燈的歸屬（都不是本 commit 造成的）：</b></p>
+  <ul>
+    <li><code>classify.py --check</code> 指名的 <code>scripts/check/phase_split_ab.py</code> 是<b>別條線</b>
+        在 20:38 commit 的腳本（<code>phase-split prefill A/B</code> 驅動）。
+        依 <code>cgc-commit-gate</code> §4「紅燈不是你的錯時，不要急著重生把它消掉」，
+        <b>本 commit 不動 <code>classify.py</code></b>（替別人分類會把判斷寫進我的 commit，又要多一輪索引重生）。</li>
+    <li><code>check_shell_cjk.py</code> 的兩處是<b>既有欠賬</b>（<code>test_union_slots.sh</code>、
+        <code>run_native_baseline.sh</code>），且兩者都<b>沒有 <code>set -u</code></b> ⇒ 症狀是靜默的文字損壞
+        （結尾的 <code>）</code> 被吃掉），不是崩潰。本輪新增的檔案 0 命中。</li>
+  </ul>
+</div>
+
+<h2 id="s7">7. 不能說的話</h2>
+
+<ul>
+  <li><b>不能說「M4 的拒絕取樣已被證明有增益」</b> —— 2.3 節的兩個讀數不是配對實驗（n=2 輪、
+      分母不同、不同 server 啟動）。能說的是「方向與理論一致」。</li>
+  <li><b>不能說「M5 量過了，沒差」</b> —— 4 節的 A/B 功效不足（A 臂散佈 2.6× 對判準 10%）。
+      能說的是「上界論證顯示增益 ≈ 0」（3.2 節），而不是「量出來是 0」。</li>
+  <li><b>不能說「M3 有進展」</b> —— 它未達標，且今天<b>沒有可執行的下一步</b>；
+      今天的產出是「把路關掉」與「指名唯一活路」。</li>
+  <li><b>不能把 12.57／9.59 當成 decode 的絕對值</b> —— 它們綁在
+      <code>mtp_accept_ab.py</code> 那個 harness（12–15 token prompt、熱狀態未控制）上，
+      與 10.78／12.62 那個家族不可比。<b>可引用的是比值（+31%）。</b></li>
+  <li><b>未做</b>：M4 工作項 2（batched-union gather 套進 verify）；M1 的 6／10 GiB 池、
+      <code>union-routable</code>、chunk 2048、<code>RSS @ 10 GiB</code>；48 題品質；
+      M5 的 <code>decode-only</code> gate 修正。</li>
+</ul>
+
+<hr>
+<p class="small">本文是 <code>docs/M3_M5_CLOSURE_2026-09-17.md</code> 的白皮書版，對應本 commit
+（M4／M5 的編碼、<code>run_server.sh</code> 的兩處註解更正與 allowlist 追加、M3／M5 結案）。
+D5 的數值半與現場閘門的輸出見 §6；閘門輸出是<b>本次提交所屬的那棵樹</b>上跑出來的原文。</p>
+
+</div>
+</body>
+</html>

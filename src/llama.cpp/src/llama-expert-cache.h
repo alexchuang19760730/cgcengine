@@ -186,6 +186,10 @@ struct llama_expert_cache {
     // accumulated during prefill; the first decode step fills the pool with the top-K hot set
     // (instead of the loader's experts-0..n prewarm, which ignores actual routing).
     std::vector<std::vector<uint64_t>> freq;      // [layer][expert] prefill route counts
+    // [CGC M5 prerouter 2026-09-17] The experts predicted FOR this layer (so the scoring at the
+    // layer's own hook can compare prediction against the actual selection). Only written when
+    // CGC_PREROUTER=1; empty in every default run, so nothing downstream can observe it.
+    std::vector<std::vector<uint32_t>> prerouter_pred;  // [layer] = predicted expert ids
     // [CGC mass-coverage measurement 2026-09-06] accumulate the actual softmax MASS carried by
     // every expert selection (not just counts) so a post-run report can answer "would the
     // resident top-K cover enough routing MASS?" — the metric that matters for renorm quality
@@ -368,6 +372,20 @@ struct llama_expert_cache {
     size_t n_prewarm_misses   = 0;
     size_t n_prefetch = 0;          // pool prefetches queued to the bg thread
     size_t n_prefetch_dropped = 0;  // skipped (queue full / no free slot / already resident) — TOTAL of all drop reasons below
+    // [CGC M5 prerouter 2026-09-17] Prefetch-only predictor counters. The roadmap's M5 exit
+    // criterion is stated in terms of OVERLAP (ms), not hit rate — so the two numbers here are the
+    // ones that decide whether a queued prefetch could have helped at all:
+    //   n_prerouter_hit / n_prerouter_pred_total = the fraction of predicted experts that the layer
+    //   actually selected. A prefetch of an expert nobody selects buys nothing; a prefetch of one
+    //   that IS selected is the only case where the synchronous pread could have been avoided.
+    // Whether that saving shows up as wall-clock is decided by the existing miss attribution
+    // (compulsory vs capacity) plus CGC-PHASE's fill_wait, NOT by these counters.
+    size_t n_prerouter_calls       = 0;  // predict() invocations with the predictor ON
+    size_t n_prerouter_queued      = 0;  // prefetch_slot returned 0 (queued for the bg thread)
+    size_t n_prerouter_nodata      = 0;  // no freq data for that layer -> nothing to predict
+    size_t n_prerouter_scored      = 0;  // score() calls that had a prediction to score
+    size_t n_prerouter_pred_total  = 0;  // predicted experts that were scored
+    size_t n_prerouter_hit         = 0;  // of those, how many the layer actually selected
     // [CGC Prefetch Drop Audit 2026-09-07] per-reason drop counters. The legacy n_prefetch_dropped
     // only counted 2 of 12 drop points (drain_layer + prefetch_slot no-evictable). This struct
     // classifies EVERY silent drop so replay/database/precommit can see the real loss breakdown.
@@ -826,6 +844,35 @@ int64_t llama_expert_cache_fill_layer_slab(llama_expert_cache * cache, uint32_t 
 // Non-blocking; uses only FREE slots (never evicts for a prediction). Returns 0 if queued, -1 if
 // skipped (pool inactive / already resident or queued / no free slot / queue full).
 int32_t llama_expert_cache_prefetch_slot(llama_expert_cache * cache, uint32_t layer, uint32_t expert);
+// [CGC M5 prerouter 2026-09-17] PREFETCH-ONLY expert predictor (env CGC_PREROUTER=1).
+//
+// Roadmap M5: "only decode, only L+1, only the 8, only time". This ranks the layer's recorded
+// route counts (cache->freq, filled by LLAMA_EXPERT_CACHE_ROUTE_RECORD=1) and queues the top-`top_k`
+// experts through llama_expert_cache_prefetch_slot(), which is free-slot-only BY CONSTRUCTION
+// ("never evicts for a prediction") — i.e. exactly the PREFETCH_ONLY semantics.
+//
+// WHAT THIS FUNCTION CANNOT DO, stated so a later reader does not have to re-derive it:
+//   * it never reserves, allocates or pins a slot;
+//   * it never writes slot_owner / slot_table;
+//   * it does not consult the current routing decision, so a misprediction costs one queued pread
+//     (or nothing at all), never a resident eviction and never a different expert.
+// The WIP it is ported from (Backup/wip_p1prime_20260911/) also had a `prerouter_staged_reserve`
+// that DID reserve slots before the real routing decision. That half is deliberately NOT ported:
+// it makes predictions decide routing, which is the one thing M5's work item forbids.
+//
+// NOT the trained per-layer linear head the roadmap sketches ("full implementation would require a
+// trained linear projection per layer") — that head does not exist and is not trained here. This is
+// the frequency fallback the WIP actually shipped, so the honest statement is "a route-frequency
+// predictor", and its ceiling is whatever route frequency can predict.
+//
+// Returns the number of experts queued (0 = nothing queued), or -1 when the predictor is off / has
+// no data for that layer. Call it with layer+1 from layer's hook to get the L+1 prefetch.
+int32_t llama_expert_cache_prerouter_predict(llama_expert_cache * cache, uint32_t layer, uint32_t top_k);
+// Score the prediction that was made FOR `layer` against the experts it actually selected.
+// Returns the number of predicted experts that were selected (increments the counters either way).
+// No-op (returns 0) when the predictor is off, so a default run pays one predictable-branch test.
+uint32_t llama_expert_cache_prerouter_score(llama_expert_cache * cache, uint32_t layer,
+                                            const uint32_t * selected, size_t n_selected);
 // L3 Option A: stabilize a layer's pool region before its FFN dispatches. The Metal backend's
 // async tensor copy is region-wide (all n_slots), so ANY in-flight bg fill for the layer would
 // tear it. Drops the layer's still-queued fills (ensure_slot re-fills if actually needed) and

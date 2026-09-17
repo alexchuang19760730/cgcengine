@@ -5339,6 +5339,46 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
         uidx[uni[k]] = (uint32_t) k;
     }
 
+    // [CGC M5 prerouter 2026-09-17] PREFETCH-ONLY predictor, decode only. Roadmap M5: "only decode,
+    // only L+1, only the 8, only time".
+    //
+    // WHY THIS SITE, and not the route-record block further down: that block sits AFTER the
+    // `cgc_l4_skip_layer0_on() && il == 0` early return, so a predictor called from there could
+    // never make a prediction at layer 0 -- and therefore never prefetch layer 1. The roadmap's own
+    // placement measurement names layers 1/2 as the churn-heaviest (distinct 250-253/256), i.e.
+    // exactly the layers that would have been silently skipped. Here `routes` is already built and
+    // the layer-0 return has not happened yet.
+    //
+    // THREE INDEPENDENT GATES, so a default run cannot reach any of this: `prerouter_on` is a
+    // function-local static over getenv, the predictor returns -1 on its own when unset, and the
+    // predicate is the same `n_tokens <= cgc_pool_max_tokens()` the pool path itself uses.
+    //
+    // WHAT IT DOES NOT DO: it cannot change routing. The only side effect is queueing a background
+    // fill of a NON-RESIDENT expert into a FREE slot (llama_expert_cache_prefetch_slot is
+    // free-slot-only and never evicts for a prediction). No slot is reserved, no owner is written.
+    {
+        static const bool prerouter_on = getenv("CGC_PREROUTER") != nullptr;
+        if (prerouter_on && n_tokens <= (int64_t) cgc_pool_max_tokens()) {
+            // Read once: a per-call getenv would be a real cost inside the decode loop, and the
+            // value is a constant for the process. Clamped to the ceiling prefetch_slot can accept.
+            static const uint32_t prerouter_top_k = [] {
+                const char * s = getenv("CGC_PREROUTER_TOP_K");
+                const long v = s != nullptr ? strtol(s, nullptr, 10) : 8;
+                return (uint32_t) (v > 0 && v <= 64 ? v : 8);
+            }();
+
+            // Score first: the record present for THIS layer was written one layer ago, so scoring
+            // it here pairs prediction and outcome without storing anything extra. Then predict for
+            // the next layer, which is the only step the roadmap allows.
+            llama_expert_cache_prerouter_score(cache, (uint32_t) il, routes.data(), routes.size());
+
+            const uint32_t next_layer = (uint32_t) il + 1;
+            if (next_layer < (uint32_t) model.hparams.n_layer_all) {
+                llama_expert_cache_prerouter_predict(cache, next_layer, prerouter_top_k);
+            }
+        }
+    }
+
     // [CGC SpAc 2026-09-06] EMA utility feed (CGC_SPAC=1 only; zero cost default): every routed
     // step updates this layer's utility vector (full-EMA decay + routed bump). Fires on every
     // path that reaches here — large prefill, MTP draft (ctx MTP) and trunk verify alike — so

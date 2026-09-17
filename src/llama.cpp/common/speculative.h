@@ -3,6 +3,12 @@
 #include "llama.h"
 #include "common.h"
 
+// [CGC M4 rejection sampling 2026-09-17] common_draft_dist (the draft's own distribution at a
+// drafted position) lives in sampling.h. Included rather than forward-declared: `std::vector<T>`
+// with an incomplete T is only accidentally valid and breaks the moment anything instantiates it.
+// No cycle -- common.h includes neither header.
+#include "sampling.h"
+
 struct common_speculative;
 
 // comma separated list the provided types
@@ -57,6 +63,19 @@ struct common_speculative_draft_params {
 
     // the generated draft from the last _draft() call
     llama_tokens * result;
+
+    // [CGC M4 rejection sampling 2026-09-17] OPTIONAL caller-owned storage, parallel to `result`:
+    // for each drafted position, the distribution the draft actually drew from. Same ownership
+    // convention as `result` / `prompt` (the caller owns the storage; this struct only points at it).
+    //
+    // Lifetime requirement, and it is the reason this is a raw pointer rather than a value: the
+    // accept step runs AFTER draft() returns, and it is the accept step that consumes this. A
+    // caller that lets it dangle would read freed memory only on the rejection path -- i.e. it would
+    // look fine in every run where the draft happened to be right.
+    //
+    // When nullptr the draft step skips the copy entirely (one predictable branch), so a default
+    // run pays nothing for this feature.
+    std::vector<common_draft_dist> * dist = nullptr;
 };
 
 common_speculative_draft_params & common_speculative_get_draft_params(common_speculative * spec, llama_seq_id seq_id);

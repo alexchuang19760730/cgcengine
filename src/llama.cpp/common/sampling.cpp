@@ -12,6 +12,7 @@
 #include <climits>
 #include <cmath>
 #include <cstring>
+#include <random>
 #include <unordered_map>
 #include <vector>
 
@@ -690,21 +691,145 @@ llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_co
     return id;
 }
 
+// [CGC M4 rejection sampling 2026-09-17] The rejection test and the residual draw, shared by both
+// sampling paths so they cannot drift apart.
+//
+// On entry `gsmpl->cur_p` must already hold the TARGET's post-chain candidate array for this
+// position -- both callers leave it there. `q` is the draft's candidate array for the same position.
+//
+// Returns true  => the draft token survives (the caller emits it and continues the draft run).
+// Returns false => the draft token is rejected; *out_token is set to the residual draw (the caller
+//                  emits THAT token and stops the run -- which is exactly what speculative decoding
+//                  does at the first rejection).
+//
+// `rng` is seeded ONCE by the caller from common_sampler_get_seed() and is deliberately kept OUT of
+// the sampler chain's own stream. That separation is load-bearing: consuming the chain's RNG here
+// would advance it on every verify step and thereby change every subsequent sampled token, so a
+// rejection-sampling A/B would stop being a comparison of accept rules and become a comparison of
+// two different random trajectories.
+static bool cgc_rejection_accept(struct common_sampler * gsmpl, llama_token draft_tok,
+                                 const common_draft_dist & q, std::mt19937_64 & rng,
+                                 llama_token * out_token) {
+    llama_token_data_array * p_arr = &gsmpl->cur_p;
+
+    float q_x = 0.0f;
+    for (size_t k = 0; k < q.ids.size(); ++k) {
+        if (q.ids[k] == draft_tok) {
+            q_x = k < q.probs.size() ? q.probs[k] : 0.0f;
+            break;
+        }
+    }
+    float p_x = 0.0f;
+    for (size_t k = 0; k < p_arr->size; ++k) {
+        if (p_arr->data[k].id == draft_tok) {
+            p_x = p_arr->data[k].p;
+            break;
+        }
+    }
+
+    // Degenerate q -- a ratio with a zero denominator is not defined, so ACCEPT. This is the honest
+    // choice: q_x == 0 means "the draft sampler could not have drawn this token", which under a
+    // correct draft sampler cannot happen. Treating it as a rejection would convert a draft-side bug
+    // into a silent collapse of the accept rate, which is precisely the failure mode that made the
+    // exact-match rule unreadable for so long.
+    if (!(q_x > 0.0f)) {
+        return true;
+    }
+
+    const float ratio = p_x / q_x;
+    const double u = std::uniform_real_distribution<double>(0.0, 1.0)(rng);
+    if (u < (double) std::min(1.0f, ratio)) {
+        return true;
+    }
+
+    // Rejected: emit a draw from the residual r(e) = max(0, p(e) - q(e)) over the UNION of the two
+    // candidate sets. Tokens outside both sets have r == 0 by construction, so the union is
+    // sufficient and no n_vocab-sized buffer appears anywhere in the decode loop.
+    std::unordered_map<llama_token, float> resid;
+    resid.reserve(p_arr->size + q.ids.size());
+    for (size_t k = 0; k < p_arr->size; ++k) {
+        resid[p_arr->data[k].id] += p_arr->data[k].p;
+    }
+    for (size_t k = 0; k < q.ids.size(); ++k) {
+        resid[q.ids[k]] -= (k < q.probs.size() ? q.probs[k] : 0.0f);
+    }
+    double total = 0.0;
+    for (auto & kv : resid) {
+        if (kv.second > 0.0f) {
+            total += kv.second;
+        } else {
+            kv.second = 0.0f;
+        }
+    }
+    if (!(total > 0.0)) {
+        // No positive residual mass (possible when q's candidate set is a superset of p's). Emitting
+        // the target's own selected token keeps the output inside p's support, which is the property
+        // that actually matters for correctness -- better than inventing mass that is not there.
+        *out_token = p_arr->data[p_arr->selected].id;
+        return false;
+    }
+    // Sort by token id before drawing: unordered_map iteration order is unspecified, and an
+    // unspecified draw order would make this path non-reproducible without changing any real
+    // behaviour -- the worst kind of nondeterminism to debug.
+    std::vector<std::pair<llama_token, float>> sorted(resid.begin(), resid.end());
+    std::sort(sorted.begin(), sorted.end(),
+              [](const std::pair<llama_token, float> & a, const std::pair<llama_token, float> & b) {
+                  return a.first < b.first;
+              });
+    double r = std::uniform_real_distribution<double>(0.0, total)(rng);
+    for (const auto & kv : sorted) {
+        r -= kv.second;
+        if (r <= 0.0) {
+            *out_token = kv.first;
+            return false;
+        }
+    }
+    *out_token = sorted.back().first;
+    return false;
+}
+
+// True when the rejection rule is active. Read once -- a per-verify-step getenv would be a real cost
+// inside the decode loop, and the value is a constant for the process. Public (not static) so the
+// callers can skip populating the draft distributions entirely when the rule is off.
+bool common_sampler_mtp_rejection_on() {
+    static const bool on = getenv("CGC_MTP_REJECTION") != nullptr;
+    return on;
+}
+
 std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sampler * gsmpl, struct llama_context * ctx, const std::vector<int> & idxs, const llama_tokens & draft, bool grammar_first) {
+    return common_sampler_sample_and_accept_n(gsmpl, ctx, idxs, draft, (const std::vector<common_draft_dist> *) nullptr, grammar_first);
+}
+
+std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sampler * gsmpl, struct llama_context * ctx, const std::vector<int> & idxs, const llama_tokens & draft, const std::vector<common_draft_dist> * draft_dist, bool grammar_first) {
     GGML_ASSERT(idxs.size() == draft.size() + 1 && "idxs.size() must be draft.size() + 1");
 
     std::vector<llama_token> result;
     result.reserve(idxs.size());
 
+    const bool rejection = common_sampler_mtp_rejection_on();
+    // Seeded once per call from the sampler's own seed, so the same run reproduces the same accept
+    // decisions, but the chain's stream is untouched (see cgc_rejection_accept).
+    std::mt19937_64 rng(rejection ? (uint64_t) common_sampler_get_seed(gsmpl) : 0u);
+
     size_t i = 0;
     for (; i < draft.size(); i++) {
-        const llama_token id = common_sampler_sample(gsmpl, ctx, idxs[i], grammar_first);
+        llama_token id = common_sampler_sample(gsmpl, ctx, idxs[i], grammar_first);
 
+        bool accepted;
+        if (rejection && draft_dist != nullptr && i < draft_dist->size() &&
+                !(*draft_dist)[i].ids.empty()) {
+            accepted = cgc_rejection_accept(gsmpl, draft[i], (*draft_dist)[i], rng, &id);
+        } else {
+            accepted = (draft[i] == id);
+        }
+
+        // The emitted token -- not the one the target happened to draw -- is what the sampler state
+        // must see: under rejection the two differ exactly when the draft was rejected.
         common_sampler_accept(gsmpl, id, true);
 
         result.push_back(id);
 
-        if (draft[i] != id) {
+        if (!accepted) {
             break;
         }
     }
@@ -733,6 +858,11 @@ std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sample
 // instead of llama_get_logits_ith(ctx, idx). Used when sub-batches split the
 // speculative tokens across multiple llama_decode() calls (L4 caps n_batch=1).
 std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sampler * gsmpl, struct llama_context * ctx, const std::vector<int> & idxs, const llama_tokens & draft, const std::vector<const float *> & external_logits, bool grammar_first) {
+    return common_sampler_sample_and_accept_n(gsmpl, ctx, idxs, draft, external_logits,
+                                              (const std::vector<common_draft_dist> *) nullptr, grammar_first);
+}
+
+std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sampler * gsmpl, struct llama_context * ctx, const std::vector<int> & idxs, const llama_tokens & draft, const std::vector<const float *> & external_logits, const std::vector<common_draft_dist> * draft_dist, bool grammar_first) {
     GGML_ASSERT(idxs.size() == draft.size() + 1 && "idxs.size() must be draft.size() + 1");
     GGML_ASSERT(external_logits.size() == idxs.size() && "external_logits.size() must equal idxs.size()");
 
@@ -772,15 +902,28 @@ std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sample
         return gsmpl->cur_p.data[gsmpl->cur_p.selected].id;
     };
 
+    // [CGC M4 rejection sampling 2026-09-17] Same rule as the ctx-logits path, same helper, same
+    // RNG separation (seeded from the sampler's seed, never from the chain's stream).
+    const bool rejection = common_sampler_mtp_rejection_on();
+    std::mt19937_64 rng(rejection ? (uint64_t) common_sampler_get_seed(gsmpl) : 0u);
+
     size_t i = 0;
     for (; i < draft.size(); i++) {
-        const llama_token id = sample_external(external_logits[i], grammar_first);
+        llama_token id = sample_external(external_logits[i], grammar_first);
+
+        bool accepted;
+        if (rejection && draft_dist != nullptr && i < draft_dist->size() &&
+                !(*draft_dist)[i].ids.empty()) {
+            accepted = cgc_rejection_accept(gsmpl, draft[i], (*draft_dist)[i], rng, &id);
+        } else {
+            accepted = (draft[i] == id);
+        }
 
         common_sampler_accept(gsmpl, id, true);
 
         result.push_back(id);
 
-        if (draft[i] != id) {
+        if (!accepted) {
             break;
         }
     }
