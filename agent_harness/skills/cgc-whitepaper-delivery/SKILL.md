@@ -6,7 +6,7 @@ agent_created: true
 
 > **這是快照，不是權威副本。**
 > 權威位置：`~/.workbuddy/skills/cgc-whitepaper-delivery/SKILL.md`（由 host 持續寫入）。
-> 本檔於 2026-09-17 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
+> 本檔於 2026-09-18 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
 > 底下的內容能被 `agent_harness/scripts/auto_git_push.ps1` 定時推送；原檔改了這裡**不會**自動跟上。
 > 要改 skill 請改原檔，再重跑 `python3 agent_harness/scripts/import_harness_snapshot.py`。
 
@@ -281,7 +281,11 @@ git diff HEAD -- <你引用過的權威檔>                # 空 ⇒ 你的重�
 
 ```sh
 # 第一個：本次的引擎／文件改動 ＋ 白皮書
-git add -A
+# ★ 逐檔 add，不要用 `git add -A`（見下方「與 cgc-commit-gate 的接口」）
+git add src/... scripts/... docs/<白皮書>.html \
+        agent_harness/engine_loop/MANIFEST.jsonl agent_harness/engine_loop/memory/INDEX.jsonl \
+        agent_harness/engine_loop/traces/lessons.jsonl
+git diff --cached --name-status          # 逐列看過：staged 清單必須只有自己的檔
 BIN_DIR='src/llama.cpp/build/bin' RUN_REPLAY_BENCH=0 \
   bash scripts/check_build_tracked.sh --repo "$PWD"
 RUN_REPLAY_BENCH=0 git commit -F <message 檔>
@@ -292,8 +296,18 @@ python3 agent_harness/engine_loop/memory/build_memory_index.py   # 先（寫 IND
 cd agent_harness/engine_loop && python3 index_assets.py && cd -  # 後（記錄 INDEX 的 bytes/mtime）
 
 # 第二個：resync（只動 INDEX.jsonl + MANIFEST.jsonl，無 src/ ⇒ D5 不必重跑，message 要寫明）
-git add -A && RUN_REPLAY_BENCH=0 git commit -m 'docs(index): resync ...'
+git add agent_harness/engine_loop/MANIFEST.jsonl agent_harness/engine_loop/memory/INDEX.jsonl \
+  && RUN_REPLAY_BENCH=0 git commit -m 'docs(index): resync ...'
 ```
+
+**★ 與 `cgc-commit-gate` 的接口（2026-09-18 修）：這一節原本兩處都寫 `git add -A`，而
+`cgc-commit-gate` §6.1 明文說 resync 不要用它。** 裁決是後者，理由是這個 repo 會同時有多條線在
+寫：`git add -A` 會把對方未定稿的 modified／untracked（實例：`agent_harness/tb_loop/agents/*`、
+`ggml-metal-ops.cpp` ＋ 它的 dylib、`Backup/cgc_logs/ids_dst_capture/arms.json`、
+`scripts/check/decode_step_profile.py`）一起收進你的 commit —— 而 resync 的賣點正是
+「只動 `INDEX.jsonl` ＋ `MANIFEST.jsonl`」。**交付那一個 commit 同樣不該用 `-A`**：
+2026-09-18 的交付就是逐檔列出 12 個路徑，並在 `git diff --cached --name-status` 上確認
+未 stage 的只剩別人的檔。
 
 - **順序不可顛倒**：`build_memory_index.py` 每次都會重寫 `INDEX.jsonl`（即使內容不變），
   所以 `MANIFEST` 必須在它之後取得 bytes/mtime。顛倒的簽名是 **`INDEX.jsonl` 的 mtime 漂移**

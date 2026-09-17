@@ -6,7 +6,7 @@ agent_created: true
 
 > **這是快照，不是權威副本。**
 > 權威位置：`~/.workbuddy/skills/cgc-prefill-thermal-delivery/SKILL.md`（由 host 持續寫入）。
-> 本檔於 2026-09-17 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
+> 本檔於 2026-09-18 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
 > 底下的內容能被 `agent_harness/scripts/auto_git_push.ps1` 定時推送；原檔改了這裡**不會**自動跟上。
 > 要改 skill 請改原檔，再重跑 `python3 agent_harness/scripts/import_harness_snapshot.py`。
 
@@ -226,6 +226,11 @@ bash Backup/run_lib_ab.sh        # 檔案互換 + 一臂暖機丟棄；退出時
    **第一候選**（見 §1）⇒ 閘門與臂報告要在**請求當下**一起記一筆負載，否則只能停在「未歸因」。
    列行程用 `ps -Ao pid=,etime=,command=`（可用）；純 `pgrep -f` 是**命令列文字比對**，
    要小心自己的指令文字被算成匹配（見第 7 條）。
+   ★ 2026-09-17 21:0x 補：**`pgrep -x llama-server`（basename 精確比對）是這裡最穩的讀法** ——
+   它既不是命令列文字比對（躲開第 7 條），也不受 `comm` 欄位語意影響。實測本機
+   `ps -Ao pid=,comm=` 印的是**完整路徑**（`47353 /Users/…/build/bin/llama-server`），
+   所以 `awk '$2=="llama-server"'` **永遠不命中** ⇒ 一種靜默的假陰性（我在 EN-80 因此兩次把
+   「自己剛啟動、正在載入的行程」讀成「被系統殺了」）。完整對照見 `cgc-commit-gate` §1.5。
 6. **`Backup/` 與 `.workbuddy/` 都在 `.gitignore` 內**（`.gitignore:396`、`:41`）。
    要交付就得 `git add -f` 或搬進 `scripts/`，否則修正只存在於本機。
 7. **★ 你自己的指令文字會讓整臂被記憶體閘門擋掉（2026-09-17 實測，毀掉一個 arm）。**

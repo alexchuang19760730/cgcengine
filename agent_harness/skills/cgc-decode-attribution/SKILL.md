@@ -6,7 +6,7 @@ agent_created: true
 
 > **這是快照，不是權威副本。**
 > 權威位置：`~/.workbuddy/skills/cgc-decode-attribution/SKILL.md`（由 host 持續寫入）。
-> 本檔於 2026-09-17 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
+> 本檔於 2026-09-18 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
 > 底下的內容能被 `agent_harness/scripts/auto_git_push.ps1` 定時推送；原檔改了這裡**不會**自動跟上。
 > 要改 skill 請改原檔，再重跑 `python3 agent_harness/scripts/import_harness_snapshot.py`。
 
@@ -18,6 +18,17 @@ agent_created: true
 ## 鐵律
 
 1. **每次跑之前 `pkill -9 -f llama-server`**，並用交錯 A/B ×3 + md5 對比。
+
+   ★★ **2026-09-18 修正：交錯 A/B 不夠，要 ABBA（含反序對）。** 同一個形狀上量 MTP，
+   用 `off,on,off` 的 A/B/A ⇒ 兩個控制臂 **10.049 vs 6.791**（差 **48%**），而它們的池統計一致到
+   0.2%（hit 96.6/96.7%、file_reads 26925/26685）⇒ 漂移是**外部的慢變數**。
+   改成**配對**（交替、短臂、對內取比值）之後仍然有偏：**ABAB 的每一對裡 `off` 總是先跑**，
+   於是 10 個臂裡「先跑的 5 個」中位 **8.387**、「後跑的 5 個」中位 **9.434**
+   ⇒ **臂的位置本身就值 12.5%**。加上反序對（`on` 先跑）之後，正序 ratio 1.071/1.171/1.013、
+   反序 0.938/0.701 ⇒ 順序校正後 `M = sqrt(1.071 × 0.820) = 0.937`。
+   ⇒ **量兩臂一律 ABBA，並在報告裡寫明「誰先跑」。**
+   （附帶定則：臂要短、丟掉 sample 0、用中位數、**計數器優於 t/s**。完整資料見
+   `docs/MTP_NET_EFFECT_PAIRED_2026-09-18.md`。）
 2. **啟動器有 env allowlist**：`scripts/run_server.sh` 只透傳列出的 `CGC_*`，
    未列出的**靜默丟棄** → 「沒效果」與「沒設到」長得一模一樣。要用任何新開關前，
    先確認它在 `run_server.sh` 裡有 `if [ -n "${VAR:-}" ]; then SERVER_ENV+=(VAR="$VAR"); fi` 區塊。
@@ -71,6 +82,29 @@ agent_created: true
 | `CGC_TENSOR_CAPTURE=<精確節點名>`（＋`CGC_TENSOR_CAPTURE_WORDS`，預設 32 上限 32） | `CGC-IDS-CAP path=DST name=<節點>.dst` | **輸出張量**的快照（2026-09-16 新增）。重用 `CGC_IDS_CAPTURE` 的同一個內核（那個內核與 ids 無關，就是「把 stride 個 int32 抄進 slot」）⇒ `.metal`／`impl.h`／`device.*`／`context.m` 一行未改，比較器也原封不動。**必須與 `CGC_IDS_CAPTURE=1` 一起開**：ids 列是比較器切 graph 的依據，少了它們 dst 列會落進一個偽 graph 而被報成 IDENTICAL（假陰性）。**只掛在 `ggml_metal_op_mul_mat_id`** ⇒ 只能擷取 gate／up／down 的輸出。名稱**精確比對**（`ffn_moe_down-1` 是 `-10..-19` 的子字串）。★ **需要一個 `ggml_metal_encoder_memory_barrier`**：ids 運算元的生產者在很多節點之前（已沉降），dst 的生產者是**緊鄰的前一個 kernel**，而這個 fork 支援內核併發。沒有屏障時讀數**不可重現** |
 | ~~`CGC_S1_OUT_CAP=1`／`=pre`~~（**既有，較舊**） | `CGC-S1: OUT`（`fnv1a64` ＋ `vals=[...]`）、`OUTSET` | **同一件事的舊版**：釘住 `ffn_moe_down` 的輸出。差別有兩點——(1) 它用 `ggml_set_output` **釘住張量**，而那會動 allocator／graph（原始碼自己寫「診斷臂專用、閘門臂永不可開」）；(2) 它印**雜湊**加少量值。⇒ **要「不擾動圖」的讀數用 `CGC_TENSOR_CAPTURE`，要層窗與雜湊用這一支。** ⚠️ 2026-09-16 交叉確認**未成立**：`CGC_S1_OUT_LAYERS=1` 跑出來的列是 `il=27` 而不是 layer 1，而 480/480 全不同 ⇒ **它的參數語意尚未弄清，不要拿它當獨立確認** |
 | `GGML_SCHED_DEBUG=2` | per-node 後端 + `GET_CAUSE` | **唯一**能回答「這個 node 落在哪個 backend、它的 src 從哪來」的儀器（=1 只有 `## SPLIT`，且走 `GGML_LOG_DEBUG` 會被預設 verbosity 濾掉） |
+
+**★ `read shape: … effective_rate=` 不是裝置速率（2026-09-17 22:4x 實測）。** 那一行是 `bytes/jobs/us_job`
+的**導出值**，而 `us/job` 含 **fill worker 的排隊／鎖／CPU 調度**，不是 SSD 延遲：同一形狀
+（散佈 0.17 MiB）**裝置實測每個 job 只要 0.24 ms（p90 0.34）**，而 log 上同一輪寫的是
+**`us/job=19406`（19.4 ms）＝ 80×**。它的算術也自相矛盾：`jobs × us/job`（26883 × 19.4 ms = **521.7 s**）
+**大於**該 cell 的 wall（**89.4 s**），因為 8 個 worker 並行（`pread_usec` 也正好是 521.7 s）。
+⇒ **不要用 `effective_rate` 或「非居民 share」推論 IO 瓶頸。** 要判 IO，折算**每 token 的磁碟位元組**
+（該輪 4.54 GiB / 512 token = **9.1 MiB/token**）× **裝置實測速率**（散佈 **639 MiB/s**、循序 **2.26 GiB/s**）
+＝ **14 ms/token**，對比 209 ms/token 的預算 ⇒ **約 7%**；而同一輪 `prefill-house` 同樣 44.5% 非居民卻跑
+**254 t/s**，是這個假設的直接反例。量法：`Backup/cgc_logs/en_io_probe_20260917.py`（唯讀，選沒被載入過的
+大檔以免 page cache 假象；重讀若快一個數量級就代表前兩項不是裝置速率）。**`fill_wait=0` 是對的**：
+消費者沒有在等 —— 這不等於 IO 不在成本裡，但這個案例裡它真的不在。
+
+**★ `CGC-SEG` 怎麼讀（2026-09-17 用它把一個 209 ms/token 的帳拆平）。** 那裡印的是**每段平均**
+（`ggml-backend.cpp:1848-1855` 註解原文）：分段迴圈把 **GPU 層 i → CPU top-k hook → submit 層 i+1**
+序列化 ⇒ **step 的 wall = Σ(wait+cb+submit) over layers**；每行平均 **160 段 ≈ 4 steps** ⇒ **1 段 = 1 層**，
+括號裡的數字是**累計段數**（÷40 = 步數，可與 reps×n_gen 對帳 ⇒ 能分辨「有沒有把某個 pass 算進去」）。
+`cb` 是「**下一層的 top-k hook：slot 管理 ＋ 阻塞式 pool 填充**」——**不是 GPU**；`submit` 是 CPU 編碼。
+判讀用**中位數**（第一段含冷池，`cb` 可貴 3 倍）。實例：96 行 × median(3021/1003/248 µs) × 40 層
+= **171 ms/token**，對上同輪實測中位 rep **178 ms**（差 4%）⇒ 帳是平的，**可以直接這樣引用**。
+**但它拆不開 `wait`**：wait 只說「CPU 在等 GPU」，要知道 GPU 是忙是閒必須**同時**開 `CGC_GPU_TIMING`
+（`gpu_busy_sum` / `gpu_union` / `gap`）。⚠️ 這個迴圈只在 `CGC_OA_ASYNC=1` 下可達；沒有它整個 graph 是一次
+async submit，三個成分都不可分。
 
 跑法：`/opt/homebrew/bin/python3 scripts/check/decode_sweep.py --profile prod25 --arms <臂>,<臂> --rounds 1 --warmup 1 --n-predict 120 --json Backup/phase_decomp/x.json`
 （`--profile` 吃的是 `CGC_SERVER_PROFILE`（如 `prod25`），**不是**矩陣臂名 `prod25-stream`。）
@@ -143,7 +177,58 @@ python3 scripts/check/llama_bench_matrix.py \
 （這一支帶 `CGC_GPU_TIMING/CGC_DECODE_PROFILE` 是為了**逐步分解／歸因**，不是 headline；
 headline 用上面那條 `--depths 512` 的標準形狀。`-d 0` 留著只為了看冷格。）
 
-逐字就是 `decode_sweep --arms p25-gputime` 的 env（兩邊都經 `run_server.sh CGC_DUMP_ENV=1`）。
+逐字就是 `decode_sweep --arms p25-gputime` 的 env（兩邊都經 **`CGC_DUMP_ENV=1` 環境變數**下的
+`run_server.sh` —— 注意那是**環境變數**，不是 argv；弄錯會真的啟一個 13 GB 的 server，見下文）。
+
+**★ 分隔符是冒號，不是分號 —— 弄錯會偽裝成「靜默空跑」**（2026-09-17 實例）：
+`PROFILE` 與第一個 env 之間是 **`:`**，env 彼此才是 `;`。整串因此**必須含一個冒號**，否則
+`llama_bench_matrix.py:492` 的 `if ":" in spec` 為假 ⇒ `:498` 拋 `unknown arm '...'`。
+
+它偽裝得極好，因為 `raise SystemExit` 發生在 `run_arm()` 的無條件落檔（`:367-368`）**之前** ⇒
+**cell 目錄全空**、wall **0.0s**、`rows=[]`、`build_commit=None`，看起來像「跑了但沒輸出」。
+實例：`prod_matrix.py:234` 曾用 `";".join(...)` 拼出沒有冒號的臂，於是**所有** `--extra-env`
+呼叫都在 0.05 s 內死掉（`/tmp/decode_ab` 臂 B、`/tmp/gpu_split` 臂 A 都是），而我一度把它
+歸因成「MTP=0 特有的失敗」。
+
+⇒ **遇到「空目錄 ＋ 0.0 s」時，下一個要看的地方是 `prod_matrix` 那份 summary JSON 的 `error`
+欄位**（`prod_matrix.py:280-281` 會把 child 的 stdout+stderr 尾 1500 字存進去），
+**不是 child 的 log —— 那份根本沒被建立**。
+
+**★ `CGC_DUMP_ENV=1` 是「環境變數」，不是「參數」** —— 弄錯的代價是一次完整的 13 GB 載入：
+`bash scripts/run_server.sh CGC_DUMP_ENV=1`（argv 形狀）**不會**進 dump 模式，而是**照常啟動 server**
+（2026-09-17 23:26 實例：pid 16194、RSS **7.89 GB**、LISTEN 8080、存活 2:08，得手動 TERM）。
+正確形狀是 `CGC_DUMP_ENV=1 bash scripts/run_server.sh`；`llama_bench_matrix.py:205` 用的就是
+`env["CGC_DUMP_ENV"] = "1"`。⇒ **`run_server.sh` 把「查環境」與「啟動」放在同一支腳本裡，
+形狀錯了沒有中間狀態。**
+
+**⚠ 而且 `resolve()` / `prod_matrix.py --dry-run` 都「不是唯讀」—— 它們會殺別人的行程。**
+`run_server.sh` 有一個 preflight，會 **SIGTERM 任何它找到的殘留 llama 行程**
+（`[preflight] 發現 1 支殘留 llama 行程，先清乾淨再起 server`）。2026-09-17 23:31，一次
+「零 GPU 讀 env」的 `resolve()` 呼叫**殺掉了鄰居正在跑的 llama-bench**（他們 30 秒後自動重試）。
+`prod_matrix.py` 的 docstring 寫「Zero GPU: this is `run_server.sh CGC_DUMP_ENV=1` plus arithmetic」
+—— **那句話是錯的**：它會摧毀鄰居的視窗。它的閘門（`--no-gate` 之外那個）保護的是 **cell**，
+**不保護 `--dry-run` 或裸 `resolve()`**。
+⇒ **別人可能正在量測時，不要呼叫 `resolve()`，也不要跑 `--dry-run`。** 要讀 env 就讀本 skill
+或 `Backup/` 的既有 dump，或先確認沒有任何 llama 行程且對方明確 idle。
+
+### `full-mtp` 的記憶體守衛，以及「不要用 prod fallback 繞過它」
+
+`run_server.sh` 的守衛（讀碼，不是推論）：
+
+| 位置 | 內容 |
+|---|---|
+| `:552 cgc_memory_guard_class` | `MTP=1 && NGL>=90 && CTX>=3072` ⇒ **`full-mtp`**（`SERVER_PROFILE=legacy-25plus` 才是 `…-known-profile`）；MTP=1 其他 ⇒ `fallback-mtp`；否則 `baseline` |
+| `:566 cgc_memory_guard_req` | `full-mtp` ⇒ 只要求 **`free_pct ≥ 40`**；`…-known-profile` 35；`fallback-mtp` 20；`baseline` 15 |
+| `:801` | `FREE_PCT` 來自 **`memory_pressure -Q`**，**不是 `vm_stat`** |
+| `:816` → `:599 cgc_apply_prod_memory_fallback` | `CGC_SERVER_MEMORY_MODE=prod` ＋ `full-mtp` ⇒ **`CTX=1024`、`NGL=8`、`BATCH=64`、`UBATCH=32`、`BUDGET=0`** |
+
+⇒ **`CGC_SERVER_MEMORY_MODE=prod` 不是「讓 MTP-on 跑得起來」的辦法**：它能把行程拉起來，但會把
+cell 換成另一套配置（**8 層上 GPU、沒有 expert pool**）⇒ 那不是生產 cell，量到的數字不可用。
+**正確的前提是等 `free_pct ≥ 40`。**
+
+**而 `memory_pressure -Q` 的 free_pct 極不穩定**：同一台機器 2026-09-17 23:25 讀 **34%**（守衛擋掉）、
+23:28 讀 **72%**（放行）—— 三分鐘內翻面。所以「現在能不能跑 MTP-on」**要用 `memory_pressure -Q` 問**，
+不要用 `vm_stat` 的 `Pages free`（它當時只有 ~80 MB，會得到相反的答案）。
 
 **`--depths 0` 是最冷的格子，不要拿它當標準。** 歷史上的「llama-bench tg 10–13 t/s」是
 **depth 512–2048**，而 depth 0 一直是 **8.7–9.8**（2026-09-16 重跑：d0 **9.52**、
@@ -242,10 +327,77 @@ SPEC_TYPE=off bash Backup/run_spec_simple.sh   # 基線臂（同一支工具、�
 - **`--spec-type none` 不是基線**：它會去載空路徑的 draft model（`failed to load draft model, ''`，
   exit 1）。基線是**完全省略** `--spec-type`。
 
-輸出是 `decoded N tokens in X seconds, speed: Y t/s` ＋ `n_drafted/n_accept/accept%` ＋
-`common_perf_print`。**這是第三個儀器**（視窗含 sampling 與 draft/verify）⇒ 不可與 llama-bench
-或伺服器的數字並排。首測（n≈48、單樣本、示範非 A/B）：no-spec **7.483** vs MTP **6.517**
-（同 NOMINAL；accept 36–53%）⇒ MTP 目前慢 **1.15×**，方向與伺服器結論一致但幅度不可互引。
+### 第四條路：`llama-bench` 內的 MTP（`--spec-type draft-mtp`，2026-09-18 **可用**）
+
+**★★ 最重要的一條（2026-09-18 真因，1 行）：batch 的 `n_past` 必須從
+`llama_memory_seq_pos_max(...) + 1` 開始，不是 0。**
+`test_gen_spec` 明確指定 batch 的 pos（`common_batch_add(batch, id_last, n_past++, …)`），
+而非 spec 的 `test_gen` 用 `llama_batch_get_one()` 讓 llama 自己配位置 —— 所以只有這條路徑要自己知道位置。
+llama-bench 每 instance 的順序是 **target ctx → warmup → depth prefill(`-d`) → prompt → gen**，
+所以 `-d 512` 已經寫過 pos 0..511；`n_past` 從 0 重來時**第一個 verify batch 的 `llama_decode` 靜默回 -1**
+（它不印任何訊息）。
+
+**★★ 症狀會誤導**：stderr 只有 `verify decode failed: ret=-1 n_tokens=4(pos 0..3) n_ctx=768 n_past=1 draft=3`
+與 teardown 的 `CGC-M2-UNREPOINT: … a second context built from this model would otherwise read a
+freed buffer` ⇒ 看起來像 Metal／記憶體／「第二個 context 踩到 freed buffer」。
+**判別式**：`-n 16 -d 0` 過、`-n 128 -d 512` 掛、`-n 128 -d 512 --no-warmup` **也**掛 ⇒ 觸發條件是
+**depth prefill**，不是 warmup。**把 draft context 的建立提前到 warmup 之前沒有用**（2026-09-18 用一次
+真的建置與一次真的執行否證了那個假設；位移本身保留在樹上，因為它與 server 同序，但**它不是原因**）。
+
+`tools/llama-bench/llama-bench.cpp` 的 `test_gen_spec()`；設計與四個坑見
+`docs/MTP_INSTRUMENT_PLAN_2026-09-17.md` 的「實作結果」節。摘要（每一條都是跑出來的）：
+
+- **★ argv 不能自己組。** 只帶 `-m` ⇒ 少了 profile 的 `--load-mode none` ⇒ **每一次**都在第一個
+  decode 的 `CGC-METAL-FAIL: command buffer 8 failed (status 5, Insufficient Memory)` abort，而
+  8 GiB vs 2 GiB pool、`-b 256` vs `-b 512`、swap 8.7–12.4 GB **全都一樣**（很容易誤判成環境）。
+  正解 `forward_argv(resolve(profile, {})['server_argv'])` —— **argv 與 env 一樣只有一條解析路徑**。
+- **`llama_model_params.load_mtp` 預設 false** ⇒ qwen35moe 的 loader 用 `TENSOR_SKIP` 建 MTP 區塊
+  （`qwen35moe.cpp:45`）⇒ `graph_mtp` assert `layer.nextn.eh_proj`（`:566`）。server 是靠
+  `--spec-type draft-mtp` 經 `common.cpp:1635` 打開的，llama-bench 沒有那條路 ⇒ 要在
+  `to_llama_mparams()` 自己設。
+- **`n_ctx = n_prompt + n_gen + n_depth`**（llama-bench 自己算的）⇒ `-n 16 -d 0` 的 ctx 只有 16；
+  verify 批次要 `1 + draft.size()` 個空位 ⇒ 短形狀會撞牆（生產 cell `-n 128 -d 512` ⇒ 640，有餘裕）。
+- **`bin/llama-bench` 的 md5 不變不代表沒重建**：它只是 33 KB 的 stub，程式在
+  `libllama-bench-impl.dylib` ⇒ 新鮮度要看後者。
+- **部分接受時不要直接 `llama_memory_seq_rm`**：實測第三輪 `llama_decode` 靜默回 **-1**
+  （`common_context_can_seq_rm` 卻回報 FULL）。參考 `examples/speculative-simple` 的
+  `common_prompt_checkpoint` 路徑（`:570-593`）；`LLAMA_BENCH_SPEC_NOTRIM=1` 可把這一項單獨拿掉來定位。
+
+**★ 但上一輪那個 −23% 的讀數已經被推翻（2026-09-18 00:48）。** 那個 A/B/A 的兩個控制臂
+（10.049 / 6.791）自己差 48% ⇒ 分母不可用。用**配對 + 反序對**（10 臂）重做之後：
+正序 ratio 1.071/1.171/1.013、反序 0.938/0.701 ⇒ **順序校正後的 MTP 倍數 = 0.937（−6%），
+而 5 對的範圍是 0.701–1.171 ⇒ 與 0 不可區分**。
+⇒ **`llama-bench` 的 `decode` cell 在生產 pool 上是 9.7–10.6 / 8.0–10.2（隨窗口），
+而 MTP 在這個形狀上沒有可測的淨增益。** 現在可引用的只剩計數器（見下）。
+
+**輸出（2026-09-18 起）**：`llama-bench` 的 JSON（`avg_ts` ＋ `samples_ts`）＋ stderr 的
+`CGC-MTP-PERF type=draft-mtp calls_draft=… acc_rate=… gen_tok_per_round=… emit_tok_per_round=… ms_per_round=…`。
+選法是 **`--spec-type draft-mtp` ＋ `--spec-draft-n-max <n>`**（22:20 由另一條線做成正式 CLI；
+`LLAMA_BENCH_SPEC=1` 降級為 deprecated alias）。`--spec-type` **不是**註冊的 cell：
+`--cells decode` 仍然 by construction 是 MTP-off（`cgc_spec_on == false` ⇒ 走原 `test_gen`），
+而這正是它必須保持的（與上游 `tg128 @ d512` 逐位元可比）。
+
+**可引用的計數器（10 個 on 臂）**：`gen_tok_per_round = 3.000`（每臂都吃滿 `n_max=3`）、
+`acc_rate` **0.626–0.795**（變異 27%！）、`emit_tok_per_round` 2.878–3.385、
+`ms_per_round`（**只是 draft head**，不含 verify）25.0–31.1、池 `hit rate` **93.7–94.8%**
+（off 臂 96.0–96.1% ⇒ **MTP 讓命中率降 2.2pp**）。
+
+⚠️ **`accept` 依取樣、prompt 與臂而變**：llama-bench 預設取樣（temp 0.8、top_k 40、top_p 0.95）下
+量到 0.626–0.795；served 生產 prompt 下是 38.5% ⇒ **兩者不可比**，而且**單一 accept 讀數的變異
+（27%）比「≥60%」這個門檻還寬** ⇒ 它不該當閘門。
+
+★ **機制（代數吻合，非直接量測）**：`acc_tok_per_round = n × p`（實測 `2.023 = 3 × 0.6744`，逐位吻合）
+⇒ MTP 的草稿是**平行**產生、各自與 target 比對的 ⇒ **加大 `n_max` 的邊際收益是線性的**
+（不像 chain 投機那樣衰減）⇒ `n_max` 掃描是值得做的下一件事。
+
+**歷史（A/B/A，2026-09-18 00:26）—— 已被上面的配對實驗取代，三個數字都不可引用**：
+`off1` 10.049 / `on` 7.715 / `off2` 6.791。留著只是為了讓「為什麼舊紀錄寫 −23%」有出處。
+附帶一個仍然成立的事實：**那兩個控制臂的池統計幾乎相同**（hit 96.6 vs 96.7%、file_reads 26925 vs 26685）
+⇒ 那次漂移**不是池**造成的。
+
+**MTP 的池副作用**（兩個 off 臂一致 ⇒ 非漂移；10 臂的配對實驗也重現：on 的 hit 率 93.7–94.8% vs
+off 的 96.0–96.1%）：`file_reads` **+62%**、`bytes` **+129%**、`hit rate` **−2.2 ~ −3.2pp**、
+`resident` **+277 MiB**。
 
 **設計這種矩陣時**：`ARMS["prod25"]` 裸臂**不帶** `CGC_DECODE_PROFILE`，所以它只有 t/s、
 沒有每步分解；要分解得用 `prod25:CGC_GPU_TIMING=1;CGC_DECODE_PROFILE=1`（不要加 `MTP=0`）。

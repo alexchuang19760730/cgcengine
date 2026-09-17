@@ -6,7 +6,7 @@ agent_created: true
 
 > **這是快照，不是權威副本。**
 > 權威位置：`~/.workbuddy/skills/cgc-tb-smoke/SKILL.md`（由 host 持續寫入）。
-> 本檔於 2026-09-17 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
+> 本檔於 2026-09-18 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
 > 底下的內容能被 `agent_harness/scripts/auto_git_push.ps1` 定時推送；原檔改了這裡**不會**自動跟上。
 > 要改 skill 請改原檔，再重跑 `python3 agent_harness/scripts/import_harness_snapshot.py`。
 
@@ -163,14 +163,38 @@ PYTHONPATH=agent_harness agent_harness/tb_loop/.venv/bin/tb run \
   --n-tasks 1 --output-path /tmp/tb_modelsmoke --run-id model_smoke
 ```
 
-- `-m` 只是 terminal-bench 的標籤；**真正送給端點的模型名是 `-k model_name=`**。
+- ★★ **`-m` 的值會蓋掉 `-k model_name=`，而且會一路變成送給端點的 model id**（2026-09-17 從原始碼
+  證實，**推翻**本 skill 舊版的「`-m` 只是標籤」那句話）。出處 `terminal_bench/cli/tb/runs.py:60`
+  的 `_process_agent_kwargs`：先跑 `for kwarg in agent_kwargs: processed_kwargs[key] = …`，
+  **然後**才 `if model_name is not None: processed_kwargs["model_name"] = model_name`
+  —— 後套用 ⇒ `-m` 勝。
+  ⇒ **`-m` 要給「真正要送給端點的裸 model id」**，不要加 provider 前綴。
+  踩過的形狀：寫 `-m "openai/deepseek/deepseek-flash"` ⇒ adapter 拼成
+  `local-gemma4/openai/deepseek/deepseek-flash` ⇒ 端點回
+  `400 The model or service ID openai/deepseek/deepseek-flash does not exist`。
+  **單變數判準**：同一顆容器只把 `openai/` 拿掉，`rc=0`、正常回覆。
 - adapter 把 `base_url` 以 `TB_GEMMA4_BASE_URL`／`OPENAI_BASE_URL` 注入**容器內**
   ⇒ 容器裡的 `localhost` **不是**這台 Mac；指向本機 server 要用 `host.docker.internal:<port>/v1`。
   雲端 https 端點不受此限（容器有外網即可）。
 - 端點：**WorkBuddy 自己不提供** OpenAI 相容的推論端點（它的 OpenAPI 是企業管理 API、
-  且明說不支援個人 API Key）。可用的是騰訊雲 **TokenHub**：
-  `https://tokenhub.tencentmaas.com/v1/chat/completions`，Key 在
-  `console.cloud.tencent.com/tokenhub/apikey` 建。
+  且明說不支援個人 API Key）。目前用過的兩家（實測有效）：
+  - 騰訊雲 **TokenHub**：`https://tokenhub.tencentmaas.com/v1/chat/completions`，Key 在
+    `console.cloud.tencent.com/tokenhub/apikey` 建。
+    ★ 2026-09-17 晚間回過 `402 The free trial quota for the service has been exhausted and
+    postpaid billing is not enabled`（免費額度用盡、未開後付費）⇒ 遇到 402 就是帳號動作，不是 harness。
+  - **MiniMax 開放平台**（2026-09-17 起改用這家）：
+    `https://api.minimax.chat/v1`（國內站）或 `https://api.minimaxi.com/v1`（國際站），**兩者皆 200**；
+    ★ `https://api.minimaxi.chat/v1` 是**舊主機名**，回 `401 invalid api key (2049)`，別用。
+    8 個模型：`MiniMax-M3`（最新）/ `M2.7` / `M2.7-highspeed` / `M2.5` / `M2.5-highspeed` /
+    `M2.1` / `M2.1-highspeed` / `M2`。`stream: true` 通（回 `chat.completion.chunk`）。
+    ★ M3 是**思考型**：`content` 裡帶 `<think>…</think>` 區塊。
+
+**★ 換端點只要問三件事，一分鐘測完，不必跑 smoke**（每次換家都適用）：
+① `GET /v1/models` 通不通 —— 順帶拿到**真實**的模型 id（**文件會過時，`/models` 才是權威**：
+TokenHub 的說明說 `qwen3.5-flash` 已下線但它仍在 `/models` 裡）；
+② `stream: true` 通不通 —— **prime-agent 一定用 SSE**，這是硬要求；
+③ 認證形狀（401 = key 本身不對；403 = key 有效但**可訪問範圍沒勾到模型**；404 = 路由／模型名不對）。
+做法：**key 寫進臨時檔、用 python `urllib` 讀檔發請求** —— 不要把 key 放進 `curl` argv（`ps` 看得見）。
 
 **★ 401 與 403 不是同一件事 —— 而它們在容器裡的現場一模一樣**（都是「agent 第一個模型呼叫就失敗，
 任務 `Unresolved`、`/app/answer.txt` 不存在」）：
@@ -366,6 +390,103 @@ hy3 不會吐那種格式 ⇒ **請求會成功，但 agent 解析不出任何�
    **兩個缺陷會互相掩蓋**：端點不通時探測在認證**之前**就失敗 ⇒ 你永遠看不到 key 也是空的。
    只有一個失敗訊號時，要先問「**這一個訊號掩蓋了幾個缺陷**」。
 
+## ★★ 判讀鐵律：`total_input_tokens = 0` 底下是**三個互相獨立**的缺陷（2026-09-17 實測）
+
+同一個症狀、`failure_mode` 會換來換去，但底下是三件互不相干的事。修好任一件**不會**讓另兩件變好。
+**判準不是 `failure_mode`，而是「agent 那一步實際花了多少秒」**（`run.log` 的
+`Blocking command completed in <N>s`）：**10 秒 = agent 根本沒被等待**；53／163／596 秒 = 真的跑了。
+
+> ★★ **更正：不要用 `total_input_tokens` 當判準 —— 它在這條路徑上永遠是 0。**
+> tb 的 `abstract_installed_agent.py:176-179` 把
+> `return AgentResult(total_input_tokens=0, total_output_tokens=0)` **寫死**，
+> 所有 installed agent 都不解析用量。所以「`total_input_tokens > 0` 才算通」這個判準**本身不成立**
+> （我先前拿它當 gate，白等了好幾輪）。
+> **真正的判準有兩個，都在容器裡、都是硬的**：
+> ① 「agent 那一步花了幾秒」（10 秒 = 沒跑；數百秒 = 真的在做事）；
+> ② **容器裡有沒有產物** —— `docker exec <c> cat /app/results.json`、
+>    `ls -la /prime-agent-harness/sessions/`（session jsonl 的大小就是「做了多少」的代理指標，
+>    實測一輪成功的 agent 是 **544 KB**）。
+
+### 修好上面三件事之後，會撞到的第四、第五道牆（2026-09-17 實測，順序已驗證）
+
+- **第四道：測試階段自己建環境，被 60s 切掉。** raman 的 `run-tests.sh` 會
+  `apt install curl` → 下 `uv` → `uv venv` → **`uv sync`**，走的是與 kernel bootstrap **同一條慢 PyPI 通道**，
+  卡在 `Preparing packages... (4/6)` 就被 `task.yaml` 的 `max_test_timeout_sec: 60.0` 切斷
+  ⇒ `failure_mode = test_timeout`、`Error parsing results … No short test summary info found`。
+  槓桿：① tb 有 `--global-test-timeout-sec`；② 把測試需要的那幾個**純 python** wheel
+  （pytest/pygments/iniconfig/pluggy/packaging）也放進 wheelhouse，並在 setup 腳本裡
+  `export UV_FIND_LINKS="$HOME/wheels"`（setup 腳本是被 `source` 進 tmux shell 的，export 會留給測試階段）。
+  ★ **不要加 `UV_OFFLINE=1`** —— 解析不到時會直接失敗；只給 find-links 是「先本機、後網路」，嚴格更優。
+- **第五道：模型的遵循度。** 換 MiniMax-M3 那輪 agent 真的完成了擬合、寫出 `/app/results.json`
+  （`ipython` 工具有了、工具呼叫閉環成立），但**鍵名寫錯**：任務要 `{"G": …, "2D": …}`，
+  它寫成 `{"G_peak": …, "2D_peak": …}` ⇒ 即使測試不逾時，schema 也會對不上。
+  ⇒ 記住：harness 修好之後，下一個失敗點的現場是「`test failed`（有內容）」，與 harness 缺陷的
+  「0 token／逾時（沒內容）」完全不同 —— **不要混為一談**。
+
+| # | 缺陷 | 症狀 | 修法 |
+|---|---|---|---|
+| 1 | 安裝腳本裡的 **Node.js 兜底**（`deb.nodesource.com` ＋ `apt-get install nodejs`）是安裝階段最後一條外網依賴 | 快時 43s、慢時 **>10 分鐘**（實測 10.7 kB/s，而 nodejs deb 約 25 MB ⇒ 40 分鐘） | **整段刪掉**。官方安裝器不需要 node：`install.sh:76-88` 在 `PRIME_AGENT_INSTALL_METHOD=auto` 且平台偵測成功時直接走 native 並 `return`，`:1078` 的 Node.js 提示一行都不會執行。再 `export PRIME_AGENT_INSTALL_METHOD=binary` 把路徑釘死 |
+| 2 | **tb 的 agent 命令預設 `block=False`** ⇒ agent 從未被等待 | agent 階段只有 ~10 秒 | `TerminalCommand(..., block=True, max_timeout_sec=inf)`。預設值出處 `terminal/models.py:13`；`abstract_installed_agent.py:173-179` 送完就 return 一個 0/0 的 AgentResult。上游既有寫法一律 `block=True`（`claude_code_agent.py:64`、`codex_agent.py:46`） |
+| 3 | **agent 的時間預算包含「安裝 agent」** | 預算被安裝吃掉 ⇒ 被讀成「模型解不出來」 | `max_agent_timeout_sec` 是**任務自己**訂的（`harness.py:639-643`；raman 的 `task.yaml:35` = 360.0），而 tb 把安裝與 agent 送進**同一個 tmux session** ⇒ 加 `--global-agent-timeout-sec`（★ 放寬後與官方榜單數字**不可直接比較**，要寫進交付文件） |
+
+## ★★ Python kernel：`PRIME_AGENT_KERNEL_PYTHON` 有硬檢查，判準在執行檔裡（不是文件）
+
+解析順序（官方 `docs/rlm-runtime.md` 的 Kernel Lifecycle）：
+① `PRIME_AGENT_KERNEL_PYTHON`（要有 current `prime-agent-runtime`）
+② `~/.prime/agent/kernel-venv/bin/python`（uv bootstrap 的）
+③ XDG 位置。
+
+- **路徑②要一個 bootstrap 標記**。執行檔裡的常數：`xPn = ".bootstrap-version"`、`E$s = ".bootstrap.lock"`、`bPn = 9`。
+  離線自己建出來的 venv **沒有那個標記** ⇒ 必被判 stale ⇒ 走 bootstrap ⇒ `uv python install 3.11` 因無網而失敗
+  （原文：`Failed to set up the Python kernel runtime. /root/.local/bin/uv python install 3.11 failed with exit code 1`）。
+  **⇒ 必須走路徑①**：在 agent 命令裡 `export PRIME_AGENT_KERNEL_PYTHON="$HOME/.prime/agent/kernel-venv/bin/python"`。
+- **路徑①有一道硬檢查，缺 default Python packages 直接拒絕**（不是 warning）。原文：
+  `PRIME_AGENT_KERNEL_PYTHON points to a Python missing default Python packages`
+  `(requests, httpx, yaml, tomli, dotenv, pandas, numpy, scipy, bs4, lxml, pydantic, tyro): …`
+  ⇒ 那份清單裡 **numpy/scipy/pandas/lxml/pydantic-core 都是原生擴充** ⇒ wheel 綁 ABI
+  ⇒ **「用映像自己的 python ＋ 只裝 pure-python wheel」在這道要求下不可能成立**（我為此白做了一版 19 MB 的 bundle）。
+  可行解：bundle **自帶 linux-aarch64 的 standalone CPython 3.11**
+  （URL 用 host 的 `uv python list --all-platforms --show-urls` 取，來源 `releases.astral.sh`）
+  ＋ cp311 的 wheelhouse（`pip download --platform manylinux_2_28_aarch64 --platform manylinux_2_17_aarch64
+  --python-version 3.11 --implementation cp --abi cp311 …`）。好處：與任務映像的 Python 版本無關
+  （python-3-13 與 ubuntu-24-04 都適用），且 3.11 正是執行檔裡 `pPn = "3.11"` 期望的版本。
+  實測 bundle 128 MB、容器內離線建 venv ＋ 裝完 30 個包 **1 秒**。
+- **`mcp` 仍然不要裝**（用 `--no-deps` 裝 runtime）：`import rlm.mcp` **在沒有 mcp 的情況下 OK**
+  （`rlm/mcp.py` 只 import 標準庫與 `.mcp_base`；mcp_base 對 mcp SDK 的 import 全在**函式內部**）。
+  **這點很關鍵**：kernel shim 把 `import rlm.mcp` 放在 `bash()` 的**同一個 try 裡** ⇒ import 不過會**連 bash 一起廢**。
+  裝了反而壞：mcp → pyjwt[crypto] → cryptography，其原生擴充在這台 VM 會 SIGILL。
+- 診斷口徑：**「venv 存在」不等於「被接受」** —— 驗收要看 agent 那邊
+  `Failed to set up the Python kernel runtime` 與 `points to a Python missing` **都是 0 次**，
+  不是看安裝腳本那行 `kernel ready`。
+
+## ★ 判準去哪挖：`strings` 那個執行檔，比讀文件快
+
+想知道 prime-agent 的環境變數／檔名／錯誤文案，直接掃執行檔字串
+（`prime-agent` 在 mirror 的 release tarball 裡，解出來約 160 MB）：
+
+```python
+import re
+data = open('/tmp/pa_bin/prime-agent','rb').read()
+for s in re.findall(rb'[\x20-\x7e]{5,}', data):
+    if b'kernel-venv' in s or b'KERNEL_PYTHON' in s or b'bootstrap' in s:
+        print(s.decode('ascii','replace'))
+```
+
+實測一次就拿到：`.bootstrap-version`、`.bootstrap.lock`、`kernel-venv`、`PRIME_AGENT_KERNEL_PYTHON`、
+以及三句錯誤文案的完整字串（含那份 default packages 清單）。**文件只說「A bootstrap marker detects
+stale environments」，不會告訴你那個 marker 叫什麼、內容是什麼。**
+
+## ★ 效率規矩（我自己的傷）：秒級探針先做，端到端最後做
+
+這條線我連著跑了 5 輪、每輪 5–10 分鐘的端到端 smoke，每輪只換一個變數 —— 這是最貴的做法。
+**端到端只用來回答「整體通不通」**；凡是能用秒級探針回答的，不要用端到端去問：
+
+- 「這個 venv 合格嗎」→ 容器內建 venv ＋ 逐個 `import`（**1 秒**），不要跑 smoke。
+- 「prime-agent 要求什麼」→ `strings` 掃執行檔（**秒級**）。
+- 「這一步花多久」→ 分段計時／PATH 墊片／每 2 秒採樣 `docker top`（**分鐘級**），不要靠猜。
+- 「安裝腳本本身對不對」→ 把兩個 tarball `docker cp` 進去、直接 `source` 那支腳本（**~15 秒**），
+  不必啟動 tb。
+
 ## 前置（缺一不可）—— 2026-09-17 三次失敗才通
 
 ```bash
@@ -484,3 +605,42 @@ curl -s -o /dev/null --max-time 20 -w "%{size_download} %{speed_download}\n" "<u
 可用的槓桿：`PRIME_AGENT_DOWNLOAD_BASE_URL`（`install.sh:10`，base URL 可換）⇒ 指向 host 上的本地鏡像
 （容器內用 `host.docker.internal:<port>` —— 與 `TB_GEMMA4_BASE_URL` 預設值同一個機制）。
 鏡像需覆蓋 channel 檔（`stable` → `v0.9.5`）、`releases/v0.9.5/SHA256SUMS`、arm64 tarball。
+
+### ★★ 已實作的做法（2026-09-17）：host 預抓 → 注入容器 → 容器內 **loopback** 供檔
+
+**不要**起 host 的 http server 讓容器連 —— 走 `copy_to_container`（Docker API）**不經過**那個慢網路，
+再用容器自己的 loopback 供檔。三個檔案就是全部：
+
+| 檔案 | 角色 |
+|---|---|
+| `agent_harness/tb_loop/scripts/fetch-prime-agent-mirror.sh` | host 端抓一次並快取（`~/.cache/prime-agent-mirror{,.tar.gz}`，~112 MB）；**冪等**，`--refresh` 重抓；逐檔驗 sha256 |
+| `prime_agent_adapter.py` 的 `_ship_mirror()` | 把那個 tarball 用 `session.copy_to_container(..., container_dir="/installed-agent")` 送進去 |
+| `prime-agent-setup.sh` | 解鏡像 → `python3 -m http.server <port> --bind 127.0.0.1` → 設 loopback feed 的兩個 env → 跑官方安裝器 |
+
+為什麼是官方支援的路徑（**不是 hack**）：`install.sh` 的 `prime_agent_validate_download_base_url`
+對 `http://*` 只在 `PRIME_AGENT_ALLOW_INSECURE_HTTP_FOR_TESTS=1` **且**
+`prime_agent_is_loopback_test_base_url`（只接受 `http://127.0.0.1:<數字埠>`）時放行 ——
+上游自己的錯誤訊息就寫著「Local loopback test feeds require …」。
+
+**實測**（同一顆容器、同一輪）：安裝 **421.89 s 逾時失敗 → 43.26 s rc=0**
+（43 s 含 113 MB 的 `docker cp` 與解壓）。loopback server 的 access log 證明它只取了三個檔。
+
+⚠️ **`--autonomous` 需要 Python kernel，不要為了省時間關掉它。**
+`PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=0` 看起來很划算（那段 bootstrap 實測 **>418 s**），
+但 agent 自己會報「`Status: blocked — no executable tool is available`」——
+因為 **`bash()` 是透過 Python REPL 暴露的**，kernel 起不來就等於**沒有任何工具**。
+```text
+- Every `ipython` call returns: `Failed to set up the Python kernel runtime.
+  uv is required to set up the Python kernel.`
+- `bash()` is exposed only through the Python REPL, so the broken kernel also removes shell access.
+```
+⇒ kernel 是必需品；它慢是因為它也要下 `uv` ＋ Python ＋ 一批 wheel，**也需要同樣的鏡像／預熱待遇**。
+在那之前，安裝會慢（但正確）。
+
+**模型路徑的最小可用證明**（不必跑完整 task）：
+```bash
+# 在容器內，設好 loopback 與環境後
+prime-agent -p --offline --model local-gemma4/deepseek/deepseek-flash 'reply with the single word: pong'
+# → rc=0，輸出 pong   ← 這一條通了，代表 provider/認證/端點/串流全都通
+```
+`--offline` 是「Disable startup network operations」，**不**擋模型呼叫（別把它當成離線模式）。

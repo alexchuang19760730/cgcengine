@@ -6,7 +6,7 @@ agent_created: true
 
 > **這是快照，不是權威副本。**
 > 權威位置：`~/.workbuddy/skills/cgc-commit-gate/SKILL.md`（由 host 持續寫入）。
-> 本檔於 2026-09-17 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
+> 本檔於 2026-09-18 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
 > 底下的內容能被 `agent_harness/scripts/auto_git_push.ps1` 定時推送；原檔改了這裡**不會**自動跟上。
 > 要改 skill 請改原檔，再重跑 `python3 agent_harness/scripts/import_harness_snapshot.py`。
 
@@ -109,7 +109,7 @@ exit code 在 0/1 之間不一致，而檔案裡**明明有**那些字串（`sed
 於是列出**另一個 repo** 的內容，看起來像「本 repo 的檔案不見了」。診斷腳本時要用**絕對路徑**，
 不要把 `cd` 放進條件區塊——它產出的是一份**自信的錯誤清單**，而不是報錯。
 
-### 1.5 macOS 沒有 `timeout`／`gtimeout`；`ps` **可用**，而且只有它數得對行程
+### 1.5 macOS 沒有 `timeout`／`gtimeout`；`ps` 可用但**欄位語意必須當場驗**，行程身分用 `pgrep -x`
 
 要做「啟動 30 秒後自動收掉」的 smoke，用背景 PID ＋ 有界 sleep：
 
@@ -117,8 +117,8 @@ exit code 在 0/1 之間不一致，而檔案裡**明明有**那些字串（`sed
 bash -c 'CGC_SERVER_PROFILE=prefill250 CGC_SERVER_UBATCH=4096 bash scripts/run_server.sh \
            >/tmp/p3.txt 2>&1 & P=$!; sleep 32; kill -TERM $P; sleep 5;
          kill -0 $P 2>/dev/null && echo STILL_ALIVE || echo EXITED'
-# 判準看「執行檔」，不要看命令列文字（下一段）
-ps -Ao pid=,comm=,command= | awk '$2=="llama-server" || $2=="llama-bench"'
+# 判準看「執行檔 basename」，不要看命令列文字，也不要看 ps 的欄位索引（下一段）
+pgrep -x llama-server ; pgrep -x llama-bench
 ```
 
 判準是 log 裡同時有 `model loaded` 與 `listening on http://0.0.0.0:8080`，而且 `SIGTERM`／`SIGINT`
@@ -134,14 +134,44 @@ ps -Ao pid=,comm=,command= | awk '$2=="llama-server" || $2=="llama-bench"'
 直接擋掉一整臂**（實例：日誌 `§Z6`／commit `a6125accc`）。同一類 bug 在本 repo 有**三份**獨立實作
 （`run_server.sh` 的 `OTHER_LLAMA_SERVERS`、`Backup/run_req2_retest.sh` 的 `alive()`、以及本檔舊版的檢查）。
 
-**正確寫法** —— 比對 `comm`（執行檔 basename），不看命令列文字：
+**★★ 2026-09-17 21:0x 更正：本機的 `comm` 是「完整路徑」，不是 basename ⇒ 下面那個 `$2 == "llama-server"` 是一個永遠不命中的閘門。**
+實測（用別條線正在聽 8080 的 server 當樣本）：
+
+```
+ps -Ao pid=,comm=      →  47353 /Users/alexchuang/Documents/flashkv-devserver/src/llama.cpp/build/bin/llama-server
+ps -Ao pid=,comm= | awk '$2=="llama-server"'      →  （空）
+pgrep -x llama-server                              →  47353      ← 對的
+```
+
+代價是**靜默的假陰性**：閘門印 `GATE-PASS` 而機器上其實有一輪在跑。本輪（EN-80）我因此
+**兩次**把「自己剛啟動、正在載入 13.66 GB 的行程」讀成「被系統殺掉了」，多花一輪去診斷一個不存在的失敗。
+
+**正確寫法** —— 用 `pgrep -x`（比對 **basename**，且不是命令列文字比對 ⇒ 同時躲開 `pgrep -f` 的誤報與
+`comm` 全路徑的假陰性）：
 
 ```sh
+# 執行檔身分：basename 精確比對
+pgrep -x llama-server ; pgrep -x llama-bench ; pgrep -x llama-speculative-simple
+# 量測驅動（python 腳本）：這類只能命令列比對，所以用字元類躲掉自己那一行
+pgrep -f '[d]ecode_sweep\.py|[m]123_oracle_gate\.py|[p]rod_matrix\.py|[p]hase_split_ab\.py|[d]ecode_step_profile\.py'
+# 別條線的 driver 包裝（`bash -c 'sleep N; … tail …/dsp_out/driver*.log'`）——它不含任何 llama 字樣
+pgrep -f '[d]sp_out/driver|[p]refill_certifiability'
+```
+
+`ps` 仍然可用，但**只信任你當場用樣本驗過的欄位語意**；`$2=="llama-server"` 在這台機器上不是那樣的語意。
+下面保留舊寫法只為了對照 —— 如果你要改它，先跑一次上面的樣本驗證。
+
+```sh
+# 舊寫法（留作對照；在本機 `comm` 是完整路徑 ⇒ 第 2 行永不命中）
 ps -Ao pid=,comm=,command= | awk '
     $2 == "llama-server" || $2 == "llama-bench" { print; next }
     $2 ~ /^python/ && (index($0,"decode_sweep.py") || index($0,"decode_bench.py") ||
                        index($0,"m123_oracle_gate.py")) { print; next }
     $2 == "bash" && index($0,"run_ids_dst_capture.sh") { print }'
+
+# 現用寫法：basename 精確比對 + 字元類躲自匹配
+{ pgrep -x llama-server; pgrep -x llama-bench; pgrep -x llama-speculative-simple;
+  pgrep -f '[d]ecode_sweep\.py|[m]123_oracle_gate\.py|[p]rod_matrix\.py|[d]sp_out/driver'; }
 ```
 「有輸出就停手」的閘門必須**在同一個分支裡 abort**，只印出來不算 —— 見 §4-6。
 
@@ -588,14 +618,15 @@ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
    **檢查與動作在同一個分支、非空就 abort**：
 
    ```sh
-   # 兩件事都要看：① 港埠有沒有 listener ② 別條線的量測行程（比對 comm，見 §1.5）
-   if lsof -nP -iTCP:8080 -sTCP:LISTEN >/dev/null 2>&1 || \
-      ps -Ao pid=,comm=,command= | awk '
-          $2=="llama-server" || $2=="llama-bench" { f=1 }
-          $2 ~ /^python/ && (index($0,"decode_sweep.py") || index($0,"decode_bench.py")) { f=1 }
-          $2 == "bash" && index($0,"run_ids_dst_capture.sh") { f=1 }
-          END { exit !f }'
-   then
+   # 兩件事都要看：① 港埠有沒有 listener ② 別條線的量測行程
+   # ⚠ 行程偵測用 `pgrep -x`（basename 精確比對）—— 不是 `ps ... $2=="llama-server"`，
+   #   那個在本機永遠不命中（`comm` 是完整路徑）⇒ 閘門會靜默放行。見 §1.5。
+   busy=0
+   lsof -nP -iTCP:8080 -sTCP:LISTEN >/dev/null 2>&1 && busy=1
+   pgrep -x llama-server >/dev/null 2>&1 && busy=1
+   pgrep -x llama-bench  >/dev/null 2>&1 && busy=1
+   pgrep -f '[d]ecode_sweep\.py|[m]123_oracle_gate\.py|[p]rod_matrix\.py|[d]sp_out/driver' >/dev/null 2>&1 && busy=1
+   if [ "$busy" = "1" ]; then
        echo "!! build aborted: another line is using the machine"; exit 3
    fi
    cmake --build src/llama.cpp/build --target llama-server -j 8
