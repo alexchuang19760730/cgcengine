@@ -176,9 +176,9 @@ bash scripts/setup_env.sh          # 一次性：venv ＋ terminal-bench ＋ hos
 | 階段 | 內容 | 狀態 |
 |---|---|---|
 | **E0** | 索引 ＋ 第一版 episode 匯出 | ✅ 122 筆 episode；資產數看 `index_assets.py --check` |
-| **E1** | 結構 ＋ 憲章：資產搬進 `tb_loop/`、修 import 路徑、寫 `CONVENTIONS.md` | ✅ 三條驗收 **2 條已結清、第 3 條只差 Docker**：套件解析**實測通過**（見下方 2026-09-17 更正 —— 要用 `tb_loop/.venv` 的直譯器）、`CONVENTIONS.md` 61/61 條有指針；**`tb run --n-tasks 1` 的 smoke 未跑**，缺的是 Docker daemon（colima 已停）與 `.venv`（已存在）——不是缺模型端點 |
+| **E1** | 結構 ＋ 憲章：資產搬進 `tb_loop/`、修 import 路徑、寫 `CONVENTIONS.md` | ✅ **三條驗收全部結清（2026-09-17 15:22）**：套件解析實測通過（要用 `tb_loop/.venv` 的直譯器 —— 見下方 2026-09-17 更正）、`CONVENTIONS.md` 61/61 條有指針、**`tb run --n-tasks 1` smoke 實跑通過**（`raman-fitting.easy`，1/1 resolved，見下方更正 (c)） |
 | **E2** | T1 蒸餾 ＋ 兩個投影（`sft_pi/`、`sft_prime/`、`harness_engine/`）＋ 結清 D6 的閉環欠帳 | ✅ 四個目錄已建、兩份投影可用 `--check` 驗（見 `docs/AGENT_HARNESS_E2_TRAINING_PROJECTIONS_20260916.html`）；**T1 未接真模型；D6 的閉環欠帳未結清** |
-| **E3** | 閉環：round1（無 lesson）vs round2（注入 lesson） | ⏳ 執行器已建並離線驗證（`distill/closed_loop.py`，41 項自測；見 `docs/AGENT_HARNESS_E3_DESIGN_20260916.html`）；**模型半未跑 ⇒ 本體未結清** |
+| **E3** | 閉環：round1（無 lesson）vs round2（注入 lesson） | ⏳ 執行器已建並離線驗證（`distill/closed_loop.py`，48 項自測；見 `docs/AGENT_HARNESS_E3_DESIGN_20260916.html`）；**模型半未跑 ⇒ 本體未結清** |
 | **E4** | 治理（可選）：log 政策、`knifeedge_matrix.py` 拆分、`scripts/check/` 分層、標記 stale | ✅ 四項都到了終態，見下方 2026-09-17 的註記；每一項的證據一支指令可重跑 |
 
 **★ 2026-09-17 更正：上面那格 E4 曾經說「`pack_evidence.py` 根本不存在」—— 那句話是假的。**
@@ -241,9 +241,29 @@ $ PYTHONPATH=agent_harness agent_harness/tb_loop/.venv/bin/python \
 程式沒改。而 E1 當時的掃描只看了 **shell 的路徑派生**，沒有掃 **Python 的 import 字串** ——
 所以「掃描涵蓋了什麼」與「掃描漏了什麼」是兩個不同的問題，而後者不會自己說出來。
 
-**(c) 第 3 條驗收（`tb run --n-tasks 1` smoke）缺的是 Docker，不是模型端點。**
-`.venv` 與 `terminal-bench` 都在；`colima` 已停（使用者要求），所以 Docker daemon 不在。
-這是一個**環境前置**，不是量測 —— 起 colima 之後就能跑。
+**(c) 第 3 條驗收（`tb run --n-tasks 1` smoke）—— 2026-09-17 15:22 實跑通過，而真正的 blocker 不是 Docker daemon。**
+原文寫「缺的是 Docker daemon（colima 已停）」—— **那句話只對了第一層**。起 colima 之後 smoke 仍然失敗兩次，
+原因在**被移除的 Docker Desktop 留下的設定**：
+
+| 症狀 | 真正的原因 |
+|---|---|
+| `docker compose` → `unknown command: docker compose`（exit 125） | `~/.docker/cli-plugins/` 底下 **16 個連結全部斷掉**（都指向已不存在的 `/Applications/Docker.app`）；Homebrew 的 docker CLI 自己沒帶 compose 外掛 ⇒ docker **靜默忽略**斷連結 |
+| `docker compose … build` → `error listing credentials - err: exec: "docker-credential-desktop": executable file not found` | `~/.docker/config.json` 的 `credsStore: "desktop"` 指向同一個已消失的 app。`auths` 其實是**空的** ⇒ 移除那個鍵不損失任何憑證 |
+
+處置（機器層，非 repo）：`brew install docker-compose`、把 `~/.docker/cli-plugins/docker-compose`
+重新指向 `/opt/homebrew/lib/docker/cli-plugins/docker-compose`、移除 `credsStore`
+（備份 `~/.docker/config.json.bak-20260917-1518`）。之後一次通過：
+
+```
+$ PYTHONPATH=agent_harness agent_harness/tb_loop/.venv/bin/tb run \
+    -d "terminal-bench-core==0.1.1" --n-tasks 1 --output-path <tmp> --run-id e1_smoke
+  Resolved Trials 1 / Unresolved Trials 0 / Accuracy 100.00%   task: raman-fitting.easy
+```
+
+★ 兩件留給下一個人的：**(1)** `--agent` 的預設是 `oracle`（跑 gold solution），所以這個 smoke
+**不需要模型** —— 那正是它便宜的原因。**(2)** `tb_loop/README.md` 原本寫的
+`python -m terminal_bench.cli.tb run` **是壞的**（`'terminal_bench.cli.tb' is a package and cannot be
+directly executed`）；可用的入口是 venv 裡的 `tb` console script（已修）。
 （另註：`local_rehearsal.py` 的彩排路徑以 Windows Git Bash 為設計對象，本機的等價物是
 `scripts/run_wsl2.sh`；`results/` 底下 9/3 的 rehearsal_1/2/3 就是那條線的產物。）
 

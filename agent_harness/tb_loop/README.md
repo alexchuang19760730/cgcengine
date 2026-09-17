@@ -100,7 +100,11 @@ mlx_lm.lora --train \
 ## 手动跑单轮（不用 run_round.sh）
 
 ```bash
-PYTHONPATH=tb_loop .venv/bin/python -m terminal_bench.cli.tb run \
+# ★ 2026-09-17 更正：可用的入口是 venv 裡的 `tb` console script。
+#   原本寫的 `python -m terminal_bench.cli.tb` 在本 repo 的版本上**跑不起來**
+#   （`'terminal_bench.cli.tb' is a package and cannot be directly executed`）；
+#   而 PYTHONPATH 要指向 agent_harness/（`tb_loop` 才是那裡的套件名）—— 兩者都已實測。
+PYTHONPATH=agent_harness .venv/bin/tb run \
   -d terminal-bench-core==0.1.1 \
   --agent-import-path tb_loop.agents.prime_agent_adapter:PrimeAgentAgent \
   -m openai/gemma-4-26b-a4b-it \
@@ -109,7 +113,19 @@ PYTHONPATH=tb_loop .venv/bin/python -m terminal_bench.cli.tb run \
   -k harness_dir=tb_loop/harness \
   -k max_turns=12 -k max_tokens=30000 -k timeout_ms=600000 \
   --n-tasks 10 --output-path results/round_1 --run-id round_1
+
+# 不需要模型的鏈路 smoke（--agent 預設就是 oracle，跑 gold solution）：
+# 這是 E1 第 3 條驗收的指令，2026-09-17 實跑 1/1 resolved。
+PYTHONPATH=agent_harness .venv/bin/tb run \
+  -d terminal-bench-core==0.1.1 --n-tasks 1 \
+  --output-path /tmp/tb_smoke --run-id e1_smoke
 ```
+
+**前置（2026-09-17 實測，缺一不可）**：Docker daemon（`colima start`）＋ **Docker Compose v2 外掛**。
+本機的 Docker Desktop 已被移除，留下 `~/.docker/cli-plugins/` 底下 16 個斷連結與
+`config.json` 的 `credsStore: "desktop"` —— 症狀是 `docker compose` 變成 `unknown command`
+與 `docker-credential-desktop not found`，而**兩者都不是「沒裝 docker」**。
+修法見 `agent_harness/README.md` 的 E1 更正 (c)。
 
 ## 工作原理
 

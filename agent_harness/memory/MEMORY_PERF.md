@@ -46,6 +46,9 @@
   all of them*。⇒ M1 的數值半應改述為「**不變性**已達成」；要主張「數對」必須用 r33 之後的
   參考（v6_nbaware）。**兩條沒過**：
   ① `decode 不得退步` ⇒ 2 GiB（gather＋slab）**6.36** vs 8 GiB（pool）**8.87 t/s** ＝ **0.72×**；
+  **⚠ 這條的基準要重定（09-17 15:0x）**：8.87 是 09-14 的 build，而今天同類量測（Nail、8 GiB、MTP off）
+  是 **9.82**（`ROUTING_TRACE` §14.2），且 r33 修正改動了 routing（hit 57.1→72.0）⇒ **0.72× 這個比值
+  跨了 build，不能直接沿用**；要重跑 M1 的 2 GiB 格對**當天**的 8 GiB 格比。
   ② `prefill chunk 2048` ⇒ 缺工作項 2。**工作項 1**（`CGC_POOL_SPLIT=1`，保持 expert tensor 全寬）
   實作了但被判 **EXPERIMENTAL, NOT USABLE**：Blocker A（寬 tensor 讓 gather 把 Metal buffer 的指標
   重指到 Metal 不知道的 host 指標 ⇒ **靜默** `tensor buffer is nil`、**M1 2/42**；且 16 GB 上
@@ -56,7 +59,18 @@
 - **M3 decode 的 compute 削減：未開始**（依賴 M1）。兩個探針試過且**不可引用**：`CGC_MMV_FUSE`
   （MoE gather 融合）輸出損壞且更慢；`CGC_SUBMIT_AHEAD`（序列化）天花板 ×1.711 但輸出損壞。
   離開條件「decode（MTP off）≥ 15 t/s」未達。
-- **M4 MTP 拒絕取樣 ＋ verify 真批次：未開始**（accept 19.9%；今天 MTP-on 是 **1.8× 淨損失**）。
+- **M4 MTP 拒絕取樣 ＋ verify 真批次：核心數字已達成（09-17 14:2x，別條線），但離開條件之一被證明是錯的判準。**
+  同 binary A/B（build 14:12，carrier `nail`，pool 8 GiB，`n_predict=96`，每臂 3 請求）：
+  **MTP off 9.82 t/s｜MTP on 修前（`CGC_IDS_LINEAR_READ=1`）8.62 t/s（accept 73.81%）｜
+  MTP on nb-aware 修正 12.62 t/s（accept 58.25%）** ⇒ **MTP-on ≥ MTP-off 達成（+28.5%）**，
+  修前是淨負。★ **accept 下降而吞吐上升 46%**：修前 verify 批次的 token≥1 用別的 token 的專家算
+  ⇒「accepted」是拿錯分布比出來的、而且**被抬高**。⇒ **「accept ≥ 60%」這個離開條件要作廢**
+  （改成「MTP-on ≥ MTP-off ＋ M1/M2 = 100% with MTP ON」），並且**修前記錄的每個 accept 數字
+  （含 09-14 的 70.4%、roadmap 的 19.9%）都屬於被抬高的 regime**。全文 `ROUTING_TRACE` §14。
+  **⇒ 今天補上的正好是 09-14 就指名的那唯一缺口**：`docs/MTP_HEAD_PROVENANCE_GATE_2026-09-14.md` §5
+  早已寫「Nail 配對已達 70.39%，超過 M4 的 60% 離開條件；**該配對仍未過的是 `MTP-on ≥ MTP-off`
+  （6.74 < 8.87）**」⇒ 今天 12.62 ≥ 9.82 ⇒ **M4 的功能缺口關閉**。仍未處理：`plain_match=False`
+  （batch verify 與逐 token 解碼不一致；同一份文件 §5 第 2 點）與「M1/M2 = 100% with MTP ON」。
 - **M5 prerouter 只當預取提示：未開始**（可選、期望值低）。**`PREFETCH_ONLY` 在本 repo 0 筆。**
 - **M6 換量化幾何：頭條目標已達成，剩下的只有「一個綁定層」**（09-17 12:1x 實測；
   全文 `docs/M6_QUANT_GEOMETRY_PLAN_2026-09-17.md`）。
@@ -69,6 +83,18 @@
   現行 `BUDGET_DEFAULT = 10 GiB` ⇒ **179 slots**；`run_server.sh:411-419` 自記 **143 slots 時
   hit 90.8%**（counterfactual K=96 79.7／128 87.7／192 97.1／256 100）⇒ **hit 早已超過 roadmap 的 84%**。
   **★★ 決定（09-17 13:0x，使用者裁定）：只走無損的設定路線，不動模型。**
+  **★★ 裁定（09-17 15:0x，閘門 4 之後）：設定路線「不可交付」，不是「機制被否證」。**
+  同負載實測（`docs/M6_…md` §4.9）：均勻 143 的 **capacity 佔 miss 的 45.6%**，但 **miss 只佔抓取的
+  3.16%** ⇒ capacity ≈ **1.4% 的抓取**；而 `--slack 256MiB`（薄層 149）**消不掉它** —— 引擎自己報
+  **最差層 layer 2 的 distinct ＝ 239 > 149**、且 **9 層 distinct > slots**。
+  ⇒ **代價不是 +238 MiB，而是 cap ≈ 240–256（+2 GiB 等級）**，而吃緊的形狀連 +238 MiB 都已在
+  MTP-on 上**請求即 GPU OOM**（§4.8 ③）。上限反推：這個負載（hit 96.8%）只有 **≤ +0.7%**；
+  用生產負載的 hit（89.2%）反推是 **≤ +2.5%**。
+  ⇒ **機制存在、上限存在、代價落在買不起的一側**；而且別條線的 r33 修正已把 hit 由 57.1% 抬到
+  **72.0%（與池無關）** ⇒ 一部分本來要 M6 買的東西已被「修路由」買走。
+  **能復活的三條路**：① 加預算（> +2 GiB）；② **改淘汰／填充策略**（不靠更多 slot 提高複用 —— 唯一
+  不需預算的路）；③ 改目標（少讀本來是 M2 的地盤）。另：M6 的**本體**（per-expert 1.769→目標 1.122 MB）
+  **早已在出貨檔裡**（實測 1.0703 MiB）⇒ 頭條價值已兌現、未被推翻。
   **設定路線＝一條既有 env 字串，零程式改動、零重建、零 D5**：`LLAMA_EXPERT_CACHE_LAYER_CAPS`
   是**雙邊讀取**的（loader 的 `ne[2]=cgc_layer_cap(il,cap)` @`llama-model-loader.cpp:1492/1502`
   ＋ cache 的 `n_slots_l` @`llama-expert-cache.cpp:3136-3142`），而 **`run_server.sh:1804-1807`
