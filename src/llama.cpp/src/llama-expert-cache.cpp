@@ -271,10 +271,23 @@ int32_t llama_expert_cache_slot_table_safe(const llama_expert_cache * cache, uin
 }
 
 int64_t llama_expert_cache_publish_slot_table(const llama_expert_cache * cache, uint32_t layer,
-                                             int32_t * dst, uint32_t n_expert) {
+                                             int32_t * dst, uint32_t n_expert,
+                                             const int32_t * sel_ids, int64_t n_sel_ids,
+                                             int64_t * out_sel_clamped, int64_t * out_sel_wrong) {
+    if (out_sel_clamped != nullptr) { *out_sel_clamped = 0; }
+    if (out_sel_wrong   != nullptr) { *out_sel_wrong   = 0; }
     if (cache == nullptr || dst == nullptr || layer >= cache->slot_owner.size()) {
         return 0;
     }
+    // [CGC 2026-09-17] CGC_S1_TAG=<v>: debug-only identifier written INTO the published map. The
+    // ring capture (CGC_IDS_CAPTURE) shows what the GPU read, but a 0 in it is ambiguous between
+    // "the publish wrote 0 (clamped)" and "nothing was ever written there". Shifting resident
+    // entries by v and tagging clamped ones with 1000+v separates those two in one run. It
+    // deliberately corrupts the mapping: never quote quality or speed from a tagged run.
+    static const int cgc_s1_tag = [] {
+        const char * t = getenv("CGC_S1_TAG");
+        return t != nullptr ? atoi(t) : 0;
+    }();
     // [CGC 2026-09-15 S1 cleanup] The CGC_S1_TAG (1000+layer) and CGC_S1_IDENT (constant 0)
     // deliberately-wrong publishes used to sit here. They asked "does the host write reach the very
     // buffer the GPU reads, and in what order" and answered it indirectly, by whether an
@@ -285,22 +298,55 @@ int64_t llama_expert_cache_publish_slot_table(const llama_expert_cache * cache, 
     const int32_t * table = cache->slot_table.data() + (size_t) layer * cache->n_expert;
     const int32_t zs = llama_expert_cache_zero_slot(cache, layer);
     int64_t clamped = 0;
+    // Which entries THIS loop published as a placeholder instead of a real slot. Membership is
+    // recorded here, not re-derived later from the live table, so a background fill landing after
+    // this loop cannot move the answer (see the race note on the declaration).
+    std::vector<uint8_t> placeholder(ne, 0);
     for (uint32_t e = 0; e < ne; ++e) {
         const int32_t slot = table[e];
         if (slot >= 0) {
-            dst[e] = slot;
+            dst[e] = slot + cgc_s1_tag;
         } else if (zs >= 0) {
-            dst[e] = zs;
+            dst[e] = zs + cgc_s1_tag;
         } else {
             // No reserved ZERO slot on this layer. The host path would write -1 here; the gather
             // must not (index -1 reads out of bounds). Clamp to 0 and let the caller report it.
-            dst[e] = 0;
+            dst[e] = cgc_s1_tag != 0 ? 1000 + cgc_s1_tag : 0;
+            placeholder[e] = 1;
             clamped++;
         }
     }
     // Anything past the cache's own expert count would otherwise keep the previous step's value.
     for (uint32_t e = ne; e < n_expert; ++e) {
         dst[e] = 0;
+    }
+    // [CGC 2026-09-17] The quantity that decides whether the answer can be silently wrong: of the
+    // ids the consumer reads THIS step, how many were published as a placeholder. Counted here,
+    // from the same loop that wrote the entries, because the previous post-hoc version read the
+    // live table and therefore raced the fills it was meant to catch.
+    if (sel_ids != nullptr && n_sel_ids > 0 &&
+            (out_sel_clamped != nullptr || out_sel_wrong != nullptr)) {
+        const std::vector<int32_t> & owner = cache->slot_owner[layer];
+        int64_t n_placeholder = 0;
+        int64_t n_not_owned   = 0;
+        for (int64_t j = 0; j < n_sel_ids; ++j) {
+            const int32_t e = sel_ids[j];
+            if (e < 0 || (uint32_t) e >= ne) {
+                continue;   // outside this layer's table; not this function's accounting
+            }
+            const int32_t pub = dst[e];
+            if (placeholder[e]) {
+                n_placeholder++;
+            }
+            const int32_t pub_slot = cgc_s1_tag != 0 ? pub - cgc_s1_tag : pub;
+            const bool owned = pub_slot >= 0 && (size_t) pub_slot < owner.size() &&
+                               owner[pub_slot] == e;
+            if (!owned) {
+                n_not_owned++;
+            }
+        }
+        if (out_sel_clamped != nullptr) { *out_sel_clamped = n_placeholder; }
+        if (out_sel_wrong   != nullptr) { *out_sel_wrong   = n_not_owned; }
     }
     return clamped;
 }

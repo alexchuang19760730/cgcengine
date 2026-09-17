@@ -3542,8 +3542,31 @@ ggml_status llama_context::graph_compute(
                 } else {
                     snprintf(vtb, sizeof(vtb), "n/a (index vector buffer recycled)");
                 }
-                fprintf(stderr, "] gather_data=%p ids_src_data=%p table_data=%p same=%d ids_src_valid=%d gather_vs_table=[%s]%s\n",
-                        s->data, ids_src_data, tb != nullptr ? tb->data : nullptr,
+                // [CGC 2026-09-17 §11.3] Print the index vector itself, whether or not it passed the
+                // range check. Under CGC_S1_PIN_IDS it is read from a live (pinned) buffer, and then
+                // its tail answers the remaining question directly: are the experts of token >= 1 in
+                // there (gather is correct and the zeros are the table's non-resident entries), or is
+                // the tail a foreign vector (the CONT that is supposed to materialise them did not)?
+                fprintf(stderr, "] idx=[");
+                if (ibuf.empty()) {
+                    fprintf(stderr, "n/a");
+                } else {
+                    for (int64_t k = 0; k < nv; ++k) {
+                        fprintf(stderr, "%s%d", k ? " " : "", ibuf[(size_t) k]);
+                    }
+                }
+                // [CGC 2026-09-17 §11.5] `ids_leaf_data` is where the HOOK wrote the index vector
+                // (cache_ids_tensors[il]->data); `ids_src_data` is what the readback actually read back
+                // through the gather's view chain. If the two differ, the hook is writing a tensor that
+                // is not the one the graph copies from -- which is the failure mode a zero index vector
+                // and a zero gather output together are the signature of.
+                ggml_tensor * cgc_ileaf = cache_ids_tensors.count(il) ? cache_ids_tensors[il] : nullptr;
+                fprintf(stderr, "] gather_data=%p ids_src_data=%p ids_leaf_data=%p ids_leaf_ne=[%lld,%lld] table_data=%p same=%d ids_src_valid=%d gather_vs_table=[%s]%s\n",
+                        s->data, ids_src_data,
+                        cgc_ileaf != nullptr ? cgc_ileaf->data : nullptr,
+                        cgc_ileaf != nullptr ? (long long) cgc_ileaf->ne[0] : -1,
+                        cgc_ileaf != nullptr ? (long long) cgc_ileaf->ne[1] : -1,
+                        tb != nullptr ? tb->data : nullptr,
                         (!rbuf.empty() && memcmp(sbuf.data(), rbuf.data(), (size_t) ntot * sizeof(int32_t)) == 0) ? 1 : 0,
                         ids_src_valid, vtb,
                         (s->data != nullptr && s->data == ids_src_data)
@@ -4406,10 +4429,53 @@ static void cgc_s1_equiv_dbg(const char * site, const llama_expert_cache * cache
         }
     }
     const int32_t zs = identity ? -1 : llama_expert_cache_zero_slot(cache, (uint32_t) il);
+    // [CGC 2026-09-17 §10.7] The two `table=`/`safe=` fields are the VALUES OF THE INITIALISERS
+    // whenever `first_e == -1`, i.e. whenever no mismatch was recorded -- `0`/`0` was a placeholder
+    // printed in the exact shape of a measurement. It was read as one ("table=0 safe=0" beside
+    // `zero_slot=-1` looked like "the table says slot 0"), which is the same failure as an absent
+    // instrument being read as a null result. A count of zero mismatches does not carry the values,
+    // so they must not be printed as if it did: -999 is not a legal slot, a clamp, or a ZERO-slot
+    // index, so it cannot be mistaken for one.
+    const int32_t got_disp  = first_e < 0 ? -999 : first_got;
+    const int32_t want_disp = first_e < 0 ? -999 : first_want;
     fprintf(stderr, "CGC-S1: EQUIV-%s il=%d ntok=%lld n_sel=%lld mismatch=%lld"
                     " first_e=%d table=%d safe=%d zero_slot=%d map=%s\n",
             site, il, (long long) n_tokens, (long long) n_sel, (long long) n_mismatch,
-            first_e, first_got, first_want, zs, identity ? "identity" : "slot");
+            first_e, got_disp, want_disp, zs, identity ? "identity" : "slot");
+
+    // [CGC 2026-09-17 §10.7] Unconditional per-expert dump of the first CGC_S1_EQV_N selected
+    // experts (default 8 = one decode step's ids, i.e. one whole token).
+    //
+    // Why a mismatch COUNT cannot answer this question: on the run that needed it, mismatch was 0 --
+    // the published table and slot_table_safe agreed on all 16 selected experts -- while the ids the
+    // consumer actually read were `[0,0,0,0,0,0,6,0]` for the second token. "They agree" and "they
+    // agree that it is 0" are different statements, and only the second one is about the defect. So
+    // the values themselves (live table, published copy, safe(), zs) are printed per expert, and two
+    // geometries that can produce a published 0 without any clamp are printed beside them:
+    //   cache_n_expert  vs  tbl_ne1  -- when the cache was built with FEWER experts than the tensor,
+    //   publish_slot_table's tail loop (`for (e = ne; e < n_expert; ++e) dst[e] = 0;`) writes real
+    //   zeros for every expert id above the cache's own count, and no counter anywhere records it.
+    {
+        static const int64_t cgc_eqv_n = [] {
+            const char * e = getenv("CGC_S1_EQV_N");
+            return e != nullptr ? (int64_t) atoll(e) : (int64_t) 8;
+        }();
+        const int32_t * stv = identity ? nullptr : llama_expert_cache_slot_table(cache, (uint32_t) il);
+        const int64_t cache_ne = (int64_t) cache->n_expert;
+        const int64_t tbl_ne1  = tbl->ne[1];
+        fprintf(stderr, "CGC-S1: EQVDUMP-%s il=%d zs=%d cache_n_expert=%lld tbl_ne1=%lld n_sel=%lld",
+                site, il, zs, (long long) cache_ne, (long long) tbl_ne1, (long long) n_sel);
+        for (int64_t j = 0; j < n_sel && j < cgc_eqv_n; ++j) {
+            const uint32_t e = (uint32_t) ids[j];
+            const int32_t live = (stv != nullptr && (int64_t) e < cache_ne) ? stv[e] : -999;
+            const int32_t publ = ((int64_t) e < tbl_ne1) ? tb[e] : -999;
+            const int32_t safe = identity ? (int32_t) e
+                                         : llama_expert_cache_slot_table_safe(cache, (uint32_t) il, e);
+            fprintf(stderr, " [j=%lld e=%u live=%d pub=%d safe=%d]",
+                    (long long) j, e, live, publ, safe);
+        }
+        fprintf(stderr, "\n");
+    }
 }
 
 // [CGC 2026-09-15 §8.3 + premise B] The single publish-and-count entry point for the GPU slot
@@ -4439,9 +4505,14 @@ static int64_t cgc_publish_slot_table_counted(llama_expert_cache * cache, int il
     if (cache == nullptr || table == nullptr || table->data == nullptr) {
         return 0;
     }
+    int64_t sel_clamped = 0;
+    int64_t sel_wrong   = 0;
     const int64_t clamped = llama_expert_cache_publish_slot_table(
-            cache, (uint32_t) il, (int32_t *) table->data, (uint32_t) n_expert);
+            cache, (uint32_t) il, (int32_t *) table->data, (uint32_t) n_expert,
+            ids, ids != nullptr ? n_tokens * n_expert_used : 0,
+            &sel_clamped, &sel_wrong);
     cache->n_slot_table_publishes++;
+    cache->n_slot_table_clamped_selected += (size_t) sel_clamped;
     if (clamped > 0) {
         cache->n_slot_table_clamped += (size_t) clamped;
         // [CGC 2026-09-15 §8.3 gate quantity, take 2] The whole-table count is kept only as a
@@ -4453,21 +4524,36 @@ static int64_t cgc_publish_slot_table_counted(llama_expert_cache * cache, int il
         // decides whether the answer can be silently wrong is the SELECTED subset: of the ids the
         // consumer actually reads this step, how many were clamped to slot 0 instead of -1.
         // Verify-strict is supposed to make that zero; this is what says whether it did.
-        if (ids != nullptr && n_expert_used > 0) {
-            const int32_t * tb = (const int32_t *) table->data;
-            const int32_t * st = llama_expert_cache_slot_table(cache, (uint32_t) il);
-            for (int64_t j = 0; j < n_tokens * n_expert_used; ++j) {
-                const int32_t e = ids[j];
-                if (st != nullptr && e >= 0 && (int64_t) e < n_expert && st[e] < 0 && tb[e] == 0) {
-                    cache->n_slot_table_clamped_selected++;
-                }
-            }
-        }
+        // [CGC 2026-09-17 take 3] The selected-subset accounting MOVED INTO the publish loop. It
+        // used to be re-derived here by re-reading the live table (`st[e] < 0 && tb[e] == 0`),
+        // which races the very fills it is meant to catch: a background fill landing in between
+        // turns st[e] non-negative and the entries published as 0 are then counted as fine.
+        // Measured 2026-09-17 -- that counter read 0 on every layer while the ids the GPU consumed
+        // were provably not the table's values, i.e. it reported "nothing wrong" about the one bug
+        // it exists for.
+        //
+        // Two numbers, because they answer different questions:
+        //   clamped_all  -- whole-table placeholders. Large in EVERY run (a 143-slot pool over 256
+        //                   experts is ~44% non-resident), so on its own it carries no information.
+        //   sel_wrong    -- CONSUMED ids whose published slot is not owned by their expert. This is
+        //                   the clamp seen from the consumer, and it is the only one that can make
+        //                   the answer silently wrong.
+        // (A layer that reserves a ZERO slot maps its non-resident experts there without clamping;
+        //  those are counted by sel_wrong too, and are already reported by CGC-ZERO-MAPPED.)
         static long long cgc_clamp_lines = 0;
-        if (cgc_clamp_lines++ < 16) {
+        static long long cgc_clamp_sel_lines = 0;
+        if (sel_wrong > 0) {
+            if (cgc_clamp_sel_lines++ < 16) {
+                fprintf(stderr, "CGC-S1-CLAMP-SELECTED: site=%s %s il=%d sel_wrong=%lld/%lld"
+                                " sel_clamped=%lld clamped_all=%lld/%lld"
+                                "  <-- a CONSUMED id reads a slot that does not hold its expert\n",
+                        site, is_draft ? "draft" : "verify", il,
+                        (long long) sel_wrong, (long long) (n_tokens * n_expert_used),
+                        (long long) sel_clamped, (long long) clamped, (long long) n_expert);
+            }
+        } else if (cgc_clamp_lines++ < 16) {
             fprintf(stderr, "CGC-SLOT-TABLE-CLAMP: site=%s %s il=%d clamped=%lld/%lld"
-                            "  <-- TABLE/LEAF EQUIVALENCE BROKEN: gather reads slot 0 (another"
-                            " expert's weights) while the host leaf writes -1 (loud)\n",
+                            " (no consumed id affected: sel_wrong=0)\n",
                     site, is_draft ? "draft" : "verify", il,
                     (long long) clamped, (long long) n_expert);
         }
@@ -4832,6 +4918,22 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
     // They are now lazily allocated Metal buffers (cache_gather_slab, created on first wide union),
     // so there is nothing to pre-create: a default-config server never allocates one at all.
 
+    // [CGC 2026-09-17 r31] Layout check for the snapshot below. `ids_snap` reads the top-k with
+    // LINEAR indexing (`ids[t*k + j]`), which is only the token `t` step's ranks if `t->nb[1] == k*4`.
+    // If the top-k node is the strided argsort view the graph comment in `build_moe_ffn` describes
+    // (`nb[1] = n_expert*4`), then this read returns ranks k..2k-1 of token 0 for token 1 -- legal
+    // expert ids, silently the wrong token -- and the HOST is the side that is wrong, not the device
+    // index vector. Printed once per layer so the two readings can be compared directly.
+    {
+        static int cgc_topk_shape_lines = 0;
+        if (cgc_topk_shape_lines++ < 8) {
+            fprintf(stderr, "CGC-TOPK-SHAPE il=%d t_ne=[%lld,%lld,%lld,%lld] t_nb=[%lld,%lld,%lld,%lld] "
+                    "t_op=%d ids_stride_expected=%lld\n", il,
+                    (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2], (long long) t->ne[3],
+                    (long long) t->nb[0], (long long) t->nb[1], (long long) t->nb[2], (long long) t->nb[3],
+                    (int) t->op, (long long) n_expert_used * 4);
+        }
+    }
     const int32_t * ids = (const int32_t *) t->data;
     if (ids == nullptr) {
         return;
@@ -4842,7 +4944,41 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
     // blocking ensure_batch/drain_layer below then returns clobbered values (segfault in the
     // CGC-POST/st slot lookup + a corrupted remap). Snapshot the ids once, up front, so every later
     // read (remap write, debug prints) is stable.
-    std::vector<int32_t> ids_snap(ids, ids + (size_t) n_tokens * n_expert_used);
+    // [CGC 2026-09-17 r32] NB-AWARE, and this is a real fix rather than a tidy-up. The top-k node is
+    // `ggml_argsort_top_k`'s output: a VIEW whose `nb[1]` is `n_expert*4`, not `n_expert_used*4`.
+    // Measured on the S1 arm (r32):
+    //
+    //   CGC-TOPK-SHAPE il=1 t_ne=[8,2,1,1] t_nb=[4,1024,2048,2048] t_op=38  expected_stride=32
+    //   CGC-S1: SELSHAPE il=1 sel_ne=[8,1] sel_nb=[4,1024]
+    //
+    // The old snapshot (`ids` + linear index) therefore read element `t*k + j`, i.e. for token >= 1 it
+    // read ranks k..2k-1 of token 0's sorted row -- legal expert ids, silently the wrong token. That
+    // vector is what writes the remap leaf, so every T >= 2 step (all prefill, all batch verify)
+    // routed tokens >= 1 through another token's experts. It stayed invisible because it is
+    // deterministic: every arm and every pool size made the SAME mistake, so M1/M2 (cross-pool
+    // invariance) passed while the prefill ids were wrong for all of them. The device-side CONT that
+    // feeds the S1 gather is nb-aware, which is why the S1 index vector and this snapshot disagreed
+    // for token >= 1 -- the disagreement that was read for two rounds as a CONT bug in the gather.
+    //
+    // CGC_IDS_LINEAR_READ=1 restores the pre-fix read EXACTLY, so the two can be A/B'd on ONE binary
+    // (same build, same pool, same dispatch regime -- the only other baseline is a days-old binary and
+    // comparing across that would not be a before/after). Default is the fixed, nb-aware read. The knob
+    // reproduces a defect on purpose: never quote quality or throughput from that arm.
+    const bool cgc_ids_linear =
+        getenv("CGC_IDS_LINEAR_READ") != nullptr && atoi(getenv("CGC_IDS_LINEAR_READ")) != 0;
+    std::vector<int32_t> ids_snap((size_t) n_tokens * (size_t) n_expert_used);
+    if (cgc_ids_linear) {
+        memcpy(ids_snap.data(), t->data, ids_snap.size() * sizeof(int32_t));
+    } else {
+        for (int64_t tt = 0; tt < n_tokens; ++tt) {
+            const char * row = (const char *) t->data + (size_t) tt * t->nb[1];
+            for (int64_t j = 0; j < n_expert_used; ++j) {
+                int32_t v = 0;
+                memcpy(&v, row + (size_t) j * t->nb[0], sizeof(int32_t));
+                ids_snap[(size_t) tt * (size_t) n_expert_used + (size_t) j] = v;
+            }
+        }
+    }
     ids = ids_snap.data();
 
     // [CGC 2026-09-17 §EN-14b] SLOT-SEL: the same reverse lookup, restricted to the experts the
@@ -4880,9 +5016,18 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
     static int cgc_hook_dbg_n = 0;
     if (cgc_hook_dbg_n < 80) {
         cgc_hook_dbg_n++;
-        fprintf(stderr, "CGC-HOOK: ctx=%p il=%d ntok=%lld ids=[%d %d %d %d %d %d %d %d]\n",
-                (void *) this, il, (long long) n_tokens,
-                ids[0], ids[1], ids[2], ids[3], ids[4], ids[5], ids[6], ids[7]);
+        // [CGC 2026-09-17 §11.3] Every token's ids, not just token 0's eight. The old print showed
+        // the first eight only -- which is exactly the half the S1 GPU gather gets right -- so the
+        // one comparison this line exists for (hook's ids vs the index vector the gather consumed,
+        // `CGC-S1: POST ... idx=[...]` under CGC_S1_PIN_IDS) could never be made for the tokens that
+        // disagree. Truncation says so on the line instead of silently cutting.
+        const int64_t cgc_hn = n_tokens * n_expert_used < 16 ? n_tokens * n_expert_used : 16;
+        fprintf(stderr, "CGC-HOOK: ctx=%p il=%d ntok=%lld ids=[",
+                (void *) this, il, (long long) n_tokens);
+        for (int64_t j = 0; j < cgc_hn; ++j) {
+            fprintf(stderr, "%s%d", j ? " " : "", ids[j]);
+        }
+        fprintf(stderr, "]%s\n", (n_tokens * n_expert_used > 16) ? " (truncated to 16)" : "");
     }
     // [CGC MTP Draft Prefetch 2026-09-07] COLLECT phase: during MTP draft decode
     // (ctx_type == MTP, n_tokens >= 1), the draft ctx computes the top-8 expert ids for the
@@ -6046,6 +6191,33 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
                 // counting the same quantity in two different places is how one of them ends up
                 // discarding it, which is precisely what the pool site did. See the long note on
                 // cgc_publish_slot_table_counted above for why both are funnelled here.
+                // [CGC 2026-09-17 §11.5] The gather's index vector, for EVERY token, written by the
+                // host. Placed next to the publish on purpose: table and index vector are one mapping
+                // and a site that writes one without the other is the bug this section closed.
+                {
+                    auto it_ids = cache_ids_tensors.find(il);
+                    static int cgc_ids_shape_lines = 0;
+                    if (it_ids != cache_ids_tensors.end() && it_ids->second != nullptr &&
+                            it_ids->second->data != nullptr) {
+                        ggml_tensor * t_ids = it_ids->second;
+                        const int64_t n_ids_step = n_tokens * n_expert_used;
+                        if (ggml_nelements(t_ids) == n_ids_step) {
+                            memcpy(t_ids->data, ids, (size_t) n_ids_step * sizeof(int32_t));
+                        { static int cgc_idsw = 0; if (cgc_idsw++ < 12) { fprintf(stderr,
+                            "CGC-S1-IDS-WRITE: il=%d t=%p data=%p ne=[%lld,%lld] n=%lld v0=%d v8=%d\n",
+                            il, (void *) t_ids, t_ids->data, (long long) t_ids->ne[0],
+                            (long long) t_ids->ne[1], (long long) n_ids_step,
+                            ids[0], n_ids_step > 8 ? ids[8] : -1); } }
+                        } else if (cgc_ids_shape_lines++ < 8) {
+                            // Loud, because the alternative is the consumer reading the PREVIOUS step's
+                            // vector -- legal ids, wrong experts, nothing asserts.
+                            fprintf(stderr, "CGC-S1-IDS-SHAPE: site=fast il=%d tensor_ne=[%lld,%lld]"
+                                            " step_ids=%lld -- index vector NOT written\n",
+                                    il, (long long) t_ids->ne[0], (long long) t_ids->ne[1],
+                                    (long long) n_ids_step);
+                        }
+                    }
+                }
                 cgc_publish_slot_table_counted(cache, il, n_tokens, n_expert, cgc_stable,
                         cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP, "fast", ids, n_expert_used);
                 if (cgc_s1_dbg) {
@@ -6172,6 +6344,31 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
         if (cgc_stable_e != nullptr && cgc_stable_e->data != nullptr) {
             // [CGC 2026-09-15 §8.3] This site used to discard the return value, and it is the site
             // every MTP-off S1 arm takes -- so the clamp count was computed and never observed.
+            {
+                // [CGC 2026-09-17 §11.5] Same write as the fast path (see the note there); this is the
+                // site every MTP-off S1 arm takes, so leaving it out would fix nothing that is
+                // measured here.
+                auto it_ids = cache_ids_tensors.find(il);
+                static int cgc_ids_shape_lines = 0;
+                if (it_ids != cache_ids_tensors.end() && it_ids->second != nullptr &&
+                        it_ids->second->data != nullptr) {
+                    ggml_tensor * t_ids = it_ids->second;
+                    const int64_t n_ids_step = n_tokens * n_expert_used;
+                    if (ggml_nelements(t_ids) == n_ids_step) {
+                        memcpy(t_ids->data, ids, (size_t) n_ids_step * sizeof(int32_t));
+                        { static int cgc_idsw = 0; if (cgc_idsw++ < 12) { fprintf(stderr,
+                            "CGC-S1-IDS-WRITE: il=%d t=%p data=%p ne=[%lld,%lld] n=%lld v0=%d v8=%d\n",
+                            il, (void *) t_ids, t_ids->data, (long long) t_ids->ne[0],
+                            (long long) t_ids->ne[1], (long long) n_ids_step,
+                            ids[0], n_ids_step > 8 ? ids[8] : -1); } }
+                    } else if (cgc_ids_shape_lines++ < 8) {
+                        fprintf(stderr, "CGC-S1-IDS-SHAPE: site=pool il=%d tensor_ne=[%lld,%lld]"
+                                        " step_ids=%lld -- index vector NOT written\n",
+                                il, (long long) t_ids->ne[0], (long long) t_ids->ne[1],
+                                (long long) n_ids_step);
+                    }
+                }
+            }
             cgc_publish_slot_table_counted(cache, il, n_tokens, n_expert, cgc_stable_e,
                     cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP, "pool", ids, n_expert_used);
         }
@@ -6574,6 +6771,13 @@ llm_graph_cb llama_context::graph_get_cb() const {
             // cache_slots_out_tensors in the header for why the encode-time probe cannot.
             if (strcmp(name, "ffn_moe_slots") == 0) {
                 cache_slots_out_tensors[il] = cur;
+            }
+            // [CGC 2026-09-17 §11.5] `ffn_moe_ids_leaf` is the S1 gather's INDEX VECTOR. Captured so
+            // the hook can write this step's raw ids into it -- see the point of use in
+            // llama-graph.cpp for why the gather must not build that vector from `selected_experts`
+            // on the device (strided CONT -> token >= 1 got ranks 8..15 of token 0).
+            if (strcmp(name, "ffn_moe_ids_leaf") == 0) {
+                cache_ids_tensors[il] = cur;
             }
             // [CGC 2026-09-15 S1 slot-table] `ffn_moe_slot_table` is the S1 replacement for
             // `ffn_moe_topk_remap` and is built under the same conditions, so it must get the same

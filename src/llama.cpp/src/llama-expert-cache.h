@@ -869,5 +869,28 @@ int32_t llama_expert_cache_slot_table_safe(const llama_expert_cache * cache, uin
 // drift apart. Returns the number of entries that had to be clamped to 0 because the layer has no
 // reserved ZERO slot (the map would otherwise contain -1 and the gather would read out of bounds);
 // callers report a nonzero count instead of treating it as normal.
+// [CGC 2026-09-17 S1 clamp accounting]
+// `sel_ids` (n_sel_ids entries, the step's raw expert ids) is OPTIONAL and exists so the count can
+// be taken INSIDE the publish loop. The caller used to re-derive it afterwards by re-reading the
+// live table (`st[e] < 0 && dst[e] == 0`), which is a race: a background fill can land between the
+// two loops and turn st[e] non-negative, so the very entries that were published as 0 are then
+// counted as fine. Measured 2026-09-17: that counter read 0 while the ids the GPU consumed were
+// provably not the table's values, i.e. it reported "nothing wrong" about the bug it exists for.
+// With the ids passed in, membership is decided from the same loop that wrote the entries.
+//
+// out_sel_clamped: consumed ids published as 0 because the layer has no reserved ZERO slot
+//                  (the gather then reads slot 0 -- another expert's weights).
+// out_sel_wrong:   consumed ids whose published slot is not owned by that expert (superset of the
+//                  above; >0 means the consumer reads weights that are not its own).
+// Both may be nullptr.
+//
+// CGC_S1_TAG=<v> (debug only, default off): add v to every published entry and tag the clamped
+// ones with 1000+v instead of 0. It exists to answer one question the ring capture cannot: is a
+// value the GPU read *published 0* or *never written at all*. Never use it for quality or speed
+// numbers -- it deliberately corrupts the mapping.
 int64_t llama_expert_cache_publish_slot_table(const llama_expert_cache * cache, uint32_t layer,
-                                             int32_t * dst, uint32_t n_expert);
+                                             int32_t * dst, uint32_t n_expert,
+                                             const int32_t * sel_ids = nullptr,
+                                             int64_t n_sel_ids = 0,
+                                             int64_t * out_sel_clamped = nullptr,
+                                             int64_t * out_sel_wrong = nullptr);

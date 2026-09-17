@@ -143,7 +143,30 @@ COMPARE = ROOT / "scripts" / "check" / "cgc_logits_oracle_compare.py"
 # i.e. the next reader could not tell a SPAC-on baseline from a SPAC-off one. The SLOT_TABLE_GPU
 # precedent does not transfer: that knob is an experiment whose whole claim is bit-identity, and it
 # is not a production default.
-DEFAULT_REF = ROOT / "Backup" / "knifeedge_matrix" / "ref_iq3_pool8gb_M2_6144_bitident_v5_spac.jsonl"
+# v6 (ref_iq3_pool8gb_M2_6144_bitident_v6_nbaware.jsonl), dumped 2026-09-17 13:45.
+#
+# This re-baseline is NOT nominal, unlike every earlier one: it records a FIX.
+# `expert_cache_on_topk` used to snapshot the top-k with a LINEAR read of
+# `ggml_argsort_top_k`'s output, a view whose `nb[1]` is `n_expert*4` rather than `n_expert_used*4`.
+# For every T >= 2 step it therefore read ranks k..2k-1 of token 0's sorted row for token >= 1 --
+# legal expert ids, silently the wrong token -- and that vector is what writes the remap leaf, so
+# all prefill and all batch verify routed tokens >= 1 through another token's experts. The read is
+# nb-aware now; `CGC_IDS_LINEAR_READ=1` restores the old one in place for A/B on one binary.
+#
+# Measured, new binary vs v5: M1 5/9, M2 6/9, M3 5/9. Row by row the 4 changed rows are
+# (0,0,'DEF') plus (5,1)(5,2)(5,3) -- and (5,0) is UNCHANGED while (5,1..3) change, which is the
+# defect's own signature: on a 4-token step, token 0 keeps its routing and tokens >= 1 do not.
+# A fresh launch against v6 is M1/M2/M3 9/9, and the two runs that failed against v5 produced
+# byte-identical hashes (so the reference was stale, not the runs).
+#
+# Consequence for older evidence: M1/M2 passing across pools before this date shows INVARIANCE
+# only. Every arm and every pool size made the same mistake, so cross-pool agreement could not see
+# it -- the 2026-09-14 "M1 117/117" belongs to that category and must not be quoted as "the
+# numbers were right". Only a v6 comparison can support that claim.
+#
+# Not a diagnostic key, and deliberately so: CGC_IDS_LINEAR_READ stays in the comparability stamp,
+# because a reference dumped with the old read must never compare clean against a fixed binary.
+DEFAULT_REF = ROOT / "Backup" / "knifeedge_matrix" / "ref_iq3_pool8gb_M2_6144_bitident_v6_nbaware.jsonl"
 RESULT_DIR = ROOT / "Backup" / "m123_oracle_gate"
 
 # ★ The oracle's batch/ubatch are part of THE ORACLE'S IDENTITY, not a property of the profile.

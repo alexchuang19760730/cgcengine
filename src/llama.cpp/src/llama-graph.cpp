@@ -2200,7 +2200,99 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             // kernel_cpy_i32_i32 is instantiated, so no CPU fallback (which would reintroduce a
             // per-layer sync). Cost is one tiny cpy of k*n_tokens ints per layer, and dropping it
             // (the id vector is already contiguous in the host path) is S2 work.
+            // [CGC 2026-09-17 §11.5] The index vector is written by the HOOK, not computed from
+            // `selected_experts` on the device. That is the fix for the bug the same day localized,
+            // and the reason is worth keeping:
+            //
+            // The previous chain was CONT(selected_experts) -> RESHAPE_1D(k*T) -> GET_ROWS. The CONT
+            // was added because `selected_experts` is `ggml_argsort_top_k`'s output -- a view with
+            // nb[1] = n_expert*4, i.e. NOT contiguous -- and `ggml_reshape_1d` asserts
+            // `ggml_is_contiguous`. So it existed purely to satisfy an assert, and it did satisfy it
+            // while breaking the data: measured 2026-09-17 (pinned readback + hook ids, same run),
+            // the vector the gather consumed was correct for token 0 and wrong for every token >= 1
+            // on every layer --
+            //
+            //   hook = [193 105 229 249 220 106 181  84 | 237 163  50 218  20  55 222 212]
+            //   idx  = [193 105 229 249 220 106 181  84 | 161 103 250  74 110 121 212  99]
+            //
+            // i.e. a strided copy that read contiguous k-blocks: token 1's row became ranks 8..15 of
+            // token 0's sorted list. Every value stayed in [0, n_expert), so nothing asserted and the
+            // gather did exactly what it was told (`gather_vs_table=0` on all 16 positions) -- the
+            // corruption is silent by construction. The published table is ~72% non-resident zeros,
+            // which is why it surfaced as "mostly zeros with a few plausible slots" rather than as a
+            // crash, and why it was read as a mapping/pool problem for several rounds.
+            //
+            // The hook has had these exact ids all along (`expert_cache_on_topk` derives them from
+            // the router and the host-leaf arm -- which is bit-identical to the baseline -- writes
+            // them), so the correct index vector never needed the device at all. Writing it into a
+            // pinned per-layer tensor keeps the gather (and the table publish) on the same mapping as
+            // the leaf by construction, and removes the strided copy from the correctness path.
+            //
+            // Contract: the hook MUST fill this tensor for every step in which the S1 nodes are built
+            // (`cgc_write_ids_leaf` at both remap-leaf sites in llama-context.cpp), exactly like the
+            // table. A step that builds the nodes and skips the write would leave the previous step's
+            // ids in place -- a legal but wrong vector, which is the failure mode this whole section
+            // exists to eliminate.
+            // 1-D on purpose, and a graph root consumed DIRECTLY by the gather: that is exactly the
+            // shape `slot_table` has (root -> get_rows src1), which is the one proven to deliver host
+            // writes to the device. Measured 2026-09-17: a 2-D root consumed through a view read
+            // zeros -- the view did not share the root's buffer (`ids_src_data` sat in the arena while
+            // the root sat next to `slot_table`), and `ggml_cont(ids_leaf)` folds to `ids_leaf`
+            // itself because the source is already contiguous, so the whole chain collapsed onto a
+            // view of the root. Flat layout is token-major, i.e. ids[j] is the expert of output row j
+            // -- the same order the hook's `ids` array has.
+            // [CGC 2026-09-17 r31] MEASURED, and it retires the host-written index vector: a
+            // 1-D I32 root written by `expert_cache_on_topk` and consumed directly by this GET_ROWS
+            // scheduled fine and the host readback confirmed BOTH the address and the values --
+            //
+            //   ids_src_data == ids_leaf_data (0x11146c500), ids_src_valid=1
+            //   idx = [193 105 229 249 220 106 181 84 | 237 163 50 218 20 55 222 212]   (= hook)
+            //
+            // -- and yet the gather returned [0 x16]: `gather_vs_table=[15]`, i.e. the device read
+            // ZEROS for that index vector while the host mirror held the numbers above. A
+            // host-written root consumed by a GPU kernel is therefore not delivered to the device
+            // (the table and the remap leaf are consumed by `mul_mat_id`, not by a device GET_ROWS),
+            // so that design cannot work no matter how the host fills it. The index vector goes BACK
+            // to being device-produced (CONT of `selected_experts`), which is the structure that
+            // r26 measured as self-consistent (`gather_vs_table=[0]` on all 16 positions).
+            //
+            // The "token >= 1 is wrong" reading that motivated the experiment is re-opened and now
+            // points at the HOST side: `expert_cache_on_topk` reads the top-k with `ids[i]` linear
+            // indexing (see the snapshot there), which is only correct if `t->nb[1] == k*4`. The
+            // shapes below are printed so that read can be checked against the tensor's own layout.
+            static int cgc_sel_shape_lines = 0;
+            if (cgc_sel_shape_lines++ < 4) {
+                fprintf(stderr, "CGC-S1: SELSHAPE il=%d sel_ne=[%lld,%lld] sel_nb=[%lld,%lld] "
+                        "ops=%d src0_op=%d\n", il,
+                        (long long) selected_experts->ne[0], (long long) selected_experts->ne[1],
+                        (long long) selected_experts->nb[0], (long long) selected_experts->nb[1],
+                        (int) selected_experts->op,
+                        selected_experts->src[0] != nullptr ? (int) selected_experts->src[0]->op : -1);
+            }
+            // Consume the root DIRECTLY. An earlier revision reshaped it to 1-D first (the shape the
+            // GET_ROWS of `probs`/`weights` uses), and that aborted the reserve build with
+            // `ggml-alloc.c:623 GGML_ASSERT(buffer_id >= 0)`: the get_rows then reached the root only
+            // through a view, and a view of a graph root is not assigned a backend by the scheduler.
+            // This is the same trap the keep-leaf comment above records for `slot_table`, hit from the
+            // other side. A 2-D index tensor is legal here: ggml_get_rows produces [a->ne0, k, T].
+            // Keep the node structure that is proven to schedule: CONT -> RESHAPE_1D -> GET_ROWS ->
+            // RESHAPE_2D with a 1-D index vector. Only the SOURCE of the copy changes -- from the
+            // strided argsort view to the host-written leaf -- so the CONT becomes a contiguous
+            // duplicate (a plain memcpy, no strides to get wrong).
+            //
+            // Two alternative structures aborted the reserve build with
+            // `ggml-alloc.c:623 GGML_ASSERT(buffer_id >= 0)`, i.e. a node the scheduler never assigned
+            // a backend to:
+            //   * reshape_1d(ids_leaf) -> GET_ROWS            (root reached only through a view)
+            //   * GET_ROWS(slot_table, ids_leaf) with a 2-D index -> [1,k,T] -> reshape_2d
+            // Both had a 2-D root. A 1-D root consumed directly is the `slot_table` shape and
+            // schedules; that is what this is.
             ggml_tensor * ids_cont = ggml_cont(ctx0, selected_experts);
+            // Pinned on purpose: the post-synchronize readback validates the index vector by reading
+            // it AFTER the command buffer completed, which only means something if its buffer is still
+            // alive. Measured r25/r26: this pin is safe, and without it the readback degrades to
+            // `n/a (index vector buffer recycled)` and silently proves nothing.
+            ggml_set_output(ids_cont);
             ggml_tensor * ids_flat = ggml_reshape_1d(ctx0, ids_cont, n_expert_used * n_tokens);
             ggml_tensor * slots    = ggml_get_rows(ctx0, slot_table, ids_flat); // I32 [1, k*n_tokens]
             // [CGC 2026-09-15 S1: buffer aliasing] `ggml_set_output` is REQUIRED here for exactly the
@@ -2293,17 +2385,42 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 }
             }
             if (cgc_s1_dbg) {
-                static int cgc_s1_gn = 0;
-                if (cgc_s1_gn < 6) {
-                    cgc_s1_gn++;
-                    // ids_data (printed by the CGC-MMID-ASSERT provenance probe, ggml-metal-ops.cpp)
-                    // must EQUAL slots_data here, otherwise the mmid is not consuming this tensor.
-                    fprintf(stderr, "CGC-S1: graph slot-table il=%d n_expert=%lld ids_flat_ne0=%lld "
-                                    "slots_ne=[%lld,%lld] table_data=%p ids_flat_data=%p slots_data=%p\n",
-                            il, (long long) n_expert, (long long) ids_flat->ne[0],
-                            (long long) slots->ne[0], (long long) slots->ne[1],
-                            slot_table->data, ids_flat->data, slots->data);
+                // [CGC 2026-09-17 §11.3] The decisive shape question, printed for EVERY distinct build
+                // instead of the first six. The post-synchronize readback proved the gather really does
+                // write token 0's k lookups and then mostly zeros, which is what looking up a long index
+                // vector whose tail is not this step's experts looks like; the published table is ~72%
+                // zeros (non-resident), so garbage indices land on 0 most of the time and occasionally
+                // on a resident entry -- exactly the observed mix.
+                //
+                // What decides it is the pair of shapes, not any value:
+                //   selected_experts->ne[1]  the router's own token count (ground truth)
+                //   n_tokens                 the local count this block builds the S1 nodes with
+                // The code already documents that these can disagree ("build_moe_ffn's n_tokens is NOT
+                // ubatch.n_tokens"). If selected_experts->ne[1] > n_tokens, then ids_flat is k long
+                // while the consumer reads k*T, and the zeros are explained by construction rather than
+                // by any allocator or kernel behaviour.
+                //
+                // Deduplicated by signature with a count: the distinct shapes are few, and printing one
+                // line per layer per step is how the earlier probe managed to look at a shape nobody had
+                // questioned (all six of its lines were the 1-token reserve build).
+                static std::map<std::string, long long> cgc_s1_sig;
+                char sig[256];
+                snprintf(sig, sizeof(sig),
+                        "n_tokens=%lld sel_ne=[%lld,%lld] ids_flat_ne0=%lld "
+                        "slots_ne=[%lld,%lld] slots_nbytes=%zu",
+                        (long long) n_tokens, (long long) selected_experts->ne[0],
+                        (long long) selected_experts->ne[1], (long long) ids_flat->ne[0],
+                        (long long) slots->ne[0], (long long) slots->ne[1],
+                        ggml_nbytes(slots));
+                long long & n_sig = cgc_s1_sig[sig];
+                if (n_sig < 3) {
+                    fprintf(stderr, "CGC-S1: SHAPE il=%d %s (occurrence %lld)%s\n",
+                            il, sig, n_sig + 1,
+                            selected_experts->ne[1] != n_tokens
+                                ? "  <-- MISMATCH: the S1 gather is sized from n_tokens, the router has more tokens"
+                                : "");
                 }
+                n_sig++;
             }
         } else {
         ggml_tensor * remap = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_expert_used, n_tokens);
@@ -2557,12 +2674,67 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // note: here we explicitly use hparams.n_expert_used instead of n_expert_used
     //       to avoid potentially a large number of add nodes during warmup
     //       ref: https://github.com/ggml-org/llama.cpp/pull/14753
-    ggml_tensor * moe_out = cur_experts[0];
+    //
+    // [CGC 2026-09-17 §9.18.9 reduction-order probe] CGC_ADD_ORDER=rev reverses the ASSOCIATION of
+    // this left-to-right chain: (((c0+c1)+c2)+...) becomes (((c7+c6)+c5)+...).
+    //
+    // Why this is the right shape for the question it answers. The open question is whether the
+    // pool-path A/B divergence is carried by the REDUCTION ORDER/PRECISION of the FFN aggregation
+    // (the "coin flip": a sub-ulp difference that flips the top-k three passes later) or by the two
+    // arms genuinely computing different values. Two facts pin the probe down:
+    //   * the per-expert row index i is the POSITION in the ids array, and `cur_experts[i]` is the
+    //     i-th expert's already-weighted contribution -- so reordering the CHAIN reassociates the
+    //     same 8 terms and changes nothing but floating-point summation order. Reordering the IDS
+    //     (the obvious alternative) does NOT have that property: the routing weights are gathered
+    //     positionally (`weights = get_rows(probs, selected_experts)`) and consumed positionally by
+    //     `ggml_mul`, so permuting the ids alone would pair expert A's output with expert B's weight
+    //     -- a silent wrong answer, not a reordering.
+    //   * fp32 `add` is not associative, so a full reversal is the STRONGEST single test: if even
+    //     the reversed chain is bit-identical, then NO canonicalisation of this sum (ascending by
+    //     expert id, slot order, or anything else) can change the result either -- every one of them
+    //     is a permutation of the very terms whose permutation just measured as inert. If it is NOT
+    //     bit-identical, the size of the movement is the order-sensitivity of the reduction, which is
+    //     the number a canonical order would be introduced to control.
+    // Same treatment on both arms (this is a graph property, not an arm property), default off.
+    static const char * cgc_add_order = getenv("CGC_ADD_ORDER");
+    static const bool   cgc_add_rev   = cgc_add_order != nullptr && strcmp(cgc_add_order, "rev") == 0;
+    // One-shot banner: an arm is only quotable if the log it produced names the arm that produced
+    // it. A run whose CGC_ADD_ORDER did not reach the server is otherwise indistinguishable from a
+    // run where the reversal simply changed nothing -- the same "absent instrument reads as equal"
+    // failure the capture tooling carries a mandatory same-arm control for.
+    // RAW fprintf(stderr), and that is measured rather than stylistic. Two attempts to make this
+    // banner readable through the logging macros both produced a log in which the arm could not name
+    // itself, while the SAME run carried 3847 `CGC-` lines from the ggml-metal probes:
+    //   * LLAMA_LOG_INFO  -- absent. (The arm's log is not simply WARN-only: it has `I cmn` / `I srv`
+    //     lines from the server's own logger, but zero `llama_context`/`llama_model_loader` lines.)
+    //   * LLAMA_LOG_WARN  -- absent too, even though the string is verifiably in the loaded dylib
+    //     (`strings build/bin/libllama.0.dylib`) and `llama_log_internal` imposes no level filter.
+    // Rather than keep probing which channel survives this harness, the banner uses the channel whose
+    // delivery is proven in these very logs: the `[CGC] Shutdown reminder` line at the head of every
+    // arm log is a raw stderr write from the engine, with no server prefix and no timestamp. An arm
+    // identity has to be readable in the arm's own log, so it rides the channel that arrives.
+    static const bool cgc_add_rev_banner = [] {
+        fprintf(stderr, "CGC-ADD-ORDER: expert aggregation = %s\n",
+                cgc_add_rev ? "REVERSED (reduction-order probe)" : "left-to-right");
+        fflush(stderr);
+        return true;
+    }();
+    (void) cgc_add_rev_banner;
 
-    for (uint32_t i = 1; i < hparams.n_expert_used; ++i) {
-        moe_out = ggml_add(ctx0, moe_out, cur_experts[i]);
+    ggml_tensor * moe_out = cur_experts[cgc_add_rev ? hparams.n_expert_used - 1 : 0];
 
-        ggml_build_forward_expand(gf, moe_out);
+    if (cgc_add_rev) {
+        for (int i = (int) hparams.n_expert_used - 2; i >= 0; --i) {
+            moe_out = ggml_add(ctx0, moe_out, cur_experts[i]);
+
+            ggml_build_forward_expand(gf, moe_out);
+        }
+    } else {
+        for (uint32_t i = 1; i < hparams.n_expert_used; ++i) {
+            moe_out = ggml_add(ctx0, moe_out, cur_experts[i]);
+
+            ggml_build_forward_expand(gf, moe_out);
+        }
     }
 
     if (hparams.n_expert_used == 1) {

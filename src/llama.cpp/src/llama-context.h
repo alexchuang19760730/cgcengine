@@ -365,6 +365,13 @@ private:
     // other path bit-identical and makes the S1 A/B a pure scheduler/dispatch change.
     // mutable: filled from the const graph_get_cb.
     mutable std::map<int, ggml_tensor *> cache_slot_table_tensors;
+    // [CGC 2026-09-17 §11.5] layer -> the `ffn_moe_ids_leaf` node: the INDEX VECTOR the S1 gather
+    // reads (k*n_tokens int32, contiguous, pinned). The hook writes the step's raw expert ids into it
+    // -- the same array the host leaf is written from -- so the gather never depends on the device
+    // materialising a copy of `selected_experts`, which is what produced a correct token 0 and a wrong
+    // token >= 1 (a strided CONT read as contiguous blocks; see the point of use in llama-graph.cpp).
+    // Contract: every step that builds the S1 nodes must fill this, like the table itself.
+    mutable std::map<int, ggml_tensor *> cache_ids_tensors;
     // [CGC 2026-09-15 S1 slot-table] layer -> the `ffn_moe_slots` node, i.e. the GET_ROWS result
     // (viewed as [k, n_tokens]) that mul_mat_id consumes as its ids operand. Captured ONLY so the
     // post-synchronize readback can read back what the Metal gather actually produced, on the host,

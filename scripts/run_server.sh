@@ -1470,6 +1470,16 @@ fi
 if [ -n "${CGC_S1_DBG:-}" ]; then
     SERVER_ENV+=(CGC_S1_DBG="$CGC_S1_DBG")
 fi
+# [CGC 2026-09-17 r38] CGC_IDS_LINEAR_READ=1 restores the PRE-FIX top-k snapshot in
+# `expert_cache_on_topk`: a linear read of `ggml_argsort_top_k`'s strided view, which fed tokens
+# >= 1 of every T >= 2 step another token's expert ids (see the point of use in
+# llama-context.cpp). It exists so the fix can be A/B'd on ONE binary -- same build, same pool,
+# same everything -- because the only other baseline is a 3-day-old binary in a different
+# dispatch regime, and comparing across that would not be a before/after. Never for quality or
+# throughput numbers; the knob reproduces a defect on purpose.
+if [ -n "${CGC_IDS_LINEAR_READ:-}" ]; then
+    SERVER_ENV+=(CGC_IDS_LINEAR_READ="$CGC_IDS_LINEAR_READ")
+fi
 # [CGC 2026-09-15 S1 kernel-side ids capture] Opt-in snapshot of the ids a mul_mat_id kernel
 # actually consumed, written by a tiny post-consumer kernel into a buffer the graph allocator does
 # not own. Must be listed here for the same reason as CGC_SLOT_TABLE_GPU above: the launch line's
@@ -1801,11 +1811,6 @@ if [ "$SERVER_MTP" = "1" ]; then
     else
         SERVER_ENV+=(CGC_WARM_NPAST=8)
     fi
-    if [ -n "$SERVER_LAYER_CAPS" ]; then
-        SERVER_ENV+=(LLAMA_EXPERT_CACHE_LAYER_CAPS="$SERVER_LAYER_CAPS")
-    else
-        SERVER_ENV+=(LLAMA_EXPERT_CACHE_LAYER_CAPS="40-40:256")
-    fi
     if [ "$SERVER_MTP_CLI_PARITY" = "1" ]; then
         SERVER_ENV+=(CGC_MTP_CLI_PARITY=1)
     fi
@@ -1846,6 +1851,19 @@ if [ "$SERVER_MTP" = "1" ]; then
     if [ "$SERVER_NO_SEQ_RM_PROBE" = "1" ]; then
         SERVER_ENV+=(CGC_NO_SEQ_RM_PROBE=1)
     fi
+fi
+# [CGC 2026-09-17] LAYER_CAPS must NOT be gated on the MTP profile. It sizes EVERY layer's pool
+# region on BOTH sides (the loader's ne[2] shrink via cgc_layer_cap, and the cache's n_slots_l),
+# and the decode baseline arm (p25-gputime) is MTP=0 -- so while this block sat inside
+# `if [ "$SERVER_MTP" = "1" ]` the knob was silently dropped exactly where it was wanted.
+# Measured 2026-09-17: with CGC_SERVER_LAYER_CAPS set, MTP=1 exported it and MTP=0 exported
+# nothing; the engine printed no `LAYER_CAPS per-layer caps` census line at all, and the run
+# looked exactly like "the knob has no effect". Byte-identical for every existing config:
+# no env + MTP=1 still gets 40-40:256; no env + MTP=0 still gets nothing (as before).
+if [ -n "$SERVER_LAYER_CAPS" ]; then
+    SERVER_ENV+=(LLAMA_EXPERT_CACHE_LAYER_CAPS="$SERVER_LAYER_CAPS")
+elif [ "$SERVER_MTP" = "1" ]; then
+    SERVER_ENV+=(LLAMA_EXPERT_CACHE_LAYER_CAPS="40-40:256")
 fi
 # [CGC 2026-09-15] CGC_DUMP_ENV=1 -- print the FULLY-RESOLVED launch environment and argv, then
 # exit without launching anything. Inserted here, after every profile default / override has been
