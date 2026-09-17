@@ -8,6 +8,10 @@ captured nodes instead of one.
 Two readings, deliberately kept apart:
   * rows with path=MV|MM are the 09-15 ids instrument: what mul_mat_id actually CONSUMED.
   * rows with path=DST are tensor OUTPUTS, one per name in CGC_TENSOR_CAPTURE.
+A THIRD stream (path=POOL, [CGC 2026-09-17 r12], `Backup/run_ids_dst_capture.sh POOL=1`) digests the
+pool ROWS behind the ids on the device. It is a different unit of comparison -- a per-row digest, not a
+tensor -- so it is EXCLUDED here (counted and reported, never silently) and compared by
+`Backup/compare_pool_row.py`.
 
 The localisation is the ORDER of the divergence, not the count of them. Rows are emitted in
 SUBMISSION order (the dump merges the two streams by seq), so within a graph the earliest DST row
@@ -55,6 +59,10 @@ RX = re.compile(
     r"CGC-IDS-CAP slot=(\d+) path=(\w+) n_ids=(\d+) name=(\S+) ids=\[([^\]]*)\](?: fuse=(\d+) ne=(\d+))?(?: off=(\d+))?"
 )
 GRAPH_START = "ffn_moe_gate-1"
+
+# [CGC 2026-09-17 r12] Counter for path=POOL rows dropped by parse(). Module-level so it survives the
+# two calls in main() and can be reported once; see the note there.
+POOL_ROWS_SEEN = 0
 
 # The layer chain, taken from the graph builder (qwen35moe.cpp + delta-net-base.cpp + llama-graph.cpp),
 # NOT from the emission order. Emission order is NOT usable as the localisation key: measured
@@ -113,10 +121,21 @@ def chain_rank(name):
 
 def parse(path):
     """-> list of graphs; each graph is a list of (name, path, vals, fuse, ne, off)."""
+    global POOL_ROWS_SEEN
     rows = []
     for line in open(path, errors="replace"):
         m = RX.search(line)
         if m:
+            # [CGC 2026-09-17 r12] `path=POOL` rows are the device-side row digest (a third stream,
+            # same `CGC-IDS-CAP` line format). They are NOT comparable here -- this file's unit is a
+            # captured tensor or ids vector, theirs is a digest of the pool rows BEHIND the ids -- and
+            # letting them through would add nodes like `ffn_moe_gate-1.pool` to the localisation,
+            # which is a published result. Excluded, COUNTED, and reported in main(): a filter that
+            # silently changes what a comparator sees is the defect this repository keeps re-learning
+            # (the 256-byte filter, the --upto blind spot). Compared by Backup/compare_pool_row.py.
+            if m.group(2) == "POOL":
+                POOL_ROWS_SEEN += 1
+                continue
             vals = tuple(int(x) for x in m.group(5).split(",")) if m.group(5) else ()
             rows.append((m.group(4), m.group(2), vals, int(m.group(6) or 0),
                          int(m.group(7) or 0), int(m.group(8) or 0)))
@@ -193,6 +212,12 @@ def main():
     args = ap.parse_args()
 
     a, b = parse(args.a), parse(args.b)
+    # [CGC 2026-09-17 r12] Never let the POOL exclusion be invisible: if the run carried the device
+    # row digest (CGC_POOL_CAPTURE), say how many rows this comparator dropped and where they went.
+    if POOL_ROWS_SEEN:
+        print(f"[info] {POOL_ROWS_SEEN} path=POOL row(s) EXCLUDED from this comparison -- they are the "
+              f"device-side pool-row digest, a different unit of comparison. Use "
+              f"Backup/compare_pool_row.py for them.\n")
     n = min(len(a), len(b))
     if args.upto:
         n = min(n, args.upto)

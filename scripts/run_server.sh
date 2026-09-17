@@ -1493,6 +1493,22 @@ fi
 if [ -n "${CGC_TENSOR_CAPTURE_HASH:-}" ]; then
     SERVER_ENV+=(CGC_TENSOR_CAPTURE_HASH="$CGC_TENSOR_CAPTURE_HASH")
 fi
+# [CGC 2026-09-17 §9.18.6 r12] The THIRD capture destination: the pool ROWS the ids select, digested
+# ON THE DEVICE at the moment the consumer runs. This is the one reading that separates "the ids point
+# at different experts" from "the same expert index holds different bytes" without either arm needing
+# a host-visible pointer -- the existing host-side probe (CGC_MMID_MV_DBG) is measurably blind on the
+# S1 arm, because it reads op->src[2]->data at ENCODE time and the ids are a GPU-computed node there.
+# Same allowlist trap as above, and it bites harder here: a dropped CGC_POOL_CAPTURE produces no POOL
+# rows at all, which reads exactly like "that node never ran on this arm".
+if [ -n "${CGC_POOL_CAPTURE:-}" ]; then
+    SERVER_ENV+=(CGC_POOL_CAPTURE="$CGC_POOL_CAPTURE")
+fi
+if [ -n "${CGC_POOL_CAPTURE_ROWS:-}" ]; then
+    SERVER_ENV+=(CGC_POOL_CAPTURE_ROWS="$CGC_POOL_CAPTURE_ROWS")
+fi
+if [ -n "${CGC_POOL_CAPTURE_BYTES:-}" ]; then
+    SERVER_ENV+=(CGC_POOL_CAPTURE_BYTES="$CGC_POOL_CAPTURE_BYTES")
+fi
 if [ -n "${CGC_S1_IDENT:-}" ]; then
     SERVER_ENV+=(CGC_S1_IDENT="$CGC_S1_IDENT")
 fi

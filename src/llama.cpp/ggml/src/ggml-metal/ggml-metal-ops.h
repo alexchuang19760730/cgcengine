@@ -107,8 +107,14 @@ int ggml_metal_op_count_equal       (ggml_metal_op_t ctx, int idx);
 //   CGC_IDS_CAPTURE=1                  -> snapshot the ids operand `mul_mat_id` consumes  (path=MV|MM)
 //   CGC_TENSOR_CAPTURE=<exact node>    -> also snapshot that node's OUTPUT tensor          (path=DST)
 //   CGC_TENSOR_CAPTURE_WORDS=N         -> how many int32 words of it (default 32, max 32)
-// Both rows carry the same `CGC-IDS-CAP` line format, so scripts/check/ids_capture_diff.py diffs
-// either one unchanged; the output row is named `<node>.dst` to keep the two distinguishable.
+// [CGC 2026-09-17 §9.18.6 r12] ...and a THIRD stream for the bytes BEHIND the ids:
+//   CGC_POOL_CAPTURE=<exact node>      -> digest the rows the ids select, on the device   (path=POOL)
+//   CGC_POOL_CAPTURE_ROWS=N            -> how many of the operand's ids (default 8, max 12)
+//   CGC_POOL_CAPTURE_BYTES=N           -> bytes digested per row (default 4096, max 1 MiB)
+// Every row carries the same `CGC-IDS-CAP` line format, so scripts/check/ids_capture_diff.py diffs the
+// ids rows unchanged; the derived rows are named `<node>.dst` and `<node>.pool` (with `probe=`/`nsel=`
+// instead of `ne=`/`off=`) to keep the three distinguishable. Rows are emitted in submission order
+// across all three streams, which is what keeps each derived row inside its own graph.
 void ggml_metal_cgc_ids_dump(void);
 
 #ifdef __cplusplus

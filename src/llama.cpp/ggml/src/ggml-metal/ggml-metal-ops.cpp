@@ -3293,10 +3293,20 @@ constexpr int32_t CGC_DST_STRIDE = 32;
 // shape as the allowlist trap in run_server.sh, one layer down.
 constexpr int32_t CGC_DST_FILTER_MAX = 2048;
 
+// [CGC 2026-09-17 §9.18.6 r12] The third destination: the POOL ROWS the ids select. See
+// ggml_metal_kargs_cgc_pool_row for the words and for why this one had to become a kernel.
+//   stride 64, not 8/32: the record is 1 + 5 words PER SELECTED ROW, and a decode step selects
+//   n_expert_used (8 here) rows. 64 covers 12 rows with room to spare, and the whole stream is
+//   4096 * 64 * 4 B = 1 MiB of shared buffer -- the cost of the instrument, not of the engine.
+constexpr int32_t CGC_POOL_SLOTS  = 4096;
+constexpr int32_t CGC_POOL_STRIDE = 64;
+constexpr int32_t CGC_POOL_ROWS_MAX = (CGC_POOL_STRIDE - 1) / 5;   // 12
+
 struct cgc_ids_rec {
     char    name[48];
     int32_t n_ids;
-    int32_t kind; // 0 = MV (src2 is consumed directly), 1 = MM (src2 is consumed by map0), 2 = DST
+    int32_t kind; // 0 = MV (src2 is consumed directly), 1 = MM (src2 is consumed by map0), 2 = DST,
+                  // 3 = POOL (the rows the ids select, digested on the device)
     int32_t fuse; // DST only: how many nodes the dispatcher covered. >1 means this row is the LAST
                   // node of a fused group (the naming rule in cgc_dst_capture_at), so it is printed.
     int32_t seq;  // global submission order across BOTH streams -- see the dump
@@ -3317,6 +3327,12 @@ struct cgc_ids_rec {
                   // DIFF (tokens 1..7). Every "SAME" in rounds r1..r4 is a SAME-AT-TOKEN-0, and token
                   // 0 is the one token guaranteed to be the least informative. Printed as `off=`
                   // after `ne=`, so existing readers are unaffected.
+                  // [CGC 2026-09-17 §9.18.6 r12] For POOL rows (kind 3) these two fields carry the
+                  // row digest's own geometry instead of a window's: `ne` = probe_bytes (how many
+                  // bytes of each row were digested) and `off` = nsel (how many ids the operand
+                  // held, i.e. the pre-clamp count). Printed as `probe=`/`nsel=`, so no existing
+                  // reader sees a changed line -- and recorded at all because "0 bytes digested" and
+                  // "4096 bytes digested" otherwise print an equally plausible number of groups.
 };
 
 struct cgc_ids_state {
@@ -3340,6 +3356,17 @@ struct cgc_ids_state {
     int32_t             printed_dst = 0;
     cgc_ids_rec *       recs_dst    = nullptr;
 
+    // [CGC 2026-09-17 §9.18.6 r12] pool-row side: the bytes behind the ids, read on the device
+    bool                pool_enabled = false;
+    char                pool_filter[CGC_DST_FILTER_MAX] = { 0 };
+    int32_t             pool_rows    = 8;     // n_expert_used for this model; capped at ROWS_MAX
+    int32_t             pool_bytes   = 4096;  // same default as the host probe, so they are comparable
+    ggml_metal_buffer_t buf_pool     = nullptr;
+    int32_t *           base_pool    = nullptr;
+    int32_t             slots_pool   = 0;
+    int32_t             printed_pool = 0;
+    cgc_ids_rec *       recs_pool    = nullptr;
+
     int32_t             seq = 0;
 };
 
@@ -3351,7 +3378,7 @@ cgc_ids_state g_cgc_ids;
 // together are the §9.18.6 configuration.
 bool cgc_capture_init(ggml_metal_device_t dev) {
     if (g_cgc_ids.inited) {
-        return g_cgc_ids.enabled || g_cgc_ids.dst_enabled;
+        return g_cgc_ids.enabled || g_cgc_ids.dst_enabled || g_cgc_ids.pool_enabled;
     }
     g_cgc_ids.inited = true;
 
@@ -3422,6 +3449,64 @@ bool cgc_capture_init(ggml_metal_device_t dev) {
         }
     }
 
+    // [CGC 2026-09-17 §9.18.6 r12] The pool-row side. A comma-separated EXACT-name list for the same
+    // reason as the dst filter (see above), and it must be a SHORT list for a second reason: this
+    // instrument submits an extra kernel into the graph's own encoder, so a wide list inserts a
+    // dispatch into every node of every layer and could perturb the very scheduling the S1 question
+    // is about. The decisive question is about ONE layer, so the list should name ONE layer.
+    //
+    // ★ WHY IT IS WORTH THE PERTURBATION AT ALL: every other S1 probe either reads the ids (which the
+    //   two arms already agree on, 120/120) or reads the node OUTPUT (which differs, but says nothing
+    //   about WHY). This is the only probe that reads the bytes BETWEEN them -- the pool rows the ids
+    //   select -- at the moment of consumption. Its two outcomes have opposite consequences:
+    //     DIFF => the residency path delivers different bytes for the same slot index, i.e. the
+    //             carrier is the pool contents and the mapping layer stays exonerated;
+    //     SAME => the last sentence §9.18.4 could still be true also falls, and the divergence has to
+    //             be looked for OUTSIDE the gather's inputs (allocator aliasing, a view re-pointed
+    //             per arm, a consumer reading a stale ids buffer, or a divergence introduced after
+    //             the gather).
+    //   Neither outcome is a fix. Both change what to do next, which is the only thing a measurement
+    //   can do here. Same-arm control is MANDATORY before believing either: this copy reads a buffer
+    //   that another kernel may still be writing (the DST round's missing barrier produced a
+    //   confident false positive of exactly this shape).
+    const char * pf = getenv("CGC_POOL_CAPTURE");
+    if (pf != nullptr && pf[0] != '\0' && pf[0] != '0') {
+        const int wrote = snprintf(g_cgc_ids.pool_filter, sizeof(g_cgc_ids.pool_filter), "%s", pf);
+        g_cgc_ids.pool_enabled = true;
+        if (wrote >= (int) sizeof(g_cgc_ids.pool_filter)) {
+            GGML_LOG_WARN("CGC-POOL-CAP: CGC_POOL_CAPTURE is %d chars but the filter holds %d -- the "
+                          "list was TRUNCATED and the names past that point are dropped (the cut lands "
+                          "MID-NAME, so the last surviving name is unusable too)\n",
+                          wrote, (int) sizeof(g_cgc_ids.pool_filter) - 1);
+        }
+        GGML_LOG_WARN("CGC-POOL-CAP: CGC_POOL_CAPTURE effective (%d chars, matches EXACT names): %s\n",
+                      wrote, g_cgc_ids.pool_filter);
+
+        const char * r = getenv("CGC_POOL_CAPTURE_ROWS");
+        if (r != nullptr && r[0] != '\0') {
+            int v = atoi(r);
+            if (v < 1)                   v = 1;
+            if (v > CGC_POOL_ROWS_MAX)   v = CGC_POOL_ROWS_MAX;
+            g_cgc_ids.pool_rows = v;
+        }
+        const char * pb = getenv("CGC_POOL_CAPTURE_BYTES");
+        if (pb != nullptr && pb[0] != '\0') {
+            int v = atoi(pb);
+            if (v < 1)                 v = 1;
+            if (v > (1 << 20))         v = 1 << 20;
+            g_cgc_ids.pool_bytes = v;
+        }
+        GGML_LOG_WARN("CGC-POOL-CAP: rows=%d probe_bytes=%d stride=%d slots=%d\n",
+                      g_cgc_ids.pool_rows, g_cgc_ids.pool_bytes, CGC_POOL_STRIDE, CGC_POOL_SLOTS);
+
+        if (!g_cgc_ids.enabled) {
+            GGML_LOG_WARN("CGC-IDS-CAP: enabled implicitly -- CGC_POOL_CAPTURE needs the ids rows to "
+                          "carry the graph boundaries, or every POOL row lands in one pseudo-graph and "
+                          "is compared against nothing\n");
+            g_cgc_ids.enabled = true;
+        }
+    }
+
     if (g_cgc_ids.enabled) {
         const size_t bytes = (size_t) CGC_IDS_SLOTS * (size_t) CGC_IDS_STRIDE * sizeof(int32_t);
 
@@ -3457,7 +3542,25 @@ bool cgc_capture_init(ggml_metal_device_t dev) {
         }
     }
 
-    return g_cgc_ids.enabled || g_cgc_ids.dst_enabled;
+    if (g_cgc_ids.pool_enabled) {
+        const size_t bytes = (size_t) CGC_POOL_SLOTS * (size_t) CGC_POOL_STRIDE * sizeof(int32_t);
+
+        g_cgc_ids.buf_pool  = ggml_metal_buffer_init(dev, bytes, /*shared*/ true);
+        g_cgc_ids.base_pool = g_cgc_ids.buf_pool != nullptr ? (int32_t *) ggml_metal_buffer_get_base(g_cgc_ids.buf_pool) : nullptr;
+        g_cgc_ids.recs_pool = (cgc_ids_rec *) calloc((size_t) CGC_POOL_SLOTS, sizeof(cgc_ids_rec));
+
+        if (g_cgc_ids.buf_pool == nullptr || g_cgc_ids.base_pool == nullptr || g_cgc_ids.recs_pool == nullptr) {
+            GGML_LOG_WARN("CGC-POOL-CAP disabled: allocation failed\n");
+            g_cgc_ids.pool_enabled = false;
+        } else {
+            GGML_LOG_WARN("CGC-POOL-CAP enabled: slots=%d stride=%d bytes=%zu shared=%d "
+                          "(destination is NOT allocator-managed)\n",
+                          CGC_POOL_SLOTS, CGC_POOL_STRIDE, bytes,
+                          (int) ggml_metal_buffer_is_shared(g_cgc_ids.buf_pool));
+        }
+    }
+
+    return g_cgc_ids.enabled || g_cgc_ids.dst_enabled || g_cgc_ids.pool_enabled;
 }
 
 // Shared submission body: bind one source buffer and copy up to `stride` words into a fresh slot of
@@ -3508,12 +3611,15 @@ void cgc_ids_capture(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_ids,
 
 // Does `name` match the filter list? Tokens are compared EXACTLY (see the init comment) and a token
 // of `*` matches anything.
-bool cgc_dst_match(const char * name) {
-    if (name == nullptr || name[0] == '\0') {
+// [CGC 2026-09-17 §9.18.6 r12] Parameterised by the list rather than closed over one, because there
+// are now two independent exact-name filters (DST and POOL) and duplicating this test is how the
+// substring bug gets re-introduced in exactly one of them.
+bool cgc_name_match(const char * list, const char * name) {
+    if (name == nullptr || name[0] == '\0' || list == nullptr) {
         return false;
     }
     const size_t nl = strlen(name);
-    for (const char * p = g_cgc_ids.dst_filter; ; ) {
+    for (const char * p = list; ; ) {
         const char * comma = strchr(p, ',');
         const size_t len   = comma != nullptr ? (size_t) (comma - p) : strlen(p);
         if (len == 1 && p[0] == '*') {
@@ -3527,6 +3633,10 @@ bool cgc_dst_match(const char * name) {
         }
         p = comma + 1;
     }
+}
+
+bool cgc_dst_match(const char * name) {
+    return cgc_name_match(g_cgc_ids.dst_filter, name);
 }
 
 // [CGC 2026-09-16 S1 residency §9.18.6] Snapshot a chosen node's OUTPUT tensor. Same kernel, same
@@ -3623,6 +3733,92 @@ void cgc_dst_capture(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_dst,
     cgc_dst_capture_common(ctx, bid_dst, op, (int32_t) ggml_nelements(op), 1);
 }
 
+// [CGC 2026-09-17 §9.18.6 r12] The pool-row digest, submitted into the SAME encoder immediately
+// after the kernel that consumed `ids` and the rows. Two source buffers instead of one, so it does
+// not go through cgc_submit above (that helper binds one source by construction).
+static void cgc_submit_pool_row(ggml_metal_op_t ctx,
+                                ggml_metal_buffer_id bid_rows, ggml_metal_buffer_id bid_ids,
+                                int32_t slot, int32_t row_limit, int32_t probe_bytes,
+                                uint64_t row_bytes, int32_t n_ids) {
+    ggml_metal_kargs_cgc_pool_row args = {
+        /*.n_ids       =*/ n_ids,
+        /*.slot        =*/ slot,
+        /*.stride      =*/ CGC_POOL_STRIDE,
+        /*.rows        =*/ g_cgc_ids.pool_rows,
+        /*.row_limit   =*/ row_limit,
+        /*.probe_bytes =*/ probe_bytes,
+        /*.row_bytes   =*/ row_bytes,
+    };
+
+    ggml_metal_encoder_t enc = ctx->enc;
+
+    ggml_metal_encoder_set_pipeline(enc, ggml_metal_library_get_pipeline_cgc_pool_row(ctx->lib));
+    ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
+    ggml_metal_encoder_set_buffer  (enc, bid_rows, 1);
+    ggml_metal_encoder_set_buffer  (enc, bid_ids,  2);
+    ggml_metal_encoder_set_buffer  (enc, ggml_metal_buffer_get_id_whole(g_cgc_ids.buf_pool), 3);
+
+    ggml_metal_encoder_dispatch_threadgroups(enc, 1, 1, 1, 32, 1, 1);
+}
+
+// Call site: the two operands a routed MoE kernel consumes, read on the device right after it ran.
+//
+// ★ THE BARRIER IS NOT OPTIONAL HERE EITHER, and for the DST round's reason, not by analogy: with
+//   kernel concurrency enabled the copy can be scheduled against the kernel that fills the buffer,
+//   and the result is a CONFIDENT FALSE POSITIVE (measured 2026-09-16 on the dst side: same-arm
+//   control failed 205/205 without it and was clean with it). The pool rows are host-written on this
+//   path, but "host-written" is a claim about today's implementation, not about the schedule, and
+//   the failing read is indistinguishable from an engine defect. One barrier per matched node, and
+//   the filter is a curated list -- see the note in cgc_capture_init for why it must stay short.
+void cgc_pool_capture(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_rows, ggml_metal_buffer_id bid_ids,
+                      const struct ggml_tensor * op, int32_t n_ids, int32_t row_limit, uint64_t row_bytes,
+                      int32_t kind) {
+    if (!cgc_capture_init(ctx->dev) || !g_cgc_ids.pool_enabled) {
+        return;
+    }
+    if (!cgc_name_match(g_cgc_ids.pool_filter, op->name)) {
+        return;
+    }
+    if (g_cgc_ids.slots_pool >= CGC_POOL_SLOTS) {
+        if (g_cgc_ids.slots_pool == CGC_POOL_SLOTS) {
+            g_cgc_ids.slots_pool++;   // so the warning is emitted exactly once
+            GGML_LOG_WARN("CGC-POOL-CAP: slots exhausted (%d) -- the TAIL of the stream is NOT "
+                          "captured. Narrow CGC_POOL_CAPTURE to one layer before believing any "
+                          "'no difference' in the deeper layers\n", CGC_POOL_SLOTS);
+        }
+        return;
+    }
+    // The ids operand is I32 by construction (asserted in ggml_metal_op_mul_mat_id), and the kernel
+    // reads it as int32 words. Checked here too: reading a non-I32 operand as ids would print
+    // confident nonsense rather than fail.
+    if (op->src[2] == nullptr || op->src[2]->type != GGML_TYPE_I32) {
+        return;
+    }
+
+    ggml_metal_encoder_memory_barrier(ctx->enc);
+
+    const int32_t slot = g_cgc_ids.slots_pool++;
+    // Never read past the row: the host probe's cap has the same effect, and without it a 64 KiB
+    // probe on a 1 KiB row would digest a neighbour's weights while printing a plausible digest.
+    const int32_t probe = (int32_t) (row_bytes < (uint64_t) g_cgc_ids.pool_bytes
+                                     ? row_bytes : (uint64_t) g_cgc_ids.pool_bytes);
+
+    cgc_submit_pool_row(ctx, bid_rows, bid_ids, slot, row_limit, probe, row_bytes, n_ids);
+
+    cgc_ids_rec & r = g_cgc_ids.recs_pool[slot];
+    snprintf(r.name, sizeof(r.name), "%s.pool", op->name[0] != '\0' ? op->name : "(anon)");
+    r.n_ids = (int32_t) (1 + 5 * g_cgc_ids.pool_rows);   // meaningful words in the slot
+    // 3 = reached from the MV (GEMV) dispatch, 4 = from the MM (batched) one. Both are printed as
+    // `path=POOL` with a `from=` field, because a single run can contain BOTH: `ne21 < ne21_mm_id_min`
+    // picks per node, so a T=2 chunk and a T=1 step route the same node name down different kernels.
+    // Without the label a POOL row cannot be attributed to the dispatch that read it.
+    r.kind  = 3 + (kind != 0 ? 1 : 0);
+    r.fuse  = g_cgc_ids.pool_rows;                       // printed as rows=
+    r.seq   = g_cgc_ids.seq++;
+    r.ne    = probe;                                     // printed as probe=
+    r.off   = n_ids;                                     // printed as nsel=
+}
+
 // Dispatcher-TAIL variant. Every dispatcher that can fuse ends by writing the destination of the LAST
 // node it covered -- ggml_metal_op_norm does literally
 //     bid_dst = ggml_metal_get_buffer_id(ctx->node(idx + n_fuse - 1));
@@ -3667,55 +3863,84 @@ extern "C" void ggml_metal_cgc_ids_dump(void) {
         return;
     }
     for (;;) {
-        const bool ids_ok = g_cgc_ids.printed     < g_cgc_ids.slots;
-        const bool dst_ok = g_cgc_ids.printed_dst < g_cgc_ids.slots_dst;
-        if (!ids_ok && !dst_ok) {
+        const bool ids_ok  = g_cgc_ids.printed      < g_cgc_ids.slots;
+        const bool dst_ok  = g_cgc_ids.printed_dst  < g_cgc_ids.slots_dst;
+        const bool pool_ok = g_cgc_ids.printed_pool < g_cgc_ids.slots_pool;
+        if (!ids_ok && !dst_ok && !pool_ok) {
             break;
         }
 
-        bool take_ids;
-        if (!dst_ok) {
-            take_ids = true;
-        } else if (!ids_ok) {
-            take_ids = false;
-        } else {
-            take_ids = g_cgc_ids.recs[g_cgc_ids.printed].seq <
-                       g_cgc_ids.recs_dst[g_cgc_ids.printed_dst].seq;
+        // [CGC 2026-09-17 §9.18.6 r12] THREE streams now, and the merge rule is unchanged: ascending
+        // `seq`, i.e. SUBMISSION order across all of them. That is what keeps the POOL rows inside the
+        // graph they belong to -- printing them after every ids/dst row would put them all in one
+        // final pseudo-graph, compared against nothing and reported as identical (the failure the
+        // merge exists to prevent).
+        int take = 0;   // 0 = ids, 1 = dst, 2 = pool
+        {
+            int32_t best = 0;
+            bool have = false;
+            const cgc_ids_rec * cand[3] = { ids_ok  ? &g_cgc_ids.recs[g_cgc_ids.printed] : nullptr,
+                                            dst_ok  ? &g_cgc_ids.recs_dst[g_cgc_ids.printed_dst] : nullptr,
+                                            pool_ok ? &g_cgc_ids.recs_pool[g_cgc_ids.printed_pool] : nullptr };
+            for (int i = 0; i < 3; ++i) {
+                if (cand[i] != nullptr && (!have || cand[i]->seq < best)) {
+                    best = cand[i]->seq;
+                    take = i;
+                    have = true;
+                }
+            }
         }
 
-        const cgc_ids_rec & r  = take_ids ? g_cgc_ids.recs[g_cgc_ids.printed]
-                                          : g_cgc_ids.recs_dst[g_cgc_ids.printed_dst];
-        const int32_t       sl = take_ids ? g_cgc_ids.printed : g_cgc_ids.printed_dst;
-        const int32_t       st = take_ids ? CGC_IDS_STRIDE  : CGC_DST_STRIDE;
+        const cgc_ids_rec & r  = take == 0 ? g_cgc_ids.recs[g_cgc_ids.printed]
+                               : take == 1 ? g_cgc_ids.recs_dst[g_cgc_ids.printed_dst]
+                                           : g_cgc_ids.recs_pool[g_cgc_ids.printed_pool];
+        const int32_t       sl = take == 0 ? g_cgc_ids.printed
+                               : take == 1 ? g_cgc_ids.printed_dst
+                                           : g_cgc_ids.printed_pool;
+        const int32_t       st = take == 0 ? CGC_IDS_STRIDE : (take == 1 ? CGC_DST_STRIDE : CGC_POOL_STRIDE);
         // for the ids stream sl is both the slot index and the cursor, so the printed `slot=`
         // numbering of the 09-15 rows is unchanged.
-        const int32_t *     v  = take_ids ? g_cgc_ids.base     + (size_t) sl * (size_t) st
-                                          : g_cgc_ids.base_dst + (size_t) sl * (size_t) st;
+        const int32_t *     v  = take == 0 ? g_cgc_ids.base
+                               : take == 1 ? g_cgc_ids.base_dst
+                                           : g_cgc_ids.base_pool;
+        v += (size_t) sl * (size_t) st;
 
-        char b[512];
+        // A POOL slot is 64 words wide and only 1 + 5*rows of them are meaningful; the rest is
+        // sentinel. They are not printed, because a wall of 0x7fffffff would hide the one group that
+        // differs -- the whole point of the row.
+        const int32_t nprint = take == 2 ? (r.n_ids < st ? r.n_ids : st) : st;
+
+        char b[2048];
         int p = 0;
-        for (int32_t i = 0; i < st; ++i) {
+        for (int32_t i = 0; i < nprint; ++i) {
             p += snprintf(b + p, sizeof(b) - (size_t) p, "%s%d", i ? "," : "", (int) v[i]);
             if (p >= (int) sizeof(b) - 12) {
                 break;
             }
         }
 
-        const char * path = r.kind == 0 ? "MV" : (r.kind == 1 ? "MM" : "DST");
-        // `fuse` is appended for DST rows only, and AFTER the ids=[...] group, so every reader that
-        // regexes out `name=(\S+) ids=\[([^\]]*)\]` keeps working unchanged.
+        const char * path = r.kind == 0 ? "MV" : (r.kind == 1 ? "MM" : (r.kind == 2 ? "DST" : "POOL"));
         if (r.kind == 2) {
             GGML_LOG_WARN("CGC-IDS-CAP slot=%d path=%s n_ids=%d name=%s ids=[%s] fuse=%d ne=%d off=%d\n",
                           sl, path, (int) r.n_ids, r.name, b, (int) r.fuse, (int) r.ne, (int) r.off);
+        } else if (r.kind >= 3) {
+            // rows= / probe= / nsel= / from= instead of fuse= / ne= / off=: the same three ints carry
+            // the row digest's geometry (see the note in cgc_ids_rec), and a named field is the only
+            // way a reader can tell "8 rows of 4096 bytes" from "8 rows of 0 bytes".
+            GGML_LOG_WARN("CGC-IDS-CAP slot=%d path=%s n_ids=%d name=%s ids=[%s] rows=%d probe=%d nsel=%d from=%s\n",
+                          sl, path, (int) r.n_ids, r.name, b, (int) r.fuse, (int) r.ne, (int) r.off,
+                          r.kind == 3 ? "MV" : "MM");
         } else {
             GGML_LOG_WARN("CGC-IDS-CAP slot=%d path=%s n_ids=%d name=%s ids=[%s]\n",
                           sl, path, (int) r.n_ids, r.name, b);
         }
 
-        if (take_ids) {
+        if (take == 0) {
             g_cgc_ids.printed++;
-        } else {
+        } else if (take == 1) {
             g_cgc_ids.printed_dst++;
+        } else {
+            g_cgc_ids.printed_pool++;
         }
     }
 }
@@ -4141,6 +4366,13 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
         // note on cgc_dst_capture.
         cgc_dst_capture(ctx, bid_dst, op);
 
+        // [CGC 2026-09-17 §9.18.6 r12] The third reading at this same moment: the POOL ROWS the ids
+        // select, digested on the device. The host-side probe that was supposed to answer this
+        // (CGC_MMID_MV_DBG's row fingerprints) reads `op->src[2]->data` at ENCODE time, which on the
+        // S1 arm is before the GPU has written it -- measured `id_oob_vs_ne02 = 16/16` with float bit
+        // patterns for ids. Here the ids and the rows are read from the device, after consumption.
+        cgc_pool_capture(ctx, bid_src0, bid_src2, op, (int32_t) (ne20 * ne21), (int32_t) ne02, nb02, /*kind*/ 1);
+
         // this barrier is always needed because the next kernel has to wait for the id maps to be computed
         ggml_metal_op_concurrency_reset(ctx);
 
@@ -4256,6 +4488,11 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
         // [CGC 2026-09-17 §9.18.6 r10] Element count now comes from the tensor -- the previous
         // `(int32_t) (ne0 * ne1)` was a token-0-only read for any T > 1.
         cgc_dst_capture(ctx, bid_dst, op);
+
+        // [CGC 2026-09-17 §9.18.6 r12] The pool rows behind those ids, read on the device. This is
+        // the site every decode step takes (ne21 < ne21_mm_id_min => the whole S1 experiment runs MV),
+        // so it produces the decisive reading described in cgc_pool_capture.
+        cgc_pool_capture(ctx, bid_src0, bid_src2, op, (int32_t) (ne20 * ne21), (int32_t) ne02, nb02, /*kind*/ 0);
     }
 
     return 1;

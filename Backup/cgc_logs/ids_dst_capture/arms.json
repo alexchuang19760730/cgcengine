@@ -1,4 +1,4 @@
 {
- "p25-gputime-churn": "/Users/alexchuang/Documents/flashkv-devserver/Backup/cgc_logs/ids_dst_capture/p25-gputime-churn_llama_server_20260917_025006.log",
- "p25-slotgpu-churn": "/Users/alexchuang/Documents/flashkv-devserver/Backup/cgc_logs/ids_dst_capture/p25-slotgpu-churn_llama_server_20260917_025051.log"
+ "p25-gputime": "/Users/alexchuang/Documents/flashkv-devserver/Backup/cgc_logs/ids_dst_capture/p25-gputime_llama_server_20260917_091429.log",
+ "p25-slotgpu": "/Users/alexchuang/Documents/flashkv-devserver/Backup/cgc_logs/ids_dst_capture/p25-slotgpu_llama_server_20260917_091512.log"
 }

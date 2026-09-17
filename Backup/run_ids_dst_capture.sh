@@ -146,11 +146,37 @@ if [ -n "${MMID:-}" ]; then
     echo "  CGC_MMID_MV_DBG=$MMID  (host-side src0 pointer + row fingerprints)"
 fi
 
+# [CGC 2026-09-17 §9.18.6 r12] POOL=1 turns on the DEVICE-side pool-row digest (path=POOL): for every
+# named node, the rows the ids select are digested on the GPU at the moment the consumer runs. This is
+# the measurement the HOST-side probe (MMID=1 above) cannot make on the S1 arm -- MMID reads
+# `op->src[2]->data` at encode time, and on that arm the ids are a GPU-computed node, so it reports
+# `id_oob_vs_ne02=16/16` with float bit patterns instead of ids. Setting BOTH is the point of the
+# round: MMID is the anchor-arm reading, POOL is the one that works on both.
+#
+# Why the default list is layer 1: with CGC_S1_MIN_IL=1 (the default) layer 1 is the FIRST layer whose
+# MoE gather is served by the GPU table, and the causal test (MIN_IL=1 -> l_out-1 vs MIN_IL=2 ->
+# ffn_moe_out-2) puts the first divergence exactly there. The three names are the layer's three routed
+# matmuls; `ffn_moe_down-1` is the one round 1 captured by hand, `ffn_moe_gate-1` is the row the
+# comparators segment graphs by (so it is known to be one). `ffn_moe_up-1` is INFERRED -- if it does
+# not exist the comparator prints ABSENT for it, which is visible, and `POOLNODES='*'` enumerates.
+#
+# ROWS defaults to 8 = n_expert_used for this model, i.e. a whole decode step's ids for one tensor.
+# BYTES defaults to the same 4096 the host probe uses, so the two readings stay commensurable.
+POOL_LIST="0"
+if [ "${POOL:-0}" = "1" ]; then
+    POOLNODES="${POOLNODES:-ffn_moe_gate-1,ffn_moe_up-1,ffn_moe_down-1}"
+    POOL_LIST="$POOLNODES"
+    echo "  CGC_POOL_CAPTURE=$POOL_LIST  rows=${POOLROWS:-8} bytes=${POOLBYTES:-4096}  (device-side row digest)"
+fi
+
 CGC_IDS_CAPTURE=1 \
 CGC_TENSOR_CAPTURE="$NODES" \
 CGC_TENSOR_CAPTURE_WORDS="${WORDS:-32}" \
 CGC_TENSOR_CAPTURE_TAIL="${TAIL:-1}" \
 CGC_TENSOR_CAPTURE_HASH="${HASH:-0}" \
+CGC_POOL_CAPTURE="$POOL_LIST" \
+CGC_POOL_CAPTURE_ROWS="${POOLROWS:-8}" \
+CGC_POOL_CAPTURE_BYTES="${POOLBYTES:-4096}" \
 RUN_REPLAY_BENCH=0 \
 python3 scripts/check/decode_sweep.py \
     --profile prod25 \
@@ -171,12 +197,22 @@ for r in rows:
         tgt = dest / f"{r['tag'].replace(':', '_').replace(';', '_')}_{Path(log).name}"
         shutil.copyfile(log, tgt)
         paths[r["tag"]] = tgt
-        n_ids = sum(1 for l in open(tgt, errors="replace") if "CGC-IDS-CAP" in l and ".dst" not in l)
+        n_ids = sum(1 for l in open(tgt, errors="replace") if "CGC-IDS-CAP" in l and ".dst" not in l and ".pool" not in l)
         n_dst = sum(1 for l in open(tgt, errors="replace") if ".dst" in l and "CGC-IDS-CAP" in l)
-        print(f"  {r['tag']:<14} ids_rows={n_ids:<6} dst_rows={n_dst:<5} -> {tgt.name}")
+        # [CGC 2026-09-17 r12] counted separately, and excluded from n_ids above: the ids counter
+        # used to be "anything that is not .dst", so POOL rows would have silently inflated it -- the
+        # same class of bug as the 256-byte filter, one layer up in the reporting.
+        n_pool = sum(1 for l in open(tgt, errors="replace") if ".pool" in l and "CGC-IDS-CAP" in l)
+        print(f"  {r['tag']:<14} ids_rows={n_ids:<6} dst_rows={n_dst:<5} pool_rows={n_pool:<5} -> {tgt.name}")
 Path(dest / "arms.json").write_text(json.dumps({k: str(v) for k, v in paths.items()}, indent=1))
 for p in paths.values():
-    shutil.copyfile(p, dest / "latest_" + p.name)
+    # [CGC 2026-09-17 r12] WAS `dest / "latest_" + p.name`, which Python parses as
+    # `(dest / "latest_") + p.name` -- Path + str -> TypeError. Every run since this line was added
+    # died HERE, at the end of this heredoc, so the `latest_*` convenience copies were never made
+    # while `arms.json` (written one line above) was: the failure is invisible unless you read the
+    # script's own stderr, and the step it skips is exactly the one the NEXT reader reaches for.
+    # Found while adding the POOL counter; not caused by it (it is a context line in `git diff`).
+    shutil.copyfile(p, dest / ("latest_" + p.name))
 PY
 echo
 # [CGC 2026-09-17] Resolve A/B from the run's OWN arms.json rather than from hardcoded tag names: the
@@ -205,6 +241,17 @@ echo
 echo "=== ALL graphs (no --upto: the head of the sequence is prefill, so a localisation over it is a"
 echo "=== localisation of prefill; kept for contrast, not as the answer) ==="
 python3 Backup/analyze_capture_nodes.py "$A" "$B" --graphs 0 | /usr/bin/grep -E "^ *[0-9]+ |^(A|B) graphs|per graph|earliest|=>"
+echo
+echo "=== POOL rows: the bytes BEHIND the ids (device-side, both arms) ==="
+echo "  Read this BEFORE the dst table: it is the only reading that can separate 'the ids point at"
+echo "  different experts' from 'the same expert index holds different bytes'. If a POOL row reports"
+echo "  SAME for every row while the same node's .dst row reports DIFF, then the gather's two inputs are"
+echo "  identical and the divergence is NOT in the pool contents -- look after the gather instead."
+if [ "$POOL_LIST" != "0" ]; then
+    python3 Backup/compare_pool_row.py "$A" "$B" --max-graphs 4 2>&1 | head -40
+else
+    echo "  (skipped: POOL=0 -- rerun with POOL=1 POOLNODES='<exact node names>' to produce these rows)"
+fi
 echo
 echo "=== INSTRUMENT CONTROL (mandatory; read this before believing anything above) ==="
 echo "  A dst DIFF is only evidence of a VALUE difference if the same arm, captured twice, agrees with"

@@ -10605,6 +10605,94 @@ kernel void kernel_cgc_ids_capture(
     }
 }
 
+// [CGC 2026-09-17 S1 §9.18.6 r12] Device-side POOL-ROW digest. See ggml_metal_kargs_cgc_pool_row
+// for the word layout and for why this had to stop being a host read.
+//
+// It reads the two operands a routed MoE kernel consumes -- the ids operand and the weights the ids
+// point at -- at the moment the consumer runs, and it reads them FROM THE DEVICE. `mul_mat_id`'s own
+// kernel is not modified: this is a separate one-threadgroup dispatch submitted into the same
+// encoder, immediately after the consumer, exactly like kernel_cgc_ids_capture above.
+//
+// Bounds are checked in the kernel and NOT left to the caller, because the failure mode of an
+// out-of-range id on the pool path is a read of a *neighbouring* expert's storage: plausible-looking
+// numbers from a real but wrong row. A row that cannot be read is therefore recorded WITHOUT being
+// dereferenced -- id = -1 if the operand has no such id, or the id as read together with n = 0 if the
+// id is out of range -- and `n` (the byte count) is the field a comparator must key on to tell
+// "read and identical" from "never read", which otherwise both print as a plausible row.
+//
+// One threadgroup of 32 threads, one row at a time: bytes are strided across the threads and the
+// three accumulators are reduced over threadgroup memory. Same reduction shape as hash_mode above --
+// no simd intrinsics, nothing that depends on the Apple simdgroup width.
+kernel void kernel_cgc_pool_row(
+        constant ggml_metal_kargs_cgc_pool_row & args,
+        device const char * pool,
+        device const int32_t * ids,
+        device       char * dbg,
+        uint tgpig [[threadgroup_position_in_grid]],
+        uint tiitg [[thread_index_in_threadgroup]]) {
+    if (tgpig != 0 || args.slot < 0) {
+        return;
+    }
+
+    device int32_t * out = (device int32_t *) (dbg + (size_t) args.slot * (size_t) args.stride * sizeof(int32_t));
+
+    // Sentinel-fill first: a partially written slot must not be able to pass as "rows=0" data, and
+    // the comparator reads the whole stride.
+    for (int32_t i = 0; i < args.stride; ++i) {
+        out[i] = 0x7fffffff;
+    }
+
+    threadgroup uint32_t psum[32];
+    threadgroup uint32_t pxor[32];
+    threadgroup uint32_t pwts[32];
+    threadgroup uint32_t pcnt[32];
+
+    int32_t wrote = 0;
+    for (int32_t r = 0; r < args.rows; ++r) {
+        // -1 (not 0x7fffffff) is the "no such id in the operand" marker here, because 0x7fffffff is
+        // a legal-looking int32 that a broken lookup could genuinely produce -- the two must not
+        // print the same.
+        const int32_t id = (r < args.n_ids) ? ids[r] : -1;
+
+        uint32_t s = 0, x = 0, w = 0, n = 0;
+        if (id >= 0 && id < args.row_limit && args.probe_bytes > 0) {
+            device const uchar * row = (device const uchar *) pool + (uint64_t) id * args.row_bytes;
+            for (int32_t j = (int32_t) tiitg; j < args.probe_bytes; j += 32) {
+                const uint32_t b = (uint32_t) row[j];
+                s += b;
+                x ^= b;
+                w += b * (uint32_t) (j + 1);   // uint32 wrap is defined and well behaved here
+                n += 1;
+            }
+        }
+        psum[tiitg] = s;
+        pxor[tiitg] = x;
+        pwts[tiitg] = w;
+        pcnt[tiitg] = n;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (tiitg == 0) {
+            for (int32_t k = 1; k < 32; ++k) {
+                s += psum[k];
+                x ^= pxor[k];
+                w += pwts[k];
+                n += pcnt[k];
+            }
+            const int32_t base = 1 + 5*wrote;
+            out[base + 0] = id;
+            out[base + 1] = (int32_t) s;
+            out[base + 2] = (int32_t) x;
+            out[base + 3] = (int32_t) w;
+            out[base + 4] = (int32_t) n;
+            wrote++;
+            out[0] = wrote;
+        }
+        // Second barrier: the next row's accumulation must not start before every thread has read
+        // this row's partials.
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+}
+
 template<typename S0, typename S0_4x4, typename S0_8x8, typename S1, typename S1_2x4, typename S1_8x8, typename block_q, short nl, void (*dequantize_func)(device const block_q *, short, thread S0_4x4 &), typename T0, typename T0_4x4, typename T1, typename T1_2x4>
 kernel void kernel_mul_mm_id(
         constant ggml_metal_kargs_mul_mm_id & args,

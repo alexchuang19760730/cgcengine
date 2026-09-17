@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>裝置側 pool-row 摘要（S1 §9.18.6 r12，2026-09-17）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:27px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>裝置側 pool-row 摘要：把「同 ids 讀到不同位元組」變成可測</h1>
+<div class="sub">
+  日期 2026-09-17 03:45–04:00 · 專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code><br>
+  里程碑 D3／S1（<code>docs/REMAP_ROUNDTRIP_REMOVAL_PLAN_2026-09-15.md</code> §5.5 的 S1）· 編號 <code>§9.18.6 r12</code><br>
+  狀態：<span class="tag">已建置 09:06</span><span class="tag">煙霧測試通過 09:07</span><span class="tag">見 §6.1–6.2</span><br>
+  <span class="small">第一版（03:55）寫的是「未建置、未跑」；09:0x 起的內容是執行結果補上的，原文一字不動。</span>
+</div>
+
+<div class="box b-blue">
+<p><b>TL;DR。</b>新增<b>第三條 capture stream</b>（<code>path=POOL</code>）：在 <code>mul_mat_id</code> 的內核跑完之後、
+同一個 encoder 內，<b>從裝置</b>讀 ids 運算元與它選中的 pool row，逐 row 寫下
+<code>(id, sum, xor, wsum, nbytes)</code>。</p>
+<p>它回答的問題只有一句：<b>兩臂在「消費者讀取的那一刻」，對同一個 slot 索引是否讀到同一批位元組。</b>
+這是 S1 分歧定位唯一還沒被排除的敘述，也是為什麼它必須是內核而不是主機側探針（§1）。</p>
+<p><b>它不產生修復，只產生決策</b>：四個分支各有不同的下一步（§4）。把 SAME 讀成「兩個 pool 一樣」或把 DIFF
+讀成「引擎壞了」都是過度解讀。</p>
+<p><b>本次沒有建置、沒有跑任何量測</b>（04:00–06:10 的機器歸 prefill 的 SPAC COLD 交錯 A/B），
+而且 <code>.metal</code> 在這台機器上<b>無法離線編譯</b>（§7）。</p>
+<p class="small">↑ 這一段是 03:55 的實況，保留作為當下狀態的記錄。<b>09:06 已建置、09:07 已跑第一次</b>：
+結果在 §6.1–§6.2。</p>
+</div>
+
+<h2>1. 為什麼這件事非得在內核裡做</h2>
+
+<p>倉庫裡早就有這支儀器：<code>CGC_MMID_MV_DBG</code>（<code>ggml-metal-ops.cpp:4020</code> 起）會對每個
+MoE 節點印出「ids 所選的前 4 列、各前 ≤4096 bytes 的 FNV-1a 指紋」，它自己的註解就寫明了判準：
+<i>「ids 相同而指紋不同 ⇒ 池內容是載體。」</i>——正是我們要的那一格。</p>
+
+<p>問題是它<b>在 S1 臂上量不到東西</b>，而且是可證的量不到：它在<b>圖編碼期</b>讀
+<code>op-&gt;src[2]-&gt;data</code>，而 S1 臂的 ids 是一個 <b>graph 算出來的節點</b>（<code>get_rows(slot_table, selected_experts)</code>），
+那一刻 GPU 還沒寫它。實測結果寫在 <code>Backup/run_ids_dst_capture.sh</code> 的 <code>MMID</code> 段與
+<code>docs/S1_SRC2_INSTRUMENT_BLIND_20260917.html</code>：</p>
+
+<pre><code>id_oob_vs_ne02 = 16/16          ← 16 個「ids」全部越界
+值是 float 位元模式              ← 讀到的是那個 buffer 的前一個佔用者，不是 ids
+錨臂（host leaf）: id_oob = 0，指紋完整</code></pre>
+
+<div class="box b-amber">
+<p><b>這是 <code>eng-mh-0008</code> 的又一次發作</b>：主機側在編碼期讀一個「中間運算元」，量到的是
+<b>誰寫了那個 buffer</b>，不是<b>消費者收到什麼</b>。同一個檔案裡
+<code>kernel_cgc_ids_capture</code> 的註解已經把這件事寫過一次（09-15），但當時只修了 ids 側。</p>
+</div>
+
+<h2>2. 機制</h2>
+
+<svg viewBox="0 0 1000 250" width="100%" role="img" aria-label="三條 capture stream 的掛點">
+  <defs>
+    <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L7,3 L0,6 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+
+  <rect x="14" y="26" width="200" height="52" rx="8" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="114" y="46" text-anchor="middle" font-size="13" fill="#111827">錨臂：host 寫的 remap leaf</text>
+  <text x="114" y="65" text-anchor="middle" font-size="12" fill="#6b7280">（輸入張量，CPU 可見）</text>
+
+  <rect x="14" y="96" width="200" height="52" rx="8" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="114" y="116" text-anchor="middle" font-size="13" fill="#111827">S1 臂：slot_lookup</text>
+  <text x="114" y="135" text-anchor="middle" font-size="12" fill="#6b7280">get_rows(table, experts)</text>
+
+  <rect x="300" y="60" width="150" height="60" rx="8" fill="#f9fafb" stroke="#e5e7eb"/>
+  <text x="375" y="84" text-anchor="middle" font-size="13" fill="#111827">mul_mat_id</text>
+  <text x="375" y="103" text-anchor="middle" font-size="12" fill="#6b7280">MV 或 MM</text>
+
+  <path d="M214,52 L296,80" stroke="#6b7280" stroke-width="1.4" fill="none" marker-end="url(#ar)"/>
+  <path d="M214,122 L296,102" stroke="#6b7280" stroke-width="1.4" fill="none" marker-end="url(#ar)"/>
+  <path d="M230,150 L360,126" stroke="#2563eb" stroke-width="1.4" fill="none" marker-end="url(#ar)"/>
+  <text x="238" y="164" font-size="11.5" fill="#2563eb">pool（host 填、裝置讀）</text>
+
+  <rect x="540" y="14" width="446" height="42" rx="8" fill="#f9fafb" stroke="#e5e7eb"/>
+  <text x="556" y="34" font-size="12.5" fill="#111827">path=MV|MM　ids 運算元</text>
+  <text x="556" y="49" font-size="11.5" fill="#6b7280">09-15 起就有；兩臂 120/120 SAME</text>
+
+  <rect x="540" y="66" width="446" height="42" rx="8" fill="#f9fafb" stroke="#e5e7eb"/>
+  <text x="556" y="86" font-size="12.5" fill="#111827">path=DST　節點輸出</text>
+  <text x="556" y="101" font-size="11.5" fill="#6b7280">09-16 起；節點輸出 DIFF（但只說「不一樣」）</text>
+
+  <rect x="540" y="118" width="446" height="46" rx="8" fill="#ecfdf5" stroke="#a7f3d0"/>
+  <text x="556" y="138" font-size="12.5" fill="#111827">path=POOL　ids 選中的池列 <tspan fill="#059669">（本次新增）</tspan></text>
+  <text x="556" y="154" font-size="11.5" fill="#6b7280">逐 row：(id, sum, xor, wsum, nbytes)</text>
+
+  <path d="M450,90 L536,90" stroke="#6b7280" stroke-width="1.4" fill="none" marker-end="url(#ar)"/>
+  <text x="456" y="112" font-size="11.5" fill="#6b7280">同一 encoder、同一提交點</text>
+
+  <rect x="300" y="178" width="686" height="52" rx="8" fill="#fffbeb" stroke="#fde68a"/>
+  <text x="316" y="199" font-size="12.5" fill="#111827">三個目的地都<tspan font-weight="bold">不由 graph allocator 管理</tspan>（file-scope 的 shared buffer）：</text>
+  <text x="316" y="217" font-size="12" fill="#6b7280">讀 allocator 可以回收的位元組，正是舊探針失敗的原因。</text>
+</svg>
+
+<h3>2.1 每個 slot 的字（<code>CGC_POOL_STRIDE = 64</code>）</h3>
+
+<table>
+<tr><th>word</th><th>內容</th><th>為什麼是它</th></tr>
+<tr><td class="num">out[0]</td><td>實際寫出的 group 數</td><td>0 與「寫了但全 0」必須分得開</td></tr>
+<tr><td class="num">1+5r+0</td><td>消費者用的第 r 個 <b>id</b></td><td>與 digest 同列 ⇒ 一行就能分辨「索引不同」與「索引同但位元組不同」，不必再開一支儀器</td></tr>
+<tr><td class="num">1+5r+1</td><td>該列 <code>probe</code> bytes 的 <b>sum</b></td><td rowspan="3">byte 級，不是 word 級：運算元是量化格式（IQ3_XXS/IQ4_XS），按 word 化簡等於把 block 的 metadata 一起算進去</td></tr>
+<tr><td class="num">1+5r+2</td><td>同上 <b>xor</b></td></tr>
+<tr><td class="num">1+5r+3</td><td><b>加權和</b>，權重 = (byte index + 1)</td></tr>
+<tr><td class="num">1+5r+4</td><td><b>位元組數</b>（0 = 這一列沒讀）</td><td>比較器唯一可靠的「有沒有讀」欄位；只改成 sum/xor 會被 0 與哨兵混淆</td></tr>
+</table>
+
+<p>加權和的理由與 <code>CGC_TENSOR_CAPTURE_HASH</code> 相同：純 sum 看不見置換，而「gather 順序不同」
+正是這個 fork 被懷疑的東西之一。</p>
+
+<h3>2.2 邊界檢查寫在內核裡</h3>
+<p>池路徑上 id 越界的後果不是崩潰，而是<b>讀到隔壁專家的儲存</b>——印出一組看起來很合理的數字。
+所以 <code>id</code> 不在 <code>[0, row_limit)</code> 時<b>不 dereference</b>：記成 <code>id</code> 加 <code>nbytes = 0</code>；
+運算元裡根本沒有第 r 個 id 時記成 <code>id = -1</code>。兩者都不會與「真的讀到」混淆。</p>
+
+<h2>3. 怎麼跑</h2>
+
+<pre><code># 1) 建置（本次未做；完成後 .metal 的改動才會生效）
+cmake --build src/llama.cpp/build --target llama-server -j 8
+
+# 2) 只開一層：layer 1 是 MIN_IL=1 之下第一個被 GPU table 服務的層（第一個分歧處）
+POOL=1 POOLNODES='ffn_moe_gate-1,ffn_moe_up-1,ffn_moe_down-1' \
+  POOLROWS=8 POOLBYTES=4096 \
+  bash Backup/run_ids_dst_capture.sh
+
+# 3) 判讀（A/B 由該輪自己的 arms.json 決定）
+python3 Backup/compare_pool_row.py &lt;A.log&gt; &lt;B.log&gt;</code></pre>
+
+<div class="box b-red">
+<p><b>白名單陷阱（同一個形狀已經咬過三次）。</b><code>scripts/run_server.sh</code> 的 <code>SERVER_ENV</code>
+是<b>白名單</b>：未列出的 <code>CGC_*</code> <b>靜默丟棄</b>。「沒有效果」與「沒設到」在日誌上是同一個樣子。
+本次三個變數都已加入（<code>run_server.sh:1496-1513</code>）。若 <code>POOL</code> 打了卻沒有
+<code>path=POOL</code> 的列，<b>先查白名單，不要查引擎</b>。</p>
+</div>
+
+<p class="small">預設清單裡 <code>ffn_moe_up-1</code> 是<b>推測名</b>：<code>ffn_moe_gate-1</code>（比較器用來切圖的
+那一列）與 <code>ffn_moe_down-1</code>（round 1 手動抓過）都有直接證據，up 沒有。
+猜錯的可見後果是 <code>ABSENT</code>（比較器一定印，不會讀成「相同」），
+要列舉全部可用 <code>POOLNODES='*'</code>（4096 個 slot 會截斷，腳本會警告）。</p>
+
+<h2>4. 判讀：四個分支（這才是這支儀器的產物）</h2>
+
+<table>
+<tr><th>ids</th><th>bytes</th><th>結論</th><th>下一步</th></tr>
+<tr><td class="ok">同</td><td class="ok">同</td><td><b>gather 的兩個輸入都相同</b> ⇒ §9.18.4 最後那句也倒</td><td>分歧<b>不在讀到了什麼</b>：查 allocator 別名、每個臂各自重指的 view、消費到舊 ids buffer 的節點，或 gather <b>之後</b>的 weighted-sum/combine</td></tr>
+<tr><td class="ok">同</td><td class="bad">異</td><td><b>同一個 slot 索引在讀取時刻裝著不同位元組</b> ⇒ residency 是載體</td><td>查填充與發布的時序：table 指向的 slot 是否在本次 pass 期間被重填</td></tr>
+<tr><td class="bad">異</td><td>—</td><td>索引不同 ⇒ <b>mapping 是載體</b></td><td>回到路由／slot 對映（09-17 00:00 已把「slot 反查錯」否證，這條會把它變成「路由本身分岔」）</td></tr>
+<tr><td class="bad">異</td><td class="ok">同</td><td>不同索引剛好內容相同 ⇒ <b>池裡有重複內容</b></td><td>少見但要指出來：「同 ids」這個條件比看起來弱</td></tr>
+</table>
+
+<p class="small"><b>實測落點見 §6.3</b>：這支儀器第一次跑（09:11／09:14）只落在「ids 同／整列位元組同」
+（g1–g30）與「ids 異」（g31–g35）兩格，<b>沒有</b>落在「ids 同／bytes 異」那一格。</p>
+
+<div class="box b-amber">
+<p><b>三個分支都不是「修好了」。</b>這一格只回答「要不要沿這條軸繼續查」，以及沿哪一條。
+最好的結果是找到一個可修的時序缺陷；最壞的結果是盒子空了、第一個分歧節點的歸屬要重寫。
+<b>S1 過閘門也還不等於 D3 跑通</b>：S1 是前提 A（正確性），速度增益是 0，
+而 1.78× 那一段在 S2／S3，S3 的前提 B 已被 47.5% 的實測打掉。</p>
+</div>
+
+<h2>5. 兩個會說謊的失敗模式與對應護欄</h2>
+
+<h3>5.1 全哨兵（已發生過一次）</h3>
+<p>沒被寫到的 slot 是 <code>0x7fffffff</code>，而<b>哨兵等於哨兵</b>。2026-09-17 00:30 就是這樣把一輪讀在
+205 列裡 188 列純哨兵的表上。因此 <code>Backup/compare_pool_row.py</code> 以
+<b><code>nbytes == 0</code></b> 為判準，兩側都沒讀到就報 <code>NOT-READ</code>，
+<b>永不報 SAME</b>；且當所有共享列都是 NOT-READ 時，整體判決<b>撤銷</b>而不是印「找不到差異」。</p>
+
+<h3>5.2 沒有可比對的列</h3>
+<p>若兩份日誌沒有共同的 <code>(graph, name)</code>（節點名少打一個字、兩臂抓不同層），
+「沒有差異」是空洞的。比較器報 <code>NO-OVERLAP</code> 並拒判。</p>
+
+<h3>5.3 同臂控制（必跑）</h3>
+<p>這個 copy 讀的是別的內核可能還在寫的 buffer：<b>少了 memory barrier，同臂自比就會失敗</b>，
+而跨臂的讀數會變成一個「有自信的假陽性」——09-16 的 DST 輪正是這樣（無 barrier 時 205/205 不一致，
+加上後乾淨）。所以</p>
+<pre><code># 同一個臂跑兩次、兩份 POOL 流互比。任何一列不是 SAME ⇒ 讀數本身就是發現，不是引擎。
+python3 Backup/compare_pool_row.py run1-&lt;arm&gt;.log run2-&lt;arm&gt;.log</code></pre>
+
+<h3>5.4 不讓排除變成靜默</h3>
+<p><code>path=POOL</code> 不是 <code>Backup/analyze_capture_nodes.py</code> 的比較單位（那是一份已發表的定位結果），
+所以該檔<b>顯式排除</b> POOL 列，並在 <code>main()</code> 印出排除幾列。
+靜默改變一個比較器看到什麼，是這個倉庫反覆學到的那個缺陷（256 byte 濾網、<code>--upto</code> 盲點）。</p>
+
+<h2>6. 現場跑的閘門（原文）</h2>
+
+<pre><code>$ python3 agent_harness/engine_loop/traces/validate.py
+
+  episodes.jsonl: 122 records {'episode': 122}
+  -&gt; OK
+
+  decisions.jsonl: 38 records {'decision': 38}
+  -&gt; OK
+
+  lessons.jsonl: 121 records {'lesson': 121}
+  -&gt; OK
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  10/10 injected violations rejected
+
+$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  memory index OK: 7 file(s), 93 section(s), no drift
+
+$ python3 agent_harness/engine_loop/index_assets.py --check
+  manifest OK: 80 assets, existence + bytes + mtime all agree</code></pre>
+
+<p class="small">建置前的閘門輸出（本次改動未提交、未建置）：<code>docs/POOL_ROW_DIGEST_20260917_0355.html</code>
+產生時刻的 <code>index_assets.py --check</code> 曾經紅過 2 筆（<code>scripts/run_server.sh</code> 的 bytes 與 mtime）
+——那是我改白名單造成的，收尾以固定順序重生索引後即為上面的綠燈。
+這一條寫進來是因為<b>紅燈的成因也要能指到</b>，不是「一開始就是綠的」。</p>
+
+<h3>6.1 建置與新鮮度（09:06，原文節錄）</h3>
+
+<pre><code>$ cmake --build src/llama.cpp/build --target llama-server -j 8
+[  5%] Built target ggml-base
+Embedding Metal library
+[ 11%] Building CXX object .../ggml-metal.dir/ggml-metal-device.cpp.o
+[ 13%] Building CXX object .../ggml-metal.dir/ggml-metal-ops.cpp.o
+[ 13%] Building ASM object .../ggml-metal.dir/autogenerated/ggml-metal-embed.s.o
+[ 13%] Linking CXX shared library ../../../bin/libggml-metal.dylib
+[100%] Linking CXX executable ../../bin/llama-server
+[100%] Built target llama-server</code></pre>
+
+<p>建置新鮮度的判準是<b>輸出裡有沒有編譯行</b>（不是 exit code、不是產物存在）：上面兩個 <code>.cpp</code>
+與 <code>ggml-metal-embed.s.o</code> 都真的重編了。警告 <code>4 warnings generated</code>（<code>ggml-metal-ops.cpp</code>）
+與語法檢查階段量到的 <b>既有 4 個</b>相同 ⇒ 這次改動<b>沒有新增警告</b>。</p>
+
+<table>
+<tr><th>檔案</th><th>mtime</th></tr>
+<tr><td class="num"><code>ggml/src/ggml-metal/ggml-metal.metal</code>（我改的）</td><td class="num">03:49:53</td></tr>
+<tr><td class="num"><code>build/.../autogenerated/ggml-metal-embed.metal</code></td><td class="num">09:06:31</td></tr>
+<tr><td class="num"><code>build/.../autogenerated/ggml-metal-embed.s.o</code></td><td class="num">09:06</td></tr>
+<tr><td class="num"><code>build/bin/libggml-metal.0.19.0.dylib</code></td><td class="num">09:06:32</td></tr>
+<tr><td class="num"><code>build/bin/llama-server</code></td><td class="num">09:06:33</td></tr>
+</table>
+
+<p><code>.metal</code> → <code>embed.metal</code> → <code>embed.s.o</code> mtime <b>逐級遞增</b>：這是
+<code>GGML_METAL_EMBED_LIBRARY</code> 那條鏈真的走過的證據（shader 原始碼被嵌進 binary，執行期才編譯）。
+另一個直接證據：<code>grep -c kernel_cgc_pool_row build/.../autogenerated/ggml-metal-embed.metal</code> = <code>1</code>。</p>
+
+<h3>6.2 儀器自己的讀數（09:07 第一次跑）</h3>
+
+<pre><code>CGC-POOL-CAP: CGC_POOL_CAPTURE effective (42 chars, matches EXACT names): ffn_moe_gate-1,ffn_moe_up-1,ffn_moe_down-1
+CGC-POOL-CAP: rows=8 probe_bytes=4096 stride=64 slots=4096
+CGC-IDS-CAP enabled: slots=4096 stride=8 bytes=131072 shared=1 (destination is NOT allocator-managed)
+CGC-POOL-CAP enabled: slots=4096 stride=64 bytes=1048576 shared=1 (destination is NOT allocator-managed)</code></pre>
+
+<p>一列真實的 POOL 列（<code>ffn_moe_gate-1</code>，前兩組）與同一時刻的 ids 列：</p>
+
+<pre><code>CGC-IDS-CAP slot=3  path=MV   n_ids=16 name=ffn_moe_gate-1     ids=[2,105,7,9,5,106,1,84]
+CGC-IDS-CAP slot=0  path=POOL n_ids=41 name=ffn_moe_gate-1.pool
+        ids=[8, 2,492618,36,997710429,4096, 105,503971,179,1037270403,4096, ...] rows=8 probe=4096 nsel=16 from=MV</code></pre>
+
+<p><b>交叉核對（這條支持「同一時刻」的主張）</b>：POOL 列裡那 8 個 id
+（<code>2,105,7,9,5,106,1,84</code>）與同一輪 MV 列印出的 ids <b>逐項相同</b>；兩個 dispatch 之間只隔
+數微秒（<code>slot=3</code> 與 <code>slot=0</code> 的 seq 相鄰）。所以 pool 摘要讀的確實是那個 kernel
+消費的那些列。</p>
+
+<p>整輪 <code>n_predict=4</code> 共 <b>99 列</b> POOL（gate／up／down 各 33），
+<code>nsel</code> 由 16 走到 64（＝8×T，T 由 2 走到 8）——與既有的 chunk 序列一致。
+<b>這一輪不是量測</b>：單臂、<code>n_predict=4</code>，它只驗「管子通不通」。<code>decode 10.06 t/s</code>
+這種數字在這種樣本數下不可引用。</p>
+
+<div class="box b-amber">
+<p><b>一個真實的退化案例，正好示範守衛為什麼要 key 在 <code>nbytes</code>：</b>同一輪裡
+<code>id=14</code> 那一組是 <code>sum=0 xor=0 wsum=0 nbytes=4096</code> —— 那個 4096-byte 前綴<b>真的全是 0</b>。
+這是模型自己的資料（同一個 log 有 <code>layer=0 zero-prefix=2 of 143 resident slots</code>），
+<i>被讀到了</i>，只是內容為零。若守衛寫成「sum==0 就算沒讀」，這一列就會被誤判成 NOT-READ；
+若寫成「全零等於相同」，它又會與沒被寫到的哨兵混淆。<b>只有 <code>nbytes</code> 分得開這兩件事。</b></p>
+</div>
+
+<h4>6.2.1 同臂控制（強制；09:1x）</h4>
+
+<p>同一個臂（<code>p25-slotgpu</code>）跑兩次，兩份 POOL 流互比：</p>
+
+<pre><code>SAME=99  DIFF=0  NOT-READ=0        # 33 個 graph × 3 個節點，全 SAME
+A: pool=99 other=3960 unmatched=0 | B: pool=99 other=3960 unmatched=0</code></pre>
+
+<p><b>這是「可以開始相信跨臂結果」的前置條件。</b>兩次跑的階段結構也重合：<code>nsel</code> 走勢
+16→64→48→32→8 與已知的 chunk 序列一致（<code>nsel = 8×T</code>）。</p>
+
+<h4>6.2.2 一個既有症狀的歸因（順手做掉）</h4>
+
+<p>捕獲臂在<b>行程結束時</b>會踩到 <code>ggml_metal_device_free</code> 裡的
+<code>GGML_ASSERT([rsets->data count] == 0)</code>（走在 <code>__cxa_finalize_ranges → exit</code> 路徑上，
+不影響任何量測）。它是不是新儀器帶來的？三個短臂的對照：</p>
+
+<table>
+<tr><th>臂</th><th><code>path=POOL</code> 列</th><th>assert</th></tr>
+<tr><td><code>noPool</code>（只開 ids 側、POOL 關）</td><td class="num">0</td><td class="num">1</td></tr>
+<tr><td><code>pool1</code></td><td class="num">99</td><td class="num">1</td></tr>
+<tr><td><code>pool2</code></td><td class="num">99</td><td class="num">1</td></tr>
+</table>
+
+<p>沒有 POOL 側也照樣踩 ⇒ <b>與 r12 無關</b>。而且 09-17 02:2x–02:5x 的舊捕獲臂
+（<code>p25-gputime-churn_…</code> 每一個）都有這一行 ⇒ 它是<b>捕獲 instrument 的既有症狀</b>。
+未追根因；記在這裡只是為了不讓下一個人重新歸因一次。</p>
+
+<h3>6.3 A／B：錨臂 vs S1 臂（09:11 與 09:14，兩次）</h3>
+
+<p>兩次都用 <code>Backup/run_ids_dst_capture.sh</code>（<code>POOL=1</code>、<code>n_predict=12</code>、
+兩臂 = <code>p25-gputime</code> 對 <code>p25-slotgpu</code>、36 個 graph），差別只在<b>探針寬度</b>：</p>
+
+<table>
+<tr><th>run</th><th><code>probe</code>（每列摘要的位元組）</th><th>對比範圍</th><th>SAME／DIFF／NOT-READ</th><th>FIRST DIFF</th></tr>
+<tr><td class="num">09:11</td><td class="num">4096</td><td class="num">g1–g35（3 節點 × 36）</td><td class="num">90 / 15 / 0</td><td class="num">g31 <code>ffn_moe_down-1.pool</code> <b>ids 不同</b></td></tr>
+<tr><td class="num">09:14</td><td class="num"><b>335872 / 450560</b><br><span class="small">＝<code>nb02</code>，即<b>整列吃滿</b></span></td><td class="num">同上</td><td class="num">90 / 15 / 0</td><td class="num">同上（逐位元組相同結果）</td></tr>
+</table>
+
+<p><b>第二次的 <code>probe</code> 等於 <code>nb02</code></b>（gate／up 335872 B、down 450560 B）
+⇒ 摘要覆蓋<b>每一個被選中專家的整列</b>，不是前 4096 B 的樣本。兩個探針寬度得到<b>逐位元組相同的判決</b>。</p>
+
+<h4>6.3.1 判讀（依 §4 的分支表）</h4>
+
+<table>
+<tr><th>graph</th><th>階段</th><th>ids</th><th>整列位元組</th><th>落到哪一支</th></tr>
+<tr><td class="num">g1–g30</td><td>prefill T=2/T=8/T=6/T=4 ＋ <b>第一個 T=1</b>（g30）</td><td class="ok">相同</td><td class="ok">相同</td><td><b>gather 的兩個輸入都相同</b> ⇒ 讀到的位元組不是載體</td></tr>
+<tr><td class="num">g31–g35</td><td>T=1 後續步</td><td class="bad">不同</td><td>（跟著不同）</td><td><b>索引不同</b> ⇒ 路由已分岔，而且<b>不能</b>用來說池內容錯</td></tr>
+</table>
+
+<div class="box b-green">
+<p><b>結論（這支儀器唯一的產物）：「同一組 ids、同一池佈局、gather 讀到的位元組不同」——被否證。</b></p>
+<p>在兩臂選到<b>同一組 slot</b> 的每一個 graph 上（共 30 個，含第一個 T=1 步），那些 slot 指向的
+<b>整列位元組</b>逐位元組相同；等到兩臂的列不一樣時，原因是<b>ids 本身不同</b>（不同的專家被選中），
+而不是同一個索引裝了不同的東西。</p>
+<p><b>⇒ 池內容（residency）不是 S1 分歧的載體。</b>要查的方向因此離開 gather 的輸入側：
+第一個 T=1 步（g30）的 <code>attn_norm-0.dst</code> 已經 DIFF，而<b>同一時刻 layer 1 的 ids 仍然相同</b>
+——分歧在層 0 的活化鏈上就已經存在（那一步的 router 還沒翻），再一步（g31）路由才跟著翻。
+所以下一步該看的是<b>層 0 的 delta-net 路徑與它帶進下一步的遞迴狀態</b>，不是池。</p>
+</div>
+
+<p class="small">誠實邊界：<code>SAME</code> 是<b>強證據不是證明</b>——(sum, xor, 加權和) 三字摘要理論上
+可以被一組補償性的 multiset 變化碰撞。但這已經是這支儀器能給的最強語句，而且是
+「整列的」而不是「窗口的」。同時它只涵蓋<b>層 1 的三個節點、每個節點被選中的前 8 列</b>——
+不是全模型、不是全部 8×T 列。</p>
+
+<h2>7. 誠實邊界：這份文件不主張什麼</h2>
+
+<ul>
+<li><b>不主張任何速度或正確性數字。</b>本次沒有做任何<b>可引用</b>的量測；<code>mul_mat_id</code> 的數值路徑
+一行未改（三條 capture 流預設全部關閉，要 env 才動）。09:07 的單臂短跑
+（<code>n_predict=4</code>）只證明管子通，它的 <code>decode</code> 數字不構成結果。</li>
+<li><b>不主張內核語法正確。</b><code>.metal</code> 在這台機器上<b>無法離線編譯</b>：
+<code>xcode-select -p</code> 是 <code>/Library/Developer/CommandLineTools</code>、沒有 Xcode，
+<code>xcrun metal</code> 回 <code>unable to find utility "metal"</code>。
+而 <code>GGML_METAL_EMBED_LIBRARY</code> 是把 shader <b>原始碼</b>嵌進 binary、<b>執行期</b>才編譯，
+所以語法錯誤只會在第一次跑到它時以「整個 library 編譯失敗」的形式出現。
+已經做過的替代驗證：在 <code>/tmp</code> 抽出結構與內核單獨嘗試編譯（工具不存在，未成功）、
+逐項核對型別用法在同檔皆有先例（<code>uchar</code>、<code>uint64_t</code>、<code>threadgroup uint32_t</code>、
+靜態 threadgroup 記憶體、<code>threadgroup_barrier</code>）。
+<b>第一次跑的臂請用小 <code>POOLNODES</code> 與短 <code>n_predict</code>。</b>
+<span class="small">09:07 第一次跑（單臂、<code>n_predict=4</code>）已通過執行期編譯並產出 99 列 POOL
+⇒ <b>語法已被實跑證明</b>；但<b>離線編譯仍然不可用</b>，所以未來任何 <code>.metal</code> 改動都還是只能靠實跑驗證。</span></li>
+<li><b>不主張 D5 通過。</b><code>scripts/check/m123_oracle_gate.py</code> 需要獨占 GPU；
+04:00–06:10 的機器歸 <code>Backup/run_spac_cold_ab.sh</code>（prefill 的 SPAC 交錯 A/B），
+依該線的紀律不得做其他 GPU 工作，所以本次刻意不跑。</li>
+<li><b>不主張 <code>ffn_moe_up-1</code> 存在。</b>見 §3 的推測名說明。</li>
+<li><b>不主張「同臂控制會過」。</b>barrier 依 DST 輪的理由放進去了，但它的必要性只能由量測確認。</li>
+</ul>
+
+<h2>8. 檔案與位置</h2>
+
+<table>
+<tr><th>檔案</th><th>位置</th><th>內容</th></tr>
+<tr><td><code>ggml-metal.metal</code></td><td class="num">10608-10692</td><td>新內核 <code>kernel_cgc_pool_row</code></td></tr>
+<tr><td><code>ggml-metal-impl.h</code></td><td class="num">543-583</td><td><code>ggml_metal_kargs_cgc_pool_row</code>＋word layout 與判讀說明</td></tr>
+<tr><td><code>ggml-metal-ops.cpp</code></td><td class="num">3301-3306 / 3617 / 3739-3786 / 4374 / 4495</td><td>常數、<code>cgc_name_match</code>、pool 側 init、submit、<code>cgc_pool_capture</code>、兩個呼叫點（MM／MV）</td></tr>
+<tr><td><code>ggml-metal-ops.cpp</code></td><td class="num">3833-3960</td><td>dump 的<b>三路 seq 合併</b>（<code>path=POOL</code>／<code>rows=</code>／<code>probe=</code>／<code>nsel=</code>／<code>from=</code>）</td></tr>
+<tr><td><code>ggml-metal-device.cpp</code></td><td class="num">1063</td><td>pipeline getter（無 template、無 threadgroup 記憶體）</td></tr>
+<tr><td><code>scripts/run_server.sh</code></td><td class="num">1496-1513</td><td>三個 env 進白名單</td></tr>
+<tr><td><code>Backup/run_ids_dst_capture.sh</code></td><td>—</td><td><code>POOL=1</code> 穿透、<code>pool_rows=</code> 計數、POOL 區段</td></tr>
+<tr><td><code>Backup/compare_pool_row.py</code></td><td>新檔</td><td>比較器＋NOT-READ／NO-OVERLAP 護欄</td></tr>
+<tr><td><code>Backup/analyze_capture_nodes.py</code></td><td>—</td><td>顯式排除 POOL 列並回報排除數</td></tr>
+</table>
+
+<hr>
+<p class="small">
+出處：<code>docs/REMAP_ROUNDTRIP_REMOVAL_PLAN_2026-09-15.md</code>（D0–D3 階梯與 S1–S3 分階段）·
+<code>docs/S1_MINIL_TRACKING_20260917.html</code>（分歧跟著 <code>CGC_S1_MINIL</code> 走）·
+<code>docs/S1_SRC2_INSTRUMENT_BLIND_20260917.html</code>（主機側儀器在 S1 臂上瞎掉）·
+<code>Backup/run_ids_dst_capture.sh</code> 的檔頭（這支腳本每一輪的形狀都是上一次失敗的記錄）。
+</p>
+
+</div>
+</body>
+</html>

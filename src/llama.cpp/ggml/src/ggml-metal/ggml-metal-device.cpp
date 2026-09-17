@@ -1057,6 +1057,18 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_cgc_ids_capture(
     return res;
 }
 
+// [CGC 2026-09-17 §9.18.6 r12] Same shape: no template parameters, no threadgroup memory. The kernel
+// uses one threadgroup of 32 threads and drives its own strided reduction over threadgroup memory, so
+// there is exactly one pipeline to cache and nothing to specialise on.
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_cgc_pool_row(ggml_metal_library_t lib) {
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, "kernel_cgc_pool_row");
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, "kernel_cgc_pool_row", "kernel_cgc_pool_row", nullptr);
+    }
+    res.smem = 0;
+    return res;
+}
+
 ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm_id(ggml_metal_library_t lib, const ggml_tensor * op) {
     char base[256];
     char name[256];

@@ -538,6 +538,50 @@ typedef struct {
     int32_t hash_mode;
 } ggml_metal_kargs_cgc_ids_capture;
 
+// [CGC 2026-09-17 S1 §9.18.6 r12] Device-side POOL-ROW digest -- the third capture destination.
+//
+// WHAT QUESTION IT ANSWERS, and why it had to become a kernel. Every S1 round since 09-15 narrowed
+// the divergence to one sentence: "the two arms consume the SAME ids and read the SAME pool layout,
+// yet the gathered bytes differ". The instrument that was supposed to test that sentence is
+// CGC_MMID_MV_DBG, which fingerprints the selected rows FROM THE HOST during graph ENCODING
+// (`op->src[0]->data + id * nb02`). On the S1 arm that is measurably the wrong moment: the ids
+// operand is a graph-computed node there, so `id_oob_vs_ne02` is 16/16 and the "ids" it reads are
+// float bit patterns -- i.e. the buffer's previous occupant (eng-mh-0008). The host probe works on
+// the anchor arm precisely because that arm still has the host-written leaf.
+//
+// So this kernel reads the SAME two operands, at the SAME moment the VM/MM kernel consumes them,
+// INTO THE SAME ENCODER: `pool[id * row_bytes .. + probe_bytes]` for each of the first `rows` ids.
+// It is the third stream next to `ids` and `dst`, and it is deliberately NOT merged into either:
+//   (a) the ids destination is exactly full (36 graphs x 117 nodes = 4096 slots) and its rows carry
+//       the graph boundaries every comparator segments by, so sharing a cursor would drop its tail;
+//   (b) the useful record differs. An ids row is 8 words; a dst row is up to 32; a pool row is one
+//       group of FIVE words PER SELECTED ROW, because "the same row index" is the unit of comparison.
+//
+// WORD LAYOUT (stride words per slot, `rows` groups, the rest = 0x7fffffff sentinel):
+//   out[0]                = number of groups actually written
+//   out[1 + 5*r + 0]      = the id the consumer selected for row r (as read from the ids operand)
+//   out[1 + 5*r + 1]      = sum of the digested BYTES
+//   out[1 + 5*r + 2]      = xor of the digested bytes
+//   out[1 + 5*r + 3]      = weighted sum of the bytes, weight = (byte index + 1)
+//   out[1 + 5*r + 4]      = number of bytes digested (0 => this row was NOT read: out of range)
+// Byte-level, not word-level, because the operands are quantised (IQ3_XXS/IQ4_XS) and a word-wise
+// reduction of a block format is a reduction of metadata as much as of weights. The id is recorded
+// next to its digest ON PURPOSE: it makes "the ids differ" (mapping problem) separable from "the ids
+// agree and the bytes differ" (residency problem) inside a single row, without a second instrument.
+//
+// SAME means "no difference found over probe_bytes of that row, at the moment of consumption". It is
+// strong evidence, not proof -- a compensating multiset change can collide, and probe_bytes defaults
+// to the same 4096 the host probe uses so the two readings stay commensurable.
+typedef struct {
+    int32_t  n_ids;       // ids available in the operand (ne20 * ne21)
+    int32_t  slot;        // destination slot; negative disables the capture
+    int32_t  stride;      // int32 words per slot
+    int32_t  rows;        // how many ids to digest (the first `rows` of the operand)
+    int32_t  row_limit;   // ne02: an id must satisfy 0 <= id < row_limit or the row is NOT read
+    int32_t  probe_bytes; // bytes digested per row (host-clamped to `row_bytes`)
+    uint64_t row_bytes;   // nb02: the byte stride between consecutive selectable rows
+} ggml_metal_kargs_cgc_pool_row;
+
 typedef struct {
     int32_t  ne00;
     int32_t  ne02;
