@@ -531,10 +531,22 @@ case "$SERVER_MEMORY_MODE" in
         ;;
 esac
 
+# 這個數字餵給 memory guard 的 OTHER_LLAMA_SERVERS，而那個門檻在**每一個** profile 上都是 0
+# （見 cgc_memory_guard_req：full-mtp-known-profile 是 "0 35 0"、full-mtp 是 "0 40 0" …）
+# ⇒ 只要多數到 1 就 "startup blocked by memory guard" + exit 1，整臂被擋掉。
+#
+# 所以它必須數「真的是 llama binary」的行程，不能數「命令列裡出現過那個路徑」的行程 ——
+# 後者包含任何 `bash -c "... build/bin/llama-server ..."` 的 wrapper、grep、或記錄用的 echo。
+# 實測（2026-09-17）：造兩個這種行程，舊版回 count=2，本版回 count=0。
+#
+# 判準與 cgc_preflight_pids 一致（pgrep 蒐集候選、ps 確認第一個 token 的 basename），
+# 順帶涵蓋 llama-cli / llama-bench / llama-simple —— 它們同樣搶記憶體，而這正是本 guard 在問的事。
+#   ※ CGC_PREFLIGHT_NAMES 的註解在 2026-09-15 記過同一個坑（一支 Doubao agent 的
+#     `/bin/bash -c ... ./bin/llama-cli ...` wrapper 被誤 SIGTERM）：清理路徑修了，這裡漏了。
+#   ※ cgc_preflight_pids 定義在 676 行（本函式之後），但本函式唯一的呼叫點在 799 行
+#     ⇒ 執行時它已經定義好了。要在更早的地方呼叫就得先搬定義。
 cgc_existing_llama_server_count() {
-    local count
-    count=$(pgrep -f "build/bin/llama-server" 2>/dev/null | wc -l | tr -d ' ' || true)
-    echo "${count:-0}"
+    cgc_preflight_pids | wc -l | tr -d ' '
 }
 
 cgc_memory_guard_class() {

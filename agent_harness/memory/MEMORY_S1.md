@@ -265,7 +265,12 @@ g31–g35（T=1，nsel=8）每張 8 列全 ROUTING。g1 原始列：`A id=8 own=
 **比較器新的「map 軸」**：`OK`／`LOST`（該臂裝置讀了自己 host 沒指定的 slot）／`NO-EXP`；
 B 的 `LOST` 再按「兩邊 host 是否同意該位置」分成 `hosts agree`（機器缺陷）／`hosts differ`（上游）。
 
-**⚠ 尚未量測**：建置完成（11:29），但同時間別條線正在跑實驗，**本輪零量測**（見 `2026-09-17.md` §EN-23 的碰撞記錄）。
+**⚠ 11:38 實跑結果：`exp=none`。** 通道裝上了（banner `ACTIVE`）但**來源在 S1 臂不存在**：
+`llama-graph.cpp:2190-2191` 的 `cgc_slot_table_gpu && il >= cgc_s1_min_il` 分支**不建立 host remap leaf**
+（映射搬進圖裡用 GPU gather），所以 `cache_remap_tensors[il]` 對 `il>=1` 沒條目。層 0 仍走 leaf。
+**修法：不要讀 leaf，改成在 host 現算 `exp[j] = st[e_j]`**（`st` = 快取的 slot 表、`e_j` = router top-k；
+需要的只是每層一份 ≤64 個 int32 的 top-k 快照）。錨臂的 leaf 本來就是用這個式子寫的 ⇒ 對齊自檢照樣成立。
+本輪的量測被別條線的 runner 殺掉（`decode 0.00`、6 列）⇒ 作廢，**仍未取得可引用的 `exp` 讀數**。
 
 ## 下一步
 
