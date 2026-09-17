@@ -68,6 +68,7 @@ agent_created: true
 | `CGC_PHASE_TIMING=1` | `CGC-PHASE` | build/alloc/inputs/compute/fill_wait/gpu（每 32 步一行） |
 | `CGC_DECODE_PROFILE=1`（`+ALL`） | `CGC-DECPROF` | 每步 wait/cb/submit 三分 + 逐層歸因（top-8 或全部） |
 | `CGC_GPU_TIMING=1` | `CGC-GPUTIME` | **GPU 自己的時鐘**：wait / gpu_busy_sum / gpu_union / gap |
+| `CGC_GPU_NODES=1`（＋`CGC_GPU_TIMING=1`＋`CGC_DECODE_PROFILE=1`） | `CGC-GPUNODE` | **節點範圍級的 GPU 時間**（2026-09-18 新增）。把每個 command buffer 的 `GPUStartTime/GPUEndTime` **按它編的節點範圍**攤到節點種類上 ⇒ 比逐層細一級。**不需要 `MTLCounterSampleBuffer`**（見下方註）。自我檢查：該行的 `seg_busy` 必須等於同一行的 `layer gpu_sum`（兩條路徑加總同一批時間），`delta` 不為 0 就代表範圍或 buffer↔節點的對應錯了。**`CGC_GPU_TIMING=1` 是必要的**：`dp_lay_gpu[]` 只在它開著時才填，否則分母是 0 而 `delta=0.00%` 是空轉 |
 | `CGC_SUBMIT_AHEAD=1` | 無（改變順序） | **天花板上界探針**，輸出必然損壞，只用來量上限 |
 | `CGC_SLOT_TABLE_GPU=1` | 見 `CGC_S1_DBG` | S1：把 expert→slot 查表搬進圖（`slots = get_rows(table, selected_experts)`），移除每層 host 寫 leaf 的往返 |
 | `CGC_S1_MIN_IL=<n>` | — | 只有 layer ≥ n 用 GPU 表（預設 1）。**layer 0 留在 host**：它的 FFN 讀全寬張量 + **原始 expert id**（程式為它寫 **IDENTITY 表**），而 GPU 算出的 ids 需要跨 backend 拷貝（20:18 那次 `libggml-cpu` SIGSEGV 的形狀）。**★ 2026-09-16 更正**：舊理由「它不被池化」已失效——layer 0 自 2026-09-16 起**是池化層**（見陷阱 14/17）。所以這條限制現在只靠跨 backend 拷貝那一半支撐，**能不能下調 `MIN_IL` 未測**；要動就自己跑閘門。**前綴閘的限制**：每個臂都是連續後綴 ⇒ 左界與服務層數同步移動 ⇒ 無法區分「某一層壞」與「服務層數 ≥ N 就壞」；再加同形狀的臂沒有用 |
@@ -82,6 +83,36 @@ agent_created: true
 | `CGC_TENSOR_CAPTURE=<精確節點名>`（＋`CGC_TENSOR_CAPTURE_WORDS`，預設 32 上限 32） | `CGC-IDS-CAP path=DST name=<節點>.dst` | **輸出張量**的快照（2026-09-16 新增）。重用 `CGC_IDS_CAPTURE` 的同一個內核（那個內核與 ids 無關，就是「把 stride 個 int32 抄進 slot」）⇒ `.metal`／`impl.h`／`device.*`／`context.m` 一行未改，比較器也原封不動。**必須與 `CGC_IDS_CAPTURE=1` 一起開**：ids 列是比較器切 graph 的依據，少了它們 dst 列會落進一個偽 graph 而被報成 IDENTICAL（假陰性）。**只掛在 `ggml_metal_op_mul_mat_id`** ⇒ 只能擷取 gate／up／down 的輸出。名稱**精確比對**（`ffn_moe_down-1` 是 `-10..-19` 的子字串）。★ **需要一個 `ggml_metal_encoder_memory_barrier`**：ids 運算元的生產者在很多節點之前（已沉降），dst 的生產者是**緊鄰的前一個 kernel**，而這個 fork 支援內核併發。沒有屏障時讀數**不可重現** |
 | ~~`CGC_S1_OUT_CAP=1`／`=pre`~~（**既有，較舊**） | `CGC-S1: OUT`（`fnv1a64` ＋ `vals=[...]`）、`OUTSET` | **同一件事的舊版**：釘住 `ffn_moe_down` 的輸出。差別有兩點——(1) 它用 `ggml_set_output` **釘住張量**，而那會動 allocator／graph（原始碼自己寫「診斷臂專用、閘門臂永不可開」）；(2) 它印**雜湊**加少量值。⇒ **要「不擾動圖」的讀數用 `CGC_TENSOR_CAPTURE`，要層窗與雜湊用這一支。** ⚠️ 2026-09-16 交叉確認**未成立**：`CGC_S1_OUT_LAYERS=1` 跑出來的列是 `il=27` 而不是 layer 1，而 480/480 全不同 ⇒ **它的參數語意尚未弄清，不要拿它當獨立確認** |
 | `GGML_SCHED_DEBUG=2` | per-node 後端 + `GET_CAUSE` | **唯一**能回答「這個 node 落在哪個 backend、它的 src 從哪來」的儀器（=1 只有 `## SPLIT`，且走 `GGML_LOG_DEBUG` 會被預設 verbosity 濾掉） |
+
+**★ 節點級 GPU 時間是怎麼來的（2026-09-18；別再重推一次，也不要以為它需要 `MTLCounterSampleBuffer`）。**
+`docs/M3_VERDICT_2026-09-17.md` 說「逐節點 GPU 時間是唯一活路、要用 Metal counter sample buffer、成本最高」
+—— **活路對，成本判斷錯**。`ggml-metal-context.m:1304-1315` 的編碼回呼**本來就把圖切成固定範圍**：
+主執行緒的 slot `n_cb` 編 `[0, n_nodes_0)`、worker `cb_idx < n_cb` 編
+`[n_nodes_0 + cb_idx·p, …)`（`p = n_nodes_per_cb`），而 `n_cb / n_nodes_0 / n_nodes_per_cb`
+在 sched 側讀取時**都還在** ⇒ **範圍可以直接導出，零新狀態、無抽樣點、無 barrier**。
+既有的 `CGC_GPU_TIMING` **早就**逐 cb 讀 `[cb GPUStartTime]`／`[cb GPUEndTime` 的配對
+（`ggml-metal-context.m:503-541`），只是把它們聚合成一個 segment 跨度（`union` 的定義在 `:497`）
+⇒ **節點身分是在「聚合」那一步丟掉的，不是「取樣」那一步。** 實測指紋：
+`bufs ÷ segs = 360 ÷ 40 = 9 = n_cb + 1`（env `CGC_N_CB=8`）⇒ 一層 9 個切片。
+**兩個已知限制（先讀再引用）**：(1) 詞彙表尚未調校 —— `ffn_moe_gate/up/down` 沒出現在表上，
+前三名是 `(other)`／`node`／`cache`（`node_NN` 是 ggml 自動名、`cache_*` 是池的張量名）；
+(2) 攤分是**按節點數**加權（一個 cb 只給出一個 group 時長）⇒ 會高估小節點多的範圍。
+⇒ **解掉 (1)/(2) 之前不要用這張表套 M3 的「`ffn_moe_*` ≥ 40%」判準。**
+實作上的坑：`ggml_metal_cgc_node_name()` 讀的是**快照**（在 `graph_compute` 內複製的節點名指標）——
+`ctx->gf` 是**呼叫者**的 cgraph，而分段 dispatcher 把它建在區域變數上（`submit_seg` 的
+`struct ggml_cgraph gv = seg_view(s);`）⇒ 呼叫一返回就懸空（lesson `eng-diag-0034`；症狀是載入期
+SIGSEGV 11，而既有路徑完全正常）。**這支是全檔唯一在「呼叫之後」讀 `ctx->gf` 的讀者。**
+
+**★ 不要為了 L0 去動 `CGC_S1_MIN_IL`（2026-09-18 實測；這是第二個理由）。**
+上一列已經說了「layer 0 自 2026-09-16 起是池化層」，另外兩點：`CGC_S1_MIN_IL` **只在
+`CGC_SLOT_TABLE_GPU` 存在時才被讀**，而 `run_server.sh:1518` 只在顯式給值時才傳它
+⇒ **生產沒開 S1，它在生產上是 no-op**；而且 `decode_sweep.py:410-412` 把 L0 明文列為永久排除項
+（它的 MoE 跑 CPU/BLAS，跨 backend 拷貝就是 20:18 SIGSEGV 的形狀）。**更重要的**：
+「L0 的 GPU 時間是中位的 6~7 倍」**只在 llama-bench `-d 512` ＋ MTP env 開但沒有真的投機**那個
+regime 成立（`llama_bench_matrix.forward_argv()` 不轉發 `--spec-type` ⇒ 它的 decode step `ntok` 恆為 1）。
+在真的 decode 裡（`MTP off` 與 `MTP on+投機` 兩臂、各 42／137 個 steady step）L0 的 gpu 是
+**0.46×／1.6×**，而它的 `union` **低於中位** ⇒ **L0 沒有可重現的異常，不要去追它。**
+（`cb` 的前四名兩臂都是 L2/L1/L0/L3 —— 那是**池填充由最前面幾層付錢**的既有模式，不是 L0 的性質。）
 
 **★ `read shape: … effective_rate=` 不是裝置速率（2026-09-17 22:4x 實測）。** 那一行是 `bytes/jobs/us_job`
 的**導出值**，而 `us/job` 含 **fill worker 的排隊／鎖／CPU 調度**，不是 SSD 延遲：同一形狀
