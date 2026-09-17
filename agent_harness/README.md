@@ -177,7 +177,7 @@ bash scripts/setup_env.sh          # 一次性：venv ＋ terminal-bench ＋ hos
 |---|---|---|
 | **E0** | 索引 ＋ 第一版 episode 匯出 | ✅ 122 筆 episode；資產數看 `index_assets.py --check` |
 | **E1** | 結構 ＋ 憲章：資產搬進 `tb_loop/`、修 import 路徑、寫 `CONVENTIONS.md` | ✅ **三條驗收全部結清（2026-09-17 15:22）**：套件解析實測通過（要用 `tb_loop/.venv` 的直譯器 —— 見下方 2026-09-17 更正）、`CONVENTIONS.md` 61/61 條有指針、**`tb run --n-tasks 1` smoke 實跑通過**（`raman-fitting.easy`，1/1 resolved，見下方更正 (c)） |
-| **E2** | T1 蒸餾 ＋ 兩個投影（`sft_pi/`、`sft_prime/`、`harness_engine/`）＋ 結清 D6 的閉環欠帳 | ✅ 四個目錄已建、兩份投影可用 `--check` 驗（見 `docs/AGENT_HARNESS_E2_TRAINING_PROJECTIONS_20260916.html`）；**T1 未接真模型；D6 的閉環欠帳未結清** |
+| **E2** | T1 蒸餾 ＋ 兩個投影（`sft_pi/`、`sft_prime/`、`harness_engine/`）＋ 結清 D6 的閉環欠帳 | ✅ 四個目錄已建、兩份投影可用 `--check` 驗（見 `docs/AGENT_HARNESS_E2_TRAINING_PROJECTIONS_20260916.html`）；**T1 未跑 —— 它的前置是三層而不是一個端點（見下方更正 (d)）；D6 的閉環欠帳未結清（等窗）** |
 | **E3** | 閉環：round1（無 lesson）vs round2（注入 lesson） | ⏳ 執行器已建並離線驗證（`distill/closed_loop.py`，48 項自測；見 `docs/AGENT_HARNESS_E3_DESIGN_20260916.html`）；**模型半未跑 ⇒ 本體未結清** |
 | **E4** | 治理（可選）：log 政策、`knifeedge_matrix.py` 拆分、`scripts/check/` 分層、標記 stale | ✅ 四項都到了終態，見下方 2026-09-17 的註記；每一項的證據一支指令可重跑 |
 
@@ -267,13 +267,29 @@ directly executed`）；可用的入口是 venv 裡的 `tb` console script（已
 （另註：`local_rehearsal.py` 的彩排路徑以 Windows Git Bash 為設計對象，本機的等價物是
 `scripts/run_wsl2.sh`；`results/` 底下 9/3 的 rehearsal_1/2/3 就是那條線的產物。）
 
-**(d) E2/E3 剩下的確實是量測，但要分清哪一種。**
-T1 蒸餾（`refine_engine.sh`）、D6 欠帳（`closed_loop.py` 的 A vs B）、E3 本體（C vs D）
-都需要一個**真的會回答的模型**；`llm_client.py` 的預設是 `127.0.0.1:8080`、
-`litellm_config.yaml` 指 `127.0.0.1:8083`，兩者都是本機 server ⇒ 需要窗。
-但 `LLM_BASE_URL` 是可換的：**T1 的蒸餾在語意上可以指向遠端端點**（它讀的是 harness 的紀錄），
-而 **D6/E3 的閉環不行** —— 那一組實驗是圍繞本機模型的 ChatML／`<think>` scaffold 設計的，
-換模型等於換一個實驗。所以「等窗」這句話對 D6/E3 成立，對 T1 不完全成立。
+**(d) E2/E3 剩下的是量測 —— 但 T1 的 blocker 不是量測，是一個三層的前置（2026-09-17 17:0x 實測）。**
+
+D6 欠帳（`closed_loop.py` 的 A vs B）與 E3 本體（C vs D）需要一個**真的會回答的模型**，
+而且那一組實驗是圍繞本機模型的 ChatML／`<think>` scaffold 設計的（實測記錄就在
+`src/llama.cpp/models/templates/Qwen3-nothink-ChatML.jinja` 的檔頭）—— 換模型等於換一個實驗 ⇒ **只等窗**。
+
+**T1 不一樣，而它比「等一個端點」複雜。** `refine_engine.sh` 不是打 HTTP，它執行
+`prime-agent -p --offline --model <REFINE_ENGINE_MODEL> --autonomous …`（並把
+`PRIME_AGENT_CODING_AGENT_DIR` 指到 `engine_loop/harness_engine`）。所以「用哪個模型」由
+**prime-agent 的設定**決定，不是 `LLM_BASE_URL` —— 本檔先前的措辭（「`LLM_BASE_URL` 是可換的
+⇒ T1 可指向遠端」）**是錯的**；`LLM_BASE_URL` 是 `llm_client.py`（D6/E3 那條路）用的。實測三層：
+
+| 層 | 現況（2026-09-17 17:0x） | 怎麼補 |
+|---|---|---|
+| 1 `prime-agent` CLI | **已安裝**：`~/.local/bin/prime-agent` → 0.9.5（在此之前它不在機器上，`~/.local/bin` 在 PATH 上但沒有它） | `agent_harness/tb_loop/scripts/setup_env.sh` 的第 2/3 步就是它：`curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh \| sh` |
+| 2 provider | `~/.prime/agent/models.json` 只有一個 `turbofieldfare` → `http://localhost:8080/v1`、模型 `gemma-4-26b-a4b-it`、`api: openai-completions` ⇒ **裝好 CLI 也只會打本機 8080** | 要跑**遠端**就得加一條 provider（baseUrl ＋ apiKey）。那是 prime-agent 的**全域**設定（不在本 repo 裡）—— 改它之前先講 |
+| 3 `REFINE_ENGINE_MODEL` | 腳本刻意不給預設（用哪個模型蒸餾是一個決定，不是一個習慣） | `REFINE_ENGINE_MODEL=<provider>/<model> bash agent_harness/engine_loop/distill/refine_engine.sh` |
+
+★ 判準：`refine_engine.sh --dry-run` 在**三層都不滿足**時也會綠（它只印 prompt，45,746 B）——
+所以「dry-run 過了」**不可以**當成「可以跑」。
+（原先打算讓遠端走本機的 CGC edge：`~/.local/bin/cgc`，:8000 是 OpenAI 相容、:4000 是 Anthropic 代理；
+但那個服務的 **API 半邊目前起不來**（`cgc_engine` 的 sys.path 指到已不存在的 `ComputeGraphCompiler-main`）。
+那是 `flashkv0516` 那條線的既有問題，本線不動它。）
 
 改動本目錄的任何敘述之前，先讀 `CONVENTIONS.md`——**它同時是 `engine_loop/sft_pi/` 的 system prompt**，
 所以改它等於改動兩個迴圈未來的行為。

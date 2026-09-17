@@ -80,6 +80,13 @@ E 自我約束），同時是 `sft_pi/` 的 system prompt ⇒ 改它要走 §6.3
 - **重生順序固定、而且「每一次」都要按序**：先 `build_memory_index.py`、後 `index_assets.py`。
   `build_memory_index.py` 每次都會重寫 `INDEX.jsonl`（bytes 可能相同、只有 mtime 動）⇒ 若 `index_assets`
   報漂移**且差異只在 mtime**，那就是「順序寫反了」，重跑一次兩支即可，不要去找內容差異。
+- **★ `docs/` 在 `CURATED` 是「逐條列」而不是 glob**（`index_assets.py:266+` 一條一條寫死，
+  形狀是 `("docs/<檔名>", role, loop, replayable, produces_record, note)`）⇒
+  **新增 `docs/*.md` 與 `docs/*.html` 都不會漂移**（09-17 實測兩次）。**修正**一個已在 `CURATED`
+  裡的 docs 條目（例如改某份白皮書的 note）才會紅。省下一輪「我加了檔案，先重跑索引吧」的無用重生。
+  **判準（兩步都做）**：`grep -c "<檔名>" agent_harness/engine_loop/MANIFEST.jsonl` 命中 0
+  ＋ `index_assets.py --check` 仍印 `OK: N assets`。反過來說：**要讓一份新 docs 被索引收錄，
+  必須手動加進 `CURATED`**（像 `scripts/check/*` 的新腳本要加 `role`＋`note` 一樣）。
 
 - **★ `src/llama.cpp/build/bin/*.dylib` 與 `llama-server` 是「受版控」且「跨 session 共用」的資源**
   ⇒ **建置＝對機器上所有正在跑的實驗的一次寫入**，不是本機動作。11:29 踩過一次：`lsof` 同一行印出了

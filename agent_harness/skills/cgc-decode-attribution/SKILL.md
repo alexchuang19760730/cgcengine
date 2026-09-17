@@ -89,19 +89,59 @@ agent_created: true
   「第二個在飛的東西不可能讓真實計算變快」⇒ 若步時間下降 X%，就有 X% 是序列化。
   這比任何相位分解都決定性。輸出損壞是**預期**的，md5 必須變，否則代表旗標沒生效。
 
-## 兩個 decode 儀器不能並排（2026-09-16 實測；細節 `docs/INSTRUMENT_COMPARE_20260916_1821.html`）
+## 唯一的 decode 儀器：`llama-bench`（2026-09-17 **使用者裁定**；舊標題「兩個 decode 儀器不能並排」）
 
-**`llama-bench` 與 `decode_bench` 的數字不得互相引用，也不得放在同一句話裡比大小。**
-同 env、同模型、同 n、同場交錯量到的是 **9.4 vs 12.4**（n≈128）與 **7.2 vs 18.7**（n=24）。
+**`decode_bench` 已退休 —— 不要再量、不要再引用它的數字。** 理由是 2026-09-16 的實測：同 env／
+同模型／同 n／同場交錯，`llama-bench` 與 `decode_bench` 差 **9.4 vs 12.4**（n≈128）與
+**7.2 vs 18.7**（n=24），而且 `decode_bench` 的離散大得多（12.36／12.95／10.64 vs llama-bench
+三次 9.42／9.32／9.38 ＝ **1.1%**）。與其維護兩套互不並排的口徑，**現在只認 `llama-bench`**。
+（細節 `docs/INSTRUMENT_COMPARE_20260916_1821.html`）
 
-要配對，env 必須是解析出來的而不是手抄的——`llama_bench_matrix.py` 支援
-`PROFILE:ENV=VAL`，所以
+**標準形狀 —— 報任何 decode 數字都要附這三樣：reps 數、warmup 規則、模型家族。**
+
+- **`-d 512`**：`--depths 0` 是最冷的格子，**不要拿它當標準**。depth 的預填充在 `t_start`
+  之前完成、不計時 ⇒ 只有 `-d ≥ 512` 才是暖平台。
+- **warmup 保持 ON、並丟掉 rep1**（llama-bench 的 tg warmup 只有 1 個 token，
+  `llama-bench.cpp:2392`）⇒ **報平台值，不報 `avg_ts` 的原始平均**。
+- **模型家族必須指名，而且要看 `-m` 那一行、不是看臂名。**（2026-09-17 更正）
+  `MTP=0` 確實會換檔案，**但觸發條件是「顯式設 `CGC_SERVER_MTP=0`」而不是 profile 名**：
+  16:1x 用 `prefill_certifiability.py --dry-run` 逐字讀它印出的 `-m` 行，
+  **`--arm prefill250` 與 `--arm prod25` 都載 `Nail-…-denseIQ4X.gguf`**；
+  `ARMS` 表裡**只有 `prod25-stream-mtpoff` 設了 `CGC_SERVER_MTP`** ⇒ 只有它換成
+  `Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`。
+  **⚠ `tag` 不含模型檔**（json 只存 tag）⇒ **每份產出都要記 `-m` 那一行**（matrix 已經會印），
+  否則事後無法分辨。**後果（好消息）**：`prefill250` 與 `prod25-stream` 血統**同一個檔** ⇒
+  decode 的 10.8–10.9 與 prefill 的 `pp2048` cell **是自洽的一對**。
+- **暖平台 ＝ `10.78 / 10.91 t/s`**（`prefill250+SPAC=1`、`-b 512`、d512、NOMINAL）。
+  歷史交叉驗證：09-15 `prod25-stream` **10.79**、今天 `prod25-stream` **10.89**、
+  `prefill250+SPAC` **10.78／10.91** ⇒ **拿 10.8–10.9 當 25 t/s 的分母。**
+- **★ 要對外可比，就得跑上游形狀的那一列（2026-09-17 追加）。** 上游 `llama-bench` 的預設是
+  **`-p 512 -n 128 -d 0 -b 2048`**（`llama-bench.cpp:367-377`），標準輸出列是
+  **`pp512` / `tg128` / `pp512 @ d512` / `tg128 @ d512`**（`README.md:180-187`）。
+  我們的 `--depths 512` **逐字就是 `tg128 @ d512` 那一列**（`-p 0` 只是把 pp 列關掉）——
+  但**我們的 decode cell 跑在 `-b 512`，上游是 `-b 2048`**，而我們的 prefill cell 跑 `-p 2048`。
+  ⇒ **「對外說得出口」的 cell ＝ `--prompt 512 --gen 128 --depths 0 --batch 2048`**，
+  而且要**另開一次獨立 run**（同一行程內第二格繼承暖池 ⇒ 不獨立）。
+
+**⇒ 一句話的後果：可引用的 decode 值是 `10.8–10.9`，不是 `decode_bench` 的 `12.36`；
+距 25 t/s 約 `2.3×`，不是 `2.0×`。**
+
+**⚠ 推論（未定，等裁定）：MTP 不在這個口徑裡。** 歷史上的 MTP A/B（HTTP 路的 `12.62 vs 9.82`、
+以及「accept 是被抬高的指標」那條）都是**伺服器／`llama-speculative-simple`** 量的 ⇒
+在「只認 llama-bench」之下，那類結論**目前沒有 instrument of record**。兩條路：
+**(1)** 把 `--spec-*` 加進 `llama-bench`（下面那節說只有三處要改，但那是 `src/`，歸引擎層）；
+**(2)** 保留 `llama-speculative-simple` 當 MTP 臂，並**永遠不與 llama-bench 並排**。
+
+要配對，env 必須是解析出來的而不是手抄的——`llama_bench_matrix.py` 支援 `PROFILE:ENV=VAL`：
 
 ```sh
 python3 scripts/check/llama_bench_matrix.py \
   --arms 'prod25:CGC_SERVER_MTP=0;CGC_GPU_TIMING=1;CGC_DECODE_PROFILE=1' \
-  --prompt 0 --gen 128 --depths 0 --reps 3 --json Backup/phase_decomp/lb_x.json
+  --prompt 0 --gen 128 --depths 0,512 --reps 3 --json Backup/phase_decomp/lb_x.json
 ```
+
+（這一支帶 `CGC_GPU_TIMING/CGC_DECODE_PROFILE` 是為了**逐步分解／歸因**，不是 headline；
+headline 用上面那條 `--depths 512` 的標準形狀。`-d 0` 留著只為了看冷格。）
 
 逐字就是 `decode_sweep --arms p25-gputime` 的 env（兩邊都經 `run_server.sh CGC_DUMP_ENV=1`）。
 

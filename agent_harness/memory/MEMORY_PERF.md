@@ -37,6 +37,13 @@
 
 - **M0 量測能力：完成。**
 - **M1 解耦 pool 與圖：做了一半以上、卡住**（不是「未開始」——這個錯誤我犯過一次）。
+  **★ 09-17 15:45 狀態更新：別條線已經開始做工作項 4（canonical gather order）** —— 新增
+  `src/llama.cpp/src/llama-cgc-canon.h` 與 `scripts/check/canon_order_selftest.cpp`，並在
+  `scripts/run_server.sh` 的 allowlist 加了 **`CGC_CANON_ORDER`**（`=1` 依 expert id 排序、
+  **`=2` 是 identity 對照**，用來把「重排改了數字」與「多出來的節點改了數字」分開）。
+  他們自己在註解裡寫明：**兩個模式都會改變模型輸出，所以都不能當品質或 D5 證據**
+  （對某個在別的 mode dump 的參考）。⇒ 這正是交接白皮書 §4 建議的起手式，**已接走**；
+  本線不碰 `src/`。
   數值那一半 **09-14 已達成**：2/4/6/8/10 GiB 全部 **M1 = M2 = M3 = 117/117**，2 GiB 是唯一
   `union > slots` 那格（compacted gather），`union-routable` PASS，RSS 達標。
   **⚠ 證據地位（09-17 更正）**：這個 117/117 是**跨池不變性**，**不蘊含正確性** ——
@@ -162,11 +169,39 @@
 
 | 定義 | 數字 | 條件 |
 |---|---|---|
-| **llama-bench 暖平台**（丟 rep1） | **10.78／10.91**（d512）；11.3（n=128 平台） | `prefill250+SPAC=1`、`-b512`、NOMINAL、**MTP=0 模型** |
-| llama-bench `-d 0`（冷格） | 9.52–9.79 | 同上 |
-| **decode_bench（HTTP）** n=128 | **12.36**（NOMINAL）→ 10.64（HEAVY） | 同 env、同模型、交錯 |
-| **llama-server 非 MTP**（`p25-gputime`、n=124） | **12.95 可持續** | 全程 NOMINAL；**不要引用 20.3**（n=24 短爆） |
+| **★ 唯一的 instrument of record：llama-bench 暖平台**（丟 rep1） | **10.78／10.91**（d512）；11.3（n=128 平台） | `prefill250+SPAC=1`、`-b512`、NOMINAL、**Nail denseIQ4X**（見下更正） |
+| llama-bench `-d 0`（冷格，**不是標準格**） | 9.52–9.79 | 同上；`--depths 0` 是最冷的格子 |
+| ~~decode_bench（HTTP）n=128~~ | ~~12.36（NOMINAL）→ 10.64（HEAVY）~~ | **★ 2026-09-17 使用者裁定：`decode_bench` 退休，不要再量、不要再引用** |
+| llama-server（`p25-gputime` 等 HTTP 臂） | 12.95 可持續（**僅歸因用**） | **不再是 headline 口徑**，角色只剩逐步分解／歸因；`20.3` 一律不得引用（n=24 短爆） |
 | **「25 t/s」的出處** | 09-05 的 **27.71** | **71 slots／4 GiB pool ＋ L0=32/L1=32 分區**，`draft accept 0.9974`（3.99 token/step、144 ms/step）——**不是**現在的 143 slots／8 GiB |
+
+- **★★ 09-17 裁定：decode 統一用 `llama-bench`。** 標準形狀＝
+  `llama_bench_matrix.py --prompt 0 --gen 128 --depths 512 --reps 3`（warmup ON、**丟 rep1**）；
+  報數字一律附 **reps 數 ／ warmup 規則 ／ 模型家族**（`MTP=0` 會換檔）。
+  ⇒ **可引用的 decode ＝ 10.8–10.9 t/s；距 25 約 2.3×（不是 2.0×）。**
+  退休理由：兩器同 env／同模型／同 n／交錯差 9.4 vs 12.4（n≈128）、7.2 vs 18.7（n=24），
+  且 `decode_bench` 離散大得多（12.36／12.95／10.64 vs llama-bench 三次 **1.1%**）。
+  **⚠ 未決：MTP 不在這個口徑裡** —— 歷史的 `12.62 vs 9.82` 是 HTTP／`llama-speculative-simple`
+  量的；兩條路＝把 `--spec-*` 加進 llama-bench（三處、動 `src/`）或保留 spec-simple 但永不並排。
+- **★★ 09-17 更正（`MTP=0 模型` 那條標註是錯的）**：現行 harness 下
+  **`--arm prefill250` 與 `--arm prod25` 都載 `Nail-…-denseIQ4X.gguf`**；
+  **只有顯式 `prod25:<…>;CGC_SERVER_MTP=0`（臂 `prod25-stream-mtpoff`）才換成
+  `Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`**（16:1x 用 `prefill_certifiability.py --dry-run`
+  逐字讀它印出的 `-m` 行驗證）。`llama_bench_matrix.py` 的 `ARMS` 表裡**只有
+  `prod25-stream-mtpoff` 設了 `CGC_SERVER_MTP`**。
+  ⇒ 歷史的 **10.78／10.91 與 `prod25-stream` 的 10.79／10.89 都在 Nail denseIQ4X 上**，
+  與 prefill 的 `pp2048` cell **同一個檔** ⇒ **pp/tg 這一對是自洽的**。
+  ⚠ 但 **`tag` 不含模型檔**（json 只存 tag）⇒ **每一份 llama-bench 產出都要記 `-m` 那一行**
+  （matrix 已經會印），否則事後無法分辨。
+- **★★ 09-17 (A) 裁定：prefill 也統一 llama-bench，且要兩個 cell**（使用者追加「這個也要加上去」）：
+  - **cell 1（自家形狀）**：`prefill_certifiability.py --arm prefill250 --prompt 2048 --gen 16
+    --reps 3 --runs 5` ⇒ 形狀 `-p 2048 -n 16 -d 0 -b 5632 [profile]`（dry-run 驗證過）。
+  - **cell 2（上游可比）**：`… --prompt 512 --gen 128 --depths 0 --reps 3 --runs 5 --batch 2048`
+    ⇒ 形狀 `-p 512 -n 128 -d 0 -b 2048 [cli]`（＝上游預設 `-p 512 -n 128 -d 0 -b 2048`，
+    `llama-bench.cpp:367-377`；上游標準輸出列 `pp512/tg128/pp512@d512`，`README.md:180-187`）。
+  - **兩個 cell 必須是兩次獨立 run**（同一行程內第二格繼承暖池 ⇒ 不獨立）。
+  - **前置條件已補**：`prefill_certifiability.py` 原本**沒有** `--batch` 透傳（固定吃 profile 的
+    5632 ⇒ `pp512` 會變成「-b 5632 的 pp512」＝同名不同量）⇒ 已加 `--batch/--ubatch/--dry-run`。
 
 - **「加大 pool／提高 hit rate 是槓桿」已推翻**：71 slots 的舊幾何（09-05）反而快（該筆 `resident=0.00 MiB`
   ⇒ 另一條填充路徑）。09-15 同幾何 MTP-on 只有 6.48 ⇒ **MTP 當前是淨損失**（`llama-speculative-simple`：
@@ -192,15 +227,40 @@
 `CGC_SERVER_PROFILE=prefill250`（`-b/-ub 5632`、`CGC_PREFILL_STREAM=1`、`CGC_GATHER_SLAB_CAP=256`、
 pool 8 GiB、ctx 8192）**必要非充分**；還要散熱前提 ＋ 量測紀律。
 
+- **★★ 09-17 盤點：prefill 有兩個入口，而「哪一個是交付口徑」未定**（decode 已於同日統一在
+  llama-bench）：
+  ① **HTTP 驗收臂** `run_req2_retest.sh`（**2873-token prompt** 的 `prompt eval t/s`，
+  每請求邊界帶熱讀數）—— 本節 §1–§3 的交付規程是為它寫的，白皮書的 278.56／261.17／275.01 出自它；
+  ② **llama-bench `-p 2048`** `prefill_certifiability.py --arm prefill250 --prompt 2048 --gen 16
+  --reps 3 --runs 5`（走**同一支** `llama_bench_matrix.py`；`-b/-ub` 由 dump 取 ＝ 5632）——
+  已記錄 276.25／300.43（Nominal ×2）與 227.27／151.28／145.79／182.39（非 Nominal）。
+  ⚠️ **兩邊數字很近但不可並排**（`-p 2048` vs 2873-token、歷史 `-b` 6144 vs 5632）。
+  ⚠️ **llama-bench 那條是抽籤不是規格**：`pp2048 @ -ub 6144` 四次獨立啟動
+  276.59／198.84／176.18／122.68 ＝ **2.25× 離散**（啟動內部只差 2.08–15.41）
+  ⇒ 統一用 llama-bench 對 prefill **不是免費的**：把「熱條件不足」換成「跨啟動離散」，後者未解。
+
 - **權威儀器（非 root、11 ms）**：`notifyutil -g com.apple.system.thermalpressurelevel`
   （`0=Nominal 1=Moderate 2=Heavy 3=Trapping 4=Sleeping`）。**判準：發射前讀到 `0`。** 分離度（request
   級、零重疊）：發射 0 → **6/6 ≥250**；發射 1 或 2 → **0/21**。反面教材：`NSProcessInfo.thermalState`
   367/367 讀 `fair`、零區辨力——**找到介面 ≠ 找到儀器**。
+- **★★ 09-17 15:37 更正：上面的判準是「必要非充分」—— `COLD-STATE`（安靜 1940 s）＋ 發射前與每個
+  請求邊界都讀到 `0/NOMINAL`，仍然只量到 242.42／227.27／249.06（三個都 <250）。**
+  同 build／同 profile／同 2873-token prompt；2 Hz 序列顯示 `15:37:15→15:38:24` 連續 Nominal，
+  **req1／req2 完全落在那段之內** ⇒ 熱解釋不了。反向對照：同日 15:03 標籤只是 `UNKNOWN-STATE`
+  （無 state file）卻得 **278.56／261.17／275.01** ⇒ **安靜秒數與熱等級都不預測這個 t/s**。
+  池路徑已排掉（兩臂 `pread_usec` 1501 vs 1548 s、`us/job` 31733 vs 32533，都在 1.26 MiB/s 線上）。
+  ⇒ 標籤只能背書「**讀數的來歷**」，**不能**背書「≥250 這個門檻」。（lesson `eng-mh-0054`；
+  白皮書 §2.3／§2.4；skill 已同步修正）
 - **「距上次持續 prefill ≥150 s」作為充分條件已被推翻**（安靜 18 s → 289.86；34 s → 166.95）⇒ 自變數是
   **累積負載（同序列第幾次啟動）**；機制是 DVFS 階（1470→928→618 MHz）與熱壓同秒。
-- **可交付述句只有「發射時讀到 `0` 的那一臂，req1–req3 全部 ≥250」**。**不能**說「250 隨時可重現」。
-  熱態平台 167–201。`t(token) = 0.5575 ms + 4226/f_eff(MHz)`；純階反讀 1470→291、928→227、618→135。
-  **250 不是上限**；`swap` **不是因是果**。
+- **可交付述句（09-17 修正）**：可引用的是「**該臂的 req1–req3 讀數是 X／Y／Z**」＋ 熱標籤；
+  ❌ 舊述句「發射時讀到 `0` 的那一臂，req1–req3 全部 ≥250」**已被否證**（見上）。
+  **不能**說「250 隨時可重現」。熱態平台 167–201。`t(token) = 0.5575 ms + 4226/f_eff(MHz)`；
+  純階反讀 1470→291、928→227、618→135。**250 不是上限**；`swap` **不是因是果**。
+  **直接變數是有效時脈，熱等級只是它的粗代理**（本次 4.13 ms/tok 反推 ≈1130 MHz vs 對照臂 3.59 ≈1250）
+  ⇒ 裁決「為何 COLD 仍 <250」得用 `powermetrics` 的 GPU 時脈駐留（**需 root**，且沒試過）；
+  未排掉的第一候選是**背景 GPU 客戶端**（`Freebuff Helper (GPU)`／`WorkBuddy Helper (GPU)`／
+  `WebKit GPU`／`WindowServer`；發射時 load 1 分鐘 2.42–2.93，同日 15:39 量到 6.18）。
 - **閘門**：`COLD-STATE` 需安靜 ≥1800 s，否則 `HOT-STATE`；**HOT 不得當交付數字**。**機器地板是 HEAVY**
   （零 llama 行程時 thermal=2、GPU util 20%、Electron ~103%）⇒ agent UI 造成。
   `ARMS=2 bash Backup/run_thermal_gate.sh`（不成立 exit 3，fail closed）；

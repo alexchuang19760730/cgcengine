@@ -1,6 +1,6 @@
 ---
 name: cgc-prefill-thermal-delivery
-description: 在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）上讓一個 prefill t/s 數字取得可交付的地位。核心是一條 11 ms、不需要 root 的讀數 notifyutil -g com.apple.system.thermalpressurelevel（0=Nominal）：發射前讀到 0 才授權 250 級數字。當使用者問「prefill 250 交付了嗎」「這個 t/s 能不能引用」「prefill 為什麼忽快忽慢」「能不能 conditional 交付」「怎麼量散熱條件」、要跑 prefill 驗收、或要比較兩個 prefill 數字時使用。
+description: 在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）上決定一個 prefill t/s 數字能不能被引用。核心是一條 11 ms、不需要 root 的讀數 notifyutil -g com.apple.system.thermalpressurelevel（0=Nominal）＋臂自帶的 COLD-STATE/HOT-STATE 標籤。★2026-09-17 更正：這兩個條件都只是**必要條件**，**不**保證 ≥250（實測 COLD-STATE 下量到 242/227/249）。當使用者問「prefill 250 交付了嗎」「這個 t/s 能不能引用」「prefill 為什麼忽快忽慢」「能不能 conditional 交付」「怎麼量散熱條件」、要跑 prefill 驗收、或要比較兩個 prefill 數字時使用。
 agent_created: true
 ---
 
@@ -53,6 +53,20 @@ notifyutil -g com.apple.system.thermalpressurelevel     # 必須是 0
 HOT 得 **167.41–200.58**。⇒ **「發射時讀到 0」與「箱子是冷的」是兩件事**，
 而一個 250 級數字要能被引用，需要的是後者。`0` 是閘門開，不是冷。
 
+★★ **但「COLD-STATE」也不足以推出 ≥250 —— 2026-09-17 15:37 實測。**
+`prefill250`／同 build／同 profile／同一份 2873-token prompt，在安靜 **1940 s**
+（臂報告自己判 `COLD-STATE`、並引用 whitepaper §11.14 說「其 t/s 可以引用」）的窗口量到
+**242.42 / 227.27 / 249.06 t/s —— 三個全部低於 250**，而發射前與每個請求**之前**都是 `0/NOMINAL`
+（外掛 2 Hz 序列顯示 `15:37:15 → 15:38:24` 連續 Nominal，req1／req2 完全落在那段之內）。
+⇒ **上面那張分離度表與 §3 的「可交付的述句」都只是「該批樣本」的觀測，不是門檻的保證。**
+`COLD-STATE` 的授權要改讀成「**該臂的讀數可以引用**」，**不是**「該臂達標 ≥250」。
+反向也一樣：同日 15:03 的臂標籤只是 `UNKNOWN-STATE`，卻得 **278.56 / 261.17 / 275.01**
+⇒ **安靜秒數與等級都不預測這個 t/s**。兩臂的池 IO 幾乎相同（`pread_usec` 1501 vs 1548 s、
+`us/job` 31733 vs 32533）⇒ 不是池路徑。未歸因的候選是**背景 GPU 客戶端**（無風扇 M4 的熱／功耗
+包絡共享；發射時 load 1 分鐘值 2.93 vs 2.42，同日 15:39 量到 6.18）⇒ **閘門要在請求當下一起記錄
+負載**；能裁決的直接變數是 `powermetrics` 的 GPU 時脈駐留（需 root），熱等級只是它的粗代理。
+lesson `eng-mh-0054`。
+
 **跑 A/B 時更要注意三件事**：
 - **靜置時間不是你可以指定的值。** 它取決於前一臂留下的熱（實測同一晚兩個臂分別只等到 120 s 與 195 s）
   ⇒ 「每臂等讀數回 0」**不會**讓兩臂配對在相同的靜止條件上。可引用的 A/B 要固定靜置長度，或直接等 COLD。
@@ -96,7 +110,10 @@ HOT 得 **167.41–200.58**。⇒ **「發射時讀到 0」與「箱子是冷的
 - **時脈 → 吞吐**：`t(ms/token) = a + b/f_eff`，`a≈0.47、b≈4216`（合併 6 點）。
   250 t/s 對應有效時脈 **1154–1227 MHz**。1470 MHz → 约 291、928 → 227、618 → 135。
   看到 ~185 就是「兩階之間」。
-- **可交付的述句**：「**讀到 0 的那一臂**，其 req1–req3 全部 ≥250」。
+- **可交付的述句（2026-09-17 修正）**：可引用的是「**讀到 0 的那一臂**，其 req1–req3 讀數是
+  **X / Y / Z**」＋ 熱標籤。**❌ 舊述句「其 req1–req3 全部 ≥250」已被 lesson `eng-mh-0054` 否證**
+  （同一個條件集、同一天量到 242.42 / 227.27 / 249.06）⇒ 標籤背書的是「這個讀數的來歷」，
+  **不是「這個門檻」**。
   **不可**說「250 隨時可重現」。
 - **powermetrics 佐證（block 級）**：Nominal 2/2 → ≥250（276.25、300.43）；
   非 Nominal 4/4 → <250（227.27、151.28、182.39、145.79）。
@@ -112,6 +129,30 @@ HOT 得 **167.41–200.58**。⇒ **「發射時讀到 0」與「箱子是冷的
 ---
 
 ## 4. 怎麼跑
+
+**★ prefill 目前有兩個入口，而「哪一個是交付口徑」在 2026-09-17 仍 **未定**。** 引用前先指名入口：
+
+| 入口 | 指令 | 形狀 | 已記錄的值 |
+|---|---|---|---|
+| **HTTP 驗收臂**（本 skill §1–§3 的交付規程就是為它寫的） | `IDLE_BEFORE=0 OUTDIR=… bash Backup/run_req2_retest.sh` | **2873-token prompt** 的 `prompt eval t/s`，每請求邊界帶熱讀數 | 278.56／261.17／275.01（`UNKNOWN-STATE`） |
+| **llama-bench `pp2048`**（走**同一支** `llama_bench_matrix.py`；**自家形狀**） | `python3 scripts/check/prefill_certifiability.py --arm prefill250 --prompt 2048 --gen 16 --reps 3 --runs 5` | `-p 2048 -n 16 -d 0 -b 5632 [profile]`（`-b/-ub` 由 `run_server.sh CGC_DUMP_ENV=1` 取）；散熱靠 2 Hz `thermal_pressure.Sampler`——它是獨佔 GPU 的子行程，**沒有**每請求邊界可以掛讀數 | 276.25／300.43（Nominal ×2，≥250）；227.27／151.28／145.79／182.39（非 Nominal） |
+| **llama-bench `pp512`**（**上游可比**，2026-09-17 追加） | `… --prompt 512 --gen 128 --depths 0 --reps 3 --runs 5 --batch 2048` | `-p 512 -n 128 -d 0 -b 2048 [cli]` ＝ 上游預設（`llama-bench.cpp:367-377`；標準列 `pp512`，`README.md:180-187`） | **尚無** |
+
+- **兩個 cell 必須是兩次獨立 run**：`llama-bench` 同一行程內每個形狀共用模型與池 ⇒
+  `-p 512,2048` 會讓第二格繼承第一格暖過的池，兩格不獨立。
+- **`pp512` 只是「同一個標籤」，要真的可比還得 `-b/-ub` 也對上** ⇒ 用 `--batch 2048`。
+  這件事本來做不到（`prefill_certifiability.py` 沒有 `--batch` 透傳，固定吃 profile 的 5632），
+  **2026-09-17 已補**（`--batch/--ubatch/--dry-run`），並可用 `--dry-run` 零 GPU 驗證形狀。
+- **`tag` 不含模型檔** ⇒ 每份產出都要記 `-m` 那一行。現行 harness 下 `--arm prefill250` 與
+  `--arm prod25` **都載 `Nail-…-denseIQ4X.gguf`**（只有顯式 `CGC_SERVER_MTP=0` 才換檔）。
+
+- ⚠️ **兩邊的數字看起來很近（276.25 vs 278.56），但那是兩個不同的量**（`-p 2048` vs 2873-token
+  prompt、不同 `-b/-ub` 歷史值 6144 vs 5632）⇒ **不得並排、不得互相換算**。
+- ⚠️ **llama-bench 那條自己的頭注就說它是抽籤不是規格**：`pp2048 @ -ub 6144` 四次獨立啟動得
+  **276.59／198.84／176.18／122.68 ＝ 2.25× 離散**，而每次啟動**內部**三次樣本只差 2.08–15.41
+  ⇒ 離散來自「行程之間的狀態」，不是量測雜訊。**所以「統一用 llama-bench」對 prefill 不是免費的**：
+  它把問題從「熱條件不足」換成「跨啟動離散」，而後者還沒被解決。
+- decode 已於 2026-09-17 統一在 llama-bench（見 skill `cgc-decode-attribution`）。
 
 ```bash
 cd /Users/alexchuang/Documents/flashkv-devserver
@@ -158,9 +199,13 @@ bash Backup/run_lib_ab.sh        # 檔案互換 + 一臂暖機丟棄；退出時
    報告出現**空白讀數**，看起來像儀器讀不到。收尾用 `grep -n` 確認定義與呼叫都在。
 4. **「改了原始碼沒重建」會讓整段量測屬於舊產物。** 判準是 `cmake --build` 有沒有印編譯行
    （exit code 在「已最新」與「剛編好」都是 0）。
-5. **`sysctl -n vm.loadavg` 在 idle 也不是 0**（實測 1.71–6.47）：常駐兩個 `Xcasca`（Electron）
-   renderer，而無風扇 M4 是**共享熱包絡** ⇒ 背景負載會吃掉 GPU 的散熱餘裕。未歸零的混淆項。
-   `ps` 在本 sandbox 被擋，列行程用 `pgrep -fl`。
+5. **`sysctl -n vm.loadavg` 在 idle 也不是 0**（實測 1.71–6.47）：常駐 Electron renderer
+   （`Xcasca`／`Freebuff Helper (GPU)`／`WorkBuddy Helper (GPU)`／`WebKit GPU`／`WindowServer`），
+   而無風扇 M4 是**共享熱／功耗包絡** ⇒ 背景負載會吃掉 GPU 的散熱餘裕。未歸零的混淆項。
+   ★ 2026-09-17 更正它的地位：它不只是混淆項，它是「`COLD-STATE` 仍量到 227–249」那次否證的
+   **第一候選**（見 §1）⇒ 閘門與臂報告要在**請求當下**一起記一筆負載，否則只能停在「未歸因」。
+   列行程用 `ps -Ao pid=,etime=,command=`（可用）；純 `pgrep -f` 是**命令列文字比對**，
+   要小心自己的指令文字被算成匹配（見第 7 條）。
 6. **`Backup/` 與 `.workbuddy/` 都在 `.gitignore` 內**（`.gitignore:396`、`:41`）。
    要交付就得 `git add -f` 或搬進 `scripts/`，否則修正只存在於本機。
 7. **★ 你自己的指令文字會讓整臂被記憶體閘門擋掉（2026-09-17 實測，毀掉一個 arm）。**
