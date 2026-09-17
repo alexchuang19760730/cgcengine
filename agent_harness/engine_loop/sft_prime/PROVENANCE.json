@@ -4,7 +4,7 @@
   "input_sha256_16": {
     "decisions.jsonl": "af0abd1646b3a99d",
     "episodes.jsonl": "918089bf7cc1ccef",
-    "lessons.jsonl": "e591fd6c79395d5b"
+    "lessons.jsonl": "4ff8f1a3466f5f6d"
   },
   "invocation": {
     "head_chars": 0,
@@ -13,7 +13,7 @@
   },
   "note": "reconstructed from traces/*.jsonl; this is NOT a recorded transcript",
   "rows": {
-    "train": 152,
+    "train": 156,
     "valid": 27
   },
   "split_seed": 42,

@@ -13,6 +13,30 @@
 
 ## 現況（**09-17 02:40 重寫**；09-16 那四輪 r1–r4/r3c–r3e 全部作廢）
 
+### ★ 09-17 14:06 更新（別條線 r30–r37）：S1 的位元身分閘門**過了**，但根因比 S1 大
+
+- **根因**：host 寫的 top-k 快照**不是 nb-aware**（忽略 batch stride `nb[1]`）⇒ **T ≥ 2 的每一步都把
+  token ≥ 1 路由到 token 0 的專家**（＝涵蓋所有 prefill chunk、所有 MTP verify 步）。修在
+  `llama-context.cpp`（`row = data + t*nb[1]`、第 j 個 id 在 `row + j*nb[0]`）。
+  ⇒ **這不是 S1 臂特有的缺陷，是預設路徑的缺陷**（每一臂都中）。
+- **證據**（`docs/ROUTING_TRACE_2026-09-17.md` §12.3、§13.1–13.4）：`CGC-S1 POST … MISMATCH` **936 → 0**；
+  `gather_vs_table` `[15]` → **`[0]`**；leaf vs S1 的裝置池列 **SAME=12 DIFF=0**；
+  row-by-row 的 `(5,k)` 那步 **token 0 不變、token ≥ 1 全變**（＝機制的自身簽名），MTP 列不變。
+- **參考已重生**：`ref_..._v6_nbaware.jsonl`（md5 `72d82a33ad79e0e69bc935acd24228f2`），對它 9/9；
+  對舊 v5 的兩次都是 **M1 5/9**，且兩次 hash 逐位元相同 ⇒ 引擎確定性沒問題、**錯的是參考**。
+- **★ 速度：無主張，而且結構上不可能有。** 他們原文：*Nothing here shows S1 is faster — and it cannot
+  be, structurally: `expert_cache_on_topk` runs in **both** arms, so S1 never removed a host step.
+  Its measured value is as an instrument (device-side pool rows).*
+  （`src/llama.cpp/src/llama-context.cpp:4785` 的註解寫著同一件事 ⇒ **可引用**）
+- **計數器層面的改善**（不受熱漂移影響；`prod25`／4 GiB／S1 臂／`N_PREDICT=12` 連續三輪）：
+  hit **57.1% → 72.0%**、misses **31847 → 12205（−62%）**、io 177 → 211 MiB/s。
+  **t/s 那欄不可引用**（r33 是 `NOMINAL`、r30/r31 沒記）。
+- **附帶**：4/6 GiB 池對 v6 是 M1/M2 9/9，但那是 `--allow-incomparable` 的**獲准跨配置讀數、不是乾淨的
+  PASS**（池位元組本身是 gate 比較配置的一部分）；**N=9、一條 prompt**，不是 88 步的 knifeedge 向量。
+- **未做**：48 題套件沒重跑、`--no-mmap` 與 6–8 GiB 格沒重驗、**引擎檔 6 個仍是 `M`（未提交）**；
+  一條他們自己標明未解釋的列：`(0,0,'DEF')` 也變了。
+- **S1 臂仍然預設關閉**（`run_server.sh:1467` 只在外部設了 `CGC_SLOT_TABLE_GPU` 時才透傳）⇒ 對出貨速度無影響。
+
 **舊輪作廢的三個盲點**（細節在日誌／`analyze_capture_nodes.py` docstring）：窗口恆從 element 0 起算
 （修 `_TAIL=1`＋`off=`）／`--upto 24` 只採到 prefill（改 `--decode-only`）／`dst_filter[256]` 靜默截斷
 （`CGC_DST_FILTER_MAX=2048`）。

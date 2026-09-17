@@ -176,7 +176,7 @@ bash scripts/setup_env.sh          # 一次性：venv ＋ terminal-bench ＋ hos
 | 階段 | 內容 | 狀態 |
 |---|---|---|
 | **E0** | 索引 ＋ 第一版 episode 匯出 | ✅ 122 筆 episode；資產數看 `index_assets.py --check` |
-| **E1** | 結構 ＋ 憲章：資產搬進 `tb_loop/`、修 import 路徑、寫 `CONVENTIONS.md` | ✅ 套件解析已通（見 `docs/AGENT_HARNESS_E1_RESTRUCTURE_20260916.html`）、`CONVENTIONS.md` 已成；**`tb run` 的 smoke 仍未跑**（缺模型端點，見 `PLAN_ENGINE_LOOP_2026-09-15.md` §9） |
+| **E1** | 結構 ＋ 憲章：資產搬進 `tb_loop/`、修 import 路徑、寫 `CONVENTIONS.md` | ✅ 三條驗收 **2 條已結清、第 3 條只差 Docker**：套件解析**實測通過**（見下方 2026-09-17 更正 —— 要用 `tb_loop/.venv` 的直譯器）、`CONVENTIONS.md` 61/61 條有指針；**`tb run --n-tasks 1` 的 smoke 未跑**，缺的是 Docker daemon（colima 已停）與 `.venv`（已存在）——不是缺模型端點 |
 | **E2** | T1 蒸餾 ＋ 兩個投影（`sft_pi/`、`sft_prime/`、`harness_engine/`）＋ 結清 D6 的閉環欠帳 | ✅ 四個目錄已建、兩份投影可用 `--check` 驗（見 `docs/AGENT_HARNESS_E2_TRAINING_PROJECTIONS_20260916.html`）；**T1 未接真模型；D6 的閉環欠帳未結清** |
 | **E3** | 閉環：round1（無 lesson）vs round2（注入 lesson） | ⏳ 執行器已建並離線驗證（`distill/closed_loop.py`，41 項自測；見 `docs/AGENT_HARNESS_E3_DESIGN_20260916.html`）；**模型半未跑 ⇒ 本體未結清** |
 | **E4** | 治理（可選）：log 政策、`knifeedge_matrix.py` 拆分、`scripts/check/` 分層、標記 stale | ✅ 四項都到了終態，見下方 2026-09-17 的註記；每一項的證據一支指令可重跑 |
@@ -206,6 +206,54 @@ bash scripts/setup_env.sh          # 一次性：venv ＋ terminal-bench ＋ hos
 **這張表在 2026-09-16 晚間到 09-17 上午是錯的**：它寫 E2「⏳ 未開始」，而 E2 早已完成。
 成因是 E2 只更新了 `engine_loop/README.md` 與 `PLAN` §9，**漏了這個傘狀入口**。
 一份說「未開始」的狀態表比一個過期的數字更糟——它會讓人不去讀已經存在的東西。
+
+## ★ 2026-09-17 更正：E1「只結清一半」這句話本身是錯的，而且 E1 有一支回歸沒修
+
+有人問「E1–E3 代碼都完成了、只剩下量測嗎」。逐條實測之後，答案是**不是**，而且其中一半不是量測：
+
+**(a) E1 的第一條驗收其實已經通過 —— 只是當初用錯了直譯器。**
+`PLAN` §9 與本表長期寫著「`import tb_loop.agents.prime_agent_adapter` 止於
+`No module named 'terminal_bench'`」。那句話是用**系統 python3** 跑出來的；而 `tb_loop` 有
+自己的 venv（`agent_harness/tb_loop/.venv`，`config.env` 的 `TB_VENV_PY` 指的就是它），
+**terminal-bench 裝在那裡面**。實測：
+
+```
+$ PYTHONPATH=agent_harness agent_harness/tb_loop/.venv/bin/python \
+    -c "import tb_loop.agents.prime_agent_adapter"
+-> OK（解析到 agent_harness/tb_loop/agents/prime_agent_adapter.py）
+```
+
+**驗收條件是「套件解析成功」，不是「系統 python 也能解析」。** 用對直譯器之後它是綠的 ——
+而「用錯直譯器量出來的紅」與「用錯閘門量出來的綠」是同一種錯（量具指錯對象）。
+
+**(b) E1 有一支回歸沒修：`tb_loop/scripts/local_rehearsal.py` 連 `--help` 都跑不起來。**
+它第 42 行的註解在 E1 時就改成了 `tb_loop.agents.…`，但**第 48 行的 import 還是搬遷前的
+`from agent_harness.agents.codebuff_api_agent import CodebuffApiAgent`** —— 而上面那兩行塞進
+`sys.path` 的是 `tb_loop/` 與它的父目錄（`agent_harness/`），`agent_harness` 本身不在路徑上
+（它是 namespace package，只有 repo 根在路徑上時才解析得到）。於是
+`ModuleNotFoundError: No module named 'agent_harness'`。
+同一輪還掃到第二處同類：`agents/loopmoe_agent_adapter.py` 的 docstring 用法範例仍寫
+`--agent-import-path agent_harness.agents.loopmoe_agent_adapter:…`（使用者照抄就會踩同一個錯）。
+**兩處都已修**（`tb_loop.agents.…`），並全掃過 `tb_loop`：0 處殘留、135 支 `.py` 全部可編譯、
+所有有 `--help` 的 entry 都 rc=0。
+
+★ 這與 `eng-bound-0007`（E1 的 shell 錨點回歸）是**同一個形狀**：口徑（註解、README）改了，
+程式沒改。而 E1 當時的掃描只看了 **shell 的路徑派生**，沒有掃 **Python 的 import 字串** ——
+所以「掃描涵蓋了什麼」與「掃描漏了什麼」是兩個不同的問題，而後者不會自己說出來。
+
+**(c) 第 3 條驗收（`tb run --n-tasks 1` smoke）缺的是 Docker，不是模型端點。**
+`.venv` 與 `terminal-bench` 都在；`colima` 已停（使用者要求），所以 Docker daemon 不在。
+這是一個**環境前置**，不是量測 —— 起 colima 之後就能跑。
+（另註：`local_rehearsal.py` 的彩排路徑以 Windows Git Bash 為設計對象，本機的等價物是
+`scripts/run_wsl2.sh`；`results/` 底下 9/3 的 rehearsal_1/2/3 就是那條線的產物。）
+
+**(d) E2/E3 剩下的確實是量測，但要分清哪一種。**
+T1 蒸餾（`refine_engine.sh`）、D6 欠帳（`closed_loop.py` 的 A vs B）、E3 本體（C vs D）
+都需要一個**真的會回答的模型**；`llm_client.py` 的預設是 `127.0.0.1:8080`、
+`litellm_config.yaml` 指 `127.0.0.1:8083`，兩者都是本機 server ⇒ 需要窗。
+但 `LLM_BASE_URL` 是可換的：**T1 的蒸餾在語意上可以指向遠端端點**（它讀的是 harness 的紀錄），
+而 **D6/E3 的閉環不行** —— 那一組實驗是圍繞本機模型的 ChatML／`<think>` scaffold 設計的，
+換模型等於換一個實驗。所以「等窗」這句話對 D6/E3 成立，對 T1 不完全成立。
 
 改動本目錄的任何敘述之前，先讀 `CONVENTIONS.md`——**它同時是 `engine_loop/sft_pi/` 的 system prompt**，
 所以改它等於改動兩個迴圈未來的行為。

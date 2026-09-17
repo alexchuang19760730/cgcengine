@@ -87,3 +87,15 @@ E 自我約束），同時是 `sft_pi/` 的 system prompt ⇒ 改它要走 §6.3
   而他們那輪 A/B 因此橫跨兩個 build。**閘門要同時看 (a) 8080 的 listener 與 (b) 別條線的量測行程
   （`run_ids_dst_capture.sh`／`decode_sweep.py`），而且必須真的 abort —— 只印出來不算。**
   （lesson `eng-mh-0048`）
+
+- **★ `run_server.sh` 的 preflight 會主動 SIGTERM 掉「別條線正在跑的 server」**
+  ⇒ 在 8080 上的佔用**沒有互斥**，而且不只是「搶不到」，是**對方會把你的 server 殺掉**。
+  機制：`:638-740` `[防護 1] 清殘留`，起自己的 server 之前先把所有殘留 `llama-server`
+  送 `-TERM`（目的是防「行程疊加」造成的 `GPU OOM ret=-3` 與 kernel panic）；
+  可用 `CGC_PREFLIGHT_KILL=0` 關掉，但那是例外路徑。
+  **後果：「起跑前檢查港埠」只保護起跑那一瞬間，保護不了長跑。** 14:01 實例：13:56:54 過閘門
+  （當下 8080 確實空）起了一個 48 題的閘門臂，14:01:53 被別條線的 `r37_pool4` 起跑 preflight
+  SIGTERM 掉（死在 longform-zh #6，只跑到 14/48），而工具事後才把它標成 `invalid`。
+  ⇒ **要跑 20–30 分鐘的協定，需要的是互斥**（雙方都認的 lockfile／請對方設 `CGC_PREFLIGHT_KILL=0`），
+  或切成 `--profiles`／`--max-per-profile` 的受控片段；單次 pre-launch 檢查不夠。
+  （lesson `eng-mh-0052`）

@@ -18,7 +18,7 @@ Loop MoE × Terminal-Bench 适配器（tb 的 installed-agent 扩展点）。
 
 用法：
   tb run -d terminal-bench-core==0.1.1 \
-    --agent-import-path agent_harness.agents.loopmoe_agent_adapter:LoopMoEAgent \
+    --agent-import-path tb_loop.agents.loopmoe_agent_adapter:LoopMoEAgent \
     -m openai/qwen3.6-35b-a3b \
     -k base_url=http://127.0.0.1:1234/v1 -k api_key=sk-local \
     -k max_turns=12 -k max_tokens=4096 \

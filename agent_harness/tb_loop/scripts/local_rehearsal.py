@@ -45,7 +45,14 @@ for p in (TB_LOOP_DIR, TB_LOOP_DIR.parent):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-from agent_harness.agents.codebuff_api_agent import CodebuffApiAgent  # noqa: E402
+# 2026-09-17（E4 收尾時發現的回歸）：這一行原本寫 `agent_harness.agents.…`，
+# 而 `agent_harness/` 底下沒有 `__init__.py`、也不在 sys.path 上 —— 上面那兩行放進來的是
+# `tb_loop/` 與它的父目錄（`agent_harness/`）。所以 E1 搬遷之後這支**連 `--help` 都跑不起來**
+# （`ModuleNotFoundError: No module named 'agent_harness'`）。
+# ★ 上面那句註解在 E1 時就改成了 `tb_loop.…`，**只有 import 那行沒改** ——
+#   與 `eng-bound-0007`（shell 錨點回歸）同一個形狀：口徑改了，程式沒改。
+#   當初的掃描只看了 shell 的路徑派生，沒有掃 Python 的 import 字串。
+from tb_loop.agents.codebuff_api_agent import CodebuffApiAgent  # noqa: E402
 
 COMMAND_TIMEOUT = 120  # 单条命令超时（秒）
 

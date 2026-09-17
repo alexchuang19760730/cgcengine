@@ -38,7 +38,13 @@
 - **M0 量測能力：完成。**
 - **M1 解耦 pool 與圖：做了一半以上、卡住**（不是「未開始」——這個錯誤我犯過一次）。
   數值那一半 **09-14 已達成**：2/4/6/8/10 GiB 全部 **M1 = M2 = M3 = 117/117**，2 GiB 是唯一
-  `union > slots` 那格（compacted gather），`union-routable` PASS，RSS 達標。**兩條沒過**：
+  `union > slots` 那格（compacted gather），`union-routable` PASS，RSS 達標。
+  **⚠ 證據地位（09-17 更正）**：這個 117/117 是**跨池不變性**，**不蘊含正確性** ——
+  別條線的 r33 nb-aware 修正（`docs/ROUTING_TRACE_2026-09-17.md` §12.1／§12.4）證明
+  **每一臂都把 T≥2 的 token 路由到 token 0 的專家**，而「每一臂都犯同一個錯」正好讓跨池
+  不變性通過。該檔原文：*cross-pool invariance (M1/M2) passed while the ids were wrong for
+  all of them*。⇒ M1 的數值半應改述為「**不變性**已達成」；要主張「數對」必須用 r33 之後的
+  參考（v6_nbaware）。**兩條沒過**：
   ① `decode 不得退步` ⇒ 2 GiB（gather＋slab）**6.36** vs 8 GiB（pool）**8.87 t/s** ＝ **0.72×**；
   ② `prefill chunk 2048` ⇒ 缺工作項 2。**工作項 1**（`CGC_POOL_SPLIT=1`，保持 expert tensor 全寬）
   實作了但被判 **EXPERIMENTAL, NOT USABLE**：Blocker A（寬 tensor 讓 gather 把 Metal buffer 的指標

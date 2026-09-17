@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>E1–E3 狀態稽核：代碼完成了嗎，還是只差量測 —— 2026-09-17</title>
+<style>
+  :root{--bg:#ffffff;--fg:#1f2328;--muted:#57606a;--line:#d8dee4;--soft:#f6f8fa;
+        --blue:#0969da;--green:#1a7f37;--red:#cf222e;--amber:#9a6700;--purple:#8250df}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,"PingFang TC","PingFang SC","Helvetica Neue",Arial,sans-serif}
+  .wrap{max-width:1040px;margin:0 auto;padding:32px 20px 80px}
+  h1{font-size:25px;line-height:1.4;margin:0 0 6px}
+  h2{font-size:19px;margin:32px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:20px 0 8px}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;
+       background:var(--soft);padding:1px 5px;border-radius:4px}
+  pre{background:var(--soft);border:1px solid var(--line);border-radius:8px;padding:12px 14px;
+      overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.55}
+  pre code{background:none;padding:0}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  .tag{display:inline-block;font-size:12px;padding:1px 8px;border-radius:999px;border:1px solid}
+  .t-green{color:var(--green);border-color:#b4dfc0;background:#e9f7ee}
+  .t-red{color:var(--red);border-color:#ffc9c9;background:#fff0f0}
+  .t-amber{color:var(--amber);border-color:#f0dca4;background:#fdf6e3}
+  .t-blue{color:var(--blue);border-color:#b6d8ff;background:#eaf3ff}
+  .t-gray{color:var(--muted);border-color:#d8dee4;background:#f6f8fa}
+  .box{border-left:4px solid var(--blue);background:#f6f8fa;padding:10px 14px;border-radius:0 8px 8px 0;margin:14px 0}
+  .box.warn{border-left-color:var(--amber);background:#fdf8ec}
+  .box.bad{border-left-color:var(--red);background:#fff2f2}
+  .box.ok{border-left-color:var(--green);background:#f0f9f3}
+  .lead{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>E1–E3 狀態稽核：代碼完成了嗎，還是只差量測</h1>
+<p class="lead">2026-09-17 14:35–14:55 ｜ 起因：一句提問「e1-e3 代碼都完成了只剩下量測嗎」 ｜
+<span class="tag t-green">零 GPU</span><span class="tag t-green">零建置</span><span class="tag t-green">零 llama-server</span></p>
+
+<div class="box warn">
+<b>答案：不是，而且一半不是量測。</b>逐條實測之後，剩下的東西分三類：
+<b>(a) 一支沒修完的回歸</b>（程式）、<b>(b) 一個環境前置</b>（Docker daemon，不是量測也不是模型端點）、
+<b>(c) 真的需要窗的量測</b>（D6／E3；T1 那一項待議）。
+另外還發現<b>一個長期寫錯的結論</b>：E1「只結清一半」那句話本身是錯的。
+</div>
+
+<h2>1. 逐條對照（三類：程式／環境／量測）</h2>
+
+<table>
+<tr><th>階段</th><th>驗收條件（原文的意思）</th><th>現況</th><th>屬於哪一類</th></tr>
+<tr>
+  <td><b>E1</b></td>
+  <td><code>import tb_loop.agents.prime_agent_adapter</code> 成功</td>
+  <td><span class="tag t-green">已通過（實測）</span></td>
+  <td>已完成 —— 只是<b>當初用錯了直譯器</b>（見 §2）</td>
+</tr>
+<tr>
+  <td><b>E1</b></td>
+  <td><code>CONVENTIONS.md</code> 每條都指得到證據</td>
+  <td><span class="tag t-green">61/61、0 懸空</span></td>
+  <td>已完成</td>
+</tr>
+<tr>
+  <td><b>E1</b></td>
+  <td><code>tb run --n-tasks 1</code> smoke 過</td>
+  <td><span class="tag t-amber">未跑</span></td>
+  <td><b>環境</b>：缺 Docker daemon（colima 已停）；<code>.venv</code> 與 <code>terminal-bench</code> 都在</td>
+</tr>
+<tr>
+  <td><b>E1</b></td>
+  <td>（附帶）搬遷後沒有殘留舊引用</td>
+  <td><span class="tag t-red">2 處殘留 → 已修</span></td>
+  <td><b>程式</b>：<code>local_rehearsal.py:48</code>、<code>loopmoe_agent_adapter.py</code> 的用法範例（見 §3）</td>
+</tr>
+<tr>
+  <td><b>E2</b></td>
+  <td>四個目錄已建、兩份投影可 <code>--check</code> 驗</td>
+  <td><span class="tag t-green">OK</span>（<code>sft_pi</code>／<code>sft_prime</code>／<code>harness_engine</code>／<code>distill</code>）</td>
+  <td>已完成</td>
+</tr>
+<tr>
+  <td><b>E2</b></td>
+  <td>T1 蒸餾跑一次真模型、<code>decisions.jsonl</code> 過 validate</td>
+  <td><span class="tag t-red">未跑</span></td>
+  <td><b>量測</b>，但端點可換 ⇒ 待議（見 §4）</td>
+</tr>
+<tr>
+  <td><b>E2</b></td>
+  <td>結清 D6 的閉環欠帳（A vs B）</td>
+  <td><span class="tag t-red">未跑</span></td>
+  <td><b>量測</b>：需要本機模型端點 ＋ 乾淨窗</td>
+</tr>
+<tr>
+  <td><b>E3</b></td>
+  <td>閉環 C vs D，至少 1 條 lesson 被證明改善且可重現</td>
+  <td><span class="tag t-red">模型半未跑</span></td>
+  <td><b>量測</b>：同上；執行器與 48 項自測已就緒</td>
+</tr>
+</table>
+
+<h2>2. 更正：E1「只結清一半」那句話是錯的（而且錯在量具）</h2>
+<p><code>PLAN</code> §9 與 <code>agent_harness/README.md</code> 從 9/16 17:2x 起寫著：</p>
+<pre><code>&gt; ⚠️ smoke 未跑：tb_loop/.venv 不存在、terminal-bench 未安裝、Docker daemon 未執行
+&gt; ⇒ 驗收只結清一半，import tb_loop.agents.prime_agent_adapter 目前止於
+&gt;   No module named 'terminal_bench'</code></pre>
+<p>那個結論是用 <b>系統 python3</b> 量出來的。事實是：<code>tb_loop/.venv</code> <b>存在</b>（9/16 19:32 建立），
+<code>terminal-bench</code> 裝在裡面，而 <code>config.env</code> 的 <code>TB_VENV_PY</code> 指的就是它。
+用對直譯器：</p>
+<pre><code>$ PYTHONPATH=agent_harness agent_harness/tb_loop/.venv/bin/python \
+    -c "import tb_loop.agents.prime_agent_adapter"
+import OK -&gt; .../agent_harness/tb_loop/agents/prime_agent_adapter.py
+$ python3 -c "import tb_loop.agents.prime_agent_adapter"     # 系統 python3
+ModuleNotFoundError: No module named 'terminal_bench'</code></pre>
+<p><b>同一份原始碼、兩個相反的結論，差別只在直譯器。</b>驗收句寫的是「套件解析成功」，
+沒有指定直譯器 —— 那個模糊處就是錯誤結論的入口（lesson <code>eng-gate-0052</code>）。</p>
+
+<h2>3. E1 真的有一支回歸沒修（程式，不是量測）</h2>
+<div class="box bad">
+<pre><code>$ (cd agent_harness/tb_loop && .venv/bin/python scripts/local_rehearsal.py --help)
+Traceback (most recent call last):
+  File ".../tb_loop/scripts/local_rehearsal.py", line 48, in &lt;module&gt;
+    from agent_harness.agents.codebuff_api_agent import CodebuffApiAgent
+ModuleNotFoundError: No module named 'agent_harness'</code></pre>
+連 <code>--help</code> 都跑不到 —— 失敗點在檔頭，不在功能裡。
+</div>
+
+<p>成因是<b>半轉換</b>。同一個檔案裡：</p>
+<pre><code># 保证能 import 到 tb_loop.agents.codebuff_api_agent     ← E1 時改好了
+TB_LOOP_DIR = Path(__file__).resolve().parents[1]
+for p in (TB_LOOP_DIR, TB_LOOP_DIR.parent):              ← 放進來的是 tb_loop/ 與 agent_harness/
+    sys.path.insert(0, str(p))
+from agent_harness.agents.codebuff_api_agent import ...   ← 但這行還是搬遷前的名字</code></pre>
+<p><code>agent_harness</code> 本身不在 <code>sys.path</code> 上（它沒有 <code>__init__.py</code>，
+是 namespace package，只有 <b>repo 根</b>在路徑上時才解析得到）—— 而上面那兩行按的是<b>新</b>佈局。
+<b>註解說的是對的，所以 review 會通過。</b></p>
+
+<h3>同一輪掃到的第二處與掃描結果</h3>
+<table>
+<tr><th>位置</th><th>殘留什麼</th><th>處置</th></tr>
+<tr><td><code>tb_loop/scripts/local_rehearsal.py:48</code></td><td>可執行的 import</td><td>改成 <code>tb_loop.agents.…</code> ⇒ <code>--help</code> rc=0</td></tr>
+<tr><td><code>tb_loop/agents/loopmoe_agent_adapter.py:21</code></td><td>docstring 用法範例（使用者照抄會踩同一個錯）</td><td>改成 <code>tb_loop.agents.…</code></td></tr>
+</table>
+<pre><code>全掃 agent_harness/tb_loop/：殘留 0 處
+135 支 .py 全部可編譯（用它的 venv）
+有 --help 的 entry：build_sft_dataset.py / compare_rounds.py / harness_diff.py / local_rehearsal.py 全部 rc=0
+另外 9 處 --agent-import-path 早就都是 tb_loop.agents.…（run_round.sh、gen_sft.sh、eval_round.sh、
+README.md、prime_agent_adapter.py、codebuff_api_agent.py）</code></pre>
+<div class="box warn">
+<b>為什麼兩天沒有人發現：只有 2／135 支殘留。</b>一次「掃過一遍」看起來是乾淨的 ——
+而殘留的判準與 E1 當初用的不同：E1 掃的是 <b>shell 的路徑派生</b>（「算出來的路徑還在不在」），
+這一類要問的是 <b>Python 的 import 字串</b>（「那個名字在 sys.path 上解析得到嗎」）。
+兩個不同的問題，第二個不會自己說出來（lesson <code>eng-src-0020</code>，與 <code>eng-bound-0007</code> 同形狀：
+<b>口徑改了，程式沒改</b>）。
+</div>
+
+<h2>4. E2／E3 剩下的確實是量測 —— 但要分清哪一種</h2>
+<table>
+<tr><th></th><th>需要什麼</th><th>端點可不可以換成遠端</th></tr>
+<tr><td>T1 蒸餾（<code>refine_engine.sh</code>）</td><td>一個會回答的模型 ＋ <code>REFINE_ENGINE_MODEL</code></td>
+    <td><b>可以</b>：它讀的是 harness 的紀錄（episodes／lessons），產出 decisions。<code>LLM_BASE_URL</code>／<code>REFINE_ENGINE_MODEL</code> 都是可設的</td></tr>
+<tr><td>D6 欠帳（<code>closed_loop.py</code> A vs B）</td><td>本機模型端點 ＋ 乾淨窗</td>
+    <td><b>不行</b>：這一組實驗是圍繞本機模型的 ChatML／<code>&lt;think&gt;</code> scaffold 設計的，換模型等於換一個實驗</td></tr>
+<tr><td>E3 本體（C vs D）</td><td>同上</td><td><b>不行</b>：同上</td></tr>
+</table>
+<p>端點現況（唯讀實測）：<code>llm_client.py</code> 預設 <code>http://127.0.0.1:8080</code>、
+<code>litellm_config.yaml</code> 指 <code>http://127.0.0.1:8083</code>、4000 沒有 listener
+⇒ 本機目前沒有現成的端點。<b>所以「等窗」對 D6／E3 成立，對 T1 只是「等一個端點」。</b></p>
+
+<h2>5. 誠實邊界（不主張什麼）</h2>
+<ul>
+<li><b>smoke 沒有跑。</b>本檔只主張「它的前置條件裡，<code>.venv</code> 與 <code>terminal-bench</code> 已具備、
+缺 Docker daemon」——沒有主張 smoke 會過。<code>tb run</code> 這條路徑<b>至今沒有在本機被執行過</b>
+（<code>results/</code> 底下的是 9/3 的 Windows Git Bash 彩排與 <code>wsl2_test</code>），
+而未執行過的路徑不算「驗證過」。</li>
+<li><b>沒有起 colima。</b>使用者先前要求停掉它，所以 Docker 這一格留給使用者決定。</li>
+<li><b>沒有動 E2／E3 的任何檔案。</b>本輪只做稽核與兩處 E1 回歸的修復。</li>
+<li><b>文件更正的方法是 dated 註記，不是改寫。</b><code>PLAN</code> §9 與 <code>README</code> 的原文保留，
+新增的是標了日期的更正列／段（本 repo 對「條文被推翻」的既有規定）。</li>
+</ul>
+
+<h2>6. 這一輪動了什麼</h2>
+<table>
+<tr><th>檔案</th><th>改動</th></tr>
+<tr><td><code>agent_harness/tb_loop/scripts/local_rehearsal.py</code></td><td>import 由 <code>agent_harness.agents.…</code> 改為 <code>tb_loop.agents.…</code>（附成因註解）</td></tr>
+<tr><td><code>agent_harness/tb_loop/agents/loopmoe_agent_adapter.py</code></td><td>docstring 用法範例的路徑同步</td></tr>
+<tr><td><code>agent_harness/README.md</code></td><td>E1 列改寫 ＋ 新增「2026-09-17 更正」段（含三類的分辨與 E2/E3 的端點分析）</td></tr>
+<tr><td><code>agent_harness/PLAN_ENGINE_LOOP_2026-09-15.md</code></td><td>E1 列後插入 dated 更正列</td></tr>
+<tr><td><code>traces/lessons.jsonl</code></td><td>＋2 條（<code>eng-src-0020</code>、<code>eng-gate-0052</code>）與其 memory 檔；下游投影依規重生（149 檔）</td></tr>
+</table>
+<p>lesson 序號有一個小插曲：我先寫的 <code>eng-gate-0051</code> 被 <code>validate.py</code> 判為重複 ——
+<b>另一條線在同一小時內先佔了那個號</b>（「對比工具必須容忍有一側早停」），改成 <code>eng-gate-0052</code>。
+在併行 writer 的 repo 裡，序號要用<b>寫入前那一刻</b>掃到的最大值，而且寫完要立刻 validate。</p>
+
+</div>
+</body>
+</html>
