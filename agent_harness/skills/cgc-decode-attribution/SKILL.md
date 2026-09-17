@@ -172,6 +172,73 @@ async submit，三個成分都不可分。
 （`--profile` 吃的是 `CGC_SERVER_PROFILE`（如 `prod25`），**不是**矩陣臂名 `prod25-stream`。）
 閘門：`scripts/check/m123_oracle_gate.py`（M1/M2/M3 bit-identical + 最新 M2 oracle）。
 
+## 匿名節點（`node_NN`）：先零成本歸屬，需要時才命名（2026-09-18）
+
+`node_NN` 是 **ggml 計數器自動名**（⇒ 兩臂的圖不同 ⇒ **同名不同物、不可跨臂比對**）。
+41 層的 trunk 圖裡有 **620 個**，在節點加權表裡佔 **15–29%** —— 是最大的一塊「真運算但沒有子系統名」。
+2026-09-18 把它降到 **350**。方法是兩步，**順序重要**：先歸屬（免費），再決定要不要動原始碼。
+
+### 步驟 1（免費，不必重建）：用 dump 的**索引順序** ＋ 左右最近的有名節點
+
+`CGC_GRPH_DBG=1` 的 dump 逐字印
+`CGC-GRPH[<idx>] name=<name> op=<n>(<OP>) ne=[<ne0>,<ne1>]`，而 **`idx` 就是圖建構的順序**
+⇒ 對每個 `node_NN`，往左／往右各走到第一個**有名**的節點，那兩個名字就是它的上下文。
+實測（一個 4116 節點的圖）乾淨得可直接解讀：
+
+| op | 數 | 左鄰 → 右鄰 | 解讀 |
+|---|---|---|---|
+| `ADD` | **240**/270 | `ffn_moe_weighted` → `ffn_moe_out` | **MoE 專家輸出的歸約鏈** |
+| `GET_ROWS` | 90 | `cache_r_l*` → `cache_s_l*` | 池的 gather |
+| `MUL_MAT` | 130 | `alpha`/`beta`、`attn_norm` → `linear_attn_qkv_mixed` | 線性注意力投影 |
+| `MUL` | 60 | `norm` → `final_output` | 輸出縮放 |
+| `GATED_DELTA_NET`／`UNARY`／`FLASH_ATTN_EXT` | 30／30／10 | — | 線性注意力核心／池／10 個全注意力層 |
+
+**這一步只讀既有的 log**（`Backup/cgc_logs/*.log` 裡任一份帶 `CGC_GRPH_DBG` 的），不跑任何東西。
+⇒ **通則：在「猜名字的代價是一整輪跑」之前，先問「我能不能從既有的 dump 讀出來」。**
+
+⚠️ **兩個必須先知道的邊界**（`ggml-backend.cpp:2054-2055`）：
+
+- dump 的條件是 **`cgc_grph_dbg_n < 6`** ⇒ **只捕捉前 6 個 segment**，而它們會被載入期的
+  warmup／prefill 吃掉 ⇒ **印出來的 `ne` 是 prefill 形狀**（不是 decode）。
+  ⇒ **節點結構（名字、op、索引順序）可用；形狀不可用。** 要 decode 的形狀就得改那個常數
+  （改成「前 6 個 `ntok<=8` 的圖」），而那是動 `src/`。
+- 它 dump 的是**某一個 segment 的 cgraph**（`split->graph`）⇒ **一個 dump ＝ 一個 segment（一層）**，
+  不是整步。所以「一層的節點數」可以從單一 dump 直接算，但「整步」要把 40 個 segment 加起來。
+
+### 步驟 2（要動原始碼）：在 builder 裡命名
+
+只有當某個叢集**大到值得被單獨引用**時才做（本例：那條 240 核心的歸約鏈 ＝ **6.7% of `wait`**）。
+改動是**只呼叫 `cb()`／`ggml_format_name`**，不碰圖的結構、不碰數值。實例（行號會漂）：
+
+- `llama-graph.cpp` 的 MoE 合併迴圈 → `cb(moe_out, "ffn_moe_add", il)`。**寫在迴圈內**；
+  最後一項仍會被既有的 `cb(moe_out, "ffn_moe_out")` 改名 ⇒ 實際 **6/7 生效**（`240 = 40 層 × 6`）。
+- `models/delta-net-base.cpp` 的兩個 GDN 呼叫點 → `"gdn_state"`（K=1 路徑）／`"gdn_out_raw"`（K>1）。
+  （K=1 那條**在 2-token 的圖裡不走** ⇒ 它會是 0 次，不要以為命名失敗。）
+- ★ **詞彙表要同步加**（`ggml-backend.cpp` 的 `ns_fix[]`），否則新名字會被 longest-prefix
+  兜底桶吃掉（`ffn_moe_add` → `ffn_moe_`、`gdn_*` → `(other)`），**等於沒命名**。
+
+**命名之前必須驗的四條**（這是「我有沒有只是改了名字」的判準；四條都要查，不要用推論）：
+
+1. `cb()` ≡ `ggml_set_name`／`ggml_format_name`（`llama-context.cpp`，搜 `cb = [`）—— 只寫名字。
+2. 有沒有程式用「**名字為空**」當判準？搜 `name[0] ==`／`strlen(...->name)`；命中的要是**診斷路徑**。
+3. 該節點有沒有進 `add_fused_node`？它**只 push_back、不讀名字** ⇒ 安全（要查，不要假設）。
+4. 名字比對是 `strcmp` **精確**還是**前綴**？（前綴比對會被新名字意外命中。）
+
+**證明是 D5 的 M1 逐位元 9/9**（`--tag <你的>`）：M1 不過 ⇒ 你不只是改了名字。
+
+### ⚠️ 三個會讓人算出離譜數字的東西
+
+- **`ne` 只印前兩維**（`ne=[ne0,ne1]`），而 MoE 的 token 數在 **`ne[2]`** ⇒ 用 `ne0*ne1*4`
+  當「搬了幾 bytes」在 `n_tokens>1` 時**系統性低估**（decode 的 `ne[1]` 剛好等於 token 數，
+  所以只在批次形狀露出來）。**prefill 的 dump 一律不能這樣算。**
+- **`SET_ROWS`／`GET_ROWS` 的 `ne` 是整個張量，不是「這次搬的」**：`SET_ROWS ne=[512,8192]`
+  是整條 KV cache，而 decode 每步只寫**一行**。實測我一度算出「335 MB/步」，複核時自己推翻
+  （lesson `eng-mh-0063` 的形狀）。⇒ 要算搬運量，先問「**這個 op 是切片嗎**」。
+- **`name` 是匹配規則的產物，不是語意的產物**：`ffn_moe_` 是 longest-prefix 的**兜底桶**，
+  裝的是 `ffn_moe_swiglu`／`weights`／`weighted` ＋ **它自己的 8 個 VIEW**——**逐元素運算**，
+  與同名的專家 GEMV（`ffn_moe_gate`／`up`／`down`，op 是 `MUL_MAT_ID`）**是兩回事**。
+  照字面把「`ffn_moe_*` 那群」當成 MoE 矩陣乘，結論會**相反**。
+
 ## 判準（已校準，直接照用）
 
 - `gpu_union / wait ≥ 70%` → 傾向「執行受限」；`≤ 40%` → 傾向「序列化受限」。
@@ -532,6 +599,9 @@ off 的 96.0–96.1%）：`file_reads` **+62%**、`bytes` **+129%**、`hit rate`
 **先列舉再量測**：`CGC_TENSOR_CAPTURE='*'` 跑一次列出**全部節點名與 fuse 值**（本機 1021 個）。
 猜名字的代價是一整輪跑。**匿名節點是 `node_NNN`，不可跨臂比對**（名字來自 ggml 計數器，
 而兩臂的圖不同 ⇒ 同名不同物）。只有 builder 明確命名的節點能用。
+⇒ **但它們不是只能忍的**：上面的「匿名節點：先零成本歸屬，需要時才命名」給出兩步——先用
+`CGC-GRPH` 的**索引順序＋左右鄰居**免費歸屬（2026-09-18 把 trunk 的 620 個降到 350），
+再對值得引用的叢集做 builder 命名（**也要驗那四條安全性**，並以 **D5 M1 逐位元 9/9** 為證）。
 
 **★ 找出「一個新鉤子貢獻了哪些名字」的正法：兩次列舉的差集。** 掛鉤子**之前**先存一份 `'*'` 列舉
 （名字集合 ＋ 那份 log 的路徑），掛完再跑一次，取差集 ⇒ **新增的名字就正好是那個 dispatcher 的 dst**。
