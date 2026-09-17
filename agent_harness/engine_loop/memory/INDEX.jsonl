@@ -10,10 +10,10 @@
 {"row": "section", "path": ".workbuddy/memory/MEMORY_PERF.md", "level": 2, "title": "decode 速度：現在到底多少（09-16 20:36 盤點）", "line_start": 68, "line_end": 98, "lines": 30, "body_bytes": 2650, "subs": []}
 {"row": "section", "path": ".workbuddy/memory/MEMORY_PERF.md", "level": 2, "title": "prefill 250 的條件式交付", "line_start": 99, "line_end": 129, "lines": 30, "body_bytes": 2870, "subs": []}
 {"row": "section", "path": ".workbuddy/memory/MEMORY_PERF.md", "level": 2, "title": "指紋／戳記", "line_start": 130, "line_end": 142, "lines": 12, "body_bytes": 1061, "subs": []}
-{"row": "file", "path": ".workbuddy/memory/MEMORY_FACTS.md", "abs": "/Users/alexchuang/Documents/flashkv-devserver/.workbuddy/memory/MEMORY_FACTS.md", "bytes": 7153, "sha256": "d194e1d6d720a690", "lines": 73, "mtime": "2026-09-17T03:55:49"}
-{"row": "section", "path": ".workbuddy/memory/MEMORY_FACTS.md", "level": 2, "title": "長期事實（踩過就不該再踩）", "line_start": 6, "line_end": 34, "lines": 28, "body_bytes": 2849, "subs": []}
-{"row": "section", "path": ".workbuddy/memory/MEMORY_FACTS.md", "level": 2, "title": "agent_harness（另一條線；本線只讀）", "line_start": 35, "line_end": 56, "lines": 21, "body_bytes": 2091, "subs": []}
-{"row": "section", "path": ".workbuddy/memory/MEMORY_FACTS.md", "level": 2, "title": "記憶機制（09-17 拆分後）", "line_start": 57, "line_end": 73, "lines": 16, "body_bytes": 1780, "subs": []}
+{"row": "file", "path": ".workbuddy/memory/MEMORY_FACTS.md", "abs": "/Users/alexchuang/Documents/flashkv-devserver/.workbuddy/memory/MEMORY_FACTS.md", "bytes": 7530, "sha256": "800d94073e386a6d", "lines": 76, "mtime": "2026-09-17T09:28:43"}
+{"row": "section", "path": ".workbuddy/memory/MEMORY_FACTS.md", "level": 2, "title": "長期事實（踩過就不該再踩）", "line_start": 6, "line_end": 37, "lines": 31, "body_bytes": 3226, "subs": []}
+{"row": "section", "path": ".workbuddy/memory/MEMORY_FACTS.md", "level": 2, "title": "agent_harness（另一條線；本線只讀）", "line_start": 38, "line_end": 59, "lines": 21, "body_bytes": 2091, "subs": []}
+{"row": "section", "path": ".workbuddy/memory/MEMORY_FACTS.md", "level": 2, "title": "記憶機制（09-17 拆分後）", "line_start": 60, "line_end": 76, "lines": 16, "body_bytes": 1780, "subs": []}
 {"row": "file", "path": ".workbuddy/memory/MEMORY.md", "abs": "/Users/alexchuang/Documents/flashkv-devserver/.workbuddy/memory/MEMORY.md", "bytes": 6244, "sha256": "98563775f24660cf", "lines": 85, "mtime": "2026-09-17T07:05:35"}
 {"row": "section", "path": ".workbuddy/memory/MEMORY.md", "level": 2, "title": "這個目錄怎麼讀（09-17 拆分）", "line_start": 7, "line_end": 23, "lines": 16, "body_bytes": 1035, "subs": []}
 {"row": "section", "path": ".workbuddy/memory/MEMORY.md", "level": 2, "title": "現在的一句話狀態（**09-17 03:0x 快照；主題檔為權威**）", "line_start": 24, "line_end": 36, "lines": 12, "body_bytes": 1148, "subs": []}
