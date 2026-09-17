@@ -53,13 +53,20 @@ notifyutil -g com.apple.system.thermalpressurelevel     # 必須是 0
 HOT 得 **167.41–200.58**。⇒ **「發射時讀到 0」與「箱子是冷的」是兩件事**，
 而一個 250 級數字要能被引用，需要的是後者。`0` 是閘門開，不是冷。
 
-**跑 A/B 時更要注意兩件事**：
+**跑 A/B 時更要注意三件事**：
 - **靜置時間不是你可以指定的值。** 它取決於前一臂留下的熱（實測同一晚兩個臂分別只等到 120 s 與 195 s）
   ⇒ 「每臂等讀數回 0」**不會**讓兩臂配對在相同的靜止條件上。可引用的 A/B 要固定靜置長度，或直接等 COLD。
   反面教材：2026-09-16 的 prefill A/B，四個臂裡**最慢的兩個正是只靜置 40 s 的兩個**，
   而被測變數（SPAC）的兩輪**符號相反** ⇒ 量到的是「安靜多久」。這種資料要**作廢**，不要解釋它。
 - **失敗要 fail closed，不要「跑了然後貼標籤」。** 等不到就跳過該臂，並在總結裡留一個洞——
   一個熱態數字加上「熱態」標籤，比沒有數字更容易被下一個人誤引。
+- **★ 一個 ABAB 序列的第一個臂不能與後面的臂交換（2026-09-17 實測）。** 同一個 `CGC_SPAC=0`
+  配置在序列**位置 1** 量到 req1 ＝ **215.30**、在**位置 3** 量到 **287.80**（差 **72.50**），而兩臂的
+  **池讀 bytes 完全相同**（2 784 305 152、`us/job` 只差 3%）⇒ 這個溢價**不在池的 IO 路徑**，是「第一次
+  啟動」本身的代價（page cache／Metal pipeline 暖機）。後果：`off,on,off,on` 的 **pair 1 會被 pos1
+  溢價污染成看起來像處置效果**（實測配對差 req1 ＝ +68.06，而 pair 2 ＝ −2.98，**符號相反**）。
+  ⇒ **要 A/B，先跑一個丟棄臂**，讓每個回報臂都落在位置 ≥2；否則 req1 一律「未歸因」。
+  這也是「安靜多久」被誤讀成「SPAC 有代價」的機制。
 
 **條件讀的是「發射前那一刻」，不是「全程」。** 15:18:46 那臂發射時 0，中途升 1→2，
 三個請求仍全部 ≥250 ⇒ 中途上升不撤回該臂。機制（governor 反應落後）是**假設**，不是結論。
@@ -93,6 +100,14 @@ HOT 得 **167.41–200.58**。⇒ **「發射時讀到 0」與「箱子是冷的
   **不可**說「250 隨時可重現」。
 - **powermetrics 佐證（block 級）**：Nominal 2/2 → ≥250（276.25、300.43）；
   非 Nominal 4/4 → <250（227.27、151.28、182.39、145.79）。
+- **★ `prefill250 + CGC_SPAC=1` 的 prefill 代價：不成立（2026-09-17 07:0x，同 build COLD 交錯
+  off/on/off/on，四臂全 `COLD-STATE`）**：req1 off {215.30, 287.80} median 251.55 vs on {283.36, 284.82}
+  median 284.09；req2 268.51 vs 285.95；req3 291.03 vs 295.11。**唯一的大落差是 pos1 溢價**
+  （見 §1 第三條），req2／req3 的方向甚至與「代價」**相反**（on 快 1.4–6.5%）——但反向增益
+  也**未取得交付地位**（n=2，req3 的 +4.08 落在 off 自身 3.54 範圍內）。池歸因：>99.8% 全 compulsory，
+  off 永遠 `2604/0`、on 永遠 `2502/5`（**位置不變 ⇒ 可當 flag 真的套用了的第二個證據**），
+  SPAC=on 少讀 3.9% bytes 但**不買也不付** prefill。**要裁決「反向增益」的下一設計＝丟棄臂開頭 ＋
+  鏡射後半（`off,on,off | on,off,on`）**，資產在 `Backup/cgc_logs/spac_cold_ab/RESULT.md`。
 
 ---
 
@@ -148,6 +163,26 @@ bash Backup/run_lib_ab.sh        # 檔案互換 + 一臂暖機丟棄；退出時
    `ps` 在本 sandbox 被擋，列行程用 `pgrep -fl`。
 6. **`Backup/` 與 `.workbuddy/` 都在 `.gitignore` 內**（`.gitignore:396`、`:41`）。
    要交付就得 `git add -f` 或搬進 `scripts/`，否則修正只存在於本機。
+7. **★ 你自己的指令文字會讓整臂被記憶體閘門擋掉（2026-09-17 實測，毀掉一個 arm）。**
+   本 harness 把**每一條指令**跑成 `/bin/zsh -c … eval '<指令全文>'` ⇒ **指令全文在行程 argv 裡**。
+   而 `run_req2_retest.sh:88` 的 `alive()` 與 `run_server.sh:534` 的 `cgc_existing_llama_server_count()`
+   用的是**裸 `pgrep -f "build/bin/llama-server"`**（`run_server.sh:660-663` 早已記載「純 pattern 會打到
+   命令列裡剛好出現 llama 路徑的上層 wrapper」並在 **preflight** 修成 ps 驗證版，但**沒改這兩處**）。
+   實例：我一邊等臂、一邊輪詢 `pgrep -f 'build/bin/llama-server'`，那句指令本身就被閘門算成
+   `other_llama_servers=1`。
+   **症狀（認這三行就不會誤判成 SPAC/程式的問題）**：報告 `RESULT: ready=no last_request=0`、`[argv]` **空白**、
+   `driver.log` 出現 `error: startup blocked by memory guard -> full-mtp: other_llama_servers=1>0`，
+   而**同一支腳本**的預檢卻印 `[preflight] 無殘留 llama 行程`（ps 驗證版讀 0 ⇒ 兩個計數器互相矛盾就是這個病）。
+   它還會讓 `alive()` 報「a llama-server is ALREADY resident」並白等 180 s。
+   **為什麼 in-band 讀不到**：`pgrep` 只排除自己與**祖先** ⇒ 你的輪詢在自己的 shell 裡印 `idle`，
+   對**別的**行程（那個跑閘門的腳本）卻是在廣播自己。**儀器對自己安慰、對別人廣播。**
+   **紀律**：COLD 窗口期間，自己的指令文字**不得出現 `build/bin/llama-server`**。要探測行程就用
+   bracket 技巧（`pgrep -f 'build/bin/llama[-]server'`）——它自己的文字不匹配該 regex。
+   修法在 `run_server.sh:660` 已經寫好，就是叫那兩處改用 `cgc_preflight_pids`。
+8. **停掉一個正在跑的臂，要驗證它真的停了，而且 kill 的 pattern 別打到自己的 shell。**
+   `pkill -f 'run_spac_cold_ab.sh'` 的文字本身會被那個 pattern 匹配（第 7 條的同一個機制）⇒
+   用 `run_spac_cold_ab[.]sh`。停完 `pgrep -fl` 逐支確認（實測留了一支 MARKER 載體沒死，
+   它會在下一臂發射時變成 `other_llama_servers=1`）。
 
 ---
 
@@ -159,8 +194,12 @@ bash Backup/run_lib_ab.sh        # 檔案互換 + 一臂暖機丟棄；退出時
   **§11.15（可量測的條件）**。
 - 儀器：`Backup/thermal_pressure_probe.sh`（2 Hz 序列）、`Backup/run_thermal_gate.sh`（閘門）、
   `Backup/run_lib_ab.sh`（ABBA 檔案互換）、`Backup/run_req2_retest.sh`（in-band 讀數）、
+  `Backup/run_spac_cold_ab.sh`（COLD 交錯 A/B，off/on/off/on；**它的 pre-flight 只驗 env dump，
+  不驗行程** ⇒ 擋臂的仍是 `run_server.sh` 裡那道裸 pattern 的閘門）、
   `scripts/check/prefill_certifiability.py`（`--idle-before` **只在第一次啟動前生效**）、
   `scripts/check/powermetrics_gpu_freq{,_parse}.py`。
+- SPAC COLD 交錯 A/B 的結果與儀器事故：`Backup/cgc_logs/spac_cold_ab/RESULT.md`、
+  `Backup/cgc_logs/spac_cold_ab/RUN_NOTE.md`。
 - 慣例：`agent_harness/CONVENTIONS.md` **B29**（條件必須可量測）、**B30**（事件時間戳）、
   **B31**（平行編輯 race）、**B32**（「沒有儀器」是工具的推論）。
 - 同 repo 的 decode 側：skill `cgc-decode-attribution`。

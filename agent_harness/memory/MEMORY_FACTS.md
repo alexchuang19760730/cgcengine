@@ -29,6 +29,17 @@
 - **`CGC_METAL_LIB` 不是載入覆蓋**（只做 `_Pool` 閘門偵測）⇒ metal 庫 A/B 只能**互換檔案**。
 - **同一檔案的多個 Edit 不能並行送**（後寫覆蓋先寫，兩筆都回 success）⇒ 序列化或合併成一筆。
 - `Backup/` 在 `.gitignore:396`（要 `git add -f`）；`check 8` 只看已 staged 檔。
+  **★ 精確措辭（09-17 實測）**：`Backup/` 底下**已被追蹤**的檔案在 `git add`（不帶 `-f`）時**一樣會被拒**
+  ——錯誤是 `The following paths are ignored ...: Backup`，而且**它會讓整條 `git add` 一起失敗**（其他檔案
+  也不會進 staged）。所以 stage 要分兩段：`git add -f <Backup/...>` 先，其餘再一般 add。
+- **★ 改了 `src/` 就必須先建置才能 commit**：`check_build_tracked.sh` 的 check 8 要求
+  **產物比 staged 原始碼新** ⇒ 建置前 commit 一定紅。而 `run_server.sh`／`decode_sweep.py`／
+  `Backup/run_spac_cold_ab.sh` **都不含 cmake/--build** ⇒ 排程量測用的是**舊 binary**，
+  不會替你（也不會害你）重建。
+- **★ 不要與排程量測搶機器**：D5 的 `m123_oracle_gate.py` 會**自己起 server**（要 8080 空 ＋ 獨占 GPU），
+  而 prefill 的 COLD 交錯 A/B 需要「發射時 thermal=0」。⇒ 機器被排程佔用的時段**不 commit**（連
+  「純 doc 的 commit」也不該，因為本 repo 把「省下 D5 再寫一段解釋」判為錯的做法）。
+  未提交的改動先備份：`Backup/r12_wip/`（`tracked_changes.patch`，`git apply --check --reverse` 可驗）。
 
 ## agent_harness（另一條線；本線只讀）
 

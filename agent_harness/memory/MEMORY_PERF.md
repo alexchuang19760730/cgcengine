@@ -51,6 +51,24 @@
   （MoE gather 融合）輸出損壞且更慢；`CGC_SUBMIT_AHEAD`（序列化）天花板 ×1.711 但輸出損壞。
   離開條件「decode（MTP off）≥ 15 t/s」未達。
 - **M4 MTP 拒絕取樣 ＋ verify 真批次：未開始**（accept 19.9%）。
+- **★ D3（`REMAP_ROUNDTRIP_REMOVAL_PLAN` 的主設計：把 expert→slot 查表搬到 GPU、消除段邊界）
+  不是里程碑，是 S1→S2→S3 階梯；現況（09-17 03:3x 查證）：沒跑通。**
+  **S1**（`CGC_SLOT_TABLE_GPU=1`，leaf 改由 GPU 算、**段數不變**）**已實作且會跑，但不過
+  bit-identical**（錨 `2d4e5099` vs S1 `f0acf7d2`）；分歧＝**第一個被 GPU table 服務的層的 MoE gather**
+  （層號由 `CGC_S1_MIN_IL` 決定）。**S2（段邊界去等待）／S3（收段 `n_segs 40→~1`，＝那 ~44%）
+  從未開始**，且 **S3 的前提 B 已倒**（47.5% 的步會動被消費的映射 ⇒ 發布不冗餘）。
+  同階梯的 D0 只是量具（輸出損壞）、D1／D2／D2' 判死。⇒ **D3 無對外數字，且仍依賴卡住的 M1**。
+  S1 的細節全部在 `MEMORY_S1.md`。
+- **★ S1 的「池內容是不是載體」＝ 09-17 09:1x **已用裝置側讀數結清：不是**。**
+  兩次 A/B（探針 4096 B 與整列 `nb02`）都得到 `SAME=90 DIFF=15 NOT-READ=0`，**分歧處一律是 ids 不同**；
+  兩臂選到同一組 slot 的**每一個** graph（含第一個 T=1 步 g30）上，那些列的**整列位元組逐位元組相同**。
+  ⇒ 「同 ids、同池佈局、不同位元組」**被否證**，下一步要查的是**層 0 的 delta-net 遞迴路徑**（g30 就 DIFF）。
+  儀器與全文：`docs/POOL_ROW_DIGEST_20260917_0355.html`。
+  **★ 09-17 10:2x 修正（重要、會改「下一步」）**：那個「ids 相同」只涵蓋**每個 chunk 的 token 0**
+  （`rows=8`；而 T=2 的運算元有 16 個、T=8 有 64 個）。`POOLROWS=12` 一跑就顯示**真正的第一分歧在 g1**：
+  S1 臂對「同一 chunk 的第 2 個 token」給出**錯誤的 slot**（含重複 slot 0），而 token 0 的 ids、
+  router logits、routing weights、MoE 輸入**全部逐位元組相同** ⇒ **是 mapping 缺陷，不是 residency**。
+  細節與下一步在 `MEMORY_S1.md`。
 - 文件：`docs/ROADMAP_PREFILL250_DECODE25_2026-09-13.md`（M0–M6 定義）；
   **`docs/roadmap-2026-09-14/ROADMAP_PREFILL250_DECODE25_2026-09-14.html`**（M1 的實作與量測結果、
   「M1 還沒完成的離開條件」、「M2 的狀態」，**09-14 之後未更新**）；
@@ -107,10 +125,18 @@ pool 8 GiB、ctx 8192）**必要非充分**；還要散熱前提 ＋ 量測紀�
   （零 llama 行程時 thermal=2、GPU util 20%、Electron ~103%）⇒ agent UI 造成。
   `ARMS=2 bash Backup/run_thermal_gate.sh`（不成立 exit 3，fail closed）；
   `docs/PREFILL250_CONDITIONAL_DELIVERY_20260916.html`。
-- **未結清**（09-17 03:0x）：`prefill250 + CGC_SPAC=1` 的 COLD 單臂量到 req1 ＝ **244.96**（未達 250），
-  且**無法與更早的 254.29/282.38/265.27 比**（不同 build、機器狀態不同，更早那次連 COLD/HOT 標籤都沒有）
-  ⇒ 唯一能裁決的是**同 build 的 COLD 交錯 A/B**（`Backup/run_spac_cold_ab.sh`，off/on/off/on，每臂前
-  1800 s 靜置）。
+- **已結清（09-17 07:0x）：`prefill250 + CGC_SPAC=1` 的 prefill 代價不成立。** 同 build（server
+  `054fb22f`／`libggml-metal 2b87af2e`）COLD 交錯 off/on/off/on，四臂全 `COLD-STATE`／`survived=yes`：
+  req1 off {215.30, 287.80} median **251.55** vs on {283.36, 284.82} median **284.09**；req2 268.51 vs
+  285.95；req3 291.03 vs 295.11。**唯一的大落差（req1 配對 +68.06／−2.98 符號相反）是序列位置造成的**：
+  同一個 off 配置在位置 1 與 3 差 **72.50**，而兩臂的池讀 bytes **完全相同**（2 784 305 152，`us/job` 只差 3%）
+  ⇒ 第一次啟動的代價在池之外（page cache／Metal 暖機）＝機器的狀態，不是 flag。池：off 永遠 `2604/0`
+  （100% compulsory）、on 永遠 `2502/5`；SPAC=on 少讀 3.9% bytes，**不買也不付** prefill。
+  **20:54 那臂不可搬用**：它載入的 `libllama 233a172`／`libggml-metal ec3ece90` 與今天不同 ⇒ 不同 build，
+  且它的 req1 244.96 比今天的 off@pos1 215.30 **還快**。
+  產物 `Backup/cgc_logs/spac_cold_ab/RESULT.md`。**⚠️ 這條數字只在同 build 內可比；且 ABAB 的
+  第一個臂不可與後面的臂交換**（pos1 溢價 72.50）。下一個能裁決「反向增益」的設計＝丟棄臂開頭 ＋
+  鏡射後半（`off,on,off | on,off,on`）。
 
 ## 指紋／戳記
 

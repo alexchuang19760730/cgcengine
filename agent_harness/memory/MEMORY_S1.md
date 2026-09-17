@@ -68,7 +68,179 @@
   row 做摘要（在 capture 內核裡）。順帶：同一個 ids 運算元兩臂**填充時序不同**（數值無害）。
   比較器陷阱：指紋要**按 row id 獨立**比，不能因 ids 清單不同就短路（否則「0 差異」是空洞的）。
 
+## ★ 09-17 03:45–09:20（§EN-18／§EN-19）：裝置側 pool-row 摘要（r12）——**跑完了，盒子空了**
+
+**狀態：已建置（09:06）、已跑（09:07 煙霧、09:11／09:14 A/B、同臂控制兩次）**。
+交付與判讀全文：**`docs/POOL_ROW_DIGEST_20260917_0355.html`**（§6.1–6.3 是執行結果）。
+
+### ★ 結論：**「同 ids、同池佈局、gather 讀到不同位元組」被否證**
+
+| graph | 階段 | ids | 整列位元組（`probe = nb02`） |
+|---|---|---|---|
+| g1–g30 | prefill T=2/8/6/4 ＋ **第一個 T=1**（g30） | **相同** | **相同** |
+| g31–g35 | T=1 後續步 | **不同** | （跟著不同） |
+
+- 兩次 A/B（探針 **4096 B** 與 **整列**：gate/up 335872 B、down 450560 B）判決逐位元組相同：
+  `SAME=90 DIFF=15 NOT-READ=0`，**FIRST DIFF = g31 `ffn_moe_down-1.pool`，而且是 ids 不同**。
+- ⇒ **residency 不是載體**。而且**第一個 T=1 步（g30）**就已經 `attn_norm-0.dst` DIFF（層 0 的活化鏈），
+  而**同一時刻 layer 1 的 ids 仍相同** ⇒ 分歧在層 0 就被引入、**路由是後果**（與 §EN-15 一致，但這次是
+  **裝置側、消費時刻**的讀數，不能再被「儀器假象」解釋掉）。
+~~**下一步離開 gather**：查層 0 的 delta-net 路徑與它帶進下一步的遞迴狀態（conv/ssm state、KV cache）。~~
+**→ 作廢：真正的第一分歧在 g1 的 mapping，不在層 0（見下）。**
+
+### ★★ 10:2x 修正（上一小節的「下一步」作廢；結論不變但**適用範圍變窄**）
+
+使用者要求「先解釋 r12 留下的矛盾」。查證結果：
+
+- **判讀寬度**：`rows=8` 在 T=2 的 ids 運算元（16 個）上只涵蓋 **token 0**（ggml ne0-fastest）⇒
+  先前「ids 相同、整列相同」的判決，對**每一個多 token graph 都只是 token 0 的判決**。
+  已落 lesson `eng-diag-0030`。
+- **`POOLROWS=12` 一跑就露出來**：**真正的第一個分歧在 g1（第二個 T=2 chunk）**，而且不在池、不在層 0：
+  **S1 臂的 ids 對「同一 chunk 的第 2 個 token」是錯的** ——
+  `A(anchor)=[8,0,50,4]` vs `B(S1)=[0,103,0,74]`（B 出現兩次 slot 0、且兩次的列內容相同；g2 同形狀），
+  而 **token 0 的 8 個 id 兩臂完全相同**、router logits／routing weights／MoE 輸入**整張量逐位元組相同**。
+  ⇒ `ffn_moe_out-1` 從 g1 起整張量 DIFF，是**因為讀了不同的專家**，不是因為那些槽的位元組不同。
+- ⇒ **修正後的述句**：S1 的缺陷位置 ＝ **GPU table 在「同一 chunk 的第 2 個 token 之後」給出錯誤的
+  slot**（含重複的 slot 0／ZERO-mapping）。這是 **mapping 缺陷**，與 r12 的「ids 不同 ⇒ mapping」
+  分支一致 —— 但**範圍比以前說的大**，而且它才是這條線的第一個真分歧。
+- **仍未解釋**：g30（第一個 T=1 步）層 0 的 `attn_norm-0` 整張量 DIFF，而它的輸入應該是純 embedding。
+  候選：`conv_state_update-0`／`conv_state_last-0` 的寫回（**尚未捕捉**；`ggml_metal_op_cpy` 的 hook
+  還在 `ggml-metal-ops.cpp:2248`，把名字加回 NODES 即可）。
+- **零改碼的下一步（第二件）**：把 `ffn_moe_gate-1,ffn_moe_up-1,ffn_moe_down-1` 加進 **DST** 的 NODES
+  —— 它們的 dispatcher **有** `cgc_dst_capture` 呼叫，但從來不在清單裡（所以分析器一直印 ABSENT）。
+  加了就能分辨「gather/matmul 的專家輸出」與「combine 之後的輸出」哪一個先壞。
+- 順帶：`rows=12` 那一輪的 DST 列數 A=1475 vs B=1476（唯一差是 g19 的 `gate-1.dst` 只在 B）⇒
+  融合順序在兩臂間不完全相同，**比較時要留意**（分析器的「列數相同才配對可靠」判準）。
+- **同臂控制兩次都過**（4096 B：99/99 SAME；整列：99/99 SAME）⇒ 讀數可重現。
+- 順手歸因掉一個既有症狀：`ggml_metal_device_free` 的 `GGML_ASSERT([rsets->data count] == 0)`
+  在**只開 ids 側、不開 POOL** 的臂上也照樣出現 ⇒ **與 r12 無關**，是捕獲 instrument 的既有症狀。
+
+### 儀器本身（實作要點；原「未建置」狀態已作廢）
+
+- 新內核 `kernel_cgc_pool_row`（`ggml-metal.metal`）＝**第三條 stream**（`path=POOL`）：在 mul_mat_id 的
+  **消費者跑完之後、同一個 encoder** 內，從**裝置**讀 ids 運算元與它選中的 pool row，逐 row 寫 5 字
+  `(id, sum, xor, wsum, nbytes)`；bound 在內核裡檢查（id 越界 ⇒ 不 deref、`nbytes=0`）。
+- env：`CGC_POOL_CAPTURE=<精確節點名,或 `*`>`、`CGC_POOL_CAPTURE_ROWS`（預設 8、上限 12）、
+  `CGC_POOL_CAPTURE_BYTES`（預設 4096＝與主機側探針同寬）。**三個都要在 `run_server.sh` 白名單**（已加）。
+- 跑法：`POOL=1 POOLNODES='ffn_moe_gate-1,ffn_moe_up-1,ffn_moe_down-1' bash Backup/run_ids_dst_capture.sh`
+  ⇒ 判讀 `python3 Backup/compare_pool_row.py <A> <B>`（`ffn_moe_up-1` 是推測名，ABSENT 會顯示）。
+- **判讀分支（決策規則，這才是這支儀器的產物）**：ids 同／bytes 同 ⇒ §9.18.4 最後那句也倒，分歧在
+  gather **之後**（allocator 別名／view 重指／舊 ids buffer）；ids 同／bytes 異 ⇒ **residency 是載體**；
+  ids 異 ⇒ mapping。**三個都不是修復，只決定下一步查哪裡。**
+- 護欄：`compare_pool_row.py` 把「全部 `nbytes=0`」判 **NOT-READ**（哨兵等於哨兵，09-17 00:30 踩過）；
+  `analyze_capture_nodes.py` **顯式排除** `path=POOL` 並在 `main()` 印出排除數（不靜默）。
+  **同臂控制仍必跑**（那個 copy 讀的是別的內核可能還在寫的 buffer）。
+- 靜態驗證已做：`py_compile`×2、`bash -n`×2、兩個 TU `clang -fsyntax-only`（**0 個新警告**）、
+  比較器 6 個合成案例（SAME／bytes-DIFF／ids-DIFF／雙邊全哨兵→NOT-READ／NO-OVERLAP／parser drift）。
+- **未驗（已被實跑取代）**：~~`.metal` 無法離線編譯~~ —— 本機確實沒有 `xcrun metal`（只有
+  CommandLineTools），而 `GGML_METAL_EMBED_LIBRARY` 是把 shader **原始碼**嵌進 binary、**執行期**編譯，
+  所以內核語法只能靠實跑驗證；**09:07 第一次跑就通過**（99 列 POOL、無 library 編譯失敗）。
+  **但這條限制仍在**：未來任何 `.metal` 改動都只能靠實跑，**第一次跑的臂要用小 NODES + 短 n_predict**。
+
+## ★★★ 10:3x 第三次修正（把「第一分歧」釘到節點層；並否證我自己上一輪的一個措辭）
+
+**做法**：把 `ffn_moe_gate-1,ffn_moe_up-1,ffn_moe_down-1` 加進 **DST** 的 NODES（它們的 dispatcher 有
+`cgc_dst_capture`，只是名字從來不在清單裡 ⇒ 分析器一直印 ABSENT），並用 **churn 臂**
+（`p25-{gputime,slotgpu}-churn`、兩臂都帶 `CGC_S1_TABLE_CHURN=1`）跑同一組 A/B
+（`POOLROWS=12`、`POOLBYTES=1048576`、`HASH=1`、`--n-predict 12`）。
+
+**結果（g1、整張量摘要）——第一個分歧節點是「專家 matmul 的輸出」，不是 combine：**
+
+| 節點（layer 1） | g1 |
+|---|---|
+| `attn_post_norm-1`（MoE 輸入）、`ffn_moe_logits_raw-1`（router logits）、`ffn_moe_weights_norm-1`（16 個權重） | **SAME** |
+| **`ffn_moe_gate-1`／`ffn_moe_up-1`／`ffn_moe_down-1`（`mul_mat_id` 的輸出）** | **DIFF**（三者皆是） |
+| `ffn_moe_out-1`（combine）／`l_out-1` | DIFF（下游） |
+
+⇒ **「combine 在輸入相同時自己壞掉」被排除**；分歧在 **gather/matmul 的輸出**，而它的兩個輸入是
+**ids** 與**池的列**。
+
+**★ 但這次也否證我上一輪的措辭**：S1 臂的 ids 與錨臂不同**不必然是缺陷** ——
+`llama-context.cpp:6065-6067` 的註解明寫「兩臂可以把同一批專家放在不同 slot，且完全沒有後果」。
+這次的證據指向「不只是重排」：`SLOT-SEL wrong=0 / unowned=0`（560 行，**含 T=2 的兩個 token**）
+⇒ table↔owner **帳**一致；但**同一批列在裝置側讀到的位元組不同**，而 **slot 0 的內容兩臂相同**
+（`sum=41543766`）⇒ S1 臂在 token 1 的兩列上**讀了 slot 0 的內容**（＝錨臂在它自己那一列讀到的同一份
+位元組），即使那兩個位置錨臂讀的是 slot 8／50。
+⇒ **帳一致、內容不一致** ⇒ **owner 帳不是內容的證據**（這是先前「反查在池自洽時是恆等式」的直接後果）。
+
+**★ 一個既有的、響亮的線索（一直都印在 log 裡，我先前沒看）**：
+`CGC-SLOT-TABLE-CLAMP: site=pool verify il=1 clamped=113/256  <-- TABLE/LEAF EQUIVALENCE BROKEN:
+gather reads slot 0 (another expert's weights) while the host leaf writes -1 (loud)`
+（16 行是**列印上限** `cgc_clamp_lines++ < 16`，不是「只有 16 層」）。成因寫在
+`llama-context.cpp:4291-4307`（09-15）：**兩個寫入點用不同對映** —— fast path 的 leaf 對非常駐專家寫
+`-1`（響），而 **table 寫入把非常駐專家 clamp 成 0**（zero slot 被綁在 MTP fast path 上，S1 是 MTP=0）
+⇒ `mul_mat_id` 讀到**別的專家**的權重。**113/256 正是非常駐專家的比例**（256−143 slots）。
+⇒ **這就是「同一路由、內容不同」的候選來源**，而且它是**靜默**的（0 是合法索引）。
+
+**★ 另一個被「列印上限」藏起來的數字**：`SEL-DRIFT` 的 graph 級列印**只到 graph=9**（10 行，全部
+`entries=0`）；同一輪的**全程計數**是 `publishes=1599 clamped_selected=0 clamped_table=180687
+changed_entries=572 **consumed_changed=192** consumed_unchanged_publishes=198`
+⇒ **consumed 子集在整輪裡變動了 192 次**（必在 g9 之後，極可能是 decode 段）。
+⇒ 先前「`SEL-DRIFT=0` ⇒ 時序被否證」是**在一個被截斷的窗口上**下的結論（lesson `eng-mh-0045`）。
+
+## ★★ 10:5x §9.18.7：owner 欄（`own=`）＝把「同 id」變成可判讀的那一半【已寫好，未建置、未跑】
+
+**動機**：`SLOT-SEL wrong=0` 只講**帳**、`clamped_selected=0` 只數**當時非常駐**、POOL 的位元組摘要
+只講**內容** —— 三者都無法回答「這兩個 slot 索引在兩臂是不是指同一個專家」。要的是**同一列裡同時有
+索引、owner 與位元組**。
+
+**實作（跨 dylib 的 pull callback，不是新內核）**
+- `ggml-metal-ops.h`：`typedef int32_t (*ggml_metal_cgc_owner_fn)(int32_t il, int32_t cap, int32_t * out)`
+  ＋ `ggml_metal_cgc_set_owner_fn()`。回傳 `n`（寫了幾格）或 `-1`（這一層我不認得）。
+- `ggml-metal.cpp:1049`：把 setter 掛上 `ggml_backend_reg_get_proc_address("ggml_metal_cgc_set_owner_fn")`
+  —— 與既有的 `ggml_metal_get_cgc_{done,bufs,gpu_take}` 同一個機制。
+- `llama-context.cpp`（`graph_compute` 最前面，**每次 ubatch、encode 之前**，第一次成功才停止重試）：
+  註冊 `cgc_owner_lookup`，讀 `cache->slot_owner[il]`（`-1`＝該 slot 無主，原樣傳出）。
+  **不放在 `expert_cache_on_topk`**：那是 eval callback，在 compute 期間才 fire，而一段 graph 的
+  **第一個 segment 在任何節點被 eval 之前就編碼完了** ⇒ 頭幾列會 `own=none` 而後面有值，比兩邊都沒有更糟。
+- **抽樣時刻 ＝ 編碼當下**（`cgc_pool_capture`），不是 dump 當下。dump 在**整趟之後**，會把「晚到的 fill」
+  算進來，而「fill 是不是晚於消費者」**正是這支儀器要測的假設** ⇒ 不能用答案去標註問題。
+  每個 capture 存進**自己的** arena 格（bump，不重用）⇒ 同層的 gate/up/down 各自一份，**層內漂移看得見**。
+- 三態：`own=none`（沒標註，**不是**「沒有專家」）／`own=-1`（有標註但該槽無主 ⇒ 消費者讀了不屬於任何
+  專家的權重）／`own=<e>`。印在行尾（`from=` 之後）⇒ 既有 regex 全部不受影響。
+- 記憶體：arena 上限 `CGC_POOL_OWN_ARENA_MAX = 1<<20` words（4 MiB），只在 callback 存在時才配置，
+  用盡會印一次 WARN。
+- **沒有新 env**（只認既有的 `CGC_POOL_CAPTURE`）⇒ `run_server.sh` 白名單不用動。
+
+**比較器（`Backup/compare_pool_row.py`）改成分類器**：
+`SAME`／**`CONTENT`**（同 id 同 owner 不同位元組，或同 owner 不同 id 不同位元組 ← ★要找的）／
+`SLOT-REUSED`（同 id 不同 owner ⇒「同 id」是巧合）／`RELAYOUT`（不同 id 同 owner 同 bytes ＝良性）／
+`ROUTING`（不同專家）／`UNCLASSIFIED-*`（沒有 owner）／`UNREAD`／`ABSENT-ROW`。
+護欄新增：**`PART-READ`**（一列裡只有部分 row 沒讀到 ⇒ 舊版會被算成 SAME，因為哨兵等於哨兵）、
+**`OWNER CHANNEL ABSENT`**（全場沒有 `own=` ⇒ 明說「no CONTENT rows」**不等於**內容軸被清掉）。
+
+**★ 這一輪的教訓（列進 lesson）**：`classify` 的**第一個判準是 `nbytes == 0`**，不是 ids —— 否則
+「單邊整列沒讀到」會走進 SAME。以及 `FIRST DIFF` 的結尾句以前由「ids 同不同」決定，加了 owner 之後
+那句話會**和 CONTENT 標題互相矛盾**（ids 不同也可以是 CONTENT、ids 同也可以是 SLOT-REUSED）⇒ 句子改成
+由**cause** 驅動。
+
+**驗證到哪（誠實邊界）**：`clang -fsyntax-only`（三個 TU、真實旗標、**新行 0 警告**）；把兩個 TU 編到
+`/tmp/*.o` 後 `nm` 確認 `_ggml_metal_cgc_set_owner_fn` 是 ops.o 的 **T**、metal.o 的 **U**（純 C 符號、
+無 mangling ⇒ dylib 連結會過）；比較器 **11 個合成案例**（七種 cause ＋ 單邊 owner ＋ 整列沒讀
+＋ 無 `own=` 欄位的舊格式 ＋ `--name` 過濾）＋ **真實舊 log 回歸**（10:22 那輪仍是
+`SAME=90 DIFF=15 PART-READ=0 NOT-READ=0`、`FIRST DIFF = g31 ffn_moe_down-1.pool`，與歷史讀數逐字相同）。
+**未做**：沒有建置、沒有起 server、沒有跑。**原因不是紀律而是佔用**：10:54 起有**別的 session 的
+llama-server**（PID 2559、`-expert-cache 10 GiB`、8080）在跑，且 thermal 是 HEAVY(2)。
+
 ## 下一步
 
-在 capture 內核裡對 **ids 所選的 pool row** 做同構摘要（裝置上讀），兩臂比對 —— 這是本輪唯一還沒被
-排除的敘述。**不要**再找時序、不要再加同形狀的分梯、不要再用 `-l20` 當哨兵。
+**① 建置＋實跑 §9.18.7**（等 8080 空、thermal=0）
+```sh
+cmake --build src/llama.cpp/build --target llama-server -j 8
+POOL=1 POOLROWS=12 POOLBYTES=1048576 HASH=1 \
+  ARMS='p25-gputime,p25-slotgpu' bash Backup/run_ids_dst_capture.sh
+# 先看 banner：CGC-POOL-CAP owner channel ACTIVE（不是 ABSENT）
+# 先跑同臂控制（同一臂兩次）⇒ 必須全 SAME，否則讀數就是發現
+python3 Backup/compare_pool_row.py <A> <B> --max-graphs 0
+```
+判讀就一句：**`CONTENT > 0` ⇒ fill/內容是載體；只有 `SLOT-REUSED`／`ROUTING` ⇒ 帳／路由是載體；
+`RELAYOUT` ⇒ 良性重排（先前「ids 不同」的措辭到此才真正可判）。**
+
+**② 追 `consumed_changed=192`**：它與「發布在不在熱路徑上」（前提 B）是同一個問題，而先前的「0」是
+列印上限造成的。
+
+**③ g30 層 0 的殘餘問題**（`attn_norm-0` 整張量 DIFF，輸入應為純 embedding）⇒ 讀
+`conv_state_update-0`／`conv_state_last-0`（`ggml_metal_op_cpy` 的 hook 在 `ggml-metal-ops.cpp:2248`）。
+
+**不要**再用「ids 同不同」當「有沒有缺陷」的判準（`llama-context.cpp` 明寫兩臂可以換 slot 而無後果）；
+不要用 `clamped` 的**全表**數字；不要再用 `-l20` 當哨兵。

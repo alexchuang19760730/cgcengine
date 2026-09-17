@@ -31,7 +31,9 @@ llama.cpp 的 CGC fork：Metal ＋ **expert cache pool**（專家權重常駐 SS
 
 - **decode 實測**：llama-bench 暖平台 **10.78／10.91**（d512）；HTTP 路徑 12.36–12.95。
   **「25」是 09-05 舊幾何的 27.71，不是現在的**。→ `MEMORY_PERF.md`
-- **prefill**：COLD 下 254–282 t/s 有紀錄；最近一臂 req1 ＝ **244.96（未達 250）**，未結清。
+- **prefill**：COLD 下 254–296 t/s 有紀錄；**09-17 07:0x 結清：`prefill250 + CGC_SPAC=1` 的 prefill
+  代價不成立**（同 build COLD 交錯 A/B、四臂全 COLD-STATE）。大落差來自「同序列第幾次啟動」，不是 flag。
+  → `MEMORY_PERF.md`；⚠️ **ABAB 的第一個臂不可與後面的臂交換（pos1 溢價 72.50）。**
 - **S1**：分歧 ＝ **第一個被 GPU table 服務的層**的 MoE gather（層號由 `CGC_S1_MIN_IL` 決定，不是固定層）；
   唯一未測的敘述是「**同 ids、同池佈局、同反查，gather 讀到的位元組不同**」。→ `MEMORY_S1.md`
 - **里程碑**：**M1 做了一半卡住**（數值閘門 09-14 已達 117/117，但 decode 退步 **0.72×**、工作項 2 未實作）；

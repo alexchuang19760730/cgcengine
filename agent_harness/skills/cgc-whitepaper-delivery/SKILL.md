@@ -186,6 +186,15 @@ PREFILL250_DECODE25_WHITEPAPER_20260915_2355.html
 
 不確定就跑 `--check`，它會直接印出漂移的 path 與 bytes 變化。
 
+**★ 2026-09-17 補：真正的一般規則是「任何列在 `MANIFEST.jsonl` 裡的檔案被編輯都會紅」，
+不只是 CURATED 的 `docs` 條目。** 實例：只改了 `scripts/run_server.sh`（加三個 env 進白名單）就紅了兩筆
+——`bytes: manifest 120539 vs disk 121554` 與 `mtime`。它在 manifest 裡是 `role: "runner"` 的 CURATED 條目。
+所以「新增不會紅」只對**新增**成立；**改動既有的 runner／gate 腳本（`scripts/*.sh` 幾乎都在名單裡）
+一樣要重生 manifest**。收尾順序不變：先 `build_memory_index.py`，再 `index_assets.py`。
+
+（也要記得：`--check` 只會說「跟 manifest 記的不一樣」，**不會**說「你改壞了」。紅燈的成因要能指到——
+寫進收尾紀錄時要寫「哪一筆、為什麼紅」，不是只貼綠燈。）
+
 ### 陷阱三：**不要**把白皮書寫進 repo 的 `.workbuddy/memory/`，也**不要**手動加快照
 
 - 寫進 `.workbuddy/memory/` 會觸發 INDEX/MANIFEST 的重生義務（D6）。
