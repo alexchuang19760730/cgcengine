@@ -136,6 +136,35 @@ ARMS: dict[str, tuple[str, dict[str, str]]] = {
     # `_ALL` is on because the uniformity verdict needs all 40 layers, not the top 8.
     "prefill250-decprof": ("prefill250", {"CGC_DECODE_PROFILE": "1", "CGC_DECODE_PROFILE_ALL": "1",
                                           "CGC_GPU_TIMING": "1"}),
+
+    # ---------------------------------------------------------------------------------------------
+    # [2026-09-17] The phase-split A/B (M1 work items 2/3). Three arms, all on `prefill250` so that
+    # pool / ctx / batch / MTP / template are identical and ONLY the phase decision can differ.
+    #
+    # Why the same profile for all three: `prefill250` is the only profile that arms the slab, so
+    # "slab on" and "slab off" have to be expressed as an override of that same profile. Using two
+    # different profiles would change a dozen things at once.
+    #
+    # Why this is a PREFILL experiment and cannot be run on decode: with the pool's routable
+    # geometry here, `decode_width = min(floor(142/8), T_prefill-1) = 17`, and decode is T=1 (MTP
+    # verify 2-4), so every decode step takes the DECODE graph in BOTH arms -- the whole-layer slab
+    # cannot participate in decode at all. An armed-vs-unarmed comparison on decode is zero by
+    # construction, and reporting that zero as "the slab has no benefit" would be a false negative
+    # manufactured by the measurement shape.
+    #
+    # Why three arms and not two: for a chunk wider than the decode width, the unarmed arm ALSO
+    # takes the n_batch clamp (the launcher prints `[arm] slab OFF ... with the n_batch clamp on`),
+    # so "armed vs unarmed" differs in two things: slab-vs-pool AND one wide graph vs many narrow
+    # ones. Arms B and C differ only in the clamp width (8 vs 17), which is the graph-count axis;
+    # B/C at a fixed prompt is therefore the "is the gap just graph-evaluation count" control.
+    #   A phase-slab    : slab armed, clamp lifted          -> 1 x width-2048 PREFILL graph
+    #   B phase-pool8   : pool path, clamp = cap 8          -> ~256 x width-8 pool graphs
+    #   C phase-pool17  : pool path, clamp = bound 17       -> ~121 x width-17 pool graphs
+    # With `--prompt 17` arm C is a single pool-path graph, i.e. the pool baseline at MATCHED graph
+    # count, which is what separates "the slab is faster" from "the clamp made it slower".
+    "phase-slab":   ("prefill250", {}),
+    "phase-pool8":  ("prefill250", {"CGC_PREFILL_STREAM": "0"}),
+    "phase-pool17": ("prefill250", {"CGC_PREFILL_STREAM": "0", "CGC_POOL_MAX_TOKENS": "64"}),
 }
 
 # Args we forward from the resolved server argv to llama-bench. Allowlist, not denylist: the server
