@@ -62,10 +62,19 @@ docker compose version                   # 一定要印出 Docker Compose versio
 
 ## 動手前／收工後（本 repo 的硬規矩）
 
-- **空窗要讀日誌，不是讀 `pgrep`**：`ps -Ao comm= | grep -x llama-server` 是空的**不代表**沒人在量測。
+- **空窗要讀日誌，不是讀 `pgrep`**：行程掃描是空的**不代表**沒人在量測。
   要先看 `<repo>/.workbuddy/memory/YYYY-MM-DD.md` 的最新段落（另一條線一天做 20–29 輪，
-  取樣空窗可能只有幾十秒）。這是同一個陷阱第二次踩到。
-- 每次跑之前重掃一次行程；**檢查與動作要在同一個分支裡**（`if … ; then exit; fi` 緊接動作）。
+  取樣空窗可能只有幾十秒）。這是同一個陷阱踩過兩次。
+- **用 repo 已經有的閘門，不要手寫**：`bash agent_harness/engine_loop/runners/preflight.sh`
+  （`--self-test` **5/5 含正負對照**：命令列提到名字的 wrapper 被**排除**、真正以那個名字執行的行程
+  被**認出**）。★ 我手寫過 `ps -Ao comm= | grep -x llama-server` —— **在 macOS 上 `comm` 不是
+  basename 而是完整路徑**（`/Users/.../build/bin/llama-server`），所以它**永遠不命中**：
+  那個閘門回報的「乾淨」與「有、但我比對錯欄位」長得一模一樣（lesson `eng-gate-0054`）。
+  用 `pgrep -f`／`grep command` 時要寫成 `[l]lama-server` 這種自我排除形式，否則會命中**自己的命令列**。
+- 檢查與動作要在同一個分支裡（`if … ; then exit; fi` 緊接動作）。
+- **動別的東西之前先問**：起 llama-server（13 GB）或任何服務，即使「機器看起來很空」也一樣 ——
+  這一輪就是先被叫去跑、兩分鐘後被叫停。工作目錄一律是 `flashkv-devserver`；
+  `flashkv0516` 是它的**主 repo**（worktree 關係），踏進去要另外授權。
 - 收工：`colima stop`，並把 `~/.colima/default/colima.yaml` 的 `cpu`／`memory` 改回 `4`／`8`。
 - **macOS 沒有 `timeout`**；直接跑，或用 `gtimeout`。
 
