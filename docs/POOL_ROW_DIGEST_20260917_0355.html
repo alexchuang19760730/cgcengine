@@ -413,6 +413,45 @@ g2（T=8）               同一形狀（token 0 相同、token 1 之後不同�
 NODES —— 它們的 dispatcher <b>有</b> <code>cgc_dst_capture</code> 呼叫，但從來不在清單裡（所以分析器一直
 印 <code>ABSENT</code>）。加了就能分辨「gather/matmul 的專家輸出」與「combine 之後的輸出」哪一個先壞。</p>
 
+<h3>6.5 10:3x 第二次修正：第一分歧在<b>專家 matmul 的輸出</b>；以及一個一直都在 log 裡的線索</h3>
+
+<p>把 <code>ffn_moe_gate-1,ffn_moe_up-1,ffn_moe_down-1</code> 加進 <b>DST</b> 的 NODES（它們的 dispatcher
+本來就有 <code>cgc_dst_capture</code>，只是名字從來不在清單裡 ⇒ 分析器一直印 <code>ABSENT</code>），
+並改用 churn 臂（兩臂都開 <code>CGC_S1_TABLE_CHURN=1</code>）跑同一組 A/B。g1 的整張量摘要：</p>
+
+<table>
+<tr><th>節點（layer 1）</th><th>g1</th></tr>
+<tr><td>MoE 輸入 <code>attn_post_norm-1</code>、router logits <code>ffn_moe_logits_raw-1</code>、權重 <code>ffn_moe_weights_norm-1</code>（16 個）</td><td class="ok">SAME</td></tr>
+<tr><td><b>專家 matmul 輸出 <code>ffn_moe_gate-1</code>／<code>ffn_moe_up-1</code>／<code>ffn_moe_down-1</code></b></td><td class="bad">DIFF（三者皆是）</td></tr>
+<tr><td>combine <code>ffn_moe_out-1</code>、<code>l_out-1</code></td><td class="bad">DIFF（下游）</td></tr>
+</table>
+
+<p>⇒ 「combine 在輸入相同時自己壞掉」<b>被排除</b>；分歧在 gather/matmul 的<b>輸出</b>，而它的兩個輸入是
+<b>ids</b> 與<b>池的列</b>。</p>
+
+<div class="box b-amber">
+<p><b>同時要收回 §6.4 的一句措辭</b>：S1 臂的 ids 與錨臂不同<b>不必然是缺陷</b> ——
+<code>llama-context.cpp:6065-6067</code> 的註解明寫「兩臂可以把同一批專家放在不同 slot，且完全沒有後果」。
+這次的證據指向「不只是重排」：<code>SLOT-SEL wrong=0 / unowned=0</code>（560 行、含 T=2 的兩個 token）
+⇒ table↔owner 的<b>帳</b>一致；但同一批列在裝置側讀到的<b>位元組不同</b>，而 <b>slot 0 的內容兩臂相同</b>
+（<code>sum=41543766</code>）⇒ S1 臂在 token 1 的兩列上<b>讀了 slot 0 的內容</b>。
+<b>帳一致、內容不一致 ⇒ owner 帳不是內容的證據。</b></p>
+</div>
+
+<p><b>而一個既有的、響亮的線索一直都在 log 裡：</b></p>
+<pre><code>CGC-SLOT-TABLE-CLAMP: site=pool verify il=1 clamped=113/256  &lt;-- TABLE/LEAF EQUIVALENCE BROKEN:
+gather reads slot 0 (another expert's weights) while the host leaf writes -1 (loud)</code></pre>
+<p>（16 行是<b>列印上限</b> <code>cgc_clamp_lines++ &lt; 16</code>，不是「只有 16 層」。）
+成因寫在 <code>llama-context.cpp:4291-4307</code>（09-15）：<b>兩個寫入點用不同對映</b> —— fast path 的 leaf
+對非常駐專家寫 <code>-1</code>（響），而 <b>table 寫入把非常駐專家 clamp 成 0</b>（zero slot 被綁在 MTP
+fast path 上，而 S1 是 MTP=0）⇒ <code>mul_mat_id</code> 讀到<b>別的專家</b>的權重，而且<b>靜默</b>
+（0 是合法索引）。113/256 正是非常駐專家的比例（256 − 143 slots）。</p>
+
+<p>另一件被列印上限藏起來的事：<code>SEL-DRIFT</code> 的 graph 級列印<b>只到 graph=9</b>（10 行全是
+<code>entries=0</code>），而同一輪的全程計數是 <code>consumed_changed=192</code>
+⇒ consumed 子集整輪變動 192 次（必在 g9 之後）。先前「<code>SEL-DRIFT=0</code> ⇒ 時序被否證」是
+<b>在被截斷的窗口上</b>下的結論（lesson <code>eng-mh-0045</code>）。</p>
+
 <h2>7. 誠實邊界：這份文件不主張什麼</h2>
 
 <ul>
