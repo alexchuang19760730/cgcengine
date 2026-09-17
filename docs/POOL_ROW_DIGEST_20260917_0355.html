@@ -375,6 +375,44 @@ A: pool=99 other=3960 unmatched=0 | B: pool=99 other=3960 unmatched=0</code></pr
 「整列的」而不是「窗口的」。同時它只涵蓋<b>層 1 的三個節點、每個節點被選中的前 8 列</b>——
 不是全模型、不是全部 8×T 列。</p>
 
+<h3>6.4 10:2x 修正：真正的第一分歧在 g1 的 <b>mapping</b>，不在層 0</h3>
+
+<div class="box b-red">
+<p><b>§6.3.1 的推論要縮小範圍（結論不變）。</b>上面那個「ids 相同」只涵蓋<b>每個 chunk 的 token 0</b>：
+<code>rows=8</code> 而 T=2 的 ids 運算元有 <b>16</b> 個、T=8 有 <b>64</b> 個，而 ggml 張量是 ne0-fastest
+⇒ 前 8 列<b>就是 token 0</b>，其餘 token 根本不在讀數裡。已落 lesson <code>eng-diag-0030</code>。</p>
+<p><b>把摘要讀寬（<code>POOLROWS=12</code>）之後，真凶出現：</b></p>
+<pre><code>g1（第二個 T=2 chunk）  token 0 的 ids  A=[2,105,7,9,5,106,1,84]  B=[2,105,7,9,5,106,1,84]   &lt;- 相同
+                        token 1 的 ids  A=[8,0,50,4]           B=[0,103,0,74]            &lt;- 不同
+g2（T=8）               同一形狀（token 0 相同、token 1 之後不同）</code></pre>
+<p>B（S1 臂）出現<b>兩次 slot 0</b>，而且那兩次讀到的列內容完全相同；A（錨臂）是四個互異的 slot。
+同一張圖上 <code>attn_post_norm-1</code>（MoE 輸入）、<code>ffn_moe_logits_raw-1</code>（router logits）、
+<code>ffn_moe_weights_norm-1</code>（16 個權重）<b>整張量逐位元組相同</b> ⇒ <code>ffn_moe_out-1</code>
+從 g1 起整張量 DIFF 的那個謎，答案很簡單：<b>它讀了不同的專家</b>。</p>
+<p><b>⇒ 修正後的述句</b>：S1 的缺陷是 <b>mapping</b> —— GPU table 對「同一個 chunk 的第 2 個 token 之後」
+給出錯誤的 slot（含重複的 slot 0）。先前的「第一分歧在 g30、在層 0」是<b>判讀寬度不足造成的錯位</b>。</p>
+</div>
+
+<h4>6.4.1 順手排除掉的兩個假設</h4>
+<table>
+<tr><th>假設</th><th>怎麼查</th><th>結果</th></tr>
+<tr><td><b>融合群歸屬</b>：列名指向「融合群的最後一個節點」，而節點順序在兩臂間不穩定 ⇒ 同一個名字可能指向不同節點</td>
+<td>逐節點比對 g1/g2/g3/g29/g30/g31 的 <code>fuse/ne/off</code>（兩臂）</td>
+<td><b>完全一致</b> ⇒ 不是它。唯一的次序痕跡是 <code>rows=12</code> 那輪的 DST 列數 A=1475 vs B=1476（只有 g19 的 <code>gate-1.dst</code> 在 B 有）</td></tr>
+<tr><td><b>窗口假象</b>：TAIL 窗口只讀 32 個元素（覆蓋率 0.1–12.5%），SAME 可能只是窗口相同</td>
+<td>改跑 <code>HASH=1</code>（整張量摘要，覆蓋率 100%）再比對定位表</td>
+<td><b>逐格相同</b>（layer 0 的 12 個節點 <code>first_diff=30</code>；<code>ffn_moe_out-1</code>／<code>l_out-1</code>／layer 2 ＝ 1）⇒ 不是它</td></tr>
+</table>
+
+<h4>6.4.2 還沒解釋的部分（誠實記）</h4>
+<p>g30（第一個 T=1 步）層 0 的 <code>attn_norm-0</code> <b>整張量</b> DIFF，而它的輸入應該是純 embedding
+⇒ 它不在上面那個 mapping 缺陷的傳播路徑上。下一個讀點是 <b><code>conv_state_update-0</code>／
+<code>conv_state_last-0</code></b>（遞迴狀態的寫回；<code>ggml_metal_op_cpy</code> 的 hook 在
+<code>ggml-metal-ops.cpp:2248</code>，只是名字不在 NODES 清單裡）。</p>
+<p><b>零改碼的下一步</b>：把 <code>ffn_moe_gate-1,ffn_moe_up-1,ffn_moe_down-1</code> 加進 <b>DST</b> 的
+NODES —— 它們的 dispatcher <b>有</b> <code>cgc_dst_capture</code> 呼叫，但從來不在清單裡（所以分析器一直
+印 <code>ABSENT</code>）。加了就能分辨「gather/matmul 的專家輸出」與「combine 之後的輸出」哪一個先壞。</p>
+
 <h2>7. 誠實邊界：這份文件不主張什麼</h2>
 
 <ul>
