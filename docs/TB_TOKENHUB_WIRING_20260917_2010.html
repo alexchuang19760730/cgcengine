@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tb_loop × TokenHub 端點接線（2026-09-17）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#1f2328; --mut:#57606a; --line:#d0d7de; --soft:#f6f8fa;
+    --blue:#0969da; --green:#1a7f37; --red:#cf222e; --amber:#9a6700; --purple:#8250df;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","PingFang SC","Hiragino Sans",sans-serif;
+       font-size:15px;line-height:1.7}
+  .wrap{max-width:1040px;margin:0 auto;padding:32px 20px 80px}
+  h1{font-size:26px;line-height:1.35;margin:0 0 6px}
+  h2{font-size:19px;margin:38px 0 10px;padding-top:14px;border-top:1px solid var(--line)}
+  h3{font-size:16px;margin:24px 0 8px}
+  p,li{margin:8px 0}
+  code{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;font-size:.9em;
+       background:var(--soft);border:1px solid var(--line);border-radius:4px;padding:.1em .35em}
+  pre{background:var(--soft);border:1px solid var(--line);border-radius:6px;padding:12px 14px;
+      overflow-x:auto;margin:12px 0}
+  pre code{background:none;border:none;padding:0;font-size:12.5px;line-height:1.55}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  .num{white-space:nowrap;font-variant-numeric:tabular-nums}
+  .mut{color:var(--mut)}
+  .tag{display:inline-block;font-size:12px;padding:1px 8px;border-radius:999px;border:1px solid;white-space:nowrap}
+  .t-blue{color:var(--blue);border-color:#b6d8fb;background:#ddf4ff}
+  .t-green{color:var(--green);border-color:#b6e3c2;background:#dafbe1}
+  .t-red{color:var(--red);border-color:#f5c2c7;background:#ffebe9}
+  .t-amber{color:var(--amber);border-color:#f0d999;background:#fff8c5}
+  .t-purple{color:var(--purple);border-color:#d8c7f7;background:#fbefff}
+  .t-gray{color:var(--mut);border-color:var(--line);background:var(--soft)}
+  .box{border-left:4px solid var(--line);background:var(--soft);border-radius:0 6px 6px 0;
+       padding:10px 14px;margin:14px 0}
+  .box.warn{border-left-color:var(--amber)}
+  .box.ok{border-left-color:var(--green)}
+  .box.bad{border-left-color:var(--red)}
+  .box.pur{border-left-color:var(--purple)}
+  .box .h{font-weight:600;display:block;margin-bottom:2px}
+  figure{margin:18px 0}
+  figcaption{color:var(--mut);font-size:13px;margin-top:6px}
+  .meta{color:var(--mut);font-size:13px;margin:0 0 4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>tb_loop × TokenHub 端點接線</h1>
+<p class="meta">flashkv-devserver ／ 2026-09-17 20:10 ／ D5 白皮書附件（隨 <code>1cf226e0e</code> 之後的第一個 tb_loop 接線 commit）</p>
+
+<div class="box pur">
+<span class="h">一句話</span>
+把 terminal-bench 的「被評估 agent 模型」與「/refine 蒸餾器」這兩格，從本機 llama.cpp 換成
+騰訊雲 TokenHub 的 API；過程中量到並修掉三個缺陷，其中一個會把完整金鑰印在 <code>ps</code> 裡。
+</div>
+
+<h2>1. 為什麼需要這份文件：系統裡的模型是「兩槽」不是「一格」</h2>
+
+<p>這個 repo 有兩個地方在呼叫模型，它們的角色完全不同，而先前的討論把它們混在一起講過一次
+（我把「換 B」講成「換 TokenHub」，但沒說清楚是換哪一格）。</p>
+
+<table>
+<thead><tr><th>槽</th><th>變數</th><th>誰在用</th><th>角色</th></tr></thead>
+<tbody>
+<tr>
+  <td><span class="tag t-blue">A</span></td>
+  <td><code>TB_GEMMA4_*</code></td>
+  <td>容器內的 <code>prime-agent</code>（<code>tb run</code> / <code>run_round.sh</code>）</td>
+  <td><b>考生</b> —— 在任務容器裡解題的那個模型</td>
+</tr>
+<tr>
+  <td><span class="tag t-purple">B</span></td>
+  <td><code>SFT_*</code> ／ 新的 <code>REFINE_API_*</code></td>
+  <td>見 §1.2</td>
+  <td><b>老師</b> —— 不在容器裡解題，用來蒸餾、或當另一個 agent</td>
+</tr>
+</tbody>
+</table>
+
+<figure>
+<svg viewBox="0 0 680 250" width="100%" role="img" aria-label="兩個模型槽與三個消費者">
+  <defs>
+    <marker id="ar" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <rect x="8" y="14" width="186" height="66" rx="7" fill="#ddf4ff" stroke="#b6d8fb"/>
+  <text x="101" y="38" font-size="12.5" text-anchor="middle" fill="#1f2328" font-weight="600">A 槽：容器內 prime-agent</text>
+  <text x="101" y="56" font-size="11" text-anchor="middle" fill="#57606a">provider: local-gemma4</text>
+  <text x="101" y="70" font-size="11" text-anchor="middle" fill="#57606a">讀 TB_GEMMA4_*</text>
+
+  <rect x="8" y="150" width="186" height="66" rx="7" fill="#fbefff" stroke="#d8c7f7"/>
+  <text x="101" y="174" font-size="12.5" text-anchor="middle" fill="#1f2328" font-weight="600">B 槽：host 側 /refine</text>
+  <text x="101" y="192" font-size="11" text-anchor="middle" fill="#57606a">provider: freebuff-codebuff</text>
+  <text x="101" y="206" font-size="11" text-anchor="middle" fill="#57606a">讀 SFT_*（子行程覆寫）</text>
+
+  <rect x="280" y="88" width="150" height="52" rx="7" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="355" y="110" font-size="12.5" text-anchor="middle" fill="#1f2328" font-weight="600">TokenHub</text>
+  <text x="355" y="127" font-size="11" text-anchor="middle" fill="#57606a">tokenhub.tencentmaas.com</text>
+
+  <line x1="196" y1="47" x2="278" y2="104" stroke="#57606a" marker-end="url(#ar)"/>
+  <line x1="196" y1="183" x2="278" y2="126" stroke="#57606a" marker-end="url(#ar)"/>
+
+  <rect x="480" y="16" width="192" height="196" rx="7" fill="#ffffff" stroke="#d0d7de" stroke-dasharray="4 3"/>
+  <text x="576" y="38" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="600">SFT_* 的三個消費者</text>
+  <text x="576" y="62" font-size="11" text-anchor="middle" fill="#57606a">① refine_harness.sh（蒸餾）</text>
+  <text x="576" y="84" font-size="11" text-anchor="middle" fill="#57606a">② gen_sft.sh（產生 SFT 資料）</text>
+  <text x="576" y="106" font-size="11" text-anchor="middle" fill="#57606a">③ codebuff_api_agent.py（當 agent）</text>
+  <line x1="430" y1="114" x2="478" y2="114" stroke="#cf222e" marker-end="url(#ar)"/>
+  <text x="576" y="140" font-size="10.5" text-anchor="middle" fill="#cf222e">整槽換 ⇒ ③ 靜默壞</text>
+  <text x="576" y="178" font-size="10.5" text-anchor="middle" fill="#1a7f37">新增 REFINE_API_* ⇒ 只換 ①</text>
+</svg>
+<figcaption>兩槽各自獨立。B 槽原本是一整槽共用，本輪為它加了獨立旋鈕，讓「只換蒸餾器」成為可能。</figcaption>
+</figure>
+
+<h3>1.1 A 槽：容器內解題的模型</h3>
+<p>
+<code>prime_agent_adapter.py:63-68</code> 的解析順序是
+「<code>-k</code> 參數 → 環境變數 <code>TB_GEMMA4_*</code> → 硬編碼預設」。
+適配器再把這三個值以 <code>TB_GEMMA4_BASE_URL</code>/<code>API_KEY</code>/<code>MODEL</code>
+<b>注入容器內</b>（<code>_env</code>），由 <code>harness/extensions/gemma4-provider.ts</code> 註冊成
+provider <code>local-gemma4</code>。
+</p>
+<div class="box warn">
+<span class="h">容器裡的 localhost 不是這台 Mac</span>
+<code>base_url</code> 是注入到<b>容器內</b>的，所以指向本機服務必須用 <code>host.docker.internal:&lt;port&gt;/v1</code>。
+雲端 https 端點不受此限（容器有外網即可）—— 這也是把端點搬到雲端後，這條路<b>不再與引擎線搶 GPU</b> 的原因。
+</div>
+
+<h3>1.2 B 槽：<code>SFT_*</code> 被 10 個檔案讀，至少三種用途</h3>
+<table>
+<thead><tr><th>用途</th><th>誰</th><th>本輪處置</th></tr></thead>
+<tbody>
+<tr><td>① 蒸餾（<code>/refine</code>）</td><td><code>tb_loop/learning/refine_harness.sh</code></td>
+    <td><span class="tag t-green">已加獨立旋鈕</span> 換成雲端模型</td></tr>
+<tr><td>② 產生 SFT 訓練資料</td><td><code>tb_loop/gen_sft.sh</code> → <code>CodebuffApiAgent</code></td>
+    <td><span class="tag t-gray">不動</span></td></tr>
+<tr><td>③ 直接當 tb 的 agent</td><td><code>tb_loop/agents/codebuff_api_agent.py</code></td>
+    <td><span class="tag t-gray">不動</span></td></tr>
+</tbody>
+</table>
+
+<div class="box bad">
+<span class="h">為什麼「整槽換」會靜默弄壞 ③ —— 形狀相容 ≠ 語意相容</span>
+<code>codebuff_api_agent.py</code> 的 HTTP 形狀<b>是</b> OpenAI 相容的
+（<code>:187</code> <code>POST {base_url}/chat/completions</code> ＋ <code>:184</code>
+<code>Authorization: Bearer</code>），所以「base_url 指過去通不通」的答案是「<b>會通</b>」。
+但它<b>解析</b>的是 codebuff 原生工具呼叫格式（<code>:46</code> 檔內註解自述
+「codebuff agent 原生工具调用格式（DSML，标记是全角竖线）」，解析器在
+<code>:71 _extract_tool_commands</code>）。普通模型不吐那種格式 ⇒
+<b>請求成功、卻解析不出任何工具呼叫，而且沒有錯誤訊息。</b>
+判斷「能不能指過去」要看那支 client 怎麼<b>解析回應</b>，不是它怎麼發請求。
+</div>
+
+<h2>2. 本輪交付的四項改動</h2>
+
+<table>
+<thead><tr><th>檔案</th><th>改動</th><th>狀態</th></tr></thead>
+<tbody>
+<tr><td><code>.gitignore</code></td>
+    <td>指名排除 <code>/agent_harness/tb_loop/config.local.env</code>（不用 <code>*.local.env</code> —— 會吞掉 <code>.example</code>）</td>
+    <td><span class="tag t-green">入庫</span></td></tr>
+<tr><td><code>tb_loop/config.local.env.example</code></td>
+    <td>新增，只有形狀沒有值</td>
+    <td><span class="tag t-green">入庫</span></td></tr>
+<tr><td><code>agent_harness/tb_loop/scripts/run_model_smoke.sh</code></td>
+    <td>新增：帶模型 smoke 的標準入口（三道前置 ＋ 兩個「不碰 docker」模式）</td>
+    <td><span class="tag t-green">入庫</span></td></tr>
+<tr><td><code>tb_loop/learning/refine_harness.sh</code></td>
+    <td>新增 <code>REFINE_API_BASE_URL/KEY/MODEL</code>，未設時沿用 <code>SFT_*</code>；端點只注入 prime-agent 子行程</td>
+    <td><span class="tag t-green">入庫</span></td></tr>
+<tr><td><code>tb_loop/harness/extensions/gemma4-provider.ts</code></td>
+    <td><code>contextWindow</code> 32768 → 128000（保守值）</td>
+    <td><span class="tag t-green">入庫</span></td></tr>
+<tr><td><code>tb_loop/config.local.env</code></td>
+    <td>本機值（端點／金鑰／模型）</td>
+    <td><span class="tag t-gray">gitignored，不入庫</span></td></tr>
+</tbody>
+</table>
+
+<h2>3. 量到的三個缺陷（都已修）</h2>
+
+<h3>3.1 我自己的註解與程式順序不符（假宣稱）</h3>
+<p>
+<code>--print-only</code> 的註解寫著「擺在三道前置<b>之前</b>，所以它連 docker 都不問」，
+而它實際排在 docker 檢查<b>之後</b>。<b>沒有任何測試抓到，因為這台機器的 docker 一直是正常的。</b>
+</p>
+<div class="box warn">
+<span class="h">「測不出來」與「沒有這個問題」不一樣</span>
+證明「它不碰 X」要用<b>絆線</b>：放一個假的 <code>docker</code> 進 <code>PATH</code>，被叫到就留痕。
+第一版我試 <code>PATH=/nonexistent bash &lt;script&gt; --print-only</code> —— 結果
+<code>dirname: command not found</code> ⇒ <code>TB_LOOP_DIR</code> 解析錯 ⇒ 死在更早的地方：
+<b>那是個無效測試，卻長得像一次失敗。</b>
+</div>
+<pre><code>T=$(mktemp -d); printf '#!/bin/sh\necho CALLED &gt;&gt; /tmp/tw.txt\nexit 1\n' &gt; "$T/docker"; chmod +x "$T/docker"
+PATH="$T:$PATH" bash &lt;script&gt; --print-only; cat /tmp/tw.txt   # 無痕 = 證明它不碰 docker</code></pre>
+
+<h3>3.2 <code>REFINE_API_MODEL</code> 形同虛設（優先序被 <code>config.env</code> 釘死）</h3>
+<p>第一版寫成：</p>
+<pre><code>REFINE_MODEL="${TB_REFINE_MODEL_PATTERN:-freebuff-codebuff/${REFINE_ID}}"</code></pre>
+<p>
+而 <code>TB_REFINE_MODEL_PATTERN</code> <b>被 <code>config.env</code> 釘死</b>
+（<code>source</code> 是<b>無條件賦值</b>）⇒ 它永遠優先，新旋鈕永遠不生效。
+症狀極具誤導性：<b>探測已經打對新端點（沒有 WARN），模型字串卻還是舊的</b> ⇒
+執行時看起來像「端點說找不到模型」，而問題在我們這一側。
+</p>
+<pre><code># 修法：明確指定時就直接組
+if [[ -n "${REFINE_API_MODEL:-}" ]]; then
+    REFINE_MODEL="freebuff-codebuff/${REFINE_API_MODEL}"
+else
+    REFINE_MODEL="${TB_REFINE_MODEL_PATTERN:-freebuff-codebuff/${SFT_MODEL}}"
+fi</code></pre>
+<div class="box pur">
+<span class="h">一般化</span>
+<code>source</code> 一個 config 檔 = <b>無條件賦值</b> ⇒ 想用環境變數覆蓋它，
+<b>必須換一個它不認識的變數名</b>。沿用同名一定被蓋掉 —— 這個 repo 已踩兩次
+（<code>TB_GEMMA4_*</code> 一次、<code>REFINE_API_MODEL</code> 一次）。
+</div>
+
+<h3>3.3 完整金鑰出現在 <code>ps</code> 的命令列裡</h3>
+<p>
+診斷 smoke 時看到：<code>tb run … -k api_key=sk-…</code> —— 這台機器上任何本機使用者都看得到。
+</p>
+<p><b>修法（已用哨兵值驗證）</b>：適配器本來就支援環境變數回退，所以不要傳 <code>-k api_key=</code>，
+改成 <code>export TB_GEMMA4_API_KEY</code>：</p>
+<pre><code>不傳 -k  → api_key=SENTINEL-KEY   base_url=http://sentinel.example/v1   model=sentinel-model
+傳 -k    → api_key=EXPLICIT       base_url=http://explicit.example/v1   model=explicit-model</code></pre>
+<div class="box bad">
+<span class="h">殘留（無法回溯修正）</span>
+那一輪已跑出去的行程，它的命令列已經被寫進本機 <code>ps</code> 的可見範圍。
+要徹底乾淨就得<b>輪換金鑰</b>。<b>能走環境變數就不要走 argv。</b>
+</div>
+
+<h2>4. 兩個「先付 1 秒，省下數分鐘」的閘門</h2>
+<table>
+<thead><tr><th>模式</th><th>做什麼</th><th>為什麼值得存在</th></tr></thead>
+<tbody>
+<tr><td><code>--print-only</code></td>
+    <td>只印生效設定，不碰任何前置、不啟 tb</td>
+    <td>讓「三層優先序（環境變數 &gt; config.local.env &gt; config.env）」可被自測 ——
+        它壞掉的方式與正常運作長得一樣</td></tr>
+<tr><td><code>--probe</code></td>
+    <td>用同一組 base_url/key/model 打一次真請求，分四類：<code>200</code>／<code>401</code>／<code>403</code>／<code>404</code></td>
+    <td>key 打錯、範圍沒勾、model 名寫錯，在 smoke 裡都要等容器起來、prime-agent 裝完、
+        agent 第一次呼叫才顯形（數分鐘），而<b>那時現場只剩「任務 Unresolved」</b>；
+        <b>401 與 403 在容器裡的現場一模一樣</b></td></tr>
+</tbody>
+</table>
+<div class="box ok">
+<span class="h">401 與 403 不是同一件事</span>
+<b>401</b>＝key 本身不對（複製漏字／被停用／建在不同站台）。
+<b>403</b>＝key 有效，但<b>「可訪問範圍」沒勾到你要用的那個模型</b>。
+先在 host 上花 1 秒分辨，不要進容器才猜。
+</div>
+
+<h2>5. 本輪的模型選擇與實測</h2>
+<p>
+型號照官方「模型列表」抄，不自創。<b>「這把 key 能用哪些模型」要問端點，不是查文件</b> ——
+文件說 <code>qwen3.5-flash</code> 已於 2026-09-08 下線，但它仍出現在 <code>GET /v1/models</code> 裡。
+</p>
+<table>
+<thead><tr><th>項目</th><th>值</th><th>來源</th></tr></thead>
+<tbody>
+<tr><td>端點</td><td><code>https://tokenhub.tencentmaas.com/v1</code></td><td>官方接入指南</td></tr>
+<tr><td>DeepSeek-V4.1-Flash</td><td><code>deepseek/deepseek-flash</code></td>
+    <td>官方模型列表「原廠直供」；1M 上下文 / 最大輸出 384k / 深度思考 / Function Calling</td></tr>
+<tr><td>DeepSeek-V4-Flash 0731</td><td><code>deepseek/deepseek-v4-flash</code></td><td>同一份列表（舊版，仍可用）</td></tr>
+<tr><td>混元 Hy3</td><td><code>hy3</code></td><td>同一份列表；256k / 192k / 128k</td></tr>
+</tbody>
+</table>
+<p>兩槽的生效值（<code>--print-only</code> 與 <code>--probe</code> 的實測輸出）：</p>
+<pre><code>[smoke] base_url = https://tokenhub.tencentmaas.com/v1
+[smoke] model    = deepseek/deepseek-flash   (provider 前缀 local-gemma4 ⇒ prime-agent 侧 local-gemma4/deepseek/deepseek-flash)
+[smoke] api_key  = ***tLhm   (len=51)
+[probe] model=deepseek/deepseek-flash  key=***tLhm  ⇒ http=200
+[probe] OK：key 与 model 都能用，可以跑 smoke 了。
+
+（B 槽，export 後執行）
+== refine 蒸馏模型: freebuff-codebuff/deepseek/deepseek-flash
+no failures to refine</code></pre>
+
+<h2>6. 現場閘門輸出（原文）</h2>
+<p>以下是本白皮書產出當時、在工作區實跑的四條。第二、四條是<b>紅的</b>，歸屬見 §7。</p>
+<pre><code>### validate.py
+  -&gt; OK
+
+  lessons.jsonl: 159 records {'lesson': 159}
+  -&gt; OK
+
+### selftest.py
+  rejected  duplicate_decision_id         a supersede chain cannot resolve if the id it names is not unique
+
+  10/10 injected violations rejected
+
+### build_memory_index.py --check
+    .workbuddy/memory/2026-09-16.md :: 12:00–12:30 把四條「仍未解」逐條歸類並收尾（＋順手裁決 KV 矛盾）: fields differ ['body_bytes', 'line_end', 'line_start', 'lines', 'title']
+    .workbuddy/memory/2026-09-16.md :: 收尾（13:4x–14:0x）：交付驗證本身撞到兩個洞 —— 一個在閘門的參考身分，一個在「改了沒重建」: fields differ ['body_bytes', 'line_end', 'line_start', 'lines', 'subs', 'title']
+    regenerate with: python3 memory/build_memory_index.py
+
+### index_assets.py --check
+  [error] 4 drift(s) between the manifest and disk:
+    scripts/check/phase_split_ab.py: bytes: manifest 57328 vs disk 89443
+    scripts/check/phase_split_ab.py: mtime: manifest '2026-09-17T18:52:23' vs disk '2026-09-17T20:01:29'
+    scripts/run_server.sh: bytes: manifest 129363 vs disk 130857
+    scripts/run_server.sh: mtime: manifest '2026-09-17T18:50:45' vs disk '2026-09-17T19:39:59'
+    regenerate with: python3 index_assets.py</code></pre>
+
+<h3>6.1 索引紅燈的歸屬（本輪<span class="tag t-red">不重生</span>）</h3>
+<table>
+<thead><tr><th>紅燈</th><th>指到誰</th><th>證據</th></tr></thead>
+<tbody>
+<tr><td><code>index_assets.py --check</code> 4 筆</td>
+    <td><b>另一條線</b></td>
+    <td>兩筆是 <code>scripts/check/phase_split_ab.py</code>（mtime <span class="num">20:01:29</span>，<b>此刻正在被改</b>），
+        兩筆是 <code>scripts/run_server.sh</code>（<span class="num">19:39:59</span>）</td></tr>
+<tr><td><code>build_memory_index.py --check</code></td>
+    <td><b>共用的 append-only 日誌</b></td>
+    <td><code>.workbuddy/memory/2026-09-17.md</code> 兩條線每個 turn 都在 append；
+        <code>2026-09-16.md</code> 的 14 條<b>本輪完全沒碰過</b></td></tr>
+</tbody>
+</table>
+<div class="box warn">
+<span class="h">為什麼不重生：依規程 §4，另一個 writer 正在同一棵樹上工作</span>
+現在重生會把對方<b>未定稿的位元組</b>寫進 <code>MANIFEST.jsonl</code>，
+得到一份「既不是前一版、也不是對方完成版」的索引。紅燈不是我的錯時，
+不要急著重生把它消掉 —— 先找出 owner。
+<b>本輪的改動對索引零影響</b>（已驗）：<code>gemma4-provider</code>／<code>refine_harness</code>／
+<code>run_model_smoke</code>／<code>config.local.env</code> 逐個 <code>grep -c</code> 於
+<code>MANIFEST.jsonl</code> 都是 <code>0</code>，而新增 <code>docs/*.html</code> 不漂移。
+</div>
+
+<h2>7. 誠實邊界（本文件<span class="tag t-amber">不主張</span>什麼）</h2>
+<ul>
+<li><b>smoke 還沒有結果。</b>本白皮書產出時，<code>tb run</code> 仍在跑
+（<code>run-id=model_smoke_20260917_195218</code>，日誌 <code>/tmp/smoke_run.log</code>）。
+所以本文件<b>不主張</b>「PrimeAgentAgent ＋ 雲端模型這條路能跑完一題」——
+只主張到「key 與 model 可用（<code>--probe</code> 200）」。<br>
+<span class="mut">附帶一個觀測法的坑：<code>tb</code> 的進度表是即時終端顯示，重導到檔案<b>不會渲染</b>
+⇒ 日誌長時間停在 <code>Starting harness run</code> 是正常的，不代表卡住；判「還活著」要看
+<code>ps</code> 的 etime 與 <code>docker ps -a</code>。</span></li>
+<li><b><code>freebuff2api</code> 在這台機器上不存在</b>（不是「今天沒開」）。實測：
+<code>refine_harness.sh:47</code> 的探測回 <code>rc=7</code>（連線被拒）；<code>127.0.0.1:1234</code>
+沒有 listener；專案不在 worktree／主 repo／<code>~/Documents</code>；
+<code>app/cloud/freebuff2api/.env</code> 不存在 ⇒ <code>SFT_API_KEY</code> 是空字串。</li>
+<li><b>回退那條在 host 上也是壞的</b>：它指向 <code>http://host.docker.internal:1234/v1</code>，
+而 <code>host.docker.internal</code> <b>只在容器內解析得到</b>（<code>/etc/hosts</code> 無此條目、
+<code>curl</code> exit <b>6</b>），refine 卻跑在 host 上。⇒ 兩條分支都不通。<b>未修。</b></li>
+<li><b>端點連不到時 prime-agent 是「卡住」而不是「報錯」</b>。單變數實測：
+<code>127.0.0.1:1</code>（可解析、沒人聽）→ <b>TIMEOUT 25 s、零輸出</b>；
+<code>127.0.0.1:18099</code>（有人在聽）→ <code>rc=0</code>；
+TokenHub（可達、回 401）→ <code>rc=1</code> 秒回。
+⇒ 判準是「<b>連得到（含回 4xx）＝快速返回；連不到＝卡住</b>」。
+機制（是否重試退避）<b>未驗</b>。</li>
+<li><b><code>reasoning: false</code> 與 <code>maxTokens: 4096</code> 刻意未改</b>。V4.1-Flash 是深度思考
+模型、最大輸出 384k，但 <code>gemma4-provider.ts</code> 仍宣告 <code>reasoning:false</code>／
+<code>maxTokens:4096</code>。<b>未驗證</b> harness 遇到「宣告無 reasoning、實際有」時的行為；
+<code>maxTokens</code> 是<b>單次回覆上限</b>、直接決定成本曲線 ⇒ 改它是決策不是修 bug。</li>
+<li><b><code>contextWindow</code> 的 128k 只影響「壓縮時機」，不影響正確性</b>；且 TB 在 run 開始就把 harness
+打包進容器 ⇒ <b>改動對「正在跑的那一輪」不生效</b>，下一輪才生效。</li>
+<li><b>未跑 D5 的數值那一半</b>（<code>m123_oracle_gate.py</code>）：本 commit 的
+<code>git diff --name-only</code> 不含任何 <code>src/</code> 檔，依 §2.4 的實務判準不適用。</li>
+</ul>
+
+<h2>8. 本輪的手法沉澱</h2>
+<table>
+<thead><tr><th>手法</th><th>用在哪</th><th>為什麼有效</th></tr></thead>
+<tbody>
+<tr><td><b>兩面夾</b></td>
+    <td>手上還沒有 key 時，證「B 的接線是通的」</td>
+    <td>假憑證打真端點（驗我方接線）＋ 真形狀打假端點（驗成功路徑）。
+        把「我方」與「對方」兩個未知項<b>分開消掉</b>，比「等條件齊了再說」多拿一倍資訊</td></tr>
+<tr><td><b>絆線</b></td>
+    <td>證「某條路徑沒有被走到」</td>
+    <td>放一個「走到就會留痕」的替身去堵它。用「把依賴拿掉」的做法會連<b>別的</b>東西一起拿掉，
+        失敗點前移，而你讀到的失敗與你要問的問題無關</td></tr>
+<tr><td><b>先問端點，不問文件</b></td>
+    <td>「這把 key 能用哪些模型」</td>
+    <td><code>GET /v1/models</code> 回 121 個；文件與端點會不一致（已下線的模型仍在清單裡）</td></tr>
+<tr><td><b>寫密文用編輯工具，不走 shell</b></td>
+    <td>把 key 寫進 <code>config.local.env</code></td>
+    <td>不進命令列、不進 shell 歷史；核對只印長度與尾 4 碼</td></tr>
+</tbody>
+</table>
+
+<h2>9. 未完成／待決</h2>
+<ul>
+<li><b>smoke 結果</b>（見 §7 第一條）—— 跑完後應補一份結果記錄。</li>
+<li><b><code>run_round.sh</code> 未接上 <code>config.local.env</code></b>，這是<b>刻意的</b>：
+該檔第 7、13 行就是 <code>TB_GEMMA4_*</code>，接上去會<b>連帶把 A 槽也換掉</b>，
+那是另一個決策。目前要讓 refine 吃到新變數，得先
+<code>set -a; source agent_harness/tb_loop/config.local.env; set +a</code>（已實測有效）。</li>
+<li><b><code>cgc-tb-smoke</code> skill 的快照已 stale</b>（本輪改了它的原檔）。
+依規程 §5.2，刷新要與 skill 改動<b>同一個 commit</b>；但 §4 允許在別的 writer 在場時先擱著
+（<code>SNAPSHOT.jsonl</code> 的 banner 已聲明不會自動跟上，且它記了 provenance）。<b>本輪未刷新。</b></li>
+</ul>
+
+</div>
+</body>
+</html>

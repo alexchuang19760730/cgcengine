@@ -448,3 +448,15 @@ data/replay_bench/
 #     它的「< 20 MB」上界只有在產物進版控時才有意義，所以它是納管的。
 /agent_harness/engine_loop/runs/
 /agent_harness/engine_loop/build.json
+
+# ---- 2026-09-17: tb_loop 的本機私密端點/金鑰 (不入庫) ----
+#   config.local.env 放的是「這一台機器要打哪個端點 ＋ 那把 key」。它必須是獨立一個檔，
+#   因為 config.env 本身在版控內、而且被 engine_loop 的 MANIFEST 索引
+#   （index_assets.py --check 驗它的 bytes/mtime）⇒ 金鑰寫進去就會進 git 並讓索引漂移。
+#   載入時機：tb_loop/scripts/run_model_smoke.sh 在 source config.env「之後」才載入本檔，
+#   所以它蓋掉版控內的預設；run_round.sh 刻意不讀它（學習循環只吃 config.env，
+#   免得同一份資產在兩條路上跑不同模型）。
+#   ★ 同目錄的 config.local.env.example 是**要入庫的**（它只有形狀、沒有值），
+#     所以樣式指名到 config.local.env 這一個檔名 —— 不要用 *.local.env / *.env
+#     之類會把 example 一起吞掉的樣式。
+/agent_harness/tb_loop/config.local.env

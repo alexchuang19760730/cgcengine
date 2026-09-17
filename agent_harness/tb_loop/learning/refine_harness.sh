@@ -40,16 +40,37 @@ if [[ -n "$SNAPSHOT_DIR" && -f "$TB_HARNESS_DIR/harness_state.json" ]]; then
     fi
 fi
 
+# 蒸餾端點：預設沿用 SFT_*（freebuff2api）。
+# ★ 可以用 REFINE_API_* **單獨覆蓋蒸餾這一格** —— 這層存在的理由是 SFT_* 是「一整槽」：
+#   蒸餾（本檔）／生成 SFT 資料（gen_sft.sh → CodebuffApiAgent）／直接當 tb 的 agent，
+#   三者共用同一組變數。而把整槽指到外部 OpenAI 相容 API 會把第三個**靜默弄壞** ——
+#   CodebuffApiAgent 解析的是 codebuff 原生 DSML 工具呼叫格式，普通模型不會吐那種格式
+#   （請求會成功、卻解析不出任何工具呼叫，且沒有錯誤訊息）。
+#   有的話就是「只換蒸餾器」；沒有的話行為與以前一字不差。
+REFINE_BASE_URL="${REFINE_API_BASE_URL:-$SFT_API_BASE_URL}"
+REFINE_KEY="${REFINE_API_KEY:-$SFT_API_KEY}"
+REFINE_ID="${REFINE_API_MODEL:-$SFT_MODEL}"
+
 # 蒸馏模型：默认 freebuff2api 的 codebuff；不可达时回退本地 gemma4
-REFINE_MODEL="${TB_REFINE_MODEL_PATTERN:-freebuff-codebuff/${SFT_MODEL}}"
+# 模型字串的優先序：REFINE_API_MODEL（本次執行的明確指定）> TB_REFINE_MODEL_PATTERN（config.env）
+#   ★ 為什麼非要這條分岔不可：config.env 是 `source` 進來的**無條件賦值**，
+#     所以 `TB_REFINE_MODEL_PATTERN=... bash refine_harness.sh` 一定被它蓋掉（實測）。
+#     要能「只覆蓋蒸餾器」就必須有一個 config.env 不認識的變數名。
+#     （這一條是我第一版的漏洞：探測已經改打新端點、模型字串卻還是舊的 —— 症狀會是
+#      「請求打到對的地方、卻說找不到模型」，看起來像端點的問題。）
+if [[ -n "${REFINE_API_MODEL:-}" ]]; then
+    REFINE_MODEL="freebuff-codebuff/${REFINE_API_MODEL}"
+else
+    REFINE_MODEL="${TB_REFINE_MODEL_PATTERN:-freebuff-codebuff/${SFT_MODEL}}"
+fi
 if [[ "$REFINE_MODEL" == freebuff-codebuff/* ]]; then
-    probe="${SFT_API_BASE_URL//host.docker.internal/127.0.0.1}"
-    if ! curl -sf -m 8 -H "Authorization: Bearer $SFT_API_KEY" "$probe/models" >/dev/null 2>&1; then
-        echo "WARN: freebuff2api ($probe) 不可达 -> 蒸馏回退本地模型 $TB_MODEL_PATTERN"
+    probe="${REFINE_BASE_URL//host.docker.internal/127.0.0.1}"
+    if ! curl -sf -m 8 -H "Authorization: Bearer ${REFINE_KEY}" "${probe}/models" >/dev/null 2>&1; then
+        echo "WARN: 蒸餾端點 (${probe}) 不可達 -> 蒸馏回退本地模型 ${TB_MODEL_PATTERN}"
         REFINE_MODEL="$TB_MODEL_PATTERN"
     fi
 fi
-echo "== refine 蒸馏模型: $REFINE_MODEL"
+echo "== refine 蒸馏模型: ${REFINE_MODEL}"
 
 export PRIME_AGENT_CODING_AGENT_DIR="$TB_HARNESS_DIR"
 
@@ -66,7 +87,7 @@ else
     exit 2
 fi
 
-"$PY" - "$FAILURES" "$MAX" "$REFINE_MODEL" <<'PY'
+"$PY" - "$FAILURES" "$MAX" "$REFINE_MODEL" "$REFINE_BASE_URL" "$REFINE_KEY" "$REFINE_ID" <<'PY'
 import json
 import os
 import re
@@ -74,6 +95,8 @@ import subprocess
 import sys
 
 failures_path, max_fail, refine_model = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+# 蒸餾端點（由 shell 層決定：REFINE_API_* 有設就用它，否則沿用 SFT_*）
+refine_base, refine_key, refine_id = sys.argv[4], sys.argv[5], sys.argv[6]
 failures = json.load(open(failures_path, encoding="utf-8"))[:max_fail]
 if not failures:
     print("no failures to refine")
@@ -264,7 +287,14 @@ for f in failures:
     ]
     print(f"[refine] {f.get('task_id')} (model={refine_model}, evidence={len(evidence)} chars) ...")
     # stdin=DEVNULL：无 TTY/管道环境（如 Windows）下 prime-agent 会等 stdin 挂起
-    r = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    # ★ 蒸餾端點「只」注入這個子行程（freebuff-provider.ts 讀的就是 SFT_*）——
+    #   不改本行程、也不碰 gen_sft.sh / CodebuffApiAgent 那一槽（它們仍用 config.env 的 SFT_*）。
+    child_env = dict(os.environ)
+    child_env["SFT_API_BASE_URL"] = refine_base
+    child_env["SFT_API_KEY"] = refine_key
+    child_env["SFT_MODEL"] = refine_id
+    r = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                       env=child_env)
     if r.returncode != 0:
         tail = (r.stderr or r.stdout or "")[-500:]
         print(f"  WARN rc={r.returncode}: {tail}")
