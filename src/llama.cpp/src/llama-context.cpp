@@ -14,6 +14,8 @@
 #include "llama.h"
 
 #include "llama-expert-cache.h"
+#include "llama-cgc-canon.h"
+#include "llama-cgc-phase.h"
 
 #include <algorithm>
 #include <cinttypes>
@@ -283,16 +285,81 @@ llama_context::llama_context(
     // pool path; only prefill chunks exceed it. Leave the clamp in place for every other config.
     cgc_stream_on = cgc_prefill_stream_enabled((int64_t) model.hparams.n_expert);
     const bool cgc_prefill_stream = cgc_stream_on;
+
+    // [CGC M1 work item 2 · phase split] THE decode-graph width bound, computed once, here, from the
+    // pool's ROUTABLE geometry instead of from cap alone (work item 3's cap demotion):
+    //
+    //     decode_max = min(CGC_POOL_MAX_TOKENS, floor(min_usable_slots / n_expert_used))
+    //
+    // `min_usable_slots` is the MINIMUM over pooled layers, so a pool that cannot route the widest
+    // layer's union bounds the whole step: the predicate is per step, not per layer (the graph builds
+    // one phase for the step), and taking the min is the direction that cannot under-provision.
+    // Layers with no pool are skipped: their FFN reads full-width weights and they never route.
+    // Clamped up to 1 for the same reason the pool path always served n_tokens == 1: if the pool is
+    // too small to route even one token's top-k, the single-token decode step still has to take the
+    // pool path (it is the only path that is correct against shrunk tensors), and the clamp below
+    // then keeps every step at one token rather than letting a wider step out without a phase for it.
+    {
+        const uint32_t cap = cgc_pool_max_tokens();
+        const uint32_t top_k = (uint32_t) model.hparams.n_expert_used;
+        uint64_t min_usable = 0;
+        if (model.expert_cache != nullptr && model.expert_cache_pool_capacity > 0) {
+            for (uint32_t il = 0; il < model.hparams.n_layer_all; ++il) {
+                const uint32_t us = llama_expert_cache_usable_slots(model.expert_cache, il);
+                if (us == 0) {
+                    continue; // layer without a pool: not a constraint on the step's phase
+                }
+                if (min_usable == 0 || us < min_usable) {
+                    min_usable = us;
+                }
+            }
+        }
+        // cgc_decode_width folds in both the routable bound and the T_prefill preference, so the
+        // clamp below and the predicate the graph/hook use cannot disagree (see llama-cgc-phase.h).
+        cgc_decode_max_tokens = cgc_decode_width(min_usable, top_k, cap);
+        if (cgc_decode_max_tokens == 0) {
+            cgc_decode_max_tokens = 1;
+        }
+        // Printed with fprintf, NOT LLAMA_LOG_INFO: the production launcher runs at verbosity 3
+        // (`common_params_print_info: verbosity = 3`), so every INFO line from this file is
+        // suppressed. Measured 2026-09-17: the banner was present in the binary (`strings` hit) and
+        // absent from all 900+ lines of the run's log -- an unobservable phase decision, in the one
+        // milestone where the phase decision IS the mechanism. Every other CGC diagnostic in this
+        // engine uses fprintf(stderr, ...) for the same reason; this now matches them. Printed once
+        // from the constructor, so the cost is one line per process.
+        fprintf(stderr, "CGC-PHASE-SPLIT: cap=%u routable=%llu slots / top_k=%u -> decode graph width=%u tokens "
+                "(bound=%u, T_prefill=%u%s); prefill slab %s\n",
+                cap, (unsigned long long) min_usable, top_k, cgc_decode_max_tokens,
+                cgc_decode_bound(min_usable, top_k, cap), cgc_prefill_threshold(),
+                cgc_prefill_threshold() > cgc_decode_bound(min_usable, top_k, cap) ? ", non-binding" : ", BINDING",
+                cgc_prefill_stream ? "armed (CGC_PREFILL_STREAM=1)" : "NOT armed");
+    }
+
+    // The clamp exists for exactly one reason: without the whole-layer slab there is no prefill
+    // graph, so every step must fit the decode graph -- and then n_batch must not exceed the decode
+    // bound, or a step would be built for which no phase is correct (measured 2026-09-14: lifting the
+    // clamp without the slab produced a `ntok=16 mode=wide ne2=256` build whose Metal encoder faulted
+    // and whose router ids came back as NaN bit patterns). With the slab armed the clamp is lifted and
+    // width is decided per step by the phase predicate alone, which is work item 2's requirement.
+    // Note it is the BOUND, not cap: a pool too small to route `cap` tokens must not be allowed to
+    // build a `cap`-token step either (that is the union > usable_slots case, and it does not abort --
+    // it silently gathers, which is the shape that produced `buffer is nil`).
     if (model.expert_cache_pool_capacity > 0 && cparams.n_batch > 1 && !cgc_prefill_stream) {
-        const uint32_t pmax = cgc_pool_max_tokens();
-        if (cparams.n_batch > pmax) {
-            cparams.n_batch = pmax;
-            LLAMA_LOG_INFO("%s: L4 pool capacity=%zu -> n_batch capped to %u (multi-token pool path up to %u tokens; larger batches read shrunk tensors OOB)\n",
-                    __func__, model.expert_cache_pool_capacity, pmax, pmax);
+        if (cparams.n_batch > cgc_decode_max_tokens) {
+            const uint32_t want = cparams.n_batch;
+            cparams.n_batch = cgc_decode_max_tokens;
+            fprintf(stderr, "CGC-PHASE-SPLIT: L4 pool capacity=%zu -> n_batch %u capped to %u "
+                    "(decode graph bound: %u tokens; cap=%u, larger batches read shrunk tensors OOB)\n",
+                    model.expert_cache_pool_capacity, want, cgc_decode_max_tokens,
+                    cgc_decode_max_tokens, cgc_pool_max_tokens());
         }
     }
     if (cgc_prefill_stream && model.expert_cache_pool_capacity > 0) {
-        LLAMA_LOG_INFO("%s: CGC_PREFILL_STREAM=1 -> n_batch NOT capped (prefill chunks use whole-layer slab path)\n", __func__);
+        // fprintf for the same verbosity reason as the banner above: this line is the visible half of
+        // "the clamp is lifted", and a lifted clamp is exactly the change whose absence caused the
+        // 2026-09-14 `ntok=16 mode=wide ne2=256` fault. It must not be invisible.
+        fprintf(stderr, "CGC-PHASE-SPLIT: CGC_PREFILL_STREAM=1 -> n_batch NOT capped "
+                "(prefill chunks use whole-layer slab path)\n");
     }
 
     cparams.n_ubatch = std::min(cparams.n_batch, params.n_ubatch == 0 ? params.n_batch : params.n_ubatch);
@@ -1858,7 +1925,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     // routed experts from prefill (recorded by the hook via record_routes). One-time sync
     // cold-start preads; a no-op on later steps (hot_prewarm_done). Together with the B
     // async prefetch this keeps the working set warm from the very first decode token.
-    if (model.expert_cache_active && (uint32_t) ubatch.n_tokens <= cgc_pool_max_tokens() && getenv("CGC_NO_PREWARM") == nullptr) {
+    if (model.expert_cache_active && cgc_is_decode_graph((int64_t) ubatch.n_tokens, cgc_decode_max_tokens) && getenv("CGC_NO_PREWARM") == nullptr) {
         llama_expert_cache * ec = model.expert_cache;
         if (ec != nullptr && llama_expert_cache_pool_active(ec)) {
             llama_expert_cache_prewarm_hot(ec);
@@ -1959,7 +2026,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     // prefetch_slot publishes slot_table only after bytes land and its LRU victim is by
     // construction not in the current step's union (union members were just LRU-touched), so the
     // refresh cannot corrupt an in-flight remap. Runs every CGC_SPAC_REFRESH routed steps.
-    if (model.expert_cache_active && (uint32_t) ubatch.n_tokens <= cgc_pool_max_tokens() &&
+    if (model.expert_cache_active && cgc_is_decode_graph((int64_t) ubatch.n_tokens, cgc_decode_max_tokens) &&
             (getenv("CGC_NO_PREFETCH") == nullptr || spac_on)) {
         llama_expert_cache * ec = model.expert_cache;
         if (ec != nullptr && llama_expert_cache_pool_active(ec)) {
@@ -3142,6 +3209,7 @@ llm_graph_params llama_context::graph_params(
         /*.cb          =*/ graph_get_cb(),
         /*.res         =*/ res,
         /*.expert_cache_active =*/ model.expert_cache_active,
+        /*.expert_cache_decode_max_tokens =*/ cgc_decode_max_tokens,
         /*.n_gpu_layers =*/ model.n_gpu_layers(),
     };
 }
@@ -4981,6 +5049,71 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
     }
     ids = ids_snap.data();
 
+    // [CGC M1 work item 4 · canonical gather order] Permute the host id snapshot so that, for every
+    // token, the k positions are ordered by expert id (ascending, ties by original position).
+    //
+    // Why the permutation is applied to `ids` HERE rather than at each writer: everything the hook
+    // writes downstream is derived from this pointer -- the remap leaf at all four write sites, the
+    // S1 table's selected list, SLOT-SEL, the prefetch collectors -- and "all four sites must agree"
+    // is precisely the invariant this repo has already broken once (see the note at the fast-path
+    // publish). One permutation applied to one array is the only shape that cannot disagree with
+    // itself. The graph side consumes the SAME permutation from the `ffn_moe_canon_perm` leaf, so the
+    // device's id order and the host's host-written order are the same sequence by construction.
+    //
+    // Order matters for the same reason it does in the graph: this must run BEFORE the first remap
+    // write, which is why it sits at the snapshot instead of next to one particular writer.
+    //
+    // Gate: the leaf must exist in THIS build. It is created by the graph under exactly the condition
+    // the remap leaf is created under -- the two are built in the same block -- so keying on the leaf's
+    // presence keeps "the graph permuted the device ids" and "the hook permuted the host ids" from
+    // ever disagreeing. A missing or mis-sized leaf leaves BOTH unpermuted (mode is then a no-op for
+    // this step) and says so once, rather than permuting one side only.
+    std::vector<int32_t> cgc_canon_perm;
+    std::vector<int32_t> cgc_canon_ids;
+    {
+        const int canon_mode = cgc_canon_order_mode();
+        if (canon_mode != 0) {
+            // CGC_IDS_LINEAR_READ is NOT excluded here, and that is deliberate: it reproduces a
+            // different defect (the pre-fix linear read) and the only requirement canon has is that
+            // BOTH sides permute from the same host array, which stays true whether that array is the
+            // correct nb-aware snapshot or the deliberately wrong one. Excluding it would make the
+            // graph permute while the host did not -- the one combination that mis-pairs silently.
+            // No run may combine them anyway (both knobs change the numbers); stated so a reader does
+            // not mistake the absence of a guard for the absence of a conflict.
+            const int64_t n_ids_step = n_tokens * n_expert_used;
+            auto it_canon = cache_canon_tensors.find(il);
+            ggml_tensor * leaf = it_canon != cache_canon_tensors.end() ? it_canon->second : nullptr;
+            if (leaf != nullptr && leaf->data != nullptr && ggml_nelements(leaf) == n_ids_step) {
+                cgc_canon_perm.resize((size_t) n_ids_step);
+                cgc_canon_ids.resize((size_t) n_ids_step);
+                cgc_canon_build_perm(ids, cgc_canon_perm.data(), n_tokens, n_expert_used, canon_mode);
+                cgc_canon_apply(ids, cgc_canon_perm.data(), cgc_canon_ids.data(), n_ids_step);
+                memcpy(leaf->data, cgc_canon_perm.data(), (size_t) n_ids_step * sizeof(int32_t));
+                ids = cgc_canon_ids.data();
+                static int cgc_canon_wrote = 0;
+                if (cgc_canon_wrote++ < 8) {
+                    fprintf(stderr, "CGC-CANON: il=%d mode=%d n=%lld perm[0..7]=[%d %d %d %d %d %d %d %d] first=%d last=%d\n",
+                            il, canon_mode, (long long) n_ids_step,
+                            cgc_canon_perm[0], cgc_canon_perm[1], cgc_canon_perm[2], cgc_canon_perm[3],
+                            cgc_canon_perm[4], cgc_canon_perm[5], cgc_canon_perm[6], cgc_canon_perm[7],
+                            cgc_canon_ids[0], cgc_canon_ids[n_ids_step - 1]);
+                }
+            } else {
+                // Loud by design: the alternative failure mode is the host permuting while the graph
+                // does not (or the reverse), i.e. every expert paired with another expert's weight.
+                static int cgc_canon_miss = 0;
+                if (cgc_canon_miss++ < 8) {
+                    fprintf(stderr, "CGC-CANON: il=%d mode=%d NO PERM LEAF (%s, ne=%lld want=%lld) -- "
+                                    "host and device orders will agree by NOT permuting\n",
+                            il, canon_mode,
+                            leaf == nullptr ? "absent" : (leaf->data == nullptr ? "no data" : "size mismatch"),
+                            leaf != nullptr ? (long long) ggml_nelements(leaf) : -1LL,
+                            (long long) n_ids_step);
+                }
+            }
+        }
+    }
+
     // [CGC 2026-09-17 §EN-14b] SLOT-SEL: the same reverse lookup, restricted to the experts the
     // consumer actually reads THIS step.
     //
@@ -5399,7 +5532,13 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
     // prefill chunks of 2048 run the FFN against a freshly-streamed full expert set instead of
     // the shrunk pool tensor.
     const bool cgc_prefill_stream = cgc_stream_on;  // validated once in the constructor
-    if ((uint64_t) n_tokens > cgc_pool_max_tokens()) {
+    // [CGC M1 work item 2 · phase split] The complement of the graph's decode block, by the SAME
+    // predicate (this used to be a second, independently written `n_tokens > cap`). A step that the
+    // graph builds as the decode graph must NOT be served by this branch, and vice versa: this branch
+    // repoints the FFN weight tensors at a whole-layer slab and relies on mul_mat_id reading RAW ids,
+    // so serving it a step whose graph built the remap leaf would read raw ids against a ne[2]=256
+    // slab while the leaf says something else -- legal values, wrong experts.
+    if (!cgc_is_decode_graph((int64_t) n_tokens, cgc_decode_max_tokens)) {
         // [CGC 2026-09-15] env-gated: this fired unconditionally on every large-batch step
         // (10 lines per run, on the hot prefill path) and was committed by accident. Opt-in via
         // CGC_M2_DBG. Static-initialized once so the getenv cost is paid a single time, not per
@@ -5409,7 +5548,7 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
         if (cgc_m2_dbg && dbg_cnt < 10) {
             dbg_cnt++;
             fprintf(stderr, "CGC-M2-DBG: il=%d n_tokens=%lld pmax=%u stream=%d\n",
-                    il, (long long) n_tokens, cgc_pool_max_tokens(), (int) cgc_prefill_stream);
+                    il, (long long) n_tokens, cgc_decode_max_tokens, (int) cgc_prefill_stream);
         }
         // [M2 debug 2026-09-14] Print standard-path prefill tensor state
         static const bool m2_state_dbg = getenv("CGC_M2_STATE_DBG") != nullptr;
@@ -6719,13 +6858,17 @@ llm_graph_cb llama_context::graph_get_cb() const {
             // the eval hook's repoint is the only geometry change, and the graph-build restore
             // (cache_gather_ne2 / cache_orig) returns the tensor to its shrunk state afterward.
             const bool prefill_stream = cgc_stream_on;  // validated once in the constructor
-            if (prefill_stream && (int64_t) ubatch.n_tokens > (int64_t) cgc_pool_max_tokens()) {
+            // [CGC M1 work item 2 · phase split] Same predicate as the graph and the hook; this is
+            // the third place that decides which geometry the step's FFN weight tensors get, so it
+            // must ask the shared function rather than re-derive `n_tokens > cap`.
+            const bool cgc_step_is_decode = cgc_is_decode_graph((int64_t) ubatch.n_tokens, cgc_decode_max_tokens);
+            if (prefill_stream && !cgc_step_is_decode) {
                 return; // eval hook handles it (whole-layer slab)
             }
             if (!llama_expert_cache_pool_owned(model.expert_cache)) {
                 return; // legacy path: the tensor's buffer already points at the pool by construction
             }
-            if ((int64_t) ubatch.n_tokens <= (int64_t) cgc_pool_max_tokens()) {
+            if (cgc_step_is_decode) {
                 const uint8_t * base = llama_expert_cache_pool_data(model.expert_cache, (uint32_t) il_, kind);
                 ggml_backend_buffer_t pbuf = llama_expert_cache_pool_buffer(model.expert_cache, (uint32_t) il_, kind);
                 if (base == nullptr || pbuf == nullptr) {
@@ -6749,7 +6892,7 @@ llm_graph_cb llama_context::graph_get_cb() const {
             if (getenv("CGC_POOL_SPLIT_DBG") != nullptr && il_ <= 2) {
                 fprintf(stderr, "CGC-POOL-SPLIT-GEOM: il=%d kind=%d ntok=%lld mode=%s ne2=%lld data=%p buf=%p\n",
                         il_, kind, (long long) ubatch.n_tokens,
-                        (int64_t) ubatch.n_tokens <= (int64_t) cgc_pool_max_tokens() ? "pool" : "wide",
+                        cgc_step_is_decode ? "pool" : "wide",
                         (long long) wt->ne[2], wt->data, (void *) wt->buffer);
             }
         };
@@ -6778,6 +6921,15 @@ llm_graph_cb llama_context::graph_get_cb() const {
             // on the device (strided CONT -> token >= 1 got ranks 8..15 of token 0).
             if (strcmp(name, "ffn_moe_ids_leaf") == 0) {
                 cache_ids_tensors[il] = cur;
+            }
+            // [CGC M1 work item 4 · canonical gather order] `ffn_moe_canon_perm` is the permutation
+            // the graph applies to `selected_experts` and the hook applies to its host id snapshot.
+            // Captured for the same reason as the remap leaf: the eval hook has to write it in the
+            // step whose ids it describes, and it is built under the SAME condition as that leaf
+            // (same block in build_moe_ffn), which is what lets the hook treat "leaf present" as
+            // "the graph permuted this step".
+            if (strcmp(name, "ffn_moe_canon_perm") == 0) {
+                cache_canon_tensors[il] = cur;
             }
             // [CGC 2026-09-15 S1 slot-table] `ffn_moe_slot_table` is the S1 replacement for
             // `ffn_moe_topk_remap` and is built under the same conditions, so it must get the same

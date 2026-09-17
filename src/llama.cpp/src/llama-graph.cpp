@@ -6,6 +6,9 @@
 #include "llama-cparams.h"
 #include "llama-sampler.h"
 
+#include "llama-cgc-canon.h"
+#include "llama-cgc-phase.h"
+
 #include "llama-kv-cache.h"
 #include "llama-kv-cache-iswa.h"
 #include "llama-kv-cache-dsa.h"
@@ -1498,6 +1501,7 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     n_outputs        (params.n_outputs),
     n_ctx_orig       (cparams.n_ctx_orig_yarn),
     expert_cache_active (params.expert_cache_active),
+    expert_cache_decode_max_tokens (params.expert_cache_decode_max_tokens),
     n_gpu_layers     (params.n_gpu_layers),
     pooling_type     (cparams.pooling_type),
     rope_type        (hparams.rope_type),
@@ -2015,7 +2019,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     const bool rn_on = rn_env != nullptr && rn_env[0] != '\0' &&
         probs_in == nullptr && gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX &&
         expert_cache_active && il >= 0 && il < n_layer + n_layer_nextn &&
-        n_tokens >= 1 && (uint64_t) n_tokens <= cgc_pool_max_tokens();
+        n_tokens >= 1 && cgc_is_decode_graph(n_tokens, expert_cache_decode_max_tokens);
     if (rn_on) {
         ggml_tensor * rn_mask = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_expert, 1);
         ggml_set_output(rn_mask); // writable from host; prevent allocator overwrite before softmax reads it
@@ -2179,8 +2183,60 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // tensors are shrunk to the bounded pool capacity — a raw-id read against a capacity-slot
     // tensor would go OOB -> NaN -> garbage downstream. Creating the leaf here for such batches
     // would perturb the ggml-alloc buffer layout, so it is only built for the pool-path range.
+    // [CGC M1 work item 2 · phase split] This block IS the decode graph, so the condition is now
+    // the one shared phase predicate rather than a re-derived `n_tokens <= cap`: cap is only this
+    // graph's ceiling (llama-cgc-phase.h), and a step wider than the pool can route takes the
+    // prefill graph even when cap would have allowed it. Every other site that asks the same
+    // question (the hook's prefill branch, the prewarm/prefetch pool features) asks this function.
     if (expert_cache_active && !(dw_env && dw_env[0]) && n_tokens >= 1 &&
-            (uint64_t) n_tokens <= cgc_pool_max_tokens() && il >= 0 && il < n_layer + n_layer_nextn) {
+            cgc_is_decode_graph(n_tokens, expert_cache_decode_max_tokens) && il >= 0 && il < n_layer + n_layer_nextn) {
+        // [CGC M1 work item 4 · canonical gather order] CGC_CANON_ORDER=1 (or =2 for the identity
+        // control) applies ONE permutation to `selected_experts` HERE, before anything downstream
+        // consumes it, so every consumer follows without a second, independently computed perm:
+        //
+        //   * `weights = get_rows(probs, selected_experts)` below is gathered POSITIONALLY and is
+        //     consumed positionally by ggml_mul, so it must follow the same perm -- permuting only
+        //     the ids would pair expert A's output with expert B's weight (a silent wrong answer,
+        //     not a reordering). See docs/M1_WORKITEM4_CANONICAL_GATHER_ORDER_2026-09-17.md §1.
+        //   * the S1 gather's own CONT of `selected_experts`, built below in this same block
+        //   * the host-written remap leaf, which the hook fills with the ids permuted by the SAME
+        //     perm (llama-context.cpp, expert_cache_on_topk). That is why the placement is above the
+        //     slot-table/remap branch and not after it: a placement below would hand the GPU an
+        //     unpermuted id vector for a permuted weight vector.
+        //
+        // The perm is built on the HOST (the hook already reads the raw top-k ids there), so the
+        // sort key never has to exist on the device: the hook writes the perm into a host-written
+        // I32 leaf and this side consumes it as GET_ROWS' index vector.
+        //
+        // Two structures ARE avoided by construction, because both were measured to abort the
+        // reserve build with `ggml-alloc.c:623 GGML_ASSERT(buffer_id >= 0)`: a 1-D root (`perm`) is
+        // consumed directly -- the `slot_table` shape, the one proven to schedule -- and the permuted
+        // ids are a CONT -> RESHAPE_1D -> GET_ROWS -> RESHAPE_2D chain, which is the S1 chain
+        // verbatim. A 2-D perm root reached only through a view does not schedule.
+        if (cgc_canon_order_mode() != 0) {
+            const int64_t n_sel = (int64_t) n_expert_used * (int64_t) n_tokens;
+            ggml_tensor * perm = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_sel);
+            ggml_set_output(perm); // one pinned buffer per layer -- same reason as the remap leaf
+            cb(perm, "ffn_moe_canon_perm", il);
+            ggml_build_forward_expand(gf, perm);
+
+            // SHAPE, measured the hard way: ggml_get_rows treats src0 as a TABLE of rows of width
+            // src0->ne[0] and indexes it with src1's values (`result = [a->ne0, b->ne0, b->ne1, b->ne2]`,
+            // with `GGML_ASSERT(a->ne[2] == b->ne[1])`). A flat 1-D id vector as src0 is therefore
+            // wrong twice: one row of width n_sel (so an index of 0 reads the first n_sel ids), and a
+            // result of [n_sel, n_sel] -- measured as
+            // `ggml.c:3703 GGML_ASSERT(ggml_nelements(a) == ne0*ne1) failed` from the reshape below,
+            // i.e. an abort during model load, before any token. Casting the ids to [1, n_sel] makes
+            // every row exactly one id wide, which is precisely the `slot_table` shape the S1 gather
+            // already uses and which the assert `a->ne[2] == b->ne[1]` is written for. This is why
+            // the index vector must be ABSOLUTE and 1-D: it is consumed row-by-row in flattened order.
+            ggml_tensor * sel_c = ggml_cont(ctx0, selected_experts);
+            sel_c = ggml_reshape_2d(ctx0, sel_c, 1, n_sel); // [1, n_sel] table, one id per row
+            sel_c = ggml_get_rows(ctx0, sel_c, perm);       // [1, n_sel]
+            sel_c = ggml_reshape_2d(ctx0, sel_c, n_expert_used, n_tokens);
+            cb(sel_c, "ffn_moe_topk_canon", il);
+            selected_experts = sel_c;
+        }
         if (cgc_slot_table_gpu && il >= cgc_s1_min_il) {
             // table: [1, n_expert], published by the hook, identical for every layer of the same
             // width so the shape (and thus ggml-alloc's sizing) never changes step to step.

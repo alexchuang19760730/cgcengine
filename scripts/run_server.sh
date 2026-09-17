@@ -1480,6 +1480,25 @@ fi
 if [ -n "${CGC_IDS_LINEAR_READ:-}" ]; then
     SERVER_ENV+=(CGC_IDS_LINEAR_READ="$CGC_IDS_LINEAR_READ")
 fi
+# [CGC M1 work item 4 · canonical gather order] CGC_CANON_ORDER=1 orders each token's k expert
+# positions by expert id before the FFN aggregation, so the fp32 add chain (which is not
+# associative -- CGC_ADD_ORDER=rev moved the anchor md5) stops being a function of the pool layout.
+# =2 is the IDENTITY control: the same graph nodes with perm[p] = p, i.e. it isolates "the reordering
+# changed the numbers" from "the extra nodes changed the numbers". Both modes change model output,
+# so neither may be quoted as quality or D5 evidence for a reference dumped in another mode.
+# Same allowlist rule as the rest: an unlisted CGC_* is dropped silently, which is indistinguishable
+# from "the change had no effect" -- exactly the failure this knob's first run would be misread as.
+if [ -n "${CGC_CANON_ORDER:-}" ]; then
+    SERVER_ENV+=(CGC_CANON_ORDER="$CGC_CANON_ORDER")
+fi
+# [CGC M1 work item 2 · phase split] CGC_PREFILL_THRESHOLD is the width at which a step takes the
+# PREFILL graph (whole-layer slab, 256 experts, raw ids) even though the decode graph could route it.
+# Default 512 (the roadmap's starting point); only has an effect when the pool is large enough to
+# route wide steps. Same allowlist rule as the rest: an unlisted CGC_* is dropped silently, which is
+# indistinguishable from "the threshold had no effect".
+if [ -n "${CGC_PREFILL_THRESHOLD:-}" ]; then
+    SERVER_ENV+=(CGC_PREFILL_THRESHOLD="$CGC_PREFILL_THRESHOLD")
+fi
 # [CGC 2026-09-15 S1 kernel-side ids capture] Opt-in snapshot of the ids a mul_mat_id kernel
 # actually consumed, written by a tiny post-consumer kernel into a buffer the graph allocator does
 # not own. Must be listed here for the same reason as CGC_SLOT_TABLE_GPU above: the launch line's
@@ -1601,6 +1620,28 @@ fi
 # dispatch mul_mat_id against the full-width tensor. Decode stays on the pool path.
 if [ -n "${CGC_PREFILL_STREAM:-}" ]; then
     SERVER_ENV+=(CGC_PREFILL_STREAM="$CGC_PREFILL_STREAM")
+fi
+# [CGC M1 work item 2 · phase split 2026-09-17] Say out loud which regime this launch is in.
+#
+# The phase split (PREFILL_GRAPH = whole-layer slab, 256 experts / DECODE_GRAPH = pool path) only
+# EXISTS when the slab is armed; with it off there is no prefill graph, so prefill chunks wider
+# than the decode width go through the pool path and the n_batch clamp stays on. That is the
+# intended default, but it used to be visible only as an ABSENCE: the two variables that arm the
+# slab are defaulted inside the `prefill250` block above, so "the knob was never set" and "the
+# knob was set to off" look identical in the log -- and "why did this chunk take the pool path"
+# could only be answered by re-deriving the profile from the launch line. Printed here because the
+# binary cannot know: CGC_SERVER_PROFILE is a launcher-shell variable and is deliberately NOT in
+# SERVER_ENV (adding it would move every existing .cap ENV fingerprint, and D5's comparability is
+# read off that fingerprint -- see eng-gate-0006).
+#
+# Deliberately NOT auto-armed from runtime memory state: that would make two runs with identical
+# .cap fingerprints have different memory layouts, which the gate cannot see. One-time re-baseline
+# is the precondition if this ever becomes the default, and the profile should then write =0/=1
+# explicitly rather than expressing the state as absence.
+if [ -z "${CGC_PREFILL_STREAM:-}" ] || [ "${CGC_PREFILL_STREAM}" = "0" ]; then
+    echo "[arm]   slab OFF (profile=${SERVER_PROFILE}): prefill chunks wider than the decode width take the POOL path with the n_batch clamp on; arm with CGC_PREFILL_STREAM=1 and CGC_GATHER_SLAB_CAP>=n_expert (256 for the 35B MoE)"
+else
+    echo "[arm]   slab ON  (profile=${SERVER_PROFILE}, CGC_PREFILL_STREAM=1, CGC_GATHER_SLAB_CAP=${CGC_GATHER_SLAB_CAP:-64}): prefill chunks wider than the decode width use the whole-layer slab"
 fi
 # [CGC M2 pool reuse 2026-09-14] Slab-fill diagnostics: CGC_M2_PROFILE prints one CGC-M2-FILL /
 # CGC-M2-PROF line per (layer,kind) fill (pool vs disk bytes, ms), CGC_M2_DB_DISABLE turns the

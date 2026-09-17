@@ -804,6 +804,13 @@ struct llm_graph_params {
     // CGC expert-cache (rebuilt from build-test3 DWARF L781/L785): gate state copied from
     // the model so build_moe_ffn can emit the ffn_moe_topk_remap leaf without touching the model.
     bool expert_cache_active = false;
+    // [CGC M1 work item 2 · phase split] The DECODE graph's width bound in tokens, computed by the
+    // context from the pool's routable geometry (cgc_decode_bound(): min(CGC_POOL_MAX_TOKENS,
+    // floor(min usable slots per layer / n_expert_used))). The graph does not derive it and must not:
+    // deriving a phase from the pool in two places is how the graph and the hook end up serving
+    // different phases, and both failure modes of that disagreement are silent (raw ids against
+    // shrunk tensors; a remap leaf nobody fills). See llama-cgc-phase.h.
+    uint32_t expert_cache_decode_max_tokens = 0;
     uint32_t n_gpu_layers = 0;
 
     // return true if the "other" params would result in a graph with the same topology as with the current params
@@ -1015,6 +1022,9 @@ struct llm_graph_context {
     // gate state so build_moe_ffn can decide (without touching the model) whether to
     // emit the `ffn_moe_topk_remap-<il>` input leaf that the eval hook repoints.
     const bool   expert_cache_active;
+    // See llm_graph_params::expert_cache_decode_max_tokens. The phase predicate itself lives in
+    // llama-cgc-phase.h so this class and llama_context cannot disagree about it.
+    const uint32_t expert_cache_decode_max_tokens;
     const uint32_t n_gpu_layers;
 
     const enum llama_pooling_type pooling_type;

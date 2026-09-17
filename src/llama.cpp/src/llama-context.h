@@ -372,6 +372,22 @@ private:
     // token >= 1 (a strided CONT read as contiguous blocks; see the point of use in llama-graph.cpp).
     // Contract: every step that builds the S1 nodes must fill this, like the table itself.
     mutable std::map<int, ggml_tensor *> cache_ids_tensors;
+    // [CGC M1 work item 4 · canonical gather order] layer -> the `ffn_moe_canon_perm` leaf: the
+    // PERMUTATION the graph applies to `selected_experts` (k*n_tokens int32, 1-D, pinned) when
+    // CGC_CANON_ORDER != 0. perm[p] = the ORIGINAL POSITION whose id belongs at canonical position p,
+    // so the permuted id vector is ids[perm] and the permuted weight vector must be weights[perm].
+    //
+    // Why the permutation is written from the host: its key is the expert ID, which in the pool path
+    // only exists on the host (the device holds slot indices). The hook is the one place that holds
+    // the raw ids AND the pool's reverse map, and it must write this leaf in the same step it writes
+    // the remap leaf -- the two are one mapping, exactly like the table/leaf pair above. A step that
+    // writes one without the other mis-pairs experts with weights SILENTLY (both orders are legal
+    // ids), which is why the hook permutes its host id snapshot instead of permuting each site.
+    //
+    // Consumed by GET_ROWS as the index vector; the graph builds the same nodes in mode 1 and mode 2
+    // (identity), so mode 2 isolates "the reordering changed the numbers" from "the extra nodes did".
+    // mutable: filled from the const graph_get_cb.
+    mutable std::map<int, ggml_tensor *> cache_canon_tensors;
     // [CGC 2026-09-15 S1 slot-table] layer -> the `ffn_moe_slots` node, i.e. the GET_ROWS result
     // (viewed as [k, n_tokens]) that mul_mat_id consumes as its ids operand. Captured ONLY so the
     // post-synchronize readback can read back what the Metal gather actually produced, on the host,
@@ -470,6 +486,16 @@ private:
     // n_batch clamp stays on and the pool path runs, which is slow but correct -- the alternative
     // is a silently wrong slab.
     bool cgc_stream_on = false;
+    // [CGC M1 work item 2 · phase split] THE decode-graph width bound in tokens, computed ONCE in
+    // the constructor from the pool's ROUTABLE geometry:
+    //     min over pooled layers of llama_expert_cache_usable_slots(), / hparams.n_expert_used,
+    //     then lowered (never raised) by cgc_pool_max_tokens().
+    // It is a member, and not a call to cgc_pool_max_tokens(), because FOUR sites must agree on it:
+    // the n_batch clamp, the prewarm/prefetch pool features, the hook's prefill branch, and the
+    // graph's decode block (handed over through llm_graph_params). When those sites each derived the
+    // phase for themselves the graph could build the decode graph for a step the hook served with the
+    // prefill branch -- both variants of that disagreement are silent. See llama-cgc-phase.h.
+    uint32_t cgc_decode_max_tokens = 0;
     // Return the slab to gather this kind into, or nullptr if the request cannot be served.
     // Capacity is cgc_gather_slab_cap() experts and never follows the pool or the observed union
     // -- see the comment on cgc_gather_slab_cap in llama-context.cpp. The SIZE is the kind's
