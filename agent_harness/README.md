@@ -178,7 +178,7 @@ bash scripts/setup_env.sh          # 一次性：venv ＋ terminal-bench ＋ hos
 | **E0** | 索引 ＋ 第一版 episode 匯出 | ✅ 122 筆 episode；資產數看 `index_assets.py --check` |
 | **E1** | 結構 ＋ 憲章：資產搬進 `tb_loop/`、修 import 路徑、寫 `CONVENTIONS.md` | ✅ **三條驗收全部結清（2026-09-17 15:22）**：套件解析實測通過（要用 `tb_loop/.venv` 的直譯器 —— 見下方 2026-09-17 更正）、`CONVENTIONS.md` 61/61 條有指針、**`tb run --n-tasks 1` smoke 實跑通過**（`raman-fitting.easy`，1/1 resolved，見下方更正 (c)） |
 | **E2** | T1 蒸餾 ＋ 兩個投影（`sft_pi/`、`sft_prime/`、`harness_engine/`）＋ 結清 D6 的閉環欠帳 | ✅ 四個目錄已建、兩份投影可用 `--check` 驗（見 `docs/AGENT_HARNESS_E2_TRAINING_PROJECTIONS_20260916.html`）；**T1 未跑 —— 它的前置是三層而不是一個端點（見下方更正 (d)）；D6 的閉環欠帳未結清（等窗）** |
-| **E3** | 閉環：round1（無 lesson）vs round2（注入 lesson） | ⏳ 執行器已建並離線驗證（`distill/closed_loop.py`，48 項自測；見 `docs/AGENT_HARNESS_E3_DESIGN_20260916.html`）；**模型半未跑 ⇒ 本體未結清** |
+| **E3** | 閉環：round1（無 lesson）vs round2（注入 lesson） | ⏳ 執行器已建並離線驗證（`distill/closed_loop.py`，48 項自測；見 `docs/AGENT_HARNESS_E3_DESIGN_20260916.html`）；**scaffold 已對真模型驗證**（`15+27`→`42` ＋ 陰性對照進 thinking，2026-09-17 17:2x，2 次呼叫／~20 s）；**96 次呼叫的本體未跑 ⇒ 本體未結清** |
 | **E4** | 治理（可選）：log 政策、`knifeedge_matrix.py` 拆分、`scripts/check/` 分層、標記 stale | ✅ 四項都到了終態，見下方 2026-09-17 的註記；每一項的證據一支指令可重跑 |
 
 **★ 2026-09-17 更正：上面那格 E4 曾經說「`pack_evidence.py` 根本不存在」—— 那句話是假的。**

@@ -490,6 +490,13 @@ agent_harness/engine_loop/memory/INDEX.jsonl: mtime: manifest '2026-09-16T11:15:
 不必重生（實測新增後 `--check` 仍印 `manifest OK: 73 assets`）；但編輯 `CURATED` 裡**已列出的** docs 條目
 （例如改某份白皮書的 note）⇒ 會紅，要重生。⇒ 省掉一輪「我加了檔案，先重跑索引吧」的無用重生。
 
+**★ `docs/*.md` 也一樣（2026-09-17 第二次實測）**：`CURATED` 是**逐條列**
+（`index_assets.py:266+`，形狀 `("docs/<檔名>", role, loop, replayable, produces_record, note)`）
+而**不是 glob** ⇒ **新增 `docs/*.md` 同樣不漂移**。判準（兩步都做）：
+`grep -c "<檔名>" agent_harness/engine_loop/MANIFEST.jsonl` 命中 **0** ＋ `--check` 仍印 `OK: N assets`。
+反面同樣成立：**要讓一份新 docs 被索引收錄，必須手動加進 `CURATED`**（跟新腳本要加 `role`＋`note` 一樣）
+——「新增不漂移」不等於「它被索引了」，這兩件事很容易混。
+
 ### 3.3 `CURATED` 的維護
 
 **新增 `scripts/check/` 底下的腳本時要一併加進 `CURATED`**，否則它只會被自動索引、並讓

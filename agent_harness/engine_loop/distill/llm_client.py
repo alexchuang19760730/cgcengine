@@ -39,7 +39,8 @@ cost is recorded for free, and a run that quietly got 10x slower per call is vis
 
 WHAT THIS CLIENT DOES NOT SOLVE YET
 -----------------------------------
-Transport works; the SCAFFOLD IS NOW IMPLEMENTED BUT UNVERIFIED. Measured 2026-09-17 against this
+Transport works; the SCAFFOLD IS NOW IMPLEMENTED **AND VERIFIED** (2026-09-17 17:2x -- see
+"THE SMOKE THAT CLOSED THIS" below). Measured 2026-09-17 against this
 repo's own server (`scripts/run_server.sh`, Nail-Qwen3.6-MTP, MTP draft acceptance 0.89):
 
   * `/v1/chat/completions` with a bare user message -> the model enters its thinking mode and
@@ -52,10 +53,23 @@ COMPLETED think block AND an anchor, because "neither alone works" -- the block 
 over, the anchor says start answering. `closed_loop.build_prompt()` now renders exactly that and
 posts it verbatim here.
 
-★ IT IS NOT VERIFIED. The only GPU was busy with another session's A/B measurement, so the
-`15+27` -> `42` check has NOT been run. Do that before any multi-call run.
-`closed_loop_selftest.py` group H checks the string's STRUCTURE -- markers, order, anchor -- and
-**structure is not behaviour**. A well-formed prompt can still produce a degenerate answer.
+THE SMOKE THAT CLOSED THIS (2026-09-17 17:2x, two calls, ~20 s)
+--------------------------------------------------------------
+The `15+27` -> `42` check ran against `scripts/run_server.sh` (Nail-Qwen3.6-MTP, `CGC_SERVER_CTX=40960`).
+The prompt bytes were produced by `closed_loop.build_prompt()` itself -- never transcribed by hand:
+
+  * POSITIVE (with the scaffold) -> `42` (gen_tok=3, elapsed 11.5 s).
+  * NEGATIVE (same prompt, generation segment reduced to a bare `<|im_start|>assistant\n`)
+    -> the model enters its thinking mode, emits `<think>Here's a thinking process: ...` and
+       spends the whole 64-token budget without answering (gen_tok=64, elapsed 8.2 s).
+
+★ The negative control is the half that makes this evidence: without it, "42" could simply mean the
+question was easy. The negative reproduces exactly the failure mode recorded above, which is why the
+scaffold (completed think block + anchor) is the thing being tested.
+★ Those timings are COLD -- the model had just been mapped and the machine was swapping. They are
+**not** performance figures; do not quote them.
+`closed_loop_selftest.py` group H still checks the string's STRUCTURE -- markers, order, anchor --
+and **structure is not behaviour**. The smoke is what covered behaviour, and for one question only.
 
 AND THE COST, MEASURED IN THE SAME SESSION
 ------------------------------------------

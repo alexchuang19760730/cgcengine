@@ -320,10 +320,16 @@ def build_prompt(charter: str, mems: str, q: str) -> str:
         a bare `<|im_start|>assistant\\n`, which is what produced thinking fragments on a plain chat
         request (measured 2026-09-17; see llm_client.py).
 
-    ★ NOT YET VERIFIED AGAINST A REAL MODEL. Everything here is read off the template and its
-    comments; this build was not run against the server, because another session was running an
-    A/B measurement on the only GPU. Verify against a known question -- `15+27` must answer `42` --
-    before any multi-call run. The selftest checks the structural half (markers, order, anchor).
+    ★ VERIFIED AGAINST A REAL MODEL (2026-09-17 17:2x). Everything above is read off the template
+    and its comments, so it was checked with the known question: this function's own bytes, posted
+    through `llm_client.py` to `scripts/run_server.sh` (Nail-Qwen3.6-MTP, `CGC_SERVER_CTX=40960`),
+    answered **`42`** (gen_tok=3, 11.5 s). The NEGATIVE control -- same prompt with the generation
+    segment reduced to a bare `<|im_start|>assistant\\n` -- entered thinking mode and spent its
+    whole 64-token budget without answering, i.e. it reproduced the failure this scaffold exists to
+    prevent. Without that half, `42` would only mean the question was easy.
+    ⇒ One question, two calls, ~20 s. That is the whole of what "the scaffold works" rests on here;
+    it does **not** say the four-arm comparison will produce usable answers.
+    The selftest still covers the structural half (markers, order, anchor).
     """
     system = (charter + mems).strip()
     user = (f"## 現在要回答的問題\n\n{q}\n\n"

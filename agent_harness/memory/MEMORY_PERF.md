@@ -66,6 +66,23 @@
 - **M3 decode 的 compute 削減：未開始**（依賴 M1）。兩個探針試過且**不可引用**：`CGC_MMV_FUSE`
   （MoE gather 融合）輸出損壞且更慢；`CGC_SUBMIT_AHEAD`（序列化）天花板 ×1.711 但輸出損壞。
   離開條件「decode（MTP off）≥ 15 t/s」未達。
+  **★ 09-17 17:1x 判定（`docs/M3_VERDICT_2026-09-17.md`）：它與 D3 的 S2／S3 是同一件事。**
+  今天 10.78 t/s ＝ 92.8 ms/token。兩個目標要分開：**離開條件 15 t/s 只要 1.39×，
+  目標 100→40 ms 要 2.32×**。判決：
+  ① **host 側正式關閉** —— `CGC-PHASE` 實測 `build 0.023 + alloc 0.037 + inputs 0.026 = 0.086 ms/步`
+     ＝ **0.07%**，而 `compute=118.459`（**99.9%**）、`fill_wait=0.000`（IO 不在關鍵路徑）
+     ⇒「減少圖重建／配置／IO」三條路**沒有量**（三個數量級差 ⇒ 對熱不敏感）；
+  ② **去序列化的空間存在**（`SUBMIT_AHEAD` 實測 82.5→31–44 ms ⇒ 38–51 ms/步，
+     足以讓 15 t/s 擦線過），**但步級三分（cb 8–10% + submit 4% + gap 19–36%）只能解釋 11–29 ms**
+     ⇒ **差額 9–22 ms 住在 `wait` 的儀器盲區裡**；
+  ③ **M3 缺的不是路，是儀器** —— 兩個既有儀器都**拆不到 T=1 的層內**：
+     `CGC_PHASE_TIMING` 把整步歸成 `compute`（`compute == gpu`，是副本不是 GPU 鐘）；
+     `CGC_VERIFY_OP_TIMING` 的目標判定含 `node->src[2]->ne[1] > 1`（`llama-context.cpp:3830`）
+     ⇒ **只在 T>1（verify）生效**，對 MTP off 產生不了輸出 ⇒
+     `debug-verify-path-breakdown.md` 那組 gate/up/down（0.8/0.8/1.0 ms）**不能移植到 T=1**。
+     唯一活路是**逐節點 GPU 時間**（Metal counter sample buffer），成本最高。
+  ⇒ **判準（先寫死）**：若逐節點 GPU 時間顯示 `ffn_moe_*` 佔 `wait` ≥40% ⇒ Cell 2 有量；
+  < 15% ⇒ 三條路全不足，走「找不到路」分支。**沒有判準就不要實作**（`CGC_MMV_FUSE` 的學費）。
 - **M4 MTP 拒絕取樣 ＋ verify 真批次：核心數字已達成（09-17 14:2x，別條線），但離開條件之一被證明是錯的判準。**
   同 binary A/B（build 14:12，carrier `nail`，pool 8 GiB，`n_predict=96`，每臂 3 請求）：
   **MTP off 9.82 t/s｜MTP on 修前（`CGC_IDS_LINEAR_READ=1`）8.62 t/s（accept 73.81%）｜
