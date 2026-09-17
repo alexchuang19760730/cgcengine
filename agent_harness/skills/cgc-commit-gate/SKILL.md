@@ -657,6 +657,30 @@ glob 兩個來源目錄，並在**空清單時拒跑**（空的 `SNAPSHOT.jsonl`
 ⇒ 新增 skill **不需要改任何清單**；但若你看到它印出的 `discovered N skill(s)` 少了誰，
 那才是訊號。
 
+**★ 它沒有 `argparse`、也沒有 `--dry-run`——傳 `--help` 會直接執行匯入（2026-09-17 實測）。**
+`'argparse' in file` 與 `'sys.argv' in file` 都是 **False**，所以參數被完全忽略：
+想「先看一眼它要幹什麼」的那個反射動作，實際上就是**刷新了快照**（產生 7 檔的 repo churn，
+其中 2 檔會立刻進 staged 候選）。**要看它做什麼就讀原始碼（190 行、檔案頭 30 行就把設計講完了），
+要預覽就自己重算 `source_sha256` 比對**：
+
+```sh
+python3 - <<'PY'
+import json, hashlib
+for s in ('agent_harness/skills/SNAPSHOT.jsonl', 'agent_harness/memory/SNAPSHOT.jsonl'):
+    ok = tot = 0
+    for l in open(s, encoding='utf-8'):
+        if not l.strip(): continue
+        d = json.loads(l); tot += 1
+        ok += hashlib.sha256(open(d['source'], 'rb').read()).hexdigest() == d['source_sha256']
+    print(f'{s}: {ok}/{tot} 相符')
+PY
+```
+
+**順序有一個容易漏的轉折：記憶要先寫、再匯入。** 因為匯入會把 `.workbuddy/memory/*.md` 的
+**當下狀態**封進快照——所以「先匯入、後補一節 §EN-xx」會讓快照在**同一個 turn 內**就 stale。
+正確序列：**改 skill 原檔 ＋ append 記憶 → `import_harness_snapshot.py` → 逐檔重算 sha256 驗 12/12
+→ 重生索引 → commit**。匯入器是幂等的，寫漏了就再跑一次（成本就是再複製 12 檔）。
+
 **skill 原檔一改，快照就 stale ⇒ 不要讓它變成第二個 commit。** 把「改 skill」與「刷新快照」放在
 **同一個** commit。（若 skill 是在交付 commit **之後**才被改的，那就難免要多一個 snapshot commit。）
 
@@ -861,6 +885,20 @@ EOF
   `WARN: applies_to path does not exist`（validate 仍回 OK，所以很容易漏掉 12 條 WARN 就交出去）。
   慣例值是 `agent_harness/CONVENTIONS.md`、`scripts/run_server.sh`、`src/...cpp` 這種真實路徑。
   **交出去前看一眼 warning 數量**：`-> OK` 不代表乾淨。
+- **★ 不要把 JSON 寫在 shell heredoc 裡去 append lesson（第三個陷阱，2026-09-17 實測）。**
+  `python3 - <<'PY'` 的 `<<'PY'` 看似有引號保護，但字串常值裡的 `\n` **會被吃掉** ⇒
+  Python 得到的是「字串在中途斷行」⇒ `SyntaxError: unterminated string literal (detected at line N)`，
+  而 N 指向字串**開頭**那一行，讀起來像「引號沒收」而不是「跳脫被吃」。
+  正確形狀：**用編輯器／Write 工具把腳本寫成一個實體檔（`/tmp/xxx.py`），再 `python3 /tmp/xxx.py`。**
+  寫完要**逐欄讀回核對**（`assert` 那個 id 在 ＋ 把 `applies_to`／`class` 印出來），
+  不要只信腳本自己印的 `appended [...]`。
+  （好消息：這個失敗是**原子**的——它在 `open(P,'a')` 之前就炸，所以不會留下半筆；
+  判準是 `validate.py` 的記錄數沒變。）
+- **改 append-only 的共享檔（`lessons.jsonl`）之後，要驗「沒有弄掉別人的行」——判準是 diff 的計數。**
+  `git diff -U0 -- agent_harness/engine_loop/traces/lessons.jsonl` **必須是 `-0 +N`**
+  （新增 N 筆、移除 0 筆）。用 **python 逐行解析**那個 diff，不要用 bash `grep` 過濾（§1.3 會靜默漏行）。
+  要就地改一個字（例如錯字）就**只重寫那一行**再驗一次計數——整檔 read-modify-write 有
+  蓋掉別條線同時 append 的風險（該檔同一小時被兩條線各寫一筆，見 lesson `eng-gate-0052` 的由來）。
 
 ---
 

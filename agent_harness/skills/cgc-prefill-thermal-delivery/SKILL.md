@@ -137,6 +137,26 @@ lesson `eng-mh-0054`。
 | **HTTP 驗收臂**（本 skill §1–§3 的交付規程就是為它寫的） | `IDLE_BEFORE=0 OUTDIR=… bash Backup/run_req2_retest.sh` | **2873-token prompt** 的 `prompt eval t/s`，每請求邊界帶熱讀數 | 278.56／261.17／275.01（`UNKNOWN-STATE`） |
 | **llama-bench `pp2048`**（走**同一支** `llama_bench_matrix.py`；**自家形狀**） | `python3 scripts/check/prefill_certifiability.py --arm prefill250 --prompt 2048 --gen 16 --reps 3 --runs 5` | `-p 2048 -n 16 -d 0 -b 5632 [profile]`（`-b/-ub` 由 `run_server.sh CGC_DUMP_ENV=1` 取）；散熱靠 2 Hz `thermal_pressure.Sampler`——它是獨佔 GPU 的子行程，**沒有**每請求邊界可以掛讀數 | 276.25／300.43（Nominal ×2，≥250）；227.27／151.28／145.79／182.39（非 Nominal） |
 | **llama-bench `pp512`**（**上游可比**，2026-09-17 追加） | `… --prompt 512 --gen 128 --depths 0 --reps 3 --runs 5 --batch 2048` | `-p 512 -n 128 -d 0 -b 2048 [cli]` ＝ 上游預設（`llama-bench.cpp:367-377`；標準列 `pp512`，`README.md:180-187`） | **尚無** |
+| **`prod_matrix.py` 的四格**（**2026-09-17 17:43 第一次實跑**；`7ba001802` 的標準） | `python3 scripts/check/prod_matrix.py --profiles prefill250 --cells decode,decode-up,prefill-house,prefill-up --reps 3 --json … --md …` | 四格各自一次啟動；`prefill-house`＝`-p 2048 -n 16 -d 0 -b 5632`、`prefill-up`＝`-p 512 -n 128 -d 0 -b 2048`、`decode`／`decode-up`＝`-p 0 -n 128 -d 512 -b 512/2048`。**平台值＝丟掉 rep 1**（工具自算 `platform_ts`，`n_kept` 一併印） | 見白皮書 `docs/PROD_MATRIX_FIRST_RUN_20260917_1755.html`：decode 8.89／9.33、prefill 102.17／102.73（**四格 launch 全非 NOMINAL ⇒ 工具自己判為 HOT，不可當生產數字**） |
+
+**★ 那四格是 HOT 樣本，而且是結構性的（2026-09-17 實測）。** 四格的 launch 戳記與 `wall_s` 相減，
+格間空檔只有 **0.9／0.0／1.6 秒**，而 `Backup/run_req2_retest.sh:325` 的 `COLD_QUIET=1800`
+（分類在 `:362-371`）要求「前一臂結束後安靜 ≥1800 s」才叫 `COLD-STATE`。以 0–2 秒間隔連續發射
+⇒ **第 2–4 格必然繼承前一格的熱**（實測 launch 由 MODERATE 走到 HEAVY、launch 前 swap
+由 4445.19 走到 6646.25 MiB）。⇒ **單次呼叫 `prod_matrix.py` 不可能拿到 NOMINAL 的 prefill 格**
+（除非第一格剛好是冷的）。要可交付的數字，改成**一格一次呼叫、格間等冷**。
+
+**★ 另外兩個入口的坑（同一次實測）：**
+
+- **`--dry-run` 會建目錄**（`prod_matrix.py:249` 的 `rdir.mkdir` 在 `:259` 的 `if args.dry_run`
+  **之前**）⇒ 乾跑一輪就在 `Backup/prod_matrix/` 留 28 個空目錄，命名與真跑的一模一樣。
+  **乾跑請自帶 `--logdir /tmp/…`**（本輪以「空目錄數 124→124」證實建立點）。
+- **`gate()` 只看 8080 與量測行程，不看「有人在重建」** —— 而本 repo 的比較全建立在同一個 build 上。
+  實例：四格 17:48:36 結束，另一條線 17:48:30/31/34/37 換掉兩個 dylib 與兩支執行檔。
+  **動手前自己補一條 `ps -Ao command= | grep -E "cmake|ninja"`**。
+- **`--list` 的輸出受機器狀態影響**：機器被佔時它對 4 個 profile 印
+  `resolve failed … (rc=1)`（讀起來像 profile 壞了）；機器空了 7 個全過。要引用那份對照表前先確認機器是空的。
+
 
 - **兩個 cell 必須是兩次獨立 run**：`llama-bench` 同一行程內每個形狀共用模型與池 ⇒
   `-p 512,2048` 會讓第二格繼承第一格暖過的池，兩格不獨立。

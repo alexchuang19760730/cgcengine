@@ -205,7 +205,7 @@
 
 | 定義 | 數字 | 條件 |
 |---|---|---|
-| **★ 唯一的 instrument of record：llama-bench 暖平台**（丟 rep1） | **10.78／10.91**（d512）；11.3（n=128 平台） | `prefill250+SPAC=1`、`-b512`、NOMINAL、**Nail denseIQ4X**（見下更正） |
+| **★ 唯一的 instrument of record：llama-bench 暖平台**（丟 rep1） | **10.78／10.91／10.98**（d512，三次獨立量測）；11.3（n=128 平台） | `prefill250+SPAC=1`、`-b512`、NOMINAL、**Nail denseIQ4X**（見下更正）。10.98 是 09-17 18:04 在**當前 build**（`libggml-base 23f533ad`、per-layer 儀器之後）量的，NOMINAL 105/105 ⇒ **儀器 inert 的量測確認（不只 D5）** |
 | llama-bench `-d 0`（冷格，**不是標準格**） | 9.52–9.79 | 同上；`--depths 0` 是最冷的格子 |
 | ~~decode_bench（HTTP）n=128~~ | ~~12.36（NOMINAL）→ 10.64（HEAVY）~~ | **★ 2026-09-17 使用者裁定：`decode_bench` 退休，不要再量、不要再引用** |
 | llama-server（`p25-gputime` 等 HTTP 臂） | 12.95 可持續（**僅歸因用**） | **不再是 headline 口徑**，角色只剩逐步分解／歸因；`20.3` 一律不得引用（n=24 短爆） |

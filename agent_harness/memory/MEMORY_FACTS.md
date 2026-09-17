@@ -40,6 +40,16 @@
   而 prefill 的 COLD 交錯 A/B 需要「發射時 thermal=0」。⇒ 機器被排程佔用的時段**不 commit**（連
   「純 doc 的 commit」也不該，因為本 repo 把「省下 D5 再寫一段解釋」判為錯的做法）。
   未提交的改動先備份：`Backup/r12_wip/`（`tracked_changes.patch`，`git apply --check --reverse` 可驗）。
+- **D5 的三個指標不是同一件事**（定義在 `scripts/check/cgc_logits_oracle_compare.py` 的 `METRIC_DEFS`，
+  逐字可引）：**M1 `numeric_identity`＝逐位元相同**（*same `row_fnv1a64` for every step (= bit-identical
+  logits)*）；**M2 `decision_agreement`＝argmax 相同**；**M3 `topk_set_agreement`＝top-N id 集合相同**。
+  三者是**階梯** M1 ⊂ M2 ⊂ M3（逐位元相同 ⇒ 後兩者必然相同），階梯的用途是**部分分數可讀**。
+  ⇒ **「M1/M2/M3 都是 bit identical」是錯的述句**：只有 M1 是；M2/M3 較粗。
+  **`n_compared` 的單位是「探針點」不是 prompt**（現行參考檔 9 點 ＝ 6 `DEF` ＋ 3 `MTP`、step 0–5、
+  一條確定性 prompt、答案 `42`）。**兩個前提**：① `comparable=False` 時**不得讀** M1/M2/M3
+  （`.cap` 的 resolved env 指紋不符 ⇒ 會有「三個都 9/9 但 `ok=False`」的不可比 9/9，如 09-17 的
+  `r52/r53`）；② D5 是**不變性／確定性**閘門，**不證明模型對不對**（v6 參考是修正後 build dump 的；
+  修 r33 nb-aware 之前同一個閘門對 v5 只給 5/9，而錯的是參考）。
 
 ## agent_harness（另一條線；本線只讀）
 
