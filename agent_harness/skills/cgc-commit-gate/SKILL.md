@@ -542,6 +542,21 @@ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
 2. 此時**只新增不修改**：新增 `docs/*.html` 是安全的（見 §3.2）；**不要重生索引、不要 commit**。
    連「刷新 skill 快照」都先擱著——它的 banner 已經聲明不會自動跟上，`SNAPSHOT.jsonl` 也記了 provenance，
    所以延後是**被設計允許**的。
+
+   **★ 但「追加一筆 lesson」不屬於「只新增」，而它會與 §7 直接衝突（2026-09-17 實測）。**
+   `traces/*.jsonl` 在 `CURATED` 裡 ⇒ 追加一筆 lesson **會**讓 `index_assets.py --check` 多一筆漂移，
+   而這一輪又不能重生索引去消它。於是 §7 的「新知識要落成 lesson 並放進同一個 commit」踩上 §4-2。
+   **裁決是延後，不是硬做** —— 硬做等於把對方未定稿的位元組寫進你的 commit，那正是 §4 要防的。
+   做法：把 lesson 的內容（連可複製的 `rule`／`because`／`counterexample_observed` 形狀）
+   **寫進那一輪的白皮書**，並在 commit message 與白皮書各寫一行
+   「lesson 未登錄、理由是樹上有別人未提交的索引位元組」，下一輪樹靜下來時補登。
+   判準很好記：**先問「這個檔在 `MANIFEST.jsonl` 裡嗎」** ——
+   `docs/*.html`（**新增**）不在 ⇒ 安全；`traces/*.jsonl`、`agent_harness/CONVENTIONS.md`、
+   `PLAN_ENGINE_LOOP_*.md`、`.workbuddy/memory/*.md` 在 ⇒ **編輯它們會漂移**
+   （§2 的「新增不漂移」只對**新增**成立）。同理，別把「`--check` 說沒漂移」讀成
+   「這個檔不在索引裡」——`index_assets.py` 對 `Backup/` 與 `.workbuddy/memory/` 這兩類前綴
+   只驗**存在**、不驗 bytes（`VOLATILE_PREFIXES`），所以它們的漂移會改由
+   `build_memory_index.py --check` 單獨報出來。
 3. **不要為了「看一眼」而跑不帶 flag 的 `index_assets.py`**——那就是重建，會覆寫 manifest。
 4. 確認對方靜止（`sessions` 表裡它的 `status` 不再是 `working`、相關檔 mtime 不再動）再重生。
 5. **「誰在用這台機器」與「誰在改這些檔」是兩個不同的軸 —— 而第一個要讀日誌，不是 `pgrep`。**
@@ -707,8 +722,30 @@ D6 的 dated 修訂留下「改 CONVENTIONS.md 要走一次 §6.3 的閉環對�
 RUN_REPLAY_BENCH=0 git commit ...      # 交付本身
 # 此時把 commit hash / D5 / gate / push 結果 append 進 .workbuddy/memory/YYYY-MM-DD.md
 python3 memory/build_memory_index.py && (cd .. && python3 index_assets.py)   # 順序照舊
-git add -A && RUN_REPLAY_BENCH=0 git commit -m 'docs(index): resync ...'
+git add agent_harness/engine_loop/MANIFEST.jsonl agent_harness/engine_loop/memory/INDEX.jsonl \
+  && RUN_REPLAY_BENCH=0 git commit -m 'docs(index): resync ...'
 ```
+
+**★ resync 不要用 `git add -A`（2026-09-17 實測）。** 這一節原本寫的就是 `git add -A`，但在一個
+**有其他 session 正在寫**的樹上，它會把對方的 modified／untracked 一起 stage 進你的 resync commit
+—— 而 resync 的整個賣點是「只動 `INDEX.jsonl` ＋ `MANIFEST.jsonl`」。實例（同日 21:1x）：樹上有
+`agent_harness/tb_loop/agents/*`（tb_loop 線正在寫）、`Backup/cgc_logs/ids_dst_capture/arms.json`、
+`ggml-metal-ops.cpp` ＋ `libggml-metal.0.19.0.dylib`、`closed_loop_out/*`，以及**當下新出現**的
+`scripts/check/decode_step_profile.py` —— `git add -A` 會把它們全部收走。
+⇒ **逐檔 add**（上面那一行就是答案），並在 commit 前用 `git diff --cached --name-status` 逐列看過。
+（同一條理由也適用於**交付** commit：那一輪我是逐檔列出 20 個路徑 add 的。）
+
+**★ D5 重跑失敗的第一嫌疑是記憶體，不是你的改動（同日實測）。** 交付 commit 前用新 tag 重跑 D5，
+server 在**載入模型階段**就被 SIGTERM（`run_server.sh: line 1992: … Terminated: 15`）、沒有寫出 summary。
+原因是**這台機器 13 GB 級量測的次數上限**：那時 `vm_stat` 的 `Pages free` 只剩 **82 MB**、
+`vm.swapusage used` 是 **10351.69 MB / 11264 MB**（Swapins 111695859／Swapouts 131502717）——
+同一個 session 內**連跑兩次探針（各載入一次 13 GB）＋ 兩次 gate** 疊出來的 carried swap。
+⇒ 判準：跑 D5 之前先看 `vm_stat | awk '/Pages free/'` 與 `sysctl -n vm.swapusage`；
+**把 13 GB 級的載入當成一種配額**，一期一兩次，第三次起環境會自己否證結果。
+失敗時的正確動作是**具名交代**（哪個 tag、為什麼失敗、引用的替代證據是哪一份、為什麼它與當前樹等價），
+不是反覆重跑。同行那一次的做法可照抄：引用 `en-m4m5-inert`（cap 19:36 晚於產物 mtime
+19:35:52／19:35:59 ⇒ 不重疊、可歸屬），並說明 `run_server.sh` 在 gate 之後的改動只有註解與
+條件式 allowlist 塊（`-n "${VAR:-}"`）⇒ 在 gate 的跑法下 `SERVER_ENV` 逐項不變。
 
 **不要**試圖把收尾 memory 塞進被提交的那個 commit（做不到），也**不要把漂移留到下一輪**
 （下一個人會被 `--check` 的紅字誤導成「上一輪沒重生索引」）。**多一個 3 行的 resync commit 是正確答案。**

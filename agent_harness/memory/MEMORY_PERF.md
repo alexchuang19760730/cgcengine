@@ -36,7 +36,10 @@
 ## 里程碑現況（M0–M6；**09-17 查證**，不是憑記憶）
 
 - **M0 量測能力：完成。**
-- **M1 解耦 pool 與圖：做了一半以上、卡住**（不是「未開始」——這個錯誤我犯過一次）。
+- **M1 解耦 pool 與圖：五個工作項實作了四個（第 1 個判 EXPERIMENTAL 不可用），但★ 五條離開條件
+  沒有一條被系統性重核 ⇒ 現在的瓶頸是「驗收」不是「實作」。**
+  （★ 09-17 18:2x 改寫：先前寫「做了一半以上、卡住」，那句在 `605452177` 之後已經不準 ——
+  工作項 2/3/4 都已實作並提交，卡住的是離開條件，細節見下面 §離開條件的更正。）
   **★ 09-17 15:45 狀態更新：別條線已經開始做工作項 4（canonical gather order）** —— 新增
   `src/llama.cpp/src/llama-cgc-canon.h` 與 `scripts/check/canon_order_selftest.cpp`，並在
   `scripts/run_server.sh` 的 allowlist 加了 **`CGC_CANON_ORDER`**（`=1` 依 expert id 排序、
@@ -75,14 +78,36 @@
   **⚠ 這條的基準要重定（09-17 15:0x）**：8.87 是 09-14 的 build，而今天同類量測（Nail、8 GiB、MTP off）
   是 **9.82**（`ROUTING_TRACE` §14.2），且 r33 修正改動了 routing（hit 57.1→72.0）⇒ **0.72× 這個比值
   跨了 build，不能直接沿用**；要重跑 M1 的 2 GiB 格對**當天**的 8 GiB 格比。
-  ② `prefill chunk 2048` ⇒ 缺工作項 2。**工作項 1**（`CGC_POOL_SPLIT=1`，保持 expert tensor 全寬）
+  ② `prefill chunk 2048` ⇒ 當初缺工作項 2。**工作項 1**（`CGC_POOL_SPLIT=1`，保持 expert tensor 全寬）
   實作了但被判 **EXPERIMENTAL, NOT USABLE**：Blocker A（寬 tensor 讓 gather 把 Metal buffer 的指標
   重指到 Metal 不知道的 host 指標 ⇒ **靜默** `tensor buffer is nil`、**M1 2/42**；且 16 GB 上
-  warmup OOM），Blocker B 已於 **09-16** 修好。**工作項 2（phase split）未實作**（src 無
-  `T_prefill`／`PREFILL_GRAPH`／`DECODE_GRAPH`）。
+  warmup OOM），Blocker B 已於 **09-16** 修好。
+  **★ 09-17 18:2x 更正（本行先前寫「工作項 2 未實作」，那句已經過時且與上面 17:0x 那段矛盾）**：
+  **工作項 2 與 3 已實作並提交** —— `605452177 feat(moe): decide the build graph from the request
+  phase, and demote cap to a width ceiling`（`src/llama-cgc-phase.h`：`cgc_decode_width()` ＋
+  `cgc_select_graph_phase()`，兩側共用）。⇒ ② 的處置從「缺實作」變成「**要重測**」。
+  **★★ 而五條離開條件沒有一條被系統性重核（這是 M1 現在真正的缺口）**：
+  - **「M1/M2 @ 4/6/8/10 GiB = 100%（含 `union > slots`）」** —— 今天 **75 筆 D5 裡
+    `comparable=True` 的全部是 8 GiB（46 筆）**；4 GiB 只有 `r52_canon1_pool4gb`／`r53_base_pool4gb`
+    **兩筆，且都是 `comparable=False`**（池預算 4 GiB ⇒ `.cap` 的 `CGCENV.BUDGET` 與 8 GiB 參考不符
+    ⇒ 不可比）。⇒ **phase split 之後，多池尺寸那條從未被重新確立**；要它就得像 09-14 那樣
+    **每個預算各建一份參考**（那次是 117/117）。
+  - **`prefill chunk 2048`** —— 他們的 §A 只證了 35-token 與 12-token 兩個**單點**（舊述詞會誤路由
+    的那格），**不是 chunk 2048**。
+  - **`RSS @ 10 GiB` ±0.5 GiB vs 9.08** —— **沒有任何一筆讀數**。
+  - **`union-routable` PASS** —— 09-14 的結果，**未在 phase split 之後重跑**。
+  - **`decode 不得退步`** —— 見 ①，基準本身要重定。
 - **M2 prefill 整層串流：核心機制已落地**（`CGC_PREFILL_STREAM=1` ＋ `CGC_GATHER_SLAB_CAP=256`，
-  `prefill250` 用它跑到 250+）。**它的五條離開條件未逐條核對。**
-- **M3 decode 的 compute 削減：未開始**（依賴 M1）。兩個探針試過且**不可引用**：`CGC_MMV_FUSE`
+  `prefill250` 用它跑到 250+）。**★ 09-17 17:0x 五條離開條件已逐條審計（本線，`docs/M2_EXIT_CONDITIONS_AUDIT_2026-09-17.md`）
+  ⇒ 3 PASS / 0 FAIL / 2 未裁決**：條件 1（bytes/token @ chunk 2048 ≤3.0 MB）PASS（靠引擎自印的
+  `slab fills` 非駐留 44.1%，`11.92 GB × 0.441 ÷ 2048 = 2.57 MB/token`）；條件 4（prefill t/s 誠實記錄）
+  PASS **但附否證**（15:37 的 `COLD-STATE`、安靜 1940 s 那臂反而只有 242.42／227.27／249.06，
+  見 lesson `eng-mh-0054`）；條件 5 PASS（D5 9/9）。**條件 2（裝置持續 ≥1.0 GB/s）與 3
+  （wall < I/O + compute）＝ 未裁決，不是不合格** —— `grep slab_*us/ms/time` 在 `src/` 裡**零命中**
+  ⇒ 引擎沒有 slab 計時計數器，這兩條**沒有儀器**。儀器設計寫在該文件裡，**且都不需要動 `src/`**。
+- **M3 decode 的 compute 削減：判定書已出（尚未實作；依賴 M1）**。
+  （★ 09-17 18:2x 改寫：先前寫「未開始」，但當天已產出 `docs/M3_VERDICT_2026-09-17.md` 並**建了它缺的儀器**。）
+  兩個探針試過且**不可引用**：`CGC_MMV_FUSE`
   （MoE gather 融合）輸出損壞且更慢；`CGC_SUBMIT_AHEAD`（序列化）天花板 ×1.711 但輸出損壞。
   離開條件「decode（MTP off）≥ 15 t/s」未達。
   **★ 09-17 17:1x 判定（`docs/M3_VERDICT_2026-09-17.md`）：它與 D3 的 S2／S3 是同一件事。**
