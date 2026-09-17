@@ -669,9 +669,27 @@ git push cgcengine0907 demo/sweet-spot-windows-fix
 ```sh
 python3 agent_harness/engine_loop/traces/validate.py            # 無重複 id
 python3 agent_harness/engine_loop/traces/selftest.py            # 必須 10/10
+python3 agent_harness/engine_loop/harness_engine/build_memories.py --check
+python3 agent_harness/engine_loop/sft_pi/build_sft_pi.py --check
+python3 agent_harness/engine_loop/sft_prime/build_sft_prime.py --check
 cd agent_harness/engine_loop && python3 index_assets.py --check 2>&1 | grep -E "OK:|error"
 python3 agent_harness/engine_loop/memory/build_memory_index.py --check
 git status --porcelain --untracked-files=all                    # 必須空（例外見 §1.7）
+```
+
+**三條衍生物的 `--check` 各驗一件事，而且它們和上面兩條驗的不是同一件事。** `index_assets.py
+--check` 與 `build_memory_index.py --check` 比的是「磁碟上的 bytes == 索引記的 bytes」——
+那只證明**沒有人手改過**那份產物，不證明它**跟得上它的輸入**。要問「它有沒有隨來源前進」
+只能重生一次再比。實測（2026-09-17）：`sft_prime` 落後 +47,478 B，而**上面兩條索引全綠**，
+因為 `MANIFEST.jsonl` 的 80 筆**一筆都不是** `harness_engine/`、`sft_pi/`、`sft_prime/`、
+`distill/` ⇒ 那四個目錄根本不在管轄範圍內。**綠燈與「沒被檢查」在那裡長得一樣。**
+
+```
+衍生物                 驗什麼                                   不驗什麼
+build_memories --check  重生 == 磁碟（相對 lessons.jsonl）        不驗下游誰還在用它
+build_sft_pi --check    重生 == 磁碟 ＋ PROVENANCE 的 invocation   不驗訓練品質
+build_sft_prime --check 重生 == 磁碟 ＋ 輸入 sha256 有沒有前進     不驗訓練品質
+index_assets --check    磁碟 == 索引（相對索引自己）               ★ 不驗「索引涵蓋了它」
 ```
 
 **快照的忠實度要逐檔複核，不能看匯入器印了什麼。** 「`imported 7 file(s)`」只證明它寫了 7 個檔，

@@ -338,6 +338,14 @@ prime-agent 的 Continual Harness 狀態是一個目錄（`PRIME_AGENT_CODING_AG
 | ↳ E3 的執行器與實驗設計（2026-09-16 19:5x，`docs/AGENT_HARNESS_E3_DESIGN_20260916.html`） | 注入範圍做成參數（`--memories-scope`，預設 `all`；`first:8` 才是計畫原文的「那 8 條」）、`--reps` 預設 3 且**交錯＋輪轉**、臂內不一致的題目標 `comparable: false`、`manifest.json` 記下注入了哪些 id 與每個 rep 的臂順序 | ✅ **機械面通過**：`distill/closed_loop_selftest.py` **33 項全過**，含「同一個假模型、同一組題目，只換 scope ⇒ 一次必須答『相同』、一次必須答『不同』」的陰性／陽性對照。⚠️ **模型半未跑**（與 D6 欠帳同一個 blocker：本機無端點，而起 server 會干擾另一條線的量測）⇒ **E3 本體仍未結清** |
 | **E4**（可選治理） | log 政策落地、`knifeedge_matrix.py`（181 KB）拆分、`scripts/check/` 40+ 檔分層、標記 stale（`replay_bench_*` 已 stale，`RUN_REPLAY_BENCH=0`） | `pack_evidence.py` 產物總量 < 20 MB；stale 資產有明確 banner |
 
+**↳ 計數註記（2026-09-17 加入，適用於本表所有 ↳ 列的數字）**：那些計數是**當時的**值，不要引用。
+實測它們在一天內全部過期（memories 106→132 檔、`sft_prime` 141→166 筆、`closed_loop_selftest`
+33→41 項），而**所有既有閘門當時都是綠的**：`index_assets.py --check` 只報它管得到的 80 筆資產，
+而 `harness_engine/`、`sft_pi/`、`sft_prime/`、`distill/` 這四個目錄**一筆都不在裡面**
+⇒ **綠燈與「沒被檢查」在那裡長得一樣**。
+現況一律問產它的那一支：`build_memories.py --check`（檔數）、`build_sft_pi.py --check` 與
+`build_sft_prime.py --check`（筆數 ＋ 建置指紋）、`distill/*selftest.py`（自己的項數）。
+
 **E2 承接一筆已認領的欠帳（2026-09-16 加入；來源：`CONVENTIONS.md` D6 的 dated 修訂）。**
 
 `CONVENTIONS.md` §E 規定「改動它等於改動兩個 loop 的行為，每次改動都要走一次 §6.3 的閉環對照」，

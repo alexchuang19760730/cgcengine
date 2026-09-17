@@ -50,7 +50,11 @@
 - **M3 decode 的 compute 削減：未開始**（依賴 M1）。兩個探針試過且**不可引用**：`CGC_MMV_FUSE`
   （MoE gather 融合）輸出損壞且更慢；`CGC_SUBMIT_AHEAD`（序列化）天花板 ×1.711 但輸出損壞。
   離開條件「decode（MTP off）≥ 15 t/s」未達。
-- **M4 MTP 拒絕取樣 ＋ verify 真批次：未開始**（accept 19.9%）。
+- **M4 MTP 拒絕取樣 ＋ verify 真批次：未開始**（accept 19.9%；今天 MTP-on 是 **1.8× 淨損失**）。
+- **M5 prerouter 只當預取提示：未開始**（可選、期望值低）。**`PREFETCH_ONLY` 在本 repo 0 筆。**
+- **M6 換量化幾何：未開始**（可平行、低風險、1–2 天；per-expert 1.769→1.122 MB、6 GB pool 的
+  slots 85→133）。工具只有 `scripts/gguf_retensor.py`(38.9 KB)＋`gguf_retensor_qctl.c`；
+  roadmap 指名的 **`scripts/verify_edge0_gguf.py` 在本 repo 不存在**（全 repo find 0 筆）。
 - **★ D3（`REMAP_ROUNDTRIP_REMOVAL_PLAN` 的主設計：把 expert→slot 查表搬到 GPU、消除段邊界）
   不是里程碑，是 S1→S2→S3 階梯；現況（09-17 03:3x 查證）：沒跑通。**
   **S1**（`CGC_SLOT_TABLE_GPU=1`，leaf 改由 GPU 算、**段數不變**）**已實作且會跑，但不過
@@ -67,7 +71,12 @@
   **★ 09-17 10:2x 修正（重要、會改「下一步」）**：那個「ids 相同」只涵蓋**每個 chunk 的 token 0**
   （`rows=8`；而 T=2 的運算元有 16 個、T=8 有 64 個）。`POOLROWS=12` 一跑就顯示**真正的第一分歧在 g1**：
   S1 臂對「同一 chunk 的第 2 個 token」給出**錯誤的 slot**（含重複 slot 0），而 token 0 的 ids、
-  router logits、routing weights、MoE 輸入**全部逐位元組相同** ⇒ **是 mapping 缺陷，不是 residency**。
+  router logits、routing weights、MoE 輸入**全部逐位元組相同**   ⇒ **是 mapping 缺陷，不是 residency**。
+  **★ 11:2x 定論（`own=` 欄把這一軸結案）**：同臂控制 1200/1200 SAME 先過，A/B 得
+  **`CONTENT=0`、`SLOT-REUSED=0`、`RELAYOUT=0`，只有 `ROUTING=477`**
+  ⇒ **池的位元組／residency 這一軸結案**；載體是「**拿到的專家不同**」，位置在 **gather 上游**。
+  而 `exp=`（host 認為該讀哪個 slot，§9.18.8）**已建置但實跑回 `exp=none`**（來源在 S1 臂不存在）
+  ⇒ 來源要換成 host 現算 `st[e_j]`，**尚未量測**；全文 `docs/S1_OWNER_EXPECT_CHANNELS_20260917_1145.html`。
   細節與下一步在 `MEMORY_S1.md`。
 - 文件：`docs/ROADMAP_PREFILL250_DECODE25_2026-09-13.md`（M0–M6 定義）；
   **`docs/roadmap-2026-09-14/ROADMAP_PREFILL250_DECODE25_2026-09-14.html`**（M1 的實作與量測結果、

@@ -152,11 +152,15 @@ bash scripts/setup_env.sh          # 一次性：venv ＋ terminal-bench ＋ hos
 
 | 階段 | 內容 | 狀態 |
 |---|---|---|
-| **E0** | 索引 ＋ 第一版 episode 匯出 | ✅ 122 筆 episode、73 筆資產 |
-| **E1** | 結構 ＋ 憲章：資產搬進 `tb_loop/`、修 import 路徑、寫 `CONVENTIONS.md` | ✅ 套件解析已通（見 `docs/AGENT_HARNESS_E1_RESTRUCTURE_20260916.html`）；`CONVENTIONS.md` 已成 |
-| **E2** | T1 蒸餾 ＋ 兩個投影（`sft_pi/`、`sft_prime/`、`harness_engine/`）＋ 結清 D6 的閉環欠帳 | ⏳ 未開始 |
-| **E3** | 閉環：round1（無 lesson）vs round2（注入 lesson） | ⏳ 待 E2 |
-| **E4** | 治理（可選）：log 政策、`knifeedge_matrix.py` 拆分、`scripts/check/` 分層、標記 stale | ⏳ 可選 |
+| **E0** | 索引 ＋ 第一版 episode 匯出 | ✅ 122 筆 episode；資產數看 `index_assets.py --check` |
+| **E1** | 結構 ＋ 憲章：資產搬進 `tb_loop/`、修 import 路徑、寫 `CONVENTIONS.md` | ✅ 套件解析已通（見 `docs/AGENT_HARNESS_E1_RESTRUCTURE_20260916.html`）、`CONVENTIONS.md` 已成；**`tb run` 的 smoke 仍未跑**（缺模型端點，見 `PLAN_ENGINE_LOOP_2026-09-15.md` §9） |
+| **E2** | T1 蒸餾 ＋ 兩個投影（`sft_pi/`、`sft_prime/`、`harness_engine/`）＋ 結清 D6 的閉環欠帳 | ✅ 四個目錄已建、兩份投影可用 `--check` 驗（見 `docs/AGENT_HARNESS_E2_TRAINING_PROJECTIONS_20260916.html`）；**T1 未接真模型；D6 的閉環欠帳未結清** |
+| **E3** | 閉環：round1（無 lesson）vs round2（注入 lesson） | ⏳ 執行器已建並離線驗證（`distill/closed_loop.py`，41 項自測；見 `docs/AGENT_HARNESS_E3_DESIGN_20260916.html`）；**模型半未跑 ⇒ 本體未結清** |
+| **E4** | 治理（可選）：log 政策、`knifeedge_matrix.py` 拆分、`scripts/check/` 分層、標記 stale | ⏳ 四項全部未動 —— `pack_evidence.py` 根本不存在，所以它自己的驗收條件（產物 < 20 MB）現在無法量測 |
+
+**這張表在 2026-09-16 晚間到 09-17 上午是錯的**：它寫 E2「⏳ 未開始」，而 E2 早已完成。
+成因是 E2 只更新了 `engine_loop/README.md` 與 `PLAN` §9，**漏了這個傘狀入口**。
+一份說「未開始」的狀態表比一個過期的數字更糟——它會讓人不去讀已經存在的東西。
 
 改動本目錄的任何敘述之前，先讀 `CONVENTIONS.md`——**它同時是 `engine_loop/sft_pi/` 的 system prompt**，
 所以改它等於改動兩個迴圈未來的行為。

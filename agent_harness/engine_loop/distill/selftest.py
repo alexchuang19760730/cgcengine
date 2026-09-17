@@ -73,8 +73,13 @@ def run(cmd, **kw):
 
 def main() -> int:
     fails: list[str] = []
+    total = [0]
 
     def check(ok: bool, label: str, detail: str = "") -> None:
+        # The count is printed at the end on purpose: "all checks passed" with no number reads the
+        # same whether 27 checks ran or the loop body never executed once. A self-test whose
+        # coverage can silently become zero is not a self-test.
+        total[0] += 1
         print(f"  {'ok  ' if ok else 'FAIL'}  {label}" + (f"   {detail}" if detail and not ok else ""))
         if not ok:
             fails.append(label)
@@ -190,9 +195,9 @@ def main() -> int:
 
     print()
     if fails:
-        print(f"  {len(fails)} FAILED: {fails}")
+        print(f"  {len(fails)}/{total[0]} FAILED: {fails}")
         return 1
-    print("  all checks passed")
+    print(f"  all {total[0]} checks passed")
     return 0
 
 

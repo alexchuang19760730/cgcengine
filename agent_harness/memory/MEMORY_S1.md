@@ -281,9 +281,20 @@ B 的 `LOST` 再按「兩邊 host 是否同意該位置」分成 `hosts agree`�
   ⇒ 「table 在本輪 pass 的 fill 之前就被讀走」與「table 只覆蓋部分 expert／zero-slot」同形。
 - 讀點都已在：`CGC_S1_TABLE_CHURN=1` 的 `SEL-DRIFT`／`SLOT-OWNER`／`SLOT-SEL`（引擎側）、
   `CGC-POOL-CAP` 的 `own=`（內容側，現在兩邊都有了）。
-- **要做的是同一個問題的兩端對齊**：POOL 列裡的 `id`（消費者實際讀的 slot）與引擎側
-  `tab[e]`（host 算出來的 slot）**在同一個瞬間**比 —— 目前 `own` 給了「那個 slot 裝誰」，
-  缺的是「host 認為應該讀哪個 slot」。候選：把 `tab[ids[j]]` 也寫進 POOL 列（一樣主機側、免內核）。
+- **兩端對齊已做了一半**：`own=`（§9.18.7，那個 slot 裝誰）**已建置已跑，答案是否證**
+  （`CONTENT=0`／`SLOT-REUSED=0`／`ROUTING=477` ⇒ **池的位元組這一軸結案**）；
+  `exp=`（§9.18.8，host 認為該讀哪個 slot）**已寫完已建置，但實跑得到 `exp=none`** ⇒ **來源要換**
+  （見上面的 §9.18.8 節與 `docs/S1_OWNER_EXPECT_CHANNELS_20260917_1145.html` §4：
+  不要讀 host remap leaf，改成在 host 現算 `st[e_j]`）。
+- **⚠ 這一步現在不能動手（09-17 11:52 查證）**：**另一條 session 正在改
+  `ggml-metal-ops.cpp`（+27/−2）與 `llama-graph.cpp`（+47/−4）**，做的是 **§9.18.9 化簡順序探針**
+  （`llama-graph.cpp:2561` 的 `CGC_ADD_ORDER=rev`：把 FFN 聚合的鏈式結合從 `(((c0+c1)+c2)+…)`
+  反轉成 `(((c7+c6)+c5)+…)`；他們的註解明寫**不重排 ids** 的理由 —— 權重是按位置 gather 再被
+  `ggml_mul` 按位置消費，只換 ids 會把 A 的輸出配上 B 的權重，是**靜默錯答**而不是重排）。
+  他們 11:50:22 已建置、11:52 仍在跑（8080 有 server、thermal `HEAVY`）⇒ **動那兩個檔或再建置
+  都會撞**（lesson `eng-mh-0048`，11:29 才踩過一次）。
+  **他們的讀數若為 bit-identical，就排除「化簡順序／精度」這條軸，而且是本線可以直接引用的**
+  （同一個 repo、同一支儀器）。
 
 **② `POOLROWS` 上限是 12 而 T=2 的運算元有 16 個 id** ⇒ 第 2 個 token 只覆蓋前 4 個。
 要看全 16 個必須加大 `CGC_POOL_STRIDE`（現在 64 字）或縮 5 字/列。**目前所有 token ≥1 的結論

@@ -952,7 +952,9 @@
 - 這份文件是 `engine_loop/sft_pi/` 的 system prompt 與 `harness_engine/memories/engine/` 的注入來源，
   所以**改動它等於改動兩個 loop 的行為**，每次改動都要走一次閉環對照（見 `PLAN_ENGINE_LOOP_2026-09-15.md` §6.3）。
 - **2026-09-16 19:4x：上一條的「注入來源」現在是真的了，因此閉環對照的義務從「未到期的條件」變成「已到期的欠帳」。**
-  E2 建立了 `engine_loop/sft_pi/` 與 `engine_loop/harness_engine/memories/engine/`（106 條），
+  E2 建立了 `engine_loop/sft_pi/` 與 `engine_loop/harness_engine/memories/engine/`（**當時** 106 條；
+  這類計數隨 `traces/lessons.jsonl` 增長，一律以 `build_memories.py --check` 的輸出為準，
+  不要引用這裡的數字——它在一天內就過期了），
   所以 `sft_common.charter()` 現在真的把這份檔案讀成 system prompt 的位元組。
   對照器是 `engine_loop/distill/closed_loop.py`（四臂：A_preD6／B_postD6／C_head／D_head_mem，
   **只有 A→B 回答 D6 的欠帳**，另兩對是反歸因用的；`--dry-run` 已證實每對只隔離一件事）。

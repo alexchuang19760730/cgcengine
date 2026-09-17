@@ -35,7 +35,7 @@ evaluate  →  extract  →  refine  →  compare
 | **evaluate** | `index_assets.py` 指到的臂與 profile，由 `scripts/check/decode_sweep.py` 執行 | 已存在（今天就在跑） |
 | **extract** | `traces/episodes.jsonl`（T0，純腳本，**已完成**） | ✅ E0 |
 | **refine** | `distill/refine_engine.sh` ＋ `distill/collect_evidence.py` ＋ `distill/prompt/refine_engine.md` → `distill/out/<ts>/*.candidate.jsonl`（人審後 `--accept`） | ✅ E2（機制已建並通過離線自測；**未接真實模型跑過**） |
-| **compare** | `harness_engine/`（注入用的 harness 狀態）＋ `sft_pi/` `sft_prime/`（兩份投影）＋ `distill/closed_loop.py`（四臂閉環對照） | ✅ E2（投影已產出並可重生）；執行器與實驗設計 ✅（`closed_loop_selftest.py` 33 項全過），但**模型半仍未跑** ⇒ **E3 本體未結清**，見 §9 |
+| **compare** | `harness_engine/`（注入用的 harness 狀態）＋ `sft_pi/` `sft_prime/`（兩份投影）＋ `distill/closed_loop.py`（四臂閉環對照） | ✅ E2（投影已產出並可重生、可用 `--check` 驗）；執行器與實驗設計 ✅（`closed_loop_selftest.py` 全過），但**模型半仍未跑** ⇒ **E3 本體未結清**，見 §9 |
 
 ### 2.1 E2 新增的四個目錄
 
@@ -44,12 +44,14 @@ engine_loop/
 ├── harness_engine/            prime-agent 的第二份狀態（PLAN §6.1）
 │   ├── extensions -> ../../tb_loop/harness/extensions   ← 符號連結，**不是複本**（R1）
 │   ├── build_memories.py      lessons.jsonl -> memories/engine/<id>.md（可重生、有 --check）
-│   └── memories/engine/       一 lesson 一檔（現 111）；第一行固定 `[engine] <rule>`（/refine --global 的 scope 標記）
+│   └── memories/engine/       一 lesson 一檔（檔數 = live lesson 數，不寫死）；第一行固定 `[engine] <rule>`（/refine --global 的 scope 標記）
 ├── sft_pi/                    工具軌跡投影（messages + tool_calls）
 │   ├── build_sft_pi.py        episode 序列 + decision.action -> train/valid.jsonl
+│   ├── PROVENANCE.json        這批資料是「怎麼被建出來的」：invocation ＋ 每個輸入的 sha256[:16]
 │   └── {train,valid}.jsonl
 ├── sft_prime/                 (證據→教訓) 與 (狀態→下一個動作)
 │   ├── build_sft_prime.py
+│   ├── PROVENANCE.json        同上（沒有它，`--check` 分不出「滯後」與「換了參數重建」）
 │   └── {train,valid}.jsonl
 ├── distill/                   T1 蒸餾（半自動）
 │   ├── collect_evidence.py    可單獨跑：--stats / --next-ids / 證據區塊
@@ -57,7 +59,7 @@ engine_loop/
 │   ├── prompt/refine_engine.md
 │   ├── selftest.py            假 prime-agent，驗 prompt 的手遞與 --accept 路徑
 │   ├── closed_loop.py         四臂閉環對照（A/B = D6 欠帳、C/D = E3）
-│   ├── closed_loop_selftest.py  33 項離線自測（含「儀器必須說得出『沒有差異』」的陰性對照）
+│   ├── closed_loop_selftest.py  離線自測（含「儀器必須說得出『沒有差異』」的陰性對照；項數自己印）
 │   └── closed_loop_questions.md  8 題 + 每題的承重點
 └── sft_common.py              兩份投影共用的載入／渲染／切分（**只有一份渲染器**）
 ```
@@ -242,12 +244,19 @@ python3 agent_harness/engine_loop/memory/build_memory_index.py --query mmid -n 8
 
 | 產物 | 驗證方式 | 結果 |
 |---|---|---|
-| `harness_engine/memories/engine/` | `build_memories.py --check` | 106 檔、無漂移；第一行都是 `[engine] <rule>` |
+| `harness_engine/memories/engine/` | `build_memories.py --check` | 無漂移；第一行都是 `[engine] <rule>` |
 | `harness_engine/extensions` | 符號連結解析 ＋ `--check` 會擋「變成真目錄」 | 指向 `tb_loop/harness/extensions`（單一複本） |
-| `sft_pi/` | 由 `traces/*.jsonl` 產生，seed 固定可 diff | 14 條軌跡 / 38 個 tool call；每筆帶 `_provenance.reconstructed` |
-| `sft_prime/` | 同上 | 141 筆（105 evidence→lesson ＋ 36 state→next-arm）；排除 2 條 refuted、1 條 superseded |
-| `distill/` | `distill/selftest.py`（假 prime-agent） | 27 項檢查全過 |
-| `distill/closed_loop.py` | `--dry-run`（不需模型） | 四臂的 prompt 大小／sha256／逐對 diff |
+| `sft_pi/` | `build_sft_pi.py --check` | 重生 == 磁碟；每筆帶 `_provenance.reconstructed` |
+| `sft_prime/` | `build_sft_prime.py --check` | 同上；排除 refuted decision 與 superseded lesson |
+| `distill/` | `distill/selftest.py`（假 prime-agent） | 31 項檢查全過 |
+| `distill/closed_loop.py` | `closed_loop_selftest.py` ＋ `--dry-run`（不需模型） | 41 項全過；四臂的 prompt 大小／sha256／逐對 diff |
+
+**這一表原本每一列都帶一個計數（「106 檔」「141 筆」「14 條軌跡」），全部拿掉了。** 那些數字隨
+`traces/*.jsonl` 增長，寫死在這裡就會變成假話，而當時**沒有任何東西會發現**：`index_assets.py
+--check` 只報它管得到的資產，而這四個目錄一筆都不在它的 80 筆裡 —— **綠燈與「沒被檢查」在這裡
+長得一樣**。實測它們在一天內全部過期（106→132 檔、141→166 筆），而所有既有閘門都是綠的。
+要數字就問產它的那一支：`build_memories.py --check` 報檔數、兩個 `build_sft_*.py --check` 報筆數、
+`distill/*selftest.py` 報自己的項數。**能推導的就不要維護。**
 
 `distill/selftest.py` 抓到一個**真的 prompt 設計缺陷**並留下回歸斷言：v1 的 prompt 把
 「下一個可用 id」放在最末，而證據區先列了 106 個**已在使用**的 id ⇒ 從文件中第一個看到的

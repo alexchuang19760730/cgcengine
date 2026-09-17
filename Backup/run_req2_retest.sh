@@ -85,7 +85,34 @@ new = [p for p in sorted(glob.glob(os.path.join(ips_dir, "llama-server-*.ips")))
 print(" ".join(new))
 PY
 }
-alive()             { pgrep -f "build/bin/llama-server" >/dev/null 2>&1 && echo yes || echo no; }
+# 只認「真的是 llama-server 執行檔」的行程：`pgrep -f` 會命中「命令列裡剛好出現該路徑」的
+# wrapper（run_server.sh 的 CGC_PREFLIGHT_NAMES 註解記過同一個坑，2026-09-15：一支
+# `/bin/bash -c ... ./bin/llama-cli ...` 被誤 SIGTERM 是純粹的附帶傷害）。
+# 這裡不複製整個 cgc_preflight_pids（那會變成第二份真相，R1），只取需要的判準：
+# pgrep 蒐集候選，ps -o comm= 的 basename 確認。
+alive() {
+    local pid exe
+    for pid in $(pgrep -f "build/bin/llama-server" 2>/dev/null || true); do
+        exe="$(ps -o comm= -p "$pid" 2>/dev/null | head -1)"
+        [ "${exe##*/}" = "llama-server" ] && { echo yes; return 0; }
+    done
+    echo no
+}
+
+# 只殺「真的是 llama-server 執行檔」的行程。`pkill -f` 會連「命令列裡剛好出現該路徑」的
+# wrapper 一起 SIGKILL —— 那不是清理，是附帶傷害（run_server.sh 的 CGC_PREFLIGHT_NAMES
+# 註解在 2026-09-15 記過同一個坑：一支 Doubao agent 的 `/bin/bash -c ... ./bin/llama-cli ...`）。
+cgc_kill_real_llama_servers() {
+    local sig="${1:--TERM}" pid exe n=0
+    for pid in $(pgrep -f "build/bin/llama-server" 2>/dev/null || true); do
+        exe="$(ps -o comm= -p "$pid" 2>/dev/null | head -1)"
+        if [ "${exe##*/}" = "llama-server" ]; then
+            kill "$sig" "$pid" 2>/dev/null && n=$((n + 1))
+        fi
+    done
+    [ "$n" -gt 0 ] && echo "  [kill] $sig -> $n 個 llama-server"
+    return 0
+}
 
 send_req() {  # $1 = label
     /opt/homebrew/bin/python3 - "$1" <<'PY'
@@ -482,9 +509,15 @@ else
 fi
 
 if [ "$SURVIVED" = yes ]; then
-    pkill -TERM -f "build/bin/llama-server" 2>/dev/null
-    for i in $(seq 1 90); do pgrep -f "build/bin/llama-server" >/dev/null 2>&1 || break; sleep 1; done
-    pgrep -f "build/bin/llama-server" >/dev/null 2>&1 && pkill -9 -f "build/bin/llama-server"
+    # 這一段原本用 pkill/pgrep -f "build/bin/llama-server"：它會 SIGKILL 任何命令列裡
+    # 剛好含該路徑的行程（wrapper、grep、記錄用的 echo），而且等待迴圈會被那種行程
+    # 拖滿 90 秒才放棄。改用 alive() 與 cgc_kill_real_llama_servers（同一個 preflight 判準）。
+    cgc_kill_real_llama_servers -TERM
+    for i in $(seq 1 90); do [ "$(alive)" = no ] && break; sleep 1; done
+    if [ "$(alive)" = yes ]; then
+        echo "  [warn] TERM 後仍有 llama-server 存活，送 KILL" >&2
+        cgc_kill_real_llama_servers -KILL
+    fi
     sleep 2
 fi
 kill -TERM "$DRIVER" 2>/dev/null; sleep 1; kill -9 "$DRIVER" 2>/dev/null; sleep 2

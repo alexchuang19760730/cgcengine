@@ -1,0 +1,22 @@
+{
+  "builder": "sft_pi/build_sft_pi.py",
+  "charter_sha256_16": "ad5922e788d18c69",
+  "input_sha256_16": {
+    "decisions.jsonl": "af0abd1646b3a99d",
+    "episodes.jsonl": "918089bf7cc1ccef"
+  },
+  "invocation": {
+    "head_chars": 8000,
+    "system": "head",
+    "val_frac": 0.15
+  },
+  "note": "reconstructed from traces/*.jsonl; the tool call is regenerated from each episode's arm.env and is not a recorded command",
+  "rows": {
+    "train": 12,
+    "valid": 2
+  },
+  "split_seed": 42,
+  "system_bytes": 13568,
+  "system_chars": 8000,
+  "system_sha256_16": "3783212401a962fe"
+}
