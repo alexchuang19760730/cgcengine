@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -163,11 +164,26 @@ def main() -> int:
         })
         if args.dry_run:
             continue
-        dest = args.out / f"{rows[-1]['episode_id']}.txt.zst"
-        rows[-1]["pack_bytes"] = compress(pack, dest, zstd, args.level)
+        # ---- 內容尋址：同一份 pack 只寫一次 ------------------------------------------------
+        # 為什麼：實測 2646 個 pack 裡有 **195 組 pack_sha256 重複**（涉及 462 個檔），
+        # 最大的一組是 28 個位元組完全相同的 `*.ips_before`。那些重複**對版控不存在** ——
+        # git 的 blob 就是內容尋址的，28 個相同的檔它只存一份。所以舊寫法印出的「總量」
+        # 比版控實際增加的量多了 4.86 MB，而**那個差額比到 20 MB 門檻的餘裕還大**。
+        #
+        # 用 pack 的**原文**雜湊當鍵（不是壓縮後）：這樣命名不依賴 zstd 版本的決定性，
+        # 而 pack_sha256 仍然記壓縮後的位元組（那才是磁碟上的東西）。
+        key = hashlib.sha256(pack.encode("utf-8")).hexdigest()[:16]
+        dest = args.out / f"{key}.txt.zst"
+        reused = dest.exists()
+        if reused:
+            n = dest.stat().st_size
+        else:
+            n = compress(pack, dest, zstd, args.level)
+        rows[-1]["pack_bytes"] = n
         rows[-1]["pack_sha256"] = sha256_file(dest)
+        rows[-1]["pack_reused"] = reused
         rows[-1]["pack"] = str(dest.relative_to(REPO)) if dest.is_relative_to(REPO) else str(dest)
-        pack_bytes += rows[-1]["pack_bytes"]
+        pack_bytes += n
 
     hitless = [r["episode_id"] for r in rows if r["hit_lines"] == 0]
     print(f"  source      : {len(rows)} file(s) from {args.src.relative_to(REPO) if args.src.is_relative_to(REPO) else args.src}")
@@ -184,12 +200,47 @@ def main() -> int:
     total = pack_bytes / 1048576
     (args.out / "INDEX.jsonl").write_text(
         "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
-    print(f"  pack size   : {total:.1f} MB at zstd level {args.level}  -> {args.out}")
-    verdict = "PASS" if total < 20 else "FAIL"
-    print(f"  ★ PLAN §8 驗收（< 20 MB）: {verdict}   {total:.1f} MB")
+
+    # ---------------------------------------------------------------------------
+    # 「總量」的定義 —— 這一節是這個工具存在爭議的地方，所以要明說
+    # ---------------------------------------------------------------------------
+    # 兩種合理的量法給出不同的答案，而 20 MB 的門檻正好夾在中間（2026-09-17 實測）：
+    #   · 檔案大小總和（唯一 blob）   16.67 MB  -> PASS     ← git 存的量（git 只存內容一次）
+    #   · 實佔磁碟 st_blocks*512     20.72 MB  -> FAIL     ← 2646 個小檔在 4 KB 區塊上的對齊浪費
+    # 挑對自己有利的那個定義是錯的。**這裡做的是把歧義移除**：內容尋址之後重複不再寫入，
+    # 於是兩種量法都過關，定義之爭就不需要贏。
+    blobs = sorted({r["pack"] for r in rows if r.get("pack")})
+    apparent = allocated = 0
+    for b in blobs:
+        p = Path(b) if os.path.isabs(b) else REPO / b
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        apparent += st.st_size
+        allocated += st.st_blocks * 512
+    dup_saved = pack_bytes - apparent
+    n_reused = sum(1 for r in rows if r.get("pack_reused"))
+
+    print(f"  pack size   : {total:.1f} MB summed over rows, in {len(blobs)} unique blob(s) "
+          f"-> {args.out}")
+    print(f"  唯一 blob 的內容：{n_reused} 個 row 重用既有 blob"
+          f"（{dup_saved / 1048576:.2f} MB 的重複沒有被寫第二次）")
+    print()
+    print(f"  ★ PLAN §8「產物總量 < 20 MB」的兩種量法，以及本工具採用的那一種：")
+    print(f"      檔案大小總和 (唯一 blob)  {apparent / 1048576:6.2f} MB   "
+          f"{'PASS' if apparent / 1048576 < 20 else 'FAIL'}   ← 採用：git 只存內容一次，"
+          f"這是版控實際增加的量")
+    print(f"      實佔磁碟  (st_blocks)     {allocated / 1048576:6.2f} MB   "
+          f"{'PASS' if allocated / 1048576 < 20 else 'FAIL'}   ← 不採用：4 KB 區塊對齊是"
+          f"檔案系統的性質，不是這個產物的性質")
+    worst = max(apparent, allocated) / 1048576
+    verdict = "PASS" if worst < 20 else "FAIL"
+    print(f"  ★ 結論（以**較嚴格**的那個量法）: {verdict}   {worst:.2f} MB")
     if hitless:
-        print(f"    (無命中的 {len(hitless)} 檔只帶檔頭；若要它們完全不產生 pack，改的是規格不是程式)")
-    return 0 if total < 20 else 1
+        print(f"    (無命中的 {len(hitless)} 檔只帶檔頭。★ 不要為了縮小而濾掉它們："
+              f"636／883 的來源 <= 4 KB，整個檔就是內容，濾掉等於丟資料)")
+    return 0 if worst < 20 else 1
 
 
 if __name__ == "__main__":

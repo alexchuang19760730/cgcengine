@@ -1,5 +1,11 @@
 # DSH + agent_harness 整合
 
+> **歸屬（2026-09-17 補，見 `../README.md` 的分類表）**：這一支屬於 **tb_loop 線**，
+> 不是 harness 的第三條迴路。它的產物是 **tb_loop 的 SFT 輸入**（DSH trajectory → SFT），
+> 所以它與 `tb_loop/sft_data*/` 是同一條資料流的上下游。
+> 進來的外部**路徑**引用：1 處（`docs/archive/pre-consistency-metrics-2026-09-11/…`）。
+> 它有自己的 README（就是這一份），所以不需要另外的說明檔。
+
 ## 概述
 
 将 DeepSeek Harness (DSH) 整合进 agent_harness，利用 DSH 的插件化架构和 Prime Agent 的 /refine 自改进机制，提升 Qwen3.6-35B-A3B 在 Terminal-Bench 上的表现。

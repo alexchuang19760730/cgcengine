@@ -9,7 +9,19 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CGCROOT="$(cd "$ROOT/../cgcengine" 2>/dev/null && pwd || echo "")"
+# ★ E1 之後這支腳本位於 tb_loop/scripts/，所以 `ROOT` = tb_loop/（不是 harness 根）。
+#   原本下面用 `$ROOT/../models/gguf/...` —— 搬遷前 ROOT=agent_harness/ 所以那正好是
+#   repo 根的 models/；搬遷後 `$ROOT/..` 變成 agent_harness/ ⇒ 預設模型路徑指向
+#   不存在的 `agent_harness/models/gguf/`。
+#   失敗形態是**大聲但很晚**（不是靜默）：下面第 66 行有 `[ -f "$M" ] || exit 1`，
+#   它會印 `model not found: …` 然後結束。準確地說：腳本的預設路徑壞了，而它自己會說出來
+#   —— 所以這比另一支（`finetune_loopmoe.sh` 的同型問題，一半僥倖正確、因而靜默）容易發現。
+#   為什麼一直沒被發現：本檔第 69/72 行的 `netstat -ano` / `taskkill` 是 Windows 專用，
+#   它是給那條線用的腳本，而 E1 的搬遷檢查沒有區分「預設分支才走到的路徑」。
+#   教訓：自帶錨點**不自動等於安全** —— 只有當「腳本」與「它要指的東西」一起搬時才安全。
+#   判準不是「它有沒有自己算錨點」，是「算出來的路徑還存不存在」。
+REPO_ROOT="$(cd "$ROOT/../.." && pwd)"
+CGCROOT="$(cd "$REPO_ROOT/cgcengine" 2>/dev/null && pwd || echo "")"
 
 MODEL="qwen36"
 PORT="${PORT:-1234}"
@@ -45,11 +57,11 @@ fi
 # Find model
 case "$MODEL" in
     qwen36)
-        M="${N30CACHE_Q36:-$ROOT/../models/gguf/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf}"
+        M="${N30CACHE_Q36:-$REPO_ROOT/models/gguf/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf}"
         [ -z "$NGL" ] && NGL=99
         ;;
     gemma4)
-        M="${N30CACHE_G4:-$ROOT/../models/gguf/gemma-4-26B-A4B-it-UD-IQ3_S.gguf}"
+        M="${N30CACHE_G4:-$REPO_ROOT/models/gguf/gemma-4-26B-A4B-it-UD-IQ3_S.gguf}"
         [ -z "$NGL" ] && NGL=30
         ;;
     *) M="$MODEL"; [ -z "$NGL" ] && NGL=99 ;;

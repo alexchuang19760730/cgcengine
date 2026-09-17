@@ -15,19 +15,50 @@ set -euo pipefail
 # ============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AGENT_HARNESS_DIR="$(dirname "$SCRIPT_DIR")"
+
+# ★ 這一支腳本在 E1 之後位於 tb_loop/finetune/，而它需要的東西**不在同一層**：
+#     config.env、sft_data_merged/   在 tb_loop/        （跟腳本一起搬了）
+#     loopmoe/、loopmoe_output/      在 agent_harness/  （沒搬）
+#   原本這裡用一個 `AGENT_HARNESS_DIR="$(dirname "$SCRIPT_DIR")"` 同時代表兩者。
+#   搬遷前那個值恰好是 agent_harness/；搬遷後變成 tb_loop/ —— 於是 config.env 仍然找得到
+#   （它也在 tb_loop）而 loopmoe/ 找不到。**失敗之所以靜默，是因為其中一半僥倖正確**：
+#   同一個變數底下有一半的派生仍然解析得到，所以第一個錯會長得像「這個檔案有問題」，
+#   而不是「這個錨點錯了」。修法是**兩個名字**，並且在兩者都算得出來時互相對照。
+TB_LOOP_DIR_SELF="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # shellcheck source=../config.env
-source "$AGENT_HARNESS_DIR/config.env"
+source "$TB_LOOP_DIR_SELF/config.env"
+
+# config.env 自己也算 TB_LOOP_DIR。兩個名字指同一件事時要**驗**，不要假設。
+if [ "$TB_LOOP_DIR_SELF" != "$TB_LOOP_DIR" ]; then
+    echo "error: 自算的 TB_LOOP_DIR_SELF=$TB_LOOP_DIR_SELF 與 config.env 的 TB_LOOP_DIR=$TB_LOOP_DIR 不一致" >&2
+    exit 1
+fi
+
+# python 片段用 `os.environ.get("AGENT_HARNESS_DIR", ".")` 決定 PYTHONPATH，而它原本只是
+# 一個 shell 變數、**沒有 export** ⇒ 那些片段一直拿到 "."（只有 cwd 剛好對時才 import 得到
+# `loopmoe`）。export 成 harness 根之後，`import loopmoe` 與名字的意思才一致。
+export AGENT_HARNESS_DIR="$TB_HARNESS_ROOT"
 
 STAGE="${1:-all}"
 
 # ---------- Loop MoE 配置 ----------
-LOOPMOE_CONFIG="${LOOPMOE_CONFIG:-$AGENT_HARNESS_DIR/loopmoe/configs/loopmoe_35b.json}"
-LOOPMOE_OUTPUT_DIR="${LOOPMOE_OUTPUT_DIR:-$AGENT_HARNESS_DIR/loopmoe_output}"
+# ★ 名稱陷阱：config.env 定義的是 `LOOPMOE_CONFIG_PATH`，而這裡原本讀 `LOOPMOE_CONFIG`
+#   ⇒ 那個 `${...:-fallback}` 一定走 fallback，於是 fallback 一壞就整個壞（見上）。
+#   一併接受兩個名字，並在最後斷言它真的存在。
+LOOPMOE_CONFIG="${LOOPMOE_CONFIG:-${LOOPMOE_CONFIG_PATH:-$TB_HARNESS_ROOT/loopmoe/configs/loopmoe_35b.json}}"
+LOOPMOE_OUTPUT_DIR="${LOOPMOE_OUTPUT_DIR:-$TB_HARNESS_ROOT/loopmoe_output}"
 LOOPMOE_SOURCE_MODEL="${LOOPMOE_SOURCE_MODEL:-/path/to/Qwen3.6-35B-A3B}"
-LOOPMOE_TRAIN_DATA="${LOOPMOE_TRAIN_DATA:-$AGENT_HARNESS_DIR/sft_data_merged/train.jsonl}"
-LOOPMOE_EVAL_DATA="${LOOPMOE_EVAL_DATA:-$AGENT_HARNESS_DIR/sft_data_merged/valid.jsonl}"
+LOOPMOE_TRAIN_DATA="${LOOPMOE_TRAIN_DATA:-$TB_LOOP_DIR/sft_data_merged/train.jsonl}"
+LOOPMOE_EVAL_DATA="${LOOPMOE_EVAL_DATA:-$TB_LOOP_DIR/sft_data_merged/valid.jsonl}"
+
+# 這個斷言就是「本來就該有、而沒有的那一行」：沒有它，上面那個路徑錯誤會一路走到
+# `train_loopmoe.py` 才以 FileNotFoundError 的形式出現（或更糟：靜默地不載入設定）。
+[ -f "$LOOPMOE_CONFIG" ] || {
+    echo "error: LOOPMOE_CONFIG 不存在：$LOOPMOE_CONFIG" >&2
+    echo "       （這是 harness 層的東西，不是 tb_loop 層的 —— 見本檔第 17 行附近的說明）" >&2
+    exit 1
+}
 
 # LoRA
 LOOPMOE_LORA_RANK="${LOOPMOE_LORA_RANK:-32}"

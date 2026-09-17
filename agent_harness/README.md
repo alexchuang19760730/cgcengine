@@ -115,24 +115,47 @@ bash scripts/setup_env.sh          # 一次性：venv ＋ terminal-bench ＋ hos
 
 ---
 
-## 未分類（誠實清單）
+## 分類（2026-09-17：從「誠實清單」變成「決定」）
 
 `PLAN_ENGINE_LOOP_2026-09-15.md` §3 的目標結構只安排了 `tb_loop/`、`engine_loop/`、`shared/`。
-以下條目**不屬於任何一個迴圈，也沒有被規劃安排位置**，因此 E1 刻意不動它們：
+以下條目不屬於任何一個迴圈。E1 當時把它們記成「未分類誠實清單」——**那個措辭是對的**
+（計畫沒說不等於我可以自己發明一個家），但它留了一個缺口：**沒有說它們屬於誰**。
 
-| 條目 | 它是什麼 |
-|---|---|
-| `pd/` ＋ `docs/CGC_PD_Whitepaper.md`、`docs/DOPD_UPGRADE_PLAN.md`、`docs/PD_INTEGRATION_DELIVERY.md` | Prefill-Decode 端雲分離（另有同名副本在 `pd/` 底下，見下） |
-| `loopmoe/` | Loop MoE（RDT 循環 ＋ Gated DeltaNet） |
-| `qwen36/` | Qwen3.6 相關 |
-| `dsh_config/` | DSH（cordis）設定與 SFT 轉換 |
-| `scripts/auto_git_push.ps1` | 定時推送（`git add agent_harness` 後 push）。**刻意不搬**：它的路徑被 `CONVENTIONS.md` D6、`engine_loop/memory/README.md`、`build_memory_index.py` 的 docstring 與 lesson `eng-bound-0004` 的 `applies_to` 引用，而其中兩份是**不可手改的快照**、一份是 `traces/` 裡的已定稿 record。搬它換不到任何東西，只會製造引用漂移。 |
-| `cgc_proxy.js`、`cgc_proxy.py`、`cgc_anthropic_proxy.py`、`openai_cgc_bridge.js`、`openai_cgc_bridge.py`、`litellm_config.yaml`、`_gen.js` | CGC edge proxy / bridge（Anthropic 與 OpenAI 兼容轉接） |
+2026-09-17 補上歸屬。判準是**消費者**（誰 import／呼叫它），不是目錄名：
 
-**已知的重複（既有，未處理）**：`docs/CGC_PD_Whitepaper.md` 與 `pd/CGC_PD_Whitepaper.md`
-位元組完全相同（`md5 e1a34fac72c958ef2d688b5184a4a943`），`docs/DOPD_UPGRADE_PLAN.md` 與
-`pd/DOPD_UPGRADE_PLAN.md` 亦然（`md5 cc6292251e904be9bfc395a2f87136c6`）。這是本專案最厭惡的
-「兩份真相」，但歸屬在 PD 那一支，不在本次 E1 的範圍內。
+| 條目 | 它是什麼 | **歸屬** | 依據（實測） |
+|---|---|---|---|
+| `qwen36/` | Qwen3.6-35B-A3B 推論整合層（1 檔、3 個 def/class） | **tb_loop 的依賴** | 它自己的 docstring 列出三個消費者，全部在 `tb_loop/`：`agents/loopmoe_agent_adapter.py`、`finetune/finetune_loopmoe.sh`、SFT 管線 |
+| `loopmoe/` | Loop MoE 模型與訓練套件（22 檔） | **tb_loop 的依賴** | `tb_loop/finetune/finetune_loopmoe.sh` import `loopmoe.{config,models.loop_moe_model,training.weight_graft}` |
+| `dsh_config/` | DSH（cordis）設定 ＋ trajectory→SFT 轉換（4 檔） | **tb_loop 的 SFT 輸入** | 它的 README 自述「整合進 agent_harness…提升 Terminal-Bench 表現」；產物是 `tb_loop/sft_data*/` 的上游 |
+| `pd/` | Prefill-Decode 端雲分離（35 檔） | **引擎側的推論子系統**（不屬兩條迴路） | `qwen36/__init__.py` 把 `CGC edge_server (… + DOPD)` 列為推論後端之一 |
+| `docs/` | PD 的文件（3 檔） | 同 `pd/` | 其中 2 份原本是 `pd/` 的逐位元組副本，**已於 2026-09-17 改成指標** |
+| `scripts/auto_git_push.ps1` | 定時推送（`git add agent_harness` 後 push） | **跨機器搬運線** | **刻意不搬**：路徑被 `CONVENTIONS.md` D6、`engine_loop/memory/README.md`、`build_memory_index.py` 的 docstring 與 lesson `eng-bound-0004` 的 `applies_to` 引用，而其中兩份是不可手改的快照、一份是已定稿 record。搬它換不到任何東西，只會製造引用漂移 |
+| `cgc_proxy.js`、`cgc_proxy.py`、`cgc_anthropic_proxy.py`、`openai_cgc_bridge.js`、`openai_cgc_bridge.py`、`litellm_config.yaml`、`_gen.js` | CGC edge proxy / bridge | **基礎設施**（不是迴路也不是資料） | 沒有 harness 側的消費者；它們服務的是對外的 API 相容層 |
+
+**每個目錄都有自己的 README**，說明「它不是什麼」——因為誤解發生在**讀者落在那個目錄裡**的時候，
+而不是在他讀到這一頁的時候。
+
+### 重複的文件：已處理
+
+`docs/CGC_PD_Whitepaper.md` 與 `pd/CGC_PD_Whitepaper.md` 原本位元組完全相同
+（`md5 e1a34fac72c958ef2d688b5184a4a943`），`docs/DOPD_UPGRADE_PLAN.md` 與
+`pd/DOPD_UPGRADE_PLAN.md` 亦然（`md5 cc6292251e904be9bfc395a2f87136c6`）。
+
+2026-09-17 處置：`docs/` 底下那兩份**換成指標**（不是刪除）。
+不刪的理由是 `docs/AGENT_HARNESS_E1_RESTRUCTURE_20260916.html` 引用過那個路徑，
+刪掉會讓一份已定稿的文件說假話 —— 本 repo 對已發表文件的立場是**標註而不是改寫**。
+指標讓路徑仍然解析得到，而內容只有一份。`PD_INTEGRATION_DELIVERY.md` 沒有重複，留在原處。
+
+### 一句話說明為什麼不搬家
+
+進來的**路徑**引用幾乎是零（`pd/` 1、`loopmoe/` 1、`qwen36/` **0**、`dsh_config/` 1），
+所以搬的成本很低。但 repo 根已經有 17 個一級目錄，再開一個給 62 個檔不會讓任何人更容易找到它。
+**沒有更好的家時，搬家的唯一效果是把問題換一個地址。** 所以處置是標明歸屬，而不是搬家。
+真要搬，該由各支的 owner 決定去處。
+
+⚠️ 引用判準要用**完整路徑前綴**：裸字串會嚴重誤導 —— `qwen36` 有 83 處命中，但絕大多數指的是
+**模型**（`Qwen3.6-35B-A3B` 的別名）而不是這個套件；`loopmoe` 的 14 處多半是 `LOOPMOE_*` 變數名。
 
 ---
 

@@ -142,14 +142,20 @@ if [ -n "$other_builders" ]; then
     gate_notes+=("另一個建置正在跑：$(echo $other_builders | tr '\n' ' ')")
 fi
 
-if [ "$gate_fail" = 1 ] && [ "$FORCE" != 1 ]; then
+# ★ dry-run 不因為閘門關著而 exit 1：它的工作就是**告訴你判定**。
+#   第一次寫的時候兩者共用同一個 exit，於是閘門鏈裡「檢查建置前置」這一條會在
+#   別條線正在量測時變紅 —— 而那個紅燈的意義是「現在不要建置」，不是「這支工具壞了」。
+#   把兩件事分開：dry-run 報告並回 0；真正的建置才拒絕（這是 2026-09-17 13:18 實測到的
+#   —— 那一輪閘門真的擋下了一次，別條線正在跑 m123_oracle_gate + decode_sweep）。
+if [ "$gate_fail" = 1 ] && [ "$DRY" != 1 ] && [ "$FORCE" != 1 ]; then
     echo "error: 建置閘門擋下（NOT safe to build）" >&2
     for n in "${gate_notes[@]}"; do echo "  - $n" >&2; done
     echo "  ⇒ 建置產物被納入版控，所以 cmake --build 是對『機器上所有正在跑的實驗』的一次寫入。" >&2
     echo "     等上述都結束，或明確用 --force（你要為此負責）。" >&2
     exit 1
 fi
-[ "$gate_fail" = 1 ] && echo "  ⚠ --force: 跳過閘門（${gate_notes[*]}）"
+[ "$gate_fail" = 1 ] && [ "$FORCE" = 1 ] && [ "$DRY" != 1 ] \
+    && echo "  ⚠ --force: 跳過閘門（${gate_notes[*]}）"
 
 # ---------------------------------------------------------------------------
 # --dry-run：閘門 + 當前指紋，不建置、不寫檔

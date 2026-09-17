@@ -348,6 +348,50 @@ LOOPMOE_CONFIG = /Users/alexchuang/Documents/loopmoe/configs/…        ← 完�
 同一次搬動，兩種寫法的成本差是 0 比 9。
 </p>
 
+<div class="box red">
+<p>
+<b>★ 更正（2026-09-17，本節的推論有一半是錯的）。</b>
+上面那句「自帶錨點的腳本<b>一行都不用改</b>」只在**腳本與它要指的東西一起搬**時成立。
+E1 之後一天，掃描發現<b>兩支腳本的父目錄錨點因為搬遷而指錯</b>，而且兩支的失敗方式不同：
+</p>
+<table>
+<tr><th>腳本</th><th>錨點</th><th>搬遷前 / 後</th><th>失敗形態</th></tr>
+<tr><td><code>tb_loop/finetune/finetune_loopmoe.sh</code></td>
+    <td><code>AGENT_HARNESS_DIR="$(dirname "$SCRIPT_DIR")"</code></td>
+    <td><code>agent_harness/</code> → <code>tb_loop/</code></td>
+    <td><b>靜默</b>。<code>config.env</code> 也被搬進 <code>tb_loop/</code> 所以仍然找得到，
+        而 <code>loopmoe/</code> 找不到 ⇒ 同一個變數底下<b>一半的派生僥倖正確</b>，
+        於是不會有錯誤訊息告訴你錨點錯了</td></tr>
+<tr><td><code>tb_loop/scripts/start_local_model.sh</code></td>
+    <td><code>$ROOT/../models/gguf/…</code></td>
+    <td>repo 根 → <code>agent_harness/</code></td>
+    <td>大聲但很晚：第 66 行有 <code>[ -f "$M" ] || exit 1</code>，會印
+        <code>model not found</code> 才結束。之所以一直沒被發現是因為這支是 Windows 線的腳本
+        （<code>netstat -ano</code>／<code>taskkill</code>）</td></tr>
+</table>
+<p>
+<b>錯在哪裡：判準選錯了。</b> E1 當時的檢查是「這支腳本有沒有自己算錨點」——
+而那是<b>無關的性質</b>。正確的判準是<b>「算出來的路徑還存不存在」</b>：
+自帶錨點只保證「相對於自己」，不保證「相對於世界」。腳本往下搬一層，
+<br><code>$(dirname "$SCRIPT_DIR")</code> 的語意就跟著改一層 ——
+只有當那個目標<b>也</b>跟著搬時，兩層誤差才互相抵消。
+</p>
+<p>
+修法與驗證（2026-09-17）：<code>finetune_loopmoe.sh</code> 的錨點<b>拆成兩個名字</b>
+（<code>TB_LOOP_DIR_SELF</code> 對 <code>config.env</code>、<code>TB_HARNESS_ROOT</code> 對
+<code>loopmoe/</code>），兩者都算得出來時互相對照，並在最後斷言
+<code>LOOPMOE_CONFIG</code> 存在（<b>那一行就是本來該有而沒有的斷言</b>）；
+<code>start_local_model.sh</code> 補一個 <code>REPO_ROOT</code>。
+驗證方式是<b>用腳本自己的定義實際求值</b>再檢查每個目標存在，不是重算推論。
+</p>
+<p>
+一般化的形狀落成 lesson <code>eng-bound-0006</code>：
+<b>「它自己算錨點」不是安全性的證據，「目標還在」才是。</b>
+這與 <code>eng-smoke-0003</code> 是同一條軸的兩端 —— 那裡講的是「一個變數恰好等於另一個」，
+這裡講的是「一個相對路徑恰好還對」。
+</p>
+</div>
+
 <h2>7. 未做的事與待決</h2>
 
 <ol>
