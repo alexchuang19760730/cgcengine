@@ -975,6 +975,202 @@ python3 /tmp/en_namework_parse.py "$L"                  # 逐項排名 ＋ *bywo
 或先把它們搬進 <code>scripts/check/</code>（那需要同時加進 <code>classify.py</code>
 與 <code>index_assets.py</code> 的 <code>CURATED</code>）。</p>
 
+<h2>§15 命名 <code>node</code>：620 → 350（2026-09-18 03:3x 新增）</h2>
+
+<p>§11.2 的結論是「最大的一塊是<b>真運算但沒有子系統名</b>（<code>node</code>，20–29%），
+在它能被命名之前任何更細的排名都卡住」。這一節把它解掉。</p>
+
+<h3>§15.1 先用<b>零成本</b>的手段歸屬</h3>
+
+<p><code>CGC-GRPH</code> 的 dump 帶<b>索引順序</b>，而圖是逐層建出來的 ⇒ 「左右兩側最近的有名節點」
+就能把每個 <code>node_NN</code> 歸屬到子系統。<b>不需要任何新的量測或重建。</b></p>
+
+<table>
+<tr><th style="width:150px">op</th><th class="num">數量</th><th>鄰居（左 ｜ 右）</th><th>解讀</th></tr>
+<tr><td><code>ADD</code></td><td class="num">270<br><span class="small">其中 240</span></td>
+    <td><code>ffn_moe_weighted</code> ｜ <code>ffn_moe_out</code></td>
+    <td><b>MoE 專家輸出的歸約鏈</b>（每層 6 個中間項）</td></tr>
+<tr><td><code>GET_ROWS</code></td><td class="num">90</td><td><code>cache_r_l*</code> ｜ <code>cache_s_l*</code></td>
+    <td><b>池的 gather</b></td></tr>
+<tr><td><code>MUL_MAT</code></td><td class="num">130</td>
+    <td><code>alpha</code>／<code>beta</code>（30）、<code>attn_norm</code> ｜ <code>linear_attn_qkv_mixed</code>（29）</td>
+    <td>線性注意力的投影</td></tr>
+<tr><td><code>MUL</code></td><td class="num">60</td><td><code>norm</code> ｜ <code>final_output</code></td><td>輸出縮放</td></tr>
+<tr><td><code>GATED_DELTA_NET</code></td><td class="num">30</td><td><code>z</code> ｜ —</td><td>線性注意力核心（30 層）</td></tr>
+<tr><td><code>UNARY</code></td><td class="num">30</td><td>— ｜ <code>cache_s_l*</code></td><td>池相關</td></tr>
+<tr><td><code>FLASH_ATTN_EXT</code></td><td class="num">10</td><td><code>Qcur_full</code> ｜ <code>kqv_out</code></td>
+    <td>10 個全注意力層</td></tr>
+</table>
+
+<div class="box">
+<p><b>順手更正一個我自己的誤讀。</b><code>CGC-GRPH[..] ne=[a,b]</code> 印的是
+<b><code>ne[0]</code> 與 <code>ne[1]</code> 兩維</b>（<code>ggml-backend.cpp:2060-2062</code>），
+而 MoE 的 token 數在 <code>ne[2]</code> ⇒ 這些 <code>ne=[…,2]</code> <b>不是</b> token 數。
+把 <code>ne</code> 相乘當「流量」之前要先確認那個 op 是不是<b>切片</b>（<code>SET_ROWS</code> 的
+<code>ne=[512,8192]</code> 是整條 KV cache，實際只寫一行）⇒ 本節<b>不</b>把 <code>ne</code> 當流量。</p>
+</div>
+
+<h3>§15.2 真的在 builder 裡命名（<code>cb()</code> 只設名字，不動圖）</h3>
+
+<table>
+<tr><th>位置</th><th>新名字</th><th class="num">節點數</th></tr>
+<tr><td><code>src/llama-graph.cpp:2790</code>／<code>:2799</code>（迴圈內；最後一項仍被迴圈後的
+    <code>cb(moe_out, "ffn_moe_out")</code> 改名 ⇒ 7 個裡 6 個生效）</td>
+    <td><code>ffn_moe_add</code></td><td class="num">240</td></tr>
+<tr><td><code>src/models/delta-net-base.cpp:402</code>（<code>K=1</code> 路徑）</td>
+    <td><code>gdn_state</code></td><td class="num">0（此形狀不走）</td></tr>
+<tr><td><code>src/models/delta-net-base.cpp:572</code></td>
+    <td><code>gdn_out_raw</code></td><td class="num">60</td></tr>
+</table>
+
+<p><b>為什麼這是安全的（三條都查過，不是推論）</b>：
+① <code>cb()</code> 的實作是 <code>ggml_format_name</code>／<code>ggml_set_name</code>
+（<code>llama-context.cpp:6866-6872</code>）—— <b>只寫名字</b>；
+② 所有 <code>name[0] == '\0'</code> 的讀者（<code>llama-context.cpp:3805/4000/4054/4249/4399</code>）
+都在<b>診斷路徑</b>（<code>CGC_VERIFY_OP_TIMING</code>、tensor capture、log 格式化）；
+③ <code>add_fused_node</code> 只 <code>push_back</code>，從不讀名字（<code>llama-graph.cpp:1462</code>），
+所以替 GDN 的張量命名不會改到它的融合判定；
+④ 名字比對要嘛是 <code>strcmp</code> 精確（<code>:6944-7034</code>），要嘛是驗證路徑的診斷述詞
+（<code>:3808-3824</code>）—— <code>ffn_moe_add-</code> 兩者都不命中。</p>
+
+<h3>§15.3 實證（dump 逐字）</h3>
+
+<pre><code>$ # CGC-GRPH dump，單一 4116 節點的圖
+  n_nodes=4116: ffn_moe_add    x240
+  n_nodes=4116: gdn_out_raw    x60
+  n_nodes=4116: gdn_state      x0
+  n_nodes=4116: node_NN (unnamed) x350        &lt;-- 之前是 620
+  CGC-GPUNODE: step=86 seg_busy=162.47 ms | … | delta=0.00% | nkind=24   &lt;-- 之前 nkind=22</code></pre>
+
+<table>
+<tr><th style="width:230px">桶</th><th class="num">新表 wcntw<br><span class="small">% of wait</span></th><th>備註</th></tr>
+<tr><td><code>node</code>（已少 270 個</td><td class="num">16.6%</td>
+    <td>它的 <code>cntw</code> 由 14.9% 掉到 <b>10.4%</b>；剩下的 350 個仍無名</td></tr>
+<tr><td><b><code>ffn_moe_add</code></b></td><td class="num"><b>6.7%</b></td>
+    <td><b>240 個 kernel/步</b>，<code>ne=[2048,2]</code>（16 KiB）⇒ 11 ms 不可能是算術，是<b>相依鏈的延遲</b>
+        （每層 6 個序列 add × 40 層）</td></tr>
+<tr><td><code>gdn_out</code></td><td class="num">2.6%</td><td>30 個 GDN</td></tr>
+<tr><td><code>cache</code> / <code>(other)</code> / <code>ffn_moe_</code> / <code>norm</code></td>
+    <td class="num">8.2 / 12.7 / 7.8 / 6.7%</td><td>未變（命名不影響他們）</td></tr>
+</table>
+
+<p><b>交叉驗證</b>：op 表的 <code>ADD nd=421 wcntw=13.9%</code>，其中 <code>ffn_moe_add</code> 佔
+<b>53%</b>（10.82 / 20.50 ms）—— 而節點數比是 240/421 ＝ <b>57%</b>。兩者吻合。</p>
+
+<h2>§16 ★ 一個「從未跑過」的融合路徑（本輪最重要的發現）</h2>
+
+<div class="box pur">
+<p><code>src/llama.cpp/src/llama-graph.cpp:2675-2677</code> 逐字：</p>
+<pre><code>    // CGC P0: batch down-combine (Lily-style). One kernel replaces 8 down GEMVs + 7 adds.
+    // Only supports: decode (n_tokens==1), Q3_K down weights, no scale/bias on down,
+    // weight_after_ffn (standard MoE). Falls back to original path if any condition fails.</code></pre>
+<p>⇒ 樹上<b>已經有</b>一條把「8 個 down GEMV ＋ <b>7 個 add</b>」併成<b>一個 kernel</b> 的路徑。
+本輪剛好量出那 7 個 add 的價格：<b><code>ffn_moe_add</code> ＝ 6.7% of <code>wait</code></b>。</p>
+</div>
+
+<p><b>而它在生產上不會跑。兩個獨立的理由，都查過了：</b></p>
+
+<table>
+<tr><th style="width:210px">閘門條件</th><th>生產上的實際值</th><th class="num" style="width:70px">通過？</th></tr>
+<tr><td><code>CGC_DOWN_COMBINE=1</code></td>
+    <td><code>run_server.sh:1342</code> 只是 <b>allowlist 轉發</b>；<b>沒有任何 driver 設它</b>
+        （<code>run_native_baseline.sh:74</code> 反而 <code>unset</code> 它）⇒ 預設關</td>
+    <td class="num">✗</td></tr>
+<tr><td><code>n_tokens == 1</code></td>
+    <td>MTP off 的 decode 成立；MTP on（T=2/4）不成立</td><td class="num">部分</td></tr>
+<tr><td><code>down_exps->type == GGML_TYPE_Q3_K</code></td>
+    <td>讀 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code> 的 <b>GGUF header</b>：
+        <code>blk.*.ffn_down_exps.weight</code> ＝ <b>IQ3_S ×37、IQ4_XS ×3、Q3_K ×1</b>
+        ⇒ <b>40 層裡只有 1 層</b>可能通過</td>
+    <td class="num">✗（39/40）</td></tr>
+</table>
+
+<pre><code>$ # 證據：正常啟動的 graph dump 裡，那個融合的輸出標記出現幾次
+  ffn_moe_out_down_combine   0
+$ # 而專家型別不是猜檔名，是讀 header（753 個張量逐個讀 type）：
+  blk.0.ffn_down_exps.weight -&gt; IQ3_S dims=(512, 2048, 256)
+  blk.1.ffn_down_exps.weight -&gt; IQ3_S dims=(512, 2048, 256)
+  blk.2.ffn_down_exps.weight -&gt; IQ3_S dims=(512, 2048, 256)</code></pre>
+
+<div class="box warn">
+<p><b>所以下一步的優化是：把那條融合的型別閘門開到生產實際用的 IQ3_S／IQ2_S／IQ4_XS（要動 kernel），
+而不是從頭設計一個新的融合。</b>本輪<b>沒有</b>實作它（依「沒有判準就不要實作」——
+而那個判準現在有了，見下）。</p>
+<p><b>判準（先寫下來，免得事後移動球門）</b>：<code>ffn_moe_add</code> 佔 <code>wait</code>
+<b>≥5%</b>（現測 <b>6.7%</b>）；實作後用<b>交錯 A/B ×3</b>量，且必須確認融合節點真的出現在 dump 裡
+（出現 0 次就與「沒開」同形 —— 這正是本節發現它的方式）。</p>
+<p><b>預期收益的上界</b>：<code>ffn_moe_add</code> 的 6.7% ＋ <code>MUL_MAT_ID</code>（8 個 down GEMV）
+的一部分；<b>下界未知</b>，因為那 7 個 add 的成本是<b>延遲</b>（240 個 16 KiB 的 kernel）而非算術，
+融合之後延遲會消失但 GEMV 的記憶體流量<u>不變</u>。</p>
+</div>
+
+<h3>§16.1 一個尚未查證的觀察（不要當結論）</h3>
+
+<p><code>CPY cache_s_l&lt;N&gt; ne=[524288,0]</code> —— <b><code>ne[1] = 0</code></b>，每層 2 個、約 80 次/步。
+<code>llama-memory-recurrent.cpp:99</code> 是 <code>n_rows = mem_size * (1 + n_rs_seq)</code>
+⇒ 若 <code>mem_size == 0</code>，那就是<b>零元素複製</b>（一個什麼都不搬的 kernel）。
+<b>尚未查證</b>（需要讀 CGC 的 slot 路徑）；同一批還有 <code>GET_ROWS ne=[524288,*] ×60</code>。
+列在這裡是為了讓下一個人不必重新發現它。</p>
+
+<h2>§17 本節的誠實邊界（§13 之外的補充）</h2>
+
+<ul>
+<li><b>不主張命名改變了任何數值。</b> <code>cb()</code> 只寫名字，而且 D5 會逐位元驗證這一點
+    （見 §18）。名字改變的是<b>歸屬</b>，不是計算。</li>
+<li><b>不主張 <code>ffn_moe_add</code> 的 6.7% 是「算術」。</b> 240 × 16 KiB ＝ 3.9 MB/步，
+    在 100 GB/s 下是 0.04 ms ⇒ 11 ms 只能來自<b>相依鏈延遲</b>與／或共同出現的歸屬。
+    兩者都指向同一個動作（減少 kernel 數），但<b>比例未被分離</b>。</li>
+<li><b>不主張 down-combine 開了就一定快。</b> 它是<b>已被實作但型別不匹配</b>的路徑，
+    不是已被量到收益的路徑；預期收益是<b>由成本反推的</b>，不是量到的。</li>
+<li><b>本節的 t/s 不可引用。</b><code>en-named</code> 的 8.45 t/s 是在 <b>HEAVY(2)</b> 下量的，
+    且該臂開著 dump（本身很貴）。</li>
+<li><b>本節沒有跑 A/B。</b> 它是三個小時內的第三次「先建判準、再實作」——
+    前兩次（<code>CGC_MMV_FUSE</code> 與離線最小平方）都是沒判準就做而失敗。</li>
+</ul>
+
+<h2>§18 現場閘門輸出（原文，2026-09-18 03:34）</h2>
+
+<pre><code>$ python3 scripts/check/m123_oracle_gate.py --tag en-naming
+  M1 numeric identity    (bit-identical logits)  : 9/9  (100.0%)
+  M2 decision agreement  (same argmax token)     : 9/9  (100.0%)
+  M3 top-k set agreement (same top-N id set)     : 9/9  (100.0%)
+  (aux) full_fnv1a64 identical                   : 9/9  (100.0%)
+CROSS-TAB  (n=9)
+  M1 same  &amp; M2 same :     9   no drift, same choice
+  M1 same  &amp; M2 diff :     0   should be 0; non-zero = tie-break bug
+  M1 diff  &amp; M2 same :     0   drift only
+  M1 diff  &amp; M2 diff :     0   real divergence
+VERDICT M1 (numeric identity)   : PASS (9/9)
+VERDICT M2 (decision agreement) : PASS (9/9)
+GATE en-naming: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+cross-tab: {'num_eq_dec_eq': 9, 'num_eq_dec_ne': 0, 'num_ne_dec_eq': 0, 'num_ne_dec_ne': 0}
+
+$ # 先讀 comparable 再讀判決
+comparable    = True
+config_diffs  = []
+
+$ # 歸屬（dump 沒有 binary 指紋 ⇒ 對一眼 cap.created 與產物 mtime）
+cap created = 2026-09-18T03:34:06   （profile prefill250）
+  libggml-base.0.19.0.dylib  2026-09-18T03:31:11
+  libllama.0.0.279.dylib     2026-09-18T03:31:13
+  llama-graph.cpp            2026-09-18T03:30:43
+  delta-net-base.cpp         2026-09-18T03:30:59
+=&gt; cap 晚於每一個產物 ⇒ 可歸屬
+
+$ python3 agent_harness/engine_loop/traces/validate.py
+  lessons.jsonl: 174 records {'lesson': 174}
+  -&gt; OK
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  10/10 injected violations rejected</code></pre>
+
+<div class="box ok">
+<p><b>M1 = 9/9 逐位元相同，就是「命名沒有動數值」的證明</b>（§17 的第一條）。
+這一條比「重跑一次然後說它 pass」資訊量高：它證明<b>只有名字變了</b>。</p>
+</div>
+
+<p class="small">這一節的 <code>en-naming</code> 是<b>第三次</b>在同一棵樹上跑 D5
+（前兩次是 <code>en-nametable-work</code> 與 <code>en-nodes</code> 那一批）。每次約 33–50 s。</p>
+
 </div>
 </body>
 </html>

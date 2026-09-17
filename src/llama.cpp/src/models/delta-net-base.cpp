@@ -400,6 +400,11 @@ std::pair<ggml_tensor *, ggml_tensor *> llm_build_delta_net_base::build_delta_ne
 
     // K=1: output carries the final state only. state s is 4D [S_v, S_v, H_v, n_seqs].
     ggml_tensor * result = ggml_gated_delta_net(ctx0, q, k, v, g, b, s, /*K=*/1);
+    // [CGC 2026-09-18 NAMING] was unnamed -> the node-level GPU instrument bucketed all 30
+    // (one per linear-attention layer) into `node`. Free: cb() is ggml_format_name, and no
+    // numeric path matches this prefix. add_fused_node only pushes to a vector and never reads
+    // names (llama-graph.cpp:1462), so naming the fused node's tensor cannot change the fusion.
+    cb(result, "gdn_state", il);
     if (n_tokens == 1) {
         res->add_fused_node({LLM_FUSED_OP_GDN_AR, result, il});
     } else {
@@ -565,6 +570,7 @@ ggml_tensor * llm_build_delta_net_base::build_recurrent_attn(
 
     // state s is 4D [S_v, S_v, H_v, n_seqs]; K snapshot slots are written into the output.
     ggml_tensor * gdn_out = ggml_gated_delta_net(ctx0, q, k, v, g, b, s, K);
+    cb(gdn_out, "gdn_out_raw", il);   // [CGC 2026-09-18 NAMING] see the K=1 site above
     if (n_seq_tokens > 1) {
         res->add_fused_node({LLM_FUSED_OP_GDN_CH, gdn_out, il});
     } else {

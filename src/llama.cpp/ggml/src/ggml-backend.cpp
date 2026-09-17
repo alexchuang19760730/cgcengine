@@ -2173,6 +2173,15 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                 // The vocabulary answers M3's question -- the ffn_moe_* share against
                                 // the attention share -- rather than trying to be exhaustive.
                                 static const char * const ns_fix[] = {
+                                    // [CGC 2026-09-18 NAMING] three buckets that only exist because
+                                    // the builders were given names for previously-unnamed tensors:
+                                    // ffn_moe_add = the (n_expert_used-1) intermediate terms of the
+                                    // MoE expert-output reduce (llama-graph.cpp:2790/2799), and
+                                    // gdn_state / gdn_out_raw = ggml_gated_delta_net
+                                    // (models/delta-net-base.cpp:402/572). Before naming they were
+                                    // 240 + 30 nodes inside `node`, which was the largest single
+                                    // unnamed cluster in the whole table.
+                                    "ffn_moe_add", "gdn_state", "gdn_out",
                                     "ffn_moe_argsort", "ffn_moe_logits", "ffn_moe_probs", "ffn_moe_slots",
                                     "ffn_moe_topk", "ffn_moe_gate_up", "ffn_moe_gate", "ffn_moe_up",
                                     "ffn_moe_down", "ffn_moe_", "ffn_gate", "ffn_up", "ffn_down", "ffn_",

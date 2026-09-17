@@ -382,6 +382,14 @@ ARMS = {
     # ~1/4 instead of by 64, without needing finer slices at all.
     "en-work":           {"CGC_GPU_NODES": "1", "CGC_GPU_OPS": "1", "CGC_DECODE_PROFILE": "1",
                           "CGC_GPU_TIMING": "1"},
+    # [CGC 2026-09-18 NAMING] Same table PLUS the graph dump, so one run both proves the new names
+    # are in the graph (CGC-GRPH) and shows the re-split table (CGC-GPUNODE/CGC-GPUOPS). The three
+    # names this arm exists to verify: ffn_moe_add (the n_expert_used-1 intermediate terms of the
+    # MoE expert-output reduce, llama-graph.cpp:2790/2799), gdn_state / gdn_out_raw
+    # (ggml_gated_delta_net, models/delta-net-base.cpp:402/572). Before them, 240 + 30 nodes were
+    # bucketed into `node` -- the largest single unnamed cluster in the table.
+    "en-named":          {"CGC_GPU_NODES": "1", "CGC_GPU_OPS": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_GPU_TIMING": "1", "CGC_GRPH_DBG": "1"},
     # The granularity cross-check: same table at 2-7 node slices, where the count-weighted column
     # was already known to CHURN (MUL_MAT 27.3% -> 11.1%, GET_ROWS 4.3% -> 9.0%). Any kind whose
     # work-weighted share is stable between `en-work` and `en-work-fine` is quotable; one that moves

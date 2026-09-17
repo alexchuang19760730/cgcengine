@@ -2784,12 +2784,22 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             moe_out = ggml_add(ctx0, moe_out, cur_experts[i]);
 
             ggml_build_forward_expand(gf, moe_out);
+            // [CGC 2026-09-18 NAMING] The reduce chain left its intermediates UNNAMED, so the
+            // node-level GPU instrument bucketed n_expert_used-1 = 6 nodes per layer into `node`
+            // (240 nodes/step -- the single largest unnamed cluster, MEASURED). A name here is
+            // free: `cb` is ggml_format_name and nothing else (llama-context.cpp:6866-6872), and
+            // no numeric path matches "ffn_moe_add-" (the only name readers are the CGC_VERIFY_OP
+            // TIMING predicate at llama-context.cpp:3808-3824 and the capture dispatch at
+            // :6944+, both exact strcmp / diagnostic). The LAST term still ends up as
+            // `ffn_moe_out` because the cb() after the loop renames it.
+            cb(moe_out, "ffn_moe_add", il);
         }
     } else {
         for (uint32_t i = 1; i < hparams.n_expert_used; ++i) {
             moe_out = ggml_add(ctx0, moe_out, cur_experts[i]);
 
             ggml_build_forward_expand(gf, moe_out);
+            cb(moe_out, "ffn_moe_add", il);
         }
     }
 
