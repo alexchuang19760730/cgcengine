@@ -44,6 +44,25 @@
   他們自己在註解裡寫明：**兩個模式都會改變模型輸出，所以都不能當品質或 D5 證據**
   （對某個在別的 mode dump 的參考）。⇒ 這正是交接白皮書 §4 建議的起手式，**已接走**；
   本線不碰 `src/`。
+  **★ 09-17 17:0x：工作項 2＋3 也實作並驗證了**（`docs/M1_WORKITEM2_PHASE_SPLIT_STATUS_2026-09-17.md`）。
+  可引用的**持久事實**（這句話是判準，不是進度）：
+  - 相位判定式在 `src/llama-cgc-phase.h`，**兩側共用**：
+    `cgc_decode_width(slots, top_k, cap) = min(cgc_decode_bound(slots, top_k, cap), T_prefill-1)`，
+    `cgc_select_graph_phase(n_tokens, w) = n_tokens <= w ? DECODE : PREFILL`。
+    真實幾何下 `bound = floor(routable_slots / top_k) = floor(142/8) = 17`。
+  - ⇒ **而這有一個直接後果：decode（T=1；MTP 也只 2–4）恆 ≤ 17 ⇒ 恆走 DECODE
+    ⇒ whole-layer slab 永不參與 decode。**
+    **slab 是 prefill-only**（`run_server.sh:1618-1620` 原文：*Decode stays on the pool path*）。
+    ⇒ **任何「armed slab vs pool」的 decode A/B 是 by construction 的零差異**，
+    那個零**不可以**被讀成「slab 沒有收益」。要量就量 prefill。
+  - **未 arm 時 prefill 同時吃 `n_batch` clamp**（`[arm] OFF` 行自證）⇒
+    「armed vs unarmed」在寬 chunk 上是**兩個變數**（slab＋clamp），不是單變數。
+  - `cap` 已**降級**成 decode 圖的寬度上限（不再是相位開關）：`cap=8 → width 8`、
+    `cap=64 → width 17`（被 bound 夾住，不是 64）。
+  - gate：`Backup/m123_oracle_gate/summary_phase_p2.json`（17:00:27）`comparable=True`、9/9/9；
+    真實 cross-tab ＝ `{eq_eq:9, eq_ne:0, ne_eq:0, ne_ne:0}`。
+  - ⚠ 同批的 `r52_canon1_pool4gb`／`r53_base_pool4gb` 是 **`comparable=False` 而 M1/M2/M3 仍印 9/9**
+    ⇒ 又一個「先讀 comparable 再讀判決」的活例（他們沒引用它們，處置正確）。
   數值那一半 **09-14 已達成**：2/4/6/8/10 GiB 全部 **M1 = M2 = M3 = 117/117**，2 GiB 是唯一
   `union > slots` 那格（compacted gather），`union-routable` PASS，RSS 達標。
   **⚠ 證據地位（09-17 更正）**：這個 117/117 是**跨池不變性**，**不蘊含正確性** ——
