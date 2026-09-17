@@ -68,7 +68,9 @@ agent_created: true
 | `CGC_PHASE_TIMING=1` | `CGC-PHASE` | build/alloc/inputs/compute/fill_wait/gpu（每 32 步一行） |
 | `CGC_DECODE_PROFILE=1`（`+ALL`） | `CGC-DECPROF` | 每步 wait/cb/submit 三分 + 逐層歸因（top-8 或全部） |
 | `CGC_GPU_TIMING=1` | `CGC-GPUTIME` | **GPU 自己的時鐘**：wait / gpu_busy_sum / gpu_union / gap |
-| `CGC_GPU_NODES=1`（＋`CGC_GPU_TIMING=1`＋`CGC_DECODE_PROFILE=1`） | `CGC-GPUNODE` | **節點範圍級的 GPU 時間**（2026-09-18 新增）。把每個 command buffer 的 `GPUStartTime/GPUEndTime` **按它編的節點範圍**攤到節點種類上 ⇒ 比逐層細一級。**不需要 `MTLCounterSampleBuffer`**（見下方註）。自我檢查：該行的 `seg_busy` 必須等於同一行的 `layer gpu_sum`（兩條路徑加總同一批時間），`delta` 不為 0 就代表範圍或 buffer↔節點的對應錯了。**`CGC_GPU_TIMING=1` 是必要的**：`dp_lay_gpu[]` 只在它開著時才填，否則分母是 0 而 `delta=0.00%` 是空轉 |
+| `CGC_GPU_NODES=1`（＋`CGC_GPU_TIMING=1`＋`CGC_DECODE_PROFILE=1`） | `CGC-GPUNODE` | **節點範圍級的 GPU 時間**（2026-09-18 新增）。把每個 command buffer 的 `GPUStartTime/GPUEndTime` **按它編的節點範圍**攤到節點種類上 ⇒ 比逐層細一級。**不需要 `MTLCounterSampleBuffer`**（見下方註）。自我檢查：該行的 `seg_busy` 必須等於同一行的 `layer gpu_sum`（兩條路徑加總同一批時間），`delta` 不為 0 就代表範圍或 buffer↔節點的對應錯了。**`CGC_GPU_TIMING=1` 是必要的**：`dp_lay_gpu[]` 只在它開著時才填，否則分母是 0 而 `delta=0.00%` 是空轉。**2026-09-18 新增三欄**：`wcntw`（只按**會編碼**的節點分攤，見下方「兩張表」）、`*bywork`（按 `wcntw` 排序的前 10 名）、`work-attributed … / residual …`（可主張質量的標頭行） |
+| `CGC_GPU_OPS=1`（＋`CGC_GPU_NODES=1`） | `CGC-GPUOPS` | **以 ggml op 為鍵**的第二張表（2026-09-18）。回答名字表答不了的「**這個 op 值不值得動**」：`wcntw` 是 work-weighted 份額、`cntw` 是節點數份額、`ub` 上界、`uni` 只在「整格同一個 op」時才是精確的每節點成本。**只有五個 op 是 no-op**（`NONE/RESHAPE/VIEW/TRANSPOSE/PERMUTE`，`ggml-metal-ops.cpp:242-252` 逐字 `// noop -> next node`）⇒ 它們的 `wcntw` **按建構為 0**，這是證明不是量測 |
+| `CGC_CB_N_MAIN=<n>` / `CGC_SERVER_N_CB=<n>` | `n_cb = N` 那行 | **切細 command buffer 的兩個旋鈕**（2026-09-18）。預設 `n_main = MAX(64, 0.1·n_nodes)`（`ggml-metal-context.m:1099`）⇒ **每個 segment 的主執行緒 buffer 永遠吃 ≥64 個節點**，任何住在裡面的桶都被除以 ≥64（這是 `ffn_moe_gate` 的 `cntw` 只有 0.7% 的原因）。`CGC_CB_N_MAIN=1` 免費（cb 數不變）；`CGC_SERVER_N_CB=16` 要付 17 顆 buffer/segment。⚠️ **`n_cb ≥ 64` 在載入期死鎖**（Metal 的在途 command buffer 配額；症狀只有 `/health` 回 `Loading model` ＋ `server never became ready`，與「載入慢」同形，lesson `eng-diag-0035`）。實測上限在 **(64, 129]** 之間 |
 | `CGC_SUBMIT_AHEAD=1` | 無（改變順序） | **天花板上界探針**，輸出必然損壞，只用來量上限 |
 | `CGC_SLOT_TABLE_GPU=1` | 見 `CGC_S1_DBG` | S1：把 expert→slot 查表搬進圖（`slots = get_rows(table, selected_experts)`），移除每層 host 寫 leaf 的往返 |
 | `CGC_S1_MIN_IL=<n>` | — | 只有 layer ≥ n 用 GPU 表（預設 1）。**layer 0 留在 host**：它的 FFN 讀全寬張量 + **原始 expert id**（程式為它寫 **IDENTITY 表**），而 GPU 算出的 ids 需要跨 backend 拷貝（20:18 那次 `libggml-cpu` SIGSEGV 的形狀）。**★ 2026-09-16 更正**：舊理由「它不被池化」已失效——layer 0 自 2026-09-16 起**是池化層**（見陷阱 14/17）。所以這條限制現在只靠跨 backend 拷貝那一半支撐，**能不能下調 `MIN_IL` 未測**；要動就自己跑閘門。**前綴閘的限制**：每個臂都是連續後綴 ⇒ 左界與服務層數同步移動 ⇒ 無法區分「某一層壞」與「服務層數 ≥ N 就壞」；再加同形狀的臂沒有用 |
@@ -94,10 +96,39 @@ agent_created: true
 （`ggml-metal-context.m:503-541`），只是把它們聚合成一個 segment 跨度（`union` 的定義在 `:497`）
 ⇒ **節點身分是在「聚合」那一步丟掉的，不是「取樣」那一步。** 實測指紋：
 `bufs ÷ segs = 360 ÷ 40 = 9 = n_cb + 1`（env `CGC_N_CB=8`）⇒ 一層 9 個切片。
-**兩個已知限制（先讀再引用）**：(1) 詞彙表尚未調校 —— `ffn_moe_gate/up/down` 沒出現在表上，
-前三名是 `(other)`／`node`／`cache`（`node_NN` 是 ggml 自動名、`cache_*` 是池的張量名）；
-(2) 攤分是**按節點數**加權（一個 cb 只給出一個 group 時長）⇒ 會高估小節點多的範圍。
-⇒ **解掉 (1)/(2) 之前不要用這張表套 M3 的「`ffn_moe_*` ≥ 40%」判準。**
+**★ 兩張表的關係、以及「份額不是粒度不變的」（2026-09-18；引用任何份額前先讀這裡）。**
+- **名字表**（`CGC-GPUNODE`，按節點名前綴分桶）與 **op 表**（`CGC-GPUOPS`，按 ggml op 分桶）
+  是**同一批 buffer 的兩種鍵**。它們的 `wcntw` 在**絕對值**上一致到 0.1%（實測 ms-ratio
+  1.001／1.000：名字表 `ffn_moe_gate+up+down` vs op 表 `MUL_MAT_ID`）——**這是實作正確的證據，
+  不是權重良置的證據**。⚠️ 兩表的**百分比不可比**：名字表除以 `ns_total`（每一個 buffer），
+  op 表除以 `nsop_total`（有 ≥1 個可解析 op 的 buffer）。
+- **權重是什麼**：`dur(buffer) × (#該桶且會編碼的節點) / (#會編碼的節點)`。
+  它修掉的是「**no-op 稀釋**」（`n_main ≥ 64` + 約 40% 的節點是 no-op ⇒ 一個桶可能被除以 64；
+  實測 `ffn_moe_gate` 的節點數份額 0.7% 而上界 44.7%）。**它假設每個會編碼的節點等成本**，
+  所以它是**共同出現（co-location）的排名、不是成本排名**。
+- **⚠️ 份額不是粒度不變的**：同一 profile、同熱態，只改切片寬度（`en-work` 預設 vs
+  `en-work-fine`＝`CB_N_MAIN=1`+`SERVER_N_CB=16`）⇒ `moe_gemv` 3.2%→6.3%（1.97×）、
+  `dense_gemm` 2.2%→4.2%（1.91×）、`conv/ssm` 2.5%→0.7%（0.28×）；穩定的只有
+  `node`／`ffn_moe_`／`norm`／`(other)`／`ffn_`（0.84–1.06×）。
+  ⇒ **規則：只引用「家族總和」；逐項只在兩端差 <1.3× 時才講成排名，否則報 `[粗, 細]` 區間。**
+  （lesson `eng-mh-0064`。熱態是**另一個軸**：NOMINAL→HEAVY 對 11 個家族是**均勻**的 0.81–0.88。）
+- **`residual`（標頭行）**＝整格沒有任何有名工作節點的 buffer 質量 ⇒ 四臂實測 19.9–23.9%。
+  **它不是熱態的量**（HEAVY 細臂 20.0% ＝ NOMINAL 粗臂），是**切片組成**的量。
+- **兩個已證的識別陷阱**：(1) `ffn_moe_gate/up/down` **就是** MUL_MAT_ID（每桶 80 節點、只有這個 op），
+  但 **`ffn_moe_topk` 是 VIEW**（`op=38`, `ne=[8,2]`）⇒ 它的 `wcntw` 恆為 0.00 **是正確的**；
+  真正的選擇成本在 `ffn_moe_argsort`（ARGSORT）與裸名 `top_k`（TOP_K）。
+  (2) `node`／`(other)` 的差距不是詞表缺陷：`node` 620 節點**全部會編碼、零 no-op**
+  （ADD 270／MUL_MAT 130／GET_ROWS 90／MUL 60／GATED_DELTA_NET 30／FLASH_ATTN_EXT 10）、
+  `ffn_moe_` 680 節點只有 280 會編碼、`cache` 660 只有 290。**所以前三名是排名，不是偽影。**
+- **千萬不要**：把 `sum(wcntw)`（＝`seg_busy` 的 76–83%）當步時長。`seg_busy` 本身隨切片數
+  膨脹（同一 workload：143／296／766 ms @ n_cb = 8／16／63）⇒ **絕對 `seg_busy` 不可引用**。
+  分母請用**同一步**的 `wait`（步配對），不要拿兩個中位數相除。
+
+**兩個已知限制（先讀再引用）**：(1) ~~詞彙表尚未調校~~ **2026-09-18 已解決**：詞表是 40 條固定前綴，
+`ffn_moe_gate/up/down` 在表上；但**桶名仍是匹配規則的產物**（`ffn_moe_topk`＝VIEW 就是反例）
+⇒ 要用 `CGC-GRPH` dump 或 op 表交叉確認成員（lesson `eng-lf-0008`）。
+(2) ~~攤分是按節點數加權~~ **2026-09-18 已由 `wcntw` 取代**（只按會編碼的節點分攤）；
+但 `wcntw` **不是粒度不變的**（見上）⇒ 只引用家族總和。
 實作上的坑：`ggml_metal_cgc_node_name()` 讀的是**快照**（在 `graph_compute` 內複製的節點名指標）——
 `ctx->gf` 是**呼叫者**的 cgraph，而分段 dispatcher 把它建在區域變數上（`submit_seg` 的
 `struct ggml_cgraph gv = seg_view(s);`）⇒ 呼叫一返回就懸空（lesson `eng-diag-0034`；症狀是載入期
@@ -153,6 +184,14 @@ async submit，三個成分都不可分。
   「移除該窗口但語意錯誤」開關）整段刪掉量一次。
   「第二個在飛的東西不可能讓真實計算變快」⇒ 若步時間下降 X%，就有 X% 是序列化。
   這比任何相位分解都決定性。輸出損壞是**預期**的，md5 必須變，否則代表旗標沒生效。
+- **★ 一個新的歸屬份額（任何 weight／攤分模型）在能被引用之前，先過「換粒度」測試**：
+  同 profile、**同熱態**（讀 `thermal_launch`！）跑粗／細兩臂，逐項比。
+  不通過的項目就只報家族＋區間，不要報點估計（lesson `eng-mh-0064`）。
+  同粒度下 run-to-run 穩定（實測 11 個家族 0.89–1.02）**不代表**跨粒度穩定。
+- **M3 的 40% 判準已經有三個獨立方法都是否定的**（2026-09-18）：聯集上界 ≤28.3% of busy、
+  op 表 work-weighted 8.0／8.4%、名字表 work-weighted **3.2–6.3% of `wait`**。
+  ⇒ **Cell 2（MoE gather 融合／batched-union）沒有量，不要再投。**
+  而「MoE 的**逐元素合併**（`ffn_moe_`，7.6%）比 MoE 的**專家矩陣乘**（3.2–6.3%）還大」。
 
 ## 唯一的 decode 儀器：`llama-bench`（2026-09-17 **使用者裁定**；舊標題「兩個 decode 儀器不能並排」）
 

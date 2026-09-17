@@ -24,8 +24,14 @@ llama.cpp 的 CGC fork：Metal ＋ **expert cache pool**（專家權重常駐 SS
 | `MEMORY_FACTS.md` | 動 build／載入／預算／`-ub`／mmap、要碰 `agent_harness/`、或**要提交（記憶本體不在版控內）**之前 |
 
 - **舊報告（`docs/S1_*.html`）寫的「`MEMORY.md` 的 S1 節」＝ `MEMORY_S1.md`**（報告是 dated 產物，不回改）。
-- **新增／刪除這底下任何 `.md` 都要重生索引**：三支工具都用 glob 而不是白名單
-  （`build_memory_index.py:66`、`index_assets.py:352`、`import_harness_snapshot.py:72`）。
+- **新增／刪除這底下任何 `.md` 都要重生索引**（`build_memory_index.py:66` 用 `os.listdir` 掃
+  `.workbuddy/memory/*.md`；`import_harness_snapshot.py:72` 同理）。
+  ⚠️ **09-18 更正**：下面那句原本寫「三支工具都用 glob」是**錯的**。`index_assets.py` 只 glob
+  `scripts/check/*`（`:474`）與 `.workbuddy/memory/*.md`（`:489`）；**`docs/*` 是顯式註冊表**
+  （`:220` 起的一串 tuple）⇒ **新增 `docs/` 的檔案不會進 MANIFEST，`--check` 也不會報漂移**
+  （它只保證「已收錄的條目」一致，不保證「新的被收錄」）。要嘛手動加進註冊表，要嘛知道它不在
+  manifest 管轄內 —— 本線 09-17／09-18 那批 docs 都是後者。
+  （原文保留以資對照：~~三支工具都用 glob 而不是白名單 `index_assets.py:352`~~。）
 
 ## 現在的一句話狀態（**09-17 03:0x 快照；主題檔為權威**）
 

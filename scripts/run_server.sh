@@ -1495,6 +1495,64 @@ fi
 if [ -n "${CGC_GPU_NODES:-}" ]; then
     SERVER_ENV+=(CGC_GPU_NODES="$CGC_GPU_NODES")
 fi
+# [CGC 2026-09-18 node-level GPU time TRACE] CGC_GPU_NODES_TRACE=1 adds the RAW node names of the
+# three hottest command buffers of each sampled step, plus a range-size histogram -- the pair that
+# separates "the hot nodes are not named ffn_moe_*" from "they share a buffer with small nodes so the
+# node-count split diluted them". Needs CGC_GPU_NODES=1.
+if [ -n "${CGC_GPU_NODES_TRACE:-}" ]; then
+    SERVER_ENV+=(CGC_GPU_NODES_TRACE="$CGC_GPU_NODES_TRACE")
+fi
+# [CGC 2026-09-18 node-level GPU time MATRIX] CGC_GPU_NODES_MATRIX=1 dumps one CGC-NSM line per
+# command buffer (duration + how many nodes of each kind it encoded) so the per-kind cost can be
+# recovered offline by least squares instead of guessed by node count. Needs CGC_GPU_NODES=1.
+if [ -n "${CGC_GPU_NODES_MATRIX:-}" ]; then
+    SERVER_ENV+=(CGC_GPU_NODES_MATRIX="$CGC_GPU_NODES_MATRIX")
+fi
+# [CGC 2026-09-18 per-NODE command buffers] CGC_CB_N_MAIN overrides the Metal encoder's
+# `n_main = MAX(64, 0.1*n_nodes)` floor, i.e. how many of a segment's FIRST nodes go into the
+# main thread's single command buffer. It exists to be paired with CGC_SERVER_N_CB (already a knob
+# of this script, read at the top as `SERVER_N_CB`), so that the n_cb+1 buffers become one-node
+# slices and CGC_GPU_NODES can attribute GPU time per NODE instead of by node count.
+#
+# MEASUREMENT ONLY, and the two knobs are NOT equally available. Lowering it alone is free (it
+# changes no count, the buffers stay at n_cb+1). Pairing it with a LARGE CGC_SERVER_N_CB is not:
+# measured 2026-09-18 01:48, n_cb=127 blocks Metal's command-buffer creation
+# (`commandBufferWithUnretainedReferences` -> `_dispatch_semaphore_wait_slow`) and the server never
+# reaches ready -- the granularity is capped by Metal's in-flight limit, not by the timestamp API.
+# The usable pairing is n_cb <= ~16. Unset => upstream behaviour, byte for byte.
+if [ -n "${CGC_CB_N_MAIN:-}" ]; then
+    SERVER_ENV+=(CGC_CB_N_MAIN="$CGC_CB_N_MAIN")
+fi
+# [CGC 2026-09-18] CGC_GRPH_DBG=1 dumps the first 6 graph_computes' full node list
+# (`CGC-GRPH[i] name=... op=... ne=[..]`). It was NOT in this allowlist, so passing it through this
+# launcher did nothing -- the same silent-drop trap as CGC_VERIFY_OP_TIMING below. Its use here is
+# NAME RESOLUTION, not shapes: the node-kind table buckets by a fixed prefix vocabulary
+# (ggml-backend.cpp:2100-2109) and whatever matches no entry lands in "(other)". Measured, that
+# bucket is the single largest one in a decode step (cntw 20.2% / ub 62.8% of segment busy), so
+# "what is in (other)" cannot be answered without the raw names. The first 6 graphs are warmup
+# graphs: their token counts are wrong for anything FLOPs-based, but their NAME+OP sets are the
+# same trunk graph.
+if [ -n "${CGC_GRPH_DBG:-}" ]; then
+    SERVER_ENV+=(CGC_GRPH_DBG="$CGC_GRPH_DBG")
+fi
+# [CGC 2026-09-18 op-keyed attribution] CGC_GPU_OPS=1 (needs CGC_GPU_NODES=1) adds a second table
+# keyed by the ggml OP instead of by node-name prefix. It exists because the name-keyed table cannot
+# answer the question that decides whether merging the shape chain is worth building: does a VIEW cost
+# GPU time? A name bucket mixes ops, and node COUNT is not GPU TIME. The op table prints, per op,
+# `uni` = the EXACT us/node measured on the command buffers that held ONLY that op -- the positive
+# control the earlier least-squares attempt did not have.
+if [ -n "${CGC_GPU_OPS:-}" ]; then
+    SERVER_ENV+=(CGC_GPU_OPS="$CGC_GPU_OPS")
+fi
+# [CGC 2026-09-18] CGC_VERIFY_OP_TIMING=1 prints the per-OP-TYPE breakdown (gate/up/down) instead of
+# a per-command-buffer estimate. It was NOT in this allowlist until now, so every attempt to pass it
+# through this launcher was silently dropped -- i.e. it looked exactly like "the instrument has no
+# effect" (the trap this whole allowlist section exists to document). Its target predicate is
+# `node->src[2]->ne[1] > 1`, so it only fires for T>1, i.e. the MTP verify batch -- which is the
+# production shape (MTP on), though NOT the T=1 shape M3's leave condition is written against.
+if [ -n "${CGC_VERIFY_OP_TIMING:-}" ]; then
+    SERVER_ENV+=(CGC_VERIFY_OP_TIMING="$CGC_VERIFY_OP_TIMING")
+fi
 # [CGC 2026-09-15 GPU-side timing] CGC_GPU_TIMING=1 makes the Metal completion handlers record
 # each command buffer's own GPUStartTime/GPUEndTime, and the segmented dispatcher prints
 # CGC-GPUTIME: per-step wait / gpu_busy_sum / gpu_union / gap. It answers the one question

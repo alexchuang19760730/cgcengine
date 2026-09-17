@@ -23,7 +23,19 @@
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
 // max number of MTLCommandBuffer used to submit a graph for processing
-#define GGML_METAL_MAX_COMMAND_BUFFERS 8
+//
+// [CGC 2026-09-18] Raised 8 -> 128 so that CGC_N_CB can ask for a command buffer PER NODE. The
+// default stays 8 (run_server.sh's `CGC_SERVER_N_CB`, the §8.93 sweet spot), so nothing moves
+// unless a measurement arm sets it: this only enlarges the arrays the encoder indexes.
+//
+// Why it is needed: `ggml_metal_cgc_gpu_take_cb` attributes each command buffer's GPUStartTime/
+// GPUEndTime to the node RANGE that buffer encoded, and the ranges are
+// [0, n_nodes_0) + n_cb slices of the rest. With n_nodes_0 = MAX(64, 0.1*N) and n_cb = 8, a
+// ~100-node MoE segment gives ONE buffer covering the first 64 nodes -- and the layer's
+// topk/gate/up/down live exactly there -- so the best possible split inside it is a node-COUNT
+// guess (measured: ffn_moe_gate got 1/64 of its own buffer's duration). With CGC_CB_N_MAIN=1 and
+// a large n_cb the slices become one node each and the kind table stops being a guess.
+#define GGML_METAL_MAX_COMMAND_BUFFERS 128
 
 struct ggml_metal_command_buffer {
     id<MTLCommandBuffer> obj;
@@ -122,6 +134,13 @@ struct ggml_metal {
     //
     // Filled only when the process opted in (CGC_GPU_NODES set), so the default path pays nothing.
     const char * cgc_nm[1024];
+    // [CGC 2026-09-18 op-keyed attribution] The OP of the same node. The name-keyed table cannot
+    // answer "does a VIEW cost GPU time?" -- a name bucket mixes ops (`ffn_moe_` holds GLU/MUL/
+    // SUM_ROWS/VIEW/RESHAPE), and node COUNT is not GPU TIME. With the op available the table can be
+    // keyed by OP, and for buffers whose nodes are ALL the same op the per-node cost becomes an
+    // exact division instead of a node-count guess. Snapshotted in the same loop as cgc_nm -- same
+    // lifetime argument (the ggml_tensor lives in the model context).
+    int          cgc_nop[1024];
     int          cgc_nm_n;
     bool         cgc_nm_on;
 
@@ -360,7 +379,8 @@ ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
     res->cgc_nm_n  = 0;
     res->cgc_nm_on = getenv("CGC_GPU_NODES") != NULL;
     res->encode_async = nil;
-    for (int i = 0; i < GGML_METAL_MAX_COMMAND_BUFFERS; ++i) {
+    // `<=`: slot n_cb is the main thread's, and n_cb can be GGML_METAL_MAX_COMMAND_BUFFERS
+    for (int i = 0; i <= GGML_METAL_MAX_COMMAND_BUFFERS; ++i) {
         res->cmd_bufs[i].obj = nil;
     }
 
@@ -421,7 +441,8 @@ void ggml_metal_free(ggml_metal_t ctx) {
     // a use-after-free guard -- it is the release that balances it.
     cgc_clear_cmd_buf_last(ctx);
 
-    for (int i = 0; i < GGML_METAL_MAX_COMMAND_BUFFERS; ++i) {
+    // `<=`: slot n_cb is the main thread's, and n_cb can be GGML_METAL_MAX_COMMAND_BUFFERS
+    for (int i = 0; i <= GGML_METAL_MAX_COMMAND_BUFFERS; ++i) {
         if (ctx->cmd_bufs[i].obj) {
             [ctx->cmd_bufs[i].obj release];
         }
@@ -627,6 +648,17 @@ const char * ggml_metal_cgc_node_name(ggml_metal_t ctx, int node_idx) {
         return NULL;
     }
     return ctx->cgc_nm[node_idx];
+}
+
+// [CGC 2026-09-18 op-keyed attribution] Same snapshot, same lifetime, same "the most recent
+// graph_compute" semantics as ggml_metal_cgc_node_name above. Returns the ggml_op enum value, or -1
+// when there is no such node. Only meaningful while CGC_GPU_NODES is set (that is what fills the
+// snapshot); callers glue the two accessors together, so a -1 here means "no node", not "no op".
+int ggml_metal_cgc_node_op(ggml_metal_t ctx, int node_idx) {
+    if (ctx == NULL || node_idx < 0 || node_idx >= ctx->cgc_nm_n) {
+        return -1;
+    }
+    return ctx->cgc_nop[node_idx];
 }
 
 int ggml_metal_cgc_bufs(ggml_metal_t ctx) {
@@ -1096,7 +1128,19 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
     }
 
     // number of nodes encoded by the main thread (empirically determined)
-    const int n_main = MAX(64, 0.1*gf->n_nodes);
+    //
+    // [CGC 2026-09-18] CGC_CB_N_MAIN is a MEASUREMENT-ONLY override of the MAX(64, ...) floor.
+    // That floor is what makes the node-kind attribution coarse, and it is structural rather than
+    // cosmetic: every segment's FIRST >= 64 nodes go into one command buffer, and for a MoE layer
+    // those are exactly the topk/argsort/gate/up/weights/down nodes that the attribution is about
+    // (measured with CGC_GPU_NODES_TRACE: the 64-node buffer's head is
+    // `ffn_moe_topk-23 ffn_moe_gate-23 ffn_moe_up-23 ffn_gate-23 ...`). Lowering it together with a
+    // large CGC_N_CB turns the n_cb+1 buffers into one-node slices, which is what makes the kind
+    // table a measurement instead of a node-count guess. Unset => upstream behaviour, byte for byte.
+    const char * cgc_cb_nmain = getenv("CGC_CB_N_MAIN");
+    const int n_main = cgc_cb_nmain != NULL && cgc_cb_nmain[0] != '\0'
+                     ? MAX(1, atoi(cgc_cb_nmain))
+                     : MAX(64, 0.1*gf->n_nodes);
 
     // number of threads in addition to the main thread
     const int n_cb = ctx->n_cb;
@@ -1120,7 +1164,8 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
         if (ctx->cgc_nm_on) {
             ctx->cgc_nm_n = MIN(gf->n_nodes, (int) (sizeof(ctx->cgc_nm) / sizeof(ctx->cgc_nm[0])));
             for (int i = 0; i < ctx->cgc_nm_n; ++i) {
-                ctx->cgc_nm[i] = gf->nodes[i] != NULL ? gf->nodes[i]->name : NULL;
+                ctx->cgc_nm[i]  = gf->nodes[i] != NULL ? gf->nodes[i]->name : NULL;
+                ctx->cgc_nop[i] = gf->nodes[i] != NULL ? (int) gf->nodes[i]->op : -1;
             }
         }
 

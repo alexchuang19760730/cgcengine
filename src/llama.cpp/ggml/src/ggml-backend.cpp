@@ -1877,6 +1877,39 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 cgc_node_name_fn cgc_node_name = ns_on
                     ? (cgc_node_name_fn) ggml_backend_reg_get_proc_address(reg, "ggml_metal_cgc_node_name")
                     : nullptr;
+                // [CGC 2026-09-18 OP-KEYED attribution] CGC_GPU_OPS=1 adds a second table keyed by
+                // the ggml OP instead of by name prefix, because the name-keyed one cannot answer
+                // the question that decides whether "fuse the shape chain" is worth doing: DOES A
+                // VIEW COST GPU TIME? A name bucket mixes ops (`ffn_moe_` holds GLU/MUL/SUM_ROWS/
+                // DIV/VIEW/RESHAPE), and node COUNT is not GPU TIME. With the op known, buffers
+                // whose nodes are ALL the same op give an EXACT per-node cost (duration / nodes)
+                // with no model and no fit -- the positive control the least-squares attempt lacked.
+                // Requires CGC_GPU_NODES (that is what fills the node snapshot).
+                typedef int (*cgc_node_op_fn)(ggml_backend_t, int);
+                static const bool ns_ops = ns_on && getenv("CGC_GPU_OPS") != nullptr;
+                // [CGC 2026-09-18 WORK-WEIGHTED NAME TABLE] Resolved under CGC_GPU_NODES, NOT under
+                // CGC_GPU_OPS. The name table's split weight now needs the op of every node it
+                // buckets, and gating that on a second env var would make the work-weighted column
+                // silently ABSENT in exactly the arm that reads the name table (`en-nodes`) -- the
+                // same "unset == not set" confusion that already cost one round with
+                // CGC_VERIFY_OP_TIMING and one with CGC_GRPH_DBG. `ns_ops` still gates the OP-KEYED
+                // table itself, which is a different question ("which op costs what").
+                cgc_node_op_fn cgc_node_op = ns_on
+                    ? (cgc_node_op_fn) ggml_backend_reg_get_proc_address(reg, "ggml_metal_cgc_node_op")
+                    : nullptr;
+                // [CGC 2026-09-18] Does this op put anything into the command buffer? PROVEN, not
+                // modelled: the Metal encoder switches on node->op and treats NONE / RESHAPE / VIEW /
+                // TRANSPOSE / PERMUTE as "noop -> next node" (ggml-metal-ops.cpp:242-252), so a buffer
+                // holding only those ops contains ZERO GPU commands. Two things follow, and both are
+                // measured facts rather than opinions: (a) a node-COUNT split is wrong in a way that
+                // matters, because ~39% of a layer's nodes are these five; (b) the per-command-buffer
+                // durations can NOT be attributed to nodes at all -- an all-VIEW buffer was reported
+                // at 592 us/node, which is impossible for a buffer with no commands in it.
+                // So this predicate is what the split weight uses instead of a count.
+                auto cgc_op_emits_work = [](int op) -> bool {
+                    return op != GGML_OP_NONE && op != GGML_OP_RESHAPE && op != GGML_OP_VIEW &&
+                           op != GGML_OP_TRANSPOSE && op != GGML_OP_PERMUTE;
+                };
                 // The kind table. 48 named kinds + 1 implicit "(other)"; the name is the node name
                 // with its trailing "-<layer>" removed, so it keeps full node-kind resolution.
                 static char    ns_kind_nm[48][48] = {{0}};
@@ -1885,6 +1918,76 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 static int64_t ns_total           = 0;
                 static int64_t ns_other           = 0;
                 static int     ns_print_n         = 0;
+                // [CGC 2026-09-18 node-level GPU time TRACE] CGC_GPU_NODES_TRACE=1 prints the RAW
+                // identity of the hottest command buffers plus a range-size histogram.
+                //
+                // Why the kind table alone is not enough: it cannot separate "the MoE matmuls are
+                // not named ffn_moe_*" from "they share a command buffer with several small nodes,
+                // so the node-count split hands them only 1/N of their own buffer's duration".
+                // Measured motivation: the first table had `(other)` 16.1% / `node` 13.6% /
+                // `cache` 12.8% and no ffn_moe_gate row -- and it printed only the top 14 of 22
+                // kinds, so 26.9% of the time was in rows that were never shown. Printing the
+                // range's real names AND its size separates the two hypotheses in one line.
+                static const bool ns_trace = getenv("CGC_GPU_NODES_TRACE") != nullptr;
+                static int64_t ns_hot_dur[3] = {0, 0, 0};
+                static int     ns_hot_nn[3]  = {0, 0, 0};   // names captured
+                static int     ns_hot_rs[3]  = {0, 0, 0};   // nodes in the range
+                static char    ns_hot_nm[3][8][48] = {{{0}}};
+                static int64_t ns_rng1 = 0, ns_rng2 = 0, ns_rng3_7 = 0, ns_rng8p = 0;
+                // [CGC 2026-09-18 node-level GPU time BOUNDS] The node-count split inside one
+                // command buffer is a guess, and the TRACE run showed how bad a guess it can be:
+                // ranges reach 64 nodes (measured histogram 1=9 2=26 3-7=263 8+=40), so a buffer
+                // holding one ffn_moe_gate GEMV plus 63 small nodes handed the GEMV 1/64 of its own
+                // duration. Rather than invent a better split, bracket it -- M3's decision rule is a
+                // threshold test, so bounds are enough:
+                //   UB = sum of the durations of every buffer that CONTAINS the kind   (upper bound)
+                //   LB = sum of the durations of buffers where the kind is the ONLY kind
+                //        (a solo buffer's duration is exactly that kind's duration -- a lower bound)
+                // A kind whose LB is already above the threshold has passed the test; one whose UB
+                // is below it has failed. Only when the threshold falls inside [LB, UB] does the
+                // question need finer machinery.
+                static int64_t ns_kind_ub[48] = {0};
+                static int64_t ns_kind_lb[48] = {0};
+                // [CGC 2026-09-18 WORK-WEIGHTED NAME TABLE] The same partition as ns_kind_ns but with
+                // the buffer's duration shared over the NAMED nodes whose op ENCODES something
+                // (cgc_op_emits_work) instead of over every named node. This is what turns the name
+                // table -- `ffn_moe_*` vs `cache` vs `attn_*` -- from a direction into a ranking,
+                // and it fixes the defect by construction rather than by tuning: a node-count split
+                // divides a kind by ~64 whenever the kind shares the segment's main-thread buffer
+                // (n_main = MAX(64, 0.1*n_nodes), ggml-metal-context.m:1099), and ~39% of a layer's
+                // nodes are no-ops that pad that denominator without contributing any GPU command.
+                // MEASURED (op-keyed table, same build): the count-weighted share of MUL_MAT fell
+                // 27.3% -> 11.1% when the slices narrowed, while its work-weighted share stayed
+                // 8.0% -> 8.4%. So wcntw is the column that survives a change of granularity.
+                static int64_t ns_kind_wns[48] = {0};
+                // Sum of the durations of the buffers that contained >=1 named work node -- i.e. the
+                // mass the work-weighted column is a partition OF. ns_total - ns_kind_work_ns is the
+                // part of "segment busy" that NO named kind can claim, and printing it is what keeps
+                // the column honest instead of hiding redistribution in plain sight.
+                static int64_t ns_kind_work_ns = 0;
+                static int64_t ns_kind_work_nd = 0;
+
+                // [CGC 2026-09-18 OP-KEYED attribution] see CGC_GPU_OPS above. The decisive column is
+                // `uni` = (sum of the durations of buffers whose nodes are ALL this op) / (the nodes
+                // in those buffers). That is an EXACT per-node cost for the op -- no model, no fit --
+                // and it is the only thing in this instrument that can say whether the ~40% of a
+                // layer that is VIEW/RESHAPE/PERMUTE/PAD costs anything at all. `nd` counts nodes
+                // (ALL of them, including the empty-named ones the name table skips, so `nodes_named`
+                // and `nodes_all` are printed separately as a cross-check on the two loops).
+                static char    nsop_nm[64][24] = {{0}};
+                static int     nsop_op[64]     = {0};   // the ggml_op for each slot (for the weight)
+                static int64_t nsop_ns[64]     = {0};   // count-weighted share (the name table's cntw)
+                static int64_t nsop_wns[64]    = {0};   // WORK-weighted share (see cgc_op_emits_work)
+                static int64_t nsop_ub[64]     = {0};   // buffers containing the op
+                static int64_t nsop_lb[64]     = {0};   // buffers whose nodes are ALL this op
+                static int64_t nsop_uni_ns[64] = {0};   // duration of those same all-one-op buffers
+                static int64_t nsop_uni_nd[64] = {0};   // ... and how many nodes they held
+                static int64_t nsop_nd[64]     = {0};   // nodes of this op (denominator of `uni`)
+                static int     nsop_n          = 0;
+                static int64_t nsop_total      = 0;     // sum of durations over buffers with >=1 node
+                static int64_t nsop_nodes      = 0;
+                static int64_t nsop_work_nd    = 0;     // ... of which this many actually encode
+                static int64_t ns_kind_nodes   = 0;     // same thing for the name table (cross-check)
 
                 // [CGC M0 decode profile 2026-09-13] Per-layer attribution of a decode step. The
                 // segmented loop below serializes GPU layer i -> CPU top-k hook -> submit of layer
@@ -2039,8 +2142,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     // BUSY measure (they overlap), which is exactly what the per-layer `gpu` field
                     // reports -- hence the self-check in the printer.
                     if (cgc_gpu_take_cb != nullptr && cgc_node_name != nullptr) {
-                        int64_t cb_rec[5 * 16];
-                        const int n_rec = cgc_gpu_take_cb(split_backend, cb_rec, 16);
+                        // Deep enough for the per-node mode (CGC_CB_N_MAIN=1 + CGC_N_CB=127 gives
+                        // n_cb+1 = 128 buffers); a smaller buffer silently DROPS the tail slots,
+                        // and the tail is where DPROF's self-check denominator comes from.
+                        int64_t cb_rec[5 * 129];
+                        const int n_rec = cgc_gpu_take_cb(split_backend, cb_rec, 129);
                         for (int r = 0; r < n_rec; r++) {
                             const int64_t * rec = cb_rec + 5*r;
                             if (rec[4] == 0) {
@@ -2051,6 +2157,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                             const int nd_b = (int) rec[3];
                             int cnt[49] = {0};
                             int tot = 0;
+                            int wcnt[49] = {0};   // same buckets, restricted to nodes whose op encodes
+                            int wtot = 0;
                             for (int nd = nd_a; nd < nd_b; nd++) {
                                 const char * nm = cgc_node_name(split_backend, nd);
                                 if (nm == nullptr || nm[0] == '\0') {
@@ -2068,6 +2176,16 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                     "ffn_moe_argsort", "ffn_moe_logits", "ffn_moe_probs", "ffn_moe_slots",
                                     "ffn_moe_topk", "ffn_moe_gate_up", "ffn_moe_gate", "ffn_moe_up",
                                     "ffn_moe_down", "ffn_moe_", "ffn_gate", "ffn_up", "ffn_down", "ffn_",
+                                    // [CGC 2026-09-18] `top_k` is a REAL MoE op (ggml TOP_K, ne=[256,2]
+                                    // over the expert logits) that had no entry, so its duration was
+                                    // being reported as "(other)" -- while `ffn_moe_topk` IS in the
+                                    // vocabulary but names a VIEW (op=38, ne=[8,2], proven from the
+                                    // CGC-GRPH dump: ffn_moe_topk-0..N are all VIEW, the computation is
+                                    // ffn_moe_argsort-* ARGSORT). So the bucket that looks like the
+                                    // MoE selection step reported wcntw 0.00 BY CONSTRUCTION -- it is a
+                                    // view -- and the cost that actually exists sat in "(other)".
+                                    // Bucket name != operation; this is the second time that bit.
+                                    "top_k",
                                     "linear_attn", "attn_q", "attn_k", "attn_v", "attn_output",
                                     "attn_norm", "attn_post_norm", "attn_residual", "attn_inp_k_rot",
                                     "attn_inp_v_rot", "attn_inp_kq_mask", "attn_", "rope", "soft_max",
@@ -2097,6 +2215,16 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                 }
                                 cnt[ix < 0 ? 48 : ix]++;
                                 tot++;
+                                // WORK-WEIGHTED companion count, taken in the SAME pass so that both
+                                // denominators describe the same node set (named nodes only -- the
+                                // name table's partition must still sum to the buffer's duration).
+                                if (cgc_node_op != nullptr) {
+                                    const int nop = cgc_node_op(split_backend, nd);
+                                    if (nop >= 0 && cgc_op_emits_work(nop)) {
+                                        wcnt[ix < 0 ? 48 : ix]++;
+                                        wtot++;
+                                    }
+                                }
                             }
                             ns_total += dur;
                             if (tot == 0) {
@@ -2108,6 +2236,166 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                 }
                                 const int64_t share = dur * cnt[q] / tot;
                                 if (q < 48) { ns_kind_ns[q] += share; } else { ns_other += share; }
+                            }
+                            // [CGC 2026-09-18 BOUNDS] Per-kind lower/upper bounds (see the statics),
+                            // plus -- under TRACE -- the range-size histogram and the hottest
+                            // ranges' RAW node names. The names are copied here because the name
+                            // snapshot belongs to the most recent graph_compute, which by print time
+                            // is a LATER segment than the one being described.
+                            for (int q = 0; q < 49; q++) {
+                                if (cnt[q] == 0 || q >= 48) {
+                                    continue;
+                                }
+                                ns_kind_ub[q] += dur;
+                                if (cnt[q] == tot) {
+                                    ns_kind_lb[q] += dur;   // solo buffer: its duration IS this kind's
+                                }
+                            }
+                            ns_kind_nodes += tot;
+                            // [CGC 2026-09-18 WORK-WEIGHTED SPLIT] Same buffer, same set of named
+                            // nodes, but only the ones that encode anything are in the denominator.
+                            // A buffer with NO such node contributes nothing here -- its duration
+                            // stays in ns_total and surfaces as the printed residual -- and that is
+                            // correct, not a gap: by the encoder's own switch
+                            // (ggml-metal-ops.cpp:242-252) such a buffer contains zero GPU commands,
+                            // so its timestamp cannot be anyone's work (MEASURED: an all-VIEW buffer
+                            // reported 592 us/node while a 2048-wide ADD reported 6.7).
+                            if (wtot > 0) {
+                                ns_kind_work_ns += dur;
+                                ns_kind_work_nd += wtot;
+                                for (int q = 0; q < 49; q++) {
+                                    if (wcnt[q] == 0 || q >= 48) {
+                                        continue;
+                                    }
+                                    ns_kind_wns[q] += dur * wcnt[q] / wtot;
+                                }
+                            }
+                            // [CGC 2026-09-18 OP-KEYED attribution] independent second pass over the
+                            // SAME range, bucketed by the ggml op. Deliberately a separate loop: the
+                            // name loop above SKIPS empty-named nodes (a name is what it needs), while
+                            // the op of such a node is still perfectly well defined -- so the two
+                            // tables legitimately have different denominators, and printing both
+                            // counts is what keeps that honest instead of hidden.
+                            if (ns_ops && cgc_node_op != nullptr) {
+                                int ocnt[64] = {0};
+                                int otot = 0;
+                                int owork = 0;   // nodes whose op actually emits GPU work
+                                for (int nd = nd_a; nd < nd_b; nd++) {
+                                    const int op = cgc_node_op(split_backend, nd);
+                                    if (op < 0) {
+                                        continue;
+                                    }
+                                    const char * onm = ggml_op_name((enum ggml_op) op);
+                                    if (onm == nullptr) {
+                                        continue;
+                                    }
+                                    int oix = -1;
+                                    for (int q = 0; q < nsop_n; q++) {
+                                        if (strcmp(nsop_nm[q], onm) == 0) { oix = q; break; }
+                                    }
+                                    if (oix < 0 && nsop_n < 64) {
+                                        oix = nsop_n++;
+                                        snprintf(nsop_nm[oix], sizeof(nsop_nm[oix]), "%s", onm);
+                                        nsop_op[oix] = op;
+                                    }
+                                    if (oix < 0) {
+                                        continue;
+                                    }
+                                    ocnt[oix]++;
+                                    otot++;
+                                    if (cgc_op_emits_work(op)) {
+                                        owork++;
+                                    }
+                                }
+                                if (otot > 0) {
+                                    nsop_total += dur;
+                                    nsop_nodes += otot;
+                                    nsop_work_nd += owork;
+                                    int odistinct = 0;
+                                    for (int q = 0; q < nsop_n; q++) {
+                                        if (ocnt[q] > 0) { odistinct++; }
+                                    }
+                                    for (int q = 0; q < nsop_n; q++) {
+                                        if (ocnt[q] == 0) {
+                                            continue;
+                                        }
+                                        nsop_nd[q] += ocnt[q];
+                                        nsop_ns[q] += dur * ocnt[q] / otot;
+                                        // WORK-WEIGHTED: the buffer's duration shared out over only
+                                        // the nodes whose op encodes something. Justified by the
+                                        // encoder, not by a model -- see cgc_op_emits_work.
+                                        if (owork > 0 && cgc_op_emits_work(nsop_op[q])) {
+                                            nsop_wns[q] += dur * ocnt[q] / owork;
+                                        }
+                                        nsop_ub[q] += dur;
+                                        if (odistinct == 1) {
+                                            // ALL nodes of this buffer are the same op: its whole
+                                            // duration belongs to that op, so the per-node cost is an
+                                            // exact division and not a share. A buffer of pure no-op
+                                            // nodes therefore reports a duration that CANNOT be its
+                                            // own work -- which is what turned out to be the case
+                                            // (VIEW 592 us/node) and why `uni` is not usable.
+                                            nsop_lb[q]     += dur;
+                                            nsop_uni_ns[q] += dur;
+                                            nsop_uni_nd[q] += ocnt[q];
+                                        }
+                                    }
+                                }
+                            }
+                            // [CGC 2026-09-18 MATRIX] CGC_GPU_NODES_MATRIX=1 dumps one line per command
+                            // buffer -- its duration plus how many nodes of each kind it encoded -- so
+                            // the per-kind cost can be recovered OFFLINE by least squares instead of
+                            // GUESSED by node count. Why a guess is not good enough: n_main =
+                            // MAX(64, 0.1*n_nodes) (ggml-metal-context.m:1099) means EVERY segment's
+                            // main-thread buffer holds >= 64 nodes, so any kind living in it is
+                            // divided by >= 64 by a count-weighted split -- MEASURED: ffn_moe_gate
+                            // cntw 1.91 ms against ub 122.37 ms out of 271.94 ms of segment busy
+                            // time. The model fitted offline is dur_i = sum_k cnt_ik * t_k (t_k = one
+                            // node of kind k), which is well posed because the small worker buffers
+                            // (263 of 360 had 3-7 nodes) isolate kinds the big ones cannot.
+                            static const bool ns_matrix = getenv("CGC_GPU_NODES_MATRIX") != nullptr;
+                            if (ns_matrix) {
+                                fprintf(stderr, "CGC-NSM a=%d b=%d dur_ns=%lld nk=%d",
+                                        nd_a, nd_b, (long long) dur, tot);
+                                for (int q = 0; q < ns_kind_n; q++) {
+                                    if (cnt[q] > 0) {
+                                        fprintf(stderr, " %s:%d", ns_kind_nm[q], cnt[q]);
+                                    }
+                                }
+                                if (cnt[48] > 0) {
+                                    fprintf(stderr, " (other):%d", cnt[48]);
+                                }
+                                fprintf(stderr, "\n");
+                            }
+                            if (ns_trace) {
+                                const int rsz = nd_b - nd_a;
+                                if (rsz <= 1)      { ns_rng1++; }
+                                else if (rsz == 2) { ns_rng2++; }
+                                else if (rsz < 8)  { ns_rng3_7++; }
+                                else               { ns_rng8p++; }
+                                // Keep the three slots SORTED. The first revision shifted whenever a
+                                // candidate beat the LAST slot, so the slots held the right set only
+                                // coincidentally and the display order was insertion order --
+                                // measured: hot#2 0.050 ms printed above hot#3 3.386 ms.
+                                if (ns_hot_dur[2] == 0 || dur > ns_hot_dur[2]) {
+                                    int pos = 2;
+                                    while (pos > 0 &&
+                                           (ns_hot_dur[pos-1] == 0 || dur > ns_hot_dur[pos-1])) {
+                                        ns_hot_dur[pos] = ns_hot_dur[pos-1];
+                                        ns_hot_nn[pos]  = ns_hot_nn[pos-1];
+                                        ns_hot_rs[pos]  = ns_hot_rs[pos-1];
+                                        memcpy(ns_hot_nm[pos], ns_hot_nm[pos-1], sizeof(ns_hot_nm[pos]));
+                                        pos--;
+                                    }
+                                    ns_hot_dur[pos] = dur;
+                                    ns_hot_rs[pos]  = rsz;
+                                    ns_hot_nn[pos]  = rsz < 8 ? rsz : 8;
+                                    for (int q = 0; q < ns_hot_nn[pos]; q++) {
+                                        const char * nz = cgc_node_name(split_backend, nd_a + q);
+                                        snprintf(ns_hot_nm[pos][q], sizeof(ns_hot_nm[pos][q]), "%s",
+                                                 nz != nullptr ? nz : "(null)");
+                                    }
+                                }
                             }
                         }
                     }
@@ -2314,19 +2602,137 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                     (long long) dp_step, (double) ns_total / 1e6, (double) dp_gs / 1e6,
                                     dp_gs > 0 ? 100.0 * (double) (ns_total - dp_gs) / (double) dp_gs : 0.0,
                                     (double) ns_other / 1e6, ns_kind_n);
-                            for (int rank = 0; rank < 14; rank++) {
+                            // ALL kinds, not a top-N: the first revision printed 14 of 22 and the
+                            // hidden 8 carried 26.9% of the step -- so a kind that was present but
+                            // ranked below the cut was indistinguishable from a kind that was
+                            // missing, which is exactly the question this table exists to answer.
+                            // Rank by UB, not by the count-weighted value: a kind that the split
+                            // diluted has a LARGE ub and a small cntw, so ranking by cntw is exactly
+                            // how ffn_moe_gate stayed out of sight. Columns: cntw = the count-weighted
+                            // guess, lb = solo-buffer sum (lower bound), ub = sum over buffers that
+                            // contain the kind (upper bound). The truth is in [lb, ub].
+                            for (int rank = 0; rank < 48; rank++) {
                                 int best = -1;
                                 int64_t best_v = 0;
                                 for (int q = 0; q < ns_kind_n; q++) {
-                                    if (ns_kind_ns[q] > best_v) { best = q; best_v = ns_kind_ns[q]; }
+                                    if (ns_kind_ub[q] > best_v) { best = q; best_v = ns_kind_ub[q]; }
                                 }
                                 if (best < 0) {
                                     break;
                                 }
-                                fprintf(stderr, "CGC-GPUNODE:   %-26s %8.2f ms %5.1f%%\n",
+                                // 100*v/total. The first revision wrote v*(100/total)/1e6 -- one
+                                // 1e6 too many, because ns_total is in NANOSECONDS while v had
+                                // already been divided by 1e6 -- and printed 0.0% for every row.
+                                const double pc = 100.0 / (double) ns_total;
+                                // `wcntw` first because it is the column to rank by: the count-
+                                // weighted `cntw` is the guess that n_main's >=64-node floor made
+                                // useless, `lb`/`ub` bracket the truth without needing a weight at
+                                // all, and wcntw splits each buffer over the nodes that actually
+                                // encode. The header's work-attributed line prints the mass this is a
+                                // partition of, so the residual is visible instead of redistributed.
+                                fprintf(stderr, "CGC-GPUNODE:   %-24s wcntw=%7.2f %5.1f%% | cntw=%7.2f %5.1f%% | lb=%7.2f %5.1f%% | ub=%7.2f %5.1f%%\n",
+                                        ns_kind_nm[best],
+                                        (double) ns_kind_wns[best] / 1e6, (double) ns_kind_wns[best] * pc,
+                                        (double) ns_kind_ns[best] / 1e6, (double) ns_kind_ns[best] * pc,
+                                        (double) ns_kind_lb[best] / 1e6, (double) ns_kind_lb[best] * pc,
+                                        (double) best_v / 1e6,           (double) best_v * pc);
+                                ns_kind_ub[best] = 0;   // consumed by this print
+                            }
+                            // The work-attributed mass and the residual. Without this line the wcntw
+                            // column would read as a partition of the whole step, when it is only a
+                            // partition of the buffers that contained a named work node. The residual
+                            // is the same quantity the op-keyed table reports as
+                            // `total - sum(wcntw)` (10.6% of segment busy at n_cb=16, 51.7% at
+                            // n_cb=63), and it GROWS with the number of command buffers -- which is
+                            // why the residual is the thing that says "do not quote an absolute
+                            // seg_busy", not the column itself.
+                            fprintf(stderr,
+                                    "CGC-GPUNODE: work-attributed %.2f of %.2f ms (%.1f%%) | "
+                                    "named_work_nodes=%lld | residual=%.2f ms (%.1f%%)\n",
+                                    (double) ns_kind_work_ns / 1e6, (double) ns_total / 1e6,
+                                    ns_total > 0 ? 100.0 * (double) ns_kind_work_ns / (double) ns_total : 0.0,
+                                    (long long) ns_kind_work_nd,
+                                    (double) (ns_total - ns_kind_work_ns) / 1e6,
+                                    ns_total > 0 ? 100.0 * (double) (ns_total - ns_kind_work_ns) / (double) ns_total : 0.0);
+                            // ... and the ranking the name table exists for. The same rows, ordered by
+                            // the column that survives a change of granularity, so `ffn_moe_* vs cache
+                            // vs attn_*` can be READ OFF directly instead of inferred from a list
+                            // ordered by an upper bound (where a kind present in many buffers
+                            // outranks a kind that is actually expensive).
+                            for (int rank = 0; rank < 10; rank++) {
+                                int best = -1;
+                                int64_t best_v = 0;
+                                for (int q = 0; q < ns_kind_n; q++) {
+                                    if (ns_kind_wns[q] > best_v) { best = q; best_v = ns_kind_wns[q]; }
+                                }
+                                if (best < 0) {
+                                    break;
+                                }
+                                // Only the work-weighted column here: ns_kind_ub has already been
+                                // consumed (zeroed) by the upper-bound-ordered loop above, so a `ub=`
+                                // field in this line would print 0.00 for every row -- the shape of
+                                // the same mistake this instrument already paid for once (a consumed
+                                // array read twice).
+                                fprintf(stderr, "CGC-GPUNODE:  *bywork %-20s wcntw=%7.2f %5.1f%%\n",
                                         ns_kind_nm[best], (double) best_v / 1e6,
-                                        100.0 * (double) best_v / (double) ns_total);
-                                ns_kind_ns[best] = 0;   // consumed by this print
+                                        ns_total > 0 ? 100.0 * (double) best_v / (double) ns_total : 0.0);
+                                ns_kind_wns[best] = 0;   // consumed by this print
+                            }
+                            // [CGC 2026-09-18 OP-KEYED table] one row per ggml op. Read it as: `nd` =
+                            // how many nodes of this op, `uni` = the EXACT us/node from buffers that
+                            // held only this op (blank when no such buffer was seen -- then the row
+                            // carries only bounds), `cntw` = the count-weighted share, `lb`/`ub` = the
+                            // bounds. The number that answers "does the shape chain cost anything" is
+                            // `uni` for VIEW/RESHAPE/PERMUTE against `uni` for MUL_MAT_ID.
+                            if (ns_ops) {
+                                fprintf(stderr,
+                                        "CGC-GPUOPS: step=%lld total=%.2f ms nodes_all=%lld "
+                                        "nodes_work=%lld nodes_named=%lld nop=%d\n",
+                                        (long long) dp_step, (double) nsop_total / 1e6,
+                                        (long long) nsop_nodes, (long long) nsop_work_nd,
+                                        (long long) ns_kind_nodes, nsop_n);
+                                for (int rank = 0; rank < 24; rank++) {
+                                    int best = -1;
+                                    int64_t best_v = 0;
+                                    for (int q = 0; q < nsop_n; q++) {
+                                        if (nsop_ub[q] > best_v) { best = q; best_v = nsop_ub[q]; }
+                                    }
+                                    if (best < 0) {
+                                        break;
+                                    }
+                                    const double pc  = nsop_total > 0 ? 100.0 / (double) nsop_total : 0.0;
+                                    const double uni = nsop_uni_nd[best] > 0
+                                        ? (double) nsop_uni_ns[best] / (double) nsop_uni_nd[best] / 1e3
+                                        : -1.0;   // us per node; -1 = never seen in an all-one-op buffer
+                                    // `wcntw` = the same share but weighted by "this op encodes
+                                    // something" instead of by node count. For a no-op op it is 0 by
+                                    // construction, which is the point: a VIEW cannot cost GPU time.
+                                    fprintf(stderr,
+                                            "CGC-GPUOPS:   %-16s nd=%6lld %s wcntw=%8.2f %5.1f%%  "
+                                            "cntw=%8.2f %5.1f%%  ub=%8.2f %5.1f%%  uni=%8.3f\n",
+                                            nsop_nm[best], (long long) nsop_nd[best],
+                                            cgc_op_emits_work(nsop_op[best]) ? "work" : "NOOP",
+                                            (double) nsop_wns[best] / 1e6, (double) nsop_wns[best] * pc,
+                                            (double) nsop_ns[best] / 1e6, (double) nsop_ns[best] * pc,
+                                            (double) best_v / 1e6, (double) best_v * pc, uni);
+                                    nsop_ub[best] = 0;   // consumed by this print
+                                }
+                            }
+                            if (ns_trace) {
+                                fprintf(stderr, "CGC-GPUNODE: range sizes 1=%lld 2=%lld 3-7=%lld 8+=%lld\n",
+                                        (long long) ns_rng1, (long long) ns_rng2,
+                                        (long long) ns_rng3_7, (long long) ns_rng8p);
+                                for (int q = 0; q < 3; q++) {
+                                    if (ns_hot_dur[q] == 0) {
+                                        continue;
+                                    }
+                                    fprintf(stderr, "CGC-GPUNODE: hot#%d dur=%.3f ms range=%d nodes:",
+                                            q + 1, (double) ns_hot_dur[q] / 1e6, ns_hot_rs[q]);
+                                    for (int z = 0; z < ns_hot_nn[q]; z++) {
+                                        fprintf(stderr, " %s", ns_hot_nm[q][z]);
+                                    }
+                                    fprintf(stderr, "\n");
+                                }
                             }
                         }
                     }
@@ -2336,9 +2742,33 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     }
                     ns_total = 0;
                     ns_other = 0;
+                    ns_hot_dur[0] = ns_hot_dur[1] = ns_hot_dur[2] = 0;
+                    ns_hot_nn[0]  = ns_hot_nn[1]  = ns_hot_nn[2]  = 0;
+                    ns_hot_rs[0]  = ns_hot_rs[1]  = ns_hot_rs[2]  = 0;
+                    ns_rng1 = ns_rng2 = ns_rng3_7 = ns_rng8p = 0;
                     for (int q = 0; q < ns_kind_n; q++) {
                         ns_kind_ns[q] = 0;
+                        ns_kind_ub[q] = 0;
+                        ns_kind_lb[q] = 0;
+                        ns_kind_wns[q] = 0;
                     }
+                    ns_kind_work_ns = 0;
+                    ns_kind_work_nd = 0;
+                    // the op table keeps its name slots (nsop_nm/nsop_n) across steps -- like
+                    // ns_kind_nm -- so the accumulator indices stay stable run to run.
+                    for (int q = 0; q < nsop_n; q++) {
+                        nsop_ns[q]     = 0;
+                        nsop_wns[q]    = 0;
+                        nsop_ub[q]     = 0;
+                        nsop_lb[q]     = 0;
+                        nsop_uni_ns[q] = 0;
+                        nsop_uni_nd[q] = 0;
+                        nsop_nd[q]     = 0;
+                    }
+                    nsop_total    = 0;
+                    nsop_nodes    = 0;
+                    nsop_work_nd  = 0;
+                    ns_kind_nodes = 0;
                     dp_ntok = 0;   // per-step attribution: the next graph states its own shape
                 }
 

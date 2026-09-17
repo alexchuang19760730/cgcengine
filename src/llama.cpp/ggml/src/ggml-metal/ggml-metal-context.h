@@ -48,6 +48,9 @@ int ggml_metal_cgc_gpu_take(ggml_metal_t ctx, int64_t * out);
 // ggml_metal_cgc_node_name() at the same instant.
 int          ggml_metal_cgc_gpu_take_cb(ggml_metal_t ctx, int64_t * out, int max_cb);
 const char * ggml_metal_cgc_node_name   (ggml_metal_t ctx, int node_idx);
+// Same snapshot as ggml_metal_cgc_node_name, returning the ggml_op enum (or -1 when there is no such
+// node). Needed because the name-keyed table cannot separate ops that share a name prefix.
+int          ggml_metal_cgc_node_op     (ggml_metal_t ctx, int node_idx);
 
 void ggml_metal_set_tensor_async(ggml_metal_t ctx, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size);
 void ggml_metal_get_tensor_async(ggml_metal_t ctx, const struct ggml_tensor * tensor, void * data, size_t offset, size_t size);

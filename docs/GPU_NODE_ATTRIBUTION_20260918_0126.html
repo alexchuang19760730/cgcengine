@@ -58,7 +58,41 @@
   <span class="tag t-green">D5 PASS</span>
   <span class="tag t-amber">第 2 件：否定收場</span>
   <span class="tag t-blue">第 3 件：儀器落地</span>
+  <span class="tag t-purple">2026-09-18 03:2x 修訂：§9–§14 新增</span>
   <span class="tag t-gray">未 push</span>
+</div>
+
+<div class="box pur">
+<p><b>2026-09-18 03:2x 修訂標註（新增，原文一字未刪）。</b>
+本檔原本是 commit <code>fed7718c5</code> 的白皮書附件，涵蓋 <b>§0–§8</b>。同一天稍晚的一輪
+（那個 commit 的 <code>instrument(nodes):</code> 訊息；hash 不可能寫進它自己，
+見 <code>.workbuddy/memory/2026-09-18.md</code> §EN-112 的收尾紀錄）把本儀器往前推了一步：
+<b>把「只有會編碼的節點才進分母」這個權重接到了名字表</b>，於是 §5 的 warn 框與 §8 末尾的
+「下一輪第一步」都已經有了答案。新內容是 <b>§9–§14</b>，屬於那一輪。</p>
+<p><b>被取代的三處（逐條列，不刪原文）：</b></p>
+<ul>
+<li><b>§0 表格第三列「詞彙表：尚未調校」</b> ⇒ <b>已被取代</b>。詞表現在是 40 條固定前綴，
+    <code>ffn_moe_gate</code>／<code>ffn_moe_up</code>／<code>ffn_moe_down</code> 都在表上。
+    而當初「前三名是 <code>(other)</code>／<code>node</code>／<code>cache</code>」
+    <b>不是</b>詞表缺陷：<code>node</code> 桶 620 個節點<b>全部會編碼、零 no-op</b>
+    （見 §10.4 的成員表）。⇒ <b>前三名是排名，不是偽影。</b></li>
+<li><b>§5 的 <code>box warn</code>「先不要拿這張表去套 M3 的 40% 判準」</b> ⇒ <b>兩個限制都已被取代</b>：
+    詞彙限制已解（上一條），節點數加權已由 <code>wcntw</code> 取代。但<b>換來一個新的限制</b>：
+    <code>wcntw</code> <b>不是粒度不變的</b>（§11.3）⇒ 仍然不能把逐項百分比當排名用，
+    能引用的是<b>家族總和</b>。那個框裡「需要每個節點一個 sample point 或每個節點一個 command buffer」
+    這一句仍然成立，而且後者已在另一輪被證明<b>撞上 Metal 的在途 command buffer 配額</b>
+    （<code>n_cb ≥ 64</code> 載入期死鎖）。</li>
+<li><b>§8 末尾「下一輪的第一步：查 §5 的詞彙問題」</b> ⇒ <b>已完成</b>。答案是「兩個候選都只對一半」：
+    名字<b>是</b> <code>ffn_moe_gate/up/down</code>（所以「名字不對」為假），
+    但桶 <code>ffn_moe_topk</code> <b>是</b> <code>VIEW</code>（<code>op=38</code>, <code>ne=[8,2]</code>）
+    ⇒ 一個看起來像「MoE 選擇步」的桶其實是視圖；真正的選擇成本在 <code>ffn_moe_argsort</code>
+    （ARGSORT）與裸名 <code>top_k</code>（TOP_K）。詳見 §11.5。</li>
+</ul>
+<p><b>仍然完全成立、未被取代的部分</b>：§1 的 L0 裁決（否定收場）、§2 的「不需要
+<code>MTLCounterSampleBuffer</code>」推導、§3 的自我檢查設計、§4 的三個坑、
+§6 的 D5 輸出原文（它屬於 <code>fed7718c5</code> 那一棵樹，
+<b>不要</b>拿它當本檔後半段的證據 —— 本輪的 D5 原文在 §12）、
+§7 的其他條目（尤其「不主張逐節點」與「沒有量 t/s」，兩者在新內容裡依然成立）。</p>
 </div>
 
 <div class="box">
@@ -434,6 +468,512 @@ python3 /tmp/en_l0_layer_med.py &lt;server log&gt; &lt;drop_first_n&gt;</code></
 <p class="small">下一輪的第一步（本文件不代做）：查 §5 的詞彙問題 —— 取一個熱 range
 （<code>node</code>／<code>cache</code>／<code>(other)</code> 之一）印出它裡面的真實節點名，
 就能決定是「名字不是 <code>ffn_moe_*</code>」還是「加權把大 kernel 攤掉了」。</p>
+
+<h2>§9 工具介紹（2026-09-18 03:2x 新增）</h2>
+
+<p>這一節把 §3 落地的那支儀器往前推一步：<b>把「只有會編碼的節點才進分母」的權重接到名字表</b>，
+於是名字表第一次能回答「<code>ffn_moe_*</code> vs <code>cache</code> vs <code>attn_*</code>
+誰佔得多」。動機是 §5 那個 warn 框的第二條，以及一個結構性的<b>偏差</b>不是調校問題。</p>
+
+<h3>§9.1 現在的三支儀器與它們的關係</h3>
+
+<table>
+<tr><th style="width:230px">儀器（env）</th><th>回答什麼</th><th style="width:150px">鍵</th></tr>
+<tr><td><code>CGC_GPU_NODES=1</code><br><span class="small">＋ <code>CGC_GPU_TIMING=1</code>＋<code>CGC_DECODE_PROFILE=1</code></span></td>
+    <td><code>CGC-GPUNODE</code>：把每個 command buffer 的 <code>GPUStartTime/GPUEndTime</code>
+        <b>按它編的節點範圍</b>攤到<b>節點名前綴</b>上</td>
+    <td>節點名<br><span class="small">（40 條固定前綴）</span></td></tr>
+<tr><td><code>CGC_GPU_OPS=1</code><br><span class="small">＋ <code>CGC_GPU_NODES=1</code></span></td>
+    <td><code>CGC-GPUOPS</code>：同一批 buffer 改按 <b>ggml op</b> 攤 ⇒ 回答「這個 op 值不值得動」
+        （名字答不了：一個名字桶可以混多個 op）</td>
+    <td>ggml op</td></tr>
+<tr><td><code>CGC_CB_N_MAIN=&lt;n&gt;</code>／<code>CGC_SERVER_N_CB=&lt;n&gt;</code></td>
+    <td>把 command buffer <b>切細</b>的兩個旋鈕（預設 <code>n_main = MAX(64, 0.1·n_nodes)</code>）
+        ⇒ 用來做「換粒度」測試</td>
+    <td>—</td></tr>
+</table>
+
+<p>兩張表是<b>同一批 buffer 的兩種鍵</b>，所以在<b>絕對值</b>上必須一致 —— 這件事本身被當成
+一個<b>會失敗的自我檢查</b>（§10.4）。</p>
+
+<h3>§9.2 那個偏差的兩個來源，都是<b>原始碼逐字</b>可指</h3>
+
+<ul>
+<li><b>分母被 64 個節點的地板釘住。</b>
+    <code>ggml-metal-context.m:1099</code>：
+    <code>const int n_main = MAX(64, 0.1*gf-&gt;n_nodes);</code>
+    ⇒ 每個 segment 的主執行緒 command buffer <b>永遠吃 ≥ 64 個節點</b>，
+    而 MoE 的 <code>topk</code>／<code>gate</code>／<code>up</code>／<code>down</code>
+    正好住在 segment 的<b>前段</b> ⇒ 任何住在裡面的名字桶被<b>按節點數</b>除以 ≥ 64。</li>
+<li><b>分母裡有大約四成的東西不發任何命令。</b>
+    <code>ggml-metal-ops.cpp:242-252</code> 逐字：
+    <code>case GGML_OP_NONE: case GGML_OP_RESHAPE: case GGML_OP_VIEW: case GGML_OP_TRANSPOSE: case GGML_OP_PERMUTE: // noop -&gt; next node</code>。
+    實測（單一 4116 節點的圖）：VIEW 972 ＋ RESHAPE 600 ＋ TRANSPOSE 30 ＋ PERMUTE 30 ＝
+    <b>1632 / 4116 ＝ 39.7%</b> ⇒ 它們稀釋分母卻不貢獻 GPU 命令。</li>
+</ul>
+
+<p>兩者相乘的後果，在舊表上看得見：<code>ffn_moe_gate</code> 的<b>節點數份額只有 0.7%</b>，
+而它的<b>上界是 44.7%</b>。⇒ 舊表的點估計錯了約 <b>64 倍</b>。</p>
+
+<h3>§9.3 新的定義，與新增的三個輸出</h3>
+
+<pre><code>wcntw[k] = Σ_buffers  dur(buffer) × (#該桶且「會編碼」的節點)
+                                  ÷ (#該 buffer 中會編碼的節點)
+
+會編碼 ⇔ op ∉ { NONE, RESHAPE, VIEW, TRANSPOSE, PERMUTE }   ← 由編碼器的 switch 背書，不是模型</code></pre>
+
+<table>
+<tr><th style="width:250px">新輸出</th><th>是什麼，以及讀者該拿它做什麼</th></tr>
+<tr><td>每列多一個 <code>wcntw=&lt;ms&gt; &lt;%&gt;</code></td>
+    <td>work-weighted 份額。<b>這是排序用的欄</b>；舊的 <code>cntw</code> 保留在同一列供對照，
+        <code>lb</code>／<code>ub</code> 則是<b>不依賴任何權重</b>的上下界</td></tr>
+<tr><td><code>CGC-GPUNODE: work-attributed … / residual …</code></td>
+    <td><b>可主張的質量</b>與它的補數。沒有這一行，<code>wcntw</code> 會被讀成「整步的分割」，
+        而它只是「含至少一個有名工作節點的那些 buffer」的分割</td></tr>
+<tr><td><code>CGC-GPUNODE: *bywork &lt;桶&gt; …</code></td>
+    <td>按 <code>wcntw</code> 排序的前 10 名 —— 讓排名可以直接讀，不必自己從 <code>ub</code> 排序推</td></tr>
+</table>
+
+<div class="box warn">
+<p><b>兩個欄位的單位要指名。</b>每一列的格式是 <code>wcntw=</code> 接<b>毫秒</b>再接<b>百分比</b>
+（例：<code>wcntw=  24.60   8.5%</code>），兩張表都一樣。本輪寫核對腳本時把「%」那一欄當成 ms
+又除了一次 <code>wait</code> ⇒ 整張表規模錯誤，<b>而它看起來完全合理</b>（家族的排序都對）。
+凡是讀這兩張表，用交付的那支解析腳本，不要現寫一個。</p>
+</div>
+
+<h3>§9.4 為什麼這個權重是「有理由的代理量」，而不是「正確的答案」</h3>
+
+<p>它修掉的是 <b>no-op 稀釋</b>（上面那 39.7%，由編碼器原始碼證明）。
+它<b>假設每一個會編碼的節點成本相同</b> —— 而那是錯的：
+一層裡那個 <code>ffn_moe_weighted</code> 的 <code>MUL</code>（只有 <code>ne=[2048,8]</code>）
+與同一格裡的 <code>MUL_MAT_ID</code> 拿到<b>一樣的份額</b>。
+⇒ 它是<b>共同出現（co-location）的排名，不是成本排名</b>；這件事在 §11.3 會以
+「換粒度就移動約 1.9 倍」的形式被量到。</p>
+
+<p>要真的拿到成本需要<b>逐節點</b>的時間，而那條路（每個節點一個 command buffer）已被
+Metal 的在途 command buffer 配額擋死：<code>n_cb ≥ 64</code> 在載入期死鎖，
+而症狀只有 <code>/health</code> 回 <code>Loading model</code> ＋
+<code>server never became ready</code> —— <b>與「載入慢」同形</b>。</p>
+
+<svg viewBox="0 0 680 296" role="img" aria-label="一個 segment 的 command buffer 與兩個權重">
+  <defs>
+    <marker id="ar" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <text x="10" y="16" font-size="12" fill="#57606a">一個 decode step 的一個 segment（il = 3）：9 顆 command buffer，每顆編一段「連續節點範圍」</text>
+
+  <rect x="10" y="26" width="86" height="34" fill="#ddf4ff" stroke="#b6d8fb"/>
+  <text x="20" y="47" font-size="11" fill="#0969da">main slot</text>
+  <text x="20" y="58" font-size="9.5" fill="#57606a">nodes [0, 64)</text>
+
+  <rect x="104" y="26" width="62" height="34" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="110" y="47" font-size="10" fill="#57606a">worker 1</text>
+  <rect x="174" y="26" width="62" height="34" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="180" y="47" font-size="10" fill="#57606a">worker 2</text>
+  <rect x="244" y="26" width="62" height="34" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="250" y="47" font-size="10" fill="#57606a">…</text>
+  <rect x="314" y="26" width="62" height="34" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="320" y="47" font-size="10" fill="#57606a">worker 8</text>
+  <text x="386" y="47" font-size="10.5" fill="#57606a">⇒ 主槽那 64 個節點裡就有 ffn_moe_topk / argsort / gate / up / down</text>
+
+  <line x1="53" y1="62" x2="53" y2="86" stroke="#57606a" marker-end="url(#ar)"/>
+  <text x="10" y="102" font-size="10.5" fill="#57606a">那一顆 buffer 只有一個時長 dur</text>
+
+  <rect x="10" y="112" width="320" height="76" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="22" y="130" font-size="11.5" fill="#1f2328"><tspan font-weight="700">舊：cntw</tspan> ＝ dur × 該桶節點數 ÷ 全部有名節點</text>
+  <text x="22" y="148" font-size="10.5" fill="#cf222e">分母 64 → ffn_moe_gate 只拿到 dur/64 ⇒ 0.7%（點估計）</text>
+  <text x="22" y="166" font-size="11.5" fill="#1f2328"><tspan font-weight="700">新：wcntw</tspan> ＝ dur × 該桶<b>會編碼</b>的節點 ÷ 會編碼的節點</text>
+  <text x="22" y="182" font-size="10.5" fill="#1a7f37">分母 39.7% 的 no-op 被移出 ⇒ ffn_moe_gate 1.1%（粗）／2.2%（細）</text>
+
+  <rect x="346" y="112" width="324" height="76" fill="#ffebe9" stroke="#f5b8b5"/>
+  <text x="358" y="130" font-size="11.5" fill="#cf222e"><tspan font-weight="700">但權重不是粒度不變的</tspan></text>
+  <text x="358" y="148" font-size="10.5" fill="#1f2328">同 profile、同熱態，只改切片寬度：</text>
+  <text x="358" y="165" font-size="10.5" fill="#1f2328">moe_gemv 3.2% → 6.3%（1.97×）、conv 2.5% → 0.7%（0.28×）</text>
+  <text x="358" y="182" font-size="10.5" fill="#1f2328">⇒ 只引用<b>家族總和</b>；逐項報 [粗, 細] 區間</text>
+
+  <rect x="10" y="204" width="660" height="80" fill="#f0e8ff" stroke="#d7c4f7"/>
+  <text x="22" y="222" font-size="11.5" fill="#8250df"><tspan font-weight="700">三個自我檢查（都設計成會失敗）</tspan></text>
+  <text x="22" y="240" font-size="10.5" fill="#1f2328">① 內部一致：<tspan font-family="monospace">delta = 0.00%</tspan>（該行 seg_busy 必須等於同行的 layer gpu_sum）</text>
+  <text x="22" y="256" font-size="10.5" fill="#1f2328">② 跨表：名字表 ffn_moe_gate+up+down vs op 表 MUL_MAT_ID 的<b>絕對值</b> —— ms-ratio 1.001／1.000</text>
+  <text x="22" y="272" font-size="10.5" fill="#1f2328">③ residual 欄：名字表無法主張的質量（四臂 19.9–23.9%）</text>
+</svg>
+<div class="cap">圖一：一個 segment 的切片、兩個權重的差異、以及本輪新增的三個自我檢查。</div>
+
+<h2>§10 量測方法（新增）</h2>
+
+<h3>§10.1 分母用<b>同一步</b>的 <code>wait</code>，不是兩個中位數相除</h3>
+
+<p>判準是對 <code>wait</code> 寫的（「MoE 專家矩陣乘 ≥ <code>wait</code> 的 40%」），
+而 <code>wait</code> 是 <code>llama_graph_compute</code> 的 CPU 側自旋，<b>不受</b>
+<code>seg_busy</code> 的膨脹影響。做法是<b>步配對</b>：
+每個印出的 <code>CGC-GPUNODE</code> 區塊用自己的 <code>step=</code> 去 join 同一 step 的
+<code>CGC-DECPROF</code>，再算「家族 ms ÷ 那一步的 <code>wait</code>」，最後取中位數。</p>
+
+<div class="box bad">
+<p><b>不配對會混到兩個不同的步族群。</b>同一支 log 的 <code>wait</code> 中位數在四次列印之間
+可以是 <b>191.1 ms</b>（v1 粗，NOMINAL）到 <b>352.8 ms</b>（v2 細，HEAVY）—— 因為集合裡混了
+prefill 步與冷池步。拿「家族 ms 的中位數」除「<code>wait</code> 的中位數」會把兩個不同母體相除。
+<b>配對之後</b>每一步的比值都是自己跟自己比。</p>
+</div>
+
+<h3>§10.2 濾波與樣本（先說清楚，因為樣本很小）</h3>
+
+<pre><code>trunk 步 ⇔ seg_busy ≥ 50 ms  ∧  layers ≥ 30  ∧  ntok ≤ 4
+
+理由：MTP draft 圖與載入期暖機圖也會印，而它們小 1–2 個數量級
+      （實例：一個 0.90 ms 的 draft 段，nkind 只有 7）</code></pre>
+
+<p>每個臂 <b>4 個 trunk 步</b>（表格印在「每 8 個合格 graph_compute」⇒ <code>--n-predict 16</code>
+的 run 只有 3–4 次列印）。數字是中位數，但 n=4 的區間很寬 —— §11 的表把<b>逐 step 的值</b>也列出。</p>
+
+<h3>§10.3 ★ 一個新權重在能被引用之前，先過「換粒度」測試</h3>
+
+<ol>
+<li>同 profile、<b>同熱態</b>，跑<b>粗</b>與<b>細</b>兩個臂
+    （<code>en-work</code> 預設粒度 vs <code>en-work-fine</code> ＝
+    <code>CGC_CB_N_MAIN=1</code> ＋ <code>CGC_SERVER_N_CB=16</code> ⇒ 2–7 節點的切片）。</li>
+<li>逐項比。不通過的項目就<b>只報家族＋區間</b>，不報點估計。</li>
+<li><b>熱態是另一個軸</b>，必須分開：判熱態要讀產物裡的 <code>thermal_launch</code>；
+    判粒度要確保<b>兩臂同熱態</b>。</li>
+</ol>
+
+<div class="box warn">
+<p><b>本輪第一次的「粒度對」是被混淆的。</b>v1 的 <code>en-work</code> 起跑時是
+<b>NOMINAL(0)</b>、<code>en-work-fine</code> 起跑時是 <b>HEAVY(2)</b>
+（產物 <code>Backup/phase_decomp/en_work_20260918.json</code> 逐字：
+<code>{'level': 0, 'label': 'NOMINAL', 't': '03:12:00'}</code> 與
+<code>{'level': 2, 'label': 'HEAVY', 't': '03:12:57'}</code>）。
+發現之後<b>丟棄那一對</b>，改用 v2 的粗／細（兩臂都 HEAVY，起跑 03:14:41 與 03:15:45）。</p>
+</div>
+
+<h3>§10.4 跨表驗證：比<b>絕對值</b>，不比百分比</h3>
+
+<p>名字表的 <code>ffn_moe_gate</code>＋<code>ffn_moe_up</code>＋<code>ffn_moe_down</code>
+與 op 表的 <code>MUL_MAT_ID</code> 是<b>同一批節點</b>（§11.5 用 dump 證的）⇒ 兩條路徑必須算出
+同一個量。</p>
+
+<table>
+<tr><th>臂</th><th class="num">名字表</th><th class="num">op 表</th><th class="num">ms-ratio</th><th>印出的百分比</th></tr>
+<tr><td><code>en-work</code>（粗）</td><td class="num">7.83 ms</td><td class="num">7.82 ms</td>
+    <td class="num"><b>1.001</b></td><td class="num">3.61% vs 3.99%</td></tr>
+<tr><td><code>en-work-fine</code>（細）</td><td class="num">12.46 ms</td><td class="num">12.47 ms</td>
+    <td class="num"><b>1.000</b></td><td class="num">6.76% vs 7.13%</td></tr>
+</table>
+
+<div class="box">
+<p><b>百分比為什麼不同（而這不是矛盾）。</b>兩張表<b>各自挑自己的分母</b>：
+名字表除以 <code>ns_total</code>（<b>每一個</b> buffer，含整格都是 no-op 的那些），
+op 表除以 <code>nsop_total</code>（<b>至少有一個可解析 op</b> 的 buffer）。
+實測那一格 <code>ns_total = 217.1 ms</code> 而 <code>nsop_total = 195.9 ms</code> ——
+<code>3.61% vs 3.99%</code> 完全由這個分母差解釋。
+⇒ <b>跨表比對一律回到絕對值；百分比只在同一張表內可比。</b>
+反過來說，<b>絕對值一致而百分比不一致，正好是兩條路徑各自獨立算出同一個量的證據</b>。
+（→ lesson <code>eng-diag-0036</code>）</p>
+</div>
+
+<h2>§11 量測結果（新增）</h2>
+
+<h3>§11.1 排名：家族 ms ÷ <b>同一步</b>的 <code>wait</code></h3>
+
+<p><b>可引用的單位是家族</b>（見 §11.3）。三欄分別是：
+v1 粗 <b>NOMINAL</b>（熱態軸的一端）、v2 粗 <b>HEAVY</b>、v2 細 <b>HEAVY</b>。
+粗／細那一對是同熱態，所以那兩欄可以互比。</p>
+
+<table>
+<tr><th style="width:250px">家族（成員由 §11.5 的 dump 證）</th>
+    <th class="num">NOMINAL 粗<br><span class="small">% of wait</span></th>
+    <th class="num">HEAVY 粗</th><th class="num">HEAVY 細</th>
+    <th class="num" style="width:56px">排名</th></tr>
+<tr><td><code>node</code>（<b>無名真運算</b>：FLASH_ATTN_EXT／GATED_DELTA_NET／ROPE／ADD／MUL_MAT／MUL／GET_ROWS）</td>
+    <td class="num"><b>28.9%</b></td><td class="num"><b>24.1%</b></td><td class="num"><b>20.3%</b></td><td class="num">1</td></tr>
+<tr><td><code>(other)</code>（未映射：空基底名 ＋ <code>Kcur</code>／<code>Vcur</code> ＋ 雜項）</td>
+    <td class="num">14.0%</td><td class="num">11.4%</td><td class="num">12.1%</td><td class="num">2</td></tr>
+<tr><td><b><code>cache</code></b>（<b>池自己的暫存</b>：CPY／SCALE／SET_ROWS／views）</td>
+    <td class="num">9.4%</td><td class="num">7.7%</td><td class="num">9.8%</td><td class="num">3</td></tr>
+<tr><td><code>norm</code> 家族（RMS_NORM／attn_norm／attn_post_norm）</td>
+    <td class="num">9.4%</td><td class="num">7.7%</td><td class="num">7.5%</td><td class="num">4</td></tr>
+<tr><td><code>ffn_moe_</code>（<b>MoE 逐元素合併鏈，不含任何矩陣乘</b>）</td>
+    <td class="num">8.8%</td><td class="num">7.6%</td><td class="num">6.7%</td><td class="num">5</td></tr>
+<tr><td><code>ffn_</code>（<code>ffn_swiglu</code>／<code>ffn_shexp</code>／<code>ffn_out</code>，稠密）</td>
+    <td class="num">5.0%</td><td class="num">4.3%</td><td class="num">3.8%</td><td class="num">6</td></tr>
+<tr><td><code>attn_*</code> ＋ <code>linear_attn</code></td>
+    <td class="num">4.7%</td><td class="num">3.9%</td><td class="num">2.8%</td><td class="num">7</td></tr>
+<tr><td><b><code>moe_gemv</code> ＝ MUL_MAT_ID</b>（<code>ffn_moe_gate</code>／<code>up</code>／<code>down</code>）</td>
+    <td class="num">3.8%</td><td class="num">3.2%</td><td class="num"><b>6.3%</b></td><td class="num">8</td></tr>
+<tr><td><code>dense_gemm</code>（<code>ffn_gate</code>／<code>ffn_up</code>，MUL_MAT）</td>
+    <td class="num">2.5%</td><td class="num">2.2%</td><td class="num">4.2%</td><td class="num">9</td></tr>
+<tr><td><code>conv/ssm</code>（SSM_CONV／GET_ROWS／CONCAT）</td>
+    <td class="num">2.9%</td><td class="num">2.5%</td><td class="num">0.7%</td><td class="num">10</td></tr>
+<tr><td><code>moe_select</code>（ARGSORT／SOFT_MAX／logits／probs）</td>
+    <td class="num">1.5%</td><td class="num">1.1%</td><td class="num">0.8%</td><td class="num">11</td></tr>
+<tr><td><code>ffn_moe_topk</code>（<b>VIEW</b>，恆 0）</td>
+    <td class="num">0.0%</td><td class="num">0.0%</td><td class="num">0.0%</td><td class="num">—</td></tr>
+</table>
+
+<h3>§11.2 ③ 的答案</h3>
+
+<ul>
+<li><b>池自己的暫存（<code>cache</code>，7.7–9.8%）≥ 整個 MoE 專家 GEMV 家族（3.2–6.3%）</b>，
+    也大於整個注意力家族（2.8–4.7%）。這與 op 表的
+    <code>CPY 7.0% ＋ SCALE 2.0% ＋ SET_ROWS 0.4%</code> 吻合（兩個不同鍵、不同 run）。</li>
+<li><b>注意力不是大戶。</b><code>attn_*</code>＋<code>linear_attn</code> 排第 7，
+    <b>低於</b><code>norm</code> 家族與 <code>ffn_moe_</code>。</li>
+<li><b>MoE 的逐元素合併（<code>ffn_moe_</code>，7.6%）比 MoE 的專家矩陣乘（3.2–6.3%）還大</b>，
+    而前者<b>一個矩陣乘都沒有</b>（§11.5）。</li>
+<li><b>最大的一塊是「真運算但沒有子系統名」</b>（<code>node</code>，20–29%）。
+    這<b>不是</b>一個子系統 ⇒ 任何更細的排名都先卡在<b>命名</b>上。這是本輪最有行動價值的結論。</li>
+</ul>
+
+<h3>§11.3 ★ 限制：權重<b>不是</b>粒度不變的</h3>
+
+<table>
+<tr><th>家族</th><th class="num">v2 粗（HEAVY）</th><th class="num">v2 細（HEAVY）</th>
+    <th class="num">比值</th><th>可不可以逐項引用</th></tr>
+<tr><td><code>moe_gemv</code>（MUL_MAT_ID）</td><td class="num">3.2%</td><td class="num">6.3%</td>
+    <td class="num"><b>1.97</b></td><td>✗</td></tr>
+<tr><td><code>dense_gemm</code>（ffn_gate/up）</td><td class="num">2.2%</td><td class="num">4.2%</td>
+    <td class="num"><b>1.91</b></td><td>✗</td></tr>
+<tr><td><code>conv/ssm</code></td><td class="num">2.5%</td><td class="num">0.7%</td>
+    <td class="num"><b>0.28</b></td><td>✗</td></tr>
+<tr><td><code>cache</code>（池的暫存）</td><td class="num">7.7%</td><td class="num">9.8%</td>
+    <td class="num">1.27</td><td>~（報區間）</td></tr>
+<tr><td><code>attn_*</code>＋<code>linear_attn</code></td><td class="num">3.9%</td><td class="num">2.8%</td>
+    <td class="num">0.72</td><td>~（報區間）</td></tr>
+<tr><td><code>(other)</code></td><td class="num">11.4%</td><td class="num">12.1%</td>
+    <td class="num">1.06</td><td>✓</td></tr>
+<tr><td><code>norm</code> 家族</td><td class="num">7.7%</td><td class="num">7.5%</td>
+    <td class="num">0.97</td><td>✓</td></tr>
+<tr><td><code>ffn_moe_</code></td><td class="num">7.6%</td><td class="num">6.7%</td>
+    <td class="num">0.88</td><td>✓</td></tr>
+<tr><td><code>ffn_</code></td><td class="num">4.3%</td><td class="num">3.8%</td>
+    <td class="num">0.88</td><td>✓</td></tr>
+<tr><td><b><code>node</code></b>（無名真運算）</td><td class="num">24.1%</td><td class="num">20.3%</td>
+    <td class="num">0.84</td><td>✓</td></tr>
+</table>
+
+<p><b>機制是結構性的</b>：權重是 <code>dur × cnt_k ÷ Σ(同 buffer 中會編碼的節點)</code>，
+所以<b>同一個 buffer 裡有誰</b>決定了分配，而 buffer 的組成隨切片寬度改變。
+（與另一輪的離線最小平方不同：那裡是<b>不可辨識</b>，這裡是<b>權重本身是代理量</b>。）</p>
+
+<p><b>熱態軸則是<u>均勻</u>的</b>：v1 粗（NOMINAL）→ v2 粗（HEAVY），
+11 個家族裡有 10 個比值落在 <b>0.81–0.88</b>（中位 0.84；只有 <code>moe_select</code> 是 0.73）
+⇒ <b>熱態造成均勻位移、不重新排序</b>。⇒ <b>排名對熱態穩健，對粒度不穩健。</b></p>
+
+<h3>§11.4 殘差（新增的那一欄）與它的歸因更動</h3>
+
+<table>
+<tr><th>臂</th><th>熱態</th><th>粒度</th><th class="num">residual 中位（n=4）</th><th class="num">範圍</th></tr>
+<tr><td><code>en-work</code> v1</td><td>NOMINAL</td><td>粗</td><td class="num">19.9%</td><td class="num">17.0–23.9</td></tr>
+<tr><td><code>en-work-fine</code> v1</td><td>HEAVY</td><td>細</td><td class="num">21.9%</td><td class="num">13.1–33.9</td></tr>
+<tr><td><code>en-work</code> v2</td><td>HEAVY</td><td>粗</td><td class="num">23.9%</td><td class="num">20.3–26.4</td></tr>
+<tr><td><code>en-work-fine</code> v2</td><td>HEAVY</td><td>細</td><td class="num">20.0%</td><td class="num">13.0–27.2</td></tr>
+</table>
+
+<div class="box bad">
+<p><b>我原本把它歸因給熱態，那是錯的。</b>HEAVY 的<b>細</b>臂是 20.0%，與 NOMINAL 的<b>粗</b>臂
+相同、且<b>低於</b> HEAVY 的粗臂 ⇒ 殘差<b>不是熱態的量</b>，是<b>切片組成</b>的量
+（哪一個 buffer 剛好整格都是 no-op）。四臂都落在約 <b>20–24%</b>。
+它的用途是「<b>不要把絕對 <code>seg_busy</code> 當時長引用</b>」的證據 ——
+<code>seg_busy</code> 本身隨切片數膨脹（同一 workload：143／296／766 ms @ n_cb = 8／16／63）。</p>
+</div>
+
+<h3>§11.5 兩個識別更正（用 <code>CGC-GRPH</code> dump 證的，不是推論）</h3>
+
+<table>
+<tr><th style="width:120px">桶</th><th class="num">節點</th><th class="num">會編碼</th><th>成員（一個 4116 節點的圖，逐 op 數）</th></tr>
+<tr><td><code>ffn_moe_</code></td><td class="num">680</td><td class="num"><b>280</b></td>
+    <td>VIEW 320、RESHAPE 80（no-op）＋ GET_ROWS 40、GLU 40、SUM_ROWS 40、CLAMP 40、DIV 40、MUL 40
+        （＝每層各 1）⇒ <b>一個矩陣乘都沒有</b>。其中
+        <code>ffn_moe_weighted-&lt;層&gt;</code> ＝ <b>1 個 MUL <code>ne=[2048,8]</code> ＋ 它自己的 8 個 VIEW</b></td></tr>
+<tr><td><code>cache</code></td><td class="num">660</td><td class="num"><b>290</b></td>
+    <td>VIEW 290、RESHAPE 60、PERMUTE 20（no-op）＋ <b>CPY 210、SCALE 60、SET_ROWS 20</b>（真工作）
+        ⇒ <b>每層約 5 個 CPY ＋ 1.5 個 SCALE</b>，全部是池自己的搬運</td></tr>
+<tr><td><code>node</code></td><td class="num">620</td><td class="num"><b>620</b></td>
+    <td>ADD 270、MUL_MAT 130、GET_ROWS 90、MUL 60、GATED_DELTA_NET 30、UNARY 30、FLASH_ATTN_EXT 10
+        ⇒ <b>零 no-op</b></td></tr>
+<tr><td><code>ffn_</code></td><td class="num">160</td><td class="num"><b>160</b></td>
+    <td>GLU 40、MUL_MAT 40、MUL 40、ADD 40 ⇒ 每層 1 組稠密 FFN（共享專家）鏈</td></tr>
+<tr><td><code>(other)</code></td><td class="num">883</td><td class="num">391</td>
+    <td>RESHAPE 280、VIEW 172、UNARY 110、<b>MUL_MAT 100</b>、L2_NORM 60、MUL 51、ADD 40、TRANSPOSE 30</td></tr>
+<tr><td><code>norm</code></td><td class="num">131</td><td class="num"><b>131</b></td><td>RMS_NORM 131（每層約 3.2 個）</td></tr>
+</table>
+
+<ul>
+<li><b><code>ffn_moe_gate</code>／<code>up</code>／<code>down</code> 就是 <code>MUL_MAT_ID</code></b>：
+    每桶 80 個節點、<b>只有這一個 op</b>（<code>CGC-GRPH[..] name=ffn_moe_gate-40 op=30(MUL_MAT_ID)</code>）。
+    而 <code>ffn_gate</code>／<code>ffn_up</code> 各 80、全部 <code>MUL_MAT</code>（稠密）。
+    ⇒ 這三個桶的<b>和</b>必須等於 op 表的 <code>MUL_MAT_ID</code>，而它<b>確實等於</b>（§10.4 的 1.001／1.000）。</li>
+<li><b><code>ffn_moe_topk</code> 是 <code>VIEW</code></b>：
+    <code>CGC-GRPH[76] name=ffn_moe_topk-0 op=38(VIEW) ne=[8,2]</code>，
+    而真正的 top-k 計算是 <code>ffn_moe_argsort-0 op=70(ARGSORT) ne=[256,2]</code>。
+    ⇒ 那個看起來像「MoE 選擇步」的桶，成員全是視圖，所以它的 <code>wcntw</code>
+    <b>按建構為 0.00</b> —— <b>這是儀器正確，不是權重壞了</b>。
+    同時更正上一輪：把「<code>ffn_moe_topk</code> solo 精確 11.5%／620 µs 每節點」
+    當成陽性對照，是<b>對一個 view 的 buffer 計時</b>（這給了舊表偽影更正<b>第二個獨立理由</b>）。</li>
+<li><b>詞表加 <code>top_k</code> 對 trunk 是惰性的</b>（誠實記下）：<code>top_k</code> 節點只在
+    <b>MTP draft</b> 圖裡；而「log 裡有 4 次 <code>top_k</code>」是<b>假陽性</b> ——
+    那是 <code>CGC-PHASE-SPLIT: … / top_k=8 -&gt; …</code>（prefill 的<b>參數</b>），不是節點名。</li>
+</ul>
+
+<h3>§11.6 M3 的 40% 判準：<b>第三個獨立方法，仍然不成立</b></h3>
+
+<table>
+<tr><th>方法</th><th>讀數</th><th>依賴什麼</th></tr>
+<tr><td>聯集上界（<code>docs/M3_MOE_SHARE_2026-09-18.md</code>）</td>
+    <td class="num">≤ 28.3% of <code>seg_busy</code></td><td>只依賴 buffer 邊界，不依賴權重</td></tr>
+<tr><td>op 表的 work-weighted 份額</td><td class="num">8.0% / 8.4%</td><td>兩個<b>細</b>粒度臂</td></tr>
+<tr><td><b>名字表的 work-weighted 份額（本輪）</b></td>
+    <td class="num"><b>3.2–6.3% of <code>wait</code></b></td><td>跨表驗證過（§10.4）</td></tr>
+</table>
+
+<p>三個方法都不足以支持 40% ⇒ <b>Cell 2（MoE gather 融合／batched-union）沒有量</b>。
+⚠️ 三個方法的讀數不同（3.2 vs 8.4%），差異的來源已定位為<b>粒度</b>（§11.3），
+<b>不是矛盾</b> —— 這正是本節必須交付的限制。若把四個量測（含 v1 粗的 3.8%）一起看，
+區間是 <b>3.2–8.4%</b>。</p>
+
+<h2>§12 現場閘門輸出（原文，2026-09-18 03:2x）</h2>
+
+<pre><code>$ # 前置閘門：8080 無 listener、無 llama-server、無其他 driver ⇒ 才跑 D5
+$ python3 scripts/check/m123_oracle_gate.py --tag en-nametable-work
+  leader  : 59936   server log: …/Backup/cgc_logs/llama_server_20260918_032122.log
+  ready   : 0s
+  probe   : '15+27 等於多少？請只輸出答案' -&gt; '42'
+  stopped : after 1s
+  dump    : 9 records, validated
+oracle A: …/Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident_v6_nbaware.jsonl  (9 entries)
+oracle B: /tmp/m123_oracle_gate.jsonl  (9 entries)
+common: 9    only_A: 0    only_B: 0
+  M1 numeric identity    (bit-identical logits)  : 9/9  (100.0%)
+  M2 decision agreement  (same argmax token)     : 9/9  (100.0%)
+  M3 top-k set agreement (same top-N id set)     : 9/9  (100.0%)
+  (aux) full_fnv1a64 identical                   : 9/9  (100.0%)
+CROSS-TAB  (n=9)
+  M1 same  &amp; M2 same :     9   no drift, same choice
+  M1 same  &amp; M2 diff :     0   should be 0; non-zero = tie-break bug
+  M1 diff  &amp; M2 same :     0   drift only; M1 says 'differs', M2 says 'same'
+  M1 diff  &amp; M2 diff :     0   real divergence
+VERDICT M1 (numeric identity)   : PASS (9/9)
+VERDICT M2 (decision agreement) : PASS (9/9)
+GATE en-nametable-work: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+cross-tab: {'num_eq_dec_eq': 9, 'num_eq_dec_ne': 0, 'num_ne_dec_eq': 0, 'num_ne_dec_ne': 0}
+summary  : …/Backup/m123_oracle_gate/summary_en-nametable-work.json
+
+$ # ★ 先讀 comparable 再讀判決（D5 的第一順序）
+comparable    = True
+config_diffs  = []
+
+$ # 歸屬：D5 的 dump 沒有 binary 指紋 ⇒ 對一眼 cap.created 與產物 mtime
+cap created = 2026-09-18T03:21:22   （profile prefill250）
+  libggml-base.0.19.0.dylib    2026-09-18T03:14:13
+  libggml-metal.0.19.0.dylib   2026-09-18T03:14:13
+  ggml-backend.cpp             2026-09-18T03:12:30
+  scripts/check/decode_sweep.py 2026-09-18T03:11:06
+=&gt; cap 晚於每一個產物，不重疊，可歸屬
+
+$ python3 agent_harness/engine_loop/traces/validate.py
+  （空行）
+  lessons.jsonl: 173 records {'lesson': 173}
+  -&gt; OK
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  （空行）
+  10/10 injected violations rejected
+
+$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  memory index OK: 8 file(s), 212 section(s), no drift
+
+$ python3 agent_harness/engine_loop/index_assets.py --check
+  manifest OK: 108 assets, existence + bytes + mtime all agree
+
+$ python3 agent_harness/shared/check_shell_cjk.py --root "$PWD/agent_harness"
+  掃了 148 個 shell 檔（含 shebang 判定的 .sh/.bash）
+  0 處：所有 `$VAR` 後面都不是緊接非 ASCII
+
+$ python3 agent_harness/engine_loop/wrappers/classify.py --check
+error: scripts/check/ 與分類表不一致 —— 磁碟上有但沒被分類：
+       ['decode_step_profile.py', 'phase_split_ab.py']</code></pre>
+
+<div class="box">
+<p><b>最後那一條紅燈仍然不是本線的</b>：<code>decode_step_profile.py</code>（另一條線的檔，尚未進版控）
+與 <code>phase_split_ab.py</code>（已提交但未分類），與 §6 同一組。
+依「紅燈不是你的錯時不要急著消掉」沒有動 <code>classify.py</code>；
+<b>它在這個 commit 裡仍然是紅的，而那是它的正確狀態</b>。</p>
+</div>
+
+<p class="small">跑 D5 當時的機器狀態：<code>Pages free</code> = 81.52 MiB、
+<code>swap</code> used = 5947.88 MiB / 7168.00 MiB（<code>sysctl -n vm.swapusage</code>）。
+在這個水位 D5 跑完（50 s）—— 與 §6 那個 60.86 MiB 的水位同一等級，
+<b>下一個人該知道這台機器 13 GB 級的載入是有配額的</b>。</p>
+
+<h2>§13 本輪的誠實邊界（§7 之外的補充）</h2>
+
+<ul>
+<li><b>不主張逐項百分比可以引用。</b>他們看到的是 <code>wcntw</code>，而它<b>不是粒度不變的</b>
+    （§11.3 的 1.97／1.91／0.28）。可引用的是<b>家族總和</b>與「哪幾項穩定」這件事本身。</li>
+<li><b>不主張這是成本排名。</b>權重把「每個會編碼的節點」當<b>等成本</b> ⇒ 它是
+    <b>共同出現</b>的排名；真值偏<b>細</b>粒度那一端（切片內的同儕更同質），但沒被定案。</li>
+<li><b>樣本很小。</b>每個臂 <b>4 個 trunk 步</b>（§10.2 的濾波），只驗一個 profile
+    （<code>prefill250</code> ＋ 生產池 8 GiB）。沒有驗其他池尺寸。</li>
+<li><b>沒有量 t/s，也不引用 t/s。</b>兩臂首發熱態是 <b>HEAVY(2)</b>
+    ⇒ <code>en-work</code> 4.73／<code>en-work-fine</code> 3.39 t/s <b>不可引用</b>。
+    本輪所有數字都是 GPU 時鐘、計數器、或 CPU 側的 <code>wait</code>。</li>
+<li><b><code>(other)</code> 與 <code>node</code> 的成員只到 dump 層級</b>：
+    <code>(other)</code> 裡 204 個節點是<b>空基底名</b>（例如名字就是「 (view)」），
+    <code>node</code> 的 620 個是 ggml 自動名。兩者都<b>沒有</b>逐一歸因到子系統。</li>
+<li><b>詞表仍是手寫前綴（40 條）</b> ⇒ 「桶」的邊界是<b>詞表的產物</b>，不是語意的產物。
+    本輪再度撞到同一件事：<code>ffn_moe_topk</code>＝VIEW。</li>
+<li><b>沒有 push。</b></li>
+<li><b>揭露：本輪的 build 把另一條線未提交的 <code>ggml-metal-ops.cpp</code> 一起編進去了</b>
+    （同一個 binary 無法分離）⇒ 由那一輪的 commit 收錄<b>產物</b>，
+    但<b>沒有</b> stage 他們的<b>原始檔</b>（依「不是我改的不 commit」）—— 與 §7 最後一條同樣的處置。
+    產物指紋（相對 <code>fed7718c5</code>）：<code>libggml-metal</code>
+    <code>aa289dc4 → 05b2da93</code>；<code>libggml-base</code>
+    <code>7d7afd08 → 1940ab03 → 473ebf60 → e1ea9595</code>（最後那一步只重編
+    <code>ggml-backend.cpp.o</code>；<code>libggml-metal</code> <b>在本輪未動</b>，
+    它是在前幾輪的推進裡變的）。</li>
+</ul>
+
+<h2>§14 產物與指令（新增部分）</h2>
+
+<table>
+<tr><th>路徑</th><th>內容</th></tr>
+<tr><td><code>docs/NAME_WORK_TABLE_2026-09-18.md</code></td>
+    <td>本輪（§9–§14）的完整交付：排名、方法、兩個軸的限制、成員表</td></tr>
+<tr><td><code>Backup/phase_decomp/en_work_20260918.json</code></td>
+    <td>v1 兩臂（<code>en-work</code> 起跑 NOMINAL、<code>en-work-fine</code> 起跑 HEAVY）</td></tr>
+<tr><td><code>Backup/phase_decomp/en_work2_20260918.json</code></td>
+    <td>v2 兩臂（都 HEAVY）—— §11 的粗／細兩欄</td></tr>
+<tr><td><code>Backup/cgc_logs/llama_server_20260918_031141.log</code></td>
+    <td>v1 粗（<code>n_cb = 8</code>）的 stderr：名字表 ＋ op 表</td></tr>
+<tr><td><code>Backup/cgc_logs/llama_server_20260918_031240.log</code></td>
+    <td>v1 細（<code>n_cb = 16</code>）</td></tr>
+<tr><td><code>Backup/cgc_logs/llama_server_20260918_031423.log</code>、<code>…_031528.log</code></td>
+    <td>v2 粗／細（本輪的 §11.3 那一對）</td></tr>
+<tr><td><code>Backup/cgc_logs/llama_server_20260918_025358.log</code></td>
+    <td><code>CGC_GRPH_DBG=1</code> 的節點 dump ⇒ §11.5 的成員表（用 <code>name=… op=N(OP)</code> 計）</td></tr>
+<tr><td><code>Backup/m123_oracle_gate/summary_en-nametable-work.json</code>、<code>cap_…json</code></td>
+    <td>§12 的 D5 判決與配置戳記</td></tr>
+</table>
+
+<pre><code># 兩個臂（粗 ＝ 預設粒度＝ cntw 失效的那個臂；細 ＝ 2–7 節點切片）
+RUN_REPLAY_BENCH=0 python3 scripts/check/decode_sweep.py --profile prefill250 \
+  --arms en-work,en-work-fine --rounds 2 --warmup 1 --n-predict 16 \
+  --json Backup/phase_decomp/en_work2_20260918.json --force
+
+# 名字表 ＋ op 表在同一次跑（en-work 帶了 CGC_GPU_OPS=1）
+L=$(ls -t Backup/cgc_logs/llama_server_20260918_*.log | head -1)
+grep -h "CGC-GPUNODE\|CGC-GPUOPS" "$L"
+
+# 步配對的家族表（家族 ms ÷ 同一步的 wait）—— 權威分析工具
+python3 /tmp/en_step_paired.py "$L"
+python3 /tmp/en_namework_family.py &lt;粗 log&gt; &lt;細 log&gt;   # 家族 ＋ 跨表 ms-ratio 驗證
+python3 /tmp/en_namework_parse.py "$L"                  # 逐項排名 ＋ *bywork 次序</code></pre>
+
+<p class="small">⚠️ 上述三支解析腳本住在 <code>/tmp</code>（一次性工具，不在版控內）——
+與 §8 的 <code>en_l0_layer_med.py</code> 同樣的處置。要重跑請照 §10.1 的定義重建，
+或先把它們搬進 <code>scripts/check/</code>（那需要同時加進 <code>classify.py</code>
+與 <code>index_assets.py</code> 的 <code>CURATED</code>）。</p>
 
 </div>
 </body>

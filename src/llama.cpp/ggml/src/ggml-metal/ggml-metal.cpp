@@ -742,6 +742,16 @@ static const char * ggml_backend_metal_cgc_node_name(ggml_backend_t backend, int
     return ggml_metal_cgc_node_name(ctx, node_idx);
 }
 
+// [CGC 2026-09-18 op-keyed attribution] the OP of the same node, so the sched-side table can be
+// keyed by op instead of by name prefix. Returns the ggml_op enum value, or -1 when there is no node.
+static int ggml_backend_metal_cgc_node_op(ggml_backend_t backend, int node_idx) {
+    GGML_ASSERT(ggml_backend_is_metal(backend));
+
+    ggml_metal_t ctx = (ggml_metal_t)backend->context;
+
+    return ggml_metal_cgc_node_op(ctx, node_idx);
+}
+
 static ggml_backend_i ggml_backend_metal_i = {
     /* .get_name                = */ ggml_backend_metal_name,
     /* .free                    = */ ggml_backend_metal_free,
@@ -1075,6 +1085,11 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const 
     }
     if (strcmp(name, "ggml_metal_cgc_node_name") == 0) {
         return (void *)ggml_backend_metal_cgc_node_name;
+    }
+    // [CGC 2026-09-18 op-keyed attribution] companion of the accessor above; resolved only when the
+    // consumer wants the table keyed by op (CGC_GPU_OPS=1) instead of by name prefix.
+    if (strcmp(name, "ggml_metal_cgc_node_op") == 0) {
+        return (void *)ggml_backend_metal_cgc_node_op;
     }
     // [CGC 2026-09-17 §9.18.7] the host-side slot->expert callback that annotates POOL rows. llama
     // registers it because `llama_expert_cache::slot_owner` lives there; this side only stores the

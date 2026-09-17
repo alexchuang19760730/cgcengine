@@ -287,6 +287,136 @@ ARMS = {
     # known and 40 lines per step would bury the kind table.
     "en-nodes":          {"CGC_GPU_NODES": "1", "CGC_DECODE_PROFILE": "1",
                           "CGC_GPU_TIMING": "1"},
+    # [CGC 2026-09-18 node-level GPU time TRACE] The vocabulary question. The first table had
+    # `(other)` 16.1% / `node` 13.6% / `cache` 12.8% and NO ffn_moe_gate/up/down row, and two very
+    # different causes fit that: (a) those nodes are simply named something else after the pool
+    # repoint, or (b) they ARE there but share a command buffer with several small nodes, so the
+    # node-count split hands them only 1/N of their own buffer's duration. This arm prints the RAW
+    # node names and the range size of the three hottest command buffers per sampled step, plus a
+    # range-size histogram, which separates the two in one line. It also prints every kind instead of
+    # the top 14 -- the first revision hid 8 of 22 kinds, and those 8 carried 26.9% of the step, so
+    # "present but ranked below the cut" and "absent" looked identical.
+    "en-nodes-trace":    {"CGC_GPU_NODES": "1", "CGC_GPU_NODES_TRACE": "1",
+                          "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    # [CGC 2026-09-18 per-NODE command buffers] The end of the dilution story -- and its ceiling.
+    #
+    # TRACE showed the ranges reach 64 nodes; MATRIX showed the resulting least-squares recovery is
+    # not identifiable (rank 15/22, negative coefficients) because a segment's buffers overlap and
+    # their durations are therefore not additive. The remaining way to make the kind table a
+    # MEASUREMENT is to stop guessing inside a range: shrink the ranges.
+    #
+    # TWO knobs, and they are NOT equally available:
+    #   * CGC_CB_N_MAIN lowers the encoder's `n_main = MAX(64, 0.1*n_nodes)` floor, i.e. how many of
+    #     a segment's FIRST nodes the main thread's single buffer eats. FREE: it changes no count.
+    #   * CGC_SERVER_N_CB (= SERVER_N_CB, default 8) widens the worker slices, but every extra slice
+    #     is one more MTLCommandBuffer per segment. NOT free, and NOT unbounded -- see below.
+    #
+    # MEASURED CEILING (2026-09-18 01:48, n_cb=127 + n_main=1): the server never becomes ready. It
+    # is not slow, it is BLOCKED: `sample <pid>` puts the main thread 100% in
+    #   ggml_metal_graph_compute -> commandBufferWithUnretainedReferences -> _MTLCommandBuffer
+    #   initWithQueue: -> _dispatch_semaphore_wait_slow -> semaphore_wait_trap
+    # i.e. Metal throttles command-buffer CREATION against the number in flight, and with 128 buffers
+    # per segment the creation loop blocks BEFORE dispatch_apply, so no worker ever encodes. This is
+    # the real reason per-node timestamps are not free: the granularity is capped by Metal, not by
+    # the timestamp API. (Retracts the "no MTLCounterSampleBuffer needed" reading of the previous
+    # round: it holds for the per-COMMAND-BUFFER level, not for the per-NODE level.)
+    #   => the wide-n_cb arms below are DELIBERATELY GONE. Do not re-add n_cb >= 64: it deadlocks at
+    #      model load, before any token is generated.
+    "en-fine-ctl":       {"CGC_GPU_NODES": "1", "CGC_GPU_NODES_TRACE": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_GPU_TIMING": "1"},
+    # The one free knob. n_main=1 leaves the main-thread buffer holding the segment's FIRST node
+    # (the MoE topk) instead of its first 64, so the widest slice drops from 64 nodes to
+    # ceil((N-1)/8) ~ 13 at the production n_cb=8 -- a 5x improvement with the SAME 9 buffers per
+    # segment, hence no Metal-throttle risk at all. The MoE gate/up/down land in the first worker
+    # slice instead of inside the 64-node bucket.
+    "en-fine-nmain":     {"CGC_GPU_NODES": "1", "CGC_GPU_NODES_TRACE": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_GPU_TIMING": "1", "CGC_CB_N_MAIN": "1"},
+    # Both knobs, cb count doubled only (17 buffers per segment instead of 9 -> ~34 in flight, well
+    # under whatever the throttle is). Widest slice ~7 nodes. This is the finest granularity that
+    # can be reached without risking the deadlock above; it is a probe of whether n_cb can be raised
+    # at all, so it runs LAST in any sweep.
+    "en-fine-nmain16":   {"CGC_GPU_NODES": "1", "CGC_GPU_NODES_TRACE": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_GPU_TIMING": "1", "CGC_CB_N_MAIN": "1", "CGC_SERVER_N_CB": "16"},
+    # [CGC 2026-09-18 where is the mass] The kind table buckets nodes by a FIXED prefix vocabulary
+    # (ggml-backend.cpp:2100-2109) and drops whatever matches no entry into "(other)" -- measured to
+    # be the single largest bucket of a decode step (cntw 20.2% / ub 62.8% of segment busy). This arm
+    # just turns on CGC_GRPH_DBG, which prints every node of the first 6 graph_computes with its name
+    # and op. The point is NAME RESOLUTION: which real names are falling through to "(other)", and
+    # therefore whether the un-attributed fifth of the GPU time is a subsystem or an artefact of the
+    # vocabulary being too short. No instrumentation overhead beyond stderr at load.
+    "en-grph":           {"CGC_GRPH_DBG": "1"},
+    # [CGC 2026-09-18 does a VIEW cost GPU time] The decisive arm for "should we merge the shape
+    # chain": the op-keyed table plus the fine command-buffer granularity, so that a buffer holding a
+    # single op is common and `uni` (us per node for that op) is an exact division. Compare VIEW /
+    # RESHAPE / PERMUTE against MUL_MAT_ID. If the shape ops are ~0 us/node then the 40% of a layer
+    # that is views costs nothing and the census's "66% is data movement" is a NODE-CENSUS fact with
+    # no GPU consequence; if they are not, the shape chain is the largest addressable block.
+    # CGC_CB_N_MAIN=1 is free (no extra buffers) and CGC_SERVER_N_CB=16 costs 17 buffers/segment.
+    "en-ops":            {"CGC_GPU_NODES": "1", "CGC_GPU_OPS": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_GPU_TIMING": "1", "CGC_CB_N_MAIN": "1", "CGC_SERVER_N_CB": "16"},
+    "en-ops-coarse":     {"CGC_GPU_NODES": "1", "CGC_GPU_OPS": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_GPU_TIMING": "1"},
+    # [CGC 2026-09-18] The same table with the slices pushed to TWO nodes. Reason: at n_cb=16 the
+    # slices are ~7 nodes and almost nothing is single-op -- measured, only 2 of 27 ops ever landed in
+    # a buffer whose nodes were ALL the same op, and one of those two samples (VIEW) implied 3.5x the
+    # whole step, i.e. unusable. A layer's node order interleaves ops, so the only way to get
+    # single-op samples is to shrink the slice until it is smaller than the shortest same-op run --
+    # and the runs that exist are real: the MoE gate/up pair is two consecutive MUL_MAT_ID, and the
+    # MoE output combine is EIGHT consecutive VIEWs of ffn_moe_weighted. At n_cb=63 the slice is
+    # ceil(97/63) = 2 nodes, which puts both of those inside a single buffer.
+    # RISK: Metal throttles command-buffer creation; 129 buffers/segment deadlocked at load
+    # (ggml-metal-context.m's GGML_METAL_MAX_COMMAND_BUFFERS comment). 64/segment is the next rung
+    # down, so this arm is the probe of where that ceiling actually is.
+    "en-ops-2node":      {"CGC_GPU_NODES": "1", "CGC_GPU_OPS": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_GPU_TIMING": "1", "CGC_CB_N_MAIN": "1", "CGC_SERVER_N_CB": "63"},
+    # [CGC 2026-09-18 work-weighted NAME table] The answer to "which named subsystem actually
+    # carries the decode step", for the three families the M3 question is about: ffn_moe_* vs
+    # cache (the CGC pool's own staging) vs attn_*. Same instrument as `en-nodes`, except the name
+    # table now splits each command buffer over the named nodes that ENCODE something instead of
+    # over all named nodes, and prints `*bywork` rows ordered by that column plus a
+    # work-attributed/residual headline.
+    #
+    # Deliberately at the DEFAULT command-buffer granularity (no CGC_CB_N_MAIN / CGC_SERVER_N_CB):
+    # that is the arm whose `cntw` column was unusable, and the claim to test is precisely that the
+    # work-weighted column is usable THERE -- it divides the main-thread buffer's >=64-node range by
+    # ~1/4 instead of by 64, without needing finer slices at all.
+    "en-work":           {"CGC_GPU_NODES": "1", "CGC_GPU_OPS": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_GPU_TIMING": "1"},
+    # The granularity cross-check: same table at 2-7 node slices, where the count-weighted column
+    # was already known to CHURN (MUL_MAT 27.3% -> 11.1%, GET_ROWS 4.3% -> 9.0%). Any kind whose
+    # work-weighted share is stable between `en-work` and `en-work-fine` is quotable; one that moves
+    # is still granularity-dependent and must not be ranked. Read the two side by side, never alone.
+    "en-work-fine":      {"CGC_GPU_NODES": "1", "CGC_GPU_OPS": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_GPU_TIMING": "1", "CGC_CB_N_MAIN": "1", "CGC_SERVER_N_CB": "16"},
+    # The same granularity, but dumping one CGC-NSM line per command buffer (range + duration +
+    # per-kind node counts) instead of the aggregate table. Why it is needed even now: the printed
+    # table's `ub` is PER KIND, so a family of co-located kinds (ffn_moe_gate/up/down all live in
+    # the same ranges) has its family bound either as max(ub) or sum(ub) depending on whether the
+    # ranges coincide -- and that gap is [31.6%, 44.2%] of seg_busy, i.e. the M3 threshold falls
+    # INSIDE it. The per-buffer dump removes the ambiguity: the family bound becomes the SUM over
+    # buffers containing at least one family member (a valid upper bound), and the lower bound the
+    # sum over buffers whose nodes are ALL family members.
+    # Measured granularity of this configuration (en-fine-nmain16): range histogram 1=58 2=80
+    # 3-7=2372 8+=0 -- no buffer exceeds 7 nodes and the 64-node bucket is gone.
+    "en-fine-matrix":    {"CGC_GPU_NODES": "1", "CGC_GPU_NODES_MATRIX": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_GPU_TIMING": "1", "CGC_CB_N_MAIN": "1", "CGC_SERVER_N_CB": "16"},
+    # [CGC 2026-09-18 node-level GPU time MATRIX] The fix for the dilution the TRACE arm exposed.
+    # n_main = MAX(64, 0.1*n_nodes) (ggml-metal-context.m:1099) means every segment's main-thread
+    # command buffer holds >=64 nodes, so a count-weighted split divides anything living in it by
+    # >=64 (measured: ffn_moe_gate cntw=1.91 ms vs ub=122.37 ms of 271.94 ms). This arm dumps one
+    # CGC-NSM line per buffer -- dur plus the per-kind node counts -- so `dur_i = sum_k cnt_ik * t_k`
+    # can be solved offline (least squares) for the per-kind per-node cost t_k, which is the number
+    # M3's "ffn_moe_* >= 40%?" rule actually needs.
+    "en-nodes-matrix":   {"CGC_GPU_NODES": "1", "CGC_GPU_NODES_MATRIX": "1",
+                          "CGC_DECODE_PROFILE": "1", "CGC_GPU_TIMING": "1"},
+    # [CGC 2026-09-18] The other way to answer M3's question, and the cheap one: the per-OP-TYPE
+    # breakdown that was already in the tree. `CGC_VERIFY_OP_TIMING` fires only for T>1 (its target
+    # predicate is `node->src[2]->ne[1] > 1`), i.e. the MTP verify batch -- the production shape --
+    # so it answers "what share do gate/up/down carry" for the path that actually runs, without the
+    # node-range dilution that made CGC_GPU_NODES unusable for a threshold test. It is NOT the T=1
+    # shape M3's leave condition is written against; report it as the verify-path number it is.
+    # It also had to be added to run_server.sh's allowlist first -- it was silently dropped before.
+    "en-verify-op":      {"CGC_VERIFY_OP_TIMING": "1", "CGC_DECODE_PROFILE": "1"},
     # [2026-09-15] Fusion re-test, now that run_server.sh can actually pass CGC_MMV_FUSE through
     # (it could not before -- the var was missing from the launcher allowlist, so every earlier
     # fusion A/B through this launcher measured a fusion that was never enabled). The fused
