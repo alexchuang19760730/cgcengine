@@ -59,6 +59,7 @@
   <span class="tag t-amber">第 2 件：否定收場</span>
   <span class="tag t-blue">第 3 件：儀器落地</span>
   <span class="tag t-purple">2026-09-18 03:2x 修訂：§9–§14 新增</span>
+  <span class="tag t-purple">2026-09-18 05:1x 修訂：§19–§22 新增（把 <code>(other)</code> 拆掉）</span>
   <span class="tag t-gray">未 push</span>
 </div>
 
@@ -100,6 +101,24 @@
 它記錄同一輪的兩件事：一件是<b>否定結果</b>（計畫書裡的「L0 的 9.46 ms」不能拿，已結案），
 一件是<b>肯定結果</b>（M3 判定書指名為「唯一活路、成本最高」的節點級 GPU 時間儀器已落地，
 而且<b>不需要 <code>MTLCounterSampleBuffer</code></b>）。</p>
+</div>
+
+<div class="box warn">
+<p><b>2026-09-18 05:1x 修訂標註（新增，原文一字未刪）。</b>
+本檔第三次被追加：<b>§19–§22</b>。這一輪把 <code>(other)</code> 這個桶拆掉了 ——
+而它的真身不是「沒有名字的張量」，是<b>有名字、只是詞彙表沒收</b>。修法因此只是把 19 個前綴加進
+<code>ggml-backend.cpp</code> 的 <code>ns_fix[]</code>：<b>純消費端、零數值影響、不動任何建圖處</b>。</p>
+<p><b>被取代的一處（逐條列，不刪原文）：</b></p>
+<ul>
+<li><b>§11／§13 的家族排名裡「<code>(other)</code> 11.4%／12.1%（粗／細）」那一列</b> ⇒
+    <b>已被取代</b>：同一個 build 上它現在是 <b>0.00%</b>，而那個份額出現在 <b>19 個新 key</b>
+    （最大的是 delta-net 的 <code>z-</code> 與 <code>gdn_out</code>，各 4.40%，以及
+    <code>shared_expert_gate</code> 3.70%）。<b>舊的 11.4%／12.1% 作為那個 build 的讀數仍然成立</b>，
+    被取代的是「<code>(other)</code> 是一個無法歸因的殘餘」這個<b>用途</b>。</li>
+</ul>
+<p><b>仍然成立的部分：</b>§1–§10（L0 的裁決、不需要 <code>MTLCounterSampleBuffer</code> 的理由、
+三個坑）與 §15–§18（<code>node</code> 620 → 350 的命名、逐 op 計數）<b>都沒有被動到</b> ——
+本輪改的是<b>名字怎麼歸桶</b>，不是任何時間、也不是任何節點。</p>
 </div>
 
 <h2>§0 摘要</h2>
@@ -1170,6 +1189,123 @@ $ python3 agent_harness/engine_loop/traces/selftest.py
 
 <p class="small">這一節的 <code>en-naming</code> 是<b>第三次</b>在同一棵樹上跑 D5
 （前兩次是 <code>en-nametable-work</code> 與 <code>en-nodes</code> 那一批）。每次約 33–50 s。</p>
+
+<h2>§19 <code>(other)</code> 的真身：不是「沒名字」，是「詞彙表沒收」（2026-09-18 05:0x 新增）</h2>
+<p>本檔 §11 把 <code>(other)</code> 當成一個「無法歸因的殘餘」（11.4%／12.1%）。這一輪證明那個讀法是錯的
+—— 它有兩個不同的成因，而<b>修法完全不同</b>，混在一起看就永遠修不掉。</p>
+<h3>§19.1 機制（逐字讀 <code>ggml-backend.cpp:2175-2216</code>）</h3>
+<pre><code>key = NULL;
+for (q = 0; q &lt; ns_nfix; q++) {
+    const size_t lq = strlen(ns_fix[q]);
+    if (lq &gt; key_len &amp;&amp; strncmp(nm, ns_fix[q], lq) == 0) { key = ns_fix[q]; key_len = lq; }
+}
+if (key == NULL) key = "(other)";</code></pre>
+<p>儀器印的<b>不是張量名</b>，而是這個<b>固定詞彙表的最長前綴匹配結果</b>。而 <code>"node"</code> 本身就是
+詞彙表的一員 ⇒ 它匹配的是<b>名字以 <code>node</code> 開頭</b>的張量，也就是 ggml 對
+<b>從來沒被 <code>ggml_set_name</code> 的張量</b>自動給的 <code>node_&lt;N&gt;</code>。</p>
+<table>
+  <tr><th>桶</th><th>真身</th><th>修法</th><th>成本</th></tr>
+  <tr><td><code>(other)</code></td><td><b>有名字，只是前綴不在詞彙表裡</b></td>
+      <td><b>補 <code>ns_fix[]</code></b>（單一 array、消費端）</td><td>零（無建圖改動、無 Metal 改動）</td></tr>
+  <tr><td><code>node</code></td><td><b>真的沒名字</b>（<code>node_&lt;N&gt;</code> 自動名）</td>
+      <td>在建圖處補 <code>ggml_set_name</code></td><td>高（要動多個 builder）</td></tr>
+</table>
+<h3>§19.2 <code>(other)</code> 的名字（新 dump，4116 節點）</h3>
+<table>
+  <tr><th>前綴</th><th>節點</th><th>是什麼</th></tr>
+  <tr><td><code>shared_expert_gate</code>(+<code>_sigmoid</code>)</td><td class="num">80</td><td>稠密／共享專家的 gate</td></tr>
+  <tr><td><code>alpha</code>／<code>beta</code>／<code>beta_sigmoid</code>／<code>a_softplus</code>／<code>state_predelta</code>／<code>z-</code></td><td class="num">~190</td><td><b>delta-net 內部</b></td></tr>
+  <tr><td><code>q_conv</code>／<code>k_conv</code>／<code>v_conv</code>(±<code>predelta</code>)</td><td class="num">150</td><td>delta-net 的 conv 前處理</td></tr>
+  <tr><td><code>Qcur</code>*／<code>Kcur</code>*／<code>Vcur</code>／<code>kqv_out</code></td><td class="num">~100</td><td>attention QKV</td></tr>
+  <tr><td><code>qkv_mixed</code>／<code>gate</code>／<code>l_out</code>／<code>final_output</code>／<code>h_nextn</code></td><td class="num">~140</td><td>混合投影／gate／殘差／輸出／MTP</td></tr>
+  <tr><td>（空 base name 的 view）</td><td class="num">~62</td><td><b>詞彙表修不了</b> —— 未命名張量的視圖</td></tr>
+</table>
+<p><b>加進 <code>ns_fix[]</code> 的 19 條</b>：<code>shared_expert_gate</code>、<code>qkv_mixed</code>、
+<code>state_predelta</code>、<code>a_softplus</code>、<code>q_conv</code>、<code>k_conv</code>、<code>v_conv</code>、
+<code>alpha</code>、<code>beta</code>、<b><code>z-</code></b>、<code>Qcur</code>、<code>Kcur</code>、<code>Vcur</code>、
+<code>kqv_out</code>、<code>final_output</code>、<code>l_out</code>、<code>gate</code>、<code>h_nextn</code>。
+（<code>z-</code> 刻意不用 <code>z</code>：匹配是前綴，1 字元前綴會吞掉未來的名字。）</p>
+<h3>§19.3 ★ 時效性陷阱：一份 dump 會過期</h3>
+<p><code>Backup/phase_decomp/en_grph_20260918.json</code> 的 log 是 <b>02:53</b> 的，<b>早於 §15 那一輪命名</b>
+⇒ 用它數 <code>node</code> 的組成會<b>高估 270 個節點</b>。實測對照（同一模型、同一 profile）：</p>
+<table>
+  <tr><th>桶</th><th>新 dump（05:03，log <code>…050331</code>）</th><th>舊 dump（02:53）</th></tr>
+  <tr><td><code>(other)</code></td><td class="num">853</td><td class="num">883</td></tr>
+  <tr><td><b><code>node</code></b></td><td class="num"><b>350</b></td><td class="num">620</td></tr>
+  <tr><td><b><code>ffn_moe_add</code></b></td><td class="num"><b>240</b></td><td>（還在 <code>node</code> 裡）</td></tr>
+  <tr><td><b><code>gdn_out</code></b></td><td class="num"><b>60</b></td><td>（還在 <code>node</code> 裡）</td></tr>
+</table>
+
+<h2>§20 量測結果：<code>(other)</code> 13.70% → 0.00%，名字 22 → 41（新增）</h2>
+<h3>§20.1 同一棵樹上的純換標籤（無混淆）</h3>
+<p>把新詞彙表<b>套回同一份 05:03 的 dump</b>（那是改動前的 build）⇒ 這是決定性的一條，
+因為它<b>不含任何量測或熱態混淆</b>：</p>
+<pre><code>(other) 節點: 853 → 72        (−91.6%)
+distinct keys: 43  (上限 48 —— 只剩 5 格)</code></pre>
+<h3>§20.2 實跑（<code>en-work-fine</code>）</h3>
+<table>
+  <tr><th>名</th><th>before（log <code>…031528</code>）</th><th>after（log <code>…050646</code>）</th></tr>
+  <tr><td><code>node</code>（無名真運算）</td><td class="num">20.20%</td><td class="num"><b>16.90%</b></td></tr>
+  <tr><td><code>cache</code>（池自己的暫存）</td><td class="num">9.40%</td><td class="num">9.50%</td></tr>
+  <tr><td><b><code>z-</code>（delta-net）</b></td><td class="num">0.00%</td><td class="num"><b>4.40%</b></td></tr>
+  <tr><td><b><code>gdn_out</code>（delta-net）</b></td><td class="num">0.00%</td><td class="num"><b>4.40%</b></td></tr>
+  <tr><td><code>ffn_moe_</code>（逐元素合併鏈）</td><td class="num">7.60%</td><td class="num">8.90%</td></tr>
+  <tr><td><b><code>shared_expert_gate</code></b></td><td class="num">0.00%</td><td class="num"><b>3.70%</b></td></tr>
+  <tr><td><code>Qcur</code>／<code>Vcur</code>／<code>Kcur</code></td><td class="num">0.00%</td><td class="num">1.70%／1.60%／0.10%</td></tr>
+  <tr><td><code>gate</code>／<code>beta</code>／<code>a_softplus</code>／<code>ffn_moe_add</code></td><td class="num">0.00%</td><td class="num">1.10%／0.30%／0.10%／0.20%</td></tr>
+  <tr><td><b><code>(other)</code></b></td><td class="num"><b>13.70%</b></td><td class="num"><b>0.00%</b></td></tr>
+</table>
+<p>名字數 <b>22 → 41</b>，19 個新 key 出現在表上。</p>
+<h3>§20.3 ★ 這改變了「削 GPU work 該看哪裡」</h3>
+<p>拆掉 <code>(other)</code> 之後，新的排序（<code>wcntw</code>，占同步 <code>wait</code>）是：
+<code>node</code> <b>16.90%</b> ＞ <code>cache</code> 9.50% ＞ <b>delta-net ≈ 9.2%</b>
+（<code>z-</code> 4.40 ＋ <code>gdn_out</code> 4.40 ＋ <code>beta</code> 0.30 ＋ <code>a_softplus</code> 0.10）
+＞ <code>ffn_moe_</code> 8.90% ＞ <code>attn_norm</code> 8.00% ＞ <b>MoE 專家 GEMV ≈ 8.6%</b>
+（<code>ffn_moe_gate</code> 2.90 ＋ <code>up</code> 2.90 ＋ <code>down</code> 2.80）＞ <code>shared_expert_gate</code> 3.70%。</p>
+<p>⇒ <b>delta-net 與池暫存都跟「整個 MoE 專家 GEMV 家族」同級或更大</b> ⇒ 在 MoE 上找 2.4×
+是在最小的那一塊裡找。這是 §11 的排名<b>做不到</b>的結論（那一版的 <code>(other)</code> 把delta-net
+與 attention QKV 混成一個殘餘）。</p>
+
+<h2>§21 本節的誠實邊界（§13／§17 之外的補充）</h2>
+<ul>
+  <li><b>沒有拆 <code>node</code>。</b>它仍是第一名（<b>16.90%</b>）且仍未被命名 —— 那要
+      <code>ggml_set_name</code>，屬於另一種修法（§19.1 的表）。本節只做了「詞彙表」那一半。</li>
+  <li><b>distinct key 43／48</b> ⇒ 只剩 5 格。詞彙表可以再加，但<b>執行期表仍是 48 格</b>
+      （<code>ns_kind_n &lt; 48</code>），超過的會落回 <code>(other)</code> —— 下一個模型可能撞到這個上限。</li>
+  <li><b>§20.2 的 before／after 帶一個混淆，必須揭露：</b>baseline log 是 <b>03:15</b> 的，而 §15 那一輪
+      命名（<code>ffn_moe_add</code> 240 ＋ <code>gdn_out</code> 60）也在那之後 ⇒ 那 4.60 pp 屬於他們、
+      約 9.1 pp 屬於本輪。<b>決定性的證據是 §20.1</b>（同一份 dump、零混淆），不是 §20.2 的差值。</li>
+  <li><b>兩次實跑的熱態不同</b>（after 是 MODERATE→HEAVY），所以 §20.2 的<b>百分比不可當效能比較</b>；
+      本輪是換標籤，不是 A/B。</li>
+  <li><b>百分比是 <code>wcntw</code>，而且分母是每個 command buffer 裡的「會編碼節點數」</b>
+      ⇒ 粒度敏感（§11／§13 已記）。家族可比；逐項只在兩端差 &lt;1.3× 時才講排名。</li>
+  <li><b>沒有動 Metal 側、沒有動任何節點</b>：改動只有 <code>ggml-backend.cpp</code> 的一個 array
+      ＋ 註解。D5 的 <b>M1 = 9/9 逐位元</b>就是「只有名字變了」的機械證明。</li>
+  <li><b>仍然沒有回答「哪一塊可壓縮」</b> —— 只回答了「誰佔多少」。本節讓這個問題第一次有了完整的
+      分母（不再有 13.70% 的殘餘）。</li>
+  <li><b>本輪動到別條線的儀器檔</b>（<code>ggml-backend.cpp</code> 是他們的節點歸因儀器）。已在
+      commit message 揭露。</li>
+</ul>
+
+<h2>§22 現場閘門輸出（原文，2026-09-18 05:1x）</h2>
+<pre><code>$ python3 scripts/check/m123_oracle_gate.py --tag en-vocab        # 41 s
+GATE en-vocab: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+cross-tab: {'num_eq_dec_eq': 9, 'num_eq_dec_ne': 0, 'num_ne_dec_eq': 0, 'num_ne_dec_ne': 0}
+summary_en-vocab.json : comparable = True   config_diffs = []   ok = True
+cap_en-vocab.json     : created = 2026-09-18T05:08:44   profile = prefill250
+產物 mtime            : libggml-base.0.19.0.dylib 05:06:14 / libggml 05:06:15 / libllama 05:06:16
+                        ⇒ cap 晚於產物 ⇒ 不重疊、可歸屬
+
+$ cmake --build src/llama.cpp/build --target llama-server -j 8
+[  1%] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-backend.cpp.o
+[  5%] Built target ggml-base        ← 有編譯行 ⇒ 產物確實來自當前原始碼
+
+$ BIN_DIR='src/llama.cpp/build/bin' RUN_REPLAY_BENCH=0 bash scripts/check_build_tracked.sh --repo "$PWD"
+OK: 沒有 FAIL —但本次有 5 個區段被 SKIP，所以「OK」只代表「沒有失敗」，不代表它們被驗證過。
+
+$ python3 agent_harness/engine_loop/traces/validate.py                  → -&gt; OK
+$ python3 agent_harness/engine_loop/traces/selftest.py                  → 10/10 injected violations rejected
+$ cd agent_harness/engine_loop &amp;&amp; python3 index_assets.py --check        → manifest OK: 108 assets</code></pre>
 
 </div>
 </body>

@@ -2200,6 +2200,29 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                     "attn_inp_v_rot", "attn_inp_kq_mask", "attn_", "rope", "soft_max",
                                     "rms_norm", "norm", "get_rows", "mul_mat", "cpy", "concat", "add",
                                     "leaf", "node", "cache", "conv", "result",
+                                    // [CGC 2026-09-18 NAMING round 2] `(other)` was still 853 nodes -- and
+                                    // it is NOT unnamed tensors. It is NAMED tensors whose prefixes were
+                                    // missing from this list. Measured from a FRESH CGC-GRPH dump
+                                    // (4116 nodes, log llama_server_20260918_050331; the 02:53 dump is
+                                    // stale -- it predates the ffn_moe_add / gdn_* naming and still
+                                    // shows 620 in `node` where the current tree shows 350):
+                                    //   shared_expert_gate(+_sigmoid) 80 | delta-net gates/state
+                                    //   (alpha, beta, beta_sigmoid, a_softplus, state_predelta, z-) 190 |
+                                    //   delta-net conv preprocessing (q_conv, k_conv, v_conv) 150 |
+                                    //   attention QKV (Qcur*, Kcur*, Vcur, kqv_out) 100 |
+                                    //   qkv_mixed 30 | gate 40 | l_out 40 | final_output 30 | h_nextn 1.
+                                    // Only the ~62 nodes with an EMPTY base name stay in `(other)`: they are
+                                    // views of tensors nobody named, so they need a builder fix
+                                    // (ggml_set_name), not a vocabulary entry. That is the `node` bucket's
+                                    // job -- the two halves have DIFFERENT fixes and must not be confused.
+                                    //
+                                    // Prefix choice notes: matching is longest-prefix-wins, so `ffn_gate`
+                                    // and `shared_expert_gate` cannot collide with `gate`; and `z-` (not
+                                    // `z`) keeps a one-character prefix from swallowing future names.
+                                    "shared_expert_gate", "qkv_mixed", "state_predelta", "a_softplus",
+                                    "q_conv", "k_conv", "v_conv", "alpha", "beta", "z-",
+                                    "Qcur", "Kcur", "Vcur", "kqv_out", "final_output", "l_out", "gate",
+                                    "h_nextn",
                                 };
                                 const int ns_nfix = (int) (sizeof(ns_fix) / sizeof(ns_fix[0]));
                                 const char * key = NULL;
