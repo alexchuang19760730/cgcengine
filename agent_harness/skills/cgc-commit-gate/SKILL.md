@@ -493,6 +493,25 @@ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
    所以延後是**被設計允許**的。
 3. **不要為了「看一眼」而跑不帶 flag 的 `index_assets.py`**——那就是重建，會覆寫 manifest。
 4. 確認對方靜止（`sessions` 表裡它的 `status` 不再是 `working`、相關檔 mtime 不再動）再重生。
+5. **「誰在用這台機器」與「誰在改這些檔」是兩個不同的軸 —— 而第一個要讀日誌，不是 `pgrep`。**
+   實例（2026-09-17 11:0x，agent_harness 線）：我用
+   `pgrep -f "llama-server|llama-bench|decode_sweep|m123_oracle"` 全空，就推論「這是空窗」，
+   於是起了 13 GB 的 `llama-server` 做實驗。**結果另一條線的日誌在 10:47–11:1x 寫著：**
+   > `§9.18.7 owner 欄 —— 但只寫完，沒建置沒跑（機器被別的 session 佔著）`
+
+   那個 session 就是我；他們的最後一節還明寫「交給下一個空窗期的第一步：`cmake --build …`」。
+   ⇒ **「沒有程序在跑」不等於「沒有人在等」。** `pgrep` 只看得到**已發生**的佔用，
+   日誌看得到**已宣告**的佔用。
+
+   判斷法：讀 `.workbuddy/memory/YYYY-MM-DD.md` 的**最後一節** —— 這個 repo 的日誌明寫誰在等空窗、
+   下一步要做什麼。13 GB 級的操作（`llama-server`、`cmake --build`、量化）尤其要這樣判斷。
+   事後補救：停掉 → 確認 8080 空 ＋ `vm_stat` 的 `Pages free` 回到 GB 級 → 在日誌裡記下
+   「我佔了哪個時段、已釋放」。
+
+   ★ **反向也成立，而且更貴**：如果對方**正在跑** A/B 對照，你的任何請求都會污染它 ——
+   不是「慢一點」，是讓他們的資料作廢。實例（同日 11:2x）：`run_ids_dst_capture.sh` 起了
+   llama-server 跑 `ARMS=p25-gputime-churn,p25-slotgpu-churn`，此時**唯一正確的動作是什麼都不送**。
+   要驗證自己的東西就找不需要 GPU 的那一半（本輪就只做了字串結構的自測，把行為面留給空窗）。
 
 **推論**：`PLAN_ENGINE_LOOP_*.md` 與 `CONVENTIONS.md` 都在 `CURATED` 裡，所以它們一被別人改，
 `--check` 就會紅——**紅燈不是你的錯時，不要急著重生把它消掉**，先把 owner 找出來。
