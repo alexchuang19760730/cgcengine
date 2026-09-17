@@ -126,27 +126,46 @@ def main() -> int:
         print(f"  fixtures: {len(rows)} lesson records ({len(live)} live), "
               f"{len(list(MEM.glob('*.md')))} memory files")
 
-        # ---- A. the selector must agree with the record it selects from ----
-        print()
-        print("A. --memories-scope 的解析（無模型）")
+        # ---- A0. the two real files must agree, or group A would fail for a reason that is not
+        # about scope parsing. This happens in normal operation: another session appends a lesson
+        # and the projection has not been regenerated yet. The guard firing is CORRECT behaviour,
+        # so it is checked as such -- otherwise A's two unrelated assertions go red and the real
+        # cause is invisible.
         o = tmp / "a"
-        rc, out = run_loop(["--dry-run", "--memories-scope", "first:8"], out=o)
-        check(rc == 0 and ids_from(out) == [r["lesson_id"] for r in rows[:8]],
-              "first:8 == lessons.jsonl 的前 8 條 id（檔案順序，不是 id 排序）")
+        unsynced = [r["lesson_id"] for r in live if not (MEM / f"{r['lesson_id']}.md").is_file()]
+        print()
+        if unsynced:
+            print(f"A0. lessons.jsonl 與 memories/ 不同步（{len(unsynced)} 筆缺投影）")
+            rc, out = run_loop(["--dry-run", "--memories-scope", "all"], out=o)
+            check(rc != 0 and all(m in out for m in unsynced[:3]),
+                  "守衛正確拒跑 all，且點名缺檔的 id")
+            check("build_memories.py" in out, "訊息裡有修復指令")
+            print(f"     → 修復：python3 agent_harness/engine_loop/harness_engine/build_memories.py")
+            print(f"     → 這是資料狀態不是程式缺陷；A 組依賴兩者同步，因此跳過（B–G 不受影響）")
+        else:
+            check(True, "A0. lessons.jsonl 與 memories/ 同步")
 
-        rc, out = run_loop(["--dry-run", "--memories-scope", "all"], out=o)
-        m = re.search(r"all -- (\d+) live lessons", out)
-        check(m is not None and int(m.group(1)) == len(live),
-              "all 的總數（取自描述行；ids 行只印前 10 個）等於 live 紀錄數",
-              m.group(1) if m else "?")
+        if not unsynced:
+            # ---- A. the selector must agree with the record it selects from ----
+            print()
+            print("A. --memories-scope 的解析（無模型）")
+            rc, out = run_loop(["--dry-run", "--memories-scope", "first:8"], out=o)
+            check(rc == 0 and ids_from(out) == [r["lesson_id"] for r in rows[:8]],
+                  "first:8 == lessons.jsonl 的前 8 條 id（檔案順序，不是 id 排序）")
 
-        rc, out = run_loop(["--dry-run", "--memories-scope", "none"], out=o)
-        check(rc == 0 and not ids_from(out), "none 不注入任何 lesson")
+            rc, out = run_loop(["--dry-run", "--memories-scope", "all"], out=o)
+            m = re.search(r"all -- (\d+) live lessons", out)
+            check(m is not None and int(m.group(1)) == len(live),
+                  "all 的總數（取自描述行；ids 行只印前 10 個）等於 live 紀錄數",
+                  m.group(1) if m else "?")
 
-        rc, out = run_loop(["--dry-run", "--memories-scope", "class:mh"], out=o)
-        got = ids_from(out)
-        check(rc == 0 and len(got) >= 2 and all(i.startswith("eng-mh-") for i in got),
-              "class:mh 只選 mh 類", f"印出前 {len(got)} 個")
+            rc, out = run_loop(["--dry-run", "--memories-scope", "none"], out=o)
+            check(rc == 0 and not ids_from(out), "none 不注入任何 lesson")
+
+            rc, out = run_loop(["--dry-run", "--memories-scope", "class:mh"], out=o)
+            got = ids_from(out)
+            check(rc == 0 and len(got) >= 2 and all(i.startswith("eng-mh-") for i in got),
+                  "class:mh 只選 mh 類", f"印出前 {len(got)} 個")
 
         idfile = tmp / "ids.txt"
         idfile.write_text("# a comment\n\neng-mh-0003\neng-gate-0002\n", encoding="utf-8")

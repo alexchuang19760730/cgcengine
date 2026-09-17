@@ -413,12 +413,23 @@ def main() -> int:
     arm_order = [n for n, _, _ in arms]
     rows: list[dict] = []
     for rep in range(1, args.reps + 1):
-        # Rotate so no arm is systematically first or last across the run. Interleaving is what
-        # makes "only one thing changed" true; rotation removes position as a candidate cause.
+        # Rotate so no arm is systematically first or last across the run.
         shift = (rep - 1) % len(arm_order)
         order = arm_order[shift:] + arm_order[:shift]
-        for qid, q in qs:
-            for name in order:
+        # ARMS OUTER, QUESTIONS INNER -- and this order was changed after MEASURING, not by taste.
+        # The server reports `total_slots: 1`, i.e. exactly one KV cache. Interleaving the arms
+        # question-by-question swaps that single slot's prefix on every call, so all 96 calls pay a
+        # full 30,594-token prefill. Grouping one rep's calls by arm means each (rep, arm) pays it
+        # once: 12 full prefills instead of 96.
+        #
+        # What this gives up is that a question's four arms are no longer adjacent in time. For a
+        # throughput number that would be fatal -- machine state drifts (eng-mh-0003). For a greedy
+        # decode it is not: the weights, the temperature and the seed are all fixed, so elapsed time
+        # is not a variable. And that is TESTED here rather than assumed -- **the reps are the
+        # test**. If an arm answers identically in rep 1 and rep 3 (an hour apart, with other arms'
+        # calls in between), then elapsed time between a question's arms changed no answer.
+        for name in order:
+            for qid, q in qs:
                 ch, mm = by_name[name], mems_by_name[name]
                 prompt = build_prompt(ch, mm, q)
                 r = subprocess.run(shlex.split(cmd), input=prompt, capture_output=True, text=True)
