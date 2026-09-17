@@ -162,6 +162,17 @@ ARMS: dict[str, tuple[str, dict[str, str]]] = {
     #   C phase-pool17  : pool path, clamp = bound 17       -> ~121 x width-17 pool graphs
     # With `--prompt 17` arm C is a single pool-path graph, i.e. the pool baseline at MATCHED graph
     # count, which is what separates "the slab is faster" from "the clamp made it slower".
+    #
+    # !! THESE THREE ARMS CANNOT MEASURE A WIDE PROMPT. `llama-bench` does not chunk, so an arm whose
+    # n_batch is clamped asserts on a wide `-p`:
+    #
+    #     llama-context.cpp:2455: GGML_ASSERT(n_tokens_all <= cparams.n_batch) failed
+    #
+    # (measured 2026-09-17: `--prompt 2048` passed on phase-slab -- the one arm where the clamp is
+    # lifted -- and aborted on phase-pool8/phase-pool17). Only the slab arm is measurable at a wide
+    # prompt through llama-bench. The full grid needs the SERVER path, which chunks internally the
+    # way production does: scripts/check/phase_split_ab.py does exactly that and is the instrument
+    # for this question. These arms remain useful for `--prompt 17` and for slab-side work.
     "phase-slab":   ("prefill250", {}),
     "phase-pool8":  ("prefill250", {"CGC_PREFILL_STREAM": "0"}),
     "phase-pool17": ("prefill250", {"CGC_PREFILL_STREAM": "0", "CGC_POOL_MAX_TOKENS": "64"}),
