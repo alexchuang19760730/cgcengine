@@ -22,6 +22,20 @@ agent_created: true
    未列出的**靜默丟棄** → 「沒效果」與「沒設到」長得一模一樣。要用任何新開關前，
    先確認它在 `run_server.sh` 裡有 `if [ -n "${VAR:-}" ]; then SERVER_ENV+=(VAR="$VAR"); fi` 區塊。
    歷史上 `CGC_MMV_FUSE`、`CGC_GPU_TIMING`、`CGC_SUBMIT_AHEAD` 都因此踩過。
+
+   ★ **2026-09-17 新增第三種變體：旋鈕的 push 被關在「另一個 profile 分支」裡。**
+   `CGC_SERVER_LAYER_CAPS` 在 `run_server.sh` 有讀者（`:421`）、有回顯（`:1033`），看起來完全支援；
+   但它的 `SERVER_ENV+=(LLAMA_EXPERT_CACHE_LAYER_CAPS=…)` **原本放在 `if [ "$SERVER_MTP" = "1" ]` 區塊內**
+   ⇒ 在 **MTP=0** 的臂（`p25-gputime`、`decode_sweep.py:273`）上**從未被 export**。
+   實測：`CGC_SERVER_MTP=1` → 變數有值；`CGC_SERVER_MTP=0` → **空**。
+   症狀與上一條**同形**（「沒設到」＝「沒效果」），而且它剛好落在「最想量它的那一臂」上。
+   **判準（唯一可靠的）**：**讀引擎自己印的「已解析值」那一行**，不是讀你傳進去的值。
+   這裡是 `llama_expert_cache: LAYER_CAPS per-layer caps: total N slots (avg A/layer, min M/layer)`
+   —— **它缺席就是旋鈕沒生效**；只要它出現，`N` 就能與算好的計畫逐格對帳（實測 `37×232+2×212+179=9187` 全中）。
+   ⇒ 通則：**任何旋鈕都要有一個「已解析值」的輸出，否則你無法區分「沒設到」與「沒效果」。**
+   零成本查法：`CGC_DUMP_ENV=1 CGC_SERVER_PROFILE=<p> CGC_SERVER_MTP=<0|1> bash scripts/run_server.sh`
+   （印完即 exit，不啟動任何東西）。
+   （此條已修：push 移出 MTP 區塊、保留既有預設 ⇒ 對既有配置逐位元等價。）
 3. **不要相信 wall-clock 推論**。`compute` / `wait` 都是 CPU 側牆鐘，無法區分「GPU 真的在算」
    與「GPU 早就算完，剩下是啟動／回報延遲」。要區分就用 GPU 端時間戳（見下）。
 4. **md5 只在「同 build 指紋 + 同實際生成長度」下可比**。指紋自 2026-09-15 22:xx 起是

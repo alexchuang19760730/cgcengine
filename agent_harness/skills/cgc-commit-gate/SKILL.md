@@ -740,11 +740,26 @@ bash agent_harness/engine_loop/runners/preflight.sh --self-test
 bash agent_harness/engine_loop/runners/rebuild.sh --dry-run     # ★ 閘門關著也回 0（它只報告）
 env CGC_SERVER_CTX=40960 bash agent_harness/engine_loop/runners/server.sh --check
 for w in sweep ab bench gate triage env; do bash agent_harness/engine_loop/wrappers/$w.sh --self-test; done
+# ── E4 治理（2026-09-17 新增，4 條）────────────────────────────────
+python3 agent_harness/shared/check_stale.py --check                  # 3 個登記項；反向查未登記的 _stale
+python3 agent_harness/shared/check_log_policy.py --check --privacy   # 政策 ＋ 去隱私（全掃 2446 個 pack：7.8s）
+python3 agent_harness/shared/check_module_split.py --self-test       # 拆分等價證明的陰性對照（2/2）
+bash agent_harness/engine_loop/wrappers/gate.sh --dry-run replay_bench_compare.py   # stale banner 的出口
 # ── 收尾 ───────────────────────────────────────────────────────────
 git status --porcelain --untracked-files=all                    # 必須空（例外見 §1.7）
 ```
 
-**2026-09-17 之後閘門鏈是 26 條。** 兩個容易誤讀的地方：
+**2026-09-17 之後閘門鏈是 30 條。** 四個容易誤讀的地方：
+
+- **`check_log_policy.py --check` 的綠燈包含一段 ⚠。** 它會印「登記在案的既有例外 12 筆
+  （5831279 bytes）」—— 那是 `Backup/cgc_logs` 底下 12 個 `.log` 原文**仍在版控裡**
+  （另一條線的量測證據，2026-09-16 以 `git add -f` 加入；`docs/` 與 `*.md` 的引用數是 0）。
+  **綠燈的意思是「沒有新違反」，不是「政策成立」。** 要移出得由 owner 決定，見
+  `agent_harness/shared/log_policy.json` 的 `grandfathered`。
+- **`check_module_split.py --self-test` 只在「最近一次拆分」上成立。** 它讀
+  `shared/knifeedge_split_map.json` 的 `source_rev` 與 `declared_delta`；別人在那之後改過
+  `scripts/check/knifeedge/*`（那是產生出來的檔案，不該手改），AST 等價就會紅 —— 那時
+  正確的動作是**改 map 並重跑 `split_module.py`**，不是改模組。
 
 - **`rebuild.sh --dry-run` 在閘門關著時仍然回 0。** 那個閘門的意義是
   「**現在不要建置**」，不是「這支工具壞了」—— 13:18 實測它真的擋下了一次（別條線正在跑
