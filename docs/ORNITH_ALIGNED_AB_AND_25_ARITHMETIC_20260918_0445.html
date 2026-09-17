@@ -70,6 +70,36 @@
   <span class="tag t-blue">一對 differ-by-one 的新臂</span>
 </div>
 
+<div class="box b-amber">
+<p><b>2026-09-18 05:1x 標註（原文一字不刪）：本文件 §6「decode 到 25 的算術」有三處被後續量測取代。</b>
+寫 §6 的時候我<b>沒有讀到</b> <code>docs/M3_M4_STATUS_2026-09-17.md</code>（23:15 寫成、當時尚未提交）
+—— 那份文件已經把那兩個乘數量過了，而且<b>都比我寫的小</b>。逐條：</p>
+<ul>
+  <li><b>取代 §6.2／§6.3 的「去序列化 ×1.8–2.3」與「12.62 × 2.0 ＝ 25.24 剛好擦線」</b>：
+      實測上界是 <b>×1.5</b> —— GPU 時鐘跨度 ~101 ms、其中 idle <b>55.3 ms（35.3%）</b>；
+      <b>移除全部 idle 仍只有 10–11.5 t/s</b>，而步預算的另一條路（<code>gap → 0</code>）給 <b>12.1 t/s</b>。</li>
+  <li><b>取代 §6.2 的「MTP ×1.28」</b>：同一 launch 的<b>配對</b>增益只有 <b>×1.06</b>（6.14 vs 5.81 t/s）；
+      accept <b>58.25%</b>，且<b>在 greedy 下不可由 accept rule 移動</b>（它是 (base, head) 配對的性質）；
+      <code>CGC_MTP_REJECTION</code> 在 <code>temperature 0</code> 是 <b>by construction 的 null</b>。</li>
+  <li><b>取代 §6.4 的第 1 項「補 M3 缺的儀器」</b>：它<b>已經被做完，而且判準被判成 NO</b>。
+      那個儀器<b>不需要</b> Metal sampling —— <code>ggml-backend.cpp:1848</code> 的註解明說
+      <code>ggml_metal_graph_compute</code> 本來就把每段切成固定節點範圍的 command buffer，
+      所以逐範圍的 GPU 時長可歸因；而 <code>MTLCounterSampleBuffer</code> 的 sample point
+      <b>會插 barrier、會擾動被測物</b>（原文：<code>would perturb the thing being measured</code>）。
+      開關是 <code>CGC_GPU_NODES</code>。讀數：<code>ffn_moe_gate/up/down</code> 用<b>三個獨立方法</b>
+      都不成立（名字表 3.2–6.3%／work-weighted 8.0–8.4%／聯集上界 ≤28.3%）⇒ 點估計全部 &lt; 15%
+      ⇒ 依判準走「三條路全不足」分支。</li>
+</ul>
+<p><b>修正後的結論：</b><code>10.9 × 1.5 × 1.06–1.25 ≈ 17–20 t/s</code> —— <b>這三個方向到不了 25</b>。
+25 的那 2.4× 只能來自「削 GPU work」，而那個家族的第一名<b>不是 MoE</b>：名字表（家族 ms ÷ 同步
+<code>wait</code>，粗／細）是 <code>node</code>（無名真運算）<b>24.1／20.3%</b> ＞ <code>(other)</code>
+11.4／12.1% ＞ <code>cache</code>（<b>池自己的暫存</b>）7.7／9.8% ＞ <code>norm</code> 7.7／7.5% ＞
+<code>ffn_moe_</code> 7.6／6.7% ＞ <code>moe_gemv</code>（MUL_MAT_ID）3.2／6.3%。</p>
+<p><b>仍然成立的部分（沒有被取代）：</b>§1–§5（這一輪的兩個問題、對齊 A/B 的 ABBA 與 build 指紋、
+Ornith 慢 1.49×、建構普查）與 §7–§9（現場閘門原文、誠實邊界、產物）<b>都沒有被動到</b> ——
+本標註只修 §6 的兩個乘數與它的第 1 個待辦。</p>
+</div>
+
 <div class="box b-red">
 <p><b>一句話結論（前一半）：樹上第二個模型比旗艦快，是假的。</b>把兩臂放進<b>同一個 build</b>、
 <b>同一個 profile</b>、<b>兩臂都 MTP off</b>、而且<b>只差一個模型檔</b>（differ-by-one）的 ABBA 之後：
