@@ -1411,6 +1411,22 @@ fi
 if [ -n "${CGC_PREROUTER_TOP_K:-}" ]; then
     SERVER_ENV+=(CGC_PREROUTER_TOP_K="$CGC_PREROUTER_TOP_K")
 fi
+# [CGC MTP instrument 2026-09-17] LLAMA_BENCH_SPEC=1 makes `llama-bench` generate through the
+# speculative path (tools/llama-bench/llama-bench.cpp: test_gen_spec) instead of its bare
+# `llama_decode` loop -- the instrument that makes M4 measurable at all, since the whole
+# tools/llama-bench/ directory has ZERO hits for speculat/spec_type/draft/mtp.
+#
+# WHY A NON-CGC VAR IS IN THIS ALLOWLIST: the server does not read it and never will (the name is
+# namespaced to the tool). It is here because `llama_bench_matrix.py` gets its env from
+# `run_server.sh CGC_DUMP_ENV=1`, which prints exactly the SERVER_ENV array -- so a variable not
+# listed here is dropped on the floor and the run looks like "the instrument has no effect".
+# LLAMA_BENCH_SPEC_DRAFT_N_MAX is the same story; it is the draft-depth knob (default 3).
+if [ -n "${LLAMA_BENCH_SPEC:-}" ]; then
+    SERVER_ENV+=(LLAMA_BENCH_SPEC="$LLAMA_BENCH_SPEC")
+fi
+if [ -n "${LLAMA_BENCH_SPEC_DRAFT_N_MAX:-}" ]; then
+    SERVER_ENV+=(LLAMA_BENCH_SPEC_DRAFT_N_MAX="$LLAMA_BENCH_SPEC_DRAFT_N_MAX")
+fi
 # CGC Fast-Path Wait: wait for in-flight fills instead of ZERO-mapping (default off)
 if [ -n "${CGC_FAST_WAIT:-}" ]; then
     SERVER_ENV+=(CGC_FAST_WAIT="$CGC_FAST_WAIT")

@@ -168,8 +168,24 @@ def gate() -> list[str]:
         blockers.append(f"ps failed (rc={q.returncode}) -- cannot confirm the machine is idle")
         return blockers
     me = str(Path(__file__).name)
-    pat = re.compile(r"m123_oracle_gate|decode_sweep|mtp_accept_ab|run_ids_dst_capture"
-                     r"|knifeedge_matrix|llama-bench|llama-server")
+    # INVOCATION SHAPE, not "the name appears somewhere in argv".
+    #
+    # A bare substring match cannot tell a measurement from a *reader*, and a reader that merely
+    # names a binary is indistinguishable from one at this level -- so it aborts its neighbour's
+    # window. Three instances on 2026-09-17, each costing an arm:
+    #   * 19:34  a build gate matched its own `pgrep -f '...llama-server...'` (fixed with char classes)
+    #   * 22:37  a monitoring wrapper (`bash -c 'sleep 240; ... tail -4 /tmp/prod_m3m4/driver.log'`)
+    #            aborted phase 2 of /tmp/prod_m3m4 -- it never measured anything
+    #   * 22:59  arm A of /tmp/gpu_split2 aborted on pid 94627, a tooling shell whose command line
+    #            contained `pgrep -lx llama-bench` -- a READ-ONLY check, from the neighbouring
+    #            session. That is this repo's own convention turned into a weapon.
+    # An actual measurement always names the program as a path or at the head of the command
+    # (`<abs>/bin/llama-bench -m ...`, `python3 scripts/check/decode_sweep.py ...`), and the name is
+    # followed by whitespace or end-of-string. A mention (`pgrep -lx llama-bench`,
+    # `awk '$2=="llama-bench"'`, `Backup/knifeedge_matrix/ref_....jsonl`) is preceded by a quote or
+    # space, or followed by a path separator -- and is now correctly ignored.
+    pat = re.compile(r"(^|/)(llama-(?:bench|server)|decode_sweep|m123_oracle_gate|mtp_accept_ab"
+                     r"|run_ids_dst_capture|knifeedge_matrix)(\.\w+)?(\s|$)")
     mine = {str(os.getpid()), str(os.getppid())}
     for line in q.stdout.splitlines():
         parts = line.strip().split(None, 1)
@@ -231,7 +247,14 @@ def cell_command(profile: str, cell: str, reps: int, workdir: Path, jpath: Path,
     else:
         b, ub, why = default_batch(env, scalars)
     ok, why_not = compat(profile, cell, env, scalars, b)
-    arm = profile + "".join(f";{k}={v}" for k, v in (extra_env or {}).items())
+    # llama_bench_matrix parses `PROFILE:ENV=VAL;ENV=VAL` -- the profile is separated by a COLON and
+    # only the env pairs are semicolon-separated (spec.partition(":") then envs.split(";")). Joining
+    # every pair with ";" after the profile produces a spec with no colon at all, which the matrix
+    # rejects as `unknown arm '...'` in ~0.05 s, before it writes any output -- so the cell directory
+    # stays EMPTY and the failure looks like a silent empty run rather than a parse error. That is
+    # exactly what happened to every `--extra-env` invocation on 2026-09-17 (cell A of
+    # /tmp/gpu_split, arm B of /tmp/decode_ab): rc=1, wall=0.0s, no rows.
+    arm = profile + (":" + ";".join(f"{k}={v}" for k, v in extra_env.items()) if extra_env else "")
     cmd = [sys.executable, str(MATRIX), "--arms", arm,
            "--prompt", str(spec["p"]), "--gen", str(spec["n"]), "--depths", str(spec["d"]),
            "--reps", str(reps), "--workdir", str(workdir), "--json", str(jpath)]

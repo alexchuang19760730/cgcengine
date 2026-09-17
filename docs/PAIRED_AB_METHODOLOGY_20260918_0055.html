@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>配對式 A/B 的量測方法論（2026-09-18）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  h4{font-size:14.5px;margin:20px 0 6px;color:#374151}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:#fcfcfd}
+  .toc ol{margin:6px 0 0 20px}
+  .toc a{color:var(--blue);text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>配對式 A/B 的量測方法論</h1>
+<div class="sub">
+  日期 2026-09-18 · 專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code><br>
+  模型 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（<code>CGC_SERVER_PROFILE=prefill250</code>，8 GiB expert pool）<br>
+  硬體 <code>Mac16,12</code> MacBook Air · Apple M4 · 8 核 GPU · 16 GB unified · 無風扇<br>
+  儀器 <code>llama-bench</code>（唯一的 decode instrument of record）· 10 個臂 · 首個應用：MTP 的淨效果<br>
+  相關文件 <code>docs/MTP_NET_EFFECT_PAIRED_2026-09-18.md</code>（原始資料）、
+  <code>docs/MTP_IN_LLAMA_BENCH_2026-09-18.md</code>（儀器修復）
+</div>
+
+<div class="box b-amber">
+  <p><b>一句話結論：在這台機器上，一個測量臂「排在前面還是後面」就值 12.5%。</b>
+  因此任何單向的 A/B（含 A/B/A）對小於 10% 的效果都沒有判別力 —— 不是「不夠準」，
+  是<b>量到的東西不是 treatment 效果</b>。可行的方法只有一個：<b>配對交錯 ＋ 反序對（ABBA）</b>，
+  並且把「誰先跑」寫進報告。</p>
+</div>
+
+<div class="toc">
+  <b>目錄</b>
+  <ol>
+    <li><a href="#s0">一頁結論</a></li>
+    <li><a href="#s1">問題：A/B/A 的兩個控制臂差 48%</a></li>
+    <li><a href="#s2">方法：配對交錯 ＋ 反序對</a></li>
+    <li><a href="#s3">結果：順序效應與順序校正</a></li>
+    <li><a href="#s4">五條定則（可直接照用）</a></li>
+    <li><a href="#s5">計數器優於 t/s</a></li>
+    <li><a href="#s6">首個應用：MTP 的淨效果 ≈ 0</a></li>
+    <li><a href="#s7">附帶案例：症狀會指向錯的地方</a></li>
+    <li><a href="#s8">誠實邊界</a></li>
+    <li><a href="#s9">現場閘門輸出（原文）</a></li>
+    <li><a href="#s10">復現</a></li>
+  </ol>
+</div>
+
+<h2 id="s0">0. 一頁結論</h2>
+
+<div class="cards">
+  <div class="card"><div class="k">A/B/A 控制臂落差</div><div class="v bad">48%</div>
+    <div class="small">10.049 vs 6.791 t/s，池統計一致到 0.2%</div></div>
+  <div class="card"><div class="k">純順序效應</div><div class="v bad">+12.5%</div>
+    <div class="small">後跑 5 臂中位 9.434 vs 先跑 8.387</div></div>
+  <div class="card"><div class="k">順序校正後 MTP 倍數</div><div class="v">0.937</div>
+    <div class="small">√(1.071 × 0.820)，5 對範圍 0.701–1.171</div></div>
+  <div class="card"><div class="k">臂數</div><div class="v">10</div>
+    <div class="small">正序 6 ＋ 反序 4，每臂 <code>-n 64 -d 512 -r 4</code></div></div>
+</div>
+
+<table>
+  <tr><th>問題</th><th>答案</th><th>依據</th></tr>
+  <tr><td>單向 A/B 能不能判 10% 的效果？</td><td class="bad">不能</td>
+      <td>§1：同一配置的兩個控制臂差 48%</td></tr>
+  <tr><td>交錯 A/B 呢？</td><td class="bad">還是不夠</td>
+      <td>§3：ABAB 每對裡 <code>off</code> 總是先跑 ⇒ 系統性偏誤</td></tr>
+  <tr><td>反序對能不能把它分離出來？</td><td class="ok">能</td>
+      <td>§3：正序 1.071/1.171/1.013、反序 0.938/0.701</td></tr>
+  <tr><td>MTP 在生產 cell 形狀上有淨增益嗎？</td><td class="bad">沒有可測的</td>
+      <td>§6：校正後 −6%（±10%），與 0 不可區分</td></tr>
+  <tr><td>什麼量不受這個漂移影響？</td><td class="ok">計數器</td>
+      <td>§5：<code>accept</code>／<code>emit</code>／池 <code>hit rate</code></td></tr>
+</table>
+
+<h2 id="s1">1. 問題：A/B/A 的兩個控制臂差 48%</h2>
+
+<p>2026-09-18 00:26–00:30 跑了一次看似標準的 A/B/A —— 同一個 build、同一個 profile、同一個
+cell 形狀（<code>-p 0 -n 128 -d 512 -b 512 -r 3</code>）、8 GiB pool，只差
+<code>--spec-type draft-mtp</code>：</p>
+
+<table>
+  <tr><th>臂（依序）</th><th>rc</th><th><code>tg128 @ d512</code></th><th>樣本</th></tr>
+  <tr><td><code>off1</code>（先跑）</td><td class="num">0</td><td class="num">10.049 ± 1.181</td>
+      <td class="num">8.699 / 10.555 / 10.892</td></tr>
+  <tr><td><code>on</code></td><td class="num">0</td><td class="num">7.715 ± 0.884</td>
+      <td class="num">7.526 / 8.679 / 6.942</td></tr>
+  <tr><td><code>off2</code>（最後跑）</td><td class="num">0</td><td class="num">6.791 ± 0.077</td>
+      <td class="num">6.716 / 6.871 / 6.787</td></tr>
+</table>
+
+<p>兩個控制臂是<b>同一個配置、同一個形狀</b>，卻差 48%。而它們的池統計幾乎相同：</p>
+
+<table>
+  <tr><th>臂</th><th>hit rate</th><th>resident</th><th>file_reads</th><th>bytes</th></tr>
+  <tr><td><code>off1</code></td><td class="num">96.6%</td><td class="num">6153.70 MiB</td>
+      <td class="num">26925</td><td class="num">4.88 GB</td></tr>
+  <tr><td><code>off2</code></td><td class="num">96.7%</td><td class="num">6153.70 MiB</td>
+      <td class="num">26685</td><td class="num">4.79 GB</td></tr>
+</table>
+
+<div class="box b-red">
+  <p><b>兩個推論。</b>（一）漂移<b>不是池、不是 IO</b>（池的行為一致到 0.2%）⇒ 它是機器外部狀態
+  （熱、記憶體壓力、鄰居負載）。（二）既然控制臂自己就差 48%，那麼任何用「單一對」算出來的
+  比值（例如 <code>on/off1 = 0.768</code> 或 <code>on/off2 = 1.136</code>）<b>都不可引用</b> ——
+  而它們的方向甚至相反。</p>
+</div>
+
+<p>這一輪之前所有關於 MTP 的 t/s 結論（本線的 −23%、另一條線的 +5.7%、更早的 +31%）
+都建立在這一類比較上。它們全部因此失效 —— <b>不是因為誰算錯，而是因為方法沒有判別力。</b></p>
+
+<h2 id="s2">2. 方法：配對交錯 ＋ 反序對</h2>
+
+<p>漂移是<b>慢變數</b>。慢變數的正確處理不是「等它停」（等不到），也不是「跑更久」（它會累積），
+而是<b>讓它在對內互相抵銷</b>：交替兩個臂、每臂短、在<b>對內</b>取比值。</p>
+
+<h3>2.1 設計</h3>
+
+<table>
+  <tr><th>項目</th><th>值</th><th>為什麼</th></tr>
+  <tr><td>形狀</td><td class="num">-p 0 -n 64 -d 512 -b 512 -r 4</td>
+      <td>生產 decode cell 的形狀縮短；目標是<b>比值</b>不是絕對值</td></tr>
+  <tr><td>丟棄樣本</td><td>sample 0</td>
+      <td>它帶著 depth prefill 與池的第一次填充（後續 rep 走 <code>llama_state_seq_set_data</code> 還原）</td></tr>
+  <tr><td>統計量</td><td>每個臂 <code>median(samples[1:])</code></td>
+      <td>樣本內有離群值（實測 <code>arm2 off</code> 出現 3.85 t/s）；中位數對它穩健</td></tr>
+  <tr><td>臂間等待</td><td class="num">20 s</td>
+      <td>滿載後約 35–47 s 回 NOMINAL；20 s 是「不讓整輪太長」與「不讓熱累積」的折衷</td></tr>
+  <tr><td>env</td><td>兩臂完全相同，除 <code>--spec-type</code></td>
+      <td>刻意<b>不開</b> <code>CGC_GPU_TIMING</code>／<code>CGC_DECODE_PROFILE</code>：那些開關自己有成本，配對比較必須固定其他變數</td></tr>
+  <tr><td>臂序</td><td><b>正序 <code>off,on</code>×3 ＋ 反序 <code>on,off</code>×2</b></td>
+      <td>見 2.3 —— 這是本方法的核心，不是可選項</td></tr>
+</table>
+
+<h3>2.2 判準事先宣告</h3>
+
+<p>判準寫在驅動腳本的 docstring 裡（<code>/tmp/en_mtp_pair.py</code>），<b>在跑之前</b>：</p>
+
+<pre><code>WHAT WOULD COUNT AS AN ANSWER, fixed BEFORE the run:
+  * paired ratio (on/off) median well below 0.95 with a tight IQR  =&gt; MTP is a net loss;
+  * paired ratio IQR straddling 1.0                              =&gt; still undecidable on this box.
+Either way it is a result; a mid-run renegotiation of the criterion would not be.</code></pre>
+
+<p>理由：如果判準可以在看到數字之後才定，「整體」這個詞就沒有意義了。這一輪的結果落在第二條
+（見 §3），而它是<b>事先就允許的結論之一</b>。</p>
+
+<h3>2.3 為什麼一定要反序對</h3>
+
+<p><code>ABAB</code> 的每一對裡，<code>off</code> 總是<b>先跑</b>。如果「臂的位置」本身有效應
+（page cache 暖了、池的狀態、Metal shader cache、環境漂移的單調段），<code>on</code> 就被
+<b>系統性偏誤</b> —— 而且偏誤方向與 treatment 方向無法分離。</p>
+
+<p>把順序反過來（<code>on</code> 先跑）就能分離：令 <code>M</code> 是真正要量的倍數、<code>s</code>
+是順序效應，則</p>
+
+<pre><code>ratio_AB = M · s        （off 先跑，on 被高估 s 倍）
+ratio_BA = M / s        （on 先跑，on 被低估 s 倍）
+=&gt;  M = sqrt(ratio_AB · ratio_BA)      s = sqrt(ratio_AB / ratio_BA)</code></pre>
+
+<p>也就是說：<b>正序對與反序對合起來才構成一次完整的測量</b>；只做其中一半得到的是一個
+<code>M·s</code> 或 <code>M/s</code>，而它與 <code>M</code> 無從分辨。</p>
+
+<svg viewBox="0 0 680 210" width="100%" style="margin:10px 0;border:1px solid #e5e7eb;border-radius:10px;background:#fcfcfd">
+  <text x="16" y="26" font-size="13" font-weight="600" fill="#111827">ABAB（只有正序）</text>
+  <g font-size="11">
+    <rect x="16" y="36" width="58" height="26" rx="5" fill="#eff6ff" stroke="#bfdbfe"/>
+    <text x="45" y="53" text-anchor="middle" fill="#1f2937">off</text>
+    <rect x="78" y="36" width="58" height="26" rx="5" fill="#ecfdf5" stroke="#a7f3d0"/>
+    <text x="107" y="53" text-anchor="middle" fill="#1f2937">on</text>
+    <rect x="140" y="36" width="58" height="26" rx="5" fill="#eff6ff" stroke="#bfdbfe"/>
+    <text x="169" y="53" text-anchor="middle" fill="#1f2937">off</text>
+    <rect x="202" y="36" width="58" height="26" rx="5" fill="#ecfdf5" stroke="#a7f3d0"/>
+    <text x="231" y="53" text-anchor="middle" fill="#1f2937">on</text>
+    <rect x="264" y="36" width="58" height="26" rx="5" fill="#eff6ff" stroke="#bfdbfe"/>
+    <text x="293" y="53" text-anchor="middle" fill="#1f2937">off</text>
+    <rect x="326" y="36" width="58" height="26" rx="5" fill="#ecfdf5" stroke="#a7f3d0"/>
+    <text x="355" y="53" text-anchor="middle" fill="#1f2937">on</text>
+  </g>
+  <path d="M16 78 L384 62" stroke="#dc2626" stroke-width="1.5" fill="none"/>
+  <text x="396" y="72" font-size="11" fill="#dc2626">慢漂移（單調段）</text>
+  <text x="16" y="100" font-size="11" fill="#6b7280">on 永遠在高位（畫在後面）⇒ on/off 被高估</text>
+
+  <text x="16" y="128" font-size="13" font-weight="600" fill="#111827">BABA（補上反序）</text>
+  <g font-size="11">
+    <rect x="16" y="138" width="58" height="26" rx="5" fill="#ecfdf5" stroke="#a7f3d0"/>
+    <text x="45" y="155" text-anchor="middle" fill="#1f2937">on</text>
+    <rect x="78" y="138" width="58" height="26" rx="5" fill="#eff6ff" stroke="#bfdbfe"/>
+    <text x="107" y="155" text-anchor="middle" fill="#1f2937">off</text>
+    <rect x="140" y="138" width="58" height="26" rx="5" fill="#ecfdf5" stroke="#a7f3d0"/>
+    <text x="169" y="155" text-anchor="middle" fill="#1f2937">on</text>
+    <rect x="202" y="138" width="58" height="26" rx="5" fill="#eff6ff" stroke="#bfdbfe"/>
+    <text x="231" y="155" text-anchor="middle" fill="#1f2937">off</text>
+  </g>
+  <path d="M16 178 L260 168" stroke="#dc2626" stroke-width="1.5" fill="none"/>
+  <text x="272" y="178" font-size="11" fill="#dc2626">同一段漂移</text>
+  <text x="16" y="198" font-size="11" fill="#6b7280">on 永遠在低位 ⇒ on/off 被低估。兩邊相乘開根號 ⇒ 漂移抵銷、M 留下</text>
+</svg>
+
+<h2 id="s3">3. 結果：順序效應與順序校正</h2>
+
+<h3>3.1 十個臂</h3>
+
+<table>
+  <tr><th>輪</th><th>臂</th><th>角色</th><th>位置</th><th>median(samples[1:])</th><th>樣本（4 個）</th></tr>
+  <tr><td rowspan="6">第一輪<br><code>ABAB</code>×3</td>
+      <td><code>arm0</code></td><td>off</td><td>先</td><td class="num">8.493</td>
+      <td class="num">7.38 / 8.41 / 8.49 / 9.44</td></tr>
+  <tr><td><code>arm1</code></td><td>on</td><td>後</td><td class="num">9.093</td>
+      <td class="num">6.96 / 9.09 / 8.05 / 9.72</td></tr>
+  <tr><td><code>arm2</code></td><td>off</td><td>先</td><td class="num">8.060</td>
+      <td class="num">7.74 / 9.94 / 8.06 / <span class="bad">3.85</span></td></tr>
+  <tr><td><code>arm3</code></td><td>on</td><td>後</td><td class="num">9.434</td>
+      <td class="num">6.73 / 10.28 / 8.90 / 9.43</td></tr>
+  <tr><td><code>arm4</code></td><td>off</td><td>先</td><td class="num">8.387</td>
+      <td class="num">6.83 / 8.39 / 7.26 / 9.64</td></tr>
+  <tr><td><code>arm5</code></td><td>on</td><td>後</td><td class="num">8.493</td>
+      <td class="num">6.39 / 8.49 / 11.30 / 7.95</td></tr>
+  <tr><td rowspan="4">第二輪<br><code>BABA</code>×2</td>
+      <td><code>arm0</code></td><td>on</td><td>先</td><td class="num">9.420</td>
+      <td class="num">8.81 / 5.68 / 9.93 / 9.42</td></tr>
+  <tr><td><code>arm1</code></td><td>off</td><td>後</td><td class="num">10.039</td>
+      <td class="num">8.26 / 8.51 / 10.10 / 10.04</td></tr>
+  <tr><td><code>arm2</code></td><td>on</td><td>先</td><td class="num">7.158</td>
+      <td class="num">—</td></tr>
+  <tr><td><code>arm3</code></td><td>off</td><td>後</td><td class="num">10.205</td>
+      <td class="num">—</td></tr>
+</table>
+
+<h3>3.2 純順序效應（與 treatment 無關）</h3>
+
+<pre><code>先跑的 5 臂  [8.49, 8.06, 8.39, 9.42, 7.16]   中位 8.387
+後跑的 5 臂  [9.09, 9.43, 8.49, 10.04, 10.20]  中位 9.434
+=&gt; 後跑 / 先跑 = 1.125</code></pre>
+
+<div class="box b-red">
+  <p><b>這是本輪最重要的一個數字。</b>它把「MTP 有效嗎」這個問題的一部分答案提前揭露了：
+  在效果被量到之前，<b>光是臂的位置就貢獻了 +12.5%</b>。任何小於這個量級的效果，
+  用單向比較都是不可判的。</p>
+</div>
+
+<h3>3.3 配對比值與順序校正</h3>
+
+<table>
+  <tr><th>對</th><th>先跑</th><th>後跑</th><th>ratio (on/off)</th></tr>
+  <tr><td>AB-1</td><td>off 8.493</td><td>on 9.093</td><td class="num">1.071</td></tr>
+  <tr><td>AB-2</td><td>off 8.060</td><td>on 9.434</td><td class="num">1.171</td></tr>
+  <tr><td>AB-3</td><td>off 8.387</td><td>on 8.493</td><td class="num">1.013</td></tr>
+  <tr><td>BA-1</td><td>on 9.420</td><td>off 10.039</td><td class="num">0.938</td></tr>
+  <tr><td>BA-2</td><td>on 7.158</td><td>off 10.205</td><td class="num">0.701</td></tr>
+</table>
+
+<pre><code>正序中位 = 1.071         反序中位 = 0.820
+M = sqrt(1.071 × 0.820) = 0.937      （只用平衡的 2+2 對 ⇒ 0.959）
+5 對的範圍 = 0.701 .. 1.171</code></pre>
+
+<p><b>讀法：</b><code>M ≈ 0.94–0.96</code>，而單對的散布是 <code>0.70–1.17</code>。
+所以「MTP 讓 decode 變慢 6%」這句話的誤差比它本身大 —— 正確的述句是
+<b>「MTP 的淨效果在 ±10% 內，與 0 不可區分」</b>。</p>
+
+<div class="box b-blue">
+  <p><b>一個方法論上的不對稱，值得記住：</b>正序與反序的對數不相等（3 對 vs 2 對）時，
+  「全部 5 對的中位」（1.013）<b>不是</b> <code>M</code> 的估計 —— 它仍帶著 <code>(3−2)/5 × s</code>
+  的偏。只用平衡的部分（2+2 對 ⇒ 0.959）或直接取幾何平均（0.937）才是。
+  「把資料全部倒進同一個中位數」在這裡是錯的。</p>
+</div>
+
+<h2 id="s4">4. 五條定則（可直接照用）</h2>
+
+<ol>
+  <li><b>量兩臂一律 ABBA（含反序對）。</b>只做正序或只做反序，量到的是 <code>M·s</code> 或
+      <code>M/s</code>，與 <code>M</code> 無從分辨。報告裡要<b>寫明誰先跑</b>。</li>
+  <li><b>臂要短。</b>單調漂移在一對之內走得越少越好。本輪每臂 <code>-n 64 -r 4</code>，
+      含模型載入約 45–55 s；先用 A/B/A 的那一輪每臂是 57–66 s，漂移就吃掉了整個訊號。</li>
+  <li><b>丟掉 sample 0，用中位數。</b>第一個 rep 帶著 depth prefill 與池的第一次填充；
+      樣本內有離群值（實測一個 3.85 t/s 對同臂其他 7–10 t/s）。</li>
+  <li><b>計數器優於 t/s。</b><code>accept</code>／<code>emit</code>／池 <code>hit rate</code>
+      不受時間漂移影響（見 §5）。能用計數器回答的問題，不要用 t/s 回答。</li>
+  <li><b>判準事先寫定。</b>寫進腳本的 docstring，不是寫在事後的分析裡。</li>
+</ol>
+
+<h2 id="s5">5. 計數器優於 t/s</h2>
+
+<p>五個 <code>on</code> 臂的 <code>CGC-MTP-PERF</code> 讀數（這些是計數與比值，不經過 wall clock）：</p>
+
+<table>
+  <tr><th>臂</th><th><code>gen_tok_per_round</code></th><th><code>acc_rate</code></th>
+      <th><code>emit_tok_per_round</code></th><th><code>ms_per_round</code>（draft head）</th><th>池 hit rate</th></tr>
+  <tr><td><code>arm1</code>（第一輪）</td><td class="num">3.000</td><td class="num">0.6744</td>
+      <td class="num">3.023</td><td class="num">24.982</td><td class="num">93.7%</td></tr>
+  <tr><td><code>arm3</code></td><td class="num">3.000</td><td class="num">0.6980</td>
+      <td class="num">3.094</td><td class="num">26.131</td><td class="num">93.7%</td></tr>
+  <tr><td><code>arm5</code></td><td class="num">3.000</td><td class="num">0.7020</td>
+      <td class="num">3.106</td><td class="num">27.180</td><td class="num">94.2%</td></tr>
+  <tr><td><code>arm0</code>（第二輪）</td><td class="num">3.000</td><td class="num">0.7949</td>
+      <td class="num">3.385</td><td class="num">30.645</td><td class="num">94.5%</td></tr>
+  <tr><td><code>arm2</code>（第二輪）</td><td class="num">3.000</td><td class="num">0.6259</td>
+      <td class="num">2.878</td><td class="num">31.073</td><td class="num">94.8%</td></tr>
+</table>
+
+<p>三個仍然成立的觀察：</p>
+
+<ul>
+  <li><b><code>gen_tok_per_round</code> 恆為 3.000</b> ⇒ 每個臂都吃滿 <code>n_max=3</code>，
+      沒有被模型的 MTP 訓練長度夾到（<code>speculative.cpp:1417</code> 的 clamp 只在
+      <code>chain_heads</code>（非共用記憶體）時生效）。</li>
+  <li><b>池 <code>hit rate</code>：<code>on</code> 臂 93.7–94.8% 對 <code>off</code> 臂 96.0–96.1%</b>
+      ⇒ MTP 讓命中率降 <b>2.2pp</b>，與前兩輪獨立量到的
+      <code>file_reads</code> +62%／<code>bytes</code> +129% 同向。</li>
+  <li><b><code>accept</code> 本身的散布是 0.626–0.795（27%）</b> ⇒ 任何「accept ≥ 60%」這種
+      單次門檻的判別力比它自己的變異還小。</li>
+</ul>
+
+<p><b>還有一個機制上的發現</b>（代數吻合，非直接量測）：<code>acc_tok_per_round = 2.023</code>，
+而 <code>n_max = 3</code>、<code>acc_rate = 0.6744</code>：</p>
+
+<pre><code>若接受是序列相依（第一顆不接受則後面作廢）：p + p² + p³ = 1.436        ×
+若每顆獨立接受：                              n × p = 3 × 0.6744 = 2.023  ✓（逐位吻合）</code></pre>
+
+<p>⇒ MTP 的草稿是<b>平行</b>產生、各自與 target 比對的 ⇒ 加大 <code>n_max</code> 的邊際收益是
+<b>線性</b>的（不像 chain 投機那樣衰減）。這讓 <code>n_max</code> 掃描成為一個有定義的下一件事。</p>
+
+<h2 id="s6">6. 首個應用：MTP 的淨效果 ≈ 0</h2>
+
+<p>把 §2 的方法用在「MTP 對 decode t/s 有沒有貢獻」上，答案是<b>沒有可測的</b>。</p>
+
+<ul>
+  <li>順序校正後的倍數 <code>M = 0.937</code>，95% 等級的散布是 <code>0.70–1.17</code>
+      ⇒ 與 1.0 不可區分。</li>
+  <li>這與 served 路徑（HTTP，8 GiB）先前獨立量到的「平手」一致：
+      <code>baseline</code> 12.087 vs <code>mtp-off</code> 12.031。</li>
+  <li>而且它<b>推翻</b>了本線在同一天較早報出的 −23% —— 那個數字的分母（<code>off1</code> = 10.049）
+      恰好落在漂移的有利端。</li>
+</ul>
+
+<p>對 roadmap 的意義：25 t/s 需要 <code>2.07×</code>（served 基準 12.0–12.1），而 MTP 貢獻 ≈ 0
+⇒ <b>決定 25 的仍然只有 GPU span</b>（8 GiB 側 75.66 ms/step）。MTP 的價值不能建立在 decode t/s 上。</p>
+
+<h2 id="s7">7. 附帶案例：症狀會指向錯的地方</h2>
+
+<p>同一輪還修好了 <code>llama-bench</code> 的 MTP 路徑（讓 <code>--spec-type draft-mtp</code> 在
+生產 cell 形狀上真的能跑完）。它的失敗方式是一個獨立的方法論教訓：</p>
+
+<pre><code>test_gen_spec: verify decode failed: ret=-1 n_tokens=4(pos 0..3) n_ctx=768 n_past=1 draft=3 n_batch=512
+llama_bench: error: failed to run gen
+CGC-M2-UNREPOINT: teardown restored 120 expert tensor(s) to their model storage before freeing 6 slab(s)
+                  (a second context built from this model would otherwise read a freed buffer)</code></pre>
+
+<p>這些訊息把它指向三個錯的方向：Metal 資源、記憶體不足、「第二個 context 踩到 freed buffer」。
+而真因是<b>一個初始化</b>：<code>test_gen_spec</code> 明確指定 batch 的位置，而
+<code>n_past</code> 從 <code>0</code> 開始 —— 但同一個 rep 裡 <code>-d 512</code> 的 depth prefill
+已經寫過 pos 0..511，<code>llama_decode</code> 因此回 <b>-1，而且不印任何訊息</b>。</p>
+
+<table>
+  <tr><th>觀察</th><th>指向</th></tr>
+  <tr><td><code>-n 16 -d 0</code> 過、<code>-n 128 -d 512</code> 掛</td><td>與 depth run 有關</td></tr>
+  <tr><td><code>--no-warmup</code> <b>也</b>掛</td><td>不是 warmup 留下來的狀態</td></tr>
+  <tr><td>把 draft context 的建立提前到 warmup 之前 ⇒ <b>仍然掛</b></td><td>不是「第二個 context」的時機</td></tr>
+  <tr><td>非 spec 路徑（<code>test_gen</code>）不受影響</td><td>差別在<b>誰決定 batch 的位置</b></td></tr>
+</table>
+
+<p>⇒ 定則：<b>當錯誤訊息指向「資源」時，先問「是不是有一個輸入被算錯」</b>。
+而判別式是「換一個形狀會不會好」 —— 短形狀成功不代表邏輯對，可能只代表它沒走到那條路徑。</p>
+
+<h2 id="s8">8. 誠實邊界</h2>
+
+<div class="box b-amber">
+  <p><b>不主張的事：</b></p>
+  <ul>
+    <li><b>不主張 MTP 在任何配置下都無效。</b>本輪量的是「<code>prefill250</code> profile 的
+        decode cell 形狀、8 GiB pool、<code>n_max=3</code>、llama-bench 預設取樣」。
+        served 路徑的 prompt／取樣不同（實測 accept 38.5% 對本輪的 62.6–79.5%），
+        而 <code>n_max</code> 沒有掃過。</li>
+    <li><b>不主張 +12.5% 是「熱」造成的。</b>它是一個<b>觀察到的位置效應</b>，方向在這一輪是
+        「後跑較快」，但同一台機器稍早的 A/B/A 裡是「先跑較快」（10.049 → 6.791）。
+        所以它不是一個穩定的物理常數，而是<b>單調漂移的方向</b>；ABBA 的價值在於對稱地抵銷它，
+        不需要知道它往哪邊走。</li>
+    <li><b>不主張 0.937 是精確值。</b>它只有 2+2 對的平衡資料支撐，散布 0.70–1.17。
+        要收窄需要更多對，而每一對都是兩次 13 GB 載入。</li>
+    <li><b><code>acc_tok_per_round = n × p</code> 是代數吻合，不是直接量測</b>；接受機制的
+        驗證要靠 <code>n_max</code> 掃描。</li>
+    <li><b>本輪沒有動 <code>src/</code> 的量測部分</b>之外的東西；沒有掃 <code>n_max</code>、
+        沒有把 MTP 登記成 <code>prod_matrix.py</code> 的 cell（<code>--cells decode</code> 必須
+        維持 MTP-off 且逐位元可比）。</li>
+  </ul>
+</div>
+
+<h2 id="s9">9. 現場閘門輸出（原文）</h2>
+
+<p>產出本文時在同一棵樹上跑過：</p>
+
+<pre><code>$ python3 agent_harness/engine_loop/memory/build_memory_index.py
+  wrote 8 file(s) + 204 section(s) -&gt; agent_harness/engine_loop/memory/INDEX.jsonl
+$ (cd agent_harness/engine_loop &amp;&amp; python3 index_assets.py)
+  wrote 108 assets -&gt; agent_harness/engine_loop/MANIFEST.jsonl
+$ (cd agent_harness/engine_loop &amp;&amp; python3 index_assets.py --check)
+  manifest OK: 108 assets, existence + bytes + mtime all agree
+$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  memory index OK: 8 file(s), 204 section(s), no drift
+$ python3 agent_harness/engine_loop/traces/validate.py
+  lessons.jsonl: 163 records {&#x27;lesson&#x27;: 163}
+  -&gt; OK
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  10/10 injected violations rejected
+$ python3 agent_harness/shared/check_shell_cjk.py --root &quot;$PWD&quot;
+  掃了 331 個 shell 檔（含 shebang 判定的 .sh/.bash）
+  2 處 `$VAR` 緊接非 ASCII（`set -u` 下會 unbound variable）：
+    scripts/check/m1_early_verification/test_union_slots.sh
+      L62: $PORT 後接 &#x27;）&#x27;  -&gt;  寫成 ${PORT}
+    scripts/run_native_baseline.sh
+      L30: $QUANT 後接 &#x27;（&#x27;  -&gt;  寫成 ${QUANT}
+$ python3 agent_harness/engine_loop/wrappers/classify.py --check
+  error: scripts/check/ 與分類表不一致 —— 磁碟上有但沒被分類：[&#x27;decode_step_profile.py&#x27;, &#x27;phase_split_ab.py&#x27;]</code></pre>
+
+<p>D5（<code>CONVENTIONS.md</code> D5：每次 commit 附白皮書 ＋ 跑 M1/M2/M3）的數值那一半，因為本
+commit 含 <code>src/llama.cpp/tools/llama-bench/llama-bench.cpp</code> 而必須跑：</p>
+
+<pre><code>$ python3 scripts/check/m123_oracle_gate.py --tag en-lbmtp-instrument
+  probe   : &#x27;15+27 等於多少？請只輸出答案&#x27; -&gt; &#x27;42&#x27;
+  stopped : after 2s
+  dump    : 9 records, validated
+  oracle A: Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident_v6_nbaware.jsonl  (9 entries)
+  oracle B: /tmp/m123_oracle_gate.jsonl  (9 entries)
+  common: 9    only_A: 0    only_B: 0
+  M1 numeric identity    (bit-identical logits)  : 9/9  (100.0%)
+  M2 decision agreement  (same argmax token)     : 9/9  (100.0%)
+  M3 top-k set agreement (same top-N id set)     : 9/9  (100.0%)
+  (aux) full_fnv1a64 identical                   : 9/9  (100.0%)
+  GATE en-lbmtp-instrument: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+  cross-tab: {&#x27;num_eq_dec_eq&#x27;: 9, &#x27;num_eq_dec_ne&#x27;: 0, &#x27;num_ne_dec_eq&#x27;: 0, &#x27;num_ne_dec_ne&#x27;: 0}</code></pre>
+
+<p><b>讀法（依 <code>cgc-commit-gate</code> 的順序：先看 <code>comparable</code>，再讀那三個 9/9）：</b>
+<code>summary_en-lbmtp-instrument.json</code> 的 <code>comparable = true</code>、
+<code>config_diffs = []</code> ⇒ 三個 9/9 是<b>裁決</b>，不是「印出來僅供參考」。
+<b>歸屬：</b><code>cap_en-lbmtp-instrument.json</code> 的 <code>created = 2026-09-18T00:51:56</code>，
+而對應產物的 mtime 是 <code>00:26:44</code>（<code>libllama-bench-impl.dylib</code>）與
+<code>00:26:25</code>（<code>llama-bench.cpp</code>）⇒ 兩者不重疊，這份 PASS 可以歸屬於當前這棵樹。</p>
+
+<h2 id="s10">10. 復現</h2>
+
+<pre><code># 兩輪各跑一次；臂序是重點
+python3 /tmp/en_mtp_pair.py        # 正序 off,on ×3
+python3 /tmp/en_mtp_pair_rev.py    # 反序 on,off ×2（由前者的 ARMS/OUT 改寫而來）
+
+# 分析：配對比值 + 順序校正
+#   ratio = median(samples[1:])_on / median(samples[1:])_off，逐對算
+#   M = sqrt(median(AB ratios) × median(BA ratios))
+
+# 產物（已歸檔）
+Backup/cgc_logs/en_mtp_pair_20260918/          # 第一輪 6 臂 + 兩個驅動腳本
+Backup/cgc_logs/en_mtp_pair_20260918/rev/      # 第二輪 4 臂</code></pre>
+
+<p class="small">每個臂的 <code>stdout.json</code>（llama-bench 的 <code>-o json</code>，含
+<code>samples_ts</code>）與 <code>stderr.log</code>（含 <code>CGC-MTP-PERF</code> 與池統計）都保留；
+<code>summary.json</code> 是腳本自己寫的匯總。</p>
+
+<hr>
+<p class="small">本文是 D5 的附件，與它所屬的 commit 綁定。量測方法論的權威版本在
+<code>~/.workbuddy/skills/cgc-decode-attribution/SKILL.md</code> 的「鐵律」第 1 條；
+原始資料在 <code>docs/MTP_NET_EFFECT_PAIRED_2026-09-18.md</code>。</p>
+
+</div>
+</body>
+</html>

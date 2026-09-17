@@ -27,6 +27,18 @@
 #include "ggml.h"
 #include "llama.h"
 #include "log.h"
+// [CGC MTP instrument 2026-09-17] The speculative path for the MTP instrument (see
+// test_gen_spec below). llama-bench already links llama-common ("common.h" above is the
+// CGC-fork's common params), so these two headers are the whole wiring requirement.
+//
+// 2026-09-17 (later): the instrument is selected by `--spec-type draft-mtp`, a normal CLI option,
+// not by the LLAMA_BENCH_SPEC environment variable. The MTP head is an OPTIONAL block inside ONE
+// GGUF, and `--spec-type` is already the knob the server exposes for it (run_server.sh), so
+// "which configuration am I measuring" must not have to travel through an environment variable
+// that only makes sense for a particular file. LLAMA_BENCH_SPEC is kept as a DEPRECATED alias
+// (it maps onto the flag and says so on stderr) so that existing drivers keep running.
+#include "sampling.h"
+#include "speculative.h"
 
 #ifdef _WIN32
 #    define WIN32_LEAN_AND_MEAN
@@ -362,6 +374,13 @@ struct cmd_params {
     bool                             no_warmup;
     output_formats                   output_format;
     output_formats                   output_format_stderr;
+    // [CGC MTP instrument 2026-09-17] Speculative decoding for the gen cell. `spec_type` is the CLI
+    // surface (--spec-type, same vocabulary as the server); `spec_types` is the resolved form and is
+    // what the run actually consults. Empty `spec_types` = plain decode cell, i.e. the shape that
+    // stays comparable with upstream's tg row.
+    std::vector<std::string>             spec_type;
+    int                                  spec_draft_n_max;
+    std::vector<common_speculative_type> spec_types;
 };
 
 static const cmd_params cmd_params_defaults = {
@@ -407,6 +426,9 @@ static const cmd_params cmd_params_defaults = {
     /* no_warmup            */ false,
     /* output_format        */ MARKDOWN,
     /* output_format_stderr */ NONE,
+    /* spec_type            */ {},
+    /* spec_draft_n_max     */ 3,
+    /* spec_types           */ {},
 };
 
 static void print_usage(int /* argc */, char ** argv) {
@@ -471,6 +493,14 @@ static void print_usage(int /* argc */, char ** argv) {
     printf("                                                    (default: disabled)\n");
     printf("  -nopo, --no-op-offload <0|1>                      (default: 0)\n");
     printf("  --no-host <0|1>                                   (default: %s)\n", join(cmd_params_defaults.no_host, ",").c_str());
+    printf("  --spec-type <type>                                speculative decoding for the gen cell. Same names as the server;\n");
+    printf("                                                    only 'draft-mtp' is implemented here, and it uses the TARGET\n");
+    printf("                                                    model's own in-file MTP block (self-referential draft: no\n");
+    printf("                                                    separate draft model file).\n");
+    printf("                                                    known types: %s\n", common_speculative_all_types_str());
+    printf("                                                    (default: none -- plain decode cell)\n");
+    printf("  --spec-draft-n-max <n>                            max draft tokens for --spec-type draft-mtp, 1..16 (default: %d)\n", cmd_params_defaults.spec_draft_n_max);
+    printf("                                                    (without --spec-type this is inert)\n");
     printf("\n");
     printf(
         "Multiple values can be given for each parameter by separating them with ','\n"
@@ -524,6 +554,11 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
     params.progress             = cmd_params_defaults.progress;
     params.no_warmup            = cmd_params_defaults.no_warmup;
     params.offline              = cmd_params_defaults.offline;
+    // [CGC MTP instrument 2026-09-17] cmd_params is default-CONSTRUCTED here and then filled field
+    // by field (it is not copied from cmd_params_defaults), so every field that has a non-zero
+    // default has to be listed. Missing this one made a bare `--spec-type draft-mtp` fail its own
+    // range check with "got 0" -- caught by the interface test, not by the compiler.
+    params.spec_draft_n_max     = cmd_params_defaults.spec_draft_n_max;
 
     if (const char * env = getenv("HF_TOKEN")) {
         params.hf_token = env;
@@ -1071,6 +1106,21 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
                 for (const auto & v : p) {
                     params.fit_params_min_ctx.push_back(std::stoul(v));
                 }
+            } else if (arg == "--spec-type") {
+                // [CGC MTP instrument 2026-09-17] Long form only: `-st` is --single-turn in this
+                // fork, and upstream's --spec-type has no short form either (common/arg.cpp:4088).
+                if (++i >= argc) {
+                    invalid_param = true;
+                    break;
+                }
+                auto p = string_split<std::string>(argv[i], split_delim);
+                params.spec_type.insert(params.spec_type.end(), p.begin(), p.end());
+            } else if (arg == "--spec-draft-n-max") {
+                if (++i >= argc) {
+                    invalid_param = true;
+                    break;
+                }
+                params.spec_draft_n_max = std::stoi(argv[i]);
             } else {
                 invalid_param = true;
                 break;
@@ -1086,6 +1136,61 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
         fprintf(stderr, "error: invalid parameter for argument: %s\n", arg.c_str());
         print_usage(argc, argv);
         exit(1);
+    }
+
+    // [CGC MTP instrument 2026-09-17] Speculative-path selection, resolved ONCE here so that every
+    // later consumer (the model load in to_llama_mparams(), the gen cell) reads the same answer.
+    // Order: CLI first, then the deprecated environment shim. Nothing REQUIRES an env var -- see the
+    // header note at the top of this file.
+    if (params.spec_type.empty()) {
+        if (getenv("LLAMA_BENCH_SPEC") != nullptr) {
+            params.spec_type = { "draft-mtp" };
+            fprintf(stderr, "llama-bench: warning: LLAMA_BENCH_SPEC is deprecated; use `--spec-type draft-mtp`\n");
+            if (const char * n = getenv("LLAMA_BENCH_SPEC_DRAFT_N_MAX")) {
+                params.spec_draft_n_max = std::stoi(n);
+                fprintf(stderr, "llama-bench: warning: LLAMA_BENCH_SPEC_DRAFT_N_MAX is deprecated; use `--spec-draft-n-max %s`\n", n);
+            }
+        }
+    }
+
+    try {
+        params.spec_types = common_speculative_types_from_names(params.spec_type);
+    } catch (const std::exception & e) {
+        fprintf(stderr, "error: %s\n", e.what());
+        fprintf(stderr, "       known spec types: %s\n", common_speculative_all_types_str());
+        exit(1);
+    }
+
+    // 'none' is upstream's way of saying "explicitly disabled" (common_speculative_types_from_names
+    // returns exactly {NONE} for it), so it maps onto the empty set here rather than onto a type.
+    if (params.spec_types.size() == 1 && params.spec_types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+        params.spec_types.clear();
+    }
+
+    // This instrument implements draft-mtp and nothing else. Saying so and stopping is the point:
+    // falling back silently to the plain gen cell would emit a throughput number under a command
+    // line that claims it measured the speculative path.
+    for (const auto t : params.spec_types) {
+        if (t != COMMON_SPECULATIVE_TYPE_DRAFT_MTP) {
+            fprintf(stderr, "error: --spec-type %s is not implemented by this instrument (only draft-mtp)\n",
+                    common_speculative_type_to_str(t).c_str());
+            exit(1);
+        }
+    }
+
+    // Draft depth is a measured knob, so an out-of-range value is an error, not a silent clamp.
+    if (!params.spec_types.empty() && (params.spec_draft_n_max < 1 || params.spec_draft_n_max > 16)) {
+        fprintf(stderr, "error: --spec-draft-n-max must be in [1,16] (got %d)\n", params.spec_draft_n_max);
+        exit(1);
+    }
+
+    if (!params.spec_types.empty()) {
+        // The number produced by the gen cell changes meaning under this flag, so the run says so
+        // before it starts rather than leaving it to whoever reads the CSV afterwards.
+        fprintf(stderr, "llama-bench: [spec] %s enabled (draft n_max=%d): the gen cell measures the SPECULATIVE path "
+                        "and is NOT comparable with a plain -n decode cell; the draft model is the target model "
+                        "itself (its in-file MTP block)\n",
+                common_speculative_type_name_str(params.spec_types).c_str(), params.spec_draft_n_max);
     }
 
     if (!params.hf_repo.empty()) {
@@ -1231,6 +1336,12 @@ struct cmd_params_instance {
     bool               no_host;
     size_t             fit_target;
     uint32_t           fit_min_ctx;
+    // [CGC MTP instrument 2026-09-17] Carried on the instance because it decides the MODEL LOAD
+    // (whether the MTP block is kept), not just the test loop. The initialisers here exist only so
+    // that the aggregate initialisers below stay warning-free; get_cmd_params_instances() assigns
+    // both for every instance, so no instance can be built with a stale value.
+    std::vector<common_speculative_type> spec_types       = {};
+    int                                  spec_draft_n_max = 0;
 
     llama_model_params to_llama_mparams() const {
         llama_model_params mparams = llama_model_default_params();
@@ -1246,6 +1357,18 @@ struct cmd_params_instance {
         mparams.no_host       = no_host;
 
         mparams.expert_cache_bytes = expert_cache_bytes;
+
+        // [CGC MTP instrument 2026-09-17] `--spec-type draft-mtp` needs the MTP block to EXIST in
+        // the loaded model. The qwen35moe loader creates layers[n_layer].nextn.* with TENSOR_SKIP
+        // unless llama_model_params::load_mtp is set (models/qwen35moe.cpp:45), and the draft
+        // context that common_speculative_init_from_params builds asserts on those tensors
+        // (models/qwen35moe.cpp:566 "MTP block missing nextn.eh_proj"). This is the SAME rule the
+        // server applies, so it is written the same way as common.cpp's
+        // common_model_params_to_llama() rather than as a second opinion -- it has to be set HERE,
+        // at load time, because the test loop runs long after the model is mapped. Observed without
+        // it: instant GGML_ASSERT + SIGABRT (rc=-6) at `llama_init_from_model` <-
+        // `common_speculative_init_from_params` in 11 s.
+        mparams.load_mtp = std::find(spec_types.begin(), spec_types.end(), COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != spec_types.end();
 
         if (n_cpu_moe <= 0) {
             if (tensor_buft_overrides.empty()) {
@@ -1289,6 +1412,8 @@ struct cmd_params_instance {
     bool equal_mparams(const cmd_params_instance & other) const {
         return model == other.model && n_gpu_layers == other.n_gpu_layers && n_cpu_moe == other.n_cpu_moe &&
                expert_cache_bytes == other.expert_cache_bytes &&
+               // load_mtp is derived from spec_types, so it is part of the mparams identity.
+               spec_types == other.spec_types &&
                split_mode == other.split_mode &&
                main_gpu == other.main_gpu && tensor_split == other.tensor_split &&
                load_mode == other.load_mode && devices == other.devices && no_host == other.no_host &&
@@ -1456,6 +1581,15 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
         }
     }
     // clang-format on
+
+    // [CGC MTP instrument 2026-09-17] The speculative selection is per-INVOCATION, not per-instance:
+    // every instance of one run shares it, and it also has to reach to_llama_mparams() (it decides
+    // whether the MTP block is loaded), which is why it is copied onto the instances here instead of
+    // being read from the environment at the point of use.
+    for (auto & inst : instances) {
+        inst.spec_types       = params.spec_types;
+        inst.spec_draft_n_max = params.spec_draft_n_max;
+    }
 
     return instances;
 }
@@ -2185,6 +2319,350 @@ static bool test_gen(llama_context * ctx, int n_gen, int n_threads) {
     return true;
 }
 
+// [CGC MTP instrument 2026-09-17] Speculative generation -- the missing half of the MTP instrument.
+//
+// WHY THIS EXISTS. `llama-bench` is the project's single instrument of record for prefill and
+// decode (docs/PROD_MATRIX_STANDARD_*.html), but it has NO speculative support at all: grepping
+// tools/llama-bench/ for speculat|spec_type|draft|mtp returns zero hits, and the test_gen below
+// generates tokens with std::rand() % n_vocab -- it never looks at logits. So M4's product (the
+// MTP gain) had no instrument of record: `--cells decode` measures MTP-OFF by construction,
+// because llama-bench never runs the server and therefore never reads the profile's mtp=1.
+//
+// HOW IT IS SELECTED: `--spec-type draft-mtp` (or none). NOT a cell, and NOT an env var.
+// Not a cell, because the existing `decode` cell has to keep its shape bit-for-bit -- it must stay
+// comparable with upstream's `tg128 @ d512` row, so it must not grow a spec branch that fires by
+// default; registering it as a proper cell (and deciding what it may be quoted next to) belongs in
+// prod_matrix.py + the standard document, not here.
+// Not an env var, because the MTP head is an optional block inside ONE GGUF and `--spec-type` is
+// already the knob the server uses for it: an interface that requires a particular environment
+// variable makes the measurement look file-specific when it is not. LLAMA_BENCH_SPEC still works
+// as a DEPRECATED alias (see parse_cmd_params) so existing drivers do not break; it is translated
+// into the flag, announced on stderr, and absent from every behavioural path below.
+//
+// SHAPE. Same verbs, same order, as examples/speculative-simple/speculative-simple.cpp:
+//   draft -> verify decode -> common_speculative_process -> sample_and_accept_n -> accept.
+// Nothing here consumes the sampled ids as output, so there is no EOG handling and no prompt
+// bookkeeping -- this measures throughput only.
+//
+// WHAT CHANGED AFTER THE FIRST REAL RUN (2026-09-17 21:1x-22:1x, all four found by running it):
+//   1. argv must come from llama_bench_matrix.forward_argv() -- hand-building it (only `-m`) made
+//      every attempt abort in ggml_metal_synchronize with "command buffer 8 failed (status 5,
+//      Insufficient Memory)", which looks exactly like an out-of-memory machine and is not one.
+//   2. mparams.load_mtp has to be set at LOAD time (see to_llama_mparams): the loader otherwise
+//      skips the MTP block and graph_mtp asserts on it.
+//   3. The draft context must be handed over: release_context() + draft.ctx_tgt/ctx_dft.
+//   4. Partial acceptance uses a common_prompt_checkpoint restore, NOT a trim -- the context
+//      reports SEQ_RM_TYPE_FULL, i.e. it cannot remove a partial sequence, and trimming made the
+//      next llama_decode return -1 silently. `LLAMA_BENCH_SPEC_OLDPARTIAL=1` keeps the old path
+//      for comparison; `LLAMA_BENCH_SPEC_DBG=1` traces every round.
+//   5. THE DRAFT CONTEXT MUST BE BUILT BEFORE THE TARGET DECODES ANYTHING. Built late -- which is
+//      where it used to be, inside this function -- the first verify batch of the first round
+//      fails with ret=-1 and teardown prints CGC-M2-UNREPOINT. It is invisible on short shapes and
+//      fatal on the production one. See bench_spec_setup() for the full account.
+//
+// ONE REAL SIMPLIFICATION remains vs speculative-simple:
+//   `dist = nullptr` in the draft params, so the accept step uses the token-id comparison --
+//   i.e. the PRE-M4-1 rule. That is the correct control arm: to measure what the rejection
+//   rule buys, run this same function twice with CGC_MTP_REJECTION unset / set.
+// [CGC MTP instrument 2026-09-18] WHY THE SETUP IS OUTSIDE test_gen_spec -- the ordering fix.
+//
+// The draft context used to be created inside test_gen_spec(), i.e. at the START OF THE MEASURED
+// RUN. That works on a short shape and fails on the production one, with a failure that looks like
+// anything but an ordering bug:
+//
+//     test_gen_spec: verify decode failed: ret=-1 n_tokens=4(pos 0..3) n_ctx=768 n_past=1 draft=3
+//     llama_bench: error: failed to run gen
+//     CGC-M2-UNREPOINT: teardown restored 120 expert tensor(s) to their model storage before
+//                       freeing 6 slab(s) (a second context built from this model would otherwise
+//                       read a freed buffer)
+//
+// The FIRST llama_decode of the FIRST round returns -1, and llama_decode prints nothing for it.
+// Three observations pin this on WHEN the second context is built, not on what it is:
+//
+//   * `-n 16 -d 0` works, and so does every short shape -- the expert cache is never touched
+//     enough for the pool to matter.
+//   * `-n 128 -d 512` fails, and `-n 128 -d 512 --no-warmup` fails identically. So the trigger is
+//     not the warmup: it is the DEPTH PREFILL (`-d 512`), which is what fills the pool with slabs.
+//   * llama-server runs MTP fine, and it builds the draft context at STARTUP -- via common.cpp's
+//     `--spec-type draft-mtp` handling -- before any prompt is evaluated.
+//
+// In this file the order for one instance is: target context, warmup prompt/gen, then the per-rep
+// DEPTH PREFILL, then the measured run whose generation calls test_gen_spec.
+//
+// => It is built here, by the caller, right after the target context exists and before anything is
+//    decoded through it: the order llama-server uses, and the only one under which the second
+//    context cannot disturb the expert-tensor mapping the pool installs. The speculator, the
+//    sampler and the loop still run at the measured point, so what is being timed did not move.
+//
+// HONEST RESULT, measured 2026-09-18 00:22: moving the construction up here did NOT fix the
+// failure. The production shape still died on its first verify batch, byte-identically. The real
+// cause was the batch POSITION, not the construction order -- see the n_past initialiser in
+// test_gen_spec. This ordering is kept because it is harmless and strictly closer to the server.
+//
+// Ownership: the draft context lives in this state and is freed BEFORE the target context, because
+// the speculator's MTP impl holds a pointer to it. See the reset() call next to llama_free(ctx).
+struct bench_spec_state {
+    // Declaration order is destruction order inverted: `spec` may touch `ctx_dft` while dying, so
+    // ctx_dft has to outlive it.
+    common_params                                            params;
+    common_speculative_init_result_ptr                       init;
+    std::unique_ptr<llama_context, void (*)(llama_context *)> ctx_dft {
+        nullptr, [](llama_context * c) { if (c != nullptr) { llama_free(c); } } };
+    common_speculative_ptr                                   spec;
+    common_sampler_ptr                                       smpl;
+
+    void reset() {
+        smpl.reset();
+        spec.reset();
+        ctx_dft.reset();
+        init.reset();
+    }
+};
+
+// Build the MTP draft context and the speculator. Must be called BEFORE the target context decodes
+// anything (see the block comment on bench_spec_state). False + a message on stderr on failure.
+static bool bench_spec_setup(bench_spec_state & s, llama_model * model, llama_context * ctx,
+                             const std::vector<common_speculative_type> & spec_types,
+                             int32_t spec_draft_n_max) {
+    // The spec parameters come from the command line (`--spec-type` / `--spec-draft-n-max`), i.e.
+    // from the same vocabulary the server uses for the same two knobs in run_server.sh. n_max is
+    // the knob which trades draft depth against per-round cost -- the one an A/B actually moves --
+    // so it is a flag, not an environment variable, and its range is validated in parse_cmd_params()
+    // rather than clamped here.
+    s.params.speculative.types       = spec_types;
+    s.params.speculative.draft.n_max = spec_draft_n_max;
+
+    // TWO objects, and the order matters. `common_speculative_init_from_params` does NOT return
+    // the speculator -- it returns a holder for the MTP draft CONTEXT, and it writes that context
+    // into params.speculative.draft.ctx_dft. The speculator itself is then built from those same
+    // params by common_speculative_init(). Both must outlive the loop, and they must share ONE
+    // common_params instance or the second call will not see what the first built.
+    s.init = common_speculative_init_from_params(s.params, model, ctx);
+    if (!s.init) {
+        fprintf(stderr, "%s: failed to initialise the MTP draft context\n", __func__);
+        return false;
+    }
+
+    // [CGC MTP instrument 2026-09-17] The draft context has to be HANDED to the speculator, not
+    // just created. common_speculative_init() enables DRAFT_MTP only when
+    // `params.draft.ctx_dft != nullptr` (speculative.cpp:2633) -- with it null the constructor
+    // builds an empty impl list and returns nullptr, which is what "failed to initialise the
+    // speculative path" was. Mirrors examples/speculative-simple/speculative-simple.cpp:142
+    // (`ctx_dft.reset(spec_init->release_context())`) and :181
+    // (`params.speculative.draft.ctx_dft = ctx_dft.get()`). release_context() transfers ownership
+    // out of the holder, so the pointer must be owned and freed here.
+    s.ctx_dft.reset(s.init->release_context());
+    if (!s.ctx_dft) {
+        fprintf(stderr, "%s: the MTP draft context could not be released\n", __func__);
+        return false;
+    }
+    // [CGC MTP instrument 2026-09-17] BOTH sides have to be handed over, not just the draft one.
+    // common_speculative_impl_draft_mtp asserts `ctx_tgt && ctx_dft` (speculative.cpp:1318), so with
+    // ctx_tgt left null the next thing you see is an abort inside the impl ctor. Mirrors
+    // examples/speculative-simple/speculative-simple.cpp:180-181:
+    //     params.speculative.draft.ctx_tgt = ctx_tgt;
+    //     params.speculative.draft.ctx_dft = ctx_dft.get();
+    s.params.speculative.draft.ctx_tgt = ctx;
+    s.params.speculative.draft.ctx_dft = s.ctx_dft.get();
+
+    s.spec.reset(common_speculative_init(s.params.speculative, 1));
+    if (!s.spec) {
+        fprintf(stderr, "%s: failed to initialise the speculative path\n", __func__);
+        return false;
+    }
+
+    s.smpl.reset(common_sampler_init(model, s.params.sampling));
+    if (!s.smpl) {
+        fprintf(stderr, "%s: failed to initialise the sampler\n", __func__);
+        return false;
+    }
+
+    return true;
+}
+
+static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, int n_threads,
+                          bench_spec_state & s) {
+    llama_set_n_threads(ctx, n_threads, n_threads);
+
+    const llama_vocab * vocab   = llama_model_get_vocab(model);
+    const int32_t       n_vocab = llama_vocab_n_tokens(vocab);
+    const llama_seq_id  seq_id  = 0;
+
+    // [CGC MTP instrument 2026-09-18] The speculator, the draft context and the sampler are built by
+    // bench_spec_setup(), which the caller runs BEFORE the target context decodes anything. Only the
+    // measured part is left here. Raw aliases so the loop below reads exactly as it did before.
+    common_speculative * spec = s.spec.get();
+    common_sampler     * smpl = s.smpl.get();
+
+    llama_tokens prompt; // handed to the draft params; never fed to the target (see SHAPE above)
+    llama_tokens draft;
+
+    // [CGC MTP instrument 2026-09-17] Checkpoint for partial acceptance. common_context_can_seq_rm()
+    // reports COMMON_CONTEXT_SEQ_RM_TYPE_FULL for this context, which in this fork means "only a
+    // WHOLE sequence can be removed" -- i.e. partial removal is NOT supported (speculative-simple
+    // says it out loud at :195: use_ckpt_tgt => "context does not support partial sequence
+    // removal"). Trimming a partial accept anyway made the NEXT llama_decode return -1, silently,
+    // on round 3. The reference's answer is to restore a saved state and re-verify the accepted
+    // tokens (speculative-simple.cpp:570-593) -- that is what this does.
+    //
+    // Why the type is NOT probed here: common_context_can_seq_rm() DECODES 2 tokens [0,0] through
+    // the full trunk and clears the memory, but it does NOT reset the expert cache -- it fills
+    // slots and bumps LRU ticks (speculative-simple.cpp:184-189, "[CGC bit-bisect v5]"). This
+    // instrument does not want that side effect before the measured run, and the checkpoint path
+    // is strictly safe, so it is used unconditionally. `LLAMA_BENCH_SPEC_OLDPARTIAL=1` selects the
+    // old (broken) trim instead, for A/B of the two mechanisms.
+    common_prompt_checkpoint ckpt;
+
+    struct llama_batch batch = llama_batch_init(llama_n_batch(ctx), 0, 1);
+
+    llama_token id_last = llama_vocab_get_add_bos(vocab) ? llama_vocab_bos(vocab) : std::rand() % n_vocab;
+
+    // [CGC MTP instrument 2026-09-18] Start at the context's ACTUAL next position, not at 0.
+    //
+    // The batch positions below are explicit, while test_gen() -- the non-spec path -- hands
+    // llama_batch_get_one() to llama and lets it allocate the position. So only THIS path has to
+    // know where it is. With `-d 512` the depth prefill has already written pos 0..511 in this rep
+    // (llama-bench runs depth, then prompt, then gen), and asking for pos 0 again makes the FIRST
+    // llama_decode return -1 -- silently, because llama_decode prints nothing for it. That single
+    // mistake is why every short shape worked (`-n 16 -d 0` has no depth run) and every production
+    // shape failed, and why moving the draft-context construction earlier did not help.
+    //
+    // Empty memory returns -1 here, so a shape without a depth run still starts at 0 exactly as
+    // before.
+    int n_past = (int) llama_memory_seq_pos_max(llama_get_memory(ctx), seq_id) + 1;
+    int n_done = 0;
+
+    common_speculative_begin(spec, seq_id, prompt);
+
+    while (n_done < n_gen) {
+        if (draft.empty()) {
+            // The two halves of the checkpoint are taken at DIFFERENT points, exactly as the
+            // reference does it: update_pos before the draft (speculative-simple.cpp:421) and
+            // update_tgt after it (:452). The order matters for MTP because the draft context
+            // SHARES KV with the target, so by the time update_tgt runs the draft step has already
+            // written into the same memory -- and ckpt.pos_max stays the PRE-draft boundary.
+            ckpt.update_pos(n_past,
+                    llama_memory_seq_pos_min(llama_get_memory(ctx), seq_id),
+                    llama_memory_seq_pos_max(llama_get_memory(ctx), seq_id));
+
+            common_speculative_get_draft_params(spec, seq_id) = {
+                /* .drafting = */ true,
+                /* .n_max    = */ -1,
+                /* .n_past   = */ n_past,
+                /* .id_last  = */ id_last,
+                /* .prompt   = */ &prompt,
+                /* .result   = */ &draft,
+                /* .dist     = */ nullptr,
+            };
+            common_speculative_draft(spec);
+
+            ckpt.update_tgt(ctx, seq_id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+        }
+
+        // [CGC MTP instrument 2026-09-17] Bound the verify batch by the context. The batch needs
+        // 1 + draft.size() free positions, and llama-bench sizes n_ctx = n_prompt + n_gen + n_depth
+        // -- so a short `-n` leaves NO headroom (with -n 16 -d 0 the context is 16). Without this
+        // guard the loop walks off the end of the context and llama_decode() fails, which showed up
+        // as "failed to decode the verify batch" after 6 rounds. The production decode cell
+        // (-n 128 -d 512 => n_ctx 640) has headroom, but the guard makes short shapes usable too.
+        if (n_past + (int) draft.size() + 1 > (int) llama_n_ctx(ctx)) {
+            break;
+        }
+
+        // verify batch: [id_last, draft0 .. draftN-1]
+        common_batch_clear(batch);
+        common_batch_add  (batch, id_last, n_past++, { seq_id }, true);
+        for (size_t i = 0; i < draft.size(); ++i) {
+            common_batch_add(batch, draft[i], n_past + (llama_pos) i, { seq_id }, true);
+        }
+
+        const int ret = llama_decode(ctx, batch);
+        if (ret != 0) {
+            fprintf(stderr, "%s: verify decode failed: ret=%d n_tokens=%d(pos %d..%d) n_ctx=%d n_past=%d draft=%zu n_batch=%d\n",
+                    __func__, ret, (int) batch.n_tokens,
+                    batch.n_tokens > 0 ? (int) batch.pos[0] : -1,
+                    batch.n_tokens > 0 ? (int) batch.pos[batch.n_tokens - 1] : -1,
+                    (int) llama_n_ctx(ctx), n_past, draft.size(), (int) llama_n_batch(ctx));
+            llama_batch_free(batch);
+            return false;
+        }
+
+        if (getenv("LLAMA_BENCH_SPEC_DBG") != nullptr) {
+            fprintf(stderr, "SPECDBG round: n_done=%d n_past=%d draft=%zu\n", n_done, n_past - 1, draft.size());
+        }
+
+        common_speculative_process(spec, batch);
+
+        // Save the sampler state before sampling. The replay path below has to put it back, or the
+        // re-verify samples a DIFFERENT token than the round that was rolled back (the RNG advanced)
+        // and the same partial acceptance repeats -- observed as several consecutive
+        // "SPECDBG partial-restore: n_past=12 ..." rounds that commit nothing. Both references do
+        // this: speculative-simple.cpp:539-542 clones before sampling and moves it back at :588,
+        // and llama-server keeps one per slot (server-context.cpp:4218 `common_sampler_copy`).
+        common_sampler_ptr smpl_save(common_sampler_clone(smpl));
+
+        std::vector<int> idxs(draft.size() + 1);
+        for (size_t i = 0; i < idxs.size(); ++i) {
+            idxs[i] = (int) i;
+        }
+
+        auto ids = common_sampler_sample_and_accept_n(smpl, ctx, idxs, draft, nullptr);
+        GGML_ASSERT(!ids.empty());
+
+        // partial acceptance: the target decoded more positions than we are keeping, and this
+        // context cannot remove a PARTIAL sequence (it reports SEQ_RM_TYPE_FULL -- see the
+        // common_prompt_checkpoint comment above). So: restore the checkpoint taken before this
+        // batch, and let the accepted tokens become the next draft -- they get re-verified from a
+        // consistent state. Mirrors speculative-simple.cpp:570-593 and, for a server-shaped flow,
+        // server-context.cpp:4186-4221, including the three things that are easy to get wrong: it
+        // does NOT call common_speculative_accept (the tokens are not committed), it does NOT
+        // advance n_past/n_done/id_last, and it DOES restore the sampler.
+        if (ids.size() - 1 < draft.size() && getenv("LLAMA_BENCH_SPEC_OLDPARTIAL") == nullptr) {
+            draft = std::move(ids);
+
+            ckpt.load_tgt(ctx, seq_id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+            llama_memory_seq_rm(llama_get_memory(ctx), seq_id, ckpt.pos_max + 1, -1);
+
+            common_sampler_copy(smpl_save.get(), smpl);
+
+            n_past = (int) ckpt.n_tokens;
+
+            if (getenv("LLAMA_BENCH_SPEC_DBG") != nullptr) {
+                fprintf(stderr, "SPECDBG partial-restore: n_past=%d ids(as draft)=%zu pos_max=%d\n",
+                        n_past, draft.size(), (int) ckpt.pos_max);
+            }
+            continue;
+        }
+
+        // The old, WRONG path: trim the unaccepted positions away. Kept behind an env so the two
+        // mechanisms can be compared from one binary; it made the next llama_decode return -1.
+        if (ids.size() - 1 < draft.size() && getenv("LLAMA_BENCH_SPEC_DBG") != nullptr) {
+            fprintf(stderr, "SPECDBG partial-trim (OLDPARTIAL): ids=%zu draft=%zu\n", ids.size(), draft.size());
+        }
+        if (ids.size() - 1 < draft.size()) {
+            llama_memory_seq_rm(llama_get_memory(ctx), seq_id, n_past + (llama_pos) ids.size() - 1, -1);
+        }
+
+        // full acceptance (or the OLDPARTIAL fallback): commit the tokens to the speculator, then
+        // account for them. Accept is called HERE and not before the partial branch -- the reference
+        // has it at speculative-simple.cpp:596, past the checkpoint path, so a restored round never
+        // commits anything.
+        common_speculative_accept(spec, seq_id, (uint16_t) (ids.size() - 1));
+
+        n_past += (int) ids.size() - 1;
+        n_done += (int) ids.size();
+        id_last = ids.back();
+
+        draft.clear();
+    }
+
+    llama_synchronize(ctx);
+    llama_batch_free(batch);
+
+    common_speculative_print_stats(spec);
+    return true;
+}
+
 static void llama_null_log_callback(enum ggml_log_level level, const char * text, void * user_data) {
     (void) level;
     (void) text;
@@ -2372,6 +2850,20 @@ int llama_bench(int argc, char ** argv) {
 
         llama_attach_threadpool(ctx, threadpool, NULL);
 
+        // [CGC MTP instrument 2026-09-18] Build the speculative side BEFORE the target context
+        // decodes anything. The warmup below already touches the expert cache and the per-rep depth
+        // prefill definitely does; building the draft context after that is what made every
+        // production-shaped run fail on its first verify batch. See bench_spec_state.
+        const bool cgc_spec_on = !params.spec_types.empty();
+        bench_spec_state spec_state;
+        if (cgc_spec_on &&
+            !bench_spec_setup(spec_state, lmodel, ctx, params.spec_types, params.spec_draft_n_max)) {
+            fprintf(stderr, "%s: error: failed to set up the speculative path\n", __func__);
+            llama_free(ctx);
+            llama_model_free(lmodel);
+            exit(1);
+        }
+
         // warmup run
         if (!params.no_warmup) {
             if (t.n_prompt > 0) {
@@ -2461,7 +2953,15 @@ int llama_bench(int argc, char ** argv) {
                     fprintf(stderr, "llama-bench: benchmark %d/%zu: generation run %d/%d\n", params_idx, params_count,
                             i + 1, params.reps);
                 }
-                bool res = test_gen(ctx, t.n_gen, t.n_threads);
+                // [CGC MTP instrument 2026-09-17] `--spec-type draft-mtp` selects the speculative
+                // generation path (test_gen_spec). It stays a MODE rather than a registered cell so
+                // that the existing `decode` cell keeps its shape bit-for-bit -- it must stay
+                // comparable with upstream's `tg128 @ d512` row. Absent the flag ⇒ previous
+                // behaviour, which is why `--cells decode` measures MTP-off by construction.
+                // `cgc_spec_on` and `spec_state` are built ABOVE, before the warmup -- see the block
+                // comment on bench_spec_state for why the draft context cannot be built here.
+                bool res = cgc_spec_on ? test_gen_spec(ctx, lmodel, t.n_gen, t.n_threads, spec_state)
+                                       : test_gen(ctx, t.n_gen, t.n_threads);
                 if (!res) {
                     fprintf(stderr, "%s: error: failed to run gen\n", __func__);
                     llama_free(ctx);
@@ -2485,6 +2985,12 @@ int llama_bench(int argc, char ** argv) {
         }
 
         llama_perf_context_print(ctx);
+
+        // [CGC MTP instrument 2026-09-18] Release the draft context BEFORE the target context: the
+        // speculator's MTP impl holds a pointer to it, and spec_state's destructor alone would run
+        // after this llama_free(ctx). The failure paths above call exit(1), so this is the only
+        // place where the order is observable.
+        spec_state.reset();
 
         llama_free(ctx);
 
