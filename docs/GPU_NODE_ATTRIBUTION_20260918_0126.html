@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>節點級 GPU 時間儀器與 L0 的裁決 — flashkv-devserver 2026-09-18</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#1f2328; --muted:#57606a; --line:#d0d7de; --soft:#f6f8fa;
+    --blue:#0969da; --green:#1a7f37; --red:#cf222e; --amber:#9a6700; --purple:#8250df; --gray:#6e7781;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Helvetica,Arial,sans-serif;
+       line-height:1.7;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1040px;margin:0 auto;padding:32px 20px 80px}
+  h1{font-size:26px;line-height:1.35;margin:0 0 6px}
+  h2{font-size:19px;margin:36px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:24px 0 8px}
+  p,li{font-size:14.5px}
+  .meta{color:var(--muted);font-size:13px;margin-bottom:18px}
+  .tag{display:inline-block;font-size:12px;line-height:18px;padding:1px 8px;border-radius:999px;
+       border:1px solid var(--line);margin-right:6px;vertical-align:middle;white-space:nowrap}
+  .t-blue{color:var(--blue);border-color:#b6d8fb;background:#ddf4ff}
+  .t-green{color:var(--green);border-color:#a6e3b4;background:#dafbe1}
+  .t-red{color:var(--red);border-color:#f5b8b5;background:#ffebe9}
+  .t-amber{color:var(--amber);border-color:#e8ce8f;background:#fff8c5}
+  .t-purple{color:var(--purple);border-color:#d7c4f7;background:#f0e8ff}
+  .t-gray{color:var(--gray);border-color:#d8dee4;background:#f6f8fa}
+  table{border-collapse:collapse;width:100%;margin:12px 0 16px;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num,th.num{white-space:nowrap;font-variant-numeric:tabular-nums}
+  code{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;
+       background:var(--soft);padding:1px 4px;border-radius:4px}
+  pre{background:var(--soft);border:1px solid var(--line);border-radius:6px;padding:12px 14px;
+      overflow-x:auto;margin:12px 0}
+  pre code{background:none;padding:0;font-size:12.5px;line-height:1.55}
+  .box{border-left:4px solid var(--blue);background:#f6f8fa;padding:10px 14px;margin:14px 0;border-radius:0 6px 6px 0}
+  .box.warn{border-color:var(--amber);background:#fff8c5}
+  .box.bad{border-color:var(--red);background:#ffebe9}
+  .box.ok{border-color:var(--green);background:#dafbe1}
+  .box.pur{border-color:var(--purple);background:#f0e8ff}
+  .box p:first-child{margin-top:0}.box p:last-child{margin-bottom:0}
+  .small{font-size:12.5px;color:var(--muted)}
+  ul{padding-left:22px}
+  svg{max-width:100%;height:auto;display:block;margin:8px auto}
+  .cap{text-align:center;font-size:12.5px;color:var(--muted);margin:-4px 0 16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>節點級 GPU 時間儀器與 L0 的裁決</h1>
+<div class="meta">
+  2026-09-18 · flashkv-devserver（llama.cpp CGC fork，引擎層線）· profile <code>prefill250</code> ·
+  pool 8 GiB · 模型 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code><br>
+  <span class="tag t-green">D5 PASS</span>
+  <span class="tag t-amber">第 2 件：否定收場</span>
+  <span class="tag t-blue">第 3 件：儀器落地</span>
+  <span class="tag t-gray">未 push</span>
+</div>
+
+<div class="box">
+<p><b>這份文件是 D5 的白皮書附件</b>（<code>CONVENTIONS.md</code> 要求每次 commit 附一份）。
+它記錄同一輪的兩件事：一件是<b>否定結果</b>（計畫書裡的「L0 的 9.46 ms」不能拿，已結案），
+一件是<b>肯定結果</b>（M3 判定書指名為「唯一活路、成本最高」的節點級 GPU 時間儀器已落地，
+而且<b>不需要 <code>MTLCounterSampleBuffer</code></b>）。</p>
+</div>
+
+<h2>§0 摘要</h2>
+
+<table>
+<tr><th style="width:88px">項目</th><th>結果</th><th class="num" style="width:170px">證據</th></tr>
+<tr>
+  <td>第 2 件<br>（L0）</td>
+  <td><b>結案：沒有可重現的異常。</b> 判準事先寫死為「L0 gpu ÷ 該臂其餘 39 層中位數」，
+      三組量測裡有兩組 &lt; 2×（其中純 decode 那組是 <b>0.46×</b>，比中位還快）。
+      7.2× 只出現在 <b>llama-bench <code>-d 512</code> ＋ MTP env 開但沒有投機</b> 的那個 regime。</td>
+  <td class="num">§1</td>
+</tr>
+<tr>
+  <td>第 3 件<br>（儀器）</td>
+  <td><b>已落地並自我驗證。</b> 用既有的 per-command-buffer 時間戳 ＋ <b>可導出</b>的節點範圍，
+      得到「每個 command buffer 覆蓋哪一段節點」⇒ 逐<b>節點種類</b>的 GPU busy 時間。
+      自我檢查（<code>seg_busy</code> 必須等於同一步的 <code>layer gpu_sum</code>）
+      在 5 個 step 上全部 <b>delta = 0.00%</b>。</td>
+  <td class="num">§2–§3</td>
+</tr>
+<tr>
+  <td>詞彙表</td>
+  <td><b>尚未調校</b>。<code>ffn_moe_gate/up/down</code> 沒有出現在表上，前三名是
+      <code>(other)</code>／<code>node</code>／<code>cache</code> ⇒ <b>先不要用這張表套 M3 的
+      「<code>ffn_moe_*</code> ≥ 40%」判準</b>。</td>
+  <td class="num">§5</td>
+</tr>
+</table>
+
+<h2>§1 第 2 件：L0 定案（否定）</h2>
+
+<h3>§1.1 判準事先寫定，寫在腳本裡</h3>
+
+<p>量測之前先把判準寫進 <code>scripts/check/decode_sweep.py</code> 的臂 docstring，
+避免事後挑一個好看的讀法：</p>
+
+<pre><code>#   ratio = L0 gpu / median(other 39 layers' gpu), per arm, median over steady steps
+#     ratio &gt;= 3 in ntok=1 only      -&gt; layout-dependent (candidate: segment 0's extra work)
+#     ratio &gt;= 3 in BOTH             -&gt; layer-independent (candidate: head-of-step ramp)
+#     ratio &lt;  2 in both             -&gt; no reproducible anomaly; the 7.2x was that run's artifact</code></pre>
+
+<p>統計量刻意取 <b>run 內比值</b>而不是跨臂水準：臂的位置本身就值 +12.5%
+（lesson <code>eng-mh-0061</code>），跨臂比會量到位置而不是形狀。</p>
+
+<h3>§1.2 三組量測</h3>
+
+<table>
+<tr><th>run</th><th>形狀</th><th class="num">L0 gpu</th><th class="num">該臂中位</th>
+    <th class="num">比值</th><th class="num">L0 union ÷ 中位</th><th class="num">steady step</th></tr>
+<tr><td>2026-09-17 23:28（llama-bench <code>-p0 -n128 -d512 -r3</code>，MTP env 開但<b>無投機</b>）</td>
+    <td><code>ntok=1</code></td><td class="num">17.88</td><td class="num">2.47</td>
+    <td class="num"><b>7.2×</b></td><td class="num">5.2×</td><td class="num">47</td></tr>
+<tr><td><code>en-l0-mtpoff</code>（HTTP，MTP env <b>關</b>）</td>
+    <td><code>ntok=1</code></td><td class="num"><b>1.29</b></td><td class="num">2.83</td>
+    <td class="num"><b>0.46×</b></td><td class="num">0.69×</td><td class="num">42</td></tr>
+<tr><td><code>en-l0-mtpon</code>（HTTP，MTP env 開 <b>＋真的投機</b>）</td>
+    <td><code>ntok=2/4</code></td><td class="num">8.01</td><td class="num">5.06</td>
+    <td class="num"><b>1.6×</b></td><td class="num"><b>0.62×</b></td><td class="num">137</td></tr>
+</table>
+
+<p><b>判準第三條成立</b>（後兩臂都 &lt; 2×）。兩個獨立的觀察把「L0 這一層有問題」排除掉：</p>
+
+<ul>
+<li><b>純 decode 裡 L0 比中位還快</b>（0.46×）。它是最先被排程的那一層，池預熱之後沒有任何額外工作。</li>
+<li>投機臂裡 L0 的 <code>gpu</code> 排第一但只有 1.6×，而它的 <b><code>union</code> 反而低於中位</b>
+    （0.62×）⇒ 抬升來自 <code>busy</code>（多個 command buffer 重疊），不是跨度。</li>
+<li>兩臂的 <code>cb</code> 前四名都是 <b>L2／L1／L0／L3</b> ⇒ 那是<b>池填充由最前面幾層付錢</b>的既有模式，
+    <b>不是 L0 這一層的性質</b>。</li>
+</ul>
+
+<h3>§1.3 那個 7.2× 屬於哪個 regime，以及兩個剩下的候選</h3>
+
+<div class="box warn">
+<p><b>7.2× 出現在 llama-bench <code>-d 512</code> 的形狀裡</b>，而那個形狀有兩個特徵同時成立：
+它先做 512 token 的 depth prefill，而且它是 <b>MTP env 全開但沒有真的投機</b>
+（<code>llama_bench_matrix.forward_argv()</code> 不轉發 <code>--spec-type</code>，
+所以 decode step 的 <code>ntok</code> 恆為 1）。<b>那不是出貨形狀。</b>
+⇒ 第 2 件的 9.46 ms 從「可引用的 L0 成本」降級為「某個非生產形狀的讀數」。</p>
+</div>
+
+<p>只在該 regime 裡還需要解釋的兩個候選（都<b>沒有</b>被進一步分離）：</p>
+<ul>
+<li><b>(a) segment 0 真的扛了額外工作。</b> <code>GGML_SCHED_DEBUG=2</code> 顯示一個 segment 圖只有
+    <b>10 個節點</b>（2 個 split：一個空的 CPU ＋ 一個 MTL0），而 segment 0 把
+    <code>model.input_embed</code>、2 個 view 與 layer 0 的 leaf／<code>attn_inp_*</code> 群併在一起。
+    但一個 <code>ntok=1</code> 的 <code>get_rows</code> 只有 8 KB ⇒ <b>這條仍缺一個環節</b>。</li>
+<li><b>(b) segment 0 付的是每步開頭的啟動坡</b>（分段的 dispatcher 在每個 segment 邊界等
+    <code>cgc_done</code> ⇒ 每一步都從「GPU 已排空」開始）。<b>但這條被上表第三列否掉</b>：
+    投機臂同樣每步開頭排空，L0 的 <code>union</code> 卻是低於中位的。</li>
+</ul>
+
+<h2>§2 第 3 件：為什麼不需要 <code>MTLCounterSampleBuffer</code></h2>
+
+<p><code>docs/M3_VERDICT_2026-09-17.md</code> 的結論是：要裁決 M3 就需要「逐節點 GPU 時間」，
+而且「唯一活路」是 Metal 的 counter sample buffer，成本最高。<b>活路對，成本判斷錯。</b>
+關鍵是 <code>ggml-metal-context.m</code> 的編碼回呼早就把圖切成固定範圍了：</p>
+
+<pre><code>// ggml-metal-context.m:1304-1315（既有程式碼，逐字）
+const int n_nodes_0 = ctx-&gt;n_nodes_0;
+const int n_nodes_1 = ctx-&gt;n_nodes_1;
+const int n_nodes_per_cb = ctx-&gt;n_nodes_per_cb;
+int idx_start = 0;
+int idx_end   = n_nodes_0;
+if (cb_idx &lt; n_cb_l) {
+    idx_start = n_nodes_0 + (                                         (cb_idx + 0) * n_nodes_per_cb);
+    idx_end   = n_nodes_0 + (MIN((cb_idx == n_cb_l - 1) ? n_nodes_1 : (cb_idx + 1) * n_nodes_per_cb, n_nodes_1));
+}</code></pre>
+
+<p>⇒ 主執行緒的 slot（<code>cb_idx == n_cb</code>）編的是 <code>[0, n_nodes_0)</code>；
+worker <code>cb_idx &lt; n_cb</code> 編的是 <code>[n_nodes_0 + cb_idx·p, …)</code>。
+而 <code>n_cb / n_nodes_0 / n_nodes_per_cb</code> 在 sched 側讀取時<b>都還在</b>
+（同一個 <code>ctx</code>，同一次 <code>graph_compute</code> 的產物）⇒ <b>範圍可以直接導出</b>。</p>
+
+<p>把這件事與既有的 <code>CGC_GPU_TIMING</code> 接起來就完成了：那個儀器<b>已經</b>逐
+command buffer 讀 <code>[cb GPUStartTime]</code>／<code>[cb GPUEndTime]</code>，
+只是把它們<b>聚合成了一個 segment 跨度</b>（<code>union = max(end) − min(start)</code>，
+見 <code>ggml-metal-context.m:497</code> 的定義）。節點身分是在聚合那一步被丟掉的，
+不是在取樣那一步。</p>
+
+<svg viewBox="0 0 680 210" role="img" aria-label="一個 segment 的 command buffer 與節點範圍">
+  <rect x="8" y="10" width="664" height="46" rx="6" fill="#f0e8ff" stroke="#8250df"/>
+  <text x="20" y="30" font-size="12" fill="#1f2328" font-family="monospace">segment i  =  一次 ggml_backend_graph_compute_async</text>
+  <text x="20" y="47" font-size="11.5" fill="#57606a" font-family="monospace">nodes[0 .. n_nodes)   （實測：一個 segment 圖 10 個節點）</text>
+
+  <rect x="8" y="74" width="120" height="42" rx="6" fill="#ddf4ff" stroke="#0969da"/>
+  <text x="16" y="92" font-size="11.5" fill="#1f2328" font-family="monospace">slot n_cb（主執行緒）</text>
+  <text x="16" y="107" font-size="11.5" fill="#0969da" font-family="monospace">nodes [0, 8)</text>
+
+  <rect x="140" y="74" width="120" height="42" rx="6" fill="#ddf4ff" stroke="#0969da"/>
+  <text x="148" y="92" font-size="11.5" fill="#1f2328" font-family="monospace">slot 0</text>
+  <text x="148" y="107" font-size="11.5" fill="#0969da" font-family="monospace">nodes [8, 9)</text>
+
+  <rect x="272" y="74" width="120" height="42" rx="6" fill="#ddf4ff" stroke="#0969da"/>
+  <text x="280" y="92" font-size="11.5" fill="#1f2328" font-family="monospace">slot 1</text>
+  <text x="280" y="107" font-size="11.5" fill="#0969da" font-family="monospace">nodes [9, 10)</text>
+
+  <text x="404" y="99" font-size="12" fill="#57606a" font-family="monospace">… slot n_cb−1</text>
+
+  <rect x="8" y="132" width="664" height="34" rx="6" fill="#dafbe1" stroke="#1a7f37"/>
+  <text x="20" y="153" font-size="11.5" fill="#1f2328" font-family="monospace">每個 slot 各自有 GPUStartTime/GPUEndTime  ⇒ 該範圍的 GPU busy 時間</text>
+
+  <text x="8" y="192" font-size="12" fill="#57606a">實測 bufs／segs = 360／40 = 9 = n_cb + 1（env CGC_N_CB=8）⇒ 每層 9 個切片</text>
+</svg>
+<div class="cap">圖 1：一個 segment 切成 <code>n_cb+1</code> 個 command buffer，各自覆蓋一段連續節點。</div>
+
+<h2>§3 實作與自我檢查</h2>
+
+<table>
+<tr><th>檔案</th><th>內容</th></tr>
+<tr><td><code>ggml-metal-context.h</code></td>
+    <td><code>ggml_metal_cgc_gpu_take_cb(ctx, out, max_cb)</code>（逐 cb 回
+        <code>{start_ns, end_ns, first_node, last_node, ok}</code>）＋
+        <code>ggml_metal_cgc_node_name(ctx, idx)</code> 的宣告</td></tr>
+<tr><td><code>ggml-metal-context.m</code></td>
+    <td>兩者的實作；<code>ctx-&gt;cgc_nm[]</code> 節點名快照（預設不填，只有
+        <code>CGC_GPU_NODES</code> 開時才複製）</td></tr>
+<tr><td><code>ggml-metal.cpp</code></td>
+    <td>兩個 proc-address 註冊（<code>libggml-metal</code> 是獨立的 dylib，
+        <code>libggml</code> 不直接連結它）</td></tr>
+<tr><td><code>ggml-backend.cpp</code></td>
+    <td>在 hook 裡讀逐 cb 記錄、把時長按節點種類攤分（固定前綴字彙表、最長匹配），
+        每 8 步印一張 <code>CGC-GPUNODE:</code> 表</td></tr>
+<tr><td><code>scripts/run_server.sh</code></td>
+    <td><code>CGC_GPU_NODES</code> 進 allowlist（<b>未列出會靜默丟棄</b>，
+        與「沒有效果」同形）</td></tr>
+<tr><td><code>scripts/check/decode_sweep.py</code></td>
+    <td>新臂 <code>en-sched</code>／<code>en-l0-mtpoff</code>／<code>en-l0-mtpon</code>／<code>en-nodes</code></td></tr>
+</table>
+
+<h3>§3.1 自我檢查：設計成會失敗的那一種</h3>
+
+<p><code>seg_busy</code>（走新路徑：逐 cb 加總）必須等於同一行的 <code>layer gpu_sum</code>
+（走舊路徑：逐層加總）——兩者加總的是<b>同一批</b> per-segment Metal busy time，
+只是走兩條不同的程式路徑。若節點範圍或 buffer↔節點的對應錯了，兩者就會分開：</p>
+
+<pre><code>CGC-GPUNODE: step=1  seg_busy=268.93 ms | layer gpu_sum=268.93 ms | delta=0.00% | other=0.00 ms | nkind=22
+CGC-GPUNODE: step=17 seg_busy=279.03 ms | layer gpu_sum=279.03 ms | delta=0.00% | other=0.00 ms | nkind=22
+CGC-GPUNODE: step=33 seg_busy=33.03 ms  | layer gpu_sum=33.03 ms  | delta=0.00% | other=0.00 ms | nkind=22
+CGC-GPUNODE: step=52 seg_busy=130.29 ms | layer gpu_sum=130.29 ms | delta=0.00% | other=0.00 ms | nkind=22
+CGC-GPUNODE: step=67 seg_busy=248.07 ms | layer gpu_sum=248.07 ms | delta=0.00% | other=0.00 ms | nkind=22</code></pre>
+
+<h2>§4 三個坑（兩個是我的錯）</h2>
+
+<h3>§4.1 <code>ctx-&gt;gf</code> 是懸空指標 ⇒ 載入期 SIGSEGV 11</h3>
+
+<div class="box bad">
+<p>症狀：<code>run_server.sh</code> 印 <code>Segmentation fault: 11</code>，
+<code>decode_sweep</code> 報 <code>server never became ready</code>，
+而伺服器日誌在 <code>CGC-POST</code> 之後就斷了。</p>
+<p>真因：<code>ctx-&gt;gf</code> 存的是<b>呼叫者</b>的 cgraph，而分段 dispatcher 把它建在
+<b>區域變數</b>上（<code>ggml-backend.cpp</code> 的 <code>submit_seg</code>：
+<code>struct ggml_cgraph gv = seg_view(s);</code> 然後
+<code>ggml_backend_graph_compute_async(split_backend, &amp;gv)</code>）
+⇒ 那個呼叫一返回 <code>ctx-&gt;gf</code> 就懸空，而 sched 側的 hook 在其後才讀。</p>
+<p><b>而我這支是全檔唯一在「呼叫之後」讀 <code>ctx-&gt;gf</code> 的讀者</b>
+（既有的讀者都在 <code>graph_compute</code> 之內）⇒ 既有測試面全過，缺陷只在新功能下出現。</p>
+<p>修法：在 <code>ggml_metal_graph_compute</code> 內（<code>gf</code> 還活著、thread pool
+還沒啟動時）把<b>節點名指標</b>快照到 <code>ctx-&gt;cgc_nm[]</code>。
+<code>ggml_tensor</code> 本身活在模型的 context 裡 ⇒ 只快照指標就夠，只死掉的是 cgraph 的節點陣列。</p>
+</div>
+
+<p>⇒ 已登錄為 lesson <code>eng-diag-0034</code>（class <code>diagnosis</code>）。它的推廣述句是：
+<b>跨模組的存取器不可以讀「呼叫者擁有的指標」</b>；判別式是「這個欄位在呼叫返回之後還有誰在讀」——
+若只有<b>新加入的</b>讀者會讀它，症狀就會是「新功能一開就 SIGSEGV，而既有路徑完全正常」。</p>
+
+<h3>§4.2 自我檢查第一版是空轉</h3>
+
+<p>第一次跑 <code>en-nodes</code> 時 <code>delta</code> 印 <code>0.00%</code>，
+但同一行是 <code>layer gpu_sum=0.00 ms</code> —— <b>分母是 0，所以那個 0 沒有意義</b>。
+原因：<code>dp_lay_gpu[]</code> 只在 <code>CGC_GPU_TIMING</code> 開著時才被填，
+而那一版臂沒有帶它。修法：<code>en-nodes</code> 臂加上 <code>CGC_GPU_TIMING=1</code>，
+並把「為什麼需要它」寫進臂的註解。</p>
+
+<h3>§4.3 詞彙表第一版把 67% 的時間丟進 <code>(other)</code></h3>
+
+<p>第一版的種類鍵是「去掉節點名尾端的 <code>-&lt;層號&gt;</code>」。那在有 40 層的模型上
+仍有約 600 個不同的名字，於是 48 個格子被 warmup 期的罕見種類佔滿
+（<code>conv_states_reshaped</code>、<code>alpha</code>、<code>beta</code>…），
+<b>大的種類反而進不了表</b>。修法：改成<b>固定的前綴字彙表</b>（40 個前綴、最長匹配）
+⇒ <code>nkind=22</code>、<code>(other)=0.00 ms</code>。</p>
+
+<h2>§5 儀器現在的輸出，以及<b>不要</b>怎麼用它</h2>
+
+<table>
+<tr><th>kind</th><th class="num">ms</th><th class="num">%</th></tr>
+<tr><td><code>(other)</code></td><td class="num">39.93</td><td class="num">16.1%</td></tr>
+<tr><td><code>node</code></td><td class="num">33.77</td><td class="num">13.6%</td></tr>
+<tr><td><code>cache</code></td><td class="num">31.76</td><td class="num">12.8%</td></tr>
+<tr><td><b><code>ffn_moe_</code></b></td><td class="num">25.24</td><td class="num">10.2%</td></tr>
+<tr><td><code>norm</code></td><td class="num">9.41</td><td class="num">3.8%</td></tr>
+<tr><td><code>conv</code></td><td class="num">7.17</td><td class="num">2.9%</td></tr>
+<tr><td><code>attn_output</code></td><td class="num">6.09</td><td class="num">2.5%</td></tr>
+<tr><td><code>attn_post_norm</code></td><td class="num">6.06</td><td class="num">2.4%</td></tr>
+<tr><td><code>ffn_</code></td><td class="num">5.94</td><td class="num">2.4%</td></tr>
+<tr><td><code>linear_attn</code></td><td class="num">5.20</td><td class="num">2.1%</td></tr>
+<tr><td><code>ffn_moe_probs</code></td><td class="num">4.87</td><td class="num">2.0%</td></tr>
+<tr><td><code>ffn_moe_topk</code></td><td class="num">1.48</td><td class="num">0.6%</td></tr>
+</table>
+<p class="small">一列一個 step：<code>CGC-GPUNODE: step=67 seg_busy=248.07 ms</code>（其餘 10 個種類合計 4.3%）。</p>
+
+<div class="box warn">
+<p><b>先不要拿這張表去套 M3 的「<code>ffn_moe_*</code> 佔 ≥ 40%」判準。</b>兩個限制都還沒解：</p>
+<ul>
+<li><b>詞彙</b>：<code>ffn_moe_gate</code>／<code>ffn_moe_up</code>／<code>ffn_moe_down</code>
+    沒有出現在表上，而前三名是 <code>(other)</code>／<code>node</code>／<code>cache</code>。
+    要嘛那些熱節點的名字不是 <code>ffn_moe_*</code>（<code>node_NN</code> 是 ggml 的自動名、
+    <code>cache_*</code> 是池的張量名 —— 池 repoint 之後 MoE 的運算元可能就叫這些），
+    要嘛是下面那個加權問題造成的。</li>
+<li><b>加權</b>：攤分是<b>按節點數</b>加權的（一個 command buffer 只給出一個 group 時長），
+    所以一個含 1 個大 GEMV ＋ 數個小節點的 buffer 會<b>高估小節點</b>。
+    要真正的「每節點時鐘」需要每個節點一個 sample point（barrier，會擾動被量的東西）
+    或每個節點一個 command buffer（會改派送）。</li>
+</ul>
+<p>⇒ 第 3 件交付的是<b>可用的</b>儀器（有精確的自我檢查），<b>不是已調校的</b>詞彙表。</p>
+</div>
+
+<h2>§6 現場閘門輸出（原文）</h2>
+
+<pre><code>$ python3 scripts/check/m123_oracle_gate.py --tag en-gpunode-instr
+comparable = True
+config_diffs = []
+oracle A: Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident_v6_nbaware.jsonl  (9 entries)
+oracle B: /tmp/m123_oracle_gate.jsonl  (9 entries)
+  M1 numeric identity    (bit-identical logits)  : 9/9  (100.0%)
+  M2 decision agreement  (same argmax token)     : 9/9  (100.0%)
+  M3 top-k set agreement (same top-N id set)     : 9/9  (100.0%)
+  (aux) full_fnv1a64 identical                   : 9/9  (100.0%)
+CROSS-TAB  (n=9)  M1 same &amp; M2 same : 9
+GATE en-gpunode-instr: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+summary  : Backup/m123_oracle_gate/summary_en-gpunode-instr.json
+
+$ # 歸屬：D5 的 dump 沒有 binary 指紋 ⇒ 要對一眼 cap.created 與產物 mtime
+cap created = 2026-09-18T01:25:26   （profile prefill250）
+   libggml-base.0.19.0.dylib   2026-09-18T01:20:48
+   libggml-metal.0.19.0.dylib  2026-09-18T01:20:48
+   ggml-backend.cpp            2026-09-18T01:20:34
+   ggml-metal-context.m        2026-09-18T01:18:40
+=&gt; cap 晚於每一個產物，不重疊，可歸屬
+
+$ python3 agent_harness/engine_loop/traces/validate.py
+  lessons.jsonl: 165 records {'lesson': 165}
+  -&gt; OK
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  rejected  duplicate_decision_id         a supersede chain cannot resolve if the id it names is not unique
+  10/10 injected violations rejected
+
+$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  memory index OK: 8 file(s), 207 section(s), no drift
+
+$ python3 agent_harness/engine_loop/index_assets.py --check
+  manifest OK: 108 assets, existence + bytes + mtime all agree
+
+$ python3 agent_harness/shared/check_shell_cjk.py --root "$PWD/agent_harness"
+  掃了 148 個 shell 檔（含 shebang 判定的 .sh/.bash）
+  0 處：所有 `$VAR` 後面都不是緊接非 ASCII
+
+$ python3 agent_harness/engine_loop/wrappers/classify.py --check
+error: scripts/check/ 與分類表不一致 —— 磁碟上有但沒被分類：['decode_step_profile.py', 'phase_split_ab.py']</code></pre>
+
+<div class="box">
+<p><b>最後一條紅燈不是本線的</b>：那兩支是另一條線的檔（<code>decode_step_profile.py</code> 尚未進版控、
+<code>phase_split_ab.py</code> 已提交但未分類），與 2026-09-17 交付時同一組。
+依「紅燈不是你的錯時不要急著消掉」沒有動 <code>classify.py</code>。
+<b>它在這個 commit 裡仍然是紅的，而那是它的正確狀態。</b></p>
+</div>
+
+<p class="small">跑 D5 當時的機器狀態，一併揭露：<code>Pages free</code> = 60.86 MiB、
+<code>swap</code> used = 9704 MiB / 11264 MiB（<code>sysctl -n vm.swapusage</code>）。
+在這個水位 D5 仍跑完（54 s），但下一個人該知道它離「載入期被 SIGTERM」只差一點。</p>
+
+<h2>§7 誠實邊界（本文件不主張什麼）</h2>
+
+<ul>
+<li><b>不主張「L0 已被解釋」。</b> 這一份主張的是「L0 <b>沒有</b>可重現的異常」，
+    以及 7.2× 屬於哪個 regime。§1.3 的兩個候選都沒有被分離。</li>
+<li><b>不主張這張種類表可以下 M3 的判決。</b> §5 的兩個限制未解之前，
+    「<code>ffn_moe_*</code> 佔多少」這個問題<b>還不能問</b>。</li>
+<li><b>不主張逐節點。</b> 這支儀器的解析度是「一個 command buffer 覆蓋的<b>連續節點範圍</b>」，
+    範圍內的節點<b>沒有</b>被時鐘分開。真正的逐節點需要 sample point 或改派送。</li>
+<li><b>沒有量 t/s。</b> 這一輪的所有讀數都是 GPU 時鐘與計數器，沒有吞吐數字被引用；
+    三組量測的熱態各不相同（一組 MODERATE/NOMINAL、兩組 HEAVY），
+    所以它們只被當成<b>比值的來源</b>，不被當成水準。</li>
+<li><b>沒有跑</b> <code>check_build_tracked.sh</code> 的 replay bench（依 D2，
+    <code>RUN_REPLAY_BENCH=0</code>，理由是 <code>.replay_bench_baseline.json</code> 已 stale）。</li>
+<li><b>沒有 push。</b></li>
+<li><b>本輪的 build 把另一條線未提交的 <code>ggml-metal-ops.cpp</code> 一起編進去了</b>
+    ——同一個 binary 無法分離，所以由這個 commit 收錄並在此揭露。
+    兩個<b>版控內</b>的 dylib 因此被改寫（<code>libggml-metal</code>
+    <code>037c931e → 2f2f85e7</code>、<code>libggml-base</code> <code>23f533ad → 4323e8eb</code>）。</li>
+</ul>
+
+<h2>§8 產物與指令</h2>
+
+<table>
+<tr><th>路徑</th><th>內容</th></tr>
+<tr><td><code>docs/L0_ATTRIBUTION_2026-09-18.md</code></td>
+    <td>第 2 件的完整查證（含逐層中位數表、機制更正、兩個候選）</td></tr>
+<tr><td><code>Backup/phase_decomp/en_l0_shape_20260918.json</code></td>
+    <td><code>en-l0-mtpoff</code> ＋ <code>en-l0-mtpon</code> 的產物</td></tr>
+<tr><td><code>Backup/phase_decomp/en_nodes_20260918.json</code></td>
+    <td><code>en-nodes</code> 的產物</td></tr>
+<tr><td><code>Backup/cgc_logs/llama_server_20260918_011314.log</code></td>
+    <td>投機臂的 stderr（逐層表）</td></tr>
+<tr><td><code>Backup/cgc_logs/llama_server_20260918_011856.log</code>、<code>…_012058.log</code></td>
+    <td><code>en-nodes</code> 的 stderr：前者是詞彙表第一版（67% 進 <code>(other)</code> 的實例），
+        後者是修好之後（<code>delta=0.00%</code>、<code>other=0.00</code>）</td></tr>
+<tr><td><code>Backup/m123_oracle_gate/summary_en-gpunode-instr.json</code>、<code>cap_…json</code></td>
+    <td>D5 的判決與配置戳記</td></tr>
+</table>
+
+<pre><code># 第 2 件（先把舊 build 的形狀掃描跑完 —— 第 3 件會重建 binary、改指紋）
+RUN_REPLAY_BENCH=0 python3 scripts/check/decode_sweep.py --profile prefill250 \
+  --arms en-l0-mtpoff,en-l0-mtpon --rounds 2 --warmup 1 --n-predict 128 \
+  --json Backup/phase_decomp/en_l0_shape_20260918.json --force
+
+# 第 3 件
+RUN_REPLAY_BENCH=0 python3 scripts/check/decode_sweep.py --profile prefill250 \
+  --arms en-nodes --rounds 2 --warmup 1 --n-predict 48 \
+  --json Backup/phase_decomp/en_nodes_20260918.json --force
+
+# 逐層 × steady steps 中位數（一次性工具，不在版控內）
+python3 /tmp/en_l0_layer_med.py &lt;server log&gt; &lt;drop_first_n&gt;</code></pre>
+
+<p class="small">下一輪的第一步（本文件不代做）：查 §5 的詞彙問題 —— 取一個熱 range
+（<code>node</code>／<code>cache</code>／<code>(other)</code> 之一）印出它裡面的真實節點名，
+就能決定是「名字不是 <code>ffn_moe_*</code>」還是「加權把大 kernel 攤掉了」。</p>
+
+</div>
+</body>
+</html>

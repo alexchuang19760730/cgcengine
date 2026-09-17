@@ -241,6 +241,52 @@ ARMS = {
     # fusion can reach a `wait`-dominated one. CGC_DECODE_PROFILE_ALL=1 adds every layer.
     "p25-decprof":       {"CGC_SERVER_MTP": "0", "CGC_DECODE_PROFILE": "1",
                           "CGC_DECODE_PROFILE_ALL": "1"},
+    # [CGC 2026-09-18 engine line] The layer-0 question. The per-layer DECPROF attribution, taken as
+    # a median over 47 steady steps of the MTP-ON production shape (8 GiB pool,
+    # Backup/phase_decomp/m3_layergpu2_20260917.json), gives layer 0 gpu=17.88 / union=9.25 ms
+    # against a median of 2.47 / 1.77 -- 7.2x and 5.2x, with all other 40 layers inside
+    # 1.37-2.87 / 1.19-1.82. Layer 0's host-side numbers are NORMAL (wait 1.49, cb 1.55,
+    # submit 0.14), so the excess is GPU-side, and the two candidate mechanisms need separating:
+    #   (a) segment 0 really carries extra work (the input-embedding split, a non-pooled blk.0,
+    #       or a different node count), or
+    #   (b) segment 0 is a normal layer that pays the head-of-step launch ramp, because the
+    #       segmented dispatcher drains the queue at every segment boundary and the step therefore
+    #       starts on an idle GPU.
+    # GGML_SCHED_DEBUG=2 prints every split's backend and full node list, so counting segment 0's
+    # nodes against segment 1's separates (a) from (b) with no new instrument. MTP is left ON
+    # deliberately: that is the production setting the 7.2x was measured in.
+    "en-sched":          {"GGML_SCHED_DEBUG": "2", "CGC_DECODE_PROFILE": "1",
+                          "CGC_DECODE_PROFILE_ALL": "1", "CGC_GPU_TIMING": "1"},
+    # [CGC 2026-09-18 engine line] The shape scan that settles L0. `docs/L0_ATTRIBUTION_2026-09-18.md`
+    # found the L0 anomaly (gpu 7.2x / union 5.2x the per-layer median, 47 steady steps) in the
+    # ntok=1 layout that `llama-bench` produces -- llama-bench cannot speculate, so its decode steps
+    # are single-token -- but NOT in the ntok=2/4 layout that a real MTP verify produces. Two
+    # candidate mechanisms remain (segment 0 carries extra work vs segment 0 pays the head-of-step
+    # launch ramp) and they need the same statistic in both shapes before either can be named.
+    #
+    # DECISION RULE, written before the run:
+    #   ratio = L0 gpu / median(other 39 layers' gpu), per arm, median over steady steps
+    #     ratio >= 3 in ntok=1 only      -> layout-dependent (candidate: segment 0's extra work)
+    #     ratio >= 3 in BOTH             -> layer-independent (candidate: head-of-step ramp)
+    #     ratio <  2 in both             -> no reproducible anomaly; the 7.2x was that run's artifact
+    # The ratio is taken WITHIN a run on purpose: arm position alone is worth +12.5% (eng-mh-0061),
+    # so a cross-arm level comparison would be measuring position, not shape.
+    "en-l0-mtpoff":      {"CGC_SERVER_MTP": "0", "CGC_DECODE_PROFILE": "1",
+                          "CGC_DECODE_PROFILE_ALL": "1", "CGC_GPU_TIMING": "1"},
+    "en-l0-mtpon":       {"CGC_DECODE_PROFILE": "1",
+                          "CGC_DECODE_PROFILE_ALL": "1", "CGC_GPU_TIMING": "1"},
+    # [CGC 2026-09-18 node-level GPU time] CGC_GPU_NODES=1 adds the per-NODE-KIND GPU table
+    # (CGC-GPUNODE:) built from each command buffer's own GPUStartTime/GPUEndTime plus the contiguous
+    # node range that buffer encoded (ggml_metal_graph_compute's n_nodes_0 / n_nodes_per_cb split).
+    # No sampling and no MTLCounterSampleBuffer. SELF-CHECK: the line's `seg_busy` must equal its own
+    # `layer gpu_sum` -- both sum the same per-segment Metal busy time, so a non-zero `delta` means
+    # the ranges or the buffer/node mapping are wrong. CGC_GPU_TIMING=1 is REQUIRED for that
+    # denominator to exist: dp_lay_gpu[] is only filled from the same accessor, so without it
+    # `layer gpu_sum` reads 0.00 and `delta` is vacuously 0 (measured, first run). CGC_DECODE_PROFILE
+    # supplies the step cadence; ALL is deliberately NOT set, because the per-layer detail is already
+    # known and 40 lines per step would bury the kind table.
+    "en-nodes":          {"CGC_GPU_NODES": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_GPU_TIMING": "1"},
     # [2026-09-15] Fusion re-test, now that run_server.sh can actually pass CGC_MMV_FUSE through
     # (it could not before -- the var was missing from the launcher allowlist, so every earlier
     # fusion A/B through this launcher measured a fusion that was never enabled). The fused

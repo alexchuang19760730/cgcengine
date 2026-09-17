@@ -1845,6 +1845,47 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     ? (cgc_gpu_take_fn) ggml_backend_reg_get_proc_address(reg, "ggml_metal_get_cgc_gpu_take")
                     : nullptr;
 
+                // [CGC 2026-09-18 node-level GPU time] CGC_GPU_NODES=1 attributes each segment's GPU
+                // busy time to the NODE KINDS that produced it, one level below the per-layer table.
+                //
+                // Why this exists: M3_VERDICT closed M3 for lack of an instrument -- `wait` is a
+                // CPU-side spin (72 ms/step) and nothing could say whether the GPU was busy inside
+                // it or which op was. The per-layer `gpu`/`union` fields (dp_lay_gpu/dp_lay_uni) were
+                // the finest GPU-side reading, i.e. 40 buckets. It turns out no Metal sampling is
+                // needed to go finer: ggml_metal_graph_compute already splits each segment into
+                // n_cb+1 command buffers over FIXED, contiguous node ranges, and Metal records a
+                // GPUStartTime/GPUEndTime on each one. So a buffer's duration is attributable to the
+                // kinds of node in its range.
+                //
+                // What this can and cannot separate: it gives a duration per contiguous node RANGE,
+                // so it answers "does ffn_moe_* carry a large share of the GPU time" and NOT "node X
+                // took Y ms". It does not need an MTLCounterSampleBuffer (whose sample points insert
+                // barriers and would perturb the thing being measured), and it adds no state on the
+                // Metal side. Both accessors are resolved through the proc-address table because
+                // libggml-metal is a separate dylib.
+                //
+                // Requires CGC_DECODE_PROFILE=1 for the step cadence and for the denominator of the
+                // built-in self-check below (the kind table must add up to the same segment total the
+                // per-layer `layer gpu_sum` reports; if it does not, the ranges or the buffer/node
+                // mapping are wrong and the table means nothing).
+                typedef int (*cgc_gpu_take_cb_fn)(ggml_backend_t, int64_t *, int);
+                typedef const char * (*cgc_node_name_fn)(ggml_backend_t, int);
+                static const bool ns_on = getenv("CGC_GPU_NODES") != nullptr;
+                cgc_gpu_take_cb_fn cgc_gpu_take_cb = ns_on
+                    ? (cgc_gpu_take_cb_fn) ggml_backend_reg_get_proc_address(reg, "ggml_metal_get_cgc_gpu_take_cb")
+                    : nullptr;
+                cgc_node_name_fn cgc_node_name = ns_on
+                    ? (cgc_node_name_fn) ggml_backend_reg_get_proc_address(reg, "ggml_metal_cgc_node_name")
+                    : nullptr;
+                // The kind table. 48 named kinds + 1 implicit "(other)"; the name is the node name
+                // with its trailing "-<layer>" removed, so it keeps full node-kind resolution.
+                static char    ns_kind_nm[48][48] = {{0}};
+                static int64_t ns_kind_ns[48]     = {0};
+                static int     ns_kind_n          = 0;
+                static int64_t ns_total           = 0;
+                static int64_t ns_other           = 0;
+                static int     ns_print_n         = 0;
+
                 // [CGC M0 decode profile 2026-09-13] Per-layer attribution of a decode step. The
                 // segmented loop below serializes GPU layer i -> CPU top-k hook -> submit of layer
                 // i+1, so the step wall is sum(wait + cb + submit) over layers. The CGC-SEG print
@@ -1988,6 +2029,87 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                             gt_prev_end = g[3];
                         }
                         gt_wait += st1 - st0;
+                    }
+                    // [CGC 2026-09-18 node-level GPU time] Attribute THIS segment's GPU busy time to
+                    // the node kinds that produced it -- read at the same instant as cgc_gpu_take
+                    // above, where segment i's command buffers are still the ones sitting in the
+                    // Metal context's cmd_bufs[] and segment i+1 has not been submitted yet. Each
+                    // buffer covers a contiguous node range, so its duration is split across the
+                    // kinds in that range in proportion to the node counts. Summing the buffers is a
+                    // BUSY measure (they overlap), which is exactly what the per-layer `gpu` field
+                    // reports -- hence the self-check in the printer.
+                    if (cgc_gpu_take_cb != nullptr && cgc_node_name != nullptr) {
+                        int64_t cb_rec[5 * 16];
+                        const int n_rec = cgc_gpu_take_cb(split_backend, cb_rec, 16);
+                        for (int r = 0; r < n_rec; r++) {
+                            const int64_t * rec = cb_rec + 5*r;
+                            if (rec[4] == 0) {
+                                continue;   // slot with no completed buffer / no usable timestamp
+                            }
+                            const int64_t dur = rec[1] - rec[0];
+                            const int nd_a = (int) rec[2];
+                            const int nd_b = (int) rec[3];
+                            int cnt[49] = {0};
+                            int tot = 0;
+                            for (int nd = nd_a; nd < nd_b; nd++) {
+                                const char * nm = cgc_node_name(split_backend, nd);
+                                if (nm == nullptr || nm[0] == '\0') {
+                                    continue;
+                                }
+                                // Bucket the node into a FIXED kind vocabulary. "Strip the trailing
+                                // -<layer>" alone leaves ~600 distinct names on a 40-layer model, so
+                                // a first-come table overflows long before the big kinds arrive --
+                                // MEASURED: the first revision of this instrument put 67% of the
+                                // segment busy time in "(other)" because its 48 slots had been taken
+                                // by rare warmup-only kinds (conv_states_reshaped, alpha, beta...).
+                                // The vocabulary answers M3's question -- the ffn_moe_* share against
+                                // the attention share -- rather than trying to be exhaustive.
+                                static const char * const ns_fix[] = {
+                                    "ffn_moe_argsort", "ffn_moe_logits", "ffn_moe_probs", "ffn_moe_slots",
+                                    "ffn_moe_topk", "ffn_moe_gate_up", "ffn_moe_gate", "ffn_moe_up",
+                                    "ffn_moe_down", "ffn_moe_", "ffn_gate", "ffn_up", "ffn_down", "ffn_",
+                                    "linear_attn", "attn_q", "attn_k", "attn_v", "attn_output",
+                                    "attn_norm", "attn_post_norm", "attn_residual", "attn_inp_k_rot",
+                                    "attn_inp_v_rot", "attn_inp_kq_mask", "attn_", "rope", "soft_max",
+                                    "rms_norm", "norm", "get_rows", "mul_mat", "cpy", "concat", "add",
+                                    "leaf", "node", "cache", "conv", "result",
+                                };
+                                const int ns_nfix = (int) (sizeof(ns_fix) / sizeof(ns_fix[0]));
+                                const char * key = NULL;
+                                size_t key_len = 0;
+                                for (int q = 0; q < ns_nfix; q++) {
+                                    const size_t lq = strlen(ns_fix[q]);
+                                    if (lq > key_len && strncmp(nm, ns_fix[q], lq) == 0) {
+                                        key = ns_fix[q];
+                                        key_len = lq;
+                                    }
+                                }
+                                if (key == NULL) {
+                                    key = "(other)";
+                                }
+                                int ix = -1;
+                                for (int q = 0; q < ns_kind_n; q++) {
+                                    if (strcmp(ns_kind_nm[q], key) == 0) { ix = q; break; }
+                                }
+                                if (ix < 0 && ns_kind_n < 48) {
+                                    ix = ns_kind_n++;
+                                    snprintf(ns_kind_nm[ix], sizeof(ns_kind_nm[ix]), "%s", key);
+                                }
+                                cnt[ix < 0 ? 48 : ix]++;
+                                tot++;
+                            }
+                            ns_total += dur;
+                            if (tot == 0) {
+                                continue;
+                            }
+                            for (int q = 0; q < 49; q++) {
+                                if (cnt[q] == 0) {
+                                    continue;
+                                }
+                                const int64_t share = dur * cnt[q] / tot;
+                                if (q < 48) { ns_kind_ns[q] += share; } else { ns_other += share; }
+                            }
+                        }
                     }
                     // [CGC bit-bisect v7] in-compute tensor dump: forward every node of the
                     // just-completed segment to the eval callback (ask=false). Segments 0..i
@@ -2178,10 +2300,44 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                         (long long) dp_lay_n[l]);
                             }
                         }
+                        // [CGC 2026-09-18 node-level GPU time] the per-KIND table for this step.
+                        // SELF-CHECK: `seg_busy` must equal the `layer gpu_sum` printed on the
+                        // CGC-DECPROF line above, because both sum the same per-segment Metal busy
+                        // time. A non-zero `delta` means the node ranges or the buffer/node mapping
+                        // are wrong and the table below means nothing -- the same "verify the
+                        // instrument before the number" rule that CGC-GPUTIME's `unsupported=` field
+                        // exists for. Printed on a 1-in-8 step sample: with MTP on the DECPROF
+                        // cadence fires every step and 48 kind lines per step would swamp the log.
+                        if (ns_on && ns_total > 0 && (ns_print_n++ % 8) == 0) {
+                            fprintf(stderr, "CGC-GPUNODE: step=%lld seg_busy=%.2f ms | layer gpu_sum=%.2f ms "
+                                    "| delta=%.2f%% | other=%.2f ms | nkind=%d\n",
+                                    (long long) dp_step, (double) ns_total / 1e6, (double) dp_gs / 1e6,
+                                    dp_gs > 0 ? 100.0 * (double) (ns_total - dp_gs) / (double) dp_gs : 0.0,
+                                    (double) ns_other / 1e6, ns_kind_n);
+                            for (int rank = 0; rank < 14; rank++) {
+                                int best = -1;
+                                int64_t best_v = 0;
+                                for (int q = 0; q < ns_kind_n; q++) {
+                                    if (ns_kind_ns[q] > best_v) { best = q; best_v = ns_kind_ns[q]; }
+                                }
+                                if (best < 0) {
+                                    break;
+                                }
+                                fprintf(stderr, "CGC-GPUNODE:   %-26s %8.2f ms %5.1f%%\n",
+                                        ns_kind_nm[best], (double) best_v / 1e6,
+                                        100.0 * (double) best_v / (double) ns_total);
+                                ns_kind_ns[best] = 0;   // consumed by this print
+                            }
+                        }
                     }
                     for (int l = 0; l < 64; l++) {
                         dp_lay_w[l] = dp_lay_cb[l] = dp_lay_sub[l] = dp_lay_n[l] = 0;
                         dp_lay_gpu[l] = dp_lay_uni[l] = dp_lay_gap[l] = dp_lay_sg[l] = 0;
+                    }
+                    ns_total = 0;
+                    ns_other = 0;
+                    for (int q = 0; q < ns_kind_n; q++) {
+                        ns_kind_ns[q] = 0;
                     }
                     dp_ntok = 0;   // per-step attribution: the next graph states its own shape
                 }

@@ -1487,6 +1487,14 @@ fi
 if [ -n "${CGC_DECODE_PROFILE_ALL:-}" ]; then
     SERVER_ENV+=(CGC_DECODE_PROFILE_ALL="$CGC_DECODE_PROFILE_ALL")
 fi
+# [CGC 2026-09-18 node-level GPU time] CGC_GPU_NODES=1 prints the per-NODE-KIND GPU table
+# (CGC-GPUNODE:) on top of the per-layer one: each command buffer's GPUStartTime/GPUEndTime is
+# attributed across the contiguous node range that buffer encoded, so the resolution goes one level
+# below a layer without sampling or an MTLCounterSampleBuffer. Requires CGC_DECODE_PROFILE=1 (it
+# supplies the step cadence and the `layer gpu_sum` the table self-checks against).
+if [ -n "${CGC_GPU_NODES:-}" ]; then
+    SERVER_ENV+=(CGC_GPU_NODES="$CGC_GPU_NODES")
+fi
 # [CGC 2026-09-15 GPU-side timing] CGC_GPU_TIMING=1 makes the Metal completion handlers record
 # each command buffer's own GPUStartTime/GPUEndTime, and the segmented dispatcher prints
 # CGC-GPUTIME: per-step wait / gpu_busy_sum / gpu_union / gap. It answers the one question

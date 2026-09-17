@@ -108,6 +108,23 @@ struct ggml_metal {
 
     struct ggml_cgraph * gf;
 
+    // [CGC 2026-09-18 node-level GPU time] Node-name snapshot for CGC_GPU_NODES.
+    //
+    // WHY A SNAPSHOT RATHER THAN ctx->gf: ctx->gf holds the CALLER's cgraph, and the segmented
+    // dispatcher builds that one in a LOCAL (`ggml-backend.cpp` submit_seg:
+    // `struct ggml_cgraph gv = seg_view(s);` then `graph_compute_async(..., &gv)`), so the pointer
+    // dangles the instant that call returns -- while the sched-side hook reads the names AFTER that
+    // boundary. MEASURED: reading ctx->gf from the hook segfaults inside the load-time warmup
+    // (ggml_metal_cgc_node_name did exactly that). Nothing else in this file reads ctx->gf outside
+    // graph_compute, which is why the dangle was never hit before. Copying the name POINTERS is
+    // sufficient: the ggml_tensor objects themselves live in the model's context for the life of
+    // the process, so only the cgraph's node ARRAY is transient.
+    //
+    // Filled only when the process opted in (CGC_GPU_NODES set), so the default path pays nothing.
+    const char * cgc_nm[1024];
+    int          cgc_nm_n;
+    bool         cgc_nm_on;
+
     // the callback given to the thread pool
     void (^encode_async)(size_t ith);
 
@@ -338,6 +355,10 @@ ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
             __func__, res->fail_stop ? "ON" : "OFF");
 
     res->gf = nil;
+    // [CGC 2026-09-18 node-level GPU time] opt-in, read once. The snapshot stays empty unless
+    // CGC_GPU_NODES is set, so the default path neither copies nor reads cgc_nm[].
+    res->cgc_nm_n  = 0;
+    res->cgc_nm_on = getenv("CGC_GPU_NODES") != NULL;
     res->encode_async = nil;
     for (int i = 0; i < GGML_METAL_MAX_COMMAND_BUFFERS; ++i) {
         res->cmd_bufs[i].obj = nil;
@@ -538,6 +559,74 @@ int ggml_metal_cgc_gpu_take(ggml_metal_t ctx, int64_t * out) {
     }
     out[4] = unsup;
     return n;
+}
+
+// [CGC 2026-09-18 node-level GPU time] The SAME per-command-buffer timestamps as
+// ggml_metal_cgc_gpu_take(), but NOT collapsed into one segment span: one record per command
+// buffer, each carrying the node index range that buffer encoded.
+//
+// Why the range is derivable and why this needs no new state, no sampling and no
+// MTLCounterSampleBuffer: ggml_metal_graph_compute already splits the graph into n_cb+1 command
+// buffers with FIXED index ranges (the idx_start/idx_end computation in the encode callback). The
+// main thread's buffer -- slot n_cb -- encodes nodes [0, n_nodes_0); worker slot i < n_cb encodes
+// [n_nodes_0 + i*n_nodes_per_cb, n_nodes_0 + min(...)). n_cb, n_nodes_0, n_nodes_per_cb and gf are
+// all still set on ctx when the sched reads at the segment boundary, i.e. the same instant at which
+// ggml_metal_cgc_gpu_take() reads the same finished MTLCommandBuffers.
+//
+// What it CAN and CANNOT answer. Each buffer is a GROUP of nodes, so the node identity inside a
+// buffer is not separated by the clock: what this hands back is a duration per contiguous node
+// range. The consumer therefore attributes a buffer's duration across the node KINDS in its range
+// (by node count), which is enough to answer a question of the form "does ffn_moe_* carry a large
+// share of the GPU time" but NOT "node X took Y ms". Within one segment the buffers overlap, so
+// summing their durations is a BUSY measure, the same quantity the per-segment `gpu` field reports.
+//
+// `out` holds max_cb records of 5 int64: {start_ns, end_ns, first_node, last_node, ok}.
+// Returns the number of records written (one per command-buffer slot 0..n_cb, ok=0 for a slot whose
+// buffer is missing / not completed / has no usable timestamp). Node NAMES are read separately
+// through ggml_metal_cgc_node_name(), so this side never copies strings.
+int ggml_metal_cgc_gpu_take_cb(ggml_metal_t ctx, int64_t * out, int max_cb) {
+    if (ctx == NULL || out == NULL || max_cb <= 0) {
+        return 0;
+    }
+    const int n_bufs = ctx->n_cb + 1;
+    const int p      = ctx->n_nodes_per_cb;
+    int n = 0;
+    for (int i = 0; i < n_bufs && i <= GGML_METAL_MAX_COMMAND_BUFFERS && n < max_cb; ++i) {
+        int64_t * rec = out + 5*n;
+        rec[0] = rec[1] = 0;
+        rec[4] = 0;
+        // the node range this slot encoded -- mirrors the encode callback's idx_start/idx_end
+        if (i == ctx->n_cb) {
+            rec[2] = 0;
+            rec[3] = ctx->n_nodes_0;
+        } else {
+            rec[2] = ctx->n_nodes_0 + (int64_t) i * p;
+            rec[3] = ctx->n_nodes_0 + (int64_t) MIN((i == ctx->n_cb - 1) ? ctx->n_nodes_1 : (i + 1) * p,
+                                                    ctx->n_nodes_1);
+        }
+        id<MTLCommandBuffer> cb = ctx->cmd_bufs[i].obj;
+        if (cb != nil && [cb status] == MTLCommandBufferStatusCompleted) {
+            const CFTimeInterval s = [cb GPUStartTime];
+            const CFTimeInterval e = [cb GPUEndTime];
+            if (s > 0.0 && e > s) {
+                rec[0] = (int64_t) (s * 1e9);
+                rec[1] = (int64_t) (e * 1e9);
+                rec[4] = 1;
+            }
+        }
+        n++;
+    }
+    return n;
+}
+
+// Name of node `node_idx` of the graph the MOST RECENT graph_compute was handed. Returns NULL when
+// there is no such node. Reads the snapshot taken at graph_compute time -- NOT ctx->gf, which
+// dangles by the time the sched-side hook asks (see the cgc_nm struct comment).
+const char * ggml_metal_cgc_node_name(ggml_metal_t ctx, int node_idx) {
+    if (ctx == NULL || node_idx < 0 || node_idx >= ctx->cgc_nm_n) {
+        return NULL;
+    }
+    return ctx->cgc_nm[node_idx];
 }
 
 int ggml_metal_cgc_bufs(ggml_metal_t ctx) {
@@ -1024,6 +1113,16 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
 
     @autoreleasepool {
         ctx->gf = gf;
+
+        // [CGC 2026-09-18 node-level GPU time] Snapshot the node names while gf is still the live
+        // object -- see the struct comment on cgc_nm for why reading ctx->gf from the hook
+        // segfaults instead. Taken BEFORE the thread pool is started, so no worker races this.
+        if (ctx->cgc_nm_on) {
+            ctx->cgc_nm_n = MIN(gf->n_nodes, (int) (sizeof(ctx->cgc_nm) / sizeof(ctx->cgc_nm[0])));
+            for (int i = 0; i < ctx->cgc_nm_n; ++i) {
+                ctx->cgc_nm[i] = gf->nodes[i] != NULL ? gf->nodes[i]->name : NULL;
+            }
+        }
 
         ctx->n_nodes_0 = MIN(n_main, gf->n_nodes);
         ctx->n_nodes_1 = gf->n_nodes - ctx->n_nodes_0;

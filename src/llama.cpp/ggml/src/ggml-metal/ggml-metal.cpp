@@ -722,6 +722,26 @@ static int ggml_backend_metal_get_cgc_gpu_take(ggml_backend_t backend, int64_t *
     return ggml_metal_cgc_gpu_take(ctx, out);
 }
 
+// [CGC 2026-09-18 node-level GPU time] Per-command-buffer records instead of the collapsed segment
+// span, each carrying the node index range that buffer encoded, plus the name lookup needed to read
+// them. The contract -- and what it cannot separate -- is on ggml_metal_cgc_gpu_take_cb in
+// ggml-metal-context.h. Inert unless a consumer resolves it, i.e. unless CGC_GPU_NODES is set.
+static int ggml_backend_metal_get_cgc_gpu_take_cb(ggml_backend_t backend, int64_t * out, int max_cb) {
+    GGML_ASSERT(ggml_backend_is_metal(backend));
+
+    ggml_metal_t ctx = (ggml_metal_t)backend->context;
+
+    return ggml_metal_cgc_gpu_take_cb(ctx, out, max_cb);
+}
+
+static const char * ggml_backend_metal_cgc_node_name(ggml_backend_t backend, int node_idx) {
+    GGML_ASSERT(ggml_backend_is_metal(backend));
+
+    ggml_metal_t ctx = (ggml_metal_t)backend->context;
+
+    return ggml_metal_cgc_node_name(ctx, node_idx);
+}
+
 static ggml_backend_i ggml_backend_metal_i = {
     /* .get_name                = */ ggml_backend_metal_name,
     /* .free                    = */ ggml_backend_metal_free,
@@ -1046,6 +1066,15 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const 
     }
     if (strcmp(name, "ggml_metal_get_cgc_gpu_take") == 0) {
         return (void *)ggml_backend_metal_get_cgc_gpu_take;
+    }
+    // [CGC 2026-09-18 node-level GPU time] CGC_GPU_NODES=1 resolves these two instead of (well,
+    // as well as) the segment-span accessor above; see ggml-metal-context.h for why the node range
+    // can be handed back without sampling and without an MTLCounterSampleBuffer.
+    if (strcmp(name, "ggml_metal_get_cgc_gpu_take_cb") == 0) {
+        return (void *)ggml_backend_metal_get_cgc_gpu_take_cb;
+    }
+    if (strcmp(name, "ggml_metal_cgc_node_name") == 0) {
+        return (void *)ggml_backend_metal_cgc_node_name;
     }
     // [CGC 2026-09-17 §9.18.7] the host-side slot->expert callback that annotates POOL rows. llama
     // registers it because `llama_expert_cache::slot_owner` lives there; this side only stores the
