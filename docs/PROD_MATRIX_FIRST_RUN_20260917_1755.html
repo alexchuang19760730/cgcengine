@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>生產級量測標準的第一次實跑（2026-09-17 17:43–17:48）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --purple:#7c3aed; --purple-bg:#f5f3ff; --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  h4{font-size:14.5px;margin:20px 0 6px;color:#374151}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:24px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  .b-purple{background:var(--purple-bg);border-color:#ddd6fe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:#fcfcfd}
+  .toc ol{margin:6px 0 0 20px}
+  .toc a{color:var(--blue);text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>生產級量測標準的<strong>第一次實跑</strong></h1>
+<div class="sub">
+  日期 2026-09-17 17:43:25–17:48:36（本地）· 專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code><br>
+  被測標準 <code>docs/PROD_MATRIX_STANDARD_20260917_1630.html</code> ＋ <code>scripts/check/prod_matrix.py</code>
+  （commit <code>7ba001802</code>）<br>
+  模型 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（13,652,115,968 B，<code>n_gpu_layers=99</code>，<code>type_k/v=q8_0</code>）<br>
+  profile <code>prefill250</code> · build <code>efeade7e2</code> / build_number <code>279</code><br>
+  硬體 <code>Mac16,12</code> MacBook Air · Apple M4 · 8 核 GPU · 16 GB unified · <strong>無風扇</strong><br>
+  產物 <code>Backup/prod_matrix/prefill250.{json,md}</code>（<code>Backup/</code> 被 <code>.gitignore</code> 排除，故本文內嵌全部關鍵數字）<br>
+  相關 <code>docs/PREFILL250_DECODE_MILESTONE_20260917_1510.html</code>、skill <code>cgc-prefill-thermal-delivery</code>
+</div>
+
+<div class="box b-amber">
+  <p><strong>一句話結論：</strong>標準跑通了 —— 四格都 <code>rc=0</code>、<code>incomplete: false</code>、
+  每格一次獨立啟動、平台值規則生效、熱序列全程記錄。但<strong>它自己印出來的規則判定這一輪沒有一格可用</strong>：</p>
+  <pre><code>A cell whose launch label is not NOMINAL is a HOT sample: it may be reported, but not as the production number (and never as a &gt;=threshold claim -- see lesson eng-mh-0054).</code></pre>
+  <p>四格的 <code>launch</code> 是 <span class="mono">MODERATE / MODERATE / MODERATE / HEAVY</span>，
+  沒有一格是 <code>NOMINAL</code>。實測到的 prefill 是 <strong>102.17 / 102.73 t/s</strong>，
+  而同 repo 已記錄的 pp2048 是 <strong>276.25 / 300.43</strong>（NOMINAL）——
+  <strong>低 2.70× / 2.94×</strong>。所以這份矩陣的用處不是「交付一個生產數字」，
+  而是<strong>第一次量出標準本身的行為</strong>。</p>
+</div>
+
+<div class="toc">
+  <strong>目錄</strong>
+  <ol>
+    <li><a href="#s0">一頁結論</a></li>
+    <li><a href="#s1">測的是什麼：一個「未跑過」的標準</a></li>
+    <li><a href="#s2">現場輸出原文</a></li>
+    <li><a href="#s3">四格結果</a></li>
+    <li><a href="#s4">對照：與已記錄的值差多少</a></li>
+    <li><a href="#s5">為什麼四格全是 HOT：格間空檔是 0.9／0.0／1.6 秒</a></li>
+    <li><a href="#s6">標準本身的三個缺陷（實測）</a></li>
+    <li><a href="#s7">閘門鏈原文（含一條紅燈，不是我的）</a></li>
+    <li><a href="#s8">我在這一輪的兩個錯</a></li>
+    <li><a href="#s9">誠實邊界</a></li>
+    <li><a href="#s10">復現</a></li>
+    <li><a href="#s11">修訂記錄</a></li>
+  </ol>
+</div>
+
+<h2 id="s0">0. 一頁結論</h2>
+
+<div class="cards">
+  <div class="card"><div class="k">跑完的格</div><div class="v ok">4 / 4</div>
+    <div class="small">28 組 (profile × cell) 裡唯一可跑的 4 組，全在 <code>prefill250</code></div></div>
+  <div class="card"><div class="k">可引用的格</div><div class="v bad">0 / 4</div>
+    <div class="small">四格 launch 都不是 NOMINAL</div></div>
+  <div class="card"><div class="k">prefill（平台值）</div><div class="v warn">102.17 / 102.73</div>
+    <div class="small">已記錄 pp2048：276.25 / 300.43</div></div>
+  <div class="card"><div class="k">decode（平台值）</div><div class="v warn">8.89 / 9.33</div>
+    <div class="small">已記錄（llama-bench, d512）：10.78 / 10.91</div></div>
+  <div class="card"><div class="k">總 wall</div><div class="v">309.1 s</div>
+    <div class="small">5.2 分鐘；格間空檔合計 ≤2.5 s</div></div>
+  <div class="card"><div class="k">閘門</div><div class="v ok">GATE PASS</div>
+    <div class="small">但它只看 8080 與量測行程</div></div>
+</div>
+
+<table>
+  <tr><th>cell</th><th>形狀</th><th class="num">平台值 t/s</th><th class="num">avg_ts</th><th class="num">三個樣本 t/s</th><th class="num">rep1 價差</th><th>launch</th><th>worst</th><th class="num">wall s</th></tr>
+  <tr><td>decode</td><td class="num">-p 0 -n 128 -d 512 -b 512</td><td class="num">8.89</td><td class="num">7.86</td><td class="num">5.81 / 9.03 / 8.75</td><td class="num">+13.06%</td><td>MODERATE</td><td>HEAVY</td><td class="num">71.1</td></tr>
+  <tr><td>decode-up</td><td class="num">-p 0 -n 128 -d 512 -b 2048</td><td class="num">9.33</td><td class="num">8.80</td><td class="num">7.72 / 9.13 / 9.53</td><td class="num">+6.10%</td><td>MODERATE</td><td>MODERATE</td><td class="num">59.2</td></tr>
+  <tr><td>prefill-house</td><td class="num">-p 2048 -n 16 -d 0 -b 5632</td><td class="num">102.17</td><td class="num">102.49</td><td class="num">103.12 / 106.66 / 97.67</td><td class="num">-0.31%</td><td>MODERATE</td><td>HEAVY</td><td class="num">94.4</td></tr>
+  <tr><td>prefill-up</td><td class="num">-p 512 -n 128 -d 0 -b 2048</td><td class="num">102.73</td><td class="num">101.07</td><td class="num">97.75 / 99.73 / 105.72</td><td class="num">+1.64%</td><td class="bad">HEAVY</td><td>HEAVY</td><td class="num">84.4</td></tr>
+</table>
+<p class="small">「平台值」＝丟掉 rep 1 後兩個樣本的平均（工具自己算的 <code>platform_ts</code>，<code>n_kept=2</code>）。四個 cell 的 <code>rc=0</code>、<code>incomplete=false</code>、<code>error=null</code>。</p>
+
+<h2 id="s1">1. 測的是什麼：一個「未跑過」的標準</h2>
+
+<p>上游那份白皮書自己把狀態寫得很清楚（§8 誠實邊界）：</p>
+
+<pre><code>本輪沒有跑任何一個 cell。這份白皮書交付的是工具與判準，不是數字。
+所有 --list 與 --dry-run 的輸出都是零 GPU 產生的（run_server.sh CGC_DUMP_ENV=1 ＋ 算術）。</code></pre>
+
+<p>它同時列了四個標準 cell、以及「一個 cell 一次啟動」「丟掉 rep 1」兩條報告規則。
+所以「測試這個標準」的具體含義就是：<strong>照它自己的復現指令把四格跑完，然後看它產出什麼</strong>。
+本輪用的就是它文件裡那一行，沒有改任何參數（除了沒加 <code>--runs</code>，預設即 1）。</p>
+
+<div class="box b-blue">
+  <p><strong>入口的三件事都是它自己拿的</strong>（不是我抄的）：profile 清單解析自 <code>scripts/run_server.sh</code> 的拒絕行；
+  env／模型／batch 由 <code>llama_bench_matrix.resolve()</code>（即 <code>run_server.sh CGC_DUMP_ENV=1</code>）給；
+  熱序列用 <code>thermal_pressure.Sampler</code>，它的第一個樣本取在 child 存在之前 —— 所以 <code>launch</code> 真的表示「被發射進去的等級」。
+  本輪四格的 <code>scalars.MODEL</code> 逐格記錄，四格都是同一支 <code>Nail-…-denseIQ4X.gguf</code>。</p>
+</div>
+
+<h2 id="s2">2. 現場輸出原文</h2>
+
+<h3>2.1 閘門與啟動行</h3>
+<pre><code>$ python3 scripts/check/prod_matrix.py --profiles prefill250 \
+    --cells decode,decode-up,prefill-house,prefill-up --reps 3 \
+    --json Backup/prod_matrix/prefill250.json --md Backup/prod_matrix/prefill250.md
+GATE PASS: no 8080 listener, no other measurement process.
+profiles=1 cells=4 reps=3 runs=1 warmup=llama-bench default (warmup ON); report the platform value, i.e. drop rep 1</code></pre>
+
+<h3>2.2 四格逐行（stdout 原文，未改一個字）</h3>
+<pre><code>  prefill250     decode         rc=0 wall=71.1s thermal launch=MODERATE worst=HEAVY
+      p0n128d512: platform 8.89 t/s (rep1 +13.1%)  [avg_ts 7.86, samples [5.81, 9.03, 8.75]]
+      model=Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf build=efeade7e2
+  prefill250     decode-up      rc=0 wall=59.2s thermal launch=MODERATE worst=MODERATE
+      p0n128d512: platform 9.33 t/s (rep1 +6.1%)  [avg_ts 8.80, samples [7.72, 9.13, 9.53]]
+      model=Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf build=efeade7e2
+  prefill250     prefill-house  rc=0 wall=94.4s thermal launch=MODERATE worst=HEAVY
+      p2048n0d0: platform 102.17 t/s (rep1 -0.3%)  [avg_ts 102.49, samples [103.12, 106.66, 97.67]] | p0n16d0: platform 7.25 t/s (rep1 -2.4%)  [avg_ts 7.43, samples [7.8, 7.46, 7.05]]
+      model=Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf build=efeade7e2
+  prefill250     prefill-up     rc=0 wall=84.4s thermal launch=HEAVY worst=HEAVY
+      p512n0d0: platform 102.73 t/s (rep1 +1.6%)  [avg_ts 101.07, samples [97.75, 99.73, 105.72]] | p0n128d0: platform 7.65 t/s (rep1 +2.5%)  [avg_ts 7.46, samples [7.09, 7.79, 7.51]]
+      model=Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf build=efeade7e2</code></pre>
+
+<h3>2.3 它自己的收尾規則（逐字）</h3>
+<pre><code>warmup rule: llama-bench default (warmup ON); report the platform value, i.e. drop rep 1
+A cell whose launch label is not NOMINAL is a HOT sample: it may be reported, but not as the
+production number (and never as a >=threshold claim -- see lesson eng-mh-0054).
+
+json -&gt; Backup/prod_matrix/prefill250.json
+md -&gt; Backup/prod_matrix/prefill250.md</code></pre>
+
+<h2 id="s3">3. 四格結果</h2>
+
+<h3>3.1 兩個 prefill cell 各吐兩列</h3>
+<p><code>-p 2048 -n 16</code> 與 <code>-p 512 -n 128</code> 都會同時產生一個 pp 列與一個 tg 列
+（<code>n_gen</code> 不為 0）。要引用的是 <strong>pp 那兩格</strong>；tg 那兩格是同一支指令的副產品，
+而且它們的 <code>-d 0</code> 不是暖平台，<strong>不可當 decode 引用</strong>：</p>
+
+<table>
+  <tr><th>來源 cell</th><th>列</th><th class="num">平台值 t/s</th><th class="num">avg_ts</th><th class="num">樣本</th><th>備註</th></tr>
+  <tr><td>prefill-house</td><td class="num">p2048n0d0</td><td class="num">102.17</td><td class="num">102.49</td><td class="num">103.12 / 106.66 / 97.67</td><td>與既有 pp2048 擷取連續的那一格</td></tr>
+  <tr><td>prefill-house</td><td class="num">p0n16d0</td><td class="num">7.25</td><td class="num">7.43</td><td class="num">7.80 / 7.46 / 7.05</td><td><code>-d 0</code>，<strong>不是</strong> decode 標準（那是 <code>-d 512</code>）</td></tr>
+  <tr><td>prefill-up</td><td class="num">p512n0d0</td><td class="num">102.73</td><td class="num">101.07</td><td class="num">97.75 / 99.73 / 105.72</td><td>上游預設形狀 pp512；<strong>這一格沒有既存參考值</strong></td></tr>
+  <tr><td>prefill-up</td><td class="num">p0n128d0</td><td class="num">7.65</td><td class="num">7.46</td><td class="num">7.09 / 7.79 / 7.51</td><td>同上，<code>-d 0</code>；launch 是 HEAVY</td></tr>
+</table>
+
+<h3>3.2 熱序列與記憶體（逐格）</h3>
+<table>
+  <tr><th>cell</th><th>launch 等級</th><th>worst</th><th class="num">樣本數 / 分佈</th><th class="num">launch 前 usable</th><th class="num">launch 前 swap used</th></tr>
+  <tr><td>decode</td><td class="num">1 MODERATE</td><td class="num">2 HEAVY</td><td class="num">137（M 98 / H 40）</td><td class="num">52.96%</td><td class="num">4445.19 MiB</td></tr>
+  <tr><td>decode-up</td><td class="num">1 MODERATE</td><td class="num">1 MODERATE</td><td class="num">117（M 117）</td><td class="num">60.94%</td><td class="num">5691.31 MiB</td></tr>
+  <tr><td>prefill-house</td><td class="num">1 MODERATE</td><td class="num">2 HEAVY</td><td class="num">172（M 117 / H 55）</td><td class="num">63.33%</td><td class="num">5765.19 MiB</td></tr>
+  <tr><td>prefill-up</td><td class="num">2 HEAVY</td><td class="num">2 HEAVY</td><td class="num">163（H 149 / M 14）</td><td class="num">61.10%</td><td class="num">6646.25 MiB</td></tr>
+</table>
+<p class="small">取樣間隔 0.5 s。<code>usable</code> 與 <code>swap</code> 都是 <strong>launch 之前</strong>那一瞬（<code>pre</code> 欄）；
+swap 由 4445 → 6646 MiB <strong>單調上升</strong>，而 launch 等級同時由 MODERATE 走到 HEAVY。
+四個 <code>usable_pct</code> 都高於記憶體地板（<code>--min-usable-pct</code> 預設），所以沒有格被 skip。</p>
+
+<h2 id="s4">4. 對照：與已記錄的值差多少</h2>
+
+<p>比較基準逐條取自 <code>docs/PROD_MATRIX_STANDARD_20260917_1630.html</code> §2 的問題陳述（該表列出當天每一個數字與它的儀器）：</p>
+
+<table>
+  <tr><th>量</th><th>已記錄的值（來源與形狀）</th><th class="num">本輪平台值</th><th class="num">比值</th></tr>
+  <tr>
+    <td>prefill<br><span class="small">house 形狀</span></td>
+    <td class="num">276.25 / 300.43<br><span class="small">llama-bench pp2048（NOMINAL ×2）</span></td>
+    <td class="num">102.17</td>
+    <td class="num bad">低 2.70× ／ 2.94×</td>
+  </tr>
+  <tr>
+    <td>prefill<br><span class="small">upstream 形狀</span></td>
+    <td><span class="small">無既存值（§5 的表裡這一欄是空的）</span></td>
+    <td class="num">102.73</td>
+    <td><span class="small">本輪是這個 cell 的第一個數字，<strong>無從對照</strong></span></td>
+  </tr>
+  <tr>
+    <td>decode<br><span class="small">house 形狀</span></td>
+    <td class="num">10.78 / 10.91<br><span class="small">llama-bench（暖平台、d512）</span></td>
+    <td class="num">8.89</td>
+    <td class="num bad">低 17.53%</td>
+  </tr>
+  <tr>
+    <td>decode<br><span class="small">upstream batch</span></td>
+    <td><span class="small">同上（10.78 / 10.91 是 d512、未指明 batch）</span></td>
+    <td class="num">9.33</td>
+    <td class="num bad">低 14.48%</td>
+  </tr>
+</table>
+
+<p class="small">比值算法：<code>276.25 / 102.17 = 2.7038</code>、<code>300.43 / 102.17 = 2.9404</code>、
+<code>1 − 8.89/10.78 = 17.53%</code>、<code>1 − 9.33/10.91 = 14.48%</code>。
+兩者都是「同一支模型、同一個 profile、同一個 build 家族」下的比較；<strong>形狀不同</strong>
+（pp2048 vs 本輪 pp2048＝同；decode 則同為 d512）—— 所以 prefill 那一列的落差不能用形狀解釋。</p>
+
+<div class="box b-red">
+  <p><strong>這個落差不是「引擎變慢了」。</strong>本輪四格的 <code>launch</code> 全部不是 NOMINAL，
+  而 repo 自己的分離度表（skill <code>cgc-prefill-thermal-delivery</code> §1）是：
+  <strong>發射時 <code>0</code> Nominal → 6/6 ≥250（253.42–271.64）；發射時 <code>1</code>／<code>2</code> → 0/21 ≥250（104.88–211.65）</strong>。
+  也就是說 102 t/s 落在「非 Nominal 帶」的下緣甚至更低 —— <strong>它是一條關於熱狀態的讀數</strong>。</p>
+</div>
+
+<h2 id="s5">5. 為什麼四格全是 HOT：格間空檔是 0.9／0.0／1.6 秒</h2>
+
+<p>把每格的 launch 戳記與 <code>wall_s</code> 相加，得到上一格的結束時刻，再與下一格的 launch 相減：</p>
+
+<table>
+  <tr><th>cell</th><th class="num">launch</th><th class="num">wall s</th><th class="num">結束</th><th class="num">下一格 launch</th><th class="num">格間空檔</th><th>launch 等級</th></tr>
+  <tr><td>decode</td><td class="num">17:43:25</td><td class="num">71.1</td><td class="num">17:44:36.1</td><td class="num">17:44:37</td><td class="num">0.9 s</td><td>MODERATE</td></tr>
+  <tr><td>decode-up</td><td class="num">17:44:37</td><td class="num">59.2</td><td class="num">17:45:36.2</td><td class="num">17:45:36</td><td class="num">0.0 s</td><td>MODERATE</td></tr>
+  <tr><td>prefill-house</td><td class="num">17:45:36</td><td class="num">94.4</td><td class="num">17:47:10.4</td><td class="num">17:47:12</td><td class="num">1.6 s</td><td>MODERATE</td></tr>
+  <tr><td>prefill-up</td><td class="num">17:47:12</td><td class="num">84.4</td><td class="num">17:48:36.4</td><td class="num">—</td><td class="num">—</td><td class="bad">HEAVY</td></tr>
+</table>
+
+<div style="overflow-x:auto">
+<svg viewBox="0 0 1000 210" width="100%" height="210" role="img" aria-label="四個標準 cell 的時間軸：格間空檔 0.9／0.0／1.6 秒，第四格的窗口內發生一次重建">
+  <rect x="0" y="0" width="1000" height="210" fill="#ffffff"/>
+  <text x="90" y="18" font-size="12" fill="#6b7280" font-family="ui-monospace,Menlo,monospace">四個標準 cell 的時間軸（橫軸＝本地時間，每格一次獨立啟動）</text>
+
+  <rect x="103.8" y="40" width="195.5" height="26" fill="#dbeafe" stroke="#2563eb"/>
+  <text x="201" y="58" font-size="12" text-anchor="middle" fill="#1e3a8a" font-family="-apple-system,PingFang TC">decode</text>
+  <text x="201" y="34" font-size="11" text-anchor="middle" fill="#6b7280" font-family="ui-monospace,Menlo,monospace">17:43:25</text>
+  <text x="201" y="82" font-size="12" text-anchor="middle" fill="#111827" font-family="ui-monospace,Menlo,monospace">8.89 t/s</text>
+  <text x="201" y="97" font-size="11" text-anchor="middle" fill="#d97706" font-family="ui-monospace,Menlo,monospace">MODERATE</text>
+
+  <rect x="301.8" y="40" width="162.8" height="26" fill="#dbeafe" stroke="#2563eb"/>
+  <text x="383" y="58" font-size="12" text-anchor="middle" fill="#1e3a8a" font-family="-apple-system,PingFang TC">decode-up</text>
+  <text x="383" y="34" font-size="11" text-anchor="middle" fill="#6b7280" font-family="ui-monospace,Menlo,monospace">17:44:37</text>
+  <text x="383" y="82" font-size="12" text-anchor="middle" fill="#111827" font-family="ui-monospace,Menlo,monospace">9.33 t/s</text>
+  <text x="383" y="97" font-size="11" text-anchor="middle" fill="#d97706" font-family="ui-monospace,Menlo,monospace">MODERATE</text>
+
+  <rect x="464" y="40" width="259.6" height="26" fill="#dbeafe" stroke="#2563eb"/>
+  <text x="594" y="58" font-size="12" text-anchor="middle" fill="#1e3a8a" font-family="-apple-system,PingFang TC">prefill-house</text>
+  <text x="594" y="34" font-size="11" text-anchor="middle" fill="#6b7280" font-family="ui-monospace,Menlo,monospace">17:45:36</text>
+  <text x="594" y="82" font-size="12" text-anchor="middle" fill="#111827" font-family="ui-monospace,Menlo,monospace">102.17 t/s</text>
+  <text x="594" y="97" font-size="11" text-anchor="middle" fill="#d97706" font-family="ui-monospace,Menlo,monospace">MODERATE</text>
+
+  <rect x="728" y="40" width="232.1" height="26" fill="#fee2e2" stroke="#dc2626"/>
+  <text x="844" y="58" font-size="12" text-anchor="middle" fill="#7f1d1d" font-family="-apple-system,PingFang TC">prefill-up</text>
+  <text x="844" y="34" font-size="11" text-anchor="middle" fill="#6b7280" font-family="ui-monospace,Menlo,monospace">17:47:12</text>
+  <text x="844" y="82" font-size="12" text-anchor="middle" fill="#111827" font-family="ui-monospace,Menlo,monospace">102.73 t/s</text>
+  <text x="844" y="97" font-size="11" text-anchor="middle" fill="#dc2626" font-family="ui-monospace,Menlo,monospace">HEAVY</text>
+
+  <line x1="942.5" y1="26" x2="942.5" y2="110" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <text x="944" y="120" font-size="10.5" fill="#7c3aed" font-family="ui-monospace,Menlo,monospace">17:48:30 重建</text>
+
+  <line x1="90" y1="134" x2="975" y2="134" stroke="#e5e7eb"/>
+  <g font-size="10.5" fill="#6b7280" font-family="ui-monospace,Menlo,monospace" text-anchor="middle">
+    <text x="90" y="150">17:43:20</text>
+    <text x="255" y="150">17:44:20</text>
+    <text x="420" y="150">17:45:20</text>
+    <text x="585" y="150">17:46:20</text>
+    <text x="750" y="150">17:47:20</text>
+    <text x="915" y="150">17:48:20</text>
+  </g>
+  <text x="90" y="176" font-size="11.5" fill="#111827" font-family="-apple-system,PingFang TC">格間空檔：decode→decode-up 0.9 s、decode-up→prefill-house 0.0 s、prefill-house→prefill-up 1.6 s。</text>
+  <text x="90" y="194" font-size="11.5" fill="#dc2626" font-family="-apple-system,PingFang TC">最後一格的窗口（17:47:12–17:48:36）內，17:48:30–17:48:37 有人重建了 dylib 與執行檔。</text>
+</svg>
+</div>
+
+<div class="box b-amber">
+  <p><strong>結構性的推論（可證偽）：</strong>四格之間只隔 0.9／0.0／1.6 秒，而 repo 自己的 prefill 交付標準
+  （<code>Backup/run_req2_retest.sh:325</code> 的 <code>COLD_QUIET=1800</code>，分類在 <code>:362-371</code>）把「前一臂結束後安靜 ≥1800 s」才叫 <code>COLD-STATE</code>，
+  也只有那個狀態的讀數可以引用。以 0–2 秒的間隔連續發射，<strong>第 2–4 格必然繼承前一格的熱</strong> ——
+  本輪的資料就是這樣長出來的：launch 由 MODERATE 走到 HEAVY、swap 由 4445 走到 6646 MiB。
+  ⇒ <strong>單次呼叫 <code>prod_matrix.py</code> 不可能產生一個 NOMINAL 的 prefill 格（除非第一格剛好是冷的）。</strong>
+  要拿到可交付的數字，得改成「一格一次呼叫、每格之間等冷」。</p>
+</div>
+
+<h2 id="s6">6. 標準本身的三個缺陷（實測）</h2>
+
+<h3>6.1 <code>--list</code> 的輸出取決於機器當下的狀態，而訊息讀起來像 profile 的屬性</h3>
+
+<p>第一次執行時，機器正被另一條線的 <code>llama-bench</code> 佔著。<code>--list</code> 印出：</p>
+<pre><code>resolved settings (every value comes from `run_server.sh CGC_DUMP_ENV=1`; zero GPU)
+  !! off: resolve failed: run_server.sh CGC_DUMP_ENV=1 failed for profile off (rc=1)
+  !! qa-zh: resolve failed: run_server.sh CGC_DUMP_ENV=1 failed for profile qa-zh (rc=1)
+  !! longform-zh: resolve failed: run_server.sh CGC_DUMP_ENV=1 failed for profile longform-zh (rc=1)
+  !! coding: resolve failed: run_server.sh CGC_DUMP_ENV=1 failed for profile coding (rc=1)
+
+  profile           ctx  batch  ubatch  budgetGiB  mtp  spac  spacA  stream  slab       caps           model
+  ----------------------------------------------------------------------------------------------------------
+  legacy-25plus    8192      -       -       10.0    1     0      -       0     -  40-40:256  Nail…denseIQ4X
+  prod25           4096      -       -        8.0    1     1   0.75       0     -  40-40:256  Nail…denseIQ4X
+  prefill250       8192   5632    5632        8.0    1     1   0.75       1   256  40-40:256  Nail…denseIQ4X</code></pre>
+
+<p>同一條指令，等機器空了再跑一次（<code>memory_pressure -Q</code> 印 <code>free percentage: 79%</code>），
+<strong>7 個 profile 全部解析成功</strong>，<code>!!</code> 那四行不再出現。而且其中一個 profile
+（<code>legacy-25plus</code>）的一次獨立 <code>resolve()</code> 在載入期間<strong>掛住超過 60 秒</strong>（我用 60 s timeout 才拿回控制權）。</p>
+
+<div class="box b-amber">
+  <p><strong>為什麼這算缺陷：</strong>那四行訊息把「這台機器現在記憶體不夠」寫成了
+  「這個 profile 解析不出來」。<code>--list</code> 的說明又自稱是零 GPU、可稽核的對應表；
+  於是<strong>對照表會隨著取樣時刻而缺行，而缺行的樣子與「這幾個 profile 壞了」完全一樣</strong>。
+  這正是同一份白皮書在講的失敗模式（同一個標籤、不同的量）在<em>設定</em>這一側的版本。</p>
+</div>
+
+<h3>6.2 <code>--dry-run</code>（說明寫著「launch nothing」）會產生目錄</h3>
+
+<p><code>prod_matrix.py:249</code> 的 <code>rdir.mkdir(parents=True, exist_ok=True)</code> 在
+<code>:259</code> 的 <code>if args.dry_run</code> <strong>之前</strong>執行 —— 所以每一組 (profile × cell)
+在乾跑時就先建好工作目錄，而乾跑不寫任何產物進去做。後果是
+<code>Backup/prod_matrix/</code> 底下累積了 <strong>124 個空目錄</strong>（16:23–16:26 那幾輪乾跑留下的），
+命名格式與真的跑完的目錄<strong>一模一樣</strong>（<code>&lt;stamp&gt;_&lt;profile&gt;_&lt;cell&gt;</code>）。
+分辨方法只有「裡面有沒檔案」。</p>
+
+<table>
+  <tr><th>實驗</th><th class="num">Backup/prod_matrix 的空目錄數</th><th>結論</th></tr>
+  <tr><td>乾跑（預設 logdir）</td><td class="num">124 → 124（本輪未再跑；數字來自 16:2x 的既存狀態）</td><td>——</td></tr>
+  <tr><td>乾跑 <code>--logdir /tmp/prod_matrix_dry</code></td><td class="num">124 → <strong>124</strong></td><td>目錄跟著 <code>--logdir</code> 走 ⇒ 證實建立點在乾跑分支之前</td></tr>
+</table>
+<p class="small">本輪因此<strong>沒有</strong>重跑預設 logdir 的乾跑；改用工具自己的 <code>--logdir</code> 把工作目錄導到 <code>/tmp</code>，
+才同時重驗了「24 組不符、4 組可跑」這件事（見 6.3 的原文）。</p>
+
+<h3>6.3 閘門涵蓋 8080 與量測行程，<strong>不涵蓋「有人在重建」</strong></h3>
+
+<p><code>gate()</code> 的實作是兩條：<code>lsof -nP -iTCP:8080 -sTCP:LISTEN</code>，
+以及把 <code>ps -Ao pid=,command=</code> 拿去比對
+<code>m123_oracle_gate|decode_sweep|mtp_accept_ab|run_ids_dst_capture|knifeedge_matrix|llama-bench|llama-server</code>。
+它不含「建置中」這個狀態 —— 而這個 repo 的所有比較都建立在<strong>同一個 build</strong> 這個前提上。</p>
+
+<p>本輪就撞上了：我這一輪的四格在 <strong>17:48:36</strong> 結束，而另一條線在
+<strong>17:48:30 / 17:48:31 / 17:48:34 / 17:48:37</strong> 依序換掉了
+<code>libggml-base</code>、<code>libggml-metal</code>、<code>llama-bench</code>、<code>llama-server</code>。</p>
+
+<table>
+  <tr><th>cell</th><th class="num">窗口</th><th>與重建的關係</th></tr>
+  <tr><td>decode</td><td class="num">17:43:25–17:44:36</td><td>早於重建 3 分 54 秒</td></tr>
+  <tr><td>decode-up</td><td class="num">17:44:37–17:45:36</td><td>早於重建 2 分 54 秒</td></tr>
+  <tr><td>prefill-house</td><td class="num">17:45:36–17:47:10</td><td>早於重建 1 分 20 秒</td></tr>
+  <tr><td>prefill-up</td><td class="num">17:47:12–17:48:36</td><td class="bad"><strong>重疊</strong>：pp512 列完成於 ~17:47:41，tg128 列橫跨 17:48:30</td></tr>
+</table>
+
+<p><strong>本輪看不出受害</strong>：四格記錄到的 <code>build_commit</code> 都是 <code>efeade7e2</code>、
+<code>build_number</code> 都是 <code>279</code>（一致）；<code>prefill-up</code> 的三個 tg 樣本
+<code>7.09 / 7.79 / 7.51</code> 沒有離群；四格 <code>rc=0</code>、無 crash report。
+但要注意兩件事：</p>
+<ul>
+  <li>執行中的行程在啟動時就 map 好 dylib，正常重建是「換檔」而非「就地覆寫」，所以<strong>多半無害 —— 這是機制上的推論，不是本輪證明的事</strong>。</li>
+  <li><code>build_commit</code> 取自 build 當時的修訂，而該線的 <code>src/</code> 改動<strong>尚未提交</strong>
+  （我這一輪看到 4 個未提交的 <code>src/</code> 檔：兩個 <code>.cpp</code> 與兩個 <code>.dylib</code>）。因此<strong>重建有可能不改變 <code>build_commit</code></strong> ——
+  那意味著「建置變了」在產物裡是<strong>看不出來的</strong>。本輪無法從資料排除這件事。</li>
+</ul>
+
+<h2 id="s7">7. 閘門鏈原文（含一條紅燈，不是我的）</h2>
+
+<pre><code>$ python3 agent_harness/engine_loop/traces/validate.py
+
+  episodes.jsonl: 122 records {'episode': 122}
+  -&gt; OK
+
+  decisions.jsonl: 38 records {'decision': 38}
+  -&gt; OK
+
+  lessons.jsonl: 157 records {'lesson': 157}
+  -&gt; OK
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+
+  10/10 injected violations rejected
+
+$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  memory index OK: 7 file(s), 153 section(s), no drift
+
+$ cd agent_harness/engine_loop &amp;&amp; python3 index_assets.py --check
+  [error] 2 drift(s) between the manifest and disk:
+    scripts/check/phase_split_ab.py: bytes: manifest 11489 vs disk 12233
+    scripts/check/phase_split_ab.py: mtime: manifest '2026-09-17T17:40:53' vs disk '2026-09-17T17:47:19'
+    regenerate with: python3 index_assets.py</code></pre>
+
+<div class="box b-red">
+  <p><strong>那一條紅燈不是我的檔案。</strong><code>scripts/check/phase_split_ab.py</code> 在 17:47:19 被另一條線改過
+  （bytes 11489→12233），而那正是我四格的窗口內。依本 repo 的併行規則
+  （「看到不是自己改的 modified 檔就只新增不修改」），我<strong>沒有</strong>重生索引 ——
+  重生會把他們尚未完成的位元組寫進 MANIFEST。所以這條紅燈的 owner 是那條線，
+  而它同時是 6.3 那個「閘門不涵蓋建置」的同一個事件留下的痕跡。</p>
+</div>
+
+<h2 id="s8">8. 我在這一輪的兩個錯</h2>
+
+<div class="box b-red">
+  <p><strong>錯一（比較嚴重）：我把 <code>CGC_DUMP_ENV=1</code> 當成位置引數，結果起了一台真的 server。</strong></p>
+  <p>我為了查 <code>--list</code> 為什麼有 4 個 profile 解析失敗，手寫了
+  <code>CGC_SERVER_PROFILE=off bash scripts/run_server.sh CGC_DUMP_ENV=1</code>。
+  但 <code>run_server.sh</code> 讀的是<strong>環境變數</strong> <code>${CGC_DUMP_ENV:-}</code>（<code>:1925</code>），
+  而 <code>llama_bench_matrix.resolve()</code> 是用 <code>env["CGC_DUMP_ENV"] = "1"</code> 傳的。
+  位置引數被忽略 ⇒ 它走完整條路徑<strong>真的啟動了</strong>（pid 52916，13.6 GB 模型），
+  而那時另一條線正在量測。我在 2 分鐘內發現並 <code>kill</code> 掉（8080 回到 0 listener、0 殘留）。</p>
+  <p>事後對照才看到：他們那條驅動的第一個動作就是 <code>pkill -TERM -f "build/bin/llama-server"</code> ——
+  若我那台還活著，會被<strong>靜默殺掉</strong>，而我會以為是自己的問題。教訓與 skill
+  <code>cgc-prefill-thermal-delivery</code> §5.7 是同一條：<strong>動機器之前先問；而且不要用「我以為的介面」去呼叫一支會起 GPU 的腳本。</strong></p>
+</div>
+
+<div class="box b-amber">
+  <p><strong>錯二：我先跑了自己的封閉環探針，四臂全 <code>rc=4</code>。</strong></p>
+  <p>17:32:39 我用 <code>CLOSED_LOOP_MODEL_CMD='python3 …/llm_client.py'</code> 跑
+  <code>closed_loop.py --only Q1 --reps 1</code>（4 次呼叫）。結果四臂 <code>rc=4, answer=0 B</code> ——
+  <code>llm_client.py</code> 的 <code>rc=4</code> 是「連線層的例外」。原因是他們的驅動在 17:35:2x
+  執行了 <code>pkill -TERM -f "build/bin/llama-server"</code>，把我正在用的 server 殺掉了。
+  那 4 次呼叫沒有產生任何關於 E3 的資訊。</p>
+  <p>這件事的價值只有一個：<strong>它再次證明那個窗不是我的</strong>。而使用者在同一時間要求改用標準程序，方向是對的 ——
+  標準程序自帶閘門（<code>GATE PASS</code>），我的探針沒有。</p>
+</div>
+
+<h2 id="s9">9. 誠實邊界</h2>
+
+<p>這份文件<strong>不主張</strong>：</p>
+<ul>
+  <li><strong>不主張任何一個數字是可交付的生產數字。</strong>四格 launch 全非 NOMINAL，工具自己的規則已判定它們是 HOT 樣本。</li>
+  <li><strong>不主張 102 t/s 是這個引擎的 prefill 能力。</strong>它是「無風扇 M4 在 launch 時已被加熱」的讀數。同一支模型在 NOMINAL 時的已記錄值是 276.25／300.43。</li>
+  <li><strong>不主張 102.73（pp512）可以與任何東西並排。</strong>這是該 cell 的第一個數字，白皮書 §5 表裡它本來就是空的。</li>
+  <li><strong>不主張四格橫跨了兩個 build。</strong>四格記錄到同一個 <code>build_commit</code>／<code>build_number</code>；
+  但重建確實發生在第四格的窗口內，而 <code>build_commit</code> 對未提交的 <code>src/</code> 改動不敏感 ⇒
+  「沒有橫跨」是<strong>未被排除的假設</strong>，不是結論。</li>
+  <li><strong>不主張 <code>--list</code> 的那 4 次 <code>rc=1</code> 一定是記憶體守門造成的。</strong>
+  守門（<code>cgc_memory_guard_req</code>，<code>full-mtp-known-profile</code> 要求 <code>free_pct ≥ 35</code>）是<strong>一致的候選</strong>
+  ——它會 <code>exit 1</code> 而不是掛住——但我沒有把當時的 <code>free_pct</code> 記下來，所以那是歸因，不是量測。</li>
+  <li><strong>不主張 <code>prefill-up</code> 的 tg128 列乾淨。</strong>它橫跨了 17:48:30 那個重建時刻；三個樣本沒有離群，但這是「看不出來」不等於「沒發生」。</li>
+  <li><strong>每一格只有 3 個樣本（丟 rep 1 後剩 2）。</strong>本輪沒有任何跨啟動重複（<code>--runs</code> 預設 1），
+  所以跨啟動離散（同一條 pp2048 指令四次獨立啟動得 276.59／198.84／176.18／122.68 的那個問題）
+  <strong>本輪完全沒有碰到</strong>，那仍由 <code>scripts/check/prefill_certifiability.py</code> 負責。</li>
+</ul>
+
+<h2 id="s10">10. 復現</h2>
+
+<pre><code>cd /Users/alexchuang/Documents/flashkv-devserver
+
+# 0) 閘門：先確認沒有別人在量測，也沒有別人在建置（第二條是本文 6.3 的建議，工具目前不含）
+bash agent_harness/engine_loop/runners/preflight.sh
+lsof -nP -iTCP:8080 -sTCP:LISTEN
+ps -Ao pid=,etime=,command= | grep -E "cmake|ninja|ggml"      # 建議：看有沒有人在建置
+notifyutil -g com.apple.system.thermalpressurelevel            # 建議：先讀一次熱
+
+# 1) 標準的四格（本文實跑的那一行，未改任何參數）
+python3 scripts/check/prod_matrix.py --profiles prefill250 \
+    --cells decode,decode-up,prefill-house,prefill-up --reps 3 \
+    --json Backup/prod_matrix/prefill250.json --md Backup/prod_matrix/prefill250.md
+
+# 2) 零 GPU 的兩條（乾跑請自帶 --logdir，否則會在 Backup/prod_matrix 留空目錄 —— 見 6.2）
+python3 scripts/check/prod_matrix.py --list
+python3 scripts/check/prod_matrix.py --dry-run --logdir /tmp/prod_matrix_dry
+
+# 3) 本文 §7 的四條閘門
+python3 agent_harness/engine_loop/traces/validate.py
+python3 agent_harness/engine_loop/traces/selftest.py
+python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+cd agent_harness/engine_loop &amp;&amp; python3 index_assets.py --check
+
+# 4) 要可交付的 prefill 數字：一格一次呼叫，每格之間等冷（見 §5 的結論）
+#    本輪沒有這樣跑；這是本文唯一推薦的下一步。</code></pre>
+
+<h2 id="s11">11. 修訂記錄</h2>
+<ul>
+  <li><strong>2026-09-17 17:55（本版）：</strong>首發。被測標準是 commit <code>7ba001802</code>
+  （<code>scripts/check/prod_matrix.py</code> ＋ <code>docs/PROD_MATRIX_STANDARD_20260917_1630.html</code>），
+  該標準 §8 明寫「四個 cell 一次都沒執行」，本文件是它第一次執行的結果。</li>
+</ul>
+
+<hr>
+<p class="small">本文件是 D5 的附件。文中每一個數字都能指到具體的檔案／欄位／指令輸出：
+四格結果來自 <code>Backup/prod_matrix/prefill250.json</code>（每格的 <code>platform</code>／<code>thermal</code>／<code>pre</code> 三個區塊），
+閘門輸出來自 §7 的現場執行，時間戳來自 <code>ps</code>／<code>stat</code> 與那些產物本身。
+未經量測的推論一律標明為推論。</p>
+
+</div>
+</body>
+</html>
