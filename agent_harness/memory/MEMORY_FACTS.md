@@ -80,3 +80,10 @@ E 自我約束），同時是 `sft_pi/` 的 system prompt ⇒ 改它要走 §6.3
 - **重生順序固定、而且「每一次」都要按序**：先 `build_memory_index.py`、後 `index_assets.py`。
   `build_memory_index.py` 每次都會重寫 `INDEX.jsonl`（bytes 可能相同、只有 mtime 動）⇒ 若 `index_assets`
   報漂移**且差異只在 mtime**，那就是「順序寫反了」，重跑一次兩支即可，不要去找內容差異。
+
+- **★ `src/llama.cpp/build/bin/*.dylib` 與 `llama-server` 是「受版控」且「跨 session 共用」的資源**
+  ⇒ **建置＝對機器上所有正在跑的實驗的一次寫入**，不是本機動作。11:29 踩過一次：`lsof` 同一行印出了
+  別條線的 server 在聽 8080，build 還是跑了、蓋掉他們正在 map 的 `libggml-metal`／`libllama`，
+  而他們那輪 A/B 因此橫跨兩個 build。**閘門要同時看 (a) 8080 的 listener 與 (b) 別條線的量測行程
+  （`run_ids_dst_capture.sh`／`decode_sweep.py`），而且必須真的 abort —— 只印出來不算。**
+  （lesson `eng-mh-0048`）

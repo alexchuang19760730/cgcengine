@@ -244,6 +244,29 @@ g31–g35（T=1，nsel=8）每張 8 列全 ROUTING。g1 原始列：`A id=8 own=
 `_ggml_metal_cgc_set_owner_fn` 是 ops.o 的 T、metal.o 的 U（純 C 符號）；建置有編譯行、0 error；
 比較器 11 個合成案例 ＋ 舊格式回歸（`SAME=90 DIFF=15` 逐字重現）。
 
+## ★ 11:2x §9.18.8：`exp=` ＝ host 說「這個位置該讀哪個 slot」【已實作、已建置、**尚未量測**】
+
+**為什麼是它**：`own=` 只說「裝置讀的那個 slot 裝的是誰」。它答不出「那是不是 host 的意思」。
+兩句話在列的層級長得一樣，因為錯的索引也是合法索引：
+
+| 情況 | 意義 |
+|---|---|
+| 裝置讀 slot 8，slot 8 裝 expert 237，而 host 的表也說 237 在 slot 8 | 裝置與 host 一致 ⇒ 壞在表的上游 |
+| 裝置讀 slot 0，slot 0 裝 expert 163，而 host 的表說 237 在 slot 8 | **裝置讀的不是 host 發布的那張表** ⇒ 機器缺陷 |
+
+**來源**：`cache_remap_tensors[il]`（pool 路徑本來就寫，`llama-context.cpp:6208-6214`）。
+它**就是 host 會餵給 gather 的陣列**，而且**錨臂的圖真的消費它** ⇒ 錨臂上 `ids` 與 `exp` 是同一個陣列，
+那裡出現不等號就是**儀器壞了**（比較器印 `INSTRUMENT FAULT`），不是引擎發現。
+
+**實作**：第二通道 `ggml_metal_cgc_set_expect_fn`、共用同一個 bump arena 但每 capture 一格、
+`rec.exp_off/exp_n`、列尾 `exp=[...]`、banner 同時報兩個通道。**免內核、免新 env。**
+版面 `i + j*n_expert_used` ⇒ `exp` 第 j 格與 POOL 第 j 列是同一個位置；只要求 12 格（內核能摘要的上限）。
+
+**比較器新的「map 軸」**：`OK`／`LOST`（該臂裝置讀了自己 host 沒指定的 slot）／`NO-EXP`；
+B 的 `LOST` 再按「兩邊 host 是否同意該位置」分成 `hosts agree`（機器缺陷）／`hosts differ`（上游）。
+
+**⚠ 尚未量測**：建置完成（11:29），但同時間別條線正在跑實驗，**本輪零量測**（見 `2026-09-17.md` §EN-23 的碰撞記錄）。
+
 ## 下一步
 
 **① 追 routing／mapping 為什麼「第 2 個 token 之後」就給錯專家**（現在唯一的前線）
