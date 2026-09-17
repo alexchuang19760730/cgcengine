@@ -81,6 +81,9 @@ ASSIGNMENT = {
     ],
     "bench": [
         "decode_bench.py", "llama_bench_matrix.py", "replay_server_profile.py",
+        # 2026-09-17 本線新增。與 llama_bench_matrix.py 同類（驅動 llama-bench 產出數字），
+        # 差別是它把「profile × 標準 cell」與回報規則固定下來，並且是唯一的生產級入口。
+        "prod_matrix.py",
         "replay_bench_database.py", "bare_48.py", "replay_client_regime.py", "flip_rate.py",
         "probe_skip0.py", "session_baseline.py",
     ],

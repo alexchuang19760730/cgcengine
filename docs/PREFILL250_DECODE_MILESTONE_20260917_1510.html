@@ -54,7 +54,7 @@
 <body>
 <div class="wrap">
 
-<h1>小里程碑：<strong>prefill ≥250 的三個請求</strong>，與修正後的 decode</h1>
+<h1>小里程碑：<strong>prefill ≥250 的三個請求</strong>（<span class="bad">非交付級，見 §2.3</span>），與修正後的 decode</h1>
 <div class="sub">
   日期 2026-09-17 · HEAD <code>8e9e830e5</code> · 專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code><br>
   模型 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（<code>CGC_SERVER_PROFILE=prefill250</code>）<br>
@@ -81,14 +81,26 @@
   <p><strong>一句話結論：</strong><code>prefill250</code> 這個 profile 在同一個 build 上一次跑出
   <strong>三個都 ≥250 t/s 的 prefill</strong>（278.56 / 261.17 / 275.01），而同一臂的
   <strong>MTP-on decode 是 16.95 / 17.15 t/s</strong>。這一份把兩件事放在一起記下來，
-  因為它們是<b>同一個 build、同一次載入、同一組請求</b>產生的。</p>
+  因為它們是<strong>同一個 build、同一次載入、同一組請求</strong>產生的。</p>
+</div>
+
+<div class="box b-amber">
+  <p><strong>★ 2026-09-17 15:37 更新 —— 交付級樣本拿到了，而它否證了「≥250」這一條。</strong>
+  §2 那三個數字的標籤是 <code>UNKNOWN-STATE</code>（不是交付級）。當天 15:37 起了<strong>真正
+  <code>COLD-STATE</code></strong> 的臂（安靜 <strong>1940 s</strong> ≥ 1800 s），那是這個 profile
+  目前<strong>唯一</strong>具交付資格的樣本 —— 而它的 prefill 是
+  <strong>242.42 / 227.27 / 249.06 t/s，三個全部低於 250</strong>，而且 2 Hz 序列顯示
+  <strong>req1／req2 整個落在連續 <code>0/NOMINAL</code> 的區段內</strong>。</p>
+  <p>⇒ <strong>已發佈的條件集（安靜 ≥1800 s ＋ 每個請求邊界讀到 <code>0/NOMINAL</code>）不足以推出 ≥250。</strong>
+  本文件 §2 的 278.56 / 261.17 / 275.01 因此<strong>維持 <code>UNKNOWN-STATE</code></strong>、不得升格；
+  「交付級」這個標籤自己也需要重新定義。證據、時間軸與兩個未歸因的候選見 <a href="#s2">§2.3</a>。</p>
 </div>
 
 <div class="toc">
   <strong>目錄</strong>
   <ol>
     <li><a href="#s1">現場閘門輸出（原文）</a></li>
-    <li><a href="#s2">prefill：讀數，以及它的熱標籤</a></li>
+    <li><a href="#s2">prefill：讀數、熱標籤，與一次否證（§2.3／§2.4）</a></li>
     <li><a href="#s3">不能說的話</a></li>
     <li><a href="#s4">decode：最新更新</a></li>
     <li><a href="#s5">為什麼 accept 下降而吞吐上升</a></li>
@@ -225,6 +237,88 @@ llama_expert_cache: read shape: jobs=47310 bytes=1864409088 (0.04 MiB/job as one
 <code>slab=110.00 MiB</code>、<code>db=1</code>）就是 M2「整層串流」機制在這個 prompt 上真的走過的直接證據：
 <strong>不是從 pool 拼出來的，而是整層 256 顆一次 materialize</strong>。</p>
 
+<h3 id="s23">2.3 交付級樣本：15:37 的 COLD-STATE 臂（<strong>否證</strong>）</h3>
+
+<p>§2 那三個數字缺的只有一件事：熱標籤。所以 15:37 用<strong>同一個 profile、同一個 build、
+同一份 2873-token prompt、同一個輸出目錄</strong>再跑一次，並等足夠久讓 <code>.last_arm_end</code>
+這條證據鏈自己判 <code>COLD-STATE</code>。臂報告原文（<code>Backup/cgc_logs/milestone_20260917/req2retest_20260917_153715.txt</code>）：</p>
+
+<pre><code># [thermal label] COLD-STATE -- quiet since previous arm ended = 1940s (COLD needs &gt;= 1800s)
+#   this arm is a DELIVERY-GRADE cold sample; its prefill t/s may be quoted (whitepaper §11.14).
+# [machine state] total = 4096.00M  used = 2549.75M  free = 1546.25M  (encrypted)
+# [machine state] load:{ 2.93 3.14 2.94 }
+# [thermal pressure] before launch = 0/NOMINAL
+  health OK after 11s
+  [thermal pressure] before req1 = 0/NOMINAL
+  req1: OK wall=20.7s prompt_n=2873 prompt_ms=11851.2 pp_t/s=242.42
+  [thermal pressure] after  req1 = 0/NOMINAL
+  [thermal pressure] before req2 = 0/NOMINAL
+  req2: OK wall=16.6s prompt_n=2873 prompt_ms=12641.6 pp_t/s=227.27
+  [thermal pressure] after  req2 = 0/NOMINAL
+  [thermal pressure] before req3 = 0/NOMINAL
+  req3: OK wall=17.6s prompt_n=2873 prompt_ms=11535.2 pp_t/s=249.06
+  [thermal pressure] after  req3 = 2/HEAVY
+  ===== RESULT: ready=yes last_request=req3 survived=yes =====
+  new crash report: none</code></pre>
+
+<p>報告之外另掛了一支 2 Hz 的 <code>notifyutil</code> 序列
+（<code>Backup/thermal_pressure_probe.sh</code>；137 個樣本、每次約 11 ms）。它的兩個轉折是關鍵：</p>
+
+<pre><code>2026-09-17 15:37:15 -&gt; 0/NOMINAL     &lt;- 發射
+2026-09-17 15:38:25 -&gt; 1/MODERATE
+2026-09-17 15:38:33 -&gt; 2/HEAVY</code></pre>
+
+<p>req1 的 prompt eval 結束於 15:37:5x、req2 於 15:38:13 —— <strong>兩者完全落在
+15:37:15→15:38:24 這一段連續 <code>0/NOMINAL</code> 之內</strong>。所以「熱」解釋不了 242.42 與 227.27：
+那兩題是在等級<strong>一路讀到 0</strong> 的情況下量到的。</p>
+
+<table>
+<tr><th>欄位</th><th>15:03（<code>UNKNOWN-STATE</code>）</th><th>15:37（<code>COLD-STATE</code>）</th></tr>
+<tr><td>prefill req1/2/3</td><td class="num">278.56 / 261.17 / 275.01</td><td class="num bad">242.42 / 227.27 / 249.06</td></tr>
+<tr><td>每個請求邊界的等級</td><td class="num">0 / 0 / 0</td><td class="num">0 / 0 / 0</td></tr>
+<tr><td>安靜區間</td><td>未知（無 state file）</td><td><strong>1940 s</strong></td></tr>
+<tr><td>發射時的 swap</td><td class="num">total 4096M · used 3085.88M</td><td class="num">total 4096M · used 2549.75M</td></tr>
+<tr><td>load（1/5/15 分）</td><td class="num">2.42 / 2.73 / 3.17</td><td class="num">2.93 / 3.14 / 2.94</td></tr>
+<tr><td>池 IO <code>pread_usec</code></td><td class="num">1501264876</td><td class="num">1548003847</td></tr>
+<tr><td>池 IO <code>us/job</code></td><td class="num">31733</td><td class="num">32533</td></tr>
+<tr><td>decode req1/2/3</td><td class="num">4.72 / 16.95 / 17.15</td><td class="num">2.86 / 7.32 / 4.06</td></tr>
+</table>
+
+<div class="box b-red">
+  <p><strong>判決：這個數字不能升格，而且被否證的是判準本身。</strong></p>
+  <p>這一臂滿足了 skill <code>cgc-prefill-thermal-delivery</code> §1 的<strong>每一條</strong>已發佈條件
+  —— 安靜 ≥1800 s、發射前讀到 <code>0</code>、每一個請求邊界讀到 <code>0</code>、存活、無 crash
+  —— 卻拿到 227–249。⇒ <strong>條件集是必要條件，不是充分條件</strong>；
+  「交付級」目前的定義（<code>quiet &gt;= 1800 s</code>）<strong>不能</strong>當成「這個數字達標」的證明。</p>
+  <p>而 §2 標籤較弱的那一臂反而更快（278 vs 242）⇒ 安靜秒數與熱等級<strong>都不預測</strong>這個 t/s。
+  這是 skill §2 第 2 條鐵律的強化版：條件要「讀」，但這兩個量讀出來的<strong>解釋力不足</strong>。</p>
+</div>
+
+<h3>2.4 兩個候選（都未歸因）與能裁決它們的儀器</h3>
+
+<table>
+<tr><th>候選</th><th>支持</th><th>反對</th></tr>
+<tr><td><strong>(a) 背景 GPU 客戶端</strong>—— 無風扇 M4 的熱／功耗包絡是共享的，其他 GPU 行程會壓低有效時脈</td>
+    <td>skill §5 陷阱 5 記載 <code>vm.loadavg</code> 在 idle 也有 1.71–6.47（常駐 Electron renderer）；本次發射時 load 1 分鐘值 2.93 vs 對照臂 2.42，且 15:39 量到 6.18。已見 <code>Freebuff Helper (GPU)</code>／<code>WorkBuddy Helper (GPU)</code>／<code>WebKit GPU</code>／<code>WindowServer</code> 同時在跑</td>
+    <td>閘門沒有記錄「請求當下的負載」⇒ 這是<strong>相關</strong>不是證據；兩個值都落在 idle 的正常範圍內</td></tr>
+<tr><td><strong>(b) decode 側的隨機性</strong>—— draft 取樣多樣 ⇒ verify 批次大小不同</td>
+    <td>今天各臂的 <code>draft acceptance</code> 落在 0.42857–1.00000；15:37 臂 0.68182（15/22）、15:03 臂 0.76190（16/21）</td>
+    <td>acceptance 差異<strong>解釋不了 prefill</strong>（prefill 不經 draft），也解釋不了 decode 的 2.3×</td></tr>
+</table>
+
+<p>兩個候選都排不掉 ⇒ 正確述句是 <strong>「未歸因」</strong>。能裁決它的儀器只有一個，
+而且它<strong>不是</strong>這次用的那一個：</p>
+
+<div class="box b-blue">
+  <p><code>powermetrics</code> 的 <strong>GPU 時脈駐留分佈</strong>（<code>scripts/check/powermetrics_gpu_freq.sh</code>
+  ＋ <code>powermetrics_gpu_freq_parse.py</code>，skill §4 已備好）。理由：skill §3 給的因果式是
+  <code>t(ms/token) = a + b/f_eff</code>（<code>a≈0.47</code>、<code>b≈4216</code>），250 t/s 對應有效時脈
+  <strong>1154–1227 MHz</strong>。本次 <code>4.13 ms/token</code> 反推約 <strong>1130 MHz</strong>、
+  對照臂 <code>3.59</code> 反推約 <strong>1250 MHz</strong> ⇒ <strong>「有效時脈」才是那個直接變數，
+  熱等級只是它的粗代理</strong>。<strong>但它需要 root 與人手啟動，所以本次做不到</strong>
+  （skill §2 陷阱 2：不要寫「沒有儀器」，要寫「試過什麼、各自的結果」）。</p>
+</div>
+
 <h2 id="s3">3. 不能說的話</h2>
 
 <div class="box b-amber">
@@ -235,7 +329,8 @@ llama_expert_cache: read shape: jobs=47310 bytes=1864409088 (0.04 MiB/job as one
 <table>
 <tr><th>不可以說</th><th>為什麼</th></tr>
 <tr><td>「250 t/s 隨時可重現」</td><td>prefill 是<strong>機器狀態的讀數</strong>，不是產物性質。同一份 binary、同一 A11 指紋、同一組 <code>[perf]</code>，prefill 可以在 118 與 290 之間移動</td></tr>
-<tr><td>「這是 COLD-STATE 的交付數字」</td><td>本次標籤是 <code>UNKNOWN-STATE</code>（安靜區間未知）。<code>COLD-STATE</code> 的定義是<strong>距上一臂結束 ≥1800 s</strong>，本次不成立</td></tr>
+<tr><td>「這是 COLD-STATE 的交付數字」</td><td>§2 那一臂的標籤是 <code>UNKNOWN-STATE</code>（安靜區間未知）。<code>COLD-STATE</code> 的定義是<strong>距上一臂結束 ≥1800 s</strong>，§2 不成立</td></tr>
+<tr><td>「<code>COLD-STATE</code> ⇒ 三個都 ≥250」</td><td><strong>已被 §2.3 否證。</strong>那個臂拿到 <code>COLD-STATE</code>（1940 s）、每個請求邊界都讀到 <code>0/NOMINAL</code>，prefill 仍是 242.42 / 227.27 / 249.06 ⇒ <code>COLD-STATE</code> 是<strong>必要條件</strong>，不是充分條件</td></tr>
 <tr><td>「發射讀到 0 ⇒ 箱子是冷的」</td><td>這是兩件事。2026-09-16 的同 binary 對照：COLD 得 254.29 / 282.38 / 265.27，HOT 得 167.41–200.58。<code>0</code> 只是閘門開</td></tr>
 <tr><td>「安靜夠久 ⇒ 等級一定回 0」</td><td>反例：安靜 18 s 的臂 req1 = 289.86，安靜 34 s 的臂只有 166.95。安靜秒數不是條件</td></tr>
 <tr><td>「<code>swap</code> 是條件」</td><td>它是<strong>果</strong>。相反順序的實測：289.86 t/s @ used 4975.06M，而 13:51 的慢臂 @ 5066.06M</td></tr>
@@ -361,8 +456,10 @@ wrong for all of them</em>。缺陷在<strong>共用的</strong>程式路徑上�
 <div class="box b-amber">
   <p><strong>這份文件不主張：</strong></p>
   <ul>
-    <li><strong>不是交付級的 prefill 數字。</strong>熱標籤是 <code>UNKNOWN-STATE</code>；<code>COLD-STATE</code>
-    （安靜 ≥1800 s）本次不成立。<code>IDLE_BEFORE=0</code> 意味著協定等待<strong>沒有被施加</strong>。</li>
+    <li><strong>§2 的 prefill 不是交付級數字。</strong>熱標籤是 <code>UNKNOWN-STATE</code>；
+    <code>IDLE_BEFORE=0</code> 意味著協定等待<strong>沒有被施加</strong>。<strong>而 §2.3 那個真正
+    <code>COLD-STATE</code> 的臂反而低於 250（242.42 / 227.27 / 249.06）</strong> ⇒ 本文件
+    <strong>沒有任何一個 ≥250 的交付級 prefill 數字</strong>，而且「交付級」這個標籤已被證明<strong>不充分</strong>。</li>
     <li><strong>不是 A/B。</strong>沒有對照臂，所以本文件的任何 t/s 都只是「這一臂的讀數」，
     不是「這個設定的性質」。</li>
     <li><strong>decode 的兩個來源不可互相比較</strong>（形狀不同、熱條件不同，見 §4.2）。</li>

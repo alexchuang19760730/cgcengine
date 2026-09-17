@@ -388,6 +388,22 @@ def main() -> int:
     ap.add_argument("--idle-before", type=int, default=0,
                     help="sleep this many seconds before the FIRST launch, to test whether the "
                          "fast state is the cold state (first launch after an idle period)")
+    # [CGC 2026-09-17] --batch/--dry-run passthrough, so a pp512 cell can be made to match the
+    # UPSTREAM llama-bench shape instead of this profile's 5632.
+    #
+    # Why it matters: `llama_bench_matrix.default_batch()` takes -b/-ub from the profile (prefill250
+    # = 5632), so without this flag a `--prompt 512` cell is still run at 5632 and is therefore NOT
+    # the same shape as the `pp512` row that upstream reports -- whose defaults
+    # (tools/llama-bench/llama-bench.cpp:367-377) are -p 512 -n 128 -d 0 -b 2048, and whose
+    # canonical output rows (tools/llama-bench/README.md:180-187) are pp512 / tg128 / pp512@d512.
+    # A "pp512" at -b 5632 is a different quantity wearing the same label, which is the exact class
+    # of error this repo keeps paying for. `--dry-run` exists so that claim can be CHECKED without
+    # spending a GPU window: the matrix prints `batch : -b X -ub Y [why]` before launching anything.
+    ap.add_argument("--batch", help="override -b/-ub forwarded to the matrix "
+                                    "(needed for an upstream-comparable pp512: pass 2048)")
+    ap.add_argument("--ubatch", help="override -ub only")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="forward --dry-run to the matrix: print the command and launch nothing")
     ap.add_argument("--json")
     args = ap.parse_args()
 
@@ -452,6 +468,24 @@ def main() -> int:
         cmd = [PY, str(MATRIX), "--arms", args.arm, "--prompt", args.prompt,
                "--gen", args.gen, "--depths", args.depths, "--reps", str(args.reps),
                "--workdir", str(rdir), "--json", str(jpath)]
+        if args.batch:
+            cmd += ["--batch", str(args.batch)]
+        if args.ubatch:
+            cmd += ["--ubatch", str(args.ubatch)]
+        if args.dry_run:
+            # The matrix prints `batch : -b X -ub Y [why]` and launches nothing, so this is how the
+            # shape claim is checked. It writes no json, so stop after printing -- continuing to
+            # pp_from(jpath) here would report "no rows" for a run that was never meant to produce
+            # any, which reads like a failed launch.
+            cmd += ["--dry-run"]
+            print("  DRY RUN (no GPU, no model load):", " ".join(cmd), flush=True)
+            proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)
+            sys.stdout.write(proc.stdout[-4000:])
+            if proc.returncode != 0:
+                sys.stdout.write(proc.stderr[-1200:])
+                return 1
+            runs.append({"run": i, "dry_run": True, "cmd": cmd})
+            continue
         t0 = time.time()
         proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)
         wall = time.time() - t0

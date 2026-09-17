@@ -110,6 +110,18 @@ CURATED = [
     ("scripts/check/gguf_dead_expert_census.py", "probe", "engine", True, False,
      "census of all-zero and zero-PREFIXED expert rows straight from the GGUF, no log needed. "
      "The file-side ground truth behind every zero_row / zero-region alarm."),
+    ("scripts/check/prod_matrix.py", "measure", "engine", True, True,
+     "the ONE entry point for production-grade numbers: every profile x the four standard cells. "
+     "It adds no measurement -- every cell is llama_bench_matrix.py (so env and model come from "
+     "run_server.sh CGC_DUMP_ENV=1) and the thermal series is thermal_pressure.Sampler. What it "
+     "owns is the two things that used to be re-decided per measurement: the SHAPES (decode / "
+     "decode-up / prefill-house / prefill-up, one process each, because llama-bench shares the model "
+     "and the pool across shapes inside one process) and the REPORTING RULE (drop rep 1; measured "
+     "example: samples_ts [8.19, 9.96, 10.41] -> avg_ts 9.52 but platform 10.19). --list and "
+     "--dry-run are zero-GPU, which is how the profile list and every cell shape are checkable "
+     "without spending a window. It also REFUSES cells a profile cannot honour (prefill-house needs "
+     "-p 2048 to fit -b, and a profile that pins no BATCH and has no PREFILL_STREAM gets the pool "
+     "path's clamp of 8) instead of launching them and leaving `incomplete: true` behind."),
     ("scripts/check/prefill_certifiability.py", "probe", "engine", True, False,
      "N independent processes, one identical command, launch memory state recorded: is a "
      "throughput number a spec or a draw? --warm-runs forces the page cache up to break the "

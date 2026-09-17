@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>生產級量測的單一入口：scripts/check/prod_matrix.py（2026-09-17）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  h4{font-size:14.5px;margin:20px 0 6px;color:#374151}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:#fcfcfd}
+  .toc ol{margin:6px 0 0 20px}
+  .toc a{color:var(--blue);text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>生產級量測的<strong>單一入口</strong>：<code>scripts/check/prod_matrix.py</code></h1>
+<div class="sub">
+  日期 2026-09-17 · HEAD <code>1d6287145</code> · 專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code><br>
+  模型 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（7 個 profile 全部載入同一支）<br>
+  建置 <code>2026-09-17 14:12:40</code>（<code>libllama</code> <code>ce68629d…</code>、<code>libggml-metal</code> <code>037c931e…</code>）<br>
+  硬體 <code>Mac16,12</code> MacBook Air · Apple M4 · 8 核 GPU · 16 GB unified · <strong>無風扇</strong><br>
+  相關：<code>docs/INSTRUMENT_COMPARE_20260916_1821.html</code>（兩個 decode 儀器的分離度）、
+  <code>docs/M6_QUANT_GEOMETRY_PLAN_2026-09-17.md</code>、
+  <code>docs/PREFILL250_DECODE_MILESTONE_20260917_1510.html</code>（同日的小里程碑）
+</div>
+
+<div class="cards">
+  <div class="card"><div class="k">profiles</div><div class="v">7</div>
+    <div class="small">從 <code>run_server.sh</code> 解析，不是我抄的清單</div></div>
+  <div class="card"><div class="k">標準 cell</div><div class="v">4</div>
+    <div class="small">每格一次獨立啟動（同行程會共用暖池）</div></div>
+  <div class="card"><div class="k">可跑的 (profile × cell)</div><div class="v bad">4 / 28</div>
+    <div class="small">其餘 24 組被能力檢查<b>拒絕</b>，不是崩掉</div></div>
+  <div class="card"><div class="k">D5 M1/M2/M3</div><div class="v ok">9/9 · 9/9 · 9/9</div>
+    <div class="small"><code>comparable=True</code>、<code>config_diffs=[]</code></div></div>
+</div>
+
+<div class="box b-blue">
+  <p><strong>一句話：</strong>這份檔案不新增任何量測 —— 它把「<b>用什麼儀器、跑什麼形狀、報哪一個數</b>」
+  從每次開工前重講一遍的三件事，變成一個<b>可稽核、零 GPU 就能驗</b>的表。
+  代價是它也把一個原本沒人看見的事實講出來了：<b>28 組 (profile × cell) 裡只有 4 組跑得動</b>，
+  而那 4 組全部落在 <code>prefill250</code> 上。</p>
+</div>
+
+<div class="toc">
+  <strong>目錄</strong>
+  <ol>
+    <li><a href="#s1">現場閘門輸出（原文）</a></li>
+    <li><a href="#s2">它要解決的問題：同一句話有幾個答案</a></li>
+    <li><a href="#s3">它定義了什麼（而這是它唯一擁有的東西）</a></li>
+    <li><a href="#s4">它刻意不重新發明什麼</a></li>
+    <li><a href="#s5">把「所有 profile 與設定」變成一張表</a></li>
+    <li><a href="#s6">它拒絕什麼：24 組能力不符</a></li>
+    <li><a href="#s7">為什麼要丟掉 rep 1（worked example）</a></li>
+    <li><a href="#s8">誠實邊界</a></li>
+    <li><a href="#s9">復現</a></li>
+    <li><a href="#s10">修訂記錄</a></li>
+  </ol>
+</div>
+
+<h2 id="s1">1. 現場閘門輸出（原文）</h2>
+
+<pre><code>$ python3 agent_harness/engine_loop/traces/validate.py
+  decisions.jsonl: 38 records {'decision': 38}
+  -&gt; OK
+  lessons.jsonl: 153 records {'lesson': 153}
+  -&gt; OK
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  10/10 injected violations rejected
+
+$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  memory index OK: 7 file(s), 141 section(s), no drift
+
+$ cd agent_harness/engine_loop &amp;&amp; python3 index_assets.py --check
+  manifest OK: 104 assets, existence + bytes + mtime all agree
+
+$ python3 agent_harness/engine_loop/wrappers/classify.py --check
+  OK: 47 個腳本、6 類、無漂移、無未分類項
+
+$ python3 scripts/check/m123_oracle_gate.py --tag prodmatrix_std_20260917
+VERDICT M1 (numeric identity)   : PASS (9/9)
+VERDICT M2 (decision agreement) : PASS (9/9)
+GATE prodmatrix_std_20260917: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+cross-tab: {'num_eq_dec_eq': 9, 'num_eq_dec_ne': 0, 'num_ne_dec_eq': 0, 'num_ne_dec_ne': 0}
+</code></pre>
+
+<p>D5 的 <code>comparable</code> 與參考檔（<b>先讀 <code>comparable</code> 再讀那三個 9/9</b>）：</p>
+
+<pre><code>{'tag': 'prodmatrix_std_20260917',
+ 'ref': 'Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident_v6_nbaware.jsonl',
+ 'comparable': True, 'ok': True, 'n_compared': 9}
+config_diffs: []
+</code></pre>
+
+<h2 id="s2">2. 它要解決的問題：同一句話有幾個答案</h2>
+
+<p>2026-09-17 當天，「我們的 decode 是多少」有<b>四個</b>互不相容的答案，而「我們的 prefill 是多少」
+有<b>兩個</b>：</p>
+
+<table>
+<tr><th>問題</th><th>答案</th><th>來自哪個儀器</th></tr>
+<tr><td rowspan="4">decode</td><td class="num">10.78 / 10.91</td><td><code>llama-bench</code>（暖平台、d512）</td></tr>
+<tr><td class="num">12.36</td><td><code>decode_bench</code>（HTTP，<b>當日裁定退休</b>）</td></tr>
+<tr><td class="num">12.95</td><td><code>llama-server</code> 的 HTTP sweep（<code>p25-gputime</code>）</td></tr>
+<tr><td class="num">12.62</td><td>MTP A/B（HTTP <code>/completion</code>）</td></tr>
+<tr><td rowspan="2">prefill</td><td class="num">278.56 / 261.17 / 275.01</td><td>HTTP 驗收臂（2873-token prompt）</td></tr>
+<tr><td class="num">276.25 / 300.43</td><td><code>llama-bench</code> <code>pp2048</code></td></tr>
+</table>
+
+<p>兩件事讓它們不能並排：<b>儀器不同</b>（<code>decode_bench</code> 與 <code>llama-bench</code> 在同 env／
+同模型／同 n／同場交錯下差 <b>9.4 vs 12.4</b>，而 <code>decode_bench</code> 的離散大得多），
+以及<b>形狀不同</b>（<code>-p 2048</code> vs 2873-token prompt、<code>-b</code> 歷史值 6144 vs 5632）。
+而 repo 裡<b>沒有任何地方列舉過 profile</b> —— 所以「一致性」只能手工從五份文件拼出來，
+這正是那些數字當初分岔的方式。</p>
+
+<p>當天的兩條裁定把儀器固定下來：<b><code>decode_bench</code> 退休</b>，
+以及 <b><code>llama-bench</code> 是 prefill 與 decode 共用的唯一 instrument of record</b>。
+本檔案把那個決定的其餘部分機械化。</p>
+
+<h2 id="s3">3. 它定義了什麼（而這是它唯一擁有的東西）</h2>
+
+<h3>3.1 四個標準 cell</h3>
+
+<table>
+<tr><th>cell</th><th class="num">-p</th><th class="num">-n</th><th class="num">-d</th><th class="num">-b/-ub</th><th>為什麼是這個形狀</th></tr>
+<tr><td><code>decode</code></td><td class="num">0</td><td class="num">128</td><td class="num">512</td><td class="num">512</td>
+    <td>本 repo 的 decode 標準。<code>-d 512</code> 才是暖平台（<code>--depths 0</code> 是最冷的格子）。
+    逐字就是上游的 <code>tg128 @ d512</code> 那一列</td></tr>
+<tr><td><code>decode-up</code></td><td class="num">0</td><td class="num">128</td><td class="num">512</td><td class="num">2048</td>
+    <td>同一列，但用<b>上游的預設 batch</b> ⇒ 可以跟外面發表的數字並排</td></tr>
+<tr><td><code>prefill-house</code></td><td class="num">2048</td><td class="num">16</td><td class="num">0</td><td class="num">profile</td>
+    <td>與既有的 <code>pp2048</code> 擷取（276.25 / 300.43）保持連續</td></tr>
+<tr><td><code>prefill-up</code></td><td class="num">512</td><td class="num">128</td><td class="num">0</td><td class="num">2048</td>
+    <td>逐字就是上游的預設形狀 <code>pp512</code></td></tr>
+</table>
+
+<p>上游的預設是 <code>-p 512 -n 128 -d 0 -b 2048</code>
+（<code>src/llama.cpp/tools/llama-bench/llama-bench.cpp:367-377</code>），而它的標準輸出列是
+<code>pp512</code> / <code>tg128</code> / <code>pp512 @ d512</code> / <code>tg128 @ d512</code>
+（<code>src/llama.cpp/tools/llama-bench/README.md:180-187</code>）。</p>
+
+<h3>3.2 一個 cell 一次啟動</h3>
+
+<p><code>llama-bench</code> 為每一個 (n_prompt, n_gen, n_depth) 組合建 context，
+但<b>模型與專家池是同一份</b> ⇒ 把 <code>-p 512,2048</code> 寫在一起會讓第二格<b>繼承第一格暖過的池</b>，
+兩格就不獨立了。所以每一格都是自己的行程、自己的 <code>--workdir</code>。</p>
+
+<h3>3.3 回報規則：丟掉 rep 1</h3>
+
+<p><code>llama-bench</code> 的 tg warmup 只有 <b>1 個 token</b>
+（<code>src/llama.cpp/tools/llama-bench/llama-bench.cpp</code>），所以 rep 1 跑在空池上、
+rep 2..n 跑在暖池上。工具因此<b>同時印 <code>avg_ts</code> 與平台值</b>，
+並把平台值標成該引用的那一個（§7 有實測的價差）。</p>
+
+<h3>3.4 模型與建置必須隨數字走</h3>
+
+<p><code>tag</code>（臂名）<b>不含模型檔</b>。2026-09-17 用 <code>--dry-run</code> 逐字讀
+<code>-m</code> 那一行驗證：<code>--arm prefill250</code> 與 <code>--arm prod25</code> 解析出
+<b>同一個檔</b>（<code>Nail-…-denseIQ4X.gguf</code>），只有<b>顯式</b>設 <code>CGC_SERVER_MTP=0</code>
+才換成 <code>Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf</code>（<code>ARMS</code> 表裡只有
+<code>prod25-stream-mtpoff</code> 設了它）。所以每一列都附 <code>model_filename</code> 與
+<code>build_commit</code> —— 這兩個欄位在 <code>llama-bench</code> 的 row 裡本來就有，
+是<b>摘要</b>把它們丟掉的。（lesson <code>eng-mh-0055</code>）</p>
+
+<h3>3.5 閘門與熱序列</h3>
+
+<p>跑之前檢查 8080 有沒有 listener、以及有沒有別條線的量測行程，<b>任一非空就 <code>exit 3</code></b>
+（不是印出來然後照跑 —— 2026-09-17 有一輪把 <code>lsof</code> 與 <code>cmake --build</code> 寫在同一行、
+沒有 abort 分支，於是把別條線正在 map 的 dylib 蓋掉，他們那輪 A/B 橫跨了兩個 build）。
+熱序列用 <code>thermal_pressure.Sampler</code>，它在 child 存在<b>之前</b>取第一個樣本
+⇒ <code>launch</code> 真的表示「被發射進去的等級」。</p>
+
+<h2 id="s4">4. 它刻意不重新發明什麼</h2>
+
+<table>
+<tr><th>它需要什麼</th><th>它去哪裡拿</th><th>為什麼不自己寫</th></tr>
+<tr><td>profile 清單</td><td>從 <code>scripts/run_server.sh</code> 的
+    <code>CGC_SERVER_PROFILE must be a|b|c</code> 拒絕行解析</td>
+    <td>手抄的清單在「有人新增 profile 的那一天」就錯了，而且失效是<b>安靜的</b>
+    —— 新的 profile 只是永遠不會被量到</td></tr>
+<tr><td>env、模型、batch</td><td><code>llama_bench_matrix.resolve()</code>
+    （即 <code>run_server.sh CGC_DUMP_ENV=1</code>）</td>
+    <td>只有一條解析路徑。抄一份 env 就是第二個真相來源</td></tr>
+<tr><td>熱序列</td><td><code>thermal_pressure.Sampler</code></td>
+    <td>它的 <code>launch</code> 語意是先在 child 之前取樣，重寫會弄丟這個性質</td></tr>
+<tr><td>記憶體地板</td><td><code>prefill_certifiability.mem_state()</code></td>
+    <td>與驗收臂用的是同一個「可用記憶體」定義</td></tr>
+<tr><td>行的解析</td><td><code>llama_bench_matrix.parse_rows()</code></td>
+    <td>它能救回「mid-run 失敗前已完成的那幾行」</td></tr>
+</table>
+
+<p>⇒ 這個檔案<b>不 import 任何量測碼</b>，它 import 的是「怎麼解析設定」與「怎麼記錄狀態」。</p>
+
+<h2 id="s5">5. 把「所有 profile 與設定」變成一張表</h2>
+
+<p><code>--list</code> 是零 GPU 的（只有 <code>run_server.sh CGC_DUMP_ENV=1</code>）。
+它在磁碟上「有什麼 profile」與「它們各自是什麼設定」之間建立一個可稽核的對應：</p>
+
+<pre><code>$ python3 scripts/check/prod_matrix.py --list
+profiles: 7 (parsed from scripts/run_server.sh -- the authority -- not copied here)
+  off | qa-zh | longform-zh | coding | legacy-25plus | prod25 | prefill250
+
+resolved settings (every value comes from `run_server.sh CGC_DUMP_ENV=1`; zero GPU)
+
+  profile           ctx  batch  ubatch  budgetGiB  mtp  spac  spacA  stream  slab       caps           model
+  ----------------------------------------------------------------------------------------------------------
+  off              8192      -       -       10.0    1     0      -       0     -  40-40:256  Nail…denseIQ4X
+  qa-zh            8192      -       -       10.0    1     0      -       0     -  40-40:256  Nail…denseIQ4X
+  longform-zh      8192      -       -       10.0    1     0      -       0     -  40-40:256  Nail…denseIQ4X
+  coding           8192      -       -       10.0    1     0      -       0     -  40-40:256  Nail…denseIQ4X
+  legacy-25plus    8192      -       -       10.0    1     0      -       0     -  40-40:256  Nail…denseIQ4X
+  prod25           4096      -       -        8.0    1     1   0.75       0     -  40-40:256  Nail…denseIQ4X
+  prefill250       8192   5632    5632        8.0    1     1   0.75       1   256  40-40:256  Nail…denseIQ4X
+
+  where they differ
+    ctx        8192 -&gt; coding/legacy-25plus/longform-zh/off/prefill250/qa-zh, 4096 -&gt; prod25
+    batch      - -&gt; coding/legacy-25plus/longform-zh/off/prod25/qa-zh, 5632 -&gt; prefill250
+    ubatch     - -&gt; coding/legacy-25plus/longform-zh/off/prod25/qa-zh, 5632 -&gt; prefill250
+    budgetGiB  10.0 -&gt; coding/legacy-25plus/longform-zh/off/qa-zh, 8.0 -&gt; prefill250/prod25
+    spac       0 -&gt; coding/legacy-25plus/longform-zh/off/qa-zh, 1 -&gt; prefill250/prod25
+    spacA      - -&gt; coding/legacy-25plus/longform-zh/off/qa-zh, 0.75 -&gt; prefill250/prod25
+    stream     0 -&gt; coding/legacy-25plus/longform-zh/off/prod25/qa-zh, 1 -&gt; prefill250
+    slab       - -&gt; coding/legacy-25plus/longform-zh/off/prod25/qa-zh, 256 -&gt; prefill250
+</code></pre>
+
+<p>這張表當場確定了三件事（都不是我推的，是讀出來的）：</p>
+
+<ul>
+  <li><b>7 個 profile 全部載入同一支模型</b>（<code>Nail-…-denseIQ4X</code>），
+  而且<b>全部 <code>mtp=1</code></b>。「MTP=0」不在 profile 集合裡，它只能靠顯式覆寫產生 ——
+  這與 §3.4 是同一件事的兩面。</li>
+  <li><b><code>caps</code> 在 7 個 profile 上都是 <code>40-40:256</code></b>：
+  M6 那個旋鈕的 profile 預設是統一的（它被改動時是靠 env，不是靠 profile）。</li>
+  <li>真正分岔的只有 8 個欄位，而且集中在 <code>prefill250</code>（batch／stream／slab）
+  與 <code>prod25</code>（ctx 4096、spac 開）身上。</li>
+</ul>
+
+<div class="box b-amber">
+  <p><b>MTP 這一格刻意不從 env 讀。</b><code>CGC_SERVER_MTP</code> 是 <code>run_server.sh</code>
+  內部的 shell 變數，<b>不會</b>出現在 dump 裡 ⇒ 讀它會讓每一列都印「(default)」而看起來正常。
+  權威來源是<b>解析後的 server argv</b>：MTP=1 會帶
+  <code>--spec-type draft-mtp --spec-draft-n-max 3</code>，MTP=0 兩者都沒有
+  （當天用 <code>prod25</code> 與 <code>prod25:CGC_SERVER_MTP=0</code> 對照驗過）。</p>
+</div>
+
+<h2 id="s6">6. 它拒絕什麼：24 組能力不符</h2>
+
+<p>這是<b>寫這個工具時才看見</b>的東西。<code>prefill-house</code>（<code>-p 2048</code>）在六個
+pool-only profile 上解析成 <b><code>-b 8</code></b>，而 2048 個 token 塞進 8 的 batch 會觸發
+<code>GGML_ASSERT(n_tokens_all &lt;= cparams.n_batch)</code> ⇒ 那個 cell 會 abort，
+唯一留下的痕跡是 matrix json 裡的 <code>incomplete: true</code>。
+第二種情況更安靜：一個引擎不會照做的 batch，cell 仍然會<b>跑完</b>，
+然後產出一個戴著該 cell 標籤的數字 —— 那正是這份文件存在的目的所要防的
+「同一個標籤、不同的量」。</p>
+
+<pre><code>$ python3 scripts/check/prod_matrix.py --dry-run | grep -c "^  SKIP"
+24
+</code></pre>
+
+<p>把 4 個 cell 展開成 28 組之後，<b>只有 4 組跑得動，而且全部在 <code>prefill250</code> 上</b>：</p>
+
+<pre><code>$ python3 scripts/check/prod_matrix.py --profiles prefill250 --dry-run | grep "^  prefill250"
+  prefill250     decode         -p 0    -n 128 -d 512 -b 512   [cell (argparse)]  -m Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf
+  prefill250     decode-up      -p 0    -n 128 -d 512 -b 2048  [cell (argparse)]  -m Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf
+  prefill250     prefill-house  -p 2048 -n 16  -d 0   -b 5632  [profile]  -m Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf
+  prefill250     prefill-up     -p 512  -n 128 -d 0   -b 2048  [cell (argparse)]  -m Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf
+</code></pre>
+
+<p>拒絕的理由有兩種，工具逐組說明：</p>
+
+<pre><code>SKIP prod25  prefill-house  -- -p 2048 does not fit -b 8 (GGML_ASSERT n_tokens_all &lt;= n_batch;
+                               the engine clamps n_batch to cgc_pool_max_tokens() on this profile)
+SKIP prod25  decode         -- profile pins no BATCH and prod25 has no CGC_PREFILL_STREAM, so the
+                               engine's pool-path clamp (cgc_pool_max_tokens, default 8) applies --
+                               the cell's -b 512 would NOT be the effective batch
+</code></pre>
+
+<p>要讓 pool-only 的 profile 也能跑，介面是 <code>--extra-env</code>
+（矩陣的 <code>PROFILE:ENV=VAL</code> 形式），例如
+<code>--extra-env 'CGC_PREFILL_STREAM=1;CGC_GATHER_SLAB_CAP=256'</code>；
+代價寫在輸出裡：<b>那時量的已經不是「這個 profile 原樣」</b>。
+而即使加了它，<code>prefill-house</code> 在 <code>prod25</code> 上仍然被拒
+（stream 路徑給 <code>-b 512</code>，裝不下 <code>-p 2048</code>）—— 這是正確的拒絕。</p>
+
+<h2 id="s7">7. 為什麼要丟掉 rep 1（worked example）</h2>
+
+<p>取 <code>Backup/phase_decomp/lb_depth_repro_20260916.json</code> 裡的一列
+（<code>prod25-stream</code>、<code>-p 0 -n 128 -d 0</code>）：</p>
+
+<pre><code>samples_ts = [8.1907, 9.96428, 10.4123]      avg_ts = 9.522431
+platform   = (9.96428 + 10.4123) / 2 = 10.19 t/s
+價差       = +7.0%
+</code></pre>
+
+<p>那一列的三個樣本<b>不算離散</b>：rep 1 是冷的、rep 2/3 一致。
+換句話說，<code>avg_ts</code> 少報了 7%，而「少報」不是隨機誤差，是<b>規則問題</b>。
+預設 <code>-r 3</code> 時平台值只剩兩個樣本 ⇒ 這份工具會把 <code>n_kept</code> 一起印出來，
+讓「只有 1 個 rep」的執行<b>看得出來不是平台值</b>，而不是安靜地長得像一個。</p>
+
+<h2 id="s8">8. 誠實邊界</h2>
+
+<div class="box b-amber">
+  <p><strong>這份文件不主張：</strong></p>
+  <ul>
+    <li><b>本輪沒有跑任何一個 cell。</b>這份白皮書交付的是<b>工具與判準</b>，不是數字。
+    所有 <code>--list</code> 與 <code>--dry-run</code> 的輸出都是零 GPU 產生的
+    （<code>run_server.sh CGC_DUMP_ENV=1</code> ＋ 算術）。</li>
+    <li><b>它不取代 <code>prefill_certifiability.py</code>。</b>跨啟動離散（同一條 <code>pp2048</code>
+    指令、四次獨立啟動得 276.59 / 198.84 / 176.18 / 122.68 ＝ <b>2.25×</b>）仍然由那支
+    harness 負責 —— 它同時記錄每次啟動的記憶體狀態，那才是離散要相關的變數。
+    <code>--runs N</code> 只是把這裡變成同一個問題的淺版。</li>
+    <li><b>它不決定「哪一個 cell 是生產數字」。</b>那取決於「生產」指什麼（被服務的請求是 2873-token
+    prompt，而 cell 是 <code>pp512</code> / <code>pp2048</code>）。工具把選項與形狀固定，
+    選擇權留給引用的人。</li>
+    <li><b>它對 MTP 無能為力。</b><code>llama-bench</code> 對投機是瞎的
+    （<code>sampler|speculat|draft|MTP</code> 在它的原始碼零命中）。所以歷史上的
+    <code>12.62 vs 9.82</code>（MTP 由淨負轉淨正）在「只認 <code>llama-bench</code>」之下
+    <b>目前沒有 instrument of record</b>。兩條路（把 <code>--spec-*</code> 加進
+    <code>llama-bench</code>，或保留 <code>llama-speculative-simple</code> 當 MTP 臂並且永不並排）
+    <b>未定</b>。</li>
+    <li><b><code>prefill-house</code> 的 batch 不在 cell 手上</b>（<code>batch=None</code> ⇒ 吃 profile）。
+    這是為了與既有的 <code>pp2048</code> 擷取連續；副作用是它只能在<b>釘了寬 batch</b> 的 profile 上跑。</li>
+  </ul>
+  <p class="small">未跑的東西明寫未跑：本節列的四個 cell 一次都沒執行；
+  <code>--runs 2..N</code> 的跨啟動路徑沒跑過；<code>prefill-up</code> 沒有既有的參考數字
+  （它的紀錄欄位在 §5 的表裡是空的）。</p>
+</div>
+
+<h2 id="s9">復現</h2>
+
+<pre><code>cd /Users/alexchuang/Documents/flashkv-devserver
+
+# 零 GPU：profile × 設定、以及每一格的形狀
+python3 scripts/check/prod_matrix.py --list
+python3 scripts/check/prod_matrix.py --dry-run
+
+# 真正跑（需要一段獨佔機器的窗口；gate 會在 8080 或別條線的量測行程存在時 exit 3）
+python3 scripts/check/prod_matrix.py --profiles prefill250 \
+    --cells decode,decode-up,prefill-house,prefill-up --reps 3 \
+    --json Backup/prod_matrix/prefill250.json --md Backup/prod_matrix/prefill250.md
+
+# 讓 pool-only 的 profile 也跑得動（輸出會揭露這已經不是 profile 原樣）
+python3 scripts/check/prod_matrix.py --profiles prod25 --cells decode \
+    --extra-env 'CGC_PREFILL_STREAM=1;CGC_GATHER_SLAB_CAP=256'
+
+# 本輪的四條閘門
+python3 agent_harness/engine_loop/traces/validate.py
+python3 agent_harness/engine_loop/traces/selftest.py
+python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+cd agent_harness/engine_loop &amp;&amp; python3 index_assets.py --check
+</code></pre>
+
+<h2 id="s10">修訂記錄</h2>
+
+<ul>
+  <li><b>2026-09-17 16:30（本版）</b>：首發。同日稍早的裁定（<code>decode_bench</code> 退休、
+  <code>llama-bench</code> 為唯一 instrument of record、prefill 增加上游可比的 <code>pp512</code> cell）
+  是本檔案的輸入。</li>
+</ul>
+
+<hr>
+<p class="small">本文件是 D5 的附件，與它所屬的 commit 一起提交。
+文中每一個數字都能指到具體的檔案／欄位／指令輸出；未經量測的推論一律標明。</p>
+
+</div>
+</body>
+</html>

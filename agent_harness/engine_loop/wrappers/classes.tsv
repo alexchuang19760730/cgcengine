@@ -28,6 +28,7 @@ bench	decode_bench.py	measure	Controlled decode benchmark: short prompt, long ge
 bench	flip_rate.py	probe	Knife-edge-resistant quality evaluation (fixed seeds + repeats + verdict-flip statistics).
 bench	llama_bench_matrix.py	measure	Production prefill/decode matrix, measured the way llama-bench measures -- pp/tg x depth.
 bench	probe_skip0.py	probe	Deterministic 15+27 probe: N shots against the local OpenAI-compatible server.
+bench	prod_matrix.py	measure	The single production-grade measurement entry point: every profile x the standard cells.
 bench	replay_bench_database.py	probe	replay_bench_database.py — CGC Replay Benchmark 數據庫管理工具
 bench	replay_client_regime.py	probe	replay_client_regime.py - Raw OpenAI client quality suite (2026-09-08)
 bench	replay_server_profile.py	probe	replay_server_profile.py — 應用層 replay benchmark + 質量/速度/內存指標
