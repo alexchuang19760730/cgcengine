@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>down-combine 的可達性：為什麼旗艦模型吃不到它，而另一個模型吃得到 — flashkv-devserver 2026-09-18</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#1f2328; --muted:#57606a; --line:#d0d7de; --soft:#f6f8fa;
+    --blue:#0969da; --green:#1a7f37; --red:#cf222e; --amber:#9a6700; --purple:#8250df; --gray:#6e7781;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Helvetica,Arial,sans-serif;
+       line-height:1.7;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1040px;margin:0 auto;padding:32px 20px 80px}
+  h1{font-size:26px;line-height:1.35;margin:0 0 6px}
+  h2{font-size:19px;margin:36px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:24px 0 8px}
+  p,li{font-size:14.5px}
+  .meta{color:var(--muted);font-size:13px;margin-bottom:18px}
+  .tag{display:inline-block;font-size:12px;line-height:18px;padding:1px 8px;border-radius:999px;
+       border:1px solid var(--line);margin-right:6px;vertical-align:middle;white-space:nowrap}
+  .t-blue{color:var(--blue);border-color:#b6d8fb;background:#ddf4ff}
+  .t-green{color:var(--green);border-color:#a6e3b4;background:#dafbe1}
+  .t-red{color:var(--red);border-color:#f5b8b5;background:#ffebe9}
+  .t-amber{color:var(--amber);border-color:#e8ce8f;background:#fff8c5}
+  .t-purple{color:var(--purple);border-color:#d7c4f7;background:#f0e8ff}
+  .t-gray{color:var(--gray);border-color:#d8dee4;background:#f6f8fa}
+  table{border-collapse:collapse;width:100%;margin:12px 0 16px;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num,th.num{white-space:nowrap;font-variant-numeric:tabular-nums}
+  code{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;
+       background:var(--soft);padding:1px 4px;border-radius:4px}
+  pre{background:var(--soft);border:1px solid var(--line);border-radius:6px;padding:12px 14px;
+      overflow-x:auto;margin:12px 0}
+  pre code{background:none;padding:0;font-size:12.5px;line-height:1.55}
+  .box{border-left:4px solid var(--blue);background:#f6f8fa;padding:10px 14px;margin:14px 0;border-radius:0 6px 6px 0}
+  .box.warn{border-color:var(--amber);background:#fff8c5}
+  .box.bad{border-color:var(--red);background:#ffebe9}
+  .box.ok{border-color:var(--green);background:#dafbe1}
+  .box.pur{border-color:var(--purple);background:#f0e8ff}
+  .box p:first-child{margin-top:0}.box p:last-child{margin-bottom:0}
+  .small{font-size:12.5px;color:var(--muted)}
+  ul{padding-left:22px}
+  svg{max-width:100%;height:auto;display:block;margin:8px auto}
+  .cap{text-align:center;font-size:12.5px;color:var(--muted);margin:-4px 0 16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>down-combine 的可達性：為什麼旗艦模型吃不到它，而另一個模型吃得到</h1>
+<div class="meta">
+  2026-09-18 03:4x–04:1x · flashkv-devserver（llama.cpp CGC fork，引擎層線）· profile <code>prefill250</code> ·
+  pool 8 GiB<br>
+  受試：<code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（旗艦，41 層）與
+  <code>Ornith-1.5-35B-A3B-Abliterated-MTPv2-APEX-I-Compact-v2D-lite.gguf</code>（對照，41 層）<br>
+  <span class="tag t-green">D5 PASS</span>
+  <span class="tag t-red">① 只有 Q3_K</span>
+  <span class="tag t-amber">② 不是開閘門，是寫 kernel</span>
+  <span class="tag t-blue">③ 節點已證，A/B 已重做</span>
+</div>
+
+<div class="box">
+<p><b>一句話：</b>那條「一個 kernel 取代 8 個 down GEMV ＋ 7 個 add」的融合路徑<b>是活的</b>（節點確實
+進圖，本文件用新儀器直接印出來了），但它在<b>旗艦模型上只覆蓋 41 層裡的 1 層</b>，而那一層是 MTP
+nextn head、不在熱路徑上。要真的吃到它，得<b>寫 IQ3_S／IQ2_S／IQ4_XS 的 Metal kernel</b>，
+而且<b>還要讓它支援 <code>n_tokens &gt; 1</code></b>（MTP-on 的 verify 形狀）——
+只改型別檢查是不夠的。</p>
+<p><b>而它值不值得寫？</b>本文件用樹上第二個模型（<code>ffn_down_exps</code> 是 Q3_K ×30）量到了
+<b>+25%</b>（覆蓋 trunk 的 75%、兩臂同熱態）。所以「要不要動手」現在有一把尺了。</p>
+</div>
+
+<hr>
+
+<h2>§0 摘要：三個問題、三個答案</h2>
+
+<table>
+<tr><th>問</th><th>答</th><th>證據</th></tr>
+<tr>
+  <td><b>① kernel 支援哪些型別</b></td>
+  <td><b>只有 <code>Q3_K</code></b>，而且名字是硬寫死的</td>
+  <td><code>ggml-metal.metal:11744</code>（唯一 impl）、<code>:11886</code>（唯一 host_name）、
+      <code>ggml-metal-device.cpp:1309</code>（硬字串）</td>
+</tr>
+<tr>
+  <td><b>② 把閘門開到 IQ3_S／IQ2_S／IQ4_XS</b></td>
+  <td><b>那不是「開閘門」</b>：要寫新 kernel（IQ 系列還要 lookup table），
+      而且<b>還要</b>解 <code>n_tokens == 1</code></td>
+  <td>§1 ＋ §4</td>
+</tr>
+<tr>
+  <td><b>③ 交錯 A/B 並確認融合節點出現</b></td>
+  <td><b>節點已證出現</b>（<code>CGC-DCFUSED</code>）；A/B 第一版<b>因熱態無效</b>，
+      正確的受試是另一個模型 ⇒ <b>+25%</b></td>
+  <td>§3 ＋ §5 ＋ §6</td>
+</tr>
+</table>
+
+<h2>§1 ① 的答案：kernel 只有 <code>Q3_K</code>，而且是硬寫死的</h2>
+
+<p>三個獨立的證據，任一個就足以定案：</p>
+
+<table>
+<tr><th>位置</th><th>逐字</th><th>意義</th></tr>
+<tr><td><code>ggml-metal.metal:11744</code></td>
+    <td><code>void kernel_mul_mv_id_down_combine_q3_K_impl(...)</code></td>
+    <td><b>只有一個 impl</b>，名字帶型別</td></tr>
+<tr><td><code>ggml-metal.metal:11886-11887</code></td>
+    <td><code>[[host_name("kernel_mul_mv_id_down_combine_q3_K_f32")]]</code></td>
+    <td><b>只有一個 host_name</b> ⇒ library 裡只有這一個變體</td></tr>
+<tr><td><code>ggml-metal-device.cpp:1309</code></td>
+    <td><code>snprintf(base, 256, "kernel_mul_mv_id_down_combine_q3_K_f32");</code></td>
+    <td>pipeline 名字是<b>硬寫死的</b>，getter 沒有型別分支</td></tr>
+</table>
+
+<p>而且 getter 的其他部分也是 Q3_K 專屬的：</p>
+<ul>
+  <li><code>:1291-1292</code> <code>int nsg = N_SG_Q3_K; int nr0 = N_R0_Q3_K;</code>（Q3_K 的 tile 常數）</li>
+  <li><code>:1307</code> <code>size_t smem = 0;</code>，註解逐字：<b>「Q3_K does not need lookup table
+      in threadgroup memory」</b> ⇒ <b>IQ 系列需要 lookup table</b>（<code>smem != 0</code>），
+      dequant 邏輯也不同。</li>
+</ul>
+
+<p>消費端還有第四個鎖：<code>ggml-metal-ops.cpp:4821</code> 是<b>硬斷言</b>，不是 fallback：</p>
+<pre><code>GGML_ASSERT(op->src[0]->type == GGML_TYPE_Q3_K);</code></pre>
+
+<div class="box bad">
+<p><b>⇒ 所以「把閘門開到 IQ3_S／IQ2_S／IQ4_XS」不是改一行型別檢查。</b>
+它是<b>實作一個新的 Metal kernel</b>：IQ3_S／IQ2_S／IQ4_XS 各自的 dequant ＋ 8 專家的 GEMV ＋
+weighted combine，加上 pipeline getter 的型別分支，再加上把那個 <code>GGML_ASSERT</code>
+改成 fallback。</p>
+</div>
+
+<h2>§2 ② 的前半：旗艦模型上只有 <b>1/41 層</b>是 Q3_K</h2>
+
+<p>新儀器 <code>CGC_DOWN_COMBINE_AUDIT=1</code> 在<b>建圖時</b>逐層印出閘門六條條件的<b>實際取值</b>
+（<code>CGC-DCAUDIT il=.. flag=.. n_tokens=.. down_type=.. has_scale=.. has_bias=..
+weight_before_ffn=.. ids=.. =&gt; fuse=..</code>）。旗艦模型，1189 行審計、86 個圖：</p>
+
+<table>
+<tr><th>圖</th><th class="num">層數</th><th>型別</th><th class="num"><code>fuse=1</code></th></tr>
+<tr><td><b>trunk</b></td><td class="num">40（il 0–39）</td>
+    <td><b><code>iq3_s</code> ×37、<code>iq4_xs</code> ×3</b></td><td class="num"><b>0</b></td></tr>
+<tr><td>MTP nextn head</td><td class="num">1（il=40）</td><td><b><code>q3_K</code></b></td><td class="num">31</td></tr>
+</table>
+
+<svg viewBox="0 0 680 132" role="img" aria-label="兩個模型的 down_exps 型別分佈">
+  <text x="0" y="12" font-size="11" fill="#57606a">Nail（旗艦）· ffn_down_exps 的型別</text>
+  <rect x="0" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="16" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="32" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="48" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="64" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="80" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="96" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="112" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="128" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="144" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="160" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="176" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="192" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="208" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="224" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="240" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="256" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="272" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="288" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="304" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="320" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="336" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="352" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="368" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="384" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="400" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="416" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="432" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="448" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="464" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="480" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="496" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="512" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="528" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="544" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="560" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="576" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="592" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="608" y="18" width="16" height="16" fill="#ddf4ff" stroke="#0969da"/>
+  <rect x="624" y="18" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <text x="632" y="30" font-size="10" fill="#1a7f37">Q3_K</text>
+  <text x="0" y="50" font-size="10" fill="#6e7781">il 0–39：iq3_s / iq4_xs（0 層可融合）</text>
+  <text x="440" y="50" font-size="10" fill="#6e7781">il 40</text>
+
+  <text x="0" y="76" font-size="11" fill="#57606a">Ornith（對照）· 同一個張量的型別</text>
+  <rect x="0" y="82" width="16" height="16" fill="#f6f8fa" stroke="#6e7781"/>
+  <rect x="16" y="82" width="16" height="16" fill="#f6f8fa" stroke="#6e7781"/>
+  <rect x="32" y="82" width="16" height="16" fill="#f6f8fa" stroke="#6e7781"/>
+  <rect x="48" y="82" width="16" height="16" fill="#f6f8fa" stroke="#6e7781"/>
+  <rect x="64" y="82" width="16" height="16" fill="#f6f8fa" stroke="#6e7781"/>
+  <rect x="80" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="96" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="112" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="128" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="144" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="160" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="176" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="192" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="208" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="224" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="240" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="256" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="272" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="288" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="304" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="320" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="336" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="352" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="368" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="384" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="400" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="416" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="432" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="448" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="464" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="480" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="496" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="512" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="528" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="544" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="560" y="82" width="16" height="16" fill="#dafbe1" stroke="#1a7f37"/>
+  <rect x="576" y="82" width="16" height="16" fill="#f6f8fa" stroke="#6e7781"/>
+  <rect x="592" y="82" width="16" height="16" fill="#f6f8fa" stroke="#6e7781"/>
+  <rect x="608" y="82" width="16" height="16" fill="#f6f8fa" stroke="#6e7781"/>
+  <rect x="624" y="82" width="16" height="16" fill="#f6f8fa" stroke="#6e7781"/>
+  <text x="0" y="115" font-size="10" fill="#1a7f37">il 5–34：q3_K（30 層可融合）</text>
+  <text x="560" y="115" font-size="10" fill="#6e7781">il 0–4、35–39：q4_K</text>
+</svg>
+<div class="cap">上：旗艦模型只有 il=40（MTP nextn head）是 Q3_K。下：對照模型有 30 層是 Q3_K。</div>
+
+<div class="box warn">
+<p><b>這也修正了上一輪用 GGUF header 推的結論。</b>當時讀到
+「<code>IQ3_S ×37 ＋ IQ4_XS ×3 ＋ Q3_K ×1</code>」—— 數字對，但<b>誰是 Q3_K 那一層</b>是猜的。
+現在有直接證據：<b>是 MTP nextn head（il=40）</b>，不是 trunk 的某一層。
+<b>trunk 的 1120 行審計裡，<code>down_type == q3_K</code> 的有 0 行。</b></p>
+</div>
+
+<h2>§3 ③ 的一半：融合節點<b>確實出現</b>（而且只在 il=40）</h2>
+
+<p><code>CGC-GRPH</code> 與 <code>CGC-GPUOPS</code> <b>看不到它</b> —— 那兩者都在<b>分段路徑</b>內
+（<code>ggml-backend.cpp:2055</code> 在同一個 <code>hook_seg</code> scope），而 MTP nextn head 的圖
+不走那條路。所以在<b>建圖處</b>直接印節點本身：</p>
+
+<pre><code>CGC-DCFUSED il=40 op=31(MUL_MAT_ID_DOWN_COMBINE) name=ffn_moe_out_down_combine-40 \
+            out_ne=[2048,1,1] n_tokens=1 down_type=q3_K swiglu_src=101(GLU)</code></pre>
+
+<p>7 行，與同一 log 的 <code>CGC-DCAUDIT … =&gt; fuse=1</code> 的 7 行<b>完全一致</b>。</p>
+
+<div class="box pur">
+<p><b>方法論：把「閘門為真」與「節點存在」當成兩個不同的宣稱。</b>
+audit 說前者（六條條件的取值），DCFUSED 說後者（節點本身：op、名字、形狀、來源 op）。
+而 <code>ggml_build_forward_expand(gf, moe_out)</code> 就在那一行之後，所以節點必然進圖。</p>
+</div>
+
+<h2>§4 旗艦模型的 trunk 為什麼<b>永遠</b>不走：兩個獨立的障礙</h2>
+
+<table>
+<tr><th>障礙</th><th>條件（<code>llama-graph.cpp:2682-2687</code>）</th><th>生產上的實際取值</th></tr>
+<tr><td><b>型別</b></td><td><code>down_exps-&gt;type == GGML_TYPE_Q3_K</code></td>
+    <td>trunk 是 <code>iq3_s</code>／<code>iq4_xs</code> ⇒ <b>0/1120 行符合</b></td></tr>
+<tr><td><b>形狀</b></td><td><code>n_tokens == 1</code></td>
+    <td>MTP-on 的 trunk 是 <b>verify 圖（ntok=2/4）</b>；trunk 行裡只有 560/1120 是 <code>ntok==1</code></td></tr>
+</table>
+
+<div class="box bad">
+<p><b>⇒ 即使寫了 IQ3_S kernel，MTP-on 下 trunk 的 verify 形狀仍然走不了。</b>
+兩個都要解，而第二個（讓 kernel 支援多 token）不是「開閘門」。</p>
+</div>
+
+<h2>§5 ③ 的另一半：第一版 A/B <b>因熱態而無效</b></h2>
+
+<p><code>en-dc-on</code> vs <code>en-dc-ctl</code>（旗艦模型，<code>--rounds 3</code>）：</p>
+
+<table>
+<tr><th>臂</th><th class="num">median t/s</th><th class="num">min/max</th><th><code>thermal_hist</code></th>
+    <th class="num">hit%</th><th class="num">io MB</th></tr>
+<tr><td><code>en-dc-on</code></td><td class="num">2.780</td><td class="num">2.52/4.23</td>
+    <td><b><code>{HEAVY: 8}</code></b></td><td class="num">82.70</td><td class="num">1967.3</td></tr>
+<tr><td><code>en-dc-ctl</code></td><td class="num"><b>4.690</b></td><td class="num">4.21/5.62</td>
+    <td><b><code>{HEAVY: 1, MODERATE: 7}</code></b></td><td class="num">82.70</td><td class="num">1966.2</td></tr>
+</table>
+
+<p>看起來是「融合慢 41%」，但<b>兩臂的熱歷程不同</b>（<code>ctl</code> 只有 1 次 HEAVY），
+而池統計<b>完全相同</b>（hit 82.70 對 82.70、io 1967.3 對 1966.2 MB）⇒ <b>那 41% 是熱態</b>。
+同熱態比（<code>ctl</code> 的 round 0 = 2.33 @HEAVY vs <code>on</code> 的 2.52–4.23 @HEAVY）兩臂接近。</p>
+
+<div class="box warn">
+<p><b>★ 一個判準錯誤要記下：</b><code>thermal_launch</code> 兩臂<b>都是 HEAVY</b>，看不出差別；
+要看 <b><code>thermal_hist</code>（全程分佈）</b>。已經寫進 skill。</p>
+<p>而且這個 A/B <b>本來就測不出東西</b>：旗艦模型的覆蓋只有 <b>1/41 層</b>，
+而且那一層是 MTP head、不在 trunk 的熱路徑上 ⇒ 訊號 ≈ 0。</p>
+</div>
+
+<h2>§6 正確的受試：樹上第二個模型 ⇒ <b>+25%</b></h2>
+
+<p>第二個模型的 <code>ffn_down_exps</code> 是 <b>Q3_K ×30</b>：</p>
+
+<pre><code>models/gguf/Ornith-1.5-35B-A3B-Abliterated-MTPv2-APEX-I-Compact-v2D-lite.gguf
+  down_exps types: {'Q3_K': 30, 'Q4_K': 10, 'Q8_0': 1}   (41 MoE layers)</code></pre>
+
+<p>審計（<code>CGC_SERVER_MTP=0</code> ⇒ 純 decode，<code>ntok==1</code>）：</p>
+<ul>
+  <li><b>30 層（il 5–34）全部 <code>q3_K</code></b>，10 層（il 0–4、35–39）是 <code>q4_K</code></li>
+  <li>若 <code>flag=1</code>：<code>ntok==1 且 type==q3_K</code> 的行數 = <b>390</b>（30 層 × 13 個 decode 圖）</li>
+  <li>實測 <code>CGC-DCFUSED</code> = <b>450</b>（30 層 × 15 圖）⇒ <b>融合確實生效</b></li>
+</ul>
+
+<p>ABBA：<code>--arms on,ctl</code>（正序）與 <code>--arms ctl,on</code>（反序），各 <code>--rounds 2</code>：</p>
+
+<table>
+<tr><th>run</th><th>臂</th><th class="num">median t/s</th><th class="num">min/max</th>
+    <th><code>thermal_hist</code></th><th class="num">hit%</th><th class="num">io MB</th>
+    <th class="num">file_reads</th></tr>
+<tr><td>正序</td><td><code>on</code></td><td class="num"><b>17.880</b></td><td class="num">17.40/18.36</td>
+    <td><b><code>{NOMINAL: 6}</code></b></td><td class="num">93.3</td><td class="num">2981.1</td><td class="num">22671</td></tr>
+<tr><td>正序</td><td><code>ctl</code></td><td class="num">17.830</td><td class="num">15.24/20.42</td>
+    <td><b><code>{NOMINAL: 3, MODERATE: 3}</code></b></td><td class="num">93.3</td><td class="num">2981.5</td><td class="num">22668</td></tr>
+<tr><td>反序</td><td><code>ctl</code></td><td class="num">15.720</td><td class="num">12.43/19.01</td>
+    <td><b><code>{MODERATE: 6}</code></b></td><td class="num">93.3</td><td class="num">2981.5</td><td class="num">22668</td></tr>
+<tr><td>反序</td><td><code>on</code></td><td class="num"><b>19.650</b></td>
+    <td class="num"><b>19.56/19.75</b></td>
+    <td><b><code>{MODERATE: 6}</code></b></td><td class="num">93.3</td><td class="num">2981.1</td><td class="num">22671</td></tr>
+</table>
+
+<div class="box bad">
+<p><b>⚠️ 正序那一組不可引用。</b><code>on</code> 全程 NOMINAL 而 <code>ctl</code> 有一半是 MODERATE
+⇒ <code>AB = 1.0028</code> 是<b>熱態補償</b>的產物（<code>ctl</code> 的 MODERATE round 把它的中位數壓低了），
+不是融合的效果。因此 <code>ABBA</code> 的 <code>M = √(AB×BA) = 1.1196</code> <b>也不可引用</b>。</p>
+</div>
+
+<div class="box ok">
+<p><b>★ 反序那一組可用：兩臂都全程 MODERATE（同熱態）⇒ <code>BA = 1.2500</code>。</b></p>
+<p><b>⇒ 融合的淨效果：<span style="font-size:18px">+25%</span></b>（在 30/40 層的覆蓋下）。</p>
+<p><b>為什麼這不是熱態：</b><code>on</code> 跑在 <code>ctl</code> <b>之後</b>（熱態只會更差、不會更好），
+而它的 <code>min/max</code> 是 <b>19.56/19.75（±0.5%）</b> —— 比 <code>ctl</code> 的
+12.43/19.01（±42%）窄得多。順序效應的方向<b>與結論相反</b>。</p>
+<p><b>池統計在四臂中完全相同</b>（<code>hit</code> 93.3、<code>io</code> 2981.1–2981.5 MB、
+<code>file_reads</code> 22668–22671）⇒ <b>差異不在池</b>。</p>
+</div>
+
+<h2>§7 結論</h2>
+
+<ol>
+  <li><b>收益量級已量到</b>：覆蓋 trunk 的 75%（30/40 層）時，融合的淨效果是 <b>+25%</b>。
+      它把「值不值得為 IQ3_S 寫 kernel」從猜測變成有一把尺。</li>
+  <li><b>機制</b>：融合路徑是活的、可達的、節點確實被建立（<code>CGC-DCFUSED</code>），
+      但在旗艦模型上<b>只覆蓋 1/41 層</b>（MTP nextn head），而那不是熱路徑。</li>
+  <li><b>要真的在旗艦模型上吃到它，要解兩件事</b>：寫 IQ3_S／IQ2_S／IQ4_XS 的 kernel
+      （IQ 系列還要 lookup table），<b>以及</b>讓它支援 <code>n_tokens &gt; 1</code>
+      （MTP-on 的 verify）。<b>只做前者不足。</b></li>
+  <li><b>旗艦模型的 A/B 測不出</b>（覆蓋 1/41），而<b>第二個模型可以</b>（覆蓋 30/41）
+      ⇒ 以後這類判據要用對的受試。</li>
+  <li>本輪<b>沒有動 kernel</b>：依專案已付兩次學費的「沒有判準就不要實作」
+      （<code>CGC_MMV_FUSE</code>、離線最小平方），先量出收益量級再決定 —— 現在量到了。</li>
+</ol>
+
+<h2>§8 現場閘門輸出（原文）</h2>
+
+<h3>D5 數值閘門（<code>m123_oracle_gate.py --tag en-down-combine</code>，41 s）</h3>
+<pre><code>oracle A = Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident_v6_nbaware.jsonl  (9 entries)
+oracle B = /tmp/m123_oracle_gate.jsonl  (9 entries)     common 9   only_A 0   only_B 0
+probe    = '15+27 等於多少？請只輸出答案' -&gt; '42'
+
+M1 numeric identity    (bit-identical logits)  : 9/9  (100.0%)
+M2 decision agreement  (same argmax token)     : 9/9  (100.0%)
+M3 top-k set agreement (same top-N id set)     : 9/9  (100.0%)
+(aux) full_fnv1a64 identical                   : 9/9  (100.0%)
+
+CROSS-TAB (n=9): M1 same &amp; M2 same : 9      (其餘三格皆 0)
+comparable = true       config_diffs = []
+GATE en-down-combine: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+
+★ M1 逐位元 9/9 也就是「本輪新增的兩支診斷（CGC-DCAUDIT / CGC-DCFUSED）只印不改」的證明。</code></pre>
+
+<h3>提交閘門（<code>check_build_tracked.sh</code>，<code>BIN_DIR='src/llama.cpp/build/bin' RUN_REPLAY_BENCH=0</code>，依 D2）</h3>
+<pre><code>0 FAIL。5 個 SKIP，逐列確認理由都成立：
+  * @rpath 驗收              -- 非 dev 分支，worktree 可共用既有 binary
+  * 原始碼&lt;-&gt;binary 同步      -- 無 staged 檔案（手動跑 hook 時屬正常；commit 時必有 staged，
+                                 所以正式 commit 時這一條會真的檢查）
+  * 生產 MTP 驗收             -- RUN_CGC_PROD_ACCEPT=1 未啟用（重型驗收需手動開）
+  * deploy-harmonyos 驗收     -- RUN_DEPLOY_HARMONYOS_ACCEPT=1 未啟用
+  * replay benchmark          -- RUN_REPLAY_BENCH=0（D2：.replay_bench_baseline.json 已 stale）
+CGC 死鎖防護 7a-7d 全 PASS（pick_slot 精確 mask / batch_owned mask / 看門狗 / 裸 bg_cv.wait 守衛）</code></pre>
+
+<h3>其他閘門</h3>
+<pre><code>traces/validate.py        -&gt; 174 records, OK
+traces/selftest.py        -&gt; 10/10 injected violations rejected
+build_memory_index --check -&gt; 8 file(s), 212 section(s), no drift
+index_assets.py --check    -&gt; manifest OK: 108 assets, existence + bytes + mtime all agree</code></pre>
+
+<h2>§9 誠實邊界（本文件不主張什麼）</h2>
+
+<ul>
+  <li><b>本輪沒有實作任何 kernel。</b>+25% 是在<b>另一個模型</b>（Ornith，Q3_K ×30）上量的，
+      用的是<b>既有的</b> Q3_K kernel。<b>它不能直接外推到旗艦模型</b>：後者要的是
+      IQ3_S／IQ4_XS 的 kernel，那是<b>未寫的</b>，而 IQ 系列的 dequant 成本與 Q3_K 不同
+      （還要 lookup table）。⇒ 可引用的述句是「<b>同一個融合在覆蓋 3/4 的 trunk 時值 +25% 量級</b>」，
+      <b>不是</b>「旗艦模型會快 25%」。</li>
+  <li><b>反序那一組只有一個配對</b>（BA），而正序那一組因熱態不可用 ⇒
+      <code>M = √(AB×BA)</code> <b>不可引用</b>。要更強的結論需要更多組同熱態的配對。</li>
+  <li>兩臂是<b>先後</b>跑的（不是逐 round 交錯）⇒ 順序效應<b>沒有被完全分離</b>。
+      緩解：<code>on</code> 跑在 <code>ctl</code> <b>之後</b>（熱態只會更差），
+      而它反而快了 25% ⇒ 順序效應的方向與結論相反。</li>
+  <li><code>CGC-DCFUSED</code> 證明<b>節點進圖</b>，不證明 <b>kernel 真的執行</b>。
+      它的旁證是 <code>ggml-metal-ops.cpp:4821</code> 的斷言（型別不符會 abort，而 log 沒有 abort）
+      —— 那是<b>推論</b>。<b>而 +25% 同時是「kernel 真的在做事」的證據</b>：
+      若它只是讓圖變小而不執行，不會有正向的 t/s。</li>
+  <li><code>--rounds 0</code> 在 <code>decode_sweep.py</code> 下 <code>n_rounds=0</code>
+      ⇒ <b>t/s 欄位全為 0.0</b>（探測時踩到）。</li>
+  <li><b>本輪的量測全程在 HEAVY／MODERATE 之間**，沒有任何一組達到生產的 NOMINAL 穩定態。</b>
+      ⇒ 絕對 t/s 不可與生產的 12.0–12.9 比較；可引用的只有<b>同熱態的臂間比值</b>。</li>
+</ul>
+
+<h2>§10 產物與指令</h2>
+
+<table>
+<tr><th>類別</th><th>路徑</th></tr>
+<tr><td>本文件</td><td><code>docs/DOWN_COMBINE_REACHABILITY_20260918_0410.html</code></td></tr>
+<tr><td>查證文件（md）</td><td><code>docs/DOWN_COMBINE_REACHABILITY_2026-09-18.md</code></td></tr>
+<tr><td>新儀器（原始碼）</td>
+    <td><code>src/llama.cpp/src/llama-graph.cpp</code>（<code>CGC-DCAUDIT</code> ＋ <code>CGC-DCFUSED</code>）、
+        <code>scripts/run_server.sh</code>（allowlist）、
+        <code>scripts/check/decode_sweep.py</code>（臂 <code>en-dc-on</code>／<code>en-dc-ctl</code>／
+        <code>en-dc-orn-on</code>／<code>en-dc-orn-ctl</code>）</td></tr>
+<tr><td>產物</td>
+    <td><code>Backup/phase_decomp/en_dc_20260918.json</code>（旗艦，無效）<br>
+        <code>Backup/phase_decomp/en_dc_orn_ab_fwd_20260918.json</code>（反序前）<br>
+        <code>Backup/phase_decomp/en_dc_orn_ab_rev_20260918.json</code>（反序）<br>
+        <code>Backup/cgc_logs/llama_server_20260918_035912.log</code>（DCFUSED 450 行）</td></tr>
+<tr><td>閘門</td><td><code>python3 scripts/check/m123_oracle_gate.py --tag en-down-combine</code></td></tr>
+</table>
+
+<pre><code># 旗艦（覆蓋 1/41，預期測不出）
+RUN_REPLAY_BENCH=0 python3 scripts/check/decode_sweep.py --profile prefill250 \
+  --arms en-dc-on,en-dc-ctl --rounds 3 --warmup 1 --n-predict 24 \
+  --json Backup/phase_decomp/en_dc_20260918.json --force
+
+# 對照模型（覆蓋 30/41，MTP 強制 off 以取得 ntok==1）
+RUN_REPLAY_BENCH=0 python3 scripts/check/decode_sweep.py --profile prefill250 \
+  --arms en-dc-orn-on,en-dc-orn-ctl --rounds 2 --warmup 1 --n-predict 24 \
+  --json Backup/phase_decomp/en_dc_orn_ab_fwd_20260918.json --force
+RUN_REPLAY_BENCH=0 python3 scripts/check/decode_sweep.py --profile prefill250 \
+  --arms en-dc-orn-ctl,en-dc-orn-on --rounds 2 --warmup 1 --n-predict 24 \
+  --json Backup/phase_decomp/en_dc_orn_ab_rev_20260918.json --force</code></pre>
+
+<p class="small">⚠️ 上述 <code>--rounds N</code> 是「每臂連續 N+1 個 round」，<b>不是逐 round 交錯</b>。
+交錯要靠<b>跑兩次</b>（正序 ＋ 反序），再用同熱態的那一組。</p>
+
+<p class="small">下一輪的第一步（本文件不代做）：<b>決定要不要寫 IQ3_S kernel</b>。
+判據已經有了（覆蓋 3/4 的 trunk 值 +25%），而成本是「三種型別的 dequant ＋ lookup table ＋
+讓它支援 <code>n_tokens &gt; 1</code>」。</p>
+
+</div>
+</body>
+</html>

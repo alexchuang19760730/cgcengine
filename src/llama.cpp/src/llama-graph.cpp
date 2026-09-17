@@ -2679,6 +2679,30 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         const char * e = getenv("CGC_DOWN_COMBINE");
         return e != nullptr && e[0] == '1';
     }();
+
+    // [CGC 2026-09-18 DOWN-COMBINE AUDIT] CGC_DOWN_COMBINE_AUDIT=1 prints, once per MoE layer per
+    // built graph, the value of every one of the six gate conditions and the resulting decision.
+    // Read-only: it does not change the decision below.
+    // Why it exists: the gate is an AND of six conditions, and the type condition is the one you
+    // cannot see from the outside -- the GGUF says IQ3_S while the fused Metal kernel
+    // (ggml-metal.metal:11886 "kernel_mul_mv_id_down_combine_q3_K_f32") is Q3_K-only. This prints
+    // what the loader actually produced, per layer, instead of what the file nominally contains.
+    if (getenv("CGC_DOWN_COMBINE_AUDIT") != nullptr) {
+        const bool fuse = cgc_down_combine &&
+            n_tokens == 1 &&
+            down_exps != nullptr && down_exps->type == GGML_TYPE_Q3_K &&
+            down_exps_s == nullptr && down_exps_b == nullptr &&
+            !weight_before_ffn &&
+            mm_id_ids != nullptr;
+        fprintf(stderr,
+                "CGC-DCAUDIT il=%d flag=%d n_tokens=%lld down_type=%s has_scale=%d has_bias=%d "
+                "weight_before_ffn=%d ids=%d => fuse=%d\n",
+                il, (int) cgc_down_combine, (long long) n_tokens,
+                down_exps != nullptr ? ggml_type_name(down_exps->type) : "(null)",
+                (int) (down_exps_s != nullptr), (int) (down_exps_b != nullptr),
+                (int) weight_before_ffn, (int) (mm_id_ids != nullptr), (int) fuse);
+    }
+
     if (cgc_down_combine &&
         n_tokens == 1 &&
         down_exps != nullptr && down_exps->type == GGML_TYPE_Q3_K &&
@@ -2691,6 +2715,20 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
         ggml_tensor * moe_out = ggml_mul_mat_id_down_combine(ctx0, down_exps, cur, mm_id_ids, weights_2d);
         cb(moe_out, "ffn_moe_out_down_combine", il);
+        // [CGC 2026-09-18] The audit above says the GATE is true; this says the NODE exists.
+        // They are different claims and only this one is about the graph. It is printed here
+        // (builder time) rather than read out of CGC-GRPH/CGC-GPUOPS because those two live
+        // inside the segmented dispatch path -- and the one graph where this fires (the MTP
+        // nextn head, il = n_layer) does not appear in either of them.
+        if (getenv("CGC_DOWN_COMBINE_AUDIT") != nullptr) {
+            fprintf(stderr,
+                    "CGC-DCFUSED il=%d op=%d(%s) name=%s out_ne=[%lld,%lld,%lld] "
+                    "n_tokens=%lld down_type=%s swiglu_src=%d(%s)\n",
+                    il, (int) moe_out->op, ggml_op_name(moe_out->op), moe_out->name,
+                    (long long) moe_out->ne[0], (long long) moe_out->ne[1], (long long) moe_out->ne[2],
+                    (long long) n_tokens, ggml_type_name(down_exps->type),
+                    (int) cur->op, ggml_op_name(cur->op));
+        }
         ggml_build_forward_expand(gf, moe_out);
         return moe_out;
     }

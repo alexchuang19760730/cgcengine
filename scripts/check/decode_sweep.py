@@ -390,6 +390,49 @@ ARMS = {
     # bucketed into `node` -- the largest single unnamed cluster in the table.
     "en-named":          {"CGC_GPU_NODES": "1", "CGC_GPU_OPS": "1", "CGC_DECODE_PROFILE": "1",
                           "CGC_GPU_TIMING": "1", "CGC_GRPH_DBG": "1"},
+    # [CGC 2026-09-18 down-combine reachability] The fused path promised in llama-graph.cpp:2675
+    # ("One kernel replaces 8 down GEMVs + 7 adds") is an AND of SIX conditions, and the fused
+    # Metal kernel is Q3_K-only (ggml-metal.metal:11886, ggml-metal-device.cpp:1309 -- the pipeline
+    # name is a hard-coded snprintf, and the IQ types would additionally need a lookup table,
+    # smem != 0). This arm answers "how many of the 40 layers actually take it?" by reading the
+    # gate itself: CGC_DOWN_COMBINE_AUDIT=1 prints one CGC-DCAUDIT line per MoE layer per graph,
+    # and the op table's ADD / MUL_MAT_ID node counts are the cross-check (a fused layer loses its
+    # 6 `ffn_moe_add` nodes and its 8th MUL_MAT_ID).
+    "en-dc-on":          {"CGC_DOWN_COMBINE": "1", "CGC_DOWN_COMBINE_AUDIT": "1",
+                          "CGC_GPU_NODES": "1", "CGC_GPU_OPS": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_GPU_TIMING": "1"},
+    # The control: byte-identical except the one flag, so the audit lines and the node counts are
+    # the only moving parts. Interleave with en-dc-on; do not run them in separate windows.
+    "en-dc-ctl":         {"CGC_DOWN_COMBINE": "0", "CGC_DOWN_COMBINE_AUDIT": "1",
+                          "CGC_GPU_NODES": "1", "CGC_GPU_OPS": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_GPU_TIMING": "1"},
+    # [CGC 2026-09-18 down-combine REAL benefit] The shipped model is the WRONG SUBJECT for this
+    # A/B. Its audit says trunk = iq3_s/iq4_xs with ZERO of 1120 trunk rows being Q3_K, so the
+    # fused path can only ever serve the MTP draft head (il=40) -- one layer out of 41. Any t/s
+    # difference between en-dc-on and en-dc-ctl on that model is therefore noise BY CONSTRUCTION,
+    # and reporting "no effect" from it would be a statement about the model, not about the fusion.
+    #
+    # The second model already on disk has ffn_down_exps = Q3_K x30 (29 of them in the 40 trunk
+    # layers) and can therefore actually exercise the fused path:
+    #     models/gguf/Ornith-1.5-35B-A3B-Abliterated-MTPv2-APEX-I-Compact-v2D-lite.gguf
+    #     down_exps types: {'Q3_K': 30, 'Q4_K': 10, 'Q8_0': 1}  (41 MoE layers)
+    #
+    # MTP is forced OFF in the Ornith arms so the trunk graph is a plain decode (n_tokens == 1,
+    # llama-graph.cpp:2683). That is not a convenience: under MTP the trunk is a VERIFY graph
+    # (n_tokens 2 or 4) and the fused path is structurally unreachable whatever the type is.
+    # Read the two pairs as different questions:
+    #     en-dc-on / en-dc-ctl          (Nail)   -> coverage 1/41; expected to be a null result
+    #     en-dc-orn-on / en-dc-orn-ctl  (Ornith) -> coverage 29/40; this is where benefit shows
+    # ⚠️ Ornith is 16.4 GB vs Nail's 12.7 GB. Check free memory first -- this machine has been
+    #    within 100 MiB of the load failing.
+    "en-dc-orn-on":      {"CGC_SERVER_MODEL": "models/gguf/Ornith-1.5-35B-A3B-Abliterated-MTPv2-APEX-I-Compact-v2D-lite.gguf",
+                          "CGC_SERVER_MTP": "0", "CGC_DOWN_COMBINE": "1",
+                          "CGC_DOWN_COMBINE_AUDIT": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_GPU_TIMING": "1"},
+    "en-dc-orn-ctl":     {"CGC_SERVER_MODEL": "models/gguf/Ornith-1.5-35B-A3B-Abliterated-MTPv2-APEX-I-Compact-v2D-lite.gguf",
+                          "CGC_SERVER_MTP": "0", "CGC_DOWN_COMBINE": "0",
+                          "CGC_DOWN_COMBINE_AUDIT": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_GPU_TIMING": "1"},
     # The granularity cross-check: same table at 2-7 node slices, where the count-weighted column
     # was already known to CHURN (MUL_MAT 27.3% -> 11.1%, GET_ROWS 4.3% -> 9.0%). Any kind whose
     # work-weighted share is stable between `en-work` and `en-work-fine` is quotable; one that moves

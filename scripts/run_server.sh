@@ -1342,6 +1342,13 @@ fi
 if [ -n "${CGC_DOWN_COMBINE:-}" ]; then
     SERVER_ENV+=(CGC_DOWN_COMBINE="$CGC_DOWN_COMBINE")
 fi
+# CGC 2026-09-18: print, per MoE layer per graph, the value of each down-combine gate condition
+# and the resulting decision. Read-only (does not change the decision). It exists because the gate
+# is an AND of six conditions and only ONE of them was ever quoted -- the expert tensor's type --
+# and the type the loader produces is not the one the GGUF-oriented reasoning assumed.
+if [ -n "${CGC_DOWN_COMBINE_AUDIT:-}" ]; then
+    SERVER_ENV+=(CGC_DOWN_COMBINE_AUDIT="$CGC_DOWN_COMBINE_AUDIT")
+fi
 # CGC hook profiling (diagnostic only, default off)
 if [ -n "${CGC_HOOK_PROFILE:-}" ]; then
     SERVER_ENV+=(CGC_HOOK_PROFILE="$CGC_HOOK_PROFILE")
