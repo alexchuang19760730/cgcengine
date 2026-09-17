@@ -942,6 +942,12 @@ EOF
   `type/lesson_id/class/rule/because/counterexample_observed/applies_to/superseded_by`；
   `lesson_id` 取續號（`eng-mh-NNNN` / `eng-gate-NNNN` / `eng-bound-NNNN` / …），
   `validate.py` 會擋重複 id，`selftest.py` 要 10/10。
+  **★ 它必須寫在「索引重生」之前（2026-09-18 實測）。** `traces/*.jsonl` 在 `CURATED` 裡 ⇒
+  追加一筆就會讓 `index_assets.py --check` 漂移。正確順序是
+  **寫 lesson → 跑閘門 → 重生索引（先 `build_memory_index.py`、後 `index_assets.py`）→ 交付 commit**；
+  顛倒的話（先重生、後寫 lesson）要多重生一次，而且第一次重生出來的 `MANIFEST.jsonl` 是
+  **已經 staged、但內容會立刻過期**的版本（本輪就是這樣多跑了一輪）。
+  `git diff -U0 -- traces/lessons.jsonl` 的計數仍必須是 `-0 +N`。
 - **`class` 是封閉 enum**：`measurement-hygiene` / `log-forensics` / `diagnosis` / `gate-integrity` /
   `source-reading` / `honest-bounds` / `performance` / `smoke`。
   自創 class（曾試 `error-path-integrity`）會被擋下並印出整份可選清單。
