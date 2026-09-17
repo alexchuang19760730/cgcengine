@@ -667,6 +667,7 @@ git push cgcengine0907 demo/sweet-spot-windows-fix
 ### 6.3 提交後驗證收尾狀態
 
 ```sh
+python3 agent_harness/shared/check_citations.py                 # 憲章：每條都要有指針或「證據形態」標記
 python3 agent_harness/engine_loop/traces/validate.py            # 無重複 id
 python3 agent_harness/engine_loop/traces/selftest.py            # 必須 10/10
 python3 agent_harness/engine_loop/harness_engine/build_memories.py --check
@@ -676,6 +677,12 @@ cd agent_harness/engine_loop && python3 index_assets.py --check 2>&1 | grep -E "
 python3 agent_harness/engine_loop/memory/build_memory_index.py --check
 git status --porcelain --untracked-files=all                    # 必須空（例外見 §1.7）
 ```
+
+**`check_citations.py` 驗的是憲章自己的第 7 行**（「每一條都必須能指到今天的具體證據……
+指不到的條文不是憲章，是感想」）。它最容易被誤讀成「有沒有檔案」——**不是**：括號裡的
+「欄位值」本來就沒有檔案可指（B25 的證據是一次 `grep` 的輸出），所以判準是
+「有可解析指針 **或** 一行 `- 證據形態：…`」。缺口從來不是「沒有檔案」，是**沉默**。
+改 `CONVENTIONS.md` 就要跑它；沒交代的新條文會讓它失敗。
 
 **三條衍生物的 `--check` 各驗一件事，而且它們和上面兩條驗的不是同一件事。** `index_assets.py
 --check` 與 `build_memory_index.py --check` 比的是「磁碟上的 bytes == 索引記的 bytes」——

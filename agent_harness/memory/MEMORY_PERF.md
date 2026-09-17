@@ -52,9 +52,22 @@
   離開條件「decode（MTP off）≥ 15 t/s」未達。
 - **M4 MTP 拒絕取樣 ＋ verify 真批次：未開始**（accept 19.9%；今天 MTP-on 是 **1.8× 淨損失**）。
 - **M5 prerouter 只當預取提示：未開始**（可選、期望值低）。**`PREFETCH_ONLY` 在本 repo 0 筆。**
-- **M6 換量化幾何：未開始**（可平行、低風險、1–2 天；per-expert 1.769→1.122 MB、6 GB pool 的
-  slots 85→133）。工具只有 `scripts/gguf_retensor.py`(38.9 KB)＋`gguf_retensor_qctl.c`；
-  roadmap 指名的 **`scripts/verify_edge0_gguf.py` 在本 repo 不存在**（全 repo find 0 筆）。
+- **M6 換量化幾何：頭條目標已達成，剩下的只有「一個綁定層」**（09-17 12:1x 實測；
+  全文 `docs/M6_QUANT_GEOMETRY_PLAN_2026-09-17.md`）。
+  **★ roadmap 的 1.769→1.122 MB 與「6 GB pool 85→133 slots」指的是 Edge0-int4，不是出貨模型。**
+  出貨的 `Nail-…-denseIQ4X.gguf`（12.72 GiB）實測：41 層 × 256 experts，**典型層 274 MiB
+  ＝1.0703 MiB/expert（＝roadmap 的目標值 1.122 MB）**，但 **blk.39 是 356 MiB＝1.3906 MiB
+  （gate/up 是 IQ3_S、down 是 IQ4_XS，其餘 38 層是 IQ2_S/IQ3_S）**，而
+  `capacity = clamp(budget/(41×per_slot), 8, 256)` **取 MAX over layers** ⇒ **一層厚、全班付錢**。
+  現行 `BUDGET_DEFAULT = 10 GiB` ⇒ **179 slots**；`run_server.sh:411-419` 自記 **143 slots 時
+  hit 90.8%**（counterfactual K=96 79.7／128 87.7／192 97.1／256 100）⇒ **hit 早已超過 roadmap 的 84%**。
+  **剩下的價值**：把 blk.39 的 3 個張量改回同款（`IQ3_S→IQ2_S` ×2、`IQ4_XS→IQ3_S` ×1）
+  ⇒ per_slot 1.4582→1.1395 MB ⇒ **10 GiB 由 179 → 229 slots（+28%）**，預測 hit 98–99%（**外插，要實測**）。
+  **不動引擎、可逐位元組還原**（`gguf_retensor.py set-type`／`restore`／`verify`／`digest`；dry run 是預設）。
+  工具：`scripts/gguf_retensor.py`＋`gguf_retensor_qctl.c`（qctl 建到 `.build/gguf_retensor/`，已 ignore）；
+  **roadmap 指名的 `scripts/verify_edge0_gguf.py` 在本 repo 不存在** ⇒ 等價物是 `verify`＋`digest`
+  ＋`m123_oracle_gate`。**幾何 census 腳本尚不存在**（本輪用純 python 解 GGUF 標頭；
+  `analyze_pool_geometry.py` 是為 Edge0 寫的、且需要 numpy）。
 - **★ D3（`REMAP_ROUNDTRIP_REMOVAL_PLAN` 的主設計：把 expert→slot 查表搬到 GPU、消除段邊界）
   不是里程碑，是 S1→S2→S3 階梯；現況（09-17 03:3x 查證）：沒跑通。**
   **S1**（`CGC_SLOT_TABLE_GPU=1`，leaf 改由 GPU 算、**段數不變**）**已實作且會跑，但不過

@@ -1,6 +1,6 @@
 {
   "builder": "sft_pi/build_sft_pi.py",
-  "charter_sha256_16": "ad5922e788d18c69",
+  "charter_sha256_16": "149f1d751b776c6d",
   "input_sha256_16": {
     "decisions.jsonl": "af0abd1646b3a99d",
     "episodes.jsonl": "918089bf7cc1ccef"
@@ -16,7 +16,7 @@
     "valid": 2
   },
   "split_seed": 42,
-  "system_bytes": 13568,
+  "system_bytes": 13640,
   "system_chars": 8000,
-  "system_sha256_16": "3783212401a962fe"
+  "system_sha256_16": "1ae99b2191aee8d7"
 }

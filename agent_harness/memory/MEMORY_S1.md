@@ -272,6 +272,31 @@ B 的 `LOST` 再按「兩邊 host 是否同意該位置」分成 `hosts agree`�
 需要的只是每層一份 ≤64 個 int32 的 top-k 快照）。錨臂的 leaf 本來就是用這個式子寫的 ⇒ 對齊自檢照樣成立。
 本輪的量測被別條線的 runner 殺掉（`decode 0.00`、6 列）⇒ 作廢，**仍未取得可引用的 `exp` 讀數**。
 
+## ★★ 12:0x §9.18.9-b：`CGC_IDS_STRIDE = 8` 是錯的 —— **MV 的 id 列在多 token pass 上只印到 token 0**
+
+（未提交的改動，本線 review 過。**truncation 為真、它註解裡的 overrun 為假** —— 我讀了內核。）
+
+- **真的那半（必須採納）**：`cgc_ids_capture` 的提交寬度是 `n_ids = ne20*ne21 = 8*T`，而每個 slot 只有
+  `CGC_IDS_STRIDE = 8` 個字（該常數由 §9.18.6 `cd91aab01` 引入，存活到 r12）。舊印表機是
+  `take == 2 ? min(r.n_ids, st) : st` ⇒ **非 POOL 列一律只印 8 個字** ⇒ **T=2 印 8/16、T=8 印 8/64，
+  即每個多 token pass 只印到 token 0 的 id**。修正（在工作區）：`stride 8 → 64`
+  （＝top-k 8 × `CGC_POOL_MAX_TOKENS` 8；緩衝區 4096×64×4 **= 1 MiB**）＋印表機改成
+  `(r.n_ids < st) ? r.n_ids : st`。**兩者都正確且必要。**
+- **假的那半（要在 review 指出）**：它的註解說「kernel 在 `slot*stride` 寫 `n_ids` 個字 ⇒ n_ids=64 >
+  stride=8 時每次提交覆寫後面 7 個 slot」。**實際內核是 `for (int32_t i = 0; i < args.stride; ++i)`
+  （非 hash 與 hash 兩分支都是），目的地是 `dbg + slot*stride*4`** ⇒ 每次只寫 `stride` 個字、
+  **沒有覆寫**。⇒ **truncation 真、overrun 假**。repo 已有 lesson `eng-src-0016`（「註解解釋成因
+  讀起來像描述現況」）—— 錯的機制說明會變成下一個人的「事實」。
+- **對本線的影響**：①`§EN-16/17` 的「ids 120/120 SAME」**真正的原因是 stride=8（不是 rows=8）**，
+  它其實是「token 0 的 8 個 id SAME」⇒ 措辭要改。②**POOL 與 DST 兩條流不受影響**（POOL 只用 61/64 個字
+  且是自己的內核；DST 的 `n_ids` 遠大於 `CGC_DST_STRIDE` ⇒ 新舊都印 `st`）
+  ⇒ **§6.4／§6.5／§6.7 的判決（`CONTENT=0`、`ROUTING=477`、`gate/up/down` 於 g1 已 DIFF）照樣成立。**
+  ③**整合風險**：MV 列寬由 8 變成 `8*T`（最多 64）⇒ `Backup/analyze_capture_nodes.py`、
+  `Backup/compare_pool_row.py`、`scripts/check/ids_capture_diff.py` 的解析與**跨 build 比較**都受影響；
+  且 `CGC_IDS_SLOTS * CGC_IDS_STRIDE` 的緩衝區必須跟著變 1 MiB（要確認它是導出的常數）。
+  ④`docs/ROUTING_TRACE_2026-09-17.md` 的核心證據**全部要重跑**（它的「honest boundaries」仍寫
+  「The MV ids are exact and complete」，與同一人的程式碼註解**互相矛盾**）。
+
 ## 下一步
 
 **① 追 routing／mapping 為什麼「第 2 個 token 之後」就給錯專家**（現在唯一的前線）
@@ -286,15 +311,31 @@ B 的 `LOST` 再按「兩邊 host 是否同意該位置」分成 `hosts agree`�
   `exp=`（§9.18.8，host 認為該讀哪個 slot）**已寫完已建置，但實跑得到 `exp=none`** ⇒ **來源要換**
   （見上面的 §9.18.8 節與 `docs/S1_OWNER_EXPECT_CHANNELS_20260917_1145.html` §4：
   不要讀 host remap leaf，改成在 host 現算 `st[e_j]`）。
-- **⚠ 這一步現在不能動手（09-17 11:52 查證）**：**另一條 session 正在改
-  `ggml-metal-ops.cpp`（+27/−2）與 `llama-graph.cpp`（+47/−4）**，做的是 **§9.18.9 化簡順序探針**
-  （`llama-graph.cpp:2561` 的 `CGC_ADD_ORDER=rev`：把 FFN 聚合的鏈式結合從 `(((c0+c1)+c2)+…)`
-  反轉成 `(((c7+c6)+c5)+…)`；他們的註解明寫**不重排 ids** 的理由 —— 權重是按位置 gather 再被
-  `ggml_mul` 按位置消費，只換 ids 會把 A 的輸出配上 B 的權重，是**靜默錯答**而不是重排）。
-  他們 11:50:22 已建置、11:52 仍在跑（8080 有 server、thermal `HEAVY`）⇒ **動那兩個檔或再建置
-  都會撞**（lesson `eng-mh-0048`，11:29 才踩過一次）。
-  **他們的讀數若為 bit-identical，就排除「化簡順序／精度」這條軸，而且是本線可以直接引用的**
-  （同一個 repo、同一支儀器）。
+- **⚠ 這一步現在不能動手（09-17 12:0x 查證）**：`ggml-metal-ops.cpp`（+27/−2）與
+  `llama-graph.cpp`（+47/−4）有**未提交的 §9.18.9 化簡順序探針**（`llama-graph.cpp:2561` 的
+  `CGC_ADD_ORDER=rev`：把 FFN 聚合的鏈式結合從 `(((c0+c1)+c2)+…)` 反轉成 `(((c7+c6)+c5)+…)`；
+  註解明寫**不重排 ids** 的理由 —— 權重是按位置 gather 再被 `ggml_mul` 按位置消費，只換 ids 會把
+  A 的輸出配上 B 的權重，是**靜默錯答**而不是重排）。11:50:22 已建置（兩個 dylib relink）、
+  11:52 有一輪 A/B 在跑；**`llama-graph.cpp` 12:00:44 又被改了一次**。
+  ⇒ **動那兩個檔或再建置都會撞**（lesson `eng-mh-0048`，11:29 才踩過）。
+- **★ 歸屬更正（12:0x 唯讀查證）：這一組改動不是任何被追蹤的 WorkBuddy session 做的。**
+  · session 表裡本 repo 只有三筆：`d3b97a6a`（本線）、`cc78af2d`（agent_harness 線，cwd 在
+  `~/WorkBuddy/2026-09-16-16-48-23`）、`11c5e39c`（07:06 completed）——**沒有第四筆、沒有 deleted**。
+  · 本線對話檔第一次提到 `CGC_ADD_ORDER` 是 **11:56:48**（＝用 `git diff` 發現它），而檔案 mtime 是
+  **11:49:58** ⇒ **不是本線寫的**。
+  · `cc78af2d` 對 `src/llama.cpp` 的寫入次數 **0**（依 `file_path` 判）；它的 `CGC_ADD_ORDER`
+  只出現在**它讀本線日誌的引文**裡 ⇒ **也不是它**。
+  · `Backup/mem_probe/footprint*.{json,txt}` 的擁有者是 **root**。
+  ⇒ 最可能是**使用者本人**（或另一個不寫進 `~/.workbuddy` 的工具）。**上一輪把它寫成
+  「另一條 session」是錯的，已更正。**
+- **★ 一條可當場裁決的張力（本線 vs 那組改動）**：本線 §6.7 的 g1 讀數是
+  `ffn_moe_gate-1`／`ffn_moe_up-1`／`ffn_moe_down-1`（`mul_mat_id` 的輸出）**三者都已 DIFF**，
+  而 `attn_post_norm-1`／`ffn_moe_logits_raw-1`／`ffn_moe_weights_norm-1` **全 SAME**。
+  而 `CGC_ADD_ORDER=rev` 動的是 **combine 的結合**（在 `mul_mat_id` **之後**）⇒
+  若本線讀數成立，它**不可能**把 `ffn_moe_out-1` 變成 SAME（它的三個輸入已經不同）。
+  對方那份 `docs/ROUTING_TRACE_2026-09-17.md` 反而把第一分歧放在 **pass 0 的 `ffn_moe_out-1`**，
+  且自己標明那是 `WORDS=32 TAIL=1` 的**窗口**讀數。
+  ⇒ **兩者要用同一輪 `HASH=1`（整張量）才能裁決**；在此之前兩邊都不能宣稱自己是最終定位。
 
 **② `POOLROWS` 上限是 12 而 T=2 的運算元有 16 個 id** ⇒ 第 2 個 token 只覆蓋前 4 個。
 要看全 16 個必須加大 `CGC_POOL_STRIDE`（現在 64 字）或縮 5 字/列。**目前所有 token ≥1 的結論

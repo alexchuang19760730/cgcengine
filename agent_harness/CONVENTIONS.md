@@ -5,7 +5,13 @@
 和它被訓練時看到的判準逐位元組一致（沿用 `tb_loop/README.md` 已驗證的原則）。
 
 每一條都必須能指到**今天的具體證據**（檔名／log 行／欄位值）。指不到的條文不是憲章，是感想。
-新增條文時，同一標準適用。
+**這一條是可機檢的**：`python3 agent_harness/shared/check_citations.py`（自測 `--self-test`）。
+它要求每一條要嘛有一個**可解析**的指針（檔名／命中檔案的 glob／`eng-*`／`dec-*` id），
+要嘛有一行 `- 證據形態：<說明>` 明說它的證據是什麼形態 —— 因為括號裡的**「欄位值」本來就沒有
+檔案可指**（B25 的證據是一次 `grep` 的輸出），那種條文不是不合格，是**已標記**。
+缺口從來不是「沒有檔案」，是**沉默**：一條沒有指針也沒有標記的條文，與一條沒人管證據的條文
+在讀者面前長得一模一樣。
+新增條文時，同一標準適用：**沒交代的條文會讓檢查器失敗**。
 
 ---
 
@@ -83,7 +89,7 @@
   那是**合法索引**⇒ 讀到**別的專家**的權重，靜默；host leaf 在同樣情形下寫 **−1**，吵）。
 - 檢查：`llama_expert_cache::~llama_expert_cache()` 的 teardown 行——`clamped` 非 0 即標註
   `TABLE/LEAF EQUIVALENCE BROKEN`；`CGC_S1_CLAMP_ABORT=1` 把它從報告升為硬前置條件。
-- 反例：`llama-context.cpp` 舊的 pool-path 呼叫點（已修；兩條路徑現在都走
+- 反例：`src/llama.cpp/src/llama-context.cpp` 舊的 pool-path 呼叫點（已修；兩條路徑現在都走
   `cgc_publish_slot_table_counted`，讓兩個量**按構造**一致）。
 - **2026-09-15 修訂（量到了，且量到的不是那個量）**：上列清單裡的 `n_slot_table_clamped`
   是**全表**計數，在這個配置下等於「143 slot 對 256 expert 的非 resident 比例」——**每次
@@ -116,6 +122,8 @@
   不要用算式訂。失敗是 fail-stop abort，不是變慢，所以**不能靠逐步加寬去逼近邊界**。
 - 邊界：機制本身**未確立**（只知道 4 可、11 不可）。任何「這些張量很小所以釘住很便宜」的
   推理在本機已被上面那組配對反駁兩次。
+- 證據形態：載入期的「釘住 N 層 × 哪些 graph」失敗配對（4 組各 2/2），訊號是 abort 與
+  `.ips` 崩潰報告，**沒有單一證據檔**。
 
 **A9｜測「存在」的旋鈕，它記錄下來的值只代表意圖。** 讀者寫 `getenv(...) != nullptr` 的
 環境變數，`"0"` 是**非空指標** ⇒ **設成 0 等於打開它**。引用任何 knob 的值之前，
@@ -201,6 +209,7 @@
 **A12｜路徑解析工具回傳的相對路徑，基準是「那個工具的 cwd」，不是你的 cwd。**
 - 事證：`git -C <main-worktree> rev-parse --git-path hooks` 從**別的** cwd 跑，回
   `.git/hooks`。把它當成絕對路徑用是錯的，而且錯得靜默。
+  （這個形狀的實作在 `scripts/check_build_tracked.sh` 的 `--install-hook` 模式。）
 - 為什麼這是獨立的一條（不是 A7「工具回報成功 ≠ 改動在樹裡」的變體）：
   A7 講的是**寫入沒落盤**；這一條是**讀到了一個語意不完整的值**，
   而值本身「沒錯」（在 git 的 cwd 下它完全正確）。錯的是把它接到別人身上。
@@ -715,7 +724,8 @@
 - 為什麼：缺陷會把下游的行為遮住。SIGBUS 讓「pool 真的配置」這件事在載入階段就死，
   所以沒人看得到「pool 真配置之後，`ub` 的上限變成多少」。修好之後那條限制才會顯形，
   而且它與缺陷本身無關。
-- 實測（2026-09-16 12:02 vs 12:46，同 profile、同 `ub=4096`）：
+- 實測（2026-09-16 12:02 vs 12:46，同 profile、同 `ub=4096`；兩份日誌是
+  `Backup/cgc_logs/llama_server_20260916_120058.log` 與 `Backup/cgc_logs/llama_server_20260916_124605.log`）：
   | 面 | 死在哪 | 訊號 |
   |---|---|---|
   | 修復前 | 載入中的 fill pool | `KERN_PROTECTION_FAILURE`（`__bzero ← fill_pool_direct`），SIGBUS |
@@ -828,7 +838,8 @@
   但**替換後的字串是空的**，所以只看 `grep 'thermal pressure'` 會漏掉它。
 
 **B32｜「沒有儀器可以讀」是關於**某個工具**的推論，不是關於**系統**的事實。**
-- 為什麼（我自己犯的，寫進了白皮書 §11.14.7）：我寫下「沒有任何非 root 的即時儀器可以回答
+- 為什麼（我自己犯的，寫進了 `docs/PREFILL250_THERMAL_TRANSIENT_20260916.html` §11.14.7）：
+  我寫下「沒有任何非 root 的即時儀器可以回答
   governor 選了哪一階」，理由是 `pmset -g therm` 回 `No thermal warning level has been recorded`、
   而 DVFS 駐留要 root `powermetrics`。兩句話都對，結論是錯的。真正的儀器是
   `notifyutil -g com.apple.system.thermalpressurelevel` —— 就是 `powermetrics` 讀的那條
@@ -861,6 +872,7 @@
 **C3｜「同一個值」要問它是不是**結構性**地相同。**
 - 為什麼：`series` 看起來「兩臂一樣」，但一臂的值來自 host 寫入、另一臂來自 GPU 計算——
   同一個數字，不同的因果。分不出因果就不能預測它下一次會不會一樣。
+- 證據形態：兩臂同一欄位的取值來源（host 寫入 vs GPU 計算）的並排讀數，**沒有單一證據檔**。
 
 ---
 

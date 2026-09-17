@@ -1,10 +1,10 @@
 {
   "builder": "sft_prime/build_sft_prime.py",
-  "charter_sha256_16": "ad5922e788d18c69",
+  "charter_sha256_16": "149f1d751b776c6d",
   "input_sha256_16": {
     "decisions.jsonl": "af0abd1646b3a99d",
     "episodes.jsonl": "918089bf7cc1ccef",
-    "lessons.jsonl": "231f99b9b9ef4edf"
+    "lessons.jsonl": "e427885d922cb9d6"
   },
   "invocation": {
     "head_chars": 0,
@@ -13,7 +13,7 @@
   },
   "note": "reconstructed from traces/*.jsonl; this is NOT a recorded transcript",
   "rows": {
-    "train": 142,
+    "train": 143,
     "valid": 25
   },
   "split_seed": 42,
