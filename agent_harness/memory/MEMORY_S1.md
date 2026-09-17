@@ -178,7 +178,7 @@ changed_entries=572 **consumed_changed=192** consumed_unchanged_publishes=198`
 ⇒ **consumed 子集在整輪裡變動了 192 次**（必在 g9 之後，極可能是 decode 段）。
 ⇒ 先前「`SEL-DRIFT=0` ⇒ 時序被否證」是**在一個被截斷的窗口上**下的結論（lesson `eng-mh-0045`）。
 
-## ★★ 10:5x §9.18.7：owner 欄（`own=`）＝把「同 id」變成可判讀的那一半【已寫好，未建置、未跑】
+## ★★★ 10:5x–11:2x §9.18.7：owner 欄（`own=`）＝把「同 id」變成可判讀的那一半【已建置、已跑，答案是否證】
 
 **動機**：`SLOT-SEL wrong=0` 只講**帳**、`clamped_selected=0` 只數**當時非常駐**、POOL 的位元組摘要
 只講**內容** —— 三者都無法回答「這兩個 slot 索引在兩臂是不是指同一個專家」。要的是**同一列裡同時有
@@ -214,32 +214,57 @@ changed_entries=572 **consumed_changed=192** consumed_unchanged_publishes=198`
 那句話會**和 CONTENT 標題互相矛盾**（ids 不同也可以是 CONTENT、ids 同也可以是 SLOT-REUSED）⇒ 句子改成
 由**cause** 驅動。
 
-**驗證到哪（誠實邊界）**：`clang -fsyntax-only`（三個 TU、真實旗標、**新行 0 警告**）；把兩個 TU 編到
-`/tmp/*.o` 後 `nm` 確認 `_ggml_metal_cgc_set_owner_fn` 是 ops.o 的 **T**、metal.o 的 **U**（純 C 符號、
-無 mangling ⇒ dylib 連結會過）；比較器 **11 個合成案例**（七種 cause ＋ 單邊 owner ＋ 整列沒讀
-＋ 無 `own=` 欄位的舊格式 ＋ `--name` 過濾）＋ **真實舊 log 回歸**（10:22 那輪仍是
-`SAME=90 DIFF=15 PART-READ=0 NOT-READ=0`、`FIRST DIFF = g31 ffn_moe_down-1.pool`，與歷史讀數逐字相同）。
-**未做**：沒有建置、沒有起 server、沒有跑。**原因不是紀律而是佔用**：10:54 起有**別的 session 的
-llama-server**（PID 2559、`-expert-cache 10 GiB`、8080）在跑，且 thermal 是 HEAVY(2)。
+**★★ 結果（11:2x，同臂控制 ＋ A/B，105 key／1200 列）—— 這一軸結案**
+
+| | 同臂控制（slotgpu ×2） | A/B（gputime vs slotgpu） |
+|---|---|---|
+| 標註率 | **210/210 列有 `own=`** | 兩臂 banner 皆 `owner channel ACTIVE` |
+| verdict | `SAME=105 DIFF=0 PART-READ=0 NOT-READ=0` | `SAME=0 DIFF=105` |
+| causes | **`SAME=1200`** | **`ROUTING=477`／`SAME=723`**，**`CONTENT=0`、`SLOT-REUSED=0`、`RELAYOUT=0`** |
+
+**逐 graph**：g1–g29（所有 prompt chunk，nsel 16/32/48/64）**token 0 的 8 列每張圖 24/24 全 SAME**、
+**row 8–11（同 chunk 第 2 個 token 的前 4 個 id）每張圖 12/12 ROUTING**；g30（T=4）是轉折；
+g31–g35（T=1，nsel=8）每張 8 列全 ROUTING。g1 原始列：`A id=8 own=237` vs **`B id=0 own=163`**、
+`A id=50 own=50` vs **`B id=0 own=163`** ⇒ B 臂兩次讀 slot 0，而 slot 0 當時裝的是**專家 163**。
+
+**★ 定論（照這個改述句）**
+1. **池的位元組不是載體**（`CONTENT=0`，1200 列裡沒有任何一列是「同 slot 同 owner 不同位元組」）
+   ⇒ residency／填充這一軸**結案**，不要再查。
+2. 兩臂**從來沒有**「同索引不同專家」（`SLOT-REUSED=0`）。
+3. **載體是「拿到的專家不同」**（`ROUTING=477`）⇒ 位置在 **gather 上游**（routing／mapping）。
+   這比「ids 不同」強：後者可能是良性重排（`llama-context.cpp` 明寫可以換 slot 而無後果），前者不是。
+4. **結構性、非偶發**：token 0 在**每張** chunk 上一致、token ≥1 在**每張**上全不同；
+   且 slot 0 的兩次出現正是 `CGC-SLOT-TABLE-CLAMP`（非常駐專家被 clamp 成 0）的**內容側實證**。
+
+**實跑抓到的兩個 bug（見 lesson `eng-gate-0044`／`eng-mh-0047`）**：dump 印**裸清單**而讀者要求
+`own=[...]` ⇒ 比較器謊報 `OWNER CHANNEL ABSENT`（banner 卻說 ACTIVE）；以及 `ROWS=12` 在 T=1 的圖上
+後 4 列**超出運算元**卻被判成 `PART-READ` ⇒ 憑空 15 個「量測缺口」。兩者都修了。
+
+**驗證**：`clang -fsyntax-only` 三個 TU 新行 0 警告；`/tmp/*.o` 的 `nm` 確認
+`_ggml_metal_cgc_set_owner_fn` 是 ops.o 的 T、metal.o 的 U（純 C 符號）；建置有編譯行、0 error；
+比較器 11 個合成案例 ＋ 舊格式回歸（`SAME=90 DIFF=15` 逐字重現）。
 
 ## 下一步
 
-**① 建置＋實跑 §9.18.7**（等 8080 空、thermal=0）
-```sh
-cmake --build src/llama.cpp/build --target llama-server -j 8
-POOL=1 POOLROWS=12 POOLBYTES=1048576 HASH=1 \
-  ARMS='p25-gputime,p25-slotgpu' bash Backup/run_ids_dst_capture.sh
-# 先看 banner：CGC-POOL-CAP owner channel ACTIVE（不是 ABSENT）
-# 先跑同臂控制（同一臂兩次）⇒ 必須全 SAME，否則讀數就是發現
-python3 Backup/compare_pool_row.py <A> <B> --max-graphs 0
-```
-判讀就一句：**`CONTENT > 0` ⇒ fill/內容是載體；只有 `SLOT-REUSED`／`ROUTING` ⇒ 帳／路由是載體；
-`RELAYOUT` ⇒ 良性重排（先前「ids 不同」的措辭到此才真正可判）。**
+**① 追 routing／mapping 為什麼「第 2 個 token 之後」就給錯專家**（現在唯一的前線）
+- 已排除：池的位元組、residency、同索引換專家、IDS 側的採集（r12 那條）。
+- 已指名：`CGC-SLOT-TABLE-CLAMP`（`llama-context.cpp:4291-4307`，兩個寫入點對非常駐專家
+  一個寫 `-1`（響）一個 clamp 成 `0`（靜默）），以及 `consumed_changed=192`
+  ⇒ 「table 在本輪 pass 的 fill 之前就被讀走」與「table 只覆蓋部分 expert／zero-slot」同形。
+- 讀點都已在：`CGC_S1_TABLE_CHURN=1` 的 `SEL-DRIFT`／`SLOT-OWNER`／`SLOT-SEL`（引擎側）、
+  `CGC-POOL-CAP` 的 `own=`（內容側，現在兩邊都有了）。
+- **要做的是同一個問題的兩端對齊**：POOL 列裡的 `id`（消費者實際讀的 slot）與引擎側
+  `tab[e]`（host 算出來的 slot）**在同一個瞬間**比 —— 目前 `own` 給了「那個 slot 裝誰」，
+  缺的是「host 認為應該讀哪個 slot」。候選：把 `tab[ids[j]]` 也寫進 POOL 列（一樣主機側、免內核）。
 
-**② 追 `consumed_changed=192`**：它與「發布在不在熱路徑上」（前提 B）是同一個問題，而先前的「0」是
-列印上限造成的。
+**② `POOLROWS` 上限是 12 而 T=2 的運算元有 16 個 id** ⇒ 第 2 個 token 只覆蓋前 4 個。
+要看全 16 個必須加大 `CGC_POOL_STRIDE`（現在 64 字）或縮 5 字/列。**目前所有 token ≥1 的結論
+都建立在「前 4 個 id」上**（這 4 個已經 100% ROUTING，所以結論不會因覆蓋擴大而翻轉，但要寫清楚）。
 
-**③ g30 層 0 的殘餘問題**（`attn_norm-0` 整張量 DIFF，輸入應為純 embedding）⇒ 讀
+**③ `consumed_changed=192`**：它與「發布在不在熱路徑上」（前提 B）是同一個問題，而先前的「0」是
+列印上限造成的（lesson `eng-mh-0045`）。與 ① 是同一個機制，可能一起解掉。
+
+**④ g30 層 0 的殘餘問題**（`attn_norm-0` 整張量 DIFF，輸入應為純 embedding）⇒ 讀
 `conv_state_update-0`／`conv_state_last-0`（`ggml_metal_op_cpy` 的 hook 在 `ggml-metal-ops.cpp:2248`）。
 
 **不要**再用「ids 同不同」當「有沒有缺陷」的判準（`llama-context.cpp` 明寫兩臂可以換 slot 而無後果）；

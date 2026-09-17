@@ -274,12 +274,64 @@ def memories_block(ids: list[str]) -> str:
     return "\n".join(parts)
 
 
+# ---------------------------------------------------------------------------
+# THE GENERATION SCAFFOLD
+# ---------------------------------------------------------------------------
+# Derived by READING the server's own chat template, not by guessing at it. The template file is
+# recorded by sha256 (in the manifest and in `--dry-run`) so that a change to it cannot silently
+# invalidate the derivation.
+CHAT_TEMPLATE = REPO / "src" / "llama.cpp" / "models" / "templates" / "Qwen3-nothink-ChatML.jinja"
+
+# The anchor is the second half of the generation prompt. The template's own comments record the
+# measurement behind it (see build_prompt). It goes into the manifest because it is part of what
+# the model saw -- an anchor is a prompt, and a prompt is an experimental variable.
+ANCHOR = "答："
+
+
+def scaffold_sha() -> str:
+    """sha256[:16] of the chat template this scaffold was derived from."""
+    try:
+        return sha16(CHAT_TEMPLATE.read_text(encoding="utf-8"))
+    except OSError:
+        return "missing"
+
+
 def build_prompt(charter: str, mems: str, q: str) -> str:
-    return (charter + mems + "\n\n---\n\n"
-            "## 現在要回答的問題\n\n"
-            f"{q}\n\n"
+    """Render the generation prompt the server's chat template WOULD have rendered.
+
+    WHY IT IS RENDERED HERE INSTEAD OF BY THE SERVER
+    ------------------------------------------------
+    `closed_loop.py` records `sha256(prompt)`, and that hash is evidence only if the bytes it
+    hashes are the bytes the model saw. Posting to `/v1/chat/completions` puts ONE text in the
+    request body (the chat messages) and a DIFFERENT text in front of the model (the rendered
+    template) -- the hash covers neither, and every artefact still looks right. So the template is
+    rendered here and the result is posted verbatim to `/completion`.
+
+    WHAT THE TEMPLATE'S OWN COMMENTS SAY, AND WHY THE STRING LOOKS LIKE THIS
+    ------------------------------------------------------------------------
+      * `<|im_start|>` / `<|im_end|>` must carry the pipes (token ids 248045/248046). Without them
+        the tokenizer splits the markers into plain text tokens and the model echoes them.
+      * `content | trim`, and NO newline between `<|im_end|>` and the next `<|im_start|>`.
+      * The generation prompt must be a COMPLETED think block PLUS an anchor, because "neither
+        alone works": the block says thinking is over, the anchor says start answering. Their
+        measurement: the block alone loops the markers, the anchor alone echoes the question, both
+        together answer correctly.
+      * The shipped template does NOT apply the completed block on its no-prefill path -- it emits
+        a bare `<|im_start|>assistant\\n`, which is what produced thinking fragments on a plain chat
+        request (measured 2026-09-17; see llm_client.py).
+
+    ★ NOT YET VERIFIED AGAINST A REAL MODEL. Everything here is read off the template and its
+    comments; this build was not run against the server, because another session was running an
+    A/B measurement on the only GPU. Verify against a known question -- `15+27` must answer `42` --
+    before any multi-call run. The selftest checks the structural half (markers, order, anchor).
+    """
+    system = (charter + mems).strip()
+    user = (f"## 現在要回答的問題\n\n{q}\n\n"
             "**只回答「下一個具體動作」以及你據以判斷的欄位／判準。不要複述問題，不要客套。**\n"
-            "若你認為這個問題在現有證據下無法回答，就明說「無法回答」並指出缺什麼。\n")
+            "若你認為這個問題在現有證據下無法回答，就明說「無法回答」並指出缺什麼。").strip()
+    return (f"<|im_start|>system\n{system}<|im_end|>"
+            f"<|im_start|>user\n{user}<|im_end|>"
+            f"<|im_start|>assistant\n<think>\n\n</think>\n\n{ANCHOR}")
 
 
 def load_questions() -> list[tuple[str, str]]:
@@ -356,6 +408,8 @@ def main() -> int:
         print(f"    ids: {', '.join(scope_ids[:10])}" + (" ..." if len(scope_ids) > 10 else ""))
     print(f"  questions: {len(qs)}  ({', '.join(q for q, _ in qs)})")
     print(f"  reps: {args.reps}  -> total model calls = {len(qs) * len(arms) * args.reps}")
+    print(f"  scaffold: {CHAT_TEMPLATE.name} sha256[:16]={scaffold_sha()}  anchor={ANCHOR!r}")
+    print(f"            （模板在本腳本渲染、送 raw /completion —— 這樣 sha256 涵蓋模型看到的位元組）")
     if args.reps == 1:
         print("    ! reps=1 只能證明「有不一樣」，不能證明「可重現」——PLAN §9 的驗收要求後者。")
     for name, ch, mm in arms:
@@ -497,6 +551,10 @@ def main() -> int:
                              for r in range(1, args.reps + 1)},
         "calls": len(rows),
         "charter_sha256_16": {"A_preD6": sha16(pre), "B_postD6": sha16(post_d6), "C_head": sha16(live)},
+        # The scaffold is part of what the model saw, so it is recorded like any other input.
+        "scaffold_template": CHAT_TEMPLATE.name,
+        "scaffold_template_sha256_16": scaffold_sha(),
+        "scaffold_anchor": ANCHOR,
         "memories_block_sha256_16": sha16(mems),
         # sha256 of the command, never the command: a manifest gets committed and a command line
         # can carry an API key.

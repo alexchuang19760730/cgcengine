@@ -42,6 +42,7 @@ Usage: python3 agent_harness/engine_loop/distill/closed_loop_selftest.py
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -281,6 +282,33 @@ def main() -> int:
                        r"memories\s+\+0 B", out)
         check(m2 is not None and int(m2.group(1)) > 0,
               "A→B 那行 charter 有增行且 memories 為 0（D6 本體）")
+
+        # ---- H. the generation scaffold: the structural half of "does the model answer at all" ----
+        # The behavioural half (does `15+27` answer `42`) needs a real model and was NOT run --
+        # another session held the GPU. What CAN be checked without one is that the string this
+        # repo sends has the shape the server's own template comments say is required.
+        print()
+        print("H. 生成 scaffold 的結構（行為面需真模型，本輪未驗）")
+        spec = importlib.util.spec_from_file_location("closedloop", CLOSED)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+
+        p = m.build_prompt("CHARTER", "", "Q?")
+        check(p.startswith("<|im_start|>system\n"), "以 system 標記開頭")
+        check("<|im_end|><|im_start|>user\n" in p,
+              "system 與 user 之間沒有多餘換行（template 用 {%- endfor %} 把換行 strip 掉）")
+        check(p.endswith(f"<|im_start|>assistant\n<think>\n\n</think>\n\n{m.ANCHOR}"),
+              "生成段 = completed think block ＋ anchor（註解實測：neither alone works）",
+              f"錨點={m.ANCHOR!r}")
+        check(p.count("<|im_end|>") == 2, "恰好兩個 <|im_end|>（system、user）")
+        check("<im_start>" not in p and "<im_end>" not in p,
+              "所有標記都帶 pipe（不帶會被 tokenizer 拆成純文字、模型照抄回去）")
+        check(len(m.scaffold_sha()) == 16, "模板 sha256 可取（要記進 manifest）")
+
+        tpl = m.CHAT_TEMPLATE.read_text(encoding="utf-8")
+        check("{{ message.role }}" in tpl and "content | trim" in tpl and "<|im_end|>" in tpl,
+              "推導所依據的 template 片段還在（template 一改就要重新推導）",
+              m.CHAT_TEMPLATE.name)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

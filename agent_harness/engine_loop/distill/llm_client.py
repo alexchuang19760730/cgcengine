@@ -37,25 +37,25 @@ cost is recorded for free, and a run that quietly got 10x slower per call is vis
     CLOSED_LOOP_MODEL_CMD='python3 agent_harness/engine_loop/distill/llm_client.py' \\
       python3 agent_harness/engine_loop/distill/closed_loop.py --memories-scope first:8
 
-WHAT THIS CLIENT DOES NOT SOLVE (measured 2026-09-17)
------------------------------------------------------
-Transport works. ANSWER QUALITY DOES NOT, yet. Measured against this repo's own server
-(`scripts/run_server.sh`, Nail-Qwen3.6-MTP, MTP draft acceptance 0.89):
+WHAT THIS CLIENT DOES NOT SOLVE YET
+-----------------------------------
+Transport works; the SCAFFOLD IS NOW IMPLEMENTED BUT UNVERIFIED. Measured 2026-09-17 against this
+repo's own server (`scripts/run_server.sh`, Nail-Qwen3.6-MTP, MTP draft acceptance 0.89):
 
   * `/v1/chat/completions` with a bare user message -> the model enters its thinking mode and
-    emits `<think>...` until the token budget runs out (`finish_reason: length`). The repo's own
-    template comments describe exactly this failure and the fix (a COMPLETED think block AND an
-    anchor -- "neither alone works"); the shipped `Qwen3-nothink-ChatML.jinja` does not apply the
-    completed block on its no-prefill path.
-  * raw `/completion` with hand-written ChatML -> pure echo: the question
-    `15+27 等於多少？請只輸出答案` came straight back. Expected, in hindsight -- the server's
-    think-seed injection only runs on the chat path.
+    emits `<think>...` until the token budget runs out (`finish_reason: length`).
+  * raw `/completion` with hand-written ChatML and no generation scaffold -> pure echo: the
+    question `15+27 等於多少？請只輸出答案` came straight back.
 
-So a comparison run today would produce an artefact full of degenerate answers, and `compare.json`
-would report "the arms differ" quite correctly -- they would. **Getting the scaffolding right is a
-prerequisite for the comparison, not a detail of it.** Fixing it means building the generation
-prompt the template comments describe and verifying it against a known question (`15+27` -> `42`)
-BEFORE any 96-call run.
+Both have the same cause, described in the template's own comments: the generation prompt needs a
+COMPLETED think block AND an anchor, because "neither alone works" -- the block says thinking is
+over, the anchor says start answering. `closed_loop.build_prompt()` now renders exactly that and
+posts it verbatim here.
+
+★ IT IS NOT VERIFIED. The only GPU was busy with another session's A/B measurement, so the
+`15+27` -> `42` check has NOT been run. Do that before any multi-call run.
+`closed_loop_selftest.py` group H checks the string's STRUCTURE -- markers, order, anchor -- and
+**structure is not behaviour**. A well-formed prompt can still produce a degenerate answer.
 
 AND THE COST, MEASURED IN THE SAME SESSION
 ------------------------------------------
