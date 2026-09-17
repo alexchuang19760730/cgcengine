@@ -1860,6 +1860,20 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 static int64_t dp_lay_cb[64]  = {0};   // top-k hook (slot mgmt + blocking fill)
                 static int64_t dp_lay_sub[64] = {0};   // submit of that layer's segment
                 static int64_t dp_lay_n[64]   = {0};   // segments observed, per layer
+                // [CGC M3 2026-09-17] The GPU clock, attributed per layer. `cgc_gpu_take`
+                // already hands back per-segment Metal timestamps, but until now they were only
+                // summed into the per-step `gt_*` accumulators and the layer identity was dropped,
+                // so the only GPU-side reading in this repo was per step. `dp_lay_gpu` is the sum
+                // of GPUEndTime-GPUStartTime over the segment's buffers, `dp_lay_uni` its span, and
+                // `dp_lay_gap` the idle window between the previous segment's end and this one's
+                // start (the same quantity CGC-GPUTIME reports per step as `gap`). All three are
+                // Metal-side readings: they add no work to the graph, which is what makes this the
+                // one attribution here that is perturbation-free. `dp_lay_sg` counts segments that
+                // actually carried a usable timestamp, so "zero" can be told from "not measured".
+                static int64_t dp_lay_gpu[64] = {0};   // GPU busy (sum over the segment's buffers)
+                static int64_t dp_lay_uni[64] = {0};   // GPU union (span)
+                static int64_t dp_lay_gap[64] = {0};   // GPU idle before this layer's segment
+                static int64_t dp_lay_sg[64]  = {0};   // segments with a usable timestamp
                 static int64_t dp_step        = 0;     // graph_computes since start
                 static int64_t dp_ntok        = 0;     // tokens in the graph being profiled (its own shape)
 
@@ -1950,9 +1964,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     // completion, so all of segment i's command buffers are completed -- the
                     // only point where Metal reports GPUStartTime/GPUEndTime. Segment i+1 has
                     // not been submitted yet, so nothing else can be in flight.
+                    int64_t sg_busy = 0, sg_union = 0, sg_gap = 0;
                     if (cgc_gpu_take != nullptr) {
                         int64_t g[5] = {0, 0, 0, 0, 0};
                         const int gns = cgc_gpu_take(split_backend, g);
+                        sg_busy  = g[0];
+                        sg_union = g[1];
                         gt_busy  += g[0];
                         gt_union += g[1];
                         gt_unsup += g[4];
@@ -1965,6 +1982,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         // so gap vs (cb+submit) is a built-in cross-check on both instruments.
                         if (g[2] > 0 && gt_prev_end > 0 && g[2] > gt_prev_end) {
                             gt_gap += g[2] - gt_prev_end;
+                            sg_gap  = g[2] - gt_prev_end;
                         }
                         if (g[3] > 0) {
                             gt_prev_end = g[3];
@@ -2020,6 +2038,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                             dp_lay_w[dp_il]   += st1 - st0;
                             dp_lay_cb[dp_il]  += st2 - st1;
                             dp_lay_sub[dp_il] += dp_last_submit_us;
+                            dp_lay_gpu[dp_il] += sg_busy;
+                            dp_lay_uni[dp_il] += sg_union;
+                            dp_lay_gap[dp_il] += sg_gap;
+                            if (sg_busy > 0) {
+                                dp_lay_sg[dp_il]++;
+                            }
                             dp_lay_n[dp_il]++;
                         }
                         dp_last_submit_us = 0;
@@ -2079,14 +2103,33 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     // See eng-src-0011 (and the 95-log "min step is always 8" fingerprint).
                     if (dp_tot > 0 && ((dp_step % 8) == 0 || dp_step == 1 || dp_ntok > 1)) {
                         const double dp_inv = 100.0 / (double) dp_tot;
+                        // The gt_* family is in NANOSECONDS (CGC-GPUTIME divides by 1e6), while
+                        // the dp_lay_* family above is in MICROSECONDS. Mixing the two units is how
+                        // the first revision of this line printed a 1760x too large number; the
+                        // cross-check that catches it is `gpu_sum` vs CGC-GPUTIME's gpu_busy_sum.
+                        int64_t dp_gs = 0, dp_gu = 0, dp_gg = 0;
+                        for (int li = 0; li < 64; li++) {
+                            dp_gs += dp_lay_gpu[li];
+                            dp_gu += dp_lay_uni[li];
+                            dp_gg += dp_lay_gap[li];
+                        }
+                        char dp_gpu_tail[160];
+                        dp_gpu_tail[0] = '\0';
+                        if (cgc_gpu_take != nullptr) {
+                            snprintf(dp_gpu_tail, sizeof(dp_gpu_tail),
+                                     " | layer gpu_sum=%.2f union_sum=%.2f gap_sum=%.2f ms%s",
+                                     (double) dp_gs / 1e6, (double) dp_gu / 1e6,
+                                     (double) dp_gg / 1e6,
+                                     dp_gs == 0 ? " (NO TIMESTAMPS)" : "");
+                        }
                         fprintf(stderr,
                                 "CGC-DECPROF: step=%lld segs=%d layers=%d total=%.2f ms | "
-                                "wait=%.2f (%.0f%%) cb=%.2f (%.0f%%) submit=%.2f (%.0f%%) ntok=%lld\n",
+                                "wait=%.2f (%.0f%%) cb=%.2f (%.0f%%) submit=%.2f (%.0f%%) ntok=%lld%s\n",
                                 (long long) dp_step, n_segs, dp_layers, (double) dp_tot / 1000.0,
                                 (double) dp_w / 1000.0, (double) dp_w * dp_inv,
                                 (double) dp_cb / 1000.0, (double) dp_cb * dp_inv,
                                 (double) dp_sb / 1000.0, (double) dp_sb * dp_inv,
-                                (long long) dp_ntok);
+                                (long long) dp_ntok, dp_gpu_tail);
                         bool dp_used[64] = {false};
                         for (int rank = 0; rank < 8; rank++) {
                             int dp_best = -1;
@@ -2105,11 +2148,16 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                 break;
                             }
                             dp_used[dp_best] = true;
-                            fprintf(stderr, "CGC-DECPROF top%d: L%d wait=%.2f cb=%.2f submit=%.2f ms n=%lld\n",
+                            fprintf(stderr, "CGC-DECPROF top%d: L%d wait=%.2f cb=%.2f submit=%.2f ms "
+                                    "gpu=%.2f union=%.2f gap=%.2f sg=%lld n=%lld\n",
                                     rank + 1, dp_best,
                                     (double) dp_lay_w[dp_best] / 1000.0,
                                     (double) dp_lay_cb[dp_best] / 1000.0,
                                     (double) dp_lay_sub[dp_best] / 1000.0,
+                                    (double) dp_lay_gpu[dp_best] / 1e6,
+                                    (double) dp_lay_uni[dp_best] / 1e6,
+                                    (double) dp_lay_gap[dp_best] / 1e6,
+                                    (long long) dp_lay_sg[dp_best],
                                     (long long) dp_lay_n[dp_best]);
                         }
                         if (dp_all != 0) {
@@ -2117,17 +2165,23 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                 if (dp_lay_n[l] == 0) {
                                     continue;
                                 }
-                                fprintf(stderr, "CGC-DECPROF all: L%d wait=%.2f cb=%.2f submit=%.2f ms n=%lld\n",
+                                fprintf(stderr, "CGC-DECPROF all: L%d wait=%.2f cb=%.2f submit=%.2f ms "
+                                        "gpu=%.2f union=%.2f gap=%.2f sg=%lld n=%lld\n",
                                         l,
                                         (double) dp_lay_w[l] / 1000.0,
                                         (double) dp_lay_cb[l] / 1000.0,
                                         (double) dp_lay_sub[l] / 1000.0,
+                                        (double) dp_lay_gpu[l] / 1e6,
+                                        (double) dp_lay_uni[l] / 1e6,
+                                        (double) dp_lay_gap[l] / 1e6,
+                                        (long long) dp_lay_sg[l],
                                         (long long) dp_lay_n[l]);
                             }
                         }
                     }
                     for (int l = 0; l < 64; l++) {
                         dp_lay_w[l] = dp_lay_cb[l] = dp_lay_sub[l] = dp_lay_n[l] = 0;
+                        dp_lay_gpu[l] = dp_lay_uni[l] = dp_lay_gap[l] = dp_lay_sg[l] = 0;
                     }
                     dp_ntok = 0;   // per-step attribution: the next graph states its own shape
                 }
