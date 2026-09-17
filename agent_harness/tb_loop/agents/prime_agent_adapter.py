@@ -37,6 +37,13 @@ from terminal_bench.terminal.models import TerminalCommand
 CONTAINER_HARNESS_DIR = "/prime-agent-harness"
 CONTAINER_ENV_SCRIPT = "/prime-agent-harness-env.sh"
 CONTAINER_HARNESS_TAR = "/installed-agent/harness.tar.gz"
+# host 上快取的 prime-agent release 鏡像（由 scripts/fetch-prime-agent-mirror.sh 產生）。
+# 為什麼要送它進容器：同一個 URL，host 是 ~12.5 MB/s、容器內只有 ~164 KB/s（差 80 倍，
+# 瓶頸是 colima NAT），而官方安裝器把 `--max-time 300` 寫死 ⇒ 59.6 MB 的 release 永遠
+# 抓不完。實測後果：整段安裝 421.89s 逾時、`INSTALL_FAIL_STATUS`、agent 從未被啟動、
+# `total_input_tokens = 0`，而 tb 把這個結果報成 `agent_timeout`（與模型無關）。
+CONTAINER_MIRROR_TAR = "/installed-agent/prime-agent-mirror.tar.gz"
+DEFAULT_MIRROR_TAR = Path.home() / ".cache" / "prime-agent-mirror.tar.gz"
 
 
 class PrimeAgentAgent(AbstractInstalledAgent):
@@ -61,6 +68,13 @@ class PrimeAgentAgent(AbstractInstalledAgent):
     ) -> None:
         super().__init__(**kwargs)
         self._model_name = model_name or os.environ.get("TB_GEMMA4_MODEL", "gemma-4-26b-a4b-it")
+        # ★ tb 會把 `-m` 的**值**當成 model_name 傳進來，而那個值傳統寫法帶 provider 前綴
+        #   （`openai/<model>`）。那個前綴不該變成送給端點的 model id —— 2026-09-17 單變數實測：
+        #   `local-gemma4/openai/deepseek/deepseek-flash` ⇒ 400「model or service ID … does
+        #   not exist」；拿掉 `openai/` 之後同一顆容器 rc=0、正常回覆。所以在這裡剝掉它，
+        #   讓本 adapter 對 tb 的兩種寫法（有／無前綴）都成立。
+        if self._model_name.startswith("openai/"):
+            self._model_name = self._model_name[len("openai/"):]
         self._api_key = api_key or os.environ.get("TB_GEMMA4_API_KEY", "sk-local")
         self._base_url = base_url or os.environ.get(
             "TB_GEMMA4_BASE_URL", "http://host.docker.internal:1234/v1"
@@ -94,6 +108,10 @@ class PrimeAgentAgent(AbstractInstalledAgent):
     def _install_agent_script_path(self) -> Path:
         return Path(__file__).parent / "prime-agent-setup.sh"
 
+    @property
+    def _mirror_tar(self) -> Path:
+        return Path(os.environ.get("TB_PA_MIRROR_TAR", str(DEFAULT_MIRROR_TAR)))
+
     def _run_agent_commands(self, instruction: str) -> list[TerminalCommand]:
         model = f"{self._model_prefix}/{self._model_name}"
         cmd = (
@@ -121,8 +139,37 @@ class PrimeAgentAgent(AbstractInstalledAgent):
     # 学习循环：harness 状态注入
     # ------------------------------------------------------------------
     def perform_task(self, instruction, session, logging_dir=None):
+        self._ship_mirror(session)
         self._ship_harness(session)
         return super().perform_task(instruction, session, logging_dir)
+
+    def _ship_mirror(self, session) -> None:
+        """把 host 上快取的 prime-agent release 鏡像送進容器。
+
+        送檔走 `copy_to_container`（Docker API），**不經過容器那個 164 KB/s 的網路**；
+        送進去之後由 prime-agent-setup.sh 在容器內起一個 loopback http server 供檔，
+        讓官方安裝器從 `127.0.0.1` 取 —— 那是上游明文支援的 feed（見該腳本的說明）。
+
+        沒有鏡像時只印一行就繼續：安裝會退回「直接從外網下載」的老路徑，
+        容器網路慢時那條路徑會逾時失敗（可接受，比讓 agent 靜默 0 token 好讀）。
+        """
+        tar_path = self._mirror_tar
+        if not tar_path.is_file():
+            print(
+                f"[prime-agent] 沒有離線鏡像 {tar_path} —— 安裝會退回直接下載。\n"
+                "              產生它: bash agent_harness/tb_loop/scripts/"
+                "fetch-prime-agent-mirror.sh"
+            )
+            return
+        session.copy_to_container(
+            tar_path,
+            container_dir="/installed-agent",
+            container_filename="prime-agent-mirror.tar.gz",
+        )
+        print(
+            f"[prime-agent] 已注入離線鏡像 {tar_path.name}"
+            f"（{tar_path.stat().st_size} B）"
+        )
 
     def _ship_harness(self, session) -> None:
         """把 host 侧 harness（skills/memories/provider extension）打包进容器。"""

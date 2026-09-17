@@ -204,7 +204,17 @@ TB_ARGS=(
     run
     -d "${TB_DATASET}"
     --agent-import-path "tb_loop.agents.prime_agent_adapter:PrimeAgentAgent"
-    -m "openai/${TB_GEMMA4_MODEL}"
+    # ★★ `-m` 的值**會蓋掉** `-k model_name=`，而且會一路變成送給端點的 model id。
+    #   出處（不是推論）：terminal_bench/cli/tb/runs.py:60 的 `_process_agent_kwargs`
+    #     for kwarg in agent_kwargs: processed_kwargs[key] = _infer_type(value)
+    #     if model_name is not None:  processed_kwargs["model_name"] = model_name   ← 後套用 ⇒ `-m` 勝
+    #   ⇒ 所以**不要**在這裡加 provider 前綴。（先前寫 `-m "openai/${TB_GEMMA4_MODEL}"`，
+    #   adapter 就拼出 `local-gemma4/openai/deepseek/deepseek-flash`，端點回 400
+    #   `The model or service ID openai/deepseek/deepseek-flash does not exist`。
+    #   單變數實測：同一顆容器只把 `openai/` 拿掉，rc=0、正常回覆。adapter 也順手剝了
+    #   一層 `openai/`（見 prime_agent_adapter.py）當第二道防線。）
+    #   下面那行 `-k model_name=` 現在是多餘的（會被覆蓋），留著當舊版 tb 的退路。
+    -m "${TB_GEMMA4_MODEL}"
     -k model_name="${TB_GEMMA4_MODEL}"
     -k base_url="${TB_GEMMA4_BASE_URL}"
     -k model_prefix="${TB_MODEL_PREFIX}"

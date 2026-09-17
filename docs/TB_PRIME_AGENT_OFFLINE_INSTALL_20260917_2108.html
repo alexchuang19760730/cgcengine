@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>prime-agent 的容器內離線安裝（2026-09-17）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#1f2328; --mut:#57606a; --line:#d0d7de; --soft:#f6f8fa;
+    --blue:#0969da; --green:#1a7f37; --red:#cf222e; --amber:#9a6700; --purple:#8250df;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","PingFang SC","Hiragino Sans",sans-serif;
+       font-size:15px;line-height:1.7}
+  .wrap{max-width:1040px;margin:0 auto;padding:32px 20px 80px}
+  h1{font-size:26px;line-height:1.35;margin:0 0 6px}
+  h2{font-size:19px;margin:38px 0 10px;padding-top:14px;border-top:1px solid var(--line)}
+  h3{font-size:16px;margin:24px 0 8px}
+  p,li{margin:8px 0}
+  code{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;font-size:.9em;
+       background:var(--soft);border:1px solid var(--line);border-radius:4px;padding:.1em .35em}
+  pre{background:var(--soft);border:1px solid var(--line);border-radius:6px;padding:12px 14px;
+      overflow-x:auto;margin:12px 0}
+  pre code{background:none;border:none;padding:0;font-size:12.5px;line-height:1.55}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  .num{white-space:nowrap;font-variant-numeric:tabular-nums}
+  .mut{color:var(--mut)}
+  .tag{display:inline-block;font-size:12px;padding:1px 8px;border-radius:999px;border:1px solid;white-space:nowrap}
+  .t-blue{color:var(--blue);border-color:#b6d8fb;background:#ddf4ff}
+  .t-green{color:var(--green);border-color:#b6e3c2;background:#dafbe1}
+  .t-red{color:var(--red);border-color:#f5c2c7;background:#ffebe9}
+  .t-amber{color:var(--amber);border-color:#f0d999;background:#fff8c5}
+  .t-purple{color:var(--purple);border-color:#d8c7f7;background:#fbefff}
+  .t-gray{color:var(--mut);border-color:var(--line);background:var(--soft)}
+  .box{border-left:4px solid var(--line);background:var(--soft);border-radius:0 6px 6px 0;
+       padding:10px 14px;margin:14px 0}
+  .box.warn{border-left-color:var(--amber)}
+  .box.ok{border-left-color:var(--green)}
+  .box.bad{border-left-color:var(--red)}
+  .box.pur{border-left-color:var(--purple)}
+  .box .h{font-weight:600;display:block;margin-bottom:2px}
+  figure{margin:18px 0}
+  figcaption{color:var(--mut);font-size:13px;margin-top:6px}
+  .meta{color:var(--mut);font-size:13px;margin:0 0 4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>prime-agent 的容器內離線安裝</h1>
+<p class="meta">flashkv-devserver ／ 2026-09-17 21:08 ／ D5 白皮書附件（隨本輪 tb_loop 安裝路徑修復一起提交）</p>
+
+<div class="box pur">
+<span class="h">一句話</span>
+容器對外網只有 <b>164 KB/s</b>（host 對同一個 URL 是 <b>12.7 MB/s</b>，差 80 倍），而官方安裝器把
+<code>--max-time 300</code> 寫死 ⇒ 59.6 MB 的 release <b>永遠抓不完</b>，安裝 421.89 s 後逾時，
+agent 從未被啟動、<code>total_input_tokens = 0</code>。修法是在 host 先把 release 抓成鏡像、
+用 <code>copy_to_container</code> 送進容器，再讓<b>官方安裝器從容器自己的 loopback</b> 取檔
+（上游明文支援的 feed）—— 安裝 <b>421.89 s → 43.26 s</b>。過程中另外量到兩個獨立缺陷與一次
+<b>被實驗推翻的自己的判斷</b>。
+</div>
+
+<h2>1. 問題：慢的不是上游，是容器的網路</h2>
+
+<p>
+前一份白皮書（<code>TB_SMOKE_ENTRYPOINT_HARD_CONSTRAINTS_20260917_2035.html</code>）查出安裝失敗在
+<code>curl: (28) … 49090240 out of 59607437 bytes received</code>。本輪把責任分開：同一個 URL 各量一次。
+</p>
+
+<table>
+<thead><tr><th>量測位置</th><th>下載量</th><th>時間</th><th>速率</th></tr></thead>
+<tbody>
+<tr><td>host（本機 curl）</td><td class="num">59,607,437 B（整檔）</td><td class="num">4.71 s</td><td class="num"><b>12,667,579 B/s ≈ 12.7 MB/s</b></td></tr>
+<tr><td>容器內（tb 任務容器）</td><td class="num">49,090,240 B（82% 後逾時中斷）</td><td class="num">300 s</td><td class="num"><b>≈ 164 KB/s</b></td></tr>
+</tbody>
+</table>
+
+<p>
+⇒ 差 <b>80 倍</b>，瓶頸是 colima 的 NAT。按容器速率，59.6 MB 需約 <b>364 s</b>，
+而官方安裝器的 <code>--max-time 300</code> 是<b>寫死的</b>
+（<code>prime_agent_curl_download -fsSL --connect-timeout 10 --max-time 300 …</code>，
+全檔沒有可調該值的環境變數）⇒ <b>重試也一定失敗</b>，不是偶發。
+</p>
+
+<div class="box warn">
+<span class="h">這一條判準可以搬去別的地方用</span>
+「同一個 URL 在 host 與在容器內各量一次」是分辨「上游慢」與「容器網路慢」最便宜的辦法 ——
+host 端 20 秒的樣本就夠：<code>curl -s -o /dev/null --max-time 20 -w "%{size_download} %{speed_download}\n" &lt;url&gt;</code>；
+容器端連另外量都不必，<code>curl</code> 的 (28) 訊息自帶已收位元組數與毫秒數。
+</div>
+
+<h2>2. 修法：host 預抓 → 注入 → 容器內 loopback 供檔</h2>
+
+<figure>
+<svg viewBox="0 0 680 246" width="100%" role="img" aria-label="離線安裝的三段資料流">
+  <defs>
+    <marker id="ar4" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#57606a"/>
+    </marker>
+  </defs>
+
+  <rect x="8" y="26" width="176" height="62" rx="7" fill="#ddf4ff" stroke="#b6d8fb"/>
+  <text x="96" y="48" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="600">① host 預抓一次</text>
+  <text x="96" y="66" font-size="10.5" text-anchor="middle" fill="#57606a">fetch-prime-agent-mirror.sh</text>
+  <text x="96" y="80" font-size="10.5" text-anchor="middle" fill="#1a7f37">4.7 s / 12.7 MB/s（含驗 sha256）</text>
+
+  <rect x="8" y="150" width="176" height="62" rx="7" fill="#fbefff" stroke="#d8c7f7"/>
+  <text x="96" y="172" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="600">② 注入容器</text>
+  <text x="96" y="190" font-size="10.5" text-anchor="middle" fill="#57606a">adapter _ship_mirror</text>
+  <text x="96" y="204" font-size="10.5" text-anchor="middle" fill="#1a7f37">copy_to_container（Docker API）</text>
+
+  <rect x="264" y="88" width="168" height="62" rx="7" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="348" y="110" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="600">③ 容器內 loopback</text>
+  <text x="348" y="128" font-size="10.5" text-anchor="middle" fill="#57606a">python3 -m http.server</text>
+  <text x="348" y="142" font-size="10.5" text-anchor="middle" fill="#57606a">--bind 127.0.0.1:8899</text>
+
+  <rect x="500" y="88" width="172" height="62" rx="7" fill="#dafbe1" stroke="#b6e3c2"/>
+  <text x="586" y="110" font-size="12" text-anchor="middle" fill="#1f2328" font-weight="600">官方 install.sh</text>
+  <text x="586" y="128" font-size="10.5" text-anchor="middle" fill="#1a7f37">原封不動地跑</text>
+  <text x="586" y="142" font-size="10.5" text-anchor="middle" fill="#1a7f37">4 s 完成</text>
+
+  <line x1="186" y1="58" x2="262" y2="106" stroke="#57606a" marker-end="url(#ar4)"/>
+  <line x1="186" y1="180" x2="262" y2="132" stroke="#57606a" marker-end="url(#ar4)"/>
+  <line x1="434" y1="119" x2="498" y2="119" stroke="#57606a" marker-end="url(#ar4)"/>
+
+  <text x="340" y="24" font-size="10.5" text-anchor="middle" fill="#cf222e">全程不碰那個 164 KB/s 的網路</text>
+  <text x="340" y="230" font-size="10.5" text-anchor="middle" fill="#57606a">① 在 host、② 走 Docker API、③ 走 loopback —— 三段都繞開容器外網</text>
+</svg>
+<figcaption>關鍵在②與③都<b>不經過容器對外網</b>：② 是 Docker API，③ 是 loopback。</figcaption>
+</figure>
+
+<h3>2.1 為什麼是 loopback，而不是讓容器連 host 的 http server</h3>
+
+<p>
+這是<b>上游明文支援</b>的路徑，不是 hack。官方 <code>install.sh</code> 的
+<code>prime_agent_validate_download_base_url</code>：
+</p>
+
+<pre><code>case "$prime_agent_base_url" in
+    https://*) prime_agent_allow_insecure_http=0 ;;
+    http://*)
+        if [ "${PRIME_AGENT_ALLOW_INSECURE_HTTP_FOR_TESTS:-0}" = 1 ] &&
+            prime_agent_is_loopback_test_base_url "$prime_agent_base_url"; then
+            prime_agent_allow_insecure_http=1
+            return
+        fi
+        printf 'error: Prime Agent downloads require an HTTPS base URL.\n' >&2
+        printf 'Local loopback test feeds require PRIME_AGENT_ALLOW_INSECURE_HTTP_FOR_TESTS=1.\n' >&2
+        exit 1 ;;</code></pre>
+
+<p>
+<code>prime_agent_is_loopback_test_base_url</code> 只接受 <code>http://127.0.0.1:&lt;數字埠&gt;</code>。
+⇒ 這條路既避開 HTTPS 要求、又完全不走容器外網。而走 loopback 還有一個附帶好處：
+<b>不需要</b>在 host 上開服務、不需要 <code>host.docker.internal</code>、不需要猜埠會不會被佔。
+</p>
+
+<h3>2.2 改動的三個檔案</h3>
+
+<table>
+<thead><tr><th>檔案</th><th>角色</th></tr></thead>
+<tbody>
+<tr><td><code>agent_harness/tb_loop/scripts/fetch-prime-agent-mirror.sh</code>（新）</td>
+    <td>host 端抓一次並快取在 <code>~/.cache/prime-agent-mirror{,.tar.gz}</code>（112 MB / 113 MB）。<b>冪等</b>（已快取且 sha256 相符就跳過）、<code>--refresh</code> 強制重抓、逐檔驗 sha256。</td></tr>
+<tr><td><code>agent_harness/tb_loop/agents/prime_agent_adapter.py</code></td>
+    <td>新增 <code>_ship_mirror()</code>：把那個 tarball 用 <code>session.copy_to_container(…, container_dir="/installed-agent")</code> 送進容器（與既有的 <code>harness.tar.gz</code> 同一條路）。沒有鏡像時只印一行就繼續，退回原本的直接下載。</td></tr>
+<tr><td><code>agent_harness/tb_loop/agents/prime-agent-setup.sh</code></td>
+    <td>解鏡像 → <code>python3 -m http.server &lt;port&gt; --bind 127.0.0.1</code>（在子殼裡 <code>cd</code>，不外泄）→ 設那兩個 env → 跑官方安裝器。<b>沒有鏡像就退回舊行為</b>。</td></tr>
+</tbody>
+</table>
+
+<div class="box warn">
+<span class="h">一個會踩的細節：鏡像的目錄／檔名佈局不對稱</span>
+<code>&lt;base&gt;/&lt;channel&gt;</code>（內容如 <code>v0.9.5</code>）、
+<code>&lt;base&gt;/releases/v&lt;ver&gt;/SHA256SUMS</code>、
+<code>&lt;base&gt;/releases/v&lt;ver&gt;/prime-agent-&lt;ver&gt;-linux-arm64.tar.gz</code>
+—— <b>目錄帶 <code>v</code>、檔名不帶</b>。我第一版兩個都帶 <code>v</code>，拿到 404。
+</div>
+
+<h2>3. 實測：安裝 421.89 s → 43.26 s</h2>
+
+<table>
+<thead><tr><th></th><th>修復前</th><th>修復後</th></tr></thead>
+<tbody>
+<tr><td>tb <code>run.log</code> 的那一行</td>
+    <td><code>Blocking command completed in 421.89s.</code></td>
+    <td><code>Blocking command completed in 43.26s.</code></td></tr>
+<tr><td>容器 pane 的結尾</td>
+    <td><code>curl: (28) … 49090240 out of 59607437 bytes received</code><br><code>prime-agent install failed</code><br><code>INSTALL_FAIL_STATUS</code></td>
+    <td><code>prime-agent-0.9.5-linux-arm64.tar.gz: OK</code><br><code>Installed Prime Agent 0.9.5 at …</code><br><code>prime-agent ready: /root/.local/bin/prime-agent</code></td></tr>
+<tr><td>agent 是否被啟動</td><td>從未啟動（<code>total_input_tokens = 0</code>）</td><td><b>是</b>（命令已送入 tmux）</td></tr>
+</tbody>
+</table>
+
+<p>
+43.26 s 裡包含 113 MB tarball 的 <code>docker cp</code> 與解壓；純安裝本身在獨立容器裡量到的是
+<b>4 s</b>。容器 pane 上也留下了新程式碼的那一行：
+<code>prime-agent: 用宿主注入的离线镜像（loopback:8899）</code>。
+adapter 那一側印的是 <code>[prime-agent] 已注入離線鏡像 prime-agent-mirror.tar.gz（115537508 B）</code>。
+loopback server 的 access log 證明它只取了三個檔：
+<code>GET /stable</code>、<code>GET /releases/v0.9.5/SHA256SUMS</code>、
+<code>GET /releases/v0.9.5/prime-agent-0.9.5-linux-arm64.tar.gz</code>。
+</p>
+
+<h2>4. 順帶修掉一個會讓每次模型呼叫都 400 的缺陷</h2>
+
+<p>
+在重現 agent 那一步時，命令列上的 model 字串是
+<code>local-gemma4/openai/deepseek/deepseek-flash</code> —— 多了一層 <code>openai/</code>。
+單變數對照（同一顆容器、只改這一個字串）：
+</p>
+
+<table>
+<thead><tr><th>案例</th><th>命令</th><th>結果</th></tr></thead>
+<tbody>
+<tr><td><span class="tag t-red">A</span> tb 實際送的</td>
+    <td><code>--model local-gemma4/openai/deepseek/deepseek-flash</code></td>
+    <td><b>400</b> <code>The model or service ID openai/deepseek/deepseek-flash does not exist…</code></td></tr>
+<tr><td><span class="tag t-green">B</span> adapter 想送的</td>
+    <td><code>--model local-gemma4/deepseek/deepseek-flash</code></td>
+    <td><b>rc=0，輸出 <code>pong</code></b> ← 本線第一次真的成功的模型呼叫</td></tr>
+</tbody>
+</table>
+
+<h3>4.1 機制（讀原始碼，不是推論）</h3>
+
+<pre><code># terminal_bench/cli/tb/runs.py:60  _process_agent_kwargs
+for kwarg in agent_kwargs:
+    key, value = kwarg.split("=")
+    processed_kwargs[key] = _infer_type(value)
+
+if model_name is not None:
+    processed_kwargs["model_name"] = model_name        # ← 後套用 ⇒ -m 覆蓋 -k model_name=</code></pre>
+
+<p>
+⇒ <code>-m</code> 的值<b>會蓋掉</b> <code>-k model_name=</code>，而且會一路變成送給端點的 model id。
+這同時<b>推翻了本專案 skill 裡一句舊話</b>（「<code>-m</code> 只是 terminal-bench 的標籤，
+真正送給端點的是 <code>-k model_name=</code>」）—— 已在 <code>cgc-tb-smoke</code> 就地更正。
+</p>
+
+<p>
+修法兩道：
+</p>
+<ul>
+<li><code>run_model_smoke.sh</code>：<code>-m "${TB_GEMMA4_MODEL}"</code>（拿掉 <code>openai/</code> 前綴），並在旁邊寫明出處行號。</li>
+<li><code>prime_agent_adapter.py</code>：<code>__init__</code> 裡剝掉一層 <code>openai/</code>，讓 adapter 對 tb 的兩種寫法都成立。單元實測：兩種輸入都得到 <code>local-gemma4/deepseek/deepseek-flash</code>。</li>
+</ul>
+
+<h2>5. 一次被實驗推翻的自己的判斷（Python kernel）</h2>
+
+<p>
+為了省時間，我一度在安裝腳本裡加了 <code>PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=0</code>
+（跳過「安裝時順便準備 Python kernel」那段，它實測 <b>&gt;418 s</b> —— 900 s 上限下跑到 6 分 58 秒
+仍未完成，只裝完 <code>uv 0.12.15</code>）。<b>這個判斷是錯的，被同一顆容器的實驗推翻。</b>
+</p>
+
+<pre><code>prime-agent -p --offline --model local-gemma4/deepseek/deepseek-flash \
+  --autonomous --autonomous-max-turns 3 --autonomous-timeout-ms 60000 'reply with the single word: pong'
+
+Autonomous run stopped before terminal evidence; maxTurns reached (4/3)
+Status: blocked — no executable tool is available.
+Evidence (host-observable, repeated 3 times):
+- Every `ipython` call returns: `Failed to set up the Python kernel runtime. uv is required to set up the Python kernel.`
+- `bash()` is exposed only through the Python REPL, so the broken kernel also removes shell access.</code></pre>
+
+<p>
+⇒ <b><code>--autonomous</code> 的 <code>bash()</code> 是透過 Python REPL 暴露的</b>，
+沒有 kernel 就等於<b>沒有任何工具</b>。所以 kernel 是必需品，只是它也需要和 release 一樣的
+「鏡像／預熱」待遇。那個 <code>export</code> 已撤回，並在原處留了註解說明為什麼不要再用它換速度
+—— 否則下一個人會用同一個「划算」的動作製造出一個<b>靜默的工具全失</b>。
+</p>
+
+<div class="box bad">
+<span class="h">這條的形狀值得單獨記</span>
+我當初的推理是「<code>prime-agent -p --offline "…"</code> 在 1 秒內就走到 provider 層報
+<code>No API key found</code>，全程沒提到 kernel ⇒ kernel 對模型路徑不是必需品」。
+那句話<b>本身是對的</b>，但它回答的是錯的問題：模型路徑不需要 kernel，
+<b>而 agent 路徑需要</b>（工具是透過它暴露的）。⇒ 在 <code>--autonomous</code> 這一格上，
+「能呼叫模型」與「能做事」是兩件事。
+</div>
+
+<h2>6. 現場閘門（產出當時，原文）</h2>
+
+<pre><code>### validate.py
+  lessons.jsonl: 161 records {'lesson': 161}
+  -&gt; OK
+
+### selftest.py
+  10/10 injected violations rejected
+
+### build_memory_index.py --check
+rc=1
+  [error] 68 drift(s) between INDEX.jsonl and .workbuddy/memory/:
+    row count: index 179 vs derived 181
+
+### index_assets.py --check
+rc=1
+  [error] 2 drift(s) between the manifest and disk:
+    scripts/check/decode_step_profile.py: bytes: manifest 17111 vs disk 19081
+    scripts/check/decode_step_profile.py: mtime: manifest '2026-09-17T20:58:47' vs disk '2026-09-17T21:02:58'</code></pre>
+
+<h3>6.1 兩條紅燈的歸屬（不是本輪造成的）</h3>
+
+<table>
+<thead><tr><th>漂移的 path</th><th>磁碟 mtime</th><th>歸屬</th></tr></thead>
+<tbody>
+<tr><td><code>scripts/check/decode_step_profile.py</code></td><td class="num">2026-09-17 21:02:58</td><td>另一條線（引擎層）</td></tr>
+<tr><td><code>.workbuddy/memory/*.md</code>（68 筆）</td><td class="num">—</td><td>共享的 append-only 日誌（兩條線都在寫）</td></tr>
+</tbody>
+</table>
+
+<p>
+本輪四個檔（<code>fetch-prime-agent-mirror.sh</code>、<code>prime_agent_adapter.py</code>、
+<code>prime-agent-setup.sh</code>、<code>run_model_smoke.sh</code>）逐檔查 <code>MANIFEST.jsonl</code>
+<b>命中數皆為 0</b> ⇒ 對索引足跡為 0，故<b>不重生索引</b>
+（依 <code>cgc-commit-gate</code> §4：工作區此刻有不是本輪改的 modified 檔）。同理本輪的 lesson
+<b>未登錄</b> <code>traces/lessons.jsonl</code>（它在 <code>CURATED</code> 裡，追加會新增一筆當輪消不掉的漂移）；
+內容完整寫在本文件 §4.1／§5。
+</p>
+
+<h2>7. 誠實邊界：本文件不主張什麼</h2>
+
+<div class="box bad">
+<ul>
+<li><b>不主張 smoke 現在會成功。</b>修復後的那一輪（<code>model_smoke_20260917_210215</code>）
+     仍然是 <code>is_resolved: false</code>、<code>total_input_tokens = 0</code>，
+     而且 <code>failure_mode</code> 是 <code>unset</code>（<b>不是</b> <code>agent_timeout</code>）；
+     agent 階段只持續 44 秒
+     （<code>agent_started_at 13:02:22.7</code> → <code>agent_ended_at 13:03:06.7</code>）。
+     以本文 §5 的證據判斷，下一個 blocker 是 <b>Python kernel 起不來 ⇒ agent 沒有工具</b>。</li>
+<li><b>不主張 <code>deepseek/deepseek-flash</code> 能不能解 raman-fitting.easy。</b>模型路徑只證明到
+     「能正常回覆一句話」（案例 B）。整題跑通還沒被觀察到。</li>
+<li><b><code>openai/</code> 的剝除只剝一層</b>；沒有處理 <code>anthropic/</code> 等其他前綴
+     （本線用不到，但不主張它普遍正確）。</li>
+<li><b>未跑</b><code>--n-tasks</code> 以外的情境，也<b>未測</b>續跑守衛的 (c) 分支
+     （非空、無 lock 的 abort）。</li>
+</ul>
+</div>
+
+<h3>7.1 為什麼沒有重跑一次 smoke 來「驗證修復」</h3>
+
+<p>
+因為以現在的狀態，重跑<b>結構上不可能產生新的判決</b>：kernel 那個 blocker 會讓 agent 在沒有工具的
+狀態下耗完回合 —— 那正是本文 §5 案例 C 已經量到的結果（同一顆容器、同一個失敗訊息）。
+重跑一次要 ~10 分鐘，換到的是一個已知的形狀。<b>這是取捨，不是省時間</b>：
+兩個修復各自都有<b>單變數</b>證據（安裝：421.89 s → 43.26 s，同一條 pipeline；model 字串：A 400 / B rc=0，
+同一顆容器），而 kernel 那條 blocker 尚未修 ⇒ 重跑不會改變任何結論。
+</p>
+
+<h3>7.2 未完成（下一步）</h3>
+
+<table>
+<thead><tr><th>項目</th><th>狀態</th></tr></thead>
+<tbody>
+<tr><td>Python kernel 的離線化（uv ＋ Python ＋ 一批 wheel，>418 s／需要同樣的鏡像或預熱）</td>
+    <td><b>未做</b> —— 這是讓 smoke 真的能判模型的下一個 blocker</td></tr>
+<tr><td>kernel 預熱後如何跨映像通用（raman 用 <code>python-3-13</code>，其他題用 <code>ubuntu-24-04</code>）</td>
+    <td><b>未驗</b> —— 這決定「預熱 tarball」能不能通用</td></tr>
+<tr><td>本輪 lesson 登錄 <code>traces/lessons.jsonl</code></td>
+    <td>延後（理由見 §6.1）</td></tr>
+</tbody>
+</table>
+
+<h2>8. 引用指針</h2>
+<table>
+<thead><tr><th>事實</th><th>指針</th></tr></thead>
+<tbody>
+<tr><td>修復前的安裝失敗原文</td><td><code>model_smoke_20260917_195218/raman-fitting.easy/*/panes/post-agent.txt</code>（<code>/tmp/tb_modelsmoke/</code>，本機）</td></tr>
+<tr><td>修復後的安裝成功原文</td><td><code>model_smoke_20260917_210215/…/panes/post-agent.txt</code>（同上）</td></tr>
+<tr><td>三個案例（A 400／B pong／C blocked）的輸出</td><td><code>/tmp/pa_case_A_tb_exact.log</code>、<code>/tmp/pa_case_B_intended.log</code>、<code>/tmp/pa_case_C_autonomous.log</code>（本機）</td></tr>
+<tr><td>上游 loopback feed 的驗證函式</td><td><code>https://app.primeintellect.ai/prime-agent/install.sh</code> 的 <code>prime_agent_validate_download_base_url</code>／<code>prime_agent_curl_download</code></td></tr>
+<tr><td><code>-m</code> 覆蓋 <code>-k model_name=</code></td><td><code>agent_harness/tb_loop/.venv/lib/python3.13/site-packages/terminal_bench/cli/tb/runs.py:60</code></td></tr>
+<tr><td>改動</td><td><code>agent_harness/tb_loop/scripts/fetch-prime-agent-mirror.sh</code>、<code>agent_harness/tb_loop/agents/prime_agent_adapter.py</code>、<code>agent_harness/tb_loop/agents/prime-agent-setup.sh</code>、<code>agent_harness/tb_loop/scripts/run_model_smoke.sh</code></td></tr>
+</tbody>
+</table>
+
+<p class="meta" style="margin-top:28px">
+本文件為 D5 要求的技術白皮書附件。所有數字均為產出當時現場量測，原樣貼上；未跑的部分在§7 逐條明寫。
+</p>
+
+</div>
+</body>
+</html>
