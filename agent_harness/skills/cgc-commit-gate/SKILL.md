@@ -715,16 +715,54 @@ git push cgcengine0907 demo/sweet-spot-windows-fix
 ### 6.3 提交後驗證收尾狀態
 
 ```sh
+# ── 憲章與 record（權威）────────────────────────────────────────────
 python3 agent_harness/shared/check_citations.py                 # 憲章：每條都要有指針或「證據形態」標記
+python3 agent_harness/shared/check_shell_cjk.py --root "$PWD/agent_harness"   # $VAR 緊接中文（見下）
 python3 agent_harness/engine_loop/traces/validate.py            # 無重複 id
 python3 agent_harness/engine_loop/traces/selftest.py            # 必須 10/10
+# ── 衍生物（重生 == 磁碟，相對各自的輸入）────────────────────────────
 python3 agent_harness/engine_loop/harness_engine/build_memories.py --check
 python3 agent_harness/engine_loop/sft_pi/build_sft_pi.py --check
 python3 agent_harness/engine_loop/sft_prime/build_sft_prime.py --check
-cd agent_harness/engine_loop && python3 index_assets.py --check 2>&1 | grep -E "OK:|error"
+# ── 索引（磁碟 == 索引；★ 不驗「索引涵蓋了它」）────────────────────────
+python3 agent_harness/engine_loop/index_assets.py --check
 python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+python3 agent_harness/engine_loop/wrappers/classify.py --check  # scripts/check/* 全部被分類
+# ── 各支工具的自測（沒有自測的閘門等於沒有閘門）──────────────────────
+python3 agent_harness/shared/sanitize.py --self-test
+python3 agent_harness/shared/check_citations.py --self-test
+python3 agent_harness/shared/check_shell_cjk.py --self-test
+python3 agent_harness/shared/pack_evidence.py --dry-run
+python3 agent_harness/engine_loop/distill/selftest.py
+python3 agent_harness/engine_loop/distill/closed_loop_selftest.py
+# ── engine loop 的 runner/wrapper 層（PLAN §3）──────────────────────
+bash agent_harness/engine_loop/runners/preflight.sh --self-test
+bash agent_harness/engine_loop/runners/rebuild.sh --dry-run     # ★ 閘門關著也回 0（它只報告）
+env CGC_SERVER_CTX=40960 bash agent_harness/engine_loop/runners/server.sh --check
+for w in sweep ab bench gate triage env; do bash agent_harness/engine_loop/wrappers/$w.sh --self-test; done
+# ── 收尾 ───────────────────────────────────────────────────────────
 git status --porcelain --untracked-files=all                    # 必須空（例外見 §1.7）
 ```
+
+**2026-09-17 之後閘門鏈是 26 條。** 兩個容易誤讀的地方：
+
+- **`rebuild.sh --dry-run` 在閘門關著時仍然回 0。** 那個閘門的意義是
+  「**現在不要建置**」，不是「這支工具壞了」—— 13:18 實測它真的擋下了一次（別條線正在跑
+  `m123_oracle_gate` ＋ `decode_sweep`）。所以「它回 0」不等於「可以建置」；
+  要問那個問題要看輸出裡的 `閘門: 會擋（…）`。
+- **`server.sh --check` 沒有 `CGC_SERVER_CTX` 會故意失敗。** 那不是缺參數，是斷言：
+  閉環 prompt 是 ~30.6k token，而 `run_server.sh` 的預設 4096/8192 會**截斷**它 ——
+  而截斷後的回覆仍然看起來像回事。所以 ctx 是硬檢查。
+
+**`check_shell_cjk.py` 為什麼存在（這個 repo 特別容易踩）**：`$VAR` 緊接非 ASCII 時，
+bash 會把那幾個位元組**吃進變數名** ⇒ `set -u` 下 `unbound variable`，而
+**`bash -n` 完全抓不到**（語法合法）。這裡的註解與訊息幾乎全是中文，所以 2026-09-17
+**一天之內四個新檔各踩一次**，其中兩次只在特定分支（`n_build > 0`、`missing > 0`）才執行
+⇒ 連「跑過一遍」也不保證抓到。寫法上一律用 `${VAR}`。
+
+**`classify.py --check` 會在別人新增 `scripts/check/*` 時變紅** —— 那是對的，不是誤報：
+一個沒被分類的腳本就是一個沒有入口的腳本。2026-09-17 它因為另一條線加了兩支而變紅兩次。
+處置是把它們加進 `classify.py` 的表（那張表是手 judgment 的部分）。
 
 **`check_citations.py` 驗的是憲章自己的第 7 行**（「每一條都必須能指到今天的具體證據……
 指不到的條文不是憲章，是感想」）。它最容易被誤讀成「有沒有檔案」——**不是**：括號裡的
