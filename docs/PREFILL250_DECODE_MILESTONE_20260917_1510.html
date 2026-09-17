@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>小里程碑：prefill ≥250 的三個請求，與修正後的 decode（2026-09-17）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  h4{font-size:14.5px;margin:20px 0 6px;color:#374151}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:#fcfcfd}
+  .toc ol{margin:6px 0 0 20px}
+  .toc a{color:var(--blue);text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>小里程碑：<strong>prefill ≥250 的三個請求</strong>，與修正後的 decode</h1>
+<div class="sub">
+  日期 2026-09-17 · HEAD <code>8e9e830e5</code> · 專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code><br>
+  模型 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（<code>CGC_SERVER_PROFILE=prefill250</code>）<br>
+  建置 <code>2026-09-17 14:12:40</code>（<code>libllama</code> <code>ce68629d…</code>、<code>libggml-metal</code> <code>037c931e…</code>、<code>llama-server</code> <code>054fb22f…</code>）<br>
+  硬體 <code>Mac16,12</code> MacBook Air · Apple M4 · 8 核 GPU · 16 GB unified · <strong>無風扇</strong><br>
+  熱儀器 <code>notifyutil -g com.apple.system.thermalpressurelevel</code>（非 root、約 11 ms/次）<br>
+  相關：<code>docs/PREFILL250_CONDITIONAL_DELIVERY_20260916.html</code>（prefill 的交付條件）、
+  <code>docs/ROUTING_TRACE_2026-09-17.md</code> §13–§15（routing 修正與它的量測）、
+  <code>docs/M6_QUANT_GEOMETRY_PLAN_2026-09-17.md</code>（同日的池幾何裁定）
+</div>
+
+<div class="cards">
+  <div class="card"><div class="k">prefill req1/2/3</div><div class="v ok">278.56 / 261.17 / 275.01</div>
+    <div class="small">t/s，2873-token prompt，三個全部 ≥250</div></div>
+  <div class="card"><div class="k">decode（warm）</div><div class="v">16.95 / 17.15</div>
+    <div class="small">t/s，MTP on，24-token 生成</div></div>
+  <div class="card"><div class="k">draft acceptance</div><div class="v">0.76190</div>
+    <div class="small">16 accepted / 21 generated，mean len 3.29</div></div>
+  <div class="card"><div class="k">D5 M1/M2/M3</div><div class="v ok">9/9 · 9/9 · 9/9</div>
+    <div class="small"><code>comparable=True</code>，對 <code>v6_nbaware</code></div></div>
+</div>
+
+<div class="box b-green">
+  <p><strong>一句話結論：</strong><code>prefill250</code> 這個 profile 在同一個 build 上一次跑出
+  <strong>三個都 ≥250 t/s 的 prefill</strong>（278.56 / 261.17 / 275.01），而同一臂的
+  <strong>MTP-on decode 是 16.95 / 17.15 t/s</strong>。這一份把兩件事放在一起記下來，
+  因為它們是<b>同一個 build、同一次載入、同一組請求</b>產生的。</p>
+</div>
+
+<div class="toc">
+  <strong>目錄</strong>
+  <ol>
+    <li><a href="#s1">現場閘門輸出（原文）</a></li>
+    <li><a href="#s2">prefill：讀數，以及它的熱標籤</a></li>
+    <li><a href="#s3">不能說的話</a></li>
+    <li><a href="#s4">decode：最新更新</a></li>
+    <li><a href="#s5">為什麼 accept 下降而吞吐上升</a></li>
+    <li><a href="#s6">指紋與出處</a></li>
+    <li><a href="#s7">同一天的相鄰裁定：M6 的池幾何</a></li>
+    <li><a href="#s8">誠實邊界</a></li>
+    <li><a href="#s9">復現</a></li>
+  </ol>
+</div>
+
+<h2 id="s1">1. 現場閘門輸出（原文）</h2>
+
+<p>產出這份文件時，下列命令在同一個工作區、同一個 HEAD 上各跑過一次。輸出原樣貼上，不轉述。</p>
+
+<h3>1.1 痕跡三件套</h3>
+<pre><code>$ python3 agent_harness/engine_loop/traces/validate.py
+
+  episodes.jsonl: 122 records {'episode': 122}
+  -&gt; OK
+
+  decisions.jsonl: 38 records {'decision': 38}
+  -&gt; OK
+
+  lessons.jsonl: 149 records {'lesson': 149}
+  -&gt; OK
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  rejected  duplicate_lesson_id           two different lessons under one id make every reference to it ambiguous
+  rejected  duplicate_decision_id         a supersede chain cannot resolve if the id it names is not unique
+
+  10/10 injected violations rejected
+
+$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  memory index OK: 7 file(s), 130 section(s), no drift
+
+$ python3 agent_harness/engine_loop/index_assets.py --check
+  manifest OK: 102 assets, existence + bytes + mtime all agree</code></pre>
+
+<h3>1.2 D5（<code>m123_oracle_gate.py</code>，不帶 <code>--ref</code>）</h3>
+<pre><code>$ python3 scripts/check/m123_oracle_gate.py --tag milestone_20260917
+
+oracle A: Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident_v6_nbaware.jsonl  (9 entries)
+oracle B: /tmp/m123_oracle_gate.jsonl  (9 entries)
+common: 9    only_A: 0    only_B: 0
+--------------------------------------------------------------------------
+INDEPENDENT METRICS  (never merge these into one verdict)
+  M1 numeric identity    (bit-identical logits)  : 9/9  (100.0%)
+  M2 decision agreement  (same argmax token)     : 9/9  (100.0%)
+  M3 top-k set agreement (same top-N id set)     : 9/9  (100.0%)
+  (aux) full_fnv1a64 identical                   : 9/9  (100.0%)
+--------------------------------------------------------------------------
+CROSS-TAB  (n=9)
+  M1 same  &amp; M2 same :     9   no drift, same choice
+  M1 same  &amp; M2 diff :     0   should be 0; non-zero = tie-break bug
+  M1 diff  &amp; M2 same :     0   drift only; M1 says 'differs', M2 says 'same'
+  M1 diff  &amp; M2 diff :     0   real divergence
+==========================================================================
+GATE milestone_20260917: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9</code></pre>
+
+<div class="box b-blue">
+  <p><strong>判讀規則（照 <code>CONVENTIONS.md</code> 與 skill <code>cgc-commit-gate</code> §2.5）：</strong>
+  引用上面那三個 9/9 之前，先讀 gate 的 <code>comparable</code> 欄位。本次的
+  <code>summary_milestone_20260917.json</code> 記著 <code>comparable=True</code>、<code>ok=True</code>、
+  <code>config_diffs=[]</code> ⇒ 那三個 9/9 <strong>是裁決</strong>，不是 <em>printed for information</em>。</p>
+  <p class="small">（不帶 <code>--ref</code> 之所以能過，是因為 <code>DEFAULT_REF</code> 今天已由 v5 改指
+  <code>ref_iq3_pool8gb_M2_6144_bitident_v6_nbaware.jsonl</code>。在那之前，不帶 <code>--ref</code>
+  的 gate 會對一個已被修掉的參考報假的 <code>M1 5/9</code>。）</p>
+</div>
+
+<h2 id="s2">2. prefill：讀數，以及它的熱標籤</h2>
+
+<p>儀器是 <code>Backup/run_req2_retest.sh</code>（驗收臂；它把熱讀數寫在報告裡面，而不是靠事後推論）。
+<span class="tag">IDLE_BEFORE=0</span></p>
+
+<pre><code># prefill250 req2 retest  -- HEAD=8e9e830e5
+# [thermal label] UNKNOWN-STATE -- quiet since previous arm ended = 0s (COLD needs &gt;= 1800s)
+#   ?? no state file at Backup/cgc_logs/milestone_20260917/.last_arm_end -- the quiet interval is UNKNOWN, so this arm makes no
+#      thermal claim in either direction.
+# [thermal precondition] IDLE_BEFORE=0 -- protocol wait NOT APPLIED.
+# [thermal pressure] before launch = 0/NOMINAL   (notifyutil -g com.apple.system.thermalpressurelevel)
+
+  health OK after 11s
+  [thermal pressure] before req1 = 0/NOMINAL
+  req1: OK wall=15.7s prompt_n=2873 prompt_ms=10313.8 pp_t/s=278.56
+  [thermal pressure] after  req1 = 0/NOMINAL
+  alive after req1: yes
+  [thermal pressure] before req2 = 0/NOMINAL
+  req2: OK wall=12.7s prompt_n=2873 prompt_ms=11000.6 pp_t/s=261.17
+  [thermal pressure] after  req2 = 0/NOMINAL
+  alive after req2: yes
+  [thermal pressure] before req3 = 0/NOMINAL
+  req3: OK wall=12.0s prompt_n=2873 prompt_ms=10446.7 pp_t/s=275.01
+  [thermal pressure] after  req3 = 2/HEAVY
+  alive after req3: yes
+
+  ===== RESULT: ready=yes last_request=req3 survived=yes =====
+  new crash report: none</code></pre>
+
+<h3>2.1 三件事要分開讀</h3>
+
+<table>
+<tr><th>觀察</th><th>值</th><th>怎麼讀</th></tr>
+<tr><td>發射前、req1–req3 <strong>之前</strong>的等級</td><td class="num">0 / 0 / 0 / 0 NOMINAL</td>
+    <td>skill <code>cgc-prefill-thermal-delivery</code> §1 的閘門是「<strong>發射前那一刻</strong>」讀到 0；本次四次讀數都是 0</td></tr>
+<tr><td>req3 <strong>之後</strong>的等級</td><td class="num">2 / HEAVY</td>
+    <td>條件讀的是發射那一刻，不是全程；<strong>中途上升不撤回該臂</strong>（同一份 skill §1 的同型先例是 15:18:46 那臂）</td></tr>
+<tr><td>熱標籤</td><td class="num">UNKNOWN-STATE</td>
+    <td>本次是本目錄的<strong>第一個</strong>臂 ⇒ 沒有 <code>.last_arm_end</code>，安靜區間未知。這是誠實的「不知道」，<strong>不是</strong> COLD、也<strong>不是</strong> HOT</td></tr>
+</table>
+
+<p>因此本節唯一被授權的述句，就是 skill 自己寫的那一句：</p>
+
+<div class="box b-green">
+  <p><strong>「讀到 <code>0</code> 的那一臂，其 req1–req3 全部 ≥250」</strong> —— 278.56 / 261.17 / 275.01。</p>
+</div>
+
+<h3>2.2 同一個載入的其他讀數（同一份 log）</h3>
+<pre><code>[mode]  MTP ON (draft-mtp, n_max=3, denseIQ4X=1)
+[perf]  layer_caps=40-40:256 (default)
+[perf]  batch=5632 ubatch=5632
+[perf]  n_cb=8 glu_fused_down=1(mm_fuse=off) watchdog=1 oa_async=1 load_mode=none
+CGCENV CTX 8192 · BUDGET 8589934592 · BATCH 5632 · UBATCH 5632
+[A11 fingerprint] 007d390ef618979b17d1e36aba15324a
+
+CGC-PREFILL-STREAM: il=0 kind=0 ntok=2873 experts=256 slab=110.00 MiB filled=115343360 bytes db=1
+CGC-PREFILL-STREAM: il=1 kind=0 ntok=2873 experts=256 slab=110.00 MiB filled=115343360 bytes db=1
+
+llama_expert_cache: decode/pool (ensure_slot+batch) hits=7698/9498 (81.0%)
+llama_expert_cache: MTP fast path: calls=841 union=17495 cold(ZERO)=0 (0.0%)   verify: calls=778 union=16991 cold=0 (0.0%)   draft: calls=63 union=504 cold=0 (0.0%)
+llama_expert_cache: verify-strict: refused=17  zero_mapped_selected=0
+llama_expert_cache: read shape: jobs=47310 bytes=1864409088 (0.04 MiB/job as one contiguous run)  us/job=31733  effective_rate=1 MiB/s  total_bytes=1.74 GiB</code></pre>
+
+<p><code>CGC-PREFILL-STREAM</code> 的兩行（<code>il=0</code>／<code>il=1</code>、<code>experts=256</code>、
+<code>slab=110.00 MiB</code>、<code>db=1</code>）就是 M2「整層串流」機制在這個 prompt 上真的走過的直接證據：
+<strong>不是從 pool 拼出來的，而是整層 256 顆一次 materialize</strong>。</p>
+
+<h2 id="s3">3. 不能說的話</h2>
+
+<div class="box b-amber">
+  <p>這一節照 skill <code>cgc-prefill-thermal-delivery</code> §1 與 §2 寫，因為它是這份文件裡最容易
+  被下一個人誤引的一段。</p>
+</div>
+
+<table>
+<tr><th>不可以說</th><th>為什麼</th></tr>
+<tr><td>「250 t/s 隨時可重現」</td><td>prefill 是<strong>機器狀態的讀數</strong>，不是產物性質。同一份 binary、同一 A11 指紋、同一組 <code>[perf]</code>，prefill 可以在 118 與 290 之間移動</td></tr>
+<tr><td>「這是 COLD-STATE 的交付數字」</td><td>本次標籤是 <code>UNKNOWN-STATE</code>（安靜區間未知）。<code>COLD-STATE</code> 的定義是<strong>距上一臂結束 ≥1800 s</strong>，本次不成立</td></tr>
+<tr><td>「發射讀到 0 ⇒ 箱子是冷的」</td><td>這是兩件事。2026-09-16 的同 binary 對照：COLD 得 254.29 / 282.38 / 265.27，HOT 得 167.41–200.58。<code>0</code> 只是閘門開</td></tr>
+<tr><td>「安靜夠久 ⇒ 等級一定回 0」</td><td>反例：安靜 18 s 的臂 req1 = 289.86，安靜 34 s 的臂只有 166.95。安靜秒數不是條件</td></tr>
+<tr><td>「<code>swap</code> 是條件」</td><td>它是<strong>果</strong>。相反順序的實測：289.86 t/s @ used 4975.06M，而 13:51 的慢臂 @ 5066.06M</td></tr>
+<tr><td>把 decode 的 <code>4.72 t/s</code> 當異常</td><td>那是 req1 的<strong>冷</strong>decode（第一次生成，金屬管線與頁面都還沒暖）。warm 的兩次是 16.95 / 17.15</td></tr>
+</table>
+
+<h2 id="s4">4. decode：最新更新</h2>
+
+<h3>4.1 同一個 binary 上的 A/B（另一條 session，build 14:12）</h3>
+
+<p>來源 <code>docs/ROUTING_TRACE_2026-09-17.md</code> §14.2。方法上值得注意的是：這個 A/B
+<strong>沒有拿三天前的 baseline 當 before</strong>，而是把修前的讀取做成了開關
+（<code>CGC_IDS_LINEAR_READ=1</code> 在預設路徑自己的程式碼裡還原那個缺陷）
+⇒ 同 build、同池、同 dispatcher、同 sampler、同 prompts。</p>
+
+<table>
+<tr><th>臂</th><th>accept</th><th>acc / gen</th><th>prefill t/s</th><th>decode t/s</th></tr>
+<tr><td>MTP off（分母）</td><td class="num">n/a</td><td class="num">0 / 0</td><td class="num">19.24</td><td class="num">9.82</td></tr>
+<tr><td>MTP on，修前（<code>CGC_IDS_LINEAR_READ=1</code>）</td><td class="num">73.81%</td><td class="num">155 / 210</td><td class="num">7.30</td><td class="num">8.62</td></tr>
+<tr><td>MTP on，nb-aware 修正（預設）</td><td class="num">58.25%</td><td class="num">180 / 309</td><td class="num">21.74</td><td class="num"><strong>12.62</strong></td></tr>
+</table>
+
+<p>這張表把 M4 那條離開條件「MTP-on ≥ MTP-off」補上了（12.62 ≥ 9.82，+28.5%）。修前是淨負
+（8.62 &lt; 9.82）—— 也就是說，這個功能在修好之前是被一個<strong>本身壞掉的量測</strong>正確地否決掉的。</p>
+
+<h3>4.2 本次這一臂的 decode（prefill250，MTP on）</h3>
+
+<pre><code>      203 | prompt eval time =   10313.81 ms /  2873 tokens (    3.59 ms per token,   278.56 tokens per second)
+      204 |        eval time =    5081.03 ms /    24 tokens (  211.71 ms per token,     4.72 tokens per second)
+      207 | draft acceptance = 0.76190 (   16 accepted /    21 generated), mean len =  3.29
+      252 | prompt eval time =   11000.58 ms /  2873 tokens (    3.83 ms per token,   261.17 tokens per second)
+      253 |        eval time =    1415.52 ms /    24 tokens (   58.98 ms per token,    16.95 tokens per second)
+      256 | draft acceptance = 0.76190 (   16 accepted /    21 generated), mean len =  3.29
+      283 | prompt eval time =   10446.73 ms /  2873 tokens (    3.64 ms per token,   275.01 tokens per second)
+      284 |        eval time =    1399.37 ms /    24 tokens (   58.31 ms per token,    17.15 tokens per second)
+      287 | draft acceptance = 0.76190 (   16 accepted /    21 generated), mean len =  3.29</code></pre>
+
+<div class="box b-amber">
+  <p><strong>與 4.1 的 12.62 不可直接相比，原因有兩個，而且都不是「哪個比較快」：</strong></p>
+  <p>① <strong>形狀不同</strong>：本節是 <code>n_predict=24</code> 的短生成，4.1 是 <code>n_predict=96</code>。
+  短生成的 t/s 會被啟動攤提放大（同一臂內 req3 與 req1 差 3.6×）。</p>
+  <p>② <strong>本節的 16.95 / 17.15 沒有做過熱條件</strong>，而 4.1 那張表它自己也標了熱沒控制。</p>
+  <p>⇒ 本節能被引用的述句是：<strong>「同一次載入、同一組 2873-token 請求之下，warm decode 是 16.95 / 17.15 t/s」</strong>。
+  不能引用為「decode 已經到 17」。</p>
+</div>
+
+<h2 id="s5">5. 為什麼 accept 下降而吞吐上升</h2>
+
+<p>4.1 那張表裡有一件反直覺的事：<strong>accept 從 73.81% 降到 58.25%，而 decode 從 8.62 升到 12.62</strong>。
+兩個都是真的，而且不衝突 —— 修前 verify 批次的 token ≥ 1 是用<strong>別的 token 的專家</strong>算的，
+所以「accepted」是拿錯的分布比出來的，而它把這個指標<strong>抬高</strong>了。</p>
+
+<div class="box b-red">
+  <p><strong>後果（這是本節存在的理由）：</strong>任何<strong>只看 accept</strong>的 M4 決策，都會
+  <strong>留住缺陷、退掉修正</strong>。M4 原本的離開條件之一寫的是「accept ≥ 60%」—— 在 2026-09-14
+  就已經量到 70.39%（超過），但那個數字屬於同一個被抬高的家族。</p>
+  <p>⇒ 這條判準應該<strong>作廢</strong>，改成「<strong>MTP-on ≥ MTP-off</strong> ＋ M1/M2 = 100% with MTP ON」。
+  並且<strong>修前記錄的每一個 accept 數字都屬於那個 regime</strong>（含 2026-09-14 的 70.4% 與 roadmap 的 19.9%）。</p>
+</div>
+
+<h3>5.1 連帶的一條：修前的 M1 通過只證明「不變性」</h3>
+
+<p><code>ROUTING_TRACE</code> §15.2 的原話是 <em>cross-pool invariance (M1/M2) passed while the ids were
+wrong for all of them</em>。缺陷在<strong>共用的</strong>程式路徑上，所以每一臂、每一個池大小都用同一種
+錯誤方式路由 token ≥ 1，於是它們<strong>彼此一致</strong>。2026-09-14 那個「M1 117/117」屬於這一類：
+它必須被引用為「<strong>那些池彼此一致</strong>」，永遠不是「<strong>那些數字是對的</strong>」。
+後者只有對 <code>v6</code> 之後的參考才成立 —— 也就是本文件 §1.2 跑的那一個。</p>
+
+<h2 id="s6">6. 指紋與出處</h2>
+
+<h3>6.1 被測產物（驗收臂自己用 <code>strings</code> 驗的，不是抄來的）</h3>
+<pre><code>#   054fb22f04a01c5cb93b362883dd3f82  2026-09-17 14:12:40  llama-server
+#   27f7df4520120f5aa8d2e6fd8eff2d75  2026-09-17 14:12:40  libllama-server-impl.dylib
+#   7bceb3bd5320b3b312f040aacacfd7e9  2026-09-17 14:12:40  libllama-common.0.0.279.dylib  (symlink libllama-common.0.dylib)
+#   ce68629d951183a14956fd0d01017877  2026-09-17 14:12:40  libllama.0.0.279.dylib         (symlink libllama.0.dylib)
+#   037c931ec6169f60189e7fde19b1232e  2026-09-17 11:50:22  libggml-metal.0.19.0.dylib     (symlink libggml-metal.0.dylib)
+#   8f4abce760528e37fcdad2cd6d7c3099  2026-09-17 11:50:22  libggml.0.19.0.dylib
+# MTP_SUPPORT evidence (strings -a on the common lib the loader maps):
+#   present  UNGUARDED  (control, must be present) adding speculative implementation 'draft-mtp'
+#   present  GUARDED by MTP_SUPPORT             MTPDBG mtp_ctor: BEFORE set_nextn
+#   present  GUARDED by MTP_SUPPORT             MTPDBG process: n_tokens=
+#   present  GUARDED by MTP_SUPPORT             MTPDBG mtp_ctor: AFTER set_nextn
+#   =&gt; guarded 3/3, control present  =&gt; MTP_SUPPORT=ON (compiled in)</code></pre>
+
+<div class="box b-blue">
+  <p><code>MTP_SUPPORT=ON</code> 這一條是<strong>必要條件</strong>，不是裝飾：今天稍早同一台機器上曾出現過
+  「<code>MTP=1</code> 但 <code>libllama-common</code> 沒有 <code>-DMTP_SUPPORT</code> 編出來的程式碼
+  ⇒ 產物與原始碼不一致」的警告。一個 MTP 數字若建立在一個把 MTP 路徑編掉的產物上，
+  它量到的不是 MTP。這份報告的數字對應的產物<strong>已用 <code>strings</code> 逐條驗過</strong>。</p>
+</div>
+
+<h3>6.2 出處（每一句話都要指得到這裡）</h3>
+<table>
+<tr><th>本文的內容</th><th>出處</th></tr>
+<tr><td>prefill 的閘門、COLD/HOT、不能說的話</td><td>skill <code>cgc-prefill-thermal-delivery</code> §1–§3；<code>docs/PREFILL250_CONDITIONAL_DELIVERY_20260916.html</code></td></tr>
+<tr><td>本次 prefill / decode 的讀數、熱標籤、binary 指紋</td><td><code>Backup/cgc_logs/milestone_20260917/req2retest_20260917_150350.txt</code>（驗收臂原始報告）</td></tr>
+<tr><td>D5 的三個 9/9 與 <code>comparable</code></td><td><code>Backup/m123_oracle_gate/summary_milestone_20260917.json</code></td></tr>
+<tr><td>4.1 的 A/B、accept 反直覺、§15.2 的不變性更正</td><td><code>docs/ROUTING_TRACE_2026-09-17.md</code> §13、§14.2、§15.1、§15.2</td></tr>
+<tr><td>routing 修正本身</td><td>commit <code>8e9e830e5</code>（<code>fix(moe-ids): top-k 快照改成 nb-aware</code>）</td></tr>
+<tr><td>MTP accept 與 MTP-on ≥ MTP-off 的判準地位</td><td><code>docs/MTP_HEAD_PROVENANCE_GATE_2026-09-14.md</code> §5</td></tr>
+<tr><td>痕跡閘門的計數</td><td>§1.1 現場輸出；<code>agent_harness/engine_loop/traces/*.jsonl</code>、<code>MANIFEST.jsonl</code>、<code>memory/INDEX.jsonl</code></td></tr>
+</table>
+
+<h2 id="s7">7. 同一天的相鄰裁定：M6 的池幾何</h2>
+
+<p>同一天在同一個 repo 上還有另一組結論，與本文件的 decode 數字<strong>共用同一台機器的同一段時間</strong>，
+所以一併指向它而不複述：</p>
+
+<ul>
+  <li><code>docs/M6_QUANT_GEOMETRY_PLAN_2026-09-17.md</code> §4.9：引擎自己印的逐層 miss 歸因
+  （<code>compulsory</code>／<code>capacity</code>／<code>evictions</code>／<code>layers_distinct_over_slots</code>／
+  <code>worst=layer … distinct=… slots=…</code>）在真實 decode 負載上量到
+  <strong>capacity 佔 miss 的 41.3–45.6%</strong>，而最差的層需要 <strong>239</strong> 個 distinct 專家
+  —— 遠高於「工作集 ≈149、149 個 slot 就蓋得住」的假設。</li>
+  <li>同檔 §4.10：因此<strong>設定路線（花小額 slack 換 slot）不可交付</strong>，而 M6 的<strong>本體</strong>
+  （per-expert 1.769 → 1.122 MB）早已在出貨檔裡（實測 1.0703 MiB）⇒ 頭條價值已兌現、未被推翻。</li>
+  <li>它與本文件的交集：同一個修正把 hit 由 <strong>57.1% 抬到 72.0%</strong>（與池無關）
+  ⇒ <strong>修前的 hit 不能當池幾何的 before</strong>。</li>
+</ul>
+
+<h2 id="s8">8. 誠實邊界</h2>
+
+<div class="box b-amber">
+  <p><strong>這份文件不主張：</strong></p>
+  <ul>
+    <li><strong>不是交付級的 prefill 數字。</strong>熱標籤是 <code>UNKNOWN-STATE</code>；<code>COLD-STATE</code>
+    （安靜 ≥1800 s）本次不成立。<code>IDLE_BEFORE=0</code> 意味著協定等待<strong>沒有被施加</strong>。</li>
+    <li><strong>不是 A/B。</strong>沒有對照臂，所以本文件的任何 t/s 都只是「這一臂的讀數」，
+    不是「這個設定的性質」。</li>
+    <li><strong>decode 的兩個來源不可互相比較</strong>（形狀不同、熱條件不同，見 §4.2）。</li>
+    <li><strong>48 題品質套件今天沒有跑完一次。</strong>今天稍早的兩臂都中斷（一臂 GPU OOM、一臂被別的
+    session 的 <code>run_server.sh</code> preflight SIGTERM）⇒ 那份 <code>invalid=True</code> 的檔案不是分數。</li>
+    <li><strong>沒有碰 <code>src/</code>、沒有重建。</strong>本文件是量測與文件，不是引擎改動。</li>
+  </ul>
+  <p class="small">未跑的東西要明寫未跑：<code>edge0head</code>／<code>graft</code> carrier、6–10 GiB 的
+  prefill 格、<code>--no-mmap</code> 的 prefill 格、以及交錯 A/B 形式的 prefill 比較，本次都沒有做。</p>
+</div>
+
+<h2 id="s9">9. 復現</h2>
+
+<pre><code>cd /Users/alexchuang/Documents/flashkv-devserver
+
+# 1) 閘門：條件不成立就別跑臂（fail closed）
+notifyutil -g com.apple.system.thermalpressurelevel     # 必須是 0
+
+# 2) prefill 驗收臂（它把熱讀數寫在報告裡面）
+IDLE_BEFORE=0 OUTDIR=Backup/cgc_logs/milestone_20260917 bash Backup/run_req2_retest.sh
+
+# 3) D5（會自己起 server；先確認 8080 是空的）
+lsof -nP -iTCP:8080 -sTCP:LISTEN
+python3 scripts/check/m123_oracle_gate.py --tag &lt;標籤&gt;
+#   讀 summary_&lt;標籤&gt;.json 的 comparable，再讀 M1/M2/M3
+
+# 4) 熱的 2 Hz 序列（看臂中途的變化）
+bash Backup/thermal_pressure_probe.sh Backup/cgc_logs/milestone_20260917/pressure.tsv 0.5 900
+bash Backup/thermal_pressure_probe.sh --summarize Backup/cgc_logs/milestone_20260917/pressure.tsv</code></pre>
+
+<p class="small">本文件於 2026-09-17 15:10 產出。所有讀數取自當次原始報告與原始 log，
+未做平滑、未估整、未轉述。</p>
+
+<hr>
+<p class="small">相關文件：<code>docs/PREFILL250_CONDITIONAL_DELIVERY_20260916.html</code>、
+<code>docs/ROUTING_TRACE_2026-09-17.md</code>、
+<code>docs/M6_QUANT_GEOMETRY_PLAN_2026-09-17.md</code>、
+<code>docs/MTP_HEAD_PROVENANCE_GATE_2026-09-14.md</code>。</p>
+
+</div>
+</body>
+</html>

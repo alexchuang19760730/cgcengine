@@ -587,19 +587,45 @@ def compare_results(file_a, file_b):
     print(f"\n{'='*70}")
     print(f"對比: {a['label']} vs {b['label']}")
     print(f"{'='*70}\n")
-    print(f"{'Profile':<16} {a['label']:<12} {b['label']:<12} {'差距':<8}")
+
+    # A run stopped early by the dead-server guard covers FEWER profiles than a complete one, and
+    # iterating A's profile list raised KeyError on the first absent one -- i.e. the comparison
+    # crashed exactly when it had the most important thing to say. 2026-09-17: the slack arm died
+    # at qa-zh #1 while the control arm reached longform-zh #6, so A had {qa-zh, longform-zh} and
+    # B had {qa-zh} -> KeyError: 'longform-zh'. Iterate the UNION, show "n/a" for the absent side,
+    # and refuse to let an invalid arm's counts read as a score.
+    for name, d in ((a["label"], a), (b["label"], b)):
+        if d.get("invalid"):
+            print(f"!! {name} IS INVALID -- {d.get('invalid_reason')}")
+            print(f"   it covered {d.get('total_count')} question(s) "
+                  f"({', '.join(sorted(d.get('profiles') or [])) or 'none'}); "
+                  f"its pass counts are NOT a score and must not be quoted as one.")
+
+    print(f"\n{'Profile':<16} {a['label']:<12} {b['label']:<12} {'差距':<8}")
     print("-" * 50)
 
-    for profile in a["profiles"]:
-        pa = a["profiles"][profile]
-        pb = b["profiles"][profile]
-        diff = pb["new_pass"] - pa["new_pass"]
-        sign = "+" if diff > 0 else ""
-        print(f"{profile:<16} {pa['new_pass']}/{pa['total']:<8} {pb['new_pass']}/{pb['total']:<8} {sign}{diff}")
+    pa_all = a.get("profiles") or {}
+    pb_all = b.get("profiles") or {}
+    order = list(pa_all) + [p for p in pb_all if p not in pa_all]
+    for profile in order:
+        pa, pb = pa_all.get(profile), pb_all.get(profile)
+        ca = f"{pa['new_pass']}/{pa['total']}" if pa else "n/a"
+        cb = f"{pb['new_pass']}/{pb['total']}" if pb else "n/a"
+        if pa and pb:
+            diff = pb["new_pass"] - pa["new_pass"]
+            cs = f"{diff:+d}" if diff else "0"
+        else:
+            cs = "n/a"
+        print(f"{profile:<16} {ca:<12} {cb:<12} {cs}")
 
     print("-" * 50)
-    print(f"{'總計':<16} {a['new_total_pass']}/{a['total_count']:<8} "
-          f"{b['new_total_pass']}/{b['total_count']:<8} {b['new_total_pass']-a['new_total_pass']:+d}")
+    ta = f"{a['new_total_pass']}/{a['total_count']}" if "total_count" in a else "n/a"
+    tb = f"{b['new_total_pass']}/{b['total_count']}" if "total_count" in b else "n/a"
+    if "total_count" in a and "total_count" in b and a["total_count"] == b["total_count"]:
+        cs = f"{b['new_total_pass']-a['new_total_pass']:+d}"
+    else:
+        cs = "n/a (不同題數)"
+    print(f"{'總計':<16} {ta:<12} {tb:<12} {cs}")
     print()
 
 

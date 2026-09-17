@@ -15,9 +15,20 @@ encode takes a fresh slot from a monotone counter, so equal slot indices across 
 "the Nth mul_mat_id of the run" and stop agreeing the moment one arm runs a different number of
 graphs. Graph boundaries are detected by the node name returning to the first layer's gate.
 
-Known instrument limit: the capture reads a fixed stride (8 words) from each ids operand, so for
-n_ids = 8*n_tokens only the FIRST token's ids are visible. A divergence confined to tokens 1..N-1
-is invisible here; re-run with a non-zero n_skip to reach the tail.
+Instrument width (fixed 2026-09-17, §9.18.9). The record is `CGC_IDS_STRIDE` words wide and the
+printer clamps it to the row's own `n_ids` (= ne20*ne21 = top_k * n_tokens), so the WHOLE operand is
+visible: 8 words at T=1, 16 at T=2, 64 at T=8. Before that fix the printer used the stride alone,
+which printed exactly 8 words -- and because a ggml tensor is ne0-fastest, the first 8 words *are*
+token 0. So every "the ids are identical" / "the ids differ" verdict taken from a multi-token pass
+was in fact a verdict about ONE token. This is not a cosmetic caveat: an A/B that read "the ids
+first differ at pass 3, in prefill" read "**pass 0, 117 of 120 MoE nodes**" once the width was
+fixed, i.e. the two arms already disagreed about which expert to fetch in the FIRST prefill pass
+(docs/ROUTING_TRACE_2026-09-17.md §10).
+
+The cost of the width, stated so it is not mistaken for a regression: the stream is still
+CGC_IDS_SLOTS = 4096, so a T=8 pass consumes 64 slots per node instead of 8 -- a run now covers
+FEWER passes (41 -> 35 in the run above). More per record, fewer records. If a divergence is
+expected late in the run, the thing to enlarge is the window, not the width.
 
 Usage:
     python3 scripts/check/ids_capture_diff.py LOG_A LOG_B [--graph N] [--max N] [--model-token H]
@@ -150,7 +161,14 @@ def main():
             print(f"    only in B  {k} ids={fmt(mb[k].ids)}")
 
     print()
-    print(f"TOTAL differing nodes: {total_diff}")
+    # The scope goes IN the total: this line is the one a reader quotes, and with the default it
+    # describes ONE graph. "TOTAL differing nodes: 0" after comparing graph 0 of a 35-graph run
+    # reads as "nothing in the run differs", which is a different and much stronger claim.
+    scope = "all graphs" if args.all_graphs else f"graph {args.graph} ONLY"
+    print(f"TOTAL differing nodes: {total_diff}   (compared: {scope})")
+    if not args.all_graphs and len(ga) > 1:
+        print(f"  !! {len(ga)} graphs are present; {len(ga) - 1} were NOT compared. "
+              f"Pass --all-graphs before reading this as \"nothing differs\".")
     return 0 if total_diff == 0 else 1
 
 

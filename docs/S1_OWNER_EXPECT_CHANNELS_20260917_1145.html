@@ -148,7 +148,8 @@ if (cgc_slot_table_gpu &amp;&amp; il &gt;= cgc_s1_min_il) {   // S1 臂
 
 <div class="box b-amber">
 <p><b>⚠ 本輪沒有任何可引用的 <code>exp</code> 讀數。</b>原因不是「還沒排到窗口」，而是上面的來源要換
-——照現狀再跑一次只會再得到一次 <code>exp=none</code>。</p>
+——照現狀再跑一次只會再得到一次 <code>exp=none</code>。
+<b>&rarr; 後續狀態見 <a href="#s8">&sect;8</a></b>（同一個結論，外加一個獨立佐證與一個 M1 的交叉點）。</p>
 </div>
 
 <h2>5. 併行：這一輪撞到別的 session 兩次，而兩次都是同一類 bug</h2>
@@ -182,13 +183,53 @@ wrapper（<code>bash -c "… build/bin/llama-server …"</code>、grep、記錄�
 <h2>7. 誠實邊界</h2>
 
 <ul>
-<li><b><code>exp</code> 沒有數字</b>（§4）。<code>own</code> 的數字有，且同臂控制 1200/1200 過。</li>
+<li><b><code>exp</code> 沒有數字</b>（§4）。<code>own</code> 的數字有，且同臂控制 1200/1200 過。
+<b>&rarr; <a href="#s8">&sect;8</a> 是後續</b>：仍未取得讀數，而原因已從「排不到窗口」改成「來源要換」。</li>
 <li><b><code>POOLROWS</code> 上限 12，而 T=2 的運算元有 16 個 id</b> ⇒ 第 2 個 token 只覆蓋前 4 個。
 那 4 個已經 100% ROUTING，所以結論不會因擴大覆蓋而翻轉，但措辭必須帶上這個前綴。</li>
 <li><b>不是本檔產出的東西</b>：<code>scripts/run_server.sh</code> 與 <code>Backup/run_req2_retest.sh</code>
 的修改屬於另一條 session（11:38），<b>不在本輪的 commit 裡</b>。</li>
 <li>本檔與 <code>docs/POOL_ROW_DIGEST_20260917_0355.html</code> 的關係：那一份是 r12 的第三條 stream，
 本檔是它的續篇；兩份都保留，因為它們描述<b>不同時間點</b>的同一支儀器。</li>
+</ul>
+
+<h2 id="s8">8. 後續狀態（12:5x 補記；本節之後的述句取代 §4 的「仍未取得」）</h2>
+
+<p>§4 停在一句話上：<code>exp=none</code>，成因在原始碼裡，<b>修法是把來源換成 host 現算</b>。
+這一節記下那之後發生的事，以及<b>一個獨立佐證</b>。</p>
+
+<h3>8.1 這一格仍未取得可引用的讀數（誠實）</h3>
+<p><b>沒有量測。</b>原因不再是「排不到窗口」，而是<b>來源要換</b>：
+<code>cache_remap_tensors[il]</code> 在 <code>il &ge; CGC_S1_MIN_IL</code> 時不存在
+（S1 臂不建那張 host leaf，<code>llama-graph.cpp:2190-2191</code>），所以要改成 host 現算
+<code>exp[j] = st[e_j]</code>（<code>st</code> = 快取的 slot 表、<code>e_j</code> = router top-k）。
+<b>在那之前，任何 <code>exp</code> 的引用都只會是 <code>none</code>。</b></p>
+
+<h3>8.2 而 <code>own=</code> 這一側拿到了獨立佐證（同一條線的另一支儀器）</h3>
+<p><code>CGC_IDS_STRIDE</code> 由 8 改成 64、且印表機 clamp 到每列自己的 <code>n_ids</code> 之後，
+同一組 A/B 用<b>全寬記錄</b>重讀，第一分歧由「pass 3、114/120」變成 <b>「pass 0、117/120」</b>
+（<code>docs/ROUTING_TRACE_2026-09-17.md</code> §10），而形狀是：</p>
+<pre><code>A leaf   row0: tok0=[5,1,10,12,8,2,4,0]  tok1=[11,3,50,7,20,55,9,6]
+B table  row0: tok0=[5,1,10,12,8,2,4,0]  tok1=[ 0,0, 0,0, 0,0,6,0]   &lt;-- 7 of 8 are slot 0</code></pre>
+<p>&rArr; <b>token 0 兩臂完全相同、token &ge; 1 大多讀 slot 0</b>。這與本檔 §1 的 <code>own=</code> 判決
+（<code>CONTENT=0</code>、<code>SLOT-REUSED=0</code>、<code>ROUTING=477</code>）<b>互相印證</b>：
+兩支儀器、兩種讀法、同一個結論 —— <b>不是池的位元組，是拿到的專家不同</b>。</p>
+<p>而 <code>exp=</code> 要回答的仍是那個<b>不同的問題</b>：那些 slot 索引<b>是不是 host 的意思</b>。
+<code>own=</code> 只能說「那個 slot 裝的是誰」；一個<b>合法但錯誤</b>的索引會讓兩句話印起來一模一樣。</p>
+
+<h3>8.3 與 M1 的交叉點（新增）</h3>
+<p>同一條線的 <code>CGC_ADD_ORDER=rev</code> 探針給了另一個結果：同一個臂、同一個 build，只把
+8 個專家加權和的<b>結合順序</b>反轉，答案 md5 由 <code>2d4e5099</code> 變成 <code>f6718d44</code>
+&rArr; <b>聚合對結合順序敏感</b>。這把 roadmap 的 <b>M1 工作項 4（canonical gather order）</b>
+從「審慎」變成「必要」；設計稿見
+<code>docs/M1_WORKITEM4_CANONICAL_GATHER_ORDER_2026-09-17.md</code>。</p>
+
+<h3>8.4 本節的界線</h3>
+<ul>
+<li><b>本節沒有數字</b>：沒有量測、沒有建置、沒有起 server。它只記狀態與交叉引用。</li>
+<li>「S1 未過」的判準不變：<b>bit-identical</b>。最新完整一輪（<code>r18_hash1</code>、12:15）錨
+<code>2d4e5099</code> vs S1 <code>0c1ea987</code> &rArr; <b>仍未過</b>；S2／S3 未開始。</li>
+<li>§4 的原文<b>一字不動</b>（它是 11:45 的 dated 產物）；本節是補記，不是改寫。</li>
 </ul>
 
 <hr>
