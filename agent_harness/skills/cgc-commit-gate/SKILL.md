@@ -89,6 +89,15 @@ exit code 在 0/1 之間不一致，而檔案裡**明明有**那些字串（`sed
 **一個「查不到＝沒有」的假陰性會直接變成結論**，這與 B7／B12 同族。
 例外（已雙向量過，可用）：`strings -a <file> | grep -q <str>` 這種用法是好的（MTP-on rc=0、MTP-off rc=1）。
 
+**★ 第二個實例，而且它直接產生了一個錯誤結論（2026-09-17 交付時踩到）：
+`git diff <file> | grep -E "^[-+]" | grep -v "^[-+][-+]"` 會靜默漏行。**
+用這條管線讀 `MANIFEST.jsonl` 的 diff 時，`scripts/run_server.sh` 的那一筆**整條不見了**
+（`-`／`+` 兩行都沒有），於是我得到的結論是「另一條線改的檔沒進 manifest、我的 commit 不會污染它」——
+而**事實相反**（該筆的 bytes/mtime 正是他們 11:38:21 的版本）。改用 **python** 重做同一個 diff
+（`json.loads(line[1:])` 逐行印）才看到真相。⇒ **凡是「diff／log 的某些行是不是存在」會改變結論的地方，
+一律用 python 或內建 Grep，不要用 bash `grep` 過濾。** 這一條與 §4 的併行判斷直接相關：
+「他那筆有沒有進索引」正是決定要不要 commit 的那個問題。
+
 ### 1.4 zsh 不對未加引號的參數做 word-split
 
 `for pair in "a b"; do set -- $pair; echo $2; done` 在 zsh 下 **`$2` 是空的**，會得到
@@ -131,11 +140,25 @@ echo 去載 13 GB 的模型**。
 
 **`Backup/` 底下是「已追蹤」與「被忽略」混在一起的，要先分清（2026-09-17 實查）。** `.gitignore`
 只影響**未追蹤**的檔案：`Backup/` 底下有 9 支量測腳本是**已追蹤**的，它們的修改會被 `git add -A`
-正常收進去（也會出現在 `git status`）；只有**新增**的才需要 `git add -f`。實測的形狀是
+正常收進去（也會出現在 `git status`）。實測的形狀是
 `Backup/analyze_capture_nodes.py` 之類顯示 ` M`，而同一目錄的 `compare_slot_owner.py` 完全不顯示。
 ⇒ 判準：`git ls-files Backup/ | head` 看它是不是已追蹤。一個**已經存在的**驅動改了會被提交、
 一個**新寫的**不會——所以「我在 Backup/ 修好了腳本」與「它進得了 commit」是兩件事。
 （本 repo 的慣例是儀器驅動要進版控，所以新的那幾支就用 `git add -f` 收進來，並在 message 揭露。）
+
+**★ 但「已追蹤」不等於「`git add <路徑>` 會成功」——顯式指名 `Backup/…` 一律要 `-f`（2026-09-17 第二次實測）。**
+即使那個檔**已經在版控裡**，`git add Backup/compare_pool_row.py` 仍會回
+`The following paths are ignored by one of your .gitignore files: Backup` ＋
+`Use -f if you really want to add them`，**而且會讓整條 `git add`（同一行裡的其他路徑也一起）失敗**——
+exit 1、什麼都沒 staged。所以正確的寫法是**把 `Backup/` 的路徑從主 `git add` 裡拆出來、單獨下 `-f`**：
+
+```sh
+git add -f Backup/compare_pool_row.py          # 先，單獨
+git add agent_harness/... docs/... src/...     # 後，其餘（這一行不會被拖累）
+git diff --cached --name-status                # 驗：staged 清單就是你要的那些
+```
+（判準仍是 §4：**只 stage 自己的檔**。上面那個「整條一起失敗」的特性有正面用法——它不會讓你
+不小心把別人未追蹤的 `Backup/` 檔收進來。）
 
 ### 1.7 新增 C++ 測試編譯產物會讓 `git status` 不空
 
