@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>prime-agent 安裝器在 Terminal-Bench 容器裡的三個缺陷（2026-09-17）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --purple:#7c3aed; --purple-bg:#f5f3ff; --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  h4{font-size:14.5px;margin:20px 0 6px;color:#374151}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:24px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  .b-purple{background:var(--purple-bg);border-color:#ddd6fe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:#fcfcfd}
+  .toc ol{margin:6px 0 0 20px}
+  .toc a{color:var(--blue);text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>prime-agent 安裝器在 Terminal-Bench 容器裡的<strong>三個</strong>缺陷</h1>
+<div class="sub">
+  日期 2026-09-17 18:10–18:40（本地）· 專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code><br>
+  被修檔案 <code>agent_harness/tb_loop/agents/prime-agent-setup.sh</code>（原 25 行 → 現 74 行，多出來的是註解與前置檢查）<br>
+  觸發場合 帶 <code>--agent-import-path tb_loop.agents.prime_agent_adapter:PrimeAgentAgent</code> 的
+  <code>tb run</code>（亦即<strong>需要模型</strong>的那條 smoke，與 <code>--agent</code> 預設的 <code>oracle</code> 不同）<br>
+  環境 colima（docker 27.4.0）· 任務映像 <code>ghcr.io/laude-institute/t-bench/ubuntu-24-04</code>（精簡版）<br>
+  相關 <code>docs/PROD_MATRIX_FIRST_RUN_20260917_1755.html</code>、skill <code>cgc-tb-smoke</code>
+</div>
+
+<div class="box b-amber">
+  <p><strong>一句話結論：</strong>這條 smoke 在修好之前<strong>不會失敗，它會永遠卡住</strong>。
+  三個缺陷疊在同一支 25 行的安裝腳本上，而且每一個都<strong>不在</strong>它看起來的位置：</p>
+  <table>
+    <tr><th>#</th><th>缺陷</th><th>症狀</th><th>為什麼難認</th></tr>
+    <tr>
+      <td>1</td><td><code>exit 1</code> 在被 <code>source</code> 的腳本裡</td>
+      <td>tb 在 <code>max_timeout_sec: inf</code> 上<strong>無限等待</strong></td>
+      <td>失敗訊息 <code>INSTALL_FAIL_STATUS</code> <strong>一次都沒印出來</strong>；它在日誌裡出現的兩次都是「被印出來的命令本身」</td>
+    </tr>
+    <tr>
+      <td>2</td><td>容器沒有 <code>curl</code>，而原版沒開 <code>pipefail</code></td>
+      <td><code>prime-agent install failed</code></td>
+      <td>真正的錯因 <code>curl: command not found</code> 只在 stderr 一行；<code>set -e</code> 因為管線狀態取右側 <code>sh</code> 的 0 而<strong>不中止</strong></td>
+    </tr>
+    <tr>
+      <td>3</td><td>官方安裝器有 5 個 yes/no 提示，只有 1 個認 <code>NONINTERACTIVE</code></td>
+      <td>卡在 <code>Install Node.js and npm …?</code></td>
+      <td>看起來像「開關沒用」；實際上是其餘四個提示<strong>沒有任何開關</strong>，而 tmux 裡 <code>/dev/tty</code> 是可開的</td>
+    </tr>
+  </table>
+  <p>修好之後：安裝完整通過 → agent 啟動 → 任務<strong>乾淨地失敗</strong>（<code>Unresolved</code>，不再 hang）→
+  而 agent 自己的日誌顯示它<strong>停在模型端點</strong>：<span class="mono">status 401, providerErrorType=authentication_error</span>。</p>
+</div>
+
+<div class="toc">
+  <strong>目錄</strong>
+  <ol>
+    <li><a href="#s0">一頁結論</a></li>
+    <li><a href="#s1">怎麼被發現的：三次執行、兩次 hang</a></li>
+    <li><a href="#s2">缺陷一：被 source 的腳本不能用 exit</a></li>
+    <li><a href="#s3">缺陷二：沒有 curl，而沒有 pipefail 把錯因藏起來</a></li>
+    <li><a href="#s4">缺陷三：5 個提示只有 1 個認開關</a></li>
+    <li><a href="#s5">修好之後的重跑</a></li>
+    <li><a href="#s6">「停在模型端點」的直接證據</a></li>
+    <li><a href="#s7">兩個順帶發現（不屬於本 commit）</a></li>
+    <li><a href="#s8">現場閘門輸出原文（含兩條紅燈，都不是我的）</a></li>
+    <li><a href="#s9">誠實邊界</a></li>
+    <li><a href="#s10">復現</a></li>
+    <li><a href="#s11">修訂記錄</a></li>
+  </ol>
+</div>
+
+<h2 id="s0">0. 一頁結論</h2>
+
+<div class="cards">
+  <div class="card"><div class="k">修的缺陷</div><div class="v">3</div>
+    <div class="small">原以為 2 個；第 3 個是重跑才現形</div></div>
+  <div class="card"><div class="k">修好後的安裝</div><div class="v ok">成功</div>
+    <div class="small"><code>Installed Prime Agent 0.9.5</code></div></div>
+  <div class="card"><div class="k">任務結果</div><div class="v warn">Unresolved 1</div>
+    <div class="small">3m21s，<strong>不再 hang</strong></div></div>
+  <div class="card"><div class="k">剩下的一關</div><div class="v bad">401</div>
+    <div class="small">模型端點：要一把有效的 API key</div></div>
+  <div class="card"><div class="k">腳本行數</div><div class="v">25 → 74</div>
+    <div class="small">只加前置與註解，行為面 3 處</div></div>
+  <div class="card"><div class="k">耗時</div><div class="v">3m21s</div>
+    <div class="small">其中安裝佔絕大部分</div></div>
+</div>
+
+<h3>修法（行為面只有三處）</h3>
+<table>
+  <tr><th>處</th><th>改動</th><th>為什麼是這個形狀</th></tr>
+  <tr>
+    <td>前置</td>
+    <td>安裝前先確認 <code>curl</code>，缺就用 apt 補（<code>apt-get install -y curl</code>）</td>
+    <td>任務映像不帶 <code>curl</code>；實測該映像 apt 可達且安裝成功</td>
+  </tr>
+  <tr>
+    <td>失敗語意</td>
+    <td><code>exit 1</code> → <code>return 1 2>/dev/null || exit 1</code>；同時<strong>移除</strong> <code>set -e</code></td>
+    <td>被 <code>source</code> 時走 <code>return</code>（不殺 shell、且讓 <code>||</code> 收到非零）；當獨立程式跑時走 <code>exit</code>。<code>set -e</code> 會留在呼叫者的 shell 裡，也是同一個病</td>
+  </tr>
+  <tr>
+    <td>非互動</td>
+    <td><code>curl … | setsid sh</code>（無 <code>setsid</code> 時退回 <code>| sh</code>）＋ <code>export PRIME_AGENT_INSTALLER_NONINTERACTIVE=1</code>、<code>PLAIN=1</code></td>
+    <td>官方開關只蓋得住 5 個提示裡的 1 個；<strong>不給控制終端</strong>才能讓其餘四個走 <code>return 2</code>（＝繼續）</td>
+  </tr>
+</table>
+
+<h2 id="s1">1. 怎麼被發現的：三次執行、兩次 hang</h2>
+
+<p>起因是「用 repo 自己的生產級標準跑量測」那一輪之後的下一格 —— 要用<strong>模型</strong>的那條 smoke
+（E1 第 3 條驗收跑的是 <code>--agent</code> 預設的 <code>oracle</code>，它跑 gold solution、<strong>完全不碰模型</strong>，
+所以那條通過與這條完全無關）。三次執行的結果：</p>
+
+<div style="overflow-x:auto">
+<svg viewBox="0 0 1000 300" width="100%" height="300" role="img" aria-label="三次執行的三個結果：兩次 hang、一次成功通過安裝並停在模型端點 401">
+  <rect x="0" y="0" width="1000" height="300" fill="#ffffff"/>
+
+  <rect x="14" y="24" width="196" height="252" rx="10" fill="#f9fafb" stroke="#e5e7eb"/>
+  <text x="112" y="48" font-size="12.5" text-anchor="middle" fill="#111827" font-family="-apple-system,PingFang TC">tb 的安裝步驟</text>
+  <text x="112" y="70" font-size="10.5" text-anchor="middle" fill="#6b7280" font-family="ui-monospace,Menlo,monospace">source install-agent.sh</text>
+  <text x="112" y="86" font-size="10.5" text-anchor="middle" fill="#6b7280" font-family="ui-monospace,Menlo,monospace">|| echo INSTALL_FAIL_STATUS</text>
+  <text x="112" y="102" font-size="10.5" text-anchor="middle" fill="#6b7280" font-family="ui-monospace,Menlo,monospace">; tmux wait -S done</text>
+  <line x1="26" y1="118" x2="198" y2="118" stroke="#e5e7eb"/>
+  <text x="112" y="140" font-size="11" text-anchor="middle" fill="#dc2626" font-family="-apple-system,PingFang TC">被 source（不是執行）</text>
+  <text x="112" y="158" font-size="11" text-anchor="middle" fill="#dc2626" font-family="-apple-system,PingFang TC">⇒ exit 會殺掉 shell</text>
+  <text x="112" y="182" font-size="11" text-anchor="middle" fill="#6b7280" font-family="-apple-system,PingFang TC">timeout 是 inf</text>
+  <text x="112" y="200" font-size="11" text-anchor="middle" fill="#6b7280" font-family="-apple-system,PingFang TC">⇒ 沒有自癒的出口</text>
+
+  <rect x="248" y="24" width="738" height="72" rx="8" fill="#fef2f2" stroke="#fecaca"/>
+  <text x="266" y="46" font-size="12.5" fill="#7f1d1d" font-family="-apple-system,PingFang TC">18:11 第一次（未修）</text>
+  <text x="266" y="66" font-size="11.5" fill="#111827" font-family="ui-monospace,Menlo,monospace">bash: curl: command not found → prime-agent install failed → exit 1 → shell 死 → hang</text>
+  <text x="266" y="84" font-size="11.5" fill="#dc2626" font-family="-apple-system,PingFang TC">我手動停掉（4 分鐘，否則會一直占著機器）</text>
+
+  <rect x="248" y="114" width="738" height="72" rx="8" fill="#fffbeb" stroke="#fde68a"/>
+  <text x="266" y="136" font-size="12.5" fill="#7f3f00" font-family="-apple-system,PingFang TC">18:25 第二次（只修了 1、2）</text>
+  <text x="266" y="156" font-size="11.5" fill="#111827" font-family="ui-monospace,Menlo,monospace">curl 裝好、安裝器啟動 → 卡在 Install Node.js and npm …? → 等一個永遠不來的 Enter → hang</text>
+  <text x="266" y="174" font-size="11.5" fill="#d97706" font-family="-apple-system,PingFang TC">一樣要手動停掉；這才是第 3 個缺陷現形的地方</text>
+
+  <rect x="248" y="204" width="738" height="72" rx="8" fill="#ecfdf5" stroke="#a7f3d0"/>
+  <text x="266" y="226" font-size="12.5" fill="#065f46" font-family="-apple-system,PingFang TC">18:31 第三次（三個都修）</text>
+  <text x="266" y="246" font-size="11.5" fill="#111827" font-family="ui-monospace,Menlo,monospace">Installed Prime Agent 0.9.5 → agent 啟動 → 任務 Unresolved（乾淨失敗）</text>
+  <text x="266" y="264" font-size="11.5" fill="#059669" font-family="-apple-system,PingFang TC">agent 日誌：status 401 authentication_error（停在模型端點）</text>
+</svg>
+</div>
+
+<h2 id="s2">2. 缺陷一：被 <code>source</code> 的腳本不能用 <code>exit</code></h2>
+
+<p>tb 執行安裝腳本的方式（<code>run.log:18</code> 原文）：</p>
+<pre><code>Sending keys: ["source /installed-agent/install-agent.sh || echo 'INSTALL_FAIL_STATUS'", '; tmux wait -S done', 'Enter'] min_timeout_sec: 0.0 max_timeout_sec: inf</code></pre>
+
+<p>是 <code>source</code>。而原版只開了 <code>set -e</code>、<strong>沒有</strong> <code>set -o pipefail</code>，所以 <code>curl … | sh</code> 的管線狀態取右側 <code>sh</code> 的（空 stdin → 0）；
+真正的錯因只剩 stderr 那一行。接著腳本走到驗證段，印 <code>prime-agent install failed</code>，然後
+<code>exit 1</code> —— <strong>在被 source 的腳本裡，<code>exit</code> 會連 tmux shell 一起結束</strong>，
+於是同一行後面的 <code>tmux wait -S done</code> 永遠不執行，tb 就停在
+<code>max_timeout_sec: inf</code> 上。</p>
+
+<div class="box b-red">
+  <p><strong>最刺眼的一點：失敗訊息一次都沒印出來。</strong>
+  <code>INSTALL_FAIL_STATUS</code> 在 pane 與 <code>run.log</code> 裡各出現 1 次 —— 但
+  <code>grep -n</code> 指出那兩次都在「被印出來的那行命令」裡，不是輸出。
+  所以「<code>||</code> 有沒有生效」這件事，光看「字串在不在」會得到相反的結論。</p>
+</div>
+
+<h3>2.1 在隔離環境重現（不需要容器）</h3>
+<pre><code>$ printf '#!/usr/bin/env bash\nexit 1\n' > /tmp/a.sh
+$ bash -c 'source /tmp/a.sh || echo FELL_THROUGH; echo "shell 還活著"'
+  rc=1                     ← FELL_THROUGH 沒印、shell 還活著 也沒印
+
+$ printf '#!/usr/bin/env bash\nreturn 1 2>/dev/null || exit 1\n' > /tmp/b.sh
+$ bash -c 'source /tmp/b.sh || echo FELL_THROUGH; echo "shell 還活著"'
+FELL_THROUGH
+shell 還活著                 ← 契約達成
+$ bash /tmp/b.sh; echo rc=$?  ← 獨立執行時仍然正確
+rc=1</code></pre>
+
+<p class="small">這一組對照同時證明了修法的兩個方向都對：被 source 時 <code>||</code> 收到非零且 shell 存活；
+被當獨立程式跑時回傳 1。</p>
+
+<h2 id="s3">3. 缺陷二：沒有 <code>curl</code>，而沒有 <code>pipefail</code> 把錯因藏起來</h2>
+
+<p>任務映像 <code>ubuntu-24-04</code> 是精簡版。在容器裡逐項確認：</p>
+<table>
+  <tr><th>工具</th><th>在容器裡</th><th>備註</th></tr>
+  <tr><td class="num">curl</td><td class="bad">沒有</td><td>prime-agent 官方安裝腳本需要它</td></tr>
+  <tr><td class="num">wget</td><td class="bad">沒有</td><td>——</td></tr>
+  <tr><td class="num">nc</td><td class="bad">沒有</td><td>——</td></tr>
+  <tr><td class="num">python3</td><td class="ok">有</td><td>所以我用它做過連通性探測</td></tr>
+  <tr><td class="num">setsid</td><td class="ok">有（<code>/usr/bin/setsid</code>）</td><td>缺陷三的解法靠它</td></tr>
+</table>
+
+<p><code>apt-get install -y curl</code> 在該映像裡<strong>成功</strong> —— 也就是說容器有對外網路，
+缺的只是「沒人先裝它」。修法就是在安裝之前補上這一步。</p>
+
+<h2 id="s4">4. 缺陷三：5 個提示只有 1 個認開關</h2>
+
+<p>官方安裝器（<code>app.primeintellect.ai/prime-agent/install.sh</code>，2357 行）一共問 5 次 yes/no：</p>
+
+<table>
+  <tr><th>行號</th><th>問題</th><th>認 <code>PRIME_AGENT_INSTALLER_NONINTERACTIVE</code>？</th></tr>
+  <tr><td class="num">:2233</td><td>Install Prime Agent v&lt;ver&gt;?</td><td class="ok">認（<code>:2232</code> 那個守衛就在它上面）</td></tr>
+  <tr><td class="num">:1078</td><td>Install Node.js and npm with &lt;method&gt;?</td><td class="bad">不認</td></tr>
+  <tr><td class="num">:1485</td><td>Add standalone Node.js to your PATH?</td><td class="bad">不認</td></tr>
+  <tr><td class="num">:1607</td><td>Install Prime Agent v&lt;ver&gt; globally with npm?</td><td class="bad">不認</td></tr>
+  <tr><td class="num">:1642</td><td>Prepare Python runtime now?</td><td class="bad">不認</td></tr>
+</table>
+
+<p>而提示的輸入來源是 <code>prime_agent_prompt_yes_no()</code>（<code>:883</code>）：</p>
+<pre><code>if ( : &lt;&gt;/dev/tty ) 2&gt;/dev/null; then
+    prompt_input=tty
+    exec 3&lt;&gt;/dev/tty          ← 優先開 /dev/tty
+elif [ -t 0 ]; then
+    prompt_input=stdin
+else
+    return 2                 ← 兩者都沒有 ⇒ 「不問」，呼叫者視為繼續
+fi</code></pre>
+
+<p>tmux 裡 <code>/dev/tty</code> 是<strong>可開的</strong>，所以它會走第一支，等一個永遠不來的 Enter。
+實測：只加 <code>NONINTERACTIVE=1</code> 之後仍然卡住，而症狀極具誤導 —— 行程只剩一個
+<code>sh</code> 在等、<code>~/.local/bin</code> 是空的、<code>/tmp/node-compile-cache</code> 存在
+（看起來像「正在裝」，其實是「正在等輸入」）。</p>
+
+<div class="box b-green">
+  <p><strong>解法：不給它控制終端。</strong> <code>curl … | setsid sh</code> ⇒
+  <code>/dev/tty</code> 打不開、stdin 也不是 tty ⇒ 五個提示全部走 <code>return 2</code>（＝繼續）。
+  在同一個「有 tty」的容器裡做的對照：</p>
+  <pre><code>$ docker run --rm -t ghcr.io/laude-institute/t-bench/ubuntu-24-04:latest sh -c '
+    export PATH="$HOME/.local/bin:$PATH"
+    apt-get update -qq >/dev/null 2&gt;&amp;1; apt-get install -y -qq curl >/dev/null 2&gt;&amp;1
+    curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | setsid sh'
+downloading uv 0.12.15 aarch64-unknown-linux-gnu
+everything's installed!
+✓ ready
+kernel python: /root/.prime/agent/kernel-venv/bin/python
+Installed Prime Agent 0.9.5 at /root/.local/share/prime-agent/bin/prime-agent
+/root/.local/bin/prime-agent
+0.9.5</code></pre>
+</div>
+
+<div class="box b-purple">
+  <p><strong>我在這個修法裡自己先寫錯一次，值得記下來：</strong>第一版寫成
+  <code>PRIME_AGENT_INSTALLER_NONINTERACTIVE=1 curl … | sh</code> ——
+  那個賦值<strong>只作用於 <code>curl</code></strong>，而安裝器是在管線右側的 <code>sh</code> 裡跑的，
+  <strong>它看不到那些變數</strong>。症狀與「這個開關根本沒用」一模一樣。必須用 <code>export</code>。</p>
+</div>
+
+<h2 id="s5">5. 修好之後的重跑</h2>
+
+<pre><code>cd /Users/alexchuang/Documents/flashkv-devserver
+PYTHONPATH=agent_harness agent_harness/tb_loop/.venv/bin/tb run \
+  -d "terminal-bench-core==0.1.1" \
+  --agent-import-path tb_loop.agents.prime_agent_adapter:PrimeAgentAgent \
+  -m openai/hy3 -k model_name=hy3 -k api_key=sk-local \
+  -k base_url=https://tokenhub.tencentmaas.com/v1 \
+  -k harness_dir=/Users/alexchuang/Documents/flashkv-devserver/agent_harness/tb_loop/harness \
+  -k max_turns=12 -k max_tokens=30000 -k timeout_ms=600000 \
+  --n-tasks 1 --output-path /tmp/tb_modelsmoke_fix2 --run-id model_smoke_fix2
+
+  Running tasks (1/1, Accuracy: 0.00%) - Last: play-zork ✗ ━━━━━━━━ 100% 0:03:17
+  Resolved Trials 0 / Unresolved Trials 1 / Accuracy 0.00%</code></pre>
+
+<p>安裝階段（<code>panes/post-agent.txt</code> 原文，節錄）—— 注意最後一行是<strong>這份腳本自己的驗證行</strong>：</p>
+<pre><code>downloading uv 0.12.15 aarch64-unknown-linux-gnu
+everything's installed!
+✓ ready
+kernel python: /root/.prime/agent/kernel-venv/bin/python
+Installed Prime Agent 0.9.5 at /root/.local/share/prime-agent/bin/prime-agent
+prime-agent ready: /root/.local/bin/prime-agent</code></pre>
+
+<p>接著 agent 被啟動（<code>run.log:20</code>）：</p>
+<pre><code>prime-agent -p --offline --model local-gemma4/openai/hy3 --autonomous
+  --autonomous-max-turns 12 --autonomous-max-tokens 30000
+  --autonomous-timeout-ms 600000 --autonomous-max-continuations 3</code></pre>
+
+<p>任務失敗的原因（<code>panes/post-test.txt</code>）與模型無關，是任務本身沒被完成：</p>
+<pre><code>FAILED ../tests/test_outputs.py::test_reached_end_of_game - FileNotFoundError:
+        [Errno 2] No such file or directory: '/app/answer.txt'
+FAILED ../tests/test_outputs.py::test_maximum_score - FileNotFoundError: …
+2 failed in 0.06s</code></pre>
+
+<p><code>results.json</code>：<code>is_resolved: false</code>、<code>failure_mode: unset</code>。
+<strong>重點是它「失敗」而不是「卡住」</strong> —— 缺陷一修好之後，安裝失敗會沿著
+<code>||</code> 那條路正常結束。</p>
+
+<h2 id="s6">6. 「停在模型端點」的直接證據</h2>
+
+<p>tb 的 pane 捕捉<strong>不含</strong> agent 自己的 stderr，而容器在收尾時被刪掉了
+（<code>datasets/…/play-zork</code> 的 compose 專案已經 down）。所以我在 host 上補了這一塊：
+把 <code>harness/</code> 複製到 <code>/tmp</code>（<strong>避免污染 repo</strong>），用同一組
+<code>TB_GEMMA4_*</code> 變數跑一次 prime-agent，然後讀<strong>它自己的日誌</strong>：</p>
+
+<pre><code>{"provider":"local-gemma4","model":"openai/hy3","api":"openai-completions","kind":"auth",
+ "providerErrorType":"authentication_error","status":401,
+ "message":"401 The API Key does not exist or signature verification failed. Please check
+            whether the API Key is correct. See: https://console.cloud.tencent.com/tokenhub/apikey"}</code></pre>
+
+<p>也就是說：<strong>整條鏈路是通的</strong>（容器 → 網路 → OpenAI 相容端點 → 認證），
+而在 agent 安裝修好之後，剩下的一關就是<strong>一把有效的 API key</strong>。</p>
+
+<div class="box b-blue">
+  <p><strong>關於「WorkBuddy 有沒有提供這種端點」</strong>（同一輪被問到的）：</p>
+  <ul>
+    <li>WorkBuddy 自己的開放 API（<code>workbuddy.cn/apiDocs</code>，Base
+    <code>https://api.copilot.tencent.com/api/v1</code>）是<strong>企業管理 API</strong>：
+    12 個域（成員／License／用量／<strong>模型管理</strong>／技能／專家／日誌／可觀測／資源），
+    <strong>沒有 <code>/v1/chat/completions</code></strong>，且明文「不支持个人 API Key 调用」（個人 Key 一律 401）。</li>
+    <li>WorkBuddy CLI 的本地 REST（<code>codebuddy --serve --port 8080</code>）是它自己的形狀，
+    <strong>而且預設也用 8080</strong>，會跟本 repo 的 llama-server 撞埠。</li>
+    <li><strong>但 OpenAI 相容的端點有</strong>，來源是騰訊雲 TokenHub —— WorkBuddy 自己就是用它當「自訂模型」：
+    端點 <code>https://tokenhub.tencentmaas.com/v1/chat/completions</code>，Key 在
+    <code>console.cloud.tencent.com/tokenhub/apikey</code> 建立（要確認 Key 的可訪問範圍有勾到模型），
+    文件範例模型 <code>hy3</code>。上表那個 401 就是它回的。</li>
+  </ul>
+</div>
+
+<h2 id="s7">7. 兩個順帶發現（不屬於本 commit）</h2>
+
+<h3>7.1 <code>tb_loop/README.md</code> 的範例沒有可用的 cwd（<strong>未修</strong>）</h3>
+
+<p>README 寫的是：</p>
+<pre><code>PYTHONPATH=agent_harness .venv/bin/tb run … -k harness_dir=tb_loop/harness</code></pre>
+<p>但這三個相對路徑<strong>沒有任何一個 cwd 能同時滿足</strong>：<code>.venv/bin/tb</code> 要 cwd 是
+<code>agent_harness/tb_loop</code>；<code>PYTHONPATH=agent_harness</code> 要 cwd 是 repo 根；
+而 <code>agent_harness/tb_loop/tb_loop/</code> 不存在（所以 <code>harness_dir</code> 也對不上）。
+本輪用的是「cwd＝repo 根 ＋ <code>harness_dir</code> 給絕對路徑」，實跑通過。</p>
+<div class="box b-amber">
+  <p><strong>本 commit 刻意不改它</strong>：<code>agent_harness/tb_loop/README.md</code> <strong>在
+  <code>MANIFEST.jsonl</code> 裡</strong>，改它會多一筆索引漂移；而此刻另一條線正在寫
+  <code>scripts/run_server.sh</code> 與 <code>phase_split_ab.py</code>（見 §8），
+  重生索引會把他們<strong>尚未完成的位元組</strong>寫進我的 commit。
+  所以只記錄、不動手，等對方停手再一起改。</p>
+</div>
+
+<h3>7.2 安裝器的 5 個提示這件事值得回報上游</h3>
+<p><code>PRIME_AGENT_INSTALLER_NONINTERACTIVE</code> 只蓋住 1/5 個提示，對「在容器／CI 裡裝」是一個真問題
+（而且在 tmux 這種有 <code>/dev/tty</code> 的環境才現形，在沒有 tty 的 CI 裡反而不會遇到 —— 這也是它不容易被發現的原因）。
+本輪用 <code>setsid</code> 繞過，但那應該由安裝器自己提供「全部提示都可關」的開關。</p>
+
+<h2 id="s8">8. 現場閘門輸出原文（含兩條紅燈，都不是我的）</h2>
+
+<pre><code>$ python3 agent_harness/engine_loop/traces/validate.py
+  episodes.jsonl: 122 records {'episode': 122}
+  -&gt; OK
+  decisions.jsonl: 38 records {'decision': 38}
+  -&gt; OK
+  lessons.jsonl: 159 records {'lesson': 159}
+  -&gt; OK
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  10/10 injected violations rejected
+
+$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  [error] 5 drift(s) between INDEX.jsonl and .workbuddy/memory/:
+    .workbuddy/memory/MEMORY_PERF.md :: (file row): fields differ ['bytes', 'lines', 'mtime', 'sha256']
+    .workbuddy/memory/MEMORY_PERF.md :: 里程碑現況（M0–M6；**09-17 查證**，不是憑記憶）: …
+    regenerate with: python3 memory/build_memory_index.py
+
+$ (cd agent_harness/engine_loop &amp;&amp; python3 index_assets.py --check)
+  [error] 4 drift(s) between the manifest and disk:
+    scripts/check/phase_split_ab.py: bytes: manifest 17398 vs disk 45305
+    scripts/check/phase_split_ab.py: mtime: manifest '2026-09-17T17:56:20' vs disk '2026-09-17T18:37:44'
+    scripts/run_server.sh: bytes: manifest 127523 vs disk 128703
+    scripts/run_server.sh: mtime: manifest '2026-09-17T17:22:46' vs disk '2026-09-17T18:40:59'
+    regenerate with: python3 index_assets.py</code></pre>
+
+<div class="box b-red">
+  <p><strong>兩條紅燈的 owner 都是另一條線，不是本 commit。</strong>
+  <code>scripts/run_server.sh</code> 的 mtime 是 <strong>18:40:59</strong> ——
+  就在我跑這條檢查的幾秒前；<code>phase_split_ab.py</code> 是 18:37:44；
+  <code>MEMORY_PERF.md</code> 是他們的記憶檔。本 commit 只新增／修改兩個檔
+  （<code>agents/prime-agent-setup.sh</code> 不在 <code>MANIFEST.jsonl</code> 裡、
+  新增 <code>docs/*.html</code> 不造成漂移），所以它<strong>沒有</strong>讓這兩條紅燈多一筆。
+  依本 repo 的併行規則（「看到不是自己改的 modified 檔就只新增不修改」），
+  我<strong>沒有</strong>重生索引 —— 重生會把他們尚未完成的位元組寫進 MANIFEST／INDEX。</p>
+</div>
+
+<h2 id="s9">9. 誠實邊界</h2>
+
+<p>這份文件<strong>不主張</strong>：</p>
+<ul>
+  <li><strong>不主張那條模型 smoke 會通過。</strong>它仍然 <code>Unresolved</code>（0/1）——
+  缺的是一把有效的 API key；本輪用的 <code>api_key=sk-local</code> 是佔位符。</li>
+  <li><strong>不主張缺陷三是「唯一的」第三個。</strong>本輪只跑到「安裝成功 ＋ 第一個模型呼叫」為止；
+  提示 <code>:1485</code>（加 PATH）與 <code>:1642</code>（Python runtime）在這次路徑上被 setsid 一併自動回答了，
+  但<strong>各分支是否都被走過，我沒有逐一證明</strong>。</li>
+  <li><strong>不主張 <code>setsid</code> 在所有任務映像裡都存在。</strong>它在
+  <code>ubuntu-24-04</code> 映像是 <code>/usr/bin/setsid</code>（util-linux）；腳本保留了沒它時退回
+  <code>| sh</code> 的分支，而那條分支<strong>沒有被驗證過</strong>（會回到缺陷三的症狀）。</li>
+  <li><strong>不主張 §6 那個 401 是「容器內」發出來的。</strong>它是 host 上跑 prime-agent、
+  指向同一個端點、用同一組 <code>TB_GEMMA4_*</code> 得到的；容器<strong>內</strong>的 401 我在更早一輪
+  用 <code>curl</code> 直接量過（同一組假 key、同樣的 <code>authentication_error</code>），
+  但那一次用的是 <code>curl</code>，不是 prime-agent。</li>
+  <li><strong>不主張 <code>--offline</code> 是什麼意思。</strong>那是 adapter 既有寫法
+  （<code>prime-agent -p --offline …</code>），本輪照用，沒有查它的語意。</li>
+  <li><strong>不主張 3m21s 是這個任務的正常時間。</strong>agent 在第一個模型呼叫就失敗了，
+  所以那個數字只反映「安裝 ＋ 失敗」，不反映任務本身的長度。</li>
+</ul>
+
+<h2 id="s10">10. 復現</h2>
+
+<pre><code>cd /Users/alexchuang/Documents/flashkv-devserver
+
+# 0) 前置：Docker（本輪用 colima，docker 27.4.0）＋ Docker Compose v2 外掛
+colima status || colima start --memory 4 --cpu 2
+docker compose version          # 必須有輸出（Docker.app 被移除留下的殘缺見 README 的 E1 更正 (c)）
+
+# 1) 失敗語意的隔離重現（不需要容器、不需要模型）：exit vs return
+printf '#!/usr/bin/env bash\nexit 1\n'                    &gt; /tmp/a.sh
+printf '#!/usr/bin/env bash\nreturn 1 2&gt;/dev/null || exit 1\n' &gt; /tmp/b.sh
+bash -c 'source /tmp/a.sh || echo FELL_THROUGH; echo alive'   # 兩行都不印
+bash -c 'source /tmp/b.sh || echo FELL_THROUGH; echo alive'   # 兩行都印
+
+# 2) 安裝器的非互動對照（有 tty 的容器，重現 tmux 的條件）
+docker run --rm -t ghcr.io/laude-institute/t-bench/ubuntu-24-04:latest sh -c '
+  export PATH="$HOME/.local/bin:$PATH"
+  apt-get update -qq &gt;/dev/null 2&gt;&amp;1; apt-get install -y -qq curl &gt;/dev/null 2&gt;&amp;1
+  curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh'      # 會卡在提示（未修法）
+docker run --rm -t ghcr.io/laude-institute/t-bench/ubuntu-24-04:latest sh -c '
+  export PATH="$HOME/.local/bin:$PATH"
+  apt-get update -qq &gt;/dev/null 2&gt;&amp;1; apt-get install -y -qq curl &gt;/dev/null 2&gt;&amp;1
+  curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | setsid sh'  # 裝完
+
+# 3) 完整的模型 smoke（需要 Docker；沒有有效 key 時預期停在模型端點）
+PYTHONPATH=agent_harness agent_harness/tb_loop/.venv/bin/tb run \
+  -d "terminal-bench-core==0.1.1" \
+  --agent-import-path tb_loop.agents.prime_agent_adapter:PrimeAgentAgent \
+  -m openai/hy3 -k model_name=hy3 -k api_key=&lt;KEY&gt; \
+  -k base_url=https://tokenhub.tencentmaas.com/v1 \
+  -k harness_dir="$PWD/agent_harness/tb_loop/harness" \
+  -k max_turns=12 -k max_tokens=30000 -k timeout_ms=600000 \
+  --n-tasks 1 --output-path /tmp/tb_modelsmoke --run-id model_smoke
+
+# 4) 本輪的四條閘門（見 §8）</code></pre>
+
+<h2 id="s11">11. 修訂記錄</h2>
+<ul>
+  <li><strong>2026-09-17 18:45（本版）：</strong>首發。修
+  <code>agent_harness/tb_loop/agents/prime-agent-setup.sh</code> 的三個缺陷
+  （<code>exit</code> 在被 source 的腳本裡、容器缺 curl 且缺 pipefail、
+  官方安裝器 5 個提示只有 1 個可關），並以三次實跑（兩次 hang、一次通過）為證。</li>
+</ul>
+
+<hr>
+<p class="small">本文件是 D5 的附件。文中每一個數字都能指到具體的檔案／欄位／指令輸出：
+三次執行的 <code>run.log</code> 與 <code>panes/*.txt</code> 在
+<code>/tmp/tb_modelsmoke*/</code>（<code>/tmp</code>，會被系統清理），
+本章引用的行號是它們當下的內容；缺陷的程式面位置在
+<code>agents/prime-agent-setup.sh</code> 與官方安裝器
+<code>https://app.primeintellect.ai/prime-agent/install.sh</code>（本輪抓的副本共 2357 行）。
+未經量測的推論一律標明為推論。</p>
+
+</div>
+</body>
+</html>
