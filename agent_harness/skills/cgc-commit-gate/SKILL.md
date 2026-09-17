@@ -756,10 +756,14 @@ git status --porcelain --untracked-files=all                    # 必須空（�
   （另一條線的量測證據，2026-09-16 以 `git add -f` 加入；`docs/` 與 `*.md` 的引用數是 0）。
   **綠燈的意思是「沒有新違反」，不是「政策成立」。** 要移出得由 owner 決定，見
   `agent_harness/shared/log_policy.json` 的 `grandfathered`。
-- **`check_module_split.py --self-test` 只在「最近一次拆分」上成立。** 它讀
-  `shared/knifeedge_split_map.json` 的 `source_rev` 與 `declared_delta`；別人在那之後改過
-  `scripts/check/knifeedge/*`（那是產生出來的檔案，不該手改），AST 等價就會紅 —— 那時
-  正確的動作是**改 map 並重跑 `split_module.py`**，不是改模組。
+- **`check_module_split.py` 的原檔修訂是「釘住的」，不是 HEAD**（2026-09-17 修）。
+  它預設讀 `shared/knifeedge_split_map.json` 的 `source_rev`。在這之前預設是 `HEAD`——
+  而那在**提交之前**是對的、提交之後就開始拿 shim 當原檔比。症狀極具誤導性：
+  `declared_edits 指名了原檔裡沒有的名字` ＋ `原樣的複本 -> fail`，讀起來像「拆分壞了」。
+  ★ 它還會**掩蓋陰性對照**：兩項都回 rc=2，於是「改一個字元的複本必須失敗」看起來是 ok 的
+  （它與陽性對照同歸於盡）。⇒ **凡是拿「當下的 HEAD」當預設輸入的檢查，提交後都要再看一次。**
+  紅了的第一個問題是「它讀的是哪一個修訂」，不是「我的內容錯了」；修法一律是改 map
+  並重跑 `split_module.py`，不要手改產生出來的模組（lesson `eng-gate-0049`）。
 
 - **`rebuild.sh --dry-run` 在閘門關著時仍然回 0。** 那個閘門的意義是
   「**現在不要建置**」，不是「這支工具壞了」—— 13:18 實測它真的擋下了一次（別條線正在跑

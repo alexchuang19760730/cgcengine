@@ -136,14 +136,33 @@ def check(reg, strict=True):
             else:
                 problems.append("找不到 wrappers/_common.sh")
 
-    # 反向：帶著 _stale 但沒有登記的檔案
+    # 反向：帶著 _stale 但沒有登記的檔案。
+    # ★ 判準是「解析後的 JSON 有沒有一個頂層 `_stale` 鍵」，不是 grep 字面字串。
+    #   第一版用 `git grep -l '"_stale"'`，於是它把「內容提到 _stale 的檔案」也算進來 ——
+    #   註冊表自己（`banner_key: "_stale"`）與日誌的快照都命中，一提交就紅。
+    #   一個把「提到」當成「標記」的反向檢查，只會製造假陽性，而假陽性會把真的未登記標記稀釋掉。
     if strict:
-        out = subprocess.run(["git", "-C", REPO, "grep", "-l", '"_stale"'],
-                             capture_output=True, text=True).stdout.split()
-        for f in out:
-            if f not in seen and not f.startswith("agent_harness/shared/check_stale"):
+        for f in _json_files_with_top_level_stale():
+            if f not in seen:
                 problems.append(f"{f} 帶著 _stale 記號但不在登記表裡（誰決定的？）")
     return problems
+
+
+def _json_files_with_top_level_stale():
+    """版控中的 *.json 裡，解析後頂層 dict 帶 `_stale` 鍵的那些。"""
+    out = []
+    listing = subprocess.run(["git", "-C", REPO, "ls-files", "*.json"],
+                             capture_output=True, text=True).stdout
+    for f in listing.splitlines():
+        p = os.path.join(REPO, f)
+        try:
+            with open(p, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except Exception:
+            continue
+        if isinstance(data, dict) and "_stale" in data:
+            out.append(f)
+    return out
 
 
 def cmd_check(args):

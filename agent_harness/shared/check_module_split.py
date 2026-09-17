@@ -171,6 +171,20 @@ def dump_all(nodes):
     return [ast.dump(n) for n in nodes]
 
 
+def default_rev(map_path):
+    """原檔所在的修訂：優先讀 map 的 `source_rev`。
+
+    為什麼不能預設 HEAD：拆分一 commit，`HEAD:<那個路徑>` 就已經是 shim 了。
+    用 HEAD 會把 shim 當成「原檔」去比，於是 `declared_edits` 指名一個不在 shim 裡的名字——
+    症狀是「原樣的複本 -> fail」，看起來像拆分壞了，其實是量具指錯了修訂。
+    """
+    try:
+        spec = json.load(open(map_path, encoding="utf-8"))
+        return spec.get("source_rev") or "HEAD"
+    except Exception:
+        return "HEAD"
+
+
 def find_named(nodes, name):
     for n in nodes:
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.name == name:
@@ -486,7 +500,9 @@ def main(argv=None):
 
     p = sub.add_parser("ast")
     p.add_argument("--original", required=True)
-    p.add_argument("--rev", required=True)
+    p.add_argument("--rev", default=None,
+                   help="原檔所在的修訂。預設讀 map 的 source_rev —— 拆分一提交，HEAD 的 "
+                        "同名路徑就已經是 shim，用 HEAD 會拿 shim 當原檔")
     p.add_argument("--package", required=True)
     p.add_argument("--entry", required=True)
     p.add_argument("--map", default=None)
@@ -506,13 +522,16 @@ def main(argv=None):
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--package", default=os.path.join(REPO, "scripts/check/knifeedge"))
     ap.add_argument("--original", default="scripts/check/knifeedge_matrix.py")
-    ap.add_argument("--rev", default="HEAD")
+    ap.add_argument("--rev", default=None,
+                    help="預設讀 map 的 source_rev（拆分一提交，HEAD 的同名路徑就是 shim）")
     ap.add_argument("--map", dest="map_selftest",
                     default=os.path.join(REPO,
                                          "agent_harness/shared/knifeedge_split_map.json"))
     ap.add_argument("--entry", dest="entry_selftest",
                     default=os.path.join(REPO, "scripts/check/knifeedge_matrix.py"))
     args = ap.parse_args(argv)
+    if getattr(args, "rev", None) is None:
+        args.rev = default_rev(getattr(args, "map", None) or args.map_selftest)
     if args.self_test:
         return cmd_self_test(args)
     if not getattr(args, "func", None):
