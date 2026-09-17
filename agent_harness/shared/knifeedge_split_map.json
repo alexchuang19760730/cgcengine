@@ -1,0 +1,306 @@
+{
+ "what": "E4 item 2：scripts/check/knifeedge_matrix.py 機械拆成 scripts/check/knifeedge/ 的對照表。由 split_module.py 讀取產生模組，由 check_module_split.py 讀取 declared_delta 與 glue_files。",
+ "source": "scripts/check/knifeedge_matrix.py",
+ "source_rev": "e3e2f15767b33b38052ecef21262da8777798e09",
+ "source_sha256": "22915db4e8035a50ebcf19971123d05c0b1a20379ddb45ed1e4c48f80e6a1654",
+ "source_lines": 3310,
+ "entry": "scripts/check/knifeedge_matrix.py",
+ "package": "scripts/check/knifeedge",
+ "handwritten": {
+  "anchor": {
+   "file": "scripts/check/knifeedge/anchor.py",
+   "names": [
+    "ROOT",
+    "GGUF",
+    "SERVER_MATCH",
+    "RESULT_DIR",
+    "DEFAULT_PORT",
+    "ENTRY_FILE"
+   ],
+   "reason": "ROOT 原本用 dirname×3 從 __file__ 推導；搬進子目錄後同一個表達式會落到 scripts/。展開成看得見的三步 + ENTRY_FILE"
+  },
+  "_source": {
+   "file": "scripts/check/knifeedge/_source.py",
+   "names": [
+    "source_text"
+   ],
+   "reason": "讓『這個 harness 的原始碼』有一個入口，取代三支呼叫腳本各自 open(某一個檔案路徑)"
+  }
+ },
+ "modules": {
+  "constants": [
+   "MODELS",
+   "NIL_RE",
+   "PROBE_PROMPT",
+   "GATHER_RE",
+   "POOL_GEOMETRY_SOURCES",
+   "KEY_FIELDS",
+   "NUMERIC_SOURCES",
+   "MODEL_SAMPLE_BYTES",
+   "EXPERT_CACHE_ON",
+   "EXPERT_CACHE_OFF",
+   "EXPERT_CACHE_OFF_NOGATHER",
+   "EXPERT_CACHE_NOHOOK",
+   "GROUND_TRUTH_STATES",
+   "CAP_INVARIANCE_DEFAULT_CAPS",
+   "FACT_PATTERNS",
+   "MIN_CAP"
+  ],
+  "host": [
+   "sh",
+   "running_servers",
+   "kill_servers",
+   "mem_free_pct",
+   "server_pid",
+   "rss_gb",
+   "health",
+   "port_owner",
+   "server_procs",
+   "launch",
+   "launch_pool_bytes",
+   "wait_health",
+   "ask_probe",
+   "_read_text",
+   "read_launch_facts"
+  ],
+  "identity": [
+   "model_path",
+   "model_identity",
+   "gate_model_identity",
+   "pool_geometry_stamp",
+   "BINARY_DIR",
+   "binary_stamp",
+   "source_stamp",
+   "model_stamp",
+   "_as_int",
+   "_model_digest_full",
+   "_model_guard",
+   "_oracle_meta",
+   "_cap_sidecar",
+   "_git_out"
+  ],
+  "oracle": [
+   "expert_cache_state",
+   "_write_oracle_meta",
+   "_cap_guard",
+   "_stamp_guard",
+   "_truth_guard",
+   "_oracle_guard",
+   "_run_oracle_compare",
+   "oracle_gate",
+   "oracle_recompare",
+   "_oracle_rows"
+  ],
+  "feasibility": [
+   "_FEAS_MOD",
+   "_FEAS_GEOM",
+   "_feasibility",
+   "pool_geometry",
+   "effective_launch_env",
+   "_env_int",
+   "feasibility_cell",
+   "feasibility_gate",
+   "print_feasibility_matrix",
+   "cap_for"
+  ],
+  "provenance": [
+   "record_provenance",
+   "record_geometry_key",
+   "_short_val",
+   "key_fingerprint"
+  ],
+  "caps": [
+   "preflight",
+   "apply_template_probe",
+   "scan_nil",
+   "scan_gather_evidence",
+   "union_fit_gate",
+   "_cap_probe_provenance",
+   "_recorded_slots",
+   "reconcile_cap_probe",
+   "cap_probe_reusable",
+   "geometry_conflict_error",
+   "probe_pool_cap",
+   "comparability_verdict"
+  ],
+  "matrix": [
+   "combo_label",
+   "run_combo",
+   "summary_table"
+  ],
+  "capinv": [
+   "_realign_decode",
+   "_first_divergence",
+   "step_partition",
+   "_capinv_guard",
+   "cap_invariance_dump",
+   "cap_invariance_gate",
+   "_store_capinv",
+   "print_capinv_table"
+  ],
+  "cli": [
+   "main",
+   "print_matrix"
+  ]
+ },
+ "module_order": [
+  "anchor",
+  "_source",
+  "constants",
+  "identity",
+  "host",
+  "oracle",
+  "feasibility",
+  "provenance",
+  "caps",
+  "matrix",
+  "capinv",
+  "cli"
+ ],
+ "glue_files": [
+  "knifeedge_matrix.py",
+  "knifeedge/__init__.py",
+  "knifeedge/anchor.py",
+  "knifeedge/_source.py"
+ ],
+ "declared_delta": [
+  {
+   "dump": "Assign(targets=[Name(id='ROOT', ctx=Store())], value=Call(func=Attribute(value=Attribute(value=Name(id='os', ctx=Load()), attr='path', ctx=Load()), attr='dirname', ctx=Load()), args=[Call(func=Attribute(value=Attribute(value=Name(id='os', ctx=Load()), attr='path', ctx=Load()), attr='dirname', ctx=Load()), args=[Call(func=Attribute(value=Attribute(value=Name(id='os', ctx=Load()), attr='path', ctx=Load()), attr='dirname', ctx=Load()), args=[Call(func=Attribute(value=Attribute(value=Name(id='os', ctx=Load()), attr='path', ctx=Load()), attr='abspath', ctx=Load()), args=[Name(id='__file__', ctx=Load())])])])]))",
+   "original_line": "L78 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))",
+   "replaced_by": "knifeedge/anchor.py 的 _HERE / CHECK_DIR / ROOT 三步展開",
+   "reason": "同一個表達式換一層目錄就會算出 scripts/ 而不是 repo 根，而且沒有任何檢查會發現（eng-bound-0007）。值由 check_module_split.py 的 runtime 錨點斷言證明未變。",
+   "checked_by": "check_module_split.py compare --anchors"
+  }
+ ],
+ "notes": [
+  "print_matrix 與 main 同住 cli：args_greedy_global 只在 main 裡以 `global` 建立、只在 print_matrix 裡被讀。搬開任一邊，讀者會在它自己的模組裡找不到那個名字 —— 而且語法檢查完全不會反應。split_module.py 把這條規則寫成硬性檢查。",
+  "anchor 與 _source 是手寫模組，其餘模組由 split_module.py 逐位元組產生。"
+ ],
+ "mainguard_owner": "cli",
+ "declared_edits": [
+  {
+   "module": "provenance",
+   "name": "record_provenance",
+   "find": "open(os.path.abspath(__file__), \"rb\")",
+   "replace": "open(ENTRY_FILE, \"rb\")",
+   "why": "record_provenance 記的是『跑的是哪支腳本』的摘要。搬進子目錄之後 __file__ 會指向 knifeedge/provenance.py —— 同一個錯誤類別（eng-bound-0007），只是這次會靜默地改掉那個欄位的**指涉對象**。欄位本身在原始碼裡就標明 informational only、永不進入 comparability key，所以沒有任何既有量測因此失效；但指涉必須是明示的。",
+   "checked_by": "check_module_split.py ast：old_src.replace(find,replace) 必須逐 AST 等於新節點",
+   "note": "摘要值本身會變一次（被摘要的檔案內容確實換了），而且是變小 —— 這是實話，不是掩蓋。"
+  }
+ ],
+ "entry_glue": [
+  "_HERE",
+  "_os",
+  "_sys",
+  "_types",
+  "_PKG",
+  "_OWNER",
+  "_Forward",
+  "_self",
+  "anchor",
+  "_source",
+  "constants",
+  "identity",
+  "host",
+  "oracle",
+  "feasibility",
+  "provenance",
+  "caps",
+  "matrix",
+  "capinv",
+  "cli"
+ ],
+ "entry_glue_reason": "shim 的三類新增名字：(1) _HERE/_os/_sys 讓呼叫者不論用 import、spec_from_file_location 還是 `python3 <路徑>` 都能解析到套件；(2) 12 個子模組物件，讓 `km.<module>.<name> = x` 成為可能 —— 路徑載入時 Python 不把模組放進 sys.modules，沒有人拿得到 entry 那個物件，因此無法攔 __setattr__，子模組是唯一可行的替換入口；(3) _types/_PKG/_OWNER/_Forward/_self 是屬性寫入轉發層，讓『正常 import 的 entry 上寫屬性』維持它原本的指涉。__doc__ 與其餘每一個名字都與原檔一致。",
+ "verification": {
+  "五層，每層都有陰性對照": {
+   "1_ast": "check_module_split.py ast → 原檔 113 個頂層節點：111 個逐 AST 相同、1 個逐字重建驗過（record_provenance 的 __file__ → ENTRY_FILE）、1 個為宣告的偏差（anchor 的 ROOT）。額外節點只出現在 4 個宣告的 glue 檔。",
+   "2_runtime指紋": "check_module_split.py compare → 109 個名字全部還在；75 個函式的簽名與 docstring 逐一相同；18 個常數值相同；5 個錨點（含 ROOT 的絕對路徑）相同；__doc__ 相同。新增 5 個名字（ENTRY_FILE, source_text, _HERE, _os, _sys）為宣告的 glue。",
+   "3_cli": "check_module_split.py cli → --help stdout 逐字元相同（11168 bytes, rc=0）；stderr 的 1 個警告位置不同（同一個既有的 invalid escape，換了檔案）。",
+   "4_替換契約": "check_module_split.py contracts → 4/4。陰性對照：拿掉轉發層之後 3/4 變紅並列出 101 個具體失敗。",
+   "5_呼叫端": "兩支離線自測在**等價環境**下與搬遷前逐字元相同：feasibility_gate_selftest.py ALL PASS、oracle_truth_gate_selftest.py ALL PASS；5 支 CLI 呼叫端 --help rc=0。"
+  },
+  "唯一動到的呼叫端（兩處，都在 scripts/check/，都是機械改）": [
+   "feasibility_gate_selftest.py：5 個注入點 km.pool_geometry → km.feasibility.pool_geometry（4 處 lambda + 表頭那處）。理由：feasibility_cell 讀的是 feasibility 模組的全域。",
+   "oracle_truth_gate_selftest.py：open(HERE/knifeedge_matrix.py).read() → km.source_text()。字串斷言一字未改。"
+  ],
+  "怎麼重跑": [
+   "python3 agent_harness/shared/split_module.py --source scripts/check/knifeedge_matrix.py --from-rev <拆分前修訂> --map agent_harness/shared/knifeedge_split_map.json --out-dir scripts/check --pkg-name knifeedge --write",
+   "python3 agent_harness/shared/check_module_split.py fingerprint --entry scripts/check/knifeedge_matrix.py --out /tmp/after.json",
+   "python3 agent_harness/shared/check_module_split.py compare --before /tmp/before.json --after /tmp/after.json",
+   "python3 agent_harness/shared/check_module_split.py ast --original scripts/check/knifeedge_matrix.py --rev <拆分前修訂> --package scripts/check/knifeedge --entry scripts/check/knifeedge_matrix.py --map agent_harness/shared/knifeedge_split_map.json",
+   "python3 agent_harness/shared/check_module_split.py cli --old <拆分前 entry> --new scripts/check/knifeedge_matrix.py",
+   "python3 agent_harness/shared/check_module_split.py contracts --entry scripts/check/knifeedge_matrix.py",
+   "python3 agent_harness/shared/check_module_split.py --self-test"
+  ],
+  "拆分後的大小": {
+   "entry": 11564,
+   "package": [
+    {
+     "file": "__init__.py",
+     "lines": 139,
+     "bytes": 4714
+    },
+    {
+     "file": "_source.py",
+     "lines": 40,
+     "bytes": 1568
+    },
+    {
+     "file": "anchor.py",
+     "lines": 35,
+     "bytes": 1768
+    },
+    {
+     "file": "capinv.py",
+     "lines": 563,
+     "bytes": 31009
+    },
+    {
+     "file": "caps.py",
+     "lines": 500,
+     "bytes": 26885
+    },
+    {
+     "file": "cli.py",
+     "lines": 409,
+     "bytes": 25593
+    },
+    {
+     "file": "constants.py",
+     "lines": 197,
+     "bytes": 10363
+    },
+    {
+     "file": "feasibility.py",
+     "lines": 252,
+     "bytes": 11734
+    },
+    {
+     "file": "host.py",
+     "lines": 241,
+     "bytes": 8652
+    },
+    {
+     "file": "identity.py",
+     "lines": 308,
+     "bytes": 13225
+    },
+    {
+     "file": "matrix.py",
+     "lines": 571,
+     "bytes": 33884
+    },
+    {
+     "file": "oracle.py",
+     "lines": 314,
+     "bytes": 15777
+    },
+    {
+     "file": "provenance.py",
+     "lines": 138,
+     "bytes": 7452
+    }
+   ]
+  }
+ }
+}

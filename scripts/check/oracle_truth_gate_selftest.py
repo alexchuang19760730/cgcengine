@@ -138,7 +138,10 @@ def main():
 
     print("6. the verdict says which kind of comparison it was")
     # A 19/19 must never again be readable without knowing absolute vs relative.
-    src = open(os.path.join(HERE, "knifeedge_matrix.py"), encoding="utf-8").read()
+    # 2026-09-17（E4 item 2）：harness 已拆成 scripts/check/knifeedge/ 套件，所以
+    # 「它的原始碼」不再是一個檔案。km.source_text() 就是這個問題的正確問法
+    # （實作見 scripts/check/knifeedge/_source.py）；下面的字串斷言一字未改。
+    src = km.source_text()
     ok &= check("oracle_gate stamps comparison=absolute|relative",
                 '"comparison": "absolute" if absolute else "relative"' in src, True)
 

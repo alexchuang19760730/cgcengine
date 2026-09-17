@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>E4 治理結清：拆分、stale、log 政策 —— 2026-09-17</title>
+<style>
+  :root{--bg:#ffffff;--fg:#1f2328;--muted:#57606a;--line:#d8dee4;--soft:#f6f8fa;
+        --blue:#0969da;--green:#1a7f37;--red:#cf222e;--amber:#9a6700;--purple:#8250df}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,"PingFang TC","PingFang SC","Helvetica Neue",Arial,sans-serif}
+  .wrap{max-width:1040px;margin:0 auto;padding:32px 20px 80px}
+  h1{font-size:26px;line-height:1.4;margin:0 0 6px}
+  h2{font-size:19px;margin:34px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:22px 0 8px}
+  p,li{margin:8px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;
+       background:var(--soft);padding:1px 5px;border-radius:4px}
+  pre{background:var(--soft);border:1px solid var(--line);border-radius:8px;padding:12px 14px;
+      overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.55}
+  pre code{background:none;padding:0}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num,th.num{white-space:nowrap;text-align:right}
+  .tag{display:inline-block;font-size:12px;padding:1px 8px;border-radius:999px;border:1px solid}
+  .t-blue{color:var(--blue);border-color:#b6d8ff;background:#eaf3ff}
+  .t-green{color:var(--green);border-color:#b4dfc0;background:#e9f7ee}
+  .t-red{color:var(--red);border-color:#ffc9c9;background:#fff0f0}
+  .t-amber{color:var(--amber);border-color:#f0dca4;background:#fdf6e3}
+  .t-purple{color:var(--purple);border-color:#d9c9f7;background:#f5f0ff}
+  .t-gray{color:var(--muted);border-color:#d8dee4;background:#f6f8fa}
+  .box{border-left:4px solid var(--blue);background:#f6f8fa;padding:10px 14px;border-radius:0 8px 8px 0;margin:14px 0}
+  .box.warn{border-left-color:var(--amber);background:#fdf8ec}
+  .box.bad{border-left-color:var(--red);background:#fff2f2}
+  .box.ok{border-left-color:var(--green);background:#f0f9f3}
+  .box.pur{border-left-color:var(--purple);background:#f7f3ff}
+  .lead{color:var(--muted)}
+  svg{display:block;margin:14px 0}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>E4 治理結清：拆分、stale、log 政策</h1>
+<p class="lead">2026-09-17 13:35–14:05 ｜ 指令：「先把 e4 全部完成」 ｜ 全程<span class="tag t-green">零 GPU</span>
+<span class="tag t-green">零建置</span><span class="tag t-green">零 llama-server</span></p>
+
+<div class="box ok">
+<b>這一份要講的一件事</b>：E4 的四項（log 政策、拆分、分層、標記 stale）都不是「寫一支腳本」型的任務，
+它們的共同形狀是<b>把一句話變成一個會失敗的檢查</b>。而這一輪證明了那句話的代價：
+<b>一變成檢查，第一次執行就抓到 12 個既有的違反</b>；而拆分的四層等價證明裡，
+前三層全綠的時候，<b>東西其實是壞的</b>。
+</div>
+
+<h2>1. 四項的終態</h2>
+
+<table>
+<tr><th>#</th><th>原條目</th><th>終態</th><th>可重跑的那一支</th></tr>
+<tr>
+  <td class="num">1</td><td>log 政策落地</td>
+  <td>政策抽成資料 <code>shared/log_policy.json</code>（納管 6／不納管 5／上限／既有例外 12）<br>
+      由 <code>shared/check_log_policy.py</code> 機檢</td>
+  <td><code>check_log_policy.py --check --privacy</code><br>（全掃 2446 個 pack：7.8 秒）</td>
+</tr>
+<tr>
+  <td class="num">2</td><td><code>knifeedge_matrix.py</code>（181 KB）拆分</td>
+  <td>3310 行 → <code>scripts/check/knifeedge/</code> 11 個模組 ＋ 薄 shim，最大 571 行；<br>
+      路徑、名字、<code>dir()</code>、<code>--help</code> 全部不變</td>
+  <td><code>shared/split_module.py</code>（產生）<br><code>shared/check_module_split.py</code>（證明，四層）</td>
+</tr>
+<tr>
+  <td class="num">3</td><td><code>scripts/check/</code> 40+ 檔分層</td>
+  <td>以<b>資料</b>表達（<code>wrappers/classify.py</code> ＋ <code>classes.tsv</code>），不搬檔</td>
+  <td><code>classify.py --check</code> → <code>OK: 46 個腳本、6 類、無漂移、無未分類項</code></td>
+</tr>
+<tr>
+  <td class="num">4</td><td>標記 stale（<code>replay_bench_*</code>）</td>
+  <td><code>shared/stale_registry.json</code> 單一權威；banner 跟著資料（JSON 的 <code>_stale</code>）<br>
+      並在<b>消費點</b>由 wrapper 印出</td>
+  <td><code>check_stale.py --check</code><br><code>gate.sh --dry-run replay_bench_compare.py</code></td>
+</tr>
+</table>
+
+<h3>為什麼 item 3 不是 <code>git mv</code></h3>
+<p>實測：<code>scripts/check/*</code> 扛著 <b>562 條引用</b>，其中 <b>134 條來自已定稿的
+<code>docs/*.html</code></b>、41 條來自 append-only 的 <code>.workbuddy/memory</code>。
+搬檔會讓 175 條引用懸空，而且會讓已發佈的白皮書變成假話。
+所以分層落地成「能力分類的資料」而不是新的目錄結構 —— <b>要改的是敘述的形狀，不是檔案的位置</b>。</p>
+
+<h2>2. E4 item 2：拆分（這一輪唯一真的弄壞東西的地方）</h2>
+
+<h3>2.1 規模與形狀</h3>
+<table>
+<tr><th>檔案</th><th class="num">行</th><th class="num">bytes</th></tr>
+<tr><td class="mono">knifeedge/matrix.py</td><td class="num">571</td><td class="num">33,884</td></tr>
+<tr><td class="mono">knifeedge/capinv.py</td><td class="num">563</td><td class="num">31,009</td></tr>
+<tr><td class="mono">knifeedge/caps.py</td><td class="num">500</td><td class="num">26,885</td></tr>
+<tr><td class="mono">knifeedge/cli.py</td><td class="num">409</td><td class="num">25,593</td></tr>
+<tr><td class="mono">knifeedge/oracle.py</td><td class="num">314</td><td class="num">15,777</td></tr>
+<tr><td class="mono">knifeedge/identity.py</td><td class="num">308</td><td class="num">13,225</td></tr>
+<tr><td class="mono">knifeedge/feasibility.py</td><td class="num">252</td><td class="num">11,734</td></tr>
+<tr><td class="mono">knifeedge_matrix.py</td><td class="num">338</td><td class="num">11,564</td></tr>
+<tr><td class="mono">knifeedge/constants.py</td><td class="num">197</td><td class="num">10,363</td></tr>
+<tr><td class="mono">knifeedge/host.py</td><td class="num">241</td><td class="num">8,652</td></tr>
+<tr><td class="mono">knifeedge/provenance.py</td><td class="num">138</td><td class="num">7,452</td></tr>
+<tr><td class="mono">knifeedge/__init__.py ＋ anchor.py ＋ _source.py</td><td class="num">214</td><td class="num">8,050</td></tr>
+<tr><th>合計</th><th class="num">4,045</th><th class="num">204,188</th></tr>
+<tr><td class="mono">原檔（拆分前）</td><td class="num">3,310</td><td class="num">181,447</td></tr>
+</table>
+<p>行數與位元組都<b>增加</b>了：每個模組要帶自己的 import 標頭、<code>__init__.py</code> 要逐一
+re-export 109 個名字、shim 要保留原文的 docstring。這是預期的代價 —— 拆分的收益是
+<b>最大單檔由 181,447 bytes 降到 33,884 bytes</b>，不是總量變小。</p>
+
+<h3>2.2 搬運是機械的，證明是四層的</h3>
+<svg viewBox="0 0 1000 250" width="100%" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>拆分的四層等價證明與各自的盲區</title>
+  <desc>四層由左至右：AST、runtime 指紋、CLI、替換契約。前三層都通過時東西仍是壞的，第四層才抓到。</desc>
+  <rect x="10" y="20" width="225" height="150" rx="10" fill="#eaf3ff" stroke="#0969da" stroke-width="0.5"/>
+  <text x="30" y="48" font-size="14" font-weight="500" fill="#0b2e5c">① AST</text>
+  <text x="30" y="72" font-size="12" fill="#1f2328">113 個頂層節點：</text>
+  <text x="30" y="90" font-size="12" fill="#1f2328">111 逐 AST 相同</text>
+  <text x="30" y="108" font-size="12" fill="#1f2328">1 逐字重建驗過</text>
+  <text x="30" y="126" font-size="12" fill="#1f2328">1 宣告偏差（ROOT）</text>
+  <text x="30" y="152" font-size="12" fill="#cf222e">盲區：不呼叫函式</text>
+  <rect x="255" y="20" width="225" height="150" rx="10" fill="#eaf3ff" stroke="#0969da" stroke-width="0.5"/>
+  <text x="275" y="48" font-size="14" font-weight="500" fill="#0b2e5c">② runtime 指紋</text>
+  <text x="275" y="72" font-size="12" fill="#1f2328">109 名字全在／75 簽名</text>
+  <text x="275" y="90" font-size="12" fill="#1f2328">18 常數值／5 錨點</text>
+  <text x="275" y="108" font-size="12" fill="#1f2328">__doc__ 逐字元相同</text>
+  <text x="275" y="126" font-size="12" fill="#1f2328">（含 ROOT 絕對路徑）</text>
+  <text x="275" y="152" font-size="12" fill="#cf222e">盲區：不呼叫函式</text>
+  <rect x="500" y="20" width="225" height="150" rx="10" fill="#eaf3ff" stroke="#0969da" stroke-width="0.5"/>
+  <text x="520" y="48" font-size="14" font-weight="500" fill="#0b2e5c">③ CLI</text>
+  <text x="520" y="72" font-size="12" fill="#1f2328">--help stdout 逐字元</text>
+  <text x="520" y="90" font-size="12" fill="#1f2328">11168 bytes 相同</text>
+  <text x="520" y="108" font-size="12" fill="#1f2328">rc=0 相同</text>
+  <text x="520" y="126" font-size="12" fill="#1f2328">（清 pyc 後比）</text>
+  <text x="520" y="152" font-size="12" fill="#cf222e">盲區：只到參數面</text>
+  <rect x="745" y="20" width="245" height="150" rx="10" fill="#fff2f2" stroke="#cf222e" stroke-width="0.5"/>
+  <text x="765" y="48" font-size="14" font-weight="500" fill="#7a1218">④ 替換契約</text>
+  <text x="765" y="72" font-size="12" fill="#1f2328">entry.X = 替身 之後，</text>
+  <text x="765" y="90" font-size="12" fill="#1f2328">F.__globals__[X] 必須</text>
+  <text x="765" y="108" font-size="12" fill="#1f2328">就是那個替身</text>
+  <text x="765" y="126" font-size="12" fill="#1f2328">4/4 通過</text>
+  <text x="765" y="152" font-size="12" fill="#1a7f37">唯一抓到真缺陷的一層</text>
+  <path d="M235 95 L255 95" fill="none" stroke="#0969da" stroke-width="1.5"/>
+  <path d="M480 95 L500 95" fill="none" stroke="#0969da" stroke-width="1.5"/>
+  <path d="M725 95 L745 95" fill="none" stroke="#0969da" stroke-width="1.5"/>
+  <text x="10" y="205" font-size="13" fill="#57606a">前三層的判準是「不呼叫函式就量得到的性質」⇒ 三者都通過，而 feasibility_gate_selftest 已經崩潰。</text>
+  <text x="10" y="228" font-size="13" fill="#57606a">每一層都要有自己的陰性對照：改一個常數 → AST 變紅；拿掉轉發層 → contracts 由 4/4 變 1/4 並列出 101 個失敗。</text>
+</svg>
+
+<h3>2.3 三個「沒有任何檢查會反應」的類別</h3>
+<table>
+<tr><th>類別</th><th>實例</th><th>誰抓到</th></tr>
+<tr>
+  <td><b>錨點</b></td>
+  <td><code>ROOT = dirname(dirname(dirname(abspath(__file__))))</code>；換一層目錄就落到 <code>scripts/</code></td>
+  <td>AST 的 <code>declared_delta</code> ＋ 指紋的錨點等值斷言</td>
+</tr>
+<tr>
+  <td><b><code>__file__</code> 的指涉</b></td>
+  <td><code>record_provenance</code> 用 <code>open(abspath(__file__))</code> 記「跑的是哪支腳本」</td>
+  <td>逐字重建（<code>old.replace(find, replace)</code> 必須逐 AST 等於新節點）</td>
+</tr>
+<tr>
+  <td><b><code>global</code> 的名字</b></td>
+  <td><code>args_greedy_global</code> 只在 <code>main</code> 建立、只在 <code>print_matrix</code> 讀</td>
+  <td><code>split_module.py</code> 的硬性拒絕（要求同模組）</td>
+</tr>
+<tr>
+  <td><b>entry 上的屬性寫入</b></td>
+  <td>離線自測用 <code>km.pool_geometry = 替身</code> 注入合成幾何</td>
+  <td><code>check_module_split.py contracts</code> —— <b>AST／指紋／CLI 三者都比對不到</b></td>
+</tr>
+</table>
+
+<div class="box bad">
+<b>第四列是這一輪唯一真的弄壞東西的地方，而它的失敗是靜默的。</b>
+<pre><code># 搬遷前（等價環境）              # 搬遷後（未修）
+feasibility_gate_selftest.py     feasibility_gate_selftest.py
+  rc=0  ALL PASS                   File ".../knifeedge/feasibility.py", line 117, in feasibility_cell
+                                     geom = pool_geometry(kind)
+                                   File ".../knifeedge/feasibility.py", line 73, in pool_geometry
+                                     _FEAS_GEOM["geom"] = _feasibility().gguf_geometry(path)
+                                   ModuleNotFoundError: No module named 'numpy'</code></pre>
+注入沒生效 ⇒ 測試掉到真的 GGUF 路徑 ⇒ 在一個<b>沒有 numpy</b> 的環境裡崩潰。
+崩潰的地點（GGUF／numpy）與原因（注入失效）相距很遠 —— 這是它會浪費一輪診斷的原因。
+</div>
+
+<h3>2.4 處置：兩層，而且其中一半沒有解</h3>
+<ul>
+<li><b>正常 import 的 entry</b>：shim 把自己所在的目錄放進 <code>sys.path</code>、逐一 re-export，
+並在最後把<b>自己的類別</b>換成一個 <code>__setattr__</code> 會轉發到「定義該名字的模組」的
+<code>ModuleType</code> 子類。於是 <code>km.pool_geometry = x</code> 仍然改到
+<code>knifeedge.feasibility.pool_geometry</code>。</li>
+<li><b>路徑載入（<code>spec_from_file_location</code>）</b>：Python <b>不把那種模組放進
+<code>sys.modules</code></b>，所以沒有任何物件回指的辦法 ⇒ <b>攔不到</b>。
+那三支離線自測用的就是這個方式，它們的正解是把子模組綁在 entry 上、改打
+<code>km.feasibility.pool_geometry</code>（各 5 處與 1 處）。</li>
+</ul>
+<p>改完之後的判準是<b>逐字元</b>：兩支離線自測在等價環境（<code>git archive HEAD scripts/check</code>
+＋ <code>models</code>／<code>src</code> 符號連結）下，與搬遷前的輸出<b>逐行相同</b>，
+兩邊都是 <code>ALL PASS</code>。5 支 CLI 呼叫端 <code>--help</code> 全部 rc=0。</p>
+
+<h2>3. E4 item 4：stale</h2>
+
+<p>一個用 stale baseline 跑出來的 verdict，格式與用真 baseline 跑出來的<b>一模一樣</b>。
+所以 <code>.gitignore</code> 的註解對「讀那個檔的人」有效，對「用那個檔的程式」無效。三層：</p>
+<svg viewBox="0 0 1000 210" width="100%" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>stale 標記的三層</title>
+  <desc>第一層是單一權威 registry，第二層是跟著資料走的 _stale 區塊，第三層是消費點的 wrapper banner。</desc>
+  <rect x="10" y="20" width="300" height="120" rx="10" fill="#f5f0ff" stroke="#8250df" stroke-width="0.5"/>
+  <text x="30" y="46" font-size="14" font-weight="500" fill="#41227a">① 單一權威</text>
+  <text x="30" y="70" font-size="12" fill="#1f2328">shared/stale_registry.json</text>
+  <text x="30" y="90" font-size="12" fill="#1f2328">2 個資產 ＋ 1 個消費者</text>
+  <text x="30" y="110" font-size="12" fill="#1f2328">每筆附 why／evidence／</text>
+  <text x="30" y="128" font-size="12" fill="#1f2328">run_with／decision</text>
+  <rect x="340" y="20" width="300" height="120" rx="10" fill="#f5f0ff" stroke="#8250df" stroke-width="0.5"/>
+  <text x="360" y="46" font-size="14" font-weight="500" fill="#41227a">② banner 跟著資料</text>
+  <text x="360" y="70" font-size="12" fill="#1f2328">.replay_bench_baseline.json</text>
+  <text x="360" y="90" font-size="12" fill="#1f2328">的 _stale 區塊</text>
+  <text x="360" y="110" font-size="12" fill="#1f2328">（既有 _doc／_version 慣例）</text>
+  <text x="360" y="128" font-size="12" fill="#1f2328">已驗讀者一律用 .get()</text>
+  <rect x="670" y="20" width="320" height="120" rx="10" fill="#eaf3ff" stroke="#0969da" stroke-width="0.5"/>
+  <text x="690" y="46" font-size="14" font-weight="500" fill="#0b2e5c">③ 消費點的出口</text>
+  <text x="690" y="70" font-size="12" fill="#1f2328">wrappers/_common.sh 的</text>
+  <text x="690" y="90" font-size="12" fill="#1f2328">w_announce_stale 在執行前問</text>
+  <text x="690" y="110" font-size="12" fill="#1f2328">登記表；查不到＝不是消費者</text>
+  <text x="690" y="128" font-size="12" fill="#1f2328">（不讓機制本身弄失敗）</text>
+  <path d="M310 80 L340 80" fill="none" stroke="#8250df" stroke-width="1.5"/>
+  <path d="M640 80 L670 80" fill="none" stroke="#8250df" stroke-width="1.5"/>
+  <text x="10" y="175" font-size="13" fill="#57606a">反向也查：帶著 _stale 記號但不在登記表裡的檔案會被 --check 點名（否則任何人都能自己貼標記）。</text>
+</svg>
+
+<h3>3.1 現場輸出（<code>gate.sh --dry-run replay_bench_compare.py</code>，不會執行任何東西）</h3>
+<pre><code>[stale] scripts/check/replay_bench_compare.py —— 自 2026-09-15 起已 stale
+        為什麼：它把 current 跟 baseline 比並輸出 verdict。baseline 已 stale 時，它產出的是
+                **關於一個不存在的基準的判決**，而格式完全正常 —— 這正是消費點必須自己講出來的理由。
+        怎麼跑：RUN_REPLAY_BENCH=0
+        證據：.gitignore:419-425（baseline 已失真）、agent_harness/CONVENTIONS.md:447（D2）
+        登記在：agent_harness/shared/stale_registry.json（要改這個決定請改那裡）</code></pre>
+<p>對照：<code>gate.sh --dry-run m123_oracle_gate.py</code>（未登記）→ <b>零行 banner</b>。
+兩支 wrapper 自測項就是這一對：<code>已登記的 stale 消費者在執行前會被點名（banner 1 行）</code>
+與 <code>未登記的腳本不產生 banner（陰性對照）</code>。</p>
+
+<h2>4. E4 item 1：log 政策 —— 變成斷言之後的第一個發現</h2>
+
+<p>政策原文寫在三個地方：PLAN §8 的段落、<code>.gitignore:419-425</code> 的 dated 註解、
+以及幾支腳本的行為。它<b>從未被機檢過</b>。而它的一句話是：
+「<code>Backup/cgc_logs</code> 原文<b>不進 repo</b>」。</p>
+
+<div class="box bad">
+<b>把政策抽成 <code>shared/log_policy.json</code> ＋ <code>check_log_policy.py</code> 之後，
+第一次執行就抓到：</b>
+<pre><code>Backup/cgc_logs 底下有 12 個檔案違反政策：['…/p25-gputime_llama_server_20260916_201242.log', …]
+grandfathered 清單裡有 2 筆已經不在版控裡了 —— 把過期的例外刪掉（這是修好清單之後才出現的第二類）</code></pre>
+那 12 筆共 <b>5,831,279 bytes</b>（10 個 ~670 KB 的 llama-server 原文 ＋ 2 個小檔），
+而 <code>git grep -l &lt;檔名&gt; -- docs/ '*.md'</code> 的引用數是 <b>0</b>。
+</div>
+
+<p><b>為什麼是「登記」而不是「移出」</b>：它們是另一條線的量測證據，移出等於刪掉別人的東西
+（而且如果他們的白皮書引用著它，引用會懸空）。所以處置是把每一筆寫進
+<code>grandfathered</code>：逐筆印出、附 owner 與大小，並且<b>多一筆就紅</b>。
+<b>登記不是豁免</b> —— 它的功能是把「沉默的違規」換成「看得見的例外」。</p>
+
+<div class="box warn">
+<b>反向對照（這一條決定了檢查器有沒有判別力）</b>：<code>Backup/cgc_logs</code> 底下另外
+<b>22 個</b>檔案（118 KB 的 <code>arms.json</code>／<code>*.tsv</code>／<code>req2retest*.txt</code>）
+是<b>衍生摘要不是原文</b>，政策不禁它們。如果檢查器只會「檔數變多就紅」，
+它會把這 22 筆報成違反 —— 而那時「12 筆真違反」就被 22 筆假陽性稀釋掉了。
+處置是把「原文」操作化成兩條可量測的：<b>(a)</b> 這個路徑下不得有版控中的 <code>*.log</code>；
+<b>(b)</b> 不得有單一版控檔超過 256 KB（＝ pack 上限）。
+</div>
+
+<h3>4.1 政策檢查的其他三軸</h3>
+<table>
+<tr><th>軸</th><th>內容</th><th>現況</th></tr>
+<tr><td>納管</td><td><code>traces/*.jsonl</code>、<code>sft_pi</code>、<code>sft_prime</code>、<code>MANIFEST.jsonl</code>、<code>CONVENTIONS.md</code>、<code>evidence/INDEX.jsonl</code></td><td class="num">2／2／3／1／1／1 筆在版控</td></tr>
+<tr><td>不納管</td><td>日誌原文、<code>harness_engine/logs</code>、<code>runs/</code>、<code>build.json</code>、<code>distill/out/</code></td><td class="num">4／5 條路徑 0 筆在版控（第 5 條見上）</td></tr>
+<tr><td>上限</td><td>每筆 pack ≤ 256 KB，且每筆有 <code>source_sha256</code> 指向原文</td><td class="num">最大 79,962 bytes ＝ 78.1 KB</td></tr>
+<tr><td>去隱私</td><td>家目錄路徑／內網 IP／<code>sk-*</code> 樣式不得出現在 pack 內</td><td class="num">全掃 2446 個 pack：0 命中</td></tr>
+</table>
+
+<h2>5. 現場閘門輸出（原文）</h2>
+<pre><code>### validate
+  lessons.jsonl: 143 records {'lesson': 143}
+  -> OK
+### traces/selftest
+  10/10 injected violations rejected
+### check_citations
+  ④ 懸空                  :   0/61
+  OK: 61/61 條都有交代（可解析指針 59 ＋ 顯式標記 2），0 懸空
+### check_shell_cjk
+  2 處 `$VAR` 緊接非 ASCII（`set -u` 下會 unbound variable）：
+    scripts/check/m1_early_verification/test_union_slots.sh  L62: $PORT 後接 '）'
+    scripts/run_native_baseline.sh                            L30: $QUANT 後接 '（'
+  （新寫的 shell 零命中；這 2 處屬另一條線、且那兩支沒有 set -u）
+### build_memories --check
+  memories OK: 143 file(s), extensions pointer resolves, no drift
+### build_sft_pi --check
+  sft_pi OK: train.jsonl + valid.jsonl re-derive to the same bytes; the invocation and input hashes agree with PROVENANCE.json
+### build_sft_prime --check
+  sft_prime OK: train.jsonl + valid.jsonl re-derive to the same bytes; the invocation and input hashes agree with PROVENANCE.json
+### index_assets --check
+  manifest OK: 102 assets, existence + bytes + mtime all agree
+### build_memory_index --check
+  memory index OK: 7 file(s), 124 section(s), no drift
+### classify --check
+  OK: 46 個腳本、6 類、無漂移、無未分類項
+### check_stale --check
+  3 個登記項（2 個資產 + 1 個消費者）都對得上：banner 跟著資料、消費點有出口、反向沒有未登記的標記
+### check_log_policy --check --privacy
+  引用 2447 個 pack 檔（索引 2750 列；內容尋址去重 2750 → 2446 檔）
+  最大 pack 79962 bytes = 78.1 KB（上限 256 KB）
+  掃了 40／40 個 pack（抽樣；--all 可全掃）
+  log 政策一致
+### check_module_split（四層）
+  ast       : 原檔 113 個頂層節點：111 逐 AST 相同、1 逐字重建驗過、1 宣告偏差
+  contracts : 4/4 checks passed
+  --self-test: 2/2（未改的複本 pass；改一個字元 → fail）</code></pre>
+<p>下游連鎖（本輪真的發生）：新增 6 條 lesson ⇒ <code>build_memories --check</code> 紅
+（<code>eng-src-0019.md: in lessons.jsonl but no memory file</code>）與
+<code>build_sft_prime --check</code> 紅（<code>26 rows on disk -&gt; 27 derived</code>）
+⇒ 依序重生（143 個 memory、<code>sft_prime</code> 重推導）⇒ 兩條都綠。
+<b>這就是「加 lesson 不是只加一行」的實際成本。</b></p>
+
+<h2>6. 誠實邊界（不主張什麼）</h2>
+<ul>
+<li><b>路徑載入時的屬性寫入攔不到。</b> 拆分的替換契約只在「模組被正常 import」時成立；
+<code>spec_from_file_location</code> 載入的 entry 不在 <code>sys.modules</code> 裡，
+Python 沒有給任何回指的辦法。那個情境的正解是 <code>km.&lt;module&gt;.&lt;name&gt;</code>。
+<b>不把它講成「契約保住了」</b>（lesson <code>eng-src-0017</code>）。</li>
+<li><b>12 筆 <code>.log</code> 只有登記、沒有移出。</b> 它們仍在版控裡、仍佔 5.6 MB。</li>
+<li><b>11 個新模組不在 <code>MANIFEST.jsonl</code> 裡</b>（<code>index_assets.py</code> 的 glob 只掃
+<code>scripts/check/*</code>，非遞迴）。它們的完整性由 <code>check_module_split.py</code> 負責，
+不由索引負責 —— 這是「綠燈與沒被檢查長得一樣」的另一個實例，寫在這裡以便下一個人知道要問哪一支。</li>
+<li><b>沒有一項是起 server 驗的。</b> 拆分的等價證明全部離線；<code>check_log_policy --privacy</code>
+只解壓並掃描 pack，不執行任何量測。行為面（D6 欠帳與 E3 本體）仍缺一個乾淨的窗，見
+<code>.workbuddy/memory/2026-09-17.md</code> §Z7 的三個當下量到的理由。</li>
+<li><b>目錄裡兩個既有小瑕疵沒有動</b>（不是我的檔）：<code>knifeedge/host.py:223</code> 承接了一條
+既有的 <code>SyntaxWarning: invalid escape sequence '\S'</code>（原文在
+<code>knifeedge_matrix.py:2134</code>，逐位元組搬過來，位置隨程式碼移動）；
+以及 <code>MIN_CAP = 6</code> 在原檔裡被<b>連著同一段註解重複定義兩次</b>（L424／L432），
+拆分保留兩份 —— 拆分的目標是搬運，不是順手清理。</li>
+</ul>
+
+<h2>7. 這一份屬於哪個 commit</h2>
+<p>D5 的白皮書附件，與 E4 結清的那個 commit 綁定。檔名帶 <code>_HHMM</code>（同一天同主題可能再寫）。
+本檔的所有數字都是 13:35–14:05 之間現場量的；<b>沒有一個數字是從舊文件抄來的</b>，
+而 <code>lessons.jsonl</code> 的計數與四個模組的行數這類會過期的值，一律以現場那一支為準。</p>
+
+</div>
+</body>
+</html>

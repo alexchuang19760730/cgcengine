@@ -67,7 +67,11 @@ CURATED = [
      "logits-oracle gate against a reference dump. DIAGNOSTIC_KEYS lets the proposition under test "
      "through the allowlist but records it."),
     ("scripts/check/knifeedge_matrix.py", "gate", "engine", True, False,
-     "the gate matrix (181 KB). Large; candidate for splitting in E4. Call it, do not copy it."),
+     "the gate matrix. 2026-09-17 (E4 item 2): the 181 KB monolith became a thin shim over "
+     "scripts/check/knifeedge/ (11 modules, largest 571 lines). The path, the name, dir() and "
+     "the --help surface are unchanged; equivalence is proven by agent_harness/shared/"
+     "check_module_split.py. Call it, do not copy it, and do not edit the modules by hand -- "
+     "they are generated from shared/knifeedge_split_map.json."),
     ("scripts/check/llama_bench_matrix.py", "measure", "engine", True, True,
      "llama-bench across context lengths; records build_commit, which is the only build identity a "
      "bench run leaves behind. Also records a thermal launch+series reading per arm. NOT the "
@@ -315,7 +319,7 @@ CURATED = [
      "convert output into episode records: traces/emit_episodes.py owns that (PLAN §5 T0), and two "
      "producers of the same record diverge with no way to tell which is right."),
     ("agent_harness/engine_loop/wrappers/classify.py", "index", "engine", True, False,
-     "assigns all 44 executable scripts/check/*.py|.sh to one of 6 capability classes and derives "
+     "assigns every executable scripts/check/*.py|.sh to one of 6 capability classes and derives "
      "wrappers/classes.tsv. This IS E4 item 3's '40+ file layering', expressed as data instead of "
      "`git mv`: measured, scripts/check/* carries 562 reference edges, 134 of them from already-final "
      "docs/*.html and 41 from the append-only .workbuddy/memory -- moving files would dangle 175 "

@@ -1,0 +1,59 @@
+{
+ "version": 1,
+ "what": "已 stale 的資產與它們的消費者的單一權威。E4 item 4 要的是『stale 資產有明確 banner』—— 這份檔案定義什麼叫 stale、banner 長什麼樣、以及誰會把它講出來。",
+ "why_a_registry": "這件事原本只活在 .gitignore 的註解裡（419-425 行）。註解對「讀那個檔的人」有效，對「用那個檔的程式」無效：一個用 stale baseline 跑出來的 verdict 與一個用真 baseline 跑出來的 verdict 長得一樣。所以標記必須(a)跟著資料走、(b)在消費點被講出來、(c)有閘門證明前兩件事。",
+ "opt_out": "RUN_REPLAY_BENCH=0",
+ "banner_fields": [
+  "path",
+  "since",
+  "why",
+  "run_with",
+  "evidence",
+  "registry"
+ ],
+ "assets": [
+  {
+   "path": ".replay_bench_baseline.json",
+   "role": "asset",
+   "kind": "json",
+   "tracked": true,
+   "stale_since": "2026-09-15",
+   "why": "它記錄的是 `commit: WORKTREE`（2026-09-06 抓的），不是任何一個可重現的修訂；D2 起一律以 RUN_REPLAY_BENCH=0 跑，所以它既沒有被更新、也不該被當成比較基準。",
+   "evidence": ".gitignore:419-425（『.replay_bench_baseline.json 已失真』）、agent_harness/CONVENTIONS.md:447（D2）",
+   "run_with": "RUN_REPLAY_BENCH=0",
+   "decision": "使用者已延後（見 agent_harness/memory/2026-09-15.md:460）—— 這是記錄下來的決定，不是沒做完的工作。",
+   "banner_key": "_stale"
+  },
+  {
+   "path": "data/replay_bench",
+   "role": "asset",
+   "kind": "ignored_dir",
+   "tracked": false,
+   "stale_since": "2026-09-15",
+   "why": "舊跑的殘留（database.json + records/）。它不只是 stale，而且刻意不入庫 —— 否則會被後來的人當成有效 baseline。",
+   "evidence": ".gitignore:424-425（`data/replay_bench/`）",
+   "run_with": "RUN_REPLAY_BENCH=0",
+   "decision": "不納管（檔案留著保 provenance，112 K）。",
+   "guard": {
+    "must_be_ignored": true,
+    "gitignore_rule": "data/replay_bench/"
+   }
+  }
+ ],
+ "consumers": [
+  {
+   "path": "scripts/check/replay_bench_compare.py",
+   "role": "consumer",
+   "why": "它把 current 跟 baseline 比並輸出 verdict。baseline 已 stale 時，它產出的是**關於一個不存在的基準的判決**，而格式完全正常 —— 這正是消費點必須自己講出來的理由。",
+   "wrapper": "compare",
+   "stale_since": "2026-09-15",
+   "evidence": ".gitignore:419-425（baseline 已失真）、agent_harness/CONVENTIONS.md:447（D2）",
+   "run_with": "RUN_REPLAY_BENCH=0"
+  }
+ ],
+ "notes": [
+  "`role: asset` 的 banner 必須**跟著資料**：JSON 用 `_stale` 區塊（這個 repo 既有的 `_doc`/`_version` 慣例），被忽略的目錄用 .gitignore 規則。",
+  "`role: consumer` 的 banner 由 wrapper 層在執行前印出來（wrappers/_common.sh 的 w_announce_stale），因為消費點才是「會被誤信」的地方。",
+  "反向也查：帶著 `_stale` 但不在這裡登記的檔案會被 --check 點名 —— 否則任何人都可以自己貼一個 banner 而不留下誰決定的痕跡。"
+ ]
+}

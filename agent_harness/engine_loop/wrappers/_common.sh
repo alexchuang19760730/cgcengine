@@ -33,8 +33,28 @@ W_CONFIG="$(cd "$W_DIR/.." && pwd)/config.env"
 W_CLASSES="$W_DIR/classes.tsv"
 W_RUNS_DIR="${ENGINE_RUNS_DIR:-$ENGINE_LOOP_DIR/runs}"
 W_BUILD_JSON="${ENGINE_BUILD_JSON:-$ENGINE_LOOP_DIR/build.json}"
+W_SHARED="${ENGINE_REPO_ROOT}/agent_harness/shared"
 
 W_CLASS=""
+
+# ---------------------------------------------------------------------------
+# E4 item 4：stale 資產的消費點必須自己講出來
+# ---------------------------------------------------------------------------
+# 一個用 stale baseline 跑出來的 verdict，格式與用真 baseline 跑出來的**一模一樣**。
+# 所以標記必須在消費點被印出來，而不是只活在 .gitignore 的註解裡（讀那個檔的人看得到，
+# 用那個檔的程式看不到）。單一權威是 shared/stale_registry.json；
+# 這裡只問它「這支腳本是不是登記在案的消費者」。
+#
+# ★ 副作用刻意為零：查不到、沒有 python3、registry 壞掉 —— 一律當成「不是消費者」而不是
+#   讓整條命令失敗。一個會讓閘門因為**標記機制本身**而紅的設計，比沒有標記更糟。
+w_announce_stale() {
+    local name="$1" py="${W_SHARED}/check_stale.py" out=""
+    [ -f "${py}" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    out="$(python3 "${py}" --banner-for "scripts/check/${name}" 2>/dev/null)" || return 0
+    [ -n "${out}" ] && printf '%s\n\n' "${out}"
+    return 0
+}
 
 w_class() {
     W_CLASS="$1"
@@ -193,7 +213,10 @@ w_list() {
 
 w_selftest() {
     local fails=0
-    chk() { if [ "$2" = 1 ]; then echo "  ok    $1"; else echo "  FAIL  $1"; fails=$((fails + 1)); fi; }
+    K=0
+    # 項數由 chk 自己數 —— 原本寫死「4/4 通過」，加了第 5 項之後它就會說謊。
+    # （這個 repo 對「印出來 ≠ 檢查過」有專門的 lesson；那一條也適用於測試自己。）
+    chk() { K=$((K + 1)); if [ "$2" = 1 ]; then echo "  ok    $1"; else echo "  FAIL  $1"; fails=$((fails + 1)); fi; }
     echo "== $W_CLASS --self-test =="
     local n; n="$(w_scripts | grep -c . || true)"
     chk "classes.tsv 有這個類且非空（${n} 個成員）" "$([ "$n" -gt 0 ] && echo 1 || echo 0)"
@@ -214,8 +237,17 @@ w_selftest() {
         "$([ "$bad" = 0 ] && echo 1 || echo 0)"
     # 分類表的**互斥性**由 classify.py 保證；這裡只驗「這一類不是空的、也不是全部」
     local total; total="$(grep -v '^#' "$W_CLASSES" | grep -c . || true)"
-    chk "這一類不是全部（${n}／${total}）—— 一個包含所有東西的類別不叫分類" "$([ "$n" -lt "$total" ] && echo 1 || echo 0)"
-    if [ "$fails" = 0 ]; then echo "  --self-test: 4/4 通過"; return 0; fi
+    chk "這一類不是全部（${n}／${total}）—— 一個包含所有東西的類別不叫分類" \
+        "$([ "$n" -lt "$total" ] && echo 1 || echo 0)"
+    # E4 item 4：消費點的 banner 要有出口，而**未登記的腳本不得產生 banner**。
+    # 沒有第二條的話，「banner 機制」與「一律印一行字」就分不出來。
+    local b_reg=0 b_unreg=0
+    b_reg="$(w_announce_stale replay_bench_compare.py | grep -c '^\[stale\]' || true)"
+    b_unreg="$(w_announce_stale definitely-not-registered.py | grep -c '^\[stale\]' || true)"
+    chk "已登記的 stale 消費者在執行前會被點名（banner ${b_reg} 行）" \
+        "$([ "${b_reg}" -gt 0 ] && echo 1 || echo 0)"
+    chk "未登記的腳本不產生 banner（陰性對照）" "$([ "${b_unreg}" = 0 ] && echo 1 || echo 0)"
+    if [ "$fails" = 0 ]; then echo "  --self-test: ${K}/${K} 通過"; return 0; fi
     echo "  --self-test: $fails 項失敗" >&2
     return 1
 }
@@ -235,6 +267,7 @@ w_main() {
             local s="${1:-}"; [ -n "$s" ] && shift || true
             if [ -z "$s" ]; then echo "  用法：$0 --dry-run <script> [args...]"; return 2; fi
             [ -f "$(w_script_path "$s")" ] || { echo "error: scripts/check/$s 不在這一類（或不存在）" >&2; return 1; }
+            w_announce_stale "$s"
             echo "  cd $ENGINE_REPO_ROOT && $(w_interp "$(w_script_path "$s")") $(w_script_path "$s") $*"
             echo "  （dry-run：沒有執行任何東西）"
             return 0 ;;
@@ -243,5 +276,6 @@ w_main() {
     esac
     w_precheck || return 1
     local s="$1"; shift
+    w_announce_stale "$s"
     w_run "$s" "$@"
 }

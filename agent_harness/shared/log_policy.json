@@ -1,0 +1,188 @@
+{
+ "version": 1,
+ "what": "PLAN §8 的 log 政策的單一權威，以資料形式寫下來（原本只活在 .gitignore 的註解與 PLAN 的散文裡）。E4 item 1 要的是「政策落地」—— 落地的最低標準是它可以被機檢，而且違反時說得出違反了哪一條。",
+ "plan_ref": "agent_harness/PLAN_ENGINE_LOOP_2026-09-15.md §8（體量與去隱私）",
+ "must_track": [
+  {
+   "path": "agent_harness/engine_loop/traces",
+   "glob": "*.jsonl",
+   "why": "產出物本體 —— episode/decision/lesson 三種 record。"
+  },
+  {
+   "path": "agent_harness/engine_loop/sft_pi",
+   "glob": "*.jsonl",
+   "why": "投影本體；不進版控就沒有 `--check` 可以驗。"
+  },
+  {
+   "path": "agent_harness/engine_loop/sft_prime",
+   "glob": "*.jsonl",
+   "why": "同上。"
+  },
+  {
+   "path": "agent_harness/engine_loop/MANIFEST.jsonl",
+   "glob": null,
+   "why": "資產索引；存在理由是量兩個工作區之間的差異。"
+  },
+  {
+   "path": "agent_harness/CONVENTIONS.md",
+   "glob": null,
+   "why": "它同時是 sft_pi 的 system prompt：改它等於改兩個迴圈未來的行為，所以必須留痕。"
+  },
+  {
+   "path": "agent_harness/shared/evidence/INDEX.jsonl",
+   "glob": null,
+   "why": "證據 pack 的索引：每筆記 source_sha256 指向不進 repo 的原文。"
+  }
+ ],
+ "must_not_track": [
+  {
+   "path": "Backup/cgc_logs",
+   "gitignore_rule": "Backup/",
+   "why": "日誌原文（463 MB / 1399 檔）。證據 pack 只保留命中行 ±8 行 ＋ 檔頭 40 行，並以 sha256 指向原文；原文本身不進 repo。",
+   "forbidden_forms": [
+    "*.log"
+   ],
+   "max_bytes": 262144,
+   "operationalization": "PLAN §8 只說『原文不進 repo』。這裡把它操作化成兩條可量測的：(a) 這個路徑下不得有版控中的 *.log；(b) 不得有單一版控檔超過 256 KB（= pack 上限）。依據：本 repo 引用日誌的方式是證據 pack（抽取命中行 ±8 行 ＋ 檔頭 40 行）並以 sha256 指向原文，所以原文的用途是回溯，而回溯靠 sha256，不需要原文在版控裡。"
+  },
+  {
+   "path": "agent_harness/engine_loop/harness_engine/logs",
+   "gitignore_rule": null,
+   "why": "某一次 run 的原始輸出，會無限增長；可引用的部分已正規化進 traces/。"
+  },
+  {
+   "path": "agent_harness/engine_loop/runs",
+   "gitignore_rule": "/agent_harness/engine_loop/runs/",
+   "why": "wrappers 每跑一次落一份 run.log + run.json。"
+  },
+  {
+   "path": "agent_harness/engine_loop/build.json",
+   "gitignore_rule": "/agent_harness/engine_loop/build.json",
+   "why": "描述『這一台機器、這一次建置』，不是一個決策。"
+  },
+  {
+   "path": "agent_harness/engine_loop/distill/out",
+   "gitignore_rule": "/agent_harness/engine_loop/distill/out/",
+   "why": "還沒被人審接受的蒸餾候選；入庫會出現第二份真相。"
+  }
+ ],
+ "caps": {
+  "pack_bytes_max": 262144,
+  "head_lines": 40,
+  "context_lines": 8,
+  "why": "256 KB/episode 是 PLAN §8 寫死的上界；實測最大 78.1 KB。"
+ },
+ "privacy_forbidden": [
+  {
+   "name": "本機家目錄絕對路徑",
+   "regex": "/Users/alexchuang"
+  },
+  {
+   "name": "內網 IP",
+   "regex": "(?:^|[^0-9])(?:192\\.168|10\\.[0-9]{1,3}|172\\.(?:1[6-9]|2[0-9]|3[01]))\\.[0-9]{1,3}\\.[0-9]{1,3}"
+  },
+  {
+   "name": "API key 樣式",
+   "regex": "sk-[A-Za-z0-9]{8,}"
+  }
+ ],
+ "grandfathered": [
+  {
+   "path": "Backup/cgc_logs/ids_dst_capture/p25-gputime_llama_server_20260916_201242.log",
+   "bytes": 664771,
+   "owner": "另一條線（引擎側量測證據）",
+   "why": "2026-09-16 以 git add -f 加入。已查：docs/ 與 *.md 對這些檔名的引用數 = 0。",
+   "decision": "本輪不移出（不是我的檔案；移出等於刪掉別人的證據）。列在這裡讓它是一個**看得見的例外**而不是一個沉默的違規："
+  },
+  {
+   "path": "Backup/cgc_logs/ids_dst_capture/p25-gputime_llama_server_20260916_201418.log",
+   "bytes": 665214,
+   "owner": "另一條線（引擎側量測證據）",
+   "why": "2026-09-16 以 git add -f 加入。已查：docs/ 與 *.md 對這些檔名的引用數 = 0。",
+   "decision": "本輪不移出（不是我的檔案；移出等於刪掉別人的證據）。列在這裡讓它是一個**看得見的例外**而不是一個沉默的違規："
+  },
+  {
+   "path": "Backup/cgc_logs/ids_dst_capture/p25-gputime_llama_server_20260916_201730.log",
+   "bytes": 683408,
+   "owner": "另一條線（引擎側量測證據）",
+   "why": "2026-09-16 以 git add -f 加入。已查：docs/ 與 *.md 對這些檔名的引用數 = 0。",
+   "decision": "本輪不移出（不是我的檔案；移出等於刪掉別人的證據）。列在這裡讓它是一個**看得見的例外**而不是一個沉默的違規："
+  },
+  {
+   "path": "Backup/cgc_logs/ids_dst_capture/p25-gputime_llama_server_20260916_201900.log",
+   "bytes": 682949,
+   "owner": "另一條線（引擎側量測證據）",
+   "why": "2026-09-16 以 git add -f 加入。已查：docs/ 與 *.md 對這些檔名的引用數 = 0。",
+   "decision": "本輪不移出（不是我的檔案；移出等於刪掉別人的證據）。列在這裡讓它是一個**看得見的例外**而不是一個沉默的違規："
+  },
+  {
+   "path": "Backup/cgc_logs/ids_dst_capture/p25-slotgpu_llama_server_20260916_201329.log",
+   "bytes": 667470,
+   "owner": "另一條線（引擎側量測證據）",
+   "why": "2026-09-16 以 git add -f 加入。已查：docs/ 與 *.md 對這些檔名的引用數 = 0。",
+   "decision": "本輪不移出（不是我的檔案；移出等於刪掉別人的證據）。列在這裡讓它是一個**看得見的例外**而不是一個沉默的違規："
+  },
+  {
+   "path": "Backup/cgc_logs/ids_dst_capture/p25-slotgpu_llama_server_20260916_201502.log",
+   "bytes": 667456,
+   "owner": "另一條線（引擎側量測證據）",
+   "why": "2026-09-16 以 git add -f 加入。已查：docs/ 與 *.md 對這些檔名的引用數 = 0。",
+   "decision": "本輪不移出（不是我的檔案；移出等於刪掉別人的證據）。列在這裡讓它是一個**看得見的例外**而不是一個沉默的違規："
+  },
+  {
+   "path": "Backup/cgc_logs/ids_dst_capture/p25-slotgpu_llama_server_20260916_201815.log",
+   "bytes": 667475,
+   "owner": "另一條線（引擎側量測證據）",
+   "why": "2026-09-16 以 git add -f 加入。已查：docs/ 與 *.md 對這些檔名的引用數 = 0。",
+   "decision": "本輪不移出（不是我的檔案；移出等於刪掉別人的證據）。列在這裡讓它是一個**看得見的例外**而不是一個沉默的違規："
+  },
+  {
+   "path": "Backup/cgc_logs/ids_dst_capture/p25-slotgpu_llama_server_20260916_201945.log",
+   "bytes": 667486,
+   "owner": "另一條線（引擎側量測證據）",
+   "why": "2026-09-16 以 git add -f 加入。已查：docs/ 與 *.md 對這些檔名的引用數 = 0。",
+   "decision": "本輪不移出（不是我的檔案；移出等於刪掉別人的證據）。列在這裡讓它是一個**看得見的例外**而不是一個沉默的違規："
+  },
+  {
+   "path": "Backup/cgc_logs/outcap_crosscheck/p25-gputime_llama_server_20260916_195857.log",
+   "bytes": 227663,
+   "owner": "另一條線（引擎側量測證據）",
+   "why": "2026-09-16 以 git add -f 加入。已查：docs/ 與 *.md 對這些檔名的引用數 = 0。",
+   "decision": "本輪不移出（不是我的檔案；移出等於刪掉別人的證據）。列在這裡讓它是一個**看得見的例外**而不是一個沉默的違規："
+  },
+  {
+   "path": "Backup/cgc_logs/outcap_crosscheck/p25-slotgpu_llama_server_20260916_195947.log",
+   "bytes": 230395,
+   "owner": "另一條線（引擎側量測證據）",
+   "why": "2026-09-16 以 git add -f 加入。已查：docs/ 與 *.md 對這些檔名的引用數 = 0。",
+   "decision": "本輪不移出（不是我的檔案；移出等於刪掉別人的證據）。列在這裡讓它是一個**看得見的例外**而不是一個沉默的違規："
+  },
+  {
+   "path": "Backup/m123_oracle_gate/cmp_capround2.log",
+   "bytes": 1254,
+   "owner": "另一條線（引擎側量測證據）",
+   "why": "2026-09-16 以 git add -f 加入。已查：docs/ 與 *.md 對這些檔名的引用數 = 0。",
+   "decision": "本輪不移出（不是我的檔案；移出等於刪掉別人的證據）。列在這裡讓它是一個**看得見的例外**而不是一個沉默的違規："
+  },
+  {
+   "path": "Backup/m123_oracle_gate/launch_capround2.log",
+   "bytes": 5738,
+   "owner": "另一條線（引擎側量測證據）",
+   "why": "2026-09-16 以 git add -f 加入。已查：docs/ 與 *.md 對這些檔名的引用數 = 0。",
+   "decision": "本輪不移出（不是我的檔案；移出等於刪掉別人的證據）。列在這裡讓它是一個**看得見的例外**而不是一個沉默的違規："
+  }
+ ],
+ "notes": [
+  "must_not_track 的 path 若在 .gitignore 用**精確規則**命中，`git check-ignore` 會指出是哪一行；check_log_policy.py 只驗那一條規則存在，不驗 .gitignore 的整體樣式 —— 後者是另一件事（.gitignore 自己就警告過 `scripts/check/*` 這種會吞掉 source 的樣式）。",
+  "grandfathered 不是豁免權：check_log_policy.py 對每一筆都印出來，並且只讓**既有**的那幾筆通過；多一筆就紅。"
+ ],
+ "derived_but_tracked": [
+  {
+   "path": "Backup/cgc_logs",
+   "owner": "另一條線（引擎側）",
+   "count": 22,
+   "bytes": 117956,
+   "why": "每個都小於上限，而且是**衍生摘要**（arms.json、*.tsv、req2retest*.txt），不是 log 原文；政策不禁它們。列出來是因為 `Backup/` 整體被 .gitignore 擋住 ⇒ 它們都是 `git add -f` 進來的，而 `-f` 進來的東西沒有人覆核 —— 這是一個值得知道的狀態，不是一條違反。"
+  }
+ ]
+}

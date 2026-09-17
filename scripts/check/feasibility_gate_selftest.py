@@ -72,7 +72,11 @@ def check(name, got, want):
 
 def main():
     km = load_matrix()
-    km.pool_geometry = lambda kind: dict(FAKE_GEOM)      # no GGUF, no GPU
+    # 2026-09-17（E4 item 2）：knifeedge_matrix.py 拆成套件，pool_geometry 現在住在
+    # knifeedge/feasibility.py。`feasibility_cell` 讀的是**那個模組**的全域，所以替身要打在
+    # 那裡。打在 km 上只會改到 shim 的綁定，而它沒有任何讀者 —— 這件事本身靜默，
+    # 症狀是這個測試掉到真的 GGUF 路徑（ModuleNotFoundError: numpy）。
+    km.feasibility.pool_geometry = lambda kind: dict(FAKE_GEOM)   # no GGUF, no GPU
     fails = 0
 
     print("1. verdicts through the real decision path (synthetic geometry + layer caps)")
@@ -114,7 +118,7 @@ def main():
     fails += not check("attach -> no cell", cell, None)
 
     print("3. a missing model warns and continues (a predictor must not block a run)")
-    km.pool_geometry = lambda kind: (_ for _ in ()).throw(RuntimeError("no such file"))
+    km.feasibility.pool_geometry = lambda kind: (_ for _ in ()).throw(RuntimeError("no such file"))
     args = argparse.Namespace(allow_partition_ref=False, allow_unusable=False,
                               no_feasibility_gate=False)
     ok, cell = km.feasibility_gate("iq3", 8, args, None, [], where="selftest")
@@ -122,7 +126,7 @@ def main():
     fails += not check("missing geometry -> no cell", cell, None)
 
     print("4. run_combo refuses BEFORE touching the machine")
-    km.pool_geometry = lambda kind: dict(FAKE_GEOM)
+    km.feasibility.pool_geometry = lambda kind: dict(FAKE_GEOM)
 
     def boom(*a, **k):
         raise AssertionError("the machine was touched for an infeasible cell")
@@ -154,7 +158,7 @@ def main():
                        "UNUSABLE")
 
     print("6. cap-probe reconciliation: a measured slot count vs the arithmetic prediction")
-    km.pool_geometry = lambda kind: dict(FAKE_GEOM)
+    km.feasibility.pool_geometry = lambda kind: dict(FAKE_GEOM)
     env = ["CGC_SERVER_LAYER_CAPS=0-40:72"]          # -> 72 slots, 71 usable, cap_max 8
     args = argparse.Namespace(extra_env=env, allow_geometry_drift=False)
 
@@ -212,7 +216,7 @@ def main():
                        km.geometry_conflict_error({"cap": 8}, allow=False), None)
 
     print("8. result provenance: when may two rows be laid out next to each other?")
-    km.pool_geometry = lambda kind: dict(FAKE_GEOM)
+    km.feasibility.pool_geometry = lambda kind: dict(FAKE_GEOM)
     pargs = argparse.Namespace(extra_env=[], allow_geometry_drift=False)
     base = km.record_provenance("iq3", 8, pargs, cap=8)
 

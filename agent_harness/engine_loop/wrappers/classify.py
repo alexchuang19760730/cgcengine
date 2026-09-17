@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""classify.py — 把 `scripts/check/` 的 44 個腳本按**能力**分層，而不移動它們。
+"""classify.py — 把 `scripts/check/` 的每一個腳本按**能力**分層，而不移動它們。
 
 為什麼**不移動**（E4 item 3 的「分層」）
 ----------------------------------------
-`scripts/check/` 底下有 44 個可執行腳本，而它們被引用了 **562 次**（去重後的引用關係）：
+`scripts/check/` 底下的每一個可執行腳本都被引用了 **562 次**（去重後的引用關係）：
 `docs/*.html` 134、`Backup/` 101、`scripts/` 62、`.workbuddy/memory/` 41、`agent_harness/` 220。
 
 其中兩類是**不可改寫**的：
@@ -25,9 +25,9 @@ PLAN §3 的紅線本身也反對這件事的**動機**：那裡的立場是「`
 ------------------------------------------------------------------
 `agent_harness/engine_loop/MANIFEST.jsonl` 也有一個分類欄，實測：
 
-    role 分佈（scripts/check/* 的 44 個）：probe 34、gate 4、measure 3、compare 2、arms 1
+    role 分佈（實際數字現場量；這一輪是 probe 34、gate 4、measure 3、compare 2、arms 1）：
 
-**44 個裡有 34 個是 `probe`** ⇒ 對這個目錄來說那個標籤幾乎不帶資訊（而且 44 個全部可執行，
+**其中 34 個是 `probe`** ⇒ 對這個目錄來說那個標籤幾乎不帶資訊（而且全部可執行，
 所以「可不可執行」也不是區分軸）。能力類是**第二個座標**，它的用處是回答
 「我要做 X，該跑哪一支」—— 那個問題在 34 個 probe 之間是答不出來的。
 

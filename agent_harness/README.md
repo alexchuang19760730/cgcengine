@@ -179,7 +179,29 @@ bash scripts/setup_env.sh          # 一次性：venv ＋ terminal-bench ＋ hos
 | **E1** | 結構 ＋ 憲章：資產搬進 `tb_loop/`、修 import 路徑、寫 `CONVENTIONS.md` | ✅ 套件解析已通（見 `docs/AGENT_HARNESS_E1_RESTRUCTURE_20260916.html`）、`CONVENTIONS.md` 已成；**`tb run` 的 smoke 仍未跑**（缺模型端點，見 `PLAN_ENGINE_LOOP_2026-09-15.md` §9） |
 | **E2** | T1 蒸餾 ＋ 兩個投影（`sft_pi/`、`sft_prime/`、`harness_engine/`）＋ 結清 D6 的閉環欠帳 | ✅ 四個目錄已建、兩份投影可用 `--check` 驗（見 `docs/AGENT_HARNESS_E2_TRAINING_PROJECTIONS_20260916.html`）；**T1 未接真模型；D6 的閉環欠帳未結清** |
 | **E3** | 閉環：round1（無 lesson）vs round2（注入 lesson） | ⏳ 執行器已建並離線驗證（`distill/closed_loop.py`，41 項自測；見 `docs/AGENT_HARNESS_E3_DESIGN_20260916.html`）；**模型半未跑 ⇒ 本體未結清** |
-| **E4** | 治理（可選）：log 政策、`knifeedge_matrix.py` 拆分、`scripts/check/` 分層、標記 stale | ⏳ 四項全部未動 —— `pack_evidence.py` 根本不存在，所以它自己的驗收條件（產物 < 20 MB）現在無法量測 |
+| **E4** | 治理（可選）：log 政策、`knifeedge_matrix.py` 拆分、`scripts/check/` 分層、標記 stale | ✅ 四項都到了終態，見下方 2026-09-17 的註記；每一項的證據一支指令可重跑 |
+
+**★ 2026-09-17 更正：上面那格 E4 曾經說「`pack_evidence.py` 根本不存在」—— 那句話是假的。**
+`shared/pack_evidence.py`、`sanitize.py`、`trace_schema.md` 在 `fdfc923ef` 就入庫了，
+§8 的 2446 個內容尋址 evidence pack（12.79 MB）在 `becb20a0e` 入庫，而 **item 1 與 item 3 也早已落地**
+（item 3 以「能力分層 ＋ `classify.py` 資料化」取代 `git mv`，因為 `scripts/check/*` 有 562 條引用、
+其中 134 條來自已定稿的白皮書，搬檔會讓 175 條懸空）。這與下面那段是**同一個病**：
+**閘門全綠而散文是假的** —— `index_assets.py --check` 當時報 102 筆資產全同意，
+因為它管的是 MANIFEST 裡的資產，**不含本表的敘述列**。綠燈與「沒被檢查」在那裡長得一樣。
+
+**E4 四項的終態與證據（2026-09-17）**
+
+| # | 內容 | 終態 | 怎麼自己驗一次 |
+|---|---|---|---|
+| 1 | log 政策落地 | `shared/log_policy.json` 是單一權威（納管／不納管／上限／既有例外） | `python3 agent_harness/shared/check_log_policy.py --check --privacy` |
+| 2 | `knifeedge_matrix.py` 拆分 | 拆成 `scripts/check/knifeedge/` 11 個模組 ＋ 薄 shim（3310 行 → 最大 571 行）；五層等價證明 | `python3 agent_harness/shared/check_module_split.py --self-test`（另四支見 map 的 `verification`） |
+| 3 | `scripts/check/` 分層 | 以**資料**表達（`wrappers/classify.py` ＋ `classes.tsv`，46 個腳本 6 類），不搬檔 | `python3 agent_harness/engine_loop/wrappers/classify.py --check` |
+| 4 | 標記 stale | `shared/stale_registry.json` 是單一權威；banner 跟著資料（JSON 的 `_stale`）＋ 在消費點由 wrapper 印出 | `python3 agent_harness/shared/check_stale.py --check`；`bash agent_harness/engine_loop/wrappers/gate.sh --dry-run replay_bench_compare.py` |
+
+誠實邊界：item 1 的檢查**也是**第一次把政策變成斷言，而它一啟動就抓到 `Backup/cgc_logs` 底下有
+**12 個 `.log` 原文在版控裡**（5.6 MB，而 `docs/` 與 `*.md` 對它們的引用數是 0）。那不是這條線的檔案，
+所以本輪**不移出**，而是登記在 `log_policy.json` 的 `grandfathered`（每一筆印出來，多一筆就紅）。
+**登記 ≠ 豁免**：它現在是一個看得見的例外，而不是一個沉默的違規。
 
 **這張表在 2026-09-16 晚間到 09-17 上午是錯的**：它寫 E2「⏳ 未開始」，而 E2 早已完成。
 成因是 E2 只更新了 `engine_loop/README.md` 與 `PLAN` §9，**漏了這個傘狀入口**。

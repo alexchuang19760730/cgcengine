@@ -1,6 +1,6 @@
 # `shared/` —— 兩個 loop 共用的東西
 
-PLAN §3 替這個目錄安排三個檔案，這是它們的實況（＋ 兩個後加的：`README.md` 與 `check_citations.py`）。
+PLAN §3 替這個目錄安排三個檔案，這是它們的實況（＋ E4 之後的六個）。
 
 | 檔案 | 是什麼 | 現況 |
 |---|---|---|
@@ -8,6 +8,11 @@ PLAN §3 替這個目錄安排三個檔案，這是它們的實況（＋ 兩個�
 | `sanitize.py` | 去隱私：`$REPO`／`$HOME`／hostname／IP／金鑰／URL 憑證 | ✅ 自測 19 項全過（含 PLAN §8 指名的「連線卡」） |
 | `pack_evidence.py` | `Backup/cgc_logs` → `evidence/<id>.txt.zst` ＋ sha256 索引 | ✅ 已建、已跑、**驗收結果取決於「總量」的定義**（見下） |
 | `check_citations.py` | 把 `CONVENTIONS.md` **第 7 行**自己寫的驗收（每條都要指到證據）變成可機檢 | ✅ 61/61 條都有交代（59 可解析指針 ＋ 2 顯式標記）、0 懸空；自測 18 項含陽性對照 |
+| `check_shell_cjk.py` | `$VAR` 緊接非 ASCII ⇒ bash 把中文字節吃進變數名（`bash -n` 抓不到） | ✅ 自測 9 項；全 repo 掃出 3 處既有（其中在 `scripts/` 的 2 處無 `set -u`，症狀是靜默的文字損壞） |
+| `split_module.py` ＋ `knifeedge_split_map.json` | 把單體檔**逐位元組**拆成套件；拒絕歸屬不了的名字、import 環、以及「`global` 宣告的名字被拆散」 | ✅ E4 item 2 用它拆了 `scripts/check/knifeedge_matrix.py`（3310 行 → 11 個模組，最大 571 行） |
+| `check_module_split.py` | 證明一次拆分沒改行為：AST／runtime 指紋／CLI／替換契約，四層各含陰性對照 | ✅ 自測 2/2；替換契約陰性對照移除轉發層 → 3/4 變紅、列出 101 個具體失敗 |
+| `stale_registry.json` ＋ `check_stale.py` | 已 stale 的資產與「誰會把它講出來」的單一權威 | ✅ 3 個登記項；banner 跟著資料、消費點由 wrapper 印出、反向查未登記的標記 |
+| `log_policy.json` ＋ `check_log_policy.py` | PLAN §8 的 log 政策（納管／不納管／上限／既有例外）從散文變成斷言 | ✅ 一啟動就抓到 12 個 `.log` 原文在版控裡（5.6 MB，登記為可見例外） |
 
 ```sh
 python3 agent_harness/shared/sanitize.py --self-test
@@ -15,6 +20,10 @@ python3 agent_harness/shared/check_citations.py                  # 憲章的指�
 python3 agent_harness/shared/check_citations.py --self-test      # 含「注入假引用必須被抓到」
 python3 agent_harness/shared/pack_evidence.py --dry-run          # 只報大小，不寫任何東西
 python3 agent_harness/shared/pack_evidence.py                    # 真的產生 evidence/
+python3 agent_harness/shared/check_shell_cjk.py                  # $VAR 緊接中文
+python3 agent_harness/shared/check_stale.py --check              # stale 的雙向閘門
+python3 agent_harness/shared/check_log_policy.py --check --privacy   # 政策 ＋ 去隱私（全掃 7.8 秒）
+python3 agent_harness/shared/check_module_split.py --self-test   # 拆分等價證明的陰性對照
 ```
 
 ## `check_citations.py`：難的不是規則，是量具自己的假陽性
@@ -91,3 +100,50 @@ no hits     : 924 episode(s) 沒命中任何 pattern（仍產生只有檔頭的 
 
 `.gitignore` 只忽略 `engine_loop/runs/` 與 `engine_loop/build.json`，
 `shared/evidence/` **刻意不在忽略清單裡**（`.gitignore` 的註解寫明了這件事）。
+
+---
+
+## 拆分（E4 item 2）：難的也不是搬，是**搬動不會被檢查到的那幾件事**
+
+`scripts/check/knifeedge_matrix.py` 是 3310 行 / 181 KB。手拆等於重寫，而重寫的風險
+不是語法錯誤（那會被立刻發現）——是三類**沒有任何語法檢查會反應**的東西：
+
+| 類別 | 實例（這次真的踩到） | 誰發現的 |
+|---|---|---|
+| 錨點 | `ROOT = dirname(dirname(dirname(abspath(__file__))))` 換一層目錄就落到 `scripts/` | AST 檢查的 `declared_delta`（值由 runtime 指紋斷言相同） |
+| `__file__` 的指涉 | `record_provenance` 用 `open(abspath(__file__))` 記「跑的是哪支腳本」 | 逐字重建驗過，改成顯式的 `ENTRY_FILE` |
+| `global` 宣告的名字 | `args_greedy_global` 只在 `main` 裡建立、只在 `print_matrix` 裡被讀 | `split_module.py` 的硬性檢查（把兩者放同一模組） |
+| **entry 上的屬性寫入** | 離線自測用 `km.pool_geometry = 替身` 注入合成幾何 | **`check_module_split.py contracts`** —— AST 與指紋都比對不到它 |
+
+最後一列是這次唯一真的弄壞東西的：拆完之後 `feasibility_cell` 讀的是
+`feasibility.pool_geometry`，而 `km.pool_geometry` 只是 shim 的獨立綁定 ⇒ 注入**靜默失效**，
+測試掉到真的 GGUF 路徑並以 `ModuleNotFoundError: numpy` 崩潰。處置兩層：
+正常 import 的 entry 由 shim 換掉自己的類別攔 `__setattr__` 並轉發到定義它的模組；
+**路徑載入**（`spec_from_file_location`，三支離線自測用的）拿不到 entry 那個物件 ——
+Python 沒給任何回指的辦法 —— 所以那個情境的正解是 `km.<module>.<name> = x`。
+兩支呼叫端據此各改 5 處與 1 處，改前後輸出**逐字元相同**。
+
+## stale（E4 item 4）：banner 要跟著資料，也要在消費點被講出來
+
+一個用 stale baseline 跑出來的 verdict，格式與用真 baseline 跑出來的**一模一樣**。
+所以 `.gitignore` 的註解對「讀那個檔的人」有效，對「用那個檔的程式」無效。三層：
+
+1. **單一權威** `stale_registry.json`（資產與消費者，各附 why／evidence／run_with／decision）；
+2. **banner 跟著資料**：`.replay_bench_baseline.json` 的 `_stale` 區塊
+   （先驗過讀者一律用 `.get(<key>)` 取值、不做鍵集合比對，所以加鍵是安全的）；
+3. **消費點出口**：`wrappers/_common.sh` 的 `w_announce_stale` 在執行前問登記表 ——
+   順帶一個設計約束：**查不到或 registry 壞掉一律當成「不是消費者」**，
+   不讓閘門機制本身把命令弄失敗。
+
+## log 政策（E4 item 1）：沒有閘門的政策就是一個願望
+
+政策原文寫在 PLAN §8、`.gitignore` 的 dated 註解、以及幾支腳本的行為裡。
+把它抽成 `log_policy.json` 並加上 `check_log_policy.py` 之後，**第一次執行就抓到**：
+`Backup/cgc_logs` 底下有 **12 個 `.log` 原文在版控裡**（5.6 MB），而政策是「原文不進 repo」，
+且 `docs/` 與 `*.md` 對它們的引用數是 **0**。
+
+那 12 筆不是這條線的檔案，所以**不移出**（移出等於刪掉別人的證據），而是進 `grandfathered`：
+每一筆印出來、附 owner 與大小，**多一筆就紅**。登記不是豁免 —— 它把一個沉默的違規
+換成一個看得見的例外。另外 22 個衍生摘要（`arms.json`／`*.tsv`／`req2retest*.txt`，共 118 KB）
+如實列為 `derived_but_tracked`：它們不是原文、不違反政策，但都是 `git add -f` 進來的，
+而 `-f` 進來的東西沒有人覆核。
