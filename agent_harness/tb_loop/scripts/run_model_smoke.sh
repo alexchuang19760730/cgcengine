@@ -158,6 +158,32 @@ RUN_ID="${TB_SMOKE_RUN_ID:-model_smoke_$(date +%Y%m%d_%H%M%S)}"
 mkdir -p "${OUT_ROOT}"
 echo "[smoke] output   = ${OUT_ROOT}/${RUN_ID}"
 
+# ---- 續跑守衛 --------------------------------------------------------------
+# tb 的續跑機制是「run 目錄裡有 tb.lock 才准續」。若目錄存在但**沒有** tb.lock，
+# 它會噴：ValueError: output directory <dir> exists but no lock file found.
+#         Cannot resume run without lock file.
+# 而那句話**完全沒說**「上一次那一輪極早就失敗了、只留下一個空目錄」——
+# 那個情境幾乎一定是「第一次跑掛在建置／參數錯誤」，而不是真的要續跑。
+# 實測：兩次連續失敗就是這樣疊出來的（第一次死在 DatasetConfig 參數互斥，留下空目錄；
+#       第二次死在這個 ValueError）。所以這裡先判掉：
+#   空目錄        ⇒ 清掉（沒有任何東西會丟）繼續跑
+#   有 tb.lock    ⇒ 照 tb 的續跑語義走下去（只印一行提醒）
+#   非空又沒 lock ⇒ 明確 abort，並告訴你換 run-id（不要猜、也不要自動刪別人的產物）
+RUN_DIR="${OUT_ROOT}/${RUN_ID}"
+if [[ -d "${RUN_DIR}" ]]; then
+    if [[ -f "${RUN_DIR}/tb.lock" ]]; then
+        echo "[smoke] 注意: ${RUN_DIR} 已存在且有 tb.lock —— tb 會以「續跑該輪」處理。"
+    elif [[ -z "$(ls -A "${RUN_DIR}" 2>/dev/null)" ]]; then
+        echo "[smoke] ${RUN_DIR} 是上一次極早失敗留下的空目錄，清掉後繼續。"
+        rmdir "${RUN_DIR}"
+    else
+        echo "[smoke] abort: ${RUN_DIR} 存在、非空、且沒有 tb.lock。" >&2
+        echo "        tb 會拒絕並說「Cannot resume run without lock file」，那句話不會告訴你原因。" >&2
+        echo "        換一個 TB_SMOKE_RUN_ID，或自行確認內容後刪掉該目錄。" >&2
+        exit 3
+    fi
+fi
+
 # ---- 跑 -------------------------------------------------------------------
 # cwd 必须是 repo 根，而 PYTHONPATH 要指 tb_loop 的**父目录**（agent_harness/）——
 # --agent-import-path 要的套件名是 tb_loop.agents.…，所以解译器得看得到 tb_loop/ 那一层。
@@ -174,23 +200,39 @@ cd "${TB_REPO_ROOT}"
 export TB_GEMMA4_API_KEY
 
 # shellcheck disable=SC2086
-PYTHONPATH="${TB_HARNESS_ROOT}" "${TB_TB_BIN}" run \
-    -d "${TB_DATASET}" \
-    --agent-import-path "tb_loop.agents.prime_agent_adapter:PrimeAgentAgent" \
-    -m "openai/${TB_GEMMA4_MODEL}" \
-    -k model_name="${TB_GEMMA4_MODEL}" \
-    -k base_url="${TB_GEMMA4_BASE_URL}" \
-    -k model_prefix="${TB_MODEL_PREFIX}" \
-    -k harness_dir="${TB_HARNESS_DIR}" \
-    -k max_turns="${TB_MAX_TURNS}" \
-    -k max_tokens="${TB_MAX_TOKENS}" \
-    -k timeout_ms="${TB_TIMEOUT_MS}" \
-    -k max_continuations="${TB_MAX_CONTINUATIONS}" \
-    --n-tasks "${TB_SMOKE_N_TASKS:-1}" \
-    --n-concurrent 1 \
-    --output-path "${OUT_ROOT}" \
-    --run-id "${RUN_ID}" \
-    ${TB_SMOKE_TASK:+--task-id "${TB_SMOKE_TASK}"}
+TB_ARGS=(
+    run
+    -d "${TB_DATASET}"
+    --agent-import-path "tb_loop.agents.prime_agent_adapter:PrimeAgentAgent"
+    -m "openai/${TB_GEMMA4_MODEL}"
+    -k model_name="${TB_GEMMA4_MODEL}"
+    -k base_url="${TB_GEMMA4_BASE_URL}"
+    -k model_prefix="${TB_MODEL_PREFIX}"
+    -k harness_dir="${TB_HARNESS_DIR}"
+    -k max_turns="${TB_MAX_TURNS}"
+    -k max_tokens="${TB_MAX_TOKENS}"
+    -k timeout_ms="${TB_TIMEOUT_MS}"
+    -k max_continuations="${TB_MAX_CONTINUATIONS}"
+    --n-concurrent 1
+    --output-path "${OUT_ROOT}"
+    --run-id "${RUN_ID}"
+)
+
+# ★ --task-id 與 --n-tasks **互斥** —— tb 的 DatasetConfig 會硬擋：
+#     ValidationError: Cannot specify both task_ids and n_tasks
+#   而 tb 只在 **Harness.__init__ → _init_dataset → DatasetConfig** 才發現，
+#   所以症狀是一個 pydantic traceback、`rc=1`，訊息裡完全沒提是我們多傳了 --n-tasks。
+#   第一版就是「永遠傳 --n-tasks」＋「有 TB_SMOKE_TASK 時再傳 --task-id」⇒ 一釘題就必炸。
+#   ★ 為什麼非釘題不可：--n-tasks 1 是「按時長排序、最長優先」，它會挑到
+#     建置本身就吃掉整輪的題（實測 super-benchmark-upet：apt 裝 clang/jupyter/openjdk，
+#     手動重跑同一條 build 12 分鐘仍無輸出）⇒ 那時的 Unresolved 與模型／agent 路徑無關。
+if [[ -n "${TB_SMOKE_TASK:-}" ]]; then
+    TB_ARGS+=(--task-id "${TB_SMOKE_TASK}")
+else
+    TB_ARGS+=(--n-tasks "${TB_SMOKE_N_TASKS:-1}")
+fi
+
+PYTHONPATH="${TB_HARNESS_ROOT}" "${TB_TB_BIN}" "${TB_ARGS[@]}"
 
 echo
 echo "[smoke] 结果: ${OUT_ROOT}/${RUN_ID}/results.json"

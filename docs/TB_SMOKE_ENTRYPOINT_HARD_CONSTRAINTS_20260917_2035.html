@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tb smoke 入口的兩個硬約束（2026-09-17）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#1f2328; --mut:#57606a; --line:#d0d7de; --soft:#f6f8fa;
+    --blue:#0969da; --green:#1a7f37; --red:#cf222e; --amber:#9a6700; --purple:#8250df;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","PingFang SC","Hiragino Sans",sans-serif;
+       font-size:15px;line-height:1.7}
+  .wrap{max-width:1040px;margin:0 auto;padding:32px 20px 80px}
+  h1{font-size:26px;line-height:1.35;margin:0 0 6px}
+  h2{font-size:19px;margin:38px 0 10px;padding-top:14px;border-top:1px solid var(--line)}
+  h3{font-size:16px;margin:24px 0 8px}
+  p,li{margin:8px 0}
+  code{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;font-size:.9em;
+       background:var(--soft);border:1px solid var(--line);border-radius:4px;padding:.1em .35em}
+  pre{background:var(--soft);border:1px solid var(--line);border-radius:6px;padding:12px 14px;
+      overflow-x:auto;margin:12px 0}
+  pre code{background:none;border:none;padding:0;font-size:12.5px;line-height:1.55}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  .num{white-space:nowrap;font-variant-numeric:tabular-nums}
+  .mut{color:var(--mut)}
+  .tag{display:inline-block;font-size:12px;padding:1px 8px;border-radius:999px;border:1px solid;white-space:nowrap}
+  .t-blue{color:var(--blue);border-color:#b6d8fb;background:#ddf4ff}
+  .t-green{color:var(--green);border-color:#b6e3c2;background:#dafbe1}
+  .t-red{color:var(--red);border-color:#f5c2c7;background:#ffebe9}
+  .t-amber{color:var(--amber);border-color:#f0d999;background:#fff8c5}
+  .t-purple{color:var(--purple);border-color:#d8c7f7;background:#fbefff}
+  .t-gray{color:var(--mut);border-color:var(--line);background:var(--soft)}
+  .box{border-left:4px solid var(--line);background:var(--soft);border-radius:0 6px 6px 0;
+       padding:10px 14px;margin:14px 0}
+  .box.warn{border-left-color:var(--amber)}
+  .box.ok{border-left-color:var(--green)}
+  .box.bad{border-left-color:var(--red)}
+  .box.pur{border-left-color:var(--purple)}
+  .box .h{font-weight:600;display:block;margin-bottom:2px}
+  figure{margin:18px 0}
+  figcaption{color:var(--mut);font-size:13px;margin-top:6px}
+  .meta{color:var(--mut);font-size:13px;margin:0 0 4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>tb smoke 入口的兩個硬約束修復</h1>
+<p class="meta">flashkv-devserver ／ 2026-09-17 20:35 ／ D5 白皮書附件（隨本輪 <code>agent_harness/tb_loop/scripts/run_model_smoke.sh</code> 的修復一起提交）</p>
+
+<div class="box pur">
+<span class="h">一句話</span>
+第一次 model smoke 回報的 <code>Unresolved 0.00%</code> <b>不是</b>關於模型或 agent 路徑的證據 ——
+它的真因是 <code>--n-tasks 1</code> 會挑「時長最長」的那一題，而那一題光是建置就吃掉整輪。好不容易釘住題目之後，
+又連撞 tb 的兩個硬約束（<code>--task-id</code> 與 <code>--n-tasks</code> 互斥；殘骸目錄會被當成續跑）。
+本文留下三次失敗的原文、兩個修法、以及產出當時的閘門輸出。
+</div>
+
+<h2>1. 為什麼要單獨為這個寫一份：那個 <code>Unresolved</code> 會被讀成模型判決</h2>
+
+<p>
+前一份白皮書（<code>TB_TOKENHUB_WIRING_20260917_2010.html</code>）的§「誠實邊界」寫著
+「smoke 還沒有結果，所以本 commit 只主張到 <code>--probe</code> 200」。smoke 跑完了，結果是
+<code>Unresolved 1 / Accuracy 0.00%</code>。若不拆開它的成因，這個數字會被讀成
+「<code>deepseek/deepseek-flash</code> 驅不動 <code>prime-agent</code>」—— 而它<b>一個字都沒說</b>那件事。
+</p>
+
+<div class="box bad">
+<span class="h">真因：容器從來沒有起來</span>
+<pre><code>Harness execution failed for .../terminal-bench-core/0.1.1/super-benchmark-upet:
+Command '['docker', 'compose', '-p', 'super-benchmark-upet-1-of-1-model_smoke_20260917_195218',
+ '-f', '.../super-benchmark-upet/docker-compose.yaml', 'build']' returned non-zero exit status 2.</code></pre>
+</div>
+
+<p>
+<code>build</code> 失敗 ⇒ 容器不存在 ⇒ <code>prime-agent</code> 沒有被啟動過 ⇒
+<code>Unresolved</code> 只是「沒有容器可以跑」的另一種說法。
+</p>
+
+<h3>1.1 為什麼是這一題：<code>--n-tasks 1</code> 是「最長優先」不是「隨機」</h3>
+
+<p>
+<code>--n-tasks 1</code> 從資料集裡按<b>時長排序、取最長</b>。它挑到
+<code>super-benchmark-upet</code>，而那題的 <code>Dockerfile</code> 是
+<code>FROM python:3.10-slim-bookworm</code> 加一整串
+<code>apt-get install</code>（含 <code>openjdk-17-jdk</code>、<code>jupyter</code>、<code>clang</code>）
+再加 <code>pip install</code> —— <b>建置本身就吃掉整輪</b>。
+</p>
+
+<p>
+對照組是後來改釘的 <code>raman-fitting.easy</code>：它的 <code>Dockerfile</code> 只有
+<code>FROM ghcr.io/laude-institute/t-bench/python-3-13</code> 加一行 <code>COPY task-deps/</code>，
+而那個基礎映像<b>已在快取裡</b>（187 MB），所以建置幾乎不花時間。
+</p>
+
+<div class="box warn">
+<span class="h">未證但並列出現：<code>Docker buildx is not available</code></span>
+日誌裡緊接著出現這一行（colima 沒有 buildx）。它與 <code>exit status 2</code> 的因果<b>未經證明</b> ——
+換題之後同一條 compose build 就成功了，所以「選題」是最小充分解釋。本文不主張 buildx 是近因。
+</div>
+
+<h2>2. 釘題之後，連撞 tb 的兩個硬約束 —— 兩個都是這個入口腳本的 bug</h2>
+
+<figure>
+<svg viewBox="0 0 680 306" width="100%" role="img" aria-label="三次失敗如何疊成新症狀">
+  <defs>
+    <marker id="ar3" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#57606a"/>
+    </marker>
+  </defs>
+
+  <text x="8" y="39" font-size="11.5" fill="#57606a" font-weight="600">嘗試 1</text>
+  <rect x="72" y="20" width="170" height="32" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="157" y="40" font-size="11" text-anchor="middle" fill="#1f2328">--n-tasks 1 → 挑最長題</text>
+  <line x1="246" y1="36" x2="274" y2="36" stroke="#57606a" marker-end="url(#ar3)"/>
+  <rect x="278" y="20" width="152" height="32" rx="6" fill="#ffebe9" stroke="#f5c2c7"/>
+  <text x="354" y="40" font-size="11" text-anchor="middle" fill="#cf222e">docker build exit 2</text>
+  <line x1="434" y1="36" x2="462" y2="36" stroke="#57606a" marker-end="url(#ar3)"/>
+  <rect x="466" y="20" width="206" height="32" rx="6" fill="#ffebe9" stroke="#f5c2c7"/>
+  <text x="569" y="40" font-size="11" text-anchor="middle" fill="#cf222e">Unresolved 0.00%（容器沒起來）</text>
+
+  <text x="8" y="109" font-size="11.5" fill="#57606a" font-weight="600">嘗試 2</text>
+  <rect x="72" y="90" width="170" height="32" rx="6" fill="#fff8c5" stroke="#f0d999"/>
+  <text x="157" y="110" font-size="11" text-anchor="middle" fill="#1f2328">釘題：--task-id 也傳了</text>
+  <line x1="246" y1="106" x2="274" y2="106" stroke="#57606a" marker-end="url(#ar3)"/>
+  <rect x="278" y="90" width="394" height="32" rx="6" fill="#ffebe9" stroke="#f5c2c7"/>
+  <text x="475" y="104" font-size="11" text-anchor="middle" fill="#cf222e">ValidationError: Cannot specify both task_ids and n_tasks</text>
+  <text x="475" y="117" font-size="10" text-anchor="middle" fill="#57606a">訊息完全沒提「你多傳了 --n-tasks」</text>
+
+  <text x="8" y="179" font-size="11.5" fill="#57606a" font-weight="600">嘗試 3</text>
+  <rect x="72" y="160" width="170" height="32" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="157" y="180" font-size="11" text-anchor="middle" fill="#1f2328">改好互斥、再跑</text>
+  <line x1="246" y1="176" x2="274" y2="176" stroke="#57606a" marker-end="url(#ar3)"/>
+  <rect x="278" y="160" width="394" height="32" rx="6" fill="#ffebe9" stroke="#f5c2c7"/>
+  <text x="475" y="174" font-size="11" text-anchor="middle" fill="#cf222e">ValueError: output directory exists but no lock file found</text>
+  <text x="475" y="187" font-size="10" text-anchor="middle" fill="#57606a">指向的是嘗試 2 留下的空目錄，不是它自己</text>
+
+  <text x="8" y="249" font-size="11.5" fill="#1a7f37" font-weight="600">嘗試 4</text>
+  <rect x="72" y="230" width="170" height="32" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="157" y="250" font-size="11" text-anchor="middle" fill="#1f2328">兩個修法都進去</text>
+  <line x1="246" y1="246" x2="274" y2="246" stroke="#57606a" marker-end="url(#ar3)"/>
+  <rect x="278" y="230" width="394" height="32" rx="6" fill="#dafbe1" stroke="#b6e3c2"/>
+  <text x="475" y="250" font-size="11" text-anchor="middle" fill="#1a7f37">容器 Up —— agent 第一次真的在跑</text>
+
+  <path d="M112 52 L112 176 L70 176" fill="none" stroke="#cf222e" stroke-dasharray="4 3" marker-end="url(#ar3)"/>
+  <text x="104" y="120" font-size="10" text-anchor="end" fill="#cf222e">殘骸</text>
+</svg>
+<figcaption>嘗試 1 留下的空目錄沒有被清理，於是它的殘骸在嘗試 3 變成一個<b>看起來全新</b>的錯誤。</figcaption>
+</figure>
+
+<h3>2.1 <code>--task-id</code> 與 <code>--n-tasks</code> 互斥</h3>
+
+<pre><code>ValidationError: 1 validation error for DatasetConfig
+Value error, Cannot specify both task_ids and n_tasks [type=value_error,</code></pre>
+
+<p>
+第一版腳本是<b>永遠</b>傳 <code>--n-tasks</code>，然後在 <code>TB_SMOKE_TASK</code> 有值時<b>再</b>傳
+<code>--task-id</code> ⇒ 一釘題就必炸。tb 到
+<code>Harness.__init__</code> 內部的 <code>_init_dataset</code> 才發現，所以症狀是一個 pydantic
+traceback 加 <code>rc=1</code>，訊息裡完全沒有「你多傳了 <code>--n-tasks</code>」這層提示。
+</p>
+
+<h3>2.2 續跑守衛：<code>tb.lock</code></h3>
+
+<pre><code>ValueError: output directory /tmp/tb_modelsmoke/model_smoke_raman exists but no
+lock file found. Cannot resume run without lock file.</code></pre>
+
+<p>
+tb 的續跑語義是「run 目錄裡有 <code>tb.lock</code> 才准續」。而<b>嘗試 2 極早就失敗</b>，
+在它失敗之前已經把那個目錄建出來了（實查：目錄是空的）⇒ 嘗試 3 看到目錄存在，就以為使用者要續跑。
+</p>
+
+<div class="box warn">
+<span class="h">這條的一般形式：連續兩次失敗會疊成第三種症狀</span>
+第二個錯誤的訊息指向<b>第一個失敗的殘骸</b>，不指向它自己。所以「修好第一個之後再跑一次」不是禮貌，
+是<b>必要</b>的 —— 否則會把殘骸的錯當成新發現。本文的三次嘗試就是這個形狀。
+</div>
+
+<h3>2.3 修法</h3>
+
+<table>
+<thead><tr><th>缺陷</th><th>修法</th></tr></thead>
+<tbody>
+<tr>
+  <td>釘題必炸（參數互斥）</td>
+  <td>改用 <b>bash 陣列</b> <code>TB_ARGS=( … )</code> 組參數：<code>TB_SMOKE_TASK</code> 有值就只加
+      <code>--task-id</code>，否則才加 <code>--n-tasks</code>。<code>"${TB_ARGS[@]}"</code> 同時消掉
+      需要 <code># shellcheck disable=SC2086</code> 的那種字串展開。</td>
+</tr>
+<tr>
+  <td>殘骸目錄造成假續跑</td>
+  <td>新增守衛，在啟動 tb <b>之前</b>判三種情況：<b>空目錄</b> ⇒ 清掉後繼續；<b>有 <code>tb.lock</code></b>
+      ⇒ 照 tb 的續跑語義走並印一行提醒；<b>非空又沒 lock</b> ⇒ 明確 abort 並叫你換 run-id
+      （不猜、也不自動刪別人的產物）。</td>
+</tr>
+</tbody>
+</table>
+
+<div class="box ok">
+<span class="h">附帶得到的一條：固定 run-id 是風險</span>
+<code>TB_SMOKE_RUN_ID</code> 預設是<b>時間戳</b>。先前為了方便診斷而固定成
+<code>model_smoke_raman</code>，結果失敗那一次留下目錄，第二次就撞上守衛。
+守衛是對的（它把 cryptical 的 tb 訊息換成人看得懂的三行），但「預設用時間戳」本身也是對的。
+</div>
+
+<h2>3. 現場閘門輸出（產出當時，原文）</h2>
+
+<pre><code>### validate.py
+  lessons.jsonl: 159 records {'lesson': 159}
+  -> OK
+
+### selftest.py
+  10/10 injected violations rejected
+
+### build_memory_index.py --check
+rc=1
+  [error] 68 drift(s) between INDEX.jsonl and .workbuddy/memory/:
+    row count: index 168 vs derived 172
+    .workbuddy/memory/2026-09-17.md :: (file row): fields differ ['bytes', 'lines', 'mtime', 'sha256']
+    .workbuddy/memory/2026-09-16.md :: (file row): fields differ ['abs', 'body_bytes', 'bytes', 'level',
+      'line_end', 'line_start', 'lines', 'mtime', 'row', 'sha256', 'subs', 'title']
+    …（其餘為兩份日誌的段落列）
+    regenerate with: python3 memory/build_memory_index.py
+
+### index_assets.py --check
+rc=1
+  [error] 4 drift(s) between the manifest and disk:
+    scripts/check/phase_split_ab.py: bytes: manifest 57328 vs disk 110064
+    scripts/check/phase_split_ab.py: mtime: manifest '2026-09-17T18:52:23' vs disk '2026-09-17T20:17:35'
+    scripts/run_server.sh: bytes: manifest 129363 vs disk 130857
+    scripts/run_server.sh: mtime: manifest '2026-09-17T18:50:45' vs disk '2026-09-17T19:39:59'</code></pre>
+
+<h3>3.1 兩條紅燈的歸屬（不是本輪造成的）</h3>
+
+<table>
+<thead><tr><th>漂移的 path</th><th>磁碟 mtime</th><th>歸屬</th></tr></thead>
+<tbody>
+<tr><td><code>scripts/check/phase_split_ab.py</code></td><td class="num">2026-09-17 20:17:35</td><td>另一條線（引擎層），本檔寫作時它仍在改</td></tr>
+<tr><td><code>scripts/run_server.sh</code></td><td class="num">2026-09-17 19:39:59</td><td>另一條線（引擎層）</td></tr>
+<tr><td><code>.workbuddy/memory/*.md</code>（68 筆）</td><td class="num">02:52 / 20:30</td><td>共享的 append-only 日誌（兩條線都在寫）</td></tr>
+</tbody>
+</table>
+
+<p>
+本輪改動對索引的足跡是 <b>0</b>：逐檔查 <code>MANIFEST.jsonl</code>，
+<code>run_model_smoke</code> / <code>config.local.env</code> / 本份白皮書 三者命中數皆為 0
+（新增 <code>docs/*.html</code> 不在自動 glob、也不在 <code>CURATED</code>，故不漂移）。
+</p>
+
+<h2>4. 我造成的一個觀測污染：改動「正在執行中」的腳本</h2>
+
+<p>
+第一次 smoke 的日誌尾端有一行不屬於任何已提交版本程式碼的錯誤：
+</p>
+
+<pre><code>/Users/alexchuang/Documents/flashkv-devserver/agent_harness/tb_loop/scripts/run_model_smoke.sh: line 187: -m: command not found</code></pre>
+
+<p>
+那個 smoke 從 19:52 跑到 20:05，而我在 19:58 <b>改了那支正在被執行中的腳本</b>。已提交版本的第 187 行是
+<code>-k timeout_ms="${TB_TIMEOUT_MS}" \</code>（前一行有續行反斜線），不可能變成一個以 <code>-m</code>
+開頭的指令。用<b>受控實驗</b>把機制釘死（不靠推論）：
+</p>
+
+<pre><code>v1 = 263 行腳本，第 2 行後 sleep 8；跑起來後在 sleep 期間換成 v2（293 行）
+v1 的輸出：3 行（截斷在 STEP-1）
+  s.sh: line 294: unexpected EOF while looking for matching `"'
+  s.sh: line 295: syntax error: unexpected end of file
+對照組（完全不動它）：0 錯誤</code></pre>
+
+<div class="box warn">
+<span class="h">判準</span>
+看到「腳本尾端冒出莫名其妙的 <code>command not found</code> / EOF」時，<b>先問「它跑的時候我有沒有改它」</b>。
+而且錯誤行號落在<b>新版檔案</b>的行數上 —— 拿舊版去對會白繞一圈（本輪就是這樣繞了一圈）。
+訊息裡的路徑與行號看起來都對，因為 bash 是<b>增量讀取</b>腳本檔，它從錯的位移續讀。
+</div>
+
+<h2>5. 誠實邊界：本文件不主張什麼</h2>
+
+<div class="box bad">
+<ul>
+<li><b>不主張</b> <code>deepseek/deepseek-flash</code> 能驅動 <code>prime-agent</code> 完成一題。
+     本檔寫作時第 4 次 smoke（<code>model_smoke_20260917_202916</code>）仍在跑，狀態是
+     <code>tb run</code> 活躍、容器 <code>Up</code>、run 目錄已有 <code>tb.lock</code> 與
+     <code>raman-fitting.easy/</code>。修好的證據只到「容器起來了」。</li>
+<li><b>不主張</b> <code>Unresolved 0.00%</code> 有任何模型或 agent 層面的意義 —— 見§1。</li>
+<li><b>不主張</b> <code>Docker buildx is not available</code> 是 <code>exit status 2</code> 的近因。</li>
+<li><b>不主張</b>守衛已被負對照測過「非空又沒 lock」那個分支：本輪只實跑到「空目錄」與
+     「有 <code>tb.lock</code>」兩種。<b>沒有</b>拿一個真的非空、無 lock 的目錄去驗 abort。</li>
+</ul>
+</div>
+
+<h3>5.1 三件刻意沒做（都有理由，不是遺漏）</h3>
+
+<table>
+<thead><tr><th>沒做</th><th>為什麼</th></tr></thead>
+<tbody>
+<tr>
+  <td><b>沒重生索引</b>（<code>INDEX.jsonl</code> / <code>MANIFEST.jsonl</code>）</td>
+  <td>規程 §4：工作區此刻有<b>不是本輪改的</b> modified 檔，其中
+      <code>MANIFEST.jsonl</code> 與 <code>INDEX.jsonl</code> 正是另一條線<b>尚未提交</b>的再生結果；
+      現在重生會把對方未定稿的位元組寫進本 commit。</td>
+</tr>
+<tr>
+  <td><b>沒把本輪的 lesson 落進 <code>traces/lessons.jsonl</code></b></td>
+  <td>同一個理由：<code>traces/*.jsonl</code> 在 <code>CURATED</code> 裡，追加會<b>新增</b>一筆漂移，
+      而本輪不能重生索引去消它。內容已完整寫在本文件（§2.1、§2.2、§4），下一輪樹靜下來時補登。</td>
+</tr>
+<tr>
+  <td><b>沒刷新 skill 快照</b>（<code>agent_harness/skills/</code>）</td>
+  <td>本輪改了 <code>~/.workbuddy/skills/cgc-tb-smoke/SKILL.md</code>，它的快照因此 stale。
+      依 §5.2 刷新快照的下一步是重生索引，同上。</td>
+</tr>
+</tbody>
+</table>
+
+<h3>5.2 D5 的數值那一半</h3>
+<p>
+本 commit 的 staged 清單<b>不含任何 <code>src/</code> 檔</b>，依 D5 與 <code>cgc-commit-gate</code> §2.4
+的判準（「有沒有動 <code>src/</code>」），<code>m123_oracle_gate.py</code> 不適用。
+白皮書那一半已履行，就是本文件。
+</p>
+
+<h3>5.3 一個仍未處理的落差（承前一份白皮書）</h3>
+<p>
+<code>harness/extensions/gemma4-provider.ts</code> 的 <code>reasoning: false</code> 對上一個
+會吐 <code>reasoning_content</code> 的模型（V4.1-Flash 是深度思考模型）。同檔的
+<code>contextWindow</code> 已改為 128000、<code>maxTokens: 4096</code> 與 <code>reasoning</code>
+兩欄<b>刻意未改</b>（前者直接影響成本曲線，後者需查證切換參數）。仍在待辦。
+</p>
+
+<h2>6. 引用指針</h2>
+<table>
+<thead><tr><th>事實</th><th>指針</th></tr></thead>
+<tbody>
+<tr><td>三次失敗的日誌原文</td><td><code>/tmp/smoke_run.log</code>、<code>/tmp/smoke2.log</code>、<code>/tmp/smoke3.log</code>（本機，未入版控）</td></tr>
+<tr><td>受控實驗腳本與輸出</td><td><code>/tmp/editrace/s.sh</code>、<code>/tmp/editrace/out1.txt</code>、<code>out2.txt</code>（本機）</td></tr>
+<tr><td>修法</td><td><code>agent_harness/tb_loop/scripts/run_model_smoke.sh</code>（本 commit）</td></tr>
+<tr><td>選題成本的兩題對照</td><td><code>~/.cache/terminal-bench/terminal-bench-core/0.1.1/{super-benchmark-upet,raman-fitting.easy}/Dockerfile</code></td></tr>
+<tr><td>提交規程（§4 併行 writer、§7 commit 風格）</td><td><code>~/.workbuddy/skills/cgc-commit-gate/SKILL.md</code></td></tr>
+<tr><td>前一份白皮書（TokenHub 接線）</td><td><code>docs/TB_TOKENHUB_WIRING_20260917_2010.html</code></td></tr>
+</tbody>
+</table>
+
+<p class="meta" style="margin-top:28px">
+本文件為 D5 要求的技術白皮書附件。所有數字均為產出當時現場量測，原樣貼上；未跑的部分在§5 逐條明寫。
+</p>
+
+</div>
+</body>
+</html>
