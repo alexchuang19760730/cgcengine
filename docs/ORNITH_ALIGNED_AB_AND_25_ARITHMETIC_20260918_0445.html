@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>換模型不是提速手段，與 decode 25 的兩個乘數（2026-09-18 04:45）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --purple:#7c3aed; --purple-bg:#f5f3ff; --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  h4{font-size:14.5px;margin:20px 0 6px;color:#374151}
+  .meta,.sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid var(--line)}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  .b-purple{background:var(--purple-bg);border-color:#ddd6fe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin:2px 6px 2px 0}
+  .t-green{background:var(--green-bg);border-color:#a7f3d0;color:#047857}
+  .t-red{background:var(--red-bg);border-color:#fecaca;color:#b91c1c}
+  .t-amber{background:var(--amber-bg);border-color:#fde68a;color:#b45309}
+  .t-blue{background:var(--blue-bg);border-color:#bfdbfe;color:#1d4ed8}
+  .t-purple{background:var(--purple-bg);border-color:#ddd6fe;color:#6d28d9}
+  .small{font-size:12.5px;color:var(--muted)}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:#fcfcfd}
+  .toc ol{margin:6px 0 0 20px}
+  .toc a{color:var(--blue);text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>換模型不是提速手段，與 decode 25 的兩個乘數</h1>
+<div class="meta">
+  2026-09-18 04:33–04:46 · flashkv-devserver（llama.cpp CGC fork，引擎層線）· profile <code>prod25</code> ·
+  pool 8 GiB · <code>--n-predict 96</code> · <code>--rounds 3</code>（丟第 0 輪）<br>
+  受試：<code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（12.72 GiB，旗艦）與
+  <code>Ornith-1.5-35B-A3B-Abliterated-MTPv2-APEX-I-Compact-v2D-lite.gguf</code>（16.36 GiB，對照）<br>
+  硬體 <code>Mac16,12</code> MacBook Air · Apple M4 · 8 核 GPU · 16 GB unified · 無風扇<br>
+  產物 <code>Backup/phase_decomp/aligned_nail_vs_ornith_fwd.json</code>／<code>_rev.json</code> ·
+  <code>Backup/m123_oracle_gate/summary_en-orn-ab.json</code><br>
+  <span class="tag t-green">D5 PASS（comparable=true）</span>
+  <span class="tag t-red">換 Ornith 慢 1.49×</span>
+  <span class="tag t-amber">25 ＝ 兩個乘數相乘剛好擦線</span>
+  <span class="tag t-blue">一對 differ-by-one 的新臂</span>
+</div>
+
+<div class="box b-red">
+<p><b>一句話結論（前一半）：樹上第二個模型比旗艦快，是假的。</b>把兩臂放進<b>同一個 build</b>、
+<b>同一個 profile</b>、<b>兩臂都 MTP off</b>、而且<b>只差一個模型檔</b>（differ-by-one）的 ABBA 之後：
+<b>Nail 12.24 vs Ornith 8.21 t/s ＝ Nail 快 1.49×</b>，兩個順序都是 Nail 快。先前那組
+「Ornith 15.72–19.65」在同一個引擎上<b>不可重現</b>（今天 7.94–8.47，低 2.4×），
+而第一嫌疑是 <b>build 指紋</b>，不是熱態 —— 這正是 lesson <code>eng-mh-0066</code> 的由來。</p>
+<p><b>一句話結論（後一半）：25 t/s 不是「一個 2.3× 的動作」，是兩個乘數相乘。</b>
+25 ＝ 步速 × 每步 token 數：今天的實測點是 10.9 × 1.0；已量的兩個槓桿是
+<b>去序列化（×1.8–2.3，但探針輸出損壞）</b>與 <b>MTP（×1.28，已量）</b>。算術
+<code>12.62 × 2.0 ＝ 25.24</code> 剛好擦線 —— 但<b>「兩個乘數能不能相乘」這件事本身還沒量過</b>，
+所以現在正確的答案不是「有」或「沒有」，而是「<b>先補 M3 缺的儀器</b>」。</p>
+</div>
+
+<div class="toc">
+  <b>目錄</b>
+  <ol>
+    <li><a href="#s1">這一輪的兩個問題</a></li>
+    <li><a href="#s2">兩個模型其實是同一個架構</a></li>
+    <li><a href="#s3">對齊 A/B：設計（differ-by-one 是什麼意思）</a></li>
+    <li><a href="#s4">對齊 A/B：結果</a></li>
+    <li><a href="#s5">為什麼先前那組數字不可重現</a></li>
+    <li><a href="#s6">decode 到 25 的算術</a></li>
+    <li><a href="#s7">現場閘門輸出（原文）</a></li>
+    <li><a href="#s8">誠實邊界（本文件不主張什麼）</a></li>
+    <li><a href="#s9">產物與指令</a></li>
+  </ol>
+</div>
+
+<h2 id="s1">§1 這一輪的兩個問題</h2>
+<p>兩個問題都是使用者逐字提出的，而兩個的答案都不是提問時預設的方向。</p>
+<table>
+  <tr><th>問題（原文）</th><th>本文件的答案</th><th>證據型態</th></tr>
+  <tr>
+    <td>「為什麼 Ornith 可以做到 17，我們 12，他模型還更大」</td>
+    <td><b>那個比較不成立</b>：兩組數字跨了 <b>build</b>。在同一棵樹上重做之後，方向反過來 ——
+        <b>我們快 1.49×</b>。</td>
+    <td>ABBA、四臂 <code>build</code> 逐鍵相同</td>
+  </tr>
+  <tr>
+    <td>「我們目前 decode 到 25 t/s 有機會嗎」</td>
+    <td><b>有算得出來的路，但沒有一條已驗證的槓桿能單獨走到那裡</b>：要兩個乘數同時成立，
+        而乘數最大的那個（步速）目前只有一支會毀掉輸出的探針。</td>
+    <td>已量的三個乘數 ＋ 一次分解</td>
+  </tr>
+  <tr>
+    <td>（追問）「Ornith 可以試試加上 MTP 嗎」</td>
+    <td><b>可以，只差一個開關</b>（MTP 頭結構完整、身分已登錄）；閘門是<b>記憶體</b>。
+        但使用者同日裁定<b>不跑</b>（見 §8）。</td>
+    <td>GGUF 標頭 ＋ <code>…mtphead.json</code></td>
+  </tr>
+  <tr>
+    <td>（追問）「他們的質量跟我們比起來如何」</td>
+    <td><b>沒有數字，而且不需要有</b> —— 它不是候選模型；且現成題庫 48/48 全中文，
+        對 <code>languages=['en']</code> 的一方有系統性偏誤。</td>
+    <td>見 §2.1 與 §8</td>
+  </tr>
+</table>
+
+<h2 id="s2">§2 兩個模型其實是同一個架構</h2>
+<p>「他模型比較大」是真的 —— 但大的是<b>同一份架構的量化</b>，不是另一種模型。以
+<code>gguf-py</code> 直讀標頭（<code>scripts/check/gguf_pool_geometry.py</code> 同一張表）：</p>
+<table>
+  <tr><th>項目</th><th>Nail（旗艦）</th><th>Ornith（對照）</th><th>相同？</th></tr>
+  <tr><td><code>general.architecture</code></td><td class="num">qwen35moe</td><td class="num">qwen35moe</td><td>是</td></tr>
+  <tr><td><code>block_count</code></td><td class="num">41</td><td class="num">41</td><td>是</td></tr>
+  <tr><td><code>expert_count</code> / <code>expert_used_count</code></td><td class="num">256 / 8</td><td class="num">256 / 8</td><td>是</td></tr>
+  <tr><td><code>embedding_length</code> / <code>context_length</code></td><td class="num">2048 / 262144</td><td class="num">2048 / 262144</td><td>是</td></tr>
+  <tr><td><code>nextn_predict_layers</code></td><td class="num">1</td><td class="num">1</td><td>是</td></tr>
+  <tr><td>檔案大小</td><td class="num">12.72 GiB</td><td class="num"><b>16.36 GiB</b></td><td>否（+29%）</td></tr>
+  <tr><td>專家張量位元組</td><td class="num">11.11 GiB</td><td class="num">14.68 GiB</td><td>否</td></tr>
+  <tr><td>專家型別</td><td class="num">IQ2_S／IQ3_S／IQ4_XS／Q3_K／Q2_K</td><td class="num">Q3_K／Q4_K／Q8_0</td><td>否</td></tr>
+  <tr><td>每層每專家（binding 層）</td><td class="num">1.3906 MiB</td><td class="num">1.6875 MiB</td><td>否</td></tr>
+  <tr><td>8 GiB 池 → 槽數</td><td class="num">143</td><td class="num">118</td><td>否</td></tr>
+  <tr><td><b>每 token 專家讀取</b>（× top-k 8/256）</td><td class="num"><b>355 MiB</b></td><td class="num"><b>470 MiB</b></td><td>否（<b>+32%</b>）</td></tr>
+</table>
+<p>⇒ 兩者都是 41 層、256 專家、top-8 ⇒ <b>「模型更大」在 MoE 上不直接決定每步成本</b>；
+但它在這裡<b>確實</b>決定了每 token 讀多少位元組，而 Ornith 讀得<b>更多</b>。
+所以如果 Ornith 真的比較快，原因就只能來自<b>引擎側或量測條件</b> —— 這正是要對齊 A/B 的理由。</p>
+<p class="small">實測的整輪位元組與結構估計方向一致：Nail <code>io_bytes 9,655,181,312</code>（8.99 GiB）／
+24,837 次讀取／resident 6,197.04 MiB；Ornith <code>11,675,615,232</code>（10.87 GiB）／21,579 次／
+resident 6,554.53 MiB ⇒ <b>Ornith 整輪多讀 20.9%</b>（11,675,615,232 ÷ 9,655,181,312 ＝ 1.2093）。
+兩個數字不同義（一個是「每 token 應讀」的結構估計、一個是「整輪實際讀」的池統計），但<b>方向相同</b>。</p>
+
+<h3>§2.1 Ornith 的來源（這一節決定「質量」那個問題該怎麼問）</h3>
+<table>
+  <tr><th>欄位</th><th>值</th></tr>
+  <tr><td><code>general.basename</code></td><td class="num">ornith-1.5</td></tr>
+  <tr><td><code>general.finetune</code></td><td class="num"><b>abliterated-mlx</b></td></tr>
+  <tr><td><code>general.name</code></td><td class="num">Ornith 1.5 35b Abliterated Mlx Bf16</td></tr>
+  <tr><td><code>general.languages</code></td><td class="num"><b>['en']</b></td></tr>
+  <tr><td><code>general.tags</code></td><td class="num">['mlx', 'image-text-to-text']</td></tr>
+  <tr><td><code>general.file_type</code> / <code>quantization_version</code></td><td class="num">15 (Q8_K) / 2</td></tr>
+</table>
+<p>⇒ 它是<b>第三方的 abliterated（拒答方向被移除）微調</b>，從 <b>MLX 的 BF16</b> 轉出，
+<b>宣稱語言只有英文</b>，並帶 vision tag。<b>所以它與 Nail 的差別不只是量化，是兩個不同的微調。</b>
+（Nail 的 <code>general.*</code> 本輪未讀，因此本文件不對「Nail 支援哪些語言」作任何主張。）</p>
+
+<h2 id="s3">§3 對齊 A/B：設計（differ-by-one 是什麼意思）</h2>
+<p>先前那兩組數字要嘛條件不同、要嘛不是同一支臂。<b>缺的不是資料，是那一支臂。</b>
+所以本輪只做兩件事：</p>
+<ol>
+  <li>在 <code>scripts/check/decode_sweep.py</code> 的臂表新增 <b><code>orn-p25</code></b>：
+      它的定義是 <code>p25-gputime</code>（＝ Nail ＋ <code>CGC_SERVER_MTP=0</code> ＋
+      <code>CGC_GPU_TIMING=1</code> ＋ <code>CGC_DECODE_PROFILE=1</code>）的<b>逐字複本</b>，
+      <b>只加一個鍵</b> <code>CGC_SERVER_MODEL</code> 指向 Ornith。</li>
+  <li>跑 <b>ABBA</b>：前向 <code>--arms p25-gputime,orn-p25</code>，反向
+      <code>--arms orn-p25,p25-gputime</code>，其餘參數完全相同。</li>
+</ol>
+<div class="box b-blue">
+<p><b>為什麼要「只差一個鍵」：</b>先前那組 Ornith 數字來自 <code>en-dc-orn-*</code> 兩臂，
+而它們<b>還帶著</b> <code>CGC_DOWN_COMBINE</code>／<code>CGC_DOWN_COMBINE_AUDIT</code>
+（那是為 down-combine 融合實驗準備的）。帶著那兩個鍵的臂<b>不能</b>與 <code>p25-gputime</code> 配對 ——
+那會變成「兩個變數」而不是單變數。這個 repo 已經有一條座右銘：
+<b>「兩次量測之間只有一個產物不同」不等於單變數實驗，前提是<b>交錯</b>。</b></p>
+</div>
+<p>另一個被刻意保留的鍵：<code>CGC_SERVER_MTP=0</code> <b>兩臂都設</b>。理由是 MTP-on 會把 trunk 變成
+<b>verify 圖（<code>n_tokens</code> 2/4）</b>，那與「換模型」是兩個不同的問題；先把它固定住，
+「換模型」才是單變數。</p>
+
+<h2 id="s4">§4 對齊 A/B：結果</h2>
+<h3>§4.1 ABBA</h3>
+<table>
+  <tr><th>腿</th><th>順序</th><th>Nail（<code>p25-gputime</code>）</th><th>Ornith（<code>orn-p25</code>）</th></tr>
+  <tr><td>前向</td><td>Nail → Ornith</td><td class="num"><b>12.59</b></td><td class="num">7.94</td></tr>
+  <tr><td>反向</td><td>Ornith → Nail</td><td class="num"><b>11.89</b></td><td class="num">8.47</td></tr>
+  <tr><td colspan="2">配對中位</td><td class="num"><b>12.24</b></td><td class="num">8.21</td></tr>
+</table>
+<p>⇒ <b>兩個順序都是 Nail 快</b>（12.59 &gt; 7.94、11.89 &gt; 8.47）⇒ 這不是位置效應。
+配對比值 <b>12.24 ÷ 8.21 ＝ 1.492</b>。</p>
+<h3>§4.2 逐輪（第 0 輪是 warmup，不計入中位）</h3>
+<table>
+  <tr><th>臂</th><th>rounds（t/s）</th><th>med</th><th>min</th><th>max</th></tr>
+  <tr><td><code>p25-gputime</code> 前向</td><td class="num">8.607 / 12.585 / 12.841 / 11.944</td><td class="num">12.59</td><td class="num">11.94</td><td class="num">12.84</td></tr>
+  <tr><td><code>orn-p25</code> 前向</td><td class="num">6.785 / 8.809 / 7.299 / 7.942</td><td class="num">7.94</td><td class="num">7.30</td><td class="num">8.81</td></tr>
+  <tr><td><code>orn-p25</code> 反向</td><td class="num">6.234 / 8.473 / 8.532 / 7.854</td><td class="num">8.47</td><td class="num">7.85</td><td class="num">8.53</td></tr>
+  <tr><td><code>p25-gputime</code> 反向</td><td class="num">9.162 / 11.892 / 12.006 / 8.935</td><td class="num">11.89</td><td class="num">8.93</td><td class="num">12.01</td></tr>
+</table>
+<p class="small">順帶一個可觀測的差異：<b>Ornith 的離散小得多</b>（兩條腿的計入輪都落在 7.30–8.53），
+而 Nail 有 8.93 這種低點。本文件不對這個差異作機制主張（沒有儀器量它）。</p>
+<h3>§4.3 四臂的 build 指紋逐鍵相同（這是本文件最重要的一張表）</h3>
+<table>
+  <tr><th>鍵</th><th>值（四臂皆是）</th></tr>
+  <tr><td><code>server</code></td><td class="num">054fb22f04a0</td></tr>
+  <tr><td><code>libggml-base</code> / <code>libggml</code></td><td class="num">7d2b25c89ce4 / 8f4abce76052</td></tr>
+  <tr><td><code>libggml-blas</code> / <code>libggml-cpu</code></td><td class="num">52de23d5c405 / 70ebbd7c709a</td></tr>
+  <tr><td><code>libggml-metal</code></td><td class="num"><b>8eaa25898413</b></td></tr>
+  <tr><td><code>libllama-common</code> / <code>libllama</code></td><td class="num">bda161fafff1 / <b>324d22fc9167</b></td></tr>
+</table>
+<h3>§4.4 熱態：本輪四臂<b>不是同熱態</b>（誠實揭露）</h3>
+<table>
+  <tr><th>臂</th><th>launch</th><th><code>thermal_hist</code>（每臂 8 個讀數）</th></tr>
+  <tr><td><code>p25-gputime</code> 前向</td><td>MODERATE</td><td class="num">{MODERATE: 5, HEAVY: 3}</td></tr>
+  <tr><td><code>orn-p25</code> 前向</td><td>HEAVY</td><td class="num">{HEAVY: 8}</td></tr>
+  <tr><td><code>orn-p25</code> 反向</td><td>MODERATE</td><td class="num">{MODERATE: 1, HEAVY: 7}</td></tr>
+  <tr><td><code>p25-gputime</code> 反向</td><td>MODERATE</td><td class="num">{MODERATE: 7, HEAVY: 1}</td></tr>
+</table>
+<p>⇒ 四臂的熱歷程<b>不相同</b>，所以本文件<b>不</b>主張它滿足 lesson <code>eng-mh-0065</code>
+（「一個 A/B 的兩臂必須有相同的熱歷程」）的嚴格條件。結論的強度來自兩點：
+<b>(a) 兩個順序同向</b>；<b>(b) 在反向腿 Ornith 是先跑、且 launch 讀到 MODERATE</b>（條件對它有利），
+它仍然以 8.47 對 11.89 落後。</p>
+
+<h2 id="s5">§5 為什麼先前那組數字不可重現</h2>
+<table>
+  <tr><th>來源</th><th>時間</th><th><code>libggml-metal</code> / <code>libllama</code></th><th>Ornith</th><th>Nail</th></tr>
+  <tr><td><code>en_dc_orn_ab_rev_20260918.json</code></td><td class="num">04:00</td>
+      <td class="num">05b2da9388ea / e4e432f27aee</td><td class="num">15.72／19.65</td><td>—</td></tr>
+  <tr><td><code>en_dc_st_20260918.json</code></td><td class="num">04:15–04:17</td>
+      <td class="num">c6bddce9796a / feaaa647f4f8</td><td>—</td><td class="num">8.09／9.85</td></tr>
+  <tr><td><b>本輪對齊 ABBA</b></td><td class="num">04:33–04:39</td>
+      <td class="num">8eaa25898413 / 324d22fc9167</td><td class="num"><b>7.94／8.47</b></td><td class="num"><b>12.59／11.89</b></td></tr>
+</table>
+<p>⇒ Ornith 在同一個引擎上的兩次讀數相差 <b>2.4×</b>（19.65 → 7.94–8.47），而<b>兩者都不是熱態能解釋的</b>
+（04:00 那組兩臂全程 MODERATE）。三列的 <code>libggml-metal</code> 三個都不同 —— 04:00 → 04:15 之間
+有一次重建（IQ3_S kernel 落地），04:15 → 04:33 之間又有一次。<b>第一嫌疑是 build。</b></p>
+<div class="box b-amber">
+<p><b>這一節的可引用述句</b>：「在旗艦模型上換成 Ornith <b>不是提速手段</b> —— 它慢 <b>1.49×</b>，
+而且它的每 token 專家讀取多 <b>32%</b>。」</p>
+<p><b>不可引用的述句</b>：「Ornith 引擎效率高」（跨 build）／「Ornith 模型更大卻更快」（已被否證）／
+「Ornith 的質量跟我們差不多或更好」（<b>未量</b>，見 §8）。</p>
+</div>
+
+<h2 id="s6">§6 decode 到 25 的算術</h2>
+<h3>§6.1 恆等式，與 25 的出處</h3>
+<pre><code>t/s  ＝  步速（steps/s）  ×  每步 token 數</code></pre>
+<p>「25 t/s」在本 repo 有出處：<b>09-05 的 27.71</b>，而它是
+<code>3.99 token/step ÷ 144 ms/step</code>。換算成步速只有 <b>6.94 steps/s</b> ——
+<b>比今天慢 1.57×</b>（今天 llama-bench 暖平台 10.78／10.91／10.98）。
+⇒ <b>那個數字幾乎全部住在「每步 token 數」那一項。</b>我們曾經到過 25，但那不是靠步速。</p>
+<h3>§6.2 三個乘數的現況</h3>
+<table>
+  <tr><th>乘數</th><th>今天的值</th><th>已量的槓桿</th><th>要到 25 的缺口</th><th>卡在哪</th></tr>
+  <tr>
+    <td><b>步速</b></td>
+    <td class="num">~10.9 steps/s（1 tok/step）</td>
+    <td class="num"><code>CGC_SUBMIT_AHEAD</code>：82.5 → <b>31–44 ms/步</b>（×1.8–2.3）</td>
+    <td class="num">×2.0–2.3</td>
+    <td><b>探針輸出損壞</b>（其 16.82 t/s 不可引用）；S2／S3 的前提 B 已倒</td>
+  </tr>
+  <tr>
+    <td><b>每步 token</b></td>
+    <td class="num">1.0（MTP off）</td>
+    <td class="num">MTP-on：9.82 → <b>12.62</b>（×1.28）</td>
+    <td class="num">×1.6–2.0</td>
+    <td>accept 58.25%（09-05 的 0.9974 是舊幾何的飽和值）</td>
+  </tr>
+  <tr>
+    <td>host 側</td>
+    <td class="num">build 0.023 ＋ alloc 0.037 ＋ inputs 0.026<br>＝ <b>0.086 ms/步（0.07%）</b></td>
+    <td>—</td>
+    <td class="num"><b>0</b></td>
+    <td><b>正式關閉</b>（<code>compute</code> 佔 99.9%、<code>fill_wait = 0.000</code>）</td>
+  </tr>
+</table>
+<svg viewBox="0 0 680 382" width="100%" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>decode 到 25 t/s 的兩個乘數平面</title>
+<desc>橫軸是步速、縱軸是每步 token 數，25 t/s 的等值線由 (6.25, 4.0) 經 (12.5, 2.0) 到 (25, 1.0)。今天的實測點是 10.9×1.0；壞掉的去序列化探針單獨就能把步速推到 22.7–32.3；09-05 的舊幾何是 6.94×3.99。</desc>
+<text x="58" y="26" font-size="12" fill="#6b7280" font-family="-apple-system,PingFang TC,sans-serif">每步 token 數</text>
+<line x1="60" y1="126.7" x2="640" y2="126.7" stroke="#e5e7eb" stroke-width="0.5"/>
+<line x1="60" y1="213.3" x2="640" y2="213.3" stroke="#e5e7eb" stroke-width="0.5"/>
+<line x1="60" y1="40" x2="60" y2="300" stroke="#d1d5db" stroke-width="0.5"/>
+<line x1="60" y1="300" x2="640" y2="300" stroke="#d1d5db" stroke-width="0.5"/>
+<text x="52" y="40" font-size="12" fill="#6b7280" text-anchor="end" dominant-baseline="central" font-family="-apple-system,PingFang TC,sans-serif">4</text>
+<text x="52" y="126.7" font-size="12" fill="#6b7280" text-anchor="end" dominant-baseline="central" font-family="-apple-system,PingFang TC,sans-serif">3</text>
+<text x="52" y="213.3" font-size="12" fill="#6b7280" text-anchor="end" dominant-baseline="central" font-family="-apple-system,PingFang TC,sans-serif">2</text>
+<text x="84.2" y="316" font-size="12" fill="#6b7280" text-anchor="middle" font-family="-apple-system,PingFang TC,sans-serif">5</text>
+<text x="205" y="316" font-size="12" fill="#6b7280" text-anchor="middle" font-family="-apple-system,PingFang TC,sans-serif">10</text>
+<text x="325.8" y="316" font-size="12" fill="#6b7280" text-anchor="middle" font-family="-apple-system,PingFang TC,sans-serif">15</text>
+<text x="446.7" y="316" font-size="12" fill="#6b7280" text-anchor="middle" font-family="-apple-system,PingFang TC,sans-serif">20</text>
+<text x="567.5" y="316" font-size="12" fill="#6b7280" text-anchor="middle" font-family="-apple-system,PingFang TC,sans-serif">25</text>
+<text x="350" y="338" font-size="12" fill="#6b7280" text-anchor="middle" font-family="-apple-system,PingFang TC,sans-serif">步速（steps / s）</text>
+<polyline points="114.4,40 164.7,126.7 265.4,213.3 567.5,300" fill="none" stroke="#2563eb" stroke-width="1.5"/>
+<text x="470" y="258" font-size="12" fill="#111827" font-family="-apple-system,PingFang TC,sans-serif">25 t/s</text>
+<circle cx="131" cy="41" r="4" fill="#111827"/>
+<text x="144" y="41" font-size="12" fill="#111827" dominant-baseline="central" font-family="-apple-system,PingFang TC,sans-serif">09-05 舊幾何　6.94 × 3.99 ＝ 27.7</text>
+<circle cx="226.7" cy="297" r="4" fill="#111827"/>
+<text x="226.7" y="278" font-size="12" fill="#111827" text-anchor="middle" font-family="-apple-system,PingFang TC,sans-serif">今天 10.9 × 1.0</text>
+<circle cx="608.6" cy="297" r="4" fill="#dc2626"/>
+<text x="634" y="272" font-size="12" fill="#dc2626" text-anchor="end" font-family="-apple-system,PingFang TC,sans-serif">壞掉的探針天花板</text>
+<text x="634" y="288" font-size="12" fill="#dc2626" text-anchor="end" font-family="-apple-system,PingFang TC,sans-serif">22.7 – 32.3</text>
+<text x="40" y="362" font-size="12" fill="#6b7280" font-family="-apple-system,PingFang TC,sans-serif">25 ＝ 步速 × 每步 token 數；要 25 需要 (12.5, 2.0) 或 (14, 1.8) —— 兩者都還沒成立</text>
+</svg>
+<h3>§6.3 算術，與三個警告</h3>
+<pre><code>12.62（MTP-on 實測）× 2.0（去序列化，未證）＝ 25.24</code></pre>
+<ol>
+  <li><b>兩個乘數能不能相乘，還沒量過。</b>12.62 與 31–44 ms/步是<b>不同儀器</b>量的
+      （<code>llama-speculative-simple</code> 與 HTTP 臂），兩者可能<b>吃同一份空窗</b>。
+      ⇒ 這個乘法是<b>算術，不是計畫</b>；要把它變成計畫，得<b>在 MTP-on 的形狀下重量去序列化的天花板</b>。</li>
+  <li><b>25 ÷ 10.9 ＝ 2.29×</b>（不是 2.0×）。用 HTTP 臂的 12.24 算是 2.04×。交付口徑是
+      llama-bench 的 10.78–10.98，所以引用 25 的時候要指名口徑。</li>
+  <li><b><code>n_predict=24</code> 的短爆會給 18.7–20.3 的假希望</b>（已判不可引用）。本輪刻意用
+      <code>--n-predict 96</code>，正是為了不落在那一格。</li>
+</ol>
+<h3>§6.4 該先做哪一件（判準已先寫死，順序不要換）</h3>
+<ol>
+  <li><b>補 M3 缺的儀器</b>（逐節點 GPU 時間，Metal counter sample buffer）。
+      判準：<code>ffn_moe_*</code> 佔 <code>wait</code> ≥40% ⇒ 有量；&lt;15% ⇒ 三條路全不足、
+      走「找不到路」分支。<b>沒有這個讀數，任何去序列化的實作都是學費</b>（<code>CGC_MMV_FUSE</code> 的教訓）。</li>
+  <li><b>在 MTP-on 的形狀下重量去序列化的天花板</b> —— 這一步決定「兩個乘數能不能相乘」。</li>
+  <li><b>MTP 的 accept</b>：唯一已量到正增益、且不需要新儀器的槓桿。</li>
+  <li><b>不要算進 25 的預算</b>：down-combine 融合對旗艦是 <b>−15～18%</b>；換成 Ornith 是 <b>−1.49×</b>。</li>
+  <li><b>M1 的離開條件沒有一條被系統性重核</b> ⇒ M3／M4 站在未驗收的地基上。</li>
+</ol>
+
+<h2 id="s7">§7 現場閘門輸出（原文）</h2>
+<pre><code>$ python3 agent_harness/engine_loop/traces/validate.py
+    lessons.jsonl: 177 records {'lesson': 177}
+    WARN  eng-mh-0066: applies_to path does not exist: docs/ORNITH_ALIGNED_AB_AND_25_ARITHMETIC_20260918_0445.html
+  -&gt; OK, 1 warning(s)
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  10/10 injected violations rejected
+
+$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  memory index OK: 8 file(s), 214 section(s), no drift
+
+$ cd agent_harness/engine_loop &amp;&amp; python3 index_assets.py --check
+  manifest OK: 108 assets, existence + bytes + mtime all agree</code></pre>
+<p class="small">唯一的 WARN 是這一份文件本身（lesson <code>eng-mh-0066</code> 的 <code>applies_to</code>
+指向它）。它在建立之前必然不存在，所以那一行是<b>順序的產物</b>，不是內容的錯誤。</p>
+<h3>§7.1 D5 數值閘門（<code>m123_oracle_gate.py --tag en-orn-ab</code>，48 s）</h3>
+<pre><code>INDEPENDENT METRICS  (never merge these into one verdict)
+  M1 numeric identity    (bit-identical logits)  : 9/9  (100.0%)
+  M2 decision agreement  (same argmax token)     : 9/9  (100.0%)
+  M3 top-k set agreement (same top-N id set)     : 9/9  (100.0%)
+  (aux) full_fnv1a64 identical                   : 9/9  (100.0%)
+CROSS-TAB  (n=9)
+  M1 same  &amp; M2 same :     9   no drift, same choice
+GATE en-orn-ab: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+cross-tab: {'num_eq_dec_eq': 9, 'num_eq_dec_ne': 0, 'num_ne_dec_eq': 0, 'num_ne_dec_ne': 0}</code></pre>
+<pre><code>summary_en-orn-ab.json:  comparable = true     config_diffs = []
+cap_en-orn-ab.json:      created = 2026-09-18T04:44:16   profile = prefill250
+產物 mtime:              libllama.0.0.279.dylib 2026-09-18 04:18:55
+                         libggml-metal.0.19.0.dylib 2026-09-18 04:18:53</code></pre>
+<p>⇒ <code>comparable=true</code> 且 <code>config_diffs=[]</code> ⇒ 那三個 9/9 <b>是裁決</b>，不是
+*printed for information*；<code>cap.created</code> 晚於產物 mtime ⇒ <b>不重疊、可歸屬</b>。</p>
+<h3>§7.2 提交閘門（<code>BIN_DIR='src/llama.cpp/build/bin' RUN_REPLAY_BENCH=0</code>，依 D2）</h3>
+<pre><code>OK: 沒有 FAIL —但本次有 5 個區段被 SKIP，所以「OK」只代表「沒有失敗」，不代表它們被驗證過。
+  SKIP  非 dev 分支，worktree 可共用既有 binary；跳過 @rpath 驗收
+  SKIP  無 staged 檔案（手動跑 hook 時屬正常；commit 時必有 staged）
+  SKIP  RUN_CGC_PROD_ACCEPT=1 未啟用
+  SKIP  RUN_DEPLOY_HARMONYOS_ACCEPT=1 未啟用
+  SKIP  RUN_REPLAY_BENCH=0 -&gt; 跳過 replay benchmark regression 檢查</code></pre>
+
+<h2 id="s8">§8 誠實邊界（本文件不主張什麼）</h2>
+<ul>
+  <li><b>不主張 Ornith 的品質。</b>本輪<b>沒有跑</b>任何品質比較。若之後要跑，必須先處理這個偏誤：
+      現成題庫 <code>scripts/check/replay_bench_reference_v2.json</code> 的 7 個 profile 共 48 題，
+      <b>48/48 全含中文</b>（qa-zh 8／longform-zh 6／coding 11／math 8／reasoning 5／writing 5／translation 5），
+      而 Ornith 自報 <code>languages=['en']</code> ⇒ 比出來的差距<b>不能歸因於量化</b>。
+      另外 <code>abliterated</code>（拒答方向被移除）會讓任何含拒答／安全的評測天差地遠。</li>
+  <li><b>不主張 31–44 ms/步是可達的。</b>那個探針（<code>CGC_SUBMIT_AHEAD=1</code>）<b>輸出損壞</b>，
+      它的 16.82 t/s 不可引用；它在本文件裡的角色是「天花板存在」的證據，不是「成果」。</li>
+  <li><b>不主張兩個乘數可以相乘。</b>見 §6.3 第 1 條。</li>
+  <li><b>不主張 25 是一個計畫。</b>它是一條算術：<code>12.62 × 2.0</code>。缺的那一步（儀器）在 §6.4。</li>
+  <li><b>不主張四臂同熱態。</b>見 §4.4；結論的強度來自「兩個順序同向」而非熱態配對。</li>
+  <li><b>Ornith 的 MTP 未跑。</b>臂已建（<code>orn-p25-mtp</code>），並在原始碼註解標成
+      <code>NEVER RUN</code>：它的 MTP 頭結構完整（21 張量、含 <code>blk.40.nextn.*</code>，
+      identity <code>2e35283d…</code>、<code>degenerate: {}</code>），但閘門是<b>記憶體</b> ——
+      16.36 GiB 本體 ＋ 1.34 GiB 頭 ＋ 層 40 的 256 槽（3.19 MiB × 256 ＝ 0.80 GiB）在 16 GB 機器上。</li>
+  <li><b>不主張 D5 覆蓋這一輪的正文。</b>D5 認證的是「預設路徑的數值沒有變」；本輪<b>沒有動
+      <code>src/</code></b>（改動只有 <code>scripts/check/decode_sweep.py</code> 的臂表 ＋ 索引 ＋ 本文件），
+      所以那 9/9 是<b>惰性確認</b>，不是對新臂的驗證。新臂的驗證是它自己的 A/B。</li>
+</ul>
+
+<h2 id="s9">§9 產物與指令</h2>
+<pre><code># 對齊 A/B（ABBA；兩臂都 MTP off，只差模型檔）
+RUN_REPLAY_BENCH=0 python3 scripts/check/decode_sweep.py --profile prod25 \
+    --arms p25-gputime,orn-p25 --rounds 3 --n-predict 96 \
+    --json Backup/phase_decomp/aligned_nail_vs_ornith_fwd.json --force
+RUN_REPLAY_BENCH=0 python3 scripts/check/decode_sweep.py --profile prod25 \
+    --arms orn-p25,p25-gputime --rounds 3 --n-predict 96 \
+    --json Backup/phase_decomp/aligned_nail_vs_ornith_rev.json --force
+
+# 模型普查（純讀標頭，可在別人量測跑著時執行）
+python3 scripts/check/gguf_pool_geometry.py --budgets 8GiB --gguf models/gguf/&lt;file&gt;.gguf
+
+# D5
+python3 scripts/check/m123_oracle_gate.py --tag en-orn-ab
+
+# 提交閘門預演
+BIN_DIR='src/llama.cpp/build/bin' RUN_REPLAY_BENCH=0 bash scripts/check_build_tracked.sh --repo "$PWD"</code></pre>
+<table>
+  <tr><th>路徑</th><th>內容</th></tr>
+  <tr><td><code>Backup/phase_decomp/aligned_nail_vs_ornith_fwd.json</code></td><td>前向腿（Nail → Ornith）</td></tr>
+  <tr><td><code>Backup/phase_decomp/aligned_nail_vs_ornith_rev.json</code></td><td>反向腿（Ornith → Nail）</td></tr>
+  <tr><td><code>Backup/m123_oracle_gate/summary_en-orn-ab.json</code></td><td>D5 摘要（<code>comparable=true</code>）</td></tr>
+  <tr><td><code>Backup/m123_oracle_gate/cap_en-orn-ab.json</code></td><td>D5 啟動配置戳記</td></tr>
+  <tr><td><code>scripts/check/decode_sweep.py</code></td><td>臂 <code>orn-p25</code>（已跑）與 <code>orn-p25-mtp</code>（標記 NEVER RUN）</td></tr>
+  <tr><td><code>docs/DOWN_COMBINE_REACHABILITY_20260918_0410.html</code></td><td>上一份白皮書；其 §6／§7 的結論已被本文件取代（見該檔開頭的標註框）</td></tr>
+</table>
+<hr>
+<p class="small">本文件是 commit <code>docs: 換模型不是提速手段 …</code> 的 D5 附件。
+相關 skill：<code>cgc-commit-gate</code>、<code>cgc-whitepaper-delivery</code>、<code>cgc-decode-attribution</code>。</p>
+
+</div>
+</body>
+</html>

@@ -63,6 +63,26 @@
   <span class="tag t-blue">③ 節點已證，A/B 已重做</span>
 </div>
 
+<div class="box" style="border-color:#fde68a;background:#fffbeb">
+<p><b>2026-09-18 04:45 標註（原文一字不刪）：本文件 §6 與 §7 的「值不值得寫」那一半已被後續量測取代。</b></p>
+<p>被取代的三句，逐條列出：</p>
+<ul>
+  <li>§6 與開頭 box 的「用樹上第二個模型量到了 <b>+25%</b> …所以『要不要動手』現在有一把尺了」——
+      <b>那把尺的刻度與今天的量到的不一樣</b>。+25% 是 <b>Ornith 自己</b>（<code>ctl</code> 對 <code>on</code>）
+      的相對增益，<b>仍然是有效的測量值</b>；但「拿 Ornith 當受試」這件事此後多了兩個事實：
+      (a) 同一條融合路徑在<b>旗艦模型</b>上（IQ3_S／IQ4_XS）是 <b>−15～18%</b>；
+      (b) <b>Ornith 這個模型本身比旗艦慢 1.49×</b>（同 build、兩臂都 MTP off、differ-by-one 的 ABBA）。</li>
+  <li>§7「結論」裡「值得寫 kernel」的傾向 ⇒ <b>現在是否定的</b>：收益只出現在一個本身較慢的模型上。</li>
+  <li>§5 把「第一版 A/B 因熱態而無效」記成唯一的病因 ⇒ <b>熱態不是唯一的軸</b>；同一天稍早的那組
+      「Ornith 15.72–19.65」失敗在 <b>build 指紋</b>（lesson <code>eng-mh-0066</code>）。</li>
+</ul>
+<p><b>仍然成立的部分（沒有被取代）：</b>§1（kernel 只有 <code>Q3_K</code>）、§2（旗艦只有 1/41 層）、
+§3（融合節點確實進圖，且只在 <code>il=40</code>）、§4（trunk 的兩個獨立障礙）、§8–§10（閘門與產物）。
+<b>§6 的 +25% 這個測量值本身也沒有被推翻</b> —— 被推翻的是「它可以當旗艦的尺」這個用途。</p>
+<p>新的事實與完整的對齊 ABBA 在
+<code>docs/ORNITH_ALIGNED_AB_AND_25_ARITHMETIC_20260918_0445.html</code>。</p>
+</div>
+
 <div class="box">
 <p><b>一句話：</b>那條「一個 kernel 取代 8 個 down GEMV ＋ 7 個 add」的融合路徑<b>是活的</b>（節點確實
 進圖，本文件用新儀器直接印出來了），但它在<b>旗艦模型上只覆蓋 41 層裡的 1 層</b>，而那一層是 MTP

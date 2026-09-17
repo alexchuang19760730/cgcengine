@@ -449,6 +449,42 @@ ARMS = {
                           "CGC_SERVER_MTP": "0", "CGC_DOWN_COMBINE": "0",
                           "CGC_DOWN_COMBINE_AUDIT": "1", "CGC_DECODE_PROFILE": "1",
                           "CGC_GPU_TIMING": "1"},
+    # [CGC 2026-09-18 aligned A/B -- the arm that was missing] "Is Ornith really 1.6x faster than
+    # Nail, or was the comparison invalid?" The two en-dc-orn-* arms above cannot answer it: they
+    # also carry CGC_DOWN_COMBINE(_AUDIT), and they were measured on a different build, in a
+    # different thermal state, and -- the one that matters -- with `p25-gputime`'s own flag set
+    # missing from the Nail side of the pair. This arm is the EXACT definition of `p25-gputime`
+    # (Nail: MTP off + gpu timing + decode profile) plus one single thing: the model file.
+    # Differ-by-one is the whole point; pair it as
+    #     p25-gputime (Nail, MTP off)  vs  orn-p25 (Ornith, MTP off)
+    # interleaved ABBA (run forward, then reversed), never forward-only.
+    # ⚠️ Ornith is 16.36 GiB and this box is 16 GB -- Nail is 12.72 GiB. The load has come within
+    #    100 MiB of failing before; check the gate first.
+    "orn-p25":           {"CGC_SERVER_MTP": "0", "CGC_GPU_TIMING": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_SERVER_MODEL": "models/gguf/Ornith-1.5-35B-A3B-Abliterated-MTPv2-APEX-I-Compact-v2D-lite.gguf"},
+    # [CGC 2026-09-18 Ornith + MTP] "Can Ornith carry MTP at all, and what does it buy?"
+    # The head is structurally complete and already identified -- 21 tensors incl.
+    # blk.40.nextn.{eh_proj,enorm,hnorm,shared_head_norm} plus the shared output.weight,
+    # `cgc.mtp_head_identity/1` identity 2e35283d, `degenerate: {}` = nothing flagged. So this is
+    # ONE FLAG away: the exact definition of `orn-p25` minus `CGC_SERVER_MTP=0`. The earlier
+    # en-dc-orn-* arms switched MTP off for a different reason (a plain trunk graph, n_tokens == 1,
+    # is the only shape the down-combine gate accepts) -- not because Ornith cannot do MTP.
+    # ⚠️ THE GATE IS MEMORY, NOT CORRECTNESS. Ornith is 16.36 GiB on a 16 GB box, the MTP head is
+    #    1.34 GiB, and layer 40's 256 pool slots are another 0.80 GiB (0.80 of a 2 GiB budget in
+    #    the M6 census). Expect load-time or request-time OOM before anything else.
+    #    Escape hatch (existing, no source change): CGC_SERVER_LAYER_CAPS shrinks `40-40:256`,
+    #    e.g. `...;40-40:64`. That is a SECOND variable -- report it as its own arm, never folded
+    #    into this one.
+    # ⚠️ Also: MTP-on makes the trunk a VERIFY graph (n_tokens 2/4), so the down-combine fusion is
+    #    structurally unreachable in this arm. Do not read its t/s as "fusion works on Ornith".
+    # ⛔ NEVER RUN (decision 2026-09-18, user): the Ornith line is CLOSED. The aligned ABBA
+    #    (`p25-gputime` vs `orn-p25`, same build, both MTP off, n_predict 96) put Nail at 12.24 and
+    #    Ornith at 8.21 -- Nail is 1.49x FASTER -- and Ornith also reads 32% MORE bytes per token.
+    #    The earlier "Ornith 15.72-19.65" did not reproduce (7.94-8.47 on this build); the BUILD,
+    #    not the thermal state, is the prime suspect. See memory 2026-09-18 EN-125/EN-126.
+    #    Kept rather than deleted, as the record of a question that was asked and answered.
+    "orn-p25-mtp":       {"CGC_GPU_TIMING": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_SERVER_MODEL": "models/gguf/Ornith-1.5-35B-A3B-Abliterated-MTPv2-APEX-I-Compact-v2D-lite.gguf"},
     # The granularity cross-check: same table at 2-7 node slices, where the count-weighted column
     # was already known to CHURN (MUL_MAT 27.3% -> 11.1%, GET_ROWS 4.3% -> 9.0%). Any kind whose
     # work-weighted share is stable between `en-work` and `en-work-fine` is quotable; one that moves
