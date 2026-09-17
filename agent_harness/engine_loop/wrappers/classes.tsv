@@ -1,0 +1,58 @@
+# classes.tsv — scripts/check/ 的能力分層。由 classify.py 產生，不要手改。
+#
+# 欄位：class <TAB> 腳本 <TAB> MANIFEST 的 role <TAB> 腳本自己的一句話說明
+#
+# 為什麼是這 6 類而不是 PLAN §3 的 5 類：見 classify.py 的 docstring（env 是新增的那一類）。
+# [sweep] 對一個旋鈕做參數掃描，逐格重啟伺服器並記錄一列
+# [ab] 對兩份設定／兩份輸出做對照，得出「有沒有差」
+# [bench] 產生吞吐量或品質的基準讀數
+# [gate] 判對錯：合格／不合格、可比較／不可比較
+# [triage] 對一個既有警報或讀數做鑑識，找出它的來源
+# [env] 環境與服務的健康檢查（不產生量測讀數）
+#
+sweep	decode_sweep.py	arms	Decode arm sweep: restart the server per arm, run decode_bench, harvest cache final stats.
+sweep	knifeedge_matrix.py	gate	Anti-knife-edge evaluation matrix: (model) x (pool size).
+sweep	pool_curve.py	probe	Pool-size sweep: restart the server at one expert-pool budget, probe, record one row.
+sweep	prefill_idle_sweep.py	probe	Locate the thermal recovery time constant tau by sweeping `--idle-before`.
+ab	ab_interleave.py	compare	Interleaved A/B driver: alternate arms A,B,A,B,... so that each pair is measured back to
+ab	batch_retest_commits.sh	probe	batch_retest_commits.sh - 批量重測歷史 commit
+ab	cgc_logits_oracle_compare.py	probe	cgc_logits_oracle_compare.py - 比較兩份 CGC logits oracle JSONL 檔, 判定 A/B 結果。
+ab	flag_ab.py	probe	A/B any two CGC server flags against a fixed probe set -- "should we keep this on?".
+ab	ids_capture_diff.py	probe	Diff two CGC-IDS-CAP captures (kernel-side mul_mat_id ids) graph by graph, node by node.
+ab	mtp_accept_ab.py	compare	Measure MTP draft acceptance per carrier, with the head's identity recorded alongside it.
+ab	replay_bench_compare.py	probe	replay_bench_compare.py — 比較兩個 replay benchmark JSON, 判定 commit 是否改善。
+ab	replay_ngl_comparison.py	probe	CGC ngl=99 vs ngl=30 對比測試腳本
+ab	replay_server_vs_cli_comparison.py	probe	CGC Server vs CLI 對比測試腳本
+bench	bare_48.py	probe	48 題裸問品質測試 — 純 user message、無拐杖（no prefill / pp / stop）。
+bench	decode_bench.py	measure	Controlled decode benchmark: short prompt, long generation, temperature=0, N rounds.
+bench	flip_rate.py	probe	Knife-edge-resistant quality evaluation (fixed seeds + repeats + verdict-flip statistics).
+bench	llama_bench_matrix.py	measure	Production prefill/decode matrix, measured the way llama-bench measures -- pp/tg x depth.
+bench	probe_skip0.py	probe	Deterministic 15+27 probe: N shots against the local OpenAI-compatible server.
+bench	replay_bench_database.py	probe	replay_bench_database.py — CGC Replay Benchmark 數據庫管理工具
+bench	replay_client_regime.py	probe	replay_client_regime.py - Raw OpenAI client quality suite (2026-09-08)
+bench	replay_server_profile.py	probe	replay_server_profile.py — 應用層 replay benchmark + 質量/速度/內存指標
+bench	session_baseline.py	probe	session_baseline.py — CGC Phase-0.3 session baseline collector.
+gate	check_server_profiles.py	probe	
+gate	feasibility_gate_selftest.py	gate	Offline selftest for the PRE-LAUNCH FEASIBILITY GATE in `knifeedge_matrix.py`.
+gate	ids_capture_width_selftest.py	probe	Prove the id-capture READERS survive the full-width record -- and that "0 differences" can be
+gate	m123_oracle_gate.py	gate	m123_oracle_gate.py -- the per-commit M1/M2/M3 quality gate.
+gate	mmid_pool_vs_gguf.py	probe	Verify that the bytes mul_mat_id reads out of the expert-cache pool are the bytes
+gate	mtp_head_identity.py	probe	MTP head provenance gate: prove a GGUF carries the head that belongs to its base.
+gate	mtp_long_sequence_verify.py	probe	MTP 長序列 M1/M2/M3 驗證腳本
+gate	oracle_truth_gate_selftest.py	gate	Offline selftest for the ABSOLUTE (ground-truth) oracle gate in `knifeedge_matrix.py`.
+gate	pool_feasibility.py	probe	Decide, BEFORE launching anything, whether a (model, pool size) cell is usable.
+gate	precommit_e2e_gate.sh	probe	precommit_e2e_gate.sh — Pre-commit E2E Quality Gate
+gate	precommit_replay_gate.sh	probe	precommit_replay_gate.sh — Pre-commit Replay Benchmark Gate
+triage	gguf_dead_expert_census.py	probe	Census of ALL-ZERO expert rows in a GGUF, straight from the file.
+triage	gguf_pool_geometry.py	probe	Expert-pool geometry of a GGUF: per-slot bytes, the BINDING layer, and the slot capacity.
+triage	ioreport_gpu_pstate_probe.py	probe	Try to read GPU performance-state residency WITHOUT root, via the private IOReport framework.
+triage	mmid_geometry_probe.sh	probe	mmid_geometry_probe.sh — 把 mul_mat_id 的「幾何 vs ids」在兩條路徑上各印一次對打。
+triage	mmid_zero_row_triage.py	probe	Adjudicate CGC zero-row / zero-region alarms against the model file itself.
+triage	powermetrics_gpu_freq.sh	probe	powermetrics_gpu_freq.sh — settle "was the prefill slowdown a clock or a power cap" in one command
+triage	powermetrics_gpu_freq_parse.py	probe	powermetrics_gpu_freq_parse.py — turn a `powermetrics --samplers gpu_power` capture into an answer.
+triage	prefill_certifiability.py	probe	Is prefill 250 tok/s a spec, or a lottery?
+triage	prefill_gputime_report.py	probe	Print the per-launch GPU decomposition of every preserved cert_runs launch.
+triage	thermal_pressure.py	measure	Read the OS thermal pressure level, in band, next to whatever is being measured.
+env	check_env.sh	probe	cd /tmp
+env	check_server.sh	probe	set -euo pipefail
+env	check_torch.sh	probe	cd /tmp

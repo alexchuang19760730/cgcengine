@@ -375,6 +375,9 @@ def main() -> int:
     ap.add_argument("--reps", type=int, default=3,
                     help="calls per (question, arm), interleaved with a rotating arm order (default 3; "
                          "1 cannot establish the reproducibility PLAN §9 asks for)")
+    ap.add_argument("--allow-dirty-charter", action="store_true",
+                    help="proceed even though agent_harness/CONVENTIONS.md is uncommitted; C/D read the "
+                         "working tree, so a dirty charter has no sha anyone can check out")
     args = ap.parse_args()
 
     if args.reps < 1:
@@ -383,6 +386,26 @@ def main() -> int:
     live = CHARTER.read_text(encoding="utf-8")
     pre = charter_at(f"{D6_COMMIT}^")
     post_d6 = charter_at(D6_COMMIT)
+
+    # ---------------------------------------------------------------
+    # 可重現性：C 臂的 system prompt 是**工作區**的憲章
+    # ---------------------------------------------------------------
+    # E3 的驗收句是「至少 1 條 lesson 被證明改善**且可重現**」（PLAN §9）。可重現的操作定義
+    # 在這裡是：另一個人 `git checkout <sha>` 之後跑同一條命令，會拿到同一組 prompt。
+    #
+    # C 與 D 都用工作區的憲章，所以只要那個檔案沒被提交，就**沒有 sha 可以 checkout** ——
+    # 而症狀是安靜的：那次 run 的產物一切正常，只是它回答的那個問題已經不是同一個了。
+    # 實例：2026-09-17 為了 E1 的引用驗收改了憲章的前言與六條條文（commit e982b9f4f），
+    # 那之後 C/D 兩臂的 prompt 與之前任何一次 run 都不同。
+    #
+    # ★ 這一格**不保護 A/B**：它們是 `charter_at()` 從 git 讀的，永遠可重現、也永遠不變。
+    #   它保護的只有 C/D —— 而 C/D 正是 E3 要回答的那一對。
+    charter_dirty = subprocess.run(
+        ["git", "-C", str(REPO), "status", "--porcelain", "--", "agent_harness/CONVENTIONS.md"],
+        capture_output=True, text=True).stdout.strip()
+    charter_head = subprocess.run(
+        ["git", "-C", str(REPO), "rev-parse", "HEAD"],
+        capture_output=True, text=True).stdout.strip()
 
     scope_ids, scope_note = resolve_scope(args.memories_scope)
     mems = memories_block(scope_ids)
@@ -451,6 +474,13 @@ def main() -> int:
         print()
         print("  dry-run 到此為止：以上是「每個變數有沒有真的進到 prompt、進了多少」——問題的機械面。")
         print("  行為面需要模型回答問題，該步驟需要 CLOSED_LOOP_MODEL_CMD（不給預設值）。")
+        print()
+        print(f"  可重現性（C/D 用的是工作區憲章，所以要有 commit 才能被 checkout）：")
+        print(f"    charter_head = {charter_head[:12] or '(unknown)'}"
+              f"   工作區改動 = {charter_dirty or '無'}")
+        if charter_dirty:
+            print("    !! 未提交 ⇒ 真跑時會拒絕（除非 --allow-dirty-charter）；"
+                  "那次的『可重現』沒有可 checkout 的基準")
         return 0
 
     cmd = os.environ.get("CLOSED_LOOP_MODEL_CMD", "").strip()
@@ -459,6 +489,20 @@ def main() -> int:
               file=sys.stderr)
         print("         so this script will not pick one. e.g. CLOSED_LOOP_MODEL_CMD='llm -m <model>'",
               file=sys.stderr)
+        return 2
+
+    if charter_dirty and not args.allow_dirty_charter:
+        print(f"  error: agent_harness/CONVENTIONS.md 有未提交的改動 ⇒ C/D 兩臂沒有可 checkout 的基準",
+              file=sys.stderr)
+        for line in charter_dirty.splitlines():
+            print(f"         {line}", file=sys.stderr)
+        print(f"         C 與 D 讀的是**工作區**的憲章。它沒被提交，就沒有任何 sha 能重現這一輪 ——",
+              file=sys.stderr)
+        print(f"         而 E3 的驗收句要求『且可重現』。先提交它；明知故犯用 --allow-dirty-charter",
+              file=sys.stderr)
+        print(f"         （那會把 charter_head={charter_head[:9]} 記進 manifest，但那個 sha 的內容",
+              file=sys.stderr)
+        print(f"          與 C/D 實際用到的 prompt 不同 —— 這件事會留在產物裡）。", file=sys.stderr)
         return 2
 
     ts = time.strftime("%Y%m%d_%H%M%S")
@@ -551,6 +595,11 @@ def main() -> int:
                              for r in range(1, args.reps + 1)},
         "calls": len(rows),
         "charter_sha256_16": {"A_preD6": sha16(pre), "B_postD6": sha16(post_d6), "C_head": sha16(live)},
+        # 「這一輪能不能被重現」不是一個推論，是一個要記下來的欄位。C/D 用工作區的憲章，
+        # 所以可重現性取決於那個憲章是否等於某個 commit —— 以及是哪一個 commit。
+        "charter_head": charter_head,
+        "charter_working_tree_clean": not charter_dirty,
+        "charter_dirty_bypassed": bool(charter_dirty) and args.allow_dirty_charter,
         # The scaffold is part of what the model saw, so it is recorded like any other input.
         "scaffold_template": CHAT_TEMPLATE.name,
         "scaffold_template_sha256_16": scaffold_sha(),

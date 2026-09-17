@@ -58,16 +58,42 @@
   出貨的 `Nail-…-denseIQ4X.gguf`（12.72 GiB）實測：41 層 × 256 experts，**典型層 274 MiB
   ＝1.0703 MiB/expert（＝roadmap 的目標值 1.122 MB）**，但 **blk.39 是 356 MiB＝1.3906 MiB
   （gate/up 是 IQ3_S、down 是 IQ4_XS，其餘 38 層是 IQ2_S/IQ3_S）**，而
-  `capacity = clamp(budget/(41×per_slot), 8, 256)` **取 MAX over layers** ⇒ **一層厚、全班付錢**。
+  `capacity = clamp(budget/(41×per_slot), 8, 256)` 取 **MAX over TRUNK layers**（NextN/MTP 被跳過，
+  但 `denom` 仍數它 —— `llama-model-loader.cpp:1171-1174`）⇒ **一層厚、全班付錢**。
   現行 `BUDGET_DEFAULT = 10 GiB` ⇒ **179 slots**；`run_server.sh:411-419` 自記 **143 slots 時
   hit 90.8%**（counterfactual K=96 79.7／128 87.7／192 97.1／256 100）⇒ **hit 早已超過 roadmap 的 84%**。
-  **剩下的價值**：把 blk.39 的 3 個張量改回同款（`IQ3_S→IQ2_S` ×2、`IQ4_XS→IQ3_S` ×1）
-  ⇒ per_slot 1.4582→1.1395 MB ⇒ **10 GiB 由 179 → 229 slots（+28%）**，預測 hit 98–99%（**外插，要實測**）。
-  **不動引擎、可逐位元組還原**（`gguf_retensor.py set-type`／`restore`／`verify`／`digest`；dry run 是預設）。
-  工具：`scripts/gguf_retensor.py`＋`gguf_retensor_qctl.c`（qctl 建到 `.build/gguf_retensor/`，已 ignore）；
-  **roadmap 指名的 `scripts/verify_edge0_gguf.py` 在本 repo 不存在** ⇒ 等價物是 `verify`＋`digest`
-  ＋`m123_oracle_gate`。**幾何 census 腳本尚不存在**（本輪用純 python 解 GGUF 標頭；
-  `analyze_pool_geometry.py` 是為 Edge0 寫的、且需要 numpy）。
+  **★★ 決定（09-17 13:0x，使用者裁定）：只走無損的設定路線，不動模型。**
+  **設定路線＝一條既有 env 字串，零程式改動、零重建、零 D5**：`LLAMA_EXPERT_CACHE_LAYER_CAPS`
+  是**雙邊讀取**的（loader 的 `ne[2]=cgc_layer_cap(il,cap)` @`llama-model-loader.cpp:1492/1502`
+  ＋ cache 的 `n_slots_l` @`llama-expert-cache.cpp:3136-3142`），而 **`run_server.sh:1804-1807`
+  每次啟動都寫它**（預設 `40-40:256`）⇒ 覆蓋只要 `CGC_SERVER_LAYER_CAPS`。
+  10 GiB 下的字串：`0-33:232;34-34:212;35-37:232;38-38:212;39-39:179;40-40:256`
+  ⇒ **37 個典型層 179→232（+29.6%）**、池由 **7.85 GiB（78.5%）→ 9.97 GiB（99.7%）**
+  （今天有 **2.15 GiB 預算買不到任何 slot**）。6 GiB＝`0-33:136;34-34:125;35-37:136;38-38:125;39-39:107;40-40:256`、
+  8 GiB 把 136/125/107 換成 184/168/143。
+  產生器：`python3 scripts/check/gguf_pool_geometry.py --layer-caps`（規則＝每層等位元組，
+  **夾在今天的 uniform 值之上** —— 太少 slots 會**靜默讀到空**：Edge0 的 33 slots 是 585 次
+  `buffer is nil`、48 題 0/48）。
+  **★ 逐格驗證（引擎自己就印普查行 ⇒ 驗證是一行 grep）**：`LAYER_CAPS per-layer caps: total N slots
+  (avg A/layer, min M/layer)`，`N = 40×base + 256` ⇒ Nail 8 GiB `5976/145.8/143`、10 GiB `7416/180.9/179`、
+  **Ornith 2 GiB `1416/34.5/29`、4 GiB `2616/63.8/59`** —— 工具與引擎**逐格相同**；
+  `resident` 亦相符（179→7990.71 MiB、143→6430.6 MiB）。
+  **★ 仍未量測**：逐層變動的 trunk caps **從未跑過**（用過的只有 `1-39:32` 與 `40-40:256`）
+  ⇒ 四道依序：普查行 → 48 題（基準 **9/48**）→ `m123_oracle_gate`（換池幾何**不該**動 logits，
+  M1/M2/M3 應 9/9）→ 才談 hit%／t/s。而 **hit% 在這個區間由負載主導**（真實 log：179→87.9%（18.9 萬請求）、
+  143→86.7%、71→44.9–82.8%）⇒ **+29% slots 的收益要量不要推**。
+  **MTP 的 cap 與預算無關**：`40-40:256` 固定 256 個 slot，Ornith（Q8_0 頭）在 2 GiB 下它吃掉
+  0.80 GiB＝40% ⇒ 今天的形狀在 2 GiB **已超支 118.5%**（要調就用 `--mtp-cap`）。
+  **★ 模型路線（拉平 blk.39）已否決**：`gen_denseiq4x_tt.py` 的政策是「**每個非 dense 張量釘住它現有的
+  型別 ⇒ byte-copy**」⇒ **expert 型別是從上游 `UD-IQ3_XXS`（UD＝Unsloth Dynamic）逐位元組繼承的**，
+  厚的那幾層是**逐張量重要性校準的結果**；拉平＝**有方向的降精度**（gate/up −25.5%、down −19.1%），
+  而且只換到 +19%（單層）／+30%（4 層）—— **不比設定路線多，卻要付精度代價**。
+  （模型工具與記錄仍在：`scripts/gguf_retensor.py` set-type／restore／verify／digest，dry run 是預設；
+  `--normalize-binding` 的那三行情境；**`verify`／`set-type` 必須用 `/opt/homebrew/bin/python3`**，
+  系統與 managed python 都沒有 numpy ⇒ gguf-py 對帳 SKIPPED ⇒ 直接拒收。
+  roadmap 指名的 `scripts/verify_edge0_gguf.py` **在本 repo 不存在**。）
+  **幾何 census ＝ `scripts/check/gguf_pool_geometry.py`**（09-17 建；純讀標頭、不需 numpy、
+  可在別人量測跑著時執行）；`analyze_pool_geometry.py` 仍留著但那是為 Edge0 寫的、需要 numpy。
 - **★ D3（`REMAP_ROUNDTRIP_REMOVAL_PLAN` 的主設計：把 expert→slot 查表搬到 GPU、消除段邊界）
   不是里程碑，是 S1→S2→S3 階梯；現況（09-17 03:3x 查證）：沒跑通。**
   **S1**（`CGC_SLOT_TABLE_GPU=1`，leaf 改由 GPU 算、**段數不變**）**已實作且會跑，但不過

@@ -305,6 +305,49 @@ def main() -> int:
               "所有標記都帶 pipe（不帶會被 tokenizer 拆成純文字、模型照抄回去）")
         check(len(m.scaffold_sha()) == 16, "模板 sha256 可取（要記進 manifest）")
 
+        # ---- I. reproducibility: is arm C pinned to something anyone can check out? ----
+        # Arms A and B come from `charter_at()` -- git revisions, so they are reproducible forever.
+        # Arms C and D read the WORKING-TREE charter, so a run is only reproducible if that file
+        # equals some commit. PLAN §9's acceptance says "proved to improve AND REPRODUCIBLE", so
+        # this is wired into the manifest rather than left implicit.
+        #
+        # ★ What is NOT automated here, and why: the refusal branch (rc=2 when the charter is
+        #   dirty) can only be exercised by making a TRACKED file dirty. This selftest does not do
+        #   that -- it may run while another session is reading that same file, and a test that can
+        #   leave the charter modified is a worse failure mode than the one it guards.
+        #   It was verified by hand on 2026-09-17 (marker appended -> rc=2, no output dir created;
+        #   with --allow-dirty-charter -> rc=0 with charter_dirty_bypassed=true). The assertions
+        #   below prove the two fields are wired to real git state, which is the half that can be
+        #   checked safely.
+        print()
+        print("I. 可重現性：C/D 用的憲章能不能被 checkout（拒絕那條分支本輪不自動測，見註解）")
+        o = tmp / "i"
+        rc, out = run_loop(["--only", "Q1", "--reps", "1", "--memories-scope", "none",
+                            "--allow-dirty-charter"], out=o, model=None)
+        # no model -> rc=2, but the manifest is not written; so drive the manifest via a fake model
+        fake = tmp / "fake_i.py"
+        fake.write_text("import sys; sys.stdin.read(); print('x')\n", encoding="utf-8")
+        rc, out = run_loop(["--only", "Q1", "--reps", "1", "--memories-scope", "none",
+                            "--allow-dirty-charter"], out=o, model=fake)
+        check(rc == 0, "乾淨憲章 + --allow-dirty-charter 可以跑完", f"rc={rc}")
+        man = sorted(o.glob("*/manifest.json"))
+        check(bool(man), "寫出了 manifest.json")
+        if man:
+            doc = json.loads(man[-1].read_text(encoding="utf-8"))
+            live_bytes = (CLOSED.parent.parent.parent / "CONVENTIONS.md").read_bytes()
+            import hashlib as _h
+            check(doc.get("charter_head", "") != "",
+                  "manifest 記了 charter_head（沒有它就沒有可 checkout 的基準）",
+                  str(doc.get("charter_head"))[:12])
+            check(doc.get("charter_working_tree_clean") is True,
+                  "乾淨的憲章 ⇒ charter_working_tree_clean=true（欄位真的接到 git 狀態）")
+            check(doc.get("charter_dirty_bypassed") is False,
+                  "--allow-dirty-charter 在乾淨的樹上是 no-op，且這件事被記下來")
+            check(doc.get("charter_sha256_16", {}).get("C_head") == _h.sha256(live_bytes).hexdigest()[:16],
+                  "C 臂的 charter sha256 等於工作區檔案的 sha256（證明它讀的就是那個檔）")
+        check("charter_dirty" in CLOSED.read_text(encoding="utf-8"),
+              "拒絕那條分支存在於原始碼裡（本輪以手工驗證其行為，見 .workbuddy/memory）")
+
         tpl = m.CHAT_TEMPLATE.read_text(encoding="utf-8")
         check("{{ message.role }}" in tpl and "content | trim" in tpl and "<|im_end|>" in tpl,
               "推導所依據的 template 片段還在（template 一改就要重新推導）",

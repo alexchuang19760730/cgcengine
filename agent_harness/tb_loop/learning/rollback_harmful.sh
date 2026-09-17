@@ -56,7 +56,7 @@ if [[ -z "$IDS" ]]; then
     exit 0
 fi
 
-echo "== 将回滚以下有害 refinement（model=$REFINE_MODEL）:"
+echo "== 将回滚以下有害 refinement（model=${REFINE_MODEL}）:"
 echo "$IDS" | sed 's/^/   - /'
 if [[ "$EXECUTE" != "1" ]]; then
     echo

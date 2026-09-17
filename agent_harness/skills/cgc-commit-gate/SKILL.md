@@ -109,7 +109,7 @@ exit code 在 0/1 之間不一致，而檔案裡**明明有**那些字串（`sed
 於是列出**另一個 repo** 的內容，看起來像「本 repo 的檔案不見了」。診斷腳本時要用**絕對路徑**，
 不要把 `cd` 放進條件區塊——它產出的是一份**自信的錯誤清單**，而不是報錯。
 
-### 1.5 macOS 沒有 `timeout`／`gtimeout`；`ps` 被擋但 `pgrep` 可用
+### 1.5 macOS 沒有 `timeout`／`gtimeout`；`ps` **可用**，而且只有它數得對行程
 
 要做「啟動 30 秒後自動收掉」的 smoke，用背景 PID ＋ 有界 sleep：
 
@@ -117,12 +117,33 @@ exit code 在 0/1 之間不一致，而檔案裡**明明有**那些字串（`sed
 bash -c 'CGC_SERVER_PROFILE=prefill250 CGC_SERVER_UBATCH=4096 bash scripts/run_server.sh \
            >/tmp/p3.txt 2>&1 & P=$!; sleep 32; kill -TERM $P; sleep 5;
          kill -0 $P 2>/dev/null && echo STILL_ALIVE || echo EXITED'
-pgrep -fl llama-server      # 必須空
+# 判準看「執行檔」，不要看命令列文字（下一段）
+ps -Ao pid=,comm=,command= | awk '$2=="llama-server" || $2=="llama-bench"'
 ```
 
 判準是 log 裡同時有 `model loaded` 與 `listening on http://0.0.0.0:8080`，而且 `SIGTERM`／`SIGINT`
 走優雅關閉（`[CGC] Received SIGINT — initiating graceful shutdown` ⇒ 不洩漏 Metal buffer；
 `kill -9` 才會）。
+
+**★ `pgrep -f <路徑>` 是「命令列文字比對」，不是行程身分（2026-09-17 同一類踩到三次）。**
+任何**命令列裡剛好提到那個字串**的行程都會被算成「殘留的 llama-server」：`bash -c "… build/bin/llama-server …"`、
+`grep llama-server`、記錄用的 `echo`，甚至**一個把它自己的 pattern 印在命令列上的監看 shell**
+（實測：那種 shell 會讓閘門假性 abort）。後果不只是誤報：`run_server.sh:534` 的
+`cgc_existing_llama_server_count` 把這個數字餵給 memory guard 的 `OTHER_LLAMA_SERVERS`，
+而該門檻在**每個** profile 上都是 **0** ⇒ **多到 1 就 `startup blocked by memory guard` ＋ `exit 1`，
+直接擋掉一整臂**（實例：日誌 `§Z6`／commit `a6125accc`）。同一類 bug 在本 repo 有**三份**獨立實作
+（`run_server.sh` 的 `OTHER_LLAMA_SERVERS`、`Backup/run_req2_retest.sh` 的 `alive()`、以及本檔舊版的檢查）。
+
+**正確寫法** —— 比對 `comm`（執行檔 basename），不看命令列文字：
+
+```sh
+ps -Ao pid=,comm=,command= | awk '
+    $2 == "llama-server" || $2 == "llama-bench" { print; next }
+    $2 ~ /^python/ && (index($0,"decode_sweep.py") || index($0,"decode_bench.py") ||
+                       index($0,"m123_oracle_gate.py")) { print; next }
+    $2 == "bash" && index($0,"run_ids_dst_capture.sh") { print }'
+```
+「有輸出就停手」的閘門必須**在同一個分支裡 abort**，只印出來不算 —— 見 §4-6。
 
 **要知道「哪些行只印在真實啟動路徑」的話，先確認探針有沒有走到那裡。** `run_server.sh` 的零成本探針
 有兩個，但**都在 `[fit]` 之前就退出**：`CGC_SERVER_STRICT_BUDGET=1` 在 `[防護 2d]` 印完預算段就 `exit 1`；
@@ -535,6 +556,33 @@ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
    不是「慢一點」，是讓他們的資料作廢。實例（同日 11:2x）：`run_ids_dst_capture.sh` 起了
    llama-server 跑 `ARMS=p25-gputime-churn,p25-slotgpu-churn`，此時**唯一正確的動作是什麼都不送**。
    要驗證自己的東西就找不需要 GPU 的那一半（本輪就只做了字串結構的自測，把行為面留給空窗）。
+
+6. **★ 建置產物是共用資源 ⇒ `cmake --build` 是「對機器上所有正在跑的實驗」的一次寫入**，
+   不是本機動作。`src/llama.cpp/build/bin/*.dylib` 與 `llama-server` **受版控**，而且是每個 session
+   都會 map 的同一個檔。實例（2026-09-17 11:29）：我把 `lsof -iTCP:8080` 與 `cmake --build` 寫在
+   **同一行卻沒有 abort 分支** —— `lsof` 明明印出別條線的 server 在聽 8080，build 還是跑了，
+   **蓋掉他們正在 map 的 `libggml-metal`／`libllama`**，於是他們那一輪 A/B 橫跨兩個 build
+   （而本 repo 的所有比較都建立在「同一個 build」這個前提上）。唯一正確的形狀是
+   **檢查與動作在同一個分支、非空就 abort**：
+
+   ```sh
+   # 兩件事都要看：① 港埠有沒有 listener ② 別條線的量測行程（比對 comm，見 §1.5）
+   if lsof -nP -iTCP:8080 -sTCP:LISTEN >/dev/null 2>&1 || \
+      ps -Ao pid=,comm=,command= | awk '
+          $2=="llama-server" || $2=="llama-bench" { f=1 }
+          $2 ~ /^python/ && (index($0,"decode_sweep.py") || index($0,"decode_bench.py")) { f=1 }
+          $2 == "bash" && index($0,"run_ids_dst_capture.sh") { f=1 }
+          END { exit !f }'
+   then
+       echo "!! build aborted: another line is using the machine"; exit 3
+   fi
+   cmake --build src/llama.cpp/build --target llama-server -j 8
+   ```
+
+   **只印出來不算閘門** —— 那正是 11:29 的錯（lesson `eng-mh-0048`）。
+   附帶：連結是**逐檔**進行的，所以在連結進行中取 binary 指紋會做出一個**從未真正跑過的 build 指紋**
+   （`decode_sweep.py` 的 `build_fingerprint()` 逐檔算 md5；他們 11:28 那輪記下的是「新 metal ＋ 舊 llama」）
+   ⇒ **撕裂的指紋不會給錯數字，它給錯的許可**（lesson `eng-mh-0049`）。
 
 **推論**：`PLAN_ENGINE_LOOP_*.md` 與 `CONVENTIONS.md` 都在 `CURATED` 裡，所以它們一被別人改，
 `--check` 就會紅——**紅燈不是你的錯時，不要急著重生把它消掉**，先把 owner 找出來。

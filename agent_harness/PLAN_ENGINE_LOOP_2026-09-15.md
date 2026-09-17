@@ -121,6 +121,18 @@ agent_harness/
 製造兩份真相，而且 pre-commit 閘門與白皮書引用的是 `scripts/` 那一份。）engine_loop 用 wrapper
 呼叫它們，並把輸出正規化成 record。
 
+**↳ 2026-09-17：`runners/`、`wrappers/`、`config.env`、`emit_decisions.py` 的處置。**
+
+上面這棵樹在 E0–E4 的驗收欄裡**一個都沒被認領**（見 §9 的註記），所以它們一直不存在。
+2026-09-17 補齊了 11 個檔，同時做了三項**對計畫本身的更正** —— 記在這裡而不是默默偏離：
+
+| 條目 | 處置 | 依據 |
+|---|---|---|
+| `runners/{rebuild,server,preflight}.sh`、`config.env` | ✅ 已建（4 檔） | 它們是「讓 loop 真的能跑」那一層：沒有 build 指紋就沒有可引用的數字；沒有建置閘門，`cmake --build` 就是對機器上所有實驗的一次寫入 |
+| `wrappers/sweep ab bench gate triage` | ✅ 已建，但**多了第 6 類 `env`** | 實測 `check_env.sh`／`check_torch.sh`／`check_server.sh`／`check_server_profiles.py` 是環境與服務健康檢查 —— 不是掃描、不是 A/B、不是 benchmark、不是判對錯的閘門、也不是鑑識。硬塞進那 5 類會讓某一類變成雜物桶 |
+| `traces/emit_decisions.py` | ❌ **不建** | §3 的這個名字與 §5 的 `distill/refine_engine.sh` 是同一件事（T1 決策蒸餾）。再建一支就是**第二個生產者**，而兩個生產者的輸出會各自演化、沒有人能回答哪一份是對的。**要改的是這個條目，不是加檔案** —— §5 的名字才是權威（那裡有完整的資料流圖） |
+| `wrappers/` 的「分層」語意 | ⚠️ 落地形式改成**資料**而不是 `git mv` | 實測 `scripts/check/*` 有 **562 條引用關係**，其中 **134 條來自已定稿的 `docs/*.html`、41 條來自 append-only 的 `.workbuddy/memory/`** ⇒ 移動檔案會讓 175 條引用懸空，而改寫已發表的文件是本 repo 明文禁止的（立場是標註而不是重寫）。分層因此做成 `wrappers/classify.py` ＋ `classes.tsv`（6 類、可 `--check`） |
+
 ---
 
 ## 4. 三種 record 的 schema（附今天真實樣本）

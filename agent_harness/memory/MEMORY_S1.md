@@ -297,6 +297,21 @@ B 的 `LOST` 再按「兩邊 host 是否同意該位置」分成 `hosts agree`�
   ④`docs/ROUTING_TRACE_2026-09-17.md` 的核心證據**全部要重跑**（它的「honest boundaries」仍寫
   「The MV ids are exact and complete」，與同一人的程式碼註解**互相矛盾**）。
 
+### ★ 12:25 那條線的進展（**S1 仍未過**，但探針給了答案）
+
+- **S1 的 bit-identical 仍未達成**（最新完整一輪 `r18_hash1`，12:15，build `037c931ec616`、
+  HASH=1、兩臂都 left-to-right）：**錨 `2d4e5099`**（＝歷史錨常數）**vs S1 `0c1ea987`**。
+  S1 的 md5 由上午的 `f0acf7d2` 變成 `0c1ea987`（他們的改動移動了它）。
+- **★★ 化簡順序探針有結果**：`CGC-ADD-ORDER: expert aggregation = REVERSED` 那一輪（r17_rev），
+  **同一個錨臂**的 md5 由 `2d4e5099` 變成 **`f6718d44`** ⇒ **8 個專家的加權和對結合順序敏感**。
+  ⇒ **roadmap M1 工作項 4（canonical gather order，按 expert id 排序）因此是「必要」而不是「可選」**：
+  若累加順序跟著 slot／pool 佈局走，換 pool 大小就會改變舍入。
+  **D3/S1 的探針回饋到了 M1 的路徑上 —— 這是那條線這一小時最有用的一個結果。**
+- stride 修正**已被驗證生效**：banner `stride=64 bytes=1048576` ＋ T=2 的 MV 列現在印
+  **16 個 id**（`ffn_moe_gate-0 ids=[64,6,5,4,12,1,2,39,0,7,8,11,10,13,3,9]`）。
+- 輪次：`r14_base／r14_rev／r15_base／r16_base／r17_rev／r18_hash1／r19_mmid`（r19 12:24 起仍在跑，
+  4 GiB 池、MTP off 模型）。
+
 ## 下一步
 
 **① 追 routing／mapping 為什麼「第 2 個 token 之後」就給錯專家**（現在唯一的前線）

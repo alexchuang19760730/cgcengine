@@ -276,6 +276,128 @@ CURATED = [
      "which rules out a layer-localised implementation cost and leaves a clock/power ceiling as "
      "the only surviving explanation on the list. Quote the ratio agreement, not any single "
      "layer's milliseconds."),
+
+    # ---- engine_loop/runners + config.env (PLAN §3's orchestrator layer) -----------------------
+    # 這 4 筆在 2026-09-17 之前**不存在**，而 E0–E4 的驗收欄一個都沒認領它們（見 PLAN §9 的註記）。
+    # 它們是「讓 loop 真的能跑」的那一層：沒有 build 指紋就沒有可引用的數字，
+    # 沒有 preflight 就會在別人的量測上蓋二進位檔。
+    ("agent_harness/engine_loop/config.env", "runner", "engine", True, False,
+     "the engine loop's single environment anchor. Three separate anchors (ENGINE_LOOP_DIR / "
+     "ENGINE_HARNESS_ROOT / ENGINE_REPO_ROOT) on purpose: when a path variable 'happens' to equal "
+     "another, every derivation hanging off it is a time bomb (eng-smoke-0003). Deliberately does NOT "
+     "restate run_server.sh's defaults -- a second copy of a default drifts silently (it still runs, "
+     "just by the old rule)."),
+    ("agent_harness/engine_loop/runners/rebuild.sh", "runner", "engine", True, False,
+     "cmake --build + the build fingerprint, which is what makes any number quotable at all. Two "
+     "decisions with incidents behind them: (a) the gate ABORTS (port listener / measurement process "
+     "/ residual engine / another build) rather than printing a warning -- build artifacts are tracked "
+     "here, so cmake --build is a WRITE to every experiment running on the machine; (b) the "
+     "fingerprint is DELEGATED to scripts/check/decode_sweep.build_fingerprint(), never reimplemented "
+     "(eng-mh-0007: the hand-picked three-file copy missed libggml-base and stamped two runs with "
+     "different schedulers as comparable). --check reports drift; --dry-run needs no build."),
+    ("agent_harness/engine_loop/runners/server.sh", "runner", "engine", True, False,
+     "thin wrapper over scripts/run_server.sh (PLAN §3 red line: production scripts are never copied). "
+     "Holds no parameters, no profile list, no model default -- those stay with the authority. What it "
+     "adds: a HARD check that ctx is large enough for the ~30.6k-token closed-loop prompt (run_server's "
+     "4096/8192 default would truncate, and a truncated answer still looks plausible), plus it prints "
+     "which build.json fingerprint you are about to run. --check/--dry-run start nothing."),
+    ("agent_harness/engine_loop/runners/preflight.sh", "runner", "engine", False, False,
+     "answers 'can this machine safely start an engine right now'. Process identity is decided by "
+     "basename(ps -o comm=), NOT by command-line text -- `pgrep -f build/bin/llama-server` counts any "
+     "process whose argv merely MENTIONS that path, and on 2026-09-17 that class of mistake silently "
+     "blocked a whole arm (memory-guard threshold is 0), SIGKILLed a wrapper, and killed a diagnostic "
+     "command. --self-test proves BOTH directions with a synthetic name (never a real service name: "
+     "manufacturing an argv[0] of llama-server would abort someone else's arm)."),
+    ("agent_harness/engine_loop/wrappers/_common.sh", "runner", "engine", False, False,
+     "the shared layer of the 6 wrappers: reads classes.tsv (single source = wrappers/classify.py), "
+     "pre-checks that every member script exists, refuses without build.json (a number without a "
+     "fingerprint is not quotable), runs the tool and writes run.json + run.log. Deliberately does NOT "
+     "convert output into episode records: traces/emit_episodes.py owns that (PLAN §5 T0), and two "
+     "producers of the same record diverge with no way to tell which is right."),
+    ("agent_harness/engine_loop/wrappers/classify.py", "index", "engine", True, False,
+     "assigns all 44 executable scripts/check/*.py|.sh to one of 6 capability classes and derives "
+     "wrappers/classes.tsv. This IS E4 item 3's '40+ file layering', expressed as data instead of "
+     "`git mv`: measured, scripts/check/* carries 562 reference edges, 134 of them from already-final "
+     "docs/*.html and 41 from the append-only .workbuddy/memory -- moving files would dangle 175 "
+     "references and make published documents false. Also records why there are 6 classes and not "
+     "PLAN §3's 5. --stats exposes the degenerate finding that 34 of 44 carry role `probe` (77%), "
+     "i.e. that label does not discriminate here."),
+    ("agent_harness/engine_loop/wrappers/classes.tsv", "index", "engine", True, False,
+     "the generated class table (class | script | manifest role | the script's own one-line "
+     "description). Generated, never hand-edited: classify.py --check reds if disk and table "
+     "disagree, and a positive control (dropping an unclassified file in) was run."),
+    # The six entry points. Registered individually ON PURPOSE: they sit outside scripts/check/,
+    # so nothing globs them, and 2026-09-17 they were briefly missing here while already on disk --
+    # which is exactly the state eng-gate-0045 describes (a green check says the entries it covers
+    # agree; it does not say the artifact is covered). Caught by grepping the regenerated manifest
+    # for the paths, not by trusting "wrote 95 assets".
+    ("agent_harness/engine_loop/wrappers/sweep.sh", "runner", "engine", True, False,
+     "parametric sweep class (4 scripts): one knob varied, server restarted per cell, one row per "
+     "cell. Its precondition is not 'does the script exist' but 'can this machine be held alone' "
+     "-- see runners/preflight.sh."),
+    ("agent_harness/engine_loop/wrappers/ab.sh", "runner", "engine", True, False,
+     "two-way comparison class (9 scripts). The failure this class is most exposed to is not a crash "
+     "but a pair that differs in more than the one variable under test: two builds, or two arms whose "
+     "process identity was decided by command-line text."),
+    ("agent_harness/engine_loop/wrappers/bench.sh", "runner", "engine", True, False,
+     "baseline-reading class (9 scripts). Build fingerprint is a HARD precondition here, not a "
+     "warning: emit_episodes.py marks any row with build == null as usable_as_evidence false, so a "
+     "reading taken without one cannot be quoted no matter how clean it looks."),
+    ("agent_harness/engine_loop/wrappers/gate.sh", "runner", "engine", True, False,
+     "correct/incorrect class (10 scripts). w_run preserves the called script's rc and writes it into "
+     "run.json, so `gate.sh m123_oracle_gate.py` is usable in an && chain. NOTE: m123_oracle_gate.py "
+     "is the D5 pre-commit gate and it contains an un-prefixed `pkill -9 -f llama-server`, which will "
+     "kill any process whose command line contains that string -- including another line's arm."),
+    ("agent_harness/engine_loop/wrappers/triage.sh", "runner", "engine", True, False,
+     "forensics class (9 scripts): given an alarm or a reading, trace where it came from. Distinct "
+     "from gate: gate says pass/fail, triage says 'why is this number shaped like that'. Most of the "
+     "34 `probe`-labelled scripts live here, which is precisely why the capability axis was needed."),
+    ("agent_harness/engine_loop/wrappers/env.sh", "runner", "engine", True, False,
+     "environment/service health class (3 scripts) -- and the class PLAN §3 does NOT have. It exists "
+     "as a sixth class on purpose: check_env.sh / check_torch.sh / check_server.sh / "
+     "check_server_profiles.py are none of sweep/ab/bench/gate/triage, and forcing 3 scripts into one "
+     "of those five turns that class into a junk drawer. The deviation is written down in classify.py's "
+     "docstring, in PLAN §3, and in this file rather than left silent. These produce no measurement "
+     "readings, so they need neither the machine alone nor a fingerprint."),
+    ("agent_harness/engine_loop/wrappers/README.md", "conclusion", "engine", False, False,
+     "what this layer is for, the six classes, the 562-reference measurement that rules out `git mv`, "
+     "the degenerate-role finding, and the two things it deliberately does NOT do (it does not produce "
+     "episode records, and it refuses to run without build.json)."),
+
+    # ---- shared/ (PLAN §3; the four checkers below are gates) ----------------------------------
+    ("agent_harness/shared/check_citations.py", "gate", "engine", True, False,
+     "machine-checks CONVENTIONS.md line 7: every rule must point at today's concrete evidence (a "
+     "file, a log line, or a FIELD VALUE). Result: 61/61 accounted for (59 resolvable pointers + 2 "
+     "explicit `- 證據形態：` markers), 0 dangling. The cost of this check was not the rule but the "
+     "instrument's own false positives -- the first version reported 84 problems on a CLEAN charter, "
+     "in six classes (eng-gate-0046). --self-test injects a fake path and asserts the dangling count "
+     "goes 0 -> 1; without that, '0 dangling' and 'the checker never ran' are the same output."),
+    ("agent_harness/shared/check_shell_cjk.py", "gate", "engine", True, False,
+     "catches `$VAR` immediately followed by a non-ASCII byte. This repo's comments and messages are "
+     "almost all Chinese, so bash folds the multibyte character into the variable NAME: under `set -u` "
+     "that is `unbound variable`, and `bash -n` cannot see it at all. Four NEW files hit it in one day "
+     "(runners/{preflight,rebuild,server}.sh, wrappers/_common.sh) and two of the four only on a "
+     "specific branch (n_build > 0, missing > 0), so 'it ran once' would not have caught it either. "
+     "Repo-wide scan found 3 pre-existing instances."),
+    ("agent_harness/shared/sanitize.py", "gate", "engine", True, False,
+     "de-identification before anything leaves the machine: absolute paths -> $REPO, plus hostname / "
+     "IP / key / URL-credential masking. --self-test (19 checks) asserts the two things a sanitizer "
+     "must not confuse: idempotence, and that a pointer-looking hex (0x12e80c000) or a measurement "
+     "(441.02) is NOT treated as an IP. PLAN §8 names one must-block: run_server.sh prints a "
+     "'connection card' containing the LAN IP and port."),
+    ("agent_harness/shared/pack_evidence.py", "measure", "engine", True, False,
+     "Backup/cgc_logs -> compressed evidence packs + sha256 index (PLAN §8's log policy). Produces "
+     "evidence artifacts, not trace records. The acceptance bound ('< 20 MB') is decided here: packs "
+     "are content-addressed so identical bytes are written once -- 195 of the pack sha256s repeat "
+     "(462 files), i.e. 4.86 MB apparent / 5.90 MB allocated that version control would not have "
+     "stored either."),
+    ("agent_harness/shared/trace_schema.md", "conclusion", "engine", False, False,
+     "points at where the three record schemas are authoritative. Deliberately does NOT restate them: "
+     "a restatement is a second copy, and the second copy's failure mode is silent."),
+    ("agent_harness/shared/README.md", "conclusion", "engine", False, False,
+     "what shared/ is for, the measured state of each file, and the §8 measurement-open question "
+     "(apparent 16.67 MB PASS vs allocated 20.72 MB FAIL) with the lever that removes the ambiguity "
+     "instead of choosing the favourable definition."),
 ]
 
 

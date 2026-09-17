@@ -437,3 +437,14 @@ data/replay_bench/
 #   （每次呼叫一筆 + compare.json + manifest.json），它是證據，要不要提交是使用者的
 #   決定 —— 不該被一個萬用樣式悄悄吃掉。
 /agent_harness/engine_loop/distill/out/
+
+# ---- 2026-09-17: engine_loop 的 run 產物與建置指紋 (不入庫) ----
+#   runs/：wrappers/*.sh 每跑一次落一份 run.log + run.json（含 build 指紋、argv、rc）。
+#     性質與 Backup/cgc_logs、harness_engine/logs/ 相同 —— 某一次 run 的原始輸出，會無限增長，
+#     而**可引用的部分已經被正規化進 traces/**（PLAN §8 的納管策略：日誌不納管）。
+#   build.json：描述的是「這一台機器、這一次建置」的狀態，不是一個決策。每個 episode 自己帶
+#     `build` 欄位，所以跨機器要傳的是 episode 而不是這個檔。
+#   ★ 兩者都只忽略這一個路徑。shared/evidence/（§8 的證據 pack）**刻意不在這裡** ——
+#     它的「< 20 MB」上界只有在產物進版控時才有意義，所以它是納管的。
+/agent_harness/engine_loop/runs/
+/agent_harness/engine_loop/build.json
