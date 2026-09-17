@@ -236,6 +236,114 @@ draw. Two consequences:
 * Any A/B on this box must **interleave** arms (and ideally purge/reboot between them), which is
   what the canon/phase A/Bs in this document did.
 
+## The rotated A/B: decode after a slab-served prefill (run 20260917_2001)
+
+The protocol was rebuilt for one question — *is decode systematically colder after a slab-served
+prefill?* — because the fixed-order grid could not answer it: arms ran slab → pool8 → pool17 every
+rep, so launch position and arm were perfectly collinear, and this box's own §158 finding is that
+the first launch in a sequence is systematically the fastest (carried swap). Now the order rotates
+by rep and the report proves the balance from the same `arm_order()` the driver uses:
+
+| rep | order |
+|---|---|
+| 1 (discarded) | `phase-slab` -> `phase-pool8` -> `phase-pool17` |
+| 2 | `phase-pool8` -> `phase-pool17` -> `phase-slab` |
+| 3 | `phase-pool17` -> `phase-slab` -> `phase-pool8` |
+| 4 | `phase-slab` -> `phase-pool8` -> `phase-pool17` |
+
+Mean launch position per arm over the counted reps: **2.0 / 2.0 / 2.0 — BALANCED.**
+
+### Verdict: SYSTEMATIC COLD, confirmed
+
+Decode is paired per rep (same rep = same launch sequence position for that arm), reported for two
+instruments that measure decode *inside the same launch* as the prefill it follows: `long` (the
+decode tokens of the 2233-token request itself) and `short_postlong` (steps 2..9 of the next
+request). `first_step` is deliberately excluded from this claim: its wall contains a 12-token
+prefill, which on the slab arm is the already-known short-chunk penalty, so it would measure the
+prefill defect and not the pool's temperature.
+
+| cell | vs | per-rep paired ratio (slab/base) | median | reps colder/warmer | verdict |
+|---|---|---|---|---|---|
+| `long` | `phase-pool8` | 0.288, 0.207, 0.254 | 0.254 | 3 / 0 | SYSTEMATIC COLD |
+| `long` | `phase-pool17` | 0.275, 0.243, 0.176 | 0.243 | 3 / 0 | SYSTEMATIC COLD |
+| `short_postlong` | `phase-pool8` | 0.287, 0.131, 0.542 | 0.287 | 3 / 0 | SYSTEMATIC COLD |
+| `short_postlong` | `phase-pool17` | 0.178, 0.237, 0.226 | 0.226 | 3 / 0 | SYSTEMATIC COLD |
+
+"Systematic" is held to the strict reading: **every** counted rep must agree in direction, not a
+majority (3-of-3 here). At n=3 with one rep pointing 4x the other way, "2 of 3" is a split, not a
+verdict — the stricter rule was forced by a selftest case, not chosen for comfort.
+
+### The counters name the mechanism
+
+| | slab arm | pool8 arm |
+|---|---|---|
+| pool high-water mark (`resident`) | 6,429.53 MiB | 6,430.62 MiB |
+| pool requests | 8,835 (decode only) | 475,415 (prefill + decode) |
+| hit rate | 86.3 % | 98.3 % |
+| misses: compulsory / capacity | **1,210 / 0 (100 % / 0 %)** | 6,445 / 1,868 (77.5 % / 22.5 %) |
+| file reads | 75,264 | 23,994 |
+| cumulative pread | 3,612 – 4,977 s | 57 – 116 s |
+
+The pool is **full in both arms at the same high-water mark**, so this is not a small pool — it is a
+pool that the slab prefill never fills. Every one of the slab arm's 1,210 decode-side misses is a
+*first touch* (0 capacity), i.e. exactly the signature of "the prefill did not publish". The
+arithmetic closes: 1,210 cold reads at a few tens of ms each, spread over the pool's 8 worker
+threads, is a few hundred ms per decode step — which is what the arm measures (1.64–3.72 t/s, i.e.
+270–610 ms/step) against the pool arms' 5.7–8.7 t/s.
+
+### The honest limit of this result
+
+The grid cannot separate two components that point the same way:
+
+1. **The pool is not published** by a slab-served prefill (the slab re-points `wt->data` and
+   returns) — the 1,210/0 compulsory-only misses are direct evidence.
+2. **The box is left under pressure by the slab regime's own I/O**: 75k reads and 3.6–5.0 ks of
+   cumulative pread versus 24k reads and 57–116 s, and the slab arm ends at free = 8 % against the
+   pool arms' 13–14 % (before-states are comparable, 61–76 %).
+
+Both are cured by the same piece of work and neither is cured by tuning: an arm that arms the slab
+**and** publishes the union into the pool would discriminate them, and that arm does not exist yet.
+The prefill-side prize is also unaffected (4.43x on the long chunk, measured this run).
+
+### Decode non-regression is now a formal gate, and it FAILS
+
+`decode_gate()` compares the slab arm against `phase-pool8` (today's default: unarmed slab, clamp =
+cap 8, so "does arming the slab cost decode?" is a question about that arm), per cell, at an
+explicit ±10 % tolerance, and needs ≥2 usable launches per side before it will decide anything:
+
+| cell | slab | pool8 | ratio | verdict |
+|---|---|---|---|---|
+| `short_warm` | 3.72 | 8.70 | 0.428 | **FAIL** |
+| `long` | 1.94 | 7.68 | 0.253 | **FAIL** |
+| `short_postlong` | 1.64 | 5.72 | 0.287 | **FAIL** |
+| `first_step` | – | – | – | NOT MEASURED (degenerate, see below) |
+
+So M1's "decode must not regress" exit criterion is now **measured and failing** for a default
+arming of the slab. Together with the near-threshold prefill penalty (a 12-token chunk is ~28x
+slower through the slab at matched graph count), this strengthens option C: not a default, and the
+precondition for revisiting it is a prefill→pool handoff that removes the cold start, not a knob.
+
+### Five instrument defects found by this run (all fixed, all silent)
+
+1. **`first_step` decode was an artifact.** With `n_predict=1` the server attributes ~0 ms to the
+   single predicted token (it is emitted with the prefill batch) and reports ~1e6 "t/s". The raw run
+   wrote that into the cell, the gate compared 1e6 against 1e6, and it **PASSED** — a green cell that
+   measured nothing. Values at or above `DECODE_ARTIFACT_TPS` are now refused with the reason, and
+   the gate refuses them independently of the loader (defence in depth).
+2. **Pool counters were collected per shape, not per launch** — 16 rows for a 4-launch arm, every
+   counter 4x the truth. Ratios were unaffected, which is why it survived a glance at the verdicts
+   and was caught only by the report's own table being 4x too long.
+3. **`resident` was never parsed**, so the column that distinguishes "cold pool" from "small pool"
+   was silently empty in every row.
+4. **The launch-log → server-log regex never matched** (`\d+\d+` where the filename has
+   `date_time`, i.e. `\d+_\d+`); the fallback to the stored JSON then made it look like a working
+   parse that was merely missing a field.
+5. **Aggregation trusted the `--reps` flag over the files on disk**, so a truncated grid could be
+   reported as if the missing reps had been measured.
+
+The harness's own `--selftest` now pins all five (99 checks), plus the rotation being a Latin
+square, the cold-decision rule, and the refusal thresholds.
+
 ## Files
 
     src/llama.cpp/src/llama-cgc-phase.h           new: the single predicate + its two knobs
@@ -243,3 +351,8 @@ draw. Two consequences:
     src/llama.cpp/src/llama-context.{h,cpp}        decode width computed once, clamp + hook use it
     scripts/check/phase_split_selftest.cpp         new offline gate (11 assertions)
     scripts/run_server.sh                          CGC_PREFILL_THRESHOLD in the allowlist
+    scripts/check/phase_split_ab.py                the rotated A/B: waits for a window, rotates arms,
+                                                   attributes each timing to the graph that served it,
+                                                   gates decode, and writes its own report (99 selftests)
+    docs/PHASE_SPLIT_AB_REPORT_2026-09-17.md       generated by that script from the result JSONs
+    Backup/phase_split_ab/20260917_2001/           the run this section quotes (12 launches, 4 reps)
