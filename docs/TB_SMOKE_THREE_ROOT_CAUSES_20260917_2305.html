@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>TB smoke:0 token 的三個獨立根因與 Python kernel 的接受判準（2026-09-17）</title>
+<style>
+  :root { --fg:#1a1a1a; --muted:#5b6470; --line:#d8dee6; --bg:#fff; --code:#f5f7fa; --accent:#0b5cad; --warn:#8a4b00; }
+  * { box-sizing: border-box; }
+  body { margin:0 auto; max-width:980px; padding:40px 26px 80px; background:var(--bg); color:var(--fg);
+         font:15px/1.72 -apple-system, "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; }
+  h1 { font-size:25px; line-height:1.35; margin:0 0 8px; }
+  h2 { font-size:19px; margin:38px 0 10px; padding-top:16px; border-top:1px solid var(--line); }
+  h3 { font-size:16px; margin:24px 0 8px; }
+  .sub { color:var(--muted); font-size:13.5px; margin:0 0 26px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 18px; font-size:13.8px; }
+  th, td { border:1px solid var(--line); padding:7px 10px; text-align:left; vertical-align:top; }
+  th { background:var(--code); font-weight:600; }
+  code { background:var(--code); padding:1px 5px; border-radius:4px; font-size:12.8px;
+         font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  pre { background:var(--code); border:1px solid var(--line); border-radius:6px; padding:11px 13px;
+        overflow-x:auto; font-size:12.5px; line-height:1.6;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  ul { padding-left:22px; }
+  li { margin:4px 0; }
+  .box { border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:4px;
+         padding:11px 14px; margin:16px 0; background:#fbfcfe; }
+  .warn { border-left-color:var(--warn); background:#fffaf3; }
+  .ok { border-left-color:#1a7f37; background:#f4fbf6; }
+</style>
+</head>
+<body>
+
+<h1>TB smoke:0 token 的三個獨立根因與 Python kernel 的接受判準</h1>
+<p class="sub">
+  專案 <code>flashkv-devserver</code> · 分支 <code>demo/sweet-spot-windows-fix</code> ·
+  線別 tb_loop（PrimeAgentAgent ＋ Terminal-Bench smoke）· 2026-09-17 22:40–23:05 · 作者：tb_loop 線
+</p>
+
+<div class="box warn">
+  <b>交付狀態：程式側已修完並逐項有實測；端到端<b>尚未</b>通過，阻塞在對方帳號的 402 配額。</b>
+  smoke10（23:00:54）的 agent 現場原文：
+  <pre>402 The free trial quota for the service has been exhausted and postpaid billing is not enabled,
+so the service cannot be accessed. Please go to Console > Online Inference Service to enable postpaid billing.</pre>
+  這一條<b>不是</b>程式或 harness 的缺陷 —— 但它剛好落在「修完最後一個程式缺陷」的那一輪，所以必須說清楚：
+  <b>本 commit 不主張「smoke 跑通了」</b>，只主張下面每一項各自的實測。
+</div>
+
+<h2>1. 為什麼一個症狀底下有三個根因</h2>
+
+這次從頭到尾只有一個症狀：<code>total_input_tokens = 0</code>。但 <code>failure_mode</code> 會在
+<code>agent_timeout</code> / <code>unset</code> / <code>test_timeout</code> / <code>parse_error</code> 之間跳 ——
+因為它報的是<b>第一個撞到的失敗點</b>，而失敗點會隨著前一個被修好而往後移。底下是三件互不相干的事，
+修好任一件<b>不會</b>讓另兩件變好。
+
+<div class="box">
+  <b>判準（本輪最有用的那一條）：不要看 <code>failure_mode</code>，看「agent 那一步實際花了多少秒」</b>
+  —— <code>run.log</code> 的 <code>Blocking command completed in &lt;N&gt;s</code>。
+  <b>10 秒 = agent 根本沒被等待；53／163 秒 = 真的跑了。</b>
+</div>
+
+<h2>2. 三個缺陷</h2>
+
+<table>
+  <tr><th style="width:26px">#</th><th>缺陷</th><th>實測症狀</th><th>修法與出處</th></tr>
+  <tr>
+    <td>1</td>
+    <td>安裝腳本裡的 <b>Node.js 兜底</b>（<code>curl https://deb.nodesource.com/setup_22.x | bash -</code>
+        ＋ <code>apt-get install -y nodejs</code>）是安裝階段<b>唯一剩下的外網依賴</b></td>
+    <td>smoke5 裝成了（整段 <b>43.26s</b>）；smoke6 <b>卡死 &gt;10 分鐘</b>，pane 停在
+        <code>deb.nodesource.com</code> 那一行。<br>
+        量到的原因：<code>Fetched 24.1 kB in 2s (10.7 kB/s)</code>，而 nodejs 的 deb 約 25 MB ⇒
+        <b>約 40 分鐘</b>，超過 360s 預算。</td>
+    <td><b>整段刪掉</b>，並把安裝方法釘死成 native。<br>
+        官方安裝器<b>不需要 node</b>：<code>install.sh:76-88</code> 在
+        <code>PRIME_AGENT_INSTALL_METHOD=auto</code> 且 <code>prime_agent_native_platform</code> 成功時，
+        直接 <code>prime_agent_install_native</code> 並 <code>return</code>
+        ⇒ <code>:1078</code> 的 <code>Install Node.js and npm with …?</code> 提示
+        <b>一行都不會執行</b>。<br>
+        另加 <code>export PRIME_AGENT_INSTALL_METHOD=binary</code>：平台偵測萬一失敗就
+        <b>當場報錯</b>，而不是靜默回退到那條會掛 40 分鐘的路。</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td><b>tb 的 agent 命令預設 <code>block=False</code></b> ⇒ <code>send_command</code> 送完就返回</td>
+    <td>agent 階段只有 <b>10 秒</b>、<code>total_input_tokens = 0</code>；
+        <code>run.log</code> 裡 agent 那條命令之後<b>沒有</b> <code>Blocking command completed</code>。</td>
+    <td><code>TerminalCommand(..., block=True, max_timeout_sec=float("inf"))</code>。<br>
+        出處（皆為原始碼）：<code>terminal/models.py:13</code>（預設 False）→
+        <code>tmux_session.py:296-307</code>（<code>send_keys(block=command.block)</code>）→
+        <code>abstract_installed_agent.py:173-179</code>（送完即
+        <code>return AgentResult(total_input_tokens=0, total_output_tokens=0)</code>）。<br>
+        上游既有寫法一律 <code>block=True</code>：<code>claude_code_agent.py:64</code>、<code>codex_agent.py:46</code>。<br>
+        <b>改後實測：agent 階段 10s → 53s → 163s，且真的出現了模型輸出。</b></td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td><b>agent 的時間預算把「安裝 agent」也算進去</b></td>
+    <td>預算被安裝吃掉 ⇒ 剩下的時間不夠 agent 做事 ⇒ 結果被讀成「模型解不出來」。</td>
+    <td>時限來源是任務自己訂的：<code>harness.py:639-643</code> 取
+        <code>trial_handler.task.max_agent_timeout_sec</code>，而 raman 的
+        <code>task.yaml:35</code> 是 <b>360.0</b>。tb 把安裝與 agent 送進<b>同一個 tmux session</b>
+        （run.log 的順序：<code>Sending keys: [source …/install-agent.sh …]</code> →
+        <code>Agent timed out after 360.0s</code>）⇒ 安裝花的每一秒都從 agent 預算裡扣。<br>
+        加 <code>--global-agent-timeout-sec</code>（預設 900，<code>TB_AGENT_TIMEOUT_SEC</code> 可覆寫）。<br>
+        <b>★ 代價寫清楚：</b>官方榜單的數字是 360s 下產生的，放寬後<b>不可直接與之比較</b>。</td>
+  </tr>
+</table>
+
+<h3>2.1 第 2 條為什麼最值得記</h3>
+
+它讓前面所有「模型不行」的推論全部失效：<b>agent 從來沒有被等待過</b>。
+而它的現場與「安裝太慢」長得幾乎一樣（都是 0 token ＋ 一個 timeout），所以修好第 1 條之後，
+直覺會以為「現在應該會動了」—— 實際上不會。兩個缺陷必須分別量、分別修。
+
+<h2>3. Python kernel：接受判準在執行檔裡，不在文件裡</h2>
+
+<h3>3.1 官方文件給的解析順序</h3>
+<p>release tarball 內的 <code>rlm-runtime.md</code>（在它的 <code>docs/</code> 目錄下，Kernel Lifecycle 章節）原文：</p>
+<pre>Python resolution is:
+1. PRIME_AGENT_KERNEL_PYTHON, when it has a current prime-agent-runtime;
+2. ~/.prime/agent/kernel-venv/bin/python, bootstrapped with uv; or
+3. the XDG data location when ~/.prime is not writable.
+
+The managed environment includes Python 3.11, prime-agent-runtime, dill, and the default Python packages.
+A bootstrap marker detects stale environments.</pre>
+
+<h3>3.2 路徑②走不通：缺一個文件沒說名字的標記</h3>
+
+那句話說有「A bootstrap marker」，但沒說它叫什麼。改成掃執行檔字串就有了 ——
+在 <code>prime-agent</code>（約 160 MB）裡：
+
+<pre>var bPn = 9, pPn = "3.11", SPn = "prime-agent-runtime", R7e = "dill",
+    x7e = "curl -LsSf https://astral.sh/uv/install.sh | sh",
+    xPn = ".bootstrap-version",
+    E$s = ".bootstrap.lock";</pre>
+
+⇒ 路徑②的 <code>~/.prime/agent/kernel-venv</code> 需要一個
+<code>~/.prime/agent/.bootstrap-version</code>（常數 <b>9</b>）才算 current。
+我們離線自己建出來的 venv 沒有那個標記 ⇒ <b>必被判 stale</b> ⇒ 走 bootstrap ⇒
+<code>uv python install 3.11</code> 因無網而失敗。實測（smoke8）agent 拿到的原文：
+
+<pre>Failed to set up the Python kernel runtime.
+/root/.local/bin/uv python install 3.11 failed with exit code 1
+First-time setup needs internet to install uv, Python, prime-agent-runtime, and default Python packages;
+once set up, prime-agent runs offline. An interrupted runtime upgrade needs network once more,
+so re-run this while online.
+Set PRIME_AGENT_KERNEL_PYTHON to a Python with a current prime-agent-runtime and default Python packages
+installed to skip auto-bootstrap.</pre>
+
+⇒ <b>必須走路徑①</b>（在 agent 命令裡 <code>export PRIME_AGENT_KERNEL_PYTHON=…</code>）。
+
+<h3>3.3 路徑①有一道<b>硬檢查</b>（不是警告）</h3>
+
+改成路徑①之後（smoke9），agent 拿到的原文換成：
+
+<pre>PRIME_AGENT_KERNEL_PYTHON points to a Python missing default Python packages
+(requests, httpx, yaml, tomli, dotenv, pandas, numpy, scipy, bs4, lxml, pydantic, tyro):
+/root/.prime/agent/kernel-venv/bin/python</pre>
+
+那份清單裡 <b>numpy / scipy / pandas / lxml / pydantic-core 都是原生擴充</b> ⇒ native wheel 綁 ABI
+⇒ 先前那版「用映像自己的 python ＋ 只裝 pure-python wheel」的 19 MB bundle
+<b>在這道要求下根本不可能成立</b>（我為此白做了一版）。
+
+<b>可行解</b>：bundle 自帶 <b>linux-aarch64 的 standalone CPython 3.11.15</b>（wheel 全 cp311
+⇒ 與任務映像的 Python 版本無關；3.11 也正好是執行檔裡 <code>pPn = "3.11"</code> 期望的版本）
+＋ 那 12 個包 ＋ <code>dill</code>/<code>hatchling</code> 的 cp311 wheelhouse。
+
+<table>
+  <tr><th>量測</th><th>值</th></tr>
+  <tr><td>bundle 大小</td><td><b>128 MB</b>（解開 199 MB）：uv 41 MB ＋ CPython ＋ 35 個 wheel／67 MB</td></tr>
+  <tr><td>容器內離線建 venv ＋ 裝完 30 個包</td><td><b>1 秒</b></td></tr>
+  <tr><td>15 個關鍵 import（rlm／rlm.mcp／dill／numpy／scipy／pandas／pydantic／tyro…）</td><td><b>全部 OK</b></td></tr>
+</table>
+
+<h3>3.4 <code>mcp</code> 仍然不裝 —— 而且這件事是關鍵</h3>
+
+kernel shim 把四個 import 放在<b>同一個 try</b> 裡（執行檔內的 shim 原始碼）：
+
+<pre>try:
+    import rlm as _prime_agent_rlm_module
+    rlm  = _prime_agent_rlm_module.rlm
+    bash = _prime_agent_rlm_module.bash
+    import rlm.mcp as mcp
+except Exception as _prime_agent_rlm_error:
+    _PRIME_AGENT_RLM_IMPORT_ERROR = str(_prime_agent_rlm_error)
+    class _PrimeAgentMissingRlm:
+        def _raise_missing(self): ...
+    rlm = _PrimeAgentMissingRlm()
+    def bash(command):
+        rlm._raise_missing()</pre>
+
+⇒ <b><code>import rlm.mcp</code> 失敗會連 <code>bash()</code> 一起廢掉</b>。
+而實測：<code>import rlm.mcp</code> 在<b>沒有</b> <code>mcp</code> 套件的情況下 <b>OK</b> ——
+<code>rlm/mcp.py</code> 是 MCP <b>client</b> registry，只 import 標準庫與 <code>.mcp_base</code>，
+而 <code>mcp_base.py:101,207</code> 對 mcp SDK 的 import 全在<b>函式內部</b>（惰性）。
+
+裝了反而壞：<code>mcp</code> → <code>pyjwt[crypto]</code> → <code>cryptography</code>，
+其原生擴充在這台 VM 會 SIGILL（<code>import 'cryptography.hazmat.bindings'</code> → Illegal instruction）。
+⇒ 用 <code>--no-deps</code> 裝 runtime，把 mcp／cryptography 擋在外面。
+
+<h2>4. 最終狀態（smoke10，23:00:54）</h2>
+
+<table>
+  <tr><th>階段</th><th>實測</th><th>判讀</th></tr>
+  <tr><td>安裝</td><td><b>14.30s</b>，pane 印出
+      <code>prime-agent kernel ready: /root/.prime/agent/kernel-venv (Python 3.11.15)</code>、
+      <code>prime-agent ready: /root/.local/bin/prime-agent</code></td>
+      <td>✅（原先是 421.89s 逾時／卡死）</td></tr>
+  <tr><td>kernel 是否被接受</td>
+      <td><code>Failed to set up the Python kernel runtime</code> → <b>0 次</b>；
+          <code>points to a Python missing</code> → <b>0 次</b></td>
+      <td>✅（smoke8／smoke9 各命中一次）</td></tr>
+  <tr><td>agent 命令</td><td><b>0.82s</b> 返回</td>
+      <td>❌ 太快 —— 現場原文是 <b>402 配額</b>（見上方紅框）</td></tr>
+  <tr><td>模型是否被呼叫</td><td>smoke8（kernel 未通時）已能產生完整的擬合程式碼與解釋 ⇒ 模型路徑本身是通的</td>
+      <td>✅ 但那一輪 agent 沒有工具可用</td></tr>
+</table>
+
+<div class="box warn">
+  <b>為什麼沒有再重跑一次 smoke 來「驗證」：</b>現在的阻塞是 <code>402</code>，屬於帳號動作。
+  在額度未開通前重跑，只會得到同一個 402 —— 那<b>不構成</b>任何關於本輪修法的證據。
+  本輪每一項修法都有各自的實測（第 2 節的表格與第 3 節的量測），端到端則明寫「未通過」。
+</div>
+
+<h2>5. 檔案清單</h2>
+
+<table>
+  <tr><th>檔案</th><th>改動</th><th>為什麼</th></tr>
+  <tr><td><code>agent_harness/tb_loop/agents/prime_agent_adapter.py</code></td>
+      <td><code>block=True</code>；agent 命令加 <code>export PRIME_AGENT_KERNEL_PYTHON</code>；
+          新增 <code>_ship_uvbundle</code>；<code>_model_name</code> 剝掉 <code>openai/</code> 前綴</td>
+      <td>第 2 節的第 2 條 ＋ 第 3 節的路徑① ＋ 注入 bundle</td></tr>
+  <tr><td><code>agent_harness/tb_loop/agents/prime-agent-setup.sh</code></td>
+      <td>刪 Node.js 步驟；<code>PRIME_AGENT_INSTALL_METHOD=binary</code>；
+          步驟 3 改成用 bundle 自帶的 CPython 3.11 ＋ 裝 12 個 default packages；apt 那一步加計時</td>
+      <td>第 2 節的第 1 條 ＋ 第 3.3 節</td></tr>
+  <tr><td><code>agent_harness/tb_loop/scripts/run_model_smoke.sh</code></td>
+      <td>加 <code>--global-agent-timeout-sec</code>（<code>TB_AGENT_TIMEOUT_SEC</code>）</td>
+      <td>第 2 節的第 3 條</td></tr>
+  <tr><td><code>agent_harness/tb_loop/scripts/fetch-prime-agent-uvbundle.sh</code>（新增）</td>
+      <td>host 端建 bundle：uv ＋ linux CPython 3.11 ＋ cp311 wheelhouse</td>
+      <td>第 3.3 節</td></tr>
+  <tr><td><code>agent_harness/tb_loop/scripts/fetch-prime-agent-mirror.sh</code></td>
+      <td><code>PLATFORMS</code> 去掉 <code>linux-arm64-musl</code></td>
+      <td>兩顆任務映像（python-3-13／ubuntu-24-04）都是 glibc；musl 那份 54 MB 是純浪費</td></tr>
+</table>
+
+<h2>6. 現場閘門（原文）</h2>
+
+<pre>### validate.py
+lessons.jsonl: 161 records {'lesson': 161}
+-&gt; OK
+### selftest.py
+
+  10/10 injected violations rejected
+### build_memory_index.py --check
+rc=1
+    [error] 68 drift(s) between INDEX.jsonl and .workbuddy/memory/:
+      row count: index 179 vs derived 197
+### index_assets.py --check
+rc=1
+    [error] 6 drift(s) between the manifest and disk:
+      scripts/check/prod_matrix.py: bytes: manifest 28352 vs disk 30405
+      scripts/check/prod_matrix.py: mtime: manifest '2026-09-17T16:24:47' vs disk '2026-09-17T23:01:31'
+      scripts/check/decode_step_profile.py: bytes: manifest 17111 vs disk 23845
+      scripts/check/decode_step_profile.py: mtime: manifest '2026-09-17T20:58:47' vs disk '2026-09-17T21:22:44'
+      scripts/run_server.sh: bytes: manifest 130857 vs disk 131909
+      scripts/run_server.sh: mtime: manifest '2026-09-17T19:39:59' vs disk '2026-09-17T21:16:42'</pre>
+
+<h3>6.1 兩條紅燈的歸屬：<b>沒有一筆是本 commit 造成的</b></h3>
+<ul>
+  <li><code>scripts/check/prod_matrix.py</code> 的 mtime 是 <b>23:01:31</b> —— 另一條線<b>此刻正在改</b>。</li>
+  <li><code>scripts/check/decode_step_profile.py</code> 是<b>他們的未追蹤檔</b>（20:58→21:22）。</li>
+  <li><code>scripts/run_server.sh</code> 19:39:59→21:16:42，也是他們的。</li>
+  <li><code>.workbuddy/memory/</code> 的 68 筆是<b>共用 append-only 日誌</b>（連我自己這一輪也寫了）。</li>
+</ul>
+<p>本 commit 的 5 個檔在 <code>MANIFEST.jsonl</code> 裡逐檔 grep 的命中數<b>全為 0</b>，
+新增 <code>docs/*.html</code> 也不漂移 ⇒ 對索引足跡 <b>0</b>。
+依規程 §4：別的 writer 在動時<b>只新增不修改、不重生索引</b> —— 那兩筆紅燈留給 owner。</p>
+
+<h2>7. 誠實邊界（本 commit <b>不主張</b>什麼）</h2>
+<ul>
+  <li><b>不主張 smoke 端到端通過。</b>最後一輪是 <code>402</code>（額度），程式側的修法各有實測，但沒有一次
+      「安裝 → kernel 被接受 → agent 用工具解題 → 測試通過」的完整證據鏈。</li>
+  <li><b>不主張 <code>deepseek/deepseek-flash</code> 能解 raman-fitting.easy。</b>
+      模型路徑證明到「能產生完整的擬合程式碼與解釋」（smoke8），但那時 agent 沒有工具可用。</li>
+  <li><b>不主張這個 smoke 的數字可與官方榜單比較。</b>本輪把 agent 預算從任務的 360s 放寬到 900s
+      （理由見 2.3）；官方數字是 360s 下產生的。</li>
+  <li><b>不主張 kernel 與官方 managed 環境等價。</b>我們裝了那道硬檢查要求的 12 個包，但
+      prime-agent 自己 bootstrap 時還可能裝別的東西；另外刻意<b>不裝 <code>mcp</code></b>
+      ⇒ <b>MCP 工具伺服器在本流程不可用</b>（本線跑 tb 任務不需要）。</li>
+  <li><b>不主張測試階段（<code>max_test_timeout_sec: 60.0</code>）不會再卡。</b>
+      raman 的 <code>run-tests.sh</code> 自己會 <code>uv sync</code>（走同一條慢 PyPI 通道），
+      實測在 60s 內沒跑完。這是<b>下一個未知</b>，本輪沒有處理。</li>
+</ul>
+
+<h2>8. 未解與下一步</h2>
+<table>
+  <tr><th>項目</th><th>狀態</th></tr>
+  <tr><td>TokenHub 402（免費額度用盡／未開後付費）</td>
+      <td><b>阻塞中</b>，屬帳號動作：
+          <code>console.cloud.tencent.com/tokenhub/inference</code> → 開後付費。
+          開通後直接重跑 <code>run_model_smoke.sh</code> 即可，程式不必再改。</td></tr>
+  <tr><td>測試階段 60s 預算 vs 慢 PyPI</td>
+      <td>未處理。可考慮把 wheelhouse 也接到 <code>UV_FIND_LINKS</code>／<code>UV_OFFLINE</code>
+          讓 task 自己的 <code>uv sync</code> 也吃離線料。</td></tr>
+  <tr><td>bundle 128 MB 的注入成本</td>
+      <td>實測 <code>docker cp</code> 秒級，可接受；但每個 trial 一份，值得之後量一次。</td></tr>
+</table>
+
+<p class="sub" style="margin-top:34px">
+  本文件為 D5 附件。改動的 5 個檔在 <code>MANIFEST.jsonl</code> 的足跡為 0；索引那兩筆紅燈屬另一條線，
+  已於 §6.1 逐筆歸屬。
+</p>
+
+</body>
+</html>

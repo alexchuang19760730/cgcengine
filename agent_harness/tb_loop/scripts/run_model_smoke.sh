@@ -224,6 +224,20 @@ TB_ARGS=(
     -k timeout_ms="${TB_TIMEOUT_MS}"
     -k max_continuations="${TB_MAX_CONTINUATIONS}"
     --n-concurrent 1
+    # ★★ agent 的时间预算是**任务自己**订的，而且**安装 agent 也算在里面**。
+    #   出处：terminal_bench/harness/harness.py:639-643 —— 没给 global 值时用
+    #   `trial_handler.task.max_agent_timeout_sec`；raman-fitting.easy 的 task.yaml:35 是
+    #   **360.0**（同一档 :36 的 max_test_timeout_sec 是 60.0）。
+    #   而 tb 是把安装命令**送进同一个 tmux session**、再等 agent 的（run.log 的顺序：
+    #   `Sending keys: [source …/install-agent.sh …]` → `Agent timed out after 360.0s`）
+    #   ⇒ 安装花的每一秒都从 agent 的预算里扣。
+    #   为什么必须放宽：安装**不是** agent 的能力，却是这条路径上最容易吃掉时间的步骤 ——
+    #   其中 `apt-get update`（容器没有 curl，而 `apt-get install curl` 不先 update 会
+    #   `E: Unable to locate package curl`）要抓约 10 MB 索引，实测在 4s 到 ~330s 之间跳动。
+    #   360s 的预算下，光这一步就能把整轮吃掉 ⇒ 结果会被读成「模型解不出来」。
+    #   ⇒ 给一个**只影响时间窗、不改变被测物**的余量；TB_AGENT_TIMEOUT_SEC 可覆盖。
+    #   ★ 代价要说清楚：官方榜单的数字是在 360s 下产生的，**放宽后不可直接与之比较**。
+    --global-agent-timeout-sec "${TB_AGENT_TIMEOUT_SEC:-900}"
     --output-path "${OUT_ROOT}"
     --run-id "${RUN_ID}"
 )

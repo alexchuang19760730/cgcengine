@@ -44,6 +44,14 @@ CONTAINER_HARNESS_TAR = "/installed-agent/harness.tar.gz"
 # `total_input_tokens = 0`，而 tb 把這個結果報成 `agent_timeout`（與模型無關）。
 CONTAINER_MIRROR_TAR = "/installed-agent/prime-agent-mirror.tar.gz"
 DEFAULT_MIRROR_TAR = Path.home() / ".cache" / "prime-agent-mirror.tar.gz"
+# uv bundle（`fetch-prime-agent-uvbundle.sh` 產生，約 19 MB）：linux 的 uv 二進位 ＋ 一批
+# pure-python wheel。容器內的 setup 腳本用它**離線**把 Python kernel 建起來 ——
+# kernel 是必需品（`--autonomous` 的 `bash()` 是透過 Python REPL 暴露的），
+# 而讓 prime-agent 自己 bootstrap 會卡在容器那條 ~0.7 MB/min 的 PyPI 通道上。
+CONTAINER_UVBUNDLE_TAR = "/installed-agent/prime-agent-uvbundle.tar.gz"
+DEFAULT_UVBUNDLE_TAR = (
+    Path.home() / ".cache" / "prime-agent-uvbundle" / "prime-agent-uvbundle.tar.gz"
+)
 
 
 class PrimeAgentAgent(AbstractInstalledAgent):
@@ -112,11 +120,39 @@ class PrimeAgentAgent(AbstractInstalledAgent):
     def _mirror_tar(self) -> Path:
         return Path(os.environ.get("TB_PA_MIRROR_TAR", str(DEFAULT_MIRROR_TAR)))
 
+    @property
+    def _uvbundle_tar(self) -> Path:
+        return Path(os.environ.get("TB_PA_UVBUNDLE_TAR", str(DEFAULT_UVBUNDLE_TAR)))
+
     def _run_agent_commands(self, instruction: str) -> list[TerminalCommand]:
         model = f"{self._model_prefix}/{self._model_name}"
         cmd = (
             f"source {CONTAINER_ENV_SCRIPT} 2>/dev/null || true; "
             f"export PATH=\"$HOME/.local/bin:$PATH\"; "
+            # ★★ 把 Python kernel 指到安裝腳本**離線建好**的那個 venv。
+            #   不指的話 prime-agent 會走自己的 bootstrap（`uv python install 3.11`）——
+            #   那需要網路，而容器對 PyPI 的吞吐實測只有 ~0.7 MB/min ⇒ 必然失敗。
+            #   實測（smoke8）agent 拿到的錯誤原文：
+            #     Failed to set up the Python kernel runtime.
+            #     /root/.local/bin/uv python install 3.11 failed with exit code 1
+            #     ... Set PRIME_AGENT_KERNEL_PYTHON to a Python with a current
+            #         prime-agent-runtime and default Python packages installed
+            #         to skip auto-bootstrap.
+            #   为什么光「把 venv 建在 ~/.prime/agent/kernel-venv」不够：官方文件的
+            #   Kernel Lifecycle 写的是
+            #     1. PRIME_AGENT_KERNEL_PYTHON，当它有一个 current prime-agent-runtime；
+            #     2. ~/.prime/agent/kernel-venv/bin/python，用 uv bootstrap 的；
+            #   而执行档里有 `xPn = ".bootstrap-version"` / `E$s = ".bootstrap.lock"` 与
+            #   常數 `bPn = 9` —— 路径 2 **要有那个 bootstrap 標記**才算 current。
+            #   我们离线建出来的 venv 没有那个標記 ⇒ 被判 stale ⇒ 走 bootstrap ⇒ 失败。
+            #   路径 1 不需要標記，它验证的是「venv 里有没有可用的 prime-agent-runtime」
+            #   （协议版本比對；我们装的就是同一个 release 的 runtime ⇒ 相符）。
+            #   ★ 代价（诚实记录）：venv 里没有官方那串 default Python packages
+            #     （numpy/scipy/pandas…）⇒ prime-agent 会印
+            #     `Warning: Python skills unavailable … will be disabled` —— 是 warning，
+            #     `ipython`／`bash` 这两个工具仍可用（shim 只要求 `import rlm.mcp` 成功，
+            #     而 rlm/mcp.py 并不 import `mcp` 那个 PyPI 包：mcp_base 是函式内惰性载入）。
+            f"export PRIME_AGENT_KERNEL_PYTHON=\"$HOME/.prime/agent/kernel-venv/bin/python\"; "
             f"prime-agent -p --offline --model {shlex.quote(model)} "
             f"--autonomous "
             f"--autonomous-max-turns {self._max_turns} "
@@ -130,7 +166,23 @@ class PrimeAgentAgent(AbstractInstalledAgent):
                 command=cmd,
                 min_timeout_sec=0.0,
                 max_timeout_sec=float("inf"),
-                block=False,
+                # ★★ 必須是 True。出處（原始碼，不是推論）：
+                #   terminal_bench/terminal/models.py:13  `TerminalCommand.block: bool = False`
+                #   terminal_bench/terminal/tmux_session.py:296-307
+                #       `send_command()` → `send_keys(block=command.block, …)`
+                #   terminal_bench/agents/installed_agents/abstract_installed_agent.py:173-179
+                #       `for command in run_agent_commands: session.send_command(command)`
+                #       `return AgentResult(total_input_tokens=0, total_output_tokens=0)`
+                #   ⇒ block=False 时 send_command 送完就返回，`perform_task` **立刻**回一个
+                #     0/0 的 AgentResult，tb 随即进入测试阶段 —— **agent 从未被等待过**。
+                #     实测（smoke7）：安装 9.59s 成功，agent 阶段只有 **10 秒**、
+                #     `total_input_tokens = 0`、`failure_mode = test_timeout`；
+                #     run.log 里那条 agent 命令之后**没有** "Blocking command completed"。
+                #   ⇒ 上游的既有写法都是 True：claude_code_agent.py:64、codex_agent.py:46
+                #     （都配 max_timeout_sec=inf，超时交给 harness 的 asyncio.wait_for）。
+                #   ★ 这一条与「安装慢」是两个独立的缺陷，症状完全一样（0 token、timeout）：
+                #     安装慢 ⇒ 预算被吃光；block=False ⇒ agent 根本没跑。修好前者不会自动修后者。
+                block=True,
                 append_enter=True,
             )
         ]
@@ -140,8 +192,38 @@ class PrimeAgentAgent(AbstractInstalledAgent):
     # ------------------------------------------------------------------
     def perform_task(self, instruction, session, logging_dir=None):
         self._ship_mirror(session)
+        self._ship_uvbundle(session)
         self._ship_harness(session)
         return super().perform_task(instruction, session, logging_dir)
+
+    def _ship_uvbundle(self, session) -> None:
+        """把 host 上備好的 uv bundle（約 19 MB）送進容器。
+
+        容器內的 setup 腳本用它**離線**建 Python kernel（`~/.prime/agent/kernel-venv`）——
+        那是 `--autonomous` 的必需品：它的 `bash()` 是透過 Python REPL 暴露的，
+        沒有 kernel 就等於沒有工具。而讓 prime-agent 自己 bootstrap 會卡在容器那條
+        ~0.7 MB/min 的 PyPI 通道上（實測 20 分鐘跑不完）。
+
+        沒有 bundle 時只印一行就繼續：setup 腳本會讓 prime-agent 自己做 bootstrap
+        （慢，而且可能逾時）—— 但不會靜默地做出一個沒有工具的 agent。
+        """
+        tar_path = self._uvbundle_tar
+        if not tar_path.is_file():
+            print(
+                f"[prime-agent] 沒有 uv bundle {tar_path} —— kernel 會由 prime-agent "
+                "自己 bootstrap（容器網路慢時會逾時）。\n"
+                "              產生它: bash agent_harness/tb_loop/scripts/"
+                "fetch-prime-agent-uvbundle.sh"
+            )
+            return
+        session.copy_to_container(
+            tar_path,
+            container_dir="/installed-agent",
+            container_filename="prime-agent-uvbundle.tar.gz",
+        )
+        print(
+            f"[prime-agent] 已注入 uv bundle {tar_path.name}（{tar_path.stat().st_size} B）"
+        )
 
     def _ship_mirror(self, session) -> None:
         """把 host 上快取的 prime-agent release 鏡像送進容器。

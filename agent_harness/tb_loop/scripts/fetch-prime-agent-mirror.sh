@@ -35,7 +35,10 @@ set -u
 BASE="${TB_PA_BASE:-https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev}"
 ROOT="${TB_PA_MIRROR:-${HOME}/.cache/prime-agent-mirror}"
 TARBALL="${ROOT}.tar.gz"
-PLATFORMS="${TB_PA_PLATFORMS:-linux-arm64 linux-arm64-musl}"
+# ★ 預設只取 glibc 的 arm64：本線用到的兩顆 tb 任務映像（`python-3-13`、`ubuntu-24-04`）
+#   都是 Debian 系（glibc），musl 那個變體用不到，而它自己就 54 MB（約鏡像的一半）。
+#   要它就把 `linux-arm64-musl` 加回 `TB_PA_PLATFORMS`。
+PLATFORMS="${TB_PA_PLATFORMS:-linux-arm64}"
 REFRESH=0
 if [ "${1:-}" = "--refresh" ]; then REFRESH=1; fi
 

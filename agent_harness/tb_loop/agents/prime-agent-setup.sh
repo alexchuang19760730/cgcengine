@@ -21,21 +21,53 @@
 
 export PATH="$HOME/.local/bin:$PATH"
 
+# 宿主注入的兩個檔案（見 adapter 的 _ship_mirror／_ship_uvbundle）：
+#   release 鏡像      —— 讓官方安裝器從 loopback 取檔（不走走不通的容器外網）
+#   uv bundle         —— 讓步驟 3 能**離線**把 Python kernel 建起來
+PA_MIRROR_TAR=/installed-agent/prime-agent-mirror.tar.gz
+PA_UVBUNDLE_TAR=/installed-agent/prime-agent-uvbundle.tar.gz
+
 if ! command -v curl >/dev/null 2>&1; then
+    # ★ 这一步是**整条安装路径上唯一剩下的外网依赖**，也是唯一会「看网络脸色」的一步。
+    #   实测耗时在 4s 到 ~330s 之间跳动（`apt-get update` 要抓约 10 MB 索引；而
+    #   `apt-get install -y curl` **不先 update 会失败**：`E: Unable to locate package curl`，
+    #   所以 update 去不掉）。
+    #   ⇒ 把它计时并印出来。理由：它会直接吃掉 agent 的时间预算，而症状（0 token、timeout）
+    #     与「模型解不出来」长得一样 —— 日志里有这个数字，归因就不必靠猜。
+    #   （预算那一半的修法在 run_model_smoke.sh 的 --global-agent-timeout-sec。）
     echo "curl missing -- installing via apt"
+    pa_apt_t0=${SECONDS}
     apt-get update -y >/dev/null 2>&1 || true
     apt-get install -y curl >/dev/null 2>&1 || true
+    echo "curl via apt 完成: $((SECONDS - pa_apt_t0))s"
 fi
 if ! command -v curl >/dev/null 2>&1; then
     echo "prime-agent install failed: curl unavailable (apt could not provide it)"
     return 1 2>/dev/null || exit 1
 fi
 
-# 1) Node（prime-agent 的 release 二进制通常自带，但保留兜底）
-if ! command -v node >/dev/null 2>&1; then
-    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - || true
-    { apt-get update -y && apt-get install -y nodejs; } >/dev/null 2>&1 || true
-fi
+# 1) ★★ 2026-09-17 实测：**不要装 Node**（这一段原本是 npm 安装法的兜底，现在是纯负担）
+#
+#   ① 根本不需要：官方安装器的入口（install.sh:76-88）在 `PRIME_AGENT_INSTALL_METHOD=auto`
+#      且 `prime_agent_native_platform` 成功时，**直接 `prime_agent_install_native` 并 return**
+#      —— Node.js 那条分支（:1078 的 `Install Node.js and npm with …?` 提示）**一行都不会执行**。
+#      我们用的是 native release 二进制（linux-arm64），不是 npm 全局安装。
+#
+#   ② 它是**安装阶段唯一剩下的外网依赖**，而且是最慢的那条路。实测（smoke6，卡死现场）：
+#         Get:4 https://deb.nodesource.com/node_22.x nodistro InRelease [12.1 kB]
+#         Fetched 24.1 kB in 2s (**10.7 kB/s**)
+#      而 nodejs 的 deb 约 25 MB ⇒ 按这个速率要 **约 40 分钟**。tb 的 agent 预算是 360s，
+#      所以安装**永远跑不完** ⇒ agent 从未被启动 ⇒ `total_input_tokens = 0`。
+#
+#   ③ 这件事最值得记的地方是**它的不确定性**：同一段程式、同一个任务，smoke5 装了（43.26s）
+#      而 smoke6 卡了 10 分钟以上 —— 差别只在那一刻的网络。**「偶发」比「必错」更难发现**：
+#      如果 smoke5 是唯一一次运行，这一段会被记成「可以工作」。
+#      ⇒ 判准：安装阶段**不该有任何**「能不能跑完取决于网络」的步骤。
+#
+#   ⇒ 删掉整个 node 步骤，并把安装方法**钉成 `binary`**：万一哪天平台检测失败，
+#     它会**当场报错退出**（`no compatible compiled archive is available`），
+#     而不是静默回退到那条会挂 40 分钟的 node 路径。
+export PRIME_AGENT_INSTALL_METHOD=binary
 
 # 2) prime-agent CLI（官方安装脚本，下载 versioned release 到 ~/.local/bin）
 #
@@ -100,18 +132,21 @@ if ! command -v prime-agent >/dev/null 2>&1; then
     #   `Installed Prime Agent 0.9.5 at /root/.local/share/prime-agent/bin/prime-agent`。
     export PRIME_AGENT_INSTALLER_NONINTERACTIVE=1
     export PRIME_AGENT_INSTALLER_PLAIN=1
-    # ★★ 2026-09-17：**不要**设 PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=0 来「省时间」。
-    #   我试过，被实验推翻：跳过后 python kernel 起不来，而 `--autonomous` 的 bash() 是
-    #   **通过 Python REPL 暴露的** ⇒ 没有 kernel 就等于**没有任何工具**。agent 自己报：
+    # ★★ Python kernel 是**必需品**：`--autonomous` 的 bash() 是**透过 Python REPL 暴露的**，
+    #   没有 kernel 就等于**没有任何工具** —— agent 自己会报：
     #     Status: blocked — no executable tool is available.
-    #     - Every `ipython` call returns: `Failed to set up the Python kernel runtime.
-    #       uv is required to set up the Python kernel.`
+    #     - Every `ipython` call returns: `Failed to set up the Python kernel runtime.`
     #     - `bash()` is exposed only through the Python REPL, so the broken kernel
     #       also removes shell access.
-    #   而这一段确实慢：实测 **>418s**（900s 上限下跑到 6:58 仍未完成；先下 uv 0.12.15
-    #   约 20MB，再下 Python 与一批 wheel，全程走那个 164 KB/s 的网络）。
-    #   ⇒ 结论：kernel 是**必需品**，只是它也需要和 release 一样的「镜像／预热」待遇。
-    #     在那之前，安装这一步会慢（但正确）——**不要**用关掉 kernel 来换速度。
+    #   但**不要**让 prime-agent 自己的 bootstrap 去准备它：那段会去下 uv 0.12.15 ＋ Python ＋
+    #   一批 wheel，而容器对 PyPI 的吞吐实测只有 **~0.7 MB/min**（20 分钟都跑不完；而且
+    #   `UV_OFFLINE=1` 也挡不住那个停顿 —— 它根本不走 uv 的离线逻辑）。
+    #   改成**下面步骤 3 自己用 uv 离线建**（host 已备好料）。
+    #   ⇒ 判准：**有 uvbundle 才关它**（我们接得住）；没有 bundle 时只能让它自己做（慢但正确）。
+    #   （我一度无条件设 0 来「省时间」，被实验推翻 —— 那会静默地做出一个没有工具的 agent。）
+    if [ -s "${PA_UVBUNDLE_TAR}" ]; then
+        export PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=0
+    fi
 
     if command -v setsid >/dev/null 2>&1; then
         curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | setsid sh || true
@@ -120,7 +155,66 @@ if ! command -v prime-agent >/dev/null 2>&1; then
     fi
 fi
 
-# 3) 验证
+# 3) Python kernel（离线建 —— 见上面步骤 2 的说明：它是必需品，但不能让 prime-agent 自己做）
+#
+#    ★★ 2026-09-17 第二版：**改用 bundle 自带的 CPython 3.11**，并装上 prime-agent 的
+#       default Python packages 清单。第一版（用映像自己的 python ＋ 只装 pure-python wheel）
+#       被实验推翻了 —— prime-agent 对 KERNEL_PYTHON 有一道**硬检查**，缺清单就拒绝，
+#       实测（smoke9）agent 拿到的原文：
+#         PRIME_AGENT_KERNEL_PYTHON points to a Python missing default Python packages
+#         (requests, httpx, yaml, tomli, dotenv, pandas, numpy, scipy, bs4, lxml, pydantic, tyro):
+#         /root/.prime/agent/kernel-venv/bin/python
+#       那份清单里有 numpy/scipy/pandas/lxml/pydantic-core（原生扩充）⇒ native wheel 绑 ABI
+#       ⇒ 「用映像的 python ＋ 只装 pure-python」在这道要求下不成立。
+#       自带 CPython 3.11 同时解决两件事：清单齐得起来，且与任务映像的 Python 版本无关
+#       （顺带：3.11 正是执行档里 `pPn = "3.11"` 期望的版本）。
+#
+#    位置仍是官方文件写的「解析路径 2」＋ 我们显式设 KERNEL_PYTHON（见 adapter 的 agent 命令）。
+#      1. PRIME_AGENT_KERNEL_PYTHON，当它有一个 current prime-agent-runtime；
+#      2. ~/.prime/agent/kernel-venv/bin/python，用 uv bootstrap 的；
+#      3. ~/.prime 不可写时的 XDG 位置。
+#    ★ 路径 2 需要执行档里那个 bootstrap 标記（`xPn = ".bootstrap-version"` / 常数 `bPn = 9`）
+#      才算 current；我们离线建出来的没有那個標記 ⇒ 一定会被判 stale ⇒ 走 bootstrap ⇒
+#      因为没网而失败。所以**必须**走路径 1。
+#
+#    ★ 刻意**不装 mcp**（用 --no-deps 装 runtime）：rlm/mcp.py 是 MCP **client** registry，
+#      只 import 标准库与 .mcp_base，而 mcp_base 对 mcp SDK 的 import 全在函式内部
+#      ⇒ 实测 `import rlm.mcp` 在没有 mcp 的情况下 **OK**（这一点很重要：kernel shim 把
+#      `import rlm.mcp` 放在 `bash` 的同一个 try 里，import 不过就连 bash 一起废）。
+#      而装了反而坏：mcp → pyjwt[crypto] → cryptography，其原生扩充在这台 VM 会 SIGILL。
+PA_KERNEL_VENV="$HOME/.prime/agent/kernel-venv"
+PA_KERNEL_PY="$HOME/py311/bin/python3.11"
+pa_kernel_ok=0
+if [ -s "${PA_UVBUNDLE_TAR}" ]; then
+    tar -xzf "${PA_UVBUNDLE_TAR}" -C "$HOME" 2>/dev/null || true
+fi
+if [ -x "$HOME/.local/bin/uv" ] && [ -x "${PA_KERNEL_PY}" ] && [ -d "$HOME/wheels" ]; then
+    pa_runtime="$(find "$HOME/.local/share/prime-agent/releases" -maxdepth 2 -name prime-agent-runtime 2>/dev/null | head -1)"
+    if [ -n "${pa_runtime}" ]; then
+        export UV_OFFLINE=1
+        export UV_FIND_LINKS="$HOME/wheels"
+        # ① runtime + dill（--no-deps：把 mcp/cryptography 挡在外面）
+        # ② prime-agent 硬检查要求的那 12 个 default packages
+        # ③ 验收：rlm / dill / rlm.mcp ＋ 清单里几个关键的真实 import
+        if "$HOME/.local/bin/uv" venv "${PA_KERNEL_VENV}" --python "${PA_KERNEL_PY}" >/dev/null 2>&1 &&
+           "$HOME/.local/bin/uv" pip install --offline --find-links "$HOME/wheels" \
+               --python "${PA_KERNEL_VENV}/bin/python" -q --no-deps dill "${pa_runtime}" >/dev/null 2>&1 &&
+           "$HOME/.local/bin/uv" pip install --offline --find-links "$HOME/wheels" \
+               --python "${PA_KERNEL_VENV}/bin/python" -q \
+               requests httpx pyyaml tomli python-dotenv pandas numpy scipy beautifulsoup4 lxml pydantic tyro >/dev/null 2>&1 &&
+           "${PA_KERNEL_VENV}/bin/python" -c 'import rlm, rlm.mcp, dill, numpy, scipy, pandas, pydantic, tyro' >/dev/null 2>&1; then
+            pa_kernel_ok=1
+            echo "prime-agent kernel ready: ${PA_KERNEL_VENV} ($("${PA_KERNEL_VENV}/bin/python" -V 2>&1))"
+        fi
+    fi
+fi
+if [ "${pa_kernel_ok}" != 1 ]; then
+    # 不是致命错误（安装本身可能仍然成功），但表现是「agent 自己说 blocked」而不是安装失败，
+    # 所以刻意大声印出来 —— 这一行是判「为什么 0 token」时最该先看的东西。
+    echo "WARN: prime-agent kernel 没建起来 —— --autonomous 会没有工具（见步骤 2 的说明）" >&2
+fi
+
+# 4) 验证
 if ! command -v prime-agent >/dev/null 2>&1; then
     echo "prime-agent install failed"
     return 1 2>/dev/null || exit 1
