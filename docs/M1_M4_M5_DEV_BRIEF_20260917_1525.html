@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>M1／M4／M5 開發交接：目標、現況、與已經付過的學費（2026-09-17）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  h4{font-size:14.5px;margin:20px 0 6px;color:#374151}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:20px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:#fcfcfd}
+  .toc ol{margin:6px 0 0 20px}
+  .toc a{color:var(--blue);text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>M1／M4／M5 <strong>開發交接</strong>：目標、現況、與已經付過的學費</h1>
+<div class="sub">
+  日期 2026-09-17 15:25 · HEAD <code>a8df24a52</code> · 專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code><br>
+  模型 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（<code>CGC_SERVER_PROFILE=prefill250</code>）<br>
+  建置 <code>2026-09-17 14:12:40</code>（<code>libllama</code> <code>ce68629d…</code>、<code>libggml-metal</code> <code>037c931e…</code>、<code>llama-server</code> <code>054fb22f…</code>）<br>
+  硬體 <code>Mac16,12</code> MacBook Air · Apple M4 · 8 核 GPU · 16 GB unified · <strong>無風扇</strong><br>
+  寫給：<strong>另一個 session（引擎層的另一條線）</strong>。本文件是交接，不是規格書 ——
+  目標仍以 <code>docs/ROADMAP_PREFILL250_DECODE25_2026-09-13.md</code> 為權威，本文只負責把
+  「站在哪裡、已經付過什麼學費、建議先做哪一件」講清楚。<br>
+  對側交接（我這條線拿的）：M2 結清、M3 的剖面前置、儀器／索引／提交層 —— 見 §6。
+</div>
+
+<div class="box b-blue">
+  <p><strong>一句話：</strong>三個里程碑裡，<strong>只有 M1 在關鍵路徑上</strong>（它卡住 ⇒ M3 不能開始 ⇒
+  「decode 25」唯一還缺的那個 ~2× 拿不到）。M4 今天已經補上它唯一的功能缺口，只剩兩條；
+  M5 是選配、期望值低，適合當「等機器」時的填充工作。<strong>建議的起手式是 M1 的工作項 4</strong>，
+  因為它可以在<strong>不需要 GPU</strong> 的情況下先驗（§4）。</p>
+</div>
+
+<div class="cards">
+  <div class="card"><div class="k">M1 · 解耦 pool 與圖</div><div class="v bad">卡住</div>
+    <div class="small">數值半只證明「不變性」；工作項 2 未實作</div></div>
+  <div class="card"><div class="k">M4 · MTP 拒絕取樣</div><div class="v warn">功能缺口已關</div>
+    <div class="small">MTP-on 12.62 ≥ MTP-off 9.82；剩 <code>plain_match</code></div></div>
+  <div class="card"><div class="k">M5 · prerouter 預取</div><div class="v">未開始</div>
+    <div class="small"><code>PREFETCH_ONLY</code> 在本 repo 0 筆（實查）</div></div>
+</div>
+
+<div class="toc">
+  <strong>目錄</strong>
+  <ol>
+    <li><a href="#s1">目標（逐條，抄 roadmap，不轉述）</a></li>
+    <li><a href="#s2">現在站在哪裡（今天實測）</a></li>
+    <li><a href="#s3">已經付過的學費：不要重新踩的九條</a></li>
+    <li><a href="#s4">建議的執行順序</a></li>
+    <li><a href="#s5">機器窗口協定（共用的只有一顆 GPU）</a></li>
+    <li><a href="#s6">邊界：誰碰哪些檔</a></li>
+    <li><a href="#s7">現場閘門輸出原文</a></li>
+    <li><a href="#s8">誠實邊界</a></li>
+    <li><a href="#s9">出處</a></li>
+  </ol>
+</div>
+
+<h2 id="s1">1. 目標（逐條）</h2>
+
+<h3>1.1 M1 — 解耦 pool 與圖 <span class="tag">最關鍵</span></h3>
+<p><strong>目標：</strong>expert tensor 不再被縮小；pool 變成<strong>獨立的 cache buffer</strong>，
+只回答「哪些位元組已經在 RAM」；ubatch 寬度不再由 pool 大小決定。</p>
+
+<p><strong>五個工作項</strong>（roadmap §M1）：</p>
+<ol>
+  <li><strong>loader</strong>：pool 改成獨立配置的 Metal buffer；expert tensor（或它的可用視圖）保持全尺寸 256。</li>
+  <li><strong>graph 按 phase 分流，在建圖前決定</strong>（依 request 的 token 數，<strong>不看常駐</strong>）：
+      <code>T &gt;= T_prefill</code>（先用 512 當起點）→ <strong>PREFILL GRAPH</strong>：整層 slab、256 experts；
+      <code>T &lt;= T_decode</code>（16 ＝ <code>floor(slots/top_k)</code> 的上界）→ <strong>DECODE GRAPH</strong>：compacted gather。<strong>這一項未實作</strong>（<code>src/</code> 裡沒有 <code>T_prefill</code>／<code>PREFILL_GRAPH</code>／<code>DECODE_GRAPH</code>，實查）。</li>
+  <li><strong><code>cap</code> 不再是從 slots 推導的常數</strong>：它退化成「decode graph 的寬度上限」。</li>
+  <li><strong>canonical gather order</strong>：compacted 之後的 expert <strong>按 expert id 排序</strong>再進 batched matmul。
+      <strong>這是這個新架構唯一的 M1 陷阱</strong> —— slot index 是 pool 相關的，若累加順序跟著 slot 走，
+      換 pool 大小就會改變舍入，M1 直接垮。👉 <strong>已被實驗證明是必要而非審慎</strong>，見 §3-⑥；
+      規格已寫在 <code>docs/M1_WORKITEM4_CANONICAL_GATHER_ORDER_2026-09-17.md</code>。</li>
+  <li>計數器：<code>resident bytes</code> vs <code>pool capacity</code>、per-layer slots、<code>phase</code>（prefill／decode）每請求各跑幾次。</li>
+</ol>
+
+<p><strong>離開條件</strong>（roadmap 原文，含我今天加的一條更正）：</p>
+<table>
+<tr><th>閘門</th><th>標準</th><th>現況</th></tr>
+<tr><td>M1／M2 @ 4/6/8/10 GiB</td><td><strong>100%</strong>，且<strong>包含 <code>union &gt; slots</code> 案例</strong></td><td>117/117 已達，但<strong>只證明不變性</strong>（§3-②）</td></tr>
+<tr><td><code>union-routable</code></td><td>PASS（串流路徑被走過）</td><td>PASS</td></tr>
+<tr><td>prefill chunk 2048</td><td>被接受，無 OOB、無 NaN、無 <code>buffer is nil</code></td><td><strong>未達</strong>（缺工作項 2）</td></tr>
+<tr><td>RSS @ 10 GiB</td><td>與現在（9.08 GiB）差 ±0.5 GiB</td><td>達標</td></tr>
+<tr><td>decode 速度</td><td><strong>不得退步</strong>（roadmap 當時寫 9.3–10.5 t/s）</td>
+    <td><strong>⚠ 這條的基準要重定</strong>：09-14 量到 2 GiB 6.36 vs 8 GiB 8.87 ＝ 0.72×，但那個 8.87 是<strong>當時的 build</strong>；今天同類量測（Nail、8 GiB、MTP off）是 <strong>9.82</strong>，而且 r33 修正改動了 routing（hit 57.1% → 72.0%）⇒ <strong>0.72× 跨了 build，不能沿用</strong>。重跑時要對<strong>當天</strong>的 8 GiB 格比</td></tr>
+</table>
+
+<h3>1.2 M4 — MTP 拒絕取樣 ＋ verify 真批次</h3>
+<p><strong>目標：</strong>accept 從 19.9% 拉到 60–80%，並讓 verify 真的吃到批量紅利。</p>
+<p><strong>工作項：</strong>① 拒絕取樣（以 <code>min(1, p_t/p_d)</code> 接受、被拒時從殘差 <code>max(0, p_t − p_d)</code> 重抽）；
+② <strong>batched-union gather 套進 verify</strong>（M1 的副產品）；③ 量 accept、tokens/forward、ms/forward 的三段拆解。</p>
+
+<div class="box b-red">
+  <p><strong>★ 離開條件要改寫。</strong>roadmap 寫的是「accept <strong>≥ 60%</strong>；MTP-on ≥ MTP-off；
+  M1／M2 = 100% <strong>with MTP ON</strong>」。</p>
+  <p><strong>第一條（accept ≥ 60%）今天被證明是錯的判準</strong>：2026-09-14 就已量到 70.39%（超過），
+  但那個數字屬於<strong>被缺陷抬高的家族</strong> —— 修前 verify 批次的 token ≥ 1 是用別的 token 的專家算的，
+  「accepted」是拿錯分布比出來的。修好之後 accept <strong>下降到</strong> 58.25%，而 decode <strong>上升到</strong> 12.62。
+  ⇒ <strong>任何只看 accept 的決策都會留住缺陷、退掉修正。</strong>正確的判準是
+  「<strong>MTP-on ≥ MTP-off ＋ M1/M2 = 100% with MTP ON</strong>」，而且<strong>修前記錄的每一個 accept
+  數字都屬於那個 regime</strong>（含 70.4% 與 roadmap 的 19.9%）。</p>
+</div>
+
+<h3>1.3 M5 — prerouter 只當預取提示 <span class="tag">可選 · 期望值低</span></h3>
+<p><strong>目標：</strong>只做 <strong>decode、只做 L+1 的 8 顆、只影響時間</strong>
+（<code>PREFETCH_ONLY</code> 語義：predictions <strong>永不決定 routing</strong>）。量的是 <strong>overlap（ms）</strong>，不是 hit rate。</p>
+<p><strong>離開條件：</strong>overlap 增益 <strong>≥ 10%</strong> 才保留；&lt; 10% <strong>記錄為已排除的死路</strong>
+並把旗標預設關閉；M1／M2 = 100%。</p>
+<p><strong>前置結論（已量測，roadmap 原文）：</strong>placement 天花板只 <strong>0.2pp</strong>
+（mass coverage 90.3% vs 最佳 90.5%）；<code>start_layer = 7</code> → owner layers 6..38，
+而 churn 最重的是 <strong>layer 1／2（distinct 250–253／256）</strong>
+⇒ <strong>最需要預測的層它沒有 head</strong>。
+edge0 自己的成績：ON 有 1.5× 但品質 0.3、<code>PREFETCH_ONLY</code> 12/12 bit-identical 但增益未證實、
+LRU 64 格／40 層 ＝ 1.6 格/層 → prefill <code>hits=0</code>。</p>
+<p class="small">實查：<code>PREFETCH_ONLY</code> 在 <code>src/llama.cpp/src/</code> 與 <code>scripts/</code> 底下
+<strong>0 筆命中</strong> ⇒ 這個機制在本 repo 完全不存在，不是「有旗標但沒開」。</p>
+
+<h2 id="s2">2. 現在站在哪裡（今天的實測）</h2>
+
+<table>
+<tr><th>里程碑</th><th>狀態</th><th>還缺什麼（可指到具體檔案）</th></tr>
+<tr><td><strong>M1</strong></td><td class="bad">做一半以上、卡住</td>
+    <td>① 工作項 2（phase split）未實作；② 工作項 1（<code>CGC_POOL_SPLIT=1</code>）實作了但判
+    <strong>EXPERIMENTAL, NOT USABLE</strong>（Blocker A：寬 tensor 讓 gather 把 Metal buffer 的指標重指到
+    Metal 不知道的 host 指標 ⇒ <strong>靜默</strong> <code>tensor buffer is nil</code>、<strong>M1 2/42</strong>）；
+    ③ 工作項 4 規格已寫但未實作；④ decode 不得退步那條的基準要重定</td></tr>
+<tr><td><strong>M4</strong></td><td class="warn">功能缺口已關</td>
+    <td>① <code>plain_match=False</code>（batch verify 與逐 token 解碼不一致）—— 這一條的意思是
+    <strong>「oracle 綠不代表 verify 路徑綠」</strong>，今天沒有處理；
+    ② 「M1／M2 = 100% with MTP ON」未核（要用 <code>v6</code> 參考跑 <code>m123_oracle_gate</code>，並<strong>先讀 <code>comparable</code></strong>）；
+    ③ 離開條件「accept ≥ 60%」要改寫（§1.2）</td></tr>
+<tr><td><strong>M5</strong></td><td>未開始</td><td>機制 0 筆；前置結論已把期望值壓低（上方 §1.3）</td></tr>
+</table>
+
+<h3>2.1 M4 今天的實測（同一個 binary 上的 A/B）</h3>
+<p>來源 <code>docs/ROUTING_TRACE_2026-09-17.md</code> §14.2。方法上值得注意的是：這個 A/B
+<strong>沒有拿三天前的 baseline 當 before</strong>，而是把修前的讀取做成了開關
+（<code>CGC_IDS_LINEAR_READ=1</code> 在預設路徑自己的程式碼裡還原那個缺陷）⇒ 同 build、同池、
+同 dispatcher、同 sampler、同 prompts。<strong>這是本 repo 做 before／after 的正確形狀，值得沿用。</strong></p>
+
+<table>
+<tr><th>臂</th><th>accept</th><th>acc / gen</th><th>prefill t/s</th><th>decode t/s</th></tr>
+<tr><td>MTP off（分母）</td><td class="num">n/a</td><td class="num">0 / 0</td><td class="num">19.24</td><td class="num">9.82</td></tr>
+<tr><td>MTP on，修前（<code>CGC_IDS_LINEAR_READ=1</code>）</td><td class="num">73.81%</td><td class="num">155 / 210</td><td class="num">7.30</td><td class="num">8.62</td></tr>
+<tr><td>MTP on，nb-aware 修正（預設）</td><td class="num">58.25%</td><td class="num">180 / 309</td><td class="num">21.74</td><td class="num"><strong>12.62</strong></td></tr>
+</table>
+<p class="small">§14.4 自陳的界限（要沿用）：每臂 3 請求、一個 carrier、一個池；prefill 的 7.30 → 21.74
+有 cache 效應成分（與 §13.4 的 hit 57.1% → 72.0% 同一機制，<strong>不是獨立的提速主張</strong>）；
+熱沒有控制（同一臂內 prefill 從 38 變到 12.8）。</p>
+
+<h2 id="s3">3. 已經付過的學費：不要重新踩的九條</h2>
+
+<div class="box b-amber">
+  <p>這一節是本文最有價值的一節。「為什麼原本是錯的」比「應該怎麼做」更省時間 ——
+  以下每一條都是這個 repo 今天或本週真的付過代價的。</p>
+</div>
+
+<ol>
+  <li><strong>top-k 快照不是 nb-aware ⇒ T ≥ 2 的每一步都把 token ≥ 1 路由到 token 0 的專家。</strong>
+      涵蓋所有 prefill chunk 與所有 MTP verify 步，是<strong>預設路徑</strong>的缺陷（每一臂都中）。
+      已修（commit <code>8e9e830e5</code>：<code>row = data + t*nb[1]</code>、第 j 個 id 在 <code>row + j*nb[0]</code>）。
+      <strong>做 M1／M4 時要記得：這是「共用的」路徑，任何在它之上的量測都受它影響。</strong></li>
+
+  <li><strong>修前每一次 M1 通過只證明「不變性」，不證明「正確」。</strong>缺陷在共用路徑上 ⇒
+      每一臂、每一個池大小都用同一種錯誤方式路由 ⇒ 它們<strong>彼此一致</strong>。
+      <code>ROUTING_TRACE</code> §15.2 的原話是 <em>cross-pool invariance (M1/M2) passed while the ids
+      were wrong for all of them</em>。2026-09-14 那個「M1 117/117」屬於這一類：引用時要說
+      「<strong>那些池彼此一致</strong>」，永遠不是「<strong>那些數字是對的</strong>」——
+      後者只有對 <code>v6_nbaware</code> 之後的參考才成立。</li>
+
+  <li><strong>accept 是被抬高的指標。</strong>修前 verify 批次的 token ≥ 1 用別的 token 的專家算 ⇒
+      「accepted」是拿錯的分布比出來的，而且它<strong>抬高</strong>了這個數字。
+      ⇒ 任何只看 accept 的 M4 決策會留住缺陷、退掉修正（§1.2）。</li>
+
+  <li><strong>D5 的 gate 會 self-report 它的可比性 —— 先讀 <code>comparable</code>，再讀 M1／M2／M3。</strong>
+      <code>comparable=False</code> 時那三個 9/9 印著 <em>printed for information, NOT a verdict</em>，
+      而 gate 會 <code>exit 2</code>（INVALID COMPARISON）而不是 <code>exit 1</code>。
+      跨配置比較要走「<code>--allow-incomparable</code> 讀差異 → <code>--write-ref</code> 重新基線」的固定順序，
+      而<strong>證據標準是「逐位元相同（md5）」不是「M1 = 9/9」</strong>（後者是弱述句）。</li>
+
+  <li><strong><code>DEFAULT_REF</code> 會被重基線漏掉，而後果是「假的紅」。</strong>
+      §13.2 生了 <code>v6</code> 卻沒有移動 <code>DEFAULT_REF</code> ⇒ 所有<strong>不帶 <code>--ref</code></strong>
+      的 gate 都對著一個已被修掉的參考報 <code>M1 5/9 FAIL</code>。已修（現在指
+      <code>ref_iq3_pool8gb_M2_6144_bitident_v6_nbaware.jsonl</code>，並留 dated 註解說明
+      <strong>這次重基線不是蓋章式</strong>——v2→v5 是蓋章，v5→v6 是<strong>數字真的動了</strong>）。
+      <strong>收尾清單第 4 步（改 <code>DEFAULT_REF</code> ＋ dated 註解）不能跳。</strong></li>
+
+  <li><strong>M1 的工作項 4（canonical gather order）是必要的，不是審慎。</strong>
+      rev 探針（<code>CGC_ADD_ORDER=rev</code>）把同一個輸入的 hash 由 <code>2d4e5099</code> 變成
+      <code>f6718d44</code> ⇒ <strong>聚合對結合順序敏感</strong>。所以按 expert id 排序要<strong>先做</strong>，
+      否則工作項 2 做完才發現 M1 垮掉。規格 <code>docs/M1_WORKITEM4_CANONICAL_GATHER_ORDER_2026-09-17.md</code>
+      還附了一段<strong>不需要 GPU 的置換不變性驗證</strong>。</li>
+
+  <li><strong>「載入期存活」不是充分條件。</strong>同一個 caps 字串：7.97 GiB 的池<strong>死在載入</strong>
+      （<code>Killed: 9</code>）；6.56 GiB 的池<strong>活過載入、死在第一個請求</strong>
+      （Metal <code>kIOGPUCommandBufferCallbackErrorOutOfMemory</code>，失敗在 MTP draft 圖的配置）。
+      ⇒ 任何記憶體形狀的驗收都要<strong>跑到真實請求</strong>，不能只看有沒有載完。</li>
+
+  <li><strong>48 題這種 20–30 分鐘的協定需要「互斥」，單次起跑前檢查不夠。</strong>
+      <code>run_server.sh</code> 有一道<strong>強制 preflight</strong>（<code>:638-740</code>，
+      <code>[防護 1] 清殘留</code>），會先把任何殘留的 <code>llama-server</code> SIGTERM 掉才起自己的 ——
+      目的是防「行程疊加」造成的 <code>GPU OOM ret=-3</code> 與 kernel panic。
+      實測：14:01:53 一個正在跑第 14 題的臂被別條線的 preflight 殺掉，而它的工具只在<strong>事後</strong>
+      把結果標成 <code>invalid</code>。⇒ 長跑要事先宣告窗口（§5）。</li>
+
+  <li><strong>prefill 的 t/s 是「機器狀態的讀數」，不是產物性質。</strong>同一份 binary、同一 A11 指紋、
+      同一組 <code>[perf]</code>，prefill 可以在 118 與 290 之間移動。閘門是
+      <code>notifyutil -g com.apple.system.thermalpressurelevel</code> 讀到 <code>0</code>，
+      但那<strong>只是閘門開、不是箱子冷</strong>：<code>COLD-STATE</code> 要「距上一臂結束 ≥ 1800 s」，
+      而 <code>HOT-STATE</code> 的數字依 skill 明文 <strong>不可當交付數字引用</strong>。
+      （若 M4／M1 要報 prefill，請走 <code>Backup/run_req2_retest.sh</code>，它把熱讀數寫在報告裡面。）</li>
+</ol>
+
+<h2 id="s4">4. 建議的執行順序</h2>
+
+<h3>4.1 第一步（可以在不需要 GPU 的情況下開場）：M1 工作項 4</h3>
+<p>理由：它是<strong>唯一被實驗指名為必要的前置</strong>（§3-⑥），而它的驗證有一段
+<strong>不需要 GPU</strong> 的置換不變性檢查（規格 §3 的 A 段：「把 (貢獻, 權重) 成對置換 ⇒ 輸出必須逐位元相同」）。
+⇒ 你可以在<strong>我佔著機器做 M2 結清</strong>的時候，先把這一段做完並留下產物。這是本文最想促成的一次錯開。</p>
+
+<h3>4.2 第二步（需要機器、長窗口）：M1 工作項 2</h3>
+<p><code>T_prefill</code> 先用 512 當起點；<code>T_decode</code> ＝ <code>floor(slots/top_k)</code> 的上界（16）。
+建圖前決定、<strong>依 request 的 token 數、不看常駐</strong>。同時把 <code>cap</code> 從常數降級成
+decode graph 的寬度上限（工作項 3）。</p>
+
+<h3>4.3 平行的零 GPU 工作</h3>
+<ul>
+  <li><strong>M5 的前置盤點</strong>：<code>PREFETCH_ONLY</code> 要從零實作，所以第一次落地就要把
+      「predictions 永不決定 routing」寫成可機檢的形式（否則它會退化成一個會影響 routing 的旋鈕，
+      而那種旋鈕的輸出損壞在別處已經踩過）。純讀碼＋設計，不需要 GPU。</li>
+  <li><strong>M4 的 <code>plain_match</code></strong>：先設計「batch verify 與逐 token 解碼的逐值比對」，
+      再上機器跑。它要回答的是「oracle 綠了，verify 路徑綠了嗎」。</li>
+  <li><strong>離開條件的重定</strong>：把 M1 的「decode 不得退步」與 M4 的「accept ≥ 60%」兩條
+      改寫成<strong>可量測且基準一致</strong>的形式（前者要對當天的 8 GiB 格、後者要作廢）。
+      這是純文字工作，但它是後面所有判決的前提。</li>
+</ul>
+
+<h3>4.4 M5 什麼時候做</h3>
+<p>只有當你在<strong>等靜置時間</strong>（COLD 要 30 分鐘）或等索引／等閘門的時候才做。
+它的預期結果是<strong>否定</strong>，所以它的價值是「把它從不確定清單裡拿掉」，不是拿效能。</p>
+
+<h2 id="s5">5. 機器窗口協定（共用的只有一顆 GPU）</h2>
+
+<p>這一節是硬性的。今天的四次碰撞全部發生在這一節沒寫的時候。</p>
+
+<ol>
+  <li><strong>一次只有一條線持有 8080。</strong>起 server 前的檢查必須與起 server <strong>在同一個分支裡</strong>，
+      而且非空就 <code>exit 3</code>（只印出來不算閘門）。要同時看兩件事：
+      ① <code>lsof -nP -iTCP:8080 -sTCP:LISTEN</code>；② 別條線的量測行程。
+      <strong>比對 <code>comm</code>（執行檔 basename），不要用 <code>pgrep -f</code></strong> ——
+      後者是命令列文字比對，會打到「命令列裡剛好提到那個路徑」的行程（本 repo 有三份獨立實作踩過這件事，
+      其中一份把計數餵給 memory guard，<code>OTHER_LLAMA_SERVERS &gt; 0</code> 就直接擋掉一整臂）。</li>
+  <li><strong>長跑事先宣告。</strong>任何 20 分鐘以上的協定（48 題、交錯 A/B、COLD 序列）先在日誌裡寫下
+      「我要佔 15:37–16:10」，另一條線在那個時段不碰 <code>llama-server</code>（§3-⑧）。</li>
+  <li><strong>COLD 窗口要保留 30 分鐘。</strong>想要交付級的 prefill 數字，就必須放棄中間的其他測量。</li>
+  <li><strong>建置是對機器上所有正在跑的實驗的一次寫入。</strong><code>src/llama.cpp/build/bin/*</code>
+      受版控且跨 session 共用 ⇒ <code>cmake --build</code> 會蓋掉別人正在 map 的 dylib
+      （實測：11:29 蓋掉之後，他們那一輪 A/B 橫跨兩個 build，而本 repo 的所有比較都建立在
+      「同一個 build」上）。建置前用會 abort 的閘門。</li>
+  <li><strong>索引重生只在各自收尾時各做一次</strong>，而且順序固定：先
+      <code>build_memory_index.py</code>、後 <code>index_assets.py</code>。顛倒的簽名是
+      <strong><code>INDEX.jsonl</code> 的 mtime 漂移</strong>（不是 bytes），看到就重跑一次兩條。</li>
+</ol>
+
+<h2 id="s6">6. 邊界：誰碰哪些檔</h2>
+
+<table>
+<tr><th></th><th>歸誰</th><th>具體</th></tr>
+<tr><td><code>agent_harness/</code></td><td><strong>你</strong></td><td>含 <code>engine_loop/</code> 的 <code>INDEX.jsonl</code>／<code>MANIFEST.jsonl</code>（共用，但你剛在動）。<code>CONVENTIONS.md</code> 的條文變更走 §E 的 <code>superseded_by</code> 流程</td></tr>
+<tr><td><code>src/</code></td><td><strong>你</strong></td><td>M1／M4／M5 全部需要它。我<strong>一個都不碰</strong> ⇒ 我的量測永遠報得出「同 build」的指紋</td></tr>
+<tr><td><code>scripts/check/m123_oracle_gate.py</code></td><td><strong>你</strong></td><td>你今天動過它（<code>DEFAULT_REF</code>）。它是共用的量具，改動請在 commit message 寫出來</td></tr>
+<tr><td><code>scripts/check/gguf_pool_geometry.py</code>、<code>bare_48.py</code></td><td><strong>我</strong></td><td>池幾何的字串產生器與 48 題的對比器</td></tr>
+<tr><td><code>docs/ROUTING_TRACE_2026-09-17.md</code></td><td><strong>你</strong></td><td>§13–§15 是你的紀錄</td></tr>
+<tr><td>M2 結清、M3 的剖面前置</td><td><strong>我</strong></td><td>純量測，不寫 <code>src/</code>。我會把「M1 做完之後 M3 該動哪一格」寫成判準交給你</td></tr>
+</table>
+
+<div class="box b-blue">
+  <p><strong>為什麼要這樣切：</strong>瓶頸不是人力，是機器 —— 一顆 GPU、一個 8080、13 GB 模型一次只能載一個。
+  所以「錯開」不是兩條線並行跑，而是 <strong>一次只餵一條線機器，另一條在那段時間做不開 GPU 的那一半</strong>。
+  切檔是為了讓「誰在等誰」永遠有答案。</p>
+</div>
+
+<h2 id="s7">7. 現場閘門輸出原文</h2>
+
+<p>產出這份文件時，下列命令在同一個工作區（HEAD <code>a8df24a52</code>）上各跑過一次。輸出原樣貼上。</p>
+
+<pre><code>$ python3 agent_harness/engine_loop/traces/validate.py
+  lessons.jsonl: 149 records {'lesson': 149}
+  -&gt; OK
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  10/10 injected violations rejected
+
+$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  memory index OK: 7 file(s), 132 section(s), no drift
+
+$ python3 agent_harness/engine_loop/index_assets.py --check
+  manifest OK: 102 assets, existence + bytes + mtime all agree</code></pre>
+
+<div class="box b-amber">
+  <p><strong>同一次檢查的第一次執行，<code>index_assets.py --check</code> 曾經印出
+  <code>[error] 6 drift(s) between the manifest and disk</code>，第二次就恢復 <code>OK</code>。</strong>
+  原因不是壞掉，是<strong>併行 writer</strong>：另一條線當時正在編輯
+  <code>agent_harness/PLAN_ENGINE_LOOP_2026-09-15.md</code>、<code>agent_harness/README.md</code>、
+  <code>agent_harness/tb_loop/README.md</code>，並<strong>自己重生了一次 <code>MANIFEST.jsonl</code></strong>。
+  三個檔都在 <code>CURATED</code> 裡 ⇒ 編輯它們會讓 <code>--check</code> 紅。</p>
+  <p class="small">判準（照 skill <code>cgc-commit-gate</code> §4）：<strong>這盞紅燈不是我的錯時，
+  不要急著重生把它消掉，先把 owner 找出來。</strong>這一輪因此<strong>只新增、不重生索引、不 commit</strong>。
+  也提醒：<code>--check</code> 只會說「跟 manifest 記的不一樣」，<strong>不會</strong>說「有人改壞了」。</p>
+</div>
+
+<p>D5（數值閘門）在同一棵樹上跑過一次，tag <code>milestone_20260917</code>：</p>
+<pre><code>GATE milestone_20260917: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+summary  : Backup/m123_oracle_gate/summary_milestone_20260917.json
+  comparable = True   ok = True   config_diffs = []
+  ref        = Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident_v6_nbaware.jsonl</code></pre>
+
+<h2 id="s8">8. 誠實邊界</h2>
+
+<div class="box b-amber">
+  <p><strong>這份文件不主張：</strong></p>
+  <ul>
+    <li><strong>不是規格書。</strong>目標與離開條件以 <code>docs/ROADMAP_PREFILL250_DECODE25_2026-09-13.md</code>
+        為權威；本文只做「現況 ＋ 學費 ＋ 順序 ＋ 邊界」的交接。兩者衝突時以 roadmap 為準，
+        但要先讀本文 §1.1 與 §1.2 那兩條<strong>已更正的離開條件</strong>。</li>
+    <li><strong>本文作者沒有動過 M1／M4／M5 的任何 <code>src/</code> 檔</strong>，也沒有重建。
+        所有引擎層的數字都引自 <code>docs/ROUTING_TRACE_2026-09-17.md</code> 與 commit <code>8e9e830e5</code>，
+        <strong>我核對過 build 指紋與 <code>MTP_SUPPORT=ON</code>，但沒有逐字審閱那些 diff</strong>。</li>
+    <li><strong>「M1 117/117」不是正確性證據</strong>（§3-②）。任何引用它的地方都要附上這個限定。</li>
+    <li><strong>M5 的期望值來自 roadmap 的前置結論，不是本文實測的</strong>；本文只實查了
+        「<code>PREFETCH_ONLY</code> 0 筆」這一件事。</li>
+    <li><strong>M1 的 decode 退步比值 0.72× 不應沿用到今天</strong>，原因見 §1.1 的更正欄。</li>
+  </ul>
+  <p class="small">未跑的東西明寫未跑：本文沒有跑 48 題套件、沒有跑任何 prefill 的 COLD 序列、
+  沒有動 <code>src/</code>、沒有重建、沒有測 <code>edge0head</code>／<code>graft</code> carrier。</p>
+</div>
+
+<h2 id="s9">9. 出處</h2>
+<table>
+<tr><th>本文的內容</th><th>出處</th></tr>
+<tr><td>M1／M4／M5 的目標、工作項、離開條件、前置結論</td><td><code>docs/ROADMAP_PREFILL250_DECODE25_2026-09-13.md</code> §M1（:222）、§M4（:316）、§M5（:338）</td></tr>
+<tr><td>M4 的同 binary A/B、accept 反直覺、§15.2 的不變性更正、<code>DEFAULT_REF</code> 的修正</td><td><code>docs/ROUTING_TRACE_2026-09-17.md</code> §13、§14.2、§15.1、§15.2</td></tr>
+<tr><td>nb-aware 修正本身</td><td>commit <code>8e9e830e5</code></td></tr>
+<tr><td>M1 工作項 4 的必要性與規格</td><td><code>docs/M1_WORKITEM4_CANONICAL_GATHER_ORDER_2026-09-17.md</code></td></tr>
+<tr><td>M1 工作項 1 的 Blocker A／B 與 117/117</td><td><code>docs/M1_POOL_SPLIT_COST_2026-09-14.md</code>；<code>.workbuddy/memory/MEMORY_PERF.md</code> 的「里程碑現況」節</td></tr>
+<tr><td><code>plain_match=False</code>、「oracle 綠不代表 verify 路徑綠」</td><td><code>docs/MTP_HEAD_PROVENANCE_GATE_2026-09-14.md</code> §5</td></tr>
+<tr><td>「載入期存活不是充分條件」的兩個實例</td><td><code>docs/M6_QUANT_GEOMETRY_PLAN_2026-09-17.md</code> §4.8 ③、§4.9</td></tr>
+<tr><td>prefill 的閘門、COLD/HOT、<code>run_req2_retest.sh</code> 的 in-band 讀數</td><td>skill <code>cgc-prefill-thermal-delivery</code>；<code>docs/PREFILL250_CONDITIONAL_DELIVERY_20260916.html</code></td></tr>
+<tr><td>提交閘門鏈、索引順序、併行 writer、<code>pgrep -f</code> 的陷阱</td><td>skill <code>cgc-commit-gate</code> §1.5、§3.1、§4、§6.1</td></tr>
+<tr><td>本文 §7 的四條閘門輸出</td><td>本文產出時現場跑的（見 §7 原文）</td></tr>
+</table>
+
+<hr>
+<p class="small">相關文件：<code>docs/ROADMAP_PREFILL250_DECODE25_2026-09-13.md</code>、
+<code>docs/ROUTING_TRACE_2026-09-17.md</code>、
+<code>docs/M1_WORKITEM4_CANONICAL_GATHER_ORDER_2026-09-17.md</code>、
+<code>docs/M6_QUANT_GEOMETRY_PLAN_2026-09-17.md</code>、
+<code>docs/PREFILL250_DECODE_MILESTONE_20260917_1510.html</code>。</p>
+
+</div>
+</body>
+</html>
