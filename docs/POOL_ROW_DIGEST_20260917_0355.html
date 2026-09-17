@@ -50,6 +50,7 @@
   日期 2026-09-17 03:45–04:00 · 專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code><br>
   里程碑 D3／S1（<code>docs/REMAP_ROUNDTRIP_REMOVAL_PLAN_2026-09-15.md</code> §5.5 的 S1）· 編號 <code>§9.18.6 r12</code><br>
   狀態：<span class="tag">已建置 09:06</span><span class="tag">煙霧測試通過 09:07</span><span class="tag">見 §6.1–6.2</span><br>
+  <span class="tag">§9.18.7 owner 欄：已建置 11:08、已跑 11:2x，見 §6.7（答案是否證）</span><span class="tag">§9.18.8 exp 欄：已建置 11:29、未量測（見 §6.8）</span><br>
   <span class="small">第一版（03:55）寫的是「未建置、未跑」；09:0x 起的內容是執行結果補上的，原文一字不動。</span>
 </div>
 
@@ -180,6 +181,10 @@ python3 Backup/compare_pool_row.py &lt;A.log&gt; &lt;B.log&gt;</code></pre>
 要列舉全部可用 <code>POOLNODES='*'</code>（4096 個 slot 會截斷，腳本會警告）。</p>
 
 <h2>4. 判讀：四個分支（這才是這支儀器的產物）</h2>
+
+<p class="small"><b>2026-09-17 10:5x 起，這張表已被 §6.6 的七態分類取代</b>：下面四個分支裡的「ids 同」與
+「ids 異」<b>不再</b>各自對應一個結論 —— 少了 owner 欄的時候，SLOT-REUSED、ROUTING 與 RELAYOUT 全都印成
+同一句話。原文保留（它是當時的判準），但<b>讀結論請用 §6.6</b>。</p>
 
 <table>
 <tr><th>ids</th><th>bytes</th><th>結論</th><th>下一步</th></tr>
@@ -452,6 +457,161 @@ fast path 上，而 S1 是 MTP=0）⇒ <code>mul_mat_id</code> 讀到<b>別的�
 ⇒ consumed 子集整輪變動 192 次（必在 g9 之後）。先前「<code>SEL-DRIFT=0</code> ⇒ 時序被否證」是
 <b>在被截斷的窗口上</b>下的結論（lesson <code>eng-mh-0045</code>）。</p>
 
+<h3>6.6 10:5x §9.18.7：owner 欄（<code>own=</code>）——「同 id」終於可以判讀</h3>
+
+<p>§6.5 的結論把問題推到了「同一個 slot 索引在兩臂是不是指同一個專家」。那個問題<b>不是</b>位元組摘要能回答的：
+兩個 arm 各自把專家擺在自己的 slot 裡，所以「都說 slot 8」不等於「講的是同一個專家」。答案是<b>在 POOL 列裡
+多一個欄位</b>：每個被摘要的 slot 在<b>那一臂</b>裝的是哪個專家（<code>own=</code>）。</p>
+
+<p>實作是<b>跨 dylib 的 pull callback</b>（<code>ggml_metal_cgc_set_owner_fn</code>，
+用既有的 <code>ggml_backend_reg_get_proc_address</code> 機制），<b>沒有新內核</b>：
+llama 那一側讀 <code>llama_expert_cache::slot_owner[il]</code>，ggml-metal 那一側只存函式指標。</p>
+
+<div class="box b-amber">
+<p><b>兩個決定，不是實作細節，是這支儀器有沒有效的條件。</b></p>
+<ul>
+<li><b>抽樣時刻 ＝ 編碼當下，不是 dump 當下。</b>dump 在整趟之後，會把「晚到的 fill」算進來 ——
+而「fill 有沒有晚於消費者」<b>正是這支儀器要測的假設</b>。用答案去標註問題，量到的就是自己的假設。
+owner 表不依賴 ids，所以可以在編碼時先拍快照，等 ids 真的讀出來再查表。</li>
+<li><b>每個 capture 自己一格</b>（bump arena），不共用「一層一份」。同層的 gate/up/down 相隔幾微秒，
+共用一份會讓最後一次的狀態蓋掉前面兩列 —— <b>層內漂移會被靜默刪掉</b>，而那正是編碼時刻抽樣想看的東西。</li>
+</ul>
+</div>
+
+<p>三態<b>不可合併</b>：<code>own=none</code>（這列沒被標註，<b>不是</b>「沒有專家」）／<code>own=-1</code>
+（有標註，但那個 slot 在當時無主 ⇒ 消費者讀了不屬於任何專家的權重）／<code>own=&lt;e&gt;</code>。印在行尾
+（<code>from=</code> 之後），所以既有的每一個 regex 都不受影響。</p>
+
+<p>比較器（<code>Backup/compare_pool_row.py</code>）因此從「diff」變成「分類器」：</p>
+<table>
+<tr><th>列的情形</th><th>判決</th><th>下一步查哪裡</th></tr>
+<tr><td>id 同、owner 同、bytes 同</td><td><b>SAME</b></td><td>—</td></tr>
+<tr><td>id 同、owner 同、<b>bytes 異</b></td><td><b>CONTENT</b> ★</td><td><b>填充／內容</b>：哪個東西寫了那個 slot、什麼時候寫的</td></tr>
+<tr><td>id 同、<b>owner 異</b></td><td>SLOT-REUSED</td><td>帳／映射：同一個索引在兩臂指不同專家</td></tr>
+<tr><td>id 異、owner 同、bytes 同</td><td>RELAYOUT</td><td>良性重排，<b>不是缺陷</b>（這是「池不是載體」最強的形式）</td></tr>
+<tr><td>id 異、owner 同、<b>bytes 異</b></td><td><b>CONTENT</b> ★</td><td>同一個專家的權重，從兩個不同 slot 讀出不同位元組</td></tr>
+<tr><td>id 異、owner 異</td><td>ROUTING</td><td><b>gather 的上游</b>：路由／映射</td></tr>
+<tr><td>任一邊沒有 owner</td><td>UNCLASSIFIED</td><td>什麼都不能說；工具會明講有幾列</td></tr>
+</table>
+
+<p><b>新增的兩個護欄</b>（都是這一輪自己踩到的，不是想出來的）：</p>
+<ul>
+<li><code>PART-READ</code>：一列裡<b>只有部分 row</b> 沒讀到時，舊版會把它算成 SAME（哨兵等於哨兵）。
+key 層的「全部沒讀」護欄抓不到這種，所以 row 層的判決必須<b>自成一個名字</b>，不能折進原有的總數裡。</li>
+<li><code>OWNER CHANNEL ABSENT</code>：全場沒有任何 <code>own=</code> 時明講「<b>no CONTENT rows 不等於內容軸被清掉</b>」。
+儀器不在場與儀器找不到東西，長得一模一樣 —— 這正是 §9.18.5 那支在主機側瞎掉探針的形狀。</li>
+</ul>
+
+<p><b>還有一個被合成案例抓到的自相矛盾</b>：<code>FIRST DIFF</code> 的結尾句原本由「ids 同不同」決定。
+加了 owner 之後那句話會與 <code>CONTENT</code> 標題<b>互相矛盾</b>（ids 不同也可以是 CONTENT；ids 同也可以是
+SLOT-REUSED）。句子已改成由 <b>cause</b> 驅動。</p>
+
+<p><b>驗證到哪（誠實邊界）</b>：<code>clang -fsyntax-only</code>（三個 TU、真實旗標、<b>新行 0 警告</b>）；
+兩個 TU 編到 <code>/tmp/*.o</code> 後 <code>nm</code> 確認 <code>_ggml_metal_cgc_set_owner_fn</code>
+是 ops.o 的 <b>T</b>、metal.o 的 <b>U</b>（純 C 符號、無 mangling ⇒ dylib 連結會過）；
+比較器 11 個合成案例 ＋ 真實舊 log 回歸（10:22 那輪仍是 <code>SAME=90 DIFF=15 PART-READ=0 NOT-READ=0</code>、
+<code>FIRST DIFF = graph 31 ffn_moe_down-1.pool</code>，與歷史讀數逐字相同）。<br>
+<b>沒做</b>（本節寫成時）：沒有建置、沒有起 server、沒有量測 —— 原因不是紀律而是<b>佔用</b>：10:54:10 起有
+<b>別的 session 的 llama-server</b>（PID 2559、<code>-expert-cache 10 GiB</code>、8080 LISTEN）在跑，
+thermal 是 <code>HEAVY(2)</code>；覆寫 <code>build/bin/llama-server</code> 與
+<code>libggml-metal*.dylib</code> 會動到別人正在 map 的檔案，所以刻意<b>不建置</b>。<br>
+<b>11:0x 那個佔用消失後，建置與實跑都做了，結果在 §6.7。</b>本節描述的判讀表與護欄一字未改 ——
+它們就是 §6.7 用來下結論的那套。</p>
+
+<h3>6.7 11:0x–11:2x：<b>建置＋實跑完成，答案是「否證」</b> —— <code>CONTENT = 0</code></h3>
+
+<p>機器在 11:0x 空了（先前佔用 8080 的那台別的 session 的 server 自己退出），所以就地建置並實跑。
+建置有<b>編譯行</b>（<code>ggml-metal.cpp</code>／<code>ggml-metal-ops.cpp</code>／
+<code>ggml-metal-context.m.cpp</code>／<code>llama-context.cpp</code>）、<b>0 error</b>、警告是既有那 4＋7 個
+（新行 0 個）；<code>dylib 11:08:25</code> 晚於 <code>ggml-metal-ops.cpp 11:07:58</code>。
+banner：<code>CGC-POOL-CAP: owner channel ACTIVE</code>（兩臂皆是）。</p>
+
+<table>
+<tr><th></th><th>同臂控制（<code>p25-slotgpu</code> ×2）</th><th>A／B（<code>p25-gputime</code> vs <code>p25-slotgpu</code>）</th></tr>
+<tr><td>標註率</td><td><b>210 / 210 列有 <code>own=</code></b></td><td>兩臂 banner 皆 ACTIVE</td></tr>
+<tr><td>verdict</td><td><code>SAME=105 DIFF=0 PART-READ=0 NOT-READ=0</code></td><td><code>SAME=0 DIFF=105</code></td></tr>
+<tr><td>causes</td><td><b><code>SAME=1200</code></b></td><td><b><code>ROUTING=477 SAME=723</code></b>；<code>CONTENT=0</code>、<code>SLOT-REUSED=0</code>、<code>RELAYOUT=0</code></td></tr>
+</table>
+
+<p><b>逐 graph 分解</b>（105 key ＝ 35 張圖 × 3 個節點）：g1–g29 的每一個 prompt chunk，<b>token 0 的 8 列
+每張圖 24/24 全 SAME</b>，而 <b>row 8–11（同一個 chunk 第 2 個 token 的前 4 個 id）每張圖 12/12 ROUTING</b>；
+g30（<code>nsel=32</code>）是轉折點（tok0 21 SAME／3 ROUTING）；g31–g35（T=1 decode，<code>nsel=8</code>）
+每張 8 列全 ROUTING。</p>
+
+<p>g1 的原始列最直接：<code>A id=8 own=237</code> 對上 <b><code>B id=0 own=163</code></b>、
+<code>A id=50 own=50</code> 對上 <b><code>B id=0 own=163</code></b> —— S1 臂<b>兩次</b>讀 slot 0，而 slot 0
+當時裝的是<b>專家 163</b>。這正是 <code>CGC-SLOT-TABLE-CLAMP</code>（非常駐專家被 clamp 成 0）的
+<b>內容側實證</b>，而且是靜默的。</p>
+
+<div class="box b-amber">
+<p><b>定論（§9.18.4 那句到此可以結案）</b></p>
+<ul>
+<li><b>池的位元組不是載體</b>：1200 個被比較的列裡，<b>沒有任何一列</b>是「同 slot、同 owner、不同位元組」
+（<code>CONTENT=0</code>）。residency／填充這一軸<b>結案</b>。</li>
+<li>兩臂也<b>從來沒有</b>「同索引、不同專家」（<code>SLOT-REUSED=0</code>）。</li>
+<li><b>載體是「拿到的專家不同」</b>（<code>ROUTING=477</code>）⇒ 位置在 <b>gather 的上游</b>
+（routing／mapping）。這比 §6.4／6.5 的「ids 不同」<b>強</b>：後者可能是良性重排
+（<code>llama-context.cpp</code> 明寫兩臂可以換 slot 而無後果），前者不是。</li>
+<li>而且是<b>結構性、非偶發</b>：token 0 在<b>每一張</b> chunk 上一致、token ≥1 在<b>每一張</b>上全不同。</li>
+</ul>
+</div>
+
+<p><b>實跑抓到的兩個 bug</b>（都不是想出來的，各落一條 lesson）：① dump 印的是<b>裸清單</b>
+<code>own=193,105,…</code>，而比較器照文件要求 <code>own=[…]</code> ⇒ 它報 <code>OWNER CHANNEL ABSENT</code>，
+<b>而三行之前的 banner 說 ACTIVE</b>（<code>eng-gate-0044</code>：分隔符是欄位契約的一部分；
+「儀器不在場」必須與「儀器在場但讀者看不到」可區分）。② <code>ROWS=12</code> 在 T=1 的圖上，
+內核只寫 8 列（運算元只有 8 個 id），後 4 列是哨兵 ⇒ 舊比較器把 105 個 key 裡的 <b>15 個判成
+<code>PART-READ</code></b>，憑空製造量測缺口（<code>eng-mh-0047</code>：可比較的列數由<b>運算元</b>決定，
+不是由<b>要求的深度</b>決定）。兩者都已修，同一批 log 重讀後是
+<code>SAME=105 DIFF=0 PART-READ=0</code>。</p>
+
+<p><b>這一輪的誠實邊界</b>：<code>POOLROWS</code> 上限是 <b>12</b>，而 T=2 的運算元有 <b>16</b> 個 id
+⇒ 第 2 個 token <b>只覆蓋前 4 個</b>。（那 4 個已經 100% ROUTING，所以結論不會因擴大覆蓋而翻轉，
+但措辭必須帶上這個前綴。）同臂控制<b>兩種探針寬度</b>都 99/99、這一輪 1200/1200。
+<b>沒有跑 D5</b>（<code>m123_oracle_gate</code>，要獨占 GPU 且屬提交前閘門）⇒ <b>本輪不提交</b>；
+未提交改動備份在 <code>Backup/r13_wip/</code>。</p>
+
+<h3>6.8 11:2x §9.18.8：<code>exp=</code> ——「裝置讀的」對上「host 說該讀的」【已建置，<b>尚未量測</b>】</h3>
+
+<p><code>own=</code> 只說「裝置讀的那個 slot 裝的是誰」，它答不出「那是不是 host 的意思」——
+而<b>錯的索引也是合法索引</b>，所以兩句話在列的層級長得一模一樣：</p>
+
+<table>
+<tr><th>情況</th><th>意義</th></tr>
+<tr><td>裝置讀 slot 8，slot 8 裝 expert 237，而 host 的表也說 237 在 slot 8</td>
+    <td>裝置與 host 一致 ⇒ 壞在表的<b>上游</b></td></tr>
+<tr><td>裝置讀 slot 0，slot 0 裝 expert 163，而 host 的表說 237 在 slot 8</td>
+    <td><b>裝置讀的不是 host 發布的那張表</b> ⇒ 機器缺陷（stale table／錯 buffer／fill 晚到）</td></tr>
+</table>
+
+<p>來源不是重新推導，而是<b>既有</b>的 <code>cache_remap_tensors[il]</code>
+（<code>llama-context.cpp:6208-6214</code>，pool 路徑本來就寫 <code>rd[i + j*n_expert_used] = st[e]</code>）。
+兩點讓它成為正解而不是方便的選擇：① 它<b>就是 host 會餵給 gather 的那個陣列</b>；
+② <b>錨臂的圖真的消費它</b> ⇒ 那一臂的 <code>ids</code> 與 <code>exp</code> 是<b>同一個陣列</b>，
+出現不等號不是引擎發現而是<b>儀器壞了</b>。比較器因此把它印成 <code>INSTRUMENT FAULT</code>：
+<b>錨臂自帶對齊自檢</b>，任何結論在被引用之前必須先讓這個數字是 0。</p>
+
+<p>版面是 <code>i + j*n_expert_used</code>（ne0-fastest、ne0 = <code>n_expert_used</code>）
+⇒ <b><code>exp</code> 的第 j 格與 POOL 的第 j 列是同一個消費者位置</b>，不需要重排；
+只要求 12 格（<code>CGC_POOL_ROWS_MAX</code>，內核能摘要的上限）。實作與 <code>own</code> 同構：
+第二個通道 <code>ggml_metal_cgc_set_expect_fn</code>、共用同一個 bump arena 但<b>每 capture 一格</b>、
+列尾多一個 <code>exp=[...]</code>、banner 同時報兩個通道。<b>免內核、免新 env。</b></p>
+
+<p>比較器新增一條<b>map 軸</b>（與既有的 cause 平行，不是取代）：
+<code>OK</code>／<code>LOST</code>（該臂的裝置讀了自己 host 沒指定的 slot）／<code>NO-EXP</code>；
+B 的 <code>LOST</code> 再按「<b>兩邊的 host 是否同意那個位置</b>」分：
+<code>hosts agree</code> ⇒ 兩張表相同、只有 B 的<b>裝置</b>偏離（機器缺陷）；
+<code>hosts differ</code> ⇒ 兩張<b>表</b>本身不同（上游／映射狀態）。合成案例（含舊格式回歸）全過。</p>
+
+<div class="box b-amber">
+<p><b>⚠ 這一節沒有數字。</b>通道已實作、已建置（11:29，有編譯行、0 error），但<b>本輪零量測</b>：
+同一時間<b>另一條 session</b> 正在跑 <code>run_ids_dst_capture.sh</code>／<code>decode_sweep.py</code>
+（他們的臂前兩次已以 <code>Insufficient Memory</code> 在 load_model 階段 abort），而建置本身
+<b>蓋掉了他們正在 map 的 dylib</b> ⇒ 他們那一輪的 A/B 會橫跨兩個 build。
+已停手、未起 server、未量測。教訓：<b>受版控的建置產物是跨 session 的共用資源</b>，
+而「先檢查再建置」若沒有 abort 分支就只是安慰劑（lesson <code>eng-mh-0048</code>）。</p>
+</div>
+
 <h2>7. 誠實邊界：這份文件不主張什麼</h2>
 
 <ul>
@@ -489,6 +649,12 @@ fast path 上，而 S1 是 MTP=0）⇒ <code>mul_mat_id</code> 讀到<b>別的�
 <tr><td><code>Backup/run_ids_dst_capture.sh</code></td><td>—</td><td><code>POOL=1</code> 穿透、<code>pool_rows=</code> 計數、POOL 區段</td></tr>
 <tr><td><code>Backup/compare_pool_row.py</code></td><td>新檔</td><td>比較器＋NOT-READ／NO-OVERLAP 護欄</td></tr>
 <tr><td><code>Backup/analyze_capture_nodes.py</code></td><td>—</td><td>顯式排除 POOL 列並回報排除數</td></tr>
+<tr><td colspan="3"><b>§9.18.7（owner 欄，見 §6.6）</b></td></tr>
+<tr><td><code>ggml-metal-ops.h</code></td><td>—</td><td><code>ggml_metal_cgc_owner_fn</code>＋<code>ggml_metal_cgc_set_owner_fn</code> 與完整契約（抽樣時刻、未上鎖、成本）</td></tr>
+<tr><td><code>ggml-metal-ops.cpp</code></td><td class="num">3305-3314 / 3346-3353 / 3388-3394 / 3400-3490</td><td>常數、<code>cgc_ids_rec</code> 的 <code>own_off/own_n</code>、arena、<code>cgc_layer_from_name</code>、<code>cgc_pool_owner_snapshot</code></td></tr>
+<tr><td><code>ggml-metal-ops.cpp</code></td><td class="num">3935 / 3972 / 4057-4103</td><td><code>cgc_pool_capture</code> 末尾抽樣、<code>extern "C"</code> setter、dump 印 <code>own=</code></td></tr>
+<tr><td><code>ggml-metal.cpp</code></td><td class="num">1049-1056</td><td>proc address <code>ggml_metal_cgc_set_owner_fn</code></td></tr>
+<tr><td><code>llama-context.cpp</code></td><td class="num">3149-3188</td><td><code>cgc_owner_lookup</code>（讀 <code>cache-&gt;slot_owner[il]</code>）＋在 <code>graph_compute</code> 最前面註冊</td></tr>
 </table>
 
 <hr>

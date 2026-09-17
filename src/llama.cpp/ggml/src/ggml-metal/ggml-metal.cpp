@@ -1047,6 +1047,20 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const 
     if (strcmp(name, "ggml_metal_get_cgc_gpu_take") == 0) {
         return (void *)ggml_backend_metal_get_cgc_gpu_take;
     }
+    // [CGC 2026-09-17 §9.18.7] the host-side slot->expert callback that annotates POOL rows. llama
+    // registers it because `llama_expert_cache::slot_owner` lives there; this side only stores the
+    // pointer (see ggml_metal_cgc_set_owner_fn in ggml-metal-ops.h for the contract and for why the
+    // map is sampled at ENCODE time rather than at dump time).
+    if (strcmp(name, "ggml_metal_cgc_set_owner_fn") == 0) {
+        return (void *)ggml_metal_cgc_set_owner_fn;
+    }
+    // [CGC 2026-09-17 §9.18.8] and the host's EXPECTED slot per consumer position, so a POOL row can
+    // say whether the device read the table this side published. Separate verb from the owner callback
+    // on purpose: the two annotations are independent, and a run with one channel and not the other
+    // must say so instead of degrading both.
+    if (strcmp(name, "ggml_metal_cgc_set_expect_fn") == 0) {
+        return (void *)ggml_metal_cgc_set_expect_fn;
+    }
     // [CGC 2026-09-16] the L4 expert-cache pool buffer type (see ggml_backend_metal_buffer_type_pool)
     if (strcmp(name, "ggml_backend_dev_get_extra_bufts") == 0) {
         return (void *)ggml_backend_metal_device_get_extra_bufts;

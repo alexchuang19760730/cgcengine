@@ -117,6 +117,74 @@ int ggml_metal_op_count_equal       (ggml_metal_op_t ctx, int idx);
 // across all three streams, which is what keeps each derived row inside its own graph.
 void ggml_metal_cgc_ids_dump(void);
 
+// [CGC 2026-09-17 §9.18.7] The POOL row's missing half: WHICH EXPERT each digested row belonged to.
+//
+// A POOL row says "the ids selected these slots, and those slots hold these bytes". It does NOT say
+// whether two arms agreeing on a slot id means they agree on the DATA, because the pool's slot->expert
+// map (`llama_expert_cache::slot_owner`, a HOST array owned by llama) is not visible from here.
+// Without it the comparator cannot separate two different defects that print identically: "the same
+// slot holds different experts" (a mapping/accounting difference) and "the same slot holds the same
+// expert but the bytes differ" (a fill/content difference). Those call for different next steps.
+//
+// The reverse map has to be read where it lives, so llama registers a pull callback here through
+// ggml_backend_reg_get_proc_address("ggml_metal_cgc_set_owner_fn") -- the same cross-dylib mechanism
+// the other CGC readouts use. ggml-metal never dereferences a llama type.
+//
+//   `il`     : the MoE layer, parsed from the captured node's name (`ffn_moe_gate-17` -> 17).
+//   `cap`    : how many int32 the caller can accept (the slot count is model-specific).
+//   `out[s]` : expert id held by SLOT s, or -1 for a slot the pool does not own.
+//   returns  : how many entries were written, or -1 if the layer is unknown to the callee.
+//
+// WHEN it is called, and why that matters: ONCE PER CAPTURE, AT ENCODE TIME -- i.e. immediately before
+// the kernel that consumes the ids is submitted, not at dump time. The snapshot is copied into this
+// side's own arena (see CGC_POOL_OWN_ARENA_MAX), so a row carries the mapping as of the encode of its
+// own node. Sampling at dump time instead would read the map AFTER the whole pass, including any fill
+// that completed after the consumer had already read it -- and that late-fill is one of the hypotheses
+// under test, so the instrument must not use its answer to label the question.
+//
+// Cost: one memcpy of the slot array per matched node plus a 4 MiB arena on first use. No kernel, no
+// numeric change, and a no-op unless CGC_POOL_CAPTURE is set AND a callback is registered.
+//
+// The read is UNLOCKED, like every other engine-side readout in this project: a background pool fill
+// can be writing the same array, so a snapshot may occasionally be torn or one fill behind. That is
+// why the SAME-ARM CONTROL is the premise of any verdict drawn from it (one arm, captured twice, must
+// agree) -- a single run's `own=` values are never on their own evidence about anything.
+typedef int32_t (*ggml_metal_cgc_owner_fn)(int32_t il, int32_t cap, int32_t * out);
+
+void ggml_metal_cgc_set_owner_fn(ggml_metal_cgc_owner_fn fn);
+
+// [CGC 2026-09-17 §9.18.8] The other half of the same question: the slot the HOST says the consumer
+// should read, per consumer POSITION.
+//
+// `own=` answers "which expert does the slot the device used hold". It does NOT answer "is that the
+// slot the host meant". Those are different failures and the pool row could not tell them apart:
+//     the device read slot 8, which holds expert 237; the host's table says expert 237 lives in slot 8
+//   -> device and host agree, and whatever went wrong was upstream of the table
+//     the device read slot 0, which holds expert 163; the host's table says expert 237 lives in slot 8
+//   -> the device read a DIFFERENT TABLE than the host published
+// The second is a machine defect in this fork (stale table, wrong buffer, a fill that landed late);
+// the first is not. Without the expectation the two print identically, because in both cases the
+// device's ids "found a legal expert" -- 0 is a legal index and nothing asserts.
+//
+//   `il`     : the MoE layer, parsed from the captured node's name.
+//   `cap`    : how many positions the caller can accept.
+//   `out[j]` : the slot the host expects at consumer position j (element j of the ids operand), or
+//              -1 if the host has no opinion for that position.
+//   returns  : how many entries were written, or -1 if this layer has no expectation to give.
+//
+// Same sampling rule as the owner callback and for the same reason: ONCE PER CAPTURE, AT ENCODE TIME.
+// Both annotations describe one instant, the instant the consuming kernel was submitted; sampling one
+// of them at dump time would make the two disagree about a moment neither of them is looking at.
+//
+// Alignment is SELF-CHECKING, and that is not a nicety: on the arm whose graph actually consumes the
+// host leaf (the anchor), `ids` and `exp` must come out IDENTICAL for every row. If they do not, the
+// instrument is misaligned and nothing it prints is usable -- so the anchor arm doubles as its own
+// alignment control, and the comparator reports the mismatch as an instrument fault rather than as an
+// engine finding.
+typedef int32_t (*ggml_metal_cgc_expect_fn)(int32_t il, int32_t cap, int32_t * out);
+
+void ggml_metal_cgc_set_expect_fn(ggml_metal_cgc_expect_fn fn);
+
 #ifdef __cplusplus
 }
 #endif

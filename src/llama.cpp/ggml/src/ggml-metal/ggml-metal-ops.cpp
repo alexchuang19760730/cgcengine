@@ -3302,6 +3302,22 @@ constexpr int32_t CGC_POOL_SLOTS  = 4096;
 constexpr int32_t CGC_POOL_STRIDE = 64;
 constexpr int32_t CGC_POOL_ROWS_MAX = (CGC_POOL_STRIDE - 1) / 5;   // 12
 
+// [CGC 2026-09-17 §9.18.7] The host-side slot->expert snapshot that rides along with a POOL row.
+//   * SLOTS_MAX 256 is `n_expert` for this model (the pool cannot have more slots than experts); the
+//     callee clamps to `cap`, so a model change only narrows the snapshot, it never overruns.
+//   * ARENA_MAX 1 Mi words = 4 MiB, enough for 4096 captures at the full 256 slots and far more at the
+//     real slot count (143 for the 6 GiB pool). It is allocated on first use, ONLY when a callback is
+//     registered, and exhaustion is printed rather than silent -- a truncated snapshot would make
+//     `own=[...]` disagree with the row it annotates, which is worse than no annotation.
+constexpr int32_t CGC_POOL_OWN_SLOTS_MAX = 256;
+constexpr size_t  CGC_POOL_OWN_ARENA_MAX = (size_t) 1 << 20;   // int32 words
+
+// [CGC 2026-09-17 §9.18.8] The host-expectation snapshot is PER POSITION, and only the positions the
+// kernel will actually digest are worth carrying -- the row count, not the operand's width. A 2-token
+// chunk has 16 ids but the row digest can only ever cover CGC_POOL_ROWS_MAX of them, so asking the
+// callback for more would allocate and copy data no reader can reach.
+constexpr int32_t CGC_POOL_EXP_MAX = CGC_POOL_ROWS_MAX;        // 12
+
 struct cgc_ids_rec {
     char    name[48];
     int32_t n_ids;
@@ -3333,6 +3349,19 @@ struct cgc_ids_rec {
                   // held, i.e. the pre-clamp count). Printed as `probe=`/`nsel=`, so no existing
                   // reader sees a changed line -- and recorded at all because "0 bytes digested" and
                   // "4096 bytes digested" otherwise print an equally plausible number of groups.
+    // [CGC 2026-09-17 §9.18.7] POOL only: where this row's slot->expert snapshot lives in the owner
+    // arena, and how many entries it has. `own_n == 0` means NO snapshot was taken (callback not
+    // registered, layer unparsable from the name, or the arena was exhausted) and the row prints
+    // `own=none` -- deliberately not `own=[]`, because an empty owner list reads like "no experts
+    // were involved" rather than "this row was not annotated". Both fields stay 0 for every other
+    // kind, so the dump's POOL branch is the only reader.
+    int32_t own_off;
+    int32_t own_n;
+    // [CGC 2026-09-17 §9.18.8] Same for the host's expected slot per consumer position. Kept as its
+    // own pair rather than shared with own_off/own_n because the two arrays have different LENGTHS
+    // (one per slot, one per position) and a single offset would silently alias them.
+    int32_t exp_off;
+    int32_t exp_n;
 };
 
 struct cgc_ids_state {
@@ -3367,10 +3396,133 @@ struct cgc_ids_state {
     int32_t             printed_pool = 0;
     cgc_ids_rec *       recs_pool    = nullptr;
 
+    // [CGC 2026-09-17 §9.18.7/§9.18.8] host-side snapshots taken at ENCODE time: slot->expert, and
+    // the host's expected slot per consumer position. ONE bump-allocated arena shared by both --
+    // the unit is an int32 either way, and the offsets are per-record, so sharing the storage cannot
+    // alias anything as long as it is never reused (see cgc_snap_push).
+    int32_t *           snap_arena = nullptr;
+    size_t              snap_used  = 0;
+    size_t              snap_cap   = 0;
+    long long           snap_taken = 0;
+    long long           snap_lost  = 0;   // captures whose snapshot did not fit (printed, once)
+
     int32_t             seq = 0;
 };
 
 cgc_ids_state g_cgc_ids;
+
+// [CGC 2026-09-17 §9.18.7] The pull callback llama installs through ggml_metal_cgc_set_owner_fn().
+// Null means "the owner channel is not available", which is the state of every run that does not set
+// CGC_POOL_CAPTURE (llama only registers when it does) -- so the POOL row degrades to `own=none` and
+// nothing else changes. It is written once, from the thread that runs the graph, and read from the
+// same thread during encode; no lock, for the same reason the rest of this file takes none.
+static ggml_metal_cgc_owner_fn  g_cgc_owner_fn  = nullptr;
+// [CGC 2026-09-17 §9.18.8] ...and the host's expectation. Two separate channels rather than one with
+// two out-parameters, because they answer independent questions and either can be absent: a build
+// where only the owner table is reachable still produces a usable `own=`, and a row that carries one
+// annotation and not the other must print exactly that instead of degrading both.
+static ggml_metal_cgc_expect_fn g_cgc_expect_fn = nullptr;
+
+// `ffn_moe_gate-17` -> 17. -1 when there is no trailing -<digits>, which is the honest answer for a
+// node name that does not encode a layer: the owner map is per layer, and guessing one would annotate
+// a row with another layer's experts. Only POOL captures call this, and their filter is a list of
+// exact names, so a name that parses is a name the caller asked for.
+static int32_t cgc_layer_from_name(const char * name) {
+    if (name == nullptr) {
+        return -1;
+    }
+    const char * dash = strrchr(name, '-');
+    if (dash == nullptr || dash[1] == '\0') {
+        return -1;
+    }
+    char * end = nullptr;
+    const long v = strtol(dash + 1, &end, 10);
+    if (end == dash + 1 || *end != '\0' || v < 0 || v > 100000) {
+        return -1;
+    }
+    return (int32_t) v;
+}
+
+// Bump-allocate `n` words of the shared snapshot arena, copy `src` into them, return the offset, or -1
+// if they did not fit. Called from cgc_pool_capture, i.e. at ENCODE time -- see the callback typedefs.
+//
+// The arena is never reused: a snapshot is the answer to "what did the map say at the moment THIS row
+// was encoded", so sharing one array between captures would let a later capture silently rewrite an
+// earlier row's annotation -- the same class of defect as reading the map at dump time, and the reason
+// the two are not both simply "read the map and copy it".
+static int32_t cgc_snap_push(const int32_t * src, int32_t n) {
+    if (n <= 0) {
+        return -1;
+    }
+    if (g_cgc_ids.snap_used + (size_t) n > g_cgc_ids.snap_cap) {
+        size_t cap = g_cgc_ids.snap_cap == 0 ? (size_t) 1 << 16 : g_cgc_ids.snap_cap * 2;
+        while (cap < g_cgc_ids.snap_used + (size_t) n) {
+            cap *= 2;
+        }
+        if (cap > CGC_POOL_OWN_ARENA_MAX) {
+            cap = CGC_POOL_OWN_ARENA_MAX;
+        }
+        if (cap < g_cgc_ids.snap_used + (size_t) n) {
+            g_cgc_ids.snap_lost++;
+            if (g_cgc_ids.snap_lost == 1) {
+                GGML_LOG_WARN("CGC-POOL-CAP: snapshot arena exhausted (%zu words, used %zu) -- POOL rows "
+                              "past this point print own=none/exp=none. Narrow CGC_POOL_CAPTURE, or "
+                              "raise CGC_POOL_OWN_ARENA_MAX in ggml-metal-ops.cpp and rebuild\n",
+                              CGC_POOL_OWN_ARENA_MAX, g_cgc_ids.snap_used);
+            }
+            return -1;
+        }
+        int32_t * grown = (int32_t *) realloc(g_cgc_ids.snap_arena, cap * sizeof(int32_t));
+        if (grown == nullptr) {
+            g_cgc_ids.snap_lost++;
+            return -1;
+        }
+        g_cgc_ids.snap_arena = grown;
+        g_cgc_ids.snap_cap   = cap;
+    }
+
+    const int32_t off = (int32_t) g_cgc_ids.snap_used;
+    memcpy(g_cgc_ids.snap_arena + g_cgc_ids.snap_used, src, (size_t) n * sizeof(int32_t));
+    g_cgc_ids.snap_used += (size_t) n;
+    g_cgc_ids.snap_taken++;
+    return off;
+}
+
+// The layer's slot->expert array (`own=`), snapshotted at encode time.
+static int32_t cgc_pool_owner_snapshot(int32_t il, int32_t * n_out) {
+    *n_out = 0;
+    if (g_cgc_owner_fn == nullptr || il < 0) {
+        return -1;
+    }
+    static int32_t s_tmp[CGC_POOL_OWN_SLOTS_MAX];
+    const int32_t n   = g_cgc_owner_fn(il, CGC_POOL_OWN_SLOTS_MAX, s_tmp);
+    const int32_t off = cgc_snap_push(s_tmp, n);
+    if (off >= 0) {
+        *n_out = n;
+    }
+    return off;
+}
+
+// The host's expected slot per consumer POSITION (`exp=`), snapshotted at encode time.
+//
+// Position j here is element j of the ids operand, which is the same j the kernel reads for its row j:
+// a ggml tensor is ne0-fastest and the operand's ne0 is n_expert_used, so element j of both arrays is
+// "the j-th expert of the j/n_expert_used-th token". That is why the two arrays can be printed
+// side by side and compared elementwise -- and why the anchor arm, whose graph consumes exactly the
+// array the callback reads, is a self-check on the alignment (see the typedef note in the header).
+static int32_t cgc_pool_expect_snapshot(int32_t il, int32_t * n_out) {
+    *n_out = 0;
+    if (g_cgc_expect_fn == nullptr || il < 0) {
+        return -1;
+    }
+    static int32_t s_tmp[CGC_POOL_EXP_MAX];
+    const int32_t n   = g_cgc_expect_fn(il, CGC_POOL_EXP_MAX, s_tmp);
+    const int32_t off = cgc_snap_push(s_tmp, n);
+    if (off >= 0) {
+        *n_out = n;
+    }
+    return off;
+}
 
 // Initialises whichever of the two capture sides the environment asks for and reports whether ANY
 // side is live. The two are independent: CGC_IDS_CAPTURE alone keeps the 09-15 instrument exactly
@@ -3557,6 +3709,22 @@ bool cgc_capture_init(ggml_metal_device_t dev) {
                           "(destination is NOT allocator-managed)\n",
                           CGC_POOL_SLOTS, CGC_POOL_STRIDE, bytes,
                           (int) ggml_metal_buffer_is_shared(g_cgc_ids.buf_pool));
+            // [CGC 2026-09-17 §9.18.7/§9.18.8] Say up front which annotations the rows will carry. The
+            // callbacks are installed by llama at the start of the graph that is about to be encoded,
+            // so this is the last cheap moment to report a MISSING channel -- rows would otherwise just
+            // print `none`, which is honest but easy to mistake for "the pool owns nothing" / "the host
+            // has no opinion".
+            GGML_LOG_WARN("CGC-POOL-CAP: owner channel %s, expect channel %s "
+                          "(CGC-IDS-CAP rows will carry own=[...] exp=[...])\n",
+                          g_cgc_owner_fn  != nullptr ? "ACTIVE" : "ABSENT",
+                          g_cgc_expect_fn != nullptr ? "ACTIVE" : "ABSENT");
+            if (g_cgc_owner_fn == nullptr || g_cgc_expect_fn == nullptr) {
+                GGML_LOG_WARN("CGC-POOL-CAP: %s missing -- those rows print none. Both channels are "
+                              "installed by llama only when CGC_POOL_CAPTURE is set on the SERVER side "
+                              "(run_server.sh drops unlisted CGC_* silently)\n",
+                              g_cgc_owner_fn == nullptr && g_cgc_expect_fn == nullptr ? "BOTH annotations"
+                              : (g_cgc_owner_fn == nullptr ? "own=" : "exp="));
+            }
         }
     }
 
@@ -3817,6 +3985,19 @@ void cgc_pool_capture(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_rows, ggml_m
     r.seq   = g_cgc_ids.seq++;
     r.ne    = probe;                                     // printed as probe=
     r.off   = n_ids;                                     // printed as nsel=
+
+    // [CGC 2026-09-17 §9.18.7] WHICH EXPERT each of those rows belongs to, snapshotted HERE -- at the
+    // encode of the node whose kernel is about to read them, not at dump time. The ids are not on the
+    // host yet (that is the whole reason this stream had to become a kernel), but the slot->expert map
+    // does not depend on them, so the map itself can be captured now and consulted when the ids are
+    // finally read. Keyed on the node's own name, so `ffn_moe_gate-1`/`up-1`/`down-1` each get the
+    // layer-1 snapshot at their own instant -- if the map moves between them, the rows will show it
+    // instead of one shared array hiding it (see the arena note in cgc_pool_owner_snapshot).
+    r.own_off = cgc_pool_owner_snapshot(cgc_layer_from_name(op->name), &r.own_n);
+    // [CGC 2026-09-17 §9.18.8] ...and the slot the HOST says the consumer should read at each
+    // position. Same instant, same key: if the device's ids (row 0..rows-1) and the host's expectation
+    // disagree for a position, the table the device read is not the table this side published.
+    r.exp_off = cgc_pool_expect_snapshot(cgc_layer_from_name(op->name), &r.exp_n);
 }
 
 // Dispatcher-TAIL variant. Every dispatcher that can fuse ends by writing the destination of the LAST
@@ -3844,6 +4025,25 @@ void cgc_dst_capture_at(ggml_metal_op_t ctx, ggml_metal_buffer_id bid_dst, int i
 }
 
 } // namespace
+
+// [CGC 2026-09-17 §9.18.7] Install (or clear) the host-side slot->owner callback. extern "C" and
+// outside the anonymous namespace for the same two reasons ggml_metal_cgc_ids_dump is: it is declared
+// in ggml-metal-ops.h, which ggml-metal.cpp includes, and a definition inside the unnamed namespace
+// would be an internal-linkage entity that the header has already declared with external C linkage.
+// It is resolved across the dylib boundary by NAME (ggml_backend_reg_get_proc_address), so the
+// signature in the header is the entire contract -- and the only reason this file never has to know
+// that `llama_expert_cache::slot_owner` exists.
+extern "C" void ggml_metal_cgc_set_owner_fn(ggml_metal_cgc_owner_fn fn) {
+    g_cgc_owner_fn = fn;
+}
+
+// [CGC 2026-09-17 §9.18.8] ...and the host's expectation channel. Two setters rather than one, because
+// the two annotations are independent: a run can legitimately have the owner table reachable and no
+// expectation (or the reverse), and that must show up as one channel ABSENT in the banner rather than
+// as both silently degrading to `none`.
+extern "C" void ggml_metal_cgc_set_expect_fn(ggml_metal_cgc_expect_fn fn) {
+    g_cgc_expect_fn = fn;
+}
 
 // [CGC 2026-09-15 S1 kernel-side ids capture; extended 2026-09-16 for the tensor-output side]
 // Print every slot not printed before. Called at a synchronize point, so the bytes are guaranteed to
@@ -3919,17 +4119,88 @@ extern "C" void ggml_metal_cgc_ids_dump(void) {
             }
         }
 
+        // [CGC 2026-09-17 §9.18.7/§9.18.8] The two host-side annotations that ride with a POOL row:
+        // `own=[...]` = the expert held by the slot at each captured id, `exp=[...]` = the slot the
+        // HOST expected at that same position. Both snapshotted when THIS row was encoded (see the
+        // typedef notes in ggml-metal-ops.h -- the sampling instant is part of their meaning).
+        // Emitted at the END of the line, after `from=`, so every existing reader
+        // (ids_capture_diff.py, analyze_capture_nodes.py, the pre-§9.18.7 compare_pool_row.py) parses
+        // the line unchanged.
+        //
+        // Three states per field, kept apart on purpose, because collapsing any two is how "not
+        // measured" becomes "measured as equal":
+        //   none    -> no snapshot existed for this row (channel unregistered, layer unparsable from
+        //              the node name, or the arena ran out). NOT a statement about any slot.
+        //   [-1,..] -> the row WAS annotated and that entry has no answer: an unowned slot, or a
+        //              position past the end of the host's expectation.
+        //   [v,..]  -> `own`: slot holds expert v.  `exp`: the host expects slot v here.
+        // The id can be anything the operand held, including the kernel's 0x7fffffff sentinel for an
+        // out-of-range id, so every lookup is bounds-checked rather than trusted.
+        //
+        // ★ THE BRACKETS ARE NOT DECORATION. The first version printed a bare `own=193,105,...` and
+        //   every reader written against the documented `own=[...]` silently found nothing -- the
+        //   comparator then reported "OWNER CHANNEL ABSENT" while the banner three lines earlier said
+        //   the channel was ACTIVE. "Absent instrument" and "instrument whose output the reader cannot
+        //   see" are the same failure from the reader's side, so the delimiter is part of the contract.
+        int32_t nrows = 0;
+        if (take == 2) {
+            nrows = v[0];
+            if (nrows < 0) {
+                nrows = 0;
+            } else if (nrows > CGC_POOL_ROWS_MAX) {
+                nrows = CGC_POOL_ROWS_MAX;
+            }
+        }
+
+        char ob[512];
+        char eb[512];
+        int  q  = 0;
+        int  q2 = 0;
+        bool own_ok = false;
+        bool exp_ok = false;
+        if (take == 2 && r.own_off >= 0 && g_cgc_ids.snap_arena != nullptr) {
+            own_ok = true;
+            q += snprintf(ob + q, sizeof(ob) - (size_t) q, "[");
+            for (int32_t i = 0; i < nrows; ++i) {
+                const int32_t id = v[1 + 5 * i];
+                const int32_t ow = (id >= 0 && id < r.own_n) ? g_cgc_ids.snap_arena[r.own_off + id] : -1;
+                q += snprintf(ob + q, sizeof(ob) - (size_t) q, "%s%d", i ? "," : "", (int) ow);
+                if (q >= (int) sizeof(ob) - 12) {
+                    break;
+                }
+            }
+            // Always closed, even if the loop broke: an unterminated `own=[1,2` would make the
+            // trailing `]` optional for the reader, and "optional delimiter" is how a truncated
+            // list passes for a short one.
+            q += snprintf(ob + q, sizeof(ob) - (size_t) q, "]");
+        }
+        if (take == 2 && r.exp_off >= 0 && g_cgc_ids.snap_arena != nullptr) {
+            exp_ok = true;
+            q2 += snprintf(eb + q2, sizeof(eb) - (size_t) q2, "[");
+            for (int32_t i = 0; i < nrows; ++i) {
+                const int32_t ex = (i < r.exp_n) ? g_cgc_ids.snap_arena[r.exp_off + i] : -1;
+                q2 += snprintf(eb + q2, sizeof(eb) - (size_t) q2, "%s%d", i ? "," : "", (int) ex);
+                if (q2 >= (int) sizeof(eb) - 12) {
+                    break;
+                }
+            }
+            q2 += snprintf(eb + q2, sizeof(eb) - (size_t) q2, "]");
+        }
+
         const char * path = r.kind == 0 ? "MV" : (r.kind == 1 ? "MM" : (r.kind == 2 ? "DST" : "POOL"));
         if (r.kind == 2) {
             GGML_LOG_WARN("CGC-IDS-CAP slot=%d path=%s n_ids=%d name=%s ids=[%s] fuse=%d ne=%d off=%d\n",
                           sl, path, (int) r.n_ids, r.name, b, (int) r.fuse, (int) r.ne, (int) r.off);
         } else if (r.kind >= 3) {
-            // rows= / probe= / nsel= / from= instead of fuse= / ne= / off=: the same three ints carry
-            // the row digest's geometry (see the note in cgc_ids_rec), and a named field is the only
-            // way a reader can tell "8 rows of 4096 bytes" from "8 rows of 0 bytes".
-            GGML_LOG_WARN("CGC-IDS-CAP slot=%d path=%s n_ids=%d name=%s ids=[%s] rows=%d probe=%d nsel=%d from=%s\n",
+            // rows= / probe= / nsel= / from= / own= / exp= instead of fuse= / ne= / off=: the same
+            // three ints carry the row digest's geometry (see the note in cgc_ids_rec), and a named
+            // field is the only way a reader can tell "8 rows of 4096 bytes" from "8 rows of 0 bytes".
+            // The two annotations go LAST, in that order, so every regex written against the
+            // pre-§9.18.7 line still matches (a `\S+` capture of `own=` stops at the space before
+            // `exp=`).
+            GGML_LOG_WARN("CGC-IDS-CAP slot=%d path=%s n_ids=%d name=%s ids=[%s] rows=%d probe=%d nsel=%d from=%s own=%s exp=%s\n",
                           sl, path, (int) r.n_ids, r.name, b, (int) r.fuse, (int) r.ne, (int) r.off,
-                          r.kind == 3 ? "MV" : "MM");
+                          r.kind == 3 ? "MV" : "MM", own_ok ? ob : "none", exp_ok ? eb : "none");
         } else {
             GGML_LOG_WARN("CGC-IDS-CAP slot=%d path=%s n_ids=%d name=%s ids=[%s]\n",
                           sl, path, (int) r.n_ids, r.name, b);

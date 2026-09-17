@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>POOL 列的兩側標註：own= 與 exp=（S1 §9.18.7／§9.18.8，2026-09-17）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:27px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>POOL 列的兩側標註：<code>own=</code> 說「讀到誰」，<code>exp=</code> 說「該讀誰」</h1>
+<div class="sub">
+  日期 2026-09-17 10:45–11:45 · 專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code><br>
+  里程碑 D3／S1（<code>docs/REMAP_ROUNDTRIP_REMOVAL_PLAN_2026-09-15.md</code> §5.5 的 S1）·
+  編號 <code>§9.18.7</code>（owner）／<code>§9.18.8</code>（expect）<br>
+  狀態：<span class="tag">owner 已建置 11:08</span><span class="tag">owner 已跑 11:2x，答案是否證</span>
+  <span class="tag">expect 已建置 11:29</span><span class="tag">expect 實跑回 own=none／exp=none，成因已定位</span><br>
+  <span class="small">前置文件：<code>docs/POOL_ROW_DIGEST_20260917_0355.html</code>（r12 的第三條 stream）。
+  本檔是那條線的續篇，不改寫它。</span>
+</div>
+
+<div class="box b-blue">
+<p><b>TL;DR。</b>POOL 列（<code>path=POOL</code>，r12 新增的第三條 capture stream：內核在
+<code>mul_mat_id</code> 跑完後、同一個 encoder 內，從<b>裝置</b>讀 ids 與它選中的 pool row，逐列寫 5 字
+<code>(id, sum, xor, wsum, nbytes)</code>）本身只能說「選了哪些 slot、那些 slot 裝什麼位元組」。
+它答不出兩件事，而這兩件事各自是<b>不同的缺陷</b>：</p>
+<table>
+<tr><th>問題</th><th>欄位</th><th>答案長什麼樣</th></tr>
+<tr><td>那個 slot <b>裝的是哪個專家</b>？</td><td><code>own=[…]</code></td>
+    <td><code>llama_expert_cache::slot_owner[il]</code>（主機陣列），在<b>編碼當下</b>拍快照</td></tr>
+<tr><td><b>host 說這個位置該讀哪個 slot</b>？</td><td><code>exp=[…]</code></td>
+    <td>pool 路徑本來就寫的 <code>cache_remap_tensors[il]</code>（<code>rd[i+j·n_expert_used]=st[e]</code>）</td></tr>
+</table>
+<p>兩個欄位都<b>不新增內核、不新增 env</b>：跨 dylib 用既有的
+<code>ggml_backend_reg_get_proc_address</code> 掛一組 pull callback，llama 那一側讀、ggml-metal 那一側只存函式指標。</p>
+</div>
+
+<h2>1. 為什麼 <code>own=</code> 是判準而不是裝飾</h2>
+
+<p>兩個 arm 各自把專家擺在<b>自己的</b> slot 裡，所以「兩邊都說 slot 8」<b>不等於</b>「講的是同一個專家」。
+少了 owner，比較器分不出這兩句印起來一模一樣的話：</p>
+
+<table>
+<tr><th>列的情形</th><th>判決</th><th>下一步查哪裡</th></tr>
+<tr><td>id 同、owner 同、bytes 同</td><td><b>SAME</b></td><td>—</td></tr>
+<tr><td>id 同、owner 同、<b>bytes 異</b></td><td><b>CONTENT</b> ★</td><td><b>填充／內容</b>：誰寫了那個 slot、什麼時候寫的</td></tr>
+<tr><td>id 同、<b>owner 異</b></td><td>SLOT-REUSED</td><td>帳／映射：同一個索引在兩臂指不同專家</td></tr>
+<tr><td>id 異、owner 同、bytes 同</td><td>RELAYOUT</td><td>良性重排，<b>不是缺陷</b></td></tr>
+<tr><td>id 異、owner 同、<b>bytes 異</b></td><td><b>CONTENT</b> ★</td><td>同一個專家的權重，從兩個不同 slot 讀出不同位元組</td></tr>
+<tr><td>id 異、owner 異</td><td>ROUTING</td><td><b>gather 的上游</b>：路由／映射</td></tr>
+<tr><td>任一邊沒有 owner</td><td>UNCLASSIFIED</td><td>什麼都不能說；工具會明講有幾列</td></tr>
+</table>
+
+<p><b>結果（105 key／1200 列，同臂控制先過 1200/1200 SAME）：</b>
+<code>ROUTING=477</code>、<code>SAME=723</code>、<b><code>CONTENT=0</code></b>、<code>SLOT-REUSED=0</code>、
+<code>RELAYOUT=0</code>。逐 graph 分解：g1–g29（所有 prompt chunk）<b>token 0 的 8 列每張圖 24/24 全 SAME</b>，
+<b>row 8–11（同一個 chunk 第 2 個 token 的前 4 個 id）每張圖 12/12 ROUTING</b>；g31–g35（T=1 decode）每張 8 列全 ROUTING。
+⇒ <b>池的位元組不是載體，拿到的專家不同才是</b>，而且位置在 <b>gather 的上游</b>。</p>
+
+<h2>2. <code>exp=</code>：把「裝置讀的」對上「host 說該讀的」</h2>
+
+<p><code>own=</code> 說「裝置讀的那個 slot 裝的是誰」，它仍答不出「那是不是 host 的意思」——
+而<b>錯的索引也是合法索引</b>（0 是合法 slot，什麼都不會 assert），所以兩句話在列上同形：</p>
+
+<table>
+<tr><th>情況</th><th>意義</th></tr>
+<tr><td>裝置讀 slot 8（裝 expert 237），host 的表也說 237 在 slot 8</td>
+    <td>裝置與 host 一致 ⇒ 壞在表的<b>上游</b></td></tr>
+<tr><td>裝置讀 slot 0（裝 expert 163），host 的表說 237 在 slot 8</td>
+    <td><b>裝置讀的不是 host 發布的那張表</b> ⇒ 機器缺陷（stale table／錯 buffer／fill 晚到）</td></tr>
+</table>
+
+<p><b>錨臂自帶對齊自檢。</b>來源選的是<b>圖真的會消費的那個陣列</b>（host remap leaf），所以在錨臂上
+<code>ids</code> 與 <code>exp</code> 是<b>同一個陣列</b>；那裡出現不等號不是引擎發現，而是<b>儀器壞了</b>。
+比較器因此把它印成 <code>INSTRUMENT FAULT</code>，並在結論引用前要求那個數字是 0。</p>
+
+<h2>3. 兩個決定，它們不是實作細節而是有效性條件</h2>
+
+<ul>
+<li><b>抽樣時刻 ＝ 編碼當下，不是 dump 當下。</b>dump 在整趟之後，會把「晚到的 fill」算進來 ——
+而「fill 有沒有晚於消費者」<b>正是這支儀器要測的假設</b>。用答案去標註問題，量到的就是自己的假設。</li>
+<li><b>每個 capture 自己一格</b>（bump arena），不共用「一層一份」。同層的 gate/up/down 相隔幾微秒，
+共用一份會讓最後一次的狀態蓋掉前面兩列 —— <b>層內漂移會被靜默刪掉</b>，而那正是編碼時刻抽樣想看的東西。</li>
+</ul>
+
+<p>三態<b>不可合併</b>：<code>none</code>（這列沒被標註，<b>不是</b>「沒有專家」）／<code>-1</code>
+（有標註，但該 slot 無主／該位置沒有期望）／<code>&lt;值&gt;</code>。兩者都印在行尾
+（<code>from=</code> 之後），既有 regex 全部不受影響。</p>
+
+<h2>4. 實跑了，然後 <code>exp</code> 給的是 <code>none</code> —— 成因在原始碼裡</h2>
+
+<p>banner 說 <code>owner channel ACTIVE, expect channel ACTIVE</code>（通道裝上了），而 6 個 POOL 列
+<code>own=[…]</code> 有值、<b><code>exp=none</code> 全部沒有</b>。讀原始碼（不是推論）就找到了：</p>
+
+<pre><code>llama-graph.cpp:2190-2191
+if (cgc_slot_table_gpu &amp;&amp; il &gt;= cgc_s1_min_il) {   // S1 臂
+    ... slot_table + get_rows(...)  -&gt; remap_ids = slots    // 2228：映射搬進圖裡，用 GPU gather 做
+} else {
+    ... 建 host remap leaf          -&gt; remap_ids = remap    // 2292/2313：錨臂
+}</code></pre>
+
+<p>⇒ <b>S1 臂根本不建立那個 host leaf</b>，所以 <code>cache_remap_tensors[il]</code> 對 <code>il≥1</code>
+沒有條目 → callback 回 −1 → <code>exp=none</code>。層 0 仍走 leaf（<code>CGC_S1_MIN_IL</code> 預設 1），
+所以抓層 0 的 MoE 就會看到 <code>exp</code> 有值。</p>
+
+<p><b>修法（下一步真正的動作）</b>：不要讀 leaf，<b>用同一個定義在 host 現算</b>
+<code>exp[j] = st[e_j]</code>（<code>st</code> = 快取的 slot 表、<code>e_j</code> = router 的 top-k）。
+需要的只是<b>每層一份 top-k 快照</b>（≤64 個 int32 × 40 層 ≈ 10 KB）。兩點保證這個換法不損失什麼：
+① 錨臂的 leaf 本來就是<b>用這個式子寫的</b>（<code>llama-context.cpp:6194-6198</code>），所以對齊自檢照樣成立；
+② 換完之後 <code>exp</code> 在<b>兩臂、所有層</b>都有值，而不是只有層 0。</p>
+
+<div class="box b-amber">
+<p><b>⚠ 本輪沒有任何可引用的 <code>exp</code> 讀數。</b>原因不是「還沒排到窗口」，而是上面的來源要換
+——照現狀再跑一次只會再得到一次 <code>exp=none</code>。</p>
+</div>
+
+<h2>5. 併行：這一輪撞到別的 session 兩次，而兩次都是同一類 bug</h2>
+
+<p>（a）<b>11:29 我把建置與檢查寫在同一行卻沒有 abort 分支</b>：<code>lsof</code> 明明印出別條線的 server
+在聽 8080，build 還是跑了 ⇒ 蓋掉他們正在 map 的兩個 dylib ⇒ 他們那一輪的 A/B <b>橫跨兩個 build</b>。
+（b）<b>11:35 修好的閘門真的 abort 了</b>：<code>foreign_procs=1</code>，別條線又起了 runner；我那一臂被殺
+（<code>decode 0.00</code>、只有 6 列）⇒ 作廢不引用。</p>
+
+<p>而兩次碰撞的<b>共同根因</b>是「用 <code>pgrep -f</code> 數行程」：它會命中任何<b>命令列裡剛好提到那個路徑</b>的
+wrapper（<code>bash -c "… build/bin/llama-server …"</code>、grep、記錄用的 echo）。實測：一個把它自己
+<code>pgrep</code> 的 pattern 印在命令列上的監看 shell，就能讓閘門假性 abort。</p>
+
+<p><b>判準要改成看執行檔</b>（<code>ps -o comm=</code> 的第一個 token），不是看命令列文字。
+另一個 session 在 11:38 對 <code>scripts/run_server.sh</code> 的
+<code>OTHER_LLAMA_SERVERS</code> 與 <code>Backup/run_req2_retest.sh</code> 的 <code>alive()</code>
+做的是<b>同一個修正</b>（他們的註解記著：造兩個 wrapper，舊版回 <code>count=2</code>、本版回 <code>count=0</code>）。
+⇒ 這個坑在本 repo 有<b>三份</b>獨立實作，修的時候要一起想。</p>
+
+<h2>6. 順手抓到的第三件事：指紋不是原子操作</h2>
+
+<p><code>build_fingerprint()</code>（<code>scripts/check/decode_sweep.py:40-90</code>）對 8 個檔案各算一次 md5、
+<b>逐檔開檔讀取</b>。而一次 <code>cmake --build</code> 的連結是<b>逐個進行</b>的：本輪
+<code>libggml-metal</code> 寫於 11:29:13、<code>libllama</code> 寫於 11:29:16。別條線那一輪的 A 臂指紋
+就落在這 3 秒之間 ⇒ 記下的是「<b>新 metal ＋ 舊 llama</b>」= <b>一個從來沒有真正跑過的配置</b>。</p>
+
+<p>而這把尺正是用來決定「兩列能不能比」的 ⇒ <b>撕裂的指紋不會給錯數字，它給錯的許可。</b>
+建議：launch 與 teardown 各取一次，不一致就把該列標成不可比（lesson <code>eng-mh-0049</code>）。
+本檔沒有改那支腳本（它屬於另一條線的證據鏈）——這是<b>指出</b>，不是<b>修改</b>。</p>
+
+<h2>7. 誠實邊界</h2>
+
+<ul>
+<li><b><code>exp</code> 沒有數字</b>（§4）。<code>own</code> 的數字有，且同臂控制 1200/1200 過。</li>
+<li><b><code>POOLROWS</code> 上限 12，而 T=2 的運算元有 16 個 id</b> ⇒ 第 2 個 token 只覆蓋前 4 個。
+那 4 個已經 100% ROUTING，所以結論不會因擴大覆蓋而翻轉，但措辭必須帶上這個前綴。</li>
+<li><b>不是本檔產出的東西</b>：<code>scripts/run_server.sh</code> 與 <code>Backup/run_req2_retest.sh</code>
+的修改屬於另一條 session（11:38），<b>不在本輪的 commit 裡</b>。</li>
+<li>本檔與 <code>docs/POOL_ROW_DIGEST_20260917_0355.html</code> 的關係：那一份是 r12 的第三條 stream，
+本檔是它的續篇；兩份都保留，因為它們描述<b>不同時間點</b>的同一支儀器。</li>
+</ul>
+
+<hr>
+<p class="small">
+出處：<code>docs/POOL_ROW_DIGEST_20260917_0355.html</code>（r12：第三條 stream、判讀護欄、同臂控制）·
+<code>docs/REMAP_ROUNDTRIP_REMOVAL_PLAN_2026-09-15.md</code>（D0–D3 階梯）·
+<code>agent_harness/engine_loop/traces/lessons.jsonl</code>（<code>eng-diag-0031</code>／
+<code>eng-gate-0043</code>／<code>eng-gate-0044</code>／<code>eng-mh-0046</code>／<code>eng-mh-0047</code>／
+<code>eng-mh-0048</code>／<code>eng-mh-0049</code>）·
+<code>Backup/compare_pool_row.py</code> 的檔頭（它每一版的註解都是上一次誤判的記錄）。
+</p>
+</div>
+</body>
+</html>

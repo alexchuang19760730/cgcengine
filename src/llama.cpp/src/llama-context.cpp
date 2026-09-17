@@ -3146,9 +3146,133 @@ llm_graph_params llama_context::graph_params(
     };
 }
 
+// [CGC 2026-09-17 §9.18.7] The host half of the POOL row: WHICH EXPERT each digested slot holds.
+//
+// The metal-side instrument can read the ids the consumer used and the bytes those ids selected, but
+// not `slot_owner` -- that map is a llama structure (`llama_expert_cache`), and ggml must not reach
+// into it. So this side installs a pull callback through the backend registry (the same cross-dylib
+// mechanism the other CGC readouts use: ggml_backend_reg_get_proc_address) and ggml-metal stores the
+// pointer. The signature is duplicated in ggml-metal-ops.h deliberately: the handshake is resolved by
+// NAME at runtime, so there is nothing to share at compile time. Keep the two in step.
+//
+// WHY IT EXISTS: a POOL row says "slot 8 holds these bytes". Two arms both saying "slot 8" is NOT
+// agreement about data, because each arm lays the experts out in its own slots. Without the owner the
+// comparator cannot separate
+//     same slot, different expert, bytes differ        (a mapping / accounting difference)   from
+//     same slot, same expert, bytes differ             (a fill / content difference),
+// and those two call for completely different next work.
+//
+// WHY THE MAP IS SAMPLED AT ENCODE TIME: ggml-metal calls this once per capture, immediately before
+// the kernel that consumes the ids is submitted -- not at dump time. Dump time is AFTER the whole
+// pass, i.e. after any fill that landed late, and "did a fill land after the consumer read" is one of
+// the hypotheses this instrument is being used to test. An instrument that samples the answer at the
+// end of the step must not be used to label the instant it was supposed to measure.
+typedef int32_t (*cgc_owner_fn_t)(int32_t il, int32_t cap, int32_t * out);
+
+static llama_expert_cache * s_cgc_owner_cache = nullptr;
+
+static int32_t cgc_owner_lookup(int32_t il, int32_t cap, int32_t * out) {
+    llama_expert_cache * c = s_cgc_owner_cache;
+    if (c == nullptr || out == nullptr || cap <= 0 || il < 0 || (size_t) il >= c->slot_owner.size()) {
+        return -1;   // "this layer is unknown to me" -> the row prints own=none, never own=[]
+    }
+    const std::vector<int32_t> & own = c->slot_owner[(size_t) il];
+    const int32_t n = (int32_t) std::min((size_t) cap, own.size());
+    for (int32_t s = 0; s < n; ++s) {
+        out[s] = own[(size_t) s];   // -1 for a slot the pool does not own -- passed through, not hidden
+    }
+    return n;
+}
+
+// [CGC 2026-09-17 §9.18.8] The other half: the slot THIS side says the consumer should read, per
+// consumer position.
+//
+// The source is the remap leaf the pool path already writes for the anchor arm
+// (`cache_remap_tensors[il]`, filled at llama-context.cpp:6193-6198 with `st[e]` for each selected
+// expert e). Two properties make it the right source rather than a re-derivation:
+//   * it is what the HOST would feed the gather, so `ids != exp` means the device did not read the
+//     table the host published -- a machine defect, not a modelling one;
+//   * on the arm whose graph actually CONSUMES that leaf (the anchor), `ids` and `exp` are then the
+//     same array by construction, so an inequality there is not an engine finding but a broken
+//     instrument. That is a built-in alignment check, and it is why the comparator reports a
+//     mismatch on the anchor arm as an instrument fault instead of as a result.
+//
+// Layout: the leaf is indexed `i + j*n_expert_used`, i.e. ne0-fastest with ne0 = n_expert_used, which
+// is exactly how the device ids operand is laid out AND how the kernel's row i maps to ids[i]. So
+// element j of `exp` and row j of the POOL digest describe the same consumer position with no
+// reordering -- and because `exp` is capped at the row count, only the positions the kernel can
+// actually digest are ever requested.
+typedef int32_t (*cgc_expect_fn_t)(int32_t il, int32_t cap, int32_t * out);
+
+static const std::map<int, ggml_tensor *> * s_cgc_remap = nullptr;
+
+static int32_t cgc_expect_lookup(int32_t il, int32_t cap, int32_t * out) {
+    if (s_cgc_remap == nullptr || out == nullptr || cap <= 0 || il < 0) {
+        return -1;
+    }
+    const auto it = s_cgc_remap->find(il);
+    if (it == s_cgc_remap->end()) {
+        return -1;
+    }
+    const ggml_tensor * remap = it->second;
+    if (remap == nullptr || remap->data == nullptr || remap->type != GGML_TYPE_I32) {
+        return -1;
+    }
+    const int64_t ne = ggml_nelements(remap);
+    const int32_t n  = (int32_t) std::min((int64_t) cap, ne);
+    const int32_t * rd = (const int32_t *) remap->data;
+    for (int32_t j = 0; j < n; ++j) {
+        out[j] = rd[j];
+    }
+    return n;
+}
+
 ggml_status llama_context::graph_compute(
             ggml_cgraph * gf,
                    bool   batched) {
+    // [CGC 2026-09-17 §9.18.7/§9.18.8] Install the two POOL-row annotation callbacks BEFORE this graph
+    // is encoded. Deliberately not in expert_cache_on_topk: that is an eval callback, so it fires
+    // DURING compute, and the first segment of a graph is encoded before any of its nodes has been
+    // evaluated -- the head captures would then print `none` while later ones printed values, which is
+    // worse than either. graph_compute runs ahead of every encode of every ubatch, so the channels are
+    // up from the first capture onward. Retried until it succeeds (rather than latched on the first
+    // attempt) because a context whose backends do not include the Metal one must not consume the one
+    // attempt.
+    //
+    // Each channel is installed on its own verb, so one being unavailable leaves the other working and
+    // the metal side's banner names exactly which is missing. The two are gated on the same condition
+    // as before (`CGC_POOL_CAPTURE`), because they only exist to annotate POOL rows.
+    if (model.expert_cache != nullptr && s_cgc_owner_cache != model.expert_cache &&
+        getenv("CGC_POOL_CAPTURE") != nullptr) {
+        for (const auto & b : backends) {
+            ggml_backend_dev_t  dev = ggml_backend_get_device(b.get());
+            ggml_backend_reg_t  reg = dev != nullptr ? ggml_backend_dev_backend_reg(dev) : nullptr;
+            if (reg == nullptr) {
+                continue;
+            }
+            auto set_owner_fn  = (void (*)(cgc_owner_fn_t))  ggml_backend_reg_get_proc_address(reg, "ggml_metal_cgc_set_owner_fn");
+            auto set_expect_fn = (void (*)(cgc_expect_fn_t)) ggml_backend_reg_get_proc_address(reg, "ggml_metal_cgc_set_expect_fn");
+            if (set_owner_fn == nullptr && set_expect_fn == nullptr) {
+                continue;
+            }
+            // The owner channel points at the cache, the expect channel at this context's remap map --
+            // both are members of objects that outlive the graph, and both are read from the thread
+            // that runs the graph.
+            s_cgc_remap = &cache_remap_tensors;
+            if (set_owner_fn != nullptr) {
+                set_owner_fn(cgc_owner_lookup);
+                s_cgc_owner_cache = model.expert_cache;
+            }
+            if (set_expect_fn != nullptr) {
+                set_expect_fn(cgc_expect_lookup);
+            }
+            LLAMA_LOG_INFO("%s: CGC-POOL-CAP channels installed: owner=%s expect=%s\n", __func__,
+                           set_owner_fn  != nullptr ? "yes" : "NO",
+                           set_expect_fn != nullptr ? "yes" : "NO");
+            break;
+        }
+    }
+
     int n_threads        = batched ? cparams.n_threads_batch : cparams.n_threads;
     ggml_threadpool_t tp = batched ? threadpool_batch        : threadpool;
 
