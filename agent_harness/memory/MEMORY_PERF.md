@@ -283,6 +283,79 @@
 - 文件：`docs/ROADMAP_PREFILL250_DECODE25_2026-09-13.md`（M0–M6）、
   `docs/INSTRUMENT_COMPARE_20260916_1821.html`。
 
+## Ornith vs Nail：兩個「decode t/s」不可並排（09-18 04:3x 查證）
+
+**兩者是同一個架構的兩個量化版本**（標頭實測：`gguf-py` ＋ `gguf_pool_geometry.py`）：
+`qwen35moe`／41 層／**n_expert 256、top-k 8**／embedding 2048／ctx 262144／nextn 1，**逐項相同**。
+
+| | Nail（旗艦 `denseIQ4X`） | Ornith（`…APEX-I-Compact-v2D-lite`） |
+|---|---|---|
+| 檔案 | 12.72 GiB | **16.36 GiB（+29%）** |
+| 專家位元組 | 11.11 GiB（IQ2_S／IQ3_S／IQ4_XS） | 14.68 GiB（Q3_K／Q4_K／Q8_0） |
+| per-expert（binding） | 1.3906 MiB（blk.39） | 1.6875 MiB（blk.0-4／blk.35-39） |
+| 8 GiB → slots | 143 | 118 |
+| **每 token 專家讀取**（×8/256） | **355 MiB** | **470 MiB（+32%）** |
+
+**⇒「模型大 ⇒ 慢」不成立（同架構）；但「模型大 ⇒ 每 token 讀得多」在這裡成立 ⇒ 速度差不可能來自位元組。**
+IO 本來就不在關鍵路徑（`fill_wait = 0.000`）。
+
+**★ 兩個數字來自不同 build／熱態／MTP 狀態**（`Backup/phase_decomp/en_dc_orn_ab_rev_20260918.json`
+04:00 vs `en_dc_st_20260918.json` 04:15）：
+
+| 條件 | Ornith | Nail |
+|---|---|---|
+| build | `libggml-metal 05b2da9388ea`／`libllama e4e432f27aee` | `c6bddce9796a`／`feaaa647f4f8` |
+| 熱態 | 6/6 **MODERATE** | 6/6 **HEAVY** |
+| MTP | **OFF**（`CGC_SERVER_MTP=0`，無 `draft_*`） | **ON**（`draft_accept 0.4286`／`draft_mean_len 2.2`） |
+| `predicted_n` | 24 | 24 |
+
+⇒ **可引用的述句只有**：「Ornith 在 MTP-off／MODERATE 下量到 15.72–19.65；Nail 在 MTP-on／HEAVY 下
+量到 8.09–9.85」。**❌ 不可說「Ornith 引擎效率高 1.6×」**——只有 `n_predict=24`（短爆，本檔已判不可引用）相同。
+
+**裁決它的一次實驗（尚未跑）**：同 build、同 `n_predict`、**兩臂都 `CGC_SERVER_MTP=0`**、交錯 A/B ×3。
+⚠️ `prod25-stream-mtpoff` **不是**這一臂 —— 它載的是**第三個檔** `Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`，不是 Nail。
+⚠️ 「Nail 的 MTP-on vs off」與「同 MTP 狀態下 Nail vs Ornith」是**兩個不同的問題**（MTP-on 讓 trunk 變 verify 圖，ntok 2/4）。
+
+**★★ 09-18 04:39 對齊 A/B（ABBA）已完成 —— 這一節的懸案結清**：同 build、`--profile prod25`、
+`--n-predict 96`、`--rounds 3`、**兩臂都 MTP off、differ-by-one 只差模型檔**（`p25-gputime` vs `orn-p25`）：
+
+| 順序 | Nail | Ornith |
+|---|---|---|
+| 前向（Nail → Ornith） | **12.59** | 7.94 |
+| 反向（Ornith → Nail） | **11.89** | 8.47 |
+
+⇒ **兩個順序都是 Nail 快**（不是位置效應）⇒ 配對中位 **12.24 vs 8.21 ⇒ Nail 快 1.49×**。
+⇒ **那組 15.72–19.65 不可重現**（Ornith 今天 7.94–8.47，**低 2.4×**）⇒ 主嫌是 **build**，不是熱態。
+★ **可引用述句：「換成 Ornith 不是提速手段 —— 它慢 1.49×」**；「模型更大卻更快」在本 repo 沒有實測支持。
+（Nail 這條臂重現了歷史 HTTP 帶 12.36–12.95 ⇒ 夾具沒變。）產物 `Backup/phase_decomp/aligned_nail_vs_ornith_{fwd,rev}.json`。
+
+## decode 到 25 的算術（09-18 04:4x —— 回答「25 有沒有機會」的框架）
+
+**25 ＝ 步速（steps/s）× 每步 token 數**，兩個乘數的現況差很多：
+
+| 乘數 | 今天的值 | 已量的槓桿 | 要到 25 的缺口 | 卡在 |
+|---|---|---|---|---|
+| 步速 | **~10.9 steps/s**（1 tok/step） | `CGC_SUBMIT_AHEAD` **82.5 → 31–44 ms/步**（×1.8–2.3） | ×2.0–2.3 | **探針輸出損壞**；S2/S3 的前提 B 已倒 |
+| 每步 token | **1.0**（MTP off） | MTP-on **9.82 → 12.62**（×1.28） | ×1.6–2.0 | accept 58.25%（09-05 的 0.9974 是舊幾何的飽和值） |
+| host 側 | build+alloc+inputs ＝ **0.086 ms/步（0.07%）** | — | **0** | **正式關閉**（`compute` 99.9%、`fill_wait` 0.000） |
+
+**★ 25 的原始出處正好證明「乘數」才是題目**：09-05 的 **27.71 t/s ＝ 3.99 token/step ÷ 144 ms/step**
+⇒ 那時的步速只有 **6.94 steps/s（比今天慢 1.57×）** ⇒ **那個數字幾乎全部住在「每步 token 數」那一項**。
+
+**算術**：`9.82 × 1.28（MTP，已量）× 2.0（去序列化，未證）＝ 25.1` ⇒ **剛好擦線**。而：
+- ⚠️ **兩個乘數能不能相乘還沒量過** —— 12.62 與 16.82 是**不同儀器**量的。本檔早已註明
+  「兩個 ≈1.8× 可能吃同一份空窗、**不可加乘** ⇒ ceiling 必須**在 MTP on 下重量**，還沒做」。
+- ⚠️ **25 / 10.9 ＝ 2.29×**（不是 2.0×）；用 HTTP 臂 12.2 算是 2.05×。
+- ⚠️ **n=24 短爆會給 18.7–20.3 的假希望**（已判不可引用）。
+
+**該先做哪一件（判準已先寫死，不要調換順序）**：
+1. **補 M3 缺的儀器**（逐節點 GPU 時間）—— `ffn_moe_*` 佔 `wait` ≥40% ⇒ 有量；<15% ⇒ 三條路全不足。
+   **沒有這個讀數，任何去序列化的實作都是 `CGC_MMV_FUSE` 的學費。**
+2. **在 MTP-on 的形狀下重量去序列化的天花板**（這一步決定「兩個乘數可否相乘」）。
+3. **MTP 的 accept**（唯一已量到正增益、且不需要新儀器的槓桿）。
+4. **不要算進預算**：down-combine 融合對旗艦是 **−15~18%**；換 Ornith 是 **−1.49×**。
+5. **M1 的離開條件沒有一條被系統性重核** ⇒ M3／M4 站在未驗收的地基上。
+
 ## prefill 250 的條件式交付
 
 `CGC_SERVER_PROFILE=prefill250`（`-b/-ub 5632`、`CGC_PREFILL_STREAM=1`、`CGC_GATHER_SLAB_CAP=256`、

@@ -784,6 +784,16 @@ server 在**載入模型階段**就被 SIGTERM（`run_server.sh: line 1992: … 
 19:35:52／19:35:59 ⇒ 不重疊、可歸屬），並說明 `run_server.sh` 在 gate 之後的改動只有註解與
 條件式 allowlist 塊（`-n "${VAR:-}"`）⇒ 在 gate 的跑法下 `SERVER_ENV` 逐項不變。
 
+**★ 2026-09-18 補：記憶體吃緊是「它可能失敗」的理由，不是「不要跑」的理由。**
+同一天在 `vm_stat` 的 `Pages free` 只有 **179 MB**、`sysctl -n vm.swapusage` 是
+`used 9233.00M / total 10240.00M`（≈90%）的情況下，`m123_oracle_gate.py --tag en-orn-ab`
+仍然在 **48 s** 內 `PASS`（`comparable=true`、`config_diffs=[]`、M1/M2/M3 各 9/9、
+`cap_en-orn-ab.json` 的 `created 04:44:16` 晚於產物 mtime 04:18:53／04:18:55 ⇒ 可歸屬）。
+判準：**D5 是數值閘門，不是計時量測** —— 慢不影響它的有效性，只有**真的失敗**（載入期 SIGTERM、
+沒有寫出 summary）才走上一段的具名交代。所以「swap 很滿」**不構成**預先跳過 D5 的正當理由
+（那正是 `eng-gate-0016` 判為錯的做法）。反過來說：這一條也**不**解除「13 GB 級載入是配額」
+的警告 —— 它說的是「先跑一次看結果」，不是「跑幾次都行」。
+
 **不要**試圖把收尾 memory 塞進被提交的那個 commit（做不到），也**不要把漂移留到下一輪**
 （下一個人會被 `--check` 的紅字誤導成「上一輪沒重生索引」）。**多一個 3 行的 resync commit 是正確答案。**
 它只動 `MANIFEST.jsonl` + `INDEX.jsonl`，沒有 `src/` ⇒ **D5 不必重跑**（`271538f2f`／`e0152777d` 前例），
