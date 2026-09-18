@@ -462,7 +462,24 @@ hy3 不會吐那種格式 ⇒ **請求會成功，但 agent 解析不出任何�
 ## ★ 判準去哪挖：`strings` 那個執行檔，比讀文件快
 
 想知道 prime-agent 的環境變數／檔名／錯誤文案，直接掃執行檔字串
-（`prime-agent` 在 mirror 的 release tarball 裡，解出來約 160 MB）：
+（`prime-agent` 在 mirror 的 release tarball 裡，解出來約 **160 MB**）。
+
+★ **`/tmp/pa_bin/` 是暫存，不保證還在**（清機器時把它—— 152.6 MB ——收進回收桶了；
+2026-09-18）。兩條取回路徑，都已實測存在：
+
+```bash
+# (a) 從回收桶拉回來（最快）
+mv ~/.Trash/pa_bin /tmp/pa_bin
+
+# (b) 從本機既有的 mirror 快取重建（~/.cache/prime-agent-mirror.tar.gz，57 MB；
+#     由 agent_harness/tb_loop/scripts/fetch-prime-agent-mirror.sh 抓，--refresh 可重抓）
+mkdir -p /tmp/pa_bin && tar -xzf ~/.cache/prime-agent-mirror.tar.gz -C /tmp/pa_bin
+# 再從裡面那顆 arm64 tarball 解出 prime-agent（≈160 MB）
+```
+
+★ 也可以不摸 /tmp：一次 `tb run` 之後，**那份 mirror** 在容器的 `/installed-agent/`
+（`prime_agent_adapter.py` 的 `_ship_mirror()` 送進去的），`docker cp` 拉出來再解即可
+（`prime-agent` 在裡面那顆 arm64 tarball 內，跟快取路線一樣要解兩層）。
 
 ```python
 import re
