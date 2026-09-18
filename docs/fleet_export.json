@@ -1,0 +1,261 @@
+{
+  "schema": 1,
+  "generated_at": "2026-09-18 13:58:27",
+  "source": {
+    "repo": "flashkv-devserver（CGC engine）",
+    "producer": "agent_harness/portal/build_fleet_portal.py --export",
+    "head": "5078242be",
+    "branch": "demo/sweet-spot-windows-fix",
+    "subject": "docs(instr) + feat(sweep): 稠密 GEMV 的機制＝三閘門＋M× 重讀；consumed_changed 母體不足；生產矩陣四格（全 HOT）",
+    "mode": "offline（--no-net，未探測心跳）",
+    "how_to_regenerate": "python3 agent_harness/portal/build_fleet_portal.py --export"
+  },
+  "endpoints": [
+    {
+      "id": "mac-local",
+      "name": "本機 Mac（M4 / 16 GB unified）",
+      "kind": "local",
+      "platform": "macos",
+      "arch": "arm64",
+      "role": "decode 生產線：Metal kernel ＋ SSD expert streaming；也是這個入口自己跑的地方",
+      "chip": "上報過期",
+      "heartbeat": "skipped",
+      "reported_at": "2026-09-18 13:28:23",
+      "report_age": "30 分鐘前",
+      "capabilities": [
+        "macOS bundle 可重建／可啟動（llama-server --version ＋ llama-simple --help ＋ otool -L 查 @rpath）",
+        "兩個數字目標（prefill ≥250 t/s、decode ≥25 t/s）有綁定與現值",
+        "M1/M2/M3 oracle 對 M2 oracle 可達 bit-identical（實測 9/9、9/9、9/9、n=9）",
+        "本入口自己的完整性閘門（portal-integrity 等）跑得動"
+      ],
+      "not_measured": []
+    },
+    {
+      "id": "cloud-host2",
+      "name": "雲端主機（Host2 / 8×RTX PRO 5000）",
+      "kind": "cloud",
+      "platform": "linux",
+      "arch": "x86_64",
+      "role": "CGC 雲端算力與 edge proxy 的對端；SSH 反向隧道把本機 :4000 暴露成雲上的 :18022",
+      "chip": "未上報",
+      "heartbeat": "skipped",
+      "reported_at": "",
+      "report_age": "沒有上報過",
+      "capabilities": [
+        "SSH 反向隧道可通（本機 :4000 ↔ 雲上 :18022）",
+        "本機 :4000 是 Anthropic 相容代理（:8000 是 OpenAI 相容）",
+        "閘門結果可用 rsync 同步到雲端主機"
+      ],
+      "not_measured": [
+        "沒有實測過它「現在」的負載與可用性 —— 本入口只讀通道設定與隧道腳本，不宣稱它活著",
+        "8×RTX PRO 5000 / 576 GB 是先前記錄的規格，本入口沒有從雲端讀回來驗證",
+        "隧道腳本裡有明文 root 密碼（app/edge_engine/cloud_tunnel.py:19 附近的 DEFAULT_PASSWORD）—— 這是已登記的安全欠帳，不是本入口能修的"
+      ]
+    },
+    {
+      "id": "harmonyos-matebook14",
+      "name": "鴻蒙端（MateBook 14 / Kirin 9030）",
+      "kind": "edge",
+      "platform": "harmonyos",
+      "arch": "aarch64",
+      "role": "CPU-only 建置與執行（Kirin 9030 沒有 Metal ⇒ GGML_METAL=OFF）",
+      "chip": "未上報",
+      "heartbeat": "skipped",
+      "reported_at": "",
+      "report_age": "沒有上報過",
+      "capabilities": [
+        "能為鴻蒙 MateBook 14 建置 llama.cpp（aarch64、Kirin 9030、CPU-only NEON）",
+        "手機端可經 DevEco 的 hdc 推送（hdc.exe 路徑寫死在腳本裡）"
+      ],
+      "not_measured": [
+        "★ 從未連上過：本入口對它的「能力」全部來自 repo 裡的建置腳本，不是實測 —— 那證明的是「我們寫了給它的建置流程」，不是「它跑得動」",
+        "不知道它現在的鴻蒙版本、可用的 RAM、以及 build.sh 最後一次成功的時間",
+        "heartbeat 是 null（不是「失敗」）：它沒有可達的網路位址 ⇒ 這一格永遠只能是 unknown，不會變綠"
+      ]
+    },
+    {
+      "id": "windows-rtx4090",
+      "name": "Windows 端（RTX 4090 / VS2022）",
+      "kind": "edge",
+      "platform": "windows",
+      "arch": "x86_64",
+      "role": "CUDA 或 Vulkan 建置；repo 裡預期 Qwen3.6-35B-A3B IQ3_XXS 40–60 t/s",
+      "chip": "未上報",
+      "heartbeat": "skipped",
+      "reported_at": "",
+      "report_age": "沒有上報過",
+      "capabilities": [
+        "能建 CUDA 版（偵測到 NVIDIA ⇒ GGML_CUDA=ON），否則退回 Vulkan",
+        "README 的預期吞吐表：RTX 4090 ＋ Qwen3.6-35B-A3B IQ3_XXS ⇒ 40–60 t/s",
+        "有一支常駐腳本會把 agent_harness/ 的變更自動 commit＋push（remote cgc0907、branch fusionroutemot）"
+      ],
+      "not_measured": [
+        "★ 40–60 t/s 是 README 的**預期**，不是實測值 —— 本入口把它標成預期，不標成能力實績",
+        "auto_git_push.ps1 在本機從未被執行過（2026-09-17 實查）⇒ 「它會自動推」是設計意圖，不是已驗證的行為",
+        "它推到的是 branch fusionroutemot，而本入口讀的是 demo/sweet-spot-windows-fix ⇒ 兩者要對齊才會看到它的上報"
+      ]
+    }
+  ],
+  "targets": {
+    "source": "agent_harness/portal/targets.json（單一真相，本檔只轉述）",
+    "items": [
+      {
+        "id": "prefill-250",
+        "title": "prefill ≥ 250 t/s",
+        "metric": "prefill_tps_median",
+        "unit": "t/s",
+        "compare": ">=",
+        "goal": 250,
+        "current": "conditional",
+        "current_text": "條件式：冷機『發射 0』時 6/6 ≥250（COLD 有 254–296 的紀錄）；否則 0/21，熱態平台 167–201。最近三個讀數 242.42 / 227.27 / 249.06 **全部 <250**。",
+        "gap": "不是「差多少」，而是「條件成立才達標」—— 所以判準是『可重現性』而不是平均值。",
+        "status": "conditional"
+      },
+      {
+        "id": "decode-25",
+        "title": "decode ≥ 25 t/s",
+        "metric": "decode_tps_median",
+        "unit": "t/s",
+        "compare": ">=",
+        "goal": 25,
+        "current": 12.62,
+        "current_text": "生產基準 ≈ 12.0–12.9（8 GiB pool、prod25 profile）；配對中位 12.62。需要 2.07×。",
+        "gap": "2.07×（要 25、現在 12.62）。已判掉的三條路合計上界 ≈17–20 ⇒ **到不了**，缺的 2.4× 只能來自『削 GPU work』。",
+        "status": "not-met"
+      }
+    ]
+  },
+  "momentum": {
+    "counts": {
+      "carried": 1,
+      "replaced": 4,
+      "refuted": 2,
+      "orphan": 31,
+      "pending": 30
+    },
+    "judged_note": "pending 不計入分母（最新一天結構上不可能被更晚的引用）",
+    "refuted_rate": "5.26%",
+    "orphan_rate": "81.58%",
+    "threshold_refuted": "25.00%",
+    "threshold_orphan": "50.00%",
+    "verdict": "動能不足",
+    "declared": true,
+    "note": "動能＝被後續決策納入的程度（carried／replaced／refuted／orphan／pending），從 decisions.jsonl 實算，不是手填。"
+  },
+  "trend": {
+    "window_days": 7,
+    "missing_label": "無記錄",
+    "days": [
+      "2026-09-12",
+      "2026-09-13",
+      "2026-09-14",
+      "2026-09-15",
+      "2026-09-16",
+      "2026-09-17",
+      "2026-09-18"
+    ],
+    "series": [
+      {
+        "id": "commits",
+        "label": "commit",
+        "unit": "個",
+        "covers": 7,
+        "day_basis": "commit 的 author date（%ad）",
+        "cells": {
+          "2026-09-12": 0,
+          "2026-09-13": 8,
+          "2026-09-14": 12,
+          "2026-09-15": 9,
+          "2026-09-16": 61,
+          "2026-09-17": 76,
+          "2026-09-18": 66
+        }
+      },
+      {
+        "id": "m123",
+        "label": "M1/M2/M3 oracle 實跑",
+        "unit": "次",
+        "covers": 4,
+        "day_basis": "檔案 mtime（≈ 寫入日；不是 summary 內部的時間欄位——它沒有）",
+        "cells": {
+          "2026-09-12": null,
+          "2026-09-13": null,
+          "2026-09-14": null,
+          "2026-09-15": 25,
+          "2026-09-16": 23,
+          "2026-09-17": 29,
+          "2026-09-18": 12
+        }
+      },
+      {
+        "id": "decisions",
+        "label": "決策登錄",
+        "unit": "筆",
+        "covers": 4,
+        "day_basis": "id 內嵌日期（寫進 id 的那一天，不是檔案 mtime）",
+        "cells": {
+          "2026-09-12": null,
+          "2026-09-13": null,
+          "2026-09-14": null,
+          "2026-09-15": 26,
+          "2026-09-16": 12,
+          "2026-09-17": 0,
+          "2026-09-18": 30
+        }
+      },
+      {
+        "id": "daylog",
+        "label": "當日工作日誌",
+        "unit": "B",
+        "covers": 4,
+        "day_basis": "檔名日期",
+        "cells": {
+          "2026-09-12": null,
+          "2026-09-13": null,
+          "2026-09-14": null,
+          "2026-09-15": 122727,
+          "2026-09-16": 284362,
+          "2026-09-17": 451541,
+          "2026-09-18": 246081
+        }
+      },
+      {
+        "id": "snapshot",
+        "label": "資產快照（本入口實跑）",
+        "unit": "筆",
+        "covers": 1,
+        "day_basis": "ts（每次 build_portal.py 跑完追加的那一行）",
+        "cells": {
+          "2026-09-12": null,
+          "2026-09-13": null,
+          "2026-09-14": null,
+          "2026-09-15": null,
+          "2026-09-16": null,
+          "2026-09-17": null,
+          "2026-09-18": 15
+        }
+      },
+      {
+        "id": "endpoint_report",
+        "label": "端點上報抵達",
+        "unit": "件",
+        "covers": 1,
+        "day_basis": "artifact 的 reported_at（端點自己寫的時間）",
+        "cells": {
+          "2026-09-12": null,
+          "2026-09-13": null,
+          "2026-09-14": null,
+          "2026-09-15": null,
+          "2026-09-16": null,
+          "2026-09-17": null,
+          "2026-09-18": 1
+        }
+      }
+    ]
+  },
+  "honesty": {
+    "unknown_not_failure": "心跳失敗與未上報都是 unknown／未上報，不是失敗。一個會因為連不上而變紅的入口，會在每一個離線的早晨說謊。",
+    "missing_not_zero": "某來源某天沒有資料 ⇒ 該格是「無記錄」，不是 0。",
+    "not_a_verdict": "本檔只轉述；任何數字的權威來源是上面 source.how_to_regenerate 那條指令。"
+  }
+}

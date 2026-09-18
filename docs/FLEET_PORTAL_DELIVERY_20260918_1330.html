@@ -421,6 +421,76 @@ python3 agent_harness/portal/report_endpoint_status.py --id windows-rtx4090 \
 </ul>
 </div>
 
+<h2>§11 --export：給別的網站吃的那份契約</h2>
+
+<p class="small"><b>修訂紀錄</b>：§1–§10 寫於 2026-09-18 13:30；§11 於同日 13:5x 追加
+（同一個問題的下一段 ⇒ 就地追加，不另開新檔）。原文一字未刪。</p>
+
+<h3>§11.1 為什麼要匯出，而不是讓網站自己算</h3>
+
+<p>下游是 <code>powerauto.ai</code> 的 portal：super user 登入後要看到「端側 AI 的 prefill／decode 目標」
+與「本機／跨機的資產能力進度復盤」。那些數字——動能、七日回填、目標綁定——<b>只有在這個 repo 算得出來</b>。</p>
+
+<div class="box bad">
+<b>不能用的做法</b>：在網站端重算一次。兩份實作必然漂移，而漂移是靜默的 ——
+網站會忠實地顯示一組與這裡不同、且看起來一樣合理的數字。
+</div>
+
+<p>所以網站端<b>只吃匯出</b>：</p>
+
+<pre><code>python3 agent_harness/portal/build_fleet_portal.py --export
+  -&gt; docs/fleet_export.json   （schema 1，約 9,950 B）</code></pre>
+
+<h3>§11.2 匯出的形狀（<code>schema = 1</code>）</h3>
+
+<table>
+<thead><tr><th>鍵</th><th>內容</th><th>來源（唯一真相）</th></tr></thead>
+<tbody>
+<tr><td><code>source</code></td><td>repo／HEAD／branch／產生者／<b>重跑指令</b></td><td>本入口自己</td></tr>
+<tr><td><code>endpoints</code></td><td>四端的 id／平台／能力清單／未量測／狀態 chip</td><td><code>fleet.json</code></td></tr>
+<tr><td><code>targets</code></td><td>prefill-250 與 decode-25 的 goal／current／gap／status</td><td><code>targets.json</code>（本檔只轉述）</td></tr>
+<tr><td><code>momentum</code></td><td>五類計數、比率、門檻、判定</td><td><code>decisions.jsonl</code> 實算</td></tr>
+<tr><td><code>trend</code></td><td>7 日 × 6 來源的逐格值 ＋ 歸日依據 ＋ 覆蓋天數</td><td><code>trend_sources.json</code> ＋ git／traces／m123</td></tr>
+<tr><td><code>honesty</code></td><td>三條規矩的明文（unknown 不是失敗／無記錄不是 0／本檔只轉述）</td><td>本次設計決定</td></tr>
+</tbody></table>
+
+<p>把 <code>honesty</code> 放進資料裡（而不是只放進文件）是刻意的：下游渲染時<b>拿得到那三句話</b>，
+所以不必重新推導一次「什麼算未知」。</p>
+
+<h3>§11.3 匯出沿用入口的三條規矩</h3>
+
+<ul>
+<li><b>不假裝</b>：心跳失敗與未上報都是 <code>unknown</code>／未上報，不是失敗。匯出照傳，不改成 <code>false</code>。</li>
+<li><b>缺席要出聲</b>：每個端點的 <code>not_measured</code> 原樣帶出去 —— 下游看得到「我們不知道什麼」。</li>
+<li><b>無記錄 ≠ 0</b>：缺日的格是 <code>null</code>（下游要顯示「無記錄」），不是 0。</li>
+</ul>
+
+<h3>§11.4 下游落地時撞到的兩個網路事實（與本 repo 無關，但改變了設計）</h3>
+
+<table>
+<thead><tr><th>事實</th><th>證據（2026-09-18 實測）</th><th>後果</th></tr></thead>
+<tbody>
+<tr><td><code>*.workers.dev</code> 從中國大陸不可達</td>
+<td>DNS 解到 <code>118.184.26.113</code>（中國 IP，不是 Cloudflare 的 104.x／172.x）；同一顆沙箱的
+<code>example.com</code>／<code>cloudflare.com</code>／<code>powerauto.ai</code> 都 HTTP 200</td>
+<td>是 <b>DNS 污染</b>不是 Worker 掛了 ⇒ 雲側 endpoint <b>必須掛自訂網域</b>（例如 <code>api.powerauto.ai</code>）</td></tr>
+<tr><td><code>powerauto.ai</code> 是 GitHub Pages</td>
+<td>解析到 <code>185.199.108.153</code>（GitHub Pages 的 IP）</td>
+<td>站是靜態的 ⇒ 倉庫裡的 <code>admin/index.php</code>（PHP session）<b>在那個宿主上不會執行</b>；
+閘門不能靠 PHP，只能用 Cloudflare</td></tr>
+</tbody></table>
+
+<h3>§11.5 這一段的誠實邊界</h3>
+
+<ul>
+<li><code>--export</code> 不寫 <code>fleet_status.jsonl</code>：那是「觀測」（只追加的趨勢），匯出是「轉述」。
+兩者混在一起會讓趨勢檔摻進一堆重複的匯出紀錄。</li>
+<li>匯出前會跑同一套 <code>gather()</code> 與缺陷檢查；<b>有缺陷就不匯出</b>（rc=1），
+不會產出一份「看起來正常但其實對不上」的 JSON。</li>
+<li>下游那份 <code>index.html</code> 我沒有實測它在瀏覽器裡的渲染（本輪只驗了 HTML 結構、API 回應與 9 格自測）。
+「頁面在瀏覽器裡長得對」這件事，目前只有靜態檢查的證據。</li>
+</ul>
+
 <p class="small" style="margin-top:26px">
 本檔由 <code>docs/FLEET_PORTAL_DELIVERY_20260918_1330.html</code> 交付，與它所屬的 commit 綁定。
 所有數字都可在本機用 §10 的指令重跑；沒有任何數字是轉述的。

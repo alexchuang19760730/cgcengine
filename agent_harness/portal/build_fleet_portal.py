@@ -19,6 +19,7 @@
   --self-test  突變式黑箱自測（19 格）
   --serve      起一個 stdlib HTTP 服務：GET / 即時重畫、GET /api/fleet、POST /api/report
   （預設）      產 docs/FLEET_PORTAL.html 並把這一輪的觀測追加到 fleet_status.jsonl
+  --export     只寫 docs/fleet_export.json（給別的網站吃的可攜資料；見 export_payload 的 docstring）
 
 用法
     python3 agent_harness/portal/build_fleet_portal.py                 # 產物
@@ -57,6 +58,8 @@ M123_DIR = REPO / "Backup" / "m123_oracle_gate"
 MEM_DIR = REPO / ".workbuddy" / "memory"
 DOCS = REPO / "docs"
 OUT_HTML = DOCS / "FLEET_PORTAL.html"
+EXPORT_JSON = DOCS / "fleet_export.json"
+EXPORT_SCHEMA = 1
 HARNESS_HTML = DOCS / "AGENT_HARNESS_PORTAL.html"
 
 hesc = BP.hesc
@@ -920,6 +923,89 @@ def cmd_check() -> int:
     return 0
 
 
+def export_payload(g: dict, mom: dict, meta: dict) -> dict:
+    """給**別的網站**吃的可攜資料。
+
+    為什麼要有這一支：powerauto.ai 的 portal 要在「超級使用者登錄後」顯示端側 AI 的
+    prefill/decode 目標與本機／跨機的資產能力進度。那些數字**只有這裡算得出來**
+    （動能、七日回填、目標綁定都在這個 repo）。所以網站端**不重算**，只吃這份匯出 ——
+    兩份實作必然漂移，而漂移是靜默的。
+
+    形狀刻意扁平、且帶 schema 版本：網站端可以只依賴 schema=1 的欄位。
+    """
+    return {
+        "schema": EXPORT_SCHEMA,
+        "generated_at": meta["generated_at"],
+        "source": {
+            "repo": "flashkv-devserver（CGC engine）",
+            "producer": "agent_harness/portal/build_fleet_portal.py --export",
+            "head": meta["head"], "branch": meta["branch"], "subject": meta["subject"],
+            "mode": meta["mode"],
+            "how_to_regenerate": "python3 agent_harness/portal/build_fleet_portal.py --export",
+        },
+        "endpoints": [
+            {"id": r["id"], "name": r["name"], "kind": r["kind"],
+             "platform": r["platform"], "arch": r["arch"], "role": r["role"],
+             "chip": r["chip"], "heartbeat": r["heartbeat"]["state"],
+             "reported_at": (r["report"] or {}).get("reported_at", ""),
+             "report_age": r["report_age"],
+             "capabilities": [c.get("label", "") for c in r["capabilities"]],
+             "not_measured": r["not_measured"]}
+            for r in g["rows"]],
+        "targets": {
+            "source": "agent_harness/portal/targets.json（單一真相，本檔只轉述）",
+            "items": [
+                {"id": t.get("id"), "title": t.get("title"), "metric": t.get("metric"),
+                 "unit": t.get("unit"), "compare": t.get("compare"), "goal": t.get("goal"),
+                 "current": t.get("current"), "current_text": t.get("current_text"),
+                 "gap": t.get("gap"), "status": t.get("status")}
+                for t in (BP.load_targets().get("targets") or [])],
+        },
+        "momentum": {
+            "counts": mom["summary"], "judged_note": "pending 不計入分母（最新一天結構上不可能被更晚的引用）",
+            "refuted_rate": mom["refuted_pct"], "orphan_rate": mom["orphan_pct"],
+            "threshold_refuted": mom["thr_refuted"], "threshold_orphan": mom["thr_orphan"],
+            "verdict": mom["verdict"], "declared": True,
+            "note": "動能＝被後續決策納入的程度（carried／replaced／refuted／orphan／pending），"
+                    "從 decisions.jsonl 實算，不是手填。",
+        },
+        "trend": {
+            "window_days": g["trend"]["window_days"],
+            "missing_label": g["trend"]["missing_label"],
+            "days": g["trend"]["days"],
+            "series": [{"id": s2["id"], "label": s2["label"], "unit": s2["unit"],
+                        "covers": s2["covers"], "day_basis": s2["day_basis"],
+                        "cells": {d: s2["cells"][d] for d in g["trend"]["days"]}}
+                       for s2 in g["trend"]["sources"]],
+        },
+        "honesty": {
+            "unknown_not_failure": "心跳失敗與未上報都是 unknown／未上報，不是失敗。"
+                                   "一個會因為連不上而變紅的入口，會在每一個離線的早晨說謊。",
+            "missing_not_zero": f"某來源某天沒有資料 ⇒ 該格是「{g['trend']['missing_label']}」，不是 0。",
+            "not_a_verdict": "本檔只轉述；任何數字的權威來源是上面 source.how_to_regenerate 那條指令。",
+        },
+    }
+
+
+def cmd_export() -> int:
+    """寫出 docs/fleet_export.json（給網站吃）。不碰 fleet_status.jsonl（那不是觀測，是匯出）。"""
+    g = gather(do_net=False, timeout=1.0)
+    if g["problems"]:
+        print(f"  [error] 有 {len(g['problems'])} 項缺陷 ⇒ 不匯出:")
+        for p2 in g["problems"]:
+            print(f"    {p2}")
+        return 1
+    meta = make_meta(g, False)
+    payload = export_payload(g, momentum_block(), meta)
+    blob = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    DOCS.mkdir(parents=True, exist_ok=True)
+    EXPORT_JSON.write_text(blob, encoding="utf-8")
+    print(f"  wrote {EXPORT_JSON.relative_to(REPO)}  ({len(blob.encode()):,} B, schema {EXPORT_SCHEMA})")
+    print(f"  endpoints={len(payload['endpoints'])}  targets={len(payload['targets']['items'])}  "
+          f"trend_series={len(payload['trend']['series'])}  window={payload['trend']['window_days']}d")
+    return 0
+
+
 def cmd_build(do_net: bool, timeout: float) -> int:
     g = gather(do_net, timeout)
     if g["problems"]:
@@ -1294,6 +1380,8 @@ def main(argv=None) -> int:
     ap.add_argument("--serve", action="store_true", help="起 HTTP 服務（stdlib）")
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--no-net", action="store_true", help="不探測心跳（離線）")
+    ap.add_argument("--export", action="store_true",
+                    help="只匯出 docs/fleet_export.json（給別的網站吃的可攜資料）")
     ap.add_argument("--timeout", type=float, default=2.0, help="心跳探測超時（秒）")
     args = ap.parse_args(argv)
 
@@ -1303,6 +1391,8 @@ def main(argv=None) -> int:
         return cmd_check()
     if args.serve:
         return cmd_serve(args.port, not args.no_net, args.timeout)
+    if args.export:
+        return cmd_export()
     return cmd_build(not args.no_net, args.timeout)
 
 
