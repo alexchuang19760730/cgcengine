@@ -1602,21 +1602,19 @@ fi
 if [ -n "${CGC_SLOT_TABLE_GPU:-}" ]; then
     SERVER_ENV+=(CGC_SLOT_TABLE_GPU="$CGC_SLOT_TABLE_GPU")
 fi
-# [CGC 2026-09-18 S1 arm controls] Three knobs that let one measurement separate S1's two halves:
-#   CGC_S1_KEEP_LEAF=1  -- build the S1 nodes but keep mul_mat_id consuming the HOST leaf, so the
-#                          per-layer drain (and its round trips) stay. Cost of the gather alone.
-#   CGC_S1_BUILD_LEAF=1 -- build the host leaf too but leave it unconsumed (layout control).
-#   CGC_S1_MIN_IL=<n>   -- first layer the GPU table is used for (default 1; layer 0's mul_mat_id
-#                          runs on the CPU backend, so it keeps the leaf).
-if [ -n "${CGC_S1_KEEP_LEAF:-}" ]; then
-    SERVER_ENV+=(CGC_S1_KEEP_LEAF="$CGC_S1_KEEP_LEAF")
+# [CGC 2026-09-18] CGC_MM_DBG=1 makes ggml-metal-ops.cpp print which mul_mat family each MUL_MAT
+# takes (`MMDBG <family> ne11=.. ne00=.. t0=.. t1=..`). Needed because that family is chosen by an
+# inline type list (ggml-metal-ops.cpp:2479) plus `ne11 > ne11_mm_min = 8`: a type missing from the
+# list is indistinguishable from "the kernel is fine" without this trace. Verified ABSENT from the
+# allowlist before today, so setting it was a silent no-op (`CGC_DUMP_ENV=1` printed nothing).
+if [ -n "${CGC_MM_DBG:-}" ]; then
+    SERVER_ENV+=(CGC_MM_DBG="$CGC_MM_DBG")
 fi
-if [ -n "${CGC_S1_BUILD_LEAF:-}" ]; then
-    SERVER_ENV+=(CGC_S1_BUILD_LEAF="$CGC_S1_BUILD_LEAF")
-fi
-if [ -n "${CGC_S1_MIN_IL:-}" ]; then
-    SERVER_ENV+=(CGC_S1_MIN_IL="$CGC_S1_MIN_IL")
-fi
+# [CGC 2026-09-18] The three S1 arm controls (CGC_S1_KEEP_LEAF / CGC_S1_BUILD_LEAF / CGC_S1_MIN_IL)
+# are allowlisted further down, next to the rest of the S1 block -- they were ALREADY there, so a
+# 2026-09-18 edit of mine that added a second copy of the same three `if` blocks here was pure
+# duplication and has been removed. Read the definitions there; verified transmitted with
+# CGC_DUMP_ENV=1 (`ENV CGC_S1_KEEP_LEAF=1` on the p25-s1-keepleaf arm).
 if [ -n "${CGC_S1_DBG:-}" ]; then
     SERVER_ENV+=(CGC_S1_DBG="$CGC_S1_DBG")
 fi

@@ -64,6 +64,7 @@
   <span class="tag t-purple">2026-09-18 13:0x 修訂：§23–§27 新增（把 <code>node</code> 再拆一層）</span>
   <span class="tag t-amber">2026-09-18 13:3x 更正：名字表的細粒度讀數不可當工作量用（§25）</span>
   <span class="tag t-blue">2026-09-18 13:3x 新增：§28–§30（S1 上生產的判決）</span>
+  <span class="tag t-purple">2026-09-18 13:4x 新增：§31–§34（稠密 GEMV 的機制 ＋ 儀器的 population）</span>
   <span class="tag t-gray">未 push</span>
 </div>
 
@@ -1620,6 +1621,152 @@ $ BIN_DIR='src/llama.cpp/build/bin' RUN_REPLAY_BENCH=0 bash scripts/check_build_
 
 <p>（<code>en-node-names2</code> 是為了本輪的<b>註解更正</b>重建之後重跑的那一次；
 先前 <code>en-node-names</code> 是在三批命名都進去之後跑的，兩者皆 PASS。）</p>
+
+
+<h2>§31 稠密 GEMV 為什麼只有 8.8 GB/s：<b>三個閘門 ＋ 一個 M× 重讀</b>（2026-09-18 13:4x 新增）</h2>
+
+<p>§24 判決了「<code>dnqkv_proj</code> 不是記憶體壓力」，留下「8.8 GB/s 的成因」。
+本節把它指名到底，而且結論比預期的大：<b>不是「kernel 慢」，是「同一份權重被算 M 次」</b>。</p>
+
+<h3>§31.1 先從儀器確認家族（不是從原始碼推）</h3>
+
+<p>新增 <code>CGC_MM_DBG=1</code>（它<b>原本不在 <code>run_server.sh</code> 的 allowlist</b>，
+所以以前設了等於沒設），跑臂 <code>p25-mmd-trace</code>，log <code>133430</code>：</p>
+
+<pre><code>MMDBG &lt;family&gt; ne11=.. ne00=.. ne01=.. t0=.. t1=..
+
+家族總計：   26401 x mul_mv            &lt;-- mul_mv_ext（small-batch）與 mul_mm 都是 0
+iq4_xs × ne11： 1 / 2 / 3 / 4 / 8 全部 mul_mv，ne00/ne01 = (2048, 8192)   &lt;-- attn_qkv</code></pre>
+
+<h3>§31.2 三個閘門，缺一不可</h3>
+
+<table>
+<tr><th>閘門</th><th>逐字</th><th>對 IQ4_XS 的後果</th></tr>
+<tr><td><code>ne11_mm_min = 8</code><br>（<code>ggml-metal-ops.cpp:2438</code>）</td>
+    <td>走 <code>mul_mm</code> 要 <code>ne11 &gt; 8</code></td>
+    <td>decode／verify（M ∈ {1,2,4}）<b>永遠不夠</b></td></tr>
+<tr><td>small-batch 名單<br>（<code>:2476-2500</code>）</td>
+    <td>group A：<code>F32 F16 BF16 Q1_0 Q2_0 Q4_0 Q4_1 Q5_0 Q5_1 Q8_0 MXFP4 IQ4_NL</code> 且 <code>ne11 ∈ [2,8]</code>；
+        group B：<code>Q2_K Q3_K Q4_K Q5_K Q6_K</code> 且 <code>ne11 ∈ [4,8]</code></td>
+    <td><b><code>IQ4_XS</code> 兩組都不在</b> ⇒ 即使 <code>ne11=8</code> 也不進</td></tr>
+<tr><td><b><code>CGC_MM_BITIDENT=1</code></b><br>（<code>run_server.sh:278</code> ＝ <b>所有 profile 的預設</b>）</td>
+    <td>「forces M&lt;=8 matmuls onto the M-invariant mul_mv path… Default 1 to match production;
+        <b>opt out with CGC_MM_BITIDENT=0 for a speed A/B</b>」</td>
+    <td><b>即使把 IQ4_XS 補進名單，也會被它擋回 <code>mul_mv</code></b></td></tr>
+</table>
+
+<p>⇒ 這個模型（denseIQ4X）的<b>所有稠密投影都是 IQ4_XS</b>（<code>attn_qkv</code> 8.5 MiB／層、
+<code>attn_gate</code>／<code>ssm_out</code> 各 4.25、<code>ffn_*_shexp</code> 各 0.53）⇒ decode／verify 全部走樸素的 <code>mul_mv</code>。</p>
+
+<h3>§31.3 而落到的 <code>mul_mv</code> 是 M× 重讀</h3>
+
+<pre><code>ggml-metal-device.cpp:848 : int nr1 = 1;   // number of src1 rows per threadgroup
+ggml-metal-ops.cpp:2671   : dispatch_threadgroups(enc, ((ne11 + nr1 - 1)/nr1), ((ne01 + nr0 - 1)/nr0), ne12*ne13, 32, nsg, 1);</code></pre>
+
+<p>IQ 型別的 <code>case</code>（<code>device.cpp:989-994</code>）只設 <code>nsg</code>／<code>nr0</code>／<code>smem</code>，
+<b><code>nr1</code> 一直是 1</b> ⇒ <b>每個 threadgroup 只算 1 個 token 欄 ⇒ 權重列被讀 <code>ne11</code> 次。</b></p>
+
+<p>換算：<b>8.8 GB/s（權重唯一位元組）× 4（M=4 的 verify）＝ 35 GB/s</b>，M=8 時是 70 GB/s
+⇒ 那就不是「慢」，而是<b>同一份權重算 M 次</b>。M4 的 DRAM 約 120 GB/s，60% 是「naive matvec ＋ 重讀」
+該有的數字。</p>
+
+<p><b>★ 這是一筆從來沒入帳的 MTP 成本</b>：MTP-on 的 verify 讓每一個稠密投影的 M 由 1 變 4
+⇒ <b>稠密權重流量 ×4</b> —— 而 <code>io_bytes</code> 只數池，看不到它。
+（MTP-off 的純 decode M=1 ⇒ 這條不成立；prefill M&gt;8 ⇒ 走 <code>mul_mm</code>，也不成立。
+所以它<b>只打 decode／verify</b>，正好是延遲最敏感的那一格。）</p>
+
+<h3>§31.4 可做的候選：<b>兩個變數</b>，而且第二個有已知代價</h3>
+
+<ol>
+<li>把 <code>IQ4_XS</code> 補進 group A（一行）；</li>
+<li><b>並且</b> <code>CGC_MM_BITIDENT=0</code>（否則 ① 無效）。</li>
+</ol>
+
+<p>而 ② 會破壞 M-invariance —— <code>ggml-metal-ops.cpp:2451-2468</code> 逐字：
+那個家族讓 <code>nxpsg/r1ptg</code> 隨 <code>ne11</code> 改變，<b>K-歸約樹就跟著改變</b>，
+於是 prefill tail（M=2 vs 3）、verify（M=3）、單 token decode（M=1）的<b>逐列結果不再逐位元相同</b>。
+<code>CGC_MM_BITIDENT</code> 存在的唯一理由就是躲這件事（它自己寫「bit-identical pillar 1」）。</p>
+
+<p>⇒ <b>這是「拿 bit-identity 換 decode」的決定，不是無痛優化。</b>要做的話需要：
+① 先量 <code>CGC_MM_BITIDENT=0</code> 的速度增益（A/B）；
+② 用 D5 量它的數值代價，並<b>另立參考檔</b>（現行 <code>v6_nbaware</code> 會失效）；
+③ 明文決定這件事值不值得。</p>
+
+<h2>§32 entry ①：<code>consumed_changed</code> 回答了，但<b>母體是錯的</b>（2026-09-18 13:4x 新增）</h2>
+
+<p>要論證「池在步前一次發布所有層的表」（§28.3 的第 ① 條），前提是
+<code>consumed_changed</code> —— 即「多少 publish 其實沒有改變被消費者讀到的映射」。
+臂 <code>p25-s1-churn</code>（<code>CGC_SLOT_TABLE_GPU=1 CGC_S1_TABLE_CHURN=1</code>），log <code>133556</code>：</p>
+
+<pre><code>S1 slot-table: publishes=2635 clamped_selected=0 clamped_table=0 changed_entries=0
+               consumed_changed=0 consumed_unchanged_publishes=35</code></pre>
+
+<p><b>分母不是 2635，是 35。</b>原因是 <code>llama-context.cpp:4640</code> 的閘門：</p>
+
+<pre><code>if (cgc_churn_on &amp;&amp; n_tokens == 1) { ... }</code></pre>
+
+<p>⇒ <b>只有單 token 的 publish 進樣本。</b>而 MTP-on 的 trunk verify 是
+<code>n_tokens ∈ {2,4,8}</code> ⇒ <b>verify 步驟根本不在樣本裡</b>（那 35 筆 ≈ draft／單 token 的那些）。</p>
+
+<p>⇒ <code>consumed_changed</code> <b>在 MTP-on 生產 shape 下答不了那個問題</b>：
+要嘛放寬 <code>n_tokens == 1</code> 那個閘門（動 <code>src/</code>），要嘛在 MTP-off 臂上量。
+而 §EN-138 記的 <b>16.5% 正是 MTP-off 臂</b>的數字 ⇒ <b>兩者不是同一母體，不可互相取代。</b></p>
+
+<h2>§33 生產級量測：四格跑完，但機器在搶記憶體（2026-09-18 13:4x 新增）</h2>
+
+<p>入口 <code>prod_matrix.py --profiles prefill250 --cells decode,decode-up,prefill-house,prefill-up --reps 3</code>
+（<code>prod25</code> 被工具主動 SKIP：它沒釘 BATCH 又沒有 <code>CGC_PREFILL_STREAM</code> ⇒
+池的 clamp 會讓 cell 的 <code>-b</code> 不是有效 batch）。完整報告見
+<code>docs/PROD_MATRIX_2026-09-18.md</code>。</p>
+
+<table>
+<tr><th>cell</th><th>launch</th><th>platform t/s</th><th>avg_ts</th></tr>
+<tr><td><code>decode</code>（<code>-p 0 -n 128 -d 512 -b 512</code>）</td><td><b>HEAVY</b></td><td><b>5.61</b></td><td>5.43</td></tr>
+<tr><td><code>decode-up</code>（<code>-b 2048</code>）</td><td><b>HEAVY</b></td><td><b>5.32</b></td><td>4.79</td></tr>
+<tr><td><code>prefill-house</code>（<code>-p 2048 -b 5632</code>）</td><td><b>HEAVY</b></td><td><b>116.94</b></td><td>120.59</td></tr>
+<tr><td><code>prefill-up</code>（<code>-p 512 -b 2048</code>）</td><td>MODERATE</td><td><b>72.42</b></td><td>75.70</td></tr>
+</table>
+
+<p><b>⇒ 四格全非 NOMINAL ⇒ 依工具自己的判準不可當生產數字。</b>
+而原因是本機的宿主：<code>vm.swapusage</code> 顯示 <b>used 12836.56 / 14336 MiB（90%）</b>、
+<code>Pages free</code> ≈ 4.9 GiB，而 <code>top -o mem</code> 的前 8 名是
+<b>WorkBuddy Helper 4820M ＋ Electron ×6 ≈ 5.6 GB</b>（合計 ≈ 10.5 GB）。
+<code>prod_matrix</code> 每格的 <code>pre.swap_used_mib</code> 在四格之間由 12182 長到 15933。</p>
+
+<p>⇒ <b>模型只拿到約 1.5 GB 可用 ＋ 12.8 GB 的 swap 在翻頁</b>，所以 5.61 是記憶體爭用的產物。
+要拿到可引用的數字，前置條件是關掉宿主 Electron 群 ＋ 靜置 ≥1800 s，且每格的
+<code>launch</code> 必須是 <code>NOMINAL</code>。</p>
+
+<h2>§34 本節的誠實邊界（§13／§17／§21／§27／§29 之外的補充）</h2>
+
+<ol>
+<li><b>§31 的 <code>nr1 = 1</code> 是原始碼讀出來的事實，但「M× 重讀」的推論只由算術支持</b>
+    （8.8 × M ≈ 35–70 GB/s）。<b>沒有直接量到重讀</b>（那需要 GPU 側的記憶體計數器）。
+    可裁決的實驗：在 M=1 與 M=4 下分別量同一個 <code>MUL_MAT</code> 的 GPU 時間並比 4:1 這個比例。</li>
+<li><b>§31 的兩個候選只是候選</b>：把 IQ4_XS 補進名單 ＋ <code>CGC_MM_BITIDENT=0</code> 的<b>組合</b>
+    從未被跑過；而且它會動數值（要另立 D5 參考檔）。</li>
+<li><b>§32 的 0/35 不是「沒有 churn」</b> —— 是一個<b>母體不足</b>的讀數。不要把它寫成結論。</li>
+<li><b>§33 的數字一律不可引用</b>（含「decode 5.61」）；可引用的只有「四格 launch 全非 NOMINAL」這個<b>條件</b>。</li>
+</ol>
+
+
+<h2>§35 現場閘門輸出（原文，2026-09-18 13:5x）</h2>
+
+<pre><code>$ python3 agent_harness/scripts/import_harness_snapshot.py                → 15 檔（skills 5 支）
+$ python3 agent_harness/engine_loop/memory/build_memory_index.py          → 8 file(s) + 250 section(s)
+$ cd agent_harness/engine_loop &amp;&amp; python3 index_assets.py                 → manifest OK: 108 assets
+$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check  → memory index OK, no drift
+$ cd agent_harness/engine_loop &amp;&amp; python3 index_assets.py --check         → existence + bytes + mtime all agree
+$ python3 agent_harness/engine_loop/traces/validate.py
+  lessons.jsonl: 189 records {'lesson': 189}
+  -&gt; OK
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  10/10 injected violations rejected
+$ BIN_DIR='src/llama.cpp/build/bin' RUN_REPLAY_BENCH=0 bash scripts/check_build_tracked.sh --repo "$PWD"
+  OK: 沒有 FAIL — 5 個區段被 SKIP（各有理由）</code></pre>
+
+<p>本輪<b>沒有動 <code>src/</code></b>（只有 <code>scripts/</code> 與 <code>docs/</code>）⇒ D5 的數值那一半按判準略過；
+而 <code>check 8</code> 在 commit 時會判「無 llama 原始碼變更」。</p>
 
 </div>
 </body>

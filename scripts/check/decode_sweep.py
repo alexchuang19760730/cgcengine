@@ -160,6 +160,20 @@ ARMS = {
                           "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_KEEP_LEAF": "1"},
     "p25-s1-prod":       {"CGC_GPU_TIMING": "1", "CGC_DECODE_PROFILE": "1",
                           "CGC_SLOT_TABLE_GPU": "1"},
+    # [CGC 2026-09-18 §EN-152] Two cheap readings in one run.
+    #   p25-mmd-trace : which mul_mat family each MUL_MAT takes (CGC_MM_DBG=1). attn_qkv / attn_gate
+    #                   / ssm_out / ffn_*_shexp are all IQ4_XS, and IQ4_XS appears in NEITHER
+    #                   small-batch list (ggml-metal-ops.cpp:2479: group A needs one of
+    #                   IQ4_NL/etc with ne11 in [2,8]; group B needs Q2_K..Q6_K with ne11 in [4,8]),
+    #                   while mul_mm needs ne11 > ne11_mm_min = 8. So at decode/verify (ne11 in
+    #                   {1,2,4}) every dense projection should fall through to the plain mul_mv.
+    #                   This arm verifies that from the instrument, not from the source.
+    #   p25-s1-churn  : CGC_S1_TABLE_CHURN=1 turns on the consumed-subset churn counter that the S1
+    #                   slot-table line reports as "(not instrumented)". That number is the
+    #                   precondition for "publish all layers' tables once before the step" (§EN-150).
+    "p25-mmd-trace":     {"CGC_GPU_TIMING": "1", "CGC_DECODE_PROFILE": "1", "CGC_MM_DBG": "1"},
+    "p25-s1-churn":      {"CGC_GPU_TIMING": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_TABLE_CHURN": "1"},
     # [CGC 2026-09-18 §EN-144] The FIRST same-checkpoint MTP-off arm. Every earlier server-side
     # "MTP off" arm set only CGC_SERVER_MTP=0, and run_server.sh:154 turns that into
     # MODEL_DEFAULT=$Q36 = Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf -- a DIFFERENT checkpoint with no nextn
