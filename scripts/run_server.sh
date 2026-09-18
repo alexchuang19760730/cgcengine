@@ -684,6 +684,12 @@ cgc_preflight_cmd() {
     ps -o command= -p "$1" 2>/dev/null | head -1 || true
 }
 
+# `ps -o pid=,etime=,command=`：把「跑了多久」也印出來 —— 要判斷一支行程是自己的殘留還是別人
+# 正在跑的量測，「年齡」是最有用的單一資訊（幾秒前才起來的，八成是別人剛發的量測）。
+cgc_preflight_desc() {
+    ps -o pid=,etime=,command= -p "${1}" 2>/dev/null | cut -c1-150 || true
+}
+
 # 去重後的殘留 pid 清單（pgrep 一次一個 pattern，多個 pattern 會重複命中同一支行程）
 cgc_preflight_pids() {
     local p pid cmd exe base n cands
@@ -726,26 +732,50 @@ cgc_preflight_signal() {
     done || true
 }
 
-if [ "$CGC_PREFLIGHT_KILL" = "1" ] && [ "${N30CACHE_NO_CLEAN:-0}" != 1 ]; then
+# [CGC 2026-09-18 no-cross-kill] 預設從「送訊號清場」改成「只報告」。理由：2026-09-18 同一天裡
+# 兩支正在量的 server 被外部 SIGTERM 打死（日誌 `[CGC] Received SIGTERM`），不是 watchdog（走
+# GGML_ABORT）、不是 OOM —— 兇手就在這一段：pattern + `pgrep -f` **不看 port、不看 session**，
+# 任何一條線起 `run_server.sh` 都會把別人的 llama 一起 SIGTERM 掉；而且這段**排在 memory guard
+# 之前**，所以就算自己隨後被 guard 擋下、沒能起來，被殺的那一輪也已經死了（對方的量測整天白跑，
+# 自己這輪也沒成果）。先前的「nohup／進程組連坐」假設已被證偽：第二次死亡發生在前景命令還活著時。
+#
+# 三個取值：
+#   CGC_PREFLIGHT_KILL=1    （預設）列出撞到的行程，**不送任何訊號**；由下面的 STALE 硬檢查擋住啟動
+#   CGC_PREFLIGHT_KILL=all  舊行為：SIGTERM 全部（你確定機器上只有你自己在用）
+#   CGC_PREFLIGHT_KILL=0    完全略過 preflight
+# NOTE：`CGC_DUMP_ENV=1` 只是把解析好的 env/argv 印出來、**不會真的起 server**，所以它絕對不能
+#       有任何殺人副作用 —— llama_bench_matrix / prod_matrix / m123_oracle_gate / phase_split_ab
+#       都是靠它取值（一次的「查 env」不該把別人的量測打死）。
+if [ "$CGC_PREFLIGHT_KILL" != "0" ] && [ "${N30CACHE_NO_CLEAN:-0}" != "1" ] && [ "${CGC_DUMP_ENV:-}" != "1" ]; then
     PRE_N="$(cgc_preflight_count)"
     if [ "${PRE_N:-0}" -gt 0 ]; then
-        echo "[preflight] 發現 ${PRE_N} 支殘留 llama 行程，先清乾淨再起 server（避免 GPU OOM ret=-3）"
-        cgc_preflight_pids | while read -r pid; do
-            echo "  [preflight]   pid=${pid}: $(cgc_preflight_cmd "$pid" | cut -c1-120)"
-        done || true
-        cgc_preflight_signal -TERM
-        echo "  [preflight] SIGTERM 已送（graceful，讓 Metal buffer 正常釋放）"
-        # 等 graceful shutdown：TERM_WAIT 秒，每 0.5s 檢查一次
-        TERM_TICKS=$(( CGC_PREFLIGHT_TERM_WAIT_SEC * 2 ))
-        for i in $(seq 1 "${TERM_TICKS:-30}"); do
-            sleep 0.5
-            [ "$(cgc_preflight_count)" -eq 0 ] && break
-        done
-        # 只剩不回應的才 SIGKILL
-        if [ "$(cgc_preflight_count)" -gt 0 ]; then
-            cgc_preflight_signal -9
-            echo "  [preflight] WARNING: SIGKILL 不回應的行程（GPU 記憶體可能漏）"
-            sleep 2
+        if [ "$CGC_PREFLIGHT_KILL" = "all" ]; then
+            echo "[preflight] 發現 ${PRE_N} 支殘留 llama 行程，先清乾淨再起 server（避免 GPU OOM ret=-3）"
+            cgc_preflight_pids | while read -r pid; do
+                echo "  [preflight]   $(cgc_preflight_desc "${pid}")"
+            done || true
+            cgc_preflight_signal -TERM
+            echo "  [preflight] SIGTERM 已送（graceful，讓 Metal buffer 正常釋放）"
+            # 等 graceful shutdown：TERM_WAIT 秒，每 0.5s 檢查一次
+            TERM_TICKS=$(( CGC_PREFLIGHT_TERM_WAIT_SEC * 2 ))
+            for i in $(seq 1 "${TERM_TICKS:-30}"); do
+                sleep 0.5
+                [ "$(cgc_preflight_count)" -eq 0 ] && break
+            done
+            # 只剩不回應的才 SIGKILL
+            if [ "$(cgc_preflight_count)" -gt 0 ]; then
+                cgc_preflight_signal -9
+                echo "  [preflight] WARNING: SIGKILL 不回應的行程（GPU 記憶體可能漏）"
+                sleep 2
+            fi
+        else
+            echo "[preflight] 發現 ${PRE_N} 支 llama 行程（可能是別條 session 正在量測）→ 不送任何訊號" >&2
+            cgc_preflight_pids | while read -r pid; do
+                echo "  [preflight]   $(cgc_preflight_desc "${pid}")" >&2
+            done || true
+            echo "  [preflight] 確定是自己的殘留才手動清：kill -TERM <pid>（讓 Metal buffer 正常釋放，不要一開始就 -9）" >&2
+            echo "  [preflight] 或明確授權清場：CGC_PREFLIGHT_KILL=all ./scripts/run_server.sh" >&2
+            echo "  [preflight] 下面的 STALE 硬檢查會擋住啟動；確定要硬闖：CGC_PREFLIGHT_SKIP_STALE_CHECK=1" >&2
         fi
     else
         echo "[preflight] 無殘留 llama 行程"
@@ -767,14 +797,23 @@ if [ "$CGC_PREFLIGHT_KILL" = "1" ] && [ "${N30CACHE_NO_CLEAN:-0}" != 1 ]; then
     [ -n "${PRE_FREE:-}" ] && echo "[preflight] free=${PRE_FREE}%"
 fi
 
+# [CGC 2026-09-18] CGC_DUMP_ENV=1 是「只解析、不起 server」的模式：之後每一個「能不能起 server」
+# 的閘門（STALE 硬檢查、memory guard）對它都沒有意義，而且會讓你在**別條 session 正在跑**的時候
+# 查不到任何東西 —— 偏偏那正是最需要知道真相的時候。所以這裡立一個旗標，閘門全部讓路。
+DUMP_ONLY=0
+[ "${CGC_DUMP_ENV:-}" = "1" ] && DUMP_ONLY=1
+
 # 硬性攔截：kill/等待都做完了還有殘留，就在這裡停，不要讓它炸在模型載入之後。
 STALE_N="$(cgc_preflight_count)"
-if [ "${STALE_N:-0}" -gt 0 ]; then
-    echo "error: 仍有 ${STALE_N} 支殘留 llama 行程，繼續啟動極可能 GPU OOM (ret=-3)" >&2
+if [ "${STALE_N:-0}" -gt 0 ] && [ "$DUMP_ONLY" = "0" ]; then
+    echo "error: 仍有 ${STALE_N} 支 llama 行程，繼續啟動極可能 GPU OOM (ret=-3)" >&2
+    echo "  （preflight 預設已不再幫你清場：2026-09-18 它把別條 session 正在量的 server SIGTERM 掉了）" >&2
     cgc_preflight_pids | while read -r pid; do
-        echo "  pid=${pid}: $(cgc_preflight_cmd "$pid" | cut -c1-120)" >&2
+        echo "  $(cgc_preflight_desc "${pid}")" >&2
     done || true
-    echo "  手動清：pkill -TERM -f llama-server（等它自己退出，不要一開始就 -9）" >&2
+    echo "  第二欄是 etime（跑了多久）：幾秒鐘的多半是別人剛發的量測，不要殺。" >&2
+    echo "  確定是自己的殘留：kill -TERM <pid>（等它自己退，不要一開始就 -9）" >&2
+    echo "  確定是自己一個人在用機器：CGC_PREFLIGHT_KILL=all ./scripts/run_server.sh" >&2
     echo "  或在充分理解風險下跳過：CGC_PREFLIGHT_SKIP_STALE_CHECK=1" >&2
     [ "${CGC_PREFLIGHT_SKIP_STALE_CHECK:-0}" = "1" ] || exit 1
 fi
@@ -811,7 +850,7 @@ FREE_PCT="${FREE_PCT:-0}"
 OTHER_LLAMA_SERVERS="$(cgc_existing_llama_server_count)"
 MEM_CLASS="$(cgc_memory_guard_class)"
 read -r MEM_REQ_PHYS_GB MEM_REQ_FREE_PCT MEM_REQ_OTHER <<< "$(cgc_memory_guard_req "$MEM_CLASS")"
-if [ "$PHYS_MEM_GB" -lt "$MEM_REQ_PHYS_GB" ] || [ "$FREE_PCT" -lt "$MEM_REQ_FREE_PCT" ] || [ "$OTHER_LLAMA_SERVERS" -gt "$MEM_REQ_OTHER" ]; then
+if [ "$PHYS_MEM_GB" -lt "$MEM_REQ_PHYS_GB" ] || [ "$FREE_PCT" -lt "$MEM_REQ_FREE_PCT" ] || [ "$OTHER_LLAMA_SERVERS" -gt "$MEM_REQ_OTHER" ] && [ "$DUMP_ONLY" = "0" ]; then
     MEM_REASON="$(cgc_memory_guard_reason "$MEM_CLASS" "$PHYS_MEM_GB" "$FREE_PCT" "$OTHER_LLAMA_SERVERS" "$MEM_REQ_PHYS_GB" "$MEM_REQ_FREE_PCT" "$MEM_REQ_OTHER")"
     if [ "$SERVER_MEMORY_MODE" = "prod" ] && [ "$MEM_CLASS" = "full-mtp" ]; then
         echo "[guard] prod start does not meet full-MTP memory requirement -> $MEM_REASON" >&2
@@ -825,7 +864,7 @@ if [ "$PHYS_MEM_GB" -lt "$MEM_REQ_PHYS_GB" ] || [ "$FREE_PCT" -lt "$MEM_REQ_FREE
     fi
 fi
 
-if [ "$PHYS_MEM_GB" -lt "$MEM_REQ_PHYS_GB" ] || [ "$FREE_PCT" -lt "$MEM_REQ_FREE_PCT" ] || [ "$OTHER_LLAMA_SERVERS" -gt "$MEM_REQ_OTHER" ]; then
+if [ "$PHYS_MEM_GB" -lt "$MEM_REQ_PHYS_GB" ] || [ "$FREE_PCT" -lt "$MEM_REQ_FREE_PCT" ] || [ "$OTHER_LLAMA_SERVERS" -gt "$MEM_REQ_OTHER" ] && [ "$DUMP_ONLY" = "0" ]; then
     MEM_REASON="$(cgc_memory_guard_reason "$MEM_CLASS" "$PHYS_MEM_GB" "$FREE_PCT" "$OTHER_LLAMA_SERVERS" "$MEM_REQ_PHYS_GB" "$MEM_REQ_FREE_PCT" "$MEM_REQ_OTHER")"
     echo "error: even fallback memory guard is not satisfied -> $MEM_REASON" >&2
     echo "hint: 這代表目前機器狀態連保命線都撐不住，先關掉其他重工行程後再跑。" >&2

@@ -230,11 +230,14 @@ def main():
         env["CGC_LOGITS_ORACLE_TOPN"] = "8"
         env["CGC_LOGITS_ORACLE_FIRST_N"] = "0"  # unlimited
 
+        # start_new_session: survive the caller's process group (see run_server.sh's own --detach
+        # and the cross-kill notes in docs/PROFILE_DUO_2026-09-18.md §5).
         proc = subprocess.Popen(
             ["./scripts/run_server.sh"],
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            start_new_session=True,
         )
         print(f"[launch] server PID: {proc.pid}")
 

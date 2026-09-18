@@ -129,7 +129,11 @@ def start(pool_bytes, model, port, extra_env=None):
         k, _, v = kv.partition("=")
         env[k.strip()] = v.strip()
     with open("/tmp/pool_curve_launch.log", "ab") as logf:
-        subprocess.run(["bash", "scripts/run_server.sh"], cwd=ROOT, env=env, stdout=logf, stderr=logf)
+        # start_new_session: own session so a SIGINT/SIGHUP aimed at us (or the caller reaping our
+        # process group) cannot take the server down mid-measurement. Same reason run_server.sh
+        # grew `--detach`; see the cross-kill notes in docs/PROFILE_DUO_2026-09-18.md §5.
+        subprocess.run(["bash", "scripts/run_server.sh"], cwd=ROOT, env=env,
+                       stdout=logf, stderr=logf, start_new_session=True)
     time.sleep(3)
 
 
