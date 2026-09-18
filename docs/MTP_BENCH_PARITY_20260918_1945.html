@@ -197,7 +197,7 @@ __Z27llama_context_set_cgc_phaseP13llama_context11cgc_phase_t</code></pre>
 
 <div class="box warn">
 <b>先講可引用性</b>：本節有兩組數字，<b>只有第二組可以引用</b>。
-第一組落在 <b>19:53:59 那次不乾淨重開機之前</b>的窗內（`ResetCounter-2026-09-18-195408.diag`）
+第一組落在 <b>19:53:59 那次不乾淨重開機之前</b>的窗內（<code>ResetCounter-2026-09-18-195408.diag</code>）
 ⇒ 標 <span class="tag t-red">不可引用</span>。第二組是重開機後、環境閘門通過才跑的。
 </div>
 
@@ -258,6 +258,13 @@ MTP <code>n_max=3</code>、8 GiB pool）都與 <code>prod25-stream</code> 逐字
 </tr>
 </table>
 <ul>
+  <li>★ <b>這一組與上面的修復<u>無關</u></b>：修復只動 <code>llama-bench.cpp</code> 一個 TU，
+      <code>libllama</code>／<code>libggml-metal</code> <b>逐位未變</b>（本 commit 的
+      <code>git show --stat</code> 只有 4 個檔，其中 <code>src/</code> 兩個都不在 <code>libllama</code> 裡），
+      而這條路（<code>http_duo.py</code> → <code>run_server.sh</code> → <code>llama-server</code>）
+      <b>只鏈 <code>libllama</code></b> ⇒ <b>server 在修復前後行為相同</b>。
+      13.68 是<b>重開機後乾淨窗口</b>的產物，<b>不是修復的成果</b>。兩者的關係只有一個：
+      這個修復讓 <b>bench</b> 開始量到 server 一直在量的那個東西（§5 的 <code>union/call</code>）。</li>
   <li><b>12.x 回來了，而且超過</b>：MTP on 的 <b>13.68 &gt; 12.62</b>（+8.4%）。</li>
   <li>驅動自己印 <code>bar 250/12 -&gt; FAIL</code>，而 <b>FAIL 的唯一原因是 prefill（110 &lt; 250）</b>
       ⇒ <b>decode 的 12 t/s bar 是過的</b>（13.68 &gt; 12）。</li>
@@ -284,10 +291,25 @@ MTP <code>n_max=3</code>、8 GiB pool）都與 <code>prod25-stream</code> 逐字
   溫度（bench 預設 0.80 vs 請求端 greedy）、環境（今天 ±22%）</td></tr>
 </table>
 <p>
-<b>而且修好之後 bench 的 spec 臂數字會「變差」，那是對的</b>：修前它每個 verify 只碰 8 個專家
-（因為根本沒做 verify 的聯集），修後碰 <b>17.39</b> 個 ⇒ <b>終於開始做真的工作</b>。
+<b>修好之後 bench 的 spec 臂<b>會多搬專家</b> —— 這一半是機制，是硬的</b>：修前那 395 次 fast-path
+呼叫<b>全部是 draft</b>（<code>verify: calls=0</code>、每次 union <b>8.00</b> ＝ 單 token 的 top-k），
+修後 verify 真的進來（<b>17.39</b>／次）⇒ <b>同樣的 token 數要多搬那些專家</b>。
 「bench 量到 MTP ≈ 1.0」那個假象就是這樣來的。
 </p>
+
+<div class="box warn">
+<b>★ 更正（同日 20:30）：本節先前在此寫「所以 <code>t/s</code> 會變差，<u>那是對的</u>」—— 那句不成立。</b>
+<p>
+它與上面的 <b>§6.2</b> <b>直接矛盾</b>：唯一支持它的樣本（<code>fast</code> 3.36／5.57 vs
+<code>exact</code> 7.38 與 MTP off 7.66）<b>正是 §6.2 自己標成「不可引用」、且明說
+「本組不支持任何關於 fast／exact 貴賤的結論」的那一組</b>。用一組自己判為不可引用的數字去支撐一個斷言，
+是這一節最該避免的錯。
+</p>
+<p>
+⇒ 可引用的只有<b>機制那一半</b>（多做工作）；<b>「貴多少」今天沒有任何可引用的量測</b> ——
+修後的 bench spec 臂只在 19:53 重開機<b>之前</b>跑過兩次，都落在可疑窗內。已列為 §8 的具名缺口。
+</p>
+</div>
 
 <h2>§7 D5：閘門輸出原文（本 commit 動了 <code>src/</code> ⇒ 必需）</h2>
 
@@ -346,6 +368,11 @@ free 6.55 GB 才重跑成功。這就是「檢查與動作在同一個分支」�
       但因此<b>不能</b>回答「舊 binary 的絕對值是多少」。</li>
   <li><b>沒有動 <code>run_server.sh</code> 的那個死旗標</b>（argv 有兩個 <code>--temp</code>）；
       那是所有人共用的生產腳本，且屬另一條線的未提交修改檔。</li>
+  <li><b>★ 修復後的 bench spec 臂沒有可引用的 <code>t/s</code></b>：它只在 19:53 重開機<b>之前</b>
+      跑過兩次（<code>3.36</code>／<code>5.57</code>），而那一組已被 §6.2 判為<b>不可引用</b>。
+      ⇒ <b>「fast path 比 exact 貴多少」今天沒有答案</b>（機制上它多做工作，貴多少未量）。
+      要答就得在<b>重開機後的乾淨窗口</b>重跑 §6.1 那對照（<code>CGC_SERVER_WARM_NPAST</code> 開／關各一次，
+      同一 binary、不換 build）——那是本檔最該補的一量。</li>
 </ul>
 
 <h3>8.1 ★ 更正我自己：跨殺的兩處，一處已修、一處還在</h3>
