@@ -347,11 +347,21 @@ llama_expert_cache: MTP fast path: calls=510 union=9316 cold(ZERO)=0 (0.0%)   ve
   且 `union` 必須 `< (1+n_max)*top_k`（19.05 < 32 ⇒ batch 真的是 4）。
 - ⚠️ **陷阱（會讓兩份量測互相矛盾）**：**llama-bench 路徑下 `verify: calls = 0`**（所有 call 都被算進 `draft`），
   因為那條路的 verify 走 `ensure_batch`（真實填充 + LRU），**而 server 路徑的 verify 走 fast path（`touch`，no-fill）**。
-  ⇒ **MTP 的池成本在兩條路上結構不同，不可並排**；`MTP ≈ 0`（llama-bench）與 `+5.7%`（HTTP）的落差有這個成分。
-  ⇒ **要判 MTP 的淨效果，配對必須在 server 路徑做（HTTP + ABBA），不是 llama-bench。**
+  ⇒ **MTP 的池成本在兩條路上結構不同，不可並排**（`MTP ≈ 0`（llama-bench −4~−6%）與 `+5.7%`（HTTP）的落差有這個成分；
+  **不是**跨模型檔造成的 —— 見下一條，那兩份配對其實都是同檔的）。
 - **成本的主因不是單次 union**：`cold(ZERO) = 0` ⇒ 單次 verify 不打穿池。真正在動的是
   `layers_distinct_over_slots`（**3 → 11／18**）與 `capacity` miss（**218 → 2229，×10.2**）
   ⇒ **長期工作集超過 143 slots** ⇒ 對症的是「改淘汰／填充策略」，不是「增大池」。
+- ⚠️⚠️ **陷阱（一句話就會把「MTP off/on」變成跨模型檔比較）**：`run_server.sh:153-161` 是
+  `MODEL_DEFAULT="$Q36"` ＋ `if [ "$SERVER_MTP" = "1" ] → "$Q36_MTP_DENSEIQ4X"` ⇒
+  **只設 `CGC_SERVER_MTP=0` 就會把模型換成 `Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`**（沒有 nextn 頭的另一個檔）。
+  `CGC_DUMP_ENV=1` 逐字驗過（兩次的 `CGCENV MODEL` 不同）。
+  ⇒ 影響面：`decode_sweep.py` 的 `p25-mtpoff`／`p25-gputime`／`p25-mtpoff-phase`／`p25-phase-w32`
+  與 `llama_bench_matrix.py` 的 `prod25-stream-mtpoff` **全部跨檔**；
+  `mtp_accept_ab.py` 的 `nail_nomtp`（`:122` **顯式釘 `MODEL=Nail`**）與 llama-bench（`-m` 顯式）
+  **才是同檔** ⇒ 只有它們的配對算數。
+  ⇒ **要同檔配對就必須顯式設 `CGC_SERVER_MODEL`**（`decode_sweep.py` 的 `p25-nail-mtpoff` 就是為此存在）。
+  ⇒ 任何 MTP off 臂**開跑前**先比兩臂 ctrl log 的 `CGCENV MODEL` 那一行；跑完也要比。
 
 要配對，env 必須是解析出來的而不是手抄的——`llama_bench_matrix.py` 支援 `PROFILE:ENV=VAL`：
 

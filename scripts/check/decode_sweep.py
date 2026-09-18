@@ -149,6 +149,16 @@ ARMS = {
     # init, so it is the prime suspect. Test them one at a time, plus DRY (which penalises
     # repetition on the TARGET sampler only -- a systematic target/draft mismatch).
     "p25-mtp-on":    {},                       # same-session bare prod25 reference
+    # [CGC 2026-09-18 §EN-144] The FIRST same-checkpoint MTP-off arm. Every earlier server-side
+    # "MTP off" arm set only CGC_SERVER_MTP=0, and run_server.sh:154 turns that into
+    # MODEL_DEFAULT=$Q36 = Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf -- a DIFFERENT checkpoint with no nextn
+    # head (verified verbatim with CGC_DUMP_ENV=1, not inferred). So every historical server-side
+    # MTP off/on comparison (12.62 vs 9.82, 6.14 vs 5.81) crossed TWO variables at once. This arm
+    # pins CGC_SERVER_MODEL to the production Nail checkpoint, so the ONLY difference from
+    # p25-mtp-on is CGC_SERVER_MTP. Treat every pre-existing "MTP off" arm as a cross-checkpoint
+    # probe, and diff the CGCENV MODEL line before quoting any MTP off/on pair.
+    "p25-nail-mtpoff": {"CGC_SERVER_MODEL": "models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf",
+                        "CGC_SERVER_MTP": "0"},
     "p25-pillars-off": {"CGC_SERVER_MTP_NO_WARMUP": "0",
                         "CGC_SERVER_NO_SEQ_RM_PROBE": "0",
                         "CGC_MM_BITIDENT": "0"},
