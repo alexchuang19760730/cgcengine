@@ -932,6 +932,179 @@ $ python3 agent_harness/portal/build_portal.py
       （每一筆都指名它的來源），而復盤要人真的去讀 —— 入口的三棵樹只保證「沒有一筆是憑空寫的」。</li>
 </ul>
 
+<h2>§13 兩個數字目標，以及被綁上去的資產（含「動能」的定義）</h2>
+
+<div class="box pur">
+  <div class="k">這一輪的任務，以及它為什麼不是「漏了一欄」</div>
+  <div style="margin-top:5px">
+    使用者的指令：<b>本機的資產包含「優化決策以及對應的動能」／技能／記憶／代碼，跨機的也是；
+    這些都必須被包含在 prefill 250 t/s 與 decode 25 t/s 的本機目標上。</b><br>
+    動筆前先量了兩件事：<b>①</b> 目標樹（<code>goals.json</code>）有 G0–G5 六棵，但
+    <b>兩個數字目標沒有自己的節點</b> —— G1 的驗收只寫「decode 與 prefill 在固定 profile 下有可引用的數字」，
+    沒有 250、沒有 25；<b>②</b> 資產那一頁量化了 8 檔記憶／7 個 skill／LOC／68 筆決策，
+    但<b>沒有任何一條綁到目標上</b>。所以「這個決策有沒有在推進目標」在那之前是<b>不可回答</b>的。
+  </div>
+</div>
+
+<h3>13.1 動能的定義：由使用者當場給的</h3>
+
+<div class="box warn">
+  <div class="k">使用者的原話</div>
+  <div style="margin-top:5px">
+    「<b>納入後續決策的才是好決策；太多的被推翻就是動能不足</b>」
+  </div>
+</div>
+
+<p>
+  這句話把「動能」與「對吞吐的貢獻」分開了。前者是<b>它被後續決策納入的程度</b>，
+  後者是一個技術指標 —— 本 repo 有很多決策的吞吐貢獻是 0（甚至負的），但它們仍然可以是好決策。
+  所以動能不是手填的欄位，而是<b>從 <code>decisions.jsonl</code> 自己算出來的</b>：
+</p>
+
+<table>
+  <thead><tr><th>類別</th><th>判準（全部機械可檢）</th></tr></thead>
+  <tbody>
+    <tr><td><span class="tag t-green">carried</span></td>
+        <td>有<b>更晚</b>的決策在 <code>evidence</code>／<code>reasoning</code>／<code>conclusion</code>／
+            <code>action</code> 裡指名它的 <code>decision_id</code></td></tr>
+    <tr><td><span class="tag t-green">replaced</span></td>
+        <td>被取代 —— 有更晚的決策用 <code>supersedes</code> 指向它，或它的 <code>superseded_by</code> 被填了。
+            <b>被取代也是一種被納入</b>（後面的工作承認它曾經是對的）</td></tr>
+    <tr><td><span class="tag t-red">refuted</span></td>
+        <td><code>judgement = refuted</code>（同時是反毒閘門：會被排除出兩個 SFT 投影的正向集）</td></tr>
+    <tr><td><span class="tag t-red">orphan</span></td>
+        <td>既沒有被後續引用、也沒有被取代或推翻 —— 它對後面的工作沒有作用</td></tr>
+    <tr><td><span class="tag t-amber">pending</span></td>
+        <td><b>屬於最新的一天</b>且以上皆非。見下面那一段 —— 這一類是<b>方法上的必需品</b>，不是藉口</td></tr>
+  </tbody>
+</table>
+
+<div class="box">
+  <div class="k">為什麼一定要有 <code>pending</code>：指標不可被結構性偏誤綁死</div>
+  <div style="margin-top:5px">
+    一批決策是<b>同時</b>寫進去的 ⇒ 它裡面<b>結構上不可能</b>有「更晚的決策引用它」。
+    若把最新一批算成 orphan，那麼<b>每寫一批新決策、指標就會變差一次</b>，
+    於是「動能」會變成一個永遠很差的數字 —— 而<b>永遠很差的指標會被忽略</b>。
+    所以最新一天排除在門檻之外，並在輸出裡<b>逐筆標成 <code>pending</code></b>（不是靜默丟掉）。
+  </div>
+</div>
+
+<h3>13.2 實算結果（本輪第一次算）</h3>
+
+<pre><code>carried 1　replaced 4　refuted 2　orphan 31　pending 30
+judged 38（= 68 − 30 pending）
+refuted_rate 5.26%　（門檻 &gt; 25%）
+orphan_rate 81.58%　（門檻 &gt; 50%）　⇒ <b>動能不足：紅</b>
+carried_rate（carried ＋ replaced）13.16%
+
+分日：09-15  26 筆（refuted 2／orphan 21／carried 1／replaced 2）
+      09-16  12 筆（orphan 10／replaced 2）
+      09-18  30 筆（全部 pending）</code></pre>
+
+<p>
+  <b>兩個必要的 caveat（不寫下來就會被誤讀）：</b>
+</p>
+<ul>
+  <li><b>orphan ≠ 壞決策。</b> 它有兩種來源：(a) 真的沒有被後續工作用上；
+      (b) 它是一個<b>診斷的終點</b> —— 一個問題被它結案了，後面沒有東西需要引用它。
+      本指標量的是「被當成積木再用的程度」，而<b>一個把問題結掉的結論本來就會停在原地</b>。
+      所以它適合問「有多少產出沒有變成下一塊的基礎」，不適合逐筆判決策的好壞。</li>
+  <li><b>門檻是宣告的判準，不是普適定律。</b> 兩個門檻寫在
+      <code>targets.json</code> 的 <code>momentum.declared_red</code>，<b>可以被重新訴訟</b>；
+      引用時要附分母（這裡是 38）。</li>
+</ul>
+
+<p class="small">
+  另外三個由實算順帶確認的事實：<b>①</b> 舊的 38 筆裡真的有 <code>supersedes</code> 邊
+  （4 條），所以「被取代」這一類不是空集合；<b>②</b> 唯一一筆 <code>carried</code> 是
+  <code>dec-20260915-2110-publish-equals-safe-only-when-resident</code>，被
+  <code>dec-20260915-2125-extra-nodes-are-inert-so-the-ids-are-the-cause</code> 指名 ——
+  這是整份 registry 目前唯一一次「後面真的用了前面的結論」；<b>③</b> refuted 只有 2 筆（5.26%），
+  所以本 repo 的主要問題<b>不是「太多被推翻」，而是「很少被當成積木再用」</b>。
+</p>
+
+<h3>13.3 綁定表：97 筆，68 筆決策全覆蓋</h3>
+
+<table>
+  <thead><tr><th>量</th><th class="num">值</th></tr></thead>
+  <tbody>
+    <tr><td>綁定列</td><td class="num">97</td></tr>
+    <tr><td>其中決策／程式碼／記憶／技能</td><td class="num">68 ／ 14 ／ 8 ／ 7</td></tr>
+    <tr><td>目標分佈</td><td class="num">decode-25 51　·　enabling 39　·　prefill-250 5　·　both 4</td></tr>
+    <tr><td>完整性由誰釘住</td><td class="num"><code>portal-integrity</code> 閘門</td></tr>
+  </tbody>
+</table>
+
+<div class="box bad">
+  <div class="k">完整性檢查是這一節的重點，不是裝飾</div>
+  <div style="margin-top:5px">
+    <code>targets_problems()</code> 要求 <b>decisions.jsonl 裡的每一筆決策都必須有綁定列</b>，
+    少一列就紅並<b>指名那一筆</b>。沒有這條，一筆新決策會<b>靜默地不在任何目標上</b>，
+    而入口看起來完全正常（表上少一列，人不會去數）。
+    另有四條：<code>kind</code>／<code>target</code> 都在封閉 enum 內、binding 不能重複、
+    非決策的資產路徑必須真的存在（否則跨機那條通道會斷）、
+    <code>momentum.classes</code> 的鍵必須恰好是那五個且<b>順序固定</b>。
+    這一輪它當場抓到兩個真缺陷：<code>momentum.classes</code> 少了 <code>pending</code>，
+    以及我自己在 <code>goals.json</code> 的 <code>evidence</code> 裡塞了一個裸字串
+    （那會讓整棵目標樹在渲染時拋 <code>AttributeError</code>）。
+  </div>
+</div>
+
+<h3>13.4 本機／跨機：兩個獨立的軸</h3>
+
+<p>
+  <b>跨機</b>不是「有沒有那個檔」，而是「離開這台機器的通道真的走通了」——而那要兩個條件：
+  <b>① 在版控裡</b>（<code>git ls-files --error-unmatch</code> 通過；這一條本身就是 lesson
+  <code>eng-gate-0057</code>：<b>「索引／快照 綠」與「在版控裡」是兩個獨立的軸</b>）
+  <b>② 已推到遠端</b>（<code>ls-remote</code> 的 SHA 與本機 HEAD 相同）。
+</p>
+
+<div class="box warn">
+  <div class="k">② 在離線時只能是 <code>unknown</code>，不能是紅</div>
+  <div style="margin-top:5px">
+    這台機器在中國大陸，而本 repo 的其中一個 remote 是 <code>https://github.com/ggml-org/llama.cpp</code>。
+    實測：對它跑 <code>ls-remote</code> 會 <b>75 秒後 timeout</b>。所以
+    <code>cross_state()</code> 對連網那一軸有 <b>timeout</b>，而且失敗只寫
+    <code>pushed=unknown</code> ——
+    <b>一個會因為連不上 GitHub 而變紅的閘門，會在每一個離線的早晨說謊。</b>
+    而 <code>--check</code>（也就是 <code>portal-integrity</code> 閘門跑的那條）<b>完全不連網</b>，
+    只驗離線的 ①。
+  </div>
+</div>
+
+<h3>13.5 現場輸出原文（本輪）</h3>
+
+<pre><code>$ python3 agent_harness/portal/build_portal.py --check
+  -&gt; OK: 18 條閘門（fast 14／heavy 4），目標樹指針全部可解析、每一節都有 acceptance，
+          2 個目標 × 97 筆綁定完整（每一筆 decision 都在目標上）
+
+$ python3 agent_harness/portal/build_portal.py --self-test
+  ok    P 有決策但沒有綁定列 =&gt; rc=1 且指名那一筆 decision_id
+  ok    Q 決策有綁定列 =&gt; rc=0
+  ok    R 綁定指到不存在的路徑 =&gt; rc=1（跨機那條通道會斷）
+  18/18 checks passed
+
+$ python3 agent_harness/portal/build_portal.py
+  [portal] 產物自檢通過（264,249 B：無 markdown 殘留、標籤對稱、五個分頁齊、離線可開）
+  [portal] 閘門 14/14 綠　（全綠）</code></pre>
+
+<h3>13.6 誠實邊界（本節不主張什麼）</h3>
+
+<ul>
+  <li><b>不主張 <code>target</code> 的分類經過量測。</b> 「這一筆決策服務哪一個目標」是<b>判斷</b>，
+      不是量測（判準是它的 <code>evidence</code> 與 <code>conclusion</code> 涉及哪條路徑）。
+      綁定表刻意<b>不帶第二份證據</b> —— 證據在決策記錄自己身上，這樣才不會有兩個真相。
+      要重新訴訟一筆的分類，改的是 <code>targets.json</code> 的那一行。</li>
+  <li><b>不主張 <code>enabling</code> 是「沒有目標」。</b> 它是「不直接改變任一目標的數字，
+      但被兩個目標的推進所依賴」（方法論／閘門／流程）。39 筆落在這一類 —— 這是一個<b>事實陳述</b>，
+      也是一個可以被質疑的分類（例如 <code>m123_oracle_gate</code> 算不算 <code>both</code>？）。</li>
+  <li><b>不主張動能已經算完。</b> 30 筆 <code>pending</code> 要等下一批登錄之後才有第一批讀數；
+     而那時 <code>orphan_rate</code> 會不會降下來，正是一個可被檢驗的預測。</li>
+  <li><b>不主張 prefill 250 已經達標。</b> 它的狀態是 <code>conditional</code>：
+      冷機「發射 0」時 6/6 ≥250，否則 0/21；最近三個讀數 242.42／227.27／249.06 <b>全部 &lt;250</b>。
+      判準因此是「可重現性」而不是平均值。</li>
+</ul>
+
 <div class="box ok">
   <div class="k">一句話</div>
   <div style="margin-top:5px">

@@ -1,24 +1,24 @@
 {
-  "generated_at": "2026-09-18 12:31:40",
+  "generated_at": "2026-09-18 12:43:19",
   "git": {
     "branch": "demo/sweet-spot-windows-fix",
-    "head": "b5f8e06a346f9ea591683ab589f75fb7d13b72ec",
-    "head_short": "b5f8e06a3",
-    "subject": "docs(memory): §EN-148 -- S1 就是「去序列化」的實作點（原始碼逐字）＋ node 桶 350 個成員定位",
+    "head": "586a8bd1216aecb957edf7711e5f9155628823e6",
+    "head_short": "586a8bd12",
+    "subject": "docs(skill,snapshot): 新增 cgc-decision-registry（決策 registry 的登錄流程）-- 本批 30 節走出來的固定流程；快照 15/15 相符",
     "dirty": 10,
     "dirty_sample": [
-      "M agent_harness/engine_loop/sft_pi/PROVENANCE.json",
-      " M agent_harness/engine_loop/sft_prime/PROVENANCE.json",
-      " M agent_harness/engine_loop/sft_prime/train.jsonl",
-      " M agent_harness/engine_loop/sft_prime/valid.jsonl",
-      " M agent_harness/engine_loop/traces/decisions.jsonl",
+      "M agent_harness/portal/build_portal.py",
       " M agent_harness/portal/data.json",
+      " M agent_harness/portal/goals.json",
       " M agent_harness/portal/history.jsonl",
-      " M docs/AGENT_HARNESS_PORTAL.html"
+      " M docs/AGENT_HARNESS_PORTAL.html",
+      " M src/llama.cpp/build/bin/libggml-base.0.19.0.dylib",
+      " M src/llama.cpp/build/bin/libllama.0.0.279.dylib",
+      " M src/llama.cpp/ggml/src/ggml-backend.cpp"
     ]
   },
   "fingerprint": {
-    "digest": "f6400309ddbd2254",
+    "digest": "6027343aa0b7f15e",
     "inputs": [
       {
         "path": "agent_harness/engine_loop/traces/lessons.jsonl",
@@ -47,8 +47,8 @@
       },
       {
         "path": "agent_harness/portal/goals.json",
-        "sha256_12": "a50b7c8ee0ab",
-        "bytes": 12456
+        "sha256_12": "4d40a2bfbf41",
+        "bytes": 13923
       }
     ]
   },
@@ -78,10 +78,10 @@
         },
         {
           "name": "2026-09-18.md",
-          "bytes": 198568,
-          "mtime": "09-18 12:26",
-          "lines": 2746,
-          "sections": 30
+          "bytes": 202378,
+          "mtime": "09-18 12:32",
+          "lines": 2799,
+          "sections": 31
         },
         {
           "name": "MEMORY.md",
@@ -113,8 +113,8 @@
         }
       ],
       "count": 8,
-      "bytes": 1171584,
-      "lines": 15428
+      "bytes": 1175394,
+      "lines": 15481
     },
     "skills": {
       "items": [
@@ -124,6 +124,13 @@
           "lines": 1090,
           "sha8": "be8a39a3",
           "desc": "在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）提交 commit 時，正確通過 pre-commit 閘門並滿足 D5 的完整流程與陷阱。當要在該 repo commit、被 pre-commit hook 擋下、不確定要不要跑 re"
+        },
+        {
+          "name": "cgc-decision-registry",
+          "bytes": 9147,
+          "lines": 159,
+          "sha8": "c22b2f2f",
+          "desc": "把 flashkv-devserver 的日誌決策節（`.workbuddy/memory/YYYY-MM-DD.md` 的 §EN-／§TB- 節）登錄成 `agent_harness/engine_loop/traces/decisions.jsonl` 的決策記錄。當使用者要求「把某段時間的技"
         },
         {
           "name": "cgc-decode-attribution",
@@ -161,9 +168,9 @@
           "desc": "在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）撰寫 docs/*.html 技術白皮書的版式、取材清單與交付流程。當要求為該 repo 產生白皮書 / 技術架構文件 / 里程碑文件、或 D5 要求「每次 commit 附一份白皮書」時"
         }
       ],
-      "count": 6,
-      "bytes": 304102,
-      "lines": 3823
+      "count": 7,
+      "bytes": 313249,
+      "lines": 3982
     },
     "code": {
       "areas": [
@@ -177,8 +184,8 @@
         {
           "area": "src/llama.cpp（引擎核心 C++/Metal）",
           "files": 2440,
-          "loc": 1062639,
-          "bytes": 80195833,
+          "loc": 1062643,
+          "bytes": 80196212,
           "archive": false
         },
         {
@@ -240,8 +247,8 @@
         {
           "area": "agent_harness/portal",
           "files": 1,
-          "loc": 1816,
-          "bytes": 93571,
+          "loc": 2204,
+          "bytes": 115863,
           "archive": false
         },
         {
@@ -267,11 +274,11 @@
         }
       ],
       "files": 8062,
-      "loc": 3071210,
-      "bytes": 161626804,
+      "loc": 3071602,
+      "bytes": 161649475,
       "files_live": 4227,
-      "loc_live": 1516446,
-      "bytes_live": 97863325
+      "loc_live": 1516838,
+      "bytes_live": 97885996
     },
     "traces": {
       "episodes": 122,
@@ -306,8 +313,8 @@
         "bytes": 15426860
       },
       "backup": {
-        "files": 4591,
-        "bytes": 1090113067
+        "files": 4595,
+        "bytes": 1089473052
       }
     }
   },
@@ -450,7 +457,7 @@
         "id": "charter-citations",
         "group": "charter",
         "status": "PASS",
-        "seconds": 0.21,
+        "seconds": 0.16,
         "rc": 0,
         "tail": "  OK: 61/61 條都有交代（可解析指針 59 ＋ 顯式標記 2），0 懸空",
         "cost": "fast",
@@ -460,7 +467,7 @@
         "id": "shared-log-policy",
         "group": "shared",
         "status": "PASS",
-        "seconds": 0.39,
+        "seconds": 0.33,
         "rc": 0,
         "tail": "  log 政策一致",
         "cost": "fast",
@@ -470,7 +477,7 @@
         "id": "shared-module-split",
         "group": "shared",
         "status": "PASS",
-        "seconds": 0.45,
+        "seconds": 0.28,
         "rc": 0,
         "tail": "  2/2 checks passed",
         "cost": "fast",
@@ -480,7 +487,7 @@
         "id": "shared-shell-cjk",
         "group": "shared",
         "status": "PASS",
-        "seconds": 0.48,
+        "seconds": 0.46,
         "rc": 0,
         "tail": "  0 處：所有 `$VAR` 後面都不是緊接非 ASCII",
         "cost": "fast",
@@ -490,7 +497,7 @@
         "id": "shared-stale",
         "group": "shared",
         "status": "PASS",
-        "seconds": 0.15,
+        "seconds": 0.13,
         "rc": 0,
         "tail": "3 個登記項（2 個資產 + 1 個消費者）都對得上：banner 跟著資料、消費點有出口、反向沒有未登記的標記",
         "cost": "fast",
@@ -500,7 +507,7 @@
         "id": "traces-validate",
         "group": "traces",
         "status": "PASS",
-        "seconds": 0.05,
+        "seconds": 0.04,
         "rc": 0,
         "tail": "  -> OK",
         "cost": "fast",
@@ -510,7 +517,7 @@
         "id": "traces-selftest",
         "group": "traces",
         "status": "PASS",
-        "seconds": 0.44,
+        "seconds": 0.29,
         "rc": 0,
         "tail": "  10/10 injected violations rejected",
         "cost": "fast",
@@ -520,7 +527,7 @@
         "id": "derived-engine-memories",
         "group": "derived",
         "status": "PASS",
-        "seconds": 0.05,
+        "seconds": 0.03,
         "rc": 0,
         "tail": "memories OK: 185 file(s), extensions pointer resolves, no drift",
         "cost": "fast",
@@ -530,7 +537,7 @@
         "id": "derived-sft-pi",
         "group": "derived",
         "status": "PASS",
-        "seconds": 0.05,
+        "seconds": 0.03,
         "rc": 0,
         "tail": "  sft_pi OK: train.jsonl + valid.jsonl re-derive to the same bytes; the invocation and input hashes agree with PROVENANCE.json",
         "cost": "fast",
@@ -540,7 +547,7 @@
         "id": "derived-sft-prime",
         "group": "derived",
         "status": "PASS",
-        "seconds": 0.05,
+        "seconds": 0.04,
         "rc": 0,
         "tail": "  sft_prime OK: train.jsonl + valid.jsonl re-derive to the same bytes; the invocation and input hashes agree with PROVENANCE.json",
         "cost": "fast",
@@ -550,9 +557,9 @@
         "id": "index-memory",
         "group": "index",
         "status": "PASS",
-        "seconds": 0.05,
+        "seconds": 0.04,
         "rc": 0,
-        "tail": "memory index OK: 8 file(s), 238 section(s), no drift",
+        "tail": "memory index OK: 8 file(s), 239 section(s), no drift",
         "cost": "fast",
         "needs": ""
       },
@@ -560,7 +567,7 @@
         "id": "index-assets",
         "group": "index",
         "status": "PASS",
-        "seconds": 0.06,
+        "seconds": 0.04,
         "rc": 0,
         "tail": "manifest OK: 108 assets, existence + bytes + mtime all agree",
         "cost": "fast",
@@ -570,7 +577,7 @@
         "id": "snapshot-freshness",
         "group": "snapshot",
         "status": "PASS",
-        "seconds": 0.07,
+        "seconds": 0.04,
         "rc": 0,
         "tail": "  -> OK: 快照與原檔一致（provenance 逐筆相符、集合相符、副本未被手改、README 成員表相符）",
         "cost": "fast",
@@ -580,9 +587,9 @@
         "id": "portal-integrity",
         "group": "portal",
         "status": "PASS",
-        "seconds": 0.05,
+        "seconds": 0.04,
         "rc": 0,
-        "tail": "-> OK: 18 條閘門（fast 14／heavy 4），目標樹指針全部可解析、每一節都有 acceptance",
+        "tail": "-> OK: 18 條閘門（fast 14／heavy 4），目標樹指針全部可解析、每一節都有 acceptance，2 個目標 × 97 筆綁定完整（每一筆 decision 都在目標上）",
         "cost": "fast",
         "needs": ""
       },
@@ -649,5 +656,67 @@
       "severity": "medium",
       "title": "憲章自報的義務（第 1002 行）"
     }
-  ]
+  ],
+  "targets": {
+    "values": [
+      {
+        "id": "prefill-250",
+        "status": "conditional",
+        "goal": 250,
+        "current": "conditional"
+      },
+      {
+        "id": "decode-25",
+        "status": "not-met",
+        "goal": 25,
+        "current": 12.62
+      }
+    ],
+    "momentum": {
+      "counts": {
+        "carried": 1,
+        "replaced": 4,
+        "refuted": 2,
+        "orphan": 31,
+        "pending": 30
+      },
+      "judged": 38,
+      "pending": 30,
+      "refuted_rate": 0.0526,
+      "orphan_rate": 0.8158,
+      "carried_rate": 0.1316,
+      "red": true
+    },
+    "n_bindings": 97,
+    "cross": {
+      "in_vcs": {
+        "agent_harness/engine_loop/traces/decisions.jsonl": true,
+        "scripts/run_server.sh": true,
+        "scripts/check/prod_matrix.py": true,
+        "scripts/check/decode_sweep.py": true,
+        "scripts/check/m123_oracle_gate.py": true,
+        "scripts/check/llama_bench_matrix.py": true,
+        "scripts/check/prefill_certifiability.py": true,
+        "scripts/check/decode_step_profile.py": true,
+        "src/llama.cpp/src/llama-expert-cache.cpp": true,
+        "src/llama.cpp/src/llama-graph.cpp": true,
+        "src/llama.cpp/ggml/src/ggml-metal/ggml-metal-context.m": true,
+        "src/llama.cpp/tools/llama-bench/llama-bench.cpp": true,
+        "agent_harness/portal/build_portal.py": true,
+        "agent_harness/portal/targets.json": false,
+        ".workbuddy/memory/MEMORY_PERF.md": false,
+        ".workbuddy/memory/MEMORY_S1.md": false,
+        ".workbuddy/memory/MEMORY_FACTS.md": false,
+        ".workbuddy/memory/MEMORY.md": false,
+        ".workbuddy/memory/2026-09-15.md": false,
+        ".workbuddy/memory/2026-09-16.md": false,
+        ".workbuddy/memory/2026-09-17.md": false,
+        ".workbuddy/memory/2026-09-18.md": false
+      },
+      "pushed": "unknown",
+      "head": "586a8bd1216aecb957edf7711e5f9155628823e6",
+      "remote_sha": "",
+      "remotes": "origin,cgcengine0907"
+    }
+  }
 }

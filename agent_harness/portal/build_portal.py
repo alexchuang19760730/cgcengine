@@ -51,6 +51,7 @@ HOME = Path(os.environ.get("PA_PORTAL_HOME", Path.home()))
 PORTAL_DIR = REPO / "agent_harness" / "portal"
 GATES_JSON = PORTAL_DIR / "gates.json"
 GOALS_JSON = PORTAL_DIR / "goals.json"
+TARGETS_JSON = PORTAL_DIR / "targets.json"
 DATA_OUT = PORTAL_DIR / "data.json"
 HISTORY = PORTAL_DIR / "history.jsonl"
 HTML_OUT = REPO / "docs" / "AGENT_HARNESS_PORTAL.html"
@@ -809,6 +810,8 @@ th { background:var(--soft); font-weight:600; }
 .t-amber{color:var(--amber);border-color:#fde68a;background:#fffbeb}
 .t-blue{color:var(--blue);border-color:#bfdbfe;background:#eff6ff}
 .t-grey{color:var(--muted);border-color:var(--line);background:var(--soft)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:12px;margin:12px 0 18px}
+.card{border:1px solid var(--line);border-radius:6px;padding:12px 14px;background:var(--soft)}
 .box { border:1px solid var(--line); border-left:4px solid var(--blue); border-radius:4px;
        padding:10px 13px; margin:12px 0; background:#fbfdff; }
 .box.bad { border-left-color:var(--red); background:#fff7f7; }
@@ -1153,6 +1156,102 @@ def render_html(data: dict) -> str:
     else:
         chain_html = '<div class="box warn">沒有取代鏈。</div>'
 
+    # ── 兩個數字目標 × 資產綁定 × 動能（agent_harness/portal/targets.json）──
+    T = data.get("targets") or {}
+    tg_cards = ""
+    for t in T.get("targets") or []:
+        tone = {"met": "green", "conditional": "amber", "not-met": "red"}.get(t.get("status"), "grey")
+        ev = "".join(f'<li><code>{hesc(e)}</code></li>' for e in (t.get("evidence") or []))
+        tg_cards += (
+            f'<div class="card"><div style="margin-bottom:6px">'
+            f'<span class="tag t-{tone}">{hesc(t.get("status", "?"))}</span> '
+            f'<b>{mdx(hesc(t.get("title", "")))}</b></div>'
+            f'<div class="small">指標 <code>{hesc(t.get("metric", ""))}</code>　目標 '
+            f'<code>{hesc(t.get("compare", ""))} {hesc(str(t.get("goal", "")))} {hesc(t.get("unit", ""))}</code>'
+            f'　profile <code>{hesc(t.get("profile", ""))}</code></div>'
+            f'<div style="margin-top:8px"><b>現值</b>：{mdx(hesc(t.get("current_text", "")))}</div>'
+            f'<div style="margin-top:5px"><b>差距</b>：{mdx(hesc(t.get("gap", "")))}</div>'
+            f'<div class="small" style="margin-top:6px">儀器 <code>{hesc(t.get("instrument", ""))}</code></div>'
+            f'<div class="small" style="margin-top:6px">證據來源：</div>'
+            f'<ul class="small" style="margin:3px 0 0;padding-left:18px">{ev}</ul></div>')
+
+    binds = T.get("bindings") or []
+    # 資產 × 目標 的交叉計數（本機／跨機兩欄）
+    cross = T.get("cross") or {}
+    in_vcs = cross.get("in_vcs") or {}
+    local_counts: dict[tuple[str, str], int] = {}
+    cross_counts: dict[tuple[str, str], int] = {}
+    for b in binds:
+        key = (b.get("kind", "?"), b.get("target", "?"))
+        local_counts[key] = local_counts.get(key, 0) + 1
+        if b.get("kind") == "decision":
+            cross_counts[key] = cross_counts.get(key, 0) + 1      # decisions 已在版控（decisions.jsonl 本身）
+        elif in_vcs.get(b.get("asset", "")):
+            cross_counts[key] = cross_counts.get(key, 0) + 1
+    kinds = sorted({k for k, _ in local_counts})
+    tgt_ids = [t.get("id") for t in (T.get("targets") or [])] + ["both", "enabling"]
+    cov_rows = "".join(
+        '<tr><td><code>' + hesc(k) + '</code></td>'
+        + "".join(f'<td class="num">{local_counts.get((k, g), 0)}／'
+                  f'<span class="small">{cross_counts.get((k, g), 0)}</span></td>' for g in tgt_ids)
+        + f'<td class="num">{sum(v for (kk, _), v in local_counts.items() if kk == k)}</td></tr>'
+        for k in kinds)
+    cov_head = "".join(f'<th class="num">{hesc(g)}</th>' for g in tgt_ids)
+
+    m = T.get("momentum") or {}
+    mc = m.get("counts") or {}
+    dr = T.get("declared_red") or {}
+    momentum_line = (
+        f'動能（judged {m.get("judged")} 筆，另有 {m.get("pending")} 筆結構上還量不到）：'
+        f'carried <b>{mc.get("carried", 0)}</b>　replaced <b>{mc.get("replaced", 0)}</b>　'
+        f'refuted <b>{mc.get("refuted", 0)}</b>（{m.get("refuted_rate", 0):.1%}）　'
+        f'orphan <b>{mc.get("orphan", 0)}</b>（{m.get("orphan_rate", 0):.1%}）')
+
+    targets_panel = f"""
+<div class="panel" id="p-targets">
+  <h2>兩個數字目標，以及被綁上去的資產</h2>
+  <p class="sub">單一真相來源是 <code>agent_harness/portal/targets.json</code>。
+  本頁回答的是使用者 2026-09-18 的指令：<b>本機與跨機的資產（優化決策＋其動能／技能／記憶／代碼）
+  都必須被包含在 prefill 250 t/s 與 decode 25 t/s 這兩個目標上</b>。
+  完整性由 <code>portal-integrity</code> 閘門釘住：<b>decisions.jsonl 裡每一筆決策都必須有綁定列，少一列就紅。</b></p>
+
+  <div class="cards">{tg_cards}</div>
+
+  <h3>資產 × 目標（每格是 <b>本機／跨機</b> 的數量）</h3>
+  <table><thead><tr><th>kind</th>{cov_head}<th class="num">合計</th></tr></thead>
+  <tbody>{cov_rows}</tbody></table>
+  <p class="small">
+    <b>跨機</b>的判準是兩個獨立的軸：① 在版控裡（<code>git ls-files --error-unmatch</code>，
+    因為「索引綠」不等於「在版控裡」）② 遠端有同一個 commit。
+    決策那一列的「跨機」等於「在 <code>decisions.jsonl</code> 裡且它已進版控」——
+    而 <code>decisions.jsonl</code> 自己是否已推，見下面那一行：
+    <code>HEAD {hesc((cross.get("head") or "")[:10])}　遠端 {hesc(cross.get("remote_sha") or "?")}　
+    pushed={hesc(str(cross.get("pushed")))}</code>（連不上時是 <code>unknown</code>，不是紅）。
+  </p>
+
+  <h3>動能：決策被後續決策納入的程度</h3>
+  <div class="box { 'bad' if m.get('red') else 'ok' }">
+    <div class="k">{'動能不足（超過宣告的門檻）' if m.get('red') else '動能在宣告的門檻內'}</div>
+    <div style="margin-top:5px">{momentum_line}</div>
+    <div class="small" style="margin-top:6px">
+      判準（寫在 <code>targets.json</code>，可被重新訴訟）：
+      refuted &gt; {dr.get('refuted_rate_gt')} 或 orphan &gt; {dr.get('orphan_rate_gt')} ⇒ 紅。
+      <b>carried</b>＝有更晚的決策指名它；<b>replaced</b>＝被取代（也是一種被納入）；
+      <b>refuted</b>＝被推翻；<b>orphan</b>＝沒被引用也沒被取代；
+      <b>pending</b>＝最新一天，結構上還不可能被引用（<b>排除在門檻之外</b> ——
+      否則新的一批會讓指標永遠很差，而永遠很差的指標會被忽略）。
+    </div>
+  </div>
+
+  <h3>綁定明細（{len(binds)} 筆）</h3>
+  <table><thead><tr><th>資產</th><th>kind</th><th>目標</th><th>動能</th><th class="num">被後續引用</th></tr></thead>
+  <tbody>{''.join(
+      f'<tr><td><code>{hesc(clip(b.get("asset"), 78))}</code></td><td>{hesc(b.get("kind", ""))}</td>'
+      f'<td>{hesc(b.get("target", ""))}</td><td>{hesc(str(b.get("momentum", "")))}</td>'
+      f'<td class="num">{b.get("forward_refs", 0)}</td></tr>' for b in binds)}</tbody></table>
+</div>
+"""
+
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1187,6 +1286,7 @@ def render_html(data: dict) -> str:
 
 <div class="tabs">
   <div class="tab on" onclick="tab('mm',this)">心智圖</div>
+  <div class="tab" onclick="tab('targets',this)">250／25 目標</div>
   <div class="tab" onclick="tab('gates',this)">驗證閘門</div>
   <div class="tab" onclick="tab('assets',this)">資產盤點</div>
   <div class="tab" onclick="tab('oblig',this)">欠帳與復盤</div>
@@ -1208,6 +1308,9 @@ def render_html(data: dict) -> str:
     每個節點都要能回答 <i>為什麼</i>、<i>什麼算完成</i>、<i>證據在哪</i>。
   </div>
 </div>
+
+<!-- ══ 兩個數字目標 ══ -->
+{targets_panel}
 
 <!-- ══ 閘門 ══ -->
 <div class="panel" id="p-gates">
@@ -1391,6 +1494,24 @@ def assemble(reg: dict, goals: dict, do_gates: bool, fast_only: bool = True) -> 
         "charter": charter_tree(charter, {"lessons": assets["traces"]["lessons"],
                                           "lessons_by_class": assets["traces"]["lessons_by_class"]}, dec),
     }
+    # ── 兩個數字目標 × 資產綁定 × 動能 ──
+    tg = load_targets()
+    mrows = momentum_rows(load_jsonl(TRACES / "decisions.jsonl"))
+    msum = momentum_summary(mrows, (tg.get("momentum") or {}).get("declared_red") or {})
+    by_mom = {r["id"]: r for r in mrows}
+    binder = {b["asset"]: b for b in tg.get("bindings") or []}
+    # 跨機狀態：live=False（不連網）⇒ 只回「在版控裡」。要連網的那一軸由 render 之外的呼叫決定。
+    cm = cross_state([b["asset"] for b in (tg.get("bindings") or [])
+                      if b.get("kind") != "decision" and not b["asset"].startswith("~")], live=False)
+    targets_payload = {
+        "targets": tg.get("targets") or [],
+        "momentum": msum, "momentum_rows": mrows[:0],       # rows 太長，只進 HTML 明細
+        "bindings": [dict(b, momentum=by_mom.get(b["asset"], {}).get("momentum", "n/a"),
+                          forward_refs=len(by_mom.get(b["asset"], {}).get("forward_refs") or []))
+                     for b in (tg.get("bindings") or [])],
+        "cross": cm,
+        "declared_red": (tg.get("momentum") or {}).get("declared_red") or {},
+    }
     data = {
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "git": git,
@@ -1404,6 +1525,7 @@ def assemble(reg: dict, goals: dict, do_gates: bool, fast_only: bool = True) -> 
         "obligations": obligations,
         "trees": trees,
         "lessons_brief": lessons_brief,
+        "targets": targets_payload,
     }
     return data
 
@@ -1438,7 +1560,7 @@ def verify_output(html: str) -> list[str]:
     ① HTML 本體不得有 markdown 殘留（`**`）；
     ② 標籤要對稱 —— 但**內嵌 JSON 要先還原**，因為產生 payload 時會把 `</` 轉義成 `<\/`
        （不還原就會得到「`</code>` 少一個」這種**假的**不對稱，我自己就被它騙過一次）；
-    ③ 四個分頁錨點要在；
+    ③ 五個分頁錨點要在（心智圖／250‧25 目標／閘門／資產／欠帳）；
     ④ 不得引用外部資源（必須離線可開）。
     """
     problems = []
@@ -1477,7 +1599,7 @@ def verify_output(html: str) -> list[str]:
         if o != c:
             problems.append(f"<{tag}> 不對稱：{o} 開 / {c} 關（{where}）")
 
-    for anchor in ('id="p-mm"', 'id="p-gates"', 'id="p-assets"', 'id="p-oblig"',
+    for anchor in ('id="p-mm"', 'id="p-targets"', 'id="p-gates"', 'id="p-assets"', 'id="p-oblig"',
                    "window.__PORTAL__"):
         if anchor not in html:
             problems.append(f"缺少錨點 {anchor}")
@@ -1515,7 +1637,202 @@ def trim_for_disk(data: dict) -> dict:
         },
         "obligations": [{"kind": o["kind"], "severity": o["severity"], "title": o["title"]}
                         for o in data["obligations"]],
+        # 兩個目標與綁定的「下一輪要用的那一半」（明細 97 列不進 data.json —— 它每次都能從
+        # targets.json 重算）。沒有這一段，`targets` 會被 trim 靜默丟掉。
+        "targets": {
+            "values": [{"id": t.get("id"), "status": t.get("status"),
+                        "goal": t.get("goal"), "current": t.get("current")}
+                       for t in (data.get("targets", {}).get("targets") or [])],
+            "momentum": data.get("targets", {}).get("momentum"),
+            "n_bindings": len(data.get("targets", {}).get("bindings") or []),
+            "cross": data.get("targets", {}).get("cross"),
+        },
     }
+
+
+# ── 目標與綁定（agent_harness/portal/targets.json）──────────────────────────────
+# 使用者 2026-09-18 的指令：本機與跨機的資產（優化決策＋其動能／技能／記憶／代碼）
+# **都必須被包含在 prefill 250 t/s 與 decode 25 t/s 這兩個目標上**。
+#
+# 兩件事在這裡被算出來，而不是手填：
+#   ① 動能 —— 使用者原話「納入後續決策的才是好決策；太多的被推翻就是動能不足」
+#      ⇒ 動能＝**被後續決策納入的程度**，與「對吞吐的貢獻」無關。它只能從 decisions.jsonl 自己算。
+#   ② 跨機 —— 「在版控裡」與「已推到遠端」是兩個獨立的軸（`auto_git_push.ps1` 在本機從未跑過）。
+#
+# ★ 為什麼動能要排除「最新一天」：一批決策是同時寫進去的 ⇒ 它裡面**結構上不可能**有
+#   「更晚的決策引用它」。把新的一批算成 orphan 會製造一個永遠很差的指標，而那種指標會被忽略。
+#   所以最新一天的那一批記成 `pending`（還沒機會被引用），門檻只在有機會的那一批上算。
+KIND_VOCAB = ("decision", "skill", "memory", "code")
+TARGET_VOCAB = ("prefill-250", "decode-25", "both", "enabling")
+TARGET_STATUS = ("met", "conditional", "not-met", "unknown")
+MOMENTUM_VOCAB = ("carried", "replaced", "refuted", "orphan", "pending")
+
+
+def load_targets() -> dict:
+    return json.loads(TARGETS_JSON.read_text(encoding="utf-8"))
+
+
+def _asset_exists(asset: str) -> bool:
+    p = Path(asset.replace("~", str(Path.home()))) if asset.startswith("~") else (REPO / asset)
+    return p.exists()
+
+
+def targets_problems(tg: dict, decision_ids: list[str]) -> list[str]:
+    """targets.json 的完整性。**每一筆 decision 都要有綁定列，少一列就紅。**
+
+    這條是「缺席要出聲」的直接套用：沒有它，一筆新決策會靜默地不在任何目標上，
+    而入口看起來完全正常（表上少一列，人不會數）。
+    """
+    problems: list[str] = []
+    targets = tg.get("targets") or []
+    if len(targets) < 2:
+        problems.append("targets: 少於兩個目標（本專案的兩個數字目標是 prefill-250 與 decode-25）")
+    ids = [t.get("id") for t in targets]
+    for t in targets:
+        tid = t.get("id", "?")
+        for f in ("id", "title", "metric", "unit", "compare", "goal", "profile",
+                  "instrument", "current", "status", "evidence"):
+            if t.get(f) in (None, "", []):
+                problems.append(f"target {tid}: 缺 {f}")
+        if t.get("status") not in TARGET_STATUS:
+            problems.append(f"target {tid}: status 必須是 {TARGET_STATUS}（現在是 {t.get('status')!r}）")
+        if not isinstance(t.get("goal"), (int, float)):
+            problems.append(f"target {tid}: goal 必須是數字（現在是 {t.get('goal')!r}）")
+
+    m = tg.get("momentum") or {}
+    for f in ("definition", "classes", "how", "declared_red"):
+        if not m.get(f):
+            problems.append(f"momentum: 缺 {f}")
+    for c in MOMENTUM_VOCAB:
+        if c not in (m.get("classes") or {}):
+            problems.append(f"momentum.classes: 缺 {c} 的定義（封閉 enum，不能靠讀者猜）")
+    if list((m.get("classes") or {}).keys()) != list(MOMENTUM_VOCAB):
+        problems.append("momentum.classes 的鍵必須恰好是 "
+                        f"{MOMENTUM_VOCAB}（順序也固定，方便逐版比對）")
+    dr = m.get("declared_red") or {}
+    for k in ("refuted_rate_gt", "orphan_rate_gt", "note"):
+        if dr.get(k) in (None, ""):
+            problems.append(f"momentum.declared_red: 缺 {k}（門檻必須寫下來才可被重新訴訟）")
+
+    cm = tg.get("cross_machine") or {}
+    for f in ("axis", "local", "cross", "why_two_checks", "measured_by"):
+        if not cm.get(f):
+            problems.append(f"cross_machine: 缺 {f}")
+
+    seen: dict[str, int] = {}
+    for b in tg.get("bindings") or []:
+        a = b.get("asset", "")
+        if not a:
+            problems.append("binding 沒有 asset")
+            continue
+        seen[a] = seen.get(a, 0) + 1
+        if b.get("kind") not in KIND_VOCAB:
+            problems.append(f"binding {a}: kind 必須是 {KIND_VOCAB}（現在是 {b.get('kind')!r}）")
+        if b.get("target") not in TARGET_VOCAB:
+            problems.append(f"binding {a}: target 必須是 {TARGET_VOCAB}（現在是 {b.get('target')!r}）")
+        if b.get("kind") == "decision":
+            if a not in decision_ids:
+                problems.append(f"binding {a}: 指到一個不存在的 decision_id")
+        elif not b.get("asset", "").startswith("~") and not _asset_exists(a):
+            problems.append(f"binding {a}: 路徑不存在（跨機那條通道會斷）")
+    for a, n in seen.items():
+        if n > 1:
+            problems.append(f"binding {a}: 重複 {n} 次")
+    for d in decision_ids:
+        if d not in seen:
+            problems.append(f"決策 {d} 沒有綁定列（不在任何目標上）")
+    if not tg.get("bindings"):
+        problems.append("bindings 是空的")
+    return problems
+
+
+def momentum_rows(decisions: list[dict]) -> list[dict]:
+    """每個決策的動能，**由 decisions.jsonl 自己算出來**（見 targets.json 的 momentum.how）。
+
+    四個訊號，全部機械可檢：被更晚的決策指名（carried）／supersede 邊（replaced）／
+    judgement=refuted（refuted）／以上皆非（orphan，或最新一天的 pending）。
+    """
+    rows = [{"id": d["decision_id"], "day": d["decision_id"][4:12],
+             "judgement": d.get("judgement"), "superseded_by": d.get("superseded_by")}
+            for d in decisions]
+    day_of = {r["id"]: r["day"] for r in rows}
+    newest = max(day_of.values()) if day_of else ""
+    text = {d["decision_id"]: " ".join(str(d.get(k) or "") for k in
+                                       ("question", "reasoning", "conclusion", "action"))
+            for d in decisions}
+    supersedes = {d["decision_id"]: list(d.get("supersedes") or []) for d in decisions}
+
+    for r in rows:
+        did = r["id"]
+        later = [o for o in rows if o["day"] > r["day"] or
+                 (o["day"] == r["day"] and rows.index(o) > rows.index(r))]
+        refs = [o["id"] for o in later if did in text[o["id"]]]
+        repl = [o["id"] for o in later if did in supersedes[o["id"]]]
+        if r["superseded_by"]:
+            repl.append(r["superseded_by"])
+        r["forward_refs"] = refs
+        r["replaced_by"] = sorted(set(repl))
+        if r["judgement"] == "refuted":
+            r["momentum"] = "refuted"
+        elif r["forward_refs"]:
+            r["momentum"] = "carried"
+        elif r["replaced_by"]:
+            r["momentum"] = "replaced"
+        elif r["day"] == newest:
+            r["momentum"] = "pending"
+        else:
+            r["momentum"] = "orphan"
+    return rows
+
+
+def momentum_summary(rows: list[dict], declared: dict) -> dict:
+    counts = {c: sum(1 for r in rows if r["momentum"] == c) for c in MOMENTUM_VOCAB}
+    judged = len(rows) - counts["pending"]
+    rate = lambda n: (n / judged) if judged else 0.0        # noqa: E731
+    refuted, orphan = rate(counts["refuted"]), rate(counts["orphan"])
+    return {
+        "counts": counts, "judged": judged, "pending": counts["pending"],
+        "refuted_rate": round(refuted, 4), "orphan_rate": round(orphan, 4),
+        "carried_rate": round(rate(counts["carried"] + counts["replaced"]), 4),
+        "red": (refuted > declared.get("refuted_rate_gt", 1)
+                or orphan > declared.get("orphan_rate_gt", 1)),
+    }
+
+
+def cross_state(paths: list[str], live: bool = True, timeout: int = 8) -> dict:
+    """跨機的兩個獨立軸：① 在版控裡（`git ls-files`）② 遠端有沒有同一個 commit。
+
+    ① 是**離線且即時**的，也是這個 repo 已經付過學費的判準（lesson `eng-gate-0057`：
+    「索引／快照 綠」與「在版控裡」是兩個獨立的軸）。
+    ② 要連網，所以在中國大陸的網路環境下**必須有 timeout，而且失敗只能是 `unknown` 不能是紅**——
+    一個會因為連不上 GitHub 而變紅的閘門，會在每一個離線的早晨說謊。
+    """
+    out = {"in_vcs": {}, "pushed": "unknown", "head": "", "remote_sha": "", "remotes": "origin,cgcengine0907"}
+    for p in paths:
+        r = subprocess.run(["git", "-C", str(REPO), "ls-files", "--error-unmatch", p],
+                           capture_output=True, text=True)
+        out["in_vcs"][p] = (r.returncode == 0)
+    r = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True)
+    out["head"] = r.stdout.strip()
+    if not live or not out["head"]:
+        return out
+    shas = []
+    for rem in ("origin", "cgcengine0907"):
+        try:
+            r = subprocess.run(["git", "-C", str(REPO), "ls-remote", rem,
+                                "refs/heads/demo/sweet-spot-windows-fix"],
+                               capture_output=True, text=True, timeout=timeout)
+            shas.append(r.stdout.split()[0] if r.returncode == 0 and r.stdout.split() else "?")
+        except subprocess.TimeoutExpired:
+            shas.append("timeout")
+    out["remote_sha"] = ",".join(shas)
+    if all(s == out["head"] for s in shas):
+        out["pushed"] = "yes"
+    elif all(s in ("?", "timeout") for s in shas):
+        out["pushed"] = "unknown"          # 連不上 ⇒ 不知道，不是沒有
+    else:
+        out["pushed"] = "no"
+    return out
 
 
 def cmd_check() -> int:
@@ -1539,6 +1856,16 @@ def cmd_check() -> int:
         print(f"  [error] goals.json 不是合法 JSON: {e}")
         return 1
     problems += check_goals(goals)
+    tg: dict = {}
+    if not TARGETS_JSON.exists():
+        problems.append(f"targets.json 不存在: {TARGETS_JSON}")
+    else:
+        try:
+            tg = load_targets()
+        except json.JSONDecodeError as e:
+            print(f"  [error] targets.json 不是合法 JSON: {e}")
+            return 1
+        problems += targets_problems(tg, [d["decision_id"] for d in load_jsonl(TRACES / "decisions.jsonl")])
     if problems:
         for p in problems:
             print(f"  [error] {p}")
@@ -1547,7 +1874,9 @@ def cmd_check() -> int:
     fast = sum(1 for g in reg["gates"] if g["cost"] == "fast")
     heavy = sum(1 for g in reg["gates"] if g["cost"] == "heavy")
     print(f"  -> OK: {len(reg['gates'])} 條閘門（fast {fast}／heavy {heavy}），"
-          f"目標樹指針全部可解析、每一節都有 acceptance")
+          f"目標樹指針全部可解析、每一節都有 acceptance，"
+          f"{len(tg.get('targets') or [])} 個目標 × {len(tg.get('bindings') or [])} 筆綁定完整"
+          f"（每一筆 decision 都在目標上）")
     return 0
 
 
@@ -1601,7 +1930,34 @@ def cmd_self_test() -> int:
             {"id": "ok", "group": "g", "title": "t", "cmd": ["true"], "expect": "0",
              "proves": "p", "not_proves": "q", "cost": "fast", "selftest": ["true"]}]}
 
-        def fixture(goals_obj, gates_obj=MINIMAL_REG):
+        # 最小但合法的 targets.json。classes 的鍵順序要與 MOMENTUM_VOCAB 完全相同
+        # （檢查器刻意比對順序，這樣逐版 diff 才看得出誰被改了）。
+        MINIMAL_TARGETS = {
+            "schema": 1, "updated": "2026-01-01",
+            "notes": ["fixture"],
+            "targets": [
+                {"id": "t1", "title": "T ≥ 1", "metric": "m", "unit": "t/s", "compare": ">=",
+                 "goal": 1, "profile": "p", "instrument": "i", "current": 0.5,
+                 "current_text": "0.5", "gap": "2x", "status": "not-met", "evidence": ["e"]},
+                {"id": "t2", "title": "T2 ≥ 2", "metric": "m2", "unit": "t/s", "compare": ">=",
+                 "goal": 2, "profile": "p2", "instrument": "i2", "current": 1.0,
+                 "current_text": "1.0", "gap": "2x", "status": "conditional", "evidence": ["e2"]},
+            ],
+            "momentum": {
+                "definition": "d", "how": "h",
+                "classes": {k: k for k in MOMENTUM_VOCAB},
+                "declared_red": {"refuted_rate_gt": 0.25, "orphan_rate_gt": 0.5, "note": "n"}},
+            "cross_machine": {"axis": ["local", "cross"], "local": "l", "cross": "c",
+                              "why_two_checks": "w", "measured_by": "m"},
+            "bindings": [{"asset": "agent_harness/trails.txt", "kind": "code", "target": "enabling"}],
+        }
+
+        def dec_row(i):
+            return {"type": "decision", "decision_id": f"dec-2026010{i}-1200-fixture-{i}",
+                    "question": "q", "evidence": [{"reading": "r"}], "reasoning": "r",
+                    "conclusion": "c", "judgement": "sound", "action": "a", "superseded_by": None}
+
+        def fixture(goals_obj, gates_obj=MINIMAL_REG, targets_obj=None, decisions=None):
             r = tmp / f"repo{len(results)}"
             (r / "agent_harness" / "portal").mkdir(parents=True)
             (r / "docs").mkdir(parents=True)
@@ -1610,6 +1966,16 @@ def cmd_self_test() -> int:
                 json.dumps(goals_obj, ensure_ascii=False), encoding="utf-8")
             (r / "agent_harness" / "portal" / "gates.json").write_text(
                 json.dumps(gates_obj, ensure_ascii=False), encoding="utf-8")
+            # ★ targets.json 必須存在：沒有它，--check 會先抱怨「targets.json 不存在」，
+            #   而那會讓 A–E 那一批全部拿同一個假原因失敗（自測變成掩蓋真相的東西）——
+            #   與 MINIMAL_REG 的註解是同一個理由。
+            (r / "agent_harness" / "portal" / "targets.json").write_text(
+                json.dumps(targets_obj or MINIMAL_TARGETS, ensure_ascii=False), encoding="utf-8")
+            if decisions:
+                tr = r / "agent_harness" / "engine_loop" / "traces"
+                tr.mkdir(parents=True, exist_ok=True)
+                (tr / "decisions.jsonl").write_text(
+                    "".join(json.dumps(d, ensure_ascii=False) + "\n" for d in decisions), encoding="utf-8")
             return r
 
         def goal(ev=None, note=None, status="active"):
@@ -1703,7 +2069,7 @@ def cmd_self_test() -> int:
         txt = html.read_text(encoding="utf-8") if html.exists() else ""
         anchors = ["心智圖", "驗證閘門", "資產盤點", "欠帳與復盤", "window.__PORTAL__"]
         miss = [a for a in anchors if a not in txt]
-        case("K HTML 產出且四個分頁錨點齊全", html.exists() and not miss, f"缺 {miss}")
+        case("K HTML 產出且五個分頁錨點齊全", html.exists() and not miss, f"缺 {miss}")
 
         # 12) --no-gates 時不能有任何 PASS（不跑就不准宣稱綠）
         d = json.loads((r10 / "agent_harness" / "portal" / "data.json").read_text(encoding="utf-8"))
@@ -1731,7 +2097,29 @@ def cmd_self_test() -> int:
         gh = d["gates"]["results"][0]
         case("N heavy ⇒ SKIP（不畫成綠燈）", gh["status"] == "SKIP", gh["status"])
 
-        # 15) O. 看門狗（見上面）：真正的 repo 一個檔都不能被動到
+        # 15) P/Q/R. 目標綁定（targets.json）：這一組的判準是「缺席要出聲」
+        #     —— 一筆新決策沒有綁定列時，入口必須紅，而且指名是哪一筆。
+        r11 = fixture(goal(), decisions=[dec_row(1)])
+        rc, _, out = run_check(r11)
+        case("P 有決策但沒有綁定列 ⇒ rc=1 且指名那一筆 decision_id",
+             rc == 1 and "dec-20260101-1200-fixture-1" in out and "沒有綁定列" in out,
+             out.strip()[-120:])
+
+        r12 = fixture(goal([{"path": "agent_harness/trails.txt", "contains": "marker-ok"}]),
+                      decisions=[dec_row(1)],
+                      targets_obj=dict(MINIMAL_TARGETS, bindings=[
+                          {"asset": "dec-20260101-1200-fixture-1", "kind": "decision", "target": "enabling"}]))
+        rc, _, out = run_check(r12)
+        case("Q 決策有綁定列 ⇒ rc=0", rc == 0, out.strip()[-120:])
+
+        bad = dict(MINIMAL_TARGETS, bindings=[{"asset": "agent_harness/nope.txt",
+                                               "kind": "code", "target": "enabling"}])
+        r13 = fixture(goal(), targets_obj=bad)
+        rc, _, out = run_check(r13)
+        case("R 綁定指到不存在的路徑 ⇒ rc=1（跨機那條通道會斷）",
+             rc == 1 and "nope.txt" in out, out.strip()[-120:])
+
+        # 16) O. 看門狗（見上面）：真正的 repo 一個檔都不能被動到
         after_real = snapshot_real()
         newf = sorted(set(after_real) - set(before_real))
         chg = sorted(k for k in before_real if k in after_real and before_real[k] != after_real[k])
@@ -1799,7 +2187,7 @@ def main() -> int:
         for x in issues:
             print(f"[portal]   - {x}", file=sys.stderr)
         return 1
-    print(f"[portal] 產物自檢通過（{len(html):,} B：無 markdown 殘留、標籤對稱、四個分頁齊、離線可開）")
+    print(f"[portal] 產物自檢通過（{len(html):,} B：無 markdown 殘留、標籤對稱、五個分頁齊、離線可開）")
 
     reds = [r["id"] for r in data["gates"]["results"] if r["status"] == "FAIL"]
     print(f"[portal] {out}")
