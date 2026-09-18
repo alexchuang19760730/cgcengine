@@ -91,7 +91,14 @@ python3 scripts/check/http_duo.py --profile prod25 \
    -p 0 -n 128 -d 512 -r 3 -o json` ⇒ **pool = 8 GiB** ✓、`-p 0` ⇒ **只量 decode**。
 - 服務側數字取自 server 自己的 `timings.predicted_per_second`（**不是客戶端碼錶**），
   prompt 10 token、`n_predict 128`、`/v1/completions`。
-- server log：`Backup/cgc_logs/llama_server_20260918_1817*.log`、`…_181929.log`、`…_182245.log`。
+- **原始產物留在本機** `Backup/caliber_20260918/`（`A1_bench`、`D4_bench`（tag=`prod25-stream`）、
+  `B2_http`、`C3_http`、`E5_http`（`profile=prod25`）＋各自的 `.txt` 原文輸出）。
+  ★ **`Backup/` 是 `.gitignore:396` 明確排除追蹤的區域**（"Backup/（1.8G 手動備份區，明確排除追蹤）"）
+  ⇒ **它不隨 repo 走**，所以本檔把可引用的讀數**全部內嵌**、把重跑指令寫在 §4 —— 記錄要能自足，
+  不能依賴一個不會被 clone 到的目錄。`C3_http.json` 的 4 個 rep 全是 `null`：那正是 §5② 那一臂，
+  **留著是有意的**，它是「失敗長什麼樣」的證據。
+- server log：`Backup/cgc_logs/llama_server_20260918_1817*.log`、`…_181929.log`、`…_182245.log`
+  （同樣在 `Backup/` 底下，同上：本機）。
 
 ## 5. 附帶發現（具名，都是真缺陷）
 
