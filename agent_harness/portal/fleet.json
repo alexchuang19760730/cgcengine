@@ -57,6 +57,11 @@
           "evidence": [{"path": "agent_harness/pd/compute_sharing.py", "contains": "/v1/compute/status"}]
         },
         "artifact": "agent_harness/portal/endpoints/mac-local.json",
+        "edge_status": {
+          "url": "http://127.0.0.1:8080/v1/edge/status",
+          "dump": "agent_harness/portal/endpoints/dumps/mac-local.json",
+          "how": "兩條路都可以：服務跑著時 fleet_auto 直接抓 url；服務沒跑時在端點上跑 edge_server.py --dump-status 產生一份 dump（路徑就是下面 dump 那一格），再由既有通道把檔案帶回來。"
+        },
         "relay": [
           {
             "how": "本機直接寫檔（不需要任何通道）",
@@ -102,6 +107,11 @@
           "evidence": [{"path": "agent_harness/pd/compute_sharing.py", "contains": "register_node"}]
         },
         "artifact": "agent_harness/portal/endpoints/cloud-host2.json",
+        "edge_status": {
+          "url": "http://47.95.250.55:8080/v1/edge/status",
+          "dump": "agent_harness/portal/endpoints/dumps/cloud-host2.json",
+          "how": "兩條路都可以：服務跑著時 fleet_auto 直接抓 url；服務沒跑時在端點上跑 edge_server.py --dump-status 產生一份 dump（路徑就是下面 dump 那一格），再由既有通道把檔案帶回來。"
+        },
         "relay": [
           {
             "how": "sshpass rsync（既有腳本）；也可以由雲端自己寫檔後 commit",
@@ -141,6 +151,11 @@
       "channels": {
         "heartbeat": null,
         "artifact": "agent_harness/portal/endpoints/harmonyos-matebook14.json",
+        "edge_status": {
+          "url": null,
+          "dump": "agent_harness/portal/endpoints/dumps/harmonyos-matebook14.json",
+          "how": "端點不在我們的網路上 ⇒ url 為 null。唯一的路是在端點上跑 edge_server.py --dump-status 產生一份 dump（路徑就是下面 dump 那一格），再由既有通道把檔案帶回來。"
+        },
         "relay": [
           {
             "how": "scp 整包過去、再 ssh 進去跑 build.sh（既有腳本）",
@@ -189,6 +204,11 @@
       "channels": {
         "heartbeat": null,
         "artifact": "agent_harness/portal/endpoints/windows-rtx4090.json",
+        "edge_status": {
+          "url": null,
+          "dump": "agent_harness/portal/endpoints/dumps/windows-rtx4090.json",
+          "how": "端點不在我們的網路上 ⇒ url 為 null。唯一的路是在端點上跑 edge_server.py --dump-status 產生一份 dump（路徑就是下面 dump 那一格），再由既有通道把檔案帶回來。"
+        },
         "relay": [
           {
             "how": "★ 自動：把 endpoints/windows-rtx4090.json 寫進 agent_harness/portal/endpoints/ 之後，auto_git_push.ps1 會把整個 agent_harness/ 推上 remote cgc0907 ⇒ 這就是那條「github 數據同步」通道",

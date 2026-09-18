@@ -37,6 +37,20 @@
       },
       "checklist": [
         {
+          "id": "status-dumped",
+          "title": "（可選）先讓入口看到這台機器：dump 一份狀態",
+          "how": [
+            "服務跑著時不用 dump —— fleet_auto.py 直接抓 http://127.0.0.1:8080/v1/edge/status",
+            "服務沒跑：python3 installer/edge_server.py --dump-status status.json --endpoint-id mac-local",
+            "放到 agent_harness/portal/endpoints/dumps/mac-local.json"
+          ],
+          "check": {
+            "kind": "manual",
+            "note": "本機是否活著取決於服務在不在；每小時跑一次是為了讓「它什麼時候停的」看得出來。"
+          },
+          "why": "本機的觀測來自「edge_server 正在跑」。服務沒跑 ⇒ 這一格是 absent，那是**對的**（服務真的沒跑）。自動鏈每一輪的留痕都會記下這一格是 updated 還是 absent。"
+        },
+        {
           "id": "report-written",
           "title": "有上報檔（`endpoints/mac-local.json`）",
           "how": ["python3 agent_harness/portal/report_endpoint_status.py --id mac-local --what-ran '…'"],
@@ -87,6 +101,20 @@
         }
       },
       "checklist": [
+        {
+          "id": "status-dumped",
+          "title": "（可選）先讓入口看到這台機器：dump 一份狀態",
+          "how": [
+            "python3 installer/edge_server.py --dump-status status.json --endpoint-id windows-rtx4090",
+            "放到 agent_harness/portal/endpoints/dumps/windows-rtx4090.json（★ 是 dumps/ 子目錄，不是 endpoints/ 本身）",
+            "推上去；映射與匯出由我們這邊的 fleet_auto.py 定期接手"
+          ],
+          "check": {
+            "kind": "manual",
+            "note": "這一步只能在端點上跑（它不在我們的網路上）⇒ 無法從這裡機檢"
+          },
+          "why": "★ 這條**不等於**下面的項目：它上報的是「這台機器現在是什麼」（平台／CPU／RAM／後端提示／服務狀態），不含建置結果、加速器型號、實測 t/s —— 那些欄位要人寫。自動跑不會把它們洗掉：覆蓋報告時會把人工寫的部分接過來。"
+        },
         {
           "id": "report-written",
           "title": "產生第一份上報檔 `endpoints/windows-rtx4090.json`",
@@ -187,6 +215,20 @@
         }
       },
       "checklist": [
+        {
+          "id": "status-dumped",
+          "title": "（可選）先讓入口看到這台機器：dump 一份狀態",
+          "how": [
+            "python3 installer/edge_server.py --dump-status status.json --endpoint-id harmonyos-matebook14",
+            "放到 agent_harness/portal/endpoints/dumps/harmonyos-matebook14.json（★ 是 dumps/ 子目錄，不是 endpoints/ 本身）",
+            "推上去；映射與匯出由我們這邊的 fleet_auto.py 定期接手"
+          ],
+          "check": {
+            "kind": "manual",
+            "note": "這一步只能在端點上跑（它不在我們的網路上）⇒ 無法從這裡機檢"
+          },
+          "why": "★ 這條**不等於**下面的項目：它上報的是「這台機器現在是什麼」（平台／CPU／RAM／後端提示／服務狀態），不含建置結果、加速器型號、實測 t/s —— 那些欄位要人寫。自動跑不會把它們洗掉：覆蓋報告時會把人工寫的部分接過來。"
+        },
         {
           "id": "report-written",
           "title": "產生第一份上報檔 `endpoints/harmonyos-matebook14.json`",

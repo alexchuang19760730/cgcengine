@@ -26,7 +26,19 @@
     --print                       只印不寫檔
     --out-dir DIR                 指定輸出目錄（預設：本檔旁的 endpoints/）
     --claim-nothing-unmeasured    明確宣告「這個端點沒有未量的東西」
-    --self-test                   黑箱自測（7 格）
+    --self-test                   黑箱自測（19 格）
+
+    # 路線 A：事實由 edge 端提供，本側只做映射（fleet_auto.py 走的就是這條）
+    python3 report_endpoint_status.py --from-edge-status endpoints/windows-rtx4090.status.json
+    python3 report_endpoint_status.py --from-edge-status http://127.0.0.1:8080/v1/edge/status
+
+★ reported_at 是「觀測**產生**的時刻」，不是「我們處理它的時刻」
+-------------------------------------------------------------
+`--from-edge-status` 時 `reported_at` 取自 edge 自己的 `reported_at`（那台機器的時鐘），
+處理時刻另記在 `mapped_at`。**這兩格不能合併**：端點離線三天、dump 今天才被通道帶回來時，
+若拿映射時刻充當 reported_at，入口會說「它剛剛上報」——那是最貴的一種沉默。
+手動跑人會發現；`fleet_auto.py` 定期跑則會**每小時把它抹平一次**，永遠看起來是新的。
+同一個原因，`fleet_auto.py` 的冪等判準就是這裡的 reported_at：**同一份觀測只處理一次**。
 """
 from __future__ import annotations
 
@@ -166,11 +178,25 @@ def map_edge_status(st: dict, args) -> tuple[dict, list[str]]:
     if not args.gpu:
         prov += ("；gpu 留空 —— edge status 只有 backend_hint="
                  f"{host.get('backend_hint')!r}，那是後端提示不是型號，所以不填")
+    # ★★ reported_at ＝ 這份**觀測產生**的時刻（edge 那台機器的時鐘），
+    #    不是「我們處理它的時刻」。
+    #
+    #    為什麼這條重要：端點離線三天、dump 今天才被通道帶回來時，這兩個時刻差三天。
+    #    若拿映射時刻充當 reported_at，入口上的「上報時間」會被讀成「它剛剛上報」——
+    #    而它其實三天沒說話了。手動跑時人會注意到時間；**自動化每小時跑一次，
+    #    會把這個錯誤每小時抹平一次，永遠看起來是新的** ⇒ 這是自動化最容易製造的謊。
+    #    ⇒ 觀測時刻取 edge 的；處理時刻另記在 mapped_at（兩個都要有，別合併成一個）。
+    edge_ts = str(st.get("reported_at") or "").strip()
+    reported_at = args.reported_at or edge_ts or now_iso()
+    if not args.reported_at and not edge_ts:
+        prov += "；★ edge 沒給 reported_at ⇒ 這格退回**映射時刻**（它因此看起來比實際新）"
     notes = args.notes or ""
+    mapped_at = now_iso()
     return {
         "contract_version": CONTRACT_VERSION,
         "endpoint_id": eid,
-        "reported_at": args.reported_at or now_iso(),
+        "reported_at": reported_at,
+        "mapped_at": mapped_at,
         "hostname": args.hostname or socket.gethostname(),
         "platform": host.get("platform") or args.platform or sys.platform,
         "arch": host.get("arch") or args.arch or platform.machine(),
@@ -186,6 +212,14 @@ def map_edge_status(st: dict, args) -> tuple[dict, list[str]]:
         #   「沒設 --api-key ⇒ 同網段可存取」這類真實的未知，不要在這裡吞掉。
         "not_measured": list(st.get("not_measured") or []) + list(args.not_measured or []),
         "notes": (notes + ("\n" if notes else "") + prov),
+        # ★ 給**下一次**自動跑看的邊界：哪幾條是 edge 導出的、哪幾條是人工補的。
+        #   沒有這一格，下一次就分不出「這條 what_ran 是觀測還是人寫的」——
+        #   於是自動跑只有兩種下場：把人的東西洗掉，或把上一次導出的當成人工的重複帶
+        #   （每跑一次長一截，到最後沒人看得出哪些是真的）。
+        #   自動化能**保住人的工作**，靠的就是這條可切的界線。
+        "edge_derived": {"what_ran_n": len(derived),
+                         "capabilities_n": len(st.get("capabilities") or []),
+                         "not_measured_n": len(st.get("not_measured") or [])},
     }, problems
 
 
@@ -227,6 +261,12 @@ def validate_record(rec: dict) -> list[str]:
     ts = rec.get("reported_at")
     if not isinstance(ts, str) or len(ts) != 19 or ts[4] != "-" or ts[13] != ":":
         problems.append(f"reported_at 必須是 'YYYY-MM-DD HH:MM:SS'（拿到 {ts!r}）")
+    # mapped_at 是**選填**：它是「harness 把這份觀測映射進契約」的時刻，與 reported_at
+    # （觀測**產生**的時刻）是兩件事。有填就要格式正確；沒填不扣分（手寫上報沒有這一格）。
+    ma = rec.get("mapped_at")
+    if ma is not None and (not isinstance(ma, str) or len(ma) != 19
+                           or ma[4] != "-" or ma[13] != ":"):
+        problems.append(f"mapped_at 若存在必須是 'YYYY-MM-DD HH:MM:SS'（拿到 {ma!r}）")
     for k in ("what_ran", "capabilities", "not_measured"):
         if not isinstance(rec.get(k), list):
             problems.append(f"{k} 必須是陣列")
@@ -439,6 +479,51 @@ def self_test() -> int:
          rc == 0, f"rc={rc} url={url} out={out[:160]!r}")
     srv.shutdown()
 
+    # ══════════════════════════════════════════════════════════════════════
+    #  觀測時刻 vs 處理時刻：自動化最容易製造的謊就在這一格
+    # ══════════════════════════════════════════════════════════════════════
+
+    # 16) ★★ reported_at 必須是**觀測產生的時刻**（edge 那台機器的），不是映射時刻。
+    #     端點離線三天、dump 今天才被帶回來時，兩者差三天；若 reported_at 取 now，
+    #     入口就說「它剛剛上報」。手動跑人會發現，自動跑每小時抹平一次 ⇒ 永遠是新的。
+    od16 = tmp / "obs_time"
+    rc, out = run("--from-edge-status", str(p8), "--out-dir", str(od16))
+    r16 = (json.loads((od16 / "fixture-endpoint.json").read_text(encoding="utf-8"))
+           if rc == 0 else {})
+    _ma = r16.get("mapped_at")
+    case("★★ reported_at 取 edge 的觀測時刻（fixture 15:40:00，非映射當下）＋ mapped_at 另記處理時刻",
+         rc == 0 and r16.get("reported_at") == "2026-09-18 15:40:00"
+         and isinstance(_ma, str) and len(_ma) == 19 and _ma[4] == "-" and _ma[13] == ":",
+         f"rc={rc} reported_at={r16.get('reported_at')!r} mapped_at={_ma!r}")
+
+    # 17) ★ 同一份觀測映射兩次 ⇒ 除 mapped_at 外逐位元相同。
+    #     這是 fleet_auto 冪等的前提：同一份觀測只處理一次，才不會每小時把同一個時刻
+    #     重寫成一個「新」檔（那會讓 git 每天多出一堆沒有新資訊的 diff）。
+    od17 = tmp / "idem"
+    run("--from-edge-status", str(p8), "--out-dir", str(od17))
+    a17 = json.loads((od17 / "fixture-endpoint.json").read_text(encoding="utf-8"))
+    run("--from-edge-status", str(p8), "--out-dir", str(od17))
+    b17 = json.loads((od17 / "fixture-endpoint.json").read_text(encoding="utf-8"))
+    a17.pop("mapped_at", None)
+    b17.pop("mapped_at", None)
+    case("★ 同一份觀測映射兩次 ⇒ 除 mapped_at 外完全相同（冪等的判準就是 reported_at）",
+         a17 == b17, f"diff={[k for k in a17 if a17.get(k) != b17.get(k)]}")
+
+    # 18) edge 沒給 reported_at ⇒ 退回映射時刻，且 notes 要**明說**（不靜默冒充）
+    p18 = write_edge(edge_status(reported_at=None), "edge_nots.json")
+    od18 = tmp / "nots"
+    rc, out = run("--from-edge-status", str(p18), "--out-dir", str(od18))
+    n18 = (json.loads((od18 / "fixture-endpoint.json").read_text(encoding="utf-8"))["notes"]
+           if rc == 0 else "")
+    case("★ edge 沒給 reported_at ⇒ notes 明說這格退回映射時刻（它因此看起來比實際新）",
+         rc == 0 and "退回**映射時刻**" in n18, f"rc={rc} notes={n18[:110]!r}")
+
+    # 19) ★ edge_derived 畫出「哪幾條是導出的」—— 這是下一輪自動跑能**保住人工內容**的界線
+    ed = r16.get("edge_derived") or {}
+    case("★ edge_derived 記下導出條數（自動跑靠這條界線保住人工寫的內容，不是靠猜）",
+         ed.get("what_ran_n") == 3 and ed.get("capabilities_n") == 2
+         and ed.get("not_measured_n") == 1, f"edge_derived={ed!r}")
+
     passed = sum(1 for _, ok, _ in results if ok)
     for name, ok, detail in results:
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}" + ("" if ok else f"   ({detail})"))
@@ -474,7 +559,7 @@ def main(argv=None) -> int:
                          "★ 映射只在這一側發生 —— edge 吐事實，契約形狀留在這裡")
     ap.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR), help="輸出目錄（預設：本檔旁的 endpoints/）")
     ap.add_argument("--print", dest="print_only", action="store_true", help="只印不寫檔")
-    ap.add_argument("--self-test", action="store_true", help="黑箱自測（7 格）")
+    ap.add_argument("--self-test", action="store_true", help="黑箱自測（19 格）")
     args = ap.parse_args(argv)
 
     if args.self_test:

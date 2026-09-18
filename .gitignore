@@ -460,3 +460,8 @@ data/replay_bench/
 #     所以樣式指名到 config.local.env 這一個檔名 —— 不要用 *.local.env / *.env
 #     之類會把 example 一起吞掉的樣式。
 /agent_harness/tb_loop/config.local.env
+
+# agent_harness/portal 的執行期產物（留痕與日誌）。它們是「這台機器跑過什麼」的紀錄，
+# 不是要共享的資產；要共享的是 fleet_status.jsonl（趨勢）與 endpoints/*.json（現況）。
+agent_harness/portal/auto_runs.jsonl
+agent_harness/portal/auto_logs/

@@ -1,12 +1,12 @@
 {
   "schema": 1,
-  "generated_at": "2026-09-18 15:34:47",
+  "generated_at": "2026-09-18 16:03:51",
   "source": {
     "repo": "flashkv-devserver（CGC engine）",
     "producer": "agent_harness/portal/build_fleet_portal.py --export",
-    "head": "db6f843ae",
+    "head": "0a3d48cf7",
     "branch": "demo/sweet-spot-windows-fix",
-    "subject": "docs(index): resync after ce8f1a50f -- §EN-159（M=8 cell 落地、CGC_MM_BITIDENT=0 的負向結果、M× = L2 重複消費）",
+    "subject": "feat(contract): --from-edge-status -- 把 edge_server 的事實映射成端點契約（edge 端不必改）",
     "mode": "offline（--no-net，未探測心跳）",
     "how_to_regenerate": "python3 agent_harness/portal/build_fleet_portal.py --export"
   },
@@ -18,7 +18,7 @@
     "cidr": "192.168.101.0/24",
     "gateway": "192.168.101.1",
     "firewall": "disabled",
-    "oneline": "192.168.101.90／192.168.101.0/24　宣告 lan_ready 2 個、真的綁在區網上 0 個",
+    "oneline": "192.168.101.90／192.168.101.0/24　未實測（加 --lan-probe 才會量綁定）",
     "services": [
       {
         "id": "edge-server",
@@ -29,12 +29,7 @@
         "auth_required": false,
         "how": "python3 installer/edge_server.py --host 0.0.0.0 --port 8080 --api-key <key> --endpoint-id <id> --no-worker",
         "state_at_measurement": "absent（沒有 listener）",
-        "probe": {
-          "verdict": "absent",
-          "loopback_ok": false,
-          "lan_ok": false,
-          "identity": null
-        }
+        "probe": null
       },
       {
         "id": "edge-worker",
@@ -45,12 +40,7 @@
         "auth_required": false,
         "how": "python3 installer/edge_server.py --model <gguf> --llama-server <path>",
         "state_at_measurement": "absent",
-        "probe": {
-          "verdict": "absent",
-          "loopback_ok": false,
-          "lan_ok": false,
-          "identity": null
-        }
+        "probe": null
       },
       {
         "id": "pd-node",
@@ -61,12 +51,7 @@
         "auth_required": false,
         "how": "python3 agent_harness/pd/compute_sharing.py --role node --address 0.0.0.0 --port 9100",
         "state_at_measurement": "absent",
-        "probe": {
-          "verdict": "absent",
-          "loopback_ok": false,
-          "lan_ok": false,
-          "identity": null
-        }
+        "probe": null
       },
       {
         "id": "cgc-edge-proxy",
@@ -77,12 +62,7 @@
         "auth_required": true,
         "how": "（見 app/edge_engine/cloud_tunnel.py 的既有啟動方式）",
         "state_at_measurement": "loopback-only（實測 200 on 127.0.0.1、LAN 位址連不上）",
-        "probe": {
-          "verdict": "loopback-only",
-          "loopback_ok": true,
-          "lan_ok": false,
-          "identity": null
-        }
+        "probe": null
       },
       {
         "id": "portal-dev",
@@ -93,12 +73,7 @@
         "auth_required": false,
         "how": "python3 portal/serve.py --port 8787（只在本機開；它寫死綁 127.0.0.1）",
         "state_at_measurement": "absent",
-        "probe": {
-          "verdict": "absent",
-          "loopback_ok": false,
-          "lan_ok": false,
-          "identity": null
-        }
+        "probe": null
       }
     ],
     "foreign_lan_ports": [
@@ -134,7 +109,7 @@
       }
     ],
     "security": [],
-    "probe_ran": true,
+    "probe_ran": false,
     "how_to_check": "python3 agent_harness/portal/lan_check.py --check（離線）／--probe（實測綁定）／--self-test"
   },
   "endpoints": [
@@ -145,10 +120,10 @@
       "platform": "macos",
       "arch": "arm64",
       "role": "decode 生產線：Metal kernel ＋ SSD expert streaming；也是這個入口自己跑的地方",
-      "chip": "上報過期",
+      "chip": "已上報",
       "heartbeat": "skipped",
-      "reported_at": "2026-09-18 13:28:23",
-      "report_age": "2.1 小時前",
+      "reported_at": "2026-09-18 16:03:48",
+      "report_age": "0 分鐘前",
       "capabilities": [
         "macOS bundle 可重建／可啟動（llama-server --version ＋ llama-simple --help ＋ otool -L 查 @rpath）",
         "兩個數字目標（prefill ≥250 t/s、decode ≥25 t/s）有綁定與現值",
@@ -159,8 +134,13 @@
       "assets": {
         "report_path": "agent_harness/portal/endpoints/mac-local.json",
         "evidence_pointers": 4,
-        "what_ran_n": 3,
+        "what_ran_n": 6,
         "metrics": {
+          "edge_uptime_s": 2.5,
+          "edge_served_chat": 0.0,
+          "edge_served_completions": 0.0,
+          "host_cpu_cores": 10.0,
+          "host_ram_gb": 16.0,
           "fleet_self_test": 17.0,
           "harness_gates_last": 14.0
         }
@@ -704,7 +684,7 @@
           "2026-09-15": 9,
           "2026-09-16": 61,
           "2026-09-17": 76,
-          "2026-09-18": 73
+          "2026-09-18": 76
         }
       },
       {
@@ -752,7 +732,7 @@
           "2026-09-15": 122727,
           "2026-09-16": 284362,
           "2026-09-17": 451541,
-          "2026-09-18": 271608
+          "2026-09-18": 284308
         }
       },
       {

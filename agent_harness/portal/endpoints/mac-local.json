@@ -1,17 +1,23 @@
 {
   "contract_version": 1,
   "endpoint_id": "mac-local",
-  "reported_at": "2026-09-18 13:28:23",
+  "reported_at": "2026-09-18 16:03:48",
+  "mapped_at": "2026-09-18 16:03:48",
   "hostname": "alexchuangdeMacBook-Air.local",
   "platform": "darwin",
   "arch": "arm64",
-  "produced_by": "report_endpoint_status.py v1",
+  "produced_by": "edge_server edge_server.py v2 (2026-09-18) /v1/edge/status → report_endpoint_status.py --from-edge-status",
   "what_ran": [
+    "edge_server edge_server.py v2 (2026-09-18) 於 2026-09-18 16:03:45 啟動（listen 0.0.0.0:8080；worker 模式 disabled）",
+    "worker（http://127.0.0.1:8081）：--no-worker：沒有 spawn worker",
+    "端點已服務 chat=0、completions=0、emit=0、resume=0（uptime 2.5s）",
     "跑 build_fleet_portal.py --self-test（17/17 通過）",
     "跑 AGENT_HARNESS_PORTAL 的快速閘門（最後一次記錄 14/14，2026-09-18 12:43）",
     "停掉 colima 並清掉兩個 limactl usernet 孤兒（release 1.03 GB free / swap −756 MB）"
   ],
   "capabilities": [
+    "OpenAI 相容端點（/v1/models、/v1/chat/completions、/v1/completions）",
+    "CGC 探針端點（/v1/cgc/profile、emit、resume）",
     "macOS bundle 可重建可啟動（llama-server --version + otool -L 驗 @rpath）",
     "M1/M2/M3 oracle 對 M2 oracle bit-identical（9/9、9/9、9/9，n=9）",
     "能在 16 GB unified memory 上跑 Gemma4 26B-A4B int4 expert streaming"
@@ -19,13 +25,26 @@
   "gpu": "Apple M4 16GB unified（Metal，無獨立 GPU）",
   "build_profile": "Metal backend + 自研 int4 GEMV／attention kernel",
   "metrics": {
+    "edge_uptime_s": 2.5,
+    "edge_served_chat": 0.0,
+    "edge_served_completions": 0.0,
+    "host_cpu_cores": 10.0,
+    "host_ram_gb": 16.0,
     "fleet_self_test": 17.0,
     "harness_gates_last": 14.0
   },
   "not_measured": [
+    "worker 不可達 ⇒ 現在沒有推理能力（--no-worker：沒有 spawn worker）",
+    "啟動後還沒有任何生成請求 ⇒ 沒有實測過 tok/s 與輸出品質",
+    "沒有設 --api-key ⇒ 同網段可存取（若只在 loopback 上跑則可接受）",
     "prefill ≥250 t/s 沒有可重現的達成（冷機發射 0 時 6/6 ≥250，否則 0/21）",
     "decode 25 t/s 未達成（現值 12.62 t/s，2.07×）",
     "沒有跑 D5 的 m123 oracle（本輪無 src/ 變更）"
   ],
-  "notes": "本機是這個入口自己跑的地方；上報內容以「剛剛真的跑過的東西」為準。"
+  "notes": "what_ran 前 3 條由 edge_server /v1/edge/status 的**觀測欄位**導出（可逐條回溯到 served／uptime_s／worker／chat_route／model），其餘 3 條由 --what-ran 人工提供；edge 自己的 reported_at=2026-09-18 16:03:48",
+  "edge_derived": {
+    "what_ran_n": 3,
+    "capabilities_n": 2,
+    "not_measured_n": 3
+  }
 }

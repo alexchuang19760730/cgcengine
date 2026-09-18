@@ -38,6 +38,41 @@ python3 agent_harness/portal/report_endpoint_status.py \
 ★ **`host` 缺 platform／arch 時**：那兩個值取自**產生器所在的機器**，`notes` 會明說。
 若產生器不在端點上跑，它們就是錯的 —— 這一句必須留著，否則兩格看起來像端點的事實。
 
+★ **`reported_at` 是「觀測產生的時刻」，不是「有人處理它的時刻」**。映射時它取自 edge 自己的
+`reported_at`，處理時刻另記在 `mapped_at`。**這兩格不能合併**：端點離線三天、dump 今天才被
+通道帶回來時，若拿映射時刻充當 `reported_at`，入口會說「它剛剛上報」—— 而那是最貴的一種沉默。
+手動跑人會發現；自動跑則會**每小時把它抹平一次**，永遠看起來是新的。
+
+## 離線端唯一要做的那一步：`--dump-status`
+
+鴻蒙端與 Windows 端**不在我們的網路上** ⇒ 我們沒辦法去抓它們的 `/v1/edge/status`。
+但同一支契約吃**檔案**，所以在那兩台上只要跑一次這條：
+
+```bash
+python3 installer/edge_server.py --dump-status status.json --endpoint-id windows-rtx4090
+```
+
+- **不起服務、不開埠、不需要模型、不需要 llama-server** —— 寫完檔就結束。前置檢查刻意全部
+  跳過：離線端要的是一條「一定跑得完」的指令，而**跑不動的指令等於沒有這條路**。
+- 產出的 schema 與 `/v1/edge/status` **完全相同**；只多一格 `dump`：`uptime_s` 與 `served` 是
+  **這個 dump 行程自己**的讀數（幾乎一定是 0），**不是**一個長期服務的統計。
+  不標這一格，下游會把「剛 dump 所以 uptime≈0」讀成「服務剛重啟」。
+- `--dump-status -` 寫到 stdout。沒給 `--endpoint-id` 會**出聲**（那時這份 dump 不知道屬於誰，
+  自動鏈會拒收）。
+
+然後把 `status.json` 放到：
+
+```
+agent_harness/portal/endpoints/dumps/<endpoint_id>.json
+```
+
+★ **是 `dumps/`，不是 `endpoints/` 本身。** 放在上一層會被 `build_fleet_portal --check` 讀成
+「一個叫 `<id>.status` 的未註冊端點」—— 那是一句**誤導的症狀**（聽起來像註冊表少了東西，
+其實只是檔案放錯目錄）。`fleet_auto.py --check` 會直接指名這件事。
+
+放下來之後就**不用管了**：`agent_harness/portal/fleet_auto.py` 會定期來讀它、映射、匯出，
+並把「這一輪有沒有拿到」寫進 `auto_runs.jsonl`。
+
 
 ## 為什麼是檔案，不是協議
 
@@ -112,16 +147,25 @@ python3 report_endpoint_status.py --id windows-rtx4090 \
     --what-ran "建 CUDA 版" --metric decode_tps=52.3 \
     --not-measured "沒量過 M1/M2/M3 身分"
 
-python3 report_endpoint_status.py --self-test     # 7 格黑箱自測
+python3 report_endpoint_status.py --self-test     # 19 格黑箱自測
 
 # 沒有 Python 的端點：照上面的契約手寫同一份 JSON 就行 —— 契約是欄位，不是這支腳本
 ```
 
 產生器預設寫到**它自己旁邊的** `endpoints/`；用 `--out-dir` 指到你的 checkout 也可以。
 
-## 這個目錄的兩條規矩
+## 這個目錄的三條規矩
 
 1. **這裡放的是「現況」，不是「趨勢」。** 同一端點重複上報會**覆蓋**。趨勢落在
    `agent_harness/portal/fleet_status.jsonl`（只追加），由入口建置時寫入。
 2. **`fleet.json` 與這裡必須雙向對齊。** 註冊表裡的端點沒上報 ⇒ 表上顯示「未上報」；
    這裡有檔而註冊表沒有那個 id ⇒ **入口會紅**。少一邊都是靜默的漏洞。
+3. ★ **`<id>.json` 是「報告」，`dumps/<id>.json` 是「運輸物」。** 兩者都在這個目錄底下，用
+   子目錄隔開：報告是給入口讀的（一個 `<id>.json` 對一個註冊端點），dump 是**還沒被映射**的
+   原始 status。把 dump 直接放在這一層，檢查器只會說「有個 <id>.status 沒註冊」——
+   **症狀會把人指去修錯的地方。**
+
+★ 自動跑（`fleet_auto.py`）覆蓋一份報告時**會把人工寫的東西接過來**（`what_ran`／
+`capabilities`／`not_measured`／`gpu`／`build_profile`／`metrics`）。切分線是報告裡的
+`edge_derived`（映射層寫下的邊界：前 N 條是 edge 導出的）。**沒有那一格 ⇒ 整份都算人工的。**
+少了這條界線，自動化只有兩種下場：把人的工作洗掉，或每跑一次讓報告長一截。

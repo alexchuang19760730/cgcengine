@@ -45,9 +45,21 @@ bash deploy-harmonyos/deploy-to-harmonyos.sh <user>@<host>
 - 要起它的話：`若真的連得上：python3 agent_harness/pd/compute_sharing.py --role node --port 9100`
 - ★ null 不是「失敗」：沒有可達位址 ⇒ unknown，不會變綠。
 
-## 2. 你要做的事（5 項；做完一項，入口上就少一格 todo）
+## 2. 你要做的事（6 項；做完一項，入口上就少一格 todo）
 
-### 1. 產生第一份上報檔 `endpoints/harmonyos-matebook14.json`
+### 1. （可選）先讓入口看到這台機器：dump 一份狀態
+
+**為什麼**：★ 這條**不等於**下面的項目：它上報的是「這台機器現在是什麼」（平台／CPU／RAM／後端提示／服務狀態），不含建置結果、加速器型號、實測 t/s —— 那些欄位要人寫。自動跑不會把它們洗掉：覆蓋報告時會把人工寫的部分接過來。
+
+**怎麼做**：
+
+```bash
+python3 installer/edge_server.py --dump-status status.json --endpoint-id harmonyos-matebook14
+放到 agent_harness/portal/endpoints/dumps/harmonyos-matebook14.json（★ 是 dumps/ 子目錄，不是 endpoints/ 本身）
+推上去；映射與匯出由我們這邊的 fleet_auto.py 定期接手
+```
+
+### 2. 產生第一份上報檔 `endpoints/harmonyos-matebook14.json`
 
 **為什麼**：沒有它，入口上這一格永遠是「未上報」。
 
@@ -58,7 +70,7 @@ python3 agent_harness/portal/report_endpoint_status.py --id harmonyos-matebook14
     --what-ran '…' --not-measured '…'
 ```
 
-### 2. 回報你的環境：`notes` 要寫 REMOTE 的 `user@host`、鴻蒙版本、可用 RAM　`[弱檢查]`
+### 3. 回報你的環境：`notes` 要寫 REMOTE 的 `user@host`、鴻蒙版本、可用 RAM　`[弱檢查]`
 
 **為什麼**：我們現在的 not_measured 有三條「不知道」：鴻蒙版本、RAM、build.sh 最後成功時間。★ 這一格只證明 notes 不是空的，不代表內容對 —— 標成弱檢查，不假裝它證明了更多。
 
@@ -68,7 +80,7 @@ python3 agent_harness/portal/report_endpoint_status.py --id harmonyos-matebook14
 --notes 'REMOTE=<user>@<host>；鴻蒙版本=<…>；RAM=<…>GB'
 ```
 
-### 3. 上報的 `platform` 是實話（鴻蒙 PC 多半回 `linux`）
+### 4. 上報的 `platform` 是實話（鴻蒙 PC 多半回 `linux`）
 
 **為什麼**：註冊表用 harmonyos 當我們的標籤；若 Python 報 linux 也要能被接受，但不能容忍它空著或填錯。
 
@@ -78,7 +90,7 @@ python3 agent_harness/portal/report_endpoint_status.py --id harmonyos-matebook14
 不要覆寫 --platform，讓它取 sys.platform
 ```
 
-### 4. 跑過 `build.sh`（CPU-only、GGML_METAL=OFF），把結尾輸出寫進 `what_ran`
+### 5. 跑過 `build.sh`（CPU-only、GGML_METAL=OFF），把結尾輸出寫進 `what_ran`
 
 **為什麼**：Kirin 9030 沒有 Metal ⇒ 這是唯一能回答「這台到底跑不跑得動」的路徑。
 
@@ -89,7 +101,7 @@ ssh <user>@<host> 'cd ~/llama-cpp/harmonyos && ./build.sh'
 --what-ran 'aarch64 CPU-only 建置完成（GGML_METAL=OFF）'
 ```
 
-### 5. 跑一次真實 decode，把 t/s 寫進 `metrics.decode_tps`
+### 6. 跑一次真實 decode，把 t/s 寫進 `metrics.decode_tps`
 
 **為什麼**：CPU-only 的 decode t/s 是「decode ≥25 t/s 能不能跨機複製」的關鍵讀數；沒有它，我們只有「應該可以」。
 

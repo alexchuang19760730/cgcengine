@@ -33,9 +33,21 @@ python3 agent_harness/portal/report_endpoint_status.py --id mac-local --print
 - 要起它的話：`agent_harness/pd/compute_sharing.py --role node --port 9100`
 - 只在服務真的起來時才有回應；沒起來是 unknown，不是紅。
 
-## 2. 你要做的事（2 項；做完一項，入口上就少一格 todo）
+## 2. 你要做的事（3 項；做完一項，入口上就少一格 todo）
 
-### 1. 有上報檔（`endpoints/mac-local.json`）
+### 1. （可選）先讓入口看到這台機器：dump 一份狀態
+
+**為什麼**：本機的觀測來自「edge_server 正在跑」。服務沒跑 ⇒ 這一格是 absent，那是**對的**（服務真的沒跑）。自動鏈每一輪的留痕都會記下這一格是 updated 還是 absent。
+
+**怎麼做**：
+
+```bash
+服務跑著時不用 dump —— fleet_auto.py 直接抓 http://127.0.0.1:8080/v1/edge/status
+服務沒跑：python3 installer/edge_server.py --dump-status status.json --endpoint-id mac-local
+放到 agent_harness/portal/endpoints/dumps/mac-local.json
+```
+
+### 2. 有上報檔（`endpoints/mac-local.json`）
 
 **為什麼**：沒有上報檔，這一格永遠是「未上報」。
 
@@ -45,7 +57,7 @@ python3 agent_harness/portal/report_endpoint_status.py --id mac-local --print
 python3 agent_harness/portal/report_endpoint_status.py --id mac-local --what-ran '…'
 ```
 
-### 2. 在 `fleet.json` 的端點註冊表裡
+### 3. 在 `fleet.json` 的端點註冊表裡
 
 **為什麼**：★ 沒註冊的上報檔不會被讀（`--check` 也會指名它）。
 

@@ -59,6 +59,13 @@ svg { display:block; margin:10px 0 16px; }
 舊檔描述的工程面（目標／決策／閘門／資產）<b>一字不動、仍然成立</b>；本檔只描述新增的產品面。
 </div>
 
+<div class="box ok">
+<b>本檔已有後續：§14（自動化）</b> —— 就地追加於 2026-09-18 16:0x。它把 §13.7 的
+「離線端只差 dump 那一步」與「沒有自動化 ⋯⋯ 是下一個決定」兩條<b>做掉了</b>，
+並修正了一件 §13 留下的缺陷（<code>reported_at</code> 原本取映射時刻，自動跑會每小時抹平）。
+§1–§13 的其餘結論一字不動、仍然成立；「<code>gpu</code> 刻意留空」也仍然成立。
+</div>
+
 <h2>§1 需求，與它的三個岔路</h2>
 
 <p>使用者原話（<b>逐字</b>）：</p>
@@ -726,6 +733,193 @@ report_endpoint_status.py --from-edge-status http://192.168.101.90:8080/v1/edge/
   （那會動到 <code>fleet_status.jsonl</code> 的趨勢與上報的新鮮度）。</li>
 <li><code>gpu</code> 刻意留空：edge 只有 <code>backend_hint</code>，那不是型號。
   要填就得另外問（<code>/v1/cgc/profile</code> 有 <code>gpu_type</code>，但那是另一支端點）。</li>
+</ul>
+
+<h2>§14 自動化：把「只差 dump 那一步」與「下一個決定」做掉（09-18 16:0x）</h2>
+
+<div class="box pur">
+<b>這一節取代 §13.7 的三條，其餘一字不動：</b>
+<ol>
+<li>「離線端 ⋯⋯ 只差實作 dump 那一步」 ⇒ <b>已實作</b>（<code>--dump-status</code>，§14.1）。</li>
+<li>「<b>沒有自動化</b> ⋯⋯ 要不要讓它定期跑，是下一個決定（會動到
+<code>fleet_status.jsonl</code> 的新鮮度與入口的上報時間）」 ⇒ <b>已決定並裝上</b>
+（<code>fleet_auto.py</code> ＋ launchd，§14.2–§14.5）。那個「會動到新鮮度」的顧慮是對的，
+它變成了 §14.3 的第①條。</li>
+<li>「<code>gpu</code> 刻意留空」 ⇒ <b>仍然成立</b>，這一輪沒有動它。</li>
+</ol>
+§1–§13 其餘結論不變。本節仍然就地追加在同一個檔 —— 它是同一條線（入口）的下一段。
+</div>
+
+<h3>§14.1 端點那一步：<code>edge_server.py --dump-status</code></h3>
+
+<p>離線端（鴻蒙／Windows）不在我們的網路上，所以我們沒辦法去抓它們的
+<code>/v1/edge/status</code>。但它們能<b>寫一份檔</b>。新增的這條指令就是那一步：</p>
+
+<pre><code>python3 installer/edge_server.py --dump-status status.json --endpoint-id windows-rtx4090</code></pre>
+
+<p>產出的 schema 與 <code>/v1/edge/status</code> <b>完全相同</b>（所以 harness 那側
+<code>--from-edge-status</code> 吃檔案與吃 URL 是同一條路），只多一格 <code>dump</code>。
+三個設計決定值得記下來：</p>
+
+<ul>
+<li><b>不起服務、不開埠、不需要模型、不需要 llama-server。</b> 這個分支刻意被放在
+<b>模型檢查與 llama-server 解析之前</b>。理由不是省事：離線端要的是一條
+<b>一定跑得完</b>的指令，任何一個前置檢查都會讓它在目標機器上跑不動 ——
+而<b>跑不動的指令等於沒有這條路</b>。</li>
+<li><b><code>dump</code> 那一格是語意標記，不是裝飾。</b> 實測輸出裡
+<code>uptime_s</code> 是 <code>0.0</code>、<code>served</code> 全是 0 —— 那是
+<b>這個 dump 行程自己</b>的讀數（它剛被啟動），不是一個長期服務的統計。
+不標這一格，下游會把「剛 dump 所以 uptime≈0」讀成「服務剛重啟」。</li>
+<li>沒給 <code>--endpoint-id</code> 會<b>出聲</b>（那時這份 dump 不知道屬於誰，
+自動鏈會拒收）。</li>
+</ul>
+
+<p>放的位置也有講究：<code>agent_harness/portal/endpoints/dumps/&lt;id&gt;.json</code>，
+<b>不是</b> <code>endpoints/</code> 本身。原因是 §14.6 記的那個誤導症狀。</p>
+
+<h3>§14.2 harness 那一步：<code>fleet_auto.py</code></h3>
+
+<p>它做四件事，而且每一件都<b>呼叫既有那支</b>，不重寫第二份：採集（讀
+<code>fleet.json</code> 的 <code>channels.edge_status</code>）→ 映射
+（<code>report_endpoint_status.py --from-edge-status</code>）→ 匯出
+（<code>build_fleet_portal.py --export</code>）→ 留痕（<code>auto_runs.jsonl</code>，只追加）。</p>
+
+<p>結果只有四種，而且<b>只有一種是錯</b>：</p>
+
+<table>
+<tr><th>結果</th><th>意思</th><th class="num">rc</th></tr>
+<tr><td><code>updated</code></td><td>有新的觀測，報告已更新</td><td class="num">0</td></tr>
+<tr><td><code>unchanged</code></td><td>同一份觀測已經處理過（<b>不重寫</b>）</td><td class="num">0</td></tr>
+<tr><td><code>absent</code></td><td>沒拿到 —— 服務沒跑／dump 不存在／通道沒開。<b>不知道，不是失敗</b></td><td class="num">0</td></tr>
+<tr><td><code>reject</code></td><td>拿到了但拒收：<code>object</code> 不對／<code>endpoint_id</code>
+不一致（接受它就會寫到<b>別人的檔名</b>）／沒有 id／<b>拿到的觀測比現有的舊</b></td><td class="num">1</td></tr>
+</table>
+
+<p>把 <code>absent</code> 與 <code>reject</code> 混成一格，看門狗就分不出「該不該叫人」——
+前者不需要處理，後者需要。這也是為什麼這一支的 rc 契約與
+<code>build_fleet_portal.py</code> 的「連不上是 unknown 不是紅」是同一條。</p>
+
+<h3>§14.3 三條硬規矩（第①條是這一輪挖出來的既有缺陷）</h3>
+
+<div class="box warn">
+<b>① 不偽造新鮮度 —— 這一條修的是 §13 留下的東西。</b><br>
+<code>report_endpoint_status.py --from-edge-status</code> 原本把 <code>reported_at</code> 取成
+<b>映射發生的時刻</b>。手動跑時這個錯看不出來（人會看時間）；<b>自動化會把它每小時抹平一次</b>：
+一個離線三天的端點，dump 今天才被通道帶回來，頁面上會顯示「它剛剛上報」。<br>
+現在 <code>reported_at</code> 取 <b>edge 自己的觀測時刻</b>，處理時刻另記在
+<code>mapped_at</code>。兩個時刻都留著，不合併成一個。
+</div>
+
+<p><b>② 同一份觀測只處理一次。</b> 冪等判準就是 <code>reported_at</code>。沒有新觀測 ⇒ 不重寫檔案
+（自測驗的是 <code>mtime</code> 不變，不是「內容一樣」），也不重生 <code>fleet_export.json</code>
+—— 否則 git 每天多出一堆<b>只有時間戳不同</b>的 diff，而「上次真的有變化是什麼時候」就看不見了。
+匯出仍會在<b>跨日</b>時跑一次（七日趨勢與動能有機會變）。</p>
+
+<div class="box bad">
+<b>③ 覆蓋時要保住人的工作 —— 這一條是實測踩出來的損失，不是預防性設計。</b><br>
+第一次端到端實跑，一台剛用 <code>--no-worker</code> 起來的 edge_server 覆蓋了
+<code>mac-local.json</code>：它從「3 條能力 ＋ 3 個實測 metrics ＋ 3 條未量測 ＋ GPU 型號」
+變成「<b>uptime 2.6s、服務 0 次</b>」—— 用零換掉實質。<br>
+現在覆蓋前會把<b>只有人知道</b>的東西接過來（<code>what_ran</code>／<code>capabilities</code>／
+<code>not_measured</code>／<code>gpu</code>／<code>build_profile</code>／<code>metrics</code>）。
+切分線是報告裡的 <code>edge_derived</code>（映射層寫下的邊界：前 N 條是 edge 導出的）；
+<b>沒有那一格 ⇒ 整份都算人工的</b>。少了這條界線，自動化只有兩種下場：
+把人的工作洗掉，或每跑一次讓報告長一截。
+</div>
+
+<h3>§14.4 看門狗：五種判讀，只有兩種要叫人</h3>
+
+<table>
+<tr><th>排程</th><th>留痕</th><th>判讀</th><th class="num">rc</th></tr>
+<tr><td>無</td><td>無</td><td>未啟用</td><td class="num">0</td></tr>
+<tr><td>無</td><td>有</td><td>只人手跑過</td><td class="num">0</td></tr>
+<tr><td>有</td><td>無</td><td><b>★ 裝了卻從沒跑過</b></td><td class="num">1</td></tr>
+<tr><td>有</td><td>有，超過 2.5× 間隔</td><td><b>★ 停擺了</b></td><td class="num">1</td></tr>
+<tr><td>有</td><td>有，新鮮</td><td>健康</td><td class="num">0</td></tr>
+</table>
+
+<p>「排程裝了卻沒跑」是自動化最貴的失敗模式：<b>入口上的數字看起來一樣，而它其實停在三天前。</b>
+所以 <code>--install-schedule</code> 產生的 plist 帶 <code>RunAtLoad=true</code> ——
+裝完立刻跑一次，留痕裡會出現一筆 <code>trigger=schedule</code>。
+那是「排程真的被觸發過」唯一的證據；否則你只有一個你自己相信的設定檔。</p>
+
+<h3>§14.5 現場輸出（原文）</h3>
+
+<p><b>一輪實跑</b>（本機 edge_server 起來、採集、映射、匯出）：</p>
+
+<pre><code>  [更新] mac-local              新觀測 reported_at=2026-09-18 16:03:48　（經 url）
+  [拿不到] cloud-host2            dump 不存在（…/endpoints/dumps/cloud-host2.json）—
+  [拿不到] harmonyos-matebook14   dump 不存在（…/endpoints/dumps/harmonyos-matebook
+  [拿不到] windows-rtx4090        dump 不存在（…/endpoints/dumps/windows-rtx4090.js
+  這一輪：更新 1、同一份 0、拿不到 3、拒收 0
+  匯出：是（有端點帶回新觀測）
+  留痕：agent_harness/portal/auto_runs.jsonl
+rc=0</code></pre>
+
+<p><b>人工內容確實被保住</b>（覆蓋後的 <code>mac-local.json</code>，節錄）：</p>
+
+<pre><code>edge_derived = {"what_ran_n": 3, "capabilities_n": 2, "not_measured_n": 3}
+gpu          = 'Apple M4 16GB unified（Metal，無獨立 GPU）'
+metrics      = {"edge_uptime_s": 2.5, …, "fleet_self_test": 17.0, "harness_gates_last": 14.0}
+caps         = 5 條（2 條 edge 的 ＋ 3 條人工的）
+not_measured = 6 條（3 條 edge 的 ＋ 3 條人工的）</code></pre>
+
+<p><b>排程真的被觸發過</b>（<code>launchctl print</code> 與留痕）：</p>
+
+<pre><code>state = running
+program = /Users/alexchuang/.workbuddy/binaries/python/versions/3.13.12/bin/python3
+runs = 1
+
+2026-09-18 16:02:18  trigger=manual    更新=mac-local    拿不到=3 拒收=0 匯出=True
+2026-09-18 16:03:48  trigger=manual    更新=mac-local    拿不到=3 拒收=0 匯出=True
+2026-09-18 16:04:26  trigger=schedule  更新=-            拿不到=4 拒收=0 匯出=False</code></pre>
+
+<p>第三筆是排程自己跑的那一輪：那時 edge_server 已經停掉，所以四個端點都是
+<code>absent</code>、<code>rc=0</code>、不匯出。這是<b>對的</b> —— 服務真的沒跑。</p>
+
+<p><b>自測</b>：<code>edge_server.py</code> 36 → <b>39 格</b>；
+<code>report_endpoint_status.py</code> 15 → <b>19 格</b>；
+<code>fleet_auto.py</code> <b>21 格</b>（新增）。全部通過。</p>
+
+<h3>§14.6 這一輪自己踩到的兩個缺陷（都值得記）</h3>
+
+<div class="box warn">
+<b>① 自測把報告寫進了真 repo，而每一個「有沒有報錯」的檢查都過。</b><br>
+<code>fleet_auto.py</code> 呼叫 <code>report_endpoint_status.py</code> 時漏帶
+<code>--out-dir</code>，而那一支的預設值是<b>它自己旁邊的</b> <code>endpoints/</code>
+—— 也就是真 repo。於是 fixture 的報告（<code>fx-off.json</code>／<code>fx-live.json</code>）
+真的落到 <code>agent_harness/portal/endpoints/</code>，而檔名對、內容合契約、<code>rc=0</code>。<br>
+抓到它的是自測最後那格：<b>「自測前後 <code>endpoints/</code> 的快照要相同」</b>。
+原本的看門狗只看 <code>auto_*</code> 產物 —— <b>一個只檢查「有沒有報錯」的自測，
+對「寫到錯的地方」完全無感</b>。
+</div>
+
+<div class="box warn">
+<b>② 原始 dump 放錯目錄的症狀會把人指去修錯的地方。</b><br>
+把 <code>endpoints/&lt;id&gt;.status.json</code>（dump）放進報告目錄，<code>--check</code> 會說
+「<code>endpoints/windows-rtx4090.status.json</code> 存在，但 fleet.json 沒有註冊
+<code>windows-rtx4090.status</code>」—— 那句話聽起來像<b>註冊表少了東西</b>，
+其實只是<b>檔案放錯目錄</b>。<br>
+所以 dump 有自己的子目錄（<code>glob("*.json")</code> 不遞迴），而
+<code>fleet_auto.py --check</code> 對這個錯放會<b>直接指名「放錯位置」</b>。
+</div>
+
+<h3>§14.7 這一節不主張什麼</h3>
+
+<ul>
+<li><b>它不是「全自動」。</b> 端點上的 dump（①）與通道（②）仍然要人／既有腳本。
+  <code>absent</code> 是最常見的結果之一，而它不是失敗。</li>
+<li><b>它不 commit。</b> 只寫檔。這個 repo 有多條線同時在寫，自動 commit 會踩到別人的線。</li>
+<li><b>本機端點只在 edge_server 跑著時才有觀測。</b> 服務沒跑 ⇒ <code>absent</code>。
+  這一輪沒有做「讓本機端點一直有資料」——那需要讓服務常駐，是另一個決定。</li>
+<li><b>排程只在 macOS 上裝了。</b> 非 macOS 會<b>印出 cron 行而不裝</b>：
+  在別人的機器上偷偷多一條 cron，比不裝更糟。</li>
+<li><b>留痕與日誌會一直長大</b>（<code>auto_runs.jsonl</code> 每輪一行、
+  launchd 的 log 是 append 無輪轉）。超過 2 MB 時 <code>--run</code> 會印一行提示，
+  但<b>不自動刪</b> —— 自動刪歷史是危險動作，而「沒人記得它已經 4 MB」才是真正的問題。</li>
+<li><b>通道的對齊問題沒有被這一輪解決</b>：<code>auto_git_push.ps1</code> 推的是
+  <code>fusionroutemot</code>，入口讀的是 <code>demo/sweet-spot-windows-fix</code>（§4）。
+  Windows 端的 dump 就算產出來了，在兩邊對齊之前仍然到不了入口。</li>
 </ul>
 
 <p class="small" style="margin-top:26px">
