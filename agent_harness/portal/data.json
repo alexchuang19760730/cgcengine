@@ -1,0 +1,667 @@
+{
+  "generated_at": "2026-09-18 12:04:28",
+  "git": {
+    "branch": "demo/sweet-spot-windows-fix",
+    "head": "6e0cc03169e2e9dc9479f0338ae4ec534756417b",
+    "head_short": "6e0cc0316",
+    "subject": "feat(sweep) + docs(memory,skill): §EN-145 -- CGC_SERVER_MTP=0 會換模型檔（逐字驗證）＋ 第一個同檔 MTP-off 臂",
+    "dirty": 8,
+    "dirty_sample": [
+      "?? agent_harness/portal/README.md",
+      "?? agent_harness/portal/build_portal.py",
+      "?? agent_harness/portal/data.json",
+      "?? agent_harness/portal/gates.json",
+      "?? agent_harness/portal/goals.json",
+      "?? agent_harness/portal/history.jsonl",
+      "?? agent_harness/skills/cgc-observer-portal/SKILL.md",
+      "?? docs/AGENT_HARNESS_PORTAL.html"
+    ]
+  },
+  "fingerprint": {
+    "digest": "c9911078f39c36e1",
+    "inputs": [
+      {
+        "path": "agent_harness/engine_loop/traces/lessons.jsonl",
+        "sha256_12": "736b0c2c02a4",
+        "bytes": 329538
+      },
+      {
+        "path": "agent_harness/engine_loop/traces/decisions.jsonl",
+        "sha256_12": "af0abd1646b3",
+        "bytes": 201460
+      },
+      {
+        "path": "agent_harness/engine_loop/traces/episodes.jsonl",
+        "sha256_12": "918089bf7cc1",
+        "bytes": 203911
+      },
+      {
+        "path": "agent_harness/CONVENTIONS.md",
+        "sha256_12": "261ee13ea020",
+        "bytes": 95220
+      },
+      {
+        "path": "agent_harness/portal/gates.json",
+        "sha256_12": "ca9bdd816312",
+        "bytes": 17316
+      },
+      {
+        "path": "agent_harness/portal/goals.json",
+        "sha256_12": "a50b7c8ee0ab",
+        "bytes": 12456
+      }
+    ]
+  },
+  "assets": {
+    "memory": {
+      "files": [
+        {
+          "name": "2026-09-15.md",
+          "bytes": 122727,
+          "mtime": "09-15 23:59",
+          "lines": 1726,
+          "sections": 25
+        },
+        {
+          "name": "2026-09-16.md",
+          "bytes": 284362,
+          "mtime": "09-17 02:52",
+          "lines": 3792,
+          "sections": 38
+        },
+        {
+          "name": "2026-09-17.md",
+          "bytes": 451541,
+          "mtime": "09-18 00:09",
+          "lines": 5871,
+          "sections": 116
+        },
+        {
+          "name": "2026-09-18.md",
+          "bytes": 174808,
+          "mtime": "09-18 12:01",
+          "lines": 2424,
+          "sections": 26
+        },
+        {
+          "name": "MEMORY.md",
+          "bytes": 7247,
+          "mtime": "09-18 04:56",
+          "lines": 95,
+          "sections": 6
+        },
+        {
+          "name": "MEMORY_FACTS.md",
+          "bytes": 11205,
+          "mtime": "09-17 18:06",
+          "lines": 113,
+          "sections": 3
+        },
+        {
+          "name": "MEMORY_PERF.md",
+          "bytes": 47313,
+          "mtime": "09-18 11:57",
+          "lines": 502,
+          "sections": 7
+        },
+        {
+          "name": "MEMORY_S1.md",
+          "bytes": 47260,
+          "mtime": "09-18 11:47",
+          "lines": 569,
+          "sections": 13
+        }
+      ],
+      "count": 8,
+      "bytes": 1146463,
+      "lines": 15092
+    },
+    "skills": {
+      "items": [
+        {
+          "name": "cgc-commit-gate",
+          "bytes": 78459,
+          "lines": 1062,
+          "sha8": "a6af76e6",
+          "desc": "在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）提交 commit 時，正確通過 pre-commit 閘門並滿足 D5 的完整流程與陷阱。當要在該 repo commit、被 pre-commit hook 擋下、不確定要不要跑 re"
+        },
+        {
+          "name": "cgc-decode-attribution",
+          "bytes": 114532,
+          "lines": 1224,
+          "sha8": "aaf86cd0",
+          "desc": "在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）上把一個 decode 步歸因到 GPU 執行、CPU 序列化、池/IO 或編碼，並用既有儀器取得可證的判準數字。當使用者問「decode 為什麼慢」「wait 是什麼」「瓶頸在哪」「要不"
+        },
+        {
+          "name": "cgc-observer-portal",
+          "bytes": 7251,
+          "lines": 110,
+          "sha8": "b67bc1c6",
+          "desc": "在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）新增一個「可機檢的觀測入口」——把散在多處的目標／決策／驗證／資產收成一份**實跑**的入口，並用突變式自測證明它真的會紅。當使用者要求「可視化／可復盤」「驗證可復現」「資產盤點入口」「能"
+        },
+        {
+          "name": "cgc-prefill-thermal-delivery",
+          "bytes": 21750,
+          "lines": 270,
+          "sha8": "9dbfb765",
+          "desc": "在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）上決定一個 prefill t/s 數字能不能被引用。核心是一條 11 ms、不需要 root 的讀數 notifyutil -g com.apple.system.thermalpres"
+        },
+        {
+          "name": "cgc-tb-smoke",
+          "bytes": 48764,
+          "lines": 641,
+          "sha8": "efb13130",
+          "desc": "在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）跑 terminal-bench 的鏈路 smoke —— 分兩個變體：oracle 變體不需要模型（E1 第 3 條驗收），PrimeAgentAgent 變體需要一個 OpenAI 相"
+        },
+        {
+          "name": "cgc-whitepaper-delivery",
+          "bytes": 29211,
+          "lines": 464,
+          "sha8": "1590de94",
+          "desc": "在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）撰寫 docs/*.html 技術白皮書的版式、取材清單與交付流程。當要求為該 repo 產生白皮書 / 技術架構文件 / 里程碑文件、或 D5 要求「每次 commit 附一份白皮書」時"
+        }
+      ],
+      "count": 6,
+      "bytes": 299967,
+      "lines": 3771
+    },
+    "code": {
+      "areas": [
+        {
+          "area": "versions/（歷史存檔，不計入現行）",
+          "files": 3835,
+          "loc": 1554764,
+          "bytes": 63763479,
+          "archive": true
+        },
+        {
+          "area": "src/llama.cpp（引擎核心 C++/Metal）",
+          "files": 2440,
+          "loc": 1062633,
+          "bytes": 80195383,
+          "archive": false
+        },
+        {
+          "area": "CGC-main/",
+          "files": 1048,
+          "loc": 264395,
+          "bytes": 9842483,
+          "archive": false
+        },
+        {
+          "area": "app/（CGC 上層）",
+          "files": 68,
+          "loc": 51726,
+          "bytes": 2174368,
+          "archive": false
+        },
+        {
+          "area": "scripts/（量測、閘門、server）",
+          "files": 157,
+          "loc": 40888,
+          "bytes": 1890029,
+          "archive": false
+        },
+        {
+          "area": "agent_harness/tb_loop",
+          "files": 283,
+          "loc": 35836,
+          "bytes": 1303725,
+          "archive": false
+        },
+        {
+          "area": "CGC_Phase2/",
+          "files": 93,
+          "loc": 29035,
+          "bytes": 1128707,
+          "archive": false
+        },
+        {
+          "area": "agent_harness/（其餘）",
+          "files": 64,
+          "loc": 18175,
+          "bytes": 675641,
+          "archive": false
+        },
+        {
+          "area": "agent_harness/engine_loop",
+          "files": 26,
+          "loc": 5898,
+          "bytes": 303791,
+          "archive": false
+        },
+        {
+          "area": "agent_harness/shared",
+          "files": 8,
+          "loc": 2609,
+          "bytes": 118014,
+          "archive": false
+        },
+        {
+          "area": "moeexpert/",
+          "files": 22,
+          "loc": 1806,
+          "bytes": 75525,
+          "archive": false
+        },
+        {
+          "area": "agent_harness/portal",
+          "files": 1,
+          "loc": 1777,
+          "bytes": 90748,
+          "archive": false
+        },
+        {
+          "area": "deploy-harmonyos/",
+          "files": 15,
+          "loc": 978,
+          "bytes": 30077,
+          "archive": false
+        },
+        {
+          "area": "hf-space-deploy/",
+          "files": 2,
+          "loc": 191,
+          "bytes": 7074,
+          "archive": false
+        }
+      ],
+      "files": 8062,
+      "loc": 3070711,
+      "bytes": 161599044,
+      "files_live": 4227,
+      "loc_live": 1515947,
+      "bytes_live": 97835565
+    },
+    "traces": {
+      "episodes": 122,
+      "episodes_usable": 27,
+      "decisions": 38,
+      "lessons": 179,
+      "lessons_by_class": {
+        "measurement-hygiene": 66,
+        "gate-integrity": 49,
+        "diagnosis": 28,
+        "source-reading": 19,
+        "honest-bounds": 10,
+        "log-forensics": 4,
+        "smoke": 3
+      },
+      "bytes": 734909,
+      "schema": true
+    },
+    "derived": {
+      "engine_memories": 156,
+      "sft_pi_train": 12,
+      "sft_pi_valid": 2,
+      "sft_prime_train": 162,
+      "sft_prime_valid": 28
+    },
+    "corpus": {
+      "whitepapers": 55,
+      "latest_whitepaper": "ZERO_REGION_TRIAGE_20260916.html",
+      "docs_md": 43,
+      "evidence": {
+        "files": 2447,
+        "bytes": 15426860
+      },
+      "backup": {
+        "files": 4576,
+        "bytes": 1087717155
+      }
+    }
+  },
+  "decisions": {
+    "counts": {
+      "total": 38,
+      "sound": 36,
+      "refuted": 2,
+      "superseded": 6,
+      "high": 32,
+      "no_evidence": 5,
+      "buckets": {
+        "無證據": 5,
+        "Backup（觀測/log）": 19,
+        "src（引擎核心）": 5,
+        "scripts（量測/閘門）": 5,
+        "docs（白皮書）": 3,
+        "其他": 1
+      },
+      "days": {
+        "2026-09-15": 26,
+        "2026-09-16": 12
+      },
+      "last_day": "2026-09-16"
+    },
+    "chains": [
+      [
+        {
+          "id": "dec-20260915-1930-remap-needs-double-buffer",
+          "short": "remap needs double buffer",
+          "judgement": "refuted"
+        },
+        {
+          "id": "dec-20260915-2000-cause-is-serialization",
+          "short": "cause is serialization",
+          "judgement": "sound"
+        }
+      ],
+      [
+        {
+          "id": "dec-20260915-2045-s1-id-oob-is-a-real-defect",
+          "short": "s1 id oob is a real defect",
+          "judgement": "refuted"
+        },
+        {
+          "id": "dec-20260915-2105-id-oob-is-an-encode-time-artifact",
+          "short": "id oob is an encode time artifact",
+          "judgement": "sound"
+        }
+      ],
+      [
+        {
+          "id": "dec-20260915-2136-the-ids-are-correct-on-the-real-arm-too",
+          "short": "the ids are correct on the real arm too",
+          "judgement": "sound"
+        },
+        {
+          "id": "dec-20260915-2248-the-ids-are-bit-identical-so-the-defect-is-in-what-they-point-at",
+          "short": "the ids are bit identical so the defect is in what they point at",
+          "judgement": "sound"
+        }
+      ],
+      [
+        {
+          "id": "dec-20260915-2142-cgc-oa-async-ignores-its-value",
+          "short": "cgc oa async ignores its value",
+          "judgement": "sound"
+        },
+        {
+          "id": "dec-20260915-2158-the-dispatcher-is-neutral-on-the-baseline-and-does-not-fix-s1",
+          "short": "the dispatcher is neutral on the baseline and does not fix s1",
+          "judgement": "sound"
+        }
+      ],
+      [
+        {
+          "id": "dec-20260916-0142-prefill-250-is-a-draw-and-neither-free-memory-nor-page-cache-explains-it",
+          "short": "prefill 250 is a draw and neither free memory nor page cache explains it",
+          "judgement": "sound"
+        },
+        {
+          "id": "dec-20260916-0225-prefill-250-is-a-thermal-transient-of-a-fanless-chassis",
+          "short": "prefill 250 is a thermal transient of a fanless chassis",
+          "judgement": "sound"
+        }
+      ],
+      [
+        {
+          "id": "dec-20260916-0340-the-prefill-slowdown-is-uniform-across-all-layers",
+          "short": "the prefill slowdown is uniform across all layers",
+          "judgement": "sound"
+        },
+        {
+          "id": "dec-20260916-0410-prefill-slowdown-is-uniform-on-full-40-layer-coverage",
+          "short": "prefill slowdown is uniform on full 40 layer coverage",
+          "judgement": "sound"
+        }
+      ]
+    ],
+    "n_items": 38
+  },
+  "charter": {
+    "sections": [
+      {
+        "key": "A",
+        "title": "數字什麼時候可以引用",
+        "count": 20
+      },
+      {
+        "key": "B",
+        "title": "診斷",
+        "count": 32
+      },
+      {
+        "key": "C",
+        "title": "讀原始碼",
+        "count": 3
+      },
+      {
+        "key": "D",
+        "title": "流程與入口",
+        "count": 6
+      },
+      {
+        "key": "E",
+        "title": "這份憲章的自我約束",
+        "count": 0
+      }
+    ],
+    "total": 61
+  },
+  "gates": {
+    "n_fast": 14,
+    "n_heavy": 4,
+    "n_pass": 12,
+    "n_fail": 2,
+    "results": [
+      {
+        "id": "charter-citations",
+        "group": "charter",
+        "status": "PASS",
+        "seconds": 0.14,
+        "rc": 0,
+        "tail": "  OK: 61/61 條都有交代（可解析指針 59 ＋ 顯式標記 2），0 懸空",
+        "cost": "fast",
+        "needs": ""
+      },
+      {
+        "id": "shared-log-policy",
+        "group": "shared",
+        "status": "PASS",
+        "seconds": 0.27,
+        "rc": 0,
+        "tail": "  log 政策一致",
+        "cost": "fast",
+        "needs": ""
+      },
+      {
+        "id": "shared-module-split",
+        "group": "shared",
+        "status": "PASS",
+        "seconds": 0.27,
+        "rc": 0,
+        "tail": "  2/2 checks passed",
+        "cost": "fast",
+        "needs": ""
+      },
+      {
+        "id": "shared-shell-cjk",
+        "group": "shared",
+        "status": "PASS",
+        "seconds": 0.16,
+        "rc": 0,
+        "tail": "  0 處：所有 `$VAR` 後面都不是緊接非 ASCII",
+        "cost": "fast",
+        "needs": ""
+      },
+      {
+        "id": "shared-stale",
+        "group": "shared",
+        "status": "PASS",
+        "seconds": 0.09,
+        "rc": 0,
+        "tail": "3 個登記項（2 個資產 + 1 個消費者）都對得上：banner 跟著資料、消費點有出口、反向沒有未登記的標記",
+        "cost": "fast",
+        "needs": ""
+      },
+      {
+        "id": "traces-validate",
+        "group": "traces",
+        "status": "PASS",
+        "seconds": 0.03,
+        "rc": 0,
+        "tail": "  -> OK",
+        "cost": "fast",
+        "needs": ""
+      },
+      {
+        "id": "traces-selftest",
+        "group": "traces",
+        "status": "PASS",
+        "seconds": 0.3,
+        "rc": 0,
+        "tail": "  10/10 injected violations rejected",
+        "cost": "fast",
+        "needs": ""
+      },
+      {
+        "id": "derived-engine-memories",
+        "group": "derived",
+        "status": "FAIL",
+        "seconds": 0.03,
+        "rc": 1,
+        "tail": "    regenerate with: python3 agent_harness/engine_loop/harness_engine/build_memories.py",
+        "cost": "fast",
+        "needs": ""
+      },
+      {
+        "id": "derived-sft-pi",
+        "group": "derived",
+        "status": "PASS",
+        "seconds": 0.03,
+        "rc": 0,
+        "tail": "  sft_pi OK: train.jsonl + valid.jsonl re-derive to the same bytes; the invocation and input hashes agree with PROVENANCE.json",
+        "cost": "fast",
+        "needs": ""
+      },
+      {
+        "id": "derived-sft-prime",
+        "group": "derived",
+        "status": "FAIL",
+        "seconds": 0.03,
+        "rc": 1,
+        "tail": "    regenerate with: python3 agent_harness/engine_loop/sft_prime/build_sft_prime.py",
+        "cost": "fast",
+        "needs": ""
+      },
+      {
+        "id": "index-memory",
+        "group": "index",
+        "status": "PASS",
+        "seconds": 0.03,
+        "rc": 0,
+        "tail": "memory index OK: 8 file(s), 234 section(s), no drift",
+        "cost": "fast",
+        "needs": ""
+      },
+      {
+        "id": "index-assets",
+        "group": "index",
+        "status": "PASS",
+        "seconds": 0.04,
+        "rc": 0,
+        "tail": "manifest OK: 108 assets, existence + bytes + mtime all agree",
+        "cost": "fast",
+        "needs": ""
+      },
+      {
+        "id": "snapshot-freshness",
+        "group": "snapshot",
+        "status": "PASS",
+        "seconds": 0.03,
+        "rc": 0,
+        "tail": "  -> OK: 快照與原檔一致（provenance 逐筆相符、集合相符、副本未被手改、README 成員表相符）",
+        "cost": "fast",
+        "needs": ""
+      },
+      {
+        "id": "portal-integrity",
+        "group": "portal",
+        "status": "PASS",
+        "seconds": 0.03,
+        "rc": 0,
+        "tail": "-> OK: 18 條閘門（fast 14／heavy 4），目標樹指針全部可解析、每一節都有 acceptance",
+        "cost": "fast",
+        "needs": ""
+      },
+      {
+        "id": "commit-gate",
+        "group": "commit",
+        "status": "SKIP",
+        "seconds": null,
+        "rc": null,
+        "tail": "",
+        "cost": "heavy",
+        "needs": "build 產物（src/llama.cpp/build/bin）＋ 手動帶 BIN_DIR。**不帶 BIN_DIR 會讓 11 段全部 SKIP 卻仍然印 OK** —— 這是這個閘門最著名的自欺路徑，也是它不該被自動跑的理由之一"
+      },
+      {
+        "id": "engine-ab-interleave",
+        "group": "engine",
+        "status": "SKIP",
+        "seconds": null,
+        "rc": null,
+        "tail": "",
+        "cost": "heavy",
+        "needs": "llama-server ＋ 模型；且要確認 8080 空窗"
+      },
+      {
+        "id": "engine-oracle-gate",
+        "group": "engine",
+        "status": "SKIP",
+        "seconds": null,
+        "rc": null,
+        "tail": "",
+        "cost": "heavy",
+        "needs": "自己起 server（先確認 8080 空）"
+      },
+      {
+        "id": "tb-model-smoke",
+        "group": "tb",
+        "status": "SKIP",
+        "seconds": null,
+        "rc": null,
+        "tail": "",
+        "cost": "heavy",
+        "needs": "docker（colima）＋ 模型端點 ；本輪的最後一道牆是測試階段 60 s 逾時"
+      }
+    ]
+  },
+  "obligations": [
+    {
+      "kind": "gate",
+      "severity": "high",
+      "title": "2 條快速閘門在**乾淨的樹上就是紅的**"
+    },
+    {
+      "kind": "derived",
+      "severity": "high",
+      "title": "衍生記憶落後 lessons 23 筆"
+    },
+    {
+      "kind": "registry",
+      "severity": "medium",
+      "title": "決策 registry 的覆蓋停在 2026-09-16（今天的日誌有 2 天在它之後）"
+    },
+    {
+      "kind": "charter",
+      "severity": "medium",
+      "title": "憲章自報的義務（第 895 行）"
+    },
+    {
+      "kind": "charter",
+      "severity": "medium",
+      "title": "憲章自報的義務（第 944 行）"
+    },
+    {
+      "kind": "charter",
+      "severity": "medium",
+      "title": "憲章自報的義務（第 981 行）"
+    },
+    {
+      "kind": "charter",
+      "severity": "medium",
+      "title": "憲章自報的義務（第 1002 行）"
+    }
+  ]
+}

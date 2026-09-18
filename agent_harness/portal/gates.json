@@ -1,0 +1,359 @@
+{
+  "schema": 1,
+  "notes": [
+    "驗證閘門的單一真相來源。`build_portal.py` 與「一鍵復現」都讀這一份，所以不存在第二份清單。",
+    "新增閘門的判準（沿用本 repo 的既有規矩）：每一條都要交代 (a) 它證什麼、(b) 它**不**證什麼、",
+    "(c) 它自己的陰性對照（`selftest`）——沒有 (c) 的閘門，壞掉的方式與「沒被檢查」同形。",
+    "cost=fast 的會被入口自動跑（目標 <5 s 全部）；cost=heavy 的不會被自動跑，portal 只列出指令與前題，",
+    "不假裝它綠。這一條是刻意的：把跑不動的閘門畫成綠燈，比沒有閘門更糟。"
+  ],
+  "groups": {
+    "charter": "判準憲章自身的驗收（CONVENTIONS.md 每一條要嘛有可解析指針，要嘛顯式標記）",
+    "shared": "共用檢查器（log 政策／模組拆分／shell CJK／stale 標記）——每一個都有自己的 --self-test",
+    "traces": "訓練軌跡的 schema 與不變量（episode／decision／lesson）",
+    "derived": "衍生物 vs 輸入（重生 == 磁碟）——**這兩條目前是紅的，見 portal 的欠帳頁**",
+    "index": "索引 vs 原檔（先 build_memory_index.py、後 index_assets.py，順序固定）",
+    "snapshot": "跨機器快照的新鮮度（2026-09-18 才從不可觀測變成可觀測）",
+    "portal": "portal 自身的完整性檢查",
+    "engine": "引擎層量測（需要 GPU／build／llama-server）",
+    "commit": "提交閘門（scripts/check_build_tracked.sh，11 段）",
+    "tb": "tb_loop 端到端（需要 docker ＋ 模型端點）"
+  },
+  "gates": [
+    {
+      "id": "charter-citations",
+      "group": "charter",
+      "title": "憲章每一條都有交代（可解析指針 or 顯式標記）",
+      "cmd": [
+        "python3",
+        "agent_harness/shared/check_citations.py",
+        "--check"
+      ],
+      "expect": "rc=0；輸出 `0 懸空`",
+      "selftest": [
+        "python3",
+        "agent_harness/shared/check_citations.py",
+        "--self-test"
+      ],
+      "proves": "61 條裡 59 條指到存在的檔、2 條顯式標記了證據形態；沒有任何指向不存在檔案的懸空引用",
+      "not_proves": "指針存在 **不等於** 那條的結論還成立 —— 這一條只擋『感想混進憲章』",
+      "cost": "fast",
+      "citation": "agent_harness/CONVENTIONS.md:7-14"
+    },
+    {
+      "id": "shared-log-policy",
+      "group": "shared",
+      "title": "log 政策一致（哪些 .log 進版控、哪些不進）",
+      "cmd": [
+        "python3",
+        "agent_harness/shared/check_log_policy.py",
+        "--check"
+      ],
+      "expect": "rc=0；輸出 `log 政策一致`",
+      "selftest": [
+        "python3",
+        "agent_harness/shared/check_log_policy.py",
+        "--self-test"
+      ],
+      "proves": "受管 log 的登記項與 `log_policy.json` 相符",
+      "not_proves": "不掃 `.gitignore` 之外的漏網 log；`--privacy` 是另一個（預設抽樣的）模式",
+      "cost": "fast",
+      "citation": "agent_harness/shared/log_policy.json"
+    },
+    {
+      "id": "shared-module-split",
+      "group": "shared",
+      "title": "拆分模組的四層等價（AST／指紋／CLI／替換契約）",
+      "cmd": [
+        "python3",
+        "agent_harness/shared/check_module_split.py",
+        "--self-test"
+      ],
+      "expect": "rc=0；`2/2 checks passed`",
+      "selftest": null,
+      "proves": "拆分器與比較器自測通過（含『外部以屬性替換注入替身』那一層）",
+      "not_proves": "只驗這兩個工具本身；被拆的成品要另外跑 `compare`／`ast`／`contracts`／`cli` 四個子命令",
+      "cost": "fast",
+      "citation": "agent_harness/shared/knifeedge_split_map.json"
+    },
+    {
+      "id": "shared-shell-cjk",
+      "group": "shared",
+      "title": "shell 裡 `$VAR` 後面不緊接非 ASCII（變數名被吃掉）",
+      "cmd": [
+        "python3",
+        "agent_harness/shared/check_shell_cjk.py",
+        "--root",
+        "agent_harness"
+      ],
+      "expect": "rc=0；`0 處`",
+      "selftest": [
+        "python3",
+        "agent_harness/shared/check_shell_cjk.py",
+        "--self-test"
+      ],
+      "proves": "掃描範圍內沒有任何 `$VAR` 緊接多位元組字元（`set -u` 下會爆、`bash -n` 抓不到）",
+      "not_proves": "只管 `--root` 底下的檔案；本 repo 的 shell 散在 `scripts/` 與 `agent_harness/`，兩處都要掃",
+      "cost": "fast",
+      "citation": "agent_harness/shared/check_shell_cjk.py"
+    },
+    {
+      "id": "shared-stale",
+      "group": "shared",
+      "title": "stale 標記三層對得上（banner／消費點／反向）",
+      "cmd": [
+        "python3",
+        "agent_harness/shared/check_stale.py",
+        "--check"
+      ],
+      "expect": "rc=0；`3 個登記項 … 都對得上`",
+      "selftest": [
+        "python3",
+        "agent_harness/shared/check_stale.py",
+        "--self-test"
+      ],
+      "proves": "每個 stale 資產的 banner 跟著資料走、消費點有出口、且沒有未登記的標記",
+      "not_proves": "不驗被標記的內容本身正確 —— 只驗『標記與資料一致』",
+      "cost": "fast",
+      "citation": "agent_harness/shared/stale_registry.json"
+    },
+    {
+      "id": "traces-validate",
+      "group": "traces",
+      "title": "軌跡 schema 與跨欄位不變量（episode／decision／lesson）",
+      "cmd": [
+        "python3",
+        "agent_harness/engine_loop/traces/validate.py"
+      ],
+      "expect": "rc=0；`-> OK`；WARN 要逐條看（WARN≠FAIL，但也不會自己消失）",
+      "selftest": [
+        "python3",
+        "agent_harness/engine_loop/traces/selftest.py"
+      ],
+      "proves": "三種 record 的必填欄位與交叉條件（`build==null ⇒ usable_as_evidence==false`、`judgement==refuted ⇒ superseded_by 非空`、`n_rounds<3` 不得進對外表格）",
+      "not_proves": "不驗內容真偽；欄位格式對而結論錯的 record 照樣過",
+      "cost": "fast",
+      "citation": "agent_harness/CONVENTIONS.md:20-40"
+    },
+    {
+      "id": "traces-selftest",
+      "group": "traces",
+      "title": "validate.py 真的會擋（10 個注入違規全被拒）",
+      "cmd": [
+        "python3",
+        "agent_harness/engine_loop/traces/selftest.py"
+      ],
+      "expect": "rc=0；`10/10 injected violations rejected`",
+      "selftest": null,
+      "proves": "校驗器對 10 種已知壞 record 都回紅 —— 這是 validate.py 的陰性對照",
+      "not_proves": "只涵蓋被想到的那 10 種",
+      "cost": "fast",
+      "citation": "agent_harness/engine_loop/traces/selftest.py",
+      "no_selftest_reason": "這一條**本身就是** validate.py 的陰性對照（10 個注入違規全被拒），所以它不需要再有一個 selftest。它不能被豁免於規則之外的原因只是檔名不叫 --self-test —— 檢查器看的是 cmd 裡有沒有那個字串，而它叫 `traces/selftest.py`。要嘛改檔名、要嘛在這裡交代，選了後者（改檔名會動到既有入口）。"
+    },
+    {
+      "id": "derived-engine-memories",
+      "group": "derived",
+      "title": "harness_engine/memories/engine/ == lessons.jsonl 的重生",
+      "cmd": [
+        "python3",
+        "agent_harness/engine_loop/harness_engine/build_memories.py",
+        "--check"
+      ],
+      "expect": "rc=0",
+      "selftest": null,
+      "proves": "每一條 lesson 都有一份對應的 memory 檔（system prompt 的注入來源與 lessons 同步）",
+      "not_proves": "只驗集合與逐檔內容；**不驗『這些 lesson 該不該被注入』** —— 那是判準問題",
+      "cost": "fast",
+      "citation": "agent_harness/CONVENTIONS.md:993-1007",
+      "no_selftest_reason": "上游 build_memories.py **沒有** --self-test。這是一個已知的缺口：它壞掉時（例如 lessons 與 memories 的配對邏輯改了但沒人驗）症狀與現在這條紅燈同形 —— 都是「兩邊數量對不上」。要補的是它自己的注入式自測，登記在欠帳頁。"
+    },
+    {
+      "id": "derived-sft-pi",
+      "group": "derived",
+      "title": "sft_pi/ == 從 traces 的重生（pi-coding-agent 的工具軌跡）",
+      "cmd": [
+        "python3",
+        "agent_harness/engine_loop/sft_pi/build_sft_pi.py",
+        "--check"
+      ],
+      "expect": "rc=0；顯式記著『CONVENTIONS 改了但本資料集用 --system none 所以 bytes 不變』",
+      "selftest": null,
+      "proves": "train/valid 重推得同一位元組，且呼叫參數與輸入雜湊相符",
+      "not_proves": "不驗資料集好不好用 —— 只驗它是不是那批輸入的忠實投影",
+      "cost": "fast",
+      "citation": "agent_harness/engine_loop/sft_pi/PROVENANCE.json",
+      "no_selftest_reason": "上游 build_sft_pi.py **沒有** --self-test（它有的是 PROVENANCE.json 的輸入雜湊比對，那是『這批是不是這批輸入生的』，不是『重生邏輯本身對不對』）。"
+    },
+    {
+      "id": "derived-sft-prime",
+      "group": "derived",
+      "title": "sft_prime/ == 從 traces 的重生（(證據→教訓) 與 (狀態→下一個臂)）",
+      "cmd": [
+        "python3",
+        "agent_harness/engine_loop/sft_prime/build_sft_prime.py",
+        "--check"
+      ],
+      "expect": "rc=0",
+      "selftest": null,
+      "proves": "資料集與當前 lessons/episodes 的重生一致（含輸入雜湊）",
+      "not_proves": "同上",
+      "cost": "fast",
+      "citation": "agent_harness/engine_loop/sft_prime/PROVENANCE.json",
+      "no_selftest_reason": "同 derived-sft-pi：無 --self-test，只有 provenance 雜湊。"
+    },
+    {
+      "id": "index-memory",
+      "group": "index",
+      "title": "記憶索引 == `.workbuddy/memory/*.md` 的重生",
+      "cmd": [
+        "python3",
+        "agent_harness/engine_loop/memory/build_memory_index.py",
+        "--check"
+      ],
+      "expect": "rc=0；回報檔數／節數",
+      "selftest": null,
+      "proves": "INDEX.jsonl 是當下 8 個記憶檔（含每個 `##` 段落）的忠實投影",
+      "not_proves": "不驗內容；也不驗『有沒有該寫而沒寫的』",
+      "cost": "fast",
+      "citation": "agent_harness/CONVENTIONS.md:916-930",
+      "no_selftest_reason": "上游 build_memory_index.py **沒有** --self-test。它壞掉的方式是**安靜**的：段落切分的邊界改了，索引仍然『沒有 drift』。",
+      "volatile_inputs": "這些閘門的輸入含 `.workbuddy/memory/*.md` —— 那是**多 session 共寫的 append-only 每日日誌**。另一個 session 正在 append 的那一刻，它會紅，而且**那個紅是對的**（快照／索引真的落後了）。判準：看它印出來的檔名是不是別人在寫的那一天；是 ⇒ 等對方寫完再刷新，**不要**在別人正在寫的時候重生（§4：把對方未定稿的位元組烤進你的 commit）。"
+    },
+    {
+      "id": "index-assets",
+      "group": "index",
+      "title": "MANIFEST == 磁碟（存在 ＋ bytes ＋ mtime）",
+      "cmd": [
+        "python3",
+        "agent_harness/engine_loop/index_assets.py",
+        "--check"
+      ],
+      "expect": "rc=0；`manifest OK: N assets … all agree`",
+      "selftest": null,
+      "proves": "已收錄的資產與磁碟一致（`.workbuddy/memory/` 在 VOLATILE_PREFIXES，只驗存在）",
+      "not_proves": "**不保證『新的被收錄』** —— 這正是 lesson eng-bound-0004『索引可驗證 ≠ 索引充分』的來源",
+      "cost": "fast",
+      "citation": "agent_harness/CONVENTIONS.md:926-928",
+      "no_selftest_reason": "上游 index_assets.py **沒有** --self-test。它也有一個已知的盲點（lesson eng-bound-0004）：--check 只驗已收錄項目的 bytes/mtime，**不驗『新的有沒有被收錄』**。"
+    },
+    {
+      "id": "snapshot-freshness",
+      "group": "snapshot",
+      "title": "跨機器快照 == 原檔（provenance／集合／手改／README 成員表）",
+      "cmd": [
+        "python3",
+        "agent_harness/scripts/import_harness_snapshot.py",
+        "--check"
+      ],
+      "expect": "rc=0",
+      "selftest": [
+        "python3",
+        "agent_harness/scripts/import_harness_snapshot.py",
+        "--self-test"
+      ],
+      "proves": "memory／skills 的 dated 快照與權威原檔逐筆相符，五類漂移（stale／new／removed／hand-edited／readme-table）皆無",
+      "not_proves": "快照本身不是權威；要引用事實仍讀 `.workbuddy/memory/`",
+      "cost": "fast",
+      "citation": "agent_harness/CONVENTIONS.md:956-984",
+      "volatile_inputs": "這些閘門的輸入含 `.workbuddy/memory/*.md` —— 那是**多 session 共寫的 append-only 每日日誌**。另一個 session 正在 append 的那一刻，它會紅，而且**那個紅是對的**（快照／索引真的落後了）。判準：看它印出來的檔名是不是別人在寫的那一天；是 ⇒ 等對方寫完再刷新，**不要**在別人正在寫的時候重生（§4：把對方未定稿的位元組烤進你的 commit）。"
+    },
+    {
+      "id": "portal-integrity",
+      "group": "portal",
+      "title": "portal 自身：目標樹的指針可解析／註冊表完整",
+      "cmd": [
+        "python3",
+        "agent_harness/portal/build_portal.py",
+        "--check"
+      ],
+      "expect": "rc=0",
+      "selftest": [
+        "python3",
+        "agent_harness/portal/build_portal.py",
+        "--self-test"
+      ],
+      "proves": "每個目標要嘛指到存在的檔（可選 `contains` 子串仍在），要嘛顯式標記證據形態；閘門註冊表每條都有 proves／not_proves",
+      "not_proves": "不驗目標的措辭對不對 —— 那是人的判斷",
+      "cost": "fast",
+      "citation": "agent_harness/portal/README.md"
+    },
+    {
+      "id": "commit-gate",
+      "group": "commit",
+      "title": "提交閘門（11 段：產物追蹤／rpath／main⊆dev／死鎖／源碼↔binary／生產驗收／deploy／replay）",
+      "cmd": [
+        "env",
+        "BIN_DIR=src/llama.cpp/build/bin",
+        "RUN_REPLAY_BENCH=0",
+        "bash",
+        "scripts/check_build_tracked.sh",
+        "--repo",
+        "."
+      ],
+      "expect": "0 FAIL；**SKIP 要逐條確認理由**（`OK` 只代表沒有 FAIL）",
+      "selftest": null,
+      "proves": "11 段分開的硬條件，其中第 8 段會擋『改了 src/ 卻沒 stage build/bin 產物』",
+      "not_proves": "手動跑要自己帶 `BIN_DIR`，否則**全部 SKIP 卻仍印 OK** —— 這個閘門最著名的自欺路徑",
+      "cost": "heavy",
+      "citation": "scripts/check_build_tracked.sh:73-79,688-696",
+      "needs": "build 產物（src/llama.cpp/build/bin）＋ 手動帶 BIN_DIR。不帶 BIN_DIR 會讓 11 段全部 SKIP 卻仍然印 OK —— 這是這個閘門最著名的自欺路徑，也是它不該被自動跑的理由之一",
+      "volatile_inputs": null
+    },
+    {
+      "id": "engine-ab-interleave",
+      "group": "engine",
+      "title": "交錯 A/B ×3 的配對中位數（唯一可引用的吞吐形式）",
+      "cmd": [
+        "python3",
+        "scripts/check/ab_interleave.py",
+        "--help"
+      ],
+      "expect": "每次引用都要附 build fingerprint 與逐輪 md5",
+      "selftest": null,
+      "proves": "paired per-rep ratio 中位數 ＋ build fingerprint（`build_fingerprint()` 三個 md5 前 12 位）",
+      "not_proves": "單輪數字**根本不可引用**；沒有 fingerprint 的兩個數字**不可比**",
+      "cost": "heavy",
+      "needs": "llama-server ＋ 模型；且要確認 8080 空窗",
+      "citation": "agent_harness/CONVENTIONS.md:20-34"
+    },
+    {
+      "id": "engine-oracle-gate",
+      "group": "engine",
+      "title": "M1/M2/M3 logits oracle 閘門（D5 的三個判決指標）",
+      "cmd": [
+        "python3",
+        "scripts/check/m123_oracle_gate.py",
+        "--tag",
+        "<標籤>"
+      ],
+      "expect": "先看 `comparable` 再讀 M1/M2/M3",
+      "selftest": null,
+      "proves": "數值閘門（現行參考檔 `ref_iq3_pool8gb_M2_6144_bitident_v6_nbaware.jsonl`）",
+      "not_proves": "oracle 對得上 **不等於** 吞吐或正確性；`comparable=false` 時分數無意義",
+      "cost": "heavy",
+      "needs": "自己起 server（先確認 8080 空）",
+      "citation": "agent_harness/CONVENTIONS.md:913-914"
+    },
+    {
+      "id": "tb-model-smoke",
+      "group": "tb",
+      "title": "tb_loop 端到端（容器內裝 agent ＋ 真的呼叫模型 ＋ 跑一題）",
+      "cmd": [
+        "bash",
+        "agent_harness/tb_loop/scripts/run_model_smoke.sh"
+      ],
+      "expect": "agent 那步花數百秒（**10 秒 = 根本沒被等待**）；容器裡有 `/app/results.json`",
+      "selftest": [
+        "bash",
+        "agent_harness/tb_loop/scripts/run_model_smoke.sh",
+        "--print-only"
+      ],
+      "proves": "安裝→agent→測試整條鏈路能走完；`--probe` 可先一秒驗金鑰／模型",
+      "not_proves": "`total_input_tokens` **永遠是 0**（tb 寫死），不能用它當判準",
+      "cost": "heavy",
+      "needs": "docker（colima）＋ 模型端點 ；本輪的最後一道牆是測試階段 60 s 逾時",
+      "citation": "agent_harness/tb_loop/scripts/run_model_smoke.sh"
+    }
+  ]
+}

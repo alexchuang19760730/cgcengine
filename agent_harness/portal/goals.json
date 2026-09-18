@@ -1,0 +1,206 @@
+{
+  "schema": 1,
+  "updated": "2026-09-18",
+  "notes": [
+    "目標樹是**人的判斷**，不可從程式推導 —— 所以它是手維護的，但每一節都受機檢：",
+    "`build_portal.py --check` 要求每一節要嘛有一個**可解析**的 `evidence` 指針（可帶 `contains` 子串，",
+    "這樣就不怕行號漂移），要嘛有一行 `evidence_note` 明說它的證據形態。",
+    "這一條是抄 CONVENTIONS.md:7-14 的驗收形式：**缺口從來不是「沒有檔案」，是沉默。**",
+    "`acceptance` 是必填的：沒有『什麼算完成』的目標，在 portal 上與『永遠進行中』同形。"
+  ],
+  "root": {
+    "id": "G0",
+    "title": "cgcengine — 讓 13GB+ 的 MoE 在 16GB 統一記憶體上全卸載，且調校它的方法論本身可被訓練",
+    "why": "兩件事在這裡同時成立才算成功：① 引擎能跑（CGC bounded-residency 專家快取的 35B MoE，-ngl 99）；② 調校引擎時得到的判準能被寫下來、被機檢、被餵進兩個學習迴圈 —— 否則每一次調校都要從零重學。",
+    "status": "active",
+    "acceptance": "引擎有可引用的吞吐與數值閘門數字（帶 build fingerprint），且 agent_harness 的兩個 loop 有可跑的端到端。",
+    "evidence": [
+      { "path": "README.md", "contains": "CGC bounded-residency" },
+      { "path": "agent_harness/README.md", "contains": "兩個形狀相同" }
+    ],
+    "children": [
+      {
+        "id": "G1",
+        "title": "引擎可用性：MoE 不常駐 GPU，靠 bounded pool 按需填充",
+        "why": "16GB 統一記憶體裝不下 13GB+ 的專家權重 ＋ KV ＋ 圖；不解決 residency 就沒有這條產品線。",
+        "status": "active",
+        "acceptance": "decode 與 prefill 在固定 profile 下有可引用的數字，且數值閘門（M1/M2/M3 oracle）不掉。",
+        "evidence": [{ "path": "README.md", "contains": "讓 35B MoE" }],
+        "children": [
+          {
+            "id": "G1.1",
+            "title": "M1｜pool 與 graph 解耦",
+            "why": "池的填充不該與圖的形狀綁在一起；這是 decode 25 的前置。",
+            "status": "blocked",
+            "acceptance": "數值閘門維持、decode 不退步、工作項 2 實作完成。",
+            "blocked_by": "數值閘門 09-14 已達 117/117，但 decode **退步 0.72×**，且工作項 2 未實作 ⇒ 「做了一半卡住」。",
+            "evidence": [
+              { "path": "docs/M1_POOL_GRAPH_DECOUPLE_PLAN_2026-09-14.md" },
+              { "path": ".workbuddy/memory/MEMORY.md", "contains": "M1 做了一半卡住" }
+            ]
+          },
+          {
+            "id": "G1.2",
+            "title": "M2｜prefill 延遲分解",
+            "why": "prefill 的 t/s 只有在知道它是冷態還是熱態時才能引用 —— 否則 250 與 165 會一直被當成同一件事。",
+            "status": "done",
+            "acceptance": "冷／熱態可區分，且「prefill250 + CGC_SPAC=1 的代價不成立」被交錯 A/B 結清。",
+            "evidence": [
+              { "path": "docs/M2_EXIT_CONDITIONS_AUDIT_2026-09-17.md" },
+              { "path": ".workbuddy/memory/MEMORY_PERF.md", "contains": "prefill250 + CGC_SPAC=1" }
+            ]
+          },
+          {
+            "id": "G1.3",
+            "title": "M3／M4｜MoE 佔比與後續里程碑",
+            "why": "要知道時間花在哪裡，才能決定下一步是 kernel 還是幾何。",
+            "status": "active",
+            "acceptance": "M3 的 verdict 有產物支撐、M4 有可判定的退出條件。",
+            "evidence": [
+              { "path": "docs/M3_MOE_SHARE_2026-09-18.md" },
+              { "path": "docs/M3_M4_STATUS_2026-09-17.md" }
+            ]
+          },
+          {
+            "id": "G1.4",
+            "title": "M6＋量化幾何",
+            "why": "IQ3_XXS 之類的量化幾何決定池的形狀與 IO 量，是後續所有最佳化的前提。",
+            "status": "planned",
+            "acceptance": "有可判定的量化幾何結論（哪些 expert／哪個 kind 佔多少 bytes）。",
+            "evidence": [{ "path": "docs/M6_QUANT_GEOMETRY_PLAN_2026-09-17.md" }]
+          }
+        ]
+      },
+      {
+        "id": "G2",
+        "title": "判準可引用性：把「數字什麼時候可以引用」變成可機檢的憲章",
+        "why": "這個 repo 最貴的資產不是腳本，是**判準數字的方法論**（交錯 A/B ×3、build fingerprint、上界探針必須標註）。方法論一旦只活在人的記憶裡，隔天就會拿單輪數字當結論。",
+        "status": "active",
+        "acceptance": "每一條憲章可機檢且零懸空引用；每次提交都跑得過閘門鏈。",
+        "evidence": [{ "path": "agent_harness/CONVENTIONS.md", "contains": "判準憲章" }],
+        "children": [
+          {
+            "id": "G2.1",
+            "title": "憲章 A–E 逐條有證據（可解析指針 or 顯式標記）",
+            "why": "「指不到的條文不是憲章，是感想」——但這條驗收本身必須可機檢，否則它自己就是感想。",
+            "status": "done",
+            "acceptance": "`check_citations.py --check` rc=0、0 懸空。",
+            "evidence": [
+              { "path": "agent_harness/shared/check_citations.py" },
+              { "path": "agent_harness/CONVENTIONS.md", "contains": "這一條是可機檢的" }
+            ]
+          },
+          {
+            "id": "G2.2",
+            "title": "閘門鏈：11 段提交閘門 ＋ 共用檢查器各有陰性對照",
+            "why": "能靠刪掉輸入變綠的檢查不是檢查；沒有自測的檢查壞掉時與「沒被檢查」同形。",
+            "status": "done",
+            "acceptance": "`check_build_tracked.sh` 0 FAIL；每個共用檢查器有自己的 `--self-test`。",
+            "evidence": [{ "path": "scripts/check_build_tracked.sh", "contains": "A gate that cannot distinguish PASS from SKIP is not a gate" }]
+          },
+          {
+            "id": "G2.3",
+            "title": "索引／快照的過期變成可觀測（而不是靠人記得）",
+            "why": "過期是**靜默**的：另一台機器的推送器會忠實地把一份過期快照推上去，而沒有任何東西會出聲。",
+            "status": "active",
+            "acceptance": "`import_harness_snapshot.py --check` 綠；且每日自動化**有執行紀錄**（建好不算跑過）。",
+            "evidence": [
+              { "path": "agent_harness/scripts/import_harness_snapshot.py", "contains": "--self-test" },
+              { "path": "agent_harness/CONVENTIONS.md", "contains": "排程要真的在跑" }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "G3",
+        "title": "學習迴圈：兩個同構的 loop（任務／引擎），獎勵不同但四階段相同",
+        "why": "學習發生在 harness 的**狀態**（文本），不在模型權重 —— 這是 tb_loop 已驗證的原則。兩個 loop 共用同一條 evaluate → extract → refine → compare。",
+        "status": "active",
+        "acceptance": "兩個 loop 都真的能跑完一輪，且失敗軌跡能變成可注入的 lessons／memories。",
+        "evidence": [{ "path": "agent_harness/README.md", "contains": "evaluate → extract → refine → compare" }],
+        "children": [
+          {
+            "id": "G3.1",
+            "title": "tb_loop｜Terminal-Bench 任務迴圈端到端",
+            "why": "它是「harness 狀態能被學習」這個原則的驗證場：獎勵是客觀的 pass/fail。",
+            "status": "blocked",
+            "acceptance": "裝 agent → 真的呼叫模型 → 跑完一題 → 測試階段不再逾時。",
+            "blocked_by": "安裝（421.89 s → 14 s）與 agent 等待（block=False → True）都已修；**現在卡在測試階段 60 s 逾時**（task.yaml 的 max_test_timeout_sec），而模型側還有一個遵循度問題（鍵名 `G_peak` vs 任務要的 `G`）。",
+            "evidence": [
+              { "path": "agent_harness/tb_loop/scripts/run_model_smoke.sh" },
+              { "path": "agent_harness/tb_loop/README.md" }
+            ]
+          },
+          {
+            "id": "G3.2",
+            "title": "engine_loop｜把引擎調校收進 harness（只索引、不複製）",
+            "why": "生產腳本（`scripts/check/*`、`run_server.sh`）已被提交閘門與白皮書指著；收進 harness 若用複製，就會有兩份真相。",
+            "status": "done",
+            "acceptance": "engine_loop 只用 wrapper ＋ 索引指向生產腳本，`index_assets.py --check` 綠。",
+            "evidence": [
+              { "path": "agent_harness/PLAN_ENGINE_LOOP_2026-09-15.md", "contains": "不改動" },
+              { "path": "agent_harness/engine_loop/README.md" }
+            ]
+          },
+          {
+            "id": "G3.3",
+            "title": "訓練數據的唯一出口：episode／decision／lesson 三種 record",
+            "why": "同一批 traces 投影成兩份 SFT（pi 的工具軌跡／prime 的 (證據→教訓)），而**被推翻的假設不得當正例**。",
+            "status": "active",
+            "acceptance": "三種 record 通過 validate.py；兩份 SFT 與 traces 的重生一致。",
+            "evidence": [
+              { "path": "agent_harness/engine_loop/traces/decisions.jsonl" },
+              { "path": "agent_harness/CONVENTIONS.md", "contains": "被推翻的假設不得當正例訓練" }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "G4",
+        "title": "交付與可復現：每次交付都留下可被重新執行的東西",
+        "why": "不能重跑的交付等於一次性的表演；這個 repo 的每一份白皮書都必須帶著當時的閘門原文。",
+        "status": "active",
+        "acceptance": "每次 commit 附白皮書；任何主張都能指到一個可重跑的指令。",
+        "evidence": [{ "path": "agent_harness/CONVENTIONS.md", "contains": "每次 commit 附一份技術白皮書" }],
+        "children": [
+          {
+            "id": "G4.1",
+            "title": "D5｜白皮書版式與現場閘門原文",
+            "why": "把「當時的閘門輸出」與主張放在同一份文件裡，讀者才能自己判斷主張撐不撐得住。",
+            "status": "active",
+            "acceptance": "每次提交有 `docs/*.html`，且含閘門原文與一節「誠實邊界」。",
+            "evidence": [{ "path": "docs/AGENT_HARNESS_SNAPSHOT_FRESHNESS_20260918_1141.html" }]
+          },
+          {
+            "id": "G4.2",
+            "title": "本 portal｜目標／決策／閘門／資產四者同一頁",
+            "why": "四類資產（目標、決策、驗證、記憶／skill／代碼）目前散在 54 份白皮書、8 個記憶檔、5 個 skill、3 個 jsonl 裡；沒有單一入口就無法定期復盤。",
+            "status": "active",
+            "acceptance": "`build_portal.py` 一鍵產生；閘門狀態是**實跑**的結果而非宣告；資產是可量化的數字。",
+            "evidence": [
+              { "path": "agent_harness/portal/gates.json" },
+              { "path": "agent_harness/portal/goals.json" }
+            ]
+          },
+          {
+            "id": "G4.3",
+            "title": "定時：每日快照／索引／portal 自動刷新",
+            "why": "「有人記得跑」不是機制；機制是**會出聲的那條路**。",
+            "status": "active",
+            "acceptance": "自動化在 `automation_runs` 有執行紀錄，且 `--check` 在兩次執行之間真的被跑過。",
+            "evidence": [{ "path": "agent_harness/CONVENTIONS.md", "contains": "定時自動化" }]
+          }
+        ]
+      },
+      {
+        "id": "G5",
+        "title": "前瞻：把同一套 streaming 方法論移到別的模型（Qwen3.6-35B-A3B 等）",
+        "why": "這條線的價值能不能複製到別的模型，決定了它是「一個 fork」還是「一套方法」。",
+        "status": "planned",
+        "acceptance": "有一個非 gemma 的模型能在同一套 harness 上跑完一輪，且判準不變。",
+        "evidence_note": "證據形態：跨 repo 的規劃對話（本 repo 內無產物）。這一節刻意**沒有**可解析指針 —— 它是已標記的，不是未交代的。",
+        "evidence": []
+      }
+    ]
+  }
+}

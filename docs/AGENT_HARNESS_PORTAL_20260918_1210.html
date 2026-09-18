@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AGENT HARNESS PORTAL — 目標／決策／驗證／資產四合一入口（2026-09-18）</title>
+<style>
+  :root { --fg:#111827; --muted:#6b7280; --line:#e5e7eb; --bg:#ffffff; --soft:#f9fafb; --code:#f3f4f6;
+          --blue:#1d4ed8; --green:#15803d; --red:#b91c1c; --amber:#b45309; --purple:#6d28d9; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:15px/1.72 -apple-system,"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif; }
+  .wrap { max-width:1040px; margin:0 auto; padding:32px 20px 80px; }
+  h1 { font-size:24px; line-height:1.4; margin:0 0 6px; }
+  h2 { font-size:19px; margin:34px 0 10px; padding-top:14px; border-top:1px solid var(--line); }
+  h3 { font-size:16px; margin:22px 0 8px; }
+  .sub { color:var(--muted); font-size:13px; margin:0 0 22px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 18px; font-size:13.5px; }
+  th,td { border:1px solid var(--line); padding:7px 10px; text-align:left; vertical-align:top; }
+  th { background:var(--soft); font-weight:600; }
+  code { background:var(--code); padding:1px 5px; border-radius:4px; font-size:12.7px;
+         font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  pre { background:var(--soft); border:1px solid var(--line); border-radius:6px; padding:11px 13px;
+        overflow-x:auto; margin:10px 0 16px; }
+  pre code { background:none; padding:0; font-size:12.4px; line-height:1.6; display:block; }
+  ul { padding-left:22px; } li { margin:4px 0; }
+  .num { white-space:nowrap; }
+  .tag { display:inline-block; font-size:11.5px; padding:1px 8px; border-radius:999px;
+         border:1px solid var(--line); background:var(--soft); color:var(--muted); }
+  .t-green { color:var(--green); border-color:#bbf7d0; background:#f0fdf4; }
+  .t-red { color:var(--red); border-color:#fecaca; background:#fef2f2; }
+  .t-amber { color:var(--amber); border-color:#fde68a; background:#fffbeb; }
+  .t-blue { color:var(--blue); border-color:#bfdbfe; background:#eff6ff; }
+  .t-purple { color:var(--purple); border-color:#ddd6fe; background:#f5f3ff; }
+  .box { border:1px solid var(--line); border-left:4px solid var(--blue); border-radius:4px;
+         padding:11px 14px; margin:16px 0; background:#fbfdff; }
+  .box.ok { border-left-color:var(--green); background:#f6fdf8; }
+  .box.warn { border-left-color:var(--amber); background:#fffdf5; }
+  .box.bad { border-left-color:var(--red); background:#fff7f7; }
+  .box.pur { border-left-color:var(--purple); background:#fbfaff; }
+  figure { margin:16px 0; }
+  figcaption { color:var(--muted); font-size:12.5px; margin-top:6px; }
+  .k { font-weight:600; }
+  .small { font-size:12.5px; color:var(--muted); }
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>AGENT HARNESS PORTAL — 目標／決策／驗證／資產四合一入口</h1>
+<p class="sub">
+  日期 2026-09-18　·　狀態 <b>已實作並實跑</b>　·　HEAD <code>6e0cc0316</code>
+  　·　輸入指紋 <code>c9911078f39c36e1</code>　·　D5 附件（本 commit 無 <code>src/</code>）
+</p>
+
+<div class="box pur">
+  <div class="k">這份文件回答什麼</div>
+  <div style="margin-top:5px">
+    使用者要求三件事：<b>①目標與宏觀技術決策的心智圖（可視化／可解釋／可復盤）</b>、
+    <b>②驗證測試可復現</b>、<b>③資產（memory／skill／代碼／技術決策）可量化並形成能定時觀看的 portal</b>。
+    本檔記錄的是<b>這三件事的實作與它的判準</b>，以及<b>它第一次跑就抓到的四件事</b> ——
+    其中兩件是既存的紅燈、一件是登錄制的結構落差、一件是<b>本輪另一個 session 的 commit 留下的懸空引用</b>。
+  </div>
+</div>
+
+<h2>§1 三個問題，以及為什麼「答案必須是一條指令」</h2>
+
+<table>
+  <thead><tr><th>問題</th><th>來源</th><th>為什麼不是一份文件</th></tr></thead>
+  <tbody>
+    <tr><td>我們在追求什麼、已經決定了什麼？</td>
+        <td><code>goals.json</code> ＋ <code>engine_loop/traces/decisions.jsonl</code></td>
+        <td>決策帶 <code>judgement</code>（sound／refuted）與取代鏈 ⇒ 它是<b>可復盤的狀態</b>，不是流水帳</td></tr>
+    <tr><td>驗證是不是真的跑過、而且能重跑？</td>
+        <td><code>gates.json</code>，由入口<b>實跑</b></td>
+        <td>綠燈必須是「剛剛跑出來的 rc=0」，不是「上次看到是綠的」</td></tr>
+    <tr><td>資產有多少、有沒有在動？</td>
+        <td>實掃記憶／skill／代碼／軌跡／衍生物</td>
+        <td>數字由掃描得到，不由人填</td></tr>
+  </tbody>
+</table>
+
+<figure>
+<svg viewBox="0 0 680 250" width="100%" height="250" role="img"
+     aria-label="三個問題匯入單一入口，入口產出四個面與一個只追加的歷史">
+  <rect x="0" y="0" width="680" height="250" fill="#ffffff"/>
+  <rect x="14" y="24" width="176" height="46" rx="7" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="26" y="44" font-size="13" fill="#1d4ed8">① 目標 ＋ 宏觀決策</text>
+  <text x="26" y="61" font-size="11.5" fill="#6b7280">goals.json ／ decisions.jsonl</text>
+
+  <rect x="14" y="100" width="176" height="46" rx="7" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="26" y="120" font-size="13" fill="#1d4ed8">② 驗證閘門</text>
+  <text x="26" y="137" font-size="11.5" fill="#6b7280">gates.json（單一真相來源）</text>
+
+  <rect x="14" y="176" width="176" height="46" rx="7" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="26" y="196" font-size="13" fill="#1d4ed8">③ 資產</text>
+  <text x="26" y="213" font-size="11.5" fill="#6b7280">實掃，不由人填</text>
+
+  <rect x="252" y="88" width="150" height="70" rx="9" fill="#f5f3ff" stroke="#ddd6fe"/>
+  <text x="266" y="114" font-size="13.5" fill="#6d28d9">build_portal.py</text>
+  <text x="266" y="132" font-size="11.5" fill="#6b7280">唯一入口</text>
+  <text x="266" y="147" font-size="11.5" fill="#6b7280">15 格突變式自測</text>
+
+  <rect x="466" y="20" width="200" height="40" rx="7" fill="#f0fdf4" stroke="#bbf7d0"/>
+  <text x="478" y="45" font-size="12.5" fill="#15803d">docs/…PORTAL.html（離線可開）</text>
+
+  <rect x="466" y="74" width="200" height="40" rx="7" fill="#fffbeb" stroke="#fde68a"/>
+  <text x="478" y="99" font-size="12.5" fill="#b45309">data.json（本輪快照）</text>
+
+  <rect x="466" y="128" width="200" height="40" rx="7" fill="#fff7f7" stroke="#fecaca"/>
+  <text x="478" y="153" font-size="12.5" fill="#b91c1c">history.jsonl（只追加）</text>
+
+  <rect x="466" y="182" width="200" height="40" rx="7" fill="#f9fafb" stroke="#e5e7eb"/>
+  <text x="478" y="207" font-size="12.5" fill="#374151">每日 09:25 自動刷新</text>
+
+  <path d="M190,47 C226,47 226,120 252,120" fill="none" stroke="#d1d5db" stroke-width="1.4"/>
+  <path d="M190,123 C226,123 226,123 252,123" fill="none" stroke="#d1d5db" stroke-width="1.4"/>
+  <path d="M190,199 C226,199 226,126 252,126" fill="none" stroke="#d1d5db" stroke-width="1.4"/>
+  <path d="M402,110 C434,110 434,40 466,40" fill="none" stroke="#d1d5db" stroke-width="1.4"/>
+  <path d="M402,116 C434,116 434,94 466,94" fill="none" stroke="#d1d5db" stroke-width="1.4"/>
+  <path d="M402,124 C434,124 434,148 466,148" fill="none" stroke="#d1d5db" stroke-width="1.4"/>
+  <path d="M402,130 C434,130 434,202 466,202" fill="none" stroke="#d1d5db" stroke-width="1.4"/>
+</svg>
+<figcaption>單一入口、單一真相來源。閘門狀態是<b>實跑</b>的結果；歷史只追加，是趨勢的來源。</figcaption>
+</figure>
+
+<h2>§2 四條硬規矩（每一條都對應一個已付過的學費）</h2>
+
+<h3>規矩一：單一真相來源</h3>
+<p>閘門清單只在 <code>agent_harness/portal/gates.json</code>。Portal 顯示的「復現指令」與
+<code>--gates-only</code> 實際跑的是<b>同一份</b> ⇒ 結構上不存在「文件寫的指令已經不是實際跑的那條」。
+兩份清單必然漂移，而漂移是靜默的。</p>
+
+<h3>規矩二：不假裝</h3>
+<p>需要 GPU／build 產物／docker／模型端點的閘門標成 <code>cost=heavy</code>，
+在表上是 <span class="tag">SKIP</span> 並附前題，<b>不會被畫成綠燈</b>。
+理由是本 repo 自己最著名的自欺路徑：<code>check_build_tracked.sh</code> 不帶
+<code>BIN_DIR</code> 時 11 段全部 SKIP，卻仍然印 <code>OK</code>。
+<b>把跑不動的閘門畫成綠燈，比沒有閘門更糟。</b></p>
+
+<h3>規矩三：缺席要出聲</h3>
+<p>沿用 <code>CONVENTIONS.md:7-14</code> 的驗收形式：目標樹每一節要嘛有<b>可解析的指針</b>
+（建議用 <code>{"path": …, "contains": "…"}</code> 形式 —— 它對行號漂移免疫，純 <code>path</code> 不然），
+要嘛有一行 <code>evidence_note</code> 明說它的證據形態。閘門同理：快速閘門沒有自測時要交代理由，
+或它的 <code>cmd</code> 本身就是 <code>--self-test</code>。
+<b>缺口從來不是「沒有檔案」，是沉默 —— 而沉默與沒人管在讀者面前同形。</b></p>
+
+<h3>規矩四：可執行檔而不是形容詞</h3>
+<p>每一個主張都要能指到一個可重跑的指令；趨勢要落在<b>只追加</b>的 jsonl，不是落在 HTML 的時間戳。</p>
+
+<h2>§3 心智圖：三棵樹都是衍生的，不是我編的</h2>
+
+<table>
+  <thead><tr><th>樹</th><th>來源</th><th>規模（本次實掃）</th></tr></thead>
+  <tbody>
+    <tr><td>目標樹</td><td><code>goals.json</code>（手維護，但指針受機檢）</td>
+        <td class="num">G0 ＋ 4 條主線 ＋ 11 個子目標</td></tr>
+    <tr><td>宏觀技術決策</td><td><code>traces/decisions.jsonl</code></td>
+        <td class="num">38 筆（sound 36／refuted 2／被取代 6）＋ 6 條取代鏈</td></tr>
+    <tr><td>判準與規訓</td><td><code>CONVENTIONS.md</code> ＋ <code>traces/lessons.jsonl</code></td>
+        <td class="num">憲章 61 條（A20／B32／C3／D6）＋ lesson 179 條（7 類）</td></tr>
+  </tbody>
+</table>
+
+<p>三棵樹在頁面上共用一個右側面板，點任一節點都會回答四件事：<b>為什麼</b>、
+<b>什麼算完成</b>、<b>卡在哪</b>、<b>證據在哪</b>。節點可折疊（<code>▾</code>）、
+<code>Ctrl/⌘ + 滾輪</code>縮放 —— 這兩件事是「可復盤」的實際含義：
+讀者要能在同一頁上從「目標」走到「哪一條決策被推翻了」。</p>
+
+<h3>決策樹刻意保留被推翻的節點</h3>
+<p>依 <code>CONVENTIONS.md</code> §D4：「被推翻的假設不得當正例訓練」，
+但<b>也不得刪除</b> —— 刪掉會讓後人重踩一次。所以樹上同時有
+<span class="tag t-green">定案</span>、<span class="tag t-amber">已被取代</span>、
+<span class="tag t-red">被推翻</span>三種葉節點，並另外抽出一支「取代鏈」分支。
+本次實測 6 條取代鏈，最長的一條是 S1 分歧那一族。</p>
+
+<h2>§4 驗證：18 條閘門，14 條快速 ＋ 4 條 heavy</h2>
+
+<table>
+  <thead><tr><th>組</th><th>條數</th><th>涵蓋</th></tr></thead>
+  <tbody>
+    <tr><td><code>charter</code></td><td class="num">1</td><td>憲章每一條有可解析指針或顯式標記（<code>check_citations.py</code>）</td></tr>
+    <tr><td><code>shared</code></td><td class="num">4</td><td>log 政策／模組拆分等價／shell CJK／stale 標記</td></tr>
+    <tr><td><code>traces</code></td><td class="num">2</td><td>三種 record 的 schema 與不變量（＋ 10 格注入式陰性對照）</td></tr>
+    <tr><td><code>derived</code></td><td class="num">3</td><td>重生 == 磁碟（memories／sft_pi／sft_prime）</td></tr>
+    <tr><td><code>index</code></td><td class="num">2</td><td>記憶索引／MANIFEST vs 磁碟</td></tr>
+    <tr><td><code>snapshot</code></td><td class="num">1</td><td>跨機器快照的新鮮度（五種漂移）</td></tr>
+    <tr><td><code>portal</code></td><td class="num">1</td><td>本入口自身的完整性</td></tr>
+    <tr><td><code>engine</code>／<code>commit</code>／<code>tb</code></td><td class="num">4</td>
+        <td><span class="tag">heavy</span> 交錯 A/B／M1-M2-M3 oracle／提交閘門 11 段／tb 端到端</td></tr>
+  </tbody>
+</table>
+
+<p>快速那 14 條合計<b>約 2 秒</b>跑完 —— 這是目前這個 repo 最快的一條整體健康檢查。
+<code>--gates-only</code> 在有紅燈時回 <code>rc=1</code>（可以進 CI 或自動化）。</p>
+
+<h2>§5 它第一次跑就抓到的四件事</h2>
+
+<h3>5.1 兩條閘門<b>在一棵乾淨的樹上就是紅的</b></h3>
+<table>
+  <thead><tr><th>閘門</th><th>實測</th><th>性質</th></tr></thead>
+  <tbody>
+    <tr><td><code>derived-engine-memories</code></td>
+        <td class="num"><code>memories/engine/</code> 156 檔 vs <code>lessons.jsonl</code> 179 條 ⇒ <b>缺 23 筆</b></td>
+        <td>衍生記憶落後教訓（system prompt 的注入來源比教訓本身舊）</td></tr>
+    <tr><td><code>derived-sft-prime</code></td>
+        <td class="num"><code>train.jsonl</code> 162 行，重推得 <b>181</b> 行</td>
+        <td>資料集 stale</td></tr>
+  </tbody>
+</table>
+<p><b>兩條都不在提交閘門的 11 段裡</b> ⇒ 它們存在、跑得動、而且是紅的，
+但沒有任何人在提交時會踩到。這是「閘門存在 ≠ 閘門被跑」最具體的形式。</p>
+<div class="box warn">
+  <div class="k">刻意不順手重生它們</div>
+  <div style="margin-top:5px">
+    <code>build_memories.py</code> 一跑就會改變兩個 loop 的 system prompt（§E 的閉環對照義務），
+    <code>sft_prime</code> 同理 —— 那是<b>決策</b>，不是修 bug。兩者都已列進 portal 的欠帳頁，
+    各附一行可複製的修復指令。
+  </div>
+</div>
+
+<h3>5.2 決策 registry 的覆蓋落差</h3>
+<p><code>traces/decisions.jsonl</code> 的最後一筆停在 <b>2026-09-16</b>，
+而 09-17／09-18 的判準決定只存在於 <code>.workbuddy/memory/*.md</code> 與
+<code>CONVENTIONS.md</code> 的修訂裡 ⇒ <b>它們不會進任何資料集</b>
+（<code>sft_prime</code> 只從三個 jsonl 投影）。這是「登記制 vs 日誌制」的結構性落差，不是 bug，
+但它是<b>可量化</b>的：覆蓋停滯天數。</p>
+
+<h3>5.3 ★ 另一個 session 的 commit 留下了一個懸空引用</h3>
+<p>本輪進行期間，另一條線提交了 <code>6e0cc0316</code>（<code>feat(sweep) + docs(memory,skill)</code>）。
+它包含 <code>agent_harness/skills/README.md</code> 與 <code>agent_harness/skills/SNAPSHOT.jsonl</code>，
+而那兩處<b>正是我這一輪的改動</b>（新 skill 的成員表列 ＋ 匯入器為它產生的記錄）——
+他們跑 <code>import_harness_snapshot.py</code> 時把它的輸入一起收了進去。</p>
+<p>後果是一個<b>可機檢</b>的懸空引用。實測：</p>
+<pre><code>SNAPSHOT 共 14 筆；不在版控的副本: ['agent_harness/skills/cgc-observer-portal/SKILL.md']</code></pre>
+<p>也就是說：<code>SNAPSHOT.jsonl</code> 已經提交了一列指向某個副本，
+而那個副本<b>不在版控裡</b>。clone 出來的機器會拿到一份指著不存在檔案的清單。</p>
+<div class="box bad">
+  <div class="k">為什麼每一道閘門都是綠的</div>
+  <div style="margin-top:5px">
+    <code>import_harness_snapshot.py --check</code> 印
+    <code>-&gt; OK: 快照與原檔一致（provenance 逐筆相符、集合相符、副本未被手改、README 成員表相符）</code>
+    —— 因為它驗的是<b>磁碟上的副本</b>與來源 sha256，而那個副本<b>確實在磁碟上</b>。
+    「索引／SNAPSHOT 綠」與「在版控裡」是<b>兩個獨立的軸</b>；
+    30 秒的判別式是對任何要引用的路徑跑 <code>git ls-files --error-unmatch</code>。
+    修法是純新增 <code>git add</code>（零內容改動）—— 本 commit 就做這件事。
+  </div>
+</div>
+
+<h3>5.4 兩條「輸入易變」的閘門</h3>
+<p><code>index-memory</code> 與 <code>snapshot-freshness</code> 的輸入含
+<code>.workbuddy/memory/*.md</code> —— 那是<b>多 session 共寫的 append-only 每日日誌</b>。
+另一個 session 正在 append 的那一刻它們會紅，<b>而那個紅是對的</b>（快照／索引真的落後了）。
+Portal 對這兩條會多一個 <span class="tag t-amber">輸入易變</span> 標籤，
+並在 tooltip 裡寫明判準：<b>看它印出來的檔名是不是別人在寫的那一天</b>；
+是 ⇒ 等對方寫完再刷新，不要在別人正在寫的時候重生
+（§4：把對方未定稿的位元組烤進你的 commit）。</p>
+
+<h2>§6 現場閘門輸出原文</h2>
+
+<p class="small">以下為本輪實跑的原樣輸出（不是轉述）。</p>
+
+<pre><code>$ python3 agent_harness/engine_loop/traces/validate.py
+
+  lessons.jsonl: 179 records {'lesson': 179}
+  -> OK
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+
+  10/10 injected violations rejected
+
+$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  memory index OK: 8 file(s), 234 section(s), no drift
+
+$ python3 agent_harness/engine_loop/index_assets.py --check   # 濾 OK:/error
+  manifest OK: 108 assets, existence + bytes + mtime all agree
+
+$ python3 agent_harness/scripts/import_harness_snapshot.py --check
+  8 memory source(s), 6 skill source(s); 14 筆記錄（snapshot_date 2026-09-18…2026-09-18）
+  -> OK: 快照與原檔一致（provenance 逐筆相符、集合相符、副本未被手改、README 成員表相符）
+
+$ python3 agent_harness/portal/build_portal.py --check
+  -> OK: 18 條閘門（fast 14／heavy 4），目標樹指針全部可解析、每一節都有 acceptance
+
+$ python3 agent_harness/portal/build_portal.py --self-test
+  ok    N heavy ⇒ SKIP（不畫成綠燈）
+  ok    O 自我測試不寫任何檔到真正的 repo（子行程必須帶 PA_PORTAL_REPO）
+
+  15/15 checks passed</code></pre>
+
+<h3>一鍵復現的完整輸出（<code>--gates-only</code>，rc=1）</h3>
+<pre><code>  PASS  charter-citations            0.14s    OK: 61/61 條都有交代（可解析指針 59 ＋ 顯式標記 2），0 懸空
+  PASS  shared-log-policy            0.26s    log 政策一致
+  PASS  shared-module-split          0.27s    2/2 checks passed
+  PASS  shared-shell-cjk             0.14s    0 處：所有 `$VAR` 後面都不是緊接非 ASCII
+  PASS  shared-stale                 0.08s    3 個登記項（2 個資產 + 1 個消費者）都對得上
+  PASS  traces-validate              0.03s    -> OK
+  PASS  traces-selftest              0.27s    10/10 injected violations rejected
+  FAIL  derived-engine-memories      0.03s      regenerate with: python3 agent_harness/engine_loop/harness_engine/build_memories.py
+  PASS  derived-sft-pi               0.03s    sft_pi OK: train.jsonl + valid.jsonl re-derive to the same bytes
+  FAIL  derived-sft-prime            0.03s      regenerate with: python3 agent_harness/engine_loop/sft_prime/build_sft_prime.py
+  PASS  index-memory                 0.03s  memory index OK: 8 file(s), 234 section(s), no drift
+  PASS  index-assets                 0.04s  manifest OK: 108 assets, existence + bytes + mtime all agree
+  PASS  snapshot-freshness           0.03s    -> OK: 快照與原檔一致
+  PASS  portal-integrity             0.03s  -> OK: 18 條閘門（fast 14／heavy 4）
+  SKIP  commit-gate                     —  heavy：入口刻意不自動跑（需要 build 產物 ＋ 手動帶 BIN_DIR…）
+  SKIP  engine-ab-interleave            —  heavy：入口刻意不自動跑（需要 llama-server ＋ 模型；且要確認 8080 空窗）
+  SKIP  engine-oracle-gate              —  heavy：入口刻意不自動跑（需要 自己起 server（先確認 8080 空））
+  SKIP  tb-model-smoke                  —  heavy：入口刻意不自動跑（需要 docker（colima）＋ 模型端點）
+
+  12/14 快速閘門通過（另有 4 條 heavy 刻意未執行）
+  -> RED: 2 條 —— derived-engine-memories, derived-sft-prime</code></pre>
+
+<div class="box">
+  <div class="k">兩條紅燈的歸屬（寫進 commit message 與本檔）</div>
+  <div style="margin-top:5px">
+    兩條都<b>不是本 commit 造成的</b>：本 commit 逐檔 grep <code>MANIFEST.jsonl</code> 命中 <b>0</b>，
+    且不動 <code>src/</code>、不動三個 jsonl。它們是既存欠帳（§5.1），
+    處置已列進 portal 的欠帳頁並各附可複製的指令。
+  </div>
+</div>
+
+<h2>§7 三個我自己的錯，以及它們各自的一般化</h2>
+
+<h3>7.1 我寫下了一個假宣稱</h3>
+<p>我量到「<code>&lt;code&gt;</code> 214 個、<code>&lt;/code&gt;</code> 213 個」，
+於是斷言「來源語料有不成對的標籤」，還把它寫進程式註解。<b>那是假的。</b></p>
+<p>真正的原因：內嵌 JSON 產生時會把 <code>&lt;/</code> 轉義成 <code>&lt;\/</code>
+（防 <code>&lt;/script&gt;</code> 提前結束），所以 payload 裡的 <code>&lt;/code&gt;</code>
+本來就是 0。<b>還原轉義之後是 214/214</b>。註解已改成實話，並保留「這一條是被一個假症狀引出來的」。
+一般化：<b>內嵌 JSON 的 HTML 不能直接數標籤</b>，要分區數（HTML 本體／payload／JS）或先還原。</p>
+
+<h3>7.2 正確的陷阱，我犯在錯的地方</h3>
+<p>為了自動驗產物，我寫了 <code>verify_output()</code>——而它的第一版用
+<code>"&lt;b"</code> 當前綴去數標籤，於是命中 <code>&lt;br&gt;</code> 與 <code>&lt;body&gt;</code>，
+印出一排假的「不對稱」。這個陷阱本 repo 已經記過一次（<code>cgc-commit-gate</code> §1.3 同族），
+而我把它犯在<b>專門抓輸出缺陷的函式</b>裡。第二版改用 <code>"&lt;div&gt;"</code>，
+又因為 <code>div</code> 永遠帶屬性而數到 0。最終寫法是
+「<code>&lt;tag</code> 後面接空白或 <code>&gt;</code>」的正則。
+<b>檢查器的錯與被檢查物的錯同形，是最貴的一種。</b></p>
+
+<h3>7.3 我的自我測試會污染真 repo</h3>
+<p>第一版忘了把 <code>PA_PORTAL_REPO</code> 傳給子行程 ⇒「跑自測」等於「在真正的 repo
+原地產生一份 portal」（<code>data.json</code> 與 <code>history.jsonl</code> 真的被寫出來了），
+<b>而 13 格 fixture 全部「通過」</b>。已修，並加了第 <b>O</b> 格看門狗：
+跑測前後比對真 repo 相關目錄所有檔的 <code>(mtime_ns, size)</code>。
+<b>自測有副作用</b>是這個 repo 最不能接受的失效模態之一，所以它必須有自己的陰性對照。</p>
+
+<div class="box warn">
+  <div class="k">同一族的第四個：同一個 dict 字面量裡重複的鍵</div>
+  <div style="margin-top:5px">
+    SKIP 那一列的「理由」我在 dict 裡寫了 <code>"tail"</code>，而同一段稍後又寫了一次
+    <code>"tail": ""</code> —— 後者勝，理由被<b>靜默蓋掉</b>。
+    症狀是那一格空白，看起來像「沒有理由」，而它其實有。
+    這與 7.1（量測假象）、7.2（前綴誤配）是同一個家族的第三次：<b>輸出看起來像缺陷，或缺陷看起來像正常。</b>
+  </div>
+</div>
+
+<h2>§8 資產量化與定時</h2>
+
+<table>
+  <thead><tr><th>類別</th><th>本期實測</th></tr></thead>
+  <tbody>
+    <tr><td>記憶（權威 <code>.workbuddy/memory/</code>）</td>
+        <td class="num">8 檔 / 1,146,463 B / 15,092 行（<b>不在版控內</b>，靠 dated 快照跨機器）</td></tr>
+    <tr><td>skill（權威 <code>~/.workbuddy/skills/</code>）</td>
+        <td class="num">6 個 / 299,967 B</td></tr>
+    <tr><td>代碼（現行）</td>
+        <td class="num">1,515,947 行 / 4,227 檔；另 <code>versions/</code> 存檔 1,554,764 行（<b>不計入</b>）</td></tr>
+    <tr><td>軌跡</td>
+        <td class="num">122 episodes（其中 122 標 usable_as_evidence）／ 38 decisions ／ 179 lessons</td></tr>
+    <tr><td>衍生物</td>
+        <td class="num">memories 156 ／ sft_pi train 12 ／ sft_prime train 162</td></tr>
+    <tr><td>交付物</td>
+        <td class="num">白皮書 55 份 ／ docs/*.md 43 份</td></tr>
+    <tr><td>證據</td>
+        <td class="num"><code>shared/evidence</code> 2,447 檔 / 15.4 MB；<code>Backup/</code> 4,576 檔 / 1.04 GB</td></tr>
+  </tbody>
+</table>
+
+<div class="box warn">
+  <div class="k"><code>versions/</code> 為什麼要單獨成一個桶</div>
+  <div style="margin-top:5px">
+    它 3,835 檔、1,554,764 行，是歷史存檔而<b>不是現行代碼</b>。
+    不排除的話，「現行代碼 LOC」這個數字有一半是舊版複本 —— 看起來很厲害，卻什麼都沒說。
+    Portal 的長條圖用灰色標示它們，並在表下的說明寫明「不計入」。
+  </div>
+</div>
+
+<h3>定時</h3>
+<p>新增自動化 <code>automation-1789703825287</code>，每日 <b>09:25</b>，cwd 指向本 repo。
+排在 09:10 那條「快照新鮮度」之後 —— 這樣它看到的閘門狀態才是刷新後的。
+它的步驟是：實跑閘門 → 產 portal → <code>--check</code> → 逐檔 stage 三個檔 →
+<code>RUN_REPLAY_BENCH=0</code> commit → 推兩個遠端並驗三處 hash 相同。
+嚴禁 <code>git add -A</code>、嚴禁為了讓閘門變綠而動 <code>src/</code>。</p>
+
+<h2>§9 誠實邊界（不主張什麼）</h2>
+
+<ul>
+  <li><b>不主張 heavy 閘門的狀態。</b>它們在這一頁是未知，不是綠。要它們的狀態就得手動跑並看輸出。</li>
+  <li><b>不主張排程已經在跑。</b>自動化已建，但 <code>automation_runs</code> 尚無紀錄 ⇒
+      只主張「機制已建 ＋ 15 格自測通過」。驗收是執行紀錄，不是它的存在。</li>
+  <li><b>不主張目標樹的措辭正確。</b><code>--check</code> 只驗它有沒有指針、有沒有
+      <code>acceptance</code>；措辭對不對是人的判斷。</li>
+  <li><b>不主張兩次執行可比較</b>，除非輸入指紋相同（<code>c9911078f39c36e1</code>）。
+      指紋是六個檔的 sha256 前 12 位串接：三個 jsonl、<code>CONVENTIONS.md</code>、
+      <code>gates.json</code>、<code>goals.json</code>。</li>
+  <li><b>不主張 D6 的閉環對照已結清。</b>它仍未執行，狀態與本輪之前相同；
+      而本輪<b>又新增了一個 skill</b>（那是判準的載體），等於讓那條欠帳多一筆待對照的改動。</li>
+  <li><b>本 commit 沒有刷新 skill 快照。</b>理由：我在這一輪新建了
+      <code>cgc-observer-portal</code>，匯入器<b>已經被另一條線跑過</b>（<code>6e0cc0316</code> 帶進了它的
+      <code>SNAPSHOT.jsonl</code> 記錄），但副本沒進版控 —— 本 commit 補上副本本身，
+      而<b>不再重跑匯入器</b>：<code>.workbuddy/memory/2026-09-18.md</code> 此刻正被另一條線 append，
+      重跑會把對方未定稿的位元組烤進來（§4）。所以 <code>snapshot-freshness</code> 目前在磁碟上是綠的，
+      但它的「新鮮」對應的是另一條線跑的那一刻。</li>
+  <li><b>資產數字是「本次掃描的那一刻」。</b>記憶檔當天必變、另一個 session 也在寫；
+      要看最新請直接開 <code>docs/AGENT_HARNESS_PORTAL.html</code>（它每次產生都重掃）。</li>
+</ul>
+
+<h2>§10 檔案清單</h2>
+
+<table>
+  <thead><tr><th>檔案</th><th>角色</th></tr></thead>
+  <tbody>
+    <tr><td><code>agent_harness/portal/gates.json</code></td><td>驗證閘門的單一真相來源（18 條）</td></tr>
+    <tr><td><code>agent_harness/portal/goals.json</code></td><td>目標樹（指針受機檢）</td></tr>
+    <tr><td><code>agent_harness/portal/build_portal.py</code></td><td>入口：四種模式 ＋ 15 格突變式自測 ＋ 產物自檢</td></tr>
+    <tr><td><code>agent_harness/portal/README.md</code></td><td>規矩、用法、自測清單、已知邊界</td></tr>
+    <tr><td><code>agent_harness/portal/data.json</code></td><td>本輪的機器可讀快照（下一輪的「上一次」）</td></tr>
+    <tr><td><code>agent_harness/portal/history.jsonl</code></td><td><b>只追加</b>的量化歷史（趨勢來源）</td></tr>
+    <tr><td><code>docs/AGENT_HARNESS_PORTAL.html</code></td><td>產物：四頁、離線可開、無外部資源</td></tr>
+    <tr><td><code>agent_harness/skills/cgc-observer-portal/SKILL.md</code></td>
+        <td>新 skill 的<b>快照副本</b>（補上 <code>6e0cc0316</code> 留下的懸空引用）</td></tr>
+    <tr><td><code>docs/AGENT_HARNESS_PORTAL_20260918_1210.html</code></td><td>本檔（D5 附件）</td></tr>
+  </tbody>
+</table>
+
+<div class="box ok">
+  <div class="k">一句話</div>
+  <div style="margin-top:5px">
+    這一頁的價值不在「把四件事放在一起」，而在<b>它顯示的綠燈是剛剛跑出來的</b> ——
+    所以它第一次跑就交出了兩條沒人踩到的紅燈、一條結構落差，以及一條另一個 session 留下的懸空引用。
+  </div>
+</div>
+
+</div></body>
+</html>

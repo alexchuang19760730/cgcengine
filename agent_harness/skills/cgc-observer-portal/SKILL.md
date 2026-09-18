@@ -1,0 +1,115 @@
+---
+name: cgc-observer-portal
+description: 在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）新增一個「可機檢的觀測入口」——把散在多處的目標／決策／驗證／資產收成一份**實跑**的入口，並用突變式自測證明它真的會紅。當使用者要求「可視化／可復盤」「驗證可復現」「資產盤點入口」「能不能定期看」、或要求新增任何**彙總型檢查入口**時使用。
+agent_created: true
+---
+
+> **這是快照，不是權威副本。**
+> 權威位置：`~/.workbuddy/skills/cgc-observer-portal/SKILL.md`（由 host 持續寫入）。
+> 本檔於 2026-09-18 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
+> 底下的內容能被 `agent_harness/scripts/auto_git_push.ps1` 定時推送；原檔改了這裡**不會**自動跟上。
+> 要改 skill 請改原檔，再重跑 `python3 agent_harness/scripts/import_harness_snapshot.py`。
+
+# 在這個 repo 新增一個「觀測入口」而不是一份文件
+
+**核心判準（先問這個，再動手）**：這個入口顯示的綠燈，是**剛剛跑出來的**，還是**宣告的**？
+宣告的綠燈與沒有綠燈在讀者面前同形 —— 本 repo 的提交閘門自己就有這個陷阱
+（不帶 `BIN_DIR` ⇒ 11 段全部 SKIP，卻仍然印 `OK`，見 `scripts/check_build_tracked.sh:688-696`）。
+
+## 四條硬規矩（每一條都對應一個已付過的學費）
+
+1. **單一真相來源**。清單只在一個 JSON 裡。入口顯示的「復現指令」與入口自己跑的是同一份 ⇒
+   不存在「文件寫的指令已不是實際跑的那條」。**兩份清單必然漂移**，而漂移是靜默的。
+2. **不假裝**。需要 GPU／build 產物／docker／模型端點的檢查，標成 `cost=heavy` 並在前端
+   顯示 `SKIP` ＋前題，**不畫成綠燈**。跑不動的綠燈比紅燈更貴。
+3. **缺席要出聲**。沿用 `agent_harness/CONVENTIONS.md:7-14` 的驗收形式：每一個節點要嘛有
+   **可解析的指針**，要嘛有一行**顯式標記**說明證據形態。指針用
+   `{"path": ..., "contains": "<子串>"}` —— 它對行號漂移免疫，純 `path` 不然。
+   缺口不是「沒有檔案」，是**沉默**。
+4. **可執行檔而不是形容詞**。每一個主張都要能指到一個可重跑的指令；趨勢要落在
+   **只追加**的 jsonl，不是落在 HTML 的時間戳。
+
+## 檔案放哪裡是零索引漂移
+
+`index_assets.py` 只做三件事：跑 `CURATED` 顯式清單（`:44` 起）、glob `scripts/check/*`（`:475`）、
+glob `.workbuddy/memory/*.md`（`:490`）。`docs/*` 是**顯式註冊表**（`:220` 起的一串 tuple）。
+
+| 位置 | 後果 |
+|---|---|
+| `agent_harness/<新目錄>/` | **零漂移**（只要不是 `agent_harness/engine_loop/*` 的既有檔） |
+| `docs/*.html`（新檔） | **零漂移**，但也代表它**不會**被自動收進 MANIFEST（「索引可驗證 ≠ 索引充分」，lesson `eng-bound-0004`） |
+| `scripts/check/*`（新檔） | ★ **會**被自動收錄 ⇒ **多一筆漂移** |
+| 改既有被索引檔 | 多一筆漂移；若此刻 `--check` 已因別條線而紅，**不要重生索引** |
+
+## 入口的四種模式與 rc 契約
+
+照 `agent_harness/portal/build_portal.py` 抄：
+
+| 模式 | 契約 |
+|---|---|
+| `--check` | 只驗註冊表與指針，**不寫任何檔**；有問題 ⇒ rc=1 且逐條指名 |
+| `--self-test` | 黑箱自測（見下）；全過 rc=0 |
+| `--gates-only` | 實跑快速閘門並印表；**任何紅燈 ⇒ rc=1**（可進 CI／automation） |
+| `--no-gates` | 離線模式；此時**不得有任何 PASS**（不跑就不准宣稱綠） |
+
+`--check` 的「不寫任何檔」要**用 mtime_ns 快照驗**，不是靠讀程式碼相信（見自測 I 格）。
+
+## 突變式自測要涵蓋的東西
+
+單獨寫「乾淨輸入 ⇒ rc=0」等於沒測。至少要這些（`portal --self-test` 有 15 格可抄）：
+
+- **懸空指針** ⇒ rc=1 且**指名**那個路徑
+- **沉默**（既無指針也無標記）⇒ rc=1 ← 這一格才是規矩 3 的執行者
+- **`contains` 子串漂移** ⇒ rc=1
+- **狀態與必填欄位不一致**（例：`status=blocked` 但沒有 `blocked_by`）⇒ rc=1
+- **註冊表缺欄位**（尤其 `not_proves` —— 只能證不能否證的檢查不是檢查）⇒ rc=1
+- **壞 JSON** ⇒ rc=1 且**不是 traceback**
+- **`--check` 不寫檔**（跑前後比對 mtime_ns）
+- **只追加的檔案真的只追加**（跑兩次 ⇒ 兩行，第二次不覆蓋第一次）
+- **`--no-gates` 不得出現 PASS**
+- **heavy 不得出現 PASS**
+- ★ **自測本身不得有副作用**：子行程一定要吃「指向 fixture 的環境變數」
+  （`PA_PORTAL_REPO`）。本目錄的第一版就是忘了傳，於是「跑自測」等於「在真正的 repo
+  原地產生一份入口」，而 13 格 fixture **全部通過**。看門狗做法：跑測前後快照真 repo
+  相關目錄的 `(mtime_ns, size)`。
+
+**fixture 要合法**：每個 fixture 都要有一份最小但**合法**的註冊表。否則檢查會先抱怨
+「註冊表不存在」，讓 A–E 五格全部拿同一個假原因失敗 —— **自測本身變成掩蓋真相的東西**。
+
+## 提交序列（本 repo）
+
+```bash
+python3 <entry> --check            # 1. 註冊表與指針
+python3 <entry> --self-test        # 2. 突變式自測
+python3 <entry> --gates-only       # 3. 實跑；紅燈是可以提交的事實，但要寫進 message
+python3 <entry>                    # 4. 產物（先算 HTML 再寫檔，失敗就不留半套）
+git status --porcelain -uall       # 5. 確認別條線的檔 → 只 stage 自己那幾筆，絕不用 git add -A
+git add <explicit paths> && git diff --cached --name-status
+BIN_DIR='src/llama.cpp/build/bin' RUN_REPLAY_BENCH=0 bash scripts/check_build_tracked.sh --repo "$PWD"
+RUN_REPLAY_BENCH=0 git commit -F <msg file>
+```
+
+推送照 §6.2：`ls-remote` 拿**遠端真實 SHA**（不是 tracking ref）→ `merge-base --is-ancestor` 驗 FF →
+推兩個遠端 → 驗 local／origin／cgcengine0907 三處 hash 相同。
+
+D5 的白皮書：本 repo 每次 commit 都要附 `docs/*.html`。判準是「staged 清單有沒有動 `src/`」；
+純腳本／文件的 commit，D5 的**數值那一半**不適用，但白皮書那一半**沒有豁免**。
+
+## 動手時的三個具體陷阱
+
+1. **同一個檔案連續多筆 `Edit` 可能回報 success 而根本沒寫進去**（2026-09-17、09-18 各一次）。
+   有效做法：寫一支補丁腳本，每個錨點先 `assert s.count(anchor) == 1`，
+   **命中數不對就整批不寫入**；或改完立刻 `grep -n` 驗實際內容。
+2. **不要用 shell heredoc 寫含 `${...}` 的補丁**（JS 模板字串）—— zsh 會當成參數展開
+   （`Bad substitution: esc`）。把補丁腳本**寫成檔案再跑**。
+3. **內嵌 JSON 的 HTML 不能直接數標籤**：產生 payload 時會把 `</` 轉義成 `<\/`
+   （防 `</script>` 提前結束）⇒ `s.count('</code>')` 天然少一個。要分區數或先還原。
+   這一條的代價不是數字錯，是**會變成別人程式碼裡的前提**。
+
+## 反模式（看到就打斷）
+
+- 在入口裡「順手修」紅燈。**觀測器不是修復器**：把紅燈改綠的最小手段就是讓它別再看。
+- 為了讓數字好看而把存檔算成現行代碼（`versions/` 3835 檔 / 1.55M 行 ⇒ 一定要單獨成桶並排除）。
+- 用「建好自動化」當「它跑過」的證據。驗收是 `automation_runs` 有紀錄。
+- 把入口做成分開選單而非單頁：**這一頁的價值在於四件事同時可見**（目標／決策／閘門／資產），
+  分開就沒有人會把它們放在一起讀。
