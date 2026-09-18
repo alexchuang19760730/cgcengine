@@ -549,3 +549,14 @@ resident 6197.04）。
 序列化的認證天花板 **×1.711**（`CGC_SUBMIT_AHEAD`）⇒ `10.9 × 1.711 = 18.7 < 25`
 ⇒ **25 還需要削 GPU 工作 ≈ ×1.35**，而支配區塊是 **delta-net／狀態管線（35–45%）**，不是 MoE
 （§EN-132 的更正）。MTP 的「每步 token」乘數**修後仍 ≈ 0**。
+
+### 4. ★★★ 已坐實：逐層指紋 **48/48 相同**（不要重跑 outcap）
+
+上面 §2 要求的 `p25-{outcap,slotgpu-outcap}-pre`（prefill、pin 層 0–3）**已跑完**：
+**48 個 `(graph, layer)` 的 `fnv1a64`（整張 `ffn_moe_down`）`SAME=48`、`DIFF=0`；
+整行 `diff` = 0 行**（連印出的 float 都逐字相同）。log `113717`（錨）／`113800`（S1）。
+判讀：prefill 的 layer 0 輸入是 embedding ⇒ 兩臂 by construction 相同 ⇒ **第一層就沒差 ⇒ 沒有載體。**
+⇒ **S1 在這個 cell 上沒有可測的數值差異**（＋ `clamped_selected=0` ＋ `answer_md5` 相同）。
+⚠️ **未涵蓋**：層 4 以上、decode 圖（`p25-outcap-base`／`p25-slotgpu-outcap`）、n>16。
+**⇒ 去序列化（天花板 ×1.711）的正確性前提已滿足；`exp=` 不必再走**（`ffn_moe_ids_leaf` 已撤除）。
+全文：`.workbuddy/memory/2026-09-18.md` §EN-139。
