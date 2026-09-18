@@ -1696,6 +1696,32 @@ struct test {
 
     double stdev_ts() const { return ::stdev(get_ts()); }
 
+    // [CGC 2026-09-18] THE PLATFORM VALUE -- the same statistic with rep 1 dropped, which is what
+    // this project's standard quotes (`prod_matrix.py` `WARMUP_RULE` = "report the platform value,
+    // i.e. drop rep 1"). It is exposed as a FIELD rather than left as a reader-side convention
+    // because the convention is invisible to anyone reading this binary's JSON, and the cost of
+    // not applying it is large:
+    //
+    //   * the generation warmup is ONE token (see the warmup block in main), and for a
+    //     `-p 0 -d 512` arm -- the house decode shape -- the prompt warmup does not run at all
+    //     (`if (t.n_prompt > 0)`), so rep 1 measures a cold pipeline;
+    //   * measured: samples [7.82, 9.71, 9.86] -> avg_ts 9.13 vs platform 9.79 (+7.2%);
+    //     samples [4.95, 10.71, 11.00] -> avg_ts 8.89 vs platform 10.86 (+22.2%).
+    //
+    // So `avg_ts` is not wrong, it answers a different question ("mean over all reps, including the
+    // cold one"), and a reader who quotes it understates decode by 3-22% while every visible
+    // consistency check still passes. `n_kept` is emitted beside it so that a 1-rep run is visibly
+    // NOT a platform value instead of quietly looking like one.
+    uint64_t n_kept() const { return samples_ns.size() > 1 ? samples_ns.size() - 1 : samples_ns.size(); }
+
+    double platform_ts() const {
+        const std::vector<double> ts = get_ts();
+        if (ts.size() <= 1) {
+            return ::avg(ts);   // 1 rep: nothing to drop, and n_kept says so
+        }
+        return ::avg(std::vector<double>(ts.begin() + 1, ts.end()));
+    }
+
     static std::string get_backend() {
         std::vector<std::string> backends;
         bool                     rpc_used = false;
@@ -1728,7 +1754,8 @@ struct test {
             "tensor_buft_overrides",            "load_mode",     "embeddings",
             "no_op_offload",  "no_host",        "fit_target",    "fit_min_ctx",
             "n_prompt",       "n_gen",          "n_depth",
-            "test_time",      "avg_ns",         "stddev_ns",     "avg_ts",         "stddev_ts"
+            "test_time",      "avg_ns",         "stddev_ns",     "avg_ts",         "stddev_ts",
+            "platform_ts",    "n_kept"
         };
         return fields;
     }
@@ -1747,8 +1774,11 @@ struct test {
             field == "embeddings" || field == "no_host") {
             return BOOL;
         }
-        if (field == "avg_ts" || field == "stddev_ts") {
+        if (field == "avg_ts" || field == "stddev_ts" || field == "platform_ts") {
             return FLOAT;
+        }
+        if (field == "n_kept") {
+            return INT;
         }
         if (field == "load_mode") {
             return STRING;
@@ -1832,7 +1862,9 @@ struct test {
                                             std::to_string(avg_ns()),
                                             std::to_string(stdev_ns()),
                                             std::to_string(avg_ts()),
-                                            std::to_string(stdev_ts()) };
+                                            std::to_string(stdev_ts()),
+                                            std::to_string(platform_ts()),
+                                            std::to_string(n_kept()) };
         return values;
     }
 
