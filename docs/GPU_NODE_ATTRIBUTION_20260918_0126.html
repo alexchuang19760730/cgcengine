@@ -60,7 +60,47 @@
   <span class="tag t-blue">第 3 件：儀器落地</span>
   <span class="tag t-purple">2026-09-18 03:2x 修訂：§9–§14 新增</span>
   <span class="tag t-purple">2026-09-18 05:1x 修訂：§19–§22 新增（把 <code>(other)</code> 拆掉）</span>
+  <span class="tag t-amber">2026-09-18 11:0x 更正：<code>cache</code> 是<b>狀態快取</b>，不是池暫存</span>
   <span class="tag t-gray">未 push</span>
+</div>
+
+<div class="box warn">
+<p><b>2026-09-18 11:0x 更正標註（新增，原文一字未刪）。</b>
+<b>本檔（含 §9–§22）把 <code>cache</code> 桶標成「池自己的暫存」是錯的。</b>
+用當前詞彙表把一份新 <code>CGC-GRPH</code> dump（log <code>llama_server_20260918_050331</code>，
+4116 節點）的 <code>cache</code> 桶成員名字逐字印出來，它們是
+<code>cache_r_l*</code>（150＋120＋30×3）、<code>cache_s_l*</code>（60＋30×3）、
+<code>cache_k_l*</code>／<code>cache_v_l*</code>（20＋20＋10＋10）—— 也就是
+<b>遞歸狀態</b>（<code>src/llama.cpp/src/llama-model.cpp:378-379</code> 的
+<code>pattern_r_cache</code>／<code>pattern_s_cache</code>）與
+<b>10 個全注意力層的 KV</b>。</p>
+<p>⇒ <b>那個桶是「每 token 讀寫遞歸／KV 狀態」的管線，與專家池無關。</b>
+池的填充在 <b>CPU 側的 hook</b>（計在 <code>CGC-SEG</code> 的 <code>cb</code>），
+<b>在 GPU 節點表裡沒有成本</b> —— 與 <code>fill_wait = 0.000</code> 一致。
+份額數字全部不變（<code>cache</code> 仍 7.7–9.8%），<b>變的是它叫什麼</b>；
+而這個名字一改，結論就跟著改：</p>
+<p><b>被取代的三處（逐條列，不刪原文）：</b></p>
+<ul>
+<li>§11.4／§19.2 的「<code>cache</code>（<b>池自己的暫存</b>）」⇒ 改成
+「<code>cache</code>（<b>遞歸／KV 狀態管線</b>）」。</li>
+<li>§19.3 的「<b>池自己的暫存（<code>cache</code>，7.7–9.8%）≥ 整個 MoE 專家 GEMV 家族</b>」
+⇒ 份額成立、<b>歸屬不成立</b>；正確的句子是
+「<b>遞歸／KV 狀態管線（<code>cache</code>）≥ 整個 MoE 專家 GEMV 家族</b>」。</li>
+<li>§22 的「<code>cache</code>（池自己的暫存）」那一列 ⇒ 同上。</li>
+</ul>
+<p><b>而更正之後結論更強，不是更弱</b>：<code>node</code>（17.7%）逐名核對後
+<b>幾乎全是 delta-net</b>（<code>MUL_MAT ne=[8192,2]</code>×29、<code>MUL_MAT ne=[32,2]</code>×30、
+<code>GET_ROWS</code>×90、<code>ADD</code>／<code>UNARY</code>×30、<code>FLASH_ATTN_EXT</code>×10），
+<code>cache</code> 又是狀態管線 ⇒ <b>線性注意力（GatedDeltaNet）家族 ≈35–45%，MoE 家族 ≈12–15%</b>。
+§22 那句「delta-net 與池暫存都跟 MoE 專家 GEMV 家族同級或更大」方向是對的，
+現在可以直接寫成「<b>delta-net 家族約為 MoE 家族的 2–3 倍</b>」。</p>
+<p>另外補一個本檔沒有的性質：<b>它是操作數／啟動開銷受限，不是頻寬</b>。
+<code>cache</code> 的真工作位元組 ≈ 每 token 十幾 MB，在 ~120 GB/s 下 ≈ 0.1–0.5 ms，
+量到的卻是 27 ms；而 <b>120 個 CPY 的來源已逐行定位</b>——
+<code>src/llama.cpp/src/models/delta-net-base.cpp:509-526</code>，<code>n_rs_seq != 0</code> 時
+每層建 <code>K = n_rs_seq+1</code> 個獨立 <code>ggml_cpy</code>（30 層 × 4 = 120，與 dump 吻合），
+<code>n_rs_seq == 0</code> 那條只建 1 個。
+出處：<code>.workbuddy/memory/2026-09-18.md</code> §EN-132。</p>
 </div>
 
 <div class="box pur">

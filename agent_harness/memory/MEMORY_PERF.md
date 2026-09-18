@@ -361,9 +361,47 @@ IO 本來就不在關鍵路徑（`fill_wait = 0.000`）。
 ⇒ 12.1 t/s 上限）。
 ★★ **而那個「削 GPU work」的第一名不是 MoE**：名字表接上「會編碼」權重後的排名（§EN-112，家族 ms ÷
 同步 `wait`，粗/細）是 `node`（**無名真運算**）**24.1/20.3%** ＞ `(other)` 11.4/12.1% ＞
-`cache`（**池自己的暫存**）7.7/9.8% ＞ `norm` 7.7/7.5% ＞ `ffn_moe_`（逐元素合併鏈）7.6/6.7%
+`cache`（**狀態快取**，見下方更正）7.7/9.8% ＞ `norm` 7.7/7.5% ＞ `ffn_moe_`（逐元素合併鏈）7.6/6.7%
 ＞ … ＞ **`moe_gemv`（MUL_MAT_ID）3.2/6.3%** ＞ `dense_gemm` 2.2/4.2%。
 ⇒ **`cache` ≥ 整個 MoE 專家 GEMV 家族。**
+
+### ★ 09-18 11:0x 更正：`cache` 是**狀態快取**，不是「池自己的暫存」；而它與 `node` 一起把答案指向 delta-net
+
+用**當前詞彙表**把一份新 `CGC-GRPH` dump（log `050331`，4116 節點）的 `cache` 桶成員名字逐字印出來：
+
+```
+150  cache_r_l# (view)                          120  cache_r_l# (view) (copy of conv_input-# (view))
+ 60  cache_s_l# (view)                           30  cache_r_l# / cache_s_l# (reshaped)(…)
+ 20  cache_v_l# (view)   20  cache_k_l# (view)   10+10  cache_k_l#/cache_v_l# (view) (permuted)
+op: VIEW 290 | CPY 210 | RESHAPE 60 | SCALE 60 | SET_ROWS 20 | PERMUTE 20
+```
+
+`cache_r_l*`／`cache_s_l*` 是**遞歸狀態**（`llama-model.cpp:378-379` 的 `pattern_r_cache`／`pattern_s_cache`），
+`cache_k_l*`／`cache_v_l*` 是 **10 個全注意力層的 KV**。⇒ **這個桶是「每 token 讀寫遞歸／KV 狀態」的管線，
+與專家池無關。** 池的填充是 **CPU 側的 hook**（計在 `CGC-SEG` 的 `cb`），在 GPU 節點表裡**沒有成本**
+（與 `fill_wait = 0.000` 一致）。
+
+**⇒ 因此「池自己的暫存 ≥ 整個 MoE 家族」這句作廢**（它在 `docs/NAME_WORK_TABLE_2026-09-18.md` §6.1／§6.2 與
+兩份白皮書裡都出現過，已加標註框）。**更正後的排名語意**：
+
+| 家族 | 份額 | 是什麼 |
+|---|---|---|
+| `node`（350） | 17.7% | **delta-net 內部運算**（`MUL_MAT ne=[8192,2]`×29、`MUL_MAT ne=[32,2]`×30、`GET_ROWS`×90、`ADD`/`UNARY`×30、10 個 `FLASH_ATTN_EXT`） |
+| `cache`（660） | 10.6% | **遞歸／KV 狀態管線**（真工作 290：CPY 210＋SCALE 60＋SET_ROWS 20） |
+| `z-`＋`gdn_out`＋`conv`＋`linear_attn`＋`q/k/v_conv`＋`alpha`＋`beta` | ≈15–20% | 其餘 delta-net |
+| `ffn_moe_`＋`moe_gemv`＋`ffn_` | ≈15% | MoE 逐元素合併鏈 ＋ 專家 GEMV ＋ 稠密 FFN |
+
+⇒ **支配區塊是線性注意力（GatedDeltaNet）＋它的狀態管線（約 35–45%），不是 MoE（約 12–15%）。**
+
+**而且它是「操作數／啟動開銷」受限，不是頻寬受限**：`cache` 的真工作位元組 ≈ 每 token 十幾 MB
+（`conv_input` = 4×8192、`conv_state_last` 回寫 8192…）⇒ 在 ~120 GB/s 下 ≈ 0.1–0.5 ms/token，
+而它量到的是 **27 ms（=`cache` 的 `wcntw`）**。**120 個 CPY 的來源已定位**：
+`models/delta-net-base.cpp:509-526` 在 `n_rs_seq != 0` 時**每層建 K = n_rs_seq+1 個獨立 `ggml_cpy`**
+（實測 30 層 × 4 = 120，與 dump 逐格吻合），而 `n_rs_seq == 0` 那條路徑只建 1 個。
+
+**⇒ 判準（下一輪要動這裡）：** 若把 4 個重疊視窗的 CPY 收成 1 個 ops **不是**數值等價的
+（它們寫進 K 個不同 slot，`s_slot = K - t`）⇒ 先確認那 K 個 slot 是否真的都要寫。
+**不成立 ⇒ 這條路作廢，回到「段數／序列化」那條（天花板 ×1.711，被 pool 的每層 publish 擋住）。**
 
 **★★ 同一批量測把 M3 的判準本身判掉了（`ffn_moe_* ≥ 40% of wait?` ⇒ NO）**，三個獨立方法：
 ① 名字表 **3.2–6.3%**（跨粒度不穩）；② work-weighted op 表 **8.0/8.4%**（跨粒度穩定，`MUL_MAT_ID`）；
@@ -377,8 +415,10 @@ IO 本來就不在關鍵路徑（`fill_wait = 0.000`）。
    barrier、會擾動被測物**（原文：*would perturb the thing being measured*）。開關是 `CGC_GPU_NODES`。
    **判準已由它判成 NO（見上）**。
 2. **`node` 那 20–25% 的命名**（別條線明寫的下一件事；它 100% 是會編碼的節點 ⇒ 純歸因問題）。
-3. **`cache`（池 staging）7.7–9.8%**：真工作是**每層 5 個 CPY** ＋ SCALE ＋ SET_ROWS ⇒
-   這是「池 staging 的 GPU 成本」第一個可攻擊點。
+3. **`cache`（＝遞歸／KV **狀態**管線，不是池 staging；見上方 11:0x 更正）7.7–9.8%**：
+   真工作是**每層 5 個 CPY ＋ 1.5 SCALE ＋ 0.5 SET_ROWS**，其中 **4 個 CPY（120/步）來自
+   `delta-net-base.cpp:509-526` 的 K 次迴圈**。可攻擊，但先驗「那 K 個 slot 是否都要寫」
+   （寫的是不同 slot ⇒ 不是數值等價的摺疊）。
 4. **不要算進預算**：down-combine 融合對旗艦是 **−15~18%**；換 Ornith 是 **−1.49×**。
 5. ⚠️ **M3／M4／節點歸因現在是別條線在做**（`M3_M4_STATUS` 與 `decode_step_profile.py` 都還沒提交）
    ⇒ **不要同時動 `ggml-backend.cpp`**（撞車）。

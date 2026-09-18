@@ -68,6 +68,28 @@
   <span class="tag t-red">換 Ornith 慢 1.49×</span>
   <span class="tag t-amber">25 ＝ 兩個乘數相乘剛好擦線</span>
   <span class="tag t-blue">一對 differ-by-one 的新臂</span>
+  <span class="tag t-amber">2026-09-18 11:0x 更正：<code>cache</code> 是<b>狀態快取</b>，不是池暫存</span>
+</div>
+
+<div class="box warn">
+<p><b>2026-09-18 11:0x 更正標註（新增，原文一字未刪）。</b>
+本檔 §6 的家族排名裡把 <code>cache</code> 標成「<b>池自己的暫存</b>」是錯的
+（那份排名引自 <code>docs/NAME_WORK_TABLE_2026-09-18.md</code> §6.1，該檔開頭已補同一則更正）。
+用當前詞彙表把一份新 <code>CGC-GRPH</code> dump（log <code>llama_server_20260918_050331</code>）的
+<code>cache</code> 桶成員名字逐字印出來，它們是 <code>cache_r_l*</code>（遞歸狀態）、
+<code>cache_s_l*</code>、<code>cache_k_l*</code>／<code>cache_v_l*</code>（10 個全注意力層的 KV）
+—— <b>每 token 讀寫遞歸／KV 狀態的管線，與專家池無關</b>。池的填充在 <b>CPU 側的 hook</b>
+（<code>CGC-SEG</code> 的 <code>cb</code>），在 GPU 節點表裡<b>沒有成本</b>
+（與 <code>fill_wait = 0.000</code> 一致）。</p>
+<p><b>份額不變（<code>cache</code> 7.7／9.8%），變的是它叫什麼 —— 而名字一改結論就更強：</b>
+<code>node</code>（17.7%）逐名核對後幾乎全是 delta-net，<code>cache</code> 又是狀態管線
+⇒ <b>線性注意力（GatedDeltaNet）家族 ≈35–45%，MoE 家族 ≈12–15%</b>。
+⇒ <b>「削 GPU work」的目標是 delta-net／它的狀態管線，不是 MoE，也不是池。</b></p>
+<p>順帶：它是<b>操作數／啟動開銷</b>受限而非頻寬（<code>cache</code> 的真工作位元組 ≈ 每 token
+十幾 MB ⇒ 0.1–0.5 ms，量到 27 ms），而 <b>120 個 CPY 的來源已逐行定位</b>：
+<code>src/llama.cpp/src/models/delta-net-base.cpp:509-526</code>（<code>n_rs_seq != 0</code> 時每層建
+<code>K = n_rs_seq+1</code> 個獨立 <code>ggml_cpy</code>，30 層 × 4 = 120）。
+出處：<code>.workbuddy/memory/2026-09-18.md</code> §EN-132。</p>
 </div>
 
 <div class="box b-amber">

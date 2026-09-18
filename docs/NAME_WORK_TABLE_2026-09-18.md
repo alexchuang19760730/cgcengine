@@ -8,6 +8,44 @@
 
 ---
 
+> ## ⚠️ 2026-09-18 11:0x 補註（由引擎層那條線加上，**原文一字未刪**）
+>
+> **§6.1／§6.2 把 `cache` 標成「池自己的暫存／池的搬運」是錯的。** 用**當前詞彙表**把一份新
+> `CGC-GRPH` dump（log `llama_server_20260918_050331`，4116 節點）的 `cache` 桶成員名字逐字印出來：
+>
+> ```
+> 150 cache_r_l# (view)                        120 cache_r_l# (view) (copy of conv_input-# (view))
+>  60 cache_s_l# (view)                         90 cache_r_l#/cache_s_l# (reshaped)(…)
+>  20 cache_v_l# (view)  20 cache_k_l# (view)   20 cache_k_l#/cache_v_l# (view) (permuted)
+> op: VIEW 290 | CPY 210 | RESHAPE 60 | SCALE 60 | SET_ROWS 20 | PERMUTE 20   （與本檔 §6.2 逐格相同）
+> ```
+>
+> `cache_r_l*`／`cache_s_l*` 是**遞歸狀態**（`src/llama.cpp/src/llama-model.cpp:378-379` 的
+> `pattern_r_cache`／`pattern_s_cache`），`cache_k_l*`／`cache_v_l*` 是 **10 個全注意力層的 KV**。
+> ⇒ **這個桶是「每 token 讀寫遞歸／KV 狀態」的管線，與專家池無關。**
+> 池的填充在 **CPU 側的 hook**（計在 `CGC-SEG` 的 `cb`），**在 GPU 節點表裡沒有成本** ——
+> 這與 `fill_wait = 0.000` 一致。
+>
+> **因此下列三句作廢**（本檔 §6.1 與 §6.2 各一段）：
+> 1. 「**池自己的暫存（`cache`，7.7–9.8%）比整個 MoE 專家 GEMV 家族（3.2–6.3%）大**」——
+>    份額對，**歸屬錯**：那是**狀態快取**，不是池。
+> 2. 「`cache`（池自己的暫存：CPY／SCALE／SET_ROWS／views）… **全部是池自己的搬運**」——
+>    同上，**全部是狀態管線**。
+> 3. 「**最大的一塊是「真運算但沒有子系統名」**（`node` 20–29%）… 任何進一步的排名都先卡在**命名**上」
+>    —— 前半對，後半**已由命名解決**：`node` 的 350 個逐名核對後**幾乎全是 delta-net**
+>    （`MUL_MAT ne=[8192,2]`×29、`MUL_MAT ne=[32,2]`×30、`GET_ROWS`×90、`ADD`/`UNARY`×30、
+>    `FLASH_ATTN_EXT`×10）⇒ 它是**線性注意力**，不是雜項。
+>
+> **更正後語意**：`node` 17.7%（delta-net 運算）＋ `cache` 10.6%（遞歸／KV 狀態管線）＋
+> `z-`／`gdn_out`／`conv`／`linear_attn`／`q/k/v_conv`／`alpha`／`beta` ≈15–20%
+> ⇒ **線性注意力家族 ≈35–45%，MoE 家族 ≈12–15%。支配區塊是 delta-net，不是 MoE。**
+>
+> **仍然有效**：§3 的三個自我檢查、§4 的兩個識別更正（`ffn_moe_gate/up/down`＝MUL_MAT_ID、
+> `ffn_moe_topk`＝VIEW）、§5 的粒度限制、§6.3 的「M3 的 40% 判準三法皆否」、§7 的用法禁令。
+> 出處：`.workbuddy/memory/2026-09-18.md` §EN-132。
+
+---
+
 ## 0. 一句話
 
 把 op 表的「**只有會編碼的節點才進分母**」這個權重接到名字表之後，得到的第一個可引用排名是：
