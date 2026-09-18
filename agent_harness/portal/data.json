@@ -1,21 +1,12 @@
 {
-  "generated_at": "2026-09-18 12:18:36",
+  "generated_at": "2026-09-18 12:25:45",
   "git": {
     "branch": "demo/sweet-spot-windows-fix",
-    "head": "b47d89914568a06b9c39c199b2969495141256ed",
-    "head_short": "b47d89914",
-    "subject": "docs(memory): §EN-146 -- 同檔 ABBA 裁決：MTP 在生產路徑上是淨損失 30%（×0.695）",
-    "dirty": 42,
-    "dirty_sample": [
-      "M agent_harness/engine_loop/harness_engine/build_memories.py",
-      " M agent_harness/engine_loop/sft_common.py",
-      " M agent_harness/engine_loop/sft_prime/PROVENANCE.json",
-      " M agent_harness/engine_loop/sft_prime/build_sft_prime.py",
-      " M agent_harness/engine_loop/sft_prime/train.jsonl",
-      " M agent_harness/engine_loop/sft_prime/valid.jsonl",
-      " M agent_harness/engine_loop/traces/lessons.jsonl",
-      " M agent_harness/portal/build_portal.py"
-    ]
+    "head": "b4adb93839dc5056c2c511701ea3067799ef8e6d",
+    "head_short": "b4adb9383",
+    "subject": "docs(skill,memory,index): 收尾 ec1a389c8 -- 兩支 skill 修訂 ＋ 記憶 §TB-07 ＋ 快照 14/14 逐檔重算相符 ＋ 索引重生",
+    "dirty": 0,
+    "dirty_sample": []
   },
   "fingerprint": {
     "digest": "721ebbc5c12f6e6e",
@@ -78,10 +69,10 @@
         },
         {
           "name": "2026-09-18.md",
-          "bytes": 182891,
-          "mtime": "09-18 12:12",
-          "lines": 2539,
-          "sections": 27
+          "bytes": 194255,
+          "mtime": "09-18 12:24",
+          "lines": 2690,
+          "sections": 29
         },
         {
           "name": "MEMORY.md",
@@ -113,16 +104,16 @@
         }
       ],
       "count": 8,
-      "bytes": 1155907,
-      "lines": 15221
+      "bytes": 1167271,
+      "lines": 15372
     },
     "skills": {
       "items": [
         {
           "name": "cgc-commit-gate",
-          "bytes": 78459,
-          "lines": 1062,
-          "sha8": "a6af76e6",
+          "bytes": 80764,
+          "lines": 1090,
+          "sha8": "be8a39a3",
           "desc": "在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）提交 commit 時，正確通過 pre-commit 閘門並滿足 D5 的完整流程與陷阱。當要在該 repo commit、被 pre-commit hook 擋下、不確定要不要跑 re"
         },
         {
@@ -155,15 +146,15 @@
         },
         {
           "name": "cgc-whitepaper-delivery",
-          "bytes": 29211,
-          "lines": 464,
-          "sha8": "1590de94",
+          "bytes": 31041,
+          "lines": 488,
+          "sha8": "de75622a",
           "desc": "在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）撰寫 docs/*.html 技術白皮書的版式、取材清單與交付流程。當要求為該 repo 產生白皮書 / 技術架構文件 / 里程碑文件、或 D5 要求「每次 commit 附一份白皮書」時"
         }
       ],
       "count": 6,
-      "bytes": 299967,
-      "lines": 3771
+      "bytes": 304102,
+      "lines": 3823
     },
     "code": {
       "areas": [
@@ -306,8 +297,8 @@
         "bytes": 15426860
       },
       "backup": {
-        "files": 4584,
-        "bytes": 1087862060
+        "files": 4591,
+        "bytes": 1090113067
       }
     }
   },
@@ -442,8 +433,8 @@
   "gates": {
     "n_fast": 14,
     "n_heavy": 4,
-    "n_pass": 13,
-    "n_fail": 1,
+    "n_pass": 14,
+    "n_fail": 0,
     "results": [
       {
         "id": "charter-citations",
@@ -459,7 +450,7 @@
         "id": "shared-log-policy",
         "group": "shared",
         "status": "PASS",
-        "seconds": 0.27,
+        "seconds": 0.26,
         "rc": 0,
         "tail": "  log 政策一致",
         "cost": "fast",
@@ -469,7 +460,7 @@
         "id": "shared-module-split",
         "group": "shared",
         "status": "PASS",
-        "seconds": 0.27,
+        "seconds": 0.29,
         "rc": 0,
         "tail": "  2/2 checks passed",
         "cost": "fast",
@@ -499,7 +490,7 @@
         "id": "traces-validate",
         "group": "traces",
         "status": "PASS",
-        "seconds": 0.03,
+        "seconds": 0.04,
         "rc": 0,
         "tail": "  -> OK",
         "cost": "fast",
@@ -509,7 +500,7 @@
         "id": "traces-selftest",
         "group": "traces",
         "status": "PASS",
-        "seconds": 0.33,
+        "seconds": 0.3,
         "rc": 0,
         "tail": "  10/10 injected violations rejected",
         "cost": "fast",
@@ -549,19 +540,19 @@
         "id": "index-memory",
         "group": "index",
         "status": "PASS",
-        "seconds": 0.04,
+        "seconds": 0.03,
         "rc": 0,
-        "tail": "memory index OK: 8 file(s), 235 section(s), no drift",
+        "tail": "memory index OK: 8 file(s), 237 section(s), no drift",
         "cost": "fast",
         "needs": ""
       },
       {
         "id": "index-assets",
         "group": "index",
-        "status": "FAIL",
+        "status": "PASS",
         "seconds": 0.04,
-        "rc": 1,
-        "tail": "[error] 2 drift(s) between the manifest and disk: / scripts/check/llama_bench_matrix.py: bytes: manifest 28625 vs disk 29394 / scripts/check/llama_bench_matrix.py: mtime: manifest '2026-09-17T17:56:11' vs disk '2026-09-18T12:14:55'",
+        "rc": 0,
+        "tail": "manifest OK: 108 assets, existence + bytes + mtime all agree",
         "cost": "fast",
         "needs": ""
       },
@@ -628,11 +619,6 @@
     ]
   },
   "obligations": [
-    {
-      "kind": "gate",
-      "severity": "high",
-      "title": "1 條快速閘門在**乾淨的樹上就是紅的**"
-    },
     {
       "kind": "registry",
       "severity": "medium",
