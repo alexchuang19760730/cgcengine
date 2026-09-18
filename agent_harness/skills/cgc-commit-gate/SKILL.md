@@ -614,6 +614,27 @@ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
 
 ---
 
+## ★ 別條線已經 staged 時：用**路徑限定的部分提交**
+
+`git commit` 會把**整個 index** 提交進去 —— 包括另一條線已 `git add` 的檔。
+在一個多 session 同時寫的 repo 裡，這會把別人的半成品掛上你的 commit message。
+
+判準：
+
+```bash
+git diff --cached --name-only          # ① 先看 index 裡有沒有不是你的東西
+git add <只加你自己的路徑>              # ② 逐檔 add，永不 git add -A
+git commit -m "…" -- <你自己的路徑>      # ③ 路徑限定的部分提交
+git show --stat HEAD                   # ④ 提交後驗檔數與檔名
+```
+
+`git commit -- <pathspec>` 只提交那些路徑，**其他 staged 內容會留在 index 裡**，
+不會被帶走。（新檔要先 `git add` 讓 git 認識，否則 pathspec 對不上。）
+
+★ 本輪（2026-09-18）實際遇到：動工時 CGC repo 有另一條線的 10 個 staged 檔；
+中途他們自己提交了，於是 index 清空 —— 但**不能靠運氣**：
+那個檢查要在動手前做一次，提交前再做一次。
+
 ## 4. 併行 writer（這個 repo 會同時有多個 session 在寫）
 
 **症狀**：`git status --porcelain --untracked-files=all` 出現**不是你改的** modified／staged 檔。

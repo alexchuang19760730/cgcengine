@@ -52,6 +52,7 @@ PORTAL_DIR = REPO / "agent_harness" / "portal"
 FLEET_JSON = PORTAL_DIR / "fleet.json"
 TREND_JSON = PORTAL_DIR / "trend_sources.json"
 JOIN_JSON = PORTAL_DIR / "join.json"
+LAN_JSON = PORTAL_DIR / "lan.json"
 ENDPOINTS_DIR = PORTAL_DIR / "endpoints"
 STATUS_JSONL = PORTAL_DIR / "fleet_status.jsonl"
 HISTORY_JSONL = PORTAL_DIR / "history.jsonl"
@@ -887,6 +888,98 @@ def bar_chart(days: list[str], values: list[int | None], label: str, unit: str, 
             f'aria-label="{hesc(label)}">{"".join(grid)}{"".join(bars)}</svg>')
 
 
+LAN_MARK = {"bound-lan": "✓ LAN", "bound-lan-only": "✓ LAN（只綁該 IP）",
+            "loopback-only": "只 loopback", "absent": "沒在跑"}
+
+
+def render_lan(meta: dict) -> str:
+    """⑥ 區網（LAN）—— 端側在同一個網段上連得到嗎。
+
+    ★ 這一節回答 fleet.json 回答不了的那一半：端點名冊說「有誰」，
+      這一節說「在同一個區網上，連得到嗎、從哪個位址連」。
+    """
+    lan = meta.get("lan") or {}
+    if not lan:
+        return '<div class="box warn">lan.json 不存在 ⇒ 區網通道沒有註冊表。</div>'
+    probe = meta.get("lan_probe") or {}
+    h = lan.get("this_host") or {}
+    pv = {r.get("id"): r for r in (probe.get("services") or [])}
+
+    trs = []
+    for svc in lan.get("services") or []:
+        r = pv.get(svc.get("id")) or {}
+        if r.get("verdict"):
+            live = hesc(LAN_MARK.get(r["verdict"], r["verdict"]))
+            if (r.get("identity") or {}).get("verdict"):
+                live += f'　身分 <b>{hesc(r["identity"]["verdict"])}</b>'
+            if (svc.get("lan_ready") is True
+                    and r["verdict"] not in ("bound-lan", "bound-lan-only")):
+                live += ' <span class="tag t-amber">宣告 lan_ready 但沒綁</span>'
+        else:
+            live = '<span class="tag t-grey">未實測</span>'
+        trs.append(
+            f'<tr><td><code>{hesc(svc.get("id", ""))}</code>'
+            f'<div class="small">{mdx(hesc(svc.get("what", "")))}</div></td>'
+            f'<td class="num">{hesc(svc.get("port"))}</td>'
+            f'<td class="small"><code>{hesc(svc.get("binds_default", ""))}</code>'
+            f'<div>{hesc(svc.get("binds_flag", ""))}</div></td>'
+            f'<td class="small">{"要" if svc.get("auth_required") else "不要"}'
+            f'<div>{mdx(hesc(svc.get("auth", "")))}</div></td>'
+            f'<td class="small">{live}</td>'
+            f'<td class="small">{hesc(svc.get("state_at_measurement", ""))}</td></tr>')
+
+    frows = "".join(
+        f'<tr><td class="num">{hesc(f.get("port"))}</td>'
+        f'<td class="small"><code>{hesc(LAN_MARK.get(f.get("verdict", ""), f.get("verdict", "") or "—"))}</code></td>'
+        f'<td class="small">{hesc(f.get("who", ""))}'
+        f'<div>{mdx(hesc(f.get("why_it_matters", "")))}</div></td></tr>'
+        for f in (probe.get("foreign") or lan.get("foreign_lan_ports") or []))
+
+    sec = "".join(
+        f'<div class="box bad" style="margin:8px 0"><b>★ 安全：{hesc(w.get("id"))} '
+        f':{hesc(w.get("port"))}</b>'
+        f'<div class="small" style="margin-top:4px">{mdx(hesc(w.get("detail", "")))}</div></div>'
+        for w in (probe.get("security") or []))
+
+    how = "".join(
+        f'<li><code>{hesc(svc.get("id"))}</code>：<code>{hesc(svc.get("how", ""))}</code>'
+        + (f'<div class="small">★ 但這條現在起不來：{mdx(hesc(svc.get("blocked_by", "")))}</div>'
+           if svc.get("blocked_by") else "")
+        + "</li>"
+        for svc in (lan.get("services") or []) if svc.get("lan_ready") is True)
+
+    if probe:
+        pnote = f"（本輪有實測綁定，timeout {hesc(probe.get('timeout_s', ''))}s）"
+    else:
+        pnote = ("（本輪沒有實測 —— 加 <code>--lan-probe</code> 才會量；"
+                 "或跑 <code>python3 agent_harness/portal/lan_check.py --probe</code>）")
+
+    return f'''<div class="small">{mdx(hesc(lan.get("what_is_this", "")))}{pnote}</div>
+<div class="box">
+  <div><b>本機</b>：<code>{hesc(h.get("iface"))}</code> <b>{hesc(h.get("ipv4"))}</b>／{hesc(h.get("cidr"))}
+    　閘道 <code>{hesc(h.get("gateway"))}</code>
+    　· API 防火牆 <b>{hesc((h.get("firewall") or {}).get("global_state"))}</b></div>
+  <div class="small" style="margin-top:5px">
+    ★ 防火牆關著 ⇒ 端側連不上<b>不是</b>被防火牆擋的；唯一的阻礙是「服務有沒有綁在 LAN 位址上」。
+    {mdx(hesc("**綁定 ≠ 可達**：本機從自己的 LAN 位址連得上，證明的是 socket 綁在哪裡；"
+              "別的機器連不連得上，還要看 AP isolation／路由器 ACL —— 只有對端自己回報才算數。"))}
+  </div>
+</div>
+<table>
+<thead><tr><th>服務</th><th>埠</th><th>宣告綁定</th><th>要不要認證</th><th>實測</th><th>量測當時</th></tr></thead>
+<tbody>{"".join(trs)}</tbody></table>
+{sec}
+<div class="small"><b>別人的埠</b> —— 可達 ≠ 是我們的。本機唯一真的綁在區網上的埠是 macOS 的 AirPlay；
+任何「可達就報綠」的判定都會對它說謊。</div>
+<table>
+<thead><tr><th>埠</th><th>實測</th><th>是誰／為什麼要登記它</th></tr></thead>
+<tbody>{frows}</tbody></table>
+<div class="small" style="margin-top:10px"><b>要讓端側連得上，起這個</b>：</div>
+<ul style="font-size:13.2px">{how}</ul>
+<div class="small"><b>怎麼驗</b>：<code>python3 agent_harness/portal/lan_check.py --check</code>（離線：宣告 vs 原始碼）
+　·　<code>… --probe</code>（實測綁定）　·　<code>… --self-test</code>（20 格，真的起 socket）</div>'''
+
+
 def render_html(fleet, rows, trend, momentum, meta) -> str:
     days = trend["days"]
     miss = trend["missing_label"]
@@ -1059,6 +1152,8 @@ def render_html(fleet, rows, trend, momentum, meta) -> str:
 </div>""")
         join_sec = "".join(blocks)
 
+    lan_sec = render_lan(meta)
+
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1086,6 +1181,9 @@ def render_html(fleet, rows, trend, momentum, meta) -> str:
     一鍵復現：<code>python3 agent_harness/portal/build_fleet_portal.py</code>
     （離線：<code>… --no-net</code>）　·　只驗不寫：<code>… --check</code>　·　
     自我陰性對照：<code>… --self-test</code>　·　即時服務：<code>… --serve --port 8787</code>
+  </div>
+  <div class="small" style="margin-top:6px">
+    ★ <b>區網（LAN）</b>：{hesc(meta['lan_oneline'])}　—— 詳見 ⑥
   </div>
 </div>
 
@@ -1133,6 +1231,9 @@ orphan {hesc(mom['orphan_pct'])}（門檻 {hesc(mom['thr_orphan'])}）　·　
 指針失效會讓 <code>--check</code> 變紅，不會靜默。</li>
 <li>{hesc(meta['net_note'])}</li>
 </ul>
+
+<h2>⑥ 區網（LAN）—— 端側在同一個網段上連得到嗎</h2>
+{lan_sec}
 
 <div class="foot">
 來源：<code>agent_harness/portal/fleet.json</code>（端點，唯一真相）＋
@@ -1267,10 +1368,20 @@ def load_status_rows(path: Path | None = None) -> list[dict]:
     return out
 
 
-def gather(do_net: bool, timeout: float, today: datetime | None = None) -> dict:
+def gather(do_net: bool, timeout: float, today: datetime | None = None,
+           lan_probe: bool = False) -> dict:
     fleet = load_json(FLEET_JSON)
     spec = load_json(TREND_JSON)
     join = load_json(JOIN_JSON) if JOIN_JSON.is_file() else {"endpoints": {}}
+    lan = load_json(LAN_JSON) if LAN_JSON.is_file() else {}
+    lan_pv = None
+    if lan_probe and lan:
+        # ★ 只量本機的 LAN 位址（不連外網）；--check 永遠不會走到這條路。
+        import lan_check as LC
+        try:
+            lan_pv = LC.probe(lan)
+        except Exception as e:                       # noqa: BLE001
+            lan_pv = {"error": repr(e)[:200]}
     artifacts = load_artifacts()
     status_rows = load_status_rows()
     rows = fleet_rows(fleet, artifacts, do_net, timeout, today,
@@ -1278,8 +1389,33 @@ def gather(do_net: bool, timeout: float, today: datetime | None = None) -> dict:
     trend = trend_block(spec, REPO, today)
     problems = fleet_problems(fleet, artifacts, rows, spec, trend, REPO)
     problems += join_problems(fleet, join, artifacts, rows, REPO)
+    problems += lan_problems(lan)
     return {"fleet": fleet, "spec": spec, "join": join, "artifacts": artifacts,
-            "rows": rows, "trend": trend, "problems": problems}
+            "rows": rows, "trend": trend, "problems": problems,
+            "lan": lan, "lan_probe": lan_pv}
+
+
+def lan_problems(lan: dict) -> list[str]:
+    """區網註冊表的離線檢查。
+
+    ★ 刻意**用子行程呼叫** lan_check.py --check，而不是在這裡再寫一份 ——
+      兩份實作必然漂移，而漂移是靜默的（這個 repo 已經為此付過學費）。
+    """
+    if not lan:
+        # ★ 這份 checkout 沒有區網註冊表（自測的 fixture 就是這種）⇒ 不插手。
+        #   「沒註冊表就沒這層」與「有註冊表卻沒有檢查器」是兩件事，不能混成同一條規則。
+        return []
+    script = PORTAL_DIR / "lan_check.py"
+    if not script.is_file():
+        return [f"LAN: lan.json 存在但 lan_check.py 不存在（{script}）⇒ 註冊表沒人驗"]
+    r = subprocess.run([sys.executable, str(script), "--check"],
+                       capture_output=True, text=True, cwd=str(REPO), timeout=120)
+    out = r.stdout + r.stderr
+    if r.returncode == 0:
+        return []
+    probs = [f"LAN: {ln.strip().removeprefix('[error]').strip()}"
+             for ln in out.splitlines() if ln.strip().startswith("[error]")]
+    return probs or [f"LAN: lan_check --check rc={r.returncode}（沒有可解析的錯誤行）"]
 
 
 def git_meta() -> dict:
@@ -1303,7 +1439,22 @@ def make_meta(g: dict, do_net: bool) -> dict:
                f"{len(trend['days'])} 日窗內有 {len(trend['sources']) - len(off)}/{len(trend['sources'])} 個來源有資料。")
     if off:
         oneline += f"整週沒有資料的來源：{'、'.join(s['label'] for s in off)}。"
+    lan = g.get("lan") or {}
+    lan_pv = g.get("lan_probe") or {}
+    lan_ip = (lan.get("this_host") or {}).get("ipv4", "?")
+    lan_cidr = (lan.get("this_host") or {}).get("cidr", "?")
+    if lan_pv.get("summary"):
+        _sm = lan_pv["summary"]
+        lc = (f"{lan_ip}／{lan_cidr}　宣告 lan_ready {_sm['lan_ready_declared']} 個、"
+              f"真的綁在區網上 {_sm['lan_bound']} 個")
+        if lan_pv.get("security"):
+            lc += f"　★ 安全：{len(lan_pv['security'])} 個綁在區網但沒有認證"
+    else:
+        lc = f"{lan_ip}／{lan_cidr}　未實測（加 --lan-probe 才會量綁定）"
     return {
+        "lan": lan,
+        "lan_probe": lan_pv,
+        "lan_oneline": lc,
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "mode": "live（有探測心跳）" if do_net else "offline（--no-net，未探測心跳）",
         "offline": not do_net,
@@ -1362,6 +1513,10 @@ def export_payload(g: dict, mom: dict, meta: dict) -> dict:
 
     形狀刻意扁平、且帶 schema 版本：網站端可以只依賴 schema=1 的欄位。
     """
+    _lan = meta.get("lan") or {}
+    _host = _lan.get("this_host") or {}
+    _pv = {x.get("id"): x
+           for x in ((meta.get("lan_probe") or {}).get("services") or [])}
     return {
         "schema": EXPORT_SCHEMA,
         "generated_at": meta["generated_at"],
@@ -1372,6 +1527,31 @@ def export_payload(g: dict, mom: dict, meta: dict) -> dict:
             "mode": meta["mode"],
             "how_to_regenerate": "python3 agent_harness/portal/build_fleet_portal.py --export",
         },
+        "lan": {
+              "why": "端點名冊說「有誰」；這一塊說「在同一個區網上連得到嗎、從哪個位址連」。"
+                     "網站端不重算，只轉述。",
+              "registry": "agent_harness/portal/lan.json",
+              "iface": _host.get("iface"), "ipv4": _host.get("ipv4"),
+              "cidr": _host.get("cidr"), "gateway": _host.get("gateway"),
+              "firewall": (_host.get("firewall") or {}).get("global_state"),
+              "oneline": meta.get("lan_oneline"),
+              "services": [
+                  {"id": s.get("id"), "port": s.get("port"), "what": s.get("what"),
+                   "binds_default": s.get("binds_default"),
+                   "lan_ready": s.get("lan_ready"),
+                   "auth_required": s.get("auth_required"),
+                   "how": s.get("how"),
+                   "state_at_measurement": s.get("state_at_measurement"),
+                   "probe": (None if s.get("id") not in _pv else
+                             {k: _pv[s["id"]].get(k)
+                              for k in ("verdict", "loopback_ok", "lan_ok", "identity")})}
+                  for s in (_lan.get("services") or [])],
+              "foreign_lan_ports": (_lan.get("foreign_lan_ports") or []),
+              "security": ((meta.get("lan_probe") or {}).get("security") or []),
+              "probe_ran": bool(meta.get("lan_probe")),
+              "how_to_check": "python3 agent_harness/portal/lan_check.py --check（離線）"
+                              "／--probe（實測綁定）／--self-test",
+          },
         "endpoints": [
             {"id": r["id"], "name": r["name"], "kind": r["kind"],
              "platform": r["platform"], "arch": r["arch"], "role": r["role"],
@@ -1446,9 +1626,9 @@ def export_payload(g: dict, mom: dict, meta: dict) -> dict:
     }
 
 
-def cmd_export() -> int:
+def cmd_export(lan_probe: bool = False) -> int:
     """寫出 docs/fleet_export.json（給網站吃）。不碰 fleet_status.jsonl（那不是觀測，是匯出）。"""
-    g = gather(do_net=False, timeout=1.0)
+    g = gather(do_net=False, timeout=1.0, lan_probe=lan_probe)
     if g["problems"]:
         print(f"  [error] 有 {len(g['problems'])} 項缺陷 ⇒ 不匯出:")
         for p2 in g["problems"]:
@@ -1465,8 +1645,8 @@ def cmd_export() -> int:
     return 0
 
 
-def cmd_build(do_net: bool, timeout: float) -> int:
-    g = gather(do_net, timeout)
+def cmd_build(do_net: bool, timeout: float, lan_probe: bool = False) -> int:
+    g = gather(do_net, timeout, lan_probe=lan_probe)
     if g["problems"]:
         print(f"  [error] 有 {len(g['problems'])} 項缺陷 ⇒ 不產出（先修註冊表）:")
         for p in g["problems"]:
@@ -1526,8 +1706,25 @@ def self_test() -> int:
             #   （測「缺 id 要被指名」），這裡不濾就會 KeyError 而炸掉整個自測。
             for e in eps if e.get("reaches") == "offline" and e.get("id")}}
 
+    def min_lan(port=18080, binds="0.0.0.0", lan_ready=True):
+        """最小但**合法**的區網註冊表 fixture（evidence 指到 fixture 自己的檔）。"""
+        return {"schema": 1, "title": "fixture",
+                "this_host": {"iface": "en0", "ipv4": "10.99.0.1", "cidr": "10.99.0.0/24",
+                              "gateway": "10.99.0.254",
+                              "firewall": {"global_state": "disabled"}},
+                "services": [{"id": "fx", "what": "fixture", "port": port,
+                              "binds_default": binds, "binds_flag": "--host",
+                              "auth_required": False, "lan_ready": lan_ready, "how": "fixture",
+                              "evidence": [{"repo": "self",
+                                            "path": "agent_harness/portal/lan_marker.py",
+                                            "contains": "LAN-FIXTURE-MARKER"}]}],
+                "foreign_lan_ports": [],
+                "probe": {"timeout_s": 0.3, "ports_in_scope": [port], "never": "fixture"},
+                "rules": ["fixture"], "not_proves": ["fixture"]}
+
     def fixture(name: str, *, endpoints=None, fleet=None, sources=None,
-                artifacts=None, with_git=True, join=None, docs=None) -> Path:
+                artifacts=None, with_git=True, join=None, docs=None,
+                lan=None, lan_checker=False) -> Path:
         root = tmp / name
         (root / "agent_harness" / "portal" / "endpoints").mkdir(parents=True)
         (root / "agent_harness" / "engine_loop" / "traces").mkdir(parents=True)
@@ -1535,6 +1732,17 @@ def self_test() -> int:
         (root / "Backup" / "m123_oracle_gate").mkdir(parents=True)
         (root / ".workbuddy" / "memory").mkdir(parents=True)
         (root / "marker.txt").write_text("marker-ok\n", encoding="utf-8")
+        if lan is not None:
+            (root / "agent_harness" / "portal" / "lan.json").write_text(
+                json.dumps(lan, ensure_ascii=False), encoding="utf-8")
+        if lan_checker:
+            # 把**真的** lan_check.py 複製進 fixture（不重寫一份假檢查器 ——
+            # 那會讓這一格測的是那個假的，而不是接線本身）
+            import shutil
+            shutil.copy(Path(me).parent / "lan_check.py",
+                        root / "agent_harness" / "portal" / "lan_check.py")
+            (root / "agent_harness" / "portal" / "lan_marker.py").write_text(
+                "MARKER = 'LAN-FIXTURE-MARKER'\n", encoding="utf-8")
         eps = endpoints if endpoints is not None else [min_ep()]
         (root / "agent_harness" / "portal" / "fleet.json").write_text(
             json.dumps(fleet if fleet is not None else mk_fleet(eps), ensure_ascii=False), encoding="utf-8")
@@ -1826,6 +2034,22 @@ def self_test() -> int:
     case("★ 上報宣稱『沒有未量的東西』但註冊表列了已知未知 ⇒ rc=1（兩者矛盾）",
          rc == 1 and "矛盾" in out, f"rc={rc} {out[-150:]}")
 
+    # ── ★ LAN 接線（正／負對照）─────────────────────────────────────────
+    rA = fixture("lan_ok", lan=min_lan(), lan_checker=True)
+    rcA, outA = run(rA, "--check")
+    case("★ LAN：fixture 帶合法 lan.json ＋ 真的檢查器 ⇒ rc=0（接線不會假紅）",
+         rcA == 0, f"rc={rcA} {outA[-200:]}")
+
+    rB = fixture("lan_bad", lan=min_lan(binds="127.0.0.1"), lan_checker=True)
+    rcB, outB = run(rB, "--check")
+    case("★★ LAN：宣告 lan_ready=true 卻綁 loopback ⇒ rc=1，且訊息逐字來自 lan_check",
+         rcB != 0 and "不能同時成立" in outB, f"rc={rcB} {outB[-240:]}")
+
+    rC = fixture("lan_no_checker", lan=min_lan(), lan_checker=False)
+    rcC, outC = run(rC, "--check")
+    case("★ LAN：有 lan.json 卻沒有 lan_check.py ⇒ rc=1（不是靜默通過）",
+         rcC != 0 and "沒人驗" in outC, f"rc={rcC} {outC[-200:]}")
+
     # 26) 看門狗：真 repo 一個檔都不該被動到
     real = Path(__file__).resolve().parent
     watch = ["fleet.json", "trend_sources.json", "build_fleet_portal.py",
@@ -1841,7 +2065,7 @@ def self_test() -> int:
     return 0 if passed == len(results) else 1
 
 
-def cmd_serve(port: int, do_net: bool, timeout: float) -> int:
+def cmd_serve(port: int, do_net: bool, timeout: float, lan_probe: bool = False) -> int:
     """stdlib HTTP 服務：GET / 即時重畫、GET /api/fleet、POST /api/report。"""
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -1857,7 +2081,7 @@ def cmd_serve(port: int, do_net: bool, timeout: float) -> int:
 
         def do_GET(self):                                    # noqa: N802
             if self.path.startswith("/api/fleet"):
-                g = gather(do_net, timeout)
+                g = gather(do_net, timeout, lan_probe=lan_probe)
                 payload = {"generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                            "problems": g["problems"],
                            "endpoints": [{k: r[k] for k in ("id", "name", "chip", "heartbeat",
@@ -1865,15 +2089,22 @@ def cmd_serve(port: int, do_net: bool, timeout: float) -> int:
                                          for r in g["rows"]],
                            "trend_days": g["trend"]["days"],
                            "trend": [{k: s[k] for k in ("id", "label", "covers")}
-                                     for s in g["trend"]["sources"]]}
+                                     for s in g["trend"]["sources"]],
+                           "lan": {"ipv4": ((g.get("lan") or {}).get("this_host") or {}).get("ipv4"),
+                                   "cidr": ((g.get("lan") or {}).get("this_host") or {}).get("cidr"),
+                                   "firewall": (((g.get("lan") or {}).get("this_host") or {})
+                                                .get("firewall") or {}).get("global_state"),
+                                   "probe_ran": bool(g.get("lan_probe")),
+                                   "summary": (g.get("lan_probe") or {}).get("summary"),
+                                   "security": (g.get("lan_probe") or {}).get("security") or []}}
                 return self._send(200, json.dumps(payload, ensure_ascii=False, indent=2).encode(),
                                   "application/json; charset=utf-8")
             if self.path.startswith("/api/problems"):
-                g = gather(False, timeout)
+                g = gather(False, timeout, lan_probe=False)
                 return self._send(200, json.dumps({"problems": g["problems"]},
                                                   ensure_ascii=False, indent=2).encode(),
                                   "application/json; charset=utf-8")
-            g = gather(do_net, timeout)
+            g = gather(do_net, timeout, lan_probe=lan_probe)
             meta = make_meta(g, do_net)
             html = render_html(g["fleet"], g["rows"], g["trend"], momentum_block(), meta)
             return self._send(200, html.encode("utf-8"))
@@ -1938,6 +2169,9 @@ def main(argv=None) -> int:
     ap.add_argument("--export", action="store_true",
                     help="只匯出 docs/fleet_export.json（給別的網站吃的可攜資料）")
     ap.add_argument("--timeout", type=float, default=2.0, help="心跳探測超時（秒）")
+    ap.add_argument("--lan-probe", action="store_true",
+                    help="額外實測區網綁定（只量本機 LAN 位址，不連外網）；"
+                         "不加就一直顯示「未實測」")
     args = ap.parse_args(argv)
 
     if args.self_test:
@@ -1945,12 +2179,12 @@ def main(argv=None) -> int:
     if args.check:
         return cmd_check()
     if args.serve:
-        return cmd_serve(args.port, not args.no_net, args.timeout)
+        return cmd_serve(args.port, not args.no_net, args.timeout, args.lan_probe)
     if args.gen_onboarding:
         return cmd_gen_onboarding()
     if args.export:
-        return cmd_export()
-    return cmd_build(not args.no_net, args.timeout)
+        return cmd_export(args.lan_probe)
+    return cmd_build(not args.no_net, args.timeout, args.lan_probe)
 
 
 if __name__ == "__main__":

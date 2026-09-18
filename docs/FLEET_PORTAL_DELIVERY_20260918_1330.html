@@ -491,6 +491,129 @@ python3 agent_harness/portal/report_endpoint_status.py --id windows-rtx4090 \
 「頁面在瀏覽器裡長得對」這件事，目前只有靜態檢查的證據。</li>
 </ul>
 
+<h2>§12 區網（LAN）通道 —— 「端側在同一個網段上連得到嗎」（09-18 15:2x–15:5x）</h2>
+
+<div class="box warn">
+<b>方向被更正了，而更正是對的</b>：我前兩輪一直在談 <b>web 通道</b>（同一個網域、Cloudflare、
+store-and-forward）。使用者更正：「我說的是在端側<b>同樣的網</b>」，並附上 <code>ifconfig en0</code>。
+<b>不是網域，是區網</b> —— 所以要做的是讓 harness 的服務<b>綁在 LAN 位址上</b>，
+不是再加一條 web 通道。
+</div>
+
+<h3>§12.1 量測：這個區網上，harness 現在是隱形的</h3>
+
+<table>
+<thead><tr><th>量</th><th>讀數</th><th>它排除了什麼誤判</th></tr></thead>
+<tbody>
+<tr><td>本機 <code>en0</code></td><td><b>192.168.101.90/24</b>、閘道 <code>192.168.101.1</code>；
+另有 <code>2409:8a55:34c7:d980::/64</code>（中國移動的<b>全域</b>前綴，不是 link-local）</td>
+<td><code>bridge0</code> = 192.168.2.1 是<b>另一個網段</b> —— 端側在哪一段決定了它能連到什麼</td></tr>
+<tr><td>macOS 應用防火牆</td><td><b>關著</b>（<code>State = 0</code>、blockall off、stealth off）</td>
+<td>★ <b>排除最常見的誤判</b>：端側連不上<b>不是</b>被防火牆擋的；唯一的阻礙是綁定</td></tr>
+<tr><td>本機 listener</td><td>只有 macOS 自己的 <code>*.53</code>／<code>*.5000</code>／<code>*.7000</code>／
+<code>*.1053</code>／<code>*.49152</code> 綁在所有介面；<b>其餘全是 <code>127.0.0.1.*</code></b>
+（含 CGC edge proxy <code>:4000</code>）</td>
+<td>harness 服務<b>一個都沒綁在區網上</b></td></tr>
+<tr><td>ARP 鄰居 × harness 埠</td><td>4 個鄰居（<code>.1</code>／<code>.8</code>／<code>.82</code>／<code>.91</code>）
+× 6 個埠（8080／8081／9100／4000／8787／5000）<b>全關</b></td>
+<td>此刻區網上沒有任何端點在跑；<b>但這不證明它們不是端側</b>（可能只是沒在跑）</td></tr>
+</tbody></table>
+
+<h3>§12.2 ★ 綁定矩陣：它推翻了我原本的判定表</h3>
+
+<p>這是這一節最重要的一張表，因為它是<b>判定邏輯的依據</b>，不是裝飾：</p>
+
+<table>
+<thead><tr><th>bind</th><th>從 <code>127.0.0.1</code></th><th>從 <code>192.168.101.90</code></th><th>應讀成</th></tr></thead>
+<tbody>
+<tr><td><code>127.0.0.1</code></td><td>✓</td><td>✗</td><td><code>loopback-only</code></td></tr>
+<tr><td><code>0.0.0.0</code></td><td>✓</td><td>✓</td><td><code>bound-lan</code></td></tr>
+<tr><td><b><code>192.168.101.90</code></b></td><td><b>✗</b></td><td><b>✓</b></td><td><code>bound-lan-only</code></td></tr>
+</tbody></table>
+
+<p>最後一列是關鍵：<b>綁在特定 LAN IP 的自有服務，從 loopback 是連不上的</b>。
+我原本把「LAN 可達而 loopback 不可達」叫 <code>foreign</code>（別人的服務）——
+那個判定會把一個<b>合法</b>的綁定誤報成外來服務。修改後的四種判定是
+<code>bound-lan</code>／<code>bound-lan-only</code>／<code>loopback-only</code>／<code>absent</code>，
+而「<b>是不是我們的</b>」只能靠<b>身分</b>那條軸（<code>/v1/edge/status</code> 的 <code>object</code>）。</p>
+
+<h3>§12.3 交付</h3>
+
+<table>
+<thead><tr><th>檔案</th><th>它是什麼</th></tr></thead>
+<tbody>
+<tr><td><code>agent_harness/portal/lan.json</code></td>
+<td>區網通道的<b>唯一真相</b>：本機位址／防火牆／5 個服務的綁定宣告與認證／5 個<b>別人的</b>埠／
+4 個鄰居／判定規則／綁定矩陣／<code>not_proves</code>。7 條 <code>evidence</code> 逐條命中 1 次。</td></tr>
+<tr><td><code>agent_harness/portal/lan_check.py</code></td>
+<td><code>--check</code>（離線：宣告 vs 原始碼，且與 <code>fleet.json</code> 的本機埠引用
+<b>雙向</b>對齊）／<code>--probe</code>（實測綁定，可達時再驗身分）／
+<code>--self-test</code>（<b>20 格</b>，每格真的 bind socket）。</td></tr>
+<tr><td>入口第六節「區網（LAN）」</td>
+<td>宣告 vs 實測並排；<code>--export</code> 帶出 <code>lan</code>；新增 <code>--lan-probe</code>。
+<code>build_fleet_portal --check</code> <b>用子行程呼叫</b> <code>lan_check --check</code> ——
+不重造第二份實作（兩份必然漂移，而漂移是靜默的）。</td></tr>
+<tr><td>網站 portal 第六節</td><td><code>lanBlock()</code> ＋ 4 項渲染測試（地址／「綁定 ≠ 可達」／列數／安全警告數）。</td></tr>
+</tbody></table>
+
+<h3>§12.4 三個真缺陷（都是「檢查器／補丁自己的錯」）</h3>
+
+<ul>
+<li><b>① <code>HTTP_PROXY</code> 把 LAN 的身分檢查吃掉</b>：環境裡
+<code>HTTP_PROXY=http://127.0.0.1:7897</code>，<code>urllib</code> 把
+<code>http://192.168.101.90:…</code> <b>也丟進代理</b> ⇒ 身分檢查失敗，而判定是
+<code>unverified</code>（<b>不是紅</b>）⇒ <b>低報</b>。自測第 ⑤／⑥ 格就是這樣掛掉的。
+修法：<code>ProxyHandler({})</code> 的 opener，並加一格「環境有 proxy 時仍要 match」。</li>
+<li><b>② 裸奔變成可機檢的紅</b>：<code>/v1/edge/status</code> 在設了 <code>--api-key</code> 之後
+<b>仍公開</b>（無 key 也 200）⇒ 讀得到 <code>auth_required</code>。
+於是「<b>綁到區網卻沒有認證</b>」可以被判定：同一份設定，不給 key ⇒ 報安全警告；
+給 key ⇒ 逐格消失。<b>實測兩次</b>，兩次都對。</li>
+<li><b>③ 補丁本身也是 Python</b>：外層 <code>'''</code> 而新內容含 <code>'''</code>（或反向）⇒
+字串提早結束，症狀是 <code>invalid character '⑥'</code> —— 看起來像中文標點壞了，其實是字串被切斷。
+同族的還有「<b>錨點的縮排從 <code>sed 's/^/  /'</code> 的輸出讀</b> ⇒ 多兩格」：本輪踩<b>兩次</b>。</li>
+</ul>
+
+<h3>§12.5 ★ 端側連得上的正面證據（實跑，不是推論）</h3>
+
+<pre><code>python3 installer/edge_server.py --host 0.0.0.0 --port 8080 \
+    --api-key &lt;generated&gt; --endpoint-id mac-local --no-worker
+
+lsof:   python3.1  6404  ...  TCP *:8080 (LISTEN)          ← 綁在所有介面
+GET http://192.168.101.90:8080/health            → HTTP 503（沒 worker；誠實）
+GET http://192.168.101.90:8080/v1/edge/status    → HTTP 200
+      object=powerauto.edge.status  endpoint_id=mac-local  auth_required=true
+lan_check --probe: edge-server :8080  ✓ LAN  身分=match    ← 從「沒在跑」變成這一行
+</code></pre>
+
+<p><code>--no-worker</code> 是關鍵：<b>不需要模型、不佔記憶體</b>就能把「LAN 入口」驗起來
+（這台 16 GB 機器載不動 13 GB 的模型，先前幾輪都卡在這裡）。
+跑完<b>停掉</b> —— 不留無人看管的 listener。</p>
+
+<h3>§12.6 這個量測順帶量到的缺口</h3>
+
+<p><code>pd/compute_sharing.py</code> 的依賴（<code>uvicorn</code>／<code>fastapi</code>／<code>pydantic</code>）
+在本機<b>根本沒裝</b>（<code>importlib.util.find_spec</code> 查不到）⇒
+<code>fleet.json</code> 的 <code>channels.heartbeat.how</code> 那條指令
+（<code>python3 agent_harness/pd/compute_sharing.py --role node --port 9100</code>）
+<b>會直接 ImportError</b>。已寫進 <code>lan.json</code> 的 <code>blocked_by</code>，
+入口第六節會顯示「★ 但這條現在起不來」。<b>註冊表寫的是一條跑不起來的指令</b>，
+這種事只有實際去跑才會發現。</p>
+
+<h3>§12.7 邊界</h3>
+
+<ul>
+<li><code>--check</code> <b>完全不連網</b>（宣告 vs 原始碼是純文字比對）；<code>--probe</code> 只量本機與
+<code>192.168.101.0/24</code>，不掃其他埠、不探其他網段。</li>
+<li>★ <b>它證明的是「socket 綁在哪裡」，不是「別的機器連得到」</b>。後者還要看
+AP isolation／路由器 ACL／對端防火牆 —— <b>只有對端自己回報才算數</b>。
+這句話寫在頁面上、寫在 <code>lan.json</code> 的 <code>not_proves</code> 裡、也寫在 <code>--probe</code> 的輸出旁。</li>
+<li>區網上認身分<b>不能靠 IP</b>（DHCP 會變），<b>也不能靠 MAC</b>（macOS 預設隨機化 —— 本機的
+<code>d6:c3:92:31:56:b8</code> 就是私有 Wi-Fi 位址）⇒ 身分只能來自端點自己上報的 <code>endpoint_id</code>。</li>
+<li>本輪<b>沒有</b>改動任何服務的綁定（<code>cgc-edge-proxy</code> 仍只綁 loopback）——
+只把「誰綁在哪、該綁哪、現在能不能綁」量清楚並登記。<b>改綁定是另一個決定</b>，
+它牽涉認證與暴露面，不是這一輪能順手做的。</li>
+</ul>
+
 <p class="small" style="margin-top:26px">
 本檔由 <code>docs/FLEET_PORTAL_DELIVERY_20260918_1330.html</code> 交付，與它所屬的 commit 綁定。
 所有數字都可在本機用 §10 的指令重跑；沒有任何數字是轉述的。

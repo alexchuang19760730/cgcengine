@@ -1,0 +1,203 @@
+{
+  "schema": 1,
+  "title": "區網（LAN）通道註冊表 —— 同一個網段上的端側要怎麼連到 harness",
+  "what_is_this": "把「這台機器在區網上的位址、每個 harness 服務綁在哪個位址、要不要認證、同網段還有誰、哪些埠是別人的」寫成一份可機檢的註冊表。它回答的是 fleet.json 回答不了的那一半：fleet.json 說『機隊有誰』，join.json 說『還沒進來的要怎麼進來』，lan.json 說『同在一個網段上，連得到嗎、從哪裡連』。",
+  "why_separate_file": "★ 不塞進 fleet.json 的理由與 join.json 相同，而且已經付過兩次學費：fleet.json 與 join.json 都用**單行緊湊陣列**（`\"how\": [\"...\"]`），任何 json.dumps 讀寫都會把它們展開 —— 實測 join.json 257 行 -> 294 行、fleet.json 223 行假改動。lan.json 自己從第一筆就寫成這個形狀，所以它沒有這個包袱。",
+  "measurement": {
+    "measured_at": "2026-09-18T15:24",
+    "host": "mac-local",
+    "commands": ["ifconfig -a", "netstat -rn", "netstat -an -p tcp", "arp -an", "nc -z -G 1 -w 1", "curl", "/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate"],
+    "scope": "只在本機與同一個 /24 上量；不掃描區網其他網段、不對外網探測"
+  },
+
+  "this_host": {
+    "iface": "en0",
+    "ipv4": "192.168.101.90",
+    "netmask": "255.255.255.0",
+    "cidr": "192.168.101.0/24",
+    "broadcast": "192.168.101.255",
+    "gateway": "192.168.101.1",
+    "mac": "d6:c3:92:31:56:b8",
+    "mac_note": "這是 macOS 的私有 Wi-Fi 位址（隨機化 MAC），不是硬體 MAC —— 換網路會變，所以不能用它當端點身分。",
+    "ipv6_prefix": "2409:8a55:34c7:d980::/64",
+    "ipv6_note": "★ ISP 給的是**全域**前綴（中國移動 2409::/16），不是 link-local ⇒ 同前綴的裝置之間可以直接互連，不需要 NAT 穿透。但『有沒有出路』要逐目的地量：實測 `curl -6 https://powerauto.ai` = 200，而 `curl -6 https://ipv6.google.com` = 000。",
+    "firewall": {
+      "global_state": "disabled",
+      "block_all": "disabled",
+      "stealth_mode": "off",
+      "measured_by": "/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate",
+      "why_it_matters": "★ 這條排除了最常見的誤判：端側連不上**不是**防火牆擋的。本機的 macOS 應用防火牆是關的 ⇒ 唯一的阻礙是『服務有沒有綁在 LAN 位址上』。"
+    },
+    "other_ifaces": [
+      {
+        "iface": "bridge0",
+        "ipv4": "192.168.2.1",
+        "cidr": "192.168.2.0/24",
+        "note": "★ 這是**另一個網段**（殘留的 bridge，可能來自先前的容器／網路共享），與 en0 的 192.168.101.0/24 不通。看到兩個 IPv4 時不要混為一談：端側在哪一段，決定了它能連到什麼。"
+      }
+    ]
+  },
+
+  "services": [
+    {
+      "id": "edge-server",
+      "what": "端側的對外入口（OpenAI 相容 API ＋ /v1/edge/status ＋ 管理面）",
+      "port": 8080,
+      "repo": "powerauto.ai",
+      "binds_default": "0.0.0.0",
+      "binds_flag": "--host（預設 0.0.0.0）",
+      "auth": "選用：--api-key；設了之後 /v1/* 需要 Bearer 或 X-API-Key（/health 仍公開）",
+      "auth_gap": "★ 沒設 --api-key 時，同網段任何人都能用你的 GPU。程式自己會在 status 的 unmeasured 裡說出這件事（`沒有設 --api-key ⇒ 同網段可存取`）—— 那句話是誠實，不是安全。",
+      "auth_required": false,
+      "lan_ready": true,
+      "identity": {"path": "/v1/edge/status", "object": "powerauto.edge.status"},
+      "identity_note": "★ endpoint_id 刻意不寫死（它由 --endpoint-id 決定，逐次啟動可變）⇒ 檢查只比對 object；要比 endpoint_id 就得讓端點自己宣告。",
+      "can_run_without_model": "--no-worker（只開管理面，沒有模型也能看狀態）★ 這一條讓『LAN 入口』可以在不佔記憶體的情況下被驗證",
+      "how": "python3 installer/edge_server.py --host 0.0.0.0 --port 8080 --api-key <key> --endpoint-id <id> --no-worker",
+      "smoke": "curl -s -o /dev/null -w '%{http_code}' http://192.168.101.90:8080/v1/edge/status",
+      "evidence": [{"repo": "powerauto.ai", "path": "installer/edge_server.py", "contains": "ap.add_argument(\"--host\", default=\"0.0.0.0\")"}, {"repo": "powerauto.ai", "path": "installer/edge_server.py", "contains": "ap.add_argument(\"--no-worker\""}, {"repo": "powerauto.ai", "path": "installer/edge_server.py", "contains": "if self._needs_auth() and not self._auth_ok()"}],
+      "state_at_measurement": "absent（沒有 listener）"
+    },
+    {
+      "id": "edge-worker",
+      "what": "後端的 llama-server（edge-server 幫你 spawn，或接既有的 --worker-url）",
+      "port": 8081,
+      "repo": "powerauto.ai",
+      "binds_default": "127.0.0.1",
+      "binds_flag": "--worker-host（預設 127.0.0.1）",
+      "auth": "無（因為綁 loopback ⇒ 只有本機連得到）",
+      "auth_required": false,
+      "lan_ready": false,
+      "lan_ready_why": "★ **刻意**不綁 LAN：worker 沒有認證，綁出去等於把模型裸奔。要跨機共用推理就走 edge-server（它有 --api-key），不要直接把 worker 露出去。",
+      "how": "python3 installer/edge_server.py --model <gguf> --llama-server <path>",
+      "state_at_measurement": "absent"
+    },
+    {
+      "id": "pd-node",
+      "what": "算力共享節點（pd/compute_sharing.py --role node）—— fleet.json 的 mac-local heartbeat 指的就是它",
+      "port": 9100,
+      "repo": "self",
+      "binds_default": "0.0.0.0",
+      "binds_flag": "--address（預設 0.0.0.0）、--port（預設 9100）",
+      "auth": "★ 沒有認證（uvicorn.run(app, host, port) 直上）",
+      "auth_required": false,
+      "lan_ready": true,
+      "auth_gap": "★ 綁 0.0.0.0 ＋ 無認證 ＝ 同網段任何人都能註冊節點／提交工作。這是**已登記的缺口**，不是這份註冊表能修的。它現在還沒真的開，所以還沒暴露。",
+      "how": "python3 agent_harness/pd/compute_sharing.py --role node --address 0.0.0.0 --port 9100",
+      "blocked_by": "★★ **依賴沒裝**：uvicorn / fastapi / pydantic 在本機都不存在（實測 importlib 查不到）⇒ `--role node` 起不來。fleet.json 的 channels.heartbeat.how 寫著『python3 agent_harness/pd/compute_sharing.py --role node --port 9100』—— **那條指令現在會直接 ImportError**。",
+      "evidence": [{"repo": "self", "path": "agent_harness/pd/compute_sharing.py", "contains": "address: str = \"0.0.0.0\""}, {"repo": "self", "path": "agent_harness/pd/compute_sharing.py", "contains": "add_argument(\"--address\", default=\"0.0.0.0\")"}, {"repo": "self", "path": "agent_harness/pd/compute_sharing.py", "contains": "uvicorn.run(app, host=address, port=port)"}],
+      "state_at_measurement": "absent"
+    },
+    {
+      "id": "cgc-edge-proxy",
+      "what": "CGC edge proxy（Anthropic 相容 gateway，claude code 走它路由到 deepseek-v4-flash）",
+      "port": 4000,
+      "repo": "self",
+      "binds_default": "127.0.0.1",
+      "binds_flag": "（沒有對外綁定的旗標；寫死 loopback）",
+      "auth": "有（sk-cgc-edge-key）",
+      "auth_required": true,
+      "lan_ready": false,
+      "lan_ready_why": "它現在**只綁 loopback** ⇒ 同網段的端側連不到它。這一條是實測的，不是推論：127.0.0.1:4000 回 200，192.168.101.90:4000 連不上。要讓端側用它就得改綁定（並確認它有認證 —— 它有）。",
+      "how": "（見 app/edge_engine/cloud_tunnel.py 的既有啟動方式）",
+      "state_at_measurement": "loopback-only（實測 200 on 127.0.0.1、LAN 位址連不上）"
+    },
+    {
+      "id": "portal-dev",
+      "what": "網站 portal 的本機開發伺服器（serve.py，含探測代理與白名單）",
+      "port": 8787,
+      "repo": "powerauto.ai",
+      "binds_default": "127.0.0.1",
+      "binds_flag": "（寫死 127.0.0.1）",
+      "auth": "無（但綁 loopback ＋ 主機白名單 ALLOW_HOSTS）",
+      "auth_required": false,
+      "lan_ready": false,
+      "lan_ready_why": "★ 刻意：它會代打任意的 health URL（SSRF 面），綁到區網等於把探測代理送給整個網段。要讓端側看頁面，它們應該開 https://powerauto.ai/portal/（同一份靜態產物），不是連回這台機器。",
+      "how": "python3 portal/serve.py --port 8787（只在本機開；它寫死綁 127.0.0.1）",
+      "evidence": [{"repo": "powerauto.ai", "path": "portal/serve.py", "contains": "ThreadingHTTPServer((\"127.0.0.1\", int(sys.argv[1])), H)"}],
+      "state_at_measurement": "absent"
+    }
+  ],
+
+  "foreign_lan_ports": [
+    {
+      "port": 5000,
+      "who": "macOS ControlCenter（AirPlay 接收器）",
+      "measured": "192.168.101.90:5000 回 HTTP 403（有 listener、綁在所有介面）",
+      "why_it_matters": "★ 這是本機**唯一**真的綁在區網上的埠，而它**不是我們的**。任何『可達就報綠』的判定都會對它報 LIVE —— 那正是 portal 上一輪踩過的『可達 ≠ 是我們的服務』。它必須被登記成別人的，否則第一次上線就會誤判成 harness 活著。"
+    },
+    { "port": 53, "who": "mDNSResponder（DNS）", "measured": "綁所有介面", "why_it_matters": "系統服務；與 harness 無關。" },
+    { "port": 7000, "who": "macOS AirPlay（AirTunes）", "measured": "綁所有介面", "why_it_matters": "系統服務；與 harness 無關。" },
+    { "port": 1053, "who": "macOS 系統服務", "measured": "綁所有介面", "why_it_matters": "系統服務；與 harness 無關。" },
+    { "port": 49152, "who": "macOS 系統服務（動態埠）", "measured": "綁所有介面", "why_it_matters": "系統服務；與 harness 無關。" }
+  ],
+
+  "peers": {
+    "source": "arp -an（en0，實測 2026-09-18 15:24）",
+    "known": [
+      {"ip": "192.168.101.1", "mac": "04:79:75:1b:4f:2", "guess": "閘道／路由器"},
+      {"ip": "192.168.101.8", "mac": "5c:80:b6:c8:a3:a7", "guess": "未識別"},
+      {"ip": "192.168.101.82", "mac": "c2:81:bf:15:13:3a", "guess": "未識別（隨機化 MAC ⇒ 可能是手機／筆電）"},
+      {"ip": "192.168.101.91", "mac": "3a:9a:43:30:2a:f3", "guess": "未識別（緊鄰本機的 .90，隨機化 MAC）"}
+    ],
+    "probe_result": {
+      "ports_probed": [8080, 8081, 9100, 4000, 8787, 5000],
+      "verdict": "★★ 四個鄰居**全部、每一個埠都沒開**。⇒ 現在這個區網上，harness 對端側是**完全隱形**的（本機那 6 個埠也全關，唯一開著的 5000 是 macOS 的）。",
+      "not_proves": "★ 這只說明『此刻沒有服務在聽』。它不證明那些機器不是端側（它們可能只是沒在跑 agent），也不證明它們連得到我們（見 not_proves 第一條）。"
+    },
+    "identity_note": "★ 區網上認身分**不能靠 IP，也不能靠 MAC**（IP 是 DHCP、MAC 在 macOS 上預設隨機化）。身分只能來自端點自己上報的 endpoint_id（見 join.json／fleet.json 的契約）。"
+  },
+
+  "probe": {
+    "timeout_s": 0.5,
+    "ports_in_scope": [8080, 8081, 9100, 4000, 8787],
+    "verdicts": {
+      "bound-lan": "LAN 位址連得上，且 loopback 也連得上 ⇒ 綁在 0.0.0.0（或兩者都綁）",
+      "bound-lan-only": "LAN 位址連得上，但 loopback 連不上 ⇒ 綁在**特定** LAN IP 上。★ **這不是缺陷**",
+      "loopback-only": "loopback 連得上、LAN 位址連不上 ⇒ 只有本機連得到（設計選擇，或漏綁 —— 要看 lan_ready）",
+      "absent": "兩個都連不上 ⇒ 沒在跑（unknown，不是紅）"
+    },
+    "why_no_foreign_verdict": "★★ **綁定分不出『我們的』與『別人的』** —— 這條是實測推翻我原本的設計：`bind 192.168.101.90` 的 socket 從 127.0.0.1 **連不上**（見 measured_bind_matrix）⇒ 在綁定層，『綁在特定 LAN IP 的自有服務』與『別人的服務』**長得一模一樣**。要區分只能靠**身分**，那是另一條軸。第一版把後者叫 foreign-lan ⇒ 會把一個合法綁定誤報成外來服務。",
+    "identity": {
+      "how": "對可達的服務再打一次它的身分端點（例如 /v1/edge/status），比對 object 與 endpoint_id",
+      "verdicts": ["match", "mismatch", "unverified", "（服務沒宣告 identity ⇒ 不驗）"],
+      "why": "★ 這一條才是『可達 ≠ 是我們的』的解法。同 portal 心跳那一課。"
+    },
+    "never": "不掃描 ports_in_scope 以外的埠；不探測本機與 192.168.101.0/24 以外的位址；不寫任何檔案（除非明給 --out）。"
+  },
+
+  "measured_bind_matrix": {
+    "why": "★ 這張表是**判定邏輯的依據**，不是裝飾 —— 它推翻了我原本的判定表（見 probe.why_no_foreign_verdict）。",
+    "measured_at": "2026-09-18T15:30",
+    "how": "socket.bind((addr,0)) ＋ listen，再分別從 127.0.0.1 與 192.168.101.90 連",
+    "rows": [
+      {"bind": "127.0.0.1", "from_loopback": true, "from_lan": false, "reads_as": "loopback-only"},
+      {"bind": "0.0.0.0", "from_loopback": true, "from_lan": true, "reads_as": "bound-lan"},
+      {"bind": "192.168.101.90", "from_loopback": false, "from_lan": true, "reads_as": "bound-lan-only"}
+    ],
+    "conclusion": "『從 loopback 連不上』**不能**推論成『那不是我們的服務』。看到 bound-lan-only 要往『綁在特定 IP』想，不要往『被別人佔了』想；要確認身分只能打它的身分端點。"
+  },
+
+  "rules": [
+    "★ **綁定 ≠ 可達**：本機從自己的 LAN 位址連得上，證明的是『socket 綁在這個位址』。別的機器能不能連上，還要看 AP isolation／路由器 ACL／對端防火牆 —— 而本機的 macOS 防火牆是**關的**（已實測），所以它不是變數。這一條要寫在每一份 LAN 報告上。",
+    "★ **可達 ≠ 是我們的**：見 foreign_lan_ports（5000 是 macOS 的）。判定必須同時看身分（/v1/edge/status 的 object ＋ endpoint_id）。★ 而且**綁定層分不出來**（見 measured_bind_matrix），所以身分是必要的第二條軸。",
+    "★ **沒在跑不是紅**：absent 是 unknown 的一種。紅只留給『宣告說 lan_ready 而原始碼其實綁 loopback』『宣告了卻沒有那個服務』這種**陳述不實**。",
+    "★ **宣告要對得上原始碼**：lan.json 的 binds_default／auth 是**可離線機檢**的（grep 原始碼）。這條檢查不需要網路，所以它進 --check；實測綁定在 --probe。",
+    "★ 兩個網段不要混：en0 = 192.168.101.0/24、bridge0 = 192.168.2.0/24。端側在哪一段決定了它能連到什麼。",
+    "★ IPv6 是真通道但要想清楚：2409:8a55:34c7:d980::/64 是全域前綴 ⇒ 綁 `::` 的服務會被**同前綴**的裝置直達（也要小心：不再有 NAT 當緩衝）。外網方向要逐目的地量（powerauto.ai 200、ipv6.google.com 000）。"
+  ],
+
+  "not_proves": [
+    "本註冊表與它的檢查器**不證明**別的機器連得到我們 —— 它們只證明本機的 socket 綁在哪裡。跨機那一格永遠需要對端自己回報。",
+    "不證明那些鄰居不是端側（.8／.82／.91 未識別）。它們可能只是沒在跑。",
+    "不證明 pd-node 真的能用 —— 它的依賴沒裝（uvicorn／fastapi／pydantic）。lan.json 記的是**應該綁哪**，不是**現在能用**。",
+    "不處理跨網段／NAT 穿透／公網可達 —— 那是另一條線（cloud tunnel）。"
+  ],
+
+  "how_to": {
+    "check": "python3 agent_harness/portal/lan_check.py --check",
+    "probe": "python3 agent_harness/portal/lan_check.py --probe",
+    "self_test": "python3 agent_harness/portal/lan_check.py --self-test",
+    "regenerate_note": "本檔是**手寫的最終真相**（機器量出來的事實），不是產生物；但每一條 evidence 都被 lan_check.py --check 逐條驗真。"
+  }
+}

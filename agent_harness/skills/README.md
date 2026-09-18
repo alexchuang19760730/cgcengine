@@ -11,6 +11,7 @@
 | `cgc-prefill-thermal-delivery` | `~/.workbuddy/skills/cgc-prefill-thermal-delivery/SKILL.md` | 讓一個 prefill t/s 數字取得可交付地位 |
 | `cgc-tb-smoke` | `~/.workbuddy/skills/cgc-tb-smoke/SKILL.md` | 跑 terminal-bench 的鏈路 smoke（oracle／帶模型兩變體） |
 | `cgc-whitepaper-delivery` | `~/.workbuddy/skills/cgc-whitepaper-delivery/SKILL.md` | 寫 `docs/*.html` 技術白皮書（版式、取材清單、現場閘門輸出、收尾雙 commit） |
+| `github-transport-fallback` | `~/.workbuddy/skills/github-transport-fallback/SKILL.md` | GitHub 推送／拉取失敗時：分辨「憑證問題」與「傳輸通道問題」，以及「遠端在工作期間被別的 agent 推進」的正確處理 |
 
 YAML frontmatter（`name` / `description` / `agent_created`）**完整保留在最前面**，
 banner 插在它之後——所以這些副本仍然可以被 skill loader 解析。

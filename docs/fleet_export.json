@@ -1,14 +1,141 @@
 {
   "schema": 1,
-  "generated_at": "2026-09-18 15:03:18",
+  "generated_at": "2026-09-18 15:34:47",
   "source": {
     "repo": "flashkv-devserver（CGC engine）",
     "producer": "agent_harness/portal/build_fleet_portal.py --export",
-    "head": "38d947e04",
+    "head": "db6f843ae",
     "branch": "demo/sweet-spot-windows-fix",
-    "subject": "docs(index): resync after c7ebbce44 -- §EN-158 後記（resync／push 結果 ＋「收尾記憶與索引不會自己終止」的結構性結論）",
+    "subject": "docs(index): resync after ce8f1a50f -- §EN-159（M=8 cell 落地、CGC_MM_BITIDENT=0 的負向結果、M× = L2 重複消費）",
     "mode": "offline（--no-net，未探測心跳）",
     "how_to_regenerate": "python3 agent_harness/portal/build_fleet_portal.py --export"
+  },
+  "lan": {
+    "why": "端點名冊說「有誰」；這一塊說「在同一個區網上連得到嗎、從哪個位址連」。網站端不重算，只轉述。",
+    "registry": "agent_harness/portal/lan.json",
+    "iface": "en0",
+    "ipv4": "192.168.101.90",
+    "cidr": "192.168.101.0/24",
+    "gateway": "192.168.101.1",
+    "firewall": "disabled",
+    "oneline": "192.168.101.90／192.168.101.0/24　宣告 lan_ready 2 個、真的綁在區網上 0 個",
+    "services": [
+      {
+        "id": "edge-server",
+        "port": 8080,
+        "what": "端側的對外入口（OpenAI 相容 API ＋ /v1/edge/status ＋ 管理面）",
+        "binds_default": "0.0.0.0",
+        "lan_ready": true,
+        "auth_required": false,
+        "how": "python3 installer/edge_server.py --host 0.0.0.0 --port 8080 --api-key <key> --endpoint-id <id> --no-worker",
+        "state_at_measurement": "absent（沒有 listener）",
+        "probe": {
+          "verdict": "absent",
+          "loopback_ok": false,
+          "lan_ok": false,
+          "identity": null
+        }
+      },
+      {
+        "id": "edge-worker",
+        "port": 8081,
+        "what": "後端的 llama-server（edge-server 幫你 spawn，或接既有的 --worker-url）",
+        "binds_default": "127.0.0.1",
+        "lan_ready": false,
+        "auth_required": false,
+        "how": "python3 installer/edge_server.py --model <gguf> --llama-server <path>",
+        "state_at_measurement": "absent",
+        "probe": {
+          "verdict": "absent",
+          "loopback_ok": false,
+          "lan_ok": false,
+          "identity": null
+        }
+      },
+      {
+        "id": "pd-node",
+        "port": 9100,
+        "what": "算力共享節點（pd/compute_sharing.py --role node）—— fleet.json 的 mac-local heartbeat 指的就是它",
+        "binds_default": "0.0.0.0",
+        "lan_ready": true,
+        "auth_required": false,
+        "how": "python3 agent_harness/pd/compute_sharing.py --role node --address 0.0.0.0 --port 9100",
+        "state_at_measurement": "absent",
+        "probe": {
+          "verdict": "absent",
+          "loopback_ok": false,
+          "lan_ok": false,
+          "identity": null
+        }
+      },
+      {
+        "id": "cgc-edge-proxy",
+        "port": 4000,
+        "what": "CGC edge proxy（Anthropic 相容 gateway，claude code 走它路由到 deepseek-v4-flash）",
+        "binds_default": "127.0.0.1",
+        "lan_ready": false,
+        "auth_required": true,
+        "how": "（見 app/edge_engine/cloud_tunnel.py 的既有啟動方式）",
+        "state_at_measurement": "loopback-only（實測 200 on 127.0.0.1、LAN 位址連不上）",
+        "probe": {
+          "verdict": "loopback-only",
+          "loopback_ok": true,
+          "lan_ok": false,
+          "identity": null
+        }
+      },
+      {
+        "id": "portal-dev",
+        "port": 8787,
+        "what": "網站 portal 的本機開發伺服器（serve.py，含探測代理與白名單）",
+        "binds_default": "127.0.0.1",
+        "lan_ready": false,
+        "auth_required": false,
+        "how": "python3 portal/serve.py --port 8787（只在本機開；它寫死綁 127.0.0.1）",
+        "state_at_measurement": "absent",
+        "probe": {
+          "verdict": "absent",
+          "loopback_ok": false,
+          "lan_ok": false,
+          "identity": null
+        }
+      }
+    ],
+    "foreign_lan_ports": [
+      {
+        "port": 5000,
+        "who": "macOS ControlCenter（AirPlay 接收器）",
+        "measured": "192.168.101.90:5000 回 HTTP 403（有 listener、綁在所有介面）",
+        "why_it_matters": "★ 這是本機**唯一**真的綁在區網上的埠，而它**不是我們的**。任何『可達就報綠』的判定都會對它報 LIVE —— 那正是 portal 上一輪踩過的『可達 ≠ 是我們的服務』。它必須被登記成別人的，否則第一次上線就會誤判成 harness 活著。"
+      },
+      {
+        "port": 53,
+        "who": "mDNSResponder（DNS）",
+        "measured": "綁所有介面",
+        "why_it_matters": "系統服務；與 harness 無關。"
+      },
+      {
+        "port": 7000,
+        "who": "macOS AirPlay（AirTunes）",
+        "measured": "綁所有介面",
+        "why_it_matters": "系統服務；與 harness 無關。"
+      },
+      {
+        "port": 1053,
+        "who": "macOS 系統服務",
+        "measured": "綁所有介面",
+        "why_it_matters": "系統服務；與 harness 無關。"
+      },
+      {
+        "port": 49152,
+        "who": "macOS 系統服務（動態埠）",
+        "measured": "綁所有介面",
+        "why_it_matters": "系統服務；與 harness 無關。"
+      }
+    ],
+    "security": [],
+    "probe_ran": true,
+    "how_to_check": "python3 agent_harness/portal/lan_check.py --check（離線）／--probe（實測綁定）／--self-test"
   },
   "endpoints": [
     {
@@ -21,7 +148,7 @@
       "chip": "上報過期",
       "heartbeat": "skipped",
       "reported_at": "2026-09-18 13:28:23",
-      "report_age": "1.6 小時前",
+      "report_age": "2.1 小時前",
       "capabilities": [
         "macOS bundle 可重建／可啟動（llama-server --version ＋ llama-simple --help ＋ otool -L 查 @rpath）",
         "兩個數字目標（prefill ≥250 t/s、decode ≥25 t/s）有綁定與現值",
@@ -79,14 +206,6 @@
       },
       "retro": [
         {
-          "ts": "2026-09-18 13:31:38",
-          "chip": "已上報",
-          "heartbeat": "unknown",
-          "caps": 4,
-          "unmeasured": 0,
-          "report_age": "3 分鐘前"
-        },
-        {
           "ts": "2026-09-18 13:31:41",
           "chip": "已上報",
           "heartbeat": "unknown",
@@ -125,6 +244,14 @@
           "caps": 4,
           "unmeasured": 0,
           "report_age": "1.6 小時前"
+        },
+        {
+          "ts": "2026-09-18 15:34:37",
+          "chip": "上報過期",
+          "heartbeat": "skipped",
+          "caps": 4,
+          "unmeasured": 0,
+          "report_age": "2.1 小時前"
         }
       ]
     },
@@ -157,14 +284,6 @@
       },
       "join": null,
       "retro": [
-        {
-          "ts": "2026-09-18 13:31:38",
-          "chip": "未上報",
-          "heartbeat": "unknown",
-          "caps": 3,
-          "unmeasured": 3,
-          "report_age": "沒有上報過"
-        },
         {
           "ts": "2026-09-18 13:31:41",
           "chip": "未上報",
@@ -199,6 +318,14 @@
         },
         {
           "ts": "2026-09-18 15:03:18",
+          "chip": "未上報",
+          "heartbeat": "skipped",
+          "caps": 3,
+          "unmeasured": 3,
+          "report_age": "沒有上報過"
+        },
+        {
+          "ts": "2026-09-18 15:34:37",
           "chip": "未上報",
           "heartbeat": "skipped",
           "caps": 3,
@@ -302,14 +429,6 @@
       },
       "retro": [
         {
-          "ts": "2026-09-18 13:31:38",
-          "chip": "未上報",
-          "heartbeat": "none",
-          "caps": 2,
-          "unmeasured": 3,
-          "report_age": "沒有上報過"
-        },
-        {
           "ts": "2026-09-18 13:31:41",
           "chip": "未上報",
           "heartbeat": "none",
@@ -343,6 +462,14 @@
         },
         {
           "ts": "2026-09-18 15:03:18",
+          "chip": "未上報",
+          "heartbeat": "skipped",
+          "caps": 2,
+          "unmeasured": 3,
+          "report_age": "沒有上報過"
+        },
+        {
+          "ts": "2026-09-18 15:34:37",
           "chip": "未上報",
           "heartbeat": "skipped",
           "caps": 2,
@@ -455,14 +582,6 @@
       },
       "retro": [
         {
-          "ts": "2026-09-18 13:31:38",
-          "chip": "未上報",
-          "heartbeat": "none",
-          "caps": 3,
-          "unmeasured": 3,
-          "report_age": "沒有上報過"
-        },
-        {
           "ts": "2026-09-18 13:31:41",
           "chip": "未上報",
           "heartbeat": "none",
@@ -496,6 +615,14 @@
         },
         {
           "ts": "2026-09-18 15:03:18",
+          "chip": "未上報",
+          "heartbeat": "skipped",
+          "caps": 3,
+          "unmeasured": 3,
+          "report_age": "沒有上報過"
+        },
+        {
+          "ts": "2026-09-18 15:34:37",
           "chip": "未上報",
           "heartbeat": "skipped",
           "caps": 3,
@@ -577,7 +704,7 @@
           "2026-09-15": 9,
           "2026-09-16": 61,
           "2026-09-17": 76,
-          "2026-09-18": 70
+          "2026-09-18": 73
         }
       },
       {
@@ -593,7 +720,7 @@
           "2026-09-15": 25,
           "2026-09-16": 23,
           "2026-09-17": 29,
-          "2026-09-18": 13
+          "2026-09-18": 14
         }
       },
       {
@@ -625,7 +752,7 @@
           "2026-09-15": 122727,
           "2026-09-16": 284362,
           "2026-09-17": 451541,
-          "2026-09-18": 266358
+          "2026-09-18": 271608
         }
       },
       {
