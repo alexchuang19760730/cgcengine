@@ -1,0 +1,74 @@
+{
+  "schema": 1,
+  "title": "CGC A2A agent 註冊表",
+  "what_is_this": "有哪些 agent 實例、各自屬於哪一類、接哪些 skill、跑在哪裡。類別的定義不在這裡（在 taxonomy.py）—— 這一檔只回答「誰」與「在哪」，不回答「那一類是什麼意思」。兩者分開的理由：同一個類別可以有很多實例，而實例多半會來來去去。",
+  "why_not_in_fleet_json": "fleet.json 的端點是**機器**（mac／windows／鴻蒙），不是 agent。一台機器可以跑 0 到多個 agent，而一個 agent 也可以搬家。把它們併成一張表，就再也回答不了「這台機器上有誰在跑」。",
+  "gateway": {
+    "default_port": 9210,
+    "path_prefix": "/a2a",
+    "card_path": "/a2a/<agent_id>/.well-known/agent-card.json",
+    "rpc_path": "/a2a/<agent_id>",
+    "index_path": "/.well-known/agent-card.json",
+    "note": "index_path 是**本閘道的擴展**：標準 A2A 客戶端不需要它，但人與運營 agent 需要一個「這裡有誰」的入口。它列的是各 agent card 的位置，不是 card 本身。"
+  },
+  "agents": [
+    {
+      "id": "cgc-dev-porting",
+      "class": "developer",
+      "display_name": "CGC 移植 agent",
+      "description": "把 CGC 引擎移植到新平台（windows／鴻蒙），並證明它在上面真的跑起來",
+      "runs_on": "mac-local",
+      "reaches": "self",
+      "skill_override": [],
+      "not_capable": [
+        "無權決定要不要放棄某個移植目標 —— 那是 explorer 的 macro（porting 的取捨在 fleet-ops / decision 之間）",
+        "不直接對外提供推理服務 —— 那是 pd-inference 的事"
+      ]
+    },
+    {
+      "id": "fleet-operator",
+      "class": "operator",
+      "display_name": "機隊運營 agent",
+      "description": "讓端／雲／端的服務持續可觀測、可部署：採集端點狀態、跑看門狗、匯出機隊資料",
+      "runs_on": "mac-local",
+      "reaches": "self",
+      "skill_override": [],
+      "not_capable": [
+        "無權改動引擎原始碼或決定移植策略 —— 那是 developer 的 macro",
+        "拿不到離線端的即時狀態時，只能回報 absent，不得改寫成「一切正常」"
+      ]
+    },
+    {
+      "id": "pd-inference",
+      "class": "operator",
+      "display_name": "PD 推論服務 agent",
+      "description": "PD（prefill/decode 分離）推論子系統的對外身分：KV 配置、handoff 會話、健康狀態",
+      "runs_on": "mac-local",
+      "reaches": "self",
+      "skill_override": [],
+      "not_capable": [
+        "它的後端是 gRPC 的 pd_server，本閘道只做 A2A 到 gRPC 的映射 —— 沒有把 PDService 的每個 rpc 都翻譯過來",
+        "未實作：AllocateBlocks / StorePrefixKV 等 KV 操作目前**沒有** A2A 對應的 skill（見 A2A.md 的邊界）"
+      ]
+    },
+    {
+      "id": "cgc-explorer",
+      "class": "explorer",
+      "display_name": "CGC 探索 agent",
+      "description": "解決宏觀決策：目標還成不成立、哪條路已經封閉、哪些結論已被推翻",
+      "runs_on": "mac-local",
+      "reaches": "self",
+      "skill_override": [],
+      "not_capable": [
+        "無權直接部署或改動生產服務 —— 決定了之後由 operator 執行",
+        "它的結論必須可復盤（帶證據與取代鏈），不接受只有一句結論的呼叫"
+      ]
+    }
+  ],
+  "rules": {
+    "class_must_exist": "registry 裡的 class 必須在 taxonomy.py 裡存在；不存在的類別是硬錯誤，不是「先放著」。",
+    "one_agent_one_url": "每個 agent 一個 url 與一份 card（A2A 的慣例）。閘道用路徑前綴區分，但對客戶端而言它們是四個獨立的 agent。",
+    "not_capable_is_required": "每個 agent 都要寫明它**不做什麼**。只寫「能做什麼」的卡片，會讓對端把「沒寫」讀成「可以做」。",
+    "absence_speaks": "agent 離線或後端不可達 ⇒ 任務回報為 unknown／absent，不是失敗，也不是成功。"
+  }
+}

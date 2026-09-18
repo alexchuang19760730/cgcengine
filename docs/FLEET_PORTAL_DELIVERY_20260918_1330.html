@@ -64,6 +64,7 @@ svg { display:block; margin:10px 0 16px; }
 「離線端只差 dump 那一步」與「沒有自動化 ⋯⋯ 是下一個決定」兩條<b>做掉了</b>，
 並修正了一件 §13 留下的缺陷（<code>reported_at</code> 原本取映射時刻，自動跑會每小時抹平）。
 §1–§13 的其餘結論一字不動、仍然成立；「<code>gpu</code> 刻意留空」也仍然成立。
+<br><b>再加 §15（A2A 閘道與 agent 分類，2026-09-18 16:2x）</b> —— 同樣是新增，不取代任何一節。
 </div>
 
 <h2>§1 需求，與它的三個岔路</h2>
@@ -921,6 +922,165 @@ runs = 1
   <code>fusionroutemot</code>，入口讀的是 <code>demo/sweet-spot-windows-fix</code>（§4）。
   Windows 端的 dump 就算產出來了，在兩邊對齊之前仍然到不了入口。</li>
 </ul>
+
+<h2>§15 A2A 閘道：把 harness 與 pd 服務暴露成 agent，並讓「類別」在協議上可機檢（16:2x）</h2>
+
+<div class="box pur">
+<b>本節是新增，不取代前面任何一節。</b>§1–§14 的結論全部仍然成立；§13.7 那句
+「<code>gpu</code> 刻意留空」也仍然成立。本節處理的是另一條線的需求：
+「<b>agent harness ＋ pd 端雲端端服務要整合在一起</b>」，而且要能<b>區分 agent 屬於哪一類</b>
+——開發（windows／鴻蒙移植）／運營（pd 網站 harness）／探索（宏觀決策）——
+並且把「宏觀決策」與「微觀能力」的分類<b>放進 A2A 協議裡</b>。
+</div>
+
+<h3>§15.1 為什麼是閘道，不是改 pd</h3>
+
+<p>動手前量到三件事：<code>pd/</code> 是 gRPC 的 PD 推論子系統（KV cache ＋ DOPD handoff），
+它<b>沒有任何 HTTP 服務發現層</b>；<code>tb_loop/agents/</code> 的三個 agent 是
+terminal-bench 的<b>執行器適配器</b>（<code>AbstractInstalledAgent</code>），
+<b>沒有「類別」的概念</b>；而 <code>a2a</code>／<code>agent-card</code>／
+<code>well-known</code> 在整個 repo 裡<b>一次都沒出現過</b>（命中的全是 terminal-bench 資料集裡的
+無關字串）。</p>
+
+<p>所以這一輪是<b>從零加一層</b>，而不是改造既有的：閘道在 harness 側，
+<code>pd_server.py</code> 一個字都沒動。pd 在這一層裡只是一個 backend ——
+它變成 <code>pd-inference</code> 這個 agent 的對外身分。</p>
+
+<h3>§15.2 兩個維度：宏觀決策域與微觀能力</h3>
+
+<table>
+<tr><th>類別</th><th>是什麼</th><th>宏觀決策域（macro）</th><th>微觀能力（micro）</th></tr>
+<tr><td><code>developer</code></td><td>把引擎移植到新平台並證明它跑起來</td>
+    <td><code>porting</code> —— 移植目標與構建策略</td><td class="num">4 項</td></tr>
+<tr><td><code>operator</code></td><td>讓端／雲／端的服務持續可觀測、可部署</td>
+    <td><code>fleet-ops</code> —— 機隊部署與可用性</td><td class="num">4 項</td></tr>
+<tr><td><code>explorer</code></td><td>解決宏觀決策：目標還成不成立、哪條路已封閉</td>
+    <td><code>decision</code> —— 目標、路線與假設的取捨</td><td class="num">4 項</td></tr>
+</table>
+
+<p><b>兩者刻意分開，而且不可互相推導。</b>一個能跑 <code>cmake</code> 的 agent（micro）
+<b>不代表</b>它有權決定「要不要移植到鴻蒙」（macro）。把它們併成一張清單，
+下一個讀者就會以為「能執行」等於「有權決定」。</p>
+
+<p>協議上的落點也因此分開：</p>
+<ul>
+<li><b>微觀能力</b> → A2A <b>標準</b>的 <code>skills[]</code>（標準客戶端也看得懂）</li>
+<li><b>類別與宏觀決策域</b> → 擴展欄位 <code>x-agent-class</code>／<code>x-macro-scope</code></li>
+</ul>
+
+<div class="box warn">
+<b>為什麼不把類別也塞進 <code>skills[]</code>：</b>A2A 的 <code>skills[]</code> 語意是
+「可呼叫的能力」。把「類別」塞進去，標準客戶端會以為 <code>class:developer</code> 是一個
+<b>可以被呼叫的動作</b> —— 它會去呼叫它，然後失敗。類別與能力是兩個層次，
+協議上就該分開。
+</div>
+
+<h3>§15.3 分類的實際作用：路由會因為它拒絕</h3>
+
+<p>只把類別寫在卡片上，它是一個標籤。真正讓它是分類的是這條規則 ——
+把 explorer 的 skill 送給 developer agent：</p>
+
+<pre><code>code    = -32005
+message = skill 'register-decision' 不屬於 developer 這一類（它是 探索 agent）
+data    = {"agentClass": "developer", "skillOwnerClass": "explorer",
+           "availableSkills": ["build-target", "port-and-verify", …]}</code></pre>
+
+<p>同一個道理另一條：<b>沒指名 skill 也拒收</b>（<code>-32602</code>）。
+猜一個預設 skill 會讓打錯字的請求<b>看起來像成功</b>。</p>
+
+<p>而 <code>x-taxonomy.skill_owner</code>（每個 skill 屬於哪一類的正本）就寫在卡片上
+—— <b>對端可以自己核對我們宣稱的分類與能力歸屬一致，不必相信我們。</b></p>
+
+<h3>§15.4 四組能力（四組都真的能用，不是只有宣告）</h3>
+
+<table>
+<tr><th>方法</th><th>說明</th></tr>
+<tr><td><code>message/send</code></td><td>同步任務；回 <code>completed</code> 的 task 或 error</td></tr>
+<tr><td><code>message/stream</code></td><td>SSE，逐步回報（自測真的收事件流，不是只驗標頭）</td></tr>
+<tr><td><code>tasks/get</code> / <code>tasks/cancel</code></td>
+    <td>取消一個<b>已完成</b>的任務 ⇒ <b>拒絕</b>（-32002），不是靜默接受
+        —— 靜默接受會讓客戶端以為它及時阻止了什麼</td></tr>
+<tr><td><code>tasks/pushNotificationConfig/set|get|list|delete</code></td>
+    <td>webhook 設定，<b>且真的投遞</b>（自測起一個接收器驗這一格）</td></tr>
+</table>
+
+<p>★ <code>capabilities.pushNotifications: true</code> 宣告了就要送得出去。
+投遞結果留在 <code>tasks/get</code> 的 <code>metadata.pushDeliveries</code> 裡 ——
+否則「push 已設定」與「push 送達過」長得一樣。</p>
+
+<h3>§15.5 現場輸出（原文）</h3>
+
+<p><b>閘道目錄</b>（<code>GET /.well-known/agent-card.json</code>）：</p>
+
+<pre><code>cgc-dev-porting    developer  開發 agent  skills=build-target,port-and-verify…
+fleet-operator     operator   運營 agent  skills=deploy-endpoint,collect-status…
+pd-inference       operator   運營 agent  skills=deploy-endpoint,collect-status…
+cgc-explorer       explorer   探索 agent  skills=register-decision,test-hypothesis…</code></pre>
+
+<p><b>一張 agent card 的分類欄位</b>：</p>
+
+<pre><code>name           CGC 移植 agent
+x-agent-class  developer / 開發 agent
+x-macro-scope  porting — 移植目標與構建策略
+skills         ['build-target','port-and-verify','cross-platform-package','report-capability']
+x-not-capable  無權決定要不要放棄某個移植目標 —— 那是 explorer 的 macro</code></pre>
+
+<p><b>呼叫與拒收</b>：</p>
+
+<pre><code>③ explorer 接自己的 skill   ⇒ state=completed  artifact='登錄一筆決策'
+④ explorer 的 skill 給 developer ⇒ code=-32005，並指名 skillOwnerClass=explorer</code></pre>
+
+<p><b>自測</b>：<code>a2a_server.py --self-test</code> 共 <b>17 格</b>（黑箱：真的起服務、
+真的發 JSON-RPC、真的收 SSE、真的收 webhook），全部通過。</p>
+
+<h3>§15.6 這一輪踩到的兩個缺陷</h3>
+
+<div class="box bad">
+<b>① 同一個坑第二次：<code>HTTP_PROXY</code> 又把 <code>127.0.0.1</code> 的請求丟進代理。</b><br>
+第一次在 §13 的 <code>report_endpoint_status.py --from-edge-status</code>。這一次更貴，
+因為它在<b>產品路徑</b>上：push 的 webhook 投遞用 <code>urlopen</code>，於是
+「push 已設定」與「push 送不到」看起來一樣，而<b>錯誤訊息指向代理</b> ——
+下一個人會去查代理，而不是查這裡。修法是把繞代理做成一個共用函式
+（<code>_no_proxy_opener()</code>），產品路徑與自測路徑都走它。
+</div>
+
+<div class="box bad">
+<b>② 一個真的死鎖，而它的症狀指向錯的方向。</b><br>
+第一版在 <code>with store.lock:</code> 裡又呼叫了 <code>store.get()</code>
+（它也要同一把 <code>Lock</code>）⇒ <b>死鎖</b>。症狀是：那個請求<b>永遠沒有回應</b>，
+而且 server log 裡<b>連一行都沒有</b> —— 因為死在 <code>send_response</code> 之前，
+所以 <code>log_request</code> 根本沒被呼叫。從外面看像「連線沒建立」或「代理卡住」，
+我當時正是先懷疑代理（見上一條），方向錯了。<br>
+修法有兩層：<code>_stream</code> 那處不必要的嵌套拿掉，並且
+<code>Store.lock</code> 改用 <code>RLock</code> 當安全網。
+</div>
+
+<h3>§15.7 不主張什麼</h3>
+
+<ul>
+<li><b>不是四個獨立部署。</b>四個 agent 共用同一個閘道進程與同一份 registry
+  —— 協議上是四個身分，部署上是一個服務。</li>
+<li><b>pd 的 KV／DOPD 操作沒有全部映射過來。</b><code>pd-inference</code> 目前的能力是它的
+  <b>身分</b>，不是它的全部 rpc。說「整合完成」會是假的。</li>
+<li><b>push 沒有重試。</b>投遞失敗會留痕但不會重送 —— 重試需要「什麼算送達」的判準，
+  而那個判準目前不存在。</li>
+<li><b>沒有認證。</b>閘道預設綁 <code>127.0.0.1</code>；要對外得先有 <code>--api-key</code> 這一層，
+  目前<b>沒有</b>（與 <code>edge_server</code> 的 <code>--api-key</code> 是兩套，未對齊）。</li>
+<li><b>executor 是「讓每一格微觀能力真的能跑」而寫的，不是生產實作。</b>
+  <code>shell-allowlist</code> 只放行白名單命令、不做管線與重導向 ——
+  <code>shell=True</code> 在這個情境等於把閘道變成遠端 shell。</li>
+<li><b>portal 的入口頁還沒有畫出 agent 分類。</b>這一輪的接點是
+  <code>registry.json</code> 的 <code>runs_on</code> 對到 <code>fleet.json</code> 的端點 id
+  （兩個正交的軸：fleet 回答「這台機器上有什麼」，registry 回答「誰在跑」），
+  但<b>頁面上還看不到它</b>。</li>
+</ul>
+
+<p class="small" style="margin-top:22px">
+本節的產物：<code>agent_harness/a2a/</code> 的
+<code>taxonomy.py</code>（分類的單一真相）、<code>registry.json</code>、
+<code>agent_card.py</code>、<code>a2a_server.py</code>、<code>A2A.md</code>。
+所有數字都可在本機用 §15.5 的指令重跑。
+</p>
 
 <p class="small" style="margin-top:26px">
 本檔由 <code>docs/FLEET_PORTAL_DELIVERY_20260918_1330.html</code> 交付，與它所屬的 commit 綁定。
