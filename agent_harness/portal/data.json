@@ -1,15 +1,24 @@
 {
-  "generated_at": "2026-09-18 12:25:45",
+  "generated_at": "2026-09-18 12:31:40",
   "git": {
     "branch": "demo/sweet-spot-windows-fix",
-    "head": "b4adb93839dc5056c2c511701ea3067799ef8e6d",
-    "head_short": "b4adb9383",
-    "subject": "docs(skill,memory,index): 收尾 ec1a389c8 -- 兩支 skill 修訂 ＋ 記憶 §TB-07 ＋ 快照 14/14 逐檔重算相符 ＋ 索引重生",
-    "dirty": 0,
-    "dirty_sample": []
+    "head": "b5f8e06a346f9ea591683ab589f75fb7d13b72ec",
+    "head_short": "b5f8e06a3",
+    "subject": "docs(memory): §EN-148 -- S1 就是「去序列化」的實作點（原始碼逐字）＋ node 桶 350 個成員定位",
+    "dirty": 10,
+    "dirty_sample": [
+      "M agent_harness/engine_loop/sft_pi/PROVENANCE.json",
+      " M agent_harness/engine_loop/sft_prime/PROVENANCE.json",
+      " M agent_harness/engine_loop/sft_prime/train.jsonl",
+      " M agent_harness/engine_loop/sft_prime/valid.jsonl",
+      " M agent_harness/engine_loop/traces/decisions.jsonl",
+      " M agent_harness/portal/data.json",
+      " M agent_harness/portal/history.jsonl",
+      " M docs/AGENT_HARNESS_PORTAL.html"
+    ]
   },
   "fingerprint": {
-    "digest": "721ebbc5c12f6e6e",
+    "digest": "f6400309ddbd2254",
     "inputs": [
       {
         "path": "agent_harness/engine_loop/traces/lessons.jsonl",
@@ -18,8 +27,8 @@
       },
       {
         "path": "agent_harness/engine_loop/traces/decisions.jsonl",
-        "sha256_12": "af0abd1646b3",
-        "bytes": 201460
+        "sha256_12": "0a533741cf42",
+        "bytes": 300917
       },
       {
         "path": "agent_harness/engine_loop/traces/episodes.jsonl",
@@ -69,10 +78,10 @@
         },
         {
           "name": "2026-09-18.md",
-          "bytes": 194255,
-          "mtime": "09-18 12:24",
-          "lines": 2690,
-          "sections": 29
+          "bytes": 198568,
+          "mtime": "09-18 12:26",
+          "lines": 2746,
+          "sections": 30
         },
         {
           "name": "MEMORY.md",
@@ -104,8 +113,8 @@
         }
       ],
       "count": 8,
-      "bytes": 1167271,
-      "lines": 15372
+      "bytes": 1171584,
+      "lines": 15428
     },
     "skills": {
       "items": [
@@ -168,8 +177,8 @@
         {
           "area": "src/llama.cpp（引擎核心 C++/Metal）",
           "files": 2440,
-          "loc": 1062633,
-          "bytes": 80195383,
+          "loc": 1062639,
+          "bytes": 80195833,
           "archive": false
         },
         {
@@ -258,16 +267,16 @@
         }
       ],
       "files": 8062,
-      "loc": 3071204,
-      "bytes": 161626354,
+      "loc": 3071210,
+      "bytes": 161626804,
       "files_live": 4227,
-      "loc_live": 1516440,
-      "bytes_live": 97862875
+      "loc_live": 1516446,
+      "bytes_live": 97863325
     },
     "traces": {
       "episodes": 122,
       "episodes_usable": 27,
-      "decisions": 38,
+      "decisions": 68,
       "lessons": 185,
       "lessons_by_class": {
         "measurement-hygiene": 68,
@@ -278,15 +287,15 @@
         "log-forensics": 4,
         "smoke": 3
       },
-      "bytes": 742524,
+      "bytes": 841981,
       "schema": true
     },
     "derived": {
       "engine_memories": 185,
       "sft_pi_train": 12,
       "sft_pi_valid": 2,
-      "sft_prime_train": 185,
-      "sft_prime_valid": 33
+      "sft_prime_train": 211,
+      "sft_prime_valid": 37
     },
     "corpus": {
       "whitepapers": 56,
@@ -304,25 +313,26 @@
   },
   "decisions": {
     "counts": {
-      "total": 38,
-      "sound": 36,
+      "total": 68,
+      "sound": 66,
       "refuted": 2,
       "superseded": 6,
-      "high": 32,
+      "high": 62,
       "no_evidence": 5,
       "buckets": {
         "無證據": 5,
-        "Backup（觀測/log）": 19,
-        "src（引擎核心）": 5,
+        "Backup（觀測/log）": 22,
+        "src（引擎核心）": 13,
         "scripts（量測/閘門）": 5,
         "docs（白皮書）": 3,
-        "其他": 1
+        "其他": 20
       },
       "days": {
         "2026-09-15": 26,
-        "2026-09-16": 12
+        "2026-09-16": 12,
+        "2026-09-18": 30
       },
-      "last_day": "2026-09-16"
+      "last_day": "2026-09-18"
     },
     "chains": [
       [
@@ -398,7 +408,7 @@
         }
       ]
     ],
-    "n_items": 38
+    "n_items": 68
   },
   "charter": {
     "sections": [
@@ -440,7 +450,7 @@
         "id": "charter-citations",
         "group": "charter",
         "status": "PASS",
-        "seconds": 0.14,
+        "seconds": 0.21,
         "rc": 0,
         "tail": "  OK: 61/61 條都有交代（可解析指針 59 ＋ 顯式標記 2），0 懸空",
         "cost": "fast",
@@ -450,7 +460,7 @@
         "id": "shared-log-policy",
         "group": "shared",
         "status": "PASS",
-        "seconds": 0.26,
+        "seconds": 0.39,
         "rc": 0,
         "tail": "  log 政策一致",
         "cost": "fast",
@@ -460,7 +470,7 @@
         "id": "shared-module-split",
         "group": "shared",
         "status": "PASS",
-        "seconds": 0.29,
+        "seconds": 0.45,
         "rc": 0,
         "tail": "  2/2 checks passed",
         "cost": "fast",
@@ -470,7 +480,7 @@
         "id": "shared-shell-cjk",
         "group": "shared",
         "status": "PASS",
-        "seconds": 0.15,
+        "seconds": 0.48,
         "rc": 0,
         "tail": "  0 處：所有 `$VAR` 後面都不是緊接非 ASCII",
         "cost": "fast",
@@ -480,7 +490,7 @@
         "id": "shared-stale",
         "group": "shared",
         "status": "PASS",
-        "seconds": 0.09,
+        "seconds": 0.15,
         "rc": 0,
         "tail": "3 個登記項（2 個資產 + 1 個消費者）都對得上：banner 跟著資料、消費點有出口、反向沒有未登記的標記",
         "cost": "fast",
@@ -490,7 +500,7 @@
         "id": "traces-validate",
         "group": "traces",
         "status": "PASS",
-        "seconds": 0.04,
+        "seconds": 0.05,
         "rc": 0,
         "tail": "  -> OK",
         "cost": "fast",
@@ -500,7 +510,7 @@
         "id": "traces-selftest",
         "group": "traces",
         "status": "PASS",
-        "seconds": 0.3,
+        "seconds": 0.44,
         "rc": 0,
         "tail": "  10/10 injected violations rejected",
         "cost": "fast",
@@ -510,7 +520,7 @@
         "id": "derived-engine-memories",
         "group": "derived",
         "status": "PASS",
-        "seconds": 0.03,
+        "seconds": 0.05,
         "rc": 0,
         "tail": "memories OK: 185 file(s), extensions pointer resolves, no drift",
         "cost": "fast",
@@ -520,7 +530,7 @@
         "id": "derived-sft-pi",
         "group": "derived",
         "status": "PASS",
-        "seconds": 0.03,
+        "seconds": 0.05,
         "rc": 0,
         "tail": "  sft_pi OK: train.jsonl + valid.jsonl re-derive to the same bytes; the invocation and input hashes agree with PROVENANCE.json",
         "cost": "fast",
@@ -530,7 +540,7 @@
         "id": "derived-sft-prime",
         "group": "derived",
         "status": "PASS",
-        "seconds": 0.04,
+        "seconds": 0.05,
         "rc": 0,
         "tail": "  sft_prime OK: train.jsonl + valid.jsonl re-derive to the same bytes; the invocation and input hashes agree with PROVENANCE.json",
         "cost": "fast",
@@ -540,9 +550,9 @@
         "id": "index-memory",
         "group": "index",
         "status": "PASS",
-        "seconds": 0.03,
+        "seconds": 0.05,
         "rc": 0,
-        "tail": "memory index OK: 8 file(s), 237 section(s), no drift",
+        "tail": "memory index OK: 8 file(s), 238 section(s), no drift",
         "cost": "fast",
         "needs": ""
       },
@@ -550,7 +560,7 @@
         "id": "index-assets",
         "group": "index",
         "status": "PASS",
-        "seconds": 0.04,
+        "seconds": 0.06,
         "rc": 0,
         "tail": "manifest OK: 108 assets, existence + bytes + mtime all agree",
         "cost": "fast",
@@ -560,7 +570,7 @@
         "id": "snapshot-freshness",
         "group": "snapshot",
         "status": "PASS",
-        "seconds": 0.04,
+        "seconds": 0.07,
         "rc": 0,
         "tail": "  -> OK: 快照與原檔一致（provenance 逐筆相符、集合相符、副本未被手改、README 成員表相符）",
         "cost": "fast",
@@ -570,7 +580,7 @@
         "id": "portal-integrity",
         "group": "portal",
         "status": "PASS",
-        "seconds": 0.04,
+        "seconds": 0.05,
         "rc": 0,
         "tail": "-> OK: 18 條閘門（fast 14／heavy 4），目標樹指針全部可解析、每一節都有 acceptance",
         "cost": "fast",
@@ -619,11 +629,6 @@
     ]
   },
   "obligations": [
-    {
-      "kind": "registry",
-      "severity": "medium",
-      "title": "決策 registry 的覆蓋停在 2026-09-16（今天的日誌有 2 天在它之後）"
-    },
     {
       "kind": "charter",
       "severity": "medium",

@@ -755,6 +755,183 @@ $ python3 agent_harness/engine_loop/index_assets.py --check
   </ul>
 </div>
 
+<h2>§12 決策 registry 的覆蓋：把 2026-09-18 的 30 個決策節登錄進去</h2>
+
+<div class="box pur">
+  <div class="k">這一輪的任務，以及切點的定義</div>
+  <div style="margin-top:5px">
+    使用者的指令是「把<b>有 m1/m2/m3 oracle identical 以後</b>的技術決策<b>都</b>納入宏觀技術決策」。
+    切點的量測：<code>Backup/m123_oracle_gate/summary_*.json</code> 共 87 份，
+    <code>M1/M2/M3 = 9/9/9</code> 第一次出現在 <b>2026-09-15 17:22</b>（<code>summary_final_v2.json</code>；
+    之前是 0/4、3/13、1/4…），此後除刻意做的陰性對照外都維持 identical。
+    而 registry 原本覆蓋 <b>09-15 19:30 – 09-16 12:25</b>（38 筆）⇒ 缺口是
+    <b>09-16 尾 ＋ 整天 09-17 ＋ 整天 09-18</b>。
+    粒度經使用者裁定為<b>一節一筆</b>、<b>分批交付</b>；本節是<b>第一批：09-18 的前 30 節</b>。
+  </div>
+</div>
+
+<h3>12.1 一節一筆：30 個來源節 → 30 筆記錄</h3>
+
+<table>
+  <thead><tr><th>來源（<code>.workbuddy/memory/2026-09-18.md</code>）</th><th>登錄後的判斷</th></tr></thead>
+  <tbody>
+    <tr><td><code>§EN-102</code> llama-bench 的 MTP 失敗真因</td>
+        <td>不是「context 建太晚」而是 <b>batch 的位置</b>（<code>n_past</code> 寫死 0）<span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-103</code> 配對交錯</td>
+        <td>MTP <b>沒有可測的淨增益</b>，而<b>臂的位置本身值 ±12%</b><span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-104</code> 交付 <code>2fcf616b9</code></td>
+        <td>同檔上別條線未提交的改動 ⇒ 收錄並具名揭露；兩條紅燈不消<span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-105</code> L0 的第 2 件</td>
+        <td>機制說明的<b>兩個獨立前提都是錯的</b> ⇒ 述句降級為「未歸因」<span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-106</code> L0 結案 ＋ 節點級 GPU 時間</td>
+        <td>L0 <b>沒有槓桿</b>；逐節點<b>不需要</b> <code>MTLCounterSampleBuffer</code><span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-107</code> 交付 <code>fed7718c5</code></td>
+        <td>D5 先讀 <code>comparable</code>；歸屬＝<code>cap.created</code> vs 產物 mtime<span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-108</code> 詞彙表問題定案</td>
+        <td>(b) 為真、根因 <code>n_main = MAX(64, 0.1N)</code>；最小平方路線<b>封閉</b><span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-109</code> M3 的 40% 判準</td>
+        <td><b>量到了，而且不成立</b>（中位 29%／p90 37%，且是上界）<span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-110</code> 一層的節點普查</td>
+        <td>專家 GEMV <b>3% 節點</b>；層的 66% 是搬運；<b>桶名是匹配規則的產物</b><span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-111</code> 合併 shape 鏈</td>
+        <td><b>不值得做</b>（39% 節點不含 GPU 命令）＋ 逐 cb 的 busy <b>不是工作量</b><span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-112</code> 名字表接上會編碼權重</td>
+        <td><b>池暫存 ≥ 整個 MoE GEMV 家族</b>；MoE 的逐元素合併比專家矩陣乘大<span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-113</code> 收尾 <code>317ac55bc</code></td>
+        <td>連續幾輪不 commit ⇒ 被迫合併成巨型 commit（可稽核性）<span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-114</code> <code>node</code> 命名</td>
+        <td>620 → 350；並發現一條<b>從未跑過</b>的融合路徑<span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-115</code> 收尾 <code>c1fd7fbb1</code></td>
+        <td><b>M1 逐位元 9/9 ＝「命名不動數值」的機械證明</b><span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-116</code> 補三支 skill</td>
+        <td><b>skill 是會腐壞的資產</b>；「快照會 stale」不是拒絕修 skill 的理由<span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-117</code> down-combine 可達性</td>
+        <td>kernel 只支援 <code>Q3_K</code>；收益量到 <b>+25%</b>（反序組同熱態）<span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-118</code> 收尾 <code>004a70177</code></td>
+        <td><b>預演的 0 FAIL ≠ commit 的 0 FAIL</b>（check 8 只在有 staged 時跑）<span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-119</code> 動手前的可行性調查</td>
+        <td><b>全融合比半融合便宜</b>（op 已存在；half 反而要新增 op）<span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-120</code> IQ3_S／IQ4_XS 融合</td>
+        <td>覆蓋 40/40；<b>「取到最新產物」≠「產物已寫完」</b><span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-121</code> 首次 A/B</td>
+        <td>單 token <b>正確但慢 18%</b>；多 token 錯的原因是<b>閘門放行了 prefill</b><span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-122</code> 收尾 <code>18e5411ec</code></td>
+        <td>別人髒檔裡的<b>自己的 hunk 可以只收自己的</b>（<code>git add -p</code>）<span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-123</code> 「Ornith 17 vs 我們 12」</td>
+        <td><b>兩個數不可並排</b>（build／熱態／MTP 三者都不同）<span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-124</code> 對齊 A/B 前向腿</td>
+        <td>Ornith 是<b>不同的微調</b>（<code>abliterated-mlx</code>／<code>languages=['en']</code>）<span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-125</code> ABBA 完成</td>
+        <td><b>Nail 快 1.49×</b> ⇒「模型更大卻更快」沒有任何實測支持<span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-126</code> 使用者裁定關閉</td>
+        <td>關閉的具體形式＝<b>把結論寫在臂的註解上</b>（避免下一輪重開）<span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-127</code> 收尾 <code>cc552d422</code></td>
+        <td>lesson <code>eng-mh-0066</code>：<b>跨 build 指紋的兩個 t/s 不可並排</b><span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-128</code> 三個方向查證</td>
+        <td>① 用錯工具（那個工具會擾動被測物）、② 上限 ×1.5、③ 收益 ≈ 0 ⇒ <b>Cell 2 關閉</b><span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-129</code> <code>node</code> 桶的機制</td>
+        <td><code>node_NN</code> 是 ggml 自動名 ⇒ <b>「命名」＝改建圖處</b>；dump 有時效性<span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-130</code> <code>(other)</code> 的真身</td>
+        <td><b><code>(other)</code> 與 <code>node</code> 是兩種病</b>（詞彙表 vs 建圖）⇒ 853 → 72 節點<span class="tag t-green">sound</span></td></tr>
+    <tr><td><code>§EN-131</code> 收尾 <code>a362d6109</code></td>
+        <td><b>同一份 dump 套新詞彙表是零混淆的證據形式</b>（優先於 before/after）<span class="tag t-green">sound</span></td></tr>
+  </tbody>
+</table>
+
+<h3>12.2 registry 的形狀變化</h3>
+
+<table>
+  <thead><tr><th>量</th><th class="num">登錄前</th><th class="num">登錄後</th></tr></thead>
+  <tbody>
+    <tr><td>記錄數</td><td class="num">38</td><td class="num"><b>68</b></td></tr>
+    <tr><td><code>judgement</code> 分佈</td><td class="num">sound 36／refuted 2</td><td class="num">sound 66／refuted 2</td></tr>
+    <tr><td><code>confidence</code> = high</td><td class="num">32</td><td class="num">62</td></tr>
+    <tr><td>覆蓋的日</td><td class="num">09-15（26）、09-16（12）</td><td class="num">09-15（26）、09-16（12）、<b>09-18（30）</b></td></tr>
+    <tr><td>入口的「欠帳」</td><td class="num">7 項（含 <b>registry 覆蓋落差</b>）</td><td class="num"><b>4 項</b>（只剩憲章自報的義務）</td></tr>
+    <tr><td>每個 <code>decision</code> 平均大小</td><td class="num">—</td><td class="num">本批 30 筆共 <b>99,457 B</b>（平均 3.3 KB）</td></tr>
+  </tbody>
+</table>
+
+<p class="small">
+  登記的門檻沿用既有 38 筆的形狀：<code>question</code>／<code>evidence</code>（逐筆指到真實產物：
+  log、原始碼行號、commit hash、JSON 產物）／<code>reasoning</code>／<code>conclusion</code>／
+  <code>judgement</code>／<code>action</code>／<code>confidence</code>／<code>superseded_by</code>。
+  <b>不轉述、不改寫數字</b>：本批的每一個數字都取自當日誌的原文。
+</p>
+
+<h3>12.3 一個必須揭露的副作用：<code>sft_pi</code> 沒有從這批受益</h3>
+
+<p>
+  兩個衍生的 SFT 投影讀同一批 traces，但它們的投影方式不同：
+  <code>sft_prime</code> 的 <code>state_to_next_arm</code> 讀 decision 的
+  <code>question</code> ＋ <code>evidence</code> ＋ <code>action</code>，而 <code>sft_pi</code>
+  的軌跡投影<b>需要 <code>episode_id</code></b>。本批 30 筆的 <code>evidence</code> 全部是
+  <b>artifact／原始碼行</b>（因為來源節本身就是這樣記的）⇒
+</p>
+
+<pre><code>$ python3 agent_harness/engine_loop/sft_prime/build_sft_prime.py     # 重生
+  train=211 valid=37
+  evidence_to_lesson=182 state_to_next_arm=66 | excluded: refuted_decisions=2 superseded_lessons=3
+                                        ^^ 36 -> 66（＋30，本批的貢獻）
+
+$ python3 agent_harness/engine_loop/sft_pi/build_sft_pi.py             # 重生
+  train=12 valid=2
+  trajectories=14 tool_calls=38 | episodes used=22/122 decisions with no episode evidence=52
+                                                                    ^^ 22 -> 52（本批 30 筆全部落這裡）</code></pre>
+
+<div class="box warn">
+  <div class="k">這件事的意義，以及它不是錯誤</div>
+  <div style="margin-top:5px">
+    <code>decisions with no episode evidence</code> 由 22 升到 52 不是退化，是<b>揭露</b>：
+    這一類決策（引擎原始碼與量測產物上的判斷）本來就沒有 <code>episode_id</code>，
+    而 <code>sft_pi</code> 的軌跡投影只認 episode。所以在把
+    <code>no episode evidence</code> 當成缺陷之前，要先決定「決策記錄是否應該被強制回填 episode_id」——
+    那是一個<b>判準決定</b>，而本輪沒有做它（只把它量出來）。
+    <b>同時，兩條 <code>--check</code> 都必須是綠的</b>：改了 <code>decisions.jsonl</code>
+    就同時讓兩個投影 stale ⇒ 兩個都要重生（本輪一開始只重生了一個，入口當場報
+    <code>derived-sft-pi</code> 紅燈 —— 這是入口在正常工作）。
+  </div>
+</div>
+
+<h3>12.4 現場輸出原文（本輪）</h3>
+
+<pre><code>$ python3 agent_harness/engine_loop/traces/validate.py
+  episodes.jsonl: 122 records {'episode': 122}
+  decisions.jsonl: 68 records {'decision': 68}
+  lessons.jsonl: 185 records {'lesson': 185}
+  -> OK
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  10/10 injected violations rejected
+
+$ git diff -U0 -- agent_harness/engine_loop/traces/decisions.jsonl     # 用 python 數，不用 bash grep
+  -0 +30                       # append-only：沒有弄掉別人的行
+
+$ python3 agent_harness/portal/build_portal.py
+  [portal] 產物自檢通過（242,341 B：無 markdown 殘留、標籤對稱、四個分頁齊、離線可開）
+  [portal] 閘門 14/14 綠　（全綠）
+  [portal] 欠帳 4 項</code></pre>
+
+<h3>12.5 誠實邊界（本批不主張什麼）</h3>
+
+<ul>
+  <li><b>不主張 09-16 與 09-17 已經登錄。</b> 本批只有 <b>09-18 的前 30 節</b>
+      （<code>§EN-102</code>–<code>§EN-131</code>）。09-18 還有 <code>§EN-132</code>–<code>§EN-148</code>
+      ＋ <code>§TB-06</code>／<code>§TB-07</code> 共 19 節；09-17 有 70 節、09-16 尾有 5 節。</li>
+  <li><b>不主張 <code>§EN-111</code> 是一節。</b> 它在日誌裡是 21 節的容器（底下用 <code>###</code> 藏了
+      <code>§EN-112</code>–<code>§EN-131</code>）—— 這也是「編號看起來斷了」的原因，不是資料遺失。</li>
+  <li><b>不主張每一筆的 <code>evidence</code> 都經過我復算。</b> 它們是<b>當日誌原文的結構化重排</b>：
+      artifact 路徑、行號、數字都照抄，但我<b>沒有</b>重新跑那些量測，也<b>沒有</b>逐一打開每個
+      <code>Backup/cgc_logs/*.log</code> 核對。要引用任何數字之前，仍應回到原始產物。</li>
+  <li><b>不主張 <code>judgement</code> 是自動判的。</b> 本批 30 筆全部是 <code>sound</code>，
+      因為來源節的結論都是「以證據支持的主張」；<code>refuted</code> 的兩筆（09-15）在舊批裡。
+      被後續推翻的述句我寫在 <code>conclusion</code>／<code>action</code> 裡（例如
+      <code>§EN-131</code> 的下一輪事項已被 <code>§EN-132</code> 取代），<b>沒有</b>回填
+      <code>superseded_by</code>（那要等 <code>§EN-132</code> 先有記錄）。</li>
+  <li><b>不主張登錄完就等於「可復盤」。</b> registry 提供的是<b>可機檢的骨架</b>
+      （每一筆都指名它的來源），而復盤要人真的去讀 —— 入口的三棵樹只保證「沒有一筆是憑空寫的」。</li>
+</ul>
+
 <div class="box ok">
   <div class="k">一句話</div>
   <div style="margin-top:5px">

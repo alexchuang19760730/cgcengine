@@ -1,8 +1,8 @@
 {
   "builder": "sft_pi/build_sft_pi.py",
-  "charter_sha256_16": "149f1d751b776c6d",
+  "charter_sha256_16": "261ee13ea020f754",
   "input_sha256_16": {
-    "decisions.jsonl": "af0abd1646b3a99d",
+    "decisions.jsonl": "0a533741cf42c0c8",
     "episodes.jsonl": "918089bf7cc1ccef"
   },
   "invocation": {
