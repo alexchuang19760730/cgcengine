@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CGC 機隊與資產能力入口 — 產品化交付（2026-09-18 13:30）</title>
+<style>
+:root { --fg:#111827; --muted:#6b7280; --line:#e5e7eb; --bg:#ffffff; --soft:#f9fafb; --code:#f3f4f6;
+        --blue:#1d4ed8; --green:#15803d; --red:#b91c1c; --amber:#b45309; --purple:#6d28d9; --gray:#6b7280; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg);
+       font:15px/1.75 -apple-system,"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif; }
+.wrap { max-width:1040px; margin:0 auto; padding:32px 20px 80px; }
+h1 { font-size:23px; margin:0 0 6px; line-height:1.4; }
+h2 { font-size:18px; margin:30px 0 10px; padding-top:12px; border-top:1px solid var(--line); }
+h3 { font-size:15.5px; margin:20px 0 6px; }
+p { margin:8px 0; }
+.sub { color:var(--muted); font-size:13px; margin:0 0 20px; }
+a { color:var(--blue); }
+code { background:var(--code); padding:1px 5px; border-radius:4px; font-size:12.6px;
+       font-family:ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-all; }
+pre { background:var(--soft); border:1px solid var(--line); border-radius:6px; padding:10px 12px;
+      overflow-x:auto; margin:8px 0 14px; }
+pre code { background:none; padding:0; font-size:12.3px; line-height:1.55; display:block; white-space:pre; }
+table { border-collapse:collapse; width:100%; margin:10px 0 16px; font-size:13.2px; }
+th,td { border:1px solid var(--line); padding:6px 9px; text-align:left; vertical-align:top; }
+th { background:var(--soft); font-weight:600; }
+.num { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.tag { display:inline-block; font-size:11.5px; padding:1px 8px; border-radius:999px;
+       border:1px solid var(--line); background:var(--soft); }
+.t-blue{color:var(--blue);border-color:#bfdbfe;background:#eff6ff}
+.t-green{color:var(--green);border-color:#bbf7d0;background:#f0fdf4}
+.t-red{color:var(--red);border-color:#fecaca;background:#fef2f2}
+.t-amber{color:var(--amber);border-color:#fde68a;background:#fffbeb}
+.t-purple{color:var(--purple);border-color:#ddd6fe;background:#f5f3ff}
+.t-gray{color:var(--gray);border-color:var(--line);background:var(--soft)}
+.box { border:1px solid var(--line); border-left:4px solid var(--blue); border-radius:4px;
+       padding:11px 13px; margin:14px 0; }
+.box.warn { border-left-color:var(--amber); background:#fffdf5; }
+.box.ok { border-left-color:var(--green); background:#f6fdf8; }
+.box.bad { border-left-color:var(--red); background:#fff7f7; }
+.box.pur { border-left-color:var(--purple); background:#faf8ff; }
+.small { font-size:12.3px; color:var(--muted); }
+ul,ol { margin:6px 0 10px; padding-left:22px; }
+li { margin:3px 0; }
+svg { display:block; margin:10px 0 16px; }
+</style></head>
+<body><div class="wrap">
+
+<h1>CGC 機隊與資產能力入口 — 產品化交付</h1>
+<p class="sub">
+2026-09-18 13:30　·　產物 <a href="FLEET_PORTAL.html">FLEET_PORTAL.html</a>（本檔是它的 D5 附件）　·　
+工程面入口 <a href="AGENT_HARNESS_PORTAL.html">AGENT_HARNESS_PORTAL.html</a>　·　
+產生時 HEAD <code>db72dd2ed</code>（別條線的收尾；本檔所屬 commit 見 §8）
+</p>
+
+<div class="box pur">
+<b>這份文件的定位</b>：同一條線（入口）的<b>新階段</b>，所以另開新檔，而不是追加到
+<a href="AGENT_HARNESS_PORTAL_20260918_1210.html">AGENT_HARNESS_PORTAL_20260918_1210.html</a>
+——那份已經就地追加過三次（§11／§12／§13），依交付慣例，第四次應改為「出新檔 ＋ 舊檔只留標註框」。
+舊檔描述的工程面（目標／決策／閘門／資產）<b>一字不動、仍然成立</b>；本檔只描述新增的產品面。
+</div>
+
+<h2>§1 需求，與它的三個岔路</h2>
+
+<p>使用者原話（<b>逐字</b>）：</p>
+<pre><code>我需要一個產品化的portal ,可以看本日/本機/跨機以及跨機的資產能力動能復盤以及七日內的可視化
+目前鴻蒙端以及windows端並沒有連接近我們的網路 要善用我們的端端端雲pd 以及協同能力</code></pre>
+
+<h3>§1.1 名詞查證（動手前先做，否則會照著錯的模型做）</h3>
+
+<table>
+<thead><tr><th>詞</th><th>查證結果</th><th>出處</th></tr></thead>
+<tbody>
+<tr><td>「端端端雲」</td><td><b>全 repo 查不到</b>（<code>grep 端端端</code> = 0 命中）⇒ 是使用者新造的說法，不是既有產品名詞</td>
+<td class="small">本次查證</td></tr>
+<tr><td>「端雲協同」</td><td>既有詞：<code>CGC_Engine_CloudDevice_Protocol_Whitepaper_v1.0.md:13</code>「Cloud-Device Protocol 是端云协同推理的核心协议，定义了云端 prefill → hidden+KV 传输 → 端侧 decode resume」</td>
+<td class="small">docs/archive/</td></tr>
+<tr><td>「端端」</td><td>既有詞，指雙機協作：<code>CGC_COMPUTE_SHARING_ARCHITECTURE.md:31</code>「| <b>端端</b> | Mac A | Mac B | 双机协作 |」</td>
+<td class="small">docs/archive/</td></tr>
+<tr><td><b>「PD」</b></td><td><b>不是 product design，是 Prefill-Decode 分離</b>。<code>agent_harness/pd/pd_config.py:4</code>「端云 <b>PD 分离</b>、master/slave 代码同步」；且 <code>agent_harness/pd/</code> 已是一套可跑的系統（38 個檔，含 <code>compute_sharing.py</code>／<code>pd_server.py</code>／<code>coordinator.py</code>／gRPC protobuf）</td>
+<td class="small">agent_harness/pd/</td></tr>
+</tbody></table>
+
+<p><b>這一步改變了整個設計前提</b>：使用者的「端端端雲 pd 協同」指的是<b>已經存在的那套 PD 分離與算力共享</b>，
+不是一個待建的整合層。<code>compute_sharing.py</code> 已經有 <code>/v1/compute/status</code>、
+<code>/v1/compute/execute</code>、<code>register_node()</code>，並且可以
+<code>--role node|scheduler|client</code> 起服務。</p>
+
+<h3>§1.2 使用者裁定的三個岔路</h3>
+
+<table>
+<thead><tr><th>問題</th><th>裁定</th><th>對實作的影響</th></tr></thead>
+<tbody>
+<tr><td>「產品化」要做成什麼形式</td><td><b>HTML ＋ 本地 serve 模式</b></td><td>自包含單檔 HTML（可離線開、可拷走）＋ <code>--serve</code>（標準函式庫 HTTP，可即時重畫、可收上報）。<b>不</b>部署到 URL。</td></tr>
+<tr><td>離線端用哪種機制接入</td><td><b>pd compute＋sharing 心跳 ＋ github 數據同步</b></td><td>兩個都做：能連上時用心跳；離線時靠檔案 ＋ 既有 git／scp／rsync 通道（store-and-forward）。</td></tr>
+<tr><td>「七日內」怎麼算</td><td><b>多來源回填、逐格標出處</b></td><td>一天一列、每格標來源；缺的日子寫「無記錄」，<b>不填 0</b>。</td></tr>
+</tbody></table>
+
+<h2>§2 設計：四條硬規矩怎麼套下來的</h2>
+
+<p>這個 repo 有一份入口的方法論（<code>~/.workbuddy/skills/cgc-observer-portal/SKILL.md</code>），
+新入口必須照它。逐條對照：</p>
+
+<table>
+<thead><tr><th>規矩</th><th>本入口的落點</th></tr></thead>
+<tbody>
+<tr><td>1. 單一真相來源</td><td>端點清單只在 <code>agent_harness/portal/fleet.json</code>；七日來源清單只在 <code>trend_sources.json</code>。頁面上的「一鍵復現」指令與頁面自己跑的是同一份。</td></tr>
+<tr><td>2. 不假裝</td><td>心跳探測失敗一律寫 <b>unknown</b>；沒上報寫 <b>未上報</b>；兩者都用灰色標籤，<b>不是紅燈</b>。理由是<a href="AGENT_HARNESS_PORTAL_20260918_1210.html">舊檔</a>已經寫過的那一句：一個會因為連不上而變紅的入口，會在每一個離線的早晨說謊。</td></tr>
+<tr><td>3. 缺席要出聲</td><td>每個端點有必填的 <code>not_measured</code>；產生器<b>拒絕</b>讓它留白（見 §4.2）。</td></tr>
+<tr><td>4. 可執行檔而不是形容詞</td><td>每一條能力都指到一個真實檔案裡的<b>子串</b>（<code>{path, contains}</code>）；缺口與指針失效會讓 <code>--check</code> 變紅。</td></tr>
+<tr><td>5. 完整性要釘「缺席」</td><td>雙向：註冊表每一端都要在頁面上有一列；反過來，<code>endpoints/</code> 有檔而註冊表沒那個 id 也要紅。</td></tr>
+</tbody></table>
+
+<h2>§3 機隊註冊表：四個端點</h2>
+
+<p><code>fleet.json</code> 是端點的唯一真相。每一端的能力都帶 <code>{path, contains}</code> 指針 ——
+<b>指針不是參考資料，是被 <code>--check</code> 驗的斷言</b>：路徑不存在、或子串不命中，都會紅。</p>
+
+<table>
+<thead><tr><th>端點</th><th>平台／架構</th><th>通道</th><th>狀態（本輪實測）</th></tr></thead>
+<tbody>
+<tr><td><code>mac-local</code> 本機 Mac（M4／16 GB）</td><td>macos / arm64</td><td>心跳 <code>127.0.0.1:9100</code>（pd compute_sharing 節點）＋ 直接寫檔</td><td><span class="tag t-green">已上報</span> <span class="tag t-gray">心跳 unknown</span></td></tr>
+<tr><td><code>cloud-host2</code> 雲端主機（8×RTX PRO 5000）</td><td>linux / x86_64</td><td>心跳 <code>47.95.250.55:9100</code>（經 SSH 反向隧道）＋ rsync</td><td><span class="tag t-gray">未上報</span> <span class="tag t-gray">心跳 timed out</span></td></tr>
+<tr><td><code>harmonyos-matebook14</code> 鴻蒙端（Kirin 9030）</td><td>harmonyos / aarch64</td><td><b>無心跳</b>（不在網路上）＋ scp／ssh</td><td><span class="tag t-gray">未上報</span></td></tr>
+<tr><td><code>windows-rtx4090</code> Windows 端</td><td>windows / x86_64</td><td><b>無心跳</b>＋ <code>auto_git_push.ps1</code> 自動 push</td><td><span class="tag t-gray">未上報</span></td></tr>
+</tbody></table>
+
+<p>每一端的能力都逐條可查（節錄）：</p>
+
+<pre><code>mac-local          macOS bundle 可重建可啟動   → deploy-harmonyos/macos/check-macos-bundle.sh :: otool
+                   M1/M2/M3 oracle bit-identical → Backup/m123_oracle_gate/summary_final_v2.json :: m1_numeric_identity
+cloud-host2        SSH 反向隧道 :4000 ↔ :18022 → app/edge_engine/cloud_tunnel.py :: 47.95.250.55
+                   Anthropic 相容代理在 :4000  → agent_harness/README.md :: :4000
+harmonyos          aarch64 / Kirin 9030 CPU-only → deploy-harmonyos/harmonyos/build.sh :: Kirin 9030 沒有 Metal
+                   目標機型 MateBook 14          → deploy-harmonyos/harmonyos/build.sh :: 鴻蒙 MateBook 14
+windows            建 CUDA 版 / Vulkan 退回      → deploy-harmonyos/windows/build-windows.bat :: GGML_CUDA=ON
+                   自動 push（cgc0907）          → agent_harness/scripts/auto_git_push.ps1 :: WatchDir</code></pre>
+
+<h2>§4 狀態契約：為什麼是檔案，不是協議</h2>
+
+<h3>§4.1 真正的約束</h3>
+
+<p>鴻蒙端與 Windows 端<b>目前不在我們的網路上</b>。這個約束推翻了一種很自然的設計：</p>
+
+<div class="box bad">
+<b>不能用的做法</b>：做一個「即時上報協議」，讓每個端點定時 POST 狀態進來。<br>
+理由是它<b>只在端點連得上時成立</b>——而那正是唯一不需要它的時候。端點離線時，這個協議
+既不報錯也不出聲（它只是沒有流量），於是入口會顯示「沒有資料」，與「端點無事可報」同形。
+</div>
+
+<p>所以在它<b>真的離線</b>時仍然成立的機制只有一種：<b>store-and-forward</b> ——
+端點把狀態寫成檔案，靠<b>既有</b>的通道帶回來。</p>
+
+<svg viewBox="0 0 1000 240" width="100%" role="img" aria-label="store-and-forward 架構">
+  <rect x="14" y="16" width="200" height="52" rx="6" fill="#f9fafb" stroke="#e5e7eb"/>
+  <text x="114" y="38" font-size="13" text-anchor="middle" fill="#111827">鴻蒙端 MateBook 14</text>
+  <text x="114" y="56" font-size="11" text-anchor="middle" fill="#6b7280">Kirin 9030 / CPU-only</text>
+  <rect x="14" y="86" width="200" height="52" rx="6" fill="#f9fafb" stroke="#e5e7eb"/>
+  <text x="114" y="108" font-size="13" text-anchor="middle" fill="#111827">Windows 端</text>
+  <text x="114" y="126" font-size="11" text-anchor="middle" fill="#6b7280">RTX 4090 / CUDA</text>
+  <rect x="14" y="156" width="200" height="52" rx="6" fill="#f9fafb" stroke="#e5e7eb"/>
+  <text x="114" y="178" font-size="13" text-anchor="middle" fill="#111827">雲端主機</text>
+  <text x="114" y="196" font-size="11" text-anchor="middle" fill="#6b7280">8×RTX PRO 5000</text>
+
+  <text x="248" y="42" font-size="11.5" fill="#6b7280">scp ＋ ssh</text>
+  <line x1="216" y1="46" x2="382" y2="96" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="248" y="112" font-size="11.5" fill="#6b7280">git 自動 push</text>
+  <line x1="216" y1="112" x2="382" y2="112" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="248" y="182" font-size="11.5" fill="#6b7280">sshpass rsync</text>
+  <line x1="216" y1="178" x2="382" y2="130" stroke="#9ca3af" stroke-width="1.5"/>
+
+  <rect x="386" y="72" width="212" height="80" rx="6" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="492" y="96" font-size="13" text-anchor="middle" fill="#1d4ed8">endpoints/&lt;id&gt;.json</text>
+  <text x="492" y="116" font-size="11" text-anchor="middle" fill="#6b7280">契約：8 個必填欄位</text>
+  <text x="492" y="134" font-size="11" text-anchor="middle" fill="#6b7280">現況（可覆蓋）</text>
+
+  <line x1="598" y1="112" x2="694" y2="112" stroke="#9ca3af" stroke-width="1.5"/>
+  <text x="646" y="104" font-size="11" text-anchor="middle" fill="#6b7280">建置時讀</text>
+
+  <rect x="698" y="60" width="212" height="104" rx="6" fill="#f6fdf8" stroke="#bbf7d0"/>
+  <text x="804" y="84" font-size="13" text-anchor="middle" fill="#15803d">FLEET_PORTAL.html</text>
+  <text x="804" y="104" font-size="11" text-anchor="middle" fill="#6b7280">機隊 ＋ 七日 ＋ 動能</text>
+  <text x="804" y="124" font-size="11" text-anchor="middle" fill="#6b7280">fleet_status.jsonl</text>
+  <text x="804" y="142" font-size="11" text-anchor="middle" fill="#6b7280">（只追加：趨勢）</text>
+
+  <text x="492" y="196" font-size="11.5" text-anchor="middle" fill="#b45309">能連上時的另一條路：POST /api/report（--serve）</text>
+  <line x1="492" y1="206" x2="804" y2="206" stroke="#fde68a" stroke-width="1.5"/>
+  <line x1="804" y1="206" x2="804" y2="168" stroke="#fde68a" stroke-width="1.5"/>
+</svg>
+
+<h3>§4.2 契約的兩個設計選擇</h3>
+
+<ol>
+<li><b><code>what_ran</code> 不得是空陣列。</b>一輪什麼都沒跑也要寫一句（例如「本輪沒有跑任何東西」）。
+空陣列會被讀成「有跑，但沒東西可報」，而那是兩件不同的事。</li>
+<li><b><code>not_measured</code> 逼你表態。</b>空陣列是一個<b>主張</b>（「這個端點沒有未量的東西」），
+它不能由「使用者忘了填」推得。所以產生器要求二擇一：<code>--not-measured &lt;文字&gt;</code>（可重複）
+或 <code>--claim-nothing-unmeasured</code>。兩個都不給 ⇒ <b>拒跑（rc=2）並印出理由</b>。</li>
+</ol>
+
+<h3>§4.3 三個既有通道，與兩個會靜默失敗的對齊問題</h3>
+
+<table>
+<thead><tr><th>通道</th><th>既有實作</th><th>適用</th></tr></thead>
+<tbody>
+<tr><td>scp ＋ ssh</td><td><code>deploy-harmonyos/deploy-to-harmonyos.sh:11</code>「scp -r」</td><td>鴻蒙端</td></tr>
+<tr><td>git 自動 push</td><td><code>agent_harness/scripts/auto_git_push.ps1:9</code>「$RemoteName = "cgc0907"」，:8「$WatchDir = "agent_harness"」</td><td>Windows 端</td></tr>
+<tr><td>rsync</td><td><code>CGC-main/cgc_engine/tools/_archive_v1/server/sync_all_gates_to_hosts.sh</code></td><td>雲端主機</td></tr>
+</tbody></table>
+
+<div class="box warn">
+<b>兩個不說就會靜默失敗的對齊問題</b>（已寫進 <code>endpoints/README.md</code> 與頁面）：
+<ol>
+<li><code>auto_git_push.ps1</code> 推的是分叉 <code>fusionroutemot</code>，而入口讀的是
+<code>demo/sweet-spot-windows-fix</code> ⇒ <b>兩邊對齊之前，Windows 的上報不會出現在入口上</b>，
+而且不會有任何錯誤。</li>
+<li><code>auto_git_push.ps1</code> 在本機<b>從未被執行過</b>（2026-09-17 實查）⇒「它會自動推」
+目前是<b>設計意圖</b>，不是已驗證的行為。</li>
+</ol>
+</div>
+
+<h2>§5 七日：六個來源，覆蓋率是量出來的</h2>
+
+<p>先講一個關鍵的量測：<b>入口自己的 <code>history.jsonl</code> 只有今天的 15 筆</b>（12:00–12:43，43 分鐘）。
+所以「七日」<b>不可能</b>從它算出來，必須從別的地方回填 —— 而每個來源的覆蓋天數不同，
+這件事必須印在表上而不是藏起來。</p>
+
+<table>
+<thead><tr><th>來源</th><th>桶</th><th class="num">覆蓋</th><th>歸日依據</th><th>為什麼它不是「能力」</th></tr></thead>
+<tbody>
+<tr><td><code>commits</code> commit</td><td>工程活動</td><td class="num">7/7</td><td>commit 的 author date</td><td>改文件的 commit 與改 kernel 的 commit 一樣算 1</td></tr>
+<tr><td><code>m123</code> M1/M2/M3 oracle 實跑</td><td><b>能力（數值身分）</b></td><td class="num">4/7</td><td>檔案 mtime（≈ 寫入日）</td><td>分母小時（n=1 的陰性對照）也會顯示 1/1</td></tr>
+<tr><td><code>decisions</code> 決策登錄</td><td>判斷</td><td class="num">4/7</td><td>id 內嵌的日期前綴</td><td>決策多不等於能力強，要配動能才讀得出</td></tr>
+<tr><td><code>daylog</code> 當日工作日誌</td><td>工作痕跡</td><td class="num">4/7</td><td>檔名日期</td><td>位元組數只回答「那天有沒有人在場」</td></tr>
+<tr><td><code>snapshot</code> 資產快照</td><td>資產存量</td><td class="num">1/7</td><td>ts</td><td>存量數字取決於「有沒有人剛好跑過入口」</td></tr>
+<tr><td><code>endpoint_report</code> 端點上報抵達</td><td>機隊</td><td class="num">1/7</td><td>artifact 的 reported_at</td><td>「有上報」只證明它當時活著</td></tr>
+</tbody></table>
+
+<p><b>「無記錄」與 0 是兩件事</b>：0 是「量到沒有」，無記錄是「根本沒量」。
+本入口不把沒量過的日子填成 0。實例（現場量測）：</p>
+
+<pre><code>commit                       0個 |  8個 | 12個 |  9個 | 61個 | 76個 | 62個
+M1/M2/M3 oracle 實跑        無記錄 | 無記錄 | 無記錄 | 25次 | 23次 | 29次 | 11次
+決策登錄                     無記錄 | 無記錄 | 無記錄 | 26筆 | 12筆 |  0筆 | 30筆
+當日工作日誌                  無記錄 | 無記錄 | 無記錄 | 122727B | 284362B | 451541B | 228625B
+資產快照（本入口實跑）          無記錄 | 無記錄 | 無記錄 | 無記錄 | 無記錄 | 無記錄 | 15筆
+端點上報抵達                  無記錄 | 無記錄 | 無記錄 | 無記錄 | 無記錄 | 無記錄 |  1件
+                            (09-12  09-13  09-14  09-15  09-16  09-17  09-18)</code></pre>
+
+<p>兩個值得單獨看的讀數：<b>09-17 有 76 個 commit、29 次 m123 實跑，卻登錄了 0 筆決策</b>
+（那天做了很多、判斷沒有留下）；<b>09-12 的 commit 是 0，但那是量到的 0</b>（git 是權威來源），
+與上面那些「無記錄」不是同一種空白。</p>
+
+<h2>§6 複用而不是重造</h2>
+
+<p>產品版入口<b>不重新實作</b>任何既有概念，它 <code>import build_portal</code>：</p>
+
+<table>
+<thead><tr><th>複用了什麼</th><th>從哪來</th></tr></thead>
+<tbody>
+<tr><td>動能（carried／replaced／refuted／orphan／pending）與它的紅綠判定</td><td><code>build_portal.momentum_rows()</code>／<code>momentum_summary()</code></td></tr>
+<tr><td>目標與綁定（<code>targets.json</code>）</td><td><code>build_portal.load_targets()</code></td></tr>
+<tr><td>轉義與自由文字（<code>hesc</code>／<code>mdx</code>）</td><td><code>build_portal.hesc()</code>／<code>mdx()</code></td></tr>
+<tr><td>契約規則（必填欄位、id 字元集、時間格式）</td><td><code>report_endpoint_status.validate_record()</code> —— 產生器與入口<b>共用同一支</b></td></tr>
+<tr><td>fixture 機制（<code>PA_PORTAL_REPO</code>）</td><td><code>build_portal.REPO</code> 的環境變數約定</td></tr>
+</tbody></table>
+
+<div class="box ok">
+<b>為什麼這個複用是關鍵而不是方便</b>：門檻一旦有兩份實作，就會漂移 —— 而本輪就真的差點這樣
+（見 §7.1：我自己重算門檻，算出來的紅綠與 <code>momentum_summary</code> 相反）。
+現在比率與紅綠一律只有一份實作，本入口只把比例轉成人看的百分比。
+</div>
+
+<h2>§7 本輪自己踩到的四個缺陷</h2>
+
+<p>這一節是這份文件最有用的部分：四個都是「檢查器抓到／我抓到」的真缺陷，而且<b>症狀都長得像別的東西</b>。</p>
+
+<h3>§7.1 門檻的單位差 100 倍（紅綠會反過來）</h3>
+
+<p><code>targets.json</code> 的 <code>momentum.declared_red</code> 用的是
+<code>refuted_rate_gt: 0.25</code>／<code>orphan_rate_gt: 0.5</code> —— <b>比例</b>，不是百分點。
+我第一版自己去讀 <code>refuted_rate</code>／<code>orphan_rate</code> 這兩個<b>不存在的鍵</b>、
+預設 25／50，於是顯示的門檻差 100 倍，而且 <code>red</code> 的判定會反過來。
+修法：比率與紅綠一律取自 <code>momentum_summary()</code>，本入口只做比例 → 百分比的呈現。
+守衛：自測第 16 格（宣告 0.5 ⇒ 顯示必須是 <code>50.00%</code> 而不是 <code>0.50%</code>，且判定為「動能不足」）。</p>
+
+<h3>§7.2 <code>&lt;date&gt;</code> 沒轉義：先以「表格欄數不對稱」出現</h3>
+
+<p>來源說明文字裡有 <code>.workbuddy/memory/&lt;date&gt;.md</code>。那段文字沒有 <code>hesc()</code>，
+於是 <code>&lt;date&gt;</code> 被瀏覽器當成一個標籤吃掉，並讓後面所有 <code>&lt;/td&gt;&lt;/tr&gt;</code> 全部錯位。
+<b>我先看到的症狀是「表格的欄數不對稱」，那是症狀不是原因。</b>
+修法：所有來自註冊表的文字一律 <code>mdx(hesc(...))</code>。
+守衛：自測第 17 格（頁面必須含 <code>&amp;lt;date&amp;gt;</code> 且不含裸 <code>&lt;date&gt;</code>）。</p>
+
+<h3>§7.3 <code>import html.parser</code> 把參數 <code>html</code> 覆蓋成模組</h3>
+
+<p>在 <code>verify_output(html)</code> 裡面寫 <code>import html.parser</code>，會讓參數 <code>html</code>
+變成<b>模組</b>，於是 <code>feed(html)</code> 餵進去的是模組 ⇒
+<code>TypeError: can only concatenate str (not "module") to str</code>。
+自測當場抓到（四格同時失敗）。修法：用別名 <code>import html.parser as _hp</code>。</p>
+
+<h3>§7.4 commit message 的 markdown 漏成殘留（我一度以為是「間歇性」）</h3>
+
+<p>頁面把 git subject 用 <code>hesc()</code> 渲染（只轉義、<b>沒走 mdx</b>）。而當時 HEAD 的 subject 是：</p>
+
+<pre><code>feat(node-names) + docs: `node` 再拆一層、pool6 裁決（不是記憶體壓力）、S1 上生產判決（解不開 n_segs）</code></pre>
+
+<p>於是產物自我檢查回報 <code>markdown 殘留：'`node`'</code> 並<b>拒絕寫檔</b>。
+我當時把另一條線的下一個 commit（subject 不含反引號）當成「重現不出來」—— 其實它<b>完全可重現</b>，
+條件只是「HEAD 的 subject 含反引號」。
+修法：subject 走 <code>mdx(hesc(...))</code>。守衛：自測第 18 格（fixture 裡真的做一個含
+<code>`node`</code> 與粗體的 commit）。</p>
+
+<div class="box">
+<b>這一輪的另一個模式：我的「測試期望值」寫錯了兩次。</b>
+一次是把 <code>append</code> 語意的 <code>--what-ran</code> 當成覆蓋（期望 <code>["第二次"]</code>，實際是累積）；
+一次是把 <code>pct()</code> 的輸出 <code>50.00%</code> 寫成 <code>50%</code>。
+<b>兩次都是斷言錯、程式對</b>。判準：自測失敗時，先問「是斷言寫錯還是程式錯」，
+不要直接改程式去迎合斷言。
+</div>
+
+<h2>§8 現場閘門輸出（原文）</h2>
+
+<p>以下是把這批檔案送出前的實跑輸出，<b>原樣貼上</b>（沒有轉述）：</p>
+
+<pre><code>$ python3 agent_harness/engine_loop/traces/validate.py
+  -&gt; OK
+
+  lessons.jsonl: 187 records {'lesson': 187}
+  -&gt; OK
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  10/10 injected violations rejected
+
+$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  memory index OK: 8 file(s), 246 section(s), no drift
+
+$ cd agent_harness/engine_loop &amp;&amp; python3 index_assets.py --check
+  manifest OK: 108 assets, existence + bytes + mtime all agree
+
+$ python3 agent_harness/portal/build_fleet_portal.py --check
+  -&gt; OK: 4 個端點 × 6 個來源；指針全部可解析、契約全部合法、雙向對齊、7 日窗完整。
+
+$ python3 agent_harness/portal/build_fleet_portal.py --self-test
+  19/19 通過
+
+$ python3 agent_harness/portal/report_endpoint_status.py --self-test
+  7/7 通過
+
+$ python3 agent_harness/portal/build_portal.py --check
+  -&gt; OK: 18 條閘門（fast 14／heavy 4），目標樹指針全部可解析、每一節都有 acceptance，
+     2 個目標 × 97 筆綁定完整（每一筆 decision 都在目標上）
+
+$ python3 agent_harness/portal/build_fleet_portal.py            # 產物
+  wrote docs/FLEET_PORTAL.html  (34,241 B)
+  appended agent_harness/portal/fleet_status.jsonl  ts=2026-09-18 13:32:31 live=0/4 reported=1
+  端點狀態: mac-local=已上報、cloud-host2=未上報、harmonyos-matebook14=未上報、windows-rtx4090=未上報</code></pre>
+
+<p>產物自我檢查（<code>verify_output()</code>，寫檔前跑）：未閉合 <b>0</b>、標籤錯位 <b>0</b>、
+標籤不對稱 <b>0</b>、markdown 殘留 <b>0</b>、路徑引用 MISSING <b>0</b>。</p>
+
+<div class="box warn">
+<b>送出這批檔案時，樹上還有兩處紅燈，兩處都不是這批檔案造成的</b>（逐項指名，不當成「已知問題」帶過）：
+<ul>
+<li><code>index_assets.py --check</code>：4 處漂移，全部是別條線在 <b>13:34:17</b> 正在編輯的
+<code>scripts/check/decode_sweep.py</code>（87264 → 88541 bytes）與 <code>scripts/run_server.sh</code>
+（138710 → 138888 bytes）。<b>因此本輪刻意不重生 MANIFEST</b> —— 重生會把他們尚未定稿的位元組寫進索引。</li>
+<li><code>build_memory_index.py --check</code>：別條線在 <b>13:35:30</b> 追加了 §EN-151／§EN-152
+（INDEX 254 列 vs 推導 255 列）。同理不重生。順帶：那張漂移清單裡 09-17 的十幾筆是
+<b>位置比對的錯位假象</b>（今天早些時候已查明並寫進 <code>cgc-commit-gate</code>）。</li>
+</ul>
+本批九個檔案<b>都不在 <code>MANIFEST.jsonl</code> 的管轄內</b>（<code>agent_harness/portal/*</code>
+不在 glob／CURATED，<code>docs/*.html</code> 新檔也不會被自動收錄），所以這個 commit
+<b>不會讓任何一格從綠變紅</b>。
+</div>
+
+<h2>§9 誠實邊界：這一頁不主張什麼</h2>
+
+<ul>
+<li><b>不主張四個端點「能力如何」。</b>鴻蒙端與 Windows 端的每一條能力都來自 repo 裡的<b>建置腳本</b>，
+不是實測 —— 那證明的是「我們寫了給它的建置流程」，不是「它跑得動」。兩端的 <code>not_measured</code>
+就是這件事的逐條記錄。</li>
+<li><b>不主張心跳失敗等於端點壞了。</b>本輪 mac-local 的心跳是 <code>Connection refused</code>、
+cloud-host2 是 <code>timed out</code> —— 兩者都寫成 <b>unknown</b>。連不上只說明「現在不知道」。</li>
+<li><b>不主張 40–60 t/s 是實測值。</b>那是 <code>deploy-harmonyos/windows/README.md:49</code> 的<b>預期</b>表，
+本入口把它標成預期，不標成能力實績。</li>
+<li><b>不主張七日趨勢完整。</b>六個來源的覆蓋是 7/7、4/7、4/7、4/7、1/7、1/7 —— 表上逐列印著。
+入口自己的 <code>history.jsonl</code> 只有今天 43 分鐘的 15 筆。</li>
+<li><b>不主張門檻是定律。</b><code>refuted_rate_gt: 0.25</code>／<code>orphan_rate_gt: 0.5</code> 是
+<b>宣告的判準</b>，可以被重新訴訟；且 orphan <b>不等於壞決策</b>（它也可能是診斷的終點）。</li>
+<li><b>未跑的</b>：沒有跑 D5 的數值那一半（本 commit 無 <code>src/</code> 變更、建置產物沒動）；
+沒有實際把任何端點接上（三個端點本來就離線）；<code>auto_git_push.ps1</code> 沒有實跑過。</li>
+</ul>
+
+<h2>§10 怎麼用</h2>
+
+<pre><code># 產物（離線；有網路時去掉 --no-net 會多探測心跳）
+python3 agent_harness/portal/build_fleet_portal.py --no-net
+
+# 三種檢查
+python3 agent_harness/portal/build_fleet_portal.py --check        # 只驗不寫，有問題 rc=1
+python3 agent_harness/portal/build_fleet_portal.py --self-test    # 19 格突變式黑箱自測
+
+# 即時服務（可分享給同機的其他工具；可收上報）
+python3 agent_harness/portal/build_fleet_portal.py --serve --port 8787
+#   GET  /             即時重畫
+#   GET  /api/fleet    機隊 JSON
+#   POST /api/report   收一份端點上報（先驗契約、再驗註冊）
+
+# 在任一端點產生一份上報（只需標準函式庫）
+python3 agent_harness/portal/report_endpoint_status.py --id windows-rtx4090 \
+    --what-ran "建 CUDA 版" --metric decode_tps=52.3 --not-measured "沒量過 M1/M2/M3 身分"</code></pre>
+
+<div class="box">
+<b>已知的後續（本輪刻意沒做）</b>
+<ul>
+<li>工程面入口 <a href="AGENT_HARNESS_PORTAL.html">AGENT_HARNESS_PORTAL.html</a>
+<b>沒有回連</b>這一頁（目前是單向連結：產品面 → 工程面）。</li>
+<li><code>fleet_status.jsonl</code> 還沒有被當成一個七日來源（機隊自身觀測的趨勢）。</li>
+<li><code>index_assets.py</code> 與 <code>build_memory_index.py</code> 的重生要等樹上安靜下來
+（見 §8 的兩處紅燈）。</li>
+</ul>
+</div>
+
+<p class="small" style="margin-top:26px">
+本檔由 <code>docs/FLEET_PORTAL_DELIVERY_20260918_1330.html</code> 交付，與它所屬的 commit 綁定。
+所有數字都可在本機用 §10 的指令重跑；沒有任何數字是轉述的。
+</p>
+
+</div></body></html>

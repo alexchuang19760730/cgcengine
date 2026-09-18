@@ -1,0 +1,212 @@
+{
+  "schema": 1,
+  "title": "CGC 機隊與資產能力入口",
+  "what_is_this": "把「這台機器能做什么、別的機器能不能做、它們現在連得上嗎」變成一份可機檢、可復盤的頁面。它是資產入口的產品面；工程面（目標／決策／閘門／資產）仍在 AGENT_HARNESS_PORTAL.html。",
+  "generated_hint": "python3 agent_harness/portal/build_fleet_portal.py",
+  "contract": {
+    "version": 1,
+    "path_template": "agent_harness/portal/endpoints/<endpoint_id>.json",
+    "required": ["endpoint_id", "reported_at", "platform", "arch", "what_ran", "capabilities", "not_measured"],
+    "optional": ["hostname", "gpu", "build_profile", "metrics", "produced_by", "notes"],
+    "not_measured_rule": "not_measured 是必填且必須是陣列（可以是空陣列）。空陣列 = 這個端點沒有未量的東西；非空 = 逐條寫出「我不知道什么」。缺席要出聲，不許留白。",
+    "produce_with": "python3 agent_harness/portal/report_endpoint_status.py --id <endpoint_id> [--what-ran ...]",
+    "why_file_based": "鴻蒙端與 Windows 端目前不在我們的網路上 ⇒ 沒有任何「即時協議」能成立。唯一在它們真的離線時仍然成立的機制是 store-and-forward：端點把狀態寫成檔案，由既有的 scp（deploy-harmonyos/deploy-to-harmonyos.sh）或 git（Windows 的 agent_harness/scripts/auto_git_push.ps1 監看 agent_harness/）帶進來。當它們真的能連上時，同一份契約也可以直接 POST 給 --serve（見 build_fleet_portal.py）。"
+  },
+  "freshness": {
+    "live_s": 900,
+    "recent_s": 129600,
+    "stale_s": 604800,
+    "why": "live/recent/stale 是三個門檻，不是綠燈：它們只回答「這份上報有多舊」。任何門檻都不會把「沒上報過」變成綠色。"
+  },
+  "endpoints": [
+    {
+      "id": "mac-local",
+      "name": "本機 Mac（M4 / 16 GB unified）",
+      "kind": "local",
+      "platform": "macos",
+      "arch": "arm64",
+      "role": "decode 生產線：Metal kernel ＋ SSD expert streaming；也是這個入口自己跑的地方",
+      "reaches": "self",
+      "capabilities": [
+        {
+          "id": "macos-bundle",
+          "label": "macOS bundle 可重建／可啟動（llama-server --version ＋ llama-simple --help ＋ otool -L 查 @rpath）",
+          "evidence": [{"path": "deploy-harmonyos/macos/check-macos-bundle.sh", "contains": "otool"}]
+        },
+        {
+          "id": "targets-bound",
+          "label": "兩個數字目標（prefill ≥250 t/s、decode ≥25 t/s）有綁定與現值",
+          "evidence": [{"path": "agent_harness/portal/targets.json", "contains": "decode-25"}]
+        },
+        {
+          "id": "numeric-identity",
+          "label": "M1/M2/M3 oracle 對 M2 oracle 可達 bit-identical（實測 9/9、9/9、9/9、n=9）",
+          "evidence": [{"path": "Backup/m123_oracle_gate/summary_final_v2.json", "contains": "m1_numeric_identity"}]
+        },
+        {
+          "id": "entry-gates",
+          "label": "本入口自己的完整性閘門（portal-integrity 等）跑得動",
+          "evidence": [{"path": "agent_harness/portal/gates.json", "contains": "portal-integrity"}]
+        }
+      ],
+      "channels": {
+        "heartbeat": {
+          "url": "http://127.0.0.1:9100/v1/compute/status",
+          "how": "agent_harness/pd/compute_sharing.py --role node --port 9100",
+          "timeout_s": 2,
+          "evidence": [{"path": "agent_harness/pd/compute_sharing.py", "contains": "/v1/compute/status"}]
+        },
+        "artifact": "agent_harness/portal/endpoints/mac-local.json",
+        "relay": [
+          {
+            "how": "本機直接寫檔（不需要任何通道）",
+            "evidence": [{"path": "agent_harness/portal/fleet.json", "contains": "mac-local"}]
+          }
+        ]
+      },
+      "not_measured": []
+    },
+    {
+      "id": "cloud-host2",
+      "name": "雲端主機（Host2 / 8×RTX PRO 5000）",
+      "kind": "cloud",
+      "platform": "linux",
+      "arch": "x86_64",
+      "role": "CGC 雲端算力與 edge proxy 的對端；SSH 反向隧道把本機 :4000 暴露成雲上的 :18022",
+      "reaches": "network",
+      "capabilities": [
+        {
+          "id": "ssh-tunnel",
+          "label": "SSH 反向隧道可通（本機 :4000 ↔ 雲上 :18022）",
+          "evidence": [
+            {"path": "app/edge_engine/cloud_tunnel.py", "contains": "47.95.250.55"},
+            {"path": "app/edge_engine/cloud_tunnel.py", "contains": "18022"}
+          ]
+        },
+        {
+          "id": "proxy-4000",
+          "label": "本機 :4000 是 Anthropic 相容代理（:8000 是 OpenAI 相容）",
+          "evidence": [{"path": "agent_harness/README.md", "contains": ":4000"}]
+        },
+        {
+          "id": "gate-rsync",
+          "label": "閘門結果可用 rsync 同步到雲端主機",
+          "evidence": [{"path": "CGC-main/cgc_engine/tools/_archive_v1/server/sync_all_gates_to_hosts.sh", "contains": "47.95.250.55"}]
+        }
+      ],
+      "channels": {
+        "heartbeat": {
+          "url": "http://47.95.250.55:9100/v1/compute/status",
+          "how": "同一套 pd/compute_sharing.py；但這條路徑要真的開著才會通（本機在中國大陸，直連常常只是 timeout）",
+          "timeout_s": 3,
+          "evidence": [{"path": "agent_harness/pd/compute_sharing.py", "contains": "register_node"}]
+        },
+        "artifact": "agent_harness/portal/endpoints/cloud-host2.json",
+        "relay": [
+          {
+            "how": "sshpass rsync（既有腳本）；也可以由雲端自己寫檔後 commit",
+            "evidence": [{"path": "CGC-main/cgc_engine/tools/_archive_v1/server/sync_all_gates_to_hosts.sh", "contains": "rsync"}]
+          }
+        ]
+      },
+      "not_measured": [
+        "沒有實測過它「現在」的負載與可用性 —— 本入口只讀通道設定與隧道腳本，不宣稱它活著",
+        "8×RTX PRO 5000 / 576 GB 是先前記錄的規格，本入口沒有從雲端讀回來驗證",
+        "隧道腳本裡有明文 root 密碼（app/edge_engine/cloud_tunnel.py:19 附近的 DEFAULT_PASSWORD）—— 這是已登記的安全欠帳，不是本入口能修的"
+      ]
+    },
+    {
+      "id": "harmonyos-matebook14",
+      "name": "鴻蒙端（MateBook 14 / Kirin 9030）",
+      "kind": "edge",
+      "platform": "harmonyos",
+      "arch": "aarch64",
+      "role": "CPU-only 建置與執行（Kirin 9030 沒有 Metal ⇒ GGML_METAL=OFF）",
+      "reaches": "offline",
+      "capabilities": [
+        {
+          "id": "build-harmonyos",
+          "label": "能為鴻蒙 MateBook 14 建置 llama.cpp（aarch64、Kirin 9030、CPU-only NEON）",
+          "evidence": [
+            {"path": "deploy-harmonyos/harmonyos/build.sh", "contains": "鴻蒙 MateBook 14"},
+            {"path": "deploy-harmonyos/harmonyos/build.sh", "contains": "Kirin 9030 沒有 Metal"}
+          ]
+        },
+        {
+          "id": "phone-hdc",
+          "label": "手機端可經 DevEco 的 hdc 推送（hdc.exe 路徑寫死在腳本裡）",
+          "evidence": [{"path": "deploy-harmonyos/phone/hdc_wrap.sh", "contains": "hdc.exe"}]
+        }
+      ],
+      "channels": {
+        "heartbeat": null,
+        "artifact": "agent_harness/portal/endpoints/harmonyos-matebook14.json",
+        "relay": [
+          {
+            "how": "scp 整包過去、再 ssh 進去跑 build.sh（既有腳本）",
+            "evidence": [{"path": "deploy-harmonyos/deploy-to-harmonyos.sh", "contains": "scp -r"}]
+          },
+          {
+            "how": "如果它有 git 通道：把 endpoints/<id>.json 寫進 agent_harness/portal/endpoints/ 後 commit＋push（與 Windows 同一條路）",
+            "evidence": [{"path": "agent_harness/scripts/auto_git_push.ps1", "contains": "agent_harness"}]
+          }
+        ]
+      },
+      "not_measured": [
+        "★ 從未連上過：本入口對它的「能力」全部來自 repo 裡的建置腳本，不是實測 —— 那證明的是「我們寫了給它的建置流程」，不是「它跑得動」",
+        "不知道它現在的鴻蒙版本、可用的 RAM、以及 build.sh 最後一次成功的時間",
+        "heartbeat 是 null（不是「失敗」）：它沒有可達的網路位址 ⇒ 這一格永遠只能是 unknown，不會變綠"
+      ]
+    },
+    {
+      "id": "windows-rtx4090",
+      "name": "Windows 端（RTX 4090 / VS2022）",
+      "kind": "edge",
+      "platform": "windows",
+      "arch": "x86_64",
+      "role": "CUDA 或 Vulkan 建置；repo 裡預期 Qwen3.6-35B-A3B IQ3_XXS 40–60 t/s",
+      "reaches": "offline",
+      "capabilities": [
+        {
+          "id": "build-windows",
+          "label": "能建 CUDA 版（偵測到 NVIDIA ⇒ GGML_CUDA=ON），否則退回 Vulkan",
+          "evidence": [
+            {"path": "deploy-harmonyos/windows/build-windows.bat", "contains": "GGML_CUDA=ON"},
+            {"path": "deploy-harmonyos/windows/build-windows.bat", "contains": "Vulkan"}
+          ]
+        },
+        {
+          "id": "expected-tps",
+          "label": "README 的預期吞吐表：RTX 4090 ＋ Qwen3.6-35B-A3B IQ3_XXS ⇒ 40–60 t/s",
+          "evidence": [{"path": "deploy-harmonyos/windows/README.md", "contains": "RTX 4090"}]
+        },
+        {
+          "id": "auto-git-push",
+          "label": "有一支常駐腳本會把 agent_harness/ 的變更自動 commit＋push（remote cgc0907、branch fusionroutemot）",
+          "evidence": [{"path": "agent_harness/scripts/auto_git_push.ps1", "contains": "cgc0907"}]
+        }
+      ],
+      "channels": {
+        "heartbeat": null,
+        "artifact": "agent_harness/portal/endpoints/windows-rtx4090.json",
+        "relay": [
+          {
+            "how": "★ 自動：把 endpoints/windows-rtx4090.json 寫進 agent_harness/portal/endpoints/ 之後，auto_git_push.ps1 會把整個 agent_harness/ 推上 remote cgc0907 ⇒ 這就是那條「github 數據同步」通道",
+            "evidence": [{"path": "agent_harness/scripts/auto_git_push.ps1", "contains": "WatchDir"}]
+          }
+        ]
+      },
+      "not_measured": [
+        "★ 40–60 t/s 是 README 的**預期**，不是實測值 —— 本入口把它標成預期，不標成能力實績",
+        "auto_git_push.ps1 在本機從未被執行過（2026-09-17 實查）⇒ 「它會自動推」是設計意圖，不是已驗證的行為",
+        "它推到的是 branch fusionroutemot，而本入口讀的是 demo/sweet-spot-windows-fix ⇒ 兩者要對齊才會看到它的上報"
+      ]
+    }
+  ],
+  "rules": {
+    "unknown_not_red": "心跳探測失敗、端點沒上報、通道沒開 —— 一律是 unknown／未上報，不是紅燈。一個會因為連不上而變紅的入口，會在每一個離線的早晨說謊（同 AGENT_HARNESS_PORTAL 的跨機那一軸）。",
+    "absence_speaks": "註冊表裡的每一個端點都必須在頁面上有一列；反過來，endpoints/ 底下有任何不屬於註冊表的檔也要出聲。兩個方向都要檢查。",
+    "no_second_truth": "端點清單只在 fleet.json；七日來源清單只在 trend_sources.json。頁面上的「一鍵復現」指令與頁面自己跑的是同一份。",
+    "heavy_not_green": "需要真的連到端點才能知道的事（它的負載、它的 GPU、它的最後一次成功建置）一律列在 not_measured，不畫成綠燈。"
+  }
+}

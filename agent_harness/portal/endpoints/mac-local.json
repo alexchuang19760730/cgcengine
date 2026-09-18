@@ -1,0 +1,31 @@
+{
+  "contract_version": 1,
+  "endpoint_id": "mac-local",
+  "reported_at": "2026-09-18 13:28:23",
+  "hostname": "alexchuangdeMacBook-Air.local",
+  "platform": "darwin",
+  "arch": "arm64",
+  "produced_by": "report_endpoint_status.py v1",
+  "what_ran": [
+    "跑 build_fleet_portal.py --self-test（17/17 通過）",
+    "跑 AGENT_HARNESS_PORTAL 的快速閘門（最後一次記錄 14/14，2026-09-18 12:43）",
+    "停掉 colima 並清掉兩個 limactl usernet 孤兒（release 1.03 GB free / swap −756 MB）"
+  ],
+  "capabilities": [
+    "macOS bundle 可重建可啟動（llama-server --version + otool -L 驗 @rpath）",
+    "M1/M2/M3 oracle 對 M2 oracle bit-identical（9/9、9/9、9/9，n=9）",
+    "能在 16 GB unified memory 上跑 Gemma4 26B-A4B int4 expert streaming"
+  ],
+  "gpu": "Apple M4 16GB unified（Metal，無獨立 GPU）",
+  "build_profile": "Metal backend + 自研 int4 GEMV／attention kernel",
+  "metrics": {
+    "fleet_self_test": 17.0,
+    "harness_gates_last": 14.0
+  },
+  "not_measured": [
+    "prefill ≥250 t/s 沒有可重現的達成（冷機發射 0 時 6/6 ≥250，否則 0/21）",
+    "decode 25 t/s 未達成（現值 12.62 t/s，2.07×）",
+    "沒有跑 D5 的 m123 oracle（本輪無 src/ 變更）"
+  ],
+  "notes": "本機是這個入口自己跑的地方；上報內容以「剛剛真的跑過的東西」為準。"
+}

@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CGC 機隊與資產能力入口</title>
+<style>
+:root { --fg:#111827; --muted:#6b7280; --line:#e5e7eb; --bg:#ffffff; --soft:#f9fafb; --code:#f3f4f6;
+        --blue:#1d4ed8; --green:#15803d; --red:#b91c1c; --amber:#b45309; --purple:#6d28d9; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg);
+       font:15px/1.7 -apple-system,"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif; }
+.wrap { max-width:1280px; margin:0 auto; padding:26px 20px 90px; }
+h1 { font-size:23px; margin:0 0 4px; line-height:1.4; }
+h2 { font-size:18px; margin:26px 0 10px; padding-top:12px; border-top:1px solid var(--line); }
+h3 { font-size:15.5px; margin:18px 0 6px; }
+.sub { color:var(--muted); font-size:13px; margin:0 0 18px; }
+a { color:var(--blue); }
+code { background:var(--code); padding:1px 5px; border-radius:4px; font-size:12.6px;
+       font-family:ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-all; }
+pre { background:var(--soft); border:1px solid var(--line); border-radius:6px; padding:10px 12px;
+      overflow-x:auto; margin:8px 0 14px; }
+pre code { background:none; padding:0; font-size:12.3px; line-height:1.55; display:block; white-space:pre; }
+table { border-collapse:collapse; width:100%; margin:10px 0 16px; font-size:13.2px; }
+th,td { border:1px solid var(--line); padding:5px 8px; text-align:left; vertical-align:top; }
+th { background:var(--soft); font-weight:600; }
+.num { text-align:right; font-variant-numeric:tabular-nums; }
+.kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin:14px 0 6px; }
+.kpi { border:1px solid var(--line); border-radius:6px; padding:9px 11px; background:var(--soft); }
+.kpi .v { font-size:21px; font-weight:600; font-variant-numeric:tabular-nums; }
+.kpi .k { font-size:12px; color:var(--muted); }
+.tag { display:inline-block; font-size:11.5px; padding:1px 8px; border-radius:999px;
+       border:1px solid var(--line); background:var(--soft); }
+.t-green{color:var(--green);border-color:#bbf7d0;background:#f0fdf4}
+.t-amber{color:var(--amber);border-color:#fde68a;background:#fffbeb}
+.t-grey{color:var(--muted);border-color:var(--line);background:var(--soft)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px;margin:12px 0 18px}
+.card{border:1px solid var(--line);border-radius:6px;padding:12px 14px;background:var(--soft)}
+.box { border:1px solid var(--line); border-left:4px solid var(--blue); border-radius:4px;
+       padding:11px 13px; margin:14px 0; }
+.box.bad { border-left-color:var(--red); background:#fff7f7; }
+.box.warn { border-left-color:var(--amber); background:#fffdf5; }
+.box.ok { border-left-color:var(--green); background:#f6fdf8; }
+.small { font-size:12.3px; color:var(--muted); }
+.muted { color:var(--muted); }
+details { margin:6px 0; }
+summary { cursor:pointer; font-size:13px; color:var(--blue); }
+.ev { font-size:11.8px; color:var(--muted); font-family:ui-monospace,Menlo,monospace; word-break:break-all; }
+.chart { margin:6px 0 14px; }
+.foot { margin-top:34px; padding-top:12px; border-top:1px solid var(--line); font-size:12.3px; color:var(--muted); }
+</style></head>
+<body><div class="wrap">
+
+<h1>CGC 機隊與資產能力入口</h1>
+<p class="sub">
+產生於 <b>2026-09-18 13:38:15</b>　·　
+<code>db72dd2ed</code>（demo/sweet-spot-windows-fix）docs(memory): 收尾 79f1b5efc -- §EN-151 ＋ 索引重生（246 節）　·　
+未提交 <b>11</b> 檔　·　
+模式 <span class="tag t-grey">offline（--no-net，未探測心跳）</span>　·　
+<a href="AGENT_HARNESS_PORTAL.html">工程面入口（目標／決策／閘門／資產）→</a>
+</p>
+
+<div class="kpis"><div class="kpi"><div class="v">4</div><div class="k">端點（註冊）</div></div><div class="kpi"><div class="v">0</div><div class="k">心跳可達</div></div><div class="kpi"><div class="v">1</div><div class="k">已上報</div></div><div class="kpi"><div class="v">3</div><div class="k">未上報</div></div><div class="kpi"><div class="v">230</div><div class="k">7 日 commit</div></div><div class="kpi"><div class="v">9</div><div class="k">未量測項</div></div></div>
+
+<div class="box warn">
+  <div><b>一句話</b></div>
+  <div style="margin-top:5px">
+    註冊 4 個端點：0 個心跳可達、1 個有上報、3 個未上報（未上報不是壞消息 —— 鴻蒙端與 Windows 端本來就不在網路上）。7 日窗內有 6/6 個來源有資料。
+  </div>
+  <div class="small" style="margin-top:7px">
+    一鍵復現：<code>python3 agent_harness/portal/build_fleet_portal.py</code>
+    （離線：<code>… --no-net</code>）　·　只驗不寫：<code>… --check</code>　·　
+    自我陰性對照：<code>… --self-test</code>　·　即時服務：<code>… --serve --port 8787</code>
+  </div>
+</div>
+
+<h2>① 機隊 —— 每個端點一列，連不上的也在表上</h2>
+<div class="small">狀態只回答「我現在知不知道」，不回答「它好不好」：
+<span class="tag t-green">LIVE</span> 心跳有回應　
+<span class="tag t-green">已上報</span> 有上報且新鮮　
+<span class="tag t-amber">上報過期</span> 有上報但舊了　
+<span class="tag t-grey">未上報</span> 從來沒收到過（<b>不是紅燈</b>）。</div>
+<div class="cards"><div class="card">
+  <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline">
+    <div><b>本機 Mac（M4 / 16 GB unified）</b>
+      <div class="small"><code>mac-local</code>　macos/arm64　
+      <span class="tag t-grey">local</span>
+      <span class="tag t-grey">reaches=self</span></div>
+    </div>
+    <span class="tag t-green">已上報</span>
+  </div>
+  <div class="small" style="margin-top:6px">decode 生產線：Metal kernel ＋ SSD expert streaming；也是這個入口自己跑的地方</div>
+  <div style="margin-top:8px"><b>能力</b>（每一條都指到真實檔案裡的子串）</div>
+  <ul style="margin:4px 0 0;padding-left:18px;font-size:13px"><li><b>macOS bundle 可重建／可啟動（llama-server --version ＋ llama-simple --help ＋ otool -L 查 @rpath）</b><div class="ev">↳ deploy-harmonyos/macos/check-macos-bundle.sh :: otool</div></li><li><b>兩個數字目標（prefill ≥250 t/s、decode ≥25 t/s）有綁定與現值</b><div class="ev">↳ agent_harness/portal/targets.json :: decode-25</div></li><li><b>M1/M2/M3 oracle 對 M2 oracle 可達 bit-identical（實測 9/9、9/9、9/9、n=9）</b><div class="ev">↳ Backup/m123_oracle_gate/summary_final_v2.json :: m1_numeric_identity</div></li><li><b>本入口自己的完整性閘門（portal-integrity 等）跑得動</b><div class="ev">↳ agent_harness/portal/gates.json :: portal-integrity</div></li></ul>
+  <div style="margin-top:8px"><b>未量測</b>（缺席要出聲）</div>
+  <ul style="margin:4px 0 0;padding-left:18px;font-size:12.6px"><li class='muted'>（這個端點宣告沒有未量的東西）</li></ul>
+  <div style="margin-top:8px"><b>本輪真的跑了什麼</b>（來自它的上報，不是我們的推測）</div>
+  <ul style="margin:4px 0 0;padding-left:18px;font-size:13px"><li>跑 build_fleet_portal.py --self-test（17/17 通過）</li><li>跑 AGENT_HARNESS_PORTAL 的快速閘門（最後一次記錄 14/14，2026-09-18 12:43）</li><li>停掉 colima 並清掉兩個 limactl usernet 孤兒（release 1.03 GB free / swap −756 MB）</li></ul>
+  <div style="margin-top:6px"><b>讀數</b><div class="ev"><b>fleet_self_test</b>=17.0　<b>harness_gates_last</b>=14.0</div></div>
+  <div style="margin-top:8px"><b>通道</b><div class="ev">心跳：<code>http://127.0.0.1:9100/v1/compute/status</code><div class="ev">via agent_harness/pd/compute_sharing.py --role node --port 9100</div></div>
+    <div class="ev">探測結果：skipped —— 本輪 --no-net：不探測（跳過 ≠ 通過）</div>
+    <ul style="margin:4px 0 0;padding-left:18px;font-size:12.6px"><li>本機直接寫檔（不需要任何通道）</li></ul>
+    <div style="margin-top:4px;font-size:12.6px"><b>已上報</b> 9 分鐘前　<code>agent_harness/portal/endpoints/mac-local.json</code></div>
+  </div>
+</div><div class="card">
+  <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline">
+    <div><b>雲端主機（Host2 / 8×RTX PRO 5000）</b>
+      <div class="small"><code>cloud-host2</code>　linux/x86_64　
+      <span class="tag t-grey">cloud</span>
+      <span class="tag t-grey">reaches=network</span></div>
+    </div>
+    <span class="tag t-grey">未上報</span>
+  </div>
+  <div class="small" style="margin-top:6px">CGC 雲端算力與 edge proxy 的對端；SSH 反向隧道把本機 :4000 暴露成雲上的 :18022</div>
+  <div style="margin-top:8px"><b>能力</b>（每一條都指到真實檔案裡的子串）</div>
+  <ul style="margin:4px 0 0;padding-left:18px;font-size:13px"><li><b>SSH 反向隧道可通（本機 :4000 ↔ 雲上 :18022）</b><div class="ev">↳ app/edge_engine/cloud_tunnel.py :: 47.95.250.55</div><div class="ev">↳ app/edge_engine/cloud_tunnel.py :: 18022</div></li><li><b>本機 :4000 是 Anthropic 相容代理（:8000 是 OpenAI 相容）</b><div class="ev">↳ agent_harness/README.md :: :4000</div></li><li><b>閘門結果可用 rsync 同步到雲端主機</b><div class="ev">↳ CGC-main/cgc_engine/tools/_archive_v1/server/sync_all_gates_to_hosts.sh :: 47.95.250.55</div></li></ul>
+  <div style="margin-top:8px"><b>未量測</b>（缺席要出聲）</div>
+  <ul style="margin:4px 0 0;padding-left:18px;font-size:12.6px"><li>沒有實測過它「現在」的負載與可用性 —— 本入口只讀通道設定與隧道腳本，不宣稱它活著</li><li>8×RTX PRO 5000 / 576 GB 是先前記錄的規格，本入口沒有從雲端讀回來驗證</li><li>隧道腳本裡有明文 root 密碼（app/edge_engine/cloud_tunnel.py:19 附近的 DEFAULT_PASSWORD）—— 這是已登記的安全欠帳，不是本入口能修的</li></ul>
+  <div style="margin-top:8px"><b>本輪真的跑了什麼</b>（來自它的上報，不是我們的推測）</div>
+  <ul style="margin:4px 0 0;padding-left:18px;font-size:13px"><li class='muted'>未上報 ⇒ 不知道它跑了什麼</li></ul>
+  <div style="margin-top:6px"><b>讀數</b><div class="ev"><span class='muted'>（沒有讀數）</span></div></div>
+  <div style="margin-top:8px"><b>通道</b><div class="ev">心跳：<code>http://47.95.250.55:9100/v1/compute/status</code><div class="ev">via 同一套 pd/compute_sharing.py；但這條路徑要真的開著才會通（本機在中國大陸，直連常常只是 timeout）</div></div>
+    <div class="ev">探測結果：skipped —— 本輪 --no-net：不探測（跳過 ≠ 通過）</div>
+    <ul style="margin:4px 0 0;padding-left:18px;font-size:12.6px"><li>sshpass rsync（既有腳本）；也可以由雲端自己寫檔後 commit</li></ul>
+    <div style="margin-top:4px;font-size:12.6px"><span class="muted">未上報（沒有任何 endpoints/*.json）</span></div>
+  </div>
+</div><div class="card">
+  <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline">
+    <div><b>鴻蒙端（MateBook 14 / Kirin 9030）</b>
+      <div class="small"><code>harmonyos-matebook14</code>　harmonyos/aarch64　
+      <span class="tag t-grey">edge</span>
+      <span class="tag t-grey">reaches=offline</span></div>
+    </div>
+    <span class="tag t-grey">未上報</span>
+  </div>
+  <div class="small" style="margin-top:6px">CPU-only 建置與執行（Kirin 9030 沒有 Metal ⇒ GGML_METAL=OFF）</div>
+  <div style="margin-top:8px"><b>能力</b>（每一條都指到真實檔案裡的子串）</div>
+  <ul style="margin:4px 0 0;padding-left:18px;font-size:13px"><li><b>能為鴻蒙 MateBook 14 建置 llama.cpp（aarch64、Kirin 9030、CPU-only NEON）</b><div class="ev">↳ deploy-harmonyos/harmonyos/build.sh :: 鴻蒙 MateBook 14</div><div class="ev">↳ deploy-harmonyos/harmonyos/build.sh :: Kirin 9030 沒有 Metal</div></li><li><b>手機端可經 DevEco 的 hdc 推送（hdc.exe 路徑寫死在腳本裡）</b><div class="ev">↳ deploy-harmonyos/phone/hdc_wrap.sh :: hdc.exe</div></li></ul>
+  <div style="margin-top:8px"><b>未量測</b>（缺席要出聲）</div>
+  <ul style="margin:4px 0 0;padding-left:18px;font-size:12.6px"><li>★ 從未連上過：本入口對它的「能力」全部來自 repo 裡的建置腳本，不是實測 —— 那證明的是「我們寫了給它的建置流程」，不是「它跑得動」</li><li>不知道它現在的鴻蒙版本、可用的 RAM、以及 build.sh 最後一次成功的時間</li><li>heartbeat 是 null（不是「失敗」）：它沒有可達的網路位址 ⇒ 這一格永遠只能是 unknown，不會變綠</li></ul>
+  <div style="margin-top:8px"><b>本輪真的跑了什麼</b>（來自它的上報，不是我們的推測）</div>
+  <ul style="margin:4px 0 0;padding-left:18px;font-size:13px"><li class='muted'>未上報 ⇒ 不知道它跑了什麼</li></ul>
+  <div style="margin-top:6px"><b>讀數</b><div class="ev"><span class='muted'>（沒有讀數）</span></div></div>
+  <div style="margin-top:8px"><b>通道</b><div class="ev">心跳：<span class="muted">沒有心跳位址（這一格永遠是 unknown）</span></div>
+    <div class="ev">探測結果：skipped —— 本輪 --no-net：不探測（跳過 ≠ 通過）</div>
+    <ul style="margin:4px 0 0;padding-left:18px;font-size:12.6px"><li>scp 整包過去、再 ssh 進去跑 build.sh（既有腳本）</li><li>如果它有 git 通道：把 endpoints/&lt;id&gt;.json 寫進 agent_harness/portal/endpoints/ 後 commit＋push（與 Windows 同一條路）</li></ul>
+    <div style="margin-top:4px;font-size:12.6px"><span class="muted">未上報（沒有任何 endpoints/*.json）</span></div>
+  </div>
+</div><div class="card">
+  <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline">
+    <div><b>Windows 端（RTX 4090 / VS2022）</b>
+      <div class="small"><code>windows-rtx4090</code>　windows/x86_64　
+      <span class="tag t-grey">edge</span>
+      <span class="tag t-grey">reaches=offline</span></div>
+    </div>
+    <span class="tag t-grey">未上報</span>
+  </div>
+  <div class="small" style="margin-top:6px">CUDA 或 Vulkan 建置；repo 裡預期 Qwen3.6-35B-A3B IQ3_XXS 40–60 t/s</div>
+  <div style="margin-top:8px"><b>能力</b>（每一條都指到真實檔案裡的子串）</div>
+  <ul style="margin:4px 0 0;padding-left:18px;font-size:13px"><li><b>能建 CUDA 版（偵測到 NVIDIA ⇒ GGML_CUDA=ON），否則退回 Vulkan</b><div class="ev">↳ deploy-harmonyos/windows/build-windows.bat :: GGML_CUDA=ON</div><div class="ev">↳ deploy-harmonyos/windows/build-windows.bat :: Vulkan</div></li><li><b>README 的預期吞吐表：RTX 4090 ＋ Qwen3.6-35B-A3B IQ3_XXS ⇒ 40–60 t/s</b><div class="ev">↳ deploy-harmonyos/windows/README.md :: RTX 4090</div></li><li><b>有一支常駐腳本會把 agent_harness/ 的變更自動 commit＋push（remote cgc0907、branch fusionroutemot）</b><div class="ev">↳ agent_harness/scripts/auto_git_push.ps1 :: cgc0907</div></li></ul>
+  <div style="margin-top:8px"><b>未量測</b>（缺席要出聲）</div>
+  <ul style="margin:4px 0 0;padding-left:18px;font-size:12.6px"><li>★ 40–60 t/s 是 README 的<b>預期</b>，不是實測值 —— 本入口把它標成預期，不標成能力實績</li><li>auto_git_push.ps1 在本機從未被執行過（2026-09-17 實查）⇒ 「它會自動推」是設計意圖，不是已驗證的行為</li><li>它推到的是 branch fusionroutemot，而本入口讀的是 demo/sweet-spot-windows-fix ⇒ 兩者要對齊才會看到它的上報</li></ul>
+  <div style="margin-top:8px"><b>本輪真的跑了什麼</b>（來自它的上報，不是我們的推測）</div>
+  <ul style="margin:4px 0 0;padding-left:18px;font-size:13px"><li class='muted'>未上報 ⇒ 不知道它跑了什麼</li></ul>
+  <div style="margin-top:6px"><b>讀數</b><div class="ev"><span class='muted'>（沒有讀數）</span></div></div>
+  <div style="margin-top:8px"><b>通道</b><div class="ev">心跳：<span class="muted">沒有心跳位址（這一格永遠是 unknown）</span></div>
+    <div class="ev">探測結果：skipped —— 本輪 --no-net：不探測（跳過 ≠ 通過）</div>
+    <ul style="margin:4px 0 0;padding-left:18px;font-size:12.6px"><li>★ 自動：把 endpoints/windows-rtx4090.json 寫進 agent_harness/portal/endpoints/ 之後，auto_git_push.ps1 會把整個 agent_harness/ 推上 remote cgc0907 ⇒ 這就是那條「github 數據同步」通道</li></ul>
+    <div style="margin-top:4px;font-size:12.6px"><span class="muted">未上報（沒有任何 endpoints/*.json）</span></div>
+  </div>
+</div></div>
+
+<h2>② 7 日 —— 6 個來源，逐格標出處</h2>
+<div class="small">「無記錄」與 <b>0</b> 是不同的兩件事：0 是「量到沒有」，無記錄 是「根本沒量」。
+每一列都寫了它的來源與歸日依據。</div>
+<svg class="chart" viewBox="0 0 640 132" width="100%" role="img" aria-label="① commit"><text x="30" y="21" font-size="10.5" fill="#6b7280">① commit（最大 76 個）· 空框 = 無記錄</text><rect x="33.0" y="112.0" width="76.9" height="0.0" fill="#1d4ed8" rx="2"/><text x="71.4" y="109.0" font-size="10" fill="#374151" text-anchor="middle">0</text><text x="71.4" y="126" font-size="9" fill="#6b7280" text-anchor="middle">09-12</text><rect x="115.9" y="103.4" width="76.9" height="8.6" fill="#1d4ed8" rx="2"/><text x="154.3" y="100.4" font-size="10" fill="#374151" text-anchor="middle">8</text><text x="154.3" y="126" font-size="9" fill="#6b7280" text-anchor="middle">09-13</text><rect x="198.7" y="99.1" width="76.9" height="12.9" fill="#1d4ed8" rx="2"/><text x="237.1" y="96.1" font-size="10" fill="#374151" text-anchor="middle">12</text><text x="237.1" y="126" font-size="9" fill="#6b7280" text-anchor="middle">09-14</text><rect x="281.6" y="102.3" width="76.9" height="9.7" fill="#1d4ed8" rx="2"/><text x="320.0" y="99.3" font-size="10" fill="#374151" text-anchor="middle">9</text><text x="320.0" y="126" font-size="9" fill="#6b7280" text-anchor="middle">09-15</text><rect x="364.4" y="46.2" width="76.9" height="65.8" fill="#1d4ed8" rx="2"/><text x="402.9" y="43.2" font-size="10" fill="#374151" text-anchor="middle">61</text><text x="402.9" y="126" font-size="9" fill="#6b7280" text-anchor="middle">09-16</text><rect x="447.3" y="30.0" width="76.9" height="82.0" fill="#1d4ed8" rx="2"/><text x="485.7" y="27.0" font-size="10" fill="#374151" text-anchor="middle">76</text><text x="485.7" y="126" font-size="9" fill="#6b7280" text-anchor="middle">09-17</text><rect x="530.1" y="42.9" width="76.9" height="69.1" fill="#1d4ed8" rx="2"/><text x="568.6" y="39.9" font-size="10" fill="#374151" text-anchor="middle">64</text><text x="568.6" y="126" font-size="9" fill="#6b7280" text-anchor="middle">09-18</text></svg><svg class="chart" viewBox="0 0 640 132" width="100%" role="img" aria-label="② M1/M2/M3 oracle 實跑"><text x="30" y="21" font-size="10.5" fill="#6b7280">② M1/M2/M3 oracle 實跑（最大 29 次）· 空框 = 無記錄</text><rect x="33.0" y="30" width="76.9" height="82" fill="none" stroke="#d1d5db" stroke-dasharray="3 3"/><text x="71.4" y="126" font-size="9" fill="#9ca3af" text-anchor="middle">09-12</text><rect x="115.9" y="30" width="76.9" height="82" fill="none" stroke="#d1d5db" stroke-dasharray="3 3"/><text x="154.3" y="126" font-size="9" fill="#9ca3af" text-anchor="middle">09-13</text><rect x="198.7" y="30" width="76.9" height="82" fill="none" stroke="#d1d5db" stroke-dasharray="3 3"/><text x="237.1" y="126" font-size="9" fill="#9ca3af" text-anchor="middle">09-14</text><rect x="281.6" y="41.3" width="76.9" height="70.7" fill="#6d28d9" rx="2"/><text x="320.0" y="38.3" font-size="10" fill="#374151" text-anchor="middle">25</text><text x="320.0" y="126" font-size="9" fill="#6b7280" text-anchor="middle">09-15</text><rect x="364.4" y="47.0" width="76.9" height="65.0" fill="#6d28d9" rx="2"/><text x="402.9" y="44.0" font-size="10" fill="#374151" text-anchor="middle">23</text><text x="402.9" y="126" font-size="9" fill="#6b7280" text-anchor="middle">09-16</text><rect x="447.3" y="30.0" width="76.9" height="82.0" fill="#6d28d9" rx="2"/><text x="485.7" y="27.0" font-size="10" fill="#374151" text-anchor="middle">29</text><text x="485.7" y="126" font-size="9" fill="#6b7280" text-anchor="middle">09-17</text><rect x="530.1" y="78.1" width="76.9" height="33.9" fill="#6d28d9" rx="2"/><text x="568.6" y="75.1" font-size="10" fill="#374151" text-anchor="middle">12</text><text x="568.6" y="126" font-size="9" fill="#6b7280" text-anchor="middle">09-18</text></svg>
+<table>
+<thead><tr><th>來源</th><th class='num'>09-12</th><th class='num'>09-13</th><th class='num'>09-14</th><th class='num'>09-15</th><th class='num'>09-16</th><th class='num'>09-17</th><th class='num'>09-18</th><th>覆蓋與歸日依據</th></tr></thead>
+<tbody><tr><td><b>commit</b><div class="small">工程活動　<code>commits</code></div></td><td class="num">0個</td><td class="num">8個</td><td class="num">12個</td><td class="num">9個</td><td class="num">61個</td><td class="num">76個</td><td class="num">64個</td><td class="small">覆蓋 7/7　|　git log --pretty=%ad --date=short（author date；0 是量到的 0，不是沒量）<details><summary>怎麼來的</summary><div class="small"><b>取法</b>：git log --since=&lt;start&gt; --until=&lt;end+1&gt; --pretty=%ad --date=short，逐日計數<br><b>歸日依據</b>：commit 的 author date（%ad）<br><b>為什麼它不是能力</b>：一個只改文件的 commit 與一個改 kernel 的 commit 在這一欄一樣算 1 ⇒ 它量的是「有沒有動」，不是「能不能做」</div></details></td></tr><tr><td><b>M1/M2/M3 oracle 實跑</b><div class="small">能力（數值身分）　<code>m123</code></div></td><td class="num muted" title="此來源這天沒有資料 ⇒ 不是 0">無記錄</td><td class="num muted" title="此來源這天沒有資料 ⇒ 不是 0">無記錄</td><td class="num muted" title="此來源這天沒有資料 ⇒ 不是 0">無記錄</td><td class="num">25次</td><td class="num">23次</td><td class="num">29次</td><td class="num">12次</td><td class="small">覆蓋 4/7　|　Backup/m123_oracle_gate/summary_*.json 逐檔用 <b>mtime</b> 歸日（summary 內沒有時間欄位）；M1 身分以「分子/分母」加總。此來源最早可追溯到 <b>2026-09-15</b>。<details><summary>怎麼來的</summary><div class="small"><b>取法</b>：Backup/m123_oracle_gate/summary_*.json 逐檔讀 mtime 歸日；同一天內把 m1_numeric_identity／m2_decision_agreement／m3_topk_set_agreement 的「分子/分母」加總<br><b>歸日依據</b>：檔案 mtime（≈ 寫入日；不是 summary 內部的時間欄位——它沒有）<br><b>為什麼它不是能力</b>：它是<b>能力的證據</b>而不是能力本身：分母小時（例如 n=1 的陰性對照）也會顯示 1/1，必須看分母才不會被騙</div></details></td></tr><tr><td><b>決策登錄</b><div class="small">判斷（資產的來源）　<code>decisions</code></div></td><td class="num muted" title="此來源這天沒有資料 ⇒ 不是 0">無記錄</td><td class="num muted" title="此來源這天沒有資料 ⇒ 不是 0">無記錄</td><td class="num muted" title="此來源這天沒有資料 ⇒ 不是 0">無記錄</td><td class="num">26筆</td><td class="num">12筆</td><td class="num">0筆</td><td class="num">30筆</td><td class="small">覆蓋 4/7　|　decision_id 內嵌的 dec-YYYYMMDD- 前綴（寫進 id 的那一天，不是檔案 mtime）<details><summary>怎麼來的</summary><div class="small"><b>取法</b>：agent_harness/engine_loop/traces/decisions.jsonl，依 decision_id 內嵌的 dec-YYYYMMDD- 前綴歸日<br><b>歸日依據</b>：id 內嵌日期（寫進 id 的那一天，不是檔案 mtime）<br><b>為什麼它不是能力</b>：決策多不等於能力強；要配動能（carried／orphan）才讀得出「這些判斷有沒有被後續工作用上」</div></details></td></tr><tr><td><b>當日工作日誌</b><div class="small">工作痕跡　<code>daylog</code></div></td><td class="num muted" title="此來源這天沒有資料 ⇒ 不是 0">無記錄</td><td class="num muted" title="此來源這天沒有資料 ⇒ 不是 0">無記錄</td><td class="num muted" title="此來源這天沒有資料 ⇒ 不是 0">無記錄</td><td class="num">122727B</td><td class="num">284362B</td><td class="num">451541B</td><td class="num">238409B</td><td class="small">覆蓋 4/7　|　.workbuddy/memory/&lt;date&gt;.md 的位元組數（檔名日期）。它回答「那天有沒有人在場」，不是產出量<details><summary>怎麼來的</summary><div class="small"><b>取法</b>：.workbuddy/memory/&lt;date&gt;.md 的位元組數<br><b>歸日依據</b>：檔名日期<br><b>為什麼它不是能力</b>：日誌的位元組數與當天做了什麼只弱相關；它的作用是回答「那天有沒有人在場」</div></details></td></tr><tr><td><b>資產快照（本入口實跑）</b><div class="small">資產存量　<code>snapshot</code></div></td><td class="num muted" title="此來源這天沒有資料 ⇒ 不是 0">無記錄</td><td class="num muted" title="此來源這天沒有資料 ⇒ 不是 0">無記錄</td><td class="num muted" title="此來源這天沒有資料 ⇒ 不是 0">無記錄</td><td class="num muted" title="此來源這天沒有資料 ⇒ 不是 0">無記錄</td><td class="num muted" title="此來源這天沒有資料 ⇒ 不是 0">無記錄</td><td class="num muted" title="此來源這天沒有資料 ⇒ 不是 0">無記錄</td><td class="num">15筆</td><td class="small">覆蓋 1/7　|　history.jsonl 的 ts（每次 AGENT_HARNESS_PORTAL 跑完追加一行）<details><summary>怎麼來的</summary><div class="small"><b>取法</b>：agent_harness/portal/history.jsonl 的 ts 歸日；每筆帶著 lessons／decisions／code_loc／gates_pass 等存量讀數<br><b>歸日依據</b>：ts（每次 build_portal.py 跑完追加的那一行）<br><b>為什麼它不是能力</b>：存量數字（LOC、檔案數）會因為「有沒有人剛好跑過入口」而變，不是每日自動產生</div></details></td></tr><tr><td><b>端點上報抵達</b><div class="small">機隊　<code>endpoint_report</code></div></td><td class="num muted" title="此來源這天沒有資料 ⇒ 不是 0">無記錄</td><td class="num muted" title="此來源這天沒有資料 ⇒ 不是 0">無記錄</td><td class="num muted" title="此來源這天沒有資料 ⇒ 不是 0">無記錄</td><td class="num muted" title="此來源這天沒有資料 ⇒ 不是 0">無記錄</td><td class="num muted" title="此來源這天沒有資料 ⇒ 不是 0">無記錄</td><td class="num muted" title="此來源這天沒有資料 ⇒ 不是 0">無記錄</td><td class="num">1件</td><td class="small">覆蓋 1/7　|　endpoints/*.json 的 reported_at（端點自己寫的時間）<details><summary>怎麼來的</summary><div class="small"><b>取法</b>：agent_harness/portal/endpoints/*.json 的 reported_at 歸日<br><b>歸日依據</b>：artifact 的 reported_at（端點自己寫的時間）<br><b>為什麼它不是能力</b>：「有上報」只證明它當時活著，不證明它的產出對我們有用</div></details></td></tr></tbody></table>
+
+<h2>③ 資產動能（決策被後續工作用上的程度）</h2>
+<div class="small">這是宣告的判準（使用者：『太多的被推翻就是動能不足』），不是普適定律 ⇒ 它可以被重新訴訟。兩個門檻都是比例，所以要引用的時候要附上分母。★★ 一個必要的 caveat：orphan 不等於壞決策。它有兩種來源 —— (a) 真的沒有被後續工作用上；(b) 它是一個診斷的終點（一個問題被它結案了，後面沒有東西需要引用它）。本指標量的是「被當成積木再用的程度」，而一個把問題結掉的結論本來就會停在原地。所以 orphan 率適合用來問『我們有多少產出沒有變成下一塊的基礎』，不適合用來逐筆判決策的好壞。</div>
+<div style="margin:8px 0">
+<span class="tag t-green">carried 1</span>　<span class="tag t-green">replaced 4</span>　<span class="tag t-green">refuted 2</span>　<span class="tag t-grey">orphan 31</span>　<span class="tag t-grey">pending 30</span>　
+</div>
+<div class="small">refuted 5.26%（門檻 25.00%）　·　
+orphan 81.58%（門檻 50.00%）　·　
+判定 <span class="tag t-amber">動能不足</span></div>
+<table><thead><tr><th>decision_id</th><th>日</th><th>動能</th><th class="num">被引用</th></tr></thead>
+<tbody><tr><td><code>dec-20260915-1930-remap-needs-double-buffer</code></td><td>20260915</td><td><span class="tag t-green">refuted</span></td><td class="num">0</td></tr><tr><td><code>dec-20260915-2000-cause-is-serialization</code></td><td>20260915</td><td><span class="tag t-grey">orphan</span></td><td class="num">0</td></tr><tr><td><code>dec-20260915-2045-s1-id-oob-is-a-real-defect</code></td><td>20260915</td><td><span class="tag t-green">refuted</span></td><td class="num">0</td></tr><tr><td><code>dec-20260915-2105-id-oob-is-an-encode-time-artifact</code></td><td>20260915</td><td><span class="tag t-grey">orphan</span></td><td class="num">0</td></tr><tr><td><code>dec-20260915-2110-publish-equals-safe-only-when-resident</code></td><td>20260915</td><td><span class="tag t-green">carried</span></td><td class="num">1</td></tr><tr><td><code>dec-20260915-2115-s1-divergence-is-per-layer-not-global</code></td><td>20260915</td><td><span class="tag t-grey">orphan</span></td><td class="num">0</td></tr><tr><td><code>dec-20260915-2120-suffix-ladder-cannot-separate-layer-from-count</code></td><td>20260915</td><td><span class="tag t-grey">orphan</span></td><td class="num">0</td></tr><tr><td><code>dec-20260915-2125-extra-nodes-are-inert-so-the-ids-are-the-cause</code></td><td>20260915</td><td><span class="tag t-grey">orphan</span></td><td class="num">0</td></tr><tr><td><code>dec-20260915-2130-the-ids-are-not-the-cause-either</code></td><td>20260915</td><td><span class="tag t-grey">orphan</span></td><td class="num">0</td></tr><tr><td><code>dec-20260915-2136-the-ids-are-correct-on-the-real-arm-too</code></td><td>20260915</td><td><span class="tag t-green">replaced</span></td><td class="num">0</td></tr><tr><td><code>dec-20260915-2138-the-documented-s1-design-is-not-runnable</code></td><td>20260915</td><td><span class="tag t-grey">orphan</span></td><td class="num">0</td></tr><tr><td><code>dec-20260915-2142-cgc-oa-async-ignores-its-value</code></td><td>20260915</td><td><span class="tag t-green">replaced</span></td><td class="num">0</td></tr><tr><td><code>dec-20260915-2158-the-dispatcher-is-neutral-on-the-baseline-and-does-not-fix-s1</code></td><td>20260915</td><td><span class="tag t-grey">orphan</span></td><td class="num">0</td></tr><tr><td><code>dec-20260915-2202-the-s1-nodes-are-inert-only-under-the-segmented-dispatcher</code></td><td>20260915</td><td><span class="tag t-grey">orphan</span></td><td class="num">0</td></tr><tr><td><code>dec-20260915-2215-making-the-gate-honour-its-value-silently-re-routed-four-profiles</code></td><td>20260915</td><td><span class="tag t-grey">orphan</span></td><td class="num">0</td></tr><tr><td><code>dec-20260915-2226-the-segmented-instability-is-the-dispatchers-not-the-old-builds</code></td><td>20260915</td><td><span class="tag t-grey">orphan</span></td><td class="num">0</td></tr><tr><td><code>dec-20260915-2240-d3-demotes-submit-ahead-to-an-instrument-and-may-delete-s2</code></td><td>20260915</td><td><span class="tag t-grey">orphan</span></td><td class="num">0</td></tr><tr><td><code>dec-20260915-2248-the-ids-are-bit-identical-so-the-defect-is-in-what-they-point-at</code></td><td>20260915</td><td><span class="tag t-grey">orphan</span></td><td class="num">0</td></tr><tr><td><code>dec-20260915-2233-the-old-oracle-cap-recorded-an-intent-so-the-gate-went-dark</code></td><td>20260915</td><td><span class="tag t-grey">orphan</span></td><td class="num">0</td></tr><tr><td><code>dec-20260915-2246-d3-has-two-independent-premises-and-only-one-of-them-buys-speed</code></td><td>20260915</td><td><span class="tag t-grey">orphan</span></td><td class="num">0</td></tr><tr><td><code>dec-20260915-2311-section-3-is-closed-by-measuring-the-instruments-noise-not-by-explaining-the-gap</code></td><td>20260915</td><td><span class="tag t-grey">orphan</span></td><td class="num">0</td></tr><tr><td><code>dec-20260915-2312-the-interleave-does-not-establish-s1s-throughput-sign-and-the-arm-is-bimodal</code></td><td>20260915</td><td><span class="tag t-grey">orphan</span></td><td class="num">0</td></tr><tr><td><code>dec-20260915-2345-the-moe-output-capture-does-not-license-the-weight-content-carrier-its-premise-is-false-at-decode</code></td><td>20260915</td><td><span class="tag t-grey">orphan</span></td><td class="num">0</td></tr><tr><td><code>dec-20260915-2346-premise-b-fails-so-publication-is-not-redundant-and-section-8-3-is-inert-on-consumed-ids</code></td><td>20260915</td><td><span class="tag t-grey">orphan</span></td><td class="num">0</td></tr></tbody></table>
+
+<h2>④ 怎麼把一個離線端接進來</h2>
+<div class="small">鴻蒙端與 Windows 端<b>目前不在我們的網路上</b> ⇒ 沒有任何即時協議能成立。
+唯一在它們真的離線時仍然成立的機制是 store-and-forward：端點寫檔，靠既有通道帶回來。</div>
+<pre><code># 在端點上跑（只需 Python 標準函式庫；沒有這個 repo 也能跑）
+python3 agent_harness/portal/report_endpoint_status.py --id windows-rtx4090 \
+    --what-ran "建 CUDA 版（GGML_CUDA=ON）" --metric decode_tps=52.3 \
+    --not-measured "沒量過 M1/M2/M3 身分"
+
+# 讓它落到 endpoints/ 之後，靠既有通道帶回來：
+#   鴻蒙端  scp ＋ ssh          → deploy-harmonyos/deploy-to-harmonyos.sh
+#   Windows git（自動 push）    → agent_harness/scripts/auto_git_push.ps1
+#   雲端    rsync               → CGC-main/cgc_engine/tools/_archive_v1/server/sync_all_gates_to_hosts.sh
+# 若端點真的連得上，也可以直接 POST 給本入口：
+#   curl -X POST http://127.0.0.1:8787/api/report -d @endpoints/windows-rtx4090.json</code></pre>
+<div class="box warn"><b>兩個對齊問題（不說就會靜默失敗）</b>
+<div style="margin-top:5px">
+① <code>auto_git_push.ps1</code> 推的是 branch <code>fusionroutemot</code>，而本入口讀的是
+<code>demo/sweet-spot-windows-fix</code> ⇒ 兩邊對齊之前 Windows 的上報不會出現在這裡。<br>
+② <code>auto_git_push.ps1</code> 在本機<b>從未被執行過</b> ⇒「它會自動推」目前是設計意圖，不是已驗證的行為。
+</div></div>
+
+<h2>⑤ 這一頁的可信度邊界</h2>
+<ul style="font-size:13.2px">
+<li>本頁顯示的<b>閘門綠燈是「最後一次實跑」的記錄</b>，不是剛剛跑的 ——
+引擎面入口（<code>build_portal.py --gates-only</code>）才是跑閘門的地方。</li>
+<li>心跳探測的失敗一律寫 <b>unknown</b>，不是紅燈：連不上只說明「現在不知道」。</li>
+<li>能力的每一條都指到<b>真實檔案裡的子串</b>（見卡片下的 <code>↳</code> 行）——
+指針失效會讓 <code>--check</code> 變紅，不會靜默。</li>
+<li>本輪 --no-net：&lt;b&gt;沒有探測任何心跳&lt;/b&gt;，所以「心跳可達」顯示 0 是「沒問過」而不是「不通」。</li>
+</ul>
+
+<div class="foot">
+來源：<code>agent_harness/portal/fleet.json</code>（端點，唯一真相）＋
+<code>trend_sources.json</code>（七日來源，唯一真相）＋
+<code>endpoints/*.json</code>（端點上報）＋ 複用 <code>build_portal.py</code> 的動能與跨機判定。<br>
+本頁不連任何外部服務；所有數字都可在本機用上面那三條指令重跑。
+</div>
+
+</div></body></html>

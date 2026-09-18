@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "title": "七日趨勢的來源註冊表",
+  "window_days": 7,
+  "missing_label": "無記錄",
+  "day_basis_note": "「無記錄」與 0 是不同的兩件事：0 是「量到沒有」，無記錄是「根本沒量」。本入口不把沒量過的日子填成 0。",
+  "why_this_file_exists": "七日趨勢的每一個來源都在這裡宣告一次。頁面上的欄位、覆蓋天數與「一鍵復現」指令，全部從這份檔推導 —— 不在別的地方再寫一份清單。",
+  "sources": [
+    {
+      "id": "commits",
+      "label": "commit",
+      "bucket": "工程活動",
+      "unit": "個",
+      "how": "git log --since=<start> --until=<end+1> --pretty=%ad --date=short，逐日計數",
+      "day_basis": "commit 的 author date（%ad）",
+      "not_a_capability_because": "一個只改文件的 commit 與一個改 kernel 的 commit 在這一欄一樣算 1 ⇒ 它量的是「有沒有動」，不是「能不能做」",
+      "probe": {"kind": "git", "argv": ["git", "rev-parse", "--git-dir"]}
+    },
+    {
+      "id": "m123",
+      "label": "M1/M2/M3 oracle 實跑",
+      "bucket": "能力（數值身分）",
+      "unit": "次",
+      "how": "Backup/m123_oracle_gate/summary_*.json 逐檔讀 mtime 歸日；同一天內把 m1_numeric_identity／m2_decision_agreement／m3_topk_set_agreement 的「分子/分母」加總",
+      "day_basis": "檔案 mtime（≈ 寫入日；不是 summary 內部的時間欄位——它沒有）",
+      "not_a_capability_because": "它是**能力的證據**而不是能力本身：分母小時（例如 n=1 的陰性對照）也會顯示 1/1，必須看分母才不會被騙",
+      "probe": {"kind": "glob", "target": "Backup/m123_oracle_gate/summary_*.json", "min_count": 1}
+    },
+    {
+      "id": "decisions",
+      "label": "決策登錄",
+      "bucket": "判斷（資產的來源）",
+      "unit": "筆",
+      "how": "agent_harness/engine_loop/traces/decisions.jsonl，依 decision_id 內嵌的 dec-YYYYMMDD- 前綴歸日",
+      "day_basis": "id 內嵌日期（寫進 id 的那一天，不是檔案 mtime）",
+      "not_a_capability_because": "決策多不等於能力強；要配動能（carried／orphan）才讀得出「這些判斷有沒有被後續工作用上」",
+      "probe": {"kind": "jsonl", "target": "agent_harness/engine_loop/traces/decisions.jsonl", "require_keys": ["decision_id", "judgement"]}
+    },
+    {
+      "id": "daylog",
+      "label": "當日工作日誌",
+      "bucket": "工作痕跡",
+      "unit": "B",
+      "how": ".workbuddy/memory/<date>.md 的位元組數",
+      "day_basis": "檔名日期",
+      "not_a_capability_because": "日誌的位元組數與當天做了什麼只弱相關；它的作用是回答「那天有沒有人在場」",
+      "probe": {"kind": "dir", "target": ".workbuddy/memory"}
+    },
+    {
+      "id": "snapshot",
+      "label": "資產快照（本入口實跑）",
+      "bucket": "資產存量",
+      "unit": "筆",
+      "how": "agent_harness/portal/history.jsonl 的 ts 歸日；每筆帶著 lessons／decisions／code_loc／gates_pass 等存量讀數",
+      "day_basis": "ts（每次 build_portal.py 跑完追加的那一行）",
+      "not_a_capability_because": "存量數字（LOC、檔案數）會因為「有沒有人剛好跑過入口」而變，不是每日自動產生",
+      "probe": {"kind": "file", "target": "agent_harness/portal/history.jsonl"}
+    },
+    {
+      "id": "endpoint_report",
+      "label": "端點上報抵達",
+      "bucket": "機隊",
+      "unit": "件",
+      "how": "agent_harness/portal/endpoints/*.json 的 reported_at 歸日",
+      "day_basis": "artifact 的 reported_at（端點自己寫的時間）",
+      "not_a_capability_because": "「有上報」只證明它當時活著，不證明它的產出對我們有用",
+      "probe": {"kind": "dir", "target": "agent_harness/portal/endpoints"}
+    }
+  ],
+  "rules": {
+    "every_source_appears": "註冊表宣告的每一個來源都必須在七日表上有一列 —— 即使它整週都是「無記錄」。少一列就紅（來源被靜默漏掉時，表上完全看不出來）。",
+    "no_zero_for_missing": "某來源在某天沒有資料 ⇒ 該格必須是「無記錄」，不得填 0。",
+    "provenance_per_cell": "每一格都要帶來源代號；頁面上要能一眼看出「這個數字是從哪個檔/哪條指令來的」。"
+  }
+}
