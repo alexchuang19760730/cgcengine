@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>llama-bench 的 MTP verify 走回生產路徑 — 修法、判準與速度對照（2026-09-18 19:45）</title>
+<style>
+:root { --fg:#111827; --muted:#6b7280; --line:#e5e7eb; --bg:#ffffff; --soft:#f9fafb; --code:#f3f4f6;
+        --blue:#1d4ed8; --green:#15803d; --red:#b91c1c; --amber:#b45309; --purple:#6d28d9; --gray:#6b7280; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg);
+       font:15px/1.75 -apple-system,"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif; }
+.wrap { max-width:1040px; margin:0 auto; padding:32px 20px 80px; }
+h1 { font-size:23px; margin:0 0 6px; line-height:1.4; }
+h2 { font-size:18px; margin:30px 0 10px; padding-top:12px; border-top:1px solid var(--line); }
+h3 { font-size:15.5px; margin:20px 0 6px; }
+p { margin:8px 0; }
+.sub { color:var(--muted); font-size:13px; margin:0 0 20px; }
+a { color:var(--blue); }
+code { background:var(--code); padding:1px 5px; border-radius:4px; font-size:12.6px;
+       font-family:ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-all; }
+pre { background:var(--soft); border:1px solid var(--line); border-radius:6px; padding:10px 12px;
+      overflow-x:auto; margin:8px 0 14px; }
+pre code { background:none; padding:0; font-size:12.3px; line-height:1.55; display:block; white-space:pre; }
+table { border-collapse:collapse; width:100%; margin:10px 0 16px; font-size:13.2px; }
+th,td { border:1px solid var(--line); padding:6px 9px; text-align:left; vertical-align:top; }
+th { background:var(--soft); font-weight:600; }
+.num { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.tag { display:inline-block; font-size:11.5px; padding:1px 8px; border-radius:999px;
+       border:1px solid var(--line); background:var(--soft); }
+.t-blue{color:var(--blue);border-color:#bfdbfe;background:#eff6ff}
+.t-green{color:var(--green);border-color:#bbf7d0;background:#f0fdf4}
+.t-red{color:var(--red);border-color:#fecaca;background:#fef2f2}
+.t-amber{color:var(--amber);border-color:#fde68a;background:#fffbeb}
+.t-purple{color:var(--purple);border-color:#ddd6fe;background:#f5f3ff}
+.t-gray{color:var(--gray);border-color:var(--line);background:var(--soft)}
+.box { border:1px solid var(--line); border-left:4px solid var(--blue); border-radius:4px;
+       padding:11px 13px; margin:14px 0; }
+.box.warn { border-left-color:var(--amber); background:#fffdf5; }
+.box.ok { border-left-color:var(--green); background:#f6fdf8; }
+.box.bad { border-left-color:var(--red); background:#fff7f7; }
+.box.pur { border-left-color:var(--purple); background:#faf8ff; }
+.small { font-size:12.3px; color:var(--muted); }
+ul,ol { margin:6px 0 10px; padding-left:22px; }
+li { margin:3px 0; }
+svg { display:block; margin:10px 0 16px; }
+</style></head>
+<body><div class="wrap">
+
+<h1>llama-bench 的 MTP verify 走回生產路徑</h1>
+<p class="sub">
+2026-09-18 19:45　·　主題：<b>llama-bench × llama-server 的路徑一致性</b>（一個 <code>src/</code> 缺陷：同一支儀器量了另一條程式路徑）　·　
+本檔所屬 commit 見 §7　·　
+姊妹檔 <a href="MTP_K_AB_2026-09-18.md">MTP_K_AB_2026-09-18.md</a>（k 掃描與「只接了一半」的原始發現）、
+<a href="MTP_LAUNCH_REQUIRED_PARAMS_2026-09-18.md">MTP_LAUNCH_REQUIRED_PARAMS_2026-09-18.md</a>（啟動必跑參數）、
+<a href="HTTP_VS_BENCH_CALIBER_2026-09-18.md">HTTP_VS_BENCH_CALIBER_2026-09-18.md</a>（口徑 A/B）
+</p>
+
+<div class="box pur">
+<b>這份文件的定位</b>：<b>新主題 ⇒ 另開新檔</b>（<code>src/</code> 的修正，不是實驗記錄）。
+<a href="MTP_K_AB_2026-09-18.md">MTP_K_AB</a> 的 §3.1 把「llama-bench 的 verify 不走生產的 fast path」
+寫成了「<b>另一個洞</b>，修它會動 <code>src/</code>，屬新一輪」；<b>本檔就是那一輪</b>，並把它修完、量完。
+</div>
+
+<h2>§1 一句話</h2>
+<p>
+<b>llama-bench 的 MTP 一直沒走生產的 verify 路徑，而且沒有任何東西說出來。</b>
+fast path 的閘門是「<b>呼叫端設的 phase</b>」，而全樹只有 <b>兩個</b>呼叫者 —— server 與共用 spec 庫；
+共用庫<b>只碰 <code>ctx_dft</code></b>，所以 llama-bench 的 target ctx 永遠是 <code>UNKNOWN</code>（fail-closed）
+⇒ 每一個 verify 批次都落到 exact <code>ensure_batch</code>。修法是在 verify decode 前後各加一行呼叫，
+判準是那格計數器 <code>verify: calls</code> 從 <b class="num">0</b> 變成 <b class="num">10183</b>。
+</p>
+
+<h2>§2 問題：一個洞，三個症狀</h2>
+
+<h3>2.1 症狀 A — 計數器直接寫 0</h3>
+<p>
+同一天、同一組旗標、兩邊都 MTP on，llama-bench 的 stderr 與 llama-server 的日誌各自印出：
+</p>
+<pre><code>llama-bench  : MTP fast path: calls=395   verify: calls=0      draft: calls=395
+llama-server : MTP fast path: calls=9497  verify: calls=8819                (18.69 experts/call)</code></pre>
+<p>
+<code>verify: calls</code> 是「那條路徑被走過幾次」。<b>0 不是「很少」，是「一次都沒有」</b>。
+</p>
+
+<h3>2.2 症狀 B — <code>union/calls = 8.00</code> 是指紋</h3>
+<p>
+bench 那 395 次全部落在 <code>draft</code>，而 <code>draft</code> 是 <b>ctx_dft 的單 token</b> decode ⇒
+每個 batch 的專家聯集正好等於 top-k（8）。<b>8.00 這個「太整齊」的數字就是證據</b>：
+multi-token 的 verify 批次不可能剛好 8.00。
+</p>
+
+<h3>2.3 症狀 C — 它讓兩份「矛盾」的量測同時成立</h3>
+<p>
+樹上一直有兩個看起來互相打臉的觀察：<b>llama-bench 量到 MTP ≈ 1.0×</b>（今天的 10 臂配對）、
+<b>llama-server 量到 ×0.695</b>。<b>它們不矛盾 —— 它們量的不是同一件事。</b>
+bench 走 exact 路徑（會 eager fill），server 走 fast path（只補 cold 的）。同一個洞解釋兩個數字。
+</p>
+
+<h2>§3 根因（原始碼，三處）</h2>
+
+<h3>3.1 閘門在 <code>llama-context.cpp:6065</code></h3>
+<pre><code>const bool verify_fast = getenv("CGC_VERIFY_DECODE") != nullptr &amp;&amp;
+    cgc_phase == CGC_PHASE_VERIFY &amp;&amp;
+    cparams.ctx_type == LLAMA_CONTEXT_TYPE_DEFAULT;</code></pre>
+<p>
+<code>cgc_current_phase</code> 的預設是 <code>CGC_PHASE_UNKNOWN</code>，而同一處的註解逐字寫著
+「<i>UNKNOWN is the safe default: when caller forgets to set phase, we fall back to exact path</i>」。
+<b>fail-closed 是對的設計</b>；它只是在這個工具上被觸發了一整年而沒有聲音。
+</p>
+
+<h3>3.2 全樹只有兩個呼叫者</h3>
+<table>
+<tr><th>呼叫者</th><th>設哪個 ctx</th><th>設什麼 phase</th></tr>
+<tr><td><code>tools/server/server-context.cpp:3897</code></td><td><code>ctx_tgt</code></td><td><code>classify_batch_phase()</code> 的結果（含 VERIFY）</td></tr>
+<tr><td><code>common/speculative.cpp:303,369,1597,1733,1864</code></td><td><b>只碰 <code>ctx_dft</code></b></td><td>DRAFT / CATCHUP / UNKNOWN</td></tr>
+<tr><td><code>tools/llama-bench/</code></td><td>—</td><td><b>零</b>（<code>grep llama_context_set_cgc_phase</code> 命中 0）</td></tr>
+</table>
+
+<h3>3.3 ★ 為什麼「讓 bench 改用共生庫」救不了</h3>
+<p>
+<code>common/speculative.cpp</code> 是<b>共用</b>的 spec 庫，但它<b>本身不設 VERIFY</b> ——
+VERIFY 只存在於 <b>server 私有的 decode wrapper</b>。<b>洞在「共用庫」與「server 私有 wrapper」的交界上</b>，
+兩邊都能以為對方做了。這類交界最難被發現，因為它的症狀不是報錯，是「另一條路一直跑得很好」。
+</p>
+
+<h2>§4 修法（<code>src/llama.cpp/tools/llama-bench/llama-bench.cpp</code>，+40 行 / −0）</h2>
+<table>
+<tr><th>改動點</th><th>內容</th><th>為什麼</th></tr>
+<tr>
+  <td>include</td>
+  <td><code>#include "../../src/llama-ext.h"</code></td>
+  <td>與 <code>server-context.cpp:19</code> 同一個 staging API、同一條相對路徑</td>
+</tr>
+<tr>
+  <td><code>test_gen_spec</code> 的 verify decode <b>之前</b></td>
+  <td><code>llama_context_set_cgc_phase(ctx, CGC_PHASE_VERIFY)</code></td>
+  <td>就是缺的那一行。<b>set-then-decode</b> 是 server 用的同一個配對（<code>:3897</code> → <code>:3904</code>）</td>
+</tr>
+<tr>
+  <td>同一個 decode <b>之後</b></td>
+  <td><code>llama_context_set_cgc_phase(ctx, CGC_PHASE_UNKNOWN)</code></td>
+  <td>fail-closed 重設，抄 <code>common/speculative.cpp:1861-1864</code> 的既有理由（「a missed marker can never accidentally ZERO-map an exact-path batch」）</td>
+</tr>
+</table>
+
+<div class="box">
+<b>為什麼「無條件設 VERIFY」是對的</b>（含 0 個 draft 的回合）：
+上面建出來的 batch <b>就是</b> verify 回合 <code>[id_last, draft0..N-1]</code>。server 標記同一件事的方式
+（<code>server-context.cpp:520-524</code>）是<b>先把 base token 推入 <code>spec_i_batch</code>、再把 drafts 推進去</b>
+⇒ <b>1 token、0 個 draft 的回合仍然是 VERIFY</b>。而 <code>llama-context.cpp:6049</code> 也明說
+VERIFY 允許 <code>n_tokens == 1</code>（L4 會切）。
+</div>
+
+<div class="box warn">
+<b>為什麼重設必須放在錯誤檢查<b>之前</b></b>：這個 context <b>跨 cell 重用</b>，而
+<code>test_gen()</code> 的 depth prefill（<code>:2289</code>）與單 token 步（<code>:2311</code>）
+<b>刻意不設 phase</b>。失敗路徑若把 <code>VERIFY</code> 洩給下一個 rep，那些「普通 decode cell」會被
+<b>靜默</b>移到 fast path 上 —— 而它們看起來完全正常。
+</div>
+
+<div class="box ok">
+<b>為什麼「只此一處」就夠</b>：<code>test_gen()</code> 的那兩處在 server 分別是 PREFILL 與 NORMAL_DECODE，
+而閘門只放行 VERIFY／DRAFT ⇒ <b>兩邊都走 exact 路徑</b>。所以 bench 的 <code>UNKNOWN</code> 與 server 的
+PREFILL／NORMAL_DECODE <b>行為相同</b>，不需要動。
+</div>
+
+<h2>§5 判準：怎麼知道真的接上了</h2>
+<p>
+<b>不看旗標被不被接受</b>（<code>[mode] MTP ON</code> 只證明這件事）。要看那條路徑自己被走過的次數。
+</p>
+<table>
+<tr><th>計數器</th><th>修好前</th><th>修好後</th><th>llama-server（同口徑）</th></tr>
+<tr><td><code>verify: calls</code></td><td class="num">0</td><td class="num"><b>10183</b></td><td class="num">8819</td></tr>
+<tr><td><code>verify union / call</code></td><td class="num">—（不存在）</td><td class="num"><b>17.39</b></td><td class="num">18.69</td></tr>
+<tr><td><code>draft: calls</code>（8.00/call）</td><td class="num">395</td><td class="num">425</td><td class="num">（同 DRAFT 路徑）</td></tr>
+<tr><td><code>verify-strict: refused / zero_mapped_selected</code></td><td class="num">0 / 0</td><td class="num"><b>0 / 0</b></td><td class="num">0 / 0</td></tr>
+</table>
+<p>
+最後一列是<b>品質守門</b>：它的定義是「被選中的專家被讀成零權重」的次數。
+<code>llama-expert-cache.cpp:2537-2541</code> 逐字寫著它<b>無條件印出</b>、就是為了「不能再沉默」。
+<b>0/0 ⇒ fast path 沒有把權重丟掉。</b>另外 <code>CGC-COLD-GUARD … -&gt; ensure_batch</code> 在修好後
+仍然會觸發（冷專家佔比超過 30% 時退回 exact）⇒ <b>第二層防護活著</b>。
+</p>
+
+<h3>5.1 建置判準（B27：exit 0 不算證據）</h3>
+<pre><code>$ cmake --build src/llama.cpp/build -j8 --target llama-bench
+[100%] Building CXX object tools/llama-bench/CMakeFiles/llama-bench-impl.dir/llama-bench.cpp.o
+[100%] Linking CXX shared library ../../bin/libllama-bench-impl.dylib
+[100%] Linking CXX executable ../../bin/llama-bench</code></pre>
+<pre><code>$ nm -u src/llama.cpp/build/bin/libllama-bench-impl.dylib | grep cgc_phase
+__Z27llama_context_set_cgc_phaseP13llama_context11cgc_phase_t</code></pre>
+<p class="small">
+★ <b>驗符號要用 <code>nm -u</code>，不要用 <code>strings</code></b> —— 後者對這個符號回 0 命中，
+會讓人以為「沒編進去」。
+</p>
+
+<h2>§6 速度：路徑統一了，但「同速」要分成兩組讀</h2>
+
+<div class="box warn">
+<b>先講可引用性</b>：本節有兩組數字，<b>只有第二組可以引用</b>。
+第一組落在 <b>19:53:59 那次不乾淨重開機之前</b>的窗內（`ResetCounter-2026-09-18-195408.diag`）
+⇒ 標 <span class="tag t-red">不可引用</span>。第二組是重開機後、環境閘門通過才跑的。
+</div>
+
+<h3>6.1 方法：怎麼在<b>不換 binary</b> 的情況下重現「修前」</h3>
+<p>
+fast path 的閘門是 <code>cgc_fast_eligible = !warm_gate</code>，而 <code>warm_gate</code> 由
+<code>CGC_WARM_NPAST</code> 決定（<code>llama-context.cpp:6081-6084</code>）。把它設成天文數字
+⇒ 永遠 warm_gate ⇒ fast path 永不啟用 ⇒ verify 回到 exact <code>ensure_batch</code>，
+也就是<b>這個 commit 之前的行為</b>。設定路徑是 <code>run_server.sh:2035</code> 的
+<code>CGC_SERVER_WARM_NPAST</code>（已用 <code>--dry-run</code> 驗過它會進最終 env）。
+其餘每一格（VERIFY／DRAFT 的許可、PREFILL_STREAM、GATHER_SLAB_CAP、模型、<code>-b 512</code>、
+MTP <code>n_max=3</code>、8 GiB pool）都與 <code>prod25-stream</code> 逐字相同。
+</p>
+<p>
+<b>自我驗證（這一格是整節成立的前提）</b>：控制臂的 stderr <b>完全沒有</b> <code>MTP fast path</code>
+那一行 —— 因為 <code>n_fast_calls == 0</code>，那一行只在 &gt; 0 時印。⇒ <b>它確實回到了修前行為</b>，
+不是「我以為它回去了」。
+</p>
+
+<h3>6.2 第一組（19:41–19:48，<span class="tag t-red">不可引用</span>）</h3>
+<table>
+<tr><th>臂</th><th>路徑</th><th class="num">t/s</th><th>熱態</th></tr>
+<tr><td>A1（前輪）</td><td>MTP off（基準）</td><td class="num">7.66</td><td>NOM13 / MOD38 / HEA77</td></tr>
+<tr><td>B2（前輪）</td><td>MTP on，<b>fast</b></td><td class="num">3.36</td><td>NOM63 / MOD26 / UNR4 / HEA58</td></tr>
+<tr><td><b>X1</b></td><td>MTP on，<b>exact</b>（＝修前）</td><td class="num"><b>7.38</b></td><td>NOM48 / UNR1 / MOD52 / HEA40</td></tr>
+<tr><td><b>Y1</b></td><td>MTP on，<b>fast</b>（＝修後）</td><td class="num"><b>5.57</b></td><td>NOM25 / MOD41 / HEA70 / UNR1</td></tr>
+</table>
+<p>
+形狀一律 <code>--arms prod25-stream --prompt 0 --gen 128 --depths 512 --reps 3</code>、
+<code>--spec-type draft-mtp --spec-draft-n-max 3</code>。
+</p>
+<p>
+<b>這一組能說什麼、不能說什麼</b>：<code>exact</code> 的 7.38 與 MTP off 的 7.66 幾乎相同
+（與早上 10 臂配對的「MTP 淨效果量不出來」一致），而 <code>fast</code> 的兩個樣本（3.36／5.57）
+都更低 —— 但 fast 兩次差了 1.66×，<b>而且全落在重開機前的可疑窗</b> ⇒
+<b>本組不支持任何關於 fast／exact 貴賤的結論</b>。它唯一的用處是證明<b>那個開關真的能重現修前行為</b>。
+</p>
+
+<h3>6.3 第二組（20:11–20:17，重開機後、閘門通過；<span class="tag t-green">可引用</span>）</h3>
+<p>
+用<b>同一支驅動</b> <code>scripts/check/http_duo.py</code>（記錄的 12.24–12.59 與今天 18:22 的
+11.89／10.74 都是它跑的），<code>--profile prod25</code>、prefill 2025 token ＋ decode 128、
+<code>--reps 3</code>（rep1 為暖機、捨棄）、熱態 0–1。
+</p>
+<table>
+<tr><th>配置</th><th class="num">decode t/s</th><th class="num">prefill t/s</th><th>對照</th></tr>
+<tr>
+  <td><b>MTP off</b>（<code>CGC_SERVER_MTP=0</code>）</td>
+  <td class="num"><b>11.64</b>〔11.64, 11.26〕</td>
+  <td class="num">118.14〔117.86, 118.14〕</td>
+  <td>記錄 <b>12.24–12.59</b>；今天 18:22 的 <b>11.75</b></td>
+</tr>
+<tr>
+  <td><b>MTP on</b>（prod25 預設）</td>
+  <td class="num"><b>13.68</b>〔13.68, 13.48〕</td>
+  <td class="num">110.44〔109.95, 110.44〕</td>
+  <td>記錄的 <b>12.62</b></td>
+</tr>
+</table>
+<ul>
+  <li><b>12.x 回來了，而且超過</b>：MTP on 的 <b>13.68 &gt; 12.62</b>（+8.4%）。</li>
+  <li>驅動自己印 <code>bar 250/12 -&gt; FAIL</code>，而 <b>FAIL 的唯一原因是 prefill（110 &lt; 250）</b>
+      ⇒ <b>decode 的 12 t/s bar 是過的</b>（13.68 &gt; 12）。</li>
+  <li><b>MTP 的淨效益在這一輪是 +17.5%</b>（13.68 / 11.64），同配置的 rep 內離散只有 ~3%
+      ⇒ 高於噪音。⚠ 但 <b>「MTP off」是一整組旋鈕</b>（8 個 engine env 整塊消失），
+      <b>不是一個旗標</b> ⇒ 這 +17.5% <b>不是「MTP 單獨」的貢獻</b>。而 off 臂<b>先跑（更冷）卻更慢</b>
+      ⇒ 順序不利於此結論 ⇒ 結論更穩。<b>本檔不宣稱因果</b>（環境變了，且今天有多項改動）。</li>
+  <li>server 的 fast path 同一輪也走過：<code>verify: calls=6931 union=130307</code> ⇒ <b>18.80/call</b>
+      （記錄 18.69 ✓）、<code>draft acceptance 0.46541 mean len 2.40</code>。</li>
+</ul>
+
+<div class="box">
+<b>canary 要讀長 prompt 那一筆</b>：2025-token 的 prefill 跑出 <b>110–118 t/s</b> ⇒ 機器健全。
+同一份日誌裡那個 14-token prompt 是 <b>313 ms/token</b>，但那是<b>固定成本主導</b>
+（14 個 token 付一次 graph build）<b>不代表機器壞</b>。⇒ 判準要指名<b>哪一筆</b>，
+否則會把「短 prompt 的常態」誤讀成「環境壞掉」。
+</div>
+
+<h3>6.4 這一節怎麼讀（兩件事不要混）</h3>
+<table>
+<tr><th></th><th>路徑一致性</th><th>速度一致性</th></tr>
+<tr><td>狀態</td><td><b>已證</b>（§5 的計數器）</td><td><b>未證</b>，且受三個變數支配</td></tr>
+<tr><td>變數</td><td>—</td><td>形狀（bench <code>-d 512</code> 持續 vs server 短突發）、
+  溫度（bench 預設 0.80 vs 請求端 greedy）、環境（今天 ±22%）</td></tr>
+</table>
+<p>
+<b>而且修好之後 bench 的 spec 臂數字會「變差」，那是對的</b>：修前它每個 verify 只碰 8 個專家
+（因為根本沒做 verify 的聯集），修後碰 <b>17.39</b> 個 ⇒ <b>終於開始做真的工作</b>。
+「bench 量到 MTP ≈ 1.0」那個假象就是這樣來的。
+</p>
+
+<h2>§7 D5：閘門輸出原文（本 commit 動了 <code>src/</code> ⇒ 必需）</h2>
+
+<p>
+依 D5 的 2026-09-18 修訂：判準是「改動落在哪個目錄」
+（<code>git diff --cached --name-only | grep -c '^src/'</code>），本 commit 是 <b>2</b> 個 <code>src/</code>
+檔（<code>llama-bench.cpp</code> ＋ 被追蹤的 <code>bin/libllama-bench-impl.dylib</code>）⇒ <b>必須跑</b>。
+而依 B28，<b>先讀 <code>comparable</code> 再讀 M1/M2/M3</b>。
+</p>
+
+<pre><code>=== M1/M2/M3 oracle gate (tag en-bench-phase) ===
+  profile : prefill250
+  ref     : Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident_v6_nbaware.jsonl  (9 records)
+  extra   : ['CGC_SERVER_BATCH=6144', 'CGC_SERVER_UBATCH=6144']  (oracle pin: [...])
+  ...
+VERDICT M1 (numeric identity)   : PASS (9/9)
+VERDICT M2 (decision agreement) : PASS (9/9)
+
+GATE en-bench-phase: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+cross-tab: {'num_eq_dec_eq': 9, 'num_eq_dec_ne': 0, 'num_ne_dec_eq': 0, 'num_ne_dec_ne': 0}</code></pre>
+
+<table>
+<tr><th>可歸屬性判準（B28）</th><th>值</th><th>判讀</th></tr>
+<tr><td><code>comparable</code></td><td><b>true</b></td><td>兩側 config 可比 ⇒ 9/9 是<b>裁決</b>，不只是資訊</td></tr>
+<tr><td><code>config_diffs</code></td><td><code>[]</code></td><td>逐項無差異</td></tr>
+<tr><td><code>cap.created</code></td><td><b>2026-09-18T20:21:32</b></td><td>晚於最新產物（<code>llama-bench</code> 19:22:58）⇒ 可歸屬到這棵樹</td></tr>
+<tr><td><code>cross_tab</code></td><td>9 全在 <code>num_eq_dec_eq</code></td><td>沒有 tie-break bug、沒有 drift-only、沒有真分歧</td></tr>
+</table>
+
+<div class="box warn">
+<b>但這一格要誠實標註它的鑑別力</b>：本 commit <b>只動 <code>tools/llama-bench/</code> 這一個 TU</b>，
+<b><code>libllama</code>／<code>llama-server</code> 逐位未變</b>（見上面的 mtime：<code>libllama</code> 仍是 09-16、
+<code>libggml-metal</code> 仍是今天 12:55）。而 M1/M2/M3 走的是 <b>HTTP server 路徑</b>。
+⇒ 這個 PASS 證明的是「<b>這棵樹的引擎產物仍然 bit-identical 且決策一致</b>」，
+<b>不是</b>「這個 commit 的 bench 改動被數值驗證過」。後者的證據是 §5 的計數器與
+<code>verify-strict: 0/0</code>。<b>兩者不要互相冒充。</b>
+</div>
+
+<p class="small">
+另：D5 的第一次嘗試<b>失敗</b>（<code>[detach] 120s timeout / leader: None</code>）—— 因為別條線正在跑
+一支 <code>llama-bench</code>，而<b>新的 preflight 正確地拒絕清場</b>（見 §8.1）。等它跑完、環境回到
+free 6.55 GB 才重跑成功。這就是「檢查與動作在同一個分支」的正面例子。
+</p>
+
+
+<h2>§8 沒做的（具名）</h2>
+<ul>
+  <li><b>llama-bench 的取樣仍然是 temp 0.80</b>（<code>common_params_sampling</code> 的預設），
+      而 <code>http_duo</code> 送的是 <code>temperature: 0.0</code>（greedy）、launcher 的
+      <code>--temp 0.4</code> 是第三個值。<b>三個不同的接受率</b> ⇒ 每步 token 數不同 ⇒
+      <b>跨工具比 t/s 時必須連同溫度一起報</b>。llama-bench 沒有任何 CLI 能改它。</li>
+  <li><b><code>http_duo.py</code> 的 prefill 半軸在 <code>prod25</code> 上必 400</b>
+      （prompt 4500 token &gt; ctx 4096）⇒ 本檔的 server 對照只有 decode 半軸。</li>
+  <li><b>本檔沒有做「換回舊 binary」的 A/B</b>：改用 <code>CGC_SERVER_WARM_NPAST</code> 覆寫
+      （見 §6）在<b>同一個 binary</b> 內重現修前行為 —— 少一次建置、也少一次「跨 build 比」的風險，
+      但因此<b>不能</b>回答「舊 binary 的絕對值是多少」。</li>
+  <li><b>沒有動 <code>run_server.sh</code> 的那個死旗標</b>（argv 有兩個 <code>--temp</code>）；
+      那是所有人共用的生產腳本，且屬另一條線的未提交修改檔。</li>
+</ul>
+
+<h3>8.1 ★ 更正我自己：跨殺的兩處，一處已修、一處還在</h3>
+<table>
+<tr><th>位置</th><th>狀態</th><th>證據</th></tr>
+<tr>
+  <td><code>scripts/run_server.sh</code> 的 preflight</td>
+  <td><b>已被另一條線修好</b>（今天 <code>a26b691f1</code>）—— 現在<b>只警告、不送訊號</b></td>
+  <td>本輪 D5 的輸出原文：<code>[preflight] 發現 1 支 llama 行程（可能是別條 session 正在量測）→ 不送任何訊號</code>
+      ／<code>（preflight 預設已不再幫你清場：2026-09-18 它把別條 session 正在量的 server SIGTERM 掉了）</code></td>
+</tr>
+<tr>
+  <td><code>scripts/check/m123_oracle_gate.py</code> 的 <code>kill_servers()</code></td>
+  <td><b>還在</b>：<code>:229-230</code> 是 <code>pkill -9 -f llama-bench</code>（<b>全域</b>）</td>
+  <td>本輪它把別條線一支正在跑的 <code>llama-bench</code>（PID 9028，<code>-b 5632 -p 512 -d 0</code>）打掉了</td>
+</tr>
+</table>
+<p>
+⇒ <b>我先前文件裡那句「任何一條線啟動 <code>run_server.sh</code> 都會 SIGTERM 掉別人的 llama」已經過期</b>
+（寫在 <a href="MTP3_25TPS_ARITHMETIC_2026-09-18.md">MTP3_25TPS_ARITHMETIC_2026-09-18.md</a> §6）；
+它描述的是<b>修好之前</b>的行為，修理它的正是那條線今天的 commit；已在該檔 §6 就地加了更正塊。
+（另一份同族敘述在 <code>docs/HTTP_DUO_CTXFIT_AND_PREFILL_2026-09-18.md</code>，屬那條線，
+且他們在同一份裡就寫了修法 ⇒ 不代為更動。）
+<b>而 D5 自己的 <code>pkill -9 -f llama-bench</code> 是同族的最後一處</b>——
+建議改成「只殺自己起的那顆」（<code>http_duo.py</code> 的 <code>stop()</code> 已是這樣寫的，可照抄）。
+</p>
+
+<div class="box bad">
+<b>本輪我自己的失誤（具名）</b>：跑 D5 前我的前置檢查<b>印出了</b>那支別條線的 <code>llama-bench</code>
+<b>卻沒有中止</b>，於是 D5 的 <code>kill_servers()</code> 把它打掉了。
+<b>「印出來」不是閘門</b>——檢查必須和動作在<b>同一個分支裡</b>（這個 repo 已經為此寫過同一條規則）。
+</div>
+
+<p class="small" style="margin-top:26px">
+本檔由 <code>docs/MTP_BENCH_PARITY_20260918_1945.html</code> 離線可讀（無外部字型、無 JS）。
+所有可引用的讀數都內嵌在本文；原始 stderr / json 落在 <code>/tmp/</code> 與 <code>Backup/</code>
+（後者在 <code>.gitignore:396</code> 被排除 ⇒ 只在本機）。
+</p>
+
+</div></body></html>

@@ -128,6 +128,16 @@ const double mean_acc_len = n_draft_verif_steps > 0
 ⇒ **任何一條線啟動 `run_server.sh`，都會 SIGTERM 掉其他所有 session 正在跑的 llama 進程**；
 他們自己就算被 guard 擋下來，被殺的那一邊也已經死了。
 
+> **★ 更正（2026-09-18 20:2x，本節描述的是「修好之前」的行為）**：另一條線在同一天把這個修掉了
+> （他們自己的 commit `a26b691f1`，標記為 `[CGC 2026-09-18 no-cross-kill]`）
+> —— **preflight 現在預設只列出 `pid / etime / command`、不送任何訊號**，並印出
+> 「`確定是自己的殘留才手動清`」與「`或明確授權清場：CGC_PREFLIGHT_KILL=all`」。
+> 我在 20:21 的 D5 輸出裡直接看到新的行為：
+> `[preflight] 發現 1 支 llama 行程（可能是別條 session 正在量測）→ 不送任何訊號`。
+> ⇒ 上面這段**只適用於 2026-09-18 20:2x 之前的樹**，不要拿它當現在的行為。
+> 同族的**最後一處仍在**：`scripts/check/m123_oracle_gate.py:229-230` 是
+> `pkill -9 -f llama-bench`（**全域**）。
+
 本輪兩次撞到（`Terminated: 15`）：`llama_server_20260918_181929.log`（18:19，第 C3 臂）、
 `llama_server_20260918_183958.log`（18:40）。第二次是**在前景、我的命令還活著**的時候死的
 ⇒ **推翻我上一輪對 C3 的「nohup／進程組連坐」解釋**：同樣的症狀，真因不同。

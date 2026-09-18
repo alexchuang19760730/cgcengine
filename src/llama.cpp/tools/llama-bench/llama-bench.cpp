@@ -39,6 +39,10 @@
 // (it maps onto the flag and says so on stderr) so that existing drivers keep running.
 #include "sampling.h"
 #include "speculative.h"
+// [CGC MTP instrument 2026-09-18] llama_context_set_cgc_phase — the caller-set phase marker the
+// fast path is gated on (see the verify decode in test_gen_spec). Same include, same reason, as
+// tools/server/server-context.cpp:19.
+#include "../../src/llama-ext.h" // staging API: llama_context_set_cgc_phase (CGC Phase Discrimination)
 
 #ifdef _WIN32
 #    define WIN32_LEAN_AND_MEAN
@@ -2576,7 +2580,43 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
             common_batch_add(batch, draft[i], n_past + (llama_pos) i, { seq_id }, true);
         }
 
+        // [CGC MTP instrument 2026-09-18] THE MISSING PHASE CALL. Until this line existed, this
+        // tool's MTP never used the production verify path, and nothing said so.
+        //
+        // The fast path is gated on a CALLER-SET phase, not on the batch shape
+        // (llama-context.cpp:6065):
+        //     verify_fast = getenv("CGC_VERIFY_DECODE") != nullptr
+        //                   && cgc_current_phase == CGC_PHASE_VERIFY
+        //                   && ctx_type == DEFAULT
+        // `cgc_current_phase` defaults to CGC_PHASE_UNKNOWN, and llama_context_set_cgc_phase had
+        // exactly TWO callers in the whole tree: server-context.cpp:3897 and common/speculative.cpp
+        // — and the latter only ever touches ctx_dft. So every target-context decode in THIS tool,
+        // including this verify batch, fell to the exact ensure_batch path. Measured, same day,
+        // same flags, both MTP on:
+        //     llama-bench stderr : MTP fast path: calls=395   verify: calls=0     draft: calls=395
+        //     llama-server log   : MTP fast path: calls=9497  verify: calls=8819   (18.69 experts/call)
+        // `union/calls = 8.00` on the bench side is the tell: all 395 were single-token DRAFT
+        // decodes. The tool was not measuring the server's MTP, it was measuring the exact-path
+        // fallback — and it prints the same "-p 0 -n 128" either way, so nothing looked wrong.
+        //
+        // WHY UNCONDITIONAL VERIFY IS CORRECT FOR THIS BATCH: the batch built just above IS the
+        // verify round — [id_last, draft0 .. draftN-1]. The server marks exactly the same thing at
+        // server-context.cpp:520-524, where it pushes the BASE token into spec_i_batch first and
+        // the drafts after it: a 1-token round (zero drafts accepted) is still VERIFY. The phase is
+        // allowed to be n_tokens == 1 there (llama-context.cpp:6049).
+        //
+        // Set-then-decode is the same pairing the server uses (server-context.cpp:3897 -> :3904).
+        llama_context_set_cgc_phase(ctx, CGC_PHASE_VERIFY);
+
         const int ret = llama_decode(ctx, batch);
+
+        // Fail-closed reset, mirroring common/speculative.cpp:1861-1864 ("a missed marker can never
+        // accidentally ZERO-map an exact-path batch"). Done BEFORE the error check so the failure
+        // path cannot leak a stale VERIFY into the next rep: this context is reused across cells,
+        // and test_gen()'s depth prefill (:2289) and single-token step (:2311) deliberately set no
+        // phase — a leftover VERIFY would silently move those plain decode cells onto the fast path.
+        llama_context_set_cgc_phase(ctx, CGC_PHASE_UNKNOWN);
+
         if (ret != 0) {
             fprintf(stderr, "%s: verify decode failed: ret=%d n_tokens=%d(pos %d..%d) n_ctx=%d n_past=%d draft=%zu n_batch=%d\n",
                     __func__, ret, (int) batch.n_tokens,
