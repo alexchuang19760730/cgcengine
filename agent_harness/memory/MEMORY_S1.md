@@ -504,3 +504,48 @@ binary 再量一次 `sel_wrong`／`clamped_selected`；建置含免競態版本�
 於是用 10:5x–13:2x 的讀數去描述 14:54 之後的世界。
 **判準：任何「本檔／本節的讀數」都帶著它的時間；宣稱前先跑一次
 `git log --oneline --since=<那些 log 的時間> -- <那些檔>`。**
+
+---
+
+## ★★★ 09-18 11:35–11:4x：clamp **結案（不是缺陷）**，且**修後 S1 的輸出與錨臂相同**
+
+**這一節把上面 §12:25 的「S1 仍未過」以及所有「S1 有數值缺陷」的敘述一併作廢（它們都是修前的）。**
+詳見 `.workbuddy/memory/2026-09-18.md` §EN-138。
+
+### 1. `CGC-SLOT-TABLE-CLAMP` **不是缺陷**（免競態計數器，這次可信）
+
+`p25-gputime-churn` → `p25-slotgpu-churn`（prod25、n-predict 16），log `113550`：
+
+```
+S1 slot-table: publishes=2379 clamped_selected=0 clamped_table=268827
+               changed_entries=508 consumed_changed=187 consumed_unchanged_publishes=944
+CGC-SLOT-TABLE-CLAMP: il=1..16 clamped=113/256 (no consumed id affected: sel_wrong=0)
+CGC-S1-CLAMP-SELECTED 條數 = 0 ;  verify-strict: refused=0  zero_mapped_selected=0
+```
+
+- **`clamped_selected=0` / `sel_wrong=0` / `zero_mapped_selected=0`。**
+- **判準是「被消費的子集」（`clamped_selected`／`sel_wrong`），不是整張表的 `clamped`** ——
+  後者是**整張表**的非常駐比例，每輪都大 ⇒ 無資訊（B1）。原始碼那行自己就寫
+  `(no consumed id affected: sel_wrong=0)`。
+- ⇒ **「clamp 會靜默偷換專家」這條線索結案：它不會**（至少在被消費的子集上）。
+- 順帶：**`consumed_changed = 16.5%`** ⇒ **83.5% 的 publish 沒有改變被消費的映射**
+  （先前 47.5%）。這是「publish 能不能離開熱路徑」的新數字。
+
+### 2. **修後 S1 的輸出與錨臂相同**（`r18_hash1` 之後的第一次）
+
+同一 A/B：`answer_md5` 兩臂**都是 `b69f281a`**；`build` 8 鍵**逐鍵相同**
+（`libggml-metal 1be366306c60`）；池狀態**逐項相同**（hit 89.0／reads 16866／bytes 6626172928／
+resident 6197.04）。
+
+- 上面 §12:25 記的「S1 仍未過（錨 `2d4e5099` vs S1 `0c1ea987`、build `037c931ec616`）」是
+  **09-17 12:15、修前**；修後（14:54 `8e9e830e5`）**沒有人重量過 —— 本輪補上，答案相同。**
+- ⚠️ **不可推廣成「S1 全域 bit-identical」**：`answer_md5` 是端到端指紋、這一輪只有 n-predict 16。
+  **坐實要用 `p25-{outcap,slotgpu-outcap}-pre`**（prefill、pin 層 0–3；判讀：prefill 的 layer 0 輸入是
+  embedding ⇒ 兩臂 by construction 相同 ⇒ **第一個不同的層就指名載體**）。
+- ⚠️ **t/s 不引用**：`thermalpressurelevel=2` ＋ n-predict 16 短爆。
+
+### 3. 對路線圖的後果
+
+序列化的認證天花板 **×1.711**（`CGC_SUBMIT_AHEAD`）⇒ `10.9 × 1.711 = 18.7 < 25`
+⇒ **25 還需要削 GPU 工作 ≈ ×1.35**，而支配區塊是 **delta-net／狀態管線（35–45%）**，不是 MoE
+（§EN-132 的更正）。MTP 的「每步 token」乘數**修後仍 ≈ 0**。
