@@ -607,6 +607,140 @@ python3 scripts/check/m123_oracle_gate.py --tag en-mmflip-mulmv-surface-20260918
 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（13,652,116,512 bytes，35.5B 參數）。</li>
 </ul>
 
+<h2>§50 加了一個 cell：<code>prefill-m8</code>——因為現行四格沒有一格看得見那些閘門</h2>
+
+<p>§45 的結論是「要做一個 <code>-b 8 -ub 8</code> 的 M=8 pp cell」。加了，而且它的存在理由比原本
+寫的更硬。</p>
+
+<p><code>ggml_metal_op_mul_mat</code> 的家族選擇要求 <code>ne11</code>（＝圖的 M）落在
+<code>[2,8]</code> 才到得了 small-batch 家族、<code>ne11 &gt; 8</code> 才走 <code>mul_mm</code>，
+而落空的 <code>mul_mv</code> 每個權重位元組被消費 M 次（<code>ggml-metal-device.cpp:848</code>
+<code>nr1 = 1</code>）。逐格對照：</p>
+
+<table>
+<tr><th>cell</th><th>M</th><th>那些閘門看不看得見</th></tr>
+<tr><td><code>decode</code> / <code>decode-up</code>（<code>-p 0</code>）</td><td class="num">1</td>
+<td><b>看不見</b>：M=1 不在任何 small-batch 群組內</td></tr>
+<tr><td><code>prefill-house</code> / <code>prefill-up</code>（slab）</td><td class="num">&gt; 8</td>
+<td><b>看不見</b>：slab 路徑的 M 是 <b>ubatch</b>，而它 &gt; 8 是<b>構造上必然</b>的
+（<code>llama-context.cpp:6902</code>：只有 <code>!cgc_is_decode_graph(ubatch.n_tokens, …)</code>
+才 arm slab）⇒ 每一次都是 <code>mul_mm</code></td></tr>
+<tr><td><b><code>prefill-m8</code></b>（<code>-b 8 -ub 8 -p 512</code>）</td><td class="num"><b>8</b></td>
+<td><b>看得見</b>——而這是<b>唯一</b>看得見的地方</td></tr>
+</table>
+
+<div class="box warn">
+<p><b>★ 由此得出一條結構性結論：這個旋鈕的觸及範圍只到池路徑，而池路徑就是那個 ~10 t/s 的制程。</b>
+slab（250 t/s 的那個）的 M 永遠 &gt; 8 ⇒ <b>旋鈕在快的那一側沒有立足點</b>。
+所以任何 M∈[2,8] 的 cell <b>天生就慢</b>（本 cell 約 32 s／512-token rep）；
+那是旋鈕住在哪裡，不是 cell 的缺陷。</p>
+</div>
+
+<h2>§51 為什麼旗標是 <code>-b 8 -ub 8</code>（便宜版試過，不行）</h2>
+
+<p>第一個想法是便宜的版本：<code>-b 512 -ub 8</code>，讓 llama-bench 只發<b>一次</b> decode、由引擎
+把它切成 64 個 ubatch ⇒ 64 次 M=8 的 matmul，但走快的那條路。查原始碼後放棄：</p>
+<ul>
+<li>slab 的閘門讀的是 <b>ubatch</b> 寬度（<code>llama-context.cpp:6902</code>），
+所以 <code>-ub 8</code> 會把這步判成 decode graph ⇒ <b>還是池路徑</b>，便宜版根本不會變快；</li>
+<li>而且 <code>-b 512</code> 在只走池的 profile 上會被引擎的夾鉗（8）與 llama-bench 自己送出的
+512 對撞 ⇒ 就是 <code>GGML_ASSERT(n_tokens_all &lt;= n_batch)</code>。</li>
+</ul>
+<p>⇒ 釘成 <code>-b 8 -ub 8</code>，讓<b>宣告的 batch 等於有效的 batch</b>——那正是
+<code>compat()</code> 存在的目的。實跑後每一格都記到 <code>n_batch = 8</code>、
+<code>n_ubatch = 8</code>，逐格相符。</p>
+
+<p>順帶修掉一個會讓「加了卻沒作用」的東西：<code>compat()</code> 原本的
+<code>-p &gt;= b ⇒ 拒絕</code> 會把新 cell 擋掉。原因是推論錯了——<b>llama-bench 自己按
+<code>-b</code> 切 prompt</b>（<code>test_prompt</code>：<code>n_tokens = std::min(n_prompt -
+n_processed, n_batch)</code>，<code>tools/llama-bench/llama-bench.cpp:2282-2294</code>），
+所以 <code>-b 8 -p 512</code> 是 <b>64 次 8-token decode</b>，不是一次 512-token。
+修法刻意做成「<b>只加一條快速允許</b>」：<code>cell_b ≤ clamp</code> 就直接放行，其餘<b>逐字</b>跑原來的
+兩條拒絕。第一版寫成「<code>cell_b &gt; clamp</code> 就拒絕」，結果<b>改了三個既有 cell 的拒絕訊息</b>
+（決策相同、文字不同）——<b>拒絕訊息是別人的證據</b>，加法不該動它。</p>
+
+<h2>§52 結果：<code>(a)</code> 在 M=8 <b>不是</b>利好 <span class="tag t-amber">方向已示、量級未解</span></h2>
+
+<p>ABBA 四格（<code>--profiles prod25 --cells prefill-m8 --reps 3 --extra-env
+CGC_MM_BITIDENT=1|0</code>，順序 <code>on, off</code> 然後 <code>off, on</code>）：</p>
+
+<table>
+<tr><th>臂</th><th>順序</th><th class="num">launch</th><th class="num">worst</th>
+<th class="num">pp platform t/s</th><th class="num">三個 rep</th></tr>
+<tr><td><code>on</code>（BITIDENT=1）</td><td>fwd pos1</td><td class="num">NOMINAL</td>
+<td class="num">MODERATE</td><td class="num">31.73</td><td class="num">32.50 / 33.23 / 30.23</td></tr>
+<tr><td><code>off</code>（BITIDENT=0）</td><td>fwd pos2</td><td class="num">MODERATE</td>
+<td class="num">HEAVY</td><td class="num">29.94</td><td class="num">29.58 / 29.50 / 30.38</td></tr>
+<tr><td><code>off</code></td><td>rev pos1</td><td class="num">HEAVY</td>
+<td class="num">HEAVY</td><td class="num">26.51</td><td class="num">27.78 / 27.04 / 25.98</td></tr>
+<tr><td><code>on</code></td><td>rev pos2</td><td class="num">HEAVY</td>
+<td class="num">HEAVY</td><td class="num">26.96</td><td class="num">27.21 / 28.51 / 25.40</td></tr>
+</table>
+
+<ul>
+<li><b>ABBA 交叉（on/off）＝ 1.038</b> ⇒ <code>on</code>（<code>mul_mv</code>）較快
+⇒ <b><code>off</code> 較慢</b>。</li>
+<li><b>標籤相符的那一對</b>（<code>off</code> 26.51 與 <code>on</code> 26.96，兩臂同為 HEAVY）
+⇒ <b>on/off ＝ 1.017</b>，同一個方向。</li>
+<li><b>方向在兩個順序都一致</b>（fwd：on 31.73 &gt; off 29.94；rev：on 26.96 &gt; off 26.51）。
+位置效應不是驅動者：pos1 的 on/off ＝ 1.197、pos2 ＝ 0.900，<b>方向相反</b>。</li>
+<li><b>但量級在雜訊裡</b>：同一臂兩跑差 <b>1.177×</b>（on）與 <b>1.129×</b>（off），
+而效果是 1.7–3.8%。⇒ 述句是「<b>方向已示、量級未解</b>」。</li>
+</ul>
+
+<div class="box bad">
+<p><b>預期的方向與量到的方向相反。</b>(a) 原本被預期是「把 M× 重讀拿掉 ⇒ 省時間」的正向槓桿；
+在唯一看得見它的形狀上，量到的符號是<b>負</b>的（small-batch 較慢）。
+即使量級未解，也足以<b>停止</b>這條投資，而不是開始它。
+<b>而 (b) 繼承同一個疑慮</b>：它對 <code>IQ4_XS</code> 要求的正是「換到 small-batch 家族」這件
+剛剛量到不划算的事 ⇒ <b>不能再假設 (b) 會賺</b>。</p>
+</div>
+
+<h2>§53 機制要改寫：M× 是 <b>L2 的重複消費</b>，不是 M× DRAM 流量</h2>
+
+<p>§39 說「每一份權重位元組被讀 M 次」。這個句子在<b>指令／L2 的層次</b>是對的，
+但把它當成 <b>DRAM 流量</b>就太強了：<code>mul_mv</code> 的 <code>nr1 = 1</code> 讓 8 個
+threadgroup 各自抓<b>同一列</b>權重，而它們幾乎同時跑 ⇒ 第一次把該列帶進 L2，其餘 7 次<b>命中
+L2</b>。⇒ DRAM 看到的是 ~1×，重複的那部分花的是 <b>issue／L2 頻寬</b>，不是 DRAM 頻寬。</p>
+<p>這正好解釋了為什麼拿掉它<b>不會</b>把 DRAM 頻寬還回來——也讓 §39 的「8.8 GB/s」
+有了第二種讀法：那是<b>有用權重位元組／GPU 時間</b>，乘上 4（M=4 的重複）才是 L2 側的搬運量，
+而 DRAM 側一直都只是 1×。<b>正確的述句是「同一份權重被消費 M 次」，不是「DRAM 被讀 M 次」。</b></p>
+<p>而 small-batch 家族為什麼還更慢？它用 <code>r1ptg = 4</code> 把 grid 的 y 維從 <code>ne11</code>（8）
+<b>降到</b> <code>ne11/r1ptg</code>（2）⇒ <b>threadgroup 少 4 倍 ⇒ memory-level parallelism 少 4 倍</b>。
+對這種 latency-bound 的小 GEMV，<code>mul_mv</code> 的重複讀<b>是在買 MLP</b>。
+（<b>假說，未證</b>；但它預測的方向與 §52 量到的一致。）</p>
+
+<h2>§54 儀器可達性的完整圖（這一節是給下一個人的）</h2>
+
+<table>
+<tr><th class="num">M</th><th>在生產的哪裡出現</th><th>llama-bench 可不可達</th></tr>
+<tr><td class="num">1</td><td>單 token decode、tg 迴圈</td><td><b>可</b>（tg），但<b>閘門不作用</b></td></tr>
+<tr><td class="num">2, 3, 4</td><td><b>MTP verify 批次</b>（延遲最敏感的一格）</td>
+<td><b>不可</b>：<code>llama_bench_matrix.forward_argv()</code> 只轉發白名單，
+<code>--spec-*</code> 刻意不轉發（<code>llama_bench_matrix.py:190</code> 的註解自己寫著）⇒
+矩陣跑不出投機解碼</td></tr>
+<tr><td class="num">8</td><td>池路徑的 prompt chunk（<code>prod25</code> 就是這個）</td>
+<td><b>可</b>——本輪新增的 <code>prefill-m8</code></td></tr>
+<tr><td class="num">&gt; 8</td><td>slab 的 prefill chunk</td><td>可，但<b>閘門不作用</b>（且構造上永遠 &gt; 8）</td></tr>
+</table>
+
+<p>⇒ <b>(a) 最該定價的那一格（M=4 verify）用登記儀器量不到。</b>
+要量它得把 <code>--spec-type</code> 接進矩陣（連同 draft 模型的旗標），那是另一個工作項，
+不是這個 cell 的延伸。</p>
+
+<h2>§55 本節的誠實邊界（§47 之外的補充）</h2>
+
+<ul>
+<li><b>不主張 (a) 慢了 1.7% 或 3.8%。</b>兩個估計都在同一臂 1.13–1.18× 的散布之內；
+可以主張的是<b>方向在兩個順序一致、且與預期相反</b>。</li>
+<li><b>不主張 §53 的 L2 解釋已被證。</b>它是一個與觀測同向的假說，裁決它需要
+（a）一次 cache-miss／L2 流量的讀數，或（b）把 <code>r1ptg</code> 單獨改動的實驗。</li>
+<li><b>不主張 <code>prefill-m8</code> 的 31.73 t/s 是生產數字。</b>它是 M=8 的隔離形狀
+（<code>-b 8</code>），不是任何 profile 的預設制程；用途是<b>比較</b>，不是交付。</li>
+<li><b>未做</b>：把 <code>--spec-type</code> 接進矩陣（§54）；<code>prefill-m8</code> 在
+<code>prefill250</code> 上的對照；<code>(b)</code> 的實作（依 §52 的結果，<b>先別做</b>）。</li>
+</ul>
+
 <p class="small">本檔由引擎層 session 撰寫；上一個月份的快照與跨機器記憶請走
 <code>agent_harness/scripts/import_harness_snapshot.py</code>，不要手動新增。</p>
 

@@ -114,9 +114,38 @@ CELLS: dict[str, dict] = {
         p=512, n=128, d=0, batch="2048",
         why="exactly upstream's default shape -> the `pp512` row of the standard table",
     ),
+    # [CGC 2026-09-18] The M=8 isolation cell -- the ONLY shape that can price the kernel-family
+    # gates (`CGC_MM_BITIDENT`, and the proposed IQ4_XS-in-group-A).
+    #
+    # WHY NO EXISTING CELL CAN SEE THOSE GATES. `ggml_metal_op_mul_mat` needs `ne11` (== the graph's
+    # M) in [2,8] to reach the small-batch family, `mul_mm` needs `ne11 > 8`, and `mul_mv` reads
+    # every weight byte M times (`ggml-metal-device.cpp:848` `nr1 = 1`). So:
+    #   * `decode` / `decode-up` are `-p 0` -> every matmul is M=1 -> not eligible at all;
+    #   * `prefill-house` / `prefill-up` run the SLAB path, whose M is the UBATCH and is > 8 by
+    #     construction (the slab is armed only when `!cgc_is_decode_graph(ubatch.n_tokens, ...)`,
+    #     llama-context.cpp:6902) -> every matmul is mul_mm -> the gates are unreachable;
+    #   * the pool path at M=8 is the only place they act. It is also the ~10 t/s regime, so this
+    #     cell is inherently slow (~50 s per 512-token rep) -- that is where the knob lives, not a
+    #     property of the cell.
+    #
+    # WHY `batch="8"` AND NOT `-b 512 -ub 8` (the cheap version). Tried it first: `-b 512` makes
+    # llama-bench do ONE decode and `-ub 8` splits it into 64 M=8 ubatches. It does not work -- the
+    # slab gate reads the UBATCH width, so `-ub 8` selects the decode graph (pool path) anyway, and
+    # the `-b 512` then fights the engine clamp on a pool-only profile. Pinning `-b 8 -ub 8` makes
+    # the declared batch EQUAL the effective batch, which is the property `compat()` protects.
+    "prefill-m8": dict(
+        p=512, n=16, d=0, batch="8",
+        why="M=8 pool-path chunks: the only shape where the kernel-family gates act "
+            "(decode is M=1, the slab cells are M>8)",
+    ),
 }
 
-CELL_ORDER = ["decode", "decode-up", "prefill-house", "prefill-up"]
+CELL_ORDER = ["decode", "decode-up", "prefill-house", "prefill-up", "prefill-m8"]
+
+# The engine's pool-path clamp on a profile that neither pins BATCH nor turns on PREFILL_STREAM
+# (`cgc_pool_max_tokens()`, llama-context.cpp:285; MTP on -> 8). Named here because two places in
+# this file have to agree on it, and a literal `8` in both is how they drift apart.
+POOL_CLAMP_DEFAULT = 8
 
 # Warmup is NOT a knob here on purpose: `--no-warmup` is a no-op at `-p 0` (the tg warmup is one
 # token) and the default (warmup ON) is the closer analogue of a served request. Recorded as a
@@ -220,13 +249,31 @@ def compat(profile: str, cell: str, env: dict, scalars: dict, b: str) -> tuple[b
     ob = scalars.get("BATCH", "-")
     pinned = ob not in ("-", "")
     stream = env.get("CGC_PREFILL_STREAM", "0") not in ("0", "")
+    cell_b = CELLS[cell]["batch"]
+    # [CGC 2026-09-18] FAST-PATH ALLOW for a cell that pins its batch at or below the clamp.
+    #
+    # Such a cell is honourable on EVERY profile and at any `-p`, so it never needs either refusal
+    # below. `-p` is irrelevant because llama-bench chunks the prompt itself:
+    # `test_prompt` loops `n_tokens = std::min(n_prompt - n_processed, n_batch)`
+    # (tools/llama-bench/llama-bench.cpp:2282-2294) -- so `-b 8 -p 512` is 64 decodes of 8 tokens,
+    # NOT one 512-token decode, and `GGML_ASSERT(n_tokens_all <= n_batch)` cannot fire. And the
+    # clamp cannot lower it either: `cgc_pool_max_tokens()` is 8, so `min(8, clamp) == 8`.
+    #
+    # Shape of this branch, deliberately: it ALLOWS and returns, then the two refusals below run
+    # byte-for-byte as before. Written the other way round first (a refusal for `cell_b > clamp`)
+    # and it silently rewrote the refusal MESSAGE for three pre-existing cells on pool-only
+    # profiles -- same decision, different words, i.e. it edited other cells' evidence. A cell's
+    # refusal text is evidence; an additive change must not touch it.
+    if cell_b is not None and int(cell_b) <= POOL_CLAMP_DEFAULT:
+        return True, ""
     if p and b.isdigit() and int(b) < p:
         return False, (f"-p {p} does not fit -b {b} (GGML_ASSERT n_tokens_all <= n_batch; the "
                        f"engine clamps n_batch to cgc_pool_max_tokens() on this profile)")
-    if not pinned and not stream and b != "8":
+    if not pinned and not stream and b != str(POOL_CLAMP_DEFAULT):
         return False, (f"profile pins no BATCH and {profile} has no CGC_PREFILL_STREAM, so the "
-                       f"engine's pool-path clamp (cgc_pool_max_tokens, default 8) applies -- the "
-                       f"cell's -b {b} would NOT be the effective batch")
+                       f"engine's pool-path clamp (cgc_pool_max_tokens, default "
+                       f"{POOL_CLAMP_DEFAULT}) applies -- the cell's -b {b} would NOT be the "
+                       f"effective batch")
     return True, ""
 
 
@@ -244,6 +291,18 @@ def cell_command(profile: str, cell: str, reps: int, workdir: Path, jpath: Path,
     if spec["batch"] is not None:
         b = ub = spec["batch"]
         why = "cell (argparse)"
+        # `cells` do not carry a separate `ubatch` today, and this file does not plumb `--ubatch`.
+        # A cell that silently WROTE one would get llama-bench's `-ub` from the profile instead --
+        # the "same label, different quantity" failure this file exists to prevent, and the reason
+        # the M=8 cell pins `-b 8 -ub 8` as a single value rather than splitting them. Refuse
+        # loudly rather than ignore the key: a validator that cannot fail on a bad input is not a
+        # validator. (The cheap `-b 512 -ub 8` variant was tried first and does not work anyway --
+        # see the `prefill-m8` comment.)
+        if spec.get("ubatch") is not None and spec["ubatch"] != spec["batch"]:
+            raise SystemExit(
+                f"cell {cell!r} sets ubatch={spec['ubatch']} != batch={spec['batch']}, but this "
+                f"file does not plumb --ubatch. Refusing instead of running -ub {spec['batch']} "
+                f"under a label that says {spec['ubatch']}.")
     else:
         b, ub, why = default_batch(env, scalars)
     ok, why_not = compat(profile, cell, env, scalars, b)
