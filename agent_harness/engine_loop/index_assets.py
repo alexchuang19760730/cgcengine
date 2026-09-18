@@ -110,6 +110,13 @@ CURATED = [
     ("scripts/check/gguf_dead_expert_census.py", "probe", "engine", True, False,
      "census of all-zero and zero-PREFIXED expert rows straight from the GGUF, no log needed. "
      "The file-side ground truth behind every zero_row / zero-region alarm."),
+    ("scripts/check/mul_mv_surface.py", "measure", "engine", True, False,
+     "prices the dense `mul_mat` weight traffic that `mul_mv` re-reads M times, from an existing "
+     "CGC_MM_DBG log -- no GPU, no run. Encodes the three family gates (ne11_mm_min, the two "
+     "small-batch type lists, the CGC_MM_BITIDENT opt-out) so the '(a) BITIDENT=0' and "
+     "'(b) IQ4_XS -> group A' surfaces stay in sync with ggml-metal-ops.cpp, and slices by M with "
+     "LM-head co-occurrence as the decode/prefill discriminator. Self-check: on an arm that already "
+     "flipped, the (a) row MUST read 0 -- it says so out loud instead of looking like a no-op."),
     ("scripts/check/prod_matrix.py", "measure", "engine", True, True,
      "the ONE entry point for production-grade numbers: every profile x the four standard cells. "
      "It adds no measurement -- every cell is llama_bench_matrix.py (so env and model come from "

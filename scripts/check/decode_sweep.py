@@ -172,6 +172,28 @@ ARMS = {
     #                   slot-table line reports as "(not instrumented)". That number is the
     #                   precondition for "publish all layers' tables once before the step" (§EN-150).
     "p25-mmd-trace":     {"CGC_GPU_TIMING": "1", "CGC_DECODE_PROFILE": "1", "CGC_MM_DBG": "1"},
+    # [CGC 2026-09-18 §EN-154] (a) PRICING `CGC_MM_BITIDENT=0`. Everything else from today says
+    # the dense M<=8 GEMVs are cheap in *bytes per call* but are read ne11 times: mul_mv sets
+    # `nr1 = 1` (ggml-metal-device.cpp:848), so one threadgroup computes ONE token column and
+    # every weight byte is fetched ne11 times. The small-batch mat-mv family is the fix that
+    # already exists -- it derives r1ptg from ne11 (nxpsg/r1ptg table in ggml_metal_op_mul_mat)
+    # so one threadgroup covers all ne11 columns and the weight is read ONCE -- and BITIDENT=1
+    # is the only reason it is unreachable. This pair prices that, with NO source change.
+    #   * BOTH arms carry identical diagnostics, including CGC_MM_DBG, so the family choice is
+    #     self-attesting: the control arm must print ONLY `mul_mv` and the test arm must print
+    #     `small-batch` at exactly the calls predicted from the existing MMDBG log.
+    #   * `-on` PINS the value 1 instead of relying on the run_server.sh default, so a future
+    #     change of that default cannot silently collapse this pair into a no-op (a null result
+    #     would then be unattributable). `-off` pins 0; run_server.sh:2014-2017 forwards nothing
+    #     for "0", so the child's getenv sees the literal "0" -> `e[0] != '1'` -> old path.
+    # Prediction from Backup/cgc_logs/llama_server_20260918_133430.log (26401 mul_mv calls, all
+    # group A, group B EMPTY): 9747/26401 calls flip (f32 9100 = the routers, q8_0 555, bf16 200),
+    # 61.4 -> 8.6 GiB of eligible weight traffic (-52.8 GiB of the run's 256.3 GiB total). IQ4_XS
+    # (63.0% of that traffic) is in NEITHER small-batch list and cannot flip -- that is (b).
+    "p25-mmflip-on":     {"CGC_GPU_TIMING": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_MM_DBG": "1", "CGC_MM_BITIDENT": "1"},
+    "p25-mmflip-off":    {"CGC_GPU_TIMING": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_MM_DBG": "1", "CGC_MM_BITIDENT": "0"},
     "p25-s1-churn":      {"CGC_GPU_TIMING": "1", "CGC_DECODE_PROFILE": "1",
                           "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_TABLE_CHURN": "1"},
     # [CGC 2026-09-18 §EN-144] The FIRST same-checkpoint MTP-off arm. Every earlier server-side

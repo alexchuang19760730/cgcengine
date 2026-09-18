@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>核心家族定價與 prefill 的 regime — flashkv-devserver 2026-09-18</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#1f2328; --muted:#57606a; --line:#d0d7de; --soft:#f6f8fa;
+    --blue:#0969da; --green:#1a7f37; --red:#cf222e; --amber:#9a6700; --purple:#8250df; --gray:#6e7781;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Helvetica,Arial,sans-serif;
+       line-height:1.7;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1040px;margin:0 auto;padding:32px 20px 80px}
+  h1{font-size:26px;line-height:1.35;margin:0 0 6px}
+  h2{font-size:19px;margin:36px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:24px 0 8px}
+  p,li{font-size:14.5px}
+  .meta{color:var(--muted);font-size:13px;margin-bottom:18px}
+  .tag{display:inline-block;font-size:12px;line-height:18px;padding:1px 8px;border-radius:999px;
+       border:1px solid var(--line);margin-right:6px;vertical-align:middle;white-space:nowrap}
+  .t-blue{color:var(--blue);border-color:#b6d8fb;background:#ddf4ff}
+  .t-green{color:var(--green);border-color:#a6e3b4;background:#dafbe1}
+  .t-red{color:var(--red);border-color:#f5b8b5;background:#ffebe9}
+  .t-amber{color:var(--amber);border-color:#e8ce8f;background:#fff8c5}
+  .t-purple{color:var(--purple);border-color:#d7c4f7;background:#f0e8ff}
+  .t-gray{color:var(--gray);border-color:#d8dee4;background:#f6f8fa}
+  table{border-collapse:collapse;width:100%;margin:12px 0 16px;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num,th.num{white-space:nowrap;font-variant-numeric:tabular-nums}
+  code{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;
+       background:var(--soft);padding:1px 4px;border-radius:4px}
+  pre{background:var(--soft);border:1px solid var(--line);border-radius:6px;padding:12px 14px;
+      overflow-x:auto;margin:12px 0}
+  pre code{background:none;padding:0;font-size:12.5px;line-height:1.55}
+  .box{border-left:4px solid var(--blue);background:#f6f8fa;padding:10px 14px;margin:14px 0;border-radius:0 6px 6px 0}
+  .box.warn{border-color:var(--amber);background:#fff8c5}
+  .box.bad{border-color:var(--red);background:#ffebe9}
+  .box.ok{border-color:var(--green);background:#dafbe1}
+  .box.pur{border-color:var(--purple);background:#f0e8ff}
+  .box p:first-child{margin-top:0}.box p:last-child{margin-bottom:0}
+  .small{font-size:12.5px;color:var(--muted)}
+  ul{padding-left:22px}
+  svg{max-width:100%;height:auto;display:block;margin:8px auto}
+  .cap{text-align:center;font-size:12.5px;color:var(--muted);margin:-4px 0 16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>核心家族定價與 prefill 的 regime</h1>
+<div class="meta">
+  2026-09-18 · flashkv-devserver（llama.cpp CGC fork，引擎層線）· profile <code>prefill250</code> /
+  <code>prod25</code> · pool 8 GiB · 模型 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code><br>
+  <span class="tag t-green">D5 PASS（comparable=true）</span>
+  <span class="tag t-blue">§36–§49（接續 <code>GPU_NODE_ATTRIBUTION_20260918_0126.html</code>）</span>
+  <span class="tag t-amber">(a) 生效已證・時序未歸因</span>
+  <span class="tag t-purple">prefill 250 是 profile 差異，不是退步</span>
+</div>
+
+<div class="box pur">
+<p><b>這份文件的定位（先讀這格）。</b>
+<b>新檔，不是追加</b>：前一份 <code>docs/GPU_NODE_ATTRIBUTION_20260918_0126.html</code> 已經被
+就地追加過五輪（§9–§14、§15–§18、§19–§22、§23–§30、§31–§35），122,412 bytes。
+skill <code>cgc-whitepaper-delivery</code> §6.1.1 的上限是「被追加到第四次以上，下一次就該改回
+出新檔 ＋ 舊檔只留標註框」⇒ 本輪照該上限處理，編號<b>續用</b> §36 以保留跨檔的節號互相指涉。
+舊檔已加一個取代標註框指向本檔，原文一字未刪。</p>
+<p><b>它接的是哪一條線。</b>前一份的 §31–§33 留下兩個入口：①「塌縮 <code>n_segs</code>（先量
+<code>consumed_changed</code>）」與 ②「<code>dnqkv_proj</code> 為什麼只有 8.8 GB/s」。
+本輪把 ② 收斂成一個可定價的東西，並在過程中撞出一個必須先回答的質疑
+——「prefill 不是 250 嗎」。兩者都在這裡結清。</p>
+<p><b>三個標籤的讀法：</b>
+<span class="tag t-green">已證</span>＝有計數或逐欄位證據；
+<span class="tag t-amber">已算</span>＝由既有 log 推導、可重跑；
+<span class="tag t-red">未歸因</span>＝有量測但無法排除外部慢變數，<b>不等於「沒有效果」</b>。</p>
+</div>
+
+<h2>§36 這一輪問了什麼</h2>
+
+<p>使用者給的兩個入口，依「花機器時間的代價」排序：</p>
+<ul>
+<li><b>(a)</b> 量 <code>CGC_MM_BITIDENT=0</code> 的 A/B —— <b>零程式改動、一個 env</b>，
+是唯一能替入口 ② 定價的動作；</li>
+<li><b>(b)</b> 把 <code>IQ4_XS</code> 補進 small-batch 的 group A（原本以為「一行」）——
+單獨做無效，要與 (a) 併用；</li>
+<li><b>(c)</b> 若 (a) 的增益夠大，用 D5 量數值代價並另立參考檔。</li>
+</ul>
+<p>本輪做 (a)，並在同一輪內回答「prefill 不是 250 嗎」與「現在的數字有沒有高於上一個 commit」。</p>
+
+<div class="box">
+<p><b>先寫清楚入口 ② 的機制，因為它決定了 (a) 該怎麼量。</b>
+<code>ggml_metal_op_mul_mat</code> 用 M（＝<code>ne11</code>）選家族，三個閘門：</p>
+<ul>
+<li><code>ggml-metal-ops.cpp:2438</code> <code>ne11_mm_min = 8</code> ⇒ <code>mul_mm</code> 要 <code>ne11 &gt; 8</code>；</li>
+<li><code>ggml-metal-ops.cpp:2474-2500</code> 兩張 small-batch 型別清單
+（group A：<code>F32 F16 BF16 Q1_0 Q2_0 Q4_0 Q4_1 Q5_0 Q5_1 Q8_0 MXFP4 IQ4_NL</code> 且
+<code>ne11 ∈ [2,8]</code>；group B：<code>Q2_K..Q6_K</code> 且 <code>ne11 ∈ [4,8]</code>）；</li>
+<li><code>ggml-metal-ops.cpp:2468-2471</code> <code>CGC_MM_BITIDENT=1</code> 把以上全部繞掉。</li>
+</ul>
+<p>而落空的那條路 <code>mul_mv</code> 設 <code>nr1 = 1</code>
+（<code>ggml-metal-device.cpp:848</code>「number of src1 rows per threadgroup」）⇒
+<b>一個 threadgroup 只算一個 token 欄</b> ⇒ <b>每一份權重位元組被讀 M 次</b>。
+small-batch 家族則由 <code>ne11</code> 推出 <code>r1ptg</code>（一張 <code>ne11 → r1ptg</code> 的表），
+一個 threadgroup 覆蓋全部 <code>ne11</code> 欄 ⇒ <b>權重只讀一次</b>。</p>
+<p>⇒ 於是「哪些呼叫屬於哪個家族」變成<b>可定價</b>的問題：每次呼叫的代價是
+<code>(M − 1) × 權重位元組</code>。而 <code>CGC_MM_DBG=1</code> 早就把
+M／<code>ne00</code>／<code>ne01</code>／兩個運算元型別印出來了（<code>MMDBG</code> 行）——
+所以定價<b>不需要新儀器，也不需要跑</b>。</p>
+</div>
+
+<h2>§37 儀器設計：(a) 的兩臂，以及為什麼兩個臂都必須帶 <code>CGC_MM_DBG</code></h2>
+
+<p>新臂 <code>p25-mmflip-on</code> / <code>p25-mmflip-off</code> 加在
+<code>scripts/check/decode_sweep.py</code>，兩者<b>只差一個 env</b>：</p>
+
+<pre><code>"p25-mmflip-on":  {"CGC_GPU_TIMING":"1", "CGC_DECODE_PROFILE":"1",
+                   "CGC_MM_DBG":"1", "CGC_MM_BITIDENT":"1"},
+"p25-mmflip-off": {"CGC_GPU_TIMING":"1", "CGC_DECODE_PROFILE":"1",
+                   "CGC_MM_DBG":"1", "CGC_MM_BITIDENT":"0"},</code></pre>
+
+<ul>
+<li><b>兩個臂都帶 <code>CGC_MM_DBG=1</code>，是為了讓家族選擇「自我舉證」。</b>
+這個旋鈕在引擎裡<b>沒有任何「已解析值」的輸出</b>（<code>ggml-metal-ops.cpp:2468</code> 是一個
+<code>static const bool</code>，讀完就沒有下文）。少了 <code>MMDBG</code>，
+「翻轉成功但沒效果」與「根本沒設到」會長得一模一樣——那正是本 repo 反覆踩到的形式。
+有了它，判準變成可機檢的兩句話：<b>控制臂必須 100% <code>mul_mv</code>、測試臂必須出現
+<code>small-batch</code></b>。</li>
+<li><b><code>-on</code> 顯式釘住 <code>1</code></b>，不依賴 <code>run_server.sh</code> 的預設值。
+否則哪天預設被改動，這一對臂會靜靜地變成 no-op，而結果讀起來仍然「合理」。</li>
+</ul>
+
+<p>傳遞路徑已逐字驗過（<code>CGC_DUMP_ENV=1</code>，印完即結束、不啟動任何東西）：</p>
+
+<pre><code>=== CGC_MM_BITIDENT=1 ===
+ENV CGC_DECODE_PROFILE=1
+ENV CGC_GPU_TIMING=1
+ENV CGC_MM_DBG=1
+ENV CGC_MM_BITIDENT=1          &lt;-- 有進 SERVER_ENV
+=== CGC_MM_BITIDENT=0 ===
+ENV CGC_DECODE_PROFILE=1
+ENV CGC_GPU_TIMING=1
+ENV CGC_MM_DBG=1
+                               &lt;-- 刻意「不進」</code></pre>
+
+<p><code>scripts/run_server.sh:2014-2017</code> 的形狀是：未設 ⇒ 推 <code>1</code>；
+設成 <code>0</code> ⇒ <b>什麼都不推</b>。於是父行程環境裡的 <code>0</code> 直接傳給子行程，
+<code>getenv</code> 拿到字面 <code>"0"</code>，<code>e[0] != '1'</code> ⇒ 舊路徑。
+<b>兩臂其餘三個診斷項逐字相同</b>，所以這是單變數。</p>
+
+<div class="box warn">
+<p><b>這一段的形式值得單獨記下來</b>：閘門讀的是 <code>getenv()</code> 的<b>值</b>而不是<b>存在</b>，
+所以「不推 <code>0</code>」是正確且必要的。若哪天有人把它改成
+<code>SERVER_ENV+=(CGC_MM_BITIDENT="$CGC_MM_BITIDENT")</code> 的無條件形式，
+結果不會變（子行程仍然看到 <code>"0"</code>）—— 但本節的 dump 證據就會失效，
+而失效的方式是<b>印出來的東西變多</b>，不是變少。</p>
+</div>
+
+<h2>§38 結果（一）：家族真的翻了 <span class="tag t-green">已證</span></h2>
+
+<p>同一輪 ABBA（正序 <code>on,off</code> ＋ 反序 <code>off,on</code>，
+<code>--rounds 3 --warmup 1 --n-predict 24</code>），把兩臂的 <code>MMDBG</code> 行直接數出來：</p>
+
+<table>
+<tr><th>臂</th><th class="num"><code>CGC_MM_BITIDENT</code></th><th class="num">MMDBG 行</th>
+<th class="num"><code>mul_mv</code></th><th class="num"><code>small-batch</code></th></tr>
+<tr><td><code>p25-mmflip-on</code></td><td class="num">1（顯式釘住）</td><td class="num">59223</td>
+<td class="num"><b>59223（100%）</b></td><td class="num"><b>0</b></td></tr>
+<tr><td><code>p25-mmflip-off</code></td><td class="num">0</td><td class="num">59354</td>
+<td class="num">37575</td><td class="num"><b>21779（36.7%）</b></td></tr>
+</table>
+
+<ul>
+<li>控制臂<b>零</b> <code>small-batch</code>；測試臂 36.7% ⇒ <b>翻轉確實發生</b>，
+而且是從儀器讀出來的，不是從原始碼推的。</li>
+<li>由控制臂自己的 <code>mul_mv</code> 母體算出的預測是 <b>21147</b> 次；
+實測 <b>21779</b> 次 ⇒ 差 <b>+3.0%</b>。差距的來源是<b>兩臂的 token 流不同</b>：
+<code>mean_len</code> 2.44 vs 2.30、<code>draft_accept</code> 0.520 vs 0.481
+⇒ 步數結構不同 ⇒ 呼叫母體本身就不同。<b>不是模型錯了。</b></li>
+<li>這一節的性質是<b>計數</b>，因此<b>不受熱影響</b>——它是本輪最強的一條。</li>
+</ul>
+
+<h2>§39 結果（二）：定價 <span class="tag t-amber">已算</span></h2>
+
+<p><code>MMDBG</code> 每次呼叫印 <code>ne11</code>／<code>ne00</code>／<code>ne01</code>／兩個型別。
+配上 GGUF 的張量表，就能把每一次呼叫對到<b>真實張量</b>
+（本模型每個稠密投影的形狀都是唯一的，所以這個對映是機械的）。
+控制臂（4 個請求、約 832 個 prompt token ＋ 96 個生成 token）：</p>
+
+<table>
+<tr><th>項目</th><th class="num">次數</th><th class="num">權重流量</th><th>說明</th></tr>
+<tr><td>全部 <code>mul_mv</code></td><td class="num">59223</td><td class="num">907.0 GiB</td>
+<td>「每個權重位元組被讀 M 次」的總量</td></tr>
+<tr><td><b>(a)</b> <code>BITIDENT=0</code></td><td class="num">21147</td><td class="num"><b>省 109.8 GiB（12.1%）</b></td>
+<td>group A ＋ group B</td></tr>
+<tr><td>　其中 group B</td><td class="num">32</td><td class="num">省 37.3 GiB</td>
+<td><b>就是 LM head 在 M=4</b></td></tr>
+<tr><td><b>(b)</b> <code>IQ4_XS</code> 進 group A</td><td class="num">35243</td><td class="num"><b>省 576.3 GiB（63.5%）</b></td>
+<td>今天做不到（§42）</td></tr>
+</table>
+
+<h3>§39.1 逐 M 切：判別式是「LM head 有沒有同現」</h3>
+
+<p><code>output.weight</code> 是 <code>[2048, 248320]</code> <code>Q6_K</code>
+（<code>248320</code> ＝ <code>tokenizer.ggml.tokens</code> 的長度，也就是 <code>n_vocab</code>），
+是全檔最寬的張量，<b>只有需要 logits 的 pass 才會算它</b>。於是可以拿它當
+「這一輪是 prompt 內段還是要 logits 的 pass」的判別式——<b>這是從資料讀出來的，不是假設</b>。</p>
+
+<table>
+<tr><th class="num">M</th><th class="num">呼叫</th><th class="num">流量 GiB</th><th class="num">LM head</th>
+<th>讀作</th><th class="num">(a) GiB</th><th class="num">(b) GiB</th></tr>
+<tr><td class="num">1</td><td class="num">2797</td><td class="num">51.4</td><td class="num">yes</td><td>要 logits</td><td class="num">0.00</td><td class="num">0.00</td></tr>
+<tr><td class="num">2</td><td class="num">1994</td><td class="num">11.3</td><td class="num">yes</td><td>要 logits</td><td class="num">0.65</td><td class="num">3.46</td></tr>
+<tr><td class="num">4</td><td class="num">12832</td><td class="num">155.7</td><td class="num">yes</td><td>要 logits</td><td class="num">12.72</td><td class="num">66.74</td></tr>
+<tr><td class="num"><b>8</b></td><td class="num"><b>41600</b></td><td class="num"><b>688.6</b></td>
+<td class="num"><b>no</b></td><td><b>prompt 內段</b></td><td class="num"><b>96.42</b></td><td class="num"><b>506.10</b></td></tr>
+</table>
+
+<ul>
+<li><b>M=8 佔 75.9% 的流量，(a) 的 88% 也在那裡</b> ⇒ <b>(a) 是預填充的槓桿，不是 decode 的槓桿。</b></li>
+<li>M=8 的 41600 次 ＝ 40 層 × 1040，而 4 個請求 × 26 個 chunk ＝ 104
+⇒ <b>逐格吻合</b>（prompt ≈ 208 token）。且 <b>M=8 從來沒有 LM head</b> ⇒ 它是 prompt 內段。</li>
+<li><b>group B 那 32 次呼叫就是 LM head 在 M=4</b>：每次搬 397.852 MiB × 4，改成讀一次省 3/4
+⇒ 37.3 GiB。<b>全模型最寬的張量一直在被讀 4 次。</b></li>
+<li>路由器 <code>ffn_gate_inp</code> <code>[2048,256]</code> <code>F32</code> 在
+M ∈ {2,4,8} 共 <b>5640</b> 次翻轉，是 (a) 裡最大的一項。</li>
+</ul>
+
+<div class="box">
+<p><b>一句話。</b>入口 ② 的 8.8 GB/s <b>不是「慢」，是「同一份權重算 M 次」</b>。
+<code>io_bytes</code> 只數專家池，看不到它 ⇒ 這是<b>一筆從未入帳的 MTP 成本</b>；
+而它與「MTP 淨效果 −30%」部分同源。</p>
+</div>
+
+<h2>§40 結果（三）：時序 <span class="tag t-red">未歸因</span></h2>
+
+<p>ABBA 四格（四格都是同一顆 build <code>efeade7e2</code>、同一個 profile、同一支驅動）：</p>
+
+<table>
+<tr><th>臂</th><th>順序</th><th>launch 熱壓</th><th class="num">decode 中位</th>
+<th class="num">prefill 中位</th><th class="num">step 中位（<code>segs=41</code>）</th>
+<th class="num">池 misses / reads</th></tr>
+<tr><td><code>on</code></td><td>fwd pos1</td><td>MODERATE</td><td class="num">5.26</td><td class="num">10.64</td><td class="num">662.4 ms</td><td class="num">20107 / 58212</td></tr>
+<tr><td><code>off</code></td><td>fwd pos2</td><td>HEAVY</td><td class="num">5.25</td><td class="num">8.74</td><td class="num">701.8 ms</td><td class="num">20448 / 59232</td></tr>
+<tr><td><code>off</code></td><td>rev pos1</td><td>MODERATE</td><td class="num">5.87</td><td class="num">9.57</td><td class="num">685.0 ms</td><td class="num">20448 / 59232</td></tr>
+<tr><td><code>on</code></td><td>rev pos2</td><td>HEAVY</td><td class="num">8.84</td><td class="num">13.91</td><td class="num">505.1 ms</td><td class="num">20107 / 58212</td></tr>
+</table>
+
+<p><b>判決的依據不是「哪個數字大」，是這四件事：</b></p>
+
+<ol>
+<li><b>同一臂兩跑的池計數器逐欄相同</b>。控制臂兩跑的
+<code>final stats</code> 逐字：<code>requests=156226 hits=136119 misses=20107 (hit rate 87.1%)
+resident=6430.62 MiB file_reads=58212</code>、<code>accept 0.52000 (13/25)</code>、
+<code>mean_len 2.44</code>；測試臂兩跑則是
+<code>155680 / 135232 / 20448 (86.9%) / 59232</code>、<code>accept 0.48148</code>、
+<code>mean_len 2.30</code>。<b>token 流是確定性的 ⇒ 引擎內部狀態完全相同。</b></li>
+<li><b>而同一臂的 step 中位差了 1.31×</b>（<code>on</code> 662.4 vs 505.1；<code>off</code> 701.8 vs 685.0
+＝ 1.02×）、decode 差 1.68×（5.26 vs 8.84）⇒ <b>那 31%／68% 全部是引擎外面的。</b></li>
+<li><b>決定性的那一行是 <code>pread_usec</code></b>：控制臂兩跑的每一欄都相同
+（含 <code>fill_batch_usec</code> 134958 vs 134568），<b>唯一不同的是池的 pread 服務時間
+—— 214582493 vs 144491619 µs ＝ 1.49×</b>。
+⇒ <b>要量的效果（交叉估計 0.834）比「同一配置自己兩跑的儲存服務漂移（1.49×）」還小。</b>
+這不是「大概不可靠」，是<b>在這個設計下用今天這台機器不可能分辨</b>。</li>
+<li><b>ABBA 的交叉估計是 0.834</b>（step 時間，小於 1 表示 <code>on</code> 較快），
+但它的兩個輸入<b>不自洽</b>：位置對比 pos1 <code>on/off</code> ＝ 0.97、
+pos2 <code>on/off</code> ＝ 0.72（方向相反）⇒ 它量到的是 <code>on</code> 自己那 1.31 倍的不穩定，不是處理效果。
+<code>wait</code>／<code>gpu_sum</code>／<code>cb</code> 三個成分也全部兩序不一致
+（<code>off/on</code> 分別 0.98/1.08、1.01/1.12、1.34/1.75）。</li>
+</ol>
+
+<div class="box bad">
+<p><b>所以正確的述句是「未歸因」，不是「(a) 沒有效果」。</b>
+而且本節的數字<b>不可以</b>被引用成「(a) 讓 decode 變快/變慢 X%」——
+沒有任何一種讀法能從這四格裡分離出處理效果。</p>
+</div>
+
+<h3>§40.1 量級判準：值不值得重跑</h3>
+
+<p>109.8 GiB 的節省換成時間 ＝ <code>109.8 GiB / 有效頻寬</code>。兩個界：</p>
+<ul>
+<li>取 DRAM 上限 <b>120 GB/s</b> ⇒ <b>0.9 s</b>，對一輪約 2 分鐘的服務是 <b>0.75%</b>——
+<b>比這台機器 1.3–1.7 倍的漂移低兩個數量級</b>；</li>
+<li>取實測的 <b>8.8 GB/s</b>（<code>dnqkv_proj</code>）⇒ <b>12.5 s（10%）</b>。</li>
+</ul>
+<p>兩個界跨在「看不見」與「很明顯」之間 ⇒ <b>(a) 的時序只有在乾淨機器（關掉宿主的 Electron 群
+＋ 靜置 ≥1800 s）或改用比值型儀器（op 級 GPU 時間的<b>份額</b>）時才有意義。</b></p>
+
+<h2>§41 新工具 <code>scripts/check/mul_mv_surface.py</code>，以及它自己犯過的錯</h2>
+
+<p>定價那一節的算術不該每次用手算。<code>mul_mv_surface.py</code> 是唯讀的：
+吃既有的 <code>CGC_MM_DBG</code> log（可選 <code>--gguf</code> 把形狀對到張量名），
+把三個閘門寫成程式，輸出 (a)／(b) 的可買面、逐 M 切片、以及逐身分的表。
+<b>跑它不需要 GPU、也不需要起 server。</b></p>
+
+<p>把它寫成程式而不是繼續手算，是因為手算在同一天內犯過三個錯，而三個錯都<b>不會自己吵</b>：</p>
+<ul>
+<li><b>把「每鍵累加的位元組」又乘上一次</b> ⇒ 得到 427 TB 的「流量」，看起來像單位錯了，
+<b>確實是</b>；</li>
+<li><b>group B 的字面量寫成小寫 <code>q6_k</code></b>，而 <code>ggml_type_name()</code> 印的是
+<code>q6_K</code>（log 自己的拼法才是權威）⇒ group B 靜默變空，LM head 整條消失；</li>
+<li><b><code>IQ4_XS</code> 用 <code>0.265625</code> B/elem</b> 而不是
+<code>17/32 = 0.53125</code>（256 元素 / 136 bytes）⇒ 最寬的量化張量全部被砍半。</li>
+</ul>
+
+<div class="box warn">
+<p><b>它內建的一個腳槍，而且明寫出來。</b>在<b>已經翻轉過</b>的臂上
+（<code>CGC_MM_BITIDENT=0</code>），那些呼叫的標籤是 <code>small-batch</code>，不再是
+<code>mul_mv</code>，所以 (a) 那一欄<b>必然</b>讀 0 ——
+這與「這個旋鈕什麼都沒做」完全同形。工具的處理是：偵測到 log 裡有 <code>small-batch</code>
+就<code>印出 NOTE…reads 0 BY CONSTRUCTION</code>，並把觀測到的次數單獨列一行。
+<b>「沒有效果」與「有效果」不可以長得一樣。</b></p>
+</div>
+
+<h2>§42 更正：(b) <b>不是</b>「一行」</h2>
+
+<p>原本的預期是「把 <code>GGML_TYPE_IQ4_XS</code> 加進 group A 的條件」就好。查了才知道不是：</p>
+<ul>
+<li><code>mul_mv_ext</code> 的 <code>host_name</code> <b>只涵蓋 group A 的 12 個型別 ＋ group B 的 5 個</b>
+（<code>ggml-metal.metal:4235-4300</code> 那一帶），<b><code>IQ4_XS</code> 不在其中</b> ——
+只改 gate 會去要一個不存在的 pipeline。</li>
+<li>而管線的<b>取得方式是「按名字編譯」</b>：
+<code>ggml-metal-device.cpp:706</code> 造出
+<code>kernel_mul_mv_ext_&lt;t0&gt;_&lt;t1&gt;_r1_&lt;r1ptg&gt;</code> 再
+<code>ggml_metal_library_compile_pipeline</code> ⇒
+<b><code>template [[host_name(...)]]</code> 實例化是硬需求</b>。</li>
+<li><b>好消息</b>：<code>dequantize_iq4_xs</code>（<code>ggml-metal.metal:1005</code>）
+<b>已經是 <code>type4x4</code> 形式</b>，而且註解自己寫著「<code>il</code> is 0...15 for
+QK_K = 256」—— 正是 <code>kernel_mul_mv_ext_q4x4_f32_disp&lt;r1ptg, block_iq4_xs, 256,
+dequantize_iq4_xs&gt;</code> 需要的形狀（與 group B 用的 <code>dequantize_q4_K</code> 同型）。</li>
+</ul>
+
+<p>⇒ <b>(b) ＝ 1 個 typedef ＋ 4 行 <code>host_name</code>（<code>r1_2..5</code>）在
+<code>.metal</code> ＋ group A 那一行 gate</b>，再重建（含
+<code>autogenerated/ggml-metal-embed.s.o</code> 的新鮮度驗證）。
+比「一行」多，但仍是「新增一個既有形式的型別」裡最便宜的一種。</p>
+
+<h2>§43 <code>(a)</code> 與 <code>(b)</code> 都破壞 M-invariance ⇒ 只能當 speed datapoint</h2>
+
+<p>small-batch 家族的 <code>nsg</code>／<code>nxpsg</code> <b>由 M 決定</b>
+（原始碼註解逐字：<code>ne11=2 -&gt; nxpsg=16/r1ptg=2</code>、
+<code>ne11=3 -&gt; nxpsg=8/r1ptg=3</code>、<code>ne11=1</code> 甚至不合格），
+所以<b>同一列的 K 維歸約樹會隨 batch 大小改變</b> ⇒ 同一個邏輯列在不同 M 下得到 ULP 不同的值。
+<b>這正是 <code>CGC_MM_BITIDENT=1</code> 存在的理由</b>（它自稱 out-of-the-box 的
+「pillar 1 of the bit-identical」）。</p>
+
+<div class="box bad">
+<p>⇒ <b>(a) 與 (b) 都不能當生產預設</b>，兩者都只能進「speed datapoint」那一欄，
+而且<b>都要另立 D5 參考檔</b>（現行的
+<code>ref_iq3_pool8gb_M2_6144_bitident_v6_nbaware.jsonl</code> 會失效）。
+<b>這一條同時決定了投資順序</b>：若真要動 shader，(b) 的可買面是 (a) 的 <b>5.2 倍</b>
+（576.3 vs 109.8 GiB），(a) 幾乎是順手一起量。</p>
+</div>
+
+<h2>§44 「prefill 不是 250 嗎」——是，而且是 profile 差異 <span class="tag t-green">已證</span></h2>
+
+<p>上一輪的表上出現 <code>prefill 8.75 / 9.77 / 13.91</code>。那不是退步，也不在那個 regime 裡。</p>
+
+<h3>§44.1 根因：<code>CGC_PREFILL_STREAM</code> 只存在於 <code>prefill250</code></h3>
+
+<p><code>CGC_PREFILL_STREAM=1</code>（<code>scripts/run_server.sh:501</code>）
+<b>只在 <code>prefill250</code> 的 BUDGET 分支裡</b>被設，與它同批的還有
+<code>CGC_SERVER_BATCH=UBATCH=5632</code>、<code>CTX=8192</code>、<code>CGC_GATHER_SLAB_CAP=256</code>。
+<b><code>prod25</code> 從不設它</b> ⇒ <code>llama-context.cpp:285</code> 的
+<code>cgc_pool_max_tokens()</code> 夾鉗生效（MTP 開啟時為 <b>8</b>）
+⇒ prompt 被切成 <b>8-token chunk 走專家池</b>（每一塊都要碰 SSD）
+⇒ <b>10 t/s 是那個 regime 的正常值</b>，與 250 不是同一件事。</p>
+
+<p>零 GPU 的解析表（<code>prod_matrix.py --list</code>，值全部來自
+<code>run_server.sh CGC_DUMP_ENV=1</code>）：</p>
+
+<table>
+<tr><th>profile</th><th class="num">ctx</th><th class="num">batch</th><th class="num">ubatch</th>
+<th class="num">stream</th><th class="num">slab</th><th>prompt 處理走哪</th></tr>
+<tr><td><code>prod25</code></td><td class="num">4096</td><td class="num">-</td><td class="num">-</td>
+<td class="num"><b>0</b></td><td class="num">-</td><td>專家池（chunk 夾在 8）</td></tr>
+<tr><td><code>prefill250</code></td><td class="num">8192</td><td class="num"><b>5632</b></td>
+<td class="num"><b>5632</b></td><td class="num"><b>1</b></td><td class="num"><b>256</b></td>
+<td>whole-layer slab，不被切碎</td></tr>
+</table>
+
+<div class="box warn">
+<p><b>讀法。</b><code>prod_matrix.py:222</code> 是
+<code>env.get("CGC_PREFILL_STREAM", "0")</code> —— <b>讀不到就顯示 0</b>。
+「沒設」與「設成 0」在那張表上同形。這是本 repo 那個老陷阱的又一個實例。</p>
+</div>
+
+<h3>§44.2 生產級實測</h3>
+
+<p>啟動前 <code>thermalpressurelevel = 0</code>（NOMINAL）、free 78%、無 8080 listener、
+無其他量測行程 ⇒ 閒置機器閘門 <code>GATE PASS</code>。</p>
+
+<table>
+<tr><th>profile</th><th>cell</th><th>launch</th><th class="num">platform t/s</th>
+<th class="num">samples</th></tr>
+<tr><td><code>prefill250</code></td><td><code>prefill-house</code>（<code>-p 2048 -n 16 -b 5632</code>）</td>
+<td><b>NOMINAL</b></td><td class="num"><b>234.24</b></td><td class="num">255.82 / 247.22 / 221.27</td></tr>
+<tr><td><code>prefill250</code></td><td><code>prefill-up</code>（<code>-p 512 -n 128 -b 2048</code>）</td>
+<td>HEAVY</td><td class="num">94.65</td><td class="num">103.01 / 85.72 / 103.57</td></tr>
+</table>
+
+<p><code>run_server.sh:490-496</code> 自己記著：250+ 在<b>當天 12:51 量到 284.58</b>、
+13:45 的驗收是 <b>268.09 / 273.55 / 256.61</b>，並且
+「<b>同指紋可差到 2×</b>，報吞吐必須附機器狀態」。
+<b>⇒ 250+ 沒有消失。</b></p>
+
+<h3>§44.3 生產工具<b>自己拒絕</b>量 <code>prod25</code> 的 prefill cell（逐字）</h3>
+
+<pre><code>SKIP prod25 prefill-house  -- -p 2048 does not fit -b 8 (GGML_ASSERT n_tokens_all &lt;= n_batch;
+                              the engine clamps n_batch to cgc_pool_max_tokens() on this profile)
+SKIP prod25 prefill-up     -- profile pins no BATCH and prod25 has no CGC_PREFILL_STREAM, so the
+                              engine's pool-path clamp (cgc_pool_max_tokens, default 8) applies --
+                              the cell's -b 2048 would NOT be the effective batch</code></pre>
+
+<p>⇒ <b><code>prod25</code> 的 prompt 處理用現行四個標準 cell 一個都表達不出來</b>，
+而那正是 8-token 夾鉗。這些是 <b>refusal，不是 failure</b>。</p>
+
+<h3>§44.4 單變數隔離：夾鉗一解除就沒差</h3>
+
+<table>
+<tr><th>臂</th><th>cell</th><th>launch</th><th class="num">platform</th></tr>
+<tr><td><code>prefill250</code></td><td><code>p512n0d0</code></td><td>HEAVY</td><td class="num"><b>94.65</b></td></tr>
+<tr><td><code>prod25</code> ＋ <code>CGC_PREFILL_STREAM=1;CGC_GATHER_SLAB_CAP=256</code></td>
+<td><code>p512n0d0</code></td><td>HEAVY</td><td class="num"><b>93.49</b></td></tr>
+</table>
+
+<p>差 <b>1.2%</b>。而 <code>prefill-house</code>（234）比 <code>prefill-up</code>（94）快 2.5 倍的原因：
+<b>chunk 越長，slab 的整層專家載入被攤得越薄</b>（2048 token/chunk vs 512 token/chunk）。</p>
+
+<h2>§45 <span class="tag t-red">★</span> <code>llama-bench</code> 看不見這個旋鈕</h2>
+
+<p>本 repo 的登記儀器是 <code>llama-bench</code>。但它對 (a)／(b) 這類旋鈕是<b>結構上失明</b>的：</p>
+<ul>
+<li>tg 走 <code>llama_decode(ctx, llama_batch_get_one(&amp;token, 1))</code>
+（<code>src/llama.cpp/tools/llama-bench/llama-bench.cpp:2311</code>）⇒ <b>M ＝ 1</b>，
+而 M=1 不在任何 small-batch 群組內（group A 要 <code>ne11 ∈ [2,8]</code>、group B 要 <code>[4,8]</code>）；</li>
+<li>pp 是大 M（<code>pp512</code>／<code>pp2048</code> ⇒ <code>ne11 &gt; ne11_mm_min = 8</code>
+⇒ 走 <code>mul_mm</code>）⇒ 也不受這個閘門影響。</li>
+</ul>
+
+<div class="box pur">
+<p><b>⇒ 現行四個標準 cell 沒有一個能替 (a)／(b) 定價。</b>
+要量它必須<b>另立一個 <code>-b 8 -ub 8</code> 的 pp cell</b>（M=8，正好落在 group A 的
+<code>[2,8]</code> 內）。這也是為什麼本輪只能用<b>已被退役的 <code>decode_bench</code> 路徑</b>
+做配對，而那條路的同配置漂移是 1.49×（§40）。</p>
+<p><b>這條是本次交付裡最重要的一條方法論結論</b>：它把「(a) 值多少」從「跑一次就知道」
+變成「先做一個新 cell，否則永遠量不到」。</p>
+</div>
+
+<h2>§46 回歸檢查：沒有引擎 delta，而同一顆 binary 就有 2.30×</h2>
+
+<p>使用者的要求是「commit 前確認目前的 prefill/decode 高於上一個 commit」。<b>三層回答。</b></p>
+
+<h3>§46.1 引擎自 <code>79f1b5efc</code> 起逐位元未變</h3>
+
+<table>
+<tr><th>檢查</th><th>結果</th></tr>
+<tr><td><code>git log -1 -- src/llama.cpp/src src/llama.cpp/ggml/src</code></td>
+<td><code>79f1b5efc</code>（13:30:19，node 命名）</td></tr>
+<tr><td>其後三個 commit 的 <code>src/</code> 檔數</td>
+<td><code>44ab38317</code> 0／<code>5078242be</code> 0／<code>726fe6823</code> 0</td></tr>
+<tr><td>本輪 <code>git status</code> 的 <code>src/</code> 檔數</td><td><b>0</b></td></tr>
+<tr><td>命名 commit 是否已編入 binary</td>
+<td><code>strings libllama.0.0.279.dylib | grep -c dnqkv_proj</code> ＝ <b>1</b></td></tr>
+<tr><td>有沒有 <code>src/*.cpp</code>／<code>*.metal</code> 比 <code>llama-server</code> 新</td><td><b>沒有</b></td></tr>
+</table>
+
+<p>⇒ <b>現在的 binary ≡ HEAD 的引擎</b>，沒有可歸因的加速或退步。</p>
+
+<h3>§46.2 四格全部「更高」，但同一顆 build</h3>
+
+<p>同一顆 build <code>efeade7e2</code>、同一 profile <code>prefill250</code>、同一支
+<code>prod_matrix.py</code>，相隔 71 分鐘：</p>
+
+<table>
+<tr><th>cell</th><th class="num">13:37（＝上一個 commit 的紀錄）</th>
+<th class="num">14:50（現在）</th><th class="num">比</th></tr>
+<tr><td><code>decode</code></td><td class="num">5.61（launch HEAVY）</td>
+<td class="num"><b>10.61（launch NOMINAL／worst NOMINAL）</b></td><td class="num">1.89×</td></tr>
+<tr><td><code>decode-up</code></td><td class="num">5.32（HEAVY）</td>
+<td class="num"><b>10.72（NOMINAL／NOMINAL）</b></td><td class="num">2.02×</td></tr>
+<tr><td><code>prefill-house</code></td><td class="num">116.94（HEAVY）</td>
+<td class="num"><b>268.51（NOMINAL）</b></td><td class="num">2.30×</td></tr>
+<tr><td><code>prefill-up</code></td><td class="num">72.42（MODERATE）</td>
+<td class="num">117.22（HEAVY）</td><td class="num">1.62×</td></tr>
+</table>
+
+<p><b>最乾淨的單一證據</b>：同一顆 binary 的 <code>prefill-house</code>
+＝ 116.94（HEAVY）→ 234.24（NOMINAL）→ <b>268.51（NOMINAL）</b>。
+<code>run_server.sh</code> 自己寫著「同指紋可差到 2×」，這次量到 <b>2.30×</b>
+⇒ <b>用 commit 之間的數字比較，量到的是機器。</b></p>
+
+<h3>§46.3 「沒有退步」的正確對照：跨日、同機器品質</h3>
+
+<table>
+<tr><th>來源</th><th class="num">decode（<code>tg128 @ d512</code>）</th><th>標記</th></tr>
+<tr><td>09-17 紀錄</td><td class="num">10.78 / 10.91</td><td>暖平台</td></tr>
+<tr><td><b>09-18 現在</b></td><td class="num"><b>10.61 / 10.72</b></td>
+<td><b><code>launch</code> 與 <code>worst</code> 都是 <code>NOMINAL</code></b></td></tr>
+</table>
+
+<p>差 <b>−1.6% / −1.7%</b>，在雜訊內；而且<b>今天這兩格是紀錄上標記最乾淨的 decode 數字</b>
+（四格裡唯一 <code>worst=NOMINAL</code> 的）。<code>prefill-up</code> 的 117.22 是 HOT 樣本
+⇒ <b>不可當生產數字</b>（lesson <code>eng-mh-0054</code>）。</p>
+
+<h2>§47 誠實邊界（本文件不主張什麼）</h2>
+
+<ul>
+<li><b>不主張 (a) 或 (b) 對速度有任何方向的效果。</b>§40 的四格不足以分離處理效果與外部漂移，
+述句是「未歸因」。</li>
+<li><b>不主張 234.24／268.51 是「引擎的」數字。</b>它們是同一顆 binary 在<b>比較冷的機器</b>上
+量到的；引擎自 <code>79f1b5efc</code> 起未變（§46.1）。</li>
+<li><b>不主張 <code>(b)</code> 的 576.3 GiB 可買面能兌現。</b>位元組減少只在那些 GEMV 受記憶體限制時
+才變成時間；而 <code>dnqkv_proj</code> 的 8.8 GB/s 恰好說明它<b>不是</b>在頻寬上限運行。</li>
+<li><b>不主張 M=8 切片等於「預填充」的完整成本。</b>判別式（LM head 同現）是從資料讀出來的推論，
+它分開的是「要不要 logits」，不是「這一步叫什麼」。</li>
+<li><b>未跑／未做</b>：<code>-b 8 -ub 8</code> 的 M=8 cell（§45）；(b) 的實作（§42）；
+(b) 的新 D5 參考檔（§43）；<code>CGC_GPU_OPS</code> 的份額式量測（§40.1）。</li>
+<li><b>本輪沒有動 <code>src/</code></b>，所以沒有任何引擎行為改變。</li>
+</ul>
+
+<h2>§48 現場閘門輸出（原文）</h2>
+
+<pre><code>$ python3 agent_harness/engine_loop/traces/validate.py
+  lessons.jsonl: 189 records {'lesson': 189}
+  -&gt; OK
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  10/10 injected violations rejected
+
+$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  memory index OK: 8 file(s), 253 section(s), no drift
+
+$ cd agent_harness/engine_loop &amp;&amp; python3 index_assets.py --check
+  manifest OK: 109 assets, existence + bytes + mtime all agree</code></pre>
+
+<p>D5（<code>scripts/check/m123_oracle_gate.py --tag en-mmflip-mulmv-surface-20260918</code>，60 s，
+自帶 server，啟動前 8080 已確認為空）：</p>
+
+<pre><code>oracle A: Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident_v6_nbaware.jsonl  (9 entries)
+oracle B: /tmp/m123_oracle_gate.jsonl  (9 entries)
+common: 9    only_A: 0    only_B: 0
+--------------------------------------------------------------------------
+M1 numeric identity    (bit-identical logits)  : 9/9  (100.0%)
+M2 decision agreement  (same argmax token)     : 9/9  (100.0%)
+M3 top-k set agreement (same top-N id set)     : 9/9  (100.0%)
+(aux) full_fnv1a64 identical                   : 9/9  (100.0%)
+--------------------------------------------------------------------------
+CROSS-TAB  (n=9)
+  M1 same  &amp; M2 same :     9   no drift, same choice
+  M1 same  &amp; M2 diff :     0
+  M1 diff  &amp; M2 same :     0
+  M1 diff  &amp; M2 diff :     0
+--------------------------------------------------------------------------
+VERDICT M1 (numeric identity)   : PASS (9/9)
+VERDICT M2 (decision agreement) : PASS (9/9)
+GATE en-mmflip-mulmv-surface-20260918: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9</code></pre>
+
+<p>summary 的關鍵欄位：
+<code>comparable = True</code>、<code>config_diffs = []</code>、
+<code>m1 = 9/9</code>、<code>m2 = 9/9</code>、<code>m3 = 9/9</code>、<code>ok = True</code>。</p>
+
+<h2>§49 產物與指令</h2>
+
+<pre><code># (a) 的 ABBA（正序 ＋ 反序；兩臂只差 CGC_MM_BITIDENT）
+RUN_REPLAY_BENCH=0 python3 scripts/check/decode_sweep.py --profile prod25 \
+  --arms p25-mmflip-on,p25-mmflip-off --rounds 3 --warmup 1 --n-predict 24 \
+  --json Backup/phase_decomp/en_mmflip_fwd_20260918.json --force
+RUN_REPLAY_BENCH=0 python3 scripts/check/decode_sweep.py --profile prod25 \
+  --arms p25-mmflip-off,p25-mmflip-on --rounds 3 --warmup 1 --n-predict 24 \
+  --json Backup/phase_decomp/en_mmflip_rev_20260918.json --force
+
+# 定價（唯讀，吃既有 log；沒有 GPU、沒有 server）
+python3 scripts/check/mul_mv_surface.py Backup/cgc_logs/llama_server_20260918_141457.log \
+  --gguf models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf
+
+# profile 解析表（零 GPU）
+python3 scripts/check/prod_matrix.py --list
+
+# 生產級 prefill／四格
+python3 scripts/check/prod_matrix.py --profiles prefill250 --cells prefill-house,prefill-up ...
+python3 scripts/check/prod_matrix.py --profiles prefill250 \
+  --cells decode,decode-up,prefill-house,prefill-up --reps 3 --runs 1 ...
+
+# D5
+python3 scripts/check/m123_oracle_gate.py --tag en-mmflip-mulmv-surface-20260918</code></pre>
+
+<p>主要產物：</p>
+<ul>
+<li>工具：<code>scripts/check/mul_mv_surface.py</code>（新，唯讀定價）、
+<code>scripts/check/decode_sweep.py</code> 的兩個新臂。</li>
+<li>量測：<code>Backup/phase_decomp/en_mmflip_{fwd,rev}_20260918.json</code>、
+<code>Backup/phase_decomp/prod_matrix_20260918_1448.json</code>、
+<code>Backup/phase_decomp/prod_matrix_prefill_20260918_1430.json</code>、
+<code>Backup/phase_decomp/prod25_stream_mechanism_20260918_1446.json</code>、
+<code>Backup/m123_oracle_gate/summary_en-mmflip-mulmv-surface-20260918.json</code>。</li>
+<li>逐格原始輸出：<code>Backup/cgc_logs/llama_server_20260918_1414*.log</code>、
+<code>Backup/cgc_logs/llama_server_20260918_1420*.log</code>、
+<code>Backup/prod_matrix/20260918_1430/</code>、<code>Backup/prod_matrix/20260918_1446/</code>、
+<code>Backup/prod_matrix/20260918_1448/</code>。</li>
+<li>報告：<code>docs/PREFILL_CLAMP_2026-09-18.md</code>、
+<code>docs/REGRESSION_CHECK_2026-09-18.md</code>、
+<code>docs/PROD_MATRIX_RECHECK_2026-09-18.md</code>（工具生成）。</li>
+<li>build <code>efeade7e2</code>；模型
+<code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（13,652,116,512 bytes，35.5B 參數）。</li>
+</ul>
+
+<p class="small">本檔由引擎層 session 撰寫；上一個月份的快照與跨機器記憶請走
+<code>agent_harness/scripts/import_harness_snapshot.py</code>，不要手動新增。</p>
+
+</div>
+</body>
+</html>

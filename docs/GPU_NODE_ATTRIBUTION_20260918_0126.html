@@ -65,9 +65,43 @@
   <span class="tag t-amber">2026-09-18 13:3x 更正：名字表的細粒度讀數不可當工作量用（§25）</span>
   <span class="tag t-blue">2026-09-18 13:3x 新增：§28–§30（S1 上生產的判決）</span>
   <span class="tag t-purple">2026-09-18 13:4x 新增：§31–§34（稠密 GEMV 的機制 ＋ 儀器的 population）</span>
+  <span class="tag t-purple">2026-09-18 15:0x 續篇：本檔停在此處，後續在 <code>GPU_NODE_ATTRIBUTION_20260918_1500.html</code>（§36–§49）</span>
   <span class="tag t-gray">未 push</span>
 </div>
 
+<div class="box pur">
+<p><b>2026-09-18 15:0x 續篇標註（新增，原文一字未刪）。</b>
+本檔自 §9 起已被就地追加五輪（§9–§14、§15–§18、§19–§22、§23–§30、§31–§35），
+122,412 bytes ⇒ 觸到 skill <code>cgc-whitepaper-delivery</code> §6.1.1 的上限
+（「若同一份被追加到第四次以上，下一次就該改回『出新檔 ＋ 舊檔只留標註框』」）。
+<b>因此本檔停在此處：後續在同一個問題線上的推進不再追加進來，改到新檔。</b></p>
+<p><b>續篇：</b><code>docs/GPU_NODE_ATTRIBUTION_20260918_1500.html</code>，
+節號<b>續用</b> §36–§49（保留跨檔的節號互相指涉），涵蓋四件事：</p>
+<ul>
+<li><b>§36–§40</b>：<code>CGC_MM_BITIDENT=0</code> 的定價 —— 家族翻轉<b>已證</b>
+（控制臂 59223 全 <code>mul_mv</code> vs 測試臂 21779 <code>small-batch</code>）、
+位元組帳（907.0 GiB 之中 (a) 觸及 109.8 GiB／(b) 576.3 GiB）、
+以及<b>時序未歸因</b>（同一臂兩跑的池計數器逐欄相同，而 <code>pread_usec</code> 差 1.49×）。</li>
+<li><b>§41–§43</b>：新工具 <code>scripts/check/mul_mv_surface.py</code>（唯讀定價）；
+(b) 不是「一行」（要 1 個 typedef ＋ 4 行 <code>host_name</code>）；
+(a) 與 (b) 都破壞 M-invariance ⇒ 只能當 speed datapoint，都要另立 D5 參考檔。</li>
+<li><b>§44–§45</b>：「prefill 不是 250 嗎」＝ profile 差異
+（<code>CGC_PREFILL_STREAM</code> 只在 <code>prefill250</code> 的 BUDGET 分支，
+<code>prod25</code> 因此被 <code>cgc_pool_max_tokens()</code> 夾在 8）；
+以及 <code>llama-bench</code> 對這類旋鈕<b>結構上失明</b>
+（tg 是 <code>llama_batch_get_one(&amp;token, 1)</code> ⇒ M=1）。</li>
+<li><b>§46–§49</b>：回歸檢查（引擎自 <code>79f1b5efc</code> 起逐位元未變，
+而<b>同一顆 binary</b> 的 <code>prefill-house</code> 就有 116.94 → 268.51 ＝ 2.30×）、
+誠實邊界、現場閘門輸出原文、產物與指令。</li>
+</ul>
+<p><b>仍然成立、未被取代的部分：</b>§0–§8 的 L0 否定結論與儀器落地、
+§15–§18 的命名工作、§19–§22 對 <code>(other)</code> 的拆除、
+§23–§27 的三批命名與 <code>pool6</code> 裁決、§28–§30 的 S1 判決、
+§31–§34 的稠密 GEMV 機制與儀器 population。</p>
+<p>本檔的 §33（生產矩陣四格全 HOT）與 §34／§35 是<b>當時</b>的狀態；
+新檔 §46 補上的是「同一顆 build 在比較冷的機器上」的同一組四格，兩者不衝突，
+但要一起讀才知道那 2× 是什麼。</p>
+</div>
 <div class="box warn">
 <p><b>2026-09-18 11:0x 更正標註（新增，原文一字未刪）。</b>
 <b>本檔（含 §9–§22）把 <code>cache</code> 桶標成「池自己的暫存」是錯的。</b>
