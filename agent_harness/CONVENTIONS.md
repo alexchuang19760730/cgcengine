@@ -912,6 +912,19 @@
 
 **D5｜每次 commit 附一份技術白皮書，並在提交前跑完 `llama-bench` + M1/M2/M3 + 最新 M2 oracle。**
 - 格式沿用既有 HTML 版式（`docs/PREFILL250_DECODE25_WHITEPAPER_*.html`）。
+- **修訂 2026-09-18｜適用範圍：本條的 oracle 那一半的判準是「改動落在哪個目錄」，不是「改了什麼邏輯」。**
+  - 判據（可機檢，不要憑感覺）：
+    `git diff --cached --name-only | grep -c '^src/'`
+    **得 0 ⇒ 不需要跑 `m123_oracle_gate.py`。** 理由不是「省 23 秒」，是**沒有 `src/` 改動時
+    產物沒變**：M1/M2/M3 比的是同一份 binary 對同一份參考，跑它只證明「機器還是好的」，
+    不證明「這個 commit 是對的」——它對這個 commit **沒有鑑別力**。
+  - **運營者（只改 `agent_harness/`）⇒ 不需要。** 這一類的改動不碰引擎產物。
+    `docs/`、`.workbuddy/memory/` 同理。
+  - **白皮書那一半（本條前半句）仍然適用**，而且追加或修訂之後要**重跑整份自檢**。
+  - 反過來：動了 `src/`、或任何被 gate 預設 profile 帶上的旋鈕（`CGC_SERVER_BATCH` 等）
+    ⇒ **必須跑**，且**先讀 `comparable` 再讀 M1/M2/M3**（見 B28；`comparable=false` 時那三個 9/9
+    不是裁決）。
+  - 使用者於 2026-09-18 明確此判準（原話：「運營者只改動 agent harness 目錄 應該不需要 D5」）。
 
 **D6｜專案記憶只由索引進入 loop，不複製。**
 - 為什麼：`.workbuddy/memory/`（`MEMORY.md` ＋ 每日 append-only 日誌）由 host 在 loop 執行時持續
