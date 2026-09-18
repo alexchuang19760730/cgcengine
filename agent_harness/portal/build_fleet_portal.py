@@ -51,6 +51,7 @@ REPO = BP.REPO
 PORTAL_DIR = REPO / "agent_harness" / "portal"
 FLEET_JSON = PORTAL_DIR / "fleet.json"
 TREND_JSON = PORTAL_DIR / "trend_sources.json"
+JOIN_JSON = PORTAL_DIR / "join.json"
 ENDPOINTS_DIR = PORTAL_DIR / "endpoints"
 STATUS_JSONL = PORTAL_DIR / "fleet_status.jsonl"
 HISTORY_JSONL = PORTAL_DIR / "history.jsonl"
@@ -291,8 +292,326 @@ def age_text(iso: str, now: datetime) -> tuple[float | None, str]:
     return secs, f"{secs/86400:.1f} 天前"
 
 
+# ─────────────────────── 端點加入單（onboarding）───────────────────────
+
+def _haystack(rec: dict, scopes: list[str]) -> str:
+    parts = []
+    for k in scopes:
+        v = rec.get(k)
+        if isinstance(v, list):
+            parts.extend(str(x) for x in v)
+        elif v:
+            parts.append(str(v))
+    return "\n".join(parts)
+
+
+def join_item_status(item: dict, rec: dict | None, root: Path) -> tuple[str, str]:
+    """回 (status, evidence)。status ∈ done | todo | manual | unknown。
+
+    ★ 沒有上報檔 ⇒ 全部 todo。缺席要出聲，但缺席**不是失敗**（這一頁的既有規矩）。
+    """
+    ck = item.get("check") or {}
+    kind = ck.get("kind")
+
+    if kind == "manual":
+        return "manual", ck.get("note", "需要人判斷")
+
+    if kind == "repo_grep":
+        f = root / str(ck.get("path", ""))
+        if not f.is_file():
+            return "todo", f"{ck.get('path')} 不存在"
+        if str(ck.get("contains", "")) in f.read_text(encoding="utf-8", errors="replace"):
+            return "done", f"{ck.get('path')} 含 {ck.get('contains')!r}"
+        return "todo", f"{ck.get('path')} 不含 {ck.get('contains')!r}"
+
+    if rec is None:
+        return "todo", "還沒有上報檔"
+
+    if kind == "report_field":
+        fld = ck.get("field")
+        v = rec.get(fld)
+        if ck.get("one_of") is not None:
+            ok = v in ck["one_of"]
+            return (("done" if ok else "todo"),
+                    f"{fld}={v!r}（要 {'/'.join(map(repr, ck['one_of']))}）")
+        if ck.get("nonempty"):
+            ok = bool(v) if not isinstance(v, list) else len(v) > 0
+            return (("done" if ok else "todo"),
+                    f"{fld}={'（空）' if not ok else '（有值）'}" + ("　[弱檢查]" if ck.get("weak") else ""))
+        if "equals" in ck:
+            ok = v == ck["equals"]
+            return (("done" if ok else "todo"), f"{fld}={v!r}（要 {ck['equals']!r}）")
+        return "unknown", f"report_field 缺少判準: {fld}"
+
+    if kind == "report_contains":
+        hay = _haystack(rec, ck.get("scopes") or ["what_ran", "capabilities", "notes"])
+        hit = next((x for x in (ck.get("any_of") or []) if x in hay), None)
+        return (("done" if hit else "todo"),
+                (f"命中 {hit!r}" if hit else f"沒出現 {'/'.join(ck.get('any_of') or [])}"))
+
+    if kind == "report_metric":
+        m = rec.get("metrics") or {}
+        return (("done" if ck.get("key") in m else "todo"),
+                (f"metrics.{ck.get('key')}={m.get(ck.get('key'))}" if ck.get("key") in m
+                 else f"metrics 沒有 {ck.get('key')}"))
+
+    return "unknown", f"不認得的 check kind: {kind!r}"
+
+
+def join_progress(eid: str, spec: dict | None, rec: dict | None, root: Path) -> dict | None:
+    """一個端點的加入進度。spec 來自 join.json；沒有就回 None（代表沒登記）。"""
+    if not spec:
+        return None
+    items = []
+    for it in spec.get("checklist") or []:
+        st, ev = join_item_status(it, rec, root)
+        items.append({"id": it.get("id"), "title": it.get("title", ""),
+                      "why": it.get("why", ""), "how": it.get("how") or [],
+                      "weak": bool((it.get("check") or {}).get("weak")),
+                      "status": st, "evidence": ev})
+    cnt = {k: sum(1 for i in items if i["status"] == k)
+           for k in ("done", "todo", "manual", "unknown")}
+    total = len(items)
+    return {
+        "already": bool(spec.get("already")),
+        "doc": f"agent_harness/portal/endpoints/ONBOARDING_{eid}.md",
+        "channel": spec.get("channel") or {},
+        "items": items, "counts": cnt, "total": total,
+        "open": cnt["todo"] + cnt["unknown"],
+        "bar": (f"{cnt['done']}/{total} 完成"
+                + (f"、{cnt['todo']} 待做" if cnt["todo"] else "")
+                + (f"、{cnt['manual']} 需人工" if cnt["manual"] else "")),
+        "blockers": [i["title"] for i in items if i["status"] == "todo" and not i["weak"]][:3],
+    }
+
+
+def retro_history(status_rows: list[dict], eid: str, limit: int = 6) -> list[dict]:
+    """一個端點的復盤：從 fleet_status.jsonl 這條只追加的趨勢裡挑出它的歷史。
+
+    ★ 復盤要看的是**變化**（能力數有沒有長、未量測有沒有減少），不是最後一格的快照。
+    """
+    out = []
+    for rec in status_rows:
+        for e in rec.get("endpoints") or []:
+            if e.get("id") == eid:
+                out.append({"ts": rec.get("ts", ""), "chip": e.get("chip", ""),
+                            "heartbeat": e.get("heartbeat", ""), "caps": e.get("caps"),
+                            "unmeasured": e.get("unmeasured"),
+                            "report_age": e.get("report_age", "")})
+    return out[-limit:]
+
+
+def join_problems(fleet: dict, join: dict, artifacts: dict, rows: list[dict],
+                  root: Path) -> list[str]:
+    """加入單的完整性。兩個方向都要驗（見 cgc-observer-portal 第五條）。"""
+    P2: list[str] = []
+    reg = {e.get("id") for e in (fleet.get("endpoints") or [])}
+    jspec = join.get("endpoints") or {}
+
+    # ① 缺席：reaches=offline 的端點必須有加入單
+    for e in fleet.get("endpoints") or []:
+        if e.get("reaches") == "offline" and e.get("id") not in jspec:
+            P2.append(f"[{e.get('id')}] reaches=offline 但 join.json 沒有加入單 ⇒ "
+                      f"這一端要怎麼進來**沒有任何地方寫著**")
+    # ② 多餘：join.json 有、fleet.json 沒有（雙向）
+    for eid in jspec:
+        if eid not in reg:
+            P2.append(f"★ join.json 有 {eid!r}，但 fleet.json 沒有註冊它 ⇒ 這份加入單永遠不會被讀")
+
+    # ③ 每一格的結構
+    for eid, spec in jspec.items():
+        cl = spec.get("checklist")
+        if not isinstance(cl, list) or not cl:
+            P2.append(f"[{eid}] checklist 必須是非空陣列")
+            continue
+        seen = set()
+        for it in cl:
+            iid = it.get("id")
+            if not iid:
+                P2.append(f"[{eid}] 有一格 checklist 沒有 id")
+                continue
+            if iid in seen:
+                P2.append(f"[{eid}] checklist 的 id {iid!r} 重複")
+            seen.add(iid)
+            for k in ("title", "check", "why"):
+                if not it.get(k):
+                    P2.append(f"[{eid}.{iid}] 缺 {k}")
+            kind = (it.get("check") or {}).get("kind")
+            if kind not in ("repo_grep", "report_field", "report_contains",
+                            "report_metric", "manual"):
+                P2.append(f"[{eid}.{iid}] check.kind {kind!r} 不認得 ⇒ "
+                          f"這一格看起來像檢查，其實永遠是 unknown")
+            if kind == "repo_grep":
+                f = root / str((it["check"] or {}).get("path", ""))
+                if not f.is_file():
+                    P2.append(f"[{eid}.{iid}] repo_grep 指的 {f.name} 不存在 ⇒ 這一格永遠不可能變綠")
+        ch = spec.get("channel") or {}
+        if not ch.get("primary"):
+            P2.append(f"[{eid}] channel.primary 是空的 ⇒ 對方不知道要往哪裡送")
+        prim = ch.get("primary") or {}
+        wp = prim.get("write_path")
+        if wp and not wp.startswith("agent_harness/portal/endpoints/"):
+            P2.append(f"[{eid}] channel.primary.write_path 必須在 agent_harness/portal/endpoints/ 底下")
+
+    # ④ ★ 文件與註冊表漂移（沒做這條，手改文件沒人會發現）
+    want = gen_onboarding(join, fleet)
+    for eid, spec in jspec.items():
+        p2 = root / f"agent_harness/portal/endpoints/ONBOARDING_{eid}.md"
+        if not p2.is_file():
+            P2.append(f"[{eid}] 缺少 {p2.name} ⇒ 跑 "
+                      f"`python3 agent_harness/portal/build_fleet_portal.py --gen-onboarding`")
+        elif p2.read_text(encoding="utf-8") != want[eid]:
+            P2.append(f"[{eid}] ★ {p2.name} 與 join.json 不一致（有人手改，或改了註冊表沒重生成）"
+                      f" ⇒ 跑 --gen-onboarding")
+
+    # ⑤ ★ 上報說「沒有未量的東西」，但註冊表列著已知未知 —— 兩者必有一個是錯的
+    for e in fleet.get("endpoints") or []:
+        eid = e.get("id")
+        rec = (artifacts.get(eid) or {}).get("record")
+        if rec and rec.get("not_measured") == [] and (e.get("not_measured") or []):
+            P2.append(f"[{eid}] 上報宣稱『沒有未量的東西』，但註冊表列了 "
+                      f"{len(e['not_measured'])} 條已知未知 ⇒ 兩者矛盾（其中一個是錯的）")
+    return P2
+
+
+def gen_onboarding(join: dict, fleet: dict) -> dict[str, str]:
+    """從 join.json 產生每端的 ONBOARDING_<id>.md。
+
+    ★ 刻意**不放即時狀態**（todo/done）—— 放了就會隨上報變動，於是每次上報都要重生成，
+      而且漂移檢查會變成一種噪音。即時狀態在入口頁與匯出裡（那裡本來就會變）。
+    """
+    eps = {e.get("id"): e for e in (fleet.get("endpoints") or [])}
+    out: dict[str, str] = {}
+    for eid, spec in (join.get("endpoints") or {}).items():
+        ep = eps.get(eid) or {}
+        ch = spec.get("channel") or {}
+        prim = ch.get("primary") or {}
+        fb = ch.get("fallback") or {}
+        hb = ch.get("heartbeat") or {}
+        L: list[str] = []
+        A = L.append
+        A(f"# 加入 CGC 機隊：{ep.get('name', eid)}（`{eid}`）")
+        A("")
+        A("> ★ 本檔由 `agent_harness/portal/build_fleet_portal.py --gen-onboarding` 從")
+        A("> `agent_harness/portal/join.json` 產生。**不要手改** —— `--check` 會比對磁碟與重算結果。")
+        A("> 改了註冊表就重生成；手改文件會讓閘門變紅（刻意的：文件與註冊表漂移是靜默的）。")
+        A("")
+        A("## 0. 你是誰")
+        A("")
+        A("| 欄位 | 值 |")
+        A("|---|---|")
+        A(f"| endpoint_id | `{eid}` |")
+        A(f"| 我們的標籤 | {ep.get('platform', '?')} / {ep.get('arch', '?')} |")
+        A(f"| 角色 | {ep.get('role', '')} |")
+        A(f"| 現在的狀態 | {'已加入' if spec.get('already') else '**未加入**（我們沒有收過你的任何上報）'} |")
+        A(f"| 你的上報檔 | `{prim.get('write_path', '')}` |")
+        A("")
+        if spec.get("deadline_hint"):
+            A(f"> {spec['deadline_hint']}")
+            A("")
+        A("## 1. 連結資訊（唯一一條要打通的通道）")
+        A("")
+        A(f"### 主要通道：`{prim.get('kind', '?')}`")
+        A("")
+        for k, label in (("repo", "repo"), ("remote_hint", "remote"), ("branch", "branch"),
+                         ("write_path", "你要寫的檔案")):
+            if prim.get(k):
+                A(f"- **{label}**：`{prim[k]}`")
+        if prim.get("branch_current_in_script"):
+            A(f"- ★ **注意**：現有腳本 `auto_git_push.ps1` 推的是 "
+              f"`{prim['branch_current_in_script']}` ⇒ 與上面那條**不同**（見 §2 第 3 項）")
+        if prim.get("automation"):
+            A(f"- 自動化：`{prim['automation']}`")
+        if prim.get("why"):
+            A(f"- 為什麼：{prim['why']}")
+        if prim.get("smoke"):
+            A("")
+            A("先量一次通道有沒有通：")
+            A("")
+            A("```bash")
+            A(prim["smoke"])
+            A("```")
+        if fb:
+            A("")
+            A(f"### 備援通道：`{fb.get('kind', '?')}`")
+            A("")
+            if fb.get("how"):
+                A(f"- {fb['how']}")
+            if fb.get("smoke"):
+                A("")
+                A("```bash")
+                A(fb["smoke"])
+                A("```")
+        A("")
+        A("### 心跳（可選，不是必要條件）")
+        A("")
+        if hb.get("url"):
+            A(f"- `{hb['url']}`")
+        else:
+            A("- 現在是 `null` —— ★ **這不是「失敗」**。我們沒有你的可達位址 ⇒ 這一格永遠是")
+            A("  `unknown`、不會變綠。連得上時把實際 URL 回報給我們，我們才填進註冊表。")
+        if hb.get("how"):
+            A(f"- 要起它的話：`{hb['how']}`")
+        if hb.get("note"):
+            A(f"- {hb['note']}")
+        A("")
+        A(f"## 2. 你要做的事（{len(spec.get('checklist') or [])} 項；做完一項，入口上就少一格 todo）")
+        A("")
+        for i, it in enumerate(spec.get("checklist") or [], 1):
+            weak = bool((it.get("check") or {}).get("weak"))
+            A(f"### {i}. {it.get('title', '')}" + ("　`[弱檢查]`" if weak else ""))
+            A("")
+            if it.get("why"):
+                A(f"**為什麼**：{it['why']}")
+                A("")
+            if it.get("how"):
+                A("**怎麼做**：")
+                A("")
+                A("```bash")
+                for ln in it["how"]:
+                    A(ln)
+                A("```")
+                A("")
+        A("## 3. 送出")
+        A("")
+        A("```bash")
+        A(f"python3 agent_harness/portal/report_endpoint_status.py --id {eid} \\")
+        A("    --what-ran '實際跑了什麼' \\")
+        A("    --capability '我實際驗證過的能力' \\")
+        A("    --not-measured '我不知道什麼'   # 或 --claim-nothing-unmeasured")
+        A("")
+        A("# 先在端點上自檢（不寫檔）：")
+        A(f"python3 agent_harness/portal/report_endpoint_status.py --id {eid} --print")
+        A("```")
+        A("")
+        A(f"然後把 `{prim.get('write_path', '')}` 送到我們這邊（通道見 §1）。")
+        A("")
+        A("## 4. 邊界（不要做這些）")
+        A("")
+        A("- 不要 push 到 `main`、不要 `--force`、不要動 `agent_harness/` 以外的檔。")
+        A("- 不要 `git add -A`（這個 repo 有多條線同時在寫；`-A` 會把別人的變更一起提交）。")
+        A("- **不要填你沒量到的數字。** `--not-measured` 就是為此存在的：")
+        A("  缺席要出聲，留白會被讀成「沒有未量的東西」，而那是最貴的一種沉默。")
+        A("- 不要手改本檔（`--check` 會抓到）。")
+        A("")
+        A("## 5. 我們這邊怎麼驗")
+        A("")
+        A("```bash")
+        A("python3 agent_harness/portal/build_fleet_portal.py --check      # 會逐條指名哪一格沒做")
+        A("python3 agent_harness/portal/build_fleet_portal.py --no-net     # 產生入口頁")
+        A("```")
+        A("")
+        A("做完之後，入口的機隊表上會出現你的卡片，並且帶著：")
+        A("**加入進度**（上面那幾格）、**能力**（你上報的 ＋ 我們從 repo 驗到的）、")
+        A("**未量測**（你宣告的 ＋ 我們的）、以及**復盤**（歷次建置的能力數與未量測數變化）。")
+        A("")
+        out[eid] = "\n".join(L) + "\n"
+    return out
+
+
 def fleet_rows(fleet: dict, artifacts: dict, do_net: bool, timeout: float,
-               now: datetime | None = None) -> list[dict]:
+               now: datetime | None = None, join: dict | None = None,
+               status_rows: list[dict] | None = None) -> list[dict]:
     """一個端點一列 —— 註冊表有幾筆就幾筆，永遠不會少。"""
     now = now or datetime.now()
     fresh = fleet.get("freshness") or {}
@@ -332,6 +651,8 @@ def fleet_rows(fleet: dict, artifacts: dict, do_net: bool, timeout: float,
             "not_measured": e.get("not_measured") or [],
             "channels": e.get("channels") or {},
             "heartbeat": heart,
+            "join": join_progress(eid, (join or {}).get("endpoints", {}).get(eid), rec, REPO),
+            "retro": retro_history(status_rows or [], eid),
             "report": rec, "report_age": agetxt, "report_seconds": age,
             "report_path": f"agent_harness/portal/endpoints/{eid}.json" if rec else "",
             "chip": chip, "chip_class": CHIP.get(chip, "t-grey"), "stale_class": stale_class,
@@ -604,6 +925,35 @@ def render_html(fleet, rows, trend, momentum, meta) -> str:
         rel = "".join(f'<li>{mdx(hesc(x.get("how","")))}</li>' for x in (ch.get("relay") or []))
         rep = (f'<b>已上報</b> {hesc(r["report_age"])}　<code>{hesc(r["report_path"])}</code>'
                if r["report"] else '<span class="muted">未上報（沒有任何 endpoints/*.json）</span>')
+        # 加入進度（進度）與 fleet_status.jsonl 的歷史（復盤）
+        jn = r.get("join")
+        if jn:
+            jitems = "".join(
+                f'<li><span class="tag {"t-green" if i["status"]=="done" else ("t-amber" if i["status"] in ("todo","unknown") else "t-grey")}">'
+                f'{hesc(i["status"])}</span> {mdx(hesc(i["title"]))}'
+                + ('　<span class="tag t-grey">弱檢查</span>' if i["weak"] else "")
+                + f'<div class="ev">{mdx(hesc(i["evidence"]))}</div></li>'
+                for i in jn["items"])
+            join_html = (
+                f'<div style="margin-top:8px"><b>加入進度</b>'
+                f'<span class="tag {"t-green" if jn["open"] == 0 else "t-amber"}">{hesc(jn["bar"])}</span>'
+                f'<div class="ev">操作單：<code>{hesc(jn["doc"])}</code></div>'
+                f'<details><summary>對方 agent 要做的事（{jn["total"]} 項）</summary>'
+                f'<ul style="margin:4px 0 0;padding-left:18px;font-size:12.6px">{jitems}</ul></details></div>')
+        else:
+            join_html = ('<div style="margin-top:8px"><b>加入進度</b>'
+                         '<div class="ev"><span class="muted">join.json 沒有登記它'
+                         '（它不需要「加入」—— 例如本機或已在網路上）</span></div></div>')
+        retro = r.get("retro") or []
+        if retro:
+            rc = " → ".join(f'{hesc(x["ts"][5:16])} {hesc(x["chip"])}(能力{x["caps"]}/未量{x["unmeasured"]})'
+                            for x in retro)
+            retro_html = (f'<div style="margin-top:8px"><b>復盤</b>（歷次建置，'
+                          f'最後 {len(retro)} 次）<div class="ev">{rc}</div></div>')
+        else:
+            retro_html = ('<div style="margin-top:8px"><b>復盤</b>'
+                          '<div class="ev"><span class="muted">還沒有歷史（fleet_status.jsonl '
+                          '裡沒有它的紀錄）</span></div></div>')
         cards.append(f"""<div class="card">
   <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline">
     <div><b>{mdx(hesc(r['name']))}</b>
@@ -621,6 +971,8 @@ def render_html(fleet, rows, trend, momentum, meta) -> str:
   <div style="margin-top:8px"><b>本輪真的跑了什麼</b>（來自它的上報，不是我們的推測）</div>
   <ul style="margin:4px 0 0;padding-left:18px;font-size:13px">{ran}</ul>
   <div style="margin-top:6px"><b>讀數</b><div class="ev">{metrics}</div></div>
+  {join_html}
+  {retro_html}
   <div style="margin-top:8px"><b>通道</b><div class="ev">心跳：{hb_txt}</div>
     <div class="ev">探測結果：{hesc(r['heartbeat'].get('state',''))} —— {hesc(str(r['heartbeat'].get('detail',''))[:150])}</div>
     <ul style="margin:4px 0 0;padding-left:18px;font-size:12.6px">{rel}</ul>
@@ -658,6 +1010,54 @@ def render_html(fleet, rows, trend, momentum, meta) -> str:
         f'<td><span class="tag {"t-grey" if x["momentum"] in ("orphan","pending") else "t-green"}">'
         f'{hesc(x["momentum"])}</span></td>'
         f'<td class="num">{len(x["forward_refs"])}</td></tr>' for x in mom["rows"][:24])
+
+    # ── 加入單區塊（逐端：通道 ＋ 清單 ＋ 現況）
+    jrows = [r for r in rows if r.get("join")]
+    jn_total = len(jrows)
+    jn_open = sum(r["join"]["open"] for r in jrows)
+    if not jrows:
+        join_sec = '<div class="box warn">join.json 沒有登記任何端點。</div>'
+    else:
+        blocks = []
+        for r in jrows:
+            jn = r["join"]
+            ch = jn["channel"] or {}
+            prim = ch.get("primary") or {}
+            fb = ch.get("fallback") or {}
+            hb = ch.get("heartbeat") or {}
+            ch_lines = [f'<li>主要：<code>{hesc(prim.get("kind", "?"))}</code>'
+                        f'{"　→ <code>" + hesc(str(prim.get("write_path", ""))) + "</code>" if prim.get("write_path") else ""}'
+                        f'{"　branch <code>" + hesc(str(prim.get("branch"))) + "</code>" if prim.get("branch") else ""}'
+                        f'{"<div class=\"ev\">" + mdx(hesc(prim.get("why", ""))) + "</div>" if prim.get("why") else ""}</li>']
+            if fb:
+                ch_lines.append(f'<li>備援：<code>{hesc(fb.get("kind", "?"))}</code>'
+                                f'{"<div class=\"ev\">" + mdx(hesc(fb.get("how", ""))) + "</div>" if fb.get("how") else ""}</li>')
+            ch_lines.append(f'<li>心跳：<code>{hesc(hb["url"]) if hb.get("url") else "null"}</code>'
+                            + ('<div class="ev">null 不是失敗：沒有可達位址 ⇒ 永遠 unknown</div>'
+                               if not hb.get("url") else "") + '</li>')
+            items = "".join(
+                f'<tr><td><span class="tag {"t-green" if i["status"]=="done" else ("t-amber" if i["status"] in ("todo","unknown") else "t-grey")}">'
+                f'{hesc(i["status"])}</span></td><td><b>{mdx(hesc(i["title"]))}</b>'
+                + ('　<span class="tag t-grey">弱檢查</span>' if i["weak"] else "")
+                + f'<div class="small">{mdx(hesc(i["why"]))}</div>'
+                + (f'<details><summary>怎麼做</summary><pre><code>{hesc(chr(10).join(i["how"]))}</code></pre></details>'
+                   if i["how"] else "")
+                + f'</td><td class="small">{mdx(hesc(i["evidence"]))}</td></tr>'
+                for i in jn["items"])
+            blocks.append(f"""<div class="card" style="margin-top:10px">
+  <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline">
+    <div><b>{mdx(hesc(r['name']))}</b>
+      <div class="small"><code>{hesc(r['id'])}</code>　{hesc(r['platform'])}/{hesc(r['arch'])}
+      　<span class="tag t-grey">{'已加入' if jn['already'] else '未加入'}</span></div></div>
+    <span class="tag {'t-green' if jn['open'] == 0 else 't-amber'}">{hesc(jn['bar'])}</span>
+  </div>
+  <div class="small" style="margin-top:6px">操作單：<code>{hesc(jn['doc'])}</code>（產生自 join.json，不要手改）</div>
+  <div style="margin-top:8px"><b>通道</b><ul style="margin:4px 0 0;padding-left:18px;font-size:12.6px">{''.join(ch_lines)}</ul></div>
+  <div style="margin-top:8px"><b>要做的事</b></div>
+  <table style="margin-top:4px"><thead><tr><th>狀態</th><th>項目</th><th>判準現況</th></tr></thead>
+  <tbody>{items}</tbody></table>
+</div>""")
+        join_sec = "".join(blocks)
 
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant"><head><meta charset="utf-8">
@@ -716,26 +1116,13 @@ orphan {hesc(mom['orphan_pct'])}（門檻 {hesc(mom['thr_orphan'])}）　·　
 <table><thead><tr><th>decision_id</th><th>日</th><th>動能</th><th class="num">被引用</th></tr></thead>
 <tbody>{mom_rows}</tbody></table>
 
-<h2>④ 怎麼把一個離線端接進來</h2>
+<h2>④ 怎麼把一個離線端接進來（{jn_total} 個端點有加入單，未完成 {jn_open} 項）</h2>
 <div class="small">鴻蒙端與 Windows 端<b>目前不在我們的網路上</b> ⇒ 沒有任何即時協議能成立。
-唯一在它們真的離線時仍然成立的機制是 store-and-forward：端點寫檔，靠既有通道帶回來。</div>
-<pre><code># 在端點上跑（只需 Python 標準函式庫；沒有這個 repo 也能跑）
-python3 agent_harness/portal/report_endpoint_status.py --id windows-rtx4090 \\
-    --what-ran "建 CUDA 版（GGML_CUDA=ON）" --metric decode_tps=52.3 \\
-    --not-measured "沒量過 M1/M2/M3 身分"
-
-# 讓它落到 endpoints/ 之後，靠既有通道帶回來：
-#   鴻蒙端  scp ＋ ssh          → deploy-harmonyos/deploy-to-harmonyos.sh
-#   Windows git（自動 push）    → agent_harness/scripts/auto_git_push.ps1
-#   雲端    rsync               → CGC-main/cgc_engine/tools/_archive_v1/server/sync_all_gates_to_hosts.sh
-# 若端點真的連得上，也可以直接 POST 給本入口：
-#   curl -X POST http://127.0.0.1:8787/api/report -d @endpoints/windows-rtx4090.json</code></pre>
-<div class="box warn"><b>兩個對齊問題（不說就會靜默失敗）</b>
-<div style="margin-top:5px">
-① <code>auto_git_push.ps1</code> 推的是 branch <code>fusionroutemot</code>，而本入口讀的是
-<code>demo/sweet-spot-windows-fix</code> ⇒ 兩邊對齊之前 Windows 的上報不會出現在這裡。<br>
-② <code>auto_git_push.ps1</code> 在本機<b>從未被執行過</b> ⇒「它會自動推」目前是設計意圖，不是已驗證的行為。
-</div></div>
+唯一在它們真的離線時仍然成立的機制是 store-and-forward：端點寫檔，靠既有通道帶回來。<br>
+★ 每一端的操作單由 <code>agent_harness/portal/join.json</code> 產生
+（<code>--gen-onboarding</code>），而下面的完成度是<b>實算</b>的 —— 不是端點自己宣告的。
+<code>todo</code> 不是紅燈：沒上報的端點全部是 todo，那只是「還沒做」。</div>
+{join_sec}
 
 <h2>⑤ 這一頁的可信度邊界</h2>
 <ul style="font-size:13.2px">
@@ -865,14 +1252,33 @@ def append_status(rows: list[dict], path: Path) -> dict:
 
 # ────────────────────────────── 模式 ──────────────────────────────
 
+def load_status_rows(path: Path | None = None) -> list[dict]:
+    """讀 fleet_status.jsonl（只追加的趨勢）。壞行跳過但不假裝它不存在。"""
+    p = path or STATUS_JSONL
+    if not p.is_file():
+        return []
+    out = []
+    for line in p.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return out
+
+
 def gather(do_net: bool, timeout: float, today: datetime | None = None) -> dict:
     fleet = load_json(FLEET_JSON)
     spec = load_json(TREND_JSON)
+    join = load_json(JOIN_JSON) if JOIN_JSON.is_file() else {"endpoints": {}}
     artifacts = load_artifacts()
-    rows = fleet_rows(fleet, artifacts, do_net, timeout, today)
+    status_rows = load_status_rows()
+    rows = fleet_rows(fleet, artifacts, do_net, timeout, today,
+                      join=join, status_rows=status_rows)
     trend = trend_block(spec, REPO, today)
     problems = fleet_problems(fleet, artifacts, rows, spec, trend, REPO)
-    return {"fleet": fleet, "spec": spec, "artifacts": artifacts,
+    problems += join_problems(fleet, join, artifacts, rows, REPO)
+    return {"fleet": fleet, "spec": spec, "join": join, "artifacts": artifacts,
             "rows": rows, "trend": trend, "problems": problems}
 
 
@@ -908,6 +1314,29 @@ def make_meta(g: dict, do_net: bool) -> dict:
         "harness_href": HARNESS_HTML.name if HARNESS_HTML.exists() else "#",
         **git_meta(),
     }
+
+
+def cmd_gen_onboarding() -> int:
+    """從 join.json 產生每端的 ONBOARDING_<id>.md。★ 只寫這幾個檔，不碰別的。"""
+    fleet = load_json(FLEET_JSON)
+    if not JOIN_JSON.is_file():
+        print(f"  [error] 找不到 {JOIN_JSON.relative_to(REPO)}")
+        return 1
+    join = load_json(JOIN_JSON)
+    want = gen_onboarding(join, fleet)
+    if not want:
+        print("  [error] join.json 沒有任何端點")
+        return 1
+    ENDPOINTS_DIR.mkdir(parents=True, exist_ok=True)
+    for eid in sorted(want):
+        p = ENDPOINTS_DIR / f"ONBOARDING_{eid}.md"
+        text = want[eid]
+        old = p.read_text(encoding="utf-8") if p.is_file() else None
+        state = "unchanged" if old == text else ("updated" if old is not None else "created")
+        if state != "unchanged":
+            p.write_text(text, encoding="utf-8")
+        print(f"  {state:9s} {p.relative_to(REPO)}  ({len(text.encode()):,} B)")
+    return 0
 
 
 def cmd_check() -> int:
@@ -950,7 +1379,29 @@ def export_payload(g: dict, mom: dict, meta: dict) -> dict:
              "reported_at": (r["report"] or {}).get("reported_at", ""),
              "report_age": r["report_age"],
              "capabilities": [c.get("label", "") for c in r["capabilities"]],
-             "not_measured": r["not_measured"]}
+             "not_measured": r["not_measured"],
+             # ── 資產：這一端在 repo 裡的落點（不是它的能力，是它的紀錄在哪）
+             "assets": {"report_path": r["report_path"],
+                        "evidence_pointers": sum(len(c.get("evidence") or [])
+                                                 for c in r["capabilities"]),
+                        "what_ran_n": len((r["report"] or {}).get("what_ran") or []),
+                        "metrics": (r["report"] or {}).get("metrics") or {}},
+             # ── 進度：加入單的完成度（未上報 ⇒ 全部 todo，那不是紅）
+             "join": (None if not r.get("join") else {
+                 "already": r["join"]["already"], "bar": r["join"]["bar"],
+                 "counts": r["join"]["counts"], "total": r["join"]["total"],
+                 "open": r["join"]["open"], "doc": r["join"]["doc"],
+                 "channel": {"primary_kind": ((r["join"]["channel"].get("primary") or {}).get("kind")),
+                             "write_path": ((r["join"]["channel"].get("primary") or {}).get("write_path")),
+                             "branch": ((r["join"]["channel"].get("primary") or {}).get("branch")),
+                             "smoke": ((r["join"]["channel"].get("primary") or {}).get("smoke")),
+                             "blocker": ((r["join"]["channel"].get("primary") or {}).get("why"))},
+                 "blockers": r["join"]["blockers"],
+                 "items": [{"id": i["id"], "title": i["title"], "status": i["status"],
+                            "weak": i["weak"], "evidence": i["evidence"], "why": i["why"]}
+                           for i in r["join"]["items"]]}),
+             # ── 復盤：逐次建置的能力數／未量測數變化（只在 fleet_status.jsonl 有歷史時非空）
+             "retro": r.get("retro") or []}
             for r in g["rows"]],
         "targets": {
             "source": "agent_harness/portal/targets.json（單一真相，本檔只轉述）",
@@ -977,6 +1428,14 @@ def export_payload(g: dict, mom: dict, meta: dict) -> dict:
                         "covers": s2["covers"], "day_basis": s2["day_basis"],
                         "cells": {d: s2["cells"][d] for d in g["trend"]["days"]}}
                        for s2 in g["trend"]["sources"]],
+        },
+        "join_summary": {
+            "endpoints_with_kit": sum(1 for r in g["rows"] if r.get("join")),
+            "joined": sum(1 for r in g["rows"] if (r.get("join") or {}).get("already")),
+            "open_items": sum((r.get("join") or {}).get("open", 0) for r in g["rows"]),
+            "items": sum((r.get("join") or {}).get("total", 0) for r in g["rows"]),
+            "note": "加入單是給**還沒進來的端點**的操作單；每一格的判準都在 join.json 裡，"
+                    "由 build_fleet_portal.py 實算 —— 不是端點自己宣告的。",
         },
         "honesty": {
             "unknown_not_failure": "心跳失敗與未上報都是 unknown／未上報，不是失敗。"
@@ -1051,8 +1510,24 @@ def self_test() -> int:
         p = subprocess.run([sys.executable, me, *argv], capture_output=True, text=True, env=env)
         return p.returncode, (p.stdout or "") + (p.stderr or "")
 
+    def default_join(eps):
+        """fixture 預設就給一份**合法**的加入單 —— 否則 reaches=offline 的端點會讓
+        既有那些「預期 rc=0」的正對照全部變紅（自測會拿假原因失敗）。"""
+        return {"schema": 1, "endpoints": {
+            e["id"]: {"already": False,
+                      "channel": {"primary": {"kind": "local",
+                                              "write_path": f"agent_harness/portal/endpoints/{e['id']}.json",
+                                              "smoke": "true"}},
+                      "checklist": [{"id": "report-written", "title": "有上報檔", "why": "fixture",
+                                     "how": ["python3 …/report_endpoint_status.py --id " + e["id"]],
+                                     "check": {"kind": "report_field", "field": "endpoint_id",
+                                               "equals": e["id"]}}]}
+            # ★ 要濾掉沒有 id 的端點：既有的自測刻意用一個缺 id 的端點
+            #   （測「缺 id 要被指名」），這裡不濾就會 KeyError 而炸掉整個自測。
+            for e in eps if e.get("reaches") == "offline" and e.get("id")}}
+
     def fixture(name: str, *, endpoints=None, fleet=None, sources=None,
-                artifacts=None, with_git=True) -> Path:
+                artifacts=None, with_git=True, join=None, docs=None) -> Path:
         root = tmp / name
         (root / "agent_harness" / "portal" / "endpoints").mkdir(parents=True)
         (root / "agent_harness" / "engine_loop" / "traces").mkdir(parents=True)
@@ -1082,6 +1557,20 @@ def self_test() -> int:
         for eid, rec in (artifacts or {}).items():
             (root / "agent_harness" / "portal" / "endpoints" / f"{eid}.json").write_text(
                 json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+        # ★ 從**剛寫下去的 fleet.json** 讀回來，而不是從參數推 ——
+        #   呼叫端可能用 fleet= 直接傳一份機隊（那時 endpoints= 是空的），
+        #   fixture 自己也會變成「兩份真相」而讓正對照拿到假原因失敗。
+        fl = json.loads((root / "agent_harness" / "portal" / "fleet.json").read_text(encoding="utf-8"))
+        j = join if join is not None else default_join(fl.get("endpoints") or [])
+        (root / "agent_harness" / "portal" / "join.json").write_text(
+            json.dumps(j, ensure_ascii=False), encoding="utf-8")
+        # 文件預設由產生器算（這樣「沒有漂移」才是真的）；docs 給定時用給定的內容
+        want = gen_onboarding(j, fl)
+        for eid in want:
+            text = (docs or {}).get(eid, want[eid])
+            if text is not None:
+                (root / "agent_harness" / "portal" / "endpoints" / f"ONBOARDING_{eid}.md").write_text(
+                    text, encoding="utf-8")
         if with_git:
             subprocess.run(["git", "init", "-q"], cwd=str(root), capture_output=True)
         return root
@@ -1273,7 +1762,71 @@ def self_test() -> int:
          rc == 0 and gc.returncode == 0 and "`node`" not in html and "<code>node</code>" in html,
          f"rc={rc} git_rc={gc.returncode} 殘留={'`node`' in html}")
 
-    # 19) 看門狗：真 repo 一個檔都不該被動到
+    # 19-25) 加入單（join.json）：缺席、多餘、漂移、壞 kind、矛盾 —— 每一格都要指名
+    r19 = fixture("j19")                                   # 沒有 join.json 的端點（reaches=offline）
+    (r19 / "agent_harness" / "portal" / "join.json").write_text(
+        json.dumps({"schema": 1, "endpoints": {}}, ensure_ascii=False), encoding="utf-8")
+    for f in (r19 / "agent_harness" / "portal" / "endpoints").glob("ONBOARDING_*.md"):
+        f.unlink()
+    rc, out = run(r19, "--check")
+    case("★ reaches=offline 但 join.json 沒有加入單 ⇒ rc=1 且指名該端點",
+         rc == 1 and "reaches=offline" in out, f"rc={rc} {out[-140:]}")
+
+    j7 = default_join  # noqa: F841  （下面幾格自建 join）
+    ghost_join = {"schema": 1, "endpoints": {"ghost-ep": {
+        "already": False, "channel": {"primary": {"kind": "local",
+                                                  "write_path": "agent_harness/portal/endpoints/ghost-ep.json"}},
+        "checklist": [{"id": "x", "title": "t", "why": "w", "how": ["h"],
+                       "check": {"kind": "manual", "note": "n"}}]}}}
+    r20 = fixture("j20", join=ghost_join)
+    rc, out = run(r20, "--check")
+    case("★ join.json 有端點但 fleet.json 沒註冊 ⇒ rc=1 且指名它（雙向檢查的另一半）",
+         rc == 1 and "ghost-ep" in out, f"rc={rc} {out[-140:]}")
+
+    ep_ok = [min_ep()]
+    base_join = default_join(ep_ok)
+    r21 = fixture("j21", endpoints=ep_ok, join=base_join)
+    rc, out = run(r21, "--check")
+    case("正對照：加入單齊全且文件同步 ⇒ rc=0", rc == 0, f"rc={rc} {out[-160:]}")
+
+    r22 = fixture("j22", endpoints=ep_ok, join=base_join, docs={})
+    for f in (r22 / "agent_harness" / "portal" / "endpoints").glob("ONBOARDING_*.md"):
+        f.unlink()
+    rc, out = run(r22, "--check")
+    case("★ ONBOARDING 文件不存在 ⇒ rc=1 且叫你去跑 --gen-onboarding",
+         rc == 1 and "--gen-onboarding" in out, f"rc={rc} {out[-140:]}")
+
+    r23 = fixture("j23", endpoints=ep_ok, join=base_join, docs={"ep-a": "# 被手改過\n"})
+    rc, out = run(r23, "--check")
+    case("★ ONBOARDING 文件與 join.json 漂移（有人手改）⇒ rc=1",
+         rc == 1 and "不一致" in out, f"rc={rc} {out[-140:]}")
+
+    r24 = fixture("j24", endpoints=ep_ok, join=base_join)
+    rc, out = run(r24, "--gen-onboarding")
+    case("--gen-onboarding 產出文件且 rc=0",
+         rc == 0 and (r24 / "agent_harness/portal/endpoints/ONBOARDING_ep-a.md").is_file(),
+         f"rc={rc} {out[-120:]}")
+    rc2, out2 = run(r24, "--check")
+    case("★ --gen-onboarding 之後 --check 轉綠（產生器與檢查器同一份真相）",
+         rc2 == 0, f"rc={rc2} {out2[-160:]}")
+
+    bad_kind = default_join(ep_ok)
+    bad_kind["endpoints"]["ep-a"]["checklist"][0]["check"] = {"kind": "vibes"}
+    r25 = fixture("j25", endpoints=ep_ok, join=bad_kind)
+    rc, out = run(r25, "--check")
+    case("★ check.kind 不認得 ⇒ rc=1（不是靜默變成永遠 unknown）",
+         rc == 1 and "不認得" in out, f"rc={rc} {out[-140:]}")
+
+    rec_blank = {"contract_version": 1, "endpoint_id": "ep-a", "reported_at": "2026-09-18 10:00:00",
+                 "platform": "linux", "arch": "x86_64", "what_ran": ["跑了 X"],
+                 "capabilities": [], "not_measured": [], "metrics": {}}
+    r26 = fixture("j26", endpoints=[dict(ep_ok[0], not_measured=["我們不知道 Y"])],
+                  join=base_join, artifacts={"ep-a": rec_blank})
+    rc, out = run(r26, "--check")
+    case("★ 上報宣稱『沒有未量的東西』但註冊表列了已知未知 ⇒ rc=1（兩者矛盾）",
+         rc == 1 and "矛盾" in out, f"rc={rc} {out[-150:]}")
+
+    # 26) 看門狗：真 repo 一個檔都不該被動到
     real = Path(__file__).resolve().parent
     watch = ["fleet.json", "trend_sources.json", "build_fleet_portal.py",
              "report_endpoint_status.py", "endpoints/README.md"]
@@ -1380,6 +1933,8 @@ def main(argv=None) -> int:
     ap.add_argument("--serve", action="store_true", help="起 HTTP 服務（stdlib）")
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--no-net", action="store_true", help="不探測心跳（離線）")
+    ap.add_argument("--gen-onboarding", action="store_true",
+                    help="從 join.json 產生 endpoints/ONBOARDING_<id>.md（唯一真相是 join.json）")
     ap.add_argument("--export", action="store_true",
                     help="只匯出 docs/fleet_export.json（給別的網站吃的可攜資料）")
     ap.add_argument("--timeout", type=float, default=2.0, help="心跳探測超時（秒）")
@@ -1391,6 +1946,8 @@ def main(argv=None) -> int:
         return cmd_check()
     if args.serve:
         return cmd_serve(args.port, not args.no_net, args.timeout)
+    if args.gen_onboarding:
+        return cmd_gen_onboarding()
     if args.export:
         return cmd_export()
     return cmd_build(not args.no_net, args.timeout)

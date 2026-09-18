@@ -1,0 +1,257 @@
+{
+  "schema": 1,
+  "title": "端點加入單（onboarding kit）—— 給鴻蒙端與 Windows 端的操作單",
+  "what_is_this": "把「這兩端要怎麼連進來、進來之後對方 agent 必須做什麼」寫成一份可機檢的註冊表。它與 fleet.json 是**互相檢查的兩份真相**：fleet.json 說「機隊有誰」，join.json 說「還沒進來的要怎麼進來」。",
+  "why_a_separate_file": "★ 不塞進 fleet.json 的原因是一個已付過的學費：fleet.json 用**單行緊湊陣列**（`\"required\": [\"a\", \"b\"]`），而 json.dumps 會把它們展開 ⇒ 任何「讀進來、加一個鍵、寫回去」都會造成整檔重排（實測 223 行），diff 沒人讀得懂。新檔沒有這個包袱，而且兩份檔的**雙向交叉檢查**（見 builder 的 join_problems）比塞在一起更難腐爛。",
+  "generated_docs": "agent_harness/portal/endpoints/ONBOARDING_<endpoint_id>.md（由 build_fleet_portal.py --gen-onboarding 產生；手改會被 --check 抓到）",
+  "how_to_regenerate": "python3 agent_harness/portal/build_fleet_portal.py --gen-onboarding",
+  "check_kinds": {
+    "repo_grep": "這個 repo 裡的某個檔含某個子串（{path, contains}）—— 可機檢，且失效時會指名",
+    "report_field": "端點上報檔的某欄位（{field, equals|one_of|nonempty}）",
+    "report_contains": "上報檔的某幾個欄位裡出現任一個子串（{scopes, any_of}）",
+    "report_metric": "上報檔的 metrics 有這個鍵（{key}）",
+    "manual": "無法自動驗，需要人判斷（{note}）"
+  },
+  "rules": [
+    "★ 清單的每一格都必須**可機檢或明確標 manual** —— 不能有「看起來像檢查但其實沒檢查」的格子。",
+    "★ 標了 weak:true 的檢查代表它只證明「不是空的」，不證明內容對 —— 入口要把它顯示成弱檢查，不假裝它證明了更多。",
+    "★ 沒上報的端點，全部格子都是 todo（不是綠、也不是紅）—— 缺席要出聲，但缺席不是失敗。",
+    "★ ONBOARDING_*.md 由本檔產生。文件與註冊表漂移是靜默的，所以 --check 會比對磁碟與重算結果。"
+  ],
+  "endpoints": {
+    "mac-local": {
+      "already": true,
+      "channel": {
+        "primary": {
+          "kind": "local",
+          "write_path": "agent_harness/portal/endpoints/mac-local.json",
+          "smoke": "python3 agent_harness/portal/report_endpoint_status.py --id mac-local --print",
+          "why": "本機就是入口自己跑的地方 ⇒ 直接寫檔，不需要任何通道。"
+        },
+        "fallback": null,
+        "heartbeat": {
+          "url": "http://127.0.0.1:9100/v1/compute/status",
+          "how": "agent_harness/pd/compute_sharing.py --role node --port 9100",
+          "note": "只在服務真的起來時才有回應；沒起來是 unknown，不是紅。"
+        }
+      },
+      "checklist": [
+        {
+          "id": "report-written",
+          "title": "有上報檔（`endpoints/mac-local.json`）",
+          "how": ["python3 agent_harness/portal/report_endpoint_status.py --id mac-local --what-ran '…'"],
+          "check": {
+            "kind": "report_field",
+            "field": "endpoint_id",
+            "equals": "mac-local"
+          },
+          "why": "沒有上報檔，這一格永遠是「未上報」。"
+        },
+        {
+          "id": "registered",
+          "title": "在 `fleet.json` 的端點註冊表裡",
+          "how": ["在 fleet.json 的 endpoints 加一筆 id=mac-local"],
+          "check": {
+            "kind": "repo_grep",
+            "path": "agent_harness/portal/fleet.json",
+            "contains": "mac-local"
+          },
+          "why": "★ 沒註冊的上報檔不會被讀（`--check` 也會指名它）。"
+        }
+      ]
+    },
+    "windows-rtx4090": {
+      "already": false,
+      "deadline_hint": "這是我們最貴的通道缺口：它的 40–60 t/s 預期是唯一能把 decode 目標從「本機 12.62」往上推的外部讀數。",
+      "channel": {
+        "primary": {
+          "kind": "git",
+          "repo": "git@github.com:alexchuang19760730/cgcengine0907.git",
+          "remote_hint": "你那邊的 remote 名（現有腳本裡是 cgc0907）",
+          "branch": "demo/sweet-spot-windows-fix",
+          "branch_current_in_script": "fusionroutemot",
+          "write_path": "agent_harness/portal/endpoints/windows-rtx4090.json",
+          "automation": "agent_harness/scripts/auto_git_push.ps1（監看 agent_harness/，定期 commit ＋ push）",
+          "smoke": "git ls-remote --heads <你的 remote> demo/sweet-spot-windows-fix",
+          "why": "本入口讀的是 demo/sweet-spot-windows-fix。你推到 fusionroutemot 會成功，但入口看不到 —— 這是已知的靜默缺口。"
+        },
+        "fallback": {
+          "kind": "scp/rsync",
+          "how": "把 agent_harness/portal/endpoints/windows-rtx4090.json 直接 scp 回我們這台（或貼進 PR）",
+          "smoke": "scp agent_harness/portal/endpoints/windows-rtx4090.json <our-host>:~/incoming/"
+        },
+        "heartbeat": {
+          "url": null,
+          "how": "若真的連得上區網：python3 agent_harness/pd/compute_sharing.py --role node --port 9100",
+          "note": "★ null 不是「失敗」。現在沒有可達位址 ⇒ 這一格永遠是 unknown、不會變綠。連得上時把實際 URL 回報給我們，我們才把它填進註冊表。"
+        }
+      },
+      "checklist": [
+        {
+          "id": "report-written",
+          "title": "產生第一份上報檔 `endpoints/windows-rtx4090.json`",
+          "how": [
+            "python3 agent_harness/portal/report_endpoint_status.py --id windows-rtx4090 \\",
+            "    --what-ran '…' --not-measured '…'（或 --claim-nothing-unmeasured）"
+          ],
+          "check": {
+            "kind": "report_field",
+            "field": "endpoint_id",
+            "equals": "windows-rtx4090"
+          },
+          "why": "契約要求 not_measured 必填且不得留白；兩個都沒給，產生器會拒跑（rc=2）。"
+        },
+        {
+          "id": "platform-aligned",
+          "title": "上報的 `platform` 寫對（Windows 是 `win32`，不是 `windows`）",
+          "how": ["不要覆寫 --platform，讓它取 sys.platform（= win32）"],
+          "check": {
+            "kind": "report_field",
+            "field": "platform",
+            "one_of": ["win32"]
+          },
+          "why": "註冊表用 windows 當**我們的標籤**，而 sys.platform 是 win32 ⇒ 不對齊會讓自動比對靜默失效。"
+        },
+        {
+          "id": "channel-branch-aligned",
+          "title": "把上報推到入口讀的那條分支（或告訴我們改讀你推的那條）",
+          "how": [
+            "改 agent_harness/scripts/auto_git_push.ps1 的 $BranchName = \"demo/sweet-spot-windows-fix\"",
+            "或：叫我們改讀 fusionroutemot（二選一，但兩邊要一致）"
+          ],
+          "check": {
+            "kind": "repo_grep",
+            "path": "agent_harness/scripts/auto_git_push.ps1",
+            "contains": "demo/sweet-spot-windows-fix"
+          },
+          "why": "★ 這一格現在就是 todo —— 刻意的。它把「你推成功了但我們看不到」這個沉默缺口變成一格看得見的紅。"
+        },
+        {
+          "id": "build-ran",
+          "title": "真的建過一次（CUDA，或退回 Vulkan），把結果寫進 `what_ran`",
+          "how": [
+            "deploy-harmonyos/windows/build-windows.bat",
+            "--what-ran 'CUDA 建置完成（GGML_CUDA=ON）'"
+          ],
+          "check": {
+            "kind": "report_contains",
+            "scopes": ["what_ran"],
+            "any_of": ["CUDA", "cuda", "Vulkan", "vulkan", "GGML_CUDA"]
+          },
+          "why": "「能不能建」現在只是腳本裡的一行意圖；只有跑過才是能力。"
+        },
+        {
+          "id": "gpu-reported",
+          "title": "回報 GPU 型號與建置設定（`gpu` / `build_profile`）",
+          "how": ["--gpu 'RTX 4090 24GB' --build-profile 'VS2022 + CUDA 12.x'"],
+          "check": {
+            "kind": "report_field",
+            "field": "gpu",
+            "nonempty": true
+          },
+          "why": "沒有它，「40–60 t/s 的預期」沒有對應的機器可查。"
+        },
+        {
+          "id": "decode-measured",
+          "title": "跑一次真實 decode，把 t/s 寫進 `metrics.decode_tps`",
+          "how": ["跑一次生成（llama-server 或 Playground），再：", "--metric decode_tps=<實測值>"],
+          "check": {
+            "kind": "report_metric",
+            "key": "decode_tps"
+          },
+          "why": "README 的 40–60 t/s 是**預期**，本入口不把它當實績。唯一能改變這一點的就是量。"
+        }
+      ]
+    },
+    "harmonyos-matebook14": {
+      "already": false,
+      "channel": {
+        "primary": {
+          "kind": "git",
+          "repo": "git@github.com:alexchuang19760730/cgcengine0907.git",
+          "remote_hint": "你那邊的 remote 名",
+          "branch": "demo/sweet-spot-windows-fix",
+          "write_path": "agent_harness/portal/endpoints/harmonyos-matebook14.json",
+          "smoke": "git ls-remote --heads <你的 remote> demo/sweet-spot-windows-fix",
+          "why": "與 Windows 同一條路：推上 demo/sweet-spot-windows-fix 我們才讀得到。"
+        },
+        "fallback": {
+          "kind": "scp",
+          "how": "本機已有 deploy-harmonyos/deploy-to-harmonyos.sh（scp -r 整包過去 ＋ ssh 進去跑 build.sh）；反向把 endpoints/harmonyos-matebook14.json scp 回來也可以。",
+          "smoke": "bash deploy-harmonyos/deploy-to-harmonyos.sh <user>@<host>"
+        },
+        "heartbeat": {
+          "url": null,
+          "how": "若真的連得上：python3 agent_harness/pd/compute_sharing.py --role node --port 9100",
+          "note": "★ null 不是「失敗」：沒有可達位址 ⇒ unknown，不會變綠。"
+        }
+      },
+      "checklist": [
+        {
+          "id": "report-written",
+          "title": "產生第一份上報檔 `endpoints/harmonyos-matebook14.json`",
+          "how": [
+            "python3 agent_harness/portal/report_endpoint_status.py --id harmonyos-matebook14 \\",
+            "    --what-ran '…' --not-measured '…'"
+          ],
+          "check": {
+            "kind": "report_field",
+            "field": "endpoint_id",
+            "equals": "harmonyos-matebook14"
+          },
+          "why": "沒有它，入口上這一格永遠是「未上報」。"
+        },
+        {
+          "id": "env-reported",
+          "title": "回報你的環境：`notes` 要寫 REMOTE 的 `user@host`、鴻蒙版本、可用 RAM",
+          "how": ["--notes 'REMOTE=<user>@<host>；鴻蒙版本=<…>；RAM=<…>GB'"],
+          "check": {
+            "kind": "report_field",
+            "field": "notes",
+            "nonempty": true,
+            "weak": true
+          },
+          "why": "我們現在的 not_measured 有三條「不知道」：鴻蒙版本、RAM、build.sh 最後成功時間。★ 這一格只證明 notes 不是空的，不代表內容對 —— 標成弱檢查，不假裝它證明了更多。"
+        },
+        {
+          "id": "platform-noted",
+          "title": "上報的 `platform` 是實話（鴻蒙 PC 多半回 `linux`）",
+          "how": ["不要覆寫 --platform，讓它取 sys.platform"],
+          "check": {
+            "kind": "report_field",
+            "field": "platform",
+            "one_of": ["linux", "harmonyos"]
+          },
+          "why": "註冊表用 harmonyos 當我們的標籤；若 Python 報 linux 也要能被接受，但不能容忍它空著或填錯。"
+        },
+        {
+          "id": "build-ran",
+          "title": "跑過 `build.sh`（CPU-only、GGML_METAL=OFF），把結尾輸出寫進 `what_ran`",
+          "how": [
+            "ssh <user>@<host> 'cd ~/llama-cpp/harmonyos && ./build.sh'",
+            "--what-ran 'aarch64 CPU-only 建置完成（GGML_METAL=OFF）'"
+          ],
+          "check": {
+            "kind": "report_contains",
+            "scopes": ["what_ran"],
+            "any_of": ["build.sh", "aarch64", "GGML_METAL", "NEON", "CPU-only", "cpu-only"]
+          },
+          "why": "Kirin 9030 沒有 Metal ⇒ 這是唯一能回答「這台到底跑不跑得動」的路徑。"
+        },
+        {
+          "id": "decode-measured",
+          "title": "跑一次真實 decode，把 t/s 寫進 `metrics.decode_tps`",
+          "how": [
+            "ssh <user>@<host> 'cd ~/llama-cpp/harmonyos && ./run.sh -m ~/models/<m>.gguf'",
+            "--metric decode_tps=<實測值>"
+          ],
+          "check": {
+            "kind": "report_metric",
+            "key": "decode_tps"
+          },
+          "why": "CPU-only 的 decode t/s 是「decode ≥25 t/s 能不能跨機複製」的關鍵讀數；沒有它，我們只有「應該可以」。"
+        }
+      ]
+    }
+  }
+}

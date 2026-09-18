@@ -1,12 +1,12 @@
 {
   "schema": 1,
-  "generated_at": "2026-09-18 13:58:27",
+  "generated_at": "2026-09-18 15:03:18",
   "source": {
     "repo": "flashkv-devserver（CGC engine）",
     "producer": "agent_harness/portal/build_fleet_portal.py --export",
-    "head": "5078242be",
+    "head": "38d947e04",
     "branch": "demo/sweet-spot-windows-fix",
-    "subject": "docs(instr) + feat(sweep): 稠密 GEMV 的機制＝三閘門＋M× 重讀；consumed_changed 母體不足；生產矩陣四格（全 HOT）",
+    "subject": "docs(index): resync after c7ebbce44 -- §EN-158 後記（resync／push 結果 ＋「收尾記憶與索引不會自己終止」的結構性結論）",
     "mode": "offline（--no-net，未探測心跳）",
     "how_to_regenerate": "python3 agent_harness/portal/build_fleet_portal.py --export"
   },
@@ -21,14 +21,112 @@
       "chip": "上報過期",
       "heartbeat": "skipped",
       "reported_at": "2026-09-18 13:28:23",
-      "report_age": "30 分鐘前",
+      "report_age": "1.6 小時前",
       "capabilities": [
         "macOS bundle 可重建／可啟動（llama-server --version ＋ llama-simple --help ＋ otool -L 查 @rpath）",
         "兩個數字目標（prefill ≥250 t/s、decode ≥25 t/s）有綁定與現值",
         "M1/M2/M3 oracle 對 M2 oracle 可達 bit-identical（實測 9/9、9/9、9/9、n=9）",
         "本入口自己的完整性閘門（portal-integrity 等）跑得動"
       ],
-      "not_measured": []
+      "not_measured": [],
+      "assets": {
+        "report_path": "agent_harness/portal/endpoints/mac-local.json",
+        "evidence_pointers": 4,
+        "what_ran_n": 3,
+        "metrics": {
+          "fleet_self_test": 17.0,
+          "harness_gates_last": 14.0
+        }
+      },
+      "join": {
+        "already": true,
+        "bar": "2/2 完成",
+        "counts": {
+          "done": 2,
+          "todo": 0,
+          "manual": 0,
+          "unknown": 0
+        },
+        "total": 2,
+        "open": 0,
+        "doc": "agent_harness/portal/endpoints/ONBOARDING_mac-local.md",
+        "channel": {
+          "primary_kind": "local",
+          "write_path": "agent_harness/portal/endpoints/mac-local.json",
+          "branch": null,
+          "smoke": "python3 agent_harness/portal/report_endpoint_status.py --id mac-local --print",
+          "blocker": "本機就是入口自己跑的地方 ⇒ 直接寫檔，不需要任何通道。"
+        },
+        "blockers": [],
+        "items": [
+          {
+            "id": "report-written",
+            "title": "有上報檔（`endpoints/mac-local.json`）",
+            "status": "done",
+            "weak": false,
+            "evidence": "endpoint_id='mac-local'（要 'mac-local'）",
+            "why": "沒有上報檔，這一格永遠是「未上報」。"
+          },
+          {
+            "id": "registered",
+            "title": "在 `fleet.json` 的端點註冊表裡",
+            "status": "done",
+            "weak": false,
+            "evidence": "agent_harness/portal/fleet.json 含 'mac-local'",
+            "why": "★ 沒註冊的上報檔不會被讀（`--check` 也會指名它）。"
+          }
+        ]
+      },
+      "retro": [
+        {
+          "ts": "2026-09-18 13:31:38",
+          "chip": "已上報",
+          "heartbeat": "unknown",
+          "caps": 4,
+          "unmeasured": 0,
+          "report_age": "3 分鐘前"
+        },
+        {
+          "ts": "2026-09-18 13:31:41",
+          "chip": "已上報",
+          "heartbeat": "unknown",
+          "caps": 4,
+          "unmeasured": 0,
+          "report_age": "3 分鐘前"
+        },
+        {
+          "ts": "2026-09-18 13:32:31",
+          "chip": "已上報",
+          "heartbeat": "unknown",
+          "caps": 4,
+          "unmeasured": 0,
+          "report_age": "4 分鐘前"
+        },
+        {
+          "ts": "2026-09-18 13:32:37",
+          "chip": "已上報",
+          "heartbeat": "skipped",
+          "caps": 4,
+          "unmeasured": 0,
+          "report_age": "4 分鐘前"
+        },
+        {
+          "ts": "2026-09-18 13:38:17",
+          "chip": "已上報",
+          "heartbeat": "skipped",
+          "caps": 4,
+          "unmeasured": 0,
+          "report_age": "9 分鐘前"
+        },
+        {
+          "ts": "2026-09-18 15:03:18",
+          "chip": "上報過期",
+          "heartbeat": "skipped",
+          "caps": 4,
+          "unmeasured": 0,
+          "report_age": "1.6 小時前"
+        }
+      ]
     },
     {
       "id": "cloud-host2",
@@ -50,6 +148,63 @@
         "沒有實測過它「現在」的負載與可用性 —— 本入口只讀通道設定與隧道腳本，不宣稱它活著",
         "8×RTX PRO 5000 / 576 GB 是先前記錄的規格，本入口沒有從雲端讀回來驗證",
         "隧道腳本裡有明文 root 密碼（app/edge_engine/cloud_tunnel.py:19 附近的 DEFAULT_PASSWORD）—— 這是已登記的安全欠帳，不是本入口能修的"
+      ],
+      "assets": {
+        "report_path": "",
+        "evidence_pointers": 4,
+        "what_ran_n": 0,
+        "metrics": {}
+      },
+      "join": null,
+      "retro": [
+        {
+          "ts": "2026-09-18 13:31:38",
+          "chip": "未上報",
+          "heartbeat": "unknown",
+          "caps": 3,
+          "unmeasured": 3,
+          "report_age": "沒有上報過"
+        },
+        {
+          "ts": "2026-09-18 13:31:41",
+          "chip": "未上報",
+          "heartbeat": "unknown",
+          "caps": 3,
+          "unmeasured": 3,
+          "report_age": "沒有上報過"
+        },
+        {
+          "ts": "2026-09-18 13:32:31",
+          "chip": "未上報",
+          "heartbeat": "unknown",
+          "caps": 3,
+          "unmeasured": 3,
+          "report_age": "沒有上報過"
+        },
+        {
+          "ts": "2026-09-18 13:32:37",
+          "chip": "未上報",
+          "heartbeat": "skipped",
+          "caps": 3,
+          "unmeasured": 3,
+          "report_age": "沒有上報過"
+        },
+        {
+          "ts": "2026-09-18 13:38:17",
+          "chip": "未上報",
+          "heartbeat": "skipped",
+          "caps": 3,
+          "unmeasured": 3,
+          "report_age": "沒有上報過"
+        },
+        {
+          "ts": "2026-09-18 15:03:18",
+          "chip": "未上報",
+          "heartbeat": "skipped",
+          "caps": 3,
+          "unmeasured": 3,
+          "report_age": "沒有上報過"
+        }
       ]
     },
     {
@@ -71,6 +226,129 @@
         "★ 從未連上過：本入口對它的「能力」全部來自 repo 裡的建置腳本，不是實測 —— 那證明的是「我們寫了給它的建置流程」，不是「它跑得動」",
         "不知道它現在的鴻蒙版本、可用的 RAM、以及 build.sh 最後一次成功的時間",
         "heartbeat 是 null（不是「失敗」）：它沒有可達的網路位址 ⇒ 這一格永遠只能是 unknown，不會變綠"
+      ],
+      "assets": {
+        "report_path": "",
+        "evidence_pointers": 3,
+        "what_ran_n": 0,
+        "metrics": {}
+      },
+      "join": {
+        "already": false,
+        "bar": "0/5 完成、5 待做",
+        "counts": {
+          "done": 0,
+          "todo": 5,
+          "manual": 0,
+          "unknown": 0
+        },
+        "total": 5,
+        "open": 5,
+        "doc": "agent_harness/portal/endpoints/ONBOARDING_harmonyos-matebook14.md",
+        "channel": {
+          "primary_kind": "git",
+          "write_path": "agent_harness/portal/endpoints/harmonyos-matebook14.json",
+          "branch": "demo/sweet-spot-windows-fix",
+          "smoke": "git ls-remote --heads <你的 remote> demo/sweet-spot-windows-fix",
+          "blocker": "與 Windows 同一條路：推上 demo/sweet-spot-windows-fix 我們才讀得到。"
+        },
+        "blockers": [
+          "產生第一份上報檔 `endpoints/harmonyos-matebook14.json`",
+          "上報的 `platform` 是實話（鴻蒙 PC 多半回 `linux`）",
+          "跑過 `build.sh`（CPU-only、GGML_METAL=OFF），把結尾輸出寫進 `what_ran`"
+        ],
+        "items": [
+          {
+            "id": "report-written",
+            "title": "產生第一份上報檔 `endpoints/harmonyos-matebook14.json`",
+            "status": "todo",
+            "weak": false,
+            "evidence": "還沒有上報檔",
+            "why": "沒有它，入口上這一格永遠是「未上報」。"
+          },
+          {
+            "id": "env-reported",
+            "title": "回報你的環境：`notes` 要寫 REMOTE 的 `user@host`、鴻蒙版本、可用 RAM",
+            "status": "todo",
+            "weak": true,
+            "evidence": "還沒有上報檔",
+            "why": "我們現在的 not_measured 有三條「不知道」：鴻蒙版本、RAM、build.sh 最後成功時間。★ 這一格只證明 notes 不是空的，不代表內容對 —— 標成弱檢查，不假裝它證明了更多。"
+          },
+          {
+            "id": "platform-noted",
+            "title": "上報的 `platform` 是實話（鴻蒙 PC 多半回 `linux`）",
+            "status": "todo",
+            "weak": false,
+            "evidence": "還沒有上報檔",
+            "why": "註冊表用 harmonyos 當我們的標籤；若 Python 報 linux 也要能被接受，但不能容忍它空著或填錯。"
+          },
+          {
+            "id": "build-ran",
+            "title": "跑過 `build.sh`（CPU-only、GGML_METAL=OFF），把結尾輸出寫進 `what_ran`",
+            "status": "todo",
+            "weak": false,
+            "evidence": "還沒有上報檔",
+            "why": "Kirin 9030 沒有 Metal ⇒ 這是唯一能回答「這台到底跑不跑得動」的路徑。"
+          },
+          {
+            "id": "decode-measured",
+            "title": "跑一次真實 decode，把 t/s 寫進 `metrics.decode_tps`",
+            "status": "todo",
+            "weak": false,
+            "evidence": "還沒有上報檔",
+            "why": "CPU-only 的 decode t/s 是「decode ≥25 t/s 能不能跨機複製」的關鍵讀數；沒有它，我們只有「應該可以」。"
+          }
+        ]
+      },
+      "retro": [
+        {
+          "ts": "2026-09-18 13:31:38",
+          "chip": "未上報",
+          "heartbeat": "none",
+          "caps": 2,
+          "unmeasured": 3,
+          "report_age": "沒有上報過"
+        },
+        {
+          "ts": "2026-09-18 13:31:41",
+          "chip": "未上報",
+          "heartbeat": "none",
+          "caps": 2,
+          "unmeasured": 3,
+          "report_age": "沒有上報過"
+        },
+        {
+          "ts": "2026-09-18 13:32:31",
+          "chip": "未上報",
+          "heartbeat": "none",
+          "caps": 2,
+          "unmeasured": 3,
+          "report_age": "沒有上報過"
+        },
+        {
+          "ts": "2026-09-18 13:32:37",
+          "chip": "未上報",
+          "heartbeat": "skipped",
+          "caps": 2,
+          "unmeasured": 3,
+          "report_age": "沒有上報過"
+        },
+        {
+          "ts": "2026-09-18 13:38:17",
+          "chip": "未上報",
+          "heartbeat": "skipped",
+          "caps": 2,
+          "unmeasured": 3,
+          "report_age": "沒有上報過"
+        },
+        {
+          "ts": "2026-09-18 15:03:18",
+          "chip": "未上報",
+          "heartbeat": "skipped",
+          "caps": 2,
+          "unmeasured": 3,
+          "report_age": "沒有上報過"
+        }
       ]
     },
     {
@@ -93,6 +371,137 @@
         "★ 40–60 t/s 是 README 的**預期**，不是實測值 —— 本入口把它標成預期，不標成能力實績",
         "auto_git_push.ps1 在本機從未被執行過（2026-09-17 實查）⇒ 「它會自動推」是設計意圖，不是已驗證的行為",
         "它推到的是 branch fusionroutemot，而本入口讀的是 demo/sweet-spot-windows-fix ⇒ 兩者要對齊才會看到它的上報"
+      ],
+      "assets": {
+        "report_path": "",
+        "evidence_pointers": 4,
+        "what_ran_n": 0,
+        "metrics": {}
+      },
+      "join": {
+        "already": false,
+        "bar": "0/6 完成、6 待做",
+        "counts": {
+          "done": 0,
+          "todo": 6,
+          "manual": 0,
+          "unknown": 0
+        },
+        "total": 6,
+        "open": 6,
+        "doc": "agent_harness/portal/endpoints/ONBOARDING_windows-rtx4090.md",
+        "channel": {
+          "primary_kind": "git",
+          "write_path": "agent_harness/portal/endpoints/windows-rtx4090.json",
+          "branch": "demo/sweet-spot-windows-fix",
+          "smoke": "git ls-remote --heads <你的 remote> demo/sweet-spot-windows-fix",
+          "blocker": "本入口讀的是 demo/sweet-spot-windows-fix。你推到 fusionroutemot 會成功，但入口看不到 —— 這是已知的靜默缺口。"
+        },
+        "blockers": [
+          "產生第一份上報檔 `endpoints/windows-rtx4090.json`",
+          "上報的 `platform` 寫對（Windows 是 `win32`，不是 `windows`）",
+          "把上報推到入口讀的那條分支（或告訴我們改讀你推的那條）"
+        ],
+        "items": [
+          {
+            "id": "report-written",
+            "title": "產生第一份上報檔 `endpoints/windows-rtx4090.json`",
+            "status": "todo",
+            "weak": false,
+            "evidence": "還沒有上報檔",
+            "why": "契約要求 not_measured 必填且不得留白；兩個都沒給，產生器會拒跑（rc=2）。"
+          },
+          {
+            "id": "platform-aligned",
+            "title": "上報的 `platform` 寫對（Windows 是 `win32`，不是 `windows`）",
+            "status": "todo",
+            "weak": false,
+            "evidence": "還沒有上報檔",
+            "why": "註冊表用 windows 當**我們的標籤**，而 sys.platform 是 win32 ⇒ 不對齊會讓自動比對靜默失效。"
+          },
+          {
+            "id": "channel-branch-aligned",
+            "title": "把上報推到入口讀的那條分支（或告訴我們改讀你推的那條）",
+            "status": "todo",
+            "weak": false,
+            "evidence": "agent_harness/scripts/auto_git_push.ps1 不含 'demo/sweet-spot-windows-fix'",
+            "why": "★ 這一格現在就是 todo —— 刻意的。它把「你推成功了但我們看不到」這個沉默缺口變成一格看得見的紅。"
+          },
+          {
+            "id": "build-ran",
+            "title": "真的建過一次（CUDA，或退回 Vulkan），把結果寫進 `what_ran`",
+            "status": "todo",
+            "weak": false,
+            "evidence": "還沒有上報檔",
+            "why": "「能不能建」現在只是腳本裡的一行意圖；只有跑過才是能力。"
+          },
+          {
+            "id": "gpu-reported",
+            "title": "回報 GPU 型號與建置設定（`gpu` / `build_profile`）",
+            "status": "todo",
+            "weak": false,
+            "evidence": "還沒有上報檔",
+            "why": "沒有它，「40–60 t/s 的預期」沒有對應的機器可查。"
+          },
+          {
+            "id": "decode-measured",
+            "title": "跑一次真實 decode，把 t/s 寫進 `metrics.decode_tps`",
+            "status": "todo",
+            "weak": false,
+            "evidence": "還沒有上報檔",
+            "why": "README 的 40–60 t/s 是**預期**，本入口不把它當實績。唯一能改變這一點的就是量。"
+          }
+        ]
+      },
+      "retro": [
+        {
+          "ts": "2026-09-18 13:31:38",
+          "chip": "未上報",
+          "heartbeat": "none",
+          "caps": 3,
+          "unmeasured": 3,
+          "report_age": "沒有上報過"
+        },
+        {
+          "ts": "2026-09-18 13:31:41",
+          "chip": "未上報",
+          "heartbeat": "none",
+          "caps": 3,
+          "unmeasured": 3,
+          "report_age": "沒有上報過"
+        },
+        {
+          "ts": "2026-09-18 13:32:31",
+          "chip": "未上報",
+          "heartbeat": "none",
+          "caps": 3,
+          "unmeasured": 3,
+          "report_age": "沒有上報過"
+        },
+        {
+          "ts": "2026-09-18 13:32:37",
+          "chip": "未上報",
+          "heartbeat": "skipped",
+          "caps": 3,
+          "unmeasured": 3,
+          "report_age": "沒有上報過"
+        },
+        {
+          "ts": "2026-09-18 13:38:17",
+          "chip": "未上報",
+          "heartbeat": "skipped",
+          "caps": 3,
+          "unmeasured": 3,
+          "report_age": "沒有上報過"
+        },
+        {
+          "ts": "2026-09-18 15:03:18",
+          "chip": "未上報",
+          "heartbeat": "skipped",
+          "caps": 3,
+          "unmeasured": 3,
+          "report_age": "沒有上報過"
+        }
       ]
     }
   ],
@@ -168,7 +577,7 @@
           "2026-09-15": 9,
           "2026-09-16": 61,
           "2026-09-17": 76,
-          "2026-09-18": 66
+          "2026-09-18": 70
         }
       },
       {
@@ -184,7 +593,7 @@
           "2026-09-15": 25,
           "2026-09-16": 23,
           "2026-09-17": 29,
-          "2026-09-18": 12
+          "2026-09-18": 13
         }
       },
       {
@@ -216,7 +625,7 @@
           "2026-09-15": 122727,
           "2026-09-16": 284362,
           "2026-09-17": 451541,
-          "2026-09-18": 246081
+          "2026-09-18": 266358
         }
       },
       {
@@ -252,6 +661,13 @@
         }
       }
     ]
+  },
+  "join_summary": {
+    "endpoints_with_kit": 3,
+    "joined": 1,
+    "open_items": 11,
+    "items": 13,
+    "note": "加入單是給**還沒進來的端點**的操作單；每一格的判準都在 join.json 裡，由 build_fleet_portal.py 實算 —— 不是端點自己宣告的。"
   },
   "honesty": {
     "unknown_not_failure": "心跳失敗與未上報都是 unknown／未上報，不是失敗。一個會因為連不上而變紅的入口，會在每一個離線的早晨說謊。",
