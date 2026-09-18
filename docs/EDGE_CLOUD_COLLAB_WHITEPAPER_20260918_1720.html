@@ -1,0 +1,1026 @@
+<!DOCTYPE html>
+<html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>端 · 端 · 端 · 雲 協同開發 — 架構與細節（2026-09-18 17:20）</title>
+<style>
+:root { --fg:#111827; --muted:#6b7280; --line:#e5e7eb; --bg:#ffffff; --soft:#f9fafb; --code:#f3f4f6;
+        --blue:#1d4ed8; --green:#15803d; --red:#b91c1c; --amber:#b45309; --purple:#6d28d9; --gray:#6b7280; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg);
+       font:15px/1.75 -apple-system,"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif; }
+.wrap { max-width:1040px; margin:0 auto; padding:32px 20px 80px; }
+h1 { font-size:23px; margin:0 0 6px; line-height:1.4; }
+h2 { font-size:18px; margin:30px 0 10px; padding-top:12px; border-top:1px solid var(--line); }
+h3 { font-size:15.5px; margin:20px 0 6px; }
+p { margin:8px 0; }
+.sub { color:var(--muted); font-size:13px; margin:0 0 20px; }
+a { color:var(--blue); }
+code { background:var(--code); padding:1px 5px; border-radius:4px; font-size:12.6px;
+       font-family:ui-monospace,SFMono-Regular,Menlo,monospace; word-break:break-all; }
+pre { background:var(--soft); border:1px solid var(--line); border-radius:6px; padding:10px 12px;
+      overflow-x:auto; margin:8px 0 14px; }
+pre code { background:none; padding:0; font-size:12.3px; line-height:1.55; display:block; white-space:pre; }
+table { border-collapse:collapse; width:100%; margin:10px 0 16px; font-size:13.2px; }
+th,td { border:1px solid var(--line); padding:6px 9px; text-align:left; vertical-align:top; }
+th { background:var(--soft); font-weight:600; }
+.num { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.tag { display:inline-block; font-size:11.5px; padding:1px 8px; border-radius:999px;
+       border:1px solid var(--line); background:var(--soft); }
+.t-blue{color:var(--blue);border-color:#bfdbfe;background:#eff6ff}
+.t-green{color:var(--green);border-color:#bbf7d0;background:#f0fdf4}
+.t-red{color:var(--red);border-color:#fecaca;background:#fef2f2}
+.t-amber{color:var(--amber);border-color:#fde68a;background:#fffbeb}
+.t-purple{color:var(--purple);border-color:#ddd6fe;background:#f5f3ff}
+.t-gray{color:var(--gray);border-color:var(--line);background:var(--soft)}
+.box { border:1px solid var(--line); border-left:4px solid var(--blue); border-radius:4px;
+       padding:11px 13px; margin:14px 0; }
+.box.warn { border-left-color:var(--amber); background:#fffdf5; }
+.box.ok { border-left-color:var(--green); background:#f6fdf8; }
+.box.bad { border-left-color:var(--red); background:#fff7f7; }
+.box.pur { border-left-color:var(--purple); background:#faf8ff; }
+.small { font-size:12.3px; color:var(--muted); }
+ul,ol { margin:6px 0 10px; padding-left:22px; }
+li { margin:3px 0; }
+svg { display:block; margin:10px 0 16px; }
+</style></head>
+<body><div class="wrap">
+
+<h1>端 · 端 · 端 · 雲 協同開發 — 架構與細節</h1>
+<p class="sub">
+2026-09-18 17:20　·　主題：<b>三端一雲的協同開發架構</b>（端側引擎 × A2A 協議 × agent harness × 雲側控制面）　·　
+撰寫時 HEAD <code>22e7cb991</code>（本檔所屬 commit 見 §14）　·　
+姊妹檔 <a href="FLEET_PORTAL_DELIVERY_20260918_1330.html">FLEET_PORTAL_DELIVERY_20260918_1330.html</a>（入口／機隊主題）
+</p>
+
+<div class="box pur">
+<b>這份文件的定位</b>：<b>新主題 ⇒ 另開新檔</b>，不是追加。
+<a href="FLEET_PORTAL_DELIVERY_20260918_1330.html">FLEET_PORTAL_DELIVERY</a> 描述的是
+「<b>入口</b>」那一條線（機隊上報、網站、匯出、自動化），本檔描述的是
+「<b>端到雲的協同開發</b>」這一張<b>全域圖</b>：有哪幾個平面、每個平面的權威在哪、資料怎麼流、
+協議怎麼表達「誰是哪一類 agent」、以及<b>哪些事還沒做</b>。
+兩份不互相取代；本檔凡是引用那一份已經寫過的細節，都會指名節號而不重抄。
+</div>
+
+<div class="box ok">
+<b>一頁速覽（先記這五句，後面每一節都是它們的展開）</b>
+<ol>
+<li><b>四個端點、一個雲</b>：<code>mac-local</code>（本機，<code>reaches=self</code>）、
+    <code>cloud-host2</code>（雲主機，<code>reaches=network</code>）、
+    <code>windows-rtx4090</code> 與 <code>harmonyos-matebook14</code>（<code>reaches=offline</code>）。</li>
+<li><b>端上只需要裝一個東西</b>：<code>edge_server.py</code>。它同時是 OpenAI 相容推理入口、
+    狀態上報來源、以及 store-and-forward 的 dump 產生器。</li>
+<li><b>「怎麼到達一個端點」只有一份真相</b>：<code>agent_harness/portal/fleet.json</code> 的
+    <code>reaches</code> 與 <code>channels</code>。別的檔案只准引用它。</li>
+<li><b>agent 的分類寫在協議上</b>：A2A 卡片帶 <code>x-agent-class</code> 與
+    <code>x-macro-scope</code>，而且<b>路由會因為類別不匹配而拒絕</b> —— 分類不是標籤。</li>
+<li><b>離線不是失敗</b>：連不上、沒上報、通道沒開，一律是 <code>unknown</code>／<code>absent</code>。
+    一個會因為連不上而變紅的入口，會在每一個離線的早晨說謊。</li>
+</ol>
+</div>
+
+<h2>§1 全域拓撲：三端一雲，與五層</h2>
+
+<p>先把圖看一遍。這張圖的<b>每一格都在後面有專節</b>，而且都指得到檔案。
+圖裡刻意把「<b>誰是權威</b>」畫在方框內、把「<b>誰只是派生</b>」畫在箭頭上。</p>
+
+<svg viewBox="0 0 1000 660" width="100%" role="img" aria-label="端端端雲協同開發架構圖">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+
+  <!-- 層 1：雲側 -->
+  <rect x="30" y="20" width="940" height="118" rx="8" fill="#f9fafb" stroke="#e5e7eb"/>
+  <rect x="30" y="20" width="4" height="118" fill="#6d28d9"/>
+  <text x="46" y="42" font-size="13" font-weight="700" fill="#6d28d9">雲側</text>
+  <text x="86" y="42" font-size="11.5" fill="#6b7280">compute plane ／ control plane</text>
+
+  <rect x="46" y="52" width="440" height="72" rx="6" fill="#ffffff" stroke="#c7d2fe"/>
+  <text x="58" y="72" font-size="12.5" font-weight="700" fill="#111827">cloud-host2　47.95.250.55</text>
+  <text x="58" y="90" font-size="11.5" fill="#374151">8 × RTX PRO 5000（72 GB / 卡）· 576 GB 合計 · linux</text>
+  <text x="58" y="108" font-size="11.5" fill="#6b7280">edge_server:8080　·　reaches=network　·　heartbeat :9100</text>
+
+  <rect x="502" y="52" width="452" height="72" rx="6" fill="#ffffff" stroke="#c7d2fe"/>
+  <text x="514" y="72" font-size="12.5" font-weight="700" fill="#111827">Supabase 控制面　natitecelkwapfqwaplz.supabase.co</text>
+  <text x="514" y="90" font-size="11.5" fill="#374151">auth/v1（anon + 密碼換 JWT）· profiles 3 · models 10 · user_spaces 0</text>
+  <text x="514" y="108" font-size="11.5" fill="#6b7280">RLS 在這一頭生效；harness 只用 anon key，不用 service role key</text>
+
+  <!-- 箭頭：雲 → 協議 -->
+  <line x1="266" y1="138" x2="266" y2="186" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="274" y="166" font-size="10.5" fill="#6b7280">既有的 rsync / sshpass 通道</text>
+  <line x1="728" y1="138" x2="728" y2="186" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="736" y="166" font-size="10.5" fill="#6b7280">HTTPS（anon key + 各帳號自己的 JWT）</text>
+
+  <!-- 層 2：協議面 -->
+  <rect x="30" y="186" width="940" height="128" rx="8" fill="#f9fafb" stroke="#e5e7eb"/>
+  <rect x="30" y="186" width="4" height="128" fill="#1d4ed8"/>
+  <text x="46" y="208" font-size="13" font-weight="700" fill="#1d4ed8">協議面</text>
+  <text x="86" y="208" font-size="11.5" fill="#6b7280">agent 之間怎麼說話（兩種語言，各管各的）</text>
+
+  <rect x="46" y="218" width="440" height="82" rx="6" fill="#ffffff" stroke="#bfdbfe"/>
+  <text x="58" y="238" font-size="12.5" font-weight="700" fill="#111827">A2A 閘道　:9210　（agent_harness/a2a/）</text>
+  <text x="58" y="256" font-size="11.5" fill="#374151">JSON-RPC message/send · message/stream(SSE) · tasks/* · pushNotificationConfig</text>
+  <text x="58" y="274" font-size="11.5" fill="#374151">agent/brief · identity/check · identity/here</text>
+  <text x="58" y="292" font-size="11.5" fill="#6b7280">taxonomy → registry → agent_card（三份檔編譯成一張卡）</text>
+
+  <rect x="502" y="218" width="452" height="82" rx="6" fill="#ffffff" stroke="#bfdbfe"/>
+  <text x="514" y="238" font-size="12.5" font-weight="700" fill="#111827">pd 子系統　gRPC　（agent_harness/pd/）</text>
+  <text x="514" y="256" font-size="11.5" fill="#374151">PDService：AllocateBlocks · StorePrefixKV · GetPrefixKV · InvalidatePrefix</text>
+  <text x="514" y="274" font-size="11.5" fill="#374151">PrepareHandoff · CommitHandoff · ResumeDecode · AbortHandoff · QuerySessionState</text>
+  <text x="514" y="292" font-size="11.5" fill="#6b7280">ExecuteCGCCommand · ExecuteKDAForward · UpdateKDABasis · HealthCheck</text>
+
+  <line x1="266" y1="314" x2="266" y2="362" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="274" y="342" font-size="10.5" fill="#6b7280">呼叫既有工具，不重寫</text>
+  <line x1="728" y1="314" x2="728" y2="362" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="736" y="342" font-size="10.5" fill="#6b7280">pd-inference 只是它的 A2A 身分</text>
+
+  <!-- 層 3：調度與取證 -->
+  <rect x="30" y="362" width="940" height="128" rx="8" fill="#f9fafb" stroke="#e5e7eb"/>
+  <rect x="30" y="362" width="4" height="128" fill="#15803d"/>
+  <text x="46" y="384" font-size="13" font-weight="700" fill="#15803d">調度與取證面</text>
+  <text x="106" y="384" font-size="11.5" fill="#6b7280">誰定時去收、收完寫到哪、以及「這份數字是哪一版」</text>
+
+  <rect x="46" y="394" width="440" height="82" rx="6" fill="#ffffff" stroke="#bbf7d0"/>
+  <text x="58" y="414" font-size="12.5" font-weight="700" fill="#111827">fleet_auto.py　每 60 分（launchd）</text>
+  <text x="58" y="432" font-size="11.5" fill="#374151">採集 → 映射 → 匯出　（三步都呼叫既有工具，不重寫）</text>
+  <text x="58" y="450" font-size="11.5" fill="#374151">看門狗三態：健康 / 停擺(rc=1) / 從未啟用(unknown)</text>
+  <text x="58" y="468" font-size="11.5" fill="#6b7280">留痕 auto_runs.jsonl（唯讀地證明它跑過）</text>
+
+  <rect x="502" y="394" width="452" height="82" rx="6" fill="#ffffff" stroke="#bbf7d0"/>
+  <text x="514" y="414" font-size="12.5" font-weight="700" fill="#111827">fleet.json　「怎麼到達」的唯一真相</text>
+  <text x="514" y="432" font-size="11.5" fill="#374151">reaches：self / network / offline　（三值，不是綠黃紅）</text>
+  <text x="514" y="450" font-size="11.5" fill="#374151">channels：heartbeat · artifact · edge_status(url+dump) · relay</text>
+  <text x="514" y="468" font-size="11.5" fill="#6b7280">endpoints/*.json 是「現況」；fleet_status.jsonl 是「趨勢」</text>
+
+  <line x1="266" y1="490" x2="266" y2="538" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="274" y="518" font-size="10.5" fill="#6b7280">服務跑著就抓 url；沒跑就等 dump</text>
+  <line x1="728" y1="490" x2="728" y2="538" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="736" y="518" font-size="10.5" fill="#6b7280">狀態由既有通道帶回</text>
+
+  <!-- 層 4：端側 -->
+  <rect x="30" y="538" width="940" height="112" rx="8" fill="#f9fafb" stroke="#e5e7eb"/>
+  <rect x="30" y="538" width="4" height="112" fill="#b45309"/>
+  <text x="46" y="560" font-size="13" font-weight="700" fill="#b45309">端側</text>
+  <text x="86" y="560" font-size="11.5" fill="#6b7280">三個端，裝同一個 edge_server.py</text>
+
+  <rect x="46" y="570" width="290" height="66" rx="6" fill="#ffffff" stroke="#fde68a"/>
+  <text x="58" y="589" font-size="12.5" font-weight="700" fill="#111827">mac-local</text>
+  <text x="58" y="606" font-size="11.5" fill="#374151">macos / arm64 · M4 16 GB</text>
+  <text x="58" y="623" font-size="11.5" fill="#6b7280">reaches=self · 本機直接寫檔</text>
+
+  <rect x="355" y="570" width="290" height="66" rx="6" fill="#ffffff" stroke="#fde68a"/>
+  <text x="367" y="589" font-size="12.5" font-weight="700" fill="#111827">windows-rtx4090</text>
+  <text x="367" y="606" font-size="11.5" fill="#374151">windows · RTX 4090</text>
+  <text x="367" y="623" font-size="11.5" fill="#6b7280">reaches=offline · 只能 dump 後帶回</text>
+
+  <rect x="664" y="570" width="290" height="66" rx="6" fill="#ffffff" stroke="#fde68a"/>
+  <text x="676" y="589" font-size="12.5" font-weight="700" fill="#111827">harmonyos-matebook14</text>
+  <text x="676" y="606" font-size="11.5" fill="#374151">harmonyos · arm64</text>
+  <text x="676" y="623" font-size="11.5" fill="#6b7280">reaches=offline · 只能 dump 後帶回</text>
+</svg>
+
+<p class="small">
+※ 圖上的箭頭<b>不代表「有實作」</b>：每一條箭頭都對應 <code>fleet.json</code> 裡的一條
+<code>relay.how</code> 或 <code>heartbeat</code>，而每一條都帶 <code>evidence</code>（指到既有腳本）。
+<b>沒有 evidence 的箭頭不畫</b> —— 畫上去就會變成「看起來已經通了」。
+</p>
+
+<h3>§1.1 四個端點（<code>fleet.json</code> 的實況，不是設計稿）</h3>
+
+<table>
+<tr><th>端點 id</th><th>kind</th><th>platform</th><th><code>reaches</code></th><th>通道（<code>channels</code>）</th><th>它怎麼到達</th></tr>
+<tr>
+  <td><code>mac-local</code></td><td>local</td><td>macos</td>
+  <td><span class="tag t-green">self</span></td>
+  <td><code>heartbeat</code> <code>artifact</code> <code>edge_status</code> <code>relay</code></td>
+  <td>本機直接寫檔（不需要任何通道）</td>
+</tr>
+<tr>
+  <td><code>cloud-host2</code></td><td>cloud</td><td>linux</td>
+  <td><span class="tag t-blue">network</span></td>
+  <td>同上</td>
+  <td><code>sshpass rsync</code>（既有腳本）；也可由雲端自己寫檔後 commit</td>
+</tr>
+<tr>
+  <td><code>harmonyos-matebook14</code></td><td>edge</td><td>harmonyos</td>
+  <td><span class="tag t-amber">offline</span></td>
+  <td>同上（<code>edge_status.url = null</code>）</td>
+  <td><code>scp -r</code> 整包過去再 ssh 進去跑 <code>build.sh</code>（既有腳本）</td>
+</tr>
+<tr>
+  <td><code>windows-rtx4090</code></td><td>edge</td><td>windows</td>
+  <td><span class="tag t-amber">offline</span></td>
+  <td>同上（<code>edge_status.url = null</code>）</td>
+  <td>寫檔後由 <code>auto_git_push.ps1</code> 推上 remote <span class="tag t-red">★ 分支不一致，見 §12</span></td>
+</tr>
+</table>
+
+<div class="box warn">
+<b><code>reaches</code> 是三值，不是綠黃紅。</b>
+<code>self</code>＝本機（不需要通道）、<code>network</code>＝網路上連得到、
+<code>offline</code>＝<b>我們連不上，但對方能寫檔</b>。
+第三種最容易被誤讀成「壞掉」—— 它不是。它是「<b>需要人跑一步</b>」，
+而那一歩在 §3.2 有一支專門的指令（<code>--dump-status</code>）。
+</div>
+
+<h2>§2 先把五個平面分開，否則後面每一句都會歧義</h2>
+
+<p>「端雲協同」最容易出事的地方不是技術，是<b>同一個詞在兩個平面裡指不同東西</b>。
+例如「狀態」：控制面的狀態是帳號與模型清單，端側的狀態是服務與硬體，
+取證面的狀態是「這份上報有多舊」。三者混在一張表裡，就再也答不出「哪一個是權威」。</p>
+
+<table>
+<tr><th>平面</th><th>回答什麼問題</th><th><b>權威在哪</b></th><th>派生／消費者是誰</th><th>它壞掉的症狀</th></tr>
+<tr>
+  <td><b>控制面</b></td>
+  <td>誰是使用者、有哪些模型、誰能用什麼</td>
+  <td>Supabase（<code>auth</code> / <code>profiles</code> / <code>models</code> / <code>user_spaces</code>）</td>
+  <td>harness 的 <code>identity.py</code>（只讀）；網站前端</td>
+  <td>登入失敗、角色不符 ⇒ 由 <code>identity/check</code> 出聲</td>
+</tr>
+<tr>
+  <td><b>協議面</b></td>
+  <td>agent 之間怎麼呼叫、誰是哪一類、能做什麼</td>
+  <td><code>a2a/taxonomy.py</code>（分類）＋ <code>a2a/registry.json</code>（實例）</td>
+  <td>Agent Card（<code>agent_card.py</code> 編譯出來）</td>
+  <td>卡片與 taxonomy 不一致 ⇒ <code>agent_card.py --check</code> 紅</td>
+</tr>
+<tr>
+  <td><b>推理面</b></td>
+  <td>模型在哪跑、KV 怎麼搬、prefill/decode 怎麼分</td>
+  <td><code>pd/pd_service.proto</code>（14 個 rpc）＋ <code>edge_server.py</code></td>
+  <td>A2A 的 <code>pd-inference</code> 只是它的<b>身分</b>，不是全部能力</td>
+  <td>把「身分」當「全部 rpc」⇒ 會宣稱整合完成（假的）</td>
+</tr>
+<tr>
+  <td><b>取證面</b></td>
+  <td>這台機器跑過什麼、這份數字是哪一版</td>
+  <td><code>traces/*.jsonl</code>（只追加）＋ <code>portal/endpoints/*.json</code>（現況）</td>
+  <td><code>MANIFEST.jsonl</code>／<code>memory/INDEX.jsonl</code>／<code>docs/fleet_export.json</code></td>
+  <td>「重複上報覆蓋」被當成「趨勢」⇒ 歷史消失</td>
+</tr>
+<tr>
+  <td><b>到達面</b></td>
+  <td>我們<b>怎麼</b>碰到某個端點</td>
+  <td><b><code>portal/fleet.json</code></b>（<code>reaches</code> ＋ <code>channels</code>）</td>
+  <td><code>fleet_auto.py</code> 讀它決定來源；portal 頁面照它畫</td>
+  <td>有人在別處再寫一份「端點清單」⇒ 兩份真相，分歧時靜默</td>
+</tr>
+</table>
+
+<div class="box bad">
+<b>紅線（<code>fleet.json</code> 的 <code>rules.no_second_truth</code>）</b>：
+<b>端點清單只在 <code>fleet.json</code>；來源清單只在 <code>trend_sources.json</code>。</b>
+所以 <code>fleet_auto.py</code> 不自己維護一份端點清單 —— 它<b>讀 <code>fleet.json</code></b>。
+這也是為什麼 §7 的三步裡，第一步的輸入是 <code>fleet.json</code> 而不是任何設定檔。
+</div>
+
+<h2>§3 端側：<code>edge_server.py</code> —— 端上唯一要裝的東西</h2>
+
+<p>端側的設計目標是「<b>一條一定跑得完的指令</b>」。這件事有一個很硬的判準：
+如果那條指令需要模型檔、需要 <code>llama-server</code>、需要開埠，
+那它在<b>目標機器上就跑不動</b> —— 而<b>跑不動的指令等於沒有這條路</b>。</p>
+
+<h3>§3.1 它對外開的 HTTP 面（實測，8 個）</h3>
+
+<table>
+<tr><th>方法</th><th>路徑</th><th>做什麼</th><th>誰在用</th></tr>
+<tr><td>GET</td><td><code>/health</code>、<code>/v1/cgc/health</code></td><td>進程活著（<b>不</b>代表模型載好了）</td><td>監控、LAN 探測</td></tr>
+<tr><td>GET</td><td><code>/v1/edge/status</code></td><td><b>端點自己的狀態</b>（見 §3.3 的契約）</td><td><code>fleet_auto</code> 採集、<code>lan.json</code> 身分判定</td></tr>
+<tr><td>GET</td><td><code>/v1/models</code></td><td>OpenAI 相容模型清單</td><td>客戶端、雲側模型表對照</td></tr>
+<tr><td>GET</td><td><code>/v1/cgc/profile</code></td><td>後端與硬體側寫（<b>含 <code>gpu_type</code></b>）</td><td>別的端點；<span class="tag t-gray">見下方註</span></td></tr>
+<tr><td>POST</td><td><code>/v1/chat/completions</code></td><td>OpenAI 相容對話</td><td>網站、prime-agent、claude code</td></tr>
+<tr><td>POST</td><td><code>/v1/completions</code></td><td>OpenAI 相容補完</td><td>同上</td></tr>
+<tr><td>POST</td><td><code>/v1/cgc/emit</code></td><td>CGC 引擎的 emit 操作</td><td>CGC 內部流程</td></tr>
+<tr><td>POST</td><td><code>/v1/cgc/resume</code></td><td>CGC 引擎的 resume 操作</td><td>CGC 內部流程</td></tr>
+</table>
+
+<p class="small">
+※ <b>為什麼 <code>gpu_type</code> 不填進上報</b>：它在 <code>/v1/cgc/profile</code>，
+而在 <code>/v1/edge/status</code> 裡只有 <code>backend_hint</code>（那是<b>後端提示</b>，例如
+<code>Metal</code>，不是型號）。把提示當型號填進去，會讓「我不知道它是什麼卡」變成「它是 Metal 卡」。
+想知道型號就得另外問那支端點 —— <b>那是另一個決定</b>（會多一次往返，且離線端問不到）。
+</p>
+
+<h3>§3.2 store-and-forward 的入口：<code>--dump-status</code></h3>
+
+<p>離線端（Windows／鴻蒙）不在我們的網路上，所以我們<b>碰不到</b>它的
+<code>/v1/edge/status</code>。但它能<b>寫一份檔</b>。而下游那一支
+（<code>report_endpoint_status.py</code>）<b>吃檔案與吃 URL 是同一條路</b> ——
+所以「端點 dump → 既有通道帶回 → harness 映射」成立。</p>
+
+<pre><code># 在端點上跑（不起服務、不開埠、不需要模型、不需要 llama-server）
+python3 installer/edge_server.py --dump-status status.json --endpoint-id windows-rtx4090
+# 或直接寫 stdout
+python3 installer/edge_server.py --dump-status - --endpoint-id windows-rtx4090</code></pre>
+
+<div class="box warn">
+<b>schema 完全相同，只多一格 <code>dump</code>。</b>
+<code>uptime_s</code> 與 <code>served</code> 是<b>這個 dump 行程自己</b>的讀數（幾乎一定是 0），
+<b>不是一個長期服務的統計</b>。不標這一格，下游會把「剛 dump 所以 uptime≈0」
+讀成「服務剛重啟」。實測輸出：<code>uptime_s: 0.0</code> —— 這是<b>對的</b>，而且是<b>需要被說出來</b>的對。
+</div>
+
+<p>沒給 <code>--endpoint-id</code> 會<b>出聲</b>：那時這份 dump 不知道屬於誰，
+harness 側會拒收 —— 一份「不知道屬於誰」的狀態上報，比沒有上報更糟。</p>
+
+<h3>§3.3 上報檔的契約（<code>endpoints/&lt;id&gt;.json</code>）</h3>
+
+<p>契約正本在 <code>fleet.json</code> 的 <code>contract</code>。必填 7 欄：</p>
+
+<pre><code>"required": ["endpoint_id", "reported_at", "platform", "arch",
+             "what_ran", "capabilities", "not_measured"]</code></pre>
+
+<p>兩個語意上的要點（都在 <code>endpoints/README.md</code> 有完整說明，這裡只留最容易錯的）：</p>
+
+<ul>
+<li><b><code>reported_at</code> 是「觀測時刻」，不是「映射時刻」。</b>
+    端點離線三天、dump 今天才被帶回，入口必須顯示<b>三天前</b>。
+    手動跑時人會看時間；<b>定期跑每小時把它抹平一次，就永遠看起來是新的</b>。
+    所以另有一格 <code>mapped_at</code> 記處理時刻 —— <b>兩件事分成兩格</b>。</li>
+<li><b><code>not_measured</code> 是必填，不是選填。</b>沒有這一欄，
+    「我沒量」與「我量了沒事」會長得一樣。</li>
+</ul>
+
+<h2>§4 協議面：A2A 閘道 —— 把分類寫進協議</h2>
+
+<p>這一節是整份文件最「有主張」的部分。需求原話是
+「<b>pd 服務提供 A2A protocol 能力</b>」與「<b>能夠區分 agent 屬於哪一類</b>」，
+而且<b>宏觀決策與微觀能力的分類要放在 A2A 協議裡</b>。</p>
+
+<div class="box pur">
+<b>三個決策（使用者拍板）</b>：
+① 落點在 <b>harness 側新增閘道</b>（<b>不動 pd 的 gRPC</b>）；
+② 範圍做<b>完整規格</b>（send / stream / tasks / pushNotificationConfig）；
+③ 形狀用 <b>標準 <code>skills[]</code> ＋ 擴展欄位</b>。
+</div>
+
+<h3>§4.1 四個檔案，三層編譯</h3>
+
+<table>
+<tr><th>檔案</th><th>角色</th><th>為什麼要獨立存在</th></tr>
+<tr><td><code>a2a/taxonomy.py</code></td><td><b>分類的正本</b>：三類 × （宏觀域 ＋ 微觀能力）</td>
+<td>分類是<b>一個</b>維度，能力是<b>另一個</b>。塞進同一層，下一個人就會以為「能執行」＝「有權決定」。可 <code>python3 taxonomy.py</code> 自我檢查。</td></tr>
+<tr><td><code>a2a/registry.json</code></td><td><b>實例清單</b>：有哪些 agent、跑在哪、不做什麼</td>
+<td>「這台機器上有什麼」（<code>fleet.json</code>）與「誰在跑」（registry）是<b>兩個正交的軸</b>。併成一張表就再也答不出「這台機器上有誰」。</td></tr>
+<tr><td><code>a2a/agent_card.py</code></td><td><b>編譯器</b>：taxonomy ＋ registry → A2A Agent Card</td>
+<td>卡片是<b>派生</b>。手寫卡片必然與 taxonomy 漂移，而漂移是靜默的。</td></tr>
+<tr><td><code>a2a/a2a_server.py</code></td><td><b>閘道</b>：stdlib HTTP ＋ JSON-RPC ＋ SSE ＋ push</td>
+<td>不引入框架（見 §12 的邊界說明）。</td></tr>
+<tr><td><code>a2a/identity.py</code></td><td><b>身分 → 類別 → 四維</b>（§5）</td>
+<td>「我屬於哪一類」與「那一類要整理什麼」是同一支工具的兩個出口。</td></tr>
+</table>
+
+<h3>§4.2 三類 agent：宏觀決策域與微觀能力</h3>
+
+<table>
+<tr><th>類別</th><th>帳號（身分錨）</th><th><b>宏觀決策域</b>（macro）</th><th><b>微觀能力</b>（micro → A2A skill）</th></tr>
+<tr>
+  <td><span class="tag t-blue">developer</span> 開發<br><span class="small">windows／鴻蒙移植</span></td>
+  <td><code>developer@powerauto.ai</code></td>
+  <td><code>porting</code> —— 移植目標與建置策略</td>
+  <td><code>build-target</code> · <code>port-and-verify</code> · <code>cross-platform-package</code> · <code>report-capability</code></td>
+</tr>
+<tr>
+  <td><span class="tag t-green">operator</span> 運營<br><span class="small">pd 網站 harness</span></td>
+  <td><code>alexchuang@powerauto.ai</code></td>
+  <td><code>fleet-ops</code> —— 機隊部署與可用性</td>
+  <td><code>deploy-endpoint</code> · <code>collect-status</code> · <code>watchdog-check</code> · <code>export-fleet</code></td>
+</tr>
+<tr>
+  <td><span class="tag t-purple">explorer</span> 探索<br><span class="small">宏觀決策</span></td>
+  <td><code>frontier@powerauto.ai</code></td>
+  <td><code>decision</code> —— 目標／路線／假設的取捨</td>
+  <td><code>register-decision</code> · <code>test-hypothesis</code> · <code>measure-metric</code> · <code>triage-blocker</code></td>
+</tr>
+</table>
+
+<p><b>兩者刻意不可互相推導</b>：能跑 <code>cmake</code>（micro）<b>不代表</b>有權決定
+「要不要移植到鴻蒙」（macro）。塞進同一層，下一個人就會以為「能執行」等於「有權決定」。</p>
+
+<p>12 個 micro ＋ 1 個擴展（<code>taxonomy-dump</code>）＝ <b>13 個 executor</b>，
+而閘道的自測有一格專門驗「<b>taxonomy 裡每一個 skill 都有 executor</b>」：</p>
+
+<pre><code>['build-target', 'collect-status', 'cross-platform-package', 'deploy-endpoint',
+ 'export-fleet', 'measure-metric', 'port-and-verify', 'register-decision',
+ 'report-capability', 'taxonomy-dump', 'test-hypothesis', 'triage-blocker', 'watchdog-check']</code></pre>
+
+<p class="small">
+★ 那一格是<b>最重要的一格</b>：taxonomy 裡多一個 skill 而漏了 executor，
+症狀<b>不是報錯</b>，是「那個能力永遠不會被執行」—— 而它在卡片上看起來完全正常。
+</p>
+
+<h3>§4.3 分類的實際作用：路由會因為它<b>拒絕</b></h3>
+
+<p>只寫在卡片上的是標籤。真正讓分類成為分類的是這條：</p>
+
+<pre><code>把 explorer 的 skill 送給 developer agent
+⇒ code = -32005
+   message = skill 'register-decision' 不屬於 developer 這一類（它是 探索 agent）
+   data = {"agentClass":"developer","skillOwnerClass":"explorer","availableSkills":[...]}</code></pre>
+
+<p>同理，<b>沒指名 skill 也拒收</b>（<code>-32602</code>）——
+猜一個預設 skill 會讓打錯字的請求<b>看起來像成功</b>。</p>
+
+<p>而且卡片上帶了 <code>x-taxonomy.skill_owner</code>（每個 skill 屬於哪一類的正本），
+<b>對端可以自己核對，不必相信我們</b>。</p>
+
+<h3>§4.4 JSON-RPC 方法表（完整規格）</h3>
+
+<table>
+<tr><th>方法</th><th>做什麼</th><th>關鍵行為</th></tr>
+<tr><td><code>message/send</code></td><td>同步執行一個 skill</td><td>完成後回 artifact；skill 不屬於該類 ⇒ <code>-32005</code></td></tr>
+<tr><td><code>message/stream</code></td><td>同上，SSE 逐步回報</td><td>最後一個事件是 <code>final</code>；<b>真的串流</b>（自測逐事件驗）</td></tr>
+<tr><td><code>tasks/get</code> · <code>tasks/cancel</code></td><td>查／取消任務</td><td>已完成 ⇒ 取消被拒 <code>-32002</code>（不是靜默接受）</td></tr>
+<tr><td><code>tasks/pushNotificationConfig/{set,get,list,delete}</code></td><td>webhook 設定</td><td>投遞<b>真的 POST</b>；失敗<b>留痕但不改任務狀態</b>（通知是旁路）</td></tr>
+<tr><td><code>agent/brief</code></td><td>這一類的四維 ＋ <b>出處</b></td><td>帶 <code>email</code> 或 <code>jwt</code> ⇒ 換一類；不認得的帳號 ⇒ 拒答</td></tr>
+<tr><td><code>identity/check</code></td><td>身分錨 vs 雲側帳號</td><td><code>asClass</code>＝用哪一類帳號讀；<code>probeLogin</code> <b>明示才做</b></td></tr>
+<tr><td><code>identity/here</code></td><td><b>出處</b>（repo／HEAD／未提交改動／錨文件）</td><td><b>不是</b>身分；見 §5.3</td></tr>
+</table>
+
+<h3>§4.5 每個 agent 都要寫「不做什麼」</h3>
+
+<p><code>registry.json</code> 的 <code>not_capable</code> 是<b>必填</b>：只寫「能做什麼」的卡片，
+會讓對端把「沒寫」讀成「可以做」。四張卡片的實例：</p>
+
+<table>
+<tr><th>agent</th><th>類別</th><th>它明說<b>不做</b>什麼（首條）</th></tr>
+<tr><td><code>cgc-dev-porting</code></td><td>developer</td><td>無權決定要不要放棄某個移植目標 —— 那是 explorer 的 macro</td></tr>
+<tr><td><code>fleet-operator</code></td><td>operator</td><td>無權改動引擎原始碼或決定移植策略 —— 那是 developer 的 macro</td></tr>
+<tr><td><code>pd-inference</code></td><td>operator</td><td>它的後端是 gRPC 的 pd_server，閘道只做 A2A 到 gRPC 的映射 —— <b>沒有把每個 rpc 都翻譯過來</b></td></tr>
+<tr><td><code>cgc-explorer</code></td><td>explorer</td><td>無權直接部署或改動生產服務 —— 決定了之後由 operator 執行</td></tr>
+</table>
+
+<div class="box ok">
+<b>這四條不是禮貌用語，是<b>權限邊界</b>。</b>它們把「誰能決定什麼」寫成機器可讀的資料，
+於是「越權」這件事有機會在<b>呼叫之前</b>被拒絕，而不是在事後被發現。
+</div>
+
+<h2>§5 身分錨：session 屬於哪一類，以及那一類的四維</h2>
+
+<p>「我屬於哪一類」如果靠 session 自己宣稱或靠標題，它就是一個<b>不可機檢的宣稱</b>。
+最不會漂移的判準是<b>它用哪一個帳號登入雲側</b>。</p>
+
+<h3>§5.1 判準是帳號，不是自稱，也不是 role</h3>
+
+<table>
+<tr><th>類別</th><th>帳號</th><th>雲側 role（實況）</th><th>UUID</th></tr>
+<tr><td><code>operator</code></td><td><code>alexchuang@powerauto.ai</code></td><td><code>super_admin</code></td><td><code>59cb7315…5fc</code></td></tr>
+<tr><td><code>developer</code></td><td><code>developer@powerauto.ai</code></td><td><code>super_admin</code></td><td><code>56728e69…aac</code></td></tr>
+<tr><td><code>explorer</code></td><td><code>frontier@powerauto.ai</code></td><td><code>super_admin</code></td><td><code>f92cfa47…58e</code></td></tr>
+</table>
+
+<div class="box warn">
+<b>三個帳號都是 <code>super_admin</code></b>（2026-09-18 實測）。
+所以 <b>role 不承擔「區分類別」的職責，區分只在 email 上</b> ——
+如果有人以為「role 低的那個是開發者」，他會做錯判斷。
+<code>identity.py --check</code> 拿實況比對：角色不符報「<b>不一致</b>」、帳號不存在報「<b>absent</b>」，
+<b>兩件事分開講</b>（處置完全不同）。
+</div>
+
+<p><b>只做精確比對</b>：<code>nobody@powerauto.ai</code>（同網域但不在錨上）⇒ <b>拒答</b>。
+判不出來就拒答，不猜一個預設類別 —— 猜的代價是：一個打錯帳號的 session 拿到「運營者」的四維，
+<b>而在它自己看起來完全正常</b>。</p>
+
+<h3>§5.2 四維：形狀一樣，來源不同</h3>
+
+<table>
+<tr><th>類別</th><th>資產</th><th>能力</th><th>進度</th><th>復盤</th></tr>
+<tr><td><code>operator</code></td><td>機隊<b>全部</b>端點（4）</td><td>所有端點已驗證的能力（12 條）</td><td>各端加入單完成度</td><td>逐次上報的能力／未量測變化</td></tr>
+<tr><td><code>developer</code></td><td>只看看<b>移植目標</b></td><td>那些端的建置／移植能力</td><td>那些端的加入單</td><td>它們的建置變化</td></tr>
+<tr><td><code>explorer</code></td><td>決策與假設（不是端點）</td><td>4 個決策類 skill</td><td>decisions 的 pending 數</td><td><code>momentum_block()</code> 實算的動能</td></tr>
+</table>
+
+<p>★ developer 的<b>移植目標</b>判準是 <code>reaches == "offline"</code>
+（<b>我們連不上、得主動送過去</b>），<b>不是 platform 白名單</b>。
+第一版用「platform 不是 darwin」篩，把 <code>cloud-host2</code>（linux <b>雲端主機</b>）也算了進來 ——
+而它根本不需要移植。</p>
+
+<h3>§5.3 出處（不是身分）：為什麼<b>不做</b> session 註冊</h3>
+
+<div class="box pur">
+<b>決定</b>：身分只到「<b>帳號</b>」這一層，<b>不做 session 級註冊</b>。
+同一帳號同時開兩個 session（一個做移植、一個做運營）會拿到<b>同一類</b>的四維 ——
+這是<b>有意接受</b>的，不是漏掉的功能。
+</div>
+
+<p>理由是：能區分兩者的東西（<b>本機檔案、git 操作</b>）本來就擺在那裡，
+而且兩個 session 看到的是<b>同一份</b>。再加一層註冊表只會多一份會漂移的真相
+（這個 repo 已經為「兩份真相」付過學費）。</p>
+
+<p>所以四維帶上<b>出處</b>，並把「不區分 session」寫成<b>輸出裡的一格</b>：</p>
+
+<pre><code>$ python3 agent_harness/a2a/identity.py --here
+出處（★ 這不是身分，是歸因）：
+    repo    /Users/alexchuang/Documents/flashkv-devserver
+    cwd     /Users/alexchuang/Documents/flashkv-devserver
+    HEAD    demo/sweet-spot-windows-fix 22e7cb9919d3
+    最近提交 feat(a2a): 身分錨 -- session 屬於哪一類，以及那一類的資產／能力／進度／復盤
+    未提交  8 筆（分不出是誰改的：多 session 共用一棵樹）
+    錨文件  7 個讀得到、0 個讀不到
+    讀數時刻 2026-09-18 17:07:56
+    ★ 同一帳號的多個 session 會判到**同一類**（level=none, byDesign=True）</code></pre>
+
+<p><code>sessionDiscrimination.level</code> 固定是 <code>"none"</code>，
+而自測<b>有一格釘住它</b> —— 免得之後有人偷偷加回一個註冊表、卻忘了改這個宣告。
+「<b>分不出是誰改的</b>」那半句也是刻意的：它把 repo 的既有事實（多 session 共寫一棵樹）
+放在讀者眼前，而不是讓那個 dirty 清單看起來像「我改的」。</p>
+
+<p><b>錨文件</b>是四維的來源清單（<code>taxonomy.py</code>／<code>fleet.json</code>／
+<code>decisions.jsonl</code>／<code>fleet_export.json</code>／端側的 <code>edge_server.py</code>…）。
+<b>缺檔也留在清單裡</b>（標 <code>exists:false</code>）—— 從清單消失會讓
+「還沒匯出」與「我忘了檢查」長得一樣。</p>
+
+<h3>§5.4 憑證怎麼放</h3>
+
+<p><code>identity.py</code> 的原始碼裡<b>沒有任何 key</b>（它連自己都測這一格）。
+憑證只從環境變數或 <code>~/.config/powerauto/supabase.env</code>（repo 外、<code>chmod 600</code>）讀。
+而且它<b>刻意只用 anon key ＋ 各類帳號自己的 JWT</b>，<b>不用 Service Role Key</b> ——
+這樣讀到的就是那條路徑<b>真的讀得到</b>的東西，RLS 在雲側那一頭生效。</p>
+
+<pre><code>POWERAUTO_PASSWORD=...                    # 三個帳號共用同一把
+POWERAUTO_EMAIL_OPERATOR=alexchuang@powerauto.ai
+POWERAUTO_EMAIL_DEVELOPER=developer@powerauto.ai
+POWERAUTO_EMAIL_EXPLORER=frontier@powerauto.ai</code></pre>
+
+<div class="box bad">
+<b>Service Role Key 沒有被寫進任何檔案。</b>它是<b>繞過 RLS 的 super key</b>，
+且已在對話裡明文出現過 ⇒ <b>建議輪換</b>。把 super key 放進一支「只是要讀四維」的工具裡，
+是拿最大的權限去做最小的事。
+</div>
+
+<p>★ 使用者說「三個帳號同一把密碼」，但<b>說不是證據</b> ——
+<code>--probe-login</code> 真的各登一次（<b>只讀</b>：不建帳號、不改角色）。
+三個帳號可能沒建、密碼不同、或某一個被停用，而這三種情況的<b>處置完全不同</b>。實測：</p>
+
+<pre><code>$ python3 agent_harness/a2a/identity.py --probe-login
+  [OK] developer  developer@powerauto.ai     JWT 802 字
+  [OK] operator   alexchuang@powerauto.ai    JWT 976 字
+  [OK] explorer   frontier@powerauto.ai      JWT 800 字</code></pre>
+
+<h2>§6 通道：<code>fleet.json</code> 是「怎麼到達」的唯一真相</h2>
+
+<p>這一節回答一個很具體的問題：<b>給定一個端點，我們用什麼方法碰到它？</b>
+答案只有一處，而且結構固定。</p>
+
+<h3>§6.1 <code>reaches</code>（三值）與 <code>channels</code>（四鍵）</h3>
+
+<table>
+<tr><th>欄位</th><th>值</th><th>意思／行為</th></tr>
+<tr><td rowspan="3"><code>reaches</code></td><td><code>self</code></td><td>本機。直接寫檔，不需要任何通道。</td></tr>
+<tr><td><code>network</code></td><td>網路可達。優先<b>主動去抓</b> <code>/v1/edge/status</code>。</td></tr>
+<tr><td><code>offline</code></td><td><b>我們連不上，但對方能寫檔</b> ⇒ 只能等 dump 被帶回。</td></tr>
+<tr><td rowspan="4"><code>channels</code></td><td><code>heartbeat</code></td><td>活著探測（<code>pd/compute_sharing.py --role node</code> 的 <code>/v1/compute/status</code>，埠 9100）</td></tr>
+<tr><td><code>artifact</code></td><td>上報檔在 repo 的路徑（<code>endpoints/&lt;id&gt;.json</code>）</td></tr>
+<tr><td><code>edge_status</code></td><td><b>新增</b>：<code>url</code>（活著時直接抓）＋ <code>dump</code>（帶回的原始檔路徑）＋ <code>how</code></td></tr>
+<tr><td><code>relay</code></td><td>既有的搬運方式，每條帶 <code>evidence</code>（指到<b>既有腳本</b>，不是承諾）</td></tr>
+</table>
+
+<p><code>edge_status</code> 的四個端點實況：</p>
+
+<table>
+<tr><th>端點</th><th><code>edge_status.url</code></th><th><code>edge_status.dump</code></th></tr>
+<tr><td><code>mac-local</code></td><td><code>http://127.0.0.1:8080/v1/edge/status</code></td><td><code>endpoints/dumps/mac-local.json</code></td></tr>
+<tr><td><code>cloud-host2</code></td><td><code>http://47.95.250.55:8080/v1/edge/status</code></td><td><code>endpoints/dumps/cloud-host2.json</code></td></tr>
+<tr><td><code>harmonyos-matebook14</code></td><td><span class="tag t-gray">null</span>（不在我們的網路上）</td><td><code>endpoints/dumps/harmonyos-matebook14.json</code></td></tr>
+<tr><td><code>windows-rtx4090</code></td><td><span class="tag t-gray">null</span>（同上）</td><td><code>endpoints/dumps/windows-rtx4090.json</code></td></tr>
+</table>
+
+<div class="box warn">
+<b>為什麼 <code>dump</code> 必須放在 <code>endpoints/dumps/</code> 子目錄</b>：
+入口的 <code>load_artifacts()</code> 會 glob <code>endpoints/*.json</code>，
+而「有檔但沒註冊」會<b>報錯</b>。所以 <code>windows-rtx4090.status.json</code> 放在
+<code>endpoints/</code> 根目錄會被讀成一個 id 叫 <code>windows-rtx4090.status</code> 的端點 —— 然後入口變紅。
+<b>子目錄是隔開這兩種檔的唯一方法。</b>
+</div>
+
+<h3>§6.2 store-and-forward：四步，只有兩步能自動</h3>
+
+<svg viewBox="0 0 1000 250" width="100%" role="img" aria-label="store and forward 四步">
+  <defs>
+    <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+
+  <rect x="16" y="46" width="226" height="118" rx="6" fill="#fffdf5" stroke="#fde68a"/>
+  <text x="28" y="68" font-size="12" font-weight="700" fill="#b45309">① 端點 dump</text>
+  <text x="28" y="88" font-size="11" fill="#374151">edge_server.py</text>
+  <text x="28" y="104" font-size="11" fill="#374151">--dump-status status.json</text>
+  <text x="28" y="126" font-size="10.5" fill="#6b7280">在端點上跑。不起服務、</text>
+  <text x="28" y="140" font-size="10.5" fill="#6b7280">不開埠、不需要模型</text>
+  <text x="28" y="156" font-size="10.5" fill="#b45309">★ 人跑（自動不了）</text>
+
+  <line x1="246" y1="105" x2="272" y2="105" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ar2)"/>
+
+  <rect x="276" y="46" width="226" height="118" rx="6" fill="#fffdf5" stroke="#fde68a"/>
+  <text x="288" y="68" font-size="12" font-weight="700" fill="#b45309">② 既有通道帶回</text>
+  <text x="288" y="88" font-size="11" fill="#374151">endpoints/dumps/&lt;id&gt;.json</text>
+  <text x="288" y="110" font-size="10.5" fill="#6b7280">Windows：auto_git_push.ps1</text>
+  <text x="288" y="124" font-size="10.5" fill="#6b7280">鴻蒙：scp -r</text>
+  <text x="288" y="138" font-size="10.5" fill="#6b7280">雲：sshpass rsync</text>
+  <text x="288" y="156" font-size="10.5" fill="#b45309">★ 人跑（自動不了）</text>
+
+  <line x1="506" y1="105" x2="532" y2="105" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ar2)"/>
+
+  <rect x="536" y="46" width="226" height="118" rx="6" fill="#f6fdf8" stroke="#bbf7d0"/>
+  <text x="548" y="68" font-size="12" font-weight="700" fill="#15803d">③ harness 映射</text>
+  <text x="548" y="88" font-size="11" fill="#374151">report_endpoint_status.py</text>
+  <text x="548" y="104" font-size="11" fill="#374151">--from-edge-status</text>
+  <text x="548" y="126" font-size="10.5" fill="#6b7280">保住人工寫的欄位</text>
+  <text x="548" y="140" font-size="10.5" fill="#6b7280">（edge_derived 這條界線）</text>
+  <text x="548" y="156" font-size="10.5" fill="#15803d">✓ fleet_auto 每 60 分</text>
+
+  <line x1="766" y1="105" x2="792" y2="105" stroke="#6b7280" stroke-width="1.5" marker-end="url(#ar2)"/>
+
+  <rect x="796" y="46" width="190" height="118" rx="6" fill="#f6fdf8" stroke="#bbf7d0"/>
+  <text x="808" y="68" font-size="12" font-weight="700" fill="#15803d">④ 匯出與入口</text>
+  <text x="808" y="88" font-size="11" fill="#374151">build_fleet_portal.py</text>
+  <text x="808" y="104" font-size="11" fill="#374151">--export</text>
+  <text x="808" y="126" font-size="10.5" fill="#6b7280">docs/fleet_export.json</text>
+  <text x="808" y="140" font-size="10.5" fill="#6b7280">→ 網站（FLEET_PORTAL.html）</text>
+  <text x="808" y="156" font-size="10.5" fill="#15803d">✓ fleet_auto 每 60 分</text>
+
+  <text x="16" y="200" font-size="11.5" fill="#374151">① ② 之所以自動不了：端點不在我們的網路上（reaches=offline），而通道是「既有的東西」——</text>
+  <text x="16" y="218" font-size="11.5" fill="#374151">把它自動化等於在這裡再造一條新的搬運路徑，那會與 auto_git_push.ps1／scp 變成兩條會漂移的路。</text>
+  <text x="16" y="238" font-size="11.5" fill="#6b7280">③ ④ 是 fleet_auto.py 每 60 分做的事（§7）；它只寫檔、不 commit。</text>
+</svg>
+
+<h3>§6.3 「拿不到」是最常見的結果，而它不是失敗</h3>
+
+<p><code>fleet.json</code> 的 <code>rules.unknown_not_red</code> 寫得很直白：</p>
+
+<div class="box">
+「心跳探測失敗、端點沒上報、通道沒開 —— 一律是 <b>unknown／未上報</b>，不是紅燈。
+一個會因為連不上而變紅的入口，會在每一個離線的早晨說謊。」
+</div>
+
+<p>實測的留痕完全反映這件事：五輪裡有四輪「更新＝<code>-</code>、拿不到＝4」，
+而 <code>rc=0</code>。這<b>不是</b>「跑失敗」，是「三個離線端＋本機服務沒開」的<b>正常</b>結果。</p>
+
+<h2>§7 自動化：<code>fleet_auto.py</code> —— 三步、三態、一份留痕</h2>
+
+<p>需求原話：「<b>要讓這個 pd + agent harness 自動跑</b>」。但自動化有兩個很容易搞錯的前提，
+所以這一節先講<b>邊界</b>，再講實作。</p>
+
+<h3>§7.1 它做三步，每一步都呼叫既有工具</h3>
+
+<table>
+<tr><th>步</th><th>做什麼</th><th>呼叫誰</th></tr>
+<tr><td>1. 採集</td><td>讀 <code>fleet.json</code> 決定來源；對每個端點先試 <code>edge_status.url</code>，失敗再讀 <code>dump</code></td><td>HTTP（<code>--noproxy</code>）／檔案</td></tr>
+<tr><td>2. 映射</td><td>把端點狀態轉成合契約的上報檔</td><td><code>report_endpoint_status.py --from-edge-status</code>（<b>同一支</b>，不重寫）</td></tr>
+<tr><td>3. 匯出</td><td>產生給網站吃的資料</td><td><code>build_fleet_portal.py --export</code></td></tr>
+</table>
+
+<div class="box pur">
+<b>為什麼第 2 步一定要呼叫同一支工具</b>：再寫一份映射實作<b>必然漂移</b>，
+而漂移是靜默的 —— 這個 repo 已經為此付過學費。
+<b>一個第二份實作，等於一個不會報錯的分歧。</b>
+</div>
+
+<h3>§7.2 看門狗：三態，而且「從未啟用」不是紅</h3>
+
+<pre><code>$ python3 agent_harness/portal/fleet_auto.py --check       # 看門狗
+  健康      ⇒ rc=0
+  裝了卻沒跑 / 停擺 ⇒ rc=1（有排程但留痕不新鮮）
+  從未啟用  ⇒ rc=0（unknown，不是紅）</code></pre>
+
+<p>第三態是刻意的：<b>「沒裝」與「裝了但壞了」的處置完全不同</b>，
+把前者也畫成紅燈，會讓紅燈失去意義。</p>
+
+<h3>§7.3 排程，以及「怎麼知道排程真的被觸發過」</h3>
+
+<pre><code>$ python3 agent_harness/portal/fleet_auto.py --install-schedule --interval-min 60
+# launchd job: ai.powerauto.fleet-auto
+
+$ launchctl print gui/$(id -u)/ai.powerauto.fleet-auto | grep -E "state|runs|last exit"
+    state = not running
+    runs = 2
+    last exit code = 0</code></pre>
+
+<p><b>只有 <code>launchctl</code> 的 <code>runs</code> 與留痕裡那一筆 <code>trigger=schedule</code>
+才是證據</b> ——「設了排程」不等於「排程在跑」。實測留痕：</p>
+
+<pre><code>2026-09-18 16:02:18  trigger=manual    更新=mac-local      拿不到=cloud-host2,harmonyos-matebook14,windows-rtx4090  拒收=-
+2026-09-18 16:03:48  trigger=manual    更新=mac-local      拿不到=cloud-host2,harmonyos-matebook14,windows-rtx4090  拒收=-
+2026-09-18 16:04:26  trigger=schedule  更新=-              拿不到=4                                              拒收=-
+2026-09-18 16:08:10  trigger=schedule  更新=-              拿不到=4                                              拒收=-
+2026-09-18 17:08:14  trigger=schedule  更新=-              拿不到=4                                              拒收=-</code></pre>
+
+<h3>§7.4 兩個「自動化會放大」的缺陷（都已修）</h3>
+
+<div class="box bad">
+<b>① <code>reported_at</code> 原本取「映射時刻」而不是「觀測時刻」。</b>
+端點離線三天、dump 今天才被帶回，入口會顯示「它剛剛上報」。
+手動跑時人會看時間；<b>定期跑每小時把它抹平一次，就永遠看起來是新的</b>。
+現在<b>觀測時刻與處理時刻分成兩格</b>（<code>reported_at</code> / <code>mapped_at</code>）。
+</div>
+
+<div class="box bad">
+<b>② 覆蓋會洗掉人寫的東西（實測踩到）。</b>
+第一次端到端跑，一台剛 <code>--no-worker</code> 起來的 <code>edge_server</code> 讓
+<code>mac-local</code> 從「3 條能力 ＋ 3 個實測 metrics ＋ 3 條未量測 ＋ GPU 型號」
+變成「uptime 2.6s、服務 0 次」—— <b>用零換掉實質</b>。
+現在覆蓋前用 <code>edge_derived</code> 這條界線把人工欄位接過來
+（實測已復原：capabilities 2→5、not_measured 3→6、metrics 與 gpu 都在）。
+</div>
+
+<h3>§7.5 它只寫檔，不 commit</h3>
+
+<p>這個 repo <b>多 session 共用一棵樹</b>，自動 commit 會把別人正在改的檔一起推上去。
+所以 <code>fleet_auto</code> 的職責邊界是「寫檔 ＋ 留痕」，
+而<b>「要不要 commit」留給人</b>。</p>
+
+<p>留痕與日誌也刻意放在<b>版控之外</b>：<code>auto_runs.jsonl</code> 進 <code>.gitignore</code>，
+日誌在 <code>~/Library/Logs/powerauto/</code>（repo 外）——
+否則 <code>git status</code> 的雜訊會掩蓋真正的變更。</p>
+
+<h2>§8 pd 子系統：gRPC 的推理面，以及它與 A2A 的關係</h2>
+
+<p><code>agent_harness/pd/</code> 是 <b>prefill/decode 分離</b>的推論子系統。
+它住在 <code>agent_harness/</code> 底下是<b>歷史原因</b>（整併時一起進來的），不是設計。</p>
+
+<h3>§8.1 <code>PDService</code> 的 14 個 rpc</h3>
+
+<table>
+<tr><th>分組</th><th>rpc</th><th>管什麼</th></tr>
+<tr><td><b>KV 管理</b></td><td><code>AllocateBlocks</code> · <code>StorePrefixKV</code> · <code>GetPrefixKV</code> · <code>InvalidatePrefix</code></td><td>KV 區塊配置與前綴快取的存／取／失效</td></tr>
+<tr><td><b>DOPD handoff</b></td><td><code>PrepareHandoff</code> · <code>CommitHandoff</code> · <code>ResumeDecode</code> · <code>AbortHandoff</code></td><td>decode 從一個節點交接到另一個節點的四階段</td></tr>
+<tr><td><b>引擎命令</b></td><td><code>ExecuteCGCCommand</code> · <code>ExecuteKDAForward</code> · <code>UpdateKDABasis</code></td><td>CGC／KDA 的指令與前向</td></tr>
+<tr><td><b>狀態</b></td><td><code>QuerySessionState</code> · <code>HealthCheck</code></td><td>會話查詢與健康</td></tr>
+</table>
+
+<h3>§8.2 整合方式：<b>不改它</b></h3>
+
+<div class="box ok">
+<b>決策</b>：A2A 閘道<b>不動 pd 的 gRPC</b>。pd 在協議上只是
+<code>pd-inference</code> 這個 agent 的<b>身分</b>，閘道做的是
+「A2A → gRPC」的映射。
+</div>
+
+<p>這樣做的理由是<b>職責邊界</b>：pd 是<b>引擎側元件</b>，
+把 agent 語意（類別、macro、卡片）混進推理服務，會讓兩邊的變更節奏綁在一起。</p>
+
+<p>而 <code>registry.json</code> 的 <code>not_capable</code> 也<b>誠實地寫出了目前的缺口</b>：</p>
+
+<div class="box warn">
+「它的後端是 gRPC 的 pd_server，本閘道只做 A2A 到 gRPC 的映射 ——
+<b>沒有把 PDService 的每個 rpc 都翻譯過來</b>。」
+⇒ 目前 <code>pd-inference</code> 的能力是它的<b>身分</b>，不是它的全部 rpc。
+<b>說「整合完成」會是假的。</b>
+</div>
+
+<h3>§8.3 共用的一支：<code>pd/compute_sharing.py</code></h3>
+
+<p><code>fleet.json</code> 的 <code>heartbeat</code> 指的就是它
+（<code>--role node --port 9100</code> 開 <code>/v1/compute/status</code>）。
+它是「這台機器有多少算力」的<b>活著探測</b>，與 <code>/v1/edge/status</code>
+（「這台機器現在是什麼狀態」）是<b>兩件事</b>，兩個埠，兩條路。</p>
+
+<h2>§9 端到端：一次完整的往返（實跑原文）</h2>
+
+<h3>§9.1 本機這條（<code>reaches=self</code>）</h3>
+
+<pre><code>$ python3 -m installer.edge_server --no-worker --host 0.0.0.0 --port 8080 \
+      --endpoint-id mac-local --log-dir /tmp        # 起一個真的端點
+$ curl -s --noproxy '*' http://127.0.0.1:8080/v1/edge/status
+  object=powerauto.edge.status  endpoint_id=mac-local  reported_at=2026-09-18 16:0x:xx  uptime=2.6s
+
+$ python3 agent_harness/portal/fleet_auto.py --run
+  updated=mac-local      absent=cloud-host2,harmonyos-matebook14,windows-rtx4090
+  rejected=0             exported=True
+  rc=0</code></pre>
+
+<p>★ 這一輪踩到的就是 §7.4 的缺陷 ②：那次 <code>mac-local</code> 被「剛起來 2.6 秒的零值」
+蓋掉了人工累積的內容。<b>現在同樣的動作會保住人工欄位</b>（實測已驗）。</p>
+
+<h3>§9.2 離線這條（<code>reaches=offline</code>）</h3>
+
+<pre><code># 在端點上（Windows）—— 不需要模型、不需要 llama-server、不開任何埠
+> python3 installer/edge_server.py --dump-status status.json --endpoint-id windows-rtx4090
+  { "object": "powerauto.edge.status", "endpoint_id": "windows-rtx4090",
+    "reported_at": "...", "uptime_s": 0.0, "dump": {...}, ... }     rc=0
+
+# 檔案經既有通道帶回後，放在
+#   agent_harness/portal/endpoints/dumps/&lt;endpoint-id&gt;.json     （★ 目前四個都還沒有）
+# fleet_auto 下一輪就會拿它去映射（目前 Windows 的通道還沒對齊，見 §12）</code></pre>
+
+<h3>§9.3 協議這條（真的起閘道）</h3>
+
+<pre><code>$ python3 agent_harness/a2a/a2a_server.py --serve --port 19213
+$ curl -s -X POST http://127.0.0.1:19213/a2a/fleet-operator \
+    -d '{"jsonrpc":"2.0","id":1,"method":"agent/brief","params":{}}'
+  class=operator  identity=alexchuang@powerauto.ai
+  出處 repo=/Users/alexchuang/Documents/flashkv-devserver
+       HEAD=demo/sweet-spot-windows-fix 22e7cb9919d3  dirty=8
+       sessionDiscrimination="none"
+  資產 4 端、能力 12 條、復盤 4 端有歷史
+
+$ curl -s -X POST ... -d '{..."method":"identity/check",
+      "params":{"asClass":"developer","probeLogin":true}}'
+  asClass=developer  雲側帳號數=3  problems=0
+    OK developer  developer@powerauto.ai  JWT 802 字
+    OK operator   alexchuang@powerauto.ai JWT 976 字
+    OK explorer   frontier@powerauto.ai   JWT 800 字
+
+$ curl -s -X POST ... -d '{..."method":"identity/check",
+      "params":{"noCloud":true,"asClass":"nope"}}'
+  code=-32602  asClass 不在類別裡：'nope'（已知 ['developer','operator','explorer']）</code></pre>
+
+<h2>§10 契約與紅線：這一套靠什麼不變成兩份真相</h2>
+
+<table>
+<tr><th>原則</th><th>條文（原文）</th><th>它防的是什麼</th></tr>
+<tr>
+  <td><b>唯一真相</b></td>
+  <td>端點清單只在 <code>fleet.json</code>；來源清單只在 <code>trend_sources.json</code>。頁面上的「一鍵復現」指令與頁面自己跑的是同一份。</td>
+  <td>有人在別處再抄一份清單 ⇒ 分歧時<b>靜默</b></td>
+</tr>
+<tr>
+  <td><b>缺席要出聲</b></td>
+  <td>註冊表裡的每個端點都要在頁面上有一列；反過來，<code>endpoints/</code> 底下有不屬於註冊表的檔也要出聲。<b>兩個方向都檢查。</b></td>
+  <td>「沒有」與「我忘了檢查」長得一樣</td>
+</tr>
+<tr>
+  <td><b>不知道不是紅燈</b></td>
+  <td>心跳失敗、沒上報、通道沒開 ⇒ <code>unknown</code>／未上報。</td>
+  <td>一個會說謊的入口</td>
+</tr>
+<tr>
+  <td><b>重的不是綠的</b></td>
+  <td>需要真的連到端點才知道的事（負載、GPU、最後一次成功建置）一律列在 <code>not_measured</code>，<b>不畫成綠燈</b>。</td>
+  <td>把「沒量」畫成「沒事」</td>
+</tr>
+<tr>
+  <td><b>判不出來就拒答</b></td>
+  <td>不認識的帳號 ⇒ <code>class=None</code> ＋ <code>why</code>；不指名 skill ⇒ <code>-32602</code>。</td>
+  <td>猜一個預設值，讓錯誤的請求<b>看起來成功</b></td>
+</tr>
+<tr>
+  <td><b>權限要在呼叫前拒絕</b></td>
+  <td>skill 不屬於該類 ⇒ <code>-32005</code> 並指名 owner</td>
+  <td>越權在事後才被發現</td>
+</tr>
+<tr>
+  <td><b>推導 vs 人工</b></td>
+  <td><code>edge_derived</code> 記下「這一輪導出了幾條」，覆蓋時保住人工欄位</td>
+  <td>自動化用零值換掉人的實質工作</td>
+</tr>
+</table>
+
+<h2>§11 已驗證的數字（產出當時現場量測）</h2>
+
+<table>
+<tr><th>元件</th><th>驗證方式</th><th class="num">結果</th></tr>
+<tr><td><code>a2a/a2a_server.py</code></td><td>黑箱自測：真的起服務、真的發 JSON-RPC、真的收 SSE、真的收 webhook</td><td class="num"><b>23/23</b></td></tr>
+<tr><td><code>a2a/identity.py</code></td><td>自測（不連網；雲側用 fixture）</td><td class="num"><b>17/17</b></td></tr>
+<tr><td><code>a2a/agent_card.py</code></td><td><code>--check</code>：4 張卡，分類與能力歸屬一致</td><td class="num"><b>OK</b></td></tr>
+<tr><td><code>a2a/taxonomy.py</code></td><td>自我檢查（3 類 × 12 micro，每項對應可呼叫 skill）</td><td class="num"><b>OK</b></td></tr>
+<tr><td><code>portal/fleet_auto.py</code></td><td>突變式自測（含「自測不得污染真 repo」那格）</td><td class="num"><b>21/21</b></td></tr>
+<tr><td><code>portal/report_endpoint_status.py</code></td><td>黑箱自測（含 URL 來源 ＋ 壞 <code>HTTP_PROXY</code>）</td><td class="num"><b>19/19</b></td></tr>
+<tr><td><code>installer/edge_server.py</code></td><td>黑箱自測（含 <code>--dump-status</code> 三格）</td><td class="num"><b>39/39</b></td></tr>
+<tr><td><code>engine_loop/traces/selftest.py</code></td><td>注入違規，看驗證器會不會拒</td><td class="num"><b>10/10</b></td></tr>
+</table>
+
+<p>雲側實況（產出當時）：<code>profiles</code> <b>3</b> 筆（全 <code>super_admin</code>）、
+<code>models</code> <b>10</b> 筆（8 個 <code>backend=cloud</code> ＋ 2 個 <code>backend=mac</code>）、
+<code>user_spaces</code> <b>0</b> 筆。<br>
+取證面：<code>decisions.jsonl</code> <b>68</b> 筆、<code>lessons.jsonl</code> <b>192</b> 筆、
+<code>episodes.jsonl</code> <b>122</b> 筆（<code>usable_as_evidence</code> 為真者 27）、
+<code>docs/*.html</code> <b>60</b> 份（含本檔）。</p>
+
+<h2>§12 未完成（具名，不混進成效敘述）</h2>
+
+<div class="box bad">
+<b>★ 最重要的一條：Windows 端的通道對不上。</b>
+<code>agent_harness/scripts/auto_git_push.ps1</code> 推的是 remote <code>cgc0907</code> 的
+分支 <code>fusionroutemot</code>；
+而入口讀的是 <code>demo/sweet-spot-windows-fix</code>。
+<b>兩邊對齊之前，Windows 端產出的 dump 到不了入口</b> ——
+換句話說，<code>windows-rtx4090</code> 這條路<b>現在是斷的</b>，
+而它在 fleet 頁面上看起來只是一個「尚未上報」的正常狀態。
+</div>
+
+<table>
+<tr><th>#</th><th>還沒做的事</th><th>為什麼它是缺口（而不是「以後再說」）</th></tr>
+<tr><td>1</td><td>Windows 通道分支對齊（上框）</td><td>斷點在<b>協議之外</b>，fleet 頁面不會顯示它斷了</td></tr>
+<tr><td>2</td><td><code>pd</code> 的 KV／DOPD 操作沒有全部映射成 A2A skill</td><td>目前 <code>pd-inference</code> 的能力是它的<b>身分</b>，不是 14 個 rpc</td></tr>
+<tr><td>3</td><td><b>沒有認證</b>（閘道預設綁 <code>127.0.0.1</code>）</td><td>要對外就得先有 <code>--api-key</code> 這一層；目前與 <code>edge_server</code> 的 <code>--api-key</code> 是兩套，<b>未對齊</b></td></tr>
+<tr><td>4</td><td>push notification <b>沒有重試</b></td><td>投遞失敗會留痕，但不重送 —— 重試需要「什麼算送達」的判準，而那個判準目前<b>不存在</b></td></tr>
+<tr><td>5</td><td><code>docs/fleet_export.json</code> <b>沒有導出 <code>reaches</code></b></td><td>一份「給別的網站吃」的資料少了判斷所需的欄位 ⇒ 每個消費者都得自己回頭讀 <code>fleet.json</code></td></tr>
+<tr><td>6</td><td><b>沒有把「session」變成一個真的概念</b></td><td>刻意的（§5.3）。同一帳號的兩個 session 拿到同一類四維</td></tr>
+<tr><td>7</td><td>三個帳號都是 <code>super_admin</code></td><td><code>role</code> 因此不承擔分類職責；若之後要靠 role 收權，分類邏輯要跟著改</td></tr>
+<tr><td>8</td><td>本機端點只在 <code>edge_server</code> 跑著時才有觀測</td><td>「讓本機端點一直有資料」需要服務常駐，是<b>另一個決定</b></td></tr>
+<tr><td>9</td><td><code>gpu_type</code> 刻意留空</td><td>它在另一個端點（<code>/v1/cgc/profile</code>）；要填得多一次往返，且離線端問不到</td></tr>
+<tr><td>10</td><td>索引 drift 未收（見 §14 的閘門輸出）</td><td>8 筆在<b>別人正在編輯</b>的 <code>scripts/check/*</code>；16 筆在 <code>.workbuddy/memory/*.md</code>。<b>本輪的檔 0 筆在 <code>MANIFEST.jsonl</code> 內</b>，重生索引會把別人未定稿的位元組寫進這個 commit ⇒ 留給 owner</td></tr>
+</table>
+
+<h2>§13 操作手冊（一頁）</h2>
+
+<pre><code># ── 端側（在端點上跑；不需要模型、不需要 llama-server、不開埠）──────────
+python3 installer/edge_server.py --dump-status status.json --endpoint-id &lt;ENDPOINT_ID&gt;
+python3 installer/edge_server.py --self-test                      # 39 格
+
+# ── 協議面（在本機跑）──────────────────────────────────────────────
+python3 agent_harness/a2a/taxonomy.py                             # 分類自我檢查
+python3 agent_harness/a2a/agent_card.py --check                   # 4 張卡的一致性
+python3 agent_harness/a2a/agent_card.py --agent cgc-explorer
+python3 agent_harness/a2a/a2a_server.py --serve --port 9210       # 起閘道
+python3 agent_harness/a2a/a2a_server.py --self-test               # 23 格
+
+# ── 身分（帳號 → 類別 → 四維）─────────────────────────────────────
+python3 agent_harness/a2a/identity.py --email alexchuang@powerauto.ai --brief
+python3 agent_harness/a2a/identity.py --check                      # 含雲側帳號比對
+python3 agent_harness/a2a/identity.py --check --as-class explorer  # 用別類帳號自己看
+python3 agent_harness/a2a/identity.py --probe-login                # 三帳號各登一次（只讀）
+python3 agent_harness/a2a/identity.py --here                       # 出處（非身分）
+python3 agent_harness/a2a/identity.py --self-test                  # 17 格
+
+# ── 機隊自動化 ────────────────────────────────────────────────────
+python3 agent_harness/portal/fleet_auto.py --plan                 # 這一輪會做什麼（不寫檔）
+python3 agent_harness/portal/fleet_auto.py --run                  # 真的跑一輪
+python3 agent_harness/portal/fleet_auto.py --status               # 最近幾輪留痕
+python3 agent_harness/portal/fleet_auto.py --check                # 看門狗（三態）
+python3 agent_harness/portal/fleet_auto.py --install-schedule --interval-min 60
+python3 agent_harness/portal/fleet_auto.py --uninstall-schedule
+python3 agent_harness/portal/build_fleet_portal.py --check        # 入口契約
+python3 agent_harness/portal/build_fleet_portal.py --export       # 匯出給網站</code></pre>
+
+<p class="small">
+※ 上面所有對外請求的路徑都要走 <code>--noproxy '*'</code>（或等價的 no-proxy opener）：
+這個環境的 <code>HTTP_PROXY</code> 會把 <code>127.0.0.1</code> 的請求<b>也</b>丟進代理。
+<b>同一個坑在這條線上已經踩過三次</b>，其中一次在產品路徑上（push 的 webhook 投遞）。
+</p>
+
+<h2>§14 現場閘門輸出（產出當時原文）</h2>
+
+<h3>§14.1 通過的</h3>
+
+<pre><code>$ python3 agent_harness/engine_loop/traces/validate.py
+  episodes.jsonl: 122 records {'episode': 122}
+  -> OK
+  decisions.jsonl: 68 records {'decision': 68}
+  -> OK
+  lessons.jsonl: 192 records {'lesson': 192}
+  -> OK
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  10/10 injected violations rejected
+
+$ python3 agent_harness/a2a/a2a_server.py --self-test
+  [PASS] ★★ identity/here ⇒ 出處帶 repo／HEAD，且 sessionDiscrimination.level=none
+  [PASS] /healthz 通；不存在的路徑 ⇒ 404（不是 200 加空物件）
+  23/23 通過
+
+$ python3 agent_harness/a2a/identity.py --self-test
+  [PASS] ★★ login_probe 沒憑證 ⇒ probed=False（＝沒查），且三類都列出來
+  17/17 通過
+
+$ python3 agent_harness/a2a/agent_card.py --check
+  OK: 4 張 card，分類與能力歸屬一致        rc=0
+
+$ python3 agent_harness/portal/fleet_auto.py --self-test
+  [PASS] ★★ 看門狗：自測沒有把報告寫進真 repo 的 endpoints/
+  21/21 通過</code></pre>
+
+<h3>§14.2 <b>沒有</b>通過的（如實列出，並說明歸屬）</h3>
+
+<pre><code>$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+    .workbuddy/memory/2026-09-17.md :: ...: fields differ [body_bytes, line_end, line_start, lines, title]
+    （9 處在 2026-09-17.md、7 處在 2026-09-18.md）
+    regenerate with: python3 memory/build_memory_index.py
+
+$ python3 agent_harness/engine_loop/index_assets.py --check
+  [error] 8 drift(s) between the manifest and disk:
+     as 8 drifts and one invisible second copy of the truth.)</code></pre>
+
+<div class="box warn">
+<b>這兩個 drift 都不是本輪的檔造成的，而且本輪刻意<b>不</b>重生索引。</b>
+實測：<code>MANIFEST.jsonl</code> 共 <b>109</b> 筆，而 <code>agent_harness/a2a/</code>、
+<code>agent_harness/portal/</code>、本檔 <code>docs/EDGE_CLOUD_COLLAB_WHITEPAPER_20260918_1720.html</code>
+在索引裡<b>各 0 筆</b>
+⇒ 本輪不製造 assets drift。8 筆 drift 落在<b>別條線正在編輯</b>的
+<code>scripts/check/*.py</code> 與其 <code>INDEX.jsonl</code> 上。
+<b>重生索引會把對方未定稿的位元組寫進這個 commit</b>（這個 repo 的既有規矩：
+看到不是你改的 modified 檔就只新增、不重生索引、不 commit）。
+<code>memory</code> 那一側同理：重生會連帶把 <code>2026-09-17.md</code>（別條線的）一起動。
+⇒ <b>具名交代較誠實</b>，處置權留給 owner。
+</div>
+
+<h3>§14.3 本檔所屬</h3>
+
+<p>本檔是 D5 的白皮書附件，與同一個 commit 一起提交。
+<b>D5 的數值那一半（<code>m123_oracle_gate</code>）在本輪被中斷</b>：
+本輪改動 <b>0 個 <code>src/</code> 檔</b>（只動 <code>agent_harness/a2a/</code> 與 <code>docs/</code>），
+而依本 repo 的判準，純 doc／腳本的 commit 技術上可以不跑數值閘門 ——
+但<b>下一個動到 <code>src/</code> 的 commit 必須跑</b>，並先讀 <code>comparable</code> 再讀 M1/M2/M3。</p>
+
+<!-- MORE2 -->
+
+<p class="small" style="margin-top:26px">
+本檔由 agent harness 產出，屬 D5 附件。所有數字都在產出當時現場量測；
+凡是「還沒做」的都在 §12 具名列出，不混進成效敘述。
+</p>
+
+</div></body></html>

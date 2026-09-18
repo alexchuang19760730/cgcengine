@@ -70,6 +70,18 @@ POST /a2a/<agent_id>                                   # JSON-RPC
 GET  /healthz
 ```
 
+JSON-RPC 方法：
+
+| 方法 | 做什麼 |
+|---|---|
+| `message/send` | 同步執行一個 skill ⇒ 完成後回 artifact |
+| `message/stream` | 同上，但用 SSE 逐步回報（最後一個事件是 final） |
+| `tasks/get` / `tasks/cancel` | 查／取消任務（已完成 ⇒ 取消被拒 `-32002`） |
+| `tasks/pushNotificationConfig/{set,get,list,delete}` | webhook 設定（投遞**真的** POST；失敗留痕但不改任務狀態） |
+| `agent/brief` | ★★ 這一類的**資產／能力／進度／復盤**，並附**出處**；帶 `email`／`jwt` ⇒ 換一類 |
+| `identity/check` | 身分錨 vs 雲側帳號。`asClass`＝用哪一類帳號讀；`probeLogin`＝**明示才做**登入探測 |
+| `identity/here` | ★★ 出處（repo／HEAD／未提交改動／錨文件）——**不是**身分 |
+
 四個 agent：`cgc-dev-porting`（developer）、`fleet-operator`（operator）、
 `pd-inference`（operator）、`cgc-explorer`（explorer）。
 
@@ -77,7 +89,7 @@ GET  /healthz
 python3 agent_harness/a2a/agent_card.py --check        # 分類與卡片的一致性
 python3 agent_harness/a2a/agent_card.py --agent cgc-explorer
 python3 agent_harness/a2a/a2a_server.py --call cgc-explorer register-decision --text "..."
-python3 agent_harness/a2a/a2a_server.py --self-test    # 17 格
+python3 agent_harness/a2a/a2a_server.py --self-test    # 23 格
 ```
 
 ## 與既有東西的整合面（這一輪做到哪）
@@ -126,7 +138,10 @@ python3 agent_harness/a2a/a2a_server.py --self-test    # 17 格
 ```bash
 python3 agent_harness/a2a/identity.py --email alexchuang@powerauto.ai --brief   # 運營者的四維
 python3 agent_harness/a2a/identity.py --jwt "$TOKEN" --brief                    # 從 JWT 判別
-python3 agent_harness/a2a/identity.py --check         # 身分錨 vs 雲側帳號（含角色）
+python3 agent_harness/a2a/identity.py --check                                   # 身分錨 vs 雲側帳號（含角色）
+python3 agent_harness/a2a/identity.py --check --as-class explorer               # 用探索者帳號**自己**去看
+python3 agent_harness/a2a/identity.py --probe-login                             # 三個帳號各登入一次（★ 只讀）
+python3 agent_harness/a2a/identity.py --here                                    # 這一輪的**出處**（見下）
 ```
 
 ```bash
@@ -137,12 +152,55 @@ curl -s -X POST http://127.0.0.1:9210/a2a/fleet-operator -H 'Content-Type: appli
 #   "params":{"email":"frontier@powerauto.ai"}
 ```
 
+### 出處（不是身分）：為什麼**不做** session 註冊
+
+★★ 2026-09-18 決定：**身分只到「帳號」這一層，不做 session 級註冊。**
+同一帳號同時開兩個 session（一個做移植、一個做運營）會拿到**同一類**的四維 ——
+這是**有意接受**的，不是漏掉的功能。
+
+理由是：能區分兩者的東西（**本機檔案、git 操作**）本來就擺在那裡，而且兩個 session
+看到的是**同一份**。再加一層註冊表只會多一份會漂移的真相（這個 repo 已經為「兩份真相」付過學費）。
+
+所以四維帶的是**出處**：
+
+```bash
+python3 agent_harness/a2a/identity.py --here
+#   出處（★ 這不是身分，是歸因）：
+#       repo    /Users/alexchuang/Documents/flashkv-devserver
+#       HEAD    demo/sweet-spot-windows-fix 22e7cb9919d3
+#       未提交  8 筆（分不出是誰改的：多 session 共用一棵樹）
+#       錨文件  7 個讀得到、0 個讀不到
+#       ★ 同一帳號的多個 session 會判到**同一類**（level=none, byDesign=True）
+```
+
+於是同帳號的兩個 session 雖然同類，卻可以互相知道「**你讀的是哪一版**」——
+歸因靠出處，不靠註冊。`agent/brief` 與 `identity/here` 都回這一包，
+而 `sessionDiscrimination.level` 固定是 `"none"`：自測有一格釘住它，
+免得之後有人偷偷加回一個註冊表、卻忘了改這個宣告。
+
+「錨文件」就是四維的來源清單（`taxonomy.py`／`fleet.json`／`decisions.jsonl`／
+`fleet_export.json`／端側的 `edge_server.py`…）。**缺檔也留在清單裡**（標 `exists:false`）——
+從清單消失會讓「還沒匯出」與「我忘了檢查」長得一樣。
+
 ### 憑證怎麼放（**不要**貼進 repo）
 
 `identity.py` 的原始碼裡**沒有任何 key**，憑證只從環境變數或
 `~/.config/powerauto/supabase.env`（repo 外、`chmod 600`）讀。而且它**刻意只用 anon key
-＋ 使用者自己的 JWT**，不用 Service Role Key —— 這樣讀到的就是那條路徑**真的讀得到**的東西，
+＋ 各類帳號自己的 JWT**，不用 Service Role Key —— 這樣讀到的就是那條路徑**真的讀得到**的東西，
 RLS 在雲側那一頭生效。
+
+一個類別**一個帳號**，密碼共用同一把（2026-09-18 機檢：三個都能登入、各有自己的 UUID）：
+
+```bash
+POWERAUTO_PASSWORD=...
+POWERAUTO_EMAIL_OPERATOR=alexchuang@powerauto.ai
+POWERAUTO_EMAIL_DEVELOPER=developer@powerauto.ai
+POWERAUTO_EMAIL_EXPLORER=frontier@powerauto.ai
+```
+
+★ 使用者說「同樣的密碼」，但**說不是證據** —— `--probe-login` 真的各登一次
+（**只讀**：不建帳號、不改角色）。三個帳號可能沒建、密碼不同、或某一個被停用，
+而這三種情況的處置完全不同。
 
 ★ 已知缺口：`docs/fleet_export.json` **沒有導出 `reaches`**（portal 的 `export_payload()` 的缺口），
 所以這支得自己回頭讀 `fleet.json`。一份「給別的網站吃」的資料少了判斷所需的欄位，
@@ -162,7 +220,7 @@ RLS 在雲側那一頭生效。
   不是生產實作。`shell-allowlist` 只放行白名單命令，且不做管線與重導向 ——
   `shell=True` 在這個情境等於把閘道變成遠端 shell。
 
-## 自測 17 格（黑箱：真的起服務、真的發 JSON-RPC、真的收 SSE、真的收 webhook）
+## 自測 23 格（黑箱：真的起服務、真的發 JSON-RPC、真的收 SSE、真的收 webhook）
 
 | 格 | 在驗什麼 |
 |---|---|
@@ -179,6 +237,16 @@ RLS 在雲側那一頭生效。
 | 15 | ★★ taxonomy 的每一個 skill 都有 executor |
 | 16 | ★ 每個 agent 都寫了 `not_capable` |
 | 17 | `/healthz` 與 404 |
+| 18–19 | ★★ 身分錨：`agent/brief` 的四維按**它那一類**整理並帶身分錨；換 `email` ⇒ 換一類，不認得的帳號 ⇒ 拒答 |
+| 20 | ★ `identity/check`（`noCloud`）⇒ 明說沒查，不是靜默通過 |
+| 21 | ★★ `asClass`：不在類別裡 ⇒ 拒答（`-32602`）；合法的要記下來 |
+| 22 | ★★ `probeLogin` **明示才做**（不給就沒有 `loginProbe`）；給了 ⇒ 三類各一列 |
+| 23 | ★★ `identity/here` ⇒ 出處帶 repo／HEAD，且 `sessionDiscrimination.level=none` |
+
+另有兩支獨立自測：`identity.py`（**17 格**）與 `agent_card.py --check`。
 
 ★ 第 15 格是最重要的一格：taxonomy 裡多一個 skill 而漏了 executor，症狀**不是報錯**，
 是「那個能力永遠不會被執行」——而它在卡片上看起來完全正常。
+
+★ 第 22 格防的是另一種：一個**每次都被順手做**的網路動作（登入探測），
+會讓「沒查」這件事從輸出裡消失。

@@ -420,12 +420,32 @@ class Gateway:
             return ok(b)
 
         if method == "identity/check":
-            profs, why = (None, "params.noCloud") if params.get("noCloud") else ID.cloud_profiles()
-            return ok({"identity": [{"class": c, "email": ID.email_of(c),
-                                     "roleExpected": (TX.get(c).get("identity") or {})
-                                     .get("role_expected")} for c in TX.classes()],
-                       "cloudProfiles": profs, "cloudWhy": why,
-                       "problems": ID.identity_problems(profs, why)})
+            # ★ asClass：用**哪一類的帳號**去讀雲側。於是對端可以問一個實質問題：
+            #   「開發者那一類自己去看，看到的跟我看到的一樣嗎？」（RLS 下不一定一樣）
+            asc = str(params.get("asClass") or "operator")
+            if asc not in TX.classes():
+                return err(ERR_PARAMS, "asClass 不在類別裡：%r（已知 %s）"
+                           % (asc, list(TX.classes())))
+            profs, why = ((None, "params.noCloud") if params.get("noCloud")
+                          else ID.cloud_profiles(as_class=asc))
+            out = {"identity": [{"class": c, "email": ID.email_of(c),
+                                 "roleExpected": (TX.get(c).get("identity") or {})
+                                 .get("role_expected")} for c in TX.classes()],
+                   "asClass": asc, "cloudProfiles": profs, "cloudWhy": why,
+                   "problems": ID.identity_problems(profs, why)}
+            # ★★ 登入探測要**明示才做**（它會連出去三次）。預設不做，理由與
+            #   「缺席要出聲」同源：一個每次都被順手做的網路動作，會讓「沒查」消失。
+            if params.get("probeLogin"):
+                lp = ID.login_probe()
+                out["loginProbe"] = lp
+                if not lp["probed"]:
+                    out["problems"] = list(out["problems"]) + ["（登入探測沒有查：%s）" % lp["why"]]
+            return ok(out)
+
+        if method == "identity/here":
+            # ★★ 出處，不是身分。同帳號的多個 session 會判到**同一類**，
+            #   所以「你讀的是哪一版」要靠這個問，不是靠一個 session id。
+            return ok(ID.local_context())
 
         if method == "tasks/get":
             t = self.store.get(params.get("id") or params.get("taskId"))
@@ -955,6 +975,39 @@ def self_test() -> int:
              len(d.get("identity") or []) == 3
              and any("沒有查" in x for x in (d.get("problems") or [])),
              json.dumps(d, ensure_ascii=False)[:190])
+
+        # 21) ★★ asClass：不存在的類別 ⇒ 拒答；存在的 ⇒ 被記錄下來（用誰的帳號讀的）
+        st, r = rpc("fleet-operator", "identity/check",
+                    {"noCloud": True, "asClass": "nope"})
+        st2, r2 = rpc("fleet-operator", "identity/check",
+                      {"noCloud": True, "asClass": "explorer"})
+        case("★★ identity/check 的 asClass：不在類別裡 ⇒ 拒答（-32602）；合法的要記下來",
+             (r.get("error") or {}).get("code") == ERR_PARAMS
+             and (r2.get("result") or {}).get("asClass") == "explorer",
+             "bad=%s good=%s" % (json.dumps(r, ensure_ascii=False)[:90],
+                                 (r2.get("result") or {}).get("asClass")))
+
+        # 22) ★★ 登入探測要**明示才做**（一個每次都被順手做的網路動作，會讓「沒查」消失）
+        st, r = rpc("cgc-explorer", "identity/check", {"noCloud": True})
+        st2, r2 = rpc("cgc-explorer", "identity/check",
+                      {"noCloud": True, "probeLogin": True})
+        d0, d1 = r.get("result") or {}, r2.get("result") or {}
+        lp = d1.get("loginProbe") or {}
+        case("★★ probeLogin 不給 ⇒ 沒有 loginProbe；給了 ⇒ 三類各一列",
+             "loginProbe" not in d0
+             and len(lp.get("rows") or []) == 3
+             and all(x.get("class") in TX.classes() for x in lp.get("rows") or []),
+             "silent=%s probed=%s rows=%d" % ("loginProbe" in d0, lp.get("probed"),
+                                              len(lp.get("rows") or [])))
+
+        # 23) ★★ identity/here：出處（repo／HEAD），且明說 session 判別 level=none
+        st, r = rpc("fleet-operator", "identity/here", {})
+        h = r.get("result") or {}
+        case("★★ identity/here ⇒ 出處帶 repo／HEAD，且 sessionDiscrimination.level=none",
+             bool(h.get("repo")) and bool((h.get("git") or {}).get("head"))
+             and (h.get("sessionDiscrimination") or {}).get("level") == "none",
+             json.dumps({k: h.get(k) for k in ("repo", "observedAt")},
+                        ensure_ascii=False)[:150])
 
         # 17) registry 的 gateway 路徑真的有對應的 HTTP 行為
         st, _ = jget("/healthz")

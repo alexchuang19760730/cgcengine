@@ -1191,6 +1191,130 @@ pattern 是<b>拼出來</b>的，因為寫成字面量會讓掃描命中自己�
   <b>要區分到 session 層，得再有 session 級的註冊，目前沒有。</b></li>
 </ul>
 
+<h2>§17 三個帳號同一把密碼，與「不做 session 註冊」的決定（17:0x）</h2>
+
+<div class="box pur">
+<b>本節是 §16 的直接續，不取代任何一節。</b>§16 建立了身分錨（帳號 → 類別 → 四維），
+但留了兩件事沒收：<b>(a)</b> 開發者與探索者的帳號<b>能不能用</b>；
+<b>(b)</b> 同一帳號開兩個 session 時，「區分到 session 層」到底要不要做。
+本節的結論是 <b>(a)</b> 三個都能登入，<b>(b)</b> <b>不做</b> ——
+而且要把「為什麼不做」寫成<b>可機檢的宣告</b>，不是留一句口頭約定。
+</div>
+
+<h3>§17.1 「同樣的密碼」不是證據，登入才是</h3>
+
+<p>使用者說三個帳號用<b>同一把密碼</b>。這句話很可能是對的，但<b>它是一個宣稱</b> ——
+三個帳號可能根本沒建、密碼不同、或某一個被停用，而這三種情況的<b>處置完全不同</b>
+（建帳號／問密碼／查停用）。所以新增 <code>--probe-login</code>：三個帳號<b>各登一次</b>。</p>
+
+<p>它<b>只讀</b>：不建帳號、不改角色 —— 那兩件是寫操作，正是使用者原始文件裡
+「驗證 API 是否正常」與「改動生產資料」的分界。實測：</p>
+
+<pre>  [OK] developer  developer@powerauto.ai     JWT 802 字
+  [OK] operator   alexchuang@powerauto.ai    JWT 976 字
+  [OK] explorer   frontier@powerauto.ai      JWT 800 字</pre>
+
+<p>三個帳號各有自己的 UUID，且<b>全是 <code>super_admin</code></b>（與 §16 的實況一致 ——
+所以 <b>role 不承擔區分類別的職責，區分只在 email 上</b>）。憑證檔因此改成<b>一類一個帳號</b>：
+<code>POWERAUTO_EMAIL_OPERATOR</code>／<code>..._DEVELOPER</code>／<code>..._EXPLORER</code>，
+密碼共用同一把；命名由 <code>taxonomy.classes()</code> <b>派生</b>，新增一類時鍵會自動出現。</p>
+
+<p><b>為什麼是一類一個帳號，而不是一個帳號多個 token：</b>分類的錨是<b>帳號</b>。
+共用帳號會讓分類退回「自稱」，而那正是這一支在防的事。</p>
+
+<h3>§17.2 決定：不做 session 註冊，改用「出處」歸因</h3>
+
+<p>§16 留了一個具名缺口：<b>它沒有 session 概念，只有帳號</b> ——
+同一帳號同時開兩個 session（一個做移植、一個做運營）會拿到<b>同一類</b>的四維。
+當時的結論是「要區分到 session 層，得有 session 級註冊」。</p>
+
+<p>使用者的回覆是<b>不需要</b>：<b>看得到同樣的本機檔案與 git 操作即可</b>。
+這個判斷成立，而且比「加一層註冊表」更強：</p>
+
+<ul>
+<li>能區分兩個 session 的東西（<b>本機檔案、git 操作</b>）<b>本來就擺在那裡</b>；</li>
+<li>而且兩個 session 看到的是<b>同一份</b> —— 註冊表要多維護一份真相，
+    而<b>那份真相會漂移</b>（這個 repo 已經為「兩份真相」付過學費）；</li>
+<li>真正需要的不是「你是誰」，而是「<b>你讀的是哪一版</b>」—— 那件事<b>出處</b>就答得出來。</li>
+</ul>
+
+<p>所以四維帶上<b>出處</b>，並把「不區分 session」寫成<b>輸出裡的一格</b>：</p>
+
+<pre>出處（★ 這不是身分，是歸因）：
+    repo    /Users/alexchuang/Documents/flashkv-devserver
+    HEAD    demo/sweet-spot-windows-fix 22e7cb9919d3
+    最近提交 feat(a2a): 身分錨 --- session 屬於哪一類，以及那一類的資產／能力／進度／復盤
+    未提交  8 筆（分不出是誰改的：多 session 共用一棵樹）
+    錨文件  7 個讀得到、0 個讀不到
+    讀數時刻 2026-09-18 17:07:56
+    ★ 同一帳號的多個 session 會判到**同一類**（level=none, byDesign=True）</pre>
+
+<p><code>sessionDiscrimination.level</code> 固定是 <code>"none"</code>，
+而自測<b>有一格釘住它</b> —— 免得之後有人偷偷加回一個註冊表、卻忘了改這個宣告。
+「<b>分不出是誰改的</b>」那半句也是刻意的：它把 repo 的既有事實（多 session 共寫一棵樹）
+放在讀者眼前，而不是讓那個 dirty 清單看起來像「我改的」。</p>
+
+<p><b>錨文件</b>是四維的來源清單（<code>taxonomy.py</code>／<code>fleet.json</code>／
+<code>decisions.jsonl</code>／<code>fleet_export.json</code>／端側的 <code>edge_server.py</code>）。
+<b>缺檔也留在清單裡</b>（標 <code>exists:false</code>）—— 從清單消失會讓
+「還沒匯出」與「我忘了檢查」長得一樣。</p>
+
+<h3>§17.3 兩個順手挖出的缺陷</h3>
+
+<p><b>① <code>cfg or load_cloud_env()</code> 把「我給了空憑證」換成真憑證。</b>
+空 dict 是 falsy，所以一個想<b>離線跑</b>的呼叫端（明確傳 <code>{}</code>）會被靜默
+換成真憑證，然後<b>真的連出去</b>。自測第 17 格就是這樣抓到的：它本來要驗
+「沒憑證時 <code>login_probe</code> 要說『沒查』」，結果回報 <code>probed=true</code>、三個帳號都登入了
+—— <b>自測想要離線，它卻連了網</b>。修法是 <code>None</code> 判斷：
+<b>「我給了空設定」與「我沒給設定」不該同形。</b></p>
+
+<p><b>② <code>--check</code> 不帶 <code>--as-class</code> 時傳了空字串。</b>
+於是「沒指定」變成「指定了一個不存在的類別」，錯誤訊息印成
+「沒有&nbsp;&nbsp;這一類的帳號（要 <code>POWERAUTO_EMAIL_</code>）」—— <b>像壞掉，而不像缺設定</b>。
+缺省改成 <code>operator</code>，錯誤訊息改成指出「哪一類缺、該給哪個鍵」。</p>
+
+<h3>§17.4 現場輸出（原文）</h3>
+
+<pre>$ python3 agent_harness/a2a/identity.py --check
+  developer   developer@powerauto.ai   期望角色 super_admin
+  operator    alexchuang@powerauto.ai  期望角色 super_admin
+  explorer    frontier@powerauto.ai    期望角色 super_admin
+
+  雲側：查到 3 個帳號（以 alexchuang@powerauto.ai 登入讀取）
+
+$ python3 agent_harness/a2a/identity.py --check --as-class explorer
+  雲側：查到 3 個帳號（以 frontier@powerauto.ai 登入讀取）
+
+# 透過 A2A：identity/check 的 asClass 不在類別裡 ⇒ 拒答
+  code=-32602  asClass 不在類別裡：'nope'（已知 ['developer', 'operator', 'explorer']）</pre>
+
+<p>★ <code>--as-class explorer</code> 回答的是一個<b>實質</b>問題：
+「開發者那一類自己去看，看到的跟我看到的一樣嗎？」（RLS 下不一定一樣）。
+目前三個帳號都是 <code>super_admin</code>，所以看到的一樣 ——
+但這件事<b>現在是量出來的，不是假設的</b>。</p>
+
+<p><b>自測</b>：<code>identity.py</code> 13 → <b>17 格</b>（新增：出處的形狀與
+<code>level=none</code>／錨清單缺檔要留著／四維的出處與 <code>--here</code> 一致／
+沒憑證時 <code>probeLogin</code> 要說「沒查」）；<code>a2a_server.py</code> 20 → <b>23 格</b>
+（新增：<code>asClass</code> 合法性／<code>probeLogin</code> 明示才做／<code>identity/here</code>）。
+全部通過。</p>
+
+<h3>§17.5 不主張什麼</h3>
+
+<ul>
+<li><b>沒有把「session」變成一個真的概念。</b>這是刻意的（見 §17.2）。同一帳號的兩個
+    session 拿到同一類四維 —— 若之後真的需要分，<code>--here</code> 已經把需要的原料
+    （cwd／repo／HEAD／dirty）都放在同一個地方了，但<b>目前不做</b>。</li>
+<li><b>登入探測是明示才做的。</b>預設不連出去 —— 一個每次都被順手做的網路動作，
+    會讓「沒查」這件事從輸出裡消失。</li>
+<li><b>憑證檔裡仍然只有 anon key。</b>使用者原始文件給的 Service Role Key
+    <b>沒有寫進任何檔案</b>；它是繞過 RLS 的 super key，且已在對話裡明文出現過，
+    建議輪換。</li>
+<li><b>D5 沒跑（本 commit 0 個 <code>src/</code>）</b>：機器上另一條線正在跑量測
+    （<code>llama-server</code> 在聽 8080 ＋ 兩個驅動行程），起 13 GB 的 server 會污染
+    他們那一輪。引用同一棵樹 <code>22e7cb991</code> 的結果。</li>
+</ul>
+
 <p class="small" style="margin-top:26px">
 本檔由 <code>docs/FLEET_PORTAL_DELIVERY_20260918_1330.html</code> 交付，與它所屬的 commit 綁定。
 所有數字都可在本機用 §10 的指令重跑；沒有任何數字是轉述的。
