@@ -41,6 +41,14 @@ def _m(sid, name, desc, tags, examples):
 CLASSES: dict[str, dict] = {
     "developer": {
         "id": "developer",
+        # ★ 身分錨：這一類 agent 在**雲側**（Supabase profiles）用哪一個帳號。
+        #   它存在的理由很具體：一個 session 的運營者 agent 要能回答「我現在屬於哪一類」，
+        #   而最不會漂移的判準就是**它用哪個帳號登入** —— 不是它自己宣稱、也不是 session 標題。
+        #   ★ 帳號**不存在**時，這一類就沒有雲側身分。那是 absent，不是錯誤；
+        #     但它必須被說出來（`identity.py --check` 會出聲）。
+        #   ★★ 2026-09-18 16:38 實況：三個帳號都是 `super_admin`。
+        #     所以 **role 不承擔「區分類別」的職責，區分只在 email 上**。
+        "identity": {"email": "developer@powerauto.ai", "role_expected": "super_admin"},
         "label": "開發 agent",
         "what": "把引擎移植到新平台，並證明它在上面真的跑起來（windows／鴻蒙是目前兩個目標）",
         "macro": {
@@ -69,6 +77,12 @@ CLASSES: dict[str, dict] = {
     },
     "operator": {
         "id": "operator",
+        # ★ 身分錨：這一類 agent 在**雲側**（Supabase profiles）用哪一個帳號。
+        #   它存在的理由很具體：一個 session 的運營者 agent 要能回答「我現在屬於哪一類」，
+        #   而最不會漂移的判準就是**它用哪個帳號登入** —— 不是它自己宣稱、也不是 session 標題。
+        #   ★ 帳號**不存在**時，這一類就沒有雲側身分。那是 absent，不是錯誤；
+        #     但它必須被說出來（`identity.py --check` 會出聲）。
+        "identity": {"email": "alexchuang@powerauto.ai", "role_expected": "super_admin"},
         "label": "運營 agent",
         "what": "讓端／雲／端的服務持續可觀測、可部署（pd 服務與 harness 入口都在它的範圍內）",
         "macro": {
@@ -97,6 +111,12 @@ CLASSES: dict[str, dict] = {
     },
     "explorer": {
         "id": "explorer",
+        # ★ 身分錨：這一類 agent 在**雲側**（Supabase profiles）用哪一個帳號。
+        #   它存在的理由很具體：一個 session 的運營者 agent 要能回答「我現在屬於哪一類」，
+        #   而最不會漂移的判準就是**它用哪個帳號登入** —— 不是它自己宣稱、也不是 session 標題。
+        #   ★ 帳號**不存在**時，這一類就沒有雲側身分。那是 absent，不是錯誤；
+        #     但它必須被說出來（`identity.py --check` 會出聲）。
+        "identity": {"email": "frontier@powerauto.ai", "role_expected": "super_admin"},
         "label": "探索 agent",
         "what": "解決宏觀決策：目標該不該改、哪條路該放棄、哪些假設已經被推翻",
         "macro": {

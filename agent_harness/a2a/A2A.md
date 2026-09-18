@@ -89,6 +89,65 @@ python3 agent_harness/a2a/a2a_server.py --self-test    # 17 格
 | `tb_loop/agents/`（執行器） | 那三個是 **CLI 適配器**（terminal-bench 的 `AbstractInstalledAgent`），不是類別。它們可以被 executor 包起來，但目前**沒有**接。 |
 | `fleet_auto.py`／看門狗 | 無耦合。運營 agent 的 `watchdog-check` skill 是**呼叫它**，不是重寫它。 |
 
+## 身分錨：session 屬於哪一類（以及那一類的四維）
+
+「這個 session 是哪一類」如果靠它**自己宣稱**或靠 session 標題，它就是不可機檢的。
+最不會漂移的判準是**它用哪一個帳號登入雲側**（Supabase `profiles`）：
+
+| 類別 | 帳號 | 雲側角色 |
+|---|---|---|
+| `operator` 運營 | `alexchuang@powerauto.ai` | `super_admin` |
+| `developer` 開發 | `developer@powerauto.ai` | `super_admin` |
+| `explorer` 探索 | `frontier@powerauto.ai` | `super_admin` |
+
+★ **只做精確比對。** `nobody@powerauto.ai`（同網域但不在錨上）⇒ **拒答**，不會被吸進某一類。
+★ **判不出來就拒答**：猜一個預設類別，會讓一個打錯帳號的 session 拿到「運營者」的四維，
+而在它自己看起來完全正常。
+
+> ★★ 2026-09-18 16:38 實況：三個帳號都是 `super_admin`。
+> 所以 **role 不承擔「區分類別」的職責，區分只在 email 上** ——
+> 如果有人以為「role 低的那個是開發者」，他會做錯判斷。
+> `identity.py --check` 拿實況比對：角色不符報「不一致」、帳號不存在報「absent」，**兩件事分開講**。
+
+### 四維的形狀一樣，**來源不同**
+
+`agent/brief`（JSON-RPC）回一個類別的**資產／能力／進度／復盤**：
+
+| 類別 | 資產 | 能力 | 進度 | 復盤 |
+|---|---|---|---|---|
+| operator | 機隊**全部**端點 | 所有端點已驗證的能力 | 各端加入單完成度 | 逐次上報的能力／未量測變化 |
+| developer | 只看看**移植目標** | 那些端的建置／移植能力 | 那些端的加入單 | 它們的建置變化 |
+| explorer | 決策與假設（不是端點） | 4 個決策類 skill | decisions 的 pending 數 | `momentum_block()` 實算的動能 |
+
+★ developer 的判準是 **`reaches == "offline"`**（我們連不上、得主動送過去），
+不是 `platform` 白名單。第一版我用「platform 不是 darwin」篩，把 cloud-host2（linux 雲端主機）
+也算了進來 —— 而它根本不需要移植。
+
+```bash
+python3 agent_harness/a2a/identity.py --email alexchuang@powerauto.ai --brief   # 運營者的四維
+python3 agent_harness/a2a/identity.py --jwt "$TOKEN" --brief                    # 從 JWT 判別
+python3 agent_harness/a2a/identity.py --check         # 身分錨 vs 雲側帳號（含角色）
+```
+
+```bash
+# 透過 A2A 問（閘道要跑著）
+curl -s -X POST http://127.0.0.1:9210/a2a/fleet-operator -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"agent/brief","params":{}}'
+# 帶 email ⇒ 換一類（讓運營者用**別的**身分問同一件事）
+#   "params":{"email":"frontier@powerauto.ai"}
+```
+
+### 憑證怎麼放（**不要**貼進 repo）
+
+`identity.py` 的原始碼裡**沒有任何 key**，憑證只從環境變數或
+`~/.config/powerauto/supabase.env`（repo 外、`chmod 600`）讀。而且它**刻意只用 anon key
+＋ 使用者自己的 JWT**，不用 Service Role Key —— 這樣讀到的就是那條路徑**真的讀得到**的東西，
+RLS 在雲側那一頭生效。
+
+★ 已知缺口：`docs/fleet_export.json` **沒有導出 `reaches`**（portal 的 `export_payload()` 的缺口），
+所以這支得自己回頭讀 `fleet.json`。一份「給別的網站吃」的資料少了判斷所需的欄位，
+每個消費者都要多讀一個檔 —— 值得之後在 export 補上。
+
 ## 不主張什麼
 
 - **不是四個獨立部署**。四個 agent 共用同一個閘道進程與同一份 registry；它們在協議上是四個

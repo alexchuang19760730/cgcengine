@@ -1082,6 +1082,115 @@ x-not-capable  無權決定要不要放棄某個移植目標 —— 那是 explo
 所有數字都可在本機用 §15.5 的指令重跑。
 </p>
 
+<h2>§16 身分錨：session 屬於哪一類，以及那一類的四維（16:3x）</h2>
+
+<div class="box pur">
+<b>本節是新增，不取代前面任何一節。</b>§15 建立了 A2A 閘道與「三類 agent」的分類體系；
+本節補上它缺的那一半：<b>一個 session 要怎麼知道自己屬於哪一類</b>，
+以及知道之後要整理什麼。需求原話是「<b>每一個 session 的運營者 agent 需要區分這個是屬於哪個類別
+然後再來整理對應的資產／能力／進度／復盤</b>」。
+</div>
+
+<h3>§16.1 判準是帳號，不是自稱</h3>
+
+<p>「我屬於哪一類」如果靠 session 自己宣稱或靠標題，它就是一個<b>不可機檢的宣稱</b>。
+最不會漂移的判準是<b>它用哪一個帳號登入雲側</b>（Supabase <code>profiles</code>）：</p>
+
+<table>
+<tr><th>類別</th><th>帳號</th><th>雲側角色（實況）</th></tr>
+<tr><td><code>operator</code> 運營</td><td><code>alexchuang@powerauto.ai</code></td>
+    <td><code>super_admin</code></td></tr>
+<tr><td><code>developer</code> 開發</td><td><code>developer@powerauto.ai</code></td>
+    <td><code>super_admin</code></td></tr>
+<tr><td><code>explorer</code> 探索</td><td><code>frontier@powerauto.ai</code></td>
+    <td><code>super_admin</code></td></tr>
+</table>
+
+<div class="box warn">
+<b>兩個容易做錯的地方：</b><br>
+① <b>只做精確比對。</b><code>nobody@powerauto.ai</code>（同網域但不在錨上）⇒ <b>拒答</b>。
+   用「網域相同就算」的模糊匹配，會讓一個<b>拼錯</b>的帳號安靜地落到某一類。<br>
+② <b>判不出來就拒答。</b>猜一個預設類別，會讓打錯帳號的 session 拿到「運營者」的四維 ——
+   而在它自己看起來完全正常。
+</div>
+
+<p>★ <b>三個帳號都是 <code>super_admin</code>（16:38 實況）</b> ⇒
+<b>role 不承擔「區分類別」的職責，區分只在 email 上。</b>
+如果有人以為「role 低的那個是開發者」，他會做錯判斷。
+<code>identity.py --check</code> 拿實況比對：角色不符報「<b>不一致</b>」、帳號不存在報
+「<b>absent</b>」—— <b>這兩件事分開講</b>（前者是真的錯，後者只是還沒有）。</p>
+
+<h3>§16.2 四維的形狀一樣，來源不同</h3>
+
+<table>
+<tr><th>類別</th><th>資產</th><th>能力</th><th>進度</th><th>復盤</th></tr>
+<tr><td>operator</td><td>機隊<b>全部</b>端點</td><td>所有端點已驗證的能力</td>
+    <td>各端加入單完成度</td><td>逐次上報的能力／未量測變化</td></tr>
+<tr><td>developer</td><td>只看看<b>移植目標</b></td><td>那些端的建置／移植能力</td>
+    <td>那些端的加入單</td><td>它們的建置變化</td></tr>
+<tr><td>explorer</td><td>決策與假設（不是端點）</td><td>4 個決策類 skill</td>
+    <td>decisions 的 pending 數</td><td><code>momentum_block()</code> 實算的動能</td></tr>
+</table>
+
+<div class="box bad">
+<b>★ developer 的判準踩過一次：</b>第一版我用「platform 不是 darwin」來篩「移植目標」，
+結果把 <code>cloud-host2</code>（<b>linux 雲端主機</b>）也算了進來 —— 而它根本不需要移植。
+正確的判準是 <code>reaches == "offline"</code>：<b>我們連不上、得主動把東西送過去</b>的那些端點。
+</div>
+
+<h3>§16.3 現場輸出（原文）</h3>
+
+<pre><code>① 三個 agent 的 card 各帶哪個帳號
+  cgc-dev-porting    class=developer  identity=developer@powerauto.ai
+  fleet-operator     class=operator   identity=alexchuang@powerauto.ai
+  cgc-explorer       class=explorer   identity=frontier@powerauto.ai
+
+② 運營者問自己的四維（agent/brief）
+  class=operator  identity=alexchuang@powerauto.ai
+  資產 4 個：mac-local, cloud-host2, harmonyos-matebook14, windows-rtx4090
+  能力 12 條
+  進度 {"endpoints": 4, "joined": 3, "bars": {"mac-local": "2/2 完成", …}}
+  復盤 4 個端點有歷史
+  askedAs={"agentId":"fleet-operator","agentClass":"operator","resolvedClass":"operator"}
+
+③ ★ 換身分問 ⇒ 換一類
+  frontier@powerauto.ai      class=explorer
+  nobody@else.com            拒答 code=-32602</code></pre>
+
+<p><b>開發者那一類的資產是 2 個</b>（<code>harmonyos-matebook14</code>、
+<code>windows-rtx4090</code> —— 兩個 <code>reaches=offline</code> 的移植目標），
+而<b>探索者那一類不看端點</b>，看的是 <code>decisions.jsonl</code>（68 筆、pending 0）與動能。</p>
+
+<p><b>自測</b>：<code>identity.py</code> <b>13 格</b>；<code>a2a_server.py</code> 17 → <b>20 格</b>
+（新增：<code>agent/brief</code> 按類別整理四維／帶 email 換一類且不認得的帳號拒答／
+<code>identity/check</code> 不連網時明說「沒有查」）。全部通過。</p>
+
+<h3>§16.4 憑證怎麼放（不要貼進 repo）</h3>
+
+<p><code>identity.py</code> 的原始碼裡<b>沒有任何 key</b>（它連自己都測這一格 ——
+pattern 是<b>拼出來</b>的，因為寫成字面量會讓掃描命中自己的 pattern）。
+憑證只從環境變數或 <code>~/.config/powerauto/supabase.env</code>（repo 外、<code>chmod 600</code>）讀。</p>
+
+<p>而且它<b>刻意只用 anon key ＋ 使用者自己的 JWT</b>，<b>不用 Service Role Key</b> ——
+這樣讀到的就是那條路徑<b>真的讀得到</b>的東西，RLS 在雲側那一頭生效。
+把 super key 放進一支「只是要讀四維」的工具裡，是拿最大的權限去做最小的事。</p>
+
+<h3>§16.5 不主張什麼</h3>
+
+<ul>
+<li><b>它不驗 JWT 簽章。</b>它只回答「這是誰」；授權是雲側的事（RLS 與 role 在那一頭）。
+  用未驗簽的 token 判身分，只在「後面還有真正的閘門」時才成立。</li>
+<li><b>已知缺口：<code>docs/fleet_export.json</code> 沒有導出 <code>reaches</code></b>
+  （portal 的 <code>export_payload()</code> 的缺口），所以 <code>identity.py</code>
+  得自己回頭讀 <code>fleet.json</code>。一份「給別的網站吃」的資料少了判斷所需的欄位，
+  每個消費者都要多讀一個檔。</li>
+<li><b>非 macOS／沒有這個 repo 的環境跑不了</b> —— 它讀的是本機的
+  <code>fleet_export.json</code> 與 <code>decisions.jsonl</code>。</li>
+<li><b>它沒有「session」這個概念</b>，只有「帳號」。一個帳號在同一時間開兩個 session
+  （一個在做移植、一個在做運營）時，兩者會拿到同一類的四維 ——
+  <b>要區分到 session 層，得再有 session 級的註冊，目前沒有。</b></li>
+</ul>
+
 <p class="small" style="margin-top:26px">
 本檔由 <code>docs/FLEET_PORTAL_DELIVERY_20260918_1330.html</code> 交付，與它所屬的 commit 綁定。
 所有數字都可在本機用 §10 的指令重跑；沒有任何數字是轉述的。

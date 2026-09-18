@@ -41,6 +41,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import agent_card as AC                    # noqa: E402  card 的單一產生器
+import identity as ID                      # noqa: E402  身分 → 類別 → 四維
 import taxonomy as TX                      # noqa: E402  分類的單一真相
 
 JSONRPC = "2.0"
@@ -399,6 +400,32 @@ class Gateway:
                 th.join(timeout=float(params.get("timeout") or 30))
                 return ok(self._task_view(task))
             return {"__stream__": True, "task": task, "thread": th}
+
+        if method == "agent/brief":
+            # ★ 「我這一輪屬於哪一類，以及那一類的資產／能力／進度／復盤」。
+            #   參數可以給 email 或 jwt 覆寫（讓運營者用**別的**身分問同一件事），
+            #   不給就用這個 agent 自己的身分錨。
+            cid = self.agent(aid).get("x-agent-class")
+            want = params.get("email") or params.get("jwt")
+            if want:
+                r = (ID.resolve(email=params.get("email") or "",
+                                token=params.get("jwt") or ""))
+                if r["class"] is None:
+                    return err(ERR_PARAMS, r["why"])
+                cid = r["class"]
+            b = ID.brief_for(cid)
+            b["askedAs"] = {"agentId": aid, "agentClass": self.agent(aid).get("x-agent-class"),
+                            "resolvedClass": cid,
+                            "identityEmail": ID.email_of(cid)}
+            return ok(b)
+
+        if method == "identity/check":
+            profs, why = (None, "params.noCloud") if params.get("noCloud") else ID.cloud_profiles()
+            return ok({"identity": [{"class": c, "email": ID.email_of(c),
+                                     "roleExpected": (TX.get(c).get("identity") or {})
+                                     .get("role_expected")} for c in TX.classes()],
+                       "cloudProfiles": profs, "cloudWhy": why,
+                       "problems": ID.identity_problems(profs, why)})
 
         if method == "tasks/get":
             t = self.store.get(params.get("id") or params.get("taskId"))
@@ -902,6 +929,32 @@ def self_test() -> int:
         # 16) ★ 每張 card 的 not_capable 非空（「沒寫」會被讀成「可以做」）
         empty = [aid for aid, c in gw.cards.items() if not c.get("x-not-capable")]
         case("★ 每個 agent 都寫了 not_capable（缺席要出聲）", not empty, "empty=%s" % empty)
+
+        # 18) ★★ session 身分 → 類別 → 四維（「運營者 agent 要能區分自己在哪一類」的落地）
+        st, r = rpc("fleet-operator", "agent/brief", {})
+        br = r.get("result") or {}
+        case("★★ agent/brief：運營者拿到的四維是按**它那一類**整理的，且帶身分錨",
+             st == 200 and br.get("class") == "operator"
+             and (br.get("identity") or {}).get("email") == "alexchuang@powerauto.ai"
+             and all(k in br for k in ("assets", "capabilities", "progress", "retro")),
+             json.dumps(br, ensure_ascii=False)[:190])
+
+        # 19) ★★ 換一個身分問 ⇒ 換一類；不認識的帳號 ⇒ 拒答（分類真的跟著帳號走）
+        st, r = rpc("fleet-operator", "agent/brief", {"email": "frontier@powerauto.ai"})
+        br2 = r.get("result") or {}
+        st2, r2 = rpc("fleet-operator", "agent/brief", {"email": "nobody@else.com"})
+        case("★★ agent/brief 帶 email ⇒ 換一類；不認得的帳號 ⇒ 拒答（-32602）",
+             br2.get("class") == "explorer"
+             and (r2.get("error") or {}).get("code") == ERR_PARAMS,
+             "class=%s err=%s" % (br2.get("class"), json.dumps(r2, ensure_ascii=False)[:130]))
+
+        # 20) ★ identity/check 不連網時要說「沒有查」，不是靜默通過
+        st, r = rpc("cgc-explorer", "identity/check", {"noCloud": True})
+        d = r.get("result") or {}
+        case("★ identity/check（noCloud）⇒ 明說沒查雲側，且列出三類身分錨",
+             len(d.get("identity") or []) == 3
+             and any("沒有查" in x for x in (d.get("problems") or [])),
+             json.dumps(d, ensure_ascii=False)[:190])
 
         # 17) registry 的 gateway 路徑真的有對應的 HTTP 行為
         st, _ = jget("/healthz")

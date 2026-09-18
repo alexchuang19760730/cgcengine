@@ -139,6 +139,13 @@ def build_card(agent: dict, gw: dict, host: str = "127.0.0.1") -> tuple[dict, li
         },
         "x-not-capable": list(agent.get("not_capable") or []),
         "x-runs-on": {"endpoint_id": agent.get("runs_on"), "reaches": agent.get("reaches")},
+        # ★ 身分錨：這一類在**雲側**用哪個帳號。有它，對端（與 session 自己）才能回答
+        #   「我現在屬於哪一類」——判準是**帳號**，不是自稱、也不是 session 標題。
+        "x-identity": dict((c.get("identity") or {})),
+        "x-brief": {"method": "agent/brief",
+                    "note": "問這一類的資產／能力／進度／復盤。回來的四維是按類別整理的，"
+                            "不是全部端點的四維（運營者看全機隊、開發者只看看移植目標、"
+                            "探索者看決策與假設）。"},
 
         # ── 擴展：讓對端能自己核對分類 ────────────────────────────────
         "x-taxonomy": {
