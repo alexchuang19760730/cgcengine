@@ -953,6 +953,35 @@
   - 反向紀錄：`agent_harness/memory/README.md`、`agent_harness/skills/README.md` 與本條一起
     構成三個防線（banner / `SNAPSHOT.jsonl` / 條文），lesson `eng-bound-0004` 記的是「索引
     可驗證 ≠ 索引充分」這個一般化的規訓。
+- **修訂 2026-09-18｜本條對 loop 的約束仍一字未改；把「快照過期」從不可觀測變成可觀測，
+  並承認一條新的義務（排程）。**
+  - 新事實（實測）：快照的過期**在閘門上不存在**。`build_memory_index.py --check` 與
+    `index_assets.py --check` 都只驗原檔↔索引（上一節逐字記著），而
+    `import_harness_snapshot.py` 在 2026-09-18 之前**沒有 `--check`、沒有 argparse**
+    （傳 `--help` 會直接執行匯入）。排程也沒有：`automations` 表只有一筆已過期的一次性任務，
+    launchd／crontab 無相關條目。⇒ 失效方式是安靜的：`auto_git_push.ps1` 會**忠實地**
+    把一份過期快照推上去，而沒有任何東西會出聲。
+  - 處置：`import_harness_snapshot.py` 新增 `--check`（只驗不寫）、`--dry-run`、`--self-test`
+    （**14/14**，含陰性對照：`--check` 不寫任何檔、跨日不誤報、乾淨狀態必須回 0）。
+    它把五種漂移分開，因為**處置不同**：`[stale]`（原檔已變）、`[new]`／`[removed]`（集合變了）、
+    `[hand-edited]`（**副本被手改** —— 在這之前完全不可觀測，而「不要手改副本」正是上面
+    第 953 行那三個防線之一在講的事）、`[readme-table]`（兩份 README 的成員表與實際集合不符）。
+  - **兩份 README 的成員表納入檢查，而它們在加入檢查的那一刻就是紅的**：
+    `agent_harness/memory/README.md` 宣告 3 檔（實際 **8**）、`agent_harness/skills/README.md`
+    宣告 4 個 skill（實際 **5**，缺的是 2026-09-17 才建的 `cgc-tb-smoke`）。
+    ⇒ 這份快照機制的**第三道防線自己漂了兩天而無人知**，這是「本節的義務沒有自動執行者」
+    最具體的證據（同一份 memory README 還寫著「匯入腳本住在 `Backup/`」——
+    那句話在 2026-09-16 腳本搬家當天就死了）。
+    判準上刻意選「**拿掉表格也算失敗**」：能靠刪掉輸入變綠的檢查不是檢查。
+  - **不接進 pre-commit hook，而且是刻意的**：`.workbuddy/memory/*.md` 含每日 append-only 日誌，
+    而那是多 session 共寫的 ⇒ 硬閘門會永遠紅。判決沿用本檔 927-928 行
+    （「每日日誌當天必變，永遠紅的閘門等於沒有閘門」）。改走**兩條會真的發聲的路**：
+    ① 收尾序列（`cgc-commit-gate` §6.3）；② **定時自動化**（每日跑 `--check`，有漂移就
+    刷新＋重生索引＋commit）。
+  - **未完成的義務（不可當成已完成）**：本條上一段那個**閉環對照仍未執行**，狀態不變。
+    本節新增的義務是「**排程要真的在跑**」——自動化**建好**不構成它**跑過**的證據；
+    驗收是 `automations` 表／`automation_runs` 有執行紀錄，而且 `--check` 在兩次執行之間
+    真的被跑過。**在那些紀錄出現之前，本節只主張「機制已建、且有 14 格自測」。**
 
 ---
 

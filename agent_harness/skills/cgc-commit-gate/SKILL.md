@@ -726,11 +726,33 @@ glob 兩個來源目錄，並在**空清單時拒跑**（空的 `SNAPSHOT.jsonl`
 ⇒ 新增 skill **不需要改任何清單**；但若你看到它印出的 `discovered N skill(s)` 少了誰，
 那才是訊號。
 
-**★ 它沒有 `argparse`、也沒有 `--dry-run`——傳 `--help` 會直接執行匯入（2026-09-17 實測）。**
-`'argparse' in file` 與 `'sys.argv' in file` 都是 **False**，所以參數被完全忽略：
-想「先看一眼它要幹什麼」的那個反射動作，實際上就是**刷新了快照**（產生 7 檔的 repo churn，
-其中 2 檔會立刻進 staged 候選）。**要看它做什麼就讀原始碼（190 行、檔案頭 30 行就把設計講完了），
-要預覽就自己重算 `source_sha256` 比對**：
+**★ 2026-09-18 更新：它現在有 `argparse` 了 —— 而且有了 `--check`。**
+這一節原本寫「沒有 `argparse`、傳 `--help` 會直接執行匯入」，那個危害已經修掉：
+
+```sh
+python3 agent_harness/scripts/import_harness_snapshot.py                # 匯入（寫檔）
+python3 agent_harness/scripts/import_harness_snapshot.py --check        # ★ 只驗不寫：0=一致、1=有漂移，逐項印出
+python3 agent_harness/scripts/import_harness_snapshot.py --dry-run      # 只顯示會做什麼
+python3 agent_harness/scripts/import_harness_snapshot.py --self-test    # 黑箱自測 14/14（含陰性對照）
+python3 agent_harness/scripts/import_harness_snapshot.py --help         # 現在真的只是印說明
+```
+
+`--check` 分開**五種**漂移，因為處置不同：`[stale]`（原檔已變）、`[new]`／`[removed]`（集合變了）、
+`[hand-edited]`（**副本被手改** —— 這在 09-18 之前完全不可觀測，而匯入會靜默蓋掉它）、
+`[readme-table]`（兩份 README 的成員表與實際集合不符，**或表格不存在**）。
+
+**為什麼它不進 pre-commit hook（刻意的）**：`.workbuddy/memory/` 含**多 session 共寫**的每日
+append-only 日誌 ⇒ 硬閘門會永遠紅。判決沿用 `CONVENTIONS.md:927-928`
+（「每日日誌當天必變，永遠紅的閘門等於沒有閘門」）。它走收尾序列 ＋ **定時自動化**。
+
+**它一加進來就紅了兩處，而那兩處就是它存在的理由**（2026-09-18）：
+`agent_harness/memory/README.md` 宣告 3 檔（實際 8）、`agent_harness/skills/README.md` 宣告 4 個
+skill（實際 5）；memory 那份還寫著「匯入腳本住在 `Backup/`」（2026-09-16 搬家當天就死了）。
+⇒ 被憲章記成「三個防線」的機制，**第三道防線自己漂了兩天而沒有任何東西會出聲**。
+lesson `eng-gate-0056`；`CONVENTIONS.md` D6 有 2026-09-18 的 dated 修訂。
+
+仍然要自己重算的場合：**`--check` 是唯一權威**，下面那段手算 sha256 現在只是交叉核對
+（`--check` 用的是同一組 `source_sha256`，但它同時驗集合與副本內容）：
 
 ```sh
 python3 - <<'PY'
@@ -856,6 +878,9 @@ python3 agent_harness/engine_loop/traces/selftest.py            # 必須 10/10
 python3 agent_harness/engine_loop/harness_engine/build_memories.py --check
 python3 agent_harness/engine_loop/sft_pi/build_sft_pi.py --check
 python3 agent_harness/engine_loop/sft_prime/build_sft_prime.py --check
+# ★ 快照（agent_harness/memory + skills）。2026-09-18 之前它不被任何 --check 覆蓋 ⇒
+#   過期是靜默的，而 auto_git_push.ps1 會忠實地把過期快照推上去。順序：改原檔 → import → 索引。
+python3 agent_harness/scripts/import_harness_snapshot.py --check   # 0=一致；1=五種漂移逐項印出
 # ── 索引（磁碟 == 索引；★ 不驗「索引涵蓋了它」）────────────────────────
 python3 agent_harness/engine_loop/index_assets.py --check
 python3 agent_harness/engine_loop/memory/build_memory_index.py --check

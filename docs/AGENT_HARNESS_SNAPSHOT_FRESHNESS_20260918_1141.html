@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>agent_harness 快照新鮮度：把「過期」從不可觀測變成可觀測（2026-09-18 11:41）</title>
+<style>
+  :root { --fg:#111827; --muted:#6b7280; --line:#e5e7eb; --bg:#ffffff; --soft:#f9fafb; --code:#f3f4f6;
+          --blue:#1d4ed8; --green:#15803d; --red:#b91c1c; --amber:#b45309; --purple:#6d28d9; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:15px/1.72 -apple-system, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif; }
+  .wrap { max-width:1040px; margin:0 auto; padding:32px 20px 80px; }
+  h1 { font-size:24px; line-height:1.4; margin:0 0 6px; }
+  h2 { font-size:19px; margin:34px 0 10px; padding-top:14px; border-top:1px solid var(--line); }
+  h3 { font-size:16px; margin:22px 0 8px; }
+  .sub { color:var(--muted); font-size:13px; margin:0 0 22px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 18px; font-size:13.5px; }
+  th, td { border:1px solid var(--line); padding:7px 10px; text-align:left; vertical-align:top; }
+  th { background:var(--soft); font-weight:600; }
+  code { background:var(--code); padding:1px 5px; border-radius:4px; font-size:12.7px;
+         font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  pre { background:var(--soft); border:1px solid var(--line); border-radius:6px; padding:11px 13px;
+        overflow-x:auto; margin:10px 0 16px; }
+  pre code { background:none; padding:0; font-size:12.4px; line-height:1.6; display:block; }
+  ul { padding-left:22px; } li { margin:4px 0; }
+  .num { white-space:nowrap; }
+  .tag { display:inline-block; font-size:11.5px; padding:1px 8px; border-radius:999px;
+         border:1px solid var(--line); background:var(--soft); color:var(--muted); }
+  .t-green { color:var(--green); border-color:#bbf7d0; background:#f0fdf4; }
+  .t-red { color:var(--red); border-color:#fecaca; background:#fef2f2; }
+  .t-amber { color:var(--amber); border-color:#fde68a; background:#fffbeb; }
+  .t-blue { color:var(--blue); border-color:#bfdbfe; background:#eff6ff; }
+  .box { border:1px solid var(--line); border-left:4px solid var(--blue); border-radius:4px;
+         padding:11px 14px; margin:16px 0; background:#fbfdff; }
+  .box.ok { border-left-color:var(--green); background:#f6fdf8; }
+  .box.warn { border-left-color:var(--amber); background:#fffdf5; }
+  .box.bad { border-left-color:var(--red); background:#fff7f7; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>agent_harness 快照新鮮度：把「過期」從不可觀測變成可觀測</h1>
+<p class="sub">
+  專案 <code>flashkv-devserver</code> · 觀測時間 2026-09-18 11:41 · 白皮書檔名帶 <code>_1141</code>（同日同主題可能再修訂）<br>
+  附件所屬 commit：本輪的交付 commit（見 <code>git log</code> 的主題 <code>fix(harness): 快照的新鮮度…</code>）
+</p>
+
+<div class="box warn">
+  <b>一句話。</b><code>.workbuddy/memory/</code> 與 <code>~/.workbuddy/skills/</code> 的快照
+  （<code>agent_harness/memory/</code>、<code>agent_harness/skills/</code>）在被憲章記成「三個防線」之後，
+  <b>過期是完全不可觀測的</b>：兩個既有的 <code>--check</code> 都只驗原檔↔索引、不驗快照，
+  而跨機器推送器會忠實地把一份過期快照推上去。
+  本輪給匯入器加了 <code>--check</code>，而它<b>一加進來就紅了兩處</b> ——
+  那兩處正好是「防線自己漂了兩天而無人知」的實體。
+</div>
+
+<h2>§1 問題：過期在閘門上不存在</h2>
+
+三條各自獨立的實測，合起來構成「不可觀測」：
+
+<table>
+  <tr><th>軸</th><th>實測</th><th>後果</th></tr>
+  <tr>
+    <td>有沒有檢查</td>
+    <td><code>import_harness_snapshot.py</code> 在 2026-09-18 之前<b>沒有 <code>--check</code>、沒有 argparse</b>
+        （傳 <code>--help</code> 會直接執行匯入）</td>
+    <td>想知道快照新不新鮮，唯一的辦法是<b>執行匯入</b>——那會改檔，所以問題本身無法在不改變狀態的前提下被回答</td>
+  </tr>
+  <tr>
+    <td>有沒有排程</td>
+    <td><code>automations</code> 表只有一筆 <code>once</code> 且已過期；launchd／crontab 無相關條目</td>
+    <td>沒有任何東西會週期性地去跑它</td>
+  </tr>
+  <tr>
+    <td>有沒有閘門</td>
+    <td><code>build_memory_index.py --check</code> 與 <code>index_assets.py --check</code>
+        <b>都只驗原檔↔索引</b>（<code>CONVENTIONS.md:940-941</code> 逐字記著這件事）</td>
+    <td>快照的 bytes 不在任何檢查的管轄範圍內</td>
+  </tr>
+</table>
+
+<div class="box bad">
+  <b>失效是安靜的。</b> <code>agent_harness/scripts/auto_git_push.ps1</code>（另一台機器上的定時推送器）
+  只 <code>git add agent_harness</code> 後 push ⇒ <b>它會忠實地把一份過期快照推上去</b>，
+  而沒有任何東西會出聲。這與本 repo 反覆記下的模態同族：<b>綠燈與沒被檢查長得一樣</b>。
+</div>
+
+<h3>1.1 為什麼「過期」在這個設計裡是必然會發生的</h3>
+
+權威本體是 host 持續寫入的 <code>.workbuddy/memory/*.md</code>（每日 <b>append-only</b> 日誌，
+而且這個 repo 常見<b>多個 session 共寫</b>）。快照是衍生物，因此「它落後」是常態而不是例外；
+問題不在落後，而在<b>落後沒有任何觀測面</b>。
+
+<h2>§2 一加檢查就紅了兩處（而且那兩處是防線自己）</h2>
+
+<code>--check</code> 第一次跑在真實樹上的輸出（原文）：
+
+<pre><code>8 memory source(s), 5 skill source(s); 13 筆記錄（snapshot_date 2026-09-18…2026-09-18）
+[readme-table] agent_harness/memory/README.md: 存在但未宣告: 2026-09-17.md
+[readme-table] agent_harness/memory/README.md: 存在但未宣告: 2026-09-18.md
+[readme-table] agent_harness/memory/README.md: 存在但未宣告: MEMORY_FACTS.md
+[readme-table] agent_harness/memory/README.md: 存在但未宣告: MEMORY_PERF.md
+[readme-table] agent_harness/memory/README.md: 存在但未宣告: MEMORY_S1.md
+[readme-table] agent_harness/skills/README.md: 存在但未宣告: cgc-tb-smoke
+-&gt; DRIFT: 6 項。</code></pre>
+
+<b>兩份 README 的成員表都在說假話</b>，而且它們是憲章 D6 反向紀錄裡指名的那「三個防線」
+（banner／<code>SNAPSHOT.jsonl</code>／條文）之一。另外兩處同時被發現的腐爛：
+
+<ul>
+  <li><code>agent_harness/memory/README.md</code> 宣告 <b>3</b> 個檔，實際 <b>8</b> 個
+      —— 而它遺漏的五個裡，<code>MEMORY_FACTS.md</code>／<code>MEMORY_PERF.md</code>／<code>MEMORY_S1.md</code>
+      是<code>.workbuddy/memory/</code> 改成「1 索引 ＋ 3 主題檔」之後才出現的。</li>
+  <li>同一份 README 還寫著「<b>匯入腳本住在 <code>Backup/</code></b>」—— 那句話在 2026-09-16
+      腳本搬進 <code>agent_harness/scripts/</code> 的<b>當天就死了</b>。</li>
+  <li><code>agent_harness/skills/README.md</code> 宣告 <b>4</b> 個 skill，實際 <b>5</b> 個
+      （缺的是 2026-09-17 才建、並且當天被改了三次的 <code>cgc-tb-smoke</code>）。</li>
+</ul>
+
+<div class="box">
+  <b>這是本輪最有力的證據，因為它否證了「防線存在」這個敘述本身。</b>
+  一份被設計來防止「安靜的遺漏」的文件，自己用同樣的方式漂了兩天 ——
+  而既有的每一道閘門都是綠的，因為它們驗的是別的軸。
+</div>
+
+<h2>§3 修法：<code>--check</code> ＋ 三個刻意反直覺的判準</h2>
+
+<h3>3.1 五種漂移分開，因為處置不同</h3>
+
+<table>
+  <tr><th>標記</th><th>意思</th><th>處置</th></tr>
+  <tr><td><code>[stale]</code></td><td>原檔的 <code>source_sha256</code>／<code>source_bytes</code> 與記錄不符</td><td>正常落後：重跑匯入</td></tr>
+  <tr><td><code>[new]</code></td><td>探索到原檔但沒有記錄（新的一天／新 skill）</td><td>重跑匯入</td></tr>
+  <tr><td><code>[removed]</code></td><td>有記錄但已不是輸入（skill 被刪／改名）</td><td>重跑匯入</td></tr>
+  <tr><td><code>[hand-edited]</code></td><td>副本與「用它自己記錄的 <code>snapshot_date</code> 重算」不符</td>
+      <td><b>違規</b>：有人手改了副本，而匯入會<b>靜默蓋掉</b>它 ⇒ 先看過再匯入</td></tr>
+  <tr><td><code>[readme-table]</code></td><td>兩份 README 的成員表與實際集合不符，<b>或表格不存在</b></td><td>修表格（見 3.2 第 ① 條）</td></tr>
+</table>
+
+<p><code>[hand-edited]</code> 是<b>新增的可觀測面</b>：「不要手改副本」是 D6 三個防線之一在講的事，
+而在本輪之前它<b>完全不可觀測</b> —— 手改的內容會在下一次匯入被蓋掉，而那次匯入看起來完全正常。</p>
+
+<h3>3.2 三個反直覺的判準（理由都是同一個：能繞過的閘門不是閘門）</h3>
+
+<ol>
+  <li><b>「拿掉成員表」算失敗，不只印提示。</b>
+      若「找不到表格」只影響輸出、不影響 exit code，那刪掉表格就是一條<b>靜音的繞道</b>。
+      （這一條是自測的 F 格逼出來的：第一版寫成「只提示」，那一格於是<b>假失敗</b> ——
+      而假失敗正好暴露那個設計是錯的。）</li>
+  <li><b>不接進 pre-commit hook（刻意的）。</b>
+      <code>.workbuddy/memory/*.md</code> 含多 session 共寫的每日 append-only 日誌
+      ⇒ 硬閘門會<b>永遠紅</b>。判決沿用 <code>CONVENTIONS.md:927-928</code>：
+      「每日日誌當天必變，永遠紅的閘門等於沒有閘門」。改走兩條會真的發聲的路：
+      收尾序列（<code>cgc-commit-gate</code> §6.3）＋ <b>定時自動化</b>（§4）。</li>
+  <li><b>用「記錄裡的那個 <code>snapshot_date</code>」重算預期內容，不是用今天。</b>
+      否則每逢跨日，每一份快照都會被誤報成「被手改過」——
+      這正是本 repo 反覆踩到的 mtime 假漂移（<code>cgc-commit-gate</code> §3.1 的簽名）。
+      這一格有自測釘住（D 那一格）。</li>
+</ol>
+
+<h3>3.3 自測抓到我自己的一個 bug（守衛放錯了路徑）</h3>
+
+<p>B' 那一格（刪掉唯一的 skill）原本 <code>rc=1</code> 卻<b>看不到 <code>[removed]</code></b>：
+<code>discover()</code> 的「空清單拒跑」守衛搶先 <code>raise SystemExit</code>。
+那個守衛的正當理由是「不要寫出一份空快照」——那是<b>寫入</b>的風險；而 <code>--check</code> 不寫檔，
+它應該把那份狀態<b>報出來</b>。
+修法：<code>discover(strict=True/False)</code>，守衛只屬於寫入路徑。</p>
+
+<h3>3.4 順手修掉的兩個既有危害</h3>
+<ul>
+  <li>匯入器現在有 <code>argparse</code>：<code>--help</code> <b>真的只印說明</b>
+      （原本它會直接執行匯入，產生 7 檔 repo churn）。</li>
+  <li>新增 <code>--dry-run</code>：可以「先看它要做什麼」而不改狀態。</li>
+</ul>
+
+<h2>§4 排程：把「有人記得跑」換成「有執行者」</h2>
+
+建了一筆每日自動化（<code>automation-1789702849998</code>，<code>FREQ=DAILY;BYHOUR=9;BYMINUTE=10</code>，
+cwd 指向本 repo）。它的行為是：
+
+<pre><code>python3 agent_harness/scripts/import_harness_snapshot.py --check
+  exit 0  ⇒ 回報一行「快照新鮮，無需動作」，不改任何檔案
+  exit≠0  ⇒ 1. 先看 git status（有別人的未提交改動 ⇒ 只回報並停止，不 commit）
+            2. 有 [hand-edited] ⇒ 停下回報（刷新會蓋掉它，需要人看過）
+            3. 刷新 → 驗 sha 逐檔相符 → 修 README 表 → 重生索引（順序固定）
+            4. 再跑 --check 確認轉綠 → 逐檔 stage → RUN_REPLAY_BENCH=0 commit
+            5. push 兩個遠端，並用 ls-remote 的真實 SHA 驗三處相同</code></pre>
+
+<div class="box bad">
+  <b>誠實邊界（重要）：自動化「建好」不構成它「跑過」的證據。</b>
+  本白皮書寫作時，<code>automation_runtime_state</code> 對這筆新自動化<b>還沒有任何執行紀錄</b>。
+  ⇒ 本輪只主張「機制已建、且有 14 格自測」；「排程真的在跑」這條義務<b>尚未結清</b>，
+  驗收是 <code>automation_runs</code> 出現紀錄、而且 <code>--check</code> 在那次執行裡真的被跑過。
+  這一條已寫進 <code>CONVENTIONS.md</code> D6 的 2026-09-18 修訂（依 §E：不可寫成已完成）。
+</div>
+
+<h2>§5 現場閘門（原文）</h2>
+
+<pre><code>### validate.py
+
+  lessons.jsonl: 179 records {'lesson': 179}
+  -&gt; OK
+### selftest.py
+
+  10/10 injected violations rejected
+### import_harness_snapshot.py --check
+  8 memory source(s), 5 skill source(s); 13 筆記錄（snapshot_date 2026-09-18…2026-09-18）
+  -&gt; OK: 快照與原檔一致（provenance 逐筆相符、集合相符、副本未被手改、README 成員表相符）
+rc=0
+### import_harness_snapshot.py --self-test
+  PASS  空 skill 清單 ⇒ 匯入拒跑（rc!=0）
+  PASS  空來源 ⇒ --check 不拒跑、而是報 drift（rc=1）
+  14/14
+### build_memory_index.py --check
+  memory index OK: 8 file(s), 227 section(s), no drift
+### index_assets.py --check
+manifest OK: 108 assets, existence + bytes + mtime all agree
+rc=0</code></pre>
+
+<p>另外兩個「這一輪自己做的量測」（不是閘門，但同樣是原文）：</p>
+
+<pre><code>=== 逐檔重算 sha256（獨立於匯入器自己的輸出）===
+  13/13 相符
+=== 非互動 push 可行性（決定自動化能不能含 push）===
+  $ git push --dry-run origin demo/sweet-spot-windows-fix
+  Everything up-to-date          rc=0
+  origin: 478ae4753 / local: 478ae4753</code></pre>
+
+<h2>§6 自測 14 格（含陰性對照）</h2>
+
+<pre><code>  PASS  import rc=0 且產生副本
+  PASS  副本有 banner（插在 frontmatter 之後）
+  PASS  --check 乾淨 ⇒ rc=0
+  PASS  --check 不寫任何檔
+  PASS  A 原檔變 ⇒ rc=1 且標 stale
+  PASS  B 新增原檔 ⇒ rc=1 且標 new
+  PASS  B' 刪 skill ⇒ rc=1 且標 removed
+  PASS  重跑匯入（含修好 README 表）後回到 rc=0
+  PASS  C 手改副本 ⇒ rc=1 且標 hand-edited
+  PASS  D 跨日不誤報（用記錄的日期重算）⇒ rc=0
+  PASS  E README 宣告不存在的成員 ⇒ rc=1 且標 readme-table
+  PASS  F 拿掉成員表 ⇒ rc=1 且明說未檢查（不能靠刪輸入變綠）
+  PASS  空 skill 清單 ⇒ 匯入拒跑（rc!=0）
+  PASS  空來源 ⇒ --check 不拒跑、而是報 drift（rc=1）
+  14/14</code></pre>
+
+<p>三個陰性對照值得單獨點名，因為它們各自堵掉一種「看起來通過」：
+<b>「<code>--check</code> 不寫任何檔」</b>（判準是整棵樹的內容雜湊不變）、
+<b>「乾淨狀態必須回 0」</b>（一個永遠回 1 的檢查會讓所有陽性對照通過）、
+<b>「跨日不誤報」</b>（防止用今天重算造成永久紅燈）。</p>
+
+<h2>§7 檔案清單</h2>
+
+<table>
+  <tr><th>檔案</th><th>改動</th><th>為什麼</th></tr>
+  <tr><td><code>agent_harness/scripts/import_harness_snapshot.py</code></td>
+      <td><code>--check</code>／<code>--dry-run</code>／<code>--self-test</code>／argparse；
+          <code>discover(strict=)</code>；README 成員表比對</td>
+      <td>§1 的三條空白</td></tr>
+  <tr><td><code>agent_harness/memory/README.md</code></td>
+      <td>成員表 3 → 8 檔並補「主題」欄；修掉「腳本住在 <code>Backup/</code>」；
+          補 <code>--check</code> 與五種漂移表；加「修正紀錄」一節</td>
+      <td>§2 的兩處腐爛；表格自此受檢查約束</td></tr>
+  <tr><td><code>agent_harness/skills/README.md</code></td>
+      <td>成員表補 <code>cgc-tb-smoke</code>；修掉漂移的範例輸出；補檢查說明</td>
+      <td>同上</td></tr>
+  <tr><td><code>agent_harness/CONVENTIONS.md</code></td>
+      <td>D6 新增 <b>2026-09-18 dated 修訂</b>（原文一字未刪，依 §E）</td>
+      <td>憲章說「改動要標 <code>superseded_by</code> 而不是刪掉」</td></tr>
+  <tr><td><code>agent_harness/engine_loop/traces/lessons.jsonl</code></td>
+      <td>＋1 筆 <code>eng-gate-0056</code>（class <code>gate-integrity</code>），179 筆</td>
+      <td>§7 的規訓要落成 lesson 並同輪提交</td></tr>
+  <tr><td><code>agent_harness/memory/*</code>、<code>agent_harness/skills/cgc-commit-gate/SKILL.md</code>、兩份 <code>SNAPSHOT.jsonl</code></td>
+      <td>快照刷新（13 檔）</td>
+      <td>skill 原檔被改 ⇒ 快照必須同輪跟上（否則本輪自己就會造出一筆 drift）</td></tr>
+  <tr><td><code>agent_harness/engine_loop/memory/INDEX.jsonl</code>、<code>MANIFEST.jsonl</code></td>
+      <td>索引重生（順序：<code>build_memory_index.py</code> → <code>index_assets.py</code>）</td>
+      <td>動了 <code>CONVENTIONS.md</code>／<code>traces/lessons.jsonl</code>／<code>.workbuddy/memory/*.md</code>，三者都在 CURATED 裡</td></tr>
+</table>
+
+<h2>§8 誠實邊界（不主張什麼）</h2>
+
+<ul>
+  <li><b>不主張排程已經在跑。</b>自動化已建（§4），但沒有執行紀錄 ⇒ 只主張「機制已建、14 格自測」。</li>
+  <li><b>不主張 <code>[hand-edited]</code> 的偵測在真實樹上被觸發過。</b>
+      它只在自測的 C 格被觸發；真實樹上目前 0 筆（見 §5 的 <code>--check</code> 輸出）。</li>
+  <li><b>不主張閉環對照已執行。</b>D6 的 2026-09-16 修訂留下的那個義務（改 <code>CONVENTIONS.md</code>
+      要走一次 <code>PLAN</code> §6.3 的閉環對照）<b>狀態不變、仍未跑</b>；
+      本輪又改了 <code>CONVENTIONS.md</code>，所以那條欠帳<b>增加了一次改動</b>，並沒有被本輪結清。</li>
+  <li><b>不主張成員表涵蓋所有會腐爛的文件。</b>被納入檢查的只有
+      <code>agent_harness/memory/README.md</code> 與 <code>agent_harness/skills/README.md</code>
+      這兩張表；本輪在別的地方也看到同一族的腐爛（<code>cgc-commit-gate</code> §5.2 對匯入器的敘述
+      「沒有 argparse、傳 <code>--help</code> 會直接執行匯入」），那是<b>手動</b>修掉的，不是被檢查抓到的。</li>
+  <li><b>不主張 <code>--check</code> 的判準涵蓋「快照該不該存在」。</b>它驗的是
+      「副本 ↔ 原檔 ↔ 記錄」三者一致；<code>source</code> 路徑本身寫死成絕對路徑
+      （跨機器時那條路徑不存在，這一點仍是舊有設計，本輪未動）。</li>
+</ul>
+
+<h2>§9 未解</h2>
+
+<table>
+  <tr><th>項目</th><th>狀態</th></tr>
+  <tr><td>自動化的第一次執行紀錄</td>
+      <td><span class="tag t-amber">未驗</span> 明日 09:10 之後查 <code>automation_runs</code>／
+          <code>automation_runtime_state</code>；在那之前本條是欠帳。</td></tr>
+  <tr><td>D6 的閉環對照（<code>CONVENTIONS.md</code> 改動 → 兩個 loop 的行為）</td>
+      <td><span class="tag t-red">欠帳</span> 機制已建（<code>closed_loop.py</code> 四臂），模型半未跑。
+          本輪改 <code>CONVENTIONS.md</code> 使它又多一筆待對照的改動。</td></tr>
+  <tr><td>其他 README／文件的成員清單（同族腐爛）</td>
+      <td><span class="tag t-blue">已知</span> 本輪只把兩份納入檢查；沒有全 repo 掃。</td></tr>
+</table>
+
+<p class="sub" style="margin-top:30px">
+  取材：<code>agent_harness/scripts/import_harness_snapshot.py</code>（現行版本）、
+  <code>agent_harness/CONVENTIONS.md</code> D6（2026-09-16 與 2026-09-18 兩次修訂）、
+  <code>agent_harness/memory/README.md</code>／<code>agent_harness/skills/README.md</code>、
+  <code>agent_harness/engine_loop/traces/lessons.jsonl</code> 的 <code>eng-gate-0056</code>、
+  以及 §5 現場跑出的六條閘門輸出原文。
+  凡本檔引用的數字都是現場量的；未跑的一律標成 <span class="tag t-amber">未驗</span> 或
+  <span class="tag t-red">欠帳</span>。
+</p>
+
+</div>
+</body>
+</html>
