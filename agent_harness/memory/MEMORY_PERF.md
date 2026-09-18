@@ -356,6 +356,20 @@ IO 本來就不在關鍵路徑（`fill_wait = 0.000`）。
 | 去序列化（步速） | ×2.0（壞探針的 82.5→31–44 ms） | **×1.5**：GPU 時鐘跨度 ~101 ms、其中 idle **55.3 ms（35.3%）**；移除**全部** idle 仍只有 **10–11.5 t/s**；步預算另一條 ⇒ `gap → 0` 給 **12.1 t/s** | `M3_M4_STATUS` §3b（GPUTIME ＋ 層級 `gap_sum` 兩路互相印證 0.4%） |
 | MTP（每步 token） | ×1.28（9.82→12.62） | **×1.06（同一 launch 配對）**；跨啟動 +9～25%（不可配對）；accept **58.25%**，差 60% 只有 1.75pp，且**在 greedy 下不可由 accept rule 移動**（它是 (base, head) 配對的性質）；`CGC_MTP_REJECTION` 在 temp 0 是 **by construction 的 null** | `M3_M4_STATUS` §1 |
 
+**★★★★ 09-18 12:1x 裁決（同檔 ABBA、生產路徑）：MTP 是 ×0.695，不是 ×1.0。**
+新臂 `p25-nail-mtpoff`（釘 `CGC_SERVER_MODEL=Nail-…denseIQ4X.gguf` ＋ `MTP=0` ⇒ **同檔**；見 §EN-145 的換檔陷阱）
+vs `p25-mtp-on`，`--profile prod25 --n-predict 96 --rounds 3`：
+前向（ON 先）9.40/11.28 = **0.833**、反向（OFF 先）6.32/10.91 = **0.579**
+⇒ **ABBA 校正 M = √(0.833×0.579) = 0.695**（兩個順序都 < 1）；prefill 也 **−18%~−30%**。
+`io_bytes`／`file_reads`／**`evictions`** 三個獨立計數器**同步 ×3.02**（29.12/9.66 GB、75123/24837、25721/8526）
+⇒ **IO 完全由「驅逐」驅動**（`cold(ZERO) = 0`，不是 union 的 miss）；`capacity` miss **×6.94**、
+`distinct_over_slots` **14 → 33**、hit **94.9% → 84.3%**。
+⇒ **樹上的「MTP ≈ 0」是 llama-bench 路徑的結論**（那條路 verify 走 `ensure_batch`、`verify: calls=0`），
+**生產 server 路徑是 −30%** ⇒ 兩者不矛盾，是同一現象在兩條池分支上的兩個量級。
+**⇒ 25 的算術要重做：MTP 不是 ×1.0（可忽略），是 ×0.695（要還回去）。**
+**⇒ 對症的不是 `batched-union gather`，是「池裝不下長期工作集」（247 distinct vs 143 slots 必然 thrash）**
+⇒ 投**淘汰／填充策略**（`M6` 的「唯一不需預算的路」）。
+
 **★★★ 09-18 12:1x 追補（MTP 那條）：裁決讀數＝`union/32 = 0.595`；而成本不在「單次 union」在「長期工作集」。**
 儀器早就在印（**不是 env-gated**）：`llama-expert-cache.cpp:2529` 的
 `MTP fast path: … verify: calls=474 union=9028 cold=0   draft: calls=36 union=288` ⇒ **`9028/474/32 = 0.595`**
