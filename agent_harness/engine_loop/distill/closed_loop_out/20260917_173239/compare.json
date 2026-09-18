@@ -1,0 +1,34 @@
+[
+  {
+    "question_id": "Q1",
+    "arm_stability": {
+      "A_preD6": {
+        "n": 1,
+        "distinct": 1,
+        "stable": true
+      },
+      "B_postD6": {
+        "n": 1,
+        "distinct": 1,
+        "stable": true
+      },
+      "C_head": {
+        "n": 1,
+        "distinct": 1,
+        "stable": true
+      },
+      "D_head_mem": {
+        "n": 1,
+        "distinct": 1,
+        "stable": true
+      }
+    },
+    "comparable": true,
+    "note": null,
+    "A_vs_B_identical": true,
+    "A_vs_B_verdict": "D6 修訂在這一題上是惰性的",
+    "B_vs_C_identical": true,
+    "C_vs_D_identical": true,
+    "C_vs_D_verdict": "注入 lesson 在這一題上沒有改變答案"
+  }
+]
