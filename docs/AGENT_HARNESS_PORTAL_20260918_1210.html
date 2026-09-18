@@ -52,6 +52,37 @@
   　·　輸入指紋 <code>c9911078f39c36e1</code>　·　D5 附件（本 commit 無 <code>src/</code>）
 </p>
 
+<div class="box warn">
+  <div class="k">★ 2026-09-18 12:5x 修訂（同日常第二輪交付）— 哪幾處被取代</div>
+  <div style="margin-top:5px">
+    本檔的 §1–§10 是<b>第一輪</b>（HEAD <code>44e8ceb8c</code>）的附件，原文一字不刪。
+    以下是<b>後續量測／實作</b>改變了其中幾處的效力，逐條列出：
+  </div>
+  <table style="margin-top:8px">
+    <thead><tr><th>原本寫的</th><th>現在的狀態</th><th>在哪裡更新</th></tr></thead>
+    <tbody>
+      <tr><td>§5.1「兩條閘門在一棵乾淨的樹上就是紅的」（<code>derived-engine-memories</code> 缺 23 筆、<code>derived-sft-prime</code> 162 vs 181）</td>
+          <td><b>已修</b>：那是<b>衍生物落後於來源</b>，不是判準錯。重生之後兩條都綠（<code>memories OK: 185 file(s)</code>）</td>
+          <td>§11.1</td></tr>
+      <tr><td>§5.3「另一個 session 的 commit 留下了一個懸空引用」</td>
+          <td><b>仍然成立，且同一條線又發生一次</b>：本輪的紅燈來源是另一條線<b>正在編輯</b>的 <code>scripts/check/llama_bench_matrix.py</code> ⇒ 本輪<b>刻意不重生索引</b></td>
+          <td>§11.6</td></tr>
+      <tr><td>§2 的「規矩二：不假裝」與「規矩三：缺席要出聲」</td>
+          <td><b>仍然成立，並在本輪各抓到一次違反</b>：① 產物自檢用一個<b>假陽性</b>擋下建置；② 紅燈顯示的原因是一段與失敗無關的說明文字</td>
+          <td>§11.3、§11.4</td></tr>
+      <tr><td>§4「18 條閘門，14 條快速 ＋ 4 條 heavy」</td>
+          <td><b>仍成立</b>（條數不變）。但其中<b>兩條 fast 閘門原本沒有 <code>--self-test</code></b>，本輪補上</td>
+          <td>§11.2</td></tr>
+      <tr><td>§6「現場閘門輸出原文」</td>
+          <td><b>那是第一輪那一刻的輸出，仍然成立</b>（它是當時的證據）。本輪的輸出在 §11.6，兩者不可互換引用</td>
+          <td>§11.6</td></tr>
+      <tr><td>§10「檔案清單」</td>
+          <td>第一輪的清單仍然正確；本輪新增的檔在 §11.7</td>
+          <td>§11.7</td></tr>
+    </tbody>
+  </table>
+</div>
+
 <div class="box pur">
   <div class="k">這份文件回答什麼</div>
   <div style="margin-top:5px">
@@ -433,6 +464,296 @@ $ python3 agent_harness/portal/build_portal.py --self-test
     <tr><td><code>docs/AGENT_HARNESS_PORTAL_20260918_1210.html</code></td><td>本檔（D5 附件）</td></tr>
   </tbody>
 </table>
+
+<h2>§11 後續修訂（同日第二輪交付）</h2>
+
+<div class="box pur">
+  <div class="k">這一輪的三個動作，以及它們的判準</div>
+  <div style="margin-top:5px">
+    第一輪把入口做出來，並讓它<b>誠實地顯示紅燈</b>。第二輪處理那些紅燈裡<b>真的能修的那一部分</b>，
+    並補上兩支閘門當時自己承認的欠帳。三個動作：<b>① 重生落後的衍生物</b>、
+    <b>② 補上兩支重建腳本的注入式自測</b>、<b>③ 修掉入口的檢查器自身的兩個缺陷</b>。
+    第二個與第三個都不是「新功能」——它們是<b>第一輪的檢查器自己交代過的邊界</b>。
+  </div>
+</div>
+
+<h3>11.1 兩個衍生物落後 26 筆：這是「落後」，不是「判準錯」</h3>
+
+<p>
+  第一輪的兩條紅燈在<b>一棵乾淨的樹上</b>就是紅的，所以它們的嚴重性被標成 <code>high</code>。
+  原因不是判準，是<b>沒有人跑重生</b>：<code>traces/lessons.jsonl</code> 一直被追加，而衍生物沒有跟上。
+  兩條閘門的輸出逐字如下：
+</p>
+
+<pre><code>$ python3 agent_harness/engine_loop/harness_engine/build_memories.py --check
+  [error] 26 drift(s) between memories/engine/ and lessons.jsonl:
+    eng-bound-0008.md: in lessons.jsonl but no memory file
+    eng-diag-0033.md: in lessons.jsonl but no memory file
+    eng-gate-0055.md: in lessons.jsonl but no memory file
+    eng-mh-0057.md: in lessons.jsonl but no memory file
+    eng-src-0021.md: in lessons.jsonl but no memory file
+    ...（共 26 筆）
+    regenerate with: python3 agent_harness/engine_loop/harness_engine/build_memories.py
+
+$ python3 agent_harness/engine_loop/sft_prime/build_sft_prime.py --check
+  [error] 3 drift(s) in sft_prime/ against the current traces:
+    lessons.jsonl: INPUTS ADVANCED since this artifact was built (2dfbbfdca7ad60d6 -&gt; ab2c5a7c9c218394)
+                   -- this is staleness, not a different build
+    train.jsonl: content differs from a re-derivation (162 rows on disk -&gt; 184 derived)
+    valid.jsonl: content differs from a re-derivation (28 rows on disk -&gt; 32 derived)</code></pre>
+
+<p>
+  重生之後：<code>memories/engine/</code> 的檔數 <b>156 → 182</b>，
+  <code>sft_prime</code> 的 <b>train 162 → 184</b>／<b>valid 28 → 32</b>。
+  判準是兩條 <code>--check</code> 都回 0，不是「看起來合理」。
+</p>
+
+<div class="box">
+  <div class="k">為什麼這件事值得寫一節</div>
+  <div style="margin-top:5px">
+    因為<b>落後的症狀與判準壞掉同形</b>——兩者都印「兩邊數量對不上」。
+    第一輪的門檻是把<b>它們分開</b>（閘門其實已經分了：<code>--check</code> 逐筆指名是「缺席／孤兒／內容不同」
+    三種不同訊息）。第二輪做的是<b>分辨之後的處置</b>：<b>缺席</b>（來源有、衍生物沒有）⇒ 重生即可；
+    <b>孤兒</b>（衍生物有、來源沒有）⇒ 重生會刪掉它，而且那是對的。
+  </div>
+</div>
+
+<h3>11.2 補上兩支重建腳本的注入式自測：16 格 ＋ 16 格</h3>
+
+<p>
+  <code>gates.json</code> 原本為這兩條閘門登記了 <code>no_selftest_reason</code>，
+  白紙黑字寫著這是<b>欠帳</b>而不是豁免。理由很具體：這兩支腳本壞掉時的症狀，
+  與它們正在檢查的那件事<b>同形</b>——都是「兩邊數量對不上」。
+</p>
+
+<table>
+  <thead><tr><th>腳本</th><th>自測格數</th><th>涵蓋的注入（每一格只弄壞一件事）</th></tr></thead>
+  <tbody>
+    <tr><td><code>harness_engine/build_memories.py</code></td><td class="num">16/16</td>
+        <td>乾淨 ⇒ rc=0（3 次，陰性對照）／<code>--check</code> 不寫檔／來源多一筆⇒指名「no memory file」／
+            磁碟孤兒⇒指名「stale memory」／手改內容⇒指名「content differs」／
+            <code>extensions</code> 被複製成真目錄／<code>extensions</code> 斷鏈／接回指標⇒rc=0／
+            空來源⇒拒跑（不是寫 0 個檔就說 OK）／來源檔不存在⇒另一個訊息／
+            ★ 看門狗：真 repo 的 <code>memories/engine/</code> 沒被自測寫到</td></tr>
+    <tr><td><code>sft_prime/build_sft_prime.py</code></td><td class="num">16/16</td>
+        <td>乾淨 ⇒ rc=0（3 次）／<code>--check</code> 不寫檔／輸入前進⇒「INPUTS ADVANCED」（staleness 不是不同 build）／
+            產物被手改⇒「content differs」／PROVENANCE 不見⇒「cannot be traced」／
+            builder 是另一個投影⇒拒跑／<code>--check</code> 配矛盾的 <code>--system</code>⇒拒跑／
+            無旗標重建<b>沿用已記錄的 invocation</b>（不靜默切成 <code>full</code>）／
+            <b>反毒閘門</b>：<code>refuted</code> decision 與 <code>superseded</code> lesson 都不入正向集／
+            同樣輸入重建兩次⇒<code>train.jsonl</code> 逐位元相同／空來源⇒拒跑／★ 同一個看門狗</td></tr>
+  </tbody>
+</table>
+
+<div class="box ok">
+  <div class="k">三個設計判準（都不是「多寫幾格」）</div>
+  <div style="margin-top:5px">
+    <b>① 陰性對照佔 3 格。</b> 一個永遠回 1 的檢查會通過<b>所有</b>陽性對照（lesson <code>eng-gate-0040</code>），
+    所以「乾淨 ⇒ rc=0」要反覆斷言，而且是在每一個注入被<b>還原之後</b>再斷言一次。<br>
+    <b>② 黑箱。</b> 每一格開子行程跑真正的 CLI，不是呼叫內部函式——後者會通過，即使那個旗標
+    根本沒接上、或 exit code 被吞掉。<br>
+    <b>③ 看門狗。</b> 兩支腳本的預設輸出目錄都是<b>它自己的父目錄</b>，所以一格忘了帶 <code>--out-dir</code>
+    就會用 fixture 資料覆蓋已提交的資料集。每一格都顯式帶，並且在整個自測前後對<b>真目錄</b>取內容雜湊
+    比對。<code>build_memories.py</code> 的看門狗用的是 <code>__file__</code> 推導的路徑而不是被重導過的根
+    ——用被重導過的值會對暫時樹取雜湊，那個看門狗<b>永遠通過</b>。
+  </div>
+</div>
+
+<h3>11.3 ★ 檢查器的一個假陽性：為了防護而做的那一步，被它要防護的東西反咬</h3>
+
+<p>
+  加完自測之後，<code>build_portal.py</code> 的<b>產物自檢</b>拒絕交出 HTML：
+</p>
+
+<pre><code>[portal] ★ 產物自檢未過：
+[portal]   - &lt;script&gt; 不對稱：2 開 / 3 關</code></pre>
+
+<p>
+  而產物是好的。三種計數方式在同一份 HTML 上給出兩個不同的答案——差別只在「要不要先還原轉義」：
+</p>
+
+<table>
+  <thead><tr><th>計數的對象</th><th class="num">&lt;script</th><th class="num">&lt;/script&gt;</th><th>判讀</th></tr></thead>
+  <tbody>
+    <tr><td>原始 HTML</td><td class="num">2</td><td class="num">2</td><td><span class="tag t-green">對稱</span>　瀏覽器看到的就是這一份</td></tr>
+    <tr><td><code>body</code>（payload 已移除）</td><td class="num">2</td><td class="num">2</td><td><span class="tag t-green">對稱</span></td></tr>
+    <tr><td><code>restored</code>（把 <code>&lt;\/</code> 還原成 <code>&lt;/</code>）</td><td class="num">2</td><td class="num">3</td><td><span class="tag t-red">多一個</span>　<b>假陽性</b></td></tr>
+  </tbody>
+</table>
+
+<p>
+  機制是：產生 payload 時把 <code>&lt;/</code> 轉義成 <code>&lt;\/</code>，正是為了<b>防止字串裡的</b>
+  <code>&lt;/script&gt;</code><b>提前結束元素</b>。本輪的 payload 裡有 <b>1 個</b>這樣的轉義。
+  檢查器為了讓「字串裡的 <code>&lt;code&gt;</code> 也算進去」而先還原——那一步對<b>一般元素</b>是對的，
+  但對 <b>raw text 元素</b>（<code>script</code>／<code>style</code>）<b>反而是錯的</b>：
+  這兩種元素的內文不解析標籤，所以還原出來的 <code>&lt;/script&gt;</code> 是一個<b>根本不會被瀏覽器當成標籤</b>
+  的字串，卻被計數器算成了收尾標籤。
+</p>
+
+<figure>
+<svg viewBox="0 0 680 168" width="100%" height="168" role="img"
+     aria-label="轉義防止提前結束；還原之後計數器多算一個收尾標籤">
+  <rect x="0" y="0" width="680" height="168" fill="#ffffff"/>
+
+  <rect x="14" y="18" width="300" height="52" rx="6" fill="#f0fdf4" stroke="#bbf7d0"/>
+  <text x="26" y="38" font-size="12" fill="#15803d">payload 裡的原樣（＝瀏覽器看到的）</text>
+  <text x="26" y="58" font-size="12.5" fill="#111827" font-family="ui-monospace,Menlo,monospace">"…防 &lt;\/script&gt; 提前結束…"</text>
+
+  <rect x="14" y="92" width="300" height="52" rx="6" fill="#fff7f7" stroke="#fecaca"/>
+  <text x="26" y="112" font-size="12" fill="#b91c1c">還原之後（＝計數器看的）</text>
+  <text x="26" y="132" font-size="12.5" fill="#111827" font-family="ui-monospace,Menlo,monospace">"…防 &lt;/script&gt; 提前結束…"</text>
+
+  <text x="334" y="46" font-size="12" fill="#15803d">不是標籤 ⇒ 不計數</text>
+  <text x="334" y="120" font-size="12" fill="#b91c1c">被算成收尾標籤 ⇒ 2/3 不對稱</text>
+
+  <rect x="520" y="40" width="146" height="86" rx="7" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="532" y="62" font-size="12" fill="#1d4ed8">判準</text>
+  <text x="532" y="82" font-size="11.5" fill="#374151">raw text 元素：在</text>
+  <text x="532" y="98" font-size="11.5" fill="#374151">payload 已移除的版本上數</text>
+  <text x="532" y="114" font-size="11.5" fill="#374151">一般元素：在還原版上數</text>
+</svg>
+<figcaption>圖 11.1　同一個計數器，兩種處置。錯的不是「還原」這個動作，是「對所有元素都用同一種處置」。</figcaption>
+</figure>
+
+<div class="box bad">
+  <div class="k">這件事最貴的地方：觸發它的是一條 lesson 的內文</div>
+  <div style="margin-top:5px">
+    payload 裡那個被轉義的 <code>&lt;/script&gt;</code>，來自 lesson <code>eng-mh-0068</code> ——
+    而<b>那條 lesson 講的就是這個轉義</b>（「不要在內嵌 JSON 的 HTML 上直接數標籤」）。
+    也就是說：<b>檢查器為了防護那件事而做的那一步，被它要防護的東西反咬</b>，
+    而症狀是一條讀起來像「標籤真的少了一個」的紅燈。<br>
+    本輪的處置同時做了兩件事：修計數器（raw text 元素改在 <code>body</code> 上數），並把
+    <code>eng-mh-0068</code> 標成 <code>superseded_by: eng-mh-0069</code> —— 新 lesson 的 <code>rule</code>
+    把「三段分區」與「分元素類別決定要不要還原」<b>兩條處方都寫齊</b>，所以取代不會遺失資訊。
+  </div>
+</div>
+
+<h3>11.4 紅燈要指名：<code>tail</code> 不能取最後一行</h3>
+
+<p>
+  本輪的紅燈是 <code>index-assets</code>。修好上一節之後，portal 顯示的失敗原因是：
+</p>
+
+<pre><code>修改前：  as 8 drifts and one invisible second copy of the truth.)
+修改後：  [error] 2 drift(s) between the manifest and disk: / scripts/check/llama_bench_matrix.py: bytes: …</code></pre>
+
+<p>
+  修改前那一行<b>不是失敗原因</b>，是 <code>index_assets.py --check</code> 在漂移清單<b>之後</b>
+  才印出的 <code>--out</code> 說明文字。而且它裡面的「8 drifts」是<b>說明文字舉的例子</b>，
+  不是本輪的數字（本輪是 2）——<b>紅燈最不該做的事就是把讀者指向錯的數字</b>。
+  判準改成：失敗時先找本 repo 固定的漂移簽名 <code>[error]</code>，取它與後面兩行（那是逐筆的檔名與差值）；
+  綠燈維持最後一行（那通常就是結論句）。
+</p>
+
+<h3>11.5 兩個自測自己的錯（都在第一次跑就露出來）</h3>
+
+<table>
+  <thead><tr><th>症狀</th><th>真正的病</th><th>為什麼症狀誤導</th></tr></thead>
+  <tbody>
+    <tr><td><code>build_memories.py --self-test</code> 第一版：16 格中 4 格紅，全部集中在「乾淨 ⇒ rc=0」那三格</td>
+        <td>fixture 的目錄深度比真 repo <b>少一層</b>，於是 <code>extensions</code> 的相對 symlink
+            <code>../../tb_loop/…</code> 指到 <code>&lt;tmp&gt;/../tb_loop</code> 而不是
+            <code>&lt;tmp&gt;/agent_harness/tb_loop</code></td>
+        <td>讀起來像「這個檢查永遠是紅的」。而檢查器印的 <code>DANGLING symlink</code>
+            <b>逐字正確</b>——錯的是 fixture。⇒ 落成 lesson <code>eng-gate-0059</code></td></tr>
+    <tr><td><code>build_sft_prime.py --self-test</code> 第一版：11/16，失敗集中在那之後的三格</td>
+        <td>第 8 格把 <code>PROVENANCE.json</code> 的 <code>builder</code> 改成另一個投影，
+            而 <code>reconcile()</code> 對「builder 不對」是<b>無條件</b>擋的（<code>--check</code> 與重建都擋）
+            ⇒ 沒先清掉它，後面每一格都紅。<b>實際只有一格有病</b></td>
+        <td>一個注入破壞了<b>共用狀態</b>，失敗就<b>連鎖</b>；看起來像後面那幾個旗標壞了。
+            ⇒ 落成 lesson <code>eng-gate-0060</code></td></tr>
+  </tbody>
+</table>
+
+<h3>11.6 現場輸出原文（本輪）</h3>
+
+<pre><code>$ python3 agent_harness/portal/build_portal.py --gates-only      # rc=1
+  PASS  charter-citations            0.14s    OK: 61/61 條都有交代（可解析指針 59 ＋ 顯式標記 2），0 懸空
+  PASS  shared-log-policy            0.26s    log 政策一致
+  PASS  shared-module-split          0.27s    2/2 checks passed
+  PASS  shared-shell-cjk             0.14s    0 處：所有 `$VAR` 後面都不是緊接非 ASCII
+  PASS  shared-stale                 0.08s    3 個登記項（2 個資產 + 1 個消費者）都對得上
+  PASS  traces-validate              0.03s    -&gt; OK
+  PASS  traces-selftest              0.27s    10/10 injected violations rejected
+  PASS  derived-engine-memories      0.03s    memories OK: 185 file(s), extensions pointer resolves, no drift
+  PASS  derived-sft-pi               0.03s    sft_pi OK: train.jsonl + valid.jsonl re-derive to the same bytes
+  PASS  derived-sft-prime            0.03s    sft_prime OK: train.jsonl + valid.jsonl re-derive to the same bytes
+  PASS  index-memory                 0.03s    memory index OK: 8 file(s), 235 section(s), no drift
+  FAIL  index-assets                 0.04s    [error] 2 drift(s) between the manifest and disk: /
+                                               scripts/check/llama_bench_matrix.py: bytes: …
+  PASS  snapshot-freshness           0.03s    -&gt; OK: 快照與原檔一致
+  PASS  portal-integrity             0.03s    -&gt; OK: 18 條閘門（fast 14／heavy 4）
+  SKIP  commit-gate / engine-ab-interleave / engine-oracle-gate / tb-model-smoke
+                                               （heavy：入口刻意不自動跑）
+
+  13/14 快速閘門通過（另有 4 條 heavy 刻意未執行）
+  -&gt; RED: 1 條 —— index-assets
+
+$ python3 agent_harness/engine_loop/index_assets.py --check
+  [error] 2 drift(s) between the manifest and disk:
+    scripts/check/llama_bench_matrix.py: bytes: manifest 28625 vs disk 29394
+    scripts/check/llama_bench_matrix.py: mtime: manifest '2026-09-17T17:56:11' vs disk '2026-09-18T12:14:55'
+    regenerate with: python3 index_assets.py</code></pre>
+
+<div class="box warn">
+  <div class="k">★ 唯一那條紅燈不是本輪造成的，而且本輪<b>刻意不</b>把它消掉</div>
+  <div style="margin-top:5px">
+    <code>scripts/check/llama_bench_matrix.py</code> 是<b>另一條線</b>正在編輯的檔（他們此刻正在跑
+    <code>llama_bench_matrix.py --arms prod25-stream,prod25-nail-mtpoff</code> 的相位分解臂）。
+    這個 repo 會同時有多個 session 寫同一棵樹，而<b>重生索引就是把對方的當下位元組寫進 <code>MANIFEST.jsonl</code></b>
+    ——<code>--check</code> 會在下一次重生之前都說 OK，於是 manifest 被提交在一個
+    <b>既不是前一版、也不是對方完成版</b>的狀態上。判決沿用本 repo 已付過學費的規矩：
+    <b>紅燈不是你的錯時，先找 owner，不要急著重生把它消掉。</b>
+    本輪的所有改動都<b>不在</b> <code>MANIFEST.jsonl</code> 的管轄範圍內（逐筆查過：<code>lessons.jsonl</code>、
+    <code>portal/*</code>、<code>engine_loop/harness_engine/*</code>、<code>engine_loop/sft_prime/*</code>、
+    <code>docs/AGENT_HARNESS_PORTAL*.html</code> 都不在那 108 筆裡），所以<b>不重生索引不會讓任何一格變成假綠</b>。
+  </div>
+</div>
+
+<h3>11.7 本輪的變更與誠實邊界</h3>
+
+<table>
+  <thead><tr><th>檔案</th><th>變更</th></tr></thead>
+  <tbody>
+    <tr><td><code>agent_harness/engine_loop/traces/lessons.jsonl</code></td>
+        <td>＋3 筆 lesson（<code>eng-mh-0069</code>／<code>eng-gate-0059</code>／<code>eng-gate-0060</code>）；
+            就地改 1 行：<code>eng-mh-0068</code> 的 <code>superseded_by</code>。diff 是 <code>-1 +4</code></td></tr>
+    <tr><td><code>agent_harness/engine_loop/harness_engine/build_memories.py</code></td>
+        <td>＋<code>--self-test</code>（16 格）、<code>drift_problems()</code> 抽出、<code>HE_MEM_ROOT</code> 旋鈕、看門狗</td></tr>
+    <tr><td><code>agent_harness/engine_loop/sft_prime/build_sft_prime.py</code></td>
+        <td>＋<code>--self-test</code>（16 格）、<code>SFT_ROOT</code> 旋鈕、看門狗</td></tr>
+    <tr><td><code>agent_harness/engine_loop/sft_common.py</code></td>
+        <td><code>HERE</code> 改為可由 <code>SFT_ROOT</code> 重導（供兩支 builder 的自測用）</td></tr>
+    <tr><td><code>agent_harness/portal/build_portal.py</code></td>
+        <td>修 <code>verify_output()</code> 的 raw text 假陽性；新增 <code>tail_line()</code></td></tr>
+    <tr><td><code>agent_harness/portal/gates.json</code></td>
+        <td>兩條 derived 閘門：<code>no_selftest_reason</code> ⇒ <code>selftest</code> ＋ <code>selftest_history</code></td></tr>
+    <tr><td>衍生物（重生）</td>
+        <td><code>memories/engine/*.md</code> ＋29 檔（共 185）；<code>sft_prime/{train,valid}.jsonl</code> ＋ <code>PROVENANCE.json</code></td></tr>
+    <tr><td><code>docs/AGENT_HARNESS_PORTAL.html</code></td><td>產物重生</td></tr>
+    <tr><td><code>docs/AGENT_HARNESS_PORTAL_20260918_1210.html</code></td><td>本檔（就地追加 §11）</td></tr>
+  </tbody>
+</table>
+
+<div class="box bad">
+  <div class="k">不主張什麼</div>
+  <ul style="margin:6px 0 0">
+    <li><b>不主張閘門鏈全綠。</b> <code>index-assets</code> 是紅的，owner 是另一條線；本輪沒有消掉它，
+        也沒有假裝它不存在。</li>
+    <li><b>不主張「16 格自測」等於「重生邏輯正確」。</b> 它證的是<b>四種漂移各自被指名</b>、
+        <b>反毒閘門真的排除</b>、<b>無旗標重建沿用已記錄的 invocation</b>。
+        它<b>不</b>證 lesson 寫得對、不證記憶該不該被注入。</li>
+    <li><b>不主張 <code>build_sft_pi.py</code> 有自測。</b> 它仍然只有 <code>no_selftest_reason</code>
+        （本輪只結清 <code>build_memories.py</code> 與 <code>build_sft_prime.py</code> 兩筆）。
+        另外 <code>build_memory_index.py</code> 與 <code>index_assets.py</code> 兩筆欠帳也還在。</li>
+    <li><b>不主張兩個衍生物的數字是「最終」的。</b> 它們與 <code>lessons.jsonl</code> 同步，
+        而 lessons 每天都在長。<code>--check</code> 會在它們落後時出聲，這是設計。</li>
+    <li><b>沒有跑 D5 的數值那一半。</b> 本輪動到的 5 個檔<b>全部在 <code>agent_harness/</code> 與 <code>docs/</code></b>，
+        <b>0 個 <code>src/</code> 檔</b>，建置產物沒有動 ⇒ 依既有判準不觸發 <code>m123_oracle_gate</code>。</li>
+    <li><b>沒有跑 heavy 閘門。</b> 4 條 heavy 在 portal 上一律是 <code>SKIP</code>，
+        原因逐條印在那一列（需要 build 產物／需要模型端點／需要 Docker），不畫成綠燈。</li>
+  </ul>
+</div>
 
 <div class="box ok">
   <div class="k">一句話</div>

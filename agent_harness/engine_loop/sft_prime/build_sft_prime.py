@@ -28,6 +28,7 @@ Usage:
     python3 agent_harness/engine_loop/sft_prime/build_sft_prime.py [--out-dir DIR] [--val-frac F]
         [--system full|none]
     python3 agent_harness/engine_loop/sft_prime/build_sft_prime.py --check
+    python3 agent_harness/engine_loop/sft_prime/build_sft_prime.py --self-test
 
 WHY A BARE RUN IS NOT `--system full`, AND WHAT --check IS FOR
 --------------------------------------------------------------
@@ -46,13 +47,22 @@ agree; it does not say the artifact is covered.**
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import sft_common as C  # noqa: E402
 
 BUILDER = "sft_prime/build_sft_prime.py"
+# 真目錄，永遠由 __file__ 推導、不受 SFT_ROOT 影響：自測的看門狗要拿它當量尺，
+# 若用它被重導後的值，看門狗量的就是暫時樹，永遠通過。
+REAL_OUT_DIR = Path(__file__).resolve().parent
 
 
 def evidence_to_lesson(lessons: list[dict], sys_text: str) -> list[dict]:
@@ -118,12 +128,17 @@ def main() -> int:
     ap.add_argument("--out-dir", type=Path, default=Path(__file__).resolve().parent)
     ap.add_argument("--check", action="store_true",
                     help="re-derive from the current traces and exit 1 on any drift")
+    ap.add_argument("--self-test", dest="self_test", action="store_true",
+                    help="黑箱自測（暫時根 + 陰性對照）")
     # None means "not given" -- see sft_common.reconcile for why that distinction is load-bearing.
     ap.add_argument("--val-frac", type=float, default=None)
     ap.add_argument("--system", choices=("full", "none"), default=None,
                     help="full = CONVENTIONS.md byte-identical; none = omit it. The committed "
                          "artifact used none: every row already carries its own observation")
     args = ap.parse_args()
+
+    if args.self_test:
+        return self_test()
 
     rec = C.load_provenance(args.out_dir)
     eff, notes = C.reconcile(rec, builder=BUILDER, mode=args.system, head_chars=None,
@@ -187,6 +202,210 @@ def main() -> int:
         print("  [error] no rows -- nothing to train on", file=sys.stderr)
         return 1
     return 0
+
+
+# ---------------------------------------------------------------------------------------
+# --self-test: black box. SFT_ROOT redirects C's path constants to a temp tree, and every case
+# runs a real subprocess -- calling evidence_to_lesson() directly would still pass if the flag
+# were never wired, or if a non-zero rc were swallowed.
+#
+# The generated artifacts are the only thing this file produces, and the failure it guards
+# against is "two sets disagree" -- the same outside appearance as a broken pairing rule inside
+# this file. So each case injects ONE cause and asserts the right one is named.
+#
+# ★ WATCHDOG: --out-dir defaults to this file's real parent, so a case that forgot to pass it
+#   would overwrite the committed dataset with fixture data. Every run passes it explicitly, and
+#   the real directory is hashed before and after the whole self-test. (Sibling
+#   build_portal.py shipped exactly that bug once; a reader found it, not a test.)
+# ---------------------------------------------------------------------------------------
+def _dir_hash(d: Path) -> str:
+    h = hashlib.sha256()
+    if not d.exists():
+        return "<missing>"
+    for p in sorted(d.rglob("*")):
+        if p.is_file():
+            h.update(str(p.relative_to(d)).encode())
+            h.update(p.read_bytes())
+    return h.hexdigest()
+
+
+def _read_jsonl(p: Path) -> list[dict]:
+    return [json.loads(l) for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
+
+
+def self_test() -> int:
+    me = str(Path(__file__).resolve())
+    real_before = _dir_hash(REAL_OUT_DIR)
+    tmp = Path(tempfile.mkdtemp(prefix="sft_prime_selftest_"))
+    # 佈局照抄真 repo：SFT_ROOT = engine_loop，CONVENTIONS.md 在它的上一層。
+    root = tmp / "repo" / "agent_harness"
+    el = root / "engine_loop"
+    traces = el / "traces"
+    out = el / "sft_prime"
+    traces.mkdir(parents=True)
+    out.mkdir(parents=True)
+    (root / "CONVENTIONS.md").write_text("# fixture charter\n\nD1 some rule.\n", encoding="utf-8")
+
+    episodes = [{"episode_id": "ep-fixture-0001", "profile": "p",
+                 "arm": {"name": "a", "declared_purpose": "d"}, "goal": "g",
+                 "build": {"stamp": "x"}, "usable_as_evidence": True, "caveats": []}]
+    lessons = [
+        {"lesson_id": "eng-fixture-0001", "rule": "rule one", "class": "measurement-hygiene",
+         "because": "because one", "counterexample_observed": "ce one",
+         "applies_to": ["agent_harness/example.py"], "superseded_by": None},
+        {"lesson_id": "eng-fixture-0002", "rule": "rule two (superseded)", "class": "honest-bounds",
+         "because": "because two", "counterexample_observed": None,
+         "applies_to": ["agent_harness/other.py"], "superseded_by": "eng-fixture-0001"},
+    ]
+    decisions = [
+        {"decision_id": "dec-fixture-0001", "question": "q1", "judgement": "sound",
+         "evidence": [{"episode_id": "ep-fixture-0001", "reading": "r1"}],
+         "ruled_out": [{"claim": "c", "why_false": "w"}], "action": "do the thing",
+         "confidence": "high"},
+        {"decision_id": "dec-fixture-0002", "question": "q2", "judgement": "refuted",
+         "evidence": [{"artifact": "some/file.txt", "reading": "r2"}], "action": "do the OTHER thing",
+         "confidence": "low"},
+    ]
+
+    def write_jsonl(p: Path, rows: list[dict]) -> None:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+
+    def write_traces(les=None, dec=None, eps=None) -> None:
+        write_jsonl(traces / "lessons.jsonl", les if les is not None else lessons)
+        write_jsonl(traces / "decisions.jsonl", dec if dec is not None else decisions)
+        write_jsonl(traces / "episodes.jsonl", eps if eps is not None else episodes)
+
+    write_traces()
+
+    env = dict(os.environ, SFT_ROOT=str(el))
+    results: list[tuple[str, bool, str]] = []
+
+    def run(*args: str) -> tuple[int, str]:
+        p = subprocess.run([sys.executable, me, *args], capture_output=True, text=True, env=env)
+        return p.returncode, p.stdout + p.stderr
+
+    def rebuild() -> tuple[int, str]:
+        """建置 fixture 產物。**一律顯式帶 --out-dir**（見 §WATCHDOG），並沿用已記錄的
+        invocation 語意：第一次帶 --system none，之後不帶旗標就會沿用它。"""
+        return run("--out-dir", str(out))
+
+    def case(name: str, ok: bool, detail: str = "") -> None:
+        results.append((name, ok, detail))
+
+    def rows_on_disk() -> list[dict]:
+        return _read_jsonl(out / "train.jsonl") + _read_jsonl(out / "valid.jsonl")
+
+    def tree_hash() -> str:
+        h = hashlib.sha256()
+        for p in sorted(root.rglob("*")):
+            if p.is_file():
+                h.update(str(p.relative_to(root)).encode())
+                h.update(p.read_bytes())
+        return h.hexdigest()
+
+    # 1) 建置：兩個投影都出來，且列數 == live lessons + 非 refuted decisions
+    rc, out_s = run("--out-dir", str(out), "--system", "none")
+    n = len(rows_on_disk())
+    case("build rc=0，寫出 train/valid/PROVENANCE",
+         rc == 0 and (out / "train.jsonl").exists() and (out / "valid.jsonl").exists()
+         and (out / "PROVENANCE.json").exists(), f"rc={rc}")
+    case("列數 == live lessons(1) + 非 refuted decisions(1)",
+         n == 2, f"n={n} out={out_s.strip()[:80]}")
+
+    # 2) 反毒閘門：兩類排除各自發聲，而且真的不在正向集裡
+    srcs = {r["source_id"] for r in rows_on_disk()}
+    case("refuted decision 不入正向集（反毒閘門）",
+         "dec-fixture-0002" not in srcs and "refuted_decisions=1" in out_s, f"srcs={sorted(srcs)}")
+    case("superseded lesson 不入 evidence_to_lesson",
+         "eng-fixture-0002" not in srcs and "superseded_lessons=1" in out_s, f"srcs={sorted(srcs)}")
+
+    # 3) 陰性對照：乾淨狀態必須回 0
+    rc, o = run("--check", "--out-dir", str(out))
+    case("--check 乾淨 ⇒ rc=0（不能是永遠紅的檢查）", rc == 0, f"rc={rc} out={o.strip()[:90]}")
+
+    # 4) --check 不寫檔
+    before = tree_hash()
+    run("--check", "--out-dir", str(out))
+    case("--check 不寫任何檔", tree_hash() == before, "")
+
+    # 5) 輸入前進 ⇒ 這是 staleness，不是「換一個 build」
+    write_traces(les=lessons + [{"lesson_id": "eng-fixture-0003", "rule": "rule three",
+                                 "class": "smoke", "because": "because three",
+                                 "counterexample_observed": None,
+                                 "applies_to": ["agent_harness/third.py"], "superseded_by": None}])
+    rc, o = run("--check", "--out-dir", str(out))
+    case("lessons 前進 ⇒ rc=1 且訊息是 INPUTS ADVANCED（staleness，不是不同 build）",
+         rc == 1 and "lessons.jsonl: INPUTS ADVANCED" in o, f"rc={rc}")
+    write_traces()
+
+    # 6) 產物被手改 ⇒ 另一個原因
+    rebuild()
+    t = out / "train.jsonl"
+    good = t.read_text(encoding="utf-8")
+    t.write_text(good + '{"messages":[],"kind":"hand-edited"}\n', encoding="utf-8")
+    rc, o = run("--check", "--out-dir", str(out))
+    case("train.jsonl 被手改 ⇒ rc=1 且訊息是 content differs",
+         rc == 1 and "train.jsonl: content differs from a re-derivation" in o, f"rc={rc}")
+
+    # 7) PROVENANCE 不見了 ⇒ 追不回 invocation 與輸入版本
+    (out / "PROVENANCE.json").unlink()
+    rc, o = run("--check", "--out-dir", str(out))
+    case("PROVENANCE.json 不見 ⇒ rc=1 且訊息是 cannot be traced",
+         rc == 1 and "cannot be traced to an invocation" in o, f"rc={rc}")
+
+    # 8) PROVENANCE 記的是別人寫的 ⇒ 兩個投影不能互寫彼此的目錄
+    rebuild()
+    prov = json.loads((out / "PROVENANCE.json").read_text(encoding="utf-8"))
+    prov["builder"] = "sft_pi/build_sft_pi.py"
+    (out / "PROVENANCE.json").write_text(json.dumps(prov, ensure_ascii=False, indent=2), encoding="utf-8")
+    rc, o = run("--check", "--out-dir", str(out))
+    case("PROVENANCE 的 builder 是另一個投影 ⇒ rc!=0 且說明兩者不能互寫目錄",
+         rc != 0 and "must not write into each other's directory" in o, f"rc={rc}")
+
+    # 9) --check 驗的是「建置當時的樣子」，不能配矛盾的旗標。
+    #    ★ 上一格把那筆 PROVENANCE 弄成了壞的，而 reconcile 對「builder 不對」是**無條件**擋的
+    #      （--check 與重建都擋）⇒ 不先清掉它，這一格之後每一格都會紅，而且看起來像
+    #      「--check 壞了」。第一版就是這樣：11/16，失敗集中在後面三格，實際只有一格有病。
+    (out / "PROVENANCE.json").unlink()
+    rc, o = run("--out-dir", str(out), "--system", "none")
+    rc2, o2 = run("--check", "--out-dir", str(out), "--system", "full")
+    case("--check 搭配矛盾的 --system ⇒ 拒跑（rc!=0）且說明原因",
+         rc == 0 and rc2 != 0 and "cannot be combined with flags that" in o2, f"rc={rc} rc2={rc2}")
+    rc, o = run("--check", "--out-dir", str(out))
+    case("把上面的旗標拿掉 ⇒ rc=0（第三個陰性對照）", rc == 0, f"rc={rc}")
+
+    # 10) 無旗標重建沿用已記錄的 invocation —— 不會靜默切成 full
+    rc, o = rebuild()
+    sysmode = json.loads((out / "PROVENANCE.json").read_text(encoding="utf-8"))["invocation"]["system"]
+    case("無旗標重建沿用 recorded invocation（system 仍是 none，不是靜默變 full）",
+         rc == 0 and sysmode == "none" and "using the recorded invocation" in o, f"rc={rc} system={sysmode}")
+
+    # 11) 決定性：同樣的輸入重建兩次，位元必須相同（否則「valid 變了」與「資料變了」分不出來）
+    rebuild()
+    h1 = hashlib.sha256((out / "train.jsonl").read_bytes()).hexdigest()
+    rebuild()
+    h2 = hashlib.sha256((out / "train.jsonl").read_bytes()).hexdigest()
+    case("同樣輸入重建兩次 ⇒ train.jsonl 位元相同（split 種子固定）", h1 == h2, f"{h1[:12]} vs {h2[:12]}")
+
+    # 12) 空來源要拒跑（缺席不可靜默）
+    write_traces(les=[])
+    rc, o = run("--out-dir", str(out))
+    case("空 lessons.jsonl ⇒ 拒跑（rc!=0）",
+         rc != 0 and "refusing to build a dataset from nothing" in o, f"rc={rc}")
+    write_traces()
+
+    # 13) 看門狗：整個自測過程中，真 repo 的 sft_prime/ 一個位元組都不該動
+    case("看門狗：真 repo 的 sft_prime/ 沒被自測寫到",
+         _dir_hash(REAL_OUT_DIR) == real_before, f"{real_before[:12]} -> {_dir_hash(REAL_OUT_DIR)[:12]}")
+
+    shutil.rmtree(tmp, ignore_errors=True)
+
+    ok = sum(1 for _, o_, _ in results if o_)
+    for name, o_, detail in results:
+        print(f"  {'PASS' if o_ else 'FAIL'}  {name}" + (f"   [{detail}]" if detail and not o_ else ""))
+    print(f"  {ok}/{len(results)}")
+    return 0 if ok == len(results) else 1
 
 
 if __name__ == "__main__":

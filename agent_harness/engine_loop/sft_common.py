@@ -59,10 +59,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent          # agent_harness/engine_loop
+# SFT_ROOT exists ONLY for the builders' --self-test: it redirects this module's root to a temp
+# tree so the injection cases never read or write the real traces/sft_* directories. Same shape
+# as scripts/import_harness_snapshot.py's PA_SNAP_REPO and harness_engine/build_memories.py's
+# HE_MEM_ROOT. It is read here (not in each builder) because the PATH CONSTANTS below are the
+# thing being redirected -- a builder-local override would leave CONVENTIONS/TRACES pointing at
+# the real repo, and the self-test would report on a tree it did not build.
+_ROOT = os.environ.get("SFT_ROOT")
+HERE = Path(_ROOT).resolve() if _ROOT else Path(__file__).resolve().parent  # agent_harness/engine_loop
 TRACES = HERE / "traces"
 CONVENTIONS = HERE.parent / "CONVENTIONS.md"
 

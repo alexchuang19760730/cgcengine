@@ -566,6 +566,28 @@ def registry_problems(reg: dict) -> list[str]:
     return problems
 
 
+def tail_line(tail: list[str], rc: int | None) -> str:
+    """The ONE line a red gate shows. 失敗時是「原因」，不是「最後一行」。
+
+    為什麼不能直接取最後一行：`index_assets.py --check` 在漂移清單**之後**才印它的 `--out` 說明，
+    所以紅燈的尾行會是一段與失敗無關的文字（讀者看到「它在講 `--out`」，而不是「哪個檔漂了」）。
+    2026-09-18 實測：`index-assets` 紅，而 portal 顯示的尾行是
+    `as 8 drifts and one invisible second copy of the truth.)` —— 那句話裡的「8 drifts」是說明文字
+    的舉例，不是本輪的數字。**紅燈最不該做的事就是把讀者指向錯的數字。**
+
+    判準：先找本 repo 固定的漂移簽名 `[error]`，取它與**後面兩行**（那是逐筆的檔名與差值），
+    拼成一行；找不到才退回最後一行。綠燈維持最後一行（那通常就是結論句）。
+    """
+    if not tail:
+        return ""
+    if rc == 0:
+        return tail[-1][:200]
+    k = next((i for i, l in enumerate(tail) if "[error]" in l), None)
+    if k is None:
+        return tail[-1][:200]
+    return " / ".join(x.strip() for x in tail[k:k + 3])[:240]
+
+
 def run_gates(reg: dict, fast_only: bool = True, timeout: int = 300) -> list[dict]:
     results = []
     for g in reg.get("gates", []):
@@ -600,7 +622,7 @@ def run_gates(reg: dict, fast_only: bool = True, timeout: int = 300) -> list[dic
             "volatile": g.get("volatile_inputs", ""),
             "status": "PASS" if rc == 0 else "FAIL",
             "rc": rc, "seconds": round(secs, 2),
-            "tail": tail[-1][:200] if tail else "",
+            "tail": tail_line(tail, rc),
             "output_tail": tail[-14:],
         })
     return results
@@ -1432,16 +1454,28 @@ def verify_output(html: str) -> list[str]:
         problems.append(f"HTML 本體有 markdown 殘留 `**`（{body.count('**')} 處，例："
                         f"{body[max(0, k - 40):k + 30]!r}）")
 
-    for tag in ("code", "b", "div", "table", "tbody", "script", "style"):
+    for tag, hay, where in (("code", restored, "還原"), ("b", restored, "還原"),
+                            ("div", restored, "還原"), ("table", restored, "還原"),
+                            ("tbody", restored, "還原"),
+                            ("script", body, "未還原"), ("style", body, "未還原")):
         # ★ 開標籤要用「`<tag` 後面接空白或 `>`」來數，**不能用 `"<b>"` 也不能用 `"<b"`**：
         #   `"<b"` 會命中 `<br>`／`<body>`（症狀與「標籤真的少了一個」一模一樣）；
         #   而 `"<div>"` 永遠數到 0，因為 div 一定帶屬性（`<div class=…>`）。
         #   這兩個變體我同一天各踩一次，而且是在「專門抓輸出缺陷的函式」裡 ——
         #   **檢查器的錯與被檢查物的錯同形，是最貴的一種**。
-        o = len(re.findall(rf"<{tag}[\s>]", restored))
-        c = restored.count(f"</{tag}>")
+        #
+        # ★★ 而「還原」只對**一般元素**成立；對 **raw text 元素（script／style）它反而是錯的**
+        #   —— 這兩種元素的內文不解析標籤，而產生 payload 時把 `</` 轉義成 `<\/` 正是為了
+        #   防止 payload 字串裡的 `</script>` 提前結束元素。先還原再數，等於把「已經被正確
+        #   防護的東西」記成一個多出來的收尾標籤。
+        #   2026-09-18 真的發生：lesson `eng-mh-0068` 的內文本身在講這個轉義，於是它自己的
+        #   文字觸發了假紅燈，而**產物是好的** —— raw 是 2/2、body 是 2/2、只有 restored 是 2/3。
+        #   判準：raw text 元素在 `body`（payload 已移除 ＝ 瀏覽器實際看到的形狀）上數，
+        #   一般元素才在 `restored` 上數。
+        o = len(re.findall(rf"<{tag}[\s>]", hay))
+        c = hay.count(f"</{tag}>")
         if o != c:
-            problems.append(f"<{tag}> 不對稱：{o} 開 / {c} 關")
+            problems.append(f"<{tag}> 不對稱：{o} 開 / {c} 關（{where}）")
 
     for anchor in ('id="p-mm"', 'id="p-gates"', 'id="p-assets"', 'id="p-oblig"',
                    "window.__PORTAL__"):

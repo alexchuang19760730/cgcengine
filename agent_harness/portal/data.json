@@ -1,29 +1,29 @@
 {
-  "generated_at": "2026-09-18 12:04:28",
+  "generated_at": "2026-09-18 12:18:36",
   "git": {
     "branch": "demo/sweet-spot-windows-fix",
-    "head": "6e0cc03169e2e9dc9479f0338ae4ec534756417b",
-    "head_short": "6e0cc0316",
-    "subject": "feat(sweep) + docs(memory,skill): §EN-145 -- CGC_SERVER_MTP=0 會換模型檔（逐字驗證）＋ 第一個同檔 MTP-off 臂",
-    "dirty": 8,
+    "head": "b47d89914568a06b9c39c199b2969495141256ed",
+    "head_short": "b47d89914",
+    "subject": "docs(memory): §EN-146 -- 同檔 ABBA 裁決：MTP 在生產路徑上是淨損失 30%（×0.695）",
+    "dirty": 42,
     "dirty_sample": [
-      "?? agent_harness/portal/README.md",
-      "?? agent_harness/portal/build_portal.py",
-      "?? agent_harness/portal/data.json",
-      "?? agent_harness/portal/gates.json",
-      "?? agent_harness/portal/goals.json",
-      "?? agent_harness/portal/history.jsonl",
-      "?? agent_harness/skills/cgc-observer-portal/SKILL.md",
-      "?? docs/AGENT_HARNESS_PORTAL.html"
+      "M agent_harness/engine_loop/harness_engine/build_memories.py",
+      " M agent_harness/engine_loop/sft_common.py",
+      " M agent_harness/engine_loop/sft_prime/PROVENANCE.json",
+      " M agent_harness/engine_loop/sft_prime/build_sft_prime.py",
+      " M agent_harness/engine_loop/sft_prime/train.jsonl",
+      " M agent_harness/engine_loop/sft_prime/valid.jsonl",
+      " M agent_harness/engine_loop/traces/lessons.jsonl",
+      " M agent_harness/portal/build_portal.py"
     ]
   },
   "fingerprint": {
-    "digest": "c9911078f39c36e1",
+    "digest": "721ebbc5c12f6e6e",
     "inputs": [
       {
         "path": "agent_harness/engine_loop/traces/lessons.jsonl",
-        "sha256_12": "736b0c2c02a4",
-        "bytes": 329538
+        "sha256_12": "80cd46ae6e18",
+        "bytes": 337153
       },
       {
         "path": "agent_harness/engine_loop/traces/decisions.jsonl",
@@ -42,8 +42,8 @@
       },
       {
         "path": "agent_harness/portal/gates.json",
-        "sha256_12": "ca9bdd816312",
-        "bytes": 17316
+        "sha256_12": "c204922afe7a",
+        "bytes": 17816
       },
       {
         "path": "agent_harness/portal/goals.json",
@@ -78,10 +78,10 @@
         },
         {
           "name": "2026-09-18.md",
-          "bytes": 174808,
-          "mtime": "09-18 12:01",
-          "lines": 2424,
-          "sections": 26
+          "bytes": 182891,
+          "mtime": "09-18 12:12",
+          "lines": 2539,
+          "sections": 27
         },
         {
           "name": "MEMORY.md",
@@ -99,9 +99,9 @@
         },
         {
           "name": "MEMORY_PERF.md",
-          "bytes": 47313,
-          "mtime": "09-18 11:57",
-          "lines": 502,
+          "bytes": 48674,
+          "mtime": "09-18 12:12",
+          "lines": 516,
           "sections": 7
         },
         {
@@ -113,8 +113,8 @@
         }
       ],
       "count": 8,
-      "bytes": 1146463,
-      "lines": 15092
+      "bytes": 1155907,
+      "lines": 15221
     },
     "skills": {
       "items": [
@@ -198,8 +198,8 @@
         {
           "area": "scripts/（量測、閘門、server）",
           "files": 157,
-          "loc": 40888,
-          "bytes": 1890029,
+          "loc": 40896,
+          "bytes": 1890798,
           "archive": false
         },
         {
@@ -226,8 +226,8 @@
         {
           "area": "agent_harness/engine_loop",
           "files": 26,
-          "loc": 5898,
-          "bytes": 303791,
+          "loc": 6344,
+          "bytes": 327509,
           "archive": false
         },
         {
@@ -238,17 +238,17 @@
           "archive": false
         },
         {
+          "area": "agent_harness/portal",
+          "files": 1,
+          "loc": 1816,
+          "bytes": 93571,
+          "archive": false
+        },
+        {
           "area": "moeexpert/",
           "files": 22,
           "loc": 1806,
           "bytes": 75525,
-          "archive": false
-        },
-        {
-          "area": "agent_harness/portal",
-          "files": 1,
-          "loc": 1777,
-          "bytes": 90748,
           "archive": false
         },
         {
@@ -267,38 +267,38 @@
         }
       ],
       "files": 8062,
-      "loc": 3070711,
-      "bytes": 161599044,
+      "loc": 3071204,
+      "bytes": 161626354,
       "files_live": 4227,
-      "loc_live": 1515947,
-      "bytes_live": 97835565
+      "loc_live": 1516440,
+      "bytes_live": 97862875
     },
     "traces": {
       "episodes": 122,
       "episodes_usable": 27,
       "decisions": 38,
-      "lessons": 179,
+      "lessons": 185,
       "lessons_by_class": {
-        "measurement-hygiene": 66,
-        "gate-integrity": 49,
+        "measurement-hygiene": 68,
+        "gate-integrity": 53,
         "diagnosis": 28,
         "source-reading": 19,
         "honest-bounds": 10,
         "log-forensics": 4,
         "smoke": 3
       },
-      "bytes": 734909,
+      "bytes": 742524,
       "schema": true
     },
     "derived": {
-      "engine_memories": 156,
+      "engine_memories": 185,
       "sft_pi_train": 12,
       "sft_pi_valid": 2,
-      "sft_prime_train": 162,
-      "sft_prime_valid": 28
+      "sft_prime_train": 185,
+      "sft_prime_valid": 33
     },
     "corpus": {
-      "whitepapers": 55,
+      "whitepapers": 56,
       "latest_whitepaper": "ZERO_REGION_TRIAGE_20260916.html",
       "docs_md": 43,
       "evidence": {
@@ -306,8 +306,8 @@
         "bytes": 15426860
       },
       "backup": {
-        "files": 4576,
-        "bytes": 1087717155
+        "files": 4584,
+        "bytes": 1087862060
       }
     }
   },
@@ -442,8 +442,8 @@
   "gates": {
     "n_fast": 14,
     "n_heavy": 4,
-    "n_pass": 12,
-    "n_fail": 2,
+    "n_pass": 13,
+    "n_fail": 1,
     "results": [
       {
         "id": "charter-citations",
@@ -479,7 +479,7 @@
         "id": "shared-shell-cjk",
         "group": "shared",
         "status": "PASS",
-        "seconds": 0.16,
+        "seconds": 0.15,
         "rc": 0,
         "tail": "  0 處：所有 `$VAR` 後面都不是緊接非 ASCII",
         "cost": "fast",
@@ -509,7 +509,7 @@
         "id": "traces-selftest",
         "group": "traces",
         "status": "PASS",
-        "seconds": 0.3,
+        "seconds": 0.33,
         "rc": 0,
         "tail": "  10/10 injected violations rejected",
         "cost": "fast",
@@ -518,10 +518,10 @@
       {
         "id": "derived-engine-memories",
         "group": "derived",
-        "status": "FAIL",
+        "status": "PASS",
         "seconds": 0.03,
-        "rc": 1,
-        "tail": "    regenerate with: python3 agent_harness/engine_loop/harness_engine/build_memories.py",
+        "rc": 0,
+        "tail": "memories OK: 185 file(s), extensions pointer resolves, no drift",
         "cost": "fast",
         "needs": ""
       },
@@ -538,10 +538,10 @@
       {
         "id": "derived-sft-prime",
         "group": "derived",
-        "status": "FAIL",
-        "seconds": 0.03,
-        "rc": 1,
-        "tail": "    regenerate with: python3 agent_harness/engine_loop/sft_prime/build_sft_prime.py",
+        "status": "PASS",
+        "seconds": 0.04,
+        "rc": 0,
+        "tail": "  sft_prime OK: train.jsonl + valid.jsonl re-derive to the same bytes; the invocation and input hashes agree with PROVENANCE.json",
         "cost": "fast",
         "needs": ""
       },
@@ -549,19 +549,19 @@
         "id": "index-memory",
         "group": "index",
         "status": "PASS",
-        "seconds": 0.03,
+        "seconds": 0.04,
         "rc": 0,
-        "tail": "memory index OK: 8 file(s), 234 section(s), no drift",
+        "tail": "memory index OK: 8 file(s), 235 section(s), no drift",
         "cost": "fast",
         "needs": ""
       },
       {
         "id": "index-assets",
         "group": "index",
-        "status": "PASS",
+        "status": "FAIL",
         "seconds": 0.04,
-        "rc": 0,
-        "tail": "manifest OK: 108 assets, existence + bytes + mtime all agree",
+        "rc": 1,
+        "tail": "[error] 2 drift(s) between the manifest and disk: / scripts/check/llama_bench_matrix.py: bytes: manifest 28625 vs disk 29394 / scripts/check/llama_bench_matrix.py: mtime: manifest '2026-09-17T17:56:11' vs disk '2026-09-18T12:14:55'",
         "cost": "fast",
         "needs": ""
       },
@@ -569,7 +569,7 @@
         "id": "snapshot-freshness",
         "group": "snapshot",
         "status": "PASS",
-        "seconds": 0.03,
+        "seconds": 0.04,
         "rc": 0,
         "tail": "  -> OK: 快照與原檔一致（provenance 逐筆相符、集合相符、副本未被手改、README 成員表相符）",
         "cost": "fast",
@@ -579,7 +579,7 @@
         "id": "portal-integrity",
         "group": "portal",
         "status": "PASS",
-        "seconds": 0.03,
+        "seconds": 0.04,
         "rc": 0,
         "tail": "-> OK: 18 條閘門（fast 14／heavy 4），目標樹指針全部可解析、每一節都有 acceptance",
         "cost": "fast",
@@ -591,9 +591,9 @@
         "status": "SKIP",
         "seconds": null,
         "rc": null,
-        "tail": "",
+        "tail": "heavy：入口刻意不自動跑（需要 build 產物（src/llama.cpp/build/bin）＋ 手動帶 BIN_DIR。不帶 BIN_DIR 會讓 11 段全部 SKIP 卻仍然印 OK —— 這是這個閘門最著名的自欺路徑，也是它不該被自動跑的理由之一）",
         "cost": "heavy",
-        "needs": "build 產物（src/llama.cpp/build/bin）＋ 手動帶 BIN_DIR。**不帶 BIN_DIR 會讓 11 段全部 SKIP 卻仍然印 OK** —— 這是這個閘門最著名的自欺路徑，也是它不該被自動跑的理由之一"
+        "needs": "build 產物（src/llama.cpp/build/bin）＋ 手動帶 BIN_DIR。不帶 BIN_DIR 會讓 11 段全部 SKIP 卻仍然印 OK —— 這是這個閘門最著名的自欺路徑，也是它不該被自動跑的理由之一"
       },
       {
         "id": "engine-ab-interleave",
@@ -601,7 +601,7 @@
         "status": "SKIP",
         "seconds": null,
         "rc": null,
-        "tail": "",
+        "tail": "heavy：入口刻意不自動跑（需要 llama-server ＋ 模型；且要確認 8080 空窗）",
         "cost": "heavy",
         "needs": "llama-server ＋ 模型；且要確認 8080 空窗"
       },
@@ -611,7 +611,7 @@
         "status": "SKIP",
         "seconds": null,
         "rc": null,
-        "tail": "",
+        "tail": "heavy：入口刻意不自動跑（需要 自己起 server（先確認 8080 空））",
         "cost": "heavy",
         "needs": "自己起 server（先確認 8080 空）"
       },
@@ -621,7 +621,7 @@
         "status": "SKIP",
         "seconds": null,
         "rc": null,
-        "tail": "",
+        "tail": "heavy：入口刻意不自動跑（需要 docker（colima）＋ 模型端點 ；本輪的最後一道牆是測試階段 60 s 逾時）",
         "cost": "heavy",
         "needs": "docker（colima）＋ 模型端點 ；本輪的最後一道牆是測試階段 60 s 逾時"
       }
@@ -631,12 +631,7 @@
     {
       "kind": "gate",
       "severity": "high",
-      "title": "2 條快速閘門在**乾淨的樹上就是紅的**"
-    },
-    {
-      "kind": "derived",
-      "severity": "high",
-      "title": "衍生記憶落後 lessons 23 筆"
+      "title": "1 條快速閘門在**乾淨的樹上就是紅的**"
     },
     {
       "kind": "registry",

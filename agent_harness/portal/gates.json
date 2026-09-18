@@ -161,12 +161,16 @@
         "--check"
       ],
       "expect": "rc=0",
-      "selftest": null,
+      "selftest": [
+        "python3",
+        "agent_harness/engine_loop/harness_engine/build_memories.py",
+        "--self-test"
+      ],
       "proves": "每一條 lesson 都有一份對應的 memory 檔（system prompt 的注入來源與 lessons 同步）",
-      "not_proves": "只驗集合與逐檔內容；**不驗『這些 lesson 該不該被注入』** —— 那是判準問題",
+      "not_proves": "只驗集合與逐檔內容；**不驗『這些 lesson 該不該被注入』** —— 那是判準問題。--self-test 證的是『四種漂移各自被指名』（缺席／孤兒／手改／指標壞），不是『lesson 寫得對』",
       "cost": "fast",
       "citation": "agent_harness/CONVENTIONS.md:993-1007",
-      "no_selftest_reason": "上游 build_memories.py **沒有** --self-test。這是一個已知的缺口：它壞掉時（例如 lessons 與 memories 的配對邏輯改了但沒人驗）症狀與現在這條紅燈同形 —— 都是「兩邊數量對不上」。要補的是它自己的注入式自測，登記在欠帳頁。"
+      "selftest_history": "2026-09-18 結清：上游原本沒有 --self-test，欠帳記在這裡；現在是 16 格注入式自測（含三個陰性對照、一個真目錄看門狗）。"
     },
     {
       "id": "derived-sft-pi",
@@ -195,12 +199,16 @@
         "--check"
       ],
       "expect": "rc=0",
-      "selftest": null,
+      "selftest": [
+        "python3",
+        "agent_harness/engine_loop/sft_prime/build_sft_prime.py",
+        "--self-test"
+      ],
       "proves": "資料集與當前 lessons/episodes 的重生一致（含輸入雜湊）",
-      "not_proves": "同上",
+      "not_proves": "同上。--self-test 證的是『每一種漂移各自被指名』與『反毒閘門真的排除 refuted/superseded』，不是『資料集好不好用』",
       "cost": "fast",
       "citation": "agent_harness/engine_loop/sft_prime/PROVENANCE.json",
-      "no_selftest_reason": "同 derived-sft-pi：無 --self-test，只有 provenance 雜湊。"
+      "selftest_history": "2026-09-18 結清：上游原本沒有 --self-test，欠帳記在這裡；現在是 16 格（含三個陰性對照、反毒閘門、split 決定性、真目錄看門狗）。"
     },
     {
       "id": "index-memory",

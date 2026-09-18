@@ -10,13 +10,22 @@ is forgotten -- silently, because a MISSING memory and a memory that was never w
 identical from the outside. Deriving it means additions cannot be forgotten, and `--check` can
 prove the two sides agree.
 
-    build_memories.py            regenerate memories/engine/ from traces/lessons.jsonl
-    build_memories.py --check    re-derive and exit 1 on drift
+    build_memories.py             regenerate memories/engine/ from traces/lessons.jsonl
+    build_memories.py --check     re-derive and exit 1 on drift
+    build_memories.py --self-test black-box self-test (temp root + negative control)
 
 FORMAT (PLAN §6.1): the FIRST LINE is always `[engine] <rule>`, so `/refine --global` can tell
 this scope from the tb_loop one by looking at one line. `class` follows as a tag on the second
 line. There is deliberately NO YAML frontmatter: prime-agent's memory format is plain markdown
 and the plan chose the `[engine]` prefix as the scope marker instead.
+
+WHY --self-test EXISTS (the debt this pays off)
+-----------------------------------------------
+`--check` compares two SETS. So does a broken pairing rule inside this file, and so does a
+lesson that was never written -- all three look identical from the outside ("the two sides
+disagree"). Until 2026-09-18 the only way to tell them apart was to read this source. The
+self-test injects each drift separately and asserts `--check` names the right one, which is what
+makes the diagnosis above mechanical instead of narrative.
 """
 from __future__ import annotations
 
@@ -25,10 +34,18 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
+# HE_MEM_ROOT exists ONLY for --self-test: it redirects the root to a temp tree so the
+# injection cases never touch the real memories/engine/ (a self-test that writes into the
+# artifact it is testing reports on a repo it just corrupted). Same shape as
+# scripts/import_harness_snapshot.py's PA_SNAP_REPO, and it is why that variable is documented
+# at the point of use rather than in a README.
+_R = os.environ.get("HE_MEM_ROOT")
+HERE = Path(_R).resolve() if _R else Path(__file__).resolve().parent
 assert HERE.name == "harness_engine", "build_memories.py belongs in agent_harness/engine_loop/harness_engine/"
 
 TRACES = HERE.parent / "traces" / "lessons.jsonl"
@@ -40,6 +57,11 @@ MEM_DIR = HERE / "memories" / "engine"
 # --check fails if it ever becomes a real directory, i.e. if somebody copies instead of pointing.
 EXT_LINK = HERE / "extensions"
 EXT_TARGET = Path("..") / ".." / "tb_loop" / "harness" / "extensions"
+
+# The REAL artifact, computed from __file__ and never from HE_MEM_ROOT -- this is what the
+# self-test's watchdog hashes, so it has to be immune to the redirection the self-test itself
+# performs. Deriving it from HERE would make the watchdog hash the temp tree and always pass.
+REAL_MEM_DIR = Path(__file__).resolve().parent / "memories" / "engine"
 
 
 def load_lessons() -> list[dict]:
@@ -102,28 +124,44 @@ def check_link() -> list[str]:
     return problems
 
 
+def drift_problems(want: dict[str, str]) -> list[str]:
+    """Every way memories/engine/ disagrees with the derivation, one named problem per cause.
+
+    Each branch is a DIFFERENT cause with the same outside appearance; naming them is the whole
+    point (stale memory / never generated / hand-edited / pointer broken). --self-test asserts
+    each branch fires on its own injection.
+    """
+    problems = check_link()
+    if not MEM_DIR.is_dir():
+        problems.append(f"no memory directory at {MEM_DIR}")
+        return problems
+    have = {p.name for p in MEM_DIR.glob("*.md")}
+    for name in sorted(set(have) | set(want)):
+        if name not in want:
+            problems.append(f"{name}: on disk but not in lessons.jsonl (stale memory)")
+        elif name not in have:
+            problems.append(f"{name}: in lessons.jsonl but no memory file")
+        elif (MEM_DIR / name).read_text(encoding="utf-8") != want[name]:
+            problems.append(f"{name}: content differs from the derived text")
+    return problems
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--check", action="store_true", help="re-derive and exit 1 on any drift")
+    ap.add_argument("--self-test", dest="self_test", action="store_true",
+                    help="黑箱自測（暫時目錄 + 陰性對照）")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
+
+    if args.self_test:
+        return self_test()
 
     lessons = load_lessons()
     want = desired(lessons)
 
     if args.check:
-        problems = check_link()
-        if not MEM_DIR.is_dir():
-            problems.append(f"no memory directory at {MEM_DIR}")
-        else:
-            have = {p.name for p in MEM_DIR.glob("*.md")}
-            for name in sorted(set(have) | set(want)):
-                if name not in want:
-                    problems.append(f"{name}: on disk but not in lessons.jsonl (stale memory)")
-                elif name not in have:
-                    problems.append(f"{name}: in lessons.jsonl but no memory file")
-                elif (MEM_DIR / name).read_text(encoding="utf-8") != want[name]:
-                    problems.append(f"{name}: content differs from the derived text")
+        problems = drift_problems(want)
         if problems:
             print(f"  [error] {len(problems)} drift(s) between memories/engine/ and lessons.jsonl:")
             for p in problems:
@@ -158,6 +196,187 @@ def main() -> int:
     for p in check_link():
         print(f"  [warn] {p}")
     return 0
+
+
+# ---------------------------------------------------------------------------------------
+# --self-test: black box. A temp tree is the root, and every case runs a real subprocess
+# (not an internal function -- a test that calls `drift_problems()` directly would still pass
+# if the flag were never wired to it, or if the exit code were dropped).
+#   The negative control matters as much as the injections: a check that always returns 1
+#   passes every positive case (`eng-gate-0040`), so "clean => rc=0" is asserted three times
+#   (before, after restoring, after re-pointing the symlink).
+# ---------------------------------------------------------------------------------------
+def self_test() -> int:
+    me = str(Path(__file__).resolve())
+    real_before = _dir_hash(REAL_MEM_DIR)
+    tmp = Path(tempfile.mkdtemp(prefix="he_mem_selftest_"))
+    # 佈局必須**逐層照抄真 repo**：EXT_TARGET 是 `../../tb_loop/harness/extensions`，相對
+    # 於 harness_engine/ 往上兩層是 agent_harness/。少一層（第一版把 fixture 根放在 tmp/）
+    # 會讓 extensions 變成斷鏈，於是三格陰性對照全部 FAIL —— 這個檢查本身是對的，
+    # 錯的是 fixture。這也是「一條紅燈要先問它指的東西存不存在」的同一課。
+    fixture = tmp / "repo"
+    he = fixture / "agent_harness" / "engine_loop" / "harness_engine"
+    traces = fixture / "agent_harness" / "engine_loop" / "traces"
+    (he / "memories" / "engine").mkdir(parents=True)
+    traces.mkdir(parents=True)
+    (fixture / "agent_harness" / "tb_loop" / "harness" / "extensions").mkdir(parents=True)
+    (he / "extensions").symlink_to(Path("..") / ".." / "tb_loop" / "harness" / "extensions")
+
+    def lesson(i: int, rule: str, cls: str = "measurement-hygiene") -> dict:
+        return {"lesson_id": f"eng-fixture-{i:04d}", "rule": rule, "class": cls,
+                "because": f"because {i}", "counterexample_observed": f"counterexample {i}",
+                "applies_to": ["agent_harness/example.py"], "superseded_by": None}
+
+    def write_lessons(rows: list[dict]) -> None:
+        (traces / "lessons.jsonl").write_text(
+            "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+
+    base = [lesson(1, "rule one"), lesson(2, "rule two"), lesson(3, "rule three")]
+    write_lessons(base)
+
+    env = dict(os.environ, HE_MEM_ROOT=str(he))
+    results: list[tuple[str, bool, str]] = []
+    mem = he / "memories" / "engine"
+
+    def run(*args: str) -> tuple[int, str]:
+        p = subprocess.run([sys.executable, me, *args], capture_output=True, text=True, env=env)
+        return p.returncode, p.stdout + p.stderr
+
+    def case(name: str, ok: bool, detail: str = "") -> None:
+        results.append((name, ok, detail))
+
+    def tree_hash() -> str:
+        h = hashlib.sha256()
+        for p in sorted(tmp.rglob("*")):
+            if p.is_file() and not p.is_symlink():
+                h.update(str(p.relative_to(tmp)).encode())
+                h.update(p.read_bytes())
+        return h.hexdigest()
+
+    # 1) 重生：每個 lesson 恰好一個檔，且第一行是 scope marker
+    rc, out = run()
+    names = sorted(p.name for p in mem.glob("*.md"))
+    head = (mem / "eng-fixture-0001.md").read_text(encoding="utf-8").splitlines()[0] if names else ""
+    case("重生 rc=0，且 lesson 數 == 檔數", rc == 0 and len(names) == 3, f"rc={rc} n={len(names)}")
+    case("第一行是 `[engine] <rule>`（/refine --global 的 scope marker）",
+         head == "[engine] rule one", head)
+
+    # 2) 陰性對照：乾淨狀態必須回 0
+    rc, out = run("--check")
+    case("--check 乾淨 ⇒ rc=0（不能是永遠紅的檢查）", rc == 0, f"rc={rc} out={out.strip()[:90]}")
+
+    # 3) --check 不寫檔
+    before = tree_hash()
+    run("--check")
+    case("--check 不寫任何檔", tree_hash() == before, "")
+
+    # 4) lessons 前進、記憶沒跟上 ⇒ 指名那個檔，而且原因是「沒有檔」不是「內容不同」
+    write_lessons(base + [lesson(4, "rule four")])
+    rc, out = run("--check")
+    case("lessons 多一筆、記憶未重生 ⇒ rc=1 且指名 eng-fixture-0004.md",
+         rc == 1 and "eng-fixture-0004.md: in lessons.jsonl but no memory file" in out, f"rc={rc}")
+
+    # 5) 重生會補上缺席的檔（往返）
+    rc, out = run()
+    rc2, _ = run("--check")
+    case("重生補上缺席的檔，往返後 rc=0",
+         rc == 0 and (mem / "eng-fixture-0004.md").exists() and rc2 == 0, f"rc={rc} rc2={rc2}")
+
+    # 6) 孤兒：磁碟上有、lessons 裡沒有 ⇒ 另一個原因，必須分得出來
+    orphan = mem / "eng-fixture-9999.md"
+    orphan.write_text("[engine] orphan\n", encoding="utf-8")
+    rc, out = run("--check")
+    case("磁碟上的孤兒記憶 ⇒ rc=1，且訊息是 stale memory 不是 no memory file",
+         rc == 1 and "eng-fixture-9999.md: on disk but not in lessons.jsonl (stale memory)" in out,
+         f"rc={rc}")
+
+    # 7) 重生會刪掉孤兒（權威紀錄已不在，不能留著被注入）
+    rc, out = run()
+    case("重生刪掉孤兒（`removed 1 orphan` 有印出來）",
+         not orphan.exists() and "removed 1 orphan" in out, f"exists={orphan.exists()}")
+
+    # 8) 手改內容 ⇒ 第三個原因
+    victim = mem / "eng-fixture-0002.md"
+    good = victim.read_text(encoding="utf-8")
+    victim.write_text(good.replace("rule two", "rule two (hand edited)"), encoding="utf-8")
+    rc, out = run("--check")
+    case("手改一份記憶的內容 ⇒ rc=1 且訊息是 content differs",
+         rc == 1 and "eng-fixture-0002.md: content differs from the derived text" in out, f"rc={rc}")
+    victim.write_text(good, encoding="utf-8")
+    rc, _ = run("--check")
+    case("把上面每一格改回去之後 ⇒ rc=0（第二個陰性對照）", rc == 0, f"rc={rc}")
+
+    # 9) extensions 被複製成真目錄 ⇒ 兩份真相，漂移是靜默的
+    (he / "extensions").unlink()
+    (he / "extensions").mkdir()
+    (he / "extensions" / "gemma4-provider.ts").write_text("// a copy, not a pointer\n", encoding="utf-8")
+    rc, out = run("--check")
+    case("extensions 是真目錄（被複製而非指向）⇒ rc=1",
+         rc == 1 and "REAL directory" in out, f"rc={rc}")
+
+    # 10) 斷掉的 symlink ⇒ 指標本身壞了
+    shutil.rmtree(he / "extensions")
+    (he / "extensions").symlink_to(Path("..") / "does-not-exist")
+    rc, out = run("--check")
+    case("extensions 是斷掉的 symlink ⇒ rc=1", rc == 1 and "DANGLING" in out, f"rc={rc}")
+
+    (he / "extensions").unlink()
+    (he / "extensions").symlink_to(Path("..") / ".." / "tb_loop" / "harness" / "extensions")
+    rc, _ = run("--check")
+    case("把指標接回去 ⇒ rc=0（第三個陰性對照）", rc == 0, f"rc={rc}")
+
+    # 11) 空來源要拒跑（缺席不可靜默），而且**不能**寫出 0 個檔就說 OK
+    empty = tmp / "empty_root" / "repo"
+    empty_he = empty / "agent_harness" / "engine_loop" / "harness_engine"
+    (empty_he / "memories" / "engine").mkdir(parents=True)
+    (empty / "agent_harness" / "engine_loop" / "traces").mkdir(parents=True)
+    (empty / "agent_harness" / "tb_loop" / "harness" / "extensions").mkdir(parents=True)
+    (empty_he / "extensions").symlink_to(Path("..") / ".." / "tb_loop" / "harness" / "extensions")
+    (empty / "agent_harness" / "engine_loop" / "traces" / "lessons.jsonl").write_text("", encoding="utf-8")
+    p = subprocess.run([sys.executable, me], capture_output=True, text=True,
+                       env=dict(os.environ, HE_MEM_ROOT=str(empty_he)))
+    case("空 lessons.jsonl ⇒ 拒跑（rc!=0），不是寫出 0 個檔就說 OK",
+         p.returncode != 0 and "refusing to write an empty memory set" in (p.stdout + p.stderr),
+         f"rc={p.returncode}")
+
+    # 12) 來源檔不存在 ⇒ 另一個原因（「還沒生成」與「被判空」不同）
+    (empty / "agent_harness" / "engine_loop" / "traces" / "lessons.jsonl").unlink()
+    p = subprocess.run([sys.executable, me, "--check"], capture_output=True, text=True,
+                       env=dict(os.environ, HE_MEM_ROOT=str(empty_he)))
+    case("lessons.jsonl 不存在 ⇒ rc!=0 且訊息是 no lessons at",
+         p.returncode != 0 and "no lessons at" in (p.stdout + p.stderr), f"rc={p.returncode}")
+
+    # 13) 看門狗：整個自測過程中，真 repo 的 memories/engine/ 一個位元組都不該動
+    case("看門狗：真 repo 的 memories/engine/ 沒被自測寫到",
+         _dir_hash(REAL_MEM_DIR) == real_before,
+         f"{real_before} -> {_dir_hash(REAL_MEM_DIR)}")
+
+    shutil.rmtree(tmp, ignore_errors=True)
+
+    ok = sum(1 for _, o, _ in results if o)
+    for name, o, detail in results:
+        print(f"  {'PASS' if o else 'FAIL'}  {name}" + (f"   [{detail}]" if detail and not o else ""))
+    print(f"  {ok}/{len(results)}")
+    return 0 if ok == len(results) else 1
+
+
+def _dir_hash(d: Path) -> str:
+    """Content hash of a directory tree -- the watchdog's measuring device.
+
+    Hashing the real artifact BEFORE and AFTER the injections is the only check that can catch a
+    self-test which writes into the thing it is testing: the individual cases all still "pass",
+    because they run against the temp root; the damage is in the root they were supposed to leave
+    alone. (This script's sibling `build_portal.py` shipped exactly that bug and it was found by a
+    reader, not by a test.)
+    """
+    h = hashlib.sha256()
+    if not d.exists():
+        return "<missing>"
+    for p in sorted(d.rglob("*")):
+        if p.is_file():
+            h.update(str(p.relative_to(d)).encode())
+            h.update(p.read_bytes())
+    return h.hexdigest()
 
 
 if __name__ == "__main__":
