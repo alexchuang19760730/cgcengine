@@ -362,6 +362,19 @@ struct llama_expert_cache {
     size_t n_fast_draft_calls  = 0;
     size_t n_fast_draft_union  = 0;
     size_t n_fast_draft_cold   = 0;
+    // [CGC RSL-MTP instrument 2026-09-18] p_route = P(top8_{t+i} subset-of top8_t), accumulated
+    // over (layer, verify step). RSL-MTP (docs/MOE_MTP_FEASIBILITY_2026-09-18.md §4) locks the
+    // verify step's per-layer union to the anchor's own top-8 and truncates the draft at the first
+    // token whose top-8 is NOT a subset of it. Its entire value depends on this one number and the
+    // plan is falsifiable on it (p_route < 0.5 => do not build it). Only verify steps feed it: a
+    // verify batch IS t..t+k, so both sides of the comparison are already in one routes array
+    // (llama-context.cpp builds the per-token top-k flatten). Index i-1 holds offset i = 1..7.
+    // `n_proute_anchor_shrunk` counts anchors whose top-k deduped to fewer than n_expert_used
+    // experts (top-k is not top-unique); without it those would read as containment failures.
+    size_t n_proute_hit[8]        = {0};  // top8_{t+i} subset-of top8_t
+    size_t n_proute_tot[8]        = {0};  // comparisons at offset i
+    size_t n_proute_steps         = 0;    // verify steps observed (counted per layer)
+    size_t n_proute_anchor_shrunk = 0;    // anchors whose deduped set < n_expert_used
     size_t n_map_requests = 0;  // L3-B ensure() path (prefill / multi-token)
     size_t n_map_hits     = 0;
     // [CGC §8.99-2] loader prewarm fills (llama_model_loader: experts 0..n at load) are kept
@@ -727,6 +740,13 @@ void llama_expert_cache_refresh_prefill_protect();
 // each layer's top-K most-routed experts at the first decode step. Returns 0 when skipped.
 void llama_expert_cache_record_routes(llama_expert_cache * cache, uint32_t layer,
                                       const uint32_t * experts, size_t n);
+
+// [CGC RSL-MTP instrument 2026-09-18] Accumulate p_route over verify steps. `experts` is the
+// per-token top-k flatten ([n_tokens][n_expert_used], token-major) exactly as built in
+// llama-context.cpp; `n_tokens` is the step width (1 for decode, 1+k for MTP verify).
+void llama_expert_cache_record_proute(llama_expert_cache * cache,
+                                      const uint32_t * experts, size_t n_tokens,
+                                      size_t n_expert_used);
 // [CGC SpAc 2026-09-06] EMA utility update: decay all of layer's utilities by alpha, then bump
 // the routed experts by (1-alpha). Called from expert_cache_on_topk with the step's route list
 // (CGC_SPAC=1). Cheap (n_expert mults per layer); lock is brief.

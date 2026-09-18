@@ -1793,6 +1793,56 @@ void llama_expert_cache_record_routes(llama_expert_cache * cache, uint32_t layer
     }
 }
 
+// [CGC RSL-MTP instrument 2026-09-18] p_route -- see the header. Bitmask sets, no allocation
+// beyond a fixed 8-word buffer (n_expert <= 512). Guarded by the same cache mutex as the other
+// telemetry; joins no pool state, so it cannot affect what is measured.
+void llama_expert_cache_record_proute(llama_expert_cache * cache,
+                                      const uint32_t * experts, size_t n_tokens,
+                                      size_t n_expert_used) {
+    if (cache == nullptr || experts == nullptr || n_tokens < 2 || n_expert_used == 0) {
+        return;
+    }
+    const size_t nw = ((size_t) cache->n_expert + 63) / 64;
+    if (nw == 0 || nw > 8) {
+        return;   // > 512 experts: instrument does not apply, stay silent rather than guess
+    }
+    uint64_t anchor[8] = {0};
+    for (size_t i = 0; i < n_expert_used; ++i) {
+        const uint32_t e = experts[i];
+        if (e < cache->n_expert) {
+            anchor[e >> 6] |= (uint64_t) 1 << (e & 63);
+        }
+    }
+    size_t na = 0;
+    for (size_t w = 0; w < nw; ++w) {
+        na += (size_t) __builtin_popcountll(anchor[w]);
+    }
+
+    std::lock_guard<std::mutex> lk(cache->m);
+    cache->n_proute_steps++;
+    if (na < n_expert_used) {
+        cache->n_proute_anchor_shrunk++;
+    }
+    const size_t kmax = n_tokens - 1 < 8 ? n_tokens - 1 : 8;
+    for (size_t j = 1; j <= kmax; ++j) {
+        uint64_t s[8] = {0};
+        for (size_t i = 0; i < n_expert_used; ++i) {
+            const uint32_t e = experts[i + j * n_expert_used];
+            if (e < cache->n_expert) {
+                s[e >> 6] |= (uint64_t) 1 << (e & 63);
+            }
+        }
+        bool subset = true;
+        for (size_t w = 0; w < nw; ++w) {
+            if (s[w] & ~anchor[w]) { subset = false; break; }
+        }
+        cache->n_proute_tot[j - 1]++;
+        if (subset) {
+            cache->n_proute_hit[j - 1]++;
+        }
+    }
+}
+
 void llama_expert_cache_masscov_record(llama_expert_cache * cache, uint32_t layer,
                                        const uint32_t * experts, const float * w_sel, size_t n) {
     if (cache == nullptr || layer >= cache->massc_mass.size() || n == 0 ||
@@ -2533,6 +2583,21 @@ llama_expert_cache::~llama_expert_cache() {
                     v_union ? 100.0 * (double) v_cold / (double) v_union : 0.0,
                     n_fast_draft_calls, n_fast_draft_union, n_fast_draft_cold,
                     n_fast_draft_union ? 100.0 * (double) n_fast_draft_cold / (double) n_fast_draft_union : 0.0);
+        }
+        // [CGC RSL-MTP instrument 2026-09-18] p_route. Absent unless CGC_P_ROUTE=1 produced a
+        // verify step, so it can never be confused with a measured zero.
+        if (n_proute_steps > 0) {
+            fprintf(stderr, "llama_expert_cache: RSL p_route: steps=%zu anchor_shrunk=%zu (%.1f%%)",
+                    n_proute_steps, n_proute_anchor_shrunk,
+                    n_proute_steps ? 100.0 * (double) n_proute_anchor_shrunk / (double) n_proute_steps : 0.0);
+            for (int i = 0; i < 8; ++i) {
+                if (n_proute_tot[i] > 0) {
+                    fprintf(stderr, "  i=%d %.3f (%zu/%zu)", i + 1,
+                            100.0 * (double) n_proute_hit[i] / (double) n_proute_tot[i],
+                            n_proute_hit[i], n_proute_tot[i]);
+                }
+            }
+            fprintf(stderr, "\n");
         }
         // [CGC verify-strict 2026-09-13] Both must be 0 in a healthy run. A nonzero
         // zero_mapped_selected means a selected expert was read from the reserved ZERO slot, i.e.

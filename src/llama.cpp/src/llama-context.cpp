@@ -5923,6 +5923,18 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
         }
     }
 
+    // [CGC RSL-MTP instrument 2026-09-18] p_route -- the ONE number RSL-MTP trades accept for
+    // (docs/MOE_MTP_FEASIBILITY_2026-09-18.md §4, 待辦 iii). `routes` above is the per-token top-k
+    // flatten, and a verify step's batch IS t..t+k, so P(top8_{t+i} subset-of top8_t) needs no
+    // extra forward and no offline dump. Off unless CGC_P_ROUTE=1.
+    {
+        static const bool proute_on = getenv("CGC_P_ROUTE") != nullptr;
+        if (proute_on && n_tokens > 1 && n_expert_used > 0) {
+            llama_expert_cache_record_proute(cache, routes.data(), (size_t) n_tokens,
+                                             (size_t) n_expert_used);
+        }
+    }
+
     // decode: L3 Option A static per-layer slot pool when active and the union fits, else the
     // L3-B per-step gather path.
     const uint32_t n_usable = llama_expert_cache_usable_slots(cache, (uint32_t) il);
