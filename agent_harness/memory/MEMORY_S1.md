@@ -560,3 +560,15 @@ resident 6197.04）。
 ⚠️ **未涵蓋**：層 4 以上、decode 圖（`p25-outcap-base`／`p25-slotgpu-outcap`）、n>16。
 **⇒ 去序列化（天花板 ×1.711）的正確性前提已滿足；`exp=` 不必再走**（`ffn_moe_ids_leaf` 已撤除）。
 全文：`.workbuddy/memory/2026-09-18.md` §EN-139。
+
+### 5. 補完（同日 11:43）：**decode 對 480/480 ＋ 深度對 48/48 全同** ⇒ §4 的「未涵蓋」只剩 prefill 層 8+
+
+| 配對 | 指紋 | SAME/DIFF |
+|---|---|---|
+| `p25-outcap-base` → `p25-slotgpu-outcap`（**decode，pin 全 40 層**） | 480（12 圖 × 40 層） | **480 / 0** |
+| `p25-outcap-depth-base` → `p25-slotgpu-outcap-depth`（prefill，層 4–7） | 48 | **48 / 0** |
+
+⇒ 連同 §4 的 prefill 0–3（48/48）＝ **576/576 全同**。
+**⇒ S1 的數值身分完整通過（decode 全層已覆蓋）；去序列化的正確性前提滿足。
+⇒ 下一步：publish 離開熱路徑／`n_segs` 40 → 少數（計數器：`consumed_changed` 只有 16.5%）。**
+全文：`.workbuddy/memory/2026-09-18.md` §EN-140。
