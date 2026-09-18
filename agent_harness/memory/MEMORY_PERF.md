@@ -356,6 +356,19 @@ IO 本來就不在關鍵路徑（`fill_wait = 0.000`）。
 | 去序列化（步速） | ×2.0（壞探針的 82.5→31–44 ms） | **×1.5**：GPU 時鐘跨度 ~101 ms、其中 idle **55.3 ms（35.3%）**；移除**全部** idle 仍只有 **10–11.5 t/s**；步預算另一條 ⇒ `gap → 0` 給 **12.1 t/s** | `M3_M4_STATUS` §3b（GPUTIME ＋ 層級 `gap_sum` 兩路互相印證 0.4%） |
 | MTP（每步 token） | ×1.28（9.82→12.62） | **×1.06（同一 launch 配對）**；跨啟動 +9～25%（不可配對）；accept **58.25%**，差 60% 只有 1.75pp，且**在 greedy 下不可由 accept rule 移動**（它是 (base, head) 配對的性質）；`CGC_MTP_REJECTION` 在 temp 0 是 **by construction 的 null** | `M3_M4_STATUS` §1 |
 
+**★★★ 09-18 12:1x 追補（MTP 那條）：裁決讀數＝`union/32 = 0.595`；而成本不在「單次 union」在「長期工作集」。**
+儀器早就在印（**不是 env-gated**）：`llama-expert-cache.cpp:2529` 的
+`MTP fast path: … verify: calls=474 union=9028 cold=0   draft: calls=36 union=288` ⇒ **`9028/474/32 = 0.595`**
+（核定：draft `288/36 = 8.00` = top-k ✓；`19.05 < 32` ⇒ verify batch = 4 ✓；`n = uni.size()` @`llama-context.cpp:6303`）。
+`cold(ZERO) = 0` ⇒ **單次 verify 不打穿池**（推翻「union 打穿 143 slots」那句）。真正的成本是**長期**：
+`layers_distinct_over_slots` **3（off）→ 11（llama-bench）／18（server）**、`capacity` miss **218 → 2229（×10.2）**、
+server 路徑 hit **96.0 → 87.1%**、`worst` 層 167/143 → 240/143。
+⇒ 對症的路是「**改淘汰／填充策略**」（`M6` 的「唯一不需預算的路」），**不是**「增大池」。
+⚠️ **新疑點**：llama-bench 路徑 `verify: calls = 0`（258 次全算進 draft）⇒ 它的 verify **不走 fast path**
+（走 `ensure_batch` 的填充），而 **server 路徑的 verify 走 fast path** ⇒ **那個 −4~−6% 可能高估了生產路徑的成本**；
+`M3_M4_STATUS` 的 HTTP **+5.7%** 正是 server 路徑 ⇒ **兩份量測的不一致有了機制解釋**。
+⇒ **MTP off/on 的正確配對要在 server 路徑做（HTTP），不是 llama-bench。** 全文 §EN-143／§EN-144。
+
 ⇒ **`10.9 × 1.5 × 1.06–1.25 ≈ 17–20 t/s` ⇒ 這三個方向到不了 25。** 25 的那 2.4× **只能來自
 「削 GPU work」**（`M3_M4_STATUS` §2 的兩條界：移除 CPU 序列化 ⇒ 12.1 t/s；GPU 跨度本身 82.84 ms
 ⇒ 12.1 t/s 上限）。

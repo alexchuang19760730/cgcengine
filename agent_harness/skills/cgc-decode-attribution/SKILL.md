@@ -331,6 +331,28 @@ async submit，三個成分都不可分。
 **(1)** 把 `--spec-*` 加進 `llama-bench`（下面那節說只有三處要改，但那是 `src/`，歸引擎層）；
 **(2)** 保留 `llama-speculative-simple` 當 MTP 臂，並**永遠不與 llama-bench 並排**。
 
+**★★ 2026-09-18 補充（MTP 的池成本儀器 — 已存在，不要重寫）：**
+
+要問「verify 的 union 有多少複用」時，**儀器早就印了**，位置是
+`src/llama.cpp/src/llama-expert-cache.cpp:2529`（**不是 env-gated**，只在 `n_fast_calls > 0` 時於結尾印一次）：
+
+```
+llama_expert_cache: MTP fast path: calls=510 union=9316 cold(ZERO)=0 (0.0%)   verify: calls=474 union=9028 cold=0 (0.0%)   draft: calls=36 union=288 cold=0 (0.0%)
+```
+
+- `n = uni.size()`（`llama-context.cpp:6303` 傳的是去重後的 union）⇒ **`union` 已是去重後的個數**。
+- **讀法**：`verify 的 union / verify 的 calls` = 每次 verify 的平均 union；**除以 `(1+n_max) × top_k`**（我們是 `4 × 8 = 32`）
+  ＝ 複用率。實測 **9028/474/32 = 0.595** ⇒ 4 個 verify token 之間有 **40.5% 的專家複用**。
+- **兩個現成的內部核定**（讀之前先跑）：`draft` 的 `union/calls` 必須 **＝ top_k**（我們 288/36 = 8.00 ✓）；
+  且 `union` 必須 `< (1+n_max)*top_k`（19.05 < 32 ⇒ batch 真的是 4）。
+- ⚠️ **陷阱（會讓兩份量測互相矛盾）**：**llama-bench 路徑下 `verify: calls = 0`**（所有 call 都被算進 `draft`），
+  因為那條路的 verify 走 `ensure_batch`（真實填充 + LRU），**而 server 路徑的 verify 走 fast path（`touch`，no-fill）**。
+  ⇒ **MTP 的池成本在兩條路上結構不同，不可並排**；`MTP ≈ 0`（llama-bench）與 `+5.7%`（HTTP）的落差有這個成分。
+  ⇒ **要判 MTP 的淨效果，配對必須在 server 路徑做（HTTP + ABBA），不是 llama-bench。**
+- **成本的主因不是單次 union**：`cold(ZERO) = 0` ⇒ 單次 verify 不打穿池。真正在動的是
+  `layers_distinct_over_slots`（**3 → 11／18**）與 `capacity` miss（**218 → 2229，×10.2**）
+  ⇒ **長期工作集超過 143 slots** ⇒ 對症的是「改淘汰／填充策略」，不是「增大池」。
+
 要配對，env 必須是解析出來的而不是手抄的——`llama_bench_matrix.py` 支援 `PROFILE:ENV=VAL`：
 
 ```sh
