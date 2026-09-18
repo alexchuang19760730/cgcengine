@@ -593,6 +593,23 @@ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
    「這個檔不在索引裡」——`index_assets.py` 對 `Backup/` 與 `.workbuddy/memory/` 這兩類前綴
    只驗**存在**、不驗 bytes（`VOLATILE_PREFIXES`），所以它們的漂移會改由
    `build_memory_index.py --check` 單獨報出來。
+
+   **★★ 2026-09-18 新增同族的第三種誤讀：`manifest OK` 也不代表那條資產「在版控裡」。**
+   `index_assets.py` 對 `scripts/check/*` 驗的是**磁碟上的** existence + bytes + mtime ⇒
+   一個**從未 `git add`** 的檔案照樣讓它印
+   `manifest OK: N assets, existence + bytes + mtime all agree`，
+   而 repo 的其他部分（白皮書、skill、`lessons.jsonl`）**已經在引用它** ——
+   **引用在 repo 內是斷的，而每一道閘門都是綠的。**
+   實例（同日）：`scripts/check/decode_step_profile.py`（487 行、19 函式、有 `main()`）
+   **已在 `MANIFEST.jsonl` 裡註冊**，卻不在版控；`docs/M3_M4_STATUS_2026-09-17.md` 被
+   我的白皮書與三份記憶快照引用，也不在版控（`docs/` 的五份 `M3*` 兄弟檔全都已追蹤）。
+   修法是純新增 `git add`（零內容改動），不是改檔案。
+   **30 秒判別式**：對任何要引用的路徑跑 `git ls-files --error-unmatch <path>`；
+   失敗就是「不在版控」，與索引的顏色無關。
+   ⇒ 通則：**「索引綠」與「在版控裡」是兩個獨立的軸。**
+   （同族的第四種：`git add <path>` 對**已追蹤但被 `.gitignore` 蓋到**的路徑會失敗
+   ——`Backup/` 就是。此時要先 `git ls-files --error-unmatch` 確認它**真的已追蹤**再用 `-f`；
+   若沒先確認，`-f` 會把一個本來不該進版控的檔推進去。）
 3. **不要為了「看一眼」而跑不帶 flag 的 `index_assets.py`**——那就是重建，會覆寫 manifest。
 4. 確認對方靜止（`sessions` 表裡它的 `status` 不再是 `working`、相關檔 mtime 不再動）再重生。
 5. **「誰在用這台機器」與「誰在改這些檔」是兩個不同的軸 —— 而第一個要讀日誌，不是 `pgrep`。**
