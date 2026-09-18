@@ -614,6 +614,120 @@ AP isolation／路由器 ACL／對端防火牆 —— <b>只有對端自己回�
 它牽涉認證與暴露面，不是這一輪能順手做的。</li>
 </ul>
 
+<h2>§13 edge_server v2 × agent harness：整合的答案是「edge 端不用改，缺口在契約這一側」</h2>
+
+<div class="box ok">
+<b>問的是「edge_server.py v2 能不能跟 agent harness 整合」。量完的答案是：能，而且
+<b>edge 端一個字都不用改</b> —— 缺的那一半在契約這一側。</b>
+</div>
+
+<h3>§13.1 先把兩邊的欄位攤開來對</h3>
+
+<p>harness 的端點契約（<code>fleet.json</code> 的 <code>contract</code>）要求
+<code>endpoint_id</code>／<code>reported_at</code>／<code>platform</code>／<code>arch</code>／
+<code>what_ran</code>／<code>capabilities</code>／<code>not_measured</code>。</p>
+
+<table>
+<thead><tr><th>契約欄位</th><th>edge <code>/v1/edge/status</code></th><th>狀態</th></tr></thead>
+<tbody>
+<tr><td><code>endpoint_id</code></td><td><code>endpoint_id</code></td><td>✓ 同名</td></tr>
+<tr><td><code>reported_at</code></td><td><code>reported_at</code>（同格式）</td><td>✓ 同名</td></tr>
+<tr><td><code>platform</code></td><td><code>host.platform</code></td><td>✓ 巢狀</td></tr>
+<tr><td><code>arch</code></td><td><code>host.arch</code></td><td>✓ 巢狀</td></tr>
+<tr><td><code>capabilities</code></td><td><code>capabilities</code></td><td>✓ 同名</td></tr>
+<tr><td><code>not_measured</code></td><td><code>not_measured</code></td><td>✓ 同名（<b>原樣帶過來</b>）</td></tr>
+<tr><td><b><code>what_ran</code></b></td><td><b>無</b></td><td><b>★ 唯一的硬缺口 —— 而它不得為空</b></td></tr>
+<tr><td><code>metrics</code>（選）</td><td><code>uptime_s</code>／<code>served{}</code>／<code>host.ram_gb</code>／<code>cpu_cores</code></td><td>✓ 可映射</td></tr>
+<tr><td><code>gpu</code>（選）</td><td>只有 <code>host.backend_hint</code></td><td>✗ <b>不填</b>（那是後端提示，不是型號）</td></tr>
+</tbody></table>
+
+<h3>§13.2 契約形狀只留在契約這一側</h3>
+
+<p>新增 <code>report_endpoint_status.py --from-edge-status &lt;檔或 URL&gt;</code>。
+<b>edge 吐事實，映射只發生在 harness 這一側</b> —— 若讓 edge 也吐契約形狀，
+就會有第二份契約，而兩份必然漂移（這個 repo 已經為此付過學費）。</p>
+
+<p><b><code>what_ran</code> 從哪來</b>：契約要求它不得為空，而 edge 端唯一誠實的來源就是它
+自己的觀測 —— 啟動時間、worker 模式與可達性、已服務計數、上一次實際走過的 chat 路由、
+模型是否存在、探測到的旗標數。<b>每一條都能回溯到 status 裡的一個欄位</b>；
+<code>notes</code> 寫明「前 N 條由觀測導出、其餘 N 條由 <code>--what-ran</code> 人工提供」。
+<b>不推測、不補話。</b></p>
+
+<h3>§13.3 會拒跑的情形（寧可拒跑，也不要寫出錯的東西）</h3>
+
+<ul>
+<li><code>object</code> 不是 <code>powerauto.edge.status</code>（拿錯 JSON，例如餵了 <code>/v1/models</code>）。</li>
+<li><code>--id</code> 與 status 的 <code>endpoint_id</code> <b>不一致</b> —— 那會把上報寫到<b>錯的檔名</b>。</li>
+<li>兩邊都沒有 id ⇒ 不知道這份上報屬於誰。</li>
+<li>edge 回空 <code>not_measured</code> 而沒明確宣告 —— 空陣列是一句<b>主張</b>，不能由沉默推得。</li>
+</ul>
+
+<h3>§13.4 ★ 一個會讓整合靜默失效的環境變數：<code>HTTP_PROXY</code></h3>
+
+<p>環境裡若有 <code>HTTP_PROXY=http://127.0.0.1:7897</code>（本機實測就是），
+<code>urllib</code> 會把 <code>http://192.168.101.90:…</code> <b>也丟進代理</b> ⇒
+去連我們自己的區網入口靜默失敗 —— 而失敗<b>長得像「端點沒在跑」</b>。</p>
+
+<pre><code>負向對照（測 LAN 位址 192.168.101.90，不是 127.0.0.1 —— 後者常被系統 no_proxy 放行）：
+  urllib.urlopen（吃 HTTP_PROXY）            → 失敗（URLError）
+  build_opener(ProxyHandler({}))（繞代理）    → 通
+</code></pre>
+
+<p>所以 URL 來源一律走 <code>ProxyHandler({})</code>，並加一格自測把 <code>HTTP_PROXY</code>
+設成壞位址、斷言結果仍然正確。<b>這一格是有辨別力的</b>（上面那組負向對照就是證據）。</p>
+
+<h3>§13.5 ★ 另一件差點被靜默吞掉的事：<code>host</code> 缺 platform／arch</h3>
+
+<p>映射會退回 <code>sys.platform</code>／<code>platform.machine()</code> —— 也就是
+<b>產生器所在的機器</b>的值。若產生器不在端點上跑，那兩格就是<b>錯的</b>，而且看起來完全正常。
+所以 <code>notes</code> 會明說「取自產生器所在的機器」。自測第 13 格釘住這一句。</p>
+
+<h3>§13.6 端到端實跑（不是推論）</h3>
+
+<pre><code>edge_server.py --host 0.0.0.0 --port 8080 --api-key &lt;key&gt; --endpoint-id mac-local --no-worker
+  → lsof: *:8080 (LISTEN)
+
+report_endpoint_status.py --from-edge-status http://192.168.101.90:8080/v1/edge/status \
+    --id mac-local --not-measured '…' --out-dir /tmp/live_edge_report
+  → wrote /tmp/live_edge_report/mac-local.json
+  → what_ran = 3 件（全部由觀測導出）  not_measured = 4 件（edge 的 2 條 ＋ 人工的 2 條）
+
+產出（節錄）：
+  platform=darwin  arch=arm64
+  what_ran:
+    - edge_server edge_server.py v2 (2026-09-18) 於 2026-09-18 15:46:32 啟動
+      （listen 0.0.0.0:8080；worker 模式 disabled）
+    - worker（http://127.0.0.1:8081）：--no-worker：沒有 spawn worker
+    - 端點已服務 chat=0、completions=0、emit=0、resume=0（uptime 0.6s）
+  metrics: {"edge_uptime_s":0.6, "edge_served_chat":0, "host_cpu_cores":10, "host_ram_gb":16}
+  not_measured:
+    - worker 不可達 ⇒ 現在沒有推理能力（--no-worker…）      ← edge 自己宣告的
+    - 啟動後還沒有任何生成請求 ⇒ 沒有實測過 tok/s 與輸出品質  ← edge 自己宣告的
+    - prefill ≥250 t/s 沒有可重現的達成                     ← 人工提供
+    - decode 25 t/s 未達成（現值 12.62 t/s，2.07×）          ← 人工提供
+
+把這份換進 agent_harness/portal/endpoints/mac-local.json 之後：
+  build_fleet_portal.py --check  → OK: 4 個端點 × 6 個來源；契約全部合法
+（驗完就還原，工作區 0 項變更）
+</code></pre>
+
+<p><b>自測 7 → 15 格</b>（新增 8 格：正常映射／what_ran 可回溯／拿錯 JSON／id 不一致／
+兩邊沒 id／host 缺席要明說／空 not_measured／URL ＋ 壞 proxy）。</p>
+
+<h3>§13.7 邊界與還沒做的</h3>
+
+<ul>
+<li><b>edge 端沒有改動</b>。整合是「harness 單向讀 edge 的事實」——
+  這也是為什麼它不需要 <code>--no-worker</code> 之外的任何新旗標。</li>
+<li><b>離線端（鴻蒙／Windows）還沒走這條路</b>：它們的 edge_server 沒在跑。
+  但同一支指令吃<b>檔案</b>（<code>--from-edge-status path/to/status.json</code>），
+  所以「端點 dump status → 既有通道帶回來 → harness 映射」是成立的，只是還沒實作 dump 那一步。</li>
+<li><b>沒有自動化</b>：這是一支要人跑的指令，不是常駐同步。要不要讓它定期跑，是下一個決定
+  （那會動到 <code>fleet_status.jsonl</code> 的趨勢與上報的新鮮度）。</li>
+<li><code>gpu</code> 刻意留空：edge 只有 <code>backend_hint</code>，那不是型號。
+  要填就得另外問（<code>/v1/cgc/profile</code> 有 <code>gpu_type</code>，但那是另一支端點）。</li>
+</ul>
+
 <p class="small" style="margin-top:26px">
 本檔由 <code>docs/FLEET_PORTAL_DELIVERY_20260918_1330.html</code> 交付，與它所屬的 commit 綁定。
 所有數字都可在本機用 §10 的指令重跑；沒有任何數字是轉述的。

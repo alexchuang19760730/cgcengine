@@ -3,6 +3,42 @@
 這個目錄是**離線端進入入口的唯一入口**。任何端點只要能產生一份符合下面契約的
 `<endpoint_id>.json` 並讓它落到這裡，就會出現在 `docs/FLEET_PORTAL.html` 的機隊表上。
 
+## 從 edge_server 產生上報（`--from-edge-status`）
+
+★ **契約形狀只存在這一側。** `edge_server.py` 吐的是**事實**（它觀察到什麼），
+這一支把事實映射成契約。若讓 edge 端也吐契約形狀，就會有第二份契約 —— 而兩份必然漂移。
+
+```bash
+# 服務在跑（--no-worker 也能起，不需模型、不佔記憶體）
+python3 installer/edge_server.py --host 0.0.0.0 --port 8080 \
+    --api-key <key> --endpoint-id mac-local --no-worker
+
+# 把它的 status 映射成上報（URL 或檔案皆可）
+python3 agent_harness/portal/report_endpoint_status.py \
+    --from-edge-status http://192.168.101.90:8080/v1/edge/status \
+    --id mac-local \
+    --not-measured '<你自己知道的未知>' \
+    --out-dir agent_harness/portal/endpoints
+```
+
+**`what_ran` 從哪來**：契約要求它不得為空，而 edge 端唯一誠實的來源就是它自己的觀測 ——
+啟動時間、worker 模式與可達性、已服務計數、上一次實際走過的 chat 路由、模型是否存在、
+探測到的旗標數。**每一條都能回溯到 status 裡的一個欄位**；`notes` 會寫明
+「前 N 條由觀測導出、其餘 N 條由 `--what-ran` 人工提供」。**不推測、不補話。**
+
+**會拒跑的情形**（寧可拒跑也不要寫出錯的東西）：
+`object` 不是 `powerauto.edge.status`（拿錯 JSON）／`--id` 與 status 的 `endpoint_id` 不一致
+（會寫到**錯的檔名**）／兩邊都沒有 id／edge 回空 `not_measured` 而沒明確宣告
+（空陣列是一句**主張**，見上面的規則）。
+
+★ **URL 一律繞代理**：環境裡的 `HTTP_PROXY`（本機實測 `http://127.0.0.1:7897`）會把
+`http://192.168.101.90:…` 也丟進代理 ⇒ 靜默失敗，而失敗長得像「端點沒在跑」。
+實測：`urlopen` 失敗、`build_opener(ProxyHandler({}))` 通（測 LAN 位址，不是 127.0.0.1）。
+
+★ **`host` 缺 platform／arch 時**：那兩個值取自**產生器所在的機器**，`notes` 會明說。
+若產生器不在端點上跑，它們就是錯的 —— 這一句必須留著，否則兩格看起來像端點的事實。
+
+
 ## 為什麼是檔案，不是協議
 
 鴻蒙端與 Windows 端**目前不在我們的網路上**。在它們真的離線時，任何「即時協議」都不成立
