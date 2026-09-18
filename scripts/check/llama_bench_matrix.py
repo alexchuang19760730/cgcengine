@@ -107,6 +107,14 @@ ARMS: dict[str, tuple[str, dict[str, str]]] = {
     # arm separates "the ZERO-slot reservation starves layer 1" from "the slab path leaks cache state".
     "prod25-stream-mtpoff": ("prod25", {"CGC_PREFILL_STREAM": "1", "CGC_GATHER_SLAB_CAP": "256",
                                         "CGC_SERVER_MTP": "0"}),
+    # [CGC 2026-09-18 §EN-145/§EN-146] `prod25-stream-mtpoff` above sets ONLY CGC_SERVER_MTP=0, and
+    # run_server.sh:153-161 turns that into MODEL_DEFAULT=$Q36 -- a DIFFERENT checkpoint with no
+    # nextn head (verified with CGC_DUMP_ENV=1). So it is a cross-checkpoint probe, not an MTP pair.
+    # This arm pins MODEL to the production Nail checkpoint, so the ONLY difference from
+    # `prod25-stream` is the MTP flag -- which is what makes an MTP off/on comparison meaningful.
+    "prod25-nail-mtpoff": ("prod25", {"CGC_PREFILL_STREAM": "1", "CGC_GATHER_SLAB_CAP": "256",
+                                      "CGC_SERVER_MTP": "0",
+                                      "CGC_SERVER_MODEL": "models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf"}),
     # The instrumented FATAL showed the failing layer with owned=142/142 usable slots, loading=0,
     # queued=0, pinned=0 -- i.e. an eviction that should have succeeded but returned -1. The only
     # code path in pick_slot that rejects EVERY owned slot on all three passes is the SpAc victim
