@@ -388,3 +388,64 @@ B 的 `LOST` 再按「兩邊 host 是否同意該位置」分成 `hosts agree`�
 
 **不要**再用「ids 同不同」當「有沒有缺陷」的判準（`llama-context.cpp` 明寫兩臂可以換 slot 而無後果）；
 不要用 `clamped` 的**全表**數字；不要再用 `-l20` 當哨兵。
+
+---
+
+## ★★ 09-18 11:1x（§EN-133）：上面「下一步」裡的**主嫌被劃掉**，前線收斂到一句話
+
+**這一節取代上面「下一步①」的嫌疑犯清單與「②」的優先序。**
+
+### 1. ① 的主嫌 `CGC-SLOT-TABLE-CLAMP` **不是這個缺陷 —— 劃掉**
+
+上面寫「已指名：`CGC-SLOT-TABLE-CLAMP`（`llama-context.cpp:4291-4307`…）」。
+**只讀既有 log（沒有跑任何東西）就否證了它**：
+
+```
+llama_server_20260917_130443 / 130721 / 131247 / 132734（09-17 13:04–13:28）
+  S1 slot-table: publishes=1599 clamped_selected=0 clamped_table=295815 …
+  CGC-SLOT-TABLE-CLAMP: site=pool verify il=1..4 clamped=185/256 (no consumed id affected: sel_wrong=0)
+```
+
+- **`clamped_selected=0`、`sel_wrong=0`：每一臂、每一層。** 被消費的 id 從來沒有被 clamp。
+- `clamped_table=185/256` 是**整張表**的非常駐比例（≈72%），**每一輪都一樣 ⇒ 沒有資訊**（B1）。
+  （上面「不要用 `clamped` 的全表數字」那條正是為此，本節把它升級成「那個計數本身就不是信號」。）
+- **「這個計數是不是同義反覆」已查證，不是**：兩個呼叫點（`llama-context.cpp:6400` `site=fast`、
+  `:6551` `site=pool`）都傳**本地 `ids`**，而那個 `ids` 正是同一段 `memcpy(t_ids->data, ids, …)`
+  寫進 ids tensor 的那一份 ⇒ **它數的就是消費者會讀的那組 id**。
+
+### 2. 「消費者讀到上一步的向量」也否證
+
+碼裡 `CGC-S1-IDS-SHAPE: … index vector NOT written` 分支的註解自己寫
+「the alternative is the consumer reading the PREVIOUS step's vector -- legal ids, wrong experts,
+nothing asserts」—— 與觀測（token 0 對、token ≥1 錯、不 assert）**逐條吻合**，所以先查它：
+**所有 log 一場都沒發生**（`grep -rl CGC-S1-IDS-SHAPE` 空）；`CGC-S1-IDS-WRITE` 顯示
+`il=1 ne=[8,2] n=16 v0=193 v8=237` 這種**有寫入**的行 ⇒ **ids tensor 完整寫入**。
+
+### 3. 收斂（四個「已知」＋一個「只剩」）
+
+已知：① host 的 id 正確；② host 的表對被消費的專家自洽（`sel_wrong=0` ＋ `SLOT-SEL wrong=0`）；
+③ ids tensor 完整寫入；④ **裝置讀到的 slot 不是 host 發布的那個**
+（`own=`：B 讀 slot 0 ← 專家 163，A 讀 slot 8 ← 專家 237）。
+
+⇒ **只剩一個分支：GPU 端查表回傳了 host 沒發布的 slot。** 那正是 `exp=`（§9.18.8）要分辨的事。
+
+### 4. ⇒ 下一件事（唯一）：把 `exp=` 的**來源**換掉
+
+`cgc_expect_lookup`（`llama-context.cpp:3277-3296`）讀 `cache_remap_tensors[il]`，而
+`llama-graph.cpp:2190-2191` 的 `cgc_slot_table_gpu && il >= cgc_s1_min_il` 分支**不建 host remap leaf**
+⇒ 對 `il>=1` 沒條目 ⇒ 實跑 `exp=none`。
+**修法：不要讀 leaf，改成在 host 現算 `exp[j] = st[e_j]`。**
+- `st` ＝ `llama_expert_cache::slot_table[layer * n_expert + expert]`（`llama-expert-cache.h:151-155`）。
+- `e_j` ＝ 呼叫點手上就有（`ids` 與 `st` 在 `cgc_publish_slot_table_counted` 附近同時可見）。
+- **不需要新 env、不需要內核**（§9.18.8 已寫死）。
+- ⚠ `ggml-metal-ops.cpp` 有**未提交**的 §9.18.9 改動（`CGC_IDS_STRIDE` 8→64 ＋ 印表機 clamp，+27/−2），
+  作者不是任何被追蹤 session（§9.18.9-b）⇒ **改 `llama-context.cpp` 不撞它**，但**重建會把它的改動編進去**
+  —— 那是要的（兩半都必要），只是 commit message 要揭露。
+
+### 5. 另一條（與 S1 無關但同輪結清）：`cache` 桶的 120 個 CPY **不可摺疊**
+
+`delta-net-base.cpp:509-526` 的 K 次 `ggml_cpy` 是**回滾環**：`n_rs_seq = draft.n_max`
+（`common.h:395-400`，我們是 3 ⇒ **K=4**），`s_slot = K − t` ⇒ **K 個相差一步的快照寫進 K 個不同 slot**，
+回滾讀者 = `llama-memory-recurrent.cpp:184/396`。來源窗遞增、目的 slot 遞減 ⇒ 需要**負 stride**，
+`nb` 不能為負 ⇒ **單一 cpy 表達不了**。**⇒ 這條作廢，不要再試。**
+（附帶：`K = n_rs_seq + 1` ⇒ **MTP 一開就每層多 4 個 CPY** —— MTP 的成本不只在 verify 圖。）
