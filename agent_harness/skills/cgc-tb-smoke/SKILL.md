@@ -534,10 +534,37 @@ docker compose version                   # 一定要印出 Docker Compose versio
   這一輪就是先被叫去跑、兩分鐘後被叫停。工作目錄一律是 `flashkv-devserver`；
   `flashkv0516` 是它的**主 repo**（worktree 關係），踏進去要另外授權。
 - 收工：`colima stop`，並把 `~/.colima/default/colima.yaml` 的 `cpu`／`memory` 改回 `4`／`8`。
+  **★ 停機前先量三個「閒置判準」，任一不過就別停**：① `docker ps -aq | wc -l` 要 **0**；
+  ② `lsof -nP -U | grep -i docker.sock` **只有 colima 自己的 ssh mux、沒有外部 client**；
+  ③ `~/.workbuddy/workbuddy.db` 的 `sessions` 表裡**沒有別條線 `status='working'`**。
+  停機**可逆**（`colima start` 就回來；11 個映像在 6.6 GB 的 VM 磁碟裡，`colima stop` 一個位元組都不動它），
+  但打斷別條線正在跑的 `tb run` **不可逆** ⇒ **判準③比判準①重要**。
+- **「停掉能省多少」要用實數，不要拿 colima 的 RSS 猜**（2026-09-18 實測，`--memory 4 --cpu 2` 的閒置 VM）：
+
+  | 量 | 停機前 | 停機後 |
+  |---|---|---|
+  | `vm_stat` Pages free | 3,689 頁（**61 MB**） | 65,768 頁（**1.03 GB**） |
+  | `sysctl vm.swapusage` used | 11,132 MB | 10,376 MB（**−756 MB**） |
+  | `com.apple.Virtualization.VirtualMachine` | RSS 349 MB、行程存在 | **行程已結束** |
+
+  ★ **那 4 GiB 不在 `colima`／`limactl` 身上** —— 這幾個 host 行程 RSS 合計只有 **0.08 GB**；
+  guest RAM 掛在 `com.apple.Virtualization.VirtualMachine.xpc`（guest 閒置時大部分已被壓縮／換出，
+  所以 RSS 只有 ~350 MB 而不是 4 GiB）。**要看這個 XPC 行程與 swap，才看得出真正釋放了多少。**
 - **macOS 沒有 `timeout`**；直接跑，或用 `gtimeout`。
-- **殺不掉別人（或自己殘留）的行程時**：孤兒行程（`ppid=1`）可能不在你這個 session 的行程樹內，
-  沙箱下的 `kill -9` 會靜默無效 —— 要用非沙箱的執行方式才殺得掉。
-  （daemon 類的，例如 prime-agent 的 supervisor/worker，也是這樣。）
+- **孤兒行程（`ppid=1`）分兩類，不要套同一個結論**（★ 2026-09-18 實測，更正本節原句）：
+  - `limactl usernet`（colima 的 user-v2 網路）：**`colima stop` 不會收掉它們** —— 實測留下 **2 個**
+    （分別已跑 1 天 17 小時、21.6 小時），而且**握著同一組 socket 路徑**
+    （`_lima/_networks/user-v2/user-v2_{ep,qemu,fd}.sock`）。這兩個 **`kill -TERM` 就乾淨結束，不必 `-9`**。
+  - prime-agent 的 supervisor／worker 那類 daemon：沙箱下的 `kill -9` **靜默無效**，
+    要用非沙箱的執行方式才殺得掉。
+  ⇒ 判準是**先試 TERM 並確認結果**。把「殺不掉」的結論套到整個孤兒類別上，
+  會讓**真的能清的兩個**被漏掉，而它們看起來與「清了但沒用」一模一樣。
+- ★ **Docker Desktop 移除後留下的 root daemon 仍在跑**：`com.docker.vmnetd`
+  （binary `/Library/PrivilegedHelperTools/com.docker.vmnetd`，plist `/Library/LaunchDaemons/com.docker.vmnetd.plist`）。
+  實測已跑 **3 天 11 小時**、`/Applications/Docker.app` **不存在**、**沒有在聽任何 socket**。
+  它與 colima 無關（colima 走 lima 自己的 user-v2 網路，不走 vmnetd）⇒ **純殘骸**。
+  清它**要 sudo**（`sudo launchctl bootout system /Library/LaunchDaemons/com.docker.vmnetd.plist`
+  再移除 plist 與 binary）。拿不到 sudo 就先記著 —— **不要用 kill 硬闖**，launchd 會把它拉回來。
 
 ## 失敗時怎麼讀
 
