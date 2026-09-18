@@ -188,10 +188,30 @@ async submit，三個成分都不可分。
 | op | 數 | 左鄰 → 右鄰 | 解讀 |
 |---|---|---|---|
 | `ADD` | **240**/270 | `ffn_moe_weighted` → `ffn_moe_out` | **MoE 專家輸出的歸約鏈** |
-| `GET_ROWS` | 90 | `cache_r_l*` → `cache_s_l*` | 池的 gather |
+| `GET_ROWS` | 90 | `cache_r_l*` → `cache_s_l*` | **遞歸狀態的 gather**（★ 2026-09-18 更正：舊寫「池的 gather」是錯的，見下） |
 | `MUL_MAT` | 130 | `alpha`/`beta`、`attn_norm` → `linear_attn_qkv_mixed` | 線性注意力投影 |
 | `MUL` | 60 | `norm` → `final_output` | 輸出縮放 |
-| `GATED_DELTA_NET`／`UNARY`／`FLASH_ATTN_EXT` | 30／30／10 | — | 線性注意力核心／池／10 個全注意力層 |
+| `GATED_DELTA_NET`／`UNARY`／`FLASH_ATTN_EXT` | 30／30／10 | — | 線性注意力核心／遞歸狀態更新／10 個全注意力層 |
+
+**★ 2026-09-18 更正：`cache` 桶不是「池自己的暫存」，是「遞歸／KV 狀態管線」。**
+把 `cache` 桶成員的名字逐字印出來（新 dump，log `050331`）是
+`cache_r_l*`（遞歸狀態，`llama-model.cpp:378-379` 的 `pattern_r_cache`）、`cache_s_l*`、
+`cache_k_l*`／`cache_v_l*`（10 個全注意力層的 KV）—— **與專家池無關**。
+池的填充在 **CPU 側的 hook**（計在 `CGC-SEG` 的 `cb`），**在 GPU 節點表裡沒有成本**
+（與 `fill_wait = 0.000` 一致）。
+⇒ 「`cache` ≥ 整個 MoE 專家 GEMV 家族」這句的**份額**成立、**歸屬**不成立；
+而更正後結論更強：**線性注意力（GatedDeltaNet）家族 ≈35–45%，MoE 家族 ≈12–15%。**
+另外它是**操作數／啟動開銷**受限而非頻寬（`cache` 真工作位元組 ≈ 每 token 十幾 MB ⇒
+0.1–0.5 ms，量到 27 ms）：**120 個 CPY** 來自 `delta-net-base.cpp:509-526`，`n_rs_seq != 0`
+時每層建 `K = n_rs_seq+1` 個獨立 `ggml_cpy`（30 層 × 4 = 120，與 dump 逐格吻合）。
+（出處 `.workbuddy/memory/2026-09-18.md` §EN-132。）
+
+**★ 同一輪的另一個陷阱：`cb` 的份額會被「細粒度臂自己」灌大。**
+本 skill 曾記「decode 步 ≈80 ms；`wait` 83–90%、`cb` 7–15%、`submit` 4%」。用
+`en-work-fine`（`CB_N_MAIN=1` + `SERVER_N_CB=16` ⇒ **每段 17 顆 command buffer**）量，
+`cb` 會變成步的 **42–75%** —— 那是**那個臂自己造成的偽影**，不是生產 shape。
+⇒ **要引用相位分解，先指名臂的 `n_main`／`n_cb`；`n_cb` 掃描在生產 shape 上已於 09-15
+判死（1→16 無影響、`cb+submit` 僅 9%）。**
 
 **這一步只讀既有的 log**（`Backup/cgc_logs/*.log` 裡任一份帶 `CGC_GRPH_DBG` 的），不跑任何東西。
 ⇒ **通則：在「猜名字的代價是一整輪跑」之前，先問「我能不能從既有的 dump 讀出來」。**
