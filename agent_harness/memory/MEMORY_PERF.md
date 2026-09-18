@@ -420,6 +420,24 @@ op: VIEW 290 | CPY 210 | RESHAPE 60 | SCALE 60 | SET_ROWS 20 | PERMUTE 20
 
 ⇒ **支配區塊是線性注意力（GatedDeltaNet）＋它的狀態管線（約 35–45%），不是 MoE（約 12–15%）。**
 
+⚠️ **09-18 13:4x 追加：這個排名只能讀到「家族」層級，細粒度不能用它。**
+名字表的 `wcntw` 是 `ns_kind_wns[q] += dur * wcnt[q] / wtot`（`ggml-backend.cpp:2306`）——
+**把一個 command buffer 的 `dur` 平均分給該 buffer 內有工作的節點**。而 `prod25` 的一個 decode 步有
+`bufs=633` / `nodes_all=3979`（≈6.3 節點/buffer）⇒ **落在小 buffer 裡的節點會獨吞整段時間**，
+受害者正好是**每層的第一個具名 op**。實證：`attn_norm` 被報成 **36.76 ms（8.5%，step 88）**，
+而 dump 直讀它是 `MUL ne=[2048,2]` —— 40 個 **4096 元素**的逐元素乘法，不可能花 36.76 ms。
+**⇒ 細粒度改讀 op 級表**（`CGC-GPUOPS`，`nd=` 是確定值）：`MUL_MAT` 426 個 **32.7%** ＞
+`MUL` 278 16.6% ＞ **`MUL_MAT_ID` 117 個 10.0%（MoE 專家 GEMV）** ＞ `CPY` 210 8.1% ＞
+`UNARY` 6.6% ＞ `GATED_DELTA_NET` 4.8% ＞ `GET_ROWS` 4.3%。
+⇒ **在 op 口徑下 MoE 專家 GEMV 只有 10.0%，最大單塊是 dense `MUL_MAT`。**
+（lesson `eng-mh-0070`；白皮書 §25／§25.1；`VIEW` 866／`RESHAPE` 598 是 NOOP，`wcntw=0` 而 `cntw` 12.4%／15.0%。）
+
+⚠️ **09-18 13:1x：`dnqkv_proj` 那一塊「不是記憶體壓力」**（池 8→6 GiB 的 differ-by-one，
+`dnqkv_proj` 中位 29.34 → 30.55 ms ＝ ×1.041，跟著全局漂移，**沒有選擇性下降**；
+縮池只換來 `file_reads` +54%、`io_bytes` +56%、hit 87.1→79.7%）。
+⇒ **它是 GPU 側的成本**（8.5 MiB IQ4_XS × 30 層 = 255 MiB/步 ⊕ 29 ms/步 ⇒ **≈8.8 GB/s**，
+M4 DRAM ~120 GB/s ⇒ 延遲／固定開銷主導）。白皮書 §24。
+
 **而且它是「操作數／啟動開銷」受限，不是頻寬受限**：`cache` 的真工作位元組 ≈ 每 token 十幾 MB
 （`conv_input` = 4×8192、`conv_state_last` 回寫 8192…）⇒ 在 ~120 GB/s 下 ≈ 0.1–0.5 ms/token，
 而它量到的是 **27 ms（=`cache` 的 `wcntw`）**。**120 個 CPY 的來源已定位**：

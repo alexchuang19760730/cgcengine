@@ -572,3 +572,28 @@ resident 6197.04）。
 **⇒ S1 的數值身分完整通過（decode 全層已覆蓋）；去序列化的正確性前提滿足。
 ⇒ 下一步：publish 離開熱路徑／`n_segs` 40 → 少數（計數器：`consumed_changed` 只有 16.5%）。**
 全文：`.workbuddy/memory/2026-09-18.md` §EN-140。
+
+### 6. ★★★ 已判決：**S1 解不開 `n_segs`** —— 不要把它當「去序列化」的 unblocker（09-18 13:2x）
+
+三臂 differ-by-one（`p25-mtp-on-diag` → `p25-s1-keepleaf` → `p25-s1-prod`，同檔 Nail ＋ MTP on，
+`--profile prod25 --n-predict 96 --rounds 3`；log `131845`／`132101`／`132412`）：
+
+| 讀數 | diag（有 leaf） | keepleaf | **s1-prod（無 leaf）** |
+|---|---|---|---|
+| **`segs`** | **40** | **40** | **40** ← **沒塌縮** |
+| `S1 slot-table: publishes=` | 0 | 12111 | 12111 |
+| `answer_md5` | `bb3d2bd6` | `bb3d2bd6` | `bb3d2bd6` |
+
+⇒ ① **S1 有啟用**（`publishes=12111`）；② **leaf 在不在，`segs` 都是 40** ⇒
+`llama-graph.cpp:2119-2121` 的「the remap leaf **is the reason** the dispatcher has to drain
+at every layer boundary」**被實測否證**；③ **S1 的 table 仍然是每層 host 寫入**
+（`publishes 12111 ≈ 289 步 × 39 層 + 357 步 × 1 層 = 11628`）⇒ 與 leaf 路徑**同構**
+⇒ **`n_segs` 不可能因此塌縮。**
+
+**⇒ 要塌縮 `n_segs` 必須移除「每層一次 host 寫入」本身**：① 池在步前**一次發布所有層的表**；
+② 或把表**在裝置上算**（S2/S3 家族）。**不要再把 S1 當 unblocker 試。**
+（`consumed_changed` 這次未 instrumented —— 用 `CGC_S1_TABLE_CHURN=1` 才會有；
+§EN-138 的 16.5% 是**另一組臂**的數字，別混用。）
+**t/s 不可引用**（三臂 `thermal_hist` 不同：{NOM:5,MOD:2,HEA:1} vs {HEA:8} vs {HEA:4,MOD:4}）；
+`p25-s1-keepleaf` **永久不可報吞吐**（原始碼逐字：must never be quoted for throughput）。
+全文：`.workbuddy/memory/2026-09-18.md` §EN-150。

@@ -149,6 +149,17 @@ ARMS = {
     # init, so it is the prime suspect. Test them one at a time, plus DRY (which penalises
     # repetition on the TARGET sampler only -- a systematic target/draft mismatch).
     "p25-mtp-on":    {},                       # same-session bare prod25 reference
+    # [CGC 2026-09-18 §EN-149 path 2] S1 to production. Three arms, all on the production shape
+    # (prod25 + Nail + MTP on), so `p25-s1-prod` differs from `p25-mtp-on-diag` by ONE variable
+    # (CGC_SLOT_TABLE_GPU) and `p25-s1-keepleaf` adds one more (CGC_S1_KEEP_LEAF), which keeps the
+    # host leaf consumed and therefore keeps the per-layer drain. That trio separates S1's two
+    # halves: (diag -> keepleaf) = what the in-graph gather COSTS, (keepleaf -> s1prod) = what
+    # removing the leaf/drain PAYS. Without the middle arm a null result is unattributable.
+    "p25-mtp-on-diag":   {"CGC_GPU_TIMING": "1", "CGC_DECODE_PROFILE": "1"},
+    "p25-s1-keepleaf":   {"CGC_GPU_TIMING": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_SLOT_TABLE_GPU": "1", "CGC_S1_KEEP_LEAF": "1"},
+    "p25-s1-prod":       {"CGC_GPU_TIMING": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_SLOT_TABLE_GPU": "1"},
     # [CGC 2026-09-18 §EN-144] The FIRST same-checkpoint MTP-off arm. Every earlier server-side
     # "MTP off" arm set only CGC_SERVER_MTP=0, and run_server.sh:154 turns that into
     # MODEL_DEFAULT=$Q36 = Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf -- a DIFFERENT checkpoint with no nextn
@@ -501,6 +512,15 @@ ARMS = {
     # is still granularity-dependent and must not be ranked. Read the two side by side, never alone.
     "en-work-fine":      {"CGC_GPU_NODES": "1", "CGC_GPU_OPS": "1", "CGC_DECODE_PROFILE": "1",
                           "CGC_GPU_TIMING": "1", "CGC_CB_N_MAIN": "1", "CGC_SERVER_N_CB": "16"},
+    # [CGC 2026-09-18 §EN-149] differ-by-one from en-work-fine: the expert pool shrunk from 8 GiB
+    # to 6 GiB. Deliberately single-variable, so it decides whether `dnqkv_proj`'s 5.5% is a
+    # GPU-side latency cost or the machine's memory pressure (wqkv is a DENSE weight, so unlike the
+    # experts it never goes through the pool; at 8 GiB the launch already reports
+    # "[budget] OVERSUBSCRIBED by 4838 MiB", and 0.49 ms per 7.3 MB works out to ~15 GB/s, which is
+    # swap/compressed-memory order, not DRAM order).
+    "en-work-fine-pool6": {"CGC_GPU_NODES": "1", "CGC_GPU_OPS": "1", "CGC_DECODE_PROFILE": "1",
+                          "CGC_GPU_TIMING": "1", "CGC_CB_N_MAIN": "1", "CGC_SERVER_N_CB": "16",
+                          "CGC_SERVER_EXPERT_CACHE_BYTES": "6442450944"},
     # The same granularity, but dumping one CGC-NSM line per command buffer (range + duration +
     # per-kind node counts) instead of the aggregate table. Why it is needed even now: the printed
     # table's `ub` is PER KIND, so a family of co-located kinds (ffn_moe_gate/up/down all live in

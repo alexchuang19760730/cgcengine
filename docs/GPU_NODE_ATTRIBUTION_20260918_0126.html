@@ -61,6 +61,9 @@
   <span class="tag t-purple">2026-09-18 03:2x 修訂：§9–§14 新增</span>
   <span class="tag t-purple">2026-09-18 05:1x 修訂：§19–§22 新增（把 <code>(other)</code> 拆掉）</span>
   <span class="tag t-amber">2026-09-18 11:0x 更正：<code>cache</code> 是<b>狀態快取</b>，不是池暫存</span>
+  <span class="tag t-purple">2026-09-18 13:0x 修訂：§23–§27 新增（把 <code>node</code> 再拆一層）</span>
+  <span class="tag t-amber">2026-09-18 13:3x 更正：名字表的細粒度讀數不可當工作量用（§25）</span>
+  <span class="tag t-blue">2026-09-18 13:3x 新增：§28–§30（S1 上生產的判決）</span>
   <span class="tag t-gray">未 push</span>
 </div>
 
@@ -159,6 +162,22 @@
 <p><b>仍然成立的部分：</b>§1–§10（L0 的裁決、不需要 <code>MTLCounterSampleBuffer</code> 的理由、
 三個坑）與 §15–§18（<code>node</code> 620 → 350 的命名、逐 op 計數）<b>都沒有被動到</b> ——
 本輪改的是<b>名字怎麼歸桶</b>，不是任何時間、也不是任何節點。</p>
+</div>
+
+<div class="box warn">
+<p><b>2026-09-18 13:3x 更正標註（新增，原文一字未刪）。</b>
+<b>本檔 §11.1 的家族排名（以及 §20.3 的結論）必須與 §25 一起讀。</b>
+名字表的 <code>wcntw</code> 欄，機制是「<b>把一個 command buffer 的 <code>dur</code> 平均分給該 buffer
+內有工作的節點</b>」（<code>ggml-backend.cpp:2306</code>：
+<code>ns_kind_wns[q] += dur * wcnt[q] / wtot;</code>）。而 <code>prod25</code> 的一個 decode
+步有 <b><code>bufs=633</code></b>／<b><code>nodes_all=3979</code></b>（≈ 每個 buffer 只有 6.3 個節點）
+⇒ <b>落在小 buffer 裡的節點會獨吞整段時間</b>，而受害者正好是<b>每層的第一個具名 op</b>。
+實證：名字表把 <code>attn_norm</code> 報成 <b>36.76 ms</b>（8.5%），但 dump 直讀它是
+<code>MUL ne=[2048,2]</code> —— 40 個 <b>4096 元素</b>的逐元素乘法，不可能花 36.76 ms。
+<b>⇒ 細粒度下要讀 op 級表（§25.1），不是名字表。</b>
+（§11.1 的排名本身沒有算錯，是那個<b>權重的粒度不變性</b>在這裡不成立 —— §10.3 早就把這個測試寫成
+新權重的入場條件，而 <code>wcntw</code> 當時沒有跑過它。）
+</p>
 </div>
 
 <h2>§0 摘要</h2>
@@ -1346,6 +1365,261 @@ OK: 沒有 FAIL —但本次有 5 個區段被 SKIP，所以「OK」只代表「
 $ python3 agent_harness/engine_loop/traces/validate.py                  → -&gt; OK
 $ python3 agent_harness/engine_loop/traces/selftest.py                  → 10/10 injected violations rejected
 $ cd agent_harness/engine_loop &amp;&amp; python3 index_assets.py --check        → manifest OK: 108 assets</code></pre>
+
+
+<h2>§23 三批命名：<code>node</code> 15.90% → 10.10%，靶子收斂到一個（2026-09-18 13:0x 新增）</h2>
+
+<p>§15 把 <code>node</code> 從 <b>620</b> 壓到 <b>350</b>（第一次命名），§19–§22 把 <code>(other)</code>
+從 853 清成 <b>0</b>（補詞彙表）。本節做的是<b>把剩下的 <code>node</code> 再拆一層</b> ——
+手法相同，但這次學到「每一批都要改兩處」（§23.1）。</p>
+
+<table>
+<tr><th>名字</th><th>佔比（<code>wcntw</code>）</th><th>節點數</th><th>改了什麼</th></tr>
+<tr><td><b><code>dnqkv_proj</code></b></td><td><b>5.50%</b></td><td>29</td>
+    <td><code>qwen35moe.cpp:270</code> —— <code>attn_qkv</code> 的投影（<code>build_lora_mm(wqkv, …)</code>）</td></tr>
+<tr><td><code>dn_normg_mul</code></td><td>1.20%</td><td>60</td>
+    <td><code>qwen35moe.cpp:292</code> —— <code>build_norm_gated</code> 裡那個 <code>ggml_mul</code></td></tr>
+<tr><td><code>dnbeta_proj</code></td><td>0.10%</td><td>30</td>
+    <td><code>qwen35moe.cpp:406</code> —— <code>ssm_beta</code> 的投影</td></tr>
+</table>
+
+<p><b>結果</b>：<code>node</code> <b>15.90% → 10.10%</b>；<code>nkind</code> 41 → 44。
+<b>而只有 <code>dnqkv_proj</code> 值得動</b>：<code>dn_normg_mul</code> 是 60 個節點換 1.20%，
+<code>dnbeta_proj</code> 是 30 個節點換 0.10%。</p>
+
+<h3>§23.1 每一批都要改兩處（同一個機制的第二次實證）</h3>
+
+<p>只要在 builder 裡 <code>cb(t, "名字", il)</code> 是<b>不夠的</b>。第一次只改那一處的結果是：</p>
+
+<pre><code>node     15.90% → 10.00%      ← 降了（看起來成功）
+(other)   0.00% →  5.30%      ← 但新名字沒出現
+nkind    41     → 41          ← 沒有多出任何名字</code></pre>
+
+<p>因為 <code>(other)</code> 的定義就是「<b>有名字、但名字不在詞表 <code>ns_fix[]</code> 裡</b>」
+（<code>ggml-backend.cpp:2175-2216</code> 的最長前綴匹配）。把 <code>"dnqkv_proj", "dnbeta_proj",
+"dn_normg_mul"</code> 補進 <code>ns_fix[]</code>（<code>:2229</code>）之後，<code>(other)</code> 歸 0、
+<code>nkind</code> 41 → 43 → 44。</p>
+
+<p><b>⇒ 症狀是 <code>(other)</code> 上升而 <code>nkind</code> 不變</b>。只看「<code>node</code> 降了」
+會誤判成功。另外前綴是<b>最長匹配</b>，新名字不能撞既有前綴（用 <code>dn_</code> 是安全的）。</p>
+
+<h3>§23.2 D5 PASS ⇒ <code>cb()</code> 只改名字（這一條可複用）</h3>
+
+<p><code>m123_oracle_gate.py --tag en-node-names</code>：<code>comparable=true</code>、
+<code>config_diffs=[]</code>、M1／M2／M3 各 <b>9/9</b>。
+機制可指：<code>llama-context.cpp:6867-6872</code> 的 <code>graph_get_cb()</code> 第一件事就是
+<code>ggml_format_name</code>，而 <code>cgc_apply_expert_geometry</code> 按<b>張量身份</b>觸發
+（只對 MoE weight）。</p>
+
+<p><b>⇒ 給「非 MoE-weight 的中間張量」加 <code>cb</code> 是安全的</b>，而且<b>比 <code>ggml_set_output</code>
+乾淨</b> —— 後者會擾動 allocator 佈局、破壞逐位元性，這也是 <code>outcap</code> 那條 ladder
+自己聲明「outcap 永遠不是 gate 臂」的原因。</p>
+
+<h2>§24 ★ pool6 裁決：<code>dnqkv_proj</code> <b>不是</b>記憶體壓力（2026-09-18 13:1x 新增）</h2>
+
+<p>§23 之後剩下的問題是：<code>dnqkv_proj</code> 的 5.5% 是 GPU 側的固定開銷，還是這台機器的
+記憶體壓力？（<code>attn_qkv</code> 是 <b>dense</b> 權重，不走專家池；而啟動時已經報
+<code>[budget] OVERSUBSCRIBED by 4838 MiB</code>，且 0.49–1.0 ms 讀 8.5 MiB 折合
+8.8–15 GB/s，那是 swap／壓縮記憶體的數量級，不是 DRAM 的。）</p>
+
+<p><b>實驗</b>：<code>en-work-fine</code> vs <code>en-work-fine-pool6</code>
+（<b>differ-by-one：<code>CGC_SERVER_EXPERT_CACHE_BYTES</code> 8 GiB → 6 GiB</b>，其餘逐項相同）。
+<b>只比「大步家族」（step 88–128，兩臂的取樣 step 完全相同）</b>：</p>
+
+<table>
+<tr><th></th><th>池 8 GiB</th><th>池 6 GiB</th><th>比</th></tr>
+<tr><td><code>dnqkv_proj</code>（中位）</td><td><b>29.34 ms</b></td><td><b>30.55 ms</b></td><td><b>×1.041</b></td></tr>
+<tr><td><code>node</code></td><td>33.54</td><td>36.20</td><td>×1.079</td></tr>
+<tr><td><code>cache</code></td><td>40.42</td><td>43.48</td><td>×1.076</td></tr>
+<tr><td><code>seg_busy</code></td><td>423.00</td><td>435.66</td><td>×1.030</td></tr>
+<tr><td><code>resident</code></td><td>6430.62 MiB</td><td>4870.52 MiB</td><td>−1560</td></tr>
+<tr><td><code>file_reads</code> ／ <code>io_bytes</code></td><td>29748 ／ 11.63 GB</td><td>45903 ／ 18.15 GB</td><td><b>+54% ／ +56%</b></td></tr>
+<tr><td>池 hit</td><td>87.1%</td><td>79.7%</td><td>−7.4pp</td></tr>
+</table>
+
+<p><b>判決：<code>dnqkv_proj</code> 完全沒有選擇性下降。</b>它跟著全局漂移（×1.041），而同臂的
+<code>node</code>／<code>cache</code>／總量都在 ×1.03–1.08 —— 也就是說縮池<b>沒有</b>讓它單獨變快，
+只換來更多 IO。<b>⇒ 不是記憶體壓力 ⇒ 融合／換 kernel 是對的方向。</b></p>
+
+<p><b>順帶把靶子的量級寫清楚</b>（GGUF 直讀）：<code>blk.N.attn_qkv.weight</code> =
+<code>(2048, 8192)</code>、<b><code>IQ4_XS</code></b>、<b>8.5 MiB × 30 層 = 255 MiB／步</b>；
+29 節點 × 約 1.0 ms = <b>29 ms／步</b> ⇒ <b>≈8.8 GB/s</b>（M4 DRAM 約 120 GB/s）
+⇒ <b>延遲／固定開銷主導</b>，不是頻寬、也不是 FLOPs。
+（<code>ssm_alpha</code>／<code>ssm_beta</code> 是 <code>(2048, 32)</code> 各 0.25 MiB ⇒
+把它們拼進去的收益約 0.1%。）</p>
+
+<h2>§25 ★★ 儀器的一個內部矛盾：名字表在細粒度下不能當工作量用（2026-09-18 13:3x 新增）</h2>
+
+<p>名字表把 <b><code>attn_norm</code> 報成 36.76 ms（8.5%，step 88）</b>，排到第 3。
+但同一份 log 的 <code>CGC-GRPH</code> dump 直讀：<code>attn_norm-&lt;il&gt;</code> 是
+<b><code>MUL</code> op、<code>ne=[2048,2]</code></b> —— 40 個 <b>4096 元素</b>的逐元素乘法。
+<b>那不可能花 36.76 ms。</b></p>
+
+<p>機制逐字（<code>ggml-backend.cpp:2306</code>）：</p>
+
+<pre><code>ns_kind_wns[q] += dur * wcnt[q] / wtot;    // 每個 buffer 的 dur 依「工作節點數」平均分攤</code></pre>
+
+<p>而同一個 step 的另外兩個讀數是：<code>CGC-GPUTIME: bufs=633</code>、
+<code>CGC-GPUOPS: nodes_all=3979 nodes_work=2455</code> ⇒ <b>平均每個 buffer 只有 6.3 個節點</b>
+⇒ <b>落在小 buffer 裡的節點會獨吞整段時間</b>，而 <code>attn_norm</code> 正好是每層的<b>第一個具名 op</b>
+（layer boundary 那個小 buffer 最可能只有它一個工作節點）。</p>
+
+<p><b>⇒ 判準：拿一個已知大小的 op 當探針。</b>若不合理的節點排到前面，就改讀 <b>op 級表</b> ——
+<code>nd=</code> 是確定的節點數，聚合粒度粗得多因而穩健。</p>
+
+<h3>§25.1 op 級排名（step 88，<code>total=384.90 ms</code>，<code>nodes_work=2455</code>）</h3>
+
+<table>
+<tr><th>op</th><th><code>nd</code></th><th><code>wcntw</code></th><th>註</th></tr>
+<tr><td><b>MUL_MAT</b></td><td><b>426</b></td><td><b>32.7%</b></td><td>dense GEMV 家族（<code>dnqkv_proj</code> 是其中 29 個）</td></tr>
+<tr><td>MUL</td><td>278</td><td>16.6%</td><td>norm 乘權重、gate 乘</td></tr>
+<tr><td><b>MUL_MAT_ID</b></td><td><b>117</b></td><td><b>10.0%</b></td><td><b>MoE 專家 GEMV</b></td></tr>
+<tr><td>CPY</td><td>210</td><td>8.1%</td><td>含 delta-net 狀態管線（<code>K = n_max+1</code> 那批）</td></tr>
+<tr><td>UNARY</td><td>169</td><td>6.6%</td><td>silu／softplus 等</td></tr>
+<tr><td>GATED_DELTA_NET</td><td>30</td><td>4.8%</td><td></td></tr>
+<tr><td>GET_ROWS</td><td>159</td><td>4.3%</td><td>池 gather ＋ 狀態 gather</td></tr>
+<tr><td>SUM_ROWS／SCALE／CLAMP／ADD／RMS_NORM／GLU／FLASH_ATTN_EXT</td><td>39／60／39／421／130／78／10</td><td>3.2／2.8／2.5／2.2／2.0／1.6／0.6%</td><td></td></tr>
+</table>
+
+<p>（<code>RESHAPE</code> 598 個與 <code>VIEW</code> 866 個是 <b>NOOP</b>：<code>wcntw=0</code> 而
+<code>cntw</code> 卻是 15.0%／12.4% ⇒ <b>節點數的大頭不是工作量的大頭</b>，這正是 <code>wcntw</code>
+存在的理由。）</p>
+
+<p><b>⇒ 在 op 口徑下，MoE 專家 GEMV（<code>MUL_MAT_ID</code>）只有 10.0%，最大的單塊是 dense
+<code>MUL_MAT</code> 的 32.7%。</b>這與 §11.1 用名字表得到的家族排序<b>不同</b>，差別就是 §25 那個
+「小 buffer 獨吞」效應。</p>
+
+<h2>§26 去序列化的直接證據（同一批 log）</h2>
+
+<p><b><code>segs=40／41</code> ＝ 每層一個 segment ＝ 每層一次 drain</b> —— 與
+<code>llama-graph.cpp:2138</code> 逐字一致（remap leaf 是 graph input，「<b>the reason the dispatcher
+has to drain the pipeline at every layer boundary</b>」）。這一句在<b>兩種形狀下都成立</b>。</p>
+
+<p><b>但 idle 的份額取決於臂的形狀，差別很大</b>（<code>CGC-DECPROF</code>，都取 <code>segs=41 layers=40</code> 的步）：</p>
+
+<table>
+<tr><th>臂</th><th>步</th><th><code>ntok</code></th><th><code>wait</code></th><th><code>cb</code></th><th><code>union</code></th><th><code>gap</code></th><th><code>gap/union</code></th></tr>
+<tr><td rowspan="3"><b>生產形狀</b><br>（<code>p25-mtp-on-diag</code>，無 <code>CB_N_MAIN</code>／<code>N_CB</code>）</td>
+    <td>1118</td><td>4</td><td>149.0</td><td><b>24.0</b></td><td>143.9</td><td>32.4</td><td><b>23%</b></td></tr>
+<tr><td>1123</td><td>4</td><td>155.6</td><td><b>17.5</b></td><td>147.6</td><td>31.1</td><td><b>21%</b></td></tr>
+<tr><td>1128</td><td>2</td><td>89.8</td><td>8.4</td><td>81.7</td><td>20.7</td><td>25%</td></tr>
+<tr><td rowspan="3"><b>細粒度</b><br>（<code>en-work-fine</code>，<code>CB_N_MAIN=1</code> ＋ <code>N_CB=16</code>）</td>
+    <td>149</td><td>4</td><td>135.1</td><td><b>112.0</b></td><td>133.9</td><td>125.2</td><td>93%</td></tr>
+<tr><td>154</td><td>4</td><td>195.7</td><td><b>67.6</b></td><td>204.1</td><td>75.5</td><td>37%</td></tr>
+<tr><td>164</td><td>3</td><td>138.4</td><td><b>38.5</b></td><td>147.3</td><td>42.8</td><td>29%</td></tr>
+</table>
+
+<p><b>⇒ 可引用的述句是「生產形狀下 gap ≈ 21–33%」</b>（<code>p25-mtp-on-diag</code> 的四個 verify 步）；
+細粒度臂（<code>CB_N_MAIN=1</code> ＋ <code>N_CB=16</code>，<code>bufs</code> 由 360 漲到約 640）會把
+<code>cb</code> 從 17–24 ms 灌到 38–112 ms、<code>gap</code> 灌到 93% ⇒
+<b>那是臂自己的偽影，不是生產的數字</b>（同一個陷阱 <code>skills/cgc-decode-attribution</code> 早就記過 ——
+它當時是針對 <code>cb</code> 的份額，而 <code>gap</code>／名字表的份額是<b>同一個原因</b>）。</p>
+
+<h2>§27 本節的誠實邊界（§13／§17／§21 之外的補充）</h2>
+
+<ol>
+<li><b>30–50% 的「削 delta-net」只是算術，不是承諾。</b>§24 只證明 <code>dnqkv_proj</code>
+    不在記憶體側；<b>沒有任何東西證明它可以在 GPU 側被削掉</b>。8.8 GB/s 的成因仍未指名
+    （延遲／launch／kernel 形狀三個候選）。</li>
+<li><b>名字表的份額在本節之後不應再用於細粒度排名</b>（§25）。家族層級的排序仍然可用，
+    但必須與 §25.1 的 op 級表並讀。</li>
+<li><b>pool6 那一臂的絕對值不可外推</b>：兩臂 <code>thermal_hist</code> 都是 <code>{HEAVY:4}</code>，
+    但 t/s 8.13 → 7.64 是<b>更多 IO</b>造成的，不是熱造成的；引用的只有「中位 ×1.041」這個比值。</li>
+<li><b>t/s 一律未引用</b>（<code>thermalpressurelevel=2</code> ＋ <code>n_predict=16</code> 的短爆）。</li>
+<li><b>三個新名字的分母是「decode 步的 busy time」</b>（<code>seg_busy</code>），不是端到端時間。</li>
+</ol>
+
+
+<h2>§28 S1 上生產：<b>engagement 確認，結構零改變</b>（2026-09-18 13:2x 新增）</h2>
+
+<p>§26 記了「<code>segs=40／41</code> ＝ 每層一個 segment」。而 <code>llama-graph.cpp:2119-2121</code>
+把原因指名給 remap leaf：<i>the remap leaf is an INPUT tensor that the eval hook hand-writes every step,
+and <b>it is the reason</b> the dispatcher has to drain the pipeline at every layer boundary</i>。
+S1（<code>CGC_SLOT_TABLE_GPU=1</code>）把那個映射搬進圖 ⇒ 依那個敘述，leaf 消失 ⇒ 理由消失
+⇒ 那條 <code>×1.711</code> 的去序列化路會被打開。本節把這句話量掉。</p>
+
+<h3>§28.1 三臂（differ-by-one 鏈）與可引用的讀數</h3>
+
+<p>全部同檔（<code>Nail-…-denseIQ4X.gguf</code>）、MTP on、<code>--profile prod25 --n-predict 96 --rounds 3</code>：</p>
+
+<table>
+<tr><th>讀數</th><th><code>p25-mtp-on-diag</code><br>（有 leaf，無表）</th><th><code>p25-s1-keepleaf</code><br>（表 ＋ leaf）</th><th><b><code>p25-s1-prod</code></b><br>（表，無 leaf）</th></tr>
+<tr><td><b><code>segs</code></b></td><td><b>40</b></td><td><b>40</b></td><td><b>40</b> ← <b>沒有塌縮</b></td></tr>
+<tr><td><code>bufs</code></td><td>354–360</td><td>357–360</td><td>357–360</td></tr>
+<tr><td><b><code>S1 slot-table: publishes=</code></b></td><td><b>0</b>（無表）</td><td><b>12111</b></td><td><b>12111</b></td></tr>
+<tr><td><code>clamped_selected</code>／<code>changed_entries</code></td><td>—</td><td>0 ／ 0</td><td>0 ／ 0</td></tr>
+<tr><td>池 <code>hit</code>／<code>reads</code>／<code>io</code></td><td>84.3%／75123／29.12 GB</td><td>逐項相同</td><td>逐項相同</td></tr>
+<tr><td><code>answer_md5</code></td><td><code>bb3d2bd6</code></td><td><code>bb3d2bd6</code></td><td><code>bb3d2bd6</code></td></tr>
+<tr><td><code>thermal_hist</code></td><td>{NOM:5,MOD:2,HEA:1}</td><td>{HEA:8}</td><td>{HEA:4,MOD:4}</td></tr>
+</table>
+
+<p>（log <code>131845</code>／<code>132101</code>／<code>132412</code>；
+產物 <code>Backup/phase_decomp/s1_prod_fwd.json</code>。）</p>
+
+<h3>§28.2 判決：兩件事同時成立，而它們合起來否掉了那條路</h3>
+
+<ol>
+<li><b>S1 確實啟用了</b>：<code>publishes=12111</code>（不是 0）⇒ 不是「env 沒設到」那一類失敗。</li>
+<li><b><code>segs</code> 在三臂都是 40</b> ⇒ <b>把 host leaf 拿掉並沒有讓 segment 數塌縮</b>。
+    ⇒ <b>§26 引的那句原始碼敘述被實測否證</b>（leaf 在不在，<code>segs</code> 都是 40，<code>bufs</code> 也一樣）。</li>
+<li><b>而 S1 只是把「每層一次 host 寫入」的標的從 leaf 換成 table</b> —— table 仍然是每層 host 寫入的：
+    <code>publishes=12111</code>；日誌自己數得 <code>layers=40</code> 的步 <b>289</b>、<code>layers=1</code> 的步 <b>357</b>
+    ⇒ <code>289×39 + 357×1 = 11628</code>（與 12111 差 4%）⇒ <b>每步每層一次 publish</b>，
+    與 leaf 路徑的「每層一次 host 寫入」<b>同構</b>。</li>
+</ol>
+
+<p><b>⇒ 依賴結構沒有變 ⇒ <code>n_segs</code> 不可能因此塌縮。
+「S1 作為 <code>×1.711</code> 的 unblocker」這條路正式作廢。</b></p>
+
+<h3>§28.3 正確的下一步（取代「S1 上生產」）</h3>
+
+<p>要塌縮 <code>n_segs</code>，必須移除<b>「每層一次 host 寫入」本身</b>，而不是換張量：</p>
+
+<ol>
+<li><b>一次發布所有層的表</b>：池在步<b>前</b>批次寫完全部層的表，步中零 host 寫 ⇒ 依賴只剩「一步一次」。</li>
+<li><b>把表在裝置上算</b>（S1 註解自己提的 S2/S3 家族），host 完全不寫。</li>
+</ol>
+
+<p>而 <code>consumed_changed</code> 這一輪是<b>未 instrumented</b>（那一行自己提示
+<code>set CGC_S1_TABLE_CHURN=1</code>）⇒ 動第 ① 條之前，先用它量「多少 publish 其實沒改變被消費的映射」。
+⚠️ §EN-138 記的 16.5% 是<b>另一組臂</b>的數字，不可混用。</p>
+
+<h2>§29 本節的誠實邊界（§13／§17／§21／§27 之外的補充）</h2>
+
+<ol>
+<li><b>t/s 一律不可引用</b>：三臂的 <code>thermal_hist</code> 完全不同（diag 5 NOMINAL vs keepleaf 8 HEAVY）
+    ⇒ diag 9.80／keepleaf 3.87／s1-prod 5.14 <b>是熱的差，不是 S1 的差</b>。判決不依賴 t/s
+    （<code>segs</code>／<code>publishes</code> 是結構讀數）。</li>
+<li><b><code>p25-s1-keepleaf</code> 永久不可報吞吐</b> —— 原始碼逐字：
+    <i>it exists to answer one yes/no question… must never be quoted for throughput</i>
+    （它多建了 leaf ⇒ 每步多 40 個 host 寫）。本節只把它當<b>數值對照</b>用（<code>answer_md5</code> 相同）。</li>
+<li><b>這一輪只有 fwd 腿，沒有 rev</b>。對 t/s 是一個缺口；對本節的判決不是（結構讀數不需要 ABBA）。</li>
+<li><b>「leaf 不是 drain 的原因」只否證了那一個候選</b>，沒有指名真正的原因
+    （剩下的候選：每層的 pool publish、layer 0 的 CPU <code>mul_mat_id</code>、topk 的 eval hook）。
+    要指名它，需要一次「把 host 寫入全部搬出步中」的實驗。</li>
+</ol>
+
+
+<h2>§30 現場閘門輸出（原文，2026-09-18 13:3x）</h2>
+
+<pre><code>D5  m123_oracle_gate.py --tag en-node-names2      → comparable=true  config_diffs=[]  M1/M2/M3 = 9/9  ok=true
+    ref = Backup/knifeedge_matrix/ref_iq3_pool8gb_M2_6144_bitident_v6_nbaware.jsonl
+    cap.created = 2026-09-18T13:28:26  &gt; 產物 mtime libllama 13:28:05   → 可歸屬
+
+$ python3 agent_harness/engine_loop/traces/validate.py
+  lessons.jsonl: 187 records {'lesson': 187}
+  -&gt; OK
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  10/10 injected violations rejected
+$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  memory index OK: 8 file(s), 245 section(s), no drift
+$ cd agent_harness/engine_loop &amp;&amp; python3 index_assets.py --check
+  manifest OK: 108 assets, existence + bytes + mtime all agree
+$ BIN_DIR='src/llama.cpp/build/bin' RUN_REPLAY_BENCH=0 bash scripts/check_build_tracked.sh --repo "$PWD"
+  OK: 沒有 FAIL — 5 個區段被 SKIP（各有理由；commit 時 check 8 會真的跑）</code></pre>
+
+<p>（<code>en-node-names2</code> 是為了本輪的<b>註解更正</b>重建之後重跑的那一次；
+先前 <code>en-node-names</code> 是在三批命名都進去之後跑的，兩者皆 PASS。）</p>
 
 </div>
 </body>

@@ -1591,11 +1591,31 @@ fi
 # [CGC 2026-09-15 S1 slot-table] CGC_SLOT_TABLE_GPU=1 replaces the host-written remap leaf with a
 # GPU-side gather: the eval hook publishes the per-layer expert->slot table (I32 [1, n_expert]) and
 # the graph computes `slots = get_rows(table, selected_experts)`, which is byte-for-byte what the
-# hook used to write. Single-token decode only; every multi-token / gather path keeps the leaf.
+# hook used to write.
+# SCOPE (corrected 2026-09-18): NOT single-token only. It is exactly the host leaf's condition --
+# every step that would have built the leaf, i.e. single-token decode AND the small multi-token
+# pool steps (MTP verify / gather). See the authoritative comment at llama-graph.cpp:2138, which
+# also explains why the earlier n_tokens == 1 narrowing was wrong (build_moe_ffn's n_tokens is not
+# ubatch.n_tokens, so a decode step never built a table at all).
 # Same allowlist rule as CGC_SUBMIT_AHEAD and CGC_MMV_FUSE: an unlisted CGC_* is dropped silently,
 # which is indistinguishable from "the change had no effect".
 if [ -n "${CGC_SLOT_TABLE_GPU:-}" ]; then
     SERVER_ENV+=(CGC_SLOT_TABLE_GPU="$CGC_SLOT_TABLE_GPU")
+fi
+# [CGC 2026-09-18 S1 arm controls] Three knobs that let one measurement separate S1's two halves:
+#   CGC_S1_KEEP_LEAF=1  -- build the S1 nodes but keep mul_mat_id consuming the HOST leaf, so the
+#                          per-layer drain (and its round trips) stay. Cost of the gather alone.
+#   CGC_S1_BUILD_LEAF=1 -- build the host leaf too but leave it unconsumed (layout control).
+#   CGC_S1_MIN_IL=<n>   -- first layer the GPU table is used for (default 1; layer 0's mul_mat_id
+#                          runs on the CPU backend, so it keeps the leaf).
+if [ -n "${CGC_S1_KEEP_LEAF:-}" ]; then
+    SERVER_ENV+=(CGC_S1_KEEP_LEAF="$CGC_S1_KEEP_LEAF")
+fi
+if [ -n "${CGC_S1_BUILD_LEAF:-}" ]; then
+    SERVER_ENV+=(CGC_S1_BUILD_LEAF="$CGC_S1_BUILD_LEAF")
+fi
+if [ -n "${CGC_S1_MIN_IL:-}" ]; then
+    SERVER_ENV+=(CGC_S1_MIN_IL="$CGC_S1_MIN_IL")
 fi
 if [ -n "${CGC_S1_DBG:-}" ]; then
     SERVER_ENV+=(CGC_S1_DBG="$CGC_S1_DBG")

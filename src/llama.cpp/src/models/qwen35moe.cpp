@@ -261,6 +261,13 @@ std::pair<ggml_tensor *, ggml_tensor *> llama_model_qwen35moe::graph::build_qkvz
     const int64_t n_seq_tokens = ubatch.n_seq_tokens;
 
     ggml_tensor * qkv_mixed = build_lora_mm(model.layers[il].wqkv, input, model.layers[il].wqkv_s);
+    // [CGC 2026-09-18 §EN-149] Name the projection itself (the reshape below already gets
+    // "linear_attn_qkv_mixed"). attn_qkv.weight is (2048, 8192) IQ4_XS = 8.5 MiB per layer, and
+    // this MUL_MAT is 29 of the nodes the CGC-GPUNODE table folded into `node`; naming it split
+    // that bucket (measured 5.5% of the decode step's busy time, the largest single unnamed group
+    // after the split). NOTE `ne=[8192, 2]` in the graph dump: ne[0] is the OUTPUT dim, so this is
+    // a 2048->8192 dense GEMV, not a small op.
+    cb(qkv_mixed, "dnqkv_proj", il);
     qkv_mixed = ggml_reshape_3d(ctx0, qkv_mixed, qkv_mixed->ne[0], n_seq_tokens, n_seqs);
     cb(qkv_mixed, "linear_attn_qkv_mixed", il);
 
@@ -278,7 +285,12 @@ ggml_tensor * llama_model_qwen35moe::graph::build_norm_gated(
     ggml_tensor * normalized = build_norm(input, weights, nullptr, LLM_NORM_RMS, layer);
     ggml_tensor * gated_silu = ggml_silu(ctx0, gate);
 
-    return ggml_mul(ctx0, normalized, gated_silu);
+    // [CGC 2026-09-18 §EN-149] Name the gated-normalisation multiply. It is the single largest
+    // unnamed group in the CGC-GPUNODE `node` bucket (60 nodes = 30 layers x 2), and without a
+    // name it cannot be ranked against anything.
+    ggml_tensor * gated_mul = ggml_mul(ctx0, normalized, gated_silu);
+    cb(gated_mul, "dn_normg_mul", layer);
+    return gated_mul;
 }
 
 ggml_tensor * llama_model_qwen35moe::graph::build_layer_attn(
@@ -386,6 +398,12 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_attn_linear(
     ggml_tensor * z         = qkvz.second;
 
     ggml_tensor * beta = build_lora_mm(model.layers[il].ssm_beta, cur, model.layers[il].ssm_beta_s);
+    // [CGC 2026-09-18 §EN-149] Same for the beta projection (30 x MUL_MAT ne=[32, 2] = 2048->32,
+    // ssm_beta.weight is (2048, 32) F32 = 0.25 MiB). Named for completeness so the bucket splits
+    // cleanly; measured share 0.10%, so it is NOT worth optimising -- an earlier version of this
+    // comment said "output is only 2 numbers", which misread ne[0] as the batch rather than the
+    // output dim. See docs/GPU_NODE_ATTRIBUTION_20260918_0126.html §23.1.
+    cb(beta, "dnbeta_proj", il);
     beta = ggml_reshape_4d(ctx0, beta, 1, num_v_heads, n_seq_tokens, n_seqs);
     cb(beta, "beta", il);
 

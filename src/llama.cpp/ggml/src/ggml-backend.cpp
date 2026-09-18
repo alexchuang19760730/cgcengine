@@ -2223,6 +2223,10 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                     "q_conv", "k_conv", "v_conv", "alpha", "beta", "z-",
                                     "Qcur", "Kcur", "Vcur", "kqv_out", "final_output", "l_out", "gate",
                                     "h_nextn",
+                                    // [CGC 2026-09-18 §EN-149] Names added to the graph so the
+                                    // CGC-GPUNODE `node` bucket can be split: before this, both landed in
+                                    // `node` (or `(other)` once named but unlisted) and could not be ranked.
+                                    "dnqkv_proj", "dnbeta_proj", "dn_normg_mul",
                                 };
                                 const int ns_nfix = (int) (sizeof(ns_fix) / sizeof(ns_fix[0]));
                                 const char * key = NULL;
