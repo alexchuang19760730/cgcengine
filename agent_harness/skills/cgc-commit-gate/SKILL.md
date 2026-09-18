@@ -537,6 +537,34 @@ agent_harness/engine_loop/memory/INDEX.jsonl: mtime: manifest '2026-09-16T11:15:
 - **不確定就跑 `index_assets.py --check`**，它會直接印出漂移的 path 與 bytes 變化——它就是為此存在的，
   比猜便宜。
 
+**★★ 2026-09-18 實測更正：上面那份清單是「設計意圖」，不是「此刻的成員」。動手前要量，不要照抄。**
+那次實際列了 `MANIFEST.jsonl` 的 **108 筆**，按目錄分：`scripts/` 57、`agent_harness/` 33、
+`.workbuddy/` 8、`docs/` 5、`Backup/` 5。三個與上面清單**不符**的地方，而每一個都會改變處置：
+
+| 上面的清單說 | 實測 | 後果 |
+|---|---|---|
+| `traces/*.jsonl` 在 CURATED | **不在**（只有 `traces/schema/*.json`、`validate.py`、`emit_episodes.py` 在） | 追加 lesson 到 `lessons.jsonl` **不會**漂移；§7 的「lesson 必須寫在索引重生之前」在這棵樹上**不觸發** |
+| 自動索引 `agent_harness/engine_loop/*` | 只有**頂層**那幾支（`sft_common.py` 也**不在**） | 改 `harness_engine/`、`sft_pi/`、`sft_prime/`、`distill/` 底下的東西不必重生索引 |
+| `docs/*` 在 CURATED | 只有 **5 筆**（`PREFILL250_CERTIFIABILITY_*` 等），新白皮書與入口產物都**不在** | 就地追加白皮書**不會**漂移 |
+
+量法（10 秒，只讀不寫）：
+```sh
+python3 - <<'PY'
+import json, collections
+rows=[json.loads(l) for l in open('agent_harness/engine_loop/MANIFEST.jsonl') if l.strip()]
+print(len(rows), collections.Counter(str(r.get("path","")).split("/")[0] for r in rows))
+for t in ("lessons.jsonl","portal/","harness_engine/","sft_prime/"):
+    print(t, [r["path"] for r in rows if t in str(r.get("path",""))][:3] or "（不在索引）")
+PY
+```
+**為什麼這件事重要**：§4 的併行 writer 規矩是「只新增不修改、不要重生索引、不要 commit」。
+但「你能不能 commit」的真正前置條件不是「樹上紅不紅」，而是
+**「你動的檔在不在 `MANIFEST.jsonl` 裡」**——逐筆量過之後，如果全部不在，
+你就可以在**別人的檔正在改**的同一個樹上安全地 commit（只要逐檔 `git add`，永不 `git add -A`），
+而不會讓任何一格變成假綠。本輪（`ec1a389c8`）就是這個情形：42 個自己的檔全部在管轄範圍外，
+唯一紅的 `index-assets` 來源是另一條線正在編輯的 `scripts/check/llama_bench_matrix.py`，
+所以 commit 之後索引仍然是 13/14 —— 那**不是**這次 commit 的迴歸，而 commit message 要寫明這件事。
+
 **`docs/` 的「新增」與「修改」差別很大**：新增一份 `docs/*.html`（D5 的白皮書附件）⇒ **不漂移**，
 不必重生（實測新增後 `--check` 仍印 `manifest OK: 73 assets`）；但編輯 `CURATED` 裡**已列出的** docs 條目
 （例如改某份白皮書的 note）⇒ 會紅，要重生。⇒ 省掉一輪「我加了檔案，先重跑索引吧」的無用重生。

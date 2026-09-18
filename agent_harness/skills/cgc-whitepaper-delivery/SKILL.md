@@ -460,6 +460,30 @@ EOF
 - 追加後**檔案會持續變大**（本例 27 KB → 65 KB → 77 KB）。若同一份被追加到第四次以上，
   下一次就該改回「出新檔 ＋ 舊檔只留標註框」，否則它會變成誰也讀不完的流水帳。
 
+**★ 追加的作法：用一支腳本做「有錨點的插入」，不要手編那顆 28 KB 以上的 HTML（2026-09-18 實證）。**
+兩個插入點各自需要「恰好命中一次」的保證——標註框插在第一個 `</p>` 之後、新節插在結尾那句之前——
+而手編會同時碰到「插錯地方」與「插了兩次」兩種錯，且**兩者都不會報錯**（HTML 仍然合法）。
+可照抄的形狀（`scripts/…` 之外的 `/tmp/xxx.py`，用 Write 工具寫成實體檔，不要用 heredoc）：
+
+```python
+s = P.read_text(encoding="utf-8")
+ANCHOR = "</p>\n\n<div class=\"box pur\">"
+assert s.count(ANCHOR) == 1, f"anchor x{s.count(ANCHOR)}"     # ← 「恰好一次」是這裡的重點
+s2 = s.replace(ANCHOR, "</p>\n" + NOTE + "\n<div class=\"box pur\">", 1)
+assert s2 != s, "note box not inserted"                        # ← 沒插進去要吵，不要靜默通過
+…
+P.write_text(s3, encoding="utf-8"); print(f"bytes {len(s.encode())} -> {len(s3.encode())}")
+```
+- **`assert count == 1` 是必要的，不是防禦性程式設計**：錨點若不唯一，`replace(..., 1)` 會安靜地
+  只改第一個，而你以為改了全部。（那顆錨點本身就會隨文件長大而重複——本檔第一輪就有一個同形的
+  `</p>` 區塊。）
+- **HTML 字串一律用 `r"""…"""`**：內容裡有 `<\/`（那個轉義本身是白皮書在講的東西），
+  非 raw 字串會觸發 invalid escape sequence 警告。
+- 本輪（`ec1a389c8` 的 §11，28,842 → 51,073 B）追加後**一次就過**整份自檢
+  （`unclosed=[] errors=[]`、標籤計數全等、markdown 殘留 0、24 個路徑引用全部存在）——
+  因為新段落**從一開始就用 `<b>`／`<code>` 寫**，完全不碰 markdown 粗體，所以 §6(d) 那兩輪轉換
+  與巢狀驗證都不需要。
+
 ---
 
 ## 7. 這條 skill 自己的邊界
