@@ -98,6 +98,21 @@ exit code 在 0/1 之間不一致，而檔案裡**明明有**那些字串（`sed
 一律用 python 或內建 Grep，不要用 bash `grep` 過濾。** 這一條與 §4 的併行判斷直接相關：
 「他那筆有沒有進索引」正是決定要不要 commit 的那個問題。
 
+**★★ 第三個實例，而且它產生的是「與輸出明文矛盾的數字」（2026-09-18）：`cmd | tail -N; echo $?`
+讀到的是 `tail` 的退出碼，不是 `cmd` 的。** 我用那個形狀量一個新寫的 `--check`：
+
+```sh
+python3 agent_harness/scripts/import_harness_snapshot.py --check 2>&1 | tail -4; echo "rc=$?"
+-> DRIFT: 1 項。…
+rc=0                      ← 錯的：這裡的 $? 是 tail 的
+python3 agent_harness/scripts/import_harness_snapshot.py --check > /tmp/o.txt 2>&1; echo $?   # rc=1 ✔
+```
+
+同族的還有 `${PIPESTATUS[0]}`（bash）。**沒有輸出可以讀的時候，這個錯誤是完全隱形的**
+（例如用 `| tail` 只為了截短一段你看過的訊息，而結論只依賴 rc）——而它與「檢查真的回 0」
+長得一模一樣。判準：**要量 rc 就不要接管線。**
+一般化：**兩份證據互相矛盾時，先懷疑量測工具，不要先懷疑被測物。**
+
 ### 1.4 zsh 不對未加引號的參數做 word-split
 
 `for pair in "a b"; do set -- $pair; echo $2; done` 在 zsh 下 **`$2` 是空的**，會得到
