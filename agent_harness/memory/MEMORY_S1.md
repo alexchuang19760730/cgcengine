@@ -449,3 +449,58 @@ nothing asserts」—— 與觀測（token 0 對、token ≥1 錯、不 assert�
 回滾讀者 = `llama-memory-recurrent.cpp:184/396`。來源窗遞增、目的 slot 遞減 ⇒ 需要**負 stride**，
 `nb` 不能為負 ⇒ **單一 cpy 表達不了**。**⇒ 這條作廢，不要再試。**
 （附帶：`K = n_rs_seq + 1` ⇒ **MTP 一開就每層多 4 個 CPY** —— MTP 的成本不只在 verify 圖。）
+
+---
+
+## ★★★ 09-18 11:2x 更正：上面「09-18 11:1x」那一節的 §1–§4 **讀的是修前的 log**；
+## 真正的處置是 `8e9e830e5`（09-17 14:54，**已提交**）
+
+**這一節取代上面整節的 §1–§4（§5 的 `exp=` 也被取代）。§5 的後半（K 個 CPY）與本檔其餘部分不受影響。**
+
+### 1. 我不該漏掉的那個 commit
+
+`8e9e830e5` 「fix(moe-ids): top-k 快照改成 nb-aware -- 修前每一臂都把 token>=1 路由到別的 token 的 experts」
+（09-17 14:54，作者 alex_chuang，`git merge-base --is-ancestor` 確認是 HEAD 的祖先）。
+它逐字寫：**「`expert_cache_on_topk` 讀 top-k 用的是線性索引，但那是 `ggml_argsort_top_k` 的 view
+（實測 `t_ne=[8,2] t_nb=[4,1024,2048,2048]`，`nb[1]=n_expert*4` 而非 `k*4`）。因此對 token>=1
+讀到的是 token 0 排序清單的第 k..2k-1 名：合法 id、安靜地錯 token，而那份 vector 就是寫 remap leaf
+的來源 —— 所有 prefill 與 batch verify 的 token>=1 都用了別的 token 的 experts。」**
+
+⇒ **「token ≥1 拿到不同的專家」＝ 這個缺陷，而且它在 host 側就錯了（不是裝置的 mapping）。**
+修後（同一個 commit 的實測）：**M1/M2/M3 對 v6 全 9/9；decode 8.62 → 12.62 t/s；
+prefill 命中率 57.1% → 72.0%；accept 73.81% → 58.25%（而吞吐上升）。**
+
+**⇒ 這一節之後，「前線」不再是 token≥1 的專家不同。** 本檔上面 09-18 11:1x 那一節寫的
+「載體是拿到的專家不同（`ROUTING=477`）⇒ 位置在 gather 上游」**是修前症狀的正確描述，
+但它已經被處置了**，不是待辦。
+
+### 2. ★ 「host 算一份期望值去對比裝置」這條路**已經被走過並結案**
+
+同一個 commit 逐字：**「S1 的 host-written index vector（`ffn_moe_ids_leaf`）已量測否證並撤除：
+位址與值都對，但 device GET_ROWS 讀到全 0（host 寫的 root 不會送達裝置），index vector 還原成裝置產生。」**
+
+⇒ §9.18.8 的 `exp=` 若要沿著「host 現算 `st[e_j]`」走，**必須先解釋這一條**：
+同一個 host→device 的送出機制，在 `ffn_moe_ids_leaf` 上已經量到「位址與值都對、裝置讀到全 0」。
+**在解釋它之前，改 `cgc_expect_lookup` 的來源是重複一次已否證的路。**（這也是 §9.18.8 的
+`exp=none` 的直接鄰居：兩者都卡在「host 寫的東西到不了裝置」。）
+
+### 3. ★ 上面 §1 用來劃掉 `CGC-SLOT-TABLE-CLAMP` 的那個讀數**來源不可信**
+
+我讀的是 **09-17 13:04–13:28** 的 log，而 `sel_wrong`／`clamped_selected` 的**免競態版本是
+14:54 才**移進 publish 迴圈的（同一個 commit：「clamp 計數移進 publish 迴圈（race-free，
+`sel_wrong` 不再是事後重讀的產物）」）。原始碼自己在 `llama-context.cpp:4595-4601` 寫得很清楚，
+舊版是事後重讀、**會與它要抓的 fill 競態**，實測是
+**「read 0 on every layer while the ids the GPU consumed were provably not the table's values」**。
+
+⇒ **那時的 `sel_wrong=0` 正是這個計數自己承認失效的那種 0。**
+**`CGC-SLOT-TABLE-CLAMP` 的狀態是「未定」，不是「劃掉」。**（要結它，得用**現在**這顆
+binary 再量一次 `sel_wrong`／`clamped_selected`；建置含免競態版本，見 §9.18.9 的 commit。）
+
+### 4. 這一輪真正的教訓（比結論重要）
+
+**在讀「舊 log」之前，先問「這些 log 之後有沒有人 commit 過同一個問題」。**
+我的做法（只讀既有 log）本身是對的，而且這次**救了一次**（若照 11:1x 版去實作 `exp=`，
+就是把 §2 那條已被否證的路再走一遍）；但我**漏了 `git log --since` 這一步**，
+於是用 10:5x–13:2x 的讀數去描述 14:54 之後的世界。
+**判準：任何「本檔／本節的讀數」都帶著它的時間；宣稱前先跑一次
+`git log --oneline --since=<那些 log 的時間> -- <那些檔>`。**

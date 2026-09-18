@@ -3266,7 +3266,39 @@ static int ggml_metal_op_mul_mat_id_glu_fused(ggml_metal_op_t ctx, int idx, int 
 namespace {
 
 constexpr int32_t CGC_IDS_SLOTS  = 4096;
-constexpr int32_t CGC_IDS_STRIDE = 8;
+// [CGC 2026-09-17 §9.18.9] WAS 8, and 8 was wrong in two independent ways at once.
+//
+// The submission is `cgc_submit(..., stride, n_ids = ne20 * ne21, ...)`, i.e. the row's real width is
+// **k * n_tokens** (8 * T for this model), not k:
+//
+//   (1) TRUNCATED READING. The printer used `st` (= stride) as the word count for the MV stream, so
+//       every pass reported exactly 8 ids -- token 0's experts and nothing else. Every "the ids are
+//       identical / the ids differ" statement in docs/ROUTING_TRACE_2026-09-17.md is therefore a
+//       statement about ONE token of a T-token pass: at T=2 half the ids were invisible, at T=8
+//       seven eighths of them were. A comparison that sees 1/8 of its input cannot settle which
+//       token first diverges, and that is the question the ids stream exists to answer.
+//   (2) TRUNCATED CAPTURE -- NOT an overrun. (Corrected 2026-09-18; the first version of this note
+//       claimed the kernel wrote `n_ids` words into a `stride`-word slot region and clobbered the
+//       next 7 slots. That is false, and it was checkable: `kernel_cgc_ids_capture` in
+//       ggml-metal.metal ends with `for (int32_t i = 0; i < args.stride; ++i) {
+//           out[i] = (j < args.n_ids) ? in[j] : 0x7fffffff; }`
+//       with `out = dbg + slot * stride * 4` and `stride` passed at ggml-metal-ops.cpp:3790 -- so it
+//       writes exactly `stride` words into its own region and clamps the tail to the sentinel. No
+//       overrun, in either direction. The real consequence is the opposite one and it is worse: the
+//       SAME loop is what the capture width is, so at stride = 8 the buffer physically held token 0's
+//       eight experts and the rest of the pass was never recorded at all. Widening the constant is
+//       therefore not a display fix -- without it no printer could have printed more.)
+//       (Lesson eng-src-0016: a comment that explains a cause reads like a description of the
+//       current state. This one did, so it was fixed rather than shipped.)
+//
+// 64 = 8 (n_expert_used, this model's top-k) * 8 (the largest chunk this instrument is used on: the
+// pool path's bound, CGC_POOL_MAX_TOKENS, default 8). Buffer cost 4096 * 64 * 4 B = 1 MiB, allocated
+// once at enable time (the byte count is derived -- `CGC_IDS_SLOTS * CGC_IDS_STRIDE * sizeof(int32_t)`
+// below -- so the constant cannot be widened without the buffer following). `n_ids` is recorded per
+// row and the printer clamps to it, so a row with a smaller n_ids still prints exactly what it
+// captured. Consumers that key on the printed `n_ids` rather than the row width are unaffected;
+// `scripts/check/ids_capture_diff.py` already documents the post-fix width.
+constexpr int32_t CGC_IDS_STRIDE = 64;
 
 // [CGC 2026-09-16 S1 residency, §9.18.6] Tensor-OUTPUT capture: the SAME kernel, a second
 // destination. A separate buffer rather than a second stream inside the existing one, for two
@@ -4108,7 +4140,11 @@ extern "C" void ggml_metal_cgc_ids_dump(void) {
         // A POOL slot is 64 words wide and only 1 + 5*rows of them are meaningful; the rest is
         // sentinel. They are not printed, because a wall of 0x7fffffff would hide the one group that
         // differs -- the whole point of the row.
-        const int32_t nprint = take == 2 ? (r.n_ids < st ? r.n_ids : st) : st;
+        // [CGC 2026-09-17 §9.18.9] Clamp to the ROW's own n_ids for the ids stream too. The old
+        // `: st` (stride only) IS the truncation described at CGC_IDS_STRIDE: it silently printed 8
+        // of the 16/64 ids a multi-token pass submitted, so "identical ids" was decided on token 0.
+        // n_ids is what cgc_ids_capture recorded from ne20*ne21 -- the row's own width.
+        const int32_t nprint = (r.n_ids < st) ? r.n_ids : st;
 
         char b[2048];
         int p = 0;
