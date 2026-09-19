@@ -1948,6 +1948,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 // question need finer machinery.
                 static int64_t ns_kind_ub[48] = {0};
                 static int64_t ns_kind_lb[48] = {0};
+                // [CGC 2026-09-19 KIND x OP] Per-(kind, op) work-weighted duration. The kind
+                // table's biggest row is `node` -- ggml's auto-name for UNNAMED nodes
+                // (ggml.c:7192) -- and a NAME is not an identity, the OP is. Reset with the other
+                // ns_kind_* accumulators, after the print that consumes it.
+                static int64_t ns_kop_wns[48][GGML_OP_COUNT] = {{0}};
                 // [CGC 2026-09-18 WORK-WEIGHTED NAME TABLE] The same partition as ns_kind_ns but with
                 // the buffer's duration shared over the NAMED nodes whose op ENCODES something
                 // (cgc_op_emits_work) instead of over every named node. This is what turns the name
@@ -2159,6 +2164,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                             int tot = 0;
                             int wcnt[49] = {0};   // same buckets, restricted to nodes whose op encodes
                             int wtot = 0;
+                            // [CGC 2026-09-19 KIND x OP] The work-weighted split is per node, so the
+                            // pair list is per buffer; bounded by the buffer's working nodes.
+                            int kop_ix[160];
+                            int kop_op[160];
+                            int kop_k = 0;
                             for (int nd = nd_a; nd < nd_b; nd++) {
                                 const char * nm = cgc_node_name(split_backend, nd);
                                 if (nm == nullptr || nm[0] == '\0') {
@@ -2257,8 +2267,14 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                 if (cgc_node_op != nullptr) {
                                     const int nop = cgc_node_op(split_backend, nd);
                                     if (nop >= 0 && cgc_op_emits_work(nop)) {
-                                        wcnt[ix < 0 ? 48 : ix]++;
+                                        const int wi = ix < 0 ? 48 : ix;
+                                        wcnt[wi]++;
                                         wtot++;
+                                        if (wi < 48 && nop < GGML_OP_COUNT && kop_k < 160) {
+                                            kop_ix[kop_k] = wi;
+                                            kop_op[kop_k] = nop;
+                                            kop_k++;
+                                        }
                                     }
                                 }
                             }
@@ -2304,6 +2320,13 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                         continue;
                                     }
                                     ns_kind_wns[q] += dur * wcnt[q] / wtot;
+                                }
+                                // [CGC 2026-09-19 KIND x OP] The identical share, one term per
+                                // working node, tagged by (kind, op). Summing a kind's ops
+                                // reproduces its wcntw row -- this refines that column, it does
+                                // not add a second model.
+                                for (int k = 0; k < kop_k; k++) {
+                                    ns_kop_wns[kop_ix[k]][kop_op[k]] += dur / wtot;
                                 }
                             }
                             // [CGC 2026-09-18 OP-KEYED attribution] independent second pass over the
@@ -2690,6 +2713,27 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                     (long long) ns_kind_work_nd,
                                     (double) (ns_total - ns_kind_work_ns) / 1e6,
                                     ns_total > 0 ? 100.0 * (double) (ns_total - ns_kind_work_ns) / (double) ns_total : 0.0);
+                            // [CGC 2026-09-19 KIND x OP] A kind NAME is a label; the OP is the work.
+                            // This is the table that turns one into the other, and it is the only way
+                            // to answer "the top kind is `node`, so which ops is it?" -- `node_<i>`
+                            // is what the TRACE prints, and that is not an answer. Rows below 0.5% of
+                            // their kind are suppressed; a kind's rows sum to its wcntw entry.
+                            if (ns_ops) {
+                                for (int q = 0; q < 48; q++) {
+                                    int64_t kop_tot = 0;
+                                    for (int o = 0; o < GGML_OP_COUNT; o++) { kop_tot += ns_kop_wns[q][o]; }
+                                    if (kop_tot == 0) { continue; }
+                                    for (int o = 0; o < GGML_OP_COUNT; o++) {
+                                        if (ns_kop_wns[q][o] * 200 < kop_tot) { continue; }
+                                        const char * kop_onm = ggml_op_name((enum ggml_op) o);
+                                        fprintf(stderr, "CGC-GPUOPK: %-22s %-14s %8.2f ms %5.1f%% of kind | %5.1f%% of step\n",
+                                                ns_kind_nm[q], kop_onm == nullptr ? "?" : kop_onm,
+                                                (double) ns_kop_wns[q][o] / 1e6,
+                                                100.0 * (double) ns_kop_wns[q][o] / (double) kop_tot,
+                                                ns_total > 0 ? 100.0 * (double) ns_kop_wns[q][o] / (double) ns_total : 0.0);
+                                    }
+                                }
+                            }
                             // ... and the ranking the name table exists for. The same rows, ordered by
                             // the column that survives a change of granularity, so `ffn_moe_* vs cache
                             // vs attn_*` can be READ OFF directly instead of inferred from a list
@@ -2787,6 +2831,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         ns_kind_ub[q] = 0;
                         ns_kind_lb[q] = 0;
                         ns_kind_wns[q] = 0;
+                        // [CGC 2026-09-19 KIND x OP] per-STEP, like every other accumulator here.
+                        // It must NOT live in the print block: the print fires every 8th step, so
+                        // that version accumulated 8 steps against a 1-step ns_total and reported
+                        // `node` at 177x its kind-table value (measured, first run).
+                        for (int o = 0; o < GGML_OP_COUNT; o++) { ns_kop_wns[q][o] = 0; }
                     }
                     ns_kind_work_ns = 0;
                     ns_kind_work_nd = 0;
