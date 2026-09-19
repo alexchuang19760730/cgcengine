@@ -42,6 +42,22 @@ DEFAULT_TARGET_PCT = 12.8      # G4: union <= 38*mean_len at the measured mean_l
 SPIKE_RATIO = 3.0              # union > 3x its own median == a pool-fill/cold step, not a step
 
 
+def ntok_hist(S):
+    """How many full-graph steps at each graph width.
+
+    Worth printing, because `layers >= 40` also admits PREFILL steps and they carry a completely
+    different union. MEASURED on llama_server_20260919_210013.log: 199 full-graph steps with
+    ntok {2: 4, 3: 1, 4: 179, 14: 3, 489: 3, 512: 9} -- the 489/512 rows are batches, and a floor
+    computed over "all steps" would be a floor of a mixture of two different operations.
+    ntok=4 is the decode graph width (MTP draft width) and is the population G4's target is
+    stated against, since `union <= 38*mean_len` is evaluated at the delivery mean_len.
+    """
+    h = {}
+    for v in S.values():
+        h[v["ntok"]] = h.get(v["ntok"], 0) + 1
+    return dict(sorted(h.items()))
+
+
 def pick_ntok(S, want=None):
     """The modal ntok, or the requested one if the run actually has it."""
     if not S:
@@ -84,7 +100,8 @@ def report(path, want_ntok=None, target_pct=DEFAULT_TARGET_PCT, trim=SPIKE_RATIO
     kept = [S[s]["union"] for s in steps if S[s]["union"] <= trim * med_all]
     dropped = len(raw) - len(kept)
     head.update(ntok=ntok, all_steps=floor_of(raw), spikes_dropped=dropped,
-                spike_cut_ms=trim * med_all)
+                spike_cut_ms=trim * med_all, ntok_hist=ntok_hist(S),
+                ntok_share=len(steps) / len(S))
     if kept:
         head["trimmed"] = floor_of(kept)
 
@@ -100,8 +117,10 @@ def report(path, want_ntok=None, target_pct=DEFAULT_TARGET_PCT, trim=SPIKE_RATIO
     # the run's own sequence, not by which half looked better -- so it is a statement about the
     # cold start (which is not part of a steady-state floor), not a data-dependent selection.
     # It is printed with its step range so the reader can reject it if the pool was still filling.
-    best = min((head[k] for k in ("trimmed", "all_steps", "second_half") if k in head),
-               key=lambda d: d["three_se_pct"])
+    best_key = min((k for k in ("trimmed", "all_steps", "second_half") if k in head),
+                   key=lambda k: head[k]["three_se_pct"])
+    best = head[best_key]
+    head["best_subset"] = best_key
     head["best_3se_pct"] = best["three_se_pct"]
     head["n"] = best["n"]
     head["median"] = best["median"]
@@ -117,9 +136,14 @@ def _fmt(h):
     f = h["trimmed"] if "trimmed" in h else h["all_steps"]
     tag = f"ntok={h['ntok']}"
     line = (f"{p:<44} {tag:<8} n={f['n']:>4}  median {f['median']:>7.2f} ms  "
-            f"sigma {f['sigma']:>6.2f}  3SE {f['three_se_pct']:>5.1f}%")
+            f"sigma {f['sigma']:>6.2f}  3SE {h['best_3se_pct']:>5.1f}% "
+            f"[{h['best_subset']}]")
     if h["spikes_dropped"]:
         line += f"  (dropped {h['spikes_dropped']} >{h['spike_cut_ms']:.0f} ms)"
+    if h["ntok_share"] < 0.80:
+        other = {k: v for k, v in h["ntok_hist"].items() if k != h["ntok"]}
+        line += (f"  WARN ntok={h['ntok']} is only {h['ntok_share']:.0%} of the {sum(h['ntok_hist'].values())} "
+                 f"full-graph steps (other widths: {other}) -- the modal filter may not be one population")
     return line
 
 
@@ -131,6 +155,9 @@ def cmd_logs(paths, args):
         if "refuse" in h:
             continue
         any_ok = True
+        if args.verbose and "ntok_hist" in h:
+            print(f"      ntok histogram {h['ntok_hist']}  "
+                  f"(chosen ntok={h['ntok']} covers {h['ntok_share']:.0%} of full-graph steps)")
         if args.verbose:
             for k in ("all_steps", "trimmed", "second_half"):
                 if k in h and isinstance(h[k], dict):
@@ -184,6 +211,15 @@ def selftest() -> int:
     expect("modal ntok", pick_ntok(S)[0], 4)
     expect("explicit ntok", pick_ntok(S, 1)[1], [7, 8, 9])
     expect("absent ntok yields no steps", pick_ntok(S, 2)[1], [])
+
+    print("\n_fmt must render every shape report() can return (the first version crashed here)")
+    as_is = dict(path="x.log", ntok=4, n=10, median=100.0, sigma=1.0, spikes_dropped=0,
+                 ntok_share=1.0, ntok_hist={4: 10}, best_3se_pct=3.0, best_subset="trimmed",
+                 all_steps=floor_of([100.0] * 10), trimmed=floor_of([100.0] * 10))
+    expect("renders a real report", isinstance(_fmt(as_is), str), True)
+    expect("names a too-narrow ntok population", "WARN" in _fmt(dict(as_is, ntok_share=0.5)),
+           True)
+    expect("renders a refusal", "REFUSE" in _fmt(dict(path="y.log", refuse="why")), True)
 
     print("\nreport refuses on a log with DECPROF but no GPU tail, and names the missing knob")
     import tempfile
