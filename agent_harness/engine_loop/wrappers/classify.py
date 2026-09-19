@@ -132,6 +132,9 @@ ASSIGNMENT = {
         "test_decode_window_harness.py",
         "union_floor.py",
         "window_gate.py",
+        # 2026-09-20 引擎線：讀 premise B 的 churn 讀數並**拒絕**不可比的輸入（旋鈕沒開 / 沒發布 /
+        # 樣本太小 / 舊 teardown 形狀）。與 union_floor.py 同類：判「這個數字能不能引用」。
+        "premise_b_read.py",
     ],
     "triage": [
         "mmid_zero_row_triage.py", "gguf_dead_expert_census.py", "mmid_geometry_probe.sh",

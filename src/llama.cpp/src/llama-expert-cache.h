@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <tuple>
 #include <thread>
@@ -343,6 +344,17 @@ struct llama_expert_cache {
     // per-step host->GPU ordering requirement exists.
     size_t n_slot_table_consumed_changed = 0;
     size_t n_slot_table_consumed_same    = 0;
+    // [CGC 2026-09-20 §G1-B] The consumed-subset counts, SPLIT BY THE STEP'S n_tokens. Premise B
+    // asks one question -- does the mapping of an id the consumer reads move between two steps --
+    // but `consumed_total = n_tokens * n_expert_used`, so a single scalar ANSWERS IT FOR A MIXTURE
+    // whose weights the reader cannot recover. Measured on the delivery configuration: 73.4% overall
+    // while only 19% of that rate was decided by the delivery decode step (ntok=4); the rest was
+    // ntok=8 prompt chunks carrying twice the ids per publish. Shaping the run instead of the
+    // instrument does NOT work here: the only tool with a prompt knob (http_duo.py) cannot drive
+    // prod25 at all (its prompt does not fit ctx 4096 -- the attempt produced one step and its own
+    // `NOT QUOTABLE: only 1 kept rep(s)`).
+    std::map<int64_t, size_t> n_slot_table_consumed_changed_by_ntok;
+    std::map<int64_t, size_t> n_slot_table_consumed_same_by_ntok;
     // [CGC 2026-09-15 premise B] How often the published table actually CHANGES. §9.17(d) asked for
     // "publish_slot_table call count per decode step", which is degenerate by construction (both of
     // its call sites are inside the S1 hook itself, so the answer is 0 on the baseline arm and once

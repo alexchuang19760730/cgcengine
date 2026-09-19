@@ -131,7 +131,7 @@ gate 是 `n_tokens == 1`（`llama-context.cpp:4668`），而 `n_tokens = t->ne[1
 
 ---
 
-## 5. 量測卡（窗口一開照抄）
+## 5. 量測卡（**已於 2026-09-20 03:0x 執行完畢 —— 見 §7；本節保留為當時的判斷**）
 
 ```sh
 # 前提：一次 build（會蓋掉別人正在 map 的 dylib ⇒ 見 docs/G4_MEASUREMENT_CARD 的窗口規則）
@@ -145,6 +145,10 @@ CGC_S1_TABLE_CHURN=1 <交付臂> run_server.sh
 #   llama_expert_cache: S1 slot-table: ... consumed_changed=X consumed_unchanged_publishes=Y
 #   ⇒ churn = X/(X+Y)。要它的中位與散布，不是單一值（見 §3.2(b)：同一配置可差 2.3 倍）
 ```
+
+**執行結果見 §7**（補丁已套用並 build；兩輪已量；**但這張卡漏了一件後來才發現的事**：
+`consumed_total = n_tokens x n_expert_used` ⇒ 混合族群的讀數會被 `ntok=8` 的 prefill 塊主導，
+所以卡的判準要在**加上 rate 權重**之後才讀得對。§7.3 是那個權重的量化。）
 
 **判準**：
 - `X/(X+Y)` 的中位若 ≫ 0 ⇒ 前提 B 不成立 ⇒ **S2**（§9.17(c) 的 S1→S3 建議要撤回）
@@ -164,3 +168,157 @@ CGC_S1_TABLE_CHURN=1 <交付臂> run_server.sh
 4. ❌「`n_tokens == 1` 要改成 `<= 2`」——在 MTP-on 上只覆蓋 1/128（§2）。
 5. ❌「儀器需要新寫」——它存在、在 binary、在 allowlist（§1）。
 6. ⚠️ **未驗**：那個驅動 churn 在 37%–84% 之間移動的旋鈕是什麼。本輪只確認它**存在且未被記錄**。
+
+---
+
+## 7. 量測結果：補丁已套用並 build，交付配置已量到（2026-09-20 03:0x）
+
+### 7.1 補丁與 build（都驗過了）
+
+`Backup/patch_churn_gate_20260920.py --apply` → `cmake --build ... --target llama-server -j 8`
+→ 6 秒、rc=0、7 個 warning（與補丁前逐項相同）。驗證：
+
+| 檢查 | 結果 |
+|---|---|
+| 新格式字串在 binary 裡 | `strings libllama.0.dylib` ⇒ `CGC-S1: TABLE-CHURN graph=%lld ntok=%lld ...` ✓ |
+| 舊字串（不含 ntok） | 命中 **0** ⇒ 確實換掉了 |
+| build 新鮮度（判準是「輸出有沒有編譯行」） | `.cpp` 02:55:21 → `libllama.0.dylib` 02:55:30 → `llama-server` 02:55:31 ✓ |
+| 閘門 | build 前檢查「無 llama 行程、無 listener」，串在同一個分支裡 |
+
+### 7.2 兩輪讀數（交付配置 `prod25` ＋ `p25-s1-churn` 臂；無 SIGTERM，品質閘門全綠）
+
+臂 = `{CGC_GPU_TIMING=1, CGC_DECODE_PROFILE=1, CGC_SLOT_TABLE_GPU=1, CGC_S1_TABLE_CHURN=1}`
+（`decode_sweep.py:203` 已定義，不是我新造的）。
+
+| run | 形狀 | publishes | `consumed_changed` | churn | **decode 的 rate 權重** |
+|---|---|---:|---:|---:|---:|
+| 1 | `--rounds 3 --n-predict 32` | 6595 | 4810 / 6555 | **73.4%** | 19% |
+| 2 | `--rounds 3 --n-predict 512` | 12971 | 7150 / 12931 | **55.3%** | 50% |
+
+兩輪都是：`clamped_selected=0`、`clamped_table=0`、`verify-strict refused=0`、
+`zero_mapped_selected=0`、**`Received SIGTERM` = 0**（有效樣本）。
+⚠️ 兩輪的 thermal 全程 **HEAVY** ⇒ **t/s 不可引用**；但 churn 是計數器，不受散熱影響。
+
+### 7.3 ★ 那 73.4% 只有 19% 是交付態 decode 決定的
+
+`consumed_total = n_tokens x n_expert_used`，所以一個 `ntok=8` 的塊**每步帶 2 倍的 id**
+⇒ 它對「率」的貢獻是 `ntok=4` 的兩倍。第一輪的族群與權重：
+
+| ntok | graphs | rate 權重 | 是什麼 |
+|---:|---:|---:|---|
+| 8 | 104 | **80%** | chunked prefill 的塊（prompt ≈ 208 token / 8） |
+| 4 | 48 | **19%** | **交付態的 verify 步** |
+| 2 | 4 | 1% | |
+| 1 | 4 | 0% | |
+
+⇒ **一個「50:50 的步數」是「33:67 的率權重」**，而第一輪是 19:80。
+⇒ 所以 `73.4%` **不能**讀成「交付態 decode 的 churn」。
+
+### 7.4 兩輪的差（73.4% → 55.3%）**不能**直接當成「decode 佔比的效應」
+
+逐 graph 的整表 churn 顯示它在**衰減**：run1 的前 12 個 graph 是
+`13% 6% 5% 4% 7% 5% 4% 4% 2% 2% 2%`，後段落到 1–2%。而 **`ntok=4` 類的「後 3 中位」
+在 run1 是 1.1%、run2 是 0.5%** ⇒ run2 走得更深，還沒到平台。
+
+⚠️ **而且兩輪的 prefill 前綴逐位元相同**：`ntok=8` 在兩輪都是 **104 個 graph、同一序列**
+（`graph=0→0%、1→13%、2→6%…` 完全一致）⇒ 那是**同一段 prompt 處理**。
+
+⇒ 所以「decode 佔比」與「暫態佔比」**在這兩輪裡同時變化**，兩個解釋都活著。
+**⇒ 需要固定 decode 步數、只變 prefill 塊數，才能分離。**（見 §7.5）
+
+### 7.5 ★ A/B 這個設計**分離不了** —— 而這是一個要記下來的錯
+
+我原本設計的 A/B 是「**固定 decode 步數、只變 prefill 塊數**」：
+
+| | prompt | prefill 塊/輪 | decode 步/輪 | decode 的 rate 權重 | 總步數 |
+|---|---:|---:|---:|---:|---:|
+| A `--prefill-target-tokens 512` | 512 | 64 | 32 | 14% | 大 |
+| B `--prefill-target-tokens 64` | 64 | 8 | 32 | 57% | 小 |
+
+**問題**：改 prompt 長度必然同時改變**總步數**（A 比 B 長得多）。
+而兩個競爭解釋都預測同一個方向 ——
+
+* 若 churn 的主因是 **prefill 的 rate 權重** ⇒ A（權重低）churn 低；
+* 若主因是 **暫態**（池在填，§7.4 的衰減）⇒ A（走得深）churn 也低。
+
+⇒ **A < B 在兩種解釋下都成立，所以 A/B 看到任何結果都不能歸因。**
+**這個配對是我設計錯的，在跑之前就該看出來** —— 判準是「兩個解釋是否預測同方向」，
+而它們預測同方向。同型的教訓本專案已經有很多條（見技能陷阱 38）。
+
+### 7.6 唯一乾淨的路：把 `ntok` 納入計數（**已做 —— 見 §7.8**）
+
+`consumed_changed` 是一個**累計純量**，事後拆不開。要拿到「交付態 decode 的 churn」，
+唯一乾淨的做法是讓儀器**按 `n_tokens` 分桶**：
+
+```cpp
+// llama-expert-cache.h（新成員）
+std::map<int64_t, size_t> n_slot_table_consumed_changed_by_ntok;
+std::map<int64_t, size_t> n_slot_table_consumed_same_by_ntok;
+// llama-context.cpp（:4815-4821 那兩行旁邊各加一行分桶累加）
+// llama-expert-cache.cpp（teardown 按 ntok 逐行印率）
+```
+
+成本：3 個檔 ＋ 一次 build（`.h` 被 6 個檔引用 ⇒ 實測 36 秒）。而它讓「交付態 decode 的
+churn」變成**直接量到的**而不是外推的。
+實作：`Backup/patch_churn_by_ntok_20260920.py`（`.h` 的兩個 `std::map`、`context.cpp` 的兩行
+分桶累加、`expert-cache.cpp` 的 teardown 一行；並補上缺的 `#include <map>` / `<set>` ——
+**補丁自己的守衛抓到那兩個 include 不存在**）。build 後 `strings` 確認新行在 binary 裡。
+
+### 7.7 替代方案：讓 prefill 的權重降到 ~3%
+
+不改變儀器也能逼近答案：把 **prompt 縮到最小**、把 **decode 拉長**。
+
+| prefill 塊 | decode 步 | decode 的 rate 權重 |
+|---:|---:|---:|
+| 8 | 128 | 89% |
+| 8 | 512 | **97%** |
+| 8 | 1024 | 98% |
+
+⇒ 在 97% 的權重下，混合讀數**就是**交付態 decode 的讀數（誤差 ≤3%），
+而且它同時把暫態攤薄（512 個 decode 步 vs 32 個）。
+
+⇒ 這是本輪採用的路，結果見 §7.8。
+
+### 7.8 ★★ 結果：交付態 decode 步的 churn = **42.3%**
+
+分桶儀器 build 後，用**與 run2 完全相同的形狀**跑第三次
+（`--profile prod25 --arms p25-s1-churn --rounds 3 --warmup 1 --n-predict 512`）：
+
+```
+llama_expert_cache: S1 churn by ntok (consumed subset):
+    ntok=1     0/612    =  0.0%      MTP draft 步
+    ntok=4  3449/8160   = 42.3%      ★ 交付態 decode（MTP verify）步
+    ntok=8  3701/4159   = 89.0%      chunked prefill 塊（cgc_pool_max_tokens()）
+```
+
+**這一行就是前提 B 的答案，而且它可以直接引用**：
+
+| 讀數 | 值 | 能引用嗎 |
+|---|---:|---|
+| 混合（run2 / run3 的純量） | 55.3% | ❌ 是 42.3% 與 89.0% 的加權平均，單獨引用會誤導 |
+| **交付態 decode（ntok=4）** | **42.3%**（3449/8160） | ✅ **這是前提 B 要的那個數** |
+| prefill 塊（ntok=8） | 89.0%（3701/4159） | ⚠️ 事實，但它不是交付態的步 |
+| draft 步（ntok=1） | 0.0%（0/612） | ⚠️ 有趣：draft 的表**從不動** |
+
+**★ 分桶沒有改變累加（強驗證）**：run3 的 `consumed_changed=7150`、`consumed_unchanged=5781`
+與 run2 **逐位元相同**，而 3449+3701+0 = 7150、8160+4159+612 = 12931 ⇒ 分桶只是把同一個
+純量拆開。兩輪的品質閘門也都全綠、都沒有 SIGTERM。
+
+**⇒ 判決：前提 B 不成立。** 42.3% ≠ 0 —— 交付態 decode 步的**被消費映射有 42% 的
+（步,層）對會變動** ⇒ 表內容不是常數 ⇒ **發布不是冗餘** ⇒
+**S3（收段 40→1）的前提不成立，S2 是對的那條**（與 `REMAP_ROUNDTRIP_REMOVAL_PLAN` §9.17(c)
+的 S1→S3 建議相反、與 G1 的 `new_question_verdict` 一致）。
+
+⚠️ **仍然要報散布而不是單點**：§3.2(b) 量到同一個簽名的 run 家族裡 churn 散 37.2%–84.4%
+（那是舊儀器、混合族群）；而本節的 42.3% 是**單一 run 的三個桶之一**。
+**本輪只有一個 run3**，所以 42.3% 是「一次直接量到的交付態讀數」，
+**不是**「交付態 churn 的分布」。要得到分布需要多跑幾次。
+
+### 7.9 這一節之後，G1 的狀態
+
+| 問題 | 答案 |
+|---|---|
+| 前提 B 的儀器存在嗎 | 是（§1），且在交付配置上**現在**觸發（§7.1） |
+| 交付態 decode 的 churn 量到了嗎 | **是：42.3%**（§7.8，直接量到，非外推） |
+| S2 還是 S3 | **S2**（前提 B 不成立） |
+| 這個數字的分布 | **未知** —— 只有一個 run3（§7.8 的警告） |

@@ -4660,12 +4660,37 @@ static int64_t cgc_publish_slot_table_counted(llama_expert_cache * cache, int il
         }
     }
 
-    // Premise B: does the published CONTENT move between steps? Only decode steps are counted --
-    // prefill rewrites the table for reasons nobody is questioning, and mixing the two would drown
-    // the decode answer. Keyed by (context, layer) so verify and draft cannot contaminate each
-    // other's snapshots.
+    // Premise B: does the published CONTENT move between steps? Only pool-path steps are counted --
+    // a step that never publishes cannot testify about republishing, and prefill that bypasses the
+    // pool rewrites the table for reasons nobody is questioning. Keyed by (context, layer) so verify
+    // and draft cannot contaminate each other's snapshots.
+    //
+    // [CGC 2026-09-20 §G1-B] The gate used to be `n_tokens == 1`, which fires on NO delivery step.
+    // Measured on the 2026-09-20 02:30 G6 round: the MTP-ON arm -- the delivery configuration, the
+    // one whose shape G1's `union <= 38*mean_len` is stated against -- runs ntok {2:1, 3:2, 4:107,
+    // 8:18}, so `== 1` fires 0 times in 128 steps while the MTP-OFF arm fires on 31 of 60. Every
+    // reading this counter has ever produced therefore comes from MTP-off runs, and premise B has
+    // had zero readings where it decides anything.
+    //
+    // The bound is the pool path's own predicate rather than a literal, because "does this step
+    // take the pool path" IS premise B's question: the pool path is the only thing that publishes a
+    // table, so its step boundary is the one the question is about. `cgc_is_decode_graph` and
+    // `cgc_pool_max_tokens` are both `static inline` in headers, so this static free function can
+    // call them without a signature change. The same pair is already the predicate at
+    // llama-graph.cpp:2022 and :2192, so this makes the churn count and the remap decision agree
+    // about what a step is, by construction.
+    //
+    // Do NOT "fix" this back to `<= 2` by copying llama-context.cpp:4932 (§EN-16). That bound was
+    // chosen for READABILITY there -- its comment says it "skips the 8-token middle" -- and on the
+    // MTP-ON arm it covers 1 of 128 steps. A readability bound is fine for a divergence
+    // instrument; it is wrong for the one whose answer picks S2 or S3.
+    //
+    // This admits multi-token prompt chunks that also take the pool path (chunk sequence
+    // 2,2,8x21,6,8,2,4,4). They do publish, so they are inside the question rather than noise --
+    // but "the previous step" then means something slightly different for them, so the per-graph
+    // line below prints ntok and a reader can split the answer instead of trusting a mix.
     static const bool cgc_churn_on = getenv("CGC_S1_TABLE_CHURN") != nullptr;
-    if (cgc_churn_on && n_tokens == 1) {
+    if (cgc_churn_on && cgc_is_decode_graph(n_tokens, cgc_pool_max_tokens())) {
         static std::map<int, std::vector<int32_t>> cgc_churn_last;
         // [CGC 2026-09-17 §EN-13] The ids the consumer read at this layer's last publish. Comparing
         // the published table against the LIVE pool for ALL entries measures the clamp (non-resident
@@ -4769,10 +4794,11 @@ static int64_t cgc_publish_slot_table_counted(llama_expert_cache * cache, int il
                     }
                 }
             }
-            fprintf(stderr, "CGC-S1: TABLE-CHURN graph=%lld publishes=%lld changed_entries=%lld"
+            fprintf(stderr, "CGC-S1: TABLE-CHURN graph=%lld ntok=%lld publishes=%lld changed_entries=%lld"
                             "  SEL-DRIFT layers=%lld entries=%lld max_per_layer=%lld argmax_il=%d"
                             "   (all-entry drift, clamp-dominated, for contrast: layers=%lld entries=%lld)\n",
-                    cgc_churn_graph_idx, cgc_churn_graph_pub, cgc_churn_graph_chg,
+                    cgc_churn_graph_idx, (long long) n_tokens,
+                    cgc_churn_graph_pub, cgc_churn_graph_chg,
                     sel_layers, sel_drift, sel_max, sel_argmax,
                     drift_layers, drift_entries);
             cgc_churn_graph_idx++;
@@ -4815,8 +4841,10 @@ static int64_t cgc_publish_slot_table_counted(llama_expert_cache * cache, int il
             if (consumed_total > 0) {
                 if (consumed_moved > 0) {
                     cache->n_slot_table_consumed_changed++;
+                    cache->n_slot_table_consumed_changed_by_ntok[n_tokens]++;
                 } else {
                     cache->n_slot_table_consumed_same++;
+                    cache->n_slot_table_consumed_same_by_ntok[n_tokens]++;
                 }
             }
         }

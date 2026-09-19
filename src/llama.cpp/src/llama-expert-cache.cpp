@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <set>
 #include <cstring>
 #include <chrono>
 #include <thread>
@@ -2659,6 +2660,28 @@ llama_expert_cache::~llama_expert_cache() {
                     n_slot_table_publishes, n_slot_table_clamped_selected, n_slot_table_clamped,
                     n_slot_table_changed, n_slot_table_consumed_changed,
                     n_slot_table_consumed_same, cgc_s1_note);
+            // [CGC 2026-09-20 §G1-B] The scalar above is a MIXTURE. Print the rate per n_tokens so
+            // the delivery decode step can be read on its own instead of inferred. One line, one
+            // entry per distinct width actually seen; `ntok<=4` on this model covers the decode and
+            // MTP-verify steps, `ntok=8` is `cgc_pool_max_tokens()` and is the chunked-prefill block.
+            {
+                std::set<int64_t> ntok_keys;
+                for (const auto & kv : n_slot_table_consumed_changed_by_ntok) { ntok_keys.insert(kv.first); }
+                for (const auto & kv : n_slot_table_consumed_same_by_ntok)    { ntok_keys.insert(kv.first); }
+                if (!ntok_keys.empty()) {
+                    fprintf(stderr, "llama_expert_cache: S1 churn by ntok (consumed subset):");
+                    for (const int64_t k : ntok_keys) {
+                        const auto ic = n_slot_table_consumed_changed_by_ntok.find(k);
+                        const auto is = n_slot_table_consumed_same_by_ntok.find(k);
+                        const size_t ch = ic == n_slot_table_consumed_changed_by_ntok.end() ? 0 : ic->second;
+                        const size_t sa = is == n_slot_table_consumed_same_by_ntok.end()    ? 0 : is->second;
+                        const size_t tot = ch + sa;
+                        fprintf(stderr, "  ntok=%lld %zu/%zu=%.1f%%",
+                                (long long) k, ch, tot, tot ? 100.0 * (double) ch / (double) tot : 0.0);
+                    }
+                    fprintf(stderr, "\n");
+                }
+            }
         }
         // [CGC MTP Draft Prefetch 2026-09-07] final stats: how many experts were queued for
         // prefetch from draft predictions, and how many of those predictions were actually selected
