@@ -14,28 +14,50 @@ sweep	decode_sweep.py	arms	Decode arm sweep: restart the server per arm, run dec
 sweep	knifeedge_matrix.py	gate	Anti-knife-edge evaluation matrix: (model) x (pool size).
 sweep	pool_curve.py	probe	Pool-size sweep: restart the server at one expert-pool budget, probe, record one row.
 sweep	prefill_idle_sweep.py	probe	Locate the thermal recovery time constant tau by sweeping `--idle-before`.
+sweep	sntok_curve.py	probe	S(ntok) with MTP ON, and the per-layer decomposition of the fixed cost F.
+sweep	spec_cost_curve.py	probe	Measure the speculative-decoding cost curve cost(k) = 1 + m*k on the decode axis.
 ab	ab_interleave.py	compare	Interleaved A/B driver: alternate arms A,B,A,B,... so that each pair is measured back to
 ab	batch_retest_commits.sh	probe	batch_retest_commits.sh - 批量重測歷史 commit
+ab	caliber_env.py	probe	Two questions the caliber report left open, answered mechanically.
 ab	cgc_logits_oracle_compare.py	probe	cgc_logits_oracle_compare.py - 比較兩份 CGC logits oracle JSONL 檔, 判定 A/B 結果。
+ab	decode_window_harness.py	probe	Two decode lanes, run only in a quiet window, with a judged report instead of a pile of numbers.
+ab	divergence_onset_sweep.py	probe	Is `plain_match`'s divergence onset a FIXED sequence position, or an END-of-generation artifact?
 ab	flag_ab.py	probe	A/B any two CGC server flags against a fixed probe set -- "should we keep this on?".
 ab	ids_capture_diff.py	probe	Diff two CGC-IDS-CAP captures (kernel-side mul_mat_id ids) graph by graph, node by node.
+ab	layer_ahead_ab.py	probe	Compare the CGC_LAYER_AHEAD_PREFETCH arms from the driver logs + the server DECPROF blocks.
 ab	mtp_accept_ab.py	compare	Measure MTP draft acceptance per carrier, with the head's identity recorded alongside it.
+ab	paired_ab.py	probe	Paired A/B for throughput, with memory pressure made VISIBLE instead of silent.
+ab	paired_union_ab.py	-	Paired AB/BA on `union_sum` (the GPU-side span), from server logs that already exist.
+ab	paired_union_runner.py	-	A SERVER-SIDE paired A/B runner that records every rep's server log -- the tool G4 lacks.
+ab	phase_split_ab.py	probe	Phase-split prefill A/B: is the armed slab faster, or is the clamp merely slower?
+ab	plain_match_ab.py	probe	plain_match: does the batch-verify path compute the SAME thing as per-token decode?
+ab	plain_match_window.py	probe	Run `plain_match_ab` the moment the box is actually free, and requeue if it is not.
 ab	replay_bench_compare.py	probe	replay_bench_compare.py — 比較兩個 replay benchmark JSON, 判定 commit 是否改善。
 ab	replay_ngl_comparison.py	probe	CGC ngl=99 vs ngl=30 對比測試腳本
 ab	replay_server_vs_cli_comparison.py	probe	CGC Server vs CLI 對比測試腳本
+ab	slab_handoff_ab.py	probe	Slab→pool handoff A/B: can prefill 250 and a warm decode hold at the same time?
+ab	spec_ngram_ablation.py	probe	Where does the per-draft-token cost live: the DRAFT FORWARD, or the VERIFY path?
 bench	bare_48.py	probe	48 題裸問品質測試 — 純 user message、無拐杖（no prefill / pp / stop）。
 bench	decode_bench.py	measure	Controlled decode benchmark: short prompt, long generation, temperature=0, N rounds.
 bench	flip_rate.py	probe	Knife-edge-resistant quality evaluation (fixed seeds + repeats + verdict-flip statistics).
+bench	http_duo.py	probe	Measure prefill AND decode on the SERVED (HTTP) path, one profile, one table.
 bench	llama_bench_matrix.py	measure	Production prefill/decode matrix, measured the way llama-bench measures -- pp/tg x depth.
+bench	mean_len_direct.py	probe	Per-request direct count: how many tokens does one decode step actually deliver?
+bench	mtp_ruler.py	probe	The cross-arm ruler: mean_len and step time are one number, not two.
 bench	probe_skip0.py	probe	Deterministic 15+27 probe: N shots against the local OpenAI-compatible server.
 bench	prod_matrix.py	measure	The single production-grade measurement entry point: every profile x the standard cells.
+bench	profile_duo.py	probe	Measure one profile on BOTH axes -- prefill and decode -- and never report one without the other.
 bench	replay_bench_database.py	probe	replay_bench_database.py — CGC Replay Benchmark 數據庫管理工具
 bench	replay_client_regime.py	probe	replay_client_regime.py - Raw OpenAI client quality suite (2026-09-08)
 bench	replay_server_profile.py	probe	replay_server_profile.py — 應用層 replay benchmark + 質量/速度/內存指標
 bench	session_baseline.py	probe	session_baseline.py — CGC Phase-0.3 session baseline collector.
 gate	check_server_profiles.py	probe	
+gate	commit_gates.py	probe	Every commit must declare where it stands against the decode-25 gate chain.
+gate	engine_freeze.py	probe	engine_freeze.py -- pin (engine source state) <-> (build artifacts), and check the pin later.
+gate	engine_identity.py	probe	Stamp a measurement product with the binary that produced it. One identity, one place.
 gate	feasibility_gate_selftest.py	gate	Offline selftest for the PRE-LAUNCH FEASIBILITY GATE in `knifeedge_matrix.py`.
 gate	ids_capture_width_selftest.py	probe	Prove the id-capture READERS survive the full-width record -- and that "0 differences" can be
+gate	m123_gate_window.py	probe	Run the M1/M2/M3 oracle gate inside a quiet window, and record the reading WITH its provenance.
 gate	m123_oracle_gate.py	gate	m123_oracle_gate.py -- the per-commit M1/M2/M3 quality gate.
 gate	mmid_pool_vs_gguf.py	probe	Verify that the bytes mul_mat_id reads out of the expert-cache pool are the bytes
 gate	mtp_head_identity.py	probe	MTP head provenance gate: prove a GGUF carries the head that belongs to its base.
@@ -44,16 +66,29 @@ gate	oracle_truth_gate_selftest.py	gate	Offline selftest for the ABSOLUTE (groun
 gate	pool_feasibility.py	probe	Decide, BEFORE launching anything, whether a (model, pool size) cell is usable.
 gate	precommit_e2e_gate.sh	probe	precommit_e2e_gate.sh — Pre-commit E2E Quality Gate
 gate	precommit_replay_gate.sh	probe	precommit_replay_gate.sh — Pre-commit Replay Benchmark Gate
+gate	test_decode_window_harness.py	probe	Self-test for the harness verdicts.
+gate	union_floor.py	-	Can one existing server log resolve a given change in `union_sum`? Answer from the log.
+gate	window_gate.py	probe	Commit gate: the number of UNGATED server launchers may only go down.
+triage	attn_moe_split.py	probe	attn_moe_split.py — how much of a decode step's GPU time is ATTENTION vs MoE?
+triage	attribution_timeline.py	probe	One timeline: M1/M2/M3 readings and on/off attribution, segmented by engine digest.
+triage	decode_layer_cb.py	probe	Per-layer `cb` (command-buffer cost) from a CGC-DECPROF log, segmented BY REQUEST.
+triage	decode_layer_timeline.py	probe	G3's reading: put the per-layer GPU intervals on one timeline and say whether they overlap.
+triage	decode_step_profile.py	probe	MTP-off decode step profile: where do the ~100 ms/token actually go?
+triage	gdn_split.py	probe	gdn_split.py — WHERE does the GDN layers' extra per-layer GPU cost live?
 triage	gguf_dead_expert_census.py	probe	Census of ALL-ZERO expert rows in a GGUF, straight from the file.
 triage	gguf_pool_geometry.py	probe	Expert-pool geometry of a GGUF: per-slot bytes, the BINDING layer, and the slot capacity.
 triage	ioreport_gpu_pstate_probe.py	probe	Try to read GPU performance-state residency WITHOUT root, via the private IOReport framework.
 triage	mmid_geometry_probe.sh	probe	mmid_geometry_probe.sh — 把 mul_mat_id 的「幾何 vs ids」在兩條路徑上各印一次對打。
 triage	mmid_zero_row_triage.py	probe	Adjudicate CGC zero-row / zero-region alarms against the model file itself.
+triage	mul_mv_surface.py	measure	Price the dense `mul_mat` weight traffic that `mul_mv` re-reads M times, per shape and per
+triage	pool_split_geom_diff.py	probe	Is the LAYER_CAPS numeric carrier the per-layer PATH (pool vs wide), or something inside one path?
 triage	powermetrics_gpu_freq.sh	probe	powermetrics_gpu_freq.sh — settle "was the prefill slowdown a clock or a power cap" in one command
 triage	powermetrics_gpu_freq_parse.py	probe	powermetrics_gpu_freq_parse.py — turn a `powermetrics --samplers gpu_power` capture into an answer.
 triage	prefill_certifiability.py	probe	Is prefill 250 tok/s a spec, or a lottery?
 triage	prefill_gputime_report.py	probe	Print the per-launch GPU decomposition of every preserved cert_runs launch.
+triage	slot_alloc_curve.py	probe	Per-layer slot allocation from a routing trace: is there slack to borrow?
 triage	thermal_pressure.py	measure	Read the OS thermal pressure level, in band, next to whatever is being measured.
 env	check_env.sh	probe	cd /tmp
 env	check_server.sh	probe	set -euo pipefail
 env	check_torch.sh	probe	cd /tmp
+env	server_window.py	probe	One probe for "is this box actually free", shared by every script that launches a server.

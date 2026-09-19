@@ -73,11 +73,31 @@ CLASSES = {
 ASSIGNMENT = {
     "sweep": [
         "decode_sweep.py", "pool_curve.py", "prefill_idle_sweep.py", "knifeedge_matrix.py",
+        # 2026-09-20 由引擎線補齊：表中缺 35 筆 ⇒ `--check` 每次都 SystemExit、classes.tsv 從未
+        # 產生過。逐支讀模組 docstring 指派（不是憑檔名猜）；`sweep` 的判準是「**逐格重啟伺服器**」，
+        # 所以 divergence_onset_sweep.py 依它自己的 docstring（two launches total）歸 ab，不是 sweep。
+        "sntok_curve.py",
+        "spec_cost_curve.py",
     ],
     "ab": [
         "ab_interleave.py", "flag_ab.py", "mtp_accept_ab.py", "cgc_logits_oracle_compare.py",
         "ids_capture_diff.py", "replay_bench_compare.py", "replay_ngl_comparison.py",
         "replay_server_vs_cli_comparison.py", "batch_retest_commits.sh",
+        # 2026-09-20 由引擎線補齊：表中缺 35 筆 ⇒ `--check` 每次都 SystemExit、classes.tsv 從未
+        # 產生過。逐支讀模組 docstring 指派（不是憑檔名猜）；`sweep` 的判準是「**逐格重啟伺服器**」，
+        # 所以 divergence_onset_sweep.py 依它自己的 docstring（two launches total）歸 ab，不是 sweep。
+        "caliber_env.py",
+        "decode_window_harness.py",
+        "divergence_onset_sweep.py",
+        "layer_ahead_ab.py",
+        "paired_ab.py",
+        "paired_union_ab.py",
+        "paired_union_runner.py",
+        "phase_split_ab.py",
+        "plain_match_ab.py",
+        "plain_match_window.py",
+        "slab_handoff_ab.py",
+        "spec_ngram_ablation.py",
     ],
     "bench": [
         "decode_bench.py", "llama_bench_matrix.py", "replay_server_profile.py",
@@ -86,6 +106,13 @@ ASSIGNMENT = {
         "prod_matrix.py",
         "replay_bench_database.py", "bare_48.py", "replay_client_regime.py", "flip_rate.py",
         "probe_skip0.py", "session_baseline.py",
+        # 2026-09-20 由引擎線補齊：表中缺 35 筆 ⇒ `--check` 每次都 SystemExit、classes.tsv 從未
+        # 產生過。逐支讀模組 docstring 指派（不是憑檔名猜）；`sweep` 的判準是「**逐格重啟伺服器**」，
+        # 所以 divergence_onset_sweep.py 依它自己的 docstring（two launches total）歸 ab，不是 sweep。
+        "http_duo.py",
+        "mean_len_direct.py",
+        "mtp_ruler.py",
+        "profile_duo.py",
     ],
     "gate": [
         "m123_oracle_gate.py", "precommit_e2e_gate.sh", "precommit_replay_gate.sh",
@@ -95,6 +122,16 @@ ASSIGNMENT = {
         # 2026-09-17 由另一條線新增。本表必須覆蓋磁碟上的**全部** —— `--check` 就是這樣變紅的，
         # 而它紅得對：一個沒被分類的腳本就是一個沒有入口的腳本。
         "ids_capture_width_selftest.py",
+        # 2026-09-20 由引擎線補齊：表中缺 35 筆 ⇒ `--check` 每次都 SystemExit、classes.tsv 從未
+        # 產生過。逐支讀模組 docstring 指派（不是憑檔名猜）；`sweep` 的判準是「**逐格重啟伺服器**」，
+        # 所以 divergence_onset_sweep.py 依它自己的 docstring（two launches total）歸 ab，不是 sweep。
+        "commit_gates.py",
+        "engine_freeze.py",
+        "engine_identity.py",
+        "m123_gate_window.py",
+        "test_decode_window_harness.py",
+        "union_floor.py",
+        "window_gate.py",
     ],
     "triage": [
         "mmid_zero_row_triage.py", "gguf_dead_expert_census.py", "mmid_geometry_probe.sh",
@@ -103,9 +140,25 @@ ASSIGNMENT = {
         # 2026-09-17 由另一條線新增：從 GGUF 推導 pool 幾何（per-slot bytes、BINDING layer、
         # slot 容量）。它回答的是「這個容量為什麼是這個數字」⇒ 與 gguf_dead_expert_census.py 同類。
         "gguf_pool_geometry.py",
+        # 2026-09-20 由引擎線補齊：表中缺 35 筆 ⇒ `--check` 每次都 SystemExit、classes.tsv 從未
+        # 產生過。逐支讀模組 docstring 指派（不是憑檔名猜）；`sweep` 的判準是「**逐格重啟伺服器**」，
+        # 所以 divergence_onset_sweep.py 依它自己的 docstring（two launches total）歸 ab，不是 sweep。
+        "attn_moe_split.py",
+        "attribution_timeline.py",
+        "decode_layer_cb.py",
+        "decode_layer_timeline.py",
+        "decode_step_profile.py",
+        "gdn_split.py",
+        "mul_mv_surface.py",
+        "pool_split_geom_diff.py",
+        "slot_alloc_curve.py",
     ],
     "env": [
         "check_env.sh", "check_torch.sh", "check_server.sh",
+        # 2026-09-20 由引擎線補齊：表中缺 35 筆 ⇒ `--check` 每次都 SystemExit、classes.tsv 從未
+        # 產生過。逐支讀模組 docstring 指派（不是憑檔名猜）；`sweep` 的判準是「**逐格重啟伺服器**」，
+        # 所以 divergence_onset_sweep.py 依它自己的 docstring（two launches total）歸 ab，不是 sweep。
+        "server_window.py",
     ],
 }
 
