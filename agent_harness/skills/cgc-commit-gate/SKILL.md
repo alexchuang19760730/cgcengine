@@ -6,7 +6,7 @@ agent_created: true
 
 > **這是快照，不是權威副本。**
 > 權威位置：`~/.workbuddy/skills/cgc-commit-gate/SKILL.md`（由 host 持續寫入）。
-> 本檔於 2026-09-18 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
+> 本檔於 2026-09-20 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
 > 底下的內容能被 `agent_harness/scripts/auto_git_push.ps1` 定時推送；原檔改了這裡**不會**自動跟上。
 > 要改 skill 請改原檔，再重跑 `python3 agent_harness/scripts/import_harness_snapshot.py`。
 
@@ -19,7 +19,7 @@ agent_created: true
 ／ §6 收尾與 push ／ §7 commit 風格 ／ §8 附錄（歷史輪次索引）。
 **要動手就從 §0 的指令區塊開始，卡住再查對應主題。**
 
-### 動手前必記（只有這 9 條會真的弄壞 commit；細節在後面對應節）
+### 動手前必記（只有這 10 條會真的弄壞 commit；細節在後面對應節）
 
 1. 手動預演要自己帶 `BIN_DIR='src/llama.cpp/build/bin'`，否則閘門全 SKIP 卻印 `OK`（§1.1）。
 2. 提交要 `RUN_REPLAY_BENCH=0`——這是**依 D2**（基線 stale），不是腳本預設（§2.3）。
@@ -32,17 +32,90 @@ agent_created: true
 8. 動手前後各跑一次 `git status --porcelain -uall`；看到**不是你改的** modified／staged 檔
    ⇒ 停下找 owner，只新增不修改、不重生索引、不 commit（§4）。**`agent_harness/` 目前歸另一個
    session（他在做 E1），引擎層（`src/`、`scripts/check/`）歸這個 session。**
-9. 動到**任何會起 server 的腳本** ⇒ 跑 `python3 scripts/check/window_gate.py check`。它是純檔案
-   檢查（毫秒級、不需 server），會擋住「新出現的 ungated 啟動器」——在繁忙盒況下 launch 會量到
-   鄰居（同配置實測離散度 17%）而**數字本身看不出來**。剩下的 ungated 是另一條線持有的那幾支，
-   基線只准下降（`update` 要刻意單獨跑，不會混在 commit 裡）。見 `docs/SERVER_WINDOW_LEDGER_2026-09-19.md`。
-10. 動到**量測產物的 writer 或它的讀者** ⇒ 跑 `python3 scripts/check/engine_identity.py consumers`
-   （純檔案、毫秒級）。它擋的是「宣稱蓋了章、但產物根本沒被寫出來」：第一版 hook 就是
-   `cgc_logits_oracle_compare.py` 用了 `os` 卻沒 import，在**整個比對跑完之後**才 NameError，
-   產物無聲消失（自測測的是模組本身，看不到消費者）。同一條閘門也管「寫者與讀者的形狀必須
-   互相認得」：`stamp()` 把 md5 放在 `artifacts.<name>.md5`，而讀者只往下看一層 ⇒ 186 份產物
-   仍是 0 可歸屬；且閘門存 16 字元、蓋章存 32 字元 ⇒ 同一顆 binary 裂成兩段**假的**
-   `ATTRIBUTABLE → UNKNOWN` 轉換。兩者都有陰性對照釘在 `selftest` 裡。
+
+9. **commit 訊息必須聲明它對 gate 鏈的立場**（使用者 2026-09-19 22:17 的規則：
+   「每一次 commit 都要列出跟 gate 的關係放在狀態，met / not met (improve xxx)」）。
+   寫法：訊息末尾一個 `Gates:` 段 ——
+
+   ```text
+   Gates: none (docs-only, touches no measured metric)
+   Gates: G3 met (proved segment merge works); G4 not-met (improve 104.60 -> 98.00 ms)
+   Gates:
+     G3 met (union pair L4/L5 < 2x a single layer)
+     G4 not-met (improve 104.60 -> 98.00 ms, blocked-by-G3)
+   ```
+
+   規則：`none` 必須附理由；`not-met` **必須**有 `(improve ...)`；id 必須存在於
+   `agent_harness/portal/targets.json`（目標的單一真相來源，目前 G0–G7）。
+   **沉默是錯誤** ——「這輪推進了計畫」與「這輪什麼都沒動」不能在 log 裡長得一樣。
+   預演（不必 commit 就能驗）：`python3 scripts/check/commit_gates.py --last`，
+   或 `--message-file .git/COMMIT_EDITMSG`；檢查器自測 `--selftest`（12 項）。
+   要掛成 hook：`python3 scripts/check/commit_gates.py --install-hook` —— 它裝到 **common dir**，
+    ⇒ 本 repo 的**所有 worktree** 都生效，所以由人決定何時裝，**不要自動裝**。
+
+10. **併行 writer 在場時，判斷「能不能 commit」的判準是「我的 staged 集合裡有沒有別人的 bytes」，
+    不是「樹乾不乾淨」**（2026-09-19 實測）。§4-2 的字面是「看到不是你改的 modified 檔 ⇒ 不要 commit」，
+    但它給的**理由**是「不要把你 commit 在別人未定稿的 bytes 上」⇒ 危害在**staged 集合**，樹只是徵兆。
+    當天實況：別人未提交 `src/llama.cpp/src/llama-context.cpp`（+38/−5）＋重建的 `libllama` ＋新腳本，
+    而我的 7 檔 staged 集合 `git diff --cached --name-only | grep -E 'src/|pool_split|CANON_CAPS'` **空**
+    ⇒ commit 安全；**該延後的是會吸收別人 bytes 的載體** —— `MANIFEST.jsonl` 與 `memory/INDEX.jsonl`
+    （我的索引重生已把他們未定稿的 `pool_split_geom_diff.py` 收進去）。
+    ⚠ 但若對方正在做 **rebase／reset 之類會改歷史的** 操作，就少了「我的集合乾淨」這條豁免 ⇒ 一起延後。
+    ⚠ **動手前先讀 pre-commit hook**：本 repo 的 hook 只跑 `check_build_tracked.sh`（**檢查器，不建置**）
+    ⇒ commit 不會覆蓋別人正在 map 的 dylib。若某顆 hook 會建置，那麼在併行量測期間 commit
+    就等於對別人的實驗做一次寫入（那正是 `cmake --build` 的危害）。
+    預演指令（**必帶 `BIN_DIR`**，否則閘門全 SKIP 卻印 OK）：
+    `BIN_DIR='src/llama.cpp/build/bin' RUN_REPLAY_BENCH=0 bash scripts/check_build_tracked.sh --repo "$PWD"`。
+    事後再用 `commit_gates.py --last` 對**真正入檔的訊息**驗一次（不只驗草稿）。
+
+11. **改 `targets.json` 只做「單一錨點的局部文字替換」，不要整檔 reserialize**（2026-09-20 實測）。
+    `json.loads` → 改 dict → `json.dumps(indent=2)` 寫回，**語意正確但 diff 是 500 行**：檔裡的
+    `bindings` 是**一行式物件**的陣列（被展開成多行），而且 `"orphan_rate_gt": 0.50` 變成 `0.5`。
+    在併行 writer 在場時，那個 diff 會把**別條線同一區塊的未提交修改**包進衝突面。
+    正確做法（`Backup/patch_g4_work_order_20260920.py` 是範本）：
+    - 先 `cp` 一份備份；
+    - `assert s.count(ANCHOR) == 1`，錨在**目標區塊最後一個欄位**那一行；
+    - 插入的每一行**只有中間才有逗號**（第一版每行都加逗號 ⇒ `json.loads` 報
+      `Illegal trailing comma` —— 這正是「先驗再寫」救回來的一次）；
+    - `json.loads(整份新文字)` 通過**才** `write_text`；
+    - 收尾用 `diff 備份 新檔 | grep -c '^[<>]'` 驗 churn（本次 7 行）。
+    ⚠️ 這條與記憶裡「`targets.json` 兩次寫壞、規則：先 `json.loads(new_s)` 驗過才 `write_text`」
+    是同一族的第 3 次 —— 前兩次壞在**內容**，這次壞在**排版造成的協作成本**。
+    - ⚠️ **把散文接進 JSON 字串時，永遠不用裸 `"`**（2026-09-20，**同一族的第 4 次**）。
+      替換進去的文字若含未轉義的 `"`（實例：`the "after the fix" 16.5%`），`json.loads` 守衛會報
+      `Expecting ',' delimiter: line 91 column 888` —— **守衛第二次救命，檔案位元未變**。
+      用 `「」`（本專案慣例）或 `'`；**在 python 單引號字面量裡連 `'` 也不可用**（會切斷字面量，
+      第一次修正是這樣壞的）⇒ 一律用 `「」`。
+      **在腳本裡加一個指名道姓的守衛**，否則失敗只會給你一個 decoder 位置：
+      ```python
+      for name, blk in (("NEW_S3", NEW_S3), ("PREMISE_B", PREMISE_B)):
+          if '"' in blk:
+              raise SystemExit(f"{name} contains a bare double quote -- it would break the JSON string")
+      json.loads(out)
+      ```
+      範本：`Backup/patch_g1_premise_b_20260920.py`。
+
+12. ★ **同一份共享檔上有別人的 hunk 時，只 `git apply --cached` 自己那一個**（2026-09-20 實測）。
+    `targets.json` 上有另一條線未提交的 G6 措辭、以及我的 G4 區塊，`git diff -U0` 顯示
+    **三個獨立 hunk**（我的在 `@@ -137 +137,7 @@`）。此時**兩種常見做法都會吸收別人的位元組**：
+    - `git add <file>` → 整個 worktree 版本進 index；
+    - `git commit -- <pathspec>` → **更危險**：它對該路徑**繞過 index**、直接把 worktree 內容提交，
+      於是把對方的字串一起寫進你的 commit message 底下。
+    正確形狀（`Backup/stage_g4_hunk_20260920.py` 是範本，用 **marker 認 hunk 而不是 hunk 序號**
+    ——序號會被上游編輯靜默改變）：
+    ```python
+    # 1) git diff -U0 -- <path>  2) 依 '^@@' 切 hunk
+    # 3) mine = [h for h in hunks if MARKER in h]  ; assert len(mine) == 1
+    # 4) 其餘 hunk 逐一斷言含「我方認不得的」特徵字串（否則就是有第三個 writer）
+    # 5) header + mine[0] 寫檔 → git apply --cached --unidiff-zero
+    # 6) assert staged 清單 == 只有我的路徑；assert staged diff 裡有 MARKER 且沒有禁用字串
+    ```
+    - `--unidiff-zero` 是 `-U0` 的必要搭檔（沒有上下文行時 git 預設會拒）。
+    - **提交後要複驗「對方的位元組還在 worktree」**：`git diff --stat -- <path>` 應仍表現出
+      對方的那幾行，且用對方特徵字串 `grep -c` 應為 1。**這一步才證明沒有吸收。**
+    - **不需要 resync commit**：若你提交的檔都不在 `MANIFEST.jsonl` 裡（`grep -c <basename>` = 0），
+      就沒有「哪個檔要記這次的 hash」的問題 —— §6.1 的 resync 是因為**被提交的檔本身**要記結果，
+      不是 commit 的儀式。本次 0 個 `src/`、兩個檔都不在索引 ⇒ 一個 commit 收工。
 
 ---
 
@@ -61,13 +134,6 @@ python3 scripts/check/m123_oracle_gate.py --tag <標籤>        # ~40–60 s（�
 # (c) 有動被索引的檔案 → 依序重生索引（順序固定，見 §3.1）
 python3 agent_harness/engine_loop/memory/build_memory_index.py    # 先：寫 INDEX.jsonl
 cd agent_harness/engine_loop && python3 index_assets.py && cd -   # 後：MANIFEST 記 INDEX 的 bytes/mtime
-
-# (c2) 純檔案檢查（毫秒級、不用 server）：起 server 的腳本不得默默變成 ungated
-python3 scripts/check/window_gate.py check
-
-# (c3) 純檔案檢查：產物 writer／reader 一致性（形狀不一致 = 無聲 no-op，數字不會自己說出來）
-python3 scripts/check/engine_identity.py consumers   # 未綁定的名字 ⇒ 產物寫不出來
-python3 scripts/check/engine_identity.py selftest    # 寫者/讀者互測，含陰性對照
 
 # (d) 預演閘門（不要盲目提交）
 BIN_DIR='src/llama.cpp/build/bin' RUN_REPLAY_BENCH=0 bash scripts/check_build_tracked.sh --repo "$PWD"
@@ -312,8 +378,27 @@ message 講清楚三件事：(a) 不是這個 session 寫的（附 mtime 與它�
 `a22ebe88e` / `6ceeb281b` / `57bd90801` / `e0152777d` 全部 **0 個 `src/` 檔**，四者 message 都**沒有**
 報告 M1/M2/M3；報告它的是動到 `src/` 的 `2b284667f` 與 `2162e8cbd`。
 注意 `e0152777d`（subject 就叫 *the D5 gate is cheap -- run it*）本身 0 個 src 檔——它是 `2162e8cbd`
-的補記 commit。⇒ **一個純 doc/腳本的 commit 技術上可以不跑，但跑它只花 23 秒**，而「省下 23 秒然後
-在 message 裡用一段話解釋為何不跑」是這個 repo 已經明確判為錯的做法（`eng-gate-0016`）。**跑了就寫出來。**
+的補記 commit。
+
+★★ **2026-09-18 修正（使用者明確此判準）**：**`agent_harness/` 的 commit 不需要跑數值閘門。**
+原話：「運營者只改動 agent harness 目錄 應該不需要 D5」。判定用**目錄**，不要憑感覺：
+
+```sh
+git diff --cached --name-only | grep -c '^src/'     # 0 ⇒ 不適用（不是「可以不跑」）
+```
+
+三個層次的措辭要分清。舊版把三者混成一句「跑了就寫出來」，實際執行時會把人推向「還是跑吧」——
+**2026-09-18 我就是這樣白跑了一趟**（0 個 `src/`、卻因為「只花 23 秒」而啟動，還把沒跑成寫成缺憾）：
+
+| 情況 | 處置 | message 要寫什麼 |
+|---|---|---|
+| **不適用**（0 個 `src/`：只改 `agent_harness/`／`docs/`／`.workbuddy/memory/`） | **不跑** | 一句「本 commit 0 個 `src/` ⇒ D5 數值那一半不適用」。**不必**解釋為何不跑 |
+| **必需**（含 `src/`，或被 gate 預設 profile 帶上的旋鈕） | **跑**，且先讀 `comparable` | M1/M2/M3 的實際數字 |
+| 跑了（自願或必需） | — | **跑了就寫出來**（`eng-gate-0016`） |
+
+`eng-gate-0016` 判為錯的是「**動了 `src/` 卻用一段話解釋為何不跑**」——拿論證換證據。
+它**不是**說「0 個 `src/` 的 commit 也該跑」：那種 commit 裡 gate 對它**沒有鑑別力**
+（產物沒變 ⇒ M1/M2/M3 比的是同一份 binary 對同一份參考，只證明「機器還是好的」）。
 
 ### 2.5 D5 的 oracle 旋鈕是「釘住的」——它會擋下一種你以為沒事的改動
 
@@ -864,6 +949,17 @@ PY
 **當下狀態**封進快照——所以「先匯入、後補一節 §EN-xx」會讓快照在**同一個 turn 內**就 stale。
 正確序列：**改 skill 原檔 ＋ append 記憶 → `import_harness_snapshot.py` → 逐檔重算 sha256 驗 12/12
 → 重生索引 → commit**。匯入器是幂等的，寫漏了就再跑一次（成本就是再複製 12 檔）。
+
+**★ `§EN-NNN` 是多條 session 共用的號碼池，追加前要先取 max，不要憑印象接號（2026-09-18）。**
+`.workbuddy/memory/YYYY-MM-DD.md` 由多條線共寫，號碼不是「你這輪用過的下一個」。
+我當天想寫 `§EN-112`（我上一輪停在 XX）而它早已被另一條線用掉 ⇒ 直接 append 會產生兩個同名節，
+往後引用節號時無法辨認是哪一輪。追加前的兩行：
+
+```python
+import io, re
+s = io.open('.workbuddy/memory/2026-09-18.md', encoding='utf-8').read()
+print(max(int(m) for m in re.findall(r'§EN-(\d+)', s)))   # 下一個＝這個 ＋1
+```
 
 **skill 原檔一改，快照就 stale ⇒ 不要讓它變成第二個 commit。** 把「改 skill」與「刷新快照」放在
 **同一個** commit。（若 skill 是在交付 commit **之後**才被改的，那就難免要多一個 snapshot commit。）

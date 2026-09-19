@@ -2,7 +2,7 @@
 
 > **這是快照，不是權威副本。**
 > 權威位置：`.workbuddy/memory/MEMORY_PERF.md`（由 host 持續寫入）。
-> 本檔於 2026-09-18 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
+> 本檔於 2026-09-20 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
 > 底下的內容能被 `agent_harness/scripts/auto_git_push.ps1` 定時推送；原檔改了這裡**不會**自動跟上。
 > 索引與漂移檢查見 `agent_harness/engine_loop/memory/INDEX.jsonl`。
 
@@ -537,3 +537,81 @@ A11 啟動環境指紋），`suite` 是第五軸，`harness.script_digest` **刻
 - `source_stamp`／`pool_geometry_stamp` 的來源清單是**人工列舉**；不在清單但會改數值的至少還有
   `ggml-metal.metal`、`ggml-backend.cpp`、`llama-model-loader.cpp`、`ggml-metal-context.m`（靠
   `binary_stamp` 兜住）。
+
+## MTP／speculative（2026-09-18 由 MEMORY.md 移入，本節為權威）
+
+- **★ acceptance 是「同一 prompt + greedy ⇒ 逐 rep 完全相同」的確定量（09-19 實測 6/6）。**
+  prod25 / `http_duo` 那個 prompt = `0.53061（78/147）mean_len 2.59`；先前記的 0.46541 是**別的
+  prompt**。**⇒ ① 的問題從「是不是 bug」改寫成「是不是系統性偏差」：隨機不一致類已被排除。**
+  副作用（重要）：既然同 prompt+greedy 逐位相同，**batch-verify 的 logits 與逐 token 解碼的 logits
+  必須逐位相同** ⇒ plain_match 從「0.5–1 天只讀」壓成**一支跑**——「兩次跑本來就不同」這層藉口沒了。
+- **★ server 側 decode t/s 一律是 post-prefill 暫態（09-19 實測 6.38–10.69 t/s）**，正好落在
+  `llama-expert-cache.cpp:385` 注的 degraded band（8.1–8.9），遠低於 steady **22.2**；
+  `n_predict=128` 走不完暫態 ⇒ 引用前要把 `n_predict` 拉到 ≥512 且只報尾段，或明確標注「暫態」。
+
+- **MTP／spec：攤薄係數 `m` 已量（09-18，`prefill250`，llama-bench）**＝0.474（3 輪配對中位）／
+  0.689（唯一全程 NOMINAL 點）⇒ **每個 k 都虧（S 0.55–0.74），accept 拉到 0.92 也只 ~1.5×**；
+  **2× 需 m ≤ 0.214**。成本來源＝`union/call = 9.36 + 3.12·k_eff`（單 token 一步＝8）。
+  工具 `scripts/check/spec_cost_curve.py`。→ `docs/SPEC_COST_CURVE_2026-09-18.md`
+  （服務路徑 prod25 卻是 +31%／m≈0.21，**兩台儀器結論相反，未解決**）。
+- **★ RSL-MTP（我提的「draft 的 top-8 ⊆ 已付費並集」）已被自己的數據否決：0.70–0.97×，無一格 ≥1.0。**
+  親和性存在（單專家邊際重疊 q≈0.55）但「**整個** top-8」⇒ q⁸=0.008；放寬成預算 b 後
+  **接受率掉得比成本快**。m=0.474 下 **2× 即使 a→1 也不可能**。⇒ 別練 draft head。
+  → `docs/RSL_MTP_GAIN_ESTIMATE_2026-09-18.md`
+- **★ 那該攻什么：verify 的 residency thrash（新主項，未驗證）。** 同一批 log 的 teardown 就印了：
+  `layers_distinct_over_slots` 0→4→15→17（k=0..7）；worst layer distinct/slots **143/143 已零餘量**
+  →219/143；hit% 92.6→49.2 就發生在越界那一刻；每步讀取 7.9→67 MiB。回歸
+  `ms/step=89+3.35·MiB`（r²=0.70，**MiB 與 k 共線 ⇒ 弱證據**，真正提供機制的是那條整數計數器）。
+  ⚠ **更正**：「pool 143→179 slots ⇒ I/O −3.7× 但 decode 只 +9% ⇒ 非 IO bound」是在 **MTP-off、
+  非 verify 路徑**量的（那裡 k=0 時不 thrash）⇒ 不能推到 verify，要重跑。修好後上界 S=E=1.31–1.88×；
+  m=0.474 時 a=0.85 也只 1.23× ⇒ **thrash 的價值是讓 accept 變得值得買**。`CGC_NO_PREFETCH=1`
+  是預設（`run_server.sh:2029`）⇒ 以上全在 prefetch 關閉下量得。dynamic-k oracle 只 1.035×
+  （且被噪音膨脹）⇒ 別做。→ `docs/MTP_VERIFY_OPT_2026-09-18.md`
+- **★ 承上，「residency thrash 是主項」已被第三批雙軸數據否決（09-18 晚）。** 工具加 budget 第二軸
+  （`--budgets 8,6,4`）：slots 143/107/71，**k=0 就已有 0/10/38 層越界**。但**同 k 跨池的
+  bytes→時間彈性只有 0.10–0.17（k=1/3 甚至 −0.38）**；`k_eff` 單變數解釋 **84%** 的 ms/step 變異
+  （59 ms/token），bytes 只 65%、加進去後係數掉 3×。draft 側只佔 union **3%**
+  ⇒ **`m=0.43–0.56` 的機械解釋是「每個 draft token 的固定代價」，不是流送**。
+  **修 residency 的上界只剩 ~15%**（超額 +269 ms 中 bytes 只解釋 ~40 ms）。
+  ⇒ thrash／per-layer 配額／prefetch 開關**降為次要**。
+- **★ 2026-09-19 → `docs/MTP_2X_BOUNDARY_2026-09-19.md`（「MTP 到 2×」的還輯列為權威）：**
+  `S = (1+a·k)/(1+m·k)`，今天 server `a=0.4654`、`m=0.322`（`C=168.4/85.65=1.966 @ k=3`）、bench `m=0.474`。
+  ➜ **k→∞ 的上界是 `a/m`：1.445（server）／0.982（bench）**
+     ⇒ **k 加到多大都不到 2×**（與 dynamic-k oracle 1.035× 互證）⇒ `n_max 3→5` 作廢。
+  ➜ **k=3 到 2× 的邊界**：`m ≤ ((1+3a)/2 − 1)/3`
+     a=0.465→m≤0.066（−79%）、a=0.70→≤0.183（−43%）、**a=0.80→≤0.233（−28%）**、
+     a=0.90→≤0.283（−12%）、**a=1.00→≤0.333（今天已夠，給 2.03×＝23.75 t/s）**。
+     ⇒ **a 的標數比 m 大得多 ⇒ 首選是攻接受率**，不是再削成本。
+  ➜ 攻接受率的下手處：`plain_match=False`（batch verify 與逐
+     token 不一致，**至今未出理**）；量化天花板假說用
+     **Ornith 的 acceptance 當探針**（只當探針，它慢 1.49×）。
+  ➜ ⚠ **第三次共線陷阱**：`ms/step ≈ requests × 1.59 ms`也是 k 的另一種形狀
+     （`requests/輪 = 8.49 + 3.61·k`）⇒ 未證實也未否證。
+     判它的仍是 **`--spec-type ngram-map-k` 消融` 與 `CGC_P_ROUTE=1`**（都還沒跑）。新的並列第一是兩個廉價實驗：
+  **`CGC_P_ROUTE=1`**（探針已在樹裡 `llama-context.cpp:5929`，直接印 `P(top8_{t+j}⊆top8_t)`，
+  不需額外 forward）與 **n-gram draft**（`--spec-type ngram-map-k` 去掉 draft 前向：
+  m 崩 ⇒ 是 draft 前向；m 不動 ⇒ 在 verify 每 token 路徑／T=k+1 沒攤薄）。
+  ⚠ 這批三個混淆：**run 順序與 budget 完全混淆**（每回合永遠 8→6→4，重跑得上拉丁方）、
+  漂移 −1.93 ms/run 但熱態同時變壞 ⇒ 是預熱不是熱態、同格跨回合 max/min **1.03–1.74×**
+  ⇒ 絕對 t/s 不可引用，只引用回合內比值與計數器。→ `docs/POOL_BUDGET_COST_DECOMP_2026-09-18.md`
+
+## ★ 2026-09-19 更正：本檔「llama-bench 對 MTP 是瞎的」那一節已過期（部分）
+
+**`8194a2ba4`（2026-09-18 20:24）已修**：`test_gen_spec` 補上了缺的那一行
+`llama_context_set_cgc_phase(ctx, CGC_PHASE_VERIFY)`（＋decode 後 fail-closed reset）。
+病因：fast path 的閘門是 **caller 設的 phase**，不是 batch 形狀（`llama-context.cpp:6065`），
+而全樹只有 server-context.cpp 與 speculative.cpp 兩個 caller ⇒ bench 的 verify 批次一律掉回
+`ensure_batch` 精確路徑。
+
+**已驗證生效（09-19 四支帶 spec 的 run，`verify: calls` 全部非零）**：
+union/call **16.30–18.15**，而 server 側參考值是 **18.69** ⇒ **bench 現在與 server 同側**；
+修復前的症狀是 `verify: calls=0`、`union/calls = 8.00`。
+
+⇒ 因此本檔這兩句**作廢**：
+- ~~「llama-bench 對 MTP 是瞎的」~~
+- ~~「llama-bench 路徑 `verify: calls = 0` ⇒ 它的 verify 不走 fast path」~~
+⇒ 由它們推出的「**MTP on/off 的正確配對要在 server 路徑做（HTTP），不是 llama-bench**」
+  **需要重估**（現在 bench 也能量）。
+⚠ 但 **09-18 20:24 之後**量的 bench MTP 數字（§EN-187 的 `m=0.474`、§EN-190 的 bench V1 21:59）
+都在修復之後 ⇒ **不受影響**；只有 09-18 上午及更早的要打折。
+（全文見 `.workbuddy/memory/2026-09-19.md` §EN-200。）

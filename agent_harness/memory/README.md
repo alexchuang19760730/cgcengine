@@ -12,6 +12,8 @@
 | `2026-09-16.md` | `.workbuddy/memory/2026-09-16.md` | 當日工作誌（append-only） |
 | `2026-09-17.md` | `.workbuddy/memory/2026-09-17.md` | 當日工作誌（append-only） |
 | `2026-09-18.md` | `.workbuddy/memory/2026-09-18.md` | 當日工作誌（append-only） |
+| `2026-09-19.md` | `.workbuddy/memory/2026-09-19.md` | 當日工作誌（append-only） |
+| `2026-09-20.md` | `.workbuddy/memory/2026-09-20.md` | 當日工作誌（append-only） |
 
 每個快照檔開頭都有 banner 標明這件事（插在 YAML frontmatter **之後**，避免弄壞 frontmatter）。
 

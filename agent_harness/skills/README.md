@@ -7,6 +7,7 @@
 | `cgc-commit-gate` | `~/.workbuddy/skills/cgc-commit-gate/SKILL.md` | 在本 repo commit 時通過 pre-commit 閘門與 D5 |
 | `cgc-decision-registry` | `~/.workbuddy/skills/cgc-decision-registry/SKILL.md` | 把日誌的 §EN-／§TB- 決策節登錄成 `traces/decisions.jsonl`（schema、id 格式、改完要重生哪兩個投影） |
 | `cgc-decode-attribution` | `~/.workbuddy/skills/cgc-decode-attribution/SKILL.md` | 把 decode 步歸因到 GPU／CPU／池 IO／編碼 |
+| `cgc-mtp-cost-curve` | `~/.workbuddy/skills/cgc-mtp-cost-curve/SKILL.md` | 量測 speculative/MTP 的攤薄係數 m 與每步接受數 E（判斷「練 draft head 值不值得」） |
 | `cgc-observer-portal` | `~/.workbuddy/skills/cgc-observer-portal/SKILL.md` | 新增「可機檢的觀測入口」（目標／決策／閘門／資產四合一）時：四條硬規矩、零漂移的位置、突變式自測清單 |
 | `cgc-prefill-thermal-delivery` | `~/.workbuddy/skills/cgc-prefill-thermal-delivery/SKILL.md` | 讓一個 prefill t/s 數字取得可交付地位 |
 | `cgc-tb-smoke` | `~/.workbuddy/skills/cgc-tb-smoke/SKILL.md` | 跑 terminal-bench 的鏈路 smoke（oracle／帶模型兩變體） |

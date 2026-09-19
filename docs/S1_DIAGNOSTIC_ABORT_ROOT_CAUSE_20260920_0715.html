@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>S1 的 abort 不是 S1 的 —— 診斷探針讀到了別人的張量（2026-09-20 07:15）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#1f2328; --muted:#57606a; --line:#d0d7de;
+    --blue:#0969da; --green:#1a7f37; --red:#cf222e; --amber:#9a6700; --purple:#8250df; --gray:#6e7781;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font-family:-apple-system,"PingFang TC","PingFang SC","Microsoft JhengHei",Segoe UI,Roboto,sans-serif;
+       font-size:15px;line-height:1.72;}
+  .wrap{max-width:1040px;margin:0 auto;padding:32px 20px 80px}
+  h1{font-size:26px;line-height:1.35;margin:0 0 6px}
+  h2{font-size:19px;margin:34px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:22px 0 8px}
+  p{margin:10px 0}
+  .sub{color:var(--muted);font-size:13px;margin:0 0 18px}
+  code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"DejaVu Sans Mono",monospace}
+  code{background:#f6f8fa;border:1px solid var(--line);border-radius:4px;padding:1px 4px;font-size:13px}
+  pre{background:#f6f8fa;border:1px solid var(--line);border-radius:6px;padding:12px 14px;overflow:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;border:0;padding:0;font-size:inherit}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:#f9fafb}
+  .num{white-space:nowrap}
+  .tag{display:inline-block;border-radius:999px;padding:1px 9px;font-size:12px;border:1px solid var(--line);background:#f6f8fa;color:var(--muted)}
+  .t-blue{color:var(--blue);border-color:#b6d8f7;background:#eaf3fe}
+  .t-green{color:var(--green);border-color:#b7e0c2;background:#eaf7ee}
+  .t-red{color:var(--red);border-color:#f5c2c7;background:#fdeef0}
+  .t-amber{color:var(--amber);border-color:#f0dc9a;background:#fdf6e3}
+  .t-purple{color:var(--purple);border-color:#dbc7f5;background:#f5eefd}
+  .t-gray{color:var(--gray);border-color:#d8dee4;background:#f6f8fa}
+  .box{border-left:4px solid var(--line);background:#f9fafb;border-radius:0 6px 6px 0;padding:10px 14px;margin:14px 0}
+  .box.warn{border-left-color:var(--amber);background:#fdf8ee}
+  .box.ok{border-left-color:var(--green);background:#f0f9f2}
+  .box.bad{border-left-color:var(--red);background:#fdf1f2}
+  .box.pur{border-left-color:var(--purple);background:#f7f2fd}
+  .box p:first-child{margin-top:0}
+  .box p:last-child{margin-bottom:0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:4px 0}
+  .kv{color:var(--muted);font-size:13px}
+  footer{margin-top:40px;padding-top:14px;border-top:1px solid var(--line);color:var(--muted);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>S1 的 abort 不是 S1 的<br>—— 一條診斷探針讀到了別人的張量</h1>
+<p class="sub">
+  日期：2026-09-20 07:0x–07:2x（+08）　·　專案：flashkv-devserver（llama.cpp CGC fork）<br>
+  儀器：<code>scripts/check/m123_oracle_gate.py</code>（D5 數值閘門，自行經 <code>run_server.sh</code> 起 server）
+  　·　三次 A/B 對照<br>
+  兄弟檔：<code>docs/S1_DIAGNOSTIC_ABORT_ROOT_CAUSE_2026-09-20.md</code>（同內容的 Markdown 報告）、
+  <code>docs/S2_IMPLEMENTATION_PLAN_2026-09-20.md</code> §7（本檔推翻它的結論）
+</p>
+
+<div class="box pur">
+<p><b>本文要取代什麼。</b>2026-09-20 07:00 的一份讀數寫著「<b>S1 現在會 abort</b>，所以 S2 卡在一個要先修的
+defect 上」，並據此把 S2 的下一步排成「先修 abort，再談裝置化」。</p>
+<p><b>那個結論作廢。</b>S1 在交付配置上不會 abort；abort 的是 <code>CGC_S1_DBG</code> 這條診斷指令<b>自己</b>。
+判準是同一顆 build、同一棵樹上、<b>只差那一格旋鈕</b>的對照。原文的崩潰現場（log 行、堆疊、<code>id_oob</code>）
+一個字沒改，作廢的只有由它推出的那個結論。</p>
+</div>
+
+<h2>§1　一句話</h2>
+<p>
+<code>CGC_S1_DBG</code> 的 POST 探針在<b>不是它自己建的圖</b>上遍歷一張從不清空的捕獲表，
+把舊指標指到的張量按 <b>4 bytes/元素</b> 讀；其中一層（<code>il=14</code>）的實際位元組數只有讀取長度的一半，
+於是撞上 <code>ggml-backend.cpp:349</code> 的越界斷言 —— <b>探針殺掉了它正在量測的那一輪，
+而責任被記在受試物頭上。</b>
+</p>
+
+<h2>§2　對照：唯一變數是那顆診斷旋鈕</h2>
+<table>
+<tr><th>臂</th><th>旋鈕（banner 逐字）</th><th class="num">gate 判決</th><th>M1 / M2 / M3</th></tr>
+<tr>
+  <td><code>s1-nodbg</code></td>
+  <td><code>slot_table_gpu=1 … s1_dbg=off</code></td>
+  <td class="num"><span class="tag t-green">PASS</span><br><span class="kv">comparable=true, diffs=[]</span></td>
+  <td class="num">9/9　9/9　9/9</td>
+</tr>
+<tr>
+  <td><code>s1-baseline</code></td>
+  <td><code>slot_table_gpu=1 … s1_dbg=1</code></td>
+  <td class="num"><span class="tag t-red">abort</span><br><span class="kv">請求失敗，server 已死</span></td>
+  <td class="num">—（INVALID RUN）</td>
+</tr>
+</table>
+
+<pre><code>launch_s1-nodbg.log:29     [perf]  diag: submit_ahead=off slot_table_gpu=1 canon_order=off pool_split_dbg=off s1_dbg=off
+launch_s1-baseline.log:29  [perf]  diag: submit_ahead=off slot_table_gpu=1 canon_order=off pool_split_dbg=off s1_dbg=1</code></pre>
+
+<p>
+兩份 banner 都是 <code>run_server.sh</code> 自己印的（所以不是「沒設到」），
+而 <code>[guard]</code> 那行都是 <code>memory_mode=dev class=full-mtp phys=16GB</code>。
+⇒ 在那個配置上，<b>「閘門判 S1 bit-identical」這個前提已經滿足</b>，
+<code>llama-graph.cpp:2144-2145</code> 要求 S1「先過 bit-identical 閘門」的那句話因此不再是阻塞。
+</p>
+
+<h2>§3　根因：三件事疊起來</h2>
+
+<h3>§3.1　捕獲表只在建 decode 圖時被填，而且從不清空</h3>
+<p>
+三張表（<code>cache_slots_out_tensors</code> / <code>cache_slot_table_tensors</code> /
+<code>cache_remap_tensors</code>）在 <code>llama-context.cpp:7142-7173</code> 的 <code>graph_get_cb</code> 裡寫入，
+而那個 capture 位在 <code>llama-graph.cpp:2191</code> 的條件之內：
+</p>
+<pre><code>if (expert_cache_active &amp;&amp; !(dw_env &amp;&amp; dw_env[0]) &amp;&amp; n_tokens &gt;= 1 &amp;&amp;
+        cgc_is_decode_graph(n_tokens, expert_cache_decode_max_tokens) &amp;&amp; il &gt;= 0 &amp;&amp; ...)</code></pre>
+<p>
+只有 decode 圖會填它。而三張表在全檔裡<b>沒有任何 <code>.clear()</code></b>
+（只有賦值、<code>count()</code>、<code>find()</code>、以及 <code>operator[]</code>）。
+所以在 prefill 圖上，它們裝的是「最後一次建 decode 圖時」的指標。
+</p>
+
+<h3>§3.2　ggml 每個 build 都 reset 並重用 arena ⇒ 舊指標落在當前圖的別的張量上</h3>
+<p>
+這一條是<b>實測</b>出來的，不是推論。同一次啟動裡探針跑了兩次（<code>if (cgc_s1_post_n &lt; 6)</code>），
+兩次互相矛盾：
+</p>
+<table>
+<tr><th>呼叫</th><th class="num">行號</th><th>內容</th></tr>
+<tr>
+  <td>第 1 次</td><td class="num">254–292</td>
+  <td><code>il=1..39</code>，<b>每一條都是 <code>ntok=2 n_expert=256</code></b> —— 真正的 decode 形狀，表是新鮮的</td>
+</tr>
+<tr>
+  <td>第 2 次</td><td class="num">355–367</td>
+  <td>同 39 個 key，<b>每一條的形狀都屬於別的張量</b>（<code>ntok=207 n_expert=8192</code> 這類）</td>
+</tr>
+</table>
+<p>
+第一版修法加的是「<b>這個位址是不是當前圖的節點</b>」這個檢查，而它在第 2 次呼叫上
+<b>一條都沒攔下</b>（<code>SKIPPED</code> 計數 = 0）。原因就是 arena 被重用：
+那個舊位址<b>真的</b>是當前圖某個節點的位址
+⇒ <b>「是不是這張圖的節點」不等於「是不是我當初那顆張量」。</b>
+</p>
+
+<h3>§3.3　讀取長度假設 4 bytes/元素，而那些張量不保證</h3>
+<p>
+探針的每一處讀都是 <code>ggml_backend_tensor_get(t, buf, 0, n * sizeof(int32_t))</code>，
+而 <code>ggml_nbytes()</code> 是<b>由 <code>nb[]</code> 算出來的</b>。落在舊位址上的張量若是
+F16／量化型別，<code>4n</code> 就會超過它自己的 <code>ggml_nbytes</code>：
+</p>
+<pre><code>src/llama.cpp/ggml/src/ggml-backend.cpp:349:
+  GGML_ASSERT(offset + size &lt;= ggml_nbytes(tensor) &amp;&amp; "tensor read out of bounds") failed</code></pre>
+
+<h2>§4　定量證據（修後那次運行 <code>llama_server_20260920_071337.log</code>）</h2>
+<p>同一條探針的 82 條輸出，逐條分類：</p>
+<table>
+<tr><th>類別</th><th class="num">條數</th><th>說明</th></tr>
+<tr><td><code>reported</code></td><td class="num">65</td><td>兩個判準都過，正常印出</td></tr>
+<tr><td><code>over</code>（<code>ggml_nbytes &gt; 4n</code>）</td><td class="num">13</td><td>別人的張量，讀起來<b>安全但是錯的報告</b></td></tr>
+<tr><td><code>zero</code>（<code>ntot = 0</code>）</td><td class="num">1</td><td>退化形狀</td></tr>
+<tr><td><b><code>under</code>（<code>ggml_nbytes &lt; 4n</code>）</b></td><td class="num"><b>1</b></td><td><b>這就是 abort 的那一處</b></td></tr>
+<tr><td><code>membership</code>（不是本圖節點）</td><td class="num">2</td><td>舊指標已完全不在圖裡</td></tr>
+</table>
+<p>那唯一一條下溢，逐字：</p>
+<pre><code>CGC-S1: POST il=14 SKIPPED (ne=[256,256] but ggml_nbytes=139264 is not 65536 int32s:
+                            this capture now points at another tensor of this graph,
+                            so it says nothing about the gather)</code></pre>
+<p>
+<code>ne=[256,256]</code> ⇒ 要讀 <code>65536 × 4 = 262144</code> bytes，而
+<code>ggml_nbytes = 139264</code> ⇒ <b>越界 122880 bytes</b>。
+而 07:00 那份 log 崩潰前的<b>最後一行是 <code>il=13</code></b> —— 它死在 <code>il=14</code>，
+與這裡指出的那一層<b>同一個</b>。
+</p>
+
+<h2>§5　修法（<code>src/llama.cpp/src/llama-context.cpp</code>，只在 <code>CGC_S1_DBG</code> 下生效）</h2>
+<p>兩個判準，<b>都必要</b>，而且不是同一件事：</p>
+<pre><code>// ① 這個位址屬於剛剛跑的那張圖（必要，但不充分）
+static bool cgc_node_in_graph(ggml_cgraph * gf, const ggml_tensor * t);
+
+// ② 這顆張量真的裝著 n 個連續的 4-byte 元素 —— 讀取本身的前置條件
+static bool cgc_is_i32_n(const ggml_tensor * t, int64_t n) {
+    return t != nullptr &amp;&amp; t-&gt;data != nullptr &amp;&amp; n &gt; 0 &amp;&amp;
+           ggml_nbytes(t) == (size_t) n * sizeof(int32_t);
+}</code></pre>
+<ul>
+<li>① 用<b>公開</b>訪問器 <code>ggml_graph_n_nodes()</code> / <code>ggml_graph_node()</code>：
+<code>ggml_cgraph</code> 在這個 TU 只有前向宣告（完整定義在 <code>src/llama.cpp/ggml/src/ggml-impl.h</code>，
+而 <code>src/</code> 底下沒有任何檔案 include 它），直接寫 <code>gf-&gt;n_nodes</code> 會在建置時得到兩條
+<code>member access into incomplete type</code>。</li>
+<li>② 用 <code>==</code> 而不是 <code>&gt;=</code>：它同時要求<b>連續</b>
+（非連續的 4-byte 張量 <code>nbytes &gt; 4n</code>），而探針正是把張量當扁平緩衝讀的。</li>
+<li><code>tb</code> / <code>rm</code> / <code>ids_src</code> 的讀取套用同一組判準；任何一項不過就把該指標降成
+<code>nullptr</code>，而下游每一處都已經處理 null（表頭印 <code>-1</code> / <code>0x0</code>，差分自動跳過）。</li>
+</ul>
+
+<div class="box warn">
+<p><b>留下的殘餘限制（明寫，不藏）。</b><code>cgc_is_i32_n</code> 讓讀取<b>安全</b>，
+沒有讓它<b>可歸屬</b>：一個舊指標若剛好落在「長度對得上的 I32 張量」上，兩個判準都會過，
+那一行印的就是<b>那顆張量</b>而不是 S1 的 gather。要真正關掉它需要<b>建置世代戳記</b> ——
+讓 capture 端（<code>llama-graph.cpp</code>）記下「是哪一次 build 寫的」。
+那是後續工作，不在這次改動裡；在它做完之前，每一條 POST 行都必須連同 <code>ids_src_valid</code> 一起讀
+（這條紀律本來就寫在探針自己的表頭註解裡：<i>IT ONLY MEANS SOMETHING WHEN ids_src_valid=1</i>）。</p>
+</div>
+
+<h2>§6　現場閘門輸出原文</h2>
+<p>三次運行的判決（<code>Backup/m123_oracle_gate/summary_*.json</code>）：</p>
+<table>
+<tr><th>tag</th><th>binary</th><th class="num">comparable</th><th><code>config_diffs</code></th><th class="num">M1 / M2 / M3</th><th>判決</th></tr>
+<tr>
+  <td><code>s1-nodbg</code></td><td>補丁<b>前</b></td><td class="num">true</td><td><code>[]</code></td>
+  <td class="num">9/9　9/9　9/9</td><td><span class="tag t-green">PASS</span></td>
+</tr>
+<tr>
+  <td><code>s1-dbg-fixed2</code></td><td>補丁<b>後</b></td><td class="num">false</td>
+  <td><code>["ENV.CGC_S1_DBG: ref='&lt;absent&gt;'  now='1'"]</code></td>
+  <td class="num">9/9　9/9　9/9</td>
+  <td><span class="tag t-amber">INVALID COMPARISON</span></td>
+</tr>
+<tr>
+  <td><code>s1-postfix</code></td><td>補丁<b>後</b></td><td class="num">true</td><td><code>[]</code></td>
+  <td class="num">9/9　9/9　9/9</td><td><span class="tag t-green">PASS</span></td>
+</tr>
+</table>
+<pre><code>GATE s1-postfix: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+cross-tab: {'num_eq_dec_eq': 9, 'num_eq_dec_ne': 0, 'num_ne_dec_eq': 0, 'num_ne_dec_ne': 0}
+  quality   : zero_mapped_selected=0 (must be 0) -&gt; OK ; fast_cold=0 verify_cold=0
+  build   : libllama.0.0.279.dylib=f9bb8693e593e5ae  libggml-metal.0.19.0.dylib=1be366306c604669
+            libggml-base.0.19.0.dylib=6fe5b3e0abff3079  llama-server=054fb22f04a01c5c</code></pre>
+<p>
+<b>歸屬</b>：<code>cap_s1-postfix.json</code> 的 <code>created</code> = <code>2026-09-20T07:14:45</code>，
+晚於 <code>libllama.0.0.279.dylib</code> 的 mtime <code>07:13:33</code> ⇒ 兩者不重疊，判決可歸給那一顆 binary。
+<code>ref_md5 = 72d82a33ad79e0e69bc935acd24228f2</code> 與釘住的 <code>REF_PINS</code> 相符（<code>ref_pinned=true</code>）。
+</p>
+<div class="box">
+<p><b><code>s1-dbg-fixed2</code> 的 INVALID 不是故障。</b>參考檔是在沒有 <code>CGC_S1_DBG</code> 的配置下 dump 的，
+而 <code>CGC_S1_DBG</code> <b>不在</b> <code>DIAGNOSTIC_KEYS</code> 裡（<code>CGC_SLOT_TABLE_GPU</code> 在）
+⇒ 開它必然產生一筆 <code>config_stamp</code> 差異。這也是為什麼 <code>s1-nodbg</code> 是
+<code>comparable=true</code> 而它不是。那兩個 9/9 都只是
+<i>printed for information, NOT a verdict</i>。</p>
+</div>
+
+<h2>§7　對 S2／G1 的後果</h2>
+<ul>
+<li><span class="tag t-red">作廢</span>「S2 卡在一個要先修的 defect 上」、「S1 的前置是會崩」。</li>
+<li><span class="tag t-green">成立</span>S1 的 bit-identical 前提<b>已滿足</b>
+（<code>s1-nodbg</code> 與 <code>s1-postfix</code> 兩次：<code>comparable=true</code>、9/9/9、
+<code>zero_mapped_selected=0</code>）。</li>
+<li>⇒ S2（<code>docs/S2_IMPLEMENTATION_PLAN_2026-09-20.md</code> §4 的裝置化）<b>沒有數值前置阻塞</b>；
+剩下的阻塞是流程性的：§5 的 owner 問題，以及那個檔上本線自己尚未提交的 G4 儀器。</li>
+</ul>
+
+<h2>§8　誠實邊界</h2>
+<ul>
+<li>本檔<b>沒有</b>主張「S1 在交付配置上功能正確」——它主張的是「<b>閘門判它 bit-identical</b>」，
+以及在 <code>s1-nodbg</code>／<code>s1-postfix</code> 那兩個配置上 <code>zero_mapped_selected=0</code>。
+兩者都不是「S2 可以照做」的證明。</li>
+<li><b><code>id_oob</code> 仍然出現</b>（<code>s1-nodbg</code> 的 log 有 8 行），而它的結果是 9/9/9。
+這與既有裁決一致（<code>CGC-MMID-ASSERT</code> 在 encode 期讀的是配置器的殘留，不是消費者讀到的值），
+但本檔沒有為它新增證據。</li>
+<li>「<code>il=14</code> 就是舊 log 死去的那一層」是<b>跨行程的形狀對應</b>，不是同一份 dump 內的同一顆張量；
+它的成立依賴「arena 重用後佈局穩定」，而本檔只量到<b>兩次運行都有同一條 <code>il=14</code> 下溢</b>的其中一次。</li>
+<li>修法<b>只動診斷路徑</b>：<code>CGC_S1_DBG</code> 未設時一行都不執行，不動 dispatch、不動圖、不動任何數值。
+本檔不含任何 t/s 數字，也不主張任何效能變化。</li>
+</ul>
+
+<footer>
+  flashkv-devserver · S1 診斷探針 abort 的根因 · 2026-09-20 07:15（+08）<br>
+  兄弟檔：<code>docs/S1_DIAGNOSTIC_ABORT_ROOT_CAUSE_2026-09-20.md</code>　·　
+  證據：<code>Backup/cgc_logs/llama_server_20260920_070035.log</code>、
+  <code>Backup/cgc_logs/llama_server_20260920_071337.log</code>、
+  <code>Backup/m123_oracle_gate/summary_s1-nodbg.json</code>、
+  <code>Backup/m123_oracle_gate/summary_s1-dbg-fixed2.json</code>、
+  <code>Backup/m123_oracle_gate/summary_s1-postfix.json</code>
+</footer>
+
+</div>
+</body>
+</html>

@@ -2,7 +2,7 @@
 
 > **這是快照，不是權威副本。**
 > 權威位置：`.workbuddy/memory/MEMORY_FACTS.md`（由 host 持續寫入）。
-> 本檔於 2026-09-18 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
+> 本檔於 2026-09-20 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
 > 底下的內容能被 `agent_harness/scripts/auto_git_push.ps1` 定時推送；原檔改了這裡**不會**自動跟上。
 > 索引與漂移檢查見 `agent_harness/engine_loop/memory/INDEX.jsonl`。
 
@@ -32,6 +32,13 @@
   **★ 精確措辭（09-17 實測）**：`Backup/` 底下**已被追蹤**的檔案在 `git add`（不帶 `-f`）時**一樣會被拒**
   ——錯誤是 `The following paths are ignored ...: Backup`，而且**它會讓整條 `git add` 一起失敗**（其他檔案
   也不會進 staged）。所以 stage 要分兩段：`git add -f <Backup/...>` 先，其餘再一般 add。
+- **★ 每次 commit 都要聲明它對 gate 鏈的立場**（使用者 2026-09-19 22:17 的規則）。
+  訊息末尾一個 `Gates:` 段：`met` 或 `not-met (improve xxx)`；與 gate 無關的寫 `none (<理由>)`。
+  預演（不必 commit 就能驗）：`python3 scripts/check/commit_gates.py --last`。
+  gate id 來自 `agent_harness/portal/targets.json`（目標的單一真相來源，目前 G0–G7），
+  所以**新增 gate 只改那個檔**，檢查器會自動跟上。檢查器自測 `--selftest`（12 項）；
+  掛 hook 用 `--install-hook`（裝到 **common dir** ⇒ 本 repo 所有 worktree 生效，由人決定何時裝）。
+  **沉默是錯誤** —— 沒有這段，`git log` 分不出「這輪推進了計畫」與「這輪什麼都沒動」。
 - **★ 改了 `src/` 就必須先建置才能 commit**：`check_build_tracked.sh` 的 check 8 要求
   **產物比 staged 原始碼新** ⇒ 建置前 commit 一定紅。而 `run_server.sh`／`decode_sweep.py`／
   `Backup/run_spac_cold_ab.sh` **都不含 cmake/--build** ⇒ 排程量測用的是**舊 binary**，

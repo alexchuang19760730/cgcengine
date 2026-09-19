@@ -2,7 +2,7 @@
 
 > **這是快照，不是權威副本。**
 > 權威位置：`.workbuddy/memory/MEMORY_S1.md`（由 host 持續寫入）。
-> 本檔於 2026-09-18 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
+> 本檔於 2026-09-20 由 `agent_harness/scripts/import_harness_snapshot.py` 複製進 repo，唯一目的是讓 `agent_harness/`
 > 底下的內容能被 `agent_harness/scripts/auto_git_push.ps1` 定時推送；原檔改了這裡**不會**自動跟上。
 > 索引與漂移檢查見 `agent_harness/engine_loop/memory/INDEX.jsonl`。
 
@@ -11,6 +11,21 @@
 >
 > **舊報告（`docs/S1_*.html`）寫的「`MEMORY.md` 的 S1 節」＝本檔**（報告是 dated 產物，不回改）。
 
+
+### ★ 09-20 07:2x 更正：**「S1 會 abort」作廢** —— 那是 `CGC_S1_DBG` 探針自己的 bug
+
+- 07:00 曾記「S1 在交付配置下會 abort，S2 卡在要先修的 defect 上」。**同一天判定作廢。**
+- **判準**（同一顆 build、同一棵樹，只差一格旋鈕）：`CGC_SLOT_TABLE_GPU=1` 且 **不開** `CGC_S1_DBG`
+  ⇒ **不 abort、gate `PASS`**（`comparable=true`、M1/M2/M3 9/9、`zero_mapped_selected=0`）；
+  開了 `CGC_S1_DBG` 才 abort。⇒ **S1 的 bit-identical 前提已滿足**，S2 沒有數值前置阻塞。
+- **根因**：POST 探針遍歷的捕獲表只在建 decode 圖時被填、**從不清空**；而 ggml 每個 build 都 reset
+  並**重用 arena** ⇒ 舊指標落在**當前圖的別的張量**上（實測同一次啟動的兩次呼叫：第一次 39 條全對、
+  第二次同一批 key 全錯，而「是不是本圖節點」的檢查**一條都沒攔下**）；讀取長度按 4 bytes/元素算，
+  唯一下溢的一條是 `il=14`（要讀 262144 bytes，`ggml_nbytes` 只有 139264）。
+- **修法**（`llama-context.cpp`，只在 `CGC_S1_DBG` 下生效）：`cgc_is_i32_n()` ＝
+  `ggml_nbytes(t) == n*sizeof(int32_t)`。⚠ 殘餘：它讓讀取**安全**，沒有讓它**可歸屬** ⇒
+  POST 行仍必須連同 `ids_src_valid` 一起讀。
+- 詳見 `docs/S1_DIAGNOSTIC_ABORT_ROOT_CAUSE_2026-09-20.md`；lesson `eng-diag-0037`。
 ## 現況（**09-17 02:40 重寫**；09-16 那四輪 r1–r4/r3c–r3e 全部作廢）
 
 ### ★ 09-17 14:06 更新（別條線 r30–r37）：S1 的位元身分閘門**過了**，但根因比 S1 大

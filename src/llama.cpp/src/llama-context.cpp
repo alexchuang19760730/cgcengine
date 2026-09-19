@@ -3323,6 +3323,71 @@ static int32_t cgc_expect_lookup(int32_t il, int32_t cap, int32_t * out) {
     return n;
 }
 
+// [CGC 2026-09-20 §EN-307] Two guards for the S1 capture maps.
+//
+// The maps (cache_slots_out_tensors / cache_slot_table_tensors / cache_remap_tensors) are filled by
+// llm_graph_context::build_moe_ffn, and they are filled ONLY while building a DECODE graph --
+// llama-graph.cpp:2191 gates the whole S1 branch on cgc_is_decode_graph. They are never cleared, so
+// outside a decode graph they still hold pointers from the LAST build that captured them.
+//
+// Reading `->ne` off such a pointer is what turned a diagnostic into a hard abort. Measured
+// 2026-09-20 (Backup/cgc_logs/llama_server_20260920_070035.log:368): the `CGC-S1: POST` loop printed
+// `ntok=207 n_expert=8192` on a step whose real width is two tokens, and the readback that followed
+// died on
+//   ggml-backend.cpp:349 GGML_ASSERT(offset + size <= ggml_nbytes(tensor) && "tensor read out of bounds")
+// i.e. the probe killed the run it was measuring. That was read as "S1 aborts"; the control says
+// otherwise -- same build, same tree, `CGC_SLOT_TABLE_GPU=1` ALONE (no CGC_S1_DBG) passes the gate
+// M1 9/9 / M2 9/9 / M3 9/9 with zero_mapped_selected=0.
+//
+// Membership in `gf` is NECESSARY BUT NOT SUFFICIENT, and the measurement that falsified
+// "membership == freshness" is in the same log. The probe fired twice (cgc_s1_post_n < 6) and the two
+// invocations disagree:
+//   invocation 1 (lines 254-292): il=1..39, every entry `ntok=2 n_expert=256` -- the real decode
+//                                 shapes, i.e. the maps were fresh;
+//   invocation 2 (lines 355-367): the same 39 keys, every entry garbage, and `cgc_node_in_graph`
+//                                 rejected ZERO of them.
+// The reason is that ggml resets and REUSES the arena on every build: an address captured in a
+// decode build is occupied by a DIFFERENT tensor of the next (here: prefill) build, so the stale
+// pointer is genuinely a node of the current graph and its `ne` is genuinely another tensor's. The
+// membership test answers "does this address belong to this graph", which is not the question.
+//
+// The question the readbacks actually need is the precondition of the read itself: `ggml_nbytes` is
+// computed from nb[], so a tensor that is not n contiguous 4-byte elements makes
+// `ggml_backend_tensor_get(t, buf, 0, n*sizeof(int32_t))` longer than the tensor -- which is the
+// abort above, and it is a property of the tensor, not of its age. That is what cgc_is_i32_n tests.
+//
+// RESIDUAL LIMITATION, stated rather than hidden: `cgc_is_i32_n` makes the read SAFE, it does not
+// make it ATTRIBUTABLE. A stale pointer that happens to land on a live I32 tensor of the right
+// length still passes, and the line it prints then describes that tensor rather than the S1 gather.
+// Closing that needs a per-build generation stamp taken at the capture site (llama-graph.cpp), i.e.
+// the capture must record WHICH build wrote it; that is a follow-up, not this change, and until it
+// is done every POST line must be read together with its `ids_src_valid` tag -- the same discipline
+// the header comment on this probe already demands ("IT ONLY MEANS SOMETHING WHEN ids_src_valid=1").
+static bool cgc_node_in_graph(ggml_cgraph * gf, const ggml_tensor * t) {
+    if (t == nullptr) {
+        return false;
+    }
+    // Public accessors on purpose: `ggml_cgraph` is only forward-declared in this TU (the full
+    // definition lives in ggml/src/ggml-impl.h, which nothing under src/ includes), so this must not
+    // touch `gf->n_nodes` directly -- measured: two `member access into incomplete type` errors at
+    // the first build.
+    const int n = ggml_graph_n_nodes(gf);
+    for (int i = 0; i < n; i++) {
+        if (ggml_graph_node(gf, i) == t) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Does `t` hold exactly `n` contiguous 4-byte elements? Every readback below is
+// `ggml_backend_tensor_get(t, buf, 0, n * sizeof(int32_t))` and prints int32, so this is its
+// precondition -- and it is checked, not assumed.
+static bool cgc_is_i32_n(const ggml_tensor * t, int64_t n) {
+    return t != nullptr && t->data != nullptr && n > 0 &&
+           ggml_nbytes(t) == (size_t) n * sizeof(int32_t);
+}
+
 ggml_status llama_context::graph_compute(
             ggml_cgraph * gf,
                    bool   batched) {
@@ -3558,11 +3623,41 @@ ggml_status llama_context::graph_compute(
                     fprintf(stderr, "CGC-S1: POST il=%d gather=null (leaf path)\n", il);
                     continue;
                 }
+                // [CGC 2026-09-20 §EN-307] See the two guards above. Both are needed and they are not
+                // the same test: membership says "this address belongs to the graph that just ran",
+                // cgc_is_i32_n says "this tensor can be read as n int32s". Measured in one log
+                // (Backup/cgc_logs/llama_server_20260920_071116.log) that membership alone accepts
+                // ALL 39 stale entries -- the arena is reset and reused on every build, so the stale
+                // address genuinely is a current node -- while the byte test is what actually stops
+                // the read from running past the tensor.
                 const int64_t ntot = s->ne[0] * s->ne[1];
+                if (!cgc_node_in_graph(gf, s)) {
+                    fprintf(stderr, "CGC-S1: POST il=%d SKIPPED (capture is not a node of this graph; "
+                                    "the S1 nodes are built only in a decode graph)\n", il);
+                    continue;
+                }
+                if (!cgc_is_i32_n(s, ntot)) {
+                    fprintf(stderr, "CGC-S1: POST il=%d SKIPPED (ne=[%lld,%lld] but ggml_nbytes=%zu is "
+                                    "not %lld int32s: this capture now points at another tensor of this "
+                                    "graph, so it says nothing about the gather)\n",
+                            il, (long long) s->ne[0], (long long) s->ne[1], ggml_nbytes(s),
+                            (long long) ntot);
+                    continue;
+                }
                 std::vector<int32_t> sbuf((size_t) ntot);
                 ggml_backend_tensor_get(s, sbuf.data(), 0, (size_t) ntot * sizeof(int32_t));
+                // Same two tests for the two other tensors this entry reads; a capture that fails
+                // either one is dropped to null, and every use below already handles null (the header
+                // prints -1 / 0x0 and the differential is skipped).
+                if (!cgc_node_in_graph(gf, rm) || !cgc_is_i32_n(rm, ntot) ||
+                        rm->ne[0] != s->ne[0] || rm->ne[1] != s->ne[1]) {
+                    rm = nullptr;
+                }
+                if (!cgc_node_in_graph(gf, tb) || !cgc_is_i32_n(tb, tb->ne[1])) {
+                    tb = nullptr;
+                }
                 std::vector<int32_t> rbuf;
-                if (rm != nullptr && rm->data != nullptr && rm->ne[0] == s->ne[0] && rm->ne[1] == s->ne[1]) {
+                if (rm != nullptr) {
                     rbuf.resize((size_t) ntot);
                     ggml_backend_tensor_get(rm, rbuf.data(), 0, (size_t) ntot * sizeof(int32_t));
                 }
@@ -3588,12 +3683,15 @@ ggml_status llama_context::graph_compute(
                 const void * ids_src_data = ids_src != nullptr ? ids_src->data : nullptr;
                 std::vector<int32_t> ibuf;
                 std::vector<int32_t> tbuf;
-                if (ids_src != nullptr && ids_src->data != nullptr &&
-                        ggml_nelements(ids_src) == ntot) {
+                // [CGC 2026-09-20 §EN-307] Same byte test as for `s` and `rm`, for the same measured
+                // reason: the `ggml_nelements` equality that used to be the only guard here is
+                // satisfied by an F16 tensor of the same element count, and the read is 4 bytes per
+                // element -- which is exactly the `tensor read out of bounds` abort.
+                if (cgc_is_i32_n(ids_src, ntot) && ggml_nelements(ids_src) == ntot) {
                     ibuf.resize((size_t) ntot);
                     ggml_backend_tensor_get(ids_src, ibuf.data(), 0, (size_t) ntot * sizeof(int32_t));
                 }
-                if (tb != nullptr && tb->data != nullptr) {
+                if (tb != nullptr) {
                     tbuf.resize((size_t) tb->ne[1]);
                     ggml_backend_tensor_get(tb, tbuf.data(), 0, (size_t) tb->ne[1] * sizeof(int32_t));
                 }
