@@ -126,7 +126,9 @@
             "to": "union <= 38 * mean_len (ms)",
             "status": "open",
             "unblocked_by": "G3 (met) -- the intervals are disjoint, so the compressible quantity exists. NOTE the lever's identity: overlapping two layers cannot reduce EITHER layer's union (they are independent GPU spans), so G4's 'union_sum' target is really about making each layer FASTER -- the schedule-side win is G1's gap. Keep the two apart or G4 will be chased with an overlap change and never move.",
-            "why_not_a_constant": "25 t/s needs total <= 1000*mean_len/25, and total ~ union/0.95 once G1 lands, so the requirement is union <= 38*mean_len: -34.6% at today's mean_len 1.80, -27.0% at G6's 2.01, -12.8% at the old roadmap's 2.4. The roadmap's -23% silently assumed mean_len ~2.13, so the number would have gone stale the moment G6 moved.",
+            "why_not_a_constant": "25 t/s needs total <= 1000*mean_len/25, and total ~ union/0.95 once G1 lands, so the requirement is union <= 38*mean_len: -12.8% at the MEASURED mean_len 2.40. (This field used to read '-34.6% at today's mean_len 1.80 ... -12.8% at the old roadmap's 2.4'; the 1.80 was WITHDRAWN on 2026-09-19 because DECPROF's `ntok` is the graph width, not the accepted-token count -- so the value this file credited to 'the old roadmap' is in fact the measured one, and the requirement is 4x smaller than it looked.) The roadmap's -23% silently assumed mean_len ~2.13, so the number would have gone stale the moment G6 moved.",
+            "necessity": "NOT REQUIRED UNLESS G6 STALLS. G1's measured ceiling alone (step 169.21 -> 99.39 ms, x1.702) is 2.40/0.09939 = 24.15 t/s with NO union reduction at all, and crossing 25 from there costs +3.5% of mean_len. So G4 exists to cover the case where G6 cannot deliver, not as the main path.",
+            "no_single_lever": "The KIND x OP table now decomposes the union for 83% of it: the 30 linear layers have gpu/union = 1.00, so for them union IS gpu_sum and KIND x OP already sums exactly that. Over all decode blocks: node 15.0%, ffn_moe_ 10.6%, ffn_moe_add 9.1%, cache 8.0% (CPY 74.5% of it), norm 6.4%, ffn_ 6.0%, the GDN conv path (k_conv+z-+gdn_out+conv) ~14.6%, shared_expert_gate 3.0%. NO KIND EXCEEDS 15%, and the largest is the UNATTRIBUTED bucket. So -12.8% of the union is not find-the-big-one-and-cut-it: it is shaving ~13% off everything, i.e. a kernel/algorithm programme rather than an attribution result. That is the mechanism G4 still lacks.",
             "evidence": "the -23% figure came from the older roadmap and still has no mechanism attached; EN-244/EN-245; docs/G3_UNION_COMPRESSIBILITY_2026-09-19.md section 4"
           },
           {
@@ -140,12 +142,12 @@
             "id": "G6",
             "what": "raise mean_len",
             "metric": "mean_len",
-            "from": "1.80",
-            "to": ">= 2.01",
+            "from": "2.40",
+            "to": ">= 2.485 if G1 lands (step 99.4 ms, the measured x1.702 ceiling), else >= 3.479",
             "owner": "line S (accept / k)",
             "status": "open",
             "coupled_to": "G4 -- the two thresholds are ONE equation (union <= 38 * mean_len). 2.01 is what G4's OLD union target (80.5 ms) implied, not an independent fact: if G4 turns out to need a bigger cut because mean_len grows more slowly, this number moves with it. Quote the pair together or quote neither.",
-            "evidence": "at step_cost 80.5 ms, 25 t/s needs mean_len >= 2.01 (25 * 0.0805)"
+            "evidence": "25 t/s at a step of S ms needs mean_len >= 25*S/1000. At G1's measured ceiling (S=99.4 ms) that is 2.485; at E2b's 139.16 ms it is 3.479. The old 2.01 came from an 80.5 ms step that no run has produced. G6 is therefore the CHEAPEST remaining move: +3.5% on mean_len (accept 0.465 -> 0.495) if G1 lands, versus G4's -12.8% on every GPU kind."
           },
           {
             "id": "G7",
