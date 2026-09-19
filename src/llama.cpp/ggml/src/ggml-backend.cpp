@@ -1953,6 +1953,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 // (ggml.c:7192) -- and a NAME is not an identity, the OP is. Reset with the other
                 // ns_kind_* accumulators, after the print that consumes it.
                 static int64_t ns_kop_wns[48][GGML_OP_COUNT] = {{0}};
+                // [CGC 2026-09-20 G4 per-layer KIND x OP] Previous per-step snapshot of the
+                // accumulator above, so a segment boundary can bank the INCREMENT rather than the
+                // running total. Reset with ns_kop_wns (see the per-step reset block); the two MUST
+                // stay in sync or the first segment of a step reports a negative increment.
+                static int64_t ns_kop_prev[48] = {0};
                 // [CGC 2026-09-18 WORK-WEIGHTED NAME TABLE] The same partition as ns_kind_ns but with
                 // the buffer's duration shared over the NAMED nodes whose op ENCODES something
                 // (cgc_op_emits_work) instead of over every named node. This is what turns the name
@@ -2543,6 +2548,52 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         fprintf(stderr, "CGC-SEG: wait %.1f cb %.1f submit %.1f us (%d)\n",
                                 (double) w_us / n, (double) c_us / n, (double) p_us / p_n, (int) n);
                     }
+                    // [CGC 2026-09-20 G4 per-layer KIND x OP] Bank this segment's INCREMENT of the
+                    // step-level KIND x OP accumulator and print it. G4's target is the per-layer
+                    // `union`, and the step-level table cannot see layers at all -- its kind names
+                    // carry no layer number (measured: `grep -E -- '-[0-9]+$'` on the CGC-GPUOPK kind
+                    // column returns 0) -- while the interval work (EN-244) showed there is no
+                    // single-layer hot spot reachable another way. A decode segment IS a layer
+                    // (n_segs = n_as_found + 1), so this line is the per-layer kind split; for the 30
+                    // linear layers, whose gpu/union == 1.00, the kind sum IS that layer's union.
+                    // ADD-ONLY: reads an accumulator, writes one line, touches no scheduling, no
+                    // buffer and no value that reaches the GPU -- so it must pass G2 like any other
+                    // change, and it is silent unless CGC_GPU_OPS is set.
+                    if (ns_ops) {
+                        int64_t kop_inc[48] = {0};
+                        int64_t kop_itot = 0;
+                        for (int q = 0; q < ns_kind_n; q++) {
+                            int64_t cur = 0;
+                            for (int o = 0; o < GGML_OP_COUNT; o++) { cur += ns_kop_wns[q][o]; }
+                            kop_inc[q]   = cur - ns_kop_prev[q];
+                            ns_kop_prev[q] = cur;
+                            kop_itot += kop_inc[q];
+                        }
+                        if (kop_itot > 0) {
+                            char kop_line[600];
+                            int kop_off = snprintf(kop_line, sizeof(kop_line),
+                                                   "CGC-GPULAYK: seg=%d tot=%.2f ms |", i,
+                                                   (double) kop_itot / 1e6);
+                            // Top 5 kinds, each at least 5% of THIS segment. Suppressing the long
+                            // tail is the same discipline as the step-level line: an unsuppressed
+                            // list would be 48 entries of noise, and the question is which kind
+                            // dominates WHICH segment, not the full vector.
+                            for (int r = 0; r < 5; r++) {
+                                int bi = -1;
+                                for (int q = 0; q < ns_kind_n; q++) {
+                                    if (kop_inc[q] * 20 < kop_itot) { continue; }
+                                    if (bi < 0 || kop_inc[q] > kop_inc[bi]) { bi = q; }
+                                }
+                                if (bi < 0) { break; }
+                                kop_off += snprintf(kop_line + kop_off, sizeof(kop_line) - kop_off,
+                                                    " %s=%.2f(%.1f%%)", ns_kind_nm[bi],
+                                                    (double) kop_inc[bi] / 1e6,
+                                                    100.0 * (double) kop_inc[bi] / (double) kop_itot);
+                                kop_inc[bi] = 0;   // consumed: the next round picks the runner-up
+                            }
+                            fprintf(stderr, "%s\n", kop_line);
+                        }
+                    }
                     return true;
                 };
                 for (int i = 0; i < n_segs; i++) {
@@ -2863,6 +2914,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         // that version accumulated 8 steps against a 1-step ns_total and reported
                         // `node` at 177x its kind-table value (measured, first run).
                         for (int o = 0; o < GGML_OP_COUNT; o++) { ns_kop_wns[q][o] = 0; }
+                        // [CGC 2026-09-20] the per-segment snapshot must fall with it, or the first
+                        // segment of the next step banks (0 - previous_total) = a large negative.
+                        ns_kop_prev[q] = 0;
                     }
                     ns_kind_work_ns = 0;
                     ns_kind_work_nd = 0;

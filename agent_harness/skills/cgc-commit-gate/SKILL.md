@@ -400,6 +400,26 @@ git diff --cached --name-only | grep -c '^src/'     # 0 ⇒ 不適用（不是�
 它**不是**說「0 個 `src/` 的 commit 也該跑」：那種 commit 裡 gate 對它**沒有鑑別力**
 （產物沒變 ⇒ M1/M2/M3 比的是同一份 binary 對同一份參考，只證明「機器還是好的」）。
 
+**★ 2026-09-20 補：純診斷／儀器的 `src/` 改動，數值那一半怎麼取。**
+
+一個只加印出、而且被自己的旋鈕關著的改動，仍然含 `src/` ⇒ **仍要跑**。有用的證據是**兩次**，
+而且只有一次有判決力：
+
+| 臂 | `comparable` | 它證明什麼 |
+|---|---|---|
+| 儀器**休眠**（不設它自己的 env） | 應該 `true` | 「碼在上面、但它不執行」時數值不動 —— **唯一有判決力**的那次 |
+| 儀器**開啟** | 通常 `false` | 只證明「印出來的那條路不會崩」；9/9 僅供參考 |
+
+**為什麼開啟那次幾乎一定 `false`**：`CGC_S1_DBG`／`CGC_GPU_NODES`／`CGC_GPU_OPS` 這一類旋鈕
+**不在** `DIAGNOSTIC_KEYS`（`scripts/check/m123_oracle_gate.py:223`）⇒ 開它必然產生一筆
+`ENV.<KNOB>: ref='<absent>'  now='1'`。**不要為了讓它變可比而把旋鈕塞進 `DIAGNOSTIC_KEYS`** ——
+那個集合的每一條都是一個**主張**（「這個旋鈕不改變數字」），要在裡面加一條就得先有那條主張要的證據。
+
+實例（2026-09-20，同一顆 build 指紋 `libllama=f9bb8693e593e5ae`／`libggml-base=6fe5b3e0abff3079`）：
+`summary_s1-nodbg.json`（`true`、PASS）／`summary_s1-dbg-fixed2.json`（`false`，唯一 diff 就是那顆旋鈕）／
+`summary_s1-postfix.json`（`true`、PASS）。**兩個臂的 build 指紋必須逐位元相同**，
+把那三行貼進 message，否則你證明的是兩個 build。
+
 ### 2.5 D5 的 oracle 旋鈕是「釘住的」——它會擋下一種你以為沒事的改動
 
 `m123_oracle_gate.py` 有 `ORACLE_PINNED_ENV = ("CGC_SERVER_BATCH=6144", "CGC_SERVER_UBATCH=6144")`

@@ -62,6 +62,14 @@
 </div>
 
 <div class="box pur">
+<p><b>2026-09-20 07:2x 追加標註（§56–§62）。</b>本輪<b>沒有取代任何一節</b>：§36–§55 的每一條都仍然成立
+（包括 §47 與 §55 的誠實邊界）。新增的是一支<b>同一家族的儀器</b>的下一段 —— 把 KIND×OP 的分解從
+「一步」下推到「一段」，而一段就是一層。它同時把 G4 的落點從「哪一種 kind」推進到「哪一層的哪一種 kind」。</p>
+<p>區別寫在這裡，免得被當成同一張表：<b>§36–§55 的表都是 per-step；§58 的表是 per-layer。</b>
+兩者不可互相加總或替換。</p>
+</div>
+
+<div class="box pur">
 <p><b>這份文件的定位（先讀這格）。</b>
 <b>新檔，不是追加</b>：前一份 <code>docs/GPU_NODE_ATTRIBUTION_20260918_0126.html</code> 已經被
 就地追加過五輪（§9–§14、§15–§18、§19–§22、§23–§30、§31–§35），122,412 bytes。
@@ -743,6 +751,132 @@ L2</b>。⇒ DRAM 看到的是 ~1×，重複的那部分花的是 <b>issue／L2 
 
 <p class="small">本檔由引擎層 session 撰寫；上一個月份的快照與跨機器記憶請走
 <code>agent_harness/scripts/import_harness_snapshot.py</code>，不要手動新增。</p>
+
+<h2>§56 這一輪加了什麼（一句話）</h2>
+<p>
+新增一行輸出，把 KIND×OP 的分解下推到 segment 層級：
+</p>
+<pre><code>CGC-GPULAYK: seg=1 tot=9.73 ms | node=1.52(15.6%) ffn_moe_=1.18(12.1%) cache=1.11(11.4%) ffn_moe_add=1.01(10.4%) ffn_=0.68(6.9%)
+CGC-GPULAYK: seg=35 tot=6.29 ms | ffn_moe_=0.93(14.8%) ffn_moe_add=0.80(12.7%) node=0.55(8.7%) ffn_=0.53(8.5%) norm=0.43(6.8%)</code></pre>
+<p>
+（原文，取自 <code>Backup/cgc_logs/llama_server_20260920_010541.log</code>。）
+<b>decoded segment 就是一層</b> —— <code>n_segs = n_as_found + 1</code> —— 所以這一行的
+<code>seg=i</code> 就是層號。這一步是必要的，因為 step 級的 KIND×OP 表<b>看不到層</b>：
+它的 kind 名字不帶層號（實測：<code>CGC-GPUOPK</code> 的 kind 欄位跑
+<code>grep -E -- '-[0-9]+$'</code> 回 0 筆），而區間工作（§EN-244）已經顯示沒有單層熱點是
+可以從別的路徑拿到的。
+</p>
+
+<h2>§57 儀器設計</h2>
+<ul>
+<li><b>入帳的是增量，不是總量。</b>插在 segment 尾端（<code>hook_seg</code> 之後、<code>for (i...)</code>
+迴圈之前，<code>ggml-backend.cpp</code> 的 <code>compute_splits</code> 內）。它對 step 級的累加器
+<code>ns_kop_wns[48][GGML_OP_COUNT]</code> 取一份<b>逐段快照</b>（<code>ns_kop_prev[48]</code>），
+相減得到這一段的增量；快照與累加器<b>一起在每步的 reset 區塊歸零</b> —— 不同步的話，一步的第一段
+會報一個負增量。</li>
+<li><b>ADD-ONLY。</b>讀一個累加器、寫一行 stderr；不碰排程、不碰 buffer、不碰任何送達 GPU 的值。</li>
+<li><b>只在明確的旋鈕下執行</b>：<code>ns_ops = CGC_GPU_NODES &amp;&amp; CGC_GPU_OPS</code>
+（<code>:1873</code> / <code>:1889</code>）；未設時一行都不執行。</li>
+<li><b>只印 top-5、且每項 ≥5%</b>（<code>kop_inc[q] * 20 &lt; kop_itot</code> 就跳過）。
+壓掉長尾是刻意的，與 step 級同一套紀律：不壓的話是 48 筆噪音，而問題是
+「<b>哪一種 kind 主導哪一段</b>」。</li>
+<li><b>它分解的是 <code>gpu</code>，不是 <code>union</code>。</b>對 30 個 linear 層
+（<code>gpu/union == 1.00</code>）kind 之和<b>就是</b>那層的 union；對 full_attn 層不是。
+引用時必須連同這一句。</li>
+</ul>
+
+<h2>§58 結果（唯一一份 log 是<b>冷→暖</b>）</h2>
+<p>
+<b>先做交叉驗證，再讀表</b>：該 log 的 40 段合計 <b>135.19 ms</b>，而 E2b 那份
+（<code>llama_server_20260919_210013.log</code>）的 <code>gpu_sum</code> 是 <b>132.13 ms</b>，
+差 <b>2.3%</b>。兩個不同 log、兩支不同取向的解析在「per-segment 總和 ＝ gpu_sum」上對上
+⇒ 口徑確認。
+</p>
+<table>
+<tr><th>kind</th><th class="num">linear 30 層（合計 111.35 ms）</th><th class="num">full_attn 10 層（合計 23.84 ms）</th></tr>
+<tr><td><code>node</code>（未命名節點桶）</td><td class="num">17.4%</td><td class="num">11.1%</td></tr>
+<tr><td><code>cache</code></td><td class="num">12.1%</td><td class="num">—</td></tr>
+<tr><td><code>ffn_moe_</code></td><td class="num">8.8%</td><td class="num">13.8%</td></tr>
+<tr><td><code>norm</code></td><td class="num">8.6%</td><td class="num">6.5%</td></tr>
+<tr><td><code>ffn_moe_add</code></td><td class="num">7.6%</td><td class="num">11.8%</td></tr>
+<tr><td><code>ffn_</code></td><td class="num">0.1%</td><td class="num">7.9%</td></tr>
+<tr><td><code>k_conv</code> / <code>gdn_out</code></td><td class="num">2.1% / 2.1%</td><td class="num">—</td></tr>
+<tr><td><b>印出的合計</b></td><td class="num"><b>61.3%</b></td><td class="num">52.8%</td></tr>
+<tr><td><b>未印出的長尾</b></td><td class="num"><b>38.7%（43.12 ms）</b></td><td class="num">47.2%</td></tr>
+</table>
+<div class="box warn">
+<p><b>兩個都要標明，缺一個就是過度解讀</b>：
+(a) 儀器只印 ≥5% 的 kind ⇒ <b>三分之一到一半的開銷沒有名字</b>（與 <code>G4.no_single_lever</code> 的
+「最大桶是未歸屬」一致）；
+(b) <b>沒有任一個 kind 超過 17.4%</b> —— 包括那個「最大」的 <code>node</code>。</p>
+</div>
+
+<h2>§59 它回答了什麼、沒回答什麼</h2>
+<ul>
+<li><span class="tag t-green">回答</span>缺口<b>不是單一 kind</b>，也<b>不是單層熱點</b>：
+逐層 union 的中位是 linear 30 層 <b>2.81 ms</b> vs full_attn 10 層 <b>1.86 ms</b>；
+最快的 5 層（L35 <b>1.74</b>、L39 1.81、L7 1.85、L15 1.85）全部是 full_attn，
+最慢的 5 層全部 <b>2.82</b>（30 個 linear 幾乎同值）。</li>
+<li><span class="tag t-red">沒回答</span>那 38.7%／47.2% 的長尾<b>是什麼</b>。要回答它必須放寬
+「≥5%」這個門檻（或改印全 48 個 kind），而那份 log 已經沒有更細的資訊 —— 這是<b>要再跑一次</b>的事，
+不是重算。</li>
+</ul>
+
+<h2>§60 誠實邊界（§47／§55 之外的補充）</h2>
+<ul>
+<li><b>唯一一份 log 是冷→暖</b>（該次啟動的第一批步）。§58 的百分比因此不是暖態值；
+    本檔不主張它們在暖態下不變。</li>
+<li><b>逐層的中位數不可加</b>：<code>cb</code> 尤其明顯（多數層 0.15–0.24 ms，少數層
+    0.89–1.42 ms，而 header 是 21.23 ms）。逐層 union 之和 101.73 vs header 104.87（−3.0%）
+    才是可用的一致性檢查。</li>
+<li><b>不得由本檔推 t/s。</b>本檔沒有一個速度數字是可交付的；地板算出來的 19.5 ms 與
+    「已達到 1.74 ms」之間的 3.6× <b>沒有任何已被指名的機制</b>。</li>
+<li><b>本輪只加了診斷碼。</b>對「數值是否不動」的可比判決來自 §61 的兩個 tag，其中一個
+    （<code>s1-postfix</code>）是<b>同一顆 build 且儀器休眠</b>的可比 PASS。</li>
+</ul>
+
+<h2>§61 現場閘門輸出（原文）</h2>
+<pre><code>GATE g4-kindop-active: INVALID COMPARISON -- reference was dumped under a different
+  numerics-determining configuration or probe (2 diffs).
+  observed M1=9/9  M2=9/9  M3=9/9  n=9 (printed for information, NOT a verdict)
+  quality   : zero_mapped_selected=0 (must be 0) -&gt; OK ; fast_cold=0 verify_cold=0
+  build   : libllama.0.0.279.dylib=f9bb8693e593e5ae  libggml-metal.0.19.0.dylib=1be366306c604669
+            libggml-base.0.19.0.dylib=6fe5b3e0abff3079  llama-server=054fb22f04a01c5c</code></pre>
+<p>
+那 2 筆 diff 逐字是 <code>ENV.CGC_GPU_NODES: ref='&lt;absent&gt;' now='1'</code> 與
+<code>ENV.CGC_GPU_OPS: ref='&lt;absent&gt;' now='1'</code> —— 也就是<b>儀器自己的兩顆旋鈕</b>，
+而它們不符 <code>DIAGNOSTIC_KEYS</code>（<code>m123_oracle_gate.py:223</code>）⇒ 開著它們必然
+不可比。這次運行的 log 有 <b>125 行</b> <code>CGC-GPULAYK</code>、<b>0 個 <code>GGML_ASSERT</code></b>。
+</p>
+<p>
+「儀器休眠時數值不動」的可比判決是同一顆 build 的另一個 tag：
+</p>
+<pre><code>GATE s1-postfix: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+  build   : libllama.0.0.279.dylib=f9bb8693e593e5ae  libggml-base.0.19.0.dylib=6fe5b3e0abff3079
+  comparable=true  config_diffs=[]</code></pre>
+<p>
+兩次運行的 build 指紋逐位元相同，而 <code>cap_g4-kindop-active.json</code> 的
+<code>created</code> = <code>2026-09-20T07:22:18</code> 晚於 <code>libggml-base</code> 的 mtime
+<code>01:04:18</code> ⇒ 兩者不重疊。
+</p>
+
+<h2>§62 產物與指令</h2>
+<pre><code># 儀器（+54 行，全部在 ggml-backend.cpp）
+cmake --build src/llama.cpp/build --target llama-server -j 8
+
+# 有它與沒有它的兩個閘門
+python3 scripts/check/m123_oracle_gate.py --tag g4-kindop-active   --env CGC_GPU_NODES=1 --env CGC_GPU_OPS=1
+python3 scripts/check/m123_oracle_gate.py --tag s1-postfix --env CGC_SLOT_TABLE_GPU=1</code></pre>
+<ul>
+<li><code>src/llama.cpp/ggml/src/ggml-backend.cpp</code>（+54）與重建的
+<code>libggml-base.0.19.0.dylib</code></li>
+<li><code>Backup/patch_g4_perlayer_kindop_20260920.py</code>（3 錨點、<code>--check</code>、可重放）、
+<code>Backup/phase_decomp/g4_perlayer_20260920.json</code>、
+<code>Backup/cgc_logs/llama_server_20260920_010541.log</code>（957 行 <code>CGC-GPULAYK</code>）、
+<code>Backup/cgc_logs/llama_server_20260920_072218.log</code>（125 行，本檔 §61 的那次）</li>
+<li>相關：<code>docs/G4_WORK_ORDER_2026-09-20.md</code>（目標與它的勘誤）、
+<code>docs/G4_MEASUREMENT_CARD_2026-09-20.md</code>、<code>docs/NODE_LABEL_GAP_2026-09-20.md</code></li>
+</ul>
 
 </div>
 </body>
