@@ -1096,6 +1096,15 @@ fi
 # CGC_MMV_FUSE=1; without it the flag is inert (see the pass-through below), and a bare
 # "glu_fused_down=1" invites the reader to believe a fusion is active when it is not.
 echo "[perf]  n_cb=$SERVER_N_CB glu_fused_down=$SERVER_GLU_FUSED_DOWN(mm_fuse=${CGC_MMV_FUSE:-off}) watchdog=$SERVER_WATCHDOG oa_async=$SERVER_OA_ASYNC load_mode=$SERVER_LOAD_MODE"
+# [CGC 2026-09-19] Echo the schedule-shaping diagnostics. An UNLISTED CGC_* is dropped silently, so
+# without this line "the switch did nothing" and "the switch was never set" leave the same artifact
+# -- which is the single most expensive confusion in this repo's history (see the CGC_OA_ASYNC note
+# near the top, and the CGC_MMV_FUSE trap). These four are all in the allowlist below and were
+# visible in NO log: CGC_SUBMIT_AHEAD is the zero-code ceiling probe for the whole overlap family,
+# CGC_SLOT_TABLE_GPU is the S1 arm, CGC_CANON_ORDER is M1 item 4, CGC_POOL_SPLIT_DBG is the
+# pool-vs-wide path discriminator. Do NOT add a knob here that the allowlist drops -- the banner
+# would then lie about what was requested, which is worse than being silent.
+echo "[perf]  diag: submit_ahead=${CGC_SUBMIT_AHEAD:-off} slot_table_gpu=${CGC_SLOT_TABLE_GPU:-off} canon_order=${CGC_CANON_ORDER:-off} pool_split_dbg=${CGC_POOL_SPLIT_DBG:-off} s1_dbg=${CGC_S1_DBG:-off}"
 echo "[perf]  runtime_profile=$SERVER_RUNTIME_PROFILE model_root=$MODEL_ROOT"
 echo "[guard] memory_mode=$SERVER_MEMORY_MODE class=$MEM_CLASS phys=${PHYS_MEM_GB}GB free=${FREE_PCT}% other_llama_servers=$OTHER_LLAMA_SERVERS"
 if [ "$SERVER_PROFILE" != "off" ]; then

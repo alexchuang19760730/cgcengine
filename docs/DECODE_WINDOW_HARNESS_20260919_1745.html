@@ -73,6 +73,21 @@ harness 報告：<code>docs/DECODE_WINDOW_2026-09-19.html</code>（17:18，由 <
 判決文字凡是引號或 <code>PRE</code> 區塊內的，都是 harness 自己的輸出原文。</p>
 </div>
 
+<div style="border:2px solid #d97706;background:#fffbeb;border-radius:8px;padding:14px 18px;margin:0 0 26px">
+<b>修訂標註（2026-09-19 追加 §12–§16；原文一字未刪）</b>
+<ul>
+<li><b>被取代的兩句</b>：本文件與它的素材裡任何以 <code>mean_len</code> 為 1.80 的算式，
+以及任何引用「gap 佔 31.9%／union 62.8%」當<b>生產</b>形狀的段落 ——
+請改讀 <a href="#s13">§13</a>（<code>mean_len</code> 實測 2.40）與 <a href="#s14">§14</a>
+（生產穩定態的 gap 是 28.7%，31.9% 是冷／重載的形狀）。</li>
+<li><b>仍然成立</b>：噪音底（同配置離散度）就是門檻、判定要看原文輸出、逐 request 分段、
+「冷／暖」必須當必填欄位。</li>
+<li><b>本輪換了儀器</b>：§12–§16 用的是 oracle 等價閘門與逐層 span 分解，不是 window harness；
+它們的入口在 <code>Backup/g123_campaign_20260919.sh</code> 與
+<code>docs/G3_UNION_COMPRESSIBILITY_2026-09-19.md</code>。</li>
+</ul>
+</div>
+
 <div class="toc">
 <b>目錄</b>
 <ol>
@@ -87,6 +102,11 @@ harness 報告：<code>docs/DECODE_WINDOW_2026-09-19.html</code>（17:18，由 <
 <li><a href="#s9">現場閘門輸出（原文）</a></li>
 <li><a href="#s10">誠實邊界：這份整理不主張什麼</a></li>
 <li><a href="#s11">下一輪的具體動作</a></li>
+<li><a href="#s12">12. 這一輪：把 decode 25 t/s 拆成 gate 鏈</a></li>
+<li><a href="#s13">13. ★ 更正一：<code>ntok</code> 是「圖寬」，<code>mean_len</code> 是 2.40</a></li>
+<li><a href="#s14">14. ★ 更正二：<code>CGC_SUBMIT_AHEAD</code> 是「半死」的探針</a></li>
+<li><a href="#s15">15. G2 第一次扣扳機：<code>ahead</code> 的 dump 全 NaN</a></li>
+<li><a href="#s16">16. 誠實邊界與下一步</a></li>
 </ol>
 </div>
 
@@ -554,6 +574,93 @@ harness 的命名只是省略了版本號後綴）。<br>
 <li><b>item 1 從待辦清單移除。</b>§5 用讀 GGUF 就證明了前提不成立
 （專家權重 <code>expert 且 eligible = 0 MiB</code>，上限 2.4%）。</li>
 </ol>
+
+<h2 id="s12">12. 這一輪：把 decode 25 t/s 拆成 gate 鏈</h2>
+
+<p>25 不是一個數，是兩個欄位的乘積條件：<code>t/s = mean_len x 1000 / step_cost_ms</code>。
+所以「離 25 多遠」這種問法本身沒有鑑別力 —— 必須先回答<b>哪一個因子是綁住的</b>。這一輪把它拆成
+G0–G7（<code>agent_harness/portal/targets.json</code> 的 <code>decode-25</code>），
+其中只有中間幾格是<b>結構量或計數器</b>，最後一格（交付讀數）刻意不當判準，因為 15–20% 的
+run-to-run 噪音讓單一 t/s 讀數決定不了任何事。</p>
+
+<p>三個 gate 的關係是<b>串聯</b>的：G1（把 gap 藏掉）與 G3（union 到底可不可壓）各自是
+G2／G5（等價閘門）的前提，而 G4（span 削減）只有在 G3 成立時才有機制。</p>
+
+<h2 id="s13">13. ★ 更正一：<code>ntok</code> 是「圖寬」，<code>mean_len</code> 是 2.40</h2>
+
+<p><b>先前的錯</b>：本線曾用「<code>http_duo</code> 的 t/s ÷ DECPROF 的步/秒」反推出
+<code>mean_len ≈ 1.80</code>，並據以宣稱「1.80 之下到不了 25」。<b>那個 1.80 是窗口與算術的產物，
+不是任何儀器讀出來的數。</b></p>
+
+<p><b>定義</b>（<code>ggml-backend.cpp:2493-2500</code>）：DECPROF header 的 <code>ntok</code>
+是<b>被 profile 的那張圖的 token 維度</b>（<code>ttopk-&gt;ne[1]</code>），註釋自己寫
+「<code>ntok=2048</code> ⇒ prefill、<code>ntok=1</code> ⇒ decode」。它很好用<b>當判別器</b>，
+但 MTP 開啟時它幾乎恆等於 <code>1 + n_max</code>。</p>
+
+<table>
+<tr><th>來源</th><th>值</th><th>是什麼</th></tr>
+<tr><td>server 自己的計數器（per request）</td><td><b><code>mean len = 2.40</code></b>、
+<code>draft acceptance = 0.46541</code></td>
+<td>由 acceptance 導出：<code>1 + n_max x 0.465 = 2.40</code> ✓（<b>這才是 mean_len</b>）</td></tr>
+<tr><td>DECPROF <code>ntok</code> 直方圖（同日實測）</td><td><b>174/177 步 = 4</b></td>
+<td><b>圖寬（draft 寬）</b>，不是接受數 ⇒ <b>不能拿它算 mean_len</b></td></tr>
+</table>
+
+<p><b>後果</b>：G4 的需求從「−34.6%」變成 <code>union ≤ 38 x mean_len</code> 這個<b>函數</b>
+（mean_len 1.80 ⇒ −34.6%、2.40 ⇒ −12.8%）。把門檻寫成常數，會在夥伴欄位移動時默默過期。</p>
+
+<h2 id="s14">14. ★ 更正二：<code>CGC_SUBMIT_AHEAD</code> 是「半死」的探針</h2>
+
+<p>它是專案指定的「唯一零改碼上界探針」（<code>run_server.sh:1673</code> 的註釋原文如此）。
+同日實測它<b>只對一半</b>：</p>
+
+<table>
+<tr><th>欄位</th><th>base</th><th><code>ahead</code></th><th>能不能讀</th></tr>
+<tr><td>每步圖寬</td><td>4（174/177 步）</td><td>4（28/28 步）</td><td><b>相同</b> ⇒ 每步工作一樣</td></tr>
+<tr><td>每步 median <code>total</code></td><td><b>169.21 ms</b></td><td><b>99.39 ms</b></td>
+<td><b>可讀</b>：比值 <b>×1.702</b>，與認證的 <b>×1.711</b> 差 0.5% ⇒ <b>重現</b></td></tr>
+<tr><td><code>mean_len</code>（server）</td><td>2.40–2.50</td><td><b>1.00</b></td>
+<td>不可讀 t/s：acceptance 崩掉 ⇒ 探針自己的 t/s 只有 base 的 <b>0.709×</b></td></tr>
+<tr><td><code>gap</code>/<code>union</code></td><td>可讀</td>
+<td><b>25/28 步印 <code>(NO TIMESTAMPS)</code></b></td>
+<td><b>不可讀</b>：poll 點移到下一段提交之後 ⇒ <b>結構性</b>，不是「gap 已消除」</td></tr>
+</table>
+
+<p>⇒ 合法的讀數<b>只有步時比</b>：<b>序列化窗 = 步時的 41%</b>（<code>1 - 1/1.70</code>），
+所以 <code>total</code> 從 169.2 → 99.4 ms，而 <code>t/s</code> 上界 = <code>2.40/0.09939 = 24.15</code>
+（條件是 acceptance 保住），下界 ×1.0 由 G2 保證。⇒ 跨過 25 只需 <code>mean_len ≥ 2.485</code>
+（+3.5%，accept 0.465 → 0.495）⇒ <b>G4 可能根本不需要</b>。</p>
+
+<p>⚠ 本線當天在這一格<b>連續犯了兩個相反方向的錯</b>：先說「探針全壞、×1.711 無法重現」，
+再說 t/s 報酬是「[1.41, 1.70]」—— 兩個都是錯的。正解是<b>逐欄位判定合法性</b>，不是整體判死活。</p>
+
+<h2 id="s15">15. G2 第一次扣扳機：<code>ahead</code> 的 dump 全 NaN</h2>
+
+<p>G2（等價閘門）是在實作落地<b>之前</b>就上好膛的。它第一次被扣扳機就擋下一個候選 ——
+引擎自己的判決原文：</p>
+
+<pre>CGC-DECPROF ... | layer gpu_sum=0.00 union_sum=0.00 gap_sum=0.00 ms (NO TIMESTAMPS)
+oracle_long_ahead_20260919.jsonl.invalid:
+  {"reason":"non-finite values: 248320 of 248320","n_tokens":1,"n_vocab":248320,"pmax":222}</pre>
+
+<p>⇒ racy 不只是「數字不同」，是<b>數值壞掉</b>（全 NaN）。放在 G2 的判準上：
+「不改輸出」不是靠機制論證通過的，是靠 884 步的長 probe 實測。同日另一個負結果同樣成立：
+<b><code>LAYER_CAPS</code> 那條路無法用 canonical 歸約順序救回來</b>
+（<code>canonA vs canonE2</code> 仍是 M1 1/968，而同配置重跑是 1003/1003 逐位元相同）。</p>
+
+<h2 id="s16">16. 誠實邊界與下一步</h2>
+
+<ul>
+<li><b>不主張</b>：本輪的 <code>t/s</code> 全部來自 <code>http_duo</code>，而它自己對三個臂都報
+<code>kept reps disagree by more than 1.10x</code> ⇒ <b>t/s 不可引用</b>，只有結構比值可用。
+要引用絕對值必須用 llama-bench（<code>scripts/check/profile_duo.py</code>，兩軸並列）。</li>
+<li><b>不主張</b>：G3 仍未跑。union 有讀數（base 115.8 ms / 68.7%）但<b>沒有可壓性的證據</b>；
+pair-merge 的因果檢定仍需要線 B 的引擎改動或那件四行的時間戳儀器。</li>
+<li><b>已知缺口</b>：<code>gap/union</code> 的<b>內部切分</b>在探針臂讀不到（結構性）⇒
+「那 41% 落在 step 的哪一段」仍需真的 <code>start</code>/<code>end</code> 時間戳。</li>
+<li><b>下一步</b>：① 用 llama-bench 重取 base 的兩軸（讓 t/s 可引用）；② 線 B 收件時用 G2 ＋
+「正確版能不能保住 acceptance」驗 payoff；③ 若 payoff 落在上界附近，G4 可以直接作廢。</li>
+</ul>
 
 <hr>
 <p class="small">

@@ -235,7 +235,8 @@ def _post(url, payload, timeout=300.0):
 def kill_servers(port: int | None = None):
     """Preflight cleanup. With a port, only that listener is targeted: `pkill -f llama-server`
     also matches every parallel session's server (http_duo.py:31,285). llama-bench has no port, so
-    its pattern kill stays -- it is a tool the gate itself never leaves running.
+    it CANNOT be scoped -- and the gate never launches it, while profile_duo.py (this repo's
+    delivery instrument for t/s) does. See the listing/opt-in below.
 
     [CGC 2026-09-19] The `else` branch used to fall back to `pkill -9 -f llama-server` precisely
     when nothing was listening on our port -- i.e. the idlest moment on the box, and therefore the
@@ -252,7 +253,20 @@ def kill_servers(port: int | None = None):
         # else: nothing of ours is on that port. Do NOT widen to a pattern kill.
     else:
         subprocess.run(["pkill", "-9", "-f", "llama-server"], check=False)
-    subprocess.run(["pkill", "-9", "-f", "llama-bench"], check=False)
+    # llama-bench is NOT a leftover of ours -- the gate never launches it, profile_duo.py does.
+    # A pattern kill here can therefore only hit another session's in-flight measurement, and the
+    # victim sees a dead bench rather than a dead gate. Same rule as run_server.sh's preflight:
+    # list by default, signal only on explicit request (CGC_PREFLIGHT_KILL=all).
+    _lb = subprocess.run(["pgrep", "-fl", "llama-bench"], capture_output=True, text=True)
+    _hits = [l for l in _lb.stdout.splitlines() if l.strip()]
+    if _hits:
+        if os.environ.get("CGC_PREFLIGHT_KILL", "").strip() == "all":
+            subprocess.run(["pkill", "-9", "-f", "llama-bench"], check=False)
+            print("  [preflight] killed %d llama-bench (CGC_PREFLIGHT_KILL=all)" % len(_hits),
+                  flush=True)
+        else:
+            print("  [preflight] %d llama-bench running, NOT killed (set CGC_PREFLIGHT_KILL=all "
+                  "to kill); first: %s" % (len(_hits), _hits[0].strip()[:88]), flush=True)
     time.sleep(1.0)
 
 
