@@ -1143,6 +1143,30 @@ cur = attn_norm(inp)
 那會把兩個 pass 併成一個、之後每個 graph 整體錯位。⇒ 分析器現在印**逐 graph 的行數**並列出不一致的
 graph；**最強的保證是「你要的節點在兩份日誌的每個 graph 都恰好出現一次」**（比總數相等更強）。
 
+
+### ★ 第五條規則（2026-09-20 新增）：**捕獲表不是「這一輪的」** —— 讀之前先驗讀取的前置條件
+
+任何「在 build 時把 tensor 指標存進一張表、稍後再讀它」的探針（`cache_slots_out_tensors` /
+`cache_slot_table_tensors` / `cache_remap_tensors` 就是），都會遇到同一件事：**那張表只在它自己
+建的那種圖上被填，而且從不清空**；而 ggml 每個 build 都 reset 並**重用 arena**。
+
+⇒ 舊指標會落在**當前圖的別的張量**上，於是：
+
+- **「這個位址是不是當前圖的節點」不是有效判準** —— 2026-09-20 實測：它對 39 條陳舊條目
+  **全部放行**（同一次啟動的兩次呼叫，第一次 39 條形狀全對、第二次同一批 key 全錯）；
+- 真正的判準是**讀取本身的前置條件**。要讀 `n` 個 int32 就要求
+  `ggml_nbytes(t) == n * sizeof(int32_t)`（連續 ＋ 4-byte ＋ 長度對），因為 `ggml_nbytes()`
+  是**由 `nb[]` 算的**：落在 F16／量化張量上時 `4n` 會超過它自己的位元組數 ⇒
+  `ggml-backend.cpp:349 GGML_ASSERT(offset + size <= ggml_nbytes(tensor))` **abort**。
+
+價格：一條純診斷指令 abort 之後，**它正在量測的那一輪就沒了**，而預設的讀法是把責任歸給受試物。
+實例：`CGC_S1_DBG` 的 POST 探針被記成「S1 會 abort ⇒ S2 卡在一個要先修的 defect」，
+而同 build、只把該旋鈕關掉的對照是 **PASS**（`comparable=true`、M1/M2/M3 各 9/9）。
+lesson `eng-diag-0037`；根因報告 `docs/S1_DIAGNOSTIC_ABORT_ROOT_CAUSE_2026-09-20.md`。
+
+**殘餘（明寫）**：那個判準讓讀取**安全**，沒有讓它**可歸屬** —— 長度對得上的舊指標仍會產生
+錯誤的報告行。要關掉它需要在 capture 端記下**建置世代戳記**（「是哪一次 build 寫的」）。
+
 ## 陷阱（都踩過）
 
 **★ 陷阱 0（2026-09-18）：`ls -t | head -1` 取到的「最新產物」可能還沒寫完。**
