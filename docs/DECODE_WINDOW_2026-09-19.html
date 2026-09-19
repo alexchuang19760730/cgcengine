@@ -1,0 +1,59 @@
+<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<title>Decode window harness — 2026-09-19 17:18</title>
+<style>
+ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;
+   max-width:1080px;margin:2rem auto;padding:0 1.2rem;line-height:1.65;color:#1a1a1a}
+ h1{font-size:1.5rem;border-bottom:2px solid #333;padding-bottom:.4rem}
+ h2{font-size:1.15rem;margin-top:2rem;border-left:4px solid #555;padding-left:.6rem}
+ table{border-collapse:collapse;width:100%;margin:.8rem 0;font-size:.92rem}
+ th,td{border:1px solid #ddd;padding:.4rem .55rem;text-align:right}
+ th:first-child,td:first-child{text-align:left}
+ th{background:#f4f4f4}
+ code{background:#f2f2f2;padding:.1rem .3rem;border-radius:3px;font-size:.88em}
+ .badge{display:inline-block;padding:.12rem .5rem;border-radius:10px;color:#fff;font-size:.8rem;
+   font-weight:600}
+ .ok{background:#1a7f37} .bad{background:#b42318} .warn{background:#9a6700}
+ .note{background:#fbf8e5;border-left:4px solid #d4a72c;padding:.6rem .9rem;margin:1rem 0}
+ .v{margin:.5rem 0 .5rem .6rem}
+</style></head><body>
+<h1>Decode window harness</h1>
+<p><strong>2026-09-19 17:18</strong> · port 8199 (8080 only observed, never signalled) ·
+engine digests: {&quot;llama-server&quot;: &quot;054fb22f04a01c5c&quot;, &quot;libllama.0.dylib&quot;: &quot;aab787412e572550&quot;, &quot;libggml-metal.0.dylib&quot;: &quot;1be366306c604669&quot;, &quot;libllama-server-impl.dylib&quot;: &quot;a87bfd2e80a086b4&quot;}</p>
+<div class="note"><strong>如何讀這份報告：</strong>每個判定都要打贏「這台機器自己的漂移」才算數。
+Lane A 的兩個 BITIDENT=1 基線之間的分歧就是那個門檻；效果小於門檻一律標成
+INCONCLUSIVE，不會被四捨五入成結論。Lane B 的冷/暖是變數不是雜訊。</div>
+<h2>Lane A — item 1：small-batch mat-mv 是不是 2.28× 的成因</h2>
+<p>預測是<b>微分</b>的：原始碼說 <code>ne11=1</code> 本來就不在 small-batch 家族裡，所以 BITIDENT=0 應該<b>只動 ntok=4</b>、不動 ntok=1。</p>
+<table><thead><tr><th>arm</th><th>BITIDENT</th><th>ms/token</th><th>ntok=1 total</th><th>ntok=1 wait</th><th>ntok=1 cb</th><th>ntok=4 total</th><th>ntok=4 wait</th><th>ntok=4 cb</th><th>log</th></tr></thead><tbody><tr><td>b1</td><td>1</td><td>102.45</td><td>—</td><td>—</td><td>—</td><td>166.41</td><td>149.93</td><td>9.63</td><td>llama_server_20260919_154509.log</td></tr><tr><td>b0</td><td>0</td><td>148.70</td><td>—</td><td>—</td><td>—</td><td>140.55</td><td>107.63</td><td>17.77</td><td>llama_server_20260919_155357.log</td></tr><tr><td>b1b</td><td>1</td><td>89.25</td><td>—</td><td>—</td><td>—</td><td>139.57</td><td>122.12</td><td>10.15</td><td>llama_server_20260919_155803.log</td></tr></tbody></table>
+<div class="v"><span class="badge bad">DESIGN GAP</span> no ntok=1 plain step exists to act as the control: with MTP on every base step is a 4-wide verify batch. The verify step is judged on its own; the control is recorded as UNAVAILABLE, not as a pass.</div>
+<div class="v"><span class="badge ok">flat</span> ntok=4 verify step (TEST: ne11=4): baselines 153.0 ms (spread 17.5%, threshold 17.5%), BITIDENT=0 140.6 ms =&gt; -8.1% -&gt; within baseline spread</div>
+<div class="v"><span class="badge warn">CAVEAT</span> ms/token is NOT comparable across these arms -- BITIDENT=0 breaks bit-identity, so the token stream and the accept rate differ. Compare fixed-shape per-step costs only.</div>
+<div class="v"><span class="badge warn">NOT SUPPORTED</span> The verify step is inside this box&#x27;s own drift (the two BITIDENT=1 baselines disagree by 17.5% (budget 5%)), so the small-batch family shows no resolvable effect here. The comparison is underpowered, not negative: tightening the baselines is what would change this.</div>
+<h2>Lane B — items 6–8：thrash 的殘留與暖池機制</h2>
+<table><thead><tr><th>request</th><th>tokens</th><th>ms/token</th><th>step total</th><th>step wait</th><th>step cb</th></tr></thead><tbody><tr><td>rep1_cold</td><td>92</td><td>118.08</td><td>107.73</td><td>76.59</td><td>22.20</td></tr><tr><td>rep2_warm</td><td>92</td><td>73.71</td><td>69.25</td><td>63.03</td><td>5.19</td></tr><tr><td>rep3_warm</td><td>92</td><td>74.20</td><td>68.54</td><td>63.07</td><td>3.58</td></tr><tr><td>thrash_slab2000</td><td>8</td><td>69.65</td><td>62.20</td><td>44.00</td><td>15.37</td></tr><tr><td>rep4_after_thrash</td><td>96</td><td>77.16</td><td>70.12</td><td>61.41</td><td>4.92</td></tr><tr><td>rep5_after_thrash2</td><td>96</td><td>73.47</td><td>65.88</td><td>59.45</td><td>3.58</td></tr></tbody></table>
+<p><b>逐層殘留</b>（暖池 vs thrash 後第一個請求，wait 差值最大的幾層）：</p>
+<table><thead><tr><th>layer</th><th>warm wait</th><th>after-thrash wait</th><th>delta</th></tr></thead><tbody><tr><td>2</td><td>1.75</td><td>2.44</td><td>0.70</td></tr><tr><td>4</td><td>1.52</td><td>1.71</td><td>0.19</td></tr><tr><td>14</td><td>1.46</td><td>1.59</td><td>0.13</td></tr><tr><td>13</td><td>1.56</td><td>1.66</td><td>0.10</td></tr><tr><td>34</td><td>1.46</td><td>1.53</td><td>0.07</td></tr><tr><td>22</td><td>1.54</td><td>1.59</td><td>0.05</td></tr></tbody></table>
+<div class="v"><span class="badge ok">no material residue</span> per-layer deltas total only +2 ms across 19 layers; not labelled concentrated or global, because at this size neither word means anything.</div>
+<div class="v"><span class="badge ok">no material residue</span> after a 2000-token slab thrash the rate is 77.16 vs 73.95 ms/token (+4.3%): below the 5% threshold, so there is no residue worth engineering away in this run. The per-layer table below is then comparing noise -- read it as such.</div>
+<div class="v"><span class="badge ok">recovered</span> second pass after the thrash: 73.47 ms/token vs warm 73.95 (-0.7%) =&gt; one more pass restores the rate, so &#x27;re-warm after prefill&#x27; is a sufficient fix</div>
+<div class="note"><strong>還沒開始量測。</strong>harness 正在等一個乾淨窗口，自 16:57:28 起被擋住：<code>quiet</code>。下面那兩個 INCOMPLETE 就是這個意思。要看即時狀態用 <code>tail -f /tmp/harness.log</code>。</div>
+<h2>Drift lane — 交錯重複的 b1/b1b：item 1 的比較有沒有解析度</h2>
+<p>問的不是 BITIDENT，是兩個<b>完全同配置</b>的臂能不能在 5% 內一致。第一次跑它們差 17.5%，所以那個結果只能報成 underpowered。逐層證據：b1/b1b 的 wait 比值中位 1.121、<b>最小 1.020（沒有一層更快）</b>、而 cb 比值 0.974 ⇒ 全域 GPU 側因子（時脈/熱），不是 pool。所以這條線<b>交錯時序</b>並輪替區塊內順序，讓配對差值抵銷漂移。</p>
+<p><b>配對結果</b>（同一區塊內 b1 vs b1b 的 verify step）：</p>
+<table><thead><tr><th>block</th><th>b1 step (ms)</th><th>b1b step (ms)</th><th>ratio</th></tr></thead><tbody><tr><td>1</td><td>325.70</td><td>392.50</td><td>0.8298</td></tr></tbody></table>
+<p><b>區塊內全臂展幅</b>（這才是「配對有沒有用」的判準：同一區塊內所有臂的span。大於門檻就代表這一對<b>不在同一個 regime</b>，再多 block 也補不回來）：</p>
+<table><thead><tr><th>block</th><th>span %</th><th>arms (ms)</th></tr></thead><tbody><tr><td>1</td><td>18.84</td><td>b1=325.7, b0=345.3, b1b=392.5</td></tr><tr><td>2</td><td>86.49</td><td>b1b=337.2, b0=133.6</td></tr></tbody></table>
+<p>每個臂的原始讀數（時間與 free 是為了讓漂移看得到，不是解釋）：</p>
+<table><thead><tr><th>block</th><th>arm</th><th>BITIDENT</th><th>ts</th><th>free MB</th><th>swap MB</th><th>step total</th><th>cb</th><th>wait</th><th>ms/token</th></tr></thead><tbody><tr><td>1</td><td>b1</td><td>1</td><td>16:41:52</td><td>920</td><td>—</td><td>325.70</td><td>8.66</td><td>310.61</td><td>194.72</td></tr><tr><td>1</td><td>b0</td><td>0</td><td>16:45:37</td><td>1117</td><td>—</td><td>345.27</td><td>10.82</td><td>330.57</td><td>209.79</td></tr><tr><td>1</td><td>b1b</td><td>1</td><td>16:49:19</td><td>1109</td><td>—</td><td>392.50</td><td>9.71</td><td>378.69</td><td>225.94</td></tr><tr><td>2</td><td>b1b</td><td>1</td><td>16:53:11</td><td>1111</td><td>5393</td><td>337.17</td><td>9.84</td><td>323.42</td><td>201.74</td></tr><tr><td>2</td><td>b0</td><td>0</td><td>16:56:54</td><td>903</td><td>5182</td><td>133.59</td><td>10.84</td><td>112.20</td><td>89.10</td></tr></tbody></table>
+<div class="v"><span class="badge ok">block stable</span> block 1: arms span 18.8% (b1=325.7, b0=345.3, b1b=392.5) against a 20% flip threshold; a pair in this block was measured inside one regime.</div>
+<div class="v"><span class="badge bad">regime faster than one arm</span> block 2: arms span 86.5% (b1b=337.2, b0=133.6) against a 20% flip threshold; a pair in this block was NOT measured inside one regime.</div>
+<div class="v"><span class="badge warn">INCOMPLETE</span> 1 pair(s) with both BITIDENT=1 baselines; a paired spread needs at least 2, so the paired question stays open. (5 arm(s) measured.)</div>
+<h2>Kernel family eligibility — item 1 的前提是否成立（讀真的 GGUF，不跑量測）</h2>
+<p>這件事<b>不是量測問題</b>：small-batch 家族（<code>mul_mv_ext</code>）只接受兩份互斥的型別白名單，其餘型別一律落到 mul_mv/mul_mm；在那裡 batch size 不改變每列的歸約，所以 <code>CGC_MM_BITIDENT</code> 對它們<b>不可能有任何效果</b>。若 expert 權重的型別一個都不在白名單上，那 item 1 的 kernel 假設對這顆模型根本不適用——此時 A/B 裡看到的任何差異都不是 kernel 家族的效應。</p>
+<table><thead><tr><th>type</th><th>tensors</th><th>of which expert</th><th>eligible</th><th>expert &amp; eligible</th><th>expert MiB</th><th>expert &amp; elig MiB</th><th>family</th></tr></thead><tbody><tr><td>IQ2_S</td><td>78</td><td>78</td><td>0</td><td>0</td><td>6396</td><td>0</td><td>--</td></tr><tr><td>IQ3_S</td><td>39</td><td>39</td><td>0</td><td>0</td><td>4290</td><td>0</td><td>--</td></tr><tr><td>IQ4_XS</td><td>253</td><td>3</td><td>0</td><td>0</td><td>408</td><td>0</td><td>--</td></tr><tr><td>Q2_K</td><td>2</td><td>2</td><td>2</td><td>2</td><td>168</td><td>168</td><td>B ne11 4-8</td></tr><tr><td>Q3_K</td><td>1</td><td>1</td><td>1</td><td>1</td><td>110</td><td>110</td><td>B ne11 4-8</td></tr><tr><td>Q6_K</td><td>2</td><td>0</td><td>2</td><td>0</td><td>0</td><td>0</td><td>B ne11 4-8</td></tr><tr><td>F32</td><td>368</td><td>0</td><td>278</td><td>0</td><td>0</td><td>0</td><td>A ne11 2-8</td></tr><tr><td>Q8_0</td><td>8</td><td>0</td><td>8</td><td>0</td><td>0</td><td>0</td><td>A ne11 2-8</td></tr><tr><td>BF16</td><td>2</td><td>0</td><td>2</td><td>0</td><td>0</td><td>0</td><td>A ne11 2-8</td></tr></tbody></table>
+<div class="v"><span class="badge warn">premise bounded</span> the knob can only move 2.4% of the expert weight bytes (278 MiB of 11372 MiB; 3/123 tensors), so any kernel-family saving on the verify step is capped near that share of its expert-matmul cost. A measured effect much larger than this is not a kernel-family effect -- grid contention, or a regime change.</div>
+<div class="v"><span class="badge bad">not attributable</span> the A/B measures 15.5% on the verify step (b1 166.4 -&gt; b0 140.6 ms) while the weights allow at most 2.4%: the effect is 6x the ceiling, so it is NOT a kernel-family effect. Block 2 of the drift lane shows the same arm moving 152% between launches -- that is the signature of the shared GPU, not of a kernel.</div>
+<h2>執行日誌（最後 400 行）</h2><pre style='font-size:.82rem;background:#f7f7f7;padding:.8rem;overflow:auto;max-height:26rem'>[17:18:52] === decode window harness (port 8199; 8080 observed only) ===
+[17:18:52] --- report (kept current from now on): /Users/alexchuang/Documents/flashkv-devserver/docs/DECODE_WINDOW_2026-09-19.html
+[17:18:52] --- --analyze-only: running no lanes, reporting from the saved state</pre>
+</body></html>
