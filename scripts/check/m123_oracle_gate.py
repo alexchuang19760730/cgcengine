@@ -176,6 +176,27 @@ COMPARE = ROOT / "scripts" / "check" / "cgc_logits_oracle_compare.py"
 DEFAULT_REF = ROOT / "Backup" / "knifeedge_matrix" / "ref_iq3_pool8gb_M2_6144_bitident_v6_nbaware.jsonl"
 RESULT_DIR = ROOT / "Backup" / "m123_oracle_gate"
 
+# ★ The reference is an UNTRACKED asset (Backup/ is gitignored) and every verdict is measured against
+# it, so its PATH is not enough: the summary must also say WHICH BYTES were compared. Until
+# 2026-09-19 nothing pinned the reference's content, which means re-baselining or hand-editing that
+# one file would silently redefine every future M1/M2 number with no artefact recording the change.
+# Pinned here, next to DEFAULT_REF, in the same spirit as ORACLE_PINNED_ENV below.
+#
+#   --write-ref writes the .cap sidecar but does NOT update this table; after a deliberate
+#   re-baseline, update the md5 here in the same commit, so the change is reviewable.
+REF_PINS = {
+    "ref_iq3_pool8gb_M2_6144_bitident_v6_nbaware.jsonl": "72d82a33ad79e0e69bc935acd24228f2",
+}
+
+
+def ref_md5(path: Path) -> str:
+    """md5 of the reference file, streamed (these dumps are small, but no reason to hold them)."""
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
 # ★ The oracle's batch/ubatch are part of THE ORACLE'S IDENTITY, not a property of the profile.
 #
 # The `prefill250` profile used to carry batch=ubatch=6144 as its production default, which made
@@ -627,6 +648,10 @@ def main() -> int:
     ap.add_argument("--allow-invalid-ref", action="store_true",
                     help="skip dump-validity screening on the reference file. Default is to refuse "
                          "a reference that does not pass the same checks as a fresh dump.")
+    ap.add_argument("--allow-ref-drift", action="store_true",
+                    help="proceed even though the reference's md5 does not match REF_PINS. Use only "
+                         "while re-baselining; the verdict stays meaningful only if you also update "
+                         "REF_PINS in the same commit.")
     ap.add_argument("--ready-timeout", type=float, default=300.0)
     ap.add_argument("--teardown-timeout", type=float, default=90.0)
     args = ap.parse_args()
@@ -650,6 +675,24 @@ def main() -> int:
             print("       Re-baseline from a healthy run, or pass --allow-invalid-ref to override "
                   "(the verdict will be meaningless).", file=sys.stderr)
             return 2
+
+    # The reference's own bytes. A mismatch here is the one failure that would make two runs at
+    # different times incomparable while every other artefact (engine digest, config stamp, tree)
+    # still matches -- i.e. exactly the silent case, so refuse rather than warn.
+    ref_hex = ref_md5(ref)
+    pin = REF_PINS.get(ref.name)
+    if pin is None:
+        print(f"note: no REF_PINS entry for {ref.name}; recording md5 {ref_hex} without checking it")
+    elif pin != ref_hex:
+        print(f"ERROR: reference {ref.name} has md5 {ref_hex} but REF_PINS pins {pin}.", file=sys.stderr)
+        print("       Every M1/M2 number below would be measured against different bytes than the "
+              "one this repository has been quoting.", file=sys.stderr)
+        if not args.allow_ref_drift:
+            print("       Re-baseline deliberately (--write-ref) and update REF_PINS in the same "
+                  "commit, or pass --allow-ref-drift to proceed anyway.", file=sys.stderr)
+            return 4
+        print("       --allow-ref-drift given: proceeding; treat the verdict as a new baseline.",
+              file=sys.stderr)
 
     # Merge the oracle pin with the caller's --env BEFORE anything is printed or resolved, so the
     # line below reports the EFFECTIVE set. A pin that was silently overridden and a pin that was
@@ -922,7 +965,8 @@ def main() -> int:
     m1r, m2r, m3r = (met["numeric_identity"]["rate"], met["decision_agreement"]["rate"],
                      met["topk_set_agreement"]["rate"])
     summary = {
-        "tag": tag, "profile": args.profile, "ref": str(ref), "dump": str(dump),
+        "tag": tag, "profile": args.profile, "ref": str(ref), "ref_md5": ref_hex,
+        "ref_pinned": (pin == ref_hex), "dump": str(dump),
         "probe_answer": ans.strip(),
         "m1_numeric_identity": f"{met['numeric_identity']['equal']}/{met['numeric_identity']['n']}",
         "m2_decision_agreement": f"{met['decision_agreement']['equal']}/{met['decision_agreement']['n']}",
