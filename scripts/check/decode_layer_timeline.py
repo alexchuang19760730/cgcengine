@@ -217,14 +217,29 @@ def main():
         num = sum((d - md) * (c - mc) for d, c in pairs)
         den = (sum((d - md) ** 2 for d in ds) * sum((c - mc) ** 2 for c in cs)) ** 0.5
         r = num / den if den > 0 else float("nan")
+        # The robust form is a REGRESSION, not a ratio of medians: cb_prev is bimodal
+        # (a handful of loud layers at 0.8-2.9 ms, ~28 quiet ones at 0.01-0.06), so the pooled
+        # median cb is ~0.02 ms against a median idle of ~0.45 ms and the ratio of medians is
+        # meaningless (it prints ~20 while the slope is 1.0).
+        sx = sum(cs) / len(cs)
+        sy = sum(ds) / len(ds)
+        sxx = sum((c - sx) ** 2 for c in cs)
+        slope = (sum((c - sx) * (d - sy) for d, c in pairs) / sxx) if sxx > 0 else float("nan")
+        icept = sy - slope * sx
+        loud = [c for c in cs if c >= 0.4]
         print("  inter-layer idle vs PREDECESSOR's cb (the hook the next segment depends on):")
-        print("    median idle %.3f ms  median cb %.3f ms  ratio %.2f   Pearson r = %+.3f  (n=%d)" % (
-            md, mc, md / mc if mc else float("nan"), r, len(pairs)))
-        print("    r ~ +1 and ratio ~1  => the idle IS that hook's shadow: a real data dependency,")
-        print("                            not schedulable slack. Then the only correct lever is a")
-        print("                            cheaper hook (S1), and CGC_SUBMIT_AHEAD's x1.702 deletes")
-        print("                            the dependency itself -- so it is no ceiling for any")
-        print("                            correct design.")
+        print("    idle = %.2f x cb_prev + %.3f ms      r = %+.3f   (n=%d pairs)" % (
+            slope, icept, r, len(pairs)))
+        print("    cb_prev bimodality: %d/%d pairs with cb>=0.4 ms (median of those %.3f) ; "
+              "median cb overall %.3f" % (
+                  len(loud), len(cs), med(loud) if loud else float("nan"), mc))
+        print("    a slope of 1.00 means the hook adds its WHOLE duration to the critical path --")
+        print("    zero CPU/GPU overlap -- 39 times per step, and the intercept is the per-boundary")
+        print("    launch/completion residue. So the idle has exactly two components and no third.")
+        print("    The window is DEFINED as 'GPU idle while the CPU runs the hook', so hiding it")
+        print("    behind GPU work is not available: the only levers are a cheaper hook or fewer")
+        print("    boundaries. CGC_SUBMIT_AHEAD's x1.702 deletes the dependency itself and is racy,")
+        print("    so it is no ceiling for any correct design.")
     print()
     print("  reading: if parallelism ~1.00 AND the excess is positive, the layers are serial with an")
     print("           idle between them -> merging a pair removes the idle (G3 met, G1 is the lever).")
