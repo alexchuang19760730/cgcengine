@@ -1,29 +1,29 @@
 {
-  "generated_at": "2026-09-18 12:43:19",
+  "generated_at": "2026-09-19 12:26:09",
   "git": {
     "branch": "demo/sweet-spot-windows-fix",
-    "head": "586a8bd1216aecb957edf7711e5f9155628823e6",
-    "head_short": "586a8bd12",
-    "subject": "docs(skill,snapshot): 新增 cgc-decision-registry（決策 registry 的登錄流程）-- 本批 30 節走出來的固定流程；快照 15/15 相符",
-    "dirty": 10,
+    "head": "98b44c8c60eef1683b951070b3da429b0bba1aff",
+    "head_short": "98b44c8c6",
+    "subject": "feat(mtp): 量 p_route ⇒ RSL-MTP 被實測證偽（0.21% vs 門檻 50%）＋ 消掉上一條「未驗證」",
+    "dirty": 47,
     "dirty_sample": [
-      "M agent_harness/portal/build_portal.py",
+      "M agent_harness/engine_loop/MANIFEST.jsonl",
+      " M agent_harness/engine_loop/memory/INDEX.jsonl",
       " M agent_harness/portal/data.json",
       " M agent_harness/portal/goals.json",
       " M agent_harness/portal/history.jsonl",
       " M docs/AGENT_HARNESS_PORTAL.html",
-      " M src/llama.cpp/build/bin/libggml-base.0.19.0.dylib",
-      " M src/llama.cpp/build/bin/libllama.0.0.279.dylib",
-      " M src/llama.cpp/ggml/src/ggml-backend.cpp"
+      " M docs/fleet_export.json",
+      " M scripts/check/decode_sweep.py"
     ]
   },
   "fingerprint": {
-    "digest": "6027343aa0b7f15e",
+    "digest": "9f9cc3a5a2435cbb",
     "inputs": [
       {
         "path": "agent_harness/engine_loop/traces/lessons.jsonl",
-        "sha256_12": "80cd46ae6e18",
-        "bytes": 337153
+        "sha256_12": "782f8358640a",
+        "bytes": 347040
       },
       {
         "path": "agent_harness/engine_loop/traces/decisions.jsonl",
@@ -37,8 +37,8 @@
       },
       {
         "path": "agent_harness/CONVENTIONS.md",
-        "sha256_12": "261ee13ea020",
-        "bytes": 95220
+        "sha256_12": "73e562431b8a",
+        "bytes": 96433
       },
       {
         "path": "agent_harness/portal/gates.json",
@@ -47,8 +47,8 @@
       },
       {
         "path": "agent_harness/portal/goals.json",
-        "sha256_12": "4d40a2bfbf41",
-        "bytes": 13923
+        "sha256_12": "029edb3f5332",
+        "bytes": 13920
       }
     ]
   },
@@ -78,17 +78,24 @@
         },
         {
           "name": "2026-09-18.md",
-          "bytes": 202378,
-          "mtime": "09-18 12:32",
-          "lines": 2799,
-          "sections": 31
+          "bytes": 399440,
+          "mtime": "09-19 00:03",
+          "lines": 5322,
+          "sections": 69
+        },
+        {
+          "name": "2026-09-19.md",
+          "bytes": 46546,
+          "mtime": "09-19 12:24",
+          "lines": 643,
+          "sections": 12
         },
         {
           "name": "MEMORY.md",
-          "bytes": 7247,
-          "mtime": "09-18 04:56",
-          "lines": 95,
-          "sections": 6
+          "bytes": 11652,
+          "mtime": "09-19 00:47",
+          "lines": 129,
+          "sections": 7
         },
         {
           "name": "MEMORY_FACTS.md",
@@ -99,51 +106,58 @@
         },
         {
           "name": "MEMORY_PERF.md",
-          "bytes": 48674,
-          "mtime": "09-18 12:12",
-          "lines": 516,
-          "sections": 7
+          "bytes": 55994,
+          "mtime": "09-19 02:28",
+          "lines": 591,
+          "sections": 8
         },
         {
           "name": "MEMORY_S1.md",
-          "bytes": 47260,
-          "mtime": "09-18 11:47",
-          "lines": 569,
+          "bytes": 48927,
+          "mtime": "09-18 13:28",
+          "lines": 594,
           "sections": 13
         }
       ],
-      "count": 8,
-      "bytes": 1175394,
-      "lines": 15481
+      "count": 9,
+      "bytes": 1432394,
+      "lines": 18781
     },
     "skills": {
       "items": [
         {
           "name": "cgc-commit-gate",
-          "bytes": 80764,
-          "lines": 1090,
-          "sha8": "be8a39a3",
+          "bytes": 84923,
+          "lines": 1152,
+          "sha8": "ddb595b6",
           "desc": "在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）提交 commit 時，正確通過 pre-commit 閘門並滿足 D5 的完整流程與陷阱。當要在該 repo commit、被 pre-commit hook 擋下、不確定要不要跑 re"
         },
         {
           "name": "cgc-decision-registry",
-          "bytes": 9147,
-          "lines": 159,
-          "sha8": "c22b2f2f",
+          "bytes": 12051,
+          "lines": 201,
+          "sha8": "4323c500",
           "desc": "把 flashkv-devserver 的日誌決策節（`.workbuddy/memory/YYYY-MM-DD.md` 的 §EN-／§TB- 節）登錄成 `agent_harness/engine_loop/traces/decisions.jsonl` 的決策記錄。當使用者要求「把某段時間的技"
         },
         {
           "name": "cgc-decode-attribution",
-          "bytes": 114532,
-          "lines": 1224,
-          "sha8": "aaf86cd0",
+          "bytes": 132356,
+          "lines": 1409,
+          "sha8": "a892b9d0",
           "desc": "在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）上把一個 decode 步歸因到 GPU 執行、CPU 序列化、池/IO 或編碼，並用既有儀器取得可證的判準數字。當使用者問「decode 為什麼慢」「wait 是什麼」「瓶頸在哪」「要不"
         },
         {
+          "name": "cgc-mtp-cost-curve",
+          "bytes": 10646,
+          "lines": 158,
+          "sha8": "89f91f2e",
+          "desc": "在 flashkv-devserver（llama.cpp CGC fork，流式 MoE）上量測 speculative/MTP 的攤薄係數 m 與每步接受數 E，判斷「練 draft head 值不值得」。當使用者問「MTP 能不能加速／為什麼 MTP 虧／accept rate 要拉到多少才划"
+        },
+        {
           "name": "cgc-observer-portal",
-          "bytes": 7251,
-          "lines": 110,
-          "sha8": "b67bc1c6",
+          "bytes": 18302,
+          "lines": 263,
+          "sha8": "2d2c158e",
           "desc": "在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）新增一個「可機檢的觀測入口」——把散在多處的目標／決策／驗證／資產收成一份**實跑**的入口，並用突變式自測證明它真的會紅。當使用者要求「可視化／可復盤」「驗證可復現」「資產盤點入口」「能"
         },
         {
@@ -155,22 +169,29 @@
         },
         {
           "name": "cgc-tb-smoke",
-          "bytes": 48764,
-          "lines": 641,
-          "sha8": "efb13130",
+          "bytes": 52192,
+          "lines": 685,
+          "sha8": "f34806c1",
           "desc": "在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）跑 terminal-bench 的鏈路 smoke —— 分兩個變體：oracle 變體不需要模型（E1 第 3 條驗收），PrimeAgentAgent 變體需要一個 OpenAI 相"
         },
         {
           "name": "cgc-whitepaper-delivery",
-          "bytes": 31041,
-          "lines": 488,
-          "sha8": "de75622a",
+          "bytes": 32865,
+          "lines": 508,
+          "sha8": "9a6ffdb1",
           "desc": "在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）撰寫 docs/*.html 技術白皮書的版式、取材清單與交付流程。當要求為該 repo 產生白皮書 / 技術架構文件 / 里程碑文件、或 D5 要求「每次 commit 附一份白皮書」時"
+        },
+        {
+          "name": "github-transport-fallback",
+          "bytes": 6468,
+          "lines": 105,
+          "sha8": "a0eb8030",
+          "desc": "在 GitHub 推送／拉取失敗時，判斷是「憑證問題」還是「傳輸通道問題」，並選對路走（SSH 優先、Git Data API 為最後手段）；以及「遠端在工作期間被別的 agent 推進」時的正確處理流程。當出現 `git push` 被拒、non-fast-forward、`github.com:"
         }
       ],
-      "count": 7,
-      "bytes": 313249,
-      "lines": 3982
+      "count": 9,
+      "bytes": 371553,
+      "lines": 4751
     },
     "code": {
       "areas": [
@@ -184,8 +205,8 @@
         {
           "area": "src/llama.cpp（引擎核心 C++/Metal）",
           "files": 2440,
-          "loc": 1062643,
-          "bytes": 80196212,
+          "loc": 1063233,
+          "bytes": 80234017,
           "archive": false
         },
         {
@@ -204,9 +225,9 @@
         },
         {
           "area": "scripts/（量測、閘門、server）",
-          "files": 157,
-          "loc": 40896,
-          "bytes": 1890798,
+          "files": 168,
+          "loc": 45285,
+          "bytes": 2116487,
           "archive": false
         },
         {
@@ -225,16 +246,23 @@
         },
         {
           "area": "agent_harness/（其餘）",
-          "files": 64,
-          "loc": 18175,
-          "bytes": 675641,
+          "files": 69,
+          "loc": 20616,
+          "bytes": 801219,
+          "archive": false
+        },
+        {
+          "area": "agent_harness/portal",
+          "files": 6,
+          "loc": 7326,
+          "bytes": 391704,
           "archive": false
         },
         {
           "area": "agent_harness/engine_loop",
           "files": 26,
-          "loc": 6344,
-          "bytes": 327509,
+          "loc": 6351,
+          "bytes": 328166,
           "archive": false
         },
         {
@@ -242,13 +270,6 @@
           "files": 8,
           "loc": 2609,
           "bytes": 118014,
-          "archive": false
-        },
-        {
-          "area": "agent_harness/portal",
-          "files": 1,
-          "loc": 2204,
-          "bytes": 115863,
           "archive": false
         },
         {
@@ -273,28 +294,28 @@
           "archive": false
         }
       ],
-      "files": 8062,
-      "loc": 3071602,
-      "bytes": 161649475,
-      "files_live": 4227,
-      "loc_live": 1516838,
-      "bytes_live": 97885996
+      "files": 8083,
+      "loc": 3084151,
+      "bytes": 162315045,
+      "files_live": 4248,
+      "loc_live": 1529387,
+      "bytes_live": 98551566
     },
     "traces": {
       "episodes": 122,
       "episodes_usable": 27,
       "decisions": 68,
-      "lessons": 185,
+      "lessons": 192,
       "lessons_by_class": {
-        "measurement-hygiene": 68,
-        "gate-integrity": 53,
+        "measurement-hygiene": 70,
+        "gate-integrity": 55,
         "diagnosis": 28,
-        "source-reading": 19,
-        "honest-bounds": 10,
+        "source-reading": 21,
+        "honest-bounds": 11,
         "log-forensics": 4,
         "smoke": 3
       },
-      "bytes": 841981,
+      "bytes": 851868,
       "schema": true
     },
     "derived": {
@@ -305,16 +326,16 @@
       "sft_prime_valid": 37
     },
     "corpus": {
-      "whitepapers": 56,
+      "whitepapers": 62,
       "latest_whitepaper": "ZERO_REGION_TRIAGE_20260916.html",
-      "docs_md": 43,
+      "docs_md": 75,
       "evidence": {
         "files": 2447,
         "bytes": 15426860
       },
       "backup": {
-        "files": 4595,
-        "bytes": 1089473052
+        "files": 5202,
+        "bytes": 1126636470
       }
     }
   },
@@ -450,14 +471,14 @@
   "gates": {
     "n_fast": 14,
     "n_heavy": 4,
-    "n_pass": 14,
-    "n_fail": 0,
+    "n_pass": 9,
+    "n_fail": 5,
     "results": [
       {
         "id": "charter-citations",
         "group": "charter",
         "status": "PASS",
-        "seconds": 0.16,
+        "seconds": 0.14,
         "rc": 0,
         "tail": "  OK: 61/61 條都有交代（可解析指針 59 ＋ 顯式標記 2），0 懸空",
         "cost": "fast",
@@ -467,7 +488,7 @@
         "id": "shared-log-policy",
         "group": "shared",
         "status": "PASS",
-        "seconds": 0.33,
+        "seconds": 0.24,
         "rc": 0,
         "tail": "  log 政策一致",
         "cost": "fast",
@@ -477,7 +498,7 @@
         "id": "shared-module-split",
         "group": "shared",
         "status": "PASS",
-        "seconds": 0.28,
+        "seconds": 0.26,
         "rc": 0,
         "tail": "  2/2 checks passed",
         "cost": "fast",
@@ -487,7 +508,7 @@
         "id": "shared-shell-cjk",
         "group": "shared",
         "status": "PASS",
-        "seconds": 0.46,
+        "seconds": 0.14,
         "rc": 0,
         "tail": "  0 處：所有 `$VAR` 後面都不是緊接非 ASCII",
         "cost": "fast",
@@ -497,7 +518,7 @@
         "id": "shared-stale",
         "group": "shared",
         "status": "PASS",
-        "seconds": 0.13,
+        "seconds": 0.08,
         "rc": 0,
         "tail": "3 個登記項（2 個資產 + 1 個消費者）都對得上：banner 跟著資料、消費點有出口、反向沒有未登記的標記",
         "cost": "fast",
@@ -507,7 +528,7 @@
         "id": "traces-validate",
         "group": "traces",
         "status": "PASS",
-        "seconds": 0.04,
+        "seconds": 0.03,
         "rc": 0,
         "tail": "  -> OK",
         "cost": "fast",
@@ -517,7 +538,7 @@
         "id": "traces-selftest",
         "group": "traces",
         "status": "PASS",
-        "seconds": 0.29,
+        "seconds": 0.25,
         "rc": 0,
         "tail": "  10/10 injected violations rejected",
         "cost": "fast",
@@ -526,10 +547,10 @@
       {
         "id": "derived-engine-memories",
         "group": "derived",
-        "status": "PASS",
+        "status": "FAIL",
         "seconds": 0.03,
-        "rc": 0,
-        "tail": "memories OK: 185 file(s), extensions pointer resolves, no drift",
+        "rc": 1,
+        "tail": "[error] 7 drift(s) between memories/engine/ and lessons.jsonl: / eng-bound-0010.md: in lessons.jsonl but no memory file / eng-gate-0061.md: in lessons.jsonl but no memory file",
         "cost": "fast",
         "needs": ""
       },
@@ -546,40 +567,40 @@
       {
         "id": "derived-sft-prime",
         "group": "derived",
-        "status": "PASS",
-        "seconds": 0.04,
-        "rc": 0,
-        "tail": "  sft_prime OK: train.jsonl + valid.jsonl re-derive to the same bytes; the invocation and input hashes agree with PROVENANCE.json",
+        "status": "FAIL",
+        "seconds": 0.03,
+        "rc": 1,
+        "tail": "[error] 3 drift(s) in sft_prime/ against the current traces: / lessons.jsonl: INPUTS ADVANCED since this artifact was built (80cd46ae6e183a79 -> 782f8358640a8993) -- this is staleness, not a different build / train.jsonl: content differs fr",
         "cost": "fast",
         "needs": ""
       },
       {
         "id": "index-memory",
         "group": "index",
-        "status": "PASS",
-        "seconds": 0.04,
-        "rc": 0,
-        "tail": "memory index OK: 8 file(s), 239 section(s), no drift",
+        "status": "FAIL",
+        "seconds": 0.03,
+        "rc": 1,
+        "tail": "[error] 255 drift(s) between INDEX.jsonl and .workbuddy/memory/: / row count: index 293 vs derived 300 / .workbuddy/memory/2026-09-19.md :: (file row): fields differ ['bytes', 'lines', 'mtime', 'sha256']",
         "cost": "fast",
         "needs": ""
       },
       {
         "id": "index-assets",
         "group": "index",
-        "status": "PASS",
+        "status": "FAIL",
         "seconds": 0.04,
-        "rc": 0,
-        "tail": "manifest OK: 108 assets, existence + bytes + mtime all agree",
+        "rc": 1,
+        "tail": "[error] 13 drift(s) between the manifest and disk: / scripts/check/decode_sweep.py: bytes: manifest 90531 vs disk 91594 / scripts/check/decode_sweep.py: mtime: manifest '2026-09-18T14:14:34' vs disk '2026-09-19T03:48:27'",
         "cost": "fast",
         "needs": ""
       },
       {
         "id": "snapshot-freshness",
         "group": "snapshot",
-        "status": "PASS",
-        "seconds": 0.04,
-        "rc": 0,
-        "tail": "  -> OK: 快照與原檔一致（provenance 逐筆相符、集合相符、副本未被手改、README 成員表相符）",
+        "status": "FAIL",
+        "seconds": 0.03,
+        "rc": 1,
+        "tail": "  -> DRIFT: 9 項。重跑 `python3 agent_harness/scripts/import_harness_snapshot.py` 再重生索引（先 build_memory_index.py、後 index_assets.py）。",
         "cost": "fast",
         "needs": ""
       },
@@ -587,7 +608,7 @@
         "id": "portal-integrity",
         "group": "portal",
         "status": "PASS",
-        "seconds": 0.04,
+        "seconds": 0.03,
         "rc": 0,
         "tail": "-> OK: 18 條閘門（fast 14／heavy 4），目標樹指針全部可解析、每一節都有 acceptance，2 個目標 × 97 筆綁定完整（每一筆 decision 都在目標上）",
         "cost": "fast",
@@ -637,6 +658,21 @@
   },
   "obligations": [
     {
+      "kind": "gate",
+      "severity": "high",
+      "title": "5 條快速閘門在**乾淨的樹上就是紅的**"
+    },
+    {
+      "kind": "derived",
+      "severity": "high",
+      "title": "衍生記憶落後 lessons 7 筆"
+    },
+    {
+      "kind": "registry",
+      "severity": "medium",
+      "title": "決策 registry 的覆蓋停在 2026-09-18（今天的日誌有 1 天在它之後）"
+    },
+    {
       "kind": "charter",
       "severity": "medium",
       "title": "憲章自報的義務（第 895 行）"
@@ -644,17 +680,17 @@
     {
       "kind": "charter",
       "severity": "medium",
-      "title": "憲章自報的義務（第 944 行）"
+      "title": "憲章自報的義務（第 957 行）"
     },
     {
       "kind": "charter",
       "severity": "medium",
-      "title": "憲章自報的義務（第 981 行）"
+      "title": "憲章自報的義務（第 994 行）"
     },
     {
       "kind": "charter",
       "severity": "medium",
-      "title": "憲章自報的義務（第 1002 行）"
+      "title": "憲章自報的義務（第 1015 行）"
     }
   ],
   "targets": {
@@ -703,7 +739,7 @@
         "src/llama.cpp/ggml/src/ggml-metal/ggml-metal-context.m": true,
         "src/llama.cpp/tools/llama-bench/llama-bench.cpp": true,
         "agent_harness/portal/build_portal.py": true,
-        "agent_harness/portal/targets.json": false,
+        "agent_harness/portal/targets.json": true,
         ".workbuddy/memory/MEMORY_PERF.md": false,
         ".workbuddy/memory/MEMORY_S1.md": false,
         ".workbuddy/memory/MEMORY_FACTS.md": false,
@@ -714,7 +750,7 @@
         ".workbuddy/memory/2026-09-18.md": false
       },
       "pushed": "unknown",
-      "head": "586a8bd1216aecb957edf7711e5f9155628823e6",
+      "head": "98b44c8c60eef1683b951070b3da429b0bba1aff",
       "remote_sha": "",
       "remotes": "origin,cgcengine0907"
     }
