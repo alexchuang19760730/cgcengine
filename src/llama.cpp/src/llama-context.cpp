@@ -7055,11 +7055,44 @@ llm_graph_cb llama_context::graph_get_cb() const {
                 wt->buffer = wbuf;
                 wt->ne[2]  = wne2;
             }
-            if (getenv("CGC_POOL_SPLIT_DBG") != nullptr && il_ <= 2) {
-                fprintf(stderr, "CGC-POOL-SPLIT-GEOM: il=%d kind=%d ntok=%lld mode=%s ne2=%lld data=%p buf=%p\n",
-                        il_, kind, (long long) ubatch.n_tokens,
-                        cgc_step_is_decode ? "pool" : "wide",
-                        (long long) wt->ne[2], wt->data, (void *) wt->buffer);
+            // [CGC 2026-09-19 caps-carrier probe] WHICH PATH did this layer take this step, and at
+            // what expert-axis width? This is the only line that answers it, and it used to print
+            // for `il <= 2` only -- three layers cannot distinguish "these layers changed path"
+            // from "every layer did", and that is precisely the question the caps run left open:
+            //   * LAYER_CAPS moves ne[2] AND the output (capsA vs e2noh40: M1 1/884, 859 rows diverged)
+            //   * pool 8 -> 4 GiB moves ne[2] MORE (145.8 -> 75.5 slots/layer, launch logs) and the
+            //     output is bit-identical (884/884, pool4 vs capsA) => shape alone is not the carrier
+            //   * canonicalising the k=8 reduction does not close it (canonA vs canonE2: M1 1/968,
+            //     null control 1003/1003 clean)
+            // What is left is the PATH: pool vs wide/overflow, resident vs cold. This line prints
+            // the path, so it has to cover every layer for the comparison to be possible at all.
+            //
+            // Change-detected, not per-step: 940 steps x 41 layers x 3 kinds of identical lines is
+            // ~115k lines nobody reads, and the question is which (layer, kind, mode, ne2) tuples
+            // OCCUR, not how often. One line per distinct tuple, plus an explicit CHANGE line when a
+            // tuple moves (a silent move would otherwise look like a constant path). `ntok` is
+            // printed but deliberately NOT part of the identity: it changes every prefill chunk and
+            // would defeat the filter entirely.
+            if (getenv("CGC_POOL_SPLIT_DBG") != nullptr) {
+                const long long ne2  = (long long) wt->ne[2];
+                const char *    mode = cgc_step_is_decode ? "pool" : "wide";
+                const size_t slot = (size_t) (il_ < 0 ? 0 : il_) * 4u + (size_t) (kind < 0 ? 0 : kind);
+                static std::vector<std::string> spp_last;   // [layer * 4 + kind] -> last signature
+                if (spp_last.size() <= slot) {
+                    spp_last.resize(slot + 1);
+                }
+                std::string sig = mode;
+                sig += "/";
+                sig += std::to_string(ne2);
+                if (spp_last[slot] != sig) {
+                    if (!spp_last[slot].empty()) {
+                        fprintf(stderr, "CGC-POOL-SPLIT-GEOM-CHANGE: il=%d kind=%d %s -> %s\n",
+                                il_, kind, spp_last[slot].c_str(), sig.c_str());
+                    }
+                    spp_last[slot] = sig;
+                    fprintf(stderr, "CGC-POOL-SPLIT-GEOM: il=%d kind=%d ntok=%lld mode=%s ne2=%lld data=%p buf=%p\n",
+                            il_, kind, (long long) ubatch.n_tokens, mode, ne2, wt->data, (void *) wt->buffer);
+                }
             }
         };
 
