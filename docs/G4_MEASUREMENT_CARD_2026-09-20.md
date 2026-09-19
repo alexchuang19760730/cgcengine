@@ -130,3 +130,30 @@ G6 **不依賴 G4**（`union <= 38*mean_len` 的兩邊各自可量）⇒ 照他�
    （Ornith fixture 反推是 ≈68 對，但那是短 run；單 run 拉的長度可以換掉對數，見 §0）。
 2. §0 的表用的是**既有 log 的中位數**，不是同一批配對樣本；它的用途是**定出可分辨門檻的量級**，
    不是給出一個判決。
+
+---
+
+## 5. 收割完成了（2026-09-20 02:3x）—— §2 的「不要為量底排窗口」被實跑證明
+
+佇列裡那一輪在 02:30 跑完（`Backup/cgc_logs/joint_step_accept_g6.json`），它的 log 帶著
+`CGC_DECODE_PROFILE=1` ＋ `CGC_GPU_TIMING=1` ⇒ 儀器底**直接從它讀出來**，一台 server 都沒有另外起。
+
+```
+python3 scripts/check/union_floor.py --newest 4
+llama_server_20260920_023021.log  ntok=4  n=107  median 181.56 ms  sigma 53.12  3SE 10.6% [trimmed]
+llama_server_20260920_023202.log  ntok=1  n= 31  median 131.83 ms  sigma 38.05  3SE 19.5% [trimmed]
+                                  WARN ntok=1 is only 52% of the 60 full-graph steps
+                                       (other widths: {2: 2, 3: 1, 4: 18, 8: 8}) -- the modal filter may not be one population
+VERDICT  this run can resolve 12.8% (3SE 10.6% < 12.8%)
+```
+
+三件值得記的：
+
+1. **G4 的 12.8% 在這台機器的**當前配置**上仍然分辨得出來，但邊際變薄了**：這條 run 是
+   **3SE 10.6% vs 目標 12.8%**，只剩 2.2 個百分點；E2b（n=179）是 8.0%。⇒ **run 的長度就是判準**，
+   而 `union_floor.py` 每次都會把「還需要多少步」算出來。
+2. **中位 union 從 E2b 的 132.13 ms 變成 181.56 ms** —— 這是不同的形狀（8 GiB pool ＋ `--chat`），
+   所以 **`from` 的 104.60 ms 不是這條 config 的基準**。要比就得在同一個形狀上比。
+3. **`union_floor.py` 新加的 `WARN` 第一次上真實資料就生效**：arm2 的 `ntok=1` 只佔 60 個全圖步的
+   52%（其餘是 2/3/4/8），工具直接點名「modal filter 可能不是同一個族群」。**如果沒有那條警告，
+   那個 10.6% 會被當成「一個族群」的精度讀出去。**
