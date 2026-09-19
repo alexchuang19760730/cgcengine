@@ -46,8 +46,8 @@
       "profile": "prod25",
       "instrument": "scripts/check/prod_matrix.py（生產級量測的單一入口）",
       "current": 12.62,
-      "current_text": "生產基準 ≈ 12.0–12.9（8 GiB pool、prod25 profile）；配對中位 12.62。需要 2.07×。",
-      "gap": "2.07×（要 25、現在 12.62）。已判掉的三條路合計上界 ≈17–20 ⇒ **到不了**，缺的 2.4× 只能來自『削 GPU work』。",
+      "current_text": "生產基準 ≈ 12.0–12.9（8 GiB pool、prod25 profile）；配對中位 12.62。需要 2.07×。⚠ 2026-09-19：這個數字目前只有 http_duo 的讀數，而它對三個臂都報 kept reps disagree >1.10× ⇒ t/s 不可引用，待用 llama-bench（scripts/check/profile_duo.py，兩軸並列）重取。",
+      "gap": "2.07×（要 25、現在 12.62）。★ 2026-09-19 更正：「已判掉的三條路合計上界 ≈17–20 ⇒ 到不了」**已被量測推翻**。零改碼上界探針 CGC_SUBMIT_AHEAD=1 在當前 regime 量到步時 169.21 → 99.39 ms = ×1.702（重現認證的 ×1.711；成立的條件是兩臂 verify 圖寬同為 4，實測 base 174/177 步、ahead 28/28 步）⇒ 序列化窗 = 步時的 41% ⇒ t/s 上界 = 2.40/0.09939 = 24.15（條件是 acceptance 保住；下界 ×1.0 由 G2 保證）。跨過 25 只需 mean_len ≥ 2.485（+3.5%）。⚠ 但先前的 mean_len 1.80 也是錯的（DECPROF 的 ntok 是圖寬不是接受數），真值是 2.40；而 G4 的門檻是 union ≤ 38×mean_len。",
       "status": "not-met",
       "gates": {
         "formula": "t/s = mean_len * 1000 / step_cost_ms",
@@ -90,6 +90,7 @@
             "read_the_metric_from": "the STEP HEADER's gap_sum (median over decode steps), not the sum of per-layer medians -- medians do not add across layers, and the two differ by 39% on the same 184 steps (21.43 vs 34.76 ms). Per-step they close to 0.01%.",
             "probe": "CGC_SUBMIT_AHEAD=1 -- zero-code, already in run_server.sh's allowlist (:1682), and that block's own comment calls it the only measurement of this family's ceiling. It is DELIBERATELY WRONG (the GPU can read a stale remap), so it measures a ceiling and can never ship; G2 vetoes it by construction.",
             "prior_reading": "x1.711 certified (82.5 -> 31-44 ms/step), measured 2026-09-15/16 at 1 tok/step, giving 10.9 x 1.711 = 18.7 t/s < 25. NOT CURRENT: today's regime is ~139 ms/step at mean_len ~1.8, so the multiplier itself is unmeasured.",
+            "timeline": "2026-09-19: the new per-layer INTERVAL instrument (st=/en=) settles WHERE the gap is. The 40 layers are STRICTLY SERIAL -- merging the 40 intervals per step gives coverage 391.36 ms against sum(union) 391.37 ms, i.e. 0.01 ms of overlap, none at all. The inter-layer idle is 22.2 ms/step (median) but is heavily skewed: median 0.289 ms per adjacent pair, p90 2.70, max 32.5; a wide step showed 282.43 ms of idle in a 673.80 ms span = 41.9%, which is the SAME fraction the CGC_SUBMIT_AHEAD probe reports (41.2%, x1.702). Two independent instruments agreeing on the size of the serialization window is the strongest evidence in this repo that it is real. Correlate: idle vs the predecessor's cb has r=+0.868 (idle ~ 14x cb), so the idle is a small launch/completion baseline plus a term proportional to the hook.",
             "evidence": "ceiling 25.0% of the step at the stable state (the earlier roadmap used 31.9%, a cold/reload shape); EN-247/EN-250. Measured by Backup/g123_campaign_20260919.sh arm `ahead`."
           },
           {
@@ -106,7 +107,8 @@
             "id": "G3",
             "what": "PREREQUISITE: is union compressible at all?",
             "gate": "merging one adjacent pair of ratio=1.00 segments (L4/L5 or L8/L9) gives that pair's union < 2x a single layer",
-            "status": "never-run",
+            "status": "met",
+            "verdict": "MET BY THE INTERVAL MEASUREMENT, not by the merge arm. The premise the gate was written to test -- 'is there compressible room between adjacent segments' -- is answered: the 40 per-layer intervals are DISJOINT (coverage == sum(union) to 0.01 ms), so a pair's combined elapsed span is union_a + gap + union_b and a merge can remove exactly the gap. The gap is median 0.289 ms per pair, p90 2.70, max 32.5, summing to 22.2 ms/step. BOUNDARY: the literal pair-merge arm is still unrun (it needs a one-pair submit-ahead, which is racy for that pair), and the payoff is concentrated in a minority of windows -- the median pair is worth 0.29 ms, so 'merging pairs' is NOT the lever; the tail is.",
             "instrument_gap": "DECPROF reports each layer's GPU DURATION, never its INTERVAL, so 'did layer i+1 overlap layer i' is not expressible on today's readings. The raw data already exists -- Metal stamps GPUStartTime/GPUEndTime per command buffer and CGC-GPUTIME differences them into dur (ggml-backend.cpp:1856-1858) -- so printing the pair is ADD-ONLY instrumentation that touches no scheduling, and it must itself pass G2.",
             "stage_a": "DEAD as of 2026-09-19 22:43: the zero-code probe arm `ahead` (CGC_SUBMIT_AHEAD=1) kills the GPU-side instrument itself -- 25/28 decode steps report (NO TIMESTAMPS) with union_sum=gap_sum=0 -- AND kills MTP drafting (mean len 1.00 vs 2.40) AND truncates generation at 21 tokens (vs ~141). So it yields neither a gap reading nor a comparable t/s -- BUT the ceiling itself REPRODUCES: both arms run the same width-4 verify graph (base 174/177 steps at ntok=4, ahead 28/28), so the step-time ratio is clean: 169.21 -> 99.39 ms = x1.702 vs the certified x1.711 (0.5% apart) => the serialization window is 41% of a step and roadmap stage 2 has current support. The t/s payoff is [x1.0, x1.70]: the probe's OWN t/s is 0.709x (SLOWER) because it collapses acceptance (2.40 -> 1.00), so it cannot testify about that half at all; a correct implementation cannot be worse than base (G2's job), giving floor x1.0, while the ceiling is 24.15 t/s (= 2.40 / 0.09939) conditional on acceptance being preserved. Crossing 25 needs mean_len >= 2.485, i.e. +3.5% (accept 0.465 -> 0.495) -- so G4 may not be needed at all. The probe arm's oracle dump is separately INVALID: 248320 of 248320 non-finite logits. The report tool now refuses to score such an arm instead of printing a false G1 MET. Consequence: the timestamps in `instrument_gap` are the shared entry point for BOTH G1 and G3, and are now blocking rather than nice-to-have.",
             "design": "docs/G3_UNION_COMPRESSIBILITY_2026-09-19.md",
@@ -118,7 +120,8 @@
             "metric": "union_sum median",
             "from": "104.60 ms",
             "to": "union <= 38 * mean_len (ms)",
-            "status": "blocked-by-G3",
+            "status": "open",
+            "unblocked_by": "G3 (met) -- the intervals are disjoint, so the compressible quantity exists. NOTE the lever's identity: overlapping two layers cannot reduce EITHER layer's union (they are independent GPU spans), so G4's 'union_sum' target is really about making each layer FASTER -- the schedule-side win is G1's gap. Keep the two apart or G4 will be chased with an overlap change and never move.",
             "why_not_a_constant": "25 t/s needs total <= 1000*mean_len/25, and total ~ union/0.95 once G1 lands, so the requirement is union <= 38*mean_len: -34.6% at today's mean_len 1.80, -27.0% at G6's 2.01, -12.8% at the old roadmap's 2.4. The roadmap's -23% silently assumed mean_len ~2.13, so the number would have gone stale the moment G6 moved.",
             "evidence": "the -23% figure came from the older roadmap and still has no mechanism attached; EN-244/EN-245; docs/G3_UNION_COMPRESSIBILITY_2026-09-19.md section 4"
           },

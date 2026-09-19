@@ -107,6 +107,8 @@ harness 報告：<code>docs/DECODE_WINDOW_2026-09-19.html</code>（17:18，由 <
 <li><a href="#s14">14. ★ 更正二：<code>CGC_SUBMIT_AHEAD</code> 是「半死」的探針</a></li>
 <li><a href="#s15">15. G2 第一次扣扳機：<code>ahead</code> 的 dump 全 NaN</a></li>
 <li><a href="#s16">16. 誠實邊界與下一步</a></li>
+<li><a href="#s17">17. G3 的儀器：逐層 GPU <b>區間</b>（不是時長）</a></li>
+<li><a href="#s18">18. 時間軸的答案：層嚴格序列，G3 met、G4 unblocked</a></li>
 </ol>
 </div>
 
@@ -647,6 +649,51 @@ oracle_long_ahead_20260919.jsonl.invalid:
 「不改輸出」不是靠機制論證通過的，是靠 884 步的長 probe 實測。同日另一個負結果同樣成立：
 <b><code>LAYER_CAPS</code> 那條路無法用 canonical 歸約順序救回來</b>
 （<code>canonA vs canonE2</code> 仍是 M1 1/968，而同配置重跑是 1003/1003 逐位元相同）。</p>
+
+<h2 id="s17">17. G3 的儀器：逐層 GPU <b>區間</b>（不是時長）</h2>
+
+<p>本文件先前所有的 GPU 側逐層讀數（<code>gpu</code>/<code>union</code>/<code>gap</code>）都是
+<b>時長</b>，而兩個 2.81 ms 的 span 不管一前一後還是疊在一起都長一樣 —— 所以「第 i+1 層有沒有壓在
+第 i 層上」<b>用時長不可表達</b>。需要的那對值其實一直在手上：<code>cgc_gpu_take</code> 回傳
+<code>g[2]=GPUStartTime</code>、<code>g[3]=GPUEndTime</code>，而唯一的消費者只用了兩者的差分
+（算 <code>sg_gap</code>）。</p>
+
+<pre>MODE: add-only. 8 anchors in ggml-backend.cpp: declare dp_lay_st/en, capture g[2]/g[3],
+keep per-layer min-start/max-end, print st=%.3f en=%.3f relative to the step's earliest
+start. No scheduling, no buffer, no arithmetic touched.</pre>
+
+<p><b>它必須自己過閘門，而且它過了兩次：</b></p>
+<table>
+<tr><th>檢定</th><th>n</th><th>結果</th></tr>
+<tr><td>跨 binary 等價（新 binary vs 改動前 base2，同配置）</td><td>884</td>
+<td><b>M1/M2/M3 = 884/884（100%）</b>，cross-tab 全 0</td></tr>
+<tr><td>D5 標準閘門（<code>--profile prefill250</code>，pinned env，與 reference 同配置）</td><td>9</td>
+<td><b><code>comparable=true</code>（0 diffs）⇒ M1 9/9、M2 9/9、M3 9/9 PASS</b></td></tr>
+</table>
+
+<p>⚠ 同一顆 binary 用 <code>--profile prod25</code> 跑標準閘門會得到 <code>comparable=false</code>
+（reference 是 prefill250／CTX 8192／帶 <code>CGC_PREFILL_STREAM=1</code>＋<code>CGC_GATHER_SLAB_CAP=256</code>）
+⇒ 那時的 M1 1/9 <b>不是退步</b>。這正是「先看 <code>comparable</code> 再讀 M1/M2/M3」那條規則的用處。</p>
+
+<h2 id="s18">18. 時間軸的答案：層嚴格序列，G3 met、G4 unblocked</h2>
+
+<pre>per step (width-8 regime, 506 steps):  sum(union)=391.37 ms   span=673.80 ms
+merged coverage of the 40 intervals = 391.36 ms  -> overlap = 0.01 ms = NONE</pre>
+
+<p><b>40 層是完全序列的</b>（把 40 個區間併起來的覆蓋長度等於 <code>sum(union)</code>，差 0.01 ms）。
+所以層間是真空檔：中位步 <b>22.2 ms/步</b>；逐對看高度偏斜 —— 中位 <b>0.289 ms</b>、
+p90 <b>2.70</b>、max <b>32.5</b>。一個寬步量到 <b>282.43 ms / 673.80 = 41.9%</b> 的空檔，
+而 <code>CGC_SUBMIT_AHEAD</code> 探針量到的是 <b>41.2%（×1.702）</b> ——
+<b>兩支獨立儀器對同一個序列化窗給出相同的大小</b>，這是本 repo 對「那個窗是真的」最強的證據。</p>
+
+<p>相關性：層間空檔 vs <b>前一層的 <code>cb</code></b> 的 <b>Pearson r = +0.868</b>（idle ≈ 14×cb）
+⇒ 空檔 = 一個小的 launch/completion 基線 ＋ 與 hook 成正比的項。</p>
+
+<p><b>判決</b>：<b>G3 met</b>（前提回答了：區間不相交 ⇒ 合併一對可以省掉那個 gap），
+<b>G4 unblocked</b>。⚠ 但兩個槓桿的身分必須分清 —— <b>重疊兩層不會讓任一層的 union 變小</b>
+（它們是各自獨立的 GPU span）⇒ G4 的 <code>union_sum</code> 目標其實是「讓每層變快」，
+排程側的收益是 G1 的 gap。⚠ 另一個邊界：中位那一對只值 0.289 ms ⇒
+<b>「合併相鄰對」不是槓桿，尾巴才是</b>。</p>
 
 <h2 id="s16">16. 誠實邊界與下一步</h2>
 

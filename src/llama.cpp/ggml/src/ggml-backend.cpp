@@ -2023,6 +2023,15 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 static int64_t dp_lay_uni[64] = {0};   // GPU union (span)
                 static int64_t dp_lay_gap[64] = {0};   // GPU idle before this layer's segment
                 static int64_t dp_lay_sg[64]  = {0};   // segments with a usable timestamp
+                // [CGC 2026-09-19 G3 timestamp instrument] The INTERVAL, not just the duration.
+                // `gpu`/`union`/`gap` are all durations, and two 2.81 ms spans look identical
+                // whether they ran back-to-back or on top of each other -- so "did layer i+1
+                // overlap layer i" is not expressible with them. The pair needed is already here:
+                // `cgc_gpu_take` returns g[2]=GPUStartTime and g[3]=GPUEndTime, and the only
+                // consumer is `sg_gap` (this start minus the previous end). Keep the per-layer min
+                // start / max end and print them; no scheduling, buffer or arithmetic is touched.
+                static int64_t dp_lay_st[64]  = {0};   // earliest GPU-clock start this step
+                static int64_t dp_lay_en[64]  = {0};   // latest   GPU-clock end   this step
                 static int64_t dp_step        = 0;     // graph_computes since start
                 static int64_t dp_ntok        = 0;     // tokens in the graph being profiled (its own shape)
 
@@ -2113,12 +2122,14 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     // completion, so all of segment i's command buffers are completed -- the
                     // only point where Metal reports GPUStartTime/GPUEndTime. Segment i+1 has
                     // not been submitted yet, so nothing else can be in flight.
-                    int64_t sg_busy = 0, sg_union = 0, sg_gap = 0;
+                    int64_t sg_busy = 0, sg_union = 0, sg_gap = 0, sg_st = 0, sg_en = 0;
                     if (cgc_gpu_take != nullptr) {
                         int64_t g[5] = {0, 0, 0, 0, 0};
                         const int gns = cgc_gpu_take(split_backend, g);
                         sg_busy  = g[0];
                         sg_union = g[1];
+                        sg_st    = g[2];
+                        sg_en    = g[3];
                         gt_busy  += g[0];
                         gt_union += g[1];
                         gt_unsup += g[4];
@@ -2510,6 +2521,14 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                             dp_lay_gpu[dp_il] += sg_busy;
                             dp_lay_uni[dp_il] += sg_union;
                             dp_lay_gap[dp_il] += sg_gap;
+                            // min start / max end: a layer appears once per step, but min/max is
+                            // the definition that stays correct if it ever appears twice.
+                            if (sg_st > 0 && (dp_lay_st[dp_il] == 0 || sg_st < dp_lay_st[dp_il])) {
+                                dp_lay_st[dp_il] = sg_st;
+                            }
+                            if (sg_en > dp_lay_en[dp_il]) {
+                                dp_lay_en[dp_il] = sg_en;
+                            }
                             if (sg_busy > 0) {
                                 dp_lay_sg[dp_il]++;
                             }
@@ -2576,11 +2595,15 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                         // the dp_lay_* family above is in MICROSECONDS. Mixing the two units is how
                         // the first revision of this line printed a 1760x too large number; the
                         // cross-check that catches it is `gpu_sum` vs CGC-GPUTIME's gpu_busy_sum.
-                        int64_t dp_gs = 0, dp_gu = 0, dp_gg = 0;
+                        int64_t dp_gs = 0, dp_gu = 0, dp_gg = 0, dp_min_st = 0;
                         for (int li = 0; li < 64; li++) {
                             dp_gs += dp_lay_gpu[li];
                             dp_gu += dp_lay_uni[li];
                             dp_gg += dp_lay_gap[li];
+                            // the timeline's origin: earliest segment start in THIS step
+                            if (dp_lay_st[li] > 0 && (dp_min_st == 0 || dp_lay_st[li] < dp_min_st)) {
+                                dp_min_st = dp_lay_st[li];
+                            }
                         }
                         char dp_gpu_tail[160];
                         dp_gpu_tail[0] = '\0';
@@ -2635,7 +2658,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                     continue;
                                 }
                                 fprintf(stderr, "CGC-DECPROF all: L%d wait=%.2f cb=%.2f submit=%.2f ms "
-                                        "gpu=%.2f union=%.2f gap=%.2f sg=%lld n=%lld\n",
+                                        "gpu=%.2f union=%.2f gap=%.2f sg=%lld n=%lld "
+                                        "st=%.3f en=%.3f\n",
                                         l,
                                         (double) dp_lay_w[l] / 1000.0,
                                         (double) dp_lay_cb[l] / 1000.0,
@@ -2644,7 +2668,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                         (double) dp_lay_uni[l] / 1e6,
                                         (double) dp_lay_gap[l] / 1e6,
                                         (long long) dp_lay_sg[l],
-                                        (long long) dp_lay_n[l]);
+                                        (long long) dp_lay_n[l],
+                                        dp_min_st > 0 ? (double) (dp_lay_st[l] - dp_min_st) / 1e6 : 0.0,
+                                        dp_min_st > 0 ? (double) (dp_lay_en[l] - dp_min_st) / 1e6 : 0.0);
                             }
                         }
                         // [CGC 2026-09-18 node-level GPU time] the per-KIND table for this step.
@@ -2819,6 +2845,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     for (int l = 0; l < 64; l++) {
                         dp_lay_w[l] = dp_lay_cb[l] = dp_lay_sub[l] = dp_lay_n[l] = 0;
                         dp_lay_gpu[l] = dp_lay_uni[l] = dp_lay_gap[l] = dp_lay_sg[l] = 0;
+                        dp_lay_st[l] = dp_lay_en[l] = 0;
                     }
                     ns_total = 0;
                     ns_other = 0;
