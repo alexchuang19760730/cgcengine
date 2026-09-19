@@ -37,7 +37,9 @@ cgc_logits_oracle_compare.py - 比較兩份 CGC logits oracle JSONL 檔, 判定 
   舊行為 (row hash 全同就算 PASS, 即使 argmax 不同) 可用 --fail-on numeric 重現。
 """
 import argparse
+import importlib.util
 import json
+import os
 import sys
 
 METRIC_DEFS = {
@@ -151,7 +153,17 @@ def main():
     }
     if args.report:
         with open(args.report, "w", encoding="utf-8") as f:
-            json.dump(summary, f, indent=2, ensure_ascii=False)
+            # Identify the binary at write time. This product compares two dumps but, until now,
+            # said nothing about WHICH build produced them -- 51 of the 186 capability products the
+            # timeline reads were unplaceable for exactly this reason, and a comparison whose
+            # binary is unknown cannot be quoted against any other reading. See
+            # scripts/check/engine_identity.py (no retrofitting: only new runs are stamped).
+            _spec = importlib.util.spec_from_file_location(
+                "engine_identity", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                "engine_identity.py"))
+            _ei = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(_ei)
+            json.dump(_ei.stamp(summary), f, indent=2, ensure_ascii=False)
             f.write("\n")
 
     def pct(e, n):

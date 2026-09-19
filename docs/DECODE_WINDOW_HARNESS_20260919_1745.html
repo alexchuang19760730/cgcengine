@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>decode 量測窗口 harness：結果整理與噪音底（2026-09-19）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  h4{font-size:14.5px;margin:20px 0 6px;color:#374151}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:#fcfcfd}
+  .toc ol{margin:6px 0 0 20px}
+  .toc a{color:var(--blue);text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>decode 量測窗口 harness：<b>結果整理與噪音底</b></h1>
+<div class="sub">
+2026-09-19 · 整理對象：<code>scripts/check/decode_window_harness.py</code>（另一條 session 開發與執行）<br>
+harness 報告：<code>docs/DECODE_WINDOW_2026-09-19.html</code>（17:18，由 <code>--analyze-only</code> 產生）·
+本次整理不重跑任何 lane，只讀它的狀態檔與報告<br>
+引擎指紋（harness 自己記錄）：<code>llama-server 054fb22f04a01c5c</code> ·
+<code>libllama.0.dylib aab787412e572550</code> · <code>libggml-metal.0.dylib 1be366306c604669</code> ·
+<code>libllama-server-impl.dylib a87bfd2e80a086b4</code>
+</div>
+
+<div class="box b-blue">
+<p><b>這份文件是什麼。</b>把 <code>decode_window_harness.py</code> 已經跑出來的結果，照本專案
+<code>docs/*.html</code> 的版式整理成一份可以獨立閱讀的白皮書：它量了什麼、判定框架是什麼、
+每一條判定的原文結論是什麼、以及它對「這個 box 上還能判什麼」的結論性含意。</p>
+<p><b>這份文件不是什麼。</b>不是重跑、不是新量測、不是對 harness 的修改建議。所有數字都來自
+<code>/tmp/decode_window_harness.json</code> 與它產生的報告；本文件沒有新增任何量測數據。
+判決文字凡是引號或 <code>PRE</code> 區塊內的，都是 harness 自己的輸出原文。</p>
+</div>
+
+<div class="toc">
+<b>目錄</b>
+<ol>
+<li><a href="#s1">30 秒版</a></li>
+<li><a href="#s2">儀器：lane 結構、常數與三條設計規則</a></li>
+<li><a href="#s3">判定框架：噪音底就是門檻</a></li>
+<li><a href="#s4">Lane A — item 1：small-batch mat-mv 是不是 2.28× 的成因</a></li>
+<li><a href="#s5">Kernel family eligibility：item 1 的前提本身不成立</a></li>
+<li><a href="#s6">Lane B — thrash 的殘留與暖池機制</a></li>
+<li><a href="#s7">Drift lane — 交錯配對的解析度</a></li>
+<li><a href="#s8">把噪音底接回 bench 與 HTTP 的差距</a></li>
+<li><a href="#s9">現場閘門輸出（原文）</a></li>
+<li><a href="#s10">誠實邊界：這份整理不主張什麼</a></li>
+<li><a href="#s11">下一輪的具體動作</a></li>
+</ol>
+</div>
+
+<h2 id="s1">1. 30 秒版</h2>
+
+<div class="cards">
+  <div class="card"><div class="k">噪音底（同配置兩臂）</div><div class="v bad">17.5%</div>
+    <div class="small">Lane A 的 b1 與 b1b，門檻 <code>BASELINE_AGREE_PCT = 5%</code></div></div>
+  <div class="card"><div class="k">冷 → 暖（同一臂）</div><div class="v ok">1.60×</div>
+    <div class="small">Lane B：118.08 → 73.71 ms/token</div></div>
+  <div class="card"><div class="k">thrash 殘留</div><div class="v ok">+4.3%</div>
+    <div class="small">低於 <code>MATERIAL_RESIDUE_PCT = 5%</code>，判為無殘留</div></div>
+  <div class="card"><div class="k">kernel 家族可解釋上限</div><div class="v warn">2.4%</div>
+    <div class="small">實測 15.5% 是其 6 倍 ⇒ 不可歸因</div></div>
+</div>
+
+<div class="box b-amber">
+<p><b>最重要的一條。</b>這支 harness 的設計前提是：<b>任何判定都必須先打贏這台機器自己的漂移</b>。
+它自己量出來的漂移是 <b>17.5%</b>（兩個完全相同配置的 <code>BITIDENT=1</code> 基線之間），
+而它的預算門檻是 <b>5%</b>。因此它在 item 1 上給的判決是
+<b>「NOT SUPPORTED … underpowered, not negative」</b>——不是「沒有這個效應」，
+而是「以現在的解析度判不出來」。這句話的適用範圍遠超過 item 1。</p>
+</div>
+
+<h2 id="s2">2. 儀器：lane 結構、常數與三條設計規則</h2>
+
+<h3>2.1 它跑什麼</h3>
+<table>
+<tr><th>項目</th><th>值</th></tr>
+<tr><td>入口</td><td><code>scripts/check/decode_window_harness.py run</code> / <code>report</code> / <code>run --analyze-only</code></td></tr>
+<tr><td>port</td><td><code>PROBE_PORT=8199</code>；<code>PROBE_OTHER_PORT=8080</code> 只觀測、從不發訊號</td></tr>
+<tr><td>prompt</td><td>短句 <code>"Explain in a few sentences why disk caches help sequential reads…"</code>，<code>PROBE_N_PREDICT=96</code></td></tr>
+<tr><td>thrash 用 prompt</td><td><code>FILLER × 60</code> ＋ 收尾句（約 2000 token 的 slab），<code>THRASH_N=8</code></td></tr>
+<tr><td>窗口判定</td><td><code>QUIET_SAMPLES=4</code> × <code>SAMPLE_S=20</code>；<code>MAX_WAIT_S=5400</code>；總預算 <code>PROBE_BUDGET_S=14400</code></td></tr>
+<tr><td>判定門檻</td><td><code>BASELINE_AGREE_PCT=5.0</code>、<code>MATERIAL_RESIDUE_PCT=5.0</code>、<code>REGIME_FLIP_PCT=20.0</code></td></tr>
+<tr><td>drift lane 重複數</td><td><code>PROBE_DRIFT_REPS=3</code></td></tr>
+<tr><td>載體</td><td>非 MTP 的 <code>Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf</code>，<code>-c 8192 -np 1 --no-kv-unified -sps 0 -b 5632 -ub 5632</code></td></tr>
+</table>
+
+<h3>2.2 三條寫進 docstring 的設計規則</h3>
+<ol>
+<li><b>窗口，不是一次啟動。</b>只有全部請求都回來的臂才記成 <code>done</code>；
+被中斷的一律重排、永不當成資料。</li>
+<li><b>只對自己的 port 發訊號。</b>窗口要求「完全沒有 llama 行程」；
+清理只針對自己的專用 port。<code>pkill -f llama-server</code> 在這裡殺過別條線的 server 一次。</li>
+<li><b>基線夾住測試。</b>Lane A 跑 <code>b1 / b0 / b1b</code>，
+兩個 <code>BITIDENT=1</code> 基線之間的差就是門檻；小於門檻一律 <code>INCONCLUSIVE</code>，
+不會被四捨五入成結論。</li>
+</ol>
+
+<div class="box b-blue">
+<p><b>第四條（在 drift lane 的 docstring 裡）。</b>這台機器<b>沒有可讀的溫度探針</b>
+（<code>pmset -g therm</code> 不記錄、<code>powermetrics</code> 要 root）。
+它的處理方式是<b>把溫度從變數變成設計條件</b>：相鄰時間的臂共享熱狀態，
+所以<b>同一區塊內的配對差值會抵銷漂移</b>；而區塊間<b>交替順序</b>，
+把「慢升溫會固定偏向某一臂」變成配對能消掉的東西。</p>
+</div>
+
+<h2 id="s3">3. 判定框架：噪音底就是門檻</h2>
+
+<p>它在報告開頭自己寫了讀法（原文）：</p>
+<pre><code>每個判定都要打贏「這台機器自己的漂移」才算數。
+Lane A 的兩個 BITIDENT=1 基線之間的分歧就是那個門檻；效果小於門檻一律標成
+INCONCLUSIVE，不會被四捨五入成結論。Lane B 的冷/暖是變數不是雜訊。</code></pre>
+
+<p>這個門檻的實際數值：</p>
+<table>
+<tr><th>arm</th><th>BITIDENT</th><th class="num">ms/token</th><th class="num">ntok=4 total</th><th class="num">ntok=4 wait</th><th class="num">ntok=4 cb</th></tr>
+<tr><td>b1</td><td class="num">1</td><td class="num">102.45</td><td class="num">166.41</td><td class="num">149.93</td><td class="num">9.63</td></tr>
+<tr><td>b0</td><td class="num">0</td><td class="num">148.70</td><td class="num">140.55</td><td class="num">107.63</td><td class="num">17.77</td></tr>
+<tr><td>b1b</td><td class="num">1</td><td class="num">89.25</td><td class="num">139.57</td><td class="num">122.12</td><td class="num">10.15</td></tr>
+</table>
+
+<p>兩個 <code>BITIDENT=1</code> 基線在 <code>ntok=4</code> 的 verify step 上是
+<b>166.41 與 139.57 ms</b>，均值 153.0 ⇒ 展幅 <b>17.5%</b>，而預算是 5%。
+它的判決原文：</p>
+
+<pre><code>flat ntok=4 verify step (TEST: ne11=4): baselines 153.0 ms (spread 17.5%, threshold 17.5%),
+BITIDENT=0 140.6 ms =&gt; -8.1% -&gt; within baseline spread
+
+CAVEAT ms/token is NOT comparable across these arms -- BITIDENT=0 breaks bit-identity,
+so the token stream and the accept rate differ. Compare fixed-shape per-step costs only.
+
+NOT SUPPORTED The verify step is inside this box's own drift (the two BITIDENT=1 baselines
+disagree by 17.5% (budget 5%), so the small-batch family shows no resolvable effect here.
+The comparison is underpowered, not negative: tightening the baselines is what would
+change this.</code></pre>
+
+<div class="box b-red">
+<p><b>還有一個被明確記錄下來的設計缺口（原文）。</b></p>
+<pre><code>DESIGN GAP no ntok=1 plain step exists to act as the control: with MTP on every base step
+is a 4-wide verify batch. The verify step is judged on its own; the control is recorded as
+UNAVAILABLE, not as a pass.</code></pre>
+<p>這條值得單獨看：它<b>沒有</b>把「沒有對照」寫成通過，而是寫成
+<code>UNAVAILABLE</code>。這是本專案 <code>CONVENTIONS.md</code> §E 的形狀。</p>
+</div>
+
+<h2 id="s4">4. Lane A — item 1：small-batch mat-mv 是不是 2.28× 的成因</h2>
+
+<h3>4.1 預測為什麼是「微分」的</h3>
+<p>預測：原始碼說 <code>ne11=1</code> 本來就不在 small-batch 家族裡，
+所以 <code>BITIDENT=0</code> 應該<b>只動 <code>ntok=4</code></b>、不動 <code>ntok=1</code>。
+這個預測無法用這顆載體檢驗，因為（見 §3 的 <code>DESIGN GAP</code>）
+MTP 開啟時每一個 base step 都是 4-wide 的 verify batch，<b>不存在</b> <code>ntok=1</code>
+的 plain step 可以當對照。</p>
+
+<h3>4.2 判定</h3>
+<table>
+<tr><th>比較</th><th class="num">值</th><th>判定</th></tr>
+<tr><td>兩基線展幅</td><td class="num">17.5%（門檻 5%）</td><td>超標</td></tr>
+<tr><td><code>BITIDENT=0</code> 對 verify step 的效果</td><td class="num">−8.1%</td><td>落在基線展幅內</td></tr>
+<tr><td>結論</td><td colspan="2"><b>NOT SUPPORTED（underpowered，不是 negative）</b></td></tr>
+</table>
+
+<div class="box b-amber">
+<p><b>讀這條時最常犯的錯。</b>它的 <code>ms/token</code> 欄<b>不能</b>跨臂比較
+（<code>BITIDENT=0</code> 破壞 bit-identity ⇒ token 流與接受率都不同），
+這是它自己標的 <code>CAVEAT</code>。能比的是<b>固定形狀的每步成本</b>：
+<code>ntok=4</code> 的 total / wait / cb。上表就是照這個比法。</p>
+</div>
+
+<h2 id="s5">5. Kernel family eligibility：item 1 的前提本身不成立</h2>
+
+<p>這一節<b>不跑量測</b>，直接讀真的 GGUF。理由寫在它的說明裡：
+small-batch 家族（<code>mul_mv_ext</code>）只接受兩份互斥的型別白名單，
+其餘型別一律落到 <code>mul_mv</code>/<code>mul_mm</code>；在那裡 batch size 不改變每列的歸約，
+所以 <code>CGC_MM_BITIDENT</code> 對它們不可能有任何效果。</p>
+
+<table>
+<tr><th>type</th><th class="num">tensors</th><th class="num">其中 expert</th><th class="num">eligible</th><th class="num">expert 且 eligible</th><th class="num">expert MiB</th><th class="num">expert 且 elig MiB</th><th>family</th></tr>
+<tr><td>IQ2_S</td><td class="num">78</td><td class="num">78</td><td class="num">0</td><td class="num">0</td><td class="num">6396</td><td class="num">0</td><td>--</td></tr>
+<tr><td>IQ3_S</td><td class="num">39</td><td class="num">39</td><td class="num">0</td><td class="num">0</td><td class="num">4290</td><td class="num">0</td><td>--</td></tr>
+<tr><td>IQ4_XS</td><td class="num">253</td><td class="num">3</td><td class="num">0</td><td class="num">0</td><td class="num">408</td><td class="num">0</td><td>--</td></tr>
+<tr><td>Q2_K</td><td class="num">2</td><td class="num">2</td><td class="num">2</td><td class="num">2</td><td class="num">168</td><td class="num">168</td><td>B ne11 4-8</td></tr>
+<tr><td>Q3_K</td><td class="num">1</td><td class="num">1</td><td class="num">1</td><td class="num">1</td><td class="num">110</td><td class="num">110</td><td>B ne11 4-8</td></tr>
+<tr><td>Q6_K</td><td class="num">2</td><td class="num">0</td><td class="num">2</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td>B ne11 4-8</td></tr>
+<tr><td>F32</td><td class="num">368</td><td class="num">0</td><td class="num">278</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td>A ne11 2-8</td></tr>
+<tr><td>Q8_0</td><td class="num">8</td><td class="num">0</td><td class="num">8</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td>A ne11 2-8</td></tr>
+<tr><td>BF16</td><td class="num">2</td><td class="num">0</td><td class="num">2</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td>A ne11 2-8</td></tr>
+</table>
+
+<p>兩條判決原文：</p>
+<pre><code>premise bounded the knob can only move 2.4% of the expert weight bytes
+(278 MiB of 11372 MiB; 3/123 tensors), so any kernel-family saving on the verify step is
+capped near that share of its expert-matmul cost. A measured effect much larger than this
+is not a kernel-family effect -- grid contention, or a regime change.
+
+not attributable the A/B measures 15.5% on the verify step (b1 166.4 -&gt; b0 140.6 ms)
+while the weights allow at most 2.4%: the effect is 6x the ceiling, so it is NOT a
+kernel-family effect. Block 2 of the drift lane shows the same arm moving 152% between
+launches -- that is the signature of the shared GPU, not of a kernel.</code></pre>
+
+<div class="box b-green">
+<p><b>這一節的價值最高，而且它一行量測都沒跑。</b>專家權重是 IQ2_S / IQ3_S / IQ4_XS，
+<b>一個都不在 small-batch 白名單上</b>（<code>expert 且 eligible = 0 MiB</code>）。
+所以：<b>item 1 的 kernel 家族假設對這顆模型根本不適用</b>，
+而且即使適用，上限也只有 <b>2.4%</b>——任何比這大的讀數都不是 kernel 效應。
+這把一整條調查線用讀檔就結掉了。</p>
+</div>
+
+<h2 id="s6">6. Lane B — thrash 的殘留與暖池機制</h2>
+
+<table>
+<tr><th>request</th><th class="num">tokens</th><th class="num">ms/token</th><th class="num">step total</th><th class="num">step wait</th><th class="num">step cb</th></tr>
+<tr><td>rep1_cold</td><td class="num">92</td><td class="num">118.08</td><td class="num">107.73</td><td class="num">76.59</td><td class="num">22.20</td></tr>
+<tr><td>rep2_warm</td><td class="num">92</td><td class="num">73.71</td><td class="num">69.25</td><td class="num">63.03</td><td class="num">5.19</td></tr>
+<tr><td>rep3_warm</td><td class="num">92</td><td class="num">74.20</td><td class="num">68.54</td><td class="num">63.07</td><td class="num">3.58</td></tr>
+<tr><td>thrash_slab2000</td><td class="num">8</td><td class="num">69.65</td><td class="num">62.20</td><td class="num">44.00</td><td class="num">15.37</td></tr>
+<tr><td>rep4_after_thrash</td><td class="num">96</td><td class="num">77.16</td><td class="num">70.12</td><td class="num">61.41</td><td class="num">4.92</td></tr>
+<tr><td>rep5_after_thrash2</td><td class="num">96</td><td class="num">73.47</td><td class="num">65.88</td><td class="num">59.45</td><td class="num">3.58</td></tr>
+</table>
+
+<h3>6.1 冷與暖是兩個製程，不是雜訊</h3>
+<p>同一個臂內 <code>rep1_cold</code> 與 <code>rep2_warm</code>：
+<b>118.08 → 73.71 ms/token ＝ 1.60×</b>。而且連 <code>step cb</code> 也一起變
+（22.20 → 5.19），<code>step wait</code> 則幾乎不動的量級不同（76.59 → 63.03）。
+⇒ <b>冷的那一個請求慢了 60%</b>，這比 harness 想判的任何旋鈕效應都大一個量級。</p>
+
+<h3>6.2 thrash 之後有沒有殘留：兩條判決</h3>
+<pre><code>no material residue per-layer deltas total only +2 ms across 19 layers; not labelled
+concentrated or global, because at this size neither word means anything.
+
+no material residue after a 2000-token slab thrash the rate is 77.16 vs 73.95 ms/token
+(+4.3%): below the 5% threshold, so there is no residue worth engineering away in this run.
+The per-layer table below is then comparing noise -- read it as such.</code></pre>
+
+<p>逐層殘留表（原文照抄，但它自己說這是在比雜訊）：</p>
+<table>
+<tr><th>layer</th><th class="num">warm wait</th><th class="num">after-thrash wait</th><th class="num">delta</th></tr>
+<tr><td>2</td><td class="num">1.75</td><td class="num">2.44</td><td class="num">0.70</td></tr>
+<tr><td>4</td><td class="num">1.52</td><td class="num">1.71</td><td class="num">0.19</td></tr>
+<tr><td>14</td><td class="num">1.46</td><td class="num">1.59</td><td class="num">0.13</td></tr>
+<tr><td>13</td><td class="num">1.56</td><td class="num">1.66</td><td class="num">0.10</td></tr>
+<tr><td>34</td><td class="num">1.46</td><td class="num">1.53</td><td class="num">0.07</td></tr>
+<tr><td>22</td><td class="num">1.54</td><td class="num">1.59</td><td class="num">0.05</td></tr>
+</table>
+
+<h3>6.3 一次 pass 就恢復 ⇒ 「prefill 後重新暖」是充分修法</h3>
+<pre><code>recovered second pass after the thrash: 73.47 ms/token vs warm 73.95 (-0.7%)
+=&gt; one more pass restores the rate, so 're-warm after prefill' is a sufficient fix</code></pre>
+
+<div class="box b-green">
+<p><b>這是本次唯一一條正面、可實作的結論。</b>2000-token slab 的 thrash 之後，
+第一個請求只有 <b>+4.3%</b>（低於 5% 門檻），而<b>第二個請求就回到 −0.7%</b>。
+⇒ 對這顆載體、這個深度，<b>不需要為 thrash 設計機制</b>；「prefill 之後再跑一個 pass」
+就足以把速率還原。</p>
+</div>
+
+<h2 id="s7">7. Drift lane — 交錯配對的解析度</h2>
+
+<p>這一條問的不是 <code>BITIDENT</code>，而是<b>兩個完全同配置的臂能不能在 5% 內一致</b>。
+第一次跑它們差 17.5%，所以那個結果只能報成 underpowered。逐層證據（原文）：</p>
+<pre><code>逐層證據：b1/b1b 的 wait 比值中位 1.121、最小 1.020（沒有一層更快）、
+而 cb 比值 0.974 =&gt; 全域 GPU 側因子（時脈/熱），不是 pool。
+所以這條線交錯時序並輪替區塊內順序，讓配對差值抵銷漂移。</code></pre>
+
+<p>配對結果與區塊內的臂展幅：</p>
+<table>
+<tr><th>block</th><th class="num">span %</th><th>arms (ms)</th><th>判定（原文）</th></tr>
+<tr><td>1</td><td class="num">18.84</td><td>b1=325.7, b0=345.3, b1b=392.5</td><td>block stable（門檻 20%）</td></tr>
+<tr><td>2</td><td class="num">86.49</td><td>b1b=337.2, b0=133.6</td><td>regime faster than one arm</td></tr>
+</table>
+
+<p>配對本身（block 1 的 b1 vs b1b）：</p>
+<table>
+<tr><th>block</th><th class="num">b1 step (ms)</th><th class="num">b1b step (ms)</th><th class="num">ratio</th></tr>
+<tr><td>1</td><td class="num">325.70</td><td class="num">392.50</td><td class="num">0.8298</td></tr>
+</table>
+
+<p>每個臂的原始讀數（時間與 free 是為了讓漂移看得到，不是解釋）：</p>
+<table>
+<tr><th>block</th><th>arm</th><th class="num">BITIDENT</th><th class="num">ts</th><th class="num">free MB</th><th class="num">swap MB</th><th class="num">step total</th><th class="num">cb</th><th class="num">wait</th><th class="num">ms/token</th></tr>
+<tr><td>1</td><td>b1</td><td class="num">1</td><td class="num">16:41:52</td><td class="num">920</td><td class="num">—</td><td class="num">325.70</td><td class="num">8.66</td><td class="num">310.61</td><td class="num">194.72</td></tr>
+<tr><td>1</td><td>b0</td><td class="num">0</td><td class="num">16:45:37</td><td class="num">1117</td><td class="num">—</td><td class="num">345.27</td><td class="num">10.82</td><td class="num">330.57</td><td class="num">209.79</td></tr>
+<tr><td>1</td><td>b1b</td><td class="num">1</td><td class="num">16:49:19</td><td class="num">1109</td><td class="num">—</td><td class="num">392.50</td><td class="num">9.71</td><td class="num">378.69</td><td class="num">225.94</td></tr>
+<tr><td>2</td><td>b1b</td><td class="num">1</td><td class="num">16:53:11</td><td class="num">1111</td><td class="num">5393</td><td class="num">337.17</td><td class="num">9.84</td><td class="num">323.42</td><td class="num">201.74</td></tr>
+<tr><td>2</td><td>b0</td><td class="num">0</td><td class="num">16:56:54</td><td class="num">903</td><td class="num">5182</td><td class="num">133.59</td><td class="num">10.84</td><td class="num">112.20</td><td class="num">89.10</td></tr>
+</table>
+
+<pre><code>INCOMPLETE 1 pair(s) with both BITIDENT=1 baselines; a paired spread needs at least 2,
+so the paired question stays open. (5 arm(s) measured.)</code></pre>
+
+<div class="box b-amber">
+<p><b>讀這一節要知道的三件事。</b></p>
+<p>(1) block 2 的 <code>b1b=337.2</code> 與 <code>b0=133.6</code> 相差 <b>86.5%</b>
+——同一個 <code>b1b</code> 臂在 block 1 是 392.5、block 2 是 337.2，
+而 <code>b0</code> 在同一小時內出現 345.3 與 133.6。這不是 kernel 的形狀，
+是<b>共享 GPU 的形狀</b>（它自己的判決原文也是這樣寫的）。</p>
+<p>(2) 因此「配對設計」的成敗要看<b>區塊內臂展幅</b>，不是看配對比值好不好看：
+block 1 的 18.8% 剛好在 20% 門檻內（可用），block 2 的 86.5% 直接判成不在同一個 regime。</p>
+<p>(3) <code>INCOMPLETE</code>：只有 1 對同時具備兩個基線，而配對展幅至少要 2 對才成立
+⇒ <b>配對問題仍然開放</b>，不是已經判過。</p>
+</div>
+
+<h2 id="s8">8. 把噪音底接回 bench 與 HTTP 的差距</h2>
+
+<p>本專案目前有一個懸而未決的問題：<code>llama-bench</code> 的 decode 平台約
+<b>10.8–11.6 t/s</b>，而同樣載體的 HTTP server 平台約 <b>13.1–14.0 t/s</b>，
+缺口約 <b>15%</b>。把 harness 的噪音底放進來看，這張圖是這樣的：</p>
+
+<svg viewBox="0 0 1000 340" width="100%" role="img" aria-label="效應大小與噪音底的對照">
+  <rect x="0" y="0" width="1000" height="340" fill="#ffffff"/>
+  <text x="8" y="20" font-size="13" font-weight="700" fill="#111827">效應大小（%）與這台機器的噪音底</text>
+  <text x="8" y="38" font-size="11.5" fill="#6b7280">綠＝可解析；紅＝落在噪音底內；橙＝上限而非效應。灰帶＝15–18% 的同配置兩臂離散。</text>
+
+  <!-- noise band -->
+  <rect x="323" y="48" width="25" height="262" fill="#fde68a" opacity="0.55"/>
+  <text x="335" y="60" font-size="10.5" fill="#92400e" text-anchor="middle">噪音底</text>
+
+  <!-- axis -->
+  <line x1="200" y1="310" x2="950" y2="310" stroke="#e5e7eb"/>
+  <g font-size="10.5" fill="#9ca3af" text-anchor="middle">
+    <text x="200" y="326">0</text><text x="282" y="326">10</text><text x="364" y="326">20</text>
+    <text x="447" y="326">30</text><text x="529" y="326">40</text><text x="611" y="326">50</text>
+    <text x="693" y="326">60</text><text x="776" y="326">70</text><text x="858" y="326">80</text>
+    <text x="940" y="326">90</text>
+  </g>
+
+  <!-- rows -->
+  <g font-size="12" fill="#111827">
+    <text x="190" y="76" text-anchor="end">Drift block 2 臂展幅</text>
+    <text x="190" y="108" text-anchor="end">冷 → 暖（Lane B）</text>
+    <text x="190" y="140" text-anchor="end">Lane A 兩基線離散</text>
+    <text x="190" y="172" text-anchor="end">bench ↔ HTTP 缺口</text>
+    <text x="190" y="204" text-anchor="end">Lane A A/B 效果</text>
+    <text x="190" y="236" text-anchor="end">Lane B thrash 殘留</text>
+    <text x="190" y="268" text-anchor="end">kernel 家族上限</text>
+  </g>
+
+  <g>
+    <rect x="200" y="66" width="711" height="14" fill="#dc2626" opacity="0.75"/>
+    <text x="921" y="76" font-size="11" fill="#7f1d1d">86.5</text>
+
+    <rect x="200" y="98" width="495" height="14" fill="#059669" opacity="0.8"/>
+    <text x="705" y="108" font-size="11" fill="#065f46">60.2</text>
+
+    <rect x="200" y="130" width="144" height="14" fill="#dc2626" opacity="0.75"/>
+    <text x="354" y="140" font-size="11" fill="#7f1d1d">17.5（門檻 5）</text>
+
+    <rect x="200" y="162" width="123" height="14" fill="#dc2626" opacity="0.75"/>
+    <text x="333" y="172" font-size="11" fill="#7f1d1d">15.0</text>
+
+    <rect x="200" y="194" width="67" height="14" fill="#dc2626" opacity="0.75"/>
+    <text x="277" y="204" font-size="11" fill="#7f1d1d">8.1</text>
+
+    <rect x="200" y="226" width="35" height="14" fill="#059669" opacity="0.8"/>
+    <text x="245" y="236" font-size="11" fill="#065f46">4.3（門檻 5）</text>
+
+    <rect x="200" y="258" width="20" height="14" fill="#d97706" opacity="0.85"/>
+    <text x="230" y="268" font-size="11" fill="#92400e">2.4（上限；實測 15.5 ＝ 6×）</text>
+  </g>
+</svg>
+
+<div class="box b-red">
+<p><b>結論。</b>bench 與 HTTP 之間待解釋的 <b>15%</b>，與這台機器<b>同配置兩臂的離散
+（17.5%）</b>是同一個量級 ⇒ <b>在目前的儀器與次數下，這個缺口判不出來</b>。
+這不是「找不到槓桿」，是「解析度不足」——而 harness 對 item 1 用的字眼完全適用：
+<b>underpowered, not negative</b>。</p>
+</div>
+
+<h3>8.1 一個獨立的交叉檢查</h3>
+<p>harness 的 Lane B 暖態是 <b>73.71 ms/token ＝ 13.57 t/s</b>（非 MTP 模型、短 prompt）；
+本線在 MTP 載體、2025-token prompt 上量到的 HTTP 平台是 <b>13.13 t/s</b>。
+兩個不同儀器、不同載體、不同 prompt 形狀<br>
+落在同一個帶狀區間（13.1–13.6），與 harness docstring 自己記的
+「the first request of a fresh server is a different regime (8.5-9 t/s vs 13.3 t/s)」一致。</p>
+
+<h2 id="s9">9. 現場閘門輸出（原文）</h2>
+
+<p class="small">以下四條於 2026-09-19 17:3x 現場執行，輸出原文貼上。第五條為 D5 的 oracle gate。</p>
+
+<pre><code>$ python3 agent_harness/engine_loop/traces/validate.py
+  episodes.jsonl: 122 records {'episode': 122}
+  -&gt; OK
+  decisions.jsonl: 68 records {'decision': 68}
+  -&gt; OK
+  lessons.jsonl: 192 records {'lesson': 192}
+  -&gt; OK
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  rejected  build_null_but_usable         a measurement whose binaries are unknown must not be evidence
+  rejected  missing_required_field        dropping `gate` must not pass silently
+  rejected  bad_episode_id_pattern        a hand-typed id breaks the timestamp convention (ids come from the log filename)
+  rejected  generation_without_digest     a generation with no answer digest makes answer_stable vacuous
+  rejected  refuted_without_supersede     a killed hypothesis must name what replaced it, or it can be read as still-held
+  rejected  evidence_unknown_episode      evidence pointing at a non-existent run turns a decision into an assertion
+  rejected  unknown_extra_field           an undocumented field is a convention nobody agreed to; it must not slip in
+  rejected  bad_lesson_class              class is what makes a lesson injectable at the right moment
+  rejected  duplicate_lesson_id           two different lessons under one id make every reference to it ambiguous
+  rejected  duplicate_decision_id         a supersede chain cannot resolve if the id it names is not unique
+  10/10 injected violations rejected
+
+$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  [error] 273 drift(s) between INDEX.jsonl and .workbuddy/memory/:
+    .workbuddy/memory/MEMORY_PERF.md :: (file row): fields differ ['bytes', 'lines', 'mtime', 'sha256']
+    .workbuddy/memory/MEMORY_PERF.md :: MTP／speculative（2026-09-18 由 MEMORY.md 移入，本節為權威）: fields differ ['body_bytes', 'line_end', 'lines']
+    .workbuddy/memory/MEMORY_PERF.md :: ★ 2026-09-19 更正：本檔「llama-bench 對 MTP 是瞎的」那一節已過期（部分）: fields differ ['abs', 'body_bytes', 'bytes', 'level', 'line_end', 'line_start', 'lines', 'mtime', 'path', 'row', 'sha256', 'subs', 'title']
+    .workbuddy/memory/MEMORY_FACTS.md :: (file row): fields differ ['abs', 'body_bytes', 'bytes', 'level', 'line_end', 'line_start', 'lines', 'mtime', 'row', 'sha256', 'subs', 'title']
+    .workbuddy/memory/MEMORY_FACTS.md :: 長期事實（踩過就不該再踩）: fields differ ['body_bytes', 'line_end', 'line_start', 'lines', 'title']
+    .workbuddy/memory/MEMORY_FACTS.md :: agent_harness（另一條線；本線只讀）: fields differ ['body_bytes', 'line_end', 'line_start', 'lines', 'title']
+    .workbuddy/memory/MEMORY_FACTS.md :: 記憶機制（09-17 拆分後）: fields differ ['abs', 'body_bytes', 'bytes', 'level', 'line_end', 'line_start', 'lines', 'mtime', 'path', 'row', 'sha256', 'subs', 'title']
+    .workbuddy/memory/MEMORY.md :: (file row): fields differ ['abs', 'body_bytes', 'bytes', 'level', 'line_end', 'line_start', 'lines', 'mtime', 'row', 'sha256', 'subs', 'title']
+    .workbuddy/memory/MEMORY.md :: 這個目錄怎麼讀（09-17 拆分；**本檔要維持小，超過 ~10KB 注入時會被截斷掉尾巴**）: fields differ ['body_bytes', 'line_end', 'line_start', 'lines', 'title']
+    .workbuddy/memory/MEMORY.md :: 現在的一句話狀態（09-18 快照；**主題檔為權威**）: fields differ ['body_bytes', 'line_end', 'line_start', 'lines', 'title']
+    .workbuddy/memory/MEMORY.md :: 分工: fields differ ['body_bytes', 'line_end', 'line_start', 'lines', 'title']
+    .workbuddy/memory/MEMORY.md :: ★★ 並行 session 安全（2026-09-18 血的教訓，動手前必讀）: fields differ ['body_bytes', 'line_end', 'line_start', 'lines', 'title']
+    .workbuddy/memory/MEMORY.md :: 入口（照抄）: fields differ ['body_bytes', 'line_end', 'line_start', 'lines', 'title']
+    .workbuddy/memory/MEMORY.md :: 量測衛生: fields differ ['body_bytes', 'line_end', 'line_start', 'lines', 'title']
+    .workbuddy/memory/MEMORY.md :: Skill（動手前先讀）: fields differ ['abs', 'body_bytes', 'bytes', 'level', 'line_end', 'line_start', 'lines', 'mtime', 'path', 'row', 'sha256', 'subs', 'title']
+    .workbuddy/memory/2026-09-19.md :: (file row): fields differ ['abs', 'body_bytes', 'bytes', 'level', 'line_end', 'line_start', 'lines', 'mtime', 'row', 'sha256', 'subs', 'title']
+    .workbuddy/memory/2026-09-19.md :: §EN-185 輪成本優化候選（承接 09-18 §EN-181..184 的 bench/HTTP parity）: fields differ ['body_bytes', 'line_end', 'line_start', 'lines', 'subs', 'title']
+    .workbuddy/memory/2026-09-19.md :: §EN-186 更正：T1 預測應為 12.97（重建），不是 18.4（跑贏 42%）: fields differ ['body_bytes', 'line_end', 'line_start', 'lines', 'subs', 'title']
+    .workbuddy/memory/2026-09-19.md :: §EN-187 BigMoMo(arXiv:2609.14643) 搬到這裡的天花板，＋ bench/http 參數落差: fields differ ['body_bytes', 'line_end', 'line_start', 'lines', 'subs', 'title']
+    regenerate with: python3 memory/build_memory_index.py
+
+$ python3 agent_harness/engine_loop/index_assets.py --check
+  [error] 20 drift(s) between the manifest and disk:
+     as 8 drifts and one invisible second copy of the truth.)
+
+$ python3 scripts/check/m123_oracle_gate.py --tag wph_20260919
+=== M1/M2/M3 oracle gate (tag wph_20260919) ===
+  M1 numeric identity    (bit-identical logits)  : 9/9  (100.0%)
+  M2 decision agreement  (same argmax token)     : 9/9  (100.0%)
+  M3 top-k set agreement (same top-N id set)     : 9/9  (100.0%)
+  M1 same  &amp; M2 same :     9   no drift, same choice
+  M1 same  &amp; M2 diff :     0   should be 0; non-zero = tie-break bug
+  M1 diff  &amp; M2 same :     0   drift only; M1 says 'differs', M2 says 'same'
+  M1 diff  &amp; M2 diff :     0   real divergence
+VERDICT M1 (numeric identity)   : PASS (9/9)
+VERDICT M2 (decision agreement) : PASS (9/9)
+GATE wph_20260919: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+cross-tab: {'num_eq_dec_eq': 9, 'num_eq_dec_ne': 0, 'num_ne_dec_eq': 0, 'num_ne_dec_ne': 0}
+summary  : /Users/alexchuang/Documents/flashkv-devserver/Backup/m123_oracle_gate/summary_wph_20260919.json
+  build   : libllama.0.0.279.dylib=aab787412e572550  libggml-metal.0.19.0.dylib=1be366306c604669  libggml-base.0.19.0.dylib=229f03a3996355da  llama-server=054fb22f04a01c5c
+  tree    : c78620a39 dirty_tracked=17
+</code></pre>
+
+<div class="box b-green">
+<p><b>交叉驗證：兩邊用的是同一顆引擎。</b>上面 oracle gate 的 <code>build</code> 行是</p>
+<pre><code>libllama.0.0.279.dylib=aab787412e572550  libggml-metal.0.19.0.dylib=1be366306c604669
+libggml-base.0.19.0.dylib=229f03a3996355da  llama-server=054fb22f04a01c5c</code></pre>
+<p>而 harness 在它自己報告的頁首記錄的是</p>
+<pre><code>{"llama-server": "054fb22f04a01c5c", "libllama.0.dylib": "aab787412e572550",
+ "libggml-metal.0.dylib": "1be366306c604669", "libllama-server-impl.dylib": "a87bfd2e80a086b4"}</code></pre>
+<p><b>三個共同的指紋逐位相同</b>（<code>llama-server 054fb22f04a01c5c</code>、
+<code>libllama aab787412e572550</code>、<code>libggml-metal 1be366306c604669</code>；
+harness 的命名只是省略了版本號後綴）。<br>
+⇒ 本文件把它的 ms/token 與本線的 bench／HTTP 讀數並列，<b>是合法的</b>——
+它們落在同一顆引擎上。而 oracle gate 的 <code>comparable=True</code>
+（<code>Backup/m123_oracle_gate/summary_wph_20260919.json</code>），
+<code>tree: c78620a39 dirty_tracked=17</code>。</p>
+</div>
+
+<h2 id="s10">10. 誠實邊界：這份整理不主張什麼</h2>
+
+<div class="box b-red">
+<p><b>(1) 本文件沒有重跑任何 lane。</b>所有數字來自 harness 的狀態檔與它 17:18 的報告；
+本文件新增的量測數據是零。harness 自己在同一份報告裡標了
+「還沒開始量測。harness 正在等一個乾淨窗口，自 16:57:28 起被擋住：quiet」
+⇒ 那時有 lane 尚未取得窗口，對應的兩個 <code>INCOMPLETE</code>。</p>
+<p><b>(2) item 1 是 underpowered，不是 negative。</b>不要把它讀成「BITIDENT 沒有影響」。
+它自己的原文是「tightening the baselines is what would change this」。</p>
+<p><b>(3) 配對問題仍然開放。</b>只有 1 對同時具備兩個基線，需要至少 2 對。</p>
+<p><b>(4) Lane B 的 thrash 結論只對這個載體、這個深度成立。</b>它的 thrash 是
+<code>FILLER × 60</code>（約 2000 token）的 slab，<code>MATERIAL_RESIDUE_PCT=5%</code>
+的門檻是設計選擇，不是物理常數。</p>
+<p><b>(5) 本文件的 §8 是跨儀器推論，不是 harness 的判決。</b>harness 沒有量 bench，
+也沒有量 2025-token prompt 的載體；那一段的比對責任在本文件，不在它。</p>
+<p><b>(6) 引擎指紋只在 harness 自己記錄的那一組上有效。</b>本文件引用的所有 ms/token
+都屬於那一組 digest，跨 build 不繼承。</p>
+</div>
+
+<h3>10.1 未完成與未跑的</h3>
+<ul>
+<li>harness 的 lane 尚未全部取得窗口（16:57:28 起被擋在 <code>quiet</code>）。</li>
+<li>「配對展幅 ≥2 對」未達成 ⇒ drift lane 的配對判決未成立。</li>
+<li>本文件<b>沒有</b>重跑 oracle gate 之外的任何量測；<code>Backup/</code> 下沒有本文件產生的 JSON。</li>
+</ul>
+
+<h3>10.2 動筆時的 repo 狀態（照陷阱六查過）</h3>
+<p>動筆前後各查一次 <code>git status --porcelain --untracked-files=all</code>，
+確認<b>至少兩條 session 同時在這個 repo 有未提交改動</b>（本線：
+<code>llama-bench.cpp</code>、<code>llama_bench_matrix.py</code>、<code>decode_step_profile.py</code>；
+另一條線：<code>src/llama.cpp/src/llama-context.cpp</code>、<code>src/llama.cpp/src/llama-expert-cache.cpp</code>／<code>.h</code>、
+<code>scripts/run_server.sh</code> 與數支 <code>scripts/check/*</code>）。
+因此本輪<b>只新增檔案</b>：不重生索引、不刷新快照、不 commit。
+這也直接解釋了 §9 裡第 3、4 條閘門為什麼是紅的——它們記的是<b>已提交</b>的 bytes，
+而磁碟上有兩條線的未提交工作。</p>
+
+<h2 id="s11">11. 下一輪的具體動作</h2>
+
+<ol>
+<li><b>先量噪音底，再判任何旋鈕。</b>
+<code>python3 scripts/check/paired_ab.py --null --cell decode --pairs 4 --reps 3</code>
+⇒ 預期 ≈15%。<b>若 >10%，正解是「不可測」</b>，不是繼續找槓桿。</li>
+<li><b>採用 harness 已驗證的形狀</b>：相鄰時間成對、block 間交替順序、看配對差、
+低於門檻判 <code>INCONCLUSIVE</code>。<code>paired_ab.py</code> 是 bench 側的等價物，
+它的 <code>--a-env/--b-env</code> 現在可以驅動 <code>CGC_BENCH_CTX</code> 與
+<code>CGC_BENCH_WARM_SKIP</code>（見 <code>docs/DECODE_NOISE_FLOOR_2026-09-19.md</code>）。</li>
+<li><b>把「冷/暖」當成必填欄位。</b>Lane B 量到 1.60×，本線量到 1.30–1.36×
+（HTTP <code>rep1</code> vs <code>rep2+</code>）。任何 decode 數字沒有指名「第幾個請求」
+就沒有意義。</li>
+<li><b>thrash 不用做機制。</b>Lane B 的 <code>re-warm after prefill</code> 已足夠
+（+4.3% ⇒ 一次 pass 回到 −0.7%）；把力氣放在別的地方。</li>
+<li><b>item 1 從待辦清單移除。</b>§5 用讀 GGUF 就證明了前提不成立
+（專家權重 <code>expert 且 eligible = 0 MiB</code>，上限 2.4%）。</li>
+</ol>
+
+<hr>
+<p class="small">
+整理：本線 session（引擎層）。素材：<code>scripts/check/decode_window_harness.py</code>、
+<code>/tmp/decode_window_harness.json</code>、<code>docs/DECODE_WINDOW_2026-09-19.html</code>、
+<code>docs/DECODE_NOISE_FLOOR_2026-09-19.md</code>。<br>
+原 harness 報告仍以 <code>docs/DECODE_WINDOW_2026-09-19.html</code> 為準；
+本文件是它的白皮書版整理，不取代它。
+</p>
+
+</div>
+</body>
+</html>

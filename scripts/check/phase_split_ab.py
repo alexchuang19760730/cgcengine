@@ -364,6 +364,18 @@ def launch(extra_env: dict, launch_log: str) -> dict:
     """`run_server.sh --detach` forks and exits itself; it prints the authoritative server PID and
     log path, which is why nothing here guesses from mtime or port."""
     env = dict(os.environ, CGC_SERVER_PROFILE=PROFILE, **extra_env)
+    # The shared box probe (docs/SERVER_WINDOW_LEDGER_2026-09-19.md): refuses to load a model plus a
+    # pool into a busy box, because a number taken then describes the neighbour. Self-contained
+    # import so this file needs no sys.path setup; gated once per process, not per arm.
+    import importlib.util as _ilu, os as _os
+    _spec = _ilu.spec_from_file_location(
+        "server_window", _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                       "server_window.py"))
+    _sw = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_sw)
+    _sw.require_first(port=int(env.get("CGC_SERVER_PORT", "8080")),
+                      need_mb=float(_os.environ.get("CGC_WINDOW_NEED_MB", "8000")),
+                      where="phase_split_ab")
     with open(launch_log, "wb") as f:
         p = subprocess.run(["./scripts/run_server.sh", "--detach"], cwd=ROOT, env=env,
                            stdout=f, stderr=subprocess.STDOUT)

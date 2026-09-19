@@ -639,6 +639,19 @@ static uint32_t cgc_gather_slab_cap() {
     return cap;
 }
 
+// [CGC 2026-09-19 slab→pool handoff] CGC_SLAB_HANDOFF=<cap> experts per layer (0/unset = off).
+// The value is the per-layer cap of the publish the first decode step performs after a prefill that
+// went through the slab path; see llama_expert_cache_prewarm_hot_capped for why a cap is required.
+// Parsed once, and clamped to the expert count so a typo cannot ask for more than a layer has.
+static int cgc_slab_handoff_cap() {
+    static const int cap = []() {
+        const char * e = getenv("CGC_SLAB_HANDOFF");
+        const int v = e != nullptr && e[0] != '\0' ? atoi(e) : 0;
+        return v < 0 ? 0 : (v > 512 ? 512 : v);
+    }();
+    return cap;
+}
+
 // [CGC M2 2026-09-14] Is the whole-layer prefill stream path usable in this process?
 //
 // The stream path repoints the expert tensors with ne[2] = n_expert and fills n_expert experts
@@ -1929,6 +1942,21 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         llama_expert_cache * ec = model.expert_cache;
         if (ec != nullptr && llama_expert_cache_pool_active(ec)) {
             llama_expert_cache_prewarm_hot(ec);
+            // [CGC 2026-09-19 slab→pool handoff] CGC_SLAB_HANDOFF=<cap>: if the prefill that just
+            // finished was served by the slab path (which never writes the pool), publish the
+            // prefill's hot set into the pool now, before the first decode token. Bounded by `cap`
+            // experts per layer because this is synchronous I/O on the calling thread; the print
+            // says what it cost, so "the handoff ran" and "the handoff is free" cannot be confused.
+            const int hs = cgc_slab_handoff_cap();
+            if (hs > 0 && ec->handoff_pending) {
+                const int64_t hs_t0 = ggml_time_us();
+                const size_t hs_warm = llama_expert_cache_prewarm_hot_capped(ec, (size_t) hs);
+                const int64_t hs_us = ggml_time_us() - hs_t0;
+                ec->handoff_pending = 0;
+                fprintf(stderr, "CGC-SLAB-HANDOFF: cap=%d warmed=%zu experts in %.1f ms (before the "
+                                "first decode step)\n",
+                        hs, hs_warm, (double) hs_us / 1000.0);
+            }
         }
     }
 
@@ -4834,6 +4862,24 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
         return;
     }
 
+    // [CGC 2026-09-19 hook split] CGC_HOOK_SPLIT=1 splits this hook's own CPU cost into the four
+    // blocks it is actually made of -- pre (everything before the demand ensure: diagnostics, the
+    // top-k unwrap), ensure (the batched union fill), drain (drain_layer), tail (publish + remap
+    // leaf + the union record) -- and prints a running mean every 160 calls, the same cadence the
+    // segmented dispatcher uses for CGC-SEG.
+    //
+    // Why it is needed: the decode step profile reports `cb` (this hook) as one number, and the
+    // GPU's idle time tracks it (gap ~= 1.3 x (cb + submit)). That makes "cb" the quantity every
+    // batching decision turns on, and until now nothing said which of the four blocks it is. The
+    // existing counters cannot answer it: `fill_wait_us` only counts waits on PREFETCH-queued slots
+    // (0 at HEAD, where nothing prefetches) and `fill_batch_usec` is only accumulated by the blob
+    // path, so the demand fills this hook performs are invisible to both (measured: fill_batch_usec=0
+    // on a run with 2086 misses). Off by default; the timers are gated on a static bool, so with the
+    // flag unset this is two predictable branches per layer, not a measurement.
+    static const bool cgc_hook_split = getenv("CGC_HOOK_SPLIT") != nullptr;
+    static int64_t cgc_hs_pre = 0, cgc_hs_ensure = 0, cgc_hs_drain = 0, cgc_hs_tail = 0, cgc_hs_n = 0;
+    const int64_t cgc_hs_t0 = cgc_hook_split ? ggml_time_us() : 0;
+
     // [CGC MTP Draft Prefetch DEBUG] trace every on_topk call to verify draft ctx reaches here
     static int cgc_draft_pf_dbg_count = 0;
     if (cgc_draft_prefetch_on() && cgc_draft_pf_dbg_count < 500) {  // increased from 50 to 500 to capture decode phase
@@ -5206,7 +5252,14 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
     // routing overlap). CGC_PREV_TOKEN_PREFETCH=1 enables; default OFF = byte-identical legacy.
     static const bool cgc_prev_token_prefetch = getenv("CGC_PREV_TOKEN_PREFETCH") != nullptr &&
                                                   getenv("CGC_PREV_TOKEN_PREFETCH")[0] == '1';
-    if (cgc_prev_token_prefetch &&
+    // [CGC 2026-09-19 layer-ahead] CGC_LAYER_AHEAD_PREFETCH=1 prefetches layer il+1's predicted
+    // union from THIS hook, instead of front-loading all 40 layers at il==1 the way
+    // CGC_PREV_TOKEN_PREFETCH does. Same prediction source (the previous token's per-layer ids), so
+    // the collection below must run for either flag -- otherwise the one-ahead trigger would read an
+    // empty prediction and "the flag is on" would be indistinguishable from "the flag is off".
+    static const bool cgc_layer_ahead = getenv("CGC_LAYER_AHEAD_PREFETCH") != nullptr &&
+                                        getenv("CGC_LAYER_AHEAD_PREFETCH")[0] == '1';
+    if ((cgc_prev_token_prefetch || cgc_layer_ahead) &&
         cparams.ctx_type == LLAMA_CONTEXT_TYPE_DEFAULT && n_tokens >= 1 &&
         il >= 0 && (size_t) il < cache->curr_token_expert_ids.size()) {
         // At il==0, swap prev<->curr: prev now holds the complete previous token's ids,
@@ -5608,6 +5661,12 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
             }
         }
         llama_expert_cache_record_routes(cache, (uint32_t) il, routes.data(), routes.size());
+        // [CGC 2026-09-19 slab→pool handoff] Mark that a prefill went through a path that does not
+        // write the pool, so the next decode step must publish the recorded hot set itself (see the
+        // call site in build_graph). Only when the handoff is armed; otherwise this stays 0.
+        if (cgc_slab_handoff_cap() > 0) {
+            cache->handoff_pending = 1;
+        }
         if (!cgc_prefill_stream) {
             return;
         }
@@ -6511,9 +6570,47 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
         // owner was filled during decode, instead of churning the working set the next
         // generation needs (measured: 22.2 t/s steady-state decode vs 8.1-8.9 t/s after a
         // prefill). False for every other phase, so the default build is unchanged.
+        const int64_t cgc_hs_t1 = cgc_hook_split ? ggml_time_us() : 0;
         llama_expert_cache_ensure_batch(cache, (uint32_t) il, uni.data(), uni.size(),
                                         cgc_current_phase == CGC_PHASE_PREFILL);
+        const int64_t cgc_hs_t2 = cgc_hook_split ? ggml_time_us() : 0;
         llama_expert_cache_drain_layer(cache, (uint32_t) il);
+        const int64_t cgc_hs_t3 = cgc_hook_split ? ggml_time_us() : 0;
+        // [CGC 2026-09-19 layer-ahead prefetch] The measured shape of a decode step at HEAD is
+        // `GPU busy ~45 ms + GPU idle ~19-43 ms`, and the idle tracks the CPU hook (gap ~= 1.3 x
+        // (cb + submit)): the GPU drains while this thread fills the layer's union and writes the
+        // leaf. The reason the idle is unavoidable per layer is a real data dependency -- layer il's
+        // expert set is produced by the argsort at the END of segment il and consumed by the
+        // mul_mat_id at the START of segment il+1 -- so the fills for il cannot start before il's
+        // top-k exists. What CAN be overlapped is il+1's fills: adjacent tokens reuse ~87% of their
+        // routing (measured, see POOL_BUDGET_COST_DECOMP), so the previous token's union for il+1 is
+        // available NOW, one layer earlier than the demand. Queueing it here gives those preads the
+        // whole of segment il+1's GPU window to land.
+        //
+        // Deliberately placed AFTER this layer's ensure_batch/drain: the demand path has already
+        // taken the slots it needs, so a prediction can only ever occupy a FREE slot
+        // (prefetch_slot never evicts), and a misprediction costs one dropped pread, never a
+        // resident eviction. The free-slot-only rule is also why this is not the same experiment as
+        // CGC_PREV_TOKEN_PREFETCH: that one queues all 40 layers inside a single hook (320 experts
+        // against the free slots that exist at that instant), so most of it is refused before it can
+        // overlap with anything.
+        //
+        // Honest limit: drain_layer(next) DROPS prefetches for the next layer that have not started
+        // yet, so only fills that actually land inside the window pay off. That is measurable (the
+        // drop counters), and it is why this is an A/B flag rather than a default.
+        if (cgc_layer_ahead && n_tokens >= 1) {
+            const size_t next_l = (size_t) il + 1;
+            if (next_l < cache->prev_token_valid.size() && cache->prev_token_valid[next_l] &&
+                    next_l < cache->slot_table.size() / (size_t) cache->n_expert) {
+                const std::vector<uint32_t> & pred = cache->prev_token_expert_ids[next_l];
+                const int32_t * st_next = cache->slot_table.data() + next_l * cache->n_expert;
+                for (uint32_t e : pred) {
+                    if (e < cache->n_expert && st_next[e] < 0) {
+                        llama_expert_cache_prefetch_slot(cache, (uint32_t) next_l, e);
+                    }
+                }
+            }
+        }
         if (cgc_ep) {
             const int32_t * st1 = llama_expert_cache_slot_table(cache, (uint32_t) il);
             fprintf(stderr, "CGC-EXACT-POST: il=%d\n", il);
@@ -6684,6 +6781,23 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
         // B: record this step's per-layer union so process_ubatch can async-prefetch it for the
         // next decode step (temporal locality). The bg fill runs behind the sampler + next step's
         // GPU window, so the next step's ensure_batch hits instead of blocking on disk reads.
+        if (cgc_hook_split) {
+            const int64_t cgc_hs_t4 = ggml_time_us();
+            cgc_hs_pre    += cgc_hs_t1 - cgc_hs_t0;
+            cgc_hs_ensure += cgc_hs_t2 - cgc_hs_t1;
+            cgc_hs_drain  += cgc_hs_t3 - cgc_hs_t2;
+            cgc_hs_tail   += cgc_hs_t4 - cgc_hs_t3;
+            if (++cgc_hs_n % 160 == 0) {
+                fprintf(stderr, "CGC-HOOKSPLIT: n=%lld  pre=%.1f  ensure=%.1f  drain=%.1f  tail=%.1f us/call "
+                                "(total %.1f)\n",
+                        (long long) cgc_hs_n,
+                        (double) cgc_hs_pre    / (double) cgc_hs_n,
+                        (double) cgc_hs_ensure / (double) cgc_hs_n,
+                        (double) cgc_hs_drain  / (double) cgc_hs_n,
+                        (double) cgc_hs_tail   / (double) cgc_hs_n,
+                        (double) (cgc_hs_pre + cgc_hs_ensure + cgc_hs_drain + cgc_hs_tail) / (double) cgc_hs_n);
+            }
+        }
         if (cache_step_union.size() < (size_t) model.hparams.n_layer_all) {
             cache_step_union.resize(model.hparams.n_layer_all);
         }

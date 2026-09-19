@@ -587,7 +587,63 @@ Three things follow, and they answer the "1.9 -> 0.5 ms/layer" sentence:
 * Artifacts: `scripts/check/sntok_curve.py`, `/tmp/sntok_curve.json` (pass 2),
   `/tmp/sntok_curve_pass1.json` (pass 1). No engine source was modified by either pass.
 
-## 17. Boundaries
+## 17. The overlap project: two numbers, and THREE separate death causes
+
+Hand-off numbers for the decode-overlap work, plus a warning against merging three ideas that have
+been killed for three *different* reasons.
+
+### 17.1 Do not size the prize by `cb` — size it by `gap`
+
+`cb` is the CPU-side fill time. The GPU stays idle for the whole hook **and** submit window, which is
+why the engine's own relation is `gap ~= 1.3 x (cb + submit)` (`llama-context.cpp:6580`). Measured on
+the current build (`scripts/check/gdn_split.py`, ntok=1 decode steps, medians):
+
+| regime | step total | `cb` | `gap` (GPU idle) | `gap` / step |
+|---|---:|---:|---:|---:|
+| cold (first request) | 129.7 ms | 31.6 ms (24%) | **49.7 ms** | **38.3%** |
+| warm (production) | 143.4 ms | 14.9 ms (10%) | **34.1 ms** | **23.8%** |
+
+The relation holds on these numbers too: `1.3 x (14.9 + 12.1) = 35.1` vs the measured `34.1`.
+
+So the two numbers for the overlap work are **10% and 24%** of the step, and they mean different
+things:
+
+* **10% (warm `cb`)** — what a *fills-only* change can recover at best (make the fill non-blocking).
+* **24% (warm `gap`)** — the **ceiling of the whole overlap family**: the round trip is
+  wait -> hook (fill + remap write) -> submit, so a change that pipelines the entire round trip off
+  the critical path is bounded by the idle window, not by the fill time.
+* Cold is the same two numbers at 24% / 38% — the fill is 2x bigger cold, which is expected: cold
+  steps pay real I/O.
+
+The requirement is **137 -> 96 ms (-30%)**. So this family is worth ~1/3 to ~4/5 of the requirement
+depending on which end of it is implemented — worth doing *because* it is one of the few candidates
+that does not move a single number, not because it closes the target.
+
+Caveat that travels with the table: `gap` is a GPU-clock quantity read at segment boundaries, and
+like every span on this box it is regime-sensitive (the same build read 14.5 ms of `gap` on a
+71 ms step earlier today). Quote the two numbers with the regime, and verify the change as a `gap`
+reduction — a `cb` reduction alone does not prove the idle shrank.
+
+### 17.2 Three death causes, and why they must not be merged
+
+| idea | what it actually changes | verdict | why |
+|---|---|---|---|
+| **split-MMID** (split H/C, reorder) | arithmetic: the combine's summation order | **dead by bit-identity** | `llama-graph.cpp` combine accumulates left-to-right; reassociation is not bit-identical |
+| **`CGC_SUBMIT_AHEAD=1`** | *when the next segment is submitted* — before the hook wrote the remap leaf | **dead by race**, NOT by arithmetic | `ggml-backend.cpp:1813`: stale remap -> garbage; the symptom is cold/short-prompt divergence while warm prompts happen to win the race and stay bit-identical |
+| **fills off the critical path** (another stream / non-blocking, no computation moved) | only *when bytes are fetched*; no node, no order, no accumulator changes | **not covered by either** — still open | the two causes above are arithmetic and remap-visibility; neither is touched by rescheduling I/O |
+
+Which means: quoting the race (`SUBMIT_AHEAD`) as the reason fills cannot be overlapped is a
+category error, and so is quoting split-MMID. The fills-only change has to be judged on its own
+measurement (`gap`, and M1/M2 on a **cold** prompt — the warm case is the one that hides the race).
+
+One real boundary that does apply to it, from the code's own dependency note: **the demand fill for
+layer `il` cannot start before `il`'s argsort exists** (`llama-context.cpp:6583`), and the argsort is
+the LAST node of segment `il`. So the demand fill is not movable; what overlapped-able is the
+*fill for `il+1`* (adjacent-token routing reuse ~87%), which is the `CGC_LAYER_AHEAD_PREFETCH` rail
+that already exists. A fills-only change should therefore be described as "make the demand fill stop
+blocking the CPU", and its ceiling is the warm `cb` (10%), not the warm `gap` (24%).
+
+## 18. Boundaries
 
 * `free` was 60 MB during both arms; swap grew 128 MB (off) / 922 MB (on) across the pair. The
   ratio is defensible because both arms ran back-to-back on one machine state; the absolute

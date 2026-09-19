@@ -336,6 +336,33 @@ def run_arm(tag: str, profile: str, extra_env: dict[str, str], args) -> dict:
     ]
     if args.no_warmup:
         cmd.append("--no-warmup")
+    # Appended rather than spliced into `fwd`: `fwd` is the SERVER's argv, and this is a property of
+    # the CELL. Keeping them apart is what makes `--dry-run` able to show which is which.
+    # [CGC 2026-09-19] Real-text prompt fill. Passed through only when asked: without it
+    # llama-bench keeps its historical std::rand()%n_vocab fill, which is what every earlier
+    # row in the record was measured with.
+    if getattr(args, "prompt_file", None):
+        cmd += ["--prompt-file", args.prompt_file]
+    # [CGC 2026-09-19] Reseed the random fill at the top of every rep. Off by default: leaving it
+    # off reproduces every earlier row bit-for-bit.
+    if getattr(args, "fixed_fill_seed", 0):
+        cmd += ["--fixed-fill-seed", str(args.fixed_fill_seed)]
+    # [CGC 2026-09-19] --warm-skip N: run N generated tokens in EVERY rep before the clock starts,
+    # and report them out of n_gen. Without it the tg figure is a whole-generation average whose
+    # value depends on `--gen`: at -d 512, -n 128 reads 7.96 t/s and -n 512 reads 10.22. Passed
+    # through only when set, so every existing arm keeps a bit-identical command line.
+    if getattr(args, "warm_skip", 0):
+        cmd += ["--warm-skip", str(args.warm_skip)]
+    # [CGC 2026-09-19] --ctx-size N: llama-bench derives n_ctx = n_prompt + n_gen + n_depth, which
+    # for the house decode arm is ~704 while prod25 serves at -c 4096. n_ctx sizes the KV allocation
+    # and drives the engine's batch clamping, so this removes a confound every bench-vs-HTTP
+    # comparison to date has carried. Passed only when set.
+    if getattr(args, "ctx_size", 0):
+        cmd += ["--ctx-size", str(args.ctx_size)]
+    if args.spec_type:
+        cmd += ["--spec-type", args.spec_type]
+        if args.spec_draft_n_max is not None:
+            cmd += ["--spec-draft-n-max", str(args.spec_draft_n_max)]
 
     print(f"\n=== arm {tag} (profile {profile}) ===", flush=True)
     print(f"  batch    : -b {b} -ub {ub}   [{why}]", flush=True)
@@ -399,7 +426,13 @@ def run_arm(tag: str, profile: str, extra_env: dict[str, str], args) -> dict:
     out = {"tag": tag, "profile": profile, "extra_env": extra_env, "batch": b, "ubatch": ub,
            "batch_why": why, "wall_s": round(wall, 1), "env": env, "scalars": scalars,
            "rows": rows, "cache": stats, "incomplete": incomplete, "error": err,
-           "thermal": sampler.result}
+           "thermal": sampler.result,
+           # Recorded, not inferred: whether a row came from the speculative gen path is a property
+           # of the invocation, and a spec row wears the same `tg` label as a plain one.
+           "spec_type": args.spec_type or None,
+           "warm_skip": getattr(args, "warm_skip", 0) or None,
+           "ctx_size": getattr(args, "ctx_size", 0) or None,
+           "spec_draft_n_max": args.spec_draft_n_max}
     for r in rows:
         shape = ("pp" if r["n_prompt"] > 0 else "tg")
         # llama-bench emits `test_time` as an ISO-8601 STRING, not a duration -- formatting it
@@ -484,6 +517,33 @@ def main() -> int:
     ap.add_argument("--no-warmup", action="store_true",
                     help="pass --no-warmup; note warmup is what leaves the expert pool hot, so the "
                          "default (warmup ON) is the closer analogue of a served request")
+    # [CGC 2026-09-18] MTP/speculative mode. A CLI flag and NOT an env var, because llama-bench
+    # resolves CLI FIRST and prints "LLAMA_BENCH_SPEC is deprecated" for the env form
+    # (llama-bench.cpp:1145-1153) -- an env-driven cell would therefore be running a path the
+    # instrument itself asks people to stop using, and the deprecation warning would be the only
+    # trace of it. Also NOT forwarded from the server argv: forwarding it by default would turn
+    # every existing cell into a spec cell on all seven profiles (all have mtp=1), i.e. it would
+    # silently redefine the recorded `decode` number. So it is opt-in, per cell.
+    ap.add_argument("--spec-type", default="",
+                    help="llama-bench --spec-type (only 'draft-mtp' is implemented). Empty = the "
+                         "plain gen cell, i.e. the previous behaviour of every existing cell.")
+    ap.add_argument("--prompt-file", default="",
+                    help="llama-bench --prompt-file: fill prompt/depth with REAL text read from this "
+                         "file (cycled) instead of std::rand()%%n_vocab. Empty = the historical random "
+                         "fill, i.e. comparable with every earlier row.")
+    ap.add_argument("--ctx-size", type=int, default=0,
+                    help="override llama-bench's derived n_ctx = n_prompt + n_gen + n_depth "
+                         "(llama-bench -c/--ctx-size). 0 = historical derived value")
+    ap.add_argument("--warm-skip", type=int, default=0,
+                    help="run N generated tokens per rep before the clock starts; reported n_gen "
+                         "excludes them (llama-bench --warm-skip). 0 = historical behaviour")
+    ap.add_argument("--fixed-fill-seed", type=int, default=0,
+                    help="llama-bench --fixed-fill-seed: reseed std::rand() at the top of EVERY rep, "
+                         "so all reps see the same fill stream and the expert cache can reach steady "
+                         "state. 0 (default) = the historical advancing-stream behaviour.")
+    ap.add_argument("--spec-draft-n-max", type=int, default=None,
+                    help="llama-bench --spec-draft-n-max (1..16). Inert without --spec-type; when "
+                         "omitted, llama-bench's own default (3) applies.")
     ap.add_argument("--workdir", default="/tmp")
     ap.add_argument("--json")
     ap.add_argument("--md")

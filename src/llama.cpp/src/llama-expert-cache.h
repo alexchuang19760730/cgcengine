@@ -201,6 +201,12 @@ struct llama_expert_cache {
     std::vector<uint64_t> massc_sel_total;        // [layer] total SELECTED expert ids seen (count, not mass)
     std::vector<uint64_t> massc_sel_cold;         // [layer] selected expert ids that were COLD (slot<0)
     bool hot_prewarm_done = false;                // prewarm_hot runs once, before the 1st decode
+    // [CGC 2026-09-19 slab→pool handoff] Set by the slab prefill path (expert_cache_on_topk's
+    // non-decode-graph branch) and consumed once by the next decode step: that path repoints the
+    // FFN weights at a per-layer slab and never writes the pool, so without this the only publish is
+    // the one-shot prewarm above -- which a server consumes on its first request. Only set when
+    // CGC_SLAB_HANDOFF > 0, so the default path leaves it at 0 and does nothing with it.
+    int handoff_pending = 0;
     std::vector<std::vector<int32_t>> slot_owner;        // [layer][slot] = expert (-1 free)
     std::vector<std::vector<uint64_t>> slot_last_use;    // [layer][slot]
     std::vector<std::vector<uint8_t>>  slot_queued;      // [layer][slot] 1 = prefetch queued to bg, fill not started yet
@@ -740,6 +746,12 @@ void llama_expert_cache_refresh_prefill_protect();
 // each layer's top-K most-routed experts at the first decode step. Returns 0 when skipped.
 void llama_expert_cache_record_routes(llama_expert_cache * cache, uint32_t layer,
                                       const uint32_t * experts, size_t n);
+// [CGC 2026-09-19 slab→pool handoff] Fill each layer's pool with its top-`cap` most-routed experts
+// from the recorded prefill routing, WITHOUT the one-shot guard, evicting when the layer is full
+// (cap == 0 = legacy prewarm_hot: one-shot, whole slot budget, what the default path calls).
+// Called at the first decode step of a request whose prefill went through the slab path.
+// Synchronous; returns the number of experts ensured. See the definition for the cost model.
+size_t llama_expert_cache_prewarm_hot_capped(llama_expert_cache * cache, size_t cap);
 
 // [CGC RSL-MTP instrument 2026-09-18] Accumulate p_route over verify steps. `experts` is the
 // per-token top-k flatten ([n_tokens][n_expert_used], token-major) exactly as built in

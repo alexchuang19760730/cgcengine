@@ -62,6 +62,20 @@ ARMS = {
     "prof":  {},
     "ahead": {"CGC_SUBMIT_AHEAD": "1"},
     "nosync": {"CGC_SERVER_OA_ASYNC": "0"},
+    # [CGC 2026-09-19] The production carrier: MTP ON. `extra_env` is merged AFTER BASE_ENV in
+    # launch(), so this overrides BASE_ENV's CGC_SERVER_MTP=0 and reproduces the shape every
+    # quoted HTTP number used (--spec-type draft-mtp --spec-draft-n-max 3, LAYER_CAPS 40-40:256,
+    # the whole MTP env block). The model stays REFERENCE_MODEL, which is pinned explicitly.
+    # Needed because the 55.3 ms/step fixed cost was measured MTP-OFF, and per-token figures from
+    # an MTP-off carrier cannot be carried into an MTP-on step budget: one MTP step emits
+    # mean_len tokens from TWO decode calls (draft + verify).
+    # The three keys are not optional: BASE_ENV sets neither a profile nor the slab knobs, and the
+    # launcher defaults CGC_SERVER_PROFILE=off (run_server.sh:119) -- which is NOT the carrier any
+    # quoted HTTP number used. Measured on the first attempt: `slab OFF (profile=off)`,
+    # `L4 pool capacity=179`, `n_batch 2048 capped to 8`, and the model never became healthy.
+    # This triple is exactly what http_duo.py passed for the 13.98 t/s run.
+    "mtp":   {"CGC_SERVER_MTP": "1", "CGC_SERVER_PROFILE": "prod25",
+              "CGC_PREFILL_STREAM": "1", "CGC_GATHER_SLAB_CAP": "256"},
 }
 # Measured 2026-09-17: the `ahead` arm SEGFAULTS on its first multi-token graph (the warm-up's
 # 2-token prefill graph, CGC-TOPK-SHAPE t_ne=[8,2,1,1]). That is the hazard the launcher's own comment
@@ -112,8 +126,18 @@ def mem_state() -> dict:
 
 
 def llama_procs() -> list[str]:
-    r = subprocess.run(["ps", "-Ao", "pid=,command="], capture_output=True, text=True).stdout
-    return [l for l in r.splitlines()
+    # `ps` is DENIED inside the agent sandbox (PermissionError: [Errno 1] Operation not permitted)
+    # while `pgrep` is allowed. Without the fallback this raised out of the guard before the first
+    # launch, so the tool could not run at all -- and the failure looked like a crash, not a refusal.
+    try:
+        out = subprocess.run(["ps", "-Ao", "pid=,command="], capture_output=True, text=True).stdout
+    except (PermissionError, OSError):
+        try:
+            out = subprocess.run(["pgrep", "-fl", "llama-server|llama-bench"],
+                                 capture_output=True, text=True).stdout
+        except Exception:  # noqa: BLE001
+            out = ""
+    return [l for l in out.splitlines()
             if ("llama-server" in l or "llama-bench" in l) and "grep" not in l]
 
 
@@ -352,12 +376,16 @@ def run_arm(arm: str, extra: dict, out: str, args: argparse.Namespace) -> dict:
         # the last block) only land on shutdown, so the log is read after the stop, not before.
         stop(server_pid(before))
         time.sleep(1.5)
-        try:
-            subprocess.run(["pkill", "-INT", "-f", "scripts/run_server.sh"], check=False)
-        except Exception:  # noqa: BLE001
-            pass
+        # [CGC 2026-09-19 P0-2] NO pattern kill here. `pkill -f scripts/run_server.sh` matches
+        # EVERY launcher on this box, so it kills another session's mid-measurement run -- the
+        # same defect http_duo.py:31/285 and plain_match_ab.py carried. `server_pid(before)`
+        # above already stops MY server child; this only closes MY launcher, by handle.
         if p.poll() is None:
-            p.terminate()
+            p.send_signal(signal.SIGINT)
+            try:
+                p.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                p.terminate()
     text, sl = arm_text(llog)
     rec["server_log"] = sl
     prof = parse_profile(text)

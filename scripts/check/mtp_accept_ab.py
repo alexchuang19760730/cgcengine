@@ -184,15 +184,24 @@ def launch(model: Path, pool_gb: float, port: int, logpath: Path, mtp: str = "1"
                          start_new_session=True)
 
 
-def server_pid() -> int | None:
+def server_pid(port: int | None = None) -> int | None:
+    """The listener on `port` if given, else any llama-server. The port-scoped form is the one
+    teardown uses: this box runs parallel sessions, so a pid-blind `pkill -f llama-server` kills
+    their servers too (the defect http_duo.py:31,285 already recorded)."""
+    if port is not None:
+        out = sh("lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t").split()
+        return int(out[0]) if out else None
     out = sh("pgrep", "-f", "build/bin/llama-server").split()
     return int(out[0]) if out else None
 
 
-def stop_server() -> None:
-    subprocess.run(["pkill", "-9", "-f", "build/bin/llama-server"], check=False)
+def stop_server(port: int | None = None) -> None:
+    pid = server_pid(port)
+    if pid is None:
+        return
+    subprocess.run(["kill", "-9", str(pid)], check=False)
     for _ in range(20):
-        if server_pid() is None:
+        if server_pid(port) is None:
             return
         time.sleep(0.5)
 
@@ -299,12 +308,12 @@ def measure(label: str, model: Path, pool_gb: float, port: int, n_predict: int,
         f" extra={list(extra_env) or '-'} ctx_chars={context_chars}")
     log(f"    log: {logpath}")
 
-    stop_server()
+    stop_server(port)
     launch(model, pool_gb, port, logpath, mtp, extra_env)
     try:
         if not wait_health(port, logpath):
             raise SystemExit(f"{label}: server did not become healthy")
-        log(f"    healthy (pid {server_pid()})")
+        log(f"    healthy (pid {server_pid(port)})")
 
         prefix = context_prefix(context_chars)
         if warm:
@@ -333,7 +342,7 @@ def measure(label: str, model: Path, pool_gb: float, port: int, n_predict: int,
                 f"prefill={tm.get('prompt_per_second', 0):.2f} t/s "
                 f"decode={tm.get('predicted_per_second', 0):.2f} t/s  draft {d_a}/{d_n}  {dt:.1f}s")
     finally:
-        stop_server()
+        stop_server(port)
 
     tot_n = sum(r["draft_n"] for r in reqs)
     tot_a = sum(r["draft_n_accepted"] for r in reqs)
@@ -389,9 +398,10 @@ def main() -> int:
                           extra_env=args.extra_env, context_chars=args.context_chars)
         except SystemExit as e:
             # One carrier failing must not cost the others' measurements: a 3-arm run takes many
+            # (the port-scoped teardown below is the same reason: only OUR listener is stopped)
             # minutes and a launcher refusal on arm 2 is not a reason to discard arm 1.
             log(f"    ARM FAILED: {e}")
-            stop_server()
+            stop_server(args.port)
             results.append({"label": label, "model": model.name, "failed": str(e),
                             "head_identity": fp["identity"], "head_types": fp["types"]})
             time.sleep(5)

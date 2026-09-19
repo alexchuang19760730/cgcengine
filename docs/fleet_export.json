@@ -1,12 +1,12 @@
 {
   "schema": 1,
-  "generated_at": "2026-09-18 16:03:51",
+  "generated_at": "2026-09-19 00:46:49",
   "source": {
     "repo": "flashkv-devserver（CGC engine）",
     "producer": "agent_harness/portal/build_fleet_portal.py --export",
-    "head": "0a3d48cf7",
+    "head": "98b44c8c6",
     "branch": "demo/sweet-spot-windows-fix",
-    "subject": "feat(contract): --from-edge-status -- 把 edge_server 的事實映射成端點契約（edge 端不必改）",
+    "subject": "feat(mtp): 量 p_route ⇒ RSL-MTP 被實測證偽（0.21% vs 門檻 50%）＋ 消掉上一條「未驗證」",
     "mode": "offline（--no-net，未探測心跳）",
     "how_to_regenerate": "python3 agent_harness/portal/build_fleet_portal.py --export"
   },
@@ -120,10 +120,10 @@
       "platform": "macos",
       "arch": "arm64",
       "role": "decode 生產線：Metal kernel ＋ SSD expert streaming；也是這個入口自己跑的地方",
-      "chip": "已上報",
+      "chip": "上報過期",
       "heartbeat": "skipped",
       "reported_at": "2026-09-18 16:03:48",
-      "report_age": "0 分鐘前",
+      "report_age": "8.7 小時前",
       "capabilities": [
         "macOS bundle 可重建／可啟動（llama-server --version ＋ llama-simple --help ＋ otool -L 查 @rpath）",
         "兩個數字目標（prefill ≥250 t/s、decode ≥25 t/s）有綁定與現值",
@@ -147,14 +147,14 @@
       },
       "join": {
         "already": true,
-        "bar": "2/2 完成",
+        "bar": "2/3 完成、1 需人工",
         "counts": {
           "done": 2,
           "todo": 0,
-          "manual": 0,
+          "manual": 1,
           "unknown": 0
         },
-        "total": 2,
+        "total": 3,
         "open": 0,
         "doc": "agent_harness/portal/endpoints/ONBOARDING_mac-local.md",
         "channel": {
@@ -166,6 +166,14 @@
         },
         "blockers": [],
         "items": [
+          {
+            "id": "status-dumped",
+            "title": "（可選）先讓入口看到這台機器：dump 一份狀態",
+            "status": "manual",
+            "weak": false,
+            "evidence": "本機是否活著取決於服務在不在；每小時跑一次是為了讓「它什麼時候停的」看得出來。",
+            "why": "本機的觀測來自「edge_server 正在跑」。服務沒跑 ⇒ 這一格是 absent，那是**對的**（服務真的沒跑）。自動鏈每一輪的留痕都會記下這一格是 updated 還是 absent。"
+          },
           {
             "id": "report-written",
             "title": "有上報檔（`endpoints/mac-local.json`）",
@@ -342,14 +350,14 @@
       },
       "join": {
         "already": false,
-        "bar": "0/5 完成、5 待做",
+        "bar": "0/6 完成、5 待做、1 需人工",
         "counts": {
           "done": 0,
           "todo": 5,
-          "manual": 0,
+          "manual": 1,
           "unknown": 0
         },
-        "total": 5,
+        "total": 6,
         "open": 5,
         "doc": "agent_harness/portal/endpoints/ONBOARDING_harmonyos-matebook14.md",
         "channel": {
@@ -365,6 +373,14 @@
           "跑過 `build.sh`（CPU-only、GGML_METAL=OFF），把結尾輸出寫進 `what_ran`"
         ],
         "items": [
+          {
+            "id": "status-dumped",
+            "title": "（可選）先讓入口看到這台機器：dump 一份狀態",
+            "status": "manual",
+            "weak": false,
+            "evidence": "這一步只能在端點上跑（它不在我們的網路上）⇒ 無法從這裡機檢",
+            "why": "★ 這條**不等於**下面的項目：它上報的是「這台機器現在是什麼」（平台／CPU／RAM／後端提示／服務狀態），不含建置結果、加速器型號、實測 t/s —— 那些欄位要人寫。自動跑不會把它們洗掉：覆蓋報告時會把人工寫的部分接過來。"
+          },
           {
             "id": "report-written",
             "title": "產生第一份上報檔 `endpoints/harmonyos-matebook14.json`",
@@ -487,14 +503,14 @@
       },
       "join": {
         "already": false,
-        "bar": "0/6 完成、6 待做",
+        "bar": "0/7 完成、6 待做、1 需人工",
         "counts": {
           "done": 0,
           "todo": 6,
-          "manual": 0,
+          "manual": 1,
           "unknown": 0
         },
-        "total": 6,
+        "total": 7,
         "open": 6,
         "doc": "agent_harness/portal/endpoints/ONBOARDING_windows-rtx4090.md",
         "channel": {
@@ -510,6 +526,14 @@
           "把上報推到入口讀的那條分支（或告訴我們改讀你推的那條）"
         ],
         "items": [
+          {
+            "id": "status-dumped",
+            "title": "（可選）先讓入口看到這台機器：dump 一份狀態",
+            "status": "manual",
+            "weak": false,
+            "evidence": "這一步只能在端點上跑（它不在我們的網路上）⇒ 無法從這裡機檢",
+            "why": "★ 這條**不等於**下面的項目：它上報的是「這台機器現在是什麼」（平台／CPU／RAM／後端提示／服務狀態），不含建置結果、加速器型號、實測 t/s —— 那些欄位要人寫。自動跑不會把它們洗掉：覆蓋報告時會把人工寫的部分接過來。"
+          },
           {
             "id": "report-written",
             "title": "產生第一份上報檔 `endpoints/windows-rtx4090.json`",
@@ -662,13 +686,13 @@
     "window_days": 7,
     "missing_label": "無記錄",
     "days": [
-      "2026-09-12",
       "2026-09-13",
       "2026-09-14",
       "2026-09-15",
       "2026-09-16",
       "2026-09-17",
-      "2026-09-18"
+      "2026-09-18",
+      "2026-09-19"
     ],
     "series": [
       {
@@ -678,93 +702,93 @@
         "covers": 7,
         "day_basis": "commit 的 author date（%ad）",
         "cells": {
-          "2026-09-12": 0,
           "2026-09-13": 8,
           "2026-09-14": 12,
           "2026-09-15": 9,
           "2026-09-16": 61,
           "2026-09-17": 76,
-          "2026-09-18": 76
+          "2026-09-18": 96,
+          "2026-09-19": 0
         }
       },
       {
         "id": "m123",
         "label": "M1/M2/M3 oracle 實跑",
         "unit": "次",
-        "covers": 4,
+        "covers": 5,
         "day_basis": "檔案 mtime（≈ 寫入日；不是 summary 內部的時間欄位——它沒有）",
         "cells": {
-          "2026-09-12": null,
           "2026-09-13": null,
           "2026-09-14": null,
           "2026-09-15": 25,
           "2026-09-16": 23,
           "2026-09-17": 29,
-          "2026-09-18": 14
+          "2026-09-18": 18,
+          "2026-09-19": 0
         }
       },
       {
         "id": "decisions",
         "label": "決策登錄",
         "unit": "筆",
-        "covers": 4,
+        "covers": 5,
         "day_basis": "id 內嵌日期（寫進 id 的那一天，不是檔案 mtime）",
         "cells": {
-          "2026-09-12": null,
           "2026-09-13": null,
           "2026-09-14": null,
           "2026-09-15": 26,
           "2026-09-16": 12,
           "2026-09-17": 0,
-          "2026-09-18": 30
+          "2026-09-18": 30,
+          "2026-09-19": 0
         }
       },
       {
         "id": "daylog",
         "label": "當日工作日誌",
         "unit": "B",
-        "covers": 4,
+        "covers": 5,
         "day_basis": "檔名日期",
         "cells": {
-          "2026-09-12": null,
           "2026-09-13": null,
           "2026-09-14": null,
           "2026-09-15": 122727,
           "2026-09-16": 284362,
           "2026-09-17": 451541,
-          "2026-09-18": 284308
+          "2026-09-18": 399440,
+          "2026-09-19": 11725
         }
       },
       {
         "id": "snapshot",
         "label": "資產快照（本入口實跑）",
         "unit": "筆",
-        "covers": 1,
+        "covers": 2,
         "day_basis": "ts（每次 build_portal.py 跑完追加的那一行）",
         "cells": {
-          "2026-09-12": null,
           "2026-09-13": null,
           "2026-09-14": null,
           "2026-09-15": null,
           "2026-09-16": null,
           "2026-09-17": null,
-          "2026-09-18": 15
+          "2026-09-18": 15,
+          "2026-09-19": 0
         }
       },
       {
         "id": "endpoint_report",
         "label": "端點上報抵達",
         "unit": "件",
-        "covers": 1,
+        "covers": 2,
         "day_basis": "artifact 的 reported_at（端點自己寫的時間）",
         "cells": {
-          "2026-09-12": null,
           "2026-09-13": null,
           "2026-09-14": null,
           "2026-09-15": null,
           "2026-09-16": null,
           "2026-09-17": null,
-          "2026-09-18": 1
+          "2026-09-18": 1,
+          "2026-09-19": 0
         }
       }
     ]
@@ -773,7 +797,7 @@
     "endpoints_with_kit": 3,
     "joined": 1,
     "open_items": 11,
-    "items": 13,
+    "items": 16,
     "note": "加入單是給**還沒進來的端點**的操作單；每一格的判準都在 join.json 裡，由 build_fleet_portal.py 實算 —— 不是端點自己宣告的。"
   },
   "honesty": {

@@ -509,19 +509,76 @@ def main() -> int:
 
         kept = [r for r in runs if not r["warmup"]]
 
-        def med(axis):
-            vs = [r[axis] for r in kept if r.get(axis) is not None]
-            return sorted(vs)[len(vs) // 2] if vs else None
-        pf, dc = med("prefill"), med("decode")
+        # [CGC 2026-09-18] `med()` used to be `sorted(vs)[len(vs) // 2]`, which is an UPPER median:
+        # for n == 2 that expression is `vs[1]`, i.e. the LARGER of the two kept reps rather than
+        # their midpoint. It stayed invisible while every arm ran `--reps 4` (3 kept => the index
+        # does land on the median), but a 2-kept arm silently quotes the better half. Observed
+        # 2026-09-18 A1: kept decode = [11.73, 6.04] and the driver reported 11.73, as if the run
+        # had never collapsed. That is a one-sided bias in the direction of good news, applied
+        # exactly when the run is unstable -- the worst possible place for it.
+        #
+        # Fix, two parts, because either one alone is insufficient:
+        #   1. a TRUE median (midpoint of the two middle samples when n is even), so n == 2 stops
+        #      being special-cased into the max;
+        #   2. a spread guard that refuses to call the number quotable at all when the kept reps
+        #      disagree, because "the median of a bimodal pair" is not a reading of anything --
+        #      11.73 and 6.04 are two different steady states, and averaging them hides both.
+        # Default `--reps 4` (3 kept) is unaffected by (1): for odd n the true median IS vs[n//2].
+        # The limit is EVIDENCE-BASED, not chosen. Across every clean 3-kept run measured on
+        # 2026-09-18 the kept reps agreed to 1.01-1.03 (V3 11.23/11.17/11.01 = 1.020, A3
+        # 11.52/11.22 = 1.027, A2 14.13/14.03 = 1.008, and the historical off arm
+        # 11.637/11.257 = 1.034). The runs that were NOT clean sit at 1.21 and above (V4
+        # 10.69/12.90/10.86 = 1.207, a thermally degraded window whose prefill fell to 90.85 t/s;
+        # A1 11.73/6.04 = 1.941). Any threshold in 1.05-1.15 separates those two populations, and
+        # 1.10 sits in the middle of the gap. The first draft of this guard used 1.25 and let V4
+        # through -- which is precisely the failure the guard exists to prevent, so the number is
+        # recorded here rather than left as a taste.
+        SPREAD_LIMIT = 1.10   # max/min over kept reps; beyond this a single number is not a reading
+        # (3) and a floor on the SAMPLE COUNT. A median of two numbers is not a median of anything:
+        #     the pair [11.73, 6.04] has no central tendency to estimate, so the honest answer is
+        #     "not enough reps", not the midpoint 8.89. This matters for the RECORD, not just today:
+        #     the standard's 11.64 / 13.68 pair was itself produced with `--reps 3` (2 kept), so the
+        #     guard reclassifies those too -- which is the point. The driver's own default is
+        #     `--reps 4` (3 kept), so the default path stays quotable and only the shortcut is
+        #     flagged. The numbers are not erased; they are marked, with the remedy printed.
+        MIN_KEPT     = 3
+
+        def agg(axis):
+            vs = sorted(r[axis] for r in kept if r.get(axis) is not None)
+            if not vs:
+                return None, None
+            n = len(vs)
+            mid = vs[n // 2] if n % 2 else 0.5 * (vs[n // 2 - 1] + vs[n // 2])
+            return mid, ((vs[-1] / vs[0]) if vs[0] > 0 else None)
+
+        pf, pf_spread = agg("prefill")
+        dc, dc_spread = agg("decode")
+        n_kept = len(kept)
+        stable     = lambda s: (s is None) or (s < SPREAD_LIMIT)
+        enough     = n_kept >= MIN_KEPT
+        quotable   = enough and stable(pf_spread) and stable(dc_spread)
+
+        def note(spread):
+            if not enough:
+                return f"   [!] NOT QUOTABLE: only {n_kept} kept rep(s), need {MIN_KEPT}"
+            return "" if stable(spread) else f"   [!] NOT QUOTABLE: spread {spread:.2f}x (max/min)"
 
         print("\n" + "=" * 74)
         print(f"profile {args.profile}  --  SERVED path, rep1 dropped, port {port}")
         print(f"  ctx      {ctx}  (prefill {'planned from ctx' if prefill_prompt else 'NOT APPLICABLE'})")
         print(f"  prefill  {f'{pf:.2f}' if pf is not None else '-':>10} t/s   "
               f"samples {[round(r['prefill'], 2) for r in kept if r.get('prefill') is not None]}"
-              + (f"   NA: {plan['reason']}" if pf is None else ""))
+              + (f"   NA: {plan['reason']}" if pf is None else "") + note(pf_spread))
         print(f"  decode   {f'{dc:.2f}' if dc is not None else '-':>10} t/s   "
-              f"samples {[round(r['decode'], 2) for r in kept if r.get('decode') is not None]}")
+              f"samples {[round(r['decode'], 2) for r in kept if r.get('decode') is not None]}"
+              + note(dc_spread))
+        if not quotable:
+            if not enough:
+                print(f"  [!] {n_kept} kept rep(s) is below the {MIN_KEPT} needed to quote a median; "
+                      f"use --reps {MIN_KEPT + 1} or more.")
+            if not (stable(pf_spread) and stable(dc_spread)):
+                print(f"  [!] kept reps disagree by more than {SPREAD_LIMIT:.2f}x on at least one axis.")
+            print(f"  [!] Rerun before quoting: this is not a single steady state.")
         # NOTE: the bar needs BOTH axes from ONE server. If the prefill axis is not applicable on
         # this profile, there is no served-path verdict here -- only a decode number.
         if pf is None and dc is not None:
@@ -530,6 +587,9 @@ def main() -> int:
                   f"this profile has {ctx})")
             print(f"  decode-only number above is still comparable across profiles.")
             meets = None
+        elif not quotable:
+            meets = False
+            print(f"  bar 250/12 -> FAIL (not quotable: see the spread note above)")
         else:
             meets = pf is not None and dc is not None and pf >= BAR_PREFILL and dc >= BAR_DECODE
             print(f"  bar 250/12 -> {'PASS' if meets else 'FAIL'}")
@@ -542,6 +602,11 @@ def main() -> int:
                  "ctx_resolved_dump": ctx_dump, "ctx_live_props": ctx_live,
                  "prefill_plan": plan, "prefill_tokens_planned": plan.get("tokens"),
                  "runs": runs, "prefill": pf, "decode": dc, "meets_bar": meets,
+                 # Recorded rather than inferred: whether a number may be quoted is a property of
+                 # this run, and it was previously left for the reader to eyeball from `samples`.
+                 "prefill_spread": pf_spread, "decode_spread": dc_spread,
+                 "n_kept": n_kept, "min_kept": MIN_KEPT,
+                 "quotable": quotable, "spread_limit": SPREAD_LIMIT,
                  "valid": not (evidence["sigterm"] or killed),
                  "server_killed": bool(evidence["sigterm"] or killed),
                  "server_log": str(logpath)},

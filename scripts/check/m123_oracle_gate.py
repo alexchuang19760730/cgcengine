@@ -63,7 +63,14 @@ Usage:
 
 Exit code: 0 = M1 and M2 both 1.0, 1 = any difference, 2 = harness error / not comparable.
 """
+# This interpreter is Python 3.9.6: without the future import, PEP 604 annotations such as
+# `port: int | None = None` are EVALUATED at def time and raise TypeError, which killed the whole
+# gate (not just the annotated call) for every caller. Deferring annotation evaluation fixes that
+# without changing a single line of the annotated code.
+from __future__ import annotations
+
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -225,8 +232,26 @@ def _post(url, payload, timeout=300.0):
         return r.read()
 
 
-def kill_servers():
-    subprocess.run(["pkill", "-9", "-f", "llama-server"], check=False)
+def kill_servers(port: int | None = None):
+    """Preflight cleanup. With a port, only that listener is targeted: `pkill -f llama-server`
+    also matches every parallel session's server (http_duo.py:31,285). llama-bench has no port, so
+    its pattern kill stays -- it is a tool the gate itself never leaves running.
+
+    [CGC 2026-09-19] The `else` branch used to fall back to `pkill -9 -f llama-server` precisely
+    when nothing was listening on our port -- i.e. the idlest moment on the box, and therefore the
+    moment when the only servers that pattern can match are OTHER sessions'. "Free the port" means
+    "kill our listener", and with no listener on that port there is nothing of ours to free. A
+    pid-blind kill here cannot make our launch succeed; it can only break someone else's run, so
+    the fallback is removed. The no-port call (used only where a port genuinely does not exist)
+    keeps the pattern kill and says so.
+    """
+    if port is not None:
+        pids = server_listeners(port)
+        if pids:
+            subprocess.run(["kill", "-9", *pids], check=False)
+        # else: nothing of ours is on that port. Do NOT widen to a pattern kill.
+    else:
+        subprocess.run(["pkill", "-9", "-f", "llama-server"], check=False)
     subprocess.run(["pkill", "-9", "-f", "llama-bench"], check=False)
     time.sleep(1.0)
 
@@ -234,6 +259,57 @@ def kill_servers():
 def server_pids():
     out = subprocess.run(["pgrep", "-f", "build/bin/llama-server"], capture_output=True, text=True)
     return [int(x) for x in out.stdout.split() if x.strip().isdigit()]
+
+
+def server_listeners(port: int) -> list[str]:
+    """PIDs listening on `port`. The pid-blind `server_pids()` above answers "is any server up",
+    which is what the readiness/teardown loop wants; this one answers "is OURS up", which is what
+    a teardown must use on a box shared with other sessions."""
+    out = subprocess.run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+                         capture_output=True, text=True).stdout
+    return [x for x in out.split() if x.strip().isdigit()]
+
+
+def engine_digest() -> dict:
+    """md5 of the linked engine artifacts, recorded with every verdict.
+
+    Why this is not optional: on 2026-09-19 the same probe with the same env and argv produced
+    PLAIN_MATCH TRUE at 02:57 and FALSE at 04:0x with ONE difference between them -- libllama was
+    rebuilt in between -- and the artifact that had been linked at 02:54 was already gone from
+    disk, so the build could not be bisected after the fact. An M1/M2/M3 verdict has the same
+    exposure: "the gate passed" is only a statement about a build if the build is named. With the
+    digest in the summary, a flip is build identity, not a mystery.
+    """
+    out = {}
+    for name in ("libllama.0.0.279.dylib", "libggml-metal.0.19.0.dylib",
+                 "libggml-base.0.19.0.dylib", "llama-server"):
+        p = ROOT / "src" / "llama.cpp" / "build" / "bin" / name
+        if not p.exists():
+            continue
+        h = hashlib.md5()
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        out[name] = {"md5": h.hexdigest()[:16], "mtime": int(p.stat().st_mtime)}
+    return out
+
+
+def tree_dirty() -> dict:
+    """Tracked-file diff state at verdict time. A gate PASS that does not say whether the tree
+    matched HEAD cannot be reproduced later -- and this box runs parallel sessions that edit the
+    same tree."""
+    info = {}
+    try:
+        head = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=str(ROOT),
+                              capture_output=True, text=True).stdout.strip()
+        st = subprocess.run(["git", "status", "--porcelain"], cwd=str(ROOT),
+                            capture_output=True, text=True).stdout
+        tracked = [l for l in st.splitlines() if l and not l.startswith("??")]
+        info = {"head": head, "dirty_tracked": len(tracked),
+                "dirty_paths": sorted(l[3:].strip() for l in tracked)[:20]}
+    except Exception:  # noqa: BLE001 - provenance must never fail the run it describes
+        pass
+    return info
 
 
 def tee(name, text):
@@ -370,6 +446,34 @@ def config_stamp(cfg):
     }
 
 
+def _norm_path_value(s):
+    """A path-valued entry compares by the BYTES it names, not by its spelling.
+
+    Measured 2026-09-19: `CGC_SERVER_MTP=0` resolves MODEL to
+    `models/gguf/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`, which is a SYMLINK whose realpath and size
+    (13,663,116,512 B) are byte-for-byte those of the MTP carrier the reference was dumped with.
+    The stamp diff nevertheless reported `CGCENV.MODEL` as one of 36 numerics-determining
+    differences -- a difference in *spelling* on a check that decides whether a comparison is
+    legitimate at all. That matters beyond cosmetics: this file's whole discipline is "a
+    cross-config diff is not a regression", so a spelling-only diff makes a legitimate
+    comparison look illegitimate and pushes the reader toward re-baselining (which would destroy
+    the reference) or toward `--allow-incomparable` (which discards the check everywhere).
+
+    Only absolute paths that exist are resolved; anything else is returned unchanged, so a knob
+    value like `1` or `none` can never be mistaken for a filename. The claim is unchanged in
+    strength -- different bytes still differ (realpath OR size moves), same bytes no longer do.
+    """
+    if not isinstance(s, str) or not s.startswith("/"):
+        return s
+    p = Path(s)
+    try:
+        if not p.exists():
+            return s
+        return f"{p.resolve()}|size={p.stat().st_size}"
+    except OSError:  # noqa: BLE001 - an unreadable path is just a string
+        return s
+
+
 def diff_stamp(a, b):
     """Return a list of human-readable differences between two config stamps."""
     out = []
@@ -378,14 +482,36 @@ def diff_stamp(a, b):
         for k in sorted(set(ka) | set(kb)):
             va, vb = ka.get(k, "<absent>"), kb.get(k, "<absent>")
             if va != vb:
-                out.append(f"{section}.{k}: ref={va!r}  now={vb!r}")
+                na, nb = _norm_path_value(va), _norm_path_value(vb)
+                if na == nb:
+                    continue  # same bytes, different spelling -- not a config difference
+                out.append(f"{section}.{k}: ref={va!r}  now={vb!r}"
+                           if na == va and nb == vb else
+                           f"{section}.{k}: ref={na!r}  now={nb!r}")
     if a.get("ARG") != b.get("ARG"):
         sa, sb = a.get("ARG", []), b.get("ARG", [])
         for i in range(max(len(sa), len(sb))):
             va = sa[i] if i < len(sa) else "<absent>"
             vb = sb[i] if i < len(sb) else "<absent>"
-            if va != vb:
+            if va != vb and _norm_path_value(va) != _norm_path_value(vb):
                 out.append(f"ARG[{i}]: ref={va!r}  now={vb!r}")
+    return out
+
+
+def stamp_notes(a, b):
+    """Path-valued axes that differ by SPELLING only, i.e. the diffs diff_stamp dropped.
+
+    Reported rather than swallowed: "0 config diffs" must mean "nothing numeric differs", and a
+    reader has to be able to tell that apart from "the model path was spelled the same by luck".
+    Silence about a dropped axis is how an instrument turns into an assumption.
+    """
+    out = []
+    for section in ("CGCENV", "ENV"):
+        ka, kb = a.get(section, {}), b.get(section, {})
+        for k in sorted(set(ka) | set(kb)):
+            va, vb = ka.get(k, "<absent>"), kb.get(k, "<absent>")
+            if va != vb and _norm_path_value(va) == _norm_path_value(vb):
+                out.append(f"{section}.{k}: ref={va!r}  now={vb!r}  -> same bytes, not a diff")
     return out
 
 
@@ -445,8 +571,22 @@ def main() -> int:
                          "reference out from under the gate.")
     ap.add_argument("--ref", default=str(DEFAULT_REF))
     ap.add_argument("--dump", default="/tmp/m123_oracle_gate.jsonl")
+    # [CGC 2026-09-19] The default probe answers "42" and stops, so it always yields 9 oracle
+    # records regardless of CGC_LOGITS_ORACLE_FIRST_N. That is enough to see that a knob moved the
+    # logits, and NOT enough to say whether the choice survives -- greedy decoding is chaotic, and
+    # five steps is five coin flips. Ask for a long generation when the question is "does it
+    # matter", and keep the defaults so existing dumps stay reproducible.
+    ap.add_argument("--probe-prompt", default=PROBE_PROMPT,
+                    help="prompt for the dump run. Default is the short arithmetic probe; pass a "
+                         "prompt that generates at length when you need many steps to compare.")
+    ap.add_argument("--probe-max-tokens", type=int, default=48,
+                    help="max_tokens for the dump run (default 48, matching the reference dumps).")
     ap.add_argument("--tag", default="")
-    ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--port", type=int, default=None,
+                    help="port the server binds. Default: the resolved profile's CGCENV PORT "
+                         "(prefill250 -> 8080). The gate PROBES this port and teardown CLEANS it, "
+                         "so it must equal what the profile binds; a different value is refused "
+                         "rather than measured against a socket nobody owns.")
     ap.add_argument("--env", action="append", default=[],
                     help="extra KEY=VAL handed to run_server.sh (its allowlist still applies; "
                          "a dropped variable prints nothing, so pass only documented knobs). "
@@ -518,7 +658,7 @@ def main() -> int:
         pin = "" if args.no_pin_oracle_env else f"  (oracle pin: {list(ORACLE_PINNED_ENV)})"
         print(f"  extra   : {extra_env}{pin}", flush=True)
 
-    # (1) resolve the launch config FIRST -- before anything is launched, and before kill_servers()
+    # (1) resolve the launch config FIRST -- before anything is launched, and before kill_servers(getattr(args, "port", None))
     # so the pkill this incurs cannot race our own server.
     try:
         now_cfg = resolve_launch(args.profile, extra_env)
@@ -526,6 +666,36 @@ def main() -> int:
         print(f"ERROR: could not resolve the launch configuration: {e}", file=sys.stderr)
         return 2
     now_stamp = config_stamp(now_cfg)
+
+    # [CGC 2026-09-19] The probe target and the server's bind port were two pieces of state that
+    # nothing tied together. `--port 8081` against a profile that binds 8080 gave a run that looked
+    # healthy -- a dump appeared, because the startup anchor writes one record -- and then sat for
+    # the full 300 s ready-timeout polling a socket nobody owned, followed by a teardown that
+    # cleaned the wrong port. Take the port from the resolved config (by construction what
+    # run_server.sh will bind) and refuse a mismatch; this sits before any kill_servers call.
+    profile_port = now_cfg["cgcenv"].get("PORT")
+    if profile_port is None:
+        print("ERROR: the resolved profile carries no PORT; cannot tie --port to the launch.\n"
+              f"       resolved CGCENV keys: {sorted(now_cfg['cgcenv'])}", file=sys.stderr)
+        return 2
+    try:
+        profile_port = int(profile_port)
+    except ValueError:
+        print(f"ERROR: resolved PORT is not an integer: {profile_port!r}", file=sys.stderr)
+        return 2
+    if args.port is None:
+        args.port = profile_port
+        print(f"  port    : {args.port} (from profile {args.profile})", flush=True)
+    elif args.port != profile_port:
+        print(flush=True)
+        print("!" * 74)
+        print(f"  PORT MISMATCH: --port {args.port}, but profile {args.profile} binds {profile_port}.")
+        print("  The gate PROBES --port and teardown CLEANS --port, so a mismatch would poll a")
+        print("  socket nobody owns for the whole ready-timeout and then clean the wrong listener.")
+        print("  Refusing to launch. Either drop --port (it defaults to the profile's port) or")
+        print("  change the profile's PORT so the two agree.")
+        print("!" * 74, flush=True)
+        return 2
 
     # (2) comparability precondition. Both sides resolved by the same code path, so this is an
     # exact comparison, not a curated knob list that can go stale.
@@ -542,6 +712,8 @@ def main() -> int:
         else:
             cfg_diffs = diff_stamp(ref_stamp, now_stamp)
             comparable = not cfg_diffs
+            for n in stamp_notes(ref_stamp, now_stamp):
+                print(f"  note    : {n}", flush=True)
     if not comparable:
         print(flush=True)
         print("!" * 74)
@@ -555,7 +727,7 @@ def main() -> int:
         print(f"        --write-ref {ref.relative_to(ROOT)}")
         print("!" * 74, flush=True)
 
-    kill_servers()
+    kill_servers(getattr(args, "port", None))
     dump = Path(args.dump)
     for p in (dump, Path(str(dump) + ".cap"), Path(str(dump) + INVALID_SUFFIX)):
         if p.exists():
@@ -593,7 +765,7 @@ def main() -> int:
         except subprocess.TimeoutExpired:
             print("ERROR: run_server.sh did not return within 180s (it should detach and exit)",
                   file=sys.stderr)
-            kill_servers()
+            kill_servers(getattr(args, "port", None))
             return 2
     out = launch_log.read_text(errors="replace")
     print(out.rstrip(), flush=True)
@@ -619,26 +791,41 @@ def main() -> int:
             time.sleep(2.0)
     if not ready:
         print(f"ERROR: server did not become ready within {args.ready_timeout}s", file=sys.stderr)
-        kill_servers()
+        kill_servers(getattr(args, "port", None))
         return 2
     print(f"  ready   : {time.time() - t0:.0f}s", flush=True)
+    # In the transcript, next to the dump path: a dump's provenance must include the probe that
+    # produced it, or two dumps of different lengths look interchangeable in the write-up.
+    print(f"  probe   : max_tokens={args.probe_max_tokens} "
+          f"prompt={args.probe_prompt[:46]!r}", flush=True)
 
-    payload = {"model": "local", "messages": [{"role": "user", "content": PROBE_PROMPT}],
-               "temperature": 0.0, "max_tokens": 48}
+    payload = {"model": "local", "messages": [{"role": "user", "content": args.probe_prompt}],
+               "temperature": 0.0, "max_tokens": args.probe_max_tokens}
     try:
         body = _post(f"{base}/chat/completions", payload)
         ans = json.loads(body).get("choices", [{}])[0].get("message", {}).get("content", "")
     except Exception as e:  # noqa: BLE001 - harness
         print(f"WARN: probe request failed: {e}", flush=True)
         ans = ""
-    print(f"  probe   : {PROBE_PROMPT!r} -> {ans.strip()[:60]!r}", flush=True)
+    print(f"  answer  : {ans.strip()[:60]!r}", flush=True)
     time.sleep(1.5)
 
     # SIGINT so the cache teardown stats are emitted into the server log.
     if leader:
         subprocess.run(["kill", "-INT", str(leader)], check=False)
     else:
-        subprocess.run(["pkill", "-INT", "-f", "build/bin/llama-server"], check=False)
+        # `pkill -f build/bin/llama-server` is pid-blind and this box runs parallel sessions, so as
+        # a teardown it can only ever hit somebody else's server -- the defect http_duo.py:31,285
+        # already recorded. Match on the port string instead. The probe is the only thing we own.
+        subprocess.run(["pkill", "-INT", "-f", f"--port {args.port}"], check=False)
+    # [CGC 2026-09-19] The port-scoped sweep used to live in the `else` branch above, i.e. it was
+    # unreachable in the one run that needed it: `leader` came from the `server PID=` line and
+    # pointed at a pid that had already exited ("kill: 47306: No such process"), while the real
+    # server kept listening. Always sweep the port AFTER the leader kill, never only instead of it.
+    time.sleep(1.0)
+    held = server_listeners(args.port)
+    if held:
+        subprocess.run(["kill", "-INT", *held], check=False)
     t1 = time.time()
     while time.time() - t1 < args.teardown_timeout:
         if not server_pids():
@@ -646,7 +833,7 @@ def main() -> int:
         time.sleep(1.0)
     if server_pids():
         print("WARN: server did not exit on SIGINT; killing", flush=True)
-        kill_servers()
+        kill_servers(getattr(args, "port", None))
     print(f"  stopped : after {time.time() - t1:.0f}s", flush=True)
 
     if not dump.exists() or dump.stat().st_size == 0:
@@ -731,6 +918,8 @@ def main() -> int:
         "comparable": comparable,
         "config_diffs": cfg_diffs,
         "ok": bool(comparable and m1r == 1.0 and m2r == 1.0),
+        "engine_digest": engine_digest(),
+        "tree": tree_dirty(),
         "report": str(report),
     }
     (RESULT_DIR / f"summary_{tag}.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2))
@@ -748,6 +937,11 @@ def main() -> int:
               f"M3(topk)={summary['m3_topk_set_agreement']}  n={summary['n_compared']}")
         print(f"cross-tab: {d['cross_tab']}")
     print(f"summary  : {RESULT_DIR / f'summary_{tag}.json'}")
+    print("  build   : " + "  ".join(
+        f"{k}={v['md5']}" for k, v in summary["engine_digest"].items()) or "  build   : (none)")
+    tr = summary["tree"]
+    if tr:
+        print(f"  tree    : {tr.get('head')} dirty_tracked={tr.get('dirty_tracked')}")
     print("=" * 74)
     if not comparable:
         return 2 if not args.allow_incomparable else (0 if summary["ok"] else 1)

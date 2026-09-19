@@ -1,0 +1,346 @@
+<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<title>prefill 250 / decode 25 — 兩條線的整合技術策略白皮書（2026-09-19）</title>
+<style>
+ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;
+   max-width:1080px;margin:2rem auto;padding:0 1.2rem;line-height:1.65;color:#1a1a1a}
+ h1{font-size:1.5rem;border-bottom:2px solid #333;padding-bottom:.4rem}
+ h2{font-size:1.15rem;margin-top:2rem;border-left:4px solid #555;padding-left:.6rem}
+ h3{font-size:1rem;margin-top:1.3rem;color:#333}
+ table{border-collapse:collapse;width:100%;margin:.8rem 0;font-size:.92rem}
+ th,td{border:1px solid #ddd;padding:.4rem .55rem;text-align:right}
+ th:first-child,td:first-child{text-align:left}
+ th{background:#f4f4f4}
+ code{background:#f2f2f2;padding:.1rem .3rem;border-radius:3px;font-size:.88em}
+ pre{font-size:.82rem;background:#f7f7f7;padding:.8rem;overflow:auto}
+ .badge{display:inline-block;padding:.12rem .5rem;border-radius:10px;color:#fff;font-size:.8rem;
+   font-weight:600}
+ .ok{background:#1a7f37} .bad{background:#b42318} .warn{background:#9a6700} .info{background:#0550ae}
+ .note{background:#fbf8e5;border-left:4px solid #d4a72c;padding:.6rem .9rem;margin:1rem 0}
+ .stop{background:#fdeceb;border-left:4px solid #b42318;padding:.6rem .9rem;margin:1rem 0}
+ .v{margin:.5rem 0 .5rem .6rem}
+</style></head><body>
+
+<h1>prefill 250 / decode 25 — 兩條線的整合技術策略白皮書</h1>
+
+<p><strong>2026-09-19</strong> · 分支 <code>demo/sweet-spot-windows-fix</code> · HEAD <code>47e524da8</code> ·
+目標裝置：16 GB M4 Mac Air（記憶體頻寬 ~120 GB/s、內接 SSD ~3 GB/s）· 目標：<b>prefill ≥ 250 tok/s、decode ≥ 25 tok/s</b>，且 M1/M2/M3 逐位元一致。</p>
+
+<div class="note"><strong>怎麼讀這份文件：</strong>每個數字都掛三種標籤之一 ——
+<b>[量]</b> 直接量到、<b>[推]</b> 由別的量推導、<b>[預]</b> 事前註冊、可否證的預測。
+凡是被<b>除役</b>過的數字（見 §7）一律不出現在路線圖的算式裡。這份文件的首要目的不是給出樂觀的
+總和，而是讓「哪一步該誰做、用什麼判定」在動手前就固定下來。</div>
+
+<h2>§1 回答「另外一條現在負責什麼」——用擁有物認定</h2>
+
+<p>共享日誌裡的 <code>線 A/B/C</code> 標籤<b>不可靠</b>：全庫（09-18／09-19 兩份日誌）只有兩處使用，
+且互相矛盾 —— 一處說「F 的修法是線 B（<code>sntok_curve.py</code>）與線 C（STEP_BUDGET）的地盤」，
+另一處說「<code>ggml-backend.cpp</code> 自此歸線 B（要實作 overlap 的那條）」。
+<s>代號</s> 不是判準，<b>擁有物才是</b>（<code>docs/SHARED_SRC_OWNERSHIP_2026-09-19.md</code> ＋ <code>git status</code>）。</p>
+
+<table><thead><tr><th></th><th>線 I — 儀器／快取幾何線（另一條）</th><th>線 S — 步時預算線（本線）</th></tr></thead><tbody>
+<tr><td>手上未提交的引擎檔</td><td><code>llama-context.cpp</code> +116、<code>llama-expert-cache.cpp</code> +30／<code>.h</code> +12、<code>run_server.sh</code> +109、<code>llama-bench.cpp</code>（混合）</td><td>無（引擎零改動；<code>ggml-backend.cpp</code> 已由線 I 提交於 <code>4fdfaa8de</code> 後轉出）</td></tr>
+<tr><td>今天的產出</td><td>KIND×OP 儀器（<code>4fdfaa8de</code>）、<code>attn_moe_split.py</code>、op 級分解、逐層 gap 表、hook 窗定位、<code>slot_alloc_curve.py</code></td><td><code>gdn_split.py</code>、<code>sntok_curve.py</code>、<code>decode_window_harness.py</code>、<code>plain_match_window.py</code>、<code>DECODE_STEP_BUDGET</code>、<code>GDN_ATTENTION_SPLIT</code></td></tr>
+<tr><td><b>現在這一刻在做</b></td><td><b>Run E：逐層槽位「只加不減」</b>（頭段 L0–L6＋L11 拿 <code>S_for_0</code>、尾段留 143、MTP 頭 256 ⇒ 6384 槽 ≈ 6.9 GiB），帶 4 條事前預測</td><td>窗口守門（<code>plain_match_window.py</code>，等到 8080 空＋無 llama＋reclaimable ≥ 8 GB 就自動跑 <code>plain_match_ab</code>）</td></tr>
+<tr><td>它的唯一槓桿種類</td><td><b>結構</b>：快取槽位幾何、hook 窗、span 內容 —— 全是引擎／env</td><td><b>分母</b>：每步帶幾個 token ＋ 判定的紀律（閘門、窗口、數字除役）</td></tr>
+</tbody></table>
+
+<h3>線 I 現在這一格，具體在做什麼（Run D → Run E）</h3>
+
+<p>它昨天到今天把「hook 窗」從一個標籤變成可指名的東西，然後用<b>逐層槽位重分配</b>去打它。
+Run D 的結果是<b>機制被證實、但分配器把尾段收得太緊</b>：</p>
+
+<table><thead><tr><th>run</th><th>配置</th><th>total 槽</th><th>hit</th><th>misses</th><th>compulsory</th><th>capacity</th><th>layers_over</th></tr></thead><tbody>
+<tr><td>A（基線）</td><td>均勻 143 ＋ MTP 256</td><td>5976</td><td>63.6%</td><td>8128</td><td>3792</td><td><b>4336</b></td><td>5</td></tr>
+<tr><td>C（部分）</td><td>只有 L0=232</td><td>5952</td><td>62.7%</td><td>7689</td><td>4407</td><td>3282</td><td>5</td></tr>
+<tr><td><b>D（完整）</b></td><td>逐層（頭 232…尾 96）</td><td><b>5559</b></td><td><b>58.6%</b></td><td>7762</td><td>5008</td><td><b>2754</b></td><td><b>13</b></td></tr>
+</tbody></table>
+
+<div class="v"><span class="badge ok">機制成立</span> 給一層它需要的槽 ⇒ 該層 hook 成本消失：
+L0–L3 的 <code>cb</code> 由 <b>4.23 / 3.91 / 3.85 / 2.55</b> → <b>0.13 / 0.17 / 0.17 / 0.14 ms/層</b>（Run C 單層驗過一次，Run D 四層重現）。</div>
+<div class="v"><span class="badge bad">尾段抗議</span> 同一支 run 上 L20–L29 的 <code>cb</code> 由 ~0.2–0.32 升到 <b>~1.15–1.28 ms/層</b>，
+<code>layers_distinct_over_slots</code> 5 → 13 ⇒ 離線分配器假設「逐層獨立、單一冷啟重播」，
+而真實是跨 3 個 request、有 run-to-run 路由變異。</div>
+<div class="v"><span class="badge warn">淨帳</span> hook 窗 <b>28.1% → 23.4%</b>（真、但小），hit rate <b>變差</b> 63.6%→58.6%，
+記憶體反而少（6430 → 5968 MiB）。<b>它縮了池，難怪尾段抗議。</b></div>
+<div class="v"><span class="badge info">★ 沒被用到的預算</span> 池的上限是 8 GiB，<b>實配只有 6.4 GiB</b>（5976 槽 × 1.073 MiB）
+⇒ <b>約 1.7 GiB 是空的</b>。這是它 Run E「只加不減」的依據。</div>
+
+<p>Run E 的事前預測（<b>[預]</b>，可否證）：① <code>capacity</code> 4336 → ~1000；② <code>cb</code> 在 L0–L6／L11 崩到平底且尾段不再上升；③ <code>layers_over</code> 回到 5；④ 若 ③ 不成立 ⇒ 143 對尾段本來就不夠，該<b>擴大總預算</b>而不是重分配。</p>
+
+<h2>§2 兩張表是同一筆錢 —— A 與 B 不是兩個方向</h2>
+
+<p>線 I 的 §5 把步時同時用兩個視角切開（中位數，129 個 decode 步）。它們<b>都閉合到 ~95%</b>，
+因為它們是同一條時長：</p>
+
+<table><thead><tr><th>切法</th><th>分解</th><th>合計</th><th>vs <code>total</code> 216.5</th></tr></thead><tbody>
+<tr><td><b>A</b>（CPU 座位）</td><td><code>wait</code> 145.3 ＋ <code>cb</code> 51.1 ＋ <code>submit</code> 8.4</td><td>204.8</td><td>94.6%</td></tr>
+<tr><td><b>B</b>（GPU 座位）</td><td><code>union</code> <b>135.9（62.8%）</b> ＋ <code>gap</code> <b>69.1（31.9%）</b></td><td>204.9</td><td>94.7%</td></tr>
+</tbody></table>
+
+<p>未閉合的 ~5% ＝ MTP 頭（L40）＋ 沒有歸屬到 trunk 的 segment（<code>segs=41</code> vs <code>layers=40</code>）。</p>
+
+<table><thead><tr><th>桶</th><th>它是什麼</th><th>是不是槓桿</th></tr></thead><tbody>
+<tr><td><code>wait</code> 145.3</td><td>CPU 等 GPU。<b>它就是 <code>union + gap</code></b>，不是第三件事</td><td><b>不是槓桿</b>（別放進待辦清單）</td></tr>
+<tr><td><code>cb</code> 51.1</td><td>專家填充。線 I 已證它<b>已被藏住</b>（<code>fill_wait 78 ms/run</code>、prefetch 完成全丟而無人等）</td><td><b>已判死</b>（見 §5 死因表）</td></tr>
+<tr><td><code>submit</code> 8.4</td><td>41 段的 encode + commit</td><td><b>活的、但小</b>（此處 4%、warm 12.1 ms＝8%）</td></tr>
+<tr><td><code>union</code> 135.9</td><td>GPU 跨距＝真的在執行</td><td><b>主戰場</b>（見 §3）</td></tr>
+<tr><td><code>gap</code> 69.1</td><td>段邊界之間的 GPU 空檔</td><td><b>第二</b>，且是整個 overlap 家族的天花板</td></tr>
+</tbody></table>
+
+<div class="stop"><strong>因此「往 A 還是往 B 優化」是假選擇。</strong>
+A 裡只有 <code>submit</code> 是可動的（4–8%）；<code>wait</code> 是 B 的別名，<code>cb</code> 已判死。
+真正的方向是 <b>B</b>，而手段有兩個、作用在完全不同的因子上：<b>把 union 變小</b>（線 I 的結構工作）
+與<b>讓每步多帶 token</b>（線 S 的分母工作）。</div>
+
+<h3>2.1 這個 62.8% / 31.9% 是<b>冷／重載</b>的形狀，不是生產的形狀</h3>
+
+<table><thead><tr><th>regime</th><th>步時</th><th><code>cb</code></th><th><code>gap</code></th><th><code>gap</code>/步</th><th>出處</th></tr></thead><tbody>
+<tr><td>cold（第一個請求）</td><td>129.7 ms</td><td>31.6（24%）</td><td><b>49.7</b></td><td><b>38.3%</b></td><td>線 S <code>gdn_split.py</code></td></tr>
+<tr><td>warm（生產）</td><td>143.4 ms</td><td>14.9（10%）</td><td><b>34.1</b></td><td><b>23.8%</b></td><td>線 S <code>gdn_split.py</code></td></tr>
+<tr><td>線 I 的 129 步中位</td><td>216.5 ms</td><td>51.1（24%）</td><td>69.1</td><td>31.9%</td><td><code>SHARED_SRC_OWNERSHIP</code> §5</td></tr>
+</tbody></table>
+
+<p>引擎自己的關係式 <code>gap ≈ 1.3 × (cb + submit)</code>（<code>llama-context.cpp:6580</code>）在三組數字上都成立
+（warm：<code>1.3×(14.9+12.1)=35.1</code> vs 實測 34.1）。線 I 另外量到
+<code>corr(gap, cb+submit) = 1.000</code>、<code>gap/hook = 1.03→1.21</code> 在整個 run 內穩定 ⇒
+<b>兩件事同時為真</b>：<b>比值是結構性的</b>（線 I 對），<b>絕對值是 regime 綁定的</b>（線 S 對）。
+引用時掛 regime；驗收要看 <b><code>gap</code> 是否下降</b>，不是 <code>cb</code>。</p>
+
+<h2>§3 union 的 62.8% 裡是什麼 —— 兩條線在這裡接上</h2>
+
+<h3>3.1 不是 matmul FLOPs，是記憶體型管線工作（線 I，op 級）</h3>
+
+<table><thead><tr><th>op 家族</th><th>佔 span</th><th>備註</th></tr></thead><tbody>
+<tr><td><code>MUL_MAT</code> ＋ <code>MUL_MAT_ID</code></td><td><b>~19%</b>（15.1 ＋ 3.7）</td><td>兩個 matmul 加起來只有 ~1/5</td></tr>
+<tr><td>elementwise <code>ADD/MUL/UNARY/SCALE</code></td><td><b>~34.7%</b></td><td>最大的一塊</td></tr>
+<tr><td>norm <code>RMS_NORM/L2_NORM</code></td><td>~10.8%</td><td></td></tr>
+<tr><td>copy/gather <code>CPY/GET_ROWS</code></td><td><b>12%</b></td><td>含 GDN 的 conv-state store</td></tr>
+</tbody></table>
+
+<div class="v"><span class="badge info">一半的層可以斷言「span 內沒有空檔」</span> 逐層
+<code>gpu/union ≈ 1.00</code> 佔 2453/4600（<b>53%</b>）⇒ 那些層的 3.55 ms 是真的在執行；
+其餘 47% 是 buffer 重疊（儀器邊界，量不出 span 內空檔）。</div>
+<div class="v"><span class="badge warn">GDN 的額外成本在 union、不在 gap</span> 線 I 的逐層表：
+GDN <code>gap</code> 1.09 vs attn 1.00（幾乎相同），而 GDN <code>union</code> 3.53 vs attn 2.34
+⇒ <b>+1.19 ms/層 × 30 層 ≈ +36 ms/步</b>，且 <code>gpu/union</code> = 1.14（span 內是塞滿的）。
+它指名的機制是 <code>cache_r</code>／GDN conv-state store 的 CPY ——
+<b>2.9 MiB/步卻佔 ~6% 的步 ⇒ overhead-bound，不是頻寬</b>。</div>
+
+<div class="note"><strong>★ 兩條線在同一個量上會合，而這是本白皮書最重要的一格。</strong>
+線 S 用<b>另一個儀器</b>（<code>gdn_split.py</code>，逐層 span）量到同一件事的<b>比例形式</b>：
+GDN/attn span = <b>1.55×</b>，且它跨寬度（1.54/1.54/1.55/1.52）、跨啟動（1.51–1.54）、
+跨群內位置（1.55/1.56/1.56）都不變；逐層中位數 GDN 1.83–2.33 vs attn 1.14–1.30（唯一例外 L39 = 2.22）。
+線 S 的加性形式（+0.77 ms/層）<b>不穩定</b>（CV 68%、與該步自己的 <code>union_sum</code> 相關 +0.51），
+可引用的形式是那個比例（CV 22%）。<br>
+⇒ <b>線 S 的「3/4 找不到專屬 op」與線 I 的「cache_r 的 CPY」是同一格的兩種描述</b>：
+線 S 只證明了 class-exclusive op（conv 0.032 ＋ scan/state 0.131 = 0.163 ms/層）只佔 21%，
+而線 I 指名了剩下那塊的一個具體候選。<b>這不是矛盾，是一個待併的量測。</b></div>
+
+<h2>§4 整合路線圖 —— 用<b>量到的</b>分母重算</h2>
+
+<h3>4.1 ★ 1.5× 的矛盾已解 —— 而它不是量測衝突，是配對錯誤</h3>
+
+<p>工具 <code>scripts/check/mean_len_direct.py</code>（11 項自測）不做任何推算：它只讀<b>引擎自己逐請求印的那一行</b>，
+再用<b>獨立路線</b>核對步數。引擎的定義（<code>server-context.cpp:674</code>）是
+<code>mean_acc_len = 1.0 + n_draft_accepted / n_draft_verif_steps</code>，於是同一個步數有三條路：</p>
+
+<table><thead><tr><th>路線</th><th>值（<code>190212</code> task 8，逐字取自 log）</th></tr></thead><tbody>
+<tr><td>A：<code>emitted / mean_len</code> ＝ 128 / 2.40</td><td><b>53.3</b></td></tr>
+<tr><td>B：<code>generated_drafts / k</code> ＝ 159 / 3</td><td><b>53.0</b></td></tr>
+<tr><td>C：<code>graphs reused</code></td><td><b>56</b></td></tr>
+<tr><td>代數：<code>accepted/(mean_len−1)</code> ＝ 74/1.40</td><td>52.9 — <b>定義重讀，不是證據</b></td></tr>
+</tbody></table>
+
+<div class="v"><span class="badge ok">17 個夠長的請求，A 與 B 全在 5% 內</span>（最差 3.3%；C 的中位 100.8%）。
+短於 20 步的 11 個請求被<b>排除</b>而非判過 —— 最後一輪 draft 被截斷的偏差 ≈ 1/步數
+（6.4 步 16.7%、53 步 0.6%，與 1/steps 定律吻合），所以短請求不能裁決 <code>k</code>。</div>
+<div class="v"><span class="badge ok">accept 模型在同樣 17 個請求上全數成立</span>
+<code>mean_len == 1 + k·a</code> 誤差 &lt;5% ⇒ 這個模型是<b>被驗證的</b>，不是假設的。</div>
+<div class="v"><span class="badge bad">兩個錯的 mean_len 都不是量測衝突</span>
+<b>1.75</b> 是把 <b>MTP-on</b> 的 token 數除以 <b>MTP-off</b> 的步時（143.4 ms），而 MTP-on 的 verify 步是
+<b>227 ms</b>（中位；p10 175 / p90 295）。<b>2.67</b> 是除數錯：我用 <code>288−180=108</code> 當輪數，
+引擎的 <code>verify_steps</code> 是 <code>309/3=103</code> ⇒ 正確值是 <b>2.75</b>。
+兩者都是同一個病：<b>分子與分母來自不同 regime。</b></div>
+
+<h3>4.1b 修正後的實測（同 arm 配對 —— 唯一有意義的配對）</h3>
+
+<p>7 個 log、17 個夠長的請求，全部同一顆 build（MTP 開、<code>k=3</code>、greedy）：</p>
+
+<table><thead><tr><th>log</th><th>n</th><th>mean_len</th><th>verify 步</th><th>t/s</th><th>accept</th></tr></thead><tbody>
+<tr><td><code>190212</code></td><td>2</td><td>2.40</td><td>236.8 ms</td><td>10.14</td><td>0.46541</td></tr>
+<tr><td><code>191400</code></td><td>2</td><td>2.40</td><td>274.1 ms</td><td>9.03</td><td>0.46541</td></tr>
+<tr><td><code>193907</code></td><td>3</td><td>2.97</td><td>245.9 ms</td><td>11.95</td><td>0.66316</td></tr>
+<tr><td><code>194311</code></td><td>3</td><td>2.21</td><td>186.2 ms</td><td>11.87</td><td>0.40828</td></tr>
+<tr><td><code>195229</code></td><td>3</td><td>2.31</td><td>199.6 ms</td><td>10.62</td><td>0.44172</td></tr>
+<tr><td><code>201211</code></td><td>2</td><td>2.52</td><td>203.2 ms</td><td>12.88</td><td>0.51007</td></tr>
+<tr><td><code>201338</code></td><td>2</td><td>2.52</td><td>217.9 ms</td><td>11.57</td><td>0.51007</td></tr>
+<tr><td><b>全部夠長的</b></td><td><b>17</b></td><td><b>2.40</b>（p10 2.19 / p90 2.97）</td><td><b>226.8 ms</b>（p10 175 / p90 295）</td><td><b>10.58</b></td><td>0.41–0.66</td></tr>
+<tr><td>對照：MTP-off</td><td>—</td><td><b>1.00</b>（依定義）</td><td><b>~105 ms</b>（9.18–9.82 t/s ÷ 1.0）</td><td>9.18–9.82</td><td>—</td></tr>
+</tbody></table>
+
+<div class="note"><strong>★ 這張表最重要的兩個推論。</strong>
+① MTP 的淨值 <b>= mean_len ÷ verify 步的膨脹</b>：<code>2.40 / (227/105) = 2.40/2.16 = </code><b>+11%</b>
+（端到端實測 +20~35%，差額是 arm 差異）。<b>所以 MTP 值不值得，取決於 verify 步的固定成本，不是 accept 本身。</b>
+② raise accept 在 <b>固定 k</b> 下<b>不會加寬 verify 批次</b>（批次恆為 k+1＝4），所以它沒有讓步變貴的機制
+⇒ 它是最接近「免費乘數」的槓桿。跨 arm 看到的「accept 高 ⇒ 步時高」是 arm／regime 混淆，不是因果 ——
+這是一個可否證的點，[預] 由 M5 驗。</div>
+
+<h3>4.1c ★ M5 的前置判決（<code>plain_match</code>，守門於 20:12 自動執行，rc=0）</h3>
+
+<p>這是那個從 2026-09-14 記錄至今、從未裁決的問題：<b>verify 批次算出的 target 分佈，是不是與逐 token 解碼相同？</b>
+守門（<code>plain_match_window.py</code>：8080 空 ＋ 無 llama ＋ reclaimable ≥ 8 GB 且連續兩次）自己等到窗口、開了 4 臂（<code>--order 1,0,1,0</code>）。</p>
+
+<table><thead><tr><th>欄位</th><th>值</th><th>意義</th></tr></thead><tbody>
+<tr><td><code>verdict</code></td><td><b>PLAIN_MATCH FALSE</b></td><td>verify 路徑與逐 token 解碼不一致</td></tr>
+<tr><td><code>first_divergence_pos</code></td><td><b>205</b> / 262</td><td><b>前 204 個位置完全相同</b> ⇒ 不是模板、不是載體、不是路由錯位</td></tr>
+<tr><td><code>diverging_positions</code></td><td>57（21.76%）</td><td>分歧集中在尾段</td></tr>
+<tr><td><code>within_arm_deterministic</code></td><td><b>True</b></td><td>每一臂都重現自己 ⇒ 這是真的路徑差異，不是噪音</td></tr>
+<tr><td><code>same_carrier</code></td><td><b>True</b></td><td>同一組模型／head ⇒ 可歸因</td></tr>
+<tr><td>accept（兩臂）</td><td>0.51007（76/149）</td><td>與 §4.1b 一致</td></tr>
+</tbody></table>
+
+<div class="v"><span class="badge ok">判決是可否證且有歸因的</span> 四次臂全是 <code>within-arm identical=True</code>、
+<code>same_carrier=True</code> ⇒ 「兩臂不同」這件事本身成立。這比之前任何一次 MTP A/B 都強：
+<code>CGC_MM_BITIDENT</code> 已經從 MTP 區塊 hoist 出來（見 §1），兩臂不再跑不同 kernel。</div>
+<div class="v"><span class="badge bad">它把 M5 的順序翻了</span> 分支是「<b>verify 路徑有真實缺陷</b>」，不是「draft 頭不夠好」。
+所以 accept 0.58 <b>至少有一部分買在一個錯的 target 上</b>，而修它不是調參 —— 那正是先前定位的方向
+（手寫 softmax matmul → 每 token 一次 fused SDPA）。accept 會<b>免費</b>上升。</div>
+<div class="v"><span class="badge warn">★ 位置 205 是一條還沒用到的線索</span> 若分歧是常數偏移，它會在位置 0 就出現。
+<b>前 204 個位置逐位元相同、然後才開始分歧</b> ⇒ 指向一個<b>累積性／閾值性</b>的機制
+（上下文長度相關的 kernel 切換、state 精度累積、或某個在 205 附近才越界的量）。
+這是一個便宜的下一個實驗：把 <code>n-predict</code> 掃在 205 前後，看首個分歧位置是否跟著移動。</div>
+
+<p>其餘既有的量：</p>
+<table><thead><tr><th>量</th><th>值</th><th>出處</th></tr></thead><tbody>
+<tr><td>accept（greedy、nail 載體、pool 8.0）</td><td><b>0.5825（180/309）</b></td><td>跨 build 重現（09-17 <code>_r38</code>/<code>_r40</code>/<code>_r54</code> ＋ 09-19）</td></tr>
+<tr><td>accept 的 config 散布</td><td>0.5825 → <b>0.7381</b>（pool/profile 不同）</td><td>同上 ⇒ 不能脫離 config 引用一個 accept</td></tr>
+<tr><td>prefill</td><td>已達 250＋</td><td>線 I／<code>prefill250</code> profile</td></tr>
+</tbody></table>
+
+<h3>4.2 兩個因子，兩條線各打一個</h3>
+
+<pre>     throughput (tok/s)  =  step_cost (ms/step)  /  mean_len (tok/step)
+
+     線 I 的工作：↓ step_cost         線 S 的工作：↑ mean_len
+       · 槽位幾何（Run E）              · accept（draft/verify 的一致性）
+       · overlap（gap 31.9%）           · k（每次 verify 帶幾個）
+       · union 內容（cache_r CPY）      · 判定紀律（閘門、窗口、除役）</pre>
+
+<p>這兩件事<b>不是競爭關係</b>：線 I 的每一項都在動分子，線 S 的每一項都在動分母，而 25 t/s 需要兩邊同時到。</p>
+
+<h3>4.3 路線圖（全部改用 §4.1b 的同臂實測值）</h3>
+
+<p>每一列都寫出算式。起點是<b>實測的 verify 步</b>，不是 MTP-off 的步：
+<code>226.8 ms/步、mean_len 2.40</code>；<code>gap</code> 佔 31.9%、<code>union</code> 佔 62.8%（線 I）⇒
+<code>union ≈ 0.628 × 226.8 = 142.4 ms</code>。</p>
+
+<table><thead><tr><th>階段</th><th>verify 步</th><th>mean_len</th><th>t/s</th></tr></thead><tbody>
+<tr><td>現況（MTP-on 實測中位）</td><td>226.8 ms</td><td>2.40</td><td><b>10.58</b></td></tr>
+<tr><td>＋ <code>gap</code> 全藏（overlap 上界 −31.9%）<br><code>226.8 × 0.681 = 154.6</code></td><td>154.6 ms</td><td>2.40</td><td><b>15.52</b></td></tr>
+<tr><td>＋ <code>union</code> −23%（M4 的目標）<br><code>154.6 − 0.23×142.4 = 121.8</code></td><td>121.8 ms</td><td>2.40</td><td><b>19.70</b></td></tr>
+<tr><td>＋ accept 0.58→0.80（<b>固定 k</b> ⇒ mean_len 1+3×0.8 = <b>3.40</b>；批次寬度不變 ⇒ 步時不變）</td><td>121.8 ms</td><td>3.40</td><td><b>27.91</b></td></tr>
+<tr><td>保守版：若 verify 步仍因之 +10%</td><td>134.0 ms</td><td>3.40</td><td><b>25.37</b></td></tr>
+</tbody></table>
+
+<div class="v"><span class="badge ok">25 需要「三者同時」，而且它在最後一列才出現</span>
+<code>gap</code> 單獨到 15.5、再加 <code>union</code> 到 19.7、再加 accept 才 25–28。
+這與 §2 的結論一致：不是一個瓶頸，是三個相乘的因子。</div>
+<div class="v"><span class="badge warn">唯一能讓它從 27.9 掉回 25.4 的假設是「accept 會讓步變貴」</span>
+在固定 <code>k</code> 下批次恆為 4 寬，沒有這個機制；但引擎有一筆相反的記錄
+（<code>llama-context.cpp:6293</code>「draft accept 0.735 / mean len 3.21 → 6.48 t/s，比 MTP-off 的 10.43 更差」）。
+那筆的 <code>k</code> 與 regime 未載明 ⇒ M5 必須把它當可否證項處理，不能引用其結論。</div>
+
+<div class="v"><span class="badge warn">讀法</span> 沒有任何單一階段到 25。這張表的意義是
+<b>它證明 25 是一個「三個 8%／31.9%／43% 相乘」的命題</b>，不是一個瓶頸的命題。</div>
+<div class="v"><span class="badge bad">限度</span> 「span −23%」目前<b>沒有實作路徑</b>，只是用線 I 的
+「overlap 到 19.7、再從 span 砍 23% 到 25.5」反推的缺口。它必須先被換成一個可否證的單層目標
+（候選：GDN <code>cache_r</code> CPY 的 <code>+1.19 ms/層</code>，而它是 <b>overhead-bound 而非頻寬-bound</b>
+⇒ 要打的是 launch/sync，不是搬資料）。</div>
+<div class="v"><span class="badge ok">分母那一格是免費的</span> accept 那一列<b>不動引擎、不動數值</b>，
+而且它與線 I 的 overlap 是<b>乘積</b>關係 —— 這也是為什麼它的優先序最高。</div>
+
+<h2>§5 三個死因，一條活路 —— 不要把不同死法混在一起</h2>
+
+<table><thead><tr><th>想法</th><th>它實際改的是什麼</th><th>判定</th><th>為什麼</th></tr></thead><tbody>
+<tr><td><b>split-MMID</b>（切 H/C 重排）</td><td>算術：combine 的求和順序</td><td><span class="badge bad">死於 bit-identity</span></td><td><code>llama-graph.cpp</code> 的 combine 是 left-to-right 累加，重結合不逐位元相同</td></tr>
+<tr><td><b><code>CGC_SUBMIT_AHEAD=1</code></b></td><td>何時送出下一段（在 hook 寫 remap <b>之前</b>）</td><td><span class="badge bad">死於 race，不是算術</span></td><td><code>ggml-backend.cpp:1813</code>：陳舊 remap → 垃圾。症狀是<b>冷／短 prompt 分歧</b>，而暖長 prompt 湊巧贏 race、保持 bit-identical</td></tr>
+<tr><td><b>填充挪離臨界路徑</b>（另一條 stream／非阻塞，不重排任何計算）</td><td>只改「位元何時被讀進來」；節點、順序、累加器都不動</td><td><span class="badge ok">前兩個死因都沒涵蓋 ⇒ 仍然開放</span></td><td>兩個死因一個是算術、一個是 remap 可見性，重排 I/O 兩者都不碰</td></tr>
+</tbody></table>
+
+<div class="note"><strong>兩個一起帶走的邊界：</strong>① 層 <code>il</code> 的 demand fill <b>不可能更早開始</b>
+（它的 key 是 <code>il</code> 的 argsort，而 argsort 是段 <code>il</code> 的<b>最後一個節點</b>，
+<code>llama-context.cpp:6583</code>）⇒ 正確述句是「讓 demand fill 不要再阻塞 CPU」，上限＝warm <code>cb</code>（10%）；
+真正可重疊的是 <code>il+1</code> 的填充（相鄰 token 路由重用 ~87%）。<br>
+② 驗收<b>必須用冷 prompt</b> 跑 M1/M2 —— 暖的正是那個會把 race 藏起來的案例。</div>
+
+<h2>§6 里程碑與閘門（每一項都標擁有者與判定）</h2>
+
+<table><thead><tr><th>#</th><th>工作</th><th>擁有者</th><th>驗收（可否證）</th></tr></thead><tbody>
+<tr><td>M0</td><td><b>可歸因性</b>：F 的組成、GDN 比例、槽位幾何、共享 src 擁有權、窗口守門</td><td>S＋I</td><td><span class="badge ok">已達成</span>（本文件的前提）</td></tr>
+<tr><td><b>M1</b></td><td><b>解掉 mean_len 的 1.5× 矛盾</b>：逐請求 direct count</td><td>S</td><td><span class="badge ok">已達成</span> <code>mean_len_direct.py</code>：17 個夠長請求上兩條步數路線差 &lt;5%、<code>mean_len==1+k·a</code> 全數成立 ⇒ <b>mean_len = 2.40</b>（同臂）</td></tr>
+<tr><td><b>M2</b></td><td><b>Run E 槽位「只加不減」</b>（頭段拿 <code>S_for_0</code>、尾段留 143、MTP 頭 256 ⇒ 6384 槽 ≈ 6.9 GiB）</td><td>I</td><td>① <code>capacity</code> 4336→~1000 ② 頭段 <code>cb</code> 崩平底且尾段不再上升 ③ <code>layers_over</code> 回 5 ④ 記憶體 ≤ 8 GiB；<b>＋ M1/M2/M3 逐位元一致</b></td></tr>
+<tr><td><b>M3</b></td><td><b>overlap hook 窗</b>（<code>ggml-backend.cpp</code>，非阻塞／另一條 stream，不重排計算）</td><td>I（overlap 線）</td><td><b><code>gap</code> 下降</b>（不是 <code>cb</code>）＋ <b>冷 prompt</b> 的 M1/M2 —— 暖的會假通過</td></tr>
+<tr><td><b>M4</b></td><td><b>GDN <code>cache_r</code> 的 CPY</b>（2.9 MiB/步卻 ~6% 的步 ⇒ 打 overhead 不打頻寬）</td><td>I</td><td>GDN/attn span 比例 <b>1.55 → 1.15</b>（線 S 的 <code>widthscan</code> 可重複跑）；上界 ~15 ms/步</td></tr>
+<tr><td><b>M5</b></td><td><b>accept 推過 0.80</b>：<span class="badge bad">前置判決已出：<code>PLAIN_MATCH FALSE</code>（§4.1c）</span> ⇒ 先修 verify 路徑，不是調 head。<br><b>現在的機制理由</b>：固定 <code>k</code> ⇒ 批次寬度不變 ⇒ 沒有讓步變貴的機制，所以假定步時不變是有根據的；<b>但</b>必須同時量步時有無位移，否則無法區分「真的免費」與「引擎那筆反例」</td><td>S</td><td>accept 由 server log／<code>timings.draft_n_*</code> 讀；<b>可否證</b>：<code>python3 scripts/check/mean_len_direct.py scan</code> 在<b>同一 arm</b> 上給出 step_ms —— 若 accept ↑ 而 step_ms 也 ↑ 超過 +10%，則 §4.3 的保守列成立、非保守列被否證。<b>同一顆 build</b> 同跑 M1/M2；記 digest。<code>--spec-draft-n-max 0</code> <b>不可</b>當對照（第一個 decode 就 abort）</td></tr>
+<tr><td>M6</td><td><code>submit</code> 的 ~8%（41 段的 encode+commit）</td><td>S</td><td>純排程、不動計算 ⇒ 冷 prompt M1/M2 必過</td></tr>
+</tbody></table>
+
+<h3>6.1 跨里程碑的共同閘門（不可跳）</h3>
+
+<pre>1. M1/M2/M3 = 9/9 對 v6 參考（m123_oracle_gate，DEFAULT_REF 必須指 v6）
+2. 每一臂前後各一次：python3 scripts/check/engine_freeze.py verify --tag &lt;你的名字&gt;
+   —— 判準是「指紋一致」，不是 git status 乾淨（build 產物納入版控）
+3. ⚠ 本 repo 有兩套 digest 函數（sha256[:24] vs 另一套 16 hex）——
+   跨套比對等於比兩個不同的函數，會看到幻影漂移
+4. 冷 prompt 跑 M1/M2（任何碰到 submit／prefetch／開銷的改動都要）
+5. 量測落差 > 15–18% 噪音底時標 INCONCLUSIVE，不要四捨五入成結論</pre>
+
+<h2>§7 除役的數字與被推翻的機制宣稱（防止再度沿用）</h2>
+
+<table><thead><tr><th>數字／宣稱</th><th>狀態</th><th>理由</th></tr></thead><tbody>
+<tr><td><s><code>accept = 0.46541</code> 除役</s></td><td><span class="badge bad">本線撤回除役</span></td><td><b>它是引擎自己印的，而且重現兩次</b>：<code>190212</code> 與 <code>191400</code> 的 task 8／71 都是 <code>0.46541 (74 accepted / 159 generated), mean len = 2.40</code>，兩條步數路線差 0.63%。本線當初的「不在磁碟上」是<b>搜尋不完整</b>（只 grep 了 accept JSON 與字面 <code>46541</code>，沒 grep <code>Backup/cgc_logs/*.log</code>）—— 同一個病，換方向</td></tr>
+<tr><td><code>1.445×</code> MTP 天花板</td><td><span class="badge warn">算式缺一項</span></td><td>它的前提（0.46541）恢復了，但那個算式只有 <code>a</code> 與 <code>m</code>，<b>少了 verify 步的膨脹</b>。正確形式見 §4.1b：<code>mean_len ÷ (verify 步 / plain 步)</code> ＝ <code>2.40/2.16</code> ＝ <b>+11%</b></td></tr>
+<tr><td><code>mean_len = 1.75</code></td><td><span class="badge bad">除役</span></td><td>把 MTP-on 的 token 數除以 MTP-off 的步時（143.4 ms）—— 而 verify 步是 227 ms。分子與分母來自不同 regime</td></tr>
+<tr><td><code>mean_len = 2.67</code></td><td><span class="badge bad">已更正為 2.75</span></td><td>除數錯：用 <code>288−180=108</code> 當輪數，引擎的 <code>verify_steps = 309/3 = 103</code></td></tr>
+<tr><td>「warm <code>cb</code> 只有 7%」</td><td><span class="badge bad">已更正</span></td><td>那是逐層<b>中位數 × 層數</b>的產物（分佈右偏 ⇒ 系統性低估）。實測對帳：步級 <code>cb=476.95</code> vs 40 層相加 <b>476.9</b> ⇒ 要用<b>逐層相加</b></td></tr>
+<tr><td>「GDN 貴在它自己的注意力」</td><td><span class="badge bad">否證</span></td><td>GDN 的 class-exclusive op（conv 0.032 ＋ scan/state 0.131）＝ 0.163 ms/層，只佔那個差值的 <b>21%</b>；要放大 4.7 倍才追得上</td></tr>
+<tr><td>「prefill 比例 0.76 證明這是 T=1 自迴歸路徑」</td><td><span class="badge bad">撤回</span></td><td>縮放指數檢定：4→13 時 attention 是 <code>T^1.58</code>（超線性）、GDN 是 <code>T^1.04</code>（線性）⇒ <b>動的是 attention 側</b>。且 fused/chunked 建的是同一個節點，這份資料分不開兩條路徑</td></tr>
+<tr><td>「<code>--spec-draft-n-max 0</code> 是合法的無 draft 基線」</td><td><span class="badge bad">錯</span></td><td>第一個 decode 就 abort（<code>GGML_ASSERT(n_outputs_max &lt;= cparams.n_outputs_max)</code>，<code>llama-context.cpp:2961</code>）；<code>spec_cost_curve.py</code> 依賴它</td></tr>
+<tr><td>「overlap 的天花板是 ~7%」（線 I 早期版本）</td><td><span class="badge warn">已上調 4 倍</span></td><td>更正為 <code>gap</code> 的 <b>28–32%</b>（<code>corr(gap, cb+submit)=1.000</code>、<code>gap/hook</code> run 內穩定）</td></tr>
+</tbody></table>
+
+<h2>§8 還沒解決的（與上面的數字一起引用，不是放在最後）</h2>
+
+<ol>
+<li><b>mean_len 的 1.5× 矛盾</b>（§4.1）—— 不解決則所有 t/s 路線圖都是空中樓閣。M1 就是它。</li>
+<li><b>union 的 62.8% 裡，多大的比例是<b>真的計算</b>而不是等待</b>：per-layer 的 <code>union</code> 是該段 GPU span，
+含等其他在途工作。目前只能說 53% 的層-樣本 <code>gpu/union ≈ 1.00</code>（span 塞滿）。</li>
+<li><b>「span −23%」沒有實作路徑</b>（§4.3）—— 它是從 25.5 反推的缺口，不是一個目標。</li>
+<li><b>decode 形狀沒有 (層, kind) 解析度</b>：<code>CGC_GRPH_DBG</code> 只在前 6 次 compute 印（全是 prefill），
+NSM 的群是「8 buffers / ~99 nodes 混合 GDN+attn+MoE」⇒ 只能按層數正規化。</li>
+<li><b>線 I 的離線分配器假設太強</b>（逐層獨立、單一冷啟重播），Run D 的尾段抗議就是它的代價。Run E 是修正，不是重試。</li>
+<li><b>超額訂閱是常態</b>：靜態需求 ~21.2 GiB vs 實體 16 GiB（模型 13.0 ＋ 池 8.2）⇒
+池的「8 GiB 上限」與「實配 6.4 GiB」之間那 1.7 GiB 該不該用，是 M2 的核心問題。</li>
+</ol>
+
+<h2>§9 一句話的策略</h2>
+
+<div class="note"><b>線 I 把每個 step 變便宜（結構：槽位、hook 窗、span 內容），線 S 讓每個 step 帶更多 token（分母：accept、k、判定紀律）。
+25 t/s 是這兩個因子的乘積，而 M1/M2/M3 逐位元一致是兩邊共用的閘門。
+<span class="badge ok">M1 已達成</span>：<code>mean_len</code> 現在是引擎逐請求印出來的 <b>2.40</b>（三條路線交叉核對、
+accept 模型全數成立），路線圖已全部改用同臂實測。下一個唯一的前置動作是把 M5 的 accept 推過 0.80 ——
+它現在有機制理由（固定 <code>k</code> ⇒ 批次寬度不變）支持它是免費乘數。</b></div>
+
+<h2>§10 本文件的來源（可逐項核對）</h2>
+
+<ul>
+<li>線 I：<code>docs/SHARED_SRC_OWNERSHIP_2026-09-19.md</code> §5–6；<code>.workbuddy/memory/2026-09-19.md</code> §EN-228…§EN-237；
+commits <code>4fdfaa8de</code>、<code>47e524da8</code>；<code>scripts/check/attn_moe_split.py</code>、<code>slot_alloc_curve.py</code>。</li>
+<li>線 S：<code>docs/DECODE_STEP_BUDGET_2026-09-19.md</code> §16–18；<code>docs/GDN_ATTENTION_SPLIT_2026-09-19.md</code> §1／§9（含撤回）；
+<code>scripts/check/{gdn_split,sntok_curve,decode_window_harness,plain_match_window,mean_len_direct}.py</code>；
+<code>Backup/cgc_logs/mtp_accept_ab.json</code>；§4.1／§4.1b／§4.3 的 direct count 原始輸出
+<code>/tmp/mean_len_direct.json</code>（可重跑：<code>python3 scripts/check/mean_len_direct.py scan Backup/cgc_logs/llama_server_20260919_19*.log --k 3</code>）。</li>
+<li>擁有權與 digest：<code>docs/SHARED_SRC_OWNERSHIP_2026-09-19.md</code> §1–4；<code>scripts/check/engine_freeze.py</code>。</li>
+</ul>
+
+</body></html>

@@ -128,6 +128,18 @@ def start(pool_bytes, model, port, extra_env=None):
     for kv in (extra_env or []):
         k, _, v = kv.partition("=")
         env[k.strip()] = v.strip()
+    # The shared box probe (docs/SERVER_WINDOW_LEDGER_2026-09-19.md): this script sweeps the pool, so
+    # it launches repeatedly -- gated once per process (require_first), because a per-launch check
+    # would fail on the page cache our own previous launch just filled.
+    import importlib.util as _ilu, os as _os
+    _spec = _ilu.spec_from_file_location(
+        "server_window", _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                       "server_window.py"))
+    _sw = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_sw)
+    _sw.require_first(port=int(env.get("CGC_SERVER_PORT", "8080")),
+                      need_mb=float(_os.environ.get("CGC_WINDOW_NEED_MB", "8000")),
+                      where="pool_curve")
     with open("/tmp/pool_curve_launch.log", "ab") as logf:
         # start_new_session: own session so a SIGINT/SIGHUP aimed at us (or the caller reaping our
         # process group) cannot take the server down mid-measurement. Same reason run_server.sh

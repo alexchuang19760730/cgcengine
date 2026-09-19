@@ -1975,10 +1975,33 @@ size_t llama_expert_cache_spac_prefetch(llama_expert_cache * cache) {
 // same cold-start cost as the loader prewarm, but land in the slots decode actually uses.
 // Runs once (hot_prewarm_done); a no-op on later steps. Returns the number of experts ensured.
 size_t llama_expert_cache_prewarm_hot(llama_expert_cache * cache) {
+    return llama_expert_cache_prewarm_hot_capped(cache, 0);
+}
+
+// [CGC 2026-09-19 slab→pool handoff] Same hot-set selection as prewarm_hot, but (a) no one-shot
+// guard, so it can run on EVERY prefill→decode transition, and (b) capped at `cap` experts per
+// layer (cap == 0 = the whole per-layer slot budget, i.e. the legacy behaviour), and (c) it
+// EVICTS when the layer is full (ensure_slot → pick_slot → evict_lru), which is what makes it a
+// publish rather than a free-slot-only prefetch.
+//
+// Why it exists: the slab prefill path (CGC_PREFILL_STREAM) repoints each layer's FFN weights at a
+// per-layer slab and never writes the pool, so a request served that way leaves decode to start
+// against whatever the pool happened to hold. Measured 2026-09-17 (docs/M1_WORKITEM2_PHASE_SPLIT_*):
+// the slab arm's decode-side misses were 1,210 with capacity=0 -- i.e. the pool was full but not of
+// the experts decode demanded. prewarm_hot is the mechanism for exactly that set, but its
+// `hot_prewarm_done` is a PROCESS-level flag, so in a server it is consumed by the first request
+// and every later prefill→decode transition gets no publish at all. This function is the publish.
+//
+// Cost model, stated because it is the whole decision: each expert is 3 preads (~1.11 MiB, measured
+// 1.65 ms per 0.37 MiB job at 235 MiB/s on this box). At cap=32 and 40 layers that is 1,280 experts
+// ≈ 0.7-2 s of I/O on the caller's thread, which lands BEFORE the first decode token -- a latency
+// cost, not a throughput one. That trade is what the A/B measures; it is why the default is 0 (off).
+size_t llama_expert_cache_prewarm_hot_capped(llama_expert_cache * cache, size_t cap) {
     if (cache == nullptr || !cache->pool_active || cache->freq.empty()) {
         return 0;
     }
-    {
+    const bool one_shot = (cap == 0);
+    if (one_shot) {
         std::lock_guard<std::mutex> lk(cache->m);
         if (cache->hot_prewarm_done) {
             return 0;
@@ -1998,7 +2021,10 @@ size_t llama_expert_cache_prewarm_hot(llama_expert_cache * cache) {
                 const uint64_t fa = cache->freq[l][a], fb = cache->freq[l][b];
                 return fa != fb ? fa > fb : a < b;
             });
-            const size_t n = std::min<size_t>(slots_l(cache, l), cache->n_expert);
+            size_t n = std::min<size_t>(slots_l(cache, l), cache->n_expert);
+            if (cap > 0 && n > cap) {
+                n = cap;
+            }
             top[l].assign(order.begin(), order.begin() + n);
         }
     }

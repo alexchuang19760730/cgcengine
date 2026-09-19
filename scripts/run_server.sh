@@ -361,11 +361,27 @@ esac
 # 也要在不該 warning 的時候不 warning，否則它會被當成背景噪音而失效。
 if [ "$SERVER_MTP" = "1" ]; then
     _cgc_common="$(dirname "$BIN")/libllama-common.0.dylib"
-    if [ -e "$_cgc_common" ] && ! strings -a "$_cgc_common" 2>/dev/null | grep -q 'MTPDBG mtp_ctor'; then
-        echo "warning: MTP=1 但 $(basename "$_cgc_common") 沒有 -DMTP_SUPPORT 編出來的程式碼。" >&2
-        echo "         MTP 路徑的 [CGC MTP fix] 與 qwen35moe 的 t_embd 都會被編掉，產物與原始碼不一致。" >&2
-        echo "         重建：cmake -B src/llama.cpp/build -DLLAMA_BUILD_SERVER=ON -DCMAKE_CXX_FLAGS=-DMTP_SUPPORT" >&2
-        echo "               cmake --build src/llama.cpp/build -j8" >&2
+    if [ -e "$_cgc_common" ]; then
+        # [CGC 2026-09-19] `grep -c`, not `grep -q` -- this script is `set -euo pipefail` (line 34)
+        # and `grep -q` closes the pipe on first match, so `strings` dies of SIGPIPE (rc=141) and
+        # pipefail turns the WHOLE pipeline into a failure. The guard then fires on an artifact
+        # that DOES carry -DMTP_SUPPORT. Measured on this tree: `pipefail + grep -q` -> rc=1
+        # "warning: MTP=1 但 ... 沒有 -DMTP_SUPPORT" while `strings -a libllama-common.0.dylib |
+        # grep -c 'MTPDBG mtp_ctor'` -> 3; without pipefail the same test is silent.
+        #
+        # Why this one mattered more than a cosmetic warning: every MTP=1 launch printed "產物與
+        # 原始碼不一致", and that sentence is acted on -- 2026-09-19 a parallel session recorded
+        # MTP numbers as unattributable because of it. A guard that always says "broken" trains
+        # its reader to ignore it and costs real measurements. The exact same defect class is
+        # already documented 500 lines below (CGC_METAL_LIB), which is where the pattern is from.
+        _cgc_hits="$(strings -a "$_cgc_common" 2>/dev/null | grep -c 'MTPDBG mtp_ctor' || true)"
+        if [ "${_cgc_hits:-0}" -eq 0 ]; then
+            echo "warning: MTP=1 但 $(basename "$_cgc_common") 沒有 -DMTP_SUPPORT 編出來的程式碼。" >&2
+            echo "         MTP 路徑的 [CGC MTP fix] 與 qwen35moe 的 t_embd 都會被編掉，產物與原始碼不一致。" >&2
+            echo "         重建：cmake -B src/llama.cpp/build -DLLAMA_BUILD_SERVER=ON -DCMAKE_CXX_FLAGS=-DMTP_SUPPORT" >&2
+            echo "               cmake --build src/llama.cpp/build -j8" >&2
+        fi
+        unset _cgc_hits
     fi
     unset _cgc_common
 fi
@@ -1454,11 +1470,50 @@ fi
 if [ -n "${CGC_PREROUTER:-}" ]; then
     SERVER_ENV+=(CGC_PREROUTER="$CGC_PREROUTER")
 fi
+# [CGC 2026-09-19 layer-ahead decode prefetch] CGC_LAYER_AHEAD_PREFETCH=1 makes each layer's hook
+# queue the NEXT layer's predicted union (previous token's ids) through prefetch_slot, so the pread
+# overlaps segment il+1's GPU window instead of blocking inside layer il+1's own hook. It is handled
+# in llama-context.cpp expert_cache_on_topk; without this block the launch line's `env` allowlist
+# drops it and "the flag did nothing" would have no visible cause (the trap this section documents).
+if [ -n "${CGC_LAYER_AHEAD_PREFETCH:-}" ]; then
+    SERVER_ENV+=(CGC_LAYER_AHEAD_PREFETCH="$CGC_LAYER_AHEAD_PREFETCH")
+fi
+# [CGC 2026-09-19 hook split] CGC_HOOK_SPLIT=1 makes the per-layer top-k hook report its own cost
+# split into pre / ensure (the batched union fill) / drain / tail (publish + remap leaf). `cb` in the
+# decode profile is the quantity every batching decision turns on and nothing said what is in it: the
+# existing fill counters are blind to this hook's demand fills (fill_batch_usec is only accumulated by
+# the blob path, fill_wait_us only counts waits on prefetch-queued slots). Same allowlist trap.
+if [ -n "${CGC_HOOK_SPLIT:-}" ]; then
+    SERVER_ENV+=(CGC_HOOK_SPLIT="$CGC_HOOK_SPLIT")
+fi
+# [CGC 2026-09-19 slab→pool handoff] CGC_SLAB_HANDOFF=<cap> experts/layer: at the first decode step
+# after a slab prefill, publish the prefill's hot set into the pool (evicting, capped, synchronous),
+# because the slab path repoints the FFN weights at a per-layer slab and never writes the pool. The
+# one-shot prewarm_hot that exists for this is a process-level flag, so in a server it is consumed by
+# the first request and later prefills get no publish at all. Same allowlist trap as the two above.
+if [ -n "${CGC_SLAB_HANDOFF:-}" ]; then
+    SERVER_ENV+=(CGC_SLAB_HANDOFF="$CGC_SLAB_HANDOFF")
+fi
 # Attribution for the line above: prefetch_slot's three exit classes (guard-reject vs already
 # resident vs no-free-slot) print `PFDBG guard-reject ...` / `PFDBG drop: resident ...` per call.
 # Not in the allowlist before 2026-09-17, so "queued=0" had no readable cause.
 if [ -n "${LLAMA_EXPERT_CACHE_PREFETCH_DBG:-}" ]; then
     SERVER_ENV+=(LLAMA_EXPERT_CACHE_PREFETCH_DBG="$LLAMA_EXPERT_CACHE_PREFETCH_DBG")
+fi
+# [CGC 2026-09-19 thrash attribution] LLAMA_EXPERT_CACHE_MISS_DUMP=<path> writes one
+# "<layer> <expert>" line per DEMAND-ORDERED miss (llama-expert-cache.cpp:1061, flushed per line so a
+# kill -9 still leaves a usable file). It exists to answer a question the cumulative compulsory/
+# capacity counters cannot: a capacity miss is a reload, but is it a reload after 2 steps (real
+# thrash, a policy can fix it) or after 200 (a working set larger than the pool, only capacity
+# fixes it)? The counter split alone cannot tell those apart, and the answer decides whether the
+# lever is the eviction policy or the pool geometry. Never armed through this launcher before, so
+# the dump had no producer -- the same allowlist trap as the blocks above (the engine has read it
+# since 2026-09-13). MISS_ATTR_LAYERS is its companion: per-layer distinct-vs-slots rows.
+if [ -n "${LLAMA_EXPERT_CACHE_MISS_DUMP:-}" ]; then
+    SERVER_ENV+=(LLAMA_EXPERT_CACHE_MISS_DUMP="$LLAMA_EXPERT_CACHE_MISS_DUMP")
+fi
+if [ -n "${LLAMA_EXPERT_CACHE_MISS_ATTR_LAYERS:-}" ]; then
+    SERVER_ENV+=(LLAMA_EXPERT_CACHE_MISS_ATTR_LAYERS="$LLAMA_EXPERT_CACHE_MISS_ATTR_LAYERS")
 fi
 if [ -n "${CGC_PREROUTER_TOP_K:-}" ]; then
     SERVER_ENV+=(CGC_PREROUTER_TOP_K="$CGC_PREROUTER_TOP_K")
@@ -2014,6 +2069,39 @@ fi
 if [ "$SERVER_WATCHDOG" = "1" ]; then
     SERVER_ENV+=(CGC_WATCHDOG=1)
 fi
+# [CGC 2026-09-19 P0-1] Two knobs that used to live in the MTP block below are NOT spec
+# properties: the engine reads them through getenv() at points that exist whether or not a
+# verify/draft batch does.
+#   * CGC_MM_BITIDENT -> ggml-metal-ops.cpp:2470 (mul_mat kernel choice; decode's GEMV is M=1,
+#     inside its M<=8 range). It is bit-identical pillar 1.
+#   * CGC_NO_PREFETCH  -> llama-context.cpp:2058 (background slot prefetch, plain decode).
+# While they sat inside `if [ "$SERVER_MTP" = "1" ]`, an MTP-off A/B arm silently ran a DIFFERENT
+# KERNEL and a different prefetch policy, so any output difference had two candidate causes and
+# could not be attributed to speculation (the confound recorded in .workbuddy/memory §EN-193).
+# They are hoisted so a caller can EQUALISE the arms; nothing more.
+#
+# DEFAULT BEHAVIOUR IS UNCHANGED, deliberately: MTP=1 still gets both (as before), MTP=0 still gets
+# neither unless the caller sets them here. Flipping the MTP=0 default would silently re-baseline
+# every recorded MTP-off number in this repo (the 10.47 / 12.99 t/s family), a bigger change than
+# this bug needs.
+SERVER_NO_PREFETCH="${CGC_SERVER_NO_PREFETCH:-}"
+if [ -z "$SERVER_NO_PREFETCH" ]; then
+    if [ "$SERVER_MTP" = "1" ]; then
+        SERVER_ENV+=(CGC_NO_PREFETCH=1)
+        SERVER_NO_PREFETCH=1
+    else
+        SERVER_NO_PREFETCH=0
+    fi
+elif [ "$SERVER_NO_PREFETCH" != "0" ]; then
+    SERVER_ENV+=(CGC_NO_PREFETCH=1)
+fi
+if [ -z "${CGC_MM_BITIDENT:-}" ]; then
+    if [ "$SERVER_MTP" = "1" ]; then
+        SERVER_ENV+=(CGC_MM_BITIDENT=1)
+    fi
+elif [ "${CGC_MM_BITIDENT}" != "0" ]; then
+    SERVER_ENV+=(CGC_MM_BITIDENT="$CGC_MM_BITIDENT")
+fi
 if [ "$SERVER_MTP" = "1" ]; then
     # MTP server 路徑對齊 run_n30cache.sh 的已驗證防護：
     # - 關 prefetch：避免 verify/draft 期背景填槽覆寫 GPU 正在讀的 slot
@@ -2026,10 +2114,10 @@ if [ "$SERVER_MTP" = "1" ]; then
     # ⚠️ 陷阱：C++ 端對這些布林旗標全部用 `getenv(X) != nullptr` 判斷（presence，不是值），
     # 所以 `CGC_VERIFY_DECODE=0` 仍然是「開」。這裡因此把 0 翻成「完全不傳該變數」，
     # 傳 0 才會真的關掉。（第一版 A/B 就是踩到這個：兩臂逐位元相同，等於沒改。）
-    SERVER_NO_PREFETCH="${CGC_SERVER_NO_PREFETCH:-1}"
+    # CGC_NO_PREFETCH is NOT set here any more: it is engine-wide policy (llama-context.cpp:2058),
+    # so it moved to the hoisted block above this `if` (2026-09-19). MTP=1 default is unchanged.
     SERVER_VERIFY_DECODE="${CGC_SERVER_VERIFY_DECODE:-1}"
     SERVER_DRAFT_DECODE="${CGC_SERVER_DRAFT_DECODE:-1}"
-    [ "$SERVER_NO_PREFETCH" = "0" ]  || SERVER_ENV+=(CGC_NO_PREFETCH=1)
     [ "$SERVER_VERIFY_DECODE" = "0" ] || SERVER_ENV+=(CGC_VERIFY_DECODE=1)
     [ "$SERVER_DRAFT_DECODE" = "0" ]  || SERVER_ENV+=(CGC_DRAFT_DECODE=1)
     if [ -n "${CGC_SERVER_WARM_NPAST:-}" ]; then
@@ -2050,11 +2138,8 @@ if [ "$SERVER_MTP" = "1" ]; then
     # was completely absent from this allowlist -- so the "expert cache ON is not bit-identical"
     # investigation has been running with one of its three required pillars disabled the whole
     # time. Default 1 to match production; opt out with CGC_MM_BITIDENT=0 for a speed A/B.
-    if [ -z "${CGC_MM_BITIDENT:-}" ]; then
-        SERVER_ENV+=(CGC_MM_BITIDENT=1)
-    elif [ "${CGC_MM_BITIDENT}" != "0" ]; then
-        SERVER_ENV+=(CGC_MM_BITIDENT="$CGC_MM_BITIDENT")
-    fi
+    # 2026-09-19: the assignment moved to the hoisted block above this `if` -- the knob decides a
+    # KERNEL, so an MTP-off A/B arm must be able to carry it too. MTP=1 stays 1, as before.
     # [CGC MTP sampler parity 2026-09-13] pass through the draft-sampler A/B knob. Without this
     # the explicit `env` allowlist on the launch line drops it and the server silently keeps the
     # legacy {TOP_K=10} draft chain, so an A/B would show "no effect" that is really "no knob".

@@ -1,0 +1,13 @@
+{
+ "note": "ungated server launchers; may only shrink. Regenerate with `update`.",
+ "generated": "2026-09-19 21:24:31",
+ "ungated": [
+  "decode_step_profile.py",
+  "decode_sweep.py",
+  "http_duo.py",
+  "m123_oracle_gate.py",
+  "mtp_accept_ab.py"
+ ],
+ "gated_count": 8,
+ "launchers": 14
+}

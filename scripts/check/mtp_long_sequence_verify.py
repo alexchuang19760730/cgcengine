@@ -230,6 +230,19 @@ def main():
         env["CGC_LOGITS_ORACLE_TOPN"] = "8"
         env["CGC_LOGITS_ORACLE_FIRST_N"] = "0"  # unlimited
 
+        # The shared box probe (docs/SERVER_WINDOW_LEDGER_2026-09-19.md): refuses to load a model
+        # plus a pool into a busy box, because a number taken then describes the neighbour.
+        # Self-contained import so this file needs no sys.path setup.
+        import importlib.util as _ilu, os as _os
+        _spec = _ilu.spec_from_file_location(
+            "server_window", _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                           "server_window.py"))
+        _sw = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_sw)
+        _sw.require_first(port=int(env.get("CGC_SERVER_PORT", "8080")),
+                          need_mb=float(_os.environ.get("CGC_WINDOW_NEED_MB", "8000")),
+                          where="mtp_long_sequence_verify")
+
         # start_new_session: survive the caller's process group (see run_server.sh's own --detach
         # and the cross-kill notes in docs/PROFILE_DUO_2026-09-18.md §5).
         proc = subprocess.Popen(

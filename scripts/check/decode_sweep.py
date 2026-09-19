@@ -964,7 +964,28 @@ ARMS = {
 }
 
 
-def killed():
+def port_listener(port: int | None) -> list[str]:
+    """PIDs listening on `port`, via lsof. The handle that is actually ours."""
+    if port is None:
+        return []
+    out = subprocess.run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+                         capture_output=True, text=True).stdout
+    return [x for x in out.split() if x.strip().isdigit()]
+
+
+def killed(port: int | None = None):
+    """Stop THIS arm's server. Port-scoped when a port is known: `pkill -f <pattern>` is
+    pid-blind and on this shared box it takes out parallel sessions' servers too (the defect
+    recorded at http_duo.py:31,285). The pattern form is kept only as the no-port fallback."""
+    pids = port_listener(port)
+    if pids:
+        subprocess.run(["kill", "-INT", *pids], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(6)
+        left = port_listener(port)
+        if left:
+            subprocess.run(["kill", "-9", *left], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(2)
+        return
     subprocess.run(["pkill", "-INT", "-f", SERVER_MATCH],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(6)
@@ -1174,7 +1195,7 @@ def main():
         # itself a thermal event. Per-round readings come from decode_bench, which stamps
         # both sides of every request.
         thermal_sweep = {"pre_kill": tp.stamp()}
-        killed()
+        killed(getattr(args, "port", None))
         thermal_sweep["launch"] = tp.stamp()
         stamp = time.strftime("%Y%m%d_%H%M%S")
         ctrl_path = os.path.join(LOG_DIR, f"arm_{tag}_{stamp}.ctrl.log")

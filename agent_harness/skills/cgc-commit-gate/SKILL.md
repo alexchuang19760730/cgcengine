@@ -19,7 +19,7 @@ agent_created: true
 ／ §6 收尾與 push ／ §7 commit 風格 ／ §8 附錄（歷史輪次索引）。
 **要動手就從 §0 的指令區塊開始，卡住再查對應主題。**
 
-### 動手前必記（只有這 8 條會真的弄壞 commit；細節在後面對應節）
+### 動手前必記（只有這 9 條會真的弄壞 commit；細節在後面對應節）
 
 1. 手動預演要自己帶 `BIN_DIR='src/llama.cpp/build/bin'`，否則閘門全 SKIP 卻印 `OK`（§1.1）。
 2. 提交要 `RUN_REPLAY_BENCH=0`——這是**依 D2**（基線 stale），不是腳本預設（§2.3）。
@@ -32,6 +32,17 @@ agent_created: true
 8. 動手前後各跑一次 `git status --porcelain -uall`；看到**不是你改的** modified／staged 檔
    ⇒ 停下找 owner，只新增不修改、不重生索引、不 commit（§4）。**`agent_harness/` 目前歸另一個
    session（他在做 E1），引擎層（`src/`、`scripts/check/`）歸這個 session。**
+9. 動到**任何會起 server 的腳本** ⇒ 跑 `python3 scripts/check/window_gate.py check`。它是純檔案
+   檢查（毫秒級、不需 server），會擋住「新出現的 ungated 啟動器」——在繁忙盒況下 launch 會量到
+   鄰居（同配置實測離散度 17%）而**數字本身看不出來**。剩下的 ungated 是另一條線持有的那幾支，
+   基線只准下降（`update` 要刻意單獨跑，不會混在 commit 裡）。見 `docs/SERVER_WINDOW_LEDGER_2026-09-19.md`。
+10. 動到**量測產物的 writer 或它的讀者** ⇒ 跑 `python3 scripts/check/engine_identity.py consumers`
+   （純檔案、毫秒級）。它擋的是「宣稱蓋了章、但產物根本沒被寫出來」：第一版 hook 就是
+   `cgc_logits_oracle_compare.py` 用了 `os` 卻沒 import，在**整個比對跑完之後**才 NameError，
+   產物無聲消失（自測測的是模組本身，看不到消費者）。同一條閘門也管「寫者與讀者的形狀必須
+   互相認得」：`stamp()` 把 md5 放在 `artifacts.<name>.md5`，而讀者只往下看一層 ⇒ 186 份產物
+   仍是 0 可歸屬；且閘門存 16 字元、蓋章存 32 字元 ⇒ 同一顆 binary 裂成兩段**假的**
+   `ATTRIBUTABLE → UNKNOWN` 轉換。兩者都有陰性對照釘在 `selftest` 裡。
 
 ---
 
@@ -50,6 +61,13 @@ python3 scripts/check/m123_oracle_gate.py --tag <標籤>        # ~40–60 s（�
 # (c) 有動被索引的檔案 → 依序重生索引（順序固定，見 §3.1）
 python3 agent_harness/engine_loop/memory/build_memory_index.py    # 先：寫 INDEX.jsonl
 cd agent_harness/engine_loop && python3 index_assets.py && cd -   # 後：MANIFEST 記 INDEX 的 bytes/mtime
+
+# (c2) 純檔案檢查（毫秒級、不用 server）：起 server 的腳本不得默默變成 ungated
+python3 scripts/check/window_gate.py check
+
+# (c3) 純檔案檢查：產物 writer／reader 一致性（形狀不一致 = 無聲 no-op，數字不會自己說出來）
+python3 scripts/check/engine_identity.py consumers   # 未綁定的名字 ⇒ 產物寫不出來
+python3 scripts/check/engine_identity.py selftest    # 寫者/讀者互測，含陰性對照
 
 # (d) 預演閘門（不要盲目提交）
 BIN_DIR='src/llama.cpp/build/bin' RUN_REPLAY_BENCH=0 bash scripts/check_build_tracked.sh --repo "$PWD"

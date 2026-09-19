@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import importlib.util
 import json
 import os
 import re
@@ -518,9 +519,19 @@ def cmd_run(args):
     groups = aggregate_by_group(steps)
     report(groups, log)
     jp = os.path.join(out, "attn_moe_split.json")
+    # Identify the binary at write time. Without it this product cannot be joined to a generation
+    # on the timeline (0 of 186 capability products were placeable because of exactly this gap) --
+    # and a decomposition that does not say which build it describes cannot be compared with an
+    # oracle reading. See scripts/check/engine_identity.py.
+    _spec = importlib.util.spec_from_file_location(
+        "engine_identity", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        "engine_identity.py"))
+    _ei = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_ei)
+    doc = _ei.stamp({"log": log, "n_tables": len(steps),
+                     "groups": {lab: {"n_tables": n, "agg": a} for lab, n, a in groups}})
     with open(jp, "w") as fh:
-        json.dump({"log": log, "n_tables": len(steps),
-                   "groups": {lab: {"n_tables": n, "agg": a} for lab, n, a in groups}}, fh, indent=1)
+        json.dump(doc, fh, indent=1)
     print(f"\nsaved: {jp}")
     return 0
 
@@ -658,9 +669,274 @@ def cmd_selftest(_args):
     ok("kind x op: shape 2 holds the ADD row, shape 1 holds MUL",
        shapes[2][0]["ops"][0]["op"] == "ADD" and shapes[1][0]["ops"][0]["op"] == "MUL")
 
+    # 12. per-layer: the engine states gap lives inside the PREVIOUS segment's hook+submit
+    #     window, so gap == cb+submit must read back as a ratio of 1.
+    def lay(il, wait, cb, sub, gpu, uni, gap):
+        return ("CGC-DECPROF all: L%d wait=%.2f cb=%.2f submit=%.2f ms gpu=%.2f union=%.2f gap=%.2f sg=1 n=1\n" % (il, wait, cb, sub, gpu, uni, gap))
+    body = "".join(lay(i, 3.0, 0.5, 0.5, 4.0, 3.5, 1.0) for i in range(40))
+    rep = layer_report(body)
+    ok("layers: table found", rep is not None and rep["n_steps"] == 1)
+    ok("layers: 30 GDN / 10 full-attn",
+       rep["families"]["gdn"]["n_layers"] == 30 and rep["families"]["full_attn"]["n_layers"] == 10)
+    ok("layers: gap/hook == 1 by construction", abs(rep["ratios"]["gap_over_hook"] - 1.0) < 1e-9)
+    ok("layers: wall == wait+cb+submit",
+       abs(rep["sums"]["wall"] - (3.0 + 0.5 + 0.5) * 40) < 0.5)
+    # negative control: no idle at all -> the verdict must not claim an idle story
+    noidle = "".join(lay(i, 3.0, 0.5, 0.5, 4.0, 3.5, 0.0) for i in range(40))
+    ok("layers: zero gap reads as zero", layer_report(noidle)["ratios"]["gap_over_hook"] == 0.0)
+    # a one-row run is the MTP head, not a step: it must be dropped, not averaged in
+    tiny = lay(40, 1.0, 0.1, 0.1, 1.0, 1.0, 9.9)
+    ok("layers: single-row table excluded", layer_report(tiny) is None)
+    ok("layers: absent -> None, not a zero", layer_report("nothing here") is None)
+
     print()
     print(f"{len(fails)} failed" if fails else "all selftest cases behaved")
     return 1 if fails else 0
+
+
+# ------------------------------------------------------- per-layer DECPROF (GPU busy vs idle)
+#
+# Closes the question the kind/op tables cannot: for a given layer, was the GPU WORKING or WAITING?
+#
+# Field meanings, read off ggml-backend.cpp (the accumulation points are dp_lay_* / sg_*):
+#   wait   = CPU blocked waiting for the previous segment's GPU work to finish
+#   cb     = the top-k hook: expert slot management + BLOCKING fill
+#   submit = dispatch of this segment
+#   ---- total = wait + cb + submit. Verified against the step line, which prints all three and a
+#        total that they reproduce to 0.1 ms. This is the ONLY additive decomposition here.
+#   gpu    = sum over the segment's buffers of their GPU busy time -- OVERLAPPING buffers are
+#            counted twice, so it may exceed `union`. Never add it to anything.
+#   union  = the GPU SPAN of this segment (first start .. last end). Idle INSIDE the span is
+#            included in it, so union is a span, not a busy time.
+#   gap    = GPU idle between the previous segment's GPU end and this segment's GPU start.
+#            ggml-backend.cpp:2130 states where that window lives: "This window sits inside the
+#            previous segment's hook+submit (CPU) time, so gap vs (cb+submit) is a built-in
+#            cross-check on both instruments."  =>  gap/(cb+submit) ~ 1 means the hook window is
+#            time the GPU spends doing nothing.
+#
+# The family split below is not cosmetic: the qwen35 trunk interleaves full attention every 4th
+# layer from 3, and the OTHER 30 carry the GDN mixer, which is the family that owns `cache_r_l*`
+# (build_rwkv_token_shift_store, llama-graph.cpp:4077). So "GDN vs full-attn" IS the
+# "does the cache_r copy show up as idle" question, at the granularity the engine can answer.
+FULL_ATTN = frozenset(range(3, 40, 4))
+
+LAYRE = re.compile(r"CGC-DECPROF all: L(\d+) wait=([\d.]+) cb=([\d.]+) submit=([\d.]+) ms "
+                   r"gpu=([\d.]+) union=([\d.]+) gap=([\d.]+)")
+STEPRE = re.compile(r"CGC-DECPROF: step=(\d+) segs=(\d+) layers=(\d+) total=([\d.]+) ms \| "
+                    r"wait=([\d.]+) \(\d+%\) cb=([\d.]+) \(\d+%\) submit=([\d.]+) \(\d+%\) "
+                    r"ntok=(\d+) \| layer gpu_sum=([\d.]+) union_sum=([\d.]+) gap_sum=([\d.]+)")
+
+
+def parse_layer_tables(text):
+    """Per-layer rows grouped into steps by contiguous L index.
+
+    Contiguity is the only key available: these rows carry no step id. A one-row run is the MTP
+    head's own step, not a trunk step, which is why a row-count floor is applied later rather than
+    averaging everything together -- the same shape trap the kind and op tables each taught.
+    """
+    rows = []
+    for ln in text.splitlines():
+        m = LAYRE.search(ln)
+        if m:
+            rows.append({"il": int(m.group(1)), "wait": float(m.group(2)), "cb": float(m.group(3)),
+                         "submit": float(m.group(4)), "gpu": float(m.group(5)),
+                         "union": float(m.group(6)), "gap": float(m.group(7))})
+    tables, cur = [], []
+    for r in rows:
+        if cur and r["il"] != cur[-1]["il"] + 1:
+            tables.append(cur)
+            cur = []
+        cur.append(r)
+    if cur:
+        tables.append(cur)
+    return tables
+
+
+def parse_step_rows(text):
+    out = []
+    for ln in text.splitlines():
+        m = STEPRE.search(ln)
+        if m:
+            out.append({"step": int(m.group(1)), "layers": int(m.group(3)), "total": float(m.group(4)),
+                        "wait": float(m.group(5)), "cb": float(m.group(6)), "submit": float(m.group(7)),
+                        "ntok": int(m.group(8)), "gpu_sum": float(m.group(9)),
+                        "union_sum": float(m.group(10)), "gap_sum": float(m.group(11))})
+    return out
+
+
+def _corr(a, b):
+    n = min(len(a), len(b))
+    if n < 3:
+        return None
+    a, b = a[:n], b[:n]
+    ma, mb = sum(a) / n, sum(b) / n
+    num = sum((x - ma) * (y - mb) for x, y in zip(a, b))
+    da = (sum((x - ma) ** 2 for x in a)) ** 0.5
+    db = (sum((y - mb) ** 2 for y in b)) ** 0.5
+    return num / (da * db) if da * db else None
+
+
+def layer_report(text, min_rows=40):
+    """None when absent -- a log without per-layer rows means the instrument was off."""
+    tables = [t for t in parse_layer_tables(text) if len(t) >= min_rows]
+    if not tables:
+        return None
+    steps = [t for t in tables if st.median([r["union"] for r in t]) < 20.0]
+    # Steps whose pool fill dominates are cold-pool steps; excluding them is what makes the rest
+    # comparable to a served request. The threshold is on the ratio, not on a raw ms, so it travels.
+    cold = sum(1 for t in steps if sum(r["cb"] for r in t) > 0.5 * sum(r["wait"] for r in t))
+    out = {"n_tables": len(tables), "n_steps": len(steps), "n_cold_like": cold, "families": {},
+           "sums": {}, "ratios": {}, "n_step_rows": len(parse_step_rows(text))}
+    within_corr = None
+    for name, is_attn in (("gdn", False), ("full_attn", True)):
+        v = [r for t in steps for r in t
+             if r["il"] < 40 and ((r["il"] in FULL_ATTN) == is_attn)]
+        if not v:
+            continue
+        med = {k: st.median([r[k] for r in v]) for k in ("wait", "cb", "submit", "gpu", "union", "gap")}
+        med["n_layers"] = len({r["il"] for r in v})
+        med["n_rows"] = len(v)
+        med["gpu_over_union"] = med["gpu"] / med["union"] if med["union"] else None
+        med["gap_share"] = med["gap"] / (med["gap"] + med["union"]) if (med["gap"] or med["union"]) else None
+        out["families"][name] = med
+    per_step = []
+    for t in steps:
+        b = [r for r in t if r["il"] < 40]
+        per_step.append({"wait": sum(r["wait"] for r in b), "cb": sum(r["cb"] for r in b),
+                         "submit": sum(r["submit"] for r in b), "gap": sum(r["gap"] for r in b),
+                         "union": sum(r["union"] for r in b), "gpu": sum(r["gpu"] for r in b)})
+    # Per-LAYER profile. Both questions that matter are answered here and nowhere else in this
+    # instrument: WHICH layers carry the hook window, and whether it tracks that layer's own GPU
+    # work (a per-layer sync would; bookkeeping driven by slot churn would not).
+    by_il = {}
+    for t in steps:
+        for r in t:
+            if r["il"] < 40:
+                by_il.setdefault(r["il"], []).append(r)
+    out["per_layer"] = {}
+    for il, v in sorted(by_il.items()):
+        out["per_layer"][il] = {"cb": st.median([r["cb"] for r in v]),
+                                "union": st.median([r["union"] for r in v]),
+                                "gap": st.median([r["gap"] for r in v]), "n": len(v)}
+    if out["per_layer"]:
+        tot = sum(d["cb"] for d in out["per_layer"].values())
+        rank = sorted(out["per_layer"].items(), key=lambda kv: -kv[1]["cb"])
+        out["cb_concentration"] = {"total_median_per_layer_ms": tot,
+                                   "top4_share": sum(d["cb"] for _, d in rank[:4]) / tot if tot else None,
+                                   "top8_share": sum(d["cb"] for _, d in rank[:8]) / tot if tot else None,
+                                   "top_layers": [il for il, _ in rank[:8]]}
+        # within-step correlation across layers, which removes the step-to-step scale
+        within = []
+        for t in steps:
+            b = [r for r in t if r["il"] < 40]
+            if len(b) >= 40:
+                c = _corr([r["cb"] for r in b], [r["union"] for r in b])
+                if c is not None:
+                    within.append(c)
+        within_corr = st.median(within) if within else None
+    if per_step:
+        med = {k: st.median([p[k] for p in per_step]) for k in per_step[0]}
+        wall = med["wait"] + med["cb"] + med["submit"]
+        out["sums"] = med
+        out["sums"]["wall"] = wall
+        hook = med["cb"] + med["submit"]
+        out["ratios"] = {
+            "gap_over_hook": (med["gap"] / hook) if hook else None,
+            "gap_over_wall": (med["gap"] / wall) if wall else None,
+            "hook_over_wall": (hook / wall) if wall else None,
+            "gpu_over_union": (med["gpu"] / med["union"]) if med["union"] else None,
+            # the engine's own cross-check, across steps rather than within one
+            "corr_gap_hook": _corr([p["gap"] for p in per_step],
+                                   [p["cb"] + p["submit"] for p in per_step]),
+            "corr_gap_wait": _corr([p["gap"] for p in per_step], [p["wait"] for p in per_step]),
+        }
+        # set AFTER the literal above: assigning into out["ratios"] earlier is silently lost when
+        # this dict is built (it rebinds the name). Cost of finding that out: one KeyError.
+        out["ratios"]["within_step_corr_cb_union"] = within_corr
+    return out
+
+
+def layer_verdict(a):
+    r = a.get("ratios") or {}
+    if not r.get("gap_over_hook"):
+        return "NO DATA"
+    fam = a["families"]
+    g, f = fam.get("gdn"), fam.get("full_attn")
+    msg = []
+    if g and f:
+        if g["gpu_over_union"] >= 1.0 and f["gpu_over_union"] >= 1.0:
+            msg.append("GPU is packed inside both families' spans (gpu/union >= 1) -> per-layer idle "
+                       "is NOT the story")
+        if abs(g["gap"] - f["gap"]) / max(g["gap"], f["gap"], 1e-9) < 0.25:
+            msg.append("the cache_r-bearing (GDN) layers carry the SAME per-layer gap as full-attn "
+                       "(%.2f vs %.2f ms) -> the copy does not present as idle" % (g["gap"], f["gap"]))
+    msg.append("step-level GPU idle = %.0f%% of the wall, and it tracks the CPU hook window 1:1 "
+               "(gap/hook=%.2f, corr=%.3f)" % (100 * r["gap_over_wall"], r["gap_over_hook"],
+                                               r["corr_gap_hook"] or float("nan")))
+    return "; ".join(msg)
+
+
+def cmd_layers(args):
+    text = open(args.log, errors="replace").read()
+    a = layer_report(text)
+    if a is None:
+        print("no per-layer CGC-DECPROF rows in this log (instrument off, or CGC_DECODE_PROFILE unset)")
+        return 1
+    print("=" * 78)
+    print("PER-LAYER: was the GPU working, or waiting?  (medians; ms)")
+    print("=" * 78)
+    print("log                 : %s" % args.log)
+    print("trunk tables        : %d   (steps used: %d, of which cold-looking: %d)"
+          % (a["n_tables"], a["n_steps"], a["n_cold_like"]))
+    print("step summary rows   : %d  (used to cross-check the sums below)" % a["n_step_rows"])
+    print()
+    print("%-11s %5s %6s %6s %7s %7s %7s %7s %9s %9s" %
+          ("family", "nLay", "wait", "cb", "submit", "gpu", "union", "gap", "gpu/uni", "gap share"))
+    print("-" * 78)
+    for name in ("gdn", "full_attn"):
+        d = a["families"].get(name)
+        if not d:
+            continue
+        print("%-11s %5d %6.2f %6.2f %7.2f %7.2f %7.2f %7.2f %9.2f %8.0f%%" %
+              (name, d["n_layers"], d["wait"], d["cb"], d["submit"], d["gpu"], d["union"], d["gap"],
+               d["gpu_over_union"], 100 * d["gap_share"]))
+    s = a["sums"]
+    r = a["ratios"]
+    print()
+    print("per-step sums (40 trunk layers, medians):")
+    print("  wall = wait + cb + submit      = %8.1f ms  (%.1f + %.1f + %.1f)"
+          % (s["wall"], s["wait"], s["cb"], s["submit"]))
+    print("  hook window = cb + submit      = %8.1f ms  = %.1f%% of wall"
+          % (s["cb"] + s["submit"], 100 * r["hook_over_wall"]))
+    print("  gap (GPU idle, directly read)  = %8.1f ms  = %.1f%% of wall" % (s["gap"], 100 * r["gap_over_wall"]))
+    print("  gpu / union                    = %8.2f     (overlap double counts; >1 hides span idle)"
+          % r["gpu_over_union"])
+    print("  gap / hook                     = %8.2f     <- the engine's own cross-check" % r["gap_over_hook"])
+    print("  corr(gap, cb+submit)           = %8.3f     corr(gap, wait) = %.3f"
+          % (r["corr_gap_hook"], r["corr_gap_wait"]))
+    pl = a.get("per_layer") or {}
+    if pl:
+        cc = a["cb_concentration"]
+        print()
+        print("per-layer cb profile (median over steps, ms) -- WHERE the hook window lives:")
+        for lo in (0, 20):
+            hi = min(lo + 20, 40)
+            print("  L%-2d-" % lo + "%-2d  " % (hi - 1) +
+                  " ".join("%5.2f" % pl[i]["cb"] for i in range(lo, hi) if i in pl))
+        print("  top 4 share of cb = %.0f%%   top 8 share = %.0f%%   (layers %s)"
+              % (100 * cc["top4_share"], 100 * cc["top8_share"],
+                 ",".join("L%d" % i for i in cc["top_layers"])))
+        print("  within-step corr(cb, union) across layers = %s"
+              % ("%.3f" % a["ratios"].get("within_step_corr_cb_union")
+                 if a["ratios"].get("within_step_corr_cb_union") is not None else "n/a"))
+        print("  reading: a flat ~0.2 ms floor with a few big layers = bookkeeping driven by those")
+        print("  layers' churn. If instead cb tracked union, it would be a per-layer GPU sync.")
+    print()
+    print("VERDICT: %s" % layer_verdict(a))
+    print()
+    print("Read it this way: `union` is a SPAN, so idle inside it is invisible here; `gap` is the")
+    print("idle BETWEEN segments and is the only idle this table can name. `gpu` double counts.")
+    return 0
 
 
 def main():
@@ -679,6 +955,9 @@ def main():
     a = sub.add_parser("analyze")
     a.add_argument("log")
     a.set_defaults(fn=cmd_analyze)
+    l = sub.add_parser("layers")
+    l.add_argument("log")
+    l.set_defaults(fn=cmd_layers)
     s = sub.add_parser("selftest")
     s.set_defaults(fn=cmd_selftest)
     args = ap.parse_args()

@@ -32,6 +32,7 @@ THE CELLS (one shape per launch -- see the trap below)
 |                   |      |     |     |        | put beside published numbers                    |
 | prefill-house     | 2048 | 16  | 0   | profile| continuity with the recorded pp2048 captures  |
 | prefill-up        | 512  | 128 | 0   | 2048   | exactly upstream's default shape -> `pp512`    |
+| decode-spec       | 0    | 128 | 512 | 8      | MTP verify (`--spec-type draft-mtp`), M=2..4   |
 
 Upstream's own defaults are `-p 512 -n 128 -d 0 -b 2048` (`tools/llama-bench/llama-bench.cpp`),
 and its canonical output rows are `pp512 / tg128 / pp512 @ d512` (`tools/llama-bench/README.md`).
@@ -138,9 +139,35 @@ CELLS: dict[str, dict] = {
         why="M=8 pool-path chunks: the only shape where the kernel-family gates act "
             "(decode is M=1, the slab cells are M>8)",
     ),
+    # [CGC 2026-09-18] The MTP-VERIFY cell -- the last row of the reachability table that no
+    # existing cell can see. `decode` / `decode-up` are `-p 0` with no spec, so every matmul is
+    # M=1 and the gates are not eligible; `prefill-m8` is M=8; the slab cells are M>8. The verify
+    # batch is `1 + draft.size()` tokens (llama-bench.cpp:2570-2574), so at the server's
+    # `--spec-draft-n-max 3` it is 4 -- and `ggml_metal_op_mul_mat` reaches the small-batch family
+    # for ne11 in [2,8]. This is the only production shape at M=2..4.
+    #
+    # WHY `batch="8"`: the same reason as `prefill-m8`. It is the only width the engine honours on
+    # a pool-only profile, and `compat()` refuses a cell whose batch is not the effective batch
+    # instead of running it under a false label. The verify batch (<= 4) fits inside 8.
+    #
+    # WHY IT IS NOT FORWARDED FROM THE SERVER ARGV: all seven profiles carry
+    # `--spec-type draft-mtp`, so auto-forwarding would turn EVERY existing cell into a spec cell
+    # and silently redefine the recorded `decode` number -- the "same label, different quantity"
+    # failure this file exists to prevent. So it is opt-in and per-cell, and `cell_command()`
+    # REFUSES it on a profile whose resolved argv has no `--spec-type`.
+    #
+    # WHAT IT MEASURES: `avg_ts` is still n_gen / wall, i.e. OUTPUT tokens per second, so it is
+    # directly comparable with the plain `decode` cell. It is NOT a pure kernel number: one round
+    # is an MTP draft forward plus one target verify, so a gate that only touches the verify
+    # matmul is diluted by whatever fraction of the round is not that matmul.
+    "decode-spec": dict(
+        p=0, n=128, d=512, batch="8", spec="draft-mtp",
+        why="MTP verify at M=2..4: the only production shape the kernel-family gates can act on "
+            "(plain decode is M=1, the prefill cells are M>=8)",
+    ),
 }
 
-CELL_ORDER = ["decode", "decode-up", "prefill-house", "prefill-up", "prefill-m8"]
+CELL_ORDER = ["decode", "decode-up", "prefill-house", "prefill-up", "prefill-m8", "decode-spec"]
 
 # The engine's pool-path clamp on a profile that neither pins BATCH nor turns on PREFILL_STREAM
 # (`cgc_pool_max_tokens()`, llama-context.cpp:285; MTP on -> 8). Named here because two places in
@@ -322,6 +349,25 @@ def cell_command(profile: str, cell: str, reps: int, workdir: Path, jpath: Path,
     # The matrix rebuilds the llama-bench argv itself; `fwd` is only used here to show the reader
     # what the cell will inherit (model, -ngl, --expert-cache, kv types ...).
     model = next((fwd[i + 1] for i, a in enumerate(fwd[:-1]) if a == "-m"), "<no -m in server argv>")
+    # [CGC 2026-09-18] The spec cell's flags, taken from the PROFILE's own resolved server argv
+    # rather than from a literal here. `--spec-draft-n-max` is what sets M (verify batch = 1 + up
+    # to n_max draft tokens), so hard-coding it would make the cell's M a property of this file
+    # instead of a property of the profile -- i.e. the cell would stop measuring the profile.
+    # Absent from the argv => let llama-bench use its own default (3) rather than guess.
+    # Placed AFTER `model`: this branch returns through the same tuple as the tail return, and an
+    # early return above `model` would be a NameError on exactly the profiles it has to refuse.
+    cell_spec = spec.get("spec")
+    if cell_spec:
+        if "--spec-type" not in argv:
+            return cmd, spec, model, b, why, False, (
+                f"cell {cell!r} needs the speculative path, but profile {profile!r} does not run "
+                f"MTP (no --spec-type in its resolved server argv) -- the cell would not measure "
+                f"this profile as-is")
+        cmd += ["--spec-type", cell_spec]
+        for i, a in enumerate(argv[:-1]):
+            if a == "--spec-draft-n-max":
+                cmd += ["--spec-draft-n-max", argv[i + 1]]
+                break
     return cmd, spec, model, b, why, ok, why_not
 
 

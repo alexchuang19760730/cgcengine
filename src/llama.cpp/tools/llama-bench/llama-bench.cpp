@@ -385,6 +385,8 @@ struct cmd_params {
     std::vector<std::string>             spec_type;
     int                                  spec_draft_n_max;
     std::vector<common_speculative_type> spec_types;
+    // [CGC 2026-09-19] --prompt-file: fill prompt/depth with REAL text instead of std::rand()%n_vocab.
+    std::string                          prompt_file;
 };
 
 static const cmd_params cmd_params_defaults = {
@@ -433,7 +435,165 @@ static const cmd_params cmd_params_defaults = {
     /* spec_type            */ {},
     /* spec_draft_n_max     */ 3,
     /* spec_types           */ {},
+    /* prompt_file          */ "",
 };
+
+// [CGC 2026-09-19] --prompt-file support for test_prompt().
+//
+// WHY. `llama-bench` has always filled its prompt AND its depth with `std::rand() % n_vocab`,
+// i.e. a uniform draw over the whole vocabulary. That is not what the served path sees: the
+// server's prompt is real prose, whose MoE routing is far from uniform. The measured consequence
+// (2026-09-18, docs/BENCH_HTTP_PARITY_2026-09-18.md and
+// docs/MTP_ROUND_COST_OPT_BACKLOG_2026-09-19.md) is that the uniform draw moves TWO things at
+// once, and both in the direction that made llama-bench disagree with HTTP:
+//   - cache requests/round 200.3 vs the server's 116.5 (routing spread over ~256 experts instead of
+//     a prose-shaped working set), which is 76% of the per-round cost;
+//   - draft acceptance 0.8012 vs the server's 0.4654 -- a garbage prompt makes the model's
+//     distribution very peaked, so draft and target agree on the top-1 far more often. mean len is
+//     1 + n_max*p, so 1+3(0.8012)=3.404 vs 1+3(0.4654)=2.396, i.e. the same cause.
+// Feeding the same real text the server gets should therefore remove BOTH halves and let
+// llama-bench land on the HTTP number (predicted 2.40/0.185 = 12.97 vs HTTP 12.99).
+//
+// The tokens are cycled (idx % n) so a short unit can fill an arbitrary --n-depth, which is exactly
+// what http_duo.py does when it repeats _PREFILL_UNIT up to the profile's ctx.
+static std::string              g_prompt_file;
+static std::vector<llama_token> g_prompt_tokens;
+static const llama_vocab *      g_prompt_vocab = nullptr;
+
+// [CGC 2026-09-19] --fixed-fill-seed N: reseed std::rand() at the top of EVERY rep.
+//
+// WHY. `llama-bench` never calls srand(), so the C library's seed is 1 once per PROCESS, not once
+// per rep. The rand stream therefore keeps advancing across reps: rep 1, 2, 3, 4 each draw a
+// DIFFERENT random depth and a different decode token stream. Since the expert cache lives on the
+// model (it is NOT cleared by llama_memory_clear), every rep flushes the pool and re-pays the
+// compulsory misses -- llama-bench can never reach steady state, while the HTTP server (same
+// prompt, temp 0) converges after rep 1. That is the whole of the bench-vs-http gap.
+// 0 keeps the historical behaviour bit-for-bit.
+static int g_fixed_fill_seed = 0;
+
+// [CGC 2026-09-19] --warm-skip N: run N generated tokens that are NOT timed.
+//
+// WHY. A decode t/s from this tool is a window average and the window is whatever `-n` says; the
+// plateau is not reached at the start of a generation. Measured on this box with the house decode
+// shape: `-d 512 -n 128` reads 7.96 t/s while `-d 512 -n 512` reads 10.22 -- same engine, same pool,
+// same everything except how many tokens the average covers. The plateau then had to be recovered
+// by hand from the per-rep `samples_ts`, which is not something a reader of this binary's JSON can
+// do. This flag puts the window in the command line and makes the reported `n_gen` state the number
+// of tokens the figure is actually about.
+//
+// It is NOT `platform_ts`: that drops a whole REP (a different question, "the first rep is cold"),
+// while this drops the first N tokens of EVERY rep.
+//
+// 0 (default) is bit-identical to the previous behaviour: no extra generation call, the timed
+// interval is untouched, `n_gen` is untouched.
+static int g_warm_skip = 0;
+
+// [CGC 2026-09-19] -c, --ctx-size N: override the derived n_ctx (n_prompt + n_gen + n_depth).
+//
+// WHY. That derived value is the only ctx this tool ever ran at, and it is much smaller than the
+// server's: the house decode arm `-d 512 -n 192` derives **704** while prod25 serves at **-c 4096**.
+// n_ctx is not cosmetic -- it sizes the KV allocation and it drives the engine's own batch clamping
+// (`CGC-PHASE-SPLIT: L4 pool capacity=179 -> n_batch 2048 capped to 8`). So every bench-vs-HTTP
+// comparison in this project has been taken at two different ctx values, and ctx was never tested
+// because the tool could not set it. 0 = the historical derived value.
+static int g_ctx_override = 0;
+
+// [CGC 2026-09-19] Env fallbacks for the two window/carrier knobs.
+//
+// WHY. `scripts/check/paired_ab.py` drives an A/B through `--a-env`/`--b-env`, i.e. environment
+// variables -- it has no way to differ two arms by CLI flag. Without these, `--warm-skip` and
+// `--ctx-size` cannot be tested by this project's own paired design (AB/BA + median + `--null`
+// noise floor), which is the only design that has survived this box's across-launch spread.
+// A CLI flag still WINS over the env when both are given.
+static int env_int_or(const char * name, int fallback) {
+    const char * v = getenv(name);
+    if (v == nullptr || v[0] == '\0') {
+        return fallback;
+    }
+    return std::atoi(v);
+}
+
+static int warm_skip_value() { return g_warm_skip > 0 ? g_warm_skip : env_int_or("CGC_BENCH_WARM_SKIP", 0); }
+static int ctx_size_value()  { return g_ctx_override > 0 ? g_ctx_override : env_int_or("CGC_BENCH_CTX", 0); }
+
+// Returns token `idx` of the real text, or a uniform random token when --prompt-file was not given
+// (or could not be read). Bit-identical to the previous behaviour in the fallback case.
+static llama_token bench_fill_token(const llama_vocab * vocab, int32_t n_vocab, int idx) {
+    if (g_prompt_file.empty()) {
+        return std::rand() % n_vocab;
+    }
+    if (g_prompt_vocab != vocab) {
+        g_prompt_tokens.clear();
+        g_prompt_vocab = vocab;
+
+        FILE * f = fopen(g_prompt_file.c_str(), "rb");
+        if (!f) {
+            fprintf(stderr, "llama-bench: --prompt-file '%s' could not be opened; using random fill\n",
+                    g_prompt_file.c_str());
+            g_prompt_file.clear();
+            return std::rand() % n_vocab;
+        }
+        fseek(f, 0, SEEK_END);
+        const long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        std::string text;
+        if (sz > 0) {
+            text.resize((size_t) sz);
+            const size_t got = fread(&text[0], 1, (size_t) sz, f);
+            text.resize(got);
+        }
+        fclose(f);
+
+        g_prompt_tokens.resize(text.size() + 64);
+        int32_t n = llama_tokenize(vocab, text.c_str(), (int32_t) text.size(), g_prompt_tokens.data(),
+                                   (int32_t) g_prompt_tokens.size(), true, false);
+        if (n < 0) { // buffer too small: llama_tokenize returns -(required)
+            g_prompt_tokens.resize((size_t) -n);
+            n = llama_tokenize(vocab, text.c_str(), (int32_t) text.size(), g_prompt_tokens.data(),
+                               (int32_t) g_prompt_tokens.size(), true, false);
+        }
+        if (n <= 0) {
+            fprintf(stderr, "llama-bench: --prompt-file '%s' tokenized to %d tokens; using random fill\n",
+                    g_prompt_file.c_str(), (int) n);
+            g_prompt_file.clear();
+            g_prompt_tokens.clear();
+            return std::rand() % n_vocab;
+        }
+        g_prompt_tokens.resize((size_t) n);
+        fprintf(stderr, "llama-bench: --prompt-file '%s' -> %d real tokens (cycled to fill prompt/depth)\n",
+                g_prompt_file.c_str(), (int) n);
+    }
+    if (g_prompt_tokens.empty()) {
+        return std::rand() % n_vocab;
+    }
+    return g_prompt_tokens[(size_t) idx % g_prompt_tokens.size()];
+}
+
+// [CGC 2026-09-19 n-gram control arm] Self-speculation from the token history: it drafts WITHOUT any
+// draft-model forward. That is the whole reason it is here -- it is the only arm that can answer
+// "is the ~46-59 ms per draft token the DRAFT FORWARD, or the verify path that the extra token
+// brings with it?" (docs/POOL_BUDGET_COST_DECOMP_2026-09-18.md §6.1b). Neither k nor the pool size
+// can separate those two, because both scale together with k.
+//
+// ONE definition, three consumers (type validation, spec setup, the measured loop), for the same
+// reason the phase predicate has one: a second copy of this list is how the arms stop agreeing on
+// what they measured.
+static bool is_ngram_spec_type(common_speculative_type t) {
+    switch (t) {
+        case COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE:
+        case COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K:
+        case COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V:
+        case COMMON_SPECULATIVE_TYPE_NGRAM_MOD:
+        case COMMON_SPECULATIVE_TYPE_NGRAM_CACHE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool is_ngram_spec_arm(const std::vector<common_speculative_type> & types) {
+    return !types.empty() && std::all_of(types.begin(), types.end(), is_ngram_spec_type);
+}
 
 static void print_usage(int /* argc */, char ** argv) {
     printf("usage: %s [options]\n", argv[0]);
@@ -505,6 +665,20 @@ static void print_usage(int /* argc */, char ** argv) {
     printf("                                                    (default: none -- plain decode cell)\n");
     printf("  --spec-draft-n-max <n>                            max draft tokens for --spec-type draft-mtp, 1..16 (default: %d)\n", cmd_params_defaults.spec_draft_n_max);
     printf("                                                    (without --spec-type this is inert)\n");
+    printf("  --prompt-file <path>                              fill the prompt/depth with REAL text read from\n");
+    printf("                                                    <path> (cycled) instead of std::rand()%%n_vocab.\n");
+    printf("                                                    The random fill is NOT what the server sees, and it\n");
+    printf("                                                    moves both cache requests/round and draft acceptance.\n");
+    printf("  --fixed-fill-seed <n>                             reseed std::rand() with <n> at the top of EVERY\n");
+    printf("                                                    rep, so all reps see the same fill stream (and the\n");
+    printf("                                                    expert cache can reach steady state). 0 = off,\n");
+    printf("                                                    the historical advancing-stream behaviour (default).\n");
+    printf("  -c, --ctx-size <n>                                context size (default: n_prompt + n_gen + n_depth).\n");
+    printf("  --warm-skip <n>                                   run <n> generated tokens in EVERY rep before the\n");
+    printf("                                                    clock starts, and report them out of n_gen. The\n");
+    printf("                                                    plateau of a generation is not reached at its first\n");
+    printf("                                                    token: -d 512 -n 128 reads 7.96 t/s while -d 512\n");
+    printf("                                                    -n 512 reads 10.22 on the same engine. 0 = off.\n");
     printf("\n");
     printf(
         "Multiple values can be given for each parameter by separating them with ','\n"
@@ -1125,6 +1299,32 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
                     break;
                 }
                 params.spec_draft_n_max = std::stoi(argv[i]);
+            } else if (arg == "--prompt-file") {
+                // [CGC 2026-09-19] Long form only; see the note at the --spec-type branch above.
+                if (++i >= argc) {
+                    invalid_param = true;
+                    break;
+                }
+                params.prompt_file = argv[i];
+                g_prompt_file      = argv[i];
+            } else if (arg == "--fixed-fill-seed") {
+                if (++i >= argc) {
+                    invalid_param = true;
+                    break;
+                }
+                g_fixed_fill_seed = std::stoi(argv[i]);
+            } else if (arg == "-c" || arg == "--ctx-size") {
+                if (++i >= argc) {
+                    invalid_param = true;
+                    break;
+                }
+                g_ctx_override = std::stoi(argv[i]);
+            } else if (arg == "--warm-skip") {
+                if (++i >= argc) {
+                    invalid_param = true;
+                    break;
+                }
+                g_warm_skip = std::stoi(argv[i]);
             } else {
                 invalid_param = true;
                 break;
@@ -1171,12 +1371,14 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
         params.spec_types.clear();
     }
 
-    // This instrument implements draft-mtp and nothing else. Saying so and stopping is the point:
-    // falling back silently to the plain gen cell would emit a throughput number under a command
-    // line that claims it measured the speculative path.
+    // draft-mtp is what this instrument was built for; the n-gram family is accepted as its CONTROL
+    // (a real draft without a draft forward). Anything else still stops the run: falling back
+    // silently to the plain gen cell would emit a throughput number under a command line that
+    // claims it measured the speculative path.
     for (const auto t : params.spec_types) {
-        if (t != COMMON_SPECULATIVE_TYPE_DRAFT_MTP) {
-            fprintf(stderr, "error: --spec-type %s is not implemented by this instrument (only draft-mtp)\n",
+        if (t != COMMON_SPECULATIVE_TYPE_DRAFT_MTP && !is_ngram_spec_type(t)) {
+            fprintf(stderr, "error: --spec-type %s is not implemented by this instrument "
+                            "(draft-mtp, or one ngram-* type as the no-draft-forward control)\n",
                     common_speculative_type_to_str(t).c_str());
             exit(1);
         }
@@ -1195,6 +1397,13 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
                         "and is NOT comparable with a plain -n decode cell; the draft model is the target model "
                         "itself (its in-file MTP block)\n",
                 common_speculative_type_name_str(params.spec_types).c_str(), params.spec_draft_n_max);
+        if (is_ngram_spec_arm(params.spec_types)) {
+            // The number this cell produces is not a quality number, and saying which cost it
+            // measures is the difference between an ablation and a mystery.
+            fprintf(stderr, "llama-bench: [spec] n-gram CONTROL arm: the draft comes from the token HISTORY "
+                            "and there is NO draft forward. This cell therefore measures the VERIFY path at "
+                            "the same batch size (1 + n_max tokens); its m is the control for draft-mtp's m.\n");
+        }
     }
 
     if (!params.hf_repo.empty()) {
@@ -1427,7 +1636,10 @@ struct cmd_params_instance {
     llama_context_params to_llama_cparams() const {
         llama_context_params cparams = llama_context_default_params();
 
-        cparams.n_ctx           = n_prompt + n_gen + n_depth;
+        // [CGC 2026-09-19] -c/--ctx-size overrides the derived value; 0 keeps it bit-for-bit.
+        cparams.n_ctx           = ctx_size_value() > 0
+                                ? (uint32_t) ctx_size_value()
+                                : (uint32_t) (n_prompt + n_gen + n_depth);
         cparams.n_batch         = n_batch;
         cparams.n_ubatch        = n_ubatch;
         cparams.type_k          = type_k;
@@ -1755,7 +1967,7 @@ struct test {
             "no_op_offload",  "no_host",        "fit_target",    "fit_min_ctx",
             "n_prompt",       "n_gen",          "n_depth",
             "test_time",      "avg_ns",         "stddev_ns",     "avg_ts",         "stddev_ts",
-            "platform_ts",    "n_kept"
+            "platform_ts",    "n_kept",         "warm_skip",      "ctx_override"
         };
         return fields;
     }
@@ -1777,7 +1989,7 @@ struct test {
         if (field == "avg_ts" || field == "stddev_ts" || field == "platform_ts") {
             return FLOAT;
         }
-        if (field == "n_kept") {
+        if (field == "n_kept" || field == "warm_skip" || field == "ctx_override") {
             return INT;
         }
         if (field == "load_mode") {
@@ -1864,7 +2076,9 @@ struct test {
                                             std::to_string(avg_ts()),
                                             std::to_string(stdev_ts()),
                                             std::to_string(platform_ts()),
-                                            std::to_string(n_kept()) };
+                                            std::to_string(n_kept()),
+                                            std::to_string(warm_skip_value()),
+                                            std::to_string(ctx_size_value()) };
         return values;
     }
 
@@ -2318,9 +2532,11 @@ static bool test_prompt(llama_context * ctx, int n_prompt, int n_batch, int n_th
 
     while (n_processed < n_prompt) {
         int n_tokens = std::min(n_prompt - n_processed, n_batch);
-        tokens[0]    = n_processed == 0 && llama_vocab_get_add_bos(vocab) ? llama_vocab_bos(vocab) : std::rand() % n_vocab;
+        tokens[0]    = n_processed == 0 && llama_vocab_get_add_bos(vocab)
+                       ? llama_vocab_bos(vocab)
+                       : bench_fill_token(vocab, n_vocab, n_processed);
         for (int i = 1; i < n_tokens; i++) {
-            tokens[i] = std::rand() % n_vocab;
+            tokens[i] = bench_fill_token(vocab, n_vocab, n_processed + i);
         }
         int res = llama_decode(ctx, llama_batch_get_one(tokens.data(), n_tokens));
         if (res != 0) {
@@ -2473,12 +2689,18 @@ static bool bench_spec_setup(bench_spec_state & s, llama_model * model, llama_co
     // into params.speculative.draft.ctx_dft. The speculator itself is then built from those same
     // params by common_speculative_init(). Both must outlive the loop, and they must share ONE
     // common_params instance or the second call will not see what the first built.
-    s.init = common_speculative_init_from_params(s.params, model, ctx);
-    if (!s.init) {
-        fprintf(stderr, "%s: failed to initialise the MTP draft context\n", __func__);
-        return false;
-    }
+    const bool ngram_arm = is_ngram_spec_arm(spec_types);
 
+    // The MTP draft CONTEXT only exists for the draft-model impls. The n-gram arm has no draft model
+    // at all (common/speculative.cpp:2625-2635 is the list of impls NOT gated on ctx_dft), so asking
+    // for one would be an error this arm has to survive rather than a step it has to take.
+    if (!ngram_arm) {
+        s.init = common_speculative_init_from_params(s.params, model, ctx);
+        if (!s.init) {
+            fprintf(stderr, "%s: failed to initialise the MTP draft context\n", __func__);
+            return false;
+        }
+    }
     // [CGC MTP instrument 2026-09-17] The draft context has to be HANDED to the speculator, not
     // just created. common_speculative_init() enables DRAFT_MTP only when
     // `params.draft.ctx_dft != nullptr` (speculative.cpp:2633) -- with it null the constructor
@@ -2487,10 +2709,17 @@ static bool bench_spec_setup(bench_spec_state & s, llama_model * model, llama_co
     // (`ctx_dft.reset(spec_init->release_context())`) and :181
     // (`params.speculative.draft.ctx_dft = ctx_dft.get()`). release_context() transfers ownership
     // out of the holder, so the pointer must be owned and freed here.
-    s.ctx_dft.reset(s.init->release_context());
-    if (!s.ctx_dft) {
-        fprintf(stderr, "%s: the MTP draft context could not be released\n", __func__);
-        return false;
+    //
+    // [CGC 2026-09-19] This half is inside the guard too, and it has to be: with the constructor
+    // skipped, `s.init` is null and `s.init->release_context()` is a null dereference -- measured as
+    // SIGSEGV at KERN_INVALID_ADDRESS 0x0 with a 3-frame crash report whose only reason frame is
+    // `common_speculative_init_result::release_context()` called from llama_bench().
+    if (!ngram_arm) {
+        s.ctx_dft.reset(s.init->release_context());
+        if (!s.ctx_dft) {
+            fprintf(stderr, "%s: the MTP draft context could not be released\n", __func__);
+            return false;
+        }
     }
     // [CGC MTP instrument 2026-09-17] BOTH sides have to be handed over, not just the draft one.
     // common_speculative_impl_draft_mtp asserts `ctx_tgt && ctx_dft` (speculative.cpp:1318), so with
@@ -2499,12 +2728,40 @@ static bool bench_spec_setup(bench_spec_state & s, llama_model * model, llama_co
     //     params.speculative.draft.ctx_tgt = ctx_tgt;
     //     params.speculative.draft.ctx_dft = ctx_dft.get();
     s.params.speculative.draft.ctx_tgt = ctx;
-    s.params.speculative.draft.ctx_dft = s.ctx_dft.get();
+    s.params.speculative.draft.ctx_dft = ngram_arm ? nullptr : s.ctx_dft.get();
 
     s.spec.reset(common_speculative_init(s.params.speculative, 1));
     if (!s.spec) {
         fprintf(stderr, "%s: failed to initialise the speculative path\n", __func__);
         return false;
+    }
+
+    // [CGC 2026-09-19 instrument parity] SAMPLING PARITY WITH llama-server.
+    //
+    // Until this block existed, this tool had NO sampling controls at all -- `params.sampling` was
+    // never touched, so it kept common_params_sampling's struct defaults (temp 0.80 / top_p 0.95 /
+    // top_k 40 / min_p 0.05), while run_server.sh:1268-1270 launches the server with
+    // `--temp ${CGC_SERVER_TEMP:-0.4} --top-p ${CGC_SERVER_TOP_P:-0.8}` and `--top-k 0`.
+    //
+    // That is not a cosmetic difference. The MTP accept step compares the draft token against the
+    // TARGET's sampled token, so the target distribution's sharpness IS the accept rate: a sharper
+    // (lower-temperature) target puts more mass on the draft token and accepts more, a flatter one
+    // accepts less. Measured 2026-09-19 on the same prompt and carrier (prod25): the server reports
+    // mean_len 2.50 while this tool reports 2.02, and that accept term is 2/3 of the 1.37x
+    // throughput gap between the two paths -- so the two instruments were not measuring the same
+    // quantity. Reading the SAME env names the launcher uses is what makes them comparable; passing
+    // one env set to a driver aligns both sides with no new flags.
+    if (const char * v = getenv("CGC_SERVER_TEMP")) {
+        s.params.sampling.temp = (float) atof(v);
+    }
+    if (const char * v = getenv("CGC_SERVER_TOP_P")) {
+        s.params.sampling.top_p = (float) atof(v);
+    }
+    if (const char * v = getenv("CGC_SERVER_TOP_K")) {
+        s.params.sampling.top_k = atoi(v);
+    }
+    if (const char * v = getenv("CGC_SERVER_MIN_P")) {
+        s.params.sampling.min_p = (float) atof(v);
     }
 
     s.smpl.reset(common_sampler_init(model, s.params.sampling));
@@ -2531,7 +2788,22 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
     common_sampler     * smpl = s.smpl.get();
 
     llama_tokens prompt; // handed to the draft params; never fed to the target (see SHAPE above)
+
+    // [CGC MTP path parity 2026-09-18] `prompt` above is EMPTY, and its emptiness used to reach
+    // common_speculative_begin(), which silently disabled the only draft-path health check in the
+    // tree. `prompt_probe` is a separate vector so the size handed to begin() can be honest
+    // without changing what the (legacy) draft-params field carries -- nothing enabled here reads
+    // it anyway (common/speculative.h:61 marks it for removal).
+    llama_tokens prompt_probe;
     llama_tokens draft;
+    // [CGC 2026-09-19 instrument parity] Storage for the draft distribution the rejection
+    // rule consumes. The server hands this over only when the rule is on
+    // (server-context.cpp:3218: `common_sampler_mtp_rejection_on() ? &slot.spec_draft_dist
+    // : nullptr`); this tool hardcoded nullptr, so `CGC_MTP_REJECTION=1` was structurally
+    // unrepresentable here and any accept-rate comparison against the server would silently
+    // compare two different rules. Left empty when the rule is off, which is exactly the
+    // server's default path.
+    std::vector<common_draft_dist> draft_dist;
 
     // [CGC MTP instrument 2026-09-17] Checkpoint for partial acceptance. common_context_can_seq_rm()
     // reports COMMON_CONTEXT_SEQ_RM_TYPE_FULL for this context, which in this fork means "only a
@@ -2568,7 +2840,73 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
     int n_past = (int) llama_memory_seq_pos_max(llama_get_memory(ctx), seq_id) + 1;
     int n_done = 0;
 
-    common_speculative_begin(spec, seq_id, prompt);
+    // [CGC MTP path parity 2026-09-18] THE SIZE OF THIS VECTOR IS LOAD-BEARING. It used to be 0.
+    //
+    // common_speculative_impl_draft_mtp::begin() (common/speculative.cpp:1455-1471) opens with
+    // `if (N <= 0) return;`, and its ONLY body is a warning that fires when
+    //
+    //     pos_max(ctx_dft) < N - 1
+    //
+    // i.e. the one check in the tree that asks "did the target's prefill actually reach the DRAFT
+    // context on every ubatch -- need_embd / logits=1 on every prompt position?". The server feeds
+    // it the real prompt, so the check is live there. llama-bench fed it the EMPTY `prompt` vector
+    // above, so in every bench run that check returned at :1457 and could never fire, no matter how
+    // degraded the draft path was. This is the same failure shape as the missing CGC_PHASE_VERIFY:
+    // the instrument was silent not because the path was healthy, but because it was never asked.
+    //
+    // With the length supplied, bench says it out loud:
+    //     spec begin: ctx_dft pos_max=-1 < N-1=2024 - process() hook may not have run on every
+    //                 prefill ubatch (need_embd / logits=1 on every prompt position?).
+    // `pos_max = -1`: the draft context held NO positions -- the MTP head was drafting against an
+    // empty prefix. Only `prompt.size()` is read, so the faithful analogue of the server's N is
+    // "how many tokens this context has already consumed", i.e. n_past.
+    //
+    // ATTEMPTED FIX, MEASURED AND REVERTED TWICE (do not remove this note): feeding the prefill to
+    // the draft context (the way the server does) is a large REGRESSION in bench, both alone
+    // (tg [7.62, 10.03, 12.54, 8.81] -> [2.56, 3.90, 2.68, 2.98]) and paired with the KV-lifecycle
+    // half (-> [4.44, 7.23, 3.58, 1.36], 5.3x spread). Retained variant:
+    // Backup/bench_parity2_20260918/llama-bench.cpp.VARIANT_B_prefillfeed_lifecycle
+    // [CGC 2026-09-19 n-gram control arm] WHAT THE HISTORY HAS TO BE for the control to be a control.
+    //
+    // common_ngram_map_draft() (common/ngram-map.cpp:229-234) RETURNS WITH NO DRAFT when
+    // `inp.size() < 2*size_key + size_m`, and it looks its key up in this history. Two degenerate
+    // choices are rejected on exactly those grounds:
+    //   * empty history -> cur_len = 0 -> zero drafts -> the arm silently becomes a plain per-token
+    //     decode, and would "find" that the draft forward costs everything;
+    //   * constant run  -> drafts ARE produced, but the verify batch is k+1 copies of ONE token,
+    //     which collapses the expert union and makes the verify path look cheaper than the MTP arm's
+    //     -- i.e. it manufactures the same answer by the other door.
+    // So the history is a deterministic period-48 ramp: 48 < 2*12+48-1 keeps the key inside the window
+    // the descending search actually scans (ngram-map.cpp:279-296), and the m-gram it proposes is a
+    // run of DIFFERENT tokens, like draft-mtp's.
+    const bool ngram_arm = is_ngram_spec_arm(s.params.speculative.types);
+    const int  ngram_period = 48;
+    llama_token ngram_next = id_last;
+    if (ngram_arm) {
+        prompt_probe.assign((size_t) std::max(n_past, 1), 0);
+        for (size_t i = 0; i < prompt_probe.size(); ++i) {
+            prompt_probe[i] = (llama_token) (n_vocab / 4 + (int32_t) (i % (size_t) ngram_period));
+        }
+        // `sampled` has to CONTINUE the ramp, or the key is simply absent from the history and the
+        // round verifies ONE token with no draft -- a PARTIAL null that reads as "the verify path is
+        // cheap". This value is re-imposed every round below, for the same reason.
+        ngram_next = (llama_token) (n_vocab / 4 +
+                (int32_t) (prompt_probe.size() % (size_t) ngram_period));
+        id_last = ngram_next;
+        if ((int) prompt_probe.size() < 2 * 12 + 48) {
+            fprintf(stderr, "%s: the n-gram control arm needs a history of at least 2*size_key+size_m = "
+                            "72 tokens, because common_ngram_map_draft() drafts nothing below that; "
+                            "this shape supplied %d. Refusing to run: an arm with no draft verifies one "
+                            "token and would be read as a cheap verify path (use -d >= 128).\n",
+                    __func__, (int) prompt_probe.size());
+            llama_batch_free(batch);
+            return false;
+        }
+    } else {
+        prompt_probe.assign((size_t) std::max(n_past, 0), id_last);
+    }
+
+    common_speculative_begin(spec, seq_id, prompt_probe);
 
     while (n_done < n_gen) {
         if (draft.empty()) {
@@ -2581,14 +2919,36 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
                     llama_memory_seq_pos_min(llama_get_memory(ctx), seq_id),
                     llama_memory_seq_pos_max(llama_get_memory(ctx), seq_id));
 
+            if (ngram_arm) {
+                // Re-anchored every round ON PURPOSE: the n-gram map has no way to draft against a
+                // history that is not appended to, so `sampled` is kept on the ramp instead of
+                // following the target's own last token. The target's token stream is synthetic in
+                // this instrument anyway (the plain cell fills it with std::rand()), and what this
+                // arm measures is COST per verify step, not quality.
+                id_last = ngram_next;
+            }
+
+            // [CGC 2026-09-19] Two fields differ for the n-gram arm, and both are load-bearing:
+            //   * `.prompt` -- the n-gram impl SEARCHES this vector (and drafts nothing when it is
+            //     shorter than 2*size_key+size_m). The MTP impl never reads it, so pointing it at
+            //     `prompt_probe` cannot move the draft-mtp arm.
+            //   * `.n_max`  -- the dispatcher truncates the draft to this (speculative.cpp:2839-2843)
+            //     and llama-bench passed -1 = unbounded. An unbounded n-gram draft is up to size_m =
+            //     48 tokens, i.e. a 49-token verify batch, which is NOT the "same k" this control
+            //     exists to hold. Bounded to spec_draft_n_max it is exactly k, like draft-mtp.
             common_speculative_get_draft_params(spec, seq_id) = {
                 /* .drafting = */ true,
-                /* .n_max    = */ -1,
+                /* .n_max    = */ ngram_arm ? s.params.speculative.draft.n_max : -1,
                 /* .n_past   = */ n_past,
                 /* .id_last  = */ id_last,
-                /* .prompt   = */ &prompt,
+                /* .prompt   = */ ngram_arm ? &prompt_probe : &prompt,
                 /* .result   = */ &draft,
-                /* .dist     = */ nullptr,
+                // [CGC 2026-09-19 instrument parity] Was a hardcoded nullptr. The server passes
+                // storage only when common_sampler_mtp_rejection_on() (env CGC_MTP_REJECTION,
+                // common/sampling.cpp:794) is set; mirroring that here is what lets the same env
+                // drive both sides. With the env unset this evaluates to nullptr, so the default
+                // path is bit-for-bit the previous behaviour.
+                /* .dist     = */ common_sampler_mtp_rejection_on() ? &draft_dist : nullptr,
             };
             common_speculative_draft(spec);
 
@@ -2965,7 +3325,18 @@ int llama_bench(int argc, char ** argv) {
             }
         }
 
+        // [CGC 2026-09-19] --warm-skip: derived ONCE, before the loop. It must not be recomputed
+        // from t.n_gen inside the loop, because t.n_gen is deliberately left alone there (see the
+        // subtract after the loop) and mutating it mid-loop would shrink every later rep.
+        const int n_warm_skip = (warm_skip_value() > 0 && t.n_gen > warm_skip_value()) ? warm_skip_value() : 0;
+
         for (int i = 0; i < params.reps; i++) {
+            // [CGC 2026-09-19] Make every rep see the SAME fill stream. See the block comment on
+            // g_fixed_fill_seed; 0 (default) keeps the historical advancing-stream behaviour.
+            if (g_fixed_fill_seed > 0) {
+                std::srand((unsigned) g_fixed_fill_seed);
+            }
+
             llama_memory_clear(llama_get_memory(ctx), false);
 
             if (t.n_depth > 0) {
@@ -3005,7 +3376,8 @@ int llama_bench(int argc, char ** argv) {
                 }
             }
 
-            uint64_t t_start = get_time_ns();
+            uint64_t t_start    = get_time_ns();
+            uint64_t t_warm_ns  = 0;   // [CGC 2026-09-19] --warm-skip; subtracted from t_ns below
 
             if (t.n_prompt > 0) {
                 if (params.progress) {
@@ -3032,8 +3404,25 @@ int llama_bench(int argc, char ** argv) {
                 // behaviour, which is why `--cells decode` measures MTP-off by construction.
                 // `cgc_spec_on` and `spec_state` are built ABOVE, before the warmup -- see the block
                 // comment on bench_spec_state for why the draft context cannot be built here.
-                bool res = cgc_spec_on ? test_gen_spec(ctx, lmodel, t.n_gen, t.n_threads, spec_state)
-                                       : test_gen(ctx, t.n_gen, t.n_threads);
+                // [CGC 2026-09-19] --warm-skip: the warm-up generation is a SEPARATE call. It has
+                // to be: the plateau is a property of the generation's own progression, so the run
+                // cannot be skipped by shortening the depth fill (that is a different state, and it
+                // is what `-d` already controls). Its duration is measured here and subtracted from
+                // t_ns, and its token count is removed from t.n_gen after the loop.
+                if (n_warm_skip > 0) {
+                    const uint64_t w0   = get_time_ns();
+                    const bool     wres = cgc_spec_on ? test_gen_spec(ctx, lmodel, n_warm_skip, t.n_threads, spec_state)
+                                                      : test_gen(ctx, n_warm_skip, t.n_threads);
+                    if (!wres) {
+                        fprintf(stderr, "%s: error: failed to run warm-skip gen\n", __func__);
+                        llama_free(ctx);
+                        llama_model_free(lmodel);
+                        exit(1);
+                    }
+                    t_warm_ns = get_time_ns() - w0;
+                }
+                bool res = cgc_spec_on ? test_gen_spec(ctx, lmodel, t.n_gen - n_warm_skip, t.n_threads, spec_state)
+                                       : test_gen(ctx, t.n_gen - n_warm_skip, t.n_threads);
                 if (!res) {
                     fprintf(stderr, "%s: error: failed to run gen\n", __func__);
                     llama_free(ctx);
@@ -3042,9 +3431,15 @@ int llama_bench(int argc, char ** argv) {
                 }
             }
 
-            uint64_t t_ns = get_time_ns() - t_start;
+            uint64_t t_ns = get_time_ns() - t_start - t_warm_ns;
             t.samples_ns.push_back(t_ns);
         }
+
+        // [CGC 2026-09-19] --warm-skip: the timed region covered only (n_gen - n_warm_skip) tokens,
+        // so the reported n_gen has to say so -- otherwise `avg_ts` (= n_tokens / ns) would divide a
+        // short interval into a long token count and overstate the result. Done HERE, after the loop,
+        // so the loop's own calls all still derived from the original value.
+        t.n_gen -= n_warm_skip;
 
         if (p) {
             p->print_test(t);
