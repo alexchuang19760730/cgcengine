@@ -58,6 +58,19 @@
 
 目標：量「某個候選」對 `union_sum` 的效應，判準 3SE ≤ 8%。
 
+> ⚠️ **修訂（2026-09-20 02:2x）—— 先讀這段，再讀下面的指令。**
+> 1. **它會無閘門啟動 server。** `http_duo.py` **不在**走 `server_window` 閘門的 13 支工具之列
+>    （`phase_split_ab`／`pool_curve`／`mtp_accept_ab` … 在，`http_duo`／`profile_duo`／
+>    `decode_sweep` **不在**）。照這張卡原樣跑，等於在別人的 waiter 排隊時直接起 server ——
+>    就是 §EN-278 那次事故。要跑就得自己包一層：
+>    `python3 scripts/check/server_window.py wait --need-mb <F> -- python3 scripts/check/paired_union_runner.py run …`
+> 2. **「量儀器底」這個用途已被取代，不要為它排窗口。** 佇列裡那一輪帶著
+>    `CGC_DECODE_PROFILE=1` ＋ `CGC_GPU_TIMING=1`（launcher 自己印的 `extra=[...]`），
+>    **它的 server log 就有 `union_sum`** ⇒ 用 `scripts/check/union_floor.py --newest 3` 直接讀。
+>    本節留著是為了**要測一個候選**時用的，不是為了量底。
+> 3. 現成的答案：E2b `llama_server_20260919_210013.log`（ntok=4、n=179）⇒ 中位 132.13 ms、
+>    σ 37.69、**3SE 8.0%**（後半段 6.3%）—— **單 run 足以分辨 G4 的 12.8%**。
+
 **工具已經有了**：`scripts/check/paired_union_runner.py`（2026-09-20 新增，與 `paired_union_ab.py`
 同批）。它是**唯一**同時滿足「server 端」與「記錄每 rep 的 log 路徑」的執行器 ——
 另外三支各缺一半：`paired_ab.py` 驅動 llama-bench（無 server log、也不記路徑）、
