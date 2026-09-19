@@ -560,6 +560,121 @@ def read_cap(path):
         return None
 
 
+# ── (d) the gate's OWN pool pressure ────────────────────────────────────────────────────────────
+#
+# G2 gates changes to the pool's remap/hook path, but until 2026-09-19 the gate never recorded how
+# much of that path its own probe exercised. The measured production runs log 12k-758k expert
+# lookups at 61.6-96.4% hit rate; a single cold 400-token probe may be nowhere near the eviction
+# code, and "the probe passed" would then mean much less than it looks like. So the summary now
+# carries the probe run's own counters, read from the server log at teardown.
+#
+# NOT done on purpose: guessing which server log belongs to this run. The banner prints it
+# (`[log]   <path>`), and if that line is absent the answer is recorded as "unknown" rather than
+# filled in from a glob -- another run's counters would be a silent wrong answer.
+POOL_TEARDOWN_MARKER = "llama_expert_cache: final stats:"
+
+_FINAL_RE = re.compile(
+    r"llama_expert_cache: final stats: runtime requests=(?P<requests>\d+) hits=(?P<hits>\d+) "
+    r"misses=(?P<misses>\d+) \(hit rate (?P<hit_pct>[\d.]+)%\)\s+prewarm req=(?P<prewarm_req>\d+) "
+    r"hit=(?P<prewarm_hit>\d+) miss=(?P<prewarm_miss>\d+)\s+resident=(?P<resident_mib>[\d.]+) MiB")
+_MISS_RE = re.compile(
+    r"llama_expert_cache: miss attribution: compulsory=(?P<compulsory>\d+) capacity=(?P<capacity>\d+)"
+    r" \((?P<compulsory_pct>[\d.]+)% / (?P<capacity_pct>[\d.]+)% of (?P<miss_total>\d+)\)\s+"
+    r"evictions=(?P<evictions>\d+)\s+layers_distinct_over_slots=(?P<over>\d+)\s+worst=(?P<worst>[^|\n]+)")
+# The banner appends a CJK parenthetical right after the path (`...log（tail -f 同路徑）`), and CJK
+# is non-space, so a plain \S+ swallows it and the path stops being a path. Stop at either paren.
+_LOG_RE = re.compile(r"\[log\]\s+(?P<path>/[^\s（(]+)")
+
+
+def parse_pool_counters(text: str) -> dict:
+    """Pool counters from a finished server log.
+
+    `found` is False WITH A REASON when the teardown stats are absent -- never a dict of zeros, so
+    "the probe saw no pressure" and "nobody looked" stay distinguishable.
+    """
+    fin = _FINAL_RE.search(text)
+    if not fin:
+        return {"found": False,
+                "reason": f"no '{POOL_TEARDOWN_MARKER}' line in the server log. That line is written "
+                          f"at teardown, so the usual cause is reading the log while the server is "
+                          f"still alive."}
+    out = {"found": True,
+           "requests": int(fin.group("requests")), "hits": int(fin.group("hits")),
+           "misses": int(fin.group("misses")), "hit_pct": float(fin.group("hit_pct")),
+           "prewarm_req": int(fin.group("prewarm_req")),
+           "resident_mib": float(fin.group("resident_mib"))}
+    m = _MISS_RE.search(text)
+    if m:
+        for k in ("compulsory", "capacity", "evictions", "over"):
+            out[k] = int(m.group(k))
+        out["worst"] = m.group("worst").strip()
+    return out
+
+
+def pool_counters_for_run(launch_log: Path, wait_s: float = 20.0) -> dict:
+    """The pool counters of THIS gate run, or a reason they could not be read."""
+    try:
+        banner = launch_log.read_text(errors="replace")
+    except OSError as e:
+        return {"found": False, "reason": f"launch log unreadable: {e}"}
+    m = _LOG_RE.search(banner)
+    if not m:
+        return {"found": False,
+                "reason": f"the launch banner in {launch_log.name} has no '[log] <path>' line, so the "
+                          f"server log cannot be attributed. Deliberately not guessed from a glob: "
+                          f"another run's counters would be a silent wrong answer."}
+    slog = Path(m.group("path"))
+    if not slog.exists():
+        return {"found": False, "reason": f"server log named by the banner does not exist: {slog}"}
+    deadline = time.monotonic() + wait_s
+    while True:
+        pc = parse_pool_counters(slog.read_text(errors="replace"))
+        if pc["found"] or time.monotonic() >= deadline:
+            pc["source"] = str(slog)
+            return pc
+        time.sleep(0.5)
+
+
+def selftest_pool_counters() -> int:
+    """Positive cases and, more importantly, negatives: a parser that returned zeros for a missing
+    line would make "no pressure" and "no reading" identical."""
+    real = ("llama_expert_cache: final stats: runtime requests=20740 hits=12772 misses=7968 "
+            "(hit rate 61.6%)  prewarm req=0 hit=0 miss=0  resident=6430.62 MiB file_reads=233544 "
+            "pread_usec=6267007337\n"
+            "llama_expert_cache: miss attribution: compulsory=3746 capacity=4222 (47.0% / 53.0% of "
+            "7968)  evictions=7686  layers_distinct_over_slots=5  worst=layer 1 distinct=217 "
+            "slots=143\n")
+    p = parse_pool_counters(real)
+    q = parse_pool_counters("llama_expert_cache: decode/pool (ensure_slot+batch) hits=1/2 (50.0%)\n")
+    b = _LOG_RE.search("[log]   /tmp/llama_server_20260919_202004.log（tail -f 同路徑）\n")
+    cases = [
+        ("real teardown parses", p.get("found") is True),
+        ("requests", p.get("requests") == 20740),
+        ("hit_pct", p.get("hit_pct") == 61.6),
+        ("prewarm_req", p.get("prewarm_req") == 0),
+        ("capacity", p.get("capacity") == 4222),
+        ("evictions", p.get("evictions") == 7686),
+        ("layers_distinct_over_slots", p.get("over") == 5),
+        ("worst kept as text", "layer 1" in str(p.get("worst"))),
+        ("mid-run log (no teardown) => found False", q.get("found") is False),
+        ("... and it names the cause", "teardown" in q.get("reason", "")),
+        ("... and carries NO zero counters", "requests" not in q),
+        ("banner path stops before the CJK tail",
+         bool(b) and b.group("path") == "/tmp/llama_server_20260919_202004.log"),
+        ("banner without the line => no match", _LOG_RE.search("[perf] batch=6144\n") is None),
+        # Regression guard for the name collision: `pin` was bound twice in main() and the
+        # second binding made the summary report ref_pinned=False forever.
+        ("no bare `pin` binding survives in this module",
+         re.search(r"^\s*pin\s*=", Path(__file__).read_text(encoding="utf-8"), re.M) is None),
+    ]
+    bad = 0
+    for name, ok in cases:
+        print(f"  [{'ok' if ok else 'FAIL'}] {name}")
+        bad += 0 if ok else 1
+    print(f"pool-counter selftest: {len(cases) - bad}/{len(cases)} passed")
+    return 0 if bad == 0 else 1
+
+
 def cap_doc(cfg, note="", extra=None):
     """The provenance document. Same shape the dumper side uses, plus the resolved config."""
     stamp = config_stamp(cfg)
@@ -652,9 +767,17 @@ def main() -> int:
                     help="proceed even though the reference's md5 does not match REF_PINS. Use only "
                          "while re-baselining; the verdict stays meaningful only if you also update "
                          "REF_PINS in the same commit.")
+    ap.add_argument("--pool-wait", type=float, default=20.0,
+                    help="seconds to wait for the server log's teardown stats before recording the "
+                         "probe's pool counters as unreadable (default 20).")
+    ap.add_argument("--selftest", action="store_true",
+                    help="run the pool-counter parser's self-test and exit (no server is launched).")
     ap.add_argument("--ready-timeout", type=float, default=300.0)
     ap.add_argument("--teardown-timeout", type=float, default=90.0)
     args = ap.parse_args()
+
+    if args.selftest:
+        return selftest_pool_counters()
 
     tag = args.tag or time.strftime("%Y%m%d_%H%M")
     ref = Path(args.ref)
@@ -680,11 +803,11 @@ def main() -> int:
     # different times incomparable while every other artefact (engine digest, config stamp, tree)
     # still matches -- i.e. exactly the silent case, so refuse rather than warn.
     ref_hex = ref_md5(ref)
-    pin = REF_PINS.get(ref.name)
-    if pin is None:
+    ref_pin = REF_PINS.get(ref.name)
+    if ref_pin is None:
         print(f"note: no REF_PINS entry for {ref.name}; recording md5 {ref_hex} without checking it")
-    elif pin != ref_hex:
-        print(f"ERROR: reference {ref.name} has md5 {ref_hex} but REF_PINS pins {pin}.", file=sys.stderr)
+    elif ref_pin != ref_hex:
+        print(f"ERROR: reference {ref.name} has md5 {ref_hex} but REF_PINS pins {ref_pin}.", file=sys.stderr)
         print("       Every M1/M2 number below would be measured against different bytes than the "
               "one this repository has been quoting.", file=sys.stderr)
         if not args.allow_ref_drift:
@@ -712,8 +835,10 @@ def main() -> int:
     print(f"  profile : {args.profile}", flush=True)
     print(f"  ref     : {ref.relative_to(ROOT)}  ({sum(1 for _ in ref.open())} records)", flush=True)
     if extra_env:
-        pin = "" if args.no_pin_oracle_env else f"  (oracle pin: {list(ORACLE_PINNED_ENV)})"
-        print(f"  extra   : {extra_env}{pin}", flush=True)
+        # NOT named `pin`: that name is taken by the reference md5 check above, and reusing it
+        # silently made the summary's `ref_pinned` always False (fixed 2026-09-19).
+        pin_note = "" if args.no_pin_oracle_env else f"  (oracle pin: {list(ORACLE_PINNED_ENV)})"
+        print(f"  extra   : {extra_env}{pin_note}", flush=True)
 
     # (1) resolve the launch config FIRST -- before anything is launched, and before kill_servers(getattr(args, "port", None))
     # so the pkill this incurs cannot race our own server.
@@ -964,9 +1089,26 @@ def main() -> int:
     met = d["metrics"]
     m1r, m2r, m3r = (met["numeric_identity"]["rate"], met["decision_agreement"]["rate"],
                      met["topk_set_agreement"]["rate"])
+    pool_counters = pool_counters_for_run(launch_log,
+                                          wait_s=float(getattr(args, "pool_wait", 20.0)))
+
+    # How much of the dump actually had a counterpart in the reference. A shortfall means record
+    # keys collided across DIFFERENT token sequences -- which is what happens when the probe prompt
+    # differs from the one the reference was taken with -- and then M1/M2 compare unrelated content
+    # while `comparable` still says True, because the prompt is a CLI argument and not part of the
+    # config stamp. Recorded, not inferred, because the symptom (a low M1) reads like a regression.
+    try:
+        dump_records = sum(1 for _ in dump.open())
+    except OSError:
+        dump_records = 0
+    n_common = met["numeric_identity"]["n"]
+    coverage_pct = (100.0 * n_common / dump_records) if dump_records else None
     summary = {
         "tag": tag, "profile": args.profile, "ref": str(ref), "ref_md5": ref_hex,
-        "ref_pinned": (pin == ref_hex), "dump": str(dump),
+        "ref_pinned": (ref_pin == ref_hex), "dump": str(dump),
+        "probe_prompt_md5": hashlib.md5(args.probe_prompt.encode()).hexdigest(),
+        "dump_records": dump_records,
+        "coverage_pct": coverage_pct,
         "probe_answer": ans.strip(),
         "m1_numeric_identity": f"{met['numeric_identity']['equal']}/{met['numeric_identity']['n']}",
         "m2_decision_agreement": f"{met['decision_agreement']['equal']}/{met['decision_agreement']['n']}",
@@ -977,10 +1119,25 @@ def main() -> int:
         "config_diffs": cfg_diffs,
         "ok": bool(comparable and m1r == 1.0 and m2r == 1.0),
         "engine_digest": engine_digest(),
+        "pool_counters": pool_counters,
         "tree": tree_dirty(),
         "report": str(report),
     }
     (RESULT_DIR / f"summary_{tag}.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2))
+    pc = summary["pool_counters"]
+    if pc.get("found"):
+        print(f"  probe pool: requests={pc['requests']} hit={pc['hit_pct']}% "
+              f"capacity={pc.get('capacity')} evictions={pc.get('evictions')} "
+              f"over={pc.get('over')} prewarm={pc['prewarm_req']}")
+    else:
+        print(f"  probe pool: UNREADABLE -- {pc.get('reason')}")
+    if coverage_pct is not None and coverage_pct < 100.0:
+        print(f"  \u26a0 coverage: only {n_common} of {dump_records} dump records "
+              f"({coverage_pct:.1f}%) had a counterpart in the reference. That is what a DIFFERENT "
+              f"probe prompt looks like from here: the keys (step, token_idx, ctx_type) collide while "
+              f"describing a different token sequence, so M1/M2 above compare unrelated content even "
+              f"though comparable=True. Compare `probe_prompt_md5` in this summary against the "
+              f"reference's run before reading any verdict.")
     print("=" * 74)
     if not comparable:
         print(f"GATE {tag}: INVALID COMPARISON -- reference was dumped under a different "
