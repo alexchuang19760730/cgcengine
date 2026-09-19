@@ -39,7 +39,7 @@
    ⇒ 配對集會是空的，然後被讀成「沒有效應」。
    檢查一行：
    ```sh
-   python3 Backup/paired_union_ab.py --pick "$(date -v-30M +%s)"   # 逐份報 union 步 n/decprof 步 m 並指名缺哪個旋鈕
+   python3 scripts/check/paired_union_ab.py --pick "$(date -v-30M +%s)"   # 逐份報 union 步 n/decprof 步 m 並指名缺哪個旋鈕
    ```
 2. **機器必須真的空**（他的閘門 = 8080 無 listener ＋ 無別的 llama 行程 ＋ `vm_free_mb() ≥ 8000`）：
    ```sh
@@ -58,23 +58,38 @@
 
 目標：量「某個候選」對 `union_sum` 的效應，判準 3SE ≤ 8%。
 
-```sh
-# (1) 起一台 server，開兩個旋鈕，跑足夠長的 decode。
-#     用 http_duo.py（它 --extra-env 是 "ENV=VAL;ENV=VAL"，且 --port auto 不撞別人的 8080）
-python3 scripts/check/http_duo.py --profile prefill250 --port auto \
-  --reps 6 --decode-predict 96 \
-  --extra-env 'CGC_DECODE_PROFILE=1;CGC_GPU_TIMING=1' \
-  --logdir Backup/cgc_logs/g4card --json Backup/phase_decomp/g4card_A.json
+**工具已經有了**：`scripts/check/paired_union_runner.py`（2026-09-20 新增，與 `paired_union_ab.py`
+同批）。它是**唯一**同時滿足「server 端」與「記錄每 rep 的 log 路徑」的執行器 ——
+另外三支各缺一半：`paired_ab.py` 驅動 llama-bench（無 server log、也不記路徑）、
+`decode_sweep.py` 是臂外層（兩臂必然是先後兩台 server）、`http_duo.py` 只有單臂（但它**記
+`server_log`**，所以本工具用它當每個 rep 的引擎）。
 
-#     ⚠️ 步數要夠：E2b 的經驗是 ~180 個 ntok=4 的完整步才到 3SE 8%。
-#        若 --reps 6 拿不到足夠步數，就加大 --reps（同一個 server 內續跑，成本只是時間）。
+設計上它**只當排程器**：每個 rep 呼叫 `http_duo.py --port auto`（⇒ 不撞別人的 8080），
+**不重打啟動與 env 邏輯** —— `run_server.sh` 的 allowlist 只有一份，重打一份就是旋鈕靜默失效的來源。
+`--self-test` 6 項（ABBA 排程、SE 公式、三條拒絕路徑、fixture 可配對步數），
+另外 import 時就斷言 `http_duo.py` 真的在解析出來的路徑上。
+
+```sh
+# (1) 跑 ABBA 交錯配對：每對換執行序（A-B / B-A），單調漂移在 AB/BA 估計量裡抵消。
+#     --a-env / --b-env 預設相同 ⇒ NULL 模式（儀器底）。要測候選就把它們設成兩個不同的旋鈕。
+python3 scripts/check/paired_union_runner.py run \
+  --pairs 8 --reps 4 --profile prod25 \
+  --out Backup/phase_decomp/g4_null_manifest.json
+#     ⚠️ 缺 CGC_DECODE_PROFILE 或 CGC_GPU_TIMING 時它會警告（那一臂的 log 不會有 union）。
+#     ⚠️ 步數決定單 run 的精度：E2b 的經驗是 ~180 個 ntok=4 的完整步才到 3SE 8%
+#        ⇒ 先把 --reps 加大（同一個 server 內續跑，成本只是時間），再考慮加對數。
 
 # (2) 立刻確認這一跑真的有 union（不是空的）
-python3 Backup/paired_union_ab.py --pick "$(date -v-20M +%s)"
+python3 scripts/check/paired_union_ab.py --pick "$(date -v-20M +%s)"
 
-# (3) 讀這一跑的中位數與 3SE（同一份 log，用既有的逐層工具）
-python3 Backup/union_by_layer_20260919.py <該 run 的 server log>     # header 的 union_sum
+# (3) 統計：每對一個 Δ、按執行序分組、AB/BA 扣漂移、3SE 對照 12.8%
+python3 scripts/check/paired_union_runner.py eval \
+  --manifest Backup/phase_decomp/g4_null_manifest.json
 ```
+
+`eval` 會同時印三件事，缺一不可：**效應 (A−B)**、**漂移**（未交錯的設計會把它當成效應報出來 ——
+Ornith fixture 上漂移是 **+28.12%** 而真效應只有 +5.43%）、以及**「欲達 3SE 需 n_pairs ≈ X」**。
+**漂移若與效應同量級，這個 run 不足以下結論。**
 
 **判準（事前寫下，免得事後挑）**：把這一跑的 `union_sum` 中位數與 E2b 的 **132.13 ms**
 （`llama_server_20260919_210013.log`，ntok=4、n=179、3SE 8.0%）比。
@@ -96,9 +111,9 @@ G6 **不依賴 G4**（`union <= 38*mean_len` 的兩邊各自可量）⇒ 照他�
 
 ## 4. 這張卡自己承認的兩個弱點
 
-1. **「一台長 run 的 3SE」與「跨 run 漂移」是兩件事**，而 §2 的判準同時用到兩者。
-   真正乾淨的做法是 AB/BA（交錯），但那需要**一個會記錄每 rep log 路徑的 server 端配對執行器**，
-   而它**目前不存在**（`paired_ab.py` 是 bench 端、`decode_sweep.py` 是臂外層、`http_duo.py` 只有單臂）。
-   **那才是 G4 真正缺的工具**，不是槓桿。
+1. ~~真正乾淨的做法是 AB/BA，但那需要一個會記錄每 rep log 路徑的 server 端配對執行器，而它不存在。~~
+   **2026-09-20 已補上**：`scripts/check/paired_union_runner.py`。它把「效應」與「漂移」分開報，
+   所以 §4 的第 1 個弱點從「缺工具」降級成「樣本數」——`eval` 會直接印「欲達 3SE 需 n_pairs ≈ X」
+   （Ornith fixture 反推是 ≈68 對，但那是短 run；單 run 拉的長度可以換掉對數，見 §0）。
 2. §0 的表用的是**既有 log 的中位數**，不是同一批配對樣本；它的用途是**定出可分辨門檻的量級**，
    不是給出一個判決。
