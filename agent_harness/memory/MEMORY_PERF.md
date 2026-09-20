@@ -33,6 +33,20 @@
   `SPEC_DRAFT_N_MAX=3`。三支柱 bit-identical：`CGC_MM_BITIDENT=1`／`SERVER_MTP_NO_WARMUP=1`／
   `SERVER_NO_SEQ_RM_PROBE=1`。**池壓力熱點層會變**（layer 0 與 layer 2 都出現過）。
 
+- **★ 2026-09-20 交付 decode 的權威讀數（凍結）**：profile＝**`prefill250`** —— 它**就是**「prefill250 ＋
+  最好的 decode」，逐旋鈕同一性見 `docs/PRODUCTION_PROFILE_2026-09-20.md` §3（零 GPU 比對，解析後 env 差異＝空）。
+  **交付 decode＝ 12.57 t/s**（`NOMINAL` **全程**、±2.26；`Backup/prod_profile/prod_profile_20260920_1230.json`）
+  ⇒ **這是「下一個 agent 要打敗的數字」**。既有帶：13.10／10.94（09-19）、10.78／10.91／10.98（instrument of record）。
+  - **交付口徑＝四個 bench 約定**：`--batch 512`、`--ctx-size 4096`、`--warm-skip 64`、`--spec-type draft-mtp`。
+    ⚠ **`profile_duo.py`／`prod_matrix.py` 的 `decode` cell 表達不了它**（沒有 spec／warm-skip／ctx）⇒ 同一 profile
+    在那兩支工具裡只讀 **7.96–9.12**，比交付低約 **1.4×**。**要引用交付 decode，一律用 `scripts/check/prod_profile.py`。**
+  - **★ 單臂噪音底 ≈ ±27%**：**同一個命令**、同一次 session 讀 9.90 與 12.57（更低的那次 `worst=MODERATE`）
+    ⇒ **小於 ~27% 的效應，單臂前後對比證明不出來**；只能靠配對交錯 A/B（第一步 `--null`）。
+  - **prefill 的 250 bar 在 09-20 未驗證**（不是退步）：三次 188.12／212.59／222.40，全部 `worst ≥ MODERATE`、
+    全部 < 250；而 09-16 的判準是「Nominal 6/6 全部 ≥250（最低 253.42）；**非 Nominal 0/21（最高 211.65）**」，
+    本日三次都落在非 Nominal 側 ⇒ **不可引用**。
+  - ⚠ **`wait_nominal` 可以立即回 0（`waited 0s`）而底盤仍然熱**（第三次 prefill 重跑即如此）
+    ⇒ **NOMINAL 是必要條件，不是充分條件**；重跑大臂中間的空閒要按**分鐘**計。
 ## 里程碑現況（M0–M6；**09-17 查證**，不是憑記憶）
 
 - **M0 量測能力：完成。**
