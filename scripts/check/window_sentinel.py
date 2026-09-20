@@ -83,14 +83,27 @@ def others():
     the python drivers are; anything else is a mention and must not block.
     Being wrong in the other direction is much cheaper: a false positive only means "did not run".
     """
-    pids = subprocess.run(["pgrep", "-f", OTHER], capture_output=True, text=True).stdout.split()
+    # `ps` is DENIED inside the agent sandbox (PermissionError: [Errno 1] Operation not
+    # permitted) while `pgrep` is allowed -- decode_step_profile.py:128 hit the same wall.
+    # The first version called `ps -o comm=` per pid, which is fine while pgrep matches
+    # nothing (the loop body never runs) and crashes the gate the moment it does. A gate
+    # that raises instead of answering is worse than no gate: it aborts the caller's run
+    # and looks like "the machine is busy" when it is the tool that broke.
+    # `pgrep -fl` already prints "<pid> <full command>", so comm is the basename of its
+    # first token and the python check can read the whole line -- no `ps` needed.
+    out = subprocess.run(["pgrep", "-fl", OTHER], capture_output=True, text=True).stdout
     blocking = []
-    for pid in pids:
-        comm = _ps(pid, "comm")
+    for line in out.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            continue
+        pid, cmd = parts[0], parts[1]
+        tok = cmd.split()
+        comm = os.path.basename(tok[0]) if tok else ""
         if comm.startswith("llama"):
             blocking.append(pid)
         elif comm.startswith("python"):
-            if any(s in _ps(pid, "args") for s in PY_SCRIPTS):
+            if any(s in cmd for s in PY_SCRIPTS):
                 blocking.append(pid)
     return blocking
 
