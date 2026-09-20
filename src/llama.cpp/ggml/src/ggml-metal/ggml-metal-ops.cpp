@@ -5698,6 +5698,26 @@ int ggml_metal_op_bin(ggml_metal_op_t ctx, int idx) {
         }
     }
 
+    // [CGC 2026-09-20 G4] Is the MoE reduce ADD chain ALREADY fused by upstream?
+    // `GGML_LOG_DEBUG` does not survive this harness (measured: `GGML_METAL_FUSION_DEBUG=2`
+    // printed zero lines while `CGC-` raw stderr lines from the same process arrive), so the
+    // question "does the 9-long ADD chain become 1 dispatch" cannot be read off a log that
+    // exists today. This prints it on the channel that does arrive, env-gated and capped.
+    // ADD-ONLY: reads n_fuse, writes a line, changes no encoding and no value.
+    {
+        static const bool cgc_addfuse_dbg = [] {
+            const char * e = getenv("CGC_ADDFUSE_DBG");
+            return e != nullptr && e[0] == '1';
+        }();
+        static int cgc_addfuse_n = 0;
+        if (cgc_addfuse_dbg && cgc_addfuse_n < 200) {
+            cgc_addfuse_n++;
+            fprintf(stderr, "CGC-ADDFUSE: op=%s n_fuse=%d ne0=%lld ne1=%lld\n",
+                    ggml_op_name(op->op), n_fuse,
+                    (long long) op->ne[0], (long long) op->ne[1]);
+        }
+    }
+
     // the offsets of src1 and all fused buffers are relative to the start of the src1 buffer
     bid_src1.offs = 0;
 
