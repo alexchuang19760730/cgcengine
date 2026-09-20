@@ -570,6 +570,56 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
         }
     }
 
+    // [CGC 2026-09-20 G4] DISPATCH-LEVEL census. The KINDxOP / GPUOPS tables partition a buffer's
+    // duration over graph NODES, and Metal fusion makes node count != dispatch count (measured:
+    // the 9-long MoE ADD chain is 9 nodes but 2 dispatches, §EN-337) -- so none of those tables
+    // can answer "how many kernels does a step actually launch, and of which op". This counts one
+    // DISPATCH per encode_node call and, separately, the graph nodes it consumed; the gap between
+    // the two columns is exactly what fusion bought. ADD-ONLY: reads node->op / n_fuse, writes a
+    // table, changes no encoding and no value. Silent unless CGC_DISPATCH_CENSUS=1.
+    {
+        static const bool cgc_dsp = [] {
+            const char * e = getenv("CGC_DISPATCH_CENSUS");
+            return e != nullptr && e[0] == '1';
+        }();
+        static int64_t cgc_dsp_cnt[GGML_OP_COUNT]  = {0};
+        static int64_t cgc_dsp_nd[GGML_OP_COUNT]   = {0};
+        static int64_t cgc_dsp_tot                 = 0;
+        static int64_t cgc_dsp_totnd               = 0;
+        static int     cgc_dsp_graphs              = 0;
+        if (cgc_dsp && cgc_dsp_graphs < 48) {
+            // idx == 0 means a new graph just started: flush the previous one.
+            if (idx == 0 && cgc_dsp_tot > 0) {
+                cgc_dsp_graphs++;
+                fprintf(stderr, "CGC-DISPATCH: graph=%d dispatches=%lld nodes=%lld (fusion saved %lld)\n",
+                        cgc_dsp_graphs, (long long) cgc_dsp_tot, (long long) cgc_dsp_totnd,
+                        (long long) (cgc_dsp_totnd - cgc_dsp_tot));
+                for (int r = 0; r < 14; r++) {
+                    int best = -1;
+                    for (int q = 0; q < GGML_OP_COUNT; q++) {
+                        if (cgc_dsp_cnt[q] == 0) { continue; }
+                        if (best < 0 || cgc_dsp_cnt[q] > cgc_dsp_cnt[best]) { best = q; }
+                    }
+                    if (best < 0) { break; }
+                    fprintf(stderr, "CGC-DISPATCH:   %-18s dispatches=%-6lld nodes=%-6lld x%.2f\n",
+                            ggml_op_name((enum ggml_op) best),
+                            (long long) cgc_dsp_cnt[best], (long long) cgc_dsp_nd[best],
+                            (double) cgc_dsp_nd[best] / (double) cgc_dsp_cnt[best]);
+                    cgc_dsp_cnt[best] = 0;
+                }
+                for (int q = 0; q < GGML_OP_COUNT; q++) { cgc_dsp_cnt[q] = 0; cgc_dsp_nd[q] = 0; }
+                cgc_dsp_tot = 0;
+                cgc_dsp_totnd = 0;
+            }
+            if (cgc_dsp_graphs < 48) {
+                cgc_dsp_cnt[node->op]++;
+                cgc_dsp_nd[node->op] += n_fuse;
+                cgc_dsp_tot++;
+                cgc_dsp_totnd += n_fuse;
+            }
+        }
+    }
+
     // update the mem ranges in the encoding context
     for (int i = 0; i < n_fuse; ++i) {
         if (!ggml_metal_op_concurrency_add(ctx, ctx->node(idx + i))) {
