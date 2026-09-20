@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>里程碑圖：兩條線的目標、進展、天花板（2026-09-20）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --purple:#7c3aed; --purple-bg:#f5f3ff; --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  h4{font-size:14.5px;margin:20px 0 6px;color:#374151}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)} .pur{color:var(--purple)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  .b-pur{background:var(--purple-bg);border-color:#ddd6fe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .t-met{background:#ecfdf5;border-color:#a7f3d0;color:#059669}
+  .t-open{background:#fffbeb;border-color:#fde68a;color:#d97706}
+  .small{font-size:12.5px;color:var(--muted)}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:#fcfcfd}
+  .toc ol{margin:6px 0 0 20px}
+  .toc a{color:var(--blue);text-decoration:none}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>里程碑圖：<strong>兩條線</strong>的目標、進展、天花板</h1>
+<div class="sub">
+  2026-09-20 13:4x · 專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code> ·
+  目標 <code>decode_tps_median ≥ 25</code>（<code>G7</code>）<br>
+  這一頁的用途：<strong>按表操課</strong> —— 每個里程碑點對應「可達到的 prefill／decode」，
+  並標明那一格是<strong>量測</strong>、<strong>推算</strong>、<strong>外推</strong>還是<strong>不可達上界</strong>。<br>
+  線別：<code>線A (ace)</code>（本線）· <code>線 I</code>（另一條，做 <code>cb</code>）· <code>線 S</code>（步時預算）
+</div>
+
+<div class="box b-blue">
+  <p><strong>★ 先讀這一條，否則整張表會被引用錯：</strong>本專案的「decode t/s」有<strong>多個互不相容的口徑</strong>。
+  本頁<strong>只把 llama-bench 交付口徑的數字放進「decode」欄</strong>；
+  引擎內部的推算（步時 × <code>mean_len</code>）<strong>另立一欄並標明不可換算</strong> ——
+  兩者之間的校準<strong>不是常數</strong>（實測差 +13～30%）。</p>
+</div>
+
+<div class="toc">
+  <strong>目錄</strong>
+  <ol>
+    <li><a href="#s1">目標表 G0–G7</a></li>
+    <li><a href="#s2">兩條線：各做什麼、各自的天花板</a></li>
+    <li><a href="#s3">★ 里程碑表：每個點可達到的 prefill／decode</a></li>
+    <li><a href="#s4">圖：decode 的位置</a></li>
+    <li><a href="#s5">為什麼不能相加</a></li>
+    <li><a href="#s6">按表操課的紀律</a></li>
+    <li><a href="#s7">誠實邊界</a></li>
+  </ol>
+</div>
+
+<div class="cards">
+  <div class="card"><div class="k">交付 decode（今天）</div><div class="v">12.57</div>
+    <div class="small">llama-bench、NOMINAL 全程、±2.26</div></div>
+  <div class="card"><div class="k">交付 prefill（可引用）</div><div class="v">292.34</div>
+    <div class="small">09-18；<strong>09-20 三次未驗證</strong></div></div>
+  <div class="card"><div class="k">目標 / 差距</div><div class="v bad">25</div>
+    <div class="small">還差 <strong>×1.99</strong></div></div>
+  <div class="card"><div class="k">已觀測的最好外推</div><div class="v ok">48.5</div>
+    <div class="small">40 層都 = 最好單層（1.74 ms）</div></div>
+</div>
+
+<h2 id="s1">1. 目標表 G0–G7（<code>agent_harness/portal/targets.json</code> 為權威）</h2>
+
+<table>
+  <tr><th>id</th><th>是什麼</th><th><code>to</code></th><th>現況</th><th>owner</th></tr>
+  <tr><td><code>G0</code></td><td>量測能力</td><td>—</td>
+      <td><span class="tag t-met">met</span></td><td>—</td></tr>
+  <tr><td><code>G1</code></td><td>段邊界 / <code>cb</code>（<strong>兩個獨立分量</strong>）</td>
+      <td><code>gap_sum/total ≤ 5%</code> <strong>不可達</strong> ⇒ 重述為
+          (a) <code>cb_sum/total</code>、(b) 段數</td>
+      <td><span class="tag t-open">open</span></td>
+      <td>line B (implementation); <strong><code>線A (ace)</code> owns the ceiling reading</strong></td></tr>
+  <tr><td><code>G2</code></td><td>逐位元 / argmax / top-k 不變式</td><td>M1/M2 = 884/884</td>
+      <td><span class="tag t-open">open</span></td><td>—</td></tr>
+  <tr><td><code>G3</code></td><td>40 段嚴格序</td><td>—</td>
+      <td><span class="tag t-met">met</span></td><td>—</td></tr>
+  <tr><td><code>G4</code></td><td><code>union</code> 中位（把 <code>union</code> 變小）</td>
+      <td><code>union ≤ 38 × mean_len</code>（ms）</td>
+      <td><span class="tag t-open">open</span></td><td>—</td></tr>
+  <tr><td><code>G5</code></td><td>同 G2 的規則</td><td>—</td>
+      <td><span class="tag t-open">open</span></td><td>—</td></tr>
+  <tr><td><code>G6</code></td><td><code>mean_len</code>（每步產出幾個 token）</td>
+      <td><strong>條件式</strong>：<code>G1</code> 成立 ⇒ ≥2.485；<strong>否則 ⇒ ≥3.479</strong>
+          （<strong>現在由第二支管</strong>）</td>
+      <td><span class="tag t-open">open</span></td><td><code>線 S</code>（accept / k）</td></tr>
+  <tr><td><code>G7</code></td><td><strong>交付 decode</strong></td><td><strong>≥ 25</strong></td>
+      <td><span class="tag t-open">open</span></td><td>—</td></tr>
+</table>
+
+<h2 id="s2">2. 兩條線：各做什麼、各自的天花板</h2>
+
+<h3>2.1 擁有物（衝突時以 <code>docs/ENGINE_LINE_ASSIGNMENT_AND_G1_LADDERS_2026-09-20.md</code> 為準）</h3>
+
+<table>
+  <tr><th>線</th><th>擁有物（可查證）</th><th>現在在做</th></tr>
+  <tr><td><strong><code>線A (ace)</code></strong>（本線）</td>
+      <td><code>llama-context.cpp</code> 的 <code>graph_compute</code> 區段（S1 探針修補）、
+          <code>ggml-backend.cpp</code> 的逐層 KIND×OP 儀器與 <strong>S2 的切點</strong>、
+          <code>llama-expert-cache.{h,cpp}</code> 的策略普查</td>
+      <td><strong>S2</strong>（把 slot mgmt 搬到裝置，讓 submit-ahead 合法）＋ 段邊界歸因</td></tr>
+  <tr><td><strong><code>線 I</code></strong></td>
+      <td><code>cb_miss_regression.py</code>、<code>F1_CB_MISS_REGRESSION_RESULT_*</code>、
+          <code>CGC-HOOK-SPLIT</code> 那一族儀器</td>
+      <td><strong>F1–F5</strong>（<code>cb</code> ＝池 miss 的服務成本）→ 已進入 <strong>F2-R</strong></td></tr>
+  <tr><td><code>線 S</code></td><td><code>decode_window_harness.py</code>、步時預算</td>
+      <td>窗口守門、<code>G6</code>（accept / k）</td></tr>
+</table>
+
+<h3>2.2 各自的天花板（<strong>不可相加</strong>，見 §5）</h3>
+
+<table>
+  <tr><th>階梯</th><th>owner</th><th>機制</th><th>它的天花板</th></tr>
+  <tr><td><strong>① <code>cb</code> → 小</strong></td><td><code>線 I</code></td>
+      <td>每層 host 回呼 ＝ 池 miss 的服務成本。F1 判 <strong>LINEAR</strong>：邊際 miss
+          <strong>0.695 ms</strong>，被 ~1.6 GiB/s 的 <strong>RAM 拷貝</strong>服務（<strong>不是磁碟</strong>）；
+          另拆出<strong>每層 barrier 12.86 ms/step</strong>（一個 miss 就付整筆）</td>
+      <td><code>cb</code> → 0 ⇒ <strong>25.8</strong>（他們的形狀，<code>mean_len</code> 3.715）；
+          <strong>F5 單獨</strong> ⇒ 19.3–19.4（約 +6%）</td></tr>
+  <tr><td><strong>② <code>wait</code>／段邊界 → 小</strong></td><td><code>線A (ace)</code></td>
+      <td>S2：把 residency 決策＋表發布搬到裝置 ⇒ <code>submit_seg(i+1)</code> 才能合法地早於
+          <code>hook_seg(i)</code> 的 wait</td>
+      <td>引擎內部（E2b 暖、<code>mean_len</code> 2.40）：現況 17.2 ⇒
+          <strong>S2 完美 22.9</strong>／只有 <code>submit</code> 能搬 <strong>19.0</strong>
+          —— <strong>推算，不是量測</strong></td></tr>
+  <tr><td><strong>③ <code>union</code> → 小</strong></td><td>（<code>G4</code>）</td>
+      <td>逐層 KIND×OP：命名合計 61.3%、最大一類只 17.4%、<strong>38.7% 沒有名字</strong>，
+          且<strong>沒有單層熱點</strong></td>
+      <td><code>union</code> 104.87 ms vs 權重地板 <strong>19.5 ms/步</strong> ⇒ <strong>5.4×</strong>
+          —— 但<strong>不是一根槓桿</strong>，是逐 op 的 kernel 工程</td></tr>
+  <tr><td><strong>④ <code>mean_len</code> → 大</strong></td><td><code>線 S</code>（<code>G6</code>）</td>
+      <td><code>mean_len = 1 + k·accept</code>，<code>k=3</code> 是配方</td>
+      <td><strong>口徑問題不是槓桿</strong>：實測 off 臂 3.436–3.598／on 臂 3.520–3.639，
+          <strong>兩臂自己就跨在門檻 3.479 上</strong></td></tr>
+</table>
+
+<div class="box b-red">
+  <p><strong>★ 而 <code>線 I</code> 的預取／重疊那一半今天剛關門。</strong>
+  <code>F2</code> 判 FAIL 而<strong>它從未執行治療</strong>（<code>prefetch_slot</code> 從未被呼叫；
+  且用的 <code>qa-zh</code> 本身就是 <code>CGC_NO_PREFETCH=1</code>）；接著 <code>F2-R</code> 的 L1
+  劑量-反應（<code>CGC_SPAC_K</code> 8/32/64）讀到 <strong>resident 100.0% → 99.22% → 99.19%</strong>
+  ⇒ 命中他們<strong>事前註冊</strong>的第一行：「K=64 仍 ≥90% ⇒ 覆蓋不是槓桿 ⇒ 跳過 L2」。
+  他們自己也算好了天花板：<strong>整個預取家族最多值 ~38 ms</strong>（74.4% × 51 ms）⇒ 單獨到不了 25。</p>
+</div>
+
+<h2 id="s3">3. ★ 里程碑表：每個點可達到的 prefill／decode</h2>
+
+<p><strong>怎麼讀這張表</strong>：<code>decode</code> 欄<strong>只有「量測」那幾格</strong>是可直接引用的交付讀數；
+其餘標明<strong>推算／外推／不可達</strong>。<code>prefill</code> 欄在這些里程碑上<strong>基本上是常數</strong>
+—— 這些槓桿都是 decode 側的，<strong>但它們都碰 prefill 的熱路徑</strong>（見 §6 第 3 條）。</p>
+
+<table>
+  <tr><th>#</th><th>里程碑點</th><th>decode（交付口徑）</th><th>prefill</th><th>性質</th></tr>
+
+  <tr><td><strong>M‑now</strong></td>
+      <td><strong>現在</strong>（2026-09-20 凍結的生產 profile）</td>
+      <td class="num"><strong>12.57</strong> <span class="small">（±2.26，NOMINAL 全程）</span></td>
+      <td class="num">292.34 <span class="small">（09-18）</span></td>
+      <td class="ok">量測。decode 是<strong>交付基線</strong>；prefill 在 09-20 <strong>三次未驗證</strong></td></tr>
+
+  <tr><td><strong>M‑G6</strong></td>
+      <td><code>G6</code> 的<strong>絕對位置被量出來</strong>（不是拉槓桿）</td>
+      <td class="num">不變 <span class="small">（G6 不是槓桿）</span></td>
+      <td class="num">不變</td>
+      <td class="warn">一次 launch 即可（不帶 <code>--rule-ab</code> 的 <code>temp 0.4</code> 基線）</td></tr>
+
+  <tr><td><strong>M-S2</strong></td>
+      <td><strong>S2 落地</strong>（<code>線A</code>）：段邊界的 wait 拿掉</td>
+      <td class="num pur">交付口徑<strong>未知</strong></td>
+      <td class="num">需同 commit 重新量（S2 改的是熱路徑）</td>
+      <td class="pur">引擎內部推算 <strong>19.0–22.9</strong>；
+          <strong>不可換算成交付口徑</strong>（校準不是常數）</td></tr>
+
+  <tr><td><strong>M-F5</strong></td>
+      <td><code>線 I</code> 只剩 <strong>F5 每層 barrier</strong>（預取那一半已關門）</td>
+      <td class="num pur">未知</td><td class="num">不變</td>
+      <td class="pur">推算 +6%（19.3–19.4 於他們的形狀）</td></tr>
+
+  <tr><td><strong>M-CB</strong></td>
+      <td><code>線 I</code> 的 <code>cb</code> <strong>全拿</strong>（含 barrier 與 per-miss）</td>
+      <td class="num pur">未知</td><td class="num">不變</td>
+      <td class="pur">推算 <strong>25.8</strong>（他們的形狀 <code>mean_len</code> 3.715）</td></tr>
+
+  <tr><td><strong>M-25</strong></td>
+      <td><strong>過線</strong>（<code>G7.to</code>）</td>
+      <td class="num"><strong>25</strong></td><td class="num">≥250 且<strong>必須重驗</strong></td>
+      <td class="warn">需要<strong>兩條階梯疊乘</strong>＋<code>G6</code>：<code>mean_len</code> 3.375 時步要
+          <strong>≤135 ms</strong></td></tr>
+
+  <tr><td><strong>M-G4</strong></td>
+      <td><code>G4</code>：<code>union</code> → 權重地板</td>
+      <td class="num pur">未知</td><td class="num">不變</td>
+      <td class="pur">外推 <strong>48.5</strong>（40 層都 ＝已觀測最好單層 1.74 ms）
+          ／<strong>173</strong>（權重地板，<strong>不可達上界</strong>）</td></tr>
+
+  <tr><td><strong>M-MAX</strong></td>
+      <td>accept → 1（<code>mean_len</code> → 4）<strong>且</strong> <code>union</code> → 地板</td>
+      <td class="num pur">~205</td><td class="num">不變</td>
+      <td class="pur">兩個條件都要；<strong>不可達上界</strong></td></tr>
+</table>
+
+<div class="box b-amber">
+  <p><strong>⇒ 按表操課時，看的是「下一格」而不是最後一格。</strong>從 <strong>12.57</strong> 起步，
+  能<strong>立即</strong>做的是 <strong>M‑G6</strong>（一次 launch，把 G6 的絕對位置量出來 ——
+  它決定 25 那個門檻的步時預算）與 <strong>M-S2／M-F5</strong>（兩條階梯的各一半）。
+  而 <strong>M-CB 與 M-S2 都各自 &lt; 25</strong> ⇒ 兩條<strong>必須疊乘</strong>。</p>
+</div>
+
+<h2 id="s4">4. 圖：decode 的位置（交付口徑為準）</h2>
+
+<p>下面這張圖把「可引用的交付讀數」與「引擎內部推算」<strong>分軸畫</strong> ——
+因為兩者之間<strong>沒有可用的換算</strong>，把它們放在同一條軸上就會製造出一個假的進度。</p>
+
+<svg viewBox="0 0 960 430" width="100%" role="img" aria-label="decode 位置圖：交付口徑與引擎內部口徑分軸">
+  <rect x="0" y="0" width="960" height="430" fill="#ffffff"/>
+  <text x="14" y="20" font-size="13" font-weight="700" fill="#111827">交付口徑（llama-bench，可引用）</text>
+  <!-- 交付轴 0..30 t/s, x = 200 + v*20 -->
+  <line x1="200" y1="26" x2="800" y2="26" stroke="#e5e7eb"/>
+  <g font-size="10" fill="#6b7280">
+    <text x="196" y="20" text-anchor="end">0</text>
+    <text x="400" y="20" text-anchor="middle">10</text>
+    <text x="600" y="20" text-anchor="middle">20</text>
+    <text x="800" y="20" text-anchor="middle">30</text>
+  </g>
+  <!-- gridlines -->
+  <g stroke="#f3f4f6">
+    <line x1="400" y1="26" x2="400" y2="230"/><line x1="600" y1="26" x2="600" y2="230"/>
+    <line x1="700" y1="26" x2="700" y2="230"/><line x1="800" y1="26" x2="800" y2="230"/>
+  </g>
+  <!-- bar 12.57 -->
+  <rect x="200" y="42" width="251" height="26" fill="#059669" opacity="0.85"/>
+  <text x="459" y="60" font-size="12" font-weight="700" fill="#059669">12.57</text>
+  <text x="14" y="60" font-size="12" fill="#111827">交付 decode（今天）</text>
+  <!-- bar 13.10 best -->
+  <rect x="200" y="76" width="262" height="20" fill="#059669" opacity="0.30"/>
+  <text x="470" y="91" font-size="11" fill="#6b7280">13.10（最好一次，σ 31%）</text>
+  <text x="14" y="91" font-size="12" fill="#111827">交付帶上限（09-19）</text>
+  <!-- bar 10.78 -->
+  <rect x="200" y="104" width="216" height="20" fill="#059669" opacity="0.30"/>
+  <text x="424" y="119" font-size="11" fill="#6b7280">10.78（instrument of record）</text>
+  <text x="14" y="119" font-size="12" fill="#111827">交付帶下限</text>
+  <!-- bar 25 target -->
+  <rect x="200" y="146" width="500" height="26" fill="#dc2626" opacity="0.12"/>
+  <line x1="700" y1="140" x2="700" y2="300" stroke="#dc2626" stroke-width="2" stroke-dasharray="5 4"/>
+  <text x="708" y="164" font-size="12" font-weight="700" fill="#dc2626">目標 25（G7.to）</text>
+  <text x="14" y="164" font-size="12" fill="#111827">還差 ×1.99</text>
+
+  <!-- 引擎内部轴 -->
+  <text x="14" y="252" font-size="13" font-weight="700" fill="#7c3aed">引擎內部口徑（推算，<tspan font-weight="400">不可與上面並排</tspan>）</text>
+  <g font-size="10" fill="#6b7280">
+    <text x="196" y="272" text-anchor="end">0</text>
+    <text x="330" y="272" text-anchor="middle">8</text>
+    <text x="460" y="272" text-anchor="middle">16</text>
+    <text x="590" y="272" text-anchor="middle">24</text>
+    <text x="700" y="272" text-anchor="middle">28</text>
+  </g>
+  <!-- engine scale: x = 200 + v*17.86 -->
+  <rect x="200" y="282" width="307" height="22" fill="#7c3aed" opacity="0.28"/>
+  <text x="513" y="298" font-size="11" fill="#7c3aed">17.2（現況，E2b 暖）</text>
+  <text x="14" y="298" font-size="12" fill="#111827">現況（引擎內部）</text>
+  <rect x="200" y="310" width="339" height="22" fill="#7c3aed" opacity="0.45"/>
+  <text x="545" y="326" font-size="11" fill="#7c3aed">19.0（S2 但只有 submit 能搬）</text>
+  <text x="14" y="326" font-size="12" fill="#111827">階梯②保守格</text>
+  <rect x="200" y="338" width="409" height="22" fill="#7c3aed" opacity="0.45"/>
+  <text x="615" y="354" font-size="11" fill="#7c3aed">22.9（S2 完美 ⇒ total → union）</text>
+  <text x="14" y="354" font-size="12" fill="#111827">階梯②上限</text>
+  <rect x="200" y="366" width="461" height="22" fill="#7c3aed" opacity="0.45"/>
+  <text x="667" y="382" font-size="11" fill="#7c3aed">25.8（cb → 0，他們的形狀）</text>
+  <text x="14" y="382" font-size="12" fill="#111827">階梯①上限</text>
+
+  <text x="200" y="412" font-size="11" fill="#6b7280">※ 兩軸<strong>沒有</strong>共同刻度；同一張圖只是為了讓「哪一格是量測、哪一格是推算」一眼可辨。</text>
+</svg>
+
+<p class="small">交付那三格的出處：<code>Backup/prod_profile/prod_profile_20260920_1230.json</code>（12.57）、
+<code>Backup/phase_decomp/{carrier2_20260919/C,warmskip2_20260919/B}.json</code>（13.10／10.94）、
+<code>MEMORY_PERF.md</code> 的 instrument-of-record（10.78／10.91／10.98）。
+引擎內部那四格的出處：<code>targets.json</code> 的 <code>G6.evidence</code>、
+<code>docs/S2_IMPLEMENTATION_PLAN_2026-09-20.md</code>、<code>docs/ENGINE_LINE_ASSIGNMENT_AND_G1_LADDERS_2026-09-20.md</code> §2。</p>
+
+<h2 id="s5">5. 為什麼不能相加</h2>
+
+<div class="box b-red">
+  <p><strong>兩條階梯的天花板不能相加</strong> —— 而這不是保守，是有實測的：</p>
+  <ul>
+    <li><code>gap ⊆ cb+submit</code> 的<strong>原始碼內建交叉檢查</strong>實測以 <strong>10.09 ms 失敗</strong>
+        （應 ≤24.78，實測 <code>gap=34.87</code>）；</li>
+    <li>交付 regime 的 <code>union+gap = 1.14 × total</code> 是 <strong>UNEXPLAINED</strong>
+        （<code>docs/G1_ACHIEVABLE_CEILING_2026-09-20.md</code> §7）。</li>
+  </ul>
+  <p>⇒ <strong>在它被解釋之前，<code>total → union</code> 這個換算在交付 regime 裡不能假設</strong>，
+  「S2 完美 ⇒ 步＝ <code>union</code>」也就不能當成交付承諾。</p>
+</div>
+
+<h3>每一格都要帶 regime 標籤（這是兩份 ceiling 互相否證的成因）</h3>
+
+<table>
+  <tr><th>量</th><th>帶了什麼</th><th>值</th></tr>
+  <tr><td rowspan="2"><code>cb</code></td><td>高 swap（10.1/11.2 GB）＋ <code>CGC_HOOK_SPLIT</code> ＋ <code>mean_len</code> 3.715</td>
+      <td class="num">60.22 / 74.18 ms</td></tr>
+  <tr><td>E2b 暖 ＋ <code>mean_len</code> 2.40</td><td class="num">21.23 ms</td></tr>
+</table>
+
+<p class="small">⇒ <strong>差 3 倍，而兩個都可能對。</strong>他們的文件已自己標了「絕對值不可與未帶儀器的交付讀數並排」
+—— 請把那句當成<strong>引用規則</strong>，不是免責聲明。</p>
+
+<h2 id="s6">6. 按表操課的紀律</h2>
+
+<ol>
+  <li><strong>引用任何 t/s 之前，先指名 (a) 儀器、(b) cell、(c) regime 標籤。</strong>
+      交付 decode 一律用 <code>scripts/check/prod_profile.py</code> 的 <code>decode-delivery</code>
+      cell（<code>--batch 512 --ctx-size 4096 --warm-skip 64 --spec-type draft-mtp</code>）。</li>
+  <li><strong>單臂噪音底 ≈ ±27%</strong>（同一個命令、同一次 session 讀 9.90 與 12.57，更低的那次 <code>worst=MODERATE</code>）
+      ⇒ <strong>小於 ~27% 的效應，單臂前後對比證明不出來</strong>，只能用配對交錯 A/B（第一步 <code>--null</code>）。</li>
+  <li><strong>動了 decode 的槓桿，prefill 必須用同一個 commit 重量</strong>
+      —— <code>CGC_SPAC</code> 的 EMA 更新與 <code>spac_prefetch</code> 都在 prefill 的熱路徑上
+      （<code>run_server.sh</code> 的 <code>prefill250</code> 區塊自己寫了這件事）。</li>
+  <li><strong>任何 commit 都要指名它移動 <code>G1</code> 的哪一個 restatement</strong>
+      （<code>cb_sum/total</code> 還是段數）—— <code>G1.to</code> 自己寫了這條要求。</li>
+  <li><strong>改動前先查窗口</strong>：<code>cmake --build</code> 會蓋掉別的 session 正在 map 的 <code>.dylib</code>，
+      而這個 repo 的所有比較都建立在「同一個 build」上。</li>
+</ol>
+
+<h2 id="s8">8. 產出當時的閘門輸出（原文）</h2>
+
+<pre><code>$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  memory index OK: 10 file(s), 425 section(s), no drift
+
+$ python3 agent_harness/engine_loop/index_assets.py --check
+  manifest OK: 149 assets, existence + bytes + mtime all agree
+
+$ python3 agent_harness/scripts/import_harness_snapshot.py --check
+  -&gt; OK: 快照與原檔一致（provenance 逐筆相符、集合相符、副本未被手改、README 成員表相符）
+
+$ python3 agent_harness/engine_loop/traces/validate.py
+  episodes.jsonl: 122 records {'episode': 122}    -&gt; OK
+  decisions.jsonl: 68 records {'decision': 68}    -&gt; OK
+  lessons.jsonl: 193 records {'lesson': 193}      -&gt; OK
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  10/10 injected violations rejected
+
+--- 本頁引用的交付基線，其 D5 判決（同一棵樹，見 c4e1c1778）---
+GATE s2-entry-rate: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+  quality   : zero_mapped_selected=0 (must be 0) -&gt; OK</code></pre>
+
+<h2 id="s7">7. 誠實邊界</h2>
+
+<ul>
+  <li><strong>本頁不是新的量測。</strong>每一格都指回既有出處；本頁的工作是<strong>把散在四份文件裡的東西
+      放進同一張表並標明性質</strong>。</li>
+  <li><strong>M-now 的 prefill 是 09-18 的數</strong>：09-20 三次嘗試（188.12／212.59／222.40）
+      <strong>全部 <code>worst ≥ MODERATE</code> ⇒ 不可引用</strong>，所以「prefill 現況」這一格
+      嚴格說是<strong>未驗證</strong>。</li>
+  <li><strong>兩條階梯的推算格沒有一個是量測</strong>，而且其中一條（<code>線 I</code>）的預取那一半
+      <strong>今天已被自己的 L1 關門</strong> ⇒ 它的 25.8 是<strong>收不到</strong>的舊天花板。</li>
+  <li><strong>「總和天花板」不是一個數字。</strong>可給的是三個帶標籤的上界：
+      <strong>48.5</strong>（已觀測最好單層的外推）、<strong>173</strong>（權重地板，不可達）、
+      <strong>~205</strong>（前者再加 <code>mean_len</code>→4）。而 <strong>25 落在「過線」附近</strong>，
+      不是終點 —— 但<strong>沒有任何一格是量測達到的</strong>。</li>
+</ul>
+
+<hr>
+<p class="small">線A (ace) · 2026-09-20 · 權威：<code>agent_harness/portal/targets.json</code>（目標）、
+<code>docs/ENGINE_LINE_ASSIGNMENT_AND_G1_LADDERS_2026-09-20.md</code>（兩條階梯）、
+<code>docs/PRODUCTION_PROFILE_2026-09-20.md</code>（交付基線）、
+<code>.workbuddy/memory/MEMORY_PERF.md</code>（速度）。</p>
+
+</div>
+</body>
+</html>
