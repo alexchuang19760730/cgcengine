@@ -1,29 +1,29 @@
 {
-  "generated_at": "2026-09-19 12:26:09",
+  "generated_at": "2026-09-20 09:15:41",
   "git": {
     "branch": "demo/sweet-spot-windows-fix",
-    "head": "98b44c8c60eef1683b951070b3da429b0bba1aff",
-    "head_short": "98b44c8c6",
-    "subject": "feat(mtp): 量 p_route ⇒ RSL-MTP 被實測證偽（0.21% vs 門檻 50%）＋ 消掉上一條「未驗證」",
-    "dirty": 47,
+    "head": "bfd2c3c01ef8811946968f621500b6e01aed74a5",
+    "head_short": "bfd2c3c01",
+    "subject": "docs(index): resync —— §EN-308 補上 fc0b8a406 的 hash、Gates 段的格式修正經過，重生兩支索引",
+    "dirty": 14,
     "dirty_sample": [
-      "M agent_harness/engine_loop/MANIFEST.jsonl",
-      " M agent_harness/engine_loop/memory/INDEX.jsonl",
-      " M agent_harness/portal/data.json",
-      " M agent_harness/portal/goals.json",
-      " M agent_harness/portal/history.jsonl",
-      " M docs/AGENT_HARNESS_PORTAL.html",
+      "M agent_harness/portal/targets.json",
       " M docs/fleet_export.json",
-      " M scripts/check/decode_sweep.py"
+      " M scripts/check/caliber_env.py",
+      " M scripts/check/decode_sweep.py",
+      " M scripts/check/m123_oracle_gate.py",
+      " M scripts/check/mtp_accept_ab.py",
+      " M scripts/check/paired_ab.py",
+      " M scripts/check/server_window.py"
     ]
   },
   "fingerprint": {
-    "digest": "9f9cc3a5a2435cbb",
+    "digest": "35a46167ff9d793c",
     "inputs": [
       {
         "path": "agent_harness/engine_loop/traces/lessons.jsonl",
-        "sha256_12": "782f8358640a",
-        "bytes": 347040
+        "sha256_12": "e1a37324fe20",
+        "bytes": 349155
       },
       {
         "path": "agent_harness/engine_loop/traces/decisions.jsonl",
@@ -85,51 +85,58 @@
         },
         {
           "name": "2026-09-19.md",
-          "bytes": 46546,
-          "mtime": "09-19 12:24",
-          "lines": 643,
-          "sections": 12
+          "bytes": 307767,
+          "mtime": "09-20 00:38",
+          "lines": 4066,
+          "sections": 85
+        },
+        {
+          "name": "2026-09-20.md",
+          "bytes": 178095,
+          "mtime": "09-20 07:36",
+          "lines": 2505,
+          "sections": 44
         },
         {
           "name": "MEMORY.md",
-          "bytes": 11652,
-          "mtime": "09-19 00:47",
-          "lines": 129,
+          "bytes": 12403,
+          "mtime": "09-20 02:36",
+          "lines": 137,
           "sections": 7
         },
         {
           "name": "MEMORY_FACTS.md",
-          "bytes": 11205,
-          "mtime": "09-17 18:06",
-          "lines": 113,
+          "bytes": 11981,
+          "mtime": "09-19 22:19",
+          "lines": 120,
           "sections": 3
         },
         {
           "name": "MEMORY_PERF.md",
-          "bytes": 55994,
-          "mtime": "09-19 02:28",
-          "lines": 591,
-          "sections": 8
+          "bytes": 57381,
+          "mtime": "09-19 12:58",
+          "lines": 612,
+          "sections": 9
         },
         {
           "name": "MEMORY_S1.md",
-          "bytes": 48927,
-          "mtime": "09-18 13:28",
-          "lines": 594,
+          "bytes": 50333,
+          "mtime": "09-20 07:16",
+          "lines": 609,
           "sections": 13
         }
       ],
-      "count": 9,
-      "bytes": 1432394,
-      "lines": 18781
+      "count": 10,
+      "bytes": 1876030,
+      "lines": 24760
     },
     "skills": {
       "items": [
         {
           "name": "cgc-commit-gate",
-          "bytes": 84923,
-          "lines": 1152,
-          "sha8": "ddb595b6",
+          "bytes": 93375,
+          "lines": 1256,
+          "sha8": "25e33f31",
           "desc": "在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）提交 commit 時，正確通過 pre-commit 閘門並滿足 D5 的完整流程與陷阱。當要在該 repo commit、被 pre-commit hook 擋下、不確定要不要跑 re"
         },
         {
@@ -141,9 +148,9 @@
         },
         {
           "name": "cgc-decode-attribution",
-          "bytes": 132356,
-          "lines": 1409,
-          "sha8": "a892b9d0",
+          "bytes": 201803,
+          "lines": 2096,
+          "sha8": "7d9b04d9",
           "desc": "在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）上把一個 decode 步歸因到 GPU 執行、CPU 序列化、池/IO 或編碼，並用既有儀器取得可證的判準數字。當使用者問「decode 為什麼慢」「wait 是什麼」「瓶頸在哪」「要不"
         },
         {
@@ -190,8 +197,8 @@
         }
       ],
       "count": 9,
-      "bytes": 371553,
-      "lines": 4751
+      "bytes": 449452,
+      "lines": 5542
     },
     "code": {
       "areas": [
@@ -205,8 +212,8 @@
         {
           "area": "src/llama.cpp（引擎核心 C++/Metal）",
           "files": 2440,
-          "loc": 1063233,
-          "bytes": 80234017,
+          "loc": 1063695,
+          "bytes": 80267017,
           "archive": false
         },
         {
@@ -217,17 +224,17 @@
           "archive": false
         },
         {
+          "area": "scripts/（量測、閘門、server）",
+          "files": 191,
+          "loc": 59198,
+          "bytes": 2840826,
+          "archive": false
+        },
+        {
           "area": "app/（CGC 上層）",
           "files": 68,
           "loc": 51726,
           "bytes": 2174368,
-          "archive": false
-        },
-        {
-          "area": "scripts/（量測、閘門、server）",
-          "files": 168,
-          "loc": 45285,
-          "bytes": 2116487,
           "archive": false
         },
         {
@@ -261,8 +268,8 @@
         {
           "area": "agent_harness/engine_loop",
           "files": 26,
-          "loc": 6351,
-          "bytes": 328166,
+          "loc": 6407,
+          "bytes": 331695,
           "archive": false
         },
         {
@@ -294,28 +301,28 @@
           "archive": false
         }
       ],
-      "files": 8083,
-      "loc": 3084151,
-      "bytes": 162315045,
-      "files_live": 4248,
-      "loc_live": 1529387,
-      "bytes_live": 98551566
+      "files": 8106,
+      "loc": 3098582,
+      "bytes": 163075913,
+      "files_live": 4271,
+      "loc_live": 1543818,
+      "bytes_live": 99312434
     },
     "traces": {
       "episodes": 122,
       "episodes_usable": 27,
       "decisions": 68,
-      "lessons": 192,
+      "lessons": 193,
       "lessons_by_class": {
         "measurement-hygiene": 70,
         "gate-integrity": 55,
-        "diagnosis": 28,
+        "diagnosis": 29,
         "source-reading": 21,
         "honest-bounds": 11,
         "log-forensics": 4,
         "smoke": 3
       },
-      "bytes": 851868,
+      "bytes": 853983,
       "schema": true
     },
     "derived": {
@@ -326,16 +333,16 @@
       "sft_prime_valid": 37
     },
     "corpus": {
-      "whitepapers": 62,
+      "whitepapers": 66,
       "latest_whitepaper": "ZERO_REGION_TRIAGE_20260916.html",
-      "docs_md": 75,
+      "docs_md": 99,
       "evidence": {
         "files": 2447,
         "bytes": 15426860
       },
       "backup": {
-        "files": 5202,
-        "bytes": 1126636470
+        "files": 5924,
+        "bytes": 1258084382
       }
     }
   },
@@ -488,7 +495,7 @@
         "id": "shared-log-policy",
         "group": "shared",
         "status": "PASS",
-        "seconds": 0.24,
+        "seconds": 0.23,
         "rc": 0,
         "tail": "  log 政策一致",
         "cost": "fast",
@@ -498,7 +505,7 @@
         "id": "shared-module-split",
         "group": "shared",
         "status": "PASS",
-        "seconds": 0.26,
+        "seconds": 0.25,
         "rc": 0,
         "tail": "  2/2 checks passed",
         "cost": "fast",
@@ -508,7 +515,7 @@
         "id": "shared-shell-cjk",
         "group": "shared",
         "status": "PASS",
-        "seconds": 0.14,
+        "seconds": 0.13,
         "rc": 0,
         "tail": "  0 處：所有 `$VAR` 後面都不是緊接非 ASCII",
         "cost": "fast",
@@ -550,7 +557,7 @@
         "status": "FAIL",
         "seconds": 0.03,
         "rc": 1,
-        "tail": "[error] 7 drift(s) between memories/engine/ and lessons.jsonl: / eng-bound-0010.md: in lessons.jsonl but no memory file / eng-gate-0061.md: in lessons.jsonl but no memory file",
+        "tail": "[error] 8 drift(s) between memories/engine/ and lessons.jsonl: / eng-bound-0010.md: in lessons.jsonl but no memory file / eng-diag-0037.md: in lessons.jsonl but no memory file",
         "cost": "fast",
         "needs": ""
       },
@@ -570,7 +577,7 @@
         "status": "FAIL",
         "seconds": 0.03,
         "rc": 1,
-        "tail": "[error] 3 drift(s) in sft_prime/ against the current traces: / lessons.jsonl: INPUTS ADVANCED since this artifact was built (80cd46ae6e183a79 -> 782f8358640a8993) -- this is staleness, not a different build / train.jsonl: content differs fr",
+        "tail": "[error] 3 drift(s) in sft_prime/ against the current traces: / lessons.jsonl: INPUTS ADVANCED since this artifact was built (80cd46ae6e183a79 -> e1a37324fe20c404) -- this is staleness, not a different build / train.jsonl: content differs fr",
         "cost": "fast",
         "needs": ""
       },
@@ -578,9 +585,9 @@
         "id": "index-memory",
         "group": "index",
         "status": "FAIL",
-        "seconds": 0.03,
+        "seconds": 0.04,
         "rc": 1,
-        "tail": "[error] 255 drift(s) between INDEX.jsonl and .workbuddy/memory/: / row count: index 293 vs derived 300 / .workbuddy/memory/2026-09-19.md :: (file row): fields differ ['bytes', 'lines', 'mtime', 'sha256']",
+        "tail": "[error] 341 drift(s) between INDEX.jsonl and .workbuddy/memory/: / row count: index 418 vs derived 419 / .workbuddy/memory/2026-09-20.md :: (file row): fields differ ['bytes', 'lines', 'mtime', 'sha256']",
         "cost": "fast",
         "needs": ""
       },
@@ -590,7 +597,7 @@
         "status": "FAIL",
         "seconds": 0.04,
         "rc": 1,
-        "tail": "[error] 13 drift(s) between the manifest and disk: / scripts/check/decode_sweep.py: bytes: manifest 90531 vs disk 91594 / scripts/check/decode_sweep.py: mtime: manifest '2026-09-18T14:14:34' vs disk '2026-09-19T03:48:27'",
+        "tail": "[error] 2 drift(s) between the manifest and disk: / scripts/check/mtp_accept_ab.py: bytes: manifest 104405 vs disk 108220 / scripts/check/mtp_accept_ab.py: mtime: manifest '2026-09-20T07:25:01' vs disk '2026-09-20T07:29:30'",
         "cost": "fast",
         "needs": ""
       },
@@ -600,7 +607,7 @@
         "status": "FAIL",
         "seconds": 0.03,
         "rc": 1,
-        "tail": "  -> DRIFT: 9 項。重跑 `python3 agent_harness/scripts/import_harness_snapshot.py` 再重生索引（先 build_memory_index.py、後 index_assets.py）。",
+        "tail": "  -> DRIFT: 1 項。重跑 `python3 agent_harness/scripts/import_harness_snapshot.py` 再重生索引（先 build_memory_index.py、後 index_assets.py）。",
         "cost": "fast",
         "needs": ""
       },
@@ -665,12 +672,12 @@
     {
       "kind": "derived",
       "severity": "high",
-      "title": "衍生記憶落後 lessons 7 筆"
+      "title": "衍生記憶落後 lessons 8 筆"
     },
     {
       "kind": "registry",
       "severity": "medium",
-      "title": "決策 registry 的覆蓋停在 2026-09-18（今天的日誌有 1 天在它之後）"
+      "title": "決策 registry 的覆蓋停在 2026-09-18（今天的日誌有 2 天在它之後）"
     },
     {
       "kind": "charter",
@@ -750,7 +757,7 @@
         ".workbuddy/memory/2026-09-18.md": false
       },
       "pushed": "unknown",
-      "head": "98b44c8c60eef1683b951070b3da429b0bba1aff",
+      "head": "bfd2c3c01ef8811946968f621500b6e01aed74a5",
       "remote_sha": "",
       "remotes": "origin,cgcengine0907"
     }
