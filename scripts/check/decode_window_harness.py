@@ -32,6 +32,7 @@ import json
 import os
 import re
 import signal
+import sys
 import statistics as st
 import subprocess
 import time
@@ -190,7 +191,23 @@ def foreign_llama():
     run_server.sh's preflight documents the same class of bug and adopted the same rule: match the
     executable, and a real bench is still caught -- its own child has the llama binary as argv[0].
     """
-    out = subprocess.run(["ps", "-Ao", "pid=,args="], capture_output=True, text=True).stdout
+    # [CGC 2026-09-20 線A (ace)] `ps` PORTABILITY FALLBACK -- and it must NOT become a silent
+    # "window is free". On a session whose environment denies `ps` (measured: `operation not
+    # permitted: ps`, raised at the shell level, and it survived `dangerouslyDisableSandbox`, so it
+    # is this session's environment rather than the tool sandbox) this guard used to die with
+    # PermissionError -- i.e. the guard whose whole job is to stop cross-session collisions crashed
+    # instead of guarding. `pgrep -af .` returns the same `pid args` shape and is available where
+    # `ps` is not (359 lines, measured on the same box).
+    # !! If BOTH fail this MUST raise: falling through to an empty list would mean "no foreign
+    # llama" and hold the guard OPEN on a busy machine. A guard that cannot run is not a guard.
+    try:
+        out = subprocess.run(["ps", "-Ao", "pid=,args="], capture_output=True, text=True,
+                             check=True).stdout
+    except (OSError, subprocess.CalledProcessError) as _e:
+        out = subprocess.run(["pgrep", "-af", "."], capture_output=True, text=True,
+                             check=True).stdout
+        sys.stderr.write("decode_window_harness: `ps` unavailable (%s) -- fell back to "
+                         "`pgrep -af .`, same pid+args shape\n" % (_e,))
     hits = []
     for line in out.splitlines():
         pid, _, args = line.strip().partition(" ")
