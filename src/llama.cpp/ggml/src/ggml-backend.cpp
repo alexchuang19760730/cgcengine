@@ -2570,7 +2570,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                             kop_itot += kop_inc[q];
                         }
                         if (kop_itot > 0) {
-                            char kop_line[600];
+                            char kop_line[1600];   // [CGC G4] 16 kinds need the room
                             int kop_off = snprintf(kop_line, sizeof(kop_line),
                                                    "CGC-GPULAYK: seg=%d tot=%.2f ms |", i,
                                                    (double) kop_itot / 1e6);
@@ -2578,10 +2578,23 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                             // tail is the same discipline as the step-level line: an unsuppressed
                             // list would be 48 entries of noise, and the question is which kind
                             // dominates WHICH segment, not the full vector.
-                            for (int r = 0; r < 5; r++) {
+                            //
+                            // [CGC 2026-09-20 G4] The cap above is what CREATES the apparent "45%
+                            // has no name". Measured on llama_server_20260920_072218.log (125 segs):
+                            // the SAME five kinds top every segment and the median named share is
+                            // 54.6%, so the residual is not one mystery op -- it is whatever ranks
+                            // 6th and below, each under 5%. `CGC_GPU_OPS=2` widens THIS line only
+                            // (top 16, 1% floor) so the tail can finally be named; the value `1`
+                            // leaves every earlier record's line shape unchanged, which is why the
+                            // widening is value-gated rather than a new env name.
+                            int kop_topk = 5, kop_floor_div = 20;   // 20 => 5% floor
+                            if (const char * ops_lv = getenv("CGC_GPU_OPS")) {
+                                if (atoi(ops_lv) >= 2) { kop_topk = 16; kop_floor_div = 100; }
+                            }
+                            for (int r = 0; r < kop_topk; r++) {
                                 int bi = -1;
                                 for (int q = 0; q < ns_kind_n; q++) {
-                                    if (kop_inc[q] * 20 < kop_itot) { continue; }
+                                    if (kop_inc[q] * kop_floor_div < kop_itot) { continue; }
                                     if (bi < 0 || kop_inc[q] > kop_inc[bi]) { bi = q; }
                                 }
                                 if (bi < 0) { break; }

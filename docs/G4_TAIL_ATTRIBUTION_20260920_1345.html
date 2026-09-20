@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>G4：45% 沒有名字的真相 —— 被儀器上限蓋住的第 6 名以下（2026-09-20）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .small{font-size:12.5px;color:var(--muted)}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:#fcfcfd}
+  .toc ol{margin:6px 0 0 20px}
+  .toc a{color:var(--blue);text-decoration:none}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>G4：那「45% 沒有名字」不是長尾，是<strong>被儀器上限蓋住的第 6 名以下</strong></h1>
+<div class="sub">
+  2026-09-20 13:3x–13:4x · 專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code><br>
+  載體 <code>m123_oracle_gate.py --tag g4-tail --env CGC_GPU_NODES=1 --env CGC_GPU_OPS=2</code>
+  （<code>Backup/cgc_logs/llama_server_20260920_133610.log</code>，125 段）<br>
+  儀器改動 <code>ggml-backend.cpp</code>（<strong>+16 / −3</strong>，只放寬那一行的列印）· 線別 <strong>線A (ace)</strong>
+</div>
+
+<div class="box b-green">
+  <p><strong>兩句話：</strong>① <strong>不是一條長尾</strong> —— 每個 segment 的前 5 名<strong>完全一樣</strong>，
+  已命名佔比中位只有 <strong>54.6%</strong>；殘量是<strong>第 6 名以下、每個都 &lt;5%</strong> 的一群。
+  ② <strong>放寬上限就全部命名了</strong>：中位 <strong>54.6% → 86.9%</strong>，而
+  <strong>沒有任何單一 kind 超過 12.8%</strong> ⇒ 這正是 <code>G4.no_single_lever</code> 的實測版本：
+  <strong>成本是攤平的，槓桿是「融合」，不是「找熱點」。</strong></p>
+</div>
+
+<h2 id="s1">1. 診斷：上限就是成因（零 GPU，既有 log）</h2>
+
+<p>解析舊口徑的 <code>Backup/cgc_logs/llama_server_20260920_072218.log</code>（125 段）：</p>
+
+<pre><code>seg=0 tot=3.92 ms | cache=0.91(23.2%) node=0.71(18.0%) linear_attn=0.45(11.4%) conv=0.40(10.3%) norm=0.21(5.4%)
+seg=1 tot=5.83 ms | node=0.97(16.7%) cache=0.70(12.0%) ffn_moe_=0.55(9.4%) norm=0.49(8.4%) ffn_moe_add=0.47(8.1%)
+seg=2 tot=6.38 ms | node=1.05(16.4%) cache=0.75(11.8%) ffn_moe_=0.64(10.1%) ffn_moe_add=0.55(8.6%) norm=0.51(7.9%)</code></pre>
+
+<table>
+  <tr><th>量</th><th>舊口徑（top-5、≥5%）</th></tr>
+  <tr><td>已命名佔比</td><td class="num">中位 <strong>54.6%</strong>（最小 41.4%、最大 90.0%）</td></tr>
+  <tr><td>未命名殘量</td><td class="num"><strong>45.4%</strong></td></tr>
+  <tr><td>前 5 名的組合</td><td><strong>每一段都一樣</strong>（<code>node</code>／<code>cache</code>／<code>ffn_moe_</code>／<code>ffn_moe_add</code>／<code>norm</code>）</td></tr>
+</table>
+
+<p>⇒ <strong>殘量不是「一個謎樣的 op」，而是「一群每個都 &lt;5% 的 op」。</strong>命名的唯一障礙是儀器的上限。</p>
+
+<h2 id="s2">2. 放寬之後（<code>CGC_GPU_OPS=2</code>，top-16、1% 下限）</h2>
+
+<pre><code>seg=0 tot=3.93 ms | cache=0.91(23.1%) node=0.71(18.0%) linear_attn=0.45(11.5%) conv=0.40(10.3%) norm=0.21(5.4%)
+                  | attn_norm=0.10(2.6%) dnqkv_proj=0.10(2.6%) dnbeta_proj=0.10(2.6%) beta=0.10(2.6%)
+                    a_softplus=0.10(2.6%) gate=0.10(2.6%) q_conv=0.10(2.6%) k_conv=0.10(2.6%)
+                    z-=0.10(2.6%) gdn_out=0.10(2.6%) dn_normg_mul=0.10(2.6%)
+seg=1 tot=8.42 ms | node=2.10(25.0%) cache=1.26(15.0%) norm=1.07(12.7%) ffn_moe_=0.55(6.5%) ffn_moe_add=0.47(5.6%)
+                  | ffn_=0.31(3.7%) k_conv=0.28(3.3%) z-=0.28(3.3%) gdn_out=0.28(3.3%) conv=0.25(2.9%)
+                    shared_expert_gate=0.16(1.9%) linear_attn=0.14(1.6%) attn_residual=0.14(1.6%) dn_normg_mul=0.14(1.6%)</code></pre>
+
+<table>
+  <tr><th>量</th><th>舊口徑</th><th>放寬後</th></tr>
+  <tr><td>已命名佔比（中位）</td><td class="num">54.6%</td><td class="num ok"><strong>86.9%</strong>（最小 83.5%、最大 99.9%）</td></tr>
+  <tr><td>未命名殘量（中位）</td><td class="num">45.4%</td><td class="num ok"><strong>13.1%</strong>（每段 ≈ 1.09 ms / 8.08 ms）</td></tr>
+  <tr><td>每段 kind 數</td><td class="num">5</td><td class="num">14–16</td></tr>
+</table>
+
+<h3>2.1 全局 kind 佔比（125 段合計；已命名合計 = tot 的 86.8%）</h3>
+
+<table>
+  <tr><th>kind</th><th>% of tot</th><th>讀法</th></tr>
+  <tr><td><code>ffn_moe_</code> ／ <code>node</code> ／ <code>ffn_moe_add</code></td>
+      <td class="num"><strong>12.8 / 12.3 / 11.0</strong></td>
+      <td>MoE FFN 的支撐 op（未融合 elementwise ＋ 殘差加 ＋ 家族前綴）＝ 前三名合計 <strong>36.1%</strong></td></tr>
+  <tr><td><code>cache</code> ／ <code>ffn_</code> ／ <code>norm</code></td><td class="num">8.2 / 7.3 / 5.8</td><td></td></tr>
+  <tr><td><code>shared_expert_gate</code> ／ <code>conv</code></td><td class="num">3.7 / 3.4</td><td><code>conv</code> 是 GDN 的卷積</td></tr>
+  <tr><td><code>k_conv</code> ／ <code>z-</code> ／ <code>gdn_out</code></td>
+      <td class="num">2.4 each<br>（三者都<strong>剛好 51.98 ms</strong>）</td>
+      <td><strong>同工作權重</strong> ⇒ 一族同尺寸 op 的簽名</td></tr>
+  <tr><td><code>attn_norm</code> ／ <code>Qcur</code> ／ <code>Kcur</code></td><td class="num">1.8 / 1.5 / 1.5</td><td><code>Qcur</code>／<code>Kcur</code> 也是同值對</td></tr>
+  <tr><td><code>dnqkv_proj</code> ／ <code>dnbeta_proj</code> ／ <code>beta</code></td><td class="num">1.3 / 1.1 / 1.1</td><td></td></tr>
+</table>
+
+<h3>2.2 ★ 兩個結構性事實（G4 的機制）</h3>
+
+<ol>
+  <li><strong>沒有任何單一 kind 超過 12.8%</strong> —— 成本<strong>攤平</strong>在 ~25 個已命名的 kind 上
+      ⇒ <strong>G4 的槓桿是「融合一群同尺寸的 op」，不是「找一個熱 kernel」</strong>
+      （熱點<strong>不存在</strong>，這正是 <code>G4.no_single_lever</code> 的實測版本）。</li>
+  <li><strong>尾部由 gated-delta-net（linear attention）的支撐 op 主導</strong>：
+      <code>conv</code>／<code>k_conv</code>／<code>z-</code>／<code>gdn_out</code>／<code>attn_norm</code>／
+      <code>dnqkv_proj</code>／<code>dnbeta_proj</code>／<code>beta</code>／<code>q_conv</code>／
+      <code>dn_normg_mul</code>／<code>linear_attn</code> 合計約 <strong>15–16% of tot</strong>。</li>
+</ol>
+
+<div class="box b-amber">
+  <p><strong>⚠ 一條自我更正（讀法上的）。</strong>我先寫「那 15 個 <code>0.10 ms</code> 的 kind 在計時解析度下限」，
+  <strong>這個讀法收回</strong> —— 同一份 log 否證了它：<code>k_conv</code>／<code>z-</code>／<code>gdn_out</code>
+  在 125 段<strong>合計逐位元同值 51.98 ms</strong>、每段百分比也相同（2.6%）⇒ 這只能是
+  <strong>工作權重與節點數相同</strong>，不是量測底噪。正確說法：「<strong>它們同值，因為同工作權重</strong>」。</p>
+</div>
+
+<div class="box b-blue">
+  <p><strong>殘量 13.1% 仍未命名</strong>（低於 1% 門檻）。要再往下只能再放寬（例如 <code>=3</code> 給 0.1% 門檻），
+  但那會開始把<strong>圖的固定開銷</strong>與<strong>真正的 op</strong> 混在一起
+  ⇒ 建議先把 §2.2 的融合路線做完再回來。</p>
+</div>
+
+<h2 id="s3">3. 對 G4 的結論</h2>
+
+<table>
+  <tr><th></th><th></th></tr>
+  <tr><td><strong>可及空間（不變）</strong></td>
+      <td><code>union</code> 104.87 ms vs 權重地板 <strong>19.5 ms/步</strong> ⇒ <strong>5.4×</strong>；
+          等效頻寬 22.3 GB/s ＝ M4 的 19%</td></tr>
+  <tr><td><strong>機制（本節新增）</strong></td>
+      <td>攤平在 ~25 個已命名的 kind 上，<strong>沒有任何一個 &gt;12.8%</strong>，而它們分成兩族：
+          <strong>MoE FFN 支撐 op（前 3 名 36.1%）</strong> 與 <strong>GDN 支撐 op（~15%）</strong></td></tr>
+  <tr><td><strong>所以下一步</strong></td>
+      <td><strong>融合</strong>（<code>node</code> 的未融合 elementwise、<code>ffn_moe_add</code> 的殘差加、
+          GDN 的一族同尺寸小 op），<strong>逐族做，沒有單一槓桿</strong></td></tr>
+  <tr><td><strong>不是</strong></td><td>找不到熱點 kernel —— 熱點<strong>不存在</strong></td></tr>
+</table>
+
+<h2 id="s4">4. 儀器改動（+16 / −3）</h2>
+
+<pre><code>int kop_topk = 5, kop_floor_div = 20;   // 20 =&gt; 5% floor
+if (const char * ops_lv = getenv("CGC_GPU_OPS")) {
+    if (atoi(ops_lv) &gt;= 2) { kop_topk = 16; kop_floor_div = 100; }
+}</code></pre>
+
+<ul>
+  <li><strong><code>CGC_GPU_OPS=1</code> 的路徑逐字不變</strong> ⇒ 既有記錄（含
+      <code>docs/GPU_NODE_ATTRIBUTION_20260918_1500.html</code> §56–§62 的數字）可複現。</li>
+  <li><strong>刻意複用既有門控、按值分級，而不是新增 env 名</strong>：<code>CGC_GPU_OPS</code> 已在
+      <code>run_server.sh</code> 的 allowlist 裡，而那個區塊<strong>正被另一條線編輯</strong>；
+      blob-staged 的加法會被他們下一次提交同一區塊時還原。</li>
+  <li>行緩衝 <code>600 → 1600</code>：16 個 kind 塞不進 600 bytes，而 <code>snprintf</code> 截斷會
+      <strong>靜默丟掉</strong>這次要讀的尾巴。</li>
+</ul>
+
+<h2 id="s5">5. 閘門輸出原文</h2>
+
+<pre><code>$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  memory index OK: 10 file(s), 431 section(s), no drift
+
+$ python3 agent_harness/engine_loop/index_assets.py --check
+  manifest OK: 149 assets, existence + bytes + mtime all agree
+
+$ python3 agent_harness/scripts/import_harness_snapshot.py --check
+  -&gt; OK: 快照與原檔一致（provenance 逐筆相符、集合相符、副本未被手改、README 成員表相符）
+
+$ python3 agent_harness/engine_loop/traces/validate.py
+  episodes.jsonl: 122 records   -&gt; OK
+  decisions.jsonl: 68 records    -&gt; OK
+  lessons.jsonl: 193 records     -&gt; OK
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  10/10 injected violations rejected
+
+--- D5 數值判決：本 commit 動了 src/ ⇒ 這半必要 ---
+$ python3 scripts/check/m123_oracle_gate.py --tag g4-tail-off     # 儀器休眠（未設 CGC_GPU_NODES/OPS）
+GATE g4-tail-off: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+cross-tab: {'num_eq_dec_eq': 9, 'num_eq_dec_ne': 0, 'num_ne_dec_eq': 0, 'num_ne_dec_ne': 0}
+  quality   : zero_mapped_selected=0 (must be 0) -&gt; OK ; fast_cold=0 verify_cold=0
+  build     : libllama.0.0.279.dylib=0cd5a62833e31549  libggml-metal.0.19.0.dylib=1be366306c604669
+              libggml-base.0.19.0.dylib=9d33b03e44b0e7c4  llama-server=054fb22f04a01c5c
+comparable=True, config_diffs=[]
+
+--- 儀器開啟臂（125 段的來源）---
+$ python3 scripts/check/m123_oracle_gate.py --tag g4-tail --env CGC_GPU_NODES=1 --env CGC_GPU_OPS=2
+GATE g4-tail: INVALID COMPARISON -- ... (2 diffs)
+  observed M1=9/9  M2=9/9  M3=9/9  n=9   (printed for information, NOT a verdict)
+  ⇒ 2 筆 diff 就是那兩顆診斷旋鈕（不在 DIAGNOSTIC_KEYS）。數值判決取上面的休眠臂。</code></pre>
+
+<h2 id="s6">6. 誠實邊界</h2>
+
+<ul>
+  <li><strong>這是歸因，不是優化。</strong>本 commit <strong>沒有移動任何被量測的指標</strong>
+      —— 它把「沒有名字的 45%」變成「有名字的兩族」，並把 <code>no_single_lever</code> 從判斷升級成實測。</li>
+  <li><strong>kind 佔比是在 <code>ns_kop_*</code> 的工作權重上加總的</strong>，不是直接量測每個 op 的 kernel 時間；
+      它回答「哪一族值得融合」，不回答「融合能拿到多少」。</li>
+  <li><strong>單一 regime</strong>：<code>m123_oracle_gate</code> 的 9 個 oracle 比對、pool 8 GiB；
+      而 <code>union</code> 的 104.87 ms 是 <strong>E2b 暖</strong>的另一個 regime ⇒ <strong>不要把兩者的百分比相乘</strong>。</li>
+  <li>本輪 <strong>沒有</strong>驗證任何融合的收益 —— 那需要實作 ＋ 一次配對 A/B（單臂噪音底 ±27%，見
+      <code>MEMORY_PERF.md</code>）。</li>
+</ul>
+
+<hr>
+<p class="small">線A (ace) · 2026-09-20 · markdown 雙生檔：<code>docs/G4_TAIL_ATTRIBUTION_2026-09-20.md</code></p>
+
+</div>
+</body>
+</html>
