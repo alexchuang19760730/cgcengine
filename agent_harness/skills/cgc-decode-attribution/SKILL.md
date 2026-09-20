@@ -1167,6 +1167,32 @@ lesson `eng-diag-0037`；根因報告 `docs/S1_DIAGNOSTIC_ABORT_ROOT_CAUSE_2026-
 **殘餘（明寫）**：那個判準讓讀取**安全**，沒有讓它**可歸屬** —— 長度對得上的舊指標仍會產生
 錯誤的報告行。要關掉它需要在 capture 端記下**建置世代戳記**（「是哪一次 build 寫的」）。
 
+### ★ 第六條規則（2026-09-20 新增）：**引用 decode t/s 之前先指名 cell —— 交付形狀不是預設形狀**
+
+`t/s` 是**一個 cell** 的讀數，不是引擎的性質。本 repo 有兩個 decode 入口，而**同一個 profile**
+在兩者之間差約 **1.4×**：
+
+| 入口 | cell | 同一 profile 讀到 |
+|---|---|---|
+| `profile_duo.py` / `prod_matrix.py` 的 `decode` | `-p 0 -n 128 -d 512 -b 512`，**無 spec、無 warm-skip、
+  ctx 由 llama-bench 自行推導 ~704** | **7.96–9.12** |
+| **交付形狀**（`scripts/check/prod_profile.py` 的 `decode-delivery`） | 上列 ＋ `--ctx-size 4096`、
+  `--warm-skip 64`、`--spec-type draft-mtp` | **12.57**（09-20，`NOMINAL` 全程） |
+
+⇒ **交付 decode 的四個約定**：`--batch 512`、`--ctx-size 4096`、`--warm-skip 64`、
+`--spec-type draft-mtp`。**任缺一個，那一列就不是交付 decode。**
+⚠ 所以「記錄 7.7–10.8、今天 9.90」**不是退步** —— 那是**兩個 cell**。
+（`--ctx-size` 特別容易忘：llama-bench 的 `n_ctx = p+n+d ≈ 704`，而生產 server 跑 4096；
+KV 配置與 batch 夾制都吃它。`--warm-skip N` 讓時鐘在 N 個 token 之後才起算，報告的 `n_gen` 排除它們。）
+
+**★ 同一條命令的單臂噪音 ≈ ±27%。** 2026-09-20 實測：**同一次 session、同一個命令**（只差 `--arms`
+的名字），讀 **9.90**（`worst=MODERATE`）與 **12.57**（`worst=NOMINAL`）—— 更低的那次是更熱的那次。
+⇒ **小於 ~27% 的效應，單臂前後對比證明不出來**；只能用配對交錯 A/B（AB/BA ＋ `median(A/B)`），
+而第一步永遠是 `--null`（兩槽同 binary）。這與 09-18「四臂全 launch=NOMINAL 卻給 10.80/10.34/8.92/8.58」同向。
+
+權威出處：`MEMORY_PERF.md` 的 profile 節（交付 decode＝12.57、四個約定、±27%）與
+`docs/PRODUCTION_PROFILE_2026-09-20.md`（旋鈕全文、同一性證明、重現命令）。
+
 ## 陷阱（都踩過）
 
 **★ 陷阱 0（2026-09-18）：`ls -t | head -1` 取到的「最新產物」可能還沒寫完。**
