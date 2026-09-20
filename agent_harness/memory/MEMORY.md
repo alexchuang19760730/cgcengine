@@ -48,20 +48,21 @@ llama.cpp 的 CGC fork：Metal ＋ **expert cache pool**（專家權重常駐 SS
 **`agent_harness/` 歸另一條 session；引擎層（`src/`、`scripts/check/`、decode／prefill 量測）歸本線。**
 動手前後各跑 `git status --porcelain -uall`；看到不是自己的 modified／staged 檔就停手、只 stage 自己的檔案。
 
-- ⚠️ **09-20 起引擎層有兩條 session，而兩者都自稱「線 I」**（`targets.json` 的 `G1.owner` 寫
-  「line B (implementation); **line I owns the ceiling reading**」）：
-  **本線**＝S1／段邊界（`wait`／`gap`／S2）＋ 逐層 KIND×OP 儀器；**另一條**＝`cb` 的 **F1–F5**
-  （`docs/DECODE_CB_BREAKDOWN_2026-09-20.md`、`docs/F1_CB_MISS_REGRESSION_RESULT_2026-09-20.md`、
-  `scripts/check/cb_miss_regression.py`）。**兩者都產出 G1 的天花板** ⇒ G1 的 `to` 需要有
-  一個權威讀法，否則兩份都對、互相否證。
-- ⚠️ **共用的碰撞面（09-20 實測）**：① `src/llama.cpp/src/llama-context.cpp`
-  （F2 的 `CGC_LAYER_AHEAD_PREFETCH` 在 hook `:5381`；本線的 S1 修補在 `graph_compute` `:3348`）；
-  ② `ggml-backend.cpp`（F5 的「每層 barrier」與本線的 S2 切點＋G4 儀器同在 `hook_seg`／submit 迴圈）；
-  ③ `libggml-base`（`cmake --build` 會蓋掉別人正在 map 的 dylib）與 8080／GPU 窗口；
-  ④ **`cb` 的口徑**（他們 60.22／74.18 ms＝高 swap ＋ `CGC_HOOK_SPLIT` ＋ `mean_len 3.715`；
-  本線 21.23 ms＝E2b 暖 ＋ `mean_len 2.40`；差 3 倍但**兩個都可能對**）；
-  ⑤ **`.workbuddy/memory/*.md` 的併發寫入**（09-20 11:45–11:46 實測：本線 `§EN-308` 標題被拆兩行）。
-- **但意圖不衝突**：F2 打的是 `cb`（miss 的服務成本），S2 打的是 `wait`（段邊界），兩者**可加**，
+- ⚠️ **09-20 起引擎層有兩條 session。命名已由 operator 裁定（11:5x）：本線 ＝ `線A (ace)`**
+  （舊標籤「本線（line I）」與另一條的文件署名撞了）。**另一條請沿用 `線 I`** ——
+  它的擁有物是 `cb`／快取命中儀器（`cb_miss_regression.py`、`docs/F1_CB_MISS_REGRESSION_RESULT_*`），
+  正是「`線 I` ＝ 儀器／快取幾何線」的字面意思。
+  **`線A (ace)` 的定義按擁有物**：S1／段邊界（`wait`／`gap`／S2）＋ 逐層 KIND×OP 儀器
+  （`4fdfaa8de` 在本線祖先鏈上）。命名表與五個碰撞面在
+  **`docs/ENGINE_LINE_ASSIGNMENT_AND_G1_LADDERS_2026-09-20.md`**，那份同時把 **G1 的 `to` 拆成兩條
+  階梯**（`cb`→0 owner `線 I`；`wait`/段邊界→0 owner `線A`）⇒ 兩份 ceiling 不再互相否證。
+- ⚠️ **共用碰撞面（09-20 實測）**：① `llama-context.cpp`（F2 在 hook `:5381`；本線在 `graph_compute`
+  `:3348`）；② `ggml-backend.cpp`（F5 的每層 barrier 與本線 S2 切點、G4 儀器同在 `hook_seg`／submit 迴圈）；
+  ③ `libggml-base` 與 8080／GPU 窗口；④ **`cb` 的口徑**（他們 60.22／74.18 ms 高 swap ＋ `CGC_HOOK_SPLIT`；
+  本線 21.23 ms E2b 暖；差 3 倍但**兩個都可能對**）；⑤ `.workbuddy/memory/*.md` 的併發寫入
+  （09-20 11:45–11:46 實測本線 `§EN-308` 標題被拆兩行；`.workbuddy/` gitignored ⇒ 無版控安全網）。
+- **意圖不衝突**：F2 打 `cb`、S2 打 `wait`，兩者可加，且雙方天花板都自寫「單獨不足 25」。
+  ⚠️ 但 `gap ⊆ cb+submit` 的內建交叉檢查以 10.09 ms 失敗 ⇒ **分量相加在該 regime 不閉合，別直接加總。**
   且雙方的天花板都自己寫明「單獨不足 25」。
 
 ## ★★ 並行 session 安全（2026-09-18 血的教訓，動手前必讀）

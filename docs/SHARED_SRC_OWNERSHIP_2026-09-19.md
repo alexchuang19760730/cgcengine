@@ -184,3 +184,19 @@ norm（`RMS_NORM` 7.5 ＋ `L2_NORM` 3.3 ≈ 10.8%）、copy/gather（`CPY` 6.9 �
 | `scripts/check/llama_bench_matrix.py` | `--warm-skip`／`--ctx-size` 透傳（未提交） |
 | `scripts/check/decode_step_profile.py` | `mtp` arm、移除 pattern-kill、`ps`→`pgrep` 回退（未提交） |
 | `llama-bench.cpp` | 見 §4（未提交，混合） |
+
+---
+
+## 7. 2026-09-20 11:5x：本線改名 **`線A (ace)`**（operator 指定），並記下新的碰撞面
+
+舊標籤撞了：本線的記憶寫「本線（line I）」，而另一條 session 的文件也署名「（線 I，2026-09-20 下午）」。
+**⇒ 本線 ＝ `線A (ace)`；`線 I` 留給做 `cb`／F1–F5 的那條**（它的擁有物＝快取命中儀器，
+正是 `線 I = 儀器／快取幾何線` 的字面意思）。
+
+- 本檔 §1 的「`ggml-backend.cpp` 自此歸線 B」**仍然有效**；但 §EN-308 起本線在該檔的
+  **`hook_seg`／submit 迴圈**放了逐層 KIND×OP 儀器（`fc0b8a406`），所以那一區要動之前請先讀
+  `docs/S2_IMPLEMENTATION_PLAN_2026-09-20.md` §1 的行號表。
+- `src/llama.cpp/src/llama-context.cpp`：本線現在只持有 **`graph_compute` 區段**
+  （`a1a2473fd`，S1 探針的兩個守衛）；hook（`:5381` 的 `CGC_LAYER_AHEAD_PREFETCH`）不是本線的。
+- 完整的命名表、五個碰撞面與 G1 的**兩條階梯**：
+  `docs/ENGINE_LINE_ASSIGNMENT_AND_G1_LADDERS_2026-09-20.md`。

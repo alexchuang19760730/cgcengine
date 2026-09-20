@@ -110,6 +110,7 @@ for (int i = 0; i < n_segs; i++) {
 1. **owner**：`agent_harness/portal/targets.json` 的 `G1.owner` ＝
    **`line B (implementation); line I owns the ceiling reading`**。
    本線（line I）動手就是越界，**而今天早上本線自己記過「我不越界去寫 S2 的程式」**。
+   > **2026-09-20 11:5x 註記（原文未刪）**：本線自此叫 **`線A (ace)`**（operator 裁定；「line I」是當時的標籤，而它與另一條 session 的署名撞了）。命名表、五個碰撞面、以及 **G1 的 `to` 拆成兩條階梯**（`cb`→0 owner `線 I`；`wait`/段邊界→0 owner `線A`）在 **`docs/ENGINE_LINE_ASSIGNMENT_AND_G1_LADDERS_2026-09-20.md`**。
 2. **檔案佔用**：`src/llama.cpp/ggml/src/ggml-backend.cpp` **現在是 dirty 的**
    （**本線自己**未提交的 G4 `CGC-GPULAYK` 逐層儀器，見 `.workbuddy/memory/2026-09-20.md`
    的產物清單；這裡 07:0x 原先寫成「另一條線」，是誤記）。S2 的三個改動點裡有兩個就在這個檔
