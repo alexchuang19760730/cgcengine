@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>G4 融合清單：41 層 × 一條 9 連 ADD 鏈，以及第一刀的上界（2026-09-20）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .small{font-size:12.5px;color:var(--muted)}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:#fcfcfd}
+  .toc ol{margin:6px 0 0 20px}
+  .toc a{color:var(--blue);text-decoration:none}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>G4 融合清單：<b>41 層 × 一條 9 連 ADD 鏈</b>，以及第一刀的上界</h1>
+<div class="sub">
+  2026-09-20 15:0x · 專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code><br>
+  零 GPU（本輪沒有起 server、沒有新讀數）· 雙生檔 <code>docs/G4_FUSION_INVENTORY_2026-09-20.md</code><br>
+  上游：<code>docs/G4_TAIL_ATTRIBUTION_2026-09-20.md</code>（§EN-327，靶的指名）·
+  <code>docs/G4_MEASUREMENT_CARD_2026-09-20.md</code>（門檻與地板）
+</div>
+
+<div class="toc">
+  <b>目錄</b>
+  <ol>
+    <li><a href="#s1">這份是什麼（施工圖，不是量測報告）</a></li>
+    <li><a href="#s2">素材與 provenance 的兩條限制</a></li>
+    <li><a href="#s3">定位結果：每層一條 9 連 ADD 鏈</a></li>
+    <li><a href="#s4">另外兩個同形狀群組</a></li>
+    <li><a href="#s5">第一刀能拿多少：三段，只有中段未知</a></li>
+    <li><a href="#s6">更正 §EN-327：三個同值 op 不是融合候選</a></li>
+    <li><a href="#s7">G2 的約束：同順序串加</a></li>
+    <li><a href="#s8">最小實作形狀（尚未動工）</a></li>
+    <li><a href="#s9">誠實邊界</a></li>
+  </ol>
+</div>
+
+<div class="box b-amber">
+  <p><b>先講結論。</b>找到的第一個可融合群組是「MoE 輸出還原 ＋ 兩個殘差」的 <b>9 連 ADD</b>，
+  每層一條、每步 41 條 ⇒ 每步可移除 <b>328 個 kernel</b>。它的<b>上界</b>是 GPU busy 的
+  <b>11.5%</b>，<b>低於</b> G4 的門檻 <b>12.8%</b>；把三個找到的群組都做完，上界
+  <b>14.1%</b> 才過線。而下界只有 <b>~1 ms/步</b>（純頻寬）。
+  真實值卡在一個今天沒有人量過的量：<b>每 kernel 的發派成本</b>。</p>
+</div>
+
+<h2 id="s1">1. 這份是什麼（施工圖，不是量測報告）</h2>
+<p>它回答 <code>§EN-327</code> 留下的下一步：把 <code>node</code>、<code>ffn_moe_add</code>
+與那三個同值 op <b>在圖上定位</b>，列出可融合群組 ＋ 各自的值，算出第一刀能拿多少。</p>
+<p>本輪<b>沒有起 server、沒有新讀數</b>：14:2x 那一輪三條軸全部被儀器自己的熱閘門拒絕
+（<code>worst=HEAVY</code>），所以今天沒有可引用的新數字。下面每一個數字都指回既有 log。</p>
+
+<h2 id="s2">2. 素材與 provenance 的兩條限制</h2>
+<table>
+  <tr><th>用途</th><th>檔案</th><th>內容</th></tr>
+  <tr><td>結構</td><td><code>Backup/cgc_logs/llama_server_20260918_050331.log</code></td>
+      <td><code>CGC-GRPH</code> 逐節點 dump，<b>6 份快照</b>：4 份 4116 節點（主圖，layer 0–39）＋ 2 份 91 節點（MTP／draft 圖，layer 40）</td></tr>
+  <tr><td>值（kind）</td><td><code>Backup/cgc_logs/llama_server_20260920_133610.log</code></td>
+      <td><code>CGC-GPULAYK</code>，125 段，<code>CGC_GPU_OPS=2</code>（top-16／1%）</td></tr>
+  <tr><td>值（op 表）</td><td><code>Backup/cgc_logs/llama_server_20260920_010541.log</code></td>
+      <td><code>CGC-GPUOPS</code>，<code>step=114 total=165.00 ms nodes_all=4076 nodes_work=2455</code>（樹上唯一一份完整步的 op 表）</td></tr>
+</table>
+
+<div class="box b-red">
+  <p><b>限制一：結構檔是 09-18 05:03 的樹，不是今天的樹。</b>圖的<b>拓樸</b>（哪一層有幾個 ADD）
+  比命名穩定，但「今天有沒有多／少一個節點」<b>未驗證</b>。要驗證只能在乾淨熱窗口重跑一次
+  <code>CGC-GRPH</code>。</p>
+  <p><b>限制二：<code>wcntw</code> 不是 op 自己的時間。</b>它是
+  「buffer 時長 × 該 op 在該 buffer 裡的工作節點佔比」。它與真實值的關係<b>未校準</b>：整份 op 表裡
+  <code>uni</code>（全同 op buffer 的精確 per-node 成本）<b>只有 <code>RESHAPE</code> 一格不是
+  <code>-1.000</code></b>（<code>uni=916.250</code>，而那是一顆不含 GPU 命令的 buffer 的戳記，不是 launch 成本）
+  ⇒ <b>儀器今天給不出 per-launch 成本</b>。下面所有「能拿多少」都是<b>上界</b>。</p>
+</div>
+
+<h2 id="s3">3. 定位結果：每層一條 9 連 ADD 鏈</h2>
+<p>主圖每份快照 <b>40 條</b>、draft 圖 <b>1 條</b>（layer 40）⇒ <b>每步 41 條</b>。
+一條鏈的逐節點名單（<code>snap3</code>，layer 0）：</p>
+<pre><code>109  ffn_moe_add-0   ADD  [2048,8]
+110  ffn_moe_add-0   ADD  [2048,8]
+111  ffn_moe_add-0   ADD  [2048,8]
+112  ffn_moe_add-0   ADD  [2048,8]
+113  ffn_moe_add-0   ADD  [2048,8]
+114  ffn_moe_add-0   ADD  [2048,8]
+115  ffn_moe_out-0   ADD  [2048,8]
+116  ffn_out-0       ADD  [2048,8]
+117  l_out-0         ADD  [2048,8]</code></pre>
+<p class="small"><code>snap0</code> 的同一條鏈是 <code>ne=[2048,2]</code> —— 形狀隨 <code>ntok</code> 變，拓樸不變。</p>
+
+<div class="box b-green">
+  <p><b>內部一致性檢查。</b><code>top_k = 8</code>（<code>CGC-PHASE-SPLIT ... top_k=8</code>）
+  ⇒ 8 個專家輸出要化成 1 個，需要 <b>7 個 ADD</b> = 連續的 <code>ffn_moe_add ×6</code> ＋
+  <code>ffn_moe_out ×1</code> ✓。後面再接 <code>ffn_out</code>（shared-expert／殘差）與
+  <code>l_out</code>（層殘差）⇒ <b>9</b>。</p>
+  <p>每步 41 × 9 = <b>369 個 ADD 節點</b>；op 表 <code>step=114</code> 的 <code>ADD nd=421</code>
+  ⇒ <b>鏈佔全部 ADD 的 87.6%</b>（其餘 52 個散在別處）。</p>
+</div>
+
+<h2 id="s4">4. 另外兩個同形狀群組</h2>
+<table>
+  <tr><th>群組</th><th>形狀</th><th>每步群數</th><th>每群長度</th><th>可移除 kernel</th><th>值的出處</th></tr>
+  <tr><td><b>ADD 鏈</b>（MoE 還原 ＋ 兩個殘差）</td><td class="num">[2048,ntok]</td><td class="num">41</td><td class="num">9</td><td class="num"><b>328</b></td><td><code>ADD nd=421 wcntw=24.39 ms（14.8%）</code></td></tr>
+  <tr><td>GLU 對（<code>ffn_</code>/<code>ffn_moe_</code>）</td><td class="num">[512,8]</td><td class="num">41</td><td class="num">2</td><td class="num">41</td><td><code>GLU nd=78 wcntw=4.38 ms（2.7%）</code></td></tr>
+  <tr><td>MUL 對（<code>node</code>，未命名張量）</td><td class="num">[128,32]</td><td class="num">30</td><td class="num">2</td><td class="num">30</td><td><code>MUL nd=278 wcntw=18.55 ms（11.2%）</code></td></tr>
+  <tr><td><b>合計</b></td><td></td><td></td><td></td><td class="num"><b>399</b></td><td><code>nodes_work = 2455</code> ⇒ <b>16.3% 的工作節點</b></td></tr>
+</table>
+<p class="small">群數＝主圖 40 ＋ draft 圖 1；MUL 對只在主圖見到 30。</p>
+
+<h2 id="s5">5. 第一刀能拿多少：三段，只有中段未知</h2>
+
+<h3>(1) 頻寬那一段：約 1.0 ms/步（可算，不是估的）</h3>
+<p>設 activation 為 f16（2 bytes；<b>這是假設，未驗證</b>）：<code>[2048,8]</code> = 32 KB/張量。</p>
+<ul>
+  <li>未融合：9 個 ADD ×（讀 2 張 ＋ 寫 1 張）× 32 KB = <b>864 KB/層</b></li>
+  <li>融合後（9 輸入 → 1 輸出）：9 讀 ＋ 1 寫 = <b>320 KB/層</b></li>
+  <li>省 544 KB/層 × 41 = <b>22.3 MB/步</b> ÷ <b>22.3 GB/s</b>（G4 量測卡上的等效頻寬）=
+      <b>1.00 ms/步</b></li>
+</ul>
+<p>⇒ <b>資料搬運只能解釋約 1 ms，它解釋不了下面那個 19 ms。</b></p>
+
+<h3>(2) 發派那一段：0 … 19.00 ms/步（未量測，這是全部的風險）</h3>
+<p>若歸因到的成本與節點數成正比、且融合後的 kernel 仍要 1 次 launch：</p>
+<pre><code>可移除 = (328 / 421) x 24.39 ms = 19.00 ms/步 = 165.00 ms 的 11.5%</code></pre>
+<p><code>uni = -1.000</code>（見 §2）⇒ <b>每 kernel 的發派成本今天沒有數字</b>。
+若它是 0 ⇒ 拿到 19.00 ms；若它等於現在每節點的歸因成本（57.9 µs = 24.39/421）⇒ 拿到 <b>0</b>。
+真實值落在這個區間裡，而<b>區間的兩端都還沒有人去量</b>。</p>
+
+<h3>(3) 三群一起：上界 14.1%</h3>
+<table>
+  <tr><th>群組</th><th>上界（線性外推）</th><th>佔 165.00 ms</th></tr>
+  <tr><td>ADD 鏈</td><td class="num">19.00 ms</td><td class="num"><b>11.5%</b></td></tr>
+  <tr><td>GLU 對</td><td class="num">(41/78) x 4.38 = 2.30 ms</td><td class="num">1.4%</td></tr>
+  <tr><td>MUL 對</td><td class="num">(30/278) x 18.55 = 2.00 ms</td><td class="num">1.2%</td></tr>
+  <tr><td><b>合計</b></td><td class="num"><b>23.30 ms</b></td><td class="num"><b>14.1%</b></td></tr>
+</table>
+
+<div class="box b-red">
+  <p><b>判讀（本輪最重要的結論）。</b></p>
+  <p><b>ADD 鏈單獨的上界 11.5% ＜ G4 的門檻 12.8%</b>（<code>union ≤ 38 × mean_len</code>）
+  ⇒ <b>第一刀只做 ADD 鏈，即使在上界也過不了 G4。</b></p>
+  <p><b>三群一起的上界 14.1% ＞ 12.8%</b> ⇒ 「過得了」這件事只有把所有找到的群組做完才成立，
+  而且<b>只是在上界成立</b>。</p>
+  <p>兩個數字都<b>不是預測</b>。它們是「若且唯若每一個被移除的節點的歸因成本都是純發派成本」時的算術。</p>
+</div>
+
+<h2 id="s6">6. 更正 §EN-327：三個同值 op 不是融合候選</h2>
+<p><code>§EN-327</code> 記載 <code>k_conv</code>／<code>z-</code>／<code>gdn_out</code> 在 125 段
+<b>逐位元同值 51.98 ms</b>，原讀法是「同工作權重 ⇒ 一族同尺寸 op 的簽名」，並把那三個 op
+列為<b>第一個融合候選</b>。<b>這個讀法要收回。</b>dump 給的逐 op 明細（每份主圖）：</p>
+<table>
+  <tr><th>kind</th><th>節點數</th><th>op 組成</th></tr>
+  <tr><td><code>k_conv</code></td><td class="num">60</td><td><code>VIEW 30</code> ＋ <code>L2_NORM 30</code></td></tr>
+  <tr><td><code>z-</code></td><td class="num">60</td><td><code>MUL_MAT 30</code> ＋ <code>RESHAPE 30</code></td></tr>
+  <tr><td><code>gdn_out</code></td><td class="num">60</td><td><code>GATED_DELTA_NET 30</code> ＋ <code>VIEW 30</code></td></tr>
+</table>
+<p>三者<b>節點數逐項相同</b>（60 = 30+30），而儀器的份額是
+<code>buffer 時長 × 節點佔比</code> ⇒ <b>落在同一批 buffer 裡、節點向量相同的 kind，必然得到同一個數字。</b>
+<code>k_conv</code> 是 L2_NORM、<code>z-</code> 是 MUL_MAT、<code>gdn_out</code> 是 GATED_DELTA_NET
+—— 它們<b>既不同 op、也不同尺寸，不能互相融合</b>。「同值」是<b>歸因的簽名</b>，不是<b>可融合的簽名</b>。</p>
+
+<div class="box b-amber">
+  <p>同一條順手更正另一個措辭：<code>node</code> 的 12.3% <b>不是</b>「未融合 elementwise」。
+  它每份主圖 350 個節點裡有 <code>MUL_MAT 130</code> ＋ <code>GET_ROWS 90</code> = 220 個是取權重／查表，
+  只有 <code>ADD 30</code> ＋ <code>UNARY 30</code> ＋ <code>MUL 60</code> = 120 個是 elementwise
+  ⇒ <b>可對付的那一半約 34%</b>。</p>
+</div>
+
+<h2 id="s7">7. G2 的約束：同順序串加</h2>
+<p>融合 9 個 ADD 會改變浮點加法順序 ⇒ <b>G2（逐位元閘門）會否決</b>，除非：</p>
+<div class="box b-green">
+  <p><b>融合後的 kernel 必須以與鏈完全相同的順序做加法</b>（<code>cur = cur + x_i</code>，i 依原順序），
+  而不是樹狀歸約、也不是先累加再正規化。同順序 ⇒ 同位元 ⇒ 結果逐位元相同。</p>
+</div>
+<p>這一條把設計空間縮成一句話：<b>「一個 kernel，9 個輸入，串序累加，1 個輸出」</b>。
+它也說明為什麼「換成 <code>ggml_sum</code>／樹狀 reduce」這條看似更簡單的路<b>過不了 G2</b>。</p>
+
+<h2 id="s8">8. 最小實作形狀（下一步，還沒做）</h2>
+<ol>
+  <li>在 <code>src/llama.cpp/src/llama-graph.cpp</code> 建 MoE 還原的那一段（現行
+      <code>ffn_moe_add</code> ×6 ＋ <code>ffn_moe_out</code>）改成<b>一個新 op</b>
+      （例如 <code>GGML_OP_ADD_N</code>／<code>ggml_add_n</code>），src 為 9 張同形狀張量；
+      或在 Metal 後端加一條「同形狀多輸入串序累加」kernel，CPU 後端照同順序做為對照。</li>
+  <li><b>先做 G2 的自證</b>：同一 prompt、同一 seed，融合前後 <code>M1/M2</code> 必須逐位元相等
+      （<code>scripts/check/m123_oracle_gate.py</code>）。做不到 ⇒ 順序錯了，不是「差不多」。</li>
+  <li>之後才談值：需要<b>一個乾淨熱窗口</b>的 <code>CGC_GPU_OPS</code> op 表，
+      對照 <code>ADD nd</code> 從 421 → 93。</li>
+</ol>
+
+<h2 id="s9">9. 誠實邊界（這份文件不主張什麼）</h2>
+<ul>
+  <li><b>不主張任何 t/s。</b>沒有新量測；<code>12.57</code>（09-20 12:57，NOMINAL 全程）仍是唯一可引用的交付 decode。</li>
+  <li><b>不主張第一刀一定能過 G4。</b>只給出上界 11.5%（單做 ADD 鏈）／14.1%（三群），
+      與下界約 1 ms（純頻寬）。真實值未知，<b>卡在一個今天沒有人量過的量：per-launch 成本</b>。</li>
+  <li><b>結構是 09-18 的樹。</b>拓樸（41 層 × 9 ADD）未在今天驗證。</li>
+  <li><b><code>wcntw</code> 未校準。</b>它是 buffer 時長的節點佔比，與 op 真實時間的關係沒有獨立證據。</li>
+  <li><b>未做</b>：沒有寫任何 kernel、沒有改 <code>llama-graph.cpp</code>、沒有跑 G2。</li>
+</ul>
+
+<hr>
+<p class="small">產生方式：讀既有 log（<code>CGC-GRPH</code> dump ＋ <code>CGC-GPUOPS</code> op 表）
+＋ 既有 kind 佔比，零 GPU。本輪未修改任何引擎原始碼。</p>
+
+</div>
+</body>
+</html>
