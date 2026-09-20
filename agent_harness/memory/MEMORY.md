@@ -35,6 +35,15 @@ llama.cpp 的 CGC fork：Metal ＋ **expert cache pool**（專家權重常駐 SS
 
 - **decode 可引用＝ 全程 NOMINAL 那兩臂 10.80（舊引擎）／7.74（新引擎）** ⇒ 範圍 **7.7–10.8**，不是一個點。
   ⚠️ 「9.12 vs 10.78」**不能說成退步**。HTTP 的 12.36/12.95 是另一台儀器，統一 llama-bench 後不再引用。
+
+- **★ 2026-09-20 更正（原文未刪，就在上面那一條）**：上面那個 **7.7–10.8** 是 `profile_duo`／`prod_matrix` 的
+  **`decode` cell** 的讀數，而**那個 cell 不是交付形狀**（沒有 `--spec-type` ⇒ MTP off、沒有 `--warm-skip`
+  ⇒ 冷的時鐘、沒有 `--ctx-size` ⇒ llama-bench 自行推導 ~704）。**交付 decode＝ `12.57 t/s`**
+  （2026-09-20、`NOMINAL` **全程**、±2.26；`Backup/prod_profile/prod_profile_20260920_1230.json`），
+  落在 10.78–13.10 的既有帶裡。⇒ **要引用交付 decode，用 `scripts/check/prod_profile.py`，不要用 `profile_duo`。**
+  同一命令的**單臂噪音底 ≈ ±27%**（9.90 vs 12.57，更低的那次 `worst=MODERATE`）⇒ 小於 ~27% 的效應單臂證明不出來。
+  prefill 的 250 bar **在 09-20 未驗證**（三次 188.12／212.59／222.40，全部 `worst ≥ MODERATE`）。
+  → `MEMORY_PERF.md` 的 profile 節；`docs/PRODUCTION_PROFILE_2026-09-20.md`。
 - **「疑似 −15% decode 退步」未獲證實也未排除** ⇒ 見下方「量測衛生」。→ `MEMORY_PERF.md`
 - **S1**＝第一個被 GPU table 服務的層的 MoE gather（層號由 `CGC_S1_MIN_IL` 定）→ `MEMORY_S1.md`
 - **MTP／spec 的三份 dated 結論（m、RSL、residency thrash）已全部移到 `MEMORY_PERF.md` 的

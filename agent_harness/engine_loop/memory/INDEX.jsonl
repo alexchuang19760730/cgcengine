@@ -26,14 +26,14 @@
 {"row": "section", "path": ".workbuddy/memory/MEMORY_FACTS.md", "level": 2, "title": "長期事實（踩過就不該再踩）", "line_start": 6, "line_end": 54, "lines": 48, "body_bytes": 5157, "subs": []}
 {"row": "section", "path": ".workbuddy/memory/MEMORY_FACTS.md", "level": 2, "title": "agent_harness（另一條線；本線只讀）", "line_start": 55, "line_end": 76, "lines": 21, "body_bytes": 2091, "subs": []}
 {"row": "section", "path": ".workbuddy/memory/MEMORY_FACTS.md", "level": 2, "title": "記憶機制（09-17 拆分後）", "line_start": 77, "line_end": 119, "lines": 42, "body_bytes": 4300, "subs": []}
-{"row": "file", "path": ".workbuddy/memory/MEMORY.md", "abs": "/Users/alexchuang/Documents/flashkv-devserver/.workbuddy/memory/MEMORY.md", "bytes": 14175, "sha256": "d6b14ce2c534775f", "lines": 153, "mtime": "2026-09-20T11:56:24"}
+{"row": "file", "path": ".workbuddy/memory/MEMORY.md", "abs": "/Users/alexchuang/Documents/flashkv-devserver/.workbuddy/memory/MEMORY.md", "bytes": 15154, "sha256": "d7651c059870cb6a", "lines": 162, "mtime": "2026-09-20T12:43:42"}
 {"row": "section", "path": ".workbuddy/memory/MEMORY.md", "level": 2, "title": "這個目錄怎麼讀（09-17 拆分；**本檔要維持小**）", "line_start": 7, "line_end": 27, "lines": 20, "body_bytes": 1403, "subs": []}
-{"row": "section", "path": ".workbuddy/memory/MEMORY.md", "level": 2, "title": "現在的一句話狀態（09-18 快照；**主題檔為權威**）", "line_start": 28, "line_end": 39, "lines": 11, "body_bytes": 1084, "subs": []}
-{"row": "section", "path": ".workbuddy/memory/MEMORY.md", "level": 2, "title": "分工", "line_start": 40, "line_end": 61, "lines": 21, "body_bytes": 2032, "subs": []}
-{"row": "section", "path": ".workbuddy/memory/MEMORY.md", "level": 2, "title": "★★ 並行 session 安全（2026-09-18 血的教訓，動手前必讀）", "line_start": 62, "line_end": 78, "lines": 16, "body_bytes": 1477, "subs": []}
-{"row": "section", "path": ".workbuddy/memory/MEMORY.md", "level": 2, "title": "入口（照抄）", "line_start": 79, "line_end": 89, "lines": 10, "body_bytes": 627, "subs": []}
-{"row": "section", "path": ".workbuddy/memory/MEMORY.md", "level": 2, "title": "量測衛生", "line_start": 101, "line_end": 148, "lines": 47, "body_bytes": 5437, "subs": []}
-{"row": "section", "path": ".workbuddy/memory/MEMORY.md", "level": 2, "title": "Skill（動手前先讀）", "line_start": 149, "line_end": 153, "lines": 4, "body_bytes": 347, "subs": []}
+{"row": "section", "path": ".workbuddy/memory/MEMORY.md", "level": 2, "title": "現在的一句話狀態（09-18 快照；**主題檔為權威**）", "line_start": 28, "line_end": 48, "lines": 20, "body_bytes": 2063, "subs": []}
+{"row": "section", "path": ".workbuddy/memory/MEMORY.md", "level": 2, "title": "分工", "line_start": 49, "line_end": 70, "lines": 21, "body_bytes": 2032, "subs": []}
+{"row": "section", "path": ".workbuddy/memory/MEMORY.md", "level": 2, "title": "★★ 並行 session 安全（2026-09-18 血的教訓，動手前必讀）", "line_start": 71, "line_end": 87, "lines": 16, "body_bytes": 1477, "subs": []}
+{"row": "section", "path": ".workbuddy/memory/MEMORY.md", "level": 2, "title": "入口（照抄）", "line_start": 88, "line_end": 98, "lines": 10, "body_bytes": 627, "subs": []}
+{"row": "section", "path": ".workbuddy/memory/MEMORY.md", "level": 2, "title": "量測衛生", "line_start": 110, "line_end": 157, "lines": 47, "body_bytes": 5437, "subs": []}
+{"row": "section", "path": ".workbuddy/memory/MEMORY.md", "level": 2, "title": "Skill（動手前先讀）", "line_start": 158, "line_end": 162, "lines": 4, "body_bytes": 347, "subs": []}
 {"row": "file", "path": ".workbuddy/memory/2026-09-20.md", "abs": "/Users/alexchuang/Documents/flashkv-devserver/.workbuddy/memory/2026-09-20.md", "bytes": 224697, "sha256": "6604ab9aca218d05", "lines": 3125, "mtime": "2026-09-20T12:42:57"}
 {"row": "section", "path": ".workbuddy/memory/2026-09-20.md", "level": 2, "title": "§EN-269 — 掃掉三處殘留的過時數字（00:4x）", "line_start": 8, "line_end": 42, "lines": 34, "body_bytes": 2631, "subs": ["現場（00:41）", "產物"]}
 {"row": "section", "path": ".workbuddy/memory/2026-09-20.md", "level": 2, "title": "§EN-270 — 看另一條線的 G6 進展：實驗在跑但被記憶體擋住；而他們抓到一個我也沒抓到的缺陷（00:5x）", "line_start": 43, "line_end": 106, "lines": 63, "body_bytes": 5074, "subs": ["他正在跑（實況）", "工具已完成（未提交，`mtp_accept_ab.py` +387/−13）", "★★ 他們抓到兩個會讓 accept 數字不可讀的缺陷（我都沒抓到）", "⚠ `targets.json` 現在**也被共編**了", "我對「最便宜的一步是 G6」這個判斷的修正（算術）", "一個環境觀察（他的工具在無 `ps` 的環境會崩）", "產物"]}
