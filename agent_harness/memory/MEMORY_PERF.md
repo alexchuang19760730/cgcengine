@@ -195,6 +195,22 @@
   **幾何 census ＝ `scripts/check/gguf_pool_geometry.py`**（09-17 建；純讀標頭、不需 numpy、
   可在別人量測跑著時執行）；`analyze_pool_geometry.py` 仍留著但那是為 Edge0 寫的、需要 numpy。
 - **★ D3（`REMAP_ROUNDTRIP_REMOVAL_PLAN` 的主設計：把 expert→slot 查表搬到 GPU、消除段邊界）
+  **★★ 09-20 07:2x 更正（原句保留在下方，原文一字未刪）：S1 的 bit-identical 閘門**已經過了**。**
+  同一天在交付配置上量到：`CGC_SLOT_TABLE_GPU=1` 且**不開** `CGC_S1_DBG` ⇒ gate **PASS**
+  （`comparable=true`、`config_diffs=[]`、M1/M2/M3 各 9/9、`zero_mapped_selected=0`）；補丁後
+  同一顆 binary 再量一次仍 **PASS**（`summary_s1-postfix.json`）。⇒ 下方
+  「**已實作且會跑，但不過 bit-identical**（錨 `2d4e5099` vs S1 `f0acf7d2`）」與
+  「⇒ **D3 無對外數字，且仍依賴卡住的 M1**」的**前半**已作廢（S2 因此沒有數值前置阻塞）。
+  而 07:00 那份「S1 會在交付配置下 abort」的讀數是**探針自己的 bug**，不是 S1 的 ——
+  根因 `docs/S1_DIAGNOSTIC_ABORT_ROOT_CAUSE_2026-09-20.md`、lesson `eng-diag-0037`。
+  ⚠️ **「過了閘」不等於「有速度」**：S1 仍然**無速度主張，而且結構上不可能有** ——
+  見 `MEMORY_S1.md:36`（`expert_cache_on_topk` 在**兩臂都跑**，S1 從未移除任何 host 步驟；
+  **段數不變**），且 S1 臂**預設關閉**（`run_server.sh:1467`）⇒ 對出貨速度無影響。
+  ⚠️ **「19 t/s」是 S2 的下界，不是 S1 的。** 出處：`2026-09-20.md` §EN-304(2) 的表
+  （暖態 `mean_len 2.40`、現況 17.2 → S2 完美 **22.9**／`39×0.32` 不可約 20.5／
+  **只有 `submit` 能搬（`cb` 留在關鍵路徑）19.0**），而**它是從 139.46 ms 的步分解推算的，不是量測**。
+  可交付的 llama-bench 讀數是 **7.7–10.8**（最好一次 13.10）⇒ **不要把 19 搬到 llama-bench 口徑上**，
+  也不要用它當 S2 的期望值（同表自註：交付配對那一欄是 HEAVY，是下界）。
   不是里程碑，是 S1→S2→S3 階梯；現況（09-17 03:3x 查證）：沒跑通。**
   **S1**（`CGC_SLOT_TABLE_GPU=1`，leaf 改由 GPU 算、**段數不變**）**已實作且會跑，但不過
   bit-identical**（錨 `2d4e5099` vs S1 `f0acf7d2`）；分歧＝**第一個被 GPU table 服務的層的 MoE gather**
