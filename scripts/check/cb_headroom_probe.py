@@ -75,6 +75,7 @@ import joint_reconcile as jr                      # noqa: E402
 import prefill_certifiability as pc               # noqa: E402
 import window_sentinel as wsent                   # noqa: E402
 import decode_step_profile as dsp                 # noqa: E402
+import server_window as sww                       # noqa: E402
 
 LAUNCHER = ROOT / "scripts" / "run_server.sh"
 REGISTRY = ROOT / "Backup" / "phase_decomp" / "cb_water_registry.jsonl"
@@ -309,6 +310,20 @@ def run_once(tag: str, args) -> dict:
         return rec
     print("  water in band after %.0fs: %s" % (gate["waited_s"], gate["water"]), flush=True)
 
+    # This script launches a server, so it has to ask the shared probe first: a launch into a busy
+    # box measures the neighbour, and nothing in the resulting cb number would say so. `require_first`
+    # (not `require`) because arm 2+ of a --runs N sequence legitimately starts while arm 1's page
+    # cache is still resident; gating every launch would refuse a run that is running correctly.
+    try:
+        gate_ok = sww.require_first(where="cb_headroom_probe.launch[%s]" % tag)
+    except sww.BusyBox as e:
+        rec["refused"] = "busy box, refused before launch: %s" % e
+        rec["window"] = sww.provenance()
+        return rec
+    if not gate_ok:
+        print("  [window] OVERRIDE: proceeding over a busy box; the condition is recorded with "
+              "this run and the reading may describe the neighbour.", flush=True)
+
     before = {int(x) for x in subprocess.run(["pgrep", "-f", "build/bin/llama-server"],
                                              capture_output=True, text=True).stdout.split()}
     sampler = Sampler(args.sample_interval)
@@ -352,6 +367,9 @@ def run_once(tag: str, args) -> dict:
         rec["model"] = mm.group(1).split("/")[-1] if mm else None
     except OSError:
         pass
+    # Carried in-process, never stamped on afterwards: the box state at write time is not the box
+    # state this reading was taken under.
+    rec["window"] = sww.provenance()
     return rec
 
 
