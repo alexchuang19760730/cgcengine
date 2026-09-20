@@ -485,6 +485,7 @@ static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer, const uint8
     const uint32_t ns = llama_expert_cache_usable_slots(cache, layer);
     for (uint32_t i = 0; i < ns; ++i) {
         if (owner[i] < 0 && !load[i] && !queued[i]) {
+            if (cgc_s2_probe_on()) { cache->n_s2_free++; }   // [CGC S2-A] no policy needed here
             return (int32_t) i;
         }
     }
@@ -601,6 +602,20 @@ static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer, const uint8
             }
             if (evicted >= 0 && evicted < (int32_t) cache->n_expert) {
                 cache->slot_table[(size_t) layer * cache->n_expert + evicted] = -1;
+            }
+            if (cgc_s2_probe_on()) {
+                // [CGC S2-A 2026-09-20] The one comparison that decides how much state S2 must move
+                // to the device. `lru_slot` is the pure-LRU candidate over the SAME admissible set
+                // (pass filters, batch_mask, loading/queued already applied above), tracked
+                // independently of the SpAc branch since 2026-09-15. Equal => the EMA agreed and cost
+                // nothing; different => the EMA is what picked this victim.
+                cache->n_s2_evict++;
+                if (lru_slot >= 0) {
+                    cache->n_s2_lru_cand++;
+                    if (lru_slot != best_slot) {
+                        cache->n_s2_lru_mismatch++;
+                    }
+                }
             }
             owner[best_slot] = -1;
             return best_slot;
@@ -2403,6 +2418,19 @@ llama_expert_cache::~llama_expert_cache() {
                         "batch_invariant_checks=%zu batch_invariant_violations=%zu\n",
                 n_batch_evict_batches, n_hit_adopted_queued,
                 n_batch_inv_checks, n_batch_inv_violations);
+        // [CGC S2-A 2026-09-20] Print the placement-policy census. Three of the five counters below
+        // existed and were never readable anywhere in the tree (`n_spac_lru_fallback`,
+        // `n_spac_nonfinite`, and the LRU-mismatch pair this probe adds), so "the EMA drove the
+        // placement" and "the EMA was never consulted" were indistinguishable from a log.
+        if (cgc_s2_probe_on()) {
+            fprintf(stderr, "llama_expert_cache: S2-PROBE free=%zu evict=%zu lru_cand=%zu "
+                            "lru_mismatch=%zu (%.2f%% of victims) spac_lru_fallback=%zu "
+                            "spac_nonfinite=%zu pin_yield=%zu defer_skip=%zu defer_yield=%zu\n",
+                    n_s2_free, n_s2_evict, n_s2_lru_cand, n_s2_lru_mismatch,
+                    n_s2_lru_cand ? 100.0 * (double) n_s2_lru_mismatch / (double) n_s2_lru_cand : 0.0,
+                    n_spac_lru_fallback, n_spac_nonfinite, n_pin_yield,
+                    n_defer_skip, n_prefill_defer_yield);
+        }
         // [CGC 2026-09-15] Pool integrity at teardown. The always-on mul_mat_id assertion in
         // ggml-metal-ops fires ~8x/run and ALWAYS as a gate+up pair on il=1 (pool slot 14 / slab
         // expert 214). That assertion reads at graph-BUILD time, so on its own it cannot separate

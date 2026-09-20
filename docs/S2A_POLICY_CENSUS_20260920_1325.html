@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>S2-A：slot 策略普查 —— EMA 決定 57% 的受害者（2026-09-20）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .small{font-size:12.5px;color:var(--muted)}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:#fcfcfd}
+  .toc ol{margin:6px 0 0 20px}
+  .toc a{color:var(--blue);text-decoration:none}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>S2-A：slot 策略普查 —— <strong>EMA 決定了 57% 的受害者</strong></h1>
+<div class="sub">
+  日期 2026-09-20 13:05 · 專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code><br>
+  載體 <code>decode_sweep.py --profile prod25 --arms p25-s1-churn</code>（與 <code>§EN-317</code> 的條目率量測同一個臂）<br>
+  事前判準 <code>Backup/phase_decomp/S2A_POLICY_CENSUS_20260920.conditions.md</code>（跑之前寫、事後不改）<br>
+  線別 <strong>線A (ace)</strong> · 探針 <strong>add-only +44 / −0</strong>，掛 <code>CGC_S1_TABLE_CHURN</code> 門控
+</div>
+
+<div class="box b-green">
+  <p><strong>一句話：</strong>S2 的裝置側<strong>必須</strong>帶走 <code>spac_util</code> 這條 FP EMA
+  （<strong>57.42%</strong> 的受害者由它決定），但可以把<strong>三個 pin 類與 decode-reserved defer 規則整組丟掉</strong>
+  （engagement 全為 0）。⇒ S2 的裝置狀態＝<strong>3 個陣列 ＋ 1 張 bitmap ＋ 1 個純量</strong>；
+  難點不是資料量，是 <strong>EMA 的算術要被逐位元重現</strong>。</p>
+</div>
+
+<div class="toc">
+  <strong>目錄</strong>
+  <ol>
+    <li><a href="#s1">為什麼問得出來（<code>lru_slot</code> 已經在樹上）</a></li>
+    <li><a href="#s2">讀數與判準命中</a></li>
+    <li><a href="#s3">裝置狀態清單（本節真正的產出）</a></li>
+    <li><a href="#s4">它改變了 T 的哪一格</a></li>
+    <li><a href="#s5">閘門輸出原文</a></li>
+    <li><a href="#s6">誠實邊界</a></li>
+  </ol>
+</div>
+
+<div class="cards">
+  <div class="card"><div class="k">受害者由 EMA 決定</div><div class="v warn">57.42%</div>
+    <div class="small">8041 / 14004</div></div>
+  <div class="card"><div class="k">策略被行使的比例</div><div class="v">99.2%</div>
+    <div class="small">14004 evict vs 112 free</div></div>
+  <div class="card"><div class="k">三個 pin 類 engagement</div><div class="v ok">0</div>
+    <div class="small">pin_yield / defer_skip / defer_yield</div></div>
+  <div class="card"><div class="k">可丟的裝置狀態</div><div class="v ok">3 張 bitmap</div>
+    <div class="small">pinned / static / decode_reserved</div></div>
+</div>
+
+<h2 id="s1">1. 為什麼問得出來</h2>
+
+<p>S2（把 <code>slot_table</code> 的發布從 host 搬到裝置）必須重現 <code>pick_slot</code>
+（<code>llama-expert-cache.cpp:478</code>）的答案 —— 因為 <strong>host 的 fill 落在 host 選的槽裡</strong>，
+兩邊不一致 ⇒ gather 讀到錯的槽。而 <code>pick_slot</code> 需要的狀態有七項（見 §3）。</p>
+
+<p><strong>但 <code>pick_slot</code> 已經獨立追蹤一個純 LRU 候選</strong>：<code>lru_slot</code>
+（<code>:531-556</code>，2026-09-15 作為 abort 修復加入，<strong>只</strong>在 SpAc 分支選不出東西時當 fallback
+被使用，卻每一趟 pass 都在算）。⇒ <strong>「EMA 有沒有改變答案」＝ <code>lru_slot != best_slot</code> 一次比較</strong>
+—— 不需要新狀態、不需要模擬、不需要第二套策略。</p>
+
+<div class="box b-blue">
+  <p><strong>在此之前這個問題在 log 上同形。</strong>三個計數器存在於樹上卻<strong>從未在任何地方被讀</strong>：
+  <code>n_spac_lru_fallback</code>、<code>n_spac_nonfinite</code>，以及本探針新增的 LRU 失配配對。
+  同型的既有註解就在 <code>:2391-2401</code>（<code>n_hit_adopted_queued</code>「written and never read
+  anywhere in the tree」）—— 本探針照那個樣式補齊。</p>
+</div>
+
+<h2 id="s2">2. 讀數與判準命中</h2>
+
+<pre><code>llama_expert_cache: S2-PROBE free=112 evict=14004 lru_cand=14004 lru_mismatch=8041 (57.42% of victims)
+                   spac_lru_fallback=0 spac_nonfinite=0 pin_yield=0 defer_skip=0 defer_yield=0</code></pre>
+
+<table>
+  <tr><th>欄位</th><th>值</th><th>讀法</th></tr>
+  <tr><td><code>free</code></td><td class="num">112</td>
+      <td>拿到<strong>空槽</strong>的次數 ⇒ 免策略的快路徑只佔 <strong>0.8%</strong>（112/14116），且幾乎全在預熱期</td></tr>
+  <tr><td><code>evict</code></td><td class="num">14004</td>
+      <td>需要挑受害者 ⇒ <strong>策略被行使 99.2%</strong></td></tr>
+  <tr><td><code>lru_cand</code></td><td class="num">14004</td>
+      <td>每次都有合法的純 LRU 候選 ⇒ <strong>比較沒有被審查掉</strong>（no censoring）</td></tr>
+  <tr><td><strong><code>lru_mismatch</code></strong></td><td class="num bad">8041</td>
+      <td><strong>57.42%</strong>：EMA 選出的受害者與純 LRU <strong>不同</strong></td></tr>
+  <tr><td><code>spac_lru_fallback</code> / <code>spac_nonfinite</code></td><td class="num">0 / 0</td>
+      <td>EMA 分支每次都選得出東西 ⇒ <strong>EMA 是權威，不是備援</strong>；EMA 健康</td></tr>
+  <tr><td><code>pin_yield</code> / <code>defer_skip</code> / <code>defer_yield</code></td>
+      <td class="num ok">0 / 0 / 0</td>
+      <td><strong>三個 pin 類與 prefill-defer 規則從未被行使</strong></td></tr>
+</table>
+
+<h3>事前寫死的判準（第三格命中）</h3>
+
+<table>
+  <tr><th>事前判準</th><th>判決</th></tr>
+  <tr><td><code>mismatch == 0</code> ⇒ EMA 從未決定 ⇒ 裝置只需 <code>owner[]+last_use[]+batch_mask</code></td>
+      <td class="bad">✗</td></tr>
+  <tr><td><code>0 &lt; mismatch &lt;&lt; victims</code> ⇒ 量化份額</td><td class="bad">✗</td></tr>
+  <tr><td><strong><code>mismatch ≈ victims</code> ⇒ EMA 就是 placement ⇒ 裝置必須帶 EMA 與 <code>spac_update</code></strong></td>
+      <td class="ok">✓ <strong>命中（57.42%）</strong></td></tr>
+</table>
+
+<h2 id="s3">3. 裝置狀態清單（本節真正的產出）</h2>
+
+<p>計畫書 <code>docs/S2_IMPLEMENTATION_PLAN_2026-09-20.md</code> §4 第 1 項寫的是
+「現行的 <code>expert_cache_on_topk</code> 要在裝置上有一個等價物，<strong>或</strong>改成表由裝置增量維護」
+—— 這一節把那句「要有個等價物」變成一份<strong>逐項可查的清單</strong>。</p>
+
+<table>
+  <tr><th>狀態</th><th>要不要搬到裝置</th><th>依據</th></tr>
+  <tr><td><code>slot_owner[]</code></td><td class="ok">要</td><td>決定「這個槽是誰的」</td></tr>
+  <tr><td><code>slot_last_use[]</code>（uint64 tick）</td><td class="ok">要</td><td>純 LRU 的依據；也是 EMA 的 tie-break</td></tr>
+  <tr><td><strong><code>spac_util[layer][expert]</code>（FP EMA）</strong></td><td class="bad">要</td>
+      <td><strong>57.42% 的受害者由它決定</strong></td></tr>
+  <tr><td><code>batch_mask</code></td><td class="ok">要</td><td>這一批已擁有的槽不可選</td></tr>
+  <tr><td><code>slot_loading</code> / <code>slot_queued</code></td><td class="ok">要（介面問題）</td>
+      <td>在飛的 fill 不可選，但 fill 本身是 host 的行為</td></tr>
+  <tr><td><code>tick</code></td><td class="ok">要（一個純量）</td><td>LRU 的單調來源</td></tr>
+  <tr><td><code>slot_pinned</code> / <code>slot_pinned_static</code> / <code>slot_decode_reserved</code></td>
+      <td class="ok"><strong>可以丟</strong></td><td>三者 engagement <strong>全為 0</strong></td></tr>
+</table>
+
+<div class="box b-amber">
+  <p><strong>⇒ 常駐狀態＝ 3 個陣列（owner / last_use / spac_util）＋ 1 張 bitmap（batch_mask）＋ 1 個純量（tick）。</strong>
+  難點<strong>不是</strong>資料量：<code>spac_util</code> 由 <code>spac_update</code> 以
+  <code>u[e] += bump</code> 的 EMA 維護，要被<strong>逐位元</strong>重現，否則 placement 分歧
+  —— 而 57.42% 的受害者由它決定。</p>
+</div>
+
+<h2 id="s4">4. 它改變了什麼</h2>
+
+<ul>
+  <li><strong>對 S2 的量級</strong>：計畫書 §4 的評估<strong>成立</strong>（S2 維持大工程）——
+      但「工程主體」現在有一份可逐項勾的清單，而不是一句「要有個等價物」。</li>
+  <li><strong>對「簡化」的誘惑</strong>：本輪稍早我一度想用「池子不滿 ⇒ 裝置只做空槽分配就好」來縮小 S2。
+      <strong>那條被兩個獨立讀數擋掉</strong>：長 run 的 <strong>79.9% capacity</strong>（<code>§EN-323</code>）
+      ＋ 本節的 <strong>99.2% 需要挑受害者</strong>。</li>
+  <li><strong>對交接單的階梯 ②</strong>（<code>owner</code> ＝ <code>線A (ace)</code>）：這一步<strong>沒有移動任何被量測的指標</strong>，
+      它把「S2 要搬多少狀態」從未知變成已知。</li>
+</ul>
+
+<h2 id="s5">5. 閘門輸出原文</h2>
+
+<pre><code>$ python3 agent_harness/engine_loop/traces/validate.py
+  episodes.jsonl: 122 records {'episode': 122}
+  -&gt; OK
+  decisions.jsonl: 68 records {'decision': 68}
+  -&gt; OK
+  lessons.jsonl: 193 records {'lesson': 193}
+  -&gt; OK
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  10/10 injected violations rejected
+
+$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  memory index OK: 10 file(s), 425 section(s), no drift
+
+$ python3 agent_harness/engine_loop/index_assets.py --check
+  manifest OK: 149 assets, existence + bytes + mtime all agree
+
+$ python3 agent_harness/scripts/import_harness_snapshot.py --check
+  -&gt; OK: 快照與原檔一致（provenance 逐筆相符、集合相符、副本未被手改、README 成員表相符）
+
+--- 探針本身的輸出（Backup/cgc_logs/llama_server_20260920_130514.log）---
+llama_expert_cache: S2-PROBE free=112 evict=14004 lru_cand=14004 lru_mismatch=8041 (57.42% of victims)
+                   spac_lru_fallback=0 spac_nonfinite=0 pin_yield=0 defer_skip=0 defer_yield=0</code></pre>
+
+<h2 id="s6">6. 誠實邊界</h2>
+
+<ul>
+  <li><strong>單一 regime</strong>：<code>prod25</code>、pool 8 GiB、MTP on、HTTP door。
+      「三個 pin 類 engagement ＝ 0」是<strong>這個配置的性質</strong>，不是普遍事實
+      （換 pool 大小或開 routing-aware placement 就會變；<code>n_pin_marked</code> 有印，本輪未開）。</li>
+  <li><strong>失配 ≠ 觀測到的分歧</strong>：受害者不同 ⇒ 表不同，但<strong>被消費的條目</strong>是否不同，
+      取決於那位專家後來有沒有被要。長 run 的 79.9% capacity 強烈暗示會被要，
+      <strong>但這需要第二支探針（在被消費集合上比對）才能定量</strong>。
+      <strong>本節只主張「EMA 決定了 victim」，不主張「表在數值上分歧」。</strong></li>
+  <li><code>free=112</code> 幾乎全發生在預熱期，所以那 0.8% 不是穩態的代表。</li>
+  <li><strong>沒有動任何數值路徑</strong>：探針只在 <code>pick_slot</code> 的兩條 return 上加計數，
+      不改 dispatch、不改 hook 順序、不改 <code>slot_table</code> 的內容。</li>
+</ul>
+
+<hr>
+<p class="small">線A (ace) · 2026-09-20 · markdown 雙生檔：<code>docs/S2A_POLICY_CENSUS_2026-09-20.md</code></p>
+
+</div>
+</body>
+</html>

@@ -305,6 +305,14 @@ struct llama_expert_cache {
     size_t n_miss_compulsory = 0;
     size_t n_miss_capacity   = 0;
     size_t n_evictions       = 0;
+
+    // [CGC S2-A 2026-09-20] Does the SpAc EMA actually decide the victim, or is it always pure LRU?
+    // `pick_slot` keeps a pure-LRU candidate independently of the SpAc branch, so `lru_slot != best_slot`
+    // is exactly "the EMA changed the answer". See the probe's header comment in llama-expert-cache.cpp.
+    size_t n_s2_free         = 0;  // pick_slot handed out an EMPTY slot (no eviction, no policy)
+    size_t n_s2_evict        = 0;  // pick_slot had to choose a victim (the policy was exercised)
+    size_t n_s2_lru_cand     = 0;  // of those, how many had a pure-LRU candidate to compare against
+    size_t n_s2_lru_mismatch = 0;  // of those, how many the EMA answered DIFFERENTLY from pure LRU
     // [CGC verify-strict 2026-09-13] Ground-truth quality counters. Both must stay 0 in a healthy
     // run. n_verify_strict_refused counts fast-path steps that were REFUSED because a selected
     // expert was still cold after the fill attempt (the exact path ran instead), and
@@ -679,6 +687,14 @@ static inline uint32_t cgc_fast_wait_max() {
 // cgc_env_on() so the value means what it says.
 static inline bool cgc_spac_on() {
     static const bool v = cgc_env_on("CGC_SPAC");
+    return v;
+}
+
+// [CGC S2-A 2026-09-20] Rides on the table-instrumentation env that is ALREADY in run_server.sh's
+// allowlist. A dedicated name would have to be added to a block another session is editing, and the
+// blob-staged version of that edit would be reverted by their next commit of the same block.
+static inline bool cgc_s2_probe_on() {
+    static const bool v = cgc_env_on("CGC_S1_TABLE_CHURN");
     return v;
 }
 static inline double cgc_spac_alpha() {
