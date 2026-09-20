@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>S2：駐留那一半結案，drain 那一半不可能只靠主機側完成</title>
+<style>
+
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .small{font-size:12.5px;color:var(--muted)}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:#fcfcfd}
+  .toc ol{margin:6px 0 0 20px}
+  .toc a{color:var(--blue);text-decoration:none}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+
+</style>
+</head>
+<body>
+
+<h1>S2：<strong>駐留那一半結案（4 層在抖動）</strong>，而 drain 那一半<strong>不可能只靠主機側完成</strong></h1>
+<div class="sub">
+  2026-09-20 14:0x–14:2x · 專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code><br>
+  載體 <code>decode_sweep.py --profile prefill250 --arms p25-mtp-on</code> ＋
+  <code>LLAMA_EXPERT_CACHE_MISS_ATTR_LAYERS=1</code>（<code>Backup/cgc_logs/llama_server_20260920_140638.log</code>）<br>
+  引擎改動 <strong>0</strong>（配置路線已驗證但<strong>不建議</strong>設成預設 —— §7）· 線別 <strong>線A (ace)</strong>
+</div>
+
+<div class="box b-green">
+  <p><strong>三句話：</strong>① 逐層駐留戶籍<strong>第一次被打開</strong>：<code>il 0/1/2/3</code> 要
+  <strong>193 / 184 / 196 / 154</strong> 個槽、只有 <strong>143</strong>（<strong>4 層</strong>在抖動），
+  而 <code>il=20</code> 只要 <strong>41</strong> 個卻拿到 143（<strong>3.5 倍</strong>過量）——
+  143 這個數字與任何一層的需求都沒有關係。<br>
+  ② <strong>但它只值 1.5–2.8%</strong>：capacity 佔 miss 的 <strong>26.0%</strong>，而 per-miss 項是
+  <strong>7.89 ms/step</strong> ⇒ <strong>2.05 ms / 139.46 ms</strong>。低於交付 cell 的單臂噪音底（±27%）。<br>
+  ③ <strong>drain 拿不掉，而且不是「還沒做」而是「主機側做不到」</strong>：hook 寫的
+  <code>slot_table</code> 就是 <strong>segment i+1 第一個節點的直接輸入</strong> ⇒ 它的 commit
+  必須在 hook 之後。要拿掉它需要<strong>裝置側駐留判定</strong>。</p>
+</div>
+
+<h2 id="s1">1. 計畫書 §4 的三項，現在的狀態</h2>
+
+<table>
+<tr><th>§4 的項</th><th>狀態</th></tr>
+<tr><td><strong>① 決定 residency 的介面</strong></td><td><strong>本文件結案</strong> —— 池子把 4 層餓著、把 36 層餵到 3.5 倍；配置路線可修（§6）但不划算（§7–§8）</td></tr>
+<tr><td><strong>② 6.16% 的 first-touch 規則</strong></td><td><strong>不需要設計</strong> —— first-touch 佔 miss 的 <strong>74.0%</strong>，是路由器在探索，任何裝置側規則都不能讓「第一次被選中的專家」變成常駐</td></tr>
+<tr><td><strong>③ 拿掉 segment drain</strong></td><td><strong>§9 從原始碼證明主機側做不到</strong>，並指出它真正需要的東西</td></tr>
+</table>
+
+<h2 id="s2">2. 第一次被打開的儀器</h2>
+
+<p><code>LLAMA_EXPERT_CACHE_MISS_ATTR_LAYERS</code> 一直在樹上（<code>llama-expert-cache.cpp:2699-2701</code>）、
+也一直在 <code>run_server.sh</code> 的轉發白名單裡（<code>:1562-1563</code>），但：</p>
+
+<pre><code>$ grep -rl 'miss-attr layer=' Backup/cgc_logs/*.log | wc -l
+0</code></pre>
+
+<p><strong>⇒ 這台機器上從來沒有人印過逐層的駐留戶籍。</strong> 之前所有「池子夠不夠」的討論，
+用的都是<strong>單一格</strong> <code>worst=layer N distinct=D slots=S</code>（只報最壞一層），
+或把短 run 的 teardown 拿去對另一個 run 的步數（<code>§EN-314</code> 那個已作廢的結論）。</p>
+
+<h2 id="s3">3. 讀數</h2>
+
+<pre><code>miss attribution: compulsory=3014 capacity=1061 (74.0% / 26.0% of 4075)  evictions=3787
+                  layers_distinct_over_slots=4  worst=layer 2 distinct=196 slots=143
+final stats: runtime requests=13657 hits=9582 misses=4075 (hit rate 70.2%)  resident=6430.62 MiB</code></pre>
+
+<table>
+<tr><th>il</th><th>distinct</th><th>slots</th><th>il</th><th>distinct</th><th>slots</th><th>il</th><th>distinct</th><th>slots</th></tr>
+<tr><td><strong>0</strong></td><td><strong>193</strong></td><td>143</td><td>14</td><td>45</td><td>143</td><td>28</td><td>60</td><td>143</td></tr>
+<tr><td><strong>1</strong></td><td><strong>184</strong></td><td>143</td><td>15</td><td>53</td><td>143</td><td>29</td><td>49</td><td>143</td></tr>
+<tr><td><strong>2</strong></td><td><strong>196</strong></td><td>143</td><td>16</td><td>50</td><td>143</td><td>30</td><td>62</td><td>143</td></tr>
+<tr><td><strong>3</strong></td><td><strong>154</strong></td><td>143</td><td>17</td><td>52</td><td>143</td><td>31</td><td>57</td><td>143</td></tr>
+<tr><td>4</td><td>123</td><td>143</td><td>18</td><td>51</td><td>143</td><td>32</td><td>60</td><td>143</td></tr>
+<tr><td>5</td><td>90</td><td>143</td><td>19</td><td>58</td><td>143</td><td>33</td><td>66</td><td>143</td></tr>
+<tr><td>6</td><td>71</td><td>143</td><td><strong>20</strong></td><td><strong>41</strong></td><td>143</td><td>34</td><td>49</td><td>143</td></tr>
+<tr><td>7</td><td>69</td><td>143</td><td>21</td><td>61</td><td>143</td><td>35</td><td>70</td><td>143</td></tr>
+<tr><td>8</td><td>50</td><td>143</td><td>22</td><td>66</td><td>143</td><td>36</td><td>56</td><td>143</td></tr>
+<tr><td>9</td><td>67</td><td>143</td><td>23</td><td>66</td><td>143</td><td>37</td><td>50</td><td>143</td></tr>
+<tr><td>10</td><td>73</td><td>143</td><td>24</td><td>52</td><td>143</td><td>38</td><td>60</td><td>143</td></tr>
+<tr><td>11</td><td>72</td><td>143</td><td>25</td><td>61</td><td>143</td><td>39</td><td>47</td><td>143</td></tr>
+<tr><td>12</td><td>48</td><td>143</td><td>26</td><td>51</td><td>143</td><td>40</td><td>113</td><td><strong>256</strong></td></tr>
+<tr><td>13</td><td>61</td><td>143</td><td>27</td><td>57</td><td>143</td><td></td><td></td><td></td></tr>
+</table>
+
+<p><strong>兩個極端在同一張表上</strong>：<code>il=20</code> 要 41 個槽、拿到 143；
+<code>il=2</code> 要 196 個、拿到 143。而 <code>layers_distinct_over_slots=4</code>
+⇒ <strong>只有 4 層是餓的。</strong></p>
+
+<h2 id="s4">4. 原始碼自己寫的判準</h2>
+
+<pre><code>// llama-expert-cache.cpp:2680-2684
+// If a layer's distinct demanded experts fit inside its slot count, no capacity miss is possible
+// there once warm -&gt; only locality / routing can help and growing the pool is pure RSS cost. If
+// distinct &gt;&gt; slots, the LRU is thrashing and capacity IS the lever.</code></pre>
+
+<p>⇒ <code>il 0/1/2/3</code> 是「capacity IS the lever」那一格；<code>il 4..39</code> 是
+「growing the pool is pure RSS cost」那一格。這條槓桿<strong>只作用在 4 層上</strong>。</p>
+
+<h2 id="s5">5. 幾何：143 是怎麼來的</h2>
+
+<pre><code>slots = clamp(pool_bytes / (n_layers * per_slot), 8, 256)        # gguf_pool_geometry.py
+iq3: 41 層、per_slot = 1,458,176 B（binding blk.39） → 8 GiB ⇒ 143</code></pre>
+
+<p><strong>槽數是對 41 層套同一個數字</strong>，而各層需求差 4.8 倍。<code>40-40:256</code>
+（<code>run_server.sh:2235</code>，MTP 分支才有）是唯一的按層例外。
+⇒ <strong>在逐層資料出現之前，「池子夠不夠」這個問題是提不出來的。</strong></p>
+
+<h2 id="s6">6. 配置路線與它的驗證</h2>
+
+<pre><code>CGC_SERVER_LAYER_CAPS="0-3:256;40-40:256"
+# -&gt; llama_expert_cache: LAYER_CAPS per-layer caps: total 6428 slots (avg 156.8/layer, min 143/layer)</code></pre>
+
+<p><code>6428 − 5976 = 452 = 4 × 113</code> ✓ 精確等於把四層從 143 提到 256。
+（<code>40-40:256</code> 必須一起寫 —— <code>run_server.sh:2233-2235</code> 是 if/elif。）
+池子 ≈ 6.80 GiB（<strong>+0.48 GiB</strong>）。</p>
+
+<pre><code>REFERENCE IS NOT COMPARABLE (1 numerics-determining difference(s))
+  ENV.LLAMA_EXPERT_CACHE_LAYER_CAPS: ref='40-40:256'  now='0-3:256;40-40:256'</code></pre>
+
+<p>⇒ caps <strong>是被追蹤的鍵</strong>，任何改動必然是 <code>INVALID COMPARISON</code>（預期，不是回歸）。
+<strong>數值判決看 M1/M2/M3：</strong></p>
+
+<pre><code>$ python3 scripts/check/m123_oracle_gate.py --tag s2-caps-ctl        # 對照：不含 caps
+  GATE s2-caps-ctl: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+  comparable=True, config_diffs=[]
+  build: libllama.0.0.279.dylib=95030f0177e4574e   tree a2eda68d6 dirty_tracked=13
+
+$ CGC_SERVER_LAYER_CAPS="0-3:256;40-40:256"       python3 scripts/check/m123_oracle_gate.py --tag s2-caps-run    # 處理：含 caps
+  INVALID RUN: the probe returned an empty answer.   # server 死於 Insufficient Memory（§7）
+
+⇒ 對照臂 PASS ⇒ 基準仍有效，而且「與參考不符」可以被歸因（樹上的 libllama
+   在 13:57 被另一條線重建過）。處理臂沒有判決 ⇒ caps 的 bit-identity 未被驗證。</code></pre>
+
+<h2 id="s7">7. ⚠ 記憶體代價與一次 OOM —— 為什麼不設成預設</h2>
+
+<pre><code>Backup/cgc_logs/llama_server_20260920_140934.log:144-147
+E ggml_metal_synchronize: error: command buffer 8 failed with status 5
+E error: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)
+  &lt;- libllama  llama_context::cgc_logits_oracle_dump  &lt;- process_ubatch &lt;- decode</code></pre>
+
+<table>
+<tr><th>log</th><th>caps</th><th><code>Insufficient Memory</code></th><th>有沒有真的跑</th></tr>
+<tr><td><code>..._140934</code>（<code>s2-caps</code>）</td><td>有</td><td><strong>3</strong></td><td><strong>0</strong></td></tr>
+<tr><td><code>..._141049</code>（<code>s2-caps2</code>）</td><td>有</td><td>0</td><td>1</td></tr>
+<tr><td><code>..._142546</code>（<code>s2-caps-run</code>）</td><td>有</td><td><strong>3</strong></td><td><strong>0</strong></td></tr>
+<tr><td><code>s2-caps-ctl</code>（<strong>不含 caps</strong>）</td><td>無</td><td>0</td><td>1</td></tr>
+</table>
+
+<p><strong>兩次死的位置逐字相同</strong>（<code>command buffer 8</code>、<code>compute #82</code>），
+時間戳都在 <strong>0.26–0.32 s</strong> ⇒ 是<strong>第一個 decode</strong>，不是隨機的機器狀態；
+而<strong>不含 caps 的對照臂在同一棵樹上跑通了</strong>（<code>s2-caps-ctl</code> PASS）
+⇒ <strong>機器狀態不是解釋變數。</strong></p>
+
+<div class="box b-amber">
+<p><strong>⇒ 歸因：caps 把 4 層的 <code>ne[2]</code> 由 143 提到 256，等於多要約 0.48 GiB 的
+GPU-wired 專家緩衝，而這台 16 GB 的機器在第一個 decode 就交出
+<code>kIOGPUCommandBufferCallbackErrorOutOfMemory</code>。</strong>
+所以駐留重分配在這台機器上是「<strong>記憶體上不可行</strong>」，不只是「不划算」。
+<code>..._141049</code> 那次跑通是唯一不支持的樣本（1/3），所以嚴格說法是「使…很可能發生」。</p>
+</div>
+
+<h2 id="s8">8. 算術：駐留這一半最多值多少</h2>
+
+<p>F1 的擬合（r² = 0.862）：<code>cb_layer = 0.46 ms + 0.695 ms × m</code>。交付暖態
+<code>cb</code> = 21.23 ms/step、L = 29：</p>
+
+<pre><code>barrier  = 29 × 0.46 = 13.34 ms
+per-miss = 21.23 - 13.34 = 7.89 ms      ⇒ m ≈ 11.4 misses/step
+capacity 佔 miss 的 26.0%  ⇒ 0.26 × 7.89 = 2.05 ms/step = 139.46 ms 的 1.5%
+就算 capacity 佔到 50%      ⇒ 3.9 ms = 2.8%</code></pre>
+
+<p><strong>而 first-touch（74.0%）不可能拿掉</strong> —— 池子再大也得為第一次被選中的專家付一次讀取。
+⇒ <strong>駐留這一半的全部價值 ≈ 1.5–2.8%，低於單臂噪音底（±27%）</strong>，
+所以它的 t/s 效應在單臂前後對比下<strong>測不出來</strong>；只能像本文件這樣從機制
+（<code>capacity=</code>、<code>evictions=</code>）去證明。</p>
+
+<h2 id="s9">9. ★★ drain：為什麼不可能只靠主機側完成</h2>
+
+<p>S1 之後，index vector 由<strong>裝置產生</strong>（<code>selected_experts</code> 的 CONT，
+<code>llama-graph.cpp:2290-2345</code>），所以主機不再需要為 gather 寫東西。
+但 dispatch 迴圈（<code>ggml-backend.cpp:2612-2630</code>）仍然是：</p>
+
+<pre><code>for i in 0..n_segs-1:
+    hook_seg(i)                  # 先等 segment i 跑完（:2119 的 sched_yield 輪詢），再跑 top-k hook
+    if i+1 &lt; n_segs: submit_seg(i+1)</code></pre>
+
+<p><code>hook_seg(i)</code> 做三件事，<strong>全部依賴 segment i 的輸出</strong>：
+① 讀出該層的 expert ids；② 用 ids 跑 <code>ensure_batch</code> 把不在池裡的專家填進去
+（<strong>這就是 miss 成本</strong>）；③ 把結果寫進 <code>slot_table[layer]</code>。</p>
+
+<div class="box b-amber">
+<p><strong>而 segment i+1 恰好從該層的 <code>mul_mat_id</code> 那一段開始</strong>：
+<code>seg_view(s)</code> 的邊界是 <code>a = as_idx[s-1]+1</code>、<code>b = as_idx[s]</code>
+（<code>ggml-backend.cpp:2057-2060</code>）⇒ 邊界節點 <code>as_idx[i]</code> 是 <strong>segment i
+的最後一個</strong>節點，而它的下一個（<code>as_idx[i]+1</code>）就是 segment i+1 的起點；
+該層的 <code>mul_mat_id</code> 就在其中，透過 <code>get_rows(slot_table, …)</code> 讀這張表 ⇒ <strong>第 ③ 步的產物是 segment i+1 的直接輸入 ⇒ 它的 commit
+必須在 hook 之後。</strong> <code>CGC_SUBMIT_AHEAD=1</code>（把那兩行對調）刪掉的正是這個順序，
+所以它<strong>必然錯</strong>；它量到的 <strong>×1.78</strong> 只是這個家族的<strong>上界</strong>。</p>
+</div>
+
+<table>
+<tr><th>繞法</th><th>為什麼不行</th></tr>
+<tr><td>表延後一步發布</td><td>「第一次被選中」的專家在延後的表裡沒有槽 ⇒ zero-map ⇒ <code>G2.zero_mapping_invariant</code> 否決（本 run 實測 <code>zero_mapped_selected=0</code>）</td></tr>
+<tr><td>表雙緩衝 ＋ 世代選擇器</td><td>世代必須在 <strong>encode 時</strong>確定，而世代由 hook 決定 ⇒ 同一個雞生蛋</td></tr>
+<tr><td><strong>讓「這一步不會改表」在主機側可證</strong></td><td>唯一可行方向，但條件是 <strong>cap == 256 且 256 個專家全部常駐</strong> ⇒ 41 × 256 × ~1.13 MB ≈ <strong>11.9 GB</strong>，16 GB 放不下（模型本身還要 ~10 GB）</td></tr>
+</table>
+
+<p>⇒ 只要「本步的映射依賴本步的 ids」成立，drain 就是必要的。拿掉它只有兩條路：
+<strong>(i) 把駐留判定搬上裝置</strong>（裝置側表 ＋ 一個「有沒有被選中的專家不在池裡」的裝置側判定
+＋ 在那條時間線上排隊的填寫）—— <strong>這是 kernel 工程</strong>，不是配置或幾行程式；
+<strong>(ii) 打破「映射依賴本步 ids」</strong>（= 接受錯誤），已被 G2 否決。</p>
+
+<pre><code>p25-submit-ahead 量到        ×1.78     故意錯的臂 ⇒ 家族上界，不是可達值
+§EN-326 的 31.9% 邊界        ×1.087    推算
+本節                         可達值在 (×1.087, ×1.78) 之間，而它要一個裝置側判定</code></pre>
+
+<h2 id="s10">10. 誠實邊界</h2>
+
+<ol>
+<li><strong>§3 的 distinct 是 512 token 的讀數</strong>；更長的 run 會更大（另一批長 run 的
+<code>worst=layer 0/1/2 distinct=242–255</code> 就是這個方向）⇒ <strong>「4 層」是下界估計</strong>，
+而那些長 run 是 <strong>MTP=0</strong>（沒有 <code>40-40:256</code>、且有 draft 路徑），
+<strong>兩個 regime 不可直接比</strong>。</li>
+<li><strong>§8 的 <code>cb</code> 拆解用的是 09-19 的 F1 擬合</strong>，不是本 run 重測的。
+它與本 run 的總量自洽（<code>0.46×29 + 0.695×11.4 = 21.3</code> vs 記錄的 21.23），
+但<strong>沒有在同一 run 內同時量過</strong>。</li>
+<li><strong>本輪沒有跑 t/s 對比</strong>：+0.48 GiB 的配置改動換 1.5% 的效應，而交付 cell 的單臂噪音
+±27% ⇒ 那個對比<strong>在設計上就不可能給出答案</strong>，不做比做一個誤導性的數字好。</li>
+<li><strong>caps 的 bit-identity「未被驗證」</strong>（§6）：處理臂死在 OOM 上、沒有 M1/M2/M3。
+對照臂（不含 caps）在同一棵樹上 PASS ⇒ 基準仍有效，而失敗方向是單向的。</li>
+<li><strong>§7 的歸因是「2/3 可重現 ＋ 對照臂通過」</strong>，不是「3/3 必然」——
+<code>..._141049</code> 那次帶 caps 跑通，所以嚴格說法是「<strong>使…很可能發生</strong>」。</li>
+</ol>
+
+</body>
+</html>
