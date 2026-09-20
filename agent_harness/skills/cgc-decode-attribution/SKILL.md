@@ -1193,6 +1193,31 @@ KV 配置與 batch 夾制都吃它。`--warm-skip N` 讓時鐘在 N 個 token �
 權威出處：`MEMORY_PERF.md` 的 profile 節（交付 decode＝12.57、四個約定、±27%）與
 `docs/PRODUCTION_PROFILE_2026-09-20.md`（旋鈕全文、同一性證明、重現命令）。
 
+### ★ 第七條規則（2026-09-20 新增）：**你自己的命令行會把你的閘門關掉**
+
+`run_server.sh` 的 preflight 用 `pgrep -f` 找「別條 session 的 llama 行程」，而 **`pgrep -f`
+比對的是整條命令列** ⇒ **只要你自己那一條 shell 的字串裡出現 `llama-server`（或 preflight 比對的
+任何字串），它就會匹配到你自己的包裝 shell**，然後拒絕啟動：
+
+```
+[preflight] 發現 1 支 llama 行程（可能是別條 session 正在量測）→ 不送任何訊號
+  [preflight]                      <-- 這一行的 pid/etime 列表是空的
+error: 仍有 1 支 llama 行程，繼續啟動極可能 GPU OOM (ret=-3)
+[detach] 120s timeout
+  leader  : None   server log: None
+```
+
+**辨識簽名 ＝ 那個列表是空的。**（真的有競爭者時它會印出 pid ＋ etime。）
+實測 2026-09-20：`m123_oracle_gate.py --tag s2-caps2` 就是這樣被卡死的，
+而我當下「殺掉的殘留 pid」其實是**我自己的 shell**，**窗口一直是空的**。
+
+規則：
+1. **診斷命令一律用不會自匹配的寫法** —— `pgrep -f '[l]lama'` 而不是 `pgrep -f llama-server`。
+2. **看到空的 pid 列表就當作「沒有競爭者」**，重跑或（確定是自己一個人在用機器時）
+   `CGC_PREFLIGHT_SKIP_STALE_CHECK=1`。
+3. 這一條與「`ps` 被擋時用 `pgrep`」是**相反的風險**：`pgrep -f` 太好匹配了。
+   任何「我用它來判斷窗口」的指令，**先問它會不會匹配到我自己**。
+
 ## 陷阱（都踩過）
 
 **★ 陷阱 0（2026-09-18）：`ls -t | head -1` 取到的「最新產物」可能還沒寫完。**
