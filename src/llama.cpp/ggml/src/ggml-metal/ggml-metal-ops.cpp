@@ -5674,8 +5674,36 @@ static bool ggml_metal_op_can_fuse_snake(ggml_metal_op_t ctx, int idx) {
     return types_ok && shape_ok && dim_ok && contig_ok && x_in_add == x;
 }
 
+// [CGC 2026-09-20 FUSION ATTRIBUTION] `GGML_METAL_FUSION_DISABLE=1` is an all-or-nothing switch:
+// it turns off the snake fusion (MUL->SIN->SQR->MUL->ADD), the bin chains (ADD/MUL/SUB/DIV with up
+// to 8 fused operands) and the norm chain (norm->mul->add) TOGETHER. Measured 2026-09-20 (§EN-342):
+// fusion OFF is +14.1% t/s -- but that number belongs to "no fusion anywhere", not to any single
+// family, so it cannot say whether the 9-long MoE ADD chain is a help or a hurt.
+//
+//   CGC_FUSE_OFF=bin|norm|snake|all   (comma-separated; unset => nothing disabled)
+//   CGC_FUSE_MAX=<n>                  (cap the bin chain depth; unset => 8, i.e. unchanged)
+//
+// Both are read once and default to the pre-existing behaviour, so the default path (and therefore
+// the D5 oracle) is bit-for-bit what it was.
+static bool cgc_fuse_allowed(const char * family) {
+    static const char * off = getenv("CGC_FUSE_OFF");
+    if (off == nullptr || off[0] == '\0') {
+        return true;
+    }
+    if (strstr(off, "all") != nullptr) {
+        return false;
+    }
+    return strstr(off, family) == nullptr;
+}
+
+static int cgc_fuse_max(void) {
+    static const char * m = getenv("CGC_FUSE_MAX");
+    static const int v = m != nullptr ? atoi(m) : 8;
+    return v < 1 ? 1 : (v > 8 ? 8 : v);
+}
+
 int ggml_metal_op_bin(ggml_metal_op_t ctx, int idx) {
-    if (ctx->use_fusion && ggml_metal_op_can_fuse_snake(ctx, idx)) {
+    if (ctx->use_fusion && cgc_fuse_allowed("snake") && ggml_metal_op_can_fuse_snake(ctx, idx)) {
         return ggml_metal_op_snake_fused(ctx, idx);
     }
 
@@ -5739,7 +5767,7 @@ int ggml_metal_op_bin(ggml_metal_op_t ctx, int idx) {
     // c[1] = add(c[0], b[1])
     // c[2] = add(c[1], b[2])
     // ...
-    if (use_fusion) {
+    if (use_fusion && cgc_fuse_allowed("bin")) {
         fops[0] = GGML_OP_ADD;
         fops[1] = GGML_OP_ADD;
         fops[2] = GGML_OP_ADD;
@@ -5751,7 +5779,7 @@ int ggml_metal_op_bin(ggml_metal_op_t ctx, int idx) {
 
         // note: in metal, we sometimes encode the graph in parallel so we have to avoid fusing ops
         //       across splits. idx_end indicates the last node in the current split
-        for (n_fuse = 0; n_fuse <= 6; ++n_fuse) {
+        for (n_fuse = 0; n_fuse <= 6 && n_fuse < cgc_fuse_max() - 1; ++n_fuse) {
             if (!ctx->can_fuse(idx + n_fuse, fops + n_fuse, 2)) {
                 break;
             }
@@ -6053,7 +6081,7 @@ int ggml_metal_op_norm(ggml_metal_op_t ctx, int idx) {
     // d[0] = norm(a)
     // d[1] = mul(d[0], b)
     // d[2] = add(d[1], c)
-    if (use_fusion) {
+    if (use_fusion && cgc_fuse_allowed("norm")) {
         fops[0] = op->op;
         fops[1] = GGML_OP_MUL;
         fops[2] = GGML_OP_ADD;
