@@ -2682,6 +2682,34 @@ llama_expert_cache::~llama_expert_cache() {
                     fprintf(stderr, "\n");
                 }
             }
+            // [CGC 2026-09-20 §EN-317] The ENTRY rate, beside the publish rate above. The publish rate
+            // answers "how often does ANY consumed id move"; this answers "how MANY do" -- the `0/N or
+            // N/N` question. Same comparison, same ids, same runs, so the two are directly comparable:
+            // entry_rate <= publish_rate always, and the gap is the mean number of ids that moved in a
+            // publish that moved at least one.
+            {
+                std::set<int64_t> ntok_keys;
+                for (const auto & kv : n_slot_table_consumed_moved_entries_by_ntok) { ntok_keys.insert(kv.first); }
+                for (const auto & kv : n_slot_table_consumed_total_entries_by_ntok) { ntok_keys.insert(kv.first); }
+                if (!ntok_keys.empty()) {
+                    const size_t mv_all = n_slot_table_consumed_moved_entries;
+                    const size_t tt_all = n_slot_table_consumed_total_entries;
+                    fprintf(stderr, "llama_expert_cache: S1 churn by ntok (ENTRY granularity, numerator = "
+                                    "consumed ids that moved)  overall %zu/%zu=%.1f%%:",
+                            mv_all, tt_all,
+                            tt_all ? 100.0 * (double) mv_all / (double) tt_all : 0.0);
+                    for (const int64_t k : ntok_keys) {
+                        const auto im = n_slot_table_consumed_moved_entries_by_ntok.find(k);
+                        const auto it = n_slot_table_consumed_total_entries_by_ntok.find(k);
+                        const size_t mv = im == n_slot_table_consumed_moved_entries_by_ntok.end() ? 0 : im->second;
+                        const size_t tt = it == n_slot_table_consumed_total_entries_by_ntok.end() ? 0 : it->second;
+                        fprintf(stderr, "  ntok=%lld %zu/%zu=%.1f%%",
+                                (long long) k, mv, tt,
+                                tt ? 100.0 * (double) mv / (double) tt : 0.0);
+                    }
+                    fprintf(stderr, "\n");
+                }
+            }
         }
         // [CGC MTP Draft Prefetch 2026-09-07] final stats: how many experts were queued for
         // prefetch from draft predictions, and how many of those predictions were actually selected

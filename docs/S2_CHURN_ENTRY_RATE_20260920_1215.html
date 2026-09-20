@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>交付 decode 步的被消費映射 churn 是 3.1%，不是 42.4%（2026-09-20 12:15）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#1f2328; --muted:#57606a; --line:#d0d7de;
+    --blue:#0969da; --green:#1a7f37; --red:#cf222e; --amber:#9a6700; --purple:#8250df; --gray:#6e7781;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font-family:-apple-system,"PingFang TC","PingFang SC","Microsoft JhengHei",Segoe UI,Roboto,sans-serif;
+       font-size:15px;line-height:1.72;}
+  .wrap{max-width:1040px;margin:0 auto;padding:32px 20px 80px}
+  h1{font-size:25px;line-height:1.35;margin:0 0 6px}
+  h2{font-size:19px;margin:34px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:22px 0 8px}
+  p{margin:10px 0}
+  .sub{color:var(--muted);font-size:13px;margin:0 0 18px}
+  code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"DejaVu Sans Mono",monospace}
+  code{background:#f6f8fa;border:1px solid var(--line);border-radius:4px;padding:1px 4px;font-size:13px}
+  pre{background:#f6f8fa;border:1px solid var(--line);border-radius:6px;padding:12px 14px;overflow:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;border:0;padding:0;font-size:inherit}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:#f9fafb}
+  .num{white-space:nowrap}
+  .tag{display:inline-block;border-radius:999px;padding:1px 9px;font-size:12px;border:1px solid var(--line);background:#f6f8fa;color:var(--muted)}
+  .t-green{color:var(--green);border-color:#b7e0c2;background:#eaf7ee}
+  .t-red{color:var(--red);border-color:#f5c2c7;background:#fdeef0}
+  .t-amber{color:var(--amber);border-color:#f0dc9a;background:#fdf6e3}
+  .t-blue{color:var(--blue);border-color:#b6d8f7;background:#eaf3fe}
+  .box{border-left:4px solid var(--line);background:#f9fafb;border-radius:0 6px 6px 0;padding:10px 14px;margin:14px 0}
+  .box.warn{border-left-color:var(--amber);background:#fdf8ee}
+  .box.ok{border-left-color:var(--green);background:#f0f9f2}
+  .box.bad{border-left-color:var(--red);background:#fdf1f2}
+  .box.pur{border-left-color:var(--purple);background:#f7f2fd}
+  .box p:first-child{margin-top:0}
+  .box p:last-child{margin-bottom:0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:4px 0}
+  .kv{color:var(--muted);font-size:13px}
+  footer{margin-top:40px;padding-top:14px;border-top:1px solid var(--line);color:var(--muted);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>交付 decode 步的被消費映射 churn 是 <b>3.1%</b>，不是 42.4%</h1>
+<p class="sub">
+  事件率（publish-level）與條目率（entry-level）是兩個量，而 <code>S3</code> 的生死被前者的數字判過一次。<br>
+  日期：2026-09-20 12:1x（+08）　·　作者：<b><code>線A (ace)</code></b>　·　
+  儀器：<code>decode_sweep.py --arms p25-s1-churn</code>（prod25、<code>--n-predict 512</code>、rounds 1）
+  與 <code>m123_oracle_gate.py</code>（D5）<br>
+  兄弟檔：<code>docs/S2_CHURN_COUNTER_SEMANTICS_2026-09-20.md</code>（同一條線的上一段，純讀碼）、
+  <code>docs/S2_IMPLEMENTATION_PLAN_2026-09-20.md</code>
+</p>
+
+<h2>§1　一句話</h2>
+<p>
+同一次運行、同一個比較、同一批 ids，<b>兩個儀器給出兩個量</b>：<code>ntok=4</code> 的交付 decode 步上，
+<b>publish 率是 42.4%</b>（「有多少次發布裡至少一個被消費 id 換了值」），而
+<b>條目率是 3.1%</b>（「有多少個被消費 id 換了值」）。<b>被引用去判 <code>S3</code> 生死的是前者。</b>
+</p>
+
+<h2>§2　兩個計數器、一次運行、同一批 ids</h2>
+<p>逐字原文（同一份 log 的 teardown，兩行相鄰）：</p>
+<pre><code>llama_expert_cache: S1 churn by ntok (consumed subset):  ntok=1 0/306=0.0%  ntok=4 1729/4080=42.4%  ntok=8 1863/2079=89.6%
+llama_expert_cache: S1 churn by ntok (ENTRY granularity, numerator = consumed ids that moved)  overall 17454/266064=6.6%:  ntok=1 0/2448=0.0%  ntok=4 4090/130560=3.1%  ntok=8 13364/133056=10.0%</code></pre>
+<table>
+<tr><th><code>ntok</code></th><th>是什麼步</th><th class="num">publish 率（事件）</th><th class="num">條目率</th><th>一次「動的發布」平均動幾個</th></tr>
+<tr><td class="num">1</td><td>draft（MTP draft 自己的步）</td><td class="num">0/306 = 0.0%</td><td class="num">0/2448 = <b>0.0%</b></td><td class="num">—（完全穩定）</td></tr>
+<tr><td class="num">4</td><td><b>交付 decode（verify）</b></td><td class="num">1729/4080 = 42.4%</td><td class="num">4090/130560 = <b>3.1%</b></td><td class="num">4090/1729 ≈ <b>2.37 / 32</b></td></tr>
+<tr><td class="num">8</td><td><code>cgc_pool_max_tokens()</code>：chunked-prefill 塊</td><td class="num">1863/2079 = 89.6%</td><td class="num">13364/133056 = 10.0%</td><td class="num">13364/1863 ≈ 7.2 / 64</td></tr>
+<tr><td colspan="2"><b>全部</b></td><td class="num">—</td><td class="num">17454/266064 = <b>6.6%</b></td><td class="num">—</td></tr>
+</table>
+
+<div class="box ok">
+<p><b>這兩個數是可比對的，而且對得上。</b>publish 側逐字複現了紀錄：本輪 <code>ntok=4</code> <b>42.4%</b>
+對紀錄的 <b>42.3%</b>、<code>ntok=8</code> <b>89.6%</b> 對紀錄的 <b>89.0%</b>、<code>ntok=1</code>
+兩邊都是 <b>0.0%</b>。⇒ 兩次運行是<b>同一個配置的同一個比較</b>，所以條目率那兩欄可以放進同一張表。</p>
+</div>
+
+<h2>§3　為什麼 42.4% 會被讀成「42% 的映射變了」</h2>
+<p>
+因為那支計數器<b>每次發布最多只 +1</b>。它比較的是「這一層上一次發布的表」對「這一次發布的表」，
+只在<b>這一步被消費的 ids 裡</b>走，而程式<b>把條目數算出來了卻丟掉</b>：
+</p>
+<pre><code>long long consumed_moved = 0, consumed_total = 0;
+for (int64_t j = 0; j &lt; n_tokens * n_expert_used; ++j) {
+    const int32_t e = ids[j];
+    ...
+    consumed_total++;
+    if (prev[e] != now[e]) { consumed_moved++; }      // &lt;- 條目級，算出來了
+}
+if (consumed_total &gt; 0) {
+    if (consumed_moved &gt; 0) {
+        cache-&gt;n_slot_table_consumed_changed++;        // &lt;- 只留布林（每次發布最多 +1）
+        ...
+</code></pre>
+<p>
+⇒ 一次發布裡「32 個中 1 個動了」與「32 個全動了」<b>同形</b>。而同一段程式碼自己寫的判準是
+<i>the question is whether it is 0/N or N/N</i> —— 那個問題這支計數器答不了，而
+<code>G1.premise_b</code> 的「the consumed mapping moves on 42% of the (step, layer) pairs」
+就是把事件率讀成了條目率。
+</p>
+
+<h2>§4　對 S3／S2 的後果</h2>
+<ul>
+<li><span class="tag t-red">方向不變</span><b>3.1% ≠ 0</b> ⇒ 被消費的映射不是常數 ⇒ 表的內容每一步都會動
+⇒ <b>「發布一次就好」不成立</b>，<code>S3</code>（把 40 段收成 1）的前提<b>仍然倒</b>。</li>
+<li><span class="tag t-amber">量級 −13×</span>但它的<b>大小</b>第一次有了出處：交付 decode 步上是
+<b>3.1%</b>，而 <b>42.4%</b> 是「有多少次發布至少動一個」。</li>
+<li><span class="tag t-blue">新線索</span>交付 decode 步上，平均<b>每次發布只有 1.00 個</b>被消費 id 換值
+（4090/4080），而動的那次平均動 <b>2.37 個</b>（4090/1729，滿額 32）。⇒ 要更新的量是<b>幾個 int</b>，
+不是 256 個。這正是 <code>S2</code> 想要的東西的一部分：<b>發布若能做成增量，它就有機會塞進 GPU 忙的窗口</b>
+（而 <code>cb</code> 的量也會跟著掉）。</li>
+</ul>
+<div class="box warn">
+<p><b>但不要把它讀成「發布可以只寫那幾個 int」。</b>本輪只量到 <b>被消費的</b>條目；<b>整表</b>的變動只在
+<code>ntok=8</code> 的圖上看到一次 <code>changed_entries=452</code>（該圖 40 層 × 256 ＝ 10240 條 ⇒ 4.4%）。
+交付 decode 圖的整表變動<b>本輪沒有量</b>，而增量發布的成本由整表決定，不由被消費的子集決定。</p>
+</div>
+
+<h2>§5　現場輸出原文</h2>
+<p>D5 的數值那一半（新 build、儀器<b>休眠</b> ⇒ 應可比）：</p>
+<pre><code>GATE s2-entry-rate: PASS   M1(bit-identical)=9/9  M2(argmax)=9/9  M3(topk)=9/9  n=9
+cross-tab: {'num_eq_dec_eq': 9, 'num_eq_dec_ne': 0, 'num_ne_dec_eq': 0, 'num_ne_dec_ne': 0}
+  quality   : zero_mapped_selected=0 (must be 0) -&gt; OK ; fast_cold=0 verify_cold=0
+  build   : libllama.0.0.279.dylib=cfd550a18638c9ec  libggml-metal.0.19.0.dylib=1be366306c604669
+            libggml-base.0.19.0.dylib=6fe5b3e0abff3079  llama-server=054fb22f04a01c5c</code></pre>
+<p><b>歸屬</b>：<code>cap_s2-entry-rate.json</code> 的 <code>created</code> = <code>2026-09-20T12:14:25</code>，晚於 <code>libllama.0.0.279.dylib</code> 的 mtime <code>2026-09-20T12:12:12</code> ⇒ 兩者不重疊。
+判決是 <b>PASS</b> 且 <code>comparable=true</code>、<code>config_diffs=[]</code> ⇒ 這一格是<b>判決</b>，不是「僅供參考」。（儀器休眠：本輪沒有設 <code>CGC_S1_TABLE_CHURN</code>。）</p>
+<p>量測那一半（同一顆 build、儀器開啟）的 teardown 已見 §2；該次運行的
+<code>TABLE-CHURN</code> 逐圖行在這顆 build 上仍是：
+</p>
+<pre><code>CGC-S1: TABLE-CHURN graph=82 ntok=8 publishes=40 changed_entries=452  SEL-DRIFT layers=0 entries=0 max_per_layer=0 argmax_il=-1   (all-entry drift, clamp-dominated, for contrast: layers=...)</code></pre>
+<p>
+<code>SEL-DRIFT entries=0</code> 與 §EN-313 前的紀錄一致：<b>發布之後到步末之間沒有動</b>
+—— 跨步才會動，而那就是 §2 量到的東西。
+</p>
+
+<h2>§6　誠實邊界</h2>
+<ul>
+<li><b>一次運行</b>（<code>--rounds 1</code>）、一個 profile（prod25）、一顆 build。<b>publish 側與紀錄相符</b>
+是「配置相符」的證據，<b>不是</b> 3.1% 可重複的證據。</li>
+<li>42.3% 那份紀錄自己就寫著「這是一次讀數，不是分佈」（同簽名下 37.2%–84.4% 散佈）⇒
+<b>條目率同樣可能散佈</b>，要分佈得跑多次。本檔只給一個點。</li>
+<li>本檔<b>沒有</b>量任何速度（t/s）；也<b>沒有</b>量交付 decode 圖的<b>整表</b>變動。</li>
+<li>被量到的「動」是<b>發布值</b>的差，不是「消費者讀到不同的 slot」—— 後者還要經過 ZERO-slot 與
+clamp 的路徑；而 <code>zero_mapped_selected=0</code> 只保證沒有被 ZERO 映射的選中專家，不保證
+發布值與讀值相同。</li>
+<li>本改動是 <b>add-only</b>，且只在 <code>CGC_S1_TABLE_CHURN</code> 開啟時執行 ⇒
+未設時一行都不跑（§5 的休眠臂就是它的數值證據）。</li>
+</ul>
+
+<h2>§7　產物與指令</h2>
+<pre><code>cmake --build src/llama.cpp/build --target llama-server -j 8
+
+RUN_REPLAY_BENCH=0 python3 scripts/check/decode_sweep.py --profile prod25 \
+  --arms p25-s1-churn --rounds 1 --n-predict 512 \
+  --json Backup/phase_decomp/s2_entry_rate.json --force
+
+python3 scripts/check/m123_oracle_gate.py --tag s2-entry-rate --env CGC_SLOT_TABLE_GPU=1</code></pre>
+<ul>
+<li><code>src/llama.cpp/src/llama-expert-cache.h</code>（＋4 欄：兩個總數 ＋ 兩個 by-ntok map）、
+<code>llama-context.cpp</code>（＋4 行累加，與事件計數器同一個比較）、
+<code>llama-expert-cache.cpp</code>（＋ teardown 一行）、重建的 <code>libllama.0.0.279.dylib</code>；
+補丁腳本 <code>Backup/add_entry_rate_counter.py</code></li>
+<li><code>Backup/cgc_logs/llama_server_20260920_121225.log</code>（本檔 §2/§5 的原文）、
+<code>Backup/phase_decomp/s2_entry_rate.json</code></li>
+</ul>
+
+<footer>
+  flashkv-devserver · 被消費映射 churn 的事件率 vs 條目率 · 2026-09-20 12:15（+08）<br>
+  兄弟檔：<code>docs/S2_CHURN_COUNTER_SEMANTICS_2026-09-20.md</code>　·　
+  上一段的更正：<code>docs/S2_IMPLEMENTATION_PLAN_2026-09-20.md</code> §7
+</footer>
+
+</div>
+</body>
+</html>

@@ -4937,6 +4937,13 @@ static int64_t cgc_publish_slot_table_counted(llama_expert_cache * cache, int il
                 }
             }
             if (consumed_total > 0) {
+                // [CGC 2026-09-20 §EN-317] The entry-granularity twin of the pair below, from the SAME
+                // comparison: `consumed_moved`/`consumed_total` were already computed and thrown away,
+                // which is what made "1 of 32 moved" and "32 of 32 moved" the same reading.
+                cache->n_slot_table_consumed_moved_entries += (size_t) consumed_moved;
+                cache->n_slot_table_consumed_total_entries += (size_t) consumed_total;
+                cache->n_slot_table_consumed_moved_entries_by_ntok[n_tokens] += (size_t) consumed_moved;
+                cache->n_slot_table_consumed_total_entries_by_ntok[n_tokens] += (size_t) consumed_total;
                 if (consumed_moved > 0) {
                     cache->n_slot_table_consumed_changed++;
                     cache->n_slot_table_consumed_changed_by_ntok[n_tokens]++;

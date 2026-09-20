@@ -355,6 +355,21 @@ struct llama_expert_cache {
     // `NOT QUOTABLE: only 1 kept rep(s)`).
     std::map<int64_t, size_t> n_slot_table_consumed_changed_by_ntok;
     std::map<int64_t, size_t> n_slot_table_consumed_same_by_ntok;
+    // [CGC 2026-09-20 §EN-317] THE ENTRY-LEVEL COUNTER THE ROUTE DECISION NEEDS. The two pairs above
+    // are PUBLISH-LEVEL EVENTS: `n_slot_table_consumed_changed` goes up at most ONCE per publish, when
+    // AT LEAST ONE of the consumed ids differs from the same layer's previous publish. Measured on the
+    // delivery ntok=4 step that is 42.3% -- but a publish in which 1 of 32 ids moved and one in which
+    // 32 of 32 moved are INDISTINGUISHABLE inside it, while the criterion the code states one screen
+    // up (`the question is whether it is 0/N or N/N`) IS that distinction. Premise B, and with it the
+    // S3-vs-S2 route, was therefore decided on a counter that cannot answer its own question.
+    // These four accumulate the SAME comparison, over the SAME ids, at entry granularity: the
+    // denominator is `sum over publishes of (# consumed ids)`, NOT `# publishes`. By construction
+    // entry_rate <= publish_rate, and the ratio between the two is the mean number of ids that moved
+    // inside a publish that moved at least one.
+    size_t n_slot_table_consumed_moved_entries = 0;
+    size_t n_slot_table_consumed_total_entries = 0;
+    std::map<int64_t, size_t> n_slot_table_consumed_moved_entries_by_ntok;
+    std::map<int64_t, size_t> n_slot_table_consumed_total_entries_by_ntok;
     // [CGC 2026-09-15 premise B] How often the published table actually CHANGES. §9.17(d) asked for
     // "publish_slot_table call count per decode step", which is degenerate by construction (both of
     // its call sites are inside the S1 hook itself, so the answer is 0 on the baseline arm and once
