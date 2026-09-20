@@ -39,6 +39,19 @@ agent_created: true
 
    ```text
    Gates: none (docs-only, touches no measured metric)
+
+   **★★ 2026-09-20 實測兩次同一個錯：`Gates:` 的每一筆都不能跨行。**
+   `RE_IMPROVE = re.compile(r"\(([^)]*improve[^)]*)\)")` 要求**括號在同一行閉合**，而 `parse_block`
+   是**逐行**取 entries。所以「只有一筆、但把它折成兩行」會同時得到
+   `[NO_IMPROVE] G4 is not-met and must carry (improve ...)` 與第二行的 `[BAD_ENTRY]`，
+   而**訊息本身讀起來完全正常** —— 我（2026-09-20）在同一天犯了兩次，第二次還是剛把這條教訓寫進記憶之後。
+
+   - 單筆 ⇒ 寫在 `Gates:` 的**同一行**：
+     `Gates: G4 not-met (improve 104.60 -> 104.60 ms union; only adds diagnostic code)`
+   - 多筆 ⇒ 用 block form，**每筆一行、各自完整**（見上面的範例）
+   - **預演一定用 `--message-file <你剛寫的那個檔>`**，不要等 commit 完才跑 `--last`
+     —— 那時唯一的補救是 `--amend`（它只在「自己、未推送、只被本地一個分支引用」時才安全：
+     先跑 `git for-each-ref --contains <hash>` 確認）
    Gates: G3 met (proved segment merge works); G4 not-met (improve 104.60 -> 98.00 ms)
    Gates:
      G3 met (union pair L4/L5 < 2x a single layer)
