@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>生產 profile 凍結與交付 decode 的噪音底（2026-09-20）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:26px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:#fcfcfd}
+  .toc ol{margin:6px 0 0 20px}
+  .toc a{color:var(--blue);text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>生產 profile 凍結，與交付 decode 的<strong>噪音底</strong></h1>
+<div class="sub">
+  日期 2026-09-20 12:24–12:41 · 專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code><br>
+  profile <code>CGC_SERVER_PROFILE=prefill250</code> · 模型 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code><br>
+  硬體 Mac16,12 MacBook Air · Apple M4 · 8 核 GPU · 16 GB unified · <strong>無風扇</strong><br>
+  儀器 <code>scripts/check/prod_profile.py</code>（本輪新增）· 引擎 <code>build_commit=efeade7e2</code>（#279）<br>
+  線別 <strong>線A (ace)</strong> · 同機同時段另有「線 I」在跑 F2–F5
+</div>
+
+<div class="box b-green">
+  <p><strong>一句話：</strong>profile 就是 <code>prefill250</code> —— 它<strong>已經</strong>同時是最高的 prefill
+  與目前最好的 decode，這一點是<strong>零 GPU 逐旋鈕比對</strong>出來的（§3）。本輪把它<strong>釘住</strong>，
+  並補上唯一缺的那件東西：一支能在<strong>交付口徑</strong>下重跑兩軸的儀器。</p>
+  <p><strong>交付 decode 基線＝ <code>12.57 t/s</code></strong>（<code>NOMINAL</code> 全程）—— 這是下一個 agent
+  要打敗的數字。而它的<strong>單臂噪音底約 ±27%</strong>（§6）：小於這個量級的優化，單臂證明不出來。</p>
+</div>
+
+<div class="toc">
+  <strong>目錄</strong>
+  <ol>
+    <li><a href="#s1">profile 與它的 28 個旋鈕</a></li>
+    <li><a href="#s2">為什麼不加一個 profile 名字</a></li>
+    <li><a href="#s3">「最好的 decode」是什麼，以及同一性證明</a></li>
+    <li><a href="#s4">交付 decode 的四個約定</a></li>
+    <li><a href="#s5">2026-09-20 的兩軸讀數</a></li>
+    <li><a href="#s6">交付 cell 的單臂噪音 ≈ ±27%</a></li>
+    <li><a href="#s7">怎麼重現</a></li>
+    <li><a href="#s8">不要做什麼</a></li>
+    <li><a href="#s9">閘門輸出原文</a></li>
+    <li><a href="#s10">誠實邊界</a></li>
+  </ol>
+</div>
+
+<div class="cards">
+  <div class="card"><div class="k">交付 decode（NOMINAL 全程）</div><div class="v ok">12.57</div>
+    <div class="small">t/s ± 2.26 · bar 12 · <b>PASS</b></div></div>
+  <div class="card"><div class="k">同一命令的第二次讀數</div><div class="v bad">9.90</div>
+    <div class="small">t/s ± 1.25 · worst=MODERATE · 拒絕</div></div>
+  <div class="card"><div class="k">單臂噪音（同一命令）</div><div class="v warn">27%</div>
+    <div class="small">9.90 vs 12.57</div></div>
+  <div class="card"><div class="k">prefill（bar 250）</div><div class="v bad">212–222</div>
+    <div class="small">3 次全部 worst ≥ MODERATE ⇒ 未驗證</div></div>
+</div>
+
+<h2 id="s1">1. profile 與它的 28 個旋鈕</h2>
+
+<p>旋鈕的真相來源只有一個：<code>run_server.sh</code>。這條命令把它的<strong>解析結果</strong>印出來，不是抄的：</p>
+
+<pre><code>python3 scripts/check/prod_profile.py --emit-spec</code></pre>
+
+<table>
+  <tr><th>項目</th><th>值</th></tr>
+  <tr><td><code>CGC_SERVER_PROFILE</code></td><td><code>prefill250</code></td></tr>
+  <tr><td>模型</td><td><code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（13.66 GiB）</td></tr>
+  <tr><td><code>CTX</code> / <code>BATCH</code> / <code>UBATCH</code></td><td class="num">8192 / 5632 / 5632</td></tr>
+  <tr><td><code>CGC_EXPERT_CACHE_BYTES</code></td><td class="num">8589934592（8 GiB）</td></tr>
+  <tr><td>三支柱（bit-identical）</td>
+      <td><code>CGC_MM_BITIDENT=1</code>、<code>CGC_MTP_NO_WARMUP=1</code>、<code>CGC_NO_SEQ_RM_PROBE=1</code></td></tr>
+  <tr><td>池幾何</td>
+      <td><code>LLAMA_EXPERT_CACHE_LAYER_CAPS=40-40:256</code>、<code>WORKERS=8</code>、<code>ALLOW_NGL=1</code></td></tr>
+</table>
+
+<p>解析後的引擎 env（28 個，逐字）：</p>
+
+<pre><code>CGC_DBUF 1 · CGC_DRAFT_DECODE 1 · CGC_EVICTED_RING 0 · CGC_EXPERT_CACHE_BYTES 8589934592
+CGC_GATHER_SLAB_CAP 256 · CGC_GLU_FUSED_DOWN 1 · CGC_LOOP_GUARD 1 · CGC_MM_BITIDENT 1
+CGC_MTP_NO_WARMUP 1 · CGC_NO_PREFETCH 1 · CGC_NO_SEQ_RM_PROBE 1 · CGC_N_CB 8
+CGC_OA_ASYNC 1 · CGC_PREFILL_STREAM 1 · CGC_SERVER_AUTO_ANCHOR 0
+CGC_SERVER_DEFAULT_MARKER_STOPS 1 · CGC_SOFT_POOL_L0 0 · CGC_SOFT_POOL_L1 0
+CGC_SPAC 1 · CGC_SPAC_ALPHA 0.75 · CGC_VERIFY_DECODE 1 · CGC_WAKE_POLL_US 15
+CGC_WARM_NPAST 0 · CGC_WATCHDOG 1 · LLAMA_EXPERT_CACHE_ALLOW_NGL 1
+LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0 0 · LLAMA_EXPERT_CACHE_LAYER_CAPS 40-40:256
+LLAMA_EXPERT_CACHE_WORKERS 8</code></pre>
+
+<div class="box b-blue">
+  <p><strong>這一節刻意不是一份 repo 內的 JSON。</strong>旋鈕的第二份拷貝就是第二個權威來源（D6 要防的事）。
+  需要機器可讀版本時跑 <code>--emit-spec</code> 當場重生 —— 它讀的是 <code>run_server.sh</code> 本身。
+  原始讀數在 <code>Backup/prod_profile/</code>（<code>Backup/</code> 依 <code>.gitignore:396</code> 不進版控，與既有慣例一致）。</p>
+</div>
+
+<h2 id="s2">2. 為什麼不加一個 profile 名字</h2>
+
+<p>候選做法是把「prefill250 ＋ 最好的 decode」做成 <code>run_server.sh</code> 裡的新分支。<strong>沒有做</strong>，兩條理由：</p>
+
+<ol>
+  <li><strong>它會是純重複</strong> —— 見 §3，兩者的解析後 env 逐旋鈕相同。</li>
+  <li><strong>它會靜默改變別的 session 的量測</strong>：<code>prod_matrix.py</code> 的 <code>--profiles</code>
+      預設是 <code>all</code>，而 profile 清單是從 <code>run_server.sh</code> 的拒絕訊息<strong>解析</strong>出來的
+      （<code>profiles_from_run_server()</code>，<code>:179</code>）⇒ 加一個分支會讓這台機器上<strong>每一支</strong>
+      <code>prod_matrix --profiles all</code>（含另一條線正在跑的）變長並多一列。</li>
+</ol>
+
+<p>「profile 不寫的那一格，就是會漂移的那一格」（<code>run_server.sh:290</code> 的既有原則）在這裡由
+<strong>這份記錄 ＋ 一支會印出解析結果的儀器</strong>滿足，而不是靠第二個名字。</p>
+
+<h2 id="s3">3. 「最好的 decode」是什麼，以及同一性證明</h2>
+
+<p>記錄裡最好的 decode 讀數是 <strong>13.10</strong>（09-19 16:58）與 <strong>10.94</strong>（09-19 15:19），
+兩個都 <code>launch</code> 與 <code>worst</code> 皆 <code>NOMINAL</code>
+（<code>Backup/phase_decomp/carrier2_20260919/C.json</code>、<code>warmskip2_20260919/B.json</code>）。
+它們用的不是一個 profile，而是：</p>
+
+<table>
+  <tr><th>元件</th><th>值</th><th>從哪來</th></tr>
+  <tr><td>profile</td><td><code>prod25</code></td><td><code>run_server.sh</code></td></tr>
+  <tr><td>arm override</td><td><code>CGC_PREFILL_STREAM=1</code>、<code>CGC_GATHER_SLAB_CAP=256</code></td>
+      <td>臂 <code>prod25-stream</code>（<code>llama_bench_matrix.py:84</code>）</td></tr>
+  <tr><td>bench 側四約定</td><td><code>--batch 512</code>、<code>--ctx-size 4096</code>、<code>--warm-skip 64</code>、<code>--spec-type draft-mtp</code></td>
+      <td>§4</td></tr>
+</table>
+
+<h3>3.1 零 GPU 的同一性證明</h3>
+
+<pre><code>python3 - &lt;&lt;'EOF'
+import sys; sys.path.insert(0,'scripts/check')
+from llama_bench_matrix import resolve
+a = resolve('prefill250', {})
+b = resolve('prod25', {"CGC_PREFILL_STREAM":"1","CGC_GATHER_SLAB_CAP":"256"})
+print({k:(a['env'].get(k), b['env'].get(k))
+       for k in set(a['env'])|set(b['env']) if a['env'].get(k) != b['env'].get(k)})
+EOF
+# -&gt; {}      （解析後的 env 差異＝空）</code></pre>
+
+<p>差異只出現在三處，<strong>而三處都被 decode cell 覆寫</strong>：</p>
+
+<table>
+  <tr><th></th><th><code>prefill250</code></th><th><code>prod25-stream</code></th><th>bench 的 decode cell</th></tr>
+  <tr><td><code>BATCH/UBATCH</code></td><td class="num">5632 / 5632</td><td>模型預設</td><td><strong>覆寫成 512</strong></td></tr>
+  <tr><td><code>CTX</code></td><td class="num">8192</td><td class="num">4096</td><td><strong>覆寫成 4096</strong></td></tr>
+  <tr><td><code>--chat-template-kwargs</code></td><td>有（chat-ab prefix）</td><td>無</td><td>不轉發（<code>FORWARD_*</code> 白名單）</td></tr>
+</table>
+
+<div class="box b-green">
+  <p><strong>⇒ <code>prefill250</code> 就是那個組合。</strong>統一 profile 在 09-16 就已經存在；
+  09-20 缺的不是旋鈕，是<strong>記錄</strong>與<strong>能重現交付口徑的儀器</strong>。</p>
+</div>
+
+<h3>3.2 工具缺口（本輪真正的發現）</h3>
+
+<p><code>profile_duo.py</code> 與 <code>prod_matrix.py</code> 的 <code>decode</code> cell
+<strong>表達不了交付形狀</strong>：不帶 <code>--spec-type</code>（⇒ MTP off）、不帶 <code>--warm-skip</code>
+（⇒ 冷的時鐘）、不帶 <code>--ctx-size</code>（⇒ llama-bench 自行推導的 ~704）。
+同一個 profile 在那兩支工具裡因此只讀 <strong>7.96–9.12</strong>，比交付低約 <strong>1.4×</strong>。</p>
+
+<p><strong>「profile 慢」與「cell 不是交付形狀」是兩件事</strong>，而在 09-20 之前它們沒有被分開寫下來。</p>
+
+<h2 id="s4">4. 交付 decode 的四個約定</h2>
+
+<table>
+  <tr><th>約定</th><th>值</th><th>為什麼不能省</th></tr>
+  <tr><td><code>--batch</code></td><td class="num">512</td>
+      <td><code>decode</code> cell 的既定值；<code>-b</code> 大於池上限時 <code>compat()</code> 會拒絕</td></tr>
+  <tr><td><code>--ctx-size</code></td><td class="num"><strong>4096</strong></td>
+      <td>llama-bench 會自行推導 <code>n_ctx = p+n+d ≈ 704</code>，而生產 server 跑在 4096；KV 配置與 batch 夾制都吃這個</td></tr>
+  <tr><td><code>--warm-skip</code></td><td class="num"><strong>64</strong></td>
+      <td>時鐘在前 64 個 token 之後才起算，報告的 <code>n_gen</code> 是 64。沒有它，<code>-n 128</code> 讀 7.96、<code>-n 512</code> 讀 10.22 —— 同一個引擎兩個數</td></tr>
+  <tr><td><code>--spec-type</code></td><td><code>draft-mtp</code></td>
+      <td>開啟 MTP verify 回合（M=1..4），即服務路徑真正付的那一段。<code>--spec-draft-n-max</code> 由 profile 的 argv 決定（此處 3）</td></tr>
+</table>
+
+<p><strong>四個全在，那一列才是交付 decode；任缺一個，它就不是。</strong></p>
+
+<h2 id="s5">5. 2026-09-20 的兩軸讀數</h2>
+
+<p>儀器：<code>python3 scripts/check/prod_profile.py --profile prefill250 --reps 3</code>
+（三個 launch：prefill 軸、decode 交付軸、decode 錨點臂；<strong>每個 launch 前等 NOMINAL，逾時即拒絕發射</strong>）</p>
+
+<table>
+  <tr><th>軸</th><th>臂</th><th>t/s</th><th>±</th><th><code>n_batch</code></th>
+      <th>thermal launch / worst</th><th>判決</th></tr>
+  <tr><td><code>decode-delivery</code></td><td><code>prod25-stream</code>（錨點）</td>
+      <td class="num ok"><strong>12.57</strong></td><td class="num">2.26</td><td class="num">512</td>
+      <td><code>NOMINAL</code> / <code>NOMINAL</code></td><td class="ok"><strong>PASS</strong>（bar 12）</td></tr>
+  <tr><td><code>decode-delivery</code></td><td><code>prefill250</code></td>
+      <td class="num">9.90</td><td class="num">1.25</td><td class="num">512</td>
+      <td><code>NOMINAL</code> / <code>MODERATE</code></td><td class="bad">臂內升溫</td></tr>
+  <tr><td><code>prefill-house</code></td><td><code>prefill250</code></td>
+      <td class="num">212.59</td><td class="num">4.65</td><td class="num">5632</td>
+      <td><code>NOMINAL</code> / <code>HEAVY</code></td><td class="bad">臂內升溫</td></tr>
+  <tr><td><code>prefill-house</code>（單獨重跑）</td><td><code>prefill250</code></td>
+      <td class="num">222.40</td><td class="num">22.91</td><td class="num">5632</td>
+      <td><code>NOMINAL</code> / <code>MODERATE</code></td><td class="bad">臂內升溫</td></tr>
+</table>
+
+<p class="small">歷史參照（<strong>不同日期，只能當參照</strong>）：decode <strong>13.10 / 10.94</strong>（09-19，皆 NOMINAL 全程）；
+prefill <strong>292.34</strong>（09-18，NOMINAL 全程，<code>Backup/prod_matrix/duo_prefill250_20260918_1615.json</code>）。</p>
+
+<h3>5.1 兩條 decode 臂是<strong>同一個命令</strong></h3>
+
+<p>把兩條臂的 <code>cmd</code> 逐字比對（去掉 <code>--arms</code> 的名字）：<strong>完全相同</strong>。</p>
+
+<pre><code>... --reps 3 --prompt 0 --gen 128 --depths 512 --batch 512 \
+    --ctx-size 4096 --warm-skip 64 --spec-type draft-mtp</code></pre>
+
+<p><code>prefill250</code> 的解析後 env 本身就含 <code>CGC_PREFILL_STREAM=1</code>／<code>CGC_GATHER_SLAB_CAP=256</code>
+（所以它的 <code>extra_env</code> 印出來是空的），錨點臂是把它當 override 傳 —— <strong>淨結果同一個 env</strong>。</p>
+
+<div class="box b-green">
+  <p><strong>⇒ 12.57 就是這個 profile 的交付 decode 讀數</strong>，不是「只屬於錨點臂」的數字。
+  錨點臂在這裡的作用不是提供一個額外的量，而是<strong>證明交付口徑在 09-20 重現了</strong>
+  （落在 10.94–13.10 的帶內）。</p>
+</div>
+
+<h3>5.2 prefill 的 250 bar：<strong>今天無法驗證</strong></h3>
+
+<p>三次讀數 <strong>188.12 / 212.59 / 222.40</strong>，全部 <code>worst ≥ MODERATE</code>，全部 &lt; 250。
+而 09-16 的記錄（<code>docs/PREFILL250_CONDITIONAL_DELIVERY_20260916.html</code>）寫的判準是
+<strong>「Nominal 6/6 全部 ≥250（最低 253.42）；非 Nominal 0/21（最高 211.65）」</strong>
+—— 本日三次都落在<strong>非 Nominal</strong> 那一側。</p>
+
+<div class="box b-red">
+  <p><strong>不是「prefill 退步了」，是「這台機器今天撐不住一整條 prefill 臂」</strong>
+  （<code>-r 3</code> × 2048 token × <code>-b 5632</code>，無風扇）。這一格<strong>不可引用</strong>，
+  而「未驗證」必須寫成未驗證。</p>
+</div>
+
+<h2 id="s6">6. 交付 decode cell 的單臂噪音 ≈ <span class="warn">±27%</span></h2>
+
+<p>同一個命令、同一次 session、同一顆 build：<strong>9.90（<code>worst=MODERATE</code>）vs 12.57（<code>worst=NOMINAL</code>）</strong>。
+更低的那一次是更熱的那一次 —— 與 09-18 的既有發現同向（四臂全部 <code>launch=NOMINAL</code> 卻給出
+10.80 / 10.34 / 8.92 / 8.58，排序跟著「臂內多熱」而不是受試引擎）。</p>
+
+<p><strong>對下一個 agent 的直接含意：</strong></p>
+
+<ul>
+  <li>單臂前後對比<strong>無法</strong>證明小於 ~27% 的效應；</li>
+  <li>要證明小效應，唯一的路是<strong>配對的交錯 A/B（AB/BA ＋ <code>median(A/B)</code>）</strong>，
+      而第一步永遠是 <code>--null</code>（兩槽同 binary）—— 它量的是儀器自己的底；</li>
+  <li>另一條路是<strong>降低每臂的發熱</strong>，或把兩軸拆成獨立的 session。</li>
+</ul>
+
+<h2 id="s7">7. 怎麼重現</h2>
+
+<pre><code># 兩軸 ＋ 錨點臂；每個 launch 前等 NOMINAL，逾時即拒絕；寫 JSON 與 markdown
+python3 scripts/check/prod_profile.py --profile prefill250 --reps 3 \
+  --json Backup/prod_profile/prod_profile_20260920_1230.json \
+  --md   Backup/prod_profile/prod_profile_20260920_1230.md
+# 檔名以當次時間戳命名；上面用的是本次這一輪的檔名（另有 _1240_prefill 與 _1225 hotrun 兩個）
+
+# 只要一軸（本日 prefill 的教訓：連跑會把機器加熱）
+python3 scripts/check/prod_profile.py --axes prefill --no-ref
+python3 scripts/check/prod_profile.py --axes decode  --no-ref
+
+# 零 GPU：旋鈕 / 命令列
+python3 scripts/check/prod_profile.py --emit-spec
+python3 scripts/check/prod_profile.py --dry-run</code></pre>
+
+<p>儀器性質（都寫在 docstring 裡，這裡只列要點）：</p>
+
+<ul>
+  <li><strong>重用而非複製</strong>：<code>thermal_pressure</code>、<code>prefill_certifiability.mem_state</code>、
+      <code>llama_bench_matrix.resolve</code>（旋鈕的唯一真相來源）、<code>profile_duo.wait_nominal</code>。</li>
+  <li>讀數<strong>從子進程自己的 <code>--json</code> 回讀</strong>，不另寫解析器。</li>
+  <li>兩道閘門：發射前 NOMINAL ＋ <code>usable ≥ 30%</code>；<strong>逾時＝拒絕發射</strong>（與 <code>profile_duo</code> 同語意）。</li>
+  <li><code>worst</code> 不是 <code>launch</code>：<code>clean = launch==NOMINAL and worst==NOMINAL</code>，只有 <code>clean</code> 才算達 bar。</li>
+</ul>
+
+<div class="box b-amber">
+  <p><strong>已知的不足：</strong><code>wait_nominal</code> 可以在上一次重臂之後 <strong>立即回 0（waited 0s）</strong>，
+  而底盤仍然是熱的 —— 本日第三次 prefill 重跑就是「waited 0s 之後 worst=MODERATE」。
+  ⇒ <strong>NOMINAL 是必要條件，不是充分條件</strong>；重跑一個大臂時，中間的空閒要按<strong>分鐘</strong>計，
+  不能靠這個讀數自己回到 0。（這條同時也是本輪修掉的一個工具缺陷：第一版在等待逾時後仍會發射；
+  現在與 <code>profile_duo</code> 一致 —— 逾時即 <code>REFUSED</code>。）</p>
+</div>
+
+<h2 id="s8">8. 不要做什麼（省得重走）</h2>
+
+<ul>
+  <li><strong>不要</strong>把 §5 的 212.59／222.40 當 prefill 交付數字 —— 它們是<strong>非 Nominal 側</strong>的讀數。</li>
+  <li><strong>不要</strong>把 decode 的 12.57 與 prefill 的任一個相乘或相除去推 joint 吞吐。</li>
+  <li><strong>不要</strong>在兩台儀器之間換算（引擎內部步時 ↔ llama-bench <code>avg_ts</code>）：記錄寫明<strong>校準不是常數</strong>（實測差 +13~30%）。</li>
+  <li><strong>不要</strong>為了好看把診斷旋鈕塞進交付 cell（<code>DIAGNOSTIC_KEYS</code> 的每一條都是一個主張）。</li>
+  <li><strong>不要</strong>把 <code>prefill250</code> 的 <code>CTX=8192</code> 當成交付 ctx；交付 server 跑 <strong>4096</strong>。</li>
+</ul>
+
+<h2 id="s9">9. 閘門輸出原文</h2>
+
+<h3>A. 收尾閘門鏈（產出本文當時實跑，原文）</h3>
+<pre><code>$ python3 agent_harness/engine_loop/traces/validate.py
+  episodes.jsonl: 122 records {'episode': 122}
+  -&gt; OK
+  decisions.jsonl: 68 records {'decision': 68}
+  -&gt; OK
+  lessons.jsonl: 193 records {'lesson': 193}
+  -&gt; OK
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  10/10 injected violations rejected
+
+$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+  memory index OK: 10 file(s), 422 section(s), no drift
+
+$ python3 agent_harness/engine_loop/index_assets.py --check
+  manifest OK: 148 assets, existence + bytes + mtime all agree
+
+$ python3 agent_harness/scripts/import_harness_snapshot.py --check
+  10 memory source(s), 9 skill source(s); 19 筆記錄（snapshot_date 2026-09-20…2026-09-20）
+  -&gt; OK: 快照與原檔一致（provenance 逐筆相符、集合相符、副本未被手改、README 成員表相符）</code></pre>
+<h3>B. 量測本身（<code>prod_profile.py</code> 寫出的表，原文）</h3>
+<pre><code># Backup/prod_profile/prod_profile_20260920_1230.md
+| axis | arm | shape | t/s | ± | n_batch | thermal launch / worst | bar | verdict |
+|---|---|---|---:|---:|---:|---|---:|---|
+| prefill-house | prefill250 | --prompt 2048 --gen 16 --depths 0 | 212.59 | 4.65 | 5632 | NOMINAL / HEAVY | 250.0 | refused: left NOMINAL -&gt; not a bar-meeting number |
+| decode-delivery | prefill250 | --prompt 0 -n 128 -d 512 -b 512 -c 4096 --warm-skip 64 --spec-type draft-mtp | 9.90 | 1.25 | 512 | NOMINAL / MODERATE | 12.0 | refused: left NOMINAL -&gt; not a bar-meeting number |
+| decode-delivery-anchor | prod25-stream | （同上，逐字相同的命令） | 12.57 | 2.26 | 512 | NOMINAL / NOMINAL | 12.0 | **PASS** |
+
+# Backup/prod_profile/prod_profile_20260920_1240_prefill.md   （單獨重跑 prefill）
+| prefill-house | prefill250 | --prompt 2048 --gen 16 --depths 0 | 222.40 | 22.91 | 5632 | NOMINAL / MODERATE | 250.0 | refused |</code></pre>
+<h3>C. build 指紋（量測後當場算）</h3>
+<pre><code>llama-bench                        28ae5feed73660da
+llama-server                       054fb22f04a01c5c
+libllama.0.0.279.dylib             cfd550a18638c9ec
+libggml-metal.0.19.0.dylib         1be366306c604669
+libggml-base.0.19.0.dylib          6fe5b3e0abff3079
+build_commit efeade7e2 · build_number 279</code></pre>
+
+<h2 id="s10">10. 誠實邊界</h2>
+
+<ul>
+  <li><strong>噪音 vs 效應</strong>：本輪<strong>沒有</strong>證明任何優化，也沒有主張 profile 變快或變慢。
+      §5 全部是「同一天、這一台、這三次 launch」的讀數，帶各自的熱態標籤。</li>
+  <li><strong>prefill 未驗證</strong>：bar 250 今天沒有達成過一次乾淨的讀數；這一格是未驗證，不是失敗。</li>
+  <li><strong>同機競爭</strong>：同一天同一台機器上「線 I」跑了 F2–F5 的三次啟動；其熱殘留未量，
+      但 §5 的每一次 launch 前都查過 8080 與 <code>llama-*</code>。</li>
+  <li><strong>讀數的可歸屬性</strong>：build 指紋逐檔列在 §9 與 markdown 版；原始 JSON 在 <code>Backup/</code>（不進版控）。</li>
+  <li><strong>越界揭露</strong>：<code>targets.json</code> 的 <code>G1.owner</code> 寫「line B (implementation);
+      line A (ace) owns the ceiling reading」。本輪凍結 profile ＋ 量兩軸落在 ceiling reading 那一側，
+      <strong>沒有改任何 <code>src/</code>、沒有改 <code>run_server.sh</code>、沒有改任何共享工具</strong>。</li>
+</ul>
+
+<hr>
+<p class="small">線A (ace) · 2026-09-20 · 本文的 markdown 雙生檔：<code>docs/PRODUCTION_PROFILE_2026-09-20.md</code></p>
+
+</div>
+</body>
+</html>
