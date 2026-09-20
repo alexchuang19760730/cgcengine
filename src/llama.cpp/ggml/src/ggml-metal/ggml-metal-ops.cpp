@@ -570,6 +570,44 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
         }
     }
 
+    // [CGC 2026-09-20 G4] ELEMENTWISE dispatch census. The dispatch census (§EN-338) says 376 of
+    // 1098 dispatches/step are elementwise and NONE of them is fused (ratio 1.00) -- but "UNARY"
+    // is one ggml op carrying a sub-op in op_params[0], so the census alone cannot say WHICH
+    // unary, nor which tensor. This prints one line per elementwise dispatch: the op, the unary
+    // sub-op where it applies, the tensor name and the shape. The name is what lets the 376 be
+    // grouped into named targets on the existing CGC-GRPH vocabulary.
+    // ADD-ONLY: reads node fields, prints, changes nothing. Silent unless CGC_ELEMW_CENSUS=1.
+    {
+        static const bool cgc_ew = [] {
+            const char * e = getenv("CGC_ELEMW_CENSUS");
+            return e != nullptr && e[0] == '1';
+        }();
+        static int cgc_ew_n = 0;
+        if (cgc_ew && cgc_ew_n < 3000) {
+            const bool want =
+                node->op == GGML_OP_UNARY || node->op == GGML_OP_MUL  ||
+                node->op == GGML_OP_GLU   || node->op == GGML_OP_SCALE ||
+                node->op == GGML_OP_L2_NORM || node->op == GGML_OP_DIV ||
+                node->op == GGML_OP_CLAMP || node->op == GGML_OP_SUM_ROWS;
+            if (want) {
+                cgc_ew_n++;
+                // ⚠ ggml_get_unary_op() asserts op == GGML_OP_UNARY ONLY (ggml.c:1934) -- calling
+                // it for GGML_OP_GLU aborts the process. Measured: this exact assertion is what
+                // made the first version of this census print 11 lines and die.
+                const char * sub = (node->op == GGML_OP_UNARY)
+                    ? ggml_unary_op_name(ggml_get_unary_op(node)) : "-";
+                fprintf(stderr, "CGC-ELEMW: op=%-8s sub=%-10s name=%-34s ne=[%lld,%lld,%lld,%lld]\n",
+                        ggml_op_name(node->op), sub, node->name,
+                        (long long) node->ne[0], (long long) node->ne[1],
+                        (long long) node->ne[2], (long long) node->ne[3]);
+                // stderr is block-buffered once it is redirected to a file, and this process
+                // aborts (Metal OOM) while the buffer still holds most of the census -- measured:
+                // 11 lines survived an abort that had produced ~376. Flush every line.
+                fflush(stderr);
+            }
+        }
+    }
+
     // [CGC 2026-09-20 G4] DISPATCH-LEVEL census. The KINDxOP / GPUOPS tables partition a buffer's
     // duration over graph NODES, and Metal fusion makes node count != dispatch count (measured:
     // the 9-long MoE ADD chain is 9 nodes but 2 dispatches, §EN-337) -- so none of those tables
