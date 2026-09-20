@@ -46,6 +46,16 @@ findings, not crashes, and a cell that leaves NOMINAL while running is marked `c
 `bar_ok=false` -- launching from NOMINAL is not sufficient, and on 2026-09-18 four arms that all
 launched NOMINAL gave 10.80 / 10.34 / 8.92 / 8.58 in the order of how hot they got.
 
+WINDOW CROSS-CHECK (added 2026-09-20). The gate above is bookkeeping: it checks that the box CLAIMS
+to be fine. On 2026-09-20 18:1x a window passed all of it -- NOMINAL throughout, 54% usable, no other
+session -- while running ~5x slow, and it silently corrupted two rounds of A/B. So this tool now also
+checks the box PHYSICALLY: the prefill axis it already measures IS the sentinel shape (pp2048, the
+same population as `window_sentinel_ref.json`), so its own prefill reading is compared against that
+recorded band at zero extra GPU cost. A reading under the floor marks the whole table
+`window=DEGRADED` in the JSON and prints a warning. The per-axis verdicts are deliberately NOT
+changed -- a degraded window usually fails the bars on its own, and the cases this catches are the
+relative comparisons people make FROM this table.
+
 Exit code is 0 whenever the table was produced. A refused bar is a result.
 
 USAGE
@@ -202,6 +212,31 @@ def verdict(rec: dict, bar: float) -> dict:
                     f"left NOMINAL (launch={launch}, worst={worst}) -> not a bar-meeting number")}
 
 
+def window_crosscheck(recs: list) -> dict:
+    """Physical health, from a reading this run already paid for.
+
+    The prefill axis of this very tool is the sentinel shape (pp2048 at the profile's batch), so its
+    t/s is a sample of the population recorded in `window_sentinel_ref.json`. No extra launch. The
+    floor is `median * frac` (default 0.85): the recorded healthy samples span 275.65-300.43 (1.09x),
+    so 15% under the median cannot belong to that population, while the degraded window measured on
+    2026-09-20 read ~0.2x of it -- the line is not a knife edge.
+    """
+    ref_p = HERE / "window_sentinel_ref.json"
+    pre = next((r for r in recs if r.get("axis") == "prefill-house"), None)
+    if not pre or not ref_p.exists():
+        return {"verdict": "UNKNOWN", "why": "no prefill axis in this run (or no reference band)"}
+    row = (pre.get("rows") or [{}])[0]
+    ts = row.get("t/s")
+    if ts is None:
+        return {"verdict": "UNKNOWN", "why": "prefill axis produced no t/s"}
+    ref = json.loads(ref_p.read_text())
+    frac = float(ref.get("frac", 0.85))
+    floor = float(ref["median"]) * frac
+    return {"verdict": "HEALTHY" if ts >= floor else "DEGRADED",
+            "prefill_ts": ts, "ref_median": float(ref["median"]), "frac": frac,
+            "floor": floor, "ratio_to_median": ts / float(ref["median"])}
+
+
 def md_table(recs: list, bars: dict) -> str:
     lines = ["| axis | arm | shape | t/s | ± | n_batch | thermal launch / worst | bar | verdict |",
              "|---|---|---|---:|---:|---:|---|---:|---|"]
@@ -322,8 +357,19 @@ def main() -> int:
             print("  ", r["cmd"])
         return 0
 
+    win = window_crosscheck(recs)
     out = {"tool": "prod_profile.py", "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
-           "declared": declared, "build": fingerprint(), "axes": recs}
+           "declared": declared, "build": fingerprint(), "window": win, "axes": recs}
+    if win["verdict"] == "DEGRADED":
+        print("\n*** WINDOW DEGRADED: prefill read %.2f t/s against a recorded median of %.2f "
+              "(floor %.2f, %.2fx of median) while the thermal key said NOMINAL. ***\n"
+              "    Every number in this table was taken on a box that is physically slow, not a box "
+              "that merely claims to be fine. Do not compare them against other runs."
+              % (win["prefill_ts"], win["ref_median"], win["floor"], win["ratio_to_median"]),
+              flush=True)
+    elif win["verdict"] == "HEALTHY":
+        print("\nwindow: HEALTHY (prefill %.2f t/s = %.2fx of the recorded median %.2f)"
+              % (win["prefill_ts"], win["ratio_to_median"], win["ref_median"]), flush=True)
     if args.json:
         Path(args.json).write_text(json.dumps(out, ensure_ascii=False, indent=2))
         print(f"\njson -> {args.json}")

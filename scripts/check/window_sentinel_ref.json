@@ -1,0 +1,24 @@
+{
+  "shape": "-p 2048 -n 0",
+  "batch": 5632,
+  "profile": "prefill250",
+  "median": 281.51,
+  "frac": 0.85,
+  "samples": [275.65, 276.25, 281.51, 292.34, 300.43],
+  "provenance": "All five are prefill-house readings of the frozen production profile (prefill250, pp2048, -b 5632) that were recorded with launch=worst=NOMINAL and are already in the tree: 276.25 and 300.43 are quoted in scripts/check/prod_profile.py's docstring; 292.34 is the 2026-09-18 referenceable prefill; 281.51 is Backup/prod_profile/prod_profile_20260920_1528.json (PASS, NOMINAL/NOMINAL); 275.65 is the same tool on 15:50 (refused only because the run left NOMINAL).",
+  "note": "REFERENCE FROM RECORDS, not from a fresh recording on a certified-healthy box. Refresh with --record --this-box-is-healthy when the box is known good. The healthy span is 275.65-300.43 (1.09x); the 0.85 floor (239.3) sits 13% below the worst healthy sample, and the degraded window measured on 2026-09-20 18:1x read about 0.2x of the median -- so the line is not a knife edge.",
+  "unclean_samples": [
+    {
+      "ts": 274.14,
+      "when": "2026-09-20 20:11:50-20:12:50",
+      "why_unclean": "another line's llama-server was loaded on the box at the time (its mtp_accept_ab L3-dose arm1). NOT folded into the median: the band is meant to be the solo-box population, and 274.14 was measured while sharing. Kept because it is the one live sample this tool has produced, and because it says something real: the sentinel reads HEALTHY even on a shared box -- so it does NOT prove exclusivity, only physical speed. Exclusivity still comes from the pgrep gate.",
+      "ratio_to_median": 0.974
+    }
+  ],
+  "counter_example": {
+    "when": "2026-09-20 18:11-18:23",
+    "what": "three arms of a decode A/B: 2.17 / 1.36 / 1.35 t/s against 10.64 t/s for the same cell at 16:10",
+    "gates_that_passed": "thermal NOMINAL for the whole run, usable memory 54%, no other session",
+    "why_it_matters": "both conditions the existing window gate checks were satisfied and the box was ~5x slow; that window then silently corrupted two rounds of measurement"
+  }
+}
