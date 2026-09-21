@@ -1,20 +1,20 @@
 {
-  "generated_at": "2026-09-20 09:15:41",
+  "generated_at": "2026-09-21 09:15:56",
   "git": {
     "branch": "demo/sweet-spot-windows-fix",
-    "head": "bfd2c3c01ef8811946968f621500b6e01aed74a5",
-    "head_short": "bfd2c3c01",
-    "subject": "docs(index): resync —— §EN-308 補上 fc0b8a406 的 hash、Gates 段的格式修正經過，重生兩支索引",
-    "dirty": 14,
+    "head": "4396874e8fbc11b52cb70ff54b7b19ed504c1fa0",
+    "head_short": "4396874e8",
+    "subject": "add io_granularity_curve.py: measure pread size -> effective bandwidth",
+    "dirty": 71,
     "dirty_sample": [
-      "M agent_harness/portal/targets.json",
+      "M agent_harness/engine_loop/MANIFEST.jsonl",
+      " M agent_harness/engine_loop/memory/INDEX.jsonl",
+      " M agent_harness/portal/targets.json",
       " M docs/fleet_export.json",
+      " M scripts/check/attribution_timeline.py",
       " M scripts/check/caliber_env.py",
       " M scripts/check/decode_sweep.py",
-      " M scripts/check/m123_oracle_gate.py",
-      " M scripts/check/mtp_accept_ab.py",
-      " M scripts/check/paired_ab.py",
-      " M scripts/check/server_window.py"
+      " M scripts/check/m123_oracle_gate.py"
     ]
   },
   "fingerprint": {
@@ -92,31 +92,38 @@
         },
         {
           "name": "2026-09-20.md",
-          "bytes": 178095,
-          "mtime": "09-20 07:36",
-          "lines": 2505,
-          "sections": 44
+          "bytes": 373953,
+          "mtime": "09-20 23:53",
+          "lines": 5076,
+          "sections": 98
+        },
+        {
+          "name": "2026-09-21.md",
+          "bytes": 31789,
+          "mtime": "09-21 02:25",
+          "lines": 364,
+          "sections": 12
         },
         {
           "name": "MEMORY.md",
-          "bytes": 12403,
-          "mtime": "09-20 02:36",
-          "lines": 137,
+          "bytes": 17246,
+          "mtime": "09-20 21:08",
+          "lines": 183,
           "sections": 7
         },
         {
           "name": "MEMORY_FACTS.md",
-          "bytes": 11981,
-          "mtime": "09-19 22:19",
-          "lines": 120,
-          "sections": 3
+          "bytes": 14122,
+          "mtime": "09-21 02:02",
+          "lines": 143,
+          "sections": 4
         },
         {
           "name": "MEMORY_PERF.md",
-          "bytes": 57381,
-          "mtime": "09-19 12:58",
-          "lines": 612,
-          "sections": 9
+          "bytes": 88476,
+          "mtime": "09-21 02:14",
+          "lines": 920,
+          "sections": 19
         },
         {
           "name": "MEMORY_S1.md",
@@ -126,17 +133,17 @@
           "sections": 13
         }
       ],
-      "count": 10,
-      "bytes": 1876030,
-      "lines": 24760
+      "count": 11,
+      "bytes": 2141756,
+      "lines": 28072
     },
     "skills": {
       "items": [
         {
           "name": "cgc-commit-gate",
-          "bytes": 93375,
-          "lines": 1256,
-          "sha8": "25e33f31",
+          "bytes": 94444,
+          "lines": 1269,
+          "sha8": "db6a58e3",
           "desc": "在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）提交 commit 時，正確通過 pre-commit 閘門並滿足 D5 的完整流程與陷阱。當要在該 repo commit、被 pre-commit hook 擋下、不確定要不要跑 re"
         },
         {
@@ -148,9 +155,9 @@
         },
         {
           "name": "cgc-decode-attribution",
-          "bytes": 201803,
-          "lines": 2096,
-          "sha8": "7d9b04d9",
+          "bytes": 205264,
+          "lines": 2147,
+          "sha8": "58f63166",
           "desc": "在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）上把一個 decode 步歸因到 GPU 執行、CPU 序列化、池/IO 或編碼，並用既有儀器取得可證的判準數字。當使用者問「decode 為什麼慢」「wait 是什麼」「瓶頸在哪」「要不"
         },
         {
@@ -169,9 +176,9 @@
         },
         {
           "name": "cgc-prefill-thermal-delivery",
-          "bytes": 21750,
-          "lines": 270,
-          "sha8": "9dbfb765",
+          "bytes": 24664,
+          "lines": 285,
+          "sha8": "71958a1f",
           "desc": "在 flashkv-devserver（TurboFieldfare / llama.cpp CGC fork）上決定一個 prefill t/s 數字能不能被引用。核心是一條 11 ms、不需要 root 的讀數 notifyutil -g com.apple.system.thermalpres"
         },
         {
@@ -197,8 +204,8 @@
         }
       ],
       "count": 9,
-      "bytes": 449452,
-      "lines": 5542
+      "bytes": 456896,
+      "lines": 5621
     },
     "code": {
       "areas": [
@@ -212,8 +219,8 @@
         {
           "area": "src/llama.cpp（引擎核心 C++/Metal）",
           "files": 2440,
-          "loc": 1063695,
-          "bytes": 80267017,
+          "loc": 1064762,
+          "bytes": 80336316,
           "archive": false
         },
         {
@@ -225,9 +232,9 @@
         },
         {
           "area": "scripts/（量測、閘門、server）",
-          "files": 191,
-          "loc": 59198,
-          "bytes": 2840826,
+          "files": 208,
+          "loc": 66950,
+          "bytes": 3236756,
           "archive": false
         },
         {
@@ -301,12 +308,12 @@
           "archive": false
         }
       ],
-      "files": 8106,
-      "loc": 3098582,
-      "bytes": 163075913,
-      "files_live": 4271,
-      "loc_live": 1543818,
-      "bytes_live": 99312434
+      "files": 8123,
+      "loc": 3107401,
+      "bytes": 163541142,
+      "files_live": 4288,
+      "loc_live": 1552637,
+      "bytes_live": 99777663
     },
     "traces": {
       "episodes": 122,
@@ -333,16 +340,16 @@
       "sft_prime_valid": 37
     },
     "corpus": {
-      "whitepapers": 66,
+      "whitepapers": 73,
       "latest_whitepaper": "ZERO_REGION_TRIAGE_20260916.html",
-      "docs_md": 99,
+      "docs_md": 150,
       "evidence": {
         "files": 2447,
         "bytes": 15426860
       },
       "backup": {
-        "files": 5924,
-        "bytes": 1258084382
+        "files": 6543,
+        "bytes": 1420000004
       }
     }
   },
@@ -515,7 +522,7 @@
         "id": "shared-shell-cjk",
         "group": "shared",
         "status": "PASS",
-        "seconds": 0.13,
+        "seconds": 0.29,
         "rc": 0,
         "tail": "  0 處：所有 `$VAR` 後面都不是緊接非 ASCII",
         "cost": "fast",
@@ -587,7 +594,7 @@
         "status": "FAIL",
         "seconds": 0.04,
         "rc": 1,
-        "tail": "[error] 341 drift(s) between INDEX.jsonl and .workbuddy/memory/: / row count: index 418 vs derived 419 / .workbuddy/memory/2026-09-20.md :: (file row): fields differ ['bytes', 'lines', 'mtime', 'sha256']",
+        "tail": "[error] 447 drift(s) between INDEX.jsonl and .workbuddy/memory/: / row count: index 470 vs derived 497 / .workbuddy/memory/MEMORY_PERF.md :: (file row): fields differ ['bytes', 'lines', 'mtime', 'sha256']",
         "cost": "fast",
         "needs": ""
       },
@@ -597,7 +604,7 @@
         "status": "FAIL",
         "seconds": 0.04,
         "rc": 1,
-        "tail": "[error] 2 drift(s) between the manifest and disk: / scripts/check/mtp_accept_ab.py: bytes: manifest 104405 vs disk 108220 / scripts/check/mtp_accept_ab.py: mtime: manifest '2026-09-20T07:25:01' vs disk '2026-09-20T07:29:30'",
+        "tail": "[error] 12 drift(s) between the manifest and disk: / scripts/check/m123_oracle_gate.py: bytes: manifest 78120 vs disk 98653 / scripts/check/m123_oracle_gate.py: mtime: manifest '2026-09-20T20:26:18' vs disk '2026-09-21T00:10:17'",
         "cost": "fast",
         "needs": ""
       },
@@ -607,7 +614,7 @@
         "status": "FAIL",
         "seconds": 0.03,
         "rc": 1,
-        "tail": "  -> DRIFT: 1 項。重跑 `python3 agent_harness/scripts/import_harness_snapshot.py` 再重生索引（先 build_memory_index.py、後 index_assets.py）。",
+        "tail": "  -> DRIFT: 7 項。重跑 `python3 agent_harness/scripts/import_harness_snapshot.py` 再重生索引（先 build_memory_index.py、後 index_assets.py）。",
         "cost": "fast",
         "needs": ""
       },
@@ -677,7 +684,7 @@
     {
       "kind": "registry",
       "severity": "medium",
-      "title": "決策 registry 的覆蓋停在 2026-09-18（今天的日誌有 2 天在它之後）"
+      "title": "決策 registry 的覆蓋停在 2026-09-18（今天的日誌有 3 天在它之後）"
     },
     {
       "kind": "charter",
@@ -757,7 +764,7 @@
         ".workbuddy/memory/2026-09-18.md": false
       },
       "pushed": "unknown",
-      "head": "bfd2c3c01ef8811946968f621500b6e01aed74a5",
+      "head": "4396874e8fbc11b52cb70ff54b7b19ed504c1fa0",
       "remote_sha": "",
       "remotes": "origin,cgcengine0907"
     }
