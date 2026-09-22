@@ -133,6 +133,13 @@ SWEEP_SHAPES = (
 )
 
 
+# The verdicts that carry no median: a channel that moved, and one with no null cell at all.
+# Both print only their reason -- every other branch reads `null_pct_per_rep`, so a status that
+# reaches the else-branch without it is a KeyError in the middle of a sweep (seen once, on the
+# `--reps 1` path: the tool crashed AFTER the first shape's arm had already been measured).
+REFUSALS = ("INVALID", "unjudged")
+
+
 def rotated(values, rep):
     """The arm order for rep `rep`: the list rotated left by `rep`.
 
@@ -276,7 +283,7 @@ def nsg_sweep(args):
                 "median_us": median([r["marginal_us"] for r in rows]), "spread_frac": sp / 100,
                 "pipeline": rows[-1]["pipeline"], "reached": reached.get(tag), "per_rep": rows}
 
-        if v["status"] == "INVALID":
+        if v["status"] in REFUSALS:
             print("   NO READING: %s" % v["why"])
         else:
             print("   null cell: unset spans %.1f-%.1f%% => noise %.1f%%, threshold %.1f%%"
@@ -655,6 +662,16 @@ def selftest():
           unwired["status"] == "INVALID" and "plumbing" in unwired["why"])
     check("one unset reading is 'unjudged', not a zero-width noise floor",
           nsg_decide({"unset": [44.3], "8": [60.0]}, {"8": True})["status"] == "unjudged")
+
+    # The printer reads `null_pct_per_rep` in its non-refusal branch, so the precondition it
+    # needs is one-directional: any status OUTSIDE REFUSALS must carry the key. (INVALID
+    # carries it too -- it is built from the same dict as a win -- which is why an "exactly
+    # one of the two sets" reading is wrong, and a test asserting that did fail first.)
+    none_clause = nsg_decide({"unset": [44.3], "8": [60.0]}, {"8": True})
+    every = [drifted, stable, loud, none_clause]
+    check("every non-refusal verdict carries the null cell the printer reads",
+          all(("null_pct_per_rep" in v) or (v["status"] in REFUSALS) for v in every)
+          and {v["status"] for v in every} >= {"INVALID", "unjudged", "no-lever", "win"})
     print("selftest: %d/%d passed" % (tot - bad, tot))
     return 0 if bad == 0 else 1
 

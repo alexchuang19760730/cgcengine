@@ -832,6 +832,13 @@ static int ggml_metal_nsg_env(ggml_type t) {
     switch (t) {
         case GGML_TYPE_IQ2_S:   return N_SG_IQ2_S;
         case GGML_TYPE_IQ3_XXS: return N_SG_IQ3_XXS;
+        // CGC P1-3e: IQ3_S. In the MUL_MAT_ID getter this type was the ONLY one of
+        // the model's three expert types still hard-coded (IQ2_S has read this helper
+        // since P1-3c) -- so the family's slowest per-BYTE shape was the one shape no
+        // sweep could reach. It is also a Metal function constant there, so nothing in
+        // the .metal source has to change and each row's dot product still stays inside
+        // one simdgroup (same bit-identity argument as IQ2_S).
+        case GGML_TYPE_IQ3_S:   return N_SG_IQ3_S;
         default:                return -1;
     }
 }
@@ -1215,7 +1222,16 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv_id(ggml_m
             } break;
         case GGML_TYPE_IQ3_S:
             {
-                nsg = N_SG_IQ3_S;
+                // CGC P1-3e: the last hard-coded type in THIS getter. IQ2_S below has
+                // honoured CGC_MMV_NSG since P1-3c, so the expert family's slowest
+                // per-byte shape (down_exps, 110 MiB/bank vs IQ2_S's 82) was also the
+                // only one no sweep could reach. nsg is a function constant here -- the
+                // pipeline name prints kernel_mul_mv_id_iq3_s_f32_nsg=N -- so no .metal
+                // change is needed, and a row's dot product still stays inside one
+                // simdgroup, which is the same bit-identity argument IQ2_S rests on.
+                // smem and nr0 are deliberately untouched: this makes the tile dimension
+                // a knob, it does not change what the kernel reads.
+                nsg = ggml_metal_nsg_env(GGML_TYPE_IQ3_S);
                 nr0 = N_R0_IQ3_S;
                 smem = 512*4;
             } break;
