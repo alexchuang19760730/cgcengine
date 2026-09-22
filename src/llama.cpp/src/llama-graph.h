@@ -4,6 +4,7 @@
 #include "llama-batch.h"
 #include "llama-hparams.h"
 #include "llama-adapter.h"
+#include "llama-shape-knob.h"
 
 #include <cstdint>
 #include <cstdlib>
@@ -20,22 +21,12 @@
 // Tunable via CGC_POOL_MAX_TOKENS (clamped to [2, 64]).
 // [2026-09-08] Increased upper bound from 16 to 64 to allow larger prefill batches
 // for better GPU utilization. Note: larger values may increase memory pressure.
+// [2026-09-22] The parse moved into the shape knob table (`llama-shape-knob.cpp`) so that the
+// value this function returns, the value the context applies, and the value the `CGC-SHAPE`
+// report prints cannot disagree. Behaviours preserved: same default (8), same [2,64] clamp,
+// and `CGC_SHAPE_M` is accepted as an alias (see the table for the conflict rule).
 static inline uint32_t cgc_pool_max_tokens() {
-    static const uint32_t v = []() {
-        uint32_t x = 8;
-        const char * e = getenv("CGC_POOL_MAX_TOKENS");
-        if (e != nullptr) {
-            x = 0;
-            for (; *e >= '0' && *e <= '9'; ++e) {
-                x = x * 10 + (uint32_t) (*e - '0');
-                if (x > 100) break;
-            }
-        }
-        if (x < 2)  x = 2;
-        if (x > 64) x = 64;
-        return x;
-    }();
-    return v;
+    return cgc_shape_pool_max_tokens();
 }
 
 struct ggml_cgraph;

@@ -80,6 +80,36 @@ SHAPES = (
 
 MIB = 1024 * 1024
 
+# How much device memory ONE invocation asks for. This used to be a literal 320
+# buried inside marginal(), with no way to change it -- which is why "is the
+# instrument itself what makes the box unreadable" could not even be asked.
+#
+# Measured 2026-09-23 by shape_probe/footprint_ab.py (three arms, 3 reps, two shapes):
+#   peak RSS does NOT move with this number    204.5 MB at pool=320 and 204.2 at pool=146
+#     -> the pages past the bank are reserved but never faulted, so they never appear in
+#        the process own resident set
+#   the BOX's reclaimable dip DOES move with it  320 -> 146 MiB cut the dip 26.4%
+#     -> so the right instrument for "is the probe too heavy" is the shared window's
+#        vm_free_mb during the run, not the child RSS. Both are recorded for that reason.
+POOL_MIB_DEFAULT = 320
+POOL_SLACK_MIB = 64
+# Exact bytes per 256-element block, read back from what the probe prints for these banks.
+BLOCK_BYTES = {"iq2_s": 82, "iq3_s": 110, "iq3_xxs": 84, "iq4_xs": 106, "q3_k": 112}
+BLOCK_ELEMS = 256
+
+
+def lean_pool_mib(tname, k, out_n, experts):
+    """Smallest pool this bank still fits in.
+
+    The probe exits 2 printing "pool exhausted" instead of returning a number, so a
+    too-small pool is a loud failure rather than a quiet wrong reading -- which is
+    why this may be optimistic by one slack term and is not required to be exact.
+    """
+    if tname not in BLOCK_BYTES:
+        return POOL_MIB_DEFAULT          # refuse to guess a size for an unknown type
+    blocks = (k * out_n * experts + BLOCK_ELEMS - 1) // BLOCK_ELEMS
+    return int(round(blocks * BLOCK_BYTES[tname] / MIB + POOL_SLACK_MIB))
+
 
 # ---------------------------------------------------------------- window (must
 # travel with every reading: this box runs other sessions, and a number taken over
@@ -122,6 +152,57 @@ def _tree_digest():
     return out
 
 
+def thermal_stamp():
+    """The OS thermal pressure level, or None when it cannot be read.
+
+    `thermal_pressure.py` is the tree's instrument for this (2 ms, no root). It is imported here
+    rather than re-implemented, and an unreadable reading stays None instead of becoming a default
+    NOMINAL: mtp_accept_ab.py records the same field the same way, and a fabricated Nominal is how
+    a HEAVY run gets quoted as a clean one.
+    """
+    try:
+        import thermal_pressure  # noqa: E402  (sys.path already carries scripts/check)
+        return thermal_pressure.stamp()
+    except Exception:
+        return None
+
+
+def window_now(need_mb=None):
+    """The shared probe, asked NOW.
+
+    The module-level WINDOW is a snapshot taken at import: right for a header line,
+    useless for answering whether the box was still ours when the last arm ran. On
+    2026-09-23 that difference was not academic -- a sweep whose header read
+    usable 1.25 GiB started while the same box had shown 9.4 GiB minutes before and
+    8.0 GiB minutes after, so its rows describe a memory regime nobody else saw.
+    """
+    try:
+        return _sw.decision(need_mb=NEED_MB if need_mb is None else need_mb)
+    except Exception as exc:                       # the probe failing is not permission to guess
+        return {"error": str(exc), "admits": None, "reclaimable_mb": None,
+                "foreign_llama": None, "class": "unreadable"}
+
+
+def lost_the_box(w0, w1):
+    """True only when the box was ours at the start and NOT ours at the end.
+
+    The asymmetry is the whole content of the function, and it is why this is not a
+    boolean: starting over someone else's box is already recorded by the header line
+    that is printed anyway, whereas LOSING it mid-sweep is what makes every row in
+    between uninterpretable. The reverse direction (busy -> quiet) is not a hijack,
+    it is a change nobody asked for and nobody can attribute.
+    """
+    if w0 is None or w1 is None:
+        return None
+    a0, a1 = w0.get("admits"), w1.get("admits")
+    # An unread probe leaves the question UNANSWERABLE, which is a third answer and not
+    # a synonym for "no hijack": returning False here would print no warning at all on a
+    # run whose window was never actually taken. (Caught by selftest, not by review.)
+    if not isinstance(a0, bool) or not isinstance(a1, bool):
+        return None
+    return (a0 is True) and (a1 is not True)
+
+
 # --------------------------------------------------------------- the nsg sweep
 # The id pipeline's tile dimension (nsg = simdgroups per threadgroup). IQ2_S has honoured
 # CGC_MMV_NSG since CGC P1-3c; IQ3_S only since P1-3e (this commit), so an older dylib will
@@ -138,6 +219,14 @@ SWEEP_SHAPES = (
 # reaches the else-branch without it is a KeyError in the middle of a sweep (seen once, on the
 # `--reps 1` path: the tool crashed AFTER the first shape's arm had already been measured).
 REFUSALS = ("INVALID", "unjudged")
+
+
+def pool_for(tname, k, out_n, experts, requested):
+    """0 means "the smallest pool that still fits" (lean_pool_mib); anything else is used
+    verbatim and gets recorded, so a row can always be traced to the pool it ran with."""
+    if requested == 0:
+        return lean_pool_mib(tname, k, out_n, experts)
+    return requested
 
 
 def rotated(values, rep):
@@ -228,14 +317,42 @@ def nsg_sweep(args):
     print("window %s: usable %.2f GiB, swap %.0f MiB  |  %d rep(s), arm order rotated per rep"
           % (WINDOW["class"], WINDOW["usable_mib"] / 1024, WINDOW["swap_used_mib"], reps))
     print("-" * 104)
+    W0 = window_now()
+    # The thermal level AT LAUNCH, which is the criterion (thermal_pressure.py): the shared window
+    # bar answers "is the box mine", not "is it hot", and the two are independent -- a box can be
+    # idle and HEAVY while the host is still shedding the previous run's heat. Recorded here because
+    # the sweep's admission rule names thermal level 0 as a condition and this artifact had no field
+    # to check it against.
+    T0 = thermal_stamp()
+    print("window  begin: admits=%s reclaimable=%s MB foreign=%s thermal=%s"
+          % (W0.get("admits"), None if W0.get("reclaimable_mb") is None else round(W0["reclaimable_mb"]),
+             W0.get("foreign_llama"), (T0 or {}).get("label")))
+    # Print, yes -- but printing is not a gate. Every one of the five runs of this sweep
+    # (2026-09-22 20:00 and four on 2026-09-23) started on a box somebody else was
+    # loading, and every one of them came back with an unreadable null cell. A refusal
+    # here costs one message; proceeding costs two minutes and a number nobody can use.
+    overridden = False
+    if W0.get("admits") is not True:
+        why = "; ".join(W0.get("refused_by") or []) or "the shared window says no"
+        if not args.allow_busy:
+            print("REFUSED: %s" % why)
+            print("  this sweep's rows never once separated the knob from the box. Wait for "
+                  "a window where the shared probe admits; --allow-busy proceeds and says so.")
+            return 2
+        print("OVERRIDDEN: %s -- every row below may describe the neighbour" % why)
+        overridden = True
 
     out = {"peak_gib_s": PEAK_GIB_S, "tokens": tokens, "libdir": args.libdir,
-           "window": WINDOW, "engine_digest": digest(args.libdir), "reps": reps,
+           "window": WINDOW, "window_begin": W0, "thermal_begin": T0, "overridden": overridden,
+           "engine_digest": digest(args.libdir), "reps": reps, "pool_mib": args.pool_mib,
            "instrument": "shape_probe/mmid_shapes.py --nsg-sweep", "b1": args.b1, "b2": args.b2,
            "rows": {}}
 
     for (label, tname, k, out_n, experts) in SWEEP_SHAPES:
-        print("%s  %s %dx%d  experts=%d used=%d" % (label, tname, k, out_n, experts, USED))
+        POOL = pool_for(tname, k, out_n, experts, args.pool_mib)
+        print("%s  %s %dx%d  experts=%d used=%d  pool=%d MiB%s"
+              % (label, tname, k, out_n, experts, USED, POOL,
+                 " (lean)" if args.pool_mib == 0 else ""))
         per_arm, detail, reached, passes = {}, {}, {}, []
         for rep in range(reps):
             tags = []
@@ -245,7 +362,8 @@ def nsg_sweep(args):
                 if val is not None:
                     e["CGC_MMV_NSG"] = str(val)
                 m, fixed, op_bytes, extra = marginal(tname, k, out_n, experts, USED, tokens,
-                                                     args.b1, args.b2, args.target_ms, e)
+                                                     args.b1, args.b2, args.target_ms, e,
+                                                     POOL)
                 if m is None:
                     print("   rep %d %-6s FAILED -- %s" % (rep, tag, transport(extra)))
                     out["rows"]["%s_%s" % (label, tag)] = {"error": transport(extra)}
@@ -302,6 +420,19 @@ def nsg_sweep(args):
                 print("   (unstable across reps, inside the trend: %s)" % ", ".join(v["unstable"]))
         out["rows"][label + "_verdict"] = dict(v, passes=passes)
         print()
+
+    W1 = window_now()
+    lost = lost_the_box(W0, W1)
+    out["window_end"] = W1
+    out["thermal_end"] = thermal_stamp()
+    out["lost_box"] = lost
+    print("window  end  : admits=%s reclaimable=%s MB foreign=%s  swap %.0f MiB  thermal=%s"
+          % (W1.get("admits"),
+             None if W1.get("reclaimable_mb") is None else round(W1["reclaimable_mb"]),
+             W1.get("foreign_llama"), swap_used_mib(), (out["thermal_end"] or {}).get("label")))
+    if lost:
+        print("HIJACKED: the box was ours at the start and had stopped being ours by the end "
+              "-- every row above may describe someone else's memory regime")
 
     if args.json:
         p = Path(args.json)
@@ -444,14 +575,15 @@ def one(tname, k, out_n, experts, used, tokens, batch, target_ms, pool_mib, env=
             "op_bytes": op_bytes, "pipeline": parse_pipeline(p.stderr)}, ""
 
 
-def marginal(tname, k, out_n, experts, used, tokens, b1, b2, target_ms, env=None):
+def marginal(tname, k, out_n, experts, used, tokens, b1, b2, target_ms, env=None,
+            pool_mib=POOL_MIB_DEFAULT):
     """(marginal µs/op, fixed µs/graph, op bytes, [raw g(b1), g(b2)]) or (None...)."""
     raw = {}
     for b in (b1, b2):
         # Device memory for ONE bank (82-136 MiB) + ids + outs. The bank is shared by
         # every copy and the copies differ by ids, so this does NOT scale with b --
         # which is why a 200 MiB pool can host a 32-op graph that reads 256 experts.
-        r, err = one(tname, k, out_n, experts, used, tokens, b, target_ms, 320, env)
+        r, err = one(tname, k, out_n, experts, used, tokens, b, target_ms, pool_mib, env)
         if r is None:
             return None, None, None, err
         raw[b] = r["per_op_us"] * r["ops"]          # µs per graph (one loop)
@@ -467,6 +599,15 @@ def main():
     ap.add_argument("--b1", type=int, default=16)
     ap.add_argument("--b2", type=int, default=32)
     ap.add_argument("--target-ms", type=float, default=1500.0)
+    # No %-formatting here: argparse formats every help string itself (with the action's params),
+    # so a string that still contains a bare `%` after our own substitution kills `--help` with
+    # "TypeError: must be real number, not dict". Interpolate by concatenation and leave %% escaped.
+    ap.add_argument("--pool-mib", type=int, default=POOL_MIB_DEFAULT,
+                    help="device pool per invocation; " + str(POOL_MIB_DEFAULT) + " today, "
+                         "0 = the smallest that still fits the bank. footprint_ab.py measured "
+                         "2026-09-23: the child RSS is the SAME either way, but the box "
+                         "reclaimable dip falls 26%% lean -- so this is a real footprint lever "
+                         "with no effect on what is measured.")
     ap.add_argument("--json", default="")
     ap.add_argument("--libdir", default="",
                     help="directory holding the libggml-metal to test (a build outside the tree); "
@@ -476,6 +617,11 @@ def main():
     ap.add_argument("--nsg-sweep", default="",
                     help="comma-separated CGC_MMV_NSG values (or 'unset') to compare, "
                          "e.g. 'unset,1,4,8,16,32'")
+    ap.add_argument("--allow-busy", action="store_true",
+                    help="proceed even when the shared window refuses, and record that it did "
+                         "(the escape hatch is explicit because the default is the point)")
+    ap.add_argument("--need-mb", type=float, default=0.0,
+                    help="0 = the shared server_window.NEED_MB")
     ap.add_argument("--reps", type=int, default=3,
                     help="passes over the arm list, rotated per pass (default 3). One pass "
                          "cannot separate a knob from a drift: this sweep's first run left a "
@@ -504,7 +650,7 @@ def main():
     out = {"peak_gib_s": PEAK_GIB_S, "step_ms": [STEP_MS_LO, STEP_MS_HI], "ml": ML_CENTRAL,
            "window": WINDOW, "engine_digest": digest(),
            "instrument": "shape_probe/mmid_shapes.py --op mul_mat_id (kernel-side only; no engine)",
-           "used": USED, "layers": LAYERS,
+           "used": USED, "layers": LAYERS, "pool_mib": args.pool_mib,
            "b1": args.b1, "b2": args.b2, "target_ms": args.target_ms, "rows": {}}
     per_token_ms = {}                      # tokens -> measured ms/step for the whole family
     bytes_step = {}                        # tokens -> bytes/step for the whole family
@@ -513,8 +659,10 @@ def main():
         tot_ms = tot_bytes = 0.0
         print("tokens/op = %d" % T)
         for (label, tname, k, out_n, experts, ops, layers) in SHAPES:
+            POOL = pool_for(tname, k, out_n, experts, args.pool_mib)
             m, fixed, op_bytes, err = marginal(tname, k, out_n, experts, USED, T,
-                                               args.b1, args.b2, args.target_ms)
+                                               args.b1, args.b2, args.target_ms,
+                                               pool_mib=POOL)
             key = "%s_t%d" % (label, T)
             if m is None:
                 print("   %-10s FAILED -- %s" % (label, err))
@@ -642,6 +790,43 @@ def selftest():
     check("rotation is periodic, not lossy", rotated(vals, 3) == rotated(vals, 0))
     check("median is the middle of an odd list and the mean of the pair in an even one",
           median([3.0, 1.0, 2.0]) == 2.0 and median([1.0, 2.0, 3.0, 4.0]) == 2.5)
+
+    # The pool lever must be smaller than today's default AND still hold the bank it
+    # is asked to hold: too small is a loud probe failure, too large silently costs
+    # the box its reclaimable memory (footprint_ab.py: 26.4 percent dip, same RSS).
+    check("the lean pool for the iq2_s gate bank fits 82 MiB plus slack",
+          lean_pool_mib("iq2_s", 2048, 512, 256) == 146)
+    check("and the iq3_s down bank (110 MiB) gets one too",
+          lean_pool_mib("iq3_s", 512, 2048, 256) == 174)
+    check("every lean pool is strictly bigger than the bank it holds",
+          lean_pool_mib("iq2_s", 2048, 512, 256) > 82 and lean_pool_mib("iq3_s", 512, 2048, 256) > 110)
+    check("...and strictly smaller than the default it is meant to replace",
+          max(lean_pool_mib(t, k, o, e) for t, k, o, e in
+              (("iq2_s", 2048, 512, 256), ("iq3_s", 512, 2048, 256))) < POOL_MIB_DEFAULT)
+    check("an unknown type falls back to the default instead of inventing a size",
+          lean_pool_mib("q9_z", 1, 1, 1) == POOL_MIB_DEFAULT)
+    check("pool_for(0) asks for lean", pool_for("iq3_s", 512, 2048, 256, 0) == 174)
+
+    # The window pair: losing the box mid-sweep is the only case that voids rows, and
+    # the direction is the content -- so mutating it must go red in both directions.
+    check("starting quiet and ending busy is a hijack",
+          lost_the_box({"admits": True}, {"admits": False}) is True)
+    check("starting QUIET and ending quiet is not",
+          lost_the_box({"admits": True}, {"admits": True}) is False)
+    check("busy -> quiet during a sweep is NOT a hijack (nobody lost anything)",
+          lost_the_box({"admits": False}, {"admits": True}) is False)
+    check("busy -> busy is not either",
+          lost_the_box({"admits": False}, {"admits": False}) is False)
+    check("an unreadable probe gives None, never an implied clean bill of health",
+          lost_the_box({"admits": None}, {"admits": False}) is None
+          and lost_the_box(None, {"admits": False}) is None)
+    check("...at EITHER end: a missing reading never becomes 'no hijack'",
+          lost_the_box({"admits": True}, {"admits": None}) is None
+          and lost_the_box({"admits": True}, None) is None)
+    check("and None is distinguishable from False at the call site",
+          lost_the_box({"admits": True}, {"admits": None}) is not False)
+    check("pool_for(n) honours and records an explicit request",
+          pool_for("iq3_s", 512, 2048, 256, 200) == 200)
 
     # a channel that DRIFTED (the real first run: unset 29.8% and 20.4% for the same arm)
     drifted = nsg_decide({"unset": [29.8, 20.4], "1": [28.3, 21.0], "32": [18.7, 25.0]},

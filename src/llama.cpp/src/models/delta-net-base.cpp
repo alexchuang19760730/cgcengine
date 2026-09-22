@@ -3,6 +3,9 @@
 #include "llama-impl.h"
 #include "llama-memory-recurrent.h"
 
+// the shape OUTPUT house: this file reports which recurrence implementation it actually ran
+#include "llama-shape-knob.h"
+
 // utility to get one slice from the third dimension
 // input dim:  [x, y, c, b]
 // output dim: [x, y, 1, b]
@@ -437,13 +440,20 @@ std::pair<ggml_tensor *, ggml_tensor *> llm_build_delta_net_base::build_delta_ne
         int           il) {
     const int64_t n_seq_tokens = q->ne[2];
 
+    // Observation only: which branch takes this layer, reported on the CGC-SHAPE final line via
+    // llama-shape-knob.h (gdn_saw_fused / gdn_saw_manual). Without it, "ablation changed nothing"
+    // cannot be distinguished from "ablation never reached the builder".
+    const auto note_branch = [](bool fused) { cgc_shape_count_gdn(fused ? 1 : 0); };
+
     if (n_seq_tokens == 1) {
+        note_branch(!!cparams.fused_gdn_ar);
         if (cparams.fused_gdn_ar) {
             return build_delta_net_fused(q, k, v, g, b, s, il);
         }
         return build_delta_net_autoregressive(q, k, v, g, b, s, il);
     }
 
+    note_branch(!!cparams.fused_gdn_ch);
     if (cparams.fused_gdn_ch) {
         return build_delta_net_fused(q, k, v, g, b, s, il);
     }

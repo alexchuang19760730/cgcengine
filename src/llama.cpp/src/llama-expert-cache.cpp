@@ -2,6 +2,8 @@
 
 #include "llama-model.h" // llama_model::expert_cache_path / expert_index
 
+#include "llama-shape-knob.h"  // cgc_shape_report_final (the output half of the shape table)
+
 #include <algorithm>
 #include <limits>
 #include <set>
@@ -2380,6 +2382,18 @@ llama_expert_cache::~llama_expert_cache() {
                 (unsigned long long) fill_batch_usec.load(std::memory_order_relaxed),
                 (unsigned long long) fill_wait_us.load(std::memory_order_relaxed),
                 n_prefetch, n_prefetch_dropped);
+
+        // [2026-09-22 shape knob] One machine-parsable line carrying the realized shape plus the
+        // cache's own counters, so a shape search reads THIS instead of assembling a second
+        // opinion from four separately-formatted banners. It repeats the width/union recorded at
+        // init (the miss counters move between phases; the geometry does not) and adds the three
+        // numbers that decide whether a FASTER configuration is legitimate at all:
+        //   zero_mapped     -- a selected expert whose contribution was silently dropped
+        //   verify_refused  -- a fast-path step refused because experts were still cold
+        //   inv_viol        -- batch invariance broken
+        // Any of the three being nonzero voids the row's timing: it means the run did not do the
+        // same work, so comparing its t/s against the reference is not a measurement.
+        cgc_shape_report_final(this, 0, (uint32_t) slot_owner.size());
         // [CGC M5 prerouter 2026-09-17] Print the predictor's counters, but ONLY when it was on --
         // a line that always appears would make "the predictor ran and queued nothing" look like
         // "the predictor was never armed", which is the silent-drop failure shape this repo keeps

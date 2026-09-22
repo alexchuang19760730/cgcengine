@@ -832,6 +832,15 @@ static int ggml_metal_nsg_env(ggml_type t) {
     switch (t) {
         case GGML_TYPE_IQ2_S:   return N_SG_IQ2_S;
         case GGML_TYPE_IQ3_XXS: return N_SG_IQ3_XXS;
+        // CGC P1-3d: dense GEMV. These are the shapes that dominate the per-step
+        // bytes (docs/BEST_SHAPE_IQ3XXS_M4_2026-09-22.md) and until now they had
+        // NO runtime tile dimension at all. nsg was already a Metal function
+        // constant for them; this only lets the env reach it. Bit-identity holds
+        // for the same reason it does for IQ2_S: each row's dot product stays
+        // inside a single simdgroup, so nsg cannot change the reduction order.
+        case GGML_TYPE_IQ4_XS:  return N_SG_IQ4_XS;
+        case GGML_TYPE_Q6_K:    return N_SG_Q6_K;
+        case GGML_TYPE_Q8_0:    return N_SG_Q8_0;
         // CGC P1-3e: IQ3_S. In the MUL_MAT_ID getter this type was the ONLY one of
         // the model's three expert types still hard-coded (IQ2_S has read this helper
         // since P1-3c) -- so the family's slowest per-BYTE shape was the one shape no
@@ -912,7 +921,8 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv(ggml_meta
             } break;
         case GGML_TYPE_Q8_0:
             {
-                nsg = N_SG_Q8_0;
+                // CGC P1-3d: same treatment as IQ4_XS (see its case below).
+                nsg = ggml_metal_nsg_env(GGML_TYPE_Q8_0);
                 nr0 = N_R0_Q8_0;
                 smem = 32*sizeof(float)*N_R0_Q8_0;
             } break;
@@ -944,7 +954,8 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv(ggml_meta
             } break;
         case GGML_TYPE_Q6_K:
             {
-                nsg = N_SG_Q6_K;
+                // CGC P1-3d: same treatment as IQ4_XS (see its case below).
+                nsg = ggml_metal_nsg_env(GGML_TYPE_Q6_K);
                 nr0 = N_R0_Q6_K;
             } break;
         case GGML_TYPE_IQ2_XXS:
@@ -995,7 +1006,11 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv(ggml_meta
             } break;
         case GGML_TYPE_IQ4_XS:
             {
-                nsg = N_SG_IQ4_XS;
+                // CGC P1-3d: the dense trunk GEMV -- the family that owns most of
+                // the per-step bytes -- now honours CGC_MMV_NSG, exactly like the
+                // per-expert GEMV already did. mul_mv only: the id / down_combine
+                // variants below are MoE-only and keep their compile-time value.
+                nsg = ggml_metal_nsg_env(GGML_TYPE_IQ4_XS);
                 nr0 = N_R0_IQ4_XS;
                 smem = 32*sizeof(float);
             } break;

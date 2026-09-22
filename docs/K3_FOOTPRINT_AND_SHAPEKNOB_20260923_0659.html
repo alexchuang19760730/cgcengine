@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2026-09-23 進展白皮書：儀器為何拒答、k=3 為何飄（含 09-22 引擎落地）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --mut:#6b7280; --line:#e5e7eb;
+    --blue:#1d4ed8; --green:#047857; --red:#b91c1c; --amber:#b45309; --pur:#6d28d9;
+    --panel:#f9fafb;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;
+       font-size:15px;line-height:1.75}
+  .wrap{max-width:1040px;margin:0 auto;padding:32px 20px 80px}
+  h1{font-size:26px;line-height:1.35;margin:0 0 6px}
+  h2{font-size:20px;margin:38px 0 10px;padding-top:14px;border-top:1px solid var(--line)}
+  h3{font-size:16px;margin:22px 0 6px}
+  p{margin:8px 0}
+  .sub{color:var(--mut);font-size:13px;margin:0 0 18px}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;
+       background:#f3f4f6;padding:1px 4px;border-radius:3px}
+  pre{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--blue);
+      padding:12px 14px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:var(--panel);font-weight:600}
+  td.num,th.num{white-space:nowrap;font-variant-numeric:tabular-nums}
+  .box{border-left:4px solid var(--blue);background:var(--panel);padding:10px 14px;margin:14px 0}
+  .box.warn{border-color:var(--amber)}
+  .box.bad{border-color:var(--red)}
+  .box.ok{border-color:var(--green)}
+  .box.pur{border-color:var(--pur)}
+  .tag{display:inline-block;font-size:12px;padding:1px 8px;border-radius:10px;
+       border:1px solid var(--line);color:#fff;margin-right:6px}
+  .t-blue{background:var(--blue)} .t-green{background:var(--green)}
+  .t-red{background:var(--red)} .t-amber{background:var(--amber)}
+  .t-pur{background:var(--pur)} .t-gray{background:#4b5563}
+  .fig{margin:16px 0;border:1px solid var(--line);padding:14px;background:var(--panel)}
+  .figcap{font-size:12.5px;color:var(--mut);margin-top:8px}
+  ul{margin:8px 0 8px 20px;padding:0}
+  li{margin:4px 0}
+  .foot{margin-top:44px;padding-top:14px;border-top:1px solid var(--line);color:var(--mut);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>2026-09-23 進展白皮書：儀器為何拒答、k=3 為何飄<br>（並附上 09-22 尚未提交的引擎落地）</h1>
+<p class="sub">
+日期 2026-09-23 · 線別 <b>線 A（ace）</b>＝引擎層與量測儀器 · 載體
+<code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X</code> · 分支
+<code>demo/sweet-spot-windows-fix</code> · 本文件是 D5（<code>CONVENTIONS.md:889</code>）要求隨 commit 附上的技術白皮書。
+</p>
+
+<div class="box">
+<b>一句話。</b>這一輪沒有讓 decode 變快，它做的是把「為什麼量不出來」這件事變成可機讀、可拒答的介面：
+<b>（一）</b>「量測工具吃太多記憶體」這個假設被<b>否證</b>——降 footprint 真的量得到（−26.4%），
+但它比真正的原因小 20 倍以上；<b>（二）</b>「k=3 會飄 1.43×」被拆成兩層變異數，
+發現 k=3 有一個<b>專屬</b>的 launch 級項（13.16%，F=4.49），而 k=2 沒有；
+<b>（三）</b> k=2 與 k=3 其實<b>不是乾淨的 A/B</b>——ntok=4 會跨過一個 kernel 門檻把 PSO 換掉。
+三件事的共同結論：<b>接下來最便宜的一步不是多跑 arm，是把一個已經存在於樹上的計數器打開。</b>
+</div>
+
+<div class="box warn">
+<b>本文件的地位。</b>它是<b>進展</b>文件，不是里程碑文件。它同時收錄 09-22 已完成但從未提交的引擎改動
+（shape knob 的輸入／輸出兩半、dense GEMV 的 NSG 延伸、載體型別探針），因為那些改動與這一輪的產物
+共用同一顆 build（<code>libllama.0.0.578</code>），拆成兩個 commit 會讓 check 8 的原始碼↔產物同步檢查失去意義。
+</div>
+
+<h2>1. 這一輪在問的兩個問題</h2>
+
+<table>
+  <tr><th style="width:22%">問題</th><th style="width:34%">現象</th><th>本輪的答案</th></tr>
+  <tr>
+    <td><b>Q1</b><br>joint（shape × kernel）pilot 為什麼一直拒答</td>
+    <td>連續五次 sweep，null cell 讀到 44% / 57.7% / 241.5% / 26.2% / 36.5%，門檻是 ≤5%。
+        疑犯有兩個：(A) 共用門檻 <code>NEED_MB=8000</code> 太嚴；(B) 量測工具自己太吃記憶體。</td>
+    <td><b>兩個都不是。</b>降 footprint 是真的量得到（−26.4%），但可調的那一整包只有 0.13 GB，
+        而真正的原因是盒子自己的可用記憶體在數十秒內擺盪 8.5 GB（而且常常有別條線的 server 在載模型）。
+        ⇒ <code>NEED_MB=8000</code> 不動，改成「視窗不 admit 就<b>不准跑</b>」。</td>
+  </tr>
+  <tr>
+    <td><b>Q2</b><br>k=3 為什麼同一份工作會飄 1.43×</td>
+    <td>10 條 arm 的熱狀態標籤<b>全部</b>是 NOMINAL（level 0），k=3 照樣在 8.59–12.25 t/s 之間擺（1.43×），
+        而 k=2 只有 11.21–12.83（1.14×）。</td>
+    <td>把變異數拆兩層之後：逐 request 的噪音兩組幾乎一樣（10.54% vs 12.21%），
+        <b>差的全部在 launch 那一層</b>——k=3 有 13.16%（F=4.49），k=2 測不到（F=0.62 &lt; 1）。</td>
+  </tr>
+</table>
+
+<h2>2. Q1：半步 (B) 做完了，答案是否定的</h2>
+
+<h3>2.1 先要有活能量</h3>
+<p>
+沒有任何東西能回答「一次 probe invocation 到底吃掉多少」，所以先寫
+<code>scripts/check/shape_probe/footprint_ab.py</code>（selftest <b>26/26</b>）。
+它把 footprint 拆成三個<b>彼此分離</b>的成分，因為砍錯一件就白砍：
+</p>
+<table>
+  <tr><th>成分</th><th>用什麼調</th><th>是不是我們能砍的</th></tr>
+  <tr><td>分配量（pool / bank / host fill buffer）</td><td><code>--pool-mib</code></td><td>是（但 bank 不行）</td></tr>
+  <tr><td>持續時間（熱頁被摸多久）</td><td><code>--target-ms</code></td><td>是</td></tr>
+  <tr><td>幾何（bank 本身多大＝模型的 256 experts）</td><td><code>--experts</code></td><td><b>不是</b>——砍它就是換一個模型在量</td></tr>
+</table>
+
+<h3>2.2 實驗一：三臂單次區間（reps=3，兩個形狀）</h3>
+<table>
+  <tr><th>arm</th><th>pool</th><th>target</th><th class="num">峰值 RSS</th><th class="num">盒子可用下陷</th><th class="num">wall</th></tr>
+  <tr><td>A（今天的預設）</td><td class="num">320 MiB</td><td class="num">1500 ms</td><td class="num">232 MB</td><td class="num"><b>487 MB</b></td><td class="num">1.81 s</td></tr>
+  <tr><td>B（瘦池）</td><td class="num">146 / 174 MiB</td><td class="num">1500 ms</td><td class="num">232 MB</td><td class="num"><b>358 MB（−26.4%）</b></td><td class="num">1.79 s</td></tr>
+  <tr><td>C（短算）</td><td class="num">320 MiB</td><td class="num">100 ms</td><td class="num">232 MB</td><td class="num">464 MB（−4.8%，NO READING）</td><td class="num">0.39 s</td></tr>
+</table>
+<p>
+兩個立刻有用的結果：<b>(1)</b> 行程自己的 RSS <b>完全沒動</b>（三臂都 232 MB）——pool 裡超過 bank 的那些頁
+<b>從來沒被觸及</b>，所以「砍 pool 會讓行程變瘦」這個直覺是錯的，只能用量測回答；
+<b>(2)</b> 但盒子的可用記憶體下陷<b>真的降了 26.4%</b> 且超出自身離散 ⇒ 「降 footprint」這個方向有一部分是真的。
+</p>
+
+<h3>2.3 實驗二、三：帶著瘦池去跑，以及那 6 GB 去哪了</h3>
+<p>
+只加 <code>--pool-mib 0</code>、同一顆 build（dylib <code>650dd9d1d9fb89a4</code>）重跑 joint sweep：
+null cell 從 241.5% 進步到 <b>26.2%</b>，<b>但仍然讀不到</b>，離 ≤5% 還差 3–5 倍。
+而 sweep 標頭寫 <code>usable 1.25 GiB</code>、單次 invocation 只掉 ~0.4 GiB，<b>中間少了 6 GB</b>。
+所以加了 <code>--sequence</code> 模式（每臂連打 12 次、三臂交錯、追蹤每次的出發點）：
+</p>
+<pre><code>arm A  pool 320 MiB  target 1500 ms  baseline 9368 -&gt; 8235 MB  DRIFT -1133 MB
+arm B  pool 146 MiB  target 1500 ms  baseline 9470 -&gt; 8216 MB  DRIFT -1254 MB
+arm C  pool 320 MiB  target  100 ms  baseline 9392 -&gt; 8179 MB  DRIFT -1213 MB</code></pre>
+<p>
+三種 footprint 掉的量<b>一模一樣</b> ⇒ 那 ~1.2 GB 不是我們能調的那兩個旋鈕造成的。
+</p>
+
+<h3>2.4 真兇：盒子自己會甩 8.5 GB，而且甩的時候常常有別人</h3>
+<pre><code>window  begin: admits=False reclaimable=1278 MB foreign=[(80017, 'llama-server')]
+window  end  : admits=False reclaimable=7727 MB foreign=[]</code></pre>
+<p>
+跑 sweep 的整整兩分鐘裡，<b>另一條線的 llama-server 正在載模型</b>；另一次序列測試記錄到同一台機器在
+<b>18 秒之內從 1463 MB 甩回 9869 MB</b>。
+</p>
+
+<div class="fig">
+<svg viewBox="0 0 680 210" width="100%" height="210" role="img" aria-label="記憶體量級比較">
+  <text x="0" y="16" font-size="13" fill="#111827">同一台盒子上的三個記憶體量級（線性尺度，GB）</text>
+  <rect x="0" y="30" width="14" height="24" fill="#1d4ed8"></rect>
+  <text x="22" y="47" font-size="12.5" fill="#111827">0.13 GB — 我們能調的整套 footprint（pool + 持續時間，±0.05）</text>
+  <rect x="0" y="70" width="126" height="24" fill="#047857"></rect>
+  <text x="134" y="87" font-size="12.5" fill="#111827">1.2 GB — 每次 joint sweep 期間流失的可用記憶體（與 config 無關）</text>
+  <rect x="0" y="110" width="680" height="24" fill="#b91c1c"></rect>
+  <text x="0" y="152" font-size="12.5" fill="#111827">8.5 GB — 盒子可用記憶體自己的擺盪幅度（1463 ↔ 9869 MB，數十秒內）</text>
+  <line x1="0" y1="168" x2="680" y2="168" stroke="#e5e7eb"></line>
+  <text x="0" y="192" font-size="12.5" fill="#6b7280">可調的那一槓比真正的原因小 20 倍以上 ⇒ 降 footprint 換不到可讀性</text>
+</svg>
+<div class="figcap">圖 1：三個量級放在同一個線性尺度上。0.13 GB 那一格刻意只畫成一條細線——它就是這麼小，把它畫大會騙人。</div>
+</div>
+
+<div class="box ok">
+<b>Q1 的結論。</b><b>不要動</b> <code>NEED_MB=8000</code>，而且現在有更好的理由：不是「預設如此」，是「量過了，
+降 footprint 換不到可讀性」。正解是第三條路——<b>共用視窗真的 admit 的時候才准跑，跑完再問一次</b>。
+<code>shape_knob_search.py</code> 上一輪已接這個閘門，<code>mmid_shapes.py</code> 本輪補上
+（原本只會印不會擋，所以它會把兩分鐘的量測浪費在別人的載入過程裡）。
+</div>
+
+<h2>3. Q2：把「飄」拆成兩層之後，它變成兩個問題</h2>
+
+<p>
+一 arm ＝ 一 launch ＝ 3 個 counted request（逐 request 的 <code>decode_tps</code> 已存在
+<code>Backup/k_abba_2026-09-23/</code>），所以單因子隨機效應可以直接套：
+</p>
+<pre><code>MS_within  = SS_within  / (n(m-1))    期望 = σ²_within
+MS_between = SS_between / (n-1)       期望 = σ²_within + m·σ²_launch
+σ²_launch  = max(MS_between − MS_within, 0) / m</code></pre>
+<p>
+<code>max(…, 0)</code> 是刻意的地板：MS_between &lt; MS_within 會偶然發生，意思是「沒測到」，不是「負變異數」。
+</p>
+
+<table>
+  <tr><th></th><th class="num">單一 request 的噪音</th><th class="num">每次 launch 被指定的基準</th><th class="num">arm mean 的總散佈</th></tr>
+  <tr><td><b>k=2</b></td><td class="num">10.54%</td><td class="num"><b>0.00%</b>（F=0.62 &lt; 1，95% 上界 9.98%）</td><td class="num">6.09%</td></tr>
+  <tr><td><b>k=3</b></td><td class="num">12.21%</td><td class="num"><b>13.16%</b>（F=4.49，df 4/10，臨界 3.48）</td><td class="num">14.93%</td></tr>
+</table>
+
+<div class="box">
+<b>這直接解釋了為什麼 ABBA 配對買不到東西。</b>配對只能扣掉兩組<b>共有</b>的項，而這一項是 k=3 <b>獨有</b>的
+⇒ 配對 sd 只能等於 √2 × 單臂 sd。實測 2.28 vs 2.18 t/s —— 吻合。
+</div>
+
+<h3>3.1 順便量到：arm 自己把自己跑熱</h3>
+<table>
+  <tr><th></th><th>3 個 request 單調下滑的比例</th><th>first→last 跌幅</th></tr>
+  <tr><td>k=2</td><td><b>4/5</b></td><td>17 / 2 / 22 / 18 / 24 %</td></tr>
+  <tr><td>k=3</td><td>1/5</td><td>7 / 21 / 18 / 6 / 23 %</td></tr>
+</table>
+<p>
+一條 arm 的 ~70 s 自己就在發熱（最多掉 24%），所以在 launch <b>之內</b>還有漂移，任何 launch 前的閘門都管不到它。
+</p>
+
+<h2>4. k=2 與 k=3 不是乾淨的 A/B：ntok=4 換了一顆 kernel</h2>
+
+<p>
+<code>server-context.cpp:4158</code> 的 <code>GGML_ASSERT(slot.spec_i_batch.size() == n_draft + 1)</code>
+⇒ <b>k=3 是一個 verify step 4 個 token，k=2 是 3 個</b>。而 4 這個數字會跨過一道門檻：
+</p>
+
+<table>
+  <tr><th>類型群</th><th><code>mul_mv_ext</code> 進入條件</th><th>行號</th></tr>
+  <tr><td>F32 / F16 / BF16 / Q8_0 / IQ4_NL / Q4_0 …</td><td><code>ne11 &gt;= 2 &amp;&amp; ne11 &lt;= 8</code></td><td><code>ggml-metal-ops.cpp:2569-2581</code></td></tr>
+  <tr><td><b>Q4_K / Q5_K / Q6_K / Q2_K / Q3_K</b></td><td><b><code>ne11 &gt;= 4 &amp;&amp; ne11 &lt;= 8</code></b></td><td><b><code>ggml-metal-ops.cpp:2583-2590</code></b></td></tr>
+</table>
+
+<p>
+這個模型有 Q2_K×2、Q3_K×1、Q6_K×1 ⇒ <b>Q_K 家族在 ntok=3 走不到 ext，在 ntok=4 才進得去</b>。
+而且同一個 ext kernel 內部也換 PSO：<code>nxpsg</code> 由 <code>ne11 &lt; 3</code> 決定
+（<code>:2607-2612</code>，3→16、4→8）、<code>r1ptg</code> 由 <code>ne11</code> 決定
+（<code>:2618</code> 預設、<code>case 4:</code> 在 <code>:2627</code>）。
+</p>
+
+<div class="box bad">
+<b>結論。</b>任何 k2−k3 的 t/s 差都把兩件事混在一起：<b>「寬 verify 划不划算」</b>與<b>「那顆 PSO 好不好」</b>。
+所以 <b>k 本身不是一個乾淨的 knob</b>，k=2 上量到的排名不能直接搬去 k=3（反之亦然）。<br>
+順帶：<code>ggml-metal-ops.cpp:2604</code> 的 <code>nsg = 2</code> 是寫死的，<code>CGC_MMV_NSG</code> 摸不到這條路。
+</div>
+
+<h3>4.1 兩個已經被否證的假設（寫下來是為了讓下一個人不用再查）</h3>
+<ul>
+  <li><b>相位閾值：不是它。</b><code>llama-cgc-phase.h:133-143</code> 用 <code>n_tokens &lt;= decode_width</code>
+      選 DECODE／PREFILL，若 width==3 那會是天差地遠的兩張圖。但 09-23 log 實測
+      <code>CGC-SHAPE … width=8 routable=142</code> ⇒ <b>3 和 4 都 ≤ 8，同一張 DECODE 圖</b>。</li>
+  <li><b>SYNCFILL 計數相同 ≠ 沒有 IO。</b><code>llama-context.cpp:6497</code> 印的
+      <code>cold_filled</code> 是<b>請求數</b>（<code>cold.size()</code>），不是落盤讀取數；真正的讀在
+      <code>llama-expert-cache.cpp:35</code> 的 <code>pread</code>，服務時間取決於 OS 頁快取。
+      ⇒ 「175 次請求四次 arm 都一樣」與「每次請求的服務時間差 1.43×」完全可以並存。</li>
+</ul>
+
+<h3>4.2 最便宜的下一步：一個已經在樹上、卻沒被打開的計數器</h3>
+<pre><code>llama-expert-cache.cpp:418  static void rig_snapshot(int mode)
+llama-expert-cache.cpp:432  "CGC-RIG-SNAPSHOT mode=%d reads=%zu read_bytes=%llu pread_usec=%llu ..."
+llama-expert-cache.cpp:446  llama_expert_cache_refresh_prefill_protect()   // 唯一呼叫點
+llama-expert-cache.cpp:447  getenv("CGC_PREFILL_PROTECT_FILE")             // 未設就直接 return</code></pre>
+<p>
+<code>grep CGC-RIG-SNAPSHOT</code> 在 09-23 的全部 log 裡<b>零命中</b>——就是因為沒設那個 env。
+而 <code>pread_usec</code> 正是把「池 IO 服務時間」這個假設（H1）從假設變成數字的那個量。
+<b>而且它不用 rebuild</b>：設 <code>CGC_PREFILL_PROTECT_FILE</code> 指向一個內容是
+<code>"0"</code> 的檔即可（prefill-protect 維持關閉＝目前預設行為，但 rig 照樣 snapshot）。
+</p>
+<div class="box warn">
+兩個陷阱：<b>(1)</b> 不要用 <code>CGC_PREFILL_PROTECT</code> env —— <code>cgc_prefill_protect_on()</code>
+用 <code>getenv(...) != nullptr</code>，所以 <code>=0</code> <b>也會把它打開</b>；
+<b>(2)</b> <code>docs/O1_PREFILL_PROTECT_RERUN_2026-09-19.md:87</code> 寫的
+<code>CGC_RIG_SNAPSHOT=1</code> 在 src 裡<b>不存在</b>（已 grep 確認），別照抄。
+</div>
+
+<h2>5. 16.4% 該怎麼認證：一份事先登記的協定</h2>
+
+<p>
+現況（<code>Backup/k_abba_2026-09-23/</code>，5 對 ABBA）：
+</p>
+<pre><code>n=5 pairs   mean diff +1.71 t/s (+16.4%)   sd 1.83   SE 0.82   t=2.08   crit=2.78 (df=4)
+k3 slower in 4/5 pairs
+VERDICT: NOT YET  -- n=5 &lt; planned 8: testing now would be optional stopping</code></pre>
+
+<p>
+k=2 平均比 k=3 快 16.4%，但這個數字<b>沒有被認證</b>，而且 k=3 是<b>雙峰</b>（3/5 掉到 8.59–10.72），
+不是單純的吵。所以把它寫成一份事先登記的協定（<code>docs/K3_PAIR_CERT_2026-09-23.md</code>）：
+</p>
+
+<table>
+  <tr><th style="width:26%">項目</th><th>登記值</th></tr>
+  <tr><td>總對數 <code>planned_n</code></td><td><b>8</b>（現有 5 ⇒ 再跑 3 對：r5、r6、r7）</td></tr>
+  <tr><td>主要統計量</td><td>一對 ＝ 一個 ABBA 回合的 arm mean 差（k2 − k3，t/s）</td></tr>
+  <tr><td>檢定</td><td>配對 t，雙尾，α = 0.05</td></tr>
+  <tr><td>判決時機</td><td><b>只在 n=8 判一次</b>；n&lt;8 工具回 <code>NOT YET</code>，n&gt;8 回 <code>OVERRUN</code></td></tr>
+  <tr><td>每一對的條件</td><td><code>CGC_SERVER_PROFILE=prod25</code>；每一 arm 出發前 OS 熱狀態 level 0</td></tr>
+  <tr><td>順序</td><td>ABBA 旋轉：r5 = k2 先，r6 = k3 先，r7 = k2 先</td></tr>
+</table>
+
+<p>
+n=7 太緊（t=2.47 對臨界 2.447，只過 0.025，而 sd 本身是 n=5 估出來的 ⇒ 那是一場 50/50 的賭）；
+n=8 時 t=2.64 對臨界 2.365，有餘裕。工具 <code>k_swing_decompose.py --paired --planned-n 8</code>
+會自己擋住中途偷看。
+</p>
+
+<h3>5.1 三條出路（事先寫死，不當場決定）</h3>
+<table>
+  <tr><th style="width:16%">結果</th><th>要做什麼</th></tr>
+  <tr><td><span class="tag t-green">A</span><b>CERTIFIED</b></td>
+      <td>交付 cell 換 k=2（<code>llama-bench --spec-draft-n-max 2</code>，<code>llama-bench.cpp:666</code>，
+          <b>不用 rebuild</b>）；<b>必須重新 anchor</b>——12.57 t/s 是 k=3 的數字，換 k 之後既有比較全部失效；
+          然後才精算 k=2 要幾臂。</td></tr>
+  <tr><td><span class="tag t-amber">B</span><b>NOT SEPARATED</b></td>
+      <td><b>不要再加對</b>（加對就是 optional stopping）。改用同一趟的 <code>pread_usec</code>
+          直接看慢狀態是不是池 IO —— 那是機制問題，不是樣本數問題。</td></tr>
+  <tr><td><span class="tag t-red">C</span><b>OVERRUN</b></td>
+      <td>判決已經在 n=8 發生過；多跑的是另一個實驗，要另外事先登記，不能併進來。</td></tr>
+</table>
+
+<h2>6. 這一輪更正自己的六句話</h2>
+
+<table>
+  <tr><th style="width:30%">原本寫的</th><th>更正</th><th style="width:16%">毛病屬於哪一族</th></tr>
+  <tr><td>swapfile 推到 6.1 GiB「不會自動縮回去」</td>
+      <td><b>錯，它會。</b>實測 total 回到 4096 MiB（used 3348），期間沒做什麼特別的事。</td>
+      <td>把暫態當成本質</td></tr>
+  <tr><td>「這台機器今晚沒有 8 GB 空檔」</td>
+      <td><b>錯，它有，只是不穩定。</b>02:1x 實測六次連採都在 9364–9428 MB，<code>admits=True</code>。</td>
+      <td>把一次樣本當成分佈</td></tr>
+  <tr><td>「4 臂／組」</td>
+      <td><b>那是標準誤（SE）不是信賴區間。</b>k=2 實際是 4 臂（SE 3%）／<b>16 臂</b>（95% CI 3%）。</td>
+      <td>SE 與 CI 混用</td></tr>
+  <tr><td>k=2 的 launch 項「0.00%」</td>
+      <td><b>那不是證明為零，是沒測到。</b>F 檢定的下尾反解給出 95% 上界 <b>9.98%</b>。</td>
+      <td>把「未測到」讀成「不存在」</td></tr>
+  <tr><td>「再 2 對就夠（n=7）」</td>
+      <td><b>太緊</b>，改成 n=8（t=2.64 vs 臨界 2.365，而不是 2.47 vs 2.447）。</td>
+      <td>用同一份 sd 去規劃抽那份 sd 的實驗</td></tr>
+  <tr><td>「<code>pread_usec</code> 要 rebuild」</td>
+      <td><b>不用。</b>讀碼發現它受 <code>CGC_PREFILL_PROTECT_FILE</code> 這個 env 閘控制。</td>
+      <td>沒有讀碼就先報價</td></tr>
+</table>
+
+<h2>7. 本 commit 一併落地的 09-22 引擎改動</h2>
+
+<p>
+以下四項在 09-22 已完成實測但從未提交，與本輪產物共用同一顆 build，因此一起進版控。
+</p>
+
+<h3>7.1 shape knob 的輸入與輸出兩半（<code>llama-shape-knob.{h,cpp}</code>，新增）</h3>
+<ul>
+  <li><b>INPUT <code>cgc_shape_knobs()</code></b>：所有形狀 env 只 parse 一次 ＋ 跨軸驗證 ＋ 每軸狀態
+      （<code>APPLIED/CLAMPED/CONFLICT/ABSENT/REFUSED</code>）。<code>cgc_pool_max_tokens()</code>
+      （<code>llama-graph.h</code>）與 <code>CGC_N_CB</code>（<code>llama-context.cpp:495</code>）
+      <b>都改由這張表供值</b>，行為不變（default 8、[2,64] clamp）⇒ 被施加的值與 report 印的值不會 disagree。</li>
+  <li><b>OUTPUT <code>cgc_shape_report_{init,final}()</code></b>：每相位一行 <code>CGC-SHAPE v=1 …</code>，
+      含實收幾何（<code>width/union/fits/pool_cap_slots/slots_layer</code>）＋ cache counter ＋
+      <b>品質哨兵</b> <code>zero_mapped/verify_refused/inv_viol</code>（任一非零 ⇒ 該 row 做的不是同一份工，t/s 不算量測）。</li>
+  <li>實測：<b>M 上限 17 確認</b>（routable 是 <b>142 不是 143</b>，因 ZERO slot）；
+      <b>capacity miss 只佔 miss 的 6~7%</b> ⇒ 143 slot/層不是容量飢餓，「處方反了」——該試的是<b>縮池</b>
+      把 RAM 還給 dense page-cache。</li>
+</ul>
+
+<h3>7.2 GDN 軸（#7）：operator 存在，但從沒被執行</h3>
+<p>
+<code>ggml_gated_delta_net</code> 與 Metal pipeline <code>kernel_gated_delta_net_&lt;type&gt;_&lt;nsg&gt;</code>
+真的存在，<code>K</code>（狀態快照數）是 <b>function constant</b> ⇒ T=1 與 T&gt;1 同一顆 kernel。
+但加了 builder 自己的旁證 <code>gdn_saw_fused</code>／<code>gdn_saw_manual</code> 之後發現：
+<b>default 與 ablation 兩者皆 0/0</b> ⇒ <code>build_delta_net</code> 在這個 server 歷程裡一次都沒被呼叫。
+</p>
+<div class="box bad">
+<b>這意味著：GDN 相關的量測到目前都是在量 0。</b>「關掉 ablation 之後 logits 逐位元相同」本來會被讀成
+「兩條實做數值一致」——那是<b>假結論</b>，相同的原因是「沒有東西可比」。這條軸可以體面收掉。
+⚠ MTP 陷阱：spec decode 時 <code>n_seq_tokens&gt;1</code> 走 chunking 分支，只關 <code>GDN_AR</code> 會完全看不見
+⇒ 要 ablation 就 AR/CH 都關。
+</div>
+
+<h3>7.3 dense GEMV 的 NSG 延伸（P1-3d）與載體型別探針</h3>
+<ul>
+  <li><code>ggml-metal-device.cpp</code>：<code>CGC_MMV_NSG</code> 現在能觸及 <b>dense GEMV</b> 的
+      IQ4_XS / Q6_K / Q8_0（此前那些形狀完全沒有 runtime tile dimension）。位元同一性理由與 IQ2_S 相同：
+      每一列的 dot product 留在單一 simdgroup 內 ⇒ nsg 改變不了化簡順序。</li>
+  <li><code>tests/test-backend-ops.cpp</code>：補上 <b>IQ3_S</b> 的載體型別探針——交付載體的
+      <code>ffn_down_exps</code> 是 IQ3_S（41 層中 37 層，另 3 層 IQ4_XS、1 層 Q3_K），
+      <b>不是</b> IQ3_XXS；兩個形狀都留著才能在同一幾何下比型別，而不是從另一個型別推論。</li>
+</ul>
+
+<h2>8. 本輪的交付物</h2>
+
+<table>
+  <tr><th style="width:36%">檔案</th><th style="width:14%">性質</th><th>內容</th></tr>
+  <tr><td><code>scripts/check/shape_probe/footprint_ab.py</code></td><td><span class="tag t-blue">新增</span></td>
+      <td>三臂 A/B/C、<code>--sequence N</code>（交錯）、<code>--settle-ms</code>；讀數不足時回
+          <code>unjudged</code> 而不是把小差異兜成小贏。selftest <b>26/26</b>。</td></tr>
+  <tr><td><code>scripts/check/k_swing_decompose.py</code></td><td><span class="tag t-blue">新增</span></td>
+      <td>變異數分解、F 下尾上界、配對 t 判決（<code>--paired --planned-n</code>；n 不足回
+          <code>NOT YET</code>、超過回 <code>OVERRUN</code>）。selftest <b>36/36</b>。</td></tr>
+  <tr><td><code>scripts/check/shape_probe/mmid_shapes.py</code></td><td><span class="tag t-pur">修改</span></td>
+      <td><code>POOL_MIB_DEFAULT</code>／<code>lean_pool_mib()</code>（原本硬寫 320）、
+          <code>window_now()</code>、<b>有方向</b>的 <code>lost_the_box()</code>（讀不到回 <code>None</code> 不回
+          <code>False</code>）、<code>--nsg-sweep</code> 視窗閘門（不 admit 就 <code>return 2</code>）。
+          selftest <b>34 → 41/41</b>。</td></tr>
+  <tr><td><code>docs/FOOTPRINT_HALFSTEP_2026-09-23.md</code></td><td><span class="tag t-gray">文件</span></td><td>Q1 的完整過程與數字。</td></tr>
+  <tr><td><code>docs/K3_SWING_ANALYSIS_2026-09-23.md</code></td><td><span class="tag t-gray">文件</span></td><td>Q2 的變異數分解、kernel 門檻、H1–H5 候選機制與否證條件。</td></tr>
+  <tr><td><code>docs/K3_PAIR_CERT_2026-09-23.md</code></td><td><span class="tag t-gray">文件</span></td><td>給執行側的 n=8 事先登記協定與三條出路。</td></tr>
+  <tr><td><code>docs/JOINT_SHAPE_KERNEL_AXIS_2026-09-22.md</code></td><td><span class="tag t-gray">文件</span></td><td>joint 軸的本體，本輪追加 §9（「不是 footprint 的鍋」）。</td></tr>
+</table>
+
+<h2>9. 現場閘門輸出（原文，產出當時）</h2>
+
+<h3>9.1 三支工具的自測</h3>
+<pre><code>$ python3 scripts/check/k_swing_decompose.py --selftest
+selftest: 36/36 passed
+
+$ python3 scripts/check/shape_probe/footprint_ab.py --selftest
+selftest: 26/26 passed
+
+$ python3 scripts/check/shape_probe/mmid_shapes.py --selftest
+selftest: 41/41 passed</code></pre>
+
+<h3>9.2 D5 的數值那一半（本 commit 含 <code>src/</code> ⇒ 必需）</h3>
+<pre><code>$ python3 scripts/check/m123_oracle_gate.py --tag en-k3pair-cert
+INDEPENDENT METRICS  (never merge these into one verdict)
+  M1 numeric identity    (bit-identical logits)  : 9/9  (100.0%)
+  M2 decision agreement  (same argmax token)     : 9/9  (100.0%)
+  M3 top-k set agreement (same top-N id set)     : 9/9  (100.0%)
+  (aux) full_fnv1a64 identical                   : 9/9  (100.0%)
+CROSS-TAB  (n=9)
+  M1 same  &amp; M2 same :     9   no drift, same choice
+GATE en-k3pair-cert: PASS   M1=9/9  M2=9/9  M3=9/9  n=9
+summary  : Backup/m123_oracle_gate/summary_en-k3pair-cert.json
+  build   : libllama.0.0.279.dylib=0cd5a62833e31549  libggml-metal.0.19.0.dylib=128b6048870fcc55
+            libggml-base.0.19.0.dylib=7099cb53fba54531  llama-server=054fb22f04a01c5c
+  tree    : 1ca685490 dirty_tracked=22</code></pre>
+<p>
+<code>summary_en-k3pair-cert.json</code>：<code>comparable=True</code>、<code>config_diffs=[]</code>
+⇒ 這三個 9/9 是裁決，不是「printed for information」。
+<code>cap_en-k3pair-cert.json</code> 的 <code>created = 2026-09-23T06:54:23</code>，晚於產物 mtime
+（<code>libllama.0.0.578.dylib</code> 建於 09-22 22:29:15）⇒ 可歸屬，沒有與建置重疊。
+</p>
+<div class="box warn">
+<b>閘門的 <code>build:</code> 行印的是 stale 的 <code>libllama.0.0.279.dylib</code></b>（09-22 已發現並寫進
+<code>decode_window_harness.py</code> 註解）：權威指紋應看 <code>libllama.0.dylib</code>（symlink → 最新的
+<code>0.0.578</code>）。把 279 的 md5 當成「本輪的 build」會對錯物件。
+</div>
+
+<h3>9.3 提交前閘門（<code>check_build_tracked.sh</code>）</h3>
+<p>
+動手前預演回報 <b>9 個 FAIL</b>，全部是同一個來源：<code>libllama-common.0.dylib</code>／
+<code>libllama.0.dylib</code>／<code>libmtmd.0.dylib</code> 這三個 symlink 指向的
+<code>0.0.578</code> 檔<b>未被追蹤</b>（09-22 版本號從 279 推到 578，產品建好了、卻沒進版控）。
+把那三個 dylib 與 symlink 一起 stage 之後，閘門轉綠——這也是本 commit 必須把 09-22 的產物一起帶進來的原因。
+</p>
+
+<h2>10. 誠實邊界（本文件不主張什麼）</h2>
+<ul>
+  <li><b>沒有讓任何東西變快。</b>這一輪的產出是「為什麼量不出來」的可機讀解釋，不是速度。交付數字仍是
+      <b>12.57 t/s</b>（k=3，llama-bench，<code>prod_profile.py</code>，reps=3，全程 NOMINAL，±2.26）。</li>
+  <li><b>n 很小。</b>5 臂 × 3 request；F(4,10) 的 0.05 臨界是 3.48，k=3 得 4.49 —— 過了，但只過一點。
+      這份文件給的是<b>量級與不對稱性</b>，不是定論。</li>
+  <li><b>k=2 的 <code>0.00%</code> 不是「沒有 launch 級項」</b>，是「沒測到」；95% 上界 9.98%。</li>
+  <li><b>H1／H2／H3 三個候選機制沒有被任何數字判定。</b>分解只說「有一個 launch 級的項、13.16%、只有 k=3 有」；
+      它是什麼，要等 <code>pread_usec</code> 或 op 級的 <code>--tokens</code> 二階差分。</li>
+  <li><b>§4 的 kernel 替換是讀碼讀出來的，沒有跑起來驗。</b></li>
+  <li><b>n=8 協定是在看過 n=5 之後寫的</b> ⇒ 名目 α 略失真，無法完全補償；
+      而且 <code>gated</code> 那一對是否與 r1–r4 同母體<b>沒有查</b>。</li>
+  <li><b><code>pread_usec</code> 的配方是讀碼得來的，沒有實跑驗證。</b>第一次用請先看 stderr 有沒有
+      <code>CGC-RIG-SNAPSHOT</code>；沒有就回報，不要假設它開了。</li>
+  <li><b>GPU 實驗不在本輪範圍。</b>依 <code>docs/NEXT_ACTIONS_2026-09-23.md</code> 的分工，
+      跑 n=8 的配對屬於執行 Agent；本輪只交規格與工具。</li>
+</ul>
+
+<h2>11. 這個 commit 的範圍（以及刻意沒收進來的東西）</h2>
+<p>
+同一棵樹上還有別條線正在進行的未提交工作，本 commit <b>逐檔 stage、一律沒有用
+<code>git add -A</code></b>，因此下列檔案被刻意留在樹上：
+</p>
+<ul>
+  <li>執行側（【執行 Agent】）的產物：<code>docs/P0_ARMS_2026-09-23.md</code>、
+      <code>docs/MOE_NSG_ADMITTED_WINDOW_2026-09-23.md</code>、<code>docs/CACHE_SIZE_AB_2026-09-23.md</code>、
+      <code>docs/CERTIFIED_WINDOW_K_AB_2026-09-23.md</code>、
+      <code>docs/PAIRED_PROTOCOL_3PCT_2026-09-23.md</code>、
+      <code>docs/INSTRUMENT_RESOLUTION_2026-09-23.md</code>、
+      <code>docs/DENSE_NSG_RESCAN_2026-09-23.md</code>。</li>
+  <li>被修改的量測驅動：<code>scripts/check/decode_sweep.py</code>、
+      <code>scripts/check/decode_window_harness.py</code>、<code>scripts/check/mtp_accept_ab.py</code>、
+      <code>scripts/check/window_sentinel.py</code>、<code>scripts/run_server.sh</code>、
+      <code>docs/fleet_export.json</code>。</li>
+  <li><b>索引沒有重生。</b><code>.workbuddy/memory/</code> 是多 session 共寫的，此刻樹上有別的 writer，
+      重生 <code>INDEX.jsonl</code>／<code>MANIFEST.jsonl</code> 會把對方未定稿的位元組寫進來
+      ⇒ 留到下一個安靜窗口，另開一個 resync commit。</li>
+</ul>
+
+<p class="foot">
+相關文件：<code>docs/FOOTPRINT_HALFSTEP_2026-09-23.md</code>、
+<code>docs/K3_SWING_ANALYSIS_2026-09-23.md</code>、<code>docs/K3_PAIR_CERT_2026-09-23.md</code>、
+<code>docs/JOINT_SHAPE_KERNEL_AXIS_2026-09-22.md</code>、
+<code>docs/SHAPE_KNOB_LANDED_2026-09-22.md</code>、<code>docs/GDN_AXIS_RESOLVED_2026-09-22.md</code>、
+<code>docs/NEXT_ACTIONS_2026-09-23.md</code>。
+</p>
+
+</div>
+</body>
+</html>

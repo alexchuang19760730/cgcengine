@@ -9027,7 +9027,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_Q8_0, GGML_TYPE_F32, 128, 128, false, 8192, 1, 5120)); // Llama-4-Maverick-17B-128E-PAB-Q8_0
     // CGC non-serialized FFN vs head bandwidth probe (real qwen36 decode shapes)
     test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_IQ2_S,   GGML_TYPE_F32, 256, 8, false,  512, 1, 2048)); // qwen36 ffn_gate/up (K=2048,N=512,256E,top8)
-    test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_IQ3_XXS, GGML_TYPE_F32, 256, 8, false, 2048, 1,  512)); // qwen36 ffn_down (K=512,N=2048,256E,top8)
+    test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_IQ3_XXS, GGML_TYPE_F32, 256, 8, false, 2048, 1,  512)); // NOT the carrier's ffn_down -- the file has no IQ3_XXS tensor; kept as a reference point (real type is IQ3_S, below)
     test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_IQ3_XXS, GGML_TYPE_F32, 256, 8, false,  512, 1, 2048)); // gate/up at IQ3_XXS (isolate quant-type effect)
     test_cases.emplace_back(new test_mul_mat  (GGML_TYPE_Q6_K,    GGML_TYPE_F32, 248320, 1, 2048, {1,1}, {1,1})); // qwen36 lm_head (Q6_K 2048x248320)
     test_cases.emplace_back(new test_mul_mat  (GGML_TYPE_IQ3_XXS, GGML_TYPE_F32, 248320, 1, 2048, {1,1}, {1,1})); // head at IQ3_XXS (isolate quant-type effect)
@@ -9966,7 +9966,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
 
     // CGC non-serialized FFN vs head bandwidth probe (real qwen36 decode shapes, M=1 mv path)
     test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_IQ2_S,   GGML_TYPE_F32, 256, 8, false,  512, 1, 2048)); // qwen36 ffn_gate/up (K=2048,N=512,256E,top8)
-    test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_IQ3_XXS, GGML_TYPE_F32, 256, 8, false, 2048, 1,  512)); // qwen36 ffn_down (K=512,N=2048,256E,top8)
+    test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_IQ3_XXS, GGML_TYPE_F32, 256, 8, false, 2048, 1,  512)); // NOT the carrier's ffn_down -- the file has no IQ3_XXS tensor; kept as a reference point (real type is IQ3_S, below)
     test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_IQ3_XXS, GGML_TYPE_F32, 256, 8, false,  512, 1, 2048)); // gate/up at IQ3_XXS (isolate quant-type effect)
     test_cases.emplace_back(new test_mul_mat  (GGML_TYPE_Q6_K,    GGML_TYPE_F32, 248320, 1, 2048, {1,1}, {1,1})); // qwen36 lm_head (Q6_K 2048x248320)
     test_cases.emplace_back(new test_mul_mat  (GGML_TYPE_IQ3_XXS, GGML_TYPE_F32, 248320, 1, 2048, {1,1}, {1,1})); // head at IQ3_XXS (isolate quant-type effect)
@@ -9988,6 +9988,28 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_IQ4_NL, GGML_TYPE_F32, 256, 8, false, 2048, 1,  512)); // qwen36 down at IQ4_NL
     test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_Q2_K,   GGML_TYPE_F32, 128, 8, false, 1408, 1, 2816)); // gemma4 gate_up at Q2_K
     // (gemma4 down at Q3_K removed: init_mul_mat_id_tensors OOB crash, harness bug not kernel)
+
+    // CGC carrier-type probe: the delivered carrier's ffn_down_exps is IQ3_S (37 of 41 layers;
+    // the other 3 IQ4_XS + 1 Q3_K), NOT IQ3_XXS. Both shapes are here so the type can be
+    // compared at equal geometry rather than inferred from a different one.
+    test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_IQ3_S,  GGML_TYPE_F32, 256, 8, false, 2048, 1,  512)); // qwen36 ffn_down, real type (K=512,N=2048,256E,top8)
+    test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_IQ3_S,  GGML_TYPE_F32, 256, 8, false,  512, 1, 2048)); // gate/up at IQ3_S (isolate the type)
+
+    // CGC MTP-verify probe: the speculative verify batch IS "n > 1" at exactly these shapes,
+    // and no such case existed -- so the marginal cost of an extra drafted token had never
+    // been measured at the kernel level. verify batch = 1 + n.
+    test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_IQ2_S,  GGML_TYPE_F32, 256, 8, false,  512, 2, 2048)); // gate/up, verify n=3
+    test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_IQ2_S,  GGML_TYPE_F32, 256, 8, false,  512, 3, 2048)); // gate/up, verify n=4
+    test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_IQ2_S,  GGML_TYPE_F32, 256, 8, false,  512, 4, 2048)); // gate/up, verify n=5
+    test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_IQ3_S,  GGML_TYPE_F32, 256, 8, false, 2048, 2,  512)); // down,   verify n=3
+    test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_IQ3_S,  GGML_TYPE_F32, 256, 8, false, 2048, 3,  512)); // down,   verify n=4
+    test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_IQ3_S,  GGML_TYPE_F32, 256, 8, false, 2048, 4,  512)); // down,   verify n=5
+
+    // CGC device peak: every DUP case in the eval list is 10x10x5, far too small to reach DRAM,
+    // and the perf list had no DUP at all. perf mode prints GB/s directly for flop-free ops, so
+    // this one gives the device's MEASURED peak instead of the cited 120 GB/s the roofline table
+    // otherwise has to rely on (docs/SHAPE_ROOFLINE_2026-09-22.md §9). 128 MiB in, 128 MiB out.
+    test_cases.emplace_back(new test_dup(GGML_TYPE_F32, {1024, 1024, 32, 1}, {0, 0, 0, 0}));
 
     // CGC small-op wall probe (qwen36 decode M=1): attribute the ~2000 small GPU kernels/step
     // (histogram from CGC_SCHED_DBG_ALL: MUL 237 / ADD 358 / UNARY 144 / GET_ROWS 135 /

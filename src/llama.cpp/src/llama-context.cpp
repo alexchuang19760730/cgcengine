@@ -14,6 +14,7 @@
 #include "llama.h"
 
 #include "llama-expert-cache.h"
+#include "llama-shape-knob.h"
 #include "llama-cgc-canon.h"
 #include "llama-cgc-phase.h"
 
@@ -246,6 +247,12 @@ llama_context::llama_context(
     cparams.fused_gdn_ch = true;
     cparams.auto_fgdn    = true;
 
+    // [CGC 2026-09-22 shape knob] Axis D selects an implementation, it does not add one: the fused
+    // ggml_gated_delta_net already covers both token counts on Metal. 0 asks to take it OUT so its
+    // cost can be measured against the manual graphs; there is no value that turns a knob up.
+    if (cgc_shape_gdn_ar_req() == 0) { cparams.fused_gdn_ar = false; cparams.auto_fgdn = false; }
+    if (cgc_shape_gdn_ch_req() == 0) { cparams.fused_gdn_ch = false; cparams.auto_fgdn = false; }
+
     cparams.fused_lid    = true;
     cparams.auto_flid    = true;
 
@@ -333,6 +340,18 @@ llama_context::llama_context(
                 cgc_decode_bound(min_usable, top_k, cap), cgc_prefill_threshold(),
                 cgc_prefill_threshold() > cgc_decode_bound(min_usable, top_k, cap) ? ", non-binding" : ", BINDING",
                 cgc_prefill_stream ? "armed (CGC_PREFILL_STREAM=1)" : "NOT armed");
+
+        // [2026-09-22 shape knob] Record the REALIZED geometry in the knob table, then print the
+        // init-phase report. Whether the requested width survived the routable bound is exactly
+        // what a width sweep has to see, and until now it existed only as prose inside the line
+        // above -- which is why "M=8 was requested" and "width 4 was run" used to be indistinguishable.
+        cgc_shape_note_width(cgc_decode_max_tokens, min_usable, top_k,
+                             model.expert_cache_pool_capacity,
+                             model.expert_cache ? model.expert_cache->n_slots  : 0,
+                             model.expert_cache ? model.expert_cache->n_expert : 0);
+        cgc_shape_report_init(getenv("CGC_SHAPE_TAG"), model.expert_cache_pool_capacity,
+                              model.expert_cache ? model.expert_cache->n_slots  : 0,
+                              model.expert_cache ? model.expert_cache->n_expert : 0);
     }
 
     // The clamp exists for exactly one reason: without the whole-layer slab there is no prefill
@@ -492,10 +511,13 @@ llama_context::llama_context(
         // buffer submission overhead (production profile: n_cb = max(1, n_parallel) unless the env
         // overrides). The proc-address form keeps this source decoupled from the Metal headers.
         {
+            // [2026-09-22] Sourced from the shape knob table so this value, the width decision
+            // below, and the `CGC-SHAPE` report all come from one parse (see llama-shape-knob.h).
+            const int n_cb_shape = cgc_shape_n_cb();
             const char * cgc_n_cb = getenv("CGC_N_CB");
             if (cgc_n_cb && cgc_n_cb[0]) {
                 typedef void (*ggml_backend_set_n_cb_t)(ggml_backend_t backend, int n_cb);
-                const int n_cb = std::max(1, atoi(cgc_n_cb));
+                const int n_cb = std::max(1, n_cb_shape);
                 for (auto & backend : backends) {
                     ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(backend.get()));
                     if (!reg) {
@@ -997,6 +1019,12 @@ void llama_context::resolve_fused_ops(const llama_memory_context_i * mctx, uint3
         resolve(llm_fused_op_gdn_ch_probe, cparams.fused_gdn_ch);
         cparams.auto_fgdn = false;
     }
+
+    // The realized choice belongs in the table, because "asked for the fused scan" and "the support
+    // probe said no, so the manual graph ran" used to print identically. Unconditional: with an
+    // ablation request the block above is skipped on purpose, and that is exactly the run whose
+    // report has to say so.
+    cgc_shape_note_gdn((int) cparams.fused_gdn_ar, (int) cparams.fused_gdn_ch);
 
     if (cparams.auto_flid) {
         LLAMA_LOG_INFO("%s: resolving fused Lightning Indexer support:\n", func);
