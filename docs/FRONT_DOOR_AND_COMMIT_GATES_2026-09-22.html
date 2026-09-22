@@ -408,7 +408,7 @@ PASS: no new offender; the offender count did not rise, and every report produce
 <li><strong>0 / 59</strong> 是這個契約存在的理由：41 份產物、59 個 measured object，沒有一個答得出「量它的時候盒子忙不忙」。<span class="small">（<code>server_window.py audit-products</code> 掃到的是更大的 corpus：含未追蹤的 <code>Backup/</code> scratch，514 份產物、893 個 object，其中 3 個帶 window。兩個數字回答同一個問題、兩個 corpus，所以兩邊都寫出來。）</li>
 <li><strong>「不解析的 7 個」不算違規。</strong>實測：其中 6 個是 vendored 的 JSONC 設定（<code>pyrightconfig.json</code>、三個 llama.cpp 樹裡的 <code>tools/ui/tsconfig.json</code>），加上一個 12 bytes 的 <code>No results</code>。把基準灌這些進去，就是訓練人忽略這個閘門。但它們仍被<strong>記名</strong>，所以新的不解析檔案會變成 WARNING，不會靜靜通過。</li>
 <li><strong>基準只降不升，而 <code>update</code> 是獨立指令。</strong>重新基準不可能在 commit 裡意外發生。</li>
-<li><strong>72/72 自測</strong>，而且分母是<strong>算出來的、不是打上去的</strong>——這個「N/N」在本線已經過期兩次，而一個手動維護分母的自測，無法被信任來報告自己的覆蓋率。</li>
+<li><strong>自測通過，而且分母是算出來的、不是打上去的。</strong>本文件<strong>刻意不寫那個 N</strong>：這個「N/N」在本線已經過期三次（含寫完這份文件之後又被改了兩次），而一個手動維護分母的自測無法被信任來報告自己的覆蓋率。要讀那個數字，跑 <code>selftest</code>：它會把分母自己算出來並印成最後一行。</li>
 </ul>
 
 <h3>兩種模式，因為它們回答不同的問題</h3>
@@ -481,7 +481,7 @@ python3 scripts/check/harness.py run target25_report -- --measure --logdir /tmp/
 python3 scripts/check/target25_report.py --pair /tmp/verify_layers
 
 # 4) 產物進 repo 前的兩道關
-python3 scripts/check/provenance_gate.py selftest        # 72/72
+python3 scripts/check/provenance_gate.py selftest        # 最後一行：selftest: N/N passed
 python3 scripts/check/provenance_gate.py check --staged  # 這次 commit 的 *.json
 
 # 5) 整個 pre-commit 的那一輪（等於 hook 會跑的內容）
@@ -494,11 +494,13 @@ python3 scripts/check/harness.py audit</code></pre>
 <h2>7. 邊界與未竟項</h2>
 
 <div class="box b-amber">
-<p><strong>未 commit。</strong>本輪動到的檔案（全部在工作區）：</p>
+<p><strong>已 commit（<code>ffb72176f</code>，逐檔 <code>git add</code>，未用 <code>-A</code>）。</strong>本輪動到的 10 檔：</p>
 <ul>
-<li>新增：<code>scripts/check/provenance_gate.py</code>、<code>scripts/check/provenance_gate_baseline.json</code>、本文件。</li>
+<li>新增：<code>scripts/check/provenance_gate.py</code>、<code>scripts/check/provenance_gate_baseline.json</code>、<code>scripts/check/target25_report.py</code>（登記表指的就是它，缺檔會讓完整性自測在乾淨 clone 上轉紅）、<code>docs/DECODE_WINDOW_2026-09-19.json</code>（backfill 出來的 sidecar）、本文件。</li>
 <li>修改：<code>scripts/check/decode_window_harness.py</code>（sidecar 與報告同一個呼叫寫出、<code>backfill</code> 子命令、生產者的 glob 改成自己的命名規則）、<code>scripts/check_build_tracked.sh</code>（檢查 12＋檔頭＋總結字串）、<code>scripts/check/server_window.py</code>（<code>decision()</code>／<code>launcher_guard()</code>＋8 項自測）、<code>scripts/check/harness.py</code>（<code>target25_report</code> 登記、看板缺席值、生產者自測）、<code>scripts/run_server.sh</code>（<strong>兩個 hunk</strong>：<code>LLAMA_EXPERT_CACHE_BATCH_DBG</code> 轉送，以及 <code>[guard]</code> 發布自己的判定）。</li>
 <li>主 clone（<code>flashkv0516</code>）目前還有 9 筆 docs 的刪除狀態，<strong>不是本輪造成的</strong>。</li>
+<li><strong>commit 閘自己跑了一次真的把關：</strong>第一次 commit 被 hook 擋下（<code>FAIL 檢查 11</code>：replay benchmark 需要活著的 llama-server），最後以 <code>RUN_REPLAY_BENCH=0</code> 過關。這是逃生閥、不是靜默略過——script 自己的總結會把 SKIP 列出來（那次是 4 個區段），而檢查 12 在同一次執行裡是 PASS。</li>
+<li>本線還留在工作區的一份獨立工作（25 t/s 量測鏈：<code>target25_grid.py</code>、<code>verify_marginal.py</code>、<code>gap_vs_miss.py</code>、<code>draft_budget.py</code>、<code>shape_roofline.py</code>、<code>mtp_k_sweep.py</code> 與 <code>TOOLCHAIN_25TPS</code>／<code>VERIFY_MARGINAL</code>／<code>TARGET25_*</code> 幾份文件）尚未 commit——它是一個獨立的主題，所以沒有搭這顆便車。</li>
 </ul>
 </div>
 
@@ -520,7 +522,7 @@ python3 scripts/check/harness.py audit</code></pre>
 <table>
 <thead><tr><th>對象</th><th>指令</th><th>結果</th></tr></thead>
 <tbody>
-<tr><td><code>provenance_gate.py</code></td><td><code>selftest</code> / <code>--selftest</code></td><td class="ok">72/72（成對規則、「登記表過期就轉紅」、比對寬度、backfill 的拒寫，兩種旗標形式都通）</td></tr>
+<tr><td><code>provenance_gate.py</code></td><td><code>selftest</code> / <code>--selftest</code></td><td class="ok">all passed（成對規則、「登記表過期就轉紅」、比對寬度、backfill 的拒寫、成對修復例外，兩種旗標形式都通）</td></tr>
 <tr><td><code>decode_window_harness.py</code></td><td><code>backfill &lt;report.html&gt;</code></td><td class="ok">真檔案 3 臂 5 讀數；無 digest 行的 fixture 拒寫（在閘門自測裡）</td></tr>
 <tr><td><code>server_window.py</code></td><td><code>selftest</code></td><td class="ok">44 項全過（含新的 guard 行解析與 <code>decision()</code> 形狀）</td></tr>
 <tr><td><code>harness.py</code></td><td><code>selftest</code></td><td class="ok">22 項全過（含「生產者必須存在」）</td></tr>
