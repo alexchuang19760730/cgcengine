@@ -121,6 +121,11 @@ REGISTRY: dict[str, dict] = {
     "pool_curve.py": dict(needs_window=True, purpose="pool-size sweep, one budget per restart"),
     "slab_handoff_ab.py": dict(needs_window=True, purpose="slab to pool handoff A/B"),
     "test_decode_window_harness.py": dict(needs_window=True, purpose="self-test for harness verdicts"),
+    # A driver whose `--measure` path launches, and whose `--pair` path does not. It is listed as
+    # needing a window because the stance has to hold for the mode that launches: `harness.py
+    # selftest` fails if a launcher has no stance at all, which is how this entry came to exist.
+    "target25_report.py": dict(needs_window=True,
+                               purpose="one-shot driver: measure -> decompose -> HTML report"),
 }
 
 
@@ -211,9 +216,12 @@ def cmd_show(args) -> int:
     print("WINDOW BOARD  %s" % box["when"])
     print("  port %-5d %s" % (box["port"], "HELD by %s" % d["port_held"] if d["port_held"] else "free"))
     print("  foreign llama: %s" % (",".join(d["foreign_llama"]) if d["foreign_llama"] else "none"))
-    print("  reclaimable %.0f MB (need %.0f)   launcher free %s%% (req %s%%, class %s)" % (
-        d["reclaimable_mb"], box["need_mb"], d["launcher_free_pct"], d["launcher_req_pct"],
-        d["launcher_class"]))
+    # "-" and not 0 for an absent launcher verdict: the launcher's bar and "no bar published" are
+    # different statements, and a 0 would read as "the launcher would refuse anything".
+    dash = lambda v: "-" if v is None else str(v)
+    print("  reclaimable %.0f MB (need %.0f)   launcher %s%% (req %s%%, class %s)" % (
+        d["reclaimable_mb"], box["need_mb"], dash(d["launcher_free_pct"]),
+        dash(d["launcher_req_pct"]), dash(d["launcher_class"])))
     print("  other sessions: %s" % (",".join(box["other_session_pids"]) or "none"))
     print("  VERDICT: %s -- %s" % (verdict, why))
     print()
@@ -435,6 +443,18 @@ def selftest() -> int:
         expect("waits for 2 consecutive", (ok, calls["n"]), (True, 4))
     finally:
         sw.record = real
+
+    print("\nthe box view comes from the shared probe's real producer, not from a shape invented here")
+    # This check exists because the old selftest built the decision dict as a FIXTURE and asserted on
+    # it, so `show` -- this file's own default command -- called `sw.decision()` for months while that
+    # function did not exist, and the selftest stayed green. Assert the producer, not a mock of it.
+    got = sw.decision(need_mb=1.0)
+    for k in ("admits", "harness_admits", "launcher_admits", "agree", "binding", "reclaimable_mb",
+              "port_held", "foreign_llama", "launcher_class"):
+        expect("decision() carries %s" % k, k in got, True)
+    expect("agree is never True without a published launcher verdict",
+           got["agree"] is True and got["launcher_admits"] is not None or got["agree"] is not True,
+           True)
 
     print("\nan unregistered tool is treated as needing a window, never as not needing one")
     by = {r["tool"]: r for r in rows}

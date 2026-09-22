@@ -250,6 +250,17 @@ def swap_used_mb():
     return float(m.group(1)) if m else None
 
 
+# Every window check this launcher makes, kept so the report's sidecar can answer the one question a
+# product has to answer about itself: was the box busy when this was measured? Empty means the question
+# cannot be answered, which is why `window_evidence()` reports that as `unknown` and not as `clean`.
+WINDOW_SAMPLES: list[dict] = []
+
+
+def _record_window(where, quiet, why, gated=False):
+    WINDOW_SAMPLES.append({"where": where, "quiet": bool(quiet), "why": why,
+                           "gated": bool(gated), "at": time.strftime("%H:%M:%S")})
+
+
 def window_state():
     reasons = []
     fl = foreign_llama()
@@ -265,7 +276,43 @@ def window_state():
     age = newest_log_age()
     if age is not None and age < 90:
         reasons.append(f"foreign log written {age:.0f}s ago")
-    return (not reasons), "; ".join(reasons) or "quiet"
+    why = "; ".join(reasons) or "quiet"
+    _record_window("window_state", not reasons, why)
+    return (not reasons), why
+
+
+def window_evidence():
+    """The sidecar's `window` block, from the checks THIS launcher made.
+
+    The vocabulary is the shared one -- clean / busy-then-cleared / busy-overridden / unknown, defined
+    in `server_window.provenance()` -- and that is a NAMED coupling: a second word for one question is
+    how this line ends up with two answers to it. It is computed here rather than by calling the shared
+    gate because THIS MODULE IS THAT GATE'S PROBE SOURCE (`server_window._load_harness`); importing it
+    back by path would instantiate a second copy whose sample log is empty, which can only ever answer
+    `unknown`. `class_source` says which implementation answered, so nobody has to guess.
+
+    `gated` marks the sample that actually decided a launch may proceed; without it "the box was busy
+    but we waited" and "we launched over a busy box" are the same list.
+    """
+    s = list(WINDOW_SAMPLES)
+    busy = [x for x in s if not x["quiet"]]
+    gated = [x for x in s if x["gated"]]
+    if not s:
+        cls = "unknown"
+        why = ("this run never asked the window probe, so whether the box was busy cannot be answered "
+               "from this product")
+    elif busy and any(x["quiet"] for x in gated):
+        cls = "busy-then-cleared"
+        why = f"{len(busy)} busy sample(s), but the gated launch saw a quiet box"
+    elif busy:
+        cls = "busy-overridden"
+        why = (f"{len(busy)} busy sample(s) and no quiet gated launch: this measurement may describe "
+               f"the neighbour")
+    else:
+        cls = "clean"
+        why = f"every window sample was quiet ({len(s)} check(s))"
+    return {"class": cls, "why": why, "n_samples": len(s), "busy_samples": len(busy),
+            "samples": s, "class_source": "decode_window_harness.py (this launcher's own checks)"}
 
 
 def wait_for_window():
@@ -280,6 +327,11 @@ def wait_for_window():
             streak += 1
             log(f"    quiet sample {streak}/{QUIET_SAMPLES}")
             if streak >= QUIET_SAMPLES:
+                # The sample that decided this launch. Same role as `gated=True` in
+                # server_window.record(): it is what separates "waited for quiet" from "launched
+                # over a busy box" when the sidecar is read later.
+                WINDOW_SAMPLES[-1]["gated"] = True
+                _record_window("launch", True, why, gated=True)
                 return True
         else:
             if streak:
@@ -839,14 +891,147 @@ def report_path():
             or os.path.join(ROOT, "docs", f"DECODE_WINDOW_{datetime.now().strftime('%Y-%m-%d')}.html"))
 
 
+def sidecar_path(out):
+    return os.path.splitext(out)[0] + ".json"
+
+
+def _stamp_window(doc, w):
+    """Put the window block where `server_window.audit_products` looks for it.
+
+    It counts a dict as a measured object when the dict carries one of MEASURED_KEYS -- so the block
+    belongs on the top level (`rows` is one of those keys) AND on each row, because a product whose
+    container has a block and whose rows do not still reports half its objects as unanswerable. That
+    trap has bitten this line twice. Written as two explicit lines rather than a recursion so the
+    digest/anchor blocks are not polluted with a `window` key: if a field named in MEASURED_KEYS is
+    ever added elsewhere in this product, stamp that dict here too.
+    """
+    doc["window"] = w
+    for r in doc["rows"]:
+        r["window"] = w
+
+
+def sidecar_doc(state, report):
+    """The report's evidence, in the shape a gate can read.
+
+    Why this exists: the HTML is written for a human, and the numbers in it are the ones other lines
+    quote. The evidence for them -- which engine, which window -- was in
+    `/tmp/decode_window_harness.json`, i.e. in a file that a reboot deletes and git never sees. The
+    two reports already in `docs/` therefore had no evidence in the repository at all, and
+    `provenance_gate` named them: `2 of 2 unpaired`. The sidecar is written in the same call as the
+    HTML so the pair cannot drift.
+    """
+    ok, why = anchor_ok(digest())
+    rows = []
+    for arm, rec in sorted((state.get("lane_a") or {}).items()):
+        rows.append({"lane": "A", "arm": arm, "bitident": rec.get("bitident"),
+                     "status": rec.get("status"), "reps": sorted((rec.get("reps") or {}))})
+    b = state.get("lane_b") or {}
+    if b:
+        rows.append({"lane": "B", "arm": "lane_b", "status": b.get("status"),
+                     "reps": sorted((b.get("reps") or {}))})
+    doc = {
+        "product": "decode_window_harness.py (two decode lanes, judged report)",
+        "report_html": report,
+        "raw_state": STATE,
+        "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "engine_digest": digest(),
+        "tree": tree_state(),
+        "anchor": {"ok": ok, "why": why},
+        "window": window_evidence(),
+        "rows": rows,
+        "note": ("`raw_state` is a TEMPORARY path: it is this run's scratch, not evidence. The evidence "
+                 "is here -- engine digest, anchor, and the window checks this launcher made."),
+    }
+    _stamp_window(doc, doc["window"])
+    return doc
+
+
+DIGEST_LINE = re.compile(r"engine digests:\s*(\{[^}]*\})")
+BACKFILL_WINDOW = {
+    "class": "unknown",
+    "why": ("backfilled from the report's own text: this run's launcher samples are gone, so the "
+            "reads below are the per-arm free/swap readings the report itself printed"),
+    "n_samples": 0, "busy_samples": 0, "samples": [],
+    "class_source": "decode_window_harness.py backfill (not a live probe)",
+}
+
+
+def backfill_doc(html_text, report):
+    """A sidecar for a report written BEFORE the sidecar existed, read out of the report's own text.
+
+    This is extraction, not reconstruction: every field below is copied from the artifact (the digest
+    line the report printed, the arms table, the raw per-arm free/swap readings), and the `window`
+    block says so and stays `unknown`. That distinction is the whole point -- `provenance_gate`
+    refuses a *fabricated* sidecar, and a backfill that invented a digest or a window class would be
+    worse than the missing file it replaces. It refuses (returns None) when the digest line is not
+    in the text, so an artifact with no evidence cannot acquire one by being backfilled.
+    """
+    m = DIGEST_LINE.search(html.unescape(html_text))
+    if not m:
+        return None
+    try:
+        digests = json.loads(m.group(1))
+    except Exception:                                                  # noqa: BLE001
+        return None
+    if not digests:
+        return None
+    text = html.unescape(html_text)
+    rows = [{"lane": "A", "arm": a, "bitident": int(b), "ms_per_token": float(ms), "log": log}
+            for a, b, ms, log in re.findall(
+                r"<td>([^<]{1,12})</td><td>([01])</td><td>([\d.]+)</td>(?:.*?)<td>([\w.]+\.log)</td>",
+                text)]
+    samples = [{"ts": ts, "free_mb": int(f), "swap_mb": None if s == "\u2014" else int(s)}
+               for ts, f, s in re.findall(
+                   r"<td>(\d{2}:\d{2}:\d{2})</td><td>(\d+)</td><td>(\u2014|\d+)</td>", text)]
+    w = dict(BACKFILL_WINDOW, n_samples=len(samples), samples=samples)
+    doc = {
+        "product": "decode_window_harness.py (two decode lanes, judged report)",
+        "report_html": report,
+        "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "engine_digest": digests,
+        "source": (f"backfilled from {os.path.basename(report)}'s own text "
+                   f"({len(rows)} arm row(s), {len(samples)} window reading(s)); the run's state file "
+                   f"is gone and NOTHING here was re-measured"),
+        "window": w,
+        "rows": rows,
+    }
+    _stamp_window(doc, w)
+    return doc
+
+
+def cmd_backfill(args):
+    """Give an already-published report the sidecar it should have had. Refuses without evidence."""
+    for report in args.reports:
+        if not os.path.exists(report):
+            log(f"backfill: {report} does not exist")
+            return 1
+        doc = backfill_doc(open(report, encoding="utf-8").read(), report)
+        if doc is None:
+            log(f"backfill: REFUSED {report} -- no engine-digest line in it, so it has no evidence to "
+                f"copy and a sidecar here would be invented")
+            return 1
+        side = sidecar_path(report)
+        if os.path.exists(side) and not args.force:
+            log(f"backfill: {side} already exists (--force to replace)")
+            return 1
+        with open(side, "w") as fh:
+            json.dump(doc, fh, indent=1)
+        log(f"backfill: {side} ({len(doc['rows'])} arm row(s), {doc['window']['n_samples']} window "
+            f"reading(s))")
+    return 0
+
+
 def autoreport(state):
-    """Refresh the report from whatever is known right now. Never raises: a report that fails to
-    write must not take the measurement down with it."""
+    """Refresh the report AND its sidecar from whatever is known right now. Never raises: an output
+    file that fails to write must not take the measurement down with it."""
     try:
         out = report_path()
         os.makedirs(os.path.dirname(out), exist_ok=True)
+        page = write_html(state, out)
         with open(out, "w") as fh:
-            fh.write(write_html(state))
+            fh.write(page)
+        with open(sidecar_path(out), "w") as fh:
+            json.dump(sidecar_doc(state, out), fh, indent=1)
         return out
     except Exception as exc:                                    # noqa: BLE001 - see docstring
         log(f"    (report write failed: {exc})")
@@ -1262,7 +1447,7 @@ def verdict_drift(state):
 
 
 # ------------------------------------------------------------------------- report
-def write_html(state):
+def write_html(state, out=None):
     a = verdict_lane_a(state)
     b = verdict_lane_b(state)
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -1409,6 +1594,12 @@ INCONCLUSIVE，不會被四捨五入成結論。Lane B 的冷/暖是變數不是
         parts.append("<h2>執行日誌（最後 400 行）</h2><pre style='font-size:.82rem;background:#f7f7f7;"
                      "padding:.8rem;overflow:auto;max-height:26rem'>"
                      + esc("\n".join(state["log"])) + "</pre>")
+    # Name the sidecar in the report itself: the numbers above are quoted by other lines, and the
+    # file that says which engine and which window they came from has to be findable from here.
+    parts.append("<p style='font-size:.85rem;color:#555'>證據（engine digest、M1/M2/M3 anchor、這次量測"
+                 "做過的每一次窗口檢查）在與本報告同名的 sidecar <code>"
+                 + esc(os.path.basename(sidecar_path(out or report_path()))) + "</code>，與這份 HTML "
+                 "同一次寫出。</p>")
     parts.append("</body></html>")
     return "\n".join(parts)
 
@@ -1531,16 +1722,19 @@ def cmd_run(args):
 
 
 def write_report(args, state):
-    """Write the HTML verdict report and echo the verdicts. Returns the path."""
+    """Write the HTML verdict report AND its sidecar, and echo the verdicts. Returns the path."""
     out = getattr(args, "out", None) or report_path()
     with open(out, "w") as fh:
-        fh.write(write_html(state))
+        fh.write(write_html(state, out))
+    with open(sidecar_path(out), "w") as fh:
+        json.dump(sidecar_doc(state, out), fh, indent=1)
     a = verdict_lane_a(state)
     b = verdict_lane_b(state)
     log("=== verdicts ===")
     for kind, text in a["verdicts"] + b["verdicts"] + verdict_drift(state)["verdicts"]:
         log(f"  [{kind}] {text}")
     log("report: " + out)
+    log("sidecar: " + sidecar_path(out))
     return out
 
 
@@ -1574,6 +1768,11 @@ def main():
                                              "(never a measurement, never written to docs/)")
     s.add_argument("--out", default="/tmp/DECODE_WINDOW_RENDER_TEST.html")
     s.set_defaults(func=cmd_render_sample)
+    b = sub.add_parser("backfill", help="write the sidecar for a report published before sidecars "
+                                        "existed, by copying the evidence out of the report's text")
+    b.add_argument("reports", nargs="+")
+    b.add_argument("--force", action="store_true")
+    b.set_defaults(func=cmd_backfill)
     args = ap.parse_args()
     return args.func(args)
 

@@ -1,0 +1,450 @@
+{
+ "updated": "2026-09-22 18:46:30",
+ "note": "Offenders that existed BEFORE this gate was wired in. Tolerated so the gate can ship; the count may only go down, and `update` is a deliberate command so a re-baseline cannot happen by accident inside a commit.",
+ "corpus": "git ls-files '*.json'",
+ "counts": {
+  "files": 41,
+  "measured_objects": 59,
+  "with_window": 0,
+  "without": 59,
+  "unreadable": 7,
+  "not_a_product": 288
+ },
+ "offenders": {
+  "Backup/m123_oracle_gate/summary_capround2.json": {
+   "reasons": [
+    "1 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "summary_capround2.json"
+   ],
+   "measured": 1
+  },
+  "Backup/phase_decomp/db_n128_match2_20260916_1807.json": {
+   "reasons": [
+    "1 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "db_n128_match2_20260916_1807.json[0]"
+   ],
+   "measured": 1
+  },
+  "Backup/phase_decomp/db_n128_match_20260916_1807.json": {
+   "reasons": [
+    "1 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "db_n128_match_20260916_1807.json[0]"
+   ],
+   "measured": 1
+  },
+  "Backup/phase_decomp/db_n24_match_20260916_1807.json": {
+   "reasons": [
+    "1 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "db_n24_match_20260916_1807.json[0]"
+   ],
+   "measured": 1
+  },
+  "Backup/phase_decomp/ids_dst_capture_20260916_201234.json": {
+   "reasons": [
+    "2 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "ids_dst_capture_20260916_201234.json[0]",
+    "ids_dst_capture_20260916_201234.json[1]"
+   ],
+   "measured": 2
+  },
+  "Backup/phase_decomp/ids_dst_capture_20260916_201409.json": {
+   "reasons": [
+    "2 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "ids_dst_capture_20260916_201409.json[0]",
+    "ids_dst_capture_20260916_201409.json[1]"
+   ],
+   "measured": 2
+  },
+  "Backup/phase_decomp/ids_dst_capture_20260916_201721.json": {
+   "reasons": [
+    "2 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "ids_dst_capture_20260916_201721.json[0]",
+    "ids_dst_capture_20260916_201721.json[1]"
+   ],
+   "measured": 2
+  },
+  "Backup/phase_decomp/ids_dst_capture_20260916_201852.json": {
+   "reasons": [
+    "2 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "ids_dst_capture_20260916_201852.json[0]",
+    "ids_dst_capture_20260916_201852.json[1]"
+   ],
+   "measured": 2
+  },
+  "Backup/phase_decomp/lb_depth_repro_20260916.json": {
+   "reasons": [
+    "2 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "lb_depth_repro_20260916.json[0]",
+    "lb_depth_repro_20260916.json[0].cache"
+   ],
+   "measured": 2
+  },
+  "Backup/phase_decomp/lb_n128_match2_20260916_1807.json": {
+   "reasons": [
+    "2 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "lb_n128_match2_20260916_1807.json[0]",
+    "lb_n128_match2_20260916_1807.json[0].cache"
+   ],
+   "measured": 2
+  },
+  "Backup/phase_decomp/lb_n128_match_20260916_1807.json": {
+   "reasons": [
+    "2 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "lb_n128_match_20260916_1807.json[0]",
+    "lb_n128_match_20260916_1807.json[0].cache"
+   ],
+   "measured": 2
+  },
+  "Backup/phase_decomp/lb_n128_mtp_20260916_1807.json": {
+   "reasons": [
+    "2 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "lb_n128_mtp_20260916_1807.json[0]",
+    "lb_n128_mtp_20260916_1807.json[0].cache"
+   ],
+   "measured": 2
+  },
+  "Backup/phase_decomp/lb_n24_match_20260916_1807.json": {
+   "reasons": [
+    "2 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "lb_n24_match_20260916_1807.json[0]",
+    "lb_n24_match_20260916_1807.json[0].cache"
+   ],
+   "measured": 2
+  },
+  "Backup/phase_decomp/lb_p0_anchor_n128_20260916_1814.json": {
+   "reasons": [
+    "2 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "lb_p0_anchor_n128_20260916_1814.json[0]",
+    "lb_p0_anchor_n128_20260916_1814.json[0].cache"
+   ],
+   "measured": 2
+  },
+  "Backup/phase_decomp/lb_p1_n24_r8_20260916_1814.json": {
+   "reasons": [
+    "2 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "lb_p1_n24_r8_20260916_1814.json[0]",
+    "lb_p1_n24_r8_20260916_1814.json[0].cache"
+   ],
+   "measured": 2
+  },
+  "Backup/phase_decomp/lb_p2_n128_nowarm_20260916_1814.json": {
+   "reasons": [
+    "2 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "lb_p2_n128_nowarm_20260916_1814.json[0]",
+    "lb_p2_n128_nowarm_20260916_1814.json[0].cache"
+   ],
+   "measured": 2
+  },
+  "Backup/phase_decomp/lb_p3_n256_20260916_1814.json": {
+   "reasons": [
+    "2 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "lb_p3_n256_20260916_1814.json[0]",
+    "lb_p3_n256_20260916_1814.json[0].cache"
+   ],
+   "measured": 2
+  },
+  "Backup/phase_decomp/name_enum.json": {
+   "reasons": [
+    "1 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "name_enum.json[0]"
+   ],
+   "measured": 1
+  },
+  "Backup/phase_decomp/outcap_crosscheck.json": {
+   "reasons": [
+    "2 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "outcap_crosscheck.json[0]",
+    "outcap_crosscheck.json[1]"
+   ],
+   "measured": 2
+  },
+  "Backup/phase_decomp/unified_ab_A1_20260916_1848.json": {
+   "reasons": [
+    "2 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "unified_ab_A1_20260916_1848.json[0]",
+    "unified_ab_A1_20260916_1848.json[0].cache"
+   ],
+   "measured": 2
+  },
+  "Backup/phase_decomp/unified_ab_A2_20260916_1848.json": {
+   "reasons": [
+    "2 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "unified_ab_A2_20260916_1848.json[0]",
+    "unified_ab_A2_20260916_1848.json[0].cache"
+   ],
+   "measured": 2
+  },
+  "Backup/phase_decomp/unified_ab_B1_20260916_1848.json": {
+   "reasons": [
+    "2 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "unified_ab_B1_20260916_1848.json[0]",
+    "unified_ab_B1_20260916_1848.json[0].cache"
+   ],
+   "measured": 2
+  },
+  "Backup/phase_decomp/unified_ab_B2_20260916_1848.json": {
+   "reasons": [
+    "2 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "unified_ab_B2_20260916_1848.json[0]",
+    "unified_ab_B2_20260916_1848.json[0].cache"
+   ],
+   "measured": 2
+  },
+  "CGC-main/Output/edge_first_proxy_reports/draft_mode_acceptance.live.json": {
+   "reasons": [
+    "1 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "draft_mode_acceptance.live.json.modes.mtp"
+   ],
+   "measured": 1
+  },
+  "CGC-main/Output/edge_first_proxy_reports/fit_memory_compare/e4b_fit_memory_streaming_compare.json": {
+   "reasons": [
+    "1 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "e4b_fit_memory_streaming_compare.json"
+   ],
+   "measured": 1
+  },
+  "CGC-main/Output/edge_first_proxy_reports/route_heat_snapshot.live.json": {
+   "reasons": [
+    "1 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "route_heat_snapshot.live.json.expert_data_plane"
+   ],
+   "measured": 1
+  },
+  "CGC-main/Output/edge_first_proxy_reports/single_node_candidate_matrix.live.json": {
+   "reasons": [
+    "1 measured object(s) with no window block"
+   ],
+   "examples": [
+    "single_node_candidate_matrix.live.json.expert_data_plane"
+   ],
+   "measured": 1
+  },
+  "CGC-main/Output/edge_first_proxy_reports/tuning_matrix_fixed/e4b_local_full_tuning_summary.json": {
+   "reasons": [
+    "1 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "e4b_local_full_tuning_summary.json"
+   ],
+   "measured": 1
+  },
+  "CGC-main/cgc_engine/tools/scripts/benchmarks/benchmark_harness_agent_results_20260514_104603.json": {
+   "reasons": [
+    "1 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "benchmark_harness_agent_results_20260514_104603.json"
+   ],
+   "measured": 1
+  },
+  "CGC-main/cgc_engine/tools/scripts/benchmarks/benchmark_harness_agent_results_20260514_121937.json": {
+   "reasons": [
+    "1 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "benchmark_harness_agent_results_20260514_121937.json"
+   ],
+   "measured": 1
+  },
+  "CGC-main/cgc_engine/tools/scripts/benchmarks/benchmark_harness_agent_results_20260514_122017.json": {
+   "reasons": [
+    "1 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "benchmark_harness_agent_results_20260514_122017.json"
+   ],
+   "measured": 1
+  },
+  "CGC-main/cgc_engine/tools/scripts/run/validation_report_gate50_20260707.json": {
+   "reasons": [
+    "1 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "validation_report_gate50_20260707.json"
+   ],
+   "measured": 1
+  },
+  "CGC-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/fusionroute_v2_candidate_contract_report.json": {
+   "reasons": [
+    "1 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "fusionroute_v2_candidate_contract_report.json"
+   ],
+   "measured": 1
+  },
+  "CGC-main/docs/technical_whitepapers/CGC_Gate_6.0_fusionroute_complete/fusionroute_v2_formal_contract_report.json": {
+   "reasons": [
+    "1 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "fusionroute_v2_formal_contract_report.json"
+   ],
+   "measured": 1
+  },
+  "agent_harness/engine_loop/distill/closed_loop_out/20260917_173239/manifest.json": {
+   "reasons": [
+    "1 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "manifest.json"
+   ],
+   "measured": 1
+  },
+  "agent_harness/engine_loop/sft_pi/PROVENANCE.json": {
+   "reasons": [
+    "1 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "PROVENANCE.json"
+   ],
+   "measured": 1
+  },
+  "agent_harness/engine_loop/sft_prime/PROVENANCE.json": {
+   "reasons": [
+    "1 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "PROVENANCE.json"
+   ],
+   "measured": 1
+  },
+  "agent_harness/engine_loop/traces/schema/episode.schema.json": {
+   "reasons": [
+    "1 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "episode.schema.json.properties.obs.properties.oracle.properties"
+   ],
+   "measured": 1
+  },
+  "agent_harness/portal/data.json": {
+   "reasons": [
+    "1 measured object(s) with no window block"
+   ],
+   "examples": [
+    "data.json.gates"
+   ],
+   "measured": 1
+  },
+  "agent_harness/portal/lan.json": {
+   "reasons": [
+    "1 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "lan.json.measured_bind_matrix"
+   ],
+   "measured": 1
+  },
+  "agent_harness/portal/targets.json": {
+   "reasons": [
+    "1 measured object(s) with no window block",
+    "no engine digest anywhere in the product"
+   ],
+   "examples": [
+    "targets.json.targets[1].gates.baseline"
+   ],
+   "measured": 1
+  }
+ },
+ "unparseable": {
+  "CGC-main/cgc_engine/tools/scripts/direct/direct_ablation_results.json": "JSONDecodeError: Expecting value: line 1 column 1 (char 0)",
+  "src/llama.cpp/pyrightconfig.json": "JSONDecodeError: Expecting property name enclosed in double quotes: line 9 column 40 (c",
+  "src/llama.cpp/tools/ui/tsconfig.json": "JSONDecodeError: Expecting ',' delimiter: line 29 column 2 (char 686)",
+  "versions/llama_roadB/llama.cpp-master/pyrightconfig.json": "JSONDecodeError: Expecting property name enclosed in double quotes: line 9 column 40 (c",
+  "versions/llama_roadB/llama.cpp-master/tools/ui/tsconfig.json": "JSONDecodeError: Expecting ',' delimiter: line 29 column 2 (char 686)",
+  "versions/llama_roadB/upstream_ref/pyrightconfig.json": "JSONDecodeError: Expecting property name enclosed in double quotes: line 9 column 40 (c",
+  "versions/llama_roadB/upstream_ref/tools/ui/tsconfig.json": "JSONDecodeError: Expecting ',' delimiter: line 29 column 2 (char 686)"
+ }
+}

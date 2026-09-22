@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>量測的前門與關口：harness.py、產物出處契約、pre-commit 的 12 道檢查（2026-09-22）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa; --purple:#7c3aed; --purple-bg:#f5f3ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:27px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num,th.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap;text-align:right}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:22px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  .b-purple{background:var(--purple-bg);border-color:#ddd6fe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  .tool{border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:22px 0}
+  .tool > h3{margin-top:0}
+  .tool .q{font-size:13.5px;color:#1f2937;background:#f9fafb;border-left:3px solid var(--blue);
+           padding:8px 12px;margin:0 0 12px;border-radius:0 6px 6px 0}
+  .pill{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:999px;
+        background:var(--code-bg);border:1px solid var(--line);margin-right:4px;
+        font-family:ui-monospace,Menlo,monospace}
+  .no{color:var(--muted)}
+  .flow{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+        font-family:ui-monospace,Menlo,monospace;font-size:12px;line-height:1.55;white-space:pre;
+        overflow-x:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>量測的前門與關口</h1>
+<div class="sub">
+  <code>harness.py</code>（量測前門）· 28 支工具的量測自適應 · 產物出處契約（engine digest + window block）
+  · <code>check_build_tracked.sh</code> 的 12 道 pre-commit 檢查<br>
+  載體 <span class="pill">demo/sweet-spot-windows-fix</span> <span class="pill">HEAD b54b83e80</span>
+  <span class="pill">2026-09-22</span>
+</div>
+
+<div class="box b-red">
+<p><strong>開場先講一個今天才發現、而且已經修掉的缺陷。</strong>這份文件原本要寫「<code>harness.py show</code> 是你每天早上第一條指令」，結果那條指令一跑就 <span class="bad">AttributeError: module 'sw' has no attribute 'decision'</span>。
+<code>sw.decision()</code> 在五個 worktree 裡都被呼叫（<code>harness.py</code>、<code>box_probe_compare.py</code>、<code>Backup/phase_decomp/gap_split_swap.py</code>），卻沒有任何一個檔案定義它。它的 selftest 之所以一直是綠的，是因為那個 selftest <em>自己把 decision 的 dict 當 fixture 造出來</em>再對它斷言——它驗了一個替身，不是驗生產者。</p>
+<p>修法、修完的讀數、以及為什麼這件事值得寫在第一段，見 <a href="#defect">第二節</a>。</p>
+</div>
+
+<h2>0. 一句話與三張圖</h2>
+
+<p>這條線上有<strong>三個入口</strong>，各自回答一個問題，而且互相不重疊：</p>
+
+<table>
+<thead><tr><th>入口</th><th>檔案</th><th>它回答的問題</th><th>誰會跑到它</th></tr></thead>
+<tbody>
+<tr><td>量測前門</td><td><code>scripts/check/harness.py</code><br><span class="small">542 行 · 22 項自測</span></td>
+    <td>「現在這台機器能跑哪一支工具、跑出來的數字能不能歸屬」</td>
+    <td>人手、以及每一支繞過它的工具（透過 <code>server_window</code>）</td></tr>
+<tr><td>Commit 關口</td><td><code>scripts/check_build_tracked.sh</code><br><span class="small">735 行 · 12 道檢查</span></td>
+    <td>「這次 commit 可不可以進 git」</td>
+    <td><code>.git/hooks/pre-commit</code>（所有 worktree 共用一顆）</td></tr>
+<tr><td>產物出處契約</td><td><code>scripts/check/provenance_gate.py</code><br><span class="small">560 行 · 38 項自測</span></td>
+    <td>「這份量測產物答不答得出『量它的時候盒子忙不忙』」</td>
+    <td>關口內的檢查 12；以及 repo 級的審計模式</td></tr>
+</tbody>
+</table>
+
+<div class="flow">                     ┌────────────────────────── 你要量一個東西 ──────────────────────────┐
+                     │                                                                    │
+              python3 scripts/check/harness.py run &lt;tool&gt; -- &lt;它的參數&gt;
+                     │                                                                    │
+                     ├─ 1. registry：這支工具需要安靜的窗口嗎？（? = 需要，寧可多等）
+                     ├─ 2. server_window：問一次共用探針（8080 有沒有被聽、有沒有外來的 llama、reclaimable 記憶體）
+                     ├─ 3. --certify：量一次吞吐量當哨兵（thermal NOMINAL 曾經簽過一台慢 5 倍的機器）
+                     ├─ 4. 跑子行程
+                     └─ 5. 寫一行證據 → Backup/phase_decomp/harness_runs.jsonl（含 child_gated 標記）
+
+                     ┌────────────────────────── 你要 commit ────────────────────────────┐
+ git commit  ──▶  .git/hooks/pre-commit（common dir，全部 worktree 共用）
+                     └─▶ scripts/check_build_tracked.sh --repo &lt;runtime 解析&gt;
+                              ├─ 檢查 1–5  build/bin 追蹤、rpath、symlink、關鍵 exe
+                              ├─ 檢查 6    main ⊆ dev
+                              ├─ 檢查 7    CGC 專家快取死鎖防護（靜態）
+                              ├─ 檢查 8    原始碼 ↔ binary 同步
+                              ├─ 檢查 12   量測產物出處契約（★ 本次新增，0.2 秒）
+                              ├─ 檢查 9/10 重型生產驗收、deploy 驗收（env-gated）
+                              └─ 檢查 11   replay benchmark regression（代碼 commit 才觸發）
+
+                     ┌────────────────────── 產物自己帶身分 ────────────────────────┐
+ server_window.provenance()  在行程內取樣 ──▶ {"class": clean|busy-then-cleared|busy-overridden|unknown}
+ engine_digest               build/bin/*.dylib 的 md5 + size
+ 兩者寫進 sidecar JSON  ──▶ 檢查 12 在 commit 那一刻檢查它有沒有</div>
+
+<div class="cards">
+  <div class="card"><div class="k">registry 工具數</div><div class="v">28</div>
+    <div class="small">未標記的 0 支（未標記一律當作需要窗口）</div></div>
+  <div class="card"><div class="k">未受閘的啟動器</div><div class="v warn">5</div>
+    <div class="small">已受閘 11 / 共 17；規則：只降不升</div></div>
+  <div class="card"><div class="k">pre-commit 檢查數</div><div class="v">12</div>
+    <div class="small">其中 11 道需要 env 才會跑重型項</div></div>
+  <div class="card"><div class="k">量測產物帶 window 的比例</div><div class="v bad">0 / 59</div>
+    <div class="small">tracked corpus：41 份產物、59 個 measured object</div></div>
+  <div class="card"><div class="k">已登記的報告 producer</div><div class="v warn">2 → 3 份</div>
+    <div class="small">其中 1 支今天還不寫 sidecar ⇒ 2 份成品無側錄（已報，未闘）</div></div>
+</div>
+
+<h2>1. 入口 A：<code>harness.py</code> —— 為什麼要有前門</h2>
+
+<div class="tool">
+<h3>它存在的原因不是潔癖，是一組實測到的散佈</h3>
+<div class="q">四支工具各自實作了一次「等到盒子空了再跑」：<code>decode_window_harness.py</code>（定義探針的那支）、<code>m123_gate_window.py</code>、<code>plain_match_window.py</code>、<code>server_window.py cmd_wait</code>。它們彼此不一致，而不一致不是外觀問題：<strong>同一份設定的實測散佈是 17%，壞日子 2.5×</strong>——而這種失敗在它產生的數字裡看不出來，所以只有在啟動前攔下來才有用。攔不攔得到，取決於你剛好挑了哪一個 wrapper。</div>
+
+<p><code>harness.py</code> 不取代那四個 wrapper，它是<strong>前門</strong>：一個知道四件事的地方。</p>
+
+<table>
+<thead><tr><th>#</th><th>它知道的事</th><th>實作</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>哪一支工具需要安靜的窗口</td><td><code>REGISTRY</code>（28 支）＋ <code>server_window.audit()</code> 併入的 <code>launches</code>，所以新啟動器不必有人記得改表就會出現</td></tr>
+<tr><td>2</td><td>盒子現在怎麼說</td><td><code>server_window.decision()</code> —— 一次提問、兩個定義並排</td></tr>
+<tr><td>3</td><td>那個判定在物理上可不可以信</td><td><code>--certify</code>：先量 <code>window_sentinel</code> 的吞吐量當哨兵（thermal NOMINAL 曾在 2026-09-20 簽過一台慢 ~5 倍的機器）</td></tr>
+<tr><td>4</td><td>證據去了哪裡</td><td><code>Backup/phase_decomp/harness_runs.jsonl</code>，每跑一次 append 一行（目前 5 行）</td></tr>
+</tbody>
+</table>
+
+</div>
+
+<h3>三種立場，而「未知」不是 False</h3>
+<pre><code>needs_window=True   盒子忙會汙染這支工具的輸出（要等窗口）
+needs_window=False  它只解析檔案 / 做算術，鄰居的 server 不改變答案（只改變速度）
+needs_window=None   還沒標記 —— show 會把它報成缺口，而不是靜靜當成 False
+
+未登記的工具一律 needs_window_for() == True：不安全是不對稱的。
+把「需要安靜」誤判成「不需要」會產生一個看起來正常、描述的是鄰居的數字；
+反過來只會讓人多等。</code></pre>
+
+<h3>CLI</h3>
+<pre><code>python3 scripts/check/harness.py show                 # 窗口看板（預設指令，alias: windows）
+python3 scripts/check/harness.py show --json
+python3 scripts/check/harness.py run &lt;tool&gt; -- &lt;child args&gt;   # 等窗口 → 跑 → 記一行
+python3 scripts/check/harness.py run &lt;tool&gt; --certify -- ...
+python3 scripts/check/harness.py list                 # registry
+python3 scripts/check/harness.py audit                # 未受閘的啟動器（= window_gate）
+python3 scripts/check/harness.py selftest</code></pre>
+
+<div class="box b-amber">
+<p><strong><code>--</code> 是手動切的，不是 <code>argparse.REMAINDER</code>。</strong>原因記在程式碼裡：REMAINDER 放在 <code>tool</code> 之後會貪婪地吞掉 harness 自己的選項（<code>--window-timeout-s 4</code> 被交給子行程，於是那次等待用了預設的 900 秒）。現在在 <code>main()</code> 裡遇到第一個裸 <code>--</code> 才切。</p>
+</div>
+
+<h3>2026-09-22 18:53 的實測看板</h3>
+<pre><code>WINDOW BOARD  2026-09-22 18:53:16
+  port 8080  free
+  foreign llama: none
+  reclaimable 5643 MB (need 8000)   launcher 73% (req 40%, class full-mtp)
+  other sessions: none
+  VERDICT: REFUSED -- reclaimable 5643MB &lt; 8000 [DISAGREE: the launcher's own probe
+           would admit; binding=harness]
+
+TOOL                               WINDOW  LAUNCHES GATED  OWNER  NOW
+cb_headroom_probe.py               yes     yes      yes    lineA  blocked
+decode_window_harness.py           yes     yes      src    lineA  blocked
+joint_reconcile.py                 no      -        -      lineA  runnable
+server_window.py                   no      yes      yes    shared runnable
+window_gate.py                     no      -        -      shared runnable
+...（共 28 支）
+
+ungated launchers (5): decode_step_profile.py, decode_sweep.py, http_duo.py,
+                       m123_oracle_gate.py, mtp_accept_ab.py
+unlabelled in registry (0): none
+windows: closed -- the box is not admitting a launch right now</code></pre>
+
+<p>這張看板上有兩個獨立的事實值得指出：</p>
+<ul>
+<li><strong><code>DISAGREE</code> 是當場的一個讀數，不是假設。</strong>harness 的門檻（reclaimable ≥ 8000 MB）拒絕，而 launcher 自己的探針（<code>memory_pressure -Q</code> 的 73% ≥ 該 class 的 40%）會放行。<code>binding=harness</code> 就是「現在是哪一個在決定」的答案。要改用 launcher 的門檻跑，就<strong>刻意</strong>傳比較低的 <code>--need-mb</code>——紀錄裡會寫明用了哪一條。</li>
+<li><strong><code>GATED=NO</code> 的那 5 支</strong>是「從這裡啟動就無法在忙碌的盒子上歸屬」的名單，規則是不只不能增加，只能下降（<code>window_gate.py</code>，基準存在 <code>window_gate_baseline.json</code>）。</li>
+</ul>
+
+<h2 id="defect">2. 前門上面那個洞：<code>sw.decision()</code> 不存在（已修）</h2>
+
+<div class="box b-red">
+<p><strong>症狀。</strong><code>python3 scripts/check/harness.py show</code>（也就是這個檔案自己的預設指令、docstring 叫人「先跑這個」的那一條）當場崩潰：</p>
+<pre><code>File "scripts/check/harness.py", line 207, in cmd_show
+    box = box_view(sw, args.port, args.need_mb)
+File "scripts/check/harness.py", line 171, in box_view
+    d = sw.decision(port, need_mb)
+AttributeError: module 'sw' has no attribute 'decision'</code></pre>
+<p><strong>範圍。</strong><code>sw.decision(</code> 的呼叫者：<code>harness.py</code>（三個 worktree 各一份）、<code>box_probe_compare.py</code>、<code>Backup/phase_decomp/gap_split_swap.py</code>。全樹沒有任何檔案定義它——五個 worktree 都沒有。</p>
+<p><strong>為什麼 selftest 一直是綠的。</strong>舊的 selftest 把 decision 的 dict 當 <em>fixture</em> 造出來（<code>base = {"decision": {...}}</code>）再斷言——它驗的是 <code>_verdict()</code> 這個純函式對一份<em>自己造的</em>輸入的反應。<strong>沒有任何一項檢查去問「這個 dict 的生產者存在嗎」</strong>，所以一個不存在的函式可以讓 22 項自測全過，而預設指令是壞的。</p>
+</div>
+
+<h3>修法（三個檔案，各一處）</h3>
+
+<table>
+<thead><tr><th>檔案</th><th>改動</th><th>為什麼是這樣改</th></tr></thead>
+<tbody>
+<tr><td><code>server_window.py</code></td>
+    <td>新增 <code>decision()</code> 與 <code>launcher_guard()</code>（44 項自測）</td>
+    <td>harness 側沿用既有的 <code>quiet()</code> 探針；launcher 側<strong>去問 launcher 本人</strong>，不在 Python 端重算它的門檻</td></tr>
+<tr><td><code>run_server.sh</code></td>
+    <td><code>[guard]</code> 那行多發布 <code>req_phys / req_free / req_other / admits=yes|no</code></td>
+    <td>門檻只住在 <code>cgc_memory_guard_req</code>。由 Python 從 <code>free%</code> 回推「launcher 會不會放行」＝<strong>在世界裡多一個 launcher 門檻定義</strong>，而那正是「兩個 free memory 定義」已經付過一次代價的病</td></tr>
+<tr><td><code>harness.py</code></td>
+    <td>看板對缺席值印 <code>-</code> 而不是 0；selftest 改為斷言<strong>生產者</strong>（9 個 key）</td>
+    <td><code>0</code> 會被讀成「launcher 什麼都會拒絕」；而 0 與「沒有發布」是兩句不同的話（absence-as-a-value）</td></tr>
+</tbody>
+</table>
+
+<p>launcher 的自我判定是它自己印的，成本 0.25 秒（<code>CGC_DUMP_ENV=1 bash scripts/run_server.sh</code>，印完就結束、不啟動）：</p>
+
+<pre><code>[guard] memory_mode=dev class=full-mtp phys=16GB free=72% other_llama_servers=0 \
+        req_phys=0GB req_free=40% req_other=0 admits=yes</code></pre>
+
+<p>而 <code>decision()</code> 回傳的就是兩個定義並排的那一份：</p>
+
+<pre><code>{
+ "reclaimable_mb": 5607.234375, "need_mb": 8000.0,
+ "foreign_llama": [], "port_held": [],
+ "harness_admits": false, "harness_terms": {"memory": false, "foreign": true, "port": true},
+ "launcher_class": "full-mtp", "launcher_free_pct": 72, "launcher_req_pct": 40,
+ "launcher_terms": {"phys": true, "free": true, "other": true}, "launcher_admits": true,
+ "agree": false, "binding": "harness", "admits": false, "refused_by": ["harness:memory"]
+}</code></pre>
+
+<div class="box b-green">
+<p><strong>修完的當場價值：兩個定義現在真的不一致，而它變成一條指令就能讀到的事實。</strong>harness 說 5607 &lt; 8000 拒絕；launcher 說 72% ≥ 40% 放行。<code>agree=false、binding=harness</code>——這正是 2026-09-20 那次（harness 在 6636 MB 拒絕、launcher 讀到 84%）的形狀，只是現在不必靠回憶。</p>
+</div>
+
+<h3>自測補上的三件事（這些是原本抓不到的）</h3>
+<ul>
+<li><code>decision()</code> 必須真的存在，且帶齊 <code>admits / harness_admits / launcher_admits / agree / binding / reclaimable_mb / port_held / foreign_llama / launcher_class</code>。</li>
+<li><code>agree</code> 只有在 launcher <strong>有發布判定</strong>時才可能是 True。</li>
+<li><code>[guard]</code> 舊格式（沒有 req/admits 欄位）仍要能解析，而且<strong>發布「沒有判定」而不是暗示的 yes</strong>——其他 worktree 的 <code>run_server.sh</code> 還沒更新時，這條才是誠實的。</li>
+</ul>
+
+<h2>3. 入口 B：<code>check_build_tracked.sh</code> —— pre-commit 的 12 道檢查</h2>
+
+<div class="tool">
+<h3>hook 的落點，以及三個很容易裝錯的地方</h3>
+<div class="q">安裝：<code>scripts/check_build_tracked.sh --install-hook</code>。它寫的是 <strong>git 真正會讀的 hooks 目錄</strong>（<code>git rev-parse --git-path hooks</code>，也就是 common dir 的 hooks）——這個 repo 有多個 worktree，所以<strong>同一顆 hook 服務全部 worktree</strong>。</div>
+<pre><code>#!/bin/bash
+# generated by check_build_tracked.sh --install-hook
+set -euo pipefail
+export BIN_DIR='src/llama.cpp/build/bin'
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+exec "$REPO_ROOT/scripts/check_build_tracked.sh" --repo "$REPO_ROOT"</code></pre>
+<ul>
+<li><strong>REPO_ROOT 在執行時解析、不寫死。</strong>寫死安裝當下那一個，從別的 worktree commit 時會去驗錯的 repo（偽 PASS）——這個檔案以前就是落到死路徑。</li>
+<li><strong>hook 的 <code>set -e</code> 會傳進本 script。</strong><code>set -uo pipefail</code> 不會把 <code>-e</code> 關掉，所以新增的檢查必須把非零離開碼接在 <code>if</code> 條件裡，否則整個 script 會被中止（檢查 12 的註解就是記這件事）。</li>
+<li><strong>SKIP 要計數（B7：可被跳過的閘門不是閘門）。</strong>本 script 會在總結說「本次有 N 個區段被 SKIP」，因為「OK」在 11 個區段全被跳過時也照樣印得出來。</li>
+</ul>
+</div>
+
+<h3>12 道檢查</h3>
+<table>
+<thead><tr><th>#</th><th>檢查</th><th>什麼時候跑</th><th>擋什麼</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>build/bin 內每個 <code>*.dylib</code> 都被 git 追蹤</td><td>有 build 目錄時</td><td>版本化 dylib 被 .gitignore 一刀切（29.85 t/s 的 build 一度救不回來）</td></tr>
+<tr><td>2</td><td>必要 dylib 前綴至少有一個已追蹤</td><td>同上</td><td>整批產物消失</td></tr>
+<tr><td>3</td><td>symlink 解析到「已追蹤」的目標</td><td>同上</td><td><code>libllama.0.dylib</code> 指到不相容的目標</td></tr>
+<tr><td>4</td><td>關鍵 exe 存在且被追蹤</td><td>同上</td><td>checkout 後免重建即可驗證的前提消失</td></tr>
+<tr><td>5</td><td>關鍵 exe 的 <code>@rpath</code> 指向本 repo 的 build/bin</td><td>同上</td><td>production 載入別處的 dylib（batch cap / garbled output）</td></tr>
+<tr><td>6</td><td>main ⊆ dev 分支包含性</td><td>永遠（在 1–5 之前）</td><td>兩線分岔；在 main 上直接 commit</td></tr>
+<tr><td>7</td><td>CGC 專家快取死鎖防護（靜態）</td><td>永遠</td><td><code>pick_slot</code> 回到啟發式（4a746c724 之前的 100% 掛死）</td></tr>
+<tr><td>8</td><td>原始碼 ↔ build 產物同步</td><td>改了 llama 原始碼時</td><td>改了 source 卻沒重建／沒一起 staged</td></tr>
+<tr><td><strong>12</strong></td><td><strong>量測產物出處契約</strong></td><td>有新增／改動的 <code>*.json</code> 時</td><td><strong>帶 measured object 卻沒有 window block 或 engine digest 的產物</strong></td></tr>
+<tr><td>9</td><td>重型生產驗收（短／長 prompt）</td><td><code>RUN_CGC_PROD_ACCEPT=1</code></td><td>no-0000 與指標摘錄退步</td></tr>
+<tr><td>10</td><td>deploy-harmonyos bundle 可重建／可啟動</td><td><code>RUN_DEPLOY_HARMONYOS_ACCEPT=1</code></td><td>部署產物無法重建</td></tr>
+<tr><td>11</td><td>replay benchmark regression</td><td>代碼 commit（<code>src/</code>／<code>scripts/</code>／<code>*.py</code>…）</td><td>12 個指標比 HEAD 的 baseline 退步</td></tr>
+</tbody>
+</table>
+
+<h3>檢查 12：出處契約（本次新增）</h3>
+
+<div class="box b-purple">
+<p><strong>它只判「這次 commit 新增或修改」的路徑，共三條規則</strong>（任何一條不成立就擋）：</p>
+<table>
+<thead><tr><th>規則</th><th>對象</th><th>條文</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>任何 <code>*.json</code></td>
+    <td>只要含 measured object（11 個 key 之一），就必須同時有 <code>window</code> block（帶 <code>class</code>）與 engine digest</td></tr>
+<tr><td>2</td><td>已登記 producer 的報告</td>
+    <td>報告與它的 sidecar <strong>必須進同一顆 commit</strong>（兩個方向都判）</td></tr>
+<tr><td>3</td><td>任何 <code>*.py</code></td>
+    <td>寫 <code>docs/*.html</code> 報告但沒登記進 registry 的 producer 也擋（否則它寫的產物沒人判）</td></tr>
+</tbody>
+</table>
+<p>三個設計決定：</p>
+<ol>
+<li><strong>判 INDEX 的內容（<code>git show :path</code>），不是工作區。</strong>否則「先 stage 裸檔、再在工作區補好」會放行，而 commit 裡留著的還是裸檔。這與檢查 11 對 baseline 用的是同一條紀律。</li>
+<li><strong>沒有 baseline、沒有容忍。</strong>repo 級審計模式對 41 份歷史違規容忍（否則上線第一天就擋幾百個檔案，然後有人 <code>--no-verify</code>，於是等於沒閘），但 commit 這一側判的就是「你要放進 repo 的東西」。</li>
+<li><strong>放在檢查 9/10 之前。</strong>它 0.2 秒跑完，沒必要先花幾分鐘跑重型驗收才被一個缺欄位的 JSON 擋下。</li>
+</ol>
+<p><code>RUN_PROVENANCE_GATE=0</code> 可跳過（會以 SKIP 記名，不是靜靜放行）。</p>
+</div>
+
+<h3>端到端驗證（今天實跑，每一步的離開碼都是量到的）</h3>
+<table>
+<thead><tr><th>步驟</th><th>動作</th><th>檢查 12</th><th><code>check_build_tracked.sh</code> rc</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>stage 一份裸產物 <code>{"rows":[{"tps":11.0}]}</code></td><td class="bad">FAIL（缺 window + 缺 digest，2 個 measured object）</td><td class="num bad">1</td></tr>
+<tr><td>2</td><td>只在<strong>工作區</strong>補上 window + engine_digest</td><td class="bad">FAIL（index 裡還是裸的那份）</td><td class="num bad">1</td></tr>
+<tr><td>3</td><td><code>git add</code> 補好的版本</td><td class="ok">PASS</td><td class="num ok">0</td></tr>
+<tr><td>4</td><td><code>RUN_PROVENANCE_GATE=0</code></td><td class="warn">SKIP（且總結仍照實印）</td><td class="num">0</td></tr>
+<tr><td>5</td><td>清理：index 空、探針檔不存在</td><td colspan="2" class="small">staged=0、probe=0</td></tr>
+<tr><td>6★</td><td>只 stage 報告 <code>docs/TARGET25_REPORT_probe.html</code>（規則 2，拆分方向 A）</td>
+    <td class="bad">FAIL：<code>its &lt;stem&gt;.json is not in this commit</code>、指名 producer</td><td class="num bad">1</td></tr>
+<tr><td>7★</td><td>報告與 sidecar 一起 <code>git add</code></td><td class="ok">PASS（2 judged path、1 份 measured 產物）</td><td class="num ok">0</td></tr>
+<tr><td>8★</td><td>只 stage sidecar（方向 B）</td><td class="bad">FAIL：<code>TARGET25_REPORT_probe.html</code> 不在這次 commit</td><td class="num bad">1</td></tr>
+</tbody>
+</table>
+
+<p>失敗時它印的是可以照著修的東西，不是一句「退步」：</p>
+<pre><code>provenance gate (staged): 1 *.json added or modified by this commit
+  measurement products among them : 1
+
+FAIL: 1 measurement product(s) in this commit cannot be attributed -- add the evidence,
+      or keep the file out of the commit.
+  scripts/check/pvgate_probe.json  (2 measured object(s))
+      2 measured object(s) with no window block
+      no engine digest anywhere in the product
+      at pvgate_probe.json
+      at pvgate_probe.json.rows[0]</code></pre>
+
+<h2>4. 入口 C：產物出處契約本身</h2>
+
+<h3>「window class」是四個值，而不是一個布林</h3>
+<p><code>server_window.provenance()</code> <strong>在行程內</strong>取樣，不在事後補蓋——寫檔當下的盒況不是量測當時的盒況，事後蓋章是<em>偽造的出處</em>，與這條線產生過的每個錯數字同一形狀。</p>
+<table>
+<thead><tr><th>class</th><th>意思</th></tr></thead>
+<tbody>
+<tr><td><code>clean</code></td><td>每一個樣本都安靜，而且 gated 的那次啟動看到的是安靜的盒子</td></tr>
+<tr><td><code>busy-then-cleared</code></td><td>稍早忙過，但 gated 的啟動是安靜的（等待型守衛的正常結果）</td></tr>
+<tr><td><code>busy-overridden</code></td><td>在忙的盒子上照跑（<code>CGC_WINDOW_OVERRIDE=1</code>）：這筆可能描述的是鄰居</td></tr>
+<tr><td><code>unknown</code></td><td>這個行程<strong>從沒問過</strong>共用探針——明講，不是留白</td></tr>
+</tbody>
+</table>
+
+<p>「measured object」的判定是 11 個 key：<code>mean_len, accept, m1_numeric_identity, m2_decision_agreement, tps, arms, cuts, rows, requests, results, onoff_separated</code>。<code>rows</code>／<code>arms</code>／<code>requests</code> 本身是容器，所以<strong>帶著它們的容器也要有 window</strong>——這個陷阱吃過兩次（一份記錄了盒況的產物，仍有一半的 object 答不出來）。</p>
+
+<h3>報告與它的 sidecar：為什麼是登記制，而不是「所有 docs/*.html」</h3>
+
+<p><code>docs/</code> 裡有 <strong>77 個 <code>*.html</code></strong>，幾乎都是手寫的白皮書。對所有 HTML 要求 sidecar，就是一個會被 <code>--no-verify</code> 掉的規則。所以這裡反向定義：<strong>一份產物被判，是因為有一個工具被登記為它的生產者</strong>。</p>
+
+<pre><code>REPORT_PRODUCERS = (
+  target25_report.py         docs/TARGET25_REPORT_*.html   sidecar=&lt;stem&gt;.json
+    evidence: writes the sidecar in the same run (target25_report.py:636)
+  decode_window_harness.py   docs/DECODE_WINDOW_????-??-??.html   sidecar=&lt;stem&gt;.json
+    evidence: sidecar written in the same call as the HTML (write_report / autoreport)
+)</code></pre>
+
+<div class="box b-amber">
+<p><strong>第二條的 glob 是那支工具自己的命名規則，不是 <code>DECODE_WINDOW_*.html</code>。</strong>寬的版本會去判 <code>docs/DECODE_WINDOW_HARNESS_20260919_1745.html</code>——那是一份<strong>手寫的</strong>、關於這支 harness 的分析（它自己的內文就這麼說），因此依定義不會有 sidecar。把比對寬度放大在這裡<strong>不是保守</strong>：它等於向一份從未被量測的產物索取證據，跟向 <code>docs/</code> 那 77 份手寫白皮書索取 sidecar 是同一種病。已知盲點：用 <code>--out</code> 寫到別的名字的報告會逃出這條規則。</p>
+</div>
+
+<p>登記制最危險的方向是<strong>過期</strong>：一個新 producer 沒人登記，它寫的產物就沒人判。所以登記表自己的完整性也要被查——<code>producers_writing_html_docs()</code> 掃 <code>scripts/**/*.py</code>，找出所有「組出一條指向 <code>docs/</code> 的 <code>.html</code> 路徑」的行，每一支都必須在登記表裡或有具名理由的例外。</p>
+
+<div class="box b-amber">
+<p><strong>那個掃描規則是量出來的，不是猜的。</strong>粗糙版（同一行同時出現 <code>docs</code> 與 <code>.html</code>）在這棵樹上命中 14 行，其中 12 行是 docstring／help 文字（例如 <code>knifeedge/feasibility.py:209</code> 是一句 stderr 提示的 f-string）。加上兩個排除條件（註解行、<code>stderr</code>／<code>print(</code> 行）＋「必須是路徑建構」之後，剩下的<strong>恰好就是兩支真的 producer</strong>。</p>
+<p>唯一的例外是這個閘門自己：它的 selftest fixture 會把 <code>docs/TARGET25_REPORT_t.html</code> 寫進一顆臨時 repo，所以 <code>REPORT_EXEMPT</code> 收錄它並記錄理由——而 selftest 會<strong>在例外過期時轉紅</strong>（被例外的檔案若不再命中，就是一條没人管的 allow-list）。</p>
+</div>
+
+<h3>今天的 repo 級審計（tracked corpus）</h3>
+<pre><code>$ python3 scripts/check/provenance_gate.py check
+provenance gate: 336 tracked *.json
+  measurement products : 41  (288 file(s) carry no measured object)
+  measured objects     : 59
+  with a window block  : 0
+  offenders            : 41  (baseline 41)
+  not parseable as JSON: 7 (not offenders -- vendored JSONC configs and the like)
+  registered report pairs: 2 producer(s), 2 artifact(s), 0 NEW unpaired (0 legacy)
+
+PASS: no new offender; the offender count did not rise, and every report producer is registered.</code></pre>
+
+<div class="box b-blue">
+<p><strong><code>2 unpaired</code> 修好了，而且是兩件不同的事。</strong>上一輪它是真的：<code>decode_window_harness.py</code> 把報告寫進 <code>docs/</code>，狀態卻存到 <code>/tmp/decode_window_harness.json</code>，所以那兩份成品在 repo 裡沒有任何證據。修法有兩半：</p>
+<p><strong>① 未來</strong>：sidecar 與 HTML 在同一個呼叫裡寫出（<code>write_report</code>／<code>autoreport</code>），所以這一對不可能漂移。</p>
+<p><strong>② 過去</strong>：<code>backfill</code> 子命令把已發布的那份報告的證據<strong>從它自己的內文抄出來</strong>（digest 行、arms 表、每臂 free／swap 讀數）。這是<strong>抽取，不是重建</strong>：每個欄位都是從產物複製的，而 window 區塊自己寫著 <code>class: unknown</code> 加上理由（「那次啟動的取樣已經不在了；下面是這份報告自己印出的讀數」）。一份會自己發明 digest 或 window class 的 backfill，比它要取代的那個缺檔更糟——所以內文裡沒有 digest 行時它<strong>拒寫</strong>（selftest 有釘住）。另一半是「<code>2</code> 裡有一份根本不是產物」：那份手寫分析文件是<strong>比對過寬</strong>造成的（見上一格）。</p>
+</div>
+
+<ul>
+<li><strong>0 / 59</strong> 是這個契約存在的理由：41 份產物、59 個 measured object，沒有一個答得出「量它的時候盒子忙不忙」。<span class="small">（<code>server_window.py audit-products</code> 掃到的是更大的 corpus：含未追蹤的 <code>Backup/</code> scratch，514 份產物、893 個 object，其中 3 個帶 window。兩個數字回答同一個問題、兩個 corpus，所以兩邊都寫出來。）</li>
+<li><strong>「不解析的 7 個」不算違規。</strong>實測：其中 6 個是 vendored 的 JSONC 設定（<code>pyrightconfig.json</code>、三個 llama.cpp 樹裡的 <code>tools/ui/tsconfig.json</code>），加上一個 12 bytes 的 <code>No results</code>。把基準灌這些進去，就是訓練人忽略這個閘門。但它們仍被<strong>記名</strong>，所以新的不解析檔案會變成 WARNING，不會靜靜通過。</li>
+<li><strong>基準只降不升，而 <code>update</code> 是獨立指令。</strong>重新基準不可能在 commit 裡意外發生。</li>
+<li><strong>72/72 自測</strong>，而且分母是<strong>算出來的、不是打上去的</strong>——這個「N/N」在本線已經過期兩次，而一個手動維護分母的自測，無法被信任來報告自己的覆蓋率。</li>
+</ul>
+
+<h3>兩種模式，因為它們回答不同的問題</h3>
+<table>
+<thead><tr><th>模式</th><th>判什麼</th><th>憑什麼</th><th>誰在用</th></tr></thead>
+<tbody>
+<tr><td><code>check --staged</code></td><td>這次 commit 新增／修改的 <code>*.json</code></td><td>INDEX 的 blob（<code>git show :path</code>）</td><td>檢查 12（pre-commit）</td></tr>
+<tr><td><code>check</code></td><td>全 repo 的 tracked <code>*.json</code> 對基準</td><td>baseline 檔案，只降不升</td><td>repo 級審計、harness／portal</td></tr>
+</tbody>
+</table>
+
+<h2>5. 對應的量測工具（全表）</h2>
+
+<p>下面這張表是 <code>harness.py list</code> 的原文輸出——28 支工具、各自是否需要窗口、是否會啟動 server、是否已經受閘、以及擁有者。<code>launches</code> 這一欄來自 <code>server_window.audit()</code>（讀樹），不是手動維護。</p>
+
+<pre><code>ab_interleave.py                   window=yes   launches=-     gated=no    owner=lineA  interleaved A/B
+cb_headroom_probe.py               window=yes   launches=yes   gated=yes   owner=lineA  re-read cb under a declared memory band
+cb_miss_regression.py              window=yes   launches=-     gated=no    owner=lineI  cb miss regression
+decode_step_profile.py             window=yes   launches=yes   gated=no    owner=lineA  per-step DECPROF capture (wait/cb/submit/gpu/union)
+decode_sweep.py                    window=yes   launches=yes   gated=no    owner=lineA  phase decomposition sweep
+decode_window_harness.py           window=yes   launches=yes   gated=no    owner=lineA  two decode lanes, judged report
+gate_registry.py                   window=yes   launches=-     gated=no    owner=lineA  G0-G7 gate registry (long probe needs a server)
+http_duo.py                        window=yes   launches=yes   gated=no    owner=lineA  service-path two-axis probe
+joint_reconcile.py                 window=no    launches=-     gated=no    owner=lineA  reconcile one step's account from a saved log
+llama_bench_matrix.py              window=yes   launches=-     gated=no    owner=lineA  bench matrix resolver
+m123_gate_window.py                window=yes   launches=-     gated=no    owner=lineI  oracle gate in a window
+m123_oracle_gate.py                window=yes   launches=yes   gated=no    owner=lineI  M1/M2/M3 oracle gate
+mtp_accept_ab.py                   window=yes   launches=yes   gated=no    owner=-      MTP draft acceptance per carrier
+mtp_long_sequence_verify.py        window=yes   launches=yes   gated=yes   owner=-      MTP long-sequence M1/M2/M3 verify
+paired_ab.py                       window=yes   launches=-     gated=no    owner=lineA  paired A/B (AB/BA interleaved)
+phase_split_ab.py                  window=yes   launches=yes   gated=yes   owner=-      phase-split prefill A/B: armed slab vs clamp
+plain_match_ab.py                  window=yes   launches=yes   gated=yes   owner=-      does batch-verify compute the same thing as per-token decode
+plain_match_window.py              window=yes   launches=yes   gated=yes   owner=-      wrapper: plain_match_ab in a window
+pool_curve.py                      window=yes   launches=yes   gated=yes   owner=-      pool-size sweep, one budget per restart
+prod_matrix.py                     window=yes   launches=-     gated=no    owner=lineA  production matrix
+prod_profile.py                    window=yes   launches=-     gated=no    owner=lineA  delivery bars: prefill+decode
+profile_duo.py                     window=yes   launches=-     gated=no    owner=lineA  llama-bench two-axis (delivery)
+server_window.py                   window=no    launches=yes   gated=yes   owner=shared the shared probe + launcher audit
+slab_handoff_ab.py                 window=yes   launches=yes   gated=yes   owner=-      slab to pool handoff A/B
+target25_report.py                 window=yes   launches=yes   gated=yes   owner=-      one-shot driver: measure -&gt; decompose -&gt; HTML report
+test_decode_window_harness.py      window=yes   launches=yes   gated=yes   owner=-      self-test for harness verdicts
+window_gate.py                     window=no    launches=-     gated=no    owner=shared commit gate: launchers only go down
+window_sentinel.py                 window=yes   launches=yes   gated=yes   owner=lineA  certify a window by measured throughput</code></pre>
+
+<h3>另外六支（25 t/s 工具鏈）＋一支 one-shot driver</h3>
+<p>它們不啟動 server，所以多數 <code>needs_window=False</code> 或不在 registry 裡：它們吃的是<strong>已經落地的紀錄</strong>。這就是為什麼把它們接在出處契約後面才有意義——它們的輸入必須答得出盒況。</p>
+<table>
+<thead><tr><th>工具</th><th>行數</th><th>自測</th><th>它回答的問題</th></tr></thead>
+<tbody>
+<tr><td><code>gap_vs_miss.py</code></td><td class="num">445</td><td class="num">11</td><td>一層的空窗是 miss 買的、還是固定成本？（共用逐層解析器）</td></tr>
+<tr><td><code>mtp_k_sweep.py</code></td><td class="num">594</td><td class="num">33</td><td>多一個 verify token 要多少 ms（同 harness、同窗口、四個點）</td></tr>
+<tr><td><code>verify_marginal.py</code></td><td class="num">553</td><td class="num">30</td><td>邊際 token 是 miss、matmul、還是主機路徑</td></tr>
+<tr><td><code>target25_grid.py</code></td><td class="num">267</td><td class="num">14</td><td>25 t/s 的必要條件階梯（兩個模式、兩個 regime）</td></tr>
+<tr><td><code>draft_budget.py</code></td><td class="num">215</td><td class="num">7</td><td>最佳 k，以及 accept 軸自己的天花板</td></tr>
+<tr><td><code>shape_roofline.py</code></td><td class="num">468</td><td class="num">11</td><td>kernel 的頭頂還有多高（bytes 算術 vs 實測 kernel）</td></tr>
+<tr><td><code>target25_report.py</code></td><td class="num">810</td><td class="num">38</td><td>一條指令：量測 → 拆歸因 → HTML 報告（<strong>產物自己蓋 digest 與 window</strong>）</td></tr>
+<tr><td><code>provenance_gate.py</code></td><td class="num">560</td><td class="num">38</td><td>這份產物答得出「盒況忙不忙」嗎（兩種模式）</td></tr>
+</tbody>
+</table>
+
+<h2>6. 把整條線跑一次</h2>
+
+<pre><code># 1) 盒子能不能跑，以及哪一支工具需要窗口
+python3 scripts/check/harness.py show
+
+# 2) 要量東西就走前門（會等窗口、會記證據）
+python3 scripts/check/harness.py run target25_report -- --measure --logdir /tmp/mtp_k_sweep --reps 3
+
+# 3) 只讀既有紀錄、產出報告
+python3 scripts/check/target25_report.py --pair /tmp/verify_layers
+
+# 4) 產物進 repo 前的兩道關
+python3 scripts/check/provenance_gate.py selftest        # 72/72
+python3 scripts/check/provenance_gate.py check --staged  # 這次 commit 的 *.json
+
+# 5) 整個 pre-commit 的那一輪（等於 hook 會跑的內容）
+bash scripts/check_build_tracked.sh --repo "$PWD"
+
+# 6) 未受閘的啟動器只能下降
+python3 scripts/check/window_gate.py check
+python3 scripts/check/harness.py audit</code></pre>
+
+<h2>7. 邊界與未竟項</h2>
+
+<div class="box b-amber">
+<p><strong>未 commit。</strong>本輪動到的檔案（全部在工作區）：</p>
+<ul>
+<li>新增：<code>scripts/check/provenance_gate.py</code>、<code>scripts/check/provenance_gate_baseline.json</code>、本文件。</li>
+<li>修改：<code>scripts/check/decode_window_harness.py</code>（sidecar 與報告同一個呼叫寫出、<code>backfill</code> 子命令、生產者的 glob 改成自己的命名規則）、<code>scripts/check_build_tracked.sh</code>（檢查 12＋檔頭＋總結字串）、<code>scripts/check/server_window.py</code>（<code>decision()</code>／<code>launcher_guard()</code>＋8 項自測）、<code>scripts/check/harness.py</code>（<code>target25_report</code> 登記、看板缺席值、生產者自測）、<code>scripts/run_server.sh</code>（<strong>兩個 hunk</strong>：<code>LLAMA_EXPERT_CACHE_BATCH_DBG</code> 轉送，以及 <code>[guard]</code> 發布自己的判定）。</li>
+<li>主 clone（<code>flashkv0516</code>）目前還有 9 筆 docs 的刪除狀態，<strong>不是本輪造成的</strong>。</li>
+</ul>
+</div>
+
+<ul>
+<li><strong>成對規則只看已登記的 producer，也只看 <code>docs/</code>。</strong>寫到 <code>Backup/</code> 或 <code>/tmp</code> 的報告不在這條規則的可見範圍內（<code>/tmp</code> 那個正是原先 <code>2 unpaired</code> 的成因）；而沒登記的 producer 會被規則 3 擋在 commit 之前——這是兩條不同的防線，只有其中一條能擋未來。</li>
+<li><strong>backfill 出來的 sidecar 不是「已驗證的證據」。</strong>它證明的是「這份報告的 digest 與讀數與它自己一致」，不是「那次量測乾淨」。window class 所以是 <code>unknown</code> 而不是 <code>clean</code>——把 backfill 讀成後者是這條線最熟悉的那種錯（把缺席當成一個值）。</li>
+<li><strong>報告與 sidecar 必須進同一顆 commit，所以「HTML 逐位元不變、只有 sidecar 重跑」也會被擋。</strong>那是「成對移動」的嚴格讀法，也是刻意的：拆開的半對就是沒人查得了的半對（<code>git add docs/X.*</code> 會一起 stage）。</li>
+<li><strong>一個沒有動到報告的 commit 裡刪掉 sidecar，不會被看到。</strong><code>--diff-filter=ACMR</code> 把刪除排除在 staged 集合之外；要涵蓋就得把 D 也拿進來，而那會讓「刪一份舊報告」的 commit 多一道判定。</li>
+<li><strong>key 比對會有偽陽性。</strong>把同樣的證據記在別的欄位名下的產物，會被算成缺。一次偽陽性的成本是一行修正；一次偽陰性的成本是幾週，所以閘門偏向指名檔案。</li>
+<li><strong>重新命名（rename）會被當成新增。</strong>把一份歷史違規搬路徑會進到新路徑 ⇒ 被擋。這是規則 1 的字面讀法，不是特例：帶上證據，或不要把那個檔案放進這次 commit。</li>
+<li><strong>前門的紀錄是「子行程周圍的盒子」。</strong><code>harness_runs.jsonl</code> 記的是這個行程在啟動前與返回後看到的盒況；子行程有自己的位址空間。若子行程本身是受閘工具，它會自己問同一個探針並帶上自己的證據（<code>child_gated</code> 就是標這件事），否則那筆紀錄只描述盒子，不描述子行程內部。</li>
+<li><strong>5 支啟動器仍未受閘</strong>（<code>decode_step_profile.py</code>、<code>decode_sweep.py</code>、<code>http_duo.py</code>、<code>m123_oracle_gate.py</code>、<code>mtp_accept_ab.py</code>）。<code>window_gate</code> 的規則是不只不能增加，只能下降——要降就得把它們接上 <code>require_first()</code>。</li>
+<li><strong><code>--certify</code> 需要 <code>window_sentinel_ref.json</code></strong>；沒有參考值時它會拒絕背書（rc=4），而不是用 0 當門檻。</li>
+<li><strong>看板的 REFUSED 是 harness 的門檻（8000 MB），不是 launcher 的。</strong>要改用 launcher 的門檻跑就得刻意傳較低的 <code>--need-mb</code>——紀錄會寫明用了哪一條。這一格以前只會給出「the box is busy」的錯覺，現在它會指明 <code>binding</code>。</li>
+</ul>
+
+<h2>8. 附：本輪的驗證紀錄</h2>
+
+<table>
+<thead><tr><th>對象</th><th>指令</th><th>結果</th></tr></thead>
+<tbody>
+<tr><td><code>provenance_gate.py</code></td><td><code>selftest</code> / <code>--selftest</code></td><td class="ok">72/72（成對規則、「登記表過期就轉紅」、比對寬度、backfill 的拒寫，兩種旗標形式都通）</td></tr>
+<tr><td><code>decode_window_harness.py</code></td><td><code>backfill &lt;report.html&gt;</code></td><td class="ok">真檔案 3 臂 5 讀數；無 digest 行的 fixture 拒寫（在閘門自測裡）</td></tr>
+<tr><td><code>server_window.py</code></td><td><code>selftest</code></td><td class="ok">44 項全過（含新的 guard 行解析與 <code>decision()</code> 形狀）</td></tr>
+<tr><td><code>harness.py</code></td><td><code>selftest</code></td><td class="ok">22 項全過（含「生產者必須存在」）</td></tr>
+<tr><td><code>harness.py</code></td><td><code>show</code></td><td class="ok">不再崩潰；VERDICT=REFUSED、binding=harness、ungated 5、unlabelled 0</td></tr>
+<tr><td><code>window_gate.py</code></td><td><code>selftest</code> / <code>check</code></td><td class="ok">10 項全過；<code>5 ungated, unchanged (gated 11, total 17)</code></td></tr>
+<tr><td><code>check_build_tracked.sh</code></td><td><code>bash -n</code> ＋ 全跑</td><td class="ok">語法 OK；0 FAIL（5 段 SKIP，理由逐列印出）</td></tr>
+<tr><td>檢查 12 端到端</td><td>裸 staged／只改工作區／staged 修正／逃生閥</td><td class="ok">rc = 1 / 1 / 0 / 0，清理後 index 空</td></tr>
+<tr><td>檢查 12 成對端到端</td><td>只 staged 報告／兩者一起／只 staged sidecar</td><td class="ok">rc = 1 / 0 / 1，其中前兩步都經過完整的 pre-commit 腳本；清理後 index=0</td></tr>
+<tr><td><code>run_server.sh</code></td><td><code>bash -n</code>；<code>CGC_DUMP_ENV=1</code></td><td class="ok">語法 OK；<code>[guard] ... req_free=40% req_other=0 admits=yes</code></td></tr>
+<tr><td>六支工具鏈</td><td><code>--selftest</code></td><td class="ok">11 / 33 / 30 / 14 / 7 / 11 全過；<code>target25_report</code> 38</td></tr>
+</tbody>
+</table>
+
+<p class="small">
+本文件的所有數字都是今天實跑取得的；命令與輸出片段逐字取自工具本身。檔案：<code>docs/FRONT_DOOR_AND_COMMIT_GATES_2026-09-22.html</code>。
+相關：<code>docs/TOOLCHAIN_25TPS_2026-09-22.html</code>（六支工具鏈）、<code>docs/TARGET25_NECESSARY_CONDITIONS_2026-09-22.html</code>（25 t/s 的必要條件階梯）。
+</p>
+
+</div>
+</body>
+</html>

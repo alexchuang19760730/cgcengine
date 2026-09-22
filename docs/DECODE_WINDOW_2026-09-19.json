@@ -1,0 +1,171 @@
+{
+ "product": "decode_window_harness.py (two decode lanes, judged report)",
+ "report_html": "docs/DECODE_WINDOW_2026-09-19.html",
+ "generated": "2026-09-22 19:14:08",
+ "engine_digest": {
+  "llama-server": "054fb22f04a01c5c",
+  "libllama.0.dylib": "aab787412e572550",
+  "libggml-metal.0.dylib": "1be366306c604669",
+  "libllama-server-impl.dylib": "a87bfd2e80a086b4"
+ },
+ "source": "backfilled from DECODE_WINDOW_2026-09-19.html's own text (3 arm row(s), 5 window reading(s)); the run's state file is gone and NOTHING here was re-measured",
+ "window": {
+  "class": "unknown",
+  "why": "backfilled from the report's own text: this run's launcher samples are gone, so the reads below are the per-arm free/swap readings the report itself printed",
+  "n_samples": 5,
+  "busy_samples": 0,
+  "samples": [
+   {
+    "ts": "16:41:52",
+    "free_mb": 920,
+    "swap_mb": null
+   },
+   {
+    "ts": "16:45:37",
+    "free_mb": 1117,
+    "swap_mb": null
+   },
+   {
+    "ts": "16:49:19",
+    "free_mb": 1109,
+    "swap_mb": null
+   },
+   {
+    "ts": "16:53:11",
+    "free_mb": 1111,
+    "swap_mb": 5393
+   },
+   {
+    "ts": "16:56:54",
+    "free_mb": 903,
+    "swap_mb": 5182
+   }
+  ],
+  "class_source": "decode_window_harness.py backfill (not a live probe)"
+ },
+ "rows": [
+  {
+   "lane": "A",
+   "arm": "b1",
+   "bitident": 1,
+   "ms_per_token": 102.45,
+   "log": "llama_server_20260919_154509.log",
+   "window": {
+    "class": "unknown",
+    "why": "backfilled from the report's own text: this run's launcher samples are gone, so the reads below are the per-arm free/swap readings the report itself printed",
+    "n_samples": 5,
+    "busy_samples": 0,
+    "samples": [
+     {
+      "ts": "16:41:52",
+      "free_mb": 920,
+      "swap_mb": null
+     },
+     {
+      "ts": "16:45:37",
+      "free_mb": 1117,
+      "swap_mb": null
+     },
+     {
+      "ts": "16:49:19",
+      "free_mb": 1109,
+      "swap_mb": null
+     },
+     {
+      "ts": "16:53:11",
+      "free_mb": 1111,
+      "swap_mb": 5393
+     },
+     {
+      "ts": "16:56:54",
+      "free_mb": 903,
+      "swap_mb": 5182
+     }
+    ],
+    "class_source": "decode_window_harness.py backfill (not a live probe)"
+   }
+  },
+  {
+   "lane": "A",
+   "arm": "b0",
+   "bitident": 0,
+   "ms_per_token": 148.7,
+   "log": "llama_server_20260919_155357.log",
+   "window": {
+    "class": "unknown",
+    "why": "backfilled from the report's own text: this run's launcher samples are gone, so the reads below are the per-arm free/swap readings the report itself printed",
+    "n_samples": 5,
+    "busy_samples": 0,
+    "samples": [
+     {
+      "ts": "16:41:52",
+      "free_mb": 920,
+      "swap_mb": null
+     },
+     {
+      "ts": "16:45:37",
+      "free_mb": 1117,
+      "swap_mb": null
+     },
+     {
+      "ts": "16:49:19",
+      "free_mb": 1109,
+      "swap_mb": null
+     },
+     {
+      "ts": "16:53:11",
+      "free_mb": 1111,
+      "swap_mb": 5393
+     },
+     {
+      "ts": "16:56:54",
+      "free_mb": 903,
+      "swap_mb": 5182
+     }
+    ],
+    "class_source": "decode_window_harness.py backfill (not a live probe)"
+   }
+  },
+  {
+   "lane": "A",
+   "arm": "b1b",
+   "bitident": 1,
+   "ms_per_token": 89.25,
+   "log": "llama_server_20260919_155803.log",
+   "window": {
+    "class": "unknown",
+    "why": "backfilled from the report's own text: this run's launcher samples are gone, so the reads below are the per-arm free/swap readings the report itself printed",
+    "n_samples": 5,
+    "busy_samples": 0,
+    "samples": [
+     {
+      "ts": "16:41:52",
+      "free_mb": 920,
+      "swap_mb": null
+     },
+     {
+      "ts": "16:45:37",
+      "free_mb": 1117,
+      "swap_mb": null
+     },
+     {
+      "ts": "16:49:19",
+      "free_mb": 1109,
+      "swap_mb": null
+     },
+     {
+      "ts": "16:53:11",
+      "free_mb": 1111,
+      "swap_mb": 5393
+     },
+     {
+      "ts": "16:56:54",
+      "free_mb": 903,
+      "swap_mb": 5182
+     }
+    ],
+    "class_source": "decode_window_harness.py backfill (not a live probe)"
+   }
+  }
+ ]
+}

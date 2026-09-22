@@ -1106,7 +1106,16 @@ echo "[perf]  n_cb=$SERVER_N_CB glu_fused_down=$SERVER_GLU_FUSED_DOWN(mm_fuse=${
 # would then lie about what was requested, which is worse than being silent.
 echo "[perf]  diag: submit_ahead=${CGC_SUBMIT_AHEAD:-off} slot_table_gpu=${CGC_SLOT_TABLE_GPU:-off} canon_order=${CGC_CANON_ORDER:-off} pool_split_dbg=${CGC_POOL_SPLIT_DBG:-off} s1_dbg=${CGC_S1_DBG:-off}"
 echo "[perf]  runtime_profile=$SERVER_RUNTIME_PROFILE model_root=$MODEL_ROOT"
-echo "[guard] memory_mode=$SERVER_MEMORY_MODE class=$MEM_CLASS phys=${PHYS_MEM_GB}GB free=${FREE_PCT}% other_llama_servers=$OTHER_LLAMA_SERVERS"
+# 這一行同時發布 launcher 自己的判定（admits=yes/no），而不是只發布輸入值。
+# 理由：`harness.py show` 與 box_probe_compare.py 會把這條線跟 harness 自己的探針並排，
+# 而兩個定義曾經對同一台機器給出相反答案（2026-09-20：harness 在 6636 MB 就拒絕，launcher 讀到 84%）。
+# 若由 Python 端拿這些數字自行推論，就會多出「第二個 launcher 門檻定義」——而門檻只住在
+# cgc_memory_guard_req 裡，不該有第二份。
+LAUNCHER_ADMITS=yes
+if [ "$PHYS_MEM_GB" -lt "$MEM_REQ_PHYS_GB" ] || [ "$FREE_PCT" -lt "$MEM_REQ_FREE_PCT" ] || [ "$OTHER_LLAMA_SERVERS" -gt "$MEM_REQ_OTHER" ]; then
+    LAUNCHER_ADMITS=no
+fi
+echo "[guard] memory_mode=$SERVER_MEMORY_MODE class=$MEM_CLASS phys=${PHYS_MEM_GB}GB free=${FREE_PCT}% other_llama_servers=$OTHER_LLAMA_SERVERS req_phys=${MEM_REQ_PHYS_GB}GB req_free=${MEM_REQ_FREE_PCT}% req_other=${MEM_REQ_OTHER} admits=$LAUNCHER_ADMITS"
 if [ "$SERVER_PROFILE" != "off" ]; then
     echo "[chat]  profile=$SERVER_PROFILE"
 fi
@@ -1508,6 +1517,16 @@ fi
 # Not in the allowlist before 2026-09-17, so "queued=0" had no readable cause.
 if [ -n "${LLAMA_EXPERT_CACHE_PREFETCH_DBG:-}" ]; then
     SERVER_ENV+=(LLAMA_EXPERT_CACHE_PREFETCH_DBG="$LLAMA_EXPERT_CACHE_PREFETCH_DBG")
+fi
+# [CGC 2026-09-22 verify-marginal attribution] LLAMA_EXPERT_CACHE_BATCH_DBG=1 prints one
+# `BATCHDBG layer=<l> misses=<n> slots: e<expert>->s<slot> ...` line per ensure_batch call that had
+# >=1 miss (llama-expert-cache.cpp:1174). Its consumer is the per-layer series: the question
+# "is the marginal verify token paid in gather or in compute?" is a regression of a layer's
+# per-round cost against its per-round MISS COUNT, and without this producer there is no miss axis
+# per layer -- only the run-total split. Never forwarded through this launcher before (the engine
+# has read it since 2026-09-13), so arming it looked exactly like an instrument with no effect.
+if [ -n "${LLAMA_EXPERT_CACHE_BATCH_DBG:-}" ]; then
+    SERVER_ENV+=(LLAMA_EXPERT_CACHE_BATCH_DBG="$LLAMA_EXPERT_CACHE_BATCH_DBG")
 fi
 # [CGC 2026-09-19 thrash attribution] LLAMA_EXPERT_CACHE_MISS_DUMP=<path> writes one
 # "<layer> <expert>" line per DEMAND-ORDERED miss (llama-expert-cache.cpp:1061, flushed per line so a

@@ -43,6 +43,18 @@
 #   commit (docs/ / *.md / *.html) 不跑。ALLOW_REPLAY_BENCH_BASELINE=1 在 HEAD
 #   沒有 baseline 時（bootstrap 階段）改成 SKIP 而非 FAIL。RUN_REPLAY_BENCH=0 可完全關閉。
 #
+# 檢查 12（2026-09-22 新增）：量測產物的出處契約（engine digest + window block）
+#   事件：`server_window.py audit-products` 量到 514 份產物、893 個 measured object 裡只有 3 個
+#   帶 window block ⇒ 其餘都答不出「這筆讀數是在什麼盒況下量的」。同一配置的散佈在本機是 17%
+#   （壞日子 2.5×），而這種失敗在數字本身看不出來 ⇒ 只能在檔案要進 repo 的那一刻擋。
+#   12 只判「這次 commit 新增或修改」的路徑：*.json 只要含 measured object，就必須同時有
+#   window block 與 engine digest，缺一則擋；已登記的報告產物（producer registry）必須與它的
+#   sidecar 一起進同一顆 commit；而一個新的報告 producer 若沒登記，它寫的產物就沒人判 ⇒ 也擋。
+#   判的是 INDEX 的內容（git show :path），不是工作區 ——
+#   否則「先 stage 裸檔、再在工作區補好」會放行，而 commit 裡留著的還是裸檔
+#   （與檢查 11 對 baseline 用的是同一條紀律）。放在檢查 9/10 之前：0.2 秒就能擋，
+#   不必先花幾分鐘跑重型驗收。RUN_PROVENANCE_GATE=0 可跳過（不建議）。
+#
 # 用法：
 #   scripts/check_build_tracked.sh                 # 檢查目前 cwd 所在的 repo
 #   scripts/check_build_tracked.sh --repo PATH     # 檢查指定 repo
@@ -55,6 +67,7 @@
 #   REQUIRED_DYLIB   空白分隔的 dylib 前綴（預設 "libllama. libllama-common. libmtmd. libggml."）
 #   ALLOW_MISSING=1  允許 build/bin 或檔案不存在（不擋 commit；預設為擋）
 #   ALLOW_STALE_BIN=1 允許 binary 比 staged 原始碼舊（不建議；預設為擋）
+#   RUN_PROVENANCE_GATE=0  跳過檢查 12（量測產物新增/改動必須帶 window + engine digest；預設為擋）
 #   RUN_CGC_PROD_ACCEPT=1  啟用重型生產驗收（短/長 prompt no-0000 + 指標摘錄）
 #   RUN_DEPLOY_HARMONYOS_ACCEPT=1  啟用 deploy-harmonyos/macOS 重型驗收（重建 bundle + 啟動檢查）
 #   CGC_ACCEPT_SHORT_MIN_TPS / CGC_ACCEPT_LONG_BASE_MIN_TPS / CGC_ACCEPT_LONG_DENSE_MIN_TPS
@@ -73,7 +86,7 @@ REQUIRED_DYLIB=(${REQUIRED_DYLIB:-libllama. libllama-common. libmtmd. libggml.})
 # A gate that cannot distinguish PASS from SKIP is not a gate (CONVENTIONS.md B7). Every skipped
 # section is counted, because the failure mode is specific and has already happened: running this
 # script on a checkout whose build dir is at src/llama.cpp/build/bin (not build/bin) SKIPs all
-# eleven sections and then still ends with an unqualified "OK: ...", which reads as "everything was
+# twelve sections and then still ends with an unqualified "OK: ...", which reads as "everything was
 # verified". The summary now reports how much of the script actually ran.
 SKIP_N=0
 skip() { echo "SKIP  $*"; SKIP_N=$((SKIP_N + 1)); }
@@ -461,6 +474,32 @@ else
     skip "$BIN_DIR 不存在 → 跳過 build/bin 追蹤 / rpath / deadlock / binary sync 檢查"
 fi
 
+# ============ 檢查 12：量測產物的出處契約（本次 commit 新增/改動的 *.json 必須帶 window + digest）============
+# 判 INDEX 內容而不是工作區：見檔頭「檢查 12」的說明，以及 provenance_gate.py 的 --staged。
+echo "--- 檢查量測產物的出處契約（engine digest + window block） ---"
+PROV_GATE="$REPO_ROOT/scripts/check/provenance_gate.py"
+if [ "${RUN_PROVENANCE_GATE:-1}" = 0 ]; then
+    skip "RUN_PROVENANCE_GATE=0 → 跳過量測產物出處檢查"
+elif [ ! -f "$PROV_GATE" ]; then
+    fail "12 缺 scripts/check/provenance_gate.py（出處契約無從驗證）"
+else
+    # 寫成 if 條件而非直接呼叫：pre-commit hook 是 `set -euo pipefail` 再 exec 本 script，
+    # 而 `set -uo pipefail` 不會把 -e 關掉 ⇒ 非零離開碼必須在條件裡接，否則整個 script 會被 -e 中止。
+    if PROV_OUT="$(python3 "$PROV_GATE" check --staged --repo "$REPO_ROOT" 2>&1)"; then
+        PROV_RC=0
+    else
+        PROV_RC=$?
+    fi
+    case "$PROV_RC" in
+        0) pass "12 本次 commit 的量測產物都帶出處（engine digest + window block）且報告與 sidecar 成對" ;;
+        1) fail "12 量測產物無法歸屬（缺 window/digest、報告與 sidecar 被拆開、或新的 producer 未登記）→ 見下方逐條，或不要把該檔放進 commit" ;;
+        *) fail "12 出處閘門無法判定（exit $PROV_RC）— 寧可擋下也不要放行一張說不出盒況的表" ;;
+    esac
+    if [ "$PROV_RC" != 0 ]; then
+        printf '%s\n' "$PROV_OUT" | sed 's/^/        /'
+    fi
+fi
+
 # ============ 檢查 9：重型生產驗收（短/長 prompt no-0000 + 指標摘錄） ============
 echo "--- 檢查 生產 MTP 驗收（短/長 prompt） ---"
 RUN_N30="$REPO_ROOT/scripts/run_n30cache.sh"
@@ -684,7 +723,7 @@ fi
 # ============ 總結 ============
 if [ "$fail_count" -gt 0 ]; then
     echo ""
-    echo "FAIL: $fail_count 項未通過。先修好再 commit（build 產物追蹤 / rpath / main⊆dev / 死鎖防護 / 原始碼↔binary 同步 / 生產驗收 / deploy 驗收 / replay benchmark 不退化）。"
+    echo "FAIL: $fail_count 項未通過。先修好再 commit（build 產物追蹤 / rpath / main⊆dev / 死鎖防護 / 原始碼↔binary 同步 / 量測產物出處契約 / 生產驗收 / deploy 驗收 / replay benchmark 不退化）。"
     exit 1
 fi
 echo ""
@@ -693,6 +732,6 @@ if [ "$SKIP_N" -gt 0 ]; then
     echo "    逐列確認上面每一個 SKIP 的理由是否成立；本 repo 的 build 產物在 src/llama.cpp/build/bin，"
     echo "    而本 script 預設看 build/bin，因此 BIN_DIR 需指定才會真的檢查（B7：可被跳過的閘門不是閘門）。"
 else
-    echo "OK: build/bin 追蹤與 rpath 正常、main⊆dev 成立、CGC 死鎖防護在位、原始碼↔binary 同步、生產驗收與 deploy 驗收通過、replay benchmark regression 通過（0 個 SKIP）。"
+    echo "OK: build/bin 追蹤與 rpath 正常、main⊆dev 成立、CGC 死鎖防護在位、原始碼↔binary 同步、量測產物出處契約成立、生產驗收與 deploy 驗收通過、replay benchmark regression 通過（0 個 SKIP）。"
 fi
 exit 0

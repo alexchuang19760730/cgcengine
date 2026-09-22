@@ -44,12 +44,24 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS = ROOT / "scripts" / "check" / "decode_window_harness.py"
 CHECK_DIR = ROOT / "scripts" / "check"
+LAUNCHER = ROOT / "scripts" / "run_server.sh"
+
+# The launcher states its own verdict in this line (run_server.sh, `[guard] ...`). Everything after
+# `other_llama_servers=` is optional on purpose: a worktree whose run_server.sh predates the verdict
+# fields leaves them None, and "the launcher did not publish a verdict" must stay distinguishable
+# from "the launcher said yes" (None vs True -- the absence-as-a-value rule this repo lives by).
+_GUARD_LINE = re.compile(
+    r"\[guard\] memory_mode=(?P<mode>\S+) class=(?P<cls>\S+) phys=(?P<phys>\d+)GB "
+    r"free=(?P<free>\d+)% other_llama_servers=(?P<other>\d+)"
+    r"(?: req_phys=(?P<rp>\d+)GB req_free=(?P<rf>\d+)% req_other=(?P<ro>\d+)"
+    r" admits=(?P<admits>yes|no))?")
 
 # The machine needs room for the model AND the pool. 8000 MB of reclaimable was the level at which
 # guarded runs stopped failing to load; it is a floor for "no one else is holding this box", not a
@@ -123,6 +135,82 @@ def quiet(port: int = PROD_PORT, need_mb: float = NEED_MB) -> tuple[bool, str]:
     if free < need_mb:
         reasons.append(f"reclaimable={free:.0f}MB<{need_mb:.0f}")
     return (not reasons), ("; ".join(reasons) or f"quiet (reclaimable {free:.0f}MB)")
+
+
+def launcher_guard() -> dict | None:
+    """What the LAUNCHER says about this box, asked of the launcher itself.
+
+    `run_server.sh` under `CGC_DUMP_ENV=1` prints its guard line and exits without launching
+    (0.25 s, measured). Asking it is the only way to compare the two definitions without writing a
+    third one: the thresholds live in `cgc_memory_guard_req` and nowhere else, and the 2026-09-20
+    event this comparison exists for was exactly the two of them disagreeing about the same box
+    (harness refused at 6636 MB while the launcher read 84%).
+
+    Returns None when the launcher cannot be asked or does not print the line -- which is a
+    different statement from "the launcher admits", and is reported as one.
+    """
+    if not LAUNCHER.exists():
+        return None
+    try:
+        r = subprocess.run(["bash", str(LAUNCHER)], capture_output=True, text=True, timeout=120,
+                           env={**os.environ, "CGC_DUMP_ENV": "1"})
+    except Exception:
+        return None
+    for line in (r.stdout + r.stderr).splitlines():
+        m = _GUARD_LINE.search(line)
+        if not m:
+            continue
+        g = m.groupdict()
+        return {"mode": g["mode"], "class": g["cls"], "phys_gb": int(g["phys"]),
+                "free_pct": int(g["free"]), "other_servers": int(g["other"]),
+                "req_phys_gb": int(g["rp"]) if g["rp"] else None,
+                "req_free_pct": int(g["rf"]) if g["rf"] else None,
+                "req_other": int(g["ro"]) if g["ro"] else None,
+                "admits": None if g["admits"] is None else g["admits"] == "yes"}
+    return None
+
+
+def decision(port: int = PROD_PORT, need_mb: float = NEED_MB) -> dict:
+    """Both answers to "is this box free to launch into", in one dict, with the stricter one named.
+
+    Two probes answer that question on this machine and they are not interchangeable (see
+    `box_probe_compare.py`): the harness's reclaimable memory, and the launcher's own
+    `memory_pressure -Q` free percentage against a per-class threshold. `harness.py show` and
+    `box_probe_compare.py` both print them side by side so a disagreement is a reading rather than
+    an assumption about which one speaks for the machine.
+
+    `binding` names the definition that is currently deciding, and `agree` is False only when both
+    have spoken and differ. A launcher that publishes no verdict gives `agree=None`: never "agreed".
+    """
+    free = float(_probe("vm_free_mb", lambda: 0.0)())
+    busy = _probe("foreign_llama", _fallback_llama)()
+    held = _probe("listening", lambda p: False)(port)
+    harness_terms = {"memory": free >= need_mb, "foreign": not busy, "port": not held}
+    harness_admits = all(harness_terms.values())
+    g = launcher_guard() or {}
+    launcher_admits = g.get("admits")
+    launcher_terms = None
+    if g.get("req_free_pct") is not None:
+        launcher_terms = {"phys": g["phys_gb"] >= (g.get("req_phys_gb") or 0),
+                          "free": g["free_pct"] >= g["req_free_pct"],
+                          "other": g["other_servers"] <= (g.get("req_other") or 0)}
+    refused_by = [f"harness:{t}" for t, ok in harness_terms.items() if not ok]
+    if launcher_terms:
+        refused_by += [f"launcher:{t}" for t, ok in launcher_terms.items() if not ok]
+    return {
+        "port": port, "need_mb": need_mb,
+        "reclaimable_mb": free, "foreign_llama": busy, "port_held": held,
+        "harness_admits": harness_admits, "harness_terms": harness_terms,
+        "launcher_class": g.get("class"), "launcher_free_pct": g.get("free_pct"),
+        "launcher_req_pct": g.get("req_free_pct"),
+        "launcher_other_servers": g.get("other_servers"), "launcher_terms": launcher_terms,
+        "launcher_admits": launcher_admits,
+        "agree": None if launcher_admits is None else (harness_admits == launcher_admits),
+        "binding": ("harness" if not harness_admits else
+                    ("launcher" if launcher_admits is False else None)),
+        "admits": harness_admits and launcher_admits is not False,
+        "refused_by": refused_by, "launcher": g or None,
+    }
 
 
 def require(port: int = PROD_PORT, need_mb: float = NEED_MB, *, where: str = "launch",
@@ -456,6 +544,24 @@ def selftest() -> int:
     expect("record() never raises", (ok_r, why_r), (False, "busy"))
     expect("and its sample is kept with its gated flag", samples()[-1]["gated"], False)
     quiet = saved_quiet
+
+    print("\nthe two definitions of 'is the box free' must be comparable, and their absence must not read as agreement")
+    m = _GUARD_LINE.search("[guard] memory_mode=dev class=full-mtp phys=16GB free=72% "
+                           "other_llama_servers=0 req_phys=0GB req_free=40% req_other=0 admits=yes")
+    expect("the launcher's verdict line parses", bool(m) and m.group("admits") == "yes", True)
+    m2 = _GUARD_LINE.search("[guard] memory_mode=dev class=full-mtp phys=16GB free=72% "
+                            "other_llama_servers=0")
+    expect("a pre-verdict line still parses (worktrees differ)", bool(m2), True)
+    expect("...and publishes NO verdict rather than an implied yes", m2 and m2.group("admits"), None)
+    d = decision(need_mb=1.0)
+    for k in ("admits", "harness_admits", "launcher_admits", "agree", "binding", "reclaimable_mb",
+              "port_held", "foreign_llama", "launcher_class", "launcher_free_pct", "refused_by"):
+        expect("decision() carries %s" % k, k in d, True)
+    expect("agree is a real comparison when the launcher spoke, else None",
+           d["agree"], None if d["launcher_admits"] is None else (d["harness_admits"] == d["launcher_admits"]))
+    expect("binding names the stricter definition",
+           d["binding"], ("harness" if not d["harness_admits"] else
+                          ("launcher" if d["launcher_admits"] is False else None)))
 
     print("\nproduct audit: a measured object with no window block is countable")
     import tempfile as _tf
