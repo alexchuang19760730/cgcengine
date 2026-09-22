@@ -113,10 +113,13 @@
 dense 的 patch 沒動它）。旋鈕有沒有真的到達 kernel **不由 env 推論**，而是讀探針印出的
 pipeline 名：`kernel_mul_mv_id_iq3_s_f32_nsg=1|4|8|16|32`，五個值都證實到達。
 
-> **這個 hunk 本身未 commit**（見 §7）：`ggml-metal-device.cpp` 同一個檔案裡混著另一條線
-> 的 dense NSG hunk，而那個家族已被他們自己的量測判死 ⇒ 依先前建議 park，不把它們的
-> in-flight 改動與樹上 binary 的重建一起凍進 commit。本檔的量測用的是 `/tmp` 的獨立 build
-> （`libggml-metal` md5 `650dd9d1d9fb89a4`），不依賴樹上那份。
+> **這個 hunk 已 commit**：`0e5b56b0c`（source + 重新建的 `libggml-metal` 成對，檢查 8 兩條
+> 都綠）。同一顆檔案裡的另一條線 **P1-3d**（dense 的 IQ4_XS/Q6_K/Q8_0：helper 三個 case +
+> `get_pipeline_mul_mv` 三個站點）**刻意留在 working tree**：那個家族已被他們自己的量測判死，
+> 該由他們決定 revert 或明確 park（本檔不代為 commit，也不代為 revert）。因此樹上的
+> `libggml-metal` 目前比樹上的原始碼舊一個 knob，直到他們下次重建。
+> 本檔 §2–§6 的量測用的是 `/tmp` 的獨立 build（md5 `650dd9d1d9fb89a4`）；§4b 驗證旋鈕到達
+> kernel 那次用的是**樹上這顆已 commit 的** build（`mmid_shapes.py --libdir src/llama.cpp/build/bin`）。
 
 ```sh
 python3 scripts/check/shape_probe/mmid_shapes.py --nsg-sweep unset,1,4,8,16,32 \
@@ -218,11 +221,16 @@ WindowServer（37%）、Freebuff renderer（23%），compressor 3.36 GB、swap 3
 - **重跑 spread ≈ 7%**（三次）；單次讀數不可引用。探針二進位在 `.gitignore` 內、不入庫。
 - **§4b 的否定只在 IQ2_S 上成立**：IQ3_S 今天沒有讀數，只有拒答。任何把
   「nsg 沒用」講成**整條 id 路徑**的句子，都超出了手上證據（等於把一個通道的否定借給另一個）。
-- **§4b 的引擎 hunk 未 commit**：`ggml-metal-device.cpp` 是共用檔，我的 `_id`/IQ3_S 那格與
-  另一條線的 dense hunk 互相依賴（我的呼叫的是他們的 `ggml_metal_nsg_env()`），所以不能只
-  取一半；而 commit 引擎原始碼會依檢查 8 一併要求 `build/bin` 產物，那批 binary 是他們
-  in-flight 的重建（`libllama` 3.19 MB → 3.18 MB）⇒ 先 park。要把它轉正需要由擁有該檔的
-  那一側決定：要嘛一起 commit（source+binary 成對），要嘛把 dense 那半 revert。
+- **§4b 的引擎 hunk 已 commit，另一半沒有**：`0e5b56b0c` 只帶 P1-3e（IQ3_S 的 id 路徑）。
+  我一度以為它與 P1-3d 互相依賴（「我的呼叫的是他們的 `ggml_metal_nsg_env()`」）——
+  **查證後不成立**：helper 本身（P1-3c）早就在 HEAD，只有三個 type case 是他們的，所以兩邊
+  可分開 commit。代價是檢查 8：staged 原始碼必須隨 `build/bin` 產物，而該閘的 env-gated
+  例外（`ALLOW_ENV_GATED_BIN`）判斷的是「所有 dylib 都與 HEAD 位元相同」，會被**鄰居**正在
+  重建的 `libllama` 關掉——這是一個真的閘門缺陷（例外的前提沒寫出來）。
+  最後做法：暫時移出他們的四個 hunk（先存檔、驗 md5）、用我的那份建 `libggml-metal`、
+  commit 成對、再原樣放回（md5 `df570578fcaa64798c304209754ecc2a` 不變）。
+  他們那段註解「id / down_combine variants keep their compile-time value」在 P1-3e 之後對
+  `mul_mv_id` 的 IQ3_S 已不成立，若他們保留 dense 那半，這句要一起改。
 - **%peak 的分母是乾淨狀態下量到的 108.8 GiB/s**：在超訂盒況下，同一顆 kernel 的
   每 arm 絕對值會掉到 1.5–2 倍慢，所以 §4b 的比較只用「同一通道內的相對位置」，不用絕對 µs。
 
