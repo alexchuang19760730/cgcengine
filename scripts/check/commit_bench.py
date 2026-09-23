@@ -127,9 +127,17 @@ def main():
 
     # [2026-09-23] commit 標題必須帶量測成績：把這行貼進 commit message（subject 或 body 首行）。
     # 格式固定，供 commit_gates / 事後 grep 追溯（"數字跟東西對不上" 的歷史禁止重演）。
+    # [2026-09-23 修復] decode 成績必須自帶 MTP 口徑：prod-new 預設 MTP off，
+    # 但 off/on 不可混讀（off 12.19 vs on 11.35 是同級差距）；從結果 JSON 的
+    # spec_type 判（None=off，draft-mtp=on），缺省時 fail-closed 標 off。
     pv = prefill.get("avg_ts", 0) if prefill else 0.0
     dv = decode.get("avg_ts", 0) if decode else 0.0
-    bench_line = (f"prefill={pv:.2f}t/s decode={dv:.2f}t/s "
+    try:
+        spec_type = results[0].get("spec_type") if results else None
+    except Exception:
+        spec_type = None
+    mtp_tag = "mtp=on" if spec_type else "mtp=off"
+    bench_line = (f"prefill={pv:.2f}t/s decode={dv:.2f}t/s({mtp_tag}) "
                   f"(commit_bench {args.profile} p{args.prompt} n{args.gen} d{args.depths} r{args.reps})")
     print(f"\n[commit-gate] {bench_line}")
     print(f"[commit-gate] 標題範例: perf(server): <你的改動>（{bench_line}）")
