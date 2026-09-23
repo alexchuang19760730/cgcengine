@@ -293,6 +293,29 @@ case "$SERVER_PROFILE" in
         [ -z "${CGC_MM_BITIDENT+x}" ]           && CGC_MM_BITIDENT=1
         [ -z "${CGC_SERVER_MTP_NO_WARMUP+x}" ]  && SERVER_MTP_NO_WARMUP=1
         [ -z "${CGC_SERVER_NO_SEQ_RM_PROBE+x}" ] && SERVER_NO_SEQ_RM_PROBE=1
+        # [CGC 2026-09-23] Prefix reuse ON in the delivery profile, now that the cost of NOT having
+        # it is measured rather than assumed. The line above hard-writes the seq-rm probe to be
+        # SKIPPED (CLI parity, needed for M1: docs 6d), and with the probe skipped the engine hard-
+        # wrote `seq_rm_type = PART`, which suppresses `do_checkpoint` entirely (server-context.cpp
+        # :3651) -- so the prompt cache resolved a perfect match (f_sim = 1.000) and then threw it
+        # away: **every** request re-prefilled 208/208 tokens (~20 s). Measured on one binary, same
+        # load, only this knob differing (docs/T5_INTRA_NP_CONCURRENCY_2026-09-23.md 6f/6g):
+        #   prompt tokens per request  208,208,208  ->  208,8,8
+        #   prompt ms per request      ~20 000      ->  ~800
+        #   per-request wall            37.5 s      ->  19.6 s
+        #   reused prefix              0% (x3)      ->  ~96% (200 of 208 restored)
+        #   memory per cache entry     256 MiB (3 checkpoints) -> 130 MiB (1, natural boundary)
+        # What it does NOT buy, stated because the inverse reading is the tempting one: 6g measured
+        # that this knob is NOT bit-neutral in the MTP-on regime at equal request ordinal -- the
+        # reuse path moves 7 of 204 verify-batch rows (the proposed-token rows; the same effect 6c
+        # read as the accept shift 58/153 -> 57/156), while the trunk's own logits at the prompt
+        # tail stay byte-identical. MTP-on bit-identity is already only defined for the FIRST request
+        # (the draft head's rows differ between request 0 and every later request in an arm with no
+        # reuse at all), so the gate cannot certify this trade either way today -- that is 6g's
+        # open item, not a clean bill of health. Under MTP=0 the knob is a no-op: the probe runs,
+        # can_seq_rm answers RS, checkpoints were already being taken (6g, identical dumps).
+        # Override with CGC_SERVER_PREFIX_REUSE_CKPT=0 for a prompt-cache A/B.
+        [ -z "${CGC_SERVER_PREFIX_REUSE_CKPT+x}" ] && SERVER_PREFIX_REUSE_CKPT=1
         # 走 GGUF embedded ChatML（与 qa-zh / coding 一致）
         if [ -z "${CGC_SERVER_CHAT_TEMPLATE_FILE:-}" ] && [ -z "${CGC_SERVER_CHAT_TEMPLATE:-}" ]; then
             SERVER_CHAT_TEMPLATE_FILE=""

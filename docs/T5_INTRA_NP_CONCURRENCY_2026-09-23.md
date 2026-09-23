@@ -519,6 +519,86 @@ should turn the knob on by default is now a supported decision rather than a hop
 (M1 9/9, byte-identical dump, ~96% of the prompt tax recovered, half the cached-state memory) points one
 way, but a profile default is a deliberate act, not a byproduct of a fix.
 
+## 6g. The restore path's own logits — the gap §6e/§6f left open
+
+§6e/§6f ended on a stated boundary: **every dump in this project is two of them away from the thing
+prefix reuse actually does.** `m123_oracle_gate.py` sends ONE request, so it can only see checkpoint
+*creation*; the restore path — the 208→8 prompt collapse — had never been dumped. This round dumps it.
+
+**Two new instruments** (neither existed before):
+
+| what | where | why it has to be its own thing |
+|---|---|---|
+| `pfx_restore_probe.py` | `Backup/phase_decomp/` | one server, N identical **serial** requests (the concurrency probe's pair phase would put two sequences in one dump), dump on; then splits the dump into per-request files and **asserts** the segment count equals the requests sent |
+| `--align pos` | `scripts/check/cgc_logits_oracle_compare.py` | the global `step` counter cannot align two dumps whose evaluation sequences differ. `pos` keys each row on its own identity `(ctx_type, n_tokens, pmax, token_idx)` and compares a key's records as a **multiset** (measured: ~50 MTP keys per request hold *two* records with different hashes, so "one key, one value" would have been a silent lie) |
+
+**Setup, and the single-variable claim is read off the products rather than asserted:** prod25 shape,
+4 GiB pool, MTP on k=3, `CGC_SERVER_SEQ_RM_TYPE=PART` pinned in **both** arms (so the rollback route
+is not a variable — §6d's confound), same build (`libllama=cbea2d5bef81`,
+`libllama-server-impl=60fb7910a8bb`), `build stable within each arm: True`. The env diff between the
+two arms is exactly `CGC_SERVER_PREFIX_REUSE_CKPT: 0 → 1` plus the dump path.
+
+| comparison (MTP **on**) | keys | bit-identical | differing | record-count mismatch |
+|---|---:|---:|---:|---:|
+| req 0, two launches (instrument check) | 306 | **306** | 0 | 0 |
+| **req 1: full prefill vs restore** (the measurement) | 305 | 198 | **104** | 3 |
+| req 2: full prefill vs restore | 305 | 198 | 104 | 3 |
+| restore vs restore, same arm | 309 | **309** | 0 | 0 |
+| **ordinal control**: two *full-prefill* requests in the reuse-free arm | 305 | 205 | **100** | 0 |
+| two *full-prefill* requests, ordinals 1 vs 2, reuse-free arm | 305 | **305** | 0 | 0 |
+
+MTP **off** (same widget, both arms on `cbea2d5bef81`; here the flag is a **no-op**: the two arms'
+whole dumps are the same file, md5 `855e0d8f66354b724fc4f5a7deee23f0`):
+
+| comparison (MTP **off**) | keys | bit-identical |
+|---|---:|---:|
+| full prefill vs restore (arm a) | 108 | **108** |
+| full prefill vs restore (arm b) | 108 | **108** |
+| restore vs restore, two launches | 108 | **108** |
+| req 0, two launches | 109 | **109** |
+
+### Three readings, in the order the evidence supports them
+
+1. **Where reuse was already the mechanism, restore is bit-exact.** MTP off: full prefill vs restore
+   is 108/108, cross-launch identical, and the two arms produce byte-identical dumps — because in
+   that configuration the seq-rm probe runs, `can_seq_rm` answers `RS`, and checkpoints were already
+   being created (§6c). So `CGC_PREFIX_REUSE_CKPT` adds nothing there, which is the clean way to say
+   "the property is not the flag's doing".
+2. **Under MTP on, the 100 draft-head keys that differ are NOT the flag's doing.** The reuse-free arm
+   is the falsifier: within it, request 0 vs request 1 differ in **exactly those 100 keys**
+   (`('MTP',1,*)` rows), while requests 1 vs 2 differ in **none**. Set check: the ordinal-difference
+   set is a subset of the cross-arm difference set (`E∩C=100, E−C=0, C−E=7`). The extra 7 keys are
+   `('DEF',4,*,1..3)` — verify-batch rows at the *proposed-token* positions, i.e. the run-to-run draft
+   proposal differing, which is the same thing §6c measured as the accept shift. The same numbers
+   (198/305, 100 MTP + 7 verify) reproduced on a **different build** earlier today (`971ade0f947d`),
+   so they are a property of the configuration, not of one launch.
+3. **The trunk's own logits — the ones that decide the first generated token — are identical either
+   way.** `('DEF',1,207,0)` (the prompt tail) and the first verify batch `('DEF',4,211,0..3)` are
+   byte-identical between full prefill and restore.
+
+### What this does to the "default it?" question
+
+The measurement says the question is **not yet answerable at M1 under MTP on** — and the reason is not
+reuse. Under MTP on, the draft head's logits are a function of the *process's history*, not of the
+request: request 0 differs from every later request in 100 rows **in every arm, including the arm with
+no reuse at all**, and later requests are then perfectly reproducible (305/305). The M1 definition the
+gate enforces ("bit-identical logits") is therefore defined, for MTP-on, **only for the first request** —
+and the gate dumps one request, so it cannot see this. Two consequences, both concrete:
+
+* Enabling prefix reuse in a rolling multi-request MTP-on workload cannot be certified by the current
+gate, and *not* enabling it cannot either — they are both "request ≥ 1". That certification needs a
+dump of the second request, which is what this section is, and it is a different instrument, not a
+longer run of the gate.
+* Under MTP off the answer is already yes, exactly (108/108), for a workload that is symmetric in the
+ordinal.
+
+All 12 requests in the four arms answered with the same md5 (`3958f37c`, 108 tokens), i.e. none of the
+above moves a greedy decision **on this probe** — the same boundary §6d drew.
+
+Artifacts: products `Backup/pfx_restore/{pair1-a,pair1-b,mtp0-ckpt0,mtp0-ckpt1}.json`, dumps and their
+per-request splits beside them (`dumps.json` carries the md5s), comparison report
+`/tmp/pfx_full_vs_restore_mtp1.json` (regenerable from the dumps).
+
 ## 7. Instrument defects found and fixed this round
 
 1. **The null cell compared walls to a per-request baseline.** `--baseline-tps 8.30` is
@@ -546,6 +626,17 @@ way, but a profile default is a deliberate act, not a byproduct of a fix.
    because a gate that can be advanced by prose is a gate that cannot be trusted in the other direction.
 6. **`m123_oracle_gate.engine_digest()` omitted the file the server's logic lives in** (`§6f`), so four
    arms with materially different server code recorded the same `llama-server` md5. Fixed.
+7. **`pfx_restore_probe.witnesses()` read the server log *before* teardown**, and the pool-integrity
+   lines are written during teardown — so the product recorded `pool_integrity_lines: 0`, which reads
+   as "the pool is clean" when it actually meant "the line had not been printed yet". The same class
+   as the absent-as-zero defects above. Fixed, and the four existing products re-derived from their
+   logs; the field is now named `*_lines` with a `note` that 0 means *the line is absent*.
+8. **`t5_parallel_baseline.engine_md5()` has the §6f defect too** (no `libllama-server-impl.dylib`),
+   which matters here because *this* change lives in that file. Not fixed in the shared helper (it is
+   another line's file): the probe records the impl digest as an extra key of its own, and it also
+   records the digest **at the end of the arm** so a rebuild during a run is flagged instead of
+   silently compared — which happened today (12:10 and 12:20 both moved `libllama`), and one MTP-on
+   pair from the first pass had to be thrown away because its two arms were on two builds.
 
 ## 8. Boundaries
 
@@ -560,6 +651,15 @@ way, but a profile default is a deliberate act, not a byproduct of a fix.
 * `np2-mtpoff`'s `null_cell` prints +8.2% against the 8.30 baseline that was taken **with MTP on** —
   a cross-regime comparison. It is printed because the tool prints it; it means nothing. The
   within-arm 1.664 does.
+* **The engine was rebuilt twice while §6g's arms were being taken** (12:10 and 12:20, `libllama`
+  `971ade0f947d → 92adbd07d3c9 → cbea2d5bef81`, by a parallel session). Only comparisons whose *two*
+  arms share one digest are quoted; the first MTP-on pair was discarded for exactly that reason and
+  re-run. Every product carries the digest at the arm's start **and** end plus a
+  `BUILD_MOVED_DURING_RUN` flag, because "same build" cannot be checked after the fact from a record
+  that holds one number.
+* §6g's dumps were written to `/tmp` (the engine opens the path it is given); copies and their
+  per-request splits are in `Backup/pfx_restore/`. A `/tmp` reaper would make the numbers
+  unquotable, which is why they were copied before the write-up.
 * The arms above were taken with the **launcher's** guard only (free% ≥ 40, zero other llama
   processes); the shared window probe was not asked, and by its own floor
   (`NEED_MB = 8000`) this box refuses in every arm. The driver now asks it
