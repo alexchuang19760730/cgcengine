@@ -482,12 +482,18 @@ struct llama_expert_cache {
         // #12: Collect skip — draft collection only fires when ctx==MTP && n_tokens==1;
         //     any batched draft step silently produces no prediction
         size_t collect_skipped = 0;
+        // #13: [CGC 2026-09-23 rho fuse] CGC_RHO_PREFETCH_MAXQ — background prefetch queue
+        //     exceeded the depth cap, so prefetch_slot dropped the prediction to keep the bg
+        //     thread from saturating the device with speculative small reads (fill 空轉 §EN-471:
+        //     80k x 41 KB jobs drove fill_wait 56ms -> 15-20s, t/s -21%). This counter proves
+        //     the fuse fired; the A/B decides whether interference is the cause.
+        size_t maxq_limit = 0;
         // Helper: total of all per-reason counters (should equal n_prefetch_dropped + structural)
         size_t total() const {
             return no_free_slot + dbuf_cap_skip + drain_cleared + zero_slot_fallback +
                    lru_evicted_predicted + bg_reassign_race + guard_reject +
                    dbuf2_scratch_invisible + one_shot_consumed + fast_wait_expired +
-                   trigger_too_late + collect_skipped;
+                   trigger_too_late + collect_skipped + maxq_limit;
         }
     } drop_stats;
     // [CGC SpAc 2026-09-06] per-(layer, expert) EMA utility estimator (CGC_SPAC=1), ported from
@@ -511,6 +517,29 @@ struct llama_expert_cache {
     // CGC_DRAFT_PREFETCH=1 enables; default OFF = byte-identical legacy behavior.
     std::vector<std::vector<uint32_t>> draft_prefetch_ids;  // [layer] draft-predicted top-8 expert ids
     std::vector<bool> draft_prefetch_valid;                   // [layer] true if draft collected this round
+    // [CGC prebind probe 2026-09-23] MEASUREMENT ONLY (spec: docs/PREBIND_STAGE0_SPEC_2026-09-23.md).
+    // The draft ctx computes top-8 for EVERY token it processes (n_tokens rows), but
+    // draft_prefetch_ids keeps only row j=0 -- and the prefetch consumer at llama-context.cpp
+    // iterates that whole vector, so widening it in place would CHANGE BEHAVIOUR. We therefore
+    // keep a second buffer with ALL rows, read only by the probe. Nothing else touches it.
+    std::vector<std::vector<uint32_t>> draft_all_ids;   // [layer] all token rows of draft-predicted ids
+    std::vector<bool> draft_all_valid;                  // [layer] true if collected this round
+    // [CGC prebind probe 2026-09-23] Prediction source(s) the probe owns.
+    //
+    // WHY IT OWNS THEM AT ALL: the engine already has prev_token_expert_ids, but its COLLECT is
+    // gated on CGC_PREV_TOKEN_PREFETCH / CGC_LAYER_AHEAD_PREFETCH (llama-context.cpp) -- and
+    // those envs also turn on the prefetch BEHAVIOUR, which would move p_res0, the very number
+    // the probe measures. So the probe keeps its own copies, written by the same rule
+    // (j=0 row of the ids tensor, rotated at il==0) and read by nothing else.
+    //
+    // WHY FOUR, NOT TWO (2026-09-23, after the first measured run): the draft-ctx source turned
+    // out to be unusable -- see the long note in llama-context.cpp. The width axis (8/16/24 ids)
+    // therefore has to come from HISTORY: the last 1 / 2 / 3 tokens' per-layer ids. p1/p2/p3 are
+    // those three, `curr` is the one being filled now.
+    std::vector<std::vector<uint32_t>> prebind_p1;    // [layer] ids of token t-1
+    std::vector<std::vector<uint32_t>> prebind_p2;    // [layer] ids of token t-2
+    std::vector<std::vector<uint32_t>> prebind_p3;    // [layer] ids of token t-3
+    std::vector<std::vector<uint32_t>> prebind_curr;  // [layer] ids of token t (being filled)
     size_t n_draft_prefetch_queued = 0;    // experts queued for prefetch from draft predictions
     size_t n_draft_prefetch_hit = 0;       // draft-predicted experts actually selected by verify
     size_t n_draft_prefetch_miss = 0;      // draft-predicted experts NOT selected by verify (wasted)

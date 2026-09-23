@@ -86,6 +86,94 @@ static bool fill_segments_concurrent(llama_expert_cache * cache,
     return true;
 }
 
+// [CGC 2026-09-23 fill 空轉] 背景 prefetch 專用：把一個 (layer, expert) 的 segments 依
+// (file_idx, file_offset) 排序，把 file-contiguous 的 run 合成**一次 preadv**，並且在
+// 呼叫端執行緒上**內聯**做完 —— 不 spawn thread、不進共享的 job 佇列。
+//
+// 為什麼要換掉 `fill_segments_concurrent`（每段一個 std::thread ＋ 每段一次 pread）：
+//   ρ 臂實測（tag=191500）：file_reads 45078 → 81700、job 大小 0.25 MiB → **0.04 MiB**、
+//   pread_usec 434 s → 900 s，而關鍵路徑的等待 `fill_wait_us` **44 ms → 15.4 s（345×）**。
+//   位元組數其實是**下降**的（10.87 → 3.32 GiB），hit% 也從 57.4 升到 86.8 ⇒ 損失不在
+//   「讀太多」，而在「讀得太碎」：預取把自己變成 8 萬個 4 萬位元組的小讀，把裝置灌滿，
+//   關鍵路徑的同步 fill 只好乾等 —— 這就是「fill 空轉」的實體。
+//   bg 執行緒本來就不在關鍵路徑上，串行執行不付代價；合併後 syscall 數與佇列深度都下降。
+//   `CGC_PREFETCH_LEGACY_FILL=1` 退回舊路徑（A/B 用）。
+static bool fill_segments_merged_serial(llama_expert_cache * cache,
+                                        const std::vector<llama_expert_cache::segment> & segs,
+                                        const std::vector<uint8_t *> & dsts) {
+    const size_t n = segs.size();
+    if (n == 0) {
+        return true;
+    }
+    if (n == 1) {
+        int ok = 0;
+        fill_job(cache, &segs[0], dsts[0], &ok);
+        return ok != 0;
+    }
+    const auto tb0 = std::chrono::steady_clock::now();
+
+    std::vector<uint32_t> order(n);
+    for (size_t i = 0; i < n; ++i) {
+        order[i] = (uint32_t) i;
+    }
+    std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+        if (segs[a].file_idx != segs[b].file_idx) {
+            return segs[a].file_idx < segs[b].file_idx;
+        }
+        return segs[a].file_offset < segs[b].file_offset;
+    });
+
+    std::vector<int> ok(n, 0);
+    size_t i = 0;
+    while (i < n) {
+        size_t j = i;
+        while (j + 1 < n
+               && segs[order[j + 1]].file_idx == segs[order[i]].file_idx
+               && segs[order[j]].file_offset + segs[order[j]].bytes == segs[order[j + 1]].file_offset) {
+            ++j;
+        }
+        if (j == i) {
+            fill_job(cache, &segs[order[i]], dsts[order[i]], &ok[order[i]]);
+        } else {
+            const int    cnt   = (int) (j - i + 1);
+            size_t       total = 0;
+            std::vector<struct iovec> iovs((size_t) cnt);
+            for (size_t k = i; k <= j; ++k) {
+                const uint32_t s = order[k];
+                iovs[k - i].iov_base = (void *) dsts[s];
+                iovs[k - i].iov_len  = segs[s].bytes;
+                total += segs[s].bytes;
+            }
+            FILE * f = cache->files.at(segs[order[i]].file_idx);
+            const auto t0 = std::chrono::steady_clock::now();
+            const ssize_t rd = preadv(fileno(f), iovs.data(), cnt, (off_t) segs[order[i]].file_offset);
+            const auto t1 = std::chrono::steady_clock::now();
+            cache->pread_usec.fetch_add((uint64_t) std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
+            cache->n_reads.fetch_add(1, std::memory_order_relaxed);
+            cache->n_read_bytes.fetch_add((uint64_t) total, std::memory_order_relaxed);
+            // 與 pool worker 同一個保守語意：short read 無法分辨是哪一個成員缺，整段判失敗。
+            const int okv = rd == (ssize_t) total;
+            for (size_t k = i; k <= j; ++k) {
+                ok[order[k]] = okv;
+            }
+            if (!okv && getenv("LLAMA_EXPERT_CACHE_PREAD_DBG") != nullptr) {
+                fprintf(stderr, "PREADVDBG(bg) off=%llu want=%zu got=%zd niov=%d\n",
+                        (unsigned long long) segs[order[i]].file_offset, total, rd, cnt);
+            }
+        }
+        i = j + 1;
+    }
+
+    for (size_t k = 0; k < n; ++k) {
+        if (!ok[k]) {
+            return false;
+        }
+    }
+    const auto tb1 = std::chrono::steady_clock::now();
+    cache->fill_batch_usec.fetch_add((uint64_t) std::chrono::duration_cast<std::chrono::microseconds>(tb1 - tb0).count());
+    return true;
+}
+
 // Fills a slot's blob from the file(s). Must be called WITHOUT holding cache->m
 // (pread may block on IO). Returns the blob size filled.
 // (defined after bg_loop; batch uses it before that point)
@@ -762,7 +850,13 @@ static void fill_pool_direct(llama_expert_cache * cache, uint32_t layer, int32_t
         return;
     }
     const uint64_t key = make_key(layer, expert);
-    if (!fill_segments_concurrent(cache, segs, dsts)) {
+    // [CGC 2026-09-23 fill 空轉] 背景 prefetch 改走合併＋內聯（見 fill_segments_merged_serial）。
+    // 舊的 fill_segments_concurrent 在這裡是純虧：thread-per-segment 的 spawn 成本 ＋ 未合併的
+    // 0.04 MiB 小讀把裝置灌滿，而這些讀全部是**推測性**的（猜錯就白讀）。
+    static const bool legacy_prefetch_fill = getenv("CGC_PREFETCH_LEGACY_FILL") != nullptr;
+    const bool filled_ok = legacy_prefetch_fill ? fill_segments_concurrent(cache, segs, dsts)
+                                                : fill_segments_merged_serial(cache, segs, dsts);
+    if (!filled_ok) {
         fprintf(stderr, "llama_expert_cache: fill_pool_direct short read key=%llu — zeroing slot\n",
                 (unsigned long long) key);
         for (size_t i = 0; i < segs.size(); ++i) {
@@ -1427,6 +1521,21 @@ int32_t llama_expert_cache_prefetch_slot(llama_expert_cache * cache, uint32_t la
             cache->drop_stats.no_free_slot++;  // #1: prefetch_slot — no free slot AND no evictable slot
             return -1;
         }
+    }
+    // [CGC 2026-09-23 rho fuse] CGC_RHO_PREFETCH_MAXQ: cap the bg prefetch queue depth.
+    // §EN-471 (fill 空轉): rho's bg prefetch flooded the device with ~80k speculative 41KB reads,
+    // fill_wait 56ms -> 15-20s, t/s -21%. This fuse drops the prediction while the queue is
+    // backed up, so the bg thread stops saturating the device; the synchronous fill path is
+    // untouched. 0/unset = unlimited (current behavior). The slot we just grabbed stays released
+    // (owner=-1), so the sync path can still claim it.
+    static const long rho_maxq = []() -> long {
+        const char * v = getenv("CGC_RHO_PREFETCH_MAXQ");
+        return v ? strtol(v, nullptr, 10) : 0L;
+    }();
+    if (rho_maxq > 0 && (long) cache->pool_queue.size() >= rho_maxq) {
+        cache->n_prefetch_dropped++;
+        cache->drop_stats.maxq_limit++;  // #13
+        return -1;
     }
     cache->slot_queued[layer][slot]  = 1;
     cache->slot_owner[layer][slot]   = (int32_t) expert;
@@ -2622,14 +2731,14 @@ llama_expert_cache::~llama_expert_cache() {
                     "#4 zero_slot_fallback=%zu  #5 lru_evicted_predicted=%zu  "
                     "#6 bg_reassign_race=%zu  #7 guard_reject=%zu  "
                     "#8 dbuf2_scratch_invisible=%zu  #9 one_shot_consumed=%zu  "
-                    "#10 fast_wait_expired=%zu  #11 trigger_too_late=%zu  #12 collect_skipped=%zu\n",
+                    "#10 fast_wait_expired=%zu  #11 trigger_too_late=%zu  #12 collect_skipped=%zu  #13 maxq_limit=%zu\n",
                     n_prefetch_dropped,
                     drop_stats.no_free_slot, drop_stats.dbuf_cap_skip, drop_stats.drain_cleared,
                     drop_stats.zero_slot_fallback, drop_stats.lru_evicted_predicted,
                     drop_stats.bg_reassign_race, drop_stats.guard_reject,
                     drop_stats.dbuf2_scratch_invisible, drop_stats.one_shot_consumed,
                     drop_stats.fast_wait_expired, drop_stats.trigger_too_late,
-                    drop_stats.collect_skipped);
+                    drop_stats.collect_skipped, drop_stats.maxq_limit);
         }
         const size_t n_dec_req = n_requests - n_map_requests;
         const size_t n_dec_hit = n_hits - n_map_hits;
@@ -3491,6 +3600,15 @@ llama_expert_cache * llama_expert_cache_init(const llama_model * model, size_t b
         // ~41 x 8 uint32 + 41 bool) so the collect phase needs no resize.
         cache->draft_prefetch_ids.assign(max_layer, std::vector<uint32_t>());
         cache->draft_prefetch_valid.assign(max_layer, false);
+        // [CGC prebind probe 2026-09-23] MEASUREMENT ONLY companion buffer (all token rows).
+        cache->draft_all_ids.assign(max_layer, std::vector<uint32_t>());
+        cache->draft_all_valid.assign(max_layer, false);
+        // [CGC prebind probe 2026-09-23] prediction-source buffers (see llama-expert-cache.h).
+        // Empty until CGC_PREBIND_PROBE is set; never read by any fill/ensure/prefetch path.
+        cache->prebind_p1.assign(max_layer, std::vector<uint32_t>());
+        cache->prebind_p2.assign(max_layer, std::vector<uint32_t>());
+        cache->prebind_p3.assign(max_layer, std::vector<uint32_t>());
+        cache->prebind_curr.assign(max_layer, std::vector<uint32_t>());
         // [CGC prev-token prefetch 2026-09-08] double-buffered per-layer expert ids for prev-token
         // prediction. prev is used for prefetch at il==1; curr collects the current token's ids;
         // swapped at the trigger boundary. Sized eagerly (~41 x 8 uint32 x 2 + 41 bool).

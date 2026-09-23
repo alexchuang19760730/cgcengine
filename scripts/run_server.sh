@@ -2370,6 +2370,13 @@ if [ -n "$SERVER_LAYER_CAPS" ]; then
 elif [ "$SERVER_MTP" = "1" ]; then
     SERVER_ENV+=(LLAMA_EXPERT_CACHE_LAYER_CAPS="40-40:256")
 fi
+# [CGC 2026-09-23 rho fuse] CGC_RHO_PREFETCH_MAXQ — depth cap for the bg prefetch queue
+# (drops speculative predictions while the queue is backed up; §EN-471 fill 空轉 fuse).
+# MUST be listed here: the launch line runs the child through `env "${SERVER_ENV[@]}"`, an
+# ALLOWLIST — an unlisted CGC_* is dropped silently (same trap as CGC_MMV_FUSE et al.).
+if [ -n "${CGC_RHO_PREFETCH_MAXQ:-}" ]; then
+    SERVER_ENV+=(CGC_RHO_PREFETCH_MAXQ="$CGC_RHO_PREFETCH_MAXQ")
+fi
 # [CGC 2026-09-15] CGC_DUMP_ENV=1 -- print the FULLY-RESOLVED launch environment and argv, then
 # exit without launching anything. Inserted here, after every profile default / override has been
 # applied and immediately before the exec, so what is printed is bit-for-bit what the server would

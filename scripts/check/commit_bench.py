@@ -58,17 +58,24 @@ def run_matrix(profile, prompt, gen, depths, reps, workdir, json_out, dry_run):
 
 
 def extract(results):
-    """From the matrix json, find the pp(2048) row and the tg(d512) row."""
+    """From the matrix json (list of run_arm dicts), find the pp(2048) row and the tg(d512) row.
+
+    Fixed 2026-09-23: llama_bench_matrix emits run_arm dicts with a `rows` list of llama-bench
+    rows (flat n_prompt/n_gen/n_depth/avg_ts), NOT the params.test structure this previously
+    expected -- so prefill/decode were never matched and the summary crashed after a PASSING
+    run (`Unknown format code 'f' for object of type 'str'` when a wrong row got picked).
+    """
     prefill = decode = None
     if not results:
         return prefill, decode
     for r in results:
-        row = r.get("result", r)
-        params = row.get("params", {})
-        if params.get("test") == "pp" and params.get("n_prompt") == PROMPT and params.get("n_depth") == 0:
-            prefill = row
-        if params.get("test") == "tg" and params.get("n_prompt") == 0 and params.get("n_depth") == DEPTHS:
-            decode = row
+        for row in r.get("rows", []):
+            np_ = int(row.get("n_prompt", 0))
+            ng_ = int(row.get("n_gen", 0))
+            if np_ == int(PROMPT) and ng_ == 0:
+                prefill = row
+            if np_ == 0 and ng_ == int(GEN):
+                decode = row
     return prefill, decode
 
 
