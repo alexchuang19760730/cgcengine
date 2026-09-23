@@ -19,7 +19,11 @@ ms/token, so no per-op slice of the verify token's device time is recoverable fr
 budget is arithmetic (`rest = F + m*T`) and `§9b` turns it into the k decision as a function of accept:
 **at the deployed a = 0.5825 the model says k = 1** (measured arms agree, 98.7 vs 108.9 ms/token), wide
 verify only pays above a ~ 0.80, and **25 t/s is unreachable at any accept rate** -- the best arm stops
-at 13.5-14.1 t/s even at a = 1.0.
+at 13.5-14.1 t/s even at a = 1.0. `§8c`/`§8d` then closed the per-op question as far as this graph can
+take it: composition medians *do* identify per-kind levels once the encoder shards a segment (28 -> 136
+compositions, rank 20 -> **36 of 44**, and the model-free direct check agrees to **4.5%** where it
+previously contradicted the fit), but the *marginal* still cannot be attributed -- **42% of it is
+per-command-buffer overhead** and the rest needs shape-keyed kinds, not counts.
 
 ## 1. Why the round-level axes were not enough
 
@@ -240,6 +244,86 @@ the verify token's device time is recoverable from this design matrix.** Its two
   not small enough for the remainder to be presented as a row. The fitted marginal (-0.98) and the
   measured one (+12.66) are 13.6 ms/token apart on the same steps -- the gap §9 calls composition.
 
+### 8c. Why it is not identification: 28 compositions, rank 20, and a falsifier
+
+The estimator was then rebuilt around what the graph actually emits, and this is the part that
+settles the question:
+
+```
+distinct buffer compositions in the whole capture            28   (56 pooled over k1+k3)
+within-composition IQR/median of dur_ns                      64.8%  (p10 35.5%, p90 129.6%)
+fit R2 on composition MEDIANS (the new estimator)            0.9197   k3 alone
+fit R2 of the same costs on the raw buffer rows              0.6611   -> the gap is jitter
+count-matrix rank                                            20 of 44 kinds (unchanged)
+```
+
+So the earlier `R2 = 0.69` was not model error -- it was the per-buffer jitter of a shared GPU, and
+`--nsm` now reports both numbers side by side so the two can never be confused again. Medians fix the
+levels (0.92). They do **not** fix identification, and the capture contains a falsifier that no R2 can
+see: a buffer whose nodes are all ONE kind measures that kind with no model at all. Measured
+(k3 arm, direct = median minus the fit's own offset):
+
+| kind | observations | fitted | direct (no model) |
+|---|---:|---:|---:|
+| `ffn_moe_argsort` | 1870 | **-407.1 us** | **+13.5 us** |
+| `cache` | 69 | 94.6 us | 716.9 us |
+
+The fit assigns a **negative** duration to a kind it measures at +13.5 us, while its R2 stays 0.92.
+That is the whole lesson in one row: a level fit can be excellent and its coefficients can still be
+arbitrary, because with rank 20 of 44 the solution distributes whatever the identified directions leave
+to the kinds it cannot separate. Consequently the marginal is refused too -- fitted **+0.29** against
+measured **+31.19** ms/token on the k3 arm (pooled: +2.16 vs +12.66).
+
+### 8d. The shard the encoder CAN do, and what it fixed (18:36)
+
+The encoder cannot emit one node per buffer (`n_cb=127` deadlocks Metal), but it can shard a segment
+into ~17 smaller ones. Same protocol, adding `CGC_CB_N_MAIN=1;CGC_SERVER_N_CB=16` (`/tmp/nsm_shard`,
+2 launches, 149 family steps, 96 206 buffers):
+
+| read | unsharded (18:14) | sharded (18:36) |
+|---|---:|---:|
+| distinct buffer compositions | 28 | **136** |
+| count-matrix rank | 20 of 44 | **36 of 44** |
+| kinds held out (< 3 signatures) | 26 | **10** |
+| nodes per buffer (`nk`) | 1, 3-5, 45, 64 | **1-7** |
+| composition-median R2 | 0.9197 | 0.9234 |
+| `ffn_moe_topk`: fitted vs direct | -- | **675.0 vs 645.9 us (n=1600, 4.5%)** |
+
+The falsifier from §8c is **gone** on the largest directly measurable kind: before, `ffn_moe_argsort`
+was fitted at -407 us against a direct +13.5; now the biggest kind agrees with its model-free
+measurement to 4.5% on 1600 observations. That is identification progress, and it is the shard doing it
+-- not a better solver, not more data.
+
+**The marginal still does not close, and the reason is now specific rather than structural.** Same
+matrix, widths 2 -> 4: rows + unident + offset = the fitted slope **+4.70** (arithmetic exact),
+against a measured **+17.80 ms/token**. Two named terms:
+
+* `(per-buffer) +7.50` -- the fit's own offset column times the growth in buffer COUNT, i.e. **42% of
+the measured marginal is per-command-buffer overhead**, not node work. Sharding buys identification and
+pays for it in exactly this term.
+* `+13.10` measured minus fitted -- the remainder, and it has a named cause: the model prices a kind per
+  *count*, while a MUL_MAT's cost depends on its **shape**, which changes with the token count at
+  constant count. A count-only design matrix cannot carry that, so an op-level attribution of the
+  *marginal* needs shape-keyed kinds (op x shape), an emitter change (the kind vocabulary is names,
+  `ggml-backend.cpp:2100-2109`).
+
+So: **levels, yes**, with a direct-measurement check that now passes; **the marginal, no** -- and for a
+third, smaller reason than §8c's two: a per-buffer floor plus shape-blind kinds.
+
+**The two prerequisites this leaves, both measured:**
+
+1. **The encoder must shard the segment so different buffers hold different node subsets.** Today it
+   emits only 28 compositions, so 24 kinds never vary independently. `CGC_CB_N_MAIN=1` +
+   `CGC_SERVER_N_CB<=16` is the knob that exists (run_server.sh:1735-1750); `n_cb=127` deadlocks
+   Metal's in-flight limit, so one-node slices are not reachable that way, and a per-kind grouping
+   would be an encoder change.
+2. **The step-level aggregation must be fixed before any closure against the span.** The *per-layer*
+   `CGC-DECPROF all: Lxx gpu=/union=` lines are sane ns-derived values, but the step's `gpu_sum` is
+   `dp_lay_gpu[]` summed while those arrays receive **nanoseconds** from `sg_busy`
+   (`ggml-backend.cpp:2580-2582`) and the printer treats them as microseconds -- measured 2.57e8 ms in
+   one step against 41 per-layer lines at ~9 ms each. `--nsm`'s device gate therefore refuses the
+   union slope (median union/wait = 1.2e6 on 92% of steps) and closes against NSM's own durations.
+
 Two rule defects were found and fixed by this run (both are fixtures in `--selftest` now):
 
 * **the offset column is per BUFFER row**, and the buffer count grows with the width -- so a 1 us
@@ -340,6 +424,10 @@ python3 scripts/check/verify_marginal.py --k-econ Backup/phase_decomp/spec_onoff
 # §8b the design matrix, SOLVED; comma-separated logs become one matrix (k1 log + k3 log)
 python3 scripts/check/verify_marginal.py --nsm Backup/phase_decomp/node_attr/nsm_k1_r0_20260923.log,\
 Backup/phase_decomp/node_attr/nsm_k3_r0_20260923.log
+# §8d the same read on a SHARDED encoder (CGC_CB_N_MAIN=1 + CGC_SERVER_N_CB=16), which is what turns
+#   28 compositions / rank 20 into 136 / 36 and makes the direct check agree
+python3 scripts/check/verify_marginal.py --nsm Backup/phase_decomp/node_attr/nsm_shard_k1_20260923.log,\
+Backup/phase_decomp/node_attr/nsm_shard_k3_20260923.log
 # the phase identity (needs CGC_PHASE_DBG=1 in the arm)
 python3 scripts/check/prod_matrix.py --profiles prod25 --cells decode-spec --reps 3 \
   --extra-env "CGC_SERVER_MTP_N_MAX=3;CGC_DECODE_PROFILE=1;CGC_DECODE_PROFILE_ALL=1;CGC_GPU_TIMING=1;CGC_PHASE_DBG=1;CGC_MTP_PERF=1"

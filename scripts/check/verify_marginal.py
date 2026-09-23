@@ -857,6 +857,8 @@ def _count_rank(bufs: list) -> tuple:
 
 NSM_MIN_PATTERNS = 3   # a kind seen in fewer distinct co-occurrence signatures than this keeps a
                        # cost it does not own; the fit returns a number either way (see `patterns`)
+NSM_MIN_COMP = 8       # a composition needs this many observations before its median is an estimate
+NSM_MIN_DIRECT = 8     # ...and a kind needs this many SOLO observations before it is a measurement
 
 
 def _nsm_arm(log: Path, phase: str | None = None) -> tuple:
@@ -961,10 +963,49 @@ def nsm_attribution(log, cell_min: int = 4, phase: str | None = None) -> tuple:
             row[col_of[b["arm"]]] = 1.0
         A.append(row)
         yv.append(float(b["dur_ns"]))
-    sol, r2, cond = gds.lstsq(A, yv)
+    # ── why the rows below are composition MEDIANS and not the raw buffer rows ─────────────────
+    # Measured on the 18:14 capture: the graph emits only 28 distinct buffer compositions, and the
+    # SAME composition measures with a within-composition IQR/median of 65% (p10 35%, p90 130%). So a
+    # least-squares over individual buffers is mostly fitting the per-buffer jitter of a shared GPU --
+    # which is what R2 = 0.69 was. Aggregating to one row per composition turns 110k noisy rows into
+    # <= 28 medians, each backed by thousands of observations, and leaves the rank as the only limit.
+    comps = collections.defaultdict(list)
+    for b in kept:
+        comps[(b["arm"], frozenset(b["cnt"].items()))].append(b["dur_ns"])
+    small = [c for c, v in comps.items() if len(v) < NSM_MIN_COMP]
+    ckeys = [c for c, v in comps.items() if len(v) >= NSM_MIN_COMP]
+    if not ckeys:
+        return None, (f"no composition reaches {NSM_MIN_COMP} observations ({len(comps)} distinct) "
+                      f"-- nothing here is a measurement yet")
+    CA, cy, cw = [], [], []
+    for arm, sig in ckeys:
+        row = [0.0] * (len(kinds) + len(col_of))
+        for k, c in sig:
+            row[idx[k]] = float(c)
+        if arm in col_of:
+            row[col_of[arm]] = 1.0
+        CA.append(row)
+        cy.append(float(_median(comps[(arm, sig)])))
+        cw.append(float(len(comps[(arm, sig)])) ** 0.5)
+    wA = [[v * w for v in row] for row, w in zip(CA, cw)]
+    wy = [v * w for v, w in zip(cy, cw)]
+    sol, r2c, cond = gds.lstsq(wA, wy)
     t_ns = {k: sol[idx[k]] for k in kinds}
     off_ns = {a: (sol[col_of[a]] if a in col_of else 0.0) for a in arms_used}
+    # the same costs predict the raw rows, and that residual IS the jitter -- reported, not hidden
+    pred = [sum(row[j] * sol[j] for j in range(len(sol))) for row in A]
+    mu = sum(yv) / len(yv)
+    ss_tot = sum((v - mu) ** 2 for v in yv)
+    r2 = (1.0 - sum((yv[i] - pred[i]) ** 2 for i in range(len(yv))) / ss_tot) if ss_tot else 0.0
     rank, nkinds = _count_rank(kept)
+    # Sole occupancy is the one place no model is involved: a buffer whose nodes are all ONE kind
+    # measures that kind plus the per-buffer constant, so (median - offset) is a direct read of t_k.
+    solo = collections.defaultdict(list)
+    for b in kept:
+        if len(b["cnt"]) == 1 and list(b["cnt"].values())[0] == 1:
+            solo[(b["arm"], list(b["cnt"])[0])].append(b["dur_ns"])
+    direct = {k: (_median(v) - off_ns[a], len(v)) for (a, k), v in solo.items()
+              if len(v) >= NSM_MIN_DIRECT}
     # A kind's cost is its own only if it is seen with more than one set of neighbours: with a single
     # signature its column is a combination of its neighbours' columns, and the fit still returns a
     # number -- `patterns`, not R2, is what tells the two apart.
@@ -1022,6 +1063,9 @@ def nsm_attribution(log, cell_min: int = 4, phase: str | None = None) -> tuple:
                 groups[kind_group(k)].append(k)
     return {"n_fam": n_fam, "n_nsm": len(with_nsm), "n_at": dict(n_at), "thin": thin,
             "rank": rank, "nkinds": nkinds, "buffers": len(kept), "dropped": dropped,
+            "comps": len(comps), "n_comp": len(ckeys), "small_comps": len(small),
+            "small_n": sum(len(comps[c]) for c in small), "r2_comp": r2c, "r2_raw": r2,
+            "direct": direct,
             "dropped_ms": dropped_ms, "groups": {k: sorted(v) for k, v in groups.items()},
             "t_ns": t_ns, "patterns": patterns, "r2": r2, "cond_ok": cond, "marg": marg,
             "logs": [l["log"] for l in per_log],
@@ -1048,9 +1092,21 @@ def print_nsm_attribution(res: dict, logs) -> None:
           f"longer than their own step and are dropped, not smoothed (an absolute uptime stamp in "
           f"the field: see NSM_GROUP_RULES' comment)")
     gate, gwhy = res["device_gate"]
-    print(f"    fit: {res['buffers']} buffer rows over {res['nkinds']} kinds, R2={res['r2']:.4f}, "
-          f"count-matrix rank {res['rank']}"
+    print(f"    fit: {res['n_comp']} composition medians over {res['nkinds']} kinds "
+          f"({res['comps']} distinct compositions exist; {res['small_comps']} with fewer than "
+          f"{NSM_MIN_COMP} observations, {res['small_n']} buffers, excluded), R2={res['r2_comp']:.4f}, "
+          f"count-matrix rank {res['rank']} of {res['nkinds']}"
           + ("" if res["cond_ok"] else "  !! a pivot is negligible: part of this split is arbitrary"))
+    print(f"    the same costs against the raw buffer rows give R2={res['r2_raw']:.4f} on "
+          f"{res['buffers']} rows: the gap is per-buffer timing jitter, not model error -- the same "
+          f"composition repeats with an IQR/median of tens of percent, which is why the rows are "
+          f"medians and not rows")
+    if res["direct"]:
+        print(f"    direct check -- a buffer whose nodes are all ONE kind measures that kind with no "
+              f"model (median minus the fit's own offset): "
+              + "; ".join(f"{k} fitted {res['t_ns'][k] / 1e3:.1f} vs direct {v / 1e3:.1f} us (n={n})"
+                          for k, (v, n) in sorted(res["direct"].items(),
+                                                  key=lambda kv: -kv[1][1])[:5]))
     weak = sorted(k for k, p in res["patterns"].items() if p < NSM_MIN_PATTERNS)
     print(f"    {len(weak)} of {res['nkinds']} kind(s) sit in fewer than {NSM_MIN_PATTERNS} distinct "
           f"co-occurrence signatures, so they keep a cost they do not own: not quoted"
@@ -1308,6 +1364,7 @@ def print_k_econ(res: dict, path: Path, schema: str) -> None:
     fit = res["fit"]
     if fit is None:
         print(f"    no fit (needs >=2 arms on one build)")
+        return
         return
     print(f"    fit rest = F + m*T  ->  m = {fit['m']:+.2f} ms per verify token, "
           f"F = {fit['F']:.1f} ms per round   ({len(res['arms'])} arms, dof {fit['dof']})")
@@ -1818,14 +1875,22 @@ def selftest() -> int:
 
         # ── NSM: the design matrix has to recover costs it was not told, and the rows have to sum
         #    back to the span the same log reports (that closure is the point of the read).
-        def nsm_log(name, costs, specs, bogus=0, off=0):
+        def nsm_log(name, costs, specs, bogus=0, off=0, jitter=0.0, solo=()):
             d = tmp / name
             d.mkdir()
             out = []
+            seq = 0   # a GLOBAL counter: the multiplier cycles uniformly over its 9 levels, so every
+                      # composition sees a near-uniform sample of them and the median is unbiased
             for i, (w, bufs) in enumerate(specs, start=1):
                 gpu = 0
-                for cnt in bufs:
-                    dur = sum(costs[k] * c for k, c in cnt.items()) + off
+                for n, cnt in enumerate(list(bufs) + [dict([(s, 1)]) for s in solo], start=1):
+                    seq += 1
+                    # 17 levels (prime, coprime with the fixture's i%2 / i%3 count patterns) so the
+                    # jitter cannot alias with a kind's own count -- 9 aliased with i%3 and biased one
+                    # kind by 20% in the first version of this fixture, which is a fixture bug and
+                    # would have read as a fit failure
+                    dur = int((sum(costs[k] * c for k, c in cnt.items()) + off)
+                              * (1 + jitter * (((seq * 7919) % 17) - 8) / 8.0))
                     gpu += dur
                     out.append(f"CGC-NSM a=0 b={len(cnt)} dur_ns={dur} nk={sum(cnt.values())} "
                                + " ".join(f"{k}:{c}" for k, c in cnt.items()) + "\n")
@@ -1893,6 +1958,32 @@ def selftest() -> int:
         # one width cannot give a per-token split at all -- refused by name, not extrapolated
         check("nsm: a single-width capture refuses the marginal and says why",
               nb["marg"], None)
+
+        # the composition median is what makes the rows quotable: the SAME fixture with 40% per-buffer
+        # jitter must still recover the costs, and must do it through medians (raw R2 < comp R2).
+        noisy = nsm_log("nsm_noisy", costs, nsm_specs(4) * 4, jitter=0.4)
+        nn, _ = nsm_attribution(noisy / "nsm_noisy.stderr.log")
+        errs = {k: round(nn["t_ns"][k] / v - 1, 3)
+                for k, v in (("moe", 10_000), ("gdn", 5_000), ("norm", 30_000))}
+        check("nsm: 40% per-buffer jitter still recovers t_k to within 8% through the medians",
+              (max(abs(e) for e in errs.values()) < 0.08, errs), (True, errs))
+        check("nsm: ...and the raw-row R2 is reported as the jitter it is",
+              (nn["r2_comp"] > 0.98, nn["r2_raw"] < nn["r2_comp"]), (True, True))
+
+        # a composition seen only a handful of times is not an estimate -- excluded and counted
+        base_c = nsm_log("nsm_basecomp", costs, nsm_specs(4))
+        nc0, _ = nsm_attribution(base_c / "nsm_basecomp.stderr.log")
+        thin_c = nsm_log("nsm_thincomp", costs,
+                         nsm_specs(4) + [(4, [{"moe": 1, "gdn": 9}]) for _ in range(3)])
+        nt, _ = nsm_attribution(thin_c / "nsm_thincomp.stderr.log")
+        check("nsm: a composition under the observation floor is excluded and counted",
+              (nt["small_n"] - nc0["small_n"], nt["comps"] > nc0["comps"]), (3, True))
+
+        # sole occupancy needs no model at all: the direct read must land on the planted cost
+        dsolo = nsm_log("nsm_solo", costs, nsm_specs(4), solo=("gdn",))
+        ns_, _ = nsm_attribution(dsolo / "nsm_solo.stderr.log")
+        check("nsm: a kind measured ALONE (no model) agrees with the fit",
+              round(ns_["direct"]["gdn"][0] / 1e3), 5)
 
         coll = nsm_log("nsm_coll", {"alpha": 1000, "beta": 2000},
                        [(2, [{"alpha": 2, "beta": 4}, {"alpha": 1, "beta": 2}])] * 8
