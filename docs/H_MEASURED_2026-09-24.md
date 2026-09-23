@@ -53,3 +53,42 @@ prod-new profile 兩次 load（同一 binary、只改 expert-cache 大小），`
 - llama-context.cpp 三處儀器改動：**未 commit**（純量測儀器；h 的 SUM 行已驗證會印）
 - server 已停、swap 4533MB、無殘留行程
 - 下一步：h=0.37 判死 A ⇒ 白皮書 §10 方向更新；L1 甜點曲線（4/6/8G × hit × swap）仍需 6G 一臂
+
+---
+
+## 四、h 全中率口徑實測（2026-09-24 03:10，白皮書 §10 第 1 步「量 h」閉合版）
+
+### 背景：freebuff 的口徑糾錯
+白皮書 §6 定價 A 用的是「**全中率**」h = P(本步 union 全被上一步 union 覆蓋)，不是覆蓋率 cov。
+兩者可同時是 0.85 和 ~0：每次固定錯 ~2.8 個 expert（cov=0.854 而 h=0）。
+硬上界：uni_avg≈19.4、cov=0.854 ⇒ 平均未覆蓋 2.83 ⇒ h ≤ 0.854，不足以定案；
+**A 要贏過 ρ 上界（14.39 t/s）需 h ≥ 0.75**——這是唯一還沒量的判據。
+
+### 儀器
+llama-context.cpp :6260 塊加 `s_h_all` 計數器（h_step==1.0 的步數/總步數），
+輸出到 CGC-RHO-SUM 的 `h_all=` 欄位。3 處改動、未 commit。
+
+### 讀數（prod-new、MTP off、server 路徑、decode 128 tokens、swap 環境）
+```
+CGC-RHO-SUM: steps=94 layers=3761 skip=0 rho_tok=0.8581 cov_uni=0.8585 h_step=0.4318 h_layers=3721 h_all=0.0030
+```
+- **h_step = 0.4318**：上一步 union 平均蓋住本步 union 的 43%（時間局部性中等）
+- **h_all = 0.0030**：**每步 100% 全中被上一步 union 蓋住的機率只有 0.3%**（3721 層樣本中僅 ~11 步）
+- cov_uni = 0.8585、rho_tok = 0.8581（與先前 0.854 同量級，驗證可重現）
+
+### 判決
+- **A（speculative slot binding / 跨 token 預指派）徹底判死**：h_all=0.003 ≪ 0.75（贏 ρ 上界的門檻）≪ 0.65（原門檻）。
+  跨 token 猜在語義上不可行——每次固定錯 ~2.7 個 expert，永遠有未覆蓋。
+- **ρ 路線坐實**：cov_uni=0.859 已過 0.398 門檻且 >0.70 飽和點 ⇒ 覆蓋率不是瓶頸；
+  剩餘槓桿是 insert 4.76 ms/步的實測與 cb 42–51 ms 的遮蔽（CB_DELIVERY_SETTLED 已定讞）。
+- 與 freebuff 的口徑預測完全一致：「cov=0.854 而 h=0」——現在有實測。
+
+### 順帶：CGC_IDSEQ_DUMP 不可達（freebuff 的儀器）
+freebuff 的 CGC_IDSEQ_DUMP（llama-context.cpp :5464，A-gate 註解）放在 canonical
+gather 塊之後，但**該函數在交付 build 下從未執行**：server log 與 bench log 的
+CGC-CANON 計數皆為 0 ⇒ IDSEQ fopen 從不觸發、trace 永不生成（實測三次無檔案）。
+要量 per-call ids 序列需移到真正執行的 topk hook 路徑；本輪用 h_all 計數器繞過。
+
+### 狀態
+- llama-context.cpp 儀器 3 處（h_all）未 commit；CGC_IDSEQ_DUMP 未 commit
+- server 已停、無殘留行程

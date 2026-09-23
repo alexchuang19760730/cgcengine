@@ -3952,8 +3952,148 @@ ggml_status llama_context::graph_compute(
     return status;
 }
 
+// [CGC rho probe 2026-09-23] 影子 router logits 的收發。
+//
+// 為什麼要一個「stamp」：影子分支與真實 route 是圖裡兩條獨立的分支，ggml 不保證誰先算。
+// 而 `expert_cache_on_topk`（真實 ids 的來源）是在 top-k 節點算完時觸發的 —— 若影子節點
+// 排在它後面，hook 讀到的就是**上一輪**的影子值，那會是一個靜默錯誤（數字看起來很合理，
+// 其實是錯位的）。做法：影子 capture 時 `g_rho_shadow_stamp[il]++`，hook 時
+// `g_rho_hook_stamp[il]++`；兩者相等才代表「本步的影子值已經在 hook 之前算完」。
+// 不等就**跳過並計數**，最後把 skip 數印出來 —— 這樣「順序不對」是可觀測的，不是假設。
+// （這與 §EN-460 學到的是同一條：不要把「沒量到」和「量到很低」混在一起。）
+static std::vector<std::vector<float>> g_rho_logits;   // [layer] 影子 logits，row-major [e + tok*ne0]
+static std::vector<int64_t>           g_rho_ne0;       // [layer] n_expert
+static std::vector<int64_t>           g_rho_ne1;       // [layer] n_tokens
+static std::vector<uint64_t>          g_rho_shadow_stamp;
+static std::vector<uint64_t>          g_rho_hook_stamp;
+static std::vector<uint64_t>          g_rho_seen_stamp;
+
+static void cgc_rho_capture(ggml_tensor * t) {
+    const char * dash = strrchr(t->name, '-');
+    if (dash == nullptr) {
+        return;
+    }
+    const int il = atoi(dash + 1);
+    if (il < 0 || t->type != GGML_TYPE_F32 || t->ne[0] <= 0 || t->ne[1] <= 0) {
+        return;
+    }
+    const size_t ul = (size_t) il;
+    if (ul >= g_rho_logits.size()) {
+        const size_t want = ul + 1;
+        g_rho_logits.resize(want);
+        g_rho_ne0.resize(want, 0);
+        g_rho_ne1.resize(want, 0);
+        g_rho_shadow_stamp.resize(want, 0);
+        g_rho_hook_stamp.resize(want, 0);
+        g_rho_seen_stamp.resize(want, 0);
+    }
+    {
+        static int dbg = 0;
+        if (il == 0 && dbg++ < 12) {
+            fprintf(stderr, "CGC-RHO-CAP: name=%s il=%d ne=[%lld,%lld] type=%d\n",
+                    t->name, il, (long long) t->ne[0], (long long) t->ne[1], (int) t->type);
+        }
+    }
+    const size_t n = (size_t) t->ne[0] * (size_t) t->ne[1];
+    std::vector<float> & dst = g_rho_logits[ul];
+    dst.resize(n);
+    // 與 CGC_WCOLD_EN 那段同一個讀法（mul_mat 輸出視為 [ne0, ne1] 連續 F32）。
+    ggml_backend_tensor_get(t, dst.data(), 0, n * sizeof(float));
+    g_rho_ne0[ul] = t->ne[0];
+    g_rho_ne1[ul] = t->ne[1];
+    g_rho_shadow_stamp[ul] += 1;
+}
+
+// [CGC ρ-fill 2026-09-23] 見 llama-context.h 的宣告：把 ρ 從「量測」變成「真的提前發起 IO」。
+//
+// 這裡做的每一件事都必須是**非阻塞**的。任何等待都會把「提前發起」換成「原地等 IO」——
+// 那不只是白做，還比基線多付一次影子 matmul。`llama_expert_cache_prefetch_slot` 只把
+// (layer, expert) 推進背景佇列並喚醒 bg 執行緒，所以它是安全的；真正的 pread 在別的執行緒。
+//
+// 最壞情形（ρ 全猜錯）不會出錯：真實 on_topk 的 ensure 會自己同步 pread，而猜對的那一批
+// 已經在路上了 ⇒ 退化成基線。這就是為什麼先量 cov 再動手：猜錯不罰，猜對才賺。
+void llama_context::cgc_rho_prefetch(int il) {
+    static const bool on = getenv("CGC_RHO_FILL") != nullptr;
+    if (!on) {
+        return;
+    }
+    // 只對主幹做。MTP draft ctx 也有 0..39 這些層號，而它的 token 與 verify 那一步完全
+    // 不相交（見 §EN-467：相鄰 step 的 token 不相交），讓它去排 prefetch 只會污染主幹的
+    // slot 選擇。draft 有它自己的 prefetch 路徑（cgc_draft_prefetch_on）。
+    if (cparams.ctx_type != LLAMA_CONTEXT_TYPE_DEFAULT) {
+        return;
+    }
+    llama_expert_cache * cache = model.expert_cache;
+    if (cache == nullptr || !llama_expert_cache_pool_active(cache)) {
+        return;
+    }
+    if (il < 0 || il >= (int) model.hparams.n_layer_all) {
+        return;
+    }
+    const size_t ul = (size_t) il;
+    if (ul >= g_rho_logits.size() || g_rho_logits[ul].empty()) {
+        return;
+    }
+    const int64_t ne = g_rho_ne0[ul];
+    const int64_t nt = g_rho_ne1[ul];
+    const uint32_t k = model.hparams.n_expert_used;
+    if (ne <= 0 || nt <= 0 || k == 0 || (int64_t) k > ne) {
+        return;
+    }
+
+    // 逐 token 取 top-k，再取所有 token 的聯集 —— 這與量 cov_uni 時用的是同一個東西，
+    // 所以量到的 0.854~0.860 就是這裡實際會拿到的命中率，不是另一個口徑。
+    const std::vector<float> & lg = g_rho_logits[ul];
+    std::vector<std::pair<float, uint32_t>> tmp;
+    tmp.reserve((size_t) ne);
+    std::vector<uint32_t> uni;
+    std::unordered_set<uint32_t> seen;
+    for (int64_t tt = 0; tt < nt; ++tt) {
+        tmp.clear();
+        const float * row = lg.data() + (size_t) tt * (size_t) ne;
+        for (int64_t e = 0; e < ne; ++e) { tmp.emplace_back(row[e], (uint32_t) e); }
+        std::partial_sort(tmp.begin(), tmp.begin() + (long) k, tmp.end(),
+                          [](const std::pair<float, uint32_t> & a,
+                             const std::pair<float, uint32_t> & b) { return a.first > b.first; });
+        for (uint32_t j = 0; j < k; ++j) {
+            if (seen.insert(tmp[j].second).second) { uni.push_back(tmp[j].second); }
+        }
+    }
+    // [CGC 2026-09-24 rho layer-batch] ONE batch queue entry per layer instead of N
+    // single-slot entries: collapses 80k lock+queue+pread requests per run to ~40 and lets
+    // bg_loop merge file-contiguous runs across the layer's experts. Claim policy identical
+    // (shared prefetch_claim_slot_locked). MAXQ now caps in-flight batches.
+    if (!uni.empty()) {
+        llama_expert_cache_prefetch_batch(cache, (uint32_t) il, uni.data(), uni.size());
+    }
+
+    // 只報「發起了多少」。**命中與否不在此處自評**：要讓 ensure 那一側既有的
+    // n_map_hits / n_map_misses 來說 —— 那才是決定 t/s 的數，另立一套命中率只會在
+    // 複核時對不上。
+    static uint64_t s_layers = 0, s_queued = 0;
+    s_layers += 1;
+    s_queued += uni.size();
+    if (il == 0) {
+        fprintf(stderr, "CGC-RHO-FILL: layers=%llu queued=%llu per_layer=%.2f\n",
+                (unsigned long long) s_layers, (unsigned long long) s_queued,
+                s_layers ? (double) s_queued / (double) s_layers : 0.0);
+    }
+}
+
 bool llama_context::expert_cache_eval_cb(ggml_tensor * t, bool ask, void * user_data) {
     llama_context * ctx = static_cast<llama_context *>(user_data);
+    static const bool cgc_rho_probe = getenv("CGC_RHO_PROBE") != nullptr;
+    if (cgc_rho_probe && !ask && strncmp(t->name, "cgc_rho_logits", 14) == 0) {
+        cgc_rho_capture(t);
+        // [CGC ρ-fill] 影子 logits 一落地就發起 IO —— 這是整個機制唯一「做正事」的一行。
+        // 位置就是一切：影子節點建在 layer L 的第一個算子（見 qwen35moe.cpp），所以這一
+        // 行比真實 `ffn_moe_topk-L` 早一個 submodule。它若被搬到 attn 之後，提前量歸零，
+        // 機制就退化成「多付一次 matmul 換不到任何東西」。
+        const char * rho_dash = strrchr(t->name, '-');
+        if (rho_dash != nullptr) {
+            ctx->cgc_rho_prefetch(atoi(rho_dash + 1));
+        }
+    }
     const bool cgc_verify_op_timing = getenv("CGC_VERIFY_OP_TIMING") != nullptr;
     auto cgc_is_verify_timing_target = [](const ggml_tensor * node) -> bool {
         if (node == nullptr || node->name[0] == '\0') {
@@ -5321,6 +5461,55 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
         }
     }
 
+    // [CGC 2026-09-24 A-gate] CGC_IDSEQ_DUMP=<path>: emit the per-call selected-expert id sequence
+    // (pass, ctx, layer, n_tokens, top-k ids) so prescription A's hit rate h can be measured OFFLINE.
+    //
+    // Why this is the number that decides A: A removes the top-k hook from the critical path by
+    // binding slots with PREDICTED ids before the segment is submitted and only verifying after.
+    // That payoff is all-or-nothing PER HOOK CALL -- one unpredicted id still forces the blocking
+    // fill -- so the quantity that prices it is P[every id of this call was predicted], which is NOT
+    // a per-expert reuse rate. GAP_FIX_WHITEPAPER §6 quoted 0.87^8 = 33% as the naive landing point,
+    // but that exponent is the per-TOKEN top-k while a decode call carries n_tokens*top_k ids (32 at
+    // ntok=4), and the ids inside one call are correlated (heavy-tailed routing). So the exponent is
+    // neither 8 nor 32: it has to be measured on the real sequence, which nothing on the tree emits
+    // (ROUTE_DUMP / CGC_MASSCOV are frequency aggregates, not per-call traces).
+    //
+    // Writes are plain fprintf on a file opened once; the gate is n_tokens <= 8 so the 512-token
+    // prefill passes (4096 ids per call) cannot swamp the file.
+    {
+        static FILE * cgc_idseq_f = nullptr;
+        static bool   cgc_idseq_init = false;
+        static int    cgc_idseq_prev_il = -1;
+        static long long cgc_idseq_pass = 0;
+        if (!cgc_idseq_init) {
+            cgc_idseq_init = true;
+            const char * p = getenv("CGC_IDSEQ_DUMP");
+            if (p != nullptr && p[0] != '\0') {
+                cgc_idseq_f = fopen(p, "w");
+                if (cgc_idseq_f == nullptr) {
+                    fprintf(stderr, "CGC-IDSEQ: open failed: %s\n", p);
+                }
+            }
+        }
+        if (cgc_idseq_f != nullptr) {
+            if (cgc_idseq_prev_il >= 0 && il <= cgc_idseq_prev_il) {
+                cgc_idseq_pass++;   // the layer walk wrapped round => a new pass
+            }
+            cgc_idseq_prev_il = il;
+            if (n_tokens <= 8) {
+                const int64_t n_ids_step = n_tokens * n_expert_used;
+                fprintf(cgc_idseq_f, "%lld %d %d %lld %lld",
+                        cgc_idseq_pass,
+                        cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP ? 1 : 0,
+                        il, (long long) n_tokens, (long long) n_expert_used);
+                for (int64_t j = 0; j < n_ids_step; ++j) {
+                    fprintf(cgc_idseq_f, " %d", ids[j]);
+                }
+                fprintf(cgc_idseq_f, "\n");
+            }
+        }
+    }
+
     // [CGC 2026-09-17 §EN-14b] SLOT-SEL: the same reverse lookup, restricted to the experts the
     // consumer actually reads THIS step.
     //
@@ -5369,6 +5558,7 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
         }
         fprintf(stderr, "]%s\n", (n_tokens * n_expert_used > 16) ? " (truncated to 16)" : "");
     }
+
     // [CGC MTP Draft Prefetch 2026-09-07] COLLECT phase: during MTP draft decode
     // (ctx_type == MTP, n_tokens >= 1), the draft ctx computes the top-8 expert ids for the
     // NEXT token one step ahead of the trunk verify ctx. Since draft_accept is 92-98%, these
@@ -5767,6 +5957,150 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
                     il, hit, miss,
                     (hit + miss) > 0 ? (double) hit / (hit + miss) * 100.0 : 0.0,
                     cache->n_draft_prefetch_hit, cache->n_draft_prefetch_miss);
+        }
+    }
+
+    const bool cgc_probe_is_decode = cgc_is_decode_graph((int64_t) n_tokens, cgc_decode_max_tokens);
+
+    // [CGC rho probe 2026-09-23] ★★ ρ =「提前一層」發起 fill 時，預測能蓋住多少真實 union。
+    //
+    // 與 prebind 的本質差別：prebind 是**跨 token** 猜（時間局部性，第二輪修正後量到的是
+    // 「上一步 union」的覆蓋）；這是**同一步、同一批 token、只差一個 submodule** —— 用
+    // MoE core(L-1) 一結束時的殘差（還沒過 attn(L)）去算 gate(L)，得到近似 top-k。
+    // 它是真實 matmul 不是猜 ⇒ 不必加寬（保持 top-8）⇒ 沒有 prebind 那個影子成本。
+    //
+    // 兩個量：
+    //   rho_tok = 每個 token 的「近似 top-8 ∩ 真實 top-8」/ 8（路由本身像不像）
+    //   cov_uni = 「近似 union ∩ 真實 union」/ |真實 union|（**能省多少 fill**，這才是門檻要的）
+    // 門檻（2026-09-23 事前算好，見 §EN-464）：cov_uni >= 0.398 ⇒ step −10%；
+    // >= 0.164 ⇒ step −3%；> 0.70 之後窗口飽和，再準也沒用。
+    {
+        static const bool cgc_rho_probe = getenv("CGC_RHO_PROBE") != nullptr;
+        static const bool cgc_rho_verbose = getenv("CGC_PREBIND_PROBE_VERBOSE") != nullptr;
+        if (cgc_rho_probe && cgc_probe_is_decode &&
+            cparams.ctx_type == LLAMA_CONTEXT_TYPE_DEFAULT &&
+            il >= 0 && n_tokens >= 1 && n_expert_used > 0 && !uni.empty()) {
+            const size_t ul = (size_t) il;
+            if (ul >= g_rho_hook_stamp.size()) {
+                const size_t want = ul + 1;
+                g_rho_logits.resize(want);
+                g_rho_ne0.resize(want, 0);
+                g_rho_ne1.resize(want, 0);
+                g_rho_shadow_stamp.resize(want, 0);
+                g_rho_hook_stamp.resize(want, 0);
+                g_rho_seen_stamp.resize(want, 0);
+            }
+            g_rho_hook_stamp[ul] += 1;
+            // ★ 順序檢查：影子分支與真實 route 是圖裡兩條獨立分支，ggml 不保證誰先算。
+            //   若影子排在 top-k 後面，這裡讀到的是**上一輪**的值 —— 那是一個靜默錯誤
+            //   （數字照樣很漂亮）。
+            //   判據用「stamp 有沒有前進」而**不是**「兩邊相等」：實測 CGC_TD_CB 的逐段轉發
+            //   會把同一個節點轉發多次（shadow_stamp=3 vs hook_stamp=2），嚴格相等會把
+            //   100% 的層判成 stale。用單調遞增 + 「看過就記住」就只問一件事：
+            //   「hook 之前有沒有出現過一個**新的**影子值」。
+            const bool fresh = (g_rho_shadow_stamp[ul] > g_rho_seen_stamp[ul]);
+
+            static uint64_t s_rho_layers = 0, s_rho_skip = 0, s_rho_steps = 0;
+            static double   s_rho_tok = 0.0, s_rho_cov = 0.0;
+            static int      s_rho_last_il = -1;
+            if (il <= s_rho_last_il) { ++s_rho_steps; }
+            s_rho_last_il = il;
+
+            const size_t k  = (size_t) n_expert_used;
+            const size_t nt = (size_t) n_tokens;
+            const size_t Ur = uni.size();
+            double rho_tok = -1.0;
+            size_t cov_hit = 0;
+            size_t pred_uni_sz = 0;
+            // [CGC 2026-09-24 量 h] A 預指派 = 跨 token 猜（時間局部性）：候選集 = 上一步
+            // 同一層的 union。h_step = |prev_uni ∩ uni| / |uni| —— 真實 union 有多少已被
+            // 「上一步的 union」提前蓋住。白皮書 §10 第 1 步、決定 A 值不值得做的唯一判據。
+            static std::vector<std::unordered_set<uint32_t>> s_rho_prev_uni;
+            static uint64_t s_h_layers = 0, s_h_all = 0;
+            static double   s_h_sum = 0.0;
+            double h_step = -1.0;
+            if (ul >= s_rho_prev_uni.size()) {
+                s_rho_prev_uni.resize(ul + 1);
+            }
+
+            if (fresh && ul < g_rho_logits.size() && !g_rho_logits[ul].empty() &&
+                g_rho_ne0[ul] > 0 && g_rho_ne1[ul] == (int64_t) nt) {
+                const std::vector<float> & lg = g_rho_logits[ul];
+                const int64_t ne = g_rho_ne0[ul];
+                std::vector<std::pair<float, uint32_t>> tmp;
+                tmp.reserve((size_t) ne);
+                std::unordered_set<uint32_t> pred_uni;
+                double acc = 0.0;
+                for (size_t tt = 0; tt < nt; ++tt) {
+                    tmp.clear();
+                    const float * row = lg.data() + tt * (size_t) ne;
+                    for (int64_t e = 0; e < ne; ++e) { tmp.emplace_back(row[e], (uint32_t) e); }
+                    const size_t kk = std::min(k, tmp.size());
+                    std::partial_sort(tmp.begin(), tmp.begin() + (long) kk, tmp.end(),
+                                      [](const std::pair<float, uint32_t> & a,
+                                         const std::pair<float, uint32_t> & b) { return a.first > b.first; });
+                    std::unordered_set<uint32_t> pred;
+                    for (size_t j = 0; j < kk; ++j) {
+                        pred.insert(tmp[j].second);
+                        pred_uni.insert(tmp[j].second);
+                    }
+                    size_t hit = 0;
+                    for (size_t j = 0; j < k; ++j) {
+                        if (pred.count((uint32_t) ids[tt * k + j])) { ++hit; }
+                    }
+                    acc += (double) hit / (double) k;
+                }
+                rho_tok = nt ? acc / (double) nt : 0.0;
+                for (uint32_t e : uni) { if (pred_uni.count(e)) { ++cov_hit; } }
+                pred_uni_sz = pred_uni.size();
+                // 量 h：候選集 = 上一步同一層的 union（A 預指派的跨 token 假設）
+                if (!s_rho_prev_uni[ul].empty() && !uni.empty()) {
+                    size_t h_hit = 0;
+                    for (uint32_t e : uni) { if (s_rho_prev_uni[ul].count(e)) { ++h_hit; } }
+                    h_step = (double) h_hit / (double) Ur;
+                    s_h_layers += 1;
+                    s_h_sum += h_step;
+                    if (h_hit == Ur) { s_h_all += 1; }  // 全中率：本步 union 100% 被上一步覆蓋
+                }
+                s_rho_prev_uni[ul] = std::unordered_set<uint32_t>(uni.begin(), uni.end());
+                g_rho_seen_stamp[ul] = g_rho_shadow_stamp[ul];
+                s_rho_layers += 1;
+                s_rho_tok += rho_tok;
+                s_rho_cov += Ur ? (double) cov_hit / (double) Ur : 0.0;
+            } else {
+                ++s_rho_skip;   // 順序不對或沒量到 => 不進平均，也不偽裝成 0
+                static int dbg = 0;
+                if (il == 0 && dbg++ < 12) {
+                    fprintf(stderr, "CGC-RHO-MISS: il=%d ntok=%lld fresh=%d "
+                                    "shadow_stamp=%llu hook_stamp=%llu cap_ntok=%lld "
+                                    "cap_empty=%d cap_ne0=%lld\n",
+                            il, (long long) n_tokens, fresh ? 1 : 0,
+                            (unsigned long long) g_rho_shadow_stamp[ul],
+                            (unsigned long long) g_rho_hook_stamp[ul],
+                            ul < g_rho_ne1.size() ? (long long) g_rho_ne1[ul] : -1,
+                            (ul < g_rho_logits.size() && g_rho_logits[ul].empty()) ? 1 : 0,
+                            ul < g_rho_ne0.size() ? (long long) g_rho_ne0[ul] : -1);
+                }
+            }
+
+            if (cgc_rho_verbose) {
+                fprintf(stderr, "CGC-RHO-PROBE: il=%d ntok=%lld uni=%zu fresh=%d "
+                                "rho_tok=%.3f cov_uni=%.3f pred_uni=%zu\n",
+                        il, (long long) n_tokens, Ur, fresh ? 1 : 0,
+                        rho_tok, Ur ? (double) cov_hit / (double) Ur : 0.0, pred_uni_sz);
+            }
+            if (il == 0) {
+                fprintf(stderr, "CGC-RHO-SUM: steps=%llu layers=%llu skip=%llu "
+                                "rho_tok=%.4f cov_uni=%.4f h_step=%.4f h_layers=%llu "
+                                "h_all=%.4f\n",
+                        (unsigned long long) s_rho_steps, (unsigned long long) s_rho_layers,
+                        (unsigned long long) s_rho_skip,
+                        s_rho_layers ? s_rho_tok / (double) s_rho_layers : 0.0,
+                        s_rho_layers ? s_rho_cov / (double) s_rho_layers : 0.0,
+                        s_h_layers ? s_h_sum / (double) s_h_layers : -1.0,
+                        (unsigned long long) s_h_layers,
+                        s_h_layers ? (double) s_h_all / (double) s_h_layers : -1.0);
+            }
         }
     }
 
