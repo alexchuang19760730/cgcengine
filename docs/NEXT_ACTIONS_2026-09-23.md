@@ -260,16 +260,10 @@ export CGC\_SERVER\_EXPERT\_CACHE\_BYTES=4294967296
 
 **WorkBuddy（freebuff）在做：**
 
-> ⚠️ **Prompt cache 已修好但還沒 commit！請優先 commit！**
-> 
-> 問題：cache 找到完美匹配（f_sim = 1.000），但用不了
-> 原因：seq_rm_type 設錯了，導致 prompt cache 白開
-> 修法：從 metadata 判斷正確的 seq_rm_type
-> 效果：35.5s → 15.0s（+133%）
-> 
-> **待辦：**
-> 1. commit server-context.cpp + run_server.sh
-> 2. 確認 llama-bench 可以用 env var 關閉（CGC_SEQ_RM_TYPE=NO）
+> ✅ **Prompt cache 已完成並 commit（2026-09-23 核實，此標記過時）**：
+> - `ea8703a2c`（11:48）：prefix 重用與投機回滾分離（M1 9/9、dump md5 72d82a33… 逐位元相同、記憶體減半）
+> - `292baacee`（13:28）：prod25 profile 預設開 prompt cache（外部 =0 可覆寫）
+> - 均未 push。剩餘：restore 路徑多請求 A/B（§6g）、llama-bench env 關閉確認
 
 
 
