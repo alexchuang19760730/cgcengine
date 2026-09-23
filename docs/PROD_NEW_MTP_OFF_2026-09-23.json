@@ -1,0 +1,171 @@
+{
+ "product": "prod-new (MTP off) production cell, p2048 + n128 d512 r3",
+ "date": "2026-09-23",
+ "engine_digest": {
+  "libggml-base.0.19.0.dylib": "84e0ecbb29cc4760",
+  "libggml-blas.0.19.0.dylib": "9367999fff89b5ea",
+  "libggml-cpu.0.19.0.dylib": "b5d456b6ffe9dbc1",
+  "libggml-metal.0.19.0.dylib": "2141ce15959c9e9f",
+  "libggml.0.19.0.dylib": "7690ca66803e0ba2",
+  "libllama-batched-bench-impl.dylib": "d4c435c4a1ef4e85",
+  "libllama-bench-impl.dylib": "f6f33c0e6b5e9077",
+  "libllama-cli-impl.dylib": "e84ea1e23db15832",
+  "libllama-common.0.0.100.dylib": "5931012744fe3bbf",
+  "libllama-common.0.0.182.dylib": "a166c8191cfebf43",
+  "libllama-common.0.0.190.dylib": "889b17d6345e6250",
+  "libllama-common.0.0.239.dylib": "a702f8a3e2d4f17b",
+  "libllama-common.0.0.275.dylib": "5aeee043d64cec79",
+  "libllama-common.0.0.277.dylib": "ba9efd5f4581f2f5",
+  "libllama-common.0.0.279.dylib": "b5ce0bb983972271",
+  "libllama-common.0.0.578.dylib": "45fa2917437b1661",
+  "libllama-completion-impl.dylib": "9f1964e7ca3f852a",
+  "libllama-fit-params-impl.dylib": "caf97e1419ba7828",
+  "libllama-perplexity-impl.dylib": "effad9f731203a39",
+  "libllama-quantize-impl.dylib": "452b334917bcad45",
+  "libllama-server-impl.dylib": "49e71cf370521b66",
+  "libllama.0.0.100.dylib": "80e41e8165e9c39a",
+  "libllama.0.0.182.dylib": "69e1faa67bd4f59b",
+  "libllama.0.0.190.dylib": "ae87ab2c1eae6f45",
+  "libllama.0.0.239.dylib": "bdebda43aace784d",
+  "libllama.0.0.275.dylib": "4f2c9ba36e92707f",
+  "libllama.0.0.277.dylib": "2fdb71d0671c3cdf",
+  "libllama.0.0.279.dylib": "1a3fdce4bcddd50d",
+  "libllama.0.0.578.dylib": "24aef96bb20d90c4",
+  "libmtmd.0.0.100.dylib": "9ad2cdddde2ed03c",
+  "libmtmd.0.0.182.dylib": "ee0e9efb4884553e",
+  "libmtmd.0.0.190.dylib": "ee0e9efb4884553e",
+  "libmtmd.0.0.239.dylib": "ee0e9efb4884553e",
+  "libmtmd.0.0.275.dylib": "ee0e9efb4884553e",
+  "libmtmd.0.0.277.dylib": "70cabd54930add0b",
+  "libmtmd.0.0.279.dylib": "70cabd54930add0b",
+  "libmtmd.0.0.578.dylib": "70cabd54930add0b",
+  "llama-bench": "639a88bf1411dd68"
+ },
+ "head": "155ee2474",
+ "profile": "prod-new",
+ "profile_meaning": "MTP off + the prefill250 pillar (b/ub 5632, ctx 8192, PREFILL_STREAM=1, GATHER_SLAB_CAP=256, pool 8 GiB); decode carriers SPAC=1 OA_ASYNC=1 MM_BITIDENT=1 PREFIX_REUSE_CKPT=1 (the last is a no-op with MTP off)",
+ "instrument": "scripts/check/commit_bench.py --record-only (llama_bench_matrix --arms prod-new)",
+ "window": {
+  "port": 8080,
+  "need_mb": 8000.0,
+  "n_samples": 1,
+  "busy_samples": 0,
+  "samples": [
+   {
+    "where": "report",
+    "port": 8080,
+    "need_mb": 8000.0,
+    "quiet": true,
+    "why": "quiet (reclaimable 10058MB)",
+    "gated": false
+   }
+  ],
+  "class": "clean",
+  "why": "every window sample was quiet (1 check(s))"
+ },
+ "measure_window": {
+  "class": "unknown",
+  "why": "driver launched without calling the shared probe; the facts below are the substitute, and they are not a substitute for a probe sample (see the driver defect in the report)",
+  "no_llama_process_at_launch": true,
+  "no_rival_llama_during_run": true,
+  "rival_evidence": "the concurrent session's llama-bench has lstart 2026-09-23 21:04:27, i.e. after this run ended 21:01:02",
+  "thermal": {
+   "NOMINAL": 150
+  },
+  "swap_used_mb_at_launch": 5526.75,
+  "swap_used_mb_at_end": 5678.44,
+  "launched": "2026-09-23 20:59:45",
+  "wall_s": 76.6
+ },
+ "prefill": {
+  "tps": 283.014374,
+  "samples_ts": [
+   293.794,
+   280.174,
+   275.075
+  ],
+  "stddev_ts": 9.677347,
+  "n_prompt": 2048,
+  "n_depth": 512,
+  "reps": 3,
+  "target": 250.0,
+  "window": {
+   "class": "unknown",
+   "why": "driver launched without calling the shared probe; the facts below are the substitute, and they are not a substitute for a probe sample (see the driver defect in the report)",
+   "no_llama_process_at_launch": true,
+   "no_rival_llama_during_run": true,
+   "rival_evidence": "the concurrent session's llama-bench has lstart 2026-09-23 21:04:27, i.e. after this run ended 21:01:02",
+   "thermal": {
+    "NOMINAL": 150
+   },
+   "swap_used_mb_at_launch": 5526.75,
+   "swap_used_mb_at_end": 5678.44,
+   "launched": "2026-09-23 20:59:45",
+   "wall_s": 76.6
+  }
+ },
+ "decode": {
+  "tps": 11.716779,
+  "samples_ts": [
+   12.3911,
+   11.0253,
+   11.7339
+  ],
+  "stddev_ts": 0.683066,
+  "n_gen": 128,
+  "n_depth": 512,
+  "reps": 3,
+  "target": "13-14 (profile's own \u00a7EN-473)",
+  "window": {
+   "class": "unknown",
+   "why": "driver launched without calling the shared probe; the facts below are the substitute, and they are not a substitute for a probe sample (see the driver defect in the report)",
+   "no_llama_process_at_launch": true,
+   "no_rival_llama_during_run": true,
+   "rival_evidence": "the concurrent session's llama-bench has lstart 2026-09-23 21:04:27, i.e. after this run ended 21:01:02",
+   "thermal": {
+    "NOMINAL": 150
+   },
+   "swap_used_mb_at_launch": 5526.75,
+   "swap_used_mb_at_end": 5678.44,
+   "launched": "2026-09-23 20:59:45",
+   "wall_s": 76.6
+  }
+ },
+ "pool": {
+  "hit_rate_pct": 96.3,
+  "requests": 128920,
+  "hits": 124138,
+  "misses": 4782,
+  "miss_compulsory": 4030,
+  "miss_capacity": 752,
+  "capacity_pct": 15.7,
+  "resident_mib": 6197.04,
+  "pool_budget_mib": 8192.0,
+  "io_jobs": 82119,
+  "io_bytes": 2494095360,
+  "io_us_per_job": 23755,
+  "io_effective_mib_s": 1.0,
+  "window": {
+   "class": "unknown",
+   "why": "driver launched without calling the shared probe; the facts below are the substitute, and they are not a substitute for a probe sample (see the driver defect in the report)",
+   "no_llama_process_at_launch": true,
+   "no_rival_llama_during_run": true,
+   "rival_evidence": "the concurrent session's llama-bench has lstart 2026-09-23 21:04:27, i.e. after this run ended 21:01:02",
+   "thermal": {
+    "NOMINAL": 150
+   },
+   "swap_used_mb_at_launch": 5526.75,
+   "swap_used_mb_at_end": 5678.44,
+   "launched": "2026-09-23 20:59:45",
+   "wall_s": 76.6
+  },
+  "miss_split_source": "the matrix JSON written by THIS run at 21:01:02"
+ },
+ "caveats": [
+  "the measured binary is not a clean production binary: the committed tree prints CGC-SEG every 160 segments and CGC-HOOK for the first 80 routed layers, plus CGC-POST/PRE/WARM 24 times each, all ungated. This reading is therefore an instrumented reading by this repo's own rule.",
+  "the box was carrying 5.5 GiB of swap at launch (held by processes outside this run); the I/O numbers below are the evidence that this was not free",
+  "commit_bench.py itself crashes on its own profile (see the report): the verdict line was never printed, the numbers had to be read from the matrix JSON",
+  "the workdir /tmp/commit_bench and the --json default are SHARED paths: a concurrent session clobbered this run's .stderr.log at 21:04:27, so this product intentionally carries no log-derived number",
+  "the measured binary also carries ungated debug prints (CGC-SEG every 160 segments, CGC-HOOK first 80, CGC-POST/PRE/WARM 24 each): this is an instrumented reading"
+ ]
+}

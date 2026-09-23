@@ -1156,6 +1156,172 @@ def print_nsm_attribution(res: dict, logs) -> None:
     print(f"    (group rules: " + "; ".join(f"{g}={rx}" for g, rx in NSM_GROUP_RULES) + ")")
 
 
+# ── the device's own budget: which part of the step's wall time the GPU is actually doing ────────
+#
+# A different question from the marginal above. There, "what does ONE MORE verify token cost". Here,
+# "the step is N ms long -- how much of it is the device at all, and inside the device, which part of
+# the graph". The two must agree, and the second is what tells you where to look.
+#
+# It needs a fine command-buffer split: with the default `n_nodes_0 = MAX(64, 0.1*N)` a layer's ~100
+# nodes ride in ONE buffer (measured: [0,64) once per layer, 40 of them, 61.5% of the device time in
+# the coarse capture) and the best split inside it is a node-count guess. `CGC_CB_N_MAIN=1` overrides
+# that floor; with it the buffers become 1-7 nodes each and the graph's own node index becomes a
+# position on a timeline. ⚠ The mode changes the absolute step time, so its t/s is not quotable.
+#
+# Three rules, each of them bought with a measurement rather than taste:
+#   1. a buffer cannot outlive its own step. Two per step fail that on the 09-23 build (the start time
+#      arrives as a small POSITIVE value and passes the emitter's `s > 0 && e > s` guard), and the
+#      same defect is what inflates the step-level `gpu_sum` (5.4e8 ms/step against a 250 ms step).
+#      A read that does not drop them sees ~1.7e14 ns of "device span" -- and that mistake is on the
+#      record: the first pass over the 18:14 capture reported +31 ms/token of device span from it,
+#      while the same log's clean rows give +27.8 (shard, 1-7 node buffers) and the kernel probe's own
+#      floor for the expert bank is +7.9. Dropped and COUNTED, never smoothed.
+#   2. the per-buffer durations must CLOSE against the step's host `wait` window, which is a plain
+#      `ggml_time_us` delta and therefore healthy in every build. Ratio far from 1 => the sampler took
+#      a different thing than it thinks and the device rows are refused (the host channels still print).
+#   3. a per-KIND total that SHRINKS as tokens grow is not work. It is the documented VIEW/RESHAPE
+#      class -- no GPU command in that buffer, so its timestamps span whatever ran next. It is flagged
+#      by name instead of being summed into an attribution. (Measured: `ffn_moe_topk` 15.45 ms/step at
+#      T=4 against 10.97 at T=8, i.e. the single largest member of the model-free channel is an artifact.)
+DEV_CLOSE_LO, DEV_CLOSE_HI = 0.50, 1.50
+DEV_MIN_STEPS = 5
+DEV_NODE_BIN = 10
+
+
+def device_split(logs, phase: str | None = None, min_steps: int = DEV_MIN_STEPS) -> tuple:
+    """The device's share of the step, and its split by the graph's own node index, MEASURED.
+
+    Returns (res, why). `res["widths"]` is one row per token count in the family, `res["regions"]`
+    the node-index attribution at each width, `res["marg"]` the per-token marginal per region between
+    the two widest well-sampled widths, and `res["flags"]` the named defects. Refusals are per item:
+    a bad closure kills the device rows at that width and leaves the host channels readable.
+    """
+    logs = [Path(p) for p in ([logs] if isinstance(logs, (str, Path)) else logs)]
+    steps, dropped, dropped_ms = [], 0, 0.0
+    for lg in logs:
+        pairs, why = _nsm_arm(lg, phase)
+        if pairs is None:
+            return None, why
+        for step, row in pairs:
+            wall = row["total"] or 0.0
+            bufs = []
+            for b in step["nsm"]:
+                if wall and b["dur_ns"] / 1e6 > wall:
+                    dropped += 1
+                    dropped_ms += b["dur_ns"] / 1e6
+                    continue
+                bufs.append(b)
+            steps.append({"log": lg.name, "w": row["ntok"], "total": row["total"],
+                          "wait": row["wait"], "cb": row["cb"], "submit": row["submit"],
+                          "bufs": bufs, "dur": sum(b["dur_ns"] for b in bufs) / 1e6})
+    if len(steps) < min_steps:
+        return None, (f"only {len(steps)} step(s) carry CGC-NSM across {len(logs)} log(s) "
+                      f"(need >= {min_steps}; arm CGC_GPU_NODES=1 + CGC_GPU_NODES_MATRIX=1)")
+    if not any(s["bufs"] for s in steps):
+        return None, "every NSM buffer is longer than its own step -- the duration field is not one"
+
+    by_w = collections.defaultdict(list)
+    for s in steps:
+        by_w[s["w"]].append(s)
+    flags = []
+    widths = {}
+    regions = {}
+    solo = {}
+    for w, v in sorted(by_w.items()):
+        if len(v) < min_steps:
+            flags.append(f"width {w}: only {len(v)} step(s) -- below the {min_steps}-step floor")
+            continue
+        med = lambda ch: _median([s[ch] for s in v])              # noqa: E731
+        row = {ch: med(ch) for ch in ("total", "wait", "cb", "submit", "dur")}
+        row["n"] = len(v)
+        row["bufs"] = _median([len(s["bufs"]) for s in v])
+        row["ratio"] = row["dur"] / row["wait"] if row["wait"] else None
+        if row["ratio"] is None or not (DEV_CLOSE_LO <= row["ratio"] <= DEV_CLOSE_HI):
+            row["refused"] = (f"per-buffer durations / host wait = {row['ratio']}" if row["ratio"]
+                              else "no host wait in this family")
+            flags.append(f"width {w}: device rows refused ({row['refused']})")
+        widths[w] = row
+        rg = collections.defaultdict(lambda: [0.0, collections.Counter()])
+        sk = collections.defaultdict(float)
+        for s in v:
+            for b in s["bufs"]:
+                key = (min(b["a"], b["b"]) // DEV_NODE_BIN) * DEV_NODE_BIN
+                rg[key][0] += b["dur_ns"] / 1e6
+                for k, c in b["cnt"].items():
+                    rg[key][1][k] += c
+                if len(b["cnt"]) == 1:
+                    sk[next(iter(b["cnt"]))] += b["dur_ns"] / 1e6
+        tot = sum(x[0] for x in rg.values()) or 1.0
+        regions[w] = sorted((k, x[0] / len(v), 100.0 * x[0] / tot, x[1]) for k, x in rg.items())
+        solo[w] = {k: d / len(v) for k, d in sorted(sk.items(), key=lambda kv: -kv[1])}
+
+    # rule 3: a kind that shrinks as tokens grow is not work
+    ws = sorted(solo)
+    if len(ws) > 1:
+        for k in sorted(set().union(*[set(solo[w]) for w in ws])):
+            vals = [(w, solo[w].get(k)) for w in ws if solo[w].get(k) is not None]
+            if len(vals) > 1 and any(b[1] < a[1] for a, b in zip(vals, vals[1:]))\
+                    and max(v for _, v in vals) > 1.0:
+                flags.append(f"SOLO/{k}: not monotone in tokens "
+                             f"({', '.join(f'T{w}:{v:.2f}' for w, v in vals)} ms/step) -- the "
+                             f"VIEW/RESHAPE artifact, not work")
+
+    # the marginal, between the two widest widths that survived the floors
+    usable = [w for w in sorted(widths) if not widths[w].get("refused")]
+    marg = None
+    if len(usable) > 1:
+        w1, w2 = usable[-2], usable[-1]
+        dt = w2 - w1
+        d = lambda ch: (widths[w2][ch] - widths[w1][ch]) / dt   # noqa: E731
+        r1, r2 = dict((k, v) for k, v, _, _ in regions[w1]), dict((k, v) for k, v, _, _ in regions[w2])
+        marg = {"w1": w1, "w2": w2, "device": d("dur"), "total": d("total"), "cb": d("cb"),
+                "submit": d("submit"), "wait": d("wait"),
+                "regions": {k: (r2.get(k, 0.0) - r1.get(k, 0.0)) / dt for k in sorted(set(r1) | set(r2))}}
+    else:
+        flags.append("marginal refused: fewer than two widths cleared the closure and step floors")
+    return {"dropped": dropped, "dropped_ms": dropped_ms, "widths": widths, "regions": regions,
+            "solo": solo, "marg": marg, "flags": flags, "n_logs": len(logs)}, None
+
+
+def print_device_split(res: dict, logs) -> None:
+    print(f"device split: {res['n_logs']} log(s); buffers dropped as longer than their step: "
+          f"{res['dropped']} ({res['dropped_ms']:.3e} ms of junk -- see rule 1)")
+    print(f"  {'T':>3s} {'n':>4s} {'total':>8s} {'wait':>8s} {'cb':>7s} {'submit':>7s} {'device':>8s} "
+          f"{'device/wait':>11s} {'bufs/step':>9s}")
+    for w, r in sorted(res["widths"].items()):
+        dur = "REFUSED" if r.get("refused") else f"{r['dur']:8.2f}"
+        rat = "-" if r.get("refused") else f"{r['ratio']:11.3f}"
+        print(f"  {w:3d} {r['n']:4d} {r['total']:8.1f} {r['wait']:8.1f} {r['cb']:7.1f} "
+              f"{r['submit']:7.1f} {dur} {rat} {r['bufs']:9.0f}")
+    print("    host channels (total/wait/cb/submit) are ggml_time_us deltas and readable regardless;")
+    print("    the device column is the sum of per-command-buffer GPU spans, which overlap -> ratio >= 1")
+    for w, rows in sorted(res["regions"].items()):
+        if res["widths"].get(w, {}).get("refused"):
+            continue
+        print(f"  --- node-index attribution at T={w} (10-node regions = graph position) ---")
+        for k, ms, share, kc in rows:
+            if share < 0.5:
+                continue
+            top = ", ".join(k_ for k_, _ in kc.most_common(4))
+            print(f"    nodes {k:3d}-{k + DEV_NODE_BIN - 1:3d}: {ms:7.2f} ms/step {share:5.1f}%  {top}")
+    if res["solo"]:
+        print("  --- the model-free channel: kinds whose buffer held exactly ONE node ---")
+        for w, sk in sorted(res["solo"].items()):
+            if not sk:
+                print(f"    T={w}: none")
+                continue
+            print(f"    T={w}: " + ", ".join(f"{k}={v:.2f}" for k, v in list(sk.items())[:6]) + " ms/step")
+    if res["marg"]:
+        m = res["marg"]
+        print(f"  marginal per token, T={m['w1']} -> T={m['w2']}: device {m['device']:+.2f} | "
+              f"cb {m['cb']:+.2f} | submit {m['submit']:+.2f} | wait {m['wait']:+.2f} | "
+              f"step {m['total']:+.2f} ms")
+        print("    by region: " + ", ".join(f"{k}-{k + DEV_NODE_BIN - 1}: {v:+.2f}"
+                                          for k, v in sorted(m["regions"].items())))
+    for f_ in res["flags"]:
+        print(f"  FLAG {f_}")
+
+
 # ── the round's budget: rest = F + m*T, and what amortising F actually buys ───────────────────────
 #
 # A spec round pays a draft chain (k forward passes) plus one verify step. The verify step is
@@ -1282,6 +1448,93 @@ def k_econ(rows: list, target_ms: float = 40.0) -> dict:
 
 K_ECON_KMAX = 8
 K_ECON_ALPHAS = tuple(x / 100.0 for x in range(35, 101, 5))
+
+# ── the hook's envelope: what prebind (speculative slot binding) can possibly buy ─────────────────
+# Two measured sides have to be joined, and each belongs to a different instrument:
+#
+#   host side (this file, `--arm-dir`): cb is 39% of the within-arm marginal token (18:14 k3 arm:
+#     cb +17.22 of total +43.67 ms/token, cb per step 5.99 -> 26.38 over widths 2 -> 4).
+#   pass-through (the prebind line, docs/PREBIND_*): gap = 1.01*(cb + submit) + 8.0, r=0.980 -- so a
+#     millisecond the host spends in the hook becomes a millisecond of GPU idle. That slope is what
+#     makes the hook worth ~2x its own share, and it is the reason a cb-only reading UNDERSTATES it.
+#
+# What cb itself is made of, measured (M-F5): a per-layer barrier of 0.46 ms that is NOT removable
+# (it is the dispatcher's segment structure), plus a per-miss fill. So the envelope is
+#
+#     dstep = (1 + pass_through) * (cb - 0.46*n_layers) * f_clean(q)
+#
+# with f_clean the prebind line's own event probability: a layer's hook is free only when its WHOLE
+# union was resident, so with r = p_res0 + (1 - p_res0)*q and U experts per layer, f_clean = E[r^U].
+CB_BARRIER_MS_PER_LAYER = 0.46    # M-F5, measured; the part of cb that no prefetcher can remove
+CB_PASS_THROUGH = 1.01            # prebind line's gap regression slope (full transmittal to GPU idle)
+CB_P_RES0 = 0.905                 # PREBIND_STAGE0_RESULT §4: direct slot_table read at the hook
+CB_U = 19.41                      # their measured steady-state union, ntok=4 (run 2)
+
+
+def cb_f_clean(q: float, p_res0: float = CB_P_RES0, u: float = CB_U) -> float:
+    """E[r^U] with r = p_res0 + (1-p_res0)*q -- the prebind line's event, isolated here so the two
+    lines cannot drift apart on it (their probe measured q; this is the only place it is turned into
+    a per-layer probability)."""
+    r = p_res0 + (1.0 - p_res0) * q
+    return r ** u
+
+
+def cb_envelope(cb_ms: float, n_layers: int, q: float | None = None, step_ms: float = 183.5,
+                anchor_tps: float = 12.57, claim: float | None = None) -> dict:
+    """The ceiling on what slot pre-binding can buy, and whether a claimed gain fits under it.
+
+    Returns the barrier, the removable per-layer fill, dstep at the given q, the ceiling at q=1, the
+    resulting t/s, and -- when a claimed speedup is passed -- whether the claim is inside `envelope`.
+    A claim ABOVE the envelope cannot be attributed to the hook: either cb is bigger than claimed, or
+    f_clean is bigger than its own measurement supports, or the gain is not cb at all.
+    """
+    barrier = CB_BARRIER_MS_PER_LAYER * n_layers
+    removable = max(0.0, cb_ms - barrier)
+    per_layer = removable / n_layers if n_layers else 0.0
+
+    def dstep(qq: float) -> float:
+        return (1.0 + CB_PASS_THROUGH) * per_layer * n_layers * cb_f_clean(qq)
+
+    ceiling = dstep(1.0)
+    res = {"cb_ms": cb_ms, "n_layers": n_layers, "barrier_ms": barrier, "removable_ms": removable,
+           "removable_share": removable / cb_ms if cb_ms else 0.0,
+           "q": q, "f_clean": cb_f_clean(q) if q is not None else None,
+           "dstep_ms": dstep(q) if q is not None else None, "ceiling_ms": ceiling,
+           "step_ms": step_ms, "anchor_tps": anchor_tps,
+           "ceiling_tps": anchor_tps * step_ms / (step_ms - ceiling) if ceiling < step_ms else float("inf"),
+           "ceiling_step_ms": step_ms - ceiling}
+    if q is not None:
+        res["tps_at_q"] = anchor_tps * step_ms / (step_ms - res["dstep_ms"])
+        res["speedup_at_q"] = (step_ms / (step_ms - res["dstep_ms"]) - 1.0) * 100.0
+    res["ceiling_speedup_pct"] = (step_ms / (step_ms - ceiling) - 1.0) * 100.0 if ceiling < step_ms else float("inf")
+    if claim is not None:
+        need = step_ms * (1.0 - 1.0 / (1.0 + claim / 100.0))
+        res["claim"] = {"claimed_pct": claim, "needs_dstep_ms": need,
+                        "fits": need <= ceiling + 1e-9,
+                        "ratio_vs_ceiling": need / ceiling if ceiling else float("inf")}
+    return res
+
+
+def print_cb_envelope(res: dict) -> None:
+    print(f"\n  the hook's envelope (cb 39% of the marginal token x the prebind line's 1.01 pass-through)")
+    print(f"    cb {res['cb_ms']:.2f} ms = barrier {res['barrier_ms']:.2f} ({CB_BARRIER_MS_PER_LAYER} "
+          f"ms/layer x {res['n_layers']}) + removable {res['removable_ms']:.2f} "
+          f"({100 * res['removable_share']:.0f}% of cb); dstep = "
+          f"(1+{CB_PASS_THROUGH}) * removable * f_clean(q), f_clean from PREBIND's own r^U")
+    if res["q"] is not None:
+        print(f"    at q={res['q']:.4f}: f_clean={res['f_clean']:.4f} -> dstep {res['dstep_ms']:.1f} ms "
+              f"({res['step_ms']:.1f} -> {res['step_ms'] - res['dstep_ms']:.1f} ms) = "
+              f"{res['tps_at_q']:.2f} t/s, +{res['speedup_at_q']:.1f}%")
+    print(f"    CEILING at q=1 (every union resident): dstep {res['ceiling_ms']:.1f} ms "
+          f"({res['step_ms']:.1f} -> {res['ceiling_step_ms']:.1f} ms) = {res['ceiling_tps']:.2f} t/s, "
+          f"+{res['ceiling_speedup_pct']:.1f}% -- no q, no width and no accuracy can go past this")
+    if "claim" in res:
+        c = res["claim"]
+        print(f"    claim +{c['claimed_pct']:.1f}% needs dstep {c['needs_dstep_ms']:.1f} ms vs ceiling "
+              f"{res['ceiling_ms']:.1f} ms -> "
+              + ("FITS" if c["fits"] else
+                 f"DOES NOT FIT ({c['ratio_vs_ceiling']:.2f}x the envelope: something other than cb "
+                 f"is carrying part of it, or cb/f_clean are larger than measured)"))
 
 
 def k_econ_accept(res: dict, kmax: int = K_ECON_KMAX, alphas=K_ECON_ALPHAS) -> tuple:
@@ -1873,6 +2126,33 @@ def selftest() -> int:
         check("k-econ: no fit => the accept model refuses instead of inventing F and m",
               k_econ_accept({"fit": None, "arms": []}), (None, "no fit (needs >= 2 arms on one build)"))
 
+        # ── the hook's envelope: joining this file's cb carrier to the prebind line's coverage
+        env = cb_envelope(39.3, 40, q=0.7257)
+        check("cb-envelope: the barrier is the measured per-layer part, not a free parameter",
+              (round(env["barrier_ms"], 2), round(env["removable_ms"], 2)), (18.40, 20.90))
+        check("cb-envelope: the pass-through is what makes it worth ~2x its own share",
+              round(env["ceiling_ms"], 2), round((1 + CB_PASS_THROUGH) * env["removable_ms"], 2))
+        check("cb-envelope: f_clean runs from p_res0^U to 1, and is monotone",
+              (round(cb_f_clean(0.0), 6), round(cb_f_clean(1.0), 6),
+               cb_f_clean(0.5) < cb_f_clean(0.6)),
+              (round(CB_P_RES0 ** CB_U, 6), 1.0, True))
+        # both directions, or the check is decoration: one claim under the ceiling, one over it
+        inside = cb_envelope(42.04, 40, claim=27.8)
+        outside = cb_envelope(20.0, 40, claim=27.8)
+        check("cb-envelope: a claim inside the envelope passes and one above it does not",
+              (inside["claim"]["fits"], outside["claim"]["fits"]), (True, False))
+        # cb below the barrier: no removable part, and no negative or inf anywhere
+        thin = cb_envelope(10.0, 40, q=0.9)
+        check("cb-envelope: a cb at or under the barrier has an empty envelope (no negative gain)",
+              (thin["removable_ms"], thin["ceiling_ms"], round(thin["ceiling_tps"], 2)),
+              (0.0, 0.0, 12.57))
+        # the wire case: their own +27.8% at their own cb caliber sits inside the ceiling, but their
+        # own measured q only buys f_clean 0.60 -- so the claim needs 0.84. That gap is the finding.
+        wire = cb_envelope(42.04, 40, q=0.7257, claim=27.8)
+        check("cb-envelope: the prebind claim fits the ceiling yet exceeds what its q supports",
+              (wire["claim"]["fits"],
+               round(wire["claim"]["needs_dstep_ms"] / wire["dstep_ms"], 2)), (True, 1.4))
+
         # ── NSM: the design matrix has to recover costs it was not told, and the rows have to sum
         #    back to the span the same log reports (that closure is the point of the read).
         def nsm_log(name, costs, specs, bogus=0, off=0, jitter=0.0, solo=()):
@@ -1998,6 +2278,59 @@ def selftest() -> int:
         nf, whyf = nsm_attribution(few / "nsm_few.stderr.log")
         check("nsm: too few NSM steps is refused, and names the flag",
               (nf, "CGC_GPU_NODES=1" in (whyf or "")), (None, True))
+
+        # ── the device split: the buffer durations have to close against the host wait, the node
+        #    index has to be a position, and a solo cost that shrinks with width has to be NAMED.
+        def dev_log(name, widths, per_token_ns: dict, solo_ns=lambda w: {}, bogus=False, wait_x=1.0):
+            d = tmp / name
+            d.mkdir()
+            out = []
+            for i, w in enumerate(widths, start=1):
+                gpu = 0
+                for reg, ns in sorted(per_token_ns.items()):
+                    dur = int(w * ns)
+                    gpu += dur
+                    out.append(f"CGC-NSM a={reg} b={reg + 5} dur_ns={dur} nk=1 op{reg}:1\n")
+                for k, ns in sorted(solo_ns(w).items()):
+                    dur = int(ns)
+                    gpu += dur
+                    out.append(f"CGC-NSM a=90 b=91 dur_ns={dur} nk=1 {k}:1\n")
+                if bogus:
+                    out.append("CGC-NSM a=0 b=1 dur_ns=77100000000000 nk=1 moe:1\n")
+                out.append(f"CGC-DECPROF: step={i} segs=41 layers=40 total={gpu / 1e6 + 10:.2f} ms | "
+                           f"wait={gpu / 1e6 * wait_x:.2f} (90%) cb=2.00 (5%) submit=1.00 (2%) "
+                           f"ntok={w} | layer gpu_sum=1.00 union_sum=1.00 gap_sum=0.10 ms\n")
+            (d / f"{name}.stderr.log").write_text("".join(out))
+            return d / f"{name}.stderr.log"
+
+        reg = {0: 3_000_000, 40: 1_000_000}                       # ns per token, per region
+        dl = dev_log("dev_2_4", [2] * 6 + [4] * 6, reg, lambda w: {"ffn_moe_topk": 5_000_000})
+        dv, whyv = device_split([dl])
+        check("device: the split closes against the host wait window",
+              (whyv, round(dv["widths"][4]["ratio"], 3)), (None, 1.0))
+        check("device: the per-token marginal comes back per region",
+              (round(dv["marg"]["device"], 4), round(dv["marg"]["regions"][0], 4),
+               round(dv["marg"]["regions"][40], 4)), (4.0, 3.0, 1.0))
+        check("device: a per-step solo kind reads at both widths and is NOT flagged",
+              (round(dv["solo"][2]["ffn_moe_topk"], 3), round(dv["solo"][4]["ffn_moe_topk"], 3),
+               dv["flags"]), (5.0, 5.0, []))
+        # the artifact the real capture produced: the biggest model-free member SHRINKS with width
+        dsp = dev_log("dev_span", [2] * 6 + [4] * 6, reg,
+                      lambda w: {"ffn_moe_topk": 15_450_000 if w == 2 else 10_970_000})
+        dsv, _ = device_split([dsp])
+        check("device: a solo cost that shrinks with tokens is flagged by name",
+              (len(dsv["flags"]), "ffn_moe_topk" in dsv["flags"][0]), (1, True))
+        # a buffer longer than its own step is dropped and counted, and must not move the regions
+        dbg = dev_log("dev_bogus", [4] * 6, reg, lambda w: {}, bogus=True)
+        dbv, _ = device_split([dbg])
+        check("device: an impossible buffer is dropped per step and counted",
+              (dbv["dropped"], round(dbv["widths"][4]["dur"], 3)), (6, 16.0))
+        # a wait window that does not contain the device sum refuses the device rows, not the host's
+        dbad = dev_log("dev_badclose", [2] * 6 + [4] * 6, reg, lambda w: {}, wait_x=4.0)
+        dbadv, _ = device_split([dbad])
+        check("device: a bad closure refuses the device rows and keeps the host channels",
+              (bool(dbadv["widths"][4].get("refused")), dbadv["marg"],
+               round(dbadv["widths"][4]["total"], 1)), (True, None, 26.0))
     print(f"selftest: {'PASS' if bad == 0 else f'{bad} FAILED'}")
     return 0 if bad == 0 else 1
 
@@ -2049,10 +2382,43 @@ def main() -> int:
                          "CGC_DECODE_PROFILE=1 (+ CGC_GPU_TIMING=1 for the span itself)")
     ap.add_argument("--target-ms", type=float, default=40.0,
                     help="the delivered ms/token the budget is checked against (default 40 = 25 t/s)")
+    ap.add_argument("--cb-envelope", action="store_true",
+                    help="max what slot pre-binding can buy: (1+pass-through)*(cb-barrier)*f_clean(q), "
+                         "with f_clean from the prebind line's own r^U -- and whether a claimed gain "
+                         "fits under it")
+    ap.add_argument("--cb-ms", type=float, default=39.3,
+                    help="hook time per steady verify step (prebind_ev's CB_MS; the 42.04 caliber is "
+                         "their D_CB, 74.18 the 5 s window)")
+    ap.add_argument("--cb-layers", type=int, default=40, help="layers with a hook (routable)")
+    ap.add_argument("--cb-q", type=float, default=0.7257,
+                    help="their measured coverage of the non-resident part (qu3; qu1 0.5887, qu2 0.6901)")
+    ap.add_argument("--cb-step", type=float, default=183.5, help="steady verify step, ms")
+    ap.add_argument("--cb-tps", type=float, default=12.57, help="the anchor t/s that step delivers")
+    ap.add_argument("--cb-claim", type=float, default=None,
+                    help="a claimed speedup in %% to check against the envelope")
+    ap.add_argument("--device-split", default="",
+                    help="where the step's wall time goes: the device's share of it and its split by the "
+                         "graph's own node index (comma-separated logs = several launches). Needs "
+                         "CGC_GPU_NODES=1 + CGC_GPU_NODES_MATRIX=1 + CGC_DECODE_PROFILE=1 and, for a "
+                         "fine split, CGC_CB_N_MAIN=1 + a large CGC_N_CB (~1 node per buffer)")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
     if args.selftest:
         return selftest()
+
+    if args.cb_envelope:
+        print_cb_envelope(cb_envelope(args.cb_ms, args.cb_layers, q=args.cb_q, step_ms=args.cb_step,
+                                      anchor_tps=args.cb_tps, claim=args.cb_claim))
+        return 0
+
+    if args.device_split:
+        dlogs = [Path(p) for p in args.device_split.split(",") if p.strip()]
+        res, why = device_split(dlogs, args.phase or None)
+        if res is None:
+            print(f"device split not available: {why}")
+            return 1
+        print_device_split(res, dlogs)
+        return 0
 
     if args.node_attr:
         res, why = node_attribution(Path(args.node_attr))
