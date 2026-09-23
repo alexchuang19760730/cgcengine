@@ -103,6 +103,21 @@ SERVER_MTP_CLI_PARITY="${CGC_SERVER_MTP_CLI_PARITY:-0}"  # opt-in: mirror specul
 # tradeoff -- leaving them off was paying for the bug.
 SERVER_MTP_NO_WARMUP="${CGC_SERVER_MTP_NO_WARMUP:-1}"    # pass-through: skip CLI-style manual warmup
 SERVER_NO_SEQ_RM_PROBE="${CGC_SERVER_NO_SEQ_RM_PROBE:-1}" # pass-through: skip seq_rm probe explicitly
+# [CGC 2026-09-23] Which seq_rm_type the trunk claims. It reads like a label; it is a claim about the
+# memory, and the claim decides whether context checkpoints exist -- and therefore whether the prompt
+# cache can be used at all. PART (what the probe-skip branch used to hardcode) says "seq_rm can put
+# this trunk back at an arbitrary prefix", which a recurrent (hybrid GDN) trunk cannot honour, so
+# update_slots finds no checkpoint, resets n_past = 0 and re-prefills the whole prompt: measured on
+# prod25, 208/208 prompt tokens (~18 s) on EVERY request, with the cache enabled, holding a perfect
+# match (f_sim = 1.000) and unable to use it (docs/T5_INTRA_NP_CONCURRENCY_2026-09-23.md 6b).
+# The engine now answers that question from metadata (llama_n_rs_seq > 0 -> RS) in the probe-skip
+# branch; this pass-through exists so the wrong answer can be forced back for an A/B on one binary.
+SERVER_SEQ_RM_TYPE="${CGC_SERVER_SEQ_RM_TYPE:-}"   # pass-through: PART|RS|FULL|NO (empty = engine decides)
+# [CGC 2026-09-23] The reuse half, separated from the claim above. seq_rm_type decides the speculative
+# rollback route, and reading it differently cost M1 (1/9 in the MTP-on regime, 6d) -- so it stays at
+# the CLI-parity value, while checkpoint creation -- the only thing prefix reuse needs -- is turned on
+# here instead. Creation is a snapshot taken before llama_decode, which is why the two can be separated.
+SERVER_PREFIX_REUSE_CKPT="${CGC_SERVER_PREFIX_REUSE_CKPT:-}"  # pass-through: 1 = create context checkpoints (prompt-cache reuse)
 SERVER_N_CB="${CGC_SERVER_N_CB:-8}"  # §8.93: cb8 sweet spot
 SERVER_GLU_FUSED_DOWN="${CGC_SERVER_GLU_FUSED_DOWN:-1}"  # §8.113: +6.5% speed
 SERVER_WATCHDOG="${CGC_SERVER_WATCHDOG:-1}"  # Metal deadlock watchdog
@@ -866,6 +881,20 @@ FREE_PCT="${FREE_PCT:-0}"
 OTHER_LLAMA_SERVERS="$(cgc_existing_llama_server_count)"
 MEM_CLASS="$(cgc_memory_guard_class)"
 read -r MEM_REQ_PHYS_GB MEM_REQ_FREE_PCT MEM_REQ_OTHER <<< "$(cgc_memory_guard_req "$MEM_CLASS")"
+
+# [CGC parallel bypass 2026-09-23] Allow two 4GB-cache servers to run in parallel.
+# Only when: (1) CGC_PARALLEL_BYPASS=1 is explicitly set, AND (2) cache budget <= 4.5 GB.
+# If bypass is on but cache is too big, warn and keep the original gate.
+if [ "${CGC_PARALLEL_BYPASS:-0}" = "1" ]; then
+    CACHE_BUDGET_GB=$((BUDGET / 1073741824))
+    if [ "$CACHE_BUDGET_GB" -le 4 ]; then
+        MEM_REQ_OTHER=1
+        echo "[guard] parallel_bypass=on (4GB cache) -> req_other overridden to 1"
+    else
+        echo "[guard] parallel_bypass=on but cache=${CACHE_BUDGET_GB}GB > 4GB -> bypass disabled, keep req_other=0"
+    fi
+fi
+
 if [ "$PHYS_MEM_GB" -lt "$MEM_REQ_PHYS_GB" ] || [ "$FREE_PCT" -lt "$MEM_REQ_FREE_PCT" ] || [ "$OTHER_LLAMA_SERVERS" -gt "$MEM_REQ_OTHER" ] && [ "$DUMP_ONLY" = "0" ]; then
     MEM_REASON="$(cgc_memory_guard_reason "$MEM_CLASS" "$PHYS_MEM_GB" "$FREE_PCT" "$OTHER_LLAMA_SERVERS" "$MEM_REQ_PHYS_GB" "$MEM_REQ_FREE_PCT" "$MEM_REQ_OTHER")"
     if [ "$SERVER_MEMORY_MODE" = "prod" ] && [ "$MEM_CLASS" = "full-mtp" ]; then
@@ -873,6 +902,10 @@ if [ "$PHYS_MEM_GB" -lt "$MEM_REQ_PHYS_GB" ] || [ "$FREE_PCT" -lt "$MEM_REQ_FREE
         cgc_apply_prod_memory_fallback
         MEM_CLASS="$(cgc_memory_guard_class)"
         read -r MEM_REQ_PHYS_GB MEM_REQ_FREE_PCT MEM_REQ_OTHER <<< "$(cgc_memory_guard_req "$MEM_CLASS")"
+        # Re-apply parallel bypass after fallback
+        if [ "${CGC_PARALLEL_BYPASS:-0}" = "1" ] && [ "$CACHE_BUDGET_GB" -le 4 ]; then
+            MEM_REQ_OTHER=1
+        fi
     else
         echo "error: startup blocked by memory guard -> $MEM_REASON" >&2
         echo "hint: dev 線請先停掉其他 llama-server / 釋放記憶體；prod 線可設 CGC_SERVER_MEMORY_MODE=prod 走自動降級。" >&2
@@ -1280,6 +1313,14 @@ fi
 if [ "$SERVER_SKIP_CHAT_PARSING" = "1" ]; then
     SERVER_ARGS+=(--skip-chat-parsing)
 fi
+# [CGC 2026-09-23] Server log verbosity (arg.cpp:3811; 4 = TRACE). The prefix-reuse decision lives
+# entirely at TRACE: `prompt cache is enabled`, `updating prompt cache`, and server_task.cpp:1872's
+# `- looking for better prompt, base f_keep = … / - prompt with length … lcp = …`. At the default
+# threshold all of it is invisible, which is how a per-request 21 s prefill tax survived this long
+# with every log looking normal. Not exposed before because nothing needed it.
+if [ -n "${CGC_SERVER_LOG_VERBOSITY:-}" ]; then
+    SERVER_ARGS+=(--log-verbosity "$CGC_SERVER_LOG_VERBOSITY")
+fi
 # [CGC IQ3_XXS Sampling] Optimized for low-bit quantization quality
 # temp 0.4 + top_p 0.8 是 06:52 生產基線 (26.25 t/s, 98.2% draft_accept) 的配置
 # 可通過 CGC_SERVER_TEMP / CGC_SERVER_TOP_P 覆蓋
@@ -1388,8 +1429,19 @@ SERVER_ENV=(
 # It matters now because it is the cheapest probe of RESIDENCY CHURN, which is what decides D3's
 # premise B (publication off the hot path): a slot table whose entries move every step has to be
 # republished every step, and then the segment boundary keeps its reason to exist.
+# [CGC 2026-09-23] CGC_PHASE_DBG added: llama-context.cpp:6323 prints one line per layer (il<=1)
+# with the phase it resolved AND the n_tokens that graph carries ("CGC-PHASE-DBG: il=… phase=…
+# n_past=… n_tokens=…"). That is the only census of the VERIFY batch width -- the MMID assert
+# lines only fire on anomalies (2 of them per run), so they say a 4-token batch existed but not how
+# often. It existed in the engine but was not reachable through this launcher, which is the same
+# inert-knob trap the CGC_MMV_FUSE note above records.
+# [CGC 2026-09-23] CGC_SEQ_RM_TYPE added: the explicit seq_rm_type override in server-context.cpp.
+# Unlike the knobs above it is not a telemetry gate but a decision -- it chooses between the
+# checkpoint-backed reuse path and `forcing full prompt re-processing` (see the pass-through note at
+# the top of this script). It belongs here as well as in the MTP block because it must also be
+# settable for the MTP=0 arms, where the whole MTP env block does not run.
 for _v in LLAMA_EXPERT_CACHE_NOHOOK LLAMA_EXPERT_CACHE_NOGATHER LLAMA_EXPERT_CACHE_L3_NGL \
-          LLAMA_EXPERT_CACHE_STEP_DBG \
+          LLAMA_EXPERT_CACHE_STEP_DBG CGC_PHASE_DBG CGC_SEQ_RM_TYPE CGC_PREFIX_REUSE_CKPT \
           CGC_S1_OUT_CAP CGC_S1_OUT_LAYERS CGC_S1_TABLE_CHURN CGC_S1_CLAMP_ABORT \
           CGC_LOGITS_ORACLE_TOPN CGC_LOGITS_ORACLE_FIRST_N; do
     if [ -n "${!_v:-}" ]; then
@@ -1597,6 +1649,20 @@ fi
 # so raising it interacts with the pool size and must be visible to the launcher.
 if [ -n "${CGC_POOL_MAX_TOKENS:-}" ]; then
     SERVER_ENV+=(CGC_POOL_MAX_TOKENS="$CGC_POOL_MAX_TOKENS")
+fi
+# [CGC 2026-09-22 shape knob] The shape table's own width alias (`CGC_SHAPE_M`, read by
+# llama-shape-knob.cpp) and the row tag the search harness stamps into every `CGC-SHAPE` line, so
+# a row can be attributed to an arm even when two arms share one stderr stream. Same allowlist rule
+# as every other CGC_*: unlisted means SILENTLY DROPPED, which is indistinguishable from "the knob
+# was tried and had no effect" -- the exact failure shape this section exists to prevent.
+if [ -n "${CGC_SHAPE_M:-}" ]; then
+    SERVER_ENV+=(CGC_SHAPE_M="$CGC_SHAPE_M")
+fi
+if [ -n "${CGC_SHAPE_TAG:-}" ]; then
+    SERVER_ENV+=(CGC_SHAPE_TAG="$CGC_SHAPE_TAG")
+fi
+if [ -n "${CGC_SHAPE_GDN_CH:-}" ]; then
+    SERVER_ENV+=(CGC_SHAPE_GDN_CH="$CGC_SHAPE_GDN_CH")
 fi
 # CGC M1 work item 1 (C++ default OFF): keep the expert tensors at FULL WIDTH and give the pool its
 # own Metal allocation, which is what decouples the batch width from the pool size. Needs a load mode
@@ -2180,6 +2246,23 @@ if [ "$SERVER_MTP" = "1" ]; then
     if [ -n "${CGC_MTP_PERF:-}" ]; then
         SERVER_ENV+=(CGC_MTP_PERF="$CGC_MTP_PERF")
     fi
+    # [CGC 2026-09-23 P0-2] MTP draft-prefetch: the draft ctx snapshots its first token's top-8
+    # per-layer ids (llama-context.cpp:5407) and the verify ctx loads them at il==1 (:5611). It was
+    # INERT until now -- absent from this allowlist, so `CGC_DRAFT_PREFETCH=1` produced a resolved
+    # env byte-identical to the reference arm, and an A/B through this launcher would have read
+    # "no effect" that was really "no knob" (the same trap the MMV_FUSE note above records).
+    # Presence trap, like VERIFY_DECODE: the engine tests `getenv() != nullptr && [0] != NUL`, so
+    # "0" is ON. Translate 0 -> not passed, so off means off.
+    # SYNC loads in the decode thread (blocks, but is the safe one under MTP+OA_ASYNC); the engine
+    # value-tests it (== '1'), so it is only forwarded as 1.
+    if [ "${CGC_DRAFT_PREFETCH:-}" = "0" ]; then
+        : # explicit off: leave the variable unset
+    elif [ -n "${CGC_DRAFT_PREFETCH:-}" ]; then
+        SERVER_ENV+=(CGC_DRAFT_PREFETCH="$CGC_DRAFT_PREFETCH")
+        if [ "${CGC_DRAFT_PREFETCH_SYNC:-}" = "1" ]; then
+            SERVER_ENV+=(CGC_DRAFT_PREFETCH_SYNC=1)
+        fi
+    fi
     # [CGC M4 rejection sampling 2026-09-17] The accept rule for the MTP verify step. OFF by
     # default, and that default matters: with the greedy/gate configuration the draft and target
     # distributions are one-hot at the same token, so min(1, p_t/q) is 1 or 0 and the rule
@@ -2200,6 +2283,15 @@ if [ "$SERVER_MTP" = "1" ]; then
     fi
     if [ "$SERVER_NO_SEQ_RM_PROBE" = "1" ]; then
         SERVER_ENV+=(CGC_NO_SEQ_RM_PROBE=1)
+    fi
+    # Only when the direct name is unset, so the allowlist-loop route stays the winner and there is
+    # never a second entry for the same variable in SERVER_ENV (which would make precedence depend on
+    # block order in this file -- the kind of accident this section keeps documenting).
+    if [ -n "$SERVER_SEQ_RM_TYPE" ] && [ -z "${CGC_SEQ_RM_TYPE+x}" ]; then
+        SERVER_ENV+=(CGC_SEQ_RM_TYPE="$SERVER_SEQ_RM_TYPE")
+    fi
+    if [ "$SERVER_PREFIX_REUSE_CKPT" = "1" ]; then
+        SERVER_ENV+=(CGC_PREFIX_REUSE_CKPT=1)
     fi
 fi
 # [CGC 2026-09-17] LAYER_CAPS must NOT be gated on the MTP profile. It sizes EVERY layer's pool

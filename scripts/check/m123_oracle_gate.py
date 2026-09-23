@@ -316,8 +316,18 @@ def engine_digest() -> dict:
     digest in the summary, a flip is build identity, not a mystery.
     """
     out = {}
+    # libllama-server-impl.dylib belongs here for the same reason as the rest: it is where the
+    # server's own logic lives, and `llama-server` is a ~50 KB launcher whose md5 does NOT move when
+    # that logic changes. Found by measurement on 2026-09-23: three runs with different
+    # server-context.cpp behaviour (6c/6e, four arms) all recorded llama-server=054fb22f04a01c5c, so
+    # the summaries could not have told them apart -- the exact failure mode this function's docstring
+    # describes. The decode-window harness's own digest() already includes it; this one did not.
+    # (Spelled without the audit module's filename on purpose -- and the same for the harness's: the
+    # shared window probe's audit decides "is this launcher gated?" by TEXT search for those names,
+    # so naming one here reports this file as newly gated and invites the ungated baseline to be
+    # lowered on a phantom. It did, twice, before this sentence was rewritten.)
     for name in ("libllama.0.0.279.dylib", "libggml-metal.0.19.0.dylib",
-                 "libggml-base.0.19.0.dylib", "llama-server"):
+                 "libggml-base.0.19.0.dylib", "libllama-server-impl.dylib", "llama-server"):
         p = ROOT / "src" / "llama.cpp" / "build" / "bin" / name
         if not p.exists():
             continue

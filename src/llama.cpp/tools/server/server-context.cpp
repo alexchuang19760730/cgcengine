@@ -974,6 +974,13 @@ private:
     common_context_seq_rm_type ctx_tgt_seq_rm_type = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
     common_context_seq_rm_type ctx_dft_seq_rm_type = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
 
+    // [CGC prefix-reuse] Create the context checkpoints the prompt cache restores from, WITHOUT
+    // changing the seq_rm_type claim above. The two look like one decision and are two: reuse only
+    // needs a checkpoint to exist (:3699), while the speculative rollback route is chosen separately
+    // (:3253/:4183). Set from CGC_PREFIX_REUSE_CKPT in load_model(); read here because the two sites
+    // are in different member functions.
+    bool cgc_prefix_reuse_ckpt = false;
+
     common_speculative_ptr spec;
 
     bool add_bos_token = true;
@@ -1387,12 +1394,34 @@ private:
 
         slots.clear();
 
+        // [CGC prefix-reuse] seq_rm_type is a claim about the memory ("seq_rm can put this trunk back
+        // at an arbitrary prefix"), and the branch below hard-codes PART when the probe is skipped
+        // (the prod25 default). A recurrent (hybrid GDN) trunk cannot honour PART, so update_slots takes
+        // the checkpoint path, finds no checkpoint (:3699 is false for PART with n_swa == 0), resets
+        // n_past = 0 and re-prefills the whole prompt: measured on prod25, 208/208 prompt tokens (~19 s)
+        // on every request, with the prompt cache enabled and holding a perfect match (f_sim = 1.000).
+        // Trace: docs/T5_INTRA_NP_CONCURRENCY_2026-09-23.md 6b.
+        //
+        // The obvious repair -- answer the type from metadata (llama_n_rs_seq > 0 -> RS, which is what
+        // the probe itself would return, and needs no decode) -- does enable reuse, but it ALSO changes
+        // which route the speculative rollback takes (:3253/:4183 test
+        // `FULL || (RS && draft.size() > n_rs_seq)`), and that is visible in the logits: M1 1/9 in the
+        // MTP-on regime, while the same build reproduces its own dump 9/9 either way (6d). A default
+        // that quietly costs M1 is the same class of defect as the bug it repairs.
+        //
+        // So the claim stays exactly what the reference was dumped under (PART), and the thing reuse
+        // actually needs -- checkpoints existing -- is enabled independently at :3699 by
+        // CGC_PREFIX_REUSE_CKPT. That way the rollback route is untouched and the reuse is what has to
+        // prove itself M1-neutral.
+        cgc_prefix_reuse_ckpt = getenv("CGC_PREFIX_REUSE_CKPT") != nullptr;
+
         if (cgc_no_seq_rm_probe) {
             ctx_tgt_seq_rm_type = COMMON_CONTEXT_SEQ_RM_TYPE_PART;
             if (ctx_dft) {
                 ctx_dft_seq_rm_type = COMMON_CONTEXT_SEQ_RM_TYPE_PART;
             }
-            SRV_INF("%s", "skipping seq_rm probe (CLI parity / explicit override)\n");
+            SRV_INF("skipping seq_rm probe (CLI parity / explicit override)%s\n",
+                    cgc_prefix_reuse_ckpt ? " - prefix reuse enabled by context checkpoints (CGC_PREFIX_REUSE_CKPT)" : "");
         } else {
             ctx_tgt_seq_rm_type = common_context_can_seq_rm(ctx_tgt);
             if (ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_NO) {
@@ -1424,6 +1453,30 @@ private:
 
         if (!cgc_no_seq_rm_probe && ctx_dft) {
             ctx_dft_seq_rm_type = common_context_can_seq_rm(ctx_dft);
+        }
+
+        // Explicit override, last word, on both contexts: this is the only way to compare the three
+        // answers (probe / metadata / forced) on one binary. A wrong *value* is what cost 21 s per
+        // request for the whole of prod25, so an unrecognised one is loud rather than ignored.
+        if (const char * seq_rm_env = getenv("CGC_SEQ_RM_TYPE")) {
+            const std::string v = seq_rm_env;
+            common_context_seq_rm_type forced;
+            bool ok = true;
+                 if (v == "PART") { forced = COMMON_CONTEXT_SEQ_RM_TYPE_PART; }
+            else if (v == "RS")   { forced = COMMON_CONTEXT_SEQ_RM_TYPE_RS;   }
+            else if (v == "FULL") { forced = COMMON_CONTEXT_SEQ_RM_TYPE_FULL; }
+            else if (v == "NO")   { forced = COMMON_CONTEXT_SEQ_RM_TYPE_NO;   }
+            else                  { ok = false; forced = COMMON_CONTEXT_SEQ_RM_TYPE_PART; }
+
+            if (!ok) {
+                SRV_ERR("'%s' is not one of PART|RS|FULL|NO - CGC_SEQ_RM_TYPE ignored\n", v.c_str());
+            } else {
+                ctx_tgt_seq_rm_type = forced;
+                if (ctx_dft) {
+                    ctx_dft_seq_rm_type = forced;
+                }
+                SRV_INF("CGC_SEQ_RM_TYPE=%s forces seq_rm_type on trunk%s\n", v.c_str(), ctx_dft ? " and draft" : "");
+            }
         }
 
         if (spec) {
@@ -3648,10 +3701,33 @@ private:
                     // - the model does not support partial sequence removal
                     // - the model uses SWA (and we are not using `swa_full`)
                     // - the model supports partial sequence removal but only up to a fixed bound
+                    // - [CGC prefix-reuse] or the prompt cache is expected to restore from one: a
+                    //   recurrent trunk cannot be repositioned by seq_rm, so without a checkpoint every
+                    //   reuse attempt ends in `forcing full prompt re-processing`. Creation itself is a
+                    //   read-only snapshot taken before llama_decode (see :3754), which is why it can be
+                    //   enabled without touching the rollback route above.
                     do_checkpoint = do_checkpoint && (
                             ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL ||
                             ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS ||
-                            n_swa > 0);
+                            n_swa > 0 ||
+                            cgc_prefix_reuse_ckpt);
+
+                    // [CGC prefix-reuse] Creating a checkpoint and *where the prefill is split* are two
+                    // behaviours that upstream ties together, and the tie is what breaks M1. The two
+                    // breaks below (at a user-message start, and at `4 + n_ubatch` / `4` tokens before
+                    // the end) exist to manufacture a batch boundary to checkpoint at -- so turning
+                    // checkpoints on changes the chunking, hence the reduction order, hence the logits
+                    // (measured: M1 1/9, and the dump is byte-identical to the one produced when the
+                    // cause was instead the seq_rm_type claim, which is how the rollback route was
+                    // cleared of involvement -- docs/T5_INTRA_NP_CONCURRENCY_2026-09-23.md 6e).
+                    //
+                    // With CGC_PREFIX_REUSE_CKPT the checkpoint is taken at a boundary the chunker
+                    // produces anyway (the last chunk start), so `do_checkpoint` stays true for
+                    // creation while the boundaries stay exactly what they are with the feature off.
+                    // Cost: the restored prefix stops a chunk short of the prompt end (this prompt:
+                    // n_past = 200 instead of 204, i.e. 8 tokens re-evaluated instead of 4) -- a few
+                    // tokens per request against the ~204 that re-prefilling costs.
+                    const bool do_checkpoint_split = do_checkpoint && !cgc_prefix_reuse_ckpt;
 
                     bool has_mtmd = false;
 
@@ -3717,7 +3793,9 @@ private:
                         slot.n_prompt_tokens_processed++;
 
                         // break at the last user message, or at user messages at least min step past the last checkpoint
-                        if (do_checkpoint && spans.is_user_start(slot.prompt.n_tokens())) {
+                        // (do_checkpoint_split, not do_checkpoint: see the note above -- this break moves the
+                        //  chunk boundary, so it must not be conditional on the feature that needs a boundary)
+                        if (do_checkpoint_split && spans.is_user_start(slot.prompt.n_tokens())) {
                             const auto pos = slot.prompt.n_tokens();
                             const auto & checkpoints = slot.prompt.checkpoints;
 
@@ -3731,7 +3809,7 @@ private:
                         //  - 4 + n_ubatch
                         //  - 4
                         // ref: https://github.com/ggml-org/llama.cpp/pull/20288
-                        if (do_checkpoint) {
+                        if (do_checkpoint_split) {
                             static const int checkpoint_offsets[] = {4 + n_ubatch, 4};
 
                             bool should_break = false;
