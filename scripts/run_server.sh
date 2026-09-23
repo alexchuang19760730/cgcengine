@@ -321,6 +321,32 @@ case "$SERVER_PROFILE" in
             SERVER_CHAT_TEMPLATE_FILE=""
         fi
         ;;
+    prod-new)
+        # [CGC 2026-09-23] Prod_New：decode 走 MTP off（同模型實測 13-14 t/s，§EN-473：
+        # MTP off 省掉 draft 鏈 + verify batch 的額外計算，單請求下每 token 73ms vs MTP on 79.6ms），
+        # prefill 走 prefill250 支柱（5632 chunk + slab streaming，prefill 250+）。
+        # decode 支柱來自 prod25（SPAC/OA_ASYNC/bit-identical），prefill 支柱在 case 之後的
+        # if 段覆寫 batch/stream（跟 prefill250 同一個位置，那裡的 SERVER_BATCH 才被定案）。
+        # 顯式 env 永遠贏：全部 ${VAR+x} 守門。
+        #
+        # [CGC 2026-09-23] 單一 profile、MTP 開關：CGC_SERVER_MTP=0（默認）走 decode 支柱
+        # （同模型實測 13-14 t/s）；CGC_SERVER_MTP=1 走 prod25-stream 血統（MTP on +
+        # prefill250 的 stream/slab 支柱，兩者共用 case 之後的 prefill 形狀）。
+        # llama-bench A/B：--arms "prod-new:CGC_SERVER_MTP=1" 即可，不需新 profile。
+        [ -z "${CGC_SERVER_MTP+x}" ]            && SERVER_MTP=0
+        [ -z "${CGC_SERVER_DENSE_IQ4X+x}" ]     && SERVER_DENSE_IQ4X=1
+        [ -z "${CGC_SERVER_OA_ASYNC+x}" ]       && SERVER_OA_ASYNC=1
+        [ -z "${CGC_SPAC+x}" ]                  && CGC_SPAC=1
+        [ -z "${CGC_SPAC_ALPHA+x}" ]            && CGC_SPAC_ALPHA=0.75
+        # bit-identical 支柱（同 prod25；MTP off 下 prefix reuse 是 no-op，保留為顯式一致）
+        [ -z "${CGC_MM_BITIDENT+x}" ]           && CGC_MM_BITIDENT=1
+        [ -z "${CGC_SERVER_NO_SEQ_RM_PROBE+x}" ] && SERVER_NO_SEQ_RM_PROBE=1
+        [ -z "${CGC_SERVER_PREFIX_REUSE_CKPT+x}" ] && SERVER_PREFIX_REUSE_CKPT=1
+        # 走 GGUF embedded ChatML（与 prod25 一致）
+        if [ -z "${CGC_SERVER_CHAT_TEMPLATE_FILE:-}" ] && [ -z "${CGC_SERVER_CHAT_TEMPLATE:-}" ]; then
+            SERVER_CHAT_TEMPLATE_FILE=""
+        fi
+        ;;
     prefill250)
         # [CGC 2026-09-15] 可復現的 prefill 250+ tok/s 口徑（見 docs/PREFILL250_CONFIGURATION_GUIDE_2026-09-15.html
         # 與 264.78 tok/s 的實測：Backup/cgc_logs/llama_server_20260915_011146.log）。
@@ -384,7 +410,7 @@ case "$SERVER_PROFILE" in
         fi
         ;;
     *)
-        echo "error: CGC_SERVER_PROFILE must be off|qa-zh|longform-zh|coding|legacy-25plus|prod25|prefill250 (got $SERVER_PROFILE)" >&2
+        echo "error: CGC_SERVER_PROFILE must be off|qa-zh|longform-zh|coding|legacy-25plus|prod25|prefill250|prod-new (got $SERVER_PROFILE)" >&2
         exit 2
         ;;
 esac
@@ -518,6 +544,20 @@ if [ "$SERVER_PROFILE" = "prod25" ]; then
     [ -z "${CGC_SERVER_EXPERT_CACHE_BYTES+x}" ]  && BUDGET=8589934592
     # batch/ubatch 留空 = 模型預設。6144 的 ubatch 只在 prefill250 有意義。
     [ -z "${CGC_SERVER_MTP_N_MAX+x}" ]           && SPEC_DRAFT_N_MAX=3
+fi
+
+if [ "$SERVER_PROFILE" = "prod-new" ]; then
+    # [CGC 2026-09-23] prefill250 的 prefill 支柱（5632 是測過存活的最大 chunk；6144 OOM 0/5）：
+    # 大 chunk + M2 prefill streaming + 256-expert slab + 8GiB pool + ctx 8192。
+    # decode 支柱在 case 已設（MTP off 走 prod25 支柱）；MTP on 時 n_max 顯式釘 3
+    # （與 prod25 的 if 段同值；prod25 的 if 段只在 prod25 生效，這裡不能依賴它）。
+    [ -z "${CGC_SERVER_MTP_N_MAX+x}" ]  && SPEC_DRAFT_N_MAX=3
+    [ -z "${CGC_SERVER_BATCH+x}" ]      && SERVER_BATCH=5632
+    [ -z "${CGC_SERVER_UBATCH+x}" ]     && SERVER_UBATCH=5632
+    [ -z "${CGC_SERVER_CTX+x}" ]        && CTX=8192
+    [ -z "${CGC_PREFILL_STREAM+x}" ]    && CGC_PREFILL_STREAM=1
+    [ -z "${CGC_GATHER_SLAB_CAP+x}" ]   && CGC_GATHER_SLAB_CAP=256
+    [ -z "${CGC_SERVER_EXPERT_CACHE_BYTES+x}" ] && BUDGET=8589934592
 fi
 
 if [ "$SERVER_PROFILE" = "prefill250" ]; then
