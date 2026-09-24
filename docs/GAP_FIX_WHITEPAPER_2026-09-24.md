@@ -401,6 +401,64 @@ gap_eff = 44.4 × (1 − h) + 10.0 × h
 > ⇒ +4.7%）與 `CGC_RHO_PROBE`（影子節點，probe 用，開啟時 t/s 不可引用）——本塊量的是後者
 > 的 GPU 成本，即「ρ 機制若真正常駐圖上」的價格。
 
+> **✅ 2026-09-24 追加（MTP off step 分解實測 + B 方案復活判定）：prod-new / swap 7631M 髒 /
+> `CGC_DECODE_PROFILE=1` + `CGC_GPU_TIMING=1` / 1 round（12.27 t/s）。**
+>
+> **① MTP off 穩態 step 分解（40 個 ntok=1 step 中位，閉合到 3.4%）：**
+>
+> | 通道 | ms/step | 佔比 |
+> |---|---:|---:|
+> | wait（CPU 空等 GPU） | 66.3 | 85% |
+> | cb（填池） | 6.1 | 8% |
+> | submit（派送） | 4.2 | 5% |
+> | — union（GPU 真算） | 64.2 | 81% |
+> | — gap（GPU 空轉） | 18.6 | 24% |
+>
+> 閉合：wait+cb+submit = 76.5 ≈ 79.2；union+gap = 82.8 ≈ 79.2；等效 12.6 t/s ≈ bench 12.27。
+> 三個結論：
+> 1. **CPU/GPU 反相實錘**：wait 66.3 ≈ union 64.2（CPU 零提前量，完全同步等 GPU）；
+>    gap 18.6 > CPU 段間工作（cb+submit = 10.3）⇒ 未歸因 ~8.3ms = 41 段 × ~0.2ms/段
+>    （Metal command buffer 啟動固定開銷；MTP on 截距 10.1ms/41 段 = 0.25 同量級）。
+> 2. **cb 不在 MTP off 關鍵路徑**（8%，6.1ms）——修正 ρ insert B 臂的暗示：ntok=1 每步只
+>    union 8 experts、miss 極少；cb 大頭在 prefill（ntok=182/22 時 71-84%，首次填池）。
+>    swap 髒環境下 cb 穩態仍 8% ⇒ 「swap 讓 cb 放大」不成立（decode 穩態）。
+> 3. **重疊上界 = 15.6 t/s（+24%）**：step → max(10.3, 64.2) ≈ 66ms（union 硬地板，儀器給的界）。
+>
+> **② B 方案（slot 間接化）復活——讀碼可行性判定（0 GPU）：**
+>
+> - **前提 1（miss≈0 時 fill 完全繞過）✅ 成立**：`ensure_slot` 命中且非 inflight → 查表
+>   return，零 IO（llama-expert-cache.cpp:963-975）；cb 的 99.4% 是 ensure（pread）
+>   ⇒ miss→0 時 cb → ~0.03ms。**8GiB pool 裝得下全常駐**：143 slots/層 × 40 層 × 1.07MiB
+>   = 6.1GiB ≤ 8GiB（需 LAYER_CAPS 容量修正，已在樹上）。
+> - **前提 2（kernel 邊界）比預期便宜**：src0 **已是** pool 視圖（hook 註釋：「layer-N expert
+>   tensors are shrunk to the bounded pool capacity and the graph repoints them at the pool
+>   regions」）；ids **已是** slot 空間（remap leaf `cache_remap_tensors[il]` 寫 `st[e]`，
+>   llama-context.cpp:6193-6198；kernel `ne02=143`）⇒ B 的一半已在樹上。
+> - **41 段由來**（ggml-backend.cpp:1773-1820）：段邊界 = `ffn_moe_argsort-`（每層 top-k），
+>   `n_segs = n_as_found + 1`。串行 submit 是 **remap race 防護**：segment[i+1] 的 mul_mat_id
+>   引用 remap buffer，GPU 可能先讀 ⇒ DEFAULT = wait 段完成 → hook 寫 remap → submit 下一段
+>   （`CGC_SUBMIT_AHEAD=1` racy 診斷已測過會 divergence）。
+> - **關鍵洞察**：remap（expert→slot 對映）在 step 之間基本不變（slot_table 只在 miss/evict
+>   時變，不依賴本段 argsort 結果）⇒ 對映表可**在 segment[0] 提交前批量寫好**（40 層 × 256
+>   × 4B ≈ 40KB），不必逐層等 argsort。
+> - **增量三件（難點排序：miss 旁路 > dispatch 去串行 > kernel 對映表）**：
+>   ① kernel（`ggml-metal-ops.cpp` `MUL_MAT_ID` 提交）：加 slot 對映表 buffer，ids 收 expert
+>   id → GPU 查表 → 索引 pool src0（唯一必要的 kernel 改動）；
+>   ② dispatch（`ggml-backend.cpp:1773-1900`）：`n_segs` 改 1 段（或按 miss 動態分段），去掉
+>   wait→hook→submit 串行；
+>   ③ hook（`llama-context.cpp` `expert_cache_on_topk`）：step 前批量寫對映表 + 層 miss 時
+>   並行 fill/更新對映表 + 不再阻塞提交；未就緒條目需 fallback（該層退回分段或 GPU 等 signal）。
+> - **收益（MTP off 實測基）**：消除層間 hook 串行 + gap 18.6 ⇒ step 79.2 → ~64-66
+>   ⇒ **15-15.6 t/s（+19-24%）**——逼近重疊上界，唯一能到的路。
+> - **風險**：miss 旁路（成敗點——設計不好把 CPU 放回關鍵路徑）；bit-exact（改 ids 語義 →
+>   M1/M2/M3 重基；對映表雙射時數值應相同，屬「重基」非「新數值」）；Metal 一次提交 40 層的
+>   encoder 連續編碼/command buffer 上限。
+> - **前置驗證**（實作前，0 重建）：miss 分佈（每 step 哪些層 miss——決定旁路設計）+
+>   routing 穩定性（prev_token 87% 已有）。
+>
+> 資產：`/tmp/mtpoff_steps.py`（runner）、`/tmp/mtpoff_steps.server.log`（step 行原始檔）、
+> server log `Backup/cgc_logs/llama_server_20260924_103835.log`。
+
 ---
 
 ## 11. 來源表
