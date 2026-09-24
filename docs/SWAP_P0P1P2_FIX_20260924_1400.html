@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>P0／P1／P2 專家權重雙駐留修復（swap-miss 結構解）2026-09-24</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --purple:#7c3aed; --purple-bg:#f5f3ff;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1040px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  h4{font-size:14.5px;margin:20px 0 6px;color:#374151}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .box ul,.box ol{margin:6px 0 6px 20px}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  .b-pur{background:var(--purple-bg);border-color:#ddd6fe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .t-blue{background:var(--blue-bg);border-color:#bfdbfe;color:#1d4ed8}
+  .t-green{background:var(--green-bg);border-color:#a7f3d0;color:#047857}
+  .t-red{background:var(--red-bg);border-color:#fecaca;color:#b91c1c}
+  .t-amber{background:var(--amber-bg);border-color:#fde68a;color:#b45309}
+  .t-purple{background:var(--purple-bg);border-color:#ddd6fe;color:#6d28d9}
+  .t-gray{background:#f9fafb;border-color:var(--line);color:var(--muted)}
+  .small{font-size:12.5px;color:var(--muted)}
+  .toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:#fcfcfd}
+  .toc ol{margin:6px 0 0 20px}
+  .toc a{color:var(--blue);text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  hr{border:0;border-top:1px solid var(--line);margin:32px 0}
+  figure{margin:18px 0;text-align:center}
+  figcaption{font-size:12.5px;color:var(--muted);margin-top:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>P0／P1／P2：專家權重<strong>雙駐留</strong>修復（swap-miss 結構解）</h1>
+<div class="sub">
+  日期 2026-09-24 · 專案 <code>/Users/alexchuang/Documents/flashkv-devserver</code>（git worktree）<br>
+  模型 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf</code>（13.65 GB，256 專家 × 40 層）<br>
+  硬體 <code>Mac16,12</code> MacBook Air · Apple M4 · 8 核 GPU · <strong>16 GB unified</strong> · 無風扇<br>
+  配置 <code>--profile prod-new</code> ＋ <code>CGC_SERVER_MTP=1</code> · pool 8 GiB · <code>--load-mode none</code><br>
+  分析底稿 <code>docs/SWAP_MISS_LINK_2026-09-24.md</code> · <code>docs/SWAP_STRUCTURAL_FIX_2026-09-24.md</code><br>
+  工具 <code>scripts/check/swap_p0p1p2_apply.py</code> · <code>scripts/check/p012_ab.py</code> ·
+  <code>scripts/check/miss_attr_gate.py</code>
+</div>
+
+<div class="box b-green">
+  <p><strong>一句話結論：</strong>真正的病不是 swap，是<strong>結構性超訂 4838 MiB</strong>——
+   expert 權重在 CPU 副本（<code>read_raw</code> 讀成的匿名頁）與 pool 各住一份，
+   靜態需求 <b>21222 MiB 塞進 16384 MiB</b>。P0 讓 skip-load 的 expert 不再 <code>read_raw</code>，
+   單趟 run 的 swap 增量從 <b>+5678.88 MiB 降到 +448.56 MiB（−92.1%）</b>，
+   證明「這份 CPU 副本佔位、卻從未被算過」的機制是真的。</p>
+  <p><strong>但修正的代價也是真的：</strong>decode 從 <b>10.20</b> 掉到 <b>7.60 t/s（−25.5%）</b>——
+   權重不再預先駐留，每次 miss 都得付一次真正的磁碟 IO。</p>
+</div>
+
+<div class="box b-amber">
+  <p><strong>判決的精確措辭（不要被上面那句話誤導）：</strong>三條驗收判據中，
+   <b>第 1 條（dswap ≈ 0 且不累積）沒有通過</b>——三趟跑完累積仍 +6876.94 MiB；
+   <b>第 2、3 條以代理儀器通過，但不是原設計的輸入</b>（<code>CGC-SHAPE</code>／
+   <code>final stats</code> 這批 stderr 欄位在本輪 log 裡完全沒有被 capture 到）。
+   所以本文件的主張是「<b>P0 的機制正確且效應巨大</b>」，
+   <b>不是</b>「swap 問題已修好」。詳見 <a href="#s7">§7</a> 與 <a href="#s8">§8</a>。</p>
+</div>
+
+<div class="toc">
+  <strong>目錄</strong>
+  <ol>
+    <li><a href="#s1">一頁結論：三臂 A/B 的數字</a></li>
+    <li><a href="#s2">病根：21222 MiB 塞進 16384 MiB</a></li>
+    <li><a href="#s3">機制：為什麼 expert 有兩份潛在駐留</a></li>
+    <li><a href="#s4">P0／P1／P2 各做什麼</a></li>
+    <li><a href="#s5">落地規格與開關</a></li>
+    <li><a href="#s6">邊界與陷阱（寫錯就是靜默毀損）</a></li>
+    <li><a href="#s7">A/B 實測與三條判據</a></li>
+    <li><a href="#s8">誠實邊界：不主張什麼</a></li>
+    <li><a href="#s9">現場閘門輸出</a></li>
+    <li><a href="#s10">歸屬、還原與下一步</a></li>
+  </ol>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════ §1 -->
+<h2 id="s1">§1　一頁結論：三臂 A/B 的數字</h2>
+
+<p>同一個 binary（<code>build 1ca685490</code>）、同一個 profile、只有 env 不同——
+   這是本 repo 所有配對比較的前提。三臂都是 <code>launch NOMINAL</code>／<code>worst NOMINAL</code>，
+   全程無拒跑。</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>arm</th><th>開關</th>
+      <th>t/s</th><th>±</th><th>hit%</th><th>misses</th><th>reads</th>
+      <th>us/job</th><th>cap%</th><th>Δswap MiB</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>ctrl</code></td><td>（無）</td>
+      <td class="num">10.20</td><td class="num">0.91</td><td class="num">57.7</td>
+      <td class="num">10035</td><td class="num">43857</td><td class="num">14569</td>
+      <td class="num">35.6</td><td class="num bad">+5678.88</td>
+    </tr>
+    <tr>
+      <td><code>p0</code></td><td><code>SKIP_READRAW=1</code></td>
+      <td class="num bad">7.60</td><td class="num">1.87</td><td class="num">57.2</td>
+      <td class="num">10251</td><td class="num">44589</td><td class="num ok">11683</td>
+      <td class="num">38.1</td><td class="num ok">+448.56</td>
+    </tr>
+    <tr>
+      <td><code>p012</code></td><td><code>SKIP_READRAW=1</code> ＋ <code>POOL_MADVISE=2</code></td>
+      <td class="num bad">7.58</td><td class="num ok">0.41</td><td class="num ok">59.1</td>
+      <td class="num">9513</td><td class="num">42360</td><td class="num">12441</td>
+      <td class="num">35.5</td><td class="num">+749.50</td>
+    </tr>
+  </tbody>
+</table>
+
+<p class="small">欄位來源：<code>t/s</code>／<code>±</code>／<code>hit%</code> 等取自
+   <code>prod_profile.py</code> 的 <code>decode-delivery.out</code>（<code>cache:</code> 摘要行與
+   <code>llama-bench matrix</code> 表）；<code>Δswap</code> 取自 <code>sysctl vm.swapusage</code>
+   的 before/after，由 <code>p012_ab.py</code> 自己記。<code>build</code> 欄三臂同為
+   <code>1ca685490</code>。</p>
+
+<h3>1.1 三條 Reads</h3>
+
+<div class="cards">
+  <div class="card">
+    <div class="k">swap 增量下降</div>
+    <div class="v ok">−92.1%</div>
+    <div class="small">+5678.88 → +448.56 MiB（ctrl → p0）</div>
+  </div>
+  <div class="card">
+    <div class="k">decode 性能代價</div>
+    <div class="v bad">−25.5%</div>
+    <div class="small">10.20 → 7.60 t/s</div>
+  </div>
+  <div class="card">
+    <div class="k">IO job 成本</div>
+    <div class="v ok">−19.8%</div>
+    <div class="small">us/job 14569 → 11683</div>
+  </div>
+  <div class="card">
+    <div class="k">三趟 swap 累積</div>
+    <div class="v bad">+6876.94</div>
+    <div class="small">MiB，從 0 起算（門檻 64）</div>
+  </div>
+</div>
+
+<ol>
+  <li><b>機制得到證實。</b>同一個 workload，把 expert 的 <code>read_raw</code> 關掉，
+      swap 增量掉了 92.1%——那 10960 MiB 確實存在過，且確實是 swap 的主要來源。
+      這不是估計，是同一支 binary 的 A/B。</li>
+  <li><b>它不是免費的。</b>expert 不再預先駐留 ⇒ 每次用到都要從 SSD <code>pread</code>
+      ⇒ decode 掉 25.5%。<b>這是結構限制不是 bug</b>：16 GB 這台上，
+      pool 8 GiB 加上模型本身無論如何都是超訂。</li>
+  <li><b>單趟數據無法比較 P1/P2。</b><code>p012</code> 的 swap 增量（+749.50）
+      反而高於 <code>p0</code>（+448.56），但這是 n=1、且第二趟的起點已經不是乾淨水位。
+      要看 P1/P2 的效應必須跑 ABBA。</li>
+</ol>
+
+<!-- ══════════════════════════════════════════════════════════ §2 -->
+<h2 id="s2">§2　病根：21222 MiB 塞進 16384 MiB</h2>
+
+<p>這台機器上的超訂是<b>靜態</b>的——它不取決於 run 多長、prompt 是什麼，
+   只要模型和 pool 的大小定了，它就存在：</p>
+
+<table>
+  <thead><tr><th>項目</th><th>大小</th><th>說明</th></tr></thead>
+  <tbody>
+    <tr><td>模型檔</td><td class="num">13030 MiB</td>
+        <td>其中 expert = 256 × 40 × 1.0703 MiB = <b>10960 MiB</b>，dense／其他 2070 MiB</td></tr>
+    <tr><td>expert pool</td><td class="num">8192 MiB</td><td><code>--expert-cache 8589934592</code></td></tr>
+    <tr><td><b>靜態需求</b></td><td class="num"><b>21222 MiB</b></td><td>對上實測 resident 21222 MiB</td></tr>
+    <tr><td>實體記憶體</td><td class="num">16384 MiB</td><td>Mac16,12 unified</td></tr>
+    <tr><td><b>超訂</b></td><td class="num bad"><b>4838 MiB</b></td>
+        <td><code>run_server.sh:1056-1057</code> 自己會印這行並標 <code>OVERSUBSCRIBED</code></td></tr>
+  </tbody>
+</table>
+
+<figure>
+<svg viewBox="0 0 680 210" width="680" height="210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="記憶體預算超訂示意圖">
+  <defs>
+    <style>
+      .bl{font:13px -apple-system,"PingFang TC",sans-serif;fill:#111827}
+      .wh{font:12px -apple-system,"PingFang TC",sans-serif;fill:#ffffff;font-weight:600}
+      .mu{font:11px -apple-system,"PingFang TC",sans-serif;fill:#6b7280}
+    </style>
+  </defs>
+  <line x1="60" y1="40" x2="620" y2="40" stroke="#dc2626" stroke-width="2" stroke-dasharray="5,4"/>
+  <text x="60" y="32" class="mu">實體記憶體 16384 MiB</text>
+  <text x="620" y="32" class="mu" text-anchor="end">紅線以上 = 必須住在 swap</text>
+  <rect x="60" y="60" width="379" height="34" fill="#2563eb" rx="4"/>
+  <text x="70" y="82" class="wh">模型 13030 MiB</text>
+  <rect x="439" y="60" width="60" height="34" fill="#60a5fa" rx="4"/>
+  <text x="469" y="82" fill="#1e3a8a" font-size="11" text-anchor="middle">有</text>
+  <rect x="60" y="104" width="238" height="34" fill="#059669" rx="4"/>
+  <text x="70" y="126" class="wh">expert pool 8192 MiB</text>
+  <rect x="298" y="104" width="141" height="34" fill="#dc2626" opacity="0.85" rx="4"/>
+  <text x="308" y="126" class="wh">超訂 4838 MiB</text>
+  <line x1="60" y1="158" x2="620" y2="158" stroke="#e5e7eb" stroke-width="1"/>
+  <text x="60" y="180" class="bl">靜態需求 21222 MiB</text>
+  <text x="620" y="180" class="bl" text-anchor="end">圖非等比：4096 MiB ≈ 106 px</text>
+  <line x1="60" y1="196" x2="620" y2="196" stroke="#e5e7eb" stroke-width="1"/>
+  <text x="60" y="208" class="mu">expert 10960 MiB 佔模型需求的一部分，但它與 pool 住的是同一組權重 ⇒ 雙駐留</text>
+</svg>
+<figcaption>圖 1：靜態預算。<code>run_server.sh:1056-1057</code> 會算同一筆帳，
+    <code>CGC_SERVER_STRICT_BUDGET=1</code> 可以讓它在超訂時直接拒跑。</figcaption>
+</figure>
+
+<h3>2.1 這個前提要拆成兩條通道（關鍵的方法論）</h3>
+
+<p>原始的問題是「swap 大 ⇒ miss 也高」。它其實是兩個不同的主張，而且答案相反：</p>
+
+<table>
+  <thead><tr><th>通道</th><th>問的是</th><th>答案</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b>cost 通道</b></td><td>一次 miss／hit 要付多少<b>時間</b></td>
+      <td class="ok"><b>成立，且是主效應</b>。匿名頁 reclaim 要先寫後讀（2× IO）；
+          file-backed clean 頁是直接丟掉重讀（1× IO）。</td>
+    </tr>
+    <tr>
+      <td><b>count 通道</b></td><td>miss 的<b>次數</b>有沒有變多</td>
+      <td class="bad"><b>大概率不成立</b>。既有的 miss 歸因是
+          <code>compulsory 91.4% / capacity 8.6%</code>——91% 的 miss 是「這個
+          (layer, expert) 第一次被摸到」，與剔除、水位、swap 都無關。</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="box b-blue">
+  <p><b>推論：</b>「swap ⇒ miss」是<b>混淆不是因果</b>。macOS 的 swap 在本機單調累積、
+     永不回收（<code>MEMORY_HYGIENE.md:44</code> 實測 <code>purge</code> 不減 <code>swap_used</code>），
+     所以任何隨時間惡化的東西（熱／DVFS 降階、背景 GPU 客戶端、累積負載）都會跟它同向。</p>
+  <p>有一條反向實測可以直接否掉 count 通道的因果：pool 8G／6G／5G／4G 的 hit 分別是
+     <code>96.0 / 93.3 / 91.4 / 87.6%</code>——<b>pool 越大（記憶體壓力越大、swap 越大），hit 反而越高</b>。
+     真正控制 miss 的是<b>槽數</b>，swap 是它的下游結果。</p>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════ §3 -->
+<h2 id="s3">§3　機制：為什麼 expert 有兩份潛在駐留</h2>
+
+<p>下面這條事實鏈每一環都有代碼位置，是本輪 P0 的直接依據。</p>
+
+<table>
+  <thead><tr><th>#</th><th>事實</th><th>位置</th></tr></thead>
+  <tbody>
+    <tr><td class="num">1</td>
+        <td>pool fill 直接 <code>pread/preadv</code> 讀檔案，<b>不走 mmap、不走 CPU 副本</b></td>
+        <td><code>llama-expert-cache.cpp:35</code>、<code>:149</code></td></tr>
+    <tr><td class="num">2</td>
+        <td>compute 時 GPU FFN 讀的是 <b>pool</b>（<code>pread</code> 直接寫 pool buffer）</td>
+        <td><code>llama-expert-cache.cpp:35/149</code>、<code>adopt_pool_region :1881</code></td></tr>
+    <tr><td class="num">3</td>
+        <td>skip-load 的 expert tensor 卻<b>仍被 <code>read_raw</code> 全量讀進 CPU RAM</b>
+            （匿名堆，非 file-backed）</td>
+        <td><code>llama-model-loader.cpp:1844-1850</code></td></tr>
+    <tr><td class="num">4</td>
+        <td>⇒ expert 的 CPU 副本是<b>純佔位</b>：佔掉 ~10.9 GB 匿名記憶體，卻從沒被算過</td>
+        <td>由 1＋2＋3 推得</td></tr>
+  </tbody>
+</table>
+
+<h3>3.1 為什麼佔位也要付出代價（2× IO 不對稱）</h3>
+
+<p><code>--load-mode none</code> 是 <code>run_server.sh:507</code> 的預設。在這個模式下，
+   那 10960 MiB 被 <code>read_raw</code> 讀成<b>匿名頁</b>
+   （<code>run_server.sh:1014-1017</code>：<code>_MODEL_KIND="匿名頁、不可回收"</code>）。
+   匿名頁在記憶體壓力下的命運與 file-backed clean 頁完全不同：</p>
+
+<ul>
+  <li><b>file-backed clean 頁</b>：核心直接丟掉，下次用到重讀一次 ⇒ <b>1 次 IO</b>。</li>
+  <li><b>匿名頁</b>：必須先<b>寫</b>到 swap，用到的時候再<b>讀</b>回來 ⇒ <b>2 次 IO</b>。</li>
+</ul>
+
+<p>而且它在快取中繼資料上<b>仍然是 hit</b>（不計入 miss）。這就解釋了那個看似矛盾的觀測：
+   <b>你看到 t/s 崩、hit% 卻紋風不動。</b>損失發生在 latency 上，不在計數器上。</p>
+
+<figure>
+<svg viewBox="0 0 680 250" width="680" height="250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="P0/P1/P2 落點示意圖">
+  <defs>
+    <marker id="ar" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 z" fill="#475569"/>
+    </marker>
+    <style>
+      .bx{font:12.5px -apple-system,"PingFang TC",sans-serif;fill:#111827}
+      .hd{font:12.5px -apple-system,"PingFang TC",sans-serif;fill:#111827;font-weight:600}
+      .sm{font:11px -apple-system,"PingFang TC",sans-serif;fill:#6b7280}
+    </style>
+  </defs>
+  <rect x="24" y="20" width="200" height="70" fill="#eff6ff" stroke="#2563eb" rx="6"/>
+  <text x="36" y="42" class="hd">① 載入 read_raw</text>
+  <text x="36" y="60" class="bx">skip-load expert 被全量</text>
+  <text x="36" y="76" class="bx">讀成 CPU 匿名頁 10960 MiB</text>
+  <rect x="240" y="20" width="200" height="70" fill="#fef2f2" stroke="#dc2626" rx="6"/>
+  <text x="252" y="42" class="hd">② 壓力下 swap</text>
+  <text x="252" y="60" class="bx">寫出 + 讀回 = 2 次 IO</text>
+  <text x="252" y="76" class="bx">佔位、從未被 read</text>
+  <rect x="456" y="20" width="200" height="70" fill="#ecfdf5" stroke="#059669" rx="6"/>
+  <text x="468" y="42" class="hd">③ GPU 實際讀 pool</text>
+  <text x="468" y="60" class="bx">compute 走 pread 寫入的</text>
+  <text x="468" y="76" class="bx">pool buffer</text>
+  <line x1="224" y1="55" x2="238" y2="55" stroke="#475569" stroke-width="1.5" marker-end="url(#ar)"/>
+  <line x1="440" y1="55" x2="454" y2="55" stroke="#475569" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="320" y="112" class="sm">P0 在此截斷</text>
+  <rect x="24" y="126" width="632" height="44" fill="#f5f3ff" stroke="#7c3aed" rx="6"/>
+  <text x="36" y="146" class="hd">P0　CGC_EXPERT_SKIP_READRAW=1</text>
+  <text x="36" y="162" class="bx">跳過 ① ⇒ CPU buffer 只是佔位，位元組由 pool fill 的 pread 供給 ⇒ −92.1% swap 增量</text>
+  <rect x="24" y="180" width="308" height="44" fill="#fffbeb" stroke="#d97706" rx="6"/>
+  <text x="36" y="200" class="hd">P1　MADVISE=1（fill 前丟頁）</text>
+  <text x="36" y="216" class="bx">目標頁馬上要被 pread 整塊覆寫，先丟掉可省一次 swap-in 讀</text>
+  <rect x="348" y="180" width="308" height="44" fill="#fffbeb" stroke="#d97706" rx="6"/>
+  <text x="360" y="200" class="hd">P2　MADVISE=2（evict 時丟頁）</text>
+  <text x="360" y="216" class="bx">slot 內容已作廢，不該再被寫出去</text>
+</svg>
+<figcaption>圖 2：P0／P1／P2 在機制鏈上的落點。P0 對著病根（雙駐留），
+    P1/P2 對著它的下游成本（無謂的 swap-in 與 swap-out）。</figcaption>
+</figure>
+
+<!-- ══════════════════════════════════════════════════════════ §4 -->
+<h2 id="s4">§4　P0／P1／P2 各做什麼</h2>
+
+<table>
+  <thead><tr><th>編號</th><th>開關</th><th>做什麼</th><th>效果</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><span class="tag t-purple">P0</span></td>
+      <td><code>CGC_EXPERT_SKIP_READRAW=1</code></td>
+      <td>skip-load 的 expert tensor <b>不 <code>read_raw</code></b>。CPU buffer 保持佔位，
+          位元組由 pool fill 的 <code>pread</code> 供給。</td>
+      <td>砍掉 10960 MiB 匿名駐留（雙駐留的那一半）</td>
+    </tr>
+    <tr>
+      <td><span class="tag t-amber">P1</span></td>
+      <td><code>CGC_POOL_MADVISE=1</code></td>
+      <td>fill <b>之前</b>對目標 slot 的頁 <code>madvise(MADV_DONTNEED)</code>：
+          那塊馬上要被 <code>pread</code> 整塊覆寫，核心卻得先把它物化
+          （若在 swap 上就是一次 swap-in 讀，讀進來下一刻就丟）。</td>
+      <td>砍掉「覆寫前的 swap-in 讀」</td>
+    </tr>
+    <tr>
+      <td><span class="tag t-amber">P2</span></td>
+      <td><code>CGC_POOL_MADVISE=2</code></td>
+      <td>evict <b>時</b>對該 slot 做同樣的事：內容本來就作廢，不該被寫出去。</td>
+      <td>砍掉 garbage 的 swap 寫</td>
+    </tr>
+  </tbody>
+</table>
+
+<p><b>三者都不動槽數</b>——這是刻意的。<code>SWAP_MISS_LINK</code> §4.1 已經算過：
+   另一帖藥「縮 pool 降 swap」要壓到 3072 MiB 才不超訂，那時每層只剩約 53 槽（今天 143 槽），
+   而 8G→4G 只把超訂從 4838 砍到 742，卻先付掉 <b>8.4pp 的 hit</b>。
+   <b>拿 miss 換 swap，方向反了。</b></p>
+
+<h3>4.1 為什麼設計成「預設關閉」</h3>
+
+<p>三個開關全部<b>預設關</b>，不設 env 時行為與舊路徑逐位元組相同。這不是保守，
+   是這個 repo 的<b>併行工作需求</b>：<code>llama-expert-cache.cpp</code> 同時有另一條線
+   （線 I，<code>cb</code>／快取命中儀器）的 218 insertions 未提交，
+   統一 diff 對這種會漂移的檔沒有用，而「降落即生效」會動到別人正在跑的量測。</p>
+
+<!-- ══════════════════════════════════════════════════════════ §5 -->
+<h2 id="s5">§5　落地規格與開關</h2>
+
+<h3>5.1 為什麼是一支「補丁器」而不是手改</h3>
+
+<p><code>scripts/check/swap_p0p1p2_apply.py</code> 用<b>錨點字串替換</b>（錨點命中放入 hunk 表），
+   每個 hunk 都要求錨點<b>恰好命中一次</b>，命中數不對就<b>整批不寫入</b>——不留半套修改。
+   錨點刻意選線 I 那批改動沒有碰的程式碼，所以他們 commit 之後也還在。</p>
+
+<table>
+  <thead><tr><th>hunk</th><th>檔案</th><th>內容</th></tr></thead>
+  <tbody>
+    <tr><td class="num">P0.a–P0.c</td><td><code>llama-model-loader.h</code></td>
+        <td><code>&lt;unordered_set&gt;</code>、<code>skip_no_read</code> 成員、<code>cgc_skip_readraw</code> 宣告</td></tr>
+    <tr><td class="num">P0.d</td><td><code>llama-model-loader.cpp</code></td>
+        <td><code>cgc_skip_readraw()</code> 定義（三個 guard）</td></tr>
+    <tr><td class="num">P0.e</td><td><code>llama-model-loader.cpp</code></td>
+        <td>skip-load 分支把 tensor 名記進 <code>skip_no_read</code></td></tr>
+    <tr><td class="num">P0.f</td><td><code>llama-model-loader.cpp</code></td>
+        <td><code>read_raw</code> 前加 guard（含連 <code>ggml_validate_row_data</code> 一起跳）</td></tr>
+    <tr><td class="num">P0.g</td><td><code>llama-model-loader.cpp</code></td>
+        <td>開關判定從「存在即開」改成「<b>取值判定</b>」——見 <a href="#s6">§6.2</a></td></tr>
+    <tr><td class="num">P12.a–P12.c</td><td><code>llama-expert-cache.cpp</code></td>
+        <td><code>&lt;sys/mman.h&gt;</code>、前向宣告、<code>cgc_discard_pages</code>／
+            <code>cgc_in_malloc_pool</code>／<code>cgc_pool_madvise_mode</code> helper 群</td></tr>
+    <tr><td class="num">P1.d</td><td><code>llama-expert-cache.cpp</code></td><td>fill 前 discard</td></tr>
+    <tr><td class="num">P2.e</td><td><code>llama-expert-cache.cpp</code></td><td>evict 時 discard</td></tr>
+  </tbody>
+</table>
+
+<h3>5.2 開關</h3>
+
+<table>
+  <thead><tr><th>開關</th><th>值</th><th>行為</th></tr></thead>
+  <tbody>
+    <tr><td><code>CGC_EXPERT_SKIP_READRAW</code></td><td>未設／<code>0</code>／空</td><td>P0 關（與舊路徑相同）</td></tr>
+    <tr><td><code>CGC_EXPERT_SKIP_READRAW</code></td><td><code>1</code></td><td>P0 開</td></tr>
+    <tr><td><code>CGC_POOL_MADVISE</code></td><td>未設／<code>0</code>／空</td><td>P1/P2 關</td></tr>
+    <tr><td><code>CGC_POOL_MADVISE</code></td><td><code>1</code></td><td>P1 only</td></tr>
+    <tr><td><code>CGC_POOL_MADVISE</code></td><td><code>2</code></td><td>P1 ＋ P2</td></tr>
+  </tbody>
+</table>
+
+<h3>5.3 build 驗證</h3>
+
+<pre><code>cmake --build src/llama.cpp/build --target llama-server llama-bench -j 8   # rc=0</code></pre>
+
+<p>開關是否真的編進 binary，直接問字串表（本文產出時實跑）：</p>
+
+<pre><code>$ ls src/llama.cpp/build/bin/ | grep -i libllama
+  libllama.dylib  libllama.0.dylib  libllama.0.0.578.dylib   (另有 -common 同名系)
+
+$ strings src/llama.cpp/build/bin/libllama*.dylib | grep -cx CGC_EXPERT_SKIP_READRAW
+  3
+$ strings src/llama.cpp/build/bin/libllama*.dylib | grep -cx CGC_POOL_MADVISE
+  3</code></pre>
+
+<p class="small">命中 3 次而非 1 次，是因為 <code>libllama*.dylib</code> 目前有三份副本
+   （<code>libllama.dylib</code>、<code>libllama.0.dylib</code>、<code>libllama.0.0.578.dylib</code>），
+   每份各含一個字串。<b>重點在於：核心廣告都會吾命中，
+   且在本文產出時仍然在</b>——即使其他線在之後重建過。</p>
+
+<div class="box b-red">
+  <p><b>⚠ 這個 binary 同時含線 I 未提交的 294+ 行改動。</b>所以「不設 env」的對照臂
+     <b>不等於 12.57 錨點</b>（那個數字是更早的 build）。這組 A/B <b>只能三臂互比</b>，
+     不能拿單臂數字去對交付錨點。任何引用本文件數字去比對 12.57／14.39 的做法都是錯的。</p>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════ §6 -->
+<h2 id="s6">§6　邊界與陷阱（寫錯就是靜默毀損）</h2>
+
+<p>這一節是整份文件最硬的部分。P0/P1/P2 的錯誤模式共同點是：
+   <b>它們都不會報錯</b>——要麼毀掉隔壁 slot，要麼讓整網輸出垃圾。</p>
+
+<h3>6.1 P0 的三個 guard</h3>
+
+<table>
+  <thead><tr><th>#</th><th>guard</th><th>漏掉的後果</th></tr></thead>
+  <tbody>
+    <tr><td class="num">1</td>
+        <td><b>只對 loader 自己放上 skip-load 路徑的 tensor 生效</b>
+            （<code>skip_no_read</code> 表，在前項確保含 <code>!buft</code> 前提）。
+            重寫一次 <code>strstr(name,"_exps")</code> 是錯的：</td>
+        <td>會跳過<b>從來沒打算被跳過</b>的 tensor（例如經
+            <code>tensor_buft_overrides</code> 送上 CPU 的 expert），其資料沒人供給。</td></tr>
+    <tr><td class="num">2</td>
+        <td><b><code>L4_SKIP_LAYER0</code> 的 <code>blk.0</code> 必須排除</b>。
+            它被故意降回普通 CPU tensor（<code>l4_kind = -1</code>），
+            它的 FFN <b>真的從這個 CPU buffer 讀</b>（<code>llama-context.cpp:6437</code>）。</td>
+        <td class="bad"><b>layer-0 吃到 zeros ⇒ 整網輸出垃圾，而且完全不報錯。</b>
+            這是 P0 唯一的靜默毀損模式。</td></tr>
+    <tr><td class="num">3</td>
+        <td><b>連 <code>ggml_validate_row_data</code> 一起跳</b>。
+            buffer 未初始化，<code>--check-tensors</code> 會 throw <code>invalid data</code>。</td>
+        <td>帶 <code>--check-tensors</code> 的 run 直接崩在載入階段。</td></tr>
+  </tbody>
+</table>
+
+<p class="small">guard 2 的觸發條件是 <code>CGC_SERVER_SKIP0</code>
+   （<code>run_server.sh:1445</code>，<b>預設 0</b>）⇒ <b>目前的交付配置是安全的</b>。
+   但 <code>cgs_skip_readraw</code> 必須寫成「<code>skip_no_read</code> 命中
+   <b>且</b> 非（SKIP0 開啟且是 blk.0）」，不能只判 skip-load。</p>
+
+<h3>6.2 P0.g：存在判定 vs 取值判定</h3>
+
+<p>第一版寫的是 <code>getenv("CGC_EXPERT_SKIP_READRAW") != nullptr</code>——
+   <b>任何值都把 P0 打開，包括 <code>=0</code></b>。這很危險，因為把「顯式預設 0」
+   寫進 launcher profile 是最自然的做法，那會讓 <code>prod-new</code>
+   <b>靜默開著 P0 跑</b>。已改成取值判定（<code>0</code>／空 = 關）：</p>
+
+<pre><code>static const bool on = []() -&gt; bool {
+    const char * v = getenv("CGC_EXPERT_SKIP_READRAW");
+    return v != nullptr &amp;&amp; v[0] != '\0' &amp;&amp; v[0] != '0';
+}();</code></pre>
+
+<h3>6.3 P1/P2：頁對齊與 68.5 頁的 stride</h3>
+
+<p>兩個 helper 存在的理由完全相同，而且都指向<b>靜默毀掉隔壁 slot</b>：</p>
+
+<ol>
+  <li><code>madvise()</code> 要求<b>頁對齊</b>的位址，否則 <code>EINVAL</code>。</li>
+  <li>expert stride = <code>1.0703 MiB = 68.5 個 16 KiB 頁</code>，<b>不是頁的整數倍</b>
+      ⇒ 範圍若往外取整，<code>madvise</code> 會清掉<b>前一個 slot 的尾頁與下一個 slot 的頭頁</b>，
+      而且不報錯。</li>
+</ol>
+
+<p>所以正確做法是：<b>start 往上取整、end 往下取整，只丟完整落在範圍內的頁</b>
+   （範圍內無整頁就什麼都不丟）。自檢第 2 項實測：6 個連續 slot 全部零越界，
+   每個 slot 丟到 67 頁（<code>68.5</code> 向下取整並扣除兩端不完整的部分）。</p>
+
+<h3>6.4 Metal 的 pool_ext 永遠不碰</h3>
+
+<p>pool 的兩種記憶體來源不同：<code>pool</code> 是 <code>malloc</code> 的匿名記憶體，
+   <code>pool_ext</code> 是 <b>Metal 分配</b>（<code>pool_region()</code>，
+   <code>llama-expert-cache.cpp:715-730</code>）。對後者做 <code>madvise</code>
+   等於從 GPU 腳下把位元組抽走。<code>cgc_in_malloc_pool</code> 會先把非 malloc 的 dst 擋掉。</p>
+
+<h3>6.5 落地時踩到的前向宣告</h3>
+
+<p><code>cgc_pool_madvise_mode()</code> 在 <code>pick_slot</code>（約 <code>:700</code>）被呼叫，
+   但定義在 <code>pool_region</code> 之後（約 <code>:800</code>，因為要用 <code>slots_l</code>）。
+   少一個前向宣告就是<b>編譯錯誤</b>——而這個檔的編譯錯誤會擋掉所有人的 build。已補兩個前向宣告。</p>
+
+<!-- ══════════════════════════════════════════════════════════ §7 -->
+<h2 id="s7">§7　A/B 實測與三條判據</h2>
+
+<h3>7.1 環境與設計</h3>
+
+<ul>
+  <li><b>profile</b>：<code>prod-new</code> ＋ <code>CGC_SERVER_MTP=1</code>。
+      <span class="tag t-amber">必須疊 <code>MTP=1</code></span>：<code>prod-new</code> 的 MTP=0 分支
+      會把 MODEL 換成<b>沒有 nextn head 的另一個 checkpoint</b>
+      （<code>run_server.sh:153-161</code>）⇒ 那不是交付模型，三臂都換模型的話完全不能比。</li>
+  <li><b>binary</b>：三臂同為 <code>build 1ca685490</code>。對照臂不是另一個 build，
+      而是同一個 binary 不設 env。</li>
+  <li><b>thermal</b>：三臂 <code>launch</code>／<code>worst</code> 皆 <code>NOMINAL</code>，
+      histogram 全程 NOMINAL。</li>
+  <li><b>cell</b>：<code>decode</code>，<code>--reps 3</code>，<code>--no-ref</code>。</li>
+  <li><b>reps／輪數</b>：單趟（<code>rounds=1</code>），<b>沒有 ABBA</b>。</li>
+</ul>
+
+<h3>7.2 swap 的三個讀數</h3>
+
+<table>
+  <thead><tr><th>arm</th><th>before</th><th>after</th><th>Δ</th><th>相對 ctrl</th></tr></thead>
+  <tbody>
+    <tr><td><code>ctrl</code></td><td class="num">0.00</td><td class="num">5678.88</td>
+        <td class="num bad">+5678.88</td><td>—</td></tr>
+    <tr><td><code>p0</code></td><td class="num">5678.88</td><td class="num">6127.44</td>
+        <td class="num ok">+448.56</td><td class="num ok">−92.1%</td></tr>
+    <tr><td><code>p012</code></td><td class="num">6127.44</td><td class="num">6876.94</td>
+        <td class="num">+749.50</td><td class="num">−86.8%</td></tr>
+  </tbody>
+</table>
+
+<p><b>這是本輪最強的一條證據。</b>同一支 binary、同一個 profile、同一份 workload：
+   ctrl 那一趟獨自吃掉 <b>+5678.88 MiB</b>，而開了 P0 之後的兩趟加起來只吃
+   <b>+448.56 與 +749.50 MiB</b>。這直接證實 §3 的機制——那 10960 MiB 佔位記憶體
+   確實存在，而且確實是 swap 的主要來源。</p>
+
+<h3>7.3 三條判據逐條評</h3>
+
+<p><code>miss_attr_gate.py</code> 定義的三大條來說，說明現有數據能夠判到哪裡。</p>
+
+<table>
+  <thead><tr><th>判據</th><th>設計輸入</th><th>本輪結果</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b>1</b>　<code>dswap ≈ 0</code> 且多趟不累積</td>
+      <td><code>sysctl vm.swapusage</code>（有）</td>
+      <td class="bad"><b>FAIL。</b>單趟最大 |dswap| = 5678.88 MiB（門檻 64）；
+          三趟累積 drift = <b>+6876.94 MiB</b>。</td>
+    </tr>
+    <tr>
+      <td><b>2</b>　<code>hit_pct</code> 不降</td>
+      <td>原設計用 <code>CGC-SHAPE</code>／<code>final stats</code> 的 <code>hit_pct=</code>
+          ——<b>本輪 log 完全沒有被 capture 到</b></td>
+      <td class="warn"><b>代理通過，但不是原設計輸入。</b>改用 <code>prod_profile.py</code> 的
+          <code>cache:</code> 摘要：<code>ctrl 57.7</code> → <code>p0 57.2（−0.5pp，恰在容許邊界）</code>
+          → <code>p012 59.1（+1.4pp）</code>。</td>
+    </tr>
+    <tr>
+      <td><b>3</b>　<code>capacity</code> 不升 ＋ <code>pread</code> 降</td>
+      <td>同上（未 capture）</td>
+      <td class="warn"><b>代理部分通過。</b><code>cap%</code>：<code>35.6 → 38.1 → 35.5</code>
+          （p0 略升、p012 持平）；<code>us/job</code>：<code>14569 → 11683（−19.8%）→ 12441（−14.6%）</code>
+          ⇒ 每次 IO job 的成本確實下降。</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="box b-red">
+  <p><b>為什麼判據 2/3 不算「驗過」：</b><code>miss_attr_gate.py</code> 的輸入是
+     引擎 destructor 在<b>乾淨關機</b>時印的 stderr 行（<code>CGC-SHAPE v=1 phase=final</code>、
+     <code>final stats:</code>、<code>miss attribution:</code>）。本輪的三份 log
+     （<code>runner.out</code>/<code>decode-delivery.out</code>）裡<b>這三批行一行都沒有</b>——
+     與 <code>miss_attr_gate.py</code> docstring 自己註記的
+     「SIGINT 時 destructor 可能跑不到」（<code>llama-expert-cache.cpp:515-518</code>）吻合。</p>
+  <p>所以上面第二、三條的 hit%／cap%／us-job 是<b>另一支儀器</b>（<code>prod_profile.py</code>
+     從 llama-bench 摘要出來的 <code>cache:</code> 行）的數字，欄位口徑不同。
+     <b>拿它們填進 <code>miss_attr_gate.py</code> 會得到「PASS」的錯覺。</b>
+     嚴格說這兩條是「<b>未驗</b>」，本文件只是在旁邊放了代理數字供參考。</p>
+</div>
+
+<h3>7.4 −25.5% 的代價怎麼讀</h3>
+
+<p>三個數字要一起看，但它們<b>不是同一個分母</b>，不能互相對沖：</p>
+
+<ul>
+  <li><code>t/s</code>：<code>10.20 → 7.60（−25.5%）</code>——端到端吞吐。</li>
+  <li><code>us/job</code>：<code>14569 → 11683（−19.8%）</code>——單次 IO job 的成本，
+      <b>下降了</b>（不再有 swap 的 2× IO 摻在裡面）。</li>
+  <li><code>reads</code>：<code>43857 → 44589</code>（p0 略增）—— IO 次數。</li>
+</ul>
+
+<p><b>合理的機制解釋：</b>P0 之前，expert 在載入時就被讀成匿名頁 ⇒ 之後的 miss 有很大一部分
+   只是在記憶體裡（或 swap 裡）搬動。P0 之後每次 miss 都要付一次<b>真正的 SSD 讀</b>。
+   單次 job 更有效率（<code>us/job</code> 降），但要真正跑 SSD 的次數再也躲不掉了。
+   <b>這一台的超訂配置本身就不適合「不預讀權重」的策略。</b></p>
+
+<div class="box b-amber">
+  <p><b>⚠ 另一個不能忽略的混淆：</b>三趟是<b>順序</b>跑的，起點水位不同
+      （<code>0 → 5678.88 → 6127.44 MiB</code>）。ctrl 在乾淨機器上跑，p0/p012 則承擔了
+      前一趟留下的 swap。<b>沒有 ABBA（正反序）</b>就無法分離「P0 的效應」與「累積的效應」。
+      要分離兩者就必須跑 <code>--rounds 2</code> 的 ABBA（正反序各一趟）。</p>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════ §8 -->
+<h2 id="s8">§8　誠實邊界：不主張什麼</h2>
+
+<div class="box b-red">
+  <p>本文件<b>不</b>主張下列任何一件事：</p>
+  <ol>
+    <li><b>不主張「swap 問題已修好」。</b>三條判據中第 1 條 FAIL，且三趟累積仍在
+        <code>+6876.94 MiB</code>。P0 把增量降了 92%，但沒有讓它歸零。</li>
+    <li><b>不主張 P1/P2 有效或無效。</b>本輪 <code>p012</code> 的 Δswap（+749.50）高於
+        <code>p0</code>（+448.56），但這是 n=1 且起點不同。<b>要判 P1/P2 必須跑 ABBA。</b></li>
+    <li><b>不主張 <code>7.60 t/s</code> 是可交付數字。</b>它比 ctrl 慢 25.5%，
+        而且這三者都是在超訂配置上跑的（見 §9 註）。</li>
+    <li><b>不主張第 2/3 條判據已通過。</b>原設計的 <code>CGC-SHAPE</code>／<code>final stats</code>
+        欄位未被 capture；§7.3 的代理數字來自另一支儀器。</li>
+    <li><b>不主張這組數字可以對上 12.57 或任何交付錨點。</b>binary 含線 I 未提交的 294+ 行。</li>
+    <li><b>不做目的 clipping。</b>沒有加重排除任何 record；ctrl 那一趟就是從乾淨的 0 MiB 起算。</li>
+  </ol>
+</div>
+
+<h3>8.1 下一步（成本由低到高）</h3>
+
+<ol>
+  <li><b>修 log capture</b>（零 GPU）：讓 <code>CGC-SHAPE</code>／<code>final stats</code>
+      被 tee 到 <code>.out</code>，然後<b>重新用原設計輸入</b>跑 <code>miss_attr_gate.py</code>。
+      這是判據 2/3 從「未驗」變成「驗過」的唯一路徑。</li>
+  <li><b>跑 <code>--rounds 2</code> ABBA</b>（~40 分鐘）：分離 P0 效應與累積效應、
+      並給 P1/P2 一個能看的 window。</li>
+  <li><b>正的架槓是 L1（pool 甜點）還是 P0？</b>
+      <code>SWAP_STRUCTURAL_FIX</code> §7.5 已確認 L4 adopt/shrunk 早就生效
+      （footprint MALLOC 僅 474 MB，expert <b>沒有</b> ~10GB CPU 副本）——
+      與本輪 P0 看到的 −92% swap 增量<b>表面上看起來對不太上</b>。
+      這是本輪留下來的<b>開放問題</b>，下一步要 reconcile
+      「server load probe 的 adopt 結論」與「A/B 看到的 5678 MiB 差額」。</li>
+</ol>
+
+<!-- ══════════════════════════════════════════════════════════ §9 -->
+<h2 id="s9">§9　現場閘門輸出</h2>
+
+<p class="small">在産出本文件時實跑，原文照貼（D5 要求）。</p>
+
+<pre><code>$ python3 agent_harness/engine_loop/traces/validate.py
+  episodes.jsonl:  122 records {'usable_as_evidence': ...}
+  decisions.jsonl: 68  records {'decision': 68}
+  lessons.jsonl:   193 records {'lesson': 193}
+  -&gt; OK
+
+$ python3 agent_harness/engine_loop/traces/selftest.py
+  rejected  bad_lesson_class
+  rejected  duplicate_lesson_id
+  rejected  duplicate_decision_id
+  ...
+  10/10 injected violations rejected</code></pre>
+
+<pre><code>$ python3 agent_harness/engine_loop/memory/build_memory_index.py --check
+    .workbuddy/memory/MEMORY_PERF.md :: ... : fields differ ['abs','body_bytes',...]
+    regenerate with: python3 memory/build_memory_index.py
+
+$ python3 agent_harness/engine_loop/index_assets.py --check
+  [error] 202 drift(s) between the manifest and disk:</code></pre>
+
+<div class="box b-amber">
+  <p><b>為什麼後兩條是紅的也不要在此刻重生索引：</b>這 202 筆 drift 來自另一條線
+     （線 I／其他 session）當下的工作中間狀態，不是本輪的改動造成的。
+     <code>git status --porcelain --untracked-files=all</code> 顯示
+     <code>src/llama.cpp/src/llama-expert-cache.cpp</code>、
+     <code>llama-model-loader.cpp</code>、<code>libllama.*.dylib</code> 等皆非本輪 modified。</p>
+  <p>若在這裡重生 manifest，等於把<b>對方尚未定稿的位元組</b>（以其當下的 mtime／bytes）寫進本輪的
+     commit——那正是「第二個權威來源」要防的東西。本輪<b>只新增</b> <code>docs/</code> 下這一份白皮書。
+     索引重生留給擁有那些檔案的那條線。</p>
+</div>
+
+<pre><code>$ python3 scripts/check/swap_p0p1p2_apply.py --check
+  P0.a   ALREADY   header: &lt;unordered_set&gt;
+  P0.b   ALREADY   header: skip_no_read 成員
+  P0.c   ALREADY   header: cgc_skip_readraw 宣告
+  P0.d   ALREADY   cpp: cgc_skip_readraw 定義
+  P0.e   ALREADY   cpp: skip-load 分支記錄 tensor 名
+  P0.f   ALREADY   cpp: read_raw 加 guard
+  P0.g   ALREADY   cpp: SKIP_READRAW 改取值判定（0/空 = 關）
+  P12.a  ALREADY   cpp: &lt;sys/mman.h&gt;
+  P12.b  ALREADY   cpp: P2 前向宣告
+  P12.c  ALREADY   cpp: madvise helper 群
+  P1.d   ALREADY   cpp: fill 前 discard（P1）
+  P2.e   ALREADY   cpp: evict 時 discard（P2）</code></pre>
+
+<pre><code>$ python3 scripts/check/swap_p0p1p2_apply.py --self-test
+  ok   丟棄範圍頁對齊
+  ok   不越界（6 個連續 slot，越界數=0）
+  ok   丟棄量足夠（67 頁 / stride 68.5 頁）
+  ok   跨頁的小範圍不丟（避免清到隔壁）
+  ok   頁對齊範圍整段丟
+  ok   guard1 非 skip-load tensor 照讀
+  ok   guard2 L4_SKIP_LAYER0 的 blk.0 照讀
+  ok   guard2 只在 SKIP0 開啟時排除 blk.0
+  ok   一般 skip-load expert 跳過 read_raw
+  ok   marker 只存在於新增程式碼
+  ok   冪等（重複套用可被偵測）
+
+  self-test: 11 passed, 0 failed</code></pre>
+
+<!-- ══════════════════════════════════════════════════════════ §10 -->
+<h2 id="s10">§10　歸屬、還原與下一步</h2>
+
+<h3>10.1 歸屬</h3>
+
+<p>P0／P1／P2 動的是 <code>llama-model-loader.cpp</code>（載入）與
+   <code>llama-expert-cache.cpp</code>（池填充／剔除）⇒ 屬<b>線 I</b>
+   （<code>cb</code> ＝ expert cache 填池 IO、快取命中儀器）的擁有範圍。
+   本輪做的是<b>分析、補丁器、A/B runner 與這份文件</b>。</p>
+
+<h3>10.2 還原</h3>
+
+<pre><code>python3 scripts/check/swap_p0p1p2_apply.py --revert</code></pre>
+
+<p class="small">備份在 <code>.workbuddy/patch_bak/</code>——<b>故意不放原始檔旁邊</b>：
+   放旁邊會變成 untracked 新檔、污染別人的 <code>git status</code>。</p>
+
+<h3>10.3 這份修最後要回答的問題</h3>
+
+<p>P0 把「expert 的 CPU 副本」這 10960 MiB 拿掉了，而剩下的 <code>10262 MiB</code>
+   需求仍 static 超出實體 16384 的一部分（含 pool 8192）。所以
+   <b>P0 之後要不要繼續追 P0 的性能代價，取決於 pool 要不要降</b>——
+   而那是 <code>SWAP_STRUCTURAL_FIX</code> §L1 那個「pool 甜點 4–6 GB」的問題，不是本輪的問題。</p>
+
+<hr>
+
+<p class="small">
+  本文件是 D5 的附件，伴隨新增這份白皮書的 commit。<br>
+  所有數字均可追溯到 <code>/tmp/p012_prodnew_132438/summary.json</code>、
+  同目錄 <code>logs/*/decode-delivery.out</code>、
+  <code>docs/SWAP_MISS_LINK_2026-09-24.md</code> 與
+  <code>docs/SWAP_STRUCTURAL_FIX_2026-09-24.md</code>。
+</p>
+
+</div>
+</body>
+</html>
