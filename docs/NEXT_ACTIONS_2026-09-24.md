@@ -6,6 +6,39 @@
 > 並照做（交錯、深冷卻 ≥300s、配對中位、log-space 校正、窗口守門、build 指紋）。
 > 缺協議的數字不進報告。
 
+***
+
+## 🔴 兩個已定案的前提（2026-09-24 夜，勿再重複推翻）
+
+> 全文與來源：`docs/PREFILL250_MET_AND_S1_REJUDGE_2026-09-24.md`（靜態核對，0 GPU）。
+
+### P1. **prefill 250 已達標** —— 不要再把它列為缺口
+同一個 cell（`-p 2048`，prod-new 口徑）在可指名來源裡有 **9 次 launch ≥ 250 t/s**：
+283.01（`PROD_NEW_MTP_OFF_2026-09-23.md`）、296.24 / 275.98 / 269.23 / 262.01 / 275.39
+（`Backup/seg_batch_s1_pairs/`）、289.28 / 280.5 / 289.81（commit-gate 標題）。
+
+⚠ **但白皮書 §3.1/§5.1 的 `ctrl 162.5 → p0+B 209.5（+29%）` 不成立**：那不是程式碼的性質。
+同一支臂在同一個視窗十分鐘內的四次 launch 是 **275.39 / 196.72 / 207.33 / 204.98**
+（同臂散佈 **78.7 t/s = 中位的 38%**）；`177.36` 那次自己的標題就寫「swap 8.6GB 脏，环境不可引用」。
+**要報一個可引用的 prefill，必須連視窗區塊與 build digest 一起報**（照 `PROD_NEW_MTP_OFF_2026-09-23.md` 的格式）。
+未達的是**可重現的地板**，不是峰值。
+
+### P2. **單段提交（S1）的「2.2×」重判為 1.72×，且不可歸因為 shape**
+`Backup/seg_batch_s1_pairs/abba_212809.json`（8 次 launch、交錯、同 build、同 cell、兩臂均無 `--spec-type`）：
+A 分段 **11.84** / B 單段 **20.32** ⇒ 中位比值 **1.72×**（被引用的 2.2× 其分母 A 取自 8.24 那段已失敗的子視窗）。
+
+而兩臂的 **I/O 結構不同**：A `file_reads` **82,293** / `misses` **4,835** / `read_mib` 2,440；
+B **全部為 0**（無 hook ⇒ 無 demand fill ⇒ 填充路徑根本沒跑）。
+⇒ **這個比值是「S1 ＋ 填充路徑不執行」的合併效果，不是 S1 的 shape 收益**；
+而且兩臂 `k_eff = 1`，交付 regime 是 `mean_len 3.117` ⇒ **S1 從未在背著 4-token verify 下量過**。
+
+**⇒ 新硬規則（已實作）**：`scripts/check/io_symmetry.py`（`--selftest` 11/11 PASS）；
+兩臂 I/O 結構不一致時**拒絕把比值簽成效果**（`asymmetric` / `unknown` 皆 blocking）。
+已接進 `scripts/check/decode_carrier_ab.py`：verdict 變 `shape-confounded`，**exit 2**。
+```sh
+python3 scripts/check/io_symmetry.py --dir Backup/seg_batch_s1_pairs   # exit 2
+```
+
 > **🔴 commit 口徑統一**：commit 統一用 `prod-new`（單一介面）。任何寫進
 > 報告/白皮書/commit 標題的數字一律 prod-new 口徑產出。
 
@@ -38,6 +71,13 @@
 - **任何 agent 不要再碰 A 路線**（包括預指派 slot、跨 token 候選集加寬）
 
 ### ✅ ρ 路線 = 唯一正路（覆蓋率已飽和，剩 insert）
+
+> **⚠️ 已被取代（2026-09-24 18:2x 起）**：本節寫於 03:15。當天稍晚的
+> `docs/SHAPE_GAP_TO_TARGETS_2026-09-24.md` §2.4 與 `MEMORY.md` 已把第一順位換成
+> **單段提交（S1）＋ miss 處理**，ρ 與 prebind 降為第二順位；同一天的
+> `docs/RHO_BATCH_REGRESSION_2026-09-24.md` 另記 ρ-batch 實測 −38~51%。
+> 「唯一正路」這四個字在 15 小時內換過四次（見
+> `docs/PREFILL250_MET_AND_S1_REJUDGE_2026-09-24.md` §2），**不要照字面排優先級**。
 實測：cov_uni=0.8585 / rho_tok=0.8581（>0.70 飽和點，覆蓋率不是瓶頸）
 剩餘槓桿（唯一正路）：
 1. **ρ insert 實測**（白皮書 §10 下一步）——影子節點插入成本 4.76 ms/步 是估值，

@@ -24,6 +24,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(HERE))
 import server_window as sw  # noqa: E402  (the shared probe + window taxonomy)
+import io_symmetry as ios  # noqa: E402  (the I/O-structure rule; see its docstring)
 
 
 def pairs(rows):
@@ -46,7 +47,7 @@ def pairs(rows):
     return arms, out
 
 
-def summarize(rows):
+def summarize(rows, io=None):
     arms, ps = pairs(rows)
     if len(arms) != 2 or not ps:
         return {"verdict": "not-ready", "why": f"arms={arms} pairs={len(ps)}"}
@@ -69,6 +70,15 @@ def summarize(rows):
         drift = max(spread_a, spread_b)
         verdict = "inconclusive" if abs(effect) <= drift else ("faster" if effect > 0 else "slower")
         why = f"|{effect:+.1f}%| vs within-arm spread {drift:.1f}%"
+    io = io or {}
+    # THE HARD RULE. A paired ratio is only a shape effect when both arms did the same I/O work per
+    # token; if they did not, the difference contains the I/O itself and must not be signed. Case that
+    # forced it (2026-09-24): the segmented arm did 82 293 file reads, the single-submit arm 0 -- it
+    # had no hook, so its fill path never ran -- and the 2.2x between them was quoted as a shape gain.
+    if io.get("blocking") and verdict != "not-ready":
+        verdict, why = "shape-confounded", (
+            f"I/O structure asymmetric between the arms ({'; '.join(io.get('differing') or [])}) -- "
+            f"the {med_ratio:.2f}x spans arms that did different I/O work, so it is not a shape gain")
     return {
         "base_arm": base, "test_arm": test, "pairs": len(ps),
         "per_rep_decodes": {f"{base}#r{r}": a["decode_tps_median"] for r, a, _ in ps}
@@ -82,6 +92,7 @@ def summarize(rows):
         "verdict_rule": "|paired median effect| > max(within-arm spread over ALL launches of each "
                         "arm); a missing partner makes the spread unknown, not zero",
         "n_launches_per_arm": {"base": len(a_ts), "test": len(b_ts)},
+        "io_symmetry": io,
         "answer_md5": sorted({m for r in rows for m in (r.get("answer_md5_set") or [])}),
         "hit_rate_pct": {r["key"]: r.get("hit_rate_pct") for r in rows},
         "build": sorted({json.dumps(r.get("build"), sort_keys=True) for r in rows}),
@@ -94,21 +105,38 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", required=True, help="an ab_interleave --json artifact")
     ap.add_argument("--write", default="", help="write <path>.json + <path>.md")
+    ap.add_argument("--io-dir", default="",
+                    help="directory holding the arms' logs (default: the artifact's own directory); "
+                         "set to 'none' to skip the I/O-structure rule, which then says 'unchecked'")
     args = ap.parse_args()
 
     rows = json.load(open(args.json))
-    s = summarize(rows)
+    if args.io_dir == "none":
+        io = {"verdict": "unchecked", "blocking": False, "why": "rule skipped by --io-dir none"}
+    else:
+        d = args.io_dir or str(Path(args.json).resolve().parent)
+        io = ios.audit_dir(d) or {"verdict": "unchecked", "blocking": False,
+                                  "why": f"no abba_*.json (and so no arm logs) under {d}"}
+    s = summarize(rows, io)
     print(json.dumps(s, indent=1, ensure_ascii=False))
+    if s["io_symmetry"].get("verdict") == "unchecked":
+        print(f"\nNOTE: I/O structure UNCHECKED -- {s['io_symmetry']['why']}. The ratio above is a speed\n"
+              f"reading only; whether both arms did the same work per token is unverified.")
+    else:
+        print("\n" + ios.banner(s["io_symmetry"]))
     if s["verdict"] == "not-ready":
         return 1
+    if s["verdict"] == "shape-confounded":
+        return 2
 
     if args.write:
         out = Path(args.write)
         out.with_suffix(".json").write_text(json.dumps(
             {"product": "decode carrier A/B", "source": args.json, **s}, indent=1) + "\n")
-        md = [f"# decode carrier A/B — {s['base_arm']} vs {s['test_arm']}", "",
+        md = [              f"# decode carrier A/B — {s['base_arm']} vs {s['test_arm']}", "",
               f"**Verdict**: `{s['verdict']}` — paired ratio median **{s['paired_ratio_median']:.3f}** "
               f"({s['effect_pct']:+.1f}%) over {s['pairs']} interleaved pair(s); {s['verdict_why']}.", "",
+              f"I/O structure: `{s['io_symmetry'].get('verdict')}` — {s['io_symmetry'].get('why')}", "",
               f"Within-arm launch spread (all launches of each arm): base "
               f"{s['within_arm_spread_pct']['base']}, test {s['within_arm_spread_pct']['test']}. "
               f"Rule: {s['verdict_rule']}.", "",
