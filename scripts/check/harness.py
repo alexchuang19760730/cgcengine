@@ -181,10 +181,12 @@ def box_view(sw, port: int, need_mb: float) -> dict:
 def _verdict(box: dict) -> tuple[str, str]:
     d = box["decision"]
     if box.get("other_session_pids"):
-        return ("BUSY", "another session is running (pids %s)" % ",".join(box["other_session_pids"]))
+        # str() each item: the pids arrive as ints from one producer and as strings from another.
+        return ("BUSY", "another session is running (pids %s)"
+                % ", ".join(str(p) for p in box["other_session_pids"]))
     if not d["admits"]:
         why = "; ".join(f for f in [("port held" if d["port_held"] else ""),
-                                    ("foreign llama: %s" % d["foreign_llama"]
+                                    ("foreign llama: %s" % llama_desc(d["foreign_llama"])
                                      if d["foreign_llama"] else ""),
                                     ("reclaimable %.0fMB < %.0f" % (d["reclaimable_mb"],
                                                                     d["need_mb"])
@@ -202,6 +204,47 @@ def _verdict(box: dict) -> tuple[str, str]:
     return ("ADMITS", "both definitions agree the box is quiet")
 
 
+def llama_desc(items) -> str:
+    """Render the shared probe's foreign-llama list as text.
+
+    The producers hand back `(pid, exe)` PAIRS (`server_window._fallback_llama`, `decode_window_
+    harness.foreign_llama`), while the fixtures in this file's own selftest used bare strings. So
+    `",".join(...)` passed the selftest and raised `TypeError: sequence item 0: expected str
+    instance, tuple found` in `show` -- the one command whose job is to say WHO is holding the box --
+    precisely when a neighbour was holding it. The formatter takes every shape the probe can return,
+    and is used by both readers of this field (the verdict's reason and the board's header).
+    """
+    out = []
+    for it in items or []:
+        if isinstance(it, (tuple, list)):
+            out.append(" ".join(str(x) for x in it) if it else "")
+        else:
+            out.append(str(it))
+    return ", ".join(x for x in out if x)
+
+
+def box_lines(box, verdict, why) -> list[str]:
+    """`show`'s box header, as data, so a selftest can assert on it without a live probe."""
+    d = box["decision"]
+    # "-" and not 0 for an absent launcher verdict: the launcher's bar and "no bar published" are
+    # different statements, and a 0 would read as "the launcher would refuse anything".
+    dash = lambda v: "-" if v is None else str(v)
+    return [
+        "WINDOW BOARD  %s" % box["when"],
+        "  port %-5d %s" % (box["port"], "HELD by %s" % d["port_held"] if d["port_held"] else "free"),
+        "  foreign llama: %s" % (llama_desc(d["foreign_llama"]) or "none"),
+        "  reclaimable %.0f MB (need %.0f)   launcher %s%% (req %s%%, class %s)" % (
+            d["reclaimable_mb"], box["need_mb"], dash(d["launcher_free_pct"]),
+            dash(d["launcher_req_pct"]), dash(d["launcher_class"])),
+        # `other_session_pids` is None whenever the sentinel is absent -- which is the common case,
+        # and it used to reach `join()` as None (same defect class as the pairs above: the fixture
+        # passed a list, the real box passed None).
+        "  other sessions: %s" % (", ".join(str(p) for p in (box["other_session_pids"] or []))
+                                  or "none"),
+        "  VERDICT: %s -- %s" % (verdict, why),
+    ]
+
+
 def cmd_show(args) -> int:
     sw = _load("sw", "server_window.py")
     box = box_view(sw, args.port, args.need_mb)
@@ -213,17 +256,7 @@ def cmd_show(args) -> int:
         print(json.dumps({"box": box, "verdict": verdict, "why": why, "tools": rows}, indent=1))
         return 0
 
-    print("WINDOW BOARD  %s" % box["when"])
-    print("  port %-5d %s" % (box["port"], "HELD by %s" % d["port_held"] if d["port_held"] else "free"))
-    print("  foreign llama: %s" % (",".join(d["foreign_llama"]) if d["foreign_llama"] else "none"))
-    # "-" and not 0 for an absent launcher verdict: the launcher's bar and "no bar published" are
-    # different statements, and a 0 would read as "the launcher would refuse anything".
-    dash = lambda v: "-" if v is None else str(v)
-    print("  reclaimable %.0f MB (need %.0f)   launcher %s%% (req %s%%, class %s)" % (
-        d["reclaimable_mb"], box["need_mb"], dash(d["launcher_free_pct"]),
-        dash(d["launcher_req_pct"]), dash(d["launcher_class"])))
-    print("  other sessions: %s" % (",".join(box["other_session_pids"]) or "none"))
-    print("  VERDICT: %s -- %s" % (verdict, why))
+    print("\n".join(box_lines(box, verdict, why)))
     print()
 
     can = verdict == "ADMITS"
@@ -417,6 +450,28 @@ def selftest() -> int:
     v, why = _verdict(base)
     expect("refused", v, "REFUSED")
     expect("and says why", "port held" in why, True)
+
+    print("\nthe blocker is RENDERED on the probe's real shape (pid, exe) -- regression")
+    # The tuple shape is what `server_window._fallback_llama` / `decode_window_harness.foreign_llama`
+    # actually return. `",".join(...)` on it raised TypeError and killed `show` -- so the board
+    # crashed exactly when a neighbour held the box, and the fixtures above (bare strings) could
+    # never catch it. Both readers of the field are asserted below, on the real shape.
+    busy_decision = dict(base["decision"], foreign_llama=[(44076, "llama-server")],
+                         launcher_free_pct=91.0, launcher_req_pct=30.0)
+    busy_box = {"decision": busy_decision, "other_session_pids": None, "need_mb": 1.0,
+                "port": 8080, "when": "fixture"}
+    v, why = _verdict(busy_box)
+    expect("still refuses", v, "REFUSED")
+    expect("the reason names the pid and the exe", "44076" in why and "llama-server" in why, True)
+    lines = box_lines(busy_box, v, why)
+    expect("show's own header renders the pair", any("44076 llama-server" in ln for ln in lines), True)
+    expect("and never prints an empty list as a blocker",
+           any("foreign llama: none" in ln for ln in box_lines(
+               {"decision": dict(busy_decision, foreign_llama=[]), "other_session_pids": None,
+                "need_mb": 1.0, "port": 8080, "when": "fixture"}, "ADMITS", "q")), True)
+    expect("the probe's pair shape", llama_desc([(1, "a"), (2, "b")]), "1 a, 2 b")
+    expect("the bare-int shape other probes return", llama_desc([999]), "999")
+    expect("empty stays empty", llama_desc([]), "")
 
     print("\nanother session overrides a box that otherwise looks quiet")
     v, _ = _verdict({"decision": dict(base["decision"], admits=True, port_held=False),
