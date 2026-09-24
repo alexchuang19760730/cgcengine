@@ -613,6 +613,7 @@ static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer, const uint8
     for (int pass = 0; pass < 3; ++pass) {
         uint64_t best_tick = UINT64_MAX;
         double   best_util = std::numeric_limits<double>::infinity();
+        uint64_t best_cnt  = UINT64_MAX;
         int32_t  best_slot = -1;
         // [CGC 2026-09-15 FIX] flag-filtered LRU candidate tracked independently of the SpAc
         // branch. It is only ever consulted when the SpAc branch selected nothing, so it cannot
@@ -646,9 +647,28 @@ static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer, const uint8
                 lru_slot = (int32_t) i;
             }
             if (spac_victim && owner[i] >= 0 && owner[i] < (int32_t) cache->n_expert) {
+                // [CGC 2026-09-24 SPAC-HOT] CGC_SPAC_HOT=1: pick the victim with the LOWEST
+                // cumulative route count (never-decayed), tie-broken by EMA utility then LRU.
+                // The EMA alone decays hot-but-quiet experts to near-zero and evicts them for
+                // cold newcomers -- the measured 58.6%->98.6% coverage mismatch. Cumulative
+                // count keeps the heavy tail resident so the route set stays covered -> miss~0.
+                static const bool cgc_spac_hot = cgc_env_on("CGC_SPAC_HOT");
+                const double util = cache->spac_util[layer][owner[i]];
+                const uint64_t cnt = (cache->spac_count.size() > layer &&
+                                      cache->spac_count[layer].size() > (size_t) owner[i])
+                                     ? cache->spac_count[layer][owner[i]] : 0;
+                if (cgc_spac_hot) {
+                    if (cnt < best_cnt || (cnt == best_cnt &&
+                        (util < best_util || (util == best_util && last[i] < best_tick)))) {
+                        best_cnt  = cnt;
+                        best_util = util;
+                        best_tick = last[i];
+                        best_slot = (int32_t) i;
+                    }
+                    continue; // hot path replaces the EMA-victim comparison
+                }
                 // can only be false when spac_util holds a non-finite value; log once so a
                 // corrupt utility row is visible instead of silently disabling SpAc victims.
-                const double util = cache->spac_util[layer][owner[i]];
                 if (!(util < std::numeric_limits<double>::infinity())) {
                     if (cache->n_spac_nonfinite == 0) {
                         fprintf(stderr, "CGC-SPAC: non-finite util=%.17g at layer=%u expert=%u — "
@@ -2026,6 +2046,9 @@ void llama_expert_cache_spac_update(llama_expert_cache * cache, uint32_t layer,
     for (size_t i = 0; i < n; ++i) {
         if (experts[i] < ne) {
             u[experts[i]] += bump;
+            if (cache->spac_count.size() > layer && cache->spac_count[layer].size() > experts[i]) {
+                cache->spac_count[layer][experts[i]]++;
+            }
         }
     }
     cache->spac_feeds++;
@@ -3593,6 +3616,7 @@ llama_expert_cache * llama_expert_cache_init(const llama_model * model, size_t b
         // MoESpAcEstimator's seed so the first pool re-target does not degenerate to expert-id
         // ordering). Sized eagerly (cheap: ~41 x 256 doubles) so spac_update needs no resize.
         cache->spac_util.assign(max_layer, std::vector<double>(cache->n_expert, 0.5));
+        cache->spac_count.assign(max_layer, std::vector<uint64_t>(cache->n_expert, 0));
         // [CGC MTP Draft Prefetch 2026-09-07] draft-predicted expert ids per layer, collected
         // during MTP draft decode (ctx_type == MTP, 1-token) and consumed during trunk verify
         // decode (ctx_type == DEFAULT, multi-token) at il==1. draft_prefetch_valid marks layers

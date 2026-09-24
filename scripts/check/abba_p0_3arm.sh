@@ -30,7 +30,7 @@ launch() { # launch <arm> <extra_env>
   pkill -9 -f llama-server 2>/dev/null; sleep 3
   eval "CGC_PREFLIGHT_SKIP_STALE_CHECK=1 CGC_SERVER_PROFILE=prod-new $extra nohup $REPO/scripts/run_server.sh --detach > $OUT/$arm.ctrl.log 2>&1 &"
   # 等 ready
-  for i in $(seq 1 60); do
+  for t in $(seq 1 60); do
     s=$(curl -s --noproxy '*' -m 2 http://127.0.0.1:8080/health 2>/dev/null)
     [ "$s" = '{"status":"ok"}' ] && return 0
     sleep 2
@@ -87,6 +87,10 @@ print(f'== $name 判決: A中位={statistics.median(As):.2f} B中位={statistics
 }
 
 log "ABBA P0 三臂測速開始（$(fingerprint)）"
-run_pair "cP0" "" "CGC_EXPERT_SKIP_READRAW=1 "
-run_pair "p0HOT" "CGC_EXPERT_SKIP_READRAW=1 " "CGC_EXPERT_SKIP_READRAW=1 CGC_SPAC_HOT=1 "
+if [ "${RUN_GROUP:-all}" = "all" ] || [ "${RUN_GROUP:-all}" = "cP0" ]; then
+    run_pair "cP0" "" "CGC_EXPERT_SKIP_READRAW=1 "
+fi
+if [ "${RUN_GROUP:-all}" = "all" ] || [ "${RUN_GROUP:-all}" = "p0HOT" ]; then
+    run_pair "p0HOT" "CGC_EXPERT_SKIP_READRAW=1 " "CGC_EXPERT_SKIP_READRAW=1 CGC_SPAC_HOT=1 "
+fi
 log "完成"

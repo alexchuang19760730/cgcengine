@@ -507,6 +507,11 @@ struct llama_expert_cache {
     // Default 0.5 = unseeded (profile-like warm start, mirrors SpAc's 0.5 seed so an expert
     // that has never routed this session still outranks a 0-utility newcomer on refresh #1).
     std::vector<std::vector<double>> spac_util;   // [layer][expert] EMA utility, seeded 0.5
+    // [CGC 2026-09-24 SPAC-HOT] cumulative routing counts, never decayed. CGC_SPAC_HOT=1 picks
+    // victims by LOWEST cumulative count (hot experts never evicted -> resident set converges to
+    // the heavy-tailed route set -> miss ~ 0), tie-broken by EMA utility then LRU. Default off =
+    // bit-identical to the EMA-victim path.
+    std::vector<std::vector<uint64_t>> spac_count; // [layer][expert] cumulative route count
     uint64_t spac_feeds = 0;                      // routed-feed counter (refresh cadence)
     // [CGC MTP Draft Prefetch 2026-09-07] exact next-step expert prefetch from MTP draft ctx.
     // The MTP draft ctx (ctx_type == MTP, 1-token decode) computes the top-8 expert ids for the
