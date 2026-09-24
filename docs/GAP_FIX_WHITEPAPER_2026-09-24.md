@@ -373,6 +373,34 @@ gap_eff = 44.4 × (1 − h) + 10.0 × h
 > 兩條路都關閉後，§4 三處方（A/B/M-S2）已全部不可行；剩餘真實槓桿回到：
 > L1 pool 甜點（footprint 主項）+ cb 藏底（42~51ms，§8.1 定價 14.39）+ verify 圖的 NSG/shape 軸。
 
+> **✅ 2026-09-24 追加（ρ insert 實測，P0 閉環）：ABBA 3 對 / prod-new / MTP off / server 路徑 /**
+> 300s 深冷卻 / swap 5.1GB（中等，配對抵消）。**
+>
+> ρ 影子節點（每層 1 norm + 1 gate_inp matmul + capture 回調）的插入成本已從估值 4.76 ms/步
+> 變成實測讀數：
+>
+> | 臂 | env | decode t/s |
+> |---|---:|---:|
+> | A | prod-new（無影子節點，零成本 branch） | **13.99** |
+> | B | prod-new + `CGC_RHO_PROBE=1` | **12.53** |
+>
+> 配對比率 B/A 三對全 = **0.8956**（零散佈）⇒ **insert = 10.4% / step**。
+> 對照估值：step@MTP off ≈ 69.4 ms/token ⇒ insert ≈ **7.2 ms/step**；估值 4.76 ms（假設 83ms
+> step、5.7%）⇒ **實測貴 1.5×**。
+>
+> 兩個後果：
+> 1. **MTP off（= prod-new 預設）下 ρ 必為淨負**：無 draft 填池、無窗口可藏，純付 10.4% ⇒
+>    ρ 不該在 prod-new 開。這同時解釋了「ρ 是 MTP on 專屬機制」。
+> 2. **MTP on 淨收益收窄**：cb 42~51ms（佔 248ms step 的 17~21%）− insert ~10% ⇒
+>    淨 ≈ **+7~11%**（而非先前模型 +14.5~19%）；上界 14.4~15.0 t/s 打折到 ~13.9~14.4。
+>    ⚠ MTP on 的 insert 未量（影子節點在 verify 圖上可能更貴）——走 ρ 落地前必須先量，
+>    否則淨收益模型不可靠。
+>
+> 資產：`/tmp/rho_insert_ab.py`（ABBA runner）、`/tmp/rho_insert_result_final.json`。
+> 順帶區分兩個 ρ 開關：`CGC_RHO_PREFETCH_MAXQ`（預取甜點，已 commit 079f2fe46，MAXQ=16
+> ⇒ +4.7%）與 `CGC_RHO_PROBE`（影子節點，probe 用，開啟時 t/s 不可引用）——本塊量的是後者
+> 的 GPU 成本，即「ρ 機制若真正常駐圖上」的價格。
+
 ---
 
 ## 11. 來源表
