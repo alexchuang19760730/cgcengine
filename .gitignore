@@ -465,3 +465,10 @@ data/replay_bench/
 # 不是要共享的資產；要共享的是 fleet_status.jsonl（趨勢）與 endpoints/*.json（現況）。
 agent_harness/portal/auto_runs.jsonl
 agent_harness/portal/auto_logs/
+# data.json / history.jsonl 同上：由 agent_harness/portal/build_portal.py 每次執行重寫的
+# 執行期產物（看板快照 ＋ 逐次閘門結果），內容每次跑就換 ⇒ 放在版控裡只會製造永久 churn。
+# 2026-09-24 從追蹤中移除（`git rm --cached`）：先前的版本仍留在 git 歷史裡，磁碟上的檔案不動。
+# ⚠ provenance gate（`scripts/check/provenance_gate.py`）原本每 stage 就擋 data.json
+#   （`gates.results` 命中 MEASURED_KEYS 卻沒有 window block）⇒ 不再追蹤也一併解除那個卡點。
+agent_harness/portal/data.json
+agent_harness/portal/history.jsonl
