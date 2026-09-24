@@ -12,6 +12,14 @@
 > **🔴 commit gate**：每次 commit 前跑 `python3 scripts/check/commit_bench.py`
 > （prod-new，prefill≥120 / decode≥10，ABBA 協議）。標題帶 `[commit-gate]` 成績。
 
+> **🔴 budget 預檢（2026-09-24 新增）**：所有速度 runner / launch 前必須跑
+> `python3 scripts/check/budget_preflight.py`（同 run_server.sh 口徑：model resident + pool vs 實體
+> 記憶體），超訂（OVERSUBSCRIBED）即 exit 2 拒跑——不要跑完才發現不可引用。
+> 實證：MTP on + ρ 影子節點在 16GB 超訂 **4838 MiB**（model 13030 + pool 8192 = 21222 > 16384）
+> ⇒ B 臂全 0.00 t/s OOM，50 分鐘白跑。**MTP on + 影子節點的 insert 在 16GB 結構性不可量**；
+> 要量需 pool ≤ 3GiB 或換更小模型。
+> 相容模式：`--warn-only`（明知超訂仍要跑）。
+
 ***
 
 ## 方向決策（2026-09-24 03:15，量 h 閉合）
