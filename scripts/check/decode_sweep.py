@@ -15,6 +15,13 @@ Usage:
     python3 scripts/check/decode_sweep.py --arms baseline,mtp-off,pool-4g --rounds 5
     python3 scripts/check/decode_sweep.py --report /tmp/decode_sweep.json
 """
+# PEP 563: `int | None` in an annotation is evaluated at def time before 3.10, so importing this
+# module on the default system python3 (3.9) raised `TypeError: unsupported operand type(s) for |:`. That
+# is not a local inconvenience: llama_bench_matrix.harvest_bench_stats() imports this file to read a
+# shape's stats AFTER llama-bench has already run the arm, so every prod_matrix / matrix arm came back
+# rc=1 with a full measurement sitting in its stderr log and no rows in its JSON.
+from __future__ import annotations
+
 import argparse
 import glob
 import hashlib
@@ -104,6 +111,11 @@ def build_fingerprint():
 ARMS = {
     "baseline":      {},
     "mtp-off":       {"CGC_SERVER_MTP": "0"},
+    # The pool-size curve, as named in NEXT_ACTIONS task 3 (8 GiB control vs 3/4/6 GiB). Each is a
+    # different `-exper-cache`, i.e. a different SLOT COUNT -- measured 143 slots at 8 GiB,
+    # 71 at 4 GiB -- so a smaller pool is not "the same run with less RAM", it is a different
+    # cache. Pair them in one window with a reversed arm order; do not read them across windows.
+    "pool-3g":       {"CGC_SERVER_EXPERT_CACHE_BYTES": "3221225472"},
     "pool-4g":       {"CGC_SERVER_EXPERT_CACHE_BYTES": "4294967296"},
     "pool-6g":       {"CGC_SERVER_EXPERT_CACHE_BYTES": "6442450944"},
     "pool-10g":      {"CGC_SERVER_EXPERT_CACHE_BYTES": "10737418240"},

@@ -252,6 +252,103 @@ def paired_verdict(rows, planned_n, alpha=0.05):
     return out
 
 
+def _gamma_p(a, x):
+    """Regularized lower incomplete gamma P(a,x).
+
+    Series for x < a+1, continued fraction for the complement otherwise. It exists
+    because stdlib has no chi-square, and planning a pilot from an ESTIMATED sd needs a
+    chi-square quantile (see `paired_sd_upper`).
+    """
+    if x <= 0.0:
+        return 0.0
+    lg = math.lgamma(a)
+    if x < a + 1.0:
+        ap, term, s = a, 1.0 / a, 1.0 / a
+        for _ in range(1000):
+            ap += 1.0
+            term *= x / ap
+            s += term
+            if abs(term) < abs(s) * 1e-16:
+                break
+        return s * math.exp(-x + a * math.log(x) - lg)
+    tiny = 1e-300
+    b = x + 1.0 - a
+    c = 1.0 / tiny
+    d = 1.0 / (b if b != 0.0 else tiny)
+    h = d
+    for i in range(1, 1000):
+        an = -i * (i - a)
+        b += 2.0
+        d = an * d + b
+        if abs(d) < tiny:
+            d = tiny
+        c = b + an / c
+        if abs(c) < tiny:
+            c = tiny
+        d = 1.0 / d
+        de = d * c
+        h *= de
+        if abs(de - 1.0) < 1e-16:
+            break
+    return 1.0 - math.exp(-x + a * math.log(x) - lg) * h
+
+
+def chi2_cdf(x, k):
+    """P(chi2_k <= x)."""
+    return _gamma_p(k / 2.0, x / 2.0)
+
+
+def chi2_ppf(p, k):
+    """Inverse of `chi2_cdf`, by bisection -- the same approach the file already uses
+    for F and t, so the three inverses agree about how they are found."""
+    if not 0.0 < p < 1.0:
+        raise ValueError("chi2_ppf: p must be in (0,1), got %r" % p)
+    lo, hi = 0.0, 1.0
+    while chi2_cdf(hi, k) < p:
+        hi *= 2.0
+        if hi > 1e6:
+            raise ValueError("chi2_ppf: no bracket for p=%r df=%r" % (p, k))
+    for _ in range(200):
+        mid = (lo + hi) / 2.0
+        if chi2_cdf(mid, k) < p:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
+
+
+def paired_sd_upper(rows, conf=0.95):
+    """One-sided upper confidence bound on the paired sd.
+
+    (n-1)*sd^2/sigma^2 ~ chi2(n-1)  =>  sigma <= sd*sqrt((n-1)/chi2_{1-conf}(n-1)).
+
+    This exists to block planning on the POINT estimate. An sd from a handful of pairs is
+    itself noisy, and planning on its low side is how a pilot picks n and then fails to
+    separate at that n -- the failure mode that made "7 pairs" a coin flip.
+    """
+    if len(rows) < 2:
+        return None
+    sd = st.stdev([r["diff"] for r in rows])
+    n = len(rows)
+    q = chi2_ppf(1.0 - conf, n - 1)
+    return sd * math.sqrt((n - 1) / q) if q > 0 else None
+
+
+def planned_n_for(diff, sd, alpha=0.05, cap=40):
+    """Smallest n at which the paired t clears the critical value FOR THAT n.
+
+    Both sides move with n -- t grows as sqrt(n) while the critical value falls -- so this
+    is searched, not solved with the z-approximation. At these sizes the z version is
+    optimistic by about one pair, which is the whole margin in question.
+    """
+    if not sd or sd <= 0 or not diff:
+        return None
+    for n in range(2, cap + 1):
+        if abs(diff) / (sd / math.sqrt(n)) >= t_crit(n - 1, alpha):
+            return n
+    return None
+
+
 def decompose(arms):
     """arms: list of per-arm lists. Returns the random-effects split."""
     n = len(arms)
@@ -442,6 +539,40 @@ def selftest():
           paired_verdict([{"rep": "r1", "a": 12.0, "b": 10.0, "diff": 2.0}], 1)["class"]
           == "UNRESOLVED")
 
+    # Chi-square quantiles: stdlib has none, and planning a pilot from an ESTIMATED sd
+    # needs the upper bound -- sizing on the point estimate is how a pilot picks n and
+    # then fails to separate at that n. Anchored against the standard table.
+    check("chi2_ppf(0.95, 1) reproduces 3.841", abs(chi2_ppf(0.95, 1) - 3.841) < 0.002)
+    check("chi2_ppf(0.95, 3) reproduces 7.815", abs(chi2_ppf(0.95, 3) - 7.815) < 0.002)
+    check("chi2_ppf(0.05, 3) reproduces 0.352", abs(chi2_ppf(0.05, 3) - 0.352) < 0.002)
+    check("chi2_cdf inverts the quantile it produced",
+          abs(chi2_cdf(chi2_ppf(0.95, 7), 7) - 0.95) < 1e-6)
+    check("chi2_cdf is 0 at zero and rises past 0.999999",
+          chi2_cdf(0.0, 4) == 0.0 and chi2_cdf(1e6, 4) > 0.999999)
+
+    # The sd bound is the number that sizes a pilot, so the property under test is
+    # "strictly above the point estimate, and tighter as pairs accumulate".
+    p2 = [{"rep": "r1", "a": 12.0, "b": 10.3, "diff": 1.7},
+          {"rep": "r2", "a": 12.0, "b": 11.5, "diff": 0.5}]
+    sd2 = st.stdev([r["diff"] for r in p2])
+    check("a two-pair sd bound sits strictly above the point estimate",
+          paired_sd_upper(p2) > sd2)
+    check("...and more pairs bound tighter for the same spread",
+          paired_sd_upper(eight) / st.stdev([r["diff"] for r in eight])
+          < paired_sd_upper(p2) / sd2)
+    check("fewer than two pairs gives no bound, not a confident sd",
+          paired_sd_upper([p2[0]]) is None)
+
+    # The n this file's own arithmetic implies, pinned so it cannot drift: 1.71 t/s at
+    # sd 1.83 needs 7 pairs; the same diff at sd 2.0 needs 8. That one pair of margin is
+    # the entire reason the pre-registered n is 8 and not 7.
+    check("diff 1.71 at sd 1.83 needs 7 pairs (the '7' that was almost chosen)",
+          planned_n_for(1.71, 1.83) == 7)
+    check("...but at sd 2.0 the same diff needs 8 -- the sd moves, so buy the margin",
+          planned_n_for(1.71, 2.0) == 8)
+    check("a degenerate sd sizes nothing rather than 'one pair'",
+          planned_n_for(1.71, 0.0) is None)
+
     print("selftest: %d/%d passed" % (tot - bad, tot))
     return 1 if bad else 0
 
@@ -462,6 +593,11 @@ def main():
                     help="the n fixed BEFORE the run. Below it the verdict refuses; above it "
                          "the verdict calls it a new experiment. 0 = report the numbers, no test.")
     ap.add_argument("--alpha", type=float, default=0.05)
+    ap.add_argument("--sd-only", action="store_true",
+                    help="pilot mode: report the paired sd, its 95%% upper bound, and the n those "
+                         "imply -- and REFUSE to print t or a verdict. For pre-registering n on a "
+                         "caliber whose paired sd is not known yet; sizing n and testing on the "
+                         "same pairs is optional stopping with extra steps.")
     ap.add_argument("--target-pct", type=float, default=3.0,
                     help="effect size to price, for the arms-per-group estimate")
     ap.add_argument("--selftest", action="store_true")
@@ -516,7 +652,7 @@ def main():
         print("      VERDICT: %s" % verdict(d, args.f_crit))
         print("-" * 96)
 
-    if args.paired:
+    if args.paired or args.sd_only:
         # Same loader the noise split uses (arm_rows), so the two modes can never
         # disagree about what one arm's number is.
         by_rep = {}
@@ -531,6 +667,30 @@ def main():
                 rep = os.path.basename(pp)[:-5].split("_")[0]
                 by_rep.setdefault(rep, {}).setdefault(g, []).append(st.mean(rr))
         rows = paired_diffs(by_rep)
+
+        if args.sd_only:
+            print("=" * 96)
+            print("PAIRED SD PILOT -- t and the verdict are withheld on purpose")
+            for r in rows:
+                print("  %-8s  %s %7.2f   %s %7.2f   diff %+6.2f t/s"
+                      % (r["rep"], groups[0], r["a"], groups[1], r["b"], r["diff"]))
+            if len(rows) < 2:
+                print("  fewer than two pairs: no sd, no plan")
+            else:
+                sd = st.stdev([r["diff"] for r in rows])
+                hi = paired_sd_upper(rows, 0.95)
+                md = st.mean([r["diff"] for r in rows])
+                print("-" * 96)
+                print("  n=%d pairs   sd %.2f t/s   95%% upper bound %.2f t/s" % (len(rows), sd, hi))
+                print("  planning diff %+.2f t/s -- OBSERVED, used only to size n. It is not a "
+                      "finding and must not be reported as one." % md)
+                for label, s in (("point sd", sd), ("sd upper bound", hi)):
+                    N = planned_n_for(md, s, args.alpha)
+                    print("  n needed at %-15s: %s" % (label, N if N else "> %d (cap)" % 40))
+                print("  => pre-register the LARGER of the two, run to it, and judge once.")
+            print("=" * 96)
+            return 0
+
         v = paired_verdict(rows, args.planned_n, args.alpha)
         print("=" * 96)
         print("PAIRED EFFECT  (each row = one ABBA repetition, arm means)")

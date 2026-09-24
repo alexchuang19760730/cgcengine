@@ -1,0 +1,214 @@
+<!DOCTYPE html><html lang='zh-Hant'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>25 t/s 報告 2026-09-22 18:42:09</title><style>
+:root{--bg:#fff;--fg:#111827;--muted:#6b7280;--line:#e5e7eb;--blue:#2563eb;--blue-bg:#eff6ff;
+--red:#dc2626;--red-bg:#fef2f2;--green:#059669;--green-bg:#ecfdf5;--amber:#d97706;--amber-bg:#fffbeb;
+--code-bg:#f6f8fa}
+*{box-sizing:border-box}
+body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif}
+.wrap{max-width:1080px;margin:0 auto}
+h1{font-size:26px;margin:0 0 6px;letter-spacing:-.2px}
+h2{font-size:20px;margin:40px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+h3{font-size:15.5px;margin:24px 0 8px}
+.sub{color:var(--muted);font-size:13px;margin-bottom:24px}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+overflow-x:auto;font-size:12.5px;line-height:1.6;white-space:pre-wrap}
+pre code{background:none;padding:0;color:#111827}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{background:#f9fafb;font-weight:600}
+td.num,th.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap;text-align:right}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:18px 0}
+.card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.card .v{font-size:21px;font-weight:700;margin-top:2px}
+.ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+.box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+.box p{margin:6px 0}
+.b-red{background:var(--red-bg);border-color:#fecaca}
+.b-green{background:var(--green-bg);border-color:#a7f3d0}
+.b-amber{background:var(--amber-bg);border-color:#fde68a}
+.b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+.stage{border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:20px 0}
+.stage.bad-stage{border-color:#fecaca;background:#fffbfb}
+.pill{display:inline-block;font-size:11.5px;padding:1px 8px;border-radius:999px;
+border:1px solid var(--line);background:var(--code-bg);font-family:ui-monospace,Menlo,monospace}
+ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+.small{font-size:12.5px;color:var(--muted)}
+.dg{word-break:break-all;font-family:ui-monospace,Menlo,monospace;font-size:12px}
+summary{cursor:pointer;color:var(--blue);font-size:13.5px;margin:6px 0}
+</style></head><body><div class='wrap'><h1>25 t/s 報告 · <span class='mono'>2026-09-22 18:42:09</span></h1><div class='sub'>由 <code>scripts/check/target25_report.py</code> 產生 —— 這個檔案裡的每一個數字都是<strong>引用</strong>自某支工具的原始輸出，不是重算的。<br>量測來源 <code>/tmp/verify_layers</code> · 分支 <code>demo/sweet-spot-windows-fix</code> @ <code>b54b83e80</code>（工作區有 111 個未提交檔案）</div><div class='cards'><div class='card'><div class='k'>量測臂</div><div class='v'>6/6</div><div class='small'>有可用 t/s 的臂；--min-usable-pct=30.0</div></div><div class='card'><div class='k'>分析階段</div><div class='v ok'>5/5</div><div class='small'>全部完成</div></div><div class='card'><div class='k'>工具自測</div><div class='v ok'>5/5</div><div class='small'>產生這份報告的每一支工具</div></div><div class='card'><div class='k'>報告時的盒況（class）</div><div class='v warn'>unknown</div><div class='small'>這是<strong>現在</strong>，不是量測當時 —— 見下</div></div></div><div class='box b-blue'><p><strong>報告時的盒況＝unknown，因為這一輪沒有問探針</strong>（<code>--pair</code> 分析模式只讀既有紀錄，不啟動任何服務）。這是誠實的「不知道」，不是「盒況有問題」：這份報告的數字來自先前那一次量測，而<strong>那一次</strong>的窗口逐臂列在第二節。<code>--measure</code> 模式會在啟動前問探針，class 就會變成 <code>clean</code> 或指出誰占著盒子。</p></div><h2>一、出處（provenance）</h2><p>這份報告刻意把三件常被混為一談的東西分開列。混在一起就會生出偽造的出處。</p><table><thead><tr><th>項</th><th>值</th></tr></thead><tbody><tr><td>引擎 digest（現在）</td><td>35 個產物 · llama-bench=639a88bf1411dd68 · libggml-metal.0.19.0.dylib=8b61dfa206882d93 · libllama.0.0.100.dylib=80e41e8165e9c39a · <code>llama-bench=639a88bf1411dd68</code></td></tr><tr><td>引擎 digest（量測時）</td><td>35 個產物 · llama-bench=639a88bf1411dd68 · libggml-metal.0.19.0.dylib=8b61dfa206882d93 · libllama.0.0.100.dylib=80e41e8165e9c39a · <strong class='ok'>與現在相同</strong></td></tr><tr><td>報告時的盒況（<code>server_window.provenance()</code>，in process）</td><td><code>this process never asked the shared probe, so whether the box was busy cannot be answered from this product</code> · class=<strong>unknown</strong> · n_samples=0 · busy=0</td></tr><tr><td>量測時的盒況</td><td>6 筆臂紀錄，逐臂列在下一節（window_before / window_after 原文照登）</td></tr><tr><td>arms.jsonl</td><td><code>/tmp/verify_layers/arms.jsonl</code> · mtime 2026-09-22 17:00:54</td></tr><tr><td>工作區</td><td><code>demo/sweet-spot-windows-fix</code> @ <code>b54b83e80</code> · 未提交 111 檔</td></tr><tr><td>工具自測</td><td><code>draft_budget.py</code> 7/7 · <code>mtp_k_sweep.py</code> 33 ok · <code>server_window.py</code> 28 ok · <code>target25_grid.py</code> 14/14 · <code>verify_marginal.py</code> 30 ok</td></tr></tbody></table><details><summary>完整引擎 digest：現在（量這份報告的 build）（1 組）</summary><table><tbody><tr><td>與現在的 build</td><td><strong class='ok'>相同</strong></td></tr><tr><td class='dg'>35 個產物 · llama-bench=639a88bf1411dd68 · libggml-metal.0.19.0.dylib=8b61dfa206882d93 · libllama.0.0.100.dylib=80e41e8165e9c39a</td><td class='dg'>libggml-base.0.19.0.dylib <span class='small'>4fc9832ab2f8bc95</span><br>libggml-blas.0.19.0.dylib <span class='small'>9367999fff89b5ea</span><br>libggml-cpu.0.19.0.dylib <span class='small'>b5d456b6ffe9dbc1</span><br>libggml-metal.0.19.0.dylib <span class='small'>8b61dfa206882d93</span><br>libggml.0.19.0.dylib <span class='small'>7690ca66803e0ba2</span><br>libllama-batched-bench-impl.dylib <span class='small'>d4c435c4a1ef4e85</span><br>libllama-bench-impl.dylib <span class='small'>f6f33c0e6b5e9077</span><br>libllama-cli-impl.dylib <span class='small'>e84ea1e23db15832</span><br>libllama-common.0.0.100.dylib <span class='small'>5931012744fe3bbf</span><br>libllama-common.0.0.182.dylib <span class='small'>a166c8191cfebf43</span><br>libllama-common.0.0.190.dylib <span class='small'>889b17d6345e6250</span><br>libllama-common.0.0.239.dylib <span class='small'>a702f8a3e2d4f17b</span><br>libllama-common.0.0.275.dylib <span class='small'>5aeee043d64cec79</span><br>libllama-common.0.0.277.dylib <span class='small'>ba9efd5f4581f2f5</span><br>libllama-common.0.0.279.dylib <span class='small'>b5ce0bb983972271</span><br>libllama-completion-impl.dylib <span class='small'>9f1964e7ca3f852a</span><br>libllama-fit-params-impl.dylib <span class='small'>caf97e1419ba7828</span><br>libllama-perplexity-impl.dylib <span class='small'>effad9f731203a39</span><br>libllama-quantize-impl.dylib <span class='small'>452b334917bcad45</span><br>libllama-server-impl.dylib <span class='small'>5118e26289852495</span><br>libllama.0.0.100.dylib <span class='small'>80e41e8165e9c39a</span><br>libllama.0.0.182.dylib <span class='small'>69e1faa67bd4f59b</span><br>libllama.0.0.190.dylib <span class='small'>ae87ab2c1eae6f45</span><br>libllama.0.0.239.dylib <span class='small'>bdebda43aace784d</span><br>libllama.0.0.275.dylib <span class='small'>4f2c9ba36e92707f</span><br>libllama.0.0.277.dylib <span class='small'>2fdb71d0671c3cdf</span><br>libllama.0.0.279.dylib <span class='small'>1a3fdce4bcddd50d</span><br>libmtmd.0.0.100.dylib <span class='small'>9ad2cdddde2ed03c</span><br>libmtmd.0.0.182.dylib <span class='small'>ee0e9efb4884553e</span><br>libmtmd.0.0.190.dylib <span class='small'>ee0e9efb4884553e</span><br>libmtmd.0.0.239.dylib <span class='small'>ee0e9efb4884553e</span><br>libmtmd.0.0.275.dylib <span class='small'>ee0e9efb4884553e</span><br>libmtmd.0.0.277.dylib <span class='small'>70cabd54930add0b</span><br>libmtmd.0.0.279.dylib <span class='small'>70cabd54930add0b</span><br>llama-bench <span class='small'>639a88bf1411dd68</span></td></tr></tbody></table></details><details><summary>完整引擎 digest：量測當時（1 組）</summary><table><tbody><tr><td>與現在的 build</td><td><strong class='ok'>相同</strong></td></tr><tr><td class='dg'>35 個產物 · llama-bench=639a88bf1411dd68 · libggml-metal.0.19.0.dylib=8b61dfa206882d93 · libllama.0.0.100.dylib=80e41e8165e9c39a</td><td class='dg'>libggml-base.0.19.0.dylib <span class='small'>4fc9832ab2f8bc95</span><br>libggml-blas.0.19.0.dylib <span class='small'>9367999fff89b5ea</span><br>libggml-cpu.0.19.0.dylib <span class='small'>b5d456b6ffe9dbc1</span><br>libggml-metal.0.19.0.dylib <span class='small'>8b61dfa206882d93</span><br>libggml.0.19.0.dylib <span class='small'>7690ca66803e0ba2</span><br>libllama-batched-bench-impl.dylib <span class='small'>d4c435c4a1ef4e85</span><br>libllama-bench-impl.dylib <span class='small'>f6f33c0e6b5e9077</span><br>libllama-cli-impl.dylib <span class='small'>e84ea1e23db15832</span><br>libllama-common.0.0.100.dylib <span class='small'>5931012744fe3bbf</span><br>libllama-common.0.0.182.dylib <span class='small'>a166c8191cfebf43</span><br>libllama-common.0.0.190.dylib <span class='small'>889b17d6345e6250</span><br>libllama-common.0.0.239.dylib <span class='small'>a702f8a3e2d4f17b</span><br>libllama-common.0.0.275.dylib <span class='small'>5aeee043d64cec79</span><br>libllama-common.0.0.277.dylib <span class='small'>ba9efd5f4581f2f5</span><br>libllama-common.0.0.279.dylib <span class='small'>b5ce0bb983972271</span><br>libllama-completion-impl.dylib <span class='small'>9f1964e7ca3f852a</span><br>libllama-fit-params-impl.dylib <span class='small'>caf97e1419ba7828</span><br>libllama-perplexity-impl.dylib <span class='small'>effad9f731203a39</span><br>libllama-quantize-impl.dylib <span class='small'>452b334917bcad45</span><br>libllama-server-impl.dylib <span class='small'>5118e26289852495</span><br>libllama.0.0.100.dylib <span class='small'>80e41e8165e9c39a</span><br>libllama.0.0.182.dylib <span class='small'>69e1faa67bd4f59b</span><br>libllama.0.0.190.dylib <span class='small'>ae87ab2c1eae6f45</span><br>libllama.0.0.239.dylib <span class='small'>bdebda43aace784d</span><br>libllama.0.0.275.dylib <span class='small'>4f2c9ba36e92707f</span><br>libllama.0.0.277.dylib <span class='small'>2fdb71d0671c3cdf</span><br>libllama.0.0.279.dylib <span class='small'>1a3fdce4bcddd50d</span><br>libmtmd.0.0.100.dylib <span class='small'>9ad2cdddde2ed03c</span><br>libmtmd.0.0.182.dylib <span class='small'>ee0e9efb4884553e</span><br>libmtmd.0.0.190.dylib <span class='small'>ee0e9efb4884553e</span><br>libmtmd.0.0.239.dylib <span class='small'>ee0e9efb4884553e</span><br>libmtmd.0.0.275.dylib <span class='small'>ee0e9efb4884553e</span><br>libmtmd.0.0.277.dylib <span class='small'>70cabd54930add0b</span><br>libmtmd.0.0.279.dylib <span class='small'>70cabd54930add0b</span><br>llama-bench <span class='small'>639a88bf1411dd68</span></td></tr></tbody></table></details><div class='box b-blue'><p><strong>為什麼「報告時的盒況」不是「量測時的盒況」：</strong><code>server_window</code> 自己的規則就是出處必須在行程內取得、不能事後補蓋 —— 因為寫檔時的盒況不是量測當時的盒況，事後補蓋就是偽造。所以這裡兩個都印，並且分開標。</p></div><h2>二、量測時的窗口條件（逐臂，原文照登）</h2><p class='small'>每個臂的 <code>window</code> 是我從 <code>window_before</code> 推出來的，規則寫在欄位裡（clean iff usable_pct &gt;= the sweep&#x27;s --min-usable-pct; unknown if the arm has the sweep&#x27;s own `invalid` key, or usable_pct is missing, or it is below the gate (this artifact cannot tell whether the sweep proceeded or skipped)）。推不出來的一律 <code>unknown</code> 並附理由，而不是猜一個 <code>clean</code>。</p><table><thead><tr><th>rep</th><th>arm</th><th class='num'>t/s</th><th class='num'>round ms</th><th class='num'>E</th><th class='num'>usable%</th><th class='num'>swap MB</th><th class='num'>rc</th><th>thermal</th><th>window class</th></tr></thead><tbody><tr><td class='num'>0</td><td>k1</td><td class='num'>7.31</td><td class='num'>273.5</td><td class='num'>2.000</td><td class='num'>39.9</td><td class='num'>4503</td><td class='num'>1</td><td>NOMINAL / HEAVY</td><td>clean<div class='small'>usable_pct=39.9 &gt;= gate 30; matrix rc=1 (recovered instances)</div></td></tr><tr><td class='num'>0</td><td>k3</td><td class='num'>8.49</td><td class='num'>352.4</td><td class='num'>2.992</td><td class='num'>62.7</td><td class='num'>6815</td><td class='num'>1</td><td>HEAVY / HEAVY</td><td>clean<div class='small'>usable_pct=62.7 &gt;= gate 30; matrix rc=1 (recovered instances)</div></td></tr><tr><td class='num'>1</td><td>k3</td><td class='num'>7.99</td><td class='num'>383.5</td><td class='num'>3.063</td><td class='num'>63.9</td><td class='num'>5700</td><td class='num'>1</td><td>HEAVY / HEAVY</td><td>clean<div class='small'>usable_pct=63.9 &gt;= gate 30; matrix rc=1 (recovered instances)</div></td></tr><tr><td class='num'>1</td><td>k1</td><td class='num'>7.84</td><td class='num'>255.0</td><td class='num'>2.000</td><td class='num'>62.8</td><td class='num'>5880</td><td class='num'>1</td><td>MODERATE / HEAVY</td><td>clean<div class='small'>usable_pct=62.8 &gt;= gate 30; matrix rc=1 (recovered instances)</div></td></tr><tr><td class='num'>2</td><td>k1</td><td class='num'>11.21</td><td class='num'>178.5</td><td class='num'>2.000</td><td class='num'>63.1</td><td class='num'>5835</td><td class='num'>1</td><td>MODERATE / HEAVY</td><td>clean<div class='small'>usable_pct=63.1 &gt;= gate 30; matrix rc=1 (recovered instances)</div></td></tr><tr><td class='num'>2</td><td>k3</td><td class='num'>8.21</td><td class='num'>369.1</td><td class='num'>3.031</td><td class='num'>63.7</td><td class='num'>6467</td><td class='num'>1</td><td>HEAVY / HEAVY</td><td>clean<div class='small'>usable_pct=63.7 &gt;= gate 30; matrix rc=1 (recovered instances)</div></td></tr></tbody></table><div class='box b-amber'><p><strong>6 筆紀錄的 <code>rc!=0</code>。</strong>那個 rc 是 <code>llama-bench</code> 的：它在第一個壞形狀就非零退出，而 matrix 會把已完成的實例撈回來（它的註解自己這樣寫，<code>n_kept</code> 就是撈回的數量）。所以它在這裡是<strong>要印出來的警告，不是判定</strong> —— 把它折進 window class 會讓所有臂都變成 <code>unknown</code>，反而把真正的答案藏起來。</p></div><p class='small'>class 分佈：<code>{&quot;clean&quot;: 6}</code> · 有可用數字的臂：<code>k1, k3</code> · 表格數字是<strong>顯示用四捨五入</strong>，原文在 sidecar 的 <code>measure_time.arms</code>。</p><h2>三、分析階段（原文輸出）</h2><div class='stage'><h3>1. 量測來源：這一對 k 臂的身分 <span class='pill'>mtp_k_sweep.py</span> <span class='ok'>OK</span></h3><p class='small'>同 harness、同窗口的 k 成本曲線。這一節是唯一引用「量測時」狀態的地方。</p><p class='small'>指令：<code>python3 scripts/check/mtp_k_sweep.py --report-only --logdir /tmp/verify_layers</code> · exit=0</p><pre><code>per-rep t/s   (the same-rep OFF arm is the only reference sharing the machine state)
+  rep             k1            k2            k3            k4           off
+    1           7.31             -          8.49             -             -
+    2           7.84             -          7.99             -             -
+    3          11.21             -          8.21             -             -
+
+MTP sign per arm: ratio to the same-rep OFF (drift-robust), all reps listed
+
+per-rep fit  round_ms = C + c_tok*T   (T = k+1, spec arms only, same batch/env)
+  rep 1: C= 194.64  c_tok=  39.45  n=2 dof=0  r2=n/a  maxres=0.0 ms
+  rep 2: C= 126.59  c_tok=  64.22  n=2 dof=0  r2=n/a  maxres=0.0 ms
+  rep 3: C= -12.18  c_tok=  95.32  n=2 dof=0  r2=n/a  maxres=0.0 ms
+  MEDIAN over reps: C=126.59 ms  c_tok=64.22 ms/round-token
+
+POOLED over reps (contaminated by the inter-rep drift above -- for contrast only):
+  C=140.98 c_tok=57.03 r2=n/a dof=0 maxres=0.0 ms
+
+P4: where does the per-token cost live?  (median of the per-rep slopes vs k)
+                  draft head forward:   +8.23 ms per extra k  [dof 0]
+     residual (target verify + host):  +55.99 ms per extra k  [dof 0]
+  predicted: c_tok ~51.6 ms/token, of which the kernel (mul_mat_id) was ~8.4 ms
+
+P1: best k by median t/s = k3   (NOT as predicted: DRAFT_BUDGET_K predicted k=1)
+    NOTE: the optimal k is a function of the workload&#x27;s accept rate. llama-bench has no
+    prompt, so its alpha is not the server&#x27;s -- read the COST LAW here, not the ranking.
+P2: alpha from the k=1 arm (model-free: alpha = E-1) = 1.000   predicted ~0.654 from the SERVER regime</code></pre></div><div class='stage'><h3>2. 邊際 verify token 的三路拆分 + round 預算收斂 <span class='pill'>verify_marginal.py</span> <span class='ok'>OK</span></h3><p class='small'>miss / verify-matmul / host 三軸，以及 remainder 在邊際裡佔多少。</p><p class='small'>指令：<code>python3 scripts/check/verify_marginal.py --logdir /tmp/verify_layers --per-miss-ms 0.695</code> · exit=0</p><pre><code>arms k1 (T=2) vs k3 (T=4), dT=2, 3 paired rep(s)
+
+marginal verify token, per round, differenced over dT and split three ways
+  borrowed constant PER_MISS_MS=0.695 ms/miss (F1; range 0.59-0.85)
+
+  rep  round T=2  round T=4  marginal/tok     miss  compute     host
+    1      273.5      352.4        +39.45   +12.09     +nan   +27.36
+    2      255.0      383.5        +64.22    +8.99     +nan   +55.24
+    3      178.5      369.1        +95.32   +18.28     +nan   +77.03
+  (ms/token. misses: 52.7 -&gt; 87.5 per round in rep 1)
+
+  MEDIAN shares: miss 19.2%  compute n/a  host n/a
+  RULE -&gt; NO SINGLE LEVER -- report all three
+
+  miss axis by layer (rep 1): total delta +1167 over 41 layers
+    L1:+451  L0:+322  L2:+267  L3:+235  L4:+119  L6:+96  L39:+93  L7:+60
+    the largest 8 of 41 layers hold 64% of the |miss delta|
+
+  per-layer marginal (DECPROF, per token: /dT=2), 40 layers, per-layer MEAN (a median step does not carry a marginal cost)
+    step terms summed over layers: eval-sync -0.50  gather +2.04  dispatch +1.14  =&gt; total +2.67 ms/token
+    miss axis from BATCHDBG: +1.77 ms/token (borrowed 0.695 ms/miss)
+    audit: round-level marginal in rep 1 is +39.45 ms/token; per-layer sum is +2.67 (7%)
+    top 8 layers by |eval-sync marginal|, with all three axes:
+       layer     wait   gather  dispatch      sum     miss    resid
+      L0       -1.117   +0.397    +0.060   -0.660   +0.418   -1.078
+      L15      +0.100   -0.030    +0.064   +0.134   -0.011   +0.145
+      L7       +0.096   +0.120    -0.005   +0.212   +0.081   +0.131
+      L35      +0.088   -0.041    +0.037   +0.084   -0.029   +0.113
+      L39      +0.083   +0.214    +0.032   +0.328   +0.119   +0.210
+      L31      +0.077   -0.031    +0.026   +0.072   -0.023   +0.095
+      L37      -0.060   +0.038    -0.003   -0.026   +0.023   -0.049
+      L36      +0.060   +0.025    +0.035   +0.119   +0.015   +0.104
+    dominant axis: gather (2.04 ms/token of 3.68 moved)
+
+    term                                       T=2       T=4  marginal/tok   share
+      per-layer terms (40)                     209.7     215.0         +2.67      7%
+      draft head                                14.7      29.5         +7.43     19%
+      begin                                      0.0       0.0         +0.00      0%
+      remainder (not in either instrument)      49.2     107.9        +29.35     74%
+      ROUND TOTAL                              273.5     352.4        +39.45    100%
+
+  round budget closure, every usable rep
+    rep 1: term                                       T=2       T=4  marginal/tok   share
+      per-layer terms (40)                     209.7     215.0         +2.67      7%
+      draft head                                14.7      29.5         +7.43     19%
+      begin                                      0.0       0.0         +0.00      0%
+      remainder (not in either instrument)      49.2     107.9        +29.35     74%
+      ROUND TOTAL                              273.5     352.4        +39.45    100%
+    rep 2: term                                       T=2       T=4  marginal/tok   share
+      per-layer terms (40)                     241.7     223.0         -9.36    -15%
+      draft head                                13.2      29.7         +8.23     13%
+      begin                                      0.0       0.0         +0.00      0%
+      remainder (not in either instrument)       0.1     130.8        +65.35    102%
+      ROUND TOTAL                              255.0     383.5        +64.22    100%
+    rep 3: term                                       T=2       T=4  marginal/tok   share
+      per-layer terms (40)                     161.5     202.1        +20.29     21%
+      draft head                                11.5      29.0         +8.75      9%
+      begin                                      0.0       0.0         +0.00      0%
+      remainder (not in either instrument)       5.5     138.0        +66.27     70%
+      ROUND TOTAL                              178.5     369.1        +95.32    100%</code></pre></div><div class='stage'><h3>3. 25 t/s 必要條件階梯（每往下一階＝移除一個實測項） <span class='pill'>target25_grid.py</span> <span class='ok'>OK</span></h3><p class='small'>「impossible」＝連 α=1 都到不了；那是這張表存在的理由。</p><p class='small'>指令：<code>python3 scripts/check/target25_grid.py --from-pair /tmp/verify_layers --k 3</code> · exit=0</p><pre><code>25 t/s necessity from the MEASURED round budget  (/tmp/verify_layers, k=3, 3 rep(s))
+  step &lt;= 40 * mean_len;  mean_len &lt;= k+1 = 4 by construction
+
+  rep 1: T=4 arm emits 2.99 tok/round measured
+      step ms  needs mean_len  needs alpha lever to get here                                               
+        352.4           8.811   impossible   today (measured)                       --
+        244.6           6.114   impossible   - round remainder                      remainder: post-layer per-round work (70-102% of the marginal)
+        215.0           5.376   impossible   - remainder - draft head               + a cheaper drafter (no draft forward)
+        158.5           3.963        0.994   - remainder - draft - per-layer host   + dispatcher: per-layer gather+dispatch (HARD FLOOR, not a target)
+
+  rep 2: T=4 arm emits 3.06 tok/round measured
+      step ms  needs mean_len  needs alpha lever to get here                                               
+        383.5           9.587   impossible   today (measured)                       --
+        252.7           6.316   impossible   - round remainder                      remainder: post-layer per-round work (70-102% of the marginal)
+        223.0           5.574   impossible   - remainder - draft head               + a cheaper drafter (no draft forward)
+        164.5           4.112   impossible   - remainder - draft - per-layer host   + dispatcher: per-layer gather+dispatch (HARD FLOOR, not a target)
+
+  rep 3: T=4 arm emits 3.03 tok/round measured
+      step ms  needs mean_len  needs alpha lever to get here                                               
+        369.1           9.227   impossible   today (measured)                       --
+        231.1           5.776   impossible   - round remainder                      remainder: post-layer per-round work (70-102% of the marginal)
+        202.1           5.052   impossible   - remainder - draft head               + a cheaper drafter (no draft forward)
+        146.8           3.669        0.943   - remainder - draft - per-layer host   + dispatcher: per-layer gather+dispatch (HARD FLOOR, not a target)
+
+  Read the alpha column against the SAME-ARM measurement, not against a hoped-for accept:
+  every row above the floor needs mean_len &gt; k+1, i.e. no accept rate reaches it.</code></pre></div><div class='stage'><h3>4. accept 軸的天花板與最佳 k <span class='pill'>draft_budget.py</span> <span class='ok'>OK</span></h3><p class='small'>沒有正規化：預設值就是 S0=93.3 / step_T4=247.98 的實測點。</p><p class='small'>指令：<code>python3 scripts/check/draft_budget.py</code> · exit=0</p><pre><code># draft budget  (S0=93.3 ms -&gt; 10.72 t/s; step(T=4)=247.98 ms)
+cost(T) = 41.74 + 51.56*T  ms      [2-point fit: describes, does not test]
+  per-token term    : 51.56 ms   (kernel 8.36 = 16.2%; everything else 43.20 = 83.8%)
+  per-round fixed   : 41.74 ms
+  NO batch discount : c_tok in a verify round == c_tok in plain decode
+
+## break-even: the accept a round must reach to beat one plain step
+ k  T   cost ms  E needed  alpha needed
+ 1  2    144.86     1.553         0.553
+ 2  3    196.42     2.105         0.664
+ 3  4    247.98     2.658         0.731
+ 4  5    299.54     3.211         0.776
+ 5  6    351.10     3.763         0.808
+ 6  7    402.66     4.316         0.833
+ 7  8    454.22     4.868         0.851
+  -&gt; wider k demands HIGHER accept, monotonically. That is the consequence of linear cost.
+
+## optimum k by per-draft accept (t/s; MTP-off baseline 10.72)
+alpha   k=1       k=2       k=3       k=4       k=5       k=6         best
+0.465   10.11     8.56      7.19      6.10      5.27      4.62       k=0 (10.72)
+0.555   10.73     9.48      8.20      7.11      6.21      5.49       k=1 (10.73)
+0.600   11.05     9.98      8.77      7.70      6.79      6.03       k=1 (11.05)
+0.673   11.55     10.82     9.80      8.80      7.90      7.12       k=1 (11.55)
+0.735   11.98     11.58     10.78     9.90      9.05      8.29       k=1 (11.98)
+0.800   12.43     12.42     11.90     11.22     10.51     9.81       k=1 (12.43)
+0.900   13.12     13.80     13.87     13.67     13.35     12.96      k=3 (13.87)
+1.000   13.81     15.27     16.13     16.69     17.09     17.38      k=16 (18.51)
+
+## the same-harness ratio, inverted (no cross-harness error)
+  measured ON/OFF = 0.889 at k=3 =&gt; per-draft accept alpha = 0.654
+  break-even alpha at k=3 is 0.731 =&gt; that k is a NET LOSS today
+  at alpha=0.654 the best k is 1: 11.42 t/s = 1.066x the MTP-off baseline
+    k=1:  11.42 t/s   1.066x   &lt;- best
+    k=2:  10.60 t/s   0.989x
+    k=3:   9.53 t/s   0.889x
+    k=4:   8.50 t/s   0.793x
+    k=5:   7.59 t/s   0.709x
+    k=6:   6.82 t/s   0.636x
+    k=7:   6.16 t/s   0.574x
+
+## what the accept axis alone can buy
+  alpha=1 (perfect drafter), k-&gt;inf: 19.39 t/s = 1.81x
+  =&gt; 25 t/s needs c_tok &lt;= 40.00 ms, i.e. a 22% cut in the per-token cost.
+     Removing the WHOLE kernel term gives 41.74 + 43.20*T =&gt; alpha=1 ceiling 23.15 t/s. Kernel is necessary, not sufficient.
+     The 43.20 ms/token of non-kernel cost is the actual target.</code></pre></div><div class='stage'><h3>5. 這條鏈自己的閘門狀態（誰會在啟動前問共有探針） <span class='pill'>server_window.py</span> <span class='ok'>OK</span></h3><p class='small'>把註冊的啟動器數量留在產物裡，讓「未接閘門的啟動器只能下降」可以從這份報告問。</p><p class='small'>指令：<code>python3 scripts/check/server_window.py audit</code> · exit=0</p><pre><code>launcher scripts: 17   gated: 11   ungated: 5   (source of truth: 1)
+
+GATED (asks the shared probe before launching)
+  cb_headroom_probe.py                   shapes=2 tokens=server_window
+  mtp_long_sequence_verify.py            shapes=1 tokens=server_window
+  phase_split_ab.py                      shapes=3 tokens=server_window
+  plain_match_ab.py                      shapes=3 tokens=server_window
+  plain_match_window.py                  shapes=1 tokens=decode_window_harness
+  pool_curve.py                          shapes=2 tokens=server_window
+  server_window.py                       shapes=1 tokens=decode_window_harness,plain_match_window,m123_gate_window
+  slab_handoff_ab.py                     shapes=1 tokens=server_window
+  target25_report.py                     shapes=1 tokens=server_window
+  test_decode_window_harness.py          shapes=1 tokens=decode_window_harness
+  window_sentinel.py                     shapes=1 tokens=server_window
+
+UNGATED (launches without asking -- these are the ones that can measure the neighbour)
+  decode_step_profile.py                 shapes=2
+  decode_sweep.py                        shapes=3
+  http_duo.py                            shapes=1
+  m123_oracle_gate.py                    shapes=2
+  mtp_accept_ab.py                       shapes=2</code></pre></div><h2>四、邊界</h2><ul><li><strong>這份報告不重算任何數字。</strong>沒有第二個解析器：若某個數字與工具自己的輸出不符，那是工具的輸出，不是我加的。</li><li><strong>絕對步時綁窗口。</strong>量測時的 swap 與 usable% 逐臂列在第二節；比值可跨 rep 引用，絕對 t/s 不可與乾淨窗口的家族並排。</li><li><strong>逐臂的 window class 是衍生欄位</strong>，不是量測值；它存在的理由是讓產物能回答「這個數字是不是在繁忙盒況下量的」，推不出來時它說是 unknown。</li><li><strong>M1/M2/M3 逐位元閘門不在這條鏈裡。</strong>這些階段只讀既有日誌、只改環境變數，不重建引擎；engine digest 逐臂照登，但「逐位元一致」要另外跑閘門才算成立。</li><li><strong>間接啟動器的閘門邊界：</strong><code>--measure</code> 會 spawn <code>mtp_k_sweep</code>再 spawn launcher；本 driver 只在啟動前問一次共有探針（<code>require_first</code>），逐臂的閘門由 sweep 自己負責。</li></ul><p class='small'>產物：本 HTML 與其 sidecar <code>/Users/alexchuang/Documents/flashkv-devserver/docs/TARGET25_REPORT_20260922_184209.json</code>。sidecar 帶著 <code>window.class</code>，所以它可以回答 repo 自己的 <code>server_window.py audit-products</code> 那個問題。</p></div></body></html>

@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shape Overlap Insight — 疊起來跑更快</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", sans-serif; background: #0f1115; color: #e4e6eb; padding: 24px; }
+  .container { max-width: 1280px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 700; margin-bottom: 4px; color: #fff; }
+  .subtitle { font-size: 13px; color: #8b8f98; margin-bottom: 24px; }
+
+  .section { background: #1a1d24; border-radius: 12px; padding: 20px; border: 1px solid #2a2e38; margin-bottom: 16px; }
+  .section-title { font-size: 15px; font-weight: 700; color: #fff; margin-bottom: 14px; }
+
+  /* Timeline comparison */
+  .timeline-container { margin: 20px 0; }
+  .timeline-label { font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+  .timeline { position: relative; height: 60px; background: #0f1115; border-radius: 8px; margin-bottom: 16px; overflow: hidden; }
+  .timeline-block { position: absolute; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; color: #fff; border-right: 2px solid #0f1115; }
+
+  .seq-label { color: #f87171; }
+  .overlap-label { color: #4ade80; }
+
+  .total-time { font-size: 12px; color: #8b8f98; margin-top: 4px; text-align: right; }
+
+  /* Insight box */
+  .insight { background: linear-gradient(135deg, rgba(167,139,250,0.1), rgba(167,139,250,0.05)); border-left: 4px solid #a78bfa; padding: 16px; border-radius: 0 8px 8px 0; margin: 16px 0; }
+  .insight-title { font-size: 14px; font-weight: 700; color: #a78bfa; margin-bottom: 8px; }
+  .insight-text { font-size: 13px; line-height: 1.8; color: #d4d4d8; }
+  .insight-text strong { color: #a78bfa; }
+
+  /* Formula */
+  .formula { background: #0f1115; border-radius: 8px; padding: 16px; font-family: "SF Mono", Monaco, monospace; font-size: 13px; line-height: 1.8; margin: 12px 0; color: #d4d4d8; overflow-x: auto; }
+  .formula .var { color: #60a5fa; }
+  .formula .op { color: #f87171; }
+  .formula .comment { color: #71717a; }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 12px 0; }
+  th { text-align: left; padding: 10px; background: #2a2e38; color: #b4b8c2; font-weight: 600; font-size: 11px; }
+  td { padding: 10px; border-bottom: 1px solid #2a2e38; color: #e4e6eb; }
+  tr:hover { background: rgba(255,255,255,0.02); }
+
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+  .tag-red { background: rgba(248,113,113,0.15); color: #f87171; }
+  .tag-green { background: rgba(74,222,128,0.15); color: #4ade80; }
+  .tag-yellow { background: rgba(251,191,36,0.15); color: #fbbf24; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Shape Overlap — 疊起來跑更快</h1>
+  <div class="subtitle">你說得對：既然知道會跑什麼，為什麼不能疊起來跑？</div>
+
+  <!-- The Insight -->
+  <div class="insight">
+    <div class="insight-title">💡 你的洞察</div>
+    <div class="insight-text">
+      我們已經知道每一步會跑什麼：
+      <br>→ 先跑 dense GEMV
+      <br>→ 再跑 MoE gather
+      <br>→ 再跑 MTP verify
+      <br>→ 最後跑 KV cache ops
+      <br><br>
+      <strong>既然都知道了，為什麼不能疊起來跑？</strong>
+      <br>→ 在等 MoE gather 讀記憶體的時候，dense GEMV 的計算可以繼續跑
+      <br>→ 在 dense GEMV 算的時候，MoE gather 的記憶體讀取可以先開始
+      <br>→ 兩個疊在一起 = 總時間更短
+    </div>
+  </div>
+
+  <!-- Sequential vs Overlap -->
+  <div class="section">
+    <div class="section-title">⏱️ 對比：串行跑 vs 疊起來跑</div>
+
+    <div class="timeline-container">
+      <div class="timeline-label seq-label">❌ 現況：串行跑（一個跑完才跑下一個）</div>
+      <div class="timeline">
+        <div class="timeline-block" style="left:0%; width:26.5%; background: linear-gradient(180deg, #fbbf24, #f59e0b);">
+          Dense GEMV (22ms)
+        </div>
+        <div class="timeline-block" style="left:26.5%; width:33.7%; background: linear-gradient(180deg, #f87171, #ef4444);">
+          MoE Gather (28ms)
+        </div>
+        <div class="timeline-block" style="left:60.2%; width:18.1%; background: linear-gradient(180deg, #a78bfa, #8b5cf6);">
+          MTP Verify (15ms)
+        </div>
+        <div class="timeline-block" style="left:78.3%; width:12%; background: linear-gradient(180deg, #60a5fa, #3b82f6);">
+          KV Cache (10ms)
+        </div>
+        <div class="timeline-block" style="left:90.3%; width:9.7%; background: linear-gradient(180deg, #4ade80, #22c55e);">
+          Other (8ms)
+        </div>
+      </div>
+      <div class="total-time">總時間：83 ms</div>
+    </div>
+
+    <div class="timeline-container">
+      <div class="timeline-label overlap-label">✅ 理想：疊起來跑（重疊一部分）</div>
+      <div class="timeline">
+        <div class="timeline-block" style="left:0%; width:26.5%; background: linear-gradient(180deg, #fbbf24, #f59e0b);">
+          Dense GEMV (22ms)
+        </div>
+        <div class="timeline-block" style="left:15%; width:33.7%; background: linear-gradient(180deg, #f87171, #ef4444);">
+          MoE Gather (28ms) ← 提前 15ms 開始
+        </div>
+        <div class="timeline-block" style="left:35%; width:18.1%; background: linear-gradient(180deg, #a78bfa, #8b5cf6);">
+          MTP Verify (15ms) ← 提前
+        </div>
+        <div class="timeline-block" style="left:45%; width:12%; background: linear-gradient(180deg, #60a5fa, #3b82f6);">
+          KV Cache (10ms) ← 提前
+        </div>
+      </div>
+      <div class="total-time" style="color: #4ade80;">總時間：~50-55 ms（省了 30 ms）</div>
+    </div>
+
+    <div style="font-size: 11px; color: #8b8f98; margin-top: 12px; line-height: 1.6;">
+      ⚠️ 注意：上圖是示意，實際能疊多少要看硬體能不能同時跑
+      <br>⚠️ GPU 能不能同時做「記憶體讀取」和「計算」，要看硬體設計
+    </div>
+  </div>
+
+  <!-- Why this works -->
+  <div class="section">
+    <div class="section-title">🔬 為什麼可以疊起來跑？</div>
+
+    <div style="font-size: 13px; line-height: 1.8; color: #d4d4d8; margin-bottom: 16px;">
+      因為不同的部分，瓶頸不一樣：
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>部分</th>
+          <th>瓶頸是什麼？</th>
+          <th>同時做另一個</th>
+          <th>能不能疊？</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Dense GEMV</strong></td>
+          <td>記憶體頻寬（77%）</td>
+          <td>MoE gather 讀記憶體</td>
+          <td><span class="tag tag-yellow">不行</span> — 都是記憶體 bound，會搶頻寬</td>
+        </tr>
+        <tr>
+          <td><strong>Dense GEMV</strong></td>
+          <td>記憶體頻寬（77%）</td>
+          <td>MoE gather 計算</td>
+          <td><span class="tag tag-green">可以</span> — 一個讀記憶體，一個計算，不搶資源</td>
+        </tr>
+        <tr>
+          <td><strong>MoE Gather</strong></td>
+          <td>記憶體頻寬（25%）</td>
+          <td>Dense GEMV 計算</td>
+          <td><span class="tag tag-green">可以</span> — 一個讀記憶體，一個計算，不搶資源</td>
+        </tr>
+        <tr>
+          <td><strong>MoE Gather</strong></td>
+          <td>記憶體頻寬（25%）</td>
+          <td>另一個 MoE gather 讀記憶體</td>
+          <td><span class="tag tag-red">不行</span> — 都是記憶體 bound，會搶頻寬</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="insight" style="margin-top: 16px;">
+      <div class="insight-text">
+        <strong>關鍵洞察：</strong>
+        <br>如果一個 kernel 是「記憶體 bound」，另一個是「計算 bound」，
+        <br>那它們可以疊在一起跑 — 一個用頻寬，一個用算力，互不搶資源。
+        <br><br>
+        但如果兩個都是「記憶體 bound」，那就不能疊 — 它們會搶頻寬。
+      </div>
+    </div>
+  </div>
+
+  <!-- What can actually overlap -->
+  <div class="section">
+    <div class="section-title">🎯 實際上能疊什麼？</div>
+
+    <div style="font-size: 13px; line-height: 1.8; color: #d4d4d8; margin-bottom: 12px;">
+      我們來看每個部分，是記憶體 bound 還是計算 bound：
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>部分</th>
+          <th>是什麼 bound？</th>
+          <th>能不能跟別的疊？</th>
+          <th>能省多少？</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>MoE Gather 讀取</strong></td>
+          <td>記憶體 bound（25% 頻寬）</td>
+          <td>可以跟「計算 bound」的東西疊</td>
+          <td style="color:#4ade80;">省很多</td>
+        </tr>
+        <tr>
+          <td><strong>MoE Gather 計算</strong></td>
+          <td>計算 bound（其實很少）</td>
+          <td>可以跟「記憶體 bound」的東西疊</td>
+          <td style="color:#4ade80;">省很多</td>
+        </tr>
+        <tr>
+          <td><strong>Dense GEMV</strong></td>
+          <td>記憶體 bound（77% 頻寬）</td>
+          <td>已經很滿了，疊不了多少</td>
+          <td style="color:#fbbf24;">省一點</td>
+        </tr>
+        <tr>
+          <td><strong>MTP Verify</strong></td>
+          <td>混合（有讀有算）</td>
+          <td>部分可以疊</td>
+          <td style="color:#4ade80;">省一些</td>
+        </tr>
+        <tr>
+          <td><strong>KV Cache 寫入</strong></td>
+          <td>記憶體 bound</td>
+          <td>可以跟計算疊</td>
+          <td style="color:#fbbf24;">省一點</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="insight" style="margin-top: 16px;">
+      <div class="insight-text">
+        <strong>最好的組合：</strong>
+        <br>→ MoE gather 在讀記憶體的時候（記憶體 bound），
+        <br>→ 同時跑另一個 kernel 的計算部分（計算 bound）
+        <br>→ 這樣就把「閒置的算力」用起來了
+        <br><br>
+        <strong>這就是「shape overlap」：</strong>
+        <br>不是改某個 kernel 變快，
+        <br>而是讓多個 kernel 的時間軸疊起來，
+        <br>→ 總時間就變短了
+      </div>
+    </div>
+  </div>
+
+  <!-- What we need to do -->
+  <div class="section">
+    <div class="section-title">🛠️ 要怎麼做到？</div>
+
+    <div style="font-size: 13px; line-height: 1.8; color: #d4d4d8; margin-bottom: 12px;">
+      要把 shape 疊起來跑，需要做幾件事：
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>步驟</th>
+          <th>要做什麼</th>
+          <th>難度</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>1</td>
+          <td><strong>知道每個 kernel 是什麼 bound</strong>
+            <br>→ 哪些是記憶體 bound？哪些是計算 bound？
+            <br>→ 量測出來，才知道怎麼疊
+          </td>
+          <td><span class="tag tag-yellow">中</span></td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td><strong>把 kernel 拆成「讀取」和「計算」兩部分</strong>
+            <br>→ 先發出讀取請求（async）
+            <br>→ 然後去跑別的計算
+            <br>→ 等讀取完了，再繼續算
+          </td>
+          <td><span class="tag tag-red">高</span></td>
+        </tr>
+        <tr>
+          <td>3</td>
+          <td><strong>調度器要知道什麼時候可以疊</strong>
+            <br>→ 不是所有 kernel 都能疊
+            <br>→ 調度器要知道哪兩個可以同時跑
+            <br>→ 然後安排它們的時間軸
+          </td>
+          <td><span class="tag tag-red">高</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Conclusion -->
+  <div class="section" style="background: linear-gradient(135deg, #1a1d24, #1e2430);">
+    <div class="section-title">🎯 結論</div>
+
+    <div style="font-size: 13px; line-height: 1.8; color: #d4d4d8;">
+      <strong style="color:#a78bfa;">你的洞察是對的：</strong>
+      <br>既然知道會跑什麼，就應該疊起來跑。
+      <br><br>
+      <strong style="color:#4ade80;">為什麼之前沒做？</strong>
+      <br>1. 之前一直在優化單個 kernel，沒有想過「整體調度」
+      <br>2. 不知道每個 kernel 是什麼 bound，不知道怎麼疊
+      <br>3. 要做 kernel fusion + async dispatch，工程難度很高
+      <br><br>
+      <strong style="color:#fbbf24;">這跟 MoE gather 的優化是什麼關係？</strong>
+      <br>→ 是兩個不同的優化方向：
+      <br>→ 方向 A：把 MoE gather 本身變快（提高頻寬利用率）
+      <br>→ 方向 B：把不同的 kernel 疊起來跑（overlap）
+      <br><br>
+      <strong style="color:#a78bfa;">兩個都做，效果最好：</strong>
+      <br>→ 先把 MoE gather 本身優化（25% → 65%）
+      <br>→ 再把不同的 kernel 疊起來跑（overlap）
+      <br>→ 兩個加起來，就能到 25 t/s 以上
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

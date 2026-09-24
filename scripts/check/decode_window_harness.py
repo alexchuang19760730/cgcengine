@@ -71,10 +71,24 @@ MATERIAL_RESIDUE_PCT = 5.0
 # *a* digest -- just not the one any gate passed. So the harness checks instead of stamping, and
 # marks such an arm rather than recording it as data. PROBE_ANCHOR=none disables the check for a
 # deliberate new-build campaign.
+# Re-anchored 2026-09-22 21:31 after adding the shape-knob table (src/llama-shape-knob.{h,cpp})
+# and its GDN axis: the previous anchor's libllama/libggml-metal no longer exist, so every probe
+# that goes through this harness refused to measure. The new values are the build the M1/M2/M3
+# oracle gate just PASSED on -- M1 bit-identical 9/9, M2 argmax 9/9, M3 top-k 9/9, tree
+# 1ca685490 dirty_tracked=16 -- evidence in Backup/m123_oracle_gate/summary_gdn_axis_20260922.json.
+# Adding a source file changed the engine, so this is a NEW anchor, not a restatement of the old.
+# Re-anchored again 2026-09-22 22:31 after adding the GDN branch observation
+# (gdn_saw_fused / gdn_saw_manual, see models/delta-net-base.cpp): the build is the one the gate
+# passed as M1=9/9 M2=9/9 M3=9/9, tree 1ca685490 dirty_tracked=18 --
+# Backup/m123_oracle_gate/summary_gdn_probe_default_20260922.json.
+# CAUTION: the gate's own "build:" line names libllama.0.0.279.dylib, which is a STALE versioned
+# copy still lying in bin/; the unversioned libllama.0.dylib below is the one binaries load (it is
+# a symlink to the newest build, currently libllama.0.0.578.dylib). Compare this file, never the
+# versioned name the gate prints.
 ANCHOR = {
     "llama-server": "054fb22f04a01c5c",
-    "libllama.0.dylib": "aab787412e572550",
-    "libggml-metal.0.dylib": "1be366306c604669",
+    "libllama.0.dylib": "971ade0f947d23f8",
+    "libggml-metal.0.dylib": "128b6048870fcc55",
     "libllama-server-impl.dylib": "a87bfd2e80a086b4",
 }
 RESIDUE_CONCENTRATION = 0.50     # top-5 share of the total delta above which it is "concentrated"

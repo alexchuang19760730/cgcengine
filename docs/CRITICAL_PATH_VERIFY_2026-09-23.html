@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Critical Path = MTP Verify — 70% Bandwidth Target</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", sans-serif; background: #0f1115; color: #e4e6eb; padding: 24px; }
+  .container { max-width: 1280px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 700; margin-bottom: 4px; color: #fff; }
+  .subtitle { font-size: 13px; color: #8b8f98; margin-bottom: 24px; }
+
+  .section { background: #1a1d24; border-radius: 12px; padding: 20px; border: 1px solid #2a2e38; margin-bottom: 16px; }
+  .section-title { font-size: 15px; font-weight: 700; color: #fff; margin-bottom: 14px; }
+
+  .insight { background: linear-gradient(135deg, rgba(248,113,113,0.1), rgba(248,113,113,0.05)); border-left: 4px solid #f87171; padding: 16px; border-radius: 0 8px 8px 0; margin: 16px 0; }
+  .insight-title { font-size: 14px; font-weight: 700; color: #f87171; margin-bottom: 8px; }
+  .insight-text { font-size: 13px; line-height: 1.8; color: #d4d4d8; }
+  .insight-text strong { color: #f87171; }
+
+  .good-insight { background: linear-gradient(135deg, rgba(74,222,128,0.1), rgba(74,222,128,0.05)); border-left-color: #4ade80; }
+  .good-insight .insight-title { color: #4ade80; }
+  .good-insight .insight-text strong { color: #4ade80; }
+
+  /* Critical path diagram */
+  .critical-path { position: relative; height: 120px; background: #0f1115; border-radius: 8px; margin: 16px 0; padding: 12px; }
+  .path-block { position: absolute; height: 60px; border-radius: 6px; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; color: #fff; text-align: center; line-height: 1.3; }
+
+  .path-label { position: absolute; bottom: 0; left: 0; right: 0; text-align: center; font-size: 11px; color: #8b8f98; }
+
+  /* Bandwidth table */
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 12px 0; }
+  th { text-align: left; padding: 10px; background: #2a2e38; color: #b4b8c2; font-weight: 600; font-size: 11px; }
+  td { padding: 10px; border-bottom: 1px solid #2a2e38; color: #e4e6eb; }
+  tr:hover { background: rgba(255,255,255,0.02); }
+
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+  .tag-red { background: rgba(248,113,113,0.15); color: #f87171; }
+  .tag-green { background: rgba(74,222,128,0.15); color: #4ade80; }
+  .tag-yellow { background: rgba(251,191,36,0.15); color: #fbbf24; }
+
+  /* Math box */
+  .formula { background: #0f1115; border-radius: 8px; padding: 16px; font-family: "SF Mono", Monaco, monospace; font-size: 13px; line-height: 1.8; margin: 12px 0; color: #d4d4d8; overflow-x: auto; }
+  .formula .var { color: #60a5fa; }
+  .formula .op { color: #f87171; }
+  .formula .comment { color: #71717a; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Critical Path = MTP Verify</h1>
+  <div class="subtitle">你說得對：關鍵路徑是 verify，整個路徑要跑到 70% 頻寬</div>
+
+  <!-- The correction -->
+  <div class="insight">
+    <div class="insight-title">🔴 之前搞錯了重點</div>
+    <div class="insight-text">
+      我一直在盯著「MoE gather」這一個零件
+      <br>→ 以為把它從 25% 拉到 65% 就解決了
+      <br><br>
+      <strong>但你說得對：關鍵路徑是 MTP verify 整條路</strong>
+      <br>→ 不是單看 MoE gather 一個零件
+      <br>→ 是整個 verify forward pass 的平均頻寬利用率
+      <br>→ 要把整條路拉到 70%，才真的夠快
+    </div>
+  </div>
+
+  <!-- What is the critical path -->
+  <div class="section">
+    <div class="section-title">📏 關鍵路徑是什麼？</div>
+
+    <div style="font-size: 13px; line-height: 1.8; color: #d4d4d8; margin-bottom: 16px;">
+      在 speculative decoding 裡：
+      <br>→ 每一步 = 跑 draft k 次 + 跑 verify 1 次
+      <br>→ <strong>verify 這次 forward pass 就是關鍵路徑</strong>
+      <br>→ draft 可以跑在背景，但 verify 必須跑完才算完
+      <br><br>
+      所以：<strong>decode 速度 = k / verify_step_time</strong>
+      <br>→ verify 跑多久，決定了 decode 多快
+      <br>→ 不是 draft 跑多久
+      <br>→ 不是 MoE gather 跑多久
+      <br>→ 是「整個 verify forward pass」跑多久
+    </div>
+
+    <div class="critical-path">
+      <div class="path-block" style="left: 0%; width: 100%; background: linear-gradient(90deg, #f87171, #ef4444, #fbbf24, #4ade80, #60a5fa, #a78bfa);">
+        MTP Verify Forward Pass（整條路）
+      </div>
+      <div class="path-label">← 這就是關鍵路徑，要把整條路的平均頻寬利用率拉到 70% →</div>
+    </div>
+  </div>
+
+  <!-- Current bandwidth utilization -->
+  <div class="section">
+    <div class="section-title">📊 現在整條路的平均頻寬利用率是多少？</div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Verify 路徑上的各部分</th>
+          <th>占比</th>
+          <th>現在的頻寬利用率</th>
+          <th>理想是多少</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Dense GEMV（attention + layernorm）</td>
+          <td>~27%</td>
+          <td style="color:#4ade80;">77%</td>
+          <td style="color:#4ade80;">82%</td>
+        </tr>
+        <tr>
+          <td>MoE Expert Gather + Compute</td>
+          <td>~34%</td>
+          <td style="color:#f87171;">25%</td>
+          <td style="color:#fbbf24;">65%</td>
+        </tr>
+        <tr>
+          <td>KV Cache Read/Write</td>
+          <td>~12%</td>
+          <td style="color:#fbbf24;">~50%?</td>
+          <td style="color:#4ade80;">75%</td>
+        </tr>
+        <tr>
+          <td>Dispatch + Other Small Ops</td>
+          <td>~27%</td>
+          <td style="color:#8b8f98;">N/A（不是記憶體 bound）</td>
+          <td style="color:#8b8f98;">N/A</td>
+        </tr>
+        <tr style="background: rgba(248,113,113,0.05);">
+          <td><strong>整條路的平均頻寬利用率</strong></td>
+          <td>100%</td>
+          <td style="color:#f87171;"><strong>~35-40%</strong></td>
+          <td style="color:#4ade80;"><strong>70%</strong></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="insight" style="margin-top: 16px;">
+      <div class="insight-text">
+        <strong>為什麼平均只有 35-40%？</strong>
+        <br>→ Dense GEMV 不錯（77%）
+        <br>→ 但 MoE gather 拖後腿（25%）
+        <br>→ 平均下來就被拉低了
+        <br><br>
+        <strong>要到 70%，怎麼做？</strong>
+        <br>→ 不是只把 MoE gather 拉到 65%
+        <br>→ 是整條路都要提升
+        <br>→ Dense GEMV 從 77% → 82%
+        <br>→ MoE gather 從 25% → 65%
+        <br>→ KV cache 從 50% → 75%
+        <br>→ 全部一起提升，平均才會到 70%
+      </div>
+    </div>
+  </div>
+
+  <!-- The math -->
+  <div class="section">
+    <div class="section-title">🧮 算一下：70% 頻寬 = 多少 t/s？</div>
+
+    <div class="formula">
+      <span class="comment">// 基本常數</span>
+      <span class="var">B_total</span> <span class="op">=</span> 120 GB/s  <span class="comment">// M4 LPDDR5 總頻寬</span>
+      <span class="var">model_size</span> <span class="op">=</span> 13.6 GB  <span class="comment">// 模型大小（IQ2_S）</span>
+
+      <span class="comment">// Verify 一次 forward pass，要讀多少 bytes？</span>
+      <span class="var">bytes_per_verify</span> <span class="op">=</span> <span class="var">model_size</span> <span class="op">=</span> 13.6 GB
+
+      <span class="comment">// 現況：平均頻寬利用率 38%</span>
+      <span class="var">B_eff_current</span> <span class="op">=</span> 120 × 0.38 <span class="op">=</span> 45.6 GB/s
+      <span class="var">t_verify_current</span> <span class="op">=</span> 13.6 / 45.6 <span class="op">≈</span> 298 ms
+
+      <span class="comment">// 理想：平均頻寬利用率 70%</span>
+      <span class="var">B_eff_ideal</span> <span class="op">=</span> 120 × 0.70 <span class="op">=</span> 84 GB/s
+      <span class="var">t_verify_ideal</span> <span class="op">=</span> 13.6 / 84 <span class="op">≈</span> 162 ms
+
+      <span class="comment">// 加上 MTP k=2，每步產生 2 個 token</span>
+      <span class="var">tps_current</span> <span class="op">=</span> 2 / 0.298 <span class="op">≈</span> 6.7 t/s  <span class="comment">// 現況（k=2）</span>
+      <span class="var">tps_ideal</span> <span class="op">=</span> 2 / 0.162 <span class="op">≈</span> 12.3 t/s  <span class="comment">// 理想（k=2）</span>
+
+      <span class="comment">// 等等，這跟我們測到的不一樣？</span>
+      <span class="comment">// 因為上面算的是「從零讀全部模型」的情況</span>
+      <span class="comment">// 實際上很多東西已經在 cache 裡了，不用全部讀</span>
+    </div>
+
+    <div class="insight" style="margin-top: 16px;">
+      <div class="insight-text">
+        <strong>重要：不是所有東西都要從 DRAM 讀</strong>
+        <br>→ Dense 部分很多在 L2 cache 裡
+        <br>→ MoE 部分很多在 expert cache 裡
+        <br>→ 真正要從 DRAM 讀的，比 model_size 小很多
+        <br><br>
+        <strong>但不管怎麼說：</strong>
+        <br>→ 關鍵路徑是 verify
+        <br>→ 要把整條路的平均頻寬利用率拉到 70%
+        <br>→ 才真的夠快
+      </div>
+    </div>
+  </div>
+
+  <!-- What to do -->
+  <div class="section">
+    <div class="section-title">🎯 接下來該做什麼？</div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>優先級</th>
+          <th>要做什麼</th>
+          <th>為什麼</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="tag tag-red">P0</span></td>
+          <td><strong>量測 verify 整條路的平均頻寬利用率</strong>
+            <br>→ 不是單看 MoE gather
+            <br>→ 是看整個 verify forward pass 的平均
+            <br>→ 確認現在到底是 35% 還是 40% 還是多少
+          </td>
+          <td>知道現況才知道要提升多少</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-red">P0</span></td>
+          <td><strong>拆解 verify 路徑上每一部分的頻寬利用率</strong>
+            <br>→ 哪個部分拖後腿？
+            <br>→ 哪個部分已經不錯了？
+            <br>→ 哪個部分還有空間？
+          </td>
+          <td>知道從哪裡下手</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-yellow">P1</span></td>
+          <td><strong>想辦法把拖後腿的部分拉上來</strong>
+            <br>→ MoE gather 怎麼從 25% → 65%？
+            <br>→ KV cache 怎麼從 50% → 75%？
+            <br>→ Dense GEMV 怎麼從 77% → 82%？
+          </td>
+          <td>提升每個部分，平均才會上去</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-yellow">P1</span></td>
+          <td><strong>考慮 shape overlap</strong>
+            <br>→ 把不同的 kernel 疊起來跑
+            <br>→ 用一個的計算時間，隱藏另一個的記憶體等待
+            <br>→ 這樣平均頻寬利用率會更高
+          </td>
+          <td>overlap 可以進一步提升平均</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Conclusion -->
+  <div class="section" style="background: linear-gradient(135deg, #1a1d24, #1e2430);">
+    <div class="section-title">📌 結論</div>
+
+    <div style="font-size: 13px; line-height: 1.8; color: #d4d4d8;">
+      <strong style="color:#f87171;">你說得對：</strong>
+      <br>1. 關鍵路徑是 MTP verify，不是 MoE gather
+      <br>2. 要把整條路的平均頻寬利用率拉到 70%
+      <br><br>
+      <strong style="color:#4ade80;">所以：</strong>
+      <br>→ 不是只優化 MoE gather 一個零件
+      <br>→ 是要把整條 verify 路徑都優化
+      <br>→ Dense GEMV、MoE gather、KV cache、其他，全部一起看
+      <br>→ 平均頻寬利用率從 35-40% → 70%
+      <br><br>
+      <strong style="color:#a78bfa;">下一步：</strong>
+      <br>→ 先量清楚現在整條路的平均頻寬利用率到底是多少
+      <br>→ 再拆解每個部分，看哪個拖後腿
+      <br>→ 然後一個一個提升，直到平均到 70%
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

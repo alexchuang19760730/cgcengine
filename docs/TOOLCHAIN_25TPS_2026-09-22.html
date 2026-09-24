@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>25 t/s 量測工具鏈：六支工具在做什麼、怎麼用、拒絕什麼（2026-09-22）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa; --purple:#7c3aed; --purple-bg:#f5f3ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:27px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num,th.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap;text-align:right}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:22px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  .b-purple{background:var(--purple-bg);border-color:#ddd6fe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  .tool{border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:22px 0}
+  .tool > h3{margin-top:0}
+  .tool .q{font-size:13.5px;color:#1f2937;background:#f9fafb;border-left:3px solid var(--blue);
+           padding:8px 12px;margin:0 0 12px;border-radius:0 6px 6px 0}
+  .pill{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:999px;
+        background:var(--code-bg);border:1px solid var(--line);margin-right:4px;
+        font-family:ui-monospace,Menlo,monospace}
+  .no{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>25 t/s 量測工具鏈</h1>
+<div class="sub">
+  日期 2026-09-22 · 分支 <code>demo/sweet-spot-windows-fix</code> · 位置 <code>scripts/check/</code><br>
+  六支工具、共 <strong>106 項自測</strong>全過（<code>--selftest</code> 離線可跑，不需要模型、不需要 GPU）·
+  載體 <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X</code>，MTP on，pool 8 GiB，profile <code>prod25</code>
+</div>
+
+<div class="cards">
+  <div class="card"><div class="k">工具數 / 自測</div><div class="v">6 / 106</div>
+    <div class="small">全部 <code>--selftest</code> 離線通過</div></div>
+  <div class="card"><div class="k">共用解析器</div><div class="v">1 個</div>
+    <div class="small">gap_vs_miss 提供逐層序列，不重寫第二份 regex</div></div>
+  <div class="card"><div class="k">鏈的產物</div><div class="v">arms.jsonl</div>
+    <div class="small">每臂都帶 engine digest + 窗口 + 池統計</div></div>
+  <div class="card"><div class="k">「缺資料」的處理</div><div class="v bad">INVALID</div>
+    <div class="small">絕不印 0 —— 缺席是缺席，不是 0</div></div>
+</div>
+
+<div class="box b-blue">
+  <p><strong>這些工具解決的是同一個病：把「非結論」講成結論。</strong>這個 repo 反覆吃過四種：
+  手打的表格（有一次出貨時重複了一個 key、漏了另一個）、缺席被當成 0（「沒有 miss 軸」被讀成「沒有相關性」）、
+  跨 regime／跨 harness 的數字並排、以及啟動順序與 swap 漂移被當成效果。
+  六支工具各自的 <strong>拒算規則</strong>就是針對這四種寫的，而那比它們印出來的表更重要。</p>
+</div>
+
+<h2>一、這條鏈在做什麼</h2>
+
+<pre><code>  問題：25 t/s 需要什麼？                t/s = mean_len / step
+    │
+    ├─ 量：一個 verify round 的成本曲線        mtp_k_sweep.py      （起 server，改一個 env）
+    │      └─ 產物 arms.jsonl：每臂 digest / 窗口 / 池統計 / stderr
+    │
+    ├─ 拆：邊際 token 落在哪一項              verify_marginal.py  （讀 arms.jsonl，不再起 server）
+    │      └─ miss / verify-matmul / host     → 剩下一項 round remainder
+    │
+    ├─ 定價：round 預算收斂                   （verify_marginal 的輸出本身）
+    │      per-layer 7–21% · draft head 9–19% · remainder 70–102%
+    │
+    ├─ 收斂成表：必要條件階梯                  target25_grid.py    （兩個模式，兩個 regime）
+    │
+    ├─ 另一軸：accept 值多少                  draft_budget.py     （成本律 + 天花板）
+    │
+    └─ 第三處：kernel 的頭頂還有多高            shape_roofline.py   （bytes 算術 vs 實測 kernel）
+
+  共同的底層解析：gap_vs_miss.py  ← 逐層 wait / gather / dispatch + 相位邊界，一份 regex</code></pre>
+
+<h3>依賴圖（誰 import 誰）</h3>
+
+<pre><code>  target25_grid.py  ──imports──▶  verify_marginal.py  ──imports──▶  gap_vs_miss.py
+  mtp_k_sweep.py    ──imports──▶  prod_matrix.py（launcher / 盒況判定，沿用而非重寫）
+  draft_budget.py   獨立（純算術 + 自測）
+  shape_roofline.py 獨立（讀 test-backend-ops perf 的 capture + GGUF 型別表）</code></pre>
+
+<p class="small">依賴方向是刻意的：<strong>只有一個地方解析逐層日誌</strong>。
+這個 repo 曾因為「有兩個『可用記憶體』的定義」而吃過虧，所以新的分析不允許長出第二份 regex。</p>
+
+<h2>二、逐支工具</h2>
+
+<div class="tool">
+  <h3>1. <code>gap_vs_miss.py</code> —— 共用的逐層解析器 <span class="tag">445 行 · 11/11 自測</span></h3>
+  <div class="q">一層的 decode 空窗，是它的 <strong>miss 數</strong>買來的，還是<strong>固定的每層成本</strong>？</div>
+  <p>它是整條鏈的地基：把一份 server log 變成三條逐層序列，供上面所有工具匯入使用。</p>
+  <table>
+    <thead><tr><th>序列</th><th>來源行</th><th>語意</th></tr></thead>
+    <tbody>
+      <tr><td><code>idle_host</code></td><td><code>CGC-GAPSPLIT-L</code></td><td>每層每圖的 CPU 空窗（hook + tail + submit）</td></tr>
+      <tr><td><code>cb</code> / <code>wait</code> / <code>submit</code></td><td><code>CGC-DECPROF all</code></td><td>top-k hook（gather）／eval-sync／派送</td></tr>
+      <tr><td><code>misses</code></td><td><code>BATCHDBG</code></td><td>每個 <code>ensure_batch</code> 的 miss 數（<code>misses=N</code>）</td></tr>
+    </tbody>
+  </table>
+  <p><strong>三個總量規則，全部是量出來的而不是假設的：</strong></p>
+  <ul>
+    <li><strong>相位邊界</strong>＝最後一條 <code>CGC-POST:</code>。在 223046 那份 log 上，這條線把 2331 次 fill 中的 1334 次（與 59% 的 miss）移出 decode 母體 —— 跨相位擬合基本上就是在做 prefill 迴歸。</li>
+    <li><strong>圖身分</strong>：log 裡有 <code>segs=41</code>（41 層圖）與 <code>segs=2</code>（MTP draft 圖，單層）兩族。非 41 段的列被排除<em>並計數</em>，prefill 區的列也是。兩種排除都會印出來。</li>
+    <li><strong>中位數而非平均</strong>：同一層的列跨 0.02–194 ms，平均數是「這輪最慢那張圖」的陳述。因此它也另外保留 <code>*_mean</code> 變體，讓「邊際成本」可以用平均（邊際成本不會出現在中位數上）。</li>
+  </ul>
+  <p><strong>拒算：</strong>缺 <code>BATCHDBG</code> ⇒ <code>INVALID</code>（不是「無相關」）；缺 <code>CGC-POST</code> 邊界 ⇒ <code>INVALID</code>（相位未知）；完全沒有列 ⇒ <code>INVALID</code> 並附理由。三條都有自測，其中一條刻意檢查「<em>即使另外兩條序列擬合得很漂亮</em>也必須 INVALID」。</p>
+  <pre><code>python3 scripts/check/gap_vs_miss.py --log Backup/cgc_logs/llama_server_YYYYMMDD_HHMMSS.log
+python3 scripts/check/gap_vs_miss.py --selftest        # 11/11</code></pre>
+  <p class="small">模組介面：<code>parse(path) -&gt; (series, meta)</code>。</p>
+</div>
+
+<div class="tool">
+  <h3>2. <code>mtp_k_sweep.py</code> —— 在一個窗口內量完整條成本曲線 <span class="tag">594 行 · 33 項自測</span></h3>
+  <div class="q">多一個 verify token 要多少 ms —— 而這件事能不能在<strong>同一個 harness、同一個窗口</strong>內量到？</div>
+  <p>起因是 <code>draft_budget.py</code> 的擬合只有兩個點、且來自<strong>兩個不同 harness</strong>（llama-bench 的 OFF 臂 vs server 的 k=3）：
+  兩點兩參數、零自由度，它描述資料但不能檢驗資料。這支驅動去補那些缺的點，而且是<strong>一次補四個</strong>。</p>
+  <p><strong>旋鈕：</strong><code>CGC_SERVER_MTP_N_MAX</code>（<code>run_server.sh</code> 轉成 <code>--spec-draft-n-max</code>），已用 <code>CGC_DUMP_ENV=1</code> 驗證它真的落到 bench 行程的 <code>ARG</code> 行。</p>
+  <p><strong>instrument：</strong>引擎自己就印 <code>CGC-MTP-PERF</code>（<code>common/speculative.cpp:3012</code>，由 <code>CGC_MTP_PERF</code> 打開）：</p>
+  <pre><code>CGC-MTP-PERF type=draft-mtp calls_begin=... calls_draft=... gen_tokens=... acc_tokens=...
+             t_begin_ms=... t_draft_ms=... t_accept_ms=... acc_rate=...
+             gen_tok_per_round=... acc_tok_per_round=... emit_tok_per_round=... ms_per_round=...</code></pre>
+  <p>計數器是<strong>累積</strong>的 ⇒ 一次 run 的<strong>最後一行</strong>就是該 run 的總計（原始碼自己這樣寫）。有這行就不必再跑 n-gram 消融去做初步歸屬 ——
+  消融因此降級成「交叉檢查同一個計數器」，不再是發現步驟。</p>
+  <p><strong>協議：</strong>每 rep <strong>輪替臂序</strong>（rep1: k1,k2,k3,off；rep2: k2,k3,off,k1…），因為這個專案已多次證明「啟動順序主宰」。
+  每臂記錄 engine digest、窗口樣本、池統計，以及<strong>完整的 stderr</strong>（<code>&lt;stem&gt;.stderr.log</code>，<code>CGC-MTP-PERF</code> 就在那裡）。</p>
+  <p><strong>拒算：</strong>盒況不足（<code>--min-usable-pct</code>，預設 30%）不開跑；跑到一半被搶走會落下紀錄；
+  而一條 <code>INVALID</code> 的紀錄<strong>不算「這臂做完了」</strong>（否則重跑會跳過失敗的臂 —— 這是實際修過的 bug）。</p>
+  <pre><code>python3 scripts/check/mtp_k_sweep.py --reps 3 --logdir /tmp/mtp_k_sweep
+python3 scripts/check/mtp_k_sweep.py --report-only --logdir /tmp/mtp_k_sweep   # 只重算報告，不重跑
+python3 scripts/check/mtp_k_sweep.py --extra-env CGC_MTP_PERF=1,CGC_DECODE_PROFILE=1
+python3 scripts/check/mtp_k_sweep.py --selftest</code></pre>
+  <div class="box b-amber">
+    <p><strong>報表用「同 rep 內配對」，不用池化。</strong>修好之前的 bug 之一：<code>run["rows"]</code> 在 <code>--json</code> 路徑永遠是空的，
+    於是有個臂明明量到 11.13 t/s 卻被報成「0 samples」。守門<em>拒絕</em>是對的（寧可 INVALID 也不要假 0），<strong>來源</strong>是錯的。</p>
+  </div>
+</div>
+
+<div class="tool">
+  <h3>3. <code>verify_marginal.py</code> —— 邊際 verify token 的三路拆分 <span class="tag">553 行 · 30 項自測</span></h3>
+  <div class="q">那 61 ms/token 的黑盒子（「target verify + host」）裡，是 miss、是 matmul、還是主機路徑？</div>
+  <p>三個機制<em>先驗</em>可分辨，且指向三種不同的工作：<strong>miss-driven</strong>（槓桿＝覆蓋率／路由局部性）、
+  <strong>compute-driven</strong>（槓桿＝verify 的 op 路徑）、<strong>host-driven</strong>（槓桿＝批次化主機路徑）。</p>
+  <p><strong>設計：</strong>兩臂唯一差別是 verify 寬度（k=1/T=2 vs k=3/T=4），三條軸各自量，全部換算成「每回合」再差分除以 ΔT。</p>
+  <pre><code>marginal_total   = (round_ms(T=4) - round_ms(T=2)) / dT        CGC-MTP-PERF
+marginal_miss    = (miss/round(T=4) - miss/round(T=2)) * PER_MISS_MS / dT   BATCHDBG
+marginal_compute = (vop_us/round(T=4) - vop_us/round(T=2)) / dT / 1000      CGC-VERIFY-OP</code></pre>
+  <p><code>PER_MISS_MS = 0.695</code> 是<strong>借來的外部常數</strong>（F1 的定律，範圍 0.59–0.85 一併標註），工具會把它印在表頭。</p>
+  <p><strong>它印出來的東西：</strong>三路拆分表、<code>MEDIAN shares</code> 與一條 <code>RULE -&gt;</code> 判定、
+  逐層 miss 的集中度（前 8 層佔 |miss delta| 的多少）、逐層 marginal（三軸 + miss + 殘差）、
+  以及 rep 1 的 <strong>round budget 收斂表</strong>與<strong>每一個可用 rep</strong> 的收斂表。</p>
+  <p><strong>拒算（全部命名的拒絕，不是空表）：</strong>缺相位邊界、缺 miss 軸、目錄為空、兩臂回合數相同、
+  該臂完全沒有逐層列 ⇒ exit 1 並說出原因。自測裡就有一條「<em>該臂沒有 DECPROF 時必須具名拒絕，而不是靜默回傳空表</em>」。</p>
+  <pre><code>python3 scripts/check/verify_marginal.py --logdir /tmp/verify_layers
+python3 scripts/check/verify_marginal.py --logdir /tmp/verify_marginal --per-miss-ms 0.695
+python3 scripts/check/verify_marginal.py --selftest</code></pre>
+  <div class="box b-red">
+    <p><strong>必須跟著這些數字一起讀的儀器陷阱：</strong><code>CGC_VERIFY_OP_TIMING=1</code> 與 DECPROF／GAPSPLIT 家族
+    <strong>互斥</strong>。前者讓 expert-cache 的 callback 在 verify 的 <code>MUL_MAT_ID</code> 節點上答 <code>ask=true</code>，
+    於是那些節點走逐節點的 exact 路徑，<strong>分段式 async 派送器整條不跑</strong>
+    （同一 run 內：<code>CGC-VERIFY-OP</code> 4096 列 + <code>BATCHDBG</code> 5647 列，而 <code>CGC-SEG</code> / <code>CGC-DECPROF</code> /
+    <code>CGC-GAPSPLIT-L</code> / <code>CGC-GPUTIME</code> 全為 0）。總量上也看得出來：那一對的回合是 396/684 ms，
+    而未上儀器的那對是 273/352。⇒ 三路拆分的<strong>佔比</strong>是定性的，逐層那組來自另一對。一次 run 不可能兩者兼得。</p>
+  </div>
+</div>
+
+<div class="tool">
+  <h3>4. <code>target25_grid.py</code> —— 必要條件階梯（兩個模式） <span class="tag">267 行 · 14/14 自測</span></h3>
+  <div class="q">25 t/s 到底需要什麼？而「需要」有一個<strong>逐階可查</strong>的答案嗎？</div>
+  <p>兩個模式是刻意的，因為兩個 regime 的 step 分解不同，<strong>混用就是這條線一直在付的代價</strong>：</p>
+  <table>
+    <thead><tr><th>模式</th><th>輸入</th><th>step 軸</th><th>誰會用</th></tr></thead>
+    <tbody>
+      <tr><td><code>--log PATH</code>（預設）</td><td>一份 server-regime log</td>
+          <td>遮掉多少主機端 gap（<code>cb hidden</code> → <code>union floor</code>）</td>
+          <td>沒有 MTP 配對時的舊軸</td></tr>
+      <tr><td><code>--from-pair DIR</code></td><td>k 掃描的 <code>arms.jsonl</code>（需 k1 + k3 兩臂）</td>
+          <td><strong>實測的 round 預算</strong>：每往下一階＝移除一個實測項</td>
+          <td>MTP 開啟時唯一有意義的軸</td></tr>
+    </tbody>
+  </table>
+  <p><strong>表怎麼算：</strong><code>needs mean_len = 25 × step/1000</code>；<code>needs alpha</code> 是讓幾何
+  <code>E = 1+a+a²+a³</code> 達到該 mean_len 的每-draft 接受率（二分法解）。<code>impossible</code> ＝ <strong>連 α=1 都不夠</strong> ——
+  那個 <code>None</code> 正是這張表的重點：它是<strong>任何接受率都到不了的格</strong>。</p>
+  <p><code>alpha=1</code> 的邊界說明寫在自測裡：<code>alpha=1</code> 正好吐 <code>k+1</code> 個 token、<code>alpha=0</code> 正好吐 1 個、
+  <code>alpha=0.5, k=3</code> 吐 1.875 —— 而 <code>required_alpha</code> 對 <code>want</code> 必須單調。</p>
+  <p><strong>自測裡最有價值的四條：</strong>「地板以上每一階都需要超過上限的 mean_len」、
+  「上限以上不存在任何 α」、「階梯的最後一階就是 eval-sync 鏈」、以及「配對不齊 ⇒ INVALID，不是一張空表」。
+  另有一條把 <code>gpu_busy_sum</code> 與 <code>union_sum</code> 分開（前者「重疊算兩次」<strong>不是</strong>地板 —— 這條曾經出錯過一次並被撤回）。</p>
+  <pre><code>python3 scripts/check/target25_grid.py --selftest
+python3 scripts/check/target25_grid.py --from-pair /tmp/verify_layers          # round 預算階梯
+python3 scripts/check/target25_grid.py --log Backup/cgc_logs/llama_server_20260920_023021.log
+python3 scripts/check/target25_grid.py --from-pair /tmp/verify_layers --k 4    # 換寬臂</code></pre>
+  <p class="small">姊妹文件：<code>docs/TARGET25_NECESSARY_CONDITIONS_2026-09-22.html</code>（這張表的白皮書）。</p>
+</div>
+
+<div class="tool">
+  <h3>5. <code>draft_budget.py</code> —— accept 軸值多少 <span class="tag">215 行 · 7/7 自測</span></h3>
+  <div class="q">一旦確認批次<strong>不會</strong>攤薄，最佳 verify 寬度 k 是多少？而 accept 單獨的天花板在哪？</div>
+  <p>舊模型是 <code>S = E / (1 + m·k_eff)</code>，把 <code>m</code> 當一個不透明的數，並假設批次<em>有些</em>攤薄。
+  <code>shape_roofline.py</code> 在 kernel 層量到相反的事實：n=1..4 在我們確切的 MoE 形狀上，每-token 成本是<strong>平的</strong>
+  （<code>iq2_s</code> 60.22 → 57.48 µs/token、+4.6%；<code>iq3_s</code> 98.86 → 102.56、−3.7%）。
+  每個 token 帶自己的 top-k ids ⇒ 每個 token 都要重讀自己的 experts；<strong>批次只買到列數，沒買到頻寬</strong>。</p>
+  <p>於是成本律對 token 數 T 是<strong>嚴格仿射</strong>的：</p>
+  <pre><code>cost(T) = C_fixed + c_tok * T
+  T=1（MTP off）：S0 = 93.3 ms        docs/S0_MTP_ONOFF_AB_2026-09-21.md
+  T=4（MTP on k=3）：247.98 ms        docs/TARGET25_TWO_AXIS_2026-09-20.md
+  ⇒ C_fixed 41.74 ms + c_tok 51.56 ms * T   （kernel 8.36 = 16.2%，其餘 43.20 = 83.8%）</code></pre>
+  <p><strong>七項自測裡有兩條專門守住這個擬合的誠實性</strong>：<code>k=0</code> 必須<em>精確</em>回推 S0；
+  以及 <code>alpha=1</code> 的天花板是 <em>per-token 項</em>而不是固定項（19.39 t/s）。</p>
+  <p><strong>它回答的三個問題：</strong>① 每一個 k 要打平需要多少 accept（k=1:0.553 → k=7:0.851，<strong>單調上升</strong>）；
+  ② 給定 α 哪個 k 最好（<code>α ≤ 0.8</code> 時是 <strong>k=1</strong>，只有 <code>α ≥ 0.9</code> 才輪到 k=3）；
+  ③ accept 軸自己的天花板與 kernel 的必要性。</p>
+  <pre><code>python3 scripts/check/draft_budget.py --selftest
+python3 scripts/check/draft_budget.py --ratio 0.889 --ratio-k 3      # 同 harness 比值反解 alpha
+python3 scripts/check/draft_budget.py --s0 93.3 --step-t4 247.98</code></pre>
+  <div class="box b-purple">
+    <p><strong>「同 harness 比值反解」是這支工具的關鍵設計：</strong>ON/OFF 來自同 harness、同 shape、只差 <code>--spec-type</code>，
+    所以<strong>比值不帶跨 harness 誤差</strong>。把 0.889 反解 ⇒ <code>α = 0.654</code>，
+    低於 k=3 的損益平衡 0.731 ⇒ <strong>今天 k=3 是淨虧</strong>，而最佳 k 是 1（11.42 t/s = 1.066×）。
+    兩個點來自不同 harness 這件事則必須標在臉上：<code># 2-point fit: describes, does not test</code>。</p>
+  </div>
+</div>
+
+<div class="tool">
+  <h3>6. <code>shape_roofline.py</code> —— kernel 的頭頂還有多高 <span class="tag">468 行 · 11/11 自測</span></h3>
+  <div class="q">「先掃出想要的形狀、再來造 kernel」—— 但天花板與實測值來自兩個不同的地方。</div>
+  <table>
+    <thead><tr><th>數字</th><th>怎麼來</th></tr></thead>
+    <tbody>
+      <tr><td>天花板</td><td><strong>算術</strong>：bytes 由 (K, N, top-k, bits/weight) 決定，沒東西好量</td></tr>
+      <tr><td>實測</td><td><code>test-backend-ops perf</code>：逐 op、逐型別、逐形狀的<strong>真編譯 kernel</strong></td></tr>
+    </tbody>
+  </table>
+  <p>它輸出：bytes/token、我們確切形狀下的 kernel µs、實測 GB/s、佔裝置峰值的比例，
+  以及一個 kernel 勝利的<strong>端到端</strong>價值（<code>X = 步時佔比</code> × <code>Y = kernel 餘裕</code>）。</p>
+  <p><strong>拒算：</strong>未知的 quant 型別、或某個 (type, shape) 沒有量測 ⇒ <strong>硬錯誤 exit 1</strong>。
+  一個「靜默代換」過的 roofline 表比沒有表更糟。而 <code>--peak-gb-s</code> 預設值帶著它自己的標籤：
+  <code>cited M4 spec, NOT measured on this box</code>（後來的量測顯示實測峰值約 100.5 GB/s，引用值 120 高了 19%）。</p>
+  <p class="small">它也是唯一會直接指出<strong>另一支工具不能用</strong>的工具：<code>m1_harness.py</code> 的計時路徑是 shell out llama-bench 再 regex 一個 t/s 欄位 ⇒
+  它<strong>沒有形狀隔離</strong>，產不出 per-shape 的數字。</p>
+  <pre><code>python3 scripts/check/shape_roofline.py --capture Backup/roofline/phase2_*.txt --gguf models/gguf/&lt;carrier&gt;.gguf
+python3 scripts/check/shape_roofline.py --selftest
+python3 scripts/check/shape_roofline.py ... --proxy down=iq3_xxs     # 明示的 proxy，表格會標 *</code></pre>
+</div>
+
+<h2>三、把整條鏈跑一次</h2>
+
+<pre><code># 0) 先確認每一支的自我測試（離線、不需要模型）
+for f in gap_vs_miss mtp_k_sweep verify_marginal target25_grid draft_budget shape_roofline; do
+  python3 scripts/check/$f.py --selftest || echo "FAILED: $f"
+done
+
+# 1) 量（起 server，需要窗口）—— 產出 arms.jsonl
+python3 scripts/check/mtp_k_sweep.py --reps 3 --logdir /tmp/mtp_k_sweep
+
+# 2) 拆（不再起 server）—— 逐層三軸 + round budget
+python3 scripts/check/verify_marginal.py --logdir /tmp/verify_layers
+
+# 3) 收斂成表
+python3 scripts/check/target25_grid.py --from-pair /tmp/verify_layers
+
+# 4) 另一軸與第三處
+python3 scripts/check/draft_budget.py
+python3 scripts/check/shape_roofline.py --capture Backup/roofline/phase2_*.txt --gguf models/gguf/&lt;carrier&gt;.gguf</code></pre>
+
+<h2>四、共同紀律（六支工具共用的六條規則）</h2>
+
+<table>
+  <thead><tr><th>規則</th><th>在哪裡被強制</th><th>它防的是哪種錯</th></tr></thead>
+  <tbody>
+    <tr><td><strong>缺席不是 0</strong></td>
+        <td>gap_vs_miss 對缺 BATCHDBG 給 <code>INVALID</code>；mtp_k_sweep 的 <code>pool_stats</code> 對「不存在」回空而非零</td>
+        <td>「沒有 miss 軸」被讀成「沒有相關性」；「讀錯 key」被讀成「0 samples」</td></tr>
+    <tr><td><strong>只有一個解析器</strong></td>
+        <td>target25_grid → verify_marginal → gap_vs_miss 單向依賴</td>
+        <td>兩份 regex 對同一份 log 給出兩個答案（這個 repo 已有「兩個可用記憶體定義」的前例）</td></tr>
+    <tr><td><strong>同 rep 內配對</strong></td>
+        <td>mtp_k_sweep 的 <code>--report-only</code> 報表；verify_marginal 逐 rep 差分</td>
+        <td>1.5× 的 rep 漂移被當成效果；啟動順序被當成自變數</td></tr>
+    <tr><td><strong>regime 不混</strong></td>
+        <td>target25_grid 的兩個模式互斥；verify_marginal 的相位邊界</td>
+        <td>把 prefill 的 miss 混進 decode 母體；把 llama-bench 的數字與 server 的並排</td></tr>
+    <tr><td><strong>拒算優於猜測</strong></td>
+        <td>shape_roofline 的未知型別／缺形狀；target25_grid 的配對不齊；verify_marginal 的五種具名拒絕</td>
+        <td>靜默代換後的表格比沒有表更糟</td></tr>
+    <tr><td><strong>產物帶身分</strong></td>
+        <td>mtp_k_sweep 逐臂記錄 engine digest + 窗口 + 池統計 + 完整 stderr</td>
+        <td>「這個數字是不是另一顆 binary／在超訂的盒況下量的」無法從產物回答</td></tr>
+  </tbody>
+</table>
+
+<h2>五、這條鏈到目前為止的產出（可對照的數字）</h2>
+
+<table>
+  <thead><tr><th>讀數</th><th>值</th><th>出自</th></tr></thead>
+  <tbody>
+    <tr><td>每多一個 verify token</td><td class="num">c_tok ≈ 69.6 ms</td><td>mtp_k_sweep（4 點擬合，中位 r² 0.90–0.998）</td></tr>
+    <tr><td>其中 draft head vs 其餘</td><td class="num">+8.35 / +61.21 ms</td><td>mtp_k_sweep（引擎自己的計數器）</td></tr>
+    <tr><td>draft head 相對它的 kernel 地板</td><td class="num">8.35 vs 8.36 ms</td><td>shape_roofline（<code>mul_mat_id</code> 實測）</td></tr>
+    <tr><td>邊際 token 的歸屬</td><td class="num">per-layer 7–21% · head 9–19% · <strong>remainder 70–102%</strong></td><td>verify_marginal（3 rep）</td></tr>
+    <tr><td>25 t/s 的地板格需要的 accept</td><td class="num">α = 0.943 – 0.994（rep 2 無解）</td><td>target25_grid <code>--from-pair</code></td></tr>
+    <tr><td>accept 軸的天花板</td><td class="num">19.39 t/s（拿掉整個 kernel 也只 23.15）</td><td>draft_budget</td></tr>
+    <tr><td>今天同 harness 反解的 α，與最佳 k</td><td class="num">0.654 ⇒ 最佳 k=1（1.066×）</td><td>draft_budget <code>--ratio 0.889</code></td></tr>
+    <tr><td>MTP 對池子的副作用</td><td class="num">hit 96.5% → 85–88%，miss 約 3×</td><td>mtp_k_sweep 的池統計</td></tr>
+  </tbody>
+</table>
+
+<div class="box b-green">
+  <p><strong>最重要的一條方法論產出：</strong>這條鏈把「25 t/s 需要什麼」從一句論述變成<strong>一張逐階可查、且每一格都能被否證的表</strong>。
+  它同時給出了一個過去沒有的答案：地板以上的每一階都需要 <code>mean_len</code> 5.0–9.6，而硬上限是 4.0
+  ⇒ <strong>接受率在那幾格不是「不夠高」，而是無效</strong>。</p>
+</div>
+
+<h2>六、邊界</h2>
+
+<ul>
+  <li><strong>絕對值綁窗口。</strong>已量到的配對是在 swap 4.5–6.8 GB、<code>usable</code> 39.9–63.9%、部分臂 thermal HEAVY 下取得的。
+      <em>比值</em>與<em>表形狀</em>耐受漂移；t/s 絕對值不可與乾淨的 12.57 家族並排。</li>
+  <li><strong>兩點兩參數的擬合只描述、不檢驗。</strong><code>draft_budget</code> 的 cost law 自由度是 0；
+      支持「仿射形式」的不是它的算術，而是<strong>獨立的 kernel 量測</strong>（n=1..4 線性、截距≈0）與 <code>k=0</code> 能精確回推 S0。
+      檢驗方法補了第三、第四、第五個點（<code>mtp_k_sweep</code>）。</li>
+  <li><strong>remainder 是相減出來的</strong>，所以它的大小只跟同一臂的 per-layer 均值一樣好；
+      它的內部切分（lm_head／sampler-argmax／accept 路徑／圖與圖之間的宿主簿記）仍未量測。
+      可否證的預測已寫下：那段區間應該量到 <strong>T=4 ≥ 100 ms/round、T=2 ≤ 10 ms/round</strong>。</li>
+  <li><strong>M1/M2/M3 閘門不在這條鏈裡。</strong>這些工具全部只讀既有日誌或只改環境變數 ⇒ 不重建引擎。
+      engine digest 逐臂記錄，但「逐位元一致」的宣稱要另外跑那套閘門才成立。</li>
+  <li><code>test-backend-ops</code> 的 perf 模式有<strong>自己獨立的一份 case 清單</strong>（<code>make_test_cases_perf</code>）；
+      測資要加在那一份。eval 清單裡有一份被 <code>#if 0</code> 關掉的複製品，會誤導人。</li>
+</ul>
+
+<p class="small">本文件所引用的六支工具與相關量測文件均<strong>未 commit</strong>；寫作期間未起 server、未重建引擎、零殘留行程。<br>
+相關文件：<code>docs/TARGET25_NECESSARY_CONDITIONS_2026-09-22.html</code> · <code>docs/VERIFY_MARGINAL_2026-09-22.md</code> ·
+<code>docs/MTP_K_SWEEP_2026-09-22.md</code> · <code>docs/DRAFT_BUDGET_K_2026-09-22.md</code> · <code>docs/SHAPE_ROOFLINE_2026-09-22.md</code></p>
+
+</div>
+</body>
+</html>

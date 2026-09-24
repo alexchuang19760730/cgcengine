@@ -1,0 +1,105 @@
+{
+ "product": "decode_window_harness.py (two decode lanes, judged report)",
+ "report_html": "docs/DECODE_WINDOW_PROBE.html",
+ "raw_state": "/tmp/decode_window_harness.json",
+ "generated": "2026-09-22 19:09:49",
+ "engine_digest": {
+  "llama-server": "054fb22f04a01c5c",
+  "libllama.0.dylib": "0cd5a62833e31549",
+  "libggml-metal.0.dylib": "544b6c94bc7a372d",
+  "libllama-server-impl.dylib": "a87bfd2e80a086b4"
+ },
+ "tree": {
+  "dirty_tracked": 123
+ },
+ "anchor": {
+  "ok": false,
+  "why": "engine differs from the M1/M2/M3 anchor: {'libllama.0.dylib': '0cd5a62833e31549 != aab787412e572550', 'libggml-metal.0.dylib': '544b6c94bc7a372d != 1be366306c604669'}"
+ },
+ "window": {
+  "class": "unknown",
+  "why": "this run never asked the window probe, so whether the box was busy cannot be answered from this product",
+  "n_samples": 0,
+  "busy_samples": 0,
+  "samples": [],
+  "class_source": "decode_window_harness.py (this launcher's own checks)"
+ },
+ "rows": [
+  {
+   "lane": "A",
+   "arm": "b0",
+   "bitident": "0",
+   "status": "done",
+   "reps": [
+    "rep1_cold",
+    "rep2_warm"
+   ],
+   "window": {
+    "class": "unknown",
+    "why": "this run never asked the window probe, so whether the box was busy cannot be answered from this product",
+    "n_samples": 0,
+    "busy_samples": 0,
+    "samples": [],
+    "class_source": "decode_window_harness.py (this launcher's own checks)"
+   }
+  },
+  {
+   "lane": "A",
+   "arm": "b1",
+   "bitident": "1",
+   "status": "done",
+   "reps": [
+    "rep1_cold",
+    "rep2_warm"
+   ],
+   "window": {
+    "class": "unknown",
+    "why": "this run never asked the window probe, so whether the box was busy cannot be answered from this product",
+    "n_samples": 0,
+    "busy_samples": 0,
+    "samples": [],
+    "class_source": "decode_window_harness.py (this launcher's own checks)"
+   }
+  },
+  {
+   "lane": "A",
+   "arm": "b1b",
+   "bitident": "1",
+   "status": "done",
+   "reps": [
+    "rep1_cold",
+    "rep2_warm"
+   ],
+   "window": {
+    "class": "unknown",
+    "why": "this run never asked the window probe, so whether the box was busy cannot be answered from this product",
+    "n_samples": 0,
+    "busy_samples": 0,
+    "samples": [],
+    "class_source": "decode_window_harness.py (this launcher's own checks)"
+   }
+  },
+  {
+   "lane": "B",
+   "arm": "lane_b",
+   "status": "done",
+   "reps": [
+    "rep1_cold",
+    "rep2_warm",
+    "rep3_warm",
+    "rep4_after_thrash",
+    "rep5_after_thrash2",
+    "thrash_slab2000"
+   ],
+   "window": {
+    "class": "unknown",
+    "why": "this run never asked the window probe, so whether the box was busy cannot be answered from this product",
+    "n_samples": 0,
+    "busy_samples": 0,
+    "samples": [],
+    "class_source": "decode_window_harness.py (this launcher's own checks)"
+   }
+  }
+ ],
+ "note": "`raw_state` is a TEMPORARY path: it is this run's scratch, not evidence. The evidence is here -- engine digest, anchor, and the window checks this launcher made."
+}

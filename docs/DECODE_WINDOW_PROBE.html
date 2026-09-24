@@ -1,0 +1,48 @@
+<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<title>Decode window harness — 2026-09-22 19:09</title>
+<style>
+ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;
+   max-width:1080px;margin:2rem auto;padding:0 1.2rem;line-height:1.65;color:#1a1a1a}
+ h1{font-size:1.5rem;border-bottom:2px solid #333;padding-bottom:.4rem}
+ h2{font-size:1.15rem;margin-top:2rem;border-left:4px solid #555;padding-left:.6rem}
+ table{border-collapse:collapse;width:100%;margin:.8rem 0;font-size:.92rem}
+ th,td{border:1px solid #ddd;padding:.4rem .55rem;text-align:right}
+ th:first-child,td:first-child{text-align:left}
+ th{background:#f4f4f4}
+ code{background:#f2f2f2;padding:.1rem .3rem;border-radius:3px;font-size:.88em}
+ .badge{display:inline-block;padding:.12rem .5rem;border-radius:10px;color:#fff;font-size:.8rem;
+   font-weight:600}
+ .ok{background:#1a7f37} .bad{background:#b42318} .warn{background:#9a6700}
+ .note{background:#fbf8e5;border-left:4px solid #d4a72c;padding:.6rem .9rem;margin:1rem 0}
+ .v{margin:.5rem 0 .5rem .6rem}
+</style></head><body>
+<h1>Decode window harness</h1>
+<p><strong>2026-09-22 19:09</strong> · port 8199 (8080 only observed, never signalled) ·
+engine digests: {&quot;llama-server&quot;: &quot;054fb22f04a01c5c&quot;, &quot;libllama.0.dylib&quot;: &quot;aab787412e572550&quot;}</p>
+<div class="note"><strong>如何讀這份報告：</strong>每個判定都要打贏「這台機器自己的漂移」才算數。
+Lane A 的兩個 BITIDENT=1 基線之間的分歧就是那個門檻；效果小於門檻一律標成
+INCONCLUSIVE，不會被四捨五入成結論。Lane B 的冷/暖是變數不是雜訊。</div>
+<h2>Lane A — item 1：small-batch mat-mv 是不是 2.28× 的成因</h2>
+<p>預測是<b>微分</b>的：原始碼說 <code>ne11=1</code> 本來就不在 small-batch 家族裡，所以 BITIDENT=0 應該<b>只動 ntok=4</b>、不動 ntok=1。</p>
+<table><thead><tr><th>arm</th><th>BITIDENT</th><th>ms/token</th><th>ntok=1 total</th><th>ntok=1 wait</th><th>ntok=1 cb</th><th>ntok=4 total</th><th>ntok=4 wait</th><th>ntok=4 cb</th><th>log</th></tr></thead><tbody><tr><td>b1</td><td>1</td><td>100.00</td><td>95.00</td><td>75.00</td><td>20.00</td><td>152.00</td><td>122.00</td><td>30.00</td><td>b1.log</td></tr><tr><td>b0</td><td>0</td><td>88.00</td><td>94.00</td><td>74.00</td><td>20.00</td><td>110.00</td><td>80.00</td><td>30.00</td><td>b0.log</td></tr><tr><td>b1b</td><td>1</td><td>101.00</td><td>95.00</td><td>75.00</td><td>20.00</td><td>150.00</td><td>120.00</td><td>30.00</td><td>b1b.log</td></tr></tbody></table>
+<div class="v"><span class="badge ok">flat</span> ntok=1 plain step (CONTROL: ne11=1 -&gt; mul_mv either way): baselines 95.0 ms (spread 0.0%, threshold 5.0%), BITIDENT=0 94.0 ms =&gt; -1.1% -&gt; within baseline spread</div>
+<div class="v"><span class="badge bad">moved</span> ntok=4 verify step (TEST: ne11=4): baselines 151.0 ms (spread 1.3%, threshold 5.0%), BITIDENT=0 110.0 ms =&gt; -27.2% -&gt; BEYOND baseline spread</div>
+<div class="v"><span class="badge warn">CAVEAT</span> ms/token is NOT comparable across these arms -- BITIDENT=0 breaks bit-identity, so the token stream and the accept rate differ. Compare fixed-shape per-step costs only.</div>
+<div class="v"><span class="badge ok">CONFIRMED</span> Control flat, verify step faster =&gt; the small-batch mat-mv family is the mechanism. An M-invariant version of it is worth building.</div>
+<h2>Lane B — items 6–8：thrash 的殘留與暖池機制</h2>
+<table><thead><tr><th>request</th><th>tokens</th><th>ms/token</th><th>step total</th><th>step wait</th><th>step cb</th></tr></thead><tbody><tr><td>rep1_cold</td><td>92</td><td>120.00</td><td>110.00</td><td>77.10</td><td>20.40</td></tr><tr><td>rep2_warm</td><td>92</td><td>75.00</td><td>75.80</td><td>63.90</td><td>4.80</td></tr><tr><td>rep3_warm</td><td>92</td><td>75.00</td><td>78.00</td><td>68.80</td><td>3.70</td></tr><tr><td>thrash_slab2000</td><td>8</td><td>110.00</td><td>—</td><td>—</td><td>—</td></tr><tr><td>rep4_after_thrash</td><td>92</td><td>101.00</td><td>94.00</td><td>79.00</td><td>4.60</td></tr><tr><td>rep5_after_thrash2</td><td>92</td><td>84.00</td><td>75.80</td><td>63.90</td><td>4.80</td></tr></tbody></table>
+<p><b>逐層殘留</b>（暖池 vs thrash 後第一個請求，wait 差值最大的幾層）：</p>
+<table><thead><tr><th>layer</th><th>warm wait</th><th>after-thrash wait</th><th>delta</th></tr></thead><tbody><tr><td>37</td><td>1.90</td><td>16.00</td><td>14.10</td></tr><tr><td>38</td><td>1.90</td><td>16.00</td><td>14.10</td></tr><tr><td>39</td><td>1.90</td><td>16.00</td><td>14.10</td></tr><tr><td>0</td><td>1.90</td><td>2.00</td><td>0.10</td></tr><tr><td>1</td><td>1.90</td><td>2.00</td><td>0.10</td></tr><tr><td>2</td><td>1.90</td><td>2.00</td><td>0.10</td></tr></tbody></table>
+<div class="v"><span class="badge warn">concentrated</span> thrash residue: total +46 ms across 40 layers, top-5 share 92% =&gt; concentrated in a few layers</div>
+<div class="v"><span class="badge bad">material residue</span> after a 2000-token slab thrash the rate is 101.00 vs 75.00 ms/token (+34.7%).</div>
+<div class="v"><span class="badge bad">not recovered</span> second pass after the thrash: 84.00 ms/token vs warm 75.00 (+12.0%) =&gt; a second pass does NOT restore the rate; the damage is not just pool contents</div>
+<div class="note" style="background:#fdecec;border-left-color:#b42318"><strong>SYNTHETIC RENDER TEST</strong> — 下面每一個數字都是為了驗證報告排版而鍵入的，<b>不是量測結果</b>，不可引用。</div>
+<h2>Drift lane — 交錯重複的 b1/b1b：item 1 的比較有沒有解析度</h2>
+<p>問的不是 BITIDENT，是兩個<b>完全同配置</b>的臂能不能在 5% 內一致。第一次跑它們差 17.5%，所以那個結果只能報成 underpowered。逐層證據：b1/b1b 的 wait 比值中位 1.121、<b>最小 1.020（沒有一層更快）</b>、而 cb 比值 0.974 ⇒ 全域 GPU 側因子（時脈/熱），不是 pool。所以這條線<b>交錯時序</b>並輪替區塊內順序，讓配對差值抵銷漂移。</p>
+<div class="v"><span class="badge warn">INCOMPLETE</span> the drift lane has no completed arms yet.</div>
+<h2>Kernel family eligibility — item 1 的前提是否成立（讀真的 GGUF，不跑量測）</h2>
+<p>這件事<b>不是量測問題</b>：small-batch 家族（<code>mul_mv_ext</code>）只接受兩份互斥的型別白名單，其餘型別一律落到 mul_mv/mul_mm；在那裡 batch size 不改變每列的歸約，所以 <code>CGC_MM_BITIDENT</code> 對它們<b>不可能有任何效果</b>。若 expert 權重的型別一個都不在白名單上，那 item 1 的 kernel 假設對這顆模型根本不適用——此時 A/B 裡看到的任何差異都不是 kernel 家族的效應。</p>
+<div class="v"><span class="badge warn">INCOMPLETE</span> the model path was not recorded (None), so eligibility of the weights actually being measured cannot be checked.</div>
+<h2>執行日誌（最後 400 行）</h2><pre style='font-size:.82rem;background:#f7f7f7;padding:.8rem;overflow:auto;max-height:26rem'>[synthetic] render-sample: no server was launched; no lane was run.</pre>
+<p style='font-size:.85rem;color:#555'>證據（engine digest、M1/M2/M3 anchor、這次量測做過的每一次窗口檢查）在與本報告同名的 sidecar <code>DECODE_WINDOW_2026-09-22.json</code>，與這份 HTML 同一次寫出。</p>
+</body></html>

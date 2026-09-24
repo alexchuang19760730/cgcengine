@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Step Time Breakdown — All Big Chunks</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", sans-serif; background: #0f1115; color: #e4e6eb; padding: 24px; }
+  .container { max-width: 1280px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 700; margin-bottom: 4px; color: #fff; }
+  .subtitle { font-size: 13px; color: #8b8f98; margin-bottom: 24px; }
+
+  .section { background: #1a1d24; border-radius: 12px; padding: 20px; border: 1px solid #2a2e38; margin-bottom: 16px; }
+  .section-title { font-size: 15px; font-weight: 700; color: #fff; margin-bottom: 14px; }
+
+  /* Waterfall chart */
+  .waterfall { display: flex; align-items: flex-end; gap: 8px; height: 200px; padding: 20px 0; border-bottom: 1px solid #2a2e38; margin-bottom: 12px; }
+  .bar-group { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .bar { width: 100%; border-radius: 4px 4px 0 0; position: relative; transition: opacity 0.2s; }
+  .bar:hover { opacity: 0.8; }
+  .bar-label { font-size: 10px; color: #8b8f98; text-align: center; }
+  .bar-value { font-size: 11px; font-weight: 700; color: #fff; position: absolute; top: -18px; left: 50%; transform: translateX(-50%); white-space: nowrap; }
+
+  /* Chunk cards */
+  .chunk-grid { display: grid; grid-template-columns: 1fr; gap: 12px; margin: 16px 0; }
+  .chunk { background: #0f1115; border-radius: 10px; padding: 16px; border-left: 4px solid #2a2e38; }
+  .chunk-high { border-left-color: #f87171; }
+  .chunk-mid { border-left-color: #fbbf24; }
+  .chunk-low { border-left-color: #4ade80; }
+
+  .chunk-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .chunk-name { font-size: 14px; font-weight: 700; color: #fff; }
+  .chunk-pct { font-size: 18px; font-weight: 800; }
+
+  .chunk-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 12px; }
+  .chunk-row:last-child { border-bottom: none; }
+  .chunk-key { color: #b4b8c2; }
+  .chunk-val { font-weight: 600; }
+
+  .bandwidth-bar { height: 8px; background: #2a2e38; border-radius: 4px; overflow: hidden; margin: 8px 0; }
+  .bandwidth-fill { height: 100%; border-radius: 4px; }
+
+  .reason-box { background: rgba(248,113,113,0.08); border-radius: 6px; padding: 10px; margin: 10px 0; font-size: 12px; line-height: 1.6; color: #d4d4d8; }
+  .reason-box strong { color: #f87171; }
+
+  .fix-box { background: rgba(74,222,128,0.08); border-radius: 6px; padding: 10px; margin: 10px 0; font-size: 12px; line-height: 1.6; color: #d4d4d8; }
+  .fix-box strong { color: #4ade80; }
+
+  /* Summary table */
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 12px 0; }
+  th { text-align: left; padding: 10px; background: #2a2e38; color: #b4b8c2; font-weight: 600; font-size: 11px; }
+  td { padding: 10px; border-bottom: 1px solid #2a2e38; color: #e4e6eb; }
+  tr:hover { background: rgba(255,255,255,0.02); }
+
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+  .tag-red { background: rgba(248,113,113,0.15); color: #f87171; }
+  .tag-green { background: rgba(74,222,128,0.15); color: #4ade80; }
+  .tag-yellow { background: rgba(251,191,36,0.15); color: #fbbf24; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Step Time Breakdown — 所有大頭拆解</h1>
+  <div class="subtitle">不只是 MoE gather，把每一個大頭都拉出來看</div>
+
+  <!-- Waterfall -->
+  <div class="section">
+    <div class="section-title">📊 現況：Step Time 83 ms 怎麼分的？</div>
+
+    <div class="waterfall">
+      <div class="bar-group">
+        <div class="bar" style="height: 80px; background: linear-gradient(180deg, #f87171, #ef4444);">
+          <div class="bar-value">28 ms (34%)</div>
+        </div>
+        <div class="bar-label">MoE Gather</div>
+      </div>
+      <div class="bar-group">
+        <div class="bar" style="height: 65px; background: linear-gradient(180deg, #fbbf24, #f59e0b);">
+          <div class="bar-value">22 ms (27%)</div>
+        </div>
+        <div class="bar-label">Dense GEMV</div>
+      </div>
+      <div class="bar-group">
+        <div class="bar" style="height: 45px; background: linear-gradient(180deg, #a78bfa, #8b5cf6);">
+          <div class="bar-value">15 ms (18%)</div>
+        </div>
+        <div class="bar-label">MTP Verify</div>
+      </div>
+      <div class="bar-group">
+        <div class="bar" style="height: 30px; background: linear-gradient(180deg, #60a5fa, #3b82f6);">
+          <div class="bar-value">10 ms (12%)</div>
+        </div>
+        <div class="bar-label">KV Cache</div>
+      </div>
+      <div class="bar-group">
+        <div class="bar" style="height: 15px; background: linear-gradient(180deg, #4ade80, #22c55e);">
+          <div class="bar-value">8 ms (9%)</div>
+        </div>
+        <div class="bar-label">Dispatch + Other</div>
+      </div>
+    </div>
+
+    <div style="font-size: 11px; color: #8b8f98; text-align: center;">
+      ⚠️ 以上是粗略估算，實際比例會因為模型大小、k 值、cache 大小而變動
+    </div>
+  </div>
+
+  <!-- Each chunk in detail -->
+  <div class="section">
+    <div class="section-title">🔍 每個大頭詳細分析</div>
+
+    <!-- Chunk 1: MoE Gather -->
+    <div class="chunk chunk-high">
+      <div class="chunk-header">
+        <div class="chunk-name">1. MoE Expert Gather</div>
+        <div class="chunk-pct" style="color:#f87171;">~34%</div>
+      </div>
+
+      <div class="chunk-row">
+        <div class="chunk-key">現況時間</div>
+        <div class="chunk-val">~28 ms</div>
+      </div>
+      <div class="chunk-row">
+        <div class="chunk-key">頻寬利用率</div>
+        <div class="chunk-val" style="color:#f87171;">~25%</div>
+      </div>
+
+      <div class="bandwidth-bar">
+        <div class="bandwidth-fill" style="width: 25%; background: linear-gradient(90deg, #f87171, #ef4444);"></div>
+      </div>
+
+      <div class="reason-box">
+        <strong>為什麼只有 25%？</strong><br>
+        1. <strong>讀取不連續</strong>：8 個 expert 分散在記憶體各處，跳來跳去，DRAM row buffer 命中率低
+        <br>2. <strong>平行度不夠</strong>：一次只讀一個 expert，沒有充分利用 DRAM 的多 bank 並行能力
+        <br>3. <strong>Overhead 占比高</strong>：每個 expert 讀 170 MB，但 dispatch overhead 相對來說不算小
+      </div>
+
+      <div class="fix-box">
+        <strong>怎麼跑滿？</strong><br>
+        1. <strong>批次讀</strong>：把多個 expert 的讀取合併成一次，讓讀取位置更連續
+        <br>2. <strong>提高平行度</strong>：同時讀多個 expert，填滿 DRAM 流水線
+        <br>3. <strong>Prefetch</strong>：提前讀下一個 expert，隱藏 IO 延遲
+        <br><br>
+        <strong>預期效果：25% → 65%，時間從 28 ms → 11 ms（省 17 ms）</strong>
+      </div>
+    </div>
+
+    <!-- Chunk 2: Dense GEMV -->
+    <div class="chunk chunk-mid">
+      <div class="chunk-header">
+        <div class="chunk-name">2. Dense GEMV（Attention + Layernorm + 其他）</div>
+        <div class="chunk-pct" style="color:#fbbf24;">~27%</div>
+      </div>
+
+      <div class="chunk-row">
+        <div class="chunk-key">現況時間</div>
+        <div class="chunk-val">~22 ms</div>
+      </div>
+      <div class="chunk-row">
+        <div class="chunk-key">頻寬利用率</div>
+        <div class="chunk-val" style="color:#4ade80;">~76-77%</div>
+      </div>
+
+      <div class="bandwidth-bar">
+        <div class="bandwidth-fill" style="width: 77%; background: linear-gradient(90deg, #4ade80, #22c55e);"></div>
+      </div>
+
+      <div class="reason-box" style="background: rgba(251,191,36,0.08);">
+        <strong>為什麼已經這麼高了？</strong><br>
+        Dense GEMV 的讀取模式是連續的（整個 weight matrix 一次讀完），所以頻寬利用率本來就高。
+        <br><br>
+        <strong>為什麼不能到 100%？</strong><br>
+        1. <strong>不是純記憶體 bound</strong>：有一點計算（matrix-vector multiply），計算也需要時間
+        <br>2. <strong>一些小 overhead</strong>：kernel launch、dispatch 等
+        <br>3. <strong>理論上限就是 ~80-85%</strong>：因為不是純 copy，還有計算
+      </div>
+
+      <div class="fix-box">
+        <strong>怎麼再跑滿一點？</strong><br>
+        已經差不多到極限了。打滿也只 +2-3%，不值得投入太多。
+        <br><br>
+        <strong>預期效果：77% → 82%，時間從 22 ms → 20.7 ms（省 1.3 ms）</strong>
+      </div>
+    </div>
+
+    <!-- Chunk 3: MTP Verify -->
+    <div class="chunk chunk-mid">
+      <div class="chunk-header">
+        <div class="chunk-name">3. MTP Verify（Speculative Decoding 驗證）</div>
+        <div class="chunk-pct" style="color:#a78bfa;">~18%</div>
+      </div>
+
+      <div class="chunk-row">
+        <div class="chunk-key">現況時間</div>
+        <div class="chunk-val">~15 ms</div>
+      </div>
+      <div class="chunk-row">
+        <div class="chunk-key">頻寬利用率</div>
+        <div class="chunk-val" style="color:#fbbf24;">未知（待量測）</div>
+      </div>
+
+      <div class="bandwidth-bar">
+        <div class="bandwidth-fill" style="width: 50%; background: linear-gradient(90deg, #a78bfa, #8b5cf6);"></div>
+      </div>
+
+      <div class="reason-box">
+        <strong>為什麼這裡也可能有問題？</strong><br>
+        MTP verify 其實也是在跑同樣的模型（只不過是 verify 多個 token），所以：
+        <br>1. 也有 dense GEMV 部分（頻寬利用率應該跟上面一樣 ~77%）
+        <br>2. 也有 MoE gather 部分（頻寬利用率應該也是 ~25%，因為是同樣的問題）
+        <br>3. <strong>如果 MoE gather 的問題解決了，MTP verify 的 MoE 部分也會一起變快</strong>
+      </div>
+
+      <div class="fix-box">
+        <strong>怎麼跑滿？</strong><br>
+        跟 MoE gather 是同一個問題，解決了 MoE gather，MTP verify 也會一起變快。
+        <br><br>
+        <strong>另外一個方向：</strong>k 值越小，MTP verify 的時間越短（因為 verify 的 token 少）
+        <br>→ k=2 比 k=3 快 16.4%（待認證）
+        <br><br>
+        <strong>預期效果：MoE 部分一起省 50%，整體省 ~7 ms</strong>
+      </div>
+    </div>
+
+    <!-- Chunk 4: KV Cache -->
+    <div class="chunk chunk-low">
+      <div class="chunk-header">
+        <div class="chunk-name">4. KV Cache 操作</div>
+        <div class="chunk-pct" style="color:#60a5fa;">~12%</div>
+      </div>
+
+      <div class="chunk-row">
+        <div class="chunk-key">現況時間</div>
+        <div class="chunk-val">~10 ms</div>
+      </div>
+      <div class="chunk-row">
+        <div class="chunk-key">頻寬利用率</div>
+        <div class="chunk-val" style="color:#fbbf24;">未知（待量測）</div>
+      </div>
+
+      <div class="bandwidth-bar">
+        <div class="bandwidth-fill" style="width: 50%; background: linear-gradient(90deg, #60a5fa, #3b82f6);"></div>
+      </div>
+
+      <div class="reason-box">
+        <strong>KV Cache 在做什麼？</strong><br>
+        1. 讀取之前的 KV cache（attention 要用）
+        <br>2. 寫入新的 KV cache
+        <br><br>
+        <strong>為什麼可能頻寬利用率不高？</strong><br>
+        1. <strong>讀寫混合</strong>：一半讀一半寫，DRAM 讀寫切換有 penalty
+        <br>2. <strong>長度可變</strong>：context 越長，要讀的 KV 越多
+        <br>3. <strong>分散存取</strong>：attention 讀的位置可能也是跳來跳去的
+      </div>
+
+      <div class="fix-box">
+        <strong>怎麼跑滿？</strong><br>
+        1. <strong>KV cache 壓縮</strong>：用更緊湊的格式，減少要讀的 bytes
+        <br>2. <strong>分頁儲存</strong>：把 KV cache 分成 page，讀取時更連續
+        <br>3. <strong>優化 attention kernel</strong>：讓 KV 的讀取更有效率
+        <br><br>
+        <strong>預期效果：省 2-3 ms</strong>
+      </div>
+    </div>
+
+    <!-- Chunk 5: Dispatch Overhead -->
+    <div class="chunk chunk-low">
+      <div class="chunk-header">
+        <div class="chunk-name">5. Dispatch Overhead + 其他</div>
+        <div class="chunk-pct" style="color:#4ade80;">~9%</div>
+      </div>
+
+      <div class="chunk-row">
+        <div class="chunk-key">現況時間</div>
+        <div class="chunk-val">~8 ms</div>
+      </div>
+      <div class="chunk-row">
+        <div class="chunk-key">類型</div>
+        <div class="chunk-val">CPU dispatch + 小 ops</div>
+      </div>
+
+      <div class="reason-box" style="background: rgba(74,222,128,0.08);">
+        <strong>這部分是什麼？</strong><br>
+        1. <strong>GPU kernel launch overhead</strong>：每個 kernel 都要 launch，launch 本身就要時間
+        <br>2. <strong>CPU 端的準備工作</strong>：算參數、準備 buffer、切換狀態
+        <br>3. <strong>小 ops</strong>：一些很小的 elementwise operation
+      </div>
+
+      <div class="fix-box">
+        <strong>怎麼減少？</strong><br>
+        1. <strong>Kernel fusion</strong>：把多個小 ops 合併成一個，減少 launch 次數
+        <br>2. <strong>預先準備</strong>：把可以預先算好的東西提前算好
+        <br><br>
+        <strong>預期效果：省 2-3 ms（之前量過，大約 2.28%，已經接近極限）</strong>
+      </div>
+    </div>
+  </div>
+
+  <!-- Summary table -->
+  <div class="section">
+    <div class="section-title">📋 總表：每個大頭能省多少？</div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>大頭</th>
+          <th>現況時間</th>
+          <th>現況頻寬利用率</th>
+          <th>理想頻寬利用率</th>
+          <th>能省多少</th>
+          <th>難度</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>MoE Gather</strong></td>
+          <td>28 ms</td>
+          <td style="color:#f87171;">25%</td>
+          <td style="color:#4ade80;">65%</td>
+          <td style="color:#4ade80;"><strong>省 17 ms</strong></td>
+          <td><span class="tag tag-red">高</span></td>
+        </tr>
+        <tr>
+          <td><strong>Dense GEMV</strong></td>
+          <td>22 ms</td>
+          <td style="color:#4ade80;">77%</td>
+          <td style="color:#4ade80;">82%</td>
+          <td style="color:#4ade80;">省 1.3 ms</td>
+          <td><span class="tag tag-green">低</span></td>
+        </tr>
+        <tr>
+          <td><strong>MTP Verify</strong></td>
+          <td>15 ms</td>
+          <td>~25% (MoE part)</td>
+          <td>~65% (MoE part)</td>
+          <td style="color:#4ade80;">省 7 ms</td>
+          <td><span class="tag tag-yellow">中</span></td>
+        </tr>
+        <tr>
+          <td><strong>KV Cache</strong></td>
+          <td>10 ms</td>
+          <td>未知</td>
+          <td>~70%</td>
+          <td style="color:#fbbf24;">省 2-3 ms</td>
+          <td><span class="tag tag-yellow">中</span></td>
+        </tr>
+        <tr>
+          <td><strong>Dispatch + Other</strong></td>
+          <td>8 ms</td>
+          <td>N/A</td>
+          <td>N/A</td>
+          <td style="color:#4ade80;">省 2-3 ms</td>
+          <td><span class="tag tag-green">低</span></td>
+        </tr>
+        <tr style="background: rgba(167,139,250,0.05);">
+          <td><strong>總計</strong></td>
+          <td><strong>83 ms</strong></td>
+          <td></td>
+          <td></td>
+          <td style="color:#a78bfa;"><strong>省 ~30 ms → 53 ms</strong></td>
+          <td></td>
+        </tr>
+        <tr style="background: rgba(74,222,128,0.05);">
+          <td><strong>對應 t/s</strong></td>
+          <td>~12 t/s</td>
+          <td></td>
+          <td></td>
+          <td style="color:#4ade80;"><strong>~18-20 t/s</strong></td>
+          <td></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Conclusion -->
+  <div class="section" style="background: linear-gradient(135deg, #1a1d24, #1e2430);">
+    <div class="section-title">🎯 結論</div>
+
+    <div style="font-size: 13px; line-height: 1.8; color: #d4d4d8;">
+      <strong style="color:#f87171;">最大的槓桿還是 MoE gather</strong>
+      <br>→ 光是 MoE gather 就能省 17 ms
+      <br>→ 加上 MTP verify 的 MoE 部分（同樣的問題），又省 7 ms
+      <br>→ 這兩個加起來就是 24 ms
+      <br><br>
+      <strong style="color:#fbbf24;">其他部分加起來也只能省 5-6 ms</strong>
+      <br>→ Dense GEMV 已經差不多了
+      <br>→ KV cache 有一點空間
+      <br>→ Dispatch overhead 也差不多了
+      <br><br>
+      <strong style="color:#4ade80;">所以：</strong>
+      <br>1. 解決 MoE gather 的問題（讀取不連續），是最大的槓桿
+      <br>2. MTP verify 會自動跟著變快（因為是同樣的 MoE 問題）
+      <br>3. 其他小問題可以順手解，但不是主戰場
+      <br><br>
+      <strong style="color:#a78bfa;">25 t/s 現實嗎？</strong>
+      <br>→ 全部加起來，大概能到 18-20 t/s
+      <br>→ 要到 25 t/s，還需要其他突破
+      <br>→ 比如：更好的 k 值、更好的 expert cache、或者架構改變
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

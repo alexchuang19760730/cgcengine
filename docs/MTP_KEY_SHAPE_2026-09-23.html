@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MTP 關鍵 Shape — 什麼樣子才能讓 MTP 發揮作用？</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", sans-serif; background: #0f1115; color: #e4e6eb; padding: 24px; }
+  .container { max-width: 1280px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 700; margin-bottom: 4px; color: #fff; }
+  .subtitle { font-size: 13px; color: #8b8f98; margin-bottom: 24px; }
+
+  .section { background: #1a1d24; border-radius: 12px; padding: 20px; border: 1px solid #2a2e38; margin-bottom: 16px; }
+  .section-title { font-size: 15px; font-weight: 700; color: #fff; margin-bottom: 14px; }
+
+  .insight { background: linear-gradient(135deg, rgba(248,113,113,0.1), rgba(248,113,113,0.05)); border-left: 4px solid #f87171; padding: 16px; border-radius: 0 8px 8px 0; margin: 16px 0; }
+  .insight-title { font-size: 14px; font-weight: 700; color: #f87171; margin-bottom: 8px; }
+  .insight-text { font-size: 13px; line-height: 1.8; color: #d4d4d8; }
+  .insight-text strong { color: #f87171; }
+
+  .good-insight { background: linear-gradient(135deg, rgba(74,222,128,0.1), rgba(74,222,128,0.05)); border-left-color: #4ade80; }
+  .good-insight .insight-title { color: #4ade80; }
+  .good-insight .insight-text strong { color: #4ade80; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 12px 0; }
+  th { text-align: left; padding: 10px; background: #2a2e38; color: #b4b8c2; font-weight: 600; font-size: 11px; }
+  td { padding: 10px; border-bottom: 1px solid #2a2e38; color: #e4e6eb; }
+  tr:hover { background: rgba(255,255,255,0.02); }
+
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+  .tag-red { background: rgba(248,113,113,0.15); color: #f87171; }
+  .tag-green { background: rgba(74,222,128,0.15); color: #4ade80; }
+  .tag-yellow { background: rgba(251,191,36,0.15); color: #fbbf24; }
+
+  .formula { background: #0f1115; border-radius: 8px; padding: 16px; font-family: "SF Mono", Monaco, monospace; font-size: 13px; line-height: 1.8; margin: 12px 0; color: #d4d4d8; overflow-x: auto; }
+  .formula .var { color: #60a5fa; }
+  .formula .op { color: #f87171; }
+  .formula .comment { color: #71717a; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>MTP 關鍵 Shape — 什麼樣子才能讓 MTP 發揮作用？</h1>
+  <div class="subtitle">k=1 就不需要 MTP 了。那要什麼樣子，MTP 才真的有用？</div>
+
+  <!-- The core question -->
+  <div class="insight">
+    <div class="insight-title">🔴 你問到核心了</div>
+    <div class="insight-text">
+      你說得對：k=1 就是不用 MTP。
+      <br>但我們做了一大堆 MTP 相關的優化，結果 k=1 才是最好的 — 那 MTP 到底有什麼用？
+      <br><br>
+      <strong>問題不是「k 要設多少」</strong>
+      <br><strong>問題是「要什麼 shape，MTP 才真的能發揮作用」</strong>
+      <br><br>
+      現在 MTP 不工作，不是 k 值設錯了
+      <br>是 <strong>shape 不對</strong>
+      <br>是 MTP 的「工作方式」本身就有問題
+    </div>
+  </div>
+
+  <!-- Why MTP isn't working now -->
+  <div class="section">
+    <div class="section-title">🔍 為什麼現在 MTP 不工作？</div>
+
+    <div style="font-size: 13px; line-height: 1.8; color: #d4d4d8; margin-bottom: 16px;">
+      從數據看，MTP 現在的問題是：
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>問題</th>
+          <th>數據</th>
+          <th>意味著什麼</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Accept rate 隨 k 下降</strong></td>
+          <td>k=2: 73.16%, k=3: 58.25%</td>
+          <td>k 越大，accept 越低，mean_len 上不去</td>
+        </tr>
+        <tr>
+          <td><strong>步時隨 k 增加太快</strong></td>
+          <td>k=2: 218 ms, k=3: 266-314 ms (+31%)</td>
+          <td>多算一個 verify token，步時增加太多</td>
+        </tr>
+        <tr>
+          <td><strong>token 增長不夠快</strong></td>
+          <td>k=2→3: E 從 2.47→2.76 (+12%)</td>
+          <td>多了一個 k，只多換來 12% 的 token</td>
+        </tr>
+        <tr>
+          <td><strong>沒有批次攤薄</strong></td>
+          <td>第 2 個 token 的成本是第 1 個的 98%</td>
+          <td>每多算一個 verify token，幾乎要付全價</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="insight" style="margin-top: 16px;">
+      <div class="insight-text">
+        <strong>白話說：</strong>
+        <br>現在的 MTP = 多跑一次模型來 verify
+        <br>→ 多跑一次 = 多花一整份時間
+        <br>→ 但只多換來 12% 的 token
+        <br>→ 怎麼算都不划算
+        <br><br>
+        所以 k=1 最好 — 因為根本不該用 MTP
+        <br>除非 MTP 的「工作方式」改變了
+      </div>
+    </div>
+  </div>
+
+  <!-- What shape would make MTP work -->
+  <div class="section">
+    <div class="section-title">🎯 什麼 shape 才能讓 MTP 真的有用？</div>
+
+    <div style="font-size: 13px; line-height: 1.8; color: #d4d4d8; margin-bottom: 16px;">
+      要讓 MTP 划算，必須滿足：
+      <br>→ 多算的 verify token，每個的邊際成本要很低
+      <br>→ 也就是：第 2 個 token 不能花第 1 個的 98%
+      <br>→ 要降到 20-30% 才划算
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Shape 是什麼</th>
+          <th>為什麼能讓 MTP 划算</th>
+          <th>難度</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>1. Batch verify（批次驗證）</strong>
+            <br>→ 一次 verify 多個 token，不是逐個 verify
+            <br>→ MoE gather 的成本可以批次攤薄
+          </td>
+          <td>
+            → 現在逐個 verify：每個 token 都要重跑整個模型
+            <br>→ 批次 verify：多個 token 一起跑，MoE gather 成本可以攤
+            <br>→ 第 2 個 token 的邊際成本從 98% → 20-30%
+          </td>
+          <td><span class="tag tag-red">高</span></td>
+        </tr>
+        <tr>
+          <td><strong>2. 更好的 drafter</strong>
+            <br>→ draft 模型更快更準
+            <br>→ accept rate 更高
+            <br>→ k 可以更大但 accept 不掉
+          </td>
+          <td>
+            → 現在的問題：k 越大，accept 掉越多
+            <br>→ 如果 drafter 更準，accept 可以維持在高位
+            <br>→ mean_len 就上去了
+          </td>
+          <td><span class="tag tag-yellow">中</span></td>
+        </tr>
+        <tr>
+          <td><strong>3. Verify 跟 draft overlap</strong>
+            <br>→ verify 不用等 draft 全部跑完
+            <br>→ 邊跑邊驗
+          </td>
+          <td>
+            → 現在：先跑完 draft，再跑 verify
+            <br>→ overlap：draft 跑第一個 token 的時候，verify 可以開始準備
+            <br>→ 隱藏一部分延遲
+          </td>
+          <td><span class="tag tag-red">高</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- The key shape: batch verify -->
+  <div class="section">
+    <div class="section-title">⭐ 關鍵中的關鍵：Batch Verify</div>
+
+    <div class="insight good-insight">
+      <div class="insight-title">💡 這才是 MTP 的正確打開方式</div>
+      <div class="insight-text">
+        <strong>現在的 MTP（逐個 verify）：</strong>
+        <br>→ 第 1 個 verify token：跑整個模型 = 100% 成本
+        <br>→ 第 2 個 verify token：再跑整個模型 = 98% 成本
+        <br>→ 第 3 個 verify token：再跑整個模型 = 98% 成本
+        <br>→ 三個 token = 100% + 98% + 98% = 296% 成本
+        <br>→ 換來 2.76 個 token
+        <br>→ 平均每個 token 成本 = 296% / 2.76 = 107%
+        <br>→ <strong>比不用 MTP 還貴！</strong>
+      </div>
+    </div>
+
+    <div class="insight">
+      <div class="insight-title">如果改成 Batch Verify：</div>
+      <div class="insight-text">
+        <strong>批次 verify：多個 token 一起跑</strong>
+        <br>→ 第 1 個 verify token：跑整個模型 = 100% 成本
+        <br>→ 第 2 個 verify token：MoE gather 可以批次攤 = 20% 成本
+        <br>→ 第 3 個 verify token：MoE gather 可以批次攤 = 20% 成本
+        <br>→ 三個 token = 100% + 20% + 20% = 140% 成本
+        <br>→ 換來 2.76 個 token
+        <br>→ 平均每個 token 成本 = 140% / 2.76 = 51%
+        <br>→ <strong>比不用 MTP 便宜一半！</strong>
+      </div>
+    </div>
+
+    <div class="formula">
+      <span class="comment">// 對比一下</span>
+
+      <span class="comment">// 現況（逐個 verify）：</span>
+      <span class="var">cost_per_token</span> <span class="op">=</span> (100 + 98 + 98) / 2.76 <span class="op">=</span> 107%
+      <span class="comment">// ⇒ 比不用 MTP 還貴，所以 k=1 最好</span>
+
+      <span class="comment">// 理想（batch verify）：</span>
+      <span class="var">cost_per_token</span> <span class="op">=</span> (100 + 20 + 20) / 2.76 <span class="op">=</span> 51%
+      <span class="comment">// ⇒ 比不用 MTP 便宜一半，MTP 真的划算</span>
+
+      <span class="comment">// 關鍵差異：</span>
+      <span class="comment">// 第 2 個 token 的邊際成本：98% → 20%</span>
+      <span class="comment">// 這就是「批次攤薄」的效果</span>
+      <span class="comment">// MoE gather 的成本，多個 token 一起攤</span>
+    </div>
+  </div>
+
+  <!-- Why is this the key shape -->
+  <div class="section">
+    <div class="section-title">🧠 為什麼 Batch Verify 是關鍵？</div>
+
+    <div style="font-size: 13px; line-height: 1.8; color: #d4d4d8; margin-bottom: 16px;">
+      因為現在 MTP 不工作的根本原因是：
+      <br>→ 「沒有批次攤薄」
+      <br>→ 第 2 個 verify token 的成本是第 1 個的 98%
+      <br>→ 這個數字來自 MoE gather 的特性
+    </div>
+
+    <div style="font-size: 13px; line-height: 1.8; color: #d4d4d8; margin-bottom: 16px;">
+      MoE gather 為什麼沒有批次攤薄？
+      <br>→ 因為每個 verify token 選的 expert 不一樣
+      <br>→ 所以每個 token 都要重新 gather 一遍
+      <br>→ 兩個 token 的 expert 重疊率很低
+      <br>→ 所以沒法批次攤薄
+    </div>
+
+    <div class="insight good-insight">
+      <div class="insight-title">那怎麼辦？</div>
+      <div class="insight-text">
+        <strong>如果改成 batch verify：</strong>
+        <br>→ 一次把多個 verify token 的 expert 全部 gather 回來
+        <br>→ 不管它們是不是同一個 expert
+        <br>→ 一次讀一大塊，總比逐個讀快
+        <br>→ DRAM row buffer 命中率更高
+        <br>→ 頻寬利用率更高
+        <br><br>
+        <strong>這就是「shape」：</strong>
+        <br>不是改某個參數調大調小
+        <br>是改「verify 的方式」
+        <br>從「逐個 verify」改成「批次 verify」
+      </div>
+    </div>
+  </div>
+
+  <!-- Conclusion -->
+  <div class="section" style="background: linear-gradient(135deg, #1a1d24, #1e2430);">
+    <div class="section-title">📌 結論</div>
+
+    <div style="font-size: 13px; line-height: 1.8; color: #d4d4d8;">
+      <strong style="color:#f87171;">你說得對：</strong>
+      <br>k=1 就不需要 MTP 了。
+      <br>那 MTP 到底有什麼用？
+      <br><br>
+      <strong style="color:#4ade80;">答案是：</strong>
+      <br>MTP 現在不工作，不是 k 值設錯了
+      <br>是 <strong>shape 不對</strong>
+      <br><br>
+      <strong style="color:#a78bfa;">關鍵 shape：Batch Verify</strong>
+      <br>→ 現在是逐個 verify，第 2 個 token 花 98% 成本
+      <br>→ 改成批次 verify，第 2 個 token 只花 20% 成本
+      <br>→ 這樣 MTP 才真的划算
+      <br><br>
+      <strong style="color:#fbbf24;">為什麼這是 shape？</strong>
+      <br>不是改某個參數
+      <br>是改「verify 的工作方式」
+      <br>從「逐個跑」改成「批次跑」
+      <br><br>
+      <strong style="color:#4ade80;">這就是形狀世界模型的核心：</strong>
+      <br>不是「試 knobs」
+      <br>是「找到對的 shape」
+      <br>找到對的 shape，MTP 才真的能發揮作用
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

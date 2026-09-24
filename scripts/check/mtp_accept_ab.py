@@ -82,7 +82,8 @@ def _facts_from_log(logpath: Path) -> dict:
 
 
 def record_provenance(label: str, model: Path, pool_gb: float, mtp: str,
-                      extra_env, logpath: Path) -> dict:
+                      extra_env, logpath: Path, thermal_at_launch=None,
+                      thermal_gate=None) -> dict:
     """Provenance for one MTP accept arm. Same philosophy as knifeedge_matrix:
     the result carries enough identity that two arms measured weeks apart can
     be certified comparable -- or refused.
@@ -95,8 +96,28 @@ def record_provenance(label: str, model: Path, pool_gb: float, mtp: str,
     if facts:
         pool["launched_min_layer_slots"] = facts.get("min_layer_slots")
         pool["launched_n_slots"] = facts.get("n_slots")
+    # [2026-09-23] `thermal_at_launch` is read BEFORE the launch (the criterion is the level at
+    # launch, not over the run -- thermal_pressure.py docstring). Without it an arm's t/s is
+    # unattributable: six arms of this same configuration spanned 1.79x (5.84-10.46 t/s) with
+    # bit-identical outputs (docs/INSTRUMENT_RESOLUTION_2026-09-23.md), and thermal pressure is
+    # the one variable this repo has a measured zero-overlap separation for -- on the PREFILL
+    # axis (level 0 -> 6/6 runs >= 250 t/s; level 1-2 -> 0/21). It is recorded as a REGIME, not
+    # a gate: it did not separate 6.26 from 9.26 t/s in the two cross-axis pairs.
     return {"when": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "arm": label,
+            # The SERVER log this arm's engine counters went to. Not `logpath`: that is the arm's own
+            # stdout capture (`mtp_accept_*.log`), which contains zero CGC lines -- naming it would
+            # be a field that answers nothing. Resolved by launch time instead, and the
+            # `llama_server_latest.log` symlink is excluded: in the 2026-09-23 run one arm's counters
+            # were read through that symlink and silently belonged to a different launch.
+            "server_log": server_log_at(launch_ts),
+            "thermal_at_launch": thermal_at_launch,
+            # Seconds spent waiting for Nominal before this launch, and whether the wait
+            # succeeded. Recorded because the wait is a TREATMENT, not overhead: in the
+            # certified-window ABBA the k=3 arms' readings rose monotonically with it
+            # (41 s -> 9.09, 50 s -> 8.59, 141 s -> 10.72, 181 s -> 11.48 t/s), i.e. the level
+            # signal alone could not separate a box idle for six minutes from one idle for 50 s.
+            "thermal_gate": thermal_gate,
             "pool": pool,
             "model": {"name": model.name, "realpath": str(model.resolve()),
                       **(_file_digest(model) or {})},
@@ -123,6 +144,8 @@ ARMS = {
                    "same Nail carrier with MTP OFF -- the denominator of 'MTP-on >= MTP-off'", "0"),
 }
 
+REQUIRE_THERMAL_0 = [None]      # --require-thermal-0 TIMEOUT_S, set in main()
+
 PROMPTS = [
     "Write one paragraph describing how a river changes between its source and the sea.",
     "Explain in a few sentences why the sky is blue.",
@@ -132,6 +155,21 @@ PROMPTS = [
 
 def log(m: str) -> None:
     print(f"[{time.strftime('%H:%M:%S')}] {m}", flush=True)
+
+
+def read_thermal():
+    """The OS thermal pressure level, or an explicit refusal to guess one.
+
+    `thermal_pressure.py` is the tree's instrument for this (2 ms, no root, and it refuses an
+    unverified key rather than inventing a reading). Imported lazily and never allowed to fail
+    an arm: a missing stamp must not become a missing measurement.
+    """
+    try:
+        sys.path.insert(0, str(ROOT / "scripts" / "check"))
+        import thermal_pressure as tp
+        return tp.stamp()
+    except Exception as e:
+        return {"level": None, "label": f"UNREADABLE: {e}"}
 
 
 def sh(*args) -> str:
@@ -309,6 +347,15 @@ def measure(label: str, model: Path, pool_gb: float, port: int, n_predict: int,
     log(f"    log: {logpath}")
 
     stop_server(port)
+    wait_s, waited = 0.0, None
+    if REQUIRE_THERMAL_0[0] is not None:
+        waited, wait_s, lvl = wait_for_thermal_0(REQUIRE_THERMAL_0[0])
+        if not waited:
+            log(f"    thermal gate: level {lvl} after {wait_s}s -- measuring anyway, recorded")
+        else:
+            log(f"    thermal gate: Nominal after {wait_s}s")
+    thermal_at_launch = read_thermal()      # the criterion is the level AT LAUNCH
+    launch_ts = time.time()
     launch(model, pool_gb, port, logpath, mtp, extra_env)
     try:
         if not wait_health(port, logpath):
@@ -361,13 +408,106 @@ def measure(label: str, model: Path, pool_gb: float, port: int, n_predict: int,
         # number from a different (base, head) pair or a different loader is not
         # the same measurement, and the roadmap's M4 exit depends on being able
         # to prove which pair produced it.
-        "provenance": record_provenance(label, model, pool_gb, mtp, extra_env, logpath),
+        "provenance": record_provenance(label, model, pool_gb, mtp, extra_env, logpath,
+                                        thermal_at_launch,
+                                        {"waited_s": wait_s, "reached_nominal": waited}),
     }
+
+
+def server_log_at(since_ts: float, logdir: Path = None) -> str:
+    """Newest real `llama_server_*.log` written at or after `since_ts`, or "".
+
+    run_server.sh writes one timestamped log per launch, so launch time identifies it uniquely;
+    the `llama_server_latest.log` symlink is skipped because it re-points at every launch (reading
+    it for an older arm returns the newest run's counters -- measured, 2026-09-23).
+    """
+    logdir = logdir or (ROOT / "Backup" / "cgc_logs")
+    cands = [p for p in logdir.glob("llama_server_*.log")
+             if not p.is_symlink() and p.stat().st_mtime >= since_ts - 1.0]
+    return str(max(cands, key=lambda p: p.stat().st_mtime)) if cands else ""
+
+
+def wait_for_thermal_0(timeout_s: float, poll_s: float = 10.0):
+    """Block until the OS reports Nominal, returning (ok, waited_s, level_seen).
+
+    Measured 2026-09-23 (docs/CERTIFIED_WINDOW_K_AB_2026-09-23.md): three back-to-back arms of
+    ONE configuration drove the pressure level 0 -> 0/1 -> 2 HEAVY, and the HEAVY arm read 18%
+    slow. So an arm's t/s is only attributable if the box is at Nominal when it launches -- the
+    criterion thermal_pressure.py records ("the level AT LAUNCH"), which had never been enforced
+    on this path. It is enforced here, with the wait recorded: the wait is itself a state
+    variable (in that same window the k=3 arms' readings rose monotonically with it), so an
+    undocumented wait would be an undocumented treatment.
+    """
+    t0 = time.time()
+    while True:
+        lvl = (read_thermal() or {}).get("level")
+        if lvl == 0:
+            return True, round(time.time() - t0, 1), lvl
+        if time.time() - t0 >= timeout_s:
+            return False, round(time.time() - t0, 1), lvl
+        time.sleep(poll_s)
+
+
+def selftest() -> int:
+    """The two behaviours added 2026-09-23 that a fixture can hold still: log resolution, and the
+    thermal gate's give-up path. Both are the kind that fail silently in a real run (an arm whose
+    counters belong to another launch; a gate that blocks forever instead of measuring)."""
+    import tempfile
+    bad = 0
+
+    def mk(folder: Path, name: str, age_s: float) -> Path:
+        p = folder / name
+        p.write_text(name)
+        os.utime(p, (time.time() - age_s,) * 2)
+        return p
+
+    d = Path(tempfile.mkdtemp())
+    own = mk(d, "llama_server_20260923_010000.log", 120)
+    later = mk(d, "llama_server_20260923_020000.log", 30)
+    (d / "llama_server_latest.log").symlink_to(later)
+    now = time.time()
+    cases = [
+        # (since, expected): the symlink is never returned even though it has the newest mtime
+        (now - 125, later.name), (now - 60, later.name), (now - 5, ""), (now - 200, later.name),
+    ]
+    for since, want in cases:
+        got = server_log_at(since, logdir=d)
+        if Path(got).name != want:
+            print(f"FAIL server_log_at(since=-{now-since:.0f}s) = {got!r}, want {want!r}")
+            bad += 1
+    # and the real file behind the symlink is reachable on its own terms
+    solo = Path(tempfile.mkdtemp())
+    only = mk(solo, "llama_server_20260923_030000.log", 10)
+    (solo / "llama_server_latest.log").symlink_to(only)
+    if Path(server_log_at(now - 60, logdir=solo)).name != only.name:
+        print("FAIL server_log_at missed the only real log")
+        bad += 1
+
+    # the gate: with the level unreadable it must give up at the timeout and say so, not hang
+    real = read_thermal
+    try:
+        globals()["read_thermal"] = lambda: {"level": 2, "label": "HEAVY"}
+        ok, waited, lvl = wait_for_thermal_0(0.0, poll_s=0.01)
+        if ok or lvl != 2 or waited < 0:
+            print(f"FAIL gate give-up: ok={ok} lvl={lvl} waited={waited}")
+            bad += 1
+        globals()["read_thermal"] = lambda: {"level": 0, "label": "NOMINAL"}
+        ok, waited, lvl = wait_for_thermal_0(5.0, poll_s=0.01)
+        if not ok or lvl != 0:
+            print(f"FAIL gate pass-through: ok={ok} lvl={lvl}")
+            bad += 1
+    finally:
+        globals()["read_thermal"] = real
+
+    print(f"selftest: {7 - bad}/7 passed")
+    return 1 if bad else 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--selftest", action="store_true",
+                    help="check log resolution and the thermal gate without launching anything")
     ap.add_argument("--arms", default=",".join(ARMS), help=f"subset of {list(ARMS)}")
     ap.add_argument("--pool-gb", type=float, default=8.0)
     ap.add_argument("--port", type=int, default=9932)
@@ -379,7 +519,17 @@ def main() -> int:
     ap.add_argument("--extra-env", action="append", default=[],
                     help="KEY=VAL for run_server.sh (repeatable) -- e.g. the pool cap and slab "
                          "capacity being A/B'd")
+    ap.add_argument("--require-thermal-0", type=float, default=None, metavar="TIMEOUT_S",
+                    help="block until the OS thermal pressure reads Nominal before EACH arm "
+                         "(give up after TIMEOUT_S and measure anyway, recorded as waited=false). "
+                         "Off by default: this makes an arm take up to minutes longer, and it is "
+                         "only worth it for arms whose effect is small. Measured same-config "
+                         "spread: 18.5%% across a drifting sequence, 5.8%% (k=2)/13.1%% (k=3) with "
+                         "this gate on.")
     args = ap.parse_args()
+    if args.selftest:
+        return selftest()
+    REQUIRE_THERMAL_0[0] = args.require_thermal_0
 
     results = []
     for label in [a.strip() for a in args.arms.split(",") if a.strip()]:

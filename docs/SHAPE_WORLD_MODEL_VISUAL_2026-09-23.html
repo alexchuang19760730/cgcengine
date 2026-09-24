@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shape World Model — 25 t/s Top-Down Analysis</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", sans-serif; background: #0f1115; color: #e4e6eb; padding: 24px; }
+  .container { max-width: 1200px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 700; margin-bottom: 6px; color: #fff; }
+  .subtitle { font-size: 13px; color: #8b8f98; margin-bottom: 24px; }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+
+  .card { background: #1a1d24; border-radius: 12px; padding: 20px; border: 1px solid #2a2e38; }
+  .card-title { font-size: 14px; font-weight: 600; color: #fff; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+  .card-title .icon { width: 20px; height: 20px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 12px; }
+
+  /* Target card */
+  .target-value { font-size: 42px; font-weight: 800; color: #4ade80; line-height: 1; margin-bottom: 4px; }
+  .target-unit { font-size: 14px; color: #8b8f98; }
+  .target-row { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #2a2e38; }
+
+  .current-value { font-size: 28px; font-weight: 700; color: #fbbf24; }
+  .gap-bar { height: 8px; background: #2a2e38; border-radius: 4px; overflow: hidden; margin: 8px 0 12px; }
+  .gap-fill { height: 100%; background: linear-gradient(90deg, #fbbf24, #4ade80); border-radius: 4px; }
+  .gap-text { font-size: 12px; color: #8b8f98; }
+
+  /* Step breakdown */
+  .step-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 12px; }
+  .step-label { width: 100px; color: #b4b8c2; }
+  .step-bar { flex: 1; height: 22px; background: #2a2e38; border-radius: 4px; position: relative; overflow: hidden; }
+  .step-fill { height: 100%; border-radius: 4px; display: flex; align-items: center; padding-left: 8px; font-size: 11px; font-weight: 600; color: #fff; }
+  .step-value { width: 50px; text-align: right; font-weight: 600; }
+
+  /* Constraint cards */
+  .constraint { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid #2a2e38; }
+  .constraint:last-child { border-bottom: none; }
+  .c-icon { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
+  .c-body { flex: 1; }
+  .c-name { font-size: 13px; font-weight: 600; color: #fff; }
+  .c-desc { font-size: 11px; color: #8b8f98; margin-top: 2px; }
+  .c-status { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 12px; }
+  .status-ok { background: rgba(74, 222, 128, 0.15); color: #4ade80; }
+  .status-warn { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
+  .status-bad { background: rgba(248, 113, 113, 0.15); color: #f87171; }
+
+  /* Shape diagram */
+  .shape-diagram { position: relative; height: 200px; margin: 16px 0; }
+  .shape-block { position: absolute; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600; color: #fff; text-align: center; line-height: 1.3; }
+
+  /* Bottom conclusion */
+  .conclusion { background: linear-gradient(135deg, #1a1d24 0%, #1e2430 100%); border-radius: 12px; padding: 20px; border: 1px solid #2a2e38; margin-top: 16px; }
+  .conclusion-title { font-size: 15px; font-weight: 700; color: #fff; margin-bottom: 10px; }
+  .conclusion-text { font-size: 13px; color: #b4b8c2; line-height: 1.7; }
+  .conclusion-text strong { color: #4ade80; }
+
+  /* Badge */
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; margin-left: 6px; }
+  .badge-green { background: rgba(74, 222, 128, 0.2); color: #4ade80; }
+  .badge-yellow { background: rgba(251, 191, 36, 0.2); color: #fbbf24; }
+  .badge-red { background: rgba(248, 113, 113, 0.2); color: #f87171; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Shape World Model</h1>
+  <div class="subtitle">25 t/s Top-Down Analysis — 從目標往回推，需要什麼形狀？</div>
+
+  <!-- Top row: Target vs Current -->
+  <div class="grid">
+    <div class="card">
+      <div class="card-title">
+        <div class="icon" style="background: rgba(74,222,128,0.2); color: #4ade80;">🎯</div>
+        目標 Target
+      </div>
+      <div class="target-row">
+        <div>
+          <div class="target-value">25<span style="font-size:18px;"> t/s</span></div>
+          <div class="target-unit">decode throughput</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:13px; color:#8b8f98;">Step Time</div>
+          <div style="font-size:24px; font-weight:700; color:#4ade80;">40 ms</div>
+        </div>
+      </div>
+      <div style="font-size:12px; color:#8b8f98;">
+        需要從現在的 <strong style="color:#fbbf24;">~83 ms/step</strong> 降到 <strong style="color:#4ade80;">40 ms/step</strong>
+        <br>加速比：<strong style="color:#f87171;">2.07×</strong>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">
+        <div class="icon" style="background: rgba(251,191,36,0.2); color: #fbbf24;">📊</div>
+        現況 Current (k=2)
+      </div>
+      <div class="target-row">
+        <div>
+          <div class="current-value">~12.1 t/s</div>
+          <div class="target-unit">measured, k=2 median</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:13px; color:#8b8f98;">Step Time</div>
+          <div style="font-size:24px; font-weight:700; color:#fbbf24;">83 ms</div>
+        </div>
+      </div>
+      <div class="gap-bar">
+        <div class="gap-fill" style="width: 48%;"></div>
+      </div>
+      <div class="gap-text">完成度：48%（12.1 / 25）　|　差距：12.9 t/s</div>
+    </div>
+  </div>
+
+  <!-- Middle row: Step breakdown + Shape diagram -->
+  <div class="grid">
+    <div class="card">
+      <div class="card-title">
+        <div class="icon" style="background: rgba(96,165,250,0.2); color: #60a5fa;">⏱️</div>
+        Step Time 分解（現況 ~83 ms）
+      </div>
+
+      <div class="step-row">
+        <div class="step-label">MTP Verify</div>
+        <div class="step-bar">
+          <div class="step-fill" style="width: 35%; background: #60a5fa;">~29 ms</div>
+        </div>
+        <div class="step-value" style="color:#60a5fa;">35%</div>
+      </div>
+
+      <div class="step-row">
+        <div class="step-label">MoE Experts</div>
+        <div class="step-bar">
+          <div class="step-fill" style="width: 40%; background: #a78bfa;">~33 ms</div>
+        </div>
+        <div class="step-value" style="color:#a78bfa;">40%</div>
+      </div>
+
+      <div class="step-row">
+        <div class="step-label">Dense GEMV</div>
+        <div class="step-bar">
+          <div class="step-fill" style="width: 15%; background: #4ade80;">~12 ms</div>
+        </div>
+        <div class="step-value" style="color:#4ade80;">15%</div>
+      </div>
+
+      <div class="step-row">
+        <div class="step-label">Dispatch + 其他</div>
+        <div class="step-bar">
+          <div class="step-fill" style="width: 10%; background: #fbbf24;">~9 ms</div>
+        </div>
+        <div class="step-value" style="color:#fbbf24;">10%</div>
+      </div>
+
+      <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid #2a2e38; font-size: 11px; color: #8b8f98; line-height: 1.6;">
+        <strong style="color:#a78bfa;">MoE Experts (40%)</strong> 是最大的瓶頸，且只有 20-25% 頻寬利用率
+        <br><strong style="color:#4ade80;">Dense GEMV (15%)</strong> 已經 76-77% 頻寬，打滿也只 +2.4%
+        <br><strong style="color:#60a5fa;">MTP Verify (35%)</strong> 占比大，但優化空間待確認
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">
+        <div class="icon" style="background: rgba(167,139,250,0.2); color: #a78bfa;">🔲</div>
+        目標形狀 Shape（理論最佳）
+      </div>
+
+      <div class="shape-diagram">
+        <!-- Target 40ms shape -->
+        <div class="shape-block" style="left:0; top:0; width:100%; height:30px; background: linear-gradient(90deg, #60a5fa, #3b82f6);">
+          MTP Verify：~14 ms（需減少 52%）
+        </div>
+        <div class="shape-block" style="left:0; top:38px; width:100%; height:55px; background: linear-gradient(90deg, #a78bfa, #8b5cf6);">
+          MoE Experts：~16 ms（需減少 52%）
+          <div style="font-size:9px; opacity:0.9; margin-top:2px;">頻寬利用率：25% → 65%+</div>
+        </div>
+        <div class="shape-block" style="left:0; top:101px; width:100%; height:22px; background: linear-gradient(90deg, #4ade80, #22c55e);">
+          Dense GEMV：~7 ms（已接近極限）
+        </div>
+        <div class="shape-block" style="left:0; top:129px; width:100%; height:18px; background: linear-gradient(90deg, #fbbf24, #f59e0b);">
+          Dispatch：~3 ms（融合優化）
+        </div>
+        <div style="position:absolute; left:0; top:155px; width:100%; text-align:center; font-size:11px; color:#4ade80; font-weight:700;">
+          總計：~40 ms → 25 t/s
+        </div>
+      </div>
+
+      <div style="font-size: 11px; color: #8b8f98; line-height: 1.6; margin-top: 12px;">
+        <strong style="color:#a78bfa;">關鍵：MoE Experts 要從 33 ms → 16 ms</strong>
+        <br>這需要把 expert gather 的頻寬利用率從 20-25% 拉到 65%+
+        <br>這是最大的槓桿，也是目前完全沒有觸及的地方
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom row: Constraints -->
+  <div class="card" style="margin-bottom: 16px;">
+    <div class="card-title">
+      <div class="icon" style="background: rgba(248,113,113,0.2); color: #f87171;">🔒</div>
+      硬約束 Hard Constraints（16GB MacBook Air M4）
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
+      <div class="constraint">
+        <div class="c-icon" style="background: rgba(96,165,250,0.15);">💾</div>
+        <div class="c-body">
+          <div class="c-name">記憶體 Memory</div>
+          <div class="c-desc">模型 13.6 GB + expert cache 8 GB ≈ 21.6 GB</div>
+        </div>
+        <div class="c-status status-bad">超限 ⚠️</div>
+      </div>
+
+      <div class="constraint">
+        <div class="c-icon" style="background: rgba(167,139,250,0.15);">🔗</div>
+        <div class="c-body">
+          <div class="c-name">頻寬 Bandwidth</div>
+          <div class="c-desc">LPDDR5 帶寬 ~120 GB/s；MoE 目前只用 25%</div>
+        </div>
+        <div class="c-status status-warn">有餘裕 ⚡</div>
+      </div>
+
+      <div class="constraint">
+        <div class="c-icon" style="background: rgba(74,222,128,0.15);">⚡</div>
+        <div class="c-body">
+          <div class="c-name">算力 Compute</div>
+          <div class="c-desc">M4 GPU 18 core；decode 是頻寬 bound，不是算力 bound</div>
+        </div>
+        <div class="c-status status-ok">不是瓶頸 ✅</div>
+      </div>
+    </div>
+
+    <div style="margin-top: 14px; padding-top: 12px; border-top: 1px solid #2a2e38; font-size: 12px; color: #8b8f98; line-height: 1.6;">
+      <strong style="color:#f87171;">記憶體是硬約束：</strong>
+      16GB 實體記憶體，模型 + expert cache 已經 21.6 GB，靠 swap 撐著。
+      要加速就得從「頻寬利用率」下手，不能從「加記憶體」下手。
+      <br><br>
+      <strong style="color:#4ade80;">關鍵洞察：</strong>
+      頻寬利用率從 25% 拉到 65% = 同樣的記憶體，跑出 2.6× 的吞吐量。
+      這不是加硬件，是把現有硬件用滿。
+    </div>
+  </div>
+
+  <!-- Conclusion -->
+  <div class="conclusion">
+    <div class="conclusion-title">📐 Shape World Model 結論</div>
+    <div class="conclusion-text">
+      <strong>從 25 t/s 往回推：</strong>需要 step time 從 83 ms 降到 40 ms（2.07× 加速）。
+      <br><br>
+      <strong>最大槓桿在 MoE Experts：</strong>目前占 33 ms（40%），但頻寬利用率只有 20-25%。
+      如果能拉到 65%，這一塊就從 33 ms → 13 ms，直接省下 20 ms。
+      <br><br>
+      <strong>硬約束：</strong>記憶體已經滿了，不能靠加大 cache 或 batch 來加速。
+      唯一的路是<strong>把現有記憶體的頻寬利用率從 25% 拉到 65%+</strong>。
+      <br><br>
+      <strong>這就是我們一直在找的「形狀」：</strong>
+      不是某個 knobs 調大調小，而是讓 MoE expert gather 這一步，把記憶體頻寬真正用滿。
+      目前我們掃的所有 knobs（NSG、cache 大小、k 值）都不是這個方向。
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

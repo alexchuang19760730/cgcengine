@@ -78,6 +78,10 @@ import thermal_pressure as thermal  # noqa: E402
 # Each arm = (profile, extra env). The extra env is merged into the run_server.sh invocation so the
 # dump we receive is the resolved truth for *that* arm, not a base profile plus our own arithmetic.
 ARMS: dict[str, tuple[str, dict[str, str]]] = {
+    # [CGC 2026-09-23] prod-new: MTP off decode (13-14 t/s, §EN-473) + prefill250 支柱
+    # (5632 chunk + slab streaming, prefill 250+). profile 的 if 段已設 stream/slab/budget，
+    # 所以不需要 extra_env。這是 commit_bench.py 的預設 profile。
+    "prod-new": ("prod-new", {}),
     # The §8 production profile verbatim. Note it does NOT set CGC_PREFILL_STREAM, so its prefill
     # runs in n_batch=8 chunks -- that is a property of the profile, and this harness is what makes
     # it visible.

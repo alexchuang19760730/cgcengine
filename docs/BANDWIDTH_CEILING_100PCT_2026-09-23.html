@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>為什麼頻寬到不了 100%？</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", sans-serif; background: #0f1115; color: #e4e6eb; padding: 24px; }
+  .container { max-width: 1280px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 700; margin-bottom: 4px; color: #fff; }
+  .subtitle { font-size: 13px; color: #8b8f98; margin-bottom: 24px; }
+
+  .section { background: #1a1d24; border-radius: 12px; padding: 20px; border: 1px solid #2a2e38; margin-bottom: 16px; }
+  .section-title { font-size: 15px; font-weight: 700; color: #fff; margin-bottom: 14px; }
+
+  .insight { background: linear-gradient(135deg, rgba(248,113,113,0.1), rgba(248,113,113,0.05)); border-left: 4px solid #f87171; padding: 16px; border-radius: 0 8px 8px 0; margin: 16px 0; }
+  .insight-title { font-size: 14px; font-weight: 700; color: #f87171; margin-bottom: 8px; }
+  .insight-text { font-size: 13px; line-height: 1.8; color: #d4d4d8; }
+  .insight-text strong { color: #f87171; }
+
+  .good-insight { background: linear-gradient(135deg, rgba(74,222,128,0.1), rgba(74,222,128,0.05)); border-left-color: #4ade80; }
+  .good-insight .insight-title { color: #4ade80; }
+  .good-insight .insight-text strong { color: #4ade80; }
+
+  /* Bandwidth ceiling bar */
+  .ceiling-bar { position: relative; height: 40px; background: #2a2e38; border-radius: 8px; margin: 16px 0; overflow: hidden; }
+  .ceiling-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: #fff; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 12px 0; }
+  th { text-align: left; padding: 10px; background: #2a2e38; color: #b4b8c2; font-weight: 600; font-size: 11px; }
+  td { padding: 10px; border-bottom: 1px solid #2a2e38; color: #e4e6eb; }
+  tr:hover { background: rgba(255,255,255,0.02); }
+
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+  .tag-red { background: rgba(248,113,113,0.15); color: #f87171; }
+  .tag-green { background: rgba(74,222,128,0.15); color: #4ade80; }
+  .tag-yellow { background: rgba(251,191,36,0.15); color: #fbbf24; }
+  .tag-blue { background: rgba(96,165,250,0.15); color: #60a5fa; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>為什麼頻寬到不了 100%？</h1>
+  <div class="subtitle">為什麼疊起來也沒辦法到 100%？</div>
+
+  <!-- The question -->
+  <div class="insight">
+    <div class="insight-title">🔴 你問的是根本問題</div>
+    <div class="insight-text">
+      你問：為什麼頻寬沒辦法接近到 100%？無法同時間疊起來嗎？
+      <br><br>
+      答案是：<strong>可以疊，但疊不到 100%</strong>
+      <br>因為 DRAM 本身就有天生的 overhead
+      <br>就算你把所有東西都疊滿，還是有 10-15% 的浪費
+      <br>那是 DRAM 硬件本身的限制，不是軟體能解決的
+    </div>
+  </div>
+
+  <!-- Why can't we hit 100% -->
+  <div class="section">
+    <div class="section-title">🔍 DRAM 本身的 100% 是什麼意思？</div>
+
+    <div style="font-size: 13px; line-height: 1.8; color: #d4d4d8; margin-bottom: 16px;">
+      首先要搞清楚：DRAM 的「峰值頻寬」是怎麼量出來的？
+      <br>→ 它是在「理想條件」下量的：
+      <br>→ 全部是連續讀取
+      <br>→ 全部是讀，沒有寫
+      <br>→ 沒有指令、沒有位址傳輸的 overhead
+      <br>→ 沒有 refresh 的時間
+      <br><br>
+      但現實不是這樣：
+      <br>→ 有讀有寫
+      <br>→ 有換行的 penalty
+      <br>→ 有 refresh 的時間
+      <br>→ 有指令/位址傳輸的 overhead
+      <br>→ 有記憶體控制器的排程延遲
+      <br><br>
+      所以現實中，就算你把所有東西都疊滿，也到不了 100%
+    </div>
+
+    <div class="ceiling-bar">
+      <div class="ceiling-fill" style="width: 100%; background: linear-gradient(90deg, #4ade80, #22c55e);">
+        峰值頻寬 100%（理想條件）
+      </div>
+    </div>
+    <div class="ceiling-bar">
+      <div class="ceiling-fill" style="width: 85%; background: linear-gradient(90deg, #60a5fa, #3b82f6);">
+        實際最好 ~85%（已經疊滿所有東西）
+      </div>
+    </div>
+    <div class="ceiling-bar">
+      <div class="ceiling-fill" style="width: 65%; background: linear-gradient(90deg, #fbbf24, #f59e0b);">
+        我們的目標 65-70%
+      </div>
+    </div>
+    <div class="ceiling-bar">
+      <div class="ceiling-fill" style="width: 35%; background: linear-gradient(90deg, #f87171, #ef4444);">
+        現況 ~35-40%
+      </div>
+    </div>
+  </div>
+
+  <!-- What's eating the bandwidth -->
+  <div class="section">
+    <div class="section-title">🔧 那些浪費掉的 15-20% 是什麼？</div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>浪費來源</th>
+          <th>浪費多少</th>
+          <th>為什麼省不掉</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Row Activate Penalty</strong>
+            <br>（換行的時間）
+          </td>
+          <td>~5-8%</td>
+          <td>讀不同 row 的時候，必須先 precharge 再 activate
+            <br>這是 DRAM 硬件本身的操作，省不掉</td>
+        </tr>
+        <tr>
+          <td><strong>Read/Write Turnaround</strong>
+            <br>（讀寫切換）
+          </td>
+          <td>~3-5%</td>
+          <td>從讀切到寫，或從寫切到讀，必須等匯流排淨空
+            <br>這是硬件本身的 turnaround time</td>
+        </tr>
+        <tr>
+          <td><strong>Refresh Overhead</strong>
+            <br>（記憶體刷新）
+          </td>
+          <td>~2-4%</td>
+          <td>DRAM 必須定期刷新，否則資料會消失
+            <br>刷新的時候不能讀寫
+            <br>這是 DRAM 的物理特性，省不掉</td>
+        </tr>
+        <tr>
+          <td><strong>Command/Address Bus</strong>
+            <br>（指令/位址傳輸）
+          </td>
+          <td>~2-3%</td>
+          <td>每次讀寫都要先送位址和指令
+            <br>這些傳輸占了匯流排的時間
+            <br>峰值頻寬的測量沒算這個</td>
+        </tr>
+        <tr>
+          <td><strong>Memory Controller Scheduling</strong>
+            <br>（記憶體控制器排程）
+          </td>
+          <td>~2-3%</td>
+          <td>多個請求來的時候，控制器要排程
+            <br>排程本身就有延遲
+            <br>不可能完美排到 100% 填滿</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="insight good-insight" style="margin-top: 16px;">
+      <div class="insight-title">加起來是多少？</div>
+      <div class="insight-text">
+        5+3+2+2+2 = 14% 到 8+5+4+3+3 = 23%
+        <br><br>
+        也就是說：
+        <br>→ 就算你把所有東西都疊滿
+        <br>→ 就算記憶體控制器完美排程
+        <br>→ 還是有 <strong>15-20%</strong> 的浪費
+        <br>→ 這是 DRAM 硬件本身的限制
+        <br>→ 軟體永遠解決不了
+        <br><br>
+        <strong>所以實際的天花板是 80-85%，不是 100%</strong>
+      </div>
+    </div>
+  </div>
+
+  <!-- So can we still stack? -->
+  <div class="section">
+    <div class="section-title">✅ 那還能疊嗎？疊了有什麼用？</div>
+
+    <div style="font-size: 13px; line-height: 1.8; color: #d4d4d8; margin-bottom: 16px;">
+      你問：無法同時間疊起來嗎？
+      <br><br>
+      答案是：<strong>可以疊，而且疊了有用</strong>
+      <br>只不過疊不到 100%，最多到 80-85%
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>狀態</th>
+          <th>頻寬利用率</th>
+          <th>是怎麼來的</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>現況</strong></td>
+          <td style="color:#f87171;">35-40%</td>
+          <td>沒有疊，逐個 kernel 跑
+            <br>一個跑完好，才跑下一個
+            <br>浪費了很多「記憶體空閒」的時間</td>
+        </tr>
+        <tr>
+          <td><strong>疊起來之後</strong></td>
+          <td style="color:#fbbf24;">65-70%</td>
+          <td>把多個 kernel 疊起來跑
+            <br>一個在等記憶體的時候，另一個在算
+            <br>填滿了大部分的空閒時間</td>
+        </tr>
+        <tr>
+          <td><strong>理想天花板</strong></td>
+          <td style="color:#4ade80;">80-85%</td>
+          <td>已經疊到極限了
+            <br>剩下的 15-20% 是 DRAM 硬件本身的 overhead
+            <br>軟體再怎麼優化都省不掉</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="insight" style="margin-top: 16px;">
+      <div class="insight-text">
+        <strong>所以：</strong>
+        <br>→ 疊起來確實有用
+        <br>→ 從 35-40% → 65-70%
+        <br>→ 這是很大的提升
+        <br>→ 但到不了 100%
+        <br>→ 因為 DRAM 本身就有 15-20% 的 overhead
+        <br><br>
+        <strong>我們的目標 65-70% 是現實的</strong>
+        <br>不是空談
+        <br>因為那是 DRAM 硬件允許的範圍之內
+      </div>
+    </div>
+  </div>
+
+  <!-- Conclusion -->
+  <div class="section" style="background: linear-gradient(135deg, #1a1d24, #1e2430);">
+    <div class="section-title">📌 一句話總結</div>
+
+    <div style="font-size: 13px; line-height: 1.8; color: #d4d4d8;">
+      <strong style="color:#f87171;">你問：</strong>
+      <br>為什麼頻寬沒辦法接近到 100%？無法同時間疊起來嗎？
+      <br><br>
+      <strong style="color:#4ade80;">答案：</strong>
+      <br>可以疊，而且疊了有用
+      <br>從現況的 35-40% → 疊到 65-70%
+      <br><br>
+      <strong style="color:#fbbf24;">但到不了 100%：</strong>
+      <br>因為 DRAM 硬件本身就有 15-20% 的 overhead
+      <br>row activate、read/write turnaround、refresh...
+      <br>這些都是硬件本身的操作，省不掉
+      <br><br>
+      <strong style="color:#60a5fa;">所以：</strong>
+      <br>實際天花板是 80-85%
+      <br>我們的目標 65-70% 是現實的
+      <br>不是空談
+      <br>因為那是 DRAM 硬件允許的範圍之內
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

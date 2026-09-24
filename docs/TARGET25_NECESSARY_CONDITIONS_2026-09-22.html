@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>25 t/s 的必要條件：改用實測的 round 預算重寫（2026-09-22）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --blue:#2563eb; --blue-bg:#eff6ff; --red:#dc2626; --red-bg:#fef2f2;
+    --green:#059669; --green-bg:#ecfdf5; --amber:#d97706; --amber-bg:#fffbeb;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 80px;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,BlinkMacSystemFont,"PingFang TC","Helvetica Neue",Arial,sans-serif;}
+  .wrap{max-width:1060px;margin:0 auto}
+  h1{font-size:27px;margin:0 0 6px;letter-spacing:-.2px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--blue)}
+  h3{font-size:16px;margin:26px 0 8px;color:#1f2937}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;color:#b91c1c}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6}
+  pre code{background:none;padding:0;color:#111827}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f9fafb;font-weight:600}
+  td.num,th.num{font-family:ui-monospace,Menlo,monospace;white-space:nowrap;text-align:right}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(205px,1fr));gap:12px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:25px;font-weight:700;margin-top:2px}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--amber)}
+  .box{border-radius:8px;padding:12px 16px;margin:16px 0;border:1px solid}
+  .box p{margin:6px 0}
+  .b-red{background:var(--red-bg);border-color:#fecaca}
+  .b-green{background:var(--green-bg);border-color:#a7f3d0}
+  .b-amber{background:var(--amber-bg);border-color:#fde68a}
+  .b-blue{background:var(--blue-bg);border-color:#bfdbfe}
+  ul,ol{margin:8px 0 8px 22px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);background:#f9fafb;color:var(--muted);margin-left:6px}
+  .small{font-size:12.5px;color:var(--muted)}
+  .hit{background:#fff7ed;font-weight:600}
+  .no{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>25 t/s 的必要條件：改用實測的 round 預算重寫</h1>
+<div class="sub">
+  日期 2026-09-22 · 分支 <code>demo/sweet-spot-windows-fix</code> · 載體
+  <code>Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X</code>，MTP on，pool 8 GiB，profile <code>prod25</code>，
+  k=1（T=2）vs k=3（T=4）<br>
+  資料對 <code>/tmp/verify_layers</code>（3 個交錯 rep，engine digest <code>8b61dfa206882d93</code>）·
+  表格由 <code>python3 scripts/check/target25_grid.py --from-pair /tmp/verify_layers</code> 產生（14/14 自測）·
+  本文件取代 <code>docs/TARGET25_TWO_AXIS_2026-09-20.md</code> 的 <strong>step 軸</strong>
+</div>
+
+<div class="cards">
+  <div class="card"><div class="k">目標式（不變）</div><div class="v">t/s = mean_len / step</div>
+    <div class="small">25 t/s ⇔ step ≤ 40 × mean_len</div></div>
+  <div class="card"><div class="k">邊際 verify token 的歸屬</div><div class="v bad">round remainder 70–102%</div>
+    <div class="small">per-layer 7–21%、draft head 9–19%</div></div>
+  <div class="card"><div class="k">地板那一格需要的 accept</div><div class="v warn">α = 0.943 – 0.994</div>
+    <div class="small">rep 2 的地板則「無解」（需 ml 4.112 &gt; 4.0）</div></div>
+  <div class="card"><div class="k">地板以上的每一格</div><div class="v bad">accept 無效</div>
+    <div class="small">需要 mean_len 5.0–9.6，硬上限 4.0</div></div>
+</div>
+
+<div class="box b-blue">
+  <p><strong>一句話：</strong>目標式沒變，變的是 <strong>step 軸上有哪些列</strong>。09-20 那張表的列是
+  「把主機端的 gap 遮掉多少」；今天的 round 預算顯示，MTP 開啟時那幾列是<strong>小的</strong> ——
+  邊際 verify token 有 <strong>70–102% 是 round remainder</strong>（最後一層之後、下一輪之前的每回合工作），
+  而把每一項 per-layer 主機成本連同 draft head 全部拿掉，k=3 下<strong>連完美的 drafter 都過不了任何一階</strong>（除了地板）。</p>
+</div>
+
+<h2>一、為什麼要換 step 軸</h2>
+
+<p>09-20 的 <code>TARGET25_TWO_AXIS</code> 把 25 t/s 寫成雙軸：step 軸（遮掉多少主機端 gap）與
+mean_len 軸（每輪吐出幾個 token）。那張表的 step 列是 <code>today → cb hidden → cb+submit hidden → union floor</code>，
+量在一份 <em>server regime</em> 的 log 上。它沒有錯，但它<strong>沒有替任何一項定價</strong> ——
+「cb 遮掉」是一列，但沒說 cb 佔邊際多少。</p>
+
+<p>今天有了 k 掃描的配對量測（<code>docs/VERIFY_MARGINAL_2026-09-22.md</code>），可以直接把一個 round 拆成三個實測項，
+並用「差分 ÷ ΔT」算出<strong>每一個 verify token 的邊際成本落在哪一項</strong>。結論是：MTP 開啟時，
+<strong>per-layer 家族與 draft head 都是小項</strong>，主體是一項先前的表格根本沒列過的東西。</p>
+
+<table>
+  <thead><tr><th>09-20 的表</th><th>今天</th></tr></thead>
+  <tbody>
+    <tr><td>step 軸 = 遮掉多少主機端 gap</td><td>step 軸 = 移除哪一個<strong>實測的 round 項</strong></td></tr>
+    <tr><td>地板 = <code>union_sum</code> 149.24 ms（一份 server log、一個儀器）</td>
+        <td>地板 = <strong>eval-sync 鏈 146.8–164.5 ms</strong>（今天配對的逐層 <code>wait</code>）—— 兩者夾住 149.24，跨兩個 regime、兩個儀器</td></tr>
+    <tr><td>「cb hidden」是一列</td>
+        <td><code>cb</code>+<code>submit</code> 只佔邊際 2–3 ms/token：<strong>是一列，但推不動任何東西</strong></td></tr>
+    <tr><td>remainder 從未定價</td><td>remainder 是<strong>第一列</strong>，而且是最大的那一項</td></tr>
+  </tbody>
+</table>
+
+<h2>二、實測的 round 預算（本輪的收斂）</h2>
+
+<pre><code>round = per-layer terms (wait + gather + dispatch, 40 層) + draft head + remainder</code></pre>
+
+<table>
+  <thead>
+    <tr><th>項</th><th class="num">rep 1 T=2 → T=4</th><th class="num">邊際/token</th><th class="num">佔邊際</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>per-layer terms（40 層）</td><td class="num">209.7 → 215.0</td><td class="num">+2.67</td><td class="num">7%</td></tr>
+    <tr><td>draft head</td><td class="num">14.7 → 29.5</td><td class="num">+7.43</td><td class="num">19%</td></tr>
+    <tr class="hit"><td>remainder（兩個儀器都沒蓋到）</td><td class="num">49.2 → 107.9</td><td class="num">+29.35</td><td class="num">74%</td></tr>
+    <tr><td>ROUND TOTAL</td><td class="num">273.5 → 352.4</td><td class="num">+39.45</td><td class="num">100%</td></tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>rep</th><th class="num">per-layer 邊際</th><th class="num">draft head</th><th class="num">remainder</th><th class="num">round 邊際</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1</td><td class="num">+2.67（7%）</td><td class="num">+7.43（19%）</td><td class="num"><strong>+29.35（74%）</strong></td><td class="num">+39.45</td></tr>
+    <tr><td>2</td><td class="num">−9.36（−15%）</td><td class="num">+8.23（13%）</td><td class="num"><strong>+65.35（102%）</strong></td><td class="num">+64.22</td></tr>
+    <tr><td>3</td><td class="num">+20.29（21%）</td><td class="num">+8.75（9%）</td><td class="num"><strong>+66.27（70%）</strong></td><td class="num">+95.32</td></tr>
+  </tbody>
+</table>
+
+<div class="box b-amber">
+  <p><strong>兩個必須一起讀的性質：</strong></p>
+  <p>① <strong>per-layer 家族對 T 不敏感</strong>：209.7 → 215.0（多養兩個已驗證 token），41 層迴圈幾乎沒感覺。
+  而且 rep 2 的 per-layer 是 <em>負的</em>（−9.36）而 round 長了 64 ms/token —— 一個會在 rep 之間翻符號的項，不是這個效應的載體。</p>
+  <p>② <strong>remainder 是唯一隨 T 成長的項，而且在 T=2 時≈0</strong>：rep 2 是 0.1 → 130.8 ms；rep 3 是 5.5 → 138.0。
+  它不是捨入誤差 —— 它<em>跟著寬 verify 批次出現</em>，並隨之成長。逐層表上最大的單層值也只有 +0.33 ms/token，
+  <strong>沒有任何一層擁有它</strong>。</p>
+</div>
+
+<h2>三、必要條件階梯（工具產生，逐 rep）</h2>
+
+<p>語意：<code>needs mean_len = 25 × step/1000</code>；<code>needs alpha</code> 是讓幾何 <code>E = 1+a+a²+a³</code>
+達到該 mean_len 的每-draft 接受率；<code>impossible</code> 表示<strong>連 α=1 都不夠</strong>。
+每往下一階＝移除一個實測項。</p>
+
+<pre><code>  rep 1: T=4 臂實測吐出 2.99 tok/round
+      step ms  needs mean_len  needs alpha  lever to get here
+        352.4           8.811   impossible  today (measured)                        --
+        244.6           6.114   impossible  - round remainder                       remainder: post-layer per-round work
+        215.0           5.376   impossible  - remainder - draft head                + a cheaper drafter
+        158.5           3.963        0.994  - remainder - draft - per-layer host   + dispatcher (HARD FLOOR)
+
+  rep 2: T=4 臂實測吐出 3.06 tok/round
+        383.5           9.587   impossible  today (measured)
+        252.7           6.316   impossible  - round remainder
+        223.0           5.574   impossible  - remainder - draft head
+        164.5           4.112   impossible  - remainder - draft - per-layer host
+
+  rep 3: T=4 臂實測吐出 3.03 tok/round
+        369.1           9.227   impossible  today (measured)
+        231.1           5.776   impossible  - round remainder
+        202.1           5.052   impossible  - remainder - draft head
+        146.8           3.669        0.943  - remainder - draft - per-layer host</code></pre>
+
+<table>
+  <thead>
+    <tr><th>rep</th><th class="num">今天</th><th class="num">− remainder</th><th class="num">− remainder − draft</th>
+        <th class="num">地板（eval-sync）</th><th class="num">地板處需要的 α</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1</td><td class="num">352.4</td><td class="num">244.6</td><td class="num">215.0</td><td class="num">158.5</td><td class="num"><strong>0.994</strong></td></tr>
+    <tr><td>2</td><td class="num">383.5</td><td class="num">252.7</td><td class="num">223.0</td><td class="num">164.5</td><td class="num bad">impossible</td></tr>
+    <tr><td>3</td><td class="num">369.1</td><td class="num">231.1</td><td class="num">202.1</td><td class="num">146.8</td><td class="num"><strong>0.943</strong></td></tr>
+  </tbody>
+</table>
+
+<h2>四、哪一格需要哪個槓桿</h2>
+
+<h3>4.1 地板以上的每一階 → 需要 <span class="bad">remainder</span>，accept 取代不了</h3>
+
+<p>四階裡有三階要求 <code>mean_len</code> 落在 <strong>5.0–9.6</strong>，而 k=3 的硬上限是 <strong>4.0</strong>。
+所以 remainder 不是「跟 accept 搶功勞」，它是 <strong>accept 軸能買到東西的前提條件</strong>。
+這是對 09-20 那張表最重要的一項更正：那張表讓「遮 host gap」看起來像是主軸，實際上主軸是一項它沒列的 round 項。</p>
+
+<p class="small">另一條同樣的結論也適用於寬 k：用線性成本律 <code>cost = 41.74 + 51.56·T</code>
+（<code>docs/DRAFT_BUDGET_K_2026-09-22.md</code>），T=8 要 454 ms 而需要 mean_len 11.4，對上上限 8.0 —— <strong>加寬 k 不開任何一格</strong>。</p>
+
+<h3>4.2 只能在地板那一階 → 需要 <span class="warn">accept α ≈ 0.94–1.00</span></h3>
+
+<p>地板的成因是 eval-sync 鏈（40 層 <code>wait</code> 的和），它是 GPU 從 CPU 看過去的極限，不是預算。
+要到那裡必須三件事同時成立：<code>[remainder 拿掉] AND [便宜 drafter] AND [per-layer 主機項拿掉] AND α ≥ ~0.95</code>。
+與 09-20 相同的「只有角落會過」結論，但現在<strong>歸屬明確</strong>。</p>
+
+<div class="box b-red">
+  <p><strong>而且地板那一格也不能被引用成「可達」：</strong>rep 2 的地板 164.5 ms 對上上限 4.0 需要 mean_len 4.112，
+  <strong>任何接受率都無解</strong>。那是 rep 之間的漂移（本輪 rep 漂移 1.5×），不是機器的性質 ——
+  但它是「地板列不能被當成許願目標」的誠實理由。</p>
+</div>
+
+<h2>五、accept 軸今天實際值多少</h2>
+
+<p>不是通往 25 的路，而這個要用數字說：同一個 harness 反解出來的每-draft 接受率是 <strong>α ≈ 0.654</strong>
+（measured ON/OFF = 0.889 @ k=3），在這個 α 下<strong>最佳 k 是 1</strong>，得 <strong>11.42 t/s = 1.066×</strong> 的 MTP-off 基線。</p>
+
+<table>
+  <thead><tr><th>路線</th><th class="num">今天</th><th>要什麼才到 25</th><th>本階梯有提供嗎</th></tr></thead>
+  <tbody>
+    <tr><td>accept 軸自身的天花板（α=1，k→∞）</td><td class="num">19.39 t/s</td>
+        <td>需要 c_tok ≤ 40.00 ms（每 token 成本砍 22%）</td><td class="no">沒有</td></tr>
+    <tr><td>把<strong>整個 kernel 項</strong>拿掉</td><td class="num">23.15 t/s</td>
+        <td>仍然不到 25 ⇒ kernel 是必要條件，不是充分條件</td><td class="no">沒有</td></tr>
+    <tr><td>MTP-off 路線（E=1）</td><td class="num">S0 = 93.3 ms</td>
+        <td>需要 step ≤ 40 ms ⇒ 砍 2.33×</td><td class="no">沒有</td></tr>
+    <tr><td>地板 + α 0.943（rep 3）</td><td class="num">146.8 ms</td>
+        <td>—</td><td class="ok">唯一算得出來的通過格</td></tr>
+  </tbody>
+</table>
+
+<div class="box b-green">
+  <p><strong>收斂成一個誠實的句子：</strong>25 t/s 在 k=3 下需要
+  <code>[remainder 歸零] + [draft head 歸零或換便宜 drafter] + [per-layer 主機項歸零] + [α ≥ 0.95]</code>
+  同時成立；其中前三項<strong>都還沒有儀器可以歸屬其內部</strong>（remainder 是相減出來的），
+  而 α 今天只有 0.654，它自己單獨的天花板是 19.39 t/s。</p>
+</div>
+
+<h2>六、邊界：這些數字不能離開這個窗口</h2>
+
+<ul>
+  <li><strong>絕對 step 是本窗口的</strong>：swap 4.5–6.8 GB、<code>usable</code> 39.9–63.9%、部分臂 thermal HEAVY。
+      <em>比值</em>（哪一項擁有邊際、階梯的形狀）耐受漂移；t/s 值不可與乾淨的 12.57 家族並排。</li>
+  <li><strong>rep 漂移 1.5×</strong>。每個邊際都是<em>在同一 rep 內</em>差分的；不使用池化數字。</li>
+  <li>地板是 40 層 <code>wait</code> 的和（eval-sync 鏈），與 <code>union_sum 149.24</code> 的一致性是
+      <strong>跨檢查、不是恆等式</strong> —— 不同儀器、不同 regime。</li>
+  <li><code>needs alpha</code> 假設幾何模型與 k=3；它是 accept 軸的<strong>上界</strong>，不是任何 drafter 的量測。</li>
+  <li><strong>remainder 是相減出來的</strong>，所以它的大小只跟同一臂的 per-layer 均值一樣好；
+      它的<em>內部</em>切分（lm_head / sampler-argmax / accept 路徑 / 圖與圖之間的宿主簿記）<strong>仍未量測</strong>。
+      §4 的「accept 取代不了它」不依賴它是哪個子項。</li>
+  <li><strong>沒有跑 M1/M2/M3 閘門</strong>：只改環境變數、沒動一行引擎，digest 逐臂記錄在 <code>arms.jsonl</code>。</li>
+</ul>
+
+<h3>可否證的下一步（已有預測）</h3>
+
+<p>在「最後一層 publish 之後、下一輪第一層之前」那一段插儀器，它應該量到
+<strong>T=4 ≥ 100 ms/round、T=2 ≤ 10 ms/round</strong>；若它對 T 是<em>平的</em>，這份分解就是錯的，
+remainder 其實是一個每回合常數加上漂移。用 rep 2 與 rep 3 的 12×／25× 分離度來看，這是一個高解析度的檢驗。</p>
+
+<h2>七、重現與產物</h2>
+
+<pre><code>python3 scripts/check/target25_grid.py --selftest
+python3 scripts/check/target25_grid.py --from-pair /tmp/verify_layers      # 本文件的階梯
+python3 scripts/check/verify_marginal.py --logdir /tmp/verify_layers       # round 預算收斂
+python3 scripts/check/draft_budget.py                                      # accept 軸的天花板</code></pre>
+
+<table>
+  <thead><tr><th>產物</th><th>內容</th></tr></thead>
+  <tbody>
+    <tr><td><code>scripts/check/target25_grid.py</code></td>
+        <td>新增 <code>--from-pair</code> 模式；14/14 自測，含「地板以上每一階都超過上限」、「上限以上不存在 α」、「階梯最後一階就是 eval-sync 鏈」、「配對不齊＝INVALID 而非空表」</td></tr>
+    <tr><td><code>docs/TARGET25_NECESSARY_CONDITIONS_2026-09-22.md</code></td><td>本文件的 markdown 版（含 §2 的原始輸出）</td></tr>
+    <tr><td><code>docs/VERIFY_MARGINAL_2026-09-22.md</code></td><td>round 預算、per-layer 稽核、儀器陷阱（VERIFY_OP_TIMING 與 DECPROF 互斥）</td></tr>
+    <tr><td><code>docs/TARGET25_TWO_AXIS_2026-09-20.md</code></td><td>step 軸已被取代；其地板、上下界、跨檢查仍成立並被引用</td></tr>
+    <tr><td><code>/tmp/verify_layers/arms.jsonl</code></td><td>逐臂原始紀錄（engine digest + 窗口 + 池統計）</td></tr>
+  </tbody>
+</table>
+
+<p class="small">工具與文件均<strong>未 commit</strong>；本輪未起 server、未重建引擎、零殘留行程。</p>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ideal Shape — From First Principles</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", sans-serif; background: #0f1115; color: #e4e6eb; padding: 24px; }
+  .container { max-width: 1280px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 700; margin-bottom: 4px; color: #fff; }
+  .subtitle { font-size: 13px; color: #8b8f98; margin-bottom: 24px; }
+
+  .section { background: #1a1d24; border-radius: 12px; padding: 20px; border: 1px solid #2a2e38; margin-bottom: 16px; }
+  .section-title { font-size: 15px; font-weight: 700; color: #fff; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+  .section-title .num { width: 24px; height: 24px; border-radius: 6px; background: #a78bfa; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
+
+  .principle-box { background: rgba(167,139,250,0.08); border-left: 3px solid #a78bfa; padding: 14px; border-radius: 0 8px 8px 0; margin: 12px 0; font-size: 13px; line-height: 1.7; color: #d4d4d8; }
+  .principle-box strong { color: #a78bfa; }
+
+  /* Current vs Ideal comparison */
+  .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
+  .compare-col { border-radius: 10px; padding: 16px; }
+  .compare-current { background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.2); }
+  .compare-ideal { background: rgba(74,222,128,0.08); border: 1px solid rgba(74,222,128,0.2); }
+  .compare-title { font-size: 13px; font-weight: 700; margin-bottom: 10px; }
+  .compare-current .compare-title { color: #f87171; }
+  .compare-ideal .compare-title { color: #4ade80; }
+
+  .metric-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 12px; }
+  .metric-row:last-child { border-bottom: none; }
+  .metric-key { color: #b4b8c2; }
+  .metric-val { font-weight: 600; }
+
+  /* Memory diagram */
+  .mem-diagram { position: relative; height: 180px; background: #0f1115; border-radius: 8px; margin: 12px 0; padding: 10px; }
+  .mem-block { position: absolute; height: 40px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600; color: #fff; text-align: center; line-height: 1.2; }
+
+  /* Formula box */
+  .formula { background: #0f1115; border-radius: 8px; padding: 16px; font-family: "SF Mono", Monaco, monospace; font-size: 13px; line-height: 1.8; margin: 12px 0; color: #d4d4d8; overflow-x: auto; }
+  .formula .var { color: #60a5fa; }
+  .formula .op { color: #f87171; }
+  .formula .comment { color: #71717a; }
+
+  /* Parameter table */
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 12px 0; }
+  th { text-align: left; padding: 10px; background: #2a2e38; color: #b4b8c2; font-weight: 600; font-size: 11px; }
+  td { padding: 10px; border-bottom: 1px solid #2a2e38; color: #e4e6eb; }
+  tr:hover { background: rgba(255,255,255,0.02); }
+
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+  .tag-red { background: rgba(248,113,113,0.15); color: #f87171; }
+  .tag-green { background: rgba(74,222,128,0.15); color: #4ade80; }
+  .tag-yellow { background: rgba(251,191,36,0.15); color: #fbbf24; }
+  .tag-purple { background: rgba(167,139,250,0.15); color: #a78bfa; }
+
+  .conclusion { background: linear-gradient(135deg, #1a1d24, #1e2430); border-radius: 12px; padding: 20px; border: 1px solid #2a2e38; }
+  .conclusion-text { font-size: 13px; line-height: 1.8; color: #d4d4d8; }
+  .conclusion-text strong { color: #4ade80; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Ideal Shape — 從原理推導</h1>
+  <div class="subtitle">不量測，從計算機結構原理 + 程式碼邏輯推導出理想形狀</div>
+
+  <!-- Section 1: First Principles -->
+  <div class="section">
+    <div class="section-title">
+      <div class="num">1</div>
+      基本原理：記憶體頻寬是怎麼浪費的？
+    </div>
+
+    <div class="principle-box">
+      <strong>DRAM Row Buffer Locality（行緩衝區局部性）</strong>
+      <br>DRAM 有一個 row buffer（一行，通常 1-2 KB）。
+      <br>讀取位元組如果在同一行：<strong>~10 GB/s</strong>（fast path）
+      <br>讀取位元組如果跳到下一行：<strong>~2 GB/s</strong>（row activate penalty）
+      <br><br>
+      ⇒ 頻寬利用率低的根本原因：<strong>讀取位置跳來跳去，每次都觸發 row activate</strong>
+    </div>
+
+    <div class="principle-box">
+      <strong>Memory-level Parallelism（記憶體層級平行度）</strong>
+      <br>DRAM 有多個 bank，可以同時服務多個請求。
+      <br>如果一次只讀一個 expert，讀完才讀下一個：<strong>流水線沒填滿</strong>
+      <br>如果同時讀多個 expert：<strong>流水線填滿，頻寬利用率高</strong>
+      <br><br>
+      ⇒ 頻寬利用率低的第二個原因：<strong>一次只讀一個 expert，平行度不夠</strong>
+    </div>
+
+    <div class="principle-box">
+      <strong>Amdahl's Law（阿姆達爾定律）</strong>
+      <br>如果 kernel launch overhead 占了 10%，就算把計算速度提到無限快，整體也只能快 11%。
+      <br>如果一次 dispatch 太小（讀的 bytes 太少），overhead 占比就高。
+      <br><br>
+      ⇒ 頻寬利用率低的第三個原因：<strong>每次 dispatch 太小，overhead 占比太高</strong>
+    </div>
+  </div>
+
+  <!-- Section 2: Current State Analysis -->
+  <div class="section">
+    <div class="section-title">
+      <div class="num">2</div>
+      現況分析：我們的 MoE gather 為什麼只有 25%？
+    </div>
+
+    <div class="principle-box">
+      <strong>從程式碼邏輯推導：</strong>
+      <br>Qwen3.6-A3B MoE：每個 token 選 top-8 expert
+      <br>llama.cpp 的做法：<strong>逐個 expert 讀取</strong>
+      <br>→ 讀 expert 1 → 讀 expert 2 → ... → 讀 expert 8
+      <br><br>
+      每個 expert 的權重：~170 MB（IQ2_S）
+      <br>每個 expert 在記憶體中是連續的（contiguous）
+      <br>但 8 個 expert 之間是<strong>不連續的</strong>（分散在不同位址）
+    </div>
+
+    <div class="compare-grid">
+      <div class="compare-col compare-current">
+        <div class="compare-title">❌ 現況（逐個讀）</div>
+
+        <div class="mem-diagram">
+          <div class="mem-block" style="left:5%; top:10px; width:15%; background:#f87171;">
+            Expert 1<br>170 MB
+          </div>
+          <div class="mem-block" style="left:30%; top:10px; width:15%; background:#fbbf24;">
+            Expert 4<br>170 MB
+          </div>
+          <div class="mem-block" style="left:55%; top:10px; width:15%; background:#fb923c;">
+            Expert 7<br>170 MB
+          </div>
+          <div class="mem-block" style="left:80%; top:10px; width:15%; background:#ef4444;">
+            Expert 8<br>170 MB
+          </div>
+          <div style="position:absolute; bottom:8px; left:0; right:0; text-align:center; font-size:10px; color:#8b8f98;">
+            跳來跳去 → 每次都觸發 row activate → 頻寬利用率低
+          </div>
+        </div>
+
+        <div class="metric-row">
+          <div class="metric-key">DRAM row hit rate</div>
+          <div class="metric-val" style="color:#f87171;">~10-20%</div>
+        </div>
+        <div class="metric-row">
+          <div class="metric-key">Memory parallelism</div>
+          <div class="metric-val" style="color:#f87171;">1（串行）</div>
+        </div>
+        <div class="metric-row">
+          <div class="metric-key">Effective bandwidth</div>
+          <div class="metric-val" style="color:#f87171;">~30 GB/s（25%）</div>
+        </div>
+        <div class="metric-row">
+          <div class="metric-key">Overhead 占比</div>
+          <div class="metric-val" style="color:#fbbf24;">~10-15%</div>
+        </div>
+      </div>
+
+      <div class="compare-col compare-ideal">
+        <div class="compare-title">✅ 理想（批次讀）</div>
+
+        <div class="mem-diagram">
+          <div class="mem-block" style="left:5%; top:10px; width:15%; background:#4ade80;">
+            Expert 1<br>170 MB
+          </div>
+          <div class="mem-block" style="left:22%; top:10px; width:15%; background:#4ade80;">
+            Expert 2<br>170 MB
+          </div>
+          <div class="mem-block" style="left:39%; top:10px; width:15%; background:#4ade80;">
+            Expert 3<br>170 MB
+          </div>
+          <div class="mem-block" style="left:56%; top:10px; width:15%; background:#4ade80;">
+            Expert 4<br>170 MB
+          </div>
+          <div style="position:absolute; bottom:8px; left:0; right:0; text-align:center; font-size:10px; color:#8b8f98;">
+            連續讀取 → row buffer hit → 頻寬利用率高
+          </div>
+        </div>
+
+        <div class="metric-row">
+          <div class="metric-key">DRAM row hit rate</div>
+          <div class="metric-val" style="color:#4ade80;">~80-90%</div>
+        </div>
+        <div class="metric-row">
+          <div class="metric-key">Memory parallelism</div>
+          <div class="metric-val" style="color:#4ade80;">4-8（並行）</div>
+        </div>
+        <div class="metric-row">
+          <div class="metric-key">Effective bandwidth</div>
+          <div class="metric-val" style="color:#4ade80;">~78 GB/s（65%）</div>
+        </div>
+        <div class="metric-row">
+          <div class="metric-key">Overhead 占比</div>
+          <div class="metric-val" style="color:#4ade80;">~3-5%</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Section 3: Ideal Shape Parameters -->
+  <div class="section">
+    <div class="section-title">
+      <div class="num">3</div>
+      理想形狀：參數應該是什麼？
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>參數</th>
+          <th>現況</th>
+          <th>理想值</th>
+          <th>為什麼</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Gather 方式</strong></td>
+          <td><span class="tag tag-red">逐個讀</span></td>
+          <td><span class="tag tag-green">批次讀</span></td>
+          <td>一次把多個 expert 的讀取合併，提高連續性</td>
+        </tr>
+        <tr>
+          <td><strong>每個 dispatch 的 bytes</strong></td>
+          <td>~170 MB（一個 expert）</td>
+          <td>~680 MB（4 個 expert）</td>
+          <td>越大，overhead 占比越低，流水線填滿</td>
+        </tr>
+        <tr>
+          <td><strong>Memory parallelism</strong></td>
+          <td>1（串行）</td>
+          <td>4-8（並行）</td>
+          <td>DRAM 有多個 bank，同時讀可以填滿流水線</td>
+        </tr>
+        <tr>
+          <td><strong>DRAM row hit rate</strong></td>
+          <td>~10-20%</td>
+          <td>~80-90%</td>
+          <td>把不連續的讀取變成連續的，提高 row buffer 命中</td>
+        </tr>
+        <tr>
+          <td><strong>Expert 佈局</strong></td>
+          <td>分散儲存</td>
+          <td>分組/打包儲存</td>
+          <td>把常用 expert 放在一起，或把多個 expert 打包成連續區塊</td>
+        </tr>
+        <tr>
+          <td><strong>Prefetch</strong></td>
+          <td>無</td>
+          <td>有（提前讀）</td>
+          <td>提前讀下一個 expert，隱藏 IO 延遲</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Section 4: The Math -->
+  <div class="section">
+    <div class="section-title">
+      <div class="num">4</div>
+      數學推導：為什麼 65% 就是 25 t/s？
+    </div>
+
+    <div class="formula">
+      <span class="comment">// 基本常數</span>
+      <span class="var">B_total</span> <span class="op">=</span> 120 GB/s  <span class="comment">// M4 LPDDR5 總頻寬</span>
+      <span class="var">B_used</span> <span class="op">=</span> <span class="var">B_total</span> <span class="op">×</span> utilization
+
+      <span class="comment">// MoE 部分每步需要讀多少 bytes</span>
+      <span class="var">bytes_per_step</span> <span class="op">=</span> 8 experts × 170 MB <span class="op">=</span> 1360 MB
+
+      <span class="comment">// MoE 部分的時間 = bytes / bandwidth</span>
+      <span class="var">t_moe</span> <span class="op">=</span> <span class="var">bytes_per_step</span> / <span class="var">B_used</span>
+
+      <span class="comment">// 現況：utilization = 25%</span>
+      <span class="var">t_moe_current</span> <span class="op">=</span> 1360 MB / (120 × 0.25) <span class="op">=</span> 1360 / 30 <span class="op">≈</span> 45 ms
+
+      <span class="comment">// 理想：utilization = 65%</span>
+      <span class="var">t_moe_ideal</span> <span class="op">=</span> 1360 MB / (120 × 0.65) <span class="op">=</span> 1360 / 78 <span class="op">≈</span> 17 ms
+
+      <span class="comment">// MoE 部分節省：45 - 17 = 28 ms</span>
+      <span class="comment">// 總步時從 83 ms → 55 ms → ~18 t/s</span>
+      <span class="comment">// 再加上 MTP、dense 等部分的優化 → 25 t/s</span>
+    </div>
+
+    <div class="principle-box">
+      <strong>注意：</strong>以上是粗略估算，實際數字會因為以下因素變動：
+      <br>1. Expert 實際大小（IQ2_S 是多少 bytes）
+      <br>2. 其他部分（MTP verify、dense GEMV）也會影響總步時
+      <br>3. L2 cache 命中的部分，不用讀 DRAM，不算在頻寬裡
+      <br><br>
+      但<strong>數量級是對的</strong>：MoE gather 的頻寬利用率從 25% 拉到 65%，
+      就是把 MoE 部分的時間減半以上，這是最大的槓桿。
+    </div>
+  </div>
+
+  <!-- Section 5: Conclusion -->
+  <div class="conclusion">
+    <div class="section-title" style="margin-bottom: 12px;">
+      <div class="num">5</div>
+      結論：理想形狀是什麼？
+    </div>
+    <div class="conclusion-text">
+      <strong>理想形狀的核心：把 MoE gather 從「逐個讀」改成「批次讀」</strong>
+      <br><br>
+      具體來說：
+      <br>1. <strong>把多個 expert 的讀取合併成一次 dispatch</strong> — 不要一個一個讀
+      <br>2. <strong>讓讀取位置盡可能連續</strong> — 提高 DRAM row buffer 命中率
+      <br>3. <strong>充分利用 memory-level parallelism</strong> — 同時讀多個 expert，填滿 DRAM 流水線
+      <br>4. <strong>盡量加大每次 dispatch 的 bytes</strong> — 降低 overhead 占比
+      <br><br>
+      這樣做完之後：
+      <br>→ MoE gather 頻寬利用率從 25% → 65%
+      <br>→ MoE 部分的時間從 ~33 ms → ~16 ms
+      <br>→ 總步時從 ~83 ms → ~40-50 ms
+      <br>→ 對應 20-25 t/s
+      <br><br>
+      <strong>這就是形狀世界模型的理想形狀。</strong>
+      <br>不是某個 knobs 調大調小，而是<strong>整個 gather 的方式要改</strong> —
+      從「串行逐個讀」變成「並行批次讀」。
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

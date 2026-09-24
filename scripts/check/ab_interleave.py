@@ -50,6 +50,42 @@ def build_fingerprint():
     return ds.build_fingerprint()
 
 
+def others_measuring():
+    """True if any foreign llama-bench / llama-server process is running.
+
+    [CGC 2026-09-23 §EN-473] Two sessions measuring at once is exactly how the
+    'clean window' turned out to be someone else's run -- the swap watermark and the
+    timing both change while we are between reps. Pollution is a hard gate (rc=2),
+    not a covariate: it is not something to fit out of the data."""
+    out = subprocess.run(["ps", "aux"], capture_output=True, text=True).stdout
+    for name in ("llama-bench", "llama-server"):
+        for line in out.splitlines():
+            if name in line and "grep" not in line and "ab_interleave" not in line:
+                return True
+    return False
+
+
+def ensure_idle(json_path, min_idle_s):
+    """Enforce a deep-cooldown gate between launches.
+
+    [CGC 2026-09-23 §EN-473] 'NOMINAL' is not a point on this fanless M4 Air: the same
+    anchor binary read 12.37 t/s when launched after a 10-minute GPU idle and 9.9-10.5
+    after only 3 minutes. Thermal is continuous below the NOMINAL label, so the gate is
+    wall-clock idle since the last measurement, not the label. The json's mtime is the
+    last write of a completed row, i.e. the end of the previous arm."""
+    if not min_idle_s:
+        return
+    if os.path.exists(json_path):
+        elapsed = time.time() - os.path.getmtime(json_path)
+        if elapsed < min_idle_s:
+            wait = min_idle_s - elapsed
+            print(f"[cooldown] last arm ended {elapsed:.0f}s ago; waiting {wait:.0f}s "
+                  f"(min-idle {min_idle_s}s)", flush=True)
+            time.sleep(wait)
+    else:
+        print(f"[cooldown] no previous run on file; assuming cold start", flush=True)
+
+
 def run_arm(arm, key, profile, rounds, warmup, n_predict):
     ds.killed()
     stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -79,6 +115,17 @@ def run_arm(arm, key, profile, rounds, warmup, n_predict):
             break
     subprocess.run(["pkill", "-9", "-f", ds.SERVER_MATCH],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # [CGC 2026-09-23 §EN-473] pkill -9 returns BEFORE the process is gone; the next arm's
+    # others_measuring() then sees our own dying server as "foreign" and aborts the interleave
+    # (hit twice today: p25-gputime#r1 and p25-nail-mtpoff#r1 both blocked their mtp partner).
+    # Wait until the match set is empty before returning.
+    for _ in range(30):
+        if subprocess.run(["pgrep", "-f", ds.SERVER_MATCH],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
+            break
+        time.sleep(2)
+    else:
+        print(f"[teardown] server still alive 60s after SIGKILL; continuing anyway", flush=True)
 
     row = {"key": key, "arm": arm, "env": ds.ARMS[arm], "log": srv_log}
     row.update({k: v for k, v in bench.items() if k != "tag"})
@@ -154,6 +201,12 @@ def main():
     ap.add_argument("--json", required=True)
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--report-only", action="store_true")
+    ap.add_argument("--min-idle-s", type=int, default=300,
+                    help="deep-cooldown gate: seconds of GPU idle since the last arm "
+                         "before the next launch (default 300). 0 disables. [§EN-473]")
+    ap.add_argument("--no-window-check", action="store_true",
+                    help="skip the foreign-process window check (only for scripted "
+                         "single-session runs). [§EN-473]")
     args = ap.parse_args()
 
     arms = [a.strip() for a in args.arms.split(",") if a.strip()]
@@ -181,6 +234,12 @@ def main():
                 if key in have and not args.force:
                     print(f"[skip] {key} already recorded", flush=True)
                     continue
+                if not args.report_only and not args.no_window_check and others_measuring():
+                    print(f"[WINDOW] foreign llama process running; refusing to launch {key} "
+                          f"(use --no-window-check only for scripted single-session runs)",
+                          file=sys.stderr, flush=True)
+                    return 2
+                ensure_idle(args.json, args.min_idle_s)
                 print(f"\n===== [{key}] arm={arm} env={ds.ARMS[arm]} =====", flush=True)
                 row = run_arm(arm, key, args.profile, args.rounds, args.warmup, args.n_predict)
                 if row is None:

@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shape Parameter Map — MoE Gather Bandwidth Utilization</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", sans-serif; background: #0f1115; color: #e4e6eb; padding: 24px; }
+  .container { max-width: 1280px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 700; margin-bottom: 4px; color: #fff; }
+  .subtitle { font-size: 13px; color: #8b8f98; margin-bottom: 24px; }
+
+  .legend { display: flex; gap: 16px; margin-bottom: 20px; font-size: 12px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+
+  /* Main layout: left = parameters, middle = relationships, right = outcome */
+  .main { display: grid; grid-template-columns: 200px 1fr 200px; gap: 16px; margin-bottom: 20px; }
+
+  .col-title { font-size: 13px; font-weight: 700; color: #fff; margin-bottom: 12px; text-align: center; padding-bottom: 8px; border-bottom: 1px solid #2a2e38; }
+
+  .param-card { background: #1a1d24; border-radius: 10px; padding: 14px; margin-bottom: 10px; border: 1px solid #2a2e38; }
+  .param-name { font-size: 13px; font-weight: 600; color: #fff; margin-bottom: 4px; }
+  .param-desc { font-size: 11px; color: #8b8f98; line-height: 1.5; }
+  .param-impact { font-size: 10px; font-weight: 600; margin-top: 6px; padding: 2px 8px; border-radius: 10px; display: inline-block; }
+
+  .impact-high { background: rgba(248,113,113,0.2); color: #f87171; }
+  .impact-mid { background: rgba(251,191,36,0.2); color: #fbbf24; }
+  .impact-low { background: rgba(74,222,128,0.2); color: #4ade80; }
+  .impact-unknown { background: rgba(139,92,246,0.2); color: #a78bfa; }
+
+  /* Middle: relationship diagram */
+  .middle-panel { background: #1a1d24; border-radius: 12px; padding: 20px; border: 1px solid #2a2e38; position: relative; }
+
+  .group { margin-bottom: 20px; }
+  .group-title { font-size: 12px; font-weight: 700; color: #a78bfa; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+  .rel-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 11px; }
+  .rel-label { width: 120px; color: #b4b8c2; text-align: right; }
+  .rel-bar { flex: 1; height: 16px; background: #2a2e38; border-radius: 4px; position: relative; overflow: hidden; }
+  .rel-fill { height: 100%; border-radius: 4px; display: flex; align-items: center; padding-left: 8px; font-size: 10px; font-weight: 600; color: #fff; }
+  .rel-value { width: 60px; font-weight: 600; }
+
+  /* Outcome panel */
+  .outcome-panel { background: linear-gradient(135deg, #1a1d24, #1e2430); border-radius: 12px; padding: 20px; border: 1px solid #2a2e38; }
+
+  .outcome-big { font-size: 36px; font-weight: 800; color: #4ade80; text-align: center; line-height: 1; margin-bottom: 4px; }
+  .outcome-label { font-size: 12px; color: #8b8f98; text-align: center; margin-bottom: 16px; }
+
+  .outcome-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #2a2e38; font-size: 12px; }
+  .outcome-row:last-child { border-bottom: none; }
+  .outcome-key { color: #b4b8c2; }
+  .outcome-val { font-weight: 600; }
+
+  /* Bottom: what we know vs what we don't */
+  .bottom-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+  .panel { background: #1a1d24; border-radius: 12px; padding: 18px; border: 1px solid #2a2e38; }
+  .panel-title { font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 12px; }
+
+  .know-item { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid #2a2e38; font-size: 12px; line-height: 1.6; }
+  .know-item:last-child { border-bottom: none; }
+  .know-icon { flex-shrink: 0; width: 20px; height: 20px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; }
+
+  .know-yes { background: rgba(74,222,128,0.15); color: #4ade80; }
+  .know-no { background: rgba(248,113,113,0.15); color: #f87171; }
+  .know-maybe { background: rgba(251,191,36,0.15); color: #fbbf24; }
+
+  /* Priority table */
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: left; padding: 8px; background: #2a2e38; color: #b4b8c2; font-weight: 600; font-size: 11px; }
+  td { padding: 8px; border-bottom: 1px solid #2a2e38; color: #e4e6eb; }
+  tr:hover { background: rgba(255,255,255,0.02); }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Shape Parameter Map</h1>
+  <div class="subtitle">MoE Expert Gather 頻寬利用率 — 參數關係地圖（快速版）</div>
+
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#f87171;"></div> 高影響（>10%）</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#fbbf24;"></div> 中影響（3-10%）</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#4ade80;"></div> 低影響（<3%）</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#a78bfa;"></div> 未知（未測量）</div>
+  </div>
+
+  <!-- Main three-column layout -->
+  <div class="main">
+    <!-- Left: Parameters that affect MoE gather -->
+    <div>
+      <div class="col-title">🔧 影響參數</div>
+
+      <div class="param-card">
+        <div class="param-name">Expert 大小</div>
+        <div class="param-desc">每個 expert 的參數量大小，決定每次讀多少 bytes</div>
+        <div class="param-impact impact-high">高影響</div>
+      </div>
+
+      <div class="param-card">
+        <div class="param-name">Gather Pattern</div>
+        <div class="param-desc">expert 是連續讀還是跳著讀，影響 DRAM row buffer 命中率</div>
+        <div class="param-impact impact-high">高影響</div>
+      </div>
+
+      <div class="param-card">
+        <div class="param-name">Dispatch 大小</div>
+        <div class="param-desc">一次 dispatch 多少個 expert / 多少 bytes，影響 overhead 占比</div>
+        <div class="param-impact impact-mid">中影響</div>
+      </div>
+
+      <div class="param-card">
+        <div class="param-name">Tile Size (NSG)</div>
+        <div class="param-desc">kernel 內部的 tile 分割大小，已掃過，無效果</div>
+        <div class="param-impact impact-low">低影響（已排除）</div>
+      </div>
+
+      <div class="param-card">
+        <div class="param-name">MTP k 值</div>
+        <div class="param-desc">speculative decoding 的深度，影響每步算多少個 expert</div>
+        <div class="param-impact impact-mid">中影響（待認證）</div>
+      </div>
+
+      <div class="param-card">
+        <div class="param-name">Expert Cache 大小</div>
+        <div class="param-desc">快取了多少 expert 在本地，miss rate 影響 IO 量</div>
+        <div class="param-impact impact-mid">中影響（已測）</div>
+      </div>
+
+      <div class="param-card">
+        <div class="param-name">L2 Cache 政策</div>
+        <div class="param-desc">Metal 的 L2 cache 映射政策，影響 expert 讀取的局部性</div>
+        <div class="param-impact impact-unknown">未知</div>
+      </div>
+
+      <div class="param-card">
+        <div class="param-name">Prefetch 政策</div>
+        <div class="param-desc">是不是提前讀下一個 expert，隱藏 IO 延遲</div>
+        <div class="param-impact impact-unknown">未知</div>
+      </div>
+    </div>
+
+    <!-- Middle: Relationships -->
+    <div class="middle-panel">
+      <div class="col-title">📊 關係強度（對 MoE 頻寬利用率）</div>
+
+      <div class="group">
+        <div class="group">Group 1：記憶體存取模式（最可能的主因）</div>
+
+        <div class="rel-row">
+          <div class="rel-label">Gather 連續性</div>
+          <div class="rel-bar">
+            <div class="rel-fill" style="width: 85%; background: linear-gradient(90deg, #f87171, #ef4444);">~85%（推測）</div>
+          </div>
+          <div class="rel-value" style="color:#f87171;">主因？</div>
+        </div>
+
+        <div class="rel-row">
+          <div class="rel-label">每次讀 bytes</div>
+          <div class="rel-bar">
+            <div class="rel-fill" style="width: 70%; background: linear-gradient(90deg, #f87171, #f97316);">~70%（推測）</div>
+          </div>
+          <div class="rel-value" style="color:#f97316;">很大</div>
+        </div>
+
+        <div class="rel-row">
+          <div class="rel-label">L2 局部性</div>
+          <div class="rel-bar">
+            <div class="rel-fill" style="width: 55%; background: linear-gradient(90deg, #f97316, #fbbf24);">~55%（未知）</div>
+          </div>
+          <div class="rel-value" style="color:#fbbf24;">未知</div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group">Group 2：Overhead 類（次要）</div>
+
+        <div class="rel-row">
+          <div class="rel-label">Dispatch overhead</div>
+          <div class="rel-bar">
+            <div class="rel-fill" style="width: 25%; background: linear-gradient(90deg, #fbbf24, #4ade80);">~25%（估）</div>
+          </div>
+          <div class="rel-value" style="color:#fbbf24;">中等</div>
+        </div>
+
+        <div class="rel-row">
+          <div class="rel-label">Kernel launch 數量</div>
+          <div class="rel-bar">
+            <div class="rel-fill" style="width: 15%; background: linear-gradient(90deg, #4ade80, #22c55e);">~15%（估）</div>
+          </div>
+          <div class="rel-value" style="color:#4ade80;">小</div>
+        </div>
+
+        <div class="rel-row">
+          <div class="rel-label">Tile Size (NSG)</div>
+          <div class="rel-bar">
+            <div class="rel-fill" style="width: 5%; background: #4ade80;">已測：~0%</div>
+          </div>
+          <div class="rel-value" style="color:#4ade80;">已排除</div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group">Group 3：外部因素（已測）</div>
+
+        <div class="rel-row">
+          <div class="rel-label">Expert Cache miss rate</div>
+          <div class="rel-bar">
+            <div class="rel-fill" style="width: 40%; background: linear-gradient(90deg, #a78bfa, #8b5cf6);">40%（已測）</div>
+          </div>
+          <div class="rel-value" style="color:#a78bfa;">已測</div>
+        </div>
+
+        <div class="rel-row">
+          <div class="rel-label">MTP k 值</div>
+          <div class="rel-bar">
+            <div class="rel-fill" style="width: 30%; background: linear-gradient(90deg, #a78bfa, #60a5fa);">16.4%（待認證）</div>
+          </div>
+          <div class="rel-value" style="color:#a78bfa;">待認證</div>
+        </div>
+      </div>
+
+      <div style="margin-top: 16px; padding: 12px; background: rgba(167,139,250,0.08); border-radius: 8px; font-size: 11px; color: #b4b8c2; line-height: 1.6;">
+        <strong style="color:#a78bfa;">關鍵假設：</strong>
+        MoE gather 頻寬利用率只有 25%，最可能的原因是「記憶體存取模式不連續」
+        — 每次讀一個 expert，跳來跳去，DRAM row buffer 命中率低。
+        <br><br>
+        <strong style="color:#f87171;">這個假設還沒有被驗證。</strong>
+        上面的關係強度大部分是「推測」，不是「實測」。
+      </div>
+    </div>
+
+    <!-- Right: Outcome -->
+    <div>
+      <div class="col-title">🎯 最終結果</div>
+
+      <div class="outcome-panel">
+        <div class="outcome-big">~12<span style="font-size:18px;"> t/s</span></div>
+        <div class="outcome-label">現況（k=2, 8GB cache）</div>
+
+        <div class="outcome-row">
+          <div class="outcome-key">MoE 頻寬利用率</div>
+          <div class="outcome-val" style="color:#f87171;">25%</div>
+        </div>
+        <div class="outcome-row">
+          <div class="outcome-key">Dense 頻寬利用率</div>
+          <div class="outcome-val" style="color:#4ade80;">77%</div>
+        </div>
+        <div class="outcome-row">
+          <div class="outcome-key">Step time</div>
+          <div class="outcome-val" style="color:#fbbf24;">83 ms</div>
+        </div>
+
+        <div style="border-top: 1px solid #2a2e38; margin: 12px 0; padding-top: 12px;">
+          <div style="font-size: 11px; color: #8b8f98; margin-bottom: 6px;">如果 MoE 拉到 65%：</div>
+          <div class="outcome-row">
+            <div class="outcome-key">預估 t/s</div>
+            <div class="outcome-val" style="color:#4ade80;">~25 t/s</div>
+          </div>
+          <div class="outcome-row">
+            <div class="outcome-key">預估 step time</div>
+            <div class="outcome-val" style="color:#4ade80;">~40 ms</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom: What we know vs what we don't -->
+  <div class="bottom-grid">
+    <div class="panel">
+      <div class="panel-title">✅ 我們知道的</div>
+
+      <div class="know-item">
+        <div class="know-icon know-yes">✓</div>
+        <div>
+          <strong>Dense kernel 已經到極限</strong>：76-77% 頻寬利用率，打滿也只 +2.4%
+        </div>
+      </div>
+
+      <div class="know-item">
+        <div class="know-icon know-yes">✓</div>
+        <div>
+          <strong>Tile Size (NSG) 沒效果</strong>：掃過 1/4/8/16/32，總跨度只有 0.6 個百分點
+        </div>
+      </div>
+
+      <div class="know-item">
+        <div class="know-icon know-yes">✓</div>
+        <div>
+          <strong>Expert cache 大小有影響</strong>：8GB → 4GB 慢 21%，但這是 miss rate 的問題，不是 gather pattern 的問題
+        </div>
+      </div>
+
+      <div class="know-item">
+        <div class="know-icon know-yes">✓</div>
+        <div>
+          <strong>平行跑不可能</strong>：引擎閘門擋下，一個 server 就要 17GB
+        </div>
+      </div>
+
+      <div class="know-item">
+        <div class="know-icon know-maybe">?</div>
+        <div>
+          <strong>k=2 比 k=3 快 16.4%</strong>：待 llama-bench 口徑認證
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">❌ 我們不知道的（最重要的）</div>
+
+      <div class="know-item">
+        <div class="know-icon know-no">✗</div>
+        <div>
+          <strong>MoE gather 為什麼頻寬利用率只有 25%？</strong>
+          <br>是 gather pattern 不連續？還是每次讀太少？還是 L2 miss 太多？
+        </div>
+      </div>
+
+      <div class="know-item">
+        <div class="know-icon know-no">✗</div>
+        <div>
+          <strong>怎麼把 gather pattern 變連續？</strong>
+          <br>把多個 expert 合併讀？改 dispatch 方式？改 kernel？
+        </div>
+      </div>
+
+      <div class="know-item">
+        <div class="know-icon know-no">✗</div>
+        <div>
+          <strong>L2 cache 政策有影響嗎？</strong>
+          <br>Metal 的 L2 映射政策，從來沒量過
+        </div>
+      </div>
+
+      <div class="know-item">
+        <div class="know-icon know-no">✗</div>
+        <div>
+          <strong>Prefetch 有效果嗎？</strong>
+          <br>提前讀下一個 expert，隱藏 IO 延遲，從來沒認真測過
+        </div>
+      </div>
+
+      <div class="know-item">
+        <div class="know-icon know-no">✗</div>
+        <div>
+          <strong>這些參數之間有交互作用嗎？</strong>
+          <br>比如：tile size × dispatch size 一起改，效果會疊加嗎？
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Priority table -->
+  <div class="panel" style="margin-top: 16px;">
+    <div class="panel-title">🎯 接下來該做什麼（優先級排序）</div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>優先級</th>
+          <th>要做的事</th>
+          <th>為什麼</th>
+          <th>預期效果</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="param-impact impact-high">P0</span></td>
+          <td><strong>診斷 MoE gather 為什麼頻寬利用率低</strong></td>
+          <td>這是最大的瓶頸，不知道原因就無法優化</td>
+          <td>找到根因</td>
+        </tr>
+        <tr>
+          <td><span class="param-impact impact-high">P0</span></td>
+          <td><strong>量測 gather pattern 的連續性</strong></td>
+          <td>驗證「gather 不連續導致頻寬低」這個假設</td>
+          <td>確認或否證假設</td>
+        </tr>
+        <tr>
+          <td><span class="param-impact impact-mid">P1</span></td>
+          <td><strong>測 Prefetch 政策的效果</strong></td>
+          <td>從來沒認真測過，可能有大效果</td>
+          <td>未知，可能很大</td>
+        </tr>
+        <tr>
+          <td><span class="param-impact impact-mid">P1</span></td>
+          <td><strong>測 L2 cache 政策的影響</strong></td>
+          <td>從來沒量過，可能有大效果</td>
+          <td>未知，可能很大</td>
+        </tr>
+        <tr>
+          <td><span class="param-impact impact-low">P2</span></td>
+          <td><strong>認證 k=2 vs k=3（llama-bench 口徑）</strong></td>
+          <td>可能有 16% 免費提速</td>
+          <td>+16%（待認證）</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+</body>
+</html>
