@@ -184,3 +184,129 @@ COUNTERFACTUAL top-K by mass: K=143 → 98.6%（min 93.4 / max 99.9）
 ```
 
 **L2 降級結論**：P0 不需要改載入路徑（選項 C）。swap 結構解的真槓桿是 **L1（pool 甜點 4–6GB）**——footprint 最大項就是 pool 的 7970MB untagged。L4 已把「模型檔案駐留」這一項砍到 880KB file-backed；剩餘 swap 壓力 = pool 8GiB 保留 + dense + 系統。（**✅ 已拆（2026-09-24，見 `docs/H_MEASURED_2026-09-24.md` §二）**：4G vs 8G footprint 對比 → untagged 增量 3120MB = pool；dense+固定 ≈ 555MB —— untagged 的 ~93% 是 pool。）
+
+### 7.6 三前提驗證結果（2026-09-25，0 GPU：純讀碼 + §7.5 實測復用）— 選項 C 定案
+
+| 前提 | 驗證方式 | 結果 |
+|---|---|---|
+| #1 expert 駐留形態 | §7.5 實測（load probe）復用 | **否定全量讀 RAM**：MALLOC 474MB、無 ~10GB CPU 副本、skip-load 0 行、L4 adopt 生效 |
+| #2 MoE kernel 無 CPU fallback | 本次讀碼（loader 判定樹 + ggml-metal supports_buft） | **成立**：見下方證據鏈 |
+| #3 ALLOW_NGL 語意 | 本次讀碼（compute_l4_pool_capacity gate + llama.cpp:384/402） | **L4 優先**：expert 走 adopt 不走 skip-load |
+
+**#2 證據鏈（純讀碼，llama-model-loader.cpp + ggml-metal.cpp）**：
+1. loader 判定樹（llama-model-loader.cpp:1350-1385）：`l4_kind >= 0` 分支**優先於** skip-load 分支。prod-new（ALLOW_NGL=1）下所有 `_exps`/`blk.` tensor 命中 l4_kind → 走 `select_weight_buft`（L4 zero-copy，Metal weight buft）→ storage 在 Metal，**根本到不了 CPU buft 分支**。
+2. ggml-metal.cpp:927-937：pool buft 已註冊 `supports_buft` → FFN `mul_mat_id` **不離開 GPU**（註釋明說：不註冊會「silently leave the GPU」）。
+3. 唯一 CPU 副本路徑 = skip-load 分支（`ggml_backend_cpu_buffer_type`）——prod-new 不觸發（§7.5 實測 0 行）。
+4. `cgc_exact_cache_verify_post_fill`（bit-exact 驗證）是**診斷路徑**：`CGC_EXACT_CACHE_VERIFY` env 未設即 return（llama-expert-cache.cpp:895-897）——prod-new 默認關。
+
+**#3 語意**：
+- `compute_l4_pool_capacity` gate（llama-model-loader.cpp:1106-1113）= `NGL>0 && ALLOW_NGL 存在 && 無 NOGATHER` → 容量 143/256@8GiB。
+- llama.cpp:384/402：`expert_cache_skip_load` 與 `l4_path` 條件都含 ALLOW_NGL——但 loader 的 `l4_kind>=0` 先命中 → **expert 走 L4 adopt（zero-copy pool），skip-load 語意僅對無 l4_kind 的 tensor 生效**（與 §7.5 一致）。
+
+**結論（選項 C 定案）**：**L2 無需實作**。「expert 權重單一駐留」已由既有 **L4 adopt + shrunk（143/256）** 實現——expert 數據流 = `檔案 → pread → Metal pool（zero-copy），CPU 零副本`。P0 不需要改載入路徑；`llama-model-loader.cpp:1844` 的 read_raw 分支在 prod-new 下**不被 expert 觸及**（dense 權重的正常載入另計）。
+
+**swap 結構解剩餘槓桿**（L1 已被 `docs/POOL_SWEET_SPOT_2026-09-25.md` §7 實測判死：4G/6G 掉速、8G 為穩定態必需）：只剩 **L3（自適應閉環：swap 進 autotuner + LAYER_CAPS 逐層容量）** 與 **L4（pool 駐留納入 wired 級管理）**——見本文 §2-§4。
+
+---
+
+## 8. L0–L4 敘事重組（2026-09-25）
+
+按「根因 → 已閉環 → 實作中 → 已兌現」重組全部工作的敘事層。
+
+### L0 —— 根因與驗證閉環（已閉環；含原 P0 工作）
+
+- **一句話根因（§0）**：13.0 GiB 模型 + 8 GiB pool = 21.2 GiB 潛在駐留塞進 16 GB；macOS swap 只累積、不回收。
+- **機制鏈 + footprint 分解（§1）**；**swap 製造機定量（§2）**：SpAc 踢錯 → pread（一趟 19.6 GiB 重讀）→ 高壓下頁變 swap。
+- **原 P0（L2 單一駐留實作）以驗證閉環收尾（§7.3–7.6）**：三前提驗證 → expert 數據流 = `檔案 → pread → Metal pool（L4 adopt, zero-copy），CPU 零副本`（MALLOC 全部 474 MB、skip-load 0 行）→ L2 已由 L4 路徑實現，**P0 不需改載入路徑，以「驗證 + 降級」而非實作收尾**。
+
+### L1 —— 縮 pool（已死）
+
+`POOL_SWEET_SPOT_2026-09-25.md` §7 同窗口真曲線：4G −36%（7.67 vs 12.06 t/s）、6G −13%（10.48）；8G 是穩定態必需（cap miss：4G 32.1% / 6G ~15% / 8G 3.8%）。
+
+### L2 —— 單一駐留（已實現，結論歸 L0）
+
+### L3 —— 實作敘事（當前主線；兩條正交路線）
+
+**路線 3a：capacity 口徑修正（判別式 #1 已跑完，2026-09-25 ~01:10）—— 143 可升到 191**
+
+一次 prod-new init（8 GiB budget）+ footprint，三重交叉驗證閉合：
+
+| 量 | 數值 | 口徑 |
+|---|---:|---|
+| untagged (VM_ALLOCATE) | 7970 MB | footprint pid（= pool + dense Metal） |
+| dense Metal（推算） | 1848 MB | 7970 − 6122 |
+| **pool 實際分配** | **6122 MiB** | 143 slots × 1.0703 MiB × 40 decoder 層 |
+| **budget 未花滿** | **2070 MiB（25.3%）** | 8192 − 6122 |
+| 4G/8G untagged 差 | 理論 3083 / 實測 3120 MiB | H_MEASURED 交叉驗證（差 1.2%） |
+
+根因（代碼定位）：capacity 用**雙重保守口徑**——`per_slot = max over decoder layers`（1.397 MiB，來自最大層；平均僅 1.0703）× `denom = max_layer=41`（**含 MTP 層，而 MTP 不佔 pool region**）（llama-model-loader.cpp:1186-1188；llama-expert-cache.cpp:3782）。
+
+**修法（確定可升 191）**：`capacity = budget / Σ_decoder per_slot_layer`（總 stride 口徑）：
+- Σ_decoder per_slot_layer = 6122/143 = 42.81 MiB（一個「40 層全開 slot」的實際 stride）
+- capacity = 8192/42.81 = **191.3 → 191 slots/layer，同 8 GiB RSS**
+- 升後總 Metal 分配 = 191 × 42.81 = 8177 MiB ≈ budget 8192（**不超**：按各層實際 stride 線性放大，footprint 已含層間差異）
+- 191 對應 counterfactual K=192 的 **99.8% mass coverage**（MASSCOV 實測）→ **capacity miss 結構性接近消除**
+
+> **誠實邊界**：穩態 cap miss 實測 3.8%（真曲線；commit_bench hit 96.2%）→ 消除後 disk 讀/swap 製造相應減少；**first-touch（compulsory）與 policy miss（SpAc 踢錯）不在此列**；t/s 收益需 ABBA 實測（143 vs 191），不預先宣稱。
+
+**路線 3b：可泛化 pin（SWAP §4 待做）**：只 pin 跨 prompt 穩定層（p0 vs p1 逐層重合率篩選）、其餘留 SpAc——靜態全 pin 已判死（真實文本 profile × 合成 cell 泛化 −33%）。
+
+**判別式 #2（未跑）**：層間路由不均——CGC_MASSCOV 按層輸出一次即可，決定 LAYER_CAPS 逐層重分配的收益上限。
+
+### L4 —— 務實內核（已兌現）
+
+- **P1/P2 的 `cgc_discard_pages` 已落地**：`madvise(MADV_DONTNEED)` 丟棄**將被覆蓋 / 已垃圾**的 pool 頁（頁對齊防護：expert stride 1.0703 MiB = 68.5 个 16 KiB 頁，start round UP / end round DOWN，只丟完全在範圍內的頁；Metal pool_ext 指針禁入）→ **避免 kernel 把將被覆蓋的頁寫盤——這就是 L4 的務實兌現**。
+- 原「pool 納入 wired 級管理」方向**不建議**：pool 是 anonymous malloc（§7.5 確認），納入 wired 需改分配路徑（→ Metal buft，大改 + 高回歸），收益模糊。
+
+
+---
+
+### L3 路線 3a/3b 終判（2026-09-25，用戶拍板 B）
+
+**路線 3a（capacity 口徑修正，CGC_L4_CAP_TOTALSTRIDE）—— 判死：高水位 OOM**
+- 代碼生效確認：cap 143 → **189 slots/layer**（理論 191，口徑差 −1%）；loader/allowlist/重建/env 驗證全過。
+- 但 server 成功 listening 後被 **SIGKILL（Killed: 9，Jetsam 高水位）**：189 × 實際 stride → pool ~8091 MiB + dense 1848 = untagged ~9939 MiB，在 swap 已佔 3.8 GB 的環境下裝不下。
+- **判決修正**：「budget 未花滿 25.3%」不是可免費提容量的冗餘，而是 capacity 保守口徑預留的**高水位安全邊際**。未 commit（改動留在工作樹：llama-model-loader.cpp、run_server.sh allowlist）。
+
+**路線 3b（可泛化 pin：只 pin 跨 prompt 穩定層）—— 判死：泛化覆蓋跑不贏 SpAc**
+- 產物：`scripts/check/pin_profiles/pin_3b_stable21.txt`（21 穩定層 pin 三 prompt 全交集共識 core avg 102/層、留 41 槽 SpAc；19 層空行全 SpAc）。
+- LOO 三折（2 prompt 共識 → 第 3 個未見 prompt）：穩定層 top-96/top-143 recall = **0.802 / 0.706**，不穩定層 = 0.729 / 0.643（僅差 7/6 pp）。
+- **判決**：共識 core 佔 71% 槽、泛化 ~80% < **SpAc 穩態實測 92.8%**；p1-pin 真實 GPU 已驗同類缺陷（佔槽 → decode −33%）。路由本質 prompt-dependent。
+- **唯一未閉合**：prompt 切換的冷啟動 miss 曲線（pin 可能只在冷啟動有價值），需逐 token hit 曲線，未量。
+
+**L3 殘留（未被證偽）**：判別式 #2 —— LAYER_CAPS **運行時**逐層容量（按實際路由頻率直方圖動態分配，非靜態 pin）。現有 route dump 為純 top-143 排名、不帶頻次，精確定價需一次按層頻次 route record；先做零 GPU 層間不均預分析決定是否值得。
+
+
+**判別式 #2（LAYER_CAPS 運行時逐層容量）—— 判死：收益 +0.5%，低於 3% 門檻（2026-09-25 精算）**
+- masscov_decode_shape_code 已帶按層頻次與 counterfactual K 曲線（k96/128/143/192），零新 GPU 直接定價。
+- 現狀：SpAc 實際 **cur=0.7874**；143 slot 理論 **k143=0.9610**；**policy gap=0.1736**（17.4% mass 因 SpAc 踢錯/動態窗口落到冷 expert）。
+- 最優逐層分配（總 slot 5720 不變、貪心邊際、各層 96–192）：覆蓋 0.9662 vs 均勻 0.9610 ⇒ **僅 +0.52 pp（+0.54%）**；對 SpAc 實際 +0.66%。
+- 層間熱點確實不同（層間 Jaccard 0.388、40 層並集 256/256），但均勻 143 已接近總預算下的覆蓋上界，逐層重分配買不到量。
+- **真正槓桿是 policy gap（17.4%），不是 capacity** ⇒ 正路＝**B 真臂（熱門優先替換）**，代碼已在樹上，待重開機乾淨環境 ABBA 驗證（冷啟動逐 token hit 曲線同一次收集）。
+
+**L0–L4 至此全部判決/兌現，唯一在途實作＝B 真臂驗證。**
+
+
+---
+
+## §9 收尾：乾淨 SpAc 現狀基線（2026-09-25 02:23–02:25，重開機 swap=0 後權威數字）
+
+命令：`harness.py bench --arm prod-new --reps 3`（p2048/n128/d512、warm-skip64、base_check PASS）
+
+| 指標 | 成績 | 各 rep | 狀態 |
+|---|---:|---:|---|
+| **prefill pp2048** | **301.47 t/s** | 307.5 / 300.0 / 296.9（std 5.5） | ✅ 超 250 目標 |
+| **decode tg** | **11.49 t/s** | 10.81 / 11.73 / 11.93（std 0.60） | 現狀基線 |
+
+- thermal：launch/worst 全程 **NOMINAL**；swap：launch **0** → after **625 MiB**（prefill 在 16GB 上的固有製造、decode 段平穩；attribution 標 swap 但 growth 主要來自 pp）。
+- 對歷史：11.49 與 commit_bench 12.17、峰值 12.57 同量級（launch-to-launch ±5–8%）；r3 中位數口徑下乾淨現狀即 11.5 檔。
+
+## §10 終局判決：現狀最優，無更多可落地槓桿
+
+L0–L4 所有分支已用數據/讀碼逐一判決或兌現：
+- **capacity / 靜態側無錢**：3a cap189 高水位 OOM；3b 泛化 pin 跑不贏 SpAc；#2 逐層容量僅 +0.5%；NSG sweep 0.6pp；縮 pool L1 −36%。
+- **預測/重疊側無路**：prebind h=0.032；ρ 按層批次化 −47.6%；L3 async fill 可遮窗口=0；verify 宿主批次化僅 ~2%。
+- **已兌現**：SpAc EMA 熱門優先替換/預取（prod-new 默認）、P0 skip-readraw、P1/P2 cgc_discard_pages、L4 adopt zero-copy 單一駐留、prefix reuse checkpoint、prefill stream。
+- 模型/kernel 側的更大 shape（更大 expert、連續佈局、更高量化）需改模型、不在工程範圍。
+
+**⇒ 16GB M4 上此引擎的可交付現狀＝prefill ~300 t/s、decode ~11.5 t/s；L0–L4 收案。**
