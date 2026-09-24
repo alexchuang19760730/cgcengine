@@ -73,6 +73,7 @@ LLAMA_BENCH = ROOT / "src" / "llama.cpp" / "build" / "bin" / "llama-bench"
 # before their numbers can be put side by side at all (eng-mh-0038).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import thermal_pressure as thermal  # noqa: E402
+import memory_pressure as mempress  # noqa: E402
 
 # --- profile / arm definitions -------------------------------------------------------------
 # Each arm = (profile, extra env). The extra env is merged into the run_server.sh invocation so the
@@ -390,8 +391,9 @@ def run_arm(tag: str, profile: str, extra_env: dict[str, str], args) -> dict:
     # reading is taken before the spawn (thermal_pressure.Sampler.start), which is the reading
     # the prefill separation is defined on -- taking it after would silently redefine it.
     sampler = thermal.Sampler()
+    msamp = mempress.Sampler()
     t0 = time.time()
-    with sampler:
+    with sampler, msamp:
         proc = subprocess.run(cmd, cwd=str(ROOT), env=run_env, capture_output=True, text=True)
     wall = time.time() - t0
     # The filename has to carry the SHAPE. `tag` alone collides for every arm that sets its env
@@ -431,6 +433,8 @@ def run_arm(tag: str, profile: str, extra_env: dict[str, str], args) -> dict:
            "batch_why": why, "wall_s": round(wall, 1), "env": env, "scalars": scalars,
            "rows": rows, "cache": stats, "incomplete": incomplete, "error": err,
            "thermal": sampler.result,
+           "memory": msamp.result,
+           "attribution": mempress.attribution(sampler.result, msamp.result),
            # Recorded, not inferred: whether a row came from the speculative gen path is a property
            # of the invocation, and a spec row wears the same `tg` label as a plain one.
            "spec_type": args.spec_type or None,
@@ -455,6 +459,15 @@ def run_arm(tag: str, profile: str, extra_env: dict[str, str], args) -> dict:
     print(f"  thermal: launch {launch.get('label')}@{launch.get('t')}  "
           f"worst {th.get('worst', {}).get('label')}  hist {th.get('hist')}  "
           f"n={th.get('n')} @{th.get('interval_s')}s", flush=True)
+    mem = msamp.result
+    mlaunch = mem.get("launch") or {}
+    mend = mem.get("end") or {}
+    mw = mem.get("worst") or {}
+    attr = out.get("attribution") or {}
+    print(f"  memory: launch swap={mlaunch.get('swap_used_mb')} MiB free={mlaunch.get('pages_free_mb')} MiB "  
+          f"-> end swap={mend.get('swap_used_mb')} MiB wired={mend.get('pages_wired_mb')} MiB "  
+          f"worst_swap={mw.get('max_swap_mb')} min_free={mw.get('min_free_mb')} procs={mend.get('llama_procs')}", flush=True)
+    print(f"  attribution: {attr.get('verdict')}  -- {attr.get('why')}", flush=True)
     return out
 
 
