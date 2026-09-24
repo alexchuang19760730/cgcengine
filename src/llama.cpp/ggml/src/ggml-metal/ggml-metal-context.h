@@ -69,6 +69,19 @@ void ggml_metal_set_abort_callback  (ggml_metal_t ctx, ggml_abort_callback abort
 bool ggml_metal_supports_family     (ggml_metal_t ctx, int family);
 void ggml_metal_capture_next_compute(ggml_metal_t ctx);
 
+// [CGC 2026-09-24] Batched speculative decode verify (oMLX-derived).
+// Compares draft[B,K] vs target[B,K+1] token ids on GPU, outputs n_accepted[B]
+// and committed[B,K+1].  All pointers must point to GPU-resident Metal buffers
+// (use ggml_metal_set_tensor_async to upload, ggml_metal_get_tensor_async to read back).
+// Returns false on error (kernel not found / buffer too small).
+bool ggml_metal_spec_decode_verify(
+    ggml_metal_t ctx,
+    const void * draft,      // [B*K]   int32, GPU buffer
+    const void * target,     // [B*(K+1)] int32, GPU buffer
+    void * n_accepted,       // [B]     int32, GPU buffer
+    void * committed,        // [B*(K+1)] int32, GPU buffer
+    int K, int B);
+
 #ifdef __cplusplus
 }
 #endif

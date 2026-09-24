@@ -276,6 +276,19 @@ private:
     // mul_mat_id src0 tensors + remap leaf so the layer computes over cache-resident weights.
     void expert_cache_on_topk(ggml_tensor * t);
 
+    // [CGC ρ-fill 2026-09-23] 把 ρ 從「量測」變成「真的提前發起 IO」。
+    //
+    // 影子 router（`qwen35moe.cpp` 的 `cgc_rho_logits-<il>`）建在 layer L 的**第一個算子**，
+    // 用的是「還沒過 attn(L) 的殘差」走同一個 post-attn norm + 同一個 gate_inp。它比真實
+    // `ffn_moe_topk-<il>` 早一個 submodule ⇒ 可以在真實 route 出來之前就把該層 union 交給
+    // 背景執行緒去 pread（llama_expert_cache_prefetch_slot，非阻塞、只挑 free slot）。
+    // 真實 on_topk 的 ensure 之後若發現 slot 已 resident 就是 hit；若還沒填完，ensure_slot
+    // 會 `bg_cv.wait` 等它 —— 也就是說**最壞情形退化成基線，不會錯**，只是沒賺。
+    //
+    // 準度（cov_uni = 0.854~0.860，2026-09-23 實測）決定賺多少；開關 `CGC_RHO_FILL`；
+    // 需要 `CGC_RHO_PROBE=1`（圖裡要有影子節點）。預設全關，行為與基線逐位元相同。
+    void cgc_rho_prefetch(int il);
+
     // Wrapper installed as cparams.cb_eval (static so it can be passed to
     // ggml_backend_sched_set_eval_callback): dispatches expert_cache_on_topk on the top-k
     // nodes, then forwards to the user's callback. Returns the user callback's result (or

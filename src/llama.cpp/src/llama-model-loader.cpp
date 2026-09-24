@@ -1368,6 +1368,10 @@ struct ggml_tensor * llama_model_loader::create_tensor(
                 // Only applies when no explicit override selected a buft (overrides win).
                 buft = ggml_backend_cpu_buffer_type();
                 LLAMA_LOG_INFO("llama_model_loader: keeping %s out of GPU buffers (skip-load expert streaming)\n", t_meta->name);
+                // [CGC 2026-09-24 swap-miss P0] remember it: load_data_for will leave the
+                // buffer unread (placeholder). The layer-0 exclusion is applied there, not
+                // here, because l4_il is not in scope at this point.
+                skip_no_read.insert(t_meta->name);
             } else {
                 buft = select_weight_buft(hparams, t_meta, op, buft_list);
             }
@@ -1637,6 +1641,48 @@ void llama_model_loader::get_mapping_range(size_t * first, size_t * last, void *
     }
 }
 
+// [CGC 2026-09-24 swap-miss P0] Skip the read_raw for CPU skip-load expert tensors.
+//
+// The 8 GiB pool + a fully-read 13.65 GB model is 21222 MiB on a 16384 MiB box: the
+// process is structurally over-subscribed and lives on swap (docs/SWAP_MISS_LINK §1).
+// ~10.9 GiB of that is expert weights that are read once here and never read again —
+// every byte that is ever needed is supplied by the pool fill's pread.
+//
+// Three guards, all of them load-bearing:
+//   (1) skip_no_read: only tensors the loader ITSELF placed on the skip-load path. The
+//       predicate at :1364 lives behind `!buft`, and an explicit tensor_buft_overrides
+//       entry can also put an expert on the CPU — re-deriving the rule from the name here
+//       would skip reads for tensors that were never meant to be skipped.
+//   (2) L4_SKIP_LAYER0's blk.0 is EXCLUDED: that tensor is deliberately demoted back to a
+//       plain CPU tensor (l4_kind = -1) and its FFN reads this buffer for real
+//       (llama-context.cpp:6437). Skipping it feeds zeros into layer 0 => the whole net
+//       outputs garbage with no error. Triggered by CGC_SERVER_SKIP0 (default 0).
+//   (3) CGC_EXPERT_SKIP_READRAW: default OFF, so landing this changes nothing until the
+//       A/B arm turns it on.
+bool llama_model_loader::cgc_skip_readraw(const char * name) const {
+    // [CGC 2026-09-24] Value-based, NOT presence-based: a launcher profile that writes an
+    // explicit `CGC_EXPERT_SKIP_READRAW=0` default has to mean OFF. The first version
+    // tested `getenv() != nullptr`, which turns P0 ON for EVERY value including "0" --
+    // so wiring a documented default into prod-new would have silently enabled it.
+    static const bool on = []() -> bool {
+        const char * v = getenv("CGC_EXPERT_SKIP_READRAW");
+        return v != nullptr && v[0] != '\0' && v[0] != '0';
+    }();
+    if (!on) {
+        return false;
+    }
+    if (skip_no_read.find(name) == skip_no_read.end()) {
+        return false; // not a loader-placed skip-load tensor (see guard 1)
+    }
+    // guard 2: layer 0 under L4_SKIP_LAYER0 reads its own buffer.
+    if (expert_cache_l4_skip_layer0 && strstr(name, "blk.0.") != nullptr) {
+        LLAMA_LOG_INFO("llama_model_loader: P0 keeps reading %s (L4_SKIP_LAYER0: its FFN "
+                       "reads this buffer directly)\n", name);
+        return false;
+    }
+    return true;
+}
+
 void llama_model_loader::load_data_for(struct ggml_tensor * cur) const {
     const auto & w = require_weight(ggml_get_name(cur));
 
@@ -1650,6 +1696,13 @@ void llama_model_loader::load_data_for(struct ggml_tensor * cur) const {
     } else {
         GGML_ASSERT(cur->data != nullptr);
         GGML_ASSERT(w.idx < files.size());
+        // [CGC 2026-09-24 swap-miss P0] placeholder expert tensor: return early so the
+        // ~10.9 GiB never becomes anonymous resident memory. Returning also skips the
+        // ggml_validate_row_data below — which MUST be skipped, since an unread buffer
+        // would otherwise throw "invalid data" under --check-tensors.
+        if (cgc_skip_readraw(ggml_get_name(cur))) {
+            return;
+        }
         const auto & file = files.at(w.idx);
         file->seek(w.offs, SEEK_SET);
         file->read_raw(cur->data, ggml_nbytes(cur));

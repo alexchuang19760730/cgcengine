@@ -188,6 +188,12 @@ llama_model_qwen3next::graph::graph(const llama_model & model, const llm_graph_p
         ggml_tensor * attn_post_norm = build_norm(cur, model.layers[il].attn_post_norm, nullptr, LLM_NORM_RMS, il);
         cb(attn_post_norm, "attn_post_norm", il);
 
+        // ⚠ 影子 router（ρ probe）**只存在於 qwen35moe.cpp**。本專案的模型是
+        // `general.architecture = qwen35moe`，第一次誤把它加在這個檔案裡，症狀是整輪
+        // `CGC-RHO-CAP` 零行、skip=100%（「完全沒量到」，不是「量到很低」）。
+        // 2026-09-23 起這裡**刻意不放副本**：留一份會在下次改 qwen35moe 那份時靜默分歧，
+        // 而換到此 arch 的代價只是再貼一次（數學一行都沒變）。
+
         // FFN layer (MoE or dense) - without residual connection
         cur = build_layer_ffn(attn_post_norm, il);
         cb(cur, "ffn_out", il);

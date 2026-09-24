@@ -14,6 +14,7 @@
 #include <fcntl.h>      // O_RDONLY for cgc_exact_cache_verify_post_fill (open fresh fd)
 #include <sys/stat.h>
 #include <sys/uio.h> // struct iovec / preadv (merge-read jobs)
+#include <sys/mman.h> // madvise/MADV_DONTNEED ([CGC 2026-09-24 swap-miss P1/P2])
 
 #ifdef __APPLE__
 #include <pthread.h>
@@ -23,6 +24,12 @@
 static uint64_t make_key(uint32_t layer, uint32_t expert) {
     return ((uint64_t) layer << 32) | expert;
 }
+
+// [CGC 2026-09-24 swap-miss P2] forward decls: both are defined after pool_region (they
+// need slots_l), but pick_slot -- which sits above that -- calls them. (Getting this wrong
+// is a compile error, and a compile error in this file blocks EVERY other line's build.)
+static int  cgc_pool_madvise_mode();
+static void cgc_discard_pool_slot(llama_expert_cache * cache, uint32_t layer, int32_t slot);
 
 
 // One pread job: read seg.bytes from (file_idx, file_offset) into dst. Accumulates wall time
@@ -709,6 +716,12 @@ static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer, const uint8
             const int32_t evicted = owner[best_slot];
             if (evicted >= 0) {
                 cache->n_evictions++; // [CGC miss attribution] a resident expert is losing its slot
+                // [CGC 2026-09-24 swap-miss P2] the slot's bytes are dead from here on: keep
+                // them from ever being written out to swap. (Interior pages only, malloc pool
+                // only — the two partial pages at the ends belong to the neighbouring slots.)
+                if (cgc_pool_madvise_mode() >= 2) {
+                    cgc_discard_pool_slot(cache, layer, best_slot);
+                }
             }
             if (evicted >= 0 && evicted < (int32_t) cache->n_expert) {
                 cache->slot_table[(size_t) layer * cache->n_expert + evicted] = -1;
@@ -752,6 +765,86 @@ static inline const uint8_t * pool_region(const llama_expert_cache * cache, uint
         return cache->pool[layer][kind].data();
     }
     return nullptr;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// [CGC 2026-09-24 swap-miss P1/P2] Drop the physical pages behind pool bytes that are
+// about to be overwritten (P1) or are already garbage (P2).
+//
+// The 8 GiB pool is malloc'd ANONYMOUS memory. Once the box is over-subscribed
+// (model 13030 MiB + pool 8192 MiB = 21222 MiB on 16384 MiB) every one of those pages is
+// a swap candidate, and the kernel writes them out even when the very next instruction
+// overwrites them. madvise(MADV_DONTNEED) says "just drop them".
+//
+// ⚠ TWO hazards this helper exists for — both corrupt a NEIGHBOUR slot silently:
+//   (1) madvise() needs a PAGE-ALIGNED address (EINVAL otherwise);
+//   (2) an expert stride is 1.0703 MiB = 68.5 pages of 16 KiB, i.e. NOT a page multiple.
+//       Rounding the range OUTWARD would zero the tail of the previous slot and the head
+//       of the next one. So: round the start UP, the end DOWN, and drop only the pages
+//       FULLY INSIDE the range. (If the range holds no whole page, drop nothing.)
+// ⚠ Metal's pool_ext is NOT anonymous malloc — never pass those pointers here.
+// ─────────────────────────────────────────────────────────────────────────────
+static void cgc_discard_pages(uint8_t * base, size_t len) {
+    if (base == nullptr || len == 0) {
+        return;
+    }
+    static const size_t page = (size_t) sysconf(_SC_PAGESIZE);
+    const uintptr_t b  = (uintptr_t) base;
+    const uintptr_t e  = b + len;
+    const uintptr_t sb = (b + page - 1) & ~(uintptr_t)(page - 1); // round UP
+    const uintptr_t se = e & ~(uintptr_t)(page - 1);              // round DOWN
+    if (se <= sb) {
+        return; // no page lies wholly inside the range: nothing may be dropped
+    }
+    ::madvise((void *) sb, (size_t)(se - sb), MADV_DONTNEED);
+}
+
+// Only the malloc'd pool may be discarded. pool_ext is a Metal allocation; discarding its
+// pages would pull the bytes out from under the GPU.
+static bool cgc_in_malloc_pool(const llama_expert_cache * cache, const uint8_t * p) {
+    for (size_t l = 0; l < cache->pool.size(); ++l) {
+        for (size_t k = 0; k < cache->pool[l].size(); ++k) {
+            const auto & v = cache->pool[l][k];
+            if (v.empty()) {
+                continue;
+            }
+            const uint8_t * base = v.data();
+            if (p >= base && p < base + v.size()) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// CGC_POOL_MADVISE: unset/0 = off (byte-identical to the old path); 1 = P1 only;
+// 2 = P1 + P2. Kept env-gated so this can land in a shared file without changing any
+// running measurement.
+static int cgc_pool_madvise_mode() {
+    static const int mode = []() -> int {
+        const char * v = getenv("CGC_POOL_MADVISE");
+        if (v == nullptr || v[0] == '\0' || v[0] == '0') { return 0; }
+        return (v[0] == '2') ? 2 : 1;
+    }();
+    return mode;
+}
+
+static void cgc_discard_pool_slot(llama_expert_cache * cache, uint32_t layer, int32_t slot) {
+    if (slot < 0 || layer >= cache->pool.size()) {
+        return;
+    }
+    const uint32_t nslots = slots_l(cache, layer);
+    if (nslots == 0) {
+        return;
+    }
+    for (size_t k = 0; k < cache->pool[layer].size(); ++k) {
+        auto & v = cache->pool[layer][k];
+        if (v.empty()) {
+            continue;
+        }
+        const size_t stride = v.size() / nslots;
+        cgc_discard_pages(v.data() + (size_t) slot * stride, stride);
+    }
 }
 
 // Build the (segment, dst) list that fill_pool_direct would pread for one (layer, expert) into
@@ -1439,28 +1532,12 @@ void llama_expert_cache_drain_layer(llama_expert_cache * cache, uint32_t layer) 
 // resident eviction. slot_queued marks the slot so pick_slot / ensure_* treat it as busy, and
 // the bg loop re-validates owner under the lock before writing. Non-blocking; returns 0 if
 // queued, -1 if skipped (pool inactive / already resident or queued / no free slot).
-int32_t llama_expert_cache_prefetch_slot(llama_expert_cache * cache, uint32_t layer, uint32_t expert) {
-    if (cache == nullptr || !cache->pool_active || layer >= cache->slot_queued.size() ||
-            expert >= cache->n_expert || cache->key_segs.find(make_key(layer, expert)) == cache->key_segs.end()) {
-        if (getenv("LLAMA_EXPERT_CACHE_PREFETCH_DBG") != nullptr) {
-            fprintf(stderr, "PFDBG guard-reject l=%u e=%u pool=%d layer_ok=%d expert_ok=%d key_ok=%d\n",
-                    layer, expert, cache ? (int) cache->pool_active : -1,
-                    cache ? (int) (layer < cache->slot_queued.size()) : -1,
-                    cache ? (int) (expert < cache->n_expert) : -1,
-                    cache ? (int) (cache->key_segs.find(make_key(layer, expert)) != cache->key_segs.end()) : -1);
-        }
-        cache->n_prefetch_dropped++;
-        cache->drop_stats.guard_reject++;  // #7: guard-reject — expert not in key_segs / layer OOR / pool inactive
-        return -1;
-    }
-    int32_t * table = cache->slot_table.data() + (size_t) layer * cache->n_expert;
-    std::unique_lock<std::mutex> lk(cache->m);
-    if (table[expert] >= 0) {
-        if (getenv("LLAMA_EXPERT_CACHE_PREFETCH_DBG") != nullptr) {
-            fprintf(stderr, "PFDBG drop: resident l=%u e=%u\n", layer, expert);
-        }
-        return -1; // already resident: nothing to prefetch
-    }
+// [CGC 2026-09-24 rho layer-batch] claim ONE pool slot for (layer, expert) under cache->m
+// (caller MUST hold the lock). This is prefetch_slot's free-slot -> SpAc/LRU evict ->
+// static-pin-yield chain, extracted so the per-layer batch path and the single path share one
+// victim-selection policy. Caller does the resident check; maxq and queue push live in the
+// callers. Returns the slot, or -1 with the drop reason already counted in drop_stats.
+static int32_t prefetch_claim_slot_locked(llama_expert_cache * cache, uint32_t layer, uint32_t expert) {
     int32_t slot = -1;
     // [CGC MTP fast path] skip the reserved ZERO slot (never assigned to a real expert).
     const uint32_t ns = llama_expert_cache_usable_slots(cache, layer);
@@ -1542,6 +1619,36 @@ int32_t llama_expert_cache_prefetch_slot(llama_expert_cache * cache, uint32_t la
             return -1;
         }
     }
+    return slot;
+}
+
+int32_t llama_expert_cache_prefetch_slot(llama_expert_cache * cache, uint32_t layer, uint32_t expert) {
+    if (cache == nullptr || !cache->pool_active || layer >= cache->slot_queued.size() ||
+            expert >= cache->n_expert || cache->key_segs.find(make_key(layer, expert)) == cache->key_segs.end()) {
+        if (getenv("LLAMA_EXPERT_CACHE_PREFETCH_DBG") != nullptr) {
+            fprintf(stderr, "PFDBG guard-reject l=%u e=%u pool=%d layer_ok=%d expert_ok=%d key_ok=%d\n",
+                    layer, expert, cache ? (int) cache->pool_active : -1,
+                    cache ? (int) (layer < cache->slot_queued.size()) : -1,
+                    cache ? (int) (expert < cache->n_expert) : -1,
+                    cache ? (int) (cache->key_segs.find(make_key(layer, expert)) != cache->key_segs.end()) : -1);
+        }
+        cache->n_prefetch_dropped++;
+        cache->drop_stats.guard_reject++;  // #7: guard-reject — expert not in key_segs / layer OOR / pool inactive
+        return -1;
+    }
+    int32_t * table = cache->slot_table.data() + (size_t) layer * cache->n_expert;
+    std::unique_lock<std::mutex> lk(cache->m);
+    if (table[expert] >= 0) {
+        if (getenv("LLAMA_EXPERT_CACHE_PREFETCH_DBG") != nullptr) {
+            fprintf(stderr, "PFDBG drop: resident l=%u e=%u\n", layer, expert);
+        }
+        return -1; // already resident: nothing to prefetch
+    }
+    const int32_t slot = prefetch_claim_slot_locked(cache, layer, expert);
+    if (slot < 0) {
+        return -1;
+    }
+
     // [CGC 2026-09-23 rho fuse] CGC_RHO_PREFETCH_MAXQ: cap the bg prefetch queue depth.
     // §EN-471 (fill 空轉): rho's bg prefetch flooded the device with ~80k speculative 41KB reads,
     // fill_wait 56ms -> 15-20s, t/s -21%. This fuse drops the prediction while the queue is
@@ -1564,6 +1671,60 @@ int32_t llama_expert_cache_prefetch_slot(llama_expert_cache * cache, uint32_t la
     lk.unlock();
     cache->bg_cv.notify_one();
     return 0;
+}
+
+// [CGC 2026-09-24 rho layer-batch] per-layer BATCH prefetch: queue one entry whose members
+// are (layer, {experts}, {slots}) for the bg thread to fill as ONE merged pread batch.
+// Purpose (rho fill 空转 root cause): the single-slot path made 80k lock+queue+pread
+// requests per run, flooding the device; batching collapses that to ~40 entries and lets
+// bg_loop merge file-contiguous runs across experts of the same layer. Claim policy is
+// identical to prefetch_slot (shared prefetch_claim_slot_locked). MAXQ caps in-flight
+// batches (same env as the single path, semantics = queue depth). Returns the number of
+// experts queued, 0 when none (all resident / no slots), -1 when the batch was dropped
+// wholesale (pool inactive / MAXQ hit).
+int32_t llama_expert_cache_prefetch_batch(llama_expert_cache * cache, uint32_t layer,
+                                          const uint32_t * experts, size_t n) {
+    if (cache == nullptr || !cache->pool_active || layer >= cache->slot_queued.size() || n == 0) {
+        return -1;
+    }
+    int32_t * table = cache->slot_table.data() + (size_t) layer * cache->n_expert;
+    std::unique_lock<std::mutex> lk(cache->m);
+    // [CGC 2026-09-23 rho fuse, batch semantics] cap the in-flight BATCH depth. 0/unset = unlimited.
+    static const long rho_maxq = []() -> long {
+        const char * v = getenv("CGC_RHO_PREFETCH_MAXQ");
+        return v ? strtol(v, nullptr, 10) : 0L;
+    }();
+    if (rho_maxq > 0 && (long) cache->pool_batch_queue.size() >= rho_maxq) {
+        cache->n_prefetch_dropped++;
+        cache->drop_stats.maxq_limit++;  // #13
+        return -1;
+    }
+    std::vector<uint32_t> q_experts;
+    std::vector<int32_t>  q_slots;
+    q_experts.reserve(n);
+    q_slots.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        const uint32_t expert = experts[i];
+        if (expert >= cache->n_expert || table[expert] >= 0) {
+            continue; // already resident (or OOR): nothing to prefetch
+        }
+        const int32_t slot = prefetch_claim_slot_locked(cache, layer, expert);
+        if (slot < 0) {
+            continue; // drop reason already counted by the helper
+        }
+        cache->slot_queued[layer][slot] = 1;
+        cache->slot_owner[layer][slot]  = (int32_t) expert;
+        q_experts.push_back(expert);
+        q_slots.push_back(slot);
+    }
+    if (q_experts.empty()) {
+        return 0;
+    }
+    cache->pool_batch_queue.emplace_back(layer, std::move(q_experts), std::move(q_slots));
+    cache->n_prefetch += q_experts.size();
+    lk.unlock();
+    cache->bg_cv.notify_one();
+    return (int32_t) q_experts.size();
 }
 
 // [CGC M5 prerouter 2026-09-17] PREFETCH-ONLY expert predictor. The header states what this
@@ -3116,22 +3277,35 @@ void llama_expert_cache::bg_loop() {
     // USER_INITIATED, not BACKGROUND: the bg fills serve the decode critical path (ensure_slot
     // waits on them); a background-priority thread gets starved during heavy compute and the
     // wait-on-prefetch becomes slower than a synchronous pread.
-    pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+    // [CGC 2026-09-24 rho layer-batch] CGC_BG_QOS_BACKGROUND=1 => BACKGROUND. The batch path
+    // cut fill_wait to ~2ms/run, so the critical path almost never waits on the bg thread;
+    // the remaining cost of prefetch is DRAM-bandwidth contention with the GPU (measured:
+    // rho-batch 9.62 vs probe-only 12.04, same hit uplift). BACKGROUND lets macOS de-prioritize
+    // the preads so they contend less. A/B arm only; default unchanged.
+    static const bool bg_qos_background = getenv("CGC_BG_QOS_BACKGROUND") != nullptr;
+    pthread_set_qos_class_self_np(bg_qos_background ? QOS_CLASS_BACKGROUND : QOS_CLASS_USER_INITIATED, 0);
 #endif
     for (;;) {
         uint64_t key = 0;
         bool has_pool = false;
+        bool has_batch = false;
         std::tuple<uint32_t, int32_t, uint32_t> pk; // (layer, slot, expert)
+        std::tuple<uint32_t, std::vector<uint32_t>, std::vector<int32_t>> batch; // (layer, {experts}, {slots})
         {
             std::unique_lock<std::mutex> lk(m);
-            while (bg_queue.empty() && pool_queue.empty() && !bg_stop) {
+            while (bg_queue.empty() && pool_queue.empty() && pool_batch_queue.empty() && !bg_stop) {
                 bg_cv.wait(lk);
             }
-            if (bg_stop && bg_queue.empty() && pool_queue.empty()) {
-                return; // drain both queues before exiting (destructor path)
+            if (bg_stop && bg_queue.empty() && pool_queue.empty() && pool_batch_queue.empty()) {
+                return; // drain all queues before exiting (destructor path)
             }
-            // Pool fills first, FIFO (layer 0's fill must land before layer 0's hook fires).
-            if (!pool_queue.empty()) {
+            // [CGC 2026-09-24 rho layer-batch] batches first, then single fills — preserves
+            // layer order (layer 0's batch lands before layer 0's hook fires).
+            if (!pool_batch_queue.empty()) {
+                batch = std::move(pool_batch_queue.front());
+                pool_batch_queue.pop_front();
+                has_batch = true;
+            } else if (!pool_queue.empty()) {
                 pk = pool_queue.front();
                 pool_queue.pop_front();
                 has_pool = true;
@@ -3140,6 +3314,87 @@ void llama_expert_cache::bg_loop() {
                 bg_queue.pop_back();
             }
         }
+
+        if (has_batch) {
+            const uint32_t blayer = std::get<0>(batch);
+            std::vector<uint32_t> & bexps = std::get<1>(batch);
+            std::vector<int32_t>  & bslots = std::get<2>(batch);
+            // Locked phase 1: validate each (slot, expert) pairing (mirrors the single-fill
+            // path's stale / reassign-race handling) and mark in-flight so drain_layer waits
+            // and pick_slot protects them while the bg thread writes the bytes.
+            {
+                std::unique_lock<std::mutex> lk(m);
+                for (size_t i = 0; i < bexps.size(); ++i) {
+                    const int32_t slot  = bslots[i];
+                    const uint32_t exp  = bexps[i];
+                    if (slot < 0 || slot >= (int32_t) slots_l(this, blayer) || !slot_queued[blayer][slot]) {
+                        if (slot >= 0 && slot < (int32_t) slots_l(this, blayer)) {
+                            slot_queued[blayer][slot]  = 0;
+                            slot_loading[blayer][slot] = 0;
+                            n_prefetch_dropped++;
+                        }
+                        bexps[i] = UINT32_MAX; // skip marker
+                        continue;
+                    }
+                    if (slot_owner[blayer][slot] != (int32_t) exp) {
+                        slot_queued[blayer][slot]  = 0;
+                        slot_loading[blayer][slot] = 0;
+                        n_prefetch_dropped++;
+                        drop_stats.bg_reassign_race++;  // #6
+                        bexps[i] = UINT32_MAX;
+                        continue;
+                    }
+                    slot_loading[blayer][slot] = 1;
+                }
+            }
+            // Phase 2 (no lock): collect every live member's segments and fill them with ONE
+            // merged pread batch (file-contiguous runs across the layer's experts coalesce).
+            std::vector<llama_expert_cache::segment> segs;
+            std::vector<uint8_t *> dsts;
+            std::vector<std::pair<uint32_t, int32_t>> live; // (expert, slot)
+            live.reserve(bexps.size());
+            for (size_t i = 0; i < bexps.size(); ++i) {
+                if (bexps[i] == UINT32_MAX) {
+                    continue;
+                }
+                live.emplace_back(bexps[i], bslots[i]);
+                fill_pool_direct_collect(this, blayer, bslots[i], bexps[i], segs, dsts);
+            }
+            if (!live.empty() && !segs.empty()) {
+                const bool filled_ok = fill_segments_merged_serial(this, segs, dsts);
+                if (!filled_ok) {
+                    for (size_t i = 0; i < segs.size(); ++i) {
+                        memset(dsts[i], 0, segs[i].bytes);
+                    }
+                }
+                cgc_exact_cache_verify_post_fill(this, segs, dsts);
+            }
+            // Phase 3 (locked): publish every live slot (same semantics as the single path:
+            // loading/queued cleared, last_use fresh, slot_table / scratch per dbuf2).
+            {
+                std::unique_lock<std::mutex> lk(m);
+                for (auto & pr : live) {
+                    const int32_t  slot   = pr.second;
+                    const uint32_t exp    = pr.first;
+                    if (slot < 0 || slot >= (int32_t) slots_l(this, blayer)) {
+                        continue;
+                    }
+                    slot_loading[blayer][slot]  = 0;
+                    slot_queued[blayer][slot]   = 0;
+                    slot_last_use[blayer][slot] = ++tick;
+                    if (exp < n_expert) {
+                        if (cgc_dbuf2_on()) {
+                            slot_table_scratch[(size_t) blayer * n_expert + exp] = slot;
+                        } else {
+                            slot_table[(size_t) blayer * n_expert + exp] = slot;
+                        }
+                    }
+                }
+                bg_cv.notify_all();
+            }
+            continue;
+        }
+
 
         if (has_pool) {
             const uint32_t layer  = std::get<0>(pk);
@@ -3314,6 +3569,17 @@ static void fill_segments_pool(llama_expert_cache * cache,
     ok.assign(n, 0);
     if (n == 0) {
         return;
+    }
+    // [CGC 2026-09-24 swap-miss P1] Every dst below is about to be overwritten in full by
+    // pread. Without this, a page that happens to sit on swap must first be read back in
+    // (swap-in) only to be discarded one instruction later — pure, repeated IO. Drop the
+    // pages first. Interior-pages-only + malloc-pool-only: see cgc_discard_pages.
+    if (cgc_pool_madvise_mode() >= 1) {
+        for (size_t i = 0; i < n; ++i) {
+            if (cgc_in_malloc_pool(cache, dsts[i])) {
+                cgc_discard_pages(dsts[i], segs[i].bytes);
+            }
+        }
     }
     // [CGC 2026-08-29 merge-read] sort the batch's segments by (file_idx, file_offset) and
     // submit each file-contiguous RUN as ONE preadv job. Within one expert tensor (kind) the

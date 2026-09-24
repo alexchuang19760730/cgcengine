@@ -186,6 +186,46 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
 
         ggml_tensor * inpSA = inpL;
 
+        // [CGC 2026-09-23] nextn 的 `inpSA` get_rows 提前到這裡（原本在 attn 之後，與 `cur`
+        // 那一行寫在一起）。它與 attn(L) 沒有資料依賴，**值不變**；提前是為了讓下面的
+        // 影子 router 能用到「和真實 post-attn 路線完全相同」的那個 inpSA，
+        // 同時自己還排在 attn(L) 之前。
+        if (il == n_layer - 1 && inp_out_ids && cparams.embeddings_nextn_masked) {
+            inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+        }
+
+        // [CGC rho probe 2026-09-23] 影子 router：用「還沒過 attn(L) 的殘差」算 gate(L)。
+        //
+        // 要量的量是 ρ =「近似 top-k」與「真實 top-k」的重合率。真實 route(L) 的輸入是
+        // `norm(h after attn(L))`；若在 MoE core(L-1) 一結束就拿 `inpSA`（= 進 attn(L) 之前的
+        // 殘差）走同一個 post-attn norm + 同一個 gate_inp matmul，就能在 MoE core(L-1) 之後
+        // 立刻發起 fill(L) —— 這是目前唯一還沒被證偽的「造重疊窗口」方向。
+        //
+        // ⚠⚠ **為什麼這幾行必須貼著 `inpSA = inpL`**：ggml 的執行序 = 建圖序。
+        //    2026-09-23 之前這塊是寫在 `attn_post_norm`（舊 :216）之後的，那時它排在
+        //    attn_norm / attn / residual / post_norm 全部後面，離真 gate(`build_layer_ffn`)
+        //    只差幾行 ⇒ **提前量 ≈ 0**，只能量準度、拿不到任何窗口；照那樣去量
+        //    「可發起時點在 segment 的百分位」會量到 ~0，然後用「建圖順序」的理由把方向殺掉
+        //    —— 與 prebind 那個 token-0 儀器 bug 是同一類錯誤。
+        //    數學完全沒變（同一組輸入、同一組權重、與 attn 無依賴），變的只有它在圖裡的位置。
+        //
+        // 這條分支的結果**不接回計算圖**：只由 `expert_cache_eval_cb` 讀出來跟真實 top-k 比。
+        // ⚠ 它在圖裡多加一個 norm + 一個 matmul ⇒ **本輪的 t/s 不可引用**，只取 ρ。
+        //    開關 CGC_RHO_PROBE（存在即開）；不設時是兩個可預測的 branch，零成本。
+        //    CGC_RHO_PROBE_LATE=1 ⇒ 退回舊的（attn 之後）位置，用來做「位置」本身的 A/B：
+        //    同一支 binary、同一組權重，ρ 應逐位元相同，只有 GPU 時間戳位置不同。
+        {
+            static const bool cgc_rho_probe = getenv("CGC_RHO_PROBE") != nullptr;
+            static const bool cgc_rho_late  = getenv("CGC_RHO_PROBE_LATE") != nullptr;
+            if (cgc_rho_probe && model.layers[il].ffn_gate_inp != nullptr && !cgc_rho_late) {
+                ggml_tensor * rho_pre = build_norm(inpSA, model.layers[il].attn_post_norm, nullptr,
+                                                   LLM_NORM_RMS, il);
+                ggml_tensor * rho_logits = build_lora_mm(model.layers[il].ffn_gate_inp, rho_pre);
+                cb(rho_logits, "cgc_rho_logits", il);   // 命名後 eval cb 才認得（cb -> "name-il"）
+                ggml_build_forward_expand(gf, rho_logits);
+            }
+        }
+
         cur = build_norm(inpL, model.layers[il].attn_norm, nullptr, LLM_NORM_RMS, il);
         cb(cur, "attn_norm", il);
 
@@ -201,8 +241,8 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
         }
 
         if (il == n_layer - 1 && inp_out_ids && cparams.embeddings_nextn_masked) {
-            cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
-            inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+            // 只有 `cur` 在這裡切 rows；`inpSA` 那份已經提前到 attn 之前做過了（見上）。
+            cur = ggml_get_rows(ctx0, cur, inp_out_ids);
         }
 
         // Residual connection
@@ -215,6 +255,21 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
         // Post-attention norm
         ggml_tensor * attn_post_norm = build_norm(cur, model.layers[il].attn_post_norm, nullptr, LLM_NORM_RMS, il);
         cb(attn_post_norm, "attn_post_norm", il);
+
+        // [CGC rho probe] **舊位置**（CGC_RHO_PROBE_LATE=1）。
+        // ⚠ 它排在 attn(L) 全部計算之後 ⇒ 提前量 ≈ 0 ⇒ **只能量準度，量不到窗口**。
+        //   只留著作為「位置 A/B」的對照臂；真正要跑的新位置在 `inpSA = inpL` 正下方。
+        {
+            static const bool cgc_rho_probe = getenv("CGC_RHO_PROBE") != nullptr;
+            static const bool cgc_rho_late  = getenv("CGC_RHO_PROBE_LATE") != nullptr;
+            if (cgc_rho_probe && model.layers[il].ffn_gate_inp != nullptr && cgc_rho_late) {
+                ggml_tensor * rho_pre = build_norm(inpSA, model.layers[il].attn_post_norm, nullptr,
+                                                   LLM_NORM_RMS, il);
+                ggml_tensor * rho_logits = build_lora_mm(model.layers[il].ffn_gate_inp, rho_pre);
+                cb(rho_logits, "cgc_rho_logits", il);
+                ggml_build_forward_expand(gf, rho_logits);
+            }
+        }
 
         // MOE FFN layer
         cur = build_layer_ffn(attn_post_norm, il);

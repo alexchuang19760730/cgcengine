@@ -1770,6 +1770,22 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         } else if (cgc_oa_async_enabled() &&
                    getenv("CGC_VERIFY_OP_TIMING") == nullptr &&
                    strcmp(ggml_backend_name(split_backend), "CPU") != 0) {
+            // [CGC 2026-09-24 B-scheme diagnostic] CGC_SEG_BATCH=1: submit the WHOLE graph as
+            // one async compute, skipping the 41-segment serial loop (wait->hook->submit).
+            // No hook is fired, so no fill happens and ids stay stale -> output is WRONG
+            // (diagnostic only, never a deliverable arm). It prices the serialized-overhead
+            // term: step 79.2ms = wait 66.3 + cb 6.1 + submit 4.2 + ~8.3 unattr (41 segs x
+            // ~0.2ms command-buffer launch). One async submit + synchronize shows what
+            // survives when the segmentation is gone -- the union floor plus a single sync.
+            static const bool cgc_seg_batch = getenv("CGC_SEG_BATCH") != nullptr;
+            if (cgc_seg_batch) {
+                enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
+                if (ec != GGML_STATUS_SUCCESS) {
+                    return ec;
+                }
+                ggml_backend_synchronize(split_backend);
+                return GGML_STATUS_SUCCESS;
+            }
             // CGC: dispatch the Metal split in segments. Segments end at the ARGSORT op (which
             // actually produces the expert ids); the top-k VIEW is a dependency-free alias that
             // ggml may place before its producer, so using it as the boundary would fire the hook
@@ -2442,6 +2458,44 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                                 }
                                 fprintf(stderr, "\n");
                             }
+                            // [CGC 2026-09-23 rho LEAD] CGC_GPU_NODES_START=1 prints, per command
+                            // buffer, the ABSOLUTE GPUStartTime/GPUEndTime plus the name of the
+                            // range's first node. Why this has to exist separately from CGC-NSM:
+                            // NSM prints a DURATION but no clock, and "how much earlier is the
+                            // shadow router than the real one" is a question about POSITION ON THE
+                            // TIMELINE, not about cost. With CGC_CB_N_MAIN=1 + CGC_N_CB=127 the
+                            // buffers become ~1 node each, so `nm=` names a single node and
+                            //     lead = start_ns(<real routing node>) - start_ns(cgc_rho_logits-L)
+                            // is the real "可發起時點提前多少" -- the term that dominates the rho
+                            // upper bound and the one the 2026-09-23 14:58 run could NOT produce
+                            // (that build put the shadow node AFTER attn(L) => lead ~= 0).
+                            // ⚠ Only the START is trustworthy: a buffer whose nodes are all
+                            // VIEW/RESHAPE encodes zero GPU commands, so its duration is not its
+                            // own work (measured: 592 us/node).
+                            // Deliberately a NEW line tag so the existing CGC-NSM parsers
+                            // (gdn_split / per_op_slice_parse / attn_moe_split) keep seeing exactly
+                            // the format they were written for.
+                            static const bool ns_start = getenv("CGC_GPU_NODES_START") != nullptr;
+                            if (ns_start) {
+                                // ⚠ ALL names in the range, not just the first: with a usable
+                                // n_cb of ~16 the slices are ~5 nodes wide, and the node we are
+                                // looking for (cgc_rho_logits-L) is usually NOT the first one --
+                                // printing only `nm=<first>` made it look like the shadow node
+                                // was absent from the graph entirely (2026-09-23 17:12).
+                                // Capped at 8; a range wider than that is reported truncated so
+                                // the reader knows the identification is a bound, not a match.
+                                fprintf(stderr, "CGC-NSCB step=%lld a=%d b=%d start_ns=%lld end_ns=%lld nm=",
+                                        (long long) dp_step, nd_a, nd_b,
+                                        (long long) rec[0], (long long) rec[1]);
+                                const int nn = nd_b - nd_a;
+                                const int npr = nn < 8 ? nn : 8;
+                                for (int q = 0; q < npr; q++) {
+                                    const char * nz = cgc_node_name(split_backend, nd_a + q);
+                                    fprintf(stderr, "%s%s", q ? "," : "",
+                                            nz != nullptr ? nz : "(null)");
+                                }
+                                fprintf(stderr, "%s\n", nn > 8 ? ",..." : "");
+                            }
                             if (ns_trace) {
                                 const int rsz = nd_b - nd_a;
                                 if (rsz <= 1)      { ns_rng1++; }
@@ -2482,7 +2536,19 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     // The llama_context side (expert_cache_eval_cb -> cgc_tdcb_maybe_dump)
                     // filters by exact tensor name (CGC_TD_CB) and writes the data. Nodes named
                     // ffn_moe_topk* are skipped here: the dedicated call right below fires those.
-                    if (getenv("CGC_TD_CB") != nullptr) {
+                    // [CGC ρ-fill 2026-09-23] 影子 router 的節點也必須能被轉發 —— 否則
+                    // `cgc_rho_capture` / `cgc_rho_prefetch` 一次都不會被呼叫，症狀是
+                    // `CGC-RHO-CAP` 零行、`CGC-RHO-SUM` 的 skip 數等於層數（實測 skip=2801、
+                    // layers=0）。而機制看起來「有在跑」，只是永遠沒東西可做 —— 又一個
+                    // 「沒量到」被讀成「量到很低」的形狀。
+                    //
+                    // 不能拿 `CGC_TD_CB` 來達成：它轉發**每一個**節點，而且下面 :3035 那段
+                    // 會為了讓 buffer 還新鮮而把非同步 pipeline 序列化 ⇒ 那一趟的 t/s 不可
+                    // 引用。這裡只在 `CGC_RHO_PROBE` 開著時額外轉發 `cgc_rho_logits-*`
+                    // （沒開 probe 時圖裡根本沒有這些節點，多出來的只是幾百次字串比較）。
+                    static const bool cgc_td_cb     = getenv("CGC_TD_CB")     != nullptr;
+                    static const bool cgc_rho_probe = getenv("CGC_RHO_PROBE") != nullptr;
+                    if (cgc_td_cb || cgc_rho_probe) {
                         const int a0 = (i == 0) ? 0 : (as_idx[i-1] + 1);
                         for (int k = a0; k <= as_idx[i]; k++) {
                             struct ggml_tensor * tn = split->graph.nodes[k];
@@ -2492,7 +2558,11 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                             if (strncmp(tn->name, "ffn_moe_topk", 12) == 0) {
                                 continue;
                             }
-                            sched->callback_eval(tn, false, sched->callback_eval_user_data);
+                            if (cgc_td_cb) {
+                                sched->callback_eval(tn, false, sched->callback_eval_user_data);
+                            } else if (strncmp(tn->name, "cgc_rho_logits", 14) == 0) {
+                                sched->callback_eval(tn, false, sched->callback_eval_user_data);
+                            }
                         }
                     }
                     struct ggml_tensor * ttopk = as_topk[i];

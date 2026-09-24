@@ -12710,3 +12710,4 @@ kernel void kernel_dsv4_hc_post_f32(
         *(device float *) (dst + i0*args.nb_d0 + idst*args.nb_d1 + it*args.nb_d2) = result[idst];
     }
 }
+

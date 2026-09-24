@@ -14,6 +14,7 @@
 #include <map>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 using llama_buf_map = std::unordered_map<uint32_t, ggml_backend_buffer_t>;
 
@@ -101,6 +102,12 @@ struct llama_model_loader {
     // keeping the expert weights out of the Metal working set (bounded residency).
     bool expert_cache_skip_load = false;
     std::vector<llama_expert_index_entry> expert_index;
+    // [CGC 2026-09-24 swap-miss P0] tensors the loader itself put on the CPU skip-load
+    // path (llama-model-loader.cpp: the `expert_cache_skip_load && _exps && blk.` branch,
+    // i.e. the `!buft` precondition already held). load_data_for must NOT read_raw these:
+    // the bytes come from the pool fill's pread and the CPU buffer is only a placeholder.
+    // Filled at tensor-creation time, read at load-data time (load_data_for is const).
+    std::unordered_set<std::string> skip_no_read;
     // CGC expert-cache L4 (Metal zero-copy pool): bounded pool capacity in slots/layer, computed by
     // compute_l4_pool_capacity as 2 * clamp(budget / (n_layers * per_slot), 8, 256). When > 0 the
     // expert tensors are created on the Metal buft with ne[2] shrunk to capacity and their storage
@@ -245,6 +252,10 @@ struct llama_model_loader {
 
     // for backwards compatibility, does not support ggml-backend
     void load_data_for(struct ggml_tensor * cur) const;
+
+    // [CGC 2026-09-24 swap-miss P0] true => load_data_for must leave this tensor's buffer
+    // UNREAD (placeholder). See skip_no_read. Layer 0 under L4_SKIP_LAYER0 is excluded.
+    bool cgc_skip_readraw(const char * name) const;
 
     // Returns false if cancelled by progress_callback
     bool load_all_data(

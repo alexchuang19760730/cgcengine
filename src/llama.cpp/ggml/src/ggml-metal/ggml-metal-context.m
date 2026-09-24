@@ -1510,3 +1510,95 @@ bool ggml_metal_supports_family(ggml_metal_t ctx, int family) {
 void ggml_metal_capture_next_compute(ggml_metal_t ctx) {
     ctx->capture_compute = 1;
 }
+
+// [CGC 2026-09-24] Batched speculative decode verify implementation
+// Adapted from oMLX bonsai/spec_decode.metal (MIT License)
+// Performs accept/reject comparison for K draft tokens across B batch rows on GPU.
+bool ggml_metal_spec_decode_verify(
+    ggml_metal_t ctx,
+    const void * draft,      // [B, K] int32
+    const void * target,     // [B, K+1] int32
+    void * n_accepted,       // [B] int32 output
+    void * committed,        // [B, K+1] int32 output
+    int K, int B) {
+
+    if (B <= 0 || K <= 0) return false;
+
+    @autoreleasepool {
+        id<MTLDevice> device = ggml_metal_device_get_obj(ctx->dev);
+        if (!device) return false;
+
+        // Create or retrieve the pipeline state (cached in static for reuse)
+        static id<MTLComputePipelineState> cached_pipeline = nil;
+        if (!cached_pipeline) {
+            NSError *error = nil;
+            const char *kernel_src =
+                "[[kernel]] void kernel_spec_decode_verify(\n"
+                "    const device int* draft [[buffer(0)]],\n"
+                "    const device int* target [[buffer(1)]],\n"
+                "    device int* n_accepted [[buffer(2)]],\n"
+                "    device int* committed [[buffer(3)]],\n"
+                "    constant int& K [[buffer(4)]],\n"
+                "    constant int& B [[buffer(5)]],\n"
+                "    uint b [[thread_position_in_grid]]) {\n"
+                "    if (b >= uint(B)) return;\n"
+                "    int n = K;\n"
+                "    for (int j = 0; j < K; ++j) {\n"
+                "        if (draft[b*K + j] != target[b*(K+1) + j]) { n = j; break; }\n"
+                "    }\n"
+                "    n_accepted[b] = n;\n"
+                "    for (int j = 0; j < K + 1; ++j)\n"
+                "        committed[b*(K+1)+j] = (j < n) ? draft[b*K+j] : (j == n ? target[b*(K+1)+n] : 0);\n"
+                "}\n";
+            NSString *src_str = [NSString stringWithUTF8String:kernel_src];
+            id<MTLLibrary> lib = [device newLibraryWithSource:src_str options:nil error:&error];
+            if (!lib || error) {
+                GGML_LOG_ERROR("%s: failed to compile spec_decode_verify library: %s\n",
+                    __func__, error ? [[error description] UTF8String] : "unknown");
+                return false;
+            }
+            id<MTLFunction> fn = [lib newFunctionWithName:@"kernel_spec_decode_verify"];
+            cached_pipeline = [device newComputePipelineStateWithFunction:fn error:&error];
+            [fn release];
+            [lib release];
+            if (!cached_pipeline || error) {
+                GGML_LOG_ERROR("%s: failed to create pipeline: %s\n",
+                    __func__, error ? [[error description] UTF8String] : "unknown");
+                return false;
+            }
+        }
+
+        id<MTLCommandQueue> queue = ggml_metal_device_get_queue(ctx->dev);
+        id<MTLCommandBuffer> command_buffer = [queue commandBuffer];
+        if (!command_buffer) return false;
+
+        id<MTLComputeCommandEncoder> encoder = [command_buffer computeCommandEncoder];
+        [encoder setComputePipelineState:cached_pipeline];
+
+        // Set buffers (index 0-3) and constants (index 4-5)
+        [encoder setBuffer:(id<MTLBuffer>)draft   offset:0 atIndex:0];
+        [encoder setBuffer:(id<MTLBuffer>)target  offset:0 atIndex:1];
+        [encoder setBuffer:(id<MTLBuffer>)n_accepted offset:0 atIndex:2];
+        [encoder setBuffer:(id<MTLBuffer>)committed offset:0 atIndex:3];
+        [encoder setBytes:&K length:sizeof(int) atIndex:4];
+        [encoder setBytes:&B length:sizeof(int) atIndex:5];
+
+        // Dispatch: B threads, one per batch row
+        int tg = (int)[cached_pipeline maxTotalThreadsPerThreadgroup];
+        if (tg > B) tg = B;
+        if (tg < 1) tg = 1;
+        [encoder dispatchThreads:MTLSizeMake(B, 1, 1)
+           threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+
+        [encoder endEncoding];
+        [command_buffer commit];
+        [command_buffer waitUntilCompleted];
+
+        if (command_buffer.error != nil) {
+            GGML_LOG_ERROR("%s: Metal error: %s\n", __func__, [[command_buffer.error description] UTF8String]);
+            return false;
+        }
+    }
+
+    return true;
+}

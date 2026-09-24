@@ -3583,6 +3583,70 @@ ggml_status llama_context::graph_compute(
         }
     }
 
+    // [CGC 2026-09-24 B-scheme preflight step 1] CGC_B_SCHEME=1 (default off, byte-identical when
+    // unset): write ALL layers' remap leaves with a LEGAL placeholder mapping BEFORE the
+    // single-segment submit. kernel_mul_mv_id indexes src0 (pool, ~143 slots) with the remap
+    // value, so every entry must be a valid slot id or generation stops early / OOB. CGC_SEG_BATCH
+    // skips the per-layer hook (which normally writes the remap after each layer's argsort), so
+    // without this the remap stays stale and the single-submit arm dies at ~8 tokens. This writes
+    // slot_table[e] when the expert is resident, else e % slots (legal-but-wrong placeholder).
+    // Purpose: measure the TRUE single-submit decode rate with enough tokens (diagnostic arm:
+    // routing is wrong, output is garbage, never a deliverable). The deliverable version replaces
+    // the placeholder with prev-token prediction + per-layer recompute of mismatched layers.
+    static const bool cgc_b_scheme = getenv("CGC_B_SCHEME") != nullptr;
+    if (cgc_b_scheme) {
+        // [CGC 2026-09-24 B-scheme preflight v2] With CGC_SLOT_TABLE_GPU=1 the graph consumes
+        // get_rows(slot_table, argsort_ids) on the GPU, so the host only needs to publish the
+        // per-layer expert->slot table ONCE before dispatch (it does not depend on routing). Write
+        // cache_slot_table_tensors[il] here: resident expert e -> its slot, non-resident -> legal
+        // placeholder (e % slots) so kernel_mul_mv_id never indexes OOB. Combined with
+        // CGC_SEG_BATCH=1 this is the single-submit + GPU-lookup arm; layers whose routing touched
+        // a placeholder need recompute (miss layers), which is the next step's work.
+        for (const auto & kv : cache_slot_table_tensors) {
+            ggml_tensor * tbl = kv.second;
+            if (tbl == nullptr || tbl->data == nullptr) {
+                continue;
+            }
+            const uint32_t il = (uint32_t) kv.first;
+            llama_expert_cache * ec = model.expert_cache;
+            const int32_t * st = ec != nullptr ? llama_expert_cache_slot_table(ec, il) : nullptr;
+            const uint32_t ns = ec != nullptr ? llama_expert_cache_slots_per_layer_l(ec, il) : 0;
+            if (ns == 0) {
+                continue;
+            }
+            int32_t * td = (int32_t *) tbl->data;
+            const int64_t n = tbl->ne[0] * tbl->ne[1];
+            for (int64_t e = 0; e < n; ++e) {
+                int32_t v = (st != nullptr && (int64_t) e < (int64_t) model.hparams.n_expert && st[e] >= 0)
+                                ? st[e] : (int32_t) ((uint32_t) e % ns);
+                td[e] = v;
+            }
+        }
+        // also write the remap leaves (host-leaf arm) to the same mapping so CGC_SLOT_TABLE_GPU
+        // can be toggled independently without a second code path.
+        for (const auto & kv : cache_remap_tensors) {
+            ggml_tensor * remap = kv.second;
+            if (remap == nullptr || remap->data == nullptr) {
+                continue;
+            }
+            const uint32_t il = (uint32_t) kv.first;
+            llama_expert_cache * ec = model.expert_cache;
+            const int32_t * st = ec != nullptr ? llama_expert_cache_slot_table(ec, il) : nullptr;
+            const uint32_t ns = ec != nullptr ? llama_expert_cache_slots_per_layer_l(ec, il) : 0;
+            if (ns == 0) {
+                continue;
+            }
+            int32_t * rd = (int32_t *) remap->data;
+            const int64_t n = remap->ne[0] * remap->ne[1];
+            for (int64_t k = 0; k < n; ++k) {
+                const int32_t e = (int32_t) (k % 8);
+                int32_t v = (st != nullptr && (int64_t) e < (int64_t) model.hparams.n_expert && st[e] >= 0)
+                                ? st[e] : (int32_t) ((uint32_t) e % ns);
+                rd[k] = v;
+            }
+        }
+    }
+
     auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
@@ -5628,7 +5692,7 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
         for (int64_t i = 0; i < n_expert_used; ++i) {
             dst[i] = (uint32_t) ids[i];  // j=0 offset is 0
         }
-        if (il <= 1 && getenv("CGC_PREV_PF_DBG") != nullptr) {
+        if (getenv("CGC_PREV_PF_DBG") != nullptr) {  // [CGC 2026-09-24] all layers (was il<=1) for B-scheme layer-accuracy measurement
             fprintf(stderr, "CGC-PREV-PF: collect il=%d ntok=%lld ids=[%u %u %u %u %u %u %u %u]\n",
                     il, (long long) n_tokens,
                     dst[0], dst[1], dst[2], dst[3], dst[4], dst[5], dst[6], dst[7]);

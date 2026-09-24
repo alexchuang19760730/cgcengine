@@ -262,6 +262,11 @@ struct llama_expert_cache {
     // remap reads OOB -> NaN cascade; waiting would hang — see pick_slot).
     std::vector<std::unordered_set<uint32_t>> pin_set;     // [layer] O(1) membership for pin_profile
     std::deque<std::tuple<uint32_t, int32_t, uint32_t>> pool_queue; // (layer, slot, expert) queued pool fills (FIFO)
+    // [CGC 2026-09-24 rho layer-batch] per-layer batch prefetch: one queue entry = one layer's
+    // whole predicted union, consumed by bg_loop as a single merged pread batch. FIFO with
+    // pool_queue (bg_loop pops batches first, then single fills). Members:
+    // (layer, {experts}, {slots}) — parallel vectors, same length.
+    std::deque<std::tuple<uint32_t, std::vector<uint32_t>, std::vector<int32_t>>> pool_batch_queue;
     // [CGC MTP fast path] reserved ZERO-slot: 1 when the layer's last slot region has been
     // zeroed (guarded by m). Only touched when CGC_VERIFY_DECODE / CGC_DRAFT_DECODE is set.
     std::vector<uint8_t> zero_slot_done; // [layer] 1 = reserved slot zeroed once
@@ -953,6 +958,12 @@ int64_t llama_expert_cache_fill_layer_slab(llama_expert_cache * cache, uint32_t 
 // Non-blocking; uses only FREE slots (never evicts for a prediction). Returns 0 if queued, -1 if
 // skipped (pool inactive / already resident or queued / no free slot / queue full).
 int32_t llama_expert_cache_prefetch_slot(llama_expert_cache * cache, uint32_t layer, uint32_t expert);
+// [CGC 2026-09-24 rho layer-batch] per-layer BATCH prefetch: queue ONE entry (layer,
+// {experts}, {slots}) for the bg thread to fill as a single merged pread batch. Same claim
+// policy as prefetch_slot (shared prefetch_claim_slot_locked), same MAXQ semantics (caps
+// in-flight batches). Returns the number of experts queued, 0 when none, -1 when dropped.
+int32_t llama_expert_cache_prefetch_batch(llama_expert_cache * cache, uint32_t layer,
+                                          const uint32_t * experts, size_t n);
 // [CGC M5 prerouter 2026-09-17] PREFETCH-ONLY expert predictor (env CGC_PREROUTER=1).
 //
 // Roadmap M5: "only decode, only L+1, only the 8, only time". This ranks the layer's recorded
