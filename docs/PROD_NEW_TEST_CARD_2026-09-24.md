@@ -44,6 +44,7 @@ llama-bench -m models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf \
 | `CGC_MM_BITIDENT` | 1 | bit-identical 支柱 |
 | `CGC_SERVER_NO_SEQ_RM_PROBE` | 1 | |
 | `CGC_SERVER_PREFIX_REUSE_CKPT` | 1 | prefix reuse（MTP off 下 no-op，保留為顯式一致） |
+| `LLAMA_EXPERT_CACHE_ALLOW_NGL` | **1** | **通用 SERVER_ENV（run_server.sh:1429，所有 profile 都帶）——L4/skip-load 使能條件**：`expert_cache_skip_load = (ngl<=0 || ALLOW_NGL || cgc_l3_ngl) && !no_gather`。**P0（skip-readraw）要生效，這條必須=1**（值語意，`0` 是關，讀者解析值不測存在） |
 | `CGC_EXPERT_SKIP_READRAW` | 0 | P0 開關（**預設關**，A/B 時設 1） |
 | `CGC_POOL_MADVISE` | 0 | P1/P2 開關（**預設關**） |
 | `CGC_PREFILL_STREAM` | 1 | prefill250 支柱（大 chunk 走 whole-layer slab） |
@@ -51,8 +52,23 @@ llama-bench -m models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf \
 | `CGC_SERVER_MTP_N_MAX` | 3 | MTP on 時 n_max 顯式釘 3 |
 | `SERVER_BATCH` / `SERVER_UBATCH` | 5632 | |
 | `CTX` | 8192 | |
-| `BUDGET` | 8589934592 | 8 GiB pool |
+| `CGC_EXPERT_CACHE_BYTES`（內部 `BUDGET`） | 8589934592 | 8 GiB pool |
 | server 參數 | `-t 8 --temp 0.4` | |
+
+### 3b. 其餘通用 SERVER_ENV 默認（run_server.sh SERVER_ENV 段，prod-new 未覆寫）
+
+| env | 值 | 角色 |
+|---|---|---|
+| `LLAMA_EXPERT_CACHE_L4_SKIP_LAYER0` | 0 | layer0 在 pool（40 層全 pool；=1 是**數值變更**，需自帶 M1/M2/M3 參考） |
+| `LLAMA_EXPERT_CACHE_WORKERS` | 8 | fill 並行度（唯一 concurrency knob；57363 preads×1.73ms 的綁定項） |
+| `CGC_WAKE_POLL_US` | 15 | 固定常數 |
+| `CGC_EVICTED_RING` | 0 | prefetch 策略固定（step 默認；hist 已移除，opt-in 用 CGC_PREFETCH_SRC=hist） |
+| `CGC_N_CB` | 8 | command buffer 深度（§8.93 cb8 sweet spot） |
+| `CGC_SERVER_AUTO_ANCHOR` | 0 | 默認關（oracle 實測 anchor ON→echo loop） |
+| `CGC_SERVER_DEFAULT_MARKER_STOPS` | 1 | client 沒給 stop 時補 ChatML marker stops |
+
+> 未帶（prod-new 默認不設）：`CGC_FORCE_TEMP0`、`CGC_DOWN_COMBINE`、`CGC_DC_MULTITOK`、`CGC_HOOK_PROFILE` —— 全是 opt-in（if 條件才加）。
+> 校準方法：`CGC_DUMP_ENV=1` 的解析輸出是唯一權威——測試卡任何一行與之不符，以 dump 為準。
 
 > 顯式 `0` 不是「不設」：讓 P0/P1/P2 開關在 profile 裡**有名字**。注意下游白名單只傳非 0 值，`CGC_DUMP_ENV=1` 在關閉時看不到這兩行——那是「關」的正常表現。
 
