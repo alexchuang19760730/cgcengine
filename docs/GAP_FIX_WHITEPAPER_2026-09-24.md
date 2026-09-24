@@ -459,6 +459,31 @@ gap_eff = 44.4 × (1 − h) + 10.0 × h
 > 資產：`/tmp/mtpoff_steps.py`（runner）、`/tmp/mtpoff_steps.server.log`（step 行原始檔）、
 > server log `Backup/cgc_logs/llama_server_20260924_103835.log`。
 
+> **✅ 2026-09-24 追加（CGC_SEG_BATCH 診斷：一次提交 vs 41 段串行，+44% 方向確認）：**
+>
+> 實作診斷版 `CGC_SEG_BATCH=1`（ggml-backend.cpp，默認 off、不影響任何現有路徑）：跳過
+> wait→hook→submit 的 41 段串行循環，整圖一次 `ggml_backend_graph_compute_async` + sync。
+> 不做 hook（不 fill、不寫 ids）——**數值錯（診斷專用）**，目的是給「分段 overhead 消失後」
+> 的速度定價。
+>
+> | 臂 | decode t/s | 備註 |
+> |---|---:|---|
+> | seg_base（prod-new 現狀，41 段串行） | **13.59** | 98 token 正常生成 |
+> | seg_batch（CGC_SEG_BATCH=1 一次提交） | **19.61** | ⚠ 僅 8 token（hook 不跑→生成提前停），退化讀數 |
+>
+> 解讀：
+> 1. **方向確認（+44%）**：Metal encoder 內部自己排層間依賴鏈（不經 CPU）比「每層 CPU
+>    插一手」快 44%——與 step 分解的 wait 85% 互相印證：分段串行的成本 = CPU 介入。
+> 2. **19.61 不可引用為產能**（8 token 含 prefill、生成提前停）——它只證明「分段 overhead
+>    移除後有大量可拿」，不是可交付數字。
+> 3. **可交付版 = kernel 查表**：ids 由 GPU 自給（argsort 原始輸出直連 kernel + GPU 查
+>    對映表）→ 一次提交 + hook 只做 miss 層補救。這是 B 方案核心，實作中（kernel
+>    `kernel_mul_mv_id` 加 slotmap、kargs、llama-context 寫對映表）。
+> 4. prod-new 下無 zero-slot（MTP 專用）→ miss 層 fallback 不能靠 zero-slot，需
+>    clamp-to-slot-0（診斷）或重算（正式）。
+>
+> 資產：`/tmp/segbatch_ab.py`、`/tmp/seg_base.json`、`/tmp/seg_batch.json`。
+
 ---
 
 ## 11. 來源表
