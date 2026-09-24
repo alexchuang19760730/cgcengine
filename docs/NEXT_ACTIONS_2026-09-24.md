@@ -42,6 +42,13 @@ python3 scripts/check/io_symmetry.py --dir Backup/seg_batch_s1_pairs   # exit 2
 > **🔴 commit 口徑統一**：commit 統一用 `prod-new`（單一介面）。任何寫進
 > 報告/白皮書/commit 標題的數字一律 prod-new 口徑產出。
 
+> **🔴 量測紀律（2026-09-24 新增，測試卡 §5，兩個 Agent 與 MainAgent 都必須遵守）**：
+> ① 每臂必須**同時測並同時報 prefill + decode**（pp + tg 兩行）——只報 tg = 不完整產物，不可引用；
+> ② 每個報出的數字必須帶 **thermal state（launch/worst/hist）+ swap state（launch/end/worst/growth）**
+> 標注，取自產物欄位（matrix json 已內嵌），不許手寫或跨產物借用；
+> ③ **HEAVY 或 swap growth > 500 MiB = 污染讀數**，只能當診斷價，不可進錨點 / commit 標題。
+> 全文：`docs/PROD_NEW_TEST_CARD_2026-09-24.md` §5。
+
 > **🔴 commit gate**：每次 commit 前跑 `python3 scripts/check/commit_bench.py`
 > （prod-new，prefill≥120 / decode≥10，ABBA 協議）。標題帶 `[commit-gate]` 成績。
 

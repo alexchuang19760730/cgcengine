@@ -80,13 +80,33 @@ llama-bench -m models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf \
 | `CGC_SPAC_HOT=1` | B 真臂 | 踢 `spac_count`（累計路由次數，永不衰減）最低者 → 熱門優先替換（命中 143 槽可覆蓋 98.9% 路由） |
 | `CGC_SERVER_MTP=1` | MTP on | 對照 decode 支柱（走 prod25-stream） |
 
-## 5. 每臂自動附帶的歸因行（不可省略）
+## 5. 量測紀律（強制，所有測試者含兩個 Agent 與 MainAgent）
+
+### 5.0 每一臂必須**同時測並同時報 prefill + decode**
+
+- llama-bench 完整側天然出兩行：`pp p=`（prefill）與 `tg p=`（decode）。
+- **禁止只報 tg**：任何報告 / commit 標題 / 結論必須同時給 `prefill=X / decode=Y`。
+- 只報 decode 的讀數視為**不完整產物**，不可引用（活例：2026-09-24 早上的單段 ABBA 只抓了 tg，prefill 行被 grep 丟掉）。
+
+### 5.1 每一個報出的數字必須帶 thermal state + swap state 標注
+
+- 格式（每個 prefill/decode 數字旁必須出現，缺標注 = 不可引用）：
 
 ```
-thermal : Sampler 0.5s 間隔，launch / worst / hist（NOMINAL/MODERATE/HEAVY）
-memory  : Sampler launch / end / worst —— swap_used / pages_free / pages_wired / llama_procs
-attribution: thermal / swap / contention / both / none
+prefill=X t/s / decode=Y t/s
+thermal: launch=MODERATE worst=HEAVY hist={NOMINAL:n, MODERATE:n, HEAVY:n}
+swap:    launch=5712 MiB end=6320 MiB worst=8318 MiB growth=+608 MiB
+attribution: thermal / swap / both / none        # memory_pressure.py 判定
 ```
+
+- **HEAVY 或 swap growth > 500 MiB 的讀數標記為污染**，只能當診斷價，不可進錨點 / commit 標題。
+
+### 5.2 機器內嵌（產物契約）
+
+- matrix 產物 json 已內嵌 `thermal` / `memory` / `attribution` / `rows`（含 pp+tg 兩行）——**不得人肉重打**。
+- 引用任何產物時，標注必須**取自該產物欄位**，不許手寫或跨產物借用。
+
+### 5.3 既有規則（保留）
 
 - 任何「慢了 X%」的結論，**先過 thermal/swap 歸因門**再下（memory_pressure.py，selftest 14/14）。
 - 交錯協議：A/B 用 ABBA 交錯（A1 B1 A2 B2 A3 B3）+ 配對 per-rep 比率中位，**不允許先跑完 A 再跑 B**。
