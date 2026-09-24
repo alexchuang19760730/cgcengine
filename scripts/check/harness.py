@@ -46,6 +46,17 @@ USAGE
     python3 scripts/check/harness.py list                 # the registry
     python3 scripts/check/harness.py audit                # ungated launchers
     python3 scripts/check/harness.py selftest
+
+BENCH (統一量測入口)
+--------------------
+    python3 scripts/check/harness.py bench \
+        --arm "prod-new:!CGC_WAKE_POLL_US=999;CGC_SERVER_MTP=1" \
+        --json /tmp/bench_out.json
+
+    - 基底 = prod-new（CGC_DUMP_ENV=1 唯一權威）；arm 語法 PROFILE:!OVERRIDE;KEY=VAL
+    - base gate：撞 base 鍵需 ! 宣告（實驗開關白名單 _EXPERIMENT_KNOBS 自動放行 + 記錄）
+    - 產物契約：每臂含 base_check + sys_before/after（thermal/swap/pageins/memory_pressure/iostat）
+    - 報告必須基於 prod-new + 自己的 env 增量；llama-bench 完整側參數見 _BENCH_DEFAULTS
 """
 from __future__ import annotations
 
@@ -526,6 +537,206 @@ def selftest() -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- bench
+# 統一量測入口：所有報告數字必須基於 prod-new（或顯式 profile）＋自己的 env 增量。
+# base gate：arm env 撞到 base 已有鍵但未用 `!` 宣告 override → fail-closed 拒跑。
+# 產物契約：每臂 json 注入 base_check + 量測紀律字段（pp/tg + thermal + swap + attribution）。
+
+_BASE_PROFILE_DEFAULT = "prod-new"
+
+# 實驗開關白名單（測試卡 §4 臂差異開關 + 支柱開關）：這些鍵允許覆蓋 base（不需 `!`，自動記錄）。
+# 其餘 base 鍵 = 環境/儀器/模型常數，鎖死——要改必須 `!` 顯式宣告。
+_EXPERIMENT_KNOBS = {
+    # ── dump 內實驗開關（撞 base 自動放行 + 記錄）──
+    "CGC_EXPERT_CACHE_BYTES", "LLAMA_EXPERT_CACHE_ALLOW_NGL",
+    "CGC_OA_ASYNC", "CGC_GATHER_SLAB_CAP", "CGC_PREFILL_STREAM",
+    "CGC_SPAC", "CGC_SPAC_ALPHA", "CGC_MM_BITIDENT",
+    # ── 不在 dump 的已知實驗開關（arm 設了 = 新增鍵，gate 不擋、產物 extra_env 記錄）──
+    "CGC_EXPERT_SKIP_READRAW", "CGC_POOL_MADVISE", "CGC_SERVER_MTP",
+    "CGC_SERVER_MTP_N_MAX", "CGC_SEG_BATCH", "CGC_B_SCHEME",
+    "CGC_SLOT_TABLE_GPU", "CGC_SPAC_HOT", "CGC_SERVER_PREFIX_REUSE_CKPT",
+    "CGC_SERVER_DENSE_IQ4X", "CGC_SERVER_OA_ASYNC", "CGC_SERVER_NO_SEQ_RM_PROBE",
+    "CGC_DOWN_COMBINE", "CGC_FORCE_TEMP0", "CGC_HOOK_PROFILE",  # opt-in 儀器
+}
+
+# llama-bench 完整側默認（測試卡 §2，可覆寫但記錄在產物）
+_BENCH_DEFAULTS = dict(prompt=2048, gen=128, depths="512", reps=1,
+                       warm_skip=64, ctx_size=0, batch=5632, ubatch=5632)
+
+
+def _parse_arm(spec: str) -> tuple[str, dict, set]:
+    """'prod-new:!A=1;B=2' -> ('prod-new', {'A':'1','B':'2'}, {'A'})"""
+    if ":" in spec:
+        profile, envs = spec.split(":", 1)
+    else:
+        profile, envs = spec, ""
+    env, overrides = {}, set()
+    for piece in envs.split(";") if envs else []:
+        piece = piece.strip()
+        if not piece:
+            continue
+        declared = piece.startswith("!")
+        if declared:
+            piece = piece[1:]
+        if "=" not in piece:
+            raise SystemExit(f"bad arm env piece: {piece!r} (want KEY=VAL or !KEY=VAL)")
+        k, v = piece.split("=", 1)
+        env[k.strip()] = v.strip()
+        if declared:
+            overrides.add(k.strip())
+    return profile, env, overrides
+
+
+def _base_gate(profile: str, extra_env: dict, overrides: set) -> tuple[bool, list[str], list[str]]:
+    """resolve base vs arm；未宣告的 base 鍵變更 → FAIL（fail-closed）。"""
+    matrix = _load("matrix", "llama_bench_matrix.py")
+    base = matrix.resolve(profile, {})
+    arm = matrix.resolve(profile, extra_env)
+    diffs, ovr = [], []
+    # 雙向比對：arm 改 base 鍵值、或設 0 讓 base 鍵從 dump 消失（= 值變更），都要歸因
+    for k in sorted(set(base["env"]) | set(arm["env"])):
+        bv, av = base["env"].get(k), arm["env"].get(k)
+        if bv is None:          # arm 新增鍵（base 沒有）
+            continue
+        if av == bv:
+            continue
+        if k in overrides:
+            ovr.append(f"{k}: {bv!r} -> {av!r} (declared override)")
+        elif k in _EXPERIMENT_KNOBS:
+            ovr.append(f"{k}: {bv!r} -> {av!r} (experiment knob)")
+        else:
+            diffs.append(f"{k}: base={bv!r} arm={av!r} (NOT declared, use !)")
+    return (len(diffs) == 0), diffs, ovr
+
+
+def _sys_snapshot() -> dict:
+    """測試前/後各採一次：thermal + swap 水位 + pageins/pageouts + memory_pressure + iostat。"""
+    snap = {}
+    tp = _load("tp_snap", "thermal_pressure.py")
+    mp = _load("mpp_snap", "memory_pressure.py")
+    try:
+        t = tp.stamp()
+        snap["thermal"] = {"label": t.get("label"), "lv": t.get("lv"), "t": t.get("t")}
+    except Exception as e:
+        snap["thermal"] = {"error": str(e)}
+    try:
+        snap["swap_used_mb"] = mp.swap_used_mb()
+    except Exception:
+        snap["swap_used_mb"] = None
+    try:  # vm_stat 累計 pageins/pageouts（欄位大小寫不敏感）
+        out = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=10)
+        pi = po = None
+        for line in out.stdout.splitlines():
+            low = line.lower()
+            if low.startswith("pageins:"):
+                pi = int(line.split()[1].rstrip("."))
+            elif low.startswith("pageouts:"):
+                po = int(line.split()[1].rstrip("."))
+        snap["pageins"], snap["pageouts"] = pi, po
+    except Exception:
+        pass
+    try:  # memory_pressure 狀態（System-wide memory free percentage 行）
+        out = subprocess.run(["memory_pressure"], capture_output=True, text=True, timeout=10)
+        lines = (out.stdout or out.stderr or "").splitlines()
+        snap["memory_pressure"] = next((l.strip() for l in lines if "percentage" in l.lower()), "")
+    except Exception:
+        snap["memory_pressure"] = ""
+    try:  # iostat 磁盤活動（最後一行 = 一次樣本）
+        out = subprocess.run(["iostat", "-d", "1", "1"], capture_output=True, text=True, timeout=10)
+        lines = [l.strip() for l in out.stdout.splitlines() if l.strip()]
+        snap["iostat"] = lines[-1].split() if lines else []
+    except Exception:
+        snap["iostat"] = []
+    return snap
+
+
+def cmd_bench(args) -> int:
+    matrix = _load("matrix", "llama_bench_matrix.py")
+    specs = list(args.arm)
+    ok_all = True
+    gate_report = []
+    for spec in specs:
+        profile, env, overrides = _parse_arm(spec)
+        ok, diffs, ovr = _base_gate(profile, env, overrides)
+        gate_report.append({"arm": spec, "profile": profile, "overrides": ovr,
+                            "diffs": diffs, "pass": ok})
+        if not ok:
+            ok_all = False
+            print(f"!! base gate FAIL for {spec}:")
+            for d in diffs:
+                print(f"    {d}")
+    if not ok_all:
+        print("base gate 未過 — 拒跑。用 !KEY=VAL 顯式宣告覆蓋，或去掉該 env。")
+        return 2
+
+    # 測試前系統快照（thermal / swap / pageins / memory_pressure / iostat）
+    t_bench0 = time.time()
+    before = _sys_snapshot()
+    print(f"系統快照 [before] thermal={before.get('thermal')} swap={before.get('swap_used_mb'):.0f} MiB "
+          f"pageins={before.get('pageins')} pageouts={before.get('pageouts')} "
+          f"pressure={before.get('memory_pressure')} iostat={before.get('iostat')}", flush=True)
+
+    # delegate 給 llama_bench_matrix（量測邏輯不複製；matrix 不自動建 workdir）
+    Path(args.workdir).mkdir(parents=True, exist_ok=True)
+    arms_joined = ",".join(specs)
+    cmd = [PY, str(HERE / "llama_bench_matrix.py"),
+           "--arms", arms_joined,
+           "--prompt", str(args.prompt), "--gen", str(args.gen),
+           "--depths", args.depths, "--reps", str(args.reps),
+           "--ctx-size", str(args.ctx_size), "--warm-skip", str(args.warm_skip),
+           "--workdir", str(args.workdir), "--json", str(args.json_path)]
+    import shutil
+    print("$ " + shlex_join(cmd) if False else " ".join(cmd), flush=True)
+    rc = subprocess.call(cmd, cwd=str(ROOT))
+    if rc != 0:
+        return rc
+
+    # 測試後系統快照 + 速率（wall 用牆鐘，thermal t 是字串不能用來減）
+    after = _sys_snapshot()
+    wall = time.time() - t_bench0
+    rate = {}
+    if before.get("pageins") is not None and after.get("pageins") is not None:
+        rate["pageins_per_s"] = (after["pageins"] - before["pageins"]) / wall
+        rate["pageouts_per_s"] = ((after.get("pageouts") or 0) - (before.get("pageouts") or 0)) / wall
+    print(f"系統快照 [after]  thermal={after.get('thermal')} swap={after.get('swap_used_mb'):.0f} MiB "
+          f"pageins={after.get('pageins')} pageouts={after.get('pageouts')} "
+          f"pressure={after.get('memory_pressure')} iostat={after.get('iostat')}", flush=True)
+    if rate:
+        print(f"page 速率: in={rate['pageins_per_s']:.1f}/s out={rate['pageouts_per_s']:.1f}/s "
+              f"(wall={wall:.0f}s)", flush=True)
+
+    # 產物注入 base_check + sys_before/after（每個 arm 一臂）
+    data = json.loads(Path(args.json_path).read_text())
+    for arm, report in zip(data, gate_report):
+        arm["base_check"] = {"profile": report["profile"], "pass": report["pass"],
+                             "overrides": report["overrides"], "diffs": report["diffs"]}
+        arm["sys_before"], arm["sys_after"] = before, after
+        if rate:
+            arm["sys_rate"] = rate
+    Path(args.json_path).write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    print(f"\n產物已寫入 {args.json_path}（每臂含 base_check + sys_before/after + 系統指標）\n", flush=True)
+
+    # 量測紀律輸出：pp + tg + thermal + swap（取自產物欄位）
+    for arm in data:
+        print(f"=== {arm.get('tag')} (base_check: {'PASS' if arm['base_check']['pass'] else 'FAIL'}) ===")
+        for r in arm["rows"]:
+            kind = "pp" if r.get("n_prompt", 0) > 0 else "tg"
+            ts = r.get("avg_ts")
+            print(f"  {kind:2s}: {ts:.2f} t/s" if ts is not None else f"  {kind:2s}: (no avg_ts)")
+        th = arm.get("thermal", {})
+        print(f"  thermal: launch={th.get('launch')} worst={th.get('worst')}")
+        m = arm.get("memory", {})
+        ls, es, ws = m.get("launch_swap"), m.get("end_swap"), m.get("worst_swap")
+        print(f"  swap: launch={ls} end={es} worst={ws} growth={((es or 0)-(ls or 0)):+.0f} MiB")
+        print(f"  attribution: {arm.get('attribution')}")
+    return 0
+
+
+import shlex as _shlex
+def shlex_join(parts):
+    return _shlex.join(parts)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd")
@@ -563,6 +774,19 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("selftest")
     p.set_defaults(func=lambda a: selftest())
+
+    p = sub.add_parser("bench", help="統一量測入口：prod-new 基底 + env 增量 + base gate + llama-bench 完整側")
+    p.add_argument("--arm", action="append", required=True,
+                   help='PROFILE:!OVERRIDE;KEY=VAL 語法（可多次）。! = 顯式覆蓋 base 鍵；未宣告的 base 變更 → 拒跑')
+    p.add_argument("--prompt", type=int, default=_BENCH_DEFAULTS["prompt"])
+    p.add_argument("--gen", type=int, default=_BENCH_DEFAULTS["gen"])
+    p.add_argument("--depths", default=_BENCH_DEFAULTS["depths"])
+    p.add_argument("--reps", type=int, default=_BENCH_DEFAULTS["reps"])
+    p.add_argument("--warm-skip", type=int, default=_BENCH_DEFAULTS["warm_skip"])
+    p.add_argument("--ctx-size", type=int, default=_BENCH_DEFAULTS["ctx_size"])
+    p.add_argument("--workdir", default="/tmp/harness_bench")
+    p.add_argument("--json", dest="json_path", required=True, help="產物 json 路徑（含 base_check）")
+    p.set_defaults(func=cmd_bench)
 
     raw = list(sys.argv[1:] if argv is None else argv)
     cmd = raw[0] if raw and not raw[0].startswith("-") else None

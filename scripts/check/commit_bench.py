@@ -4,6 +4,9 @@
 [2026-09-23] 每次 commit 前必跑：證明新的 build 沒有把 production shape 弄壞。
 形狀固定為「完整側」：2048-token prefill（-p 2048），接著 128-token decode（-n 128），
 context 預置 512（-d 512）。profile 固定 prod-new（MTP off + prefill250 支柱）。
+[2026-09-25] decode 加 --warm-skip 64，與測試卡 §2 權威口徑一致（docs/PROD_NEW_TEST_CARD_2026-09-24.md）：
+    commit_bench 量的是穩定態（池已暖）；冷啟動代價另測 —— pool 4G 下無 warm-skip 是 -33%
+    （docs/POOL_SWEET_SPOT_2026-09-25.md §2/§5）。生產冷啟動由 run_server.sh 的預熱請求解決。
 
 判定（可配）：
   prefill t/s >= --prefill-min （預設 120；prod-new 目標 250+，但機器狀態波動大，閘門保守）
@@ -42,6 +45,7 @@ def run_matrix(profile, prompt, gen, depths, reps, workdir, json_out, dry_run):
            "--prompt", prompt, "--gen", gen, "--depths", depths,
            "--reps", str(reps),
            "--ctx-size", str(0),
+           "--warm-skip", "64",
            "--workdir", workdir,
            "--json", json_out]
     if dry_run:
@@ -74,8 +78,23 @@ def extract(results):
             ng_ = int(row.get("n_gen", 0))
             if np_ == int(PROMPT) and ng_ == 0:
                 prefill = row
-            if np_ == 0 and ng_ == int(GEN):
+            # [2026-09-25] tg row 匹配：warm-skip N 時 llama-bench 輸出 n_gen = GEN - N（計時 token），
+            # 固定 ng_==GEN 會匹配不到 → decode=None → summary 崩/假 MISSING。改 np_==0 && ng_>0。
+            if np_ == 0 and ng_ > 0:
                 decode = row
+    # [2026-09-25] avg_ts / samples_ts 可能是 str（llama-bench json 未轉型）→ 統一轉 float，
+    # 否則 summary 的 :.2f 會崩（history: 兩個 PASSING run 都掛在 print）。
+    for row in (prefill, decode):
+        if row is None:
+            continue
+        if isinstance(row.get("avg_ts"), str):
+            try:
+                row["avg_ts"] = float(row["avg_ts"])
+            except (TypeError, ValueError):
+                pass
+        st = row.get("samples_ts")
+        if isinstance(st, list):
+            row["samples_ts"] = [float(x) for x in st if isinstance(x, (int, float, str)) and str(x).replace('.', '', 1).replace('-', '', 1).isdigit() or True]
     return prefill, decode
 
 
@@ -116,13 +135,13 @@ def main():
               f"{[f'{x:.2f}' for x in decode.get('samples_ts', [])]}")
 
     ok = True
-    if prefill is None or prefill.get("avg_ts", 0) < args.prefill_min:
-        print(f"[commit_bench] prefill {'MISSING' if prefill is None else prefill.get('avg_ts',0):.2f}"
-              f" < {args.prefill_min}  {'(record-only)' if args.record_only else 'FAIL'}")
+    if prefill is None or float(prefill.get("avg_ts", 0)) < args.prefill_min:
+        pv_ = "MISSING" if prefill is None else f"{float(prefill.get('avg_ts', 0)):.2f}"
+        print(f"[commit_bench] prefill {pv_} < {args.prefill_min}  {'(record-only)' if args.record_only else 'FAIL'}")
         ok = False
-    if decode is None or decode.get("avg_ts", 0) < args.decode_min:
-        print(f"[commit_bench] decode {'MISSING' if decode is None else decode.get('avg_ts',0):.2f}"
-              f" < {args.decode_min}  {'(record-only)' if args.record_only else 'FAIL'}")
+    if decode is None or float(decode.get("avg_ts", 0)) < args.decode_min:
+        dv_ = "MISSING" if decode is None else f"{float(decode.get('avg_ts', 0)):.2f}"
+        print(f"[commit_bench] decode {dv_} < {args.decode_min}  {'(record-only)' if args.record_only else 'FAIL'}")
         ok = False
 
     # [2026-09-23] commit 標題必須帶量測成績：把這行貼進 commit message（subject 或 body 首行）。

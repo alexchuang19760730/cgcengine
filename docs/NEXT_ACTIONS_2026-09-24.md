@@ -138,3 +138,23 @@ python3 scripts/check/io_symmetry.py --dir Backup/seg_batch_s1_pairs   # exit 2
 - [ ] H_MEASURED §四 與 NEXT_ACTIONS 方向已 commit（含 h_all 儀器）
 - [ ] freebuff：CGC_IDSEQ_DUMP 儀器不可達（CGC-CANON=0）——若要 per-call ids
       序列，移到真正執行的 topk hook 路徑；不急（h_all 已覆蓋判決需求）
+
+
+## 🔴 統一量測入口（harness bench）— 2026-09-24
+- 所有報告數字必須基於 prod-new + 自己的 env 增量，唯一入口：
+  `python3 scripts/check/harness.py bench --arm "prod-new:!OVERRIDE;KEY=VAL" --json <out>`
+- base gate：撞 base 鍵需 `!` 宣告；實驗開關白名單 `_EXPERIMENT_KNOBS` 自動放行 + 產物記錄
+- 產物契約：每臂 base_check + sys_before/sys_after（thermal / swap 水位 / pageins/pageouts 速率 / memory_pressure / iostat）——測試前後系統狀態必附
+- 委託 llama_bench_matrix 跑量測（邏輯不複製）；`--dry-run` 走 matrix 相同語義
+- 現有 harness 窗口守門（show/run/list/audit）未動
+
+
+## ⚠️ 重開機通知（2026-09-24 23:2x）— 兩分鐘內重開機
+- **即刻停手**：不要啟動新的 GPU 量測；正在跑的會被中斷：
+  - `seg_batch_abba.py --mode identity`（pid 63457/64173，-n 8 -r 3）可能跑不完——結果以寫入 Backup/zm_identity2 的為準，跑一半不算數
+  - `s1_ksweep.py --wait-minutes 240`（pid 64421）會被殺——重開機後需重啟該 driver 才能續
+- **重開機後第一動作**（swap 應歸零）：
+  1. `bash /tmp/seg_mtp_abba/run_clean.sh` —— 單段×MTP 單對判定（A1/B1，兩臂帶 P0=1）
+  2. `python3 scripts/check/harness.py bench --arm "prod-new" --json /tmp/harness_first.json` —— 乾淨基線（prefill/decode + 測試前後系統快照）
+- **重開機前 swap 現況**：used 7834.5 MiB（total 9216）——重開機後對比用
+- 統一量測入口 harness bench 已就緒（見上方條目）；所有後續報告基於 prod-new + 自己的 env 增量

@@ -557,9 +557,20 @@ fi
 
 if [ "$SERVER_PROFILE" = "prod-new" ]; then
     # [CGC 2026-09-23] prefill250 的 prefill 支柱（5632 是測過存活的最大 chunk；6144 OOM 0/5）：
-    # 大 chunk + M2 prefill streaming + 256-expert slab + 8GiB pool + ctx 8192。
+    # 大 chunk + M2 prefill streaming + 256-expert slab + 4GiB pool + ctx 8192。
     # decode 支柱在 case 已設（MTP off 走 prod25 支柱）；MTP on 時 n_max 顯式釘 3
     # （與 prod25 的 if 段同值；prod25 的 if 段只在 prod25 生效，這裡不能依賴它）。
+    # [CGC 2026-09-25 復原] 4GiB 方案撤銷——真 4G 穩定態即慢 -34%（capacity miss 32%），
+    #   不是冷啟動問題。同日同窗口真曲線（override 用 CGC_SERVER_EXPERT_CACHE_BYTES）：
+    #       pool      hit     cap     decode
+    #       4GiB    85.1%   32.1%    7.67 t/s
+    #       6GiB     ~89%     ~15%   10.48 t/s
+    #       8GiB    92.8%    3.8%   12.06 t/s
+    #   熱集（143/256 專家吃 98.8% 路由）需要 8GiB 才裝得下 → hit 93% → 12 t/s。
+    #   先前「4G≈8G / 4G swap≈0」的 ABBA 是 override 語法 bug（用了無 SERVER_ 前綴的
+    #   CGC_EXPERT_CACHE_BYTES，被 run_server.sh 守門忽略）→ 兩臂其實都是 8G → 假結論。
+    #   swap 結構解回 L1-L4（docs/SWAP_STRUCTURAL_FIX_2026-09-24.md，L2 單一駐留優先），
+    #   不靠縮 pool。顯式 CGC_SERVER_EXPERT_CACHE_BYTES 仍可覆寫。
     [ -z "${CGC_SERVER_MTP_N_MAX+x}" ]  && SPEC_DRAFT_N_MAX=3
     [ -z "${CGC_SERVER_BATCH+x}" ]      && SERVER_BATCH=5632
     [ -z "${CGC_SERVER_UBATCH+x}" ]     && SERVER_UBATCH=5632
