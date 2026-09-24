@@ -19,6 +19,12 @@
 > ⇒ B 臂全 0.00 t/s OOM，50 分鐘白跑。**MTP on + 影子節點的 insert 在 16GB 結構性不可量**；
 > 要量需 pool ≤ 3GiB 或換更小模型。
 > 相容模式：`--warn-only`（明知超訂仍要跑）。
+>
+> **接線面（2026-09-24 10:0x）**：`scripts/check/budget_gate.sh` —— 量測腳本 launch 前
+> `. "${REPO}/scripts/check/budget_gate.sh"` 一行即可（已接 `rho_fill_ab.sh`／
+> `route_overlap_3prompt.sh`／`masscov_decode_shape.sh`；`--self-test` 7/7）。
+> `BUDGET_GATE=strict`（預設，超訂 exit 2）／`warn`（放行但樣本帶 `CGC_BUDGET_OVERSUBSCRIBED=1`
+> 標記）／`off`。工具不會自己被叫到 —— **沒接線的 runner 等於沒有閘門**。
 
 ***
 
@@ -42,6 +48,43 @@
 
 ## 待辦（照序）
 
+- [x] **build（2026-09-24 10:47）** ✅ `cmake --build src/llama.cpp/build --target llama-server
+      llama-bench -j 8` rc=0；`strings libllama.dylib` 驗到 `CGC_EXPERT_SKIP_READRAW`、
+      `CGC_POOL_MADVISE` 兩個字串都在 ⇒ 三個開關確實編進去了。
+      ⚠ 這個 binary **同時含線 I 未提交的 294+ 行 `llama-expert-cache.cpp` 改動**
+      ⇒ **ctrl 臂 ≠ 12.57 錨點**，只能三臂互比。
+- [ ] **⚠ 重建（P0.g 還沒進 binary）**：`CGC_EXPERT_SKIP_READRAW` 的判定已從「存在即開」
+      改成「取值判定」（`=0`/空 = 關），原始碼已改但**尚未 build**（11:2x 有別條線的
+      llama-bench 在跑，不能蓋 binary）。重開機後、A/B 之前先：
+      ```sh
+      cmake --build src/llama.cpp/build --target llama-server llama-bench -j 8
+      ```
+      （三個閘門：8080 無 listener／無量測行程／無 cmake 在跑。）
+- [ ] **開關已接進 prod-new profile**（`run_server.sh`）：白名單 ＋ prod-new 底下的
+      顯式預設。`CGC_DUMP_ENV=1` 已驗證：預設不傳、`=1`/`=2` 會傳、**`=0` 不傳**。
+      ⚠ 白名單是必須的：launch line 走 `env "${SERVER_ENV[@]}"`，沒列到的 `CGC_*` 被靜默丟掉
+      ⇒ 不列進來 A/B 三臂會跑出一模一樣的數字而不報錯。
+- [ ] **重開機後跑 A/B（一步到位）**：
+      ```sh
+      python3 scripts/check/p012_ab.py --rounds 2                                  # prod25
+      python3 scripts/check/p012_ab.py --rounds 2 --profile prod-new \
+              --extra-env CGC_SERVER_MTP=1                                         # prod-new
+      python3 scripts/check/p012_ab.py --dry-run          # 零 GPU 先看會跑什麼
+      ```
+      ⚠ **prod-new 一定要疊 `CGC_SERVER_MTP=1`**：MTP=0 分支會把 MODEL 換成
+      `Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`（**沒有 nextn head 的另一個 checkpoint**）。
+      手臂順序：ctrl（不設 env）→ p0（`CGC_EXPERT_SKIP_READRAW=1`）→
+      p012（`+CGC_POOL_MADVISE=2`）；每臂記 swap 前後、tee 完整輸出到
+      `<out>/logs/<arm>_r<n>/`。跑完接著
+      ```sh
+      python3 scripts/check/miss_attr_gate.py \
+          --row ctrl=<out>/logs/ctrl_r1/decode-delivery.out \
+          --row p0=<out>/logs/p0_r1/decode-delivery.out \
+          --row p012=<out>/logs/p012_r1/decode-delivery.out
+      ```
+      ⚠ 開 P0 時**必須先看輸出是否還是正常文字**（layer-0 guard 若失效就是垃圾且不報錯）。
+      ⚠ 8 GiB pool 在 16 GB 上**靜態超訂**：P0 後 10262 + 8192 = 18454 > 16384，仍超 2070 MiB
+      ⇒ 這組數字只能三臂互比，**不可當交付錨點**；要合法得把 pool 降到 ≤ 6122 MiB。
 - [ ] **P0（正路）**：ρ insert 實測——量影子節點 + gate+topk 的實際成本，
       把 4.76 ms/步 從估值變成讀數；若 insert 不可壓，評估 ρ-batch 按層批次化（freebuff 的活）
 - [ ] 環境治理：swap 8648MB 髒——重開機/purge 拿乾淨基線後再跑任何速度 A/B

@@ -342,6 +342,15 @@ case "$SERVER_PROFILE" in
         [ -z "${CGC_MM_BITIDENT+x}" ]           && CGC_MM_BITIDENT=1
         [ -z "${CGC_SERVER_NO_SEQ_RM_PROBE+x}" ] && SERVER_NO_SEQ_RM_PROBE=1
         [ -z "${CGC_SERVER_PREFIX_REUSE_CKPT+x}" ] && SERVER_PREFIX_REUSE_CKPT=1
+        # [CGC 2026-09-24 swap-miss P0/P1/P2] 這兩個是「同一個 binary、只有 env 不同」的 A/B 開關，
+        # 歸在 prod-new 底下（顯式 env 永遠贏）：
+        #   CGC_EXPERT_SKIP_READRAW=1 → P0（skip-load expert 不 read_raw，省 ~10.9 GiB 匿名駐留）
+        #   CGC_POOL_MADVISE=1 → P1（fill 前丟頁）；=2 → P1+P2（evict 時也丟）
+        # 之所以寫成顯式的 `0` 而不是「不設」，是為了讓這兩個開關在 profile 裡**有名字**
+        # （誰改 prod-new 都看得到它們存在、看得到預設是關）。注意下游白名單只傳非 0 值，
+        # 所以 `CGC_DUMP_ENV=1` 在關閉時**看不到**這兩行 —— 那是「關」的正常表現，不是漏傳。
+        [ -z "${CGC_EXPERT_SKIP_READRAW+x}" ] && CGC_EXPERT_SKIP_READRAW=0
+        [ -z "${CGC_POOL_MADVISE+x}" ]        && CGC_POOL_MADVISE=0
         # 走 GGUF embedded ChatML（与 prod25 一致）
         if [ -z "${CGC_SERVER_CHAT_TEMPLATE_FILE:-}" ] && [ -z "${CGC_SERVER_CHAT_TEMPLATE:-}" ]; then
             SERVER_CHAT_TEMPLATE_FILE=""
@@ -2376,6 +2385,21 @@ fi
 # ALLOWLIST — an unlisted CGC_* is dropped silently (same trap as CGC_MMV_FUSE et al.).
 if [ -n "${CGC_RHO_PREFETCH_MAXQ:-}" ]; then
     SERVER_ENV+=(CGC_RHO_PREFETCH_MAXQ="$CGC_RHO_PREFETCH_MAXQ")
+fi
+# [CGC 2026-09-24 swap-miss P0/P1/P2] 同一個 binary、只有 env 不同的三臂 A/B 開關。
+# 白名單是**必須**的：launch line 走 `env "${SERVER_ENV[@]}"`，沒列到的 CGC_* 會被靜默丟掉
+# （與 CGC_RHO_PREFETCH_MAXQ 同一個陷阱）⇒ 不列進來，A/B 三臂會跑出一模一樣的數字而不報錯。
+#   0（預設）= 關，與舊路徑逐位元組相同；1 = P0／P1；2 = P1+P2（配 SKIP_READRAW 一起用）。
+# ⚠ `0` 一律**不傳**（只傳「開」的值），不是為了省一行，是因為這個欄位曾經被讀成「存在即開」：
+#   11:19 有一個別條線的 llama-bench 拿到 `CGC_EXPERT_SKIP_READRAW=0`、配上還沒重建的舊 binary，
+#   結果**靜默開著 P0 跑**（那一趟的數字要作廢）。只傳非 0 值 ⇒ 不管 binary 是新是舊，
+#   「關」都真的是關。
+if [ -n "${CGC_EXPERT_SKIP_READRAW:-}" ] && [ "${CGC_EXPERT_SKIP_READRAW}" != "0" ]; then
+    SERVER_ENV+=(CGC_EXPERT_SKIP_READRAW="$CGC_EXPERT_SKIP_READRAW")
+fi
+# CGC_POOL_MADVISE 的引擎判定本來就把 "0" 當關，這裡比照辦理，兩個開關口徑一致。
+if [ -n "${CGC_POOL_MADVISE:-}" ] && [ "${CGC_POOL_MADVISE}" != "0" ]; then
+    SERVER_ENV+=(CGC_POOL_MADVISE="$CGC_POOL_MADVISE")
 fi
 # [CGC 2026-09-15] CGC_DUMP_ENV=1 -- print the FULLY-RESOLVED launch environment and argv, then
 # exit without launching anything. Inserted here, after every profile default / override has been

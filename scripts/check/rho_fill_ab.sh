@@ -24,6 +24,9 @@ ROUNDS="${ROUNDS:-2}"
 REPS="${REPS:-1}"
 TAG="${TAG:-$(date +%H%M%S)}"
 EXTRA_SEG="${SEG:-1}"   # SEG=1 ⇒ ρ 臂加細分段（CGC_N_CB=16 + CGC_CB_N_MAIN=1）
+# [CGC 2026-09-24] PIN_PROFILE 靜態釘住的 profile（§EN-476 實測：由 --prompt 0 的
+# ROUTE_DUMP 產生，5680 專家在 load 時填好並 static pin）。
+PIN_PROFILE="${PIN_PROFILE:-${REPO}/scripts/check/pin_profiles/route_top142_p0_2026-09-23.txt}"
 
 # 交付 cell：prod-new 統一介面（2026-09-23 拍板）——每臂自己帶 arm spec：
 #   off（MTP off 交付口徑基準）vs on（MTP on）vs ρ 系列（MTP on + 影子 router + 提前 fill）。
@@ -32,12 +35,15 @@ CELL=(--reps "${REPS}" --prompt 0 --gen 128 --depths 512 \
       --batch 512 --ctx-size 4096 --warm-skip 64)
 
 # 視窗閘門：任何 listener 或別條線的量測行程在跑就停手（建置產物與 GPU 都是共用的）。
+# SKIP_WINDOW_CHECK=1 跳過（用戶明確插隊時用；結果要標記「並行污染風險」）。
+if [ -z "${SKIP_WINDOW_CHECK:-}" ]; then
 LISTEN="$(lsof -nP -iTCP:8080 -sTCP:LISTEN 2>/dev/null | tail -n +2)"
 BUSY="$(pgrep -x llama-server; pgrep -x llama-bench; \
         pgrep -fl 'run_ids_dst_capture|decode_sweep|prod_profile|window_sentinel|llama_bench_matrix')"
 if [ -n "${LISTEN}" ] || [ -n "${BUSY}" ]; then
     echo "ABORT: 視窗忙 listener=[${LISTEN}] busy=[${BUSY}]"
     exit 1
+fi
 fi
 
 # [CGC 2026-09-23] 每一臂之前都要過 prod_profile.py 的同一套閘門，否則量到的不是這個 cell 的
@@ -90,6 +96,12 @@ arm_spec() {
     case "$1" in
         base)  echo "prod-new";;                                  # MTP off 交付口徑基準
         on)    echo "prod-new:CGC_SERVER_MTP=1";;                # MTP on 基準（無 ρ）
+        # [CGC 2026-09-24] PIN A/B 走 **prod25-stream**（= prod25 + PREFILL_STREAM +
+        # GATHER_SLAB_CAP=256），這是 prod_profile.py 的 anchor arm，也是昨晚實跑的那一格。
+        # 注意 prod_profile.py --profile 只收 server profile 名（prod25），它的 decode 軸
+        # 用的是 args.profile ⇒ 拿不到 prod25-stream ⇒ 這裡直接餵 registry 名。
+        pbase) echo "prod25-stream";;
+        ppin)  echo "prod25-stream";;
         *)     echo "prod-new:CGC_SERVER_MTP=1";;                # ρ 系列全在 MTP on
     esac
 }
@@ -105,6 +117,11 @@ arm_env() {
     case "$1" in
         base)  echo "";;
         on)    echo "";;
+        # [CGC 2026-09-24] PIN_PROFILE 靜態釘住 A/B（GAP_ELIMINATION_PLAN 第 1 步）。
+        # pbase/ppin 都在 **prod25-stream + MTP on**（交付 cell）上，唯一差別是下面這個 env。
+        # 不加 CGC_MASSCOV：要讓兩臂的環境差異只有 PIN_PROFILE 一個變數。
+        pbase) echo "";;
+        ppin)  echo "LLAMA_EXPERT_CACHE_PIN_PROFILE=${PIN_PROFILE}";;
         rho)   if [ "${EXTRA_SEG}" = "1" ]; then
                    echo "CGC_RHO_PROBE=1 CGC_RHO_FILL=1 CGC_N_CB=16 CGC_CB_N_MAIN=1"
                else
@@ -124,10 +141,20 @@ arm_env() {
         # [CGC 2026-09-23 rho fuse] ρ + CGC_RHO_PREFETCH_MAXQ —— 背景預取佇列深度上限。
         # §EN-471: ρ 的 80k 個 41KB 小讀把 fill_wait 頂到 15-20s。這組掃 MAXQ：
         # 若 t/s 隨 MAXQ 變小而回歸（且 #13 maxq_limit > 0），干涉是成因 ⇒ 按層批次化值得做。
+        # [CGC 2026-09-24 甜點上掃] GAP_FIX_EXEC §4 第 1 步：09-23 只掃了 q4/q8/q16 且單調
+        # 遞增（16 > 8 > 4）⇒ 甜點很可能在 16 以上。而「按層批次化」進樹後 MAXQ 的語意從
+        # 「in-flight slots」變成「in-flight batches」（每層 1 個，40 層模型）⇒ 16 很可能偏小。
+        # 補 q24 / q48 把單調性往右延伸：若 q32 或 q48 明顯高於 q16 ⇒ 甜點要重定。
+        rho-q48) echo "CGC_RHO_PROBE=1 CGC_RHO_FILL=1 CGC_RHO_PREFETCH_MAXQ=48";;
         rho-q32) echo "CGC_RHO_PROBE=1 CGC_RHO_FILL=1 CGC_RHO_PREFETCH_MAXQ=32";;
+        rho-q24) echo "CGC_RHO_PROBE=1 CGC_RHO_FILL=1 CGC_RHO_PREFETCH_MAXQ=24";;
         rho-q16) echo "CGC_RHO_PROBE=1 CGC_RHO_FILL=1 CGC_RHO_PREFETCH_MAXQ=16";;
         rho-q8)  echo "CGC_RHO_PROBE=1 CGC_RHO_FILL=1 CGC_RHO_PREFETCH_MAXQ=8";;
         rho-q4)  echo "CGC_RHO_PROBE=1 CGC_RHO_FILL=1 CGC_RHO_PREFETCH_MAXQ=4";;
+        # [CGC 2026-09-23 判別] MAXQ=16 + legacy fill：rho-q16 已實測 9.64（干涉被保險絲壓住）。
+        # 若 rhoq16-leg（thread-per-segment 小讀）也 ~9.6 ⇒ 干涉是唯一問題、MAXQ 就是答案，
+        # 按層批次化（保留完整預取）不值得寫；若掉回 <9 ⇒ fill 形狀在無塞車時仍有代價。
+        rhoq16-leg) echo "CGC_RHO_PROBE=1 CGC_RHO_FILL=1 CGC_RHO_PREFETCH_MAXQ=16 CGC_PREFETCH_LEGACY_FILL=1";;
         seg)   echo "CGC_N_CB=16 CGC_CB_N_MAIN=1";;
         *)     echo "";;
     esac
@@ -137,6 +164,15 @@ ARMS="${ARMS:-base on rho rho-q16 rho-q8 rho-q4}"
 
 echo "== ρ-fill A/B tag=${TAG} rounds=${ROUNDS} reps=${REPS} seg=${EXTRA_SEG} arms=[${ARMS}] =="
 echo
+# ── [CGC 2026-09-24] 超訂預檢閘門（docs/SWAP_MISS_LINK_2026-09-24.md §7「立即可做」）──
+# pool 8 GiB + load_mode=none 在 16 GB 上是**靜態超訂** 4838 MiB（13030 + 8192 = 21222 > 16384，
+# 與實測 resident 21222 MiB 對上）⇒ 這種配置跑出來的數字活在壓縮 + swap 之上，不可引用。
+# 預設（BUDGET_GATE=strict）直接 exit 2 拒跑，不再造出污染樣本；要跑請
+#   BUDGET_GATE=warn  → 放行但 export CGC_BUDGET_OVERSUBSCRIBED=1（樣本帶標記，不可當乾淨基線）
+#   BUDGET_GATE=off   → 完全不檢查（相容既有流程）
+#   或把 pool 降到 ≤ 3 GiB（16384 − 13030 = 3354 MiB）。
+. "${REPO}/scripts/check/budget_gate.sh"
+echo "[budget] gate: ${CGC_BUDGET_OVERSUBSCRIBED:+OVERSUBSCRIBED-ACK }BUDGET_GATE=${BUDGET_GATE:-strict}"
 
 # 熱浸是**單調累積**的，不是隨機的：實測 base 連跑兩趟 11.97 → 9.92（−17%），而 thermal
 # key 兩趟都報 NOMINAL。若每輪都用同一個順序，永遠是後跑的那一臂在付熱浸 ⇒ ρ 會被

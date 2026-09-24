@@ -148,7 +148,8 @@ def arm_spec(arm: str) -> str:
     return arm if arm in lbm.ARMS else arm + ":"
 
 
-def run_axis(axis_label: str, arm: str, shape: list, reps: int, dry_run: bool) -> dict:
+def run_axis(axis_label: str, arm: str, shape: list, reps: int, dry_run: bool,
+             log_dir: str = "") -> dict:
     """One llama-bench launch. The row is read back from the child's OWN `--json`, never reparsed.
 
     A second parser for the same report is how two instruments come to disagree about the number
@@ -177,10 +178,26 @@ def run_axis(axis_label: str, arm: str, shape: list, reps: int, dry_run: bool) -
     rec["profile"] = a0.get("profile")
     rec["extra_env"] = a0.get("extra_env")
     rec["spec_type"] = a0.get("spec_type")
+    # Read back from the child rather than echoed from the CLI: if the flag were ever dropped in
+    # transit this is None in the record while `shape` still claims it, and the disagreement is
+    # visible instead of silent.
+    rec["spec_draft_n_max"] = a0.get("spec_draft_n_max")
     rec["warm_skip"] = a0.get("warm_skip")
     rec["ctx_size"] = a0.get("ctx_size")
     rec["batch"] = a0.get("batch")
     rec["incomplete"] = bool(a0.get("incomplete"))
+    # [CGC 2026-09-24 P0/P1/P2 A/B] tee the child's FULL output when asked. The 1200-char tail
+    # above is not enough to read the miss-attribution line (`CGC-SHAPE ... compulsory= capacity=
+    # pread_us=`), which is how the three acceptance criteria get checked afterwards. Default ""
+    # keeps the old behaviour (nothing written) so no existing caller changes.
+    if log_dir:
+        import re as _re
+        safe = _re.sub(r"[^A-Za-z0-9._-]", "_", axis_label)
+        d = Path(log_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / (safe + ".out")).write_text(proc.stdout or "")
+        (d / (safe + ".err")).write_text(proc.stderr or "")
+        rec["log_dir"] = str(d)
     th = a0.get("thermal") or {}
     rec["thermal"] = {"launch": th.get("launch"),
                       "worst": th.get("worst"),
@@ -273,8 +290,32 @@ def main() -> int:
     ap.add_argument("--poll", type=float, default=5.0)
     ap.add_argument("--min-usable-pct", type=float, default=30.0)
     ap.add_argument("--emit-spec", action="store_true", help="zero GPU: print the pinned knobs")
+    # [CGC 2026-09-23] k = max draft tokens. It was hard-pinned at the llama-bench default of 3
+    # because this file wrote the decode shape as a literal list, even though
+    # `llama_bench_matrix.py:544` already accepts `--spec-draft-n-max` and copies it into the row
+    # (:435). That mattered the moment k became the variable under test: measuring k on the server
+    # (HTTP) instrument and then applying the verdict to THIS cell is a cross-caliber extrapolation
+    # (the same k=3 reads 10.43 t/s on the server and 12.57 here). Default None = omit the flag =
+    # bit-identical command line to every row in the record so far.
+    ap.add_argument("--spec-draft-n-max", type=int, default=None,
+                    help="llama-bench --spec-draft-n-max (1..16); None = omit (bench default 3)")
     ap.add_argument("--dry-run", action="store_true")
+    # [CGC 2026-09-24] tee each child's full stdout/stderr here. Needed by the P0/P1/P2 A/B
+    # because the acceptance criteria are read off `CGC-SHAPE`/`final stats` lines that sit far
+    # from the tail this tool keeps by default.
+    ap.add_argument("--log-dir", default="")
     args = ap.parse_args()
+
+    # k is part of the cell's identity, so it is validated before anything launches and recorded
+    # beside the shape: a row that does not say which k it ran cannot be attributed afterwards.
+    decode_shape = list(DECODE_SHAPE)
+    if args.spec_draft_n_max is not None:
+        if not 1 <= args.spec_draft_n_max <= 16:
+            raise SystemExit("--spec-draft-n-max must be 1..16 (llama-bench:1388); got %d"
+                             % args.spec_draft_n_max)
+        if "--spec-type" not in decode_shape:
+            raise SystemExit("--spec-draft-n-max is inert without --spec-type")
+        decode_shape += ["--spec-draft-n-max", str(args.spec_draft_n_max)]
 
     spec = resolve(args.profile, {})
     bars = {"prefill-house": BAR_PREFILL, "decode-delivery": BAR_DECODE,
@@ -282,9 +323,12 @@ def main() -> int:
     declared = {
         "profile": args.profile,
         "reps": args.reps,
+        # None means "flag omitted", i.e. llama-bench's own default of 3 -- spelled out because a
+        # reader comparing two rows has to be able to tell "default" from "measured at 3".
+        "spec_draft_n_max": args.spec_draft_n_max,
         "prefill_cell": {"shape": PREFILL_SHAPE, "bar": BAR_PREFILL,
                          "why": "continuity with the recorded pp2048 captures (276.25 / 300.43)"},
-        "decode_cell": {"shape": DECODE_SHAPE, "bar": BAR_DECODE,
+        "decode_cell": {"shape": decode_shape, "bar": BAR_DECODE,
                         "conventions": DECODE_CONVENTIONS},
         "anchor_arm": None if args.no_ref else args.ref_arm,
         "resolved_env": spec["env"],
@@ -305,9 +349,9 @@ def main() -> int:
     if "prefill" in axes:
         plan.append(("prefill-house", args.profile, PREFILL_SHAPE))
     if "decode" in axes:
-        plan.append(("decode-delivery", args.profile, DECODE_SHAPE))
+        plan.append(("decode-delivery", args.profile, decode_shape))
         if not args.no_ref and args.ref_arm:
-            plan.append(("decode-delivery-anchor", args.ref_arm, DECODE_SHAPE))
+            plan.append(("decode-delivery-anchor", args.ref_arm, decode_shape))
 
     recs = []
     for label, arm, shape in plan:
@@ -336,7 +380,7 @@ def main() -> int:
             print("    REFUSED: %s" % recs[-1]["refused"], flush=True)
             continue
         print("    gate: %s (waited %.0fs)  mem ok" % (gate["label"], w["waited_s"]), flush=True)
-        rec = run_axis(label, arm, shape, args.reps, args.dry_run)
+        rec = run_axis(label, arm, shape, args.reps, args.dry_run, args.log_dir)
         rec["gate"] = gate
         rec["waited"] = w
         rec["mem"] = mem
