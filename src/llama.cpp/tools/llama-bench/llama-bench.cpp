@@ -3154,7 +3154,9 @@ int llama_bench(int argc, char ** argv) {
     auto * ggml_threadpool_free_fn = (decltype(ggml_threadpool_free) *) ggml_backend_reg_get_proc_address(cpu_reg, "ggml_threadpool_free");
 
     // initialize llama.cpp
-    if (!params.verbose) {
+    // [CGC] CGC_KEEP_ERRORS: keep ERROR-level logs (do not install the null sink) without paying
+    // for full --verbose DEBUG output, which itself can push a tight prefill into Metal OOM.
+    if (!params.verbose && getenv("CGC_KEEP_ERRORS") == nullptr) {
         llama_log_set(llama_null_log_callback, NULL);
     }
     llama_backend_init();

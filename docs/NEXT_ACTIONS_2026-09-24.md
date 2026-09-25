@@ -158,3 +158,143 @@ python3 scripts/check/io_symmetry.py --dir Backup/seg_batch_s1_pairs   # exit 2
   2. `python3 scripts/check/harness.py bench --arm "prod-new" --json /tmp/harness_first.json` —— 乾淨基線（prefill/decode + 測試前後系統快照）
 - **重開機前 swap 現況**：used 7834.5 MiB（total 9216）——重開機後對比用
 - 統一量測入口 harness bench 已就緒（見上方條目）；所有後續報告基於 prod-new + 自己的 env 增量
+
+## [watchdog 2026-09-25 08:53:31] 巡檢問題（看門人自動通知）
+
+- 污染產物 **不可引用/不可進 commit 標題**：prod-new pp=260.41 tg=12.20 （啟動就髒 launch_swap=2057; swap growth=+3446; attribution=swap）@ `/Users/alexchuang/Documents/flashkv-devserver/Backup/mw_ab/mw_ctrl.json`
+- 請相關 agent：修正參數/環境後重跑，勿把壓力下數字當生產成績。
+
+## [watchdog 2026-09-25 08:58:42] 巡檢問題（看門人自動通知）
+
+- 污染產物 **不可引用/不可進 commit 標題**：prod-new pp=260.41 tg=12.20 （啟動就髒 launch_swap=2057; swap growth=+3446; attribution=swap）@ `/Users/alexchuang/Documents/flashkv-devserver/Backup/mw_ab/mw_ctrl.json`
+- 污染產物 **不可引用/不可進 commit 標題**：prod-new pp=277.42 tg=12.12 （啟動就髒 launch_swap=3302; swap growth=+2044; attribution=swap）@ `/Users/alexchuang/Documents/flashkv-devserver/Backup/mw_ab/mw_w2.json`
+- 請相關 agent：修正參數/環境後重跑，勿把壓力下數字當生產成績。
+
+## [watchdog 2026-09-25 09:08:43] 巡檢問題（看門人自動通知）
+
+- 污染產物 **不可引用/不可進 commit 標題**：prod-new pp=260.41 tg=12.20 （啟動就髒 launch_swap=2057; swap growth=+3446; attribution=swap）@ `/Users/alexchuang/Documents/flashkv-devserver/Backup/mw_ab/mw_ctrl.json`
+- 污染產物 **不可引用/不可進 commit 標題**：prod-new pp=277.42 tg=12.12 （啟動就髒 launch_swap=3302; swap growth=+2044; attribution=swap）@ `/Users/alexchuang/Documents/flashkv-devserver/Backup/mw_ab/mw_w2.json`
+- 請相關 agent：修正參數/環境後重跑，勿把壓力下數字當生產成績。
+
+## [watchdog 2026-09-25 09:20:44] 巡檢問題（看門人自動通知）
+
+- 已隔離失效數字：['prod-new'] @ `/Users/alexchuang/Documents/flashkv-devserver/Backup/pf_ab/pf_new.json` → `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.json`
+- 量具失效、數字作廢：prod-new pp=268.78 tg=8.21 （量具散度 150%>12%（不可重複））@ `/Users/alexchuang/Documents/flashkv-devserver/Backup/pf_ab/pf_new.json`
+- 宣稱vs實際待驗：workers 同宣稱=8、但 us/job 離散 27454~30891（13%）；可疑 ['/Users/alexchuang/Documents/flashkv-devserver/Backup/mw_ab/mw_ctrl.json']
+    高 us/job 臂的並行度可能未實際生效（workers 實際或較少）；這是『請驗證』、非定論。需對實際下發值/進程命令行核對。
+- 環境承壓但**數字有效、可引用**：prod-new pp=260.41 tg=12.20 （啟動 swap=2057; swap growth=+3446（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=277.42 tg=12.12 （啟動 swap=3302; swap growth=+2044（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+
+## [watchdog 2026-09-25 09:32:16] 巡檢問題（看門人自動通知）
+
+- 已隔離失效數字：['prod-new'] @ `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.json` → `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.json`
+- 量具失效、數字作廢：prod-new pp=268.78 tg=8.21 （量具散度 150%>12%（不可重複））@ `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.json`
+- 宣稱vs實際待驗：workers 同宣稱=8、但 us/job 離散 27454~30891（13%）；可疑 ['/Users/alexchuang/Documents/flashkv-devserver/Backup/mw_ab/mw_ctrl.json']
+    高 us/job 臂的並行度可能未實際生效（workers 實際或較少）；這是『請驗證』、非定論。需對實際下發值/進程命令行核對。
+- 環境承壓但**數字有效、可引用**：prod-new pp=260.41 tg=12.20 （啟動 swap=2057; swap growth=+3446（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=277.42 tg=12.12 （啟動 swap=3302; swap growth=+2044（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+
+## [watchdog 2026-09-25 09:42:16] 巡檢問題（看門人自動通知）
+
+- 已隔離失效數字：['prod-new'] @ `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.json` → `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.20260925_094216.json`
+- 量具失效、數字作廢：prod-new pp=268.78 tg=8.21 （量具散度 150%>12%（不可重複））@ `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.json`
+- 宣稱vs實際待驗：workers 同宣稱=8、但 us/job 離散 27454~30891（13%）；可疑 ['/Users/alexchuang/Documents/flashkv-devserver/Backup/mw_ab/mw_ctrl.json']
+    高 us/job 臂的並行度可能未實際生效（workers 實際或較少）；這是『請驗證』、非定論。需對實際下發值/進程命令行核對。
+- 環境承壓但**數字有效、可引用**：prod-new pp=260.41 tg=12.20 （啟動 swap=2057; swap growth=+3446（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=277.42 tg=12.12 （啟動 swap=3302; swap growth=+2044（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+
+## [watchdog 2026-09-25 09:52:16] 巡檢問題（看門人自動通知）
+
+- 已隔離失效數字：['prod-new'] @ `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.20260925_094216.json` → `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.20260925_094216.20260925_095216.json`
+- 量具失效、數字作廢：prod-new pp=268.78 tg=8.21 （量具散度 150%>12%（不可重複））@ `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.20260925_094216.json`
+- 宣稱vs實際待驗：workers 同宣稱=8、但 us/job 離散 27454~30891（13%）；可疑 ['/Users/alexchuang/Documents/flashkv-devserver/Backup/mw_ab/mw_ctrl.json']
+    高 us/job 臂的並行度可能未實際生效（workers 實際或較少）；這是『請驗證』、非定論。需對實際下發值/進程命令行核對。
+- 環境承壓但**數字有效、可引用**：prod-new pp=260.41 tg=12.20 （啟動 swap=2057; swap growth=+3446（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=277.42 tg=12.12 （啟動 swap=3302; swap growth=+2044（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+
+## [watchdog 2026-09-25 10:02:16] 巡檢問題（看門人自動通知）
+
+- 已隔離失效數字：['prod-new'] @ `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.20260925_094216.20260925_095216.json` → `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.20260925_094216.20260925_095216.20260925_100216.json`
+- 量具失效、數字作廢：prod-new pp=268.78 tg=8.21 （量具散度 150%>12%（不可重複））@ `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.20260925_094216.20260925_095216.json`
+- 宣稱vs實際待驗：workers 同宣稱=8、但 us/job 離散 27454~30891（13%）；可疑 ['/Users/alexchuang/Documents/flashkv-devserver/Backup/mw_ab/mw_ctrl.json']
+    高 us/job 臂的並行度可能未實際生效（workers 實際或較少）；這是『請驗證』、非定論。需對實際下發值/進程命令行核對。
+- 環境承壓但**數字有效、可引用**：prod-new pp=260.41 tg=12.20 （啟動 swap=2057; swap growth=+3446（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=277.42 tg=12.12 （啟動 swap=3302; swap growth=+2044（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+
+## [watchdog 2026-09-25 10:12:16] 巡檢問題（看門人自動通知）
+
+- 已隔離失效數字：['prod-new'] @ `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.20260925_094216.20260925_095216.20260925_100216.json` → `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.20260925_094216.20260925_095216.20260925_100216.20260925_101217.json`
+- 量具失效、數字作廢：prod-new pp=268.78 tg=8.21 （量具散度 150%>12%（不可重複））@ `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.20260925_094216.20260925_095216.20260925_100216.json`
+- 環境承壓但**數字有效、可引用**：prod-new pp=277.42 tg=12.12 （啟動 swap=3302; swap growth=+2044（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=300.51 tg=11.79 （啟動 swap=2496; swap growth=+2128（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+
+## [watchdog 2026-09-25 10:22:17] 巡檢問題（看門人自動通知）
+
+- 已終止 pid=44235（terminated (SIGTERM)）：swap 5011 > 3072 MiB; 大 batch 5632 在高危記憶體下跑
+- 已隔離失效數字：['prod-new'] @ `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.20260925_094216.20260925_095216.20260925_100216.20260925_101217.json` → `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.20260925_094216.20260925_095216.20260925_100216.20260925_101217.20260925_102217.json`
+- 量具失效、數字作廢：prod-new pp=268.78 tg=8.21 （量具散度 150%>12%（不可重複））@ `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.20260925_094216.20260925_095216.20260925_100216.20260925_101217.json`
+- 環境承壓但**數字有效、可引用**：prod-new pp=277.42 tg=12.12 （啟動 swap=3302; swap growth=+2044（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=300.51 tg=11.79 （啟動 swap=2496; swap growth=+2128（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+
+## [watchdog 2026-09-25 10:32:18] 巡檢問題（看門人自動通知）
+
+- 已隔離失效數字：['prod-new'] @ `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.20260925_094216.20260925_095216.20260925_100216.20260925_101217.20260925_102217.json` → `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.20260925_094216.20260925_095216.20260925_100216.20260925_101217.20260925_102217.20260925_103218.json`
+- 量具失效、數字作廢：prod-new pp=268.78 tg=8.21 （量具散度 150%>12%（不可重複））@ `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.20260925_094216.20260925_095216.20260925_100216.20260925_101217.20260925_102217.json`
+- 環境承壓但**數字有效、可引用**：prod-new pp=300.51 tg=11.79 （啟動 swap=2496; swap growth=+2128（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=302.56 （啟動 swap=2180; swap growth=+2735（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+
+## [watchdog 2026-09-25 10:42:18] 巡檢問題（看門人自動通知）
+
+- 已隔離失效數字：['prod-new'] @ `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.20260925_094216.20260925_095216.20260925_100216.20260925_101217.20260925_102217.20260925_103218.json` → `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.20260925_094216.20260925_095216.20260925_100216.20260925_101217.20260925_102217.20260925_103218.20260925_104218.json`
+- 量具失效、數字作廢：prod-new pp=268.78 tg=8.21 （量具散度 150%>12%（不可重複））@ `/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.20260925_094216.20260925_095216.20260925_100216.20260925_101217.20260925_102217.20260925_103218.json`
+- 宣稱vs實際待驗：workers 同宣稱=8、但 us/job 離散 27422~30747（12%）；可疑 ['/Users/alexchuang/Documents/flashkv-devserver/Backup/quarantine/pf_new.20260925_092044.20260925_093216.20260925_094216.20260925_095216.20260925_100216.20260925_101217.20260925_102217.20260925_103218.json']
+    高 us/job 臂的並行度可能未實際生效（workers 實際或較少）；這是『請驗證』、非定論。需對實際下發值/進程命令行核對。
+- 環境承壓但**數字有效、可引用**：prod-new pp=267.34 tg=14.24 （啟動 swap=5986）；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=240.52 tg=11.03 （啟動 swap=6043）；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=300.51 tg=11.79 （啟動 swap=2496; swap growth=+2128（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=302.56 （啟動 swap=2180; swap growth=+2735（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+
+## [watchdog 2026-09-25 10:52:18] 巡檢問題（看門人自動通知）
+
+- 環境承壓但**數字有效、可引用**：prod-new pp=267.34 tg=14.24 （啟動 swap=5986）；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=240.52 tg=11.03 （啟動 swap=6043）；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=300.51 tg=11.79 （啟動 swap=2496; swap growth=+2128（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=302.56 （啟動 swap=2180; swap growth=+2735（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+
+## [watchdog 2026-09-25 11:02:18] 巡檢問題（看門人自動通知）
+
+- 環境承壓但**數字有效、可引用**：prod-new pp=267.34 tg=14.24 （啟動 swap=5986）；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=240.52 tg=11.03 （啟動 swap=6043）；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=300.51 tg=11.79 （啟動 swap=2496; swap growth=+2128（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=302.56 （啟動 swap=2180; swap growth=+2735（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+
+## [watchdog 2026-09-25 11:12:19] 巡檢問題（看門人自動通知）
+
+- 環境承壓但**數字有效、可引用**：prod-new pp=267.34 tg=14.24 （啟動 swap=5986）；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=240.52 tg=11.03 （啟動 swap=6043）；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=300.51 tg=11.79 （啟動 swap=2496; swap growth=+2128（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=302.56 （啟動 swap=2180; swap growth=+2735（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+
+## [watchdog 2026-09-25 11:22:19] 巡檢問題（看門人自動通知）
+
+- 環境承壓但**數字有效、可引用**：prod-new pp=267.34 tg=14.24 （啟動 swap=5986）；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=240.52 tg=11.03 （啟動 swap=6043）；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=300.51 tg=11.79 （啟動 swap=2496; swap growth=+2128（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=302.56 （啟動 swap=2180; swap growth=+2735（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+
+## [watchdog 2026-09-25 11:33:15] 巡檢問題（看門人自動通知）
+
+- 環境承壓但**數字有效、可引用**：prod-new pp=267.34 tg=14.24 （啟動 swap=5986）；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=240.52 tg=11.03 （啟動 swap=6043）；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=300.51 tg=11.79 （啟動 swap=2496; swap growth=+2128（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=302.56 （啟動 swap=2180; swap growth=+2735（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+
+## [watchdog 2026-09-25 11:46:30] 巡檢問題（看門人自動通知）
+
+- 環境承壓但**數字有效、可引用**：prod-new pp=267.34 tg=14.24 （啟動 swap=5986）；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=240.52 tg=11.03 （啟動 swap=6043）；swap 結構問題另需修復
+- 環境承壓但**數字有效、可引用**：prod-new pp=302.56 （啟動 swap=2180; swap growth=+2735（環境承壓、需結構修復；數字本身仍有效））；swap 結構問題另需修復
+
+## [watchdog 2026-09-25 12:05:49] 巡檢問題（看門人自動通知）
+
+- 環境承壓但**數字有效、可引用**：prod-new pp=240.52 tg=11.03 （啟動 swap=6043）；swap 結構問題另需修復

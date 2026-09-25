@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>S1 TPOT 分解（2026-09-25）</title>
+<style>
+  :root { --fg:#1a1a1a; --fg2:#5f5e5a; --bg:#ffffff; --line:rgba(0,0,0,.12); --card:#f7f7f5; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg:#f0efe9; --fg2:#b4b2a9; --bg:#1c1c1a; --line:rgba(255,255,255,.16); --card:#262624; }
+  }
+  body { margin:0; padding:28px 24px 40px; background:var(--bg); color:var(--fg);
+         font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue","PingFang TC",sans-serif; }
+  h1 { font-size:17px; font-weight:500; margin:0 0 6px; }
+  p.sub { font-size:13px; color:var(--fg2); margin:0 0 22px; line-height:1.6; }
+  .legend { display:flex; flex-wrap:wrap; gap:16px; margin-bottom:12px; font-size:13px; color:var(--fg2); }
+  .legend span { display:flex; align-items:center; gap:6px; }
+  .sw { width:11px; height:11px; border-radius:2px; display:inline-block; }
+  .wrap { position:relative; width:100%; height:250px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-top:26px; }
+  .card { background:var(--card); border-radius:8px; padding:14px 16px; }
+  .card .lbl { font-size:13px; color:var(--fg2); margin:0 0 6px; }
+  .card .num { font-size:24px; font-weight:500; margin:0; }
+  table { border-collapse:collapse; width:100%; margin-top:26px; font-size:13px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
+  th { font-weight:500; color:var(--fg2); }
+  td.n { text-align:right; font-variant-numeric:tabular-nums; }
+  .note { font-size:13px; color:var(--fg2); line-height:1.7; margin-top:24px; }
+  code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+</style>
+</head>
+<body>
+<h1>S1 單段提交 — TPOT 分解</h1>
+<p class="sub">同一顆 build <code>1ca685490</code>、同一 cell（<code>p2048 / n128 / d512 / r3 / b5632</code>）、
+同一 pool（8 GiB）、兩臂皆無 spec。數字單位 ms/token。</p>
+
+<div class="legend">
+  <span><i class="sw" style="background:#888780"></i>其餘（單段也躲不掉）48.2 ms</span>
+  <span><i class="sw" style="background:#1D9E75"></i>41 段提交的序列化 ≈ 36.3 ms</span>
+  <span><i class="sw" style="background:#D85A30"></i>fill 同步 3.96 ms</span>
+</div>
+<div class="wrap"><canvas id="c" role="img"
+  aria-label="堆疊長條圖：41 段提交 88.5 ms；單段提交 48.2 ms；單段加保留 fill 估計 52.2 ms">41 段提交 88.5 ms；單段提交 48.2 ms；單段加保留 fill 52.2 ms。</canvas></div>
+
+<div class="cards">
+  <div class="card"><p class="lbl">交付口徑 · 41 段提交</p><p class="num">88.5 ms</p><p class="lbl">11.30 t/s</p></div>
+  <div class="card"><p class="lbl">單段提交 S1（實測）</p><p class="num">48.2 ms</p><p class="lbl">20.73 t/s · ×1.83</p></div>
+  <div class="card"><p class="lbl">單段 + 保留 fill（估計）</p><p class="num">52.2 ms</p><p class="lbl">19.2 t/s · ×1.70</p></div>
+</div>
+
+<table>
+  <thead><tr><th>被消掉的部分</th><th class="n">ms / token</th><th class="n">佔參考 step</th><th>出處</th></tr></thead>
+  <tbody>
+    <tr><td>41 段提交的序列化開銷</td><td class="n">≈ 36.3</td><td class="n">41.0%</td><td>未再分解</td></tr>
+    <tr><td>fill 的同步時間</td><td class="n">3.96</td><td class="n">4.5%</td><td>EBTIMER</td></tr>
+    <tr><td><strong>合計（單段提交消掉的）</strong></td><td class="n"><strong>40.3</strong></td><td class="n"><strong>45.5%</strong></td><td>—</td></tr>
+    <tr><td>其餘（單段也躲不掉）</td><td class="n">48.2</td><td class="n">54.5%</td><td>—</td></tr>
+  </tbody>
+</table>
+
+<p class="note">
+<strong>怎麼讀</strong>：主項是<strong>序列化（~36 ms）</strong>，不是 fill（3.96 ms）。先前把 40.3 ms 全歸給 fill
+是把 4 ms 說成 40 ms。<br>
+<strong>為什麼還不能交付</strong>：同一個開關順手讓 <code>CGC-HOOK</code> 計數 0、<code>file_reads=0</code>
+⇒ 拿掉的除了同步，還有正確性前提（權重不進池）。<br>
+<strong>可執行目標</strong>：fill 若能留在單段提交之下且不進關鍵路徑 ⇒ 48.2 + 3.96 ≈ 52.2 ms ⇒
+<strong>≈ 19.2 t/s（×1.70）</strong>。<br>
+來源：<code>Backup/seg_batch_s1_pairs/abba_212809.json</code>；台帳
+<code>docs/DIAGNOSTIC_ARMS_LEDGER_2026-09-25.md</code> §1。
+</p>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+const dk = matchMedia('(prefers-color-scheme: dark)').matches;
+const tick = dk ? '#b4b2a9' : '#5f5e5a';
+const grid = dk ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.07)';
+new Chart(document.getElementById('c'), {
+  type: 'bar',
+  data: {
+    labels: ['交付口徑 · 41 段提交   88.5 ms', '單段提交 S1 實測   48.2 ms', '單段 + 保留 fill 估計   52.2 ms'],
+    datasets: [
+      { label: '其餘（躲不掉）', data: [48.2, 48.2, 48.2], backgroundColor: '#888780', borderColor: 'rgba(255,255,255,.35)', borderWidth: 1 },
+      { label: '序列化', data: [36.3, 0, 0], backgroundColor: '#1D9E75', borderColor: 'rgba(255,255,255,.35)', borderWidth: 1 },
+      { label: 'fill 同步', data: [3.96, 0, 3.96], backgroundColor: '#D85A30', borderColor: 'rgba(255,255,255,.35)', borderWidth: 1 }
+    ]
+  },
+  options: {
+    indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+    scales: {
+      x: { stacked: true, max: 100, ticks: { color: tick, stepSize: 25 }, grid: { color: grid },
+           title: { display: true, text: 'ms / token', color: tick } },
+      y: { stacked: true, ticks: { color: tick, font: { size: 11 } }, grid: { display: false } }
+    },
+    plugins: {
+      legend: { display: false },
+      tooltip: { callbacks: { label: c => c.dataset.label + '：' + c.parsed.x + ' ms' } }
+    }
+  }
+});
+</script>
+</body>
+</html>

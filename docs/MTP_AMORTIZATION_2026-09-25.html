@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MTP 攤薄分解（mtp_amortization）— 2026-09-25</title>
+<style>
+  :root { --fg:#1a1a1a; --fg2:#5f5e5a; --bg:#fff; --line:rgba(0,0,0,.12); --card:#f7f7f5;
+          --ok:#1D9E75; --warn:#BA7517; --bad:#D85A30; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg:#f0efe9; --fg2:#b4b2a9; --bg:#1c1c1a; --line:rgba(255,255,255,.16); --card:#262624; }
+  }
+  body { margin:0; padding:28px 24px 44px; background:var(--bg); color:var(--fg);
+         font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue","PingFang TC",sans-serif; line-height:1.6; }
+  h1 { font-size:17px; font-weight:500; margin:0 0 6px; }
+  h2 { font-size:14px; font-weight:500; margin:30px 0 10px; padding-top:14px; border-top:1px solid var(--line); }
+  p.sub { font-size:13px; color:var(--fg2); margin:0 0 8px; }
+  .legend { display:flex; flex-wrap:wrap; gap:16px; margin:10px 0 12px; font-size:13px; color:var(--fg2); }
+  .legend span { display:flex; align-items:center; gap:6px; }
+  .sw { width:11px; height:11px; border-radius:2px; display:inline-block; }
+  .wrap { position:relative; width:100%; height:250px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(165px,1fr)); gap:12px; margin:6px 0 0; }
+  .card { background:var(--card); border-radius:8px; padding:13px 15px; }
+  .card .lbl { font-size:12px; color:var(--fg2); margin:0 0 5px; }
+  .card .num { font-size:22px; font-weight:500; margin:0; }
+  table { border-collapse:collapse; width:100%; margin-top:12px; font-size:13px; }
+  th,td { text-align:left; padding:7px 9px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { font-weight:500; color:var(--fg2); }
+  td.n { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+  .verdict { border-left:3px solid var(--bad); padding:10px 14px; margin:14px 0 0; background:var(--card); border-radius:0 8px 8px 0; }
+  .goal { border-left:3px solid var(--ok); padding:10px 14px; margin:12px 0 0; background:var(--card); border-radius:0 8px 8px 0; }
+  .note { font-size:13px; color:var(--fg2); margin-top:10px; }
+</style>
+</head>
+<body>
+
+<h1>MTP 攤薄分解 — <code>mtp_amortization</code></h1>
+<p class="sub">同一顆 build <code>1ca685490</code>、同一 cell（<code>p2048 / n128 / d512 / r3 / b5632</code>）、
+<b>單段提交 ＋ 凍結池</b>（3 GiB，budget gate 逼的）。所有 <code>step</code> 為 run1 median（實測），
+不是擬合值。產物：<code>Backup/s1_ksweep/20260924_225548/s1_ksweep.json</code>、`Backup/seg_batch_s1_pairs/abba_212809.json`。</p>
+
+<h2>1. 算術：成本曲線與「每產出 token 成本」</h2>
+<p class="sub">擬合（run1，max resid 11.5 ms）：<code>step = 14.61 + 42.03 × T</code>（T = k+1，verify 批次大小）；
+<code>mean_len = 1 + k × acc</code>。<b>攤薄要看的是「每產出 token 的成本」＝ step ÷ mean_len。</b></p>
+
+<div class="legend">
+  <span><i class="sw" style="background:#378ADD"></i>每產出 token 成本（ms）</span>
+  <span><i class="sw" style="background:#D85A30"></i>baseline 48.2 ms（單段提交、無 spec）</span>
+</div>
+<div class="wrap"><canvas id="c1" role="img"
+  aria-label="每產出 token 成本長條圖：nospec 48.2、k1 52.4、k2 45.6、k3 56.4、k4 47.7 毫秒，幾乎與 baseline 相同">
+  每產出 token 成本：nospec 48.2／k1 52.4／k2 45.6／k3 56.4／k4 47.7 ms。</canvas></div>
+
+<table>
+  <thead><tr><th>臂</th><th class="n">T</th><th class="n">mean_len</th><th class="n">acc</th>
+  <th class="n">step（實測）</th><th class="n">t/s</th><th class="n">每產出 token</th></tr></thead>
+  <tbody>
+    <tr><td>nospec</td><td class="n">1</td><td class="n">1.00</td><td class="n">—</td><td class="n">48.2</td><td class="n">20.75</td><td class="n"><b>48.2</b></td></tr>
+    <tr><td>k1</td><td class="n">2</td><td class="n">2.00</td><td class="n">1.000</td><td class="n">104.87</td><td class="n">19.07</td><td class="n">52.4</td></tr>
+    <tr><td><b>k2</b></td><td class="n">3</td><td class="n">2.83</td><td class="n">0.915</td><td class="n">129.16</td><td class="n"><b>21.91</b></td><td class="n"><b>45.6</b></td></tr>
+    <tr><td>k3</td><td class="n">4</td><td class="n">3.32</td><td class="n">0.773</td><td class="n">187.19</td><td class="n">17.74</td><td class="n">56.4</td></tr>
+    <tr><td>k4</td><td class="n">5</td><td class="n">4.73</td><td class="n">0.932</td><td class="n">225.61</td><td class="n">20.97</td><td class="n">47.7</td></tr>
+  </tbody>
+</table>
+
+<div class="verdict">
+<b>⇒ 攤薄係數 ≈ 0。</b> 每產出 token 的成本在 <b>45.6 ~ 56.4 ms</b> 之間，而 baseline 是 <b>48.2 ms</b> ——
+<b>加了 MTP 之後每 token 的成本幾乎沒變</b>。這不是「MTP 效果小」，而是
+<b>verify 的邊際成本（42.03 ms/verify token）幾乎等於整個 baseline step（48.2 ms）</b>
+⇒ <b>同一批權重服務多個 token 這件事，在這台機器上沒有發生。</b>
+</div>
+
+<h2>2. 拆解：固定成本 vs 邊際成本，以及「要 2× 需要多少」</h2>
+<p class="sub">step ＝ <b>固定 14.61 ms</b> ＋ <b>邊際 42.03 ms × T</b>。
+紅線是「若要在該 k 上拿到 2×（相對 nospec 20.75 t/s ⇒ 每產出 token ≤ 24.1 ms）所需的 step 上限」。</p>
+
+<div class="legend">
+  <span><i class="sw" style="background:#888780"></i>固定成本 14.61 ms</span>
+  <span><i class="sw" style="background:#7F77DD"></i>verify 邊際 42.03 ms × T</span>
+  <span><i class="sw" style="background:#D85A30"></i>2× 所需的 step 上限</span>
+</div>
+<div class="wrap"><canvas id="c2" role="img"
+  aria-label="步時拆解堆疊圖：k1 104.9、k2 129.2、k3 187.2、k4 225.6 毫秒，而 2× 所需上限為 48.2 到 114.0 毫秒">
+  步時：k1 104.9／k2 129.2／k3 187.2／k4 225.6 ms；2× 所需上限 48.2／68.2／80.0／114.0 ms。</canvas></div>
+
+<table>
+  <thead><tr><th>情境</th><th class="n">step 需 ≤</th><th class="n">擬合值</th><th class="n">邊際 m 需 ≤</th><th class="n">對現在 42.03</th></tr></thead>
+  <tbody>
+    <tr><td>k=1（acc 1.000，mean_len 2.00）</td><td class="n">48.2</td><td class="n">98.7</td><td class="n">16.8 ms</td><td class="n"><b>−60%</b></td></tr>
+    <tr><td>k=2（acc 0.915，mean_len 2.83）</td><td class="n">68.2</td><td class="n">140.7</td><td class="n">17.9 ms</td><td class="n"><b>−57%</b></td></tr>
+    <tr><td>k=2（acc 拉到 1.000，mean_len 3.00）</td><td class="n">72.3</td><td class="n">140.7</td><td class="n">19.2 ms</td><td class="n"><b>−54%</b></td></tr>
+  </tbody>
+</table>
+
+<div class="verdict">
+<b>⇒ 「MTP on 加速比 2」在目前這顆 build ＋ 這個 cell 上不成立，而且不是「差一點」。</b>
+它需要 <b>verify 邊際成本從 42.03 掉到 ~18 ms/verify token（−55% 以上）</b>。
+<b>光拉 accept rate 買不到它</b>：acc 0.915 → 1.000 只值 <b>+6.0%</b>（20.11 → 21.32 t/s）。
+</div>
+
+<h2>3. draft 腿的攤薄（<code>CGC-MTP-PERF</code> 實測）</h2>
+<table>
+  <thead><tr><th>量</th><th class="n">值</th><th>出處</th></tr></thead>
+  <tbody>
+    <tr><td>draft 每 round</td><td class="n">18.40 ms</td><td><code>t_draft_ms=404.7 / 22 rounds</code></td></tr>
+    <tr><td>每 round 產出</td><td class="n">2.955 token</td><td><code>emit_tok_per_round</code></td></tr>
+    <tr><td><b>⇒ draft 每產出 token</b></td><td class="n"><b>6.23 ms</b></td><td>—</td></tr>
+    <tr><td>draft 佔比 / verify 佔比</td><td class="n">13.6% / <b>86.4%</b></td><td>對 k2 的 45.6 ms</td></tr>
+  </tbody>
+</table>
+<p class="note">⇒ <b>draft 腿很便宜（6.2 ms）</b>；貴的是 verify（39.4 ms）。
+所以「練 draft head／拉 accept」這條路的天花板，就是把 13.6% 那一塊吃完 —— <b>上限約 +16%</b>，不是 2×。</p>
+
+<h2>4. 兩大子目標（運營層）</h2>
+
+<div class="goal">
+<b>S — 序列化消減</b>（對應 <code>docs/S1_TPOT_DECOMPOSITION_2026-09-25.html</code>）<br>
+<b>現況</b>：上界已量 —— 41 段提交的同步 <b>≈ 36.3 ms</b>（step 88.5 → 48.2，−45.5%）；其中 fill 3.96 ms 必須還回去。<br>
+<b>驗收（可機檢）</b>：交付 cell（8 GiB 池、MTP off）上 <b>① decode 不退步</b> ∧
+<b>② 輸出正確性已驗</b>（<code>answer_md5</code> 與參考臂相同）∧ <b>③ step 降 ≥ 20%</b>。<br>
+<b>現況判定</b>：<b>③a 階段性</b> —— ①② 未達（無 fill ⇒ 不能放生產）。
+</div>
+
+<div class="goal">
+<b>M — MTP on 加速</b><br>
+<b>現況</b>：<b>攤薄係數 ≈ 0</b>（本頁 §1）；⛔ <s>交付口徑 MTP off 9.82 → on 12.62 = +28.5%</s> —— <b>此比值已作廢</b>（HTTP 舊口徑、無 warm-skip；<code>MEASUREMENT_CONTRACT</code> §7）。<br>
+<b>現行生產口徑 MTP off 已是 11.03~12.20</b>（<code>nf2_fill.json</code>／<code>nf_fill.json</code>／<code>mw_ctrl.json</code>）；
+<b>交付 cell 的 MTP-on 讀數 = 缺量測（UNRESOLVED）</b>。<br>
+<b>驗收（可機檢）</b>：交付 cell 上 <b>① <code>step = c0 + m·T</code> 的 m</b> 相對 42.03 下降 ∧
+<b>② t/s 相對 MTP-off 提升 ≥ 門檻</b>（門檻待 operator 定；⛔ 原寫「目前 +28.5%」**已作廢** ⇒ <b>交付 cell 尚無配對讀數</b>）。<br>
+<b>⛔ 但「加速比 2」不可當驗收線</b>—— 它要求 m ≤ 18 ms（−55%），與現況差一個數量級的策略。
+<b>建議改成可攻的兩條</b>：(a) <b>m：42.03 → ≤ 30 ms</b>（−29%）；(b) <b>acc：0.915 → ≥ 0.97</b>（+6%）。
+</div>
+
+<h2>5. 引用與邊界</h2>
+<p class="note">
+① 本頁的 <code>step</code>／<code>mean_len</code>／<code>acc</code>／<code>t_draft</code> 全是<b>實測</b>；
+<code>c0=14.61</code>、<code>m=42.03</code> 是<b>四點擬合</b>（k=1..4），<b>外推到 T=1 不可信</b>
+（擬合給 56.6 ms，實測 48.2 ms）。<br>
+② <b>本頁數字的 regime 是「單段提交 ＋ 凍結池 ＋ 3 GiB」</b> —— 不是交付 cell。
+絕對值<b>不可與交付 12.57 併排</b>；可搬的是<b>結構</b>（成本曲線、攤薄為零、draft/verify 佔比）。<br>
+③ <b>交付 cell 上缺同一條成本曲線</b>（缺量測）⇒ 「交付口徑的 m 是多少」目前<b>不知道</b>，
+⛔ 原寫「只知道端點 +28.5%」—— <b>該端點已作廢</b>（契約 §7）⇒ <b>交付 cell 的 MTP 增益目前完全不知道</b>。
+<b>要動 M 子目標，第一步是在交付 cell 上以 warm-skip 口徑掃 k（MTP on/off 配對）。</b><br>
+④ 來源：<code>Backup/s1_ksweep/20260924_225548/s1_ksweep.json</code>（run1，<b>quotable=false</b>：5 次污染、無 thermal 標註）、
+<code>Backup/seg_batch_s1_pairs/abba_212809.json</code>、<code>Backup/s1_ksweep/20260924_225548/07_k2.stderr.log</code>（MTP-PERF）。
+</p>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+const dk = matchMedia('(prefers-color-scheme: dark)').matches;
+const tick = dk ? '#b4b2a9' : '#5f5e5a';
+const grid = dk ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.07)';
+const base = { responsive:true, maintainAspectRatio:false, plugins:{ legend:{display:false} } };
+
+const perTok = [48.2, 52.4, 45.6, 56.4, 47.7];
+new Chart(document.getElementById('c1'), {
+  type: 'bar',
+  data: {
+    labels: ['nospec (T=1)', 'k1 (T=2)', 'k2 (T=3)', 'k3 (T=4)', 'k4 (T=5)'],
+    datasets: [
+      { label:'每產出 token', data: perTok, backgroundColor:'#378ADD',
+        borderColor:'rgba(255,255,255,.35)', borderWidth:1, order:2 },
+      { label:'baseline 48.2', type:'line', data:[48.2,48.2,48.2,48.2,48.2],
+        borderColor:'#D85A30', borderWidth:2, pointRadius:0, fill:false, order:1 }
+    ]
+  },
+  options: Object.assign({}, base, {
+    indexAxis:'y',
+    scales:{ x:{ min:0, max:70, ticks:{color:tick, stepSize:20}, grid:{color:grid},
+                 title:{display:true, text:'ms / 產出 token', color:tick} },
+             y:{ ticks:{color:tick}, grid:{display:false} } },
+    plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label: c => c.dataset.label + '：' + c.parsed.x + ' ms' } } }
+  })
+});
+
+const fixed = 14.61, marg = 42.03;
+const Ts = [2,3,4,5], ml = [2.00,2.83,3.32,4.73];
+new Chart(document.getElementById('c2'), {
+  type: 'bar',
+  data: {
+    labels: ['k1 (T=2)', 'k2 (T=3)', 'k3 (T=4)', 'k4 (T=5)'],
+    datasets: [
+      { label:'固定成本', data: Ts.map(()=>fixed), backgroundColor:'#888780',
+        borderColor:'rgba(255,255,255,.35)', borderWidth:1, stack:'s', order:3 },
+      { label:'verify 邊際', data: Ts.map(t=>+(marg*t).toFixed(2)), backgroundColor:'#7F77DD',
+        borderColor:'rgba(255,255,255,.35)', borderWidth:1, stack:'s', order:3 },
+      { label:'2× 所需上限', type:'line', data: ml.map(m=>+(24.1*m).toFixed(1)),
+        borderColor:'#D85A30', borderWidth:2, pointRadius:3, pointBackgroundColor:'#D85A30',
+        fill:false, order:1 }
+    ]
+  },
+  options: Object.assign({}, base, {
+    scales:{ x:{ stacked:true, ticks:{color:tick}, grid:{display:false} },
+             y:{ stacked:true, min:0, max:250, ticks:{color:tick, stepSize:50}, grid:{color:grid},
+                 title:{display:true, text:'ms / step', color:tick} } },
+    plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label: c => c.dataset.label + '：' + c.parsed.y + ' ms' } } }
+  })
+});
+</script>
+</body>
+</html>

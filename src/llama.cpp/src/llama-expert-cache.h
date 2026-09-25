@@ -608,6 +608,15 @@ struct llama_expert_cache {
     // `fill_wait_us(step) / n_tokens` IS comparable to the per-token wall time.
     std::atomic<uint64_t> fill_wait_us{0};
 
+    // [CGC 3b fill timer 2026-09-25] Backing store for `struct cgc_eb_timer` (see the .cpp).
+    // Prices the WHOLE ensure_batch call -- assignment loop + synchronous demand fill + bg wait.
+    // Accumulated by the CALLING thread only, so unlike pread_usec it is comparable to wall time.
+    // Flushed once every slot_owner.size() (= n_layers) calls, i.e. once per decode step.
+    std::atomic<uint64_t> eb_step_us{0};
+    std::atomic<uint64_t> eb_calls{0};
+    std::atomic<uint64_t> eb_miss{0};
+    std::atomic<uint64_t> eb_nsum{0};
+
 
     ~llama_expert_cache();
 

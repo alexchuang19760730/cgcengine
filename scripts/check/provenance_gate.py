@@ -148,6 +148,15 @@ REPORT_PRODUCERS = (
 REPORT_EXEMPT: dict[str, str] = {
     "scripts/check/provenance_gate.py":
         "the docs/*.html paths in it are selftest fixtures written to a temp repo, not a producer",
+    # 2026-09-25: 兩個「提到 docs/*.html 但不是量測產物生產者」的讀端。兩者被掃到的行都是
+    # 「要讀的路徑」不是「要寫的路徑」；把它們登記成 producer 會向一個它們構造上就不會寫的
+    # sidecar 索討證據 —— 那正是本檔註解點名的缺陷類（向從未量測過的產物要證明）。
+    "scripts/check/mindmap_build.py":
+        "its only docs/*.html mention is a selftest fixture list for map_docs(); the mindmap it writes "
+        "is a classification view generated mechanically from mindmap.json and carries no measured number",
+    "scripts/check/void_number_check.py":
+        "the docs/*.html paths in it are ARCHIVE_GLOBS / citation-scan globs it READS to find voided "
+        "numbers; it writes no report at all (a grep-style checker, exit code is its product)",
 }
 DOCS_HTML_PATH = re.compile(r"(?:os\.path\.join\s*\([^)]*[\"']docs[\"']|ROOT\s*/\s*[\"']docs[\"']"
                             r"|[\"']docs/)")

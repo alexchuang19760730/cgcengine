@@ -155,6 +155,17 @@ llama_context::llama_context(
 
     cparams.ctx_other = nullptr;
 
+    // MTP draft contexts are CROSS-ARCH and identified by their context type, not by
+    // model.arch. They share the target context through ctx_other. The arch allowlist
+    // below only retains ctx_other for GEMMA4_ASSISTANT/EAGLE3/DFLASH, so every other MTP
+    // arch (e.g. qwen35moe) silently lost it here -> is_mem_shared=false (common/
+    // speculative.cpp:1413) -> the draft ran the non-shared catch-up decode instead of
+    // reusing the target context, and the accept rate collapsed (a 0.98 -> 0.44).
+    // Keep ctx_other for MTP contexts whenever it was supplied.
+    if (params.ctx_type == LLAMA_CONTEXT_TYPE_MTP) {
+        cparams.ctx_other = params.ctx_other;
+    }
+
     // TODO: more generic
     if (model.arch == LLM_ARCH_GEMMA4_ASSISTANT) {
         if (params.ctx_other == nullptr) {

@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>250 / 25 攻關總圖（2026-09-05 → 2026-09-25）</title>
+<style>
+:root{--bg:#f6f7f9;--panel:#fff;--ink:#1f2430;--dim:#5b6472;--line:#dfe3ea;--accent:#2563eb}
+@media (prefers-color-scheme:dark){:root{--bg:#11151c;--panel:#171d26;--ink:#e8ecf3;--dim:#9aa5b4;--line:#2a3341;--accent:#7aa2ff}}
+body.dark{--bg:#11151c;--panel:#171d26;--ink:#e8ecf3;--dim:#9aa5b4;--line:#2a3341;--accent:#7aa2ff}
+body.light{--bg:#f6f7f9;--panel:#fff;--ink:#1f2430;--dim:#5b6472;--line:#dfe3ea;--accent:#2563eb}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 -apple-system,"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif}
+header{padding:16px 22px 10px;border-bottom:1px solid var(--line);background:var(--panel);position:relative}
+h1{margin:0 0 6px;font-size:19px}
+.meta{color:var(--dim);font-size:12.5px}
+.meta code{background:var(--bg);padding:1px 5px;border-radius:4px}
+#btns{position:absolute;right:18px;top:16px}
+button{font:inherit;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+.legend{padding:8px 22px 10px;background:var(--panel);border-bottom:1px solid var(--line)}
+.lrow{display:flex;flex-wrap:wrap;gap:7px;align-items:center;margin:3px 0}
+.lrow .lab{color:var(--dim);font-size:12px;min-width:86px}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;border:1px solid var(--line);border-radius:999px;padding:2px 9px;cursor:pointer;user-select:none}
+.chip.off{opacity:.3}
+.dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+.ring{width:10px;height:10px;border-radius:3px;display:inline-block;border:2px solid}
+.wrap{display:flex;align-items:stretch;min-height:calc(100vh - 190px)}
+#mind{flex:1 1 auto;overflow:auto;padding:8px 4px 30px}
+aside{flex:0 0 400px;border-left:1px solid var(--line);background:var(--panel);padding:14px 16px;overflow:auto;max-height:calc(100vh - 190px)}
+@media (max-width:1100px){.wrap{flex-direction:column}aside{flex:none;max-height:none;border-left:0;border-top:1px solid var(--line)}}
+.node{cursor:pointer}
+.node rect.box{fill:var(--panel);stroke:var(--line)}
+.node:hover rect.box{stroke:var(--accent);stroke-width:2}
+.node.dim{opacity:.16}
+.node text{fill:var(--ink);font-size:12.5px;pointer-events:none}
+.node .tier{fill:var(--dim);font-size:10.5px}
+.link{fill:none;stroke:var(--line);stroke-width:1.4}
+.link.closed{stroke-dasharray:3 3}
+h2{font-size:13px;color:var(--dim);margin:16px 0 6px}
+.card{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--bg)}
+.card h3{margin:0 0 6px;font-size:14px}
+.kv{display:grid;grid-template-columns:58px 1fr;gap:2px 8px;font-size:12.5px}
+.kv b{color:var(--dim);font-weight:600}
+code{font-size:11.5px;word-break:break-all}
+.pill{font-size:11px;border-radius:999px;padding:1px 7px;color:#fff;white-space:nowrap}
+input[type=search]{width:100%;padding:6px 9px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);font:inherit;margin-bottom:8px}
+.note{color:var(--dim);font-size:12px}
+.chip .t{cursor:pointer}
+.chip .x{margin-left:3px;padding:0 4px;border-radius:5px;color:var(--dim);font-size:11.5px}
+.chip .x:hover{background:var(--bg);color:var(--ink)}
+.chip.active{box-shadow:0 0 0 2px var(--accent)}
+.brief h4{margin:13px 0 4px;font-size:12.5px;color:var(--accent);border-left:3px solid var(--accent);padding-left:7px}
+.brief ul{margin:2px 0 0;padding-left:17px}
+.brief li{margin:3px 0;font-size:12.5px}
+.brief .head{font-size:12.5px;font-weight:600;margin:2px 0 9px;line-height:1.55}
+.bars{display:flex;height:9px;border-radius:5px;overflow:hidden;margin:7px 0 5px;border:1px solid var(--line)}
+.bars i{display:block;height:100%}
+.bk{display:flex;flex-wrap:wrap;gap:5px 10px;margin:3px 0 9px}
+.bk span{font-size:11.5px;color:var(--dim)}
+.grp{border-left:3px solid var(--line);padding-left:8px;margin:9px 0}
+.grp .gt{font-size:12px;font-weight:600;color:var(--dim)}
+.grp .gi{cursor:pointer;font-size:12.5px;margin:3px 0}
+.grp .gi:hover{color:var(--accent);text-decoration:underline}
+iframe{width:100%;height:360px;border:1px solid var(--line);border-radius:8px;background:#fff;margin-top:8px}
+.wpbar{display:flex;align-items:center;gap:8px;margin:6px 0 10px}
+.wpbar a.wp{flex:1;font-size:12.5px;font-weight:600;color:var(--accent);text-decoration:none;
+  border:1px solid var(--accent);border-radius:6px;padding:5px 9px;text-align:center}
+.wpbar a.wp:hover{background:var(--accent);color:#fff}
+.wpbar button{font:inherit;font-size:12px;padding:5px 9px;border:1px solid var(--line);
+  border-radius:6px;background:var(--bg);color:var(--ink);cursor:pointer}
+.hdr a{color:var(--accent)}
+.mtx{border-collapse:collapse;font-size:12px;margin:6px 0}
+.mtx th,.mtx td{border:1px solid var(--line);padding:3px 8px;text-align:center}
+.mtx th{color:var(--dim);font-weight:600}
+.banner{margin:10px 22px 0;border-left:4px solid #f59e0b;background:var(--panel);
+  border-top:1px solid var(--line);border-right:1px solid var(--line);border-bottom:1px solid var(--line);
+  border-radius:7px;padding:8px 12px;font-size:12.5px;color:var(--dim)}
+.banner b{color:var(--ink)}
+.banner ul{margin:5px 0 0;padding-left:18px}
+.banner li{margin:2px 0}
+</style>
+</head>
+<body>
+<header>
+  <div id="btns"><button id="theme">切換主題</button></div>
+  <h1>250 / 25 攻關總圖（2026-09-05 → 2026-09-25）</h1>
+  <div class="meta">範圍：9/05 至今，為達成 prefill ≥250 / decode ≥25 所做的全部實驗與嘗試，及其報告<br>分支：demo/sweet-spot-windows-fix（現行，414 份 docs）、devserver（09-05~09-07 期，39 份 docs）<br>規則：<code>docs/MEASUREMENT_CONTRACT_2026-09-25.md §5（四級成果分級）＋ §7（作廢數字）</code></div>
+  <div class="meta hdr">逐條技術白皮書：<a href="briefs/index.html">總目錄（44 條：目標 → 判準 → 結果 → 判定）</a></div>
+</header>
+<div class="legend">
+  <div class="lrow"><span class="lab">階段（分支）</span><span class="note">生產 ＝ ① ② ③b｜實驗階段 ＝ ③a｜已結案 ＝ ④ ＋ 不適用</span></div>
+  <div class="lrow" id="subLegend"><span class="lab">子目標（顏色）</span></div>
+  <div class="lrow" id="tierLegend"><span class="lab">分級（外框）</span></div>
+</div>
+<div class="banner"><b>狀態（三條）</b><ul><li><b>S（序列化）與 M（MTP）是兩大活躍攻關軸</b>；<b>C（kernel＋頻寬）單列為受物理約束的天花板軸</b>，持續證偽、不當活躍軸 —— 但它必須留在分類裡，否則最大的一塊時間（device span 56–61%）無人認領。</li><li>⚠ <b>兩軸目前都未真正交付</b>：S 的單段提交 ×1.83 建立在 hook=0、權重不進池（丟正確性）之上；M 的 draft 在當前 decode 全程 −1。⇒ 這是<b>兩條未攻克的主軸</b>，不是兩塊已拿到的收益。</li><li>⚠ <b>S 與 M 有耦合、收益不可相加</b>：兩者都動 hook／調度（ρ 與 prebind 同價不可相加是教訓）⇒ 「both」類要保留。</li></ul></div>
+<div class="wrap">
+  <div id="mind"></div>
+  <aside>
+    <input type="search" id="q" placeholder="搜尋條目 / 報告檔名…">
+    <div id="detail"><p class="note">載入中…</p></div>
+    <h2>報告對映（<span id="nmap"></span>）</h2>
+    <div id="doclist"></div>
+  </aside>
+</div>
+<script>
+const DATA = {"meta": {"title": "250 / 25 攻關總圖（2026-09-05 → 2026-09-25）", "rule": "docs/MEASUREMENT_CONTRACT_2026-09-25.md §5（四級成果分級）＋ §7（作廢數字）", "branches": ["demo/sweet-spot-windows-fix（現行，414 份 docs）", "devserver（09-05~09-07 期，39 份 docs）"], "scope": "9/05 至今，為達成 prefill ≥250 / decode ≥25 所做的全部實驗與嘗試，及其報告", "generated": "2026-09-25", "status": ["<b>S（序列化）與 M（MTP）是兩大活躍攻關軸</b>；<b>C（kernel＋頻寬）單列為受物理約束的天花板軸</b>，持續證偽、不當活躍軸 —— 但它必須留在分類裡，否則最大的一塊時間（device span 56–61%）無人認領。", "⚠ <b>兩軸目前都未真正交付</b>：S 的單段提交 ×1.83 建立在 hook=0、權重不進池（丟正確性）之上；M 的 draft 在當前 decode 全程 −1。⇒ 這是<b>兩條未攻克的主軸</b>，不是兩塊已拿到的收益。", "⚠ <b>S 與 M 有耦合、收益不可相加</b>：兩者都動 hook／調度（ρ 與 prebind 同價不可相加是教訓）⇒ 「both」類要保留。"]}, "tiers": [{"id": "1", "label": "① 攻關成功", "def": "prefill ≥ 250 ∧ decode 比目前最好還要好（目前最好＝交付錨點 12.57）", "color": "#16a34a"}, {"id": "2", "label": "② 攻關過線", "def": "prefill ≥ 250 ∧ decode 跟現在差不多（達標但未超越）", "color": "#2563eb"}, {"id": "3a", "label": "③a 實驗目標達成（階段性）", "def": "達成實驗設計目的（機制／量測成立），但產物還不能放進生產級設置", "color": "#d97706"}, {"id": "3b", "label": "③b 實驗目標達成（可放生產）", "def": "產物已可放進生產級設置：不破壞正確性 ∧ 成本可接受 ∧ 無前置條件", "color": "#0d9488"}, {"id": "4", "label": "④ 廢棄", "def": "判死／撤回／不做", "color": "#64748b"}, {"id": "na", "label": "不適用（非實驗結論）", "def": "設計／指南／紀錄／跨產品；或本線無實測權 —— 不塞進四級", "color": "#9333ea"}], "entries": [{"id": "m-prefill250", "name": "prefill ≥ 250（交付 cell）", "theme": "交付里程碑", "tier": "2", "crit": "門檻 250 t/s（同 cell `-p 2048`）", "res": "9 次 launch ≥250，最高 296.24；乾淨視窗 283.01；同期 decode 11.49~12.20", "evid": "MILESTONE_MAP_RECHECK_2026-09-25.md §5.2", "docs": ["PREFILL250_*", "ROADMAP_PREFILL250_DECODE25_*"], "note": "達標但 decode 未超越 12.57 ⇒ 只能 ②", "sub": "na", "goal": "把 <b>prefill 推到 ≥250 t/s</b>——「250 / 25」裡的 250 那一半，且要在<b>交付 cell</b> 上成立（不是降級視窗的峰值）。"}, {"id": "m-total", "name": "① 攻關成功（pp≥250 ∧ tg>12.57）", "theme": "交付里程碑", "tier": "1", "crit": "兩件事同時成立", "res": "⛔ 空 —— 最接近的一次是同 cell pp 260.41 ＋ tg 12.195（差 3%）", "evid": "docs/MILESTONE_MAP_RECHECK_2026-09-25.md", "docs": [], "note": "目前無任何一格是 ①", "sub": "na", "goal": "同一次量測裡<b>同時</b>達成 prefill ≥250 與 decode >12.57 t/s——只有這樣才算「① 攻關成功」。"}, {"id": "m-decode25", "name": "decode ≥ 25（M-25）", "theme": "交付里程碑", "tier": "4", "crit": "25 ⇔ 40.0 ms/token", "res": "交付 12.57＝79.6 ms ⇒ 要砍 49.6%；IO 全關也只 ~+5%（保守 +9%）⇒ 判死", "evid": "DECODE25_FINAL_VERDICT_2026-09-21／DECODE_25TPS_VERDICT_2026-09-23／docs/IO_AXIS_VERDICT_2026-09-25.md", "docs": ["DECODE25_*", "DECODE_25TPS_*", "WHY_MODEL_MISSED_*", "PROGRESS_25TPS_*", "CEILING_STACK_*", "CROSS_LINE_STATUS_*", "G7_DELIVERY_ARITHMETIC_*", "TARGET25_*", "TOOLCHAIN_25TPS_*"], "note": "P(25) < 3%；物理可達但已知槓桿只到 13.2~13.8", "sub": "both", "goal": "把 <b>decode 端到端推到 ≥25 t/s</b>（「250 / 25」裡的 25 那一半）。"}, {"id": "io-poolsize", "name": "池大小掃描（8→4→2 GiB）", "theme": "fill／IO", "tier": "3b", "crit": "同 cell 配對，看 t/s 與 miss", "res": "4 GiB 10.60 vs 8 GiB 10.28＝+3.1%（噪音內）；4 GiB miss 1.91×、capacity miss 3.15× 而 t/s 不動", "evid": "docs/IO_PATH_AB_2026-09-21.md（MEMORY_PERF §EN-359 自記「別再花時間在 pool 大小上」）", "docs": ["IO_PATH_AB_*"], "note": "★ 與白皮書「8G→4G −21%」矛盾且從未仲裁；另 3 GiB 那格從未乾淨量過", "sub": "S", "goal": "掃描 expert cache 池大小（8 → 4 → 2 GiB），量出<b>池容量對 decode 的敏感度</b>，判斷「加大池」能不能換到吞吐。"}, {"id": "io-shape", "name": "IO 請求形狀（合併 pread）", "theme": "fill／IO", "tier": "4", "crit": "幾何上是否可合併 ＋ 固定開銷占比", "res": "一個 expert 三段相隔 88~115 MB ⇒ 3→1 要付 182.6× 位元組；合併邏輯早已存在（preadv）；固定開銷占 90%", "evid": "scripts/check/expert_file_layout.py（7/7）／docs/IO_AXIS_VERDICT_2026-09-25.md", "docs": ["EXPERT_IO_SHAPE_FIRST_PRINCIPLES_*", "EXPERT_CHANNEL_SHAPE_*"], "note": "收益 ~2.9% < 3% 門檻 ⇒ 不值得 rebuild", "sub": "S", "goal": "改變 <b>IO 請求形狀</b>（合併 pread、加大 span、batching），用更少次 syscall 換同樣的 bytes，看 decode 是否受益。"}, {"id": "io-mw", "name": "M-W：WORKERS 8→2", "theme": "fill／IO", "tier": "4", "crit": "預先寫死門檻 15%；us/job（機制）與 t/s（端到端）雙看", "res": "us/job −11.1%、us_per_miss −14.7%，但 t/s −0.6% ⇒ 未分離（by-product：IO 只占 step ≈9%）", "evid": "docs/MW_WORKERS_VERDICT_2026-09-25.md／Backup/mw_ab/*", "docs": ["M_W_DELIVERY_VERDICT_*"], "note": "09-21 舊判 ≈+1.7% 亦在門檻下", "sub": "S", "goal": "把填池 <b>worker 數從 8 降到 2</b>（M-W），減少並發爭用與上下文切換，看 decode 是否淨得。"}, {"id": "io-layer-ahead", "name": "CGC_LAYER_AHEAD_PREFETCH（提前一層）", "theme": "fill／IO", "tier": "4", "crit": "預先寫死門檻 15%", "res": "−7.1%（未分離、方向偏負）", "evid": "Backup/layer_ahead/VERDICT_layer_ahead_2026-09-25.md", "docs": [], "note": "天花板寫在 llama-context.cpp:7244-7246（drain_layer 會 DROP）", "sub": "S", "goal": "用 <code>CGC_LAYER_AHEAD_PREFETCH=1</code> <b>提前一層</b>發出下一層 expert 的預取，把填池延遲藏到計算後面。"}, {"id": "io-mpf", "name": "M-PF：背景 neighbour prefetch", "theme": "fill／IO", "tier": "4", "crit": "打平需每 byte 便宜 ≥48%", "res": "撤回（讀入位元組 1.98×，實測最好只到 35%）", "evid": "docs/NEIGHBOUR_PREFETCH_VERDICT_2026-09-21.md", "docs": ["NEIGHBOUR_PREFETCH_*"], "note": "", "sub": "S", "goal": "做<b>背景 neighbour prefetch</b>（M-PF），讓填池完全離開關鍵路徑，不再以同步等待的形式出現在 step 裡。"}, {"id": "io-nofill", "name": "CGC_EB_NOFILL 診斷臂（fill 成本）", "theme": "fill／IO", "tier": "3a", "crit": "同 build 同 cell，fill 開/關；機制看 fill ms/step 是否歸零", "res": "fill 3.955 → 0.206 ms/step（−95%）⇒ 機制證；生產口徑同步 fill 僅占 step 4.7%", "evid": "Backup/nofill_prod/nf_fill.json", "docs": ["IO_AXIS_VERDICT_*"], "note": "端到端 reps=3 仍缺（nofill 臂曾被看門狗 SIGTERM）", "sub": "S", "goal": "<b>診斷臂</b>：用 <code>CGC_EB_NOFILL</code> 把填池關掉，量出「fill 在一個 decode step 裡到底佔多少」。"}, {"id": "s1-probe", "name": "S1 探針臂：slot table 放 GPU（數值身分）", "theme": "S1／段邊界", "tier": "3b", "crit": "預先寫死：逐層 fnv1a64 指紋 ＋ answer_md5", "res": "576/576 全同；answer_md5 相同", "evid": "docs/S1_LINE_VERDICT_2026-09-25.md §2.2b", "docs": ["S1_DISCRIMINATION_RESULT_*", "S1_OUTPUT_CAPTURE_*", "S1_OWNER_EXPECT_CHANNELS_*", "S1_MINIL_TRACKING_*", "S1_SRC2_INSTRUMENT_BLIND_*", "S1_LAYER1_MOE_GATHER_*"], "note": "★ 本臂不可報吞吐（同節寫明「速度：無主張」）", "sub": "S", "goal": "把 <b>slot table 放上 GPU</b>（<code>CGC_SLOT_TABLE_GPU</code>），證明單段提交的查表與 host 版<b>逐位相同</b>（數值身分）。"}, {"id": "s1-segbatch", "name": "單段提交（41 段 → 1 段）", "theme": "S1／段邊界", "tier": "3a", "crit": "同 build 同 cell 同 pool，兩臂皆無 spec（無驗收門檻）", "res": "A 11.30 → B 20.73 t/s；−40.3 ms/token（45.5%），其中序列化 ~36 ms、fill 僅 3.96 ms", "evid": "Backup/seg_batch_s1_pairs/abba_212809.json／docs/S1_LINE_VERDICT_2026-09-25.md", "docs": ["S1_FRONTIER_*", "S1_DIAGNOSTIC_ABORT_ROOT_CAUSE_*", "PREFILL250_MET_AND_S1_REJUDGE_*", "S1_TIMING_SEGMENT_*", "S1_WINDOW_ANCHOR_AND_LAYER1_*", "S1_INSTRUMENT_AND_MEMORY_DELIVERY_*", "S1_CAPTURE_ROUND2_*"], "note": "無 hook ⇒ 無 demand fill ⇒ 正確性未證 ⇒ 不能進生產", "sub": "S", "goal": "把 <b>41 段提交合成 1 段</b>（<code>CGC_SEG_BATCH</code>＋<code>CGC_B_SCHEME</code>），消掉段與段之間的同步與序列化開銷。"}, {"id": "s1-refuted", "name": "S1 早期診斷系列（09-16/17）", "theme": "S1／段邊界", "tier": "4", "crit": "逐輪定位第一個分歧點", "res": "多輪被自己否證：slot owner 推論被推翻、時序推論被推翻、09-16 那七輪「第一個分歧」全部不可引用（同時踩三個盲點）", "evid": "docs/S1_SLOT_OWNER_REFUTED_20260917.html／S1_TIMING_REFUTED_20260917.html／S1_WINDOW_ANCHOR_AND_LAYER1_20260917.html", "docs": ["S1_SLOT_OWNER_REFUTED_*", "S1_TIMING_REFUTED_*"], "note": "已作廢：診斷口徑本身有盲點", "sub": "S", "goal": "早期（09-16／09-17）用單段提交當探針，量測 <code>wait</code>／<code>gap</code>，<b>確認「段邊界成本」這個假說成立與否</b>。"}, {"id": "miss-3a", "name": "3a：未填充 expert 貢獻歸零（MISS_MASK / ZERO_MISS）", "theme": "缺失處理", "tier": "3b", "crit": "預先寫死雙判準：① 逐位元與 host BATCHDBG 相同 ② Δ ≤ 0.2 ms/step", "res": "兩條都過（38 層/421 元素/0 差異；Δ = −0.95 ± 2.01 ms）", "evid": "Backup/miss_axis_mtpoff_ws64_r3/miss_axis_res.json", "docs": ["MISS_PATH_COST_AUDIT_*", "GAP_VS_MISS_*", "SWAP_MISS_LINK_*"], "note": "零成本且逐位正確；但零 fill 下無正確性收益（3c 的前置）", "sub": "S", "goal": "讓<b>未填充 expert 的貢獻歸零</b>（<code>CGC_MISS_MASK</code>／ZERO_MISS），使「有 miss 也能算對」成為可能——這是單段提交的<b>正確性前提</b>。"}, {"id": "miss-3b", "name": "3b：fill 觸發點搬出 hook ＋ batch 化", "theme": "缺失處理", "tier": "4", "crit": "目標 ≤5 ms/step（現況 21 ms，超 4.3×）", "res": "判死：合併邏輯早已存在、幾何 182.6×、生產口徑上界 ~9% ⇒ 收益 ~2.9%", "evid": "docs/DIAGNOSTIC_ARMS_LEDGER_2026-09-25.md／docs/IO_AXIS_VERDICT_2026-09-25.md", "docs": [], "note": "", "sub": "S", "goal": "把 <b>fill 的觸發點搬出 hook 並批次化</b>，讓填池不再被切成 41 次小動作，而是一次大批次。"}, {"id": "miss-3c", "name": "3c：per-expert 重算 kernel", "theme": "缺失處理", "tier": "4", "crit": "文件自寫「依賴 3b」；greedy 逐 rep 相同 ＋ 落在 13.6~14.2", "res": "不做（依賴鏈斷；上限同受 ~5% 約束；舊估 +13~18% 來自已作廢的非生產 cell）", "evid": "docs/STEP3_PER_EXPERT_RECOMPUTE_2026-09-24.md §3", "docs": [], "note": "", "sub": "S", "goal": "做 <b>per-expert 重算 kernel</b>：利用 MoE 輸出是線性疊加，只重算 miss 的那幾個 expert，而不是整層重算。"}, {"id": "s1-asyncgather", "name": "異步 gather 流水線（單段＋miss 後台補＋局部重算）", "theme": "缺失處理", "tier": "3a", "crit": "預先寫死：① 補算在 sampler 消費前完成的時序窗口 ② MASK＋補算 M1 bit-exact ③ 乾淨 cell r3 decode", "res": "方案設計完成、待實施（無實測）；先跑 Stage B 量 fill 時間 vs GPU 窗口 ⇒ go/no-go", "evid": "docs/S1_ASYNC_GATHER_PIPELINE_2026-09-25.md", "detail_html": "../S1_ASYNC_GATHER_PIPELINE_2026-09-25.html", "docs": ["S1_ASYNC_GATHER_*"], "note": "不預測 ids（異於 prebind/ρ）、用真實 ids＋異步重疊；收益【推算】上界 ~19–20 t/s、不宣稱 25", "sub": "S", "goal": "在<b>單段提交</b>下用 GPU presence/slot table：命中即算、miss 只寫清單並 MASK，CPU <b>後台異步 fill</b> 與下一步 GPU 重疊，再<b>只補算 miss expert</b>（線性疊加）⇒ 拿到單段的 ×1.7~1.8 同時保住正確性。", "diff": [["prebind／方案 A", "跨 token 預測 ids、加寬 24 候選、影子 38.3 ms、q24=0.354", "<b>不預測</b>、用真實 ids、保持 top-8、不加寬"], ["ρ 按層批次", "同 token 近似 gate（跳 attn）、ρ=0.86 但窗口 1.3–1.6 ms、insert 4.76", "不做近似、miss 後台補、<b>不依賴重合率</b>"], ["miss-3b", "讓<b>同步</b> fill 變便宜（合併 pread）、收益 ~2.9% 判死", "讓 fill <b>離開同步路徑</b>（異步）、不是變便宜"], ["miss-3c", "per-expert 重算、自寫依賴 3b、舊估 +13–18% 作廢", "異步 drain＋雙緩衝補依賴、重算只為加回、<b>收益重測</b>"]], "risks": [["時序窗口（最關鍵）：一步 miss 的 fill＋補算要在 sampler 消費前完成", "<b>Stage B</b>：量 fill 時間 vs 下一步 GPU 窗口"], ["雙緩衝同步：Metal 單隊列、fill 與當前 gather 爭用", "MAXQ 保險絲、背景 fill 主動讓步"], ["異步 bit-exact：MASK＋補算要 M1 逐位相同", "對 host BATCHDBG、M1 oracle"], ["bg 爭用：背景 fill 搶 IO／頻寬", "對照 bg on/off"]]}, {"id": "mtp-instrument", "name": "MTP 儀器化（接進 llama-bench）", "theme": "MTP／spec", "tier": "3b", "crit": "同一口徑下能做 MTP on/off", "res": "接通（真因＝test_gen_spec 的 n_past 初始化）；此後 MTP 不再跨儀器比較", "evid": "docs/MTP_IN_LLAMA_BENCH_2026-09-18.md／MTP_LAUNCH_REQUIRED_PARAMS_2026-09-18.md", "docs": ["MTP_INSTRUMENT_PLAN_*", "MTP_IN_LLAMA_BENCH_*", "MTP_LAUNCH_REQUIRED_PARAMS_*", "MTP_HEAD_PROVENANCE_GATE_*", "PROD_NEW_MTP_OFF_*"], "note": "★ 前身：MTP off 9.82／on 12.62 是 HTTP 口徑 ⇒ 已作廢（契約 §7）", "sub": "M", "goal": "把 <b>MTP 接進 llama-bench</b>，讓 MTP on／off 能在<b>交付口徑</b>下做配對量測（而不是靠 HTTP server 的舊口徑）。"}, {"id": "mtp-caliper", "name": "MTP 口徑與混淆定位（pool／跨啟動／順序）", "theme": "MTP／spec", "tier": "3b", "crit": "配對設計；單點不可引用", "res": "定案：任何單點 MTP 數字不可引用；pool 4 vs 8 GiB 是一階混淆；同 launch 配對 ×1.06、生產 server 路徑 ×0.695（方向相反）", "evid": "docs/MTP_K_AB_2026-09-18.md／MTP_POOL_CONFOUND_2026-09-17.md／MEMORY_PERF.md:402-405", "docs": ["MTP_K_AB_*", "MTP_POOL_CONFOUND_*", "MTP_ABBA_RECHECK_*", "MTP_BENCH_PARITY_*", "MTP_NET_EFFECT_PAIRED_*", "S0_MTP_ONOFF_AB_*", "MTP3_25TPS_ARITHMETIC_*", "ORNITH_ALIGNED_AB_AND_25_ARITHMETIC_*"], "note": "⇒ 交付 cell 的 MTP 增益 UNRESOLVED（作廢 9.82/12.62/+28.5% 後）", "sub": "M", "goal": "定出 <b>MTP 的量測口徑</b>並定位混淆因子（pool 大小、跨啟動污染、執行順序），讓 MTP 數字可比。"}, {"id": "mtp-ksweep", "name": "MTP k-sweep（verify batch T 成本曲線）", "theme": "MTP／spec", "tier": "3a", "crit": "step(T) 線性擬合 ＋ 各 k 的 mean_len", "res": "step ≈ 14.61 + 42.03·T（max resid 11.5）；最佳 k=2 但那格不可移植（合成 accept 0.93~0.99 vs 交付 0.465~0.58）", "evid": "Backup/s1_ksweep/20260924_225548/s1_ksweep.json（quotable=false）", "docs": ["MTP_K_SWEEP_*", "MTP_VERIFY_SPLIT_*", "MTP_VERIFY_HEADROOM_*", "BIGMOMO_TRANSFER_AND_MTP_PARAM_PARITY_*", "MTP_KEY_SHAPE_*"], "note": "模型可移植、最佳 k 不可移植", "sub": "M", "goal": "掃 <b>verify batch 長度 T（k-sweep）</b>，量出每多驗一個 token 的邊際成本曲線，找出該 regime 的最佳 k。"}, {"id": "mtp-2x", "name": "MTP 到 2× 的邊界（攤薄算術）", "theme": "MTP／spec", "tier": "3b", "crit": "S = (1+a·k)/(1+m·k)，k→∞ 上界 = a/m", "res": "k 加到多大都不到 2×（server a/m=1.445、bench 0.982）；現況每產出 token 成本 45.6~56.4 vs baseline 48.2 ⇒ 攤薄 ≈ 0；2× 需 verify 邊際 42.03 → ≤17.9 ms（−57%）", "evid": "docs/MTP_2X_BOUNDARY_2026-09-19.md／docs/MTP_AMORTIZATION_2026-09-25.html", "docs": ["MTP_2X_BOUNDARY_*", "REUSE_DISTANCE_MTPON_CONFIRM_*"], "note": "★ 產品化結論：『MTP on 加速比 2』不成立 ⇒ 改寫成 m/acc 兩條可攻目標", "sub": "M", "goal": "算清「<b>MTP 加速比 2</b>」需要什麼條件（攤薄算術），判斷這個目標值不值得追、缺的是 k 還是別的。"}, {"id": "mtp-rsl", "name": "RSL-MTP（draft top-8 ⊆ 已付費並集）＋ 練 draft head", "theme": "MTP／spec", "tier": "4", "crit": "每格 ≥1.0 才算活", "res": "被自己的數據否決：0.70–0.97×，無一格 ≥1.0；m=0.474 下即使 a→1 也不可能 2×", "evid": "docs/RSL_MTP_GAIN_ESTIMATE_2026-09-18.md", "docs": ["RSL_MTP_GAIN_*", "MOE_MTP_FEASIBILITY_*", "REUSE_DISTANCE_*"], "note": "⇒ 別練 draft head", "sub": "M", "goal": "用 <b>RSL-MTP</b>（讓 draft 的 top-8 ⊆ 已付費並集）降低 draft 成本，並評估<b>練 draft head</b> 划不划算。"}, {"id": "mtp-verify-opt", "name": "verify residency thrash ／ 池配額 ／ prefetch 開關", "theme": "MTP／spec", "tier": "4", "crit": "同 k 跨池的 bytes→時間彈性", "res": "降到次要：彈性只有 0.10–0.17（k=1/3 甚至 −0.38）；k_eff 單變數解釋 84%；修 residency 上界只剩 ~15%；m 的機械解釋是「每 draft token 的固定代價」", "evid": "docs/MTP_VERIFY_OPT_2026-09-18.md／MTP_VERIFY_COST_2026-09-21.md", "docs": ["MTP_VERIFY_OPT_*", "MTP_VERIFY_COST_*", "MTP_VERIFY_SPLIT_*", "EXPERT_CACHE_THRASH_*"], "note": "另判：調高 CGC_FAST_COLD_MAX 有損 ⇒ 不做；更大的 k／tree verification 別做", "sub": "M", "goal": "降低 <b>verify 階段的 residency thrash</b>（池配額、prefetch 開關），讓 verify 不因權重換入換出而變慢。"}, {"id": "mtp-accept", "name": "accept rule／dynamic-k／n_max 調整", "theme": "MTP／spec", "tier": "4", "crit": "k→∞ 上界 a/m ＋ dynamic-k oracle", "res": "不做：dynamic-k oracle 只 1.035×；n_max 3→5 作廢；greedy 下 accept 不可由 accept rule 移動（是 (base,head) 配對的性質）", "evid": "docs/MTP_ACCEPT_RULE_G6_2026-09-20.md／MEMORY_PERF.md", "docs": ["MTP_ACCEPT_RULE_G6_*", "MTP_ROUND_COST_OPT_BACKLOG_*"], "note": "", "sub": "M", "goal": "調整 <b>accept rule／dynamic-k／n_max</b>，把接受率 a 與每輪產出 token 數拉高，直接放大攤薄倍數。"}, {"id": "cache-rho", "name": "ρ 路線（按層批次化 prefetch）", "theme": "池／快取", "tier": "3a", "crit": "qu gate（覆蓋率 ＋ 視窗）", "res": "判活：覆蓋 0.849，單獨做 14.36 t/s（+14.2%）；但視窗只有 1.30~1.59 ms，且要付 4.76 ms/步 GPU 插入 ⇒ 有前置條件", "evid": "docs/RHO_STAGE0_RESULT_2026-09-23.md／F1_CB_MISS_REGRESSION_RESULT_2026-09-20.md", "docs": ["F1_CB_MISS_REGRESSION_*", "GAP_SPLIT_SWAP_BIAS_*", "RHO_*"], "note": "與 prebind 同價、不可相加", "sub": "S", "goal": "走 <b>ρ 路線</b>：按層批次化 prefetch，用一次大批次取代多次零散小預取，減少預取本身的開銷。"}, {"id": "cache-prebind", "name": "prebind／方案 A（預指派 slot）", "theme": "池／快取", "tier": "3a", "crit": "預先寫死 qu 門檻", "res": "判活：qu2/qu3 全過、qu1 邊緣 ⇒ 14.33 t/s（+14.0%）；提前一整步發起 ⇒ 視窗 ≈ 一步", "evid": "docs/PREBIND_VERDICT_SETTLED_2026-09-24.md", "docs": ["H_MEASURED_A_VERDICT_*", "PREBIND_*", "H_MEASURED_*"], "note": "★ 方案 A 的 h=0.03 判死不適用於 S1（ids 由 GPU 端 get_rows 產生）", "sub": "S", "goal": "做 <b>prebind／方案 A</b>：預先指派 slot，消掉執行期的 slot 查表與指派成本。"}, {"id": "cache-cb", "name": "cb 口徑定讞（42 vs 74）", "theme": "池／快取", "tier": "3b", "crit": "交付 mean 口徑重算", "res": "定讞 42~51 ms；74.18 撤回", "evid": "docs/CB_DELIVERY_SETTLED_2026-09-23.md", "docs": [], "note": "已作為後續所有上界計算的單價", "sub": "S", "goal": "<b>定讞「cb」是什麼、成本多少</b>（42 vs 74 ms 之爭）——它是 expert cache 填池 IO，不是 command buffer。"}, {"id": "k3-price", "name": "K3 邊際單價（dispatch 成本）", "theme": "上界／kernel", "tier": "3b", "crit": "量到邊際價而非平均價", "res": "45.6（平均）作廢 → 邊際 0.0195%/dispatch/步（17.9 µs）⇒ 所有舊「融合能省 X%」的算術全部作廢", "evid": "docs/K3_PRICE_MEASURED_2026-09-21.md", "docs": ["K3_PRICE_MEASURED_*", "K3_CEILING_REAUDIT_*", "K3_FOOTPRINT_AND_SHAPEKNOB_*", "KNOB_FULL_MAP_*", "KNOB_INVENTORY_VERIFIED_*"], "note": "★ KNOB_INVENTORY 自記：那晚的 budget sweep 無效（撤回）", "sub": "C", "goal": "量出 <b>K3 的邊際單價</b>（多一次 dispatch 要付多少），判斷把 k 從 2 加到 3 划不划算。"}, {"id": "k3-swing", "name": "k=3 的 1.43× 飄移定位 ＋ 配對認證", "theme": "上界／kernel", "tier": "3a", "crit": "配對 t 檢定", "res": "飄移已定位；配對認證 n=5 時 t=2.08 未達 df=4 的 2.776 ⇒ 16.4% 仍未認證；上一輪「bench 配對 sd 更小」被自我撤回", "evid": "docs/K3_SWING_ANALYSIS_2026-09-23.md／K3_PAIR_CERT_V2_BENCH_2026-09-23.md", "docs": ["K3_SWING_ANALYSIS_*", "K3_PAIR_CERT_*"], "note": "", "sub": "na", "goal": "定位 <b>k=3 那個 1.43× 飄移</b>從哪裡來，並用配對認證把它關掉（或證明它是視窗機械造成的）。"}, {"id": "k-series", "name": "K0–K5 系列（融合／小 op 群）", "theme": "上界／kernel", "tier": "4", "crit": "格與格的上界（先寫死）", "res": "K1 不做（G2 禁區）、K4 主機側否證（gpu_union 占步時 92%）、K5 不做、L2 歸零、M-K5 不做；加 thread 只能切 K", "evid": "MEMORY_PERF.md「K0–K5 結案總表」＠2026-09-21", "docs": ["K5_VERDICT_*", "M_K5_SHAPE_*", "K5_GRID_HYPOTHESIS_*"], "note": "整條線結案；by-product 是 K3 的邊際單價（已升為 ③b）", "sub": "C", "goal": "走 <b>K0–K5 系列</b>（kernel 融合、小 op 群），看能不能從 kernel 側拿到可觀的增益。"}, {"id": "g4", "name": "G4：元素級融合 kernel", "theme": "上界／kernel", "tier": "4", "crit": "回歸 numel vs dispatch", "res": "判 0 ⇒ 不寫融合 kernel（回歸斜率 0.0132 µs/numel ⇒ 融合的 gain 是 0）", "evid": "docs/G4_ELEMENTWISE_TARGETS_2026-09-20.md", "docs": ["G4_ELEMENTWISE_TARGETS_*", "G4_*"], "note": "", "sub": "C", "goal": "寫 <b>元素級融合 kernel</b>（G4），減少大量小 op 的 launch 與往返開銷。"}, {"id": "c-device-span", "name": "device span 歸因（最大一塊時間）", "theme": "GPU 計算／頻寬", "tier": "3a", "sub": "C", "goal": "認領交付 step 裡最大一塊沒人歸因的時間：證明它是<b>裝置忙碌時間</b>（不是 host 開銷），並指出它住在哪些節點分區。", "crit": "逐 buffer 的 GPU span 必須與 host 的 <code>wait</code> 對得上；且要能給出 MoE／attention 分區佔比", "res": "成立：<b>57% 住在 MoE 區（層內節點 0–39）</b>、<b>42% 住在 attention／GDN 區（40–89）</b>；邊際 verify token +26.3 ms 裡 MoE +14.2（kernel 地板 +7.9）、attention/GDN +13.4。⛔ 附帶作廢：step 級 <code>gpu_sum</code>／<code>union_sum</code> 不可引用（假 buffer 灌水）⇒ 先前「裝置 span 邊際 ~31 ms」作廢。", "evid": "DEVICE_BUSY_ATTRIBUTED_2026-09-23.md §0／§1.1；CB_IS_THE_DEVICE_RESULT_2026-09-20.md", "docs": ["DEVICE_BUSY_ATTRIBUTED_*", "CB_IS_THE_DEVICE_RESULT_*"], "note": "歸因成立，但<b>不是可用槓桿</b>：受模型形狀與 kernel 物理約束 ⇒ 歸 C 天花板軸，只作背景約束與上界。"}, {"id": "c-bandwidth", "name": "頻寬屋頂／dense GEMV 上界", "theme": "GPU 計算／頻寬", "tier": "3a", "sub": "C", "goal": "回答：dense GEMV／這一族 kernel 的頻寬打滿了沒？<b>打滿能拿回多少 step</b>？（先造儀器 → 再開 knob → 掃描 → 才算上界）", "crit": "要有可引用的 achieved-bandwidth 儀器；並給出「全部打滿 100% 峰值」的<b>上界收益</b>，與 3% 門檻比", "res": "dense GEMV 每步 <b>13.39 ms（13.7–16.8%）</b>，實測已跑 <b>56–108 GB/s</b>（DRAM 峰值 108.8）；<b>就算全部打滿 100% 峰值也只省 1.92 ms ＝ 2.42% step ⇒ 低於 3% 門檻</b>。該族 kernel 另測 36–45 GB/s（裝置峰值 100.5）；NSG 全射程掃描（1..32）對成本無影響 ⇒ 這族可結案。", "evid": "DENSE_GEMV_INSTRUMENT_2026-09-22.md §0；SHAPE_ROOFLINE_2026-09-22.md §0；DENSE_NSG_RESCAN_2026-09-23.md", "docs": ["DENSE_GEMV_INSTRUMENT_*", "DENSE_NSG_RESCAN_*"], "note": "是<b>上界算術</b>不是加速手段：它給的是「打滿也只有 2.42%」這種否定結論 ⇒ 天花板軸，非活躍攻關軸。"}, {"id": "g1", "name": "G1：可達上界 / G1-G7 sweep", "theme": "上界／kernel", "tier": "3a", "crit": "空轉占比 (idle)", "res": "串行且空轉 19.2% 是「可恢復」的形狀，但 G1 已判定不可達（下界 9.0% > 5%）⇒ 「多少」目前不可引用（44/45 份非零 ⇒ 表內容會動）", "evid": "docs/G1_ACHIEVABLE_CEILING_2026-09-20.md／G1_G7_SWEEP_2026-09-20.md", "docs": ["G1_ACHIEVABLE_CEILING_*", "G1_G7_SWEEP_*", "JOINT_CAPTURE_*", "G1_PREMISE_B_RECHECK_*", "GAP_SPLIT_*", "GAP_ELIMINATION_PLAN_*", "GAP_FIX_*", "GAP_VS_MISS_*", "NODE_LABEL_GAP_*", "JOINT_SHAPE_KERNEL_AXIS_*"], "note": "", "sub": "C", "goal": "量出 <b>可達上界</b>（G1–G7 sweep）——先知道天花板在哪，才知道要追的數字合不合理。"}, {"id": "shape-knobs", "name": "shape／knob 世界模型（14–15 個旋鈕的邊界）", "theme": "上界／kernel", "tier": "3b", "crit": "θ(M) 曲線 ＋ roofline ＋ 落地驗證", "res": "SHAPE_KNOB_LANDED 證實落地；SHAPE_ROOFLINE 抓到「down 是 IQ3_S 不是 IQ3_XXS」等量測事實；BANDWIDTH_CEILING 100% 掃描；MMAP_CACHE_KERNEL_25 判死（mmap 只作用在 host 側 66.42 ms）", "evid": "docs/SHAPE_WORLD_MODEL_2026-09-23.md（已判死與 3% 軸並存）", "docs": ["SHAPE_*", "IDEAL_SHAPE_THEORETICAL_*", "FP_ORDER_*", "MMAP_CACHE_KERNEL_25_*", "BANDWIDTH_CEILING_100PCT_*", "GPU_CEILING_STEP2_*", "BEST_SHAPE_IQ3XXS_M4_*"], "note": "★ BEST_SHAPE 標「唯一沒被結論覆蓋、還活著的方向」（一處 switch case）", "sub": "C", "goal": "建立 <b>shape／knob 的世界模型</b>：把 14–15 個旋鈕各自的邊界量出來，讓「改哪個旋鈕有用」有據可依。"}, {"id": "io-constraint", "name": "IOCACHE 約束承認 ＋ 段邊界 S2", "theme": "上界／kernel", "tier": "4", "crit": "前提是否成立", "res": "IOCACHE：#6 沒做之前 #3 的 async 版本不可達（且不可並列相加）；S2：建議不做完（段邊界／drain）", "evid": "docs/IOCACHE_CONSTRAINT_ADMISSION_2026-09-22.md／docs/S2_RESIDENCY_AND_DRAIN_VERDICT_2026-09-20.md", "docs": ["IOCACHE_CONSTRAINT_ADMISSION_*", "S2_*", "L3_M1_GAP_LEDGER_*", "L3_M1_BLOCKED_STRUCTURAL_*"], "note": "", "sub": "S", "goal": "把 <b>IOCACHE 約束</b>與段邊界（S2）承認下來並寫成約束——目的是界定什麼不可能，而不是拿增益。"}, {"id": "sys-swap", "name": "swap 結構修復（L0–L4 + P0/P1/P2）", "theme": "系統／記憶體", "tier": "3b", "crit": "超訂 4838 MiB ⇒ 目標 launch swap → 0", "res": "launch swap 0、decode 11.49、thermal NOMINAL（commit efba7c1d5）", "evid": "docs/SWAP_STRUCTURAL_FIX_2026-09-24.md／SWAP_P0P1P2_FIX_*", "docs": ["SWAP_*"], "note": "⚠ 執行線主張、本線未複核；另判「pool 納入 wired 級管理」不建議", "sub": "na", "goal": "修好 <b>swap 結構</b>（L0–L4 ＋ P0／P1／P2），讓實驗跑得起來、不被 OOM／swap 殺掉。"}, {"id": "sys-window", "name": "server 窗口／box 准入（單一來源閘門）", "theme": "系統／記憶體", "tier": "3b", "crit": "窗口是否乾淨（thermal ＋ 進程 ＋ swap）", "res": "BOX_ADMISSION_SINGLE_SOURCE 定為單一來源；SERVER_WINDOW_LEDGER 記錄逐次窗口", "evid": "docs/BOX_ADMISSION_SINGLE_SOURCE_2026-09-20.md／SERVER_WINDOW_LEDGER_2026-09-19.md", "docs": ["BOX_ADMISSION_*", "SERVER_WINDOW_LEDGER_*"], "note": "與本線的 gate 規格同源（契約 §3）", "sub": "na", "goal": "建立 <b>server 窗口／box 准入的單一來源閘門</b>，避免兩條線同時搶 GPU 而互相蓋掉對方的 build。"}, {"id": "m3", "name": "M3／M4／M5 離開條件（09-17 期）", "theme": "系統／記憶體", "tier": "4", "crit": "roadmap 離開條件", "res": "M3 未達（9.82 vs 門檻 15）；M4 靠一個本身壞掉的量測被否決、修好後才關閉 —— 而那個量測現已作廢", "evid": "docs/M3_VERDICT_2026-09-17.md", "docs": ["M3_VERDICT_*"], "note": "★ 這批是 9.82/12.62 的出生地 ⇒ 已進契約 §7 作廢登記表", "sub": "na", "goal": "定出 <b>M3／M4／M5 的離開條件</b>（09-17 期）：什麼情況下該繼續投、什麼情況下該收手。"}, {"id": "misc-omlx", "name": "OMLX verify kernel ／ 其他 verify 路線", "theme": "MTP／spec", "tier": "4", "crit": "同 cell 配對", "res": "判死（見 OMLX_VERIFY_KERNEL_VERDICT）", "evid": "docs/OMLX_VERIFY_KERNEL_VERDICT_2026-09-24.md", "docs": ["OMLX_VERIFY_KERNEL_*"], "note": "⚠ 原歸 M；verify kernel 屬 GPU 計算／頻寬 ⇒ 改歸 C 天花板軸。", "sub": "C", "goal": "看 <b>OMLX verify kernel</b> 與其他 verify 路線能不能借來用，省下自己寫的成本。"}, {"id": "na-entry", "name": "入口／索引／決策頁（非實驗）", "theme": "不適用", "tier": "na", "crit": "—", "res": "不進四級：它們是入口與索引", "evid": "—", "docs": ["TODAY_TECH_DECISIONS.*", "MILESTONE_MAP*", "MILESTONE_MAP_RECHECK*", "DIAGNOSTIC_ARMS_LEDGER*", "MEASUREMENT_CONTRACT*", "IO_AXIS_VERDICT*", "S1_LINE_VERDICT*", "MW_WORKERS_VERDICT*", "MTP_AMORTIZATION*", "S1_TPOT_DECOMPOSITION*", "VOID_NUMBER_CITATIONS*", "ENGINE_LINE_ASSIGNMENT_AND_G1_LADDERS_*", "LATEST_COMMIT_GAP_ANALYSIS_*"], "note": "", "sub": "na", "goal": "（非實驗）維護<b>入口／索引／決策頁</b>，讓判決有唯一可查的落點。"}, {"id": "na-crossline", "name": "跨線／其他產品（Wan2.2、HarmonyOS、Windows client、Colibri、Unified IR…）", "theme": "不適用", "tier": "na", "crit": "—", "res": "本線無實測權或非本線主題 ⇒ 不塞進四級", "evid": "—", "docs": ["CGC_HARMONYOS_*", "CGC_Windows_Client_Guide*", "CGC_CROSS_PLATFORM_*", "CGC_COMPUTE_SHARING_*", "CGC_COLIBRI_*", "UNIFIED_RUNTIME_IR_*", "Wan2.2_*", "整合架構設計_*", "CGC_ENGINE_端雲開發指導書*"], "note": "", "sub": "na", "goal": "（非實驗）<b>跨線與其他產品</b>（Wan2.2、HarmonyOS、Windows client、Colibri、Unified IR）的記錄。"}, {"id": "na-design", "name": "expert cache 血統設計（09-05~09-09 期）", "theme": "不適用", "tier": "3b", "crit": "設計是否進了生產血統", "res": "HYBRID_DESIGN／INVARIANTS／INTEGRATION_DIFF／COMMIT_DIGEST：血統進了生產的 expert cache（現行 pool 即其後代）", "evid": "（推定：依歸檔狀態 ＋ 後續 L4／hybrid 設計檔；本線未複核）", "docs": ["CGC_EXPERT_CACHE_HYBRID_DESIGN_*", "CGC_EXPERT_CACHE_INVARIANTS_*", "CGC_EXPERT_CACHE_INTEGRATION_DIFF_*", "CGC_EXPERT_CACHE_COMMIT_DIGEST_*", "ExpertCache_關鍵版本技術白皮書_*"], "note": "⚠ 推定而非實測（歸檔於 pre-consistency-metrics 期）", "sub": "S", "goal": "確立 <b>expert cache 的血統設計</b>（09-05～09-09 期）：權重常駐 SSD → 池的整體架構與介面。"}, {"id": "na-softpool", "name": "softpool／L4 v1v2／doublebuffer spike（09-05~09-06 期）", "theme": "不適用", "tier": "4", "crit": "是否被後續版本取代", "res": "推定被 hybrid 路線取代（37/41 份零外部引用 ⇒ 已孤立）", "evid": "（推定：反向引用統計 ＋ 歸檔狀態）", "docs": ["CGC_EXPERT_CACHE_SOFTPOOL_WHITE_PAPER_*", "CGC_SOFTPOOL_EXPERT_CACHE_L4_V1V2_*", "CGC_DOUBLEBUFFER_SPIKE_DESIGN_*", "L3_Softpool_vs_L4_*", "CGC_Decode_Version_Milestone_*", "CGC_Step23_*"], "note": "⚠ 推定；非本線判決", "sub": "na", "goal": "早期（09-05～09-09）<b>softpool／L4 v1v2／doublebuffer spike</b> 的探索，尋找池的替代實作。"}, {"id": "na-olddata", "name": "舊口徑數據報告（Gemma4／MTP_BENCHMARK_WIN8GB／TPOT 路線圖）", "theme": "不適用", "tier": "4", "crit": "口徑是否仍有效", "res": "作廢：09-17 起 decode 一律 llama-bench、warm-skip 口徑（`MEMORY_PERF.md` 裁定），且 MTP_BENCHMARK_WIN8GB 屬跨啟動不可配對", "evid": "docs/CGC_TPOT_延遲分解與優化路線圖_2026-09-07.html／MTP_BENCHMARK_WIN8GB.md", "docs": ["Gemma4_*", "MTP_BENCHMARK_WIN8GB*", "CGC_TPOT_*", "CGC_DEVSERVER_RELEASE_NOTES_*", "CGC_DEVSERVER_DEVELOPMENT_WHITEPAPER_*", "CGC_Gate_1.0_*", "NATIVE_OPENAI_OPTIMIZATION_SCORECARD*", "CGC_品質*", "品质归因测试方案*", "CGC_ARCHITECTURE_OVERVIEW*", "CGC_CHAT_TEMPLATE_PROFILES_*", "AGENT_HARNESS_WHITEPAPER*", "AGENT_HARNESS_TECH_ARCH_MILESTONE_WHITEPAPER*", "檢討報告_*", "M4_SETUP_GUIDE*", "TURBOFIELDFARE_LOCAL_PROCESS_READY*"], "note": "⚠ 含作廢數字（9.82/12.62）者，依契約 §7 不得再引用", "sub": "na", "goal": "整理<b>舊口徑數據報告</b>（Gemma4、MTP_BENCHMARK_WIN8GB、TPOT 路線圖）——目的是標明它們不可再引用。"}], "subgoals": [{"id": "S", "label": "S 序列化消減", "color": "#ec4899", "def": "41 段提交的同步／資料搬運路徑（含 IO、填池、段邊界）", "role": "active", "role_label": "活躍攻關軸：41 段提交的同步／資料搬運，主項可被工程手段消掉"}, {"id": "M", "label": "M MTP on 加速", "color": "#eab308", "def": "speculative 攤薄係數 m 與 accept rate", "role": "active", "role_label": "活躍攻關軸：speculative 攤薄係數 m 與 accept rate a"}, {"id": "both", "label": "兩者", "color": "#f97316", "def": "需 S 與 M 同時成立（例：M-25）", "role": "couple", "role_label": "耦合類：需 S 與 M 同時成立（例：M-25）；收益不可假設可相加"}, {"id": "C", "label": "C kernel／頻寬效率", "color": "#38bdf8", "def": "GPU 裝置忙碌時間與頻寬效率：MUL_MAT_ID／dequant／dense GEMV 的佔比與 achieved bandwidth", "role": "ceiling", "role_label": "天花板軸（不是活躍攻關軸）：受模型形狀與 kernel 物理約束，已知槓桿多半已證偽 ⇒ 持續證偽、只當背景約束與上界；但不能在分類裡消失，否則最大的時間塊無人認領"}, {"id": "na", "label": "不適用", "color": "#94a3b8", "def": "不屬於 S／M 兩軸（系統、上界算術、其他）", "role": "none", "role_label": "非攻關軸：約束／帳本／上界算術／入口索引／跨線產品"}], "stages": [{"id": "prod", "label": "生產（可放生產／已交付）", "desc": "① ② ③b —— 已進生產、或已是生產決策依據"}, {"id": "exp", "label": "實驗階段（階段性）", "desc": "③a —— 機制／量測成立，但產物還不能進生產"}, {"id": "closed", "label": "已結案（廢棄／不適用）", "desc": "④ 廢棄 ＋ 不適用"}], "subgoal_briefs": {"S": {"ref": "../S1_TPOT_DECOMPOSITION_2026-09-25.html", "ref_title": "S1 TPOT 分解（2026-09-25）", "headline": "41 段提交 88.5 ms（11.30 t/s） → 單段提交 48.2 ms（20.73 t/s，×1.83）", "sections": [{"k": "1 現狀", "v": ["交付口徑（41 段提交）：<b>88.5 ms/token ＝ 11.30 t/s</b>。", "單段提交 S1（實測）：<b>48.2 ms ＝ 20.73 t/s（×1.83）</b>。", "單段 ＋ 保留 fill（估計）：52.2 ms ＝ 19.2 t/s（×1.70）。", "但 S1 目前<b>不能交付</b>：同一個開關讓 CGC-HOOK 計數 0、<code>file_reads=0</code> ⇒ 拿掉的除了同步，還有<b>正確性前提</b>（權重不進池）。"]}, {"k": "2 推論", "v": ["被消掉的 40.3 ms 裡：<b>41 段提交的序列化 ≈ 36.3 ms（41.0%）</b>、<b>fill 同步 3.96 ms（4.5%）</b>。", "其餘（單段也躲不掉）：<b>48.2 ms（54.5%）</b>。", "★ <b>主項是序列化，不是 fill</b> —— 先前把 40.3 ms 全歸給 fill，是把 4 ms 說成 40 ms。", "⇒ 整層重算判死；只有 <b>per-expert 重算</b>（MoE 輸出線性疊加）值得做：+13%~+18%。"]}, {"k": "3 量測", "v": ["同一 build <code>1ca685490</code>、同一 cell（<code>p2048 / n128 / d512 / r3 / b5632</code>）、同一 pool（8 GiB）、<b>兩臂皆無 spec</b>。", "fill 同步 3.96 ms 出自 <b>EBTIMER</b>；序列化 36.3 ms 為<b>未再分解</b>的差值項。", "來源：<code>Backup/seg_batch_s1_pairs/abba_212809.json</code>；台帳 <code>docs/DIAGNOSTIC_ARMS_LEDGER_2026-09-25.md</code> §1。"]}, {"k": "4 目標", "v": ["<b>可執行目標</b>：fill 若能留在單段提交之下且不進關鍵路徑 ⇒ 48.2 + 3.96 ≈ <b>52.2 ms ⇒ ≈ 19.2 t/s（×1.70）</b>。", "閘門已判 OPEN：損益平衡點 66.1%~114.3% miss 率，實測區間 4.7%~43.0% 全在平衡點以下 ⇒ per-expert 重算在 0~66% 任一 miss 率下都淨正。", "⚠ fill 是<b>正確性前提</b>不是速度前提：無 fill ⇒ 權重永不出現 ⇒ 永遠 garbage；背景 fill 決定拿 14.1 還是 19.9，<b>不決定正負</b>。"]}]}, "M": {"ref": "../mtp_amortization.html", "ref_title": "MTP 攤薄機制與現狀/歷史帳（16GB M4）", "headline": "MTP OFF 11.49 t/s → ON（今天 a=0.44）~13.7 t/s；歷史 a=0.98 → ~25 t/s", "sections": [{"k": "1 現狀", "v": ["MTP OFF（現狀）：每輪 1 次 target 前向、產出 1 token ⇒ 固定成本無攤薄 ⇒ <b>11.49 t/s</b>。", "MTP ON（<b>今天 a=0.44</b>）：每輪 1 次 verify 批次 ＋ 便宜 draft（19%），產出 L=1+a·k ≈ 2.31 token ⇒ <b>~13.7 t/s（S=1.19）</b>。", "MTP ON（<b>歷史 a=0.98</b>）：同一條 draft 幾乎全中，L≈3.91 ⇒ <b>~25 t/s（S=2.0）</b>。", "⚠ 現行生產口徑 MTP off 實為 <b>11.03~12.20</b>；<b>「9.82/12.62/+28.5%」已作廢</b>（HTTP 舊口徑、無 warm-skip）。"]}, {"k": "2 推論", "v": ["加速比 <code>S = (1 + a·k) / (1 + m·k)</code>｜a＝draft 接受率、k＝draft 長度、m＝每多驗一個 token 的邊際成本。", "槓桿（按 upside 排序）：① <b>拉高接受率 a</b>：a .444→.977 ⇒ S 1.19→2.0（★最大，查 regression）；② <b>k 按 m 選</b>：server m=.32 ⇒ k=3 贏（看 mean_len 非 a）；③ <b>降邊際 m</b>：固定 a 要 S=2 需 m≤.055（−83%）⇒ 被低效頻寬鎖死；④ <b>draft head 成本</b>：T=1 自迴歸鏈（19%）不可批次 ⇒ 次要。", "關鍵結論：攤薄倍數<b>幾乎完全由 a 決定</b>，不在 verify kernel（verify 已批次、每輪就一次）。", "已知嫌疑：<b>draft 走 greedy、target 走 temp 0.4 採樣，兩者分布不一致</b>（a 雙峰、對 prompt/temp 強敏感）。"]}, {"k": "3 量測", "v": ["<b>交付 cell 的 MTP 增益 = UNRESOLVED</b>（契約 §7 登記表；機檢 <code>void_number_check.py</code>）。", "分母失效：現行生產口徑 MTP off 已是 11.03~12.20，舊的 9.82 不能當分母。", "合成 prompt 的 <code>acc_rate 0.93~0.99</code>（交付實測 0.465~0.58）⇒ 讀數不可移植。", "執行線的 k-sweep 跑 <b>3 GiB pool</b>（budget gate 逼的）⇒ 絕對值不可與 8 GiB 的 11.5 併排。"]}, {"k": "4 目標", "v": ["把 a 拉回 <b>.97 ⇒ 23–25 t/s</b>；拉不回 ⇒ <b>MTP on 現實上界就是 ~14（+19%）</b>。", "先前「加速比 2」不成立：需 verify 邊際 42.03 → ≤17.9 ms（<b>−57%</b>）；光拉 accept rate 只值 +6%。", "draft 腿僅佔 13.6% ⇒ 其天花板 ≈ +16%（⇒ 別練 draft head、別做 dynamic-k）。"]}]}, "both": {"ref": null, "ref_title": null, "headline": "需 S 與 M 同時成立 —— 只有 M-25（同一次 pp≥250 ∧ tg>12.57）；⚠ 兩軸有耦合，收益不可假設可相加", "sections": [{"k": "1 現狀", "v": ["只有 <b>M-25</b> 一個條目落在這一格；目前<b>判死</b>。", "最接近的一次：pp 260.41 ＋ tg 12.195，<b>差 3%</b>（但不同時滿足）。", "★ 現狀提醒：<b>S、M 兩軸目前都未真正交付</b> —— S 的單段提交 ×1.83 建立在 <code>CGC-HOOK=0</code>、權重不進池（丟正確性）之上；M 的 draft 在當前 decode 全程 <b>−1</b>（沒有拿到攤薄）。⇒ 這是<b>兩條未攻克的主軸</b>，不是兩塊已拿到的收益。"]}, {"k": "2 推論", "v": ["fill 的同步時間只佔 decode step <b>4.7%</b>（EBTIMER 直讀）⇒ 即使把 fill 完全消滅也只有 +5%。", "⇒ 端到端上限也就是 ~20% ⇒ <b>到不了 25</b>。", "⚠ <b>S 與 M 不是獨立軸</b>：兩者都動 hook／調度 —— 單段提交（S）會改 fill 觸發點，MTP 的 draft／verify 也依賴同一個 hook 與上下文 ⇒ 兩者的收益<b>不可簡單相加</b>（教訓：ρ 與 prebind 各自 +14.0%~+14.5%、同 regime 下<b>同價不可相加</b>）。"]}, {"k": "3 量測", "v": ["權威：<code>docs/IO_AXIS_VERDICT_2026-09-25.md</code>。", "端到端待 <code>nf2_nofill</code> 配對定案。"]}, {"k": "4 目標", "v": ["25 t/s：需 S（序列化）與 M（MTP 攤薄）<b>同時</b>落地，目前兩者各自都未達標。", "⚠ 2026-09-25 凌晨那批非生產口徑數據已全部作廢並刪除，勿引用。"]}]}, "na": {"ref": null, "ref_title": null, "headline": "不屬於 S／M 兩軸 —— 系統／記憶體、GPU 上界算術、入口索引、跨線產品", "sections": [{"k": "1 現狀", "v": ["15 個條目：swap 結構修復、box 准入閘門、G1／K3／G4 上界算術、shape-knob、入口/索引、跨線產品。", "這些是<b>約束與帳本</b>，不是加速手段本身。"]}, {"k": "2 推論", "v": ["上界算術（G1／K3／G4）決定「什麼不可能」；系統項（swap／box）決定「能不能跑」。", "把它們當成 S 或 M 的增益來源會重複計數。"]}, {"k": "3 量測", "v": ["多為靜態算術與環境閘門，非 decode／prefill 吞吐實測。"]}, {"k": "4 目標", "v": ["維持約束成立（不被 swap／OOM 殺）、上界算術不變 ⇒ 不設加速目標。"]}]}, "C": {"ref": "../DEVICE_BUSY_ATTRIBUTED_2026-09-23.md", "ref_title": "那 154 ms 是什麼：裝置忙碌時間，不是 host（2026-09-23）", "headline": "交付 step 最大的一塊是裝置忙碌時間（不是 host、不是段序列化、不是 MTP）：MoE 57% ／ attention+GDN 42%；但打滿頻寬也只值 ~2.4% step", "sections": [{"k": "1 現狀", "v": ["歸因（<code>DEVICE_BUSY_ATTRIBUTED_2026-09-23.md</code>）：那塊沒人認領的時間<b>是裝置忙碌時間</b>——<b>57% 住在 MoE 區（層內節點 0–39）</b>、<b>42% 住在 attention／GDN 區（40–89）</b>。", "邊際 verify token 的 <b>+26.3 ms</b> 裝置時間裡，MoE 區只 +14.2（其中 kernel 自己的地板 +7.9），另外 <b>+13.4 是 attention／GDN 的投影與掃描</b>。", "operator 口徑：<b>verify 的 device span（union／MUL_MAT_ID／dequant）佔 step 56–61%，是單一最大塊</b>；dense 部分只跑 <b>47.6 GB/s</b>，屋頂 60–70 GB/s。", "⚠ 口徑打架要先講：本樹文件另載<b>裝置峰值 100.5 GB/s</b>、該族 kernel 只跑 <b>36–45 GB/s</b>、dense GEMV 實測 <b>56–108 GB/s</b>（DRAM 峰值 108.8）。引用時必須標是哪一份。"]}, {"k": "2 推論", "v": ["這一塊<b>既不是段序列化（S）、也不是 MTP 攤薄（M）</b>，而是「GPU 算得夠不夠快、頻寬打沒打滿」。", "天花板是硬的：<b>dense GEMV 每步 13.39 ms（13.7–16.8%）</b>，<b>就算每一個都打滿 100% DRAM 峰值也只省 1.92 ms ＝ 2.42% step —— 低於 3% 門檻</b>。", "已證偽的槓桿：<b>G4 元素級融合</b>（已融合／天花板 8.5%）、<b>K0–K5 融合與小 op 群</b>、<b>dense GEMV 的 NSG 全射程掃描（1..32）</b>（±3% 內、無單調趨勢）、<b>OMLX verify kernel</b>。", "尚未證偽的唯一免寫 kernel 槓桿：<b>型別替換</b>（kernel 層 gate/up <code>iq2_s→q2_K</code> 1.35×、down <code>iq3_s→iq4_nl</code> 1.46×）—— 端到端收益<b>待估</b>，未量測。"]}, {"k": "3 量測", "v": ["工具：<code>scripts/check/verify_marginal.py --device-split</code>；形狀探針 <code>scripts/check/shape_probe/</code>（獨立二進位，不動共用建置產物）。", "⛔ <b>step 級 <code>gpu_sum</code>／<code>union_sum</code> 不可引用</b>：每步 2 個假 buffer 在灌同一個累加器（<code>GPUEndTime−GPUStartTime</code> 回傳絕對開機時戳 ≈1.7e14 ns，通過了 <code>s&gt;0 &amp;&amp; e&gt;s</code> 守衛）⇒ 先前「裝置 span 邊際 ~31 ms/token」<b>作廢</b>。", "可用的是逐 buffer 的 NSM，且要套「<b>buffer 不得長於它自己的 step</b>」這一刀。"]}, {"k": "4 目標", "v": ["<b>不設加速目標，只設證偽目標</b>：它是背景約束與天花板，不是與 S／M 並列的活躍攻關軸。", "對 S／M 的含義：<b>S 消完序列化之後，剩下的地板就是這一塊</b>（單段提交後 48.2 ms 裡的大部分）—— 所以 C 決定了 S 的天花板，不決定 S 的正負。", "要持續做的是：<b>每次有人聲稱「改 kernel 就能 +X%」，先用 roofline／device-split 證偽</b>；型別替換是唯一還站著的待測槓桿。"]}]}}}, MAP = [{"doc": "\"docs/archive/pre-consistency-metrics-2026-09-11/CGC_TPOT_\\345\\273\\266\\350\\277\\237\\345\\210\\206\\350\\247\\243\\344\\270\\216\\344\\274\\230\\345\\214\\226\\350\\267\\257\\347\\272\\277\\345\\233\\276_2026-09-07.html\"", "entry": "na-olddata"}, {"doc": "\"docs/archive/pre-consistency-metrics-2026-09-11/CGC_TPOT_\\345\\273\\266\\351\\201\\262\\345\\210\\206\\350\\247\\243\\350\\210\\207\\345\\204\\252\\345\\214\\226\\350\\267\\257\\347\\267\\232\\345\\234\\226_2026-09-07.html\"", "entry": "na-olddata"}, {"doc": "\"docs/archive/pre-consistency-metrics-2026-09-11/L3_Softpool_vs_L4_\\346\\212\\200\\350\\241\\223\\346\\210\\220\\347\\206\\237\\345\\272\\246\\346\\257\\224\\350\\274\\203\\345\\240\\261\\345\\221\\212_2026-09-09.html\"", "entry": "na-softpool"}, {"doc": "docs/AGENT_HARNESS_TECH_ARCH_MILESTONE_WHITEPAPER_20260916.html", "entry": "na-olddata"}, {"doc": "docs/BANDWIDTH_CEILING_100PCT_2026-09-23.html", "entry": "shape-knobs"}, {"doc": "docs/BEST_SHAPE_IQ3XXS_M4_2026-09-22.md", "entry": "shape-knobs"}, {"doc": "docs/BIGMOMO_TRANSFER_AND_MTP_PARAM_PARITY_2026-09-19.md", "entry": "mtp-ksweep"}, {"doc": "docs/BOX_ADMISSION_SINGLE_SOURCE_2026-09-20.md", "entry": "sys-window"}, {"doc": "docs/CB_IS_THE_DEVICE_RESULT_2026-09-20.md", "entry": "c-device-span"}, {"doc": "docs/CEILING_STACK_2026-09-21.md", "entry": "m-decode25"}, {"doc": "docs/CGC_Decode_Version_Milestone_2026-09-06.html", "entry": "na-softpool"}, {"doc": "docs/CGC_EXPERT_CACHE_COMMIT_DIGEST_2026-09-05.html", "entry": "na-design"}, {"doc": "docs/CGC_EXPERT_CACHE_HYBRID_DESIGN_2026-09-05.html", "entry": "na-design"}, {"doc": "docs/CGC_EXPERT_CACHE_INTEGRATION_DIFF_2026-09-05.html", "entry": "na-design"}, {"doc": "docs/CGC_EXPERT_CACHE_INVARIANTS_v1.md", "entry": "na-design"}, {"doc": "docs/CGC_EXPERT_CACHE_SOFTPOOL_WHITE_PAPER_2026-09-05.html", "entry": "na-softpool"}, {"doc": "docs/CGC_SOFTPOOL_EXPERT_CACHE_L4_V1V2_2026-09-05.html", "entry": "na-softpool"}, {"doc": "docs/CGC_Step23_ExpertCache_ColdGuard_LogitsCallback_Repair_2026-09-06.html", "entry": "na-softpool"}, {"doc": "docs/CGC_Step23_RenormRouting_AB_2026-09-06.html", "entry": "na-softpool"}, {"doc": "docs/CROSS_LINE_STATUS_AND_TARGET_MATH_2026-09-20.md", "entry": "m-decode25"}, {"doc": "docs/DECODE25_CEILING_2026-09-20.md", "entry": "m-decode25"}, {"doc": "docs/DECODE25_FINAL_VERDICT_2026-09-21.md", "entry": "m-decode25"}, {"doc": "docs/DECODE_25TPS_TWO_ALGORITHMS_2026-09-19.md", "entry": "m-decode25"}, {"doc": "docs/DECODE_25TPS_VERDICT_2026-09-23.md", "entry": "m-decode25"}, {"doc": "docs/DENSE_GEMV_INSTRUMENT_2026-09-22.md", "entry": "c-bandwidth"}, {"doc": "docs/DENSE_NSG_RESCAN_2026-09-23.md", "entry": "c-bandwidth"}, {"doc": "docs/DEVICE_BUSY_ATTRIBUTED_2026-09-23.md", "entry": "c-device-span"}, {"doc": "docs/ENGINE_LINE_ASSIGNMENT_AND_G1_LADDERS_2026-09-20.md", "entry": "na-entry"}, {"doc": "docs/EXPERT_CACHE_THRASH_2026-09-19.md", "entry": "mtp-verify-opt"}, {"doc": "docs/EXPERT_CHANNEL_SHAPE_2026-09-23.md", "entry": "io-shape"}, {"doc": "docs/EXPERT_IO_SHAPE_FIRST_PRINCIPLES_2026-09-23.md", "entry": "io-shape"}, {"doc": "docs/F1_CB_MISS_REGRESSION_RESULT_2026-09-20.md", "entry": "cache-rho"}, {"doc": "docs/FP_ORDER_SHAPE_2026-09-22.md", "entry": "shape-knobs"}, {"doc": "docs/FP_ORDER_TARGETS_2026-09-22.md", "entry": "shape-knobs"}, {"doc": "docs/G1_ACHIEVABLE_CEILING_2026-09-20.md", "entry": "g1"}, {"doc": "docs/G1_G7_SWEEP_2026-09-20.md", "entry": "g1"}, {"doc": "docs/G1_PREMISE_B_RECHECK_2026-09-20.md", "entry": "g1"}, {"doc": "docs/G4_ADDFUSE_ALREADY_FUSED_2026-09-20.md", "entry": "g4"}, {"doc": "docs/G4_DISPATCH_CENSUS_2026-09-20.md", "entry": "g4"}, {"doc": "docs/G4_ELEMENTWISE_TARGETS_2026-09-20.md", "entry": "g4"}, {"doc": "docs/G4_FUSION_ANSWER_2026-09-20.md", "entry": "g4"}, {"doc": "docs/G4_FUSION_FAMILY_ATTRIBUTION_2026-09-20.md", "entry": "g4"}, {"doc": "docs/G4_FUSION_INVENTORY_2026-09-20.md", "entry": "g4"}, {"doc": "docs/G4_FUSION_INVENTORY_20260920_1510.html", "entry": "g4"}, {"doc": "docs/G4_MEASUREMENT_CARD_2026-09-20.md", "entry": "g4"}, {"doc": "docs/G4_TAIL_ATTRIBUTION_2026-09-20.md", "entry": "g4"}, {"doc": "docs/G4_TAIL_ATTRIBUTION_20260920_1345.html", "entry": "g4"}, {"doc": "docs/G4_WORK_ORDER_2026-09-20.md", "entry": "g4"}, {"doc": "docs/G7_DELIVERY_ARITHMETIC_2026-09-20.md", "entry": "m-decode25"}, {"doc": "docs/GAP_ELIMINATION_PLAN_2026-09-24.md", "entry": "g1"}, {"doc": "docs/GAP_FIX_EXEC_2026-09-24.md", "entry": "g1"}, {"doc": "docs/GAP_FIX_WHITEPAPER_2026-09-24.md", "entry": "g1"}, {"doc": "docs/GAP_SPLIT_2026-09-20.md", "entry": "g1"}, {"doc": "docs/GAP_SPLIT_SWAP_BIAS_2026-09-20.md", "entry": "cache-rho"}, {"doc": "docs/GAP_VS_MISS_2026-09-20.md", "entry": "miss-3a"}, {"doc": "docs/GPU_CEILING_STEP2_2026-09-22.md", "entry": "shape-knobs"}, {"doc": "docs/Gemma4_Final_Report.md", "entry": "na-olddata"}, {"doc": "docs/Gemma4_Performance_Report.md", "entry": "na-olddata"}, {"doc": "docs/H_MEASURED_2026-09-24.md", "entry": "cache-prebind"}, {"doc": "docs/H_MEASURED_A_VERDICT_2026-09-24.md", "entry": "cache-prebind"}, {"doc": "docs/IDEAL_SHAPE_THEORETICAL_2026-09-23.html", "entry": "shape-knobs"}, {"doc": "docs/IOCACHE_CONSTRAINT_ADMISSION_2026-09-22.md", "entry": "io-constraint"}, {"doc": "docs/IO_PATH_AB_2026-09-21.md", "entry": "io-poolsize"}, {"doc": "docs/JOINT_CAPTURE_2026-09-20.md", "entry": "g1"}, {"doc": "docs/JOINT_SHAPE_KERNEL_AXIS_2026-09-22.md", "entry": "g1"}, {"doc": "docs/K3_CEILING_REAUDIT_2026-09-21.md", "entry": "k3-price"}, {"doc": "docs/K3_FOOTPRINT_AND_SHAPEKNOB_20260923_0659.html", "entry": "k3-price"}, {"doc": "docs/K3_PAIR_CERT_2026-09-23.md", "entry": "k3-swing"}, {"doc": "docs/K3_PAIR_CERT_V2_BENCH_2026-09-23.md", "entry": "k3-swing"}, {"doc": "docs/K3_PRICE_MEASURED_2026-09-21.md", "entry": "k3-price"}, {"doc": "docs/K3_SWING_ANALYSIS_2026-09-23.md", "entry": "k3-swing"}, {"doc": "docs/K5_GRID_HYPOTHESIS_2026-09-21.md", "entry": "k-series"}, {"doc": "docs/K5_VERDICT_2026-09-21.md", "entry": "k-series"}, {"doc": "docs/KNOB_FULL_MAP_15_2026-09-22.md", "entry": "k3-price"}, {"doc": "docs/KNOB_INVENTORY_VERIFIED_2026-09-22.md", "entry": "k3-price"}, {"doc": "docs/L3_M1_BLOCKED_STRUCTURAL_2026-09-20.md", "entry": "io-constraint"}, {"doc": "docs/L3_M1_GAP_LEDGER_2026-09-20.md", "entry": "io-constraint"}, {"doc": "docs/LATEST_COMMIT_GAP_ANALYSIS_2026-09-15.md", "entry": "na-entry"}, {"doc": "docs/M3_VERDICT_2026-09-17.md", "entry": "m3"}, {"doc": "docs/M4_SETUP_GUIDE.md", "entry": "na-olddata"}, {"doc": "docs/MILESTONE_MAP_2026-09-21.md", "entry": "na-entry"}, {"doc": "docs/MILESTONE_MAP_20260920_1345.html", "entry": "na-entry"}, {"doc": "docs/MISS_PATH_COST_AUDIT_2026-09-13.md", "entry": "miss-3a"}, {"doc": "docs/MMAP_CACHE_KERNEL_25_2026-09-21.md", "entry": "shape-knobs"}, {"doc": "docs/MOE_MTP_FEASIBILITY_2026-09-18.md", "entry": "mtp-rsl"}, {"doc": "docs/MTP3_25TPS_ARITHMETIC_2026-09-18.md", "entry": "mtp-caliper"}, {"doc": "docs/MTP_2X_BOUNDARY_2026-09-19.md", "entry": "mtp-2x"}, {"doc": "docs/MTP_ABBA_RECHECK_2026-09-18.md", "entry": "mtp-caliper"}, {"doc": "docs/MTP_ACCEPT_RULE_G6_2026-09-20.md", "entry": "mtp-accept"}, {"doc": "docs/MTP_BENCHMARK_WIN8GB.md", "entry": "na-olddata"}, {"doc": "docs/MTP_BENCH_PARITY_20260918_1945.html", "entry": "mtp-caliper"}, {"doc": "docs/MTP_HEAD_PROVENANCE_GATE_2026-09-14.md", "entry": "mtp-instrument"}, {"doc": "docs/MTP_INSTRUMENT_PLAN_2026-09-17.md", "entry": "mtp-instrument"}, {"doc": "docs/MTP_IN_LLAMA_BENCH_2026-09-18.md", "entry": "mtp-instrument"}, {"doc": "docs/MTP_KEY_SHAPE_2026-09-23.html", "entry": "mtp-ksweep"}, {"doc": "docs/MTP_K_AB_2026-09-18.md", "entry": "mtp-caliper"}, {"doc": "docs/MTP_K_SWEEP_2026-09-22.md", "entry": "mtp-ksweep"}, {"doc": "docs/MTP_LAUNCH_REQUIRED_PARAMS_2026-09-18.md", "entry": "mtp-instrument"}, {"doc": "docs/MTP_NET_EFFECT_PAIRED_2026-09-18.md", "entry": "mtp-caliper"}, {"doc": "docs/MTP_POOL_CONFOUND_2026-09-17.md", "entry": "mtp-caliper"}, {"doc": "docs/MTP_ROUND_COST_OPT_BACKLOG_2026-09-19.md", "entry": "mtp-accept"}, {"doc": "docs/MTP_VERIFY_COST_2026-09-21.md", "entry": "mtp-verify-opt"}, {"doc": "docs/MTP_VERIFY_HEADROOM_2026-09-24.md", "entry": "mtp-ksweep"}, {"doc": "docs/MTP_VERIFY_OPT_2026-09-18.md", "entry": "mtp-verify-opt"}, {"doc": "docs/MTP_VERIFY_SPLIT_2026-09-19.md", "entry": "mtp-ksweep"}, {"doc": "docs/M_K5_SHAPE_2026-09-21.md", "entry": "k-series"}, {"doc": "docs/M_W_DELIVERY_VERDICT_2026-09-21.md", "entry": "io-mw"}, {"doc": "docs/NEIGHBOUR_PREFETCH_VERDICT_2026-09-21.md", "entry": "io-mpf"}, {"doc": "docs/NODE_LABEL_GAP_2026-09-20.md", "entry": "g1"}, {"doc": "docs/OMLX_VERIFY_KERNEL_VERDICT_2026-09-24.md", "entry": "misc-omlx"}, {"doc": "docs/ORNITH_ALIGNED_AB_AND_25_ARITHMETIC_20260918_0445.html", "entry": "mtp-caliper"}, {"doc": "docs/PREBIND_SLOT_DESIGN_2026-09-23.md", "entry": "cache-prebind"}, {"doc": "docs/PREBIND_STAGE0_RESULT_2026-09-23.md", "entry": "cache-prebind"}, {"doc": "docs/PREBIND_STAGE0_SPEC_2026-09-23.md", "entry": "cache-prebind"}, {"doc": "docs/PREBIND_TRADEOFF_2026-09-23.md", "entry": "cache-prebind"}, {"doc": "docs/PREBIND_VERDICT_SETTLED_2026-09-24.md", "entry": "cache-prebind"}, {"doc": "docs/PREFILL250_CERTIFIABILITY_20260916.html", "entry": "m-prefill250"}, {"doc": "docs/PREFILL250_CONDITIONAL_DELIVERY_20260916.html", "entry": "m-prefill250"}, {"doc": "docs/PREFILL250_CONDITIONAL_DELIVERY_20260916.md", "entry": "m-prefill250"}, {"doc": "docs/PREFILL250_CONFIGURATION_GUIDE_2026-09-15.html", "entry": "m-prefill250"}, {"doc": "docs/PREFILL250_DECODE25_STRATEGY_20260919.html", "entry": "m-prefill250"}, {"doc": "docs/PREFILL250_DECODE25_VERDICT_2026-09-20.md", "entry": "m-prefill250"}, {"doc": "docs/PREFILL250_DECODE25_WHITEPAPER_2026-09-15.html", "entry": "m-prefill250"}, {"doc": "docs/PREFILL250_DECODE25_WHITEPAPER_20260915_1745.html", "entry": "m-prefill250"}, {"doc": "docs/PREFILL250_DECODE25_WHITEPAPER_20260915_1810.html", "entry": "m-prefill250"}, {"doc": "docs/PREFILL250_DECODE25_WHITEPAPER_20260915_1900.html", "entry": "m-prefill250"}, {"doc": "docs/PREFILL250_DECODE25_WHITEPAPER_20260915_2240.html", "entry": "m-prefill250"}, {"doc": "docs/PREFILL250_DECODE25_WHITEPAPER_20260915_2355.html", "entry": "m-prefill250"}, {"doc": "docs/PREFILL250_DECODE_MILESTONE_20260917_1510.html", "entry": "m-prefill250"}, {"doc": "docs/PREFILL250_MET_AND_S1_REJUDGE_2026-09-24.md", "entry": "m-prefill250"}, {"doc": "docs/PREFILL250_THERMAL_TRANSIENT_20260916.html", "entry": "m-prefill250"}, {"doc": "docs/PROD_NEW_MTP_OFF_2026-09-23.json", "entry": "mtp-instrument"}, {"doc": "docs/PROD_NEW_MTP_OFF_2026-09-23.md", "entry": "mtp-instrument"}, {"doc": "docs/PROGRESS_25TPS_2026-09-21.md", "entry": "m-decode25"}, {"doc": "docs/REUSE_DISTANCE_MTPON_CONFIRM_2026-09-20.md", "entry": "mtp-2x"}, {"doc": "docs/REUSE_DISTANCE_RESULT_2026-09-20.md", "entry": "mtp-rsl"}, {"doc": "docs/RHO_BATCH_REGRESSION_2026-09-24.md", "entry": "cache-rho"}, {"doc": "docs/RHO_MAXQ_SETTLED_2026-09-23.md", "entry": "cache-rho"}, {"doc": "docs/RHO_STAGE0_RESULT_2026-09-23.md", "entry": "cache-rho"}, {"doc": "docs/ROADMAP_PREFILL250_DECODE25_2026-09-13.md", "entry": "m-prefill250"}, {"doc": "docs/RSL_MTP_GAIN_2026-09-18.md", "entry": "mtp-rsl"}, {"doc": "docs/RSL_MTP_GAIN_ESTIMATE_2026-09-18.md", "entry": "mtp-rsl"}, {"doc": "docs/S0_MTP_ONOFF_AB_2026-09-21.md", "entry": "mtp-caliper"}, {"doc": "docs/S1_CAPTURE_ROUND2_20260916_2035.html", "entry": "s1-segbatch"}, {"doc": "docs/S1_DIAGNOSTIC_ABORT_ROOT_CAUSE_2026-09-20.md", "entry": "s1-segbatch"}, {"doc": "docs/S1_DIAGNOSTIC_ABORT_ROOT_CAUSE_20260920_0715.html", "entry": "s1-segbatch"}, {"doc": "docs/S1_DISCRIMINATION_RESULT_20260917.html", "entry": "s1-probe"}, {"doc": "docs/S1_FRONTIER_2026-09-18.md", "entry": "s1-segbatch"}, {"doc": "docs/S1_INSTRUMENT_AND_MEMORY_DELIVERY_20260917_0320.html", "entry": "s1-segbatch"}, {"doc": "docs/S1_LAYER1_MOE_GATHER_20260917.html", "entry": "s1-probe"}, {"doc": "docs/S1_MINIL_TRACKING_20260917.html", "entry": "s1-probe"}, {"doc": "docs/S1_OUTPUT_CAPTURE_20260916_1955.html", "entry": "s1-probe"}, {"doc": "docs/S1_OWNER_EXPECT_CHANNELS_20260917_1145.html", "entry": "s1-probe"}, {"doc": "docs/S1_SLOT_OWNER_REFUTED_20260917.html", "entry": "s1-refuted"}, {"doc": "docs/S1_SRC2_INSTRUMENT_BLIND_20260917.html", "entry": "s1-probe"}, {"doc": "docs/S1_TIMING_REFUTED_20260917.html", "entry": "s1-refuted"}, {"doc": "docs/S1_TIMING_SEGMENT_20260917.html", "entry": "s1-segbatch"}, {"doc": "docs/S1_WINDOW_ANCHOR_AND_LAYER1_20260917.html", "entry": "s1-segbatch"}, {"doc": "docs/S2_PROBE2_AND_CEILING_2026-09-20.md", "entry": "io-constraint"}, {"doc": "docs/S2_RESIDENCY_AND_DRAIN_VERDICT_2026-09-20.md", "entry": "io-constraint"}, {"doc": "docs/SERVER_WINDOW_LEDGER_2026-09-19.md", "entry": "sys-window"}, {"doc": "docs/SHAPE_FOR_25_2026-09-22.md", "entry": "shape-knobs"}, {"doc": "docs/SHAPE_KNOB_LANDED_2026-09-22.md", "entry": "shape-knobs"}, {"doc": "docs/SHAPE_OVERLAP_INSIGHT_2026-09-23.html", "entry": "shape-knobs"}, {"doc": "docs/SHAPE_PARAMETER_MAP_2026-09-23.html", "entry": "shape-knobs"}, {"doc": "docs/SHAPE_ROOFLINE_2026-09-22.md", "entry": "shape-knobs"}, {"doc": "docs/SHAPE_ROOFLINE_REVIEW_2026-09-22.md", "entry": "shape-knobs"}, {"doc": "docs/SHAPE_WORLD_MODEL_2026-09-23.md", "entry": "shape-knobs"}, {"doc": "docs/SHAPE_WORLD_MODEL_VISUAL_2026-09-23.html", "entry": "shape-knobs"}, {"doc": "docs/SWAP_MISS_LINK_2026-09-24.md", "entry": "miss-3a"}, {"doc": "docs/SWAP_P0P1P2_FIX_20260924_1400.html", "entry": "sys-swap"}, {"doc": "docs/SWAP_STRUCTURAL_FIX_2026-09-24.md", "entry": "sys-swap"}, {"doc": "docs/TARGET25_NECESSARY_CONDITIONS_2026-09-22.html", "entry": "m-decode25"}, {"doc": "docs/TARGET25_NECESSARY_CONDITIONS_2026-09-22.md", "entry": "m-decode25"}, {"doc": "docs/TARGET25_REPORT_20260922_184209.html", "entry": "m-decode25"}, {"doc": "docs/TARGET25_REPORT_20260922_184209.json", "entry": "m-decode25"}, {"doc": "docs/TARGET25_TWO_AXIS_2026-09-20.md", "entry": "m-decode25"}, {"doc": "docs/TODAY_TECH_DECISIONS.html", "entry": "na-entry"}, {"doc": "docs/TOOLCHAIN_25TPS_2026-09-22.html", "entry": "m-decode25"}, {"doc": "docs/WHY_MODEL_MISSED_AND_IS_25_REACHABLE_2026-09-21.md", "entry": "m-decode25"}, {"doc": "docs/archive/pre-consistency-metrics-2026-09-11/CGC_Decode_Version_Milestone_2026-09-06.html", "entry": "na-softpool"}, {"doc": "docs/archive/pre-consistency-metrics-2026-09-11/CGC_EXPERT_CACHE_COMMIT_DIGEST_2026-09-05.html", "entry": "na-design"}, {"doc": "docs/archive/pre-consistency-metrics-2026-09-11/CGC_EXPERT_CACHE_HYBRID_DESIGN_2026-09-05.html", "entry": "na-design"}, {"doc": "docs/archive/pre-consistency-metrics-2026-09-11/CGC_EXPERT_CACHE_INTEGRATION_DIFF_2026-09-05.html", "entry": "na-design"}, {"doc": "docs/archive/pre-consistency-metrics-2026-09-11/CGC_EXPERT_CACHE_INVARIANTS_v1.md", "entry": "na-design"}, {"doc": "docs/archive/pre-consistency-metrics-2026-09-11/CGC_EXPERT_CACHE_SOFTPOOL_WHITE_PAPER_2026-09-05.html", "entry": "na-softpool"}, {"doc": "docs/archive/pre-consistency-metrics-2026-09-11/CGC_SOFTPOOL_EXPERT_CACHE_L4_V1V2_2026-09-05.html", "entry": "na-softpool"}, {"doc": "docs/archive/pre-consistency-metrics-2026-09-11/CGC_Step23_ExpertCache_ColdGuard_LogitsCallback_Repair_2026-09-06.html", "entry": "na-softpool"}, {"doc": "docs/archive/pre-consistency-metrics-2026-09-11/CGC_Step23_RenormRouting_AB_2026-09-06.html", "entry": "na-softpool"}, {"doc": "docs/archive/pre-consistency-metrics-2026-09-11/Gemma4_Final_Report.md", "entry": "na-olddata"}, {"doc": "docs/archive/pre-consistency-metrics-2026-09-11/Gemma4_Performance_Report.md", "entry": "na-olddata"}, {"doc": "docs/archive/pre-consistency-metrics-2026-09-11/M4_SETUP_GUIDE.md", "entry": "na-olddata"}, {"doc": "docs/archive/pre-consistency-metrics-2026-09-11/MTP_BENCHMARK_WIN8GB.md", "entry": "na-olddata"}, {"doc": "docs/roadmap-2026-09-14/ROADMAP_PREFILL250_DECODE25_2026-09-14.html", "entry": "m-prefill250"}, {"doc": "docs/roadmap-2026-09-14/_shots/ROADMAP_PREFILL250_DECODE25_2026-09-14_desktop.png", "entry": "m-prefill250"}, {"doc": "docs/roadmap-2026-09-14/_shots/ROADMAP_PREFILL250_DECODE25_2026-09-14_mobile.png", "entry": "m-prefill250"}], UNMAPPED = [];
+const TIER = Object.fromEntries(DATA.tiers.map(t => [t.id, t]));
+const SUB  = Object.fromEntries(DATA.subgoals.map(s => [s.id, s]));
+const STAGE = DATA.stages;
+const STAGE_OF = {"1": "prod", "2": "prod", "3b": "prod", "3a": "exp", "4": "closed", "na": "closed"};
+const ENT = Object.fromEntries(DATA.entries.map(e => [e.id, e]));
+const BRIEF = {"S": {"ref": "../S1_TPOT_DECOMPOSITION_2026-09-25.html", "ref_title": "S1 TPOT 分解（2026-09-25）", "headline": "41 段提交 88.5 ms（11.30 t/s） → 單段提交 48.2 ms（20.73 t/s，×1.83）", "sections": [{"k": "1 現狀", "v": ["交付口徑（41 段提交）：<b>88.5 ms/token ＝ 11.30 t/s</b>。", "單段提交 S1（實測）：<b>48.2 ms ＝ 20.73 t/s（×1.83）</b>。", "單段 ＋ 保留 fill（估計）：52.2 ms ＝ 19.2 t/s（×1.70）。", "但 S1 目前<b>不能交付</b>：同一個開關讓 CGC-HOOK 計數 0、<code>file_reads=0</code> ⇒ 拿掉的除了同步，還有<b>正確性前提</b>（權重不進池）。"]}, {"k": "2 推論", "v": ["被消掉的 40.3 ms 裡：<b>41 段提交的序列化 ≈ 36.3 ms（41.0%）</b>、<b>fill 同步 3.96 ms（4.5%）</b>。", "其餘（單段也躲不掉）：<b>48.2 ms（54.5%）</b>。", "★ <b>主項是序列化，不是 fill</b> —— 先前把 40.3 ms 全歸給 fill，是把 4 ms 說成 40 ms。", "⇒ 整層重算判死；只有 <b>per-expert 重算</b>（MoE 輸出線性疊加）值得做：+13%~+18%。"]}, {"k": "3 量測", "v": ["同一 build <code>1ca685490</code>、同一 cell（<code>p2048 / n128 / d512 / r3 / b5632</code>）、同一 pool（8 GiB）、<b>兩臂皆無 spec</b>。", "fill 同步 3.96 ms 出自 <b>EBTIMER</b>；序列化 36.3 ms 為<b>未再分解</b>的差值項。", "來源：<code>Backup/seg_batch_s1_pairs/abba_212809.json</code>；台帳 <code>docs/DIAGNOSTIC_ARMS_LEDGER_2026-09-25.md</code> §1。"]}, {"k": "4 目標", "v": ["<b>可執行目標</b>：fill 若能留在單段提交之下且不進關鍵路徑 ⇒ 48.2 + 3.96 ≈ <b>52.2 ms ⇒ ≈ 19.2 t/s（×1.70）</b>。", "閘門已判 OPEN：損益平衡點 66.1%~114.3% miss 率，實測區間 4.7%~43.0% 全在平衡點以下 ⇒ per-expert 重算在 0~66% 任一 miss 率下都淨正。", "⚠ fill 是<b>正確性前提</b>不是速度前提：無 fill ⇒ 權重永不出現 ⇒ 永遠 garbage；背景 fill 決定拿 14.1 還是 19.9，<b>不決定正負</b>。"]}]}, "M": {"ref": "../mtp_amortization.html", "ref_title": "MTP 攤薄機制與現狀/歷史帳（16GB M4）", "headline": "MTP OFF 11.49 t/s → ON（今天 a=0.44）~13.7 t/s；歷史 a=0.98 → ~25 t/s", "sections": [{"k": "1 現狀", "v": ["MTP OFF（現狀）：每輪 1 次 target 前向、產出 1 token ⇒ 固定成本無攤薄 ⇒ <b>11.49 t/s</b>。", "MTP ON（<b>今天 a=0.44</b>）：每輪 1 次 verify 批次 ＋ 便宜 draft（19%），產出 L=1+a·k ≈ 2.31 token ⇒ <b>~13.7 t/s（S=1.19）</b>。", "MTP ON（<b>歷史 a=0.98</b>）：同一條 draft 幾乎全中，L≈3.91 ⇒ <b>~25 t/s（S=2.0）</b>。", "⚠ 現行生產口徑 MTP off 實為 <b>11.03~12.20</b>；<b>「9.82/12.62/+28.5%」已作廢</b>（HTTP 舊口徑、無 warm-skip）。"]}, {"k": "2 推論", "v": ["加速比 <code>S = (1 + a·k) / (1 + m·k)</code>｜a＝draft 接受率、k＝draft 長度、m＝每多驗一個 token 的邊際成本。", "槓桿（按 upside 排序）：① <b>拉高接受率 a</b>：a .444→.977 ⇒ S 1.19→2.0（★最大，查 regression）；② <b>k 按 m 選</b>：server m=.32 ⇒ k=3 贏（看 mean_len 非 a）；③ <b>降邊際 m</b>：固定 a 要 S=2 需 m≤.055（−83%）⇒ 被低效頻寬鎖死；④ <b>draft head 成本</b>：T=1 自迴歸鏈（19%）不可批次 ⇒ 次要。", "關鍵結論：攤薄倍數<b>幾乎完全由 a 決定</b>，不在 verify kernel（verify 已批次、每輪就一次）。", "已知嫌疑：<b>draft 走 greedy、target 走 temp 0.4 採樣，兩者分布不一致</b>（a 雙峰、對 prompt/temp 強敏感）。"]}, {"k": "3 量測", "v": ["<b>交付 cell 的 MTP 增益 = UNRESOLVED</b>（契約 §7 登記表；機檢 <code>void_number_check.py</code>）。", "分母失效：現行生產口徑 MTP off 已是 11.03~12.20，舊的 9.82 不能當分母。", "合成 prompt 的 <code>acc_rate 0.93~0.99</code>（交付實測 0.465~0.58）⇒ 讀數不可移植。", "執行線的 k-sweep 跑 <b>3 GiB pool</b>（budget gate 逼的）⇒ 絕對值不可與 8 GiB 的 11.5 併排。"]}, {"k": "4 目標", "v": ["把 a 拉回 <b>.97 ⇒ 23–25 t/s</b>；拉不回 ⇒ <b>MTP on 現實上界就是 ~14（+19%）</b>。", "先前「加速比 2」不成立：需 verify 邊際 42.03 → ≤17.9 ms（<b>−57%</b>）；光拉 accept rate 只值 +6%。", "draft 腿僅佔 13.6% ⇒ 其天花板 ≈ +16%（⇒ 別練 draft head、別做 dynamic-k）。"]}]}, "both": {"ref": null, "ref_title": null, "headline": "需 S 與 M 同時成立 —— 只有 M-25（同一次 pp≥250 ∧ tg>12.57）；⚠ 兩軸有耦合，收益不可假設可相加", "sections": [{"k": "1 現狀", "v": ["只有 <b>M-25</b> 一個條目落在這一格；目前<b>判死</b>。", "最接近的一次：pp 260.41 ＋ tg 12.195，<b>差 3%</b>（但不同時滿足）。", "★ 現狀提醒：<b>S、M 兩軸目前都未真正交付</b> —— S 的單段提交 ×1.83 建立在 <code>CGC-HOOK=0</code>、權重不進池（丟正確性）之上；M 的 draft 在當前 decode 全程 <b>−1</b>（沒有拿到攤薄）。⇒ 這是<b>兩條未攻克的主軸</b>，不是兩塊已拿到的收益。"]}, {"k": "2 推論", "v": ["fill 的同步時間只佔 decode step <b>4.7%</b>（EBTIMER 直讀）⇒ 即使把 fill 完全消滅也只有 +5%。", "⇒ 端到端上限也就是 ~20% ⇒ <b>到不了 25</b>。", "⚠ <b>S 與 M 不是獨立軸</b>：兩者都動 hook／調度 —— 單段提交（S）會改 fill 觸發點，MTP 的 draft／verify 也依賴同一個 hook 與上下文 ⇒ 兩者的收益<b>不可簡單相加</b>（教訓：ρ 與 prebind 各自 +14.0%~+14.5%、同 regime 下<b>同價不可相加</b>）。"]}, {"k": "3 量測", "v": ["權威：<code>docs/IO_AXIS_VERDICT_2026-09-25.md</code>。", "端到端待 <code>nf2_nofill</code> 配對定案。"]}, {"k": "4 目標", "v": ["25 t/s：需 S（序列化）與 M（MTP 攤薄）<b>同時</b>落地，目前兩者各自都未達標。", "⚠ 2026-09-25 凌晨那批非生產口徑數據已全部作廢並刪除，勿引用。"]}]}, "na": {"ref": null, "ref_title": null, "headline": "不屬於 S／M 兩軸 —— 系統／記憶體、GPU 上界算術、入口索引、跨線產品", "sections": [{"k": "1 現狀", "v": ["15 個條目：swap 結構修復、box 准入閘門、G1／K3／G4 上界算術、shape-knob、入口/索引、跨線產品。", "這些是<b>約束與帳本</b>，不是加速手段本身。"]}, {"k": "2 推論", "v": ["上界算術（G1／K3／G4）決定「什麼不可能」；系統項（swap／box）決定「能不能跑」。", "把它們當成 S 或 M 的增益來源會重複計數。"]}, {"k": "3 量測", "v": ["多為靜態算術與環境閘門，非 decode／prefill 吞吐實測。"]}, {"k": "4 目標", "v": ["維持約束成立（不被 swap／OOM 殺）、上界算術不變 ⇒ 不設加速目標。"]}]}, "C": {"ref": "../DEVICE_BUSY_ATTRIBUTED_2026-09-23.md", "ref_title": "那 154 ms 是什麼：裝置忙碌時間，不是 host（2026-09-23）", "headline": "交付 step 最大的一塊是裝置忙碌時間（不是 host、不是段序列化、不是 MTP）：MoE 57% ／ attention+GDN 42%；但打滿頻寬也只值 ~2.4% step", "sections": [{"k": "1 現狀", "v": ["歸因（<code>DEVICE_BUSY_ATTRIBUTED_2026-09-23.md</code>）：那塊沒人認領的時間<b>是裝置忙碌時間</b>——<b>57% 住在 MoE 區（層內節點 0–39）</b>、<b>42% 住在 attention／GDN 區（40–89）</b>。", "邊際 verify token 的 <b>+26.3 ms</b> 裝置時間裡，MoE 區只 +14.2（其中 kernel 自己的地板 +7.9），另外 <b>+13.4 是 attention／GDN 的投影與掃描</b>。", "operator 口徑：<b>verify 的 device span（union／MUL_MAT_ID／dequant）佔 step 56–61%，是單一最大塊</b>；dense 部分只跑 <b>47.6 GB/s</b>，屋頂 60–70 GB/s。", "⚠ 口徑打架要先講：本樹文件另載<b>裝置峰值 100.5 GB/s</b>、該族 kernel 只跑 <b>36–45 GB/s</b>、dense GEMV 實測 <b>56–108 GB/s</b>（DRAM 峰值 108.8）。引用時必須標是哪一份。"]}, {"k": "2 推論", "v": ["這一塊<b>既不是段序列化（S）、也不是 MTP 攤薄（M）</b>，而是「GPU 算得夠不夠快、頻寬打沒打滿」。", "天花板是硬的：<b>dense GEMV 每步 13.39 ms（13.7–16.8%）</b>，<b>就算每一個都打滿 100% DRAM 峰值也只省 1.92 ms ＝ 2.42% step —— 低於 3% 門檻</b>。", "已證偽的槓桿：<b>G4 元素級融合</b>（已融合／天花板 8.5%）、<b>K0–K5 融合與小 op 群</b>、<b>dense GEMV 的 NSG 全射程掃描（1..32）</b>（±3% 內、無單調趨勢）、<b>OMLX verify kernel</b>。", "尚未證偽的唯一免寫 kernel 槓桿：<b>型別替換</b>（kernel 層 gate/up <code>iq2_s→q2_K</code> 1.35×、down <code>iq3_s→iq4_nl</code> 1.46×）—— 端到端收益<b>待估</b>，未量測。"]}, {"k": "3 量測", "v": ["工具：<code>scripts/check/verify_marginal.py --device-split</code>；形狀探針 <code>scripts/check/shape_probe/</code>（獨立二進位，不動共用建置產物）。", "⛔ <b>step 級 <code>gpu_sum</code>／<code>union_sum</code> 不可引用</b>：每步 2 個假 buffer 在灌同一個累加器（<code>GPUEndTime−GPUStartTime</code> 回傳絕對開機時戳 ≈1.7e14 ns，通過了 <code>s&gt;0 &amp;&amp; e&gt;s</code> 守衛）⇒ 先前「裝置 span 邊際 ~31 ms/token」<b>作廢</b>。", "可用的是逐 buffer 的 NSM，且要套「<b>buffer 不得長於它自己的 step</b>」這一刀。"]}, {"k": "4 目標", "v": ["<b>不設加速目標，只設證偽目標</b>：它是背景約束與天花板，不是與 S／M 並列的活躍攻關軸。", "對 S／M 的含義：<b>S 消完序列化之後，剩下的地板就是這一塊</b>（單段提交後 48.2 ms 裡的大部分）—— 所以 C 決定了 S 的天花板，不決定 S 的正負。", "要持續做的是：<b>每次有人聲稱「改 kernel 就能 +X%」，先用 roofline／device-split 證偽</b>；型別替換是唯一還站著的待測槓桿。"]}]}};
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+const hidTier = new Set(), hidSub = new Set();
+const filt = e => !hidTier.has(e.tier) && !hidSub.has(e.sub);
+
+function chipRow(el, items, hidden, onOpen){
+  el.querySelectorAll('.chip').forEach(n => n.remove());
+  items.forEach(o => {
+    const c = document.createElement('span');
+    c.className = 'chip';
+    const mark = o.color
+      ? `<span class="dot" style="background:${o.color}"></span>`
+      : `<span class="ring" style="border-color:${o.color}"></span>`;
+    const xbtn = onOpen ? `<span class="x" title="過濾：顯示／隱藏這個子目標">&#8856;</span>` : '';
+    c.innerHTML = mark + `<span class="t">${o.label}</span>` + xbtn;
+    const toggle = () => {
+      hidden.has(o.id) ? hidden.delete(o.id) : hidden.add(o.id);
+      c.classList.toggle('off'); draw();
+    };
+    if (onOpen) {
+      c.title = (o.def || '') + (o.role_label ? '　｜　軸性質：' + o.role_label : '')
+        + '　｜　點標籤＝看說明（現狀／推論／量測／目標）　·　點 ⊘＝過濾';
+      c.querySelector('.t').onclick = () => onOpen(o.id, c);
+    } else {
+      c.title = o.def || '';
+      c.onclick = toggle;
+    }
+    const xn = c.querySelector('.x');
+    if (xn) xn.onclick = ev => { ev.stopPropagation(); toggle(); };
+    el.appendChild(c);
+  });
+}
+chipRow(document.getElementById('subLegend'), DATA.subgoals, hidSub, showSub);
+chipRow(document.getElementById('tierLegend'), DATA.tiers, hidTier, null);
+
+const NW = 254, NH = 30, VG = 9, HG = 96, PAD = 18;
+
+function draw(){
+  const q = (document.getElementById('q').value || '').trim().toLowerCase();
+  const hit = e => !q || (e.name + e.theme + e.res + e.sub + e.tier + (e.docs||[]).join(' ')).toLowerCase().includes(q);
+  const shown = DATA.entries.filter(filt);
+
+  const rows = []; let y = PAD;
+  STAGE.forEach(st => {
+    const es = shown.filter(e => STAGE_OF[e.tier] === st.id);
+    st._es = es; st._y = y;
+    y += NH + VG;                                  // 階段標題
+    es.forEach(e => { rows.push({e, y}); y += NH + VG; });
+    y += 12;                                       // 階段間距
+  });
+  const H = Math.max(340, y + PAD);
+  const xRoot = PAD, xStage = PAD + 200 + HG, xEnt = xStage + NW + HG;
+  const W = xEnt + NW + PAD;
+  const rootY = H/2 - NH/2;
+
+  const P = [];
+  P.push(`<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">`);
+  const link = (x1,a,x2,b,dash) =>
+    `<path class="link${dash?' closed':''}" d="M${x1} ${a} C${(x1+x2)/2} ${a} ${(x1+x2)/2} ${b} ${x2} ${b}"/>`;
+  // 線
+  STAGE.forEach(st => {
+    const mid = st._y + NH/2, h = Math.max(NH, st._es.length * (NH+VG));
+    P.push(link(xRoot+200, rootY+NH/2, xStage, st._y + (h - VG)/2, st.id === 'closed'));
+    rows.filter(r => STAGE_OF[r.e.tier] === st.id).forEach(r =>
+      P.push(link(xStage+NW, st._y + NH/2, xEnt, r.y + NH/2, st.id === 'closed')));
+  });
+  const node = (x, yy, w, txt, opt = {}) => {
+    const sub = SUB[opt.sub] || null, tier = TIER[opt.tier] || null;
+    const dim = opt.eid && !hit(ENT[opt.eid]) ? ' dim' : '';
+    const attrs = `data-id="${opt.eid||''}"`
+      + (opt.stage ? ` data-stage="${opt.stage}"` : '') + (opt.root ? ` data-root="1"` : '');
+    return `<g class="node${dim}" ${attrs} transform="translate(${x},${yy})">
+      <rect class="box" x="0" y="0" width="${w}" height="${NH}" rx="7"
+        ${tier?`stroke="${tier.color}" stroke-width="2"`:''}/>
+      ${sub?`<rect x="0" y="0" width="5" height="${NH}" rx="2.5" fill="${sub.color}"/>`:''}
+      <text x="14" y="19">${esc(txt)}</text>
+      ${opt.tierTxt?`<text class="tier" x="${w-9}" y="19" text-anchor="end">${esc(opt.tierTxt)}</text>`:''}
+    </g>`;
+  };
+  P.push(node(xRoot, rootY, 200, '250 / 25 攻關（點看總覽）', {tier: null, root: true}));
+  STAGE.forEach(st => {
+    const h = Math.max(NH, st._es.length * (NH+VG));
+    P.push(node(xStage, st._y + (h - VG)/2 - NH/2, NW, st.label,
+                {tierTxt: st._es.length ? String(st._es.length) : '0',
+                 sub: null, eid: '', stage: st.id}));
+  });
+  rows.forEach(r => {
+    const e = r.e;
+    P.push(node(xEnt, r.y, NW, e.name, {sub: e.sub, tier: e.tier, tierTxt: e.tier, eid: e.id}));
+  });
+  P.push('</svg>');
+  document.getElementById('mind').innerHTML = P.join('');
+  document.querySelectorAll('.node[data-id]').forEach(g => {
+    if (g.dataset.id) g.onclick = () => show(g.dataset.id);
+  });
+  document.querySelectorAll('.node[data-stage]').forEach(g => {
+    g.onclick = () => showStage(g.dataset.stage, g);
+  });
+  const r = document.querySelector('.node[data-root]');
+  if (r) r.onclick = () => showOverview();
+}
+
+function show(id){
+  const e = ENT[id], t = TIER[e.tier], s = SUB[e.sub];
+  const st = STAGE.find(x => x.id === STAGE_OF[e.tier]);
+  const docs = MAP.filter(m => m.entry === id).map(m => m.doc);
+  const brief = 'briefs/' + id + '.html';
+  const briefMd = 'briefs/' + id + '.md';
+  const dsrc = e.detail_html || brief;
+  const rich = !!e.detail_html;
+  document.getElementById('detail').innerHTML = `
+    <div class="card">
+      <h3>${esc(e.name)}</h3>
+      <div class="wpbar">
+        <a class="wp" href="${dsrc}" target="_blank" rel="noopener"
+           title="另開完整頁面">${rich?'方案完整視圖 ↗':'技術白皮書 ↗'}</a>
+        <a class="wp" href="${briefMd}" target="_blank" rel="noopener"
+           title="另開 MD 版（同一份內容的純文字版）">MD ↗</a>
+        <button id="wpemb" title="在本頁內嵌">${rich?'收起豐富視圖':'內嵌'}</button>
+      </div>
+      <div class="kv">
+        <b>階段</b><span>${esc(st.label)}</span>
+        <b>分級</b><span><span class="pill" style="background:${t.color}">${esc(t.label)}</span></span>
+        <b>子目標</b><span><span class="pill" style="background:${s.color}">${esc(s.label)}</span></span>
+        <b>主題</b><span>${esc(e.theme)}</span>
+        <b>目標</b><span>${e.goal || '—'}</span>
+        <b>判準</b><span>${esc(e.crit)}</span>
+        <b>結果</b><span>${esc(e.res)}</span>
+        <b>依據</b><span><code>${esc(e.evid)}</code></span>
+        ${e.note?`<b>註</b><span>${esc(e.note)}</span>`:''}
+      </div>
+      <h2>對應報告（${docs.length}）</h2>
+      ${docs.length?docs.map(d=>`<div><a href="../${esc(d.replace('docs/',''))}" target="_blank"
+        rel="noopener"><code>${esc(d)}</code></a></div>`).join('')
+        :'<p class="note">（無對應報告檔；判準／結果見上方欄位與技術白皮書）</p>'}
+    </div>`;
+  const wb = document.getElementById('wpemb');
+  const card = document.querySelector('#detail .card');
+  function toggleEmbed(){
+    const old = card.querySelector('iframe');
+    if (old) { old.remove(); wb.textContent = rich ? '展開豐富視圖' : '內嵌'; return; }
+    const f = document.createElement('iframe');
+    f.src = dsrc; f.title = e.name + ' — 完整視圖';
+    if (rich) f.style.height = '700px';
+    card.appendChild(f); wb.textContent = rich ? '收起豐富視圖' : '收起';
+  }
+  if (wb) wb.onclick = toggleEmbed;
+  if (rich) toggleEmbed();   // 點此節點即內嵌呈現豐富頁面
+}
+
+function asideTop(){ const a = document.querySelector('aside'); if (a) a.scrollTop = 0; }
+
+function tierBars(es){
+  const tc = {}; es.forEach(e => tc[e.tier] = (tc[e.tier] || 0) + 1);
+  const tot = es.length || 1;
+  return `<div class="bars">${Object.keys(tc).sort().map(t =>
+    `<i style="width:${(tc[t] / tot * 100).toFixed(2)}%;background:${TIER[t].color}"
+       title="${esc(TIER[t].label)} ${tc[t]}"></i>`).join('')}</div>
+    <div class="bk">${Object.keys(tc).sort().map(t =>
+      `<span><span class="pill" style="background:${TIER[t].color}">${esc(t)}</span>
+       ${esc(TIER[t].label)} ${tc[t]}</span>`).join('')}</div>`;
+}
+
+// ★ 子目標說明：現狀 / 推論 / 量測 / 目標 ＋ 拆解的子目標狀況
+function showSub(id, chip){
+  const s = SUB[id]; if (!s) return;
+  const b = BRIEF[id] || {headline: '（缺說明）', sections: []};
+  document.querySelectorAll('#subLegend .chip').forEach(c => c.classList.remove('active'));
+  if (chip) chip.classList.add('active');
+  const es = DATA.entries.filter(e => e.sub === id);
+  const groups = STAGE.map(st => ({st, es: es.filter(e => STAGE_OF[e.tier] === st.id)}))
+                      .filter(g => g.es.length);
+  document.getElementById('detail').innerHTML = `
+    <div class="card brief">
+      <h3><span class="pill" style="background:${s.color}">${esc(s.label)}</span></h3>
+      <div class="head">${b.headline}</div>
+      <div class="kv">
+        <b>定義</b><span>${esc(s.def)}</span>
+        <b>軸性質</b><span>${esc(s.role_label || '（未標注）')}</span>
+        <b>條目</b><span>${es.length} 條｜${groups.map(g => esc(g.st.label) + ' ' + g.es.length).join(' ／ ')}</span>
+        <b>報告</b><span>${b.ref
+          ? `<a href="${b.ref}" target="_blank">${esc(b.ref_title)}</a> <button id="emb">內嵌檢視</button>`
+          : '<span class="note">（無專屬報告）</span>'}</span>
+      </div>
+      ${b.sections.map(sec =>
+        `<h4>${esc(sec.k)}</h4><ul>${sec.v.map(v => `<li>${v}</li>`).join('')}</ul>`).join('')}
+      <h4>拆解的子目標狀況（${es.length} 條目）</h4>
+      ${tierBars(es)}
+      ${groups.map(g => `<div class="grp" style="border-left-color:${s.color}">
+        <div class="gt">${esc(g.st.label)}（${g.es.length}）</div>
+        ${g.es.map(e => `<div class="gi" data-e="${esc(e.id)}">
+          <span class="pill" style="background:${TIER[e.tier].color}">${esc(e.tier)}</span>
+          ${esc(e.name)} — ${esc(e.res)}</div>`).join('')}
+      </div>`).join('')}
+    </div>`;
+  const emb = document.getElementById('emb');
+  if (emb) emb.onclick = () => {
+    const card = document.querySelector('#detail .brief');
+    const old = card.querySelector('iframe');
+    if (old) { old.remove(); emb.textContent = '內嵌檢視'; return; }
+    const f = document.createElement('iframe');
+    f.src = b.ref; f.title = b.ref_title || '';
+    card.appendChild(f); emb.textContent = '收起內嵌';
+  };
+  document.querySelectorAll('#detail .gi[data-e]').forEach(x => x.onclick = () => show(x.dataset.e));
+  asideTop();
+}
+
+function showStage(id){
+  const st = STAGE.find(x => x.id === id); if (!st) return;
+  const es = DATA.entries.filter(e => STAGE_OF[e.tier] === id);
+  const bySub = DATA.subgoals.map(sg => ({sg, n: es.filter(e => e.sub === sg.id).length}))
+                             .filter(x => x.n);
+  document.getElementById('detail').innerHTML = `
+    <div class="card brief">
+      <h3>${esc(st.label)}</h3>
+      <div class="head">${esc(st.desc)}</div>
+      <div class="kv"><b>條目</b><span>${es.length}</span>
+        <b>子目標</b><span>${bySub.map(x =>
+          `<span class="pill" style="background:${x.sg.color}">${esc(x.sg.id)}</span> ${x.n}`).join('　')}</span></div>
+      ${tierBars(es)}
+      ${bySub.map(x => `<div class="grp" style="border-left-color:${x.sg.color}">
+        <div class="gt">${esc(x.sg.label)}（${x.n}）
+          <a href="#" data-sub="${esc(x.sg.id)}" style="font-weight:400">看說明 ›</a></div>
+        ${es.filter(e => e.sub === x.sg.id).map(e => `<div class="gi" data-e="${esc(e.id)}">
+          <span class="pill" style="background:${TIER[e.tier].color}">${esc(e.tier)}</span>
+          ${esc(e.name)} — ${esc(e.res)}</div>`).join('')}
+      </div>`).join('')}
+    </div>`;
+  document.querySelectorAll('#detail a[data-sub]').forEach(a =>
+    a.onclick = ev => { ev.preventDefault(); showSub(a.dataset.sub); });
+  document.querySelectorAll('#detail .gi[data-e]').forEach(x => x.onclick = () => show(x.dataset.e));
+  asideTop();
+}
+
+function showOverview(){
+  const subs = DATA.subgoals, sts = STAGE;
+  const n = (st, sg) => DATA.entries.filter(e => STAGE_OF[e.tier] === st.id && e.sub === sg.id).length;
+  const rowTot = st => subs.reduce((a, sg) => a + n(st, sg), 0);
+  const colTot = sg => sts.reduce((a, st) => a + n(st, sg), 0);
+  document.getElementById('detail').innerHTML = `
+    <div class="card brief">
+      <h3>250 / 25 攻關總覽</h3>
+      <div class="head">${DATA.entries.length} 條目 × ${MAP.length} 份報告（映射 ${MAP.length}／未映射 ${UNMAPPED.length}）</div>
+      <table class="mtx">
+        <tr><th>階段 / 子目標</th>${subs.map(s =>
+          `<th style="color:${s.color}">${esc(s.label)}</th>`).join('')}<th>合計</th></tr>
+        ${sts.map(st => `<tr><th>${esc(st.label)}</th>${subs.map(sg => {
+          const c = n(st, sg);
+          return `<td>${c ? `<a href="#" data-sub="${esc(sg.id)}"
+            style="color:${sg.color};font-weight:600">${c}</a>` : '·'}</td>`;
+        }).join('')}<td><b>${rowTot(st)}</b></td></tr>`).join('')}
+        <tr><th>合計</th>${subs.map(sg => `<td><b>${colTot(sg)}</b></td>`).join('')}
+          <td><b>${DATA.entries.length}</b></td></tr>
+      </table>
+      <p class="note">點上方<b>子目標標籤</b>看「現狀／推論／量測／目標」＋拆解狀況；點標籤旁的
+        <b>⊘</b> 只做過濾；點左側任一節點看單條細節；點<b>根節點</b>回總覽。</p>
+    </div>`;
+  document.querySelectorAll('#detail a[data-sub]').forEach(a =>
+    a.onclick = ev => { ev.preventDefault(); showSub(a.dataset.sub); });
+  asideTop();
+}
+
+document.getElementById('nmap').textContent =
+  MAP.length + (UNMAPPED.length ? ` + 未映射 ${UNMAPPED.length}` : '');
+document.getElementById('doclist').innerHTML = MAP.map(m => {
+  const e = ENT[m.entry], s = SUB[e.sub];
+  return `<div><code>${esc(m.doc)}</code>
+    <span class="pill" style="background:${TIER[e.tier].color}">${e.tier}</span>
+    <span class="pill" style="background:${s.color}">${s.id}</span></div>`;
+}).join('') + (UNMAPPED.length
+  ? `<h2>未映射</h2>` + UNMAPPED.map(d=>`<div><code>${esc(d)}</code></div>`).join('') : '');
+
+document.getElementById('q').addEventListener('input', draw);
+document.getElementById('theme').onclick = () => {
+  document.body.classList.toggle('dark'); document.body.classList.toggle('light'); draw();
+};
+draw();
+showOverview();
+</script>
+</body>
+</html>

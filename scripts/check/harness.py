@@ -685,6 +685,10 @@ def cmd_bench(args) -> int:
            "--depths", args.depths, "--reps", str(args.reps),
            "--ctx-size", str(args.ctx_size), "--warm-skip", str(args.warm_skip),
            "--workdir", str(args.workdir), "--json", str(args.json_path)]
+    if args.spec_type:
+        cmd += ["--spec-type", args.spec_type]
+        if args.spec_draft_n_max is not None:
+            cmd += ["--spec-draft-n-max", str(args.spec_draft_n_max)]
     import shutil
     print("$ " + shlex_join(cmd) if False else " ".join(cmd), flush=True)
     rc = subprocess.call(cmd, cwd=str(ROOT))
@@ -822,6 +826,10 @@ def main(argv=None) -> int:
     p.add_argument("--reps", type=int, default=_BENCH_DEFAULTS["reps"])
     p.add_argument("--warm-skip", type=int, default=_BENCH_DEFAULTS["warm_skip"])
     p.add_argument("--ctx-size", type=int, default=_BENCH_DEFAULTS["ctx_size"])
+    p.add_argument("--spec-type", default="",
+                   help="llama-bench --spec-type（僅 draft-mtp）；空 = 一般 cell（預設行為）")
+    p.add_argument("--spec-draft-n-max", type=int, default=None,
+                   help="llama-bench --spec-draft-n-max（1..16）；需配合 --spec-type")
     p.add_argument("--workdir", default="/tmp/harness_bench")
     p.add_argument("--json", dest="json_path", required=True, help="產物 json 路徑（含 base_check）")
     p.set_defaults(func=cmd_bench)

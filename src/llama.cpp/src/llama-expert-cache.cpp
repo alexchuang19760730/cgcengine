@@ -1112,12 +1112,63 @@ int32_t llama_expert_cache_ensure_slot(llama_expert_cache * cache, uint32_t laye
 // (slot assignment is therefore atomic across the layer's experts — no interleaving between
 // them like the serial loop), then one thread per missed expert, joined before return so the
 // pool is stable before the FFN dispatches (same synchronous guarantee as ensure_slot).
+// [CGC 3b fill timer 2026-09-25] Prices the WHOLE ensure_batch call -- the assignment loop, the
+// synchronous `fill_segments_pool` demand fill, and the bg_cv wait -- which is exactly the term
+// that decides whether fill is worth engineering against. Env-gated by CGC_EB_TIMER=1.
+//
+// RAII so every return path is counted (ensure_batch has several, including early outs).
+// One decode step == one ensure_batch per layer, so the flush fires every
+// slot_owner.size() (= n_layers) calls and reports ONE step:
+//
+//     CGC-EBTIMER: step_usec=<us> calls=<n_layers> miss=<n> n_sum=<n>
+//
+// ⚠ The line format is consumed by scripts/check/{fill_onpath_ab,pair_ab}.py -- do not change it
+//   without updating EB_RE in those two scripts.
+struct cgc_eb_timer {
+    llama_expert_cache * c;
+    int64_t t0;
+    bool on;
+
+    explicit cgc_eb_timer(llama_expert_cache * c) : c(c), t0(0), on(false) {
+        static const bool timer_on = getenv("CGC_EB_TIMER") != nullptr;
+        on = timer_on;
+        if (on) {
+            t0 = ggml_time_us();
+        }
+    }
+    void add_misses(uint64_t m) {
+        if (on) { c->eb_miss.fetch_add(m, std::memory_order_relaxed); }
+    }
+    void add_n(uint64_t k) {
+        if (on) { c->eb_nsum.fetch_add(k, std::memory_order_relaxed); }
+    }
+    ~cgc_eb_timer() {
+        if (!on) { return; }
+        const uint64_t us = (uint64_t) (ggml_time_us() - t0);
+        c->eb_step_us.fetch_add(us, std::memory_order_relaxed);
+        const uint64_t calls = c->eb_calls.fetch_add(1, std::memory_order_relaxed) + 1;
+        const size_t nl = c->slot_owner.size();
+        if (nl > 0 && calls % (uint64_t) nl == 0) {
+            const uint64_t step_us = c->eb_step_us.exchange(0, std::memory_order_relaxed);
+            const uint64_t miss    = c->eb_miss.exchange(0, std::memory_order_relaxed);
+            const uint64_t nsum    = c->eb_nsum.exchange(0, std::memory_order_relaxed);
+            fprintf(stderr, "CGC-EBTIMER: step_usec=%llu calls=%llu miss=%llu n_sum=%llu\n",
+                    (unsigned long long) step_us, (unsigned long long) nl,
+                    (unsigned long long) miss, (unsigned long long) nsum);
+        }
+    }
+};
+
 void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
                                      const uint32_t * experts, size_t n,
                                      bool defer_decode_protect) {
     if (cache == nullptr || layer >= cache->slot_owner.size() || n == 0) {
         return;
     }
+    // [CGC 3b fill timer 2026-09-25] RAII: prices this call on every return path. Declared AFTER
+    // the null/layer guard above because the timer dereferences `cache`.
+    cgc_eb_timer eb_t(cache);
+    eb_t.add_n((uint64_t) n);
     const bool defer_decode = defer_decode_protect && cgc_prefill_protect_on();
     int32_t * table = cache->slot_table.data() + (size_t) layer * cache->n_expert;
     std::vector<int32_t>  slots(n, -1);
@@ -1412,6 +1463,7 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
             }
             std::vector<int> ok;
             fill_segments_pool(cache, all_segs, all_dsts, ok);
+            eb_t.add_misses((uint64_t) miss_exps.size());
             bool bad = false;
             for (size_t i = 0; i < ok.size(); ++i) {
                 if (!ok[i]) {
@@ -3566,8 +3618,15 @@ static void fill_segments_pool(llama_expert_cache * cache,
                                const std::vector<uint8_t *> & dsts,
                                std::vector<int> & ok) {
     const size_t n = segs.size();
-    ok.assign(n, 0);
-    if (n == 0) {
+    // [CGC 2026-09-25 fill-on-critical-path] CGC_EB_NOFILL=1 -- diagnostic no-op arm.
+    // Slots are still allocated and published, but NO bytes are read. ok[] is pre-filled with
+    // 1 so the caller's memset-on-failure cannot add back the cost this arm exists to exclude.
+    // Output is garbage: this arm is TIMING ONLY, never a correctness measurement.
+    // Gate sits at the function head (not at a call site) so it covers every fill path.
+    // See docs/FILL_COST_MEASURED_2026-09-25.md and docs/IO_AXIS_VERDICT_2026-09-25.md.
+    static const bool cgc_eb_nofill = getenv("CGC_EB_NOFILL") != nullptr;
+    ok.assign(n, cgc_eb_nofill ? 1 : 0);
+    if (n == 0 || cgc_eb_nofill) {
         return;
     }
     // [CGC 2026-09-24 swap-miss P1] Every dst below is about to be overwritten in full by

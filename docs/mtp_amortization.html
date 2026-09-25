@@ -1,0 +1,66 @@
+<html style="margin:0;padding:0;">
+<title>MTP 攤薄機制與現狀/歷史帳（16GB M4）</title>
+<div style="width:100%;box-sizing:border-box;padding:18px;font-family:-apple-system,'PingFang TC',sans-serif;color:#1a1a1a;">
+  <h2 style="margin:0 0 4px;font-size:19px;">MTP on 如何把固定成本「攤薄」</h2>
+  <div style="font-size:12px;color:#666;margin-bottom:14px;">加速比 S = (1 + a·k) / (1 + m·k)　｜　a=draft接受率、k=draft長度、m=每多驗一個token的邊際成本</div>
+
+  <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;">
+    <div style="flex:1;min-width:170px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px;">
+      <div style="font-size:12.5px;font-weight:600;margin-bottom:6px;">MTP OFF（現狀）</div>
+      <div style="font-size:11.5px;line-height:1.7;">每輪 = <b>1 次 target 前向</b><br>產出 <b>1 token</b>　→ 固定成本無攤薄</div>
+      <div style="margin-top:8px;font-size:22px;font-weight:700;color:#475569;">11.49 <span style="font-size:12px;font-weight:400;">t/s</span></div>
+    </div>
+    <div style="flex:1;min-width:170px;background:#eff6ff;border:1px solid #93c5fd;border-radius:8px;padding:12px;">
+      <div style="font-size:12.5px;font-weight:600;margin-bottom:6px;color:#1e40af;">MTP ON（今天 a=0.44）</div>
+      <div style="font-size:11.5px;line-height:1.7;">每輪 = 1 次 verify 批次 + 便宜 draft（19%）<br>產出 <b>L=1+a·k ≈ 2.31 token</b></div>
+      <div style="margin-top:8px;font-size:22px;font-weight:700;color:#1d4ed8;">~13.7 <span style="font-size:12px;font-weight:400;">t/s（S=1.19）</span></div>
+    </div>
+    <div style="flex:1;min-width:170px;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:12px;">
+      <div style="font-size:12.5px;font-weight:600;margin-bottom:6px;color:#166534;">MTP ON（歷史 a=0.98）</div>
+      <div style="font-size:11.5px;line-height:1.7;">同一條 draft、幾乎全中<br>產出 <b>L≈3.91 token</b></div>
+      <div style="margin-top:8px;font-size:22px;font-weight:700;color:#15803d;">~25 <span style="font-size:12px;font-weight:400;">t/s（S=2.0）</span></div>
+    </div>
+  </div>
+
+  <div style="font-size:13px;font-weight:600;margin-bottom:6px;">攤薄槓桿（按 upside 排序）</div>
+  <table style="width:100%;border-collapse:collapse;font-size:11.5px;margin-bottom:14px;">
+    <tr style="background:#f1f5f9;">
+      <td style="padding:6px 8px;font-weight:600;">槓桿</td>
+      <td style="padding:6px 8px;font-weight:600;">機制</td>
+      <td style="padding:6px 8px;font-weight:600;">算術</td>
+      <td style="padding:6px 8px;font-weight:600;">判定</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;"><b>① 拉高接受率 a</b></td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">同一輪 verify 成本、中更多 token</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">a .444→.977 ⇒ S 1.19→2.0</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;color:#15803d;">★最大、查 regression</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">② k 按 m 選</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">k 大 L 上限高、draft 鏈線性變貴</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">server m=.32 ⇒ k=3 贏</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">看 mean_len 非 a</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">③ 降邊際 m</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">verify 多 token 的 union/頻寬稅</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">固定 a 要 S=2 需 m≤.055（−83%）</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;color:#dc2626;">被低效頻寬鎖死</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">④ draft head 成本</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">T=1 自迴歸鏈（19%）、不可批次</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">更便宜 head / k 調小</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">次要</td>
+    </tr>
+  </table>
+
+  <div style="padding:11px 13px;background:#fffbeb;border:1px solid #fcd34d;border-radius:7px;font-size:12px;color:#78350f;line-height:1.65;">
+    <b>關鍵結論：</b>MTP 的攤薄倍數幾乎完全由 <b>a（接受率）</b>決定，不在 verify kernel（verify 已批次、每輪就一次）。
+    同一模型歷史實測 <b>a=0.982 / mean len 3.91</b>、今天 <b>a=0.44 / 2.31</b>——這是一條 <b>regression / 配置</b>線索，
+    已知嫌疑：<b>draft 走 greedy、target 走 temp 0.4 採樣，兩者分布不一致</b>（a 雙峰、對 prompt/temp 強敏感）。
+    把 a 拉回 .97 ⇒ 23–25；拉不回 ⇒ MTP on 現實上界就是 ~14（+19%）。
+  </div>
+</div>
+</html>

@@ -1,0 +1,107 @@
+<html style="margin:0;padding:0;">
+<title>S1 異步 gather 流水線：單段提交也保住正確性（16GB M4）</title>
+<div style="width:100%;box-sizing:border-box;padding:18px;font-family:-apple-system,'PingFang TC',sans-serif;color:#1a1a1a;">
+  <h2 style="margin:0 0 4px;font-size:19px;">S1 異步 gather 流水線：單段提交也保住正確性</h2>
+  <div style="font-size:12px;color:#666;margin-bottom:14px;line-height:1.6;">同步按需取數會讓 GPU 空等——單段 ×1.83 建立在 <code>hook=0、權重不進池（丟正確性）</code>之上　｜　解法：把取數<b>從同步路徑搬到 GPU 後台</b>、與下一步重疊、再只補算 miss expert（MoE 線性疊加）</div>
+
+  <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;">
+    <div style="flex:1;min-width:180px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:12px;">
+      <div style="font-size:12.5px;font-weight:600;margin-bottom:6px;color:#991b1b;">同步單段（現狀：快、不正確）</div>
+      <div style="font-size:11.5px;line-height:1.7;">41 段 88.5ms（11.30）→ 單段 48.2ms（<b>20.73，×1.83</b>）<br>但 <code>hook=0、file_reads=0</code> ⇒ 權重不進池</div>
+      <div style="margin-top:8px;font-size:12px;color:#991b1b;">MASK 下是<b>部分結果</b>、不是正確答案</div>
+    </div>
+    <div style="flex:1;min-width:180px;background:#eff6ff;border:1px solid #93c5fd;border-radius:8px;padding:12px;">
+      <div style="font-size:12.5px;font-weight:600;margin-bottom:6px;color:#1e40af;">異步流水線（本方案 · ③a）</div>
+      <div style="font-size:11.5px;line-height:1.7;">命中即算、miss 只寫清單並 <b>MASK</b><br>CPU <b>後台 fill（雙緩衝）</b>與下一步 GPU 重疊<br>只補算 miss expert</div>
+      <div style="margin-top:8px;font-size:22px;font-weight:700;color:#1d4ed8;">~19–20 <span style="font-size:12px;font-weight:400;">t/s【推算】</span></div>
+    </div>
+    <div style="flex:1;min-width:180px;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:12px;">
+      <div style="font-size:12.5px;font-weight:600;margin-bottom:6px;color:#166534;">理想完全重疊（上界）</div>
+      <div style="font-size:11.5px;line-height:1.7;">fill 全藏 GPU、補算在 sampler 前完成<br>step ≈ max(GPU, fill＋補算)</div>
+      <div style="margin-top:8px;font-size:12px;color:#166534;">上界 <b>~19–20</b>；<b>25 不可達</b><br>（fill 全關上限 16.35、差 34.6%）</div>
+    </div>
+  </div>
+
+  <div style="font-size:13px;font-weight:600;margin-bottom:6px;">三步流水線（命中不停頓 → 後台補 → 局部加回）</div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;align-items:stretch;">
+    <div style="flex:1;min-width:170px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px;">
+      <div style="font-size:12px;font-weight:600;margin-bottom:4px;">① 命中即算 · miss 標記</div>
+      <div style="font-size:11px;line-height:1.65;color:#334155;">gather kernel 查 GPU <b>presence/slot table</b>：hit 取權重；miss 寫進 miss list、該 expert <b>MASK 歸零</b>。當前 step 立即得部分結果、<b>GPU 不停</b>。</div>
+    </div>
+    <div style="display:flex;align-items:center;color:#94a3b8;font-size:18px;">→</div>
+    <div style="flex:1;min-width:170px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px;">
+      <div style="font-size:12px;font-weight:600;margin-bottom:4px;">② CPU 後台 fill（雙緩衝）</div>
+      <div style="font-size:11px;line-height:1.65;color:#334155;">獨立 worker 批量 drain miss list、<code>preadv</code> SSD、填 pool，<b>與下一步 GPU 重疊</b>、不進關鍵路徑。當前緩衝算、下一緩衝補。</div>
+    </div>
+    <div style="display:flex;align-items:center;color:#94a3b8;font-size:18px;">→</div>
+    <div style="flex:1;min-width:170px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px;">
+      <div style="font-size:12px;font-weight:600;margin-bottom:4px;">③ 局部補算（線性疊加）</div>
+      <div style="font-size:11px;line-height:1.65;color:#334155;">只跑新填 expert 的小 GEMM、把貢獻<b>加回部分和</b>（非整層重算），在 <b>sampler 消費前</b>完成 ⇒ 還原正確輸出。</div>
+    </div>
+  </div>
+
+  <div style="font-size:13px;font-weight:600;margin-bottom:6px;">與已判死／已走路線的關鍵差異</div>
+  <table style="width:100%;border-collapse:collapse;font-size:11.5px;margin-bottom:14px;">
+    <tr style="background:#f1f5f9;">
+      <td style="padding:6px 8px;font-weight:600;">對象</td>
+      <td style="padding:6px 8px;font-weight:600;">它的做法／結果</td>
+      <td style="padding:6px 8px;font-weight:600;">本方案差別</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;"><b>prebind／方案 A</b></td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">跨 token 預測 ids、加寬 24 候選、影子 38.3ms、q24=0.354</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;"><b>不預測</b>、用真實 ids、保持 top-8、不加寬</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;"><b>ρ 按層批次</b></td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">同 token 近似 gate（跳 attn）、ρ=0.86 但窗口 1.3–1.6ms、insert 4.76</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">不做近似、miss 後台補、<b>不依賴重合率</b></td>
+    </tr>
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;"><b>miss-3b</b></td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">讓<b>同步</b> fill 變便宜（合併 pread）、收益 ~2.9% 判死</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">讓 fill <b>離開同步路徑</b>（異步）、不是變便宜</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;"><b>miss-3c</b></td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">per-expert 重算、自寫依賴 3b、舊估 +13–18% 作廢</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">異步 drain＋雙緩衝補依賴、重算只為加回、<b>收益重測</b></td>
+    </tr>
+  </table>
+
+  <div style="font-size:13px;font-weight:600;margin-bottom:6px;">成敗點（風險 → 驗證方式）</div>
+  <table style="width:100%;border-collapse:collapse;font-size:11.5px;margin-bottom:14px;">
+    <tr style="background:#f1f5f9;">
+      <td style="padding:6px 8px;font-weight:600;">#</td>
+      <td style="padding:6px 8px;font-weight:600;">風險</td>
+      <td style="padding:6px 8px;font-weight:600;">驗證</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;color:#dc2626;"><b>① 時序窗口（最關鍵）</b></td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">一步 miss 的 fill＋補算要在 sampler 消費前完成</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;"><b>Stage B</b>：量 fill 時間 vs 下一步 GPU 窗口</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">② 雙緩衝同步</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">Metal 單隊列、fill 與當前 gather 爭用</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">MAXQ 保險絲、背景 fill 主動讓步</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">③ 異步 bit-exact</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">MASK＋補算要 M1 逐位相同</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">對 host BATCHDBG、M1 oracle</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">④ bg 爭用</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">背景 fill 搶 IO／頻寬</td>
+      <td style="padding:6px 8px;border-bottom:1px solid #eee;">對照 bg on/off</td>
+    </tr>
+  </table>
+
+  <div style="padding:11px 13px;background:#fffbeb;border:1px solid #fcd34d;border-radius:7px;font-size:12px;color:#78350f;line-height:1.65;">
+    <b>關鍵結論：</b>這條路<b>不預測、用真實 ids</b>，避開 prebind／ρ 的覆蓋率與窗口限制；直接複用已逐位驗證的零件（GPU slot table＝s1-probe、MISS_MASK＝miss-3a）。
+    收益<b>【推算】</b>上界 <b>~19–20 t/s（×1.7~1.8）</b>、<b>不宣稱 25</b>（fill 全關上限 16.35、25 差 34.6%）。
+    第一步建議 <b>Stage B</b>（一次 GPU、只量「一步 miss 的 fill 時間 vs 下一步 GPU 窗口」）做 go/no-go，<b>不直接寫全套</b>。
+  </div>
+</div>
+</html>
