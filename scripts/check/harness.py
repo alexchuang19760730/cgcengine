@@ -529,6 +529,45 @@ def selftest() -> int:
     expect("unregistered -> True (errs toward waiting)",
            needs_window_for("no_such_tool.py", by), True)
 
+    print("\nbench: the prod-new swap arms are enforced, and a disarmed A/B arm is declared")
+    armed_env = {k: v for k, v in zip(_SWAP_ARM_KEYS, ("1", "2", "1"))}
+    ok, missing = _swap_arm_gate(_BASE_PROFILE_DEFAULT, armed_env, set())
+    expect("all three armed -> pass, nothing missing", (ok, missing), (True, []))
+    ok, missing = _swap_arm_gate(_BASE_PROFILE_DEFAULT, {**armed_env, "CGC_B_SCHEME": "0"}, set())
+    expect("a key set to 0 counts as OFF (run_server.sh drops it, so it is absent upstream)",
+           (ok, [m["key"] for m in missing]), (False, ["CGC_B_SCHEME"]))
+    ok, _ = _swap_arm_gate(_BASE_PROFILE_DEFAULT,
+                           {k: armed_env[k] for k in _SWAP_ARM_KEYS if k != "CGC_B_SCHEME"}, set())
+    expect("an absent key counts as OFF", ok, False)
+    ok, missing = _swap_arm_gate(_BASE_PROFILE_DEFAULT,
+                                 {k: armed_env[k] for k in _SWAP_ARM_KEYS if k != "CGC_B_SCHEME"},
+                                 {"CGC_B_SCHEME"})
+    expect("declared with ! -> allowed (the A/B arm is legitimate) and recorded as declared",
+           (ok, [m["declared"] for m in missing]), (True, [True]))
+    expect("a non-prod-new profile gets no opinion from this gate",
+           _swap_arm_gate("prefill250", {}, set())[0], True)
+
+    print("\nbench: the cell knobs actually reach the llama-bench command line")
+    ba = argparse.Namespace(**_BENCH_DEFAULTS, workdir="/tmp/x", json_path="/tmp/x.json",
+                            spec_type="", spec_draft_n_max=None)
+    c0 = _bench_cmd(ba, ["prod-new"])
+    expect("fixed-fill-seed is on by default and reaches the command (the run3-shaped hole)",
+           ("--fixed-fill-seed" in c0, c0[c0.index("--fixed-fill-seed") + 1]), (True, "1"))
+    expect("steady-state cell is echoed as one dict",
+           _cell(ba)["fixed_fill_seed"], 1)
+    c1 = _bench_cmd(argparse.Namespace(**{**vars(ba), "fixed_fill_seed": 0}), ["prod-new"])
+    expect("an explicit seed=0 passes through rather than being overridden by the default",
+           c1[c1.index("--fixed-fill-seed") + 1], "0")
+    expect("no --no-warmup unless asked (warm-up is the pool-warm equivalent)",
+           "--no-warmup" in c0, False)
+    expect("and it appears when asked",
+           "--no-warmup" in _bench_cmd(argparse.Namespace(**{**vars(ba), "warmup": False}),
+                                       ["prod-new"]), True)
+    expect("--prompt-file only when set",
+           ("--prompt-file" in c0,
+            "--prompt-file" in _bench_cmd(argparse.Namespace(**{**vars(ba), "prompt_file": "/p.txt"}),
+                                          ["prod-new"])), (False, True))
+
     print()
     if fails:
         print("SELFTEST FAIL (%d): %s" % (len(fails), fails))
@@ -540,7 +579,8 @@ def selftest() -> int:
 # --------------------------------------------------------------------------- bench
 # 統一量測入口：所有報告數字必須基於 prod-new（或顯式 profile）＋自己的 env 增量。
 # base gate：arm env 撞到 base 已有鍵但未用 `!` 宣告 override → fail-closed 拒跑。
-# 產物契約：每臂 json 注入 base_check + 量測紀律字段（pp/tg + thermal + swap + attribution）。
+# 產物契約：每臂 json 注入 base_check + cell + box_gate（thermal/swap 讀數與冷卻結果）+ 量測紀律字段。
+# prod-new 的三個 swap 支柱（P0/P1/P2＋B_SCHEME）未武裝且未用 `!` 宣告 → 拒跑（見 _swap_arm_gate）。
 
 _BASE_PROFILE_DEFAULT = "prod-new"
 
@@ -559,9 +599,19 @@ _EXPERIMENT_KNOBS = {
     "CGC_DOWN_COMBINE", "CGC_FORCE_TEMP0", "CGC_HOOK_PROFILE",  # opt-in 儀器
 }
 
-# llama-bench 完整側默認（測試卡 §2.5 權威 CELL，可覆寫但記錄在產物；reps=3 中位數口徑）
+# prod-new 的 swap 結構組合：這三個是「預設就該開」的支柱，不是實驗開關。
+# 缺一不可的理由各自獨立（P0 砍匿名副本＝超訂根因、P1/P2 壓 churn、B_SCHEME 讓 miss 收斂），
+# 而三者關掉之後量到的 decode 會被讀成「prod-new 的效能」——所以缺了要拒跑，不是只警告。
+# 要跑關掉其中一個的 A/B，用 `!KEY=VAL` 顯式宣告（會進產物 base_check.overrides）。
+_SWAP_ARM_KEYS = ("CGC_EXPERT_SKIP_READRAW", "CGC_POOL_MADVISE", "CGC_B_SCHEME")
+
+# llama-bench 完整側默認（測試卡 §2.5 權威 CELL，可覆寫但記錄在產物；reps=3 中位數口徑）。
+# fixed_fill_seed=1 是 docs/DECODE_STEADY_BASELINE_2026-09-19.md:45 的結論（σ 3.46→1.09）：
+# 沒有它，每個 rep 換一條隨機填充流，量到的是 cold/steady 的混合（run3 = 4.13/11.85/11.67），
+# 而那個混合會直接被讀成「噪音」。它進產物的 cell 區塊，不是隱含 default。
 _BENCH_DEFAULTS = dict(prompt=2048, gen=128, depths="512", reps=3,
-                       warm_skip=64, ctx_size=0, batch=5632, ubatch=5632)
+                       warm_skip=64, ctx_size=0, batch=5632, ubatch=5632,
+                       fixed_fill_seed=1, prompt_file="", warmup=True)
 
 
 def _parse_arm(spec: str) -> tuple[str, dict, set]:
@@ -587,11 +637,30 @@ def _parse_arm(spec: str) -> tuple[str, dict, set]:
     return profile, env, overrides
 
 
-def _base_gate(profile: str, extra_env: dict, overrides: set) -> tuple[bool, list[str], list[str]]:
-    """resolve base vs arm；未宣告的 base 鍵變更 → FAIL（fail-closed）。"""
+def _swap_arm_gate(profile: str, arm_env: dict, overrides: set) -> tuple[bool, list[dict]]:
+    """prod-new 的三個 swap 支柱必須武裝；未宣吿就缺 → FAIL（fail-closed）。
+
+    `arm_env` 是 matrix.resolve() 出來的**完全解析後**環境（不是我們寫下的清單）：
+    run_server.sh 只傳非 0 值，所以「鍵不在」跟「=0」是同一件事，兩者都算沒開。
+    `!K=0` 這種顯式關閉是合法做法（A/B 需要它）——它在 base gate 已被記錄，這裡不重複審。
+    """
+    if profile != _BASE_PROFILE_DEFAULT:
+        return True, []
+    missing = []
+    for k in _SWAP_ARM_KEYS:
+        v = arm_env.get(k)
+        armed = v not in (None, "", "0")
+        if not armed:
+            missing.append({"key": k, "value": v,
+                            "declared": k in overrides})
+    undeclared = [m for m in missing if not m["declared"]]
+    return (len(undeclared) == 0), missing
+
+
+def _base_gate(profile: str, arm: dict, overrides: set) -> tuple[bool, list[str], list[str]]:
+    """base vs 已解析的 arm；未宣告的 base 鍵變更 → FAIL（fail-closed）。"""
     matrix = _load("matrix", "llama_bench_matrix.py")
     base = matrix.resolve(profile, {})
-    arm = matrix.resolve(profile, extra_env)
     diffs, ovr = [], []
     # 雙向比對：arm 改 base 鍵值、或設 0 讓 base 鍵從 dump 消失（= 值變更），都要歸因
     for k in sorted(set(base["env"]) | set(arm["env"])):
@@ -650,6 +719,66 @@ def _sys_snapshot() -> dict:
     return snap
 
 
+def _bench_cmd(args, specs) -> list[str]:
+    """llama-bench command for this cell. Extracted so the selftest can prove a knob reached it.
+
+    This exists because the way a flag goes missing is not a typo: `harness bench` simply did
+    not have `--fixed-fill-seed`, so every run through the "unified" entry point measured the
+    mixed cold/steady regime while the recipe was fine. A builder that a test can inspect is
+    the cheapest fix for that class.
+    """
+    cmd = [PY, str(HERE / "llama_bench_matrix.py"),
+           "--arms", ",".join(specs),
+           "--prompt", str(args.prompt), "--gen", str(args.gen),
+           "--depths", args.depths, "--reps", str(args.reps),
+           "--ctx-size", str(args.ctx_size), "--warm-skip", str(args.warm_skip),
+           "--fixed-fill-seed", str(args.fixed_fill_seed),
+           "--workdir", str(args.workdir), "--json", str(args.json_path)]
+    if args.prompt_file:
+        cmd += ["--prompt-file", args.prompt_file]
+    if args.batch:
+        cmd += ["--batch", str(args.batch)]
+    if not args.warmup:
+        cmd += ["--no-warmup"]
+    if args.spec_type:
+        cmd += ["--spec-type", args.spec_type]
+        if args.spec_draft_n_max is not None:
+            cmd += ["--spec-draft-n-max", str(args.spec_draft_n_max)]
+    return cmd
+
+
+def _cell(args) -> dict:
+    """The cell, as a dict -- a number is only comparable to another number from the same cell."""
+    return {"prompt": args.prompt, "gen": args.gen, "depths": args.depths, "reps": args.reps,
+            "warm_skip": args.warm_skip, "ctx_size": args.ctx_size,
+            "fixed_fill_seed": args.fixed_fill_seed, "prompt_file": args.prompt_file,
+            "warmup": args.warmup, "spec_type": args.spec_type,
+            "spec_draft_n_max": args.spec_draft_n_max}
+
+
+def _box_gate(args) -> dict:
+    """Launch 前的盒況閘：thermal 先冷卻到 NOMINAL，再看 swap（改名具的佔用者）。
+
+    thermal 的失敗是**軟的**（冷卻 bounded，逾時只大聲警告：一台熱機上永遠拒跑等於鎖死
+    使用者的桌面），而 swap 的處置是**提醒**而不是拒跑：那上面的頁不是我們的（P0/P1/P2
+    管不到別人的匿名頁），所以訊息要指名程序，不然使用者拿不到可行的動作。
+    """
+    tp = _load("tp_gate", "thermal_pressure.py")
+    mp = _load("mp_gate", "memory_pressure.py")
+    gate = {"cool_max_s": args.cool_max_s, "thermal_gate": not args.no_thermal_gate}
+    if args.no_thermal_gate:
+        gate["thermal"] = {"skipped": True}
+        print("[thermal] gate 關閉（--no-thermal-gate）-- 本輪的 thermal 狀態不會擋住啟動")
+    else:
+        gate["thermal"] = tp.wait_nominal(timeout_s=args.cool_max_s)
+    advice = mp.swap_advice()
+    gate["swap"] = advice
+    print(f"[swap] verdict={advice['verdict']} {advice['why']}")
+    for row in advice["top"]:
+        print(f"       {row['rss_mb']:8.1f} MiB  {row['proc']}")
+    return gate
+
+
 def cmd_bench(args) -> int:
     matrix = _load("matrix", "llama_bench_matrix.py")
     specs = list(args.arm)
@@ -657,17 +786,33 @@ def cmd_bench(args) -> int:
     gate_report = []
     for spec in specs:
         profile, env, overrides = _parse_arm(spec)
-        ok, diffs, ovr = _base_gate(profile, env, overrides)
-        gate_report.append({"arm": spec, "profile": profile, "overrides": ovr,
-                            "diffs": diffs, "pass": ok})
+        arm = matrix.resolve(profile, env)
+        ok, diffs, ovr = _base_gate(profile, arm, overrides)
+        armed, missing = _swap_arm_gate(profile, arm.get("env", {}), overrides)
+        report = {"arm": spec, "profile": profile, "overrides": ovr,
+                  "diffs": diffs, "pass": ok and armed,
+                  "swap_arms": {k: arm.get("env", {}).get(k) for k in _SWAP_ARM_KEYS}}
+        gate_report.append(report)
         if not ok:
             ok_all = False
             print(f"!! base gate FAIL for {spec}:")
             for d in diffs:
                 print(f"    {d}")
+        if not armed:
+            ok_all = False
+            undeclared = [m for m in missing if not m["declared"]]
+            print(f"!! swap-arm gate FAIL for {spec}: "
+                  f"{', '.join(str(m['key']) for m in undeclared)} 沒開")
+            print("   prod-new 的 decode 是在這三個開著的前提下量的（P0 砍匿名副本、"
+                  "P1/P2 壓 churn、B_SCHEME 讓 miss 收斂）；關著跑出來的數字会被讀成 "
+                  "prod-new 的效能。要跑關掉的對照臂："
+                  + " ".join(f"--arm '{profile}:!{m['key']}=0,...'" for m in undeclared))
     if not ok_all:
-        print("base gate 未過 — 拒跑。用 !KEY=VAL 顯式宣告覆蓋，或去掉該 env。")
+        print("gate 未過 — 拒跑。用 !KEY=VAL 顯式宣告覆蓋（A/B 對照臂正當），或補上缺的開關。")
         return 2
+
+    # launch 前的盒況閘（thermal 冷卻 + swap 提醒），產物會帶上它自己的讀數
+    box_gate = _box_gate(args)
 
     # 測試前系統快照（thermal / swap / pageins / memory_pressure / iostat）
     t_bench0 = time.time()
@@ -678,19 +823,8 @@ def cmd_bench(args) -> int:
 
     # delegate 給 llama_bench_matrix（量測邏輯不複製；matrix 不自動建 workdir）
     Path(args.workdir).mkdir(parents=True, exist_ok=True)
-    arms_joined = ",".join(specs)
-    cmd = [PY, str(HERE / "llama_bench_matrix.py"),
-           "--arms", arms_joined,
-           "--prompt", str(args.prompt), "--gen", str(args.gen),
-           "--depths", args.depths, "--reps", str(args.reps),
-           "--ctx-size", str(args.ctx_size), "--warm-skip", str(args.warm_skip),
-           "--workdir", str(args.workdir), "--json", str(args.json_path)]
-    if args.spec_type:
-        cmd += ["--spec-type", args.spec_type]
-        if args.spec_draft_n_max is not None:
-            cmd += ["--spec-draft-n-max", str(args.spec_draft_n_max)]
-    import shutil
-    print("$ " + shlex_join(cmd) if False else " ".join(cmd), flush=True)
+    cmd = _bench_cmd(args, specs)
+    print("$ " + " ".join(cmd), flush=True)
     rc = subprocess.call(cmd, cwd=str(ROOT))
     if rc != 0:
         return rc
@@ -709,11 +843,13 @@ def cmd_bench(args) -> int:
         print(f"page 速率: in={rate['pageins_per_s']:.1f}/s out={rate['pageouts_per_s']:.1f}/s "
               f"(wall={wall:.0f}s)", flush=True)
 
-    # 產物注入 base_check + sys_before/after（每個 arm 一臂）
+    # 產物注入 base_check + cell + box_gate + sys_before/after（每個 arm 一臂）
     data = json.loads(Path(args.json_path).read_text())
     for arm, report in zip(data, gate_report):
         arm["base_check"] = {"profile": report["profile"], "pass": report["pass"],
-                             "overrides": report["overrides"], "diffs": report["diffs"]}
+                             "overrides": report["overrides"], "diffs": report["diffs"],
+                             "swap_arms": report["swap_arms"]}
+        arm["cell"], arm["box_gate"] = _cell(args), box_gate
         arm["sys_before"], arm["sys_after"] = before, after
         if rate:
             arm["sys_rate"] = rate
@@ -734,11 +870,6 @@ def cmd_bench(args) -> int:
         print(f"  swap: launch={ls} end={es} worst={ws} growth={((es or 0)-(ls or 0)):+.0f} MiB")
         print(f"  attribution: {arm.get('attribution')}")
     return 0
-
-
-import shlex as _shlex
-def shlex_join(parts):
-    return _shlex.join(parts)
 
 
 def cmd_verify(args) -> int:
@@ -826,6 +957,19 @@ def main(argv=None) -> int:
     p.add_argument("--reps", type=int, default=_BENCH_DEFAULTS["reps"])
     p.add_argument("--warm-skip", type=int, default=_BENCH_DEFAULTS["warm_skip"])
     p.add_argument("--ctx-size", type=int, default=_BENCH_DEFAULTS["ctx_size"])
+    p.add_argument("--fixed-fill-seed", type=int, default=_BENCH_DEFAULTS["fixed_fill_seed"],
+                   help="llama-bench --fixed-fill-seed（預設 1＝每個 rep 重播同一條填充流，池才到得住穩態；"
+                        "0 = llama-bench 歷史行為＝每 rep 換一條 ⇒ cold/steady 混樣）")
+    p.add_argument("--prompt-file", default=_BENCH_DEFAULTS["prompt_file"],
+                   help="llama-bench --prompt-file（真 prompt；隨機填充的路由不是真實語言分佈）")
+    p.add_argument("--no-warmup", dest="warmup", action="store_false",
+                   default=_BENCH_DEFAULTS["warmup"],
+                   help="跳過 llama-bench 暖機（預設暖機 ON：它才是「池已暖」的等價物）")
+    p.add_argument("--batch", type=int, default=_BENCH_DEFAULTS["batch"], help="llama-bench -b")
+    p.add_argument("--cool-max-s", type=float, default=420.0,
+                   help="thermal 閘的最長冷卻秒數（420 = repo 量到的最小充分冷卻）")
+    p.add_argument("--no-thermal-gate", action="store_true",
+                   help="不等待 NOMINAL（只警告）-- 非量測用途才用")
     p.add_argument("--spec-type", default="",
                    help="llama-bench --spec-type（僅 draft-mtp）；空 = 一般 cell（預設行為）")
     p.add_argument("--spec-draft-n-max", type=int, default=None,

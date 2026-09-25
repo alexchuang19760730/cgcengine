@@ -194,16 +194,36 @@ def render_brief_html(e: dict, data: dict, mapping: dict[str, str],
     # 表 2（可選）：與其它路線的關鍵差異
     diff_tbl = ""
     if e.get("diff"):
+        # 這幾欄的內容是 mindmap.json 裡的作者文字（跟 goal 一樣帶 <b>/<code> 標記）⇒ 原樣輸出。
+        # 先前這裡用 esc()、goal 卻原樣 ⇒ 同一頁一半的粗體變成可見的 `<b>` 字標。
         diff_tbl = section_title("與其它路線的關鍵差異") + table(
             ["對象", "它的做法／結果", "本條目差別"],
-            [[esc(d[0]), esc(d[1]), esc(d[2])] for d in e["diff"]])
+            [[d[0], d[1], d[2]] for d in e["diff"]])
 
     # 表 3（可選）：成敗點（風險 → 驗證）
     risk_tbl = ""
     if e.get("risks"):
         risk_tbl = section_title("成敗點（風險 → 驗證方式）") + table(
             ["#", "風險", "驗證"],
-            [[f"<b>{i + 1}</b>", esc(r[0]), esc(r[1])] for i, r in enumerate(e["risks"])])
+            [[f"<b>{i + 1}</b>", r[0], r[1]] for i, r in enumerate(e["risks"])])
+
+    # 表 3b（可選）：生產設置（要進生產必須滿足什麼）—— 分級是 ③a 時，這張表就是「升級條件」
+    prod_tbl = ""
+    if e.get("prod_setup"):
+        prod_tbl = section_title("生產設置（要進生產必須滿足什麼）") + table(
+            ["項目", "驗收條件（可否證）", "現況"],
+            [[r[0], r[1], r[2]] for r in e["prod_setup"]])
+
+    # 表 3c（可選）：驗收測試（完整 test cases）—— 每格都要有「先寫死的通過條件」與「產物」
+    test_tbl = ""
+    if e.get("tests"):
+        test_tbl = section_title("驗收測試（完整 test cases：E 系列）") + table(
+            ["#", "測什麼", "通過條件（先寫死）", "成本／指令", "結果"],
+            [[f'<b>{esc(t.get("id", ""))}</b>', t.get("what", ""), t.get("pass", ""),
+              f'<code>{esc(t.get("cmd", ""))}</code>'
+              + (f'<br>{t["cost"]}' if t.get("cost") else ""),
+              t.get("result") or '<span style="color:#94a3b8;">未跑</span>']
+             for t in e["tests"]])
 
     # 表 4：依據 · 備註 · 軸性質 · 報告
     doclist = sorted(d for d, eid in mapping.items() if eid == e["id"])
@@ -255,8 +275,13 @@ def render_brief_html(e: dict, data: dict, mapping: dict[str, str],
            f'{prev_html}<span><a href="index.html">總目錄</a>　·　'
            f'<a href="{e["id"]}.md">MD 版</a></span>{next_html}</div>')
 
-    return f"""<html style="margin:0;padding:0;">
+    return f"""<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
 <title>{esc(e["name"])} — 技術白皮書（{esc(e["tier"])} {esc(tier["label"])}）</title>
+</head>
+<body style="margin:0;padding:0;">
 <div style="width:100%;box-sizing:border-box;padding:18px;font-family:-apple-system,'PingFang TC',sans-serif;color:#1a1a1a;">
   <h2 style="margin:0 0 4px;font-size:19px;">{esc(e["name"])}</h2>
   <div style="font-size:12px;color:#666;margin-bottom:14px;line-height:1.6;">{esc(plain(e.get("goal", "")))}
@@ -270,6 +295,8 @@ def render_brief_html(e: dict, data: dict, mapping: dict[str, str],
   {rel_tbl}
   {diff_tbl}
   {risk_tbl}
+  {prod_tbl}
+  {test_tbl}
   {meta_tbl}
   {docs_html}
 
@@ -281,6 +308,7 @@ def render_brief_html(e: dict, data: dict, mapping: dict[str, str],
     機械生成；改內容請改 JSON 後重跑，勿直接編輯本頁。</div>
   {nav}
 </div>
+</body>
 </html>
 """
 
@@ -319,8 +347,12 @@ def render_brief_md(e: dict, data: dict, mapping: dict[str, str],
     peers = [x for x in data["entries"]
              if x["id"] != e["id"] and x["sub"] == e["sub"]
              and MB.STAGE_OF.get(x["tier"]) == stage_id][:6]
-    out += ["---", "", "## 5. 與其它條目的關係（同軸／同階段，自動對照）", "",
+    # 節號從 5 起**遞增**（不是硬寫）：可選區塊（diff／risks／prod_setup／tests）缺席時，
+    # 舊版會留下跳號（5 → 8）或重號（兩個 ## 8）—— 一份自己編號對不上的文件，讀者就沒法引用它。
+    sec = 5
+    out += ["---", "", f"## {sec}. 與其它條目的關係（同軸／同階段，自動對照）", "",
             "| 條目 | 級 | 結果（摘） |", "|---|---|---|"]
+    sec += 1
     if peers:
         for p in peers:
             out.append(f'| [{plain(p["name"])}]({p["id"]}.md) | {p["tier"]} '
@@ -330,17 +362,36 @@ def render_brief_md(e: dict, data: dict, mapping: dict[str, str],
     out.append("")
 
     if e.get("diff"):
-        out += ["## 6. 與其它路線的關鍵差異", "", "| 對象 | 它的做法／結果 | 本條目差別 |", "|---|---|---|"]
+        out += [f"## {sec}. 與其它路線的關鍵差異", "", "| 對象 | 它的做法／結果 | 本條目差別 |", "|---|---|---|"]
         out += [f"| {plain(d[0])} | {plain(d[1])} | {plain(d[2])} |" for d in e["diff"]]
         out.append("")
+        sec += 1
 
     if e.get("risks"):
-        out += ["## 7. 成敗點（風險 → 驗證）", "", "| # | 風險 | 驗證 |", "|---|---|---|"]
+        out += [f"## {sec}. 成敗點（風險 → 驗證）", "", "| # | 風險 | 驗證 |", "|---|---|---|"]
         out += [f"| {i + 1} | {plain(r[0])} | {plain(r[1])} |" for i, r in enumerate(e["risks"])]
         out.append("")
+        sec += 1
+
+    if e.get("prod_setup"):
+        out += [f"## {sec}. 生產設置（要進生產必須滿足什麼）", "",
+                "| 項目 | 驗收條件（可否證） | 現況 |", "|---|---|---|"]
+        out += [f"| {plain(r[0])} | {plain(r[1])} | {plain(r[2])} |" for r in e["prod_setup"]]
+        out.append("")
+        sec += 1
+
+    if e.get("tests"):
+        out += [f"## {sec}. 驗收測試（完整 test cases：E 系列）", "",
+                "| # | 測什麼 | 通過條件（先寫死） | 成本／指令 | 結果 |", "|---|---|---|---|---|"]
+        out += [f"| **{plain(t.get('id', ''))}** | {plain(t.get('what', ''))} | "
+                f"{plain(t.get('pass', ''))} | `{plain(t.get('cmd', ''))}`"
+                + (f"（{plain(t['cost'])}）" if t.get("cost") else "")
+                + f" | {plain(t.get('result') or '未跑')} |" for t in e["tests"]]
+        out.append("")
+        sec += 1
 
     doclist = sorted(d for d, eid in mapping.items() if eid == e["id"])
-    out += ["## 8. 依據 · 備註 · 對應報告", "",
+    out += [f"## {sec}. 依據 · 備註 · 對應報告", "",
             "| 項目 | 內容 |", "|---|---|",
             f'| 依據 | `{plain(e.get("evid", "—"))}` |',
             f'| 備註 | {plain(e.get("note", "—"))} |',
@@ -409,8 +460,13 @@ def render_index_html(data: dict, mapping: dict[str, str]) -> str:
             f'<td style="padding:6px 8px;font-weight:600;">MD</td>'
             f'<td style="padding:6px 8px;font-weight:600;">結果</td></tr>'
             f'{"".join(rows)}</table>')
-    return f"""<html style="margin:0;padding:0;">
+    return f"""<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
 <title>250 / 25 攻關 — 逐條技術白皮書總目錄（{len(data["entries"])} 條）</title>
+</head>
+<body style="margin:0;padding:0;">
 <div style="width:100%;box-sizing:border-box;padding:18px;font-family:-apple-system,'PingFang TC',sans-serif;color:#1a1a1a;">
   <h2 style="margin:0 0 4px;font-size:19px;">250 / 25 攻關 — 逐條技術白皮書（{len(data["entries"])} 條）</h2>
   <div style="font-size:12px;color:#666;margin-bottom:14px;line-height:1.6;">
@@ -497,6 +553,14 @@ def selftest() -> bool:
         len([f for f in mds if f.name != "index.md"]) == n)
     chk("index.html 存在", (BRIEF_DIR / "index.html").exists())
     chk("index.md 存在", (BRIEF_DIR / "index.md").exists())
+
+    # utf-8 宣告不是菜：沒有 `<meta charset="utf-8">` 的頁面用 HTTP 開就是整頁亂碼
+    # （實測：瀏覽器以 latin-1 解讀 ⇒ 中文全爛，而「產生器 selftest 綠」完全看不到這件事）。
+    missing = [f.name for f in files if "charset" not in
+               f.read_text(encoding="utf-8")[:400].lower()]
+    chk("每一份 html 都宣告 utf-8", not missing)
+    if missing:
+        print("   缺宣告：", missing[:5])
 
     sample = data["entries"][3]
     h = (BRIEF_DIR / f"{sample['id']}.html").read_text(encoding="utf-8")

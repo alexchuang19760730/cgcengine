@@ -20,7 +20,8 @@
 llama-bench -m models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf \
   -ngl 99 --load-mode none -t 8 -expert-cache 8589934592 \
   --cache-type-k q8_0 --cache-type-v q8_0 \
-  -b 5632 -ub 5632 -p 2048 -n 128 -d 512 -r 3 -o json
+  -b 5632 -ub 5632 -p 2048 -n 128 -d 512 -r 3 -o json \
+  --warm-skip 64 --fixed-fill-seed 1
 ```
 
 | 參數 | 值 | 意義 / 依據 |
@@ -31,7 +32,9 @@ llama-bench -m models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf \
 | `-r 3` | 3 reps | 每臂 3 次（中位數口徑） |
 | `-b / -ub` | 5632 | 最大存活 chunk（6144 OOM 0/5，見 prefill250 段） |
 | `-ngl 99 --load-mode none` | 全層 GPU、不 mmap | |
-| `-expert-cache 8589934592` | 8 GiB pool | |
+| `-expert-cache 8589934592` | 8 GiB pool | 縮 pool 確定性降速（8G 12.06 → 6G 10.48 → 4G 7.67），故不縮 |
+| `--warm-skip 64` | 時鐘在池預熱後才起算 | 沒它就是「冷啟動含在內」的另一個 cell |
+| `--fixed-fill-seed 1` | 每個 rep 重播同一條填充流 | `docs/DECODE_STEADY_BASELINE_2026-09-19.md:45`：σ 3.46→1.09。設 0 ⇒ 每 rep 換一條 ⇒量到 cold/steady 混樣（run3 = 4.13/11.85/11.67），那個混樣會被讀成「噪音」 |
 
 ### 2.5 machine-readable CELL（driver 唯一讀取處：人讀 §2 命令、程式讀本塊）
 
@@ -57,7 +60,7 @@ llama-bench -m models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf \
     "expert_cache_bytes": 8589934592,
     "cache_type_k": "q8_0",
     "cache_type_v": "q8_0",
-    "fixed_fill_seed": null
+    "fixed_fill_seed": 1
   },
   "switches": {
     "LLAMA_EXPERT_CACHE_ALLOW_NGL": {
@@ -68,19 +71,27 @@ llama-bench -m models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf \
     },
     "CGC_EXPERT_SKIP_READRAW": {
       "stage": "P0",
-      "default": 0,
+      "default": 1,
+      "enforced": "run_server.sh cgc_swap_guard：未武裝且未用 CGC_SWAP_GUARD=off 宣告 ⇒ 拒跑（exit 2）",
       "values": [0, 1],
       "requires": "LLAMA_EXPERT_CACHE_ALLOW_NGL=1",
       "effect": "skip-load expert 不 read_raw，省 ~10.9 GiB 匿名駐留、swap 增量 -92%（5679→449 MiB）"
     },
     "CGC_POOL_MADVISE": {
-      "default": 0,
+      "default": 2,
+      "enforced": "同上（cgc_swap_guard，同一道閘）",
       "values": [0, 1, 2],
       "stage_map": {
         "1": "P1：fill（pread）前 madvise(DONTNEED) 丟將被覆蓋頁",
         "2": "P1+P2：fill 前 + evict 時都丟"
       },
       "effect": "減少駐留與重讀"
+    },
+    "CGC_B_SCHEME": {
+      "default": 1,
+      "enforced": "同上（cgc_swap_guard；run_server.sh SERVER_ENV 白名單已接，沒列會被靜默丟）",
+      "values": [0, 1],
+      "effect": "熱門優先替換：不踢錯熱專家，讓 miss 收斂"
     }
   },
   "runtime_adjustable": ["ctx_size", "fixed_fill_seed"],
@@ -103,8 +114,9 @@ llama-bench -m models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf \
 | `CGC_SERVER_NO_SEQ_RM_PROBE` | 1 | |
 | `CGC_SERVER_PREFIX_REUSE_CKPT` | 1 | prefix reuse（MTP off 下 no-op，保留為顯式一致） |
 | `LLAMA_EXPERT_CACHE_ALLOW_NGL` | **1** | **通用 SERVER_ENV（run_server.sh:1429，所有 profile 都帶）——L4/skip-load 使能條件**：`expert_cache_skip_load = (ngl<=0 || ALLOW_NGL || cgc_l3_ngl) && !no_gather`。**P0（skip-readraw）要生效，這條必須=1**（值語意，`0` 是關，讀者解析值不測存在） |
-| `CGC_EXPERT_SKIP_READRAW` | 0 | P0 開關（**預設關**，A/B 時設 1） |
-| `CGC_POOL_MADVISE` | 0 | P1/P2 開關（**預設關**） |
+| `CGC_EXPERT_SKIP_READRAW` | **1** | P0（**預設開**；砍 ~10.9 GiB 匿名副本＝超訂根因，開了之後 8 GiB pool 才裝得進 16 GB。要跑關掉的 A/B：`CGC_SWAP_GUARD=off CGC_EXPERT_SKIP_READRAW=0`） |
+| `CGC_POOL_MADVISE` | **2** | P1+P2（**預設開**） |
+| `CGC_B_SCHEME` | **1** | 熱門優先替換（**預設開**；`SERVER_ENV` 白名單 2026-09-25 才接上——沒接之前設了會被靜默丟） |
 | `CGC_PREFILL_STREAM` | 1 | prefill250 支柱（大 chunk 走 whole-layer slab） |
 | `CGC_GATHER_SLAB_CAP` | 256 | slab 裝得下全部 256 experts |
 | `CGC_SERVER_MTP_N_MAX` | 3 | MTP on 時 n_max 顯式釘 3 |
@@ -129,14 +141,18 @@ llama-bench -m models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf \
 > 校準方法：`CGC_DUMP_ENV=1` 的解析輸出是唯一權威——測試卡任何一行與之不符，以 dump 為準。
 
 > 顯式 `0` 不是「不設」：讓 P0/P1/P2 開關在 profile 裡**有名字**。注意下游白名單只傳非 0 值，`CGC_DUMP_ENV=1` 在關閉時看不到這兩行——那是「關」的正常表現。
+>
+> 2026-09-25：P0/P1/P2 由「顯式 0＝預設關」翻成「**預設開＋沒開就拒跑**」。理由不是 A/B 結果（那一輪量測本身不可比，見 `docs/P0_P1P2_ATTRIBUTION_2026-09-25.md`），
+> 而是預設值本身：超訂 4838 MiB 的根因是那 10.9 GiB 匿名副本，而 8 GiB pool 是 decode 的硬需求（8G 12.06 → 6G 10.48 → 4G 7.67，縮 pool 確定性降速）。
+> ⇒ 強制閘（`cgc_swap_guard`）與 `test_run_server_swap_guard.py`（三態＋順序）成對存在；閘在 `CGC_DUMP_ENV` **之後**，否則會把量測入口自己的解析路徑擋死。
 
 ## 4. 臂差異開關（A/B 用）
 
 | env | 值 | 效果 |
 |---|---|---|
-| `CGC_EXPERT_SKIP_READRAW=1` | P0 | skip-load expert 不 read_raw → 省 ~10.9 GiB 匿名駐留、swap ↓92%（5679→449 MiB） |
 | `CGC_SPAC_HOT=1` | B 真臂 | 踢 `spac_count`（累計路由次數，永不衰減）最低者 → 熱門優先替換（命中 143 槽可覆蓋 98.9% 路由） |
 | `CGC_SERVER_MTP=1` | MTP on | 對照 decode 支柱（走 prod25-stream） |
+| `CGC_EXPERT_SKIP_READRAW=0`（+`CGC_SWAP_GUARD=off`） | P0 對照 | P0 自 2026-09-25 起是**預設**，所以 A/B 的差異臂是「關掉它」；經 `harness bench` 則寫成 `--arm 'prod-new:!CGC_EXPERT_SKIP_READRAW=0'`（`!` = 已宣告，進產物） |
 
 ## 5. 量測紀律（強制，所有測試者含兩個 Agent 與 MainAgent）
 
@@ -189,10 +205,20 @@ attribution: thermal / swap / both / none        # memory_pressure.py 判定
 > `llama_bench_matrix.py`／`prod_matrix.py` 是 **internal** 驅動：直跑它們、cell 與 §2.5 不符會被合約
 > 當場拒跑；即使跑通，未帶完整 §2.5 口徑標注的數字＝**「口徑不明」**，不可寫進 commit 標題或跨時間比較。
 
+2026-09-25 新增：**cell 與三支柱都有強制閘，兩條路各司其職**。
+
+| 閘 | 在哪 | 沒過會怎樣 | 合法繞道 |
+|---|---|---|---|
+| cell 合約（`cell_contract.py`） | `llama_bench_matrix.run_arm` 拼完命令、執行前 | 拒跑（fail-closed），逐項列出與 §2.5 的差 | 走 `harness.py bench` / `commit_bench.py` 的預設 |
+| swap 支柱（P0/P1/P2＋B_SCHEME） | `run_server.sh cgc_swap_guard`（**在 `CGC_DUMP_ENV` 之後**，否則會擋死量測入口自己的解析路徑） | 拒跑（exit 2） | `CGC_SWAP_GUARD=off`（大聲警告），A/B 對照臂就靠它 |
+| thermal 冷卻（軟） | `run_server.sh cgc_box_preflight` / `harness.py bench` | 不拒跑：等 NOMINAL 最多 420 s，逾時只警告（那輪不可引用） | `CGC_THERMAL_GATE=off` / `--no-thermal-gate` |
+| swap 佔用者提醒 | 同上（`memory_pressure.py --advice`） | 不拒跑：印出超過起跑門檻的 swap 與佔用它的大戶 | —（提醒是重點，不擋啟動） |
+
 ```sh
 # 單臂（commit_bench 同款）
-python3 scripts/check/llama_bench_matrix.py --arms "prod-new:CGC_EXPERT_SKIP_READRAW=1;CGC_SPAC_HOT=1" \
+python3 scripts/check/llama_bench_matrix.py --arms "prod-new:CGC_SPAC_HOT=1" \
   --prompt 2048 --gen 128 --depths 512 --reps 3 --ctx-size 0 \
+  --warm-skip 64 --fixed-fill-seed 1 \
   --workdir /tmp/xxx --json /tmp/xxx/result.json
 
 # A/B 對比（同場）

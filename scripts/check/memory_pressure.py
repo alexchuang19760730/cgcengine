@@ -134,6 +134,66 @@ def swap_used_mb() -> float | None:
     return s["used_mb"] if s else None
 
 
+# The measurement contract's start line: above this the run starts saturated and the decay is
+# already in the artifact before the first token. Same number as §3.3.
+SWAP_START_LIMIT_MB = 2048.0
+
+
+def top_rss(n: int = 5) -> list[dict]:
+    """The `n` biggest RSS processes right now -- what the user can actually close.
+
+    Exists because "swap is at 5 GB" is not actionable and "your swap is not the engine's" is
+    not either: the residency is held by *named* other applications, and this is the list that
+    names them. Returns `[]` (never a fabricated row) when `ps` gives nothing.
+    """
+    try:
+        out = subprocess.run(["ps", "-Ao", "rss=,comm="], capture_output=True, text=True,
+                             timeout=10)
+    except Exception:  # noqa: BLE001
+        return []
+    rows = []
+    for line in out.stdout.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        try:
+            rss_kb = int(parts[0])
+        except ValueError:
+            continue
+        rows.append({"rss_mb": round(rss_kb / 1024.0, 1), "proc": parts[1].strip()})
+    rows.sort(key=lambda r: -r["rss_mb"])
+    return rows[:n]
+
+
+def swap_advice(limit_mb: float = SWAP_START_LIMIT_MB, wait_mb: float = 500.0) -> dict:
+    """Verdict on the box's swap BEFORE a launch, with the named consumers.
+
+    `wait` (swap usable, not growing) => `ok`; `advise` (system swap already over the start
+    limit with the engine not running) => the knobs cannot help, because nothing of ours holds
+    those pages: the message names the processes to close. Fail-closed is deliberately NOT used
+    here -- the launcher is not the owner of the user's desktop; it is the messenger.
+    """
+    used = swap_used_mb()
+    procs = llama_procs()
+    if used is None:
+        return {"verdict": "unknown", "swap_used_mb": None, "llama_procs": procs,
+                "limit_mb": limit_mb, "top": [],
+                "why": "sysctl vm.swapusage 讀不到（不當成 0）"}
+    if used <= wait_mb:
+        return {"verdict": "ok", "swap_used_mb": used, "llama_procs": procs,
+                "limit_mb": limit_mb, "top": [], "why": f"swap {used:.0f} MiB ≈ 乾淨"}
+    if used <= limit_mb and procs <= 0:
+        return {"verdict": "warn", "swap_used_mb": used, "llama_procs": procs,
+                "limit_mb": limit_mb, "top": top_rss(5),
+                "why": f"swap {used:.0f} MiB 已高於乾淨線 {wait_mb:.0f}、但在起跑門檻 "
+                       f"{limit_mb:.0f} 以內"}
+    return {"verdict": "advise", "swap_used_mb": used, "llama_procs": procs,
+            "limit_mb": limit_mb, "top": top_rss(5),
+            "why": (f"swap 已用 {used:.0f} MiB > 起跑門檻 {limit_mb:.0f} MiB，而機器上只有 "
+                    f"{procs} 個 llama 行程 ⇒ 這些頁不是引擎的（P0/P1/P2 管不到別人的駐留）。"
+                    f"關掉下表其中幾項（或重開機）再跑，否則這輪一開跑就已飽和")}
+
+
 def stamp() -> dict:
     """One JSON-safe reading: `{t, swap_used_mb, swap_total_mb, pages_free_mb,
     pages_wired_mb, llama_procs}`. Missing fields are None (never folded into a number)."""
@@ -325,6 +385,22 @@ def _selftest() -> int:
           r["worst"]["max_swap_mb"] == max(x["swap_used_mb"] for x in r["samples"]
                                            if x["swap_used_mb"] is not None))
 
+    # --- top_rss / swap_advice: the reminder must be actionable, and the verdict must be ----
+    # --- derived from a real reading rather than from the knob settings ------------------
+    top = top_rss(5)
+    check("top_rss() parses the real ps shape (or honestly returns nothing)",
+          all(isinstance(x["rss_mb"], float) and x["proc"] for x in top), repr(top[:2]))
+    check("top_rss() is sorted descending",
+          all(top[i]["rss_mb"] >= top[i + 1]["rss_mb"] for i in range(len(top) - 1)))
+    check("top_rss() returns at most n rows", len(top_rss(3)) <= 3)
+    a = swap_advice(limit_mb=1e9, wait_mb=950.0)
+    check("swap_advice() at a clean box says ok and names no one",
+          a["verdict"] in ("ok", "warn") and (a["verdict"] == "warn" or not a["top"]), a["why"])
+    check("swap_advice() over a tiny limit advises and carries the named consumers",
+          swap_advice(limit_mb=1.0, wait_mb=0.0)["verdict"] in ("advise", "unknown"))
+    check("swap_advice() never reports a number it did not read",
+          (swap_advice()["swap_used_mb"] is None) == (swap_used_mb() is None))
+
     print()
     print(f"  {n - bad}/{n} checks passed")
     return 1 if bad else 0
@@ -333,6 +409,15 @@ def _selftest() -> int:
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
         sys.exit(_selftest())
+    if "--advice" in sys.argv:
+        # CLI form for the shell launcher: `--advice [LIMIT_MB]`
+        _i = sys.argv.index("--advice")
+        _lim = float(sys.argv[_i + 1]) if len(sys.argv) > _i + 1 else SWAP_START_LIMIT_MB
+        _a = swap_advice(limit_mb=_lim)
+        print(f"[swap] verdict={_a['verdict']} {_a['why']}")
+        for _r in _a["top"]:
+            print(f"       {_r['rss_mb']:8.1f} MiB  {_r['proc']}")
+        sys.exit(0)
     s = stamp()
     print(f"swap used={s['swap_used_mb']} MiB  free={s['pages_free_mb']:.1f} MiB  "
           f"wired={s['pages_wired_mb']:.1f} MiB  llama_procs={s['llama_procs']}")

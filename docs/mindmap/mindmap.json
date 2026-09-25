@@ -300,13 +300,13 @@
       "theme": "缺失處理",
       "tier": "3a",
       "crit": "預先寫死：① 補算在 sampler 消費前完成的時序窗口 ② MASK＋補算 M1 bit-exact ③ 乾淨 cell r3 decode",
-      "res": "方案設計完成、待實施（無實測）；先跑 Stage B 量 fill 時間 vs GPU 窗口 ⇒ go/no-go",
-      "evid": "docs/S1_ASYNC_GATHER_PIPELINE_2026-09-25.md",
+      "res": "<b>E0 已給出決定性答案：前提成立</b>——S1（暖池 8 GiB）輸出 <code>文摘文摘…</code> 且 logits 全非有限（引擎自蓋 INVALID），同一輪的分段臂是 <code>42</code> ⇒ <b>異步 fill＋補算（C/D）是把 ×1.42–1.83 變成可交付的唯一路徑，不是可選項</b>。E2 被自身結構擋下（S1 跳過 41 段迴圈 ⇒ 逐層儀器不在路徑上）；E1 裁決 fill 的可引用值是 <b>20.8 ms/step</b>（殘差 3.955 不得當輸入）；E4 的比值（decode ×1.42／prefill ×0.80）只能當診斷價（兩臂 thermal HEAVY＋起跑 swap 8 GiB）⇒ <b>仍無任何吞吐可宣稱</b>。",
+      "evid": "docs/S1_ASYNC_GATHER_PIPELINE_2026-09-25.md、docs/S1_SHAPE1_WAIT_BUDGET_2026-09-25.md、docs/S1_COLUMN_CENSUS_2026-09-25.md；E 系列 driver＋產物：Backup/eseries/driver.py、results.json（_order ＋ 逐項 stdout）、E0/、E4/summary.json、E2b|census.json",
       "detail_html": "../S1_ASYNC_GATHER_PIPELINE_2026-09-25.html",
       "docs": [
         "S1_ASYNC_GATHER_*"
       ],
-      "note": "不預測 ids（異於 prebind/ρ）、用真實 ids＋異步重疊；收益【推算】上界 ~19–20 t/s、不宣稱 25",
+      "note": "不預測 ids（異於 prebind/ρ）、用真實 ids＋異步重疊；收益【推算】上界 ~19–20 t/s、不宣稱 25（E1 裁決後按 20.8 ms/step 重算 ⇒ ~14.5 t/s；19–20 那個數押在已降級的 3.955 上）",
       "sub": "S",
       "goal": "在<b>單段提交</b>下用 GPU presence/slot table：命中即算、miss 只寫清單並 MASK，CPU <b>後台異步 fill</b> 與下一步 GPU 重疊，再<b>只補算 miss expert</b>（線性疊加）⇒ 拿到單段的 ×1.7~1.8 同時保住正確性。",
       "diff": [
@@ -348,6 +348,57 @@
           "bg 爭用：背景 fill 搶 IO／頻寬",
           "對照 bg on/off"
         ]
+      ],
+      "prod_setup": [
+        ["正確性不能妥協", "MISS_MASK ＋ 補算必須 <b>M1 逐位元相同</b>（M1 == 1.0 且 M2 == 1.0）", "MASK 已過（3b，38 層/421 元素/0 差異）；<b>補算尚未實作</b>"],
+        ["無前置條件", "不得要求「先把 fill 關掉」或「hook=0」才能跑；miss 路徑必須 fail-closed（守住零）", "<b>未滿足，且後果已量到</b>：E0 證明「先關 fill」的代價不是變慢而是 <b>NaN</b>（暖池亦然）"],
+        ["成本可接受", "每層要藏的量 ≤ 該層 hits-only 的 MoE 時間（需求 ~0.52 ms/層 vs 窗口 ~0.4–0.8 ms）", "<b>已量 ⇒ 形狀 1（同步等 fill）死</b>：同臂同框（22:07）decode 步中位 75.09 ms ＝ wait <b>88.7%</b> ＋ cb <b>6.7%</b> ＋ submit 4.5%（三欄相加與 header 差 0.09 ms）；EBTIMER＝4.32 ms/步（每步 miss 中位 5）⇒ <b>ratio 0.86 ⇒ FILL_IN_CB</b>。⇒ 可移除的只有 6.7%，而 88.7% 的 wait 不是 miss 的函數（rho −0.32）"],
+        ["fill 成本可引用值", "不得引用單一數字而不帶 miss 負載（同一支儀器會給出 4.32 與 20.8 兩種值）", "已裁決：<b>每 miss 0.69–0.86 ms</b>（20.8/30 與 4.32/5 同帶）⇒ 「20.8 ms/步」是重負載下的數字，不是固有步成本；純屬先前把它當成固定成本的誤用"],
+        ["診斷價與可交付價分離", "任何 S1 臂的 t/s 只能當 <b>S 軸形狀上界</b>，不得當成交付速度", "已寫死：E0 證明該臂輸出 NaN（引擎註解「output is WRONG, diagnostic only, never a deliverable arm」）"],
+        ["交付載體接得上", "S1 的三個開關必須在 <code>SERVER_ENV</code> 白名單內，否則 server 路徑會靜默丟掉", "2026-09-25 已補 <code>CGC_SEG_BATCH</code>（presence-based ⇒ 只傳非 0 值）；<code>CGC_B_SCHEME</code>／<code>CGC_SLOT_TABLE_GPU</code> 已在"],
+        ["產物可指紋", "每次量測帶 engine digest ＋ cell ＋ thermal／swap（窗口條件）", "<code>harness bench</code> 已帶（base_check／cell／box_gate）"]
+      ],
+      "tests": [
+        {
+          "id": "E0",
+          "what": "<b>暖池下 S1 臂是不是對的</b>——它決定本方案的存在必要性：若暖池下 S1 與分段臂輸出相同，修法就是「暖池 ＋ miss fail-closed」，不需要異步流水線",
+          "pass": "同 build／同 cell／同 pool（8 GiB）、兩臂皆 MTP off：<code>answer_md5</code> 與 oracle 指紋相同（M1/M2/M3 逐項 9/9）。⚠ 必須附<b>冷池對照</b>（小池或首請求）顯示<b>不同</b>，否則「過」可能只是那輪沒發生 miss",
+          "cmd": "python3 scripts/check/m123_oracle_gate.py --profile prod-new --tag E0 [--env CGC_SEG_BATCH=1 --env CGC_B_SCHEME=1 --env CGC_SLOT_TABLE_GPU=1]",
+          "cost": "1–2 launch（各約 3–5 min）",
+          "result": "<b>已跑（21:34，背靠背同輪）</b>：分段臂 <code>probe_answer=42</code>、dump 有效；<b>兩個 S1 臂（8 GiB 暖池／1 GiB 小池）都回 <code>文摘文摘…</code>，且引擎自蓋 INVALID：<code>non-finite values 248320 of 248320</code></b> ⇒ <b>前提成立，且比預期更硬：S1 在交付形狀下不是「值錯」而是 NaN</b>（原始碼註解早寫「output is WRONG」，這是它第一次被量到）。⚠ 起跑 swap 8.2 GiB、worst thermal HEAVY；NaN 未在三個 env 之間歸因。產物 <code>Backup/eseries/E0/</code>（<code>seg_ref.jsonl</code>、<code>s1*.jsonl</code>＋<code>s1*.jsonl.invalid</code>）"
+        },
+        {
+          "id": "E1",
+          "what": "<b>裁決 fill 成本 3.955 vs 20.8 ms/step</b>（同一支 EBTIMER、兩個數；相差 5×，而整本帳都押在小的那個）",
+          "pass": "兩數在同 cell（warm-skip 64、fixed-fill-seed 1）下可重算 ⇒ 指出哪一個可引用；<b>不能裁決就寫「不可裁決」</b>，不取小的那個當輸入",
+          "cmd": "讀 Backup/nofill_prod/nf_fill.json ＋ docs/FILL_COST_MEASURED_2026-09-25.md §3；必要時一次 CGC_EB_NOFILL bench",
+          "cost": "0 GPU",
+          "result": "<b>已裁決（0 GPU，讀既有產物）</b>：<b>取 20.8 ms/step 當可引用值</b>——它是 <code>CGC-EBTIMER</code> 的直接量測（≥160 步穩態）且交叉驗證（n_sum/步 752 vs union≈19；miss 率 4.0% vs server 4.3%）並在 <code>CGC_POOL_MADVISE</code> 對照輪存活（21–24 ms）。3.955 是<b>兩臂步時差的殘差歸屬</b>，不是 fill 的直接量測 ⇒ <b>降級、不得當輸入</b> ⇒ E2 的窗口算術一律用 20.8"
+        },
+        {
+          "id": "E2",
+          "what": "<b>逐層窗口算術</b>：一步 miss 的 fill＋補算能不能藏進「同一層 hits-only 的 MoE」（下一層才是消費者）",
+          "pass": "① 逐層表可加總回 span（rows 對帳）② <code>needed = miss/step ÷ 41 × per-miss</code> ≤ 該層 MoE 的 gpu 時間 ⇒ 才有 Stage C；否則判 <b>no-go</b>。<b>載體必須是分段臂</b>——逐層儀器在 41 段迴圈<u>之後</u>，而 S1 在 <code>ggml-backend.cpp:1781</code> 提前 return ⇒ 在 S1 臂上它結構上不存在；且判準要先凍結依變數（此處 = <code>wait</code>）",
+          "cmd": "python3 scripts/check/llama_bench_matrix.py --arms 'prod-new:CGC_DECODE_PROFILE=1;CGC_DECODE_PROFILE_ALL=1;CGC_GPU_TIMING=1;LLAMA_EXPERT_CACHE_BATCH_DBG=1;LLAMA_EXPERT_CACHE_MISS_DUMP=<path>' --prompt 2048 --gen 128 --depths 512 --reps 3 --warm-skip 64 --fixed-fill-seed 1；再 python3 scripts/check/s1_wait_budget.py --stderr <log> --column wait",
+          "cost": "1 launch（＋0 GPU 分析）",
+          "result": "<b>已完成（22:00 等待預算 ＋ 22:07 column census）⇒ 形狀 1 不成立</b>。① 等待預算（規則預先凍結：wait 在 miss 層佔比 ≥ 0.6 且 rho ≥ 0.5）：<b>40/40 層都有 miss</b>、<b>rho = −0.32</b>、逐層中位 wait 幾乎均勻（1.32–1.92 ms）⇒ <b>R2 round-trip-bound</b>。② column census（同一臂、三支儀器）：decode 步 75.09 ms ＝ wait 88.7% ＋ cb 6.7% ＋ submit 4.5%，EBTIMER 4.32 ms/步（miss 中位 5）⇒ <b>FILL_IN_CB（ratio 0.86）</b>；兩個舊數字的矛盾也解決：<b>每 miss 0.69–0.86 ms</b>（20.8/30 與 4.32/5 同帶）⇒ 20.8 是重負載產物。⇒ <b>形狀 1 想省的只值 6.7%，不能動的 wait 值 88.7%</b>，而裝置側 gap 佔跨度 17%（重疊還有東西可拿）。⚠ 兩輪皆診斷臂（swap growth +2619／+929、worst MODERATE），不宣稱 t/s。報告：<code>docs/S1_SHAPE1_WAIT_BUDGET_2026-09-25.md</code>、<code>docs/S1_COLUMN_CENSUS_2026-09-25.md</code>"
+        },
+        {
+          "id": "E3",
+          "what": "<b>兩個 make-or-break 的離線結論</b>：補算的逐位元等價寫法、以及異步 fill 的寫入面",
+          "pass": "① 寫死「重跑該層該 token 的<b>融合 combine</b>」而不是「加回部分和」（依據：combine 熔在 <code>kernel_mul_mv_id_down_combine_*</code>；<code>CGC_ADD_ORDER=rev</code> 已證結合序會移動 anchor md5）② 指認 <code>pool_ext_buf[layer][kind]</code> 與 in-flight command buffer 的關係（否則就是 codebase 自己註記的 UB）",
+          "cmd": "讀碼（llama-graph.cpp／llama-expert-cache.h／ggml-backend.cpp）＋ grep 指紋",
+          "cost": "0 GPU",
+          "result": "<b>已裁決（0 GPU 讀碼）</b>：① <code>kernel_mul_mv_id_down_combine_*</code> 確實存在於 Metal kernel（<code>ggml-metal.metal:11744</code>）⇒ 補算<b>不能「加回部分和」</b>，唯一逐位元寫法是<b>用同一顆 kernel 重跑該層該 token 的融合 combine</b>；② <code>pool_ext_buf[layer][kind]</code> 是 <code>pool</code> 的<b>非擁有視圖</b>（<code>llama-expert-cache.h:172-174</code>，被 <code>llama-expert-cache.cpp:2099</code> 逐層指派）⇒ 異步 fill 直接寫它就是寫「in-flight command buffer 正在讀的 buffer」；<b>必須經 staging＋copy-in 雙緩衝</b>"
+        },
+        {
+          "id": "E4",
+          "what": "<b>交付 cell 配對</b>：分段臂 vs S1 臂（同 cell、同 pool、同 build），prefill 與 decode 同報",
+          "pass": "比值可引用、絕對值不外推；帶 thermal／swap／binary md5；S1 產物按台帳規則報<b>比值</b>而非獨立 t/s",
+          "cmd": "python3 scripts/check/harness.py bench --arm prod-new --arm 'prod-new:CGC_SEG_BATCH=1;CGC_B_SCHEME=1;CGC_SLOT_TABLE_GPU=1' --json /tmp/E4/summary.json",
+          "cost": "同一輪 2 臂 × r3",
+          "result": "<b>已跑（21:26–21:29，同輪 AB r3）</b>：分段臂 pp 233.29±20.83／<b>tg 11.40±0.04</b>（hit 96.2%）；S1 臂 pp 187.03±10.38／<b>tg 16.14±1.66</b>（hit 100.0%、misses 0、reads 0）⇒ <b>decode ×1.42、prefill ×0.80</b>。⚠ <b>比值亦不可引用</b>：兩臂 worst thermal 皆 HEAVY、起跑 swap 7.7–8.1 GiB、非交錯；且 S1 臂按 E0 屬「NaN 級輸出」⇒ 只能當<b>診斷價（S 軸形狀上界）</b>。prefill 方向與 09-24 k-sweep 相反 ⇒ 盒況主宰，待乾淨窗口。產物 <code>Backup/eseries/E4/summary.json</code>"
+        }
       ]
     },
     {

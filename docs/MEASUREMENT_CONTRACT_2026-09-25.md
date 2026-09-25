@@ -84,6 +84,26 @@ build 指紋    記 libllama / libggml-base / libggml-metal / server-impl 的 md
 ⇒ **具體要改的一行**：`arm_two_pass.py` 的 `--max-swap-mb` 預設 **1024 → 2048**（與 3.3 表對齊）。
 ⇒ 「起跑門檻」與「可引用性」是**兩件事**，各有一條線；現行把它們混在一起，才出現「G1 拒跑但產物可引用」。
 
+### 3.3b rep 散度的兩種來源：**regime 混合** vs 儀器噪音（2026-09-25 新增）
+
+`rep 散度 >12% ⇒ UNRELIABLE` 是對的**結論**，但它分不出兩種成因，而兩者的處置相反：
+
+- **噪音**：同一 regime 內的抖動 ⇒ 該輪作廢。
+- **regime 混合**：樣本集裡混著 **cold**（該 rep 的計時窗自己付掉 compulsory fill）與 **steady**
+  ⇒ **不是作廢，是必須拆欄**：照 `docs/DECODE_STEADY_BASELINE_2026-09-19.md` §3.3 的既有約定報
+  `decode_tps_cold` / `decode_tps_steady`，**不得用一個 `avg_ts` 蓋過兩者**。
+
+**判別證據（可離線查，0 GPU）**：**總 I/O 是否相同**。兩輪的 `misses` / `file_reads` / `pread` 相同、只有散度不同
+⇒ 差的是**填充落點**（窗內 vs 窗外）＝ regime 混合，不是噪音。
+
+實例：`Backup/mtpoff_base/run3_*.json` vs `run4_*.json` —— misses `5007 vs 4929`、reads `82797 vs 82572`、
+hit `96.1 vs 96.2%`，而 decode `4.13/11.85/11.67` vs `11.80/11.83/11.30`。低樣本也出現在 run2 的**第 2 個** rep
+（`11.77/3.95/12.34`）⇒ 它是「該 rep 的窗重新路由」的性質，**不是「第一個 rep 一定冷」**。
+
+⇒ **工具要求**：樣本集混 regime 時**逐樣本標 regime**；`judge_artifact` 對這種輪的判詞是
+`mixed-regime（拆欄後 cold 為診斷值、steady 仍需 thermal 裁決）`，而不是 `UNRELIABLE`。
+steady 欄的取得方式：`--fixed-fill-seed`（09-19 §3.2）；cold 欄需要刻意的 `seed 0` 臂、n≥3、全程 NOMINAL。
+
 ### 3.4 觸發點（唯一）
 
 1. **所有**會起 server / llama-bench 的 runner **一律**接 `scripts/check/budget_gate.sh`

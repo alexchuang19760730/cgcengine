@@ -342,15 +342,17 @@ case "$SERVER_PROFILE" in
         [ -z "${CGC_MM_BITIDENT+x}" ]           && CGC_MM_BITIDENT=1
         [ -z "${CGC_SERVER_NO_SEQ_RM_PROBE+x}" ] && SERVER_NO_SEQ_RM_PROBE=1
         [ -z "${CGC_SERVER_PREFIX_REUSE_CKPT+x}" ] && SERVER_PREFIX_REUSE_CKPT=1
-        # [CGC 2026-09-24 swap-miss P0/P1/P2] 這兩個是「同一個 binary、只有 env 不同」的 A/B 開關，
-        # 歸在 prod-new 底下（顯式 env 永遠贏）：
-        #   CGC_EXPERT_SKIP_READRAW=1 → P0（skip-load expert 不 read_raw，省 ~10.9 GiB 匿名駐留）
-        #   CGC_POOL_MADVISE=1 → P1（fill 前丟頁）；=2 → P1+P2（evict 時也丟）
-        # 之所以寫成顯式的 `0` 而不是「不設」，是為了讓這兩個開關在 profile 裡**有名字**
-        # （誰改 prod-new 都看得到它們存在、看得到預設是關）。注意下游白名單只傳非 0 值，
-        # 所以 `CGC_DUMP_ENV=1` 在關閉時**看不到**這兩行 —— 那是「關」的正常表現，不是漏傳。
-        [ -z "${CGC_EXPERT_SKIP_READRAW+x}" ] && CGC_EXPERT_SKIP_READRAW=0
-        [ -z "${CGC_POOL_MADVISE+x}" ]        && CGC_POOL_MADVISE=0
+        # [CGC 2026-09-25] swap 結構組合「預設開啟」（用戶拍板）：
+        #   CGC_EXPERT_SKIP_READRAW=1 → P0（expert 不 read_raw 進 heap，砍 ~10.9 GiB 匿名副本＝
+        #                                          超訂根因；開了之後 8GB pool 才裝得進 16GB）
+        #   CGC_POOL_MADVISE=2        → P1+P2（fill 前＋evict 時 madvise 丟頁，壓 churn）
+        #   CGC_B_SCHEME=1            → 熱門優先替換（不踢錯熱專家，讓 miss 收斂）
+        # ⚠ pool 維持 8GiB、不縮：同日真曲線（見下方 prod-new 的 if 段）縮 pool 確定降 decode
+        #   （8G 12.06 → 6G 10.48 → 4G 7.67）；P0 砍掉 heap 副本後超訂已解，無需縮 pool。
+        # 顯式 env 仍可覆寫，但 prod-new 強制閘（launch 前）會在「沒開齊」時拒跑，見 cgc_swap_guard。
+        [ -z "${CGC_EXPERT_SKIP_READRAW+x}" ] && CGC_EXPERT_SKIP_READRAW=1
+        [ -z "${CGC_POOL_MADVISE+x}" ]        && CGC_POOL_MADVISE=2
+        [ -z "${CGC_B_SCHEME+x}" ]            && CGC_B_SCHEME=1
         # 走 GGUF embedded ChatML（与 prod25 一致）
         if [ -z "${CGC_SERVER_CHAT_TEMPLATE_FILE:-}" ] && [ -z "${CGC_SERVER_CHAT_TEMPLATE:-}" ]; then
             SERVER_CHAT_TEMPLATE_FILE=""
@@ -1663,6 +1665,16 @@ fi
 if [ -n "${LLAMA_EXPERT_CACHE_BATCH_DBG:-}" ]; then
     SERVER_ENV+=(LLAMA_EXPERT_CACHE_BATCH_DBG="$LLAMA_EXPERT_CACHE_BATCH_DBG")
 fi
+# [CGC 2026-09-25 column census] CGC_EB_TIMER=1 prices the WHOLE `llama_expert_cache_ensure_batch`
+# call (assignment + synchronous fill + bg_cv wait) and prints one `CGC-EBTIMER: step_usec=...`
+# line per decode step (llama-expert-cache.cpp:1155). It was read by the engine since 2026-09-25
+# and never forwarded here -- so `docs/FILL_COST_MEASURED_2026-09-25.md` could only be produced
+# through a path that bypassed this launcher, and arming it from an `--arms` spec looked exactly
+# like an inert knob. Its consumer is the census that decides which DECPROF column the fill's
+# 20.8 ms/step lives in.
+if [ -n "${CGC_EB_TIMER:-}" ]; then
+    SERVER_ENV+=(CGC_EB_TIMER="$CGC_EB_TIMER")
+fi
 # [CGC 2026-09-19 thrash attribution] LLAMA_EXPERT_CACHE_MISS_DUMP=<path> writes one
 # "<layer> <expert>" line per DEMAND-ORDERED miss (llama-expert-cache.cpp:1061, flushed per line so a
 # kill -9 still leaves a usable file). It exists to answer a question the cumulative compulsory/
@@ -2412,6 +2424,17 @@ fi
 if [ -n "${CGC_POOL_MADVISE:-}" ] && [ "${CGC_POOL_MADVISE}" != "0" ]; then
     SERVER_ENV+=(CGC_POOL_MADVISE="$CGC_POOL_MADVISE")
 fi
+# [CGC 2026-09-25] CGC_B_SCHEME 白名單（熱門優先替換）。launch 走 env allowlist，沒列會被靜默丟。
+if [ -n "${CGC_B_SCHEME:-}" ] && [ "${CGC_B_SCHEME}" != "0" ]; then
+    SERVER_ENV+=(CGC_B_SCHEME="$CGC_B_SCHEME")
+fi
+# [CGC 2026-09-25] CGC_SEG_BATCH 白名單（S1：41 段提交 → 1 段）。在它之前，S1 只活在 llama-bench
+# 路徑（那裡直接吃 env），所以「在交付載體上驗收 S1」根本跑不起來 —— 不是速度問題，是接不上。
+# ⚠ 引擎是 **presence-based**（ggml-backend.cpp:1780 `getenv("CGC_SEG_BATCH") != nullptr`）⇒
+# `=0` 也會把它打開。所以這裡**只傳非 0 值**：`=0` 被丟掉 ⇒ 真的是關。
+if [ -n "${CGC_SEG_BATCH:-}" ] && [ "${CGC_SEG_BATCH}" != "0" ]; then
+    SERVER_ENV+=(CGC_SEG_BATCH="$CGC_SEG_BATCH")
+fi
 # [CGC 2026-09-15] CGC_DUMP_ENV=1 -- print the FULLY-RESOLVED launch environment and argv, then
 # exit without launching anything. Inserted here, after every profile default / override has been
 # applied and immediately before the exec, so what is printed is bit-for-bit what the server would
@@ -2443,6 +2466,66 @@ if [ "${CGC_DUMP_ENV:-}" = "1" ]; then
     for _kv in "${SERVER_ENV[@]}"; do echo "ENV $_kv"; done
     for _a in "${SERVER_ARGS[@]}"; do echo "ARG $_a"; done
     exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# [CGC 2026-09-25] launch 前的兩道閘，**刻意放在 CGC_DUMP_ENV 區塊之後**：
+#   (1) cgc_swap_guard：prod-new 的三個 swap 支柱必須武裝（沒開就拒跑）
+#   (2) cgc_box_preflight：thermal 冷卻到 NOMINAL + swap 佔用者提醒
+# 為什麼在 dump 之後：`CGC_DUMP_ENV=1` 是「只解析、不起 server」，而 llama_bench_matrix 就是靠它
+# 拿到完整環境的（一個出處）。把閘放在 dump 之前 ⇒ 量測入口會先被自己的守門擋死，而那不是
+# 「不安全」，那是把儀器關掉。閘只管真正會拿到 GPU 的那條路。
+
+# 回傳該 KEY 在 SERVER_ENV 裡的值（沒列到就 rc=1）。SERVER_ENV 是白名單陣列，所以「鍵不在」
+# 與「值=0」在引擎裡是同一個狀態，這裡也照同一個口徑判。
+cgc_env_value() {
+    local _k="$1" _kv
+    for _kv in "${SERVER_ENV[@]}"; do
+        case "$_kv" in "$_k="*) printf '%s' "${_kv#*=}"; return 0 ;; esac
+    done
+    return 1
+}
+
+cgc_swap_guard() {
+    local _k _v _missing=""
+    for _k in CGC_EXPERT_SKIP_READRAW CGC_POOL_MADVISE CGC_B_SCHEME; do
+        _v="$(cgc_env_value "$_k" || true)"
+        if [ -z "$_v" ] || [ "$_v" = "0" ]; then _missing="$_missing $_k"; fi
+    done
+    [ -z "$_missing" ] && return 0
+    if [ "${CGC_SWAP_GUARD:-}" = "off" ]; then
+        echo "[swap-guard] WARNING: $_missing 未武裝，但 CGC_SWAP_GUARD=off ⇒ 繼續啟動。" >&2
+        echo "[swap-guard]          這輪的 decode 不是 prod-new 的形狀；產物必須標明。" >&2
+        return 0
+    fi
+    cat >&2 <<EOF
+error: prod-new 的 swap 支柱沒開齊：$_missing
+       P0 (CGC_EXPERT_SKIP_READRAW) 砍掉 expert 的匿名副本（12 GiB 級超訂的根因）、
+       P1/P2 (CGC_POOL_MADVISE=2) 壓 fill/evict churn、CGC_B_SCHEME 讓 miss 收斂。
+       三者關著跑出來的 decode 會被讀成「prod-new 的效能」，所以這裡拒跑。
+       要跑關掉的對照臂（A/B 正當）就把意圖說出來：
+           CGC_SWAP_GUARD=off ./scripts/run_server.sh ...
+EOF
+    exit 2
+}
+
+# thermal 只冷卻、不拒跑：一台熱機上永遠拒跑等於鎖死使用者的桌面，而「這輪不可引用」是量測側
+# 已經在管的事。（cargo_cult 的相反：這裡的 420 s 是量到的最小充分冷卻，不是猜的。）
+cgc_box_preflight() {
+    if [ "${CGC_THERMAL_GATE:-1}" != "off" ]; then
+        python3 "$ROOT/scripts/check/thermal_pressure.py" \
+            --wait-nominal "${CGC_COOLDOWN_MAX_S:-420}" || true
+    else
+        echo "[thermal] gate off（CGC_THERMAL_GATE=off）⇒ 不等待 NOMINAL" >&2
+    fi
+    # swap 過高時的可行動作只有「關掉別人」。P0/P1/P2 管不到別的 app 的匿名頁，所以這行只提醒、
+    # 不拒跑，並把佔用者的名字印出來（不然使用者拿到的是「swap 5 GB」這種不可執行的事實）。
+    python3 "$ROOT/scripts/check/memory_pressure.py" --advice || true
+}
+
+if [ "$SERVER_PROFILE" = "prod-new" ]; then
+    cgc_swap_guard
+    cgc_box_preflight
 fi
 
 env "${SERVER_ENV[@]}" "$BIN" "${SERVER_ARGS[@]}" > "$LOG" 2>&1 &

@@ -204,6 +204,43 @@ class Sampler:
         return False
 
 
+def wait_nominal(timeout_s: float = 420.0, poll_s: float = 15.0, log=print) -> dict:
+    """Poll until the level returns to NOMINAL, up to `timeout_s`.
+
+    This is the ONE cooldown loop for the box. It lives here, next to `level()`, because the
+    repo already grew four private copies of it (`http_duo`, `paired_ab`, `prod_profile`,
+    `profile_duo`) and a fifth would be the same trap the swap guard exists to close.
+
+    420 s is not a taste: it is the largest cooldown the repo has measured as sufficient, and
+    the reason consecutive launches need it is recorded (`carried swap` / launch-order drift --
+    the covariate that made same-config arms differ by 17.5%).
+
+    Returns `{ok, waited_s, level, label, n_readings, timed_out}`. `ok` is False when the
+    timeout expired while still hot -- the caller decides whether that is fatal, but it must
+    NOT be silent: every run that starts hot is unquotable under the measurement contract.
+    """
+    t0 = time.time()
+    n = 0
+    while True:
+        lv = level()
+        n += 1
+        waited = time.time() - t0
+        if lv == 0:
+            if n > 1:
+                log(f"[thermal] NOMINAL after {waited:.0f}s ({n} readings)")
+            return {"ok": True, "waited_s": waited, "level": lv, "label": label(lv),
+                    "n_readings": n, "timed_out": False}
+        if waited >= timeout_s:
+            log(f"[thermal] still {label(lv)} after {waited:.0f}s (timeout {timeout_s:.0f}s); "
+                f"proceeding -- this run's readings are NOT quotable")
+            return {"ok": False, "waited_s": waited, "level": lv, "label": label(lv),
+                    "n_readings": n, "timed_out": True}
+        if n == 1:
+            log(f"[thermal] {label(lv)} at launch; cooling down (max {timeout_s:.0f}s, "
+                f"poll {poll_s:.0f}s)")
+        time.sleep(poll_s)
+
+
 def _raises(fn) -> bool:
     """True when `fn` raises -- used to assert a refusal actually refuses."""
     try:
@@ -274,6 +311,17 @@ def _selftest() -> int:
     check("Sampler's worst() is the max over the series",
           r["worst"]["level"] == max(x["level"] for x in r["samples"] if x["level"] is not None))
 
+    # --- wait_nominal: it must return, must not fake a level, and must not sleep when cold ---
+    t0 = time.time()
+    w = wait_nominal(timeout_s=0.0, poll_s=0.01, log=lambda *_: None)
+    check("wait_nominal() returns instead of hanging on a hot box",
+          time.time() - t0 < 5.0 and set(w) == {"ok", "waited_s", "level", "label",
+                                               "n_readings", "timed_out"})
+    check("wait_nominal() agrees with level() about THIS moment",
+          (w["level"] == 0) == (live == 0), f"wait {w['label']} vs level {label(live)}")
+    check("a NOMINAL box returns immediately with ok=True",
+          live != 0 or (w["ok"] and w["waited_s"] < 1.0), f"{w}")
+
     print()
     print(f"  {n - bad}/{n} checks passed")
     return 1 if bad else 0
@@ -282,5 +330,12 @@ def _selftest() -> int:
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
         sys.exit(_selftest())
+    if "--wait-nominal" in sys.argv:
+        # CLI form for the shell launcher: `--wait-nominal [SECONDS]`
+        _i = sys.argv.index("--wait-nominal")
+        _t = float(sys.argv[_i + 1]) if len(sys.argv) > _i + 1 else 420.0
+        _r = wait_nominal(timeout_s=_t)
+        print(f"[thermal] {_r['label']} waited={_r['waited_s']:.0f}s ok={_r['ok']}")
+        sys.exit(0 if _r["ok"] else 1)
     lv = level()
     print(f"{KEY} {label(lv)}" + (f" ({lv})" if lv is not None else " (level unknown)"))
