@@ -451,6 +451,22 @@ private:
     // layer -> probs tensor (softmax over experts); the hook uses it to read per-token probs.
     // mutable: filled from the const graph_get_cb.
     mutable std::map<int, ggml_tensor *> cache_probs_tensors;
+    // [CGC 2026-09-26 miss mask · step 2 REBUILD] three per-layer captures, all built only under
+    // CGC_MISS_MASK=1 (llama-graph.cpp build_moe_ffn) and therefore empty -- every use below is a
+    // no-op -- when that env is unset:
+    //   cache_valid_tensors     layer -> `ffn_moe_valid`    [1, n_expert] I32 leaf written by the
+    //                           host once per step before dispatch: 1 = expert e owns a real slot.
+    //   cache_missmask_tensors  layer -> `ffn_moe_missmask` [1, k*n_tokens] I32, the gather output:
+    //                           valid[] sampled at this step's selected experts.
+    //   cache_ids_cont_tensors  layer -> `ffn_moe_ids_cont` [k*n_tokens] I32, the SAME index vector
+    //                           the slot gather consumed, i.e. the selected expert ids.
+    // The third one is the reason the other two are useful: a mask is k flags with no identity, so
+    // a readback that prints "5 misses" cannot be checked against anything. Printing the ids is what
+    // makes the element-by-element comparison against LLAMA_EXPERT_CACHE_BATCH_DBG possible.
+    // mutable: filled from the const graph_get_cb.
+    mutable std::map<int, ggml_tensor *> cache_valid_tensors;
+    mutable std::map<int, ggml_tensor *> cache_missmask_tensors;
+    mutable std::map<int, ggml_tensor *> cache_ids_cont_tensors;
     // layer -> the FFN expert weight tensors (src0 of mul_mat_id) by kind: 0=gate 1=up
     // 2=down 3=gate_up. The hook repoints their data pointer at the cache pool region (pool
     // path) or a per-step gather buffer (L3-B path), restoring it on the next step.

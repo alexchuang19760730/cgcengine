@@ -3658,9 +3658,120 @@ ggml_status llama_context::graph_compute(
         }
     }
 
+    // [CGC 2026-09-26 miss mask · step 2 REBUILD] publish the residency snapshot into every layer's
+    // `ffn_moe_valid` leaf, once per step. Placement is the whole point: this runs AFTER
+    // ggml_backend_sched_alloc_graph (:1956) so the pointer written is the one the dispatch will
+    // actually read (the remap-leaf bisect of 2026-09-09 lost a whole round to writing before
+    // alloc), and BEFORE the submit so the gather inside this very graph sees this step's state.
+    //
+    // Snapshot rather than per-layer: for layer L, residency only changes in L's own ensure_batch,
+    // so within one step a snapshot and a per-layer read agree. The only thing that could move in
+    // between is a background prefetch publish, and whether that ever fires is exactly what the
+    // bit-exact comparison against BATCHDBG measures (scripts/check/miss_mask_check.py) -- it would
+    // surface as SET_DIFF, not as a crash, so this stays a measurable claim instead of an argument.
+    static const bool cgc_miss_mask = getenv("CGC_MISS_MASK") != nullptr;
+    if (cgc_miss_mask && !cache_valid_tensors.empty()) {
+        llama_expert_cache * mmc = model.expert_cache;
+        for (const auto & kv : cache_valid_tensors) {
+            ggml_tensor * vt = kv.second;
+            // A capture can outlive the graph that produced it -- the mask nodes are built only in a
+            // decode graph, so a prefill graph would otherwise write into a stale pointer. Same test
+            // the S1 readback below uses, same reason: the arena is reused every build, so an
+            // address check alone would accept all 39 stale entries.
+            if (vt == nullptr || vt->data == nullptr || !cgc_node_in_graph(gf, vt)) {
+                continue;
+            }
+            const int64_t nn = (int64_t) vt->ne[0] * (int64_t) vt->ne[1];
+            if (nn <= 0 || !cgc_is_i32_n(vt, nn)) {
+                continue;
+            }
+            const uint32_t il = (uint32_t) kv.first;
+            // Same bound the rn-mask publisher uses: slot_table is a flat [n_layer, n_expert] array,
+            // so the layer index has to be checked against it rather than trusted.
+            const int32_t * st = nullptr;
+            if (mmc != nullptr && (size_t) il * mmc->n_expert + mmc->n_expert <= mmc->slot_table.size()) {
+                st = llama_expert_cache_slot_table(mmc, il);
+            }
+            const int64_t nexp = (int64_t) model.hparams.n_expert;
+            int32_t * vd = (int32_t *) vt->data;
+            for (int64_t e = 0; e < nn; ++e) {
+                vd[e] = (st != nullptr && e < nexp && st[e] >= 0) ? 1 : 0;
+            }
+        }
+    }
+
     auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
+    }
+
+    // [CGC 2026-09-26 miss mask · step 2 REBUILD] DIAGNOSTIC ONLY. One extra synchronize per step to
+    // read the mask -- and the index vector that gives the mask its identity -- back on the host and
+    // print it in the two formats scripts/check/miss_mask_check.py parses:
+    //
+    //   MISSMASK il=<layer> step=<n> nsel=<k*n_tokens> misses=<n> exps: <expert ids ...>
+    //   CGC-MISSMASK-STEP: step=<n> misses=<n> layers=<n>
+    //
+    // Requires CGC_MISS_MASK=1; without it no mask node exists and this prints nothing. Never quote
+    // throughput from an arm with this on -- the extra synchronize is precisely what the priced arm
+    // is argued not to have.
+    static const bool cgc_miss_mask_dbg = getenv("CGC_MISS_MASK_DBG") != nullptr;
+    if (cgc_miss_mask_dbg) {
+        static int cgc_mm_step = 0;
+        static int cgc_mm_warn = 0;
+        if (!cgc_miss_mask && cgc_mm_warn++ == 0) {
+            fprintf(stderr, "CGC-MISSMASK: CGC_MISS_MASK_DBG=1 without CGC_MISS_MASK=1 -- no mask "
+                            "node is built, so this readback has nothing to read. Ignoring.\n");
+        }
+        cgc_mm_step++;
+        ggml_backend_sched_synchronize(sched.get());
+        int mm_tot = 0;
+        int mm_layers = 0;
+        for (const auto & kv : cache_missmask_tensors) {
+            const int il = kv.first;
+            ggml_tensor * mk  = kv.second;
+            ggml_tensor * idc = cache_ids_cont_tensors.count(il) ? cache_ids_cont_tensors[il] : nullptr;
+            if (mk == nullptr || mk->data == nullptr || idc == nullptr || idc->data == nullptr) {
+                continue;
+            }
+            // Both guards, for the reason the S1 readback records: membership says this capture is
+            // still a node of the graph that just ran, the byte test keeps the read inside it.
+            const int64_t ntot = (int64_t) mk->ne[0] * (int64_t) mk->ne[1];
+            if (ntot <= 0 || ntot != (int64_t) idc->ne[0] * (int64_t) idc->ne[1]) {
+                continue;
+            }
+            if (!cgc_node_in_graph(gf, mk) || !cgc_node_in_graph(gf, idc)) {
+                continue;
+            }
+            if (!cgc_is_i32_n(mk, ntot) || !cgc_is_i32_n(idc, ntot)) {
+                continue;
+            }
+            std::vector<int32_t> mbuf((size_t) ntot);
+            std::vector<int32_t> ibuf((size_t) ntot);
+            ggml_backend_tensor_get(mk,  mbuf.data(), 0, (size_t) ntot * sizeof(int32_t));
+            ggml_backend_tensor_get(idc, ibuf.data(), 0, (size_t) ntot * sizeof(int32_t));
+            int misses = 0;
+            std::string exps;
+            for (int64_t i = 0; i < ntot; ++i) {
+                if (mbuf[(size_t) i] == 0) {
+                    misses++;
+                    exps += " ";
+                    exps += std::to_string(ibuf[(size_t) i]);
+                }
+            }
+            // Zero-miss steps print nothing here, and BATCHDBG prints nothing for them either
+            // (llama-expert-cache.cpp), so skipping is what keeps the two per-layer sequences the
+            // same length. It is also why a log of this shape must never be split into steps by
+            // monotonicity -- the trap miss_mask_check.py §2 records.
+            if (misses == 0) {
+                continue;
+            }
+            fprintf(stderr, "MISSMASK il=%d step=%d nsel=%d misses=%d exps:%s\n",
+                    il, cgc_mm_step, (int) ntot, misses, exps.c_str());
+            mm_tot += misses;
+            mm_layers++;
+        }
+        fprintf(stderr, "CGC-MISSMASK-STEP: step=%d misses=%d layers=%d\n", cgc_mm_step, mm_tot, mm_layers);
     }
 
     // [CGC remap post-compute bisect 2026-09-09] AFTER the graph ran, read back what mul_mat_id
@@ -7683,6 +7794,19 @@ llm_graph_cb llama_context::graph_get_cb() const {
             // cache_slots_out_tensors in the header for why the encode-time probe cannot.
             if (strcmp(name, "ffn_moe_slots") == 0) {
                 cache_slots_out_tensors[il] = cur;
+            }
+            // [CGC 2026-09-26 miss mask · step 2 REBUILD] the three names build_moe_ffn emits under
+            // CGC_MISS_MASK=1. Captured for two separate jobs: `ffn_moe_valid` is written by the
+            // host before dispatch (the publish block further down), and the other two are read
+            // back after synchronize by CGC_MISS_MASK_DBG.
+            if (strcmp(name, "ffn_moe_valid") == 0) {
+                cache_valid_tensors[il] = cur;
+            }
+            if (strcmp(name, "ffn_moe_missmask") == 0) {
+                cache_missmask_tensors[il] = cur;
+            }
+            if (strcmp(name, "ffn_moe_ids_cont") == 0) {
+                cache_ids_cont_tensors[il] = cur;
             }
             // [CGC 2026-09-17 §11.5] `ffn_moe_ids_leaf` is the S1 gather's INDEX VECTOR. Captured so
             // the hook can write this step's raw ids into it -- see the point of use in

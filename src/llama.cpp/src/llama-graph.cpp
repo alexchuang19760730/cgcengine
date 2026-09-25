@@ -2151,6 +2151,27 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // [CGC 2026-09-15 S1 CONTROL] Build the host leaf as well but leave it unconsumed, i.e. the
     // design the header comment on cache_slot_table_tensors describes. See the point of use.
     static const bool cgc_s1_build_leaf = getenv("CGC_S1_BUILD_LEAF") != nullptr;
+    // [CGC 2026-09-26 miss mask · step 2 REBUILD] CGC_MISS_MASK=1 adds ONE more gather per MoE
+    // layer inside the S1 branch: vmask = get_rows(valid_table, ids_flat), where valid_table is a
+    // host-published [1, n_expert] I32 leaf carrying valid[e] = (slot_table[e] >= 0). That is the
+    // device-side answer to "which of THIS step's selected experts are placeholders", which is the
+    // number per-expert recompute has to be priced against. It can only be taken on the device:
+    // which experts were selected is known only there (that is the entire point of
+    // CGC_SLOT_TABLE_GPU), while residency is known only on the host -- so the two are intersected
+    // here rather than on either side alone.
+    //
+    // CGC_MISS_MASK is the PRICED arm: two extra nodes per layer, no extra synchronize and no extra
+    // command buffer (the gather rides the same segment as the slot gather).
+    // CGC_MISS_MASK_DBG (llama-context.cpp) is diagnostic-only: it pays one extra synchronize per
+    // step to read the mask back and print it. Never quote throughput from an arm that has it on --
+    // the extra synchronize is exactly what the priced arm is argued not to have.
+    //
+    // REBUILD NOTE (2026-09-26): this code existed on 2026-09-24 and was measured
+    // (docs/MISS_MASK_STEP2_2026-09-24.md) but NEVER entered version control and was then lost from
+    // the work tree -- `git grep CGC_MISS_MASK HEAD` returns docs only, and `strings` over all 53
+    // binaries in src/llama.cpp/build/bin finds zero hits. See
+    // docs/STEP23_BLOCKER_AND_RECOVERY_2026-09-26.md §1. That is why it goes in WITH the commit.
+    static const bool cgc_miss_mask = getenv("CGC_MISS_MASK") != nullptr;
     // [CGC 2026-09-15 S1 layer-0 gate] The GPU table must be used ONLY for layers whose MoE FFN is
     // actually offloaded to Metal. Layer 0 is not: in the prod25 profile its expert tensors keep
     // their full size (blk.0.ffn_gate_exps = 82M vs 45M for blk.1) and live in the BLAS buffer, so
@@ -2349,6 +2370,12 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             // alive. Measured r25/r26: this pin is safe, and without it the readback degrades to
             // `n/a (index vector buffer recycled)` and silently proves nothing.
             ggml_set_output(ids_cont);
+            // [CGC 2026-09-26 miss mask] named so the host can capture it. The mask alone is k flags
+            // with no identity: CGC_MISS_MASK_DBG needs the expert ids next to it to print WHICH
+            // experts missed, and scripts/check/miss_mask_check.py compares those ids element by
+            // element against BATCHDBG. The tensor already exists above (the CONT the slot gather
+            // consumes); only the name is new.
+            cb(ids_cont, "ffn_moe_ids_cont", il);
             ggml_tensor * ids_flat = ggml_reshape_1d(ctx0, ids_cont, n_expert_used * n_tokens);
             ggml_tensor * slots    = ggml_get_rows(ctx0, slot_table, ids_flat); // I32 [1, k*n_tokens]
             // [CGC 2026-09-15 S1: buffer aliasing] `ggml_set_output` is REQUIRED here for exactly the
@@ -2374,6 +2401,31 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             slots = ggml_reshape_2d(ctx0, slots, n_expert_used, n_tokens);
             cb(slots, "ffn_moe_slots", il);
             remap_ids = slots;
+            // [CGC 2026-09-26 miss mask · step 2 REBUILD] the miss mask itself. Structure is copied
+            // node-for-node from `slot_table` two hundred lines up, on purpose: every other shape
+            // tried here hit `ggml-alloc.c:623 GGML_ASSERT(buffer_id >= 0)` (a node the scheduler
+            // never assigned a backend to) -- notably reshape_1d(root) -> GET_ROWS, and a 2-D index
+            // into GET_ROWS. The shape that is proven to schedule is a 1-D [1, n_expert] I32 root
+            // consumed DIRECTLY by GET_ROWS with the same 1-D index vector `ids_flat` the slot
+            // gather already uses. Reusing `ids_flat` is also what makes the mask MEAN the same
+            // thing as the slots: both are sampled at exactly this step's selected experts, in the
+            // same flattened order, so mask[i] == 0 says "position i of the ids mul_mat_id consumes
+            // is a placeholder" -- which is precisely the per-expert recompute's work list.
+            if (cgc_miss_mask) {
+                ggml_tensor * valid_table = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, 1, n_expert);
+                // output for the same reason `slot_table` is: a host-written leaf that a device
+                // kernel reads must keep its buffer across the dispatch, or the write lands in
+                // memory the allocator has already handed to somebody else.
+                ggml_set_output(valid_table);
+                cb(valid_table, "ffn_moe_valid", il);
+                ggml_build_forward_expand(gf, valid_table);
+                ggml_tensor * vmask = ggml_get_rows(ctx0, valid_table, ids_flat); // I32 [1, k*n_tokens]
+                // pinned so the post-synchronize readback in CGC_MISS_MASK_DBG reads this step's
+                // values and not whatever the arena holds afterwards (the failure mode documented
+                // on cache_slots_out_tensors in llama-context.h).
+                ggml_set_output(vmask);
+                cb(vmask, "ffn_moe_missmask", il);
+            }
             // [CGC 2026-09-15 S1 CONTROL: CGC_S1_KEEP_LEAF]
             //
             // The bisect left two explanations for the digest divergence that need OPPOSITE fixes,
