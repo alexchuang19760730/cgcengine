@@ -737,6 +737,44 @@ def shlex_join(parts):
     return _shlex.join(parts)
 
 
+def cmd_verify(args) -> int:
+    """統一的「雙輪驗證」入口：每 arm 跑 clean + instrumented 兩輪、過生產級 gate、出 HTML。
+
+    順序：arm_two_pass（雙輪 + gate + 全 log）→ 只要 result.json 在就 arm_report_html。
+    arm_two_pass 回 2（gate 硬擋、有臂沒跑）仍生成 HTML（報告標 blocked），最終回非 0。
+    """
+    run_dir = Path(args.run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    result_json = run_dir / "result.json"
+    report_html = run_dir / "report.html"
+
+    cmd = [PY, str(HERE / "arm_two_pass.py")]
+    for a in args.arm:
+        cmd += ["--arm", a]
+    cmd += ["--prompt", str(args.prompt), "--gen", str(args.gen),
+            "--depths", str(args.depths), "--reps", str(args.reps),
+            "--warm-skip", str(args.warm_skip), "--ctx-size", str(args.ctx_size),
+            "--max-swap-mb", str(args.max_swap_mb), "--cool-s", str(args.cool_s),
+            "--run-dir", str(run_dir), "--json", str(result_json)]
+    if args.allow_dirty:
+        cmd.append("--allow-dirty")
+
+    print("「verify」雙輪驗證（每 arm：clean 無儀器 + instrumented 有儀器）", flush=True)
+    rc = subprocess.call(cmd, cwd=str(ROOT))
+
+    if result_json.exists():
+        hcmd = [PY, str(HERE / "arm_report_html.py"),
+                "--json", str(result_json), "--out", str(report_html)]
+        hrc = subprocess.call(hcmd, cwd=str(ROOT))
+        if hrc == 0:
+            print(f"\nHTML 報告：{report_html}", flush=True)
+    else:
+        print("\n（無 result.json — 通常是 gate 在跑任何 GPU 前就擋下；未生成 HTML）", flush=True)
+
+    # 0 = 全部臂兩輪通過；非 0 = 有臂被擋/失敗（HTML 仍可看）
+    return rc
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd")
@@ -787,6 +825,25 @@ def main(argv=None) -> int:
     p.add_argument("--workdir", default="/tmp/harness_bench")
     p.add_argument("--json", dest="json_path", required=True, help="產物 json 路徑（含 base_check）")
     p.set_defaults(func=cmd_bench)
+
+    p = sub.add_parser("verify",
+        help="雙輪驗證：每 arm clean（無儀器）+ instrumented（有儀器）+ 生產級 gate + HTML 報告")
+    p.add_argument("--arm", action="append", required=True,
+                   help='PROFILE:!K=V;K=V（可多臂）。每臂強制兩輪、兩輪只差儀器')
+    p.add_argument("--prompt", type=int, default=2048)
+    p.add_argument("--gen", type=int, default=128)
+    p.add_argument("--depths", default="512")
+    p.add_argument("--reps", type=int, default=1)
+    p.add_argument("--warm-skip", type=int, default=64)
+    p.add_argument("--ctx-size", type=int, default=0)
+    p.add_argument("--max-swap-mb", type=float, default=1024,
+                   help="起測允許的最大 swap（MiB）；生產嚴格可調 512")
+    p.add_argument("--cool-s", type=float, default=0,
+                   help="兩輪之間冷卻秒數（預設 0，避免拖慢開發）")
+    p.add_argument("--allow-dirty", action="store_true",
+                   help="gate 未過也硬跑、報告標紅（不建議用於 commit）")
+    p.add_argument("--run-dir", default="/tmp/harness_verify")
+    p.set_defaults(func=cmd_verify)
 
     raw = list(sys.argv[1:] if argv is None else argv)
     cmd = raw[0] if raw and not raw[0].startswith("-") else None
