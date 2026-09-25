@@ -1665,6 +1665,30 @@ fi
 if [ -n "${LLAMA_EXPERT_CACHE_BATCH_DBG:-}" ]; then
     SERVER_ENV+=(LLAMA_EXPERT_CACHE_BATCH_DBG="$LLAMA_EXPERT_CACHE_BATCH_DBG")
 fi
+# [CGC 2026-09-26 miss mask · step 2 REBUILD] CGC_MISS_MASK=1 adds one gather per MoE layer inside
+# the CGC_SLOT_TABLE_GPU branch (llama-graph.cpp:2261, NOT inside the CGC_SEG_BATCH branch -- so
+# this arm does NOT require single-segment submission): vmask = get_rows(valid_table, ids_flat),
+# i.e. the device-side answer to "which of THIS step's selected experts are placeholders".
+# Same allowlist trap as everything here: the engine has read it only since commit 553424ec1
+# (2026-09-26) and it was never forwarded, so arming it from an --arms spec would print nothing and
+# look exactly like an instrument with no effect -- indistinguishable from a broken kernel.
+if [ -n "${CGC_MISS_MASK:-}" ]; then
+    SERVER_ENV+=(CGC_MISS_MASK="$CGC_MISS_MASK")
+fi
+# [CGC 2026-09-26] CGC_MISS_MASK_DBG=1 costs ONE EXTRA SYNCHRONIZE PER DECODE STEP to read the mask
+# (and the ids that give the mask its identity) back to the host and print
+# `MISSMASK il=.. step=.. nsel=.. misses=.. exps: ..` + `CGC-MISSMASK-STEP: step=.. misses=..`.
+# Its consumer is scripts/check/miss_mask_check.py, which compares the mask element by element
+# against LLAMA_EXPERT_CACHE_BATCH_DBG above.
+# ⚠ NEVER quote throughput from an arm that has this on: the extra synchronize is precisely what
+#   the priced arm (CGC_MISS_MASK=1 alone) is argued NOT to have. This arm produces correctness and
+#   miss rate, and nothing else.
+# ⚠ It also requires CGC_MISS_MASK=1; without it there is no mask node and the engine prints a
+#   warning and nothing else (by design -- silently reading all-zero would look like "every expert
+#   missed on every step", a perfectly plausible false result).
+if [ -n "${CGC_MISS_MASK_DBG:-}" ]; then
+    SERVER_ENV+=(CGC_MISS_MASK_DBG="$CGC_MISS_MASK_DBG")
+fi
 # [CGC 2026-09-25 column census] CGC_EB_TIMER=1 prices the WHOLE `llama_expert_cache_ensure_batch`
 # call (assignment + synchronous fill + bg_cv wait) and prints one `CGC-EBTIMER: step_usec=...`
 # line per decode step (llama-expert-cache.cpp:1155). It was read by the engine since 2026-09-25
