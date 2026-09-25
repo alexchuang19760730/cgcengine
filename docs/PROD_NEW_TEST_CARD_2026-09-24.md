@@ -33,6 +33,64 @@ llama-bench -m models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf \
 | `-ngl 99 --load-mode none` | 全層 GPU、不 mmap | |
 | `-expert-cache 8589934592` | 8 GiB pool | |
 
+### 2.5 machine-readable CELL（driver 唯一讀取處：人讀 §2 命令、程式讀本塊）
+
+> 下面 JSON 是所有 driver（harness bench / commit_bench / llama_bench_matrix）組命令的**唯一齣處**。
+> driver 實際組出的命令與本塊不一致 ⇒ **fail-closed 拒跑**。臂專用開關（§4）在 `switches` 的 default 之上覆寫、並把覆寫記錄在產物；`provenance_required` 欄位必須出現（值可為 null，但不能缺席）。
+
+```json
+{
+  "schema": "prod-new-cell/v1",
+  "model": "models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf",
+  "cell": {
+    "ngl": 99,
+    "load_mode": "none",
+    "threads": 8,
+    "batch": 5632,
+    "ubatch": 5632,
+    "prompt": 2048,
+    "gen": 128,
+    "depths": 512,
+    "reps": 3,
+    "warm_skip": 64,
+    "ctx_size": 0,
+    "expert_cache_bytes": 8589934592,
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q8_0",
+    "fixed_fill_seed": null
+  },
+  "switches": {
+    "LLAMA_EXPERT_CACHE_ALLOW_NGL": {
+      "default": 1,
+      "values": [0, 1],
+      "role": "ngl>0 下 expert skip-load / L4 pool 的硬使能：expert_cache_skip_load = (ngl<=0 || ALLOW_NGL || L3_NGL) && !NOGATHER",
+      "prerequisite_for": ["CGC_EXPERT_SKIP_READRAW"]
+    },
+    "CGC_EXPERT_SKIP_READRAW": {
+      "stage": "P0",
+      "default": 0,
+      "values": [0, 1],
+      "requires": "LLAMA_EXPERT_CACHE_ALLOW_NGL=1",
+      "effect": "skip-load expert 不 read_raw，省 ~10.9 GiB 匿名駐留、swap 增量 -92%（5679→449 MiB）"
+    },
+    "CGC_POOL_MADVISE": {
+      "default": 0,
+      "values": [0, 1, 2],
+      "stage_map": {
+        "1": "P1：fill（pread）前 madvise(DONTNEED) 丟將被覆蓋頁",
+        "2": "P1+P2：fill 前 + evict 時都丟"
+      },
+      "effect": "減少駐留與重讀"
+    }
+  },
+  "runtime_adjustable": ["ctx_size", "fixed_fill_seed"],
+  "provenance_required": ["engine_md5", "swap_before", "swap_after", "thermal_launch", "thermal_worst", "fixed_fill_seed"],
+  "derived": {
+    "warm_skip_applied": "產物 n_gen 應 == cell.gen - cell.warm_skip（=64）；不符即「名義有、實際沒有」，fail-closed"
+  }
+}
+```
+
 ## 3. prod-new profile env（默認，顯式 env 永遠贏）
 
 | env | 值 | 角色 |
@@ -126,6 +184,10 @@ attribution: thermal / swap / both / none        # memory_pressure.py 判定
 - 目標：prefill 250+（冷機可達）、decode 25+（現 ~48%，缺 CPU/GPU 重疊 + MoE gather 頻寬）。
 
 ## 7. 使用入口
+
+> **唯一對外門（2026-09-25 裁定）**：通用測量走 `harness.py bench`、commit 前走 `commit_bench.py`。
+> `llama_bench_matrix.py`／`prod_matrix.py` 是 **internal** 驅動：直跑它們、cell 與 §2.5 不符會被合約
+> 當場拒跑；即使跑通，未帶完整 §2.5 口徑標注的數字＝**「口徑不明」**，不可寫進 commit 標題或跨時間比較。
 
 ```sh
 # 單臂（commit_bench 同款）

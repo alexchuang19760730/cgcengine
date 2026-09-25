@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """The single production-grade measurement entry point: every profile x the standard cells.
 
+⚠ INTERNAL (2026-09-25 ruling): despite the original wording below, this is NOT the external entry
+point. Use `harness.py bench` / `commit_bench.py`. This file only enumerates profiles x cells and
+delegates to llama_bench_matrix, which enforces the §2.5 CELL contract. Numbers from a direct run
+are 「口徑不明」 unless they match the test card; do not quote them in commits.
+
 WHY THIS FILE EXISTS
 --------------------
 On 2026-09-17 the question "what is our decode" had FOUR incompatible answers (llama-bench

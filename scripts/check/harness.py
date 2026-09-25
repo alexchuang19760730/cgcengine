@@ -559,8 +559,8 @@ _EXPERIMENT_KNOBS = {
     "CGC_DOWN_COMBINE", "CGC_FORCE_TEMP0", "CGC_HOOK_PROFILE",  # opt-in 儀器
 }
 
-# llama-bench 完整側默認（測試卡 §2，可覆寫但記錄在產物）
-_BENCH_DEFAULTS = dict(prompt=2048, gen=128, depths="512", reps=1,
+# llama-bench 完整側默認（測試卡 §2.5 權威 CELL，可覆寫但記錄在產物；reps=3 中位數口徑）
+_BENCH_DEFAULTS = dict(prompt=2048, gen=128, depths="512", reps=3,
                        warm_skip=64, ctx_size=0, batch=5632, ubatch=5632)
 
 

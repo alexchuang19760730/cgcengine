@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """Production prefill/decode matrix, measured the way llama-bench measures -- pp/tg x depth.
 
+⚠ INTERNAL DRIVER (2026-09-25 ruling): this is NOT an external entry point. The only production
+entry points are `harness.py bench` (general measurement) and `commit_bench.py` (pre-commit).
+Every command built here is checked against the test card's machine-readable CELL
+(docs/PROD_NEW_TEST_CARD_*.md §2.5): a cell that does not match is refused (fail-closed). A number
+obtained by running this file directly must NOT be quoted as "our prefill/decode" -- its provenance
+is unverified unless it matches §2.5. Go through harness bench / commit_bench.
+
 WHY THIS EXISTS
 ---------------
 Every decode number this project has quoted so far came from a bespoke harness
@@ -326,6 +333,23 @@ def harvest_bench_stats(stderr_text: str) -> dict:
     return mod.harvest(str(tmp))
 
 
+_CELL_FWD_ALIASES = {
+    "ngl": ("-ngl", "--n-gpu-layers"),
+    "load_mode": ("--load-mode", "-lm"),
+    "threads": ("-t", "--threads"),
+    "expert_cache_bytes": ("-expert-cache", "--expert-cache"),
+    "cache_type_k": ("-ctk", "--cache-type-k"),
+    "cache_type_v": ("-ctv", "--cache-type-v"),
+}
+
+
+def _fwd_val(fwd: list[str], aliases: tuple[str, ...]):
+    for i, a in enumerate(fwd):
+        if a in aliases and i + 1 < len(fwd):
+            return fwd[i + 1]
+    return None
+
+
 def run_arm(tag: str, profile: str, extra_env: dict[str, str], args) -> dict:
     res = resolve(profile, extra_env)
     env, argv, scalars = res["env"], res["server_argv"], res["scalars"]
@@ -369,6 +393,24 @@ def run_arm(tag: str, profile: str, extra_env: dict[str, str], args) -> dict:
         if args.spec_draft_n_max is not None:
             cmd += ["--spec-draft-n-max", str(args.spec_draft_n_max)]
 
+    # [cell contract] 執行前把實際 cell 與測試卡 §2.5 權威 block 對照（單一口徑、fail-closed）。
+    actual = {
+        "ngl": _fwd_val(fwd, _CELL_FWD_ALIASES["ngl"]),
+        "load_mode": _fwd_val(fwd, _CELL_FWD_ALIASES["load_mode"]),
+        "threads": _fwd_val(fwd, _CELL_FWD_ALIASES["threads"]),
+        "expert_cache_bytes": _fwd_val(fwd, _CELL_FWD_ALIASES["expert_cache_bytes"]),
+        "cache_type_k": _fwd_val(fwd, _CELL_FWD_ALIASES["cache_type_k"]),
+        "cache_type_v": _fwd_val(fwd, _CELL_FWD_ALIASES["cache_type_v"]),
+        "batch": b, "ubatch": ub,
+        "prompt": args.prompt, "gen": args.gen, "depths": args.depths,
+        "reps": args.reps,
+        "warm_skip": getattr(args, "warm_skip", 0),
+        "ctx_size": getattr(args, "ctx_size", 0),
+        "fixed_fill_seed": getattr(args, "fixed_fill_seed", 0) or None,
+    }
+    import cell_contract
+    crep = cell_contract.check_cell(actual, arm_env=extra_env)
+
     print(f"\n=== arm {tag} (profile {profile}) ===", flush=True)
     print(f"  batch    : -b {b} -ub {ub}   [{why}]", flush=True)
     print(f"  ctx      : {scalars.get('CTX')} (server)   pool budget: {scalars.get('BUDGET')}", flush=True)
@@ -380,9 +422,14 @@ def run_arm(tag: str, profile: str, extra_env: dict[str, str], args) -> dict:
     if extra_env:
         print(f"  arm env  : {extra_env}", flush=True)
     print(f"  cmd      : {' '.join(cmd)}", flush=True)
+    print("  " + crep.render().replace("\n", "\n  "), flush=True)
+    contract_block = {"ok": crep.ok, "mismatches": crep.mismatches, "declared": crep.declared}
     if args.dry_run:
         return {"tag": tag, "profile": profile, "extra_env": extra_env, "cmd": cmd,
-                "env": env, "scalars": scalars, "dry_run": True}
+                "env": env, "scalars": scalars, "contract": contract_block, "dry_run": True}
+
+    if not crep.ok:
+        raise SystemExit(f"cell contract FAIL for arm {tag} — 拒跑（fail-closed），見上。")
 
     run_env = dict(os.environ)
     run_env.update(env)
@@ -429,8 +476,23 @@ def run_arm(tag: str, profile: str, extra_env: dict[str, str], args) -> dict:
                              f"completed instance to report")
 
     stats = harvest_bench_stats(proc.stderr)
+    # [provenance] warm_skip_applied: 從產物 tg row 的 n_gen 驗證 warm-skip 是否「真生效」。
+    # 名義傳了 --warm-skip 不等於被套用；被套用時 tg n_gen 應 == gen - warm_skip。
+    warm_skip_n = int(getattr(args, "warm_skip", 0) or 0)
+    tg_rows = [r for r in rows if int(r.get("n_prompt", 0)) == 0 and int(r.get("n_gen", 0)) > 0]
+    warm_skip_applied = None
+    if warm_skip_n > 0 and tg_rows:
+        warm_skip_applied = all(
+            int(r.get("n_gen", -1)) == int(args.gen) - warm_skip_n for r in tg_rows)
+        if warm_skip_applied is False:
+            print(f"  ⛔ warm_skip_applied=False: 名義 warm-skip {warm_skip_n}，但 tg n_gen != "
+                  f"{int(args.gen) - warm_skip_n}（實際 {[r.get('n_gen') for r in tg_rows]}）"
+                  f" — 「名義有、實際沒有」，此 decode 數字隔離、不可引用。", flush=True)
+    fixed_fill_seed_actual = int(getattr(args, "fixed_fill_seed", 0) or 0) or None
+    engine_build = next((r.get("build_commit") for r in rows if r.get("build_commit")), None)
     out = {"tag": tag, "profile": profile, "extra_env": extra_env, "batch": b, "ubatch": ub,
            "batch_why": why, "wall_s": round(wall, 1), "env": env, "scalars": scalars,
+           "contract": contract_block,
            "rows": rows, "cache": stats, "incomplete": incomplete, "error": err,
            "thermal": sampler.result,
            "memory": msamp.result,
@@ -439,6 +501,9 @@ def run_arm(tag: str, profile: str, extra_env: dict[str, str], args) -> dict:
            # of the invocation, and a spec row wears the same `tg` label as a plain one.
            "spec_type": args.spec_type or None,
            "warm_skip": getattr(args, "warm_skip", 0) or None,
+           "warm_skip_applied": warm_skip_applied,
+           "fixed_fill_seed": fixed_fill_seed_actual,
+           "engine_build": engine_build,
            "ctx_size": getattr(args, "ctx_size", 0) or None,
            "spec_draft_n_max": args.spec_draft_n_max}
     for r in rows:
