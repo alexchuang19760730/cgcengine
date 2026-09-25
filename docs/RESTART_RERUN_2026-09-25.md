@@ -12,7 +12,7 @@
 | engine digest | `2ac1cbb9cfcb130a`（`libllama-common.0.dylib` → `…0.0.578.dylib`） | `md5 -q src/llama.cpp/build/bin/libllama-common.0.dylib` |
 | 原始碼↔binary | 同步（本輪 **無 llama 原始碼變更**） | pre-commit 檢查 8 PASS |
 | 重開機前的盒況 | swap **7704 / 9216 MiB**、thermal NOMINAL、0 個 llama 行程 | `sysctl -n vm.swapusage`、`thermal_pressure.py` |
-| 產物位置 | `Backup/` 在 `.gitignore:396` ⇒ **產物與 driver 只在磁碟**，見 §5 的 md5 | — |
+| 產物位置 | `Backup/` 被 ignore（`.gitignore:396`）⇒ **產物只在磁碟**；本輪**兩支重測 driver 已 `git add -f` 進版控**（依 `Backup/*.py` 已有的 12 個前例），見 §5 | — |
 
 **重開機後第一件事**：`sysctl -n vm.swapusage` 必須回到 ≈0。本輪八臂起跑前是 3849–6004 MiB，
 S1 那些格是 7.9–8.0 GiB（E4 起跑 `8129.12` MiB、E0 `8180` MiB）——這正是它們只能當診斷價的原因。
@@ -126,7 +126,10 @@ S1 兩臂必須以那份新寫的 `Backup/eseries/E0/seg_ref.jsonl` 為基準，
 | E3 | combine 熔在 `kernel_mul_mv_id_down_combine_*` ⇒ 補算只能重跑融合 combine；`pool_ext_buf` 是非擁有視圖 ⇒ 異步 fill 必須 staging＋copy-in | 0 GPU 讀碼 |
 | E4 | 分段臂 pp 233.29／**tg 11.396**（11.3544/11.4325/11.4025）；S1 臂 pp 187.03／**tg 16.136**（17.2755/14.2276/16.904，misses 0、reads 0） ⇒ decode ×1.42／prefill ×0.80。兩臂 `swap_arms` 都是 `1/2/1` ⇒ 這一對只差 S1 的三個開關 | 只能當**診斷價**：兩臂 worst HEAVY、起跑 swap `8129.12` MiB、非交錯（B 緊接 A） |
 
-## 5. 產物與 md5（Backup 不入版控，所以指紋寫在這裡）
+## 5. 產物與 md5（產物不入版控，所以指紋寫在這裡）
+
+兩支 driver 現在是版控內的檔（`git add -f`，因為 `Backup/` 被整目錄 ignore）：之後改動它們會出現在
+`git status`，那是預期的，不是別人留下的垃圾。以下 md5 是這次落版的內容。
 
 | 檔 | md5 |
 |---|---|
