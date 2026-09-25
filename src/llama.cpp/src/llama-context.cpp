@@ -3670,8 +3670,25 @@ ggml_status llama_context::graph_compute(
     // bit-exact comparison against BATCHDBG measures (scripts/check/miss_mask_check.py) -- it would
     // surface as SET_DIFF, not as a crash, so this stays a measurable claim instead of an argument.
     static const bool cgc_miss_mask = getenv("CGC_MISS_MASK") != nullptr;
+    // [CGC 2026-09-26 miss mask · step 2 · PUBLISHER PROVENANCE] Two failures print EXACTLY the same
+    // device-side series -- "MISSMASK ... misses=nsel" for every layer, forever:
+    //   (a) the publisher ran and wrote legitimately all-zero: no expert ever had residency, so every
+    //       selected expert goes through the `e % ns` placeholder in the B-scheme writer above;
+    //   (b) the publisher never reached a single leaf (null capture / not in this graph / shape
+    //       mismatch), so the leaf the gather reads is whatever the arena happened to hold.
+    // Downstream these are indistinguishable, and only (a) licenses any conclusion about routing.
+    // So the publisher reports itself: per-step counts of WHY each leaf was skipped, plus the
+    // resident count it wrote. Printed once, and never advanced unless something was actually
+    // written -- otherwise the prefill compute (which legitimately has no mask node) would consume
+    // the one shot and report "0 leaves written" for the whole run. Diagnostic: CGC_MISS_MASK_DBG.
+    static const bool mm_prov = getenv("CGC_MISS_MASK_DBG") != nullptr;
+    static bool mm_prov_done = false;
     if (cgc_miss_mask && !cache_valid_tensors.empty()) {
         llama_expert_cache * mmc = model.expert_cache;
+        int n_wrote = 0, n_skip_null = 0, n_skip_graph = 0, n_skip_shape = 0, n_st_null = 0;
+        int64_t nres_total = 0, ncell_total = 0;
+        int64_t first_nn = -1, first_nexp = -1, first_slots = -1, first_nres = -1;
+        int first_had_st = -1;
         for (const auto & kv : cache_valid_tensors) {
             ggml_tensor * vt = kv.second;
             // A capture can outlive the graph that produced it -- the mask nodes are built only in a
@@ -3679,10 +3696,16 @@ ggml_status llama_context::graph_compute(
             // the S1 readback below uses, same reason: the arena is reused every build, so an
             // address check alone would accept all 39 stale entries.
             if (vt == nullptr || vt->data == nullptr || !cgc_node_in_graph(gf, vt)) {
+                if (vt == nullptr || vt->data == nullptr) {
+                    ++n_skip_null;
+                } else {
+                    ++n_skip_graph;
+                }
                 continue;
             }
             const int64_t nn = (int64_t) vt->ne[0] * (int64_t) vt->ne[1];
             if (nn <= 0 || !cgc_is_i32_n(vt, nn)) {
+                ++n_skip_shape;
                 continue;
             }
             const uint32_t il = (uint32_t) kv.first;
@@ -3694,9 +3717,33 @@ ggml_status llama_context::graph_compute(
             }
             const int64_t nexp = (int64_t) model.hparams.n_expert;
             int32_t * vd = (int32_t *) vt->data;
+            int64_t nres = 0;
             for (int64_t e = 0; e < nn; ++e) {
                 vd[e] = (st != nullptr && e < nexp && st[e] >= 0) ? 1 : 0;
+                nres += vd[e];
             }
+            nres_total += nres;
+            ncell_total += nn;
+            if (st == nullptr) {
+                ++n_st_null;
+            }
+            ++n_wrote;
+            if (first_nn < 0) {
+                first_nn = nn;
+                first_nexp = nexp;
+                first_nres = nres;
+                first_had_st = st != nullptr ? 1 : 0;
+                first_slots = mmc != nullptr ? (int64_t) llama_expert_cache_slots_per_layer_l(mmc, il) : -1;
+            }
+        }
+        if (mm_prov && n_wrote > 0 && !mm_prov_done) {
+            mm_prov_done = true;
+            fprintf(stderr, "CGC-MM-PUB n_leaf=%zu wrote=%d skip_null=%d skip_not_in_graph=%d skip_shape=%d st_null=%d"
+                            " | first_leaf: nn=%lld nexp=%lld slots=%lld had_st=%d nres=%lld"
+                            " | resident %lld/%lld\n",
+                    cache_valid_tensors.size(), n_wrote, n_skip_null, n_skip_graph, n_skip_shape, n_st_null,
+                    (long long) first_nn, (long long) first_nexp, (long long) first_slots, first_had_st,
+                    (long long) first_nres, (long long) nres_total, (long long) ncell_total);
         }
     }
 

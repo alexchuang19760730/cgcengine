@@ -2425,6 +2425,25 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 // on cache_slots_out_tensors in llama-context.h).
                 ggml_set_output(vmask);
                 cb(vmask, "ffn_moe_missmask", il);
+                // [CGC 2026-09-26 miss mask · step 2 REBUILD · FIX #1] every other producible tensor
+                // in this file that is created the way `vmask` is -- `slot_table` at :2267 and
+                // `rn_mask` at :2027 -- is followed by `ggml_build_forward_expand(gf, node)`.
+                // `valid_table` got its expand in the first attempt; `vmask` did not, and the arm
+                // died before computing a single token:
+                //     llama-bench  GGML_ASSERT(buffer_id >= 0) failed  ggml-alloc.c:623
+                //     libllama  llama_context::graph_reserve <- llama_context::sched_reserve
+                //               <- llama_init_from_model
+                // (rc=-6, i.e. first launch of the process). That assert fires in
+                // `ggml_gallocr_allocate_node` for a node the scheduler has no backend for, and it
+                // fires during graph_reserve precisely because that is when every node reachable
+                // through `gf` gets its assignment. set_output only raises a flag -- it does NOT put
+                // the node in `gf->nodes` -- so without the expand nothing ties `vmask` to the graph
+                // and it stays unscheduled while still being allocated. HONEST BOUNDARY: I cannot
+                // diff this against the 09-24 original (it never entered version control and no copy
+                // survives), so "faithful rebuild" is an unverifiable claim. What IS checkable is the
+                // floor this establishes: the code does not abort. Treat that as a gate, not
+                // as evidence of equivalence.
+                ggml_build_forward_expand(gf, vmask);
             }
             // [CGC 2026-09-15 S1 CONTROL: CGC_S1_KEEP_LEAF]
             //

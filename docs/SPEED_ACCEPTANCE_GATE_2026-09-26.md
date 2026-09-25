@@ -137,3 +137,120 @@ I/O、也不必等任何 fill —— 而那 88.7% 的 `wait` 本來就是 fill �
 3. **G4（kernel）的 owner**。它在 `src/llama.cpp/src/`，撞 09-20 那五個碰撞面
    （`llama-context.cpp`、`ggml-backend.cpp`、`libggml-base`）。G2 出來之前不定也行，
    但 G3 落地之後它立刻變成關鍵路徑。
+
+---
+
+## 8. G4（kernel）owner 提案（2026-09-26 01:4x，**待 operator 確認**，不是既定事實）
+
+### 8.1 提案：歸**本線（線A / S1 段邊界）**
+
+依 09-20 operator 裁定的**按擁有物**定義：線A 擁有「S1／段邊界（`wait`／`gap`／S2）＋逐層
+KIND×OP 儀器」；線 I（freebuff）擁有「`cb`（expert cache 填池 IO）／快取命中儀器」。
+per-expert 重算 kernel 是 **S1 的酬載**，不是填池 IO、也不是量測工具 ⇒ 落在線A。
+
+第二個理由是**接續性**：第 2 步的 miss mask 已由本線重建並提交（`553424ec1`）、allowlist 已由
+本線補（`58e0f4020`）。同一個 kernel 交給另一條線，會再踩一次已立案的「多 session 同寫一 repo」
+＋「建置產物共用」兩個碰撞面 —— 而這次的代價是「第 2 步丟失」那種等級。
+
+### 8.2 配套的去衝突協議（若確認，本線自我約束）
+
+1. **只動** `src/llama.cpp/src/llama-graph.cpp`（建圖）與 `llama-context.cpp` 的 S1 區塊。
+2. `ggml-backend.cpp`、`libggml-base`、`llama-expert-cache.cpp` 是 09-20 明列的碰撞面：
+   **非必要不動**；必須動時先在記憶檔掛號再動。例外：G3 的 zero slot 需要放寬
+   `llama-expert-cache.cpp:268-270` 的 `zero_slot_enabled()` gate —— 那是線 I 的檔案，
+   ⇒ **這一處要先跟線 I 打招呼**。
+3. **建置前跑閘門，且檢查與建置在同一個分支裡**（`lsof` 8080 ＋ `pgrep` 量測行程，任一非空就
+   停手）。本文件 §4.3 那一輪就是這樣被擋下來的。
+4. kernel **第一個 commit 不是 kernel**（沿用既有判決）：先 zero slot，讓「缺席那一項 ≈ 0」
+   成立，才有得重算。
+
+### 8.3 時點
+
+G2 出來之前不定也不會卡住任何事（G1／G2 不需要 kernel）。**但 G3 一落地它就是關鍵路徑**
+⇒ 建議最晚在 G3 那個 commit 之前確認。
+
+---
+
+## 9. G2 實測結果（2026-09-26 03:03–03:20，本輪新增）
+
+### 9.1 先修好一個擋路的 abort（不是量測，是儀器能不能跑）
+
+第 2 步的 `vmask` 只有 `set_output` 而沒有 `ggml_build_forward_expand` ⇒ **首次啟動就 abort**：
+
+```
+GGML_ASSERT(buffer_id >= 0) failed   ggml-alloc.c:623
+libllama  llama_context::graph_reserve <- sched_reserve <- llama_init_from_model   (rc=-6)
+```
+
+`set_output` 只舉旗標、不把節點放進 `gf->nodes`，所以 `vmask` 永遠拿不到後端指派。同檔另外兩個同型
+張量（`slot_table` :2267、`rn_mask` :2027）都有 `expand`，補上（`llama-graph.cpp:2446`）後 arm 跑完。
+⚠ 界線：09-24 原碼沒進版控、也沒有副本 ⇒ 「忠實重建」是**不可驗證的主張**；可驗證的只有地板：不 abort。
+
+### 9.2 讀到的數：100%，而且釘死
+
+| 項 | 值 |
+|---|---|
+| `MISSMASK` 行數／compute 次數／層數 | 15015 ／ 385 ／ 39（il=1..39） |
+| nsel | 一律 8（top-8） |
+| miss 率 MICRO（總和比）／MACRO（逐層平均） | **1.0000 ／ 1.0000** |
+| drift head(128) vs tail(128) | 1.0000 vs 1.0000，Δ=**+0.0000** |
+| 重複性 | 另一支臂（覆寫失效的同配置）**位元級一致**（15015 行、385 次全同） |
+
+⇒ **每一步、每一層、8 個選中專家全部是佔位。**
+
+### 9.3 機制：不是儀器壞，是「從來沒有人建立過駐留」
+
+`slot_table` 初值全 `-1`（`llama-expert-cache.cpp:3855`），**正值只在真 fill 時寫入**（同步 fill `:1107`、
+bg 迴圈 `:3441`/`:3493`）。本 cell 的 `CGC-SHAPE phase=final`：
+
+```
+req=5720 hits=5720 misses=0 compulsory=0 capacity=0 evict=0
+read_mib=0.0 pread_us=0 fill_wait_us=0     pool_cap_slots=143 slots_layer=143 union=64
+```
+
+⇒ **整趟一次 pread 都沒有** ⇒ 沒有任何一次 publish ⇒ 表從頭到尾是 -1 ⇒ 全 invalid。而 B-scheme writer
+對非駐留項的 fallback 正是 `e % ns`（`llama-context.cpp:3631`），其註解自己寫明那是
+「legal-but-wrong placeholder … routing is wrong, output is garbage, never a deliverable」。
+
+**所以 §5 的推論在方向上成立，但形狀被修正**：不是「miss 率隨步數單調上升」，而是**第一次 compute
+就釘在 100% 且不再動** —— 不是「漸漸缺」，是「從來沒有熱過」。
+
+### 9.4 判決：落在 §3 的 **>20%** 分支 —— 但只對這一支臂成立
+
+本臂的 per-expert 重算 = 把 MoE 算兩遍（100% 要補算）⇒ 走「先做 async／後台 fill」那格。
+
+⛔ **不可拿這個 100% 去定價交付 cell。** 它是「單段提交＋hook 不跑」這個診斷配置的性質；
+一旦 fill 真的會發生，穩態 miss 率會是另一個數（而且 143 slots/layer vs 256 experts、
+`union=64` 說明**這個 cell 的工作集本來就裝得下**）。它回答的是「這條捷徑為什麼快」，
+不是「交付系統穩態會缺多少」。
+
+### 9.5 還沒封口的那一個洞（以及為什麼今晚補不上）
+
+`llama-context.cpp:3681` 的 `continue`（nullptr／不在圖／形狀不符）若被觸發，publisher 就沒寫，
+葉值是競技場殘留 —— **讀到的 100% 與「真的全 invalid」下游完全無法分辨**。已加 `CGC-MM-PUB`
+自證印（publisher 逐類回報 skip 原因＋寫入的 resident 數，`CGC_MISS_MASK_DBG` 閘，只印一次且
+`n_wrote>0` 才推進，避免被 prefill compute 吃掉那一次機會）。
+
+那支臂**沒跑成**：`CGC-WATCHDOG: Metal stall … stale=10020ms` 於 compute #1 abort（rc=-6）。
+起跑時系統 free **14%**、外來 swap 4.46 GiB；**前三次成功的臂起跑 free 皆為 85%** ⇒ 歸因記憶體飽和，
+不是這次的碼（新增的只有一次性的 fprintf）。⇒ 下次要跑之前先釋放記憶體，harness 的 swap advisory
+已經這樣講。
+
+### 9.6 今晚的速度數字：一個都不能引用
+
+| 臂 | pp | tg | attribution |
+|---|---|---|---|
+| 03:03（FIX 後第一支） | 310.55 ± 10.33 | 22.65 ± 1.03 | `both`（thermal HEAVY ＋ swap +2074 MiB） |
+| 03:10（同配置重覆） | 351.45 ± 16.16 | 27.04 ± 0.14 | `swap`（+1306 MiB） |
+
+同 arm 相隔 7 分鐘 tg 差 **+19%**，且本臂程式碼自述 output 是 garbage ⇒ 只能當「儀器有跑」的證明。
+**本輪可引用的只有結構性結論**（不隨窗口變）：fill 從未發生、駐留從未建立、100% 走佔位。
+
+### 9.7 本輪新踩的坑（寫死，避免再踩）
+
+1. **池 budget 覆寫的鍵名**：必須 `CGC_SERVER_EXPERT_CACHE_BYTES`；無 `SERVER_` 前綴的
+   `CGC_EXPERT_CACHE_BYTES` 被 `run_server.sh` 守門**靜默忽略**（`run_server.sh:572-575` 有註）
+   ⇒ 兩臂其實都是 8 GiB ⇒ 假結論。本輪實測：覆寫後 `pool budget` 仍印 8589934592。
+2. **`harness bench` 的 cell contract 是 fail-closed**：`expert_cache_bytes` 偏離權威值
+   8589934592 ⇒ `⛔ cell 口徑與測試卡權威 block 不一致 — 拒跑`。⇒ **池大小掃描不能走生產入口**
+   （是設計好的；要掃就得走別的入口並標非生產口徑）。
