@@ -3419,6 +3419,45 @@ static bool cgc_node_in_graph(ggml_cgraph * gf, const ggml_tensor * t) {
     return false;
 }
 
+// [CGC 2026-09-26 · leaf membership] cgc_node_in_graph walks ONLY `nodes`. A tensor built with
+// ggml_new_tensor_2d has no producer op, so ggml_visit_parents files it under `cgraph->leafs`
+// ("tensors with constant data", ggml-impl.h:337) and it is never in `nodes`.
+//
+// Measured, not argued (Backup/phase_decomp/g2_provenance_run3): the publisher reported
+// `n_leaf=39 wrote=0 skip_not_in_graph=39 skip_null=0` on every decode step. skip_null=0 says all
+// 39 leaves WERE allocated -- i.e. they were in the graph -- while the nodes-only test still said
+// "not in this graph". So every host-written leaf (ffn_moe_valid here; ffn_moe_rn_mask and the slot
+// table at :3919/:3923 use the same test and are therefore silently forced to nullptr too) is
+// unwritable under cgc_node_in_graph, and the device-side readback of the gather output then reports
+// whatever the arena held -- which is the 100% "miss" number this whole exercise produced.
+//
+// `where`, when non-null, records which list matched: 0 = nodes (an op result), 1 = leafs (a
+// host-writable tensor), -1 = neither. Callers that only care about op results keep using
+// cgc_node_in_graph; nothing existing was switched over, to keep the blast radius on this one bug.
+static bool cgc_tensor_in_graph(ggml_cgraph * gf, const ggml_tensor * t, int * where) {
+    if (t == nullptr) {
+        return false;
+    }
+    if (where) {
+        *where = -1;
+    }
+    const int n = ggml_graph_n_nodes(gf);
+    for (int i = 0; i < n; i++) {
+        if (ggml_graph_node(gf, i) == t) {
+            if (where) { *where = 0; }
+            return true;
+        }
+    }
+    const int nl = ggml_graph_n_leafs(gf);
+    for (int i = 0; i < nl; i++) {
+        if (ggml_graph_leaf(gf, i) == t) {
+            if (where) { *where = 1; }
+            return true;
+        }
+    }
+    return false;
+}
+
 // Does `t` hold exactly `n` contiguous 4-byte elements? Every readback below is
 // `ggml_backend_tensor_get(t, buf, 0, n * sizeof(int32_t))` and prints int32, so this is its
 // precondition -- and it is checked, not assumed.
@@ -3682,10 +3721,10 @@ ggml_status llama_context::graph_compute(
     // written -- otherwise the prefill compute (which legitimately has no mask node) would consume
     // the one shot and report "0 leaves written" for the whole run. Diagnostic: CGC_MISS_MASK_DBG.
     static const bool mm_prov = getenv("CGC_MISS_MASK_DBG") != nullptr;
-    static bool mm_prov_done = false;
-    if (cgc_miss_mask && !cache_valid_tensors.empty()) {
+    static int mm_prov_shots = 0;
+    if (cgc_miss_mask) {
         llama_expert_cache * mmc = model.expert_cache;
-        int n_wrote = 0, n_skip_null = 0, n_skip_graph = 0, n_skip_shape = 0, n_st_null = 0;
+        int n_wrote = 0, n_skip_null = 0, n_skip_graph = 0, n_skip_shape = 0, n_st_null = 0, n_as_leaf = 0;
         int64_t nres_total = 0, ncell_total = 0;
         int64_t first_nn = -1, first_nexp = -1, first_slots = -1, first_nres = -1;
         int first_had_st = -1;
@@ -3695,13 +3734,17 @@ ggml_status llama_context::graph_compute(
             // decode graph, so a prefill graph would otherwise write into a stale pointer. Same test
             // the S1 readback below uses, same reason: the arena is reused every build, so an
             // address check alone would accept all 39 stale entries.
-            if (vt == nullptr || vt->data == nullptr || !cgc_node_in_graph(gf, vt)) {
+            int vt_where = -1;
+            if (vt == nullptr || vt->data == nullptr || !cgc_tensor_in_graph(gf, vt, &vt_where)) {
                 if (vt == nullptr || vt->data == nullptr) {
                     ++n_skip_null;
                 } else {
                     ++n_skip_graph;
                 }
                 continue;
+            }
+            if (vt_where == 1) {
+                ++n_as_leaf;
             }
             const int64_t nn = (int64_t) vt->ne[0] * (int64_t) vt->ne[1];
             if (nn <= 0 || !cgc_is_i32_n(vt, nn)) {
@@ -3736,12 +3779,18 @@ ggml_status llama_context::graph_compute(
                 first_slots = mmc != nullptr ? (int64_t) llama_expert_cache_slots_per_layer_l(mmc, il) : -1;
             }
         }
-        if (mm_prov && n_wrote > 0 && !mm_prov_done) {
-            mm_prov_done = true;
-            fprintf(stderr, "CGC-MM-PUB n_leaf=%zu wrote=%d skip_null=%d skip_not_in_graph=%d skip_shape=%d st_null=%d"
+        // [CGC 2026-09-26 · provenance v2] The v1 gate `n_wrote > 0` was a hole: it made "the map is
+        // empty" and "every leaf was skipped" print the SAME nothing, and those are the two cases
+        // this line exists to separate. So report unconditionally, bounded: the first 8 calls cover
+        // the 5 mask-less steps (prefill/warmup, legitimately n_leaf=0) plus the first decode step,
+        // which is the one that has to show n_leaf=39. A run that prints only n_leaf=0 rows is now
+        // proof the map never filled; a run that prints n_leaf=39 wrote=0 names its own skip reason.
+        if (mm_prov && mm_prov_shots < 8) {
+            ++mm_prov_shots;
+            fprintf(stderr, "CGC-MM-PUB n_leaf=%zu wrote=%d as_leaf=%d skip_null=%d skip_not_in_graph=%d skip_shape=%d st_null=%d"
                             " | first_leaf: nn=%lld nexp=%lld slots=%lld had_st=%d nres=%lld"
                             " | resident %lld/%lld\n",
-                    cache_valid_tensors.size(), n_wrote, n_skip_null, n_skip_graph, n_skip_shape, n_st_null,
+                    cache_valid_tensors.size(), n_wrote, n_as_leaf, n_skip_null, n_skip_graph, n_skip_shape, n_st_null,
                     (long long) first_nn, (long long) first_nexp, (long long) first_slots, first_had_st,
                     (long long) first_nres, (long long) nres_total, (long long) ncell_total);
         }

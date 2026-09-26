@@ -2826,6 +2826,15 @@ extern "C" {
     GGML_API struct ggml_tensor ** ggml_graph_nodes  (struct ggml_cgraph * cgraph);
     GGML_API int                   ggml_graph_n_nodes(struct ggml_cgraph * cgraph);
 
+    // [CGC 2026-09-26] Leaf counterparts of the two accessors above. A tensor created with
+    // ggml_new_tensor_* has no producer op, so ggml_visit_parents files it under `cgraph->leafs`
+    // ("tensors with constant data") and it never appears in `nodes`. Without these two there is no
+    // way outside ggml to ask "is this host-written leaf part of this graph", which is exactly the
+    // question a publisher has to answer before writing into it -- see cgc_tensor_in_graph in
+    // llama-context.cpp, where the nodes-only test silently dropped all 39 mask leaves.
+    GGML_API struct ggml_tensor *  ggml_graph_leaf   (struct ggml_cgraph * cgraph, int i); // if i < 0, returns leafs[n_leafs + i]
+    GGML_API int                   ggml_graph_n_leafs(struct ggml_cgraph * cgraph);
+
     GGML_API void   ggml_graph_add_node(struct ggml_cgraph * cgraph, struct ggml_tensor * tensor);
 
     GGML_API size_t ggml_graph_overhead(void);

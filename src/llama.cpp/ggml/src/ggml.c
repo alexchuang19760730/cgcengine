@@ -7569,6 +7569,22 @@ int ggml_graph_n_nodes(struct ggml_cgraph * cgraph) {
     return cgraph->n_nodes;
 }
 
+// [CGC 2026-09-26] See the note at the declarations in ggml.h: mirrors ggml_graph_node /
+// ggml_graph_n_nodes exactly, but for `leafs` (tensors with no producer op).
+struct ggml_tensor * ggml_graph_leaf(struct ggml_cgraph * cgraph, int i) {
+    if (i < 0) {
+        GGML_ASSERT(cgraph->n_leafs + i >= 0);
+        return cgraph->leafs[cgraph->n_leafs + i];
+    }
+
+    GGML_ASSERT(i < cgraph->n_leafs);
+    return cgraph->leafs[i];
+}
+
+int ggml_graph_n_leafs(struct ggml_cgraph * cgraph) {
+    return cgraph->n_leafs;
+}
+
 void ggml_graph_add_node(struct ggml_cgraph * cgraph, struct ggml_tensor * tensor) {
     GGML_ASSERT(cgraph->size > cgraph->n_nodes);
     cgraph->nodes[cgraph->n_nodes] = tensor;
