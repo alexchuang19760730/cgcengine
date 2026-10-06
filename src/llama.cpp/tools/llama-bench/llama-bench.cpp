@@ -2935,6 +2935,28 @@ static bool cgc_spec_dump_on() {
     return getenv("LLAMA_BENCH_SPEC_DUMP") != nullptr;
 }
 
+// [CGC spec-tree 2026-10-06 H2 shape] SECOND BRANCH FROM THE RUNNER-UP CHANNEL (env
+// `CGC_SPEC_TREE_ALTBIND=1`，預設關).
+//
+// 為什麼要這一格：width-2 的 verify 形狀（`W_eff = 2` ⇒ 6 列）在唯一可用的自然實驗裡**只由
+// alt-seed 觸發** —— `alt_on = 1` 同時決定了「B 與 A 共批」與「6 列 verify」⇒ 兩者綁在同一個
+// 開關上（F1F2F3 §13.3 的第 2 個混淆）。要分開它們，就得有「**6 列但 draft step 沒有共批**」的臂。
+//
+// 做法**完全不動引擎**：把 seq 0 的 `draft_params::alt` 綁到 `draft_alt`（impl 在
+// `common/speculative.cpp:1962-1963` 逐位把 runner-up 寫進去），同時讓 seq 1 的 `alt_branch`
+// 不成立 ⇒ alt-seed 不觸發 ⇒ **draft batch 就是普通 3 列鏈**（B 的第一顆不再被塞進 seq 0 的批、
+// 也不共用 seq 0 的 hidden row）。`draft_alt` 改由 runner-up 頻道填滿 ⇒ `W_eff` 照樣回 2 ⇒
+// verify 形狀（列數）不變。
+//
+// ⚠ 讀數的語意：branch 1 的**尾巴**在 alt-seed 版是 B 自己的鏈，在這一版是 seq 0 逐位的
+// runner-up ⇒ 兩者的**分支策略不同，只有形狀可比**。報告必須寫成「6 列 ＋ runner-up 尾巴」。
+// 預設關 ⇒ `dp.alt` 仍是 nullptr、`alt_branch` 仍由 `cgc_alt_on` 決定，既有 cell 一字不動。
+static bool cgc_spec_tree_altbind() {
+    const char * v = getenv("CGC_SPEC_TREE_ALTBIND");
+    if (v == nullptr) { return false; }
+    return v[0] != '0';
+}
+
 // [CGC spec-tree 2026-10-02] The recurrent-state rollback budget. It has to be >= the deepest
 // rollback the tree can ask for (= the tree depth = k = the draft count): llama_memory_recurrent
 // ::seq_rm() refuses a rollback larger than n_rs_seq (llama-memory-recurrent.cpp:184). It also
@@ -3070,6 +3092,29 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
         size_t n_tree_trim_fail    = 0;
         size_t n_tree_dkv_retag    = 0;   // [CGC spec-tree 2026-10-06 F2] B 勝且真的重貼 draft KV 的輪數
         size_t n_tree_rows         = 0;   // [CGC spec-tree 2026-10-06 k-axis] 送進 verify batch 的樹列數總和
+        // [CGC spec-tree 2026-10-06 H2 shape] 見 cgc_spec_tree_altbind()／cgc_tree_rows：
+        // 第二分支的來源與目標列數。兩個都是 per-phase 常數，但放在這裡是因為見證列印在迴圈外。
+        const bool cgc_altbind     = cgc_spec_tree_altbind();
+        size_t n_rows_unmet        = 0;   // 目標列數沒有被兌現的輪數（不是靜默）
+        int    rows_d_v            = 0;   // 最後一輪算出的「每條分支 verify 尾長」上限
+        // [CGC spec-tree 2026-10-06 shape·adaptive] 逐輪控制器的狀態（見 cgc_rows_adapt）。
+        // `rows_d_adapt` ＝ 下一輪要用的尾長（1 起手，見上面的起手理由）；`rows_req_v` ＝ 最後一輪的
+        // 目標列數（見證欄位 rows_req 的讀數；靜態路徑下恰等於 cgc_tree_rows，故既有值不動）。
+        // `rows_hist` 是**實際**列數直方圖 —— 平均值看不出「一趟用過幾種形狀」，直方圖才看得出。
+        int    rows_d_adapt        = 1;
+        int    rows_req_v          = 0;
+        size_t n_rows_switch       = 0;   // 目標列數真的換過的次數（靜態形狀 ⇒ 0）
+        int    rows_req_prev       = -1;  // 上一輪的目標列數（-1 ＝ 還沒有上一輪）
+        std::vector<double> rows_rate_win;
+        double rows_rate_sum       = 0.0;
+        std::vector<size_t> rows_hist;
+        // [CGC spec-tree 2026-10-06 shape·net] 淨收益目標的狀態（見 cgc_rows_net）：每個候選 d
+        // 一條 (payoff, 實際列數) 的滑動窗，窗長 = `_WIN`。索引 ＝ d（1..max，0 不用）。
+        // 兩條平行 vector 而不是 pair —— 少一個 <utility> 的相依。
+        std::vector<std::vector<int>> net_m_win;
+        std::vector<std::vector<int>> net_r_win;
+        size_t n_net_samples       = 0;   // 已收的樣本數（每一輪一筆）
+        size_t n_net_probes        = 0;   // 已插的探測輪數（round-robin 指標）
 
         // [CGC spec-tree 2026-10-06 F1] BRANCH-B GATE (env `CGC_SPEC_TREE_BGATE=<window>`, 預設 0 = 關).
         //
@@ -3126,6 +3171,88 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
             const char * e = getenv("CGC_SPEC_TREE_K");
             const int v = e != nullptr ? atoi(e) : 0;
             return v < 1 ? 0 : v;
+        }();
+
+        // [CGC spec-tree 2026-10-06 shape] VERIFY ROW COUNT (env `CGC_SPEC_TREE_ROWS=<n>`，預設 0 = 關).
+        //
+        // 為什麼：`W_eff` 與 `K` 兩個旋鈕已經能張出列數（W=1 ⇒ 1+k、W=2 ⇒ 2*(1+k)），但**列數本身
+        // 不是參數**，而它是「樹形狀」問題唯一的自變數。這一格讓臂直接指定「這一輪 verify 要幾列」：
+        // 目標 n ⇒ 每條分支的 verify 尾長 d = floor((n - W_eff) / W_eff)（列數 = W_eff*(1+d)）。
+        // 取不到整數時 d 向下取 ⇒ 量到的是**下一個可達形狀**，並在見證上記 `rows_unmet`
+        // （可被跳過的閘門不是閘門：不符目標要看得見，不能靜默）。
+        // 兩個前提由臂自己負責（本格不代打）：draft 深度要 ≥ d（`LLAMA_BENCH_SPEC_DRAFT_N_MAX`），
+        // 且 `CGC_SPEC_TREE_RS` ≥ K（recurrent rollback 的上限，見 cgc_spec_tree_rs()）。
+        // 預設 0 ⇒ 這一格完全不存在，既有 cell 一字不動。
+        static const int cgc_tree_rows = []() {
+            const char * e = getenv("CGC_SPEC_TREE_ROWS");
+            const int v = e != nullptr ? atoi(e) : 0;
+            return v < 1 ? 0 : v;
+        }();
+
+        // [CGC spec-tree 2026-10-06 shape·adaptive] PER-ROUND ADAPTIVE ROW CONTROLLER
+        // (env `CGC_SPEC_TREE_ROWS_ADAPT=<dmax>`，預設 0 = 關；`_WIN=<w>` 接受率視窗，預設 4；
+        //  `_THR=<pct>` 接受率門檻，預設 50)。
+        //
+        // 為什麼：`CGC_SPEC_TREE_ROWS` 是**靜態**形狀 —— 一趟裡每一輪都送同一個列數，量的因此是
+        // 「形狀 → 表現」的平均；它回答不了「引擎能不能自己挑形狀」。這一格把列數接上一個逐輪的
+        // 閉環：**下一輪的尾長 d 由最近幾輪的接受率決定**。狀態是尾長 d（不是列數），因為
+        // 列數 = W_eff*(1+d) 隨 W_eff 逐輪變（alt 鏈在不在），而 d 是形狀唯一不變的自變數。
+        //
+        // 控制律（bang-bang ＋ 視窗平均，寫死、無隱藏狀態）：
+        //   rate_t   = 本輪「勝出分支被接受的 draft 數 m」/「勝出分支實際進 verify 的尾長」
+        //   mean_t   = 最近 `_WIN` 輪 rate 的算術平均（不足一窗時就是已收的幾輪）
+        //   mean_t >  thr ⇒ d += 1（上限 `_ADAPT`）；mean_t < thr ⇒ d -= 1（下限 1）；相等 ⇒ 不動。
+        // 起手 d = 1（不是 0）：d=0 的尾巴是空的，`m` 恆為 0 ⇒ 量不到接受率 ⇒ 控制器沒有方向；
+        // 「先驗一顆再問」是唯一讓第一個訊號存在的起手式。d=0 因此**不在**自適應的值域裡。
+        //
+        // ⚠ 臂的責任（本格不代打，與 CGC_SPEC_TREE_ROWS 同）：draft 深度要 ≥ dmax
+        // （`LLAMA_BENCH_SPEC_DRAFT_N_MAX`），且 `CGC_SPEC_TREE_RS` ≥ K —— 否則量到的是被 cap
+        // 過的形狀，`rows_unmet`／直方圖會看得見。
+        //
+        // 預設 0 ⇒ 這一格完全不存在（連見證欄位都是 0），既有 cell 一字不動。
+        static const int cgc_rows_adapt = []() {
+            const char * e = getenv("CGC_SPEC_TREE_ROWS_ADAPT");
+            const int v = e != nullptr ? atoi(e) : 0;
+            return v < 1 ? 0 : v;
+        }();
+        static const int cgc_rows_win = []() {
+            const char * e = getenv("CGC_SPEC_TREE_ROWS_WIN");
+            const int v = e != nullptr ? atoi(e) : 0;
+            return v < 1 ? 4 : v;
+        }();
+        static const int cgc_rows_thr = []() {
+            const char * e = getenv("CGC_SPEC_TREE_ROWS_THR");
+            const int v = e != nullptr ? atoi(e) : 0;
+            return (v < 1 || v > 100) ? 50 : v;
+        }();
+
+        // [CGC spec-tree 2026-10-06 shape·net] 第二個目標函數：**每輪淨收益**，取代接受率門檻。
+        //   env `CGC_SPEC_TREE_ROWS_OBJ=net`（預設 rate = 上面的門檻版，行為一字不動）
+        //   env `CGC_SPEC_TREE_ROWS_COST=<c>`（單位：**百分之一 token／列**，預設 100 = 1.0）
+        //
+        // 為什麼要第二個目標：門檻版問的是「接受率夠高嗎」，但接受率高不等於划算 —— 深樹的列數
+        // 是逐輪都要付的成本，門檻版的回饋迴路只在「比率」上，看不到「這一輪多送的列值不值得」。
+        // 淨收益版把兩個都在同一種單位裡比：
+        //   payoff_t = m_t              （本輪真的被接受的 draft 數；root **不計** —— 它每一輪都會
+        //                               被接受，是常數、不是形狀的功勞，計進去只會加一個常數）
+        //   cost_t   = rows_t × COST/100（**實際**列數，不是目標列數 —— 被 draft 深度／cap 砍過的
+        //                               輪才不會把「沒兌現的形狀」記成便宜）
+        //   net_t    = payoff_t − cost_t（單位：token）
+        //
+        // 政策（寫死、無隱藏狀態，與門檻版的差別只在**目標**）：
+        //   前 2*dmax 輪 round-robin（每個 d 各量兩次）—— 沒有樣本的 d 不能參加評比，否則 argmax
+        //   等於「先量到誰就選誰」；之後 d = argmax_d（最近 `_WIN` 輪的 mean net），同分取**較小的
+        //   d**（一樣的收益就少花列數）。
+        // 預設 OFF ⇒ 既有 cell 一字不動。
+        static const bool cgc_rows_net = []() {
+            const char * e = getenv("CGC_SPEC_TREE_ROWS_OBJ");
+            return e != nullptr && strcmp(e, "net") == 0;
+        }();
+        static const int cgc_rows_cost = []() {
+            const char * e = getenv("CGC_SPEC_TREE_ROWS_COST");
+            if (e == nullptr) { return 100; }
+            const int v = atoi(e);
+            return v < 0 ? 0 : v;
         }();
         int    rg_streak = 0;   // 連續幾輪 B 沒勝（只在 open 輪累積）
         int    rg_closed = 0;   // 還要關幾輪（>0 ⇒ 本輪不帶 B）
@@ -3299,11 +3426,16 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
                 // drive both sides. With the env unset this evaluates to nullptr, so the default
                 // path is bit-for-bit the previous behaviour.
                 /* .dist     = */ common_sampler_mtp_rejection_on() ? &draft_dist : nullptr,
-                // [CGC spec-tree 2026-10-05] nullptr for BOTH arms now: the tree's branch 1 is
-                // seq 1's own ALT CHAIN (bound below, written through draft_params::alt_branch),
-                // not the seq-0 runner-up array. Binding both would have written two chains into
-                // one vector -- the interleave that broke the first alt draft test.
-                /* .alt      = */ nullptr,
+                // [CGC spec-tree 2026-10-05] nullptr for BOTH arms in the default path: the tree's
+                // branch 1 is seq 1's own ALT CHAIN (bound below, written through
+                // draft_params::alt_branch), not the seq-0 runner-up array. Binding both would have
+                // written two chains into one vector -- the interleave that broke the first alt
+                // draft test.
+                // [CGC spec-tree 2026-10-06 H2 shape] `CGC_SPEC_TREE_ALTBIND=1` 是那條規則的
+                // **唯一例外**：seq 0 綁 runner-up 頻道，而 seq 1 的 `alt_branch` 被強制關
+                // （下一格）⇒ 任何時刻只有一個寫者（`drafting[1]` 永遠不成立 ⇒ seq 1 的
+                // `.result` 不會被推）⇒ interleave 的前提不成立。預設 nullptr。
+                /* .alt      = */ cgc_altbind ? &draft_alt : nullptr,
             };
             // [CGC spec-tree 2026-10-05] Bind seq 1 for the tree: the MTP impl drafts branch 1 as
             // the ALT chain seeded from seq 0's runner-up (draft_params::alt_branch), writing the
@@ -3322,7 +3454,10 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
                     // [CGC spec-tree 2026-10-06 F1] `alt_branch` 是本輪「帶不帶 B」的唯一開關：
                     // false ⇒ 實作不 seed alt 鏈（speculative.cpp:1956-1976 的 alt-seed 條件就是
                     // 這個欄位）⇒ `draft_alt` 空 ⇒ `W_eff` = 1。
-                    /* .alt_branch = */ cgc_alt_on,
+                    // [CGC spec-tree 2026-10-06 H2 shape] ALTBIND 開的時候 alt-seed 一律不觸發
+                    // （這一格就是它的閘）。seq 1 的參數仍然綁著：impl 的條件式要
+                    // `n_seq >= 2` 與 `dparams.at(1)` 存在，把整格拿掉會改到別的路徑。
+                    /* .alt_branch = */ (cgc_alt_on && !cgc_altbind),
                 };
             }
             common_speculative_draft(spec);
@@ -3356,6 +3491,26 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
         // degenerate tree, and it is the shape T1c pins.
         const int  W_eff   = (tree_on && tree_W >= 2 && draft.size() >= 1 &&
                               !draft_alt.empty() && draft_alt[0] >= 0) ? 2 : 1;
+        // [CGC spec-tree 2026-10-06 shape] 由目標列數反推每條分支的 verify 尾長（見 cgc_tree_rows）。
+        // 列數 = W_eff 個 root ＋ W_eff 條尾 ⇒ 尾長 d = floor((n - W_eff) / W_eff)；n < W_eff ⇒ d=0
+        // （只有 root 的退化形狀，量到幾列由見證負責說）。
+        // [CGC spec-tree 2026-10-06 shape·adaptive] 控制器開著時尾長改由 `rows_d_adapt`（逐輪狀態）
+        // 給，靜態旋鈕整格不讀 ⇒ 預設路徑的 `rows_d` 與 `rows_req` 一字不動。
+        const int  rows_d  = (cgc_rows_adapt > 0)
+                ? std::max(0, std::min(rows_d_adapt, cgc_rows_adapt))
+                : ((cgc_tree_rows > 0) ? std::max(0, (cgc_tree_rows - W_eff) / W_eff) : 0);
+        // `rows_req` 這一輪的目標列數：自適應 ＝ W_eff*(1+d)，靜態 ＝ env 原值。
+        const int  rows_req = (cgc_rows_adapt > 0) ? W_eff * (1 + rows_d) : cgc_tree_rows;
+        rows_d_v = rows_d;
+        rows_req_v = rows_req;
+        if (tree_on && rows_req_prev >= 0 && rows_req != rows_req_prev) {
+            n_rows_switch += 1;
+        }
+        rows_req_prev = rows_req;
+        // [CGC spec-tree 2026-10-06 shape·adaptive] 本輪真的進 verify 的列數（形狀見證那裡填）與
+        // 勝出分支的尾長（控制器的分母，tree walk 尾端填）。放在迴圈體是因為兩者都逐輪歸零。
+        int rows_actual_v = 0;
+        std::vector<int> tail_len;
 
         // One tree node = one batch slot. `slot` is implicit (== index into tree_nodes == batch
         // index) because slots are appended to the batch in tree_nodes order.
@@ -3417,10 +3572,11 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
             // branch 1 = the alt chain drafted on seq 1 -- its own first token AND its own
             // continuation. Before this, branch 1 reused draft[1..], so every branch-B win died
             // at the second position (accept@2|1 = 0.375 vs 0.90 for branch 0's own chain).
-            std::vector<int> tail_len(W_eff, 0);
+            tail_len.assign((size_t) W_eff, 0);
             for (int b = 0; b < W_eff; ++b) {
                 const llama_tokens & tail = (b == 0) ? draft : draft_alt;
-                tail_len[b] = std::min(k, (int) tail.size());
+                const int cap = (rows_d > 0) ? std::min(k, rows_d) : k;
+                tail_len[b] = std::min(cap, (int) tail.size());
                 root_slot[b] = tree_push(id_last, -1);
                 for (int i = 0; i < tail_len[b]; ++i) {
                     const int s = tree_push(tail[i], b);
@@ -3438,6 +3594,19 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
                     rows += (size_t) tail_len[b];
                 }
                 n_tree_rows += rows;
+                // [CGC spec-tree 2026-10-06 shape] 目標列數沒有被兌現時記帳（不靜默）。目標改讀
+                // 逐輪的 `rows_req`（靜態路徑下恰等於 cgc_tree_rows ⇒ 既有記帳不動）。
+                if (rows_req > 0 && rows != (size_t) rows_req) {
+                    n_rows_unmet += 1;
+                }
+                // [CGC spec-tree 2026-10-06 shape·adaptive] 實際列數直方圖：控制器「一趟用過幾種
+                // 形狀」的唯一一手證據（tree_rows/rounds_tree 只是平均，平均 6.0 可以是恆 6 也可
+                // 以是 4/6/8 混出來的）。桶超界就長大，不靜默丟。
+                if ((size_t) rows >= rows_hist.size()) {
+                    rows_hist.resize(rows + 1, 0);
+                }
+                rows_hist[rows] += 1;
+                rows_actual_v = (int) rows;
             }
 
             // Logical links for the walk: it starts at root_0; every branch's first tail hangs
@@ -3650,6 +3819,87 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
 
             const int m      = (int) ids.size() - 1;                       // accepted drafts
             const int win_br = (m == 0) ? 0 : tree_nodes[cur].branch;      // branch of the winner
+
+            // [CGC spec-tree 2026-10-06 shape·adaptive] 控制器結算（見 cgc_rows_adapt）。分母是**勝出
+            // 分支實際進 verify 的尾長**（tail_len[win_br]），不是目標列數 —— 被 cap／draft 深度砍過
+            // 的輪才不會讓接受率失真。尾長 0（唯一可能：d=0，自適應的值域不含）⇒ 沒有可量的訊號 ⇒
+            // 這輪不更新（控制器停在原值，絕不靠猜測推進）。
+            if (cgc_rows_adapt > 0 && cgc_rows_net) {
+                // ── 淨收益目標（見 cgc_rows_net）────────────────────────────────────────────
+                // 樣本記在**這一輪真的用的 d**（rows_d）上，用的是**實際**列數 rows_actual_v。
+                if (net_m_win.empty()) {
+                    net_m_win.assign((size_t) cgc_rows_adapt + 1, {});
+                    net_r_win.assign((size_t) cgc_rows_adapt + 1, {});
+                }
+                const size_t d_used = (size_t) std::max(1, std::min(rows_d, cgc_rows_adapt));
+                net_m_win[d_used].push_back(m);
+                net_r_win[d_used].push_back(rows_actual_v);
+                while ((int) net_m_win[d_used].size() > cgc_rows_win) {
+                    net_m_win[d_used].erase(net_m_win[d_used].begin());
+                    net_r_win[d_used].erase(net_r_win[d_used].begin());
+                }
+                // 政策：每 `dmax` 輪插一輪**探測**（round-robin 走過每個 d），其餘輪**利用**（argmax）。
+                // 探測刻意**穿插**而不是全部排在最前面 —— 這個 cell 的頭幾輪 MTP 接受率還沒起來
+                // （實測 m 連續為 0），把探測全塞在暖機段會讓每個 d 都量到 0 分 ⇒ argmax 退化成
+                // 「列數最少的那個」= 探測本身把答案汙染掉。穿插後每個 d 的樣本才會落在不同階段。
+                const bool probe_round = (n_net_samples % (size_t) cgc_rows_adapt) == 0;
+                n_net_samples += 1;
+
+                const int before = rows_d_adapt;
+                if (probe_round) {
+                    // 探測：沒有樣本的 d 不能參加評比，否則 argmax 等於「先量到誰就選誰」。
+                    rows_d_adapt = 1 + (int) (n_net_probes % (size_t) cgc_rows_adapt);
+                    n_net_probes += 1;
+                } else {
+                    // 利用：argmax_d mean(net)（定點：100*Σm − COST*Σrows，同一個窗內 n 可比；
+                    // 不同 d 的 n 可能不同，故除以各自的 n）。同分取較小的 d。
+                    int    best_d = 1;
+                    double best_v = 0.0;
+                    bool   have   = false;
+                    for (int d = 1; d <= cgc_rows_adapt; ++d) {
+                        const size_t n = net_m_win[(size_t) d].size();
+                        if (n == 0) { continue; }
+                        double sm = 0.0, sr = 0.0;
+                        for (size_t q = 0; q < n; ++q) {
+                            sm += (double) net_m_win[(size_t) d][q];
+                            sr += (double) net_r_win[(size_t) d][q];
+                        }
+                        const double v = (100.0 * sm - (double) cgc_rows_cost * sr) / (double) n;
+                        if (!have || v > best_v) { have = true; best_v = v; best_d = d; }
+                    }
+                    rows_d_adapt = best_d;
+                }
+                if (getenv("LLAMA_BENCH_SPEC_ROWS_DBG") != nullptr) {
+                    fprintf(stderr, "CGC-ROWS-ROUND phase=%s round=%zu obj=net d_used=%zu rows_req=%d "
+                            "rows=%d m=%d cost_pct=%d net100=%.1f win=%zu pick=%d\n",
+                            phase, n_tree_rounds, d_used, rows_req, rows_actual_v, m,
+                            cgc_rows_cost, 100.0 * m - (double) cgc_rows_cost * rows_actual_v,
+                            n_net_samples, rows_d_adapt);
+                }
+                (void) before;
+            } else if (cgc_rows_adapt > 0 && win_br >= 0 && win_br < (int) tail_len.size()) {
+                const int rows_tail_win = tail_len[win_br];
+                if (rows_tail_win > 0) {
+                    const double rate = (double) m / (double) rows_tail_win;
+                    rows_rate_win.push_back(rate);
+                    rows_rate_sum += rate;
+                    while ((int) rows_rate_win.size() > cgc_rows_win) {
+                        rows_rate_sum -= rows_rate_win.front();
+                        rows_rate_win.erase(rows_rate_win.begin());
+                    }
+                    const double mean = rows_rate_sum / (double) rows_rate_win.size();
+                    const double thr  = (double) cgc_rows_thr / 100.0;
+                    const int    before = rows_d_adapt;
+                    if (mean > thr)      { rows_d_adapt = std::min(cgc_rows_adapt, rows_d_adapt + 1); }
+                    else if (mean < thr) { rows_d_adapt = std::max(1, rows_d_adapt - 1); }
+                    if (getenv("LLAMA_BENCH_SPEC_ROWS_DBG") != nullptr) {
+                        fprintf(stderr, "CGC-ROWS-ROUND phase=%s round=%zu rows_req=%d rows=%d m=%d "
+                                "tail=%d rate=%.4f win=%zu mean=%.4f thr=%.2f d=%d->%d\n",
+                                phase, n_tree_rounds, rows_req, rows_actual_v, m, rows_tail_win,
+                                rate, rows_rate_win.size(), mean, thr, before, rows_d_adapt);
+                    }
+                }
+            }
 
             // [CGC oracle 2026-10-06 F1b] PER-ROUND 記錄（env `LLAMA_BENCH_SPEC_ORACLE`）。一輪一行 ⇒
             // 離線可算「本輪 winbr/m → 下一輪 amA」的鎖定相關、扣掉暖機輪、並用 alt_on/closed 標出
@@ -3886,11 +4136,51 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
                     cgc_tree_rgate, cgc_tree_rprobe, n_rgate_closed_rounds, n_rgate_closes,
                     n_rgate_probe_wins);
         }
+        // [CGC spec-tree 2026-10-06 shape·adaptive] 既有欄位順序不動，新欄位一律**追加在尾端**
+        // （欄位是契約）。`rows_req` 改讀逐輪的 `rows_req_v`（靜態路徑下恰等於 cgc_tree_rows ⇒ 既有
+        // 值一字不動）；`rows_hist`／`rows_kinds` 是「一趟真的用過哪些形狀」的一手證據，
+        // `rows_switch` 是靜態形狀的**否定**證據（靜態 ⇒ 0）。
+        std::string s_hist;
+        size_t n_rows_kinds = 0;
+        for (size_t i = 0; i < rows_hist.size(); ++i) {
+            if (rows_hist[i] == 0) { continue; }
+            char buf[48];
+            snprintf(buf, sizeof(buf), "%s%zu:%zu", s_hist.empty() ? "" : ",", i, rows_hist[i]);
+            s_hist += buf;
+            n_rows_kinds += 1;
+        }
+        if (s_hist.empty()) { s_hist = "-"; }
+        // [CGC spec-tree 2026-10-06 shape·net] 淨收益版的**逐 d 帳本**：`mean(payoff):mean(rows):n`。
+        // 刻意報**原料**而不是算好的 net —— 讀者可以用任何 COST 重算 argmax，不必信控制器的算術。
+        std::string s_net;
+        if (cgc_rows_net && !net_m_win.empty()) {
+            for (int d = 1; d <= cgc_rows_adapt; ++d) {
+                const size_t n = net_m_win[(size_t) d].size();
+                if (n == 0) { continue; }
+                double sm = 0.0, sr = 0.0;
+                for (size_t q = 0; q < n; ++q) {
+                    sm += (double) net_m_win[(size_t) d][q];
+                    sr += (double) net_r_win[(size_t) d][q];
+                }
+                char buf[80];
+                snprintf(buf, sizeof(buf), "%s%d:%.3f:%.3f:%zu", s_net.empty() ? "" : ",",
+                         d, sm / (double) n, sr / (double) n, n);
+                s_net += buf;
+            }
+        }
+        if (s_net.empty()) { s_net = "-"; }
         fprintf(stderr,
                 "CGC-SPEC-TREE phase=%s rounds_tree=%zu branchB=%zu path_partial=%zu "
-                "trim_fail=%zu replay=%zu tree_rows=%zu tree_k=%d\n",
+                "trim_fail=%zu replay=%zu tree_rows=%zu tree_k=%d "
+                "rows_req=%d rows_d=%d rows_unmet=%zu altbind=%d "
+                "adapt=%d adapt_max=%d adapt_thr=%d adapt_win=%d rows_switch=%zu rows_kinds=%zu "
+                "rows_hist=%s net_obj=%d net_cost=%d net_pick=%d net_tab=%s\n",
                 phase, n_tree_rounds, n_tree_branchB, n_tree_path_partial,
-                n_tree_trim_fail, n_replay, n_tree_rows, cgc_tree_k);
+                n_tree_trim_fail, n_replay, n_tree_rows, cgc_tree_k,
+                rows_req_v, rows_d_v, n_rows_unmet, cgc_altbind ? 1 : 0,
+                cgc_rows_adapt, cgc_rows_adapt, cgc_rows_thr, cgc_rows_win,
+                n_rows_switch, n_rows_kinds, s_hist.c_str(),
+                cgc_rows_net ? 1 : 0, cgc_rows_cost, rows_d_adapt, s_net.c_str());
     }
 
     // [CGC oracle 2026-10-06] See the counter block above: head-vs-target-argmax agreement with
