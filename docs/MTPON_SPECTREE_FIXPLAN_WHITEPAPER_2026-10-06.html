@@ -82,6 +82,7 @@ A–D 這四條路徑<b>作為集合是對的、沒有漏掉大條的</b>；但<
 <tr><td>k_eff 軸</td><td><span class="tag tkill">已死</span>不再從 k 軸找 25 t/s</td><td>前節判詞</td></tr>
 <tr><td>唯一活路</td><td>樹式驗證（寬-2）＋ <b>row economy</b>（emit 與 verify 列成本兩頭）</td><td>§6.3</td></tr>
 <tr><td>t/s 可引用性</td><td><span class="tag tkill">不可引用</span>三臂 <code>attribution=both</code>／thermal HEAVY；off 錨 8 分鐘漂 <b>+14%</b>（9.85→11.26）⇒ 只能當<b>比值</b></td><td>§8.4 / §9.8</td></tr>
+<tr><td>H2（spec-tree 共批）的碼路徑</td><td><span class="tag tkill">本線收束</span>機制存在且可量（B-on <code>amA</code> Δ=−0.394、z=−5.03），但 bench 側的 draft-memory 衛生（C 的 rep-loop clear／<code>CGC_SPEC_TREE_BRESET</code>）已用盡；剩下的解釋只有驗證形狀共線（<code>W_eff</code> 1→2 ＝ verify 3 列→6 列）與共用 seq 0 hidden row ⇒ 拆解需改 <code>speculative.cpp</code>（他線）</td><td>§13／V8</td></tr>
 </table>
 
 <div class="card a">
@@ -276,6 +277,39 @@ X&lt;Y 現已<b>歸零</b>：<b>C 的 llama-bench.cpp rep-loop clear</b>（§10.
 <tr><td>事實對齊</td><td>§8.3 的 <code>pos1 argmaxA</code> 0.641／0.836 在三種人口下都重現不出（全輪 ＝ <b>0.611／0.796</b>、A-path 0.954／0.981、<code>winbr0</code> 0.730／0.801）⇒ 列舊口徑；<b>引用一律用全輪人口並寫出來</b>。§9.4 的 p1 = 0.7781 <b>精確重現</b>（{0:73, 1:198, 2:58} ⇒ 256/329）。</td></tr>
 </table>
 
+<h3>V8 · H2 的碼路徑（§13）：<b>seq-1 殘留假說被否證</b> ⇒ 驗證形狀共線成為唯一剩下的解釋<span class="tag tdone">本輪完成</span></h3>
+
+<p>V7 把 H2 的目標改寫成「防止跨 rep 累積污染」。V8 把 H2 推到底：先<b>讀碼確認前提成立</b>（<code>common/speculative.cpp</code> 的 alt-seed 真的把 B 的第一顆用 <code>common_batch_add(..., {1}, true)</code> 加進 <b>seq 0 同一個 <code>llama_batch</code></b>、並共用 seq 0 的 hidden row ⇒ 共批不是猜想），再用<b>唯一的自然實驗</b>（rgate 臂的逐輪 <code>alt_on</code>）量到落差，最後用一條<b>bench 側可修</b>的假說（seq-1 draft 殘留）把它否證。完整判詞 §13。</p>
+
+<table>
+<tr><th style="width:22%">環節</th><th>讀數／結論</th></tr>
+<tr><td>自然實驗（逐輪 <code>alt_on</code> 對照只在 <code>h_orcrgate40</code>，零 GPU）</td><td>第一步 <code>amA</code>：B-on <b>0.486</b>（18/37）vs B-off <b>0.845</b>（197/233），<b>Δ=−0.359、z=−5.04</b>；<code>amB</code> 0.054 vs 0.000（B 自己更差）。<b>逐 rep 同方向</b>（rep1 0.50/0.93、rep2 0.33/0.75、rep3 0.38/0.74、rep4 0.78/0.86、rep5 0.38/1.00）。配對 McNemar（B 剛開的那一輪配它的前一輪）：<b>5 對全部兩邊都好</b> ⇒ <b>B 剛開的那一輪沒壞</b>。段內位置效應：B-off 段內前 3 <b>0.619</b> → 後 3 <b>0.905</b>（7 段、長度中位 40）⇒ 帶<b>記憶</b>、約 40 輪收斂，<b>不是常數懲罰</b> ⇒ <b>拆批不足以修</b>。</td></tr>
+<tr><td>兩個混淆（判詞必須帶著它們讀）</td><td>① <b>選擇效應</b>：關 B 是「B 連敗 3 輪」觸發的；② <b>驗證形狀共線</b>：<code>alt_on=1</code> ⇒ <code>W_eff=2</code> ⇒ 6 列，<code>alt_on=0</code> ⇒ 3 列鏈 ⇒ 上面那格是<b>關聯不是因果</b>。</td></tr>
+<tr><td>可否證的 bench 側假說（已落地、預設關）</td><td>draft 側 mirror trim 只跑 <code>for (sq = 0; sq &lt; W_eff; ++sq)</code> ⇒ B 關著（<code>W_eff == 1</code>）時 <b>seq 1 的 cell 一個都不收</b>，殘留帶記憶（對上 ~40 輪收斂）。env 閘控 <code>CGC_SPEC_TREE_BRESET</code>：<code>W_eff == 1</code> 時補 <code>llama_memory_seq_rm(mem_dft, 1, P_base+m+1, -1)</code>。</td></tr>
+</table>
+
+<p class="small">跑前註冊的三條預測與實測（臂 <code>e3_rgate</code>／<code>e3_rgate_br</code>／<code>e3_k2_br</code>；預測登錄在 §13.4，判詞在 §13.6）。</p>
+
+<table>
+<tr><th style="width:6%">#</th><th style="width:28%">預測</th><th>實測</th><th style="width:11%">判</th></tr>
+<tr><td>①</td><td><code>e3_rgate</code>（對照）重現 0.486／0.619→0.905</td><td><b>0.412</b>（14/34）vs <b>0.806</b>（199/247）、B-off 段內 0.625→0.875（8 段、中位 40）</td><td><span class="tag tdone">PASS</span></td></tr>
+<tr><td>②</td><td><code>e3_rgate_br</code>（＋BRESET）B-on 往 ~0.845 回升、B-off 暫態消失</td><td>與對照 <b>逐位元相同</b>：oracle 逐輪 281 行／ACCEPT 5 行／SPEC-TREE 10 行三條頻道全同，逐 rep 與段內 0.625→0.875 <b>一字不動</b></td><td><span class="tag tkill">FAIL</span></td></tr>
+<tr><td>③</td><td><code>e3_k2_br</code>（B 恆開＋BRESET）一字不動</td><td>與 <code>e2_k2</code>／<code>k_k2b</code> <b>逐位元相同</b>（oracle 逐輪 338 行）</td><td><span class="tag tdone">PASS（如設計）</span></td></tr>
+</table>
+
+<div class="card r">
+<span class="k">判詞：殘留假說<b>死</b>（依跑前註冊的否證規則 —— ②不動且③不動 ⇒ 假說死）。</span>
+<code>W_eff == 1</code> 的 247 輪裡對 seq 1 補做的那一刪<b>不改變任何後續</b>（連 oracle 逐輪都逐位元相同）⇒ B-on 的 Δ=−0.394 <b>不是</b> seq-1 draft 殘留造成的。
+誠實邊界：逐位元相同允許兩種讀法 ——（a）那些位置上本來就沒有殘留；（b）有殘留但不在遮罩的作用範圍。<b>兩者都讓殘留無法解釋落差</b>（否證成立）；但「BRESET 真的刪掉了 cell」這裡<b>沒有正控</b>（<code>llama_memory_seq_rm</code> 的回傳值沒被記）⇒ 列為可選，不是判詞的前提。
+</div>
+
+<div class="card a">
+<span class="k">V8 的結論 —— 這就是「MTP-on 現況」的正確措辭。</span>
+H2 <b>沒有死</b>（機制存在、可量、可重現：B-on 的落差同號同量級、逐 rep 同方向），但<b>本線已無可做的實驗</b>：bench 側的 draft-memory 衛生只有兩條（C 的 rep-loop clear、BRESET），都用完了；
+剩下的解釋只有 <b>驗證形狀共線</b>（<code>W_eff</code> 1→2 ＝ verify 3 列→6 列）與 <b>共用 seq 0 hidden row</b>，而拆這兩個<b>都必須改 <code>common/speculative.cpp</code></b>（該檔他線正在編輯，本線不動）。
+⇒ <b>MTP-on 仍未轉正</b>：沒有任何一趟量到 on 勝過 off；t/s 一律不可引用，<b>本節不新增任何 t/s 讀數</b>。
+</div>
+
 <h2>3. 修復路徑 A–D：總表（用戶原表 ＋ 本輪覆核欄）</h2>
 
 <table>
@@ -298,7 +332,7 @@ X&lt;Y 現已<b>歸零</b>：<b>C 的 llama-bench.cpp rep-loop clear</b>（§10.
   <td>code（quick）</td>
   <td>0.253→部分回升（~12–15？）</td>
   <td><span class="tag tdone">已完成（衛生）</span></td>
-  <td><b>目標（消 X&lt;Y）已達成、機制仍如 V2</b>：X&lt;Y 已歸零——<b>C 的 llama-bench.cpp rep-loop clear</b>（§10.5：樹臂 X&lt;Y 10→0、failed 8→0）＋ <b>lineA 的 speculative.cpp draft() clamp</b>（<code>dp.n_past = kv_top+1</code>，本線直跑驗證 X&lt;Y=0、draft_ratio 0.43–0.53、emit 1.87–2.06 真在 draft）。兩者雙重保障，<b>確認了 V2 的預測</b>：X&lt;Y 消除只是 ≤2% 衛生收益、<b>未救回 0.253</b>，真槓桿仍在 <b>B′（H2/H3）</b>，成功判準是 <code>pos1/pos2_argmaxA</code> 回升而非 X&lt;Y 歸零。</td>
+  <td><b>目標（消 X&lt;Y）已達成、機制仍如 V2</b>：X&lt;Y 已歸零——<b>C 的 llama-bench.cpp rep-loop clear</b>（§10.5：樹臂 X&lt;Y 10→0、failed 8→0）＋ <b>lineA 的 speculative.cpp draft() clamp</b>（<code>dp.n_past = kv_top+1</code>，本線直跑驗證 X&lt;Y=0、draft_ratio 0.43–0.53、emit 1.87–2.06 真在 draft）。兩者雙重保障，<b>確認了 V2 的預測</b>：X&lt;Y 消除只是 ≤2% 衛生收益、<b>未救回 0.253</b>，真槓桿仍在 <b>B′（H2/H3）</b>，成功判準是 <code>pos1/pos2_argmaxA</code> 回升而非 X&lt;Y 歸零。<b>（V8 更新：bench 側路徑已收束 —— seq-1 殘留假說被否證，拆 H2 需動 <code>speculative.cpp</code>）</b></td>
 </tr>
 <tr>
   <td><b>C</b></td>
@@ -474,6 +508,7 @@ H1 的判準「X&lt;Y 歸零 且 每 rep 不再損失第 1 輪」已由 <b>C 的
 <tr><td>B′1</td><td>H3（逐 rep 漂移）可先用<b>既有日誌</b>判：若把 <code>pos1_argmaxA</code> 對「rep 內已走輪數」回歸後，樹 vs 鏈的殘差差 &lt; 5 pp ⇒ 主因是漂移，不在 batch 形狀</td></tr>
 <tr><td>B′2</td><td>H2 需一個新臂：<code>W_eff=2</code> 但兩鏈<b>不共批</b>；判準＝<code>pos2_argmaxA</code> 從 0.253 往 0.749 走（≥ +0.15 才算有效）</td></tr>
 <tr><td>B′3</td><td>若 B′2 成立 ⇒ 預期 <code>emit</code> ≥ 2.2、且不打壞 §9.7 的任何閘門</td></tr>
+<tr><td>B′4</td><td><b>bench 側已無可做（V8／§13.6）</b>：<code>CGC_SPEC_TREE_BRESET</code> 的 A/B 逐位元相同（treatment 與對照一字不動）⇒ seq-1 殘留假說死；拆驗證形狀共線（<code>W_eff</code> 恆 2、B 走獨立 draft step）<b>只能改 <code>speculative.cpp</code></b></td></tr>
 </table>
 
 <h2>7. 風險與陷阱（動手前務必遵守）</h2>
@@ -485,7 +520,8 @@ H1 的判準「X&lt;Y 歸零 且 每 rep 不再損失第 1 輪」已由 <b>C 的
 <tr><td>bash 3.2 ＋ <code>set -u</code></td><td><code>local tag="$1" out="$W/$tag"</code> 會 unbound variable ⇒ 拆兩行；管線要用 <code>${PIPESTATUS[0]}</code> 保 rc；背景行程必須用 BACKGROUND；macOS 無 <code>timeout</code></td></tr>
 <tr><td>盒</td><td>16 GB、模型 12.7 GB；WorkBuddy 常佔 2.6 GB；<b>盒閘的可回收量不是 GPU 可配置性的預測量</b></td></tr>
 <tr><td>成對比較</td><td>任何 on/off 配對<b>不可</b>用「逐位元相同」當判準（閘門改播種列 ⇒ 軌跡分歧）；必須多 rep、ABBA、統計式</td></tr>
-<tr><td>不可引用的讀數</td><td><code>p_chain</code>/<code>p_chain2</code> 的 9.47／9.50（<code>drafted=0</code> 簽名：<code>emit≡1.0</code>、<code>rounds≡n_gen</code>）；<code>rs0</code> 的 ×0.592／×0.503（已被 <code>caliber_certify</code> REFUSED）；三臂的絕對 t/s</td></tr>
+<tr><td>不可引用的讀數</td><td><code>p_chain</code>/<code>p_chain2</code> 的 9.47／9.50（<code>drafted=0</code> 簽名：<code>emit≡1.0</code>、<code>rounds≡n_gen</code>）；<code>rs0</code> 的 ×0.592／×0.503（已被 <code>caliber_certify</code> REFUSED）；<code>rs1</code>（post-B-fix 配對，本輪 lineA）ON 7.838／OFF 8.415 ＝ <b>×0.931</b>（X&lt;Y=0、spec draft 5/5 全恢復；兩臂 swap 污染 ⇒ <code>caliber_certify</code> 亦 REFUSED，詳看板 C16）；三臂的絕對 t/s</td></tr>
+<tr><td>env allowlist（<b>假讀數會以 rc=0 進來</b>）</td><td>新開關必須進 <code>scripts/run_server.sh</code> 的 env allowlist，否則量到的是 <b>profile 預設</b>，而那一趟<b>仍然 rc=0</b>。2026-10-06 <code>CGC_SPEC_TREE_BRESET</code> 第一次起跑就中（harness 的 provenance 閘以 <code>rc=1</code> 擋下，才沒把 profile 預設當成 treatment）⇒ 判準：<b>臂的 env 記錄裡必須出現那個鍵</b>，不是「跑完了」</td></tr>
 <tr><td>決策面</td><td><code>board_pipeline.sh</code>（重建模式）<b>不跑</b> <code>mindmap_subgoal_sync.py --apply</code> ⇒ 只改 YAML <code>dispositions:</code> 不會到 <code>mindmap.json</code>／<code>index.html</code>／brief。正確鏈＝apply → <code>mindmap_build</code> → <code>mindmap_brief_build</code>。<b>尚未修</b></td></tr>
 <tr><td>no-retroactive 政策</td><td>舊產物無 <code>spec_draft</code> 欄 ⇒ 新閘門對它們靜默；<code>p_chain</code>/<code>p_chain2</code> 已在 12:01 自動回寫到決策面（記成一般 run、<code>result.tg ≈ 9.4</code>）⇒ 要清掉需<b>明示</b>回填</td></tr>
 </table>
@@ -509,8 +545,9 @@ H1 的判準「X&lt;Y 歸零 且 每 rep 不再損失第 1 輪」已由 <b>C 的
 <tr><td><code>Backup/spec_tree/f1b_account.py</code></td><td>逐臂 ms/round、打平線、差距（§7.6）</td></tr>
 <tr><td><code>Backup/spec_tree/f1f2_diag/{g_orc_ctrl,h_orcrgate40,o_off,o_off2}/…stderr.log</code></td><td>本輪 V1–V4 的原始日誌（329 / 270 / 254 / 254 輪）</td></tr>
 <tr><td><code>Backup/spec_tree/f1f2_diag/run_diag.sh</code></td><td>臂驅動器；k 軸臂 <code>k_k1/k_k1b/k_k2/k_k2b/o_off4/o_off5</code> 已就位</td></tr>
-<tr><td><code>Backup/spec_tree/f1f2_diag/run_diag_e2.sh</code></td><td><b>補跑驅動器（§12.2）</b>：起跑前等 Metal 餘裕（<code>ceiling − pool − wired − reserve &gt; 20 MiB</code>）、<code>refused_preflight=true</code> 也算沒起跑並重試；臂 <code>e2_off/e2_k2/e2_k1/e2_k1b/e2_k2b/e2_off2</code></td></tr>
+<tr><td><code>Backup/spec_tree/f1f2_diag/run_diag_e2.sh</code></td><td><b>補跑驅動器（§12.2）</b>：起跑前等 Metal 餘裕（<code>ceiling − pool − wired − reserve &gt; 20 MiB</code>）、<code>refused_preflight=true</code> 也算沒起跑並重試；臂 <code>e2_off/e2_k2/e2_k1/e2_k1b/e2_k2b/e2_off2</code>；H2 臂 <code>e3_rgate/e3_rgate_br/e3_k2_br</code></td></tr>
 <tr><td><code>Backup/spec_tree/e_k1_verdict.py</code></td><td><b>E 判詞（v2，§12）</b>：三位置找 log（per-arm／<code>.json.logs/live</code>／sibling）、拒跑單列一欄、E1／E2／E3 ＋ B′ 逐 rep 判別</td></tr>
+<tr><td><code>Backup/spec_tree/h2_strata.py</code></td><td><b>H2 判詞（§13.2／§13.6，零 GPU）</b>：把逐輪 <code>CGC-ORC-ROUND</code> 分成 B-on／B-off 兩層（兩比例 z 檢定）、配對 McNemar（B-on 輪配前一輪）、段內位置效應（前 3 vs 後 3）；只讀日誌</td></tr>
 <tr><td><code>Backup/spec_tree/bprime_h3.py</code></td><td><b>B′ 判詞（§11）</b>：逐 rep 的 <code>pos1 amA</code>／A-path 第二步命中／<code>amB</code>（零 GPU，只讀日誌）</td></tr>
 </table>
 
@@ -534,15 +571,16 @@ grep "CGC-SPEC-TREE-GATE" Backup/spec_tree/f1f2_diag/h_orcrgate40.stderr.log   #
 
 <div class="card b">
 <span class="k">本檔的界線。</span>
-本白皮書<b>不 commit</b>（commit 由線路自己發）。<b>§2 V6 例外</b>：C 的修復已落地 <code>src/llama.cpp/tools/llama-bench/llama-bench.cpp</code>（rep 迴圈 +3 行，備份 <code>/tmp/llama-bench.pre_C.cpp</code>），並以 CPU <code>-ngl 0</code> 前後對照驗證（X&lt;Y 10→0）。<br>
+本檔自 <code>bcdf222ee</code> 起<b>已進版控</b>（本線）；V8 與 lineA 的 <code>rs1</code> 一行更新在該 commit 之後（尚未 commit）。<b>§2 V6 例外</b>：C 的修復已落地 <code>src/llama.cpp/tools/llama-bench/llama-bench.cpp</code>（rep 迴圈 +3 行，備份 <code>/tmp/llama-bench.pre_C.cpp</code>），並以 CPU <code>-ngl 0</code> 前後對照驗證（X&lt;Y 10→0）。<br>
 <b>V7 例外</b>：E 的補跑 session（<code>e2_*</code>）<b>有新的 GPU 讀數</b>，但依 §12.7 的噪音底（同機制重複 15–43%）<b>全部不可引用</b>（機制欄位可引用、t/s 不可）。
+<b>V8 例外</b>：<code>e3_rgate_br</code>／<code>e3_k2_br</code> 是新 GPU 趟，但判詞只用<b>機制頻道</b>（逐輪 <code>CGC-ORC-ROUND</code>／<code>CGC-BENCH-ACCEPT</code>／<code>CGC-SPEC-TREE</code>），而且是「與對照逐位元相同」這種比對 ⇒ <b>零 t/s 引用</b>。
 所有量測值皆可從 §9 的既有日誌重算；<b>標為「用戶口徑」者（C 的 ~98%）沒有本文可查的一手來源</b>，已在 §3/§4.C 明確標示。
-⚠ 工作樹目前 dirty（含本線與他線的改動），HEAD 仍 <code>1aac14e93</code>。
+⚠ 工作樹仍 dirty（含本線與他線的改動）；HEAD <b>不寫死</b>（<code>git rev-parse --short HEAD</code>）。
 </div>
 
 <footer>
 MTP-on / spec-tree 修復路徑 A–D 方案規劃白皮書 · 2026-10-06 ·
-基礎判詞：<code>Backup/spec_tree/F1F2F3_IMPLEMENT_2026-10-06.md</code>（§6–§12：§9.9 F1c／§10 C／§11 B′／§12 E；<b>不寫行數</b>——它會隨每次 append 漂移）·
+基礎判詞：<code>Backup/spec_tree/F1F2F3_IMPLEMENT_2026-10-06.md</code>（§6–§13：§9.9 F1c／§10 C／§11 B′／§12 E／§13 H2 碼路徑，其中 §13.6 ＝ BRESET 否證；<b>不寫行數</b>——它會隨每次 append 漂移）·
 相關：<code>K_INVARIANT_COST_CARD_2026-10-05.md</code>、<code>SPECTREE_MTPON_HITRATE_VERDICT_2026-10-06.md</code>、<code>T1W2_ACOLLAPSE_ROOTCAUSE_2026-10-06.md</code>
 </footer>
 
