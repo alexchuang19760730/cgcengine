@@ -440,6 +440,91 @@ def parse_rows(stdout: str) -> list[dict]:
                 start = -1
     return rows
 
+# 【CGC 2026-10-06】spec 臂的 draft 健康度：逐 rep 的 `drafted`（＝送進 verify 的 draft 顆數）。
+#
+# WHY：`p_chain`（2026-10-06 12:01）第 1–4 個 rep 是 `drafted=0 rounds=128 emit=1.0000` —— draft 一顆
+# 都沒吐，那幾輪量的是**純解碼**，而它的 t/s（9.47／9.50）與健康的 tg 讀數長得一模一樣，差一點被
+# 當成「MTP-on 純鏈」引用。判定要與 `instrument_report` 同一個位置（產物寫出來的那一刻），而且
+# **逐 rep**：「一臂 5 輪裡死了 4 輪」不是雜訊，是這一臂沒有持續量到 spec 路徑。
+#
+# 為什麼是逐臂在 matrix 裡判而不是拿成對 log 事後掃：一次 `bench` 可以帶很多臂，牠們的 ACCEPT 行
+# 全寫進同一份 log ⇒ 事後掃無法歸屬到臂。這裡手上正好握著**那一臂自己的** stderr。
+_SPEC_MARK_RE = re.compile(r"llama-bench: \[spec\]")
+_ACCEPT_RE = re.compile(
+    r"CGC-BENCH-ACCEPT phase=(?P<phase>\w+) rounds=(?P<rounds>\d+) "
+    r"drafted=(?P<drafted>\d+) acc_drafts=(?P<acc>\d+)")
+_EMIT_RE = re.compile(r"emit_per_round=([0-9.]+|NA)")
+
+
+def spec_draft_health(stderr_text: str) -> dict:
+    """spec 臂逐 rep 的 draft 健康度 ⇒ 寫進產物（`spec_draft`）並在 stdout 留一行。
+
+    * `NOT_SPEC` —— 不是 spec 路徑（沒有 spec 標記、也沒有 ACCEPT 行）⇒ 本閘與它無關。
+    * `OK`       —— 有 spec、而且**每一輪** rep 的 `drafted` > 0。
+    * `INVALID`  —— 有 spec 但至少一輪 rep `drafted == 0`（draft 死亡 ⇒ 那一輪量的是純解碼），
+                    或 spec 開了卻**一行 ACCEPT 都沒有**（拿不出逐輪帳 ⇒ 不可引用）。
+
+    `dead` 保留是哪幾輪與那些輪的 `rounds`／`emit`：理由必須可查，不能只留一句「無效」。
+    """
+    reps, dead = [], []
+    for ln in (stderr_text or "").splitlines():
+        m = _ACCEPT_RE.search(ln)
+        if not m:
+            continue
+        em = _EMIT_RE.search(ln)
+        rec = {"phase": m.group("phase"), "rounds": int(m.group("rounds")),
+               "drafted": int(m.group("drafted")), "acc_drafts": int(m.group("acc")),
+               "emit_per_round": em.group(1) if em else None}
+        reps.append(rec)
+        if rec["drafted"] == 0:
+            dead.append(rec)
+    if dead:
+        which = "; ".join("rep%d(phase=%s rounds=%d emit=%s)"
+                          % (i, r["phase"], r["rounds"], r["emit_per_round"])
+                          for i, r in enumerate(reps, 1) if r["drafted"] == 0)
+        return {"state": "INVALID", "ok": False, "n_reps": len(reps), "reps": reps, "dead": dead,
+                "why": ("%d/%d 輪 rep 的 draft 死亡（drafted=0 ⇒ 那幾輪量的是純解碼，不是 spec）：%s"
+                        % (len(dead), len(reps), which))}
+    if not reps:
+        if _SPEC_MARK_RE.search(stderr_text or ""):
+            return {"state": "INVALID", "ok": False, "n_reps": 0, "reps": [], "dead": [],
+                    "why": ("spec 已開（llama-bench 的 `[spec]` 標記在）但沒有任何 "
+                            "CGC-BENCH-ACCEPT 行 ⇒ 拿不出逐輪帳 ⇒ 不可引用")}
+        return {"state": "NOT_SPEC", "ok": True, "n_reps": 0, "reps": [], "dead": [],
+                "why": "不是 spec 路徑（沒有 spec 標記、也沒有 ACCEPT 行）⇒ 本閘與它無關"}
+    return {"state": "OK", "ok": True, "n_reps": len(reps), "reps": reps, "dead": [],
+            "why": ("%d/%d 輪 rep 的 drafted>0（最小 drafted=%d）"
+                    % (len(reps), len(reps), min(r["drafted"] for r in reps)))}
+
+
+# [CGC 2026-10-06] 狀態詞彙與「死沒死」的判準放在**產物端唯一一份**，三個消費端都呼叫這裡：
+#   * `harness bench` 拒收（rc=6）        —— scripts/check/harness.py  `_spec_draft_gate`
+#   * `experiment_sync.sync_gate` 拒寫     —— code 6（寫進決策面那一步，不經 harness 也擋）
+#   * `experiment_sync._arm_on_board`      —— 不得上榜
+# 為什麼要收斂（2026-10-06 實測到的不一致）：三者原本各寫一份，harness 是 **fail-closed**
+# （`state in ("OK","NOT_SPEC")`，其餘一律拒），而後兩者只擋**字面上的 "INVALID"** ⇒ 只要狀態
+# 是 NO_STATE／打錯字／未來新增的值，sync 與排行榜就會**放行**一個 harness 會拒的臂。
+# 判準的語意：`drafted=0` 的那一輪量的是純解碼（emit ≡ 1.0），它的 t/s 與健康的 tg 長得一樣。
+SPEC_DRAFT_OK_STATES = ("OK", "NOT_SPEC")
+
+
+def spec_draft_state(arm) -> tuple:
+    """回傳 (state, present)。`present=False` ＝ 舊產物（閘門存在之前）⇒ 不回溯。"""
+    sd = (arm or {}).get("spec_draft")
+    if not isinstance(sd, dict) or not sd:
+        return "NO_FIELD", False
+    return str(sd.get("state") or "NO_STATE"), True
+
+
+def spec_draft_dead(arm) -> bool:
+    """True ⇒ 這一臂的 spec draft 死過（或狀態不明）⇒ 不可引用／不得上榜／不得 sync。
+
+    **fail-closed**：狀態不是 `OK`／`NOT_SPEC` 就是死（未知狀態不可當健康，含 `NO_STATE`）。
+    缺欄位（舊產物）⇒ False（不回溯 —— 缺席不等於有問題）。
+    """
+    state, present = spec_draft_state(arm)
+    return present and state not in SPEC_DRAFT_OK_STATES
+
 
 def harvest_bench_stats(stderr_text: str) -> dict:
     """Reuse decode_sweep's regexes so both harnesses report the engine's own counters."""
@@ -1021,6 +1106,7 @@ def run_arm(tag: str, profile: str, extra_env: dict[str, str], args, res: dict) 
             print(f"     堆疊 : {sm.get('file') or sm.get('why')}", flush=True)
 
     stats = harvest_bench_stats(serr)
+    spec_draft = spec_draft_health(serr)
     # [CGC 2026-09-29] 量具綁定（設了開關 ≠ 綁上了圖）：寫進產物，並在 stdout 留一行可見的判定。
     # 需求由臂自己的 env 推（`CGC_MISS_MASK_DBG` ⇒ 地圖必須填起來 …），可用 --require-instrument 補。
     instrument = instrument_report(
@@ -1091,6 +1177,9 @@ def run_arm(tag: str, profile: str, extra_env: dict[str, str], args, res: dict) 
                              "last_progress_line": stream.get("last_progress_line"),
                              "n_stderr_lines": stream.get("n_stderr_lines")}
                             if (stream.get("timed_out") or stream.get("stalls")) else None),
+           # spec 健康度（見 spec_draft_health）：任一轮 rep draft 死亡（drafted=0）⇒ 那一輪
+           # 量的是純解碼，t/s 不是 spec 的 ⇒ 這一臂不可引用（harness 的第六道閘門會拒收）。
+           "spec_draft": spec_draft,
            # 量具綁定判定（見 instrument_report）：UNBOUND ⇒ 這一輪的計數器不可引用。
            "instrument": instrument,
            "require_instrument": [x.strip() for x in
@@ -1123,6 +1212,8 @@ def run_arm(tag: str, profile: str, extra_env: dict[str, str], args, res: dict) 
           f"-> end swap={mend.get('swap_used_mb')} MiB wired={mend.get('pages_wired_mb')} MiB "  
           f"worst_swap={mw.get('max_swap_mb')} min_free={mw.get('min_free_mb')} procs={mend.get('llama_procs')}", flush=True)
     print(f"  attribution: {attr.get('verdict')}  -- {attr.get('why')}", flush=True)
+    sd_mark = "✅" if spec_draft["ok"] else "⛔"
+    print(f"  {sd_mark} spec draft {spec_draft['state']}  -- {spec_draft['why']}", flush=True)
     ibv = out.get("instrument") or {}
     ib_mark = {"BOUND": "✅", "N/A": "·"}.get(ibv.get("verdict"), "⛔")
     print(f"  instrument: {ib_mark} {ibv.get('verdict')}  -- {ibv.get('why')}", flush=True)
@@ -1492,7 +1583,54 @@ def selftest() -> int:
     finally:
         shutil.rmtree(bd, ignore_errors=True)
     print(f"budget-gate selftest: {4 - bgbad}/4 cases passed")
-    return 0 if bad + ebad + sbad + abad + dbad + gbad + pbad + sbad2 + bgbad == 0 else 1
+
+    # [CGC 2026-10-06] 第六道閘門的判準只有一份（本檔 `spec_draft_dead`），但有三個消費端：
+    #   * harness bench 拒收（rc=6） —— harness._spec_draft_gate
+    #   * sync 拒寫（code 6）        —— experiment_sync.sync_gate
+    #   * 排行榜不得上榜（R7）       —— experiment_sync._arm_on_board
+    # 三者原本各寫一份，而 2026-10-06 實測到不一致：harness 是 fail-closed（state 只認
+    # OK／NOT_SPEC），sync 與上榜卻只擋字面上的 "INVALID" ⇒ NO_STATE／打錯字／未來新增的狀態會
+    # **穿過 sync 寫進決策面**（sync 才是寫進決策面那一步；harness 的 rc=6 只擋經由 harness 的
+    # 那條路）。這個 fixture 逐格要求「三個消費端 == 判準本身」——任何一端自己長出第二份判準，
+    # 這裡就紅。它也釘住一條語意：產物裡的 `spec_draft_gate` 是 harness 依同一判準**算出來後
+    # 寫下**的記錄（output），三個消費端都不得拿它當 input，否則「舊記錄較嚴」的臂永遠翻不了身。
+    scbad = 0
+    scases = [("OK", {"state": "OK"}, False),
+              ("NOT_SPEC", {"state": "NOT_SPEC"}, False),
+              ("INVALID", {"state": "INVALID"}, True),
+              ("NO_STATE（缺 state 值）", {}, True),
+              ("打錯字（Dead?）", {"state": "Dead?"}, True),
+              ("state 空字串", {"state": ""}, True),
+              ("缺 spec_draft 欄（舊產物 ⇒ 不回溯）", None, False),
+              ("舊記錄較嚴（state=OK、gate.ok=False）", {"state": "OK"}, False)]
+    import harness as _H
+    import experiment_sync as _ES
+    print("\nspec-draft 死亡判準：三個消費端必須與 spec_draft_dead 逐格相同")
+    for name, sd, must in scases:
+        arm = {"tag": "fixture", "rows": [{"n_gen": 128, "avg_ts": 9.9}]}
+        if sd is not None:
+            arm["spec_draft"] = dict(sd, why="fixture")
+            arm["spec_draft_gate"] = {"ok": False}   # 記錄（output）：三個消費端都不得讀它
+        m = spec_draft_dead(arm)
+        h = not _H._spec_draft_gate([arm])["ok"]
+        with tempfile.TemporaryDirectory() as td:
+            fp = os.path.join(td, "fixture.json")
+            with open(fp, "w", encoding="utf-8") as f:
+                json.dump([arm], f)
+            # 成對閘（code 5）排在 draft 閘（code 6）之前 ⇒ 要走到 draft 閘就得給一份 sibling log
+            with open(os.path.join(td, "fixture.stderr.log"), "w", encoding="utf-8") as f:
+                f.write("llama-bench: [spec] fixture\n")
+            g = _ES.sync_gate(fp)
+        s = g.get("code") == 6
+        ob_ok, ob_why = _ES._arm_on_board(arm, None)
+        ob = (not ob_ok) and ("spec draft" in str(ob_why))    # 只認「因這條判準被擋」
+        ok = (m == h == s == ob == must)
+        if not ok:
+            scbad += 1
+        print("  %s [%s]: matrix=%s harness=%s sync_gate(code=%s)=%s on_board=%s（want %s）"
+              % ("ok  " if ok else "FAIL", name, m, h, g.get("code"), s, ob, must))
+    print(f"spec-draft rule consistency selftest: {len(scases) - scbad}/{len(scases)} cases passed")
+    return 0 if bad + ebad + sbad + abad + dbad + gbad + pbad + sbad2 + bgbad + scbad == 0 else 1
 
 
 def main() -> int:

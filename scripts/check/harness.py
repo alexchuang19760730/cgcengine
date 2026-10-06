@@ -796,6 +796,22 @@ def selftest() -> int:
     expect("verify：沒有 matrix 產物（例如 gate 在跑任何 GPU 前就擋下）⇒ 不拒收",
            (gv5["ok"], gv5["checked"]), (True, 0))
 
+    # 第六道閘門：spec 臂的 draft 死亡（逐 rep drafted=0）——判準與理由都要能離線重讀。
+    gd1 = _spec_draft_gate([{"tag": "dead", "spec_draft": {
+        "state": "INVALID", "n_reps": 5,
+        "dead": [{"phase": "timed", "rounds": 128, "drafted": 0, "emit_per_round": "1.0000"}],
+        "why": "4/5 輪 rep 的 draft 死亡"}}])
+    expect("spec 健康閘：任一 rep drafted=0 ⇒ 拒收", gd1["ok"], False)
+    gd2 = _spec_draft_gate([{"tag": "ok", "spec_draft": {
+        "state": "OK", "n_reps": 5, "dead": [], "why": "5/5 輪 rep 的 drafted>0（最小 drafted=98）"}}])
+    expect("spec 健康閘：每一輪 drafted>0 ⇒ 放行", gd2["ok"], True)
+    gd3 = _spec_draft_gate([{"tag": "off", "spec_draft": {
+        "state": "NOT_SPEC", "n_reps": 0, "dead": [], "why": "不是 spec 路徑"}}])
+    expect("spec 健康閘：非 spec 臂（off）⇒ 與它無關，放行", gd3["ok"], True)
+    gd4 = _spec_draft_gate([{"tag": "old", "rows": [], "avg_ts": 99.9}])
+    expect("spec 健康閘：舊產物沒有 spec_draft 欄 ⇒ 不回溯（但記錄 N/A）",
+           (gd4["ok"], gd4["checked"], gd4["arms"][0]["verdict"]), (True, 0, "N/A"))
+
     # 成對閘（兩扇門共用同一個判準：只有「產物旁邊有沒有 log」）
     # ⚠ 這個函式後面還有 `import tempfile`（:802/:863），所以 `tempfile` 對整個函式而言是區域名；
     # 這裡要先自己匯入一次，否則會 UnboundLocalError（2026-09-29 自己踩到）。
@@ -1294,6 +1310,58 @@ def _instrument_precheck(ibind, resolve_fn, specs, require) -> tuple:
 _INSTRUMENT_RULE = ("每一臂的 instrument verdict 必須是 BOUND 或 N/A；"
                     "UNBOUND／缺欄位 ⇒ 拒寫進決策面")
 
+# 【CGC 2026-10-06】第六道閘門：spec 臂的 draft 有沒有死。
+# 判準資料在產物裡（matrix 的 `spec_draft`，逐臂讀自己那份 stderr，所以歸屬不會錯）。
+_SPEC_DRAFT_RULE = ("spec 臂的每一輪 rep 的 CGC-BENCH-ACCEPT `drafted` 必須 > 0；"
+                    "任一轮 drafted==0（draft 死亡）或 spec 開了卻沒有 ACCEPT 行 "
+                    "⇒ 拒收（無豁免）")
+
+
+_SPEC_DRAFT_MOD = None
+
+
+def _spec_draft_dead(arm) -> bool:
+    """[CGC 2026-10-06] 判準的唯一出處在產物端（`llama_bench_matrix.spec_draft_dead`）。
+
+    這裡刻意**不做**本地 fallback 複本：三個消費端各留一份就是先前不一致的來源。
+    載入失敗就讓它炸（可見），而不是靜默換一套判準。
+    """
+    global _SPEC_DRAFT_MOD
+    if _SPEC_DRAFT_MOD is None:
+        _SPEC_DRAFT_MOD = _load("llama_bench_matrix", "llama_bench_matrix.py")
+    return _SPEC_DRAFT_MOD.spec_draft_dead(arm)
+
+
+def _spec_draft_gate(data) -> dict:
+    """第六道閘門：spec 臂的 **draft 有沒有死**（逐 rep `drafted=0`）。
+
+    WHY（2026-10-06 `p_chain`／`p_chain2`）：`CGC_SPEC_TREE=0` 的純鏈臂第 1–4 個 rep 全是
+    `drafted=0 rounds=128 emit_per_round=1.0000` —— draft 一顆都沒吐，那幾輪量的是**純解碼**，
+    而它的 t/s（9.47／9.50）與健康的 tg 讀數長得一模一樣，差一點被當成「MTP-on 純鏈」引用。
+
+    `drafted=0` 不是雜訊而是**簽名**：那一輪的 emit ≡ 1.0（= 純解碼）、rounds ≡ n_gen、
+    draft_ratio ≡ 0。判定放在跑後、寫進產物（`spec_draft_gate`），並**拒收**（rc=6）。
+    與成對 log 閘同一類：**沒有豁免** —— 要嘛修掉 draft 為什麼死，要嘛這一場不算數
+    （它沒有量到你以為的那件事）。舊產物（沒有 `spec_draft` 欄）不回溯，只記錄。
+    """
+    arms, bad, checked = [], [], 0
+    for a in data or []:
+        tag = (a or {}).get("tag")
+        d = (a or {}).get("spec_draft")
+        if not isinstance(d, dict) or not d:
+            arms.append({"tag": tag, "ok": True, "verdict": "N/A", "dead": [], "n_reps": 0,
+                         "why": "產物沒有 spec_draft 欄（閘門存在之前的產物，或這一臂不經 spec 路徑）"
+                                "⇒ 不回溯"})
+            continue
+        state = str(d.get("state") or "NO_STATE")
+        ok = not _spec_draft_dead(a)          # 判準共用（fail-closed），見 _spec_draft_dead
+        checked += 1
+        arms.append({"tag": tag, "ok": ok, "verdict": state, "why": d.get("why") or "",
+                     "dead": d.get("dead") or [], "n_reps": int(d.get("n_reps") or 0)})
+        if not ok:
+            bad.append(tag)
+    return {"ok": not bad, "arms": arms, "bad": bad, "rule": _SPEC_DRAFT_RULE, "checked": checked}
+
 
 def _instrument_gate(ibind, data, waive_reason=None) -> dict:
     """第五道閘門的**跑後那一半**：這一輪的量具到底有沒有動（決定這份產物能不能進決策面）。
@@ -1593,15 +1661,21 @@ def cmd_bench(args) -> int:
     # 這條不行，因為沒有 log 時你不知道自己錯過了什麼。
     pair_gate = ibind.pair_status(args.json_path)
     ib_gate = _instrument_gate(ibind, data, waive_reason=waive_ib)
+    # 【CGC 2026-10-06】第六道閘門：spec 臂的 draft 死沒死（判定來自產物裡的 `spec_draft`）。
+    spec_draft_gate = _spec_draft_gate(data)
     for arm in data:
         arm["instrument_gate"] = ib_gate
         arm["pair_gate"] = pair_gate
+        arm["spec_draft_gate"] = spec_draft_gate
     Path(args.json_path).write_text(json.dumps(data, indent=2, ensure_ascii=False))
     print(f"\n產物已寫入 {args.json_path}（每臂含 base_check + sys_before/after + 系統指標）\n", flush=True)
     for d in ib_gate["arms"]:
         mark = "✅" if d["ok"] else "⛔"
         print(f"  {mark} 量具 {d['verdict']:10s} {d['tag']}  {d['why']}", flush=True)
     print(f"  {'✅' if pair_gate['paired'] else '⛔'} 成對 log  {pair_gate['why']}", flush=True)
+    for d in spec_draft_gate["arms"]:
+        print(f"  {'✅' if d['ok'] else '⛔'} spec draft {d['verdict']:10s} {d['tag']}  {d['why']}",
+              flush=True)
     _ib_bad = (not ib_gate["ok"]) and not waive_ib
     if _ib_bad:
         print("!! 量具閘 FAIL — **拒寫**：這份產物不會進 mindmap（決策面）。", flush=True)
@@ -1619,6 +1693,17 @@ def cmd_bench(args) -> int:
         print("   補救：確認 llama_bench_matrix 的成對 log 寫得進去，"
               "或用 scripts/check/instrument_binding.py --pair-backfill 把真的那一份登記回來。", flush=True)
         return 5
+    if not spec_draft_gate["ok"]:
+        print("!! spec 健康閘 FAIL — **拒收**：至少一臂有 rep 的 draft 死亡"
+              "（drafted=0 ⇒ 那一輪量的是純解碼，不是 spec）。", flush=True)
+        for d in spec_draft_gate["arms"]:
+            if not d["ok"]:
+                print(f"    ⛔ {d['tag']}（{d['verdict']}）：{d['why']}", flush=True)
+        print("   理由：draft 死掉那一輪的 emit ≡ 1.0（就是純解碼），它的 t/s 與健康的 tg 讀數"
+              "長得一樣，但量的不是你以為的那件事。", flush=True)
+        print("   修法（不是豁免）：先修 draft 為什麼死（例：CGC_SPEC_TREE=0 的純鏈缺 draft-ctx "
+              "mirror trim），再重跑；這一場的 t/s 不上決策面。", flush=True)
+        return 6
     if _ib_bad:
         return 4
 
@@ -1653,6 +1738,8 @@ def cmd_bench(args) -> int:
         print(f"  thermal: launch={th.get('launch')} worst={th.get('worst')}")
         print(_swap_line(arm.get("memory", {})))
         print(f"  attribution: {arm.get('attribution')}")
+    # 0 = 正常；2 = 跑前閘拒跑；3 = 等不到 window；4 = 量具 UNBOUND；5 = 缺成對 log；
+    # 6 = spec 健康閘 FAIL（draft 死亡／拿不出逐輪帳）——4/5/6 皆拒收（不上決策面）。
     return 0
 
 

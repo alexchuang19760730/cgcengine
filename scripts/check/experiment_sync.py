@@ -167,6 +167,13 @@ class SyncRefused(Exception):
         super().__init__(gate.get("why") or "同步被量具閘擋下")
 
 
+def _spec_draft_dead(arm) -> bool:
+    """[CGC 2026-10-06] spec draft 死亡的判準——唯一出處在產物端（llama_bench_matrix）。
+    匯入失敗**不放行**（fail-closed）：判不了不等於健康。"""
+    import llama_bench_matrix as _lbm
+    return _lbm.spec_draft_dead(arm)
+
+
 def sync_gate(path, waive_reason=None) -> dict:
     """第三扇門：**同步本身**也要過量具閘與成對閘。
 
@@ -179,6 +186,8 @@ def sync_gate(path, waive_reason=None) -> dict:
 
     兩個半邊的策略差別是刻意的，與 harness 兩扇門一致：
     * **成對**不可豁免：沒有 log 時，你不知道自己錯過了什麼。
+    * **spec draft 死亡**（逐 rep `drafted=0`）不可豁免：那一輪量的是純解碼，不是 spec；
+      它的 t/s 與健康的 tg 讀數長得一樣，留下來只會被誤引用（2026-10-06 `p_chain`）。
     * **UNBOUND 可豁免**（理由記進產物）：那是「我知道這輪儀器壞了，還是要留下這一筆」。
       豁免只讓它進得來，不讓它變乾淨 —— `merge_run`／`mindmap_void_check` 照樣把它標成不可引用。
     """
@@ -210,6 +219,27 @@ def sync_gate(path, waive_reason=None) -> dict:
     if pair and not pair.get("paired", True):
         return {"ok": False, "code": 5, "pair": pair, "arms": arms, "waived": waive_reason,
                 "why": pair.get("why") or "缺成對的 stderr log"}
+    # 【CGC 2026-10-06】第六道閘門延伸到 sync：spec 臂的 draft 死過（逐 rep drafted=0）⇒ 拒寫。
+    # 與成對閘同類：**沒有豁免** —— draft 死亡的那一輪量的是純解碼（emit ≡ 1.0），
+    # 它的 t/s 與健康的 tg 讀數長得一樣，但量的不是 spec 路徑。`harness bench` 的 rc=6 只擋住
+    # 經由 harness 的那條路；手動 `sync` 不經過它，而 sync 才是寫進決策面那一步。
+    _dead = []
+    for arm in arm_list:
+        if not isinstance(arm, dict):
+            continue
+        # [CGC 2026-10-06] 與 harness／排行榜共用**同一個**判準（fail-closed）。先前這裡只擋
+        # 字面上的 "INVALID" ⇒ NO_STATE／打錯字會穿過 sync 直接寫進決策面。
+        # ⚠ 刻意**不**採用產物裡的 `spec_draft_gate`：那是 harness 依同一條判準**算出來後寫下**的
+        # 記錄（output），拿它當 input 會讓「舊記錄較嚴」的臂永遠翻不了身，而判準的唯一出處是
+        # `spec_draft.state`。三個消費端因此逐格相同。
+        if _spec_draft_dead(arm):
+            _dead.append(arm)
+    if _dead:
+        return {"ok": False, "code": 6, "pair": pair, "arms": arms, "waived": waive_reason,
+                "why": "spec draft 死亡（drafted=0 ⇒ 那一輪量的是純解碼，不是 spec）：%s"
+                       % "；".join("%s（%s）" % (a.get("tag"), ((a.get("spec_draft") or {}).get("why")
+                                                                 or "見 spec_draft_gate"))
+                                   for a in _dead[:3])}
     if unbound and not waive_reason:
         return {"ok": False, "code": 4, "pair": pair, "arms": arms, "waived": None,
                 "why": "量具 UNBOUND：%s" % "；".join("%s（%s）" % (a["tag"], a["why"])
@@ -654,6 +684,10 @@ def _arm_on_board(a: dict, path=None) -> tuple:
         return False, "R5 量具臂 %s" % "/".join(sorted(_void))
     if _unver:
         return False, "R6 輸出未見證臂 %s" % "/".join(sorted(_unver))
+    # 【CGC 2026-10-06】第六條：spec 臂的 draft 死過 ⇒ 不得上榜。與 R5／R6 同一個理由只問**臂自己的
+    # 產物欄位**（不看檔）：draft 死亡那一輪的 t/s 是純解碼的，不該因為「這個檔判不了」而爬上榜首。
+    if _spec_draft_dead(a):
+        return False, "spec draft 死亡"
     att = a.get("attribution")
     if path is not None:
         try:
@@ -909,6 +943,9 @@ def sync_artifact_file(path, cid_default=None, do_rebuild=True, stamp=None, when
         if gate["code"] == 5:
             print("   補救：先把 log 放到產物旁邊（`instrument_binding --pair-backfill <artifact> "
                   "--from <那份 log>`）—— 這一條沒有豁免。")
+        elif gate["code"] == 6:
+            print("   補救：修掉 draft 為什麼死（例：CGC_SPEC_TREE=0 的純鏈缺 draft-ctx mirror trim）"
+                  "再重跑 —— 這一條沒有豁免：draft 死掉那一輪的 t/s 是純解碼的 t/s。")
         else:
             print("   補救：修好量具重跑，或明知不可引用而要留下這一筆：sync --waive-instrument \"理由\"")
         raise SyncRefused(gate["code"], gate)
@@ -1101,6 +1138,15 @@ def selftest() -> bool:
         _doca = _art("doc.json", None, rows=False)          # 不是在跑的產物 ⇒ 成對不適用
         _bare = _art("bare.json", "BOUND")                    # 跑的產物、量具 BOUND、但沒有 log
         _unb = _art("unb.json", "UNBOUND")
+        # draft 死亡的產物：量具 BOUND、也有成對 log，唯一的問題是 spec_draft=INVALID
+        _dead = _art("dead.json", "BOUND")
+        with open(_dead, encoding="utf-8") as fh:
+            _dj = json.load(fh)
+        _dj[0]["spec_draft"] = {"state": "INVALID", "n_reps": 5, "dead": [
+            {"phase": "timed", "rounds": 128, "drafted": 0, "emit_per_round": "1.0000"}],
+            "why": "4/5 輪 rep 的 draft 死亡"}
+        with open(_dead, "w", encoding="utf-8") as fh:
+            json.dump(_dj, fh)
         import instrument_binding as _ibx   # 寫 log 用同一份規則（不在測試裡自己拼檔名）
         _ibx.write_pair_bundle(_unb, [("prod-new", "p0_n128", "x\n")])
         chk("sync gate：不是在跑的產物 ⇒ 不適用（不得誤殺）", sync_gate(_doca)["ok"])
@@ -1113,6 +1159,16 @@ def selftest() -> bool:
             g["arms"] and g["arms"][0]["verdict"] == "UNBOUND" and not g["arms"][0]["ok"])
         g = sync_gate(_unb, waive_reason="急件：先留下這一筆")
         chk("sync gate：UNBOUND 可豁免（理由進產物）", (g["ok"], g["waived"]) == (True, "急件：先留下這一筆"))
+        import instrument_binding as _iby
+        _iby.write_pair_bundle(_dead, [("prod-new", "p0_n128", "x\n")])
+        _gd = sync_gate(_dead)
+        chk("sync gate：spec draft 死亡 ⇒ 拒寫（rc=6），即使量具 BOUND、成對也齊全",
+            (_gd["ok"], _gd["code"]) == (False, 6))
+        chk("... 且理由說出「純解碼」與是哪幾輪：" + str(_gd["why"]),
+            "純解碼" in (_gd["why"] or "") and "draft" in (_gd["why"] or ""))
+        _gdw = sync_gate(_dead, waive_reason="急件")
+        chk("sync gate：draft 死亡**不可豁免**（豁免只給量具）",
+            (_gdw["ok"], _gdw["code"]) == (False, 6))
         chk("sync gate：豁免不讓它變乾淨（run 仍非乾淨）",
             _run_clean({"clean": True, "instrument": {"verdict": "UNBOUND"},
                         "pair": {"paired": True}})[0] is False)
@@ -1129,6 +1185,10 @@ def selftest() -> bool:
         _ibx.write_pair_bundle(_bare, [("prod-new", "p0_n128", "y\n")])
         chk("leaderboard：補上成對 log 且量具 BOUND ⇒ 可以上榜",
             _arm_on_board(_clean_arm, _bare)[0])
+        chk("leaderboard：spec draft 死亡不得上榜（不需要檔案，看臂自己的欄位）",
+            _arm_on_board(dict(_clean_arm, spec_draft={"state": "INVALID", "why": "drafted=0"}))[0] is False)
+        chk("leaderboard：draft 健康的臂不受這一條影響",
+            _arm_on_board(dict(_clean_arm, spec_draft={"state": "OK", "why": "5/5 drafted>0"}))[0])
         chk("leaderboard：path=None 時判歸因與 R5／R6（臂身分不需要檔案）",
             _arm_on_board({"tag": "p", "attribution": dict(_att)})[0])
         # 09-30：一個判準有兩份實作 ⇒ 一份會落後。把 `quote_gate` 的 R5／R6 接上來測。
