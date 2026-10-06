@@ -3410,6 +3410,12 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
             // APPENDS (it does not clear). The two are only in lockstep if whatever emptied `draft`
             // emptied `draft_alt` too -- so do it here, at the one point a fresh draft is asked for,
             // where a stale entry cannot survive into the round even if a path forgot to clear.
+            // [CGC 2026-10-06 RS6] `draft_dist` is APPENDED by the draft step, exactly
+            // like `draft_alt` right below, and it is only ever read by THIS round's accept
+            // call -- so it has to be emptied here too. Left uncleared, round N's distributions
+            // get read at round N+1's positions: the guard `i < size()` stays true, nothing
+            // throws, and accept rate is quietly wrong.
+            draft_dist.clear();
             if (cgc_spec_tree_on()) {
                 draft_alt.clear();
             }
@@ -4042,7 +4048,7 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
             for (size_t i = 0; i < idxs.size(); ++i) {
                 idxs[i] = (int) i;
             }
-            ids = common_sampler_sample_and_accept_n(smpl, ctx, idxs, draft, nullptr);
+            ids = common_sampler_sample_and_accept_n(smpl, ctx, idxs, draft, &draft_dist);
         }
         GGML_ASSERT(!ids.empty());
 
