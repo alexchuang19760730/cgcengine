@@ -65,6 +65,16 @@ LONG_PROBE_MAX_TOKENS = 400
 LONG_REF = ROOT / "Backup" / "phase_decomp" / "oracle_long_base2_20260919.jsonl"
 
 GATE_TOOL = "scripts/check/m123_oracle_gate.py"
+# [CGC 2026-10-07] The adjudicator. G2 and G5 are both "bitwise equivalence" constraints whose
+# criterion is `M1 == 1.0 AND M2 == 1.0` -- a PASS/FAIL pair. That pair cannot express the case
+# that actually occurs on this engine: numeric drift with every argmax unchanged (M1 < 1.0,
+# M2 == 1.0). The 2026-10-02 overlap batch hit exactly that shape and its numbers were recorded
+# as a plain "G5 did not match", i.e. indistinguishable from a behavioural regression -- so a
+# reader went looking for a bug in the change instead of reading it as reduction-order
+# sensitivity. This tool grades the difference, so the registry records what kind of "not equal"
+# it is. Wired in as an ADJUDICATOR, not as the gate: it does not replace the M1/M2 reading, it
+# classifies it.
+ADJUDICATOR = "scripts/check/drift_adjudicate.py"
 
 
 def _long_args():
@@ -244,6 +254,36 @@ def cmd_check(gid, probe=None, tag=""):
     rec = {"gate": gid, "probe": probe, "n_records_expected": p["n_records"],
            "tag": tag, "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
            "rc": r.returncode, "m1": m1, "m2": m2}
+    # [CGC 2026-10-07] Adjudicate the reading the gate just produced, and record the GRADE next
+    # to m1/m2. Without this the history can only say "did not match", which conflates three very
+    # different things: a real behavioural divergence (argmax changed), reduction-order sensitivity
+    # (numbers moved, every choice identical), and an incomparable pair (different reference bytes).
+    # Only the first is a regression to go and fix. `m1`/`m2` above stay exactly as the tool printed
+    # them -- this adds a classification, it never rewrites the measurement.
+    adjudication = None
+    oraclecmp = ROOT / "Backup" / "m123_oracle_gate" / f"oraclecmp_{tag}.json"
+    if oraclecmp.exists():
+        adj = subprocess.run([sys.executable, str(ROOT / ADJUDICATOR), str(oraclecmp)],
+                             cwd=str(ROOT), capture_output=True, text=True)
+        for line in adj.stdout.splitlines():
+            s = line.strip()
+            if s.startswith("CERTIFIABLE="):
+                adjudication = {"summary": s, "rc": adj.returncode,
+                                "note": "see Backup/m123_oracle_gate/oraclecmp_%s.json" % tag}
+                break
+        if adjudication is None:
+            adjudication = {"summary": "UNPARSEABLE", "rc": adj.returncode,
+                            "stderr": adj.stderr[-300:]}
+        print("  adjudicate: %s" % adjudication["summary"])
+        if adjudication["rc"] == 1:
+            print("  NOTE: DRIFT_ONLY is not a regression -- reduction-order sensitivity along the")
+            print("        KV chain. Do not go looking for a bug in the change under test.")
+    else:
+        adjudication = {"summary": "NO_REPORT", "rc": None,
+                        "note": "gate tool wrote no oraclecmp_%s.json, so nothing could be graded; "
+                                "'no verdict recorded' is not 'no divergence'" % tag}
+        print("  adjudicate: NO_REPORT (%s)" % adjudication["note"])
+    rec["adjudication"] = adjudication
     history = []
     if STATUS_PATH.exists():
         try:
@@ -316,6 +356,17 @@ def cmd_selftest():
     check("G5 object set has an OUT clause", "OUT" in g5["object_set"])
     check("no gate claims met without a check or a note",
           all(g.get("status") != "met" or g.get("note") for g in GATES))
+    # [CGC 2026-10-07] The adjudicator must exist and be wired into cmd_check, or the registry
+    # silently reverts to recording bare m1/m2 -- which is the state that let a DRIFT_ONLY reading
+    # be filed as a plain "G5 did not match" on 2026-10-02. Asserted here because the wiring is
+    # invisible: deleting the two lines in cmd_check breaks no test and changes no output format.
+    check("adjudicator exists", (ROOT / ADJUDICATOR).exists())
+    _src = (ROOT / "scripts" / "check" / "gate_registry.py").read_text()
+    check("cmd_check runs the adjudicator",
+          ADJUDICATOR.rsplit("/", 1)[-1] in _src and "adjudication" in _src)
+    # An earlier draft of this selftest had a third case written as `... or True`, i.e. a check
+    # that cannot fail -- the same defect the drift adjudicator's own selftest caught this day
+    # ("a reason without an effect is not a check"). Only assertions that can go red belong here.
     print("\nselftest: %d/%d" % (ok, n))
     return 0 if ok == n else 1
 

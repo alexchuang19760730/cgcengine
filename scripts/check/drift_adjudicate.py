@@ -32,9 +32,11 @@ answers a single question per artefact:
 and it grades three DISTINCT outcomes, because collapsing them is what produced
 the errors above:
 
-    CERTIFIABLE   prefix covers >= MIN_PREFIX consecutive bit-identical steps
-                  AND no decision divergence. A change that breaks the first
-                  steps is a real regression and this says so.
+    CERTIFIABLE   prefix covers >= CERTIFY_PREFIX (884) consecutive bit-identical
+                  steps AND no decision divergence. 884 is the only length this repo
+                  has actually certified (targets.json G2: 884 comparisons / 506 decode
+                  steps) and the one gate_registry's G5 mandates. A change that breaks
+                  the first steps is a real regression and this says so.
     DRIFT_ONLY    numeric divergence with every argmax unchanged. On this engine
                   that is reduction-order sensitivity propagating along the KV
                   chain (Metal 3 `simdgroup_multiply_accumulate` internals are
@@ -71,11 +73,20 @@ COMPARE = ROOT / "scripts" / "check" / "cgc_logits_oracle_compare.py"
 
 # The caliber floor. 9 records is the SHORT probe (`gate_registry.py`: "enough to
 # see that a knob MOVED the logits, NOT enough to say a choice survives"). The
-# number that has actually been certified in this repo is 884 (targets.json G2).
-# Anything under this floor cannot certify equivalence no matter how green it is,
-# which is exactly the trap that made 9/9 quotable.
+# number that has actually been certified in this repo is 884 (targets.json G2 chain[2],
+# MEASURED: 884 comparisons / 506 decode steps / ctx_type DEF 506 + MTP 378), and it is
+# the probe `gate_registry.py` G5 mandates ("Long probe required: a scheduling change
+# can be bit-identical for 9 steps and diverge later"). An intermediate value would be
+# invented: nothing between 9 and 884 has any evidence behind it, so any such threshold
+# is a number that reads as calibrated and is not. 884 it is -- a clean run that cannot
+# reach it does not get a smaller, flattering label; it gets DRIFT_ONLY or UNQUOTABLE.
 MIN_PREFIX = 9
-CERTIFY_PREFIX = 100
+CERTIFY_PREFIX = 884
+
+# The one number the repo has certified, and where it comes from. Kept adjacent to the
+# constant so a future edit has to read this.
+CERTIFY_BASIS = ("targets.json gates.chain[2].coverage -- MEASURED 884 comparisons from one "
+                 "greedy generation (506 decode steps); gate_registry.py G5 probe 'long'")
 
 GRADES = ("CERTIFIABLE", "DRIFT_ONLY", "UNQUOTABLE")
 
@@ -179,8 +190,9 @@ def adjudicate(report, source):
         reasons.append(f"no divergence in {prefix} consecutive steps (n={n})")
     elif first_num is None:
         grade = "UNQUOTABLE"
-        reasons.append(f"no divergence but only {prefix if prefix is not None else '<unrecorded>'} "
-                       f"consecutive steps (n={n}), under CERTIFY_PREFIX={CERTIFY_PREFIX}")
+        reasons.append(f"no divergence, but only {prefix if prefix is not None else '<unrecorded>'} "
+                       f"consecutive steps against CERTIFY_PREFIX={CERTIFY_PREFIX} (n={n}); that floor "
+                       f"is the only length this repo has certified -- basis: {CERTIFY_BASIS}")
     else:
         grade = "DRIFT_ONLY"
         reasons.append(f"numeric divergence onset at step {first_num}, every argmax identical "
@@ -320,6 +332,19 @@ def _selftest():
         ("UNQUOTABLE: ref bytes mismatch dominates any green ratio",
          {"n_common": 884, "ref_md5_mismatch": "a3fbfb0c vs 0cf5c593",
           "drift": dict(base_drift)}, "UNQUOTABLE"),
+        # [CGC 2026-10-07] The CERTIFY_PREFIX edge, added when the threshold moved 100 -> 884.
+        # One step below must NOT certify, and the reason must name the number rather than
+        # just "too short" -- a threshold nobody can trace is how 9/9 became quotable.
+        ("UNQUOTABLE: 883 clean steps is one short of the 884 the repo has certified",
+         {"n_common": 883, "drift": {"bit_identical_prefix": 883,
+                                     "first_numeric_divergence": None,
+                                     "first_decision_divergence": None,
+                                     "first_topk_divergence": None}}, "UNQUOTABLE"),
+        ("DRIFT_ONLY: 883 steps then onset -- long, so the shortfall is not the story",
+         {"n_common": 900, "drift": {"bit_identical_prefix": 883,
+                                     "first_numeric_divergence": 883,
+                                     "first_decision_divergence": None,
+                                     "first_topk_divergence": None}}, "DRIFT_ONLY"),
     ]
     ok = True
     for name, report, want in cases:
