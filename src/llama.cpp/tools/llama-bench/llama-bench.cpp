@@ -3982,6 +3982,31 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
                 for (llama_seq_id sq = 0; sq < (llama_seq_id) W_eff; ++sq) {
                     llama_memory_seq_rm(mem_dft, sq, P_base + m + 1, -1);
                 }
+                // [CGC H2 2026-10-06] SEQ-1 DRAFT RESIDUE (env `CGC_SPEC_TREE_BRESET=1`，預設關).
+                //
+                // 為什麼要這一格（H2 的第一條**可 bench 側**的假說）：上面那圈只收 `sq < W_eff`。
+                // 當 B 被關著（rgate／bgate：`cgc_alt_on == false` ⇒ `W_eff == 1`）時，**seq 1 的 cell
+                // 一個都不收** —— 它停在最後一次 B-on 的位置，而 B 再開時 alt-seed 是在
+                // `dp1.n_past = dp.n_past`（本輪 seq 0 的 n_past）上寫第一顆 ⇒ **可能落在那些殘留
+                // 之後**。兩種後果都與 §10.3 的 M-RoPE 牆同族（llama-batch 拒絕同一位置的重複、
+                // 或遮罩把殘留算進 attention）。
+                //
+                // 這條假說**預測**（寫死，跑之前先註冊）：
+                //   1. `h_orcrgate40` 型（B 會關會開）：B-on 的 `pos1 amA` 由 0.486 往 ~0.845 回升，
+                //      且 B-off 段內的 0.619 起步（暫態）消失；
+                //   2. **B 恆開**的臂（`g_orc_ctrl`／`k_k2b`／`e2_k2`）→ **一字不動**（那裡 W_eff==2，
+                //      上面那圈本來就收了 seq 1）⇒ 這是最強的可否證性檢查；
+                //   3. 鏈臂（`alt` 從不開）→ 一字不動；`X < Y` 維持 0。
+                // 若 (1) 不動而 (2) 也一字不動 ⇒ 殘留假說死，H2 的來源要往 verify 形狀或共用 hidden
+                // row 去找（見 §13 的兩個混淆）。
+                static const bool cgc_seq1_reset = []() {
+                    const char * e = getenv("CGC_SPEC_TREE_BRESET");
+                    if (e == nullptr) { return false; }
+                    return e[0] != '0';
+                }();
+                if (cgc_seq1_reset && W_eff == 1) {
+                    llama_memory_seq_rm(mem_dft, (llama_seq_id) 1, P_base + m + 1, -1);
+                }
             }
 
             // commit in place -- no checkpoint, no replay.
