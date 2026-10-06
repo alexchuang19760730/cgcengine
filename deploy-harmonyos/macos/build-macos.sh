@@ -64,14 +64,48 @@ copy_bin llama-bench
 copy_bin llama-server
 
 # Runtime dylibs needed by the mac bundle.
+#
+# [CGC 2026-10-06] 版號不再寫死。舊版把三個家族寫成 `*.0.0.97.dylib`，而現在的 build 產出是
+# `*.0.0.630.dylib` ⇒ `cp` 失敗 ⇒ `set -e` 中止 —— 而上面的 `rm -f` 已經先把 bundle 刪掉一半
+# （2026-10-06 實測：26 個 tracked 檔被刪、16 個被改，驗收 FAIL）。
+# 版號是 configure 時由 `git rev-list --count HEAD` 推導的（`cmake/build-info.cmake` 的 BUILD_NUMBER
+# → `LLAMA_INSTALL_VERSION 0.0.${LLAMA_BUILD_NUMBER}`），每次 commit 都可能前進 ⇒ 只能動態解析。
+resolve_dylib() {   # $1 = 家族前綴（含版號起頭）；回傳 build/bin 內最新的一個實際檔（跳過 symlink）
+    local f hit=""
+    for f in "$1"*.dylib; do
+        [ -e "$f" ] || continue
+        [ -L "$f" ] && continue
+        hit="$hit
+$(basename "$f")"
+    done
+    hit="$(printf '%s\n' "$hit" | sed '/^$/d' | sort -V | tail -1)"
+    if [ -z "$hit" ]; then
+        echo "FAIL: $BUILD_DIR/bin 找不到 $1*.dylib（版號解析失敗；不要把版號寫死）" >&2
+        exit 1
+    fi
+    printf '%s' "$hit"
+}
+
+cd "$BUILD_DIR/bin"
+BASE_VER="$(resolve_dylib libggml-base.)"
+CPU_VER="$(resolve_dylib libggml-cpu.)"
+METAL_VER="$(resolve_dylib libggml-metal.)"
+GGML_VER="$(resolve_dylib libggml.0.)"
+COMMON_VER="$(resolve_dylib libllama-common.0.0.)"
+LLAMA_VER="$(resolve_dylib libllama.0.0.)"
+MTMD_VER="$(resolve_dylib libmtmd.0.0.)"
+cd "$SCRIPT_DIR"
+echo "  dylib 版號（動態解析）: base=$BASE_VER cpu=$CPU_VER metal=$METAL_VER ggml=$GGML_VER"
+echo "                          common=$COMMON_VER llama=$LLAMA_VER mtmd=$MTMD_VER"
+
 for name in \
-    libggml-base.0.19.0.dylib libggml-base.0.dylib libggml-base.dylib \
-    libggml-cpu.0.19.0.dylib libggml-cpu.0.dylib libggml-cpu.dylib \
-    libggml-metal.0.19.0.dylib libggml-metal.0.dylib libggml-metal.dylib \
-    libggml.0.19.0.dylib libggml.0.dylib libggml.dylib \
-    libllama-common.0.0.97.dylib libllama-common.0.dylib libllama-common.dylib \
-    libllama.0.0.97.dylib libllama.0.dylib libllama.dylib \
-    libmtmd.0.0.97.dylib libmtmd.0.dylib libmtmd.dylib \
+    "$BASE_VER" libggml-base.0.dylib libggml-base.dylib \
+    "$CPU_VER" libggml-cpu.0.dylib libggml-cpu.dylib \
+    "$METAL_VER" libggml-metal.0.dylib libggml-metal.dylib \
+    "$GGML_VER" libggml.0.dylib libggml.dylib \
+    "$COMMON_VER" libllama-common.0.dylib libllama-common.dylib \
+    "$LLAMA_VER" libllama.0.dylib libllama.dylib \
+    "$MTMD_VER" libmtmd.0.dylib libmtmd.dylib \
     libllama-server-impl.dylib; do
     copy_bin "$name"
 done

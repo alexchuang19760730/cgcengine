@@ -62,7 +62,8 @@
 #   scripts/check_build_tracked.sh --list-rpaths   # 只列出關鍵 exe 的 @rpath（快速診斷）
 #
 # env：
-#   BIN_DIR          build 目錄相對路徑（預設 build/bin）
+#   BIN_DIR          build 目錄相對路徑（預設 build/bin；未指定且不存在時自動偵測
+#                    src/llama.cpp/build/bin；兩者都沒有 ⇒ 擋 commit，除非 ALLOW_MISSING=1）
 #   REQUIRED_EXES    空白分隔的 exe 清單（預設 "llama-simple llama-speculative-simple llama-bench"）
 #   REQUIRED_DYLIB   空白分隔的 dylib 前綴（預設 "libllama. libllama-common. libmtmd. libggml."）
 #   ALLOW_MISSING=1  允許 build/bin 或檔案不存在（不擋 commit；預設為擋）
@@ -79,6 +80,8 @@ REPO_ROOT=""
 INSTALL_HOOK=0
 LIST_RPATHS=0
 HOOK_BIN_DIR=""
+BIN_DIR_EXPLICIT=0
+[ -n "${BIN_DIR:-}" ] && BIN_DIR_EXPLICIT=1
 BIN_DIR="${BIN_DIR:-build/bin}"
 REQUIRED_EXES=(${REQUIRED_EXES:-llama-simple llama-speculative-simple llama-bench})
 REQUIRED_DYLIB=(${REQUIRED_DYLIB:-libllama. libllama-common. libmtmd. libggml.})
@@ -130,6 +133,16 @@ case "$GIT_HOOKS_DIR" in
     *)  GIT_HOOKS_DIR="$REPO_ROOT/$GIT_HOOKS_DIR" ;;       # 相對 ⇒ 錨定到 REPO_ROOT
 esac
 GIT_DIR="$(git -C "$REPO_ROOT" rev-parse --absolute-git-dir 2>/dev/null)"  # 僅用於死雙胞胎偵測
+
+# [CGC 2026-10-06 B7] 預設值是 build/bin，但本 repo 的產物在 src/llama.cpp/build/bin。手動跑時用
+# 預設值會讓 12 段全部 SKIP，而結尾仍印一行「OK」—— 讀起來像「全部驗過」，實際上一項都沒驗
+# （2026-10-06 實測：12 段全 SKIP、rc=0、輸出以 OK 開頭）。B7 的原文是「可被跳過的閘門不是閘門」，
+# 所以這裡做兩件事：(1) 未指定 BIN_DIR 時自動偵測一次並明說；(2) 真的找不到就大聲失敗（見下方）。
+if [ "${BIN_DIR_EXPLICIT:-0}" != 1 ] && [ ! -d "$REPO_ROOT/$BIN_DIR" ] && [ -d "$REPO_ROOT/src/llama.cpp/build/bin" ]; then
+    echo "INFO  BIN_DIR=$BIN_DIR 不存在 → 自動改用 src/llama.cpp/build/bin（可用 BIN_DIR=... 覆寫）"
+    BIN_DIR="src/llama.cpp/build/bin"
+fi
+
 BIN_ABS="$REPO_ROOT/$BIN_DIR"
 
 # 解析 symlink / 正規化絕對路徑（macOS 的 readlink 沒有 -f，用 python3）
@@ -214,7 +227,7 @@ if [ ! -d "$BIN_ABS" ]; then
     if [ "${ALLOW_MISSING:-0}" = 1 ]; then
         skip "$BIN_DIR 不存在，ALLOW_MISSING=1 → 跳過 build/bin 追蹤檢查"
     else
-        skip "$BIN_DIR 不存在（本 repo 若無生產 build 屬正常；仍會繼續跑其他驗收）"
+        fail "$BIN_DIR 不存在（${BIN_ABS}）：dylib 追蹤 / symlink / @rpath / CGC 死鎖防護 / 原始碼↔binary 同步五項都無法驗證，這不是 PASS。若本 repo 真的沒有生產 build，用 ALLOW_MISSING=1 明示；若是路徑寫錯，設 BIN_DIR=src/llama.cpp/build/bin（預設值 build/bin 在本 repo 不存在）"
     fi
 fi
 
