@@ -1440,6 +1440,28 @@ def main() -> int:
         dump_records = 0
     n_common = met["numeric_identity"]["n"]
     coverage_pct = (100.0 * n_common / dump_records) if dump_records else None
+    # [CGC 2026-10-07] Named once: `comparability_defects` below and the summary both read it, and
+    # it used to be recomputed inline twice. `None` means "the sidecar carries no prompt md5", which
+    # is UNVERIFIABLE rather than a mismatch -- the defect list treats it as one, fail-closed.
+    _prompt_md5 = hashlib.md5(args.probe_prompt.encode()).hexdigest()
+    probe_prompt_match = ((ref_cap or {}).get("probe_prompt_md5") is None
+                          or (ref_cap or {})["probe_prompt_md5"] == _prompt_md5)
+    # [CGC 2026-10-07] Fold the three extra preconditions into the verdict itself. `comparable` was
+    # conjunctive over the config stamp alone, which is why eight 2026-10-02 summaries could all say
+    # `comparable: true, config_diffs: []` while spanning two reference files. Fail-closed: an
+    # absent sidecar field yields None => not comparable, because "unverified" must not read as
+    # "verified". `config_diffs` is unchanged and still reported -- this only ever removes
+    # qualifications, it can never invent a difference.
+    _defects = [d_ for d_ in (
+        (None if ref_pin == ref_hex else
+         f"ref bytes differ from REF_PINS ({ref_hex} != {ref_pin})"),
+        (None if (ref_cap or {}).get("probe_prompt_md5") is not None else
+         "reference carries no probe_prompt_md5 (pre-dates the sidecar format)"),
+        (None if probe_prompt_match else "probe prompt differs from the reference's"),
+        (None if not dump_records or not n_common or n_common == dump_records else
+         f"only {n_common}/{dump_records} dump records found a counterpart (key collision)"),
+    ) if d_]
+    comparable = comparable and not _defects
     summary = {
         "tag": tag, "profile": args.profile, "ref": str(ref), "ref_md5": ref_hex,
         "ref_pinned": (ref_pin == ref_hex), "dump": str(dump),
@@ -1450,10 +1472,10 @@ def main() -> int:
         # Additive, so summaries written before today stay readable; the checker fail-closes when
         # the field is absent (it refuses to guess which side is the witness arm).
         "extra_env": dict(merged_env),
-        "probe_prompt_md5": hashlib.md5(args.probe_prompt.encode()).hexdigest(),
+        "probe_prompt_md5": _prompt_md5,
         "ref_probe_prompt_md5": (ref_cap or {}).get("probe_prompt_md5"),
         "probe_prompt_match": (None if (ref_cap or {}).get("probe_prompt_md5") is None
-                               else (ref_cap or {})["probe_prompt_md5"] == hashlib.md5(args.probe_prompt.encode()).hexdigest()),
+                               else probe_prompt_match),
         "dump_records": dump_records,
         "coverage_pct": coverage_pct,
         "probe_answer": ans.strip(),
@@ -1462,7 +1484,22 @@ def main() -> int:
         "m3_topk_set_agreement": f"{met['topk_set_agreement']['equal']}/{met['topk_set_agreement']['n']}",
         "n_compared": met["numeric_identity"]["n"],
         "cross_tab": d["cross_tab"],
+        # [CGC 2026-10-07] `comparable` used to mean "the two resolved CONFIG stamps agree", which
+        # is necessary but NOT sufficient, and the 2026-10-02 overlap batch proved it: eight runs
+        # all reported comparable=true / config_diffs=[] while being split across TWO different
+        # reference files (md5 a3fbfb0c vs 0cf5c593). Their M1 readings ranged 6/222 .. 222/222 and
+        # were NOT comparable -- they answered different questions. Three defects made the config
+        # stamp insufficient, each of which silently turns "incomparable" into a confident number:
+        #   (1) the reference's own BYTES (this run was measured against a different file),
+        #   (2) the probe prompt (a CLI arg, deliberately not in the config stamp),
+        #   (3) key collision in the dump, the symptom being coverage_pct far below 100.
+        # Each is recorded first and folded in after, so `comparable` stays fail-closed on old
+        # summaries that predate the fields (None => not comparable, never a free pass).
         "comparable": comparable,
+        # Per-defect verdicts, so a reader can tell WHICH precondition broke instead of only that
+        # the conjunction did. `config_diffs` alone used to be the sole evidence. Computed once
+        # above and folded into `comparable`; repeated here purely so the summary is self-contained.
+        "comparability_defects": (_defects or None),
         "config_diffs": cfg_diffs,
         "ok": bool(comparable and m1r == 1.0 and m2r == 1.0),
         "engine_digest": engine_digest(),

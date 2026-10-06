@@ -68,8 +68,32 @@ import sys
 ALIGN_KEYS = {"step": "(step, token_idx, ctx_type)",
               "pos":  "(ctx_type, n_tokens, pmax, token_idx)"}
 
+
+def _first_step_label(key, oracle):
+    """Render a first-divergence key as 'N (name)' so the report says `step 6`, not `[6, 0, 'DEF']`.
+
+    Reads the record's own `step` when present and falls back to the key's first element, because the
+    two align modes order the tuple differently (ALIGN_KEYS) and a report that guessed would be worse
+    than one that says the raw tuple.
+    """
+    if key is None:
+        return "n/a"
+    rec = oracle.get(key) or {}
+    step = rec.get("step")
+    name = rec.get("node") or rec.get("name")
+    step = key[0] if step is None else step
+    return f"{step}" + (f" ({name})" if name else "")
+
 METRIC_DEFS = {
-    "numeric_identity": "M1: same row_fnv1a64 for every step (= bit-identical logits)",
+    # [CGC 2026-10-07] "every step" is doing a lot of work here. These keys are consecutive decode
+    # steps, so on this engine a single ulp change in reduction order makes every LATER step differ
+    # (measured: onset at step 6 of 222). "M1 = 9/9" therefore certifies 9 steps, NOT the output --
+    # it was quoted as "bit-identical" repeatedly and that was wrong. Always read the `/n`: it is
+    # the length of the chain the ratio covers, and the `drift` block says where it broke.
+    "numeric_identity": ("M1: same row_fnv1a64 for every step (= bit-identical logits). READ THE /n: "
+                         "on a long run these keys are CONSECUTIVE decode steps, so one ulp of "
+                         "reduction-order difference makes every later step differ (2026-10-02: onset "
+                         "at step 6 of 222). A ratio over n steps certifies n steps, not the output."),
     "decision_agreement": "M2: same argmax_token for every step (= same chosen token)",
     "topk_set_agreement": "M3: same top-N token id set (= same candidate set)",
 }
@@ -311,19 +335,54 @@ def main():
     # 2x2: numeric identity x decision agreement
     tab = {"num_eq_dec_eq": 0, "num_eq_dec_ne": 0, "num_ne_dec_eq": 0, "num_ne_dec_ne": 0}
     diff_examples = []
+    # [CGC 2026-10-07] Long-run decode is a SEQUENCE, not 222 independent samples, and these keys
+    # are consecutive steps (`step=0..n-1`, `token_idx` 0, `ctx_type` DEF, `n_tokens` 1 -- verified
+    # in ref_ovl_m1_20261002.jsonl). Any change to GPU reduction order perturbs the logits by ~1 ulp,
+    # which changes step N's KV, which perturbs step N+1 more. Measured on 2026-10-02: the first
+    # divergence was step 6 and every later step followed (relative offset 0.009% at step 81, then
+    # argmax flipped at step 82). So "M1 = 78/222" does NOT mean "144 steps regressed" -- it means
+    # "the sequence diverged at step 6 and stayed diverged". Reporting one ratio hides that, and
+    # `num_ne_dec_ne == 0` proves the divergence is numeric, never a wrong-token cascade.
+    # Split the verdict so a short deterministic prefix can be certified WITHOUT certifying the
+    # tail, which no amount of re-running can make bit-identical on this engine.
+    _first_num_ne = _first_dec_ne = _first_top_ne = None
+    _prefix_num_eq = 0
     for key in common:
         va, vb = a[key], b[key]
         num_eq = va.get("row_fnv1a64") == vb.get("row_fnv1a64")
         dec_eq = va.get("argmax_token") == vb.get("argmax_token")
+        top_eq = _top_token_ids(va) == _top_token_ids(vb)
         n_row_hash_eq += int(num_eq)
         n_full_hash_eq += int(va.get("logits_fnv1a64") == vb.get("logits_fnv1a64"))
         n_argmax_eq += int(dec_eq)
-        n_top_eq += int(_top_token_ids(va) == _top_token_ids(vb))
+        n_top_eq += int(top_eq)
         tab[("num_eq_" if num_eq else "num_ne_") + ("dec_eq" if dec_eq else "dec_ne")] += 1
+        if not num_eq and _first_num_ne is None:
+            _first_num_ne = key
+        if not dec_eq and _first_dec_ne is None:
+            _first_dec_ne = key
+        if not top_eq and _first_top_ne is None:
+            _first_top_ne = key
+        # The prefix is walked in `common` order, which is sorted by key -- i.e. by step.
+        if _first_num_ne is None and num_eq:
+            _prefix_num_eq += 1
         diffs = _compare(va, vb)
         if diffs and len(diff_examples) < 5:
             diff_examples.append({"key": list(key), "numeric_equal": num_eq,
                                   "decision_equal": dec_eq, "diffs": diffs})
+
+    drift = {
+        "why": ("a long-run decode comparison is a sequence, so one early ulp difference makes every "
+                "later step differ; report the ONSET and the deterministic prefix, not one ratio"),
+        "first_numeric_divergence": (None if _first_num_ne is None else list(_first_num_ne)),
+        "first_decision_divergence": (None if _first_dec_ne is None else list(_first_dec_ne)),
+        "first_topk_divergence": (None if _first_top_ne is None else list(_first_top_ne)),
+        "bit_identical_prefix": _prefix_num_eq,
+        # The prefix is the ONLY part of a long run that is actually a regression signal: a change
+        # that breaks the FIRST steps is a real regression, one that only shows up at step 6 of a
+        # 222-step chain is the engine's reduction-order sensitivity. Callers certify on this.
+        "prefix_is_regression_signal": _first_num_ne is not None and common.index(_first_num_ne) == 0,
+    }
 
     metrics = {
         "numeric_identity": {**_metric(n_row_hash_eq, n_common), "definition": METRIC_DEFS["numeric_identity"]},
@@ -345,6 +404,10 @@ def main():
         "top_equal": n_top_eq,
         # new: the independent metrics + the cross-tab that must be read together
         "metrics": metrics,
+        # [CGC 2026-10-07] see `drift` above -- onset/prefix, so a 78/222 long run is not read as
+        # "144 regressions". M1's own definition also now carries `n`, because "9/9" has been
+        # quoted as "bit-identical" many times when it only certifies 9 steps of a 222-step chain.
+        "drift": drift,
         "cross_tab": tab,
         "cross_tab_note": ("num_eq_dec_eq = no drift, same choice | num_eq_dec_ne = impossible "
                            "without a tie-break bug | num_ne_dec_eq = drift but same choice "
@@ -393,6 +456,22 @@ def main():
     print(f"  M1 same  & M2 diff : {tab['num_eq_dec_ne']:>5}   should be 0; non-zero = tie-break bug")
     print(f"  M1 diff  & M2 same : {tab['num_ne_dec_eq']:>5}   drift only; M1 says 'differs', M2 says 'same'")
     print(f"  M1 diff  & M2 diff : {tab['num_ne_dec_ne']:>5}   real divergence")
+    # [CGC 2026-10-07] Printed above the cross-tab because the cross-tab is what misleads: it counts
+    # STEPS, so a run that diverged at step 6 and stayed diverged reads as "144 regressions" when it
+    # is one divergence. The onset is the actual diagnosis.
+    print("-" * 74)
+    print("SEQUENCE DRIFT  (these keys are CONSECUTIVE decode steps -- a ratio is not a count of bugs)")
+    print(f"  bit-identical prefix : {drift['bit_identical_prefix']} step(s)")
+    print(f"  first numeric diff   : step {_first_step_label(_first_num_ne, a)}"
+          f"{'  <-- divergence starts here; everything after it is propagation, not regression'
+             if _first_num_ne is not None else '  (none)'}")
+    print(f"  first decision diff  : step {_first_step_label(_first_dec_ne, a)}"
+          f"{'  <-- argmax actually flipped' if _first_dec_ne is not None else '  (none)'}")
+    print(f"  first top-k diff     : step {_first_step_label(_first_top_ne, a)}"
+          f"{'' if _first_top_ne is None else '  <-- candidate set changed'}")
+    if _first_num_ne is not None and _first_dec_ne is None:
+        print("  VERDICT: numeric-only drift (no token changed) -- this is the engine's reduction-order"
+              " sensitivity, not a behavioural regression.")
     if only_a:
         print(f"only_in_A (first 5): {only_a[:5]}")
     if only_b:
