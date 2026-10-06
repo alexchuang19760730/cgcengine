@@ -228,6 +228,23 @@ def gate_verdict(root, artifact):
     return "MIXED(%s)" % "/".join(verdicts), "檔內 row 判詞不一致"
 
 
+def _axis_verdict(recs, axis):
+    """從 quote_gate.scan 的 recs 取某軸（"decode"／"prefill"）的 verdict。
+
+    軸識別靠 row 的 `shape`（"p<n_prompt>/n<n_gen>/d<n_depth>"）：
+    - decode 軸：n_prompt=0 且 n_gen>0 ⇒ shape 以 "p0/" 開頭
+    - prefill 軸：n_gen=0 ⇒ shape 含 "/n0/"
+    回 None 表示沒找到該軸 row。
+    """
+    for r in recs or []:
+        shp = r.get("shape", "")
+        if axis == "decode" and shp.startswith("p0/"):
+            return r.get("verdict")
+        if axis == "prefill" and "/n0/" in shp:
+            return r.get("verdict")
+    return None
+
+
 def _qg():
     """懶載 quote_gate —— 判準（含 R7 的認可口徑白名單）只有一份定義。"""
     if HERE not in sys.path:
@@ -1414,8 +1431,27 @@ def validate(board, nodes, root=ROOT):
                 # 放行 env）判 DIRTY ⇒ 那是「被 operator 顯式放行的可引用」，不是「閘門說這一場乾淨」。
                 # 揭露落在本列的 item／value／waiver／why（看板渲染前三者）。刻意只放行 DIRTY（＝R4 窗口
                 # 那一條），UNSTABLE／REFUSE 一律照擋 —— 同 `quote_ungateable` 的樣式：要放行就必須寫理由。
-                if not (c.get("waiver") and live == "DIRTY"
-                        and (c["quote"] or {}).get("verdict") == "QUOTABLE"):
+                # ── 2026-10-06 擴充：waiver_axis（按軸放行）──
+                # 若本列聲明 `waiver_axis`（如 "decode"），則只看該軸 row 的 verdict；該軸純 DIRTY 即放行，
+                # 其餘軸（如 prefill）的 UNSTABLE 不連坐——前提是那些軸不在本列聲明範圍內（由 why 揭露）。
+                # 不帶 waiver_axis 時退化為原語意（整檔純 DIRTY 才放），不削弱其他認證。
+                _decl = (c["quote"] or {}).get("verdict") == "QUOTABLE"
+                _waived = bool(c.get("waiver") and _decl)
+                if _waived and live == "DIRTY":
+                    pass
+                elif _waived and c.get("waiver_axis"):
+                    _ax = c["waiver_axis"]
+                    try:
+                        _qg_mod = _qg()
+                        _recs = _qg_mod.scan([os.path.join(root, (c["quote"] or {}).get("artifact"))])
+                        _ax_v = _axis_verdict(_recs, _ax)
+                    except Exception as exc:  # noqa: BLE001
+                        errs.append("D7 certified %s 按軸 %s 判讀失敗：%s" % (c.get("id"), _ax, exc))
+                        _ax_v = None
+                    if _ax_v != "DIRTY":
+                        errs.append("D7 certified %s 宣告 verdict=%s，但閘門現在判 %s（按軸 %s 判 %s，非純 DIRTY）"
+                                    % (c.get("id"), (c["quote"] or {}).get("verdict"), live, _ax, _ax_v))
+                else:
                     errs.append("D7 certified %s 宣告 verdict=%s，但閘門現在判 %s"
                                 % (c.get("id"), (c["quote"] or {}).get("verdict"), live))
         elif c.get("meets") is True and not c.get("quote_ungateable"):
