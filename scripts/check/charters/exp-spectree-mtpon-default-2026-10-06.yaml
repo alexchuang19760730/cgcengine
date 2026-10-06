@@ -1,0 +1,105 @@
+id: exp-spectree-mtpon-default-2026-10-06
+owner: lineA
+created: 2026-10-06
+axis: na
+
+question: |
+  **交付口徑量測（生產級）**：spec-tree MTP-on（`--spec-type draft-mtp --spec-draft-n-max 2`，
+  `alt_branch` 走 seq 1 繞開 M-RoPE X<Y）vs MTP-off，在 **(default) 格**（llama-bench 出廠形狀
+  `-p 512 -n 128 -b 2048 -ub 512 -d 0 -r 5`、`warm_skip 0`）＋ **delivery 採樣口徑（temp=0.4）**、
+  **釘 seed=1**，取真實 decode tg 配對。
+
+  這是對「另一條線 10-06 修過 T1c（spec-tree alt-branch 在 sampling 下 draft_ratio=0.70、0 次 X<Y）
+  是否真能推進 delivery」的判準量測——機制 work（§16 已證）≠ 加速證成，本卡要補 tg 差。
+
+baseline:
+  metric: "decode ~10.84 t/s（C14 fence-OFF 基準：(default) 形狀、MTP off；fence.json[0]）"
+  cell: "prod-new (default) 形狀：-p512 -n128 -b2048 -ub512 -d0 -r5、MTP off、sampling temp=0.4"
+  source: "Backup/spec_tree/fence_default_20261005/fence.json"
+
+hypothesis:
+  mechanism: |
+    spec-tree alt-branch 把 tree 的 branch 1（本位置 runner-up）種在 seq 1，避開與 seq 0 在
+    draft KV 的同一位置碰撞（llama-batch 拒絕重複位置 ⇒ M-RoPE X<Y）。這道牆在 plain draft-mtp
+    （n_seq=1）撞（§13/§14 G2/G3 實測 0 drafts），但 alt-branch 是另一條 code path。
+    必要前置：binary 必須含另一條線未提交的 `common/speculative.cpp` 修動（accept_from + alt_branch）；
+    以及 `LAYER_CAPS=40-40:140`（caps≥17）讓 `cgc_decode_bound≥2` 才能塞下 verify 區塊。
+  expected: "on 臂 tg 嚴格 > off 臂 tg（真加速）且 drafted>0、accept_rate>0、逐 rep 聚合可引用。
+    ⚠ 但 S 線 10-06 證據強烈指向 on≈off（甚至微負）：W2<W1(0.86–0.91×)、live≈oracle 天花板(head-limited)、
+    現設計門檻 2.05 到不了、診斷形狀 cell 配對全被 swap 污染不可引用。本卡在 (default) 形狀下量測，
+    是要確認「機制成功、交付不 advance」是否同樣成立——這正是最初的問題（到底有沒有推進 delivery）。"
+  basis: "t1w2_smoke_tree_alt2（10-06 01:04）sampling 下 drafted=54 acc=38 mean_len=2.41 ratio=0.70 0 X<Y；本卡要的是同一路徑的 tg 差"
+
+acceptance:
+  success: "on 臂 decode tg 嚴格高於 off 臂，且兩臂皆 caliber=UNIFIED + quote=QUOTABLE（無 swap attribution）；本讀數登記為 (default) 形狀 spec-tree MTP-on 的**首筆可引用 + 最高紀錄**（certified 表 ratchet_exempt 基準列）"
+  falsify: "on 臂 tg ≤ off 臂（無加速）或 drafted=0（alt_branch 未生效 / binary 沒含修動）或 swap attribution 致不可引用。
+    ⚠ 即令 falsify（最可能的結局，依 S 線 10-06 判詞「機制成功、指標無效」），**量測本身仍進 certified**：
+    on 臂 tg 作為 (default) 形狀 spec-tree MTP-on 的 ratchet_exempt 基準列，標籤註明「無淨加速 / 未推進 delivery」
+    （對照 §13 plain-chain MTP-on 亦 −6.7%）。這正是用戶要的「到底有沒有推進」的誠實答案。"
+  on_fail: "若 on 臂 0 drafts ⇒ 檢查 binary 是否含 speculative.cpp 修動（需 rebuild）；若 tg 平手 ⇒ 仍進 certified（ratchet_exempt 基準、標「機制可用但無淨加速」），不入全局棘輪。"
+
+targets:
+  decode_tps: 11.0
+
+subgoals:
+  - id: sg-spectree-mtpon
+    text: "量 spec-tree MTP-on vs off 在 (default) 形狀 sampling 口徑的 decode tg 配對，判定是否推進 delivery"
+    expect: "on 臂 tg 嚴格 > off 臂且可引用"
+    how: "harness bench 兩臂（off=plain，on=spec-tree），比 (default) 形狀的解碼 tg"
+
+arms:
+  # 兩臂皆解析到同一支 denseIQ4X 檔（用戶要的 Nail-...-denseIQ4X.gguf）：
+  #   OFF(MTP=0) → $Q36 是該檔的 symlink；ON(MTP=1, DENSE_IQ4X 預設 1) → $Q36_MTP_DENSEIQ4X ＝同一支檔。
+  # ⚠ 顯式 CGC_SERVER_MODEL=... 鎖定會被 harness 拒跑（該鍵不在 run_server.sh SERVER_ENV 白名單 ⇒
+  #   「env 未送達引擎」rc=1），故倚賴預設解析（已同檔），不再顯式寫死。
+  - "prod-new:CGC_SERVER_SEED=1;CGC_SERVER_MTP=0"   # off：plain decode、sampling(預設0.4)、seed 釘 1
+  # on：真 spec-tree MTP（CGC_SPEC_TREE=1 + B=2 + RS=2）+ LLAMA_BENCH_SPEC=1 + DRAFT_N_MAX=2 + MTP_PERF=1、caps≥17。
+  # ⚠ 旗標全在 run_server.sh SERVER_ENV 白名單(行1580/1950/1576)：漏任一會走 plain chain、閘仍報 PASS。
+  - "prod-new:CGC_SERVER_SEED=1;CGC_SERVER_MTP=1;CGC_SERVER_LAYER_CAPS=40-40:140;CGC_DRAFT_CTX_ALIGN=1;CGC_DRAFT_SMALL_BATCH=1;LLAMA_BENCH_SPEC=1;LLAMA_BENCH_SPEC_DRAFT_N_MAX=2;CGC_SPEC_TREE=1;CGC_SPEC_TREE_B=2;CGC_SPEC_TREE_RS=2;CGC_MTP_PERF=1"
+
+notes: |
+  !! 執行前置（本卡立項時確認）：
+  1. **環境必須乾淨才能算生產級**：swap 須 purge/reboot 到 ~0（2026-10-06 03:08 已重開機 ⇒ swap 0/0、
+     compressor QUIET、thermal 0、無外來 bench；本卡即在此環境發車）。`attribution=swap` 會致不可引用，
+     reboot 後已消除此風險。
+  2. **binary 必須含 spec-tree 修動**：`common/speculative.cpp`（另一條線未提交）的 `alt_branch`＋
+     `accept_from` 是 on 臂能拿到 drafts 的前提。
+     ✅ **2026-10-06 符號表確認已含**：`nm libllama-common.0.0.630.dylib` 有
+     `__ZN33common_speculative_impl_draft_mtp11accept_fromEiit` ⇒ **免 rebuild**。
+     （`strings` 抓不到是因為它是 C++ 符號非字面量；`nm` 才對。）
+     rebuild 會同時編譯本線未提交的 §240（phase 計數器，additive、不影響 tg）與他線 source；
+     若 on 臂跑出 drafted=0 再回頭 rebuild。
+     ⛔ 重建前先 `pgrep` 確認無外來 llama-bench/server（共用 .dylib 被 map 時 rebuild 會 crash 對方）。
+  3. **(default) 形狀自動套用**：`harness bench --arm prod-new` 不加形狀旗標即為
+     `-p 512 -n 128 -b 2048 -ub 512 -d 0 -r 5 --warm-skip 0`（llama-bench 出廠）。`--reps 5 --warm-skip 0` 顯式寫出僅為明確。
+  4. **sampling 口徑**：兩臂 arm env 皆**不含 CGC_SERVER_TEMP** ⇒ `run_server.sh` 預設 0.4 生效（delivery 口徑）。
+     seed 經 arm env `CGC_SERVER_SEED=1` 釘（shell env 不轉發，必走 arm env）。
+  5. **off 臂必須顯式 CGC_SERVER_MTP=0**：`run_server.sh` 預設 MTP=1，不關會讓 off 臂也跑 MTP。
+  6. `--spec-type draft-mtp --spec-draft-n-max 2` 是**全域 harness flag**，故 on/off 分兩次 invocation 跑
+     （off 不加 spec flag）。這是 repo 既有慣例（run_g2.sh）。
+  7. **兩臂同模型（2026-10-06 用戶指令 + 發現）**：兩臂均解析到
+     `Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf`。
+     ✅ 經 inode 確認：`Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf`（run_server.sh 的 `Q36` / OFF 預設解析的模型）
+     就是該 denseIQ4X 檔的 **symlink**；ON 臂 MTP=1 + `SERVER_DENSE_IQ4X` 預設 1 ⇒ `$Q36_MTP_DENSEIQ4X` ＝同一支檔
+     ⇒ 兩臂**載入同一支檔**。⚠ 顯式 `CGC_SERVER_MODEL=...` 鎖定曾試過，但該鍵不在 run_server.sh
+     `SERVER_ENV` 白名單 ⇒ harness 判「env 未送達引擎」直接拒跑(rc=1)，故改倚賴預設解析（已同檔）。
+     −50%（s04 已量到）是 spec-tree MTP-on 的真實成本（雙 branch 打爆 8GB expert pool，hit 35.2% vs 96.3%），
+     **非模型混用造成的假象**。本卡重跑（s05）在更乾淨的環境複驗同檔配對。
+     ⚠ 16GB 盒上 model 13.66GB + 8GB pool＝21.66GB > 16GB ⇒ 必為 OVERSUBSCRIBED ⇒
+     `attrib` 必含 swap_growth ⇒ `caliber_certify` 必然 REFUSE。故本卡產物**只能上板為 diagnostic**
+     （參照 `e-victim-classify-2026-10-05` 先例：node + L25-4 notes 標 `class: done`、「不引用任何 t/s」），
+     **不進 certified / 不推全局棘輪**。
+
+  ---- 上板路徑（量完後執行，生產級閉環）----
+  A. `experiment_sync.py sync --artifact <on-arm json>`（節點需先 init；多臂去重鍵 (log,arm) 已修）
+  B. `caliber_certify.py certify <on-arm json> --board-row` 看片段；過關後
+     `caliber_certify.py certify <on-arm json> --update-board`（因 (default) 新形狀讀數 < 舊形狀棘輪 15.210976
+     且跨形狀不可互比 ⇒ 走 **ratchet_exempt 基準列**，不下推全局棘輪）。
+  C. 看板 `decode_board_2026-09-29.yaml`：
+     - `certified:` 加新列 C15（值＝on 臂 avg tg；`ratchet_exempt: "基準（非棘輪）：(default) 形狀 spec-tree MTP-on 首筆可引用讀數＝該形狀 MTP-on 最高紀錄"`；source/quote 指向 on-arm json）。
+     - `summary:` 的「pp512/tg128 交付格標準形狀」那列補一行：spec-tree MTP-on (default) 最高 X.XX t/s（若 > C14 的 13.722 即新高）。
+     - L25-4 的 `nodes:` 加本 charter id；`dispositions:` 加 `{id, kind: subgoal, ref: L25-4, why:...}`；
+       若節點不在任何 nodes: 還要在 `notes:` 加 `{node, class: done, why:...}`（D2 依據）。
+  D. `mindmap_subgoal_sync.py --apply` → `decode_board_build.py` → 兩支 `--check`（缺口 0 / PASS）。
+  ⚠ **全局棘輪（certify_anchor.decode_ts=15.210976）是舊形狀、只與同形狀互比**：本卡讀數不會、也不應推它；
+     它是「(default) 新形狀的 MTP-on 最高紀錄」，落在 certified 表為 ratchet_exempt 基準列。
