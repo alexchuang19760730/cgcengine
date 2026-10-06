@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>逐輪自適應 accept-verify 白皮書（2026-10-06）</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#1c1c1a; --muted:#5f5e5a;
+    --line:#d3d1c7; --panel:#f7f6f2;
+    --red:#a32d2d; --redbg:#fcebeb;
+    --green:#3b6d11; --greenbg:#eaf3de;
+    --amber:#854f0b; --amberbg:#faeeda;
+    --blue:#185fa5; --bluebg:#e6f1fb;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 20px 64px;background:var(--bg);color:var(--fg);
+       font:15px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;}
+  .wrap{max-width:900px;margin:0 auto}
+  h1{font-size:23px;font-weight:600;margin:0 0 6px}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:26px}
+  h2{font-size:17px;font-weight:600;margin:32px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  h3{font-size:15px;font-weight:600;margin:20px 0 8px}
+  h4{font-size:14px;font-weight:600;margin:14px 0 6px;color:var(--muted)}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:var(--panel);font-weight:600}
+  td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:14px 0;background:var(--panel)}
+  .r{background:var(--redbg);border-left:3px solid var(--red)}
+  .g{background:var(--greenbg);border-left:3px solid var(--green)}
+  .a{background:var(--amberbg);border-left:3px solid var(--amber)}
+  .b{background:var(--bluebg);border-left:3px solid var(--blue)}
+  code{font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--panel);
+       padding:1px 4px;border-radius:4px}
+  pre{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+      padding:12px 14px;overflow-x:auto;font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
+  ul,ol{padding-left:22px;margin:10px 0}
+  li{margin:5px 0}
+  .k{font-weight:600}
+  .tag{display:inline-block;font-size:11.5px;font-weight:600;border-radius:999px;
+       padding:1px 8px;margin-right:6px;vertical-align:1px;border:1px solid var(--line);background:var(--panel)}
+  .tdone{background:var(--greenbg);border-color:#b6d59a;color:var(--green)}
+  .tnext{background:var(--bluebg);border-color:#a9cdf0;color:var(--blue)}
+  .trisk{background:var(--amberbg);border-color:#e6c98f;color:var(--amber)}
+  .tkill{background:var(--redbg);border-color:#eababa;color:var(--red)}
+  footer{margin-top:44px;padding-top:14px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}
+  .small{font-size:12.5px;color:var(--muted)}
+  nav.toc{border:1px solid var(--line);border-radius:10px;padding:12px 18px;margin:18px 0;background:var(--panel)}
+  nav.toc ol{margin:6px 0;padding-left:20px}
+  nav.toc a{color:var(--blue);text-decoration:none}
+  nav.toc a:hover{text-decoration:underline}
+  @media (max-width:820px){ table{display:block;overflow-x:auto;white-space:normal} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>逐輪自適應 accept-verify：把「每輪驗幾列」變成線上決策</h1>
+<div class="sub">
+轉正線（decode 25 t/s 目標、MTP-on 轉正）· 2026-10-06 · 分支 <code>demo/sweet-spot-windows-fix</code> ·<br>
+形狀旋鈕＋控制器已收成 <code>18e75b7e8</code>（3 檔：<code>llama-bench.cpp</code>、
+<code>scripts/run_server.sh</code>、<code>libllama-bench-impl.dylib</code>）；BRESET 仍留在工作樹 ·<br>
+<b>本文不引用任何小數 t/s 讀數</b>（§12.7 噪音底 15–43% ≫ 門檻 9%）：全部證據是
+<b>形狀計數</b>與<b>每輪淨收益的原料</b>。
+</div>
+
+<nav class="toc">
+<b>目次</b>
+<ol>
+<li><a href="#s0">一句話與交付狀態</a></li>
+<li><a href="#s1">為什麼是「形狀」：k_eff 這條軸為什麼先死</a></li>
+<li><a href="#s2">方法：把驗證形狀變成可決策的變數</a></li>
+<li><a href="#s3">儀器：見證欄位與可證偽性契約</a></li>
+<li><a href="#s4">結果 A：門檻版（rate 目標）</a></li>
+<li><a href="#s5">結果 B：淨收益版（net 目標）</a></li>
+<li><a href="#s6">端到端：三條形狀軌跡與交叉點</a></li>
+<li><a href="#s7">判詞，與那個錯的預測</a></li>
+<li><a href="#s8">讀數陷阱（會咬人的四條）</a></li>
+<li><a href="#s9">限制、未竟、重現</a></li>
+<li><a href="#s10">附錄：產物索引與檔案指路</a></li>
+</ol>
+</nav>
+
+<h2 id="s0">0. 一句話與交付狀態</h2>
+
+<div class="card b">
+<span class="k">一句話。</span>
+投機解碼的 <b>k</b>（每輪接受長度）在有 alt-seed 的配置下被引擎自身的前置檢查壓成 1，這條軸
+<b>結構性不可用</b>；於是把「每輪驗幾列」變成一個<b>逐輪線上決策</b>：觀測本輪實際接受量，
+用<b>接受率門檻</b>或<b>每輪淨收益</b>當目標，在 <code>d ∈ [1, dmax]</code> 上來回移動。
+<b>機制 PASS</b>（可掃、可讀、跟訊號走、不退化），<b>但 MTP-on 未轉正</b>：目前沒有任何一路徑達到
+t/s 目標，而本方法本身也不宣稱它達到了。
+</div>
+
+<table>
+<tr><th>面</th><th>狀態</th><th>位置</th></tr>
+<tr><td>形狀旋鈕（<code>ALTBIND</code>／<code>ROWS</code>）＋控制器（rate＋net）</td>
+    <td><span class="tag tdone">已 commit</span></td><td><code>18e75b7e8</code>（3 檔）</td></tr>
+<tr><td>BRESET（seq-1 殘留清除，預設關）</td>
+    <td><span class="tag tnext">工作樹</span></td><td>單一 hunk，<b>判詞為「殘留假說死」</b>（§1.3）</td></tr>
+<tr><td>seq-1 雙加修補（<code>speculative.cpp</code>）</td>
+    <td><span class="tag trisk">未套用</span></td><td>補丁已語法檢查，<b>未實測</b>（§1.2）</td></tr>
+<tr><td>整臂形狀掃描（11 臂）</td>
+    <td><span class="tag tkill">未跑</span></td><td>本輪只加跑 2 臂（§9）</td></tr>
+</table>
+
+<h2 id="s1">1. 為什麼是「形狀」：k_eff 這條軸為什麼先死</h2>
+
+<p>投機解碼有兩個性質不同的旋鈕：<b>走多深</b>（draft 鏈的長度 k）與<b>走多寬</b>（一輪驗幾條候選列）。
+本線原本壓在 k 上，但 k 在「有 alt-seed」的配置裡被引擎自己擋住——而且理由不是原先以為的 M-RoPE 牆。</p>
+
+<h3>1.1 引擎的拒絕訊息與它的門檻值</h3>
+<pre>decode: backend sampling supports at most 1 outputs per sequence (seq_id 1 had 2)
+llama_decode: failed to decode, ret = -1
+spec        draft: llama_decode[1] returned -1</pre>
+<ul>
+<li><b>拒絕點</b>：<code>src/llama.cpp/src/llama-context.cpp:2622</code>，<code>llama_context::decode()</code>
+的前置檢查（<code>:2618</code> 數 <code>seq_output_count</code>、<code>:2621</code> 比
+<code>n_outputs_max_per_seq</code>、<code>:2625</code> <code>return -1</code>）。</li>
+<li><b>門檻 1 從哪來</b>：draft context 的參數由 <code>common_base_params_to_speculative()</code> 產生，
+其中 <b><code>common/speculative.cpp:2701</code> 寫死 <code>result.n_outputs_max_per_seq = 1;</code></b>。</li>
+<li><b>為什麼會檢查</b>：只有該 seq <b>有註冊 sampler</b> 時才檢查；註冊點是
+<code>speculative.cpp:1437</code>，由 <code>params.draft.backend_sampling</code> 驅動，而它預設開。</li>
+</ul>
+
+<h3>1.2 那顆多餘的 token 從哪來：seq 1 在同一步被加兩顆</h3>
+<p>在 <code>while (n_drafting &gt; 0)</code> 的 draft loop 內、<code>i == 0</code> 那一步：seq 0 的迭代先
+挑完 draft，接著 <b>ALT-BRANCH SEED</b>（<code>:1980-2000</code>）把 seq 1 建起來——把 alt0
+<b>推進「下一步的 batch」</b>（<code>:1991</code>）、把 <code>i_last[1]</code> 指向那個 slot
+（<code>:1994</code>）。但迴圈<b>沒有跳過 seq 1</b>，所以同一步的 <code>seq_id == 1</code> 迭代照跑：
+它在<b>還沒 decode 的 slot</b> 上取樣，讀到 seq 0 的殘值（日誌上 seq 1 的 id／p／h_row 與 seq 0
+完全相同），再把結果 push 進去 ⇒ seq 1 在同一位置有 2 顆 ⇒ 整批被拒。
+<code>n_max = 2</code> 之所以正常，是因為 <code>:1966</code> 的 <code>if (params.n_max &lt;= result.size())</code>
+continue 排在 batch add 之前。</p>
+
+<table>
+<tr><th>cell</th><th class="n">n_max</th><th>alt-seed</th><th class="n">draft/round</th><th class="n">decode 失敗</th><th>引擎理由</th></tr>
+<tr><td><code>nmax2</code></td><td class="n">2</td><td>開</td><td class="n">2</td><td class="n">0</td><td>—</td></tr>
+<tr><td><code>nmax3</code></td><td class="n">3</td><td>開</td><td class="n"><b>1</b></td><td class="n"><b>12/12</b></td><td>backend sampling … (seq_id 1 had 2)</td></tr>
+<tr><td><code>nmax3_altbind</code></td><td class="n">3</td><td>關（ALTBIND）</td><td class="n">3</td><td class="n">0</td><td>—</td></tr>
+<tr><td><code>nmax3_w1</code>（關鍵控制）</td><td class="n">3</td><td>關（<code>B=1</code>）</td><td class="n">3</td><td class="n">0</td><td>—</td></tr>
+<tr><td><code>nmax3_notree</code></td><td class="n">3</td><td>不適用（樹關）</td><td class="n">1/2/3</td><td class="n">0</td><td>—</td></tr>
+<tr><td><code>nmax3_nobksmp</code>（機制控制）</td><td class="n">3</td><td>開</td><td class="n">3</td><td class="n">0</td><td>— 仍產畸形 batch，只是沒人擋</td></tr>
+</table>
+<p class="small">證據：<code>Backup/spec_tree/f1f2_diag/keff_probe.py</code>，
+<code>-p 16 -n 16 -d 0 -r 1 --fixed-fill-seed 1</code>。<code>nmax3_w1</code> 證明<b>本配置下沒有第二個機制</b>
+（M-RoPE 牆不成立）；<code>nmax3_nobksmp</code> 證明<b>被拒的是那一批</b>，不是鏈本身。</p>
+
+<div class="card a">
+<span class="k">歸因更正（必須明文）。</span>
+先前的紀錄把此事歸因為 <code>speculative.cpp:1309-1319</code> 註解裡的「M-RoPE 牆」，<b>那是錯的</b>。
+真因是上述的 seq-1 同一步雙加。修法已寫成補丁（<code>SPECULATIVE_SEQ1_DOUBLE_ADD.patch</code>，
+3 hunk、+19/−0：新增逐 step 的 <code>just_seeded</code>，per-seq 迴圈在
+<code>if (!drafting[seq_id]) continue;</code> 後加 <code>if (seq_id == just_seeded) continue;</code>），
+通過 <code>patch --dry-run</code> 與用真實編譯命令的 <code>-fsyntax-only</code>，但<b>尚未套用、也未實測</b>
+（<code>speculative.cpp</code> 屬他線檔案，本線不動）。
+</div>
+
+<h3>1.3 BRESET：殘留假說已死（為什麼它不在這顆 commit）</h3>
+<p>bench 側還試過一條便宜的假說：當 B 被關著（<code>W_eff == 1</code>）時，seq 1 的 cell 一個都不收，
+它停在最後一次 B-on 的位置，B 再開時可能落在殘留之後。處置碼就是 BRESET（預設關）。
+A/B 判詞（跑前註冊）是 <b>FAIL</b>：把 seq 1 補刪之後，oracle 逐輪 281 行、ACCEPT 5 行、
+SPEC-TREE 10 行<b>三條頻道逐位元相同</b>；而「B 恆開」的否證控制如設計一字不動。
+⇒ B-on 段接受量的落差<b>不是</b> seq-1 draft cell 殘留造成的，殘留無法解釋它。</p>
+<p class="small">誠實邊界：逐位元相同允許兩種讀法（(a) 那些位置本來就沒殘留；(b) 有殘留但不在遮罩作用範圍），
+<b>兩者都讓殘留無法解釋落差</b>，所以否證成立；但「BRESET 真的刪掉了 cell」這件事沒有正控
+（<code>llama_memory_seq_rm</code> 的回傳值沒被記）。因此 BRESET 程式碼留在工作樹、不進這顆 commit。</p>
+
+<h2 id="s2">2. 方法：把驗證形狀變成可決策的變數</h2>
+
+<h3>2.1 參數化：狀態用「尾長 d」，不是列數</h3>
+<p>一輪的驗證列數是 <code>rows = W_eff × (1 + d)</code>。控制器把狀態記成 <b>尾長 d</b> 而不是列數，
+因為 <code>W_eff</code> 會逐輪變（B 開／關），列數不是形狀唯一不變的自變數；<code>d</code> 才是。
+列數則由 <code>d</code> 與當輪的 <code>W_eff</code> 推得。</p>
+<ul>
+<li><b>起手 d = 1</b>，不是 0：<code>d = 0</code> 的尾巴是空的、<code>m</code> 恆為 0，量不到接受率 ⇒ 控制器沒有方向。</li>
+<li><b>靜態旋鈕</b> <code>CGC_SPEC_TREE_ROWS=&lt;n&gt;</code> 走另一條式子（<code>d</code> 由需要的列數反推），
+讓「靜態」與「自適應」共用同一套見證。</li>
+<li><b>解耦</b> <code>CGC_SPEC_TREE_ALTBIND</code>：把「alt draft 綁進 tree batch」與「alt 分支探索」
+拆成兩個旗標（<code>.alt</code> 與 <code>.alt_branch</code>）。沒有這個解耦，k_full 在有 alt-seed 的輪
+斷在第二步（§1.2），自適應<b>根本換不動形狀</b>——形狀的量測會被引擎的拒絕蓋掉。</li>
+</ul>
+
+<h3>2.2 觀測量：本輪「實際」接受了什麼</h3>
+<ul>
+<li><code>m</code>：本輪真的被接受的 draft 數。root<b>不計</b>——它每輪都會被接受，是常數。</li>
+<li><code>tail_len[win_br]</code>：勝出分支<b>實際進 verify 的尾長</b>，不是目標列數。
+用實際尾長做分母，被 draft 深度或 cap 砍過的輪才不會讓接受率失真。</li>
+<li><code>rows_actual</code>：<b>實際</b>列數，同樣不是目標列數（被 cap 過的輪不該被記成便宜）。</li>
+</ul>
+
+<h3>2.3 兩把尺：rate 與 net</h3>
+<table>
+<tr><th>目標</th><th>式子</th><th>回答的問題</th></tr>
+<tr><td>rate（<code>_OBJ=rate</code>，預設）</td>
+    <td><code>rate_t = m / tail_len[win_br]</code>，與 <code>_THR</code> 比</td>
+    <td>「最近接受率夠高嗎」</td></tr>
+<tr><td>net（<code>_OBJ=net</code>）</td>
+    <td><code>payoff_t = m</code>；<code>cost_t = rows_actual × COST/100</code>；<code>net_t = payoff − cost</code></td>
+    <td>「這一輪多送的列值不值得」</td></tr>
+</table>
+<p>接受率高<b>不等於</b>划算：列數是<b>逐輪</b>都要付的成本，而門檻版的回饋迴路只看比率，
+看不到「多送的列值不值得」。這是換目標的動機。<code>_COST</code> 的單位是
+<b>百分之一 token／列</b>（<code>100</code> ＝ 每列 1.0 個被接受 token 的成本）。</p>
+
+<h3>2.4 探索—利用政策（兩版共用，差別只在目標）</h3>
+<pre>rate：mean = 最近 _WIN 輪 rate 的算術平均（不是 EWMA）
+      mean &gt; thr ⇒ d+1 ；mean &lt; thr ⇒ d−1 ；相等不動      （邊界夾在 [1, dmax]）
+
+net ：每 dmax 輪插一輪「探測」（round-robin 走過每個 d）
+      其餘輪「利用」：d = argmax_d mean(net)，同分取較小的 d
+</pre>
+<p><b>探測為什麼要穿插、而不是全排在最前面</b>：這個 cell 的頭幾輪 MTP 接受率還沒起來（實測 m 連續為 0），
+把探測全塞在暖機段會讓每個 d 都量到 0 分 ⇒ argmax 退化成「列數最少的那個」——
+<b>探測自己把答案汙染掉</b>。</p>
+
+<h3>2.5 前置條件：「臂的責任」，本格不代打</h3>
+<div class="card a">
+控制器只能從它量到的東西學習。若臂沒有把條件擺好——draft 深度 ≥ <code>dmax</code>、
+<code>CGC_SPEC_TREE_RS</code> ≥ K、<code>DRAFT_N_MAX</code> 足夠——量到的就是<b>被 cap 過的形狀</b>，
+此時控制器是「決策動、形狀跟不上」。這個失敗形狀<b>看得見</b>：<code>rows_unmet &gt; 0</code>
+（目標列數沒被滿足的輪數）與直方圖會一起露出來，見 §4 的 <code>_nk</code> 格。
+</div>
+
+<h2 id="s3">3. 儀器：見證欄位與可證偽性契約</h2>
+
+<h3>3.1 旋鈕</h3>
+<table>
+<tr><th>env</th><th>預設</th><th>作用</th></tr>
+<tr><td><code>CGC_SPEC_TREE_ALTBIND</code></td><td>0</td><td>真 ⇒ 關掉 alt-seed（<code>alt_branch=false</code>），把 alt 綁定與分支探索解耦；自適應臂必須開</td></tr>
+<tr><td><code>CGC_SPEC_TREE_ROWS=&lt;n&gt;</code></td><td>0＝關</td><td>靜態列數（走反推式）</td></tr>
+<tr><td><code>CGC_SPEC_TREE_ROWS_ADAPT=&lt;dmax&gt;</code></td><td>0＝關</td><td>開控制器；<code>d</code> 值域 <code>[1, dmax]</code></td></tr>
+<tr><td><code>CGC_SPEC_TREE_ROWS_WIN=&lt;w&gt;</code></td><td>4</td><td>接受率視窗長度（算術平均）</td></tr>
+<tr><td><code>CGC_SPEC_TREE_ROWS_THR=&lt;pct&gt;</code></td><td>50</td><td>門檻：mean &gt; thr ⇒ d+1；mean &lt; thr ⇒ d−1</td></tr>
+<tr><td><code>CGC_SPEC_TREE_ROWS_OBJ</code></td><td><code>rate</code></td><td><code>net</code> ⇒ 換成淨收益目標（預設值下 §4 的行為一字不動）</td></tr>
+<tr><td><code>CGC_SPEC_TREE_ROWS_COST=&lt;c&gt;</code></td><td>100</td><td>每列成本，百分之一 token／列</td></tr>
+</table>
+
+<h3>3.2 見證：把「引擎做了什麼決策」寫在日誌裡</h3>
+<p><b>契約</b>：既有欄位順序<b>不動</b>，新欄位一律<b>追加在 <code>CGC-SPEC-TREE</code> 行尾端</b>——
+欄位是契約，改順序等於讓所有既有的解析器說謊。</p>
+<table>
+<tr><th>欄位</th><th>它證明什麼</th></tr>
+<tr><td><code>rows_hist=&lt;n&gt;:&lt;count&gt;,…</code></td><td><b>實際</b>列數直方圖。平均 6.0 可以是恆 6，也可以是 4/6/8 混出來的 ⇒ <b>只有直方圖是形狀的一手證據</b></td></tr>
+<tr><td><code>rows_kinds</code>／<code>rows_switch</code></td><td>用過幾種形狀／換過幾次。「靜態」的<b>否定</b>證據（靜態 ⇒ kinds=1、switch=0）</td></tr>
+<tr><td><code>rows_req</code>／<code>rows_d</code></td><td>本輪<b>目標</b>列數／目前的 <code>d</code>；靜態路徑下 <code>rows_req</code> 恰等於 <code>cgc_tree_rows</code></td></tr>
+<tr><td><code>rows_unmet</code></td><td>目標沒被滿足的輪數 ⇒ 「臂沒擺好條件」的自我揭露</td></tr>
+<tr><td><code>adapt= adapt_max= adapt_thr= adapt_win=</code></td><td>控制器是否開著、參數是什麼（排除「開關根本沒送到」）</td></tr>
+<tr><td><code>altbind=</code></td><td>這一趟的 <code>W_eff</code> 前提（<code>ALTBIND=1</code> ⇒ W=2、k_full=3）</td></tr>
+<tr><td><code>net_obj= net_cost= net_pick= net_tab=</code></td><td>net 目標的設定與結果；<code>net_tab</code> 是 <code>&lt;d&gt;:&lt;mean_m&gt;:&lt;mean_rows&gt;:&lt;n&gt;</code> 的<b>原料帳本</b></td></tr>
+<tr><td><code>CGC-ROWS-ROUND …</code></td><td>環境閘的<b>逐輪</b>軌跡（rate 版有 <code>rate/mean/thr/d=→</code>；net 版有 <code>obj=net</code>、<code>net100=</code>、<code>pick=</code>）</td></tr>
+</table>
+<div class="card g">
+<span class="k">設計原則：報原料，不報結論。</span>
+<code>net_tab</code> 刻意輸出 <code>mean_m</code> 與 <code>mean_rows</code> 的原始平均，而不是控制器算好的 net 值——
+讀者可以用<b>任何</b> COST 離線重算 argmax，不必相信控制器的算術。§5 的第 ⑦ 條判別就是這樣做的：
+離線重算與見證的 <code>net_pick</code> 四格全數一致。
+</div>
+
+<h3>3.3 三條紀律</h3>
+<ol>
+<li><b>負控制先跑</b>：控制器關／靜態列數的格必須顯示 <code>rows_kinds=1</code>、<code>rows_switch=0</code>。
+沒有負控制，「自適應看起來在動」可能只是雜訊。</li>
+<li><b>判準跑前註冊</b>：每一格的預期寫進 harness 的 docstring，事後對不上要<b>如實記為錯</b>
+（§7 有一條錯的，且它是本方法最重要的限制之一）。</li>
+<li><b>位元不變的 A/B</b>：改動前後各建一次 binary，跑預設路徑與 rate 路徑，
+四條見證頻道（ACCEPT／SPEC-TREE／ORACLE／SPEC-DUMP）剝掉新增尾端欄位後必須<b>逐字元相同</b>。
+這條保證「新旋鈕沒有偷偷改變舊行為」。</li>
+</ol>
+
+<h2 id="s4">4. 結果 A：門檻版（rate 目標）</h2>
+
+<p>BASE 加 <code>CGC_SPEC_TREE_ALTBIND=1</code>、<code>DRAFT_N_MAX=3</code>、<code>RS=3</code>
+⇒ <code>W_eff=2</code>、<code>d ∈ {1,2,3}</code> ⇒ 列數 <code>{4,6,8}</code>。
+煙霧 harness：<code>Backup/spec_tree/f1f2_diag/shape_adapt_smoke.py</code>（<b>零 t/s</b>，
+<code>-p 16 -n 32 -d 0 -r 1 --fixed-fill-seed 1</code>）。</p>
+
+<table>
+<tr><th>cell</th><th><code>rows_hist</code></th><th class="n">kinds</th><th class="n">switch</th><th>判讀</th></tr>
+<tr><td><code>adapt_off_ab</code>（ADAPT 未設）</td><td>8:21</td><td class="n">1</td><td class="n">0</td><td>負控制：靜態 ⇒ 1 種形狀</td></tr>
+<tr><td><code>static_r6_ab</code>（<code>ROWS=6</code>）</td><td>6:19</td><td class="n">1</td><td class="n">0</td><td>負控制：靜態旋鈕 ⇒ 1 種形狀</td></tr>
+<tr><td><code>adapt_d3_t20_ab</code></td><td>4:7,6:1,8:11</td><td class="n"><b>3</b></td><td class="n">2</td><td>低門檻 ⇒ 爬滿 d=3 並駐留</td></tr>
+<tr><td><code>adapt_d3_t40_ab</code></td><td>4:10,6:3,8:5</td><td class="n"><b>3</b></td><td class="n"><b>6</b></td><td>門檻在訊號中段 ⇒ 來回擺</td></tr>
+<tr><td><code>adapt_d3_t70_ab</code></td><td>4:12,6:3,8:3</td><td class="n"><b>3</b></td><td class="n"><b>6</b></td><td>高門檻 ⇒ 偏淺、也擺</td></tr>
+<tr><td><code>adapt_d3_t20_nk</code>（無 ALTBIND）</td><td>4:21</td><td class="n">1</td><td class="n">2</td><td>k_full=1：<b>決策動、形狀跟不上</b>，<code>rows_unmet=14</code></td></tr>
+</table>
+
+<h3>4.1 跑前註冊的四條判別（全部對上）</h3>
+<table>
+<tr><th class="n">#</th><th>註冊判別</th><th>實測</th><th>判</th></tr>
+<tr><td class="n">①</td><td>列數 = <code>W_eff×(1+d)</code></td><td>直方圖桶只有 4／6／8，且與 <code>rows_req</code> 逐輪相等（ALTBIND 格 <code>rows_unmet=0</code>）</td><td><span class="tag tdone">PASS</span></td></tr>
+<tr><td class="n">②</td><td>靜態錨 ⇒ <code>rows_kinds=1</code> 且 <code>rows_switch=0</code></td><td><code>adapt_off_ab</code>／<code>static_r6_ab</code> 皆成立</td><td><span class="tag tdone">PASS</span></td></tr>
+<tr><td class="n">③</td><td>自適應格 ⇒ <code>kinds≥3</code> 且 <code>switch&gt;0</code>（<b>不退化成靜態</b>）</td><td>t20／t40／t70 三格 kinds=3、switch=2／6／6</td><td><span class="tag tdone">PASS</span></td></tr>
+<tr><td class="n">④</td><td>門檻越低收斂越深（平均列數）</td><td>t20 <b>6.42</b> &gt; t40 <b>5.44</b> &gt; t70 <b>5.00</b> ⇒ 控制器真的跟訊號走</td><td><span class="tag tdone">PASS</span></td></tr>
+</table>
+
+<h3>4.2 方向性：上升跟在「高接受率」後、下降跟在「低接受率」後</h3>
+<pre>adapt_d3_t40_ab 的逐輪軌跡（LLAMA_BENCH_SPEC_ROWS_DBG=1）
+  mean 0.25 → 0.50  (&gt; thr=0.40)  ⇒ d 1→2
+  mean 0.625        (&gt; thr)       ⇒ d 2→3
+  接著兩輪 rate = 0 ⇒ mean 掉到 0.29 (&lt; thr) ⇒ d 3→2→1
+  再爬</pre>
+
+<h3>4.3 端到端（<code>harness bench</code>，<code>--warm-skip 0</code>）</h3>
+<table>
+<tr><th>臂</th><th><code>rows_hist</code></th><th class="n">kinds</th><th class="n">switch</th><th class="n">平均列數</th><th>alt-seed</th><th class="n"><code>X&lt;Y</code></th></tr>
+<tr><td><code>rows_adapt_t20</code></td><td>4:11,6:12,8:54</td><td class="n">3</td><td class="n">24</td><td class="n">7.12</td><td>0</td><td class="n">0</td></tr>
+<tr><td><code>rows_adapt_t70</code></td><td>4:30,6:16,8:18</td><td class="n">3</td><td class="n">31</td><td class="n">5.63</td><td>0</td><td class="n">0</td></tr>
+</table>
+<p><code>rc=0</code>、<code>refused_preflight=false</code>、<code>spec_draft.state=OK</code>（5 reps）、
+<code>env</code> 與 <code>extra_env</code> 都含新鍵（<code>_ADAPT=3</code>／<code>_THR=20|70</code>／
+<code>ALTBIND=1</code>／<code>RS=3</code>／<code>DRAFT_N_MAX=3</code>）
+⇒ 「開關沒送到」這個<b>最貴的失敗形狀</b>被排除。t20 的平均列數 &gt; t70，與煙霧同向。</p>
+
+<h2 id="s5">5. 結果 B：淨收益版（net 目標）</h2>
+
+<p>同一個 cell、同一個 seed、同一個 <code>W_eff=2</code>／<code>k_full=3</code>，
+<b>只有目標不同</b>——這是這一節的整個設計：把「目標函數」變成唯一的自變數。</p>
+
+<table>
+<tr><th>cell</th><th>目標</th><th><code>rows_hist</code></th><th class="n"><code>net_pick</code></th><th>逐 d 帳本（<code>mean_m</code>／<code>mean_rows</code>／n）</th></tr>
+<tr><td><code>adapt_d3_t40_ab</code></td><td>rate（thr=40）</td><td>4:10,6:3,8:5</td><td class="n">—</td><td>—</td></tr>
+<tr><td><code>adapt_net_c0_ab</code></td><td>net, COST=0</td><td>4:7,6:2,8:8</td><td class="n"><b>3</b></td><td>d1 0.250/4.0/4、d2 0.500/6.0/2、d3 <b>2.250</b>/8.0/4</td></tr>
+<tr><td><code>adapt_net_c20_ab</code></td><td>net, COST=20</td><td>4:13,6:2,8:3</td><td class="n"><b>3</b></td><td>d1 0.750/4.0/4、d2 0.500/6.0/2、d3 <b>2.333</b>/8.0/3</td></tr>
+<tr><td><code>adapt_net_c40_ab</code></td><td>net, COST=40</td><td>4:15,6:2,8:2</td><td class="n"><b>1</b></td><td>d1 <b>1.000</b>/4.0/4、d2 0.500/6.0/2、d3 2.000/8.0/2</td></tr>
+<tr><td><code>adapt_net_c100_ab</code></td><td>net, COST=100</td><td>4:15,6:2,8:2</td><td class="n"><b>1</b></td><td>d1 <b>1.000</b>/4.0/4、d2 0.500/6.0/2、d3 2.000/8.0/2</td></tr>
+</table>
+
+<table>
+<tr><th class="n">#</th><th>註冊判別</th><th>實測</th><th>判</th></tr>
+<tr><td class="n">⑤</td><td><code>net_pick</code> 隨 COST 單調不增；中間值預測 COST=20 ⇒ d=2</td>
+    <td>端點與單調性對（<b>3,3,1,1</b>），但<b>中間值錯</b>：量到 d=3</td><td><span class="tag trisk">部分 PASS</span></td></tr>
+<tr><td class="n">⑥</td><td><code>net_tab</code> 的 <code>mean_rows</code> 應恰為 <code>W_eff×(1+d)</code></td>
+    <td>恰為 <b>4.000／6.000／8.000</b> ⇒ 樣本記在對的 d</td><td><span class="tag tdone">PASS</span></td></tr>
+<tr><td class="n">⑦</td><td>離線重算與見證一致</td>
+    <td>用 <code>net_tab</code> 原料算 <code>argmax(100×mean_m − COST×mean_rows)</code>（同分取小 d）與 <code>net_pick</code> <b>4/4 格全等</b>（c=20：−5／−70／+73.3 → d3 ✓；c=40：−60／−190／−120 → d1 ✓）</td>
+    <td><span class="tag tdone">PASS</span></td></tr>
+<tr><td class="n">⑧</td><td><code>net</code> 是純加法（不改舊路徑）</td>
+    <td>改動前後各建一次 binary、跑預設與 rate 兩條路徑：四頻道剝掉新欄位後逐字元相同（sha 前綴 <code>8f67c3281202fb34</code>／<code>b614501ec49e7a22</code>）</td>
+    <td><span class="tag tdone">PASS</span></td></tr>
+</table>
+<p class="small">時間軸補充：門檻版自己的 A/B（§4 的 <code>ADAPT</code> 未設路徑）同樣逐字元相同，
+sha 前綴 <code>8f67c3281202fb34</code>。也就是說「新增旋鈕」與「新增目標函數」兩次改動，
+都各自證明了沒有動到預設行為。</p>
+
+<h2 id="s6">6. 端到端：三條形狀軌跡與交叉點</h2>
+
+<p>同一 cell、同一個底座，只換目標（<code>harness bench</code>）：</p>
+
+<table>
+<tr><th>臂</th><th>目標</th><th><code>rows_hist</code></th><th class="n">平均列數</th><th class="n"><code>net_pick</code></th></tr>
+<tr><td><code>rows_adapt_t20</code></td><td>rate, thr=20</td><td>4:11,6:12,8:54</td><td class="n">7.12</td><td class="n">—</td></tr>
+<tr><td><code>rows_adapt_t70</code></td><td>rate, thr=70</td><td>4:30,6:16,8:18</td><td class="n">5.63</td><td class="n">—</td></tr>
+<tr><td><code>rows_adapt_net</code></td><td>net, COST=100</td><td><b>4:50</b>,6:7,8:7</td><td class="n"><b>4.66</b></td><td class="n"><b>1</b></td></tr>
+</table>
+<ul>
+<li>門檻版把列數推深（平均 7.12）；淨收益版壓到最淺（平均 4.66，<b>64 輪裡 50 輪是 4 列</b>）。</li>
+<li><code>net_tab=1:1.000:4.000:4, 2:2.000:6.000:4, 3:3.000:8.000:4</code>。</li>
+</ul>
+
+<h3>6.1 生產 cell 的逐輪原料（把該臂所有 rep 的 <code>CGC-ROWS-ROUND</code> 併起來）</h3>
+<table>
+<tr><th><code>d</code></th><th class="n">rows</th><th class="n">m=0</th><th class="n">m=1</th><th class="n">m=2</th><th class="n">m=3</th><th class="n">Σn</th><th class="n">mean m</th></tr>
+<tr><td>1</td><td class="n">4</td><td class="n">55</td><td class="n">213</td><td class="n">—</td><td class="n">—</td><td class="n">268</td><td class="n">0.795</td></tr>
+<tr><td>2</td><td class="n">6</td><td class="n">8</td><td class="n">19</td><td class="n">11</td><td class="n">—</td><td class="n">38</td><td class="n">1.079</td></tr>
+<tr><td>3</td><td class="n">8</td><td class="n">9</td><td class="n">18</td><td class="n">—</td><td class="n">9</td><td class="n">36</td><td class="n">1.250</td></tr>
+</table>
+<div class="card g">
+<span class="k">本節最有價值的一個數：交叉點。</span>
+<code>net(d) = mean_m(d) − c × 2(1+d)</code> 的交叉點約在 <b>c ≈ 0.11–0.14</b>（COST ≈ 11–14）：
+<b>列的成本只要高於約 0.12 個被接受的 token，最淺的形狀就贏</b>。這解釋了 COST=100 的
+<code>net_pick=1</code>，也說明了「6 列的預設形狀」在這個目標下<b>不是最優</b>——
+已測的 COST（0／20／40／100）都選 4 列或 8 列，<b>中間的 6 列從未成為 argmax</b>。
+（更細的 COST 掃描沒跑；煙霧 cell 上的交叉點另有不同值。）
+</div>
+
+<h2 id="s7">7. 判詞，與那個錯的預測</h2>
+
+<div class="card r">
+<span class="k">我的預測錯了一格，而這個錯是本方法的核心限制。</span>
+我註冊「COST=20 ⇒ d=2」，實測是 <b>d=3</b>。原因是：我的預測用了<b>門檻版</b>軌跡在 d3 上的均值
+（約 1.6），而 net 版在<b>同一個 d</b> 上量到 <b>2.333</b>。
+也就是說：<b>一個形狀的「收益」估計不是政策無關的</b>——誰去拜訪它、帶著什麼 carryover 去拜訪，
+會改變它被接受的長度。這是一個真實的混淆，不是算錯。
+</div>
+
+<table>
+<tr><th>判</th><th>內容</th></tr>
+<tr><td><span class="tag tdone">機制 PASS</span></td>
+    <td>控制器可掃、可讀（見證欄位說得出每一輪用了幾列）、逐輪跟訊號走（門檻 20／40／70 給出三條不同軌跡、方向性對）、且<b>不退化</b>成靜態（kinds=3、switch&gt;0，端到端亦然）。</td></tr>
+<tr><td><span class="tag tdone">目標函數可替換 PASS</span></td>
+    <td>同一個開關換目標，得到不同的、可解釋的形狀軌跡（深 vs 淺），且離線重算與見證一致（4/4）。</td></tr>
+<tr><td><span class="tag tkill">未轉正</span></td>
+    <td>MTP-on <b>未</b>達 t/s 目標；且本線<b>不引用</b>任何小數 t/s 讀數（噪音底 15–43% ≫ 門檻 9%）。「機制動了」不等於「指標動了」。</td></tr>
+<tr><td><span class="tag trisk">已知混淆</span></td>
+    <td>(1) 形狀收益<b>非政策無關</b>（上面那格）；(2) 探索是貪婪的（見 §8）；(3) k 的上界仍被引擎的 seq-1 雙加壓著（§1.2 未套用修補）⇒ 本方法的上限還沒被量到。</td></tr>
+</table>
+
+<h2 id="s8">8. 讀數陷阱（會咬人的四條）</h2>
+<ol>
+<li><b><code>rows_switch</code> 在 net 版不能當「非退化」的證據</b>：探測是<b>每 <code>dmax</code> 輪強制</b>的，
+所以 switch 數大部分來自探測（<code>rows_adapt_net</code> 的 28 次裡約 21 次）。
+要看的是<b>利用輪的分布</b>：exploit 的 <code>pick</code> 在非探測輪<b>始終是 1</b>，且直方圖 4:50/64。
+<b>判準必須跟著目標換</b>——門檻版能用的證據，net 版不能用。</li>
+<li><b><code>net_tab</code> 是「最後一個 rep」的窗，不是整臂</b>：要整臂的原料必須把
+<code>CGC-ROWS-ROUND</code> 併起來（§6.1 的表就是這樣做的）。</li>
+<li><b>貪婪凍結</b>：沒被選中的 <code>d</code> 只在探測輪更新樣本，兩次探測之間的估計是凍結的。
+這是教科書級的 explore／exploit 弱點，本輪沒有處理（<code>_WIN</code> 只保證<b>被拜訪的</b> d 有新鮮樣本）。</li>
+<li><b>單一 rep 的 <code>emit_per_round</code> 不可引用</b>（噪音底 15–43%）；§6 只用它做形狀的<b>旁證</b>，
+不拿它做判詞。</li>
+</ol>
+
+<h2 id="s9">9. 限制、未竟、重現</h2>
+
+<h3>9.1 未竟（誠實清單）</h3>
+<ul>
+<li><b>整臂形狀掃描（11 臂）未跑</b>：本輪只加跑 2 臂（煙霧 6 格不算整臂）。</li>
+<li><b><code>e2_off2</code> 的 off 錨仍缺</b>；<code>p_chain</code> 整 rep 死亡未在 CPU 重現。</li>
+<li><b>seq-1 雙加修補未套用</b>：它是 <code>k</code> 上界的直接死因，套用後「<code>n_max=3</code> 的 alt 鏈
+真的跑滿 3 顆」<b>尚未實測</b>——這是本線唯一未驗證的環節。副帶效果也該一起檢查：seq 1 不再在未 decode
+的 slot 上取樣，因此它第 0 步那顆「與 seq 0 完全相同」的假 draft 應整條消失。</li>
+<li><b>COST 只掃了 4 格</b>（0／20／40／100）：交叉點是用原料推的（c ≈ 0.11–0.14），不是掃出來的。</li>
+<li><b>BRESET 沒有正控</b>：<code>llama_memory_seq_rm</code> 的回傳值沒被記，「它真的刪掉了 cell」無法自證。</li>
+</ul>
+
+<h3>9.2 重現（一個 cell、一行 env）</h3>
+<pre># 自適應、rate 目標（門檻 40）、dmax=3
+CGC_SPEC_TREE_ALTBIND=1 \
+CGC_SPEC_TREE_ROWS_ADAPT=3 \
+CGC_SPEC_TREE_ROWS_THR=40 \
+DRAFT_N_MAX=3 CGC_SPEC_TREE_RS=3 \
+LLAMA_BENCH_SPEC_ROWS_DBG=1 \
+  &lt;harness bench 的臂定義&gt;
+
+# 換成淨收益目標（其餘一字不動）
+CGC_SPEC_TREE_ROWS_OBJ=net CGC_SPEC_TREE_ROWS_COST=100
+</pre>
+<p class="small">紀律：A/B 必須釘 <code>--fixed-fill-seed 1</code>（否則同一顆 binary 三次得到三條不同流）；
+bench 必須走 <code>llama_bench_matrix.resolve()</code>＋<code>forward_argv()</code>（含 <code>-expert-cache</code>），
+手工直起會 OOM。形狀臂必須用 <code>ALTBIND=1</code> 的配置，否則量到的是被引擎拒絕蓋掉的形狀。</p>
+
+<h2 id="s10">10. 附錄：產物索引與檔案指路</h2>
+
+<table>
+<tr><th>產物</th><th>內容</th></tr>
+<tr><td><code>Backup/spec_tree/F1F2F3_IMPLEMENT_2026-10-06.md</code> §14／§16</td><td>本文的證據原文（1376 行，<b>gitignored</b>）：§14 控制器、§15 k_eff 根因、§16 淨收益目標</td></tr>
+<tr><td><code>Backup/spec_tree/f1f2_diag/shape_adapt_smoke.py</code></td><td>煙霧 harness（負控制＋門檻掃描＋net 對比；判別寫在 docstring 裡＝跑前註冊）</td></tr>
+<tr><td><code>Backup/spec_tree/f1f2_diag/shape_smoke.py</code></td><td>形狀旋鈕的基礎煙霧</td></tr>
+<tr><td><code>Backup/spec_tree/f1f2_diag/keff_probe.py</code></td><td><code>k_eff</code> 塌成 1 的逐格探針（§1.2 的表）</td></tr>
+<tr><td><code>Backup/spec_tree/f1f2_diag/run_diag_rows.sh</code></td><td>端到端臂（<code>rows_adapt_t20</code>／<code>t70</code>／<code>net</code>）</td></tr>
+<tr><td><code>Backup/spec_tree/f1f2_diag/SPECULATIVE_SEQ1_DOUBLE_ADD.patch</code></td><td>seq-1 雙加修補（3 hunk、+19/−0）：<b>未套用</b></td></tr>
+<tr><td><code>/tmp/llama-bench.pre_net.cpp</code>／<code>.post_net.cpp</code></td><td>位元不變 A/B 的兩顆來源（<code>.post_net</code> ＝ 當時工作樹值 md5 <code>42799c1457db975f77c32a7353e1ba52</code>）</td></tr>
+</table>
+
+<h3>10.1 進版狀態（截至 2026-10-06）</h3>
+<ul>
+<li><b>已 commit</b> <code>18e75b7e8</code>：形狀旋鈕（<code>ALTBIND</code>／<code>ROWS</code>）＋控制器（rate＋net）
+＋見證欄位＋<code>run_server.sh</code> allowlist，連重建的 <code>libllama-bench-impl.dylib</code> 一起。
+三道閘門（<code>doc_claim_gate</code>／<code>commit_gates</code>／<code>check_build_tracked.sh</code>）通過；
+replay benchmark（檢查 11）<b>SKIPPED</b>（無 server、他線佔 GPU），不是 pass。</li>
+<li><b>未 commit</b>：BRESET 那一個 hunk（<code>llama-bench.cpp</code> 的 seq-1 殘留清除）與
+<code>run_server.sh</code> 的對應 allowlist token。判詞已定（殘留假說死），收不收由後續決定。</li>
+</ul>
+
+<h3>10.2 這份白皮書刻意不主張的事</h3>
+<ul>
+<li>不主張任何 t/s 改善（本方法未達轉正門檻，且本線噪音底遠大於門檻）。</li>
+<li>不主張「6 列不好」——只主張<b>在這個 cell、這個 payoff 模型與已測的 COST 下</b> 6 列從未勝出。</li>
+<li>不主張 BRESET 無效——只主張<b>它改變不了接受量</b>（逐位元相同）；「它真的刪掉了什麼」沒有正控。</li>
+<li>不主張 seq-1 雙加修補有效——它<b>通過語法檢查但未實測</b>。</li>
+</ul>
+
+<footer>
+逐輪自適應 accept-verify 白皮書 · 2026-10-06 · 分支 <code>demo/sweet-spot-windows-fix</code> ·
+形狀旋鈕＋控制器 = <code>18e75b7e8</code> · BRESET 留在工作樹 ·<br>
+證據原文：<code>Backup/spec_tree/F1F2F3_IMPLEMENT_2026-10-06.md</code>（gitignored）§14／§15／§16 ·
+判詞：<b>機制 PASS、目標函數可替換 PASS、MTP-on 未轉正</b>。
+</footer>
+
+</div>
+</body>
+</html>
