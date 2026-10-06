@@ -37,7 +37,7 @@ baseline:
     base 一步（MTP off）= **85.65 ms** ⇒ 11.67 t/s。
     既有配對讀數：rs1 誠實配對 ON 9.306／OFF 9.974 ＝ **×0.933**（該趟 swap 污染、REFUSED）。
   cell: "(default)（llama-bench 出廠形狀 `-p 512 -n 128 -b 2048 -ub 512 -d 0 -r 5`、warm_skip 0）＋ prod-new ＋ sampling(temp=0.4) ＋ 釘 seed=1"
-  source: "docs/MTP_2X_BOUNDARY_2026-09-19.md §0–§2；scripts/check/charters/e-mtp-m-acc-2026-09-29.yaml；Backup/spec_tree/rs5_*.md；Backup/spec_tree/rs6_dist_consumer_trace_2026-10-06.md"
+  source: "docs/MTP_2X_BOUNDARY_2026-09-19.md"
 
 hypothesis:
   mechanism: |
@@ -95,8 +95,8 @@ arms:
   #   - llama-bench.cpp:4045 **硬寫 nullptr** ⇒ bench chain 路徑 rejection 永不生效
   #   - llama-bench.cpp:3033-3041：tree walk 只做 greedy ⇒ tree 路徑沒有 rejection
   # ⇒ 若堅持用 bench，必須「補傳入 ＋ 補 clear」兩件事（dist 跨輪累積會錯位），不是一行。
-  - "prod-new:CGC_SERVER_SEED=1;CGC_SERVER_MTP=1;CGC_MTP_REJECTION=1;CGC_MTP_SAMPLER_PARITY=1"   # on ＋ rejection
-  - "prod-new:CGC_SERVER_SEED=1;CGC_SERVER_MTP=1"                                              # on 基線（精確比對）
+  - "prod-new:CGC_SERVER_SEED=1;CGC_SERVER_MTP=1;LLAMA_BENCH_SPEC=1;LLAMA_BENCH_SPEC_DRAFT_N_MAX=3;CGC_MTP_REJECTION=1;CGC_MTP_SAMPLER_PARITY=1"   # on ＋ rejection
+  - "prod-new:CGC_SERVER_SEED=1;CGC_SERVER_MTP=1;LLAMA_BENCH_SPEC=1;LLAMA_BENCH_SPEC_DRAFT_N_MAX=3"                                              # on 基線（精確比對）
   - "prod-new:CGC_SERVER_SEED=1;CGC_SERVER_MTP=0"                                              # off 錨（同 session）
 
 notes: |
