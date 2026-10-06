@@ -727,7 +727,7 @@ layers:
           artifact: "docs/OPERATOR_RULING_L251_2026-09-30.md"
           why: "A 臂已跑通（§8 兩量都有讀數）；B 臂在 8 GiB 與 6 GiB pool 上都 fail-stop ⇒ operator 已裁定不再換盒子／降模型，本格以「排除·不可測」結案。"
         title: "第六條軸：改「每 token 的 bytes 或 steps」"
-        nodes: [m-decode25, exp-caliber-calibration]
+        nodes: [m-decode25, exp-caliber-calibration, exp-targets-board-recon-2026-10-07]
         expect_ms: "缺口 45.45 ms ⇒ 需要一個能動 <b>bytes 或 steps</b> 的乘數"
         expect_tps: "≥25.0（在 ≤40.0 ms 下）"
         now: "現有軸（ms、段數、kernel、IO）<b>全量完</b>；缺口 <b>45.45 ms</b>（交付錨點 85.45 ms → 25 t/s 的 40.0 ms）。<b>§51 撤回 §50 的「未判定」</b>（B 半補丁的價目漏掉主項：備援重算 320 列 ＝ 8.09 ms；§52 用交付 cell 底座複核，仍差 7.5–11.6 ms）⇒ <b>decode ≥25 回到判死</b>，而<b>本格是全板唯一還沒被判死的一格</b>。<br><b>09-29 23:5x 唯讀盤點完成</b>（0 跑）：每 token <b>1.171 GB</b> 裡只有 <b>381 MB（33%）</b>的專家段會 miss，<b>790 MB（67%）</b>的 dense 段常駐 RAM ⇒ <b>bytes 類候選最多只能動那 33%</b>。<b>7 個候選盤完</b>：1 個 PRIMARY = <code>--spec-type ngram-*</code>（**不需要 draft head**，且 <code>need_n_rs_seq()</code> 對它回 <b>0</b> ⇒ 結構上不觸發 M2 的輸出函數改變 —— 那正是 MTP 被判「產品決策」的原因）、1 個 SECONDARY = <code>CGC_SERVER_LOAD_MODE=mmap</code>、5 個已判（bpw／top-k／砍 dense／MTP／池命中）。"
@@ -895,7 +895,7 @@ layers:
           why: "端點 <b>m</b> 的判決已經產生，而且 build 每次都會當場重判（D7b：<code>WITHIN</code>、<b>m＝0.159</b>）⇒ 再跑一趟只會覆蓋同一個答案。"
         settled: true   # 09-30 operator：已了結（結案／判死）⇒ 看板整列綠底
         title: "MTP 的產品化上限"
-        nodes: [mtp-2x, mtp-caliper, mtp-instrument, mtp-accept, exp-m-instrument-recon-2026-10-06, exp-a-lever-rejection-2026-10-06]
+        nodes: [mtp-2x, mtp-caliper, mtp-instrument, mtp-accept, exp-m-instrument-recon-2026-10-06, exp-a-lever-rejection-2026-10-06, exp-targets-board-recon-2026-10-07]
         expect_ms: "不需再追 2×（已判不成立）；改沿 m／acc 立判準"
         expect_tps: "m ≤0.30 ⇒ 上限 ≥ 24.59（m 進分母：m=0.30 ⇒ 38.85、m=0.159 ⇒ 73.30）"
         now: "「加速比 2」<b>已判不成立</b>（k 加到多大都不到 2×；現況每產出 token 成本 45.6–56.4 vs baseline 48.2 ⇒ 攤薄 ≈ 0）。caliper：<b>同 launch ×1.06、生產 ×0.695（方向相反）</b>。<br><b>09-29 判準兩半都有答案了</b>：① <b>m ≈ 0.10</b>（k=1，差分 6 行：T_draft <b>8.41–9.45 ms/輪</b> ÷ 錨點 85.45；同趟分母讀法 0.153）② <b>主項＝draft 流量</b>：T_draft 對 k <b>線性</b>（k=1..4 ⇒ 8.4–9.5／15.6–16.5／22.8–24.2／30.3–31.2 ms/輪），斜率 ≈ <b>7.3 ms per draft token</b>、截距 ≈1.5 ⇒ 主導項是「每個 draft token 一次 forward」。<br>⚠ 那批是 09-24 <code>s1_ksweep</code>（同 cell、pool 3 GiB＋soft pool、build 0.0.578）⇒ <b>證據、非認證</b>；今晚 prod-new ＋ harness bench 兩趟都落劣化窗（B2 <code>attribution=both</code>、頁入 +12.9 M）⇒ 同臂 T_draft 變 <b>24.7 ms/輪</b>（<b>m ≤ 0.289</b>，上界）。"
@@ -1097,3 +1097,4 @@ dispositions:
   - {id: exp-w1w2-paired-2026-10-06, kind: subgoal, ref: L25-4, why: "W1／W2 同 session 同 seed 配對：把跨臂（between-arm）觀察升級成臂內（within-session）因果，判定寬度軸是否真有淨收益。"}
   - {id: exp-m-instrument-recon-2026-10-06, kind: subgoal, ref: L25-5, why: "儀器對帳：定標 m（bench vs 服務端），使 verify 成本優化可判定。"}
   - {id: exp-a-lever-rejection-2026-10-06, kind: subgoal, ref: L25-5, why: "拉 a：server 路徑 chain（tree off）開 rejection sampling（min(1, p_t/q)），量逐輪 a_eff 與同 session／同 seed 配對 S。"}
+  - {id: exp-targets-board-recon-2026-10-07, kind: subgoal, ref: L25-5, why: "「宣告與現判沒有對帳閘門」第三次：看板說 20+ 判死、無已命名路；targets.json 說『已判掉的三條路上界 ≈17–20』已被量測推翻（CGC_SUBMIT_AHEAD=1 ×1.702），且 prefill-250 在冷機發射 0 下已 6/6 ≥250（254–296）。本卡不量測，只做兩份權威檔的機械對帳；權威歸屬待 operator 簽。"}

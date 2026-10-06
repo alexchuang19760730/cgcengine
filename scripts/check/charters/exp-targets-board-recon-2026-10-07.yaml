@@ -1,0 +1,82 @@
+id: exp-targets-board-recon-2026-10-07
+owner: lineA
+created: 2026-10-07
+axis: na
+
+# ───────────────────────────────────────────────────────────────────────────────
+# 「宣告與現判沒有對帳閘門」—— 第三次出現，這次要把它關掉。
+#
+# 前兩次：
+#   1. R6：charter.question 是舊稿，權威在 board state ⇒ 拿計畫卡當狀態
+#   2. 看板建議「同格加 -d 512 或 --reps 7」⇒ 機械上做不到（嚴格維度，只能用新格）
+#   3. 本次：看板說「20+ 判死、無已命名路」；targets.json 說
+#      「已判掉的三條路上界 ≈17–20 ⇒ 已被量測推翻」，且有 CGC_SUBMIT_AHEAD=1 ×1.702；
+#      且 prefill-250 在「冷機發射 0」下已 6/6 ≥250（254–296）。
+#
+# ⇒ 本卡**不量測任何速度**。它做的是一件事：把兩份權威檔的結論機械對帳，
+#   讓第 3 類矛盾從「三個月後有人手動讀到」變成「commit 時立刻紅」。
+# ─────────────────────────────────────────────────────────────────────────────
+
+question: |
+  兩份權威檔對同一個里程碑的「是否已判死」講了相反的話，而沒有閘門會發現。
+  能否加一支**只讀兩個檔**的對帳 checker，讓這種矛盾 fail-closed？
+  以及：當兩邊衝突時，**哪一份是權威**？（此題需 operator 簽，本卡只提供依據）
+
+baseline:
+  metric: |
+    矛盾清單（逐字引用，見 `Backup/spec_tree/TARGETS_VS_BOARD_CONTRADICTION_2026-10-07.md` §1-§2）：
+      ① 看板「20+ 判死、無已命名路」
+         vs targets.json「已判掉的三條路上界 ≈17–20 ⇒ 已被量測推翻」＋ CGC_SUBMIT_AHEAD=1 ×1.702
+      ② 看板「decode 25 可交付回收 ≈ 0」
+         vs targets.json「需 2.07×」（12.62 × 1.702 ≈ 21.5，不是 0）
+      ③ prefill-250：targets.json 記載**冷機發射 0 時 6/6 ≥250（254–296）**
+         ⇒ 它是「條件式已達標」，不是「差距 1.6–2×」
+  cell: "n/a（本卡不跑量測；只是文件對帳）"
+  source: "agent_harness/portal/targets.json"
+
+hypothesis:
+  mechanism: |
+    共同根因是**宣告層與機械判準層分離**：人寫的結論在 A 檔、閘門讀的判準在 B 檔，
+    中間沒有單向對帳 ⇒ 兩邊可以同時「正確」而互相矛盾，且沒有人會發現。
+  expected: |
+    加一支只讀兩檔的 checker（不改任何量測、不重建）⇒
+    上面三條矛盾任一條存在時，commit 當下就紅，而不是等人工對帳。
+  basis: "Backup/spec_tree/TARGETS_VS_BOARD_CONTRADICTION_2026-10-07.md §5"
+
+acceptance:
+  success: |
+    checker 存在並在既有三條矛盾上**如實 FAIL**（證明它會紅），
+    且 operator 已指定權威來源 ⇒ 對帳後兩邊一致（不論是哪邊改）。
+  falsify: |
+    checker 在已知矛盾上仍 PASS（沒抓到）⇒ 閘門無效，本卡結案為負。
+  on_fail: |
+    維持現狀，把矛盾原文留在筆記與 target.gap 欄，交 operator 裁權威。
+
+targets:
+  recon_gate: "每一個 target.id 的『是否已判死』結論，在 targets.json 與看板之間必須一致"
+
+subgoals:
+  - id: sg-targets-board-recon
+    text: "寫一支只讀兩檔的對帳 checker，並用既有三條矛盾證明它會紅"
+    expect: "在已知矛盾上 FAIL"
+    how: "不改任何量測、不重建、不動 src/"
+
+# 本卡**不跑任何量測**；這裡的 arm 只是為了滿足立項卡的欄位要求，
+# 慣例上所有 axis=na 的卡都至少帶一個 prod-new（見 exp-caliber-calibration 等）。
+arms:
+  - prod-new
+
+notes: |
+  ## 為什麼值得做（比衝數字便宜）
+  本卡的產物是一支只讀兩個檔案的 checker。**它不會讓 decode 變快 1 t/s**，
+  但它能防止「我們以為判死、其實依據早被推翻」這種事再發生第三次。
+
+  ## ⚠ 權威歸屬是 operator 的簽名
+  註：`commit_gates.py --list` 的 G0–G7 標註
+  `source: agent_harness/portal/targets.json` ⇒ 至少在「閘門 id」這一層
+  targets.json 是權威。但看板的 cell／里程碑判決是另一層。
+  ⇒ 本卡**不替 operator 決定**哪一層壓過哪一層，只把矛盾機械化地暴露出來。
+
+  ## 已記錄的更正
+  我 2026-10-07 00:2x 只引用看板就回答「decode 25 判死、prefill 250 差距 1.6–2×」，
+  讀過 targets.json 後**更正**：前者依據已被記載為推翻，後者是條件式已達標（冷機 254–296）。
