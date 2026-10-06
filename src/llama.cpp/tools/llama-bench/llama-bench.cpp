@@ -2718,6 +2718,11 @@ struct bench_spec_state {
 
 // Build the MTP draft context and the speculator. Must be called BEFORE the target context decodes
 // anything (see the block comment on bench_spec_state). False + a message on stderr on failure.
+// [CGC spec-tree 2026-10-03] Defined further down with the tree helpers; declared here so
+// bench_spec_setup() can size the speculator to the tree's branch width.
+static bool cgc_spec_tree_on();
+static int  cgc_spec_tree_width();
+
 static bool bench_spec_setup(bench_spec_state & s, llama_model * model, llama_context * ctx,
                              const std::vector<common_speculative_type> & spec_types,
                              int32_t spec_draft_n_max) {
@@ -2735,6 +2740,17 @@ static bool bench_spec_setup(bench_spec_state & s, llama_model * model, llama_co
     // params by common_speculative_init(). Both must outlive the loop, and they must share ONE
     // common_params instance or the second call will not see what the first built.
     const bool ngram_arm = is_ngram_spec_arm(spec_types);
+
+    // [CGC spec-tree 2026-10-05] The MTP draft context maps its n_seq_max from params.n_parallel
+    // (common/common.cpp: `cparams.n_seq_max = params.n_parallel`). The tree's ALT branch drafts
+    // on seq 1, so the draft context must accept two sequences; with the default of 1, llama-batch
+    // refused the second seq on EVERY second draft step (`init: invalid seq_id[0][0] = 1 >= 1`,
+    // measured 2026-10-05). The target context is created before this function runs (its own
+    // n_seq_max override lives at the context-creation site), so this only reaches the draft.
+    // Chain/default (width 1) keep n_parallel == 1, bit-for-bit.
+    if (cgc_spec_tree_on() && cgc_spec_tree_width() >= 2) {
+        s.params.n_parallel = std::max(2, cgc_spec_tree_width());
+    }
 
     // The MTP draft CONTEXT only exists for the draft-model impls. The n-gram arm has no draft model
     // at all (common/speculative.cpp:2625-2635 is the list of impls NOT gated on ctx_dft), so asking
@@ -2775,7 +2791,12 @@ static bool bench_spec_setup(bench_spec_state & s, llama_model * model, llama_co
     s.params.speculative.draft.ctx_tgt = ctx;
     s.params.speculative.draft.ctx_dft = ngram_arm ? nullptr : s.ctx_dft.get();
 
-    s.spec.reset(common_speculative_init(s.params.speculative, 1));
+    // [CGC spec-tree 2026-10-03] A tree arm's branch lives on seq 1; the MTP verifier tracks
+    // its hidden rows per sequence (i_batch_beg / verify_h) so accept_from() can read them.
+    // The speculator therefore needs n_seq == tree width. Chain and default (gate unset) keep
+    // n_seq == 1, bit-for-bit.
+    const uint32_t spec_n_seq = cgc_spec_tree_on() ? (uint32_t) cgc_spec_tree_width() : 1u;
+    s.spec.reset(common_speculative_init(s.params.speculative, spec_n_seq));
     if (!s.spec) {
         fprintf(stderr, "%s: failed to initialise the speculative path\n", __func__);
         return false;
@@ -3047,6 +3068,96 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
         size_t n_tree_branchB      = 0;
         size_t n_tree_path_partial = 0;
         size_t n_tree_trim_fail    = 0;
+        size_t n_tree_dkv_retag    = 0;   // [CGC spec-tree 2026-10-06 F2] B 勝且真的重貼 draft KV 的輪數
+        size_t n_tree_rows         = 0;   // [CGC spec-tree 2026-10-06 k-axis] 送進 verify batch 的樹列數總和
+
+        // [CGC spec-tree 2026-10-06 F1] BRANCH-B GATE (env `CGC_SPEC_TREE_BGATE=<window>`, 預設 0 = 關).
+        //
+        // 為什麼要它：width-2 樹的 verify batch 是 6 列（llama-bench.cpp:3306-3381：
+        // `[root_b0][tail b0 x k][root_b1][tail b1 x k]`，k = n_max = 2），但 branch B 只有在
+        // 「B 真的贏」的輪才換得回 token —— 實測 branchB = 2/53（rep 1）..19/66（rep 2），
+        // 而每一輪都要付 B 的 1 個 root ＋ 2 條 tails（實測每輪 verify ≈3.05 個 token 當量，
+        // 見 `Backup/spec_tree/SPECTREE_MTPON_HITRATE_VERDICT_2026-10-06.md` §2）。
+        //
+        // 政策（deterministic，逐 rep 重置）：每 `window` 輪結算一次；整窗 B 勝 0 次 ⇒ 關掉 B
+        // 並冷卻 `4*window` 輪（冷卻結束回到探測窗）。預設 0 = 完全維持現行行為
+        // （`W_eff` 永遠 2），所以這個 env 不開時 T1c 的 width-1 見證與既有 cell 一字不動。
+        // 關掉 B 的方式是讓 seq-1 的 `alt_branch` 不成立 ⇒ 實作不會 seed alt 鏈 ⇒ `draft_alt`
+        // 保持空 ⇒ `W_eff` 依 :3274 自然回 1 ⇒ batch 回到 3 列的鏈（不是另一條特殊路徑）。
+        static const int cgc_tree_bgate = []() {
+            const char * e = getenv("CGC_SPEC_TREE_BGATE");
+            const int v = e != nullptr ? atoi(e) : 0;
+            return v < 2 ? 0 : v;   // 0 = 關；<2 輪的窗沒有統計意義
+        }();
+        int    gt_left = cgc_tree_bgate;   // 本窗還剩幾輪
+        int    gt_wins = 0;                // 本窗 B 勝次數
+        int    gt_cool = 0;                // 冷卻剩餘輪數（>0 ⇒ 本輪不帶 B）
+        size_t n_bgate_alt_rounds = 0, n_bgate_alt_wins = 0;
+
+        // [CGC spec-tree 2026-10-06 F1b] PER-ROUND GATE (env `CGC_SPEC_TREE_RGATE=<K>`，預設 0 = 關；
+        // 回探間隔 `CGC_SPEC_TREE_RPROBE=<P>`，預設 8)。§8.4 的結論：window 結算的**粒度**才是 13%
+        // 覆蓋率的來源（一窗只要贏 1 次，整窗就不關），不是 3 列不省 —— 3 列步實測只要 6 列步的
+        // 0.364×（同熱區 0.36-0.41）。這裡改成逐輪：
+        //   open 輪：B 勝 ⇒ streak=0（繼續探測）；B 敗 ⇒ streak++；streak ≥ K ⇒ 關 P 輪。
+        //   closed 輪：不帶 B（3 列鏈）；數完 P 輪 ⇒ 回探（streak 歸零重數）。
+        // 為什麼是「固定間隔回探」而不是永遠關：closed 輪看不到 B 會不會贏（沒有 alt 鏈可勝），
+        // 只能每隔 P 輪花 1 輪去問「B 又活了嗎」。
+        static const int cgc_tree_rgate = []() {
+            const char * e = getenv("CGC_SPEC_TREE_RGATE");
+            const int v = e != nullptr ? atoi(e) : 0;
+            return v < 2 ? 0 : v;   // K<2 ＝ 每兩輪就關一輪，白花回探成本
+        }();
+        static const int cgc_tree_rprobe = []() {
+            const char * e = getenv("CGC_SPEC_TREE_RPROBE");
+            const int v = e != nullptr ? atoi(e) : 0;
+            return v < 1 ? 8 : v;
+        }();
+
+        // [CGC spec-tree 2026-10-06 k-axis] TREE DEPTH CAP (env `CGC_SPEC_TREE_K=<k>`，預設 0 = 不裁).
+        //
+        // 為什麼：6 列樹的第二步命中率只有 0.253（`CGC-ORC-ROUND` 的 pos2A 49/194，見
+        // F1F2F3_IMPLEMENT_2026-10-06.md §8.3），但每一輪都要為它付 2 列。這裡把**被驗證的深度**
+        // 由 k 裁到 K（verify 列數 = W_eff*(1+K)：K=1 ⇒ 4 列），draft 步驟完全不動 —— 兩條鏈照樣
+        // 各吐完整的 k 顆，只是尾巴不進 verify batch。預設 0 = 完全不裁（既有行為一字不動）。
+        // 為何不用 `--spec-draft-n-max 1` 做 k=1：那條路會連 alt 鏈的 seed 都不發生
+        // （speculative.cpp 的 `params.n_max <= result.size()` 早退排在 alt-seed 之前）⇒ `draft_alt`
+        // 空 ⇒ `W_eff` 依上面自然回 1 ⇒ 量到的會是 3 列鏈而不是 4 列樹。所以 k 軸必須裁在這裡。
+        static const int cgc_tree_k = []() {
+            const char * e = getenv("CGC_SPEC_TREE_K");
+            const int v = e != nullptr ? atoi(e) : 0;
+            return v < 1 ? 0 : v;
+        }();
+        int    rg_streak = 0;   // 連續幾輪 B 沒勝（只在 open 輪累積）
+        int    rg_closed = 0;   // 還要關幾輪（>0 ⇒ 本輪不帶 B）
+        size_t n_rgate_closed_rounds = 0, n_rgate_closes = 0, n_rgate_probe_wins = 0;
+
+        // [CGC oracle 2026-10-06] HEAD-vs-TARGET-ARGMAX probe (LLAMA_BENCH_SPEC_ORACLE). The walk
+        // below accepts a draft when it matches the target's SAMPLED token; the same draft has a
+        // second verdict available -- does it match the target's ARGMAX at that row? That is the
+        // offline question "how good is the in-file MTP head on the engine's own hidden", with the
+        // sampler removed from the comparison. pos1 = the round's first draft (branch A), pos2 =
+        // branch A's second token in rounds the walk actually reached it; the B columns are the alt
+        // branch's first/second token. smp* counts sampled == argmax on the same rows, i.e. the
+        // share of the live loss that is the sampler's, not the head's.
+        size_t n_orc_rows1 = 0, n_orc_smp1 = 0, n_orc_amA1 = 0, n_orc_amB1 = 0;
+        size_t n_orc_rows2 = 0, n_orc_smp2 = 0, n_orc_amA2 = 0;
+        size_t n_orc_rows2B = 0, n_orc_amB2 = 0;
+        // [CGC oracle 2026-10-06 F1b] PER-ROUND 版：本輪 root 的 target argmax 落在 A 還是 B 子節點。
+        // -1 ＝ 本輪拿不到 root logits（不可沿用上一輪殘值，故開走訪前歸零）。
+        // 有了它，T1W2 §2 的「B 首勝之後 A 鎖死」就能在**同一條軌跡內**（本輪 winbr/m × 下一輪 amA）
+        // 檢定，不必再用跨臂（between-arm）觀察。
+        int orc_r_amA = -1, orc_r_amB = -1;
+        // [CGC oracle 2026-10-06 F1c] 本輪 carryover 的來源 seq ＝ 上一輪 accept 用的 src_seq_id。
+        // `common_speculative_accept(spec, seq_id, m, W_eff==2 ? win_br : -1)` 就是從這個 seq 的
+        // verify 列取 hidden 種子寫進 `pending_h`（speculative.cpp:2053-2073）；-1 ＝ 本 rep 還沒有
+        // 前一輪（第一輪的種子由 process() 給）。有了逐輪的它，就能把「本輪第二 token 命中」按
+        // 「上一輪取自 seq0／seq1」分組，檢定 F1F2F3 §8.6.5 的播種列假說（不必再靠 winbr 平移）。
+        int orc_src_seq = -1;
+        // 本輪 branch-A 第二步（pos2）的 argmax 逐輪結果：-1 ＝ 本輪沒走到 A 的 level-1 列（無觀測）；
+        // 0 ＝ 走到了、但 argmax ≠ A 的續接 token；1 ＝ 命中。補 `CGC-ORACLE` 聚合（pos2A 49/194）
+        // 看不到的「按來源 seq 分組」分布。
+        int orc_r_p2A  = -1;
+        int orc_r_p2B  = -1;
 
     // [CGC MTP path parity 2026-09-18] THE SIZE OF THIS VECTOR IS LOAD-BEARING. It used to be 0.
     //
@@ -3117,6 +3228,21 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
     common_speculative_begin(spec, seq_id, prompt_probe);
 
     while (n_done < n_gen) {
+        // [CGC spec-tree 2026-10-06 F1] 本輪要不要帶 branch B（`CGC_SPEC_TREE_BGATE` 沒開時恆 true）。
+        const bool cgc_alt_on = ((cgc_tree_bgate <= 0) || (gt_cool == 0)) && (rg_closed == 0);
+        if (getenv("LLAMA_BENCH_SPEC_DBG") != nullptr) {
+            // [CGC spec-tree 2026-10-05 DBG] The round's top state == what the previous round's
+            // cleanup left == the state the draft step below is judged against (M-RoPE X < Y).
+            llama_memory_t mem_top = llama_get_memory(ctx);
+            llama_context * ctx_dft_top = s.ctx_dft.get();
+            const int dft_max = ctx_dft_top
+                    ? (int) llama_memory_seq_pos_max(llama_get_memory(ctx_dft_top), seq_id) : -2;
+            fprintf(stderr, "SPECDBG top: n_past=%d id_last=%d pos_min=%d pos_max=%d dft_pos_max=%d draft=%zu n_done=%d\n",
+                    n_past, (int) id_last,
+                    (int) llama_memory_seq_pos_min(mem_top, seq_id),
+                    (int) llama_memory_seq_pos_max(mem_top, seq_id),
+                    dft_max, draft.size(), n_done);
+        }
         if (draft.empty()) {
             // The two halves of the checkpoint are taken at DIFFERENT points, exactly as the
             // reference does it: update_pos before the draft (speculative-simple.cpp:421) and
@@ -3173,10 +3299,32 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
                 // drive both sides. With the env unset this evaluates to nullptr, so the default
                 // path is bit-for-bit the previous behaviour.
                 /* .dist     = */ common_sampler_mtp_rejection_on() ? &draft_dist : nullptr,
-                // [CGC spec-tree 2026-10-02] The tree verifier consumes the runner-up array
-                // positionally; the chain arm leaves this nullptr, which is the pre-change default.
-                /* .alt      = */ cgc_spec_tree_on() ? &draft_alt : nullptr,
+                // [CGC spec-tree 2026-10-05] nullptr for BOTH arms now: the tree's branch 1 is
+                // seq 1's own ALT CHAIN (bound below, written through draft_params::alt_branch),
+                // not the seq-0 runner-up array. Binding both would have written two chains into
+                // one vector -- the interleave that broke the first alt draft test.
+                /* .alt      = */ nullptr,
             };
+            // [CGC spec-tree 2026-10-05] Bind seq 1 for the tree: the MTP impl drafts branch 1 as
+            // the ALT chain seeded from seq 0's runner-up (draft_params::alt_branch), writing the
+            // full chain into `draft_alt`. Before this the impl had nowhere to write branch 1 and
+            // the tree reused seq 0's tail -- the defeat this replaces.
+            if (cgc_spec_tree_on() && cgc_spec_tree_width() >= 2) {
+                common_speculative_get_draft_params(spec, 1) = {
+                    /* .drafting   = */ false,
+                    /* .n_max      = */ -1,
+                    /* .n_past     = */ n_past,
+                    /* .id_last    = */ id_last,
+                    /* .prompt     = */ &prompt,
+                    /* .result     = */ &draft_alt,
+                    /* .dist       = */ nullptr,
+                    /* .alt        = */ nullptr,
+                    // [CGC spec-tree 2026-10-06 F1] `alt_branch` 是本輪「帶不帶 B」的唯一開關：
+                    // false ⇒ 實作不 seed alt 鏈（speculative.cpp:1956-1976 的 alt-seed 條件就是
+                    // 這個欄位）⇒ `draft_alt` 空 ⇒ `W_eff` = 1。
+                    /* .alt_branch = */ cgc_alt_on,
+                };
+            }
             common_speculative_draft(spec);
 
             // [CGC spec-tree 2026-10-02] Unconditional, same reason as the update_pos call above:
@@ -3238,38 +3386,85 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
         }
 
         common_batch_clear(batch);
+        int tree_depth_v = 0;   // [CGC spec-tree 2026-10-06 k-axis] 本輪真的進 verify 的樹深度（draft 深度或其 cap）
         if (tree_on) {
-            tree_nodes.reserve(1 + (size_t) W_eff * draft.size());
-            auto tree_add = [&](llama_token tok, int parent, int branch) -> int {
+            const int k_full = (int) draft.size();
+            const int k      = (cgc_tree_k > 0) ? std::min(k_full, cgc_tree_k) : k_full;
+            tree_depth_v = k;
+            // [CGC spec-tree 2026-10-03] ROOT PER BRANCH. A single root carrying seq{0..W-1} is
+            // rejected by the MTP verifier (common/speculative.cpp process() asserts
+            // n_seq_id[k] == 1: it indexes hidden rows per sequence, and a multi-seq token has
+            // no single row). Each branch therefore gets its own copy of the root, and each
+            // sequence's tokens stay CONTIGUOUS -- process()'s i_batch_beg/i_batch_end spans
+            // (and the non-shared catch-up path) assume one contiguous run per seq.
+            //
+            // Batch order: [root_b0][tail b0: k][root_b1][tail b1: k] ...
+            // Node index == batch slot, so the walk below still samples by slot.
+            tree_nodes.reserve((size_t) W_eff * (1 + (size_t) k));
+            std::vector<int> root_slot (W_eff, -1);
+            std::vector<int> first_tail(W_eff, -1);
+
+            auto tree_push = [&](llama_token tok, int branch) -> int {
                 cgc_tree_node n;
                 n.token  = tok;
-                n.parent = parent;
+                n.parent = -1;
                 n.branch = branch;
-                if (parent >= 0) {
-                    tree_nodes[parent].children.push_back((int) tree_nodes.size());
-                }
                 tree_nodes.push_back(std::move(n));
                 return (int) tree_nodes.size() - 1;
             };
-            tree_add(id_last, -1, -1);
+
+            // [CGC spec-tree 2026-10-05] PER-BRANCH TAILS: branch 0 = the chain's own draft,
+            // branch 1 = the alt chain drafted on seq 1 -- its own first token AND its own
+            // continuation. Before this, branch 1 reused draft[1..], so every branch-B win died
+            // at the second position (accept@2|1 = 0.375 vs 0.90 for branch 0's own chain).
+            std::vector<int> tail_len(W_eff, 0);
             for (int b = 0; b < W_eff; ++b) {
-                int prev = 0;   // root
-                for (size_t i = 0; i < draft.size(); ++i) {
-                    const llama_token tok = (i == 0) ? (b == 0 ? draft[0] : draft_alt[0]) : draft[i];
-                    prev = tree_add(tok, prev, b);
+                const llama_tokens & tail = (b == 0) ? draft : draft_alt;
+                tail_len[b] = std::min(k, (int) tail.size());
+                root_slot[b] = tree_push(id_last, -1);
+                for (int i = 0; i < tail_len[b]; ++i) {
+                    const int s = tree_push(tail[i], b);
+                    if (i == 0) {
+                        first_tail[b] = s;
+                    }
                 }
             }
-            // The root belongs to EVERY branch, so the shared prefix is one cell, not W copies.
-            std::vector<llama_seq_id> root_seqs;
-            root_seqs.reserve(W_eff);
-            for (int b = 0; b < W_eff; ++b) {
-                root_seqs.push_back((llama_seq_id) b);
+
+            // [CGC spec-tree 2026-10-06 k-axis] 形狀見證：本輪送進 decode 的列數 = W_eff 個 root
+            // ＋ 每條分支自己的尾長（K=1 ⇒ 2+1+1 = 4；未裁 ⇒ 2+2+2 = 6）。列數不靠推論，這條是量出來的。
+            {
+                size_t rows = (size_t) W_eff;
+                for (int b = 0; b < W_eff; ++b) {
+                    rows += (size_t) tail_len[b];
+                }
+                n_tree_rows += rows;
             }
-            common_batch_add(batch, id_last, n_past++, root_seqs, true);
+
+            // Logical links for the walk: it starts at root_0; every branch's first tail hangs
+            // off root_0 (the roots are the SAME token -- the duplication exists only so the
+            // verifier sees one sequence per row); a tail chains to the next tail of its branch.
             for (int b = 0; b < W_eff; ++b) {
-                for (size_t i = 0; i < draft.size(); ++i) {
-                    const int slot = 1 + b * (int) draft.size() + (int) i;
-                    GGML_ASSERT(slot < (int) tree_nodes.size());
+                if (first_tail[b] >= 0) {
+                    tree_nodes[root_slot[0]].children.push_back(first_tail[b]);
+                }
+            }
+            for (int b = 0; b < W_eff; ++b) {
+                for (int i = 0; i + 1 < tail_len[b]; ++i) {
+                    tree_nodes[first_tail[b] + i].children.push_back(first_tail[b] + i + 1);
+                }
+            }
+
+            // Every branch root sits at the SAME logical position P_base (the prefixes were
+            // seq_cp'd, and coupled seqs must keep equal memory positions). n_past advances by
+            // exactly one logical position, not W.
+            for (int b = 0; b < W_eff; ++b) {
+                common_batch_add(batch, id_last, P_base, { (llama_seq_id) b }, true);
+            }
+            n_past = P_base + 1;
+            for (int b = 0; b < W_eff; ++b) {
+                for (int i = 0; i < tail_len[b]; ++i) {
+                    const int slot = first_tail[b] + i;
+                    GGML_ASSERT(slot >= 0 && slot < (int) tree_nodes.size());
                     common_batch_add(batch, tree_nodes[slot].token, P_base + 1 + (llama_pos) i,
                                      { (llama_seq_id) b }, true);
                 }
@@ -3330,7 +3525,8 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
         }
 
         if (getenv("LLAMA_BENCH_SPEC_DBG") != nullptr) {
-            fprintf(stderr, "SPECDBG round: n_done=%d n_past=%d draft=%zu\n", n_done, n_past - 1, draft.size());
+            fprintf(stderr, "SPECDBG round: n_done=%d n_past=%d draft=%zu pos_max=%d\n", n_done, n_past - 1, draft.size(),
+                    (int) llama_memory_seq_pos_max(llama_get_memory(ctx), seq_id));
         }
 
         // the round happened: it was verified whatever it commits (a replay round is still a
@@ -3361,8 +3557,46 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
             ids.reserve(draft.size() + 1);
             int cur     = 0;    // node index == batch slot
             int branchB = 0;
+            orc_r_amA   = -1;   // 逐輪歸零（見上面的宣告）
+            orc_r_amB   = -1;
+            orc_r_p2A   = -1;
+            orc_r_p2B   = -1;
             while (true) {
                 const llama_token id = common_sampler_sample(smpl, ctx, cur, false);
+                if (getenv("LLAMA_BENCH_SPEC_ORACLE") != nullptr) {
+                    const float * lg = llama_get_logits_ith(ctx, cur);
+                    if (lg != nullptr) {
+                        llama_token am = 0;
+                        for (int32_t v = 1; v < n_vocab; ++v) {
+                            if (lg[v] > lg[(int) am]) { am = (llama_token) v; }
+                        }
+                        const bool at_root = (cur == 0);
+                        const bool at_lv1  = !at_root && !tree_nodes[cur].children.empty();
+                        if (at_root) {
+                            n_orc_rows1 += 1;
+                            n_orc_smp1  += (id == am);
+                            orc_r_amA = 0;
+                            orc_r_amB = 0;
+                        } else if (at_lv1 && tree_nodes[cur].branch != 1) {
+                            n_orc_rows2 += 1;
+                            n_orc_smp2  += (id == am);
+                            orc_r_p2A   = 0;   // 走到 A 的 level-1 列 ⇒ 本輪對 pos2 有觀測（預設未命中）
+                        } else if (at_lv1) {
+                            n_orc_rows2B += 1;
+                            orc_r_p2B   = 0;
+                        }
+                        for (int c : tree_nodes[cur].children) {
+                            if (tree_nodes[c].token != am) { continue; }
+                            if (at_root) {
+                                if (tree_nodes[c].branch == 1) { n_orc_amB1 += 1; orc_r_amB = 1; }
+                                else                           { n_orc_amA1 += 1; orc_r_amA = 1; }
+                            } else if (at_lv1) {
+                                if (tree_nodes[c].branch == 1) { n_orc_amB2 += 1; orc_r_p2B = 1; }
+                                else                           { n_orc_amA2 += 1; orc_r_p2A = 1; }
+                            }
+                        }
+                    }
+                }
                 common_sampler_accept(smpl, id, true);
                 ids.push_back(id);
                 int next = -1;
@@ -3375,10 +3609,61 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
             }
             n_tree_rounds += 1;
             if (branchB) { n_tree_branchB += 1; }
-            if ((int) ids.size() - 1 < (int) draft.size()) { n_tree_path_partial += 1; }
+            if (cgc_tree_bgate > 0 || cgc_tree_rgate > 0) {
+                // 共用的 alt 計數（`alt_rounds` 是「這一輪真的帶了 B」的輪數，任一閘門都算）。
+                const bool rg_probe_round = (cgc_tree_rgate > 0) && rg_closed == 0 && rg_streak == 0 &&
+                        n_rgate_closes > 0;
+                if (cgc_alt_on) {
+                    n_bgate_alt_rounds += 1;
+                    if (branchB) { gt_wins += 1; n_bgate_alt_wins += 1; }
+                }
+                if (cgc_tree_bgate > 0) {
+                    if (cgc_alt_on) {
+                        if (--gt_left <= 0) {
+                            if (gt_wins == 0) { gt_cool = cgc_tree_bgate * 4; }  // 整窗全敗 ⇒ 冷卻
+                            gt_left = cgc_tree_bgate;
+                            gt_wins = 0;
+                        }
+                    } else {
+                        if (--gt_cool <= 0) { gt_cool = 0; gt_left = cgc_tree_bgate; gt_wins = 0; }
+                    }
+                }
+                if (cgc_tree_rgate > 0) {
+                    if (cgc_alt_on) {
+                        if (branchB) {
+                            if (rg_probe_round) { n_rgate_probe_wins += 1; }
+                            rg_streak = 0;   // 勝一場就繼續探測（B 有價值時不要關它）
+                        } else if (++rg_streak >= cgc_tree_rgate) {
+                            rg_closed = cgc_tree_rprobe;
+                            rg_streak = 0;
+                            n_rgate_closes += 1;
+                        }
+                    } else {
+                        n_rgate_closed_rounds += 1;
+                        if (--rg_closed <= 0) { rg_closed = 0; }
+                    }
+                }
+            }
+            // [CGC spec-tree 2026-10-06 k-axis] 比的是「真的送進 verify 的深度」；未裁時
+            // tree_depth_v == draft.size()，與原本一字不差。
+            if ((int) ids.size() - 1 < tree_depth_v) { n_tree_path_partial += 1; }
 
             const int m      = (int) ids.size() - 1;                       // accepted drafts
             const int win_br = (m == 0) ? 0 : tree_nodes[cur].branch;      // branch of the winner
+
+            // [CGC oracle 2026-10-06 F1b] PER-ROUND 記錄（env `LLAMA_BENCH_SPEC_ORACLE`）。一輪一行 ⇒
+            // 離線可算「本輪 winbr/m → 下一輪 amA」的鎖定相關、扣掉暖機輪、並用 alt_on/closed 標出
+            // 這一輪到底帶不帶 B（閘門臂才看得出）。只在 root 真的看到 logits 時印，序列才可對齊。
+            // [CGC oracle 2026-10-06 F1c] 新欄位一律**追加在尾端**（欄位是契約，見上面的教訓）：
+            //   srcseq ＝ 本輪 carryover 來源 seq（上一輪 accept 的 src_seq_id；-1 ＝ 本 rep 第一輪）
+            //   p2A/p2B＝ 本輪 branch-A／B 第二步 argmax 結果（-1 無觀測／0 未命中／1 命中）
+            if (orc_r_amA >= 0 && getenv("LLAMA_BENCH_SPEC_ORACLE") != nullptr) {
+                fprintf(stderr,
+                        "CGC-ORC-ROUND phase=%s round=%zu m=%d winbr=%d amA=%d amB=%d alt_on=%d closed=%d "
+                        "srcseq=%d p2A=%d p2B=%d\n",
+                        phase, n_tree_rounds, m, win_br, orc_r_amA, orc_r_amB,
+                        (int) cgc_alt_on, rg_closed, orc_src_seq, orc_r_p2A, orc_r_p2B);
+            }
 
             // ── KV cleanup ──────────────────────────────────────────────────────────────
             // (a) drop the losing branch whole -- whole-seq removal never fails, recurrent included
@@ -3402,10 +3687,71 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
                 n_tree_trim_fail += 1;
             }
 
-            // commit in place -- no checkpoint, no replay
-            common_speculative_accept(spec, seq_id, (uint16_t) m);
+            // [CGC spec-tree 2026-10-05] Mirror that trim on the DRAFT context. Its cells live in
+            // its own memory ("shared" here means the draft layers read the target's KV; a target-
+            // side seq_rm does not remove the cells the draft step wrote), and the impl's own per-
+            // round cleanup is skipped under its `!is_mem_shared` guard. A round that accepts
+            // NOTHING therefore leaves the REJECTED first draft's cell at P_base+1 -- exactly the
+            // position the NEXT draft step has to write (its batch min position is P_base+m+1, so
+            // P_base+1 when m == 0); llama-batch then refuses it (M-RoPE X < Y, X == Y) and that
+            // round drafts nothing, i.e. it silently measures plain decode. Measured on tree_dbg2
+            // 2026-10-05: every m == 0 round (4/35) was followed by exactly one such refusal, at
+            // X == Y == 1, 3, 5, 26; rounds with m >= 1 never collide, because their stale cell
+            // sits at an ACCEPTED position (inside the committed prefix). Keeping the draft prefix
+            // == the committed prefix is exactly what the non-shared path enforces with its own
+            // seq_rm before every draft step.
+            if (s.ctx_dft) {
+                llama_memory_t mem_dft = llama_get_memory(s.ctx_dft.get());
+                // [CGC spec-tree 2026-10-06 F2] DRAFT-KV RETAG on a branch-B win (env
+                // `CGC_SPEC_TREE_DKV=1`, 預設關 ⇒ 先 A/B 再談轉正）。
+                //
+                // 為什麼：draft 階段是「seq 0 = A 鏈、seq 1 = B 鏈」寫進 draft ctx 的 KV。B 勝時
+                // committed 前綴在 P_base+1.. 是 **B 的** token，但 draft ctx 的 seq 0 在那些位置
+                // 存的是 **A 的** token ⇒ 下一輪在 seq 0 上取的 hidden 是在一段與 committed 不一致
+                // 的 KV 上算出來的，而 target 側並沒有這個問題（那裡有 lose/retag，:3518-3527）。
+                // 把 B 的 cell 重貼到 seq 0（與 target 側同一動作），再走原本的 mirror trim。
+                //
+                // 只改 draft 側（預測用），committed KV 一個字都不碰 ⇒ 不會動到正確性見證。
+                static const bool cgc_tree_dkv = []() {
+                    const char * e = getenv("CGC_SPEC_TREE_DKV");
+                    if (e == nullptr) { return false; }
+                    return e[0] != '0';
+                }();
+                // ⚠ 第一版用**帶範圍**的 seq_cp（p0=P_base+1）會在 `llama-kv-cache.cpp:502` 斷言：
+                // `seq_cp() is only supported for full KV buffers`。讀碼後知道原因：seq0/seq1 在
+                // **不同 stream** ⇒ 必須真的搬 buffer，而帶範圍的請求會讓 `is_full=false`
+                // （:493-501）。target 側之所以能過，是因為它傳的是 p0=p1=-1（整段）。
+                // 所以這裡照 target 側一字不差地做：整段丟掉、整段複製、整段丟掉來源，
+                // 再由下面那條 mirror trim 收掉未被接受的尾巴。
+                if (cgc_tree_dkv && W_eff == 2 && win_br != (int) seq_id && m >= 1) {
+                    llama_memory_seq_rm(mem_dft, seq_id, -1, -1);
+                    llama_memory_seq_cp(mem_dft, (llama_seq_id) win_br, seq_id, -1, -1);
+                    llama_memory_seq_rm(mem_dft, (llama_seq_id) win_br, -1, -1);
+                    n_tree_dkv_retag += 1;
+                }
+                for (llama_seq_id sq = 0; sq < (llama_seq_id) W_eff; ++sq) {
+                    llama_memory_seq_rm(mem_dft, sq, P_base + m + 1, -1);
+                }
+            }
+
+            // commit in place -- no checkpoint, no replay.
+            // [CGC spec-tree 2026-10-03] The hidden seed must come from the WINNING branch's
+            // verify rows: branch 1 was verified on seq 1 while the continuation is seq 0.
+            common_speculative_accept(spec, seq_id, (uint16_t) m,
+                    W_eff == 2 ? (llama_seq_id) win_br : (llama_seq_id) -1);
+            // [CGC oracle 2026-10-06 F1c] 記下「下一輪的 carryover 取自哪個 seq」：accept_from 用
+            // src_seq_id=win_br 讀 verify 列當 pending_h 種子；W_eff==1 的鏈走 accept()，來源恆為
+            // seq_id(=0)。這是逐輪 F1c 欄位 `srcseq` 的寫入點（值印在**下一輪**那一行）。
+            orc_src_seq = (W_eff == 2) ? win_br : (int) seq_id;
             n_acc_drf += m;
             n_past    += m;
+            if (getenv("LLAMA_BENCH_SPEC_DBG") != nullptr) {
+                llama_memory_t mem_after = llama_get_memory(ctx);
+                fprintf(stderr, "SPECDBG tree-cleanup: P_base=%d m=%d win_br=%d bound=%d n_past_new=%d pos_min0=%d pos_max0=%d\n",
+                        P_base, m, win_br, P_base + m + 1, n_past,
+                        (int) llama_memory_seq_pos_min(mem_after, seq_id),
+                        (int) llama_memory_seq_pos_max(mem_after, seq_id));
+            }
             n_done    += (int) ids.size();
             id_last    = ids.back();
             draft.clear();
@@ -3450,8 +3796,9 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
             n_past = (int) ckpt.n_tokens;
 
             if (getenv("LLAMA_BENCH_SPEC_DBG") != nullptr) {
-                fprintf(stderr, "SPECDBG partial-restore: n_past=%d ids(as draft)=%zu pos_max=%d\n",
-                        n_past, draft.size(), (int) ckpt.pos_max);
+                fprintf(stderr, "SPECDBG partial-restore: n_past=%d ids(as draft)=%zu pos_max=%d mem_pos_max=%d\n",
+                        n_past, draft.size(), (int) ckpt.pos_max,
+                        (int) llama_memory_seq_pos_max(llama_get_memory(ctx), seq_id));
             }
             continue;
         }
@@ -3474,6 +3821,11 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
         n_acc_drf += ids.size() - 1;
 
         n_past += (int) ids.size() - 1;
+        if (getenv("LLAMA_BENCH_SPEC_DBG") != nullptr) {
+            fprintf(stderr, "SPECDBG chain-commit: n_past_new=%d pos_max=%d ids=%zu draft=%zu\n",
+                    n_past, (int) llama_memory_seq_pos_max(llama_get_memory(ctx), seq_id),
+                    ids.size(), draft.size());
+        }
         n_done += (int) ids.size();
         id_last = ids.back();
 
@@ -3526,11 +3878,31 @@ static bool test_gen_spec(llama_context * ctx, llama_model * model, int n_gen, i
     // the path ended short (the rounds the chain would have replayed), and whether the KV trim
     // succeeded. Printed only when the gate was set, so a default run's stderr is unchanged.
     if (cgc_spec_tree_env() >= 0) {
+        if (cgc_tree_bgate > 0 || cgc_tree_rgate > 0 || n_tree_dkv_retag > 0) {
+            // 既有欄位順序不動，新欄位一律**追加在尾端**（見上面「欄位是契約」的教訓）。
+            fprintf(stderr, "CGC-SPEC-TREE-GATE phase=%s bgate=%d alt_rounds=%zu alt_wins=%zu "
+                    "dkv_retag=%zu rgate=%d rprobe=%d rclosed=%zu rcloses=%zu rpwin=%zu\n",
+                    phase, cgc_tree_bgate, n_bgate_alt_rounds, n_bgate_alt_wins, n_tree_dkv_retag,
+                    cgc_tree_rgate, cgc_tree_rprobe, n_rgate_closed_rounds, n_rgate_closes,
+                    n_rgate_probe_wins);
+        }
         fprintf(stderr,
                 "CGC-SPEC-TREE phase=%s rounds_tree=%zu branchB=%zu path_partial=%zu "
-                "trim_fail=%zu replay=%zu\n",
+                "trim_fail=%zu replay=%zu tree_rows=%zu tree_k=%d\n",
                 phase, n_tree_rounds, n_tree_branchB, n_tree_path_partial,
-                n_tree_trim_fail, n_replay);
+                n_tree_trim_fail, n_replay, n_tree_rows, cgc_tree_k);
+    }
+
+    // [CGC oracle 2026-10-06] See the counter block above: head-vs-target-argmax agreement with
+    // the sampler removed from the comparison, plus sampled == argmax on the same rows. Own tag,
+    // env-gated, so no existing parser sees a new field.
+    if (getenv("LLAMA_BENCH_SPEC_ORACLE") != nullptr && n_orc_rows1 > 0) {
+        fprintf(stderr,
+                "CGC-ORACLE phase=%s pos1_rows=%zu pos1_argmaxA=%zu pos1_argmaxB=%zu "
+                "pos1_smp_eq_argmax=%zu | pos2_rowsA=%zu pos2_argmaxA=%zu pos2_smpA=%zu "
+                "pos2_rowsB=%zu pos2_argmaxB=%zu\n",
+                phase, n_orc_rows1, n_orc_amA1, n_orc_amB1, n_orc_smp1,
+                n_orc_rows2, n_orc_amA2, n_orc_smp2, n_orc_rows2B, n_orc_amB2);
     }
 
     // [CGC spec-tree 2026-10-02] T1c: the committed token sequence, for a bit-for-bit diff between
@@ -3846,6 +4218,26 @@ int llama_bench(int argc, char ** argv) {
             }
 
             llama_memory_clear(llama_get_memory(ctx), false);
+
+            // [CGC C 2026-10-06] ... and clear the DRAFT context at the same point.
+            //
+            // The draft context is deliberately built ONCE per cell (bench_spec_state), but the
+            // upstream reset above only touches the TARGET context. Left alone, `ctx_dft` keeps
+            // seq_pos_max = n_gen-1 from the previous rep while the new rep's first draft batch
+            // starts at position 0, so llama-batch refuses it (M-RoPE X < Y: seq 0 is Y=0 vs X=32,
+            // seq 1 is Y=2 vs X=32) and that round drafts nothing. Reproduced on CPU
+            // (-ngl 0 -p 32 -n 32 -r 3, CGC_SPEC_TREE=1 CGC_SPEC_TREE_B=2): one refusal pair at
+            // EVERY rep boundary, 4/4.
+            //
+            // The impl DOES have a repair for exactly this (common/speculative.cpp:1545-1552,
+            // added 2026-09-28), but it is unreachable here: it sits behind `begin()`'s
+            // `if (N <= 0) return;` where N = prompt.size(), and this tool deliberately hands
+            // begin() an EMPTY prompt (llama-bench.cpp:3228, `prompt_probe`). It is also
+            // single-seq, so it could not have repaired the tree's seq 1 anyway. Clearing here is
+            // the layer that owns "one rep = one fresh generation", and it covers every seq.
+            if (spec_state.ctx_dft) {
+                llama_memory_clear(llama_get_memory(spec_state.ctx_dft.get()), false);
+            }
 
             if (t.n_depth > 0) {
                 bool is_cached = t.n_depth == cstate.depth;

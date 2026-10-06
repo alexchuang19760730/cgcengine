@@ -160,11 +160,19 @@ def unbound_binding(why: str = "") -> dict:
 
 # ───────────────────── 寫回：mindmap.json ──────────────────────────
 
-def apply_mindmap(sgs: list[dict], disp: dict[str, list[dict]]) -> int:
+def plan_mindmap(sgs: list[dict], disp: dict[str, list[dict]]):
+    """`--apply` 會做的計算，但**不寫檔**。回傳 (data, 漂移摘要)。
+
+    [CGC F(b) 2026-10-06] 抽出來的理由：重建路徑過去**不跑** `--apply`，所以只改看板 YAML 的
+    `dispositions:` 時，`decode_board_build` 更新了看板，但 `mindmap.json`（與由它渲染的
+    `index.html`／逐節點白皮書）**不會跟上**。而 `mindmap_build.py --check` 比的是
+    mindmap.json ↔ 渲染 —— 兩邊都舊 ⇒ 一律 PASS，漂移靜默穿過去。
+    這一支讓「來源（YAML）↔ 寫回目標（mindmap.json）」可以被單獨問一次。
+    """
     data = json.loads(MM_JSON.read_text(encoding="utf-8"))
     nm = node_map(sgs)
     by_id = {s["id"]: s for s in sgs}
-    n = 0
+    drift: list[str] = []
     for e in data["entries"]:
         ids = nm.get(e["id"]) or []
         why = next((d["why"] for d in (disp.get(e["id"]) or [])
@@ -173,14 +181,24 @@ def apply_mindmap(sgs: list[dict], disp: dict[str, list[dict]]) -> int:
         e.pop("arm_binding", None)          # 舊的掃描推導記錄：整批刪除，不留殘骸
         if e.get("subgoal_binding") != b:
             e["subgoal_binding"] = b
-            n += 1
+            drift.append(f"{e['id']}: subgoal_binding")
         rows = disp.get(e["id"]) or []
         if e.get("disposition") != rows:
             e["disposition"] = rows
-            n += 1
+            drift.append(f"{e['id']}: disposition")
+    return data, drift
+
+
+def apply_mindmap(sgs: list[dict], disp: dict[str, list[dict]]) -> int:
+    data, drift = plan_mindmap(sgs, disp)
     MM_JSON.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
                        encoding="utf-8")
-    return n
+    return len(drift)
+
+
+def drift_mindmap(sgs: list[dict], disp: dict[str, list[dict]]) -> list[str]:
+    """只問「YAML 改了但 mindmap.json 沒跟上」的格子，不寫任何檔。"""
+    return plan_mindmap(sgs, disp)[1]
 
 
 def apply_integration(disp: dict[str, list[dict]], sgs: list[dict]) -> list[str]:
@@ -605,6 +623,20 @@ def cmd_report(sgs: list[dict]) -> None:
     print(f"報告：{REPORT_MD.relative_to(ROOT)}／{REPORT_HTML.relative_to(ROOT)}")
 
 
+def cmd_drift(sgs: list[dict]) -> int:
+    """[CGC F(b) 2026-10-06] YAML → mindmap.json 的漂移閘（重建路徑漏跑 `--apply` 就紅）。"""
+    rows = drift_mindmap(sgs, dispositions(load_board()))
+    if rows:
+        print(f"YAML→渲染漂移 {len(rows)} 處（重建路徑缺 mindmap_subgoal_sync --apply）：")
+        for r in rows[:20]:
+            print(f"  · {r}")
+        if len(rows) > 20:
+            print(f"  · …另有 {len(rows) - 20} 處")
+        return 1
+    print("YAML→渲染一致（0 處漂移）")
+    return 0
+
+
 def cmd_check(sgs: list[dict]) -> int:
     rows, gaps = audit_rows(sgs)
     bound = sum(1 for r in rows if (r["b"] or {}).get("subgoal"))
@@ -683,6 +715,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--report", action="store_true")
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--drift", action="store_true",
+                    help="YAML→mindmap.json 的漂移（重建路徑漏跑 --apply ⇒ rc=1）")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args(argv)
     if a.selftest:
@@ -698,7 +732,9 @@ def main(argv: list[str]) -> int:
         cmd_report(sgs)
     if a.check:
         rc |= cmd_check(sgs)
-    if not (a.apply or a.report or a.check):
+    if a.drift:
+        rc |= cmd_drift(sgs)
+    if not (a.apply or a.report or a.check or a.drift):
         rc |= cmd_show(sgs)
     return rc
 

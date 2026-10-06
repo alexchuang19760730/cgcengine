@@ -4,7 +4,7 @@
 #   ./scripts/check/board_pipeline.sh --check   只驗（rc=1 ⇒ 有漂移／有頁面落後）
 # 重建模式會先跑 D15 的機器路徑（decode_board_build --promote：判準成立 ⇒ 自己升進 certified；
 # 寫完重建＋--check，沒過整檔回滾）。
-# 驗的八條閘門（判準各自只有一份定義）：void_check（成績面：主張了吞吐就得有產物、量具綁上、成對 log）、
+# 驗的九條閘門（判準各自只有一份定義）：void_check（成績面：主張了吞吐就得有產物、量具綁上、成對 log）、
 # doc_claim_gate（**交付文件與 commit 訊息裡的 t/s 要有主**：對得上一個通過閘門的產物，否則紅。
 # commit-msg／pre-push 兩支掛勾由 `--install-hook` 裝，裝了才會在 commit／push 當下攔；現況見 --hooks-status）、
 # quote_gate（可不可引用）、budget_gate（是能力還是足跡）、
@@ -18,6 +18,13 @@ PY=python3
 if [[ "${1:-}" == "--check" ]]; then
   $PY scripts/check/decode_board_build.py --check
   $PY scripts/check/mindmap_build.py --check
+  # [CGC F(b) 2026-10-06] 這兩條補的是「來源 ↔ 寫回目標」那一段的洞：
+  #   --check 逐子目標×options 的歸屬缺口；--drift 只改看板 YAML 的 dispositions:、
+  #   而重建路徑漏跑 `--apply` 時，mindmap.json（與由它渲染的 index.html／逐節點白皮書）
+  #   不會跟上 —— 而 mindmap_build.py --check 比的是 mindmap.json ↔ 渲染，兩邊都舊 ⇒
+  #   一律 PASS，漂移就靜默穿過去。歷史上真的發生過一次（2026-10-06 措辭更正）。
+  $PY scripts/check/mindmap_subgoal_sync.py --check
+  $PY scripts/check/mindmap_subgoal_sync.py --drift
   $PY scripts/check/mindmap_void_check.py --self-test  # 成績面判準的 fixture（先驗判準本身）
   $PY scripts/check/mindmap_void_check.py              # 現判：09-30 起 rc=1 不再是「預期」——成績面上有主張就必須有據
   $PY scripts/check/doc_claim_gate.py --selftest       # 交付面判準的 fixture（先驗判準本身）
@@ -51,6 +58,11 @@ $PY scripts/check/fill_split.py --selftest      # fill 路徑分解的 fixture�
 # 寫完重建＋--check，沒過整檔回滾）。跑在 build 之前 ⇒ 「下一次重建就自己升」，不必等人抄。
 $PY scripts/check/decode_board_build.py --promote
 $PY scripts/check/decode_board_build.py          # 看板 ＋ docs/mindmap/subgoals/*.html|md（含 D7 引用閘門、D12 前置閘門、D15 待升級）
+# [CGC F(b) 2026-10-06] 這一行是關鍵缺片：看板（YAML）→ mindmap.json 的寫回由它負責。
+# 少了它，只改 YAML 的 `dispositions:` 時看板會更新、而 mindmap.json 與所有由它渲染的頁面
+# 停在舊版；`mindmap_build.py --check` 抓不到（它比的是 mindmap.json ↔ 渲染，兩邊都舊）。
+# 它自己會順帶跑 mindmap_build，重建路徑因此多一次等冪的重建（無害）。
+$PY scripts/check/mindmap_subgoal_sync.py --apply   # YAML dispositions → mindmap.json（＋立項卡）：少了它渲染永遠落後
 $PY scripts/check/mindmap_build.py               # docs/mindmap/index.html ＋ TAXONOMY
 $PY scripts/check/mindmap_brief_build.py         # docs/mindmap/briefs/*（逐節點白皮書）
 echo "[pipeline] 全部頁面已同步（看板 ← YAML；總圖與白皮書 ← mindmap.json）"
