@@ -178,6 +178,25 @@ llama-bench -m models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf \
   "derived": {
     "warm_skip_applied": "產物 n_gen 應 == cell.gen - cell.warm_skip（=128）；不符即「名義有、實際沒有」，fail-closed"
   },
+  "cells": {
+    "hotkv-d512": {
+          "ngl": 99,
+          "load_mode": "none",
+          "threads": 8,
+          "batch": 2048,
+          "ubatch": 512,
+          "prompt": 0,
+          "gen": 128,
+          "depths": 512,
+          "reps": 5,
+          "warm_skip": 0,
+          "ctx_size": 0,
+          "expert_cache_bytes": 8589934592,
+          "cache_type_k": "q8_0",
+          "cache_type_v": "q8_0",
+          "fixed_fill_seed": 1
+    }
+  },
   "retired_cells": {
     "offload-ngl30": {
       "prompt": 2048,
