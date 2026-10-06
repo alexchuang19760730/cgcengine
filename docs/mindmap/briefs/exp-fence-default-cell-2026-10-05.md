@@ -32,7 +32,7 @@
 - **子目標**：—（未歸屬看板 15 格中的任何一格）
 - ⚠ 本條不屬於看板 15 個子目標中的任何一格（已認證／已定案／已作廢）⇒ 沒有待跑的臂，也就沒有要綁的 option。
 - **逐條處置**：已定案（約束／基準）　—　柵欄 × 現行交付格的兩方向配對：OFF 10.840 → ON 13.722 tg t/s ＝ ×1.266（① ×1.278／② ×1.254，順序無關，四臂 tg spread ≤1.082）。⇒ 定案兩條：(a) 柵欄在交付格成立、幅度大於舊形狀（×1.120）；(b) 13.72 ≈ 舊形狀乾淨窗最高 13.8674 ⇒ 形狀換成 llama-bench 出廠形狀沒有損失速度。⚠ 20 仍差 +45.8% ⇒ 20+ 仍判死（「唯一未否證的一步」已花掉）。產物 Backup/spec_tree/fence_default_20261005/fence.json ＋ fence_rev.json
-- **測試 log（實跑）**：[fence.json](../../../Backup/spec_tree/fence_default_20261005/fence.json)　[fence.json](../../../Backup/spec_tree/fence_default_20261005/fence.json)　[fence_rev.json](../../../Backup/spec_tree/fence_default_20261005/fence_rev.json)　[fence_rev.json](../../../Backup/spec_tree/fence_default_20261005/fence_rev.json)
+- **測試 log（實跑）**：[fence.json](../../../Backup/spec_tree/fence_default_20261005/fence.json)　[fence.json](../../../Backup/spec_tree/fence_default_20261005/fence.json)　[fence_rev.json](../../../Backup/spec_tree/fence_default_20261005/fence_rev.json)　[fence_rev.json](../../../Backup/spec_tree/fence_default_20261005/fence_rev.json)　[sp_fence_on_clean_s01.json](../../../Backup/spec_tree/rs0_sampling/sp_fence_on_clean_s01.json)　[sp_fence_on_clean_s02.json](../../../Backup/spec_tree/rs0_sampling/sp_fence_on_clean_s02.json)　[sp_fence_on_clean_s03.json](../../../Backup/spec_tree/rs0_sampling/sp_fence_on_clean_s03.json)　[sp_fence_on_clean_s04.json](../../../Backup/spec_tree/rs0_sampling/sp_fence_on_clean_s04.json)　[sp_fence_on_clean_s05.json](../../../Backup/spec_tree/rs0_sampling/sp_fence_on_clean_s05.json)　[sp_fence_on_clean_s06.json](../../../Backup/spec_tree/rs0_sampling/sp_fence_on_clean_s06.json)
 - 柵欄 × 現行交付格的兩方向配對：OFF 10.840 → ON 13.722 tg t/s ＝ ×1.266（① ×1.278／② ×1.254，順序無關，四臂 tg spread ≤1.082）。⇒ 定案兩條：(a) 柵欄在交付格成立、幅度大於舊形狀（×1.120）；(b) 13.72 ≈ 舊形狀乾淨窗最高 13.8674 ⇒ 形狀換成 llama-bench 出廠形狀沒有損失速度。⚠ 20 仍差 +45.8% ⇒ 20+ 仍判死（「唯一未否證的一步」已花掉）。產物 Backup/spec_tree/fence_default_20261005/fence.json ＋ fence_rev.json
 
 ## 6. 與其它條目的關係（同軸／同階段，自動對照）
@@ -76,6 +76,48 @@
 - 結果：pp=107.43　tg=10.99
 - 判定：swap：swap_growth=258.8799999999992 MiB, max_swap=8144.69 MiB
 
+**Run 5** · 2026-10-06 08:09　·　thermal NOMINAL　·　swap 4019 MiB→7383 MiB
+- arm：`prod-new:CGC_SERVER_SEED=1;CGC_SERVER_MTP=0;CGC_OVERLAP_FENCE=41`
+- 命令：`llama-bench（prod-new）-p 512 -n 128 --warm-skip None（由產物參數重建）`
+- Log／產物：[sp_fence_on_clean_s01.json](../../../Backup/spec_tree/rs0_sampling/sp_fence_on_clean_s01.json)
+- 結果：pp=132.99　tg=14.37
+- 判定：swap：swap_growth=3380.0600000000004 MiB, max_swap=7783.06 MiB
+
+**Run 6** · 2026-10-06 08:14　·　thermal HEAVY　·　swap 5270 MiB→7280 MiB
+- arm：`prod-new:CGC_SERVER_SEED=1;CGC_SERVER_MTP=0;CGC_OVERLAP_FENCE=41`
+- 命令：`llama-bench（prod-new）-p 512 -n 128 --warm-skip None（由產物參數重建）`
+- Log／產物：[sp_fence_on_clean_s02.json](../../../Backup/spec_tree/rs0_sampling/sp_fence_on_clean_s02.json)
+- 結果：pp=151.7　tg=14.09
+- 判定：both：thermal=HEAVY, swap_growth=2010.62 MiB
+
+**Run 7** · 2026-10-06 08:37　·　thermal NOMINAL　·　swap 5257 MiB→7428 MiB
+- arm：`prod-new:CGC_SERVER_SEED=1;CGC_SERVER_MTP=0;CGC_OVERLAP_FENCE=41`
+- 命令：`llama-bench（prod-new）-p 512 -n 128 --warm-skip None（由產物參數重建）`
+- Log／產物：[sp_fence_on_clean_s03.json](../../../Backup/spec_tree/rs0_sampling/sp_fence_on_clean_s03.json)
+- 結果：pp=151.83　tg=14.26
+- 判定：swap：swap_growth=2171.129999999999 MiB, max_swap=7732.5 MiB
+
+**Run 8** · 2026-10-06 08:40　·　thermal HEAVY　·　swap 7116 MiB→7622 MiB
+- arm：`prod-new:CGC_SERVER_SEED=1;CGC_SERVER_MTP=0;CGC_OVERLAP_FENCE=41`
+- 命令：`llama-bench（prod-new）-p 512 -n 128 --warm-skip None（由產物參數重建）`
+- Log／產物：[sp_fence_on_clean_s04.json](../../../Backup/spec_tree/rs0_sampling/sp_fence_on_clean_s04.json)
+- 結果：pp=159.02　tg=14.79
+- 判定：both：thermal=HEAVY, swap_growth=505.8100000000004 MiB
+
+**Run 9** · 2026-10-06 08:45　·　thermal MODERATE　·　swap 5945 MiB→8321 MiB
+- arm：`prod-new:CGC_SERVER_SEED=1;CGC_SERVER_MTP=0;CGC_OVERLAP_FENCE=41`
+- 命令：`llama-bench（prod-new）-p 512 -n 128 --warm-skip None（由產物參數重建）`
+- Log／產物：[sp_fence_on_clean_s05.json](../../../Backup/spec_tree/rs0_sampling/sp_fence_on_clean_s05.json)
+- 結果：pp=145.73　tg=14.1
+- 判定：swap：swap_growth=2375.6900000000005 MiB, max_swap=8400.69 MiB
+
+**Run 10** · 2026-10-06 08:55　·　thermal HEAVY　·　swap 5708 MiB→8085 MiB
+- arm：`prod-new:CGC_SERVER_SEED=1;CGC_SERVER_MTP=0;CGC_OVERLAP_FENCE=41`
+- 命令：`llama-bench（prod-new）-p 512 -n 128 --warm-skip None（由產物參數重建）`
+- Log／產物：[sp_fence_on_clean_s06.json](../../../Backup/spec_tree/rs0_sampling/sp_fence_on_clean_s06.json)
+- 結果：pp=139.04　tg=13.83
+- 判定：both：thermal=HEAVY, swap_growth=2377.13 MiB
+
 ## 8. 子目標分解（持續更新；2/4 完成）
 
 - [x] 跑前立項（現狀/目標/假設/驗收） [證](../../../scripts/check/charters/exp-fence-default-cell-2026-10-05.yaml)
@@ -96,6 +138,6 @@
 
 ---
 
-← [2026-10-03 operator 裁定「移除所有具名格、pro…](exp-default-cell-first-2026-10-03.md)　·　[總目錄](index.md)　·　[HTML 版](exp-fence-default-cell-2026-10-05.html)
+← [2026-10-03 operator 裁定「移除所有具名格、pro…](exp-default-cell-first-2026-10-03.md)　·　[總目錄](index.md)　·　[HTML 版](exp-fence-default-cell-2026-10-05.html)　·　[同一趟（同 build、同格、同 session）裡： ① caps… →](e-victim-classify-2026-10-05.md)
 
 本檔由 `scripts/check/mindmap_brief_build.py` 從 `docs/mindmap/mindmap.json` 機械生成；改內容請改 JSON 後重跑，勿直接編輯本檔。

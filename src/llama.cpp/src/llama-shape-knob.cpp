@@ -254,4 +254,55 @@ void cgc_shape_report_final(struct llama_expert_cache * cache, size_t pool_cap_s
             // Which implementations ACTUALLY ran, counted by the builder itself. Without these two
             // a "no difference" result is uninterpretable: invisible ablation vs identical numbers.
             cfg.gdn_saw_fused, cfg.gdn_saw_manual);
+
+    // [CGC Phase Counters 2026-10-06] verify/decode phase breakdown -- the direct test of
+    // "verify batch trashes the LRU". Slot order == cgc_phase_t:
+    // 0 UNKNOWN, 1 PREFILL, 2 VERIFY, 3 DRAFT, 4 CATCHUP, 5 DECODE.
+    // Emitted as its OWN row (phase=counters) so it never disturbs the existing final-row parser.
+    if (cache != nullptr) {
+        fprintf(stderr,
+                "CGC-SHAPE v=1 phase=counters "
+                "evict=[%llu,%llu,%llu,%llu,%llu,%llu] "
+                "misscap=[%llu,%llu,%llu,%llu,%llu,%llu] "
+                "fill_wait_us=[%llu,%llu,%llu,%llu,%llu,%llu] "
+                "req=[%llu,%llu,%llu,%llu,%llu,%llu] "
+                "hit=[%llu,%llu,%llu,%llu,%llu,%llu] "
+                "miss=[%llu,%llu,%llu,%llu,%llu,%llu]\n",
+                (unsigned long long) cache->n_evict_by_phase[0],
+                (unsigned long long) cache->n_evict_by_phase[1],
+                (unsigned long long) cache->n_evict_by_phase[2],
+                (unsigned long long) cache->n_evict_by_phase[3],
+                (unsigned long long) cache->n_evict_by_phase[4],
+                (unsigned long long) cache->n_evict_by_phase[5],
+                (unsigned long long) cache->n_misscap_by_phase[0],
+                (unsigned long long) cache->n_misscap_by_phase[1],
+                (unsigned long long) cache->n_misscap_by_phase[2],
+                (unsigned long long) cache->n_misscap_by_phase[3],
+                (unsigned long long) cache->n_misscap_by_phase[4],
+                (unsigned long long) cache->n_misscap_by_phase[5],
+                (unsigned long long) cache->fill_wait_by_phase[0].load(std::memory_order_relaxed),
+                (unsigned long long) cache->fill_wait_by_phase[1].load(std::memory_order_relaxed),
+                (unsigned long long) cache->fill_wait_by_phase[2].load(std::memory_order_relaxed),
+                (unsigned long long) cache->fill_wait_by_phase[3].load(std::memory_order_relaxed),
+                (unsigned long long) cache->fill_wait_by_phase[4].load(std::memory_order_relaxed),
+                (unsigned long long) cache->fill_wait_by_phase[5].load(std::memory_order_relaxed),
+                (unsigned long long) cache->n_req_by_phase[0],
+                (unsigned long long) cache->n_req_by_phase[1],
+                (unsigned long long) cache->n_req_by_phase[2],
+                (unsigned long long) cache->n_req_by_phase[3],
+                (unsigned long long) cache->n_req_by_phase[4],
+                (unsigned long long) cache->n_req_by_phase[5],
+                (unsigned long long) cache->n_hit_by_phase[0],
+                (unsigned long long) cache->n_hit_by_phase[1],
+                (unsigned long long) cache->n_hit_by_phase[2],
+                (unsigned long long) cache->n_hit_by_phase[3],
+                (unsigned long long) cache->n_hit_by_phase[4],
+                (unsigned long long) cache->n_hit_by_phase[5],
+                (unsigned long long) cache->n_miss_by_phase[0],
+                (unsigned long long) cache->n_miss_by_phase[1],
+                (unsigned long long) cache->n_miss_by_phase[2],
+                (unsigned long long) cache->n_miss_by_phase[3],
+                (unsigned long long) cache->n_miss_by_phase[4],
+                (unsigned long long) cache->n_miss_by_phase[5]);
+    }
 }

@@ -1,0 +1,113 @@
+id: exp-m-instrument-recon-2026-10-06
+owner: lineA
+created: 2026-10-06
+axis: M
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# 待辦 ④ 的真正內容。
+#
+# 原文：「verify 的邊際成本再降一檔（未識別出路）持續優化」。
+#
+# 本卡的判讀：**「持續優化」不是空的，但它的第一件事不是優化，
+# 而是讓 m 這個量可引用。** 理由：
+#   判準    S = (1 + a·k) / (1 + m·k)
+#   天花板  k → ∞ ⇒ S → a/m
+#   ⇒ 「轉正與否」完全由 a − m 的符號決定。
+#   ⇒ m 的讀數目前兩台儀器互相矛盾（bench 0.474 ／ server 0.21），
+#      這個符號**算不出來** ⇒ 任何「verify 成本降了 X%」都無法判定有沒有效。
+#
+# ⇒ 待辦 ④ 的第一件事：定標 m。
+# ───────────────────────────────────────────────────────────────────────────────────────
+
+question: |
+  **儀器對帳：m 的兩台儀器定標**
+  m（每 draft token 的邊際驗證成本）的兩台儀器為什麼給出不同讀數？
+    - bench 儀器：m = **0.474**
+    - 服務端儀器：m = **0.21**
+  這個落差是「量法／定義不同」還是「m 真的在飄」？
+
+baseline:
+  metric: |
+    天花板公式：`S = mean_len / C = (1 + a·k) / (1 + m·k)`；`k → ∞ ⇒ S → a/m`。
+    server `a/m = 1.445`、bench `a/m = 0.982`。今天量到的 `S = 1.09`（配對）。
+    base 一步（MTP off）= **85.65 ms** ⇒ 11.67 t/s；
+    MTP-on verify 一步（乾淨窗）= **168.4 ms** ⇒ `C @ k=3 = 1.966` ⇒ `m = 0.322`（server）／`0.474`（bench）。
+  cell: "(default)（llama-bench 出廠形狀 `-p 512 -n 128 -b 2048 -ub 512 -d 0 -r 5`、warm_skip 0）＋ prod-new ＋ sampling(temp=0.4) ＋ 釘 seed=1"
+  source: "docs/MTP_2X_BOUNDARY_2026-09-19.md §1–§2；scripts/check/decode_board_2026-09-29.yaml:94／:1059；scripts/check/charters/e-mtp-m-acc-2026-09-29.yaml"
+
+hypothesis:
+  mechanism: |
+    天花板是 `a/m`（k→∞）。`S(k) = (1+a·k)/(1+m·k)` 逐 k 逼近它。
+    ⇒ **「轉正與否」＝ `a − m` 的符號判定**。
+    ⇒ 但 m 此刻有兩台儀器各說各話（bench **0.474** ／ server **0.21**）
+    ⇒ 符號無法判定 ⇒ 任何「verify 成本降了 X%」都無法判定有沒有效。
+    ⇒ 所以「持續優化」第一步是**定標 m**，不是轉旋鈕。
+
+  expected: |
+    定標後 m 應收斂成單一值（或差值可歸因於明確的定義差異），
+    ⇒ `a − m` 符號可判 ⇒ 待辦 ④ 有可判定的下一步。
+    若 `a > m` ⇒ **MTP-on 已轉正**（待辦 ① 是唯一未套用缺陷修補）。
+    若 `a ≤ m` ⇒ 轉正不可達，待辦 ④ 應退回「定標」，不得進入「優化」。
+
+  basis: "docs/MTP_2X_BOUNDARY_2026-09-19.md §1–§2；scripts/check/charters/e-mtp-m-acc-2026-09-29.yaml；RS3 §11.4＋§11.5"
+
+acceptance:
+  success: |
+    同一 session／同 seed 下，兩台儀器量到的 m **一致**
+    （或差值可歸因於明確的定義差異），且 `a − m` 的符號可判定。
+    ⇒ 待辦 ④ 有「可判定的下一步」；結果入 certified 為 ratchet_exempt 基準列。
+
+  falsify: |
+    同一條件下兩台儀器仍給不可調和的不同 m
+    ⇒ 沒有可引用的 m ⇒ **verify 成本的優化目前無法判定有沒有效**
+    ⇒ 待辦 ④ 退回「定標」，不得進入「優化」。
+
+  on_fail: |
+    維持現狀，把 m 的兩種量法並列留下（含各自定義），交 operator 裁「以誰為準」。
+    不入全局棘輪。
+
+targets:
+  # 本卡的目標不是 t/s，是「讓 m 可引用」。
+  m_quoteable: "同一 session／同 seed 下，兩台儀器的 m 讀數可對帳（一致或差值可歸因）"
+
+subgoals:
+  - id: sg-m-instrument-recon
+    text: "定標 m：同 session 同 seed 下，bench 儀器與服務端儀器各量一次並對帳"
+    expect: "一致的 m，或可歸因的差值"
+    how: "同一 invocation 內同時接兩台儀器；不得跨 launch 比"
+
+arms:
+  # 兩臂同模型（operator 2026-10-06 指令）：prod-new 解析到
+  # Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf
+  - "prod-new:CGC_SERVER_SEED=1;CGC_SERVER_MTP=0"    # off 錨（同 session）
+  - "prod-new:CGC_SERVER_SEED=1;CGC_SERVER_MTP=1;CGC_SERVER_LAYER_CAPS=40-40:140;CGC_DRAFT_CTX_ALIGN=1;CGC_DRAFT_SMALL_BATCH=1;LLAMA_BENCH_SPEC=1;LLAMA_BENCH_SPEC_DRAFT_N_MAX=2;CGC_SPEC_TREE=1;CGC_SPEC_TREE_B=2;CGC_SPEC_TREE_RS=2;CGC_MTP_PERF=1"
+
+notes: |
+  ## 這張卡要回答的（不是優化，是定標）
+
+  判準是 `S = (1+a·k)/(1+m·k)`、天花板是 `a/m` ⇒
+  **「轉正與否」完全由 `a − m` 的符號決定**。
+  而 m 此刻有兩個不可共存的讀數（bench **0.474** ／ server **0.21**），
+  符號算不出來 ⇒ 這是待辦 ④ 的第一件事。
+
+  ## 讀到的帳（全部轉引，本輪 0 跑）
+
+  | 來源 | 比值 |
+  |---|---|
+  | rs1 誠實配對（ON 9.306／OFF 9.974） | **×0.933**（淨 −6.7%） |
+  | 天花板：server | `a/m = 1.445` |
+  | 天花板：bench | `a/m = 0.982` |
+
+  | 機制 | 命中 |
+  |---|---|
+  | W1 的 argmax 一致度 | **0.646／0.710／0.778** |
+  | W2 的 argmax 一致度 | **0.067／0.123／0.394／0.405** |
+  | 第二顆 draft token（寬-2） | **0.253** |
+  | 第一顆 draft token（3 列鏈） | **0.749** |
+
+  ## ⛔ 硬邊界
+
+  - **不得**用「優化了 verify 之後 accept 有沒有漲」判定優化有效（用結果偽造因果）。
+  - m 定標完成前，待辦 ④ 的任何優化**不可判定**，只能記 diagnostic。
+  - 本卡屬線A；`speculative.cpp`／`speculative.h` 為他線未提交檔案
+    ⇒ **不改 C++、不 rebuild**，只做量測口徑與對帳設計。

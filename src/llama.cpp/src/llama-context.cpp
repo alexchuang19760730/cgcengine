@@ -1789,6 +1789,12 @@ void llama_context::set_warmup(bool value) {
 // UNKNOWN is the safe default: exact ensure_batch path, no ZERO-slot fast path.
 void llama_context::set_cgc_phase(cgc_phase_t phase) {
     cgc_current_phase = phase;
+    // [CGC Phase Counters 2026-10-06] mirror the phase into the expert cache so the
+    // ensure/evict/fill paths can attribute evict + fill_wait + capacity-miss to the
+    // verify vs decode vs prefill phase. Closes the "verify batch trashes LRU" question.
+    if (model.expert_cache) {
+        model.expert_cache->cgc_phase = (int) phase;
+    }
     // [CGC PREFILL_PROTECT A/B 2026-09-13] refresh the runtime toggle once per batch (one
     // open()/read() per decode step) so one server can run both arms of the A/B. No-op unless
     // CGC_PREFILL_PROTECT_FILE is set.
@@ -8818,6 +8824,23 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
             //     different paths must never be subtracted (that inference was made and retracted
             //     on 2026-10-03; the rule is now in the measure-hygiene file).
             // The only honest attribution of this window is to time it in place, BEFORE the return.
+            //
+            // MEASURED UPDATE 2026-10-03 (~16:50, Backup/spec_tree/MTP_CB_CLIFF_VERDICT_2026-10-03.md):
+            // This instrument was built to price the MTP-on cliff, and its first run REFUTED that
+            // premise: over a whole MTP-on k=1 run it fired exactly ONCE (`calls=1 ... ctx=draft`),
+            // i.e. the fast path is NOT where the ~4 s/step `cb` goes. The real carrier is the
+            // LARGE-PREFILL slab branch ABOVE this block -- `:8073 if (!cgc_is_decode_graph(n_tokens,
+            // cgc_decode_max_tokens))` -> `:8334 return` -- taken by the ntok=2 verify step because
+            // prod-new's per-layer slot cap (`CGC_SERVER_LAYER_CAPS=40-40:16` => 15 routable slots)
+            // drives `cgc_decode_bound(15, 8, 8)` to 1, so the 2-token verify is classified as a
+            // PREFILL graph. `CGC_PREFILL_STREAM=1` then re-reads a whole-layer slab (~356 MiB) per
+            // layer per step (~14.2 GiB/step).
+            // That also corrects the two blindness notes above: `CGC-HOOK_SPLIT` prints zero lines
+            // not because of the `:8974` return but because the slab branch returns even earlier
+            // (`:8334`), before BOTH the fast path and the exact path; and `CGC-EB_TIMER`'s
+            // ~235 ms reading belongs to the decode/draft path, which the slab path never enters.
+            // This instrument stays: it is the right window the day the verify step gets decode
+            // width >= 2 again (pool path restored). No rebuild was done for this comment edit.
             //
             // Buckets (deltas on this thread):
             //   zero  : llama_expert_cache_zero_reserved_slot  (idempotent per layer -- expect ~0)

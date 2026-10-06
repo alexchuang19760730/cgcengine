@@ -1,11 +1,27 @@
 {
-  "_doc": "replay_server_profile.py 的 reference rules (啟發式質量檢查)。每個 profile 一個 rules 區塊, 用 7 個 check: length / required_any / required_all / forbidden / ok_finish_reasons / loop_max_run / loop_phrase。score = 加權 pass 比例 (0.0-1.0)。loop_phrase (相同 6+ 字元片語連續重複 >=3 次) 與 loop_run 為硬閘門: 偵測到迴圈時最終 score 壓到 <=0.3, 不讓迴圈輸出拿到高分。precommit hook 用 score < 0.5 視為 quality regression。",
+  "_doc": "replay_server_profile.py 的 reference rules (啟發式質量檢查)。每個 profile 一個 rules 區塊, 用 7 個 check: length / required_any / required_all / forbidden / ok_finish_reasons / loop_max_run / loop_phrase。score = 加權 pass 比例 (0.0-1.0)。loop_phrase (相同 6+ 字元片語連續重複 >=3 次) 與 loop_run 為硬閘門: 偵測到迴圈時最終 score 壓到 <=0.3, 不讓迴圈輸出拿到高分。precommit hook 用 score < 0.5 視為 quality regression。 [2026-10-06] required_any 必須覆蓋該 profile 會被輪詢到的每一個 prompt（--runs 3 依序輪詢 PROFILE_PROMPTS 的 3 題）。qa-zh 原本只列 [巴黎, 法國]，對「太陽系有幾個行星」與「15 + 27」兩題恆為 fail → median 固定 0.765 → quality 硬閘門對任何 commit 都 FAIL。現補上這兩題的答案鍵。",
   "qa-zh": {
     "length_min": 4,
     "length_max": 80,
     "required_any": [
       "巴黎",
-      "法國"
+      "法國",
+      "水星",
+      "金星",
+      "地球",
+      "火星",
+      "木星",
+      "土星",
+      "天王星",
+      "海王星",
+      "行星",
+      "八大行星",
+      "八顆",
+      "八個",
+      "8 顆",
+      "8顆",
+      "42",
+      "四十二"
     ],
     "forbidden": [
       "<|",

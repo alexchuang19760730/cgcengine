@@ -25,6 +25,14 @@ static uint64_t make_key(uint32_t layer, uint32_t expert) {
     return ((uint64_t) layer << 32) | expert;
 }
 
+// [CGC Phase Counters 2026-10-06] clamp the cache's current phase into a valid
+// array index [0,5] (== cgc_phase_t UNKNOWN..NORMAL_DECODE). Out-of-range or
+// UNKNOWN collapses to 0 so a mis-set phase never writes past the array.
+static inline int cgc_phase_idx(const llama_expert_cache * c) {
+    const int p = c->cgc_phase;
+    return (p >= 0 && p < 6) ? p : 0;
+}
+
 // [CGC 2026-09-24 swap-miss P2] forward decls: both are defined after pool_region (they
 // need slots_l), but pick_slot -- which sits above that -- calls them. (Getting this wrong
 // is a compile error, and a compile error in this file blocks EVERY other line's build.)
@@ -772,6 +780,7 @@ static int32_t pick_slot(llama_expert_cache * cache, uint32_t layer, const uint8
             const int32_t evicted = owner[best_slot];
             if (evicted >= 0) {
                 cache->n_evictions++; // [CGC miss attribution] a resident expert is losing its slot
+                cache->n_evict_by_phase[cgc_phase_idx(cache)]++;
                 // [CGC 2026-09-24 swap-miss P2] the slot's bytes are dead from here on: keep
                 // them from ever being written out to swap. (Interior pages only, malloc pool
                 // only — the two partial pages at the ends belong to the neighbouring slots.)
@@ -1051,7 +1060,9 @@ int32_t llama_expert_cache_ensure_slot(llama_expert_cache * cache, uint32_t laye
             // the flags and notifies). The pread is hidden behind the current layer's FFN.
             const int64_t fw0 = ggml_time_us();
             cache->bg_cv.wait(lk, [&]{ return !cache->slot_loading[layer][slot] && !cache->slot_queued[layer][slot]; });
-            cache->fill_wait_us.fetch_add((uint64_t) (ggml_time_us() - fw0), std::memory_order_relaxed);
+            const uint64_t cgc_fw = (uint64_t) (ggml_time_us() - fw0);
+            cache->fill_wait_us.fetch_add(cgc_fw, std::memory_order_relaxed);
+            cache->fill_wait_by_phase[cgc_phase_idx(cache)].fetch_add(cgc_fw, std::memory_order_relaxed);
         }
         (count ? cache->n_hits : cache->n_prewarm_hits)++;
         cache->slot_last_use[layer][slot] = ++cache->tick;
@@ -1067,6 +1078,7 @@ int32_t llama_expert_cache_ensure_slot(llama_expert_cache * cache, uint32_t laye
             cache->n_miss_compulsory++;
         } else {
             cache->n_miss_capacity++;
+            cache->n_misscap_by_phase[cgc_phase_idx(cache)]++;
         }
     }
 
@@ -1156,7 +1168,9 @@ int32_t llama_expert_cache_ensure_slot(llama_expert_cache * cache, uint32_t laye
 
     const int64_t fill_t0 = ggml_time_us();
     fill_pool_direct(cache, layer, slot, expert);
-    cache->fill_wait_us.fetch_add((uint64_t) (ggml_time_us() - fill_t0), std::memory_order_relaxed);
+    const uint64_t cgc_fw = (uint64_t) (ggml_time_us() - fill_t0);
+    cache->fill_wait_us.fetch_add(cgc_fw, std::memory_order_relaxed);
+    cache->fill_wait_by_phase[cgc_phase_idx(cache)].fetch_add(cgc_fw, std::memory_order_relaxed);
 
     lk.lock();
     cache->slot_last_use[layer][slot] = ++cache->tick;
@@ -1354,7 +1368,9 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
                     cache->bg_cv.wait(lk, [&]{
                         return !cache->slot_loading[layer][owned] && !cache->slot_queued[layer][owned];
                     });
-                    cache->fill_wait_us.fetch_add((uint64_t) (ggml_time_us() - fw0), std::memory_order_relaxed);
+                    const uint64_t cgc_fw = (uint64_t) (ggml_time_us() - fw0);
+            cache->fill_wait_us.fetch_add(cgc_fw, std::memory_order_relaxed);
+            cache->fill_wait_by_phase[cgc_phase_idx(cache)].fetch_add(cgc_fw, std::memory_order_relaxed);
                     cache->n_hit_adopted_queued++;
                     // the fill either published table[e] (adopted by the hit path below) or was
                     // dropped/superseded, in which case the slot is free again and we fall
@@ -1367,9 +1383,12 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
                     // prefetch queued/in flight: wait for the bg thread (same as ensure_slot)
                     const int64_t fw0 = ggml_time_us();
                     cache->bg_cv.wait(lk, [&]{ return !cache->slot_loading[layer][slot] && !cache->slot_queued[layer][slot]; });
-                    cache->fill_wait_us.fetch_add((uint64_t) (ggml_time_us() - fw0), std::memory_order_relaxed);
+                    const uint64_t cgc_fw = (uint64_t) (ggml_time_us() - fw0);
+            cache->fill_wait_us.fetch_add(cgc_fw, std::memory_order_relaxed);
+            cache->fill_wait_by_phase[cgc_phase_idx(cache)].fetch_add(cgc_fw, std::memory_order_relaxed);
                 }
                 cache->n_hits++;
+                cache->n_hit_by_phase[cgc_phase_idx(cache)]++;
                 cache->slot_last_use[layer][slot] = ++cache->tick;
                 // [CGC P1 prefill-protect] a decode hit promotes the slot to protected.
                 if (!defer_decode_protect) {
@@ -1398,6 +1417,7 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
                 continue;
             }
             cache->n_misses++;
+            cache->n_miss_by_phase[cgc_phase_idx(cache)]++;
             // [CGC miss attribution] same split as ensure_slot: first demand touch of this
             // (layer, expert) is compulsory, a repeat means it was evicted = capacity.
             if (cache->ever_loaded[layer][e] == 0) {
@@ -1406,6 +1426,7 @@ void llama_expert_cache_ensure_batch(llama_expert_cache * cache, uint32_t layer,
                 cache->n_miss_compulsory++;
             } else {
                 cache->n_miss_capacity++;
+                cache->n_misscap_by_phase[cgc_phase_idx(cache)]++;
             }
             if (getenv("LLAMA_EXPERT_CACHE_MISS_DUMP") != nullptr) {
                 static FILE * fmiss = nullptr;
@@ -4224,6 +4245,7 @@ size_t llama_expert_cache_ensure(llama_expert_cache * cache, const uint32_t * la
         const uint64_t key = make_key(layers[i], experts[i]);
         std::unique_lock<std::mutex> lk(cache->m);
         cache->n_requests++;
+        cache->n_req_by_phase[cgc_phase_idx(cache)]++;
         cache->n_map_requests++;
 
         auto it = cache->map.find(key);
@@ -4235,6 +4257,7 @@ size_t llama_expert_cache_ensure(llama_expert_cache * cache, const uint32_t * la
                 }
             }
             cache->n_hits++;
+            cache->n_hit_by_phase[cgc_phase_idx(cache)]++;
             cache->n_map_hits++;
             s.last_use = ++cache->tick;
             continue;
@@ -4242,6 +4265,7 @@ size_t llama_expert_cache_ensure(llama_expert_cache * cache, const uint32_t * la
 
         // miss: create the slot and fill synchronously (blocking IO on this thread)
         cache->n_misses++;
+        cache->n_miss_by_phase[cgc_phase_idx(cache)]++;
         misses++;
         auto new_slot = std::make_unique<llama_expert_cache::slot>();
         new_slot->key = key;

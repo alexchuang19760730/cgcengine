@@ -1,0 +1,122 @@
+id: exp-w1w2-paired-2026-10-06
+owner: lineA
+created: 2026-10-06
+axis: M
+
+# ───────────────────────────────────────────────────────────────────────────
+# 這張卡要解決的，是「觀察的等級」問題，不是「速度不夠」的問題。
+#
+# 別線 10-06 的 W1／W2 落差是 **between-arm**：兩次 invocation、不同軌跡。
+# 同一個 seed 在不同 invocation 裡會走出不同的流 ⇒ 兩臂的 accept 差
+# 可能是「寬度造成」，也可能是「軌跡不同造成」，**兩者無法分離**。
+#
+# 唯一能分離的做法：把 W1 與 W2 放進 **同一個 session（同一 invocation）**，
+# 用同一 seed、同一語料，讓 W 成為唯一自變數。
+# ⇒ 這就是本卡的定位：把 between-arm 觀察升級成 within-session 因果。
+# ───────────────────────────────────────────────────────────────────────────
+
+question: |
+  **寬度軸的因果量測（W1 vs W2，同 session 同 seed）**
+  spec-tree 的寬度旋鈕（`CGC_SPEC_TREE_B`）從 1（純鏈）切到 2（alt-branch 走 seq 1）
+  時，accept／emit 的落差有多少是**寬度本身**造成的？
+
+  必要前置（缺一不可，否則量到的是別的東西）：
+    1. binary 含另一條線未提交的 `common/speculative.cpp`（`accept_from`＋`alt_branch`）；
+    2. `CGC_SERVER_LAYER_CAPS` 的 cap ≥ 17（⇒ `cgc_decode_bound ≥ 2`，verify 區塊塞得下）；
+    3. **同一 session 內**跑 W1／W2 兩臂（不是兩次 invocation）。
+
+  與 §10 的關係：§10 證明的是「機制 PASS」（控制器跟訊號走、不退化）；
+  本卡量的是「寬度值多少」——機制動≠指標動，這正是待辦 ③ 要補的那一格。
+
+baseline:
+  metric: "decode ~10.84 t/s（C14 fence-OFF 基準：(default) 形狀、MTP off）"
+  cell: "prod-new (default)：-p512 -n128 -b2048 -ub512 -d0 -r5、MTP off、sampling temp=0.4"
+  source: "Backup/spec_tree/fence_default_20261005/fence.json"
+
+hypothesis:
+  mechanism: |
+    寬度 2 讓一輪同時驗兩條候選鏈（seq 0 = A、seq 1 = B），
+    理論上能把每輪產出從 1 顆推到 2 顆；但代價是 verify batch 從 3 列漲到 6 列
+    （`rows = W_eff × (1 + d)`），且第二顆 draft 的命中率遠低於第一顆
+    （別線實測：第二顆 0.253 vs 第一顆 0.749）。
+
+    已定位的真因（別線 §1.2）：k_eff 塌成 1 是 **seq-1 在同一步被加兩顆**
+    （ALT-BRANCH SEED 後迴圈沒跳過 seq 1），不是 M-RoPE 牆。
+    本線靜態證明（rs3 §11.1／§11.3）：位置座標系本身乾淨，`i_h` 對齊正確、無 off-by-one。
+
+  expected: |
+    同 session、同 seed（CGC_SERVER_SEED=1）下，W1 與 W2 各跑一趟，
+    拿到「同一條底座上寬度從 1→2 的 emit／accept 差」。
+    預期讀數（預先登記，事後對不上要如實記為錯）：
+      - W1 的 argmax 一致度 ≈ 0.65–0.78（三臂實測區間）
+      - W2 的 argmax 一致度 ≈ 0.07–0.41
+      - 兩者差值若能被 sampling 折扣（smp==argmax ≈ 0.85）解釋 ⇒ 管線正確、低 accept 是口徑造成
+
+  basis: "別線 `T1W2_ACOLLAPSE_ROOTCAUSE_2026-10-06.md` §1.2／§1.3；本線 `Backup/spec_tree/rs3_mrope_draft_pos_scoping_2026-10-06.md` §11"
+
+acceptance:
+  success: |
+    同一 session 內拿到 W1／W2 配對讀數，且
+    兩臂皆 caliber=UNIFIED ＋ quote=QUOTABLE（attribution=none、無 swap）
+    ⇒ 登為「寬度軸」首筆可引用配對，可進 certified（ratchet_exempt 基準列）。
+
+  falsify: |
+    W2 的 argmax 一致度 ≈ W1（差值落在 noise 內）
+    ⇒ 寬度這條軸**不產生淨收益**，本格結案（排除），與 §1.3 的
+    「B 首勝鎖死 A 已否證」同向；
+    或 W1／W2 任一臂 spread > 1.10 ⇒ UNSTABLE、不可引用（髒窗）。
+
+  on_fail: |
+    不重跑、不改動引擎。記錄「盒未淨 ⇒ 讀數不可引用」，回到待辦佇列等乾淨窗。
+    ⛔ 絕不可用「改完看 accept 有沒有漲」來判定因果。
+
+targets:
+  # ⛔ 本卡**不設** decode t/s 達標值 —— 它量的是「差值」不是「成績」。
+  # 若一定要目標：W2 emit > W1 emit 才算寬度有價值（目前實測是 1.954 vs 2.381 ⇒ 反了）。
+  emit_gap: "W2 − W1 > 0 才算寬度淨收益"
+
+subgoals:
+  - id: sg-w1w2-paired
+    text: "同一 session 同 seed 跑 W1／W2，量 emit／accept 差，判定寬度軸價值"
+    expect: "配對讀數可引用（spread ≤1.10、attribution=none）；若 W2≤W1 ⇒ 寬度軸結案排除"
+    how: "兩臂同一次 invocation（W_eff 由 CGC_SPEC_TREE_B 控制），比 emit/round 與第二顆命中率"
+
+arms:
+  # 兩臂同模型（operator 2026-10-06 指令）：prod-new 解析到
+  # Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf
+  - "prod-new:CGC_SERVER_SEED=1;CGC_SERVER_MTP=0"    # W1（關 MTP，鏈）
+  - "prod-new:CGC_SERVER_SEED=1;CGC_SERVER_MTP=1;CGC_SERVER_LAYER_CAPS=40-40:140;CGC_DRAFT_CTX_ALIGN=1;CGC_DRAFT_SMALL_BATCH=1;LLAMA_BENCH_SPEC=1;LLAMA_BENCH_SPEC_DRAFT_N_MAX=2;CGC_SPEC_TREE=1;CGC_SPEC_TREE_B=2;CGC_SPEC_TREE_RS=2;CGC_MTP_PERF=1"   # W2
+
+notes: |
+  !! 立項動機（為什麼非做不可）
+    別線的 W1／W2 落差（W2-real argmax 一致度 0.247 vs W1-real 0.695）目前只是
+    **between-arm 觀察**：不同 invocation、不同軌跡。同一 seed 在不同 invocation
+    會走出不同流 ⇒ 無法斷定落差來自寬度。
+    ⇒ 只有「同 session 同 seed」能把 W 變成唯一自變數。
+
+  !! 這張卡**不**主張什麼
+    - 不主張 MTP-on 會加速。既有判詞是 **未轉正**：MTP-on 輸出與 MTP-off 不同
+      ⇒ 不在交付口徑內；且實測比值 rs1 誠實配對為 ×0.933（淨 −6.7%）。
+    - 不主張本卡會提高交付數字。它補的是**因果等級**，不是速度。
+    - 任何 t/s 未過引用閘門前，一律只是診斷讀數。
+
+  !! 判據（跑前寫死，見 rs3 §11.5 的修正）
+    原預註冊判據「greedy 下 accept ≧ 0.9」**失效**（別線 oracle 實測
+    argmax 一致度 0.646／0.710／0.778，落在原判據的中間帶）。
+    ⇒ 改問：W1 與 W2 的 argmax 一致度**差多少**；
+      差值若落在 sampling 折扣（≈0.85）可解釋的量之內 ⇒ 管線正確、低 accept 是口徑造成；
+      差值顯著超出 ⇒ 仍有未定位缺陷。
+
+  !! 執行前置
+    1. 環境必須乾淨（swap purge/reboot、compressor QUIET、thermal 0、無外來 bench）
+       —— 16GB 盒上 model 13.66 GB ＋ pool 8 GiB ＝ 21.66 GB > 16 GB ⇒ 必然換出；
+       `attrib=swap` 會讓讀數不可引用。
+    2. 兩臂**同一 session**：`CGC_SPEC_TREE_B` 是 arm 級 env，可同 invocation 內切換；
+       若 harness 要求分 invocation ⇒ 本卡的「因果」等級自動降回 between-arm，
+       **必須在產物上標明**，不得當成 within-session 用。
+    3. seed 釘 `CGC_SERVER_SEED=1`（shell env 不轉發，必走 arm env）。
+
+  !! 已知混淆（寫在前面，不要事後才發現）
+    1. 形狀收益**非政策無關**：不同臂拜訪同一形狀時 carryover 不同 ⇒ 估計不可跨臂搬。
+    2. 部分是貪婪探索（未選中的 d 只在探測輪更新）⇒ 估計可能凍結。
+    3. cap 上界：k 的上界仍被引擎的 seq-1 雙加壓著（補丁未套用）⇒ 天花板還沒量到。

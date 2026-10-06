@@ -93,6 +93,19 @@ struct ggml_metal {
     _Atomic int64_t    cgc_last_progress_us;
     _Atomic int64_t    cgc_last_submit_us;
     _Atomic int        cgc_n_computes;
+
+    // [CGC 2026-10-05 whole-step GPU busy] Monotonic, NEVER reset on this side: the backend reads
+    // the totals before/after each step and takes the delta. Why a monotonic fetch_add and not
+    // min/max + reset: the first revision of this instrument accumulated in the completion handlers
+    // and then `atomic_exchange`d the accumulators, and a handler mid compare-exchange left the
+    // min/max wider than the sum (measured: union 1230 ms > busy_sum 746 ms > wait 375 ms --
+    // mathematically impossible for one segment; see the note above ggml_metal_cgc_gpu_take).
+    // A pure fetch_add has no such window, and a busy SUM is all `gpu_busy_sum / wait` needs.
+    // Gated by BOTH CGC_GPU_TIMING_LATE and CGC_GPU_TIMING; off => the handlers never touch these.
+    _Atomic int64_t    cgcst_busy_ns;
+    _Atomic int64_t    cgcst_n;
+    _Atomic int64_t    cgcst_unsup;
+    bool               cgc_step_accum;
     _Atomic int64_t    cgc_encode_start_us[GGML_METAL_MAX_COMMAND_BUFFERS + 1];
     _Atomic int64_t    cgc_encode_done_us[GGML_METAL_MAX_COMMAND_BUFFERS + 1];
     int64_t            cgc_cb_create_us[GGML_METAL_MAX_COMMAND_BUFFERS + 1]; // main thread only
@@ -427,6 +440,12 @@ ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
     atomic_store_explicit(&res->cgc_last_progress_us, 0, memory_order_relaxed);
     atomic_store_explicit(&res->cgc_last_submit_us,   0, memory_order_relaxed);
     atomic_store_explicit(&res->cgc_n_computes,      0, memory_order_relaxed);
+    // [CGC 2026-10-05 whole-step GPU busy] see the struct comment
+    atomic_store_explicit(&res->cgcst_busy_ns, 0, memory_order_relaxed);
+    atomic_store_explicit(&res->cgcst_n,       0, memory_order_relaxed);
+    atomic_store_explicit(&res->cgcst_unsup,   0, memory_order_relaxed);
+    res->cgc_step_accum = getenv("CGC_GPU_TIMING_LATE") != NULL &&
+                          getenv("CGC_GPU_TIMING")      != NULL;
     atomic_store_explicit(&res->cgc_watchdog_stop,   false, memory_order_relaxed);
     {
         const char * wd  = getenv("CGC_WATCHDOG");
@@ -549,6 +568,20 @@ static void cgc_wait_cmd_buf(id<MTLCommandBuffer> cmd_buf) {
 
 int ggml_metal_cgc_done(ggml_metal_t ctx) {
     return atomic_load_explicit(&ctx->cgc_done, memory_order_relaxed);
+}
+
+// [CGC 2026-10-05 whole-step GPU busy] Read the monotonic accumulator; `out` = {busy_ns, n, unsup}.
+// Pure read, no reset -- the caller takes deltas between two reads. See the struct comment for why
+// this side must not reset (the ABA window that killed the first revision) and why the sum, not the
+// span, is what `gpu_busy_sum / wait` needs. Inert unless CGC_GPU_TIMING_LATE is set.
+int ggml_metal_cgc_step_busy(ggml_metal_t ctx, int64_t * out) {
+    if (ctx == NULL || out == NULL) {
+        return 0;
+    }
+    out[0] = atomic_load_explicit(&ctx->cgcst_busy_ns, memory_order_relaxed);
+    out[1] = atomic_load_explicit(&ctx->cgcst_n,       memory_order_relaxed);
+    out[2] = atomic_load_explicit(&ctx->cgcst_unsup,   memory_order_relaxed);
+    return 3;
 }
 
 // [CGC 2026-10-02 overlap fence] ARM: the NEXT ggml_metal_graph_compute's first command buffer
@@ -1342,6 +1375,29 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
                 GGML_UNUSED(cb);
                 atomic_fetch_add_explicit(&ctx->cgc_done, 1, memory_order_relaxed);
                 atomic_store_explicit(&ctx->cgc_last_progress_us, ggml_time_us(), memory_order_relaxed);
+                // [CGC 2026-10-05 whole-step GPU busy] GPUStartTime/GPUEndTime are only valid once
+                // the buffer is COMPLETED, which is exactly here -- and this handler is the only
+                // place that sees EVERY buffer of EVERY segment. With the overlap fence on, the CPU
+                // skips the per-segment waits, so no backend read point can: the array below is
+                // recycled per segment (n_cb+1 = 9 slots) and holds only the tail segment by the time
+                // the backend runs. Pure fetch_add, no reset => no ABA window.
+                if (ctx->cgc_step_accum) {
+                    const CFTimeInterval s = [cb GPUStartTime];
+                    const CFTimeInterval e = [cb GPUEndTime];
+                    const CFTimeInterval d = e - s;
+                    // The 10 s bound is a plausibility filter, not a tuning knob: a single command
+                    // buffer in a decode step runs for microseconds, and MEASURED on the first run a
+                    // few buffers report absurd spans (the SAME pathology the per-segment accessor
+                    // shows: gpu_busy_sum 2.0e8 / 1.4e8 ms) which would poison a whole step's delta.
+                    // Rejecting them makes the count visible in `unsup` instead of hiding the bug.
+                    if (s > 0.0 && e > s && d < 10.0) {
+                        atomic_fetch_add_explicit(&ctx->cgcst_busy_ns,
+                                                  (int64_t) (d * 1e9), memory_order_relaxed);
+                        atomic_fetch_add_explicit(&ctx->cgcst_n, 1, memory_order_relaxed);
+                    } else {
+                        atomic_fetch_add_explicit(&ctx->cgcst_unsup, 1, memory_order_relaxed);
+                    }
+                }
             }];
 
             [cmd_buf enqueue];
@@ -1372,6 +1428,29 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
                 GGML_UNUSED(cb);
                 atomic_fetch_add_explicit(&ctx->cgc_done, 1, memory_order_relaxed);
                 atomic_store_explicit(&ctx->cgc_last_progress_us, ggml_time_us(), memory_order_relaxed);
+                // [CGC 2026-10-05 whole-step GPU busy] GPUStartTime/GPUEndTime are only valid once
+                // the buffer is COMPLETED, which is exactly here -- and this handler is the only
+                // place that sees EVERY buffer of EVERY segment. With the overlap fence on, the CPU
+                // skips the per-segment waits, so no backend read point can: the array below is
+                // recycled per segment (n_cb+1 = 9 slots) and holds only the tail segment by the time
+                // the backend runs. Pure fetch_add, no reset => no ABA window.
+                if (ctx->cgc_step_accum) {
+                    const CFTimeInterval s = [cb GPUStartTime];
+                    const CFTimeInterval e = [cb GPUEndTime];
+                    const CFTimeInterval d = e - s;
+                    // The 10 s bound is a plausibility filter, not a tuning knob: a single command
+                    // buffer in a decode step runs for microseconds, and MEASURED on the first run a
+                    // few buffers report absurd spans (the SAME pathology the per-segment accessor
+                    // shows: gpu_busy_sum 2.0e8 / 1.4e8 ms) which would poison a whole step's delta.
+                    // Rejecting them makes the count visible in `unsup` instead of hiding the bug.
+                    if (s > 0.0 && e > s && d < 10.0) {
+                        atomic_fetch_add_explicit(&ctx->cgcst_busy_ns,
+                                                  (int64_t) (d * 1e9), memory_order_relaxed);
+                        atomic_fetch_add_explicit(&ctx->cgcst_n, 1, memory_order_relaxed);
+                    } else {
+                        atomic_fetch_add_explicit(&ctx->cgcst_unsup, 1, memory_order_relaxed);
+                    }
+                }
             }];
 
             // always enqueue the first two command buffers

@@ -1,0 +1,124 @@
+id: exp-a-lever-rejection-2026-10-06
+owner: lineA
+created: 2026-10-06
+axis: M
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# 待辦 ②：拉 a（而不是降 m）。
+#
+# 判準：S = (1 + a·k) / (1 + m·k)；天花板 k→∞ ⇒ S → a/m。
+#   ⇒ 轉正 ⟺ a > m。
+#
+# §2 邊界表（`docs/MTP_2X_BOUNDARY_2026-09-19.md`）顯示兩軸槓桿率極不對稱：
+#   a: 0.465 → 0.70   ≡   m 砍 43%
+#   a = 0.90 時只需 m ≤ 0.283（−12%）
+#   a = 1.00 時今天 m = 0.322 已達標（−4%）
+#
+# ⇒ 關鍵：只要 a ≥ 0.8，三個 m 讀數（0.474／0.322／0.21）下 S 全部 > 1.4
+#   ⇒ **轉正成立，且不依賴 m 定標**。這條軸繞過了 m 的矛盾。
+#
+# 為什麼現在才合法：rejection sampling 保輸出分佈、不保逐位元。
+#   在 bit-identical 口徑下禁止；operator 2026-10-06 簽「任務結果相同即可」⇒ 解除。
+# ─────────────────────────────────────────────────────────────────────────────────
+
+question: |
+  **拉 a：chain 路徑開 rejection sampling 後，有效接受率能到多少？**
+  具體問三件事：
+    1. 開 `CGC_MTP_REJECTION=1` ＋ `CGC_MTP_SAMPLER_PARITY=1` 後，逐輪有效接受率 a_eff 是多少？
+       （理論值 = 1 − TV(p_t, q)；今天精確比對下 a = **0.46541**）
+    2. 配對後的 S（＝ t/s_on ÷ t/s_off，同 session、同 seed）是否 > 1？
+    3. 輸出分佈是否守住了 operator 新口徑（任務結果相同即可）？
+
+baseline:
+  metric: |
+    天花板公式 `S = (1 + a·k)/(1 + m·k)`；`k→∞ ⇒ S → a/m`。
+    今天：`a = 0.46541`、`C@(k=3) = 1.966`、`m = 0.322（server）／0.474（bench）`
+    ⇒ 天花板 1.445（server）／0.982（bench）⇒ **符號不可判**。
+    base 一步（MTP off）= **85.65 ms** ⇒ 11.67 t/s。
+    既有配對讀數：rs1 誠實配對 ON 9.306／OFF 9.974 ＝ **×0.933**（該趟 swap 污染、REFUSED）。
+  cell: "(default)（llama-bench 出廠形狀 `-p 512 -n 128 -b 2048 -ub 512 -d 0 -r 5`、warm_skip 0）＋ prod-new ＋ sampling(temp=0.4) ＋ 釘 seed=1"
+  source: "docs/MTP_2X_BOUNDARY_2026-09-19.md §0–§2；scripts/check/charters/e-mtp-m-acc-2026-09-29.yaml；Backup/spec_tree/rs5_*.md；Backup/spec_tree/rs6_dist_consumer_trace_2026-10-06.md"
+
+hypothesis:
+  mechanism: |
+    今日的低 accept **不是 head 的問題**，是口徑造成的：
+      - draft 取 argmax（one-hot q），target 取 sampling ⇒ accept 規則是「逐 token 精確比對
+        target 抽到的 id」⇒ `P(match) = Σ p_t·p_d`，被 argmax 封頂在 ≈0.465。
+      - rejection sampling 把規則換成 `min(1, p_t/q)` ⇒ 接受率 = **1 − TV(p_t, q)**，
+        且**保輸出分佈**（⇒ 與 MTP-off 統計一致，符合 operator 新口徑）。
+    ⇒ 理論上只要 MTP head 的 q 接近 p_t，a_eff 應明顯高於 0.465。
+
+    機制**已完整存在於 codebase**：
+      - 取樣器 `cgc_rejection_accept()` — `common/sampling.cpp:710-744`
+      - 消費端雙閘 — `common/sampling.cpp:819-821`（否則 fallback 精確比對 `:823`）
+      - 開關 `CGC_MTP_REJECTION` — `common/sampling.cpp:794-797`（process 級、只讀一次）
+      - 生產端 `draft()` 填 dist — `common/speculative.cpp:1947-1955`
+      - 容器 caller-owned、預設 nullptr — `common/speculative.h:78`
+
+  expected: |
+    a_eff ≥ **0.70**（模型推演：a=0.80 時三個 m 讀數下 S = 1.40～2.16）。
+    配對後 **S > 1**（轉正），且輸出分佈守住 operator 新口徑。
+
+  basis: "docs/MTP_2X_BOUNDARY_2026-09-19.md §2 邊界表；Backup/spec_tree/rs6_dist_consumer_trace_2026-10-06.md §1–§3"
+
+acceptance:
+  success: |
+    （三分；全中要同時成立）
+    ① **a_eff ≥ 0.70**（逐輪見證，非單點）；
+    ② 配對 **S > 1**（同 session、同 seed、同 shape／warm-skip）；
+    ③ 輸出分佈守住 operator 新口徑（有任務指標者指標相等；無者以預先指定的等價 oracle 判定）。
+    ⇒ 入 certified，標 **ratchet_exempt** 基準列（跨口徑，不進全局棘輪）。
+
+  falsify: |
+    ① **a_eff < 0.55**，或
+    ② 配對 **S ≤ 1** 且差值無法歸因於記憶體／暖機。
+    ⇒ 記錄「rejection 拉不起 a」及其量到的 a_eff，待辦 ② 結案為負。
+
+  on_fail: |
+    維持現狀；把 a_eff 與 S 並列留下（含口徑說明），交 operator 裁「是否接受跨口徑交付」。
+    不入全局棘輪。
+
+targets:
+  # 本卡的目標不是 t/s，是「a_eff 能不能拉起來」。
+  a_eff_floor: 0.70
+  s_sign: "> 1（同 session／同 seed 配對）"
+
+subgoals:
+  - id: sg-a-lever-rejection
+    text: "chain 路徑（tree off）開 rejection sampling，量逐輪有效接受率 a_eff 與配對 S"
+    expect: "a_eff ≥ 0.70；配對 S > 1"
+    how: "server 路徑（見 arms）；不得跨 launch 比；必須釘 seed"
+
+arms:
+  # ★ 必須走 server 路徑。理由（RS6 §0，靜態核實證）：
+  #   - server-context.cpp:4251 **無條件**傳 &slot.spec_draft_dist ⇒ rejection 會生效
+  #   - llama-bench.cpp:4045 **硬寫 nullptr** ⇒ bench chain 路徑 rejection 永不生效
+  #   - llama-bench.cpp:3033-3041：tree walk 只做 greedy ⇒ tree 路徑沒有 rejection
+  # ⇒ 若堅持用 bench，必須「補傳入 ＋ 補 clear」兩件事（dist 跨輪累積會錯位），不是一行。
+  - "prod-new:CGC_SERVER_SEED=1;CGC_SERVER_MTP=1;CGC_MTP_REJECTION=1;CGC_MTP_SAMPLER_PARITY=1"   # on ＋ rejection
+  - "prod-new:CGC_SERVER_SEED=1;CGC_SERVER_MTP=1"                                              # on 基線（精確比對）
+  - "prod-new:CGC_SERVER_SEED=1;CGC_SERVER_MTP=0"                                              # off 錨（同 session）
+
+notes: |
+  ## 這張卡是怎麼來的
+
+  RS5 說「拉 a 的機制已實作、只是預設關著」。RS6 靜態核把它查穿了：
+  **只有 server 側成立，bench 側消費端硬寫 nullptr（`:4045`），而且全文沒有
+  `draft_dist.clear()`（跨輪累積會造成分佈／位置錯位）。**
+  ⇒ 本卡的 arms 因此限定 server 路徑。
+
+  ## 為什麼先做它而不是先定標 m
+
+  天花板 `a/m` 的兩個乘數裡，`a` 的導數遠大於 `m`（§2：a 0.465→0.70 ≡ m 砍 43%）。
+  而且 **a ≥ 0.8 時三個 m 讀數下 S 全部 > 1.4** ⇒ 結論不依賴尚未解決的 m 矛盾。
+
+  ## ⚠ 硬邊界（寫死）
+
+  - **不得**用「改完 accept 有沒漲」判定因果；必須同 seed／同 shape／同 warm-skip 配對。
+  - 必須**同時報 a_eff 與列數／步成本**，否則「省列」會被誤讀成「修好」。
+  - 「任務結果相同」的定義沿用 operator 判準的三條界線：
+    ① 有任務指標 ⇒ 指標相等；② 無指標 ⇒ 需預先指定的等價 oracle；
+    ③ 兩者皆需同 seed／同 prompt／同 shape／warm-skip。
+    ③ 不得以「看起來一樣」判定。
+  - 本卡屬線A；`speculative.cpp`／`speculative.h` 為他線未提交檔案 ⇒ **不改 C++、不 rebuild**。
+  - **前置**：等他線 commit（機檢見 `Backup/spec_tree/rs3_*md` §11.1）。

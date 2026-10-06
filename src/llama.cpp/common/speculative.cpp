@@ -169,6 +169,15 @@ struct common_speculative_impl {
 
     virtual void accept(llama_seq_id seq_id, uint16_t n_accepted, bool is_other) = 0;
 
+    // [CGC spec-tree 2026-10-03] like accept(), but the hidden seed rows are read from
+    // `src_seq_id`'s verify batch instead of `seq_id`'s. The tree's winning branch is a
+    // different sequence while the continuation stays on `seq_id`. Default: behave exactly
+    // like accept(), so every existing impl is untouched.
+    virtual void accept_from(llama_seq_id seq_id, llama_seq_id src_seq_id, uint16_t n_accepted) {
+        (void) src_seq_id;
+        accept(seq_id, n_accepted, false);
+    }
+
     // (optional) serialize/restore per-seq internal state (e.g. eagle3's deferred boundary).
     virtual bool get_state(llama_seq_id /*seq_id*/, std::vector<uint8_t> & /*data*/) const { return false; }
     virtual void set_state(llama_seq_id /*seq_id*/, const std::vector<uint8_t> & /*data*/) {}
@@ -1367,7 +1376,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 common_speculative_get_devices_str(this->params.devices).c_str());
 
         const int32_t n_b = (int32_t) llama_n_batch(ctx_dft);
-        batch = llama_batch_init(/*n_tokens=*/ n_b, /*embd=*/ n_embd, /*n_seq_max=*/ 1);
+        // [CGC spec-tree 2026-10-05] n_seq_max must cover the ALT-branch sequence (seq 1) that
+        // draft() seeds when a caller sets draft_params::alt_branch; with n_seq == 1 this is 1
+        // and nothing changes for every existing path.
+        batch = llama_batch_init(/*n_tokens=*/ n_b, /*embd=*/ n_embd, /*n_seq_max=*/ std::max(1, (int) n_seq));
         // llama_batch_init allocates only one of token/embd; MTP needs both.
         // TODO: fix, how to call without malloc
         batch.token = (llama_token *) malloc(sizeof(llama_token) * n_b);
@@ -1763,6 +1775,22 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             drafting[seq_id] = true;
             common_sampler_reset(smpls[seq_id].get());
 
+            // [CGC spec-tree 2026-10-06] self-correct the draft seed position against the live KV.
+            // tools/llama-bench.cpp:3035 re-inits its local n_past from seq_pos_max(ctx)+1 *before*
+            // the rep prefill; at rep-2+ the rep loop has cleared the target memory, so seq_pos_max is
+            // -1 and n_past arrives here as 0 while the (shared) KV still holds the [0, N-1] prompt
+            // prefix. Seeding at 0 trips M-RoPE's X < Y and the whole round yields 0 drafts (plain
+            // decode). The draft must always start ONE PAST the existing KV prefix -- that is exactly
+            // what X < Y demands -- so clamping is the correct invariant, not a workaround. For the
+            // working cases (n_past already > kv_top) this is a no-op; it only rescues the rep-boundary
+            // case and the alt-branch re-seed (which reads dp.n_past one line below at :1968).
+            {
+                const llama_pos kv_top = llama_memory_seq_pos_max(llama_get_memory(ctx_dft), seq_id);
+                if (kv_top >= 0 && dp.n_past <= kv_top) {
+                    dp.n_past = kv_top + 1;
+                }
+            }
+
             common_batch_add(batch, dp.id_last, dp.n_past, { seq_id }, true);
             std::memcpy(batch.embd + (size_t) (batch.n_tokens - 1) * n_embd, pending_h[seq_id].data(), row_bytes);
 
@@ -1787,7 +1815,22 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
         int i = 0;
 
+        // [CGC spec-tree 2026-10-06 k_eff] THE STEP THAT JUST SEEDED A SEQ MUST NOT ALSO
+        // DRAFT IT. The alt-branch seed below creates seq 1 and already puts its FIRST token
+        // (the runner-up) into the batch being built for the NEXT step, at position
+        // dp1.n_past + 1, and points i_last[1] at that slot. If seq 1's own draft iteration
+        // also runs in the same step, it (a) samples a slot that has not been decoded yet and
+        // (b) adds a SECOND seq-1 token at that SAME position. That batch is then refused by
+        // the backend-sampling pre-flight (llama-context.cpp:2622, n_outputs_max_per_seq == 1,
+        // common.h:331): "backend sampling supports at most 1 outputs per sequence (seq_id 1
+        // had 2)" -> llama_decode returns -1 -> this loop `break`s at i == 1 -> the chain is
+        // silently pinned to k_eff = 1. It only shows up at n_max >= 3: at n_max == 2 the
+        // `params.n_max <= result.size()` early-exit above fires (2 <= 2) and `continue`s
+        // BEFORE the batch add, which is why k_eff was 2 at n_max 2 and 1 at n_max 3+.
+        llama_seq_id just_seeded = -1;
+
         while (n_drafting > 0) {
+            just_seeded = -1;
             // each step decodes under a different head, i.e. a different decoder layer, and
             // KV is per layer. process() filled this layer's KV only for positions < n_past
             // (prompt + accepted prefix) — nothing in the draft region yet. so reset the
@@ -1854,6 +1897,9 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
                 if (!drafting[seq_id]) {
                     continue;
+                }
+                if (seq_id == just_seeded) {
+                    continue;   // seeded this step: its token is already in the next batch
                 }
 
                 auto * smpl = smpls[seq_id].get();
@@ -1941,6 +1987,37 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                     continue;
                 }
 
+                // [CGC spec-tree 2026-10-05] ALT-BRANCH SEED (draft_params::alt_branch): the tree's
+                // branch 1 is THIS position's runner-up, and from here on it drafts ITS OWN chain.
+                // Same hidden pair (h_row) and the same logical position, but carried on seq 1, so
+                // the second chain's cells cannot collide with seq 0's in the draft KV (llama-batch
+                // refuses a repeated position: M-RoPE X < Y). Everything downstream -- the decode
+                // loop, the pair carry, the bench's mirror trim -- then treats seq 1 like any other
+                // drafting sequence.
+                const llama_token alt0 = (cur_p->size >= 2) ? cur_p->data[1].id : (llama_token) -1;
+                if (i == 0 && seq_id == 0 && n_seq >= 2 && !drafting[1] &&
+                        dparams[1].alt_branch && dparams[1].result != nullptr && alt0 >= 0) {
+                    auto & dp1 = dparams.at(1);
+
+                    dp1.n_past  = dp.n_past;
+                    dp1.id_last = alt0;
+                    dp1.result->push_back(dp1.id_last);
+
+                    drafting[1] = true;
+                    n_drafting += 1;
+
+                    common_batch_add(batch, dp1.id_last, dp1.n_past + (llama_pos) i + 1,
+                                     { (llama_seq_id) 1 }, true);
+                    std::memcpy(batch.embd + (size_t) (batch.n_tokens - 1) * n_embd, h_row, row_bytes);
+                    i_last[1] = batch.n_tokens - 1;
+                    just_seeded = 1;
+
+                    if (getenv("CGC_MTP_DBG")) {
+                        fprintf(stderr, "MTPDBG alt-seed: seq=1 id=%d pos=%d (from seq=0 step=0)\n",
+                                (int) dp1.id_last, (int) dp1.n_past + 1);
+                    }
+                }
+
                 if (chain_heads) {
                     // ref: https://github.com/ggml-org/llama.cpp/pull/24340#discussion_r3448031546
                     chain_h[seq_id].insert(chain_h[seq_id].end(), h_row, h_row + n_embd);
@@ -2001,18 +2078,33 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     }
 
     void accept(llama_seq_id seq_id, uint16_t n_accepted, bool /*is_other*/) override {
+        accept_seed(seq_id, seq_id, n_accepted);
+    }
+
+    // [CGC spec-tree 2026-10-03] Write the carryover for `seq_id` from the verify rows of
+    // `src_seq_id`. The tree's winning branch 1 was verified on seq 1 (verify_h[1]); the KV
+    // is copied onto the continuation seq 0 afterwards, so the NEXT draft must start from
+    // seq 1's row -- reading verify_h[0] would pair the wrong hidden with the emitted token.
+    void accept_from(llama_seq_id seq_id, llama_seq_id src_seq_id, uint16_t n_accepted) override {
+        accept_seed(seq_id, src_seq_id, n_accepted);
+    }
+
+    void accept_seed(llama_seq_id seq_id, llama_seq_id src_seq_id, uint16_t n_accepted) {
         if (seq_id < 0 || seq_id >= (llama_seq_id) n_seq) {
             return;
         }
+        if (src_seq_id < 0 || src_seq_id >= (llama_seq_id) n_seq) {
+            return;
+        }
 
-        const int32_t n_rows = verify_h_rows[seq_id];
+        const int32_t n_rows = verify_h_rows[src_seq_id];
         if (n_rows <= 0) {
             return;
         }
 
         const int32_t i_h = std::min<int32_t>(n_accepted, n_rows - 1);
         const size_t row_bytes = (size_t) n_embd * sizeof(float);
-        std::memcpy(pending_h[seq_id].data(), verify_h[seq_id].data() + (size_t) i_h * n_embd, row_bytes);
+        std::memcpy(pending_h[seq_id].data(), verify_h[src_seq_id].data() + (size_t) i_h * n_embd, row_bytes);
     }
 
     bool need_embd() const override {
@@ -3079,7 +3171,7 @@ void common_speculative_draft(common_speculative * spec) {
     }
 }
 
-void common_speculative_accept(common_speculative * spec, llama_seq_id seq_id, uint16_t n_accepted) {
+void common_speculative_accept(common_speculative * spec, llama_seq_id seq_id, uint16_t n_accepted, llama_seq_id src_seq_id) {
     common_speculative_impl * impl = spec->impl_last[seq_id];
 
     GGML_ASSERT(impl);
@@ -3100,7 +3192,11 @@ void common_speculative_accept(common_speculative * spec, llama_seq_id seq_id, u
             impl->n_acc_tokens += n_accepted;
         }
 
-        impl->accept(seq_id, n_accepted, false);
+        if (src_seq_id >= 0) {
+            impl->accept_from(seq_id, src_seq_id, n_accepted);
+        } else {
+            impl->accept(seq_id, n_accepted, false);
+        }
         impl->n_call_accept++;
     }
 

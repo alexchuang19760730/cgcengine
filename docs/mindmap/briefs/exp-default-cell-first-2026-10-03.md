@@ -41,6 +41,8 @@
 |---|---|---|
 | [k=3 的 1.43× 飄移定位 ＋ 配對認證](k3-swing.md) | 3a | 飄移已定位；配對認證 n=5 時 t=2.08 未達 df=4 的 2.776 ⇒ 16.4% 仍未認證；上一輪「bench 配對 sd 更小」被自我撤回 |
 | [口徑＋k=3 飄移認證（16.4% 噪聲底）](exp-caliber-calibration.md) | 3a | **未跑（有卡、無讀數）**：本節點的產出是**口徑校準**——記錄裡至少有四個不同的「步」（DECPROF work-row **167.81** ms／實付週期 step_ro |
+| [**跨 checkpoint 探針**：把 CGC 引擎（交付路徑＝…](exp-cgc-edge0gguf-2026-10-05.md) | 3a | 實驗進行中（尚無讀數） |
+| [**交付口徑量測（生產級）**：spec-tree MTP-on（`…](exp-spectree-mtpon-default-2026-10-06.md) | 3a | decode 11.36 t/s |
 
 ## 7. 運行設置與 Log（生產級腳本 prod-new ＋ 自己 option）
 

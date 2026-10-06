@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>**儀器對帳：m 的兩台儀器定標** m（每 draft token… — 技術白皮書（3a ③a 實驗目標達成（階段性））</title>
+</head>
+<body style="margin:0;padding:0;">
+<div style="width:100%;box-sizing:border-box;padding:18px;font-family:-apple-system,'PingFang TC',sans-serif;color:#1a1a1a;">
+  <h2 style="margin:0 0 4px;font-size:19px;">**儀器對帳：m 的兩台儀器定標** m（每 draft token…</h2>
+  <div style="font-size:12px;color:#666;margin-bottom:14px;line-height:1.6;">**儀器對帳：m 的兩台儀器定標** m（每 draft token 的邊際驗證成本）的兩台儀器為什麼給出不同的讀數？ - bench 儀器：m = **0.474** - 服務端儀器：m = **0.21** 這個落差是「量法／定義不同」還是「m 真的在飄」？ 為什麼要問：判準是 `S = (1+a·k)/(1+m·k)`、`k→∞` 天花板是 `a/m`。 ⇒ **轉正與否完全由 `a − m` 的符號決定**，m 的讀數不一致 ⇒ 這個符號目前**算不出來**。
+　｜　主題 實驗　｜　子目標 <span style="color:#eab308">●</span> M MTP on 加速</div>
+
+  <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;"><div style="flex:1;min-width:180px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:12px;"><div style="font-size:12.5px;font-weight:600;margin-bottom:6px;color:#991b1b;">目標 · 判準（要達成什麼、怎麼算達成）</div><div style="font-size:11.5px;line-height:1.7;">**儀器對帳：m 的兩台儀器定標**
+m（每 draft token 的邊際驗證成本）的兩台儀器為什麼給出不同的讀數？
+  - bench 儀器：m = **0.474**
+  - 服務端儀器：m = **0.21**
+這個落差是「量法／定義不同」還是「m 真的在飄」？
+
+為什麼要問：判準是 `S = (1+a·k)/(1+m·k)`、`k→∞` 天花板是 `a/m`。
+⇒ **轉正與否完全由 `a − m` 的符號決定**，m 的讀數不一致 ⇒ 這個符號目前**算不出來**。<br><span style="color:#64748b;">判準：同一 session／同 seed 下，兩台儀器量到的 m **一致**（或差值可歸因於明確的定義差異），
+且 `a − m` 的符號可判定 ⇒ 待辦 ④ 有「可判定的下一步」。
+若 `a &gt; m` ⇒ **MTP-on 已轉正**，待辦 ①（修 seq-1 雙加）為唯一未套用缺陷修補。
+</span></div></div><div style="flex:1;min-width:180px;background:#eff6ff;border:1px solid #93c5fd;border-radius:8px;padding:12px;"><div style="font-size:12.5px;font-weight:600;margin-bottom:6px;color:#1e40af;">結果（實測／推算，依據見下）</div><div style="font-size:11.5px;line-height:1.7;">實驗進行中（尚無讀數）</div></div><div style="flex:1;min-width:180px;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:12px;"><div style="font-size:12.5px;font-weight:600;margin-bottom:6px;color:#166534;">判定（契約 §5 四級）</div><div style="font-size:11.5px;line-height:1.7;">③a 實驗目標達成（階段性）<br><span style="color:#64748b;">達成實驗設計目的（機制／量測成立），但產物還不能放進生產級設置</span></div><div style="margin-top:8px;font-size:22px;font-weight:700;color:#166534;">3a</div></div></div>
+
+  <div style="font-size:13px;font-weight:600;margin-bottom:6px;">四段：目標 → 判準 → 結果 → 判定</div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;align-items:stretch;"><div style="flex:1;min-width:170px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px;"><div style="font-size:12px;font-weight:600;margin-bottom:4px;">1 目標</div><div style="font-size:11px;line-height:1.65;color:#334155;">**儀器對帳：m 的兩台儀器定標**
+m（每 draft token 的邊際驗證成本）的兩台儀器為什麼給出不同的讀數？
+  - bench 儀器：m = **0.474**
+  - 服務端儀器：m = **0.21**
+這個落差是「量法／定義不同」還是「m 真的在飄」？
+
+為什麼要問：判準是 `S = (1+a·k)/(1+m·k)`、`k→∞` 天花板是 `a/m`。
+⇒ **轉正與否完全由 `a − m` 的符號決定**，m 的讀數不一致 ⇒ 這個符號目前**算不出來**。</div></div><div style="display:flex;align-items:center;color:#94a3b8;font-size:18px;">→</div><div style="flex:1;min-width:170px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px;"><div style="font-size:12px;font-weight:600;margin-bottom:4px;">2 判準</div><div style="font-size:11px;line-height:1.65;color:#334155;">同一 session／同 seed 下，兩台儀器量到的 m **一致**（或差值可歸因於明確的定義差異），
+且 `a − m` 的符號可判定 ⇒ 待辦 ④ 有「可判定的下一步」。
+若 `a > m` ⇒ **MTP-on 已轉正**，待辦 ①（修 seq-1 雙加）為唯一未套用缺陷修補。
+</div></div><div style="display:flex;align-items:center;color:#94a3b8;font-size:18px;">→</div><div style="flex:1;min-width:170px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px;"><div style="font-size:12px;font-weight:600;margin-bottom:4px;">3 結果</div><div style="font-size:11px;line-height:1.65;color:#334155;">實驗進行中（尚無讀數）</div></div><div style="display:flex;align-items:center;color:#94a3b8;font-size:18px;">→</div><div style="flex:1;min-width:170px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px;"><div style="font-size:12px;font-weight:600;margin-bottom:4px;">4 判定</div><div style="font-size:11px;line-height:1.65;color:#334155;"><b style="color:#d97706">3a · ③a 實驗目標達成（階段性）</b><br>假設：天花板是 `a/m`（k→∞）。`S(k) = (1+a·k)/(1+m·k)` 逐 k 逼近它。
+⇒ **「轉正與否」＝ `a > m` 的符號判定**，而 m 此刻有兩台儀器各說各話
+（bench 0.474 ／ server 0.21），符號無法判定。
+⇒ 所以「持續優化」的第一件事是**定標 m**：
+  兩台儀器在同一 session／同 seed／同 shape／同 warm-skip 下各量一次，
+  把落差歸到「誰的量法不同」，而不是「m 真的在飄」。
+</div></div></div>
+
+  <div style="font-size:13px;font-weight:600;margin-bottom:6px;">與其它條目的關係（同軸 M MTP on 加速／同階段，自動對照）</div><table style="width:100%;border-collapse:collapse;font-size:11.5px;margin-bottom:14px;"><tr style="background:#f1f5f9;"><td style="padding:6px 8px;font-weight:600;">條目</td><td style="padding:6px 8px;font-weight:600;">級</td><td style="padding:6px 8px;font-weight:600;">結果（摘）</td></tr><tr><td style="padding:6px 8px;border-bottom:1px solid #eee;"><a href="mtp-ksweep.html">MTP k-sweep（verify batch T 成本曲線）</a></td><td style="padding:6px 8px;border-bottom:1px solid #eee;"><b style="color:#d97706">3a</b></td><td style="padding:6px 8px;border-bottom:1px solid #eee;">step ≈ 14.61 + 42.03·T（max resid 11.5）；最佳 k=2 但那格不可移植（合成 accept 0.93~0.99 vs 交付 0.465~0.58</td></tr><tr><td style="padding:6px 8px;border-bottom:1px solid #eee;"><a href="exp-m-draft-cost.html">M：攤薄係數 m 0.474 → ≤0.073</a></td><td style="padding:6px 8px;border-bottom:1px solid #eee;"><b style="color:#d97706">3a</b></td><td style="padding:6px 8px;border-bottom:1px solid #eee;">**未跑（有卡、無讀數）**：t/s(k) = 1000·mean_len(k)/(S0·(1+m·k))；k=3 即使 a=1.0 也只 **19.25**、k→∞ 極限 **2</td></tr><tr><td style="padding:6px 8px;border-bottom:1px solid #eee;"><a href="exp-marginal-decomp.html">**「邊際 verify token ＝ 34.7 ms」由什麼構成…</a></td><td style="padding:6px 8px;border-bottom:1px solid #eee;"><b style="color:#d97706">3a</b></td><td style="padding:6px 8px;border-bottom:1px solid #eee;">decode 9.97 t/s</td></tr><tr><td style="padding:6px 8px;border-bottom:1px solid #eee;"><a href="e-m2-slab-reuse.html">M2 slab pool-reuse（整層填的 memcpy 省多少）</a></td><td style="padding:6px 8px;border-bottom:1px solid #eee;"><b style="color:#d97706">3a</b></td><td style="padding:6px 8px;border-bottom:1px solid #eee;">decode 8.26 t/s</td></tr><tr><td style="padding:6px 8px;border-bottom:1px solid #eee;"><a href="e-victim-classify-2026-10-05.html">同一趟（同 build、同格、同 session）裡： ① caps…</a></td><td style="padding:6px 8px;border-bottom:1px solid #eee;"><b style="color:#d97706">3a</b></td><td style="padding:6px 8px;border-bottom:1px solid #eee;">尚無可引用讀數：1 個 run 全部非乾淨（attribution.verdict=swap（swap_growth=5369.81 MiB, max_swap=9644.69 M</td></tr><tr><td style="padding:6px 8px;border-bottom:1px solid #eee;"><a href="exp-w1w2-paired-2026-10-06.html">**寬度軸的因果量測（W1 vs W2，同 session 同 se…</a></td><td style="padding:6px 8px;border-bottom:1px solid #eee;"><b style="color:#d97706">3a</b></td><td style="padding:6px 8px;border-bottom:1px solid #eee;">實驗進行中（尚無讀數）</td></tr></table>
+  
+  
+  
+  
+  
+  
+  <div style="font-size:13px;font-weight:600;margin-bottom:6px;">子目標綁定 · options · 測試 Log 報告</div><table style="width:100%;border-collapse:collapse;font-size:11.5px;margin-bottom:14px;"><tr style="background:#f1f5f9;"><td style="padding:6px 8px;font-weight:600;">項目</td><td style="padding:6px 8px;font-weight:600;">內容</td></tr><tr><td style="padding:6px 8px;border-bottom:1px solid #eee;">子目標</td><td style="padding:6px 8px;border-bottom:1px solid #eee;"><b>L25-5</b>　MTP 的產品化上限</td></tr><tr><td style="padding:6px 8px;border-bottom:1px solid #eee;">來源</td><td style="padding:6px 8px;border-bottom:1px solid #eee;">子目標看板（唯一來源）　·　置信度 <code>high</code></td></tr><tr><td style="padding:6px 8px;border-bottom:1px solid #eee;">profile</td><td style="padding:6px 8px;border-bottom:1px solid #eee;"><code>prod-new</code></td></tr><tr><td style="padding:6px 8px;border-bottom:1px solid #eee;">被測 option</td><td style="padding:6px 8px;border-bottom:1px solid #eee;"><code>CGC_SERVER_MTP=1</code></td></tr><tr><td style="padding:6px 8px;border-bottom:1px solid #eee;">儀器開關（非被測）</td><td style="padding:6px 8px;border-bottom:1px solid #eee;"><code>CGC_MTP_PERF=1</code></td></tr><tr><td style="padding:6px 8px;border-bottom:1px solid #eee;">CLI</td><td style="padding:6px 8px;border-bottom:1px solid #eee;"><code>--spec-type draft-mtp</code>；<code>--spec-draft-n-max 1</code></td></tr><tr><td style="padding:6px 8px;border-bottom:1px solid #eee;">arm 1（可複製）</td><td style="padding:6px 8px;border-bottom:1px solid #eee;"><code>prod-new:CGC_SERVER_MTP=1;CGC_SERVER_LAYER_CAPS=40-40:16;CGC_DRAFT_CTX_ALIGN=1;CGC_DRAFT_SMALL_BATCH=1;CGC_MTP_PERF=1</code></td></tr><tr><td style="padding:6px 8px;border-bottom:1px solid #eee;">結案狀態</td><td style="padding:6px 8px;border-bottom:1px solid #eee;">結案（§63，端點＝m 比值門檻）：乾淨窗口（attribution=none、NOMINAL、起跑 free 7159 MB）一趟 k=1 的 m ＝ 0.159（T_draft 13.70 ms/輪 ÷ 86.13；五條閘全過）≤ 目標 0.30。⇒ 卡片自己推的 k 無窮上界 24.59 是由 m=0.474 推出來的。⚠ 09-30 更正：原文寫「實測更小 ⇒ 上界仍成立」是方向反了 —— m 在分母，m 越小上界越高：1000/(85.8×0.159) ＝ 73.30（不是 24.59）。⚠ 兩件事要說清楚：(i) m 在劣化窗只會被吹大（單邊性）⇒ 乾淨窗量到的 0.159 是上界；(ii) prod-new 的 draft 成本比 09-24 舊 build 高 60%（0.159 vs 0.099）⇒ 但「天花板比舊帳面更低」講反了：draft 成本變高 ⇒ m 變大 ⇒ 上限變低；本格量到的 m 比舊帳面小（0.159 vs 0.474）⇒ 天花板反而被抬高到 73.30。兩者不衝突：09-24 舊 build 的 m≈0.099 是「同 cell、pool 3 GiB」的讀數，不能與 prod-new 的 0.159 直接比價；真正的帳應以同一 cell 為準。</td></tr><tr><td style="padding:6px 8px;border-bottom:1px solid #eee;">逐條處置</td><td style="padding:6px 8px;border-bottom:1px solid #eee;">整合進子目標　→ <code>L25-5</code><br><span style="color:#64748b;">儀器對帳：定標 m（bench vs 服務端），使 verify 成本優化可判定。</span></td></tr><tr><td style="padding:6px 8px;border-bottom:1px solid #eee;">測試 log</td><td style="padding:6px 8px;border-bottom:1px solid #eee;"><span style="color:#94a3b8;">無實跑 log（證據＝本頁末的「對應報告」）</span></td></tr><tr><td style="padding:6px 8px;border-bottom:1px solid #eee;">備註</td><td style="padding:6px 8px;border-bottom:1px solid #eee;">★ 09-29 起本格的量測口徑改為 prod-new ＋ harness bench（唯一認可入口），不再是 prod25／server ABBA。判準：m ≤ 0.30 且指名它的主項（draft 流量／verify 寬度／pool 預算）。⚠ 單邊性：窗劣化只把 wall 吹大 ⇒ 實測 t_draft ≥ 真值 ⇒ 由它算出的 m 是上界。</td></tr></table>
+  
+  <div style="font-size:13px;font-weight:600;margin-bottom:6px;">子目標分解（持續更新；1/5 完成）</div><div style="margin:4px 0 0 0px;font-size:12.5px;line-height:1.5;"><span style="color:#16a34a;font-weight:700;">☑</span> 跑前立項（現狀/目標/假設/驗收） <a href="../../../scripts/check/charters/exp-m-instrument-recon-2026-10-06.yaml" target="_blank" rel="noopener" style="font-size:11px;color:#1d4ed8;">證 ↗</a> </div><div style="margin:4px 0 0 0px;font-size:12.5px;line-height:1.5;"><span style="color:#d97706;font-weight:700;">◔</span> 用生產級腳本 prod-new ＋ 自己 option 跑實驗臂，留存 log </div><div style="margin:4px 0 0 0px;font-size:12.5px;line-height:1.5;"><span style="color:#94a3b8;font-weight:700;">☐</span> 驗收：同一 session／同 seed 下，兩台儀器量到的 m **一致**（或差值可歸因於明確的定義差異），
+且 `a − m` 的符號可判定 ⇒ 待辦 ④ 有「可判定的下一步」。
+若 `a &gt; m` ⇒ **MTP-on 已轉正**，待辦 ①（修 seq-1 雙加）為唯一未套用缺陷修補。
+ </div><div style="margin:4px 0 0 0px;font-size:12.5px;line-height:1.5;"><span style="color:#94a3b8;font-weight:700;">☐</span> 否證條件：同一條件下兩台儀器仍給不可調和的不同 m
+⇒ 沒有可引用的 m ⇒ **verify 成本的優化目前無法判定有沒有效**
+⇒ 待辦 ④ 退回「定標」，不得進入「優化」。
+ </div><div style="margin:4px 0 0 0px;font-size:12.5px;line-height:1.5;"><span style="color:#94a3b8;font-weight:700;">☐</span> 定標 m：同 session 同 seed 下，bench 儀器與服務端儀器各量一次並對帳 <span style="color:#64748b;font-size:11px;">預期 一致的 m，或可歸因的差值</span> <span style="color:#94a3b8;font-size:11px;">— 量法：同一 invocation 內同時接兩台儀器；不得跨 launch 比</span></div>
+  <div style="font-size:13px;font-weight:600;margin-bottom:6px;">依據 · 備註 · 軸性質</div><table style="width:100%;border-collapse:collapse;font-size:11.5px;margin-bottom:14px;"><tr style="background:#f1f5f9;"><td style="padding:6px 8px;font-weight:600;">項目</td><td style="padding:6px 8px;font-weight:600;">內容</td></tr><tr><td style="padding:6px 8px;border-bottom:1px solid #eee;">依據</td><td style="padding:6px 8px;border-bottom:1px solid #eee;"><code>docs/MTP_2X_BOUNDARY_2026-09-19.md §1–§2（公式與數字）；
+scripts/check/decode_board_2026-09-29.yaml:94／:1059（看板轉引）；
+scripts/check/charters/e-mtp-m-acc-2026-09-29.yaml（原始立項，owner: freebuff）
+</code></td></tr><tr><td style="padding:6px 8px;border-bottom:1px solid #eee;">備註</td><td style="padding:6px 8px;border-bottom:1px solid #eee;">假設：天花板是 `a/m`（k→∞）。`S(k) = (1+a·k)/(1+m·k)` 逐 k 逼近它。
+⇒ **「轉正與否」＝ `a > m` 的符號判定**，而 m 此刻有兩台儀器各說各話
+（bench 0.474 ／ server 0.21），符號無法判定。
+⇒ 所以「持續優化」的第一件事是**定標 m**：
+  兩台儀器在同一 session／同 seed／同 shape／同 warm-skip 下各量一次，
+  把落差歸到「誰的量法不同」，而不是「m 真的在飄」。
+</td></tr><tr><td style="padding:6px 8px;border-bottom:1px solid #eee;">軸性質</td><td style="padding:6px 8px;border-bottom:1px solid #eee;"><span style="color:#eab308">●</span> 活躍攻關軸：speculative 攤薄係數 m 與 accept rate a</td></tr><tr><td style="padding:6px 8px;border-bottom:1px solid #eee;">階段</td><td style="padding:6px 8px;border-bottom:1px solid #eee;">實驗階段（階段性）　·　③a —— 機制／量測成立，但產物還不能進生產</td></tr><tr><td style="padding:6px 8px;border-bottom:1px solid #eee;">對應報告</td><td style="padding:6px 8px;border-bottom:1px solid #eee;">0 份</td></tr></table>
+  <div style="font-size:13px;font-weight:600;margin-bottom:6px;">對應報告</div><div style="font-size:12px;color:#94a3b8;">（無）</div>
+
+  <div style="padding:11px 13px;background:#fffbeb;border:1px solid #fcd34d;border-radius:7px;font-size:12px;color:#78350f;line-height:1.65;margin-top:12px;">
+    <b>關鍵結論：</b>判定 <b style="color:#d97706">3a · ③a 實驗目標達成（階段性）</b>（達成實驗設計目的（機制／量測成立），但產物還不能放進生產級設置）　—　假設：天花板是 `a/m`（k→∞）。`S(k) = (1+a·k)/(1+m·k)` 逐 k 逼近它。
+⇒ **「轉正與否」＝ `a > m` 的符號判定**，而 m 此刻有兩台儀器各說各話
+（bench 0.474 ／ server 0.21），符號無法判定。
+⇒ 所以「持續優化」的第一件事是**定標 m**：
+  兩台儀器在同一 session／同 seed／同 shape／同 warm-skip 下各量一次，
+  把落差歸到「誰的量法不同」，而不是「m 真的在飄」。
+　｜　本條目屬 <b>M MTP on 加速</b>（活躍攻關軸：speculative 攤薄係數 m 與 accept rate a）。
+  </div>
+  <div style="margin-top:8px;font-size:11px;color:#94a3b8;">本頁由
+    <code>scripts/check/mindmap_brief_build.py</code> 從 <code>docs/mindmap/mindmap.json</code>
+    機械生成；改內容請改 JSON 後重跑，勿直接編輯本頁。</div>
+  <div style="margin-top:16px;padding-top:10px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;gap:10px;font-size:12px;"><a href="exp-w1w2-paired-2026-10-06.html">← **寬度軸的因果量測（W1 vs W2，同 session 同 se…</a><span><a href="index.html">總目錄</a>　·　<a href="exp-m-instrument-recon-2026-10-06.md">MD 版</a></span><a href="exp-a-lever-rejection-2026-10-06.html">**拉 a：chain 路徑開 rejection sampling… →</a></div>
+</div>
+</body>
+</html>

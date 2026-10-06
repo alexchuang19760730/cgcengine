@@ -744,6 +744,18 @@ static int ggml_backend_metal_get_cgc_gpu_take(ggml_backend_t backend, int64_t *
     return ggml_metal_cgc_gpu_take(ctx, out);
 }
 
+// [CGC 2026-10-05 whole-step GPU busy] Read the monotonic accumulator that the completion handlers
+// fill, so a whole step is visible even when the overlap fence makes the CPU skip the per-segment
+// waits. See ggml_metal_cgc_step_busy in ggml-metal-context.h (and the struct comment for why this
+// side must never reset it). Inert unless CGC_GPU_TIMING_LATE is set.
+static int ggml_backend_metal_get_cgc_step_busy(ggml_backend_t backend, int64_t * out) {
+    GGML_ASSERT(ggml_backend_is_metal(backend));
+
+    ggml_metal_t ctx = (ggml_metal_t)backend->context;
+
+    return ggml_metal_cgc_step_busy(ctx, out);
+}
+
 // [CGC 2026-09-18 node-level GPU time] Per-command-buffer records instead of the collapsed segment
 // span, each carrying the node index range that buffer encoded, plus the name lookup needed to read
 // them. The contract -- and what it cannot separate -- is on ggml_metal_cgc_gpu_take_cb in
@@ -1109,6 +1121,11 @@ static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const 
     }
     if (strcmp(name, "ggml_metal_get_cgc_gpu_take") == 0) {
         return (void *)ggml_backend_metal_get_cgc_gpu_take;
+    }
+    // [CGC 2026-10-05 whole-step GPU busy] companion of the accessor above; resolves the accumulator
+    // that is not blinded by the overlap fence. Only a consumer of CGC_GPU_TIMING_LATE calls it.
+    if (strcmp(name, "ggml_metal_get_cgc_step_busy") == 0) {
+        return (void *)ggml_backend_metal_get_cgc_step_busy;
     }
     // [CGC 2026-09-18 node-level GPU time] CGC_GPU_NODES=1 resolves these two instead of (well,
     // as well as) the segment-span accessor above; see ggml-metal-context.h for why the node range

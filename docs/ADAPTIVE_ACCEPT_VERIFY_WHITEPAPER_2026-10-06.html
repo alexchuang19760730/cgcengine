@@ -79,6 +79,7 @@
 <li><a href="#s8">讀數陷阱（會咬人的四條）</a></li>
 <li><a href="#s9">限制、未竟、重現</a></li>
 <li><a href="#s10">附錄：產物索引與檔案指路</a></li>
+<li><a href="#s11">11. 交叉補充（線A）：Fix A 的否證，與病灶收窄到 seq-1</a></li>
 </ol>
 </nav>
 
@@ -457,10 +458,12 @@ bench 必須走 <code>llama_bench_matrix.resolve()</code>＋<code>forward_argv()
 <ul>
 <li><b>已 commit</b> <code>18e75b7e8</code>：形狀旋鈕（<code>ALTBIND</code>／<code>ROWS</code>）＋控制器（rate＋net）
 ＋見證欄位＋<code>run_server.sh</code> allowlist，連重建的 <code>libllama-bench-impl.dylib</code> 一起。
-三道閘門（<code>doc_claim_gate</code>／<code>commit_gates</code>／<code>check_build_tracked.sh</code>）通過；
-replay benchmark（檢查 11）<b>SKIPPED</b>（無 server、他線佔 GPU），不是 pass。</li>
-<li><b>未 commit</b>：BRESET 那一個 hunk（<code>llama-bench.cpp</code> 的 seq-1 殘留清除）與
-<code>run_server.sh</code> 的對應 allowlist token。判詞已定（殘留假說死），收不收由後續決定。</li>
+三道閘門（<code>doc_claim_gate</code>／<code>commit_gates</code>／<code>check_build_tracked.sh</code>）通過。</li>
+<li><b>已 commit</b> <code>64a342e85</code>：BRESET（<code>CGC_SPEC_TREE_BRESET</code>）—— seq-1 draft 殘留清除，預設關；
+A/B 判詞是「它改變不了接受量（逐位元相同）」。同批 <code>7a1515906</code> 另外修掉兩個閘門自身的缺陷。</li>
+<li><b>replay benchmark（檢查 11）</b>：過去記為 <b>SKIPPED</b>（<code>RUN_REPLAY_BENCH=0</code>），不是 pass。
+2026-10-06 在 <code>dbe5f8eb1</code> 上第一次真的跑完後，證明它對<b>任何</b> commit 都不可能 pass ——
+兩個成因都與被測 commit 無關；修好後重測為 <b>PASS</b>。詳見 §10.3。</li>
 </ul>
 
 <h3>10.2 這份白皮書刻意不主張的事</h3>
@@ -471,9 +474,177 @@ replay benchmark（檢查 11）<b>SKIPPED</b>（無 server、他線佔 GPU），
 <li>不主張 seq-1 雙加修補有效——它<b>通過語法檢查但未實測</b>。</li>
 </ul>
 
+<h3>10.3 檢查 11（replay benchmark）為什麼從來不可能 pass，以及怎麼修好的</h3>
+<p>2026-10-06 第一次在空的 GPU 上把檢查 11 真的跑完（<code>--mtp --dense-iq4x</code>、10 GiB expert pool、
+<code>--all-profiles --runs 3 --seed 0</code>）。verdict 是 <b>FAIL</b>，
+<code>reason = quality regression (hard gate): 1 profile(s) degraded</code>。逐項拆開後，
+兩個成因都與被測 commit 無關：</p>
+<ul>
+<li><b>成因一（ruler 與輪詢不一致 ⇒ 恆 FAIL）</b>：<code>--runs 3</code> 會依序輪詢 profile 的 3 個 prompt
+（2026-09-08 <code>4715610df</code> 加入），但 <code>qa-zh</code> 的 <code>required_any</code> 只列
+<code>[巴黎, 法國]</code>。「太陽系有幾個行星」與「15 + 27」兩題的正確答案永遠不含這兩個詞，
+於是 3 次分數固定為 <code>[1.0, 0.765, 0.765]</code>、median <code>0.765</code>，
+quality 硬閘門（絕對差 <code>0.1</code>）對<b>任何</b> commit 都 FAIL —— 包括一個空 commit。
+修法：把這兩題的答案鍵（行星名／<code>八顆</code>／<code>42</code>／<code>四十二</code>）併進
+<code>required_any</code>，並在 <code>_doc</code> 寫下「required_any 必須覆蓋該 profile 會被輪詢到的每一個 prompt」。
+修後 qa-zh 為 <code>[1.0, 1.0, 1.0]</code>。</li>
+<li><b>成因二（baseline 早於既定決定 ⇒ 記憶體恆退化）</b>：舊 baseline 記的是
+<code>commit=WORKTREE</code>（2026-09-06），早於 expert pool 的兩次<b>故意</b>放大
+（4→8 GiB 於 2026-09-06、8→10 GiB 於 2026-09-13）。同一個 server 在這兩代之間 RSS 差約 4.3 GB，
+三個 profile 一律越過 <code>25%</code> 門檻。這不是退化，是舊 baseline 不知道預算已經被改過。</li>
+</ul>
+<p><b>處置</b>：修 ruler，並在 <code>dbe5f8eb1</code> 重新量測 baseline（去掉 <code>_stale</code>，
+同時解除 <code>agent_harness/shared/stale_registry.json</code> 的 stale 登記與 <code>.gitignore</code> 的對應註解）。
+驗證方式是用<b>同一 session 狀態下的兩次獨立量測</b>互比：
+<code>verdict PASS</code>、<code>improvements=2 regressions=0 neutral=10</code>、離開碼 <code>0</code>。</p>
+<p class="small">仍未解的限制：這台 16 GB 機器跑滿載時會把 swap 用到見底（實測 13.7/14.3 GB），
+速度因此隨「開跑多久」漂移 —— 兩次連續量測的 qa-zh decode 曾差到 2.1 倍，而現行的
+<code>unstable</code> 規則（run 內 CV &gt; 30%）抓不到這種<b>跨 session</b> 漂移。
+baseline 取兩次之中較慢的那次，以免未來的 run 誤觸；但「同一 commit 兩次量測可以差 2 倍」
+本身仍是這個閘門沒解決的問題。另：扁平 <code>required_any</code> 對「回顯題目」仍可能誤判為通過，
+逐題防回顯的那把尺是 <code>scripts/check/bare_48.py</code> 的 strict 尺。</p>
+
+<h2 id="s11">11. 交叉補充（線A）：Fix A 的否證，與病灶收窄到 seq-1</h2>
+
+<p>本節由<b>本線（線A）</b>以<b>純靜態讀碼</b>補充：<b>未編譯、未 build、未跑盒子、未動任何原始碼</b>。
+它回答的是「draft 端的 M-RoPE 位置賦值」到底是不是 accept 塌陷的病因。結論：<b>不是</b>。</p>
+
+<h3>11.1 被否證的假說：「draft 只寫了 1 個位置槽」</h3>
+
+<p>先前 scoping（<code>Backup/spec_tree/rs3_mrope_draft_pos_scoping_2026-10-06.md</code> §1.1）主張：
+<code>llama_batch.pos</code> 是 <code>n_tokens × n_pos_per_embd(=3)</code> 寬、每 token 佔 3 槽（t/h/w），
+而 draft 建批時只寫了 dim 0 ⇒ draft KV 的 RoPE 用 <code>(pos,0,0)</code> 而非文字該有的
+<code>(pos,pos,pos)</code> ⇒ 隱藏態偏掉 ⇒ accept 塌陷。<b>這條假說不成立。</b></p>
+
+<table>
+<tr><th class="n">#</th><th>事實</th><th>位置</th></tr>
+<tr><td class="n">1</td><td><code>pos</code> 只有 <code>n_tokens_alloc</code> 寬（1D），<b>不是</b> nppe 倍寬</td><td><code>src/llama.cpp/src/llama-batch.cpp:962</code></td></tr>
+<tr><td class="n">2</td><td>allocr 輸入按 1D 讀：<code>seq_pos[s1].insert(batch.pos[i])</code> —— X&lt;Y 檢查的 Y 正是這組值</td><td><code>llama-batch.cpp:170</code></td></tr>
+<tr><td class="n">3</td><td>缺值兜底也是 1D：<code>pos.resize(batch.n_tokens)</code></td><td><code>llama-batch.cpp:90-91</code></td></tr>
+<tr><td class="n">4</td><td><b>3D 由 allocr 廣播產生</b>：<code>src_off = batch.token ? 0 : j*batch.n_tokens</code>；文字模式把同一標量寫入全部 <code>n_pos_per_embd</code> 段，註解明寫「if the batch is text, broadcast the same position across all RoPE sections」</td><td><code>llama-batch.cpp:781-788</code></td></tr>
+<tr><td class="n">5</td><td>MTP draft batch <b>有 token</b>（不只是 embd）</td><td><code>common/speculative.cpp:1382/:1385</code></td></tr>
+<tr><td class="n">6</td><td>draft 與 target 走同一條唯一通路</td><td><code>src/llama.cpp/src/llama-context.cpp:2631/:2346/:110</code></td></tr>
+</table>
+
+<p class="small">行號取自 <code>18e75b7e8</code> 之後的工作樹；若別線再動這些檔，行號需重新定位。</p>
+
+<div class="card r">
+<span class="k">若照這條假說實作，兩種結果都不會改善 accept。</span>
+<code>batch.pos</code> 只有 n_tokens 寬，往 <code>pos[k*nppe+1..]</code> 寫：
+<ul>
+<li><b>踩到別的 token 的位置槽</b> —— multi-seq draft 一輪會多次 <code>common_batch_add</code>，索引是連續被占用的；</li>
+<li>就算落在未用區，文字模式下 <code>ubatch_add</code> 只讀 <code>pos[idxs[i]]</code>，
+這些額外寫入<b>完全不進廣播</b> ⇒ 零影響。</li>
+</ul>
+<b>沒有好結果；第一種還會污染位置。</b>這是本輪第二個「差點寫下去的錯」。
+</div>
+
+<h3>11.2 那 3D 位置究竟是誰給的</h3>
+
+<p>不是 <code>common_batch_add</code>，是 <b>allocr</b>。選擇器在
+<code>src/llama.cpp/src/llama-graph.cpp:3033</code>：
+<code>ggml_build_forward_select(gf, inps.data(), inps.size(), ubatch.token ? 0 : 1)</code>
+—— token 非空 ⇒ 走 token embedding 那條，<code>ubatch.embd</code> 被整條丟掉。
+而 <code>llm_graph_input_embd_h::set_input</code>（<code>llama-graph.cpp:155-159</code>）
+又把 <code>embd</code> 餵給 <code>h</code> —— 兩個通道各司其職。</p>
+
+<p>本案模型（<code>qwen35moe</code>）<b>不走</b>那個通用 builder，而用
+<code>llm_graph_input_embd_h</code>（<code>models/qwen35moe.cpp:652</code>），
+一次收 <b>tokens ＋ embd ＋ h</b> 三個輸入。配對合約由此定為：</p>
+
+<pre>位置 Q 的輸入 = ( x_Q , h_{Q-1} )
+  x_Q      走 inp->tokens   → embed_tokens
+  h_{Q-1}  走 ubatch->embd  → inp->h      (llama-graph.cpp:155-159)
+  → concat[enorm(x); hnorm(h)] → eh_proj → attention → 預測 x_{Q+1}</pre>
+
+<p>⇒ 「token 與 embd 兩個都有」是<b>必需且正確</b>的：
+<code>speculative.cpp:1794</code> 寫 token、<code>:1795</code> 把 <code>pending_h</code> 寫進 embd。
+這不是 bug，是 MTP 頭的輸入格式。</p>
+
+<div class="card a">
+<span class="k">邊界（這條要留著）。</span>
+<code>ubatch.token ? 0 : 1</code> 同時顯示：<b>純 embedding 批次（<code>token == nullptr</code>）
+確實要求入口就是 nppe 寬</b>（<code>tools/mtmd/mtmd-helper-common.h:85</code> 的
+<code>pos.resize(n_tokens*n_pos_per_embd)</code> 即此類）。當前 MTP draft 有 token ⇒ 不適用。
+<b>但若將來把 draft 改成不填 token 的純 embd 批次，那時才需要 nppe 寬佈局——
+那是另一筆帳，不是 Fix A。</b>
+</div>
+
+<h3>11.3 <code>i_h</code> 對齊證明：chain 路徑是乾淨的</h3>
+
+<p>四步求證，每步都有行號：</p>
+
+<ol>
+<li><b>verify batch 布局</b>：<code>[id_last @ P, d0 @ P+1, …, d_{k-1} @ P+k]</code>
+    （<code>llama-bench.cpp:3535-3537</code>；注意 <code>n_past++</code> 的 post-inc 順序）。</li>
+<li><b><code>nextn_ith(j)</code> ＝ index j 的輸出隱藏態</b>，按 token 位置密集排列
+    （<code>llama-context.cpp:1525</code> 註釋明寫；填充見 <code>:2888-2891</code>，語意見 <code>:2467</code>）。</li>
+<li><b>全接受時 <code>ids = [d0..d_{k-1}, bonus]</code>、<code>ids.size()-1 = k</code> ＝ accepted drafts</b>
+    （<code>llama-bench.cpp:3712</code> 的註釋 <code>// accepted drafts</code>，配合
+    <code>:3625-3670</code> 的 tree walk 推出 k+1 次取樣）。</li>
+<li><b>新 root ＝ bonus @ <code>P+k+1</code></b>（<code>:3916</code> <code>id_last = ids.back()</code>）。</li>
+</ol>
+
+<p>⇒ 次輪需要配對 <code>h_{P+k}</code>；而
+<code>accept_seed</code>（<code>common/speculative.cpp:2086-2088</code>）取
+<code>i_h = min(n_accepted, n_rows-1) = min(k, k) = k</code> ⇒
+<code>pending_h = verify_h[k] = nextn_ith(index k) = h_{P+k}</code>
+—— <b>與所需完全一致，chain 路徑沒有 off-by-one。</b></p>
+
+<div class="card a">
+<span class="k">推導中踩到的陷阱。</span>
+一度以為「ids 不含 bonus token」（新 root 落在 <code>P+k</code>），那樣算起來會差一站、
+看起來就像 off-by-one。<b>含不含 bonus 會讓整個結論翻面</b>，必須讀到
+<code>llama-bench.cpp:3712</code> 才能定案——只憑 <code>:3535</code> 推會導錯。
+</div>
+
+<h3>11.4 與本檔 §1.2 合流：病灶收窄到 seq-1 seed</h3>
+
+<table>
+<tr><th>來源</th><th>結論</th></tr>
+<tr><td>別線 §1.2（本檔）</td><td>k_eff 塌成 1 的<b>真因＝seq-1 在同一步被加兩顆</b>（ALT-BRANCH SEED 後迴圈沒跳過 seq 1）</td></tr>
+<tr><td>本線 §8.1（靜態證明）</td><td>位置座標系／<code>pending_h</code> 語意在 chain 路徑<b>完全正確</b></td></tr>
+<tr><td><b>合流</b></td><td>兩條路落到<b>同一帶</b>：病灶在 draft loop 的 <b>seq-1 seed</b>，
+<b>不在</b>位置賦值、也不在 M-RoPE 語意。⇒ 「M-RoPE 牆」是<b>誤歸因</b>，已雙重否證。</td></tr>
+</table>
+
+<h3>11.5 判據修正：原預註冊判據不能用原樣跑</h3>
+
+<p>原預註冊判據是「greedy 下 accept 是否 ≧ 0.9」。別線的 oracle 已把這個前提量掉了：
+<code>pos1_argmaxA / pos1_rows</code>（branch A 首顆 == target argmax）落在
+<b>0.646／0.710／0.778</b> —— 不是 0.9+，也不是 0.25。</p>
+
+<table>
+<tr><th class="n">#</th><th>註冊判別（原）</th><th>實測</th><th>判</th></tr>
+<tr><td class="n">⑨</td><td>greedy 下 accept ≧ 0.9 ⇒ 管線正確</td>
+    <td>argmax 一致度 <b>0.646–0.778</b>（三臂），落在原判據的中間帶</td>
+    <td><span class="tag trisk">判據失效</span></td></tr>
+</table>
+
+<div class="card g">
+<span class="k">修正後的判據（跑之前先登記）。</span>
+不再問「≈0.9 嗎」，改問：
+<b>W1 鏈的 argmax 一致度（0.646–0.778）與 W2 的（0.067–0.405）差多少</b>；
+差值若落在「sampling 折扣」（<code>smp==argmax</code> ≈ 0.85）可解釋的量之內
+⇒ 管線正確、低 accept 是口徑造成；差值顯著超出 ⇒ 仍有未定位缺陷。
+<b>原判據落在中間帶 ⇒ 不具判別力，不得用它下結論。</b>
+</div>
+
+<h3>11.6 本節的限制</h3>
+
+<ul>
+<li><b>全靜態</b>：§11.1–11.4 未經實測；它們排除的是「座標系」類假說，
+<b>不能</b>證明 seq-1 雙加是唯一病因。</li>
+<li><b>「0.646–0.778」的口徑</b>：取自別線 oracle 行的聚合列，
+<b>尚未</b>與本線 harness 口徑對帳；跨線引用前需先對齊 shape／warm-skip。</li>
+<li><b>補丁狀態</b>：<code>SPECULATIVE_SEQ1_DOUBLE_ADD.patch</code>
+通過 <code>patch --dry-run</code> 與 <code>-fsyntax-only</code>，
+<b>未套用、未實測</b>；且它落在別線的 <code>speculative.cpp</code> 上，本線不動。</li>
+</ul>
+
 <footer>
 逐輪自適應 accept-verify 白皮書 · 2026-10-06 · 分支 <code>demo/sweet-spot-windows-fix</code> ·
-形狀旋鈕＋控制器 = <code>18e75b7e8</code> · BRESET 留在工作樹 ·<br>
+形狀旋鈕＋控制器 = <code>18e75b7e8</code> · BRESET = <code>64a342e85</code> · 檢查 11 = PASS ·<br>
 證據原文：<code>Backup/spec_tree/F1F2F3_IMPLEMENT_2026-10-06.md</code>（gitignored）§14／§15／§16 ·
 判詞：<b>機制 PASS、目標函數可替換 PASS、MTP-on 未轉正</b>。
 </footer>

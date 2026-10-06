@@ -1,0 +1,130 @@
+id: exp-cgc-edge0gguf-2026-10-05
+owner: lineA
+created: 2026-10-05
+axis: L20
+
+question: |
+  **跨 checkpoint 探針**：把 CGC 引擎（交付路徑＝prod-new 格／8 GiB 池／load_mode none／無 MTP）
+  指到另一顆**同 base 的容器** models/gguf/Edge0-35B-Q4_0.gguf，它跑多少？
+
+  為什麼值得問：現有全部交付錨點（tg 13.722 t/s 柵欄 ON／10.838 OFF）都長在 Nail
+  （IQ3_XXS, 12.72 GiB）上。這顆是 18.19 GiB（x1.43 bytes）、top-8、**無 nextn head**
+  （733 tensors，標頭已解析）。同 base（Qwen3.5 MoE 35B A3B、40 層、256 專家），不同容器與量化。
+
+  兩個機制指向相反：
+  (1) flashkv 側 IO 已被池／async 藏在計算後（wait 是真的、IO 不在關鍵路徑）⇒ 更大的檔未必痛；
+  (2) 同一顆 8 GiB 池在 Q4_0 上每個 bundle 更大 ⇒ 槽數更少、命中率更低、streaming 更多。
+  ⇒ **非量不可。**
+
+  口徑警告（必須與結論同時引用）：測試卡契約的頂層 `model:` 是 Nail，而 `check_cell()` 只比對
+  `cell` 區塊的維度（前向別名表裡沒有 -m）⇒ **換 checkpoint 過得了閘門、不會 fail-closed**。
+  這是已知的口徑缺口：本產物的 tg **不可直接與 13.722／10.838 做同模型比較**。
+
+baseline:
+  metric: "歷史錨點 tg 13.722（柵欄 ON）／10.838（OFF），跨 session、且屬不同 checkpoint ⇒ 不可互比；本卡為單臂，無同場控制臂（內盤空間不足 12.72 GiB 放 Nail）。格宣告見 docs/PROD_NEW_TEST_CARD_2026-09-24.md"
+  cell: "(default)：-p 512 -n 128 -b 2048 -ub 512 -d 0 -r 5（llama-bench 出廠形狀）"
+  source: "Backup/spec_tree/FENCE_DELIVERY_2026-10-05.md"
+
+hypothesis:
+  mechanism: |
+    檔大 1.43x 且無 MTP head ⇒ 每步搬的位元組更多、沒有投機攤薄。
+    若 IO 已完全隱藏 ⇒ 差距小（<15%）；若池命中率因 bundle 變大而降 ⇒ 差距大。
+  expected: "tg128 低於 13.722；猜 8-12 t/s（假說，非量測）"
+  basis: "GGUF 標頭解析（18.19 GiB／無 nextn／expert_used_count=8）；MEMORY_PERF 第三十、三十一輪"
+
+acceptance:
+  success: "以統一入口（harness bench ＋ prod-new 格、單臂）給出 tg128 與 pp512，並標明不可與 Nail 錨點同模型比較"
+  falsify: "若 tg128 >= 13.722 ⇒ 否證機制(2)：池對 bundle 大小不敏感、IO 已完全隱藏"
+  on_fail: "把結論寫進 Backup/spec_tree/ 並更新工作區記憶"
+
+targets:
+  decode_tps: 12.0
+  prefill_tps: 250.0
+
+subgoals:
+  - id: sg-cgc-edge0gguf
+    text: "量 CGC 引擎在 Edge0-35B-Q4_0.gguf 上的 tg128／pp512（prod-new 格、單臂）"
+    expect: "tg128 < 13.722；猜 8-12 t/s"
+    how: "python3 scripts/check/harness.py bench --arm \"prod-new:CGC_SERVER_MODEL=models/gguf/Edge0-35B-Q4_0.gguf\""
+
+arms:
+  - "prod-new:CGC_SERVER_MODEL=models/gguf/Edge0-35B-Q4_0.gguf"
+
+notes: |
+  ★★★ 結論（2026-10-05 19:0x，量測已被閘門擋下，**無樣本、無速度數字**）：
+
+  兩道閘門依序拒跑，第二道的判詞**就是本實驗的答案**：
+    1. charter gate：baseline.source 必須是單一存在的路徑（已修）。
+    2. **budget gate（MEASUREMENT_CONTRACT §3.4.1）**：
+         [budget] model       13030 MiB（load_mode=none => 匿名頁、不可回收）
+         [budget] expert pool 8192 MiB
+         [budget] 靜態需求    21222 MiB vs 實體 16384 MiB
+         [budget] OVERSUBSCRIBED by 4838 MiB ⇒ 量測數字不可引用 ⇒ 拒跑 rc=2
+    ⇒ **這顆 18.19 GiB 的 checkpoint 在交付格（load_mode none ＋ 8 GiB 池）下結構上跑不起來**
+      （不是「慢」）。所以「CGC × Edge0-35B-Q4_0.gguf 能跑多少」在 16 GB 盒上**沒有合法答案**。
+
+  ★ 因此浮出來的機制（原本只是假說）：**`load_mode` 是這顆能不能跑的關鍵維度**。
+    `none` = 匿名頁不可回收；`mmap` 才可回收 ⇒ **`delivery-mmap` 那格存在就是為了這種情形**。
+    ⚠ 但 `load_mode` 屬**嚴格維度**（改了就不是交付格 ⇒ 不可與 13.722 比），且該格**已退役**；
+    另有一條歷史反證（L25-1）：mmap 會讓 Metal GPU 工作集**變大**，不是「裝得下」的槓桿。
+    ⇒ 三條出路都離開交付口徑：① `BUDGET_GATE=warn` 硬跑（樣本帶 CGC_BUDGET_OVERSUBSCRIPTED=1、不可引用）
+      ② 縮池到 ≤3 GiB ③ 換 mmap（已退役格）。**沒有一條能產生可引用的交付數字。**
+
+  否證條件未觸發（沒有樣本 ⇒ 無從否證）——本卡以「不適用軸、無樣本」結案。
+
+  ★★★ 追加（2026-10-05 19:15）：**`mmap` 那條出路也被實測堵死——死在 GPU，不是 host。**
+  用 `budget_preflight.py` 三組對照先證明 mmap 過得了 host 預算：
+    Edge0 gguf + `none`：18,630 + 8,192 = 26,822 MiB ⇒ 超訂 10,438（拒跑）
+    Edge0 gguf + `mmap`：      0 + 8,192 =  8,192 MiB ⇒ OK
+    Nail + `none`（交付） ：13,030 + 8,192 = 21,222   ⇒ 超訂 4,838
+  於是走**直呼 llama-bench 的診斷跑**（`CGC_SERVER_LOAD_MODE=mmap` ＋ 交付格其餘逐字；
+  非統一口徑、不可引用）。結果**連第一個 prefill 都沒過**：
+    ggml_metal_synchronize: error: command buffer 8 failed with status 5
+    error: Insufficient Memory (kIOGPUCommandBufferCallbackErrorOutOfMemory)
+    CGC-METAL-FAIL: … refusing to return stale output; lower Metal memory pressure
+      (expert cache / -ub) or set CGC_METAL_FAIL_STOP=0
+  死在 `test_prompt → synchronize`、`il=39`（prefill 最後一層）、RSS ≈ 9,127 MiB。
+  ⇒ **mmap 讓 host 靜態預算過關，卻讓 Metal 工作集爆掉** —— 這正是 L25-1 的歷史反證
+    （「mmap 令 Metal GPU 工作集變大、不是『裝得下』的槓桿」）在**另一個模型上再次被量到**。
+  ⇒ **最終判詞：這顆 18.19 GiB 的 checkpoint 在 16 GB 盒上，交付口徑（`none`）與 `mmap`
+    兩條路都跑不動。**「能跑多少速度」在此硬體上**不存在答案**。
+  ⇒ 唯一還未試的形狀是「縮池／縮 ubatch」（錯誤訊息自己建議的），但那又是第三個離開交付格的維度。
+  產物：`Backup/spec_tree/cgc_edge0gguf_2026-10-05/mmap_bench.json`（＝`[]`，空）
+       ＋ `mmap_bench.log`（含上面的 Metal OOM 全段與 backtrace）。
+
+  ★ 順帶（儀器缺口，已驗）：**budget gate 對 `CGC_SERVER_MODEL` 是盲的**——
+  `llama_bench_matrix.py:1630` 只用 `resolve()["env"]`，而實測該 env **既無 `CGC_SERVER_MODEL`
+  也無 `MODEL`**（模型只進 argv 的 `-m`）⇒ `budget_gate.sh:12` 落到硬編碼 Nail 預設。
+  本趟報 `model 13030 MiB`（＝Nail 13,030.1）而真值 18,630.6 ⇒ **連超訂量都報錯**；
+  危險方向是「換更大的模型會低估 ⇒ 可能放行其實超訂的臂」。
+
+  ★★★ 為什麼「走 mmap 那條」也救不了——log 裡的硬數字（2026-10-05 19:1x）：
+    ggml_metal_device_init: GPU name: MTL0 (Apple M4)
+    ggml_metal_device_init: recommendedMaxWorkingSetSize = 11453.25 MB   ← GPU 預算 ≈ 11.2 GiB
+    llama_expert_cache: L4 metal pool: 121 slots/layer
+    CGC-GATHER-SLAB: kind=0/1/2 … size=144.00 MiB（合計 432 MiB，buft=MTL0_Pool）
+  ⇒ **`mmap` 改的是 host 分頁會計（file-backed ⇒ 可回收），OOM 卻在 Metal 側。**
+    這台 M4 的 GPU 建議工作集只有 **11.45 GB**，而**交付池本身就是 8 GiB（8.6 GB，121 槽）
+    ＝ 已吃掉 75%**；再扣掉 432 MiB gather slab ⇒ 只剩 ~2.4 GB 給模型的 GPU 張量 ＋ compute
+    buffer。**任何顯著大於 Nail 的 checkpoint 都塞不進去——與 host 的 `load_mode` 無關。**
+  ⇒ 所以「兩條路都堵死」不是運氣：**`none` 死在 host 靜態預算，`mmap` 死在 GPU 預算**，
+    而這兩本帳是**獨立的**。要動只能動 GPU 側（縮池／縮 `-ub`），那是第三個離開交付格的維度，
+    且依歷史縮池代價很大（8G→12.06、6G→10.48、4G→7.67 t/s）。
+
+  ★★★ 最後一條也死了（2026-10-05 19:26）——試了「縮池 ＋ 縮 -ub」的探索跑
+  （`mmap` ＋ pool 4 GiB ＋ `-ub 256`，非統一口徑、不可引用）：
+  | 配置 | pool | -ub | RSS 峰值 | 結果 |
+  |---|---|---|---|---|
+  | mmap | 121 槽（8 GiB） | 512 | 9,127 MiB | Metal OOM @ il=39 |
+  | mmap | 60 槽（4 GiB） | 256 | 5,020 MiB | Metal OOM @ il=39 |
+  錯誤逐字相同（`kIOGPUCommandBufferCallbackErrorOutOfMemory`／`compute #41`，死在 prefill 最後一層）。
+  ⇒ **池與 -ub 都不是綁定約束**（各砍半、RSS 少 45%，爆點不動）。
+  ⇒ 而 `none` 那條**數學上不可能**：模型本身 18,630 MiB 已 > host 16,384 MiB ⇒ 池再小都救不了。
+  ⇒ 引擎自己的帳很小（`CGC-RESERVE-SIZE after-PP sched=251.55 MiB`、gather slab 3×144 MiB、
+    prefill slab 144 MiB）⇒ 吃掉 GPU 的不是引擎 buffer。
+
+  ★★★ 判詞（結案）：**`Edge0-35B-Q4_0.gguf`（18.19 GiB）在 16 GB／M4（GPU 預算 11.45 GB）
+  這台盒子上沒有可跑的形狀。** `none` 死在 host 算術、`mmap` 死在 GPU，且 GPU 那條對
+  pool／ubatch **不敏感**。⇒ **「CGC × 這顆 checkpoint 能跑多快」在此硬體上不存在答案**；
+  剩下只有換盒、或換一個 ≤ 約 Nail 尺寸（12.72 GiB）的 checkpoint。
+  產物：`mmap_bench.{json,log}`（8 GiB 版）＋ `mmap4g_bench.{json,log}`（4 GiB 版），兩者 json 皆 `[]`。

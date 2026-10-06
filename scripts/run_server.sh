@@ -2555,6 +2555,15 @@ if [ "${CGC_SPAC:-0}" != "0" ]; then
         SERVER_ENV+=(CGC_SPAC_ALPHA=0.75)
     fi
 fi
+# [CGC 2026-10-05 allowlist fix] CGC_SPAC_HOT: the engine reads it (llama-expert-cache.cpp:718,
+# lowest-cumulative-route-count victim = the LFU-ish candidate for the victim-rule axis) but the
+# launch line's `env "${SERVER_ENV[@]}"` allowlist had NO entry for it, so it was reachable only
+# from direct launches (scripts/check/abba_p0_03arm.sh) and silently dropped through run_server.sh
+# / harness bench -- the same trap as CGC_FASTPATH_SPLIT (2026-10-03). Only meaningful while
+# CGC_SPAC=1 (the victim path is guarded by `spac_victim`).
+if [ -n "${CGC_SPAC_HOT:-}" ]; then
+    SERVER_ENV+=(CGC_SPAC_HOT="$CGC_SPAC_HOT")
+fi
 # CGC Soft Pool: L0/L1 tier partition. L0 = fixed hot slots (no LRU eviction), L1 = warm LRU
 # slots. L0+L1 <= n_slots; L0+L1=0 keeps the legacy uniform n_slots behavior.
 # [CGC 2026-09-13] DEFAULT FLIPPED TO 0/0 (partition off). L0 is a hand-picked "fixed hot set",

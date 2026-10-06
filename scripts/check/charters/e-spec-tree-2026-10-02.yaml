@@ -149,3 +149,271 @@ delivery:
 #   ⇒ 之後一律：**4 GiB pool ＋ n_rs_seq = k（=2）＋ 單趟**，先量記憶體再談速度。
 #   ⚠ 另：該次事故後 MTLCompilerService 一度不可用（XPC_ERROR_CONNECTION_INVALID），
 #     症狀是啟動即 abort（rc=134, <1 s，日誌有 "failed to create library"）——那是**系統殘留**，不是代碼。
+
+# ── 【2026-10-05 補記（S 線）】真樹實作完成、待跑 ─────────────────────────────
+# 三個欠項已在工作樹實作（未 commit；src/llama.cpp/common/speculative.{h,cpp} ＋
+# tools/llama-bench/llama-bench.cpp）：
+#   1. 根按分支複製：batch 改為 [root_b0][tail b0: k][root_b1][tail b1: k]…，每個 token 只掛
+#      一個 seq ⇒ 過 MTP verifier 的 `n_seq_id[k] == 1` assert；每 seq 連續 ⇒ process() 的
+#      i_batch_beg/i_batch_end 跨度與 catch-up 假設都成立。n_past 只前進一個邏輯位置。
+#   2. 種子來源改贏分支：新增 `common_speculative_accept(..., src_seq_id)`（speculative.h/.cpp
+#      加 accept_from 虛擬＋MTP impl accept_seed）——win_br==1 時必須讀 verify_h[1]（分支 1
+#      的列），原本讀 verify_h[0] 會把錯的 hidden 配給 emitted。W_eff==1 傳 -1＝原行為。
+#   3. 規格器 n_seq 跟樹寬：bench_spec_setup 由硬釘 1 改為 cgc_spec_tree_width()（鏈／預設
+#      仍 1、逐位元不變）；否則分支 seq 的 verify 列根本不被追蹤。
+# 乾跑（matrix --dry-run、BUDGET_GATE=warn）：兩臂 cell 口徑 15/15、shim 放行、state OK；
+# metal 起跑超 11–38 MiB（需 CGC_IGNORE_METAL_BUDGET 放行）。
+# 新臂（控制臂用 CGC_SPEC_TREE=0＝共用 context overrides、只差 gate）：
+#   chain: prod-new:CGC_SERVER_MTP=1;CGC_SERVER_LAYER_CAPS=40-40:140;CGC_DRAFT_CTX_ALIGN=1;
+#          CGC_DRAFT_SMALL_BATCH=1;LLAMA_BENCH_SPEC=1;LLAMA_BENCH_SPEC_DRAFT_N_MAX=2;
+#          CGC_SPEC_TREE=0;CGC_SPEC_TREE_RS=2;CGC_SERVER_SEED=1
+#   tree : 同鏈式 ＋ CGC_SPEC_TREE=1;CGC_SPEC_TREE_B=2
+# 判準不變：寬-2 臂 token/decode ≥ ~2.05 才可能打平 off；機制端點＝replay<10%、
+# emit_per_round≥1.9、trim_fail=0、branchB 有動。
+# ⚠ 盒閘 2026-10-05 13:4x：SHORT（可回收 2818 MB vs 存活線 7703；swap 5517 MB；壓縮機
+#   BUSY）⇒ 比 10-03 的 accepted-risk 窗嚴峻；待盒子降乾淨再發車，硬跑需 operator waive。
+# ── 【2026-10-05 補記（S 線，診斷兩趟跑完＋DBG 對位）】─────────────────────────
+# 診斷短趟（Backup/spec_tree/t1w2_smoke*.log；p32/n64/d0 診斷形狀，不可引用 t/s）：
+#   tree(W=2): rc=0、rounds_tree=35 branchB=2 path_partial=28 trim_fail=0 replay=0；
+#     ACCEPT rounds=35 drafted=62 acc=30 mean_len=1.8571 draft_ratio=0.484 emit/round=1.8571。
+#     n_seq_id assert 未再現、seed pinned=1。
+#   chain    : rc=0、replay=7、drafted=57 acc=43 draft_ratio=0.754 emit/round=2.20。
+# DBG 對位（tree_dbg2/chain_dbg2；後者只到啟動段 1326 B、未進生成圈，鏈側以 18:16 趟為準）：
+#   4 次 M-RoPE X==Y draft-step 拒絕全部落在「前一輪 m=0（零接受）且該輪有寫 draft」之後
+#   （P_base=0,2,4,25）；m=0 但該輪 draft=0（前一趟的被害輪）則不觸發（P_base=1,3,5,26）。
+#   症狀＝該輪 0 drafts＝純 decode；成本 4/35 輪。同型類別非樹獨有（歷史鏈 VICTIM_CLASSIFY
+#   1533 次；MTP impl begin() 早有 stale-tail 修法），但共享 KV 下「回合中 m=0」這支沒有對應
+#   trim ⇒ 去掉 replay 後由樹路徑暴露。⇒ 待辦：m=0 cleanup 後同步裁 draft ctx 殘尾
+#   （目標 emit/round 1.857→~1.97），再跑修後 tree_B=1 對鏈的最強見證。
+# 判詞小結：寬-1 樹＝打平（零增益）、k 軸死；寬-2 唯一診斷數字 1.857（<1.9 機制閘、<2.05
+#   判準）且接受率低於同形狀鏈（0.484 vs 0.754）⇒ 未判死，窄門；決勝＝修後 W=2 cell 量測。
+# ── 【2026-10-05 補記（S 線，第 4 修：m=0 殘尾鏡像裁切）】───────────────────────
+# 第 4 修（llama-bench 樹路徑 cleanup）：目標記憶體裁 [P_base+m+1,-1) 後，對 ctx_dft 做
+#   同一鏡像裁切（每分支 seq）。原理：draft ctx 的 cell 在自己的記憶體（shared＝draft 層讀
+#   目標 KV，不覆蓋 draft 寫的 cell），而 impl 自己的 per-round seq_rm 被 !is_mem_shared 跳過
+#   ⇒ m==0 的回合把被拒的第一顆 draft 的 cell 留在 P_base+1＝下一輪 draft step 的 Y 位置
+#   ⇒ M-RoPE X==Y 拒絕、該輪 0 drafts。鏡像後 draft prefix ≡ committed prefix。
+# 效果（同診斷形狀、同 seed，t1w2_smoke_tree_fix1）：
+#   BEFORE rounds=35 drafted=62 acc=30 mean_len=1.8571 ratio=0.4839 replay=0 emit/round=1.8571
+#          （4 次 M-RoPE 拒絕；branchB=2）
+#   AFTER  rounds=31 drafted=62 acc=33 mean_len=2.0645 ratio=0.5323 replay=0 emit/round=2.0645
+#          （M-RoPE 拒絕 0；branchB=10；trim_fail=0；wall 69s→42s）
+# 見證對（同 binary/形狀/seed，SMOKE_ARM=new treeb1）：
+#   chain : rounds=30 drafted=57 acc=43 mean_len=2.4333 ratio=0.7544 replay=7 emit/round=2.2000
+#   treeB1: rounds=27 drafted=54 acc=38 mean_len=2.4074 ratio=0.7037 replay=0 emit/round=2.4074
+#   ⇒ 打平家族（同 T1c cell 對 1.455/1.462 的關係）；照 T1c 見證門檻視為過。
+# ⚠ 仍未判死的黃旗：同形狀 W2(2.0645) < W1(2.4074) ⇒ 第二分支的接受增益尚未蓋過它的驗證成本；
+#   cell 判準 2.05 是最終關卡（診斷形狀不可直接引用）。
+# 盒閘（22:30 後）：SHORT 只擋記憶體，短 527 MB（可回收 7176 vs 存活線 7703；swap 4020 MB，
+#   較 7801 改善）；熱/壓縮機/埠/無 llama 皆綠。正式兩臂仍待綠或 operator waive。
+# ── 【2026-10-06 補記（S 線，branch-B 續航＝alt-chain 修正；假設被否證）】─────────
+# 背景黃旗：W2「step-2 條件接受」n64=0.417（W1=0.900）。假設＝分支 B 無續航（alt 候選未接上），
+#   故 B 贏也只得 m=1；修法是給 B 一條自己的第二顆（alt chain）。
+# 修正（bench+impl 跨檔 5 處）：
+#   (1) impl 加 alt 候選路徑：B 的第二顆＝B1 後繼；verify batch 3 列→5 列（root+A×2+B×2）。
+#   (2) draft ctx 建立時 n_seq_max=1（params.n_parallel 映射）⇒ seq1 每輪 llama_decode[1] ret=-1；
+#       修為 >=2（目標 ctx 建於 spec setup 之前，已驗順序不洩漏）。
+#   (3) seq0 的 alt 候選與 seq1 結果共用同一 vector（aliasing）⇒ 拆開。
+#   (4) alt-seed 依賴 dp.alt（被 (3) 解綁）⇒ 改直接由候選陣列 seed，每輪發火。
+#   (5) per-branch tails 續航接線。
+# 修正後量測（同形狀/同 seed；診斷形狀不可引用 t/s）：
+#   n64 : W2 = 2.0625（t1w2_smoke_tree_alt3；32/64/34；p1=.750 p2|1=.417 p2|A=.455 B_wins=2）
+#         ⇒ 對修正前 2.0645 無升。alt-seed 32/32、M-RoPE 拒絕 0、decode[1] 失敗 0、trim_fail=0。
+#   n128: W2 = 2.4151（53 輪；p1=.849 p2|1=.667 p2|A=.698；B_wins=2 且 B→m>=2 計 0）
+#         W1 = 2.6667（48 輪；p1=.854 p2|1=.951 p2|A=.951）⇒ matched 仍落後 0.25/輪（比 = 0.906×）。
+# 判詞：alt-chain「機制成功、指標無效」。缺口不在分支 B——B 上限增益 ≈P(A1 拒)×P(B1 過)
+#   ≈+0.06~0.09 acc/輪 ≈ +2.5~3.5%——而在「分支 A 自己的第二顆」：只要 W2 路徑完成雙鏈 draft，
+#   p2|A 就自 W1 水位塌陷（n64 .900→.455；n128 →.698）；未 seed 的 W2 趟（tree_alt2：27/54/38）
+#   與 W1 幾何逐項相同（p1=.741 p2|A=.900 2.4074）⇒ 塌陷隨「雙鏈 draft」出現，定位在 W2 draft
+#   批次對分支 A 第二列的取樣/列映射（aliasing 或 RNG 流位置）。屬可修 wiring，但修到頂也只是
+#   W1 水位＋B 的 ~+3%。
+# 算術上限：W2 <= W1 + ~0.08 emit/輪（診斷 ≈2.5）；cell 判準 2.05 對 W1 cell 1.462 需 >=1.40×W1
+#   的增益，而診斷實測 W2/W1 = 0.86×（n64）/0.906×（n128）⇒ **現設計樹軸無法接近 2.05**；W2 的
+#   正式 cell 趟即使發車也只是封存此結論（建議改投接受率/headroom 槓桿）。
+# 盒閘：10-06 先後 PASS（8416/7935 MB，agree=True）後回檔（volatile；亦見 -223 MB 讀數）；
+#   wait-for-green→fire 迴圈與正式 two-arm runner 已備妥未發車（t1w2_gate_then_fire.sh）。
+# ── 【2026-10-06 補記（S 線，headroom 診斷：oracle argmax 探針＝管線 vs head）】─────────
+# 問題（使用者）：用現行 llama.cpp 收集 hidden，離線跑 in-file MTP head 與目標 argmax 的接受率，
+#   和 live 對照，判斷 headroom 在管線側還是 head 本身。
+# 實作（llama-bench 樹走訪內，env 閘 LLAMA_BENCH_SPEC_ORACLE、default off、零行為改變、自帶
+#   CGC-ORACLE tag 不擾既有 parser）：每列在取樣後讀 llama_get_logits_ith(ctx,cur) 求 argmax，
+#   與該列的孩子（＝draft token）比對；同時記 sampled==argmax。位置定義：pos1＝每輪首顆
+#   （branch A）、pos2＝走到 branch A 第二顆的到達列；B 欄＝alt 分支。實測（p32 診斷形狀，
+#   同 seed；oracle 趟與非 oracle 趟 ACCEPT 逐項 bit 相同 ⇒ 探針不含侵入）：
+#   W1 n64 : live p1=20/27=.741 | oracle argmaxA=21/27=.778 ; pos2 live=18/20=.900 oracle=18/20=.900
+#            sampled==argmax: pos1 23/27=.852 pos2 19/20=.950
+#   W1 n128: live p1=41/48=.854 | oracle argmaxA=42/48=.875 ; pos2 live=39/41=.951 oracle=39/41=.951
+#            sampled==argmax: pos1 44/48=.917 pos2 40/41=.976
+#   W2 n64 : live p1=24/32=.750 | oracle argmaxA=23/32=.719 ; pos2 live=10/22=.455 oracle=10/22=.455
+#   W2 n128: live p1=45/53=.849 | oracle argmaxA=44/53=.830 ; pos2 live=30/43=.698 oracle=30/43=.698
+#            （W2 pos2 列 sampled==argmax=43/43=1.000 ⇒ 該處退化非取樣造成）
+# 判詞：
+#   (1) 生產形（W1）：live ≈ oracle 天花板（pos1 差 2-4 點＝取樣份額；pos2 差 0）⇒ **管線近飽和，
+#       headroom 在 head 本身**：即使把 hidden/種子/接線做到完美，pos1 天花板＝head 在此文字的
+#       argmax 命中率（.78 n64 → .875 n128），p2|1 天花板 .90→.95。要到判準所需水位需提升 head
+#       本體（訓練/換 head）或換接受機制，而不是再修管線。
+#   (2) W2：pos2 的塌陷在 argmax 下同樣存在（.455/.698 vs W1 .900/.951）且該列 sampled==argmax
+#       ＝100% ⇒ 屬 draft 接線缺陷（非取樣/RNG），與 10-06 前段定位一致；修到頂也只是 W1 水位。
+#   (3) 缺口＝cell 形狀的 oracle：診斷形狀天花板高於 2.05 所需，但 cell 的 live 低得多（T1C
+#       chain/W1 cell token/decode 1.455/1.462）⇒ cell oracle 是唯一還缺的數字，屬 head 側量測。
+# 證據：Backup/spec_tree/t1w2_smoke_{treeb1,tree}_oracle{,_n128}.stderr.log（CGC-ORACLE 行）。
+# 探針碼：src/llama.cpp/tools/llama-bench/llama-bench.cpp（counters ~:3072、walk 內 ~:3466、
+#   摘要列 ~:3705）；備份 /tmp/bench_oracle.bak；未 commit。
+# ── 【2026-10-06 補記（判準 2.05 出處重推導＋批次成本實測；門檻修正）】────────────
+# 2.05 出處（T1C §3 三成分）＝ chain cell token/decode 1.455 × 寬-2/鏈 每輪成本比 1.24–1.47（取中
+#   1.41）＝ 2.05。成本比來自成本律 round_ms ≈ 63.6+35.2·T̂（docs/L254_K_AXIS_ECON_2026-10-01.md:105）
+#   的 5 列/3 列 = 239.6/169.2 = 1.416，即「每顆 alt verify 列付滿邊際 35.2 ms（0.41 步）」。
+# 實測檢核（Backup/spec_tree/t1w2_roundcost.py；同 session ABBA、p32 診斷形狀、同 seed）：
+#   session A（W1→W2）262.8 / 228.9 ms = 0.871；session B（W2→W1）252.2 / 318.7 = 1.264
+#   ⇒ ABBA 平衡 W2/W1 ≈ 1.06（±0.2；跑序效應 −28% 級，單趟牆鐘不可信）
+#   ⇒ alt 兩列的實際邊際 ≈ +6%/輪，遠低於外推的 +42%（同前綴列專家命中）⇒ **門檻 2.05 過高約
+#   25–30%；修正後 ≈ 1.5–1.6（誤差帶 1.27–1.83）**。
+# 對軸的影響：寬-1 cell 1.462 距修正後的打平線僅 ~5%（與 k 掃描「最佳 k=2 −5%」同向）⇒ 原判準
+#   把軸描述得比實際絕望；但**不構成寬-2 會過**：寬-2 現行 emit/round 低於寬-1（0.86–0.91×）是
+#   已知 pos-2 接線缺陷（argmax 下同樣塌陷）⇒ 修後才回到「差 ~5%」的誠實位置。
+#   待驗：cell 形狀的成本比（盒閘綠後一趟同 session ABBA）。全文
+#   Backup/spec_tree/T1C_BAR_205_DERIVATION_2026-10-06.md。
+# ── 【2026-10-06 補記（cell 形狀 oracle：head 天花板與打平門檻的真單位）】─────────────
+# ① 儀器：llama-bench 的 spec 路徑不吃 -p（llama-bench.cpp:2964「never fed to the target」）——
+#    cell(-p512,-n128) 與診斷(-p32,-n128) 的 W1 趟逐行 bit 相同 ⇒「cell spec oracle」＝n128 那組；
+#    p512 只出現在另一個 pp 測試列與生產 server（server 餵真 prompt ⇒ 真文字接受率另是一個未量維度）。
+# ② cell 趟計數（counter，窗口無關）：treeB1 emit=2.6667 p1*=0.875 p2*=0.951 → emit_max=2.707；
+#    treeW2 emit=2.4151 p1*=0.830 p2*=0.698 → emit_max=2.409；兩者逐位等於 n128 診斷趟。
+# ③ 單位更正：2.05 與「修正後 1.5–1.6」都是 delivery cell 的 token/decode（分母含 replay 輪），
+#    不能直接套 replay=0 的樹臂。樹臂的打平式＝ emit/round ≥ R_on/R_off（R_on 每輪牆鐘、
+#    R_off off 每 token）。敏感度（q*=0.951）：R_on 150→需 p1 0.374（過線）、210→0.728（過線）、
+#    240→0.905（差 3 點）、257→1.005（不可能）、280→1.141（不可能）。
+#    ⇒ 「還要 head 進步幾點」＝ R_on 的函數：≲210 ms 時 **0 點**；240 ms 時 ~3 點；257 ms 時不可行。
+# ④ 唯一槓桿＝每輪成本：同一 3 列幾何實測 149 ms（k 掃描鏈）vs 252–263 ms（tree W1 同形狀 ABBA）
+#    ⇒ tree 路徑多付 ~100 ms/輪（kv_unified／n_rs_seq／n_seq_max=2 或清理路徑）；拉回 150–210 ms
+#    則現行 head 不需進步即可打平（W2 的 +6%/輪亦擋得住）。本次 cell 趟牆鐘全被換頁污染
+#    （W1 444 ms/輪）⇒ 不得引用；cell 的乾淨 R_on×R_off 配對仍缺。全文見
+#    Backup/spec_tree/T1C_BAR_205_DERIVATION_2026-10-06.md §5；腳本 Backup/spec_tree/t1w2_cell_oracle.py。
+# ── 【2026-10-06 補記（tree 每輪成本拆解；~100 ms 假說否證）】────────────────────
+# 三臂 ABBA 同 session（t1w2_cost_split.py，p32/n128/r1）：
+#   A 鏈/預設 round_ms 183.2 ms/emit 72.4；B 鏈＋樹 overrides 191.4 / 75.65；
+#   C tree W1 208.5 / 78.2（emit 2.6667, replay 0）
+#   ⇒ context overrides（kv_unified+n_rs_seq=2+n_seq_max=2）＝ +8.2 ms/輪、+3.25 ms/emit（~4%）；
+#     tree code＝ +17.1 ms/輪、+2.55 ms/emit（~3.4%）。
+#   ⇒「149 vs 252–263（~100 ms）」是時代差，非 tree 本體；今天同 session 樹只比鏈貴 +17 ms/輪。
+# 交錯三臂（t1w2_tri_*，同 session）：off 104.7、chain 77.8、tree W1 78.1 ms/emit ⇒ 樹≈鏈、
+#   兩者對 off ≈0.745。⚠ 不可引用：10-01 k 掃描同 session 對照是鏈 −5% vs off（比值 1.05），
+#   今天 0.744；off 9.55（era 11.52）、鏈 12.9（era 10.90）兩端都動 ⇒ 時代不穩（10-01 後落地的
+#   種子/鏡像裁切修會抬接受率：emit 1.625→2.53；或窗口差），須由 harness 乾淨窗定案。
+#   （off 慢與 caps 無關：有/無 caps 的 off 都讀 9.2–10.6。）
+# 可回收項：① n_seq_max 對 width==1 可為 1（現為 max(2,width)）② kv_unified 只對 width≥2 必要
+#   ③ tree code +17 ms/輪 需每輪 timer 拆（W1 已跳過 W2 清理）；n_rs_seq 2→1 不可回收（k=2 最深回滾=2）。
+# 產物：Backup/spec_tree/t1w2_cost_*（6 檔；A#1 中止、JSON 截斷，腳本已硬化為可跳過）、t1w2_tri_*（6 檔）。
+# ── 【2026-10-06 補記（真文字接受率與 head 天花板；19 臂；更正上段①）】────────────
+# 更正上段①：「spec 路徑不吃 -p」只說明 `-p` 這條軸（tg instance 寫死 n_prompt=0，
+#   llama-bench.cpp:1731 ⇒ -p 只生 pp 列）。餵真文字有兩條**現成**路徑，都走同一支 test_prompt()
+#   （⇒ --prompt-file 在那裡生效）：D＝`-p 0 -n 128 -d 512 --prompt-file`（depth run，時鐘外）、
+#   P＝`-p 0 -n 0 -pg 512,128 -d 0 --prompt-file`（字面 prompt 路徑）。兩者 n_ctx=640、
+#   首輪 n_past=512（SPECDBG 見證：pos_max=511、dft_pos_max=-1）。**無 C++ 改動**（同一顆 binary）。
+#   文字＝Backup/bench_parity2_20260918/real_prompt_2025.txt（server 自己餵的那段巴黎文本）。
+# 量測：19 臂＝{W1,W2}×{real,rand}×seed（1 六臂＋真文字 seed 2,3,6(W1)/2,3(W2)＋隨機 seed 2,3,4,5）。
+#   每臂 `-r 1`；**一個 seed＝一條軌跡**（CGC_SERVER_SEED 定 sampler draw、--fixed-fill-seed 定
+#   id_last；此 vocab 無 add_bos ⇒ id_last=std::rand()%n_vocab）。端點＝counters
+#   （CGC-BENCH-ACCEPT/SPEC-TREE/ORACLE）；t/s 不引用。交叉檢查 19/19 過（rounds==cleanup 行數；
+#   gen_tokens==rounds+Σm；p1A+p1B<=pos1_rows）。路線非同一抽（id_last 135409 vs 141512）。
+#   盒閘起跑 SHORT（可回收 7345 vs 7703；熱/壓縮機/埠/procs 全綠；launcher admits free 83%≥40%，
+#   agree=False、binding=harness）⇒ **operator waive**（先全 6 臂、後續同類延伸）；跑後 6907/7703、
+#   swap 存量 5248→6762 MB。
+# 結果（mean[min,max]；ceilA=1+p1A(1+p2A)）：
+#   W1 real n=5  emit 2.039 [1.985,2.098]  p1A 0.696  ceilA **2.047** [2.016,2.082]
+#   W1 rand n=5  emit 2.211 [2.048,2.633]  p1A 0.752  ceilA 2.302 [2.126,2.710]
+#   W2 real n=4  emit 1.777 [1.438,2.246]  p1A 0.247  ceilA 1.294 [1.079,1.549]（p1B 0.415）
+#   W2 rand n=5  emit 2.216 [1.803,2.667]  p1A 0.704  ceilA 2.117 [1.437,2.686]
+# 判讀：① 舊引用的 prompt-blind 天花板（W1 2.707／W2 2.409）＝**該分布的上緣抽樣**（本趟 seed1
+#   隨機臂重現 2.710/2.370），不是 head 水位；真文字下 W1 天花板 ~2.05，且 5 抽 vs 隨機 5 抽
+#   **完全分離**（排列單尾 p≈1/252≈0.40%）⇒「量級被儀器高估 ~0.65」。
+#   ② W2 真文字 **4/4 落在 A 塌陷 regime**（head 自己的 top-1 0.067–0.405；accept 改由亞軍鏈 B
+#   扛 0.139–0.754；branchB>0 4/4），W2 隨機 2/5 也落進去 ⇒ 真文字是**一致地壓進**塌陷、不是製造
+#   塌陷（n 小，bias 非分離）；且 w2_d512_real 的 emit 是可讀的**重複迴圈**（detok 見證）⇒ 這是
+#   正確性氣味。⇒ 寬-2 現行是「亞軍救援」，**先修 A 塌陷再談寬-2**。
+#   ③ live≈ceiling 在真文字下仍成立：W1 2.039 vs 2.047（精確式）；W2 用 bracket
+#   1+(p1A+p1B) ≤ live ≤ 1+(p1A+p1B)(1+max(p2A,p2B)) ⇒ 9 臂中 8 臂 IN（唯一 OUT：pg 臂
+#   2.2456 vs 2.2444，超出 0.0012）⇒ 兩寬度都仍是 head-limited。
+#   ④ 單位：2.05 與「修正後 1.5–1.6」是 delivery cell 的 token/decode（分母含 replay 輪）；樹臂
+#   replay=0 ⇒ 打平式仍是 emit/round ≥ R_on/R_off，本趟**無同窗口成本配對、不換算**。上一輪敏感度
+#   表用 q*=0.951（隨機水位），真文字 W1 的 q* 只有 0.506 ⇒ 該表每一列「所需 p1」都要重算，
+#   舊結論「R_on ≲210 ms 時 0 點」不再成立。
+# 儀器側順手量到（未修）：bench 第一輪 draft 的 pending_h 是 **0**（MTPDBG draft step0 pos=512
+#   embd norm=0.000、第二輪起 ≈113），且 bench 從不把 prompt 餵進 draft 側
+#   （common_speculative_process 唯一呼叫點在 verify batch，llama-bench.cpp:3441）⇒ 與 server 的
+#   第一輪不等價（1/49–1/89 輪），bench vs server 的 2.50 vs 2.039 仍留結構差。
+# 產物：Backup/spec_tree/T1W2_REALPROMPT_2026-10-06.md（全文）、t1w2_realp_*.stderr.log（19 檔）、
+#   驅動 t1w2_realprompt.py（ARMS=/SEEDS=）、解析 t1w2_realp_analyze2.py、t1w2_realp_{parsed,groups,
+#   detok}.json、driver log 5 份。**未 commit。**
+# [CGC 2026-10-06 打平 gate] 把「on 有沒有打平 off」從手算變成乾淨窗自動判的閘：
+#   scripts/check/mtpon_tie_gate.py（--check / --go / --watch / --replay / --selftest）。
+# 判準（唯一式子）：on 打平 off ⟺ emit_on · T_off ≥ R_on，即 gain = emit_on·T_off/R_on ≥ 1；
+#   T_off = off 的 ms/token（純解碼 1 token/步）、R_on = on 的 ms/verify 輪（含 replay 輪）、
+#   emit_on = emit_per_round（counter，CGC-BENCH-ACCEPT）。兩側**同 session**（AB 與 BA 各一跑序），
+#   gain_bal = 兩跑序的幾何平均，margin = max(--margin-min 2%, 本 session 的跑序散度)
+#   ⇒ 跑序效應與時代差都在式子裡被吸收（不再跨 session 抓數字，也不寫死雜訊帶）。
+# 為什麼必須同 session（本輪端到端 smoke 自己示範）：AB gain 0.9239 vs BA 0.6781，散度 31%
+#   ⇒ margin 升到 0.310。單趟比值會被跑序效應讀成 ±30% 的假訊號。
+# 機制閘（沿用本 charter 的驗收）：replay/rounds<10%、trim_fail=0、emit>0、每臂 rc=0、
+#   無 STALL/TIMEOUT、盒閘起跑前綠（或明確 --waive-reason 留痕）；任一不過 ⇒ VOID，不給判詞。
+#   閘的 exit code：0=TIE、1=SHORTFALL、2=拒跑/VOID。
+# 形狀閘（本輪新發現，寫死）：⛔ n_prompt>0 一律拒收。llama-bench 把 prompt run 放在計時區**內**
+#   （llama-bench.cpp:4072 在 t_start(:4065) 之後），所以 `-pg`／`-p N -n M` 的 avg_ns 含 prefill，
+#   T_off/R_on 不可用（實測：pg512 的 T_off 256.57 ms/tok vs 乾淨 104.43）。depth 前綴相反（:4028 在
+#   時鐘外）⇒ 解碼支柱 `-p 0 -n N -d D` 是乾淨的。事後審計既有 log 才用 --replay-allow-prefill，
+#   且判詞會標「不可引用」。
+# 離線審計（既有 log 重算）：t1w2_tri off/treeW1 → gain 1.3364 ⇒ TIE（散度 0、margin 0.02；
+#   形狀 -p32 -n128 d0 非 house cell ⇒ 只作「閘能重算手算」的見證）；t1w2_realp_{w1,w2}_pg512 → 污染
+#   被閘擋下（rc=2、無 traceback）。
+# 閘自身的五個 bug 全部由**實測**抓到（純函式自測看不到 CLI/程序層 ⇒ 都補了子程序回歸釘）：
+#   ① --replay 載入的 metrics 沒有 tag ⇒ sessions_valid KeyError（replay 一按就炸）
+#   ② --replay 是 nargs="+" ⇒ 後面的旗標被吃成 log 路徑（argparse 直接報錯）⇒ 旗標改位置無關
+#   ③ 形狀污染在 replay 是**未接住的 traceback**（rc 1）而非 doc 承諾的乾淨拒收 rc=2
+#   ④ --watch 的主用法（沒 waive、盒子不綠）走不到輪詢迴圈就被拒跑 ⇒「盒閘綠即跑」在主要用法下
+#      不可達（doc 承諾與程式不符）；重排控制流：--watch ＝「等它綠」的授權、waive ＝「不等它綠」
+#   ⑤ gate 被打斷時留下還在跑的 llama-bench（自己的行程群組）⇒ 收 INT/TERM/HUP/PIPE 一律先收子行程
+#      （實測：SIGTERM 後 llama-bench 歸零、rc=143、無 traceback；先前 SIGPIPE 會留下測量殘骸）
+# 另一條（同類 bug 的第二次踩）：自寫的 foreign_llama 掃「命令列字串」⇒ 啟動它的 shell／pgrep／編輯器
+#   都被判成 foreign，明明沒人在跑也拒跑（實測重現）。decode_window_harness 2026-09-20 已修過同一類
+#   ⇒ 改用盒閘同一套偵測（server_window.decision → 以**執行檔**分類，含 pgrep 退路），不立第二套定義。
+# 自測：--selftest 29 項 PASS（純函式 ＋ 子程序；不吃 GPU）。盒閘鉤子 TIE_FAKE_BOX=short|foreign
+#   只會**強制不綠**（不可能誘發真量測），用來釘「不綠時 --watch/--go 絕不發車」。
+# 端到端 smoke（形狀極小 -n 16/-n 8 d8、隨機填充、盒閘 SHORT ⇒ operator waive）：4/4 臂 rc=0、
+#   兩跑序、判詞 SHORTFALL、rc=1、產物 Backup/tie_gate_*/{tie_gate.json,report.txt,sessions.json,
+#   meta.json,meta_after.json,每臂 stderr+stdout} 齊。**該判詞本身不可引用**（形狀與填充非 house cell）。
+# 現況：**尚未取得乾淨窗的正式判詞** —— 起跑前後盒閘皆 SHORT（可回收 6.6–6.9 GB vs 存活線 7.703 GB、
+#   swap 存量 4.8–6.8 GB）。閘已就位：`--watch`（盒閘綠即跑，預設最長等 180 分，超時不產量測）或
+#   `--go`（綠才跑；不綠要 --waive-reason）。
+# 產物：scripts/check/mtpon_tie_gate.py。**未 commit。**
+# [CGC 2026-10-06 正確性閘] 把 detok 人眼看到的「退化重複迴圈」變成自動訊號 ——
+#   讓「快但壞掉」的臂**不能通過判詞**。
+# 為什麼必要：退化會**抬高接受率 ⇒ 抬高 emit ⇒ 抬高 gain**，所以「快」可能是壞掉的產物。
+#   這 19 臂裡 emit 最高的兩條（w2_d512_rand_s5 2.667、w2_d512_rand 2.407）正是最退化的兩條
+#   （run_max 116、57）⇒ 沒有這道閘，打平判詞可以用一條迴圈臂拿到 TIE。
+# 資料來源：LLAMA_BENCH_SPEC_DUMP=1 ⇒ `CGC-SPEC-DUMP phase=timed n=N ids=…`（只有 spec 路徑會 dump）。
+# 指標（全在 token id 序列上算；不需 vocab/detok ⇒ 離線、決定性、無依賴）：
+#   run_max 最長連續相同 token；selfsim 在 n=1..8 的最大 mean_i[ids[i]==ids[i-n]]；
+#   rep_k k-gram 型例比倒數（**只當診斷，不當閘** —— 真文字的自然重複會誤觸）。
+# 判準：DEGENERATE ⇔ run_max ≥ 5 或 selfsim ≥ 0.25；NO_DATA ⇔ 沒有 dump（fail-closed）。
+# 標定（scripts/check/output_health_calibrate.py，19 臂）：
+#   ① 與 detok 人眼 6/6 一致（w1_d512_real 連貫中文＝OK；w2_d512_real `在中在中…`、
+#      w2_pg512_real `，，，，…`、w1_d512_rand `تصديااا…`、w2_d512_rand `نننن…`＝DEGENERATE）。
+#   ② real 家族分離：W1 real 5/5 OK（run_max=1、selfsim ≤0.071）vs W2 real 4/4 DEGENERATE
+#      （run_max 9–108、selfsim 0.425–0.880）。
+#   ③ 門檻邊界：selfsim 健康側 3.5×、退化側 1.7×；run_max 健康側 5.0×、退化側 1.8×。
+# 接線（mtpon_tie_gate.py）：
+#   • on 臂自動帶 LLAMA_BENCH_SPEC_DUMP=1；arm_metrics 把健康度掛在 metrics.output_health。
+#   • sessions_valid：DEGENERATE ⇒ 有效性閘有話說（report VOID、rc=2）；NO_DATA ⇒ 預設 fail-closed ⇒ VOID。
+#   • `--no-output-health` 只放行 NO_DATA（legacy log 審計），**永不**放行 DEGENERATE。
+#     （`--replay` 是 nargs="+" ⇒ 與 --replay-allow-prefill 一樣先掃掉、位置無關。）
+#   • report 印健康度；tie_gate.json 留 metrics（可事後對帳）。
+# 實測驗收：
+#   • --selftest 43 項 PASS（原 29 ＋ 11 純函式/整合 ＋ 3 子程序）。
+#   • 真 log 對照：w1_d512_real ⇒ ✅ OK、SHORTFALL rc=1；w2_d512_real ⇒ ⛔ DEGENERATE
+#     （run_max=108/5、selfsim=0.874/0.25）⇒ VOID rc=2。
+#   • 子程序釘：合成退化對 ⇒ rc=2；`--no-output-health` **擋不住**；同對 log 換健康 dump ⇒ rc=1。
+# ⚠ 已知缺口（寫在 output_health.py 檔尾，不假裝蓋住）：**off 臂（純解碼）不會 dump** ⇒ 只有 on 臂
+#   有正確性見證。要兩臂都被見證，得在 llama-bench 的 test_gen 純解碼迴圈也加一條同格式 dump。
+# ⚠ 本指標只認 **token 級迴圈**；句子級迴響（w1_pg512_real 整段重複一次）判 OK —— 這是刻意的。
+# 產物：scripts/check/output_health.py（模組）、scripts/check/output_health_calibrate.py（標定台）、
+#   mtpon_tie_gate.py（接線）。**未 commit。**

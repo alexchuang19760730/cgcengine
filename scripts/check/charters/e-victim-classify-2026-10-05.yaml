@@ -1,0 +1,70 @@
+id: e-victim-classify-2026-10-05
+owner: freebuff（S 線 / L25-4 重開前置）
+created: 2026-10-05
+# 兩個「還有量級」的候選同一趟上（operator 指示：這兩個同時一起試試看）：
+#   ① MTP 重開 #1 分類修正（caps 16→17）—— 已有卡 e-mtp-cb-classify-2026-10-03，本趟以按臂 shim 重跑並**同場**加值；
+#   ② 受害者規則（LFU 式累計熱度 CGC_SPAC_HOT）—— 09-24 只在直呼路徑量過（abba_p0_03arm.sh），
+#      從未經 run_server.sh 白名單 ⇒ 本輪先補白名單入口（scripts/run_server.sh:2557 區塊），再進 harness。
+# 端點全在引擎計數器（PREFILL-STREAM / DECPROF cb / decode-pool hit）；t/s 只讀同趟比值，且 attribution 應為 swap。
+axis: M
+
+question: |
+  同一趟（同 build、同格、同 session）裡：
+  ① caps 16→17 是否把 ntok=2 的 MTP verify 步從「大-prefill slab 分支」拉回 decode 池路徑
+     （cb 3.9–6.1 s/step → ms 級、`CGC-PREFILL-STREAM … ntok=2` → 0 行、趟由 incomplete → 完成）？
+  ② 在 SpAc 已開（prod-new 預設 CGC_SPAC=1／alpha 0.75）的基礎上，把受害者規則換成
+     「累計路由次數最低者」（`CGC_SPAC_HOT=1`，llama-expert-cache.cpp:718）會不會動 decode 池的 miss/hit
+     —— 兩個 regime：MTP-off（純 decode）與 MTP-on caps17（修好分類後）？
+
+baseline:
+  metric: "MTP-on k=1 caps16：ntok=2 verify 步 cb 3.88–6.10 s（88 步有帳）、`CGC-PREFILL-STREAM … ntok=2` ≥1 行/層、趟 incomplete（driver-timeout 420 s / stall-watch 240 s）"
+  cell: "現行 (default)：prompt 512 / gen 128 / batch 2048 / ubatch 512 / depths 0 / reps 5 / warm_skip 0 / ctx 0"
+  source: "Backup/spec_tree/MTP_CB_CLIFF_VERDICT_2026-10-03.md"
+
+hypothesis:
+  mechanism: |
+    ① `expert_cache_on_topk` 以 `cgc_is_decode_graph(n_tokens, cgc_decode_max_tokens)` 分類
+       （llama-context.cpp:8073，slab 分支 return 於 :8334）。caps 16 ⇒ 15 routable ⇒
+       `cgc_decode_bound(15,8,8)=floor(15/8)=1` ⇒ width 1 ⇒ ntok=2 判 PREFILL；
+       caps 17 ⇒ 16 routable ⇒ bound=2 ⇒ 回 decode（pool ＋ remap leaf）。
+    ② SpAc 的 EMA victim 會把「熱但安靜」的專家衰減掉（engine 註解記的 58.6%→98.6% 覆蓋落差）；
+       SPAC_HOT 用**不衰減**的累計次數選 victim（保住重尾）。若 victim 規則在交付幾何（S=142、support 205）
+       真有量級，decode/pool hit% 應上移、`final stats` 的 miss 應下降。
+       上游反證（先驗＝null）：routing oracle 把「所有 placement 工作」的上限量成 +0.2pp 路由質量
+       （run_server.sh:2544 註解）；09-28 座位曲線（8→143 席）只值 0.3pp。
+  expected: |
+    ① caps17 兩臂：`CGC-PREFILL-STREAM … ntok=2` 0 行；DECPROF ntok=2 步 cb 中位 <100 ms；趟完成。
+       caps16 對照臂（本趟最後跑、可被 timeout 截）：應重現 ntok=2 slab 指紋（用途僅指紋，不引用速度）。
+    ② SPAC_HOT 兩組配對（MTP-off：base vs SPAC_HOT；MTP-on-fix：fix vs fix+SPAC_HOT）：
+       decode/pool hit% 移動 ≤0.5pp（＝null，與 oracle 一致）；若 ≥1pp 則另立卡追。
+  basis: "Backup/spec_tree/MTP_CB_CLIFF_VERDICT_2026-10-03.md；docs/REUSE_DISTANCE_MTPON_CONFIRM_2026-09-20.md（Belady−LRU 40.6%）；docs/MTP_AXIS_REOPEN_REVIEW_2026-10-02.md §9.4/§10.2；src/llama.cpp/src/llama-expert-cache.cpp:713-735"
+
+acceptance:
+  success: |
+    ① 分類修正：caps17 臂 0 行 ntok=2 slab 指紋、DECPROF ntok=2 步 cb 中位 <100 ms、趟完成（可被 --json 收下）。
+    ② 受害者規則：拿到兩組同趟配對的 decode/pool hit%（`decode/pool (ensure_slot+batch) hits=a/b`）＋
+       `final stats … hit rate` 交叉核對；不論方向如實寫出 Δ。
+    ③ 純 env/白名單（未動 src/）：CGC_SPAC_HOT 的白名單入口由本輪補上，gate 應 PASS（arm_env_dropped 不再有它）。
+  falsify: |
+    ① caps17 臂仍印 ntok=2 slab 行或 cb ≥1 s ⇒ 分類器之外還有第二條路把 verify 送去 slab（回讀碼）。
+    ② SPAC_HOT 配對的 decode hit Δ ≤0.2pp ⇒ 受害者規則在交付幾何上再一次 null（併入 oracle 判詞，不再單獨立卡）。
+  on_fail: |
+    寫 Backup/spec_tree/VICTIM_CLASSIFY_2026-10-05.md；本趟任何 t/s 皆不可引用
+    （≥3 臂 ⇒ attribution=swap，只讀同趟比值）；L25-4 的重開前置維持判詞現狀。
+
+targets:
+  decode_tps: 20.0
+  prefill_tps: 250.0
+
+arms:
+  - "prod-new:CGC_SERVER_MTP=1;CGC_SERVER_LAYER_CAPS=40-40:17;CGC_DRAFT_CTX_ALIGN=1;CGC_DRAFT_SMALL_BATCH=1;CGC_DECODE_PROFILE=1;LLAMA_BENCH_SPEC=1;LLAMA_BENCH_SPEC_DRAFT_N_MAX=1"
+  - "prod-new:CGC_SERVER_MTP=1;CGC_SERVER_LAYER_CAPS=40-40:17;CGC_DRAFT_CTX_ALIGN=1;CGC_DRAFT_SMALL_BATCH=1;CGC_DECODE_PROFILE=1;CGC_SPAC_HOT=1;LLAMA_BENCH_SPEC=1;LLAMA_BENCH_SPEC_DRAFT_N_MAX=1"
+  - prod-new:CGC_SPAC_HOT=1
+  - prod-new
+  - "prod-new:CGC_SERVER_MTP=1;CGC_SERVER_LAYER_CAPS=40-40:16;CGC_DRAFT_CTX_ALIGN=1;CGC_DRAFT_SMALL_BATCH=1;CGC_DECODE_PROFILE=1;LLAMA_BENCH_SPEC=1;LLAMA_BENCH_SPEC_DRAFT_N_MAX=1"
+
+notes: |
+  - 臂 1–2 用**按臂 shim**（LLAMA_BENCH_SPEC[=1]＋N_MAX=1）而非 whole-run `--spec-type draft-mtp`：後者是全趟旗標，
+    會讓 MTP-off 臂（臂 3/4）也帶 spec，同趟 on/off 配對就沒了——shim 是判詞認可的唯一例外（llama_bench_matrix:540-573）。
+  - 臂 5（caps16）排最後且接受被 --arm-timeout 截斷：它的用途只是同趟重現指紋，不引用速度、不算失敗。
+  - 同趟 ≥3 臂 ⇒ attribution=swap；只讀配對比值與計數器，單臂絕對 t/s 一律不引用。

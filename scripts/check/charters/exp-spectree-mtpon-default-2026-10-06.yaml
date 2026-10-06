@@ -83,12 +83,40 @@ notes: |
      就是該 denseIQ4X 檔的 **symlink**；ON 臂 MTP=1 + `SERVER_DENSE_IQ4X` 預設 1 ⇒ `$Q36_MTP_DENSEIQ4X` ＝同一支檔
      ⇒ 兩臂**載入同一支檔**。⚠ 顯式 `CGC_SERVER_MODEL=...` 鎖定曾試過，但該鍵不在 run_server.sh
      `SERVER_ENV` 白名單 ⇒ harness 判「env 未送達引擎」直接拒跑(rc=1)，故改倚賴預設解析（已同檔）。
-     −50%（s04 已量到）是 spec-tree MTP-on 的真實成本（雙 branch 打爆 8GB expert pool，hit 35.2% vs 96.3%），
-     **非模型混用造成的假象**。本卡重跑（s05）在更乾淨的環境複驗同檔配對。
+     ⛔ **上面那兩句已推翻（2026-10-06 更正；原句：「−50%（s04）是 spec-tree MTP-on 的真實成本
+     （雙 branch 打爆 8GB expert pool，hit 35.2% vs 96.3%）」）** —— 兩個斷言都不成立：
+     ① on 的 **35.2% 是 selective-fill 的冷集分母**，與 off 的 96.13% **不同量**：同一批日誌算出的
+     **聯合覆蓋率 on 97.2% > off 96.1%**（見 `Backup/spec_tree/SPECTREE_MTPON_HITRATE_VERDICT_2026-10-06.md` §6）；
+     ② rs0 那一趟（×0.592／×0.503）已被 `caliber_certify` **REFUSED**（attrib=both、thermal HEAVY、
+     spread>1.10）⇒ **不可引用**，不能當任何「真實成本」的依據。
+     ✅ **本線現在的量到版本 ＝ 同 session 三臂（driver6，2026-10-06 03:40–03:48Z，off→on→on+rgate→off）**：
+
+     | 臂 | 形狀 | tg t/s | 對 off |
+     |---|---|---|---|
+     | `o_off` | off（3 列純解碼） | **9.85 ± 2.25** | —（ABBA 前錨） |
+     | `g_orc_ctrl` | on：6 列寬-2 樹 | **6.43 ± 1.16** | **0.63×**（off 線性內插 ≈10.22） |
+     | `h_orcrgate40` | on ＋ `CGC_SPEC_TREE_RGATE=3;CGC_SPEC_TREE_RPROBE=40` | **10.48 ± 1.82** | **0.97×**（off 內插 ≈10.82；不修正 1.064×） |
+     | `o_off2` | off（收尾錨） | **11.26 ± 0.27** | — |
+
+     產物：`Backup/spec_tree/f1f2_diag/{o_off,g_orc_ctrl,h_orcrgate40,o_off2}.json`。
+     ⇒ **−40.8% 不是「spec-tree 的常態成本」，而是「B 沒價值卻每輪都驗」的成本**：把 B 逐輪關掉（rgate）
+     就回到 **≈打平（仍未過線）**。真帳兩條、都可從日誌重算：① verify **6 列／輪**（≈3.05 token 當量；
+     3 列步只要 0.437–0.510×，F1F2F3 §7.5）；② 寬-2 樹的**第二個 draft token 命中 0.253**，3 列鏈是 **0.749**
+     ⇒ emit **1.954 vs 2.381**（F1F2F3 §8.3）。
+     ⚠ 同 session 的 off 錨 8 分鐘內漂 **+14%**（9.85→11.26）⇒ 這些是**比值**，不是可引用 t/s。
+     ⚠ 「B 首勝鎖死 A」的舊機制（T1W2 §2）**已否證**（F1F2F3 §8.2：P(次輪 A|B 勝)=0.590 vs A 勝 0.661）。
+     ✅ 「**非模型混用造成的假象**」這半句**結論不變**（兩臂同檔：`Q36`＝denseIQ4X 的 symlink、inode 已驗），
+     但理由換成上面這些，**不是** hit 35.2% vs 96.3%。本卡重跑（s05）在更乾淨的環境複驗同檔配對。
      ⚠ 16GB 盒上 model 13.66GB + 8GB pool＝21.66GB > 16GB ⇒ 必為 OVERSUBSCRIBED ⇒
      `attrib` 必含 swap_growth ⇒ `caliber_certify` 必然 REFUSE。故本卡產物**只能上板為 diagnostic**
      （參照 `e-victim-classify-2026-10-05` 先例：node + L25-4 notes 標 `class: done`、「不引用任何 t/s」），
      **不進 certified / 不推全局棘輪**。
+     ⚠ **2026-10-06（本 session，operator 顯式推翻）**：經 operator 裁定，本卡產物**仍入 certified 表**為
+     `C16`（`ratchet_exempt` 基準列，operator R4 放行），推翻上句「不進 certified」。但 on 臂 artifact
+     `h_orcrgate40.json` 的 decode 軸 5 次採樣 spread 1.483 >1.10 ⇒ 閘門判 **UNSTABLE**（swap 抖動放大），
+     R4 只 cover attribution=both 不 cover spread ⇒ 整體 MIXED、**不可 QUOTABLE**；故 C16 走
+     `quote_ungateable`（入表但標「不可判」＋理由），**僅定性結論可讀**：on 臂 10.484 t/s 與同 session off
+     錨（9.845→11.256）持平 ⇒ **0.97×**（機制成功、交付不 advance）；絕對 t/s 與比值皆因 UNSTABLE 不可引用。
 
   ---- 上板路徑（量完後執行，生產級閉環）----
   A. `experiment_sync.py sync --artifact <on-arm json>`（節點需先 init；多臂去重鍵 (log,arm) 已修）
@@ -96,7 +124,7 @@ notes: |
      `caliber_certify.py certify <on-arm json> --update-board`（因 (default) 新形狀讀數 < 舊形狀棘輪 15.210976
      且跨形狀不可互比 ⇒ 走 **ratchet_exempt 基準列**，不下推全局棘輪）。
   C. 看板 `decode_board_2026-09-29.yaml`：
-     - `certified:` 加新列 C15（值＝on 臂 avg tg；`ratchet_exempt: "基準（非棘輪）：(default) 形狀 spec-tree MTP-on 首筆可引用讀數＝該形狀 MTP-on 最高紀錄"`；source/quote 指向 on-arm json）。
+     - `certified:` 加新列 C16（C15 已被 fence-on 單臂基準佔用）：值＝on 臂 avg tg 10.484；因 decode 軸 spread 1.483 >1.10 被閘門判 UNSTABLE（非純 DIRTY）⇒ 走 `quote_ungateable`（`meets: false`、`ratchet_exempt` 基準列），`ratchet_exempt: "基準（非棘輪）：(default) 形狀 spec-tree MTP-on 首筆入表讀數"`；source 指向 `h_orcrgate40.json`）。
      - `summary:` 的「pp512/tg128 交付格標準形狀」那列補一行：spec-tree MTP-on (default) 最高 X.XX t/s（若 > C14 的 13.722 即新高）。
      - L25-4 的 `nodes:` 加本 charter id；`dispositions:` 加 `{id, kind: subgoal, ref: L25-4, why:...}`；
        若節點不在任何 nodes: 還要在 `notes:` 加 `{node, class: done, why:...}`（D2 依據）。

@@ -1,0 +1,108 @@
+id: exp-rs0-bitident-2026-10-06
+owner: lineA
+created: 2026-10-06
+axis: na
+
+question: |
+  **可行性探針（非量測）**：MTP-on 加上 `CGC_SPEC_TREE=0` ＋ `CGC_SPEC_TREE_RS=0`
+  能否拿到 **K=1 的 GDN 路徑**，因而與 MTP-off **逐位元等價**？
+
+  連鎖（源碼已逐行查過）：
+    `CGC_SPEC_TREE>=0` ⇒ `llama-bench.cpp:3801 cparams.n_rs_seq = cgc_spec_tree_rs()`
+    ⇒ 0 ⇒ `delta-net-base.cpp:561 keep = (n_rs_seq>0) = false`
+    ⇒ 走 `!keep` 分支 → `build_delta_net()` → **`:405 ggml_gated_delta_net(..., /*K=*/1)`**
+    ⇒ 與 MTP-off 同一條 kernel ⇒ 逐位元候選。
+  配套：`llama-memory-recurrent.cpp:184` 的 `seq_rm()` 拒絕 > n_rs_seq 的回滾 ⇒ 必須走
+  checkpoint restore；llama-bench 已接住（`:2651`／`:2978-2992`／`:3039`）。
+
+  ⚠ 本卡**不是量測**：它是決定「要不要投資 kernel 工作」的可行性探針，
+  形狀與 reps 都不符交付口徑，任何 t/s 只能看方向。
+
+baseline:
+  metric: "同 session 的 A 臂（MTP off）的 `CGC-SPEC-DUMP` ids；§EN-2138 已證 MTP-on 預設下 M1 6/9、M3 紅"
+  cell: "llama-bench（非交付 cell）；--gen 128 --reps 1 --warm-skip 64 --ctx-size 4096"
+  source: "Backup/spec_tree/K_INVARIANT_COST_CARD_2026-10-05.md"
+
+hypothesis:
+  mechanism: |
+    `CGC_SPEC_TREE_RS=0` 只拿掉 **K 快照**，但 verify 批仍是 `n_tokens = K`，而
+    `delta-net-base.cpp:585-587` 依 `n_seq_tokens` 選：>1 → `GDN_CH`（chunked）、==1 → `GDN_AR`。
+    ⇒ off 每步 T=1（AR）、on verify 是 T=4（CH）⇒ 這是「**T 的差**」，不是「K 的差」。
+  expected: "**ids 仍不同**（~55%）；或 seq_rm refused／crash（~25%）；或 ids 相同＝成功（~20%）"
+  basis: "llama-shape-knob.h:86-87「T==1 → AR；T>1 → CH」；delta-net-base.cpp:561/582/585-587"
+
+acceptance:
+  success: "B 臂的 `CGC-SPEC-DUMP` ids 與 A 臂逐顆相同 ⇒ 一個 env 就拿到 bit-identical"
+  falsify: "若 ids 不同 ⇒ 我的「K 快照是壁」假說被否證，壁改判為「verify 批量 T>1」"
+  on_fail: "記錄 B 臂 log 裡 GDN 跑的是 GDN_CH 還是 GDN_AR；若是 CH ⇒ 證實壁是 T ⇒ 下一步＝P2-b"
+
+targets:
+  decode_tps: 11.0
+
+subgoals:
+  - id: sg-rs0-bitident
+    text: "驗 CGC_SPEC_TREE_RS=0 是否讓 MTP-on 與 MTP-off 的 emit ids 逐位元相同"
+    expect: "ids 仍不同（壁在 T 不在 K）"
+    how: "harness bench 兩臂，比 LLAMA_BENCH_SPEC_DUMP 的 CGC-SPEC-DUMP ids"
+
+arms:
+  - "prod-new"
+  - "prod-new:CGC_SERVER_MTP=1;CGC_SERVER_LAYER_CAPS=40-40:140;CGC_DRAFT_CTX_ALIGN=1;CGC_DRAFT_SMALL_BATCH=1"
+
+notes: |
+  !! 執行前置（已確認）：
+  1. **不需要 cmake --build**：本探針用 **llama-bench**，而別線 00:05 的重建已讓
+     `libllama-bench-impl`／`libllama-common`／`llama-bench` 三者一致（符號
+     `__Z25common_speculative_acceptP18common_speculativeiti` 供需相符，實測 `llama-bench --help` rc=0）。
+     ⚠ 仍壞的是 **`libllama-server-impl.dylib`（17:34）** ⇒ **oracle gate（server）不可用**。
+  2. ⛔ 不要 `cmake --build`：別線有未提交的 `common/speculative.{cpp,h}`（00:05 仍在改）。
+  3. `CGC_SPEC_TREE` 預設 -1 ⇒ **必須設**（否則 `:3801` 的 override 不生效）。
+  4. 只看 ids；t/s 僅供方向參考（形狀不符交付口徑）。
+
+  ---- 結果（2026-10-06 00:29，三臂跑完，rc=0）----
+  A off        : tg=8.09  hit_pct=96.37  read_mib=5462
+  B on + RS=0  : tg=7.09  hit_pct=31.20  read_mib=13545  verify_refused=16
+  C on + RS=2  : tg=7.52  hit_pct=33.30  read_mib=12819  verify_refused=17
+  ⇒ **CGC_SPEC_TREE_RS 不是槓桿**（0 不優於 2，且在 ±1 散佈內）。
+  ⇒ ⚠ **ids 無法比**：sampler 未釘（`--temp 0.4 --top-p 0.8`）⇒ 每臂 5 reps 吐 5 個互異序列。
+    下次必須釘 `CGC_SERVER_SEED`（`run_server.sh:1581` 白名單內），最好 temp=0。
+  ⇒ ★ 真成本不在 GDN（兩臂皆 `bitident=yes`），在 **expert cache 局部性崩塌**
+     （每生成 token 讀取 8.5 → 21.2 MiB，×2.5）。
+  ⇒ ⚠ 未分離：B/C 臂另帶 `LAYER_CAPS=40-40:140`／`CGC_DRAFT_CTX_ALIGN`／`CGC_DRAFT_SMALL_BATCH`
+     ⇒ hit 崩塌不可單獨歸給 MTP；且 `req` 兩臂差 10×（單位不同不可橫比）。
+  產物：Backup/spec_tree/rs0_bitident/{off,on_rs0,on_rs2}.{json,log}
+  判詞全文：Backup/spec_tree/K_INVARIANT_COST_CARD_2026-10-05.md §10
+
+  ---- 第二趟（2026-10-06 00:4x）：釘 seed ＋ temp=0，並分離 LAYER_CAPS ----
+  修正：上趟 `[CGC seed] pinned=0 temp=0.40` ⇒ ids 不可比。本趟三臂全部
+  `CGC_SERVER_TEMP=0;CGC_SERVER_SEED=1`（走 **arm env**，非 shell env——上趟 shell env 未轉發）。
+  設計（2×2 取三格，caps 固定為 40-40:140）：
+    A2 = MTP off ＋ caps 預設
+    D2 = MTP off ＋ caps 140     ← 分離「caps 是否打崩命中率」
+    E2 = MTP on  ＋ caps 140     ← 與 D2 配對 ⇒ 純 MTP 效應
+  判別句：
+    (1) ids：A2 vs E2 是否逐顆相同（greedy ＋ 釘 seed ⇒ 可比）。
+    (2) hit_pct：A2 vs D2 ⇒ caps 效應；D2 vs E2 ⇒ MTP 效應（caps 固定）。
+        若 D2 也崩 ⇒ 上趟 ×2.5 讀碟是 **caps 造成，不是 MTP**（§10.4 判詞要改）。
+        若 D2 不崩而 E2 崩 ⇒ 確認是 MTP。
+
+  ---- 第二趟分析結論（2026-10-06 01:0x，卡 §12）----
+  ★ 機制定位：是 MTP 不是 caps（caps 效應 A2→D2 hit 96.21→96.16 為 0；MTP 效應 D2→E2 96.16→37.06 = −59pp）。
+  ★★ union=64 三臂同、pool_cap_slots=143 三臂同 ⇒ 工作集沒變大、池沒縮 ⇒ 假說①②都排除；
+     全差在 capacity（強制 evict）：E2 6686 vs A2 2680（×2.5）；compulsory 只 +11% ⇒ 同批專家被反覆 evict/reload（LRU/順序被 verify 批打亂）。
+  ★★ 反轉：greedy 下 thrash 被 prefetch 藏住——fill_wait_us 三臂都 ≈3.0M（E2 讀 1.85× 但等待不增），
+     tg E2=10.13 落在 A2 9.98～D2 10.46 噪聲內 ≈ parity ⇒ §10.4「×2.5 讀碟=MTP 成本」過度歸因。
+  ★ 真成本只在採樣口徑顯形（§10 temp=0.4：MTP tg 8.09→7.52 −7%，那趟 read ×2.5）。
+     推論：採樣→草稿圖更多樣→thrash 變大且 prefetch 失準→fill_wait 升→tg 跌。
+  ⇒ 下一步最高優先：MTP-on＋temp=0.4＋釘 seed＋逐 rep fill_wait，局部化採樣成本。
+  ⚠ 儀器缺口：CGC-SHAPE 只 emit init/gdn/final，無 verify/decode 分相計數器，evict 無法直接歸因 verify 批。
+
+  ---- 第三趟分析結論（2026-10-06 01:4x，卡 §13）----
+  ★★★ 推翻 §12.4：採樣口徑的 MTP 成本不是 thrash，是 draft 機制本身壞掉。
+  - F2（off+sampling, temp0.4, caps140, seed1）：hit=96.08% fill_wait=3.21M read_mib=6.13G ⇒ 採樣在 off 臂未造成 fill_wait 飆升（落在 greedy off 2.79–3.12M 區間內）。
+  - G2（on+sampling, n-max2）：FAIL —— 首 draft step `llama_decode[0] returned -1` → `for M-RoPE, X < Y` → `decode: failed to initialize batch` → 每輪 0 DRAFTS/ROUND（量到 plain decode）。
+  - 即 §10「MTP-on 採樣 tg 8.09→7.52」實為 MTP 0 加速＋輕微 overhead，非 thrash。正是 L25-4「draft rep≥2 失效(M-RoPE)」在採樣下重現（greedy E2 過、sampling 觸發 X<Y）。
+  - 判死升級：MTP-on 在 delivery 口徑(temp0.4) 下不僅 bit-identical 違規，還功能失效（0 drafts）。
+  ⚠ 環境：budget gate 報 OVERSUBSCRIBED（常態），但 swap 已堆 9677/10240 MiB（幾乎滿）；G2 失敗是代碼(M-RoPE)非 swap，後續量測需先 purge swap/重開。
+  ⇒ Task 2（CGC-SHAPE phase 計數器）優先序再降：採樣成本已定位為 draft/M-RoPE 失效，phase 計數器非關鍵；留作環境健康後的 nice-to-have。
+  ⇒ 下一步：purge swap → 確認 MTP-on+sampling 在 n-max=1 是否可用（分離 M-RoPE@n-max2 vs sampling 全壞）。

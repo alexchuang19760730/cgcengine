@@ -1,0 +1,74 @@
+id: e-mtp-cb-classify-2026-10-03
+owner: freebuff（S 線 / L25-4）
+created: 2026-10-03
+axis: M
+
+question: |
+  **把 ntok=2 的 MTP verify 步從「大-prefill slab 分支」拉回 decode 池路徑（decode width ≥ 2）之後，
+  它的每步成本是多少？**
+
+  背景（判詞已落地）：MTP-on k=1 的 4–5 s/步 `cb` 是**分類錯配**，不是 hook 或 fill 的設計成本 ——
+  `CGC_SERVER_LAYER_CAPS=40-40:16` ⇒ 每層 15 routable ⇒ `cgc_decode_bound(15,8,8)=floor(15/8)=1`
+  ⇒ decode width=1 ⇒ ntok=2 被判成 PREFILL 圖 ⇒ `CGC_PREFILL_STREAM=1` 讓 hook 每層重讀整層 slab
+  （3 kinds ≈ 356 MiB/層 × 40 層 ≈ 14.2 GiB/步）⇒ `cb` 3.9–6.1 s/步、GPU 全程在等這個邊界。
+
+baseline:
+  metric: "MTP-on k=1 存活配方（caps 16）：ntok=2 verify 步 cb 3.88–6.10 s/step（88 步有帳）、cb(ntok=2)≈cb(ntok=512)（3.993 s）、趟 incomplete（driver-timeout 420 s）；fast path 全趟只中 1 次（draft ctx）"
+  cell: "delivery（prod-new ＋ CGC_SERVER_MTP=1；p0_n128_d512_r3；--spec-draft-n-max 1）"
+  source: "Backup/spec_tree/MTP_CB_CLIFF_VERDICT_2026-10-03.md"
+
+hypothesis:
+  mechanism: |
+    `expert_cache_on_topk` 在 `src/llama.cpp/src/llama-context.cpp:8073` 用
+    `!cgc_is_decode_graph((int64_t) n_tokens, cgc_decode_max_tokens)` 把步分類，並在 `:8334` return 前
+    走 slab 填。把 `CGC_SERVER_LAYER_CAPS` 由 `40-40:16` 提到 `40-40:17` ⇒ 16 routable
+    ⇒ `cgc_decode_bound(16,8,8)=2` ⇒ width=2 ⇒ ntok=2 回到 decode（pool ＋ remap leaf）
+    ⇒ `CGC-PREFILL-STREAM: … ntok=2` 應 0 行、`cb` 應回到 ms 級、趟應跑完。
+    對照臂（caps 16）本趟應重現 slab 指紋，作為分類器的同場對照。
+  expected: "ntok=2 verify 步 cb：3.9–6.1 s → <100 ms（−97% 以上）；`CGC-PREFILL-STREAM … ntok=2` 由 ≥1 行 → 0 行；趟由 incomplete → 完成"
+  basis: "Backup/spec_tree/MTP_CB_CLIFF_VERDICT_2026-10-03.md（§4–§5）；scripts/check/charters/exp-marginal-decomp.yaml（同 cell 的 MTP-on 臂）；src/llama.cpp/src/llama-cgc-phase.h:123-160；Backup/l254_kaxis_20261001/k1.json（caps 140 ⇒ width=8 的反例臂）"
+
+acceptance:
+  success: |
+    ① `CGC-PREFILL-STREAM: … ntok=2` 0 行（caps 17 臂）；
+    ② ntok=2 verify 步的 `cb` 中位 <100 ms；
+    ③ 趟完成（非 driver-timeout；可被 `--json` 收下）；
+    ④ 本卡純 env（未動 src/）⇒ 不新增 oracle 需求；若與對照臂同場，兩臂 M1/M2/M3 記錄一致。
+  falsify: |
+    ① caps 17 臂仍印 `CGC-PREFILL-STREAM: … ntok=2`，或 ② cb ≥1 s/步 ⇒ 分類器之外還有第二條路
+    把 verify 送去 slab ⇒ 回到讀碼（候選：graph 側 width 與 hook 側 width 不一致；`CGC_PREFILL_THRESHOLD`）
+  on_fail: |
+    寫進 Backup/spec_tree/；L25-4 的重開前置維持「caps ≥17（或新 cell）」不變；
+    不得把本趟任何讀數當 MTP 經濟性（k 軸判詞 DEAD 不受影響）。
+
+targets:
+  decode_tps: 20.0
+  prefill_tps: 250.0
+
+subgoals:
+  - id: sg-mtp-classify
+    text: "MTP verify 步（ntok=2）回到 decode 路徑（無整層 slab 填）"
+    expect: "cb −3.8 s/step 以上（機制端點；不是 t/s 貢獻）"
+    how: "harness bench 兩臂（caps 16 對照 vs caps 17）＋ CGC_DECODE_PROFILE=1；端點＝CGC-PREFILL-STREAM 行數與 DECPROF ntok=2 的 cb"
+
+arms:
+  - "prod-new:CGC_SERVER_MTP=1;CGC_SERVER_LAYER_CAPS=40-40:16;CGC_DRAFT_CTX_ALIGN=1;CGC_DRAFT_SMALL_BATCH=1"
+  - "prod-new:CGC_SERVER_MTP=1;CGC_SERVER_LAYER_CAPS=40-40:17;CGC_DRAFT_CTX_ALIGN=1;CGC_DRAFT_SMALL_BATCH=1"
+  - prod-new:CGC_SERVER_MTP=1;CGC_SERVER_LAYER_CAPS=40-40:16;CGC_DRAFT_CTX_ALIGN=1;CGC_DRAFT_SMALL_BATCH=1
+
+# ── 【子目標設定（由 decode_board_2026-09-29.yaml 的 L25-4 同步；勿手改，改看板）】──
+options:
+  subgoal: L25-4
+  profile: prod-new
+  arms:
+    - "prod-new:CGC_SERVER_MTP=1;CGC_SERVER_LAYER_CAPS=40-40:16;CGC_DRAFT_CTX_ALIGN=1;CGC_DRAFT_SMALL_BATCH=1"
+  cli:
+    - "--spec-type draft-mtp"
+    - "--spec-draft-n-max 1"
+  knobs:
+    - {name: CGC_SERVER_MTP, value: "1", role: subject, why: "開 MTP（allowlist 在 run_server.sh 的 SERVER_MTP 區塊，不是純 env）", source: "存活配方 09-29 定版；charters/exp-mtp-onfix-a arms[]"}
+    - {name: CGC_SERVER_LAYER_CAPS, value: "40-40:16", role: subject, why: "draft 層寬度", source: "同上"}
+    - {name: CGC_DRAFT_CTX_ALIGN, value: "1", role: subject, why: "draft ctx 對齊", source: "同上"}
+    - {name: CGC_DRAFT_SMALL_BATCH, value: "1", role: subject, why: "小批 draft", source: "同上"}
+    - {name: CGC_MTP_PERF, value: "1", role: instrument, why: "每輪 t_draft_ms／t_accept_ms／ms_per_round（在 common/speculative.cpp，不在 src/）", source: "docs/MTP_K_SWEEP_2026-09-22.md"}
+  note: "⛔ 必帶 --spec-draft-n-max 1：沒帶就是 k_eff≈2.33 必 thrash。且 MTP on/off 是不同輸出函數 ⇒ t/s 不可互比。"

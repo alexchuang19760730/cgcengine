@@ -1935,6 +1935,13 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 cgc_gpu_take_fn cgc_gpu_take = getenv("CGC_GPU_TIMING") != nullptr
                     ? (cgc_gpu_take_fn) ggml_backend_reg_get_proc_address(reg, "ggml_metal_get_cgc_gpu_take")
                     : nullptr;
+                // [CGC 2026-10-05 whole-step GPU busy] CGC_GPU_TIMING_LATE=1 reads the monotonic
+                // accumulator instead, which the overlap fence cannot blind. `out` = {busy_ns, n, unsup}.
+                typedef int (*cgc_step_busy_fn)(ggml_backend_t, int64_t *);
+                cgc_step_busy_fn cgc_step_busy =
+                    (getenv("CGC_GPU_TIMING_LATE") != nullptr && cgc_gpu_take != nullptr)
+                    ? (cgc_step_busy_fn) ggml_backend_reg_get_proc_address(reg, "ggml_metal_get_cgc_step_busy")
+                    : nullptr;
 
                 // [CGC 2026-09-18 node-level GPU time] CGC_GPU_NODES=1 attributes each segment's GPU
                 // busy time to the NODE KINDS that produced it, one level below the per-layer table.
@@ -3336,6 +3343,52 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 // through here too with a ~2-segment graph, and averaging two different machines
                 // together would produce a number that describes neither.
                 if (cgc_gpu_take != nullptr) {
+                    // [CGC 2026-10-05 fence-on whole-step read] The per-segment read in hook_seg()
+                    // collapses when the overlap fence is on: the fence commits segment i+1 early
+                    // on a device event and signals it only after the hook returned, so at the
+                    // (former) wait points the buffers are NOT yet Completed. MEASURED on
+                    // prod-new + CGC_OVERLAP_FENCE=41 (+CGC_GPU_TIMING=1), 96 of 97 lines:
+                    //   segs=1 bufs=9 skipped=351 skip_nil=0 skip_nc=351
+                    // and the printed gpu_busy_sum/wait swings 1-211% (one line even printed
+                    // 138093703.08 ms), which the instrument's own criterion (<=40% => launch/
+                    // completion latency) would read as a segment-boundary LEVER. It is an artifact.
+                    // (A rule already forbids citing gap/gpu_busy_sum with the fence on:
+                    // docs/OVERLAP_PARTIAL_DESIGN_2026-10-02.md:310.)
+                    //
+                    // A backend-side read CANNOT fix it: cmd_bufs[] is only n_cb+1 = 9 slots
+                    // (ggml-metal-context.m:183) and each dispatch SEGMENT is its own graph_compute
+                    // (:594), so the array is recycled per segment and holds just the tail segment
+                    // by the time this runs. MEASURED with a first backend-only revision: it read
+                    // bufs=0 skipped=9 skip_nc=9 -- the tail's 9 buffers, still in flight.
+                    //
+                    // So the accumulation lives on the GPU side: every completion handler adds its
+                    // buffer's (GPUEndTime - GPUStartTime) into a MONOTONIC counter that is never
+                    // reset (that is what the first revision got wrong -- an atomic_exchange raced a
+                    // handler's compare-exchange and left union 1230 ms > busy_sum 746 ms > wait 375 ms,
+                    // see the note above ggml_metal_cgc_gpu_take in ggml-metal-context.m). Here we
+                    // just take the DELTA between consecutive reads, so the number lags one graph.
+                    // Additive and env-gated: unset => this path is byte-for-byte as before.
+                    if (cgc_step_busy != nullptr && n_as_found >= 5) {
+                        static int64_t lt_nstep = 0;
+                        static int64_t lt_pb = 0, lt_pn = 0, lt_pu = 0;
+                        int64_t sb[3] = {0, 0, 0};
+                        cgc_step_busy(split_backend, sb);
+                        const int64_t lt_db = sb[0] - lt_pb;
+                        const int64_t lt_dn = sb[1] - lt_pn;
+                        const int64_t lt_du = sb[2] - lt_pu;
+                        lt_pb = sb[0]; lt_pn = sb[1]; lt_pu = sb[2];
+                        lt_nstep++;
+                        if ((lt_nstep % 4) == 0) {
+                            const double lt_ms = (double) lt_db / 1e6;
+                            const double lt_w  = (double) gt_wait / 1e3;
+                            fprintf(stderr,
+                                    "CGC-GPUTIME-LATE: step=%lld bufs=%lld unsup=%lld "
+                                    "busy_sum=%.2f ms wait=%.2f ms (busy/wait=%.0f%%)"
+                                    " [accum delta, lags one graph]\n",
+                                    (long long) lt_nstep, (long long) lt_dn, (long long) lt_du,
+                                    lt_ms, lt_w, lt_w > 0.0 ? 100.0 * lt_ms / lt_w : 0.0);
+                        }
+                    }
                     if (n_as_found >= 5 && gt_nseg > 0) {
                         gt_nstep++;
                         if ((gt_nstep % 4) == 0) {

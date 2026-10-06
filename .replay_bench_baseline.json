@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-09-06 fresh baseline after longform/coding fix (final)",
-  "commit": "WORKTREE",
-  "server_pid": 44911,
-  "base_url": "http://127.0.0.1:8080",
+  "timestamp": "2026-10-06 re-baseline at dbe5f8eb1（qa-zh ruler 補齊 3 輪 prompt 的答案鍵；10 GiB expert pool 為 2026-09-06/09-13 的既定決定，舊 baseline 早於它）",
+  "commit": "dbe5f8eb1b5c72b14ab7f96e29570b0f36106d60",
+  "server_pid": 50414,
+  "base_url": "http://127.0.0.1:8080/v1",
   "profiles": {
     "qa-zh": {
       "profile": "qa-zh",
@@ -19,7 +19,7 @@
         "checks": [
           {
             "check": "length",
-            "actual": 7,
+            "actual": 8,
             "min": 4,
             "max": 80,
             "result": "pass"
@@ -28,7 +28,23 @@
             "check": "required_any",
             "keywords": [
               "巴黎",
-              "法國"
+              "法國",
+              "水星",
+              "金星",
+              "地球",
+              "火星",
+              "木星",
+              "土星",
+              "天王星",
+              "海王星",
+              "行星",
+              "八大行星",
+              "八顆",
+              "八個",
+              "8 顆",
+              "8顆",
+              "42",
+              "四十二"
             ],
             "result": "pass"
           },
@@ -67,88 +83,223 @@
             "unit": null,
             "start": null,
             "count": null
+          },
+          {
+            "check": "three_factor_combined_score",
+            "three_factor_score": 1.0,
+            "reference_rule_score": 1.0,
+            "final_score": 1.0,
+            "result": "pass"
           }
         ]
       },
       "speed": {
-        "prefill_tps": 21.99,
-        "decode_tps": 8.32,
+        "prefill_tps": 15.0,
+        "decode_tps": 5.95,
         "decode_tps_degenerate": false,
-        "completion_tokens": 5,
-        "draft_accept_pct": 22.22,
+        "completion_tokens": 7,
+        "draft_accept_pct": 58.33,
+        "speed_vs_expected": "meets (expected slow)",
         "decode_tps_runs": [
-          7.36,
-          8.76,
-          8.32
+          5.37,
+          5.95,
+          8.43
         ],
         "prefill_tps_runs": [
-          11.51,
-          21.99,
-          25.3
+          22.23,
+          15.0,
+          13.7
         ]
       },
       "memory": {
-        "peak_mb": 5410.8,
-        "avg_mb": 5324.7,
-        "before_mb": 5303.0,
-        "after_mb": 5336.5,
-        "delta_mb": 33.5,
+        "peak_mb": 9740.9,
+        "avg_mb": 9674.5,
+        "before_mb": 9643.9,
+        "after_mb": 9672.1,
+        "delta_mb": 28.2,
         "samples": [
           [
             "before",
-            5303.0
+            9643.9
           ],
           [
             "during",
-            5303.0
+            9643.9
           ],
           [
             "during",
-            5346.9
+            9725.8
           ],
           [
             "during",
-            5334.2
+            9719.4
+          ],
+          [
+            "during",
+            9663.0
+          ],
+          [
+            "during",
+            9663.2
+          ],
+          [
+            "during",
+            9665.0
           ],
           [
             "after",
-            5336.5
+            9672.1
           ]
         ],
         "peak_runs": [
-          5346.9,
-          5410.8,
-          5395.5
+          9725.8,
+          9686.5,
+          9740.9
         ]
       },
       "timings": {
-        "prompt_ms": 347.417,
-        "predicted_ms": 679.416,
-        "predicted_n": 5,
-        "draft_n": 9,
-        "draft_n_accepted": 2
+        "prompt_ms": 1124.627,
+        "predicted_ms": 1303.983,
+        "predicted_n": 7,
+        "draft_n": 6,
+        "draft_n_accepted": 4
       },
-      "content": "是法國的首城市",
+      "three_factors": {
+        "available": false,
+        "error": "HTTP Error 404: Not Found"
+      },
+      "system_state": {
+        "before": {
+          "timestamp": "2026-10-06T21:06:53.100344",
+          "memory": {
+            "total_gb": 41759.1,
+            "free_gb": 0.06,
+            "active_gb": 0.79,
+            "inactive_gb": 0.71,
+            "speculative_gb": 0.06,
+            "compressed_gb": 2.67,
+            "wired_gb": 11.11,
+            "used_pct": 100.0,
+            "free_pct": 0.0,
+            "tier": "D (危險)",
+            "swap_total_mb": null,
+            "swap_used_mb": null,
+            "swap_free_mb": null
+          },
+          "cpu": {
+            "user_pct": 13.7,
+            "sys_pct": 30.0,
+            "idle_pct": 56.92,
+            "load_avg_1m": 8.49,
+            "load_avg_5m": 6.69,
+            "load_avg_15m": 6.03,
+            "tier": "A (正常)"
+          },
+          "process_interference": {
+            "other_llama_servers": [
+              50414
+            ],
+            "other_quantization_processes": [],
+            "heavy_processes": [
+              {
+                "pid": 54633,
+                "cpu_pct": 58.2,
+                "mem_pct": 2.5,
+                "command": "/Applications/WorkBuddy.app/Contents/Frameworks/WorkBuddy Helper (Renderer).app/"
+              }
+            ],
+            "interference_level": 0
+          },
+          "metal_gpu": {
+            "oom_warnings": 0,
+            "oom_tier": 0,
+            "gpu_available": true
+          },
+          "server_process": null,
+          "overall_tier": "D",
+          "expected_decode_tps": "< 18 t/s, 可能 OOM"
+        },
+        "after": {
+          "timestamp": "2026-10-06T21:06:57.634379",
+          "memory": {
+            "total_gb": 41778.7,
+            "free_gb": 0.06,
+            "active_gb": 0.66,
+            "inactive_gb": 0.61,
+            "speculative_gb": 0.03,
+            "compressed_gb": 2.5,
+            "wired_gb": 11.53,
+            "used_pct": 100.0,
+            "free_pct": 0.0,
+            "tier": "D (危險)",
+            "swap_total_mb": null,
+            "swap_used_mb": null,
+            "swap_free_mb": null
+          },
+          "cpu": {
+            "user_pct": 20.62,
+            "sys_pct": 41.0,
+            "idle_pct": 38.37,
+            "load_avg_1m": 7.89,
+            "load_avg_5m": 6.59,
+            "load_avg_15m": 6.0,
+            "tier": "B (輕度負載)"
+          },
+          "process_interference": {
+            "other_llama_servers": [
+              50414
+            ],
+            "other_quantization_processes": [],
+            "heavy_processes": [
+              {
+                "pid": 89484,
+                "cpu_pct": 54.0,
+                "mem_pct": 0.6,
+                "command": "/Applications/WorkBuddy.app/Contents/MacOS/Electron /Applications/WorkBuddy.app/"
+              },
+              {
+                "pid": 64057,
+                "cpu_pct": 52.5,
+                "mem_pct": 1.0,
+                "command": "/Applications/WorkBuddy.app/Contents/MacOS/Electron /Applications/WorkBuddy.app/"
+              }
+            ],
+            "interference_level": 0
+          },
+          "metal_gpu": {
+            "oom_warnings": 0,
+            "oom_tier": 0,
+            "gpu_available": true
+          },
+          "server_process": null,
+          "overall_tier": "D",
+          "expected_decode_tps": "< 18 t/s, 可能 OOM"
+        },
+        "overall_tier": "D",
+        "expected_decode_tps": "< 18 t/s, 可能 OOM",
+        "speed_vs_expected": "meets (expected slow)"
+      },
+      "content": "巴黎是法国的首都",
       "runs": 3
     },
     "longform-zh": {
       "profile": "longform-zh",
       "finish_reason": "stop",
       "quality": {
-        "score": 0.882,
+        "score": 1.0,
         "scores": [
-          0.882,
-          0.882,
-          0.882
+          1.0,
+          0.765,
+          1.0
         ],
-        "variance": 0.0,
+        "variance": 0.012,
         "checks": [
           {
             "check": "length",
-            "actual": 25,
+            "actual": 189,
             "min": 80,
             "max": 800,
-            "result": "fail"
+            "result": "pass"
           },
           {
             "check": "required_any",
@@ -189,7 +340,7 @@
           },
           {
             "check": "loop_run",
-            "max_run": 2,
+            "max_run": 1,
             "limit": 12,
             "result": "pass"
           },
@@ -202,92 +353,355 @@
             "unit": null,
             "start": null,
             "count": null
+          },
+          {
+            "check": "three_factor_combined_score",
+            "three_factor_score": 1.0,
+            "reference_rule_score": 1.0,
+            "final_score": 1.0,
+            "result": "pass"
           }
         ]
       },
       "speed": {
-        "prefill_tps": 9.73,
-        "decode_tps": 5.26,
+        "prefill_tps": 24.81,
+        "decode_tps": 5.57,
         "decode_tps_degenerate": false,
-        "completion_tokens": 20,
-        "draft_accept_pct": 30.0,
+        "completion_tokens": 122,
+        "draft_accept_pct": 27.68,
+        "speed_vs_expected": "meets (expected slow)",
         "decode_tps_runs": [
-          5.26,
-          5.02,
-          5.32
+          5.82,
+          5.57,
+          5.19
         ],
         "prefill_tps_runs": [
-          12.76,
-          6.97,
-          9.73
+          25.53,
+          20.53,
+          24.81
         ]
       },
       "memory": {
-        "peak_mb": 5658.8,
-        "avg_mb": 5555.4,
-        "before_mb": 5582.7,
-        "after_mb": 5497.7,
-        "delta_mb": -85.0,
+        "peak_mb": 9753.0,
+        "avg_mb": 9685.4,
+        "before_mb": 9646.5,
+        "after_mb": 9668.8,
+        "delta_mb": 22.3,
         "samples": [
           [
             "before",
-            5582.7
+            9646.5
           ],
           [
             "during",
-            5582.7
+            9646.5
           ],
           [
             "during",
-            5630.1
+            9753.0
           ],
           [
             "during",
-            5600.5
+            9749.8
           ],
           [
             "during",
-            5590.0
+            9745.3
           ],
           [
             "during",
-            5551.1
+            9717.1
           ],
           [
             "during",
-            5535.7
+            9664.3
           ],
           [
             "during",
-            5525.4
+            9666.9
           ],
           [
             "during",
-            5515.2
+            9671.1
           ],
           [
             "during",
-            5497.8
+            9689.6
+          ],
+          [
+            "during",
+            9685.4
+          ],
+          [
+            "during",
+            9687.5
+          ],
+          [
+            "during",
+            9691.8
+          ],
+          [
+            "during",
+            9686.6
+          ],
+          [
+            "during",
+            9686.6
+          ],
+          [
+            "during",
+            9689.3
+          ],
+          [
+            "during",
+            9689.4
+          ],
+          [
+            "during",
+            9690.6
+          ],
+          [
+            "during",
+            9678.6
+          ],
+          [
+            "during",
+            9684.9
+          ],
+          [
+            "during",
+            9689.4
+          ],
+          [
+            "during",
+            9688.2
+          ],
+          [
+            "during",
+            9686.0
+          ],
+          [
+            "during",
+            9686.7
+          ],
+          [
+            "during",
+            9683.1
+          ],
+          [
+            "during",
+            9686.8
+          ],
+          [
+            "during",
+            9694.2
+          ],
+          [
+            "during",
+            9696.2
+          ],
+          [
+            "during",
+            9687.7
+          ],
+          [
+            "during",
+            9676.8
+          ],
+          [
+            "during",
+            9681.0
+          ],
+          [
+            "during",
+            9682.4
+          ],
+          [
+            "during",
+            9688.0
+          ],
+          [
+            "during",
+            9699.8
+          ],
+          [
+            "during",
+            9700.0
+          ],
+          [
+            "during",
+            9677.9
+          ],
+          [
+            "during",
+            9679.8
+          ],
+          [
+            "during",
+            9675.1
+          ],
+          [
+            "during",
+            9682.5
+          ],
+          [
+            "during",
+            9681.4
+          ],
+          [
+            "during",
+            9684.9
+          ],
+          [
+            "during",
+            9679.6
+          ],
+          [
+            "during",
+            9669.6
+          ],
+          [
+            "during",
+            9672.6
+          ],
+          [
+            "during",
+            9671.0
+          ],
+          [
+            "during",
+            9662.9
+          ],
+          [
+            "during",
+            9671.1
+          ],
+          [
+            "during",
+            9676.0
+          ],
+          [
+            "during",
+            9678.0
+          ],
+          [
+            "during",
+            9677.8
           ],
           [
             "after",
-            5497.7
+            9668.8
           ]
         ],
         "peak_runs": [
-          5630.1,
-          5590.7,
-          5658.8
+          9753.0,
+          9697.8,
+          9750.4
         ]
       },
       "timings": {
-        "prompt_ms": 313.375,
-        "predicted_ms": 3804.267,
-        "predicted_n": 20,
-        "draft_n": 30,
-        "draft_n_accepted": 9
+        "prompt_ms": 3054.927,
+        "predicted_ms": 20971.326,
+        "predicted_n": 122,
+        "draft_n": 219,
+        "draft_n_accepted": 49
       },
-      "content": "因為其為首都，且擁有眾多歷史與文化的重要地標。\n\n",
+      "three_factors": {
+        "available": false,
+        "error": "HTTP Error 404: Not Found"
+      },
+      "system_state": {
+        "before": {
+          "timestamp": "2026-10-06T21:07:44.082505",
+          "memory": {
+            "total_gb": 41888.4,
+            "free_gb": 0.09,
+            "active_gb": 0.78,
+            "inactive_gb": 0.69,
+            "speculative_gb": 0.07,
+            "compressed_gb": 2.37,
+            "wired_gb": 11.4,
+            "used_pct": 100.0,
+            "free_pct": 0.0,
+            "tier": "D (危險)",
+            "swap_total_mb": null,
+            "swap_used_mb": null,
+            "swap_free_mb": null
+          },
+          "cpu": {
+            "user_pct": 8.6,
+            "sys_pct": 18.4,
+            "idle_pct": 73.0,
+            "load_avg_1m": 6.4,
+            "load_avg_5m": 6.41,
+            "load_avg_15m": 5.96,
+            "tier": "A (正常)"
+          },
+          "process_interference": {
+            "other_llama_servers": [
+              50414
+            ],
+            "other_quantization_processes": [],
+            "heavy_processes": [],
+            "interference_level": 0
+          },
+          "metal_gpu": {
+            "oom_warnings": 0,
+            "oom_tier": 0,
+            "gpu_available": true
+          },
+          "server_process": null,
+          "overall_tier": "D",
+          "expected_decode_tps": "< 18 t/s, 可能 OOM"
+        },
+        "after": {
+          "timestamp": "2026-10-06T21:08:09.248049",
+          "memory": {
+            "total_gb": 41937.7,
+            "free_gb": 0.08,
+            "active_gb": 0.77,
+            "inactive_gb": 0.71,
+            "speculative_gb": 0.04,
+            "compressed_gb": 2.51,
+            "wired_gb": 11.29,
+            "used_pct": 100.0,
+            "free_pct": 0.0,
+            "tier": "D (危險)",
+            "swap_total_mb": null,
+            "swap_used_mb": null,
+            "swap_free_mb": null
+          },
+          "cpu": {
+            "user_pct": 16.48,
+            "sys_pct": 44.8,
+            "idle_pct": 39.42,
+            "load_avg_1m": 6.21,
+            "load_avg_5m": 6.35,
+            "load_avg_15m": 5.95,
+            "tier": "B (輕度負載)"
+          },
+          "process_interference": {
+            "other_llama_servers": [
+              50414
+            ],
+            "other_quantization_processes": [],
+            "heavy_processes": [],
+            "interference_level": 0
+          },
+          "metal_gpu": {
+            "oom_warnings": 0,
+            "oom_tier": 0,
+            "gpu_available": true
+          },
+          "server_process": null,
+          "overall_tier": "D",
+          "expected_decode_tps": "< 18 t/s, 可能 OOM"
+        },
+        "overall_tier": "D",
+        "expected_decode_tps": "< 18 t/s, 可能 OOM",
+        "speed_vs_expected": "meets (expected slow)"
+      },
+      "content": "其地處法國心臟地帶的戰略位置、歷代君主（尤其是卡佩王朝及路易十四時期）將權力集中於此的政策，以及作為學術、藝術與思想交匯點的歷史積澱。自中世紀以來，巴黎大學的建立促進了知識傳播，而凡爾賽宮的設立更進一步鞏固了其作為國家權力核心的地位；經過法國大革命與工業革命的推動，巴黎逐漸確立了其在法律、文學、時尚及哲學領域的全國主導權，並持續吸引全國精英匯聚，從而穩固其不可替代的中心地位。",
       "runs": 3
     },
     "coding": {
@@ -297,14 +711,14 @@
         "score": 1.0,
         "scores": [
           1.0,
-          1.0,
-          0.3
+          0.3,
+          1.0
         ],
         "variance": 0.109,
         "checks": [
           {
             "check": "length",
-            "actual": 116,
+            "actual": 251,
             "min": 50,
             "max": 2000,
             "result": "pass"
@@ -339,7 +753,7 @@
           },
           {
             "check": "loop_run",
-            "max_run": 3,
+            "max_run": 9,
             "limit": 12,
             "result": "pass"
           },
@@ -352,196 +766,1865 @@
             "unit": null,
             "start": null,
             "count": null
+          },
+          {
+            "check": "three_factor_combined_score",
+            "three_factor_score": 1.0,
+            "reference_rule_score": 1.0,
+            "final_score": 1.0,
+            "result": "pass"
           }
         ]
       },
       "speed": {
-        "prefill_tps": 5.27,
-        "decode_tps": 6.19,
+        "prefill_tps": 26.19,
+        "decode_tps": 7.16,
         "decode_tps_degenerate": false,
-        "completion_tokens": 66,
-        "draft_accept_pct": 85.35,
+        "completion_tokens": 87,
+        "draft_accept_pct": 60.66,
+        "speed_vs_expected": "meets (expected slow)",
         "decode_tps_runs": [
-          5.63,
-          6.19,
-          13.72
+          8.93,
+          7.16,
+          5.61
         ],
         "prefill_tps_runs": [
-          5.27,
-          6.83,
-          4.51
+          27.97,
+          26.19,
+          18.7
         ]
       },
       "memory": {
-        "peak_mb": 5350.3,
-        "avg_mb": 5267.7,
-        "before_mb": 5023.8,
-        "after_mb": 5244.6,
-        "delta_mb": 220.8,
+        "peak_mb": 9744.2,
+        "avg_mb": 9689.4,
+        "before_mb": 9644.0,
+        "after_mb": 9692.9,
+        "delta_mb": 48.9,
         "samples": [
           [
             "before",
-            5023.8
+            9644.0
           ],
           [
             "during",
-            5023.8
+            9644.0
           ],
           [
             "during",
-            5226.4
+            9743.4
           ],
           [
             "during",
-            5242.2
+            9740.3
           ],
           [
             "during",
-            5232.3
+            9744.2
           ],
           [
             "during",
-            5253.2
+            9682.2
           ],
           [
             "during",
-            5276.0
+            9690.0
           ],
           [
             "during",
-            5274.6
+            9678.4
           ],
           [
             "during",
-            5278.1
+            9682.7
           ],
           [
             "during",
-            5283.0
+            9686.8
           ],
           [
             "during",
-            5260.4
+            9692.4
           ],
           [
             "during",
-            5269.7
+            9690.8
           ],
           [
             "during",
-            5284.2
+            9686.2
           ],
           [
             "during",
-            5289.1
+            9688.9
           ],
           [
             "during",
-            5295.4
+            9681.5
           ],
           [
             "during",
-            5300.7
+            9692.1
           ],
           [
             "during",
-            5293.3
+            9688.6
           ],
           [
             "during",
-            5302.5
+            9684.0
           ],
           [
             "during",
-            5301.7
+            9688.8
           ],
           [
             "during",
-            5323.8
+            9688.9
           ],
           [
             "during",
-            5328.3
+            9670.1
           ],
           [
             "during",
-            5332.1
+            9683.5
           ],
           [
             "during",
-            5338.4
+            9680.4
           ],
           [
             "during",
-            5338.7
-          ],
-          [
-            "during",
-            5350.3
-          ],
-          [
-            "during",
-            5261.2
+            9691.1
           ],
           [
             "after",
-            5244.6
+            9692.9
           ]
         ],
         "peak_runs": [
-          5350.3,
-          5346.5,
-          5349.9
+          9744.2,
+          9692.3,
+          9739.5
         ]
       },
       "timings": {
-        "prompt_ms": 759.306,
-        "predicted_ms": 11723.617,
-        "predicted_n": 66,
-        "draft_n": 75,
-        "draft_n_accepted": 41
+        "prompt_ms": 1394.167,
+        "predicted_ms": 9737.342,
+        "predicted_n": 87,
+        "draft_n": 87,
+        "draft_n_accepted": 60
       },
-      "content": " 計算費氏數列第 n 項\n\"\"\"\nif n <= 0:\nreturn \"輸入必須是正數\"\nelif n == 1:\nreturn 1\nelif n == 2:\nreturn 1\nelse:\nreturn n - 1 + n - 1\n",
+      "three_factors": {
+        "available": false,
+        "error": "HTTP Error 404: Not Found"
+      },
+      "system_state": {
+        "before": {
+          "timestamp": "2026-10-06T21:09:44.838836",
+          "memory": {
+            "total_gb": 42183.8,
+            "free_gb": 0.07,
+            "active_gb": 0.85,
+            "inactive_gb": 0.8,
+            "speculative_gb": 0.04,
+            "compressed_gb": 2.43,
+            "wired_gb": 11.22,
+            "used_pct": 100.0,
+            "free_pct": 0.0,
+            "tier": "D (危險)",
+            "swap_total_mb": null,
+            "swap_used_mb": null,
+            "swap_free_mb": null
+          },
+          "cpu": {
+            "user_pct": 18.0,
+            "sys_pct": 13.36,
+            "idle_pct": 68.62,
+            "load_avg_1m": 7.21,
+            "load_avg_5m": 6.6,
+            "load_avg_15m": 6.08,
+            "tier": "A (正常)"
+          },
+          "process_interference": {
+            "other_llama_servers": [
+              50414
+            ],
+            "other_quantization_processes": [],
+            "heavy_processes": [
+              {
+                "pid": 9056,
+                "cpu_pct": 81.9,
+                "mem_pct": 2.0,
+                "command": "/Applications/Freebuff.app/Contents/Frameworks/Freebuff Helper (Renderer).app/Co"
+              }
+            ],
+            "interference_level": 0
+          },
+          "metal_gpu": {
+            "oom_warnings": 0,
+            "oom_tier": 0,
+            "gpu_available": true
+          },
+          "server_process": null,
+          "overall_tier": "D",
+          "expected_decode_tps": "< 18 t/s, 可能 OOM"
+        },
+        "after": {
+          "timestamp": "2026-10-06T21:09:56.962505",
+          "memory": {
+            "total_gb": 42206.9,
+            "free_gb": 0.06,
+            "active_gb": 0.83,
+            "inactive_gb": 0.75,
+            "speculative_gb": 0.06,
+            "compressed_gb": 2.43,
+            "wired_gb": 11.27,
+            "used_pct": 100.0,
+            "free_pct": 0.0,
+            "tier": "D (危險)",
+            "swap_total_mb": null,
+            "swap_used_mb": null,
+            "swap_free_mb": null
+          },
+          "cpu": {
+            "user_pct": 29.49,
+            "sys_pct": 14.85,
+            "idle_pct": 55.65,
+            "load_avg_1m": 6.65,
+            "load_avg_5m": 6.51,
+            "load_avg_15m": 6.06,
+            "tier": "A (正常)"
+          },
+          "process_interference": {
+            "other_llama_servers": [
+              50414
+            ],
+            "other_quantization_processes": [],
+            "heavy_processes": [
+              {
+                "pid": 50687,
+                "cpu_pct": 100.9,
+                "mem_pct": 0.9,
+                "command": "/Applications/WorkBuddy.app/Contents/MacOS/Electron /Applications/WorkBuddy.app/"
+              }
+            ],
+            "interference_level": 0
+          },
+          "metal_gpu": {
+            "oom_warnings": 0,
+            "oom_tier": 0,
+            "gpu_available": true
+          },
+          "server_process": null,
+          "overall_tier": "D",
+          "expected_decode_tps": "< 18 t/s, 可能 OOM"
+        },
+        "overall_tier": "D",
+        "expected_decode_tps": "< 18 t/s, 可能 OOM",
+        "speed_vs_expected": "meets (expected slow)"
+      },
+      "content": "if n < 0:\n         raise ValueError(\"n must be a non-negative integer\")\n     if n == 0:\n         return 0\n     if n == 1:\n         return 1\n    \n    prev, curr = 0, 1\n    for _ in range(2, n + 1):\n        prev, curr = curr, prev + curr\n    return curr",
+      "runs": 3
+    },
+    "math": {
+      "profile": "math",
+      "finish_reason": "length",
+      "quality": {
+        "score": 1.0,
+        "scores": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "variance": 0.0,
+        "checks": [
+          {
+            "check": "three_factors",
+            "result": "skip",
+            "note": "CGC stats not available (expert cache not enabled or endpoint not reachable)"
+          },
+          {
+            "check": "no_reference",
+            "result": "skip",
+            "note": "no reference rules provided, using three-factor measurement"
+          }
+        ]
+      },
+      "speed": {
+        "prefill_tps": 25.2,
+        "decode_tps": 9.61,
+        "decode_tps_degenerate": false,
+        "completion_tokens": 300,
+        "draft_accept_pct": 56.16,
+        "speed_vs_expected": "meets (expected slow)",
+        "decode_tps_runs": [
+          9.43,
+          9.61,
+          11.92
+        ],
+        "prefill_tps_runs": [
+          28.9,
+          17.76,
+          25.2
+        ]
+      },
+      "memory": {
+        "peak_mb": 9770.5,
+        "avg_mb": 9694.7,
+        "before_mb": 9689.8,
+        "after_mb": 9696.1,
+        "delta_mb": 6.3,
+        "samples": [
+          [
+            "before",
+            9689.8
+          ],
+          [
+            "during",
+            9689.8
+          ],
+          [
+            "during",
+            9759.3
+          ],
+          [
+            "during",
+            9751.4
+          ],
+          [
+            "during",
+            9770.5
+          ],
+          [
+            "during",
+            9688.5
+          ],
+          [
+            "during",
+            9680.3
+          ],
+          [
+            "during",
+            9666.5
+          ],
+          [
+            "during",
+            9656.6
+          ],
+          [
+            "during",
+            9679.7
+          ],
+          [
+            "during",
+            9663.6
+          ],
+          [
+            "during",
+            9680.8
+          ],
+          [
+            "during",
+            9685.7
+          ],
+          [
+            "during",
+            9687.1
+          ],
+          [
+            "during",
+            9692.3
+          ],
+          [
+            "during",
+            9697.6
+          ],
+          [
+            "during",
+            9705.6
+          ],
+          [
+            "during",
+            9700.3
+          ],
+          [
+            "during",
+            9693.3
+          ],
+          [
+            "during",
+            9700.7
+          ],
+          [
+            "during",
+            9695.6
+          ],
+          [
+            "during",
+            9687.5
+          ],
+          [
+            "during",
+            9691.2
+          ],
+          [
+            "during",
+            9695.3
+          ],
+          [
+            "during",
+            9694.2
+          ],
+          [
+            "during",
+            9685.8
+          ],
+          [
+            "during",
+            9694.2
+          ],
+          [
+            "during",
+            9688.8
+          ],
+          [
+            "during",
+            9688.3
+          ],
+          [
+            "during",
+            9689.6
+          ],
+          [
+            "during",
+            9693.5
+          ],
+          [
+            "during",
+            9685.9
+          ],
+          [
+            "during",
+            9688.0
+          ],
+          [
+            "during",
+            9694.0
+          ],
+          [
+            "during",
+            9693.1
+          ],
+          [
+            "during",
+            9689.4
+          ],
+          [
+            "during",
+            9689.9
+          ],
+          [
+            "during",
+            9699.4
+          ],
+          [
+            "during",
+            9687.0
+          ],
+          [
+            "during",
+            9695.3
+          ],
+          [
+            "during",
+            9689.4
+          ],
+          [
+            "during",
+            9688.1
+          ],
+          [
+            "during",
+            9684.5
+          ],
+          [
+            "during",
+            9693.5
+          ],
+          [
+            "during",
+            9691.0
+          ],
+          [
+            "during",
+            9692.6
+          ],
+          [
+            "during",
+            9681.2
+          ],
+          [
+            "during",
+            9694.2
+          ],
+          [
+            "during",
+            9703.5
+          ],
+          [
+            "during",
+            9696.4
+          ],
+          [
+            "during",
+            9697.7
+          ],
+          [
+            "during",
+            9702.8
+          ],
+          [
+            "during",
+            9699.8
+          ],
+          [
+            "during",
+            9700.5
+          ],
+          [
+            "during",
+            9698.7
+          ],
+          [
+            "during",
+            9701.6
+          ],
+          [
+            "during",
+            9704.4
+          ],
+          [
+            "during",
+            9699.4
+          ],
+          [
+            "during",
+            9694.0
+          ],
+          [
+            "during",
+            9695.9
+          ],
+          [
+            "during",
+            9695.6
+          ],
+          [
+            "during",
+            9696.7
+          ],
+          [
+            "during",
+            9696.6
+          ],
+          [
+            "during",
+            9690.6
+          ],
+          [
+            "during",
+            9698.0
+          ],
+          [
+            "during",
+            9698.2
+          ],
+          [
+            "during",
+            9696.1
+          ],
+          [
+            "after",
+            9696.1
+          ]
+        ],
+        "peak_runs": [
+          9770.5,
+          9704.5,
+          9762.7
+        ]
+      },
+      "timings": {
+        "prompt_ms": 934.303,
+        "predicted_ms": 31807.883,
+        "predicted_n": 300,
+        "draft_n": 333,
+        "draft_n_accepted": 187
+      },
+      "three_factors": {
+        "available": false,
+        "error": "HTTP Error 404: Not Found"
+      },
+      "system_state": {
+        "before": {
+          "timestamp": "2026-10-06T21:11:24.484830",
+          "memory": {
+            "total_gb": 42442.8,
+            "free_gb": 0.06,
+            "active_gb": 0.85,
+            "inactive_gb": 0.78,
+            "speculative_gb": 0.06,
+            "compressed_gb": 2.51,
+            "wired_gb": 11.14,
+            "used_pct": 100.0,
+            "free_pct": 0.0,
+            "tier": "D (危險)",
+            "swap_total_mb": null,
+            "swap_used_mb": null,
+            "swap_free_mb": null
+          },
+          "cpu": {
+            "user_pct": 10.44,
+            "sys_pct": 11.3,
+            "idle_pct": 78.25,
+            "load_avg_1m": 6.47,
+            "load_avg_5m": 6.59,
+            "load_avg_15m": 6.14,
+            "tier": "A (正常)"
+          },
+          "process_interference": {
+            "other_llama_servers": [
+              50414
+            ],
+            "other_quantization_processes": [],
+            "heavy_processes": [],
+            "interference_level": 0
+          },
+          "metal_gpu": {
+            "oom_warnings": 0,
+            "oom_tier": 0,
+            "gpu_available": true
+          },
+          "server_process": null,
+          "overall_tier": "D",
+          "expected_decode_tps": "< 18 t/s, 可能 OOM"
+        },
+        "after": {
+          "timestamp": "2026-10-06T21:11:58.028390",
+          "memory": {
+            "total_gb": 42493.7,
+            "free_gb": 0.06,
+            "active_gb": 0.82,
+            "inactive_gb": 0.73,
+            "speculative_gb": 0.08,
+            "compressed_gb": 2.48,
+            "wired_gb": 11.23,
+            "used_pct": 100.0,
+            "free_pct": 0.0,
+            "tier": "D (危險)",
+            "swap_total_mb": null,
+            "swap_used_mb": null,
+            "swap_free_mb": null
+          },
+          "cpu": {
+            "user_pct": 11.61,
+            "sys_pct": 20.82,
+            "idle_pct": 67.55,
+            "load_avg_1m": 5.23,
+            "load_avg_5m": 6.26,
+            "load_avg_15m": 6.03,
+            "tier": "A (正常)"
+          },
+          "process_interference": {
+            "other_llama_servers": [
+              50414
+            ],
+            "other_quantization_processes": [],
+            "heavy_processes": [],
+            "interference_level": 0
+          },
+          "metal_gpu": {
+            "oom_warnings": 0,
+            "oom_tier": 0,
+            "gpu_available": true
+          },
+          "server_process": null,
+          "overall_tier": "D",
+          "expected_decode_tps": "< 18 t/s, 可能 OOM"
+        },
+        "overall_tier": "D",
+        "expected_decode_tps": "< 18 t/s, 可能 OOM",
+        "speed_vs_expected": "meets (expected slow)"
+      },
+      "content": "我們可以使用**長乘法（Long Multiplication）**來計算 $123 \\times 456$。\n\n### 步驟 1：分解乘數\n我們將 $456$ 拆分為百位、十位和個位，分別與 $123$ 相乘：\n$$ 456 = 400 + 50 + 6 $$\n\n因此：\n$$ 123 \\times 456 = 123 \\times (400 + 50 + 6) $$\n$$ = (123 \\times 400) + (123 \\times 50) + (123 \\times 6) $$\n\n---\n\n### 步驟 2：分別計算各部分\n\n#### 1. 計算 $123 \\times 6$\n$$\n\\begin{array}{r}\n   123 \\\\\n\\times \\phantom{0}6 \\\\\n\\hline\n   738\n\\end{array}\n$$\n*   $3 \\times 6 = 18$（寫 8，進 1）\n*   $2 \\times 6 = 12$，加上進位 1 得 13（寫 3，進 1）\n*   $1 \\times 6 =",
+      "runs": 3
+    },
+    "reasoning": {
+      "profile": "reasoning",
+      "finish_reason": "stop",
+      "quality": {
+        "score": 1.0,
+        "scores": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "variance": 0.0,
+        "checks": [
+          {
+            "check": "three_factors",
+            "result": "skip",
+            "note": "CGC stats not available (expert cache not enabled or endpoint not reachable)"
+          },
+          {
+            "check": "no_reference",
+            "result": "skip",
+            "note": "no reference rules provided, using three-factor measurement"
+          }
+        ]
+      },
+      "speed": {
+        "prefill_tps": 14.74,
+        "decode_tps": 6.24,
+        "decode_tps_degenerate": false,
+        "completion_tokens": 313,
+        "draft_accept_pct": 38.44,
+        "speed_vs_expected": "meets (expected slow)",
+        "decode_tps_runs": [
+          6.28,
+          6.24,
+          4.99
+        ],
+        "prefill_tps_runs": [
+          22.8,
+          14.74,
+          11.81
+        ]
+      },
+      "memory": {
+        "peak_mb": 9747.0,
+        "avg_mb": 9681.4,
+        "before_mb": 9644.4,
+        "after_mb": 9674.2,
+        "delta_mb": 29.8,
+        "samples": [
+          [
+            "before",
+            9644.4
+          ],
+          [
+            "during",
+            9644.4
+          ],
+          [
+            "during",
+            9747.0
+          ],
+          [
+            "during",
+            9743.0
+          ],
+          [
+            "during",
+            9661.1
+          ],
+          [
+            "during",
+            9672.1
+          ],
+          [
+            "during",
+            9673.4
+          ],
+          [
+            "during",
+            9669.8
+          ],
+          [
+            "during",
+            9678.9
+          ],
+          [
+            "during",
+            9675.1
+          ],
+          [
+            "during",
+            9676.4
+          ],
+          [
+            "during",
+            9672.0
+          ],
+          [
+            "during",
+            9683.4
+          ],
+          [
+            "during",
+            9668.2
+          ],
+          [
+            "during",
+            9673.6
+          ],
+          [
+            "during",
+            9680.8
+          ],
+          [
+            "during",
+            9681.3
+          ],
+          [
+            "during",
+            9673.5
+          ],
+          [
+            "during",
+            9681.1
+          ],
+          [
+            "during",
+            9672.8
+          ],
+          [
+            "during",
+            9674.6
+          ],
+          [
+            "during",
+            9681.8
+          ],
+          [
+            "during",
+            9681.5
+          ],
+          [
+            "during",
+            9675.0
+          ],
+          [
+            "during",
+            9674.7
+          ],
+          [
+            "during",
+            9661.7
+          ],
+          [
+            "during",
+            9673.3
+          ],
+          [
+            "during",
+            9680.8
+          ],
+          [
+            "during",
+            9691.7
+          ],
+          [
+            "during",
+            9685.5
+          ],
+          [
+            "during",
+            9688.8
+          ],
+          [
+            "during",
+            9700.5
+          ],
+          [
+            "during",
+            9696.5
+          ],
+          [
+            "during",
+            9686.5
+          ],
+          [
+            "during",
+            9687.7
+          ],
+          [
+            "during",
+            9682.4
+          ],
+          [
+            "during",
+            9683.5
+          ],
+          [
+            "during",
+            9691.3
+          ],
+          [
+            "during",
+            9685.0
+          ],
+          [
+            "during",
+            9688.1
+          ],
+          [
+            "during",
+            9675.3
+          ],
+          [
+            "during",
+            9679.9
+          ],
+          [
+            "during",
+            9685.7
+          ],
+          [
+            "during",
+            9687.7
+          ],
+          [
+            "during",
+            9694.7
+          ],
+          [
+            "during",
+            9692.1
+          ],
+          [
+            "during",
+            9676.4
+          ],
+          [
+            "during",
+            9677.9
+          ],
+          [
+            "during",
+            9685.0
+          ],
+          [
+            "during",
+            9686.8
+          ],
+          [
+            "during",
+            9686.2
+          ],
+          [
+            "during",
+            9681.6
+          ],
+          [
+            "during",
+            9682.2
+          ],
+          [
+            "during",
+            9683.8
+          ],
+          [
+            "during",
+            9686.1
+          ],
+          [
+            "during",
+            9687.8
+          ],
+          [
+            "during",
+            9686.9
+          ],
+          [
+            "during",
+            9689.6
+          ],
+          [
+            "during",
+            9696.0
+          ],
+          [
+            "during",
+            9671.4
+          ],
+          [
+            "during",
+            9688.1
+          ],
+          [
+            "during",
+            9675.8
+          ],
+          [
+            "during",
+            9684.8
+          ],
+          [
+            "during",
+            9685.3
+          ],
+          [
+            "during",
+            9686.8
+          ],
+          [
+            "during",
+            9687.1
+          ],
+          [
+            "during",
+            9668.3
+          ],
+          [
+            "during",
+            9683.3
+          ],
+          [
+            "during",
+            9684.0
+          ],
+          [
+            "during",
+            9679.8
+          ],
+          [
+            "during",
+            9682.5
+          ],
+          [
+            "during",
+            9681.6
+          ],
+          [
+            "during",
+            9677.0
+          ],
+          [
+            "during",
+            9682.9
+          ],
+          [
+            "during",
+            9677.2
+          ],
+          [
+            "during",
+            9681.2
+          ],
+          [
+            "during",
+            9673.3
+          ],
+          [
+            "during",
+            9677.8
+          ],
+          [
+            "during",
+            9674.5
+          ],
+          [
+            "during",
+            9687.1
+          ],
+          [
+            "during",
+            9698.2
+          ],
+          [
+            "during",
+            9682.4
+          ],
+          [
+            "during",
+            9684.3
+          ],
+          [
+            "during",
+            9683.3
+          ],
+          [
+            "during",
+            9679.2
+          ],
+          [
+            "during",
+            9681.4
+          ],
+          [
+            "during",
+            9687.3
+          ],
+          [
+            "during",
+            9693.0
+          ],
+          [
+            "during",
+            9680.3
+          ],
+          [
+            "during",
+            9681.0
+          ],
+          [
+            "during",
+            9678.7
+          ],
+          [
+            "during",
+            9676.2
+          ],
+          [
+            "during",
+            9677.6
+          ],
+          [
+            "during",
+            9682.3
+          ],
+          [
+            "during",
+            9683.3
+          ],
+          [
+            "during",
+            9683.9
+          ],
+          [
+            "during",
+            9676.0
+          ],
+          [
+            "during",
+            9663.2
+          ],
+          [
+            "during",
+            9682.0
+          ],
+          [
+            "during",
+            9672.4
+          ],
+          [
+            "during",
+            9677.5
+          ],
+          [
+            "during",
+            9669.1
+          ],
+          [
+            "during",
+            9664.6
+          ],
+          [
+            "after",
+            9674.2
+          ]
+        ],
+        "peak_runs": [
+          9747.0,
+          9689.2,
+          9744.6
+        ]
+      },
+      "timings": {
+        "prompt_ms": 1272.193,
+        "predicted_ms": 49867.541,
+        "predicted_n": 313,
+        "draft_n": 441,
+        "draft_n_accepted": 167
+      },
+      "three_factors": {
+        "available": false,
+        "error": "HTTP Error 404: Not Found"
+      },
+      "system_state": {
+        "before": {
+          "timestamp": "2026-10-06T21:13:29.004605",
+          "memory": {
+            "total_gb": 42677.6,
+            "free_gb": 0.08,
+            "active_gb": 0.81,
+            "inactive_gb": 0.74,
+            "speculative_gb": 0.05,
+            "compressed_gb": 2.47,
+            "wired_gb": 11.25,
+            "used_pct": 100.0,
+            "free_pct": 0.0,
+            "tier": "D (危險)",
+            "swap_total_mb": null,
+            "swap_used_mb": null,
+            "swap_free_mb": null
+          },
+          "cpu": {
+            "user_pct": 18.71,
+            "sys_pct": 22.3,
+            "idle_pct": 58.98,
+            "load_avg_1m": 7.91,
+            "load_avg_5m": 6.54,
+            "load_avg_15m": 6.14,
+            "tier": "A (正常)"
+          },
+          "process_interference": {
+            "other_llama_servers": [
+              50414
+            ],
+            "other_quantization_processes": [],
+            "heavy_processes": [],
+            "interference_level": 0
+          },
+          "metal_gpu": {
+            "oom_warnings": 0,
+            "oom_tier": 0,
+            "gpu_available": true
+          },
+          "server_process": null,
+          "overall_tier": "D",
+          "expected_decode_tps": "< 18 t/s, 可能 OOM"
+        },
+        "after": {
+          "timestamp": "2026-10-06T21:14:21.457657",
+          "memory": {
+            "total_gb": 42808.7,
+            "free_gb": 0.06,
+            "active_gb": 0.84,
+            "inactive_gb": 0.76,
+            "speculative_gb": 0.06,
+            "compressed_gb": 2.3,
+            "wired_gb": 11.37,
+            "used_pct": 100.0,
+            "free_pct": 0.0,
+            "tier": "D (危險)",
+            "swap_total_mb": null,
+            "swap_used_mb": null,
+            "swap_free_mb": null
+          },
+          "cpu": {
+            "user_pct": 16.66,
+            "sys_pct": 61.66,
+            "idle_pct": 21.67,
+            "load_avg_1m": 13.4,
+            "load_avg_5m": 8.25,
+            "load_avg_15m": 6.8,
+            "tier": "C (重度負載)"
+          },
+          "process_interference": {
+            "other_llama_servers": [
+              50414
+            ],
+            "other_quantization_processes": [],
+            "heavy_processes": [],
+            "interference_level": 0
+          },
+          "metal_gpu": {
+            "oom_warnings": 0,
+            "oom_tier": 0,
+            "gpu_available": true
+          },
+          "server_process": null,
+          "overall_tier": "D",
+          "expected_decode_tps": "< 18 t/s, 可能 OOM"
+        },
+        "overall_tier": "D",
+        "expected_decode_tps": "< 18 t/s, 可能 OOM",
+        "speed_vs_expected": "meets (expected slow)"
+      },
+      "content": "是的，**貓需要水**。\n\n以下是詳細的逻辑推理過程：\n\n### 1. 將命題形式化\n我們可以把題目中的陳述轉化為邏輯命題：\n\n*   **前提一**：所有的貓都是動物。  \n    （若 \\( x \\) 是貓 → \\( x \\) 是動物）\n*   **前提二**：所有的動物都需要水。  \n    （若 \\( x \\) 是動物 → \\( x \\) 需要水）\n\n### 2. 應用邏輯規則：三段論（Syllogism）或傳遞性\n這是一個典型的**假言推理**（Hypothetical Syllogism）或**範疇三段論**，利用「包含關係」的傳遞性：\n\n1.  從前提一可知：貓這個集合完全包含在動物這個集合內。\n2.  從前提二可知：動物這個集合完全包含在「需要水的事物」這個集合內。\n3.  根據邏輯的**傳遞性**（Transitivity）：  \n    如果 A ⊆ B 且 B ⊆ C，則 A ⊆ C。  \n    因此，貓這個集合也完全包含在「需要水的事物」這個集合內。\n\n### 3. 結論\n既然所有的貓都是動物，而所有的動物都需要水，那麼**每一個個體的貓都必然需要水**。\n\n✅ **最終答案：是的，貓需要水。**",
+      "runs": 3
+    },
+    "writing": {
+      "profile": "writing",
+      "finish_reason": "stop",
+      "quality": {
+        "score": 1.0,
+        "scores": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "variance": 0.0,
+        "checks": [
+          {
+            "check": "three_factors",
+            "result": "skip",
+            "note": "CGC stats not available (expert cache not enabled or endpoint not reachable)"
+          },
+          {
+            "check": "no_reference",
+            "result": "skip",
+            "note": "no reference rules provided, using three-factor measurement"
+          }
+        ]
+      },
+      "speed": {
+        "prefill_tps": 11.87,
+        "decode_tps": 5.92,
+        "decode_tps_degenerate": false,
+        "completion_tokens": 64,
+        "draft_accept_pct": 34.99,
+        "speed_vs_expected": "meets (expected slow)",
+        "decode_tps_runs": [
+          6.03,
+          5.92,
+          4.96
+        ],
+        "prefill_tps_runs": [
+          28.73,
+          11.87,
+          7.52
+        ]
+      },
+      "memory": {
+        "peak_mb": 9734.2,
+        "avg_mb": 9681.9,
+        "before_mb": 9643.8,
+        "after_mb": 9669.2,
+        "delta_mb": 25.4,
+        "samples": [
+          [
+            "before",
+            9643.8
+          ],
+          [
+            "during",
+            9643.8
+          ],
+          [
+            "during",
+            9728.0
+          ],
+          [
+            "during",
+            9730.0
+          ],
+          [
+            "during",
+            9678.6
+          ],
+          [
+            "during",
+            9684.5
+          ],
+          [
+            "during",
+            9671.7
+          ],
+          [
+            "during",
+            9678.3
+          ],
+          [
+            "during",
+            9677.7
+          ],
+          [
+            "during",
+            9678.7
+          ],
+          [
+            "during",
+            9674.0
+          ],
+          [
+            "during",
+            9678.4
+          ],
+          [
+            "during",
+            9679.1
+          ],
+          [
+            "during",
+            9686.2
+          ],
+          [
+            "during",
+            9698.0
+          ],
+          [
+            "during",
+            9690.4
+          ],
+          [
+            "during",
+            9687.2
+          ],
+          [
+            "during",
+            9687.9
+          ],
+          [
+            "during",
+            9685.2
+          ],
+          [
+            "during",
+            9680.4
+          ],
+          [
+            "during",
+            9677.2
+          ],
+          [
+            "during",
+            9682.2
+          ],
+          [
+            "during",
+            9682.8
+          ],
+          [
+            "during",
+            9684.5
+          ],
+          [
+            "during",
+            9671.3
+          ],
+          [
+            "after",
+            9669.2
+          ]
+        ],
+        "peak_runs": [
+          9730.0,
+          9695.4,
+          9734.2
+        ]
+      },
+      "timings": {
+        "prompt_ms": 730.833,
+        "predicted_ms": 10619.125,
+        "predicted_n": 64,
+        "draft_n": 96,
+        "draft_n_accepted": 31
+      },
+      "three_factors": {
+        "available": false,
+        "error": "HTTP Error 404: Not Found"
+      },
+      "system_state": {
+        "before": {
+          "timestamp": "2026-10-06T21:16:54.998882",
+          "memory": {
+            "total_gb": 43321.3,
+            "free_gb": 0.07,
+            "active_gb": 0.81,
+            "inactive_gb": 0.74,
+            "speculative_gb": 0.07,
+            "compressed_gb": 2.42,
+            "wired_gb": 11.29,
+            "used_pct": 100.0,
+            "free_pct": 0.0,
+            "tier": "D (危險)",
+            "swap_total_mb": null,
+            "swap_used_mb": null,
+            "swap_free_mb": null
+          },
+          "cpu": {
+            "user_pct": 12.96,
+            "sys_pct": 31.4,
+            "idle_pct": 56.0,
+            "load_avg_1m": 8.5,
+            "load_avg_5m": 8.06,
+            "load_avg_15m": 6.94,
+            "tier": "A (正常)"
+          },
+          "process_interference": {
+            "other_llama_servers": [
+              50414
+            ],
+            "other_quantization_processes": [],
+            "heavy_processes": [],
+            "interference_level": 0
+          },
+          "metal_gpu": {
+            "oom_warnings": 0,
+            "oom_tier": 0,
+            "gpu_available": true
+          },
+          "server_process": null,
+          "overall_tier": "D",
+          "expected_decode_tps": "< 18 t/s, 可能 OOM"
+        },
+        "after": {
+          "timestamp": "2026-10-06T21:17:08.801281",
+          "memory": {
+            "total_gb": 43357.2,
+            "free_gb": 0.06,
+            "active_gb": 0.78,
+            "inactive_gb": 0.69,
+            "speculative_gb": 0.07,
+            "compressed_gb": 2.4,
+            "wired_gb": 11.39,
+            "used_pct": 100.0,
+            "free_pct": 0.0,
+            "tier": "D (危險)",
+            "swap_total_mb": null,
+            "swap_used_mb": null,
+            "swap_free_mb": null
+          },
+          "cpu": {
+            "user_pct": 11.88,
+            "sys_pct": 33.37,
+            "idle_pct": 54.74,
+            "load_avg_1m": 8.24,
+            "load_avg_5m": 8.02,
+            "load_avg_15m": 6.94,
+            "tier": "A (正常)"
+          },
+          "process_interference": {
+            "other_llama_servers": [
+              50414
+            ],
+            "other_quantization_processes": [],
+            "heavy_processes": [],
+            "interference_level": 0
+          },
+          "metal_gpu": {
+            "oom_warnings": 0,
+            "oom_tier": 0,
+            "gpu_available": true
+          },
+          "server_process": null,
+          "overall_tier": "D",
+          "expected_decode_tps": "< 18 t/s, 可能 OOM"
+        },
+        "overall_tier": "D",
+        "expected_decode_tps": "< 18 t/s, 可能 OOM",
+        "speed_vs_expected": "meets (expected slow)"
+      },
+      "content": "冬雪悄然退去，\n泥土喚醒沉睡的種子。\n微風輕拂柳梢，\n染上一抹新綠的詩意。\n\n花苞在晨光中綻放，\n蝴蝶舞動金色的翅膀，\n春天，\n是大地最溫柔的呼吸。",
+      "runs": 3
+    },
+    "translation": {
+      "profile": "translation",
+      "finish_reason": "stop",
+      "quality": {
+        "score": 1.0,
+        "scores": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "variance": 0.0,
+        "checks": [
+          {
+            "check": "three_factors",
+            "result": "skip",
+            "note": "CGC stats not available (expert cache not enabled or endpoint not reachable)"
+          },
+          {
+            "check": "no_reference",
+            "result": "skip",
+            "note": "no reference rules provided, using three-factor measurement"
+          }
+        ]
+      },
+      "speed": {
+        "prefill_tps": 27.54,
+        "decode_tps": 8.29,
+        "decode_tps_degenerate": false,
+        "completion_tokens": 80,
+        "draft_accept_pct": 48.95,
+        "speed_vs_expected": "meets (expected slow)",
+        "decode_tps_runs": [
+          8.03,
+          8.29,
+          25.25
+        ],
+        "prefill_tps_runs": [
+          32.38,
+          19.64,
+          27.54
+        ]
+      },
+      "memory": {
+        "peak_mb": 9775.1,
+        "avg_mb": 9721.1,
+        "before_mb": 9680.1,
+        "after_mb": 9705.3,
+        "delta_mb": 25.2,
+        "samples": [
+          [
+            "before",
+            9680.1
+          ],
+          [
+            "during",
+            9680.1
+          ],
+          [
+            "during",
+            9756.5
+          ],
+          [
+            "during",
+            9764.5
+          ],
+          [
+            "during",
+            9766.0
+          ],
+          [
+            "during",
+            9770.0
+          ],
+          [
+            "during",
+            9770.1
+          ],
+          [
+            "during",
+            9774.8
+          ],
+          [
+            "during",
+            9775.1
+          ],
+          [
+            "during",
+            9761.9
+          ],
+          [
+            "during",
+            9695.5
+          ],
+          [
+            "during",
+            9704.1
+          ],
+          [
+            "during",
+            9708.7
+          ],
+          [
+            "during",
+            9712.6
+          ],
+          [
+            "during",
+            9718.4
+          ],
+          [
+            "during",
+            9711.5
+          ],
+          [
+            "during",
+            9692.5
+          ],
+          [
+            "during",
+            9688.3
+          ],
+          [
+            "during",
+            9682.7
+          ],
+          [
+            "during",
+            9690.1
+          ],
+          [
+            "during",
+            9699.0
+          ],
+          [
+            "during",
+            9696.9
+          ],
+          [
+            "during",
+            9701.0
+          ],
+          [
+            "after",
+            9705.3
+          ]
+        ],
+        "peak_runs": [
+          9775.1,
+          9717.4,
+          9747.3
+        ]
+      },
+      "timings": {
+        "prompt_ms": 648.509,
+        "predicted_ms": 9963.273,
+        "predicted_n": 80,
+        "draft_n": 114,
+        "draft_n_accepted": 44
+      },
+      "three_factors": {
+        "available": false,
+        "error": "HTTP Error 404: Not Found"
+      },
+      "system_state": {
+        "before": {
+          "timestamp": "2026-10-06T21:18:59.127795",
+          "memory": {
+            "total_gb": 43656.6,
+            "free_gb": 0.06,
+            "active_gb": 0.83,
+            "inactive_gb": 0.74,
+            "speculative_gb": 0.08,
+            "compressed_gb": 2.34,
+            "wired_gb": 11.34,
+            "used_pct": 100.0,
+            "free_pct": 0.0,
+            "tier": "D (危險)",
+            "swap_total_mb": null,
+            "swap_used_mb": null,
+            "swap_free_mb": null
+          },
+          "cpu": {
+            "user_pct": 5.13,
+            "sys_pct": 11.83,
+            "idle_pct": 83.3,
+            "load_avg_1m": 5.62,
+            "load_avg_5m": 7.05,
+            "load_avg_15m": 6.68,
+            "tier": "A (正常)"
+          },
+          "process_interference": {
+            "other_llama_servers": [
+              50414
+            ],
+            "other_quantization_processes": [],
+            "heavy_processes": [],
+            "interference_level": 0
+          },
+          "metal_gpu": {
+            "oom_warnings": 0,
+            "oom_tier": 0,
+            "gpu_available": true
+          },
+          "server_process": null,
+          "overall_tier": "D",
+          "expected_decode_tps": "< 18 t/s, 可能 OOM"
+        },
+        "after": {
+          "timestamp": "2026-10-06T21:19:10.482058",
+          "memory": {
+            "total_gb": 43668.4,
+            "free_gb": 0.05,
+            "active_gb": 0.82,
+            "inactive_gb": 0.74,
+            "speculative_gb": 0.07,
+            "compressed_gb": 2.29,
+            "wired_gb": 11.42,
+            "used_pct": 100.0,
+            "free_pct": 0.0,
+            "tier": "D (危險)",
+            "swap_total_mb": null,
+            "swap_used_mb": null,
+            "swap_free_mb": null
+          },
+          "cpu": {
+            "user_pct": 12.31,
+            "sys_pct": 20.13,
+            "idle_pct": 67.54,
+            "load_avg_1m": 5.28,
+            "load_avg_5m": 6.9,
+            "load_avg_15m": 6.63,
+            "tier": "A (正常)"
+          },
+          "process_interference": {
+            "other_llama_servers": [
+              50414
+            ],
+            "other_quantization_processes": [],
+            "heavy_processes": [
+              {
+                "pid": 50414,
+                "cpu_pct": 2.2,
+                "mem_pct": 59.0,
+                "command": "/Users/alexchuang/Documents/flashkv-devserver/src/llama.cpp/build/bin/llama-serv"
+              }
+            ],
+            "interference_level": 0
+          },
+          "metal_gpu": {
+            "oom_warnings": 0,
+            "oom_tier": 0,
+            "gpu_available": true
+          },
+          "server_process": null,
+          "overall_tier": "D",
+          "expected_decode_tps": "< 18 t/s, 可能 OOM"
+        },
+        "overall_tier": "D",
+        "expected_decode_tps": "< 18 t/s, 可能 OOM",
+        "speed_vs_expected": "meets (expected slow)"
+      },
+      "content": "「Hello, how are you?」的中文翻譯是：\n\n**「你好，你還好嗎？」** 或更口語地說 **「你好嗎？」**\n\n根據語境，也可以翻譯為：\n- 正式/書面：**「您好，近況如何？」**\n- 日常口語：**「嘿，最近好嗎？」**",
       "runs": 3
     }
   },
   "aggregate": {
     "decode_tps": {
-      "avg": 6.59,
-      "median": 6.19,
-      "min": 5.26,
-      "max": 8.32,
-      "n": 3
+      "avg": 6.96,
+      "median": 6.24,
+      "min": 5.57,
+      "max": 9.61,
+      "n": 7
     },
     "prefill_tps": {
-      "avg": 12.33,
-      "median": 9.73,
-      "min": 5.27,
-      "max": 21.99,
-      "n": 3
+      "avg": 20.76,
+      "median": 24.81,
+      "min": 11.87,
+      "max": 27.54,
+      "n": 7
     },
     "quality_score": {
-      "avg": 0.96,
+      "avg": 1.0,
       "median": 1.0,
-      "min": 0.882,
+      "min": 1.0,
       "max": 1.0,
-      "n": 3
+      "n": 7
     },
     "peak_rss_mb": {
-      "avg": 5473.3,
-      "median": 5410.8,
-      "min": 5350.3,
-      "max": 5658.8,
-      "n": 3
+      "avg": 9752.13,
+      "median": 9747.0,
+      "min": 9734.2,
+      "max": 9775.1,
+      "n": 7
+    },
+    "system_state": {
+      "tier": {
+        "worst": "D",
+        "best": "D",
+        "distribution": {
+          "D": 7
+        }
+      },
+      "memory_free_pct": {
+        "avg": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "n": 7
+      },
+      "cpu_idle_pct": {
+        "avg": 49.28,
+        "median": 54.74,
+        "min": 21.67,
+        "max": 67.55,
+        "n": 7
+      },
+      "speed_vs_expected": {
+        "distribution": {
+          "meets (expected slow)": 7
+        },
+        "most_common": "meets (expected slow)"
+      }
     }
   },
-  "_stale": {
-    "_why": "這個檔案自 2026-09-15 起已 stale（見 agent_harness/shared/stale_registry.json）",
-    "since": "2026-09-15",
-    "why": "它記錄的是 commit=WORKTREE（2026-09-06 抓的），不是任何可重現的修訂；D2 起一律以 RUN_REPLAY_BENCH=0 跑。",
-    "run_with": "RUN_REPLAY_BENCH=0",
-    "evidence": ".gitignore:419-425、agent_harness/CONVENTIONS.md:447（D2）",
-    "registry": "agent_harness/shared/stale_registry.json",
-    "warning": "把它當 baseline 產出的 verdict，格式與用真 baseline 跑出來的一模一樣。"
-  }
+  "prefetch_drop_breakdown": null
 }

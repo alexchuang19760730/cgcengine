@@ -1,0 +1,92 @@
+id: exp-ovlfence-gpuitime-2026-10-05
+owner: lineA
+created: 2026-10-05
+# 柵欄收割的是段邊界（gap/wait）那一桶 ⇒ 掛 S 軸；本卡是「把該桶在柵欄 ON 下量回來」。
+axis: S
+
+question: |
+  在**柵欄 ON 的交付臂**上，`wait` 是真的 GPU 執行嗎？
+  現行 `CGC-GPUTIME` 在柵欄 ON 時失效（實測 `segs=1 bufs=9 skipped=351 skip_nc=351`；
+  柵欄 OFF 是 `segs=40 bufs=355 skipped=5`）⇒ 交付格（柵欄 ON，13.722 t/s）上
+  **完全讀不到 `gpu_busy_sum`／`gpu_union`／`gap`**，於是「`gpu_busy_sum/wait=153%`
+  ⇒ wait 是真的 GPU 執行」這條判據，在**現行的交付臂上無法複核**。
+  這是 20+ 收束裡**唯一一個「量不到」而非「量到是 0」**的缺口。
+
+baseline:
+  metric: "柵欄 OFF 交付臂的既有判詞：wait 69.78 ms、gpu_busy_sum 106.58 ms（152.7%）、gpu_union 73.31 ms（105.1%）、gap 16.54 ms（23.7%）"
+  cell: "現行 (default)：prompt 512 / gen 128 / batch 2048 / ubatch 512 / depths 0 / reps 5 / warm_skip 0 / ctx 0"
+  source: "Backup/spec_tree/WAIT_ATTRIBUTION_2026-10-03.md"
+
+hypothesis:
+  mechanism: |
+    `CGC-GPUTIME` 的 `gpu_busy_sum`／`gap` 只在**段邊界**（`hook_seg(i)`）讀 Metal 的
+    GPUStartTime/GPUEndTime（呼叫點 `ggml-backend.cpp:2324`；欄位語意 `:2148-2149`：
+    `gt_gap` 是「本段 start − 上段 end」的 GPU 時鐘空窗）。而柵欄（`:2895`）的作用
+    **正是把段邊界改成「不等完成」**——它早提交 `i+1` 段、等 leaf 寫完就 `signalEvent`
+    讓 GPU 續跑（`:2930-2943`）。
+    ⇒ 讀時間戳的那一刻，該段 buffer **還沒 Completed** ⇒ `gt_unsup_nc` 爆增。
+    ★ **判別量＝`skip_nil`（結構性：該 worker 從沒分到 buffer）vs `skip_nc`（時序性：
+    buffer 在、只是讀得太早）。** 實測柵欄 ON 的 351 筆**全是 `skip_nc`、`skip_nil=0`**
+    （`docs/OVERLAP_PARTIAL_DESIGN_2026-10-02.md:305`；全庫 GPUTIME 行交叉核對亦同）
+    ⇒ **失效是時序性的、不是結構性的** ⇒ 把讀取點移到「該步已全部完成」之後即可恢復，
+    **不必放棄柵欄**（柵欄本身不能改，改了就不是交付臂了）。
+  expected: |
+    Phase 0（**已由既有產物滿足，零新跑**）：柵欄 ON ＋ CGC_GPU_TIMING=1 的指紋已在樹上
+      —— Backup/l201_accel/leafonly_d2w/llama_bench_prod-new_CGC_OVERLAP_FENCE_41_CGC_GPU_TIMING_1_*.stderr.log
+      （全庫共 13 檔）。該檔 97 行 GPUTIME 中 96 行是 `segs=1 bufs=9 skipped=351 skip_nil=0 skip_nc=351`；
+      唯一的 `segs=40` 那行是 **prefill 圖**（柵欄不武裝 ⇒ 讀得正常：`gpu_busy_sum 122%`）。
+    Phase 1（需 src 改動＋rebuild）：讀取點移到該步 buffer 全 Completed 之後 ⇒
+      `skipped` 塌到 ~0，且能算出 `gpu_busy_sum / wait`。
+  basis: "src/llama.cpp/ggml/src/ggml-backend.cpp:2148-2149,2324,2895-2943；docs/OVERLAP_PARTIAL_DESIGN_2026-10-02.md:305；Backup/spec_tree/WAIT_ATTRIBUTION_2026-10-03.md"
+
+acceptance:
+  success: |
+    Phase 1 能在**柵欄 ON 的交付臂**上讀出 `gpu_busy_sum / wait`（`skipped ≈ 0`），
+    並回答「剩下的 cb 內容是**開銷**還是**工作**」。
+  falsify: |
+    (a) 若移動讀取點後 `skipped` 仍 >0（例如 Metal 在柵欄路徑上根本不落時間戳）
+        ⇒ 這條量測路不通 ⇒ 盲區**永久化**，把它登錄為「不可關」而不是「待關」。
+    (b) 若讀得到、且 `gpu_busy_sum/wait ≥ 70%`（全是真實 GPU 工作）
+        ⇒ 這是**確認**（把 153% 的結論搬到柵欄 ON 的交付臂），**不構成新槓桿** ⇒ 20+ 結論不變。
+    ⛔ 唯一會改變 20+ 結論的結果是：讀到一個 **≥5 ms 的「非工作」窗**（≤40% ⇒ 段邊界往返有殘量）。
+  on_fail: |
+    不編造。把 Phase 0 的 `skip_nc` 指紋與 Phase 1 的 `skipped` 結果如實寫進判詞。
+    若為 (a) ⇒ 在看板把「柵欄 ON 的 wait 拆解」標為**永久不可量**，並附本卡為判據。
+
+arms:
+  - prod-new:CGC_OVERLAP_FENCE=41;CGC_GPU_TIMING=1
+  - prod-new:CGC_GPU_TIMING=1
+
+notes: |
+  ★ 為什麼值得：這是 20+ 收束裡**唯一「量不到」而非「量到是 0」**的缺口。
+  其餘四層拆解（儀器桶／op 家族／節點級／per-cb 矩陣 NSM）都已收束：
+  gap 的 CPU 部分（bdcpu 10.58 ms）已被柵欄收走（×1.218，內部自洽）；ffn_moe_ 7.9%、
+  GEMV 3.4%（≤5%）；2365 節點融合 K0–K5 端到端 2.28%；NSM `r2=0.029` 秩虧（寬 1 無跨寬度變化）。
+  ★ 為什麼便宜：**Phase 0 零 src 改動、零 rebuild**（`run_server.sh:2153` 已白名單 `CGC_GPU_TIMING`）；
+  Phase 1 只動 `ggml-backend.cpp` 的一個讀取點。
+  ⚠ 別期待改變 20+：柵欄已把該縫的 CPU 部分收走（交付格 ×1.266）；本卡是**驗證**，不是槓桿。
+  ⚠ 前置：**柵欄 ON 也是「量測狀態」**——`gap`／`gpu_busy_sum` 失效正是柵欄 ON 的性質，
+  故判讀必須在**與最終臂相同的柵欄狀態**下做（否則重演 D2 的錯）。
+  ★ **Phase 1 已完成且驗證（2026-10-05 17:3x，本線；4 檔 + rebuild）**：
+  - 實作＝**Metal 側單調累加器**（`ggml-metal-context.m`：struct 三欄 `cgcst_busy_ns/n/unsup`、兩個
+    completion handler 內 `fetch_add`、accessor `ggml_metal_cgc_step_busy`）＋ **後端取差值**
+    （`ggml-backend.cpp` 的 `ggml_metal_get_cgc_step_busy` ⇒ 印 `CGC-GPUTIME-LATE`）。全 env-gated
+    （`CGC_GPU_TIMING_LATE` 未設 ⇒ 路徑逐字不變）。
+  - ⚠ **後端-only 版先被實測否證**：`cmd_bufs[]` 只有 `n_cb+1 = 9` 格、且**每個 segment 回收一次**
+    （`ggml-metal-context.m:183`／`:594`）⇒ 後端**任何**讀取點只看得到尾段（實測 `bufs=0 skipped=9 skip_nc=9`）。
+  - ★ **零重置是關鍵**：只在 Metal 側 `fetch_add`、後端取差值 ⇒ 避開上一版的 ABA（`:594` 原話：
+    以 `atomic_exchange` 重置撞上 handler 的 compare-exchange ⇒ `union 1230 > busy_sum 746 > wait 375`）。
+  - ★ 另加 **10 s 合理性界**（單一 cb 不可能跑 10 s）：首跑有 buffer 報出 `2.0e8 ms` 級跨度、會污染整步差值；
+    過濾後進 `unsup`（可見，不掩蓋）。
+  - **實測（柵欄 ON、直呼 llama-bench、`-p 64 -n 12`）**：`bufs = 369／354／368`、`unsup = 0／15／1`、
+    **`busy/wait = 209%／153%／332%`（min 153% ≫ 70%）**。
+  - ⇒ **判詞＝確認（`acceptance.success` 達成，但依 `falsify (b)` 它不是槓桿）**：柵欄 ON 的交付臂上
+    `wait` 仍是**真實 GPU 執行** ⇒ **20+ 結論不變**；這一趟把「量不到」補成「**在交付臂上量過**」。
+  - ⚠ 未竟：① `CGC_GPU_TIMING_LATE` **尚未進 `run_server.sh` 白名單**（該檔是別條線的未提交髒檔）⇒
+    目前只有直呼 llama-bench 到得了；② 讀數**每 4 步印一次、且差值落後一張圖** ⇒ 要定值需長窗中位。
+  ★ **Phase 0 的既有讀數證明「失效不是空白、是誤導」**：柵欄 ON 的 `gpu_busy_sum/wait` 在
+  **1%–211% 之間亂跳**（多數 6–39%）、`gap` 恆為 `0.00`、`gpu_union` 1–33% —— 因為一次觀測
+  只拿到 **9/360** 個已完成的 buffer。若被誤讀，儀器自帶判據（`≤40% ⇒ launch/completion
+  latency`）會導出「**有段邊界往返可收**」的**假陽性**（正好與柵欄的結論相反）。
+  專案已有禁令擋著（`docs/OVERLAP_PARTIAL_DESIGN_2026-10-02.md:310`：「開柵欄後不得再引用
+  `gap`／`gpu_busy_sum`／`gpu_union`」）——**本卡是把那條禁令從「不准引用」升級為「修好後可引用」**。

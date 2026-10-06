@@ -33,6 +33,13 @@ const char * ggml_metal_error_desc (ggml_metal_t ctx);
 // (polled by the sched pipelined dispatch; see CGC_OA_ASYNC)
 int ggml_metal_cgc_done(ggml_metal_t ctx);
 int ggml_metal_cgc_bufs(ggml_metal_t ctx);
+// [CGC 2026-10-05 whole-step GPU busy] Monotonic accumulator filled by the command-buffer
+// completion handlers, so it survives the per-segment recycling of cmd_bufs[] that blinds the
+// per-segment accessor below when the overlap fence is on (measured: segs=1 bufs=9 skipped=351
+// skip_nc=351, gpu_busy_sum/wait swinging 1-211%). `out` holds 3 int64: {busy_ns, buffers, unsup}.
+// NEVER reset here -- the caller takes deltas between two reads (a reset raced the compare-exchange
+// in the first revision). Gated by CGC_GPU_TIMING_LATE + CGC_GPU_TIMING.
+int ggml_metal_cgc_step_busy(ggml_metal_t ctx, int64_t * out);
 // [CGC 2026-09-15 GPU-side timing] Drain this segment's GPU busy/start/end samples and reset
 // them. `out` holds 5 int64: {busy sum, busy union, earliest start, latest end, unsupported}.
 // Returns the number of cmd buffers sampled. All zeros when the segment had no completed buffer.

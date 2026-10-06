@@ -1,4 +1,4 @@
-# 250 / 25 攻關 — 逐條技術白皮書總目錄（56 條）
+# 250 / 25 攻關 — 逐條技術白皮書總目錄（62 條）
 
 > 每一條實驗／嘗試一對檔案（`html` ＋ `md`）：**目標 → 判準 → 結果 → 判定** ＋ 依據 ＋ 對應報告。
 > 回 [mindmap 總圖](../index.html)　·　[HTML 版總目錄](index.html)
@@ -25,7 +25,7 @@
 | 3b | [server 窗口／box 准入（單一來源閘門）](sys-window.html) | 不適用 | 2 | [sys-window.md](sys-window.md) | BOX_ADMISSION_SINGLE_SOURCE 定為單一來源；SERVER_WINDOW_LEDGER 記錄逐次窗口。**09-29 |
 | 3b | [expert cache 血統設計（09-05~09-09 期）](na-design.html) | S 序列化消減 | 8 | [na-design.md](na-design.md) | HYBRID_DESIGN／INVARIANTS／INTEGRATION_DIFF／COMMIT_DIGEST：血統進了生產的 expert |
 
-## 實驗階段（階段性）（23）
+## 實驗階段（階段性）（29）
 
 *③a —— 機制／量測成立，但產物還不能進生產*
 
@@ -54,6 +54,12 @@
 | 3a | [M2 slab pool-reuse（整層填的 memcpy 省多少）](e-m2-slab-reuse.html) | M MTP on 加速 | 0 | [e-m2-slab-reuse.md](e-m2-slab-reuse.md) | decode 8.26 t/s |
 | 3a | [2026-10-03 operator 裁定「移除所有具名格、pro…](exp-default-cell-first-2026-10-03.html) | 不適用 | 0 | [exp-default-cell-first-2026-10-03.md](exp-default-cell-first-2026-10-03.md) | 尚無可引用讀數：1 個 run 全部非乾淨（attribution.verdict=swap（swap_growth=3122.309999 |
 | 3a | [把段邊界重疊柵欄（CGC_OVERLAP_FENCE=41）搬到**…](exp-fence-default-cell-2026-10-05.html) | S 序列化消減 | 0 | [exp-fence-default-cell-2026-10-05.md](exp-fence-default-cell-2026-10-05.md) | 尚無可引用讀數：1 個 run 全部非乾淨（attribution.verdict=swap（swap_growth=3431.74 MiB |
+| 3a | [同一趟（同 build、同格、同 session）裡： ① caps…](e-victim-classify-2026-10-05.html) | M MTP on 加速 | 0 | [e-victim-classify-2026-10-05.md](e-victim-classify-2026-10-05.md) | 尚無可引用讀數：1 個 run 全部非乾淨（attribution.verdict=swap（swap_growth=5369.81 MiB |
+| 3a | [**跨 checkpoint 探針**：把 CGC 引擎（交付路徑＝…](exp-cgc-edge0gguf-2026-10-05.html) | 不適用 | 0 | [exp-cgc-edge0gguf-2026-10-05.md](exp-cgc-edge0gguf-2026-10-05.md) | 實驗進行中（尚無讀數） |
+| 3a | [**交付口徑量測（生產級）**：spec-tree MTP-on（`…](exp-spectree-mtpon-default-2026-10-06.html) | 不適用 | 0 | [exp-spectree-mtpon-default-2026-10-06.md](exp-spectree-mtpon-default-2026-10-06.md) | decode 11.36 t/s |
+| 3a | [**寬度軸的因果量測（W1 vs W2，同 session 同 se…](exp-w1w2-paired-2026-10-06.html) | M MTP on 加速 | 0 | [exp-w1w2-paired-2026-10-06.md](exp-w1w2-paired-2026-10-06.md) | 實驗進行中（尚無讀數） |
+| 3a | [**儀器對帳：m 的兩台儀器定標** m（每 draft token…](exp-m-instrument-recon-2026-10-06.html) | M MTP on 加速 | 0 | [exp-m-instrument-recon-2026-10-06.md](exp-m-instrument-recon-2026-10-06.md) | 實驗進行中（尚無讀數） |
+| 3a | [**拉 a：chain 路徑開 rejection sampling…](exp-a-lever-rejection-2026-10-06.html) | M MTP on 加速 | 0 | [exp-a-lever-rejection-2026-10-06.md](exp-a-lever-rejection-2026-10-06.md) | 實驗進行中（尚無讀數） |
 
 ## 已結案（廢棄／不適用）（18）
 

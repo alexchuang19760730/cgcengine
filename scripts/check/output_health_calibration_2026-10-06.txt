@@ -1,0 +1,39 @@
+=== 逐臂（門檻：run_max ≥ 5 或 selfsim ≥ 0.25 ⇒ DEGENERATE）===
+arm                        state    n  run_max  selfsim  n*   rep8
+w1_d512_rand          DEGENERATE  129       90    0.701   2  0.672
+w1_d512_rand_s2               OK  129        1    0.171   6  0.000
+w1_d512_rand_s3               OK  129        1    0.032   3  0.000
+w1_d512_rand_s4               OK  128        1    0.098   6  0.000
+w1_d512_rand_s5       DEGENERATE  129        1    0.385   7  0.295
+w1_d512_real                  OK  129        1    0.071   3  0.000
+w1_d512_real_s2               OK  128        1    0.016   6  0.355
+w1_d512_real_s3               OK  128        1    0.008   8  0.000
+w1_d512_real_s6               OK  129        1    0.016   6  0.369
+w1_pg512_real                 OK  128        1    0.017   7  0.347
+w2_d512_rand          DEGENERATE  130       57    0.896   5  0.772
+w2_d512_rand_s2       DEGENERATE  129        4    0.422   1  0.000
+w2_d512_rand_s3       DEGENERATE  128        7    0.524   4  0.554
+w2_d512_rand_s4       DEGENERATE  129       97    0.873   3  0.795
+w2_d512_rand_s5       DEGENERATE  128      116    0.937   1  0.893
+w2_d512_real          DEGENERATE  128      108    0.874   1  0.826
+w2_d512_real_s2       DEGENERATE  128       63    0.677   1  0.545
+w2_d512_real_s3       DEGENERATE  128        9    0.425   1  0.008
+w2_pg512_real         DEGENERATE  128       52    0.880   3  0.793
+
+=== 1. 與 detok 人眼見證一致（6 臂）===
+  ✅ w1_d512_rand         人眼 DEGENERATE  機器 DEGENERATE
+  ✅ w1_d512_real         人眼 OK          機器 OK
+  ✅ w1_pg512_real        人眼 OK          機器 OK
+  ✅ w2_d512_rand         人眼 DEGENERATE  機器 DEGENERATE
+  ✅ w2_d512_real         人眼 DEGENERATE  機器 DEGENERATE
+  ✅ w2_pg512_real        人眼 DEGENERATE  機器 DEGENERATE
+
+=== 2. 家族分離（real prompt）===
+  ✅ W1 real：5/5 判為 OK  ['w1_d512_real=OK', 'w1_d512_real_s2=OK', 'w1_d512_real_s3=OK', 'w1_d512_real_s6=OK', 'w1_pg512_real=OK']
+  ✅ W2 real：4/4 判為 DEGENERATE  ['w2_d512_real=DEGENERATE', 'w2_d512_real_s2=DEGENERATE', 'w2_d512_real_s3=DEGENERATE', 'w2_pg512_real=DEGENERATE']
+
+=== 3. 門檻邊界（real 家族；健康側要低、退化側要高）===
+  selfsim：健康 max 0.071 → 門檻 0.25 （3.5×）← → 退化 min 0.425（1.7×）
+  run_max：健康 max 1 → 門檻 5 （5.0×）← → 退化 min 9（1.8×）
+
+CALIBRATION: PASS

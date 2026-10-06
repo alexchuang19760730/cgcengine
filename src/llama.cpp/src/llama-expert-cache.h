@@ -327,6 +327,20 @@ struct llama_expert_cache {
     // printed instead of being invisible.
     size_t n_verify_strict_refused = 0;
     size_t n_zero_mapped_selected  = 0;
+    // [CGC Phase Counters 2026-10-06] verify/decode phase attribution so the
+    // "verify batch trashes LRU" hypothesis is directly testable. `cgc_phase` mirrors
+    // llama_context::cgc_current_phase (set by llama_context::set_cgc_phase); the
+    // ensure/prefetch/evict/fill paths index these arrays by it (values 0..5 ==
+    // cgc_phase_t UNKNOWN..NORMAL_DECODE). Only the LRU-trash-relevant counters plus the
+    // ensure-path demand counters are split; the fast-path telemetry (see print_stats) already
+    // splits verify/draft cold rates on the on_topk route.
+    int    cgc_phase = 0;  // current phase, cgc_phase_t cast to int (0 = UNKNOWN)
+    size_t n_evict_by_phase[6]   = {0};
+    size_t n_misscap_by_phase[6] = {0};
+    size_t n_req_by_phase[6]     = {0};
+    size_t n_hit_by_phase[6]     = {0};
+    size_t n_miss_by_phase[6]    = {0};
+    std::atomic<uint64_t> fill_wait_by_phase[6] = {};
     // [CGC 2026-09-15 §8.3 gate quantity] S1 slot-table health, counted on EVERY publish (the
     // counting costs one integer add, so it is unconditional; only the printing is gated).
     //

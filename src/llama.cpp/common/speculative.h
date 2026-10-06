@@ -91,6 +91,15 @@ struct common_speculative_draft_params {
     // draft-simple and the ngram drafts leave it untouched. When nullptr the draft step skips the
     // copy entirely (one predictable branch), so a default run pays nothing for this feature.
     llama_tokens * alt = nullptr;
+
+    // [CGC spec-tree 2026-10-05] OPTIONAL, MTP impl only: draft THIS sequence's chain as the ALT
+    // BRANCH of sequence 0 -- seed it with seq 0's first runner-up token, carried on the same
+    // hidden pair, at the same logical position, but on this sequence so the two chains' cells
+    // cannot collide in the draft KV. The tree verifier's branch 1 needs a chain drafted from its
+    // OWN first token; reusing branch 0's tail made every branch-B win die at the second position
+    // (measured 2026-10-05: accept@2|1 = 0.375 for the reused tail vs 0.90 for branch 0's own).
+    // Default false: chain arm, server and every other caller stay bit-for-bit.
+    bool alt_branch = false;
 };
 
 common_speculative_draft_params & common_speculative_get_draft_params(common_speculative * spec, llama_seq_id seq_id);
@@ -111,7 +120,10 @@ bool common_speculative_need_embd_nextn(common_speculative * spec);
 void common_speculative_draft(common_speculative * spec);
 
 // informs the speculative context that n_accepted tokens were accepted by the target model
-void common_speculative_accept(common_speculative * spec, llama_seq_id, uint16_t n_accepted);
+// [CGC spec-tree 2026-10-03] `src_seq_id` >= 0 reads the hidden seed rows from another
+// sequence's verify batch (the tree's winning branch lives on its own seq while the
+// continuation stays on `seq_id`). Default -1 = read from `seq_id`, the original behavior.
+void common_speculative_accept(common_speculative * spec, llama_seq_id, uint16_t n_accepted, llama_seq_id src_seq_id = -1);
 
 // (optional) get/set internal state
 bool common_speculative_get_state(common_speculative * spec, llama_seq_id seq_id, std::vector<uint8_t> & data);

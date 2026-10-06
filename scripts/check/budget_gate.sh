@@ -52,7 +52,11 @@ budget_gate() {
         return 0
     fi
 
-    local pool="${POOL_BYTES:-${CGC_SERVER_EXPERT_CACHE_BYTES:-8589934592}}"
+    # [CGC 2026-10-06 fix] run_server.sh 把外部覆寫鍵 CGC_SERVER_EXPERT_CACHE_BYTES 折算成
+    # SERVER_ENV 裡的 CGC_EXPERT_CACHE_BYTES；matrix 的 resolve() dump 只回 CGC_EXPERT_CACHE_BYTES
+    # （沒有 CGC_SERVER_* 那把）。budget gate 若只讀 CGC_SERVER_EXPERT_CACHE_BYTES，會在 matrix
+    # 路徑（樞紐池已降到 ≤3GiB 卻仍被判 8GiB 超訂）誤拒。優先序維持 CGC_SERVER_* > CGC_* > 預設。
+    local pool="${POOL_BYTES:-${CGC_SERVER_EXPERT_CACHE_BYTES:-${CGC_EXPERT_CACHE_BYTES:-8589934592}}}"
     local model="${MODEL:-${CGC_SERVER_MODEL:-${repo}/models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf}}"
     local load_mode="${LOAD_MODE:-${CGC_SERVER_LOAD_MODE:-none}}"
 

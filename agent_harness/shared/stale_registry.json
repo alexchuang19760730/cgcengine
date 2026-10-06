@@ -13,18 +13,6 @@
  ],
  "assets": [
   {
-   "path": ".replay_bench_baseline.json",
-   "role": "asset",
-   "kind": "json",
-   "tracked": true,
-   "stale_since": "2026-09-15",
-   "why": "它記錄的是 `commit: WORKTREE`（2026-09-06 抓的），不是任何一個可重現的修訂；D2 起一律以 RUN_REPLAY_BENCH=0 跑，所以它既沒有被更新、也不該被當成比較基準。",
-   "evidence": ".gitignore:419-425（『.replay_bench_baseline.json 已失真』）、agent_harness/CONVENTIONS.md:447（D2）",
-   "run_with": "RUN_REPLAY_BENCH=0",
-   "decision": "使用者已延後（見 agent_harness/memory/2026-09-15.md:460）—— 這是記錄下來的決定，不是沒做完的工作。",
-   "banner_key": "_stale"
-  },
-  {
    "path": "data/replay_bench",
    "role": "asset",
    "kind": "ignored_dir",
@@ -40,20 +28,11 @@
    }
   }
  ],
- "consumers": [
-  {
-   "path": "scripts/check/replay_bench_compare.py",
-   "role": "consumer",
-   "why": "它把 current 跟 baseline 比並輸出 verdict。baseline 已 stale 時，它產出的是**關於一個不存在的基準的判決**，而格式完全正常 —— 這正是消費點必須自己講出來的理由。",
-   "wrapper": "compare",
-   "stale_since": "2026-09-15",
-   "evidence": ".gitignore:419-425（baseline 已失真）、agent_harness/CONVENTIONS.md:447（D2）",
-   "run_with": "RUN_REPLAY_BENCH=0"
-  }
- ],
+ "consumers": [],
  "notes": [
   "`role: asset` 的 banner 必須**跟著資料**：JSON 用 `_stale` 區塊（這個 repo 既有的 `_doc`/`_version` 慣例），被忽略的目錄用 .gitignore 規則。",
   "`role: consumer` 的 banner 由 wrapper 層在執行前印出來（wrappers/_common.sh 的 w_announce_stale），因為消費點才是「會被誤信」的地方。",
-  "反向也查：帶著 `_stale` 但不在這裡登記的檔案會被 --check 點名 —— 否則任何人都可以自己貼一個 banner 而不留下誰決定的痕跡。"
+  "反向也查：帶著 `_stale` 但不在這裡登記的檔案會被 --check 點名 —— 否則任何人都可以自己貼一個 banner 而不留下誰決定的痕跡。",
+  "2026-10-06 解除 .replay_bench_baseline.json 的 stale 登記：它在 dbe5f8eb1 重新量測（真 commit、10 GiB pool），並修掉讓檢查 11 恆 FAIL 的 ruler 缺陷 —— qa-zh 的 required_any 只列 [巴黎, 法國]，但 --runs 3 自 2026-09-08（4715610df）起會輪詢到「太陽系有幾個行星」與「15 + 27」兩題；那兩題的正確答案永遠不含這兩個詞，required_any 恆 fail → median 固定 0.765 → quality 硬閘門對「任何」commit 都 FAIL。當時的處置是 RUN_REPLAY_BENCH=0；現在改成修 ruler + re-baseline。"
  ]
 }

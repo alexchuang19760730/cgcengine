@@ -1,0 +1,109 @@
+# ═══════════════════════════════════════════════════════════════════════
+# 實驗立項卡（Charter）—— e-m2-slab-reuse
+#   量「整層 slab 填」的 pool-reuse 效率：15 顆 resident 到底省掉多少 memcpy／pread？
+#   出處：Backup/spec_tree/MTP_CB_CLIFF_VERDICT_2026-10-03.md §7.4（「不需新碼的下一個量具」）
+# ═══════════════════════════════════════════════════════════════════════
+# 為什麼要立這一張：
+#   MTP-on 的 4–5 s/步 cb 已定罪＝分類錯配（ntok=2 被 width=1 判成 PREFILL ⇒ 每層整層 slab）。
+#   但在把 verify 步拉回 decode 之前，有一個**還沒量過**的量：整層 slab 這條路本身的
+#   pool-reuse 效率。內建量具 `CGC_M2_PROFILE` 會逐 fill 印
+#   `CGC-M2-PROF fill_slab[_FAST] layer=… kind=… experts=… bytes=… time_ms=…`
+#   ＋ 收尾的 `slab fills: pool=… disk=…` 計數（**不需新碼**）。
+#
+# ⚠ 為什麼這張卡本身不會產生可引用的 t/s：
+#   本量測的兩臂都會走 slab 路徑（大 prefill chunk 就是 slab 的定義）⇒ 它的產物是
+#   **機制／計數器**，不是速度讀數。依 §55／§63，這種端點不進引用閘門（它是 D7b 那一類）。
+#   MTP-on 臂的 t/s 一律不引用（k 軸判詞 DEAD 不受影響；且本卡量的是 I/O 分解）。
+#
+# ⚠ 前置（operator 級）：MTP-on 臂的 `CGC_SERVER_LAYER_CAPS` 是 **cell 欄位**
+#   （PROD_NEW_TEST_CARD_2026-09-24.md §2.5）⇒ 臂上改它要新 cell 或 operator 窗。
+#   本卡刻意**避開**這個前置：量的是 slab 路徑（兩個 caps 值都走 slab），
+#   所以主臂用 caps 140（已驗可跑完、width=8、cb 24.9 ms/步），
+#   不重跑 caps 16（那條會 thrash、燒 TB 級 SSD）。
+id: e-m2-slab-reuse
+owner: freebuff（S 線 / L25-7）
+created: 2026-10-03
+axis: M
+
+question: |
+  **整層 slab 填（`llama_expert_cache_fill_layer_slab`）在池已有 15 顆 resident 時，
+  真的省下 memcpy／pread 嗎？省下多少位元組、值多少毫秒？**
+  —— 即：`CGC-M2-PROF` 的 pool/disk 位元組比與逐 fill 時間，
+  在「整層」與「只讀非 resident」兩條路上各是多少。
+
+baseline:
+  metric: "整趟 slab fills：pool=6197.0 MiB / disk=4897.0 MiB（non-resident 44.1%）；
+           同一條路 `cb(ntok=512)` 的每層成本＝整層讀（356 MiB/層 × 40 層 ≈ 14.2 GiB/步）"
+  cell: "退役的 delivery 形狀（p0_n128_d512_r3；2026-10-03 已退役，僅為追溯舊 log）；
+         本輪量的是權威 (default) 格：p512/n128/d0/r5/b2048-ub512（無 --cell ⇒ resolve 預設格）"
+  source: "Backup/spec_tree/s1speed.json.logs/live/prod-new.p0_n128_d512_r3.stderr.log"
+
+hypothesis:
+  mechanism: |
+    `fill_layer_slab`（llama-expert-cache.cpp:4341）逐專家檢查 `slot_table`：
+    resident 且 slot < usable ⇒ **memcpy 自 pool**（pool_bytes＋），否則收成 segment 走 pread
+    （disk_bytes＋）。收尾印 pool/disk 比。既有產物已顯示 pool:disk ≈ 56:44。
+    ⚠ 但**機制上有一個反向項**：池命中會讓 `segs.size() != ne` ⇒
+    合併大 pread 的 fast path（`:4458` `contiguous`）**失效**，240 顆非 resident 變成
+    240 次 thread-per-segment pread（`fill_segments_concurrent`，每段一 thread）。
+    ⇒ 本卡要判定的是**淨效果**：省下的 memcpy/bytes 是否大於打碎 pread 的代價。
+  expected: "逐 fill 的 pool share 40–60%；若 memcpy 真的比 pread 便宜，
+            `fill_slab`（非 FAST）與 `fill_slab_FAST` 的 ms/MiB 應差 ≥2×；
+            否則兩者同級（打碎 pread 把省下的 memcpy 吃掉）"
+  basis: "Backup/spec_tree/MTP_CB_CLIFF_VERDICT_2026-10-03.md §7.4；src/llama.cpp/src/llama-expert-cache.cpp:4341-4492（pool 分支與 contiguous 的互斥）；Backup/spec_tree/s1speed.json.logs/live/prod-new.p0_n128_d512_r3.stderr.log（pool=6197.0/disk=4897.0）"
+
+acceptance:
+  success: |
+    ① `CGC-M2-PROF` 逐 fill 行 ≥ 200（覆蓋至少一輪完整 prefill 的所有層）；
+    ② 由逐 fill 行算出 pool share 與 FAST/非 FAST 的 ms/MiB，並**指名**哪一項主導；
+    ③ 端點是**計數器／比值**（不走引用閘門）；不得把本趟任何 t/s 當成績。
+  falsify: |
+    ① 逐 fill 行 < 200（量具沒真的武裝／被 allowlist 吃掉）⇒ 先修量具，不判；
+    ② 或 pool/disk 比與收尾行矛盾（逐 fill 加總 ≠ 收尾計數）⇒ 量具本身不可信，回讀碼。
+  on_fail: |
+    寫進 Backup/spec_tree/；把結果標成機制／診斷級（不可引用）；
+    L25-7 的結論照實記（含「不需要新碼」這一句是否成立）。
+
+targets:
+  decode_tps: 20.0
+  prefill_tps: 250.0
+
+subgoals:
+  - id: sg-slab-reuse
+    text: "整層 slab 的 pool-reuse 效率：pool/disk 位元組比 ＋ FAST vs 非 FAST 的 ms/MiB"
+    expect: "0（這是歸因／計數器，不是 t/s 貢獻）"
+    how: "harness bench 一趟（caps 140、MTP-on、CGC_M2_PROFILE=1、CGC_PREFILL_STREAM=1、CGC_GATHER_SLAB_CAP=256）；讀 `CGC-M2-PROF` 逐 fill 行 ＋ `slab fills: pool=… disk=…`"
+
+arms:
+  # ⚠ [2026-10-03 修正] MTP-on 臂必須帶**按臂 spec shim**（`LLAMA_BENCH_SPEC=1`）：
+  #   新 commit 5b3c12282 的 fail-closed 閘（llama_bench_matrix.mtp_without_spec）會拒跑
+  #   「CGC_SERVER_MTP=1 但 cell 沒有 --spec-type」的臂 —— 那種臂只匯出 MTP=1 的 env 區塊、
+  #   零 draft/verify 工作，量到的不是 MTP。`LLAMA_BENCH_SPEC` 由 llama-bench 從**按臂 env**
+  #   解析（llama-bench.cpp:1350-1358，只在 CLI 沒給 --spec-type 時生效）⇒ 同一趟裡可以 off/on 配對。
+  #   深度：`LLAMA_BENCH_SPEC_DRAFT_N_MAX=2`（L25-4 的 k 掃描最佳點；k=2 時 cb 正常）。
+  - "prod-new:CGC_SERVER_MTP=1;CGC_SERVER_LAYER_CAPS=40-40:140;CGC_DRAFT_CTX_ALIGN=1;CGC_DRAFT_SMALL_BATCH=1;LLAMA_BENCH_SPEC=1;LLAMA_BENCH_SPEC_DRAFT_N_MAX=2;CGC_M2_PROFILE=1"
+  # 對照臂：同一趟但關掉雙緩衝 ⇒ 看 fill 是否被背景掩蓋（time_ms 的解釋）
+  - "prod-new:CGC_SERVER_MTP=1;CGC_SERVER_LAYER_CAPS=40-40:140;CGC_DRAFT_CTX_ALIGN=1;CGC_DRAFT_SMALL_BATCH=1;LLAMA_BENCH_SPEC=1;LLAMA_BENCH_SPEC_DRAFT_N_MAX=2;CGC_M2_PROFILE=1;CGC_M2_DB_DISABLE=1"
+  # MTP-off 基底臂：不帶 MTP、不帶 shim ⇒ 走純 decode（slab 只在 prefill chunk 觸發）
+  - "prod-new:CGC_M2_PROFILE=1"
+  - prod-new:CGC_SERVER_MTP=1;CGC_SERVER_LAYER_CAPS=40-40:140;CGC_DRAFT_CTX_ALIGN=1;CGC_DRAFT_SMALL_BATCH=1;LLAMA_BENCH_SPEC=1;LLAMA_BENCH_SPEC_DRAFT_N_MAX=2;CGC_M2_PROFILE=1
+  - prod-new:CGC_SERVER_MTP=1;CGC_SERVER_LAYER_CAPS=40-40:140;CGC_DRAFT_CTX_ALIGN=1;CGC_DRAFT_SMALL_BATCH=1;LLAMA_BENCH_SPEC=1;LLAMA_BENCH_SPEC_DRAFT_N_MAX=2;CGC_M2_PROFILE=1;CGC_M2_DB_DISABLE=1
+  - prod-new:CGC_M2_PROFILE=1
+
+# ── 【子目標設定（由 decode_board_2026-09-29.yaml 的 L25-7 同步；勿手改，改看板）】──
+options:
+  subgoal: L25-7
+  profile: prod-new
+  arms:
+    - "prod-new:CGC_SERVER_MTP=1;CGC_SERVER_LAYER_CAPS=40-40:140;CGC_DRAFT_CTX_ALIGN=1;CGC_DRAFT_SMALL_BATCH=1;LLAMA_BENCH_SPEC=1;LLAMA_BENCH_SPEC_DRAFT_N_MAX=2;CGC_M2_PROFILE=1"
+    - "prod-new:CGC_SERVER_MTP=1;CGC_SERVER_LAYER_CAPS=40-40:140;CGC_DRAFT_CTX_ALIGN=1;CGC_DRAFT_SMALL_BATCH=1;LLAMA_BENCH_SPEC=1;LLAMA_BENCH_SPEC_DRAFT_N_MAX=2;CGC_M2_PROFILE=1;CGC_M2_DB_DISABLE=1"
+    - "prod-new:CGC_M2_PROFILE=1"
+  knobs:
+    - {name: CGC_SERVER_MTP, value: "1", role: subject, why: "MTP-on 是重開工程的目標臂（重開 #1 分類修正的前置）", source: "charters/e-m2-slab-reuse-2026-10-03.yaml arms[]"}
+    - {name: CGC_SERVER_LAYER_CAPS, value: "40-40:140", role: subject, why: "caps 140 ⇒ width=8（caps 16 ⇒ width=1 ⇒ ntok=2 被判 PREFILL ⇒ 每層整層 slab；那條已判 thrash、不重跑）", source: "Backup/spec_tree/MTP_CB_CLIFF_VERDICT_2026-10-03.md"}
+    - {name: CGC_DRAFT_CTX_ALIGN, value: "1", role: subject, why: "draft ctx 對齊（MTP-on 存活配方的既有欄位）", source: "存活配方 09-29 定版"}
+    - {name: CGC_DRAFT_SMALL_BATCH, value: "1", role: subject, why: "小批 draft（同上）", source: "同上"}
+    - {name: CGC_M2_PROFILE, value: "1", role: instrument, why: "逐 fill 印 CGC-M2-PROF／CGC-M2-FILL（pool vs disk bytes、ms）；收尾的 <code>slab fills</code> 行不受它控制、本來就會印", source: "src/llama.cpp/src/llama-expert-cache.cpp:4449／:4494；scripts/run_server.sh allowlist 2376-2384"}
+    - {name: LLAMA_BENCH_SPEC, value: "1", role: subject, why: "按臂 spec shim（＋ <code>LLAMA_BENCH_SPEC_DRAFT_N_MAX=2</code>）：新 commit 的 fail-closed 閘會拒跑「CGC_SERVER_MTP=1 但 cell 沒 --spec-type」的臂（那種臂只匯出 env 區塊、零 draft 工作）⇒ MTP-on 臂必須帶它", source: "scripts/check/llama_bench_matrix.py:540-573；llama-bench.cpp:1350-1358；commit 5b3c12282"}
+    - {name: CGC_M2_DB_DISABLE, value: "1", role: candidate, why: "關雙緩衝的對照臂（看 fill 是否被背景掩蓋 ⇒ time_ms 的解釋）", source: "同上；src/llama.cpp/src/llama-context.cpp:7001"}
+  note: "★ 本格端點是<b>計數器／比值</b>（不走引用閘門）；任何 t/s 一律不引用。⚠ 前置（operator 級）已在立項卡寫死：<code>CGC_SERVER_LAYER_CAPS</code> 是 cell 欄位 ⇒ 本卡刻意避開（量的是 slab 路徑，兩個 caps 值都走 slab），主臂用 caps 140（已驗跑完）。⚠ 盒閘：跑前過 <code>l255_close.py --check</code>（即時判定，不寫死數字）。"
