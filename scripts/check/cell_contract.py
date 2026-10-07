@@ -128,7 +128,13 @@ def resolve_cell(contract: dict, cell_name: str | None) -> tuple[str, dict]:
     if errs:
         raise ContractError("測試卡 §2.5 的孿生宣告有問題（fail-closed）：\n   - "
                             + "\n   - ".join(errs))
-    if cell_name is None:
+    if cell_name is None or cell_name == "(default)":
+        # [CGC 2026-10-07] `cell_names()` has always LISTED "(default)" as selectable, so a caller
+        # that did the only reasonable thing -- read the list, then pass back the name it was given
+        # -- was rejected by the line below. `hotkv-d512` (the other declared name) worked, which
+        # made it look like `(default)` specifically was unavailable rather than unnamed-vs-named
+        # being two spellings of one cell. `None` and "(default)" are the same request; treating
+        # them differently is a trap in the selector, not a decision about the caliber.
         return "(default)", contract["cell"]
     if cell_name in retired_cells(contract):
         _t = retired_cells(contract).get(cell_name) or {}

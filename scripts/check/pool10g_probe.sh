@@ -88,45 +88,36 @@ preflight() {
 # ── 單臂執行 ────────────────────────────────────────────────────────────
 # $1=arm tag  $2=pool bytes  $3=MTP(0|1)
 #
-# ★★ 2026-10-07 第一次實跑的兩個 fail-closed（都是本腳本的缺陷，不是被測對象的失敗）：
+# ★★ 2026-10-07 第一次實跑的三個 fail-closed，兩個是本腳本的缺陷、第三個是口徑阻礙：
 #
-#   (1) `cell_contract` 釘死 `expert_cache_bytes: 8589934592`
-#       —— 那是測試卡 §2.5 對 `(default)` 格的**權威宣告值**
-#       （docs/PROD_NEW_TEST_CARD_2026-09-24.md:114）。改它＝改口徑，**是 operator 的簽名，
-#       不是腳本能繞的**。⇒ 10 GiB 臂在本 shape 下**結構上不可跑**。
-#       ⇒ 誠實處置：只跑控制臂（8 GiB，本來就等於權威值），把 10 GiB 標成
-#         `NEEDS_NEW_CELL`，連 env 都不送（送了只會多一個 fail-closed 雜訊）。
+#   (1) `cell_contract` 釘死 (default) 的 `expert_cache_bytes: 8589934592`
+#       —— 那是測試卡 §2.5 對 (default) 的**權威宣告值**。
+#       ⇒ **operator 已簽：新增一格 `pool10g`（§2.5 的 `cells` 區塊）**，
+#         與 (default) 逐鍵相同、只有 expert_cache_bytes 不同 ⇒ (default) 一個鍵都沒動。
 #   (2) MTP 臂需要 `--spec-type draft-mtp`
 #       —— `CGC_SERVER_MTP=1` 只匯出 MTP 的 env block，spec 本身是 llama-bench 的旗標，
-#       沒有它量到的不是 MTP（llama_bench_matrix:1793 fail-closed）。
-#       ⇒ 補上 `--spec-type draft-mtp --spec-draft-n-max 3`。
+#       沒有它量到的不是 MTP（llama_bench_matrix:1793 fail-closed）。⇒ 已補。
+#   (3) `--cell '(default)'` 會被 cell_contract 擋下（`resolve_cell` 只認 `None`）
+#       —— ★ 這是 cell_contract 的一個 bug：`cell_names()` 一直把 "(default)" 列為可選，
+#       所以「讀清單再把名字傳回去」這個合理動作會被拒。已修（None 與 "(default)" 同義）。
 #
-# ⇒ 兩者都是「先量，再講」該做的事：寧可讓它結構性不可跑，也不要量出一個不在口徑裡的數字。
+# ⇒ 現在兩臂都跑同樣的 `--cell pool10g` / 8GiB 臂跑 `--cell (default)`，
+#    **差異只有 expert_cache_bytes 這一個鍵**，這正是這個實驗要控制的東西。
 run_arm() {
   local tag="$1" pool="$2" mtp="$3"
-
-  # (1) 池大小偏離權威值 ⇒ 不跑。理由寫進產物目錄的 notes 檔，不假裝它量過。
-  if [ "$pool" != "$POOL_8G" ]; then
-    say ""
-    say "▶ arm ${tag}   pool=$((pool/1079372032))GiB  MTP=$mtp"
-    say "  ⛔ SKIPPED by design — 不發車。"
-    say "     理由：(default) 格的權威宣告值是 expert_cache_bytes=8589934592（測試卡 §2.5）。"
-    say "           10 GiB 需要**新格**或**改測試卡**，兩者都是 operator 的口徑簽名。"
-    say "     這不是失敗，是『這個形狀下不存在這個實驗』。控制臂已足以回答 H_nowin 的分母。"
-    echo "SKIPPED: pool=$pool is not the (default) cell's authoritative value ($POOL_8G); needs an operator-approved cell" > "$OUT/${tag}.skipnote"
-    return 3
-  fi
+  # 選格：8 GiB 用 (default)（它就是 (default) 的權威值），10 GiB 用新增的 pool10g 格。
+  # ⛔ 不傳 --cell '(default)' 給 8G 臂：harness 預設就是那一格，不傳最不容易出錯。
+  local cellarg=()
+  [ "$pool" = "$POOL_10G" ] && cellarg=(--cell pool10g)
 
   local envs="CGC_SERVER_EXPERT_CACHE_BYTES=${pool};CGC_SERVER_MTP=${mtp}"
   # CGC_SERVER_SEED 釘住：逐位元 A/B 必須固定 seed（記憶 10-04 立的規矩）。
   [ "$mtp" = "1" ] && envs="${envs};CGC_SERVER_SEED=1"
   say ""
-  say "▶ arm ${tag}   pool=$((pool/1073741824))GiB  MTP=$mtp"
+  say "▶ arm ${tag}   pool=$((pool/1073741824))GiB  MTP=$mtp   cell=${cellarg[1]:-(default)}"
   say "  env: $envs"
   # --charter 的正確用法是 `waive` + `--waive-reason`（harness:482），不是 `none`。
   # 這張卡是「推翻既有判斷」的測量，不是新增交付，所以走急件豁免並留下理由。
-  # ⛔ 不傳 --cell：`(default)` 是 harness 的預設 cell，傳進去會被 cell_contract 擋下
-  #    （實測：「測試卡 §2.5 沒有 cell '(default)'」）⇒ 不傳就是對的。
   local reason
   reason="pool10g probe: 8GiB-vs-10GiB capacity-ceiling test, overturns or confirms run_server.sh:568-574"
   # (2) MTP 臂一定要 spec-type，否則量到的不是 MTP。
@@ -137,7 +128,7 @@ run_arm() {
   "$PY" scripts/check/harness.py bench \
       --arm "prod-new:${envs}" \
       --charter waive --waive-reason "$reason" \
-      "${spec[@]}" \
+      "${cellarg[@]}" "${spec[@]}" \
       --json "$OUT/${tag}.json" > "$OUT/${tag}.log" 2>&1
   rc=$?
   t1=$(date +%s)
@@ -185,13 +176,11 @@ verdict() {
   say "  H_nowin 10 GiB 活著但沒贏           ⇒ 確認容量已過熱集"
   say "  H_gain  贏且超出散布                ⇒ ★ 推翻「熱集已裝進 8 GiB」"
   say ""
-  say "★ 2026-10-07 第一次實跑的修正：H_oom 與 H_nowin 都不會發生了。"
-  say "  原因不是實驗結果，是 (default) 格的權威宣告值把 expert_cache_bytes 釘在 8589934592"
-  say "  （測試卡 §2.5）⇒ 10 GiB 臂在這個 shape 下**結構上不可跑**，連 OOM 都走不到。"
-  say "  ⇒ 本實驗退化為：**只有控制臂**。它能回答的是"
-  say "     「8 GiB 現在實際站在哪裡」，不能回答「10 GiB 會不會更快」。"
-  say "  ⇒ 要問後者，需要 operator 簽一份新格（或改測試卡 §2.5 的權威值）。"
-  say "     在那之前，任何『10 GiB 應該 X』的說法都沒有產物路徑。"
+  say "★ 2026-10-07 11:0x 那次三個試驗臂全被擋，現在的原因已逐條處理："
+  say "  · cell contract ⇒ operator 已簽新格 pool10g（§2.5），(default) 一個鍵沒動"
+  say "  · MTP 缺 spec-type ⇒ 已補 --spec-type draft-mtp"
+  say "  · --cell '(default)' 被拒 ⇒ cell_contract 的 bug 已修（None 與 '(default)' 同義）"
+  say "  ⇒ 這一次才是真正的兩臂對照。前一次只有控制臂，不能回答本題。"
   hr
   say "完整結果："
   "$PY" scripts/check/bench_ledger.py --json > "$OUT/ledger_snapshot.json" 2>/dev/null || true

@@ -197,6 +197,28 @@ llama-bench -m models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf \
           "fixed_fill_seed": 1
     }
   },
+  "cells": {
+    "pool10g": {
+      "_why": "2026-10-07 operator 簽。唯一目的是讓『池 8G vs 10G』成為一個可跑的形狀，而不是一個想法。",
+      "_why_not_default": "10 GiB 是 run_server.sh:510 的 BUDGET_DEFAULT，但 profile 層（:555/:582/:627）把它壓回 8589934592。動 (default) 會改掉所有既有 (default) 讀數的可比性 ⇒ 新開一格，(default) 一個鍵都不動。",
+      "_shape": "與 (default) 逐鍵相同，只有 expert_cache_bytes 不同 —— 所以兩臂的差只來自池大小，這正是這個實驗要控制的東西。",
+      "ngl": 99,
+      "load_mode": "none",
+      "threads": 8,
+      "batch": 2048,
+      "ubatch": 512,
+      "prompt": 512,
+      "gen": 128,
+      "depths": 0,
+      "reps": 5,
+      "warm_skip": 0,
+      "ctx_size": 0,
+      "expert_cache_bytes": 10737418240,
+      "cache_type_k": "q8_0",
+      "cache_type_v": "q8_0",
+      "fixed_fill_seed": 1
+    }
+  },
   "retired_cells": {
     "offload-ngl30": {
       "prompt": 2048,
