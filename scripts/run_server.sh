@@ -1407,9 +1407,32 @@ if [ -n "${CGC_SERVER_LOG_VERBOSITY:-}" ]; then
     SERVER_ARGS+=(--log-verbosity "$CGC_SERVER_LOG_VERBOSITY")
 fi
 # [CGC IQ3_XXS Sampling] Optimized for low-bit quantization quality
-# temp 0.4 + top_p 0.8 是 06:52 生產基線 (26.25 t/s, 98.2% draft_accept) 的配置
-# 可通過 CGC_SERVER_TEMP / CGC_SERVER_TOP_P 覆蓋
-SERVER_ARGS+=(--temp "${CGC_SERVER_TEMP:-0.4}")
+# temp 0 + top_p 0.8 自 2026-10-07 起為生產預設（operator 簽）。
+#
+# 【為什麼改成 0】temp<=0 在 llama-sampler.cpp:265-282 是 **argmax**（非 argmax 的 logit 全部
+# 設成 -INFINITY）⇒ 完全無隨機性。三個理由，每個都有讀數：
+#  ① MTP 攤薄在 temp=0 下由淨負轉為正：2026-10-07 的 9 臂交錯實測
+#     temp0.4 -> n1 0.910 / n2 0.989 / n3 0.899；temp0.0 -> 1.295 / 1.392 / 1.420。
+#     機制是 llama-bench.cpp:2810-2818 註解的那句：accept step 比較 draft 與 **target 的
+#     sampled token** ⇒ target 分布越銳利 accept 越高。
+#  ② 逐位元 A/B 的基礎變強：argmax 下同一 prompt **恆等輸出**，不再依賴 seed 才相同。
+#  ③ MTP 接受率的低基線（0.25-0.87）**不是** is_mem_shared 的問題——2026-10-07 查證
+#     is_mem_shared=true（四個 n-max>=2 的臂都印 shared-KV SEQUENTIAL），
+#     而 llama-context.cpp:166-171 記錄那個 0.98->0.44 的 allowlist 缺陷已在 09-30 修掉。
+#     ⇒ 沒有「不動輸出」的引擎側捷徑可走，temp 是唯一活著的槓桿。
+#
+# 【已知取捨（誠實記錄）】
+#  · 產出 token 序列會變 ⇒ **歷史上以 temp=0.4 產生的 decode/prefill 讀數跨不過這個斷點**。
+#    ★ 但 re-baseline **不需要做**：oracle gate 的 probe 走 HTTP API 且 payload 寫死
+#    `"temperature": 0.0`（m123_oracle_gate.py:1318）⇒ oracle 基準本來就是 greedy 產生，
+#    不受這一行影響。★ 這是 13:1x/13:2x「需 re-baseline」判斷的更正（成本被高估了）。
+#  · DRY 重複防線**早已開著**（:1429 dry-multiplier 預設 1.0），greedy 的重複崩塌風險已有覆蓋；
+#    rp 保持 1.0（開啟有 draft-accept 成本，見 :1418）。
+#  · 舊註解引用的「06:52 生產基線」不可比：BITIDENTITY_AND_0907_KNOWHOW_2026-09-22.md:159
+#    自述那些 accept 數字屬「被抬高的 regime」，修好後同一格讀數是 12.62。
+#
+# 可通過 CGC_SERVER_TEMP / CGC_SERVER_TOP_P 覆蓋（★ 這是唯一的生產落點，沒有別的 profile 釘它）。
+SERVER_ARGS+=(--temp "${CGC_SERVER_TEMP:-0}")
 SERVER_ARGS+=(--top-k "${CGC_SERVER_TOP_K:-0}")
 SERVER_ARGS+=(--top-p "${CGC_SERVER_TOP_P:-0.8}")
 # [CGC 2026-09-07 IQ3_XXS repetition guard] mid-generation repetition collapse
