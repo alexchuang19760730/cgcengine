@@ -34,6 +34,17 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 
+# [CGC 2026-10-07] The acceptance ledger. `Backup/commit_bench/` was EMPTY while 97 readings sat
+# in Backup/spec_tree/, so "what can this build actually run, under the acceptance caliber?" took
+# a 97-file scan plus a hand judgement about `attribution` every single time (2026-10-07: only
+# 3 of 97 were quotable). `attribution` was never missing from the artefacts -- llama_bench_matrix
+# has always written it -- it was simply never read out and never recorded centrally.
+# The repo rule this serves: 缺口從來不是「沒有檔案」，是沉默. A gate that blocks a commit but
+# leaves no quotable record is a gate whose verdict can only be remembered, and remembered
+# verdicts are what this repo has been fighting for three months.
+LEDGER_DIR = os.path.join(ROOT, "Backup", "commit_bench")
+LEDGER = os.path.join(LEDGER_DIR, "ledger.jsonl")
+
 PROFILE = "prod-new"          # MTP off + prefill250 支柱（§EN-473：decode 13-14 / prefill 250+）
 # [CGC 2026-10-03] 形狀＝**llama-bench 出廠**（測試卡 §2.5 預設 cell，operator 裁定）。
 # 出處：`src/llama.cpp/tools/llama-bench/llama-bench.cpp:392-439` 的 `cmd_params_defaults`：
@@ -115,6 +126,37 @@ def extract(results):
     return prefill, decode
 
 
+def record_ledger(entry):
+    """Append one acceptance reading to Backup/commit_bench/ledger.jsonl.
+
+    WHY FAIL-CLOSED ON `attribution`. The 2026-10-07 scan of 97 readings found only 3 quotable:
+    34 were `both` (thermal AND swap over limit), 23 `swap`, 14 `thermal`, and 23 had the field
+    MISSING entirely. A gate that only records the number would have banked all 97 as equally
+    real. So the ledger records the verdict alongside the reading, and `quotable` is computed
+    here rather than left to whoever reads it later -- `attribution` absent is NOT clean, it is
+    unverified, and it is graded as unquotable for the same reason drift_adjudicate fail-closes
+    on a missing sidecar field.
+
+    Append-only on purpose: overwriting would destroy the history that makes a regression visible,
+    and this repo's own convention is that a lost reading is indistinguishable from a reading that
+    never happened.
+    """
+    os.makedirs(LEDGER_DIR, exist_ok=True)
+    with open(LEDGER, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return LEDGER
+
+
+def quotable(attribution):
+    """`attribution.verdict == "none"` and nothing else. Missing field => NOT quotable."""
+    if not isinstance(attribution, dict):
+        return False, "attribution field absent => unverified, not clean"
+    v = attribution.get("verdict")
+    if v == "none":
+        return True, attribution.get("why", "")
+    return False, attribution.get("why") or f"verdict={v}"
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -177,6 +219,43 @@ def main():
                   f"(commit_bench {args.profile} p{args.prompt} n{args.gen} d{args.depths} r{args.reps})")
     print(f"\n[commit-gate] {bench_line}")
     print(f"[commit-gate] 標題範例: perf(server): <你的改動>（{bench_line}）")
+
+    # [CGC 2026-10-07] Record BEFORE the pass/fail return, so a FAILING run is banked too -- a
+    # regression is exactly the reading you need later and it is exactly the one a gate that only
+    # writes on success throws away. `attribution` decides quotability, NOT the thresholds: a run
+    # can clear both thresholds on a swap-tainted window and still be unusable as evidence.
+    try:
+        _arm = (results[0] if isinstance(results, list) and results else results) or {}
+    except Exception:
+        _arm = {}
+    _attrib = _arm.get("attribution")
+    _q, _why = quotable(_attrib)
+    _cell = _arm.get("cell") or {}
+    _entry = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "stamp": stamp,
+        "profile": args.profile,
+        "cell": {"prompt": _cell.get("prompt", args.prompt), "gen": _cell.get("gen", args.gen),
+                 "depths": _cell.get("depths", args.depths), "reps": _cell.get("reps", args.reps),
+                 "warm_skip": _cell.get("warm_skip"), "named_cell": _cell.get("named_cell"),
+                 "contract_ok": (_arm.get("contract") or {}).get("ok")},
+        "prefill_ts": pv, "decode_ts": dv, "mtp": mtp_tag,
+        "prefill_samples": (prefill or {}).get("samples_ts"),
+        "decode_samples": (decode or {}).get("samples_ts"),
+        "thresholds": {"prefill_min": args.prefill_min, "decode_min": args.decode_min},
+        "gate_pass": bool(ok),
+        "attribution": _attrib,
+        "quotable": _q,
+        "quotable_why": _why,
+        "record_only": bool(args.record_only),
+        "bench_line": bench_line,
+    }
+    _path = record_ledger(_entry)
+    print(f"[commit_bench] ledger: {os.path.relpath(_path, ROOT)}  "
+          f"(quotable={'yes' if _q else 'NO'} — {_why})")
+    if not _q:
+        print("[commit_bench] ⛔ 這筆不可引用：數字是真的，但視窗不合格（熱態／swap）。"
+              "要引用請先降溫或等 swap 回落。")
 
     if ok or args.record_only:
         print("[commit_bench] PASS" if ok else "[commit_bench] FAIL (record-only, not blocking)")
