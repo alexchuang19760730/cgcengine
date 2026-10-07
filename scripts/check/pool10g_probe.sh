@@ -1,6 +1,6 @@
 #!/bin/bash
 # ══════════════════════════════════════════════════════════════════════════════
-# pool10g_probe.sh —— 專人手動跑：產能基線 + MTP on/off（池大小那條線已結論）
+# pool10g_probe.sh —— 專人手動跑：MTP 機制（temp × n-max 雙軸）／產能基線／池大小（已結論）
 #
 # 為什麼要手動：這台機器的量測窗口會被 WorkBuddy 本身佔用（視窗合成 + GPU 行程）。
 # ★ WorkBuddy 必須**完全關閉**再跑這個腳本，否則熱態與 swap 都是被自己干擾的。
@@ -32,7 +32,8 @@
 #   cd /Users/alexchuang/Documents/flashkv-devserver
 #   bash scripts/check/pool10g_probe.sh            # 預設：MTP ABBA 四臂（約 7 分鐘）
 #   bash scripts/check/pool10g_probe.sh --off      # 只 MTP off 一趟乾淨基線（約 2 分鐘）
-#   bash scripts/check/pool10g_probe.sh --pool10g  # 已結論的 8G vs 10G（會被 budget-gate 擋）
+#   bash scripts/check/pool10g_probe.sh --axis       # ★ temp(0.0/0.4) × n-max(1/2/3)，9 臂交錯（約 25 分鐘）
+#   bash scripts/check/pool10g_probe.sh --pool10g# 已結論的 8G vs 10G（會被 budget-gate 擋）
 # ══════════════════════════════════════════════════════════════════════════════
 set -uo pipefail
 
@@ -81,12 +82,29 @@ POOL_10G=10737418240
 #   off      只跑一趟 MTP off 的乾淨基線（約 110s）
 #   pool10g  已結論的 8G vs 10G；要跑必須明確指定（見 main() 的註解）
 MODE=mtp
+# TEMP/NMAX 預設空字串 ⇒ run_arm 裡的 `${TEMP:-}`／`${NMAX:-3}` 會走交付設定
+# （temp 不傳 ⇒ run_server.sh 的 0.4；nmax=3）。這讓舊的 3 欄臂字串語意完全不变。
+TEMP=""
+NMAX=3
+case "${1:-}" in
+# --help is honoured from ANY position, not just $1: without this, `--axis --help` silently started
+# a 25-minute run because $1 was `--axis`. Scanning all args costs one loop and removes the trap.
+# This is the same shape as the zsh empty-array bug fixed at 11:2x -- a convenient shorthand that
+# silently does something else when the caller combines it with another flag.
+  "") ;;
+  --help|-h) sed -n '2,32p' "$0"; exit 0 ;;
+esac
+for _a in "$@"; do
+  case "$_a" in
+    --help|-h) sed -n '2,32p' "$0"; exit 0 ;;
+  esac
+done
 case "${1:-}" in
   ""|--mtp)      MODE=mtp ;;
   --off|--quick) MODE=off ;;   # --quick 保留為 off 的別名（沿用舊用法）
   --pool10g)     MODE=pool10g ;;
-  --help|-h)     sed -n '2,26p' "$0"; exit 0 ;;
-  *) echo "未知選項：$1（可用：--mtp / --off / --pool10g）" >&2; exit 2 ;;
+  --axis)        MODE=axis ;;  # temp x draft-n-max 雙軸，9 臂 ABBA 交錯
+  *) echo "未知選項：$1（可用：--mtp / --off / --pool10g / --axis）" >&2; exit 2 ;;
 esac
 
 # ── 陷阱六：環境閘門（listener／殘留行程／熱態／壓縮機）────────────────────
@@ -143,6 +161,16 @@ run_arm() {
   [ "$pool" = "$POOL_10G" ] && cellarg=(--cell pool10g)
 
   local envs="CGC_SERVER_EXPERT_CACHE_BYTES=${pool};CGC_SERVER_MTP=${mtp}"
+  # [CGC 2026-10-07] TEMP_AXIS. The MTP accept step compares the draft against the TARGET's
+  # SAMPLED token, so accept rate == target sharpness (llama-bench.cpp:2810-2818, verbatim). Every
+  # MTP reading in memory (10-03's 0.755/0.933, 12:0x's 0.853) was taken at temp=0.4, which is a
+  # FLAT distribution -- so "accept rate is only 0.25-0.66" was never evidence about the head.
+  # TEMP=greedy is the arm that can move the verdict from "MTP is a loss" to "our production temp
+  # is too flat", and those are different conclusions.
+  # ⚠️ The value must be last-wins-correct: run_server.sh emits `--temp 0` at argv[34] for the MTP
+  # path itself and `--temp <ours>` at argv[40]; llama_bench_matrix.sampling_env takes the LAST
+  # occurrence (verified 2026-10-07: TEMP=0.0 -> sampling_env CGC_SERVER_TEMP=0.0). Verified.
+  [ -n "$TEMP" ] && envs="${envs};CGC_SERVER_TEMP=${TEMP}"
   # CGC_SERVER_SEED 釘住：逐位元 A/B 必須固定 seed（記憶 10-04 立的規矩）。
   [ "$mtp" = "1" ] && envs="${envs};CGC_SERVER_SEED=1"
   # [CGC 2026-10-07] MTP mechanism instruments, MTP arms only.
@@ -162,8 +190,15 @@ run_arm() {
   local reason
   reason="pool10g probe: 8GiB-vs-10GiB capacity-ceiling test, overturns or confirms run_server.sh:568-574"
   # (2) MTP 臂一定要 spec-type，否則量到的不是 MTP。
+  # [CGC 2026-10-07] NMAX_AXIS. draft-n-max is a llama-bench CLI flag (not an env knob), and it is
+  # the only lever that cuts the per-token forward count: speculative.cpp:322 runs one
+  # `llama_decode(ctx_dft)` PER DRAFTED TOKEN, so forwards/token = (drafted + rounds)/gen_tokens,
+  # measured median 2.03 at n-max=3 vs 1.00 for plain decode (12:6x). Lowering n-max removes
+  # forwards that were mostly rejected anyway (draft_ratio was 0.25-0.66).
+  # ⚠️ n-max and temp INTERACT, which is why they are swept together rather than one after the
+  # other: a flat target accepts fewer drafts, so the best n-max at temp=0.4 is not the best at 0.
   local spec=()
-  if [ "$mtp" = "1" ]; then spec=(--spec-type draft-mtp --spec-draft-n-max 3); fi
+  if [ "$mtp" = "1" ]; then spec=(--spec-type draft-mtp --spec-draft-n-max "${NMAX:-3}"); fi
   local t0 t1 rc
   t0=$(date +%s)
   "$PY" scripts/check/harness.py bench \
@@ -245,6 +280,29 @@ PYEOF
 
 verdict() {
   hr
+  if [ "$MODE" = "axis" ]; then
+    say "══════ 預先寫死的判讀（temp × draft-n-max 雙軸）══════"
+    say "  ★ 這九臂是交錯的，不是「一個 temp 一塊」——位置效應實測 ~14%，與效應同量級。"
+    say "  ★ 兩組 off 臂（a1/a9 同為 temp0.4、a4 為 temp0.0）可交叉驗證漂移："
+    say "     若 off_a 與 off_b 差很多 ⇒ 本run 有漂移，比值全部不可引用。"
+    say ""
+    say "  A_gain  greedy(temp=0) 的 MTP 比值 > 1 且超出散布"
+    say "         ⇒ ★ 生產 temp=0.4 選得太平；MTP 的問題是採樣設定不是 head"
+    say "  A_flat  greedy 比值 ≈ 1（落在散布內）"
+    say "         ⇒ temp 不是槓桿；成本在每 token 的 forward 數（2.03 vs 1.00）"
+    say "  A_loss  greedy 比值 < 1 且超出散布"
+    say "         ⇒ MTP 在 greedy 下也是淨虧 ⇒ head/forward 成本是結構性的"
+    say "  A_dirty 任一臂 attribution ≠ none"
+    say "         ⇒ 不可引用，先降溫重跑（**不要**加 BUDGET_GATE=warn 硬跑）"
+    say ""
+    say "  ★ n-max 的讀法：同一 temp 下 n1/n2/n3 的 tg 應隨 forward 數下降而上升。"
+    say "     若 n1 沒比 n3 快 ⇒ forward 數不是瓶頸，桿桿方向要換。"
+    say ""
+    say "  ★★ 交付口徑提醒：服務端生產是 temp=0.4（run_server.sh:1412）。"
+    say "     所以 A_gain 也不代表交付會變快——它代表**診斷**變了（是 temp 選得太平）。"
+    hr
+    return 0
+  fi
   if [ "$MODE" = "mtp" ]; then
     say "══════ 預先寫死的判讀（MTP on/off）══════"
     say "  ★ 這四臂是 ABBA（off/on/on/off），所以**位置效應被對消**。看的是配對中位，不是四個平均。"
@@ -314,7 +372,41 @@ main() {
     pool10g)
       arms=("ctl8g:${POOL_8G}:0" "try10g:${POOL_10G}:0")
       ;;
-    *) say "未知模式：$MODE（可用：mtp / off / pool10g）" >&2; exit 2 ;;
+    # [CGC 2026-10-07] The two-axis sweep: temp x draft-n-max, ABBA-interleaved.
+    #
+    # WHY THIS SHAPE. Every MTP reading in memory was taken at temp=0.4, a FLAT distribution, and
+    # the accept step compares the draft against the TARGET's sampled token (llama-bench.cpp:2810
+    # -2818) -- so "draft_ratio is only 0.25-0.66" was never evidence about the head. The greedy arm
+    # is the one that can move the verdict from "MTP is a loss on this box" to "our production temp
+    # is too flat", and those lead to opposite decisions about draft-n-max.
+    #
+    # ★ The two axes INTERACT (accept rate sets how many drafts are worth making), so sweeping them
+    #   one-at-a-time would attribute an interaction effect to whichever axis ran second.
+    #
+    # ★ Interleaving, not one block per temp: the 10-06 measurement put the POSITION effect at ~14%,
+    #   which is the same order as the effects being measured. Both temperatures' off arms sit at
+    #   the two ends and again in the middle, so a drift shows up as off_a != off_b rather than as
+    #   a spurious temp effect. On arms alternate around them.
+    #
+    # Verdicts (pre-registered, all three count as information):
+    #   A_gain   greedy MTP ratio > 1 beyond spread => the flat production temp was the problem
+    #   A_flat   greedy ratio ~ 1                   => temp is not the lever; forward count is
+    #   A_loss   greedy ratio < 1 beyond spread    => MTP is a loss even at temp=0
+    #   A_dirty  any arm attribution != none       => not quotable, cool down and re-run
+    axis)
+      arms=(
+        "a1_t04_off:${POOL_8G}:0:0.4"
+        "a2_t00_n3:${POOL_8G}:1:0.0:3"
+        "a3_t04_n1:${POOL_8G}:1:0.4:1"
+        "a4_t00_off:${POOL_8G}:0:0.0"
+        "a5_t04_n3:${POOL_8G}:1:0.4:3"
+        "a6_t00_n1:${POOL_8G}:1:0.0:1"
+        "a7_t00_n2:${POOL_8G}:1:0.0:2"
+        "a8_t04_n2:${POOL_8G}:1:0.4:2"
+        "a9_t04_off2:${POOL_8G}:0:0.4"
+      )
+      ;;
+    *) say "未知模式：$MODE（可用：mtp / off / pool10g / axis）" >&2; exit 2 ;;
   esac
   say "模式 $MODE ⇒ ${#arms[@]} 臂：${arms[*]}"
 
@@ -323,14 +415,19 @@ main() {
   # zsh 的函式作用域預設不繼承 local，於是 `spec` 漏到全域、下一輪迭代讀到被覆寫的值。
   # 改成 `_armspec`／`local`，兩層都對。
   local _armspec tag pool mtp
+  # [CGC 2026-10-07] Arm spec gained two optional fields: tag:pool:mtp[:temp[:nmax]].
+  # Both default to the DELIVERY config when absent (temp unset => run_server.sh's 0.4, nmax=>3),
+  # so every pre-existing arm string keeps its exact old meaning. `read` leaves the extra vars
+  # EMPTY rather than unset when the field is missing, which is why the defaults are applied with
+  # `:-` below and not by initialising them once outside the loop.
   for _armspec in ${arms[@]+"${arms[@]}"}; do
-    IFS=':' read -r tag pool mtp <<< "$_armspec"
-    run_arm "$tag" "$pool" "$mtp"; results+=("$tag:$?")
+    IFS=':' read -r tag pool mtp _t _n <<< "$_armspec"
+    TEMP="$_t" NMAX="$_n" run_arm "$tag" "$pool" "$mtp"; results+=("$tag:$?")
   done
 
   hr; say "[4/5] 逐臂讀數"
   for _armspec in ${arms[@]+"${arms[@]}"}; do
-    IFS=':' read -r tag pool mtp <<< "$_armspec"
+    IFS=':' read -r tag pool mtp _t _n <<< "$_armspec"
     report_arm "$tag" "$pool" "$mtp"
   done
 
