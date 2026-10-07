@@ -329,6 +329,18 @@ def arm_env_dropped(profile: str, extra_env: dict[str, str], res_full: dict) -> 
     A key counts as landed if it is echoed verbatim (same name + value) in the resolved env /
     scalars -- which also covers "set to the value it already had" -- or if resolving with that
     one key produces a surface different from the bare profile.
+
+    [CGC 2026-10-07] The "set to the value it already had" half did not actually work, because the
+    verbatim test compares NAMES and run_server.sh renames on the way through: asking for
+    `CGC_SERVER_EXPERT_CACHE_BYTES=8589934592` lands as the argv token `-expert-cache
+    8589934592` and as env `CGC_EXPERT_CACHE_BYTES` (run_server.sh:1342 / :1441). Neither carries
+    the requested name, so the verbatim test missed; the surface-diff test missed too, because
+    8 GiB IS the prod-new default and the two surfaces are then identical. The arm was reported
+    DROPPED -- the guard built to catch silent drops was itself producing a false positive, and it
+    did so on exactly the value the profile ships with. A control arm that states the current
+    setting is the one arm a capacity sweep cannot do without.
+    => The value now counts as landed if it appears ANYWHERE in the resolved surface under another
+    name (env / scalars / argv tokens), which is what the docstring always claimed.
     """
     if not extra_env:
         return []
@@ -337,12 +349,30 @@ def arm_env_dropped(profile: str, extra_env: dict[str, str], res_full: dict) -> 
     for k, v in extra_env.items():
         if res_full["env"].get(k) == v or res_full["scalars"].get(k) == v:
             continue
+        if _value_present(res_full, v):
+            continue
         if base is None:
             base = resolve(profile, {})
         if _surface(resolve(profile, {k: v})) != _surface(base):
             continue
         dropped.append(f"{k}={v}")
     return dropped
+
+
+def _value_present(res: dict, v: str) -> bool:
+    """Does `v` appear anywhere in the resolved surface, under any name?
+
+    The renamed-knob case: run_server.sh translates some entry names into different downstream
+    names (`CGC_SERVER_EXPERT_CACHE_BYTES` -> the `-expert-cache` argv token and the
+    `CGC_EXPERT_CACHE_BYTES` env var). A name-exact test cannot see that, so the value itself is
+    the evidence. Deliberately scoped to env / scalars / argv tokens: a substring search over the
+    whole resolved dict would match model paths and prompts, and would defeat the guard.
+    """
+    for section in ("env", "scalars"):
+        if v in (res.get(section) or {}).values():
+            return True
+    argv = res.get("server_argv") or res.get("argv") or []
+    return any(str(tok) == v for tok in argv)
 
 
 def forward_argv(server_argv: list[str]) -> list[str]:
