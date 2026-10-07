@@ -1,25 +1,38 @@
 #!/bin/bash
 # ══════════════════════════════════════════════════════════════════════════════
-# pool10g_probe.sh —— 專人手動跑：expert cache 池 8 GiB vs 10 GiB
+# pool10g_probe.sh —— 專人手動跑：產能基線 + MTP on/off（池大小那條線已結論）
 #
 # 為什麼要手動：這台機器的量測窗口會被 WorkBuddy 本身佔用（視窗合成 + GPU 行程）。
 # ★ WorkBuddy 必須**完全關閉**再跑這個腳本，否則熱態與 swap 都是被自己干擾的。
 #
-# ★★ 預先寫死的判據（不做事後附會）。三個結局都算「有訊息」，其中兩個是確認既有判斷：
+# ★★ 預設模式（mtp）—— 判據預先寫死，不做事後附會：
 #
-#   H_oom    ：10 GiB 臂起不來（rc≠0 / kIOGPUCommandBufferCallbackErrorOutOfMemory）
-#              ⇒ 確認「10 GiB 放不進 16GB」。這是預期中的結局，不是失敗。
-#   H_nowin  ：10 GiB 臂活著但 tg 不高於 8 GiB 臂（差異落在兩臂散布內）
-#              ⇒ 確認「容量已過熱集，堆容量無收益」。這也是預期中的結局。
-#   H_gain   ：10 GiB 臂 tg 高於 8 GiB 臂且超出散布
-#              ⇒ ★ 推翻「熱集已裝進 8 GiB」。這是唯一會意外翻案的結局。
+#   四臂 ABBA（off / on / on / off），池固定 8 GiB（=(default) 權威值）。
+#   ★ 交錯的理由：記憶 10-06 實測**位置效應 ~14%**，而 MTP on/off 預期差異只有幾個百分點
+#     ⇒ 只跑 off→on 量到的是「位置」不是「MTP」。10-03 那兩版讀數（0.755× vs 0.933×）
+#     的差異就是這個，所以這次兩邊都堵（交錯 + attribution）。
+#   ★ 判的是**比值 tg_on/tg_off**，不是絕對值。
 #
-# 預先聲明測的是「比值」不是絕對值；且 MTP on/off 兩臂各自成對，不跨臂比。
+#   M_gain   比值 > 1 且超出兩臂散布  ⇒ MTP 有正收益
+#   M_flat   比值 ≈ 1（落在散布內）    ⇒ 攤薄與成本抵銷
+#   M_loss   比值 < 1 且超出散布      ⇒ ★ MTP 淨虧
+#   M_dirty  任一臂 attribution ≠ none ⇒ 不可引用，先降溫重跑
+#
+#   對照（記憶 10-03 誠實配對）：ON 9.306 / OFF 9.974 = **0.933×（淨負 −6.7%）**；
+#   同一測試的 v1（按臂 shim、沒暖身）報 0.755× —— **那是偽影，不可引用**。
+#
+# ★ 池大小（8G vs 10G）不再是預設：11:2x 已量到結論 ——
+#     model 13030 MiB（不可回收）＋ pool 10240 MiB ＝ 23270 vs 實體 16384
+#     ⇒ OVERSUBSCRIBED by 6886 MiB；10 GiB 臂 rows=0 / max_llama_procs=0（起跑前被擋）。
+#   再跑只會重現那行字 ⇒ 要重跑得明確指定 --pool10g。
+#
+# 用法（WorkBuddy 關閉後，在 Terminal 裡 —— zsh / bash 都行，腳本會自舉到 bash）
 #
 # 用法（WorkBuddy 關閉後，在 Terminal 裡）
 #   cd /Users/alexchuang/Documents/flashkv-devserver
-#   bash scripts/check/pool10g_probe.sh              # 8G/10G × MTP off/on = 4 臂
-#   bash scripts/check/pool10g_probe.sh --quick      # 只 MTP off 的 2 臂（先探存活）
+#   bash scripts/check/pool10g_probe.sh            # 預設：MTP ABBA 四臂（約 7 分鐘）
+#   bash scripts/check/pool10g_probe.sh --off      # 只 MTP off 一趟乾淨基線（約 2 分鐘）
+#   bash scripts/check/pool10g_probe.sh --pool10g  # 已結論的 8G vs 10G（會被 budget-gate 擋）
 # ══════════════════════════════════════════════════════════════════════════════
 set -uo pipefail
 
@@ -63,8 +76,18 @@ mkdir -p "$OUT"
 POOL_8G=8589934592
 POOL_10G=10737418240
 
-QUICK=0
-[ "${1:-}" = "--quick" ] && QUICK=1
+# ★ 模式（2026-10-07 11:2x 新增）。預設是 mtp，因為那是唯一還沒答案的實驗。
+#   mtp      ABBA 交錯：off/on/on/off，池固定 8 GiB（=(default) 權威值）⇒ 不需要新格
+#   off      只跑一趟 MTP off 的乾淨基線（約 110s）
+#   pool10g  已結論的 8G vs 10G；要跑必須明確指定（見 main() 的註解）
+MODE=mtp
+case "${1:-}" in
+  ""|--mtp)      MODE=mtp ;;
+  --off|--quick) MODE=off ;;   # --quick 保留為 off 的別名（沿用舊用法）
+  --pool10g)     MODE=pool10g ;;
+  --help|-h)     sed -n '2,26p' "$0"; exit 0 ;;
+  *) echo "未知選項：$1（可用：--mtp / --off / --pool10g）" >&2; exit 2 ;;
+esac
 
 # ── 陷阱六：環境閘門（listener／殘留行程／熱態／壓縮機）────────────────────
 say() { printf '%s\n' "$*"; }
@@ -180,39 +203,78 @@ PYEOF
 
 verdict() {
   hr
-  say "══════ 預先寫死的判讀 ══════"
-  say "  H_oom   10 GiB 起不來（OOM）        ⇒ 確認放不進"
-  say "  H_nowin 10 GiB 活著但沒贏           ⇒ 確認容量已過熱集"
-  say "  H_gain  贏且超出散布                ⇒ ★ 推翻「熱集已裝進 8 GiB」"
-  say ""
-  say "★ 2026-10-07 11:0x 那次三個試驗臂全被擋，現在的原因已逐條處理："
-  say "  · cell contract ⇒ operator 已簽新格 pool10g（§2.5），(default) 一個鍵沒動"
-  say "  · MTP 缺 spec-type ⇒ 已補 --spec-type draft-mtp"
-  say "  · --cell '(default)' 被拒 ⇒ cell_contract 的 bug 已修（None 與 '(default)' 同義）"
-  say "  ⇒ 這一次才是真正的兩臂對照。前一次只有控制臂，不能回答本題。"
+  if [ "$MODE" = "mtp" ]; then
+    say "══════ 預先寫死的判讀（MTP on/off）══════"
+    say "  ★ 這四臂是 ABBA（off/on/on/off），所以**位置效應被對消**。看的是配對中位，不是四個平均。"
+    say "  ★ 判的是**比值 tg_on/tg_off**，不是絕對值。"
+    say ""
+    say "  M_gain   tg_on/tg_off > 1 且超出兩臂散布  ⇒ MTP 在這台機器上有正收益"
+    say "  M_flat   比值 ≈ 1（落在散布內）            ⇒ MTP 沒賺也沒賠（攤薄與成本抵銷）"
+    say "  M_loss   比值 < 1 且超出散布              ⇒ ★ MTP 淨虧（成本大於攤薄）"
+    say "  M_dirty  任一臂 attribution ≠ none        ⇒ 不可引用，先降溫重跑"
+    say ""
+    say "  ★ 為什麼值得量：記憶 10-03 誠實配對得 **ON 9.306 / OFF 9.974 = 0.933×（淨負 −6.7%）**，"
+    say "    而同一個測試的另一版（按臂 shim、v1）報 0.755× —— **兩版差異就是位置／熱態**，"
+    say "    所以這次用 ABBA + attribution 雙重把關。舊的 8.698 那筆是偽影，不可引用。"
+    say "  ★ 池大小固定 8 GiB：10 GiB 已被 budget-gate 以 6886 MiB 靜態超訂擋下（11:19 量到），"
+    say "    與本實驗無關。"
+  else
+    say "══════ 預先寫死的判讀（池大小）══════"
+    say "  H_oom   10 GiB 起不來（OOM）        ⇒ 確認放不進"
+    say "  H_nowin 10 GiB 活著但沒贏           ⇒ 確認容量已過熱集"
+    say "  H_gain  贏且超出散布                ⇒ ★ 推翻「熱集已裝進 8 GiB」"
+    say ""
+    say "★ 2026-10-07 11:2x：**H_oom 已成立**，budget-gate 算出靜態需求 23270 MiB vs 實體 16384"
+    say "  ＝ OVERSUBSCRIBED by 6886 MiB，10 GiB 臂 rows=0、max_llama_procs=0（起跑前被擋）。"
+  fi
   hr
   say "完整結果："
   "$PY" scripts/check/bench_ledger.py --json > "$OUT/ledger_snapshot.json" 2>/dev/null || true
   say ""
-  say "★ 收工後請把這三件事記進 memory："
-  say "  1. 四臂的 pp/tg 與 attribution（quotable 或否）"
-  say "  2. 命中哪一個結局（H_oom / H_nowin / H_gain）"
-  say "  3. 熱態與壓縮機讀數（$OUT/compressor_before.json）"
+  say "★ 收工後請把這幾件事記進 memory："
+  say "  1. 各臂的 pp/tg 與 attribution（quotable 或否）"
+  say "  2. 命中哪一個結局（mtp 模式：M_gain / M_flat / M_loss / M_dirty）"
+  say "  3. 熱態與壓縮機讀數（$OUT/compressor_before.json、compressor_after.json）"
   say ""
   say "產物：$OUT"
 }
 
 # ── main ────────────────────────────────────────────────────────────────
 main() {
-  say "═══ pool10g probe  $(date '+%Y-%m-%d %H:%M:%S') ═══"
+  say "═══ pool10g probe  $(date '+%Y-%m-%d %H:%M:%S')  [mode=${MODE}] ═══"
   say "WorkBuddy 必須已關閉。產物 → $OUT"
   preflight
 
   hr; say "[3/5] 跑臂"
-  # 先跑 8 GiB 當控制臂（現行設定），再跑 10 GiB。
-  # 順序刻意：8G 在前，若 10G 直接 OOM，控制臂已經有了，不會兩臂都白跑。
-  local arms=("ctl8g:${POOL_8G}:0" "try10g:${POOL_10G}:0")
-  [ "$QUICK" = "0" ] && arms+=("ctl8g_mtp1:${POOL_8G}:1" "try10g_mtp1:${POOL_10G}:1")
+  # ★★ 2026-10-07 11:2x 模式改寫。理由：10 GiB 已經有結論了。
+  #
+  # 【已結論，不再重跑】pool-gate 的硬數字：
+  #     model 13030 MiB（load_mode=none ⇒ 不可回收）＋ pool 10240 MiB ＝ 23270 vs 實體 16384
+  #     ⇒ OVERSUBSCRIBED by 6886 MiB ⇒ 只能靠記憶體壓縮+swap，數字不可引用。
+  #   11:19 那趟 10 GiB 臂 rows=0 / max_llama_procs=0 ⇒ **起跑前**就被擋，連 OOM 都沒走到。
+  #   ⇒ 再跑只會重現這行字，所以 pool10g 模式改成要明確指定。
+  #
+  # 【仍未答】使用者的原始問題是「池 10GB、MTP on/off 會快多少」，而 **MTP on/off 那兩臂
+  #   從來沒有讀數**：11:0x 那趟 MTP 臂被 cell_contract 擋、11:2x 手動跑的是 MTP off。
+  #   而 8 GiB = `(default)` 的權威值 ⇒ **MTP 這個實驗不需要新格**，是產能。
+  #
+  # 【位置效應】記憶 10-06 實測位置效應 ~14%，而 MTP on/off 的預期差異只有幾個百分點
+  #   ⇒ **必須交錯（ABBA），不能只跑 off→on**，否則量到的是「位置」不是「MTP」。
+  local arms=()
+  case "$MODE" in
+    mtp)
+      arms=("m1_off_a:${POOL_8G}:0" "m2_on_a:${POOL_8G}:1"
+            "m3_on_b:${POOL_8G}:1" "m4_off_b:${POOL_8G}:0")
+      ;;
+    off)
+      arms=("base_off:${POOL_8G}:0")
+      ;;
+    pool10g)
+      arms=("ctl8g:${POOL_8G}:0" "try10g:${POOL_10G}:0")
+      ;;
+    *) say "未知模式：$MODE（可用：mtp / off / pool10g）" >&2; exit 2 ;;
+  esac
+  say "模式 $MODE ⇒ ${#arms[@]} 臂：${arms[*]}"
 
   local results=()
   # [CGC 2026-10-07] 這裡原本是 `for spec in ...` 而 `spec` 在 run_arm 內是陣列名 —— 撞名。
