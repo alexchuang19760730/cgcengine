@@ -170,6 +170,35 @@ run_arm() {
   if [ "$pool" = "$POOL_10G" ]; then cellarg=(--cell pool10g)
   elif [ "$HOT" = "1" ];     then cellarg=(--cell hotcache)
   fi
+  # ★★ 2026-10-07 14:5x：`--cell` 只帶「格的名字」，**不带格的值**。
+  #   14:49 那趟 `--hot` 九臂全被 cell_contract 擋下：
+  #     「warm_skip: 實際 0 ≠ 權威 64」—— 因為 harness 的 `--warm-skip` 預設來自
+  #     `_BENCH_DEFAULTS`，而**沒有任何機會**把 cell 的值餵回去。
+  #   `cell_contract.bench_flags(cell)`（:622）就是那個轉換器，它甚至會印出完整命令；
+  #   ★ 它有四個呼叫者（skip_probe / rho_price_authrow / l2010_window / CLI），
+  #   ★★ **harness.py 不在裡面** ⇒ 每個「格宣告了但命令列表達不到的值」都會這樣被擋。
+  #   ⇒ 這裡直接呼叫它，讓 cell 的值與 `--cell` 一起進 argv。
+  if [ ${#cellarg[@]} -gt 0 ]; then
+    local cname="${cellarg[1]}"
+    local cflags
+    # shellcheck disable=SC2207  # 這裡用 command substitution 展開陣列是刻意的
+    cflags=$("$PY" - "$cname" <<'PYEOF2'
+import sys, os
+sys.path.insert(0, os.path.join(os.getcwd(), "scripts", "check"))
+import runpy
+m = runpy.run_path("scripts/check/cell_contract.py", run_name="not_main")
+name, cell = m["resolve_cell"](m["load_contract"](), sys.argv[1])
+flags, warn = m["bench_flags"](cell)
+if warn:
+    sys.stderr.write("cell_contract warning: " + "; ".join(warn) + "\n")
+print("\n".join(flags))
+PYEOF2
+)
+    local -a cflagarr=()
+    [ -n "$cflags" ] && cflagarr=($cflags)
+    cellarg+=(${cflagarr[@]+"${cflagarr[@]}"})
+    say "  cell ${cname} ⇒ flags: ${cflagarr[*]:-(none)}"
+  fi
 
   local envs="CGC_SERVER_EXPERT_CACHE_BYTES=${pool};CGC_SERVER_MTP=${mtp}"
   # [CGC 2026-10-07] TEMP_AXIS. The MTP accept step compares the draft against the TARGET's
