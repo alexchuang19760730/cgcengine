@@ -37,6 +37,21 @@ They are constraints, not levers: they are re-run per change. Recording them as
   open-passing    -- checked, PASS, at the probe recorded in status.json
   open-failing    -- checked, FAIL
 
+THREE-WAY VERDICT, NOT TWO (2026-10-07)
+--------------------------------------
+`--check` exits 0 / 1 / 3:
+  0  PASS         -- comparable, read, m1 and m2 matched
+  1  FAIL         -- comparable, read, did not match: a real gate failure
+  3  UNDECIDABLE  -- `comparable` is false, so NO verdict is possible
+
+The third exit code exists because a stale reference and a genuine regression used
+to be indistinguishable. On 2026-10-07, G5 read against the 09-19 LONG_REF from a
+10-06 build (31 numerics-determining diffs) returned m1 FAIL / m2 FAIL -- filed as
+a gate failure, which is a category error: the binary was never in question. A
+caller that treats rc=1 as "a regression exists" now gets rc=3 and "nothing could
+be decided" instead. It is deliberately NOT folded into rc=0: an undecidable gate
+that reads as a pass is the original bug with the sign flipped.
+
 USAGE
     python3 scripts/check/gate_registry.py --list
     python3 scripts/check/gate_registry.py --check G2                # short probe
@@ -284,6 +299,25 @@ def cmd_check(gid, probe=None, tag=""):
                                 "'no verdict recorded' is not 'no divergence'" % tag}
         print("  adjudicate: NO_REPORT (%s)" % adjudication["note"])
     rec["adjudication"] = adjudication
+    # [CGC 2026-10-07] Pull `comparable` out of the gate's summary. Until now this function never
+    # read that field, which is the mechanical reason a stale reference and a genuine regression
+    # produced the same record shape: m1 FAIL, m2 FAIL, done. The gate tool writes the summary next
+    # to the oraclecmp report, so it is read from there and never re-derived.
+    comparable = None
+    defects = None
+    _summary = ROOT / "Backup" / "m123_oracle_gate" / f"summary_{tag}.json"
+    if _summary.exists():
+        try:
+            _s = json.loads(_summary.read_text())
+            comparable = _s.get("comparable")
+            defects = _s.get("comparability_defects")
+        except Exception as e:  # a malformed summary must not become a silent True
+            comparable = None
+            defects = ["summary unreadable: %s" % e]
+    rec["comparable"] = comparable
+    rec["comparability_defects"] = defects
+    print("  comparable: %s%s" % (comparable,
+                                  "" if not defects else "  defects=%s" % len(defects)))
     history = []
     if STATUS_PATH.exists():
         try:
@@ -293,7 +327,30 @@ def cmd_check(gid, probe=None, tag=""):
     history.append(rec)
     STATUS_PATH.write_text(json.dumps({"history": history}, ensure_ascii=False, indent=2) + "\n")
     print("recorded: %s" % json.dumps(rec, ensure_ascii=False))
-    return 0 if (m1 == "PASS" and m2 == "PASS") else 1
+    # [CGC 2026-10-07] The exit code used to be `0 if (m1 PASS and m2 PASS) else 1`, never consulting
+    # `comparable`. That is the same conflation this whole thread is about, one level down: a gate
+    # read against a STALE reference returned the same rc as a gate read against a current one and
+    # failed for an unrelated reason. On 2026-10-07 G5 reported m1 FAIL / m2 FAIL with
+    # `comparable: false` and three comparability_defects -- the binary was never in question; the
+    # 09-19 LONG_REF was 31 numerics-determining diffs behind a 10-06 build. Filed as a gate failure,
+    # that sends the reader hunting a regression that does not exist.
+    #
+    # Three outcomes, and the middle one is the whole point:
+    #   UNDECIDABLE (rc 3) -- comparable is false: NO verdict is possible. NOT a failure, and NOT a
+    #                         pass either. Re-baseline before reading m1/m2.
+    #   FAIL        (rc 1) -- comparable, read, and did not match: a real gate failure.
+    #   PASS        (rc 0) -- comparable, read, and matched.
+    # rc=3 is new to callers, so `cmd_check`'s own docstring lists it and `--selftest` pins it.
+    if comparable is not True:
+        rec["verdict"] = "UNDECIDABLE"
+        print("VERDICT: UNDECIDABLE -- the gate could not be decided, because comparable is %r."
+              % (comparable,))
+        print("         This is NOT a gate failure. Re-baseline the reference for this build")
+        print("         (m123_oracle_gate.py --write-ref + REF_PINS) before reading m1/m2 above.")
+        return 3
+    rec["verdict"] = "PASS" if (m1 == "PASS" and m2 == "PASS") else "FAIL"
+    print("VERDICT: %s" % rec["verdict"])
+    return 0 if rec["verdict"] == "PASS" else 1
 
 
 # Fingerprint of the 884-record reference as read on 2026-09-20.
@@ -364,9 +421,25 @@ def cmd_selftest():
     _src = (ROOT / "scripts" / "check" / "gate_registry.py").read_text()
     check("cmd_check runs the adjudicator",
           ADJUDICATOR.rsplit("/", 1)[-1] in _src and "adjudication" in _src)
-    # An earlier draft of this selftest had a third case written as `... or True`, i.e. a check
-    # that cannot fail -- the same defect the drift adjudicator's own selftest caught this day
-    # ("a reason without an effect is not a check"). Only assertions that can go red belong here.
+    # [CGC 10-07] The UNDECIDABLE branch must be reachable, or it is decoration. Asserted against the
+    # SOURCE (not a run) because reaching it for real costs an 884-step probe; what is being pinned
+    # is that the code reads `comparable` and returns 3 rather than folding it into pass/fail --
+    # the defect being that it used to ignore `comparable` entirely.
+    check("cmd_check reads comparable into the record", 'rec["comparable"] = comparable' in _src)
+    check("an undecidable gate returns 3, not 0 or 1",
+          'rec["verdict"] = "UNDECIDABLE"' in _src and "return 3" in _src)
+    # Asserted by ORDER, which is the property that matters: the comparable guard has to run and
+    # return BEFORE the pass/fail verdict is computed, otherwise an undecidable gate is decided.
+    # The first draft of this case counted string occurrences instead of asking that question and
+    # FAILED -- a check that cannot fail is not a check (same defect the drift adjudicator's selftest
+    # caught earlier today). Two earlier drafts used slice tricks that "passed" for the wrong reason.
+    _i_guard = _src.find("if comparable is not True")
+    _i_undec = _src.find('rec["verdict"] = "UNDECIDABLE"')
+    _i_ret3 = _src.find("return 3")
+    _i_pass = _src.find('rec["verdict"] = "PASS"')
+    check("the comparable guard precedes and short-circuits the pass/fail verdict",
+          _i_guard != -1 and _i_undec != -1 and _i_ret3 != -1 and _i_pass != -1
+          and _i_guard < _i_undec < _i_ret3 < _i_pass)
     print("\nselftest: %d/%d" % (ok, n))
     return 0 if ok == n else 1
 
