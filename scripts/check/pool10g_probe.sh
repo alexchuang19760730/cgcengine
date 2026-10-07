@@ -87,8 +87,36 @@ preflight() {
 
 # ── 單臂執行 ────────────────────────────────────────────────────────────
 # $1=arm tag  $2=pool bytes  $3=MTP(0|1)
+#
+# ★★ 2026-10-07 第一次實跑的兩個 fail-closed（都是本腳本的缺陷，不是被測對象的失敗）：
+#
+#   (1) `cell_contract` 釘死 `expert_cache_bytes: 8589934592`
+#       —— 那是測試卡 §2.5 對 `(default)` 格的**權威宣告值**
+#       （docs/PROD_NEW_TEST_CARD_2026-09-24.md:114）。改它＝改口徑，**是 operator 的簽名，
+#       不是腳本能繞的**。⇒ 10 GiB 臂在本 shape 下**結構上不可跑**。
+#       ⇒ 誠實處置：只跑控制臂（8 GiB，本來就等於權威值），把 10 GiB 標成
+#         `NEEDS_NEW_CELL`，連 env 都不送（送了只會多一個 fail-closed 雜訊）。
+#   (2) MTP 臂需要 `--spec-type draft-mtp`
+#       —— `CGC_SERVER_MTP=1` 只匯出 MTP 的 env block，spec 本身是 llama-bench 的旗標，
+#       沒有它量到的不是 MTP（llama_bench_matrix:1793 fail-closed）。
+#       ⇒ 補上 `--spec-type draft-mtp --spec-draft-n-max 3`。
+#
+# ⇒ 兩者都是「先量，再講」該做的事：寧可讓它結構性不可跑，也不要量出一個不在口徑裡的數字。
 run_arm() {
   local tag="$1" pool="$2" mtp="$3"
+
+  # (1) 池大小偏離權威值 ⇒ 不跑。理由寫進產物目錄的 notes 檔，不假裝它量過。
+  if [ "$pool" != "$POOL_8G" ]; then
+    say ""
+    say "▶ arm ${tag}   pool=$((pool/1079372032))GiB  MTP=$mtp"
+    say "  ⛔ SKIPPED by design — 不發車。"
+    say "     理由：(default) 格的權威宣告值是 expert_cache_bytes=8589934592（測試卡 §2.5）。"
+    say "           10 GiB 需要**新格**或**改測試卡**，兩者都是 operator 的口徑簽名。"
+    say "     這不是失敗，是『這個形狀下不存在這個實驗』。控制臂已足以回答 H_nowin 的分母。"
+    echo "SKIPPED: pool=$pool is not the (default) cell's authoritative value ($POOL_8G); needs an operator-approved cell" > "$OUT/${tag}.skipnote"
+    return 3
+  fi
+
   local envs="CGC_SERVER_EXPERT_CACHE_BYTES=${pool};CGC_SERVER_MTP=${mtp}"
   # CGC_SERVER_SEED 釘住：逐位元 A/B 必須固定 seed（記憶 10-04 立的規矩）。
   [ "$mtp" = "1" ] && envs="${envs};CGC_SERVER_SEED=1"
@@ -101,11 +129,15 @@ run_arm() {
   #    （實測：「測試卡 §2.5 沒有 cell '(default)'」）⇒ 不傳就是對的。
   local reason
   reason="pool10g probe: 8GiB-vs-10GiB capacity-ceiling test, overturns or confirms run_server.sh:568-574"
+  # (2) MTP 臂一定要 spec-type，否則量到的不是 MTP。
+  local spec=()
+  if [ "$mtp" = "1" ]; then spec=(--spec-type draft-mtp --spec-draft-n-max 3); fi
   local t0 t1 rc
   t0=$(date +%s)
   "$PY" scripts/check/harness.py bench \
       --arm "prod-new:${envs}" \
       --charter waive --waive-reason "$reason" \
+      "${spec[@]}" \
       --json "$OUT/${tag}.json" > "$OUT/${tag}.log" 2>&1
   rc=$?
   t1=$(date +%s)
@@ -121,6 +153,11 @@ run_arm() {
 # ── 讀回結果 ────────────────────────────────────────────────────────────
 report_arm() {
   local tag="$1" pool="$2" mtp="$3"
+  # SKIP 與「量了但失敗」是兩件事：前者結構上不存在這個實驗，後者有產物可讀。
+  if [ -f "$OUT/${tag}.skipnote" ]; then
+    say "  ${tag}  SKIPPED（by design，見 .skipnote）—— 沒有產物，這不是失敗也不是通過"
+    return 0
+  fi
   "$PY" - "$OUT/${tag}.json" "$((pool/1073741824))" "$mtp" <<'PYEOF' 2>&1
 import json, sys
 p, gib, mtp = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -143,10 +180,18 @@ PYEOF
 
 verdict() {
   hr
-  say "══════ 預先寫死的判讀（三個結局都算有訊息）══════"
-  say "  H_oom   10 GiB 起不來            ⇒ 確認放不進（預期）"
-  say "  H_nowin 活著但沒有贏             ⇒ 確認容量已過熱集（預期）"
-  say "  H_gain  贏且超出散布            ⇒ ★ 推翻「熱集已裝進 8 GiB」"
+  say "══════ 預先寫死的判讀 ══════"
+  say "  H_oom   10 GiB 起不來（OOM）        ⇒ 確認放不進"
+  say "  H_nowin 10 GiB 活著但沒贏           ⇒ 確認容量已過熱集"
+  say "  H_gain  贏且超出散布                ⇒ ★ 推翻「熱集已裝進 8 GiB」"
+  say ""
+  say "★ 2026-10-07 第一次實跑的修正：H_oom 與 H_nowin 都不會發生了。"
+  say "  原因不是實驗結果，是 (default) 格的權威宣告值把 expert_cache_bytes 釘在 8589934592"
+  say "  （測試卡 §2.5）⇒ 10 GiB 臂在這個 shape 下**結構上不可跑**，連 OOM 都走不到。"
+  say "  ⇒ 本實驗退化為：**只有控制臂**。它能回答的是"
+  say "     「8 GiB 現在實際站在哪裡」，不能回答「10 GiB 會不會更快」。"
+  say "  ⇒ 要問後者，需要 operator 簽一份新格（或改測試卡 §2.5 的權威值）。"
+  say "     在那之前，任何『10 GiB 應該 X』的說法都沒有產物路徑。"
   hr
   say "完整結果："
   "$PY" scripts/check/bench_ledger.py --json > "$OUT/ledger_snapshot.json" 2>/dev/null || true
