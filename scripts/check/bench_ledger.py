@@ -150,6 +150,15 @@ def _selftest():
         ("verdict both (34 of 97 real rows)", {"verdict": "both", "why": "thermal HEAVY + swap 711"}, False),
         ("verdict swap", {"verdict": "swap"}, False),
         ("verdict thermal", {"verdict": "thermal"}, False),
+        # [CGC 2026-10-07] New verdict from memory_pressure.attribution: budget-gate found the
+        # static demand exceeds RAM, so the arm could only complete through compression + swap
+        # even though every delta read zero. It must NOT be quotable -- that exact shape is what
+        # made the 12:05 arm look clean (swap_growth=0.0, thermal=NOMINAL) while 260-300 MiB of
+        # swap was still held by the 11:15 run. `quotable` recognises only "none", so this case
+        # asserts the rejection is automatic rather than depending on a special-case branch.
+        ("verdict oversubscribed (every delta zero, but budget-gate said no)",
+         {"verdict": "oversubscribed", "oversubscribed": True,
+          "why": "static demand exceeds physical RAM (budget-gate OVERSUBSCRIBED)"}, False),
         ("verdict empty string", {"verdict": ""}, False),
     ]
     ok = 0

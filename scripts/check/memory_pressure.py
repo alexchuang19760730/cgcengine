@@ -341,12 +341,30 @@ def worst(stamps) -> dict:
     }
 
 
-def attribution(thermal_result: dict, mem_result: dict) -> dict:
-    """Classify the run: thermal / swap / contention / both / none.
+def attribution(thermal_result: dict, mem_result: dict, oversubscribed: bool = False) -> dict:
+    """Classify the run: oversubscribed / thermal / swap / contention / both / none.
 
     `thermal_result` is a thermal_pressure.Sampler.result dict; `mem_result` is this
     module's Sampler.result. The rule is documented in the module docstring; every branch
     names its evidence so a reader can dispute the call instead of the number.
+
+    `oversubscribed` is budget-gate's STATIC verdict (static demand > physical RAM). It is passed
+    IN, not re-derived here: budget_gate owns that arithmetic, and a second copy of the same
+    subtraction would drift from it.
+
+    WHY IT OVERRIDES `none` (2026-10-07). Every other branch reasons about CHANGE -- swap growth,
+    wired growth, thermal level. A machine that is ALREADY being held up by swap therefore reports
+    growth = 0 and lands on `none`; "nothing got worse" gets read as "nothing was wrong". Measured
+    twice in one afternoon on this box: the 11:15 arm reported `swap_growth=+3678 MiB` (verdict
+    swap) and the 12:05 arm reported `swap_growth=0.0 MiB` (verdict none) -- minutes apart, with
+    260-300 MiB of swap still HELD by the earlier run. Under a static oversubscription of 4838 MiB
+    the launch can only complete through compression + swap, so it is not a clean baseline no
+    matter what the post-hoc arithmetic says.
+
+    It can only ever REMOVE a `none`, never create one -- the same direction the `_box_gate` swap
+    STOCK demotion took (see the note below this function), and for the same reason: stock cannot
+    separate "old swap + quiet compressor" from "small swap + busy compressor", but a static
+    oversubscription is unambiguous -- there is no reading of the deltas that undoes it.
     """
     th_worst = ((thermal_result or {}).get("worst") or {}).get("label", UNREADABLE)
     launch = ((mem_result or {}).get("launch") or {}).get("swap_used_mb")
@@ -369,6 +387,9 @@ def attribution(thermal_result: dict, mem_result: dict) -> dict:
                    (swap_growth or 0) > 0)
     contested = max_procs > 1
 
+    # Ordered so the RICHER diagnoses win: hot AND oversubscribed is `both`, because it carries
+    # strictly more information than `oversubscribed` alone. `oversubscribed` is reserved for the
+    # case where the static budget is the ONLY thing disqualifying the run.
     if hot and (swap_pressure or wired_crowd):
         verdict, why = "both", f"thermal={th_worst}, swap_growth={swap_growth} MiB"
     elif hot:
@@ -377,10 +398,16 @@ def attribution(thermal_result: dict, mem_result: dict) -> dict:
         verdict, why = "swap", f"swap_growth={swap_growth} MiB, max_swap={max_swap} MiB"
     elif contested:
         verdict, why = "contention", f"llama_procs={max_procs}"
+    elif oversubscribed:
+        verdict, why = "oversubscribed", (
+            "static demand exceeds physical RAM (budget-gate OVERSUBSCRIBED): this launch can only "
+            f"complete through compression + swap, so it is not a clean baseline; "
+            f"swap_growth={swap_growth} MiB, max_swap={max_swap} MiB, thermal={th_worst}")
     else:
         verdict, why = "none", f"swap_growth={swap_growth} MiB, thermal={th_worst}"
 
     return {"verdict": verdict, "why": why, "thermal_worst": th_worst,
+            "oversubscribed": bool(oversubscribed),
             "swap_growth_mb": swap_growth, "max_swap_mb": max_swap,
             "wired_growth_mb": wired_growth, "max_llama_procs": max_procs}
 

@@ -1182,7 +1182,15 @@ def run_arm(tag: str, profile: str, extra_env: dict[str, str], args, res: dict) 
            # launch -- i.e. about whichever row happens to dominate the histogram.
            "thermal_windows": thermal.windows((sampler.result or {}).get("samples") or [], rows),
            "memory": msamp.result,
-           "attribution": mempress.attribution(sampler.result, msamp.result),
+           # [CGC 2026-10-07] `oversubscribed` is budget-gate's OWN verdict (its env is set at the
+           # point the gate reports OVERSUBSCRIBED, :897), not a second copy of its subtraction --
+           # two copies of one arithmetic drift, and then they disagree quietly. Without it an arm
+           # whose static demand already exceeds RAM can still report attribution=none whenever the
+           # run happens not to grow swap, which is exactly what the 12:05 arm did
+           # (swap_growth=0.0 while 260-300 MiB was still held from the 11:15 arm).
+           "attribution": mempress.attribution(
+               sampler.result, msamp.result,
+               oversubscribed=(env.get("CGC_BUDGET_OVERSUBSCRIBED") == "1")),
            # Recorded, not inferred: whether a row came from the speculative gen path is a property
            # of the invocation, and a spec row wears the same `tg` label as a plain one.
            "spec_type": args.spec_type or None,
