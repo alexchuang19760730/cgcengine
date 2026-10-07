@@ -23,6 +23,15 @@
 # ══════════════════════════════════════════════════════════════════════════════
 set -uo pipefail
 
+# ★ 這個腳本用 bash 語法（陣列、`<<<` herestring）。zsh 也多數能跑，但 `set -u` 下
+#   `"${arr[@]}"` 對**空陣列**在 zsh 會 `unbound variable` 而在 bash 不会 ——
+#   同一份檔案、同一個 set -u，兩種 shell 的行為不同（2026-10-07 實測）。
+#   所以：不是「哪個 shell 比較對」，是**根本別讓外部 shell 決定**。
+#   `bash "$0" "$@"` 重啟一次，確定執行語言。
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT" || exit 2
 PY=/opt/homebrew/bin/python3
@@ -128,7 +137,7 @@ run_arm() {
   "$PY" scripts/check/harness.py bench \
       --arm "prod-new:${envs}" \
       --charter waive --waive-reason "$reason" \
-      "${cellarg[@]}" "${spec[@]}" \
+      ${cellarg[@]+"${cellarg[@]}"} ${spec[@]+"${spec[@]}"} \
       --json "$OUT/${tag}.json" > "$OUT/${tag}.log" 2>&1
   rc=$?
   t1=$(date +%s)
@@ -206,14 +215,18 @@ main() {
   [ "$QUICK" = "0" ] && arms+=("ctl8g_mtp1:${POOL_8G}:1" "try10g_mtp1:${POOL_10G}:1")
 
   local results=()
-  for spec in "${arms[@]}"; do
-    IFS=':' read -r tag pool mtp <<< "$spec"
+  # [CGC 2026-10-07] 這裡原本是 `for spec in ...` 而 `spec` 在 run_arm 內是陣列名 —— 撞名。
+  # zsh 的函式作用域預設不繼承 local，於是 `spec` 漏到全域、下一輪迭代讀到被覆寫的值。
+  # 改成 `_armspec`／`local`，兩層都對。
+  local _armspec tag pool mtp
+  for _armspec in ${arms[@]+"${arms[@]}"}; do
+    IFS=':' read -r tag pool mtp <<< "$_armspec"
     run_arm "$tag" "$pool" "$mtp"; results+=("$tag:$?")
   done
 
   hr; say "[4/5] 逐臂讀數"
-  for spec in "${arms[@]}"; do
-    IFS=':' read -r tag pool mtp <<< "$spec"
+  for _armspec in ${arms[@]+"${arms[@]}"}; do
+    IFS=':' read -r tag pool mtp <<< "$_armspec"
     report_arm "$tag" "$pool" "$mtp"
   done
 

@@ -225,9 +225,9 @@ def validate_rep_split(contract: dict) -> list[str]:
         # 4) the twin may differ from its base ONLY in reps/rep_split, and its launch count must add
         #    up to exactly the base's reps. This is what stops the twin from becoming a new shape.
         if base is not None:
-            want = {k: v for k, v in base.items() if k != "rep_split"}
+            want = {k: v for k, v in base.items() if k != "rep_split" and not k.startswith("_")}
             want["reps"] = 1
-            got = {k: v for k, v in cell.items() if k != "rep_split"}
+            got = {k: v for k, v in cell.items() if k != "rep_split" and not k.startswith("_")}
             diff = sorted(k for k in set(want) | set(got) if want.get(k) != got.get(k))
             if diff:
                 errs.append(f"{name}: 孿生 cell 只准與 {base_name!r} 差 reps/rep_split，"
@@ -284,8 +284,10 @@ def validate_reps_twins(contract: dict) -> list[str]:
         # Compare on normalized values (`"512"` == 512), leaving the two declaration keys out:
         # `rep_split` has its own validator above, and `twin_of` is what makes this a twin --
         # requiring it to equal the base's would make the declaration impossible to write.
-        want = {k: _norm(v) for k, v in base.items() if k not in ("rep_split", TWIN_KEY)}
-        got = {k: _norm(v) for k, v in cell.items() if k not in ("rep_split", TWIN_KEY)}
+        want = {k: _norm(v) for k, v in base.items()
+                if k not in ("rep_split", TWIN_KEY) and not k.startswith("_")}
+        got = {k: _norm(v) for k, v in cell.items()
+               if k not in ("rep_split", TWIN_KEY) and not k.startswith("_")}
         diff = sorted(k for k in set(want) | set(got) if want.get(k) != got.get(k))
         if not diff:
             errs.append(f"{name}: 與基底 {base_name!r} 逐字相同 —— 那是一個別名，不是孿生；"
@@ -371,6 +373,16 @@ def check_cell(actual: dict, arm_env: dict | None = None,
             # `twin_of` which cell this one is a twin of; the validators above enforce both.
             # Comparing either against `actual` would reject every legitimate launch for a key
             # llama-bench never sees.
+            continue
+        if key.startswith("_"):
+            # [CGC 2026-10-07] A leading-underscore key is a note ABOUT the cell, not a dimension
+            # of it. `_why` / `_why_not_default` / `_shape` were added to the `pool10g` cell to
+            # record why it exists and why `(default)` was left alone -- and the cell then refused
+            # to run, three times, with "實際值缺席（block 要求 '...operator 簽...'）" for the prose
+            # it had been given. The fail-closed is right; the blind spot is that it treated a
+            # comment as a measurement. `retired_cells` tombstones already carry `why` / `retired_at`
+            # and are validated by a different path, so nothing else relied on comments comparing.
+            # Underscore = not a dimension, the same convention the test card's own `_why` uses.
             continue
         if key not in actual:
             # 缺維度 ⇒ 嚴格 fail-closed，不把缺席當成預設。
