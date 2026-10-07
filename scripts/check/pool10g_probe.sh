@@ -194,10 +194,22 @@ if not isinstance(a, dict):
 rows = [r for r in (a.get("rows") or []) if isinstance(r, dict)]
 pp = next((r.get("avg_ts") for r in rows if r.get("n_gen") == 0), None)
 tg = next((r.get("avg_ts") for r in rows if r.get("n_gen") == 128), None)
-at = a.get("attribution"); at = at.get("verdict") if isinstance(at, dict) else None
-why = at if isinstance(at, dict) and at.get("why") else ""
-print(f"  {gib}GiB mtp={mtp}: pp={pp} tg={tg}  attribution={at}  {why}")
-print(f"      contract.ok={(a.get('contract') or {}).get('ok')}  cell={(a.get('cell') or {}).get('named_cell')}")
+at = a.get("attribution")
+av = at.get("verdict") if isinstance(at, dict) else None
+why = at.get("why") if isinstance(at, dict) else ""
+print(f"  {gib}GiB mtp={mtp}: pp={pp} tg={tg}  attribution={av}  {why}")
+c = a.get("cell") or {}
+print(f"      contract.ok={(a.get('contract') or {}).get('ok')}  cell={c.get('named_cell')}"
+      f"  prompt={c.get('prompt')}")
+# [CGC 2026-10-07] The 12:2x B-plan field, reported so ONE run answers both questions. A
+# product written BEFORE the fix has no `oversubscribed` key at all -- which is how you tell
+# "the box was clean" from "the tool that would have said so is older than the fix".
+if isinstance(at, dict) and "oversubscribed" in at:
+    print(f"      B-plan: oversubscribed={at.get('oversubscribed')}  "
+          f"(swap_growth={at.get('swap_growth_mb')} MiB, max_swap={at.get('max_swap_mb')} MiB)")
+else:
+    print("      B-plan: (no `oversubscribed` key) => this arm predates the 2026-10-07 fix, so its"
+          " `none` may be the false-clean the fix was written to catch.")
 PYEOF
 }
 
