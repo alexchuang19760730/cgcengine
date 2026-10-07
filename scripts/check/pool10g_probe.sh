@@ -33,6 +33,7 @@
 #   bash scripts/check/pool10g_probe.sh            # 預設：MTP ABBA 四臂（約 7 分鐘）
 #   bash scripts/check/pool10g_probe.sh --off      # 只 MTP off 一趟乾淨基線（約 2 分鐘）
 #   bash scripts/check/pool10g_probe.sh --axis       # ★ temp(0.0/0.4) × n-max(1/2/3)，9 臂交錯（約 25 分鐘）
+#   bash scripts/check/pool10g_probe.sh --hot        # ★ 同 --axis 但用 hotcache 格（warm_skip 64），抓熱 cache（約 29 分鐘）
 #   bash scripts/check/pool10g_probe.sh --pool10g# 已結論的 8G vs 10G（會被 budget-gate 擋）
 # ══════════════════════════════════════════════════════════════════════════════
 set -uo pipefail
@@ -86,6 +87,8 @@ MODE=mtp
 # （temp 不傳 ⇒ run_server.sh 的 0.4；nmax=3）。這讓舊的 3 欄臂字串語意完全不变。
 TEMP=""
 NMAX=3
+# HOT=1 ⇒ 每個臂用 hotcache 格（warm_skip 64），抓熱 cache performance（見 run_arm 的註解）
+HOT=0
 case "${1:-}" in
 # --help is honoured from ANY position, not just $1: without this, `--axis --help` silently started
 # a 25-minute run because $1 was `--axis`. Scanning all args costs one loop and removes the trap.
@@ -104,6 +107,7 @@ case "${1:-}" in
   --off|--quick) MODE=off ;;   # --quick 保留為 off 的別名（沿用舊用法）
   --pool10g)     MODE=pool10g ;;
   --axis)        MODE=axis ;;  # temp x draft-n-max 雙軸，9 臂 ABBA 交錯
+  --hot)         MODE=axis; HOT=1 ;;  # ★ 同 --axis，但每臂用 hotcache 格（warm_skip 64）
   *) echo "未知選項：$1（可用：--mtp / --off / --pool10g / --axis）" >&2; exit 2 ;;
 esac
 
@@ -157,8 +161,15 @@ run_arm() {
   local tag="$1" pool="$2" mtp="$3"
   # 選格：8 GiB 用 (default)（它就是 (default) 的權威值），10 GiB 用新增的 pool10g 格。
   # ⛔ 不傳 --cell '(default)' 給 8G 臂：harness 預設就是那一格，不傳最不容易出錯。
+  # ★★ CELL_AXIS（2026-10-07）：`--hot` 模式把每個臂切到 hotcache 格（warm_skip 64）。
+  #   理由見測試卡該格的 _why_not_default：MTP 臂的前 1-2 個 rep 明顯低於後 3 個（斜坡 8-13%），
+  #   而 MTP-off 臂沒有斜坡 ⇒ 斜坡是 MTP draft 碰到的、off 臂永不碰的專家造成的池填充。
+  #   `--warm-skip N`丟掉的是**每個** rep 的前 N 個不計時 token（llama-bench.cpp:474-488），
+  #   正是為此設計 ⇒ 它讓 avg_ts 量到熱狀態，而 avg_ts 正是 gate 讀的欄位。
   local cellarg=()
-  [ "$pool" = "$POOL_10G" ] && cellarg=(--cell pool10g)
+  if [ "$pool" = "$POOL_10G" ]; then cellarg=(--cell pool10g)
+  elif [ "$HOT" = "1" ];     then cellarg=(--cell hotcache)
+  fi
 
   local envs="CGC_SERVER_EXPERT_CACHE_BYTES=${pool};CGC_SERVER_MTP=${mtp}"
   # [CGC 2026-10-07] TEMP_AXIS. The MTP accept step compares the draft against the TARGET's
