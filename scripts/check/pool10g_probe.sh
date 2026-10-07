@@ -145,6 +145,15 @@ run_arm() {
   local envs="CGC_SERVER_EXPERT_CACHE_BYTES=${pool};CGC_SERVER_MTP=${mtp}"
   # CGC_SERVER_SEED 釘住：逐位元 A/B 必須固定 seed（記憶 10-04 立的規矩）。
   [ "$mtp" = "1" ] && envs="${envs};CGC_SERVER_SEED=1"
+  # [CGC 2026-10-07] MTP mechanism instruments, MTP arms only.
+  #   LLAMA_BENCH_SPEC_DUMP -> llama-bench prints `CGC-BENCH-ACCEPT ... emit_per_round=n_done/n_rounds`
+  #     (llama-bench.cpp:4151). ALL-COUNTER, no clock: the division cancels time entirely, so it
+  #     survives a swap-tainted window and is the ONLY half of the diagnosis that does.
+  #   CGC_MTP_PERF -> speculative.cpp:3313 prints acc_rate / emit_tok_per_round / ms_per_round.
+  #     ⚠️ `ms_per_round` and `t_draft_ms` are WALL CLOCK (common_time_meas, :3112) => swap inflates
+  #     them, so under BUDGET_GATE=warn the COST half is not trustworthy while `acc_rate` is.
+  #     Read it as a bound, not a measurement. Both are on (run_server.sh:1576 allowlists both).
+  [ "$mtp" = "1" ] && envs="${envs};LLAMA_BENCH_SPEC_DUMP=1;CGC_MTP_PERF=1"
   say ""
   say "▶ arm ${tag}   pool=$((pool/1073741824))GiB  MTP=$mtp   cell=${cellarg[1]:-(default)}"
   say "  env: $envs"
@@ -181,9 +190,9 @@ report_arm() {
     say "  ${tag}  SKIPPED（by design，見 .skipnote）—— 沒有產物，這不是失敗也不是通過"
     return 0
   fi
-  "$PY" - "$OUT/${tag}.json" "$((pool/1073741824))" "$mtp" <<'PYEOF' 2>&1
+  "$PY" - "$OUT/${tag}.json" "$(($pool/1073741824))" "$mtp" "$OUT/${tag}.stderr.log" <<'PYEOF' 2>&1
 import json, sys
-p, gib, mtp = sys.argv[1], sys.argv[2], sys.argv[3]
+p, gib, mtp, _stderr_path = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 try:
     d = json.load(open(p))
 except Exception as e:
@@ -210,6 +219,27 @@ if isinstance(at, dict) and "oversubscribed" in at:
 else:
     print("      B-plan: (no `oversubscribed` key) => this arm predates the 2026-10-07 fix, so its"
           " `none` may be the false-clean the fix was written to catch.")
+# [CGC 2026-10-07] MTP mechanism, split by whether swap can touch it. CGC-BENCH-ACCEPT and the
+# token ratios are divisions of COUNTS, so the clock cancels and they survive a tainted window;
+# ms_per_round / t_draft_ms are wall clock and do not. Printing them together without this split is
+# how a swap-inflated cost gets read as "the draft head is expensive".
+import os as _os, re as _re
+_stderr = _stderr_path
+try:
+    _txt = open(_stderr, encoding="utf-8", errors="replace").read()
+except Exception:
+    _txt = ""
+if _txt:
+    _acc = _re.findall(r"CGC-BENCH-ACCEPT[^\n]*", _txt)
+    _perf = _re.findall(r"CGC-MTP-PERF[^\n]*", _txt)
+    if _acc:
+        for _l in _acc[-2:]:
+            print("      MTP counts (swap-immune):", _l.strip())
+    if _perf:
+        for _l in _perf[-1:]:
+            print("      MTP perf (acc_rate valid / ms_per_round NOT):", _l.strip()[:200])
+    if not _acc and not _perf:
+        print("      MTP: no CGC-BENCH-ACCEPT / CGC-MTP-PERF line in this arm"
 PYEOF
 }
 
