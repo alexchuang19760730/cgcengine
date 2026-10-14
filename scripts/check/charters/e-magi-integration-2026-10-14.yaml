@@ -22,6 +22,13 @@ root_cause: |
   修復：LLAMA_PATH→$(CURDIR)/../../src/llama.cpp + 去 blas；補 include；
   KDA struct tag 對齊（MetalKDAState）；在 .mm 補齊 5 符號薄包裝（復用內部
   metal_load_gguf，magi_weights_t→ModelWeights 包裝）。
+  追加重 bug（2026-10-14 實測發現）：
+    4. metal_load_gguf 的 `if (max_ffn_float < dim*ffn_dim)` 無條件把 ffn buffer
+       抬到 dim*ffn_dim（3584×28672×4B×28層 = 11.51GB/layer）→ Metal buffer 分配
+       返回 NIL（gate/up/down）→ 後續 memcpy 到 NULL → SIGSEGV（exit 139）。
+       修復：僅當掃描全空（max_ffn_float==0）才用 dim*ffn_dim 保底；掃描非零用真實值。
+  驗證方式：合成 28 層 Qwen2.5 結構 F16 GGUF（synth_qwen25_smoke_gguf.py，91MB）
+  → magi_infer 完整加載路徑（GGUF 打開→tensor 掃描→F16 反量化→Metal 上傳）全部通過。
 
 # ── 【目標】這一臂要回答的「可判定」問題 ────────────────────────────────────
 question: |
@@ -48,8 +55,11 @@ acceptance: |
   2. ./magi_infer（無參）打印用法並 exit 1——已通過。
   3. ./magi_infer <不存在路徑> 打印「Apple M4」設備名 + 加載失敗 exit 1——已通過。
   4. make moe_profile 可構建、樁輸出四段時序 JSON——已通過（P2 交付時）。
-  5. 未完成項（後續臂）：真實 GGUF 權重完整加載路徑需配 Qwen2.5 結構小模型驗證；
-     metal_kernel_* 抽象 API 實現；SSM 串行 ≤3ms profile。
+  5. 真實 GGUF 完整加載路徑：合成 28 層 Qwen2.5 結構 F16 GGUF（91MB，seed=42）→
+     magi_infer 加載全部 28 層 + final_norm/lm_head + 「✅ 權重載入成功」exit 0
+     ——已通過（2026-10-14 17:36，修 ffn buffer NIL bug 後）。
+  6. 未完成項（後續臂）：metal_kernel_* 抽象 API 實現（main.cpp smoke 不調用）；
+     目標模型 qwen35moe（41 層 + 專家張量）支持需擴展張量名與 SSM/attention 批處理——待用戶確認整合目標。
 
 # ── 【證據檔案】────────────────────────────────────────────────────────────
 evidence:

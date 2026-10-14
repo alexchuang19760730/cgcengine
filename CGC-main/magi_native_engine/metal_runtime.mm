@@ -185,7 +185,9 @@ static bool metal_load_gguf(metal_context_t* ctx, const char* path) {
     size_t max_v_float = max_v_sz / sizeof(float);
     size_t max_o_float = max_o_sz / sizeof(float);
     size_t max_ffn_float = max_ffn_down_sz / sizeof(float);
-    if (max_ffn_float < (size_t)dim * ffn_dim) max_ffn_float = (size_t)dim * ffn_dim;
+    if (max_ffn_float == 0) max_ffn_float = (size_t)dim * ffn_dim;  /* 仅当扫描全空时才用 dim*ffn_dim 保底；
+                                                                       否则真实扫描值会被抬到 dim*ffn_dim 导致
+                                                                       Metal buffer 分配失败（2026-10-14 实证 NIL） */
 
     w->layer_attn_norm = [dev newBufferWithLength:n_layer * dim * sizeof(float) options:MTLResourceStorageModeShared];
     w->layer_qkv      = [dev newBufferWithLength:n_layer * (max_q_float + max_k_float + max_v_float) * sizeof(float) options:MTLResourceStorageModeShared];
@@ -194,6 +196,21 @@ static bool metal_load_gguf(metal_context_t* ctx, const char* path) {
     w->layer_ffn_gate = [dev newBufferWithLength:n_layer * max_ffn_float * sizeof(float) options:MTLResourceStorageModeShared];
     w->layer_ffn_up   = [dev newBufferWithLength:n_layer * max_ffn_float * sizeof(float) options:MTLResourceStorageModeShared];
     w->layer_ffn_down = [dev newBufferWithLength:n_layer * max_ffn_float * sizeof(float) options:MTLResourceStorageModeShared];
+
+    /* 2026-10-14 诊断：打印 buffer 分配大小 + nil 检查（大 fallback buffer 可能返回 nil → contents NULL → memcpy SIGSEGV） */
+    fprintf(stdout, "    [buffer] max_ffn_float=%zu (fallback dim*ffn_dim=%zu), ffn buffer=%.2fGB/layer\n",
+            max_ffn_float, (size_t)dim * ffn_dim, n_layer * max_ffn_float * sizeof(float) / 1e9);
+    fprintf(stdout, "    [buffer] gate=%s up=%s down=%s attn_norm=%s qkv=%s o=%s ffn_norm=%s\n",
+            w->layer_ffn_gate ? "ok" : "NIL", w->layer_ffn_up ? "ok" : "NIL",
+            w->layer_ffn_down ? "ok" : "NIL", w->layer_attn_norm ? "ok" : "NIL",
+            w->layer_qkv ? "ok" : "NIL", w->layer_o ? "ok" : "NIL",
+            w->layer_ffn_norm ? "ok" : "NIL");
+    fflush(stdout);
+    if (!w->layer_ffn_gate || !w->layer_ffn_up || !w->layer_ffn_down ||
+        !w->layer_attn_norm || !w->layer_qkv || !w->layer_o || !w->layer_ffn_norm) {
+        fprintf(stderr, "    [buffer] ERROR: Metal buffer allocation returned nil\n");
+        return false;
+    }
 
     fprintf(stdout, "    [buffer] QKV buffer: %zu bytes per layer, %zu total\n", (max_q_float + max_k_float + max_v_float) * sizeof(float), n_layer * (max_q_float + max_k_float + max_v_float) * sizeof(float));
     fflush(stdout);
