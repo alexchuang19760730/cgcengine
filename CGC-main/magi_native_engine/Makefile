@@ -42,7 +42,11 @@ moe_profile_metal: moe_profile_main.c moe_inject.c libmetal_runtime.a
 		"$(LLAMA_BUILD)/libggml-metal.dylib" \
 		-Wl,-rpath,$(LLAMA_BUILD)
 
+# ===== P2 · Metal 真实算量 GEMV/Router bench（compute 段真实化，仅 Metal 依赖） =====
+moe_gemv_bench: moe_gemv_bench.mm moe_gemv_metal.mm moe_gemv_metal.h
+	$(CXX) $(CXXFLAGS) -ObjC++ $^ -o $@ -framework Metal -framework Foundation
+
 clean:
-	rm -f *.o *.a magi_infer moe_profile moe_profile_metal
+	rm -f *.o *.a magi_infer moe_profile moe_profile_metal moe_gemv_bench
 
 .PHONY: clean all

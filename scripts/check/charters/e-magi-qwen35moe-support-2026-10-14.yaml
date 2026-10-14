@@ -1,0 +1,61 @@
+# ═══════════════════════════════════════════════════════════════════════
+# 實驗立項卡（Charter）—— magi 擴展支持目標模型 qwen35moe
+# 目的：讓 magi_native_engine（Metal 實驗載具）能加載目標模型
+#       Nail-Qwen3.6-35B-A3B（41 層混合架構 + 256 專家/top-8 + SSM），
+#       使 P2 四接口樁在真實權重/真實算量下驗證 Union 聚合預取 + Verifier-Side 裁剪。
+# ⚠ 方案定位：**基於 demo branch 20 tok/s 最高紀錄的擴展整合，不是獨立方案**
+#   ——最終注入目標是跑出 C17 20.790546 的 llama.cpp CGC 引擎，magi 僅為前置驗證載具，
+#   四接口語義必須對齊 llama.cpp 的 expert 加載/預取 hook（llama-context.cpp layer_ahead 等）。
+# ═══════════════════════════════════════════════════════════════════════
+id: e-magi-qwen35moe-support-2026-10-14
+owner: lineI（端側推理引擎軸）
+created: 2026-10-14
+axis: NATIVE-ENGINE / TARGET-MODEL
+parent_baseline: e-magi-integration-2026-10-14（magi 已可構建 + Qwen2.5 加載路徑已驗證）
+
+# ── 【現狀】權威基線：20 tok/s 最高紀錄（demo branch，2026-10-14）────────────
+baseline:
+  metric: "decode 棘輪上限 C17 = 20.790546 t/s（48.08 ms/token）"
+  cell:   "build f7d231124 · affinity OFF 對照臂 · Round 4 雙單臂配對 · attribution=oversubscribed 靜態超訂、swap_growth=0.0、thermal NOMINAL · operator 顯式放行 R4；配對臂 C18 = 20.610744（ON，×0.9913，基準類）"
+  source: "scripts/check/decode_board_2026-09-29.yaml  # certify_anchor.decode_ts=20.790546；artifact=Backup/aff_cert_20261013/aff_off_single.json"
+  source_note: "測試方式（同一基线體系）：harness bench --arm prod-new（llama-bench 出廠形狀 -p 512 -n 128 -b 2048 -ub 512 -d 0 -r 5、warm_skip 0、fixed_fill_seed=1、reps 5）；引用須過 quote_gate.py（§55/58/63）；prod 重型驗收 RUN_CGC_PROD_ACCEPT=1。⚠ C17 在退役形狀上量得（2026-10-03 前預設格），新默認格最高為 C14 13.722（基準類）；本卡引用 C17 作為『20 tok/s』錨點＝保持不退化目標。目標模型＝Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf（13.66GB，gguf_verified.json 核准：L=41、experts=256、top-8、hidden=2048/inter=512、SSM state=128/conv=4、nextn_pred=1）。"
+
+# ── 【目標】這一臂要回答的「可判定」問題 ────────────────────────────────────
+question: |
+  magi_native_engine 能否擴展為加載並按目標模型算量運算 qwen35moe
+  （41 層混合架構 + blk.*.ffn_*_exps.weight 專家張量 + SSM/attention 批處理），
+  使 P2 四接口樁（load_expert/batch_router/verify_batch/async_prefetch）在
+  真實權重下輸出的四段時序（compute/RAM/SSD/serial）可作為
+  llama.cpp（20 tok/s 引擎）Union 預取注入的前置機制驗證？
+
+# ── 【假設】機制 + 預期收益（給區間、須有依據）───────────────────────────────
+assumption: |
+  1. llama.cpp CGC fork（src/llama.cpp，demo branch）已支持目標模型全張量
+     （C17 20.79 即在其上量得）⇒ magi 只需對齊張量名與 shape 語義，無須重新發明架構。
+  2. 目標模型專家張量命名為 blk.{l}.ffn_gate_exps.weight / ffn_up_exps.weight /
+     ffn_down_exps.weight（GGUF 核准：gate/up=IQ2_S、down=IQ3_S、每專家 1.1223MB；
+     反量化後 f32 = inter512×2048×4B = 4MB/專家）——待實測確認（可能為 exps 前綴變體）。
+  3. SSM 層（31/41）沿 token 遞歸 ⇒ MTP 批量驗證有固定串行步（≤3ms/輪，R7 白皮書風險）；
+     magi 樁此輪只測 compute（GEMV/router）真實算量，SSM 串行留 llama.cpp 注入後實測。
+  4. Metal GEMV（batch_router_kernel + expert_gemv_kernel，moe_router.metal 已就緒）
+     用合成權重即可得真實 compute_ms（算量只依 shape，與權重內容無關）——先行接入，
+     真實權重加載隨後跟進。
+
+# ── 【驗收】判據（harness fail-closed 檢查項）───────────────────────────────
+acceptance: |
+  1. magi_infer 加載目標模型 GGUF：41 層全掃描命中（blk.*.attn_*/ffn_*_exps.weight/
+     ffn_norm/attn_norm）+ SSM 張量名解析，不 crash、exit 0。
+  2. moe_profile_metal 的 compute_ms 與 llama.cpp 同算量實測同量級（±30% 內）。
+  3. P2 樁在真實權重下：Union 命中率 / 四段時序 / 平均 U 輸出 JSON，與合成權重版
+     偏差 ≤ 5%（機制層與權重內容解耦的證據）。
+  4. 不退化：本卡不直接改 llama.cpp 引擎（注入為下一張卡 e-union-cache-shrink-*），
+     C17/C18 基線讀數不受影響（重跑 harness bench 驗證同 20.6± 級）。
+  5. 未完成項：SSM 串行 ≤3ms profile（llama.cpp 注入後）；metal_kernel_* 抽象 API 其餘部分。
+
+# ── 【證據檔案】────────────────────────────────────────────────────────────
+evidence:
+  - CGC-main/magi_native_engine/moe_router.metal        # batch_router/expert_gemv kernel（已就緒）
+  - CGC-main/magi_native_engine/synth_qwen25_smoke_gguf.py
+  - models/gguf/gguf_verified.json                       # 目標模型核准（L=41/E=256/top-8）
+  - scripts/check/decode_board_2026-09-29.yaml           # C17/C18 20 tok/s 基線（引用）
+  - Backup/aff_cert_20261013/aff_off_single.json         # C17 產物（引用）

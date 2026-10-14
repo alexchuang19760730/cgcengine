@@ -3,6 +3,8 @@
 *.a
 magi_infer
 moe_profile
+moe_profile_metal
+moe_gemv_bench
 moe_profile_out.json
 expert_manifest.json
 expert_manifest.bin
