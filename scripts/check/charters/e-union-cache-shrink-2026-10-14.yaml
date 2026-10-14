@@ -1,0 +1,102 @@
+# ═══════════════════════════════════════════════════════════════════════
+# 實驗立項卡（Charter）—— Union 聚合預取 + Verifier-Side 集合裁剪
+#                     注入 20 tok/s 引擎，收縮 Expert Cache
+# 目的：把白皮書方案（MTP N draft token 前瞻 batch-router union 聚合預取 +
+#       verify 前 U_c/P_commit 集合裁剪）作為**增量**注入 demo branch 現有
+#       llama.cpp CGC 引擎，在保持 C17 20.790546 t/s 不退化的前提下收縮 expert cache。
+# ⚠ 方案定位：**不是獨立方案**。複用引擎已有的 expert_cache/slot_table/prefetch_slot/
+#   cache_step_union 機制，只替換 union 來源（歷史→MTP 前瞻）並加裁剪掛點。
+# ═══════════════════════════════════════════════════════════════════════
+id: e-union-cache-shrink-2026-10-14
+owner: lineI（端側推理引擎軸）
+created: 2026-10-14
+axis: MTP-PREFETCH / EXPERT-CACHE-SHRINK
+parent_baseline:
+  - e-magi-integration-2026-10-14      # 構建鏈 + 四接口樁
+  - e-magi-qwen35moe-support-2026-10-14  # 真實算量 compute 基準
+whitepaper: "cgc-union-prefetch-whitepaper/Union预取与集合裁剪技术白皮书.html（v1.1）"
+
+# ── 【現狀】引擎已有的可複用機制（src/llama.cpp，demo branch）──────────────
+existing_mechanism: |
+  引擎**已有**一套 union/預取基礎，本卡不重造：
+    - expert_cache（L4 分層 bounded pool，pool_capacity，llama-context.cpp:303-412）；
+      wide-union 路徑 ceiling = cap*top_k = 8*8 = 64（llama-context.cpp:693-698）。
+    - slot_table + remap leaf：build_moe_ffn 的 mul_mat_id 前把 expert id 映射到 slot
+      （llama-graph.cpp:1573/2119-2121；llama-context.cpp:308 remap hook）。
+    - cache_step_union[il]：**每層當前 step 的 union 已存在**（id 聚合跨 token）。
+    - cache_tail_union[il]：per-layer 歷史窗口 union（CGC_PREFETCH_WINDOW，默認 4，1..16）。
+    - prefetch_slot：非阻塞 bg 線程預取，bytes 落地後才 publish slot_table；
+      LRU victim 保證不在當前 step union 內（2173-2200）。
+    - SpAc EMA membership（llama_expert_cache_spac_prefetch，CGC_SPAC_*）。
+    - 開關：CGC_NO_PREFETCH / CGC_PREFETCH_SRC / CGC_SERVER_MTP / CGC_EXPERT_AFFINITY。
+  現狀 union 來源＝**已發生 step 的路由結果 + tail 歷史**（temporal locality，事後）；
+  本卡增量＝讓 union 來源加入 **MTP verify 的 N 個 draft token 的前瞻 batch-router**（事前）。
+
+# ── 【基線】20 tok/s 最高紀錄（不可退化的權威線）──────────────────────────
+baseline:
+  metric: "decode 棘輪上限 C17 = 20.790546 t/s（48.08 ms/token）；配對 C18 = 20.610744（ON）"
+  cell:   "build f7d231124 · Round4 雙單臂配對 · harness bench --arm prod-new（-p512 -n128 -b2048 -ub512 -d0 -r5）"
+  source: "scripts/check/decode_board_2026-09-29.yaml；artifact=Backup/aff_cert_20261013/aff_off_single.json"
+  gates:  "任何注入臂重跑 harness bench，decode 不得低於配對基線的 quote_gate 散布帶；M1/M2/M3 須 bit-identical（沿用 e-l201/e-affinity 的 222/222 口徑）。"
+
+# ── 【目標】可判定問題 ─────────────────────────────────────────────────────
+question: |
+  在 C17/C18 20.6-20.8 t/s 不退化（且 M1/M2/M3 bit-identical）的前提下，
+  用 MTP N draft token 前瞻 union 聚合預取 + verify 前 U_c/P_commit 集合裁剪，
+  能否把 per-layer expert cache 駐留需求從當前池配置收縮（目標 ≥30%，挑戰 50%），
+  同時預取命中率不降、decode 吞吐不掉出 quote_gate 帶？
+
+# ── 【注入設計】四接口 ↔ 引擎 hook 對齊表 ──────────────────────────────────
+injection_map: |
+  P2 樁接口            引擎真實 hook 點                              增量動作
+  -------------------- -------------------------------------------- ----------------------------------------
+  batch_router         build_moe_ffn 前 / verify graph 的 draft ids  對 N 個 draft token 每層跑一次 router，
+                                                                     聚合前瞻 union（不進 mul_mat_id，僅預測）
+  async_prefetch       prefetch_slot（bg loop, 2173-2260）           union−resident 差集批量入隊（來源加 MTP 前瞻）
+  load_expert          expert_cache fill_pool_direct / slot publish  不變（複用；僅縮 pool_capacity 對照）
+  verify_batch         remap leaf 前的 ids 聚合（llama-graph:2119）  U_c/P_commit 裁剪掛點：按接受概率裁 union，
+                                                                     裁剪只影響預取集合，不進正確性路徑
+  關鍵安全：預測/裁剪錯只浪費 IO（多預取）或 fallback 全量，**永不改 mul_mat_id 真實 ids**
+  （MTP-verify race 已由 CGC_NO_PREFETCH 路徑與 prefetch_slot 的 publish-after-land 保證）。
+
+# ── 【假設】機制 + 預期（給區間 + 依據）────────────────────────────────────
+assumption: |
+  1. 【P2 雙門，2026-10-14 白皮書 §6.3.1 實測】能否 h=0 由兩個可測引擎量共同決定，已修復 profile_pipeline.py
+     兩處口徑（compute 攤薄 ÷Nα=6；專家字節用 GGUF 核准 1.1223MiB/個而非 2.0MiB IO 塊，W_eff=0.377=權威 0.378）：
+     (a) **SSD 讀放大（首要杠杆）**：緊湊/合並按真實專家字節預取 amp=1.0 時，即使 f32 朴素 compute 179ms/輪，
+         h0 已達 19.8 tok/s（補 ≈5% 駐留即過 20）；僅當每專家讀滿 2MB 塊 amp=1.82 且 compute 高才需明顯駐留
+         （RAM45：179→51%、110→4%、≤95→0%）。
+     (b) **每輪 compute（次要杠杆）**：f32 合成權重朴素 dispatch 實測 179.02ms/輪為上界；IQ2_S/IQ3_S 量化專家
+         字節僅 f32 的 0.28×、GEMV 訪存受限，加 graph 合流預期 40–60ms/輪，待引擎實測坐實。
+     (c) RAM13 保守邊界更緊（緊湊需 compute≤80ms 才 h=0，讀滿塊 ≥140ms 無解），待 Metal 多核有效帶寬實測收緊。
+  2. MTP 前瞻 union 與真實 verify union 的重疊率越高，預取命中率越高；N=8、α=.75 下
+     P1 模型 U12/U14 已量化（W_eff 0.378/0.454）。
+  3. cache 收縮來自「union 相對於 N*topk 上限的去重」+「裁剪掉低接受概率專家」+「緊湊預取壓讀放大」，
+     不是靠降低正確 verify 需要的專家（那些仍由 remap 真實路徑按需加載）。
+  4. 前置測量臂 A-prof（在 A0 之後、A1 之前）：先在 llama.cpp 引擎實測「實際預取讀字節/專家（得 amp）」
+     與「量化 GEMV 真實 compute/輪」，按白皮書 §6.3.1 落格確定可收縮檔位，再進 A1 union 改造。
+
+# ── 【驗收】fail-closed 判據 ───────────────────────────────────────────────
+acceptance: |
+  1. 不退化（硬門檻）：注入臂 harness bench decode ∈ C18 配對 quote_gate 散布帶，
+     不掉出；M1/M2/M3 bit-identical（222/222 或該 cell 既有口徑，coverage 100%、comparable=true）。
+  2. 收縮：per-layer pool_capacity 可配置下調 ≥30%（挑戰 50%），其餘開關不變。
+  3. 預取質量：MTP 前瞻 union 預取命中率 ≥ 現 tail-history 路徑（counter: prefetch hit/miss、
+     n_prefetch/dropped，spac_dbg 同型輸出）；cache 冷啟 miss 不增。
+  4. 裁剪安全：U_c/P_commit 裁剪臂與不裁剪臂 logits bit-identical（裁剪只動預取、不動 verify ids）。
+  5. A/B 控制變量：固定 seed、交替順序、同 cell、reps 5、warm_skip 0；產物成對出 engine digest。
+  6. falsify：任一 bit 翻臉 / decode 出帶 / 命中率下降 ⇒ 回滾該臂，回填本卡。
+
+# ── 【臂設計】──────────────────────────────────────────────────────────────
+arms:
+  - A0 baseline：現 C17/C18 配置（tail-history union，pool 不縮）
+  - A1 mtp-union：union 來源加 MTP 前瞻 batch-router（pool 不變，先驗命中率）
+  - A2 mtp-union+shrink30：A1 + pool_capacity×0.70
+  - A3 mtp-union+shrink50+prune：A1 + ×0.50 + U_c/P_commit 裁剪
+  順序：A1 先證命中率（不碰 cache 大小，隔離機制），再 A2/A3 收縮（禁止一上來就縮 + 裁剪混在一起）。
+
+evidence:
+  - src/llama.cpp/src/llama-context.cpp   # expert_cache/prefetch_slot/cache_step_union/tail_union
+  - src/llama.cpp/src/llama-graph.cpp     # build_moe_ffn/mul_mat_id/remap ids
+  - CGC-main/magi_native_engine/         # 四接口樁 + moe_gemv_bench（前置機制/算量驗證）
+  - scripts/check/decode_board_2026-09-29.yaml
