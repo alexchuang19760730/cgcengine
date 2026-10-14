@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
+#include "metal_runtime.h"   /* 2026-10-14 整合：补 include（此前从未构建成功） */
 #include "gguf.h"
 #include "ggml.h"
 #include "ggml-quants.h"
@@ -36,7 +37,7 @@ typedef struct {
     int seq_len;
 } magi_config_t;
 
-typedef struct {
+typedef struct MetalKDAState {
     id<MTLBuffer> buffer;
     int n_head;
     int head_dim;
@@ -908,6 +909,109 @@ void metal_kda_attention(metal_device_t* dev,
         [library release];
         [pso release];
     }
+}
+
+// ===== 2026-10-14 整合：补齐 metal_runtime.h 声明的 device/buffer/weights API =====
+// 此前头文件声明了完整 API，但 .mm 只实现 KDA state 4 函数 → magi_infer 从未链接成功。
+// 本轮补齐 main.cpp 实际依赖的 5 个符号（复用内部 metal_context_t + metal_load_gguf）；
+// metal_kernel_*/metal_gemm 等 kernel 抽象 API 仍为 TODO（见 charter e-magi-integration-2026-10-14）。
+
+typedef struct MetalDevice {
+    id<MTLDevice> device;
+    id<MTLCommandQueue> queue;
+} metal_device_t;
+
+typedef struct MetalBuffer {
+    id<MTLBuffer> buf;
+} metal_buffer_t;
+
+metal_device_t* metal_device_create(void) {
+    metal_device_t* dev = (metal_device_t*)calloc(1, sizeof(metal_device_t));
+    if (!dev) return NULL;
+    dev->device = MTLCreateSystemDefaultDevice();
+    if (!dev->device) { free(dev); return NULL; }
+    dev->queue = [dev->device newCommandQueue];
+    return dev;
+}
+
+void metal_device_destroy(metal_device_t* dev) {
+    if (!dev) return;
+    if (dev->queue) [dev->queue release];
+    if (dev->device) [dev->device release];
+    free(dev);
+}
+
+const char* metal_get_device_name(void) {
+    static char name[128];
+    id<MTLDevice> d = MTLCreateSystemDefaultDevice();
+    if (!d) { snprintf(name, sizeof(name), "unknown"); return name; }
+    snprintf(name, sizeof(name), "%s", [[d name] UTF8String]);
+    [d release];
+    return name;
+}
+
+ModelWeights* metal_load_gguf_weights(metal_device_t* dev, const char* path, ModelConfig* config) {
+    if (!dev || !dev->device || !path || !config) return NULL;
+    metal_context_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.device = dev->device;
+    ctx.queue = dev->queue;
+    ctx.config = (magi_config_t*)calloc(1, sizeof(magi_config_t));
+    ctx.weights = (magi_weights_t*)calloc(1, sizeof(magi_weights_t));
+    if (!ctx.config || !ctx.weights) { free(ctx.config); free(ctx.weights); return NULL; }
+    ctx.config->dim = config->dim;
+    ctx.config->n_layer = config->n_layer;
+    ctx.config->ffn_dim = 8 * config->dim;  /* fallback；实际值由 metal_load_gguf 扫描 tensor 覆盖 */
+    ctx.config->n_head = config->n_head;
+    ctx.config->head_dim = config->head_dim;
+    ctx.config->vocab_size = config->vocab_size;
+
+    if (!metal_load_gguf(&ctx, path)) {
+        [ctx.weights->embedding release]; [ctx.weights->layer_attn_norm release];
+        [ctx.weights->layer_qkv release]; [ctx.weights->layer_o release];
+        [ctx.weights->layer_ffn_norm release]; [ctx.weights->layer_ffn_up release];
+        [ctx.weights->layer_ffn_gate release]; [ctx.weights->layer_ffn_down release];
+        [ctx.weights->final_norm release]; [ctx.weights->lm_head release];
+        free(ctx.config); free(ctx.weights);
+        return NULL;
+    }
+
+    ModelWeights* w = (ModelWeights*)calloc(1, sizeof(ModelWeights));
+    if (!w) { free(ctx.config); free(ctx.weights); return NULL; }
+    magi_weights_t* m = ctx.weights;
+    /* 包装内部 magi_weights_t 的 MTLBuffer → 头文件 metal_buffer_t（共享所有权，
+     * metal_weights_destroy 负责释放；ctx.config/weights 结构体内存随 w 生命周期）。 */
+    #define WRAP_BUF(mfield) \
+        do { metal_buffer_t* _mb = (metal_buffer_t*)calloc(1, sizeof(metal_buffer_t)); \
+             if (_mb) _mb->buf = m->mfield; w->mfield = _mb; } while (0)
+    WRAP_BUF(embedding);
+    WRAP_BUF(layer_attn_norm);
+    WRAP_BUF(layer_qkv);
+    WRAP_BUF(layer_o);
+    WRAP_BUF(layer_ffn_norm);
+    WRAP_BUF(layer_ffn_up);
+    WRAP_BUF(layer_ffn_gate);
+    WRAP_BUF(layer_ffn_down);
+    WRAP_BUF(final_norm);
+    WRAP_BUF(lm_head);
+    #undef WRAP_BUF
+    w->rope_cos = w->rope_sin = NULL;  /* 头文件预留；mm 未实现 rope 表上传 */
+    (void)ctx.ggml_ctx;  /* ggml 上下文由 llama 库持有，随库生命周期 */
+    free(ctx.config); free(ctx.weights);
+    return w;
+}
+
+void metal_weights_destroy(ModelWeights* weights) {
+    if (!weights) return;
+    void* ptrs[] = { weights->embedding, weights->layer_attn_norm, weights->layer_qkv,
+                     weights->layer_o, weights->layer_ffn_norm, weights->layer_ffn_up,
+                     weights->layer_ffn_gate, weights->layer_ffn_down, weights->final_norm,
+                     weights->lm_head, weights->rope_cos, weights->rope_sin };
+    for (int i = 0; i < 12; i++) {
+        metal_buffer_t* mb = (metal_buffer_t*)ptrs[i];
+        if (mb) { if (mb->buf) [mb->buf release]; free(mb); }
+    }
+    free(weights);
 }
 
 #ifdef __cplusplus

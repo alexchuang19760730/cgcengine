@@ -3,7 +3,9 @@ CXX = clang++
 CFLAGS = -O3 -std=c17 -Wall
 CXXFLAGS = -O3 -std=c++17 -Wall
 
-LLAMA_PATH = /Users/alexchuang/Documents/cgcjitload/llama.cpp
+# 2026-10-14 整合：LLAMA_PATH 从已删除的 ~/Documents/cgcjitload/llama.cpp
+# 改指 devserver 仓库内 llama.cpp 源码树（同一 repo，build/bin 已有全套 dylib）
+LLAMA_PATH = $(abspath $(CURDIR)/../../src/llama.cpp)
 LLAMA_BUILD = $(LLAMA_PATH)/build/bin
 LLAMA_INCLUDE = $(LLAMA_PATH)/ggml/include
 LLAMA_SRC = $(LLAMA_PATH)/ggml/src
@@ -24,14 +26,23 @@ magi_infer: main.cpp libmetal_runtime.a
 		"$(LLAMA_BUILD)/libllama.dylib" \
 		"$(LLAMA_BUILD)/libggml-metal.dylib" \
 		"$(LLAMA_BUILD)/libggml-cpu.dylib" \
-		"$(LLAMA_BUILD)/libggml-blas.dylib" \
 		"$(LLAMA_BUILD)/libggml-base.dylib" \
 		-Wl,-rpath,$(LLAMA_BUILD)
 
 %.o: %.mm
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+# ===== P2 · MoE 四接口桩（不依赖 Metal/llama，纯 C 可编译） =====
+moe_profile: moe_profile_main.c moe_inject.c
+	$(CC) $(CFLAGS) $^ -o $@ -lpthread
+
+moe_profile_metal: moe_profile_main.c moe_inject.c libmetal_runtime.a
+	$(CXX) $(CXXFLAGS) $^ -o moe_profile_metal -lpthread -framework Metal -framework Foundation \
+		"$(LLAMA_BUILD)/libllama.dylib" \
+		"$(LLAMA_BUILD)/libggml-metal.dylib" \
+		-Wl,-rpath,$(LLAMA_BUILD)
+
 clean:
-	rm -f *.o *.a magi_infer
+	rm -f *.o *.a magi_infer moe_profile moe_profile_metal
 
 .PHONY: clean all

@@ -1,0 +1,62 @@
+# ═══════════════════════════════════════════════════════════════════════
+# 實驗立項卡（Charter）—— magi_native_engine 整合進 demo branch
+# 目的：把 magi_native_engine（Metal 原生引擎 + P2 四接口樁）接入
+#       demo/sweet-spot-windows-fix 的構建鏈，消除既存「從未可構建」狀態
+# ═══════════════════════════════════════════════════════════════════════
+id: e-magi-integration-2026-10-14
+owner: lineI（端側推理引擎軸）
+created: 2026-10-14
+axis: BUILD-CHAIN / NATIVE-ENGINE
+supersedes_claim: 2026-08-20 提交 30988f1e5 的「magi_native_engine 可構建」隱含假設（不成立）
+
+# ── 【已證實的根因（2026-10-14，構建期證據）】───────────────────────────────
+root_cause: |
+  magi_native_engine 在此前從未構建成功，三層斷鏈：
+    1. Makefile LLAMA_PATH 指向已刪除的 /Users/alexchuang/Documents/cgcjitload/llama.cpp；
+       devserver 倉庫內 src/llama.cpp/build/bin 已有全套 dylib（libllama/libggml-metal/cpu/base，
+       無 blas——構建未開 BLAS）。
+    2. metal_runtime.mm 從未 include 自己的 metal_runtime.h（類型全未定義）。
+    3. 頭文件聲明的 device/buffer/weights API（metal_device_create 等 5 符號）
+       .mm 完全未實現——.mm 只有內部 metal_context_t 路徑（metal_load_gguf 完整但 static）
+       + KDA state 4 函數；main.cpp 依頭文件 API 調用 ⇒ 鏈接缺 5 符號。
+  修復：LLAMA_PATH→$(CURDIR)/../../src/llama.cpp + 去 blas；補 include；
+  KDA struct tag 對齊（MetalKDAState）；在 .mm 補齊 5 符號薄包裝（復用內部
+  metal_load_gguf，magi_weights_t→ModelWeights 包裝）。
+
+# ── 【目標】這一臂要回答的「可判定」問題 ────────────────────────────────────
+question: |
+  magi_native_engine 在 demo/sweet-spot-windows-fix 上能否構建出 magi_infer
+  （Makefile all 目標），且運行入口 smoke（Metal 設備創建 / 加載失敗路徑）行為正確？
+
+# ── 【現狀】權威基線：數字 + 口徑 + 出處 ────────────────────────────────────
+baseline:
+  metric: "magi_infer 鏈接失敗（缺 metal_device_create 等 5 符號）"
+  cell:   "demo/sweet-spot-windows-fix, make magi_infer, macOS arm64, Metal"
+  source: "CGC-main/magi_native_engine/Makefile（2026-10-14 修復前）+ metal_runtime.mm 構建實測"
+
+# ── 【假設】機制 + 預期收益（給區間、須有依據）───────────────────────────────
+assumption: |
+  1. 倉庫內 src/llama.cpp/build/bin 的 dylib 與 magi 鏈接期 ABI 兼容（同 llama.cpp 源，
+     Metal/cpu/base 齊全，無 blas 不影響 magi 路徑）——已實測成立（鏈接 + 運行 smoke 通過）。
+  2. metal_runtime.h 聲明的 kernel 抽象 API（metal_kernel_*/metal_gemm 等）main.cpp 當前
+     smoke 不調用，補齊工作單列 TODO，不阻塞「可構建」驗收。
+  3. P2 四接口樁（moe_inject）獨立於 metal_runtime 層，make moe_profile 目標已驗證可構建運行。
+
+# ── 【驗收】bit-identical / 數值判據（harness fail-closed 檢查項）───────────
+acceptance: |
+  1. make magi_infer 全綠（僅 warning，無 error）——已通過（2026-10-14 17:28）。
+  2. ./magi_infer（無參）打印用法並 exit 1——已通過。
+  3. ./magi_infer <不存在路徑> 打印「Apple M4」設備名 + 加載失敗 exit 1——已通過。
+  4. make moe_profile 可構建、樁輸出四段時序 JSON——已通過（P2 交付時）。
+  5. 未完成項（後續臂）：真實 GGUF 權重完整加載路徑需配 Qwen2.5 結構小模型驗證；
+     metal_kernel_* 抽象 API 實現；SSM 串行 ≤3ms profile。
+
+# ── 【證據檔案】────────────────────────────────────────────────────────────
+evidence:
+  - CGC-main/magi_native_engine/Makefile          # LLAMA_PATH 修復 + moe_profile 目標
+  - CGC-main/magi_native_engine/metal_runtime.mm  # include + KDA tag + 5 符號包裝
+  - CGC-main/magi_native_engine/moe_inject.h/.c   # P2 四接口樁
+  - CGC-main/magi_native_engine/gen_expert_manifest.py
+  - CGC-main/magi_native_engine/moe_profile_main.c
+  - CGC-main/magi_native_engine/moe_router.metal
+  - CGC-main/magi_native_engine/.gitignore        # 構建/運行產物排除

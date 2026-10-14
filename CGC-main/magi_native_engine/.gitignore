@@ -1,0 +1,8 @@
+# magi_native_engine 构建 / 运行产物（可再生，不入库）
+*.o
+*.a
+magi_infer
+moe_profile
+moe_profile_out.json
+expert_manifest.json
+expert_manifest.bin
