@@ -43,6 +43,7 @@
 | [口徑＋k=3 飄移認證（16.4% 噪聲底）](exp-caliber-calibration.md) | 3a | **未跑（有卡、無讀數）**：本節點的產出是**口徑校準**——記錄裡至少有四個不同的「步」（DECPROF work-row **167.81** ms／實付週期 step_ro |
 | [2026-10-03 operator 裁定「移除所有具名格、pro…](exp-default-cell-first-2026-10-03.md) | 3a | 尚無可引用讀數：1 個 run 全部非乾淨（attribution.verdict=swap（swap_growth=3122.3099999999995 MiB, max_swa |
 | [**交付口徑量測（生產級）**：spec-tree MTP-on（`…](exp-spectree-mtpon-default-2026-10-06.md) | 3a | decode 11.36 t/s |
+| [兩份權威檔對同一個里程碑的「是否已判死」講了相反的話，而沒有閘門會發…](exp-targets-board-recon-2026-10-07.md) | 3a | 實驗進行中（尚無讀數） |
 
 ## 7. 子目標分解（持續更新；1/5 完成）
 

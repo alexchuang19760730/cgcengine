@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LES 目標-router 預取移植探針（qwen35moe 同構 diff）</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2230; --bd:#2d3748;
+    --fg:#e6edf3; --mut:#9aa7b4; --acc:#58a6ff; --ok:#3fb950; --warn:#d29922; --bad:#f85149;
+    --gold:#e3b341; --purple:#bc8cff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.65 -apple-system,"PingFang TC","SF Pro Text",Segoe UI,Roboto,sans-serif}
+  .wrap{max-width:1080px;margin:0 auto;padding:28px 22px 80px}
+  h1{font-size:22px;margin:0 0 4px}
+  h2{font-size:16px;margin:30px 0 10px;padding-left:10px;border-left:3px solid var(--acc)}
+  .sub{color:var(--mut);font-size:13px;margin-bottom:18px}
+  .tags{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .tag{font-size:12px;padding:2px 10px;border-radius:20px;border:1px solid var(--bd);color:var(--mut);background:var(--panel)}
+  .tag.probe{color:var(--gold);border-color:var(--gold)}
+  .tag.loss{color:var(--ok);border-color:var(--ok)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--bd);border-radius:10px;padding:14px 16px}
+  .card h3{margin:0 0 8px;font-size:14px}
+  .hyp{background:linear-gradient(135deg,#172333,#161b22);border:1px solid #1f3a5f;border-radius:10px;padding:14px 18px;font-size:15px}
+  .hyp b{color:var(--acc)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin:6px 0}
+  th,td{border:1px solid var(--bd);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--mut);font-weight:600}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  .ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)} .gold{color:var(--gold)}
+  .goal{counter-reset:g}
+  .goal .step{background:var(--panel);border:1px solid var(--bd);border-radius:10px;padding:12px 16px;margin:10px 0;position:relative;padding-left:54px}
+  .goal .step::before{counter-increment:g;content:"G" counter(g);position:absolute;left:14px;top:12px;font-weight:700;color:var(--gold);font-size:15px}
+  .goal .step .t{font-weight:600;margin-bottom:4px}
+  .goal .step .pass{color:var(--ok);font-size:13px}
+  .goal .step .fail{color:var(--bad);font-size:13px}
+  .goal .step .meta{color:var(--mut);font-size:12px;margin-top:4px}
+  code{background:#0b1220;border:1px solid var(--bd);border-radius:4px;padding:1px 6px;font:12.5px ui-monospace,SFMono-Regular,Menlo,monospace}
+  .bar-row{display:flex;align-items:center;gap:10px;margin:6px 0;font-size:12.5px}
+  .bar-row .lbl{width:230px;color:var(--mut)}
+  .bar{height:18px;background:#0b1220;border:1px solid var(--bd);border-radius:4px;flex:1;position:relative;overflow:hidden}
+  .bar > i{display:block;height:100%;border-radius:3px}
+  .bar-row .v{width:96px;text-align:right;font-variant-numeric:tabular-nums}
+  a{color:var(--acc);text-decoration:none} a:hover{text-decoration:underline}
+  ul{margin:6px 0 6px 18px;padding:0} li{margin:3px 0}
+  .note{border-left:3px solid var(--warn);background:#221d10;padding:10px 14px;border-radius:0 8px 8px 0;margin:10px 0;font-size:13px}
+  .dead{border-left:3px solid var(--bad);background:#241518;padding:10px 14px;border-radius:0 8px 8px 0;margin:10px 0;font-size:13px}
+  .small{font-size:12px;color:var(--mut)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>LES 目標-router 預取移植探針</h1>
+<div class="sub">qwen35moe 同構 diff · 類型：探針（先定位、不許諾收益）· 建立 2026-10-17 · 狀態：待立項（charter gate）</div>
+<div class="tags">
+  <span class="tag probe">Probe</span>
+  <span class="tag loss">Lossless 設計（預測不參與選擇）</span>
+  <span class="tag">上游 MIT：tc-mb/llama.cpp-omni @88bd37e</span>
+  <span class="tag">模型：Qwen3.6-35B-A3B 同族</span>
+  <span class="tag">後端：Metal</span>
+</div>
+
+<h2>一句話假設</h2>
+<div class="hyp">
+用<b>下一层 router 的真实权重</b>对当前层 <code>attn_post_norm</code> 打分取 top-8，在当前层 GPU 计算时把预测专家从 SSD 预取进 pool——
+若命中率对齐上游 <b>&gt;80%</b> 且 I/O 与计算重叠≈0，decode 的 SSD miss 串行等待应被显著压缩；
+<b>预测只指导预取、不参与路由，输出逐字节一致</b>。
+</div>
+
+<h2>現狀（CGC baseline）</h2>
+<div class="grid2">
+  <div class="card">
+    <h3>本機實測</h3>
+    <table>
+      <tr><th>配置</th><th>prefill</th><th>decode</th></tr>
+      <tr><td>prod-new · MTP-off · 穩態（IQ3_XXS）</td><td class="num">250+ t/s</td><td class="num">13.722 t/s</td></tr>
+      <tr><td>prod-new · MTP-on（warm-skip64）</td><td class="num">161.59 ±1.53</td><td class="num">12.63 ±1.78</td></tr>
+    </table>
+    <div class="small">expert GEMV 只跑峰值 38–45%；SSD miss 仍串行卡在关键路径；专家 ~1.07 MiB（IQ3_XXS，8GB pool 約 143 slots/layer）；统一内存带宽 108.8 GB/s。</div>
+  </div>
+  <div class="card">
+    <h3>上游對照（iPad Pro M4 16GB，35B-A3B，SSD）</h3>
+    <div class="bar-row"><span class="lbl">baseline SSD 加載</span><span class="bar"><i style="width:17%;background:#f85149"></i></span><span class="v">2.97 t/s</span></div>
+    <div class="bar-row"><span class="lbl">+ LES</span><span class="bar"><i style="width:56%;background:#e3b341"></i></span><span class="v">9.81 t/s</span></div>
+    <div class="bar-row"><span class="lbl">+ 逐層混合精度量化</span><span class="bar"><i style="width:86%;background:#58a6ff"></i></span><span class="v">14.92 t/s</span></div>
+    <div class="bar-row"><span class="lbl">+ DSpark 投機採樣</span><span class="bar"><i style="width:100%;background:#3fb950"></i></span><span class="v">17.39 t/s</span></div>
+    <div class="small">时序：读 1 专家 ≈1.00 ms，算 1 层 ≈1.15 ms；无预取 8 专家串行 = 8.0 ms/层，有预取 ≈0。</div>
+  </div>
+</div>
+
+<h2>為什麼這次不同（不在舊判死範圍）</h2>
+<div class="dead">
+<b>已判死（勿重做）</b>：「鄰居/啟發式背景預取」——用历史频率、层间相关性启发式猜专家，无真实打分依据。
+</div>
+<div class="note">
+<b>本方案是目標-router 預取</b>：直接拿<b>目标层 router 的权重</b>（<code>ffn_gate_inp</code>）对当前层真实特征做一次 GEMV 打分，argsort top-k。
+上游实测命中率 &gt;80%（8 个中约 6–7 个提前驻留），且预测-执行解耦保证逐字节无损。属不同信号强度的方案，<b>需要重新立项验证</b>。
+</div>
+
+<h2>子目標（可量化、可累加，每步帶實測貢獻）</h2>
+<div class="goal">
+  <div class="step">
+    <div class="t">離線命中率復現（不動引擎，最便宜）</div>
+    dump 每層 <code>attn_post_norm</code> 與下一層 gate 權重，離線重算 top-8 預測對真實路由的命中率；分層曲線 + 首末層標記。
+    <div class="pass">通過：整體命中率 ≥80%（對齊上游），且在我們的 prompt 集（編碼/對話/數學）上穩定。</div>
+    <div class="fail">否證：&lt;60% 或分層塌方（首/末層）→ 方案關閉，不進 G2。</div>
+    <div class="meta">產物：命中率分層圖 + 數據 csv；零引擎改動。</div>
+  </div>
+  <div class="step">
+    <div class="t">圖內預測構圖移植（默認 off，只預測不讀盤）</div>
+    對照 <code>qwen35moe.cpp:455-466</code>，在我們 fork 的 MoE 圖加 next-router × attn_post_norm 的 argsort top-k（僅 <code>n_tokens==1</code>）；
+    先以 <code>READ=0</code> 模式只統計 <code>n_hits/n_armed</code>。
+    <div class="pass">通過：在線命中率與 G1 離線一致（±1%）；預測開/關 decode t/s 差異 &lt;2%（開銷被 hide）。</div>
+    <div class="fail">否證：預測 GEMV 本身造成可測量延遲 → 需降頻或改預測位置。</div>
+  </div>
+  <div class="step">
+    <div class="t">預取 worker + ping-pong 窗口（重疊 I/O）</div>
+    移植 <code>lookahead_expert_prefetch</code>：後台 <code>preadv</code> 寫共享 bank 尾部、與當前層 Metal compute 重疊；
+    埋點 <code>n_hits/n_armed/n_waits/n_wait_ns/n_pred_read/n_pred_published</code>。
+    <div class="pass">通過：開/關預取逐 token logits <b>bit-exact</b>；<code>n_wait_ns</code> 顯著下降；預取深度=8 在一層 compute 窗口內可完成。</div>
+    <div class="fail">否證：窗口內讀不完 8 個專家（我們專家 1.07 MiB × 8 ≈ 8.6 MiB vs SSD 實測帶寬）→ 降 depth 或收斂為「預測指導淘汰」輕量模式。</div>
+  </div>
+  <div class="step">
+    <div class="t">與 8GB pool / LRU / SpAc / P0-P2 協同</div>
+    統一窗口模式 + 預測保護淘汰（對應上游 <code>n_evict_saved</code>）；churn 不回升；熱專家不被預取流量踢走。
+    <div class="pass">通過：ABBA（warm-skip64、prod-new）decode 相對 13.722 baseline ≥+5% 且無損、swap 不增、命中率/淘汰計數自證。</div>
+    <div class="fail">否證：收益 &lt;5% 或 churn/swap 變差 → 回退為只預測不讀盤的淘汰保護模式。</div>
+  </div>
+  <div class="step">
+    <div class="t">MTP 疊加驗證</div>
+    上游預測構圖僅在單 token decode 生效；驗證 MTP verify 多 token 路徑下的行為（禁用或擴展）。
+    <div class="pass">通過：MTP-on/off 兩檔均不崩、不退化；明確記錄預測在 verify 段的語義。</div>
+  </div>
+  <div class="step">
+    <div class="t">G6 · LES × 4/6 GiB 縮池轉正（前置 G3/G4 已過）—— 把常駐需求降級為及時預取</div>
+    背景：8 GiB 池 143 槽/層、缺 113，但每步只補 ~1.8 個（寬鬆 63 倍）⇒ 池沒被填滿、瓶頸是<b>預取品質而非容量</b>；10 GiB 擴池 Metal OOM。
+    純縮池（4/6 GiB）過去因預取訊號差、新增 miss 補不回而變慢；記憶中 8/6/4G＝12.06/10.48/7.67 已被查證為<b>轉述、不可引用</b>（全語料僅 2 筆 4G、6G 無一手；poolsweep p4–p7 被 cell contract 拒跑）。
+    G6 用同一 LES 預取補小池新增 miss：矩陣 <code>off/on × 池 {8,6,4} GiB</code>，<b>每池一格</b>（8G=8589934592 / 6G=6442450944 / 4G=4294967296），先以 off 臂重建權威一手 8/6/4 基線。
+    定義縮池懲罰 <code>pen(x,P)=1−t/s(x,P)/t/s(x,8G)</code>。
+    <div class="pass">通過：6G+on ≥ <b>8G+off×0.95</b>（小池+準預取追平大池無預取）且物理峰值降 ≥1.5 GiB；4G+on 的 pen 收窄 ≥50%（或 ≥8G+off×0.90 且不超訂）；n_wait_ns 不隨池縮小上升、n_hits/n_pred_read 上升（預取補容量缺口）、swap/churn 不惡化、bit-exact。對應常駐收縮 8→6G＝−25%、8→4G＝−50%（對齊 e-union-cache-shrink 挑戰檔，但不依賴 MTP）。</div>
+    <div class="fail">否證：t/s 隨池縮小同步掉、n_wait 同步升、n_hits 不上升 ⇒ SSD 帶寬/預取深度撐不起小池，縮池軸封閉、保留 8G；僅 6G 過則收縮上限登記 −25%。</div>
+    <div class="meta">線索（未落盤一手 json、須重測核對，不作基線）：operator 回報 4G miss 增 1.91× 而 t/s 10.28→10.60 反略升。</div>
+  </div>
+</div>
+
+<h2>實驗設置硬約束（生產級，charter gate）</h2>
+<ul>
+  <li>唯一入口：<code>harness bench</code> / <code>commit_bench</code>，profile = <code>prod-new</code>；禁止直跑 matrix。</li>
+  <li><code>--warm-skip 64</code> 熱穩態口徑；固定 seed；ABBA 成對；每臂 reps ≥3。</li>
+  <li>總開關環境變量默認 <b>off</b>（對齊上游）：<code>LLAMA_MOE_LOOKAHEAD_PREFETCH=1</code>、<code>..._DEPTH</code>（默認 8）、<code>LLAMA_MOE_PREFETCH_READ</code>（0=只預測）。</li>
+  <li>產物自證欄位：warm_skip_applied、fixed_fill_seed、engine_md5、swap before/after、thermal state、預測命中率與等待計數。</li>
+  <li>G6 縮池矩陣<b>每池一格</b>（池位元組寫進該格測試卡權威 block，避免 poolsweep 單格配臂被 cell contract fail-closed）；每池出完整 json，記錄物理峰值（wired）/swap_growth/churn。</li>
+  <li>跑前檢查 swap=0 / thermal=nominal；未立項（無 charter）不得開跑。</li>
+</ul>
+
+<h2>結果記錄（持續更新）</h2>
+<table>
+  <tr><th>日期</th><th>階段</th><th>臂</th><th>decode t/s</th><th>命中率</th><th>n_wait_ns</th><th>bit-exact</th><th>log / 設置</th></tr>
+  <tr><td colspan="8" class="small">待跑（G1 離線命中率為第一格，不需要 GPU 窗口排隊、風險為零）</td></tr>
+</table>
+
+<h2>鏈接</h2>
+<ul>
+  <li>上游設計文檔（中）：<a href="https://github.com/tc-mb/llama.cpp-omni/blob/master/docs/les/lookahead-expert-scheduling.zh.md">docs/les/lookahead-expert-scheduling.zh.md</a></li>
+  <li>上游設計文檔（英）：<a href="https://github.com/tc-mb/llama.cpp-omni/blob/master/docs/les/lookahead-expert-scheduling.md">lookahead-expert-scheduling.md</a></li>
+  <li>預測構圖：<code>src/models/qwen35moe.cpp:455-466</code>　預取調度：<code>src/llama-moe-slot.cpp</code>（struct lookahead_expert_prefetch）</li>
+  <li>本 repo 鏡像與溯源：<a href="../les/README.md">docs/les/README.md</a>（含 commit SHA、MIT 許可、行號清單）</li>
+  <li>模型權重：<a href="https://huggingface.co/openbmb/MiniCPM-V-4.7-35B-A3B">openbmb/MiniCPM-V-4.7-35B-A3B</a>（Apache-2.0）</li>
+</ul>
+
+<div class="small" style="margin-top:24px">關聯節點：方向② ρ layer-batch prefetch（已實現）· SpAc 專家替換 · P0/P1/P2 內存閘門 · MTP 攤銷（mtp_amortization）。本探針不重複已判死的鄰居啟發式預取。</div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,206 @@
+# ═══════════════════════════════════════════════════════════════════════
+# 實驗立項卡（Charter）—— LES 目標-router 預取移植（qwen35moe 同構 diff）
+# 上游：MiniCPM-V 4.7（面壁/OpenBMB）llama.cpp-omni fork（MIT）
+#   預測器 = 下一層 router 真實權重 × 當前層 attn_post_norm → argsort top-8
+#   只指導後台 preadv 預取、不參與選擇 ⇒ 逐字節一致（Lossless）
+# 資料鏡像：docs/les/（README + upstream/，SHA 88bd37eb671f67cf8d747140ed100231756e0bc3）
+# 探針頁：docs/les/les_router_prefetch_probe.html
+# ═══════════════════════════════════════════════════════════════════════
+id: e-les-router-prefetch-2026-10-17
+owner: lineI（端側推理引擎軸；qwen35moe 同構 diff）
+created: 2026-10-17
+axis: SSD-PREFETCH / EXPERT-CACHE / WAIT-HIDE
+parent_baseline:
+  - e-magi-qwen35moe-support-2026-10-14     # 同構模型（qwen35moe）支持，真實算量基準
+  - e-union-cache-shrink-2026-10-14         # MTP 前瞻 union 預取（信號源不同，需協調，見下）
+upstream_mirror: "docs/les/（MIT 鏡像，非 CGC 原創；改動只進 CGC 自有 src/）"
+
+# ── 【與既有預取線的關係】不重複立項 ──────────────────────────────────────
+# 1) 與 e-union-cache-shrink（MTP N draft union）：
+#    那條用「未來 token 的 draft router」做預取（跨 token、深度遠、依賴 draft accept）；
+#    本卡用「當前 token 的下一層 router」（同 token 層間、深度 1 層、不依賴 MTP，
+#    每個 decode token 都生效）。兩者信號正交，可疊加，但實驗順序先本卡（不依賴 MTP）。
+# 2) 與已判死的 cache-prebind（跨 token 用上一步同層 ids 提前一步）：
+#    S 線終判（S_LINE_FINAL_VERDICT_2026-10-07 §3）cold 專家 96.3% 是跨步全新 cold_new，
+#    prebind 結構上只覆蓋 3.7% cold_in_prev ⇒ 判死。LES 不看跨步歷史，對 cold_new 同樣有效。
+# 3) 與 cache-rho（按層批次 prefetch，同 token 近似 gate 跳 attn）：
+#    ρ 已判 NO_EFFECT（2026-10-01，覆蓋 0.849 但視窗 1.3–1.6ms、insert 4.76ms）。
+#    LES 用真實下一層 router（不跳 attn），構圖復用 build_lora_mm，開銷藏在當前層 GPU 工作內。
+
+# ── 【現狀】權威基線：數字 + 口徑 + 出處（出處檔案已核實存在）──────────────
+baseline:
+  metric: "decode 棘輪上限 C17 = 20.790546 t/s（48.08 ms/token，數值上限、靜態超訂放行 R4）；
+           新預設格對照 C14 = 13.722 t/s（fence ON ×1.266 兩方向配對，基準類）；
+           MTP on 標準口徑（exp-mtp-onoff-standard）：prefill 161.59±1.53 / decode 12.63±1.78"
+  cell:   "prod-new（唯一入口 harness bench）；(default)＝llama-bench 出廠 -p 512 -n 128 -b 2048 -ub 512 -d 0 -r 5；
+           C17 配置 tag=prod-new:CGC_OVERLAP_FENCE=41，8GiB 池（CGC_EXPERT_CACHE_BYTES=8589934592）、
+           ALLOW_NGL=1、N_CB=8、SPAC=1、GLU_FUSED_DOWN=1、MADVISE=2、fixed_fill_seed=1，MTP off；
+           G4 穩態量測一律 --warm-skip 64（熱穩態口徑，同 exp-mtp-onoff-standard）、seed 1、prefill/decode 同測"
+  source: "Backup/aff_cert_20261013/aff_off_single.json（C17，build f7d231124）；
+           Backup/spec_tree/fence_default_20261005/fence_on_cert.json（C14）；
+           scripts/check/decode_board_2026-09-29.yaml（certify_anchor.decode_ts=20.790546）"
+  gates:  "G4 任一注入臂 decode 不得低於同場 off 配對的 quote_gate 散布帶；M1/M2/M3 bit-identical（222/222 或該 cell 既有口徑，coverage 100%）；
+           swap_growth 不增、thermal 不惡化。所有移植開關預設 OFF。"
+
+# ── 【目標】可判定問題（一句話；分階驗收）─────────────────────────────────
+question: |
+  MiniCPM-V 4.7 開源的 LES（當前層用「下一層 router 真實權重 × 當前 token attn_post_norm」
+  argsort top-8，由後台線程把預測專家 preadv 進 ping-pong 尾部、與當前層 GPU 工作重疊，
+  預測只指導預取、不參與選擇 ⇒ 逐字節一致）在我們 Qwen3.6-35B-A3B（同 qwen35moe 架構、
+  llama.cpp+Metal）上，能否在 bit-exact 前提下把下一層 SSD miss 的串行等待藏進當前層 compute，
+  使 decode 相對當前最高配置有可認證淨增益？先以離線/只預測階段釘死命中率，再上讀盤重疊與生產 ABBA。
+  追加問題（G6）：若預取足夠準，能否把「專家常駐」需求降級為「及時預取」需求，讓 4/6 GiB 小池
+  （容量缺更多、SSD miss 更多）在吞吐不掉出 quote_gate 帶的前提下轉正，從而騰出 2–4 GiB 物理內存、
+  解除靜態超訂 / 10 GiB 擴池 OOM 困局。
+
+# ── 【假設】機制 + 預期收益（給區間、須有依據）────────────────────────────
+hypothesis:
+  mechanism: |
+    通道＝wait（SSD miss 專家就緒等待），不是 submit/cb（已收攤 2–3%）也不是裝置運算（專家 GEMV 38–45% 另案）。
+    1) 結構缺口（S_LINE_FINAL_VERDICT_2026-10-07 §3 實測 640 decode step）：
+       cold_in_prev=131（3.7%）、cold_new=3414（96.3%）⇒ 跨步歷史預取只覆蓋 3.7%，且這不是量測噪聲是路由結構
+       （每層每步只選 8/256、跨 token 專家集合大幅輪換）。
+    2) LES 信號繞過這個結構：在第 il 層 compute 時，用 model.layers[il+1].ffn_gate_inp 的真實 router
+       對當前 token 的 attn_post_norm 打分（上游 qwen35moe.cpp:455-466，build_lora_mm + ggml_argsort_top_k），
+       本質是「提前算下一層 routing」⇒ 不論該專家跨步是否出現過都能命中；預測 top-8 只用於後台 preadv，
+       下一層真實 router 結果不變 ⇒ 落空浪費一次讀、命中免重映射，輸出逐字節一致。
+    3) 時序窗口（上游 iPad M4 量，docs/les/README.md）：讀 1 專家≈1.00ms、算 1 層≈1.15ms，
+       無預取 8 專家串行讀≈8ms/層；後台讀與當前層 GPU 重疊後命中部分 I/O≈0，命中率（N=8）>80%。
+       本機的窗口可行性（我們 SSD 帶寬/專家 1.07–1.12MiB、SSM 混合層 31/41）必須在 G3 實測，不直接搬 iPad 數字。
+    4) 為何池大小線已死而本卡不同（POOL8G5_WORTH_IT / POOL10G_OOM_VERDICT）：8GiB 池 143 slots/層、
+       缺 113 專家，但每步只補 ~1.8 個/層（容量寬鬆 63 倍）⇒ 缺的不是容量是「該碰哪幾個專家」；
+       10GiB 擴池 Metal OOM（working set 上限 11453 MiB）。LES 解的正是「預對」這個路由問題。
+    5) 【G6 縮池轉正機制】「池大小不是槓桿」的實測根因是預取訊號太差、每步只補 1.8 個/層
+       （被動跨步歷史，見 POOL8G5_WORTH_IT §2），不是容量本身：池缺 113 但實際流量 1.8（寬鬆 63 倍），
+       池從沒被填滿。LES 把「下層真正要用的 8 個」在當前層窗口提前讀入、不依賴是否常駐
+       ⇒ 小池只需放跨步熱專家＋預取 ping-pong 緩衝，冷專家走 SSD 但被提前補上。
+       若 G1 命中率 ≥80% 且 G3 一層窗口讀得完，縮池新增的 miss 應被預取吸收，使「縮池懲罰」收窄：
+       8→6 GiB（−25% 駐留）／8→4 GiB（−50%，對齊 e-union-cache-shrink 挑戰檔）。
+       線索（未落盤一手 json，G6 off 臂須重測核對，不作基線）：operator 回報 4 GiB miss 增 1.91×
+       但 t/s 10.28→10.60 反略升，方向與「容量不是瓶頸、預取品質才是」一致。
+  expected: |
+    階段式，不許諾單一絕對 t/s：
+    G1 命中率 ≥80%（對齊上游 >80%；三套 prompt 分層驗證）；
+    G2 構圖開銷使 decode 退化 <2%（在線 vs 離線命中率 ±1%）；
+    G3 n_wait_ns 中位下降、depth=8 一層窗口可讀完；
+    G4 配對解碼中位增益 ≥+5%（與 e-spec-cost-gate 同門檻，顯著高於歷史 CV 2–6%），file_reads/token 升 ≤10%。
+    G6（縮池轉正，不許諾單一絕對值）：6 GiB＋LES-on 的 decode 落在 8 GiB LES-off 基線的 −5% 帶內、
+       且物理峰值降 ≥1.5 GiB；4 GiB＋on 的「縮池懲罰」相對 off 臂收窄 ≥50%（見 acceptance 公式）。
+    ★ 不由此卡承諾 25 t/s：S 線已證穩態 cold 僅 0–2.8%（多數缺口在冷啟動/池未暖階段），
+      若 G4 實測 wait 占比小於預期，增益可能落在 +0~+5% 被判否——這正是先跑 G1（一次 GPU 約 10 分鐘）釘死的原因。
+  basis: |
+    docs/les/README.md（上游鏡像與實測，SHA 88bd37eb）、docs/les/upstream/（qwen35moe.cpp:455-466、llama-moe-slot.cpp）；
+    docs/S_LINE_FINAL_VERDICT_2026-10-07.md §3（96.3% cold_new）；
+    docs/POOL8G5_WORTH_IT_2026-10-07.md（143 slots、每步補 1.8）、docs/POOL10G_OOM_VERDICT_2026-10-07.md（擴池 OOM）；
+    docs/POOL7G_ANSWER_2026-10-07.md（記憶中 8/6/4 GiB＝12.06/10.48/7.67 曲線已於 18:1x 被查證推翻：
+      全語料僅 2 筆 4 GiB、6 GiB 無一手產物 ⇒ 不可引用，G6 off 臂須補權威一手 8/6/4 基線）；
+    Backup/spec_tree/poolsweep_20261007_182512/PROVENANCE_NOTE.md（p4–p7 因單格配臂被 cell contract 拒跑、
+      僅 p8 有 json 且 oversubscribed ⇒ G6 必須「每池一格」、每池完整 json）；
+    scripts/check/decode_board_2026-09-29.yaml（C14/C17）；exp-mtp-onoff-standard（熱穩態口徑與 ±5% 漂移標準）；
+    e-union-cache-shrink-2026-10-14（同樣以收縮 ≥30%/挑戰 50% 為目標，但信號源依賴 MTP；本卡 G6 不依賴 MTP，先跑）。
+
+# ── 【驗收】跑前定好，分階 fail-closed；前一階不過不進下一階 ───────────────
+acceptance:
+  success: |
+    G1（離線命中率，零引擎讀盤改動）：三套 prompt（編碼／中文對話／數學推理，各 ≥128 decode step、seed 1），
+       per-layer 下一層 top-8 預測 vs 真實路由 top-8 命中率（Jaccard 或命中數/8，逐層列印，
+       層 1–3、中間 SSM 混合層、末層分組）整體 ≥80% 且無單層塌方（<50%）。
+    G2（圖內預測構圖，READ=0 只預測不讀盤）：移植 qwen35moe.cpp:455-466 構圖到本模型建圖，
+       開關總預設 OFF（LLAMA_MOE_LOOKAHEAD_PREFETCH=1 才開），LLAMA_MOE_PREFETCH_READ=0；
+       在線 n_hits/n_armed 命中率與 G1 離線差 ≤1%；M1/M2/M3 bit-identical（coverage 100%、comparable=true）；
+       decode t/s 退化 <2%（構圖開銷）。
+    G3（後台 preadv + ping-pong 重疊）：後台 worker 把預測專家讀入共享 bank 尾部，
+       bit-exact 保持；埋點 n_pred_read>0、n_pred_published>0、n_waits/n_wait_ns 自證，
+       專家就緒等待 n_wait_ns 中位較 G2 下降；depth=8 在一層 compute 窗口內讀完
+       （讀不完則降 depth 或僅保留 G2 輕量模式）；後台 IO 不得使前台 cb/union gap 上升。
+    G4（生產口徑 ABBA）：prod-new、--warm-skip 64、fixed-fill-seed 1、prefill/decode 同測，
+       off/on 交替 ≥3 對、ABBA 順序；on 臂 decode 配對中位增益 ≥+5% 且兩臂 caliber=UNIFIED、quote=QUOTABLE；
+       prefill 不退化（同步同測，掉出 ±5% 帶即不通過）；file_reads/token 上升 ≤10%；
+       swap_growth 不增、thermal 不惡化、churn（cold_filled/evict/ring 計數）不回升。
+    G5（MTP 共存）：MTP on/off 兩檔下 G2/G3 均不崩——verify 多 token 段（ubatch.n_tokens>1）
+       正確降級為不預測（與上游一致，僅 decode 單 token 生效）；兩檔各自 bit-exact；
+       MTP-on 數值不劣於 exp-mtp-onoff-standard 的 ±5% 漂移帶。
+    G6（LES × 縮池轉正；前置 G3、G4 已過）：off/on × 池 {8,6,4} GiB 全矩陣，**每池一格**
+       （CGC_EXPERT_CACHE_BYTES：8G=8589934592／6G=6442450944／4G=4294967296），每池完整 json、
+       warm-skip 64、seed 1、prefill/decode 同測、ABBA 交替。
+       (a) 先以 off 臂重建權威一手 8/6/4 基線（舊 12.06/10.48/7.67 是轉述、不可引用）；
+       (b) 定義縮池懲罰 pen(x,P)=1−t/s(x,P)/t/s(x,8G)，x∈{off,on}；
+       (c) **6 GiB 轉正門檻**：t/s(on,6G) ≥ t/s(off,8G)×0.95（小池+準預取追平大池無預取），
+           且物理峰值（wired/process footprint）降 ≥1.5 GiB、swap_growth 不增、thermal 不惡化；
+       (d) **4 GiB 挑戰門檻**：pen(on,4G) ≤ 0.5×pen(off,4G)（預取補回一半以上容量缺口），
+           或 t/s(on,4G) ≥ t/s(off,8G)×0.90 且內存峰值降到不超訂（外推 4G total≈11148<13000 MiB，須實測）；
+       (e) 機制自證：小池 on 臂的 n_wait_ns 不隨池縮小上升、n_hits/n_pred_read 隨池縮小上升
+           （預取在補容量缺口），file_reads/token 升幅 ≤10%，churn（cold_filled/evict）不惡化；全臂 bit-exact。
+  falsify: |
+    G1 三套 prompt 一致命中率 <60% ⇒ 信號在本模型不成立，整卡收束（不進 G2），預算轉出。
+    G2 在線 vs 離線差 >1%（構圖接錯信號）、或 decode 退化 ≥2%（構圖不免費）、或任一 bit 翻臉 ⇒ 預測路徑收束。
+    G3 depth=8 讀不完一層窗口、或 n_wait_ns 不下降、或 bit 翻臉 ⇒ 退回 G2 輕量模式（READ=0 只做淘汰保護 n_evict_saved），
+       讀盤重疊軸判死；若輕量模式也無收益則整卡收束。
+    G4 配對中位 <+5%（落在 CV 2–6% 噪聲內）、或 file_reads/swap/churn 任一惡化、或 prefill 掉出帶
+       ⇒ 與 e-spec-cost-gate 及 MTP 2026-10-07 判詞合流，SSD 讀盤預取軸收束。
+    G5 MTP verify 路徑無法安全降級（出現錯誤預取污染）⇒ 收縮為「僅 MTP-off 生效」並顯式守 n_tokens==1。
+    G6 LES-on 下縮池懲罰不收斂（t/s 隨池縮小同步掉、n_wait_ns 隨之上升、n_hits 不上升），
+       或 6G 達不到 0.95 門檻／4G 懲罰收窄 <50%，或物理峰值下降伴隨 swap/churn 惡化
+       ⇒ 預取深度或 SSD 帶寬撐不起小池，縮池軸維持封閉、保留 8 GiB；
+       若僅 6G 過、4G 不過，則收縮上限登記為 −25%（8→6），不強推 −50%。
+  on_fail: |
+    所有開關預設 OFF（LLAMA_MOE_LOOKAHEAD_PREFETCH 預設 0、READ 預設 0）；falsify 後：
+    G2 輕量模式若 n_evict_saved 顯著可單獨保留並另開小卡，否則 revert 全部源碼；
+    NEXT_ACTIONS / mindmap 節點（e-les-router-prefetch-2026-10-17）登記分階判詞與產物，
+    視覺化節點轉「已結案」；預算轉向既有更高優先級方向。
+    G6 縮池若僅部分轉正：把可達到的最小池（如 6 GiB）回填測試卡權威 block 與 run_server 預算，
+    其餘池檔維持 8 GiB；G6 全程不允許覆寫 8 GiB 生產預設，需 operator 顯式放行才改預設。
+
+# ── 【量化目標】機器可讀標竿（終極看板目標；本卡不單獨承諾達成）────────────
+targets:
+  decode_tps: 25.0
+  prefill_tps: 250.0
+
+# ── 【技術子目標】G1–G5，各自可量化、貢獻可分 ────────────────────────────
+subgoals:
+  - id: sg-g1-hitrate
+    text: "離線複現 LES 下一層 top-8 命中率（三套 prompt 分層）"
+    expect: "整體 ≥80% 通過、<60% 否證；零引擎讀盤改動"
+    how: "dump 或離線 replay：attn_post_norm × layers[il+1].ffn_gate_inp 打分 argsort top-8，
+          對齊真實路由 top-8；逐層列印命中率，層 1–3/中間/末層分組"
+  - id: sg-g2-graph
+    text: "圖內 next-router 預測構圖移植，READ=0 只預測"
+    expect: "在線 vs 離線命中率 ±1%；decode 退化 <2%；bit-identical"
+    how: "仿上游 qwen35moe.cpp:455-466 build_lora_mm+argsort_top_k；set_lookahead_pred 掛點；
+          LLAMA_MOE_PREFETCH_READ=0；M1/M2/M3 對 host oracle；harness bench 對拍開銷"
+  - id: sg-g3-worker
+    text: "後台 preadv worker + ping-pong 尾部，讀盤與當前層 compute 重疊"
+    expect: "bit-exact；n_wait_ns 中位下降；depth=8 一層窗口可讀完"
+    how: "移植 llama-moe-slot.cpp struct lookahead_expert_prefetch；
+          埋點 n_hits/n_armed/n_waits/n_wait_ns/n_pred_read/n_pred_published；
+          量本機 SSD 讀 1 專家 ms vs 一層 compute ms"
+  - id: sg-g4-abba
+    text: "與 8GiB pool/LRU/SpAc/P0-P2 協同的生產口徑 ABBA"
+    expect: "decode 配對中位 ≥+5%、prefill 不退化、file_reads/token +≤10%、swap/churn 不惡化"
+    how: "harness bench --arm prod-new --warm-skip 64 --seed 1，off/on ABBA ≥3 對；
+          memory_pressure 歸因 + thermal trace；churn 計數對比"
+  - id: sg-g5-mtp
+    text: "MTP verify 多 token 路徑安全降級與共存"
+    expect: "n_tokens>1 不預測、不污染；MTP on/off 兩檔 bit-exact、數值在 ±5% 帶內"
+    how: "守 ubatch.n_tokens==1；MTP on/off 各跑 G2/G3 驗證臂；對齊 exp-mtp-onoff-standard"
+  - id: sg-g6-shrink
+    text: "LES × 4/6 GiB 縮池轉正矩陣（off/on × 8/6/4，每池一格）"
+    expect: "6G+on ≥ 8G+off ×0.95 且物理峰值降 ≥1.5 GiB；4G+on 縮池懲罰收窄 ≥50%（或 ≥0.90 且不超訂）；n_wait 不隨池升、bit-exact"
+    how: "先 off 臂重建權威 8/6/4 基線（舊曲線為轉述不可引用）；CGC_EXPERT_CACHE_BYTES 8G=8589934592/6G=6442450944/4G=4294967296；
+          warm-skip 64、seed 1、prefill/decode 同測、ABBA；對比 n_wait_ns/n_hits/n_pred_read/wired/swap_growth/churn"
+
+# ── 臂：預設一律 prod-new；on 臂由移植開關構成（G2 起才存在）──────────────
+arms:
+  - prod-new
+# 臂說明（驅動讀 cell，命令與卡片不一致 fail-closed）：
+#   off 對照：prod-new 現況（C17 配置，所有 LES 開關 unset）
+#   G2 on ：prod-new:LLAMA_MOE_LOOKAHEAD_PREFETCH=1;LLAMA_MOE_PREFETCH_READ=0
+#   G3 on ：prod-new:LLAMA_MOE_LOOKAHEAD_PREFETCH=1;LLAMA_MOE_PREFETCH_READ=8;LLAMA_MOE_LOOKAHEAD_PREFETCH_DEPTH=8
+#   G5 on ：上述 + CGC_SERVER_MTP=1（MTP 檔）
+#   G6 矩陣：off/on × CGC_EXPERT_CACHE_BYTES={8589934592,6442450944,4294967296}（每池一格、各出完整 json；
+#            on 臂＝G3 on 開關再疊池位元組）
+# 移植若採 CGC_ 前綴命名（如 CGC_LES_LOOKAHEAD_PREFETCH），以實際落地 env 為準並回填本卡。
+
+# ── 產物自證欄位要求（匯入 arm json，缺欄 fail-closed）──────────────────────
+#  warm_skip_applied、fixed_fill_seed、engine_md5、swap before/after、
+#  les: {n_hits,n_armed,n_arm_skipped,n_waits,n_wait_ns,n_pred_read,n_pred_published,n_predict_only,n_evict_saved,n_evict_forced}
