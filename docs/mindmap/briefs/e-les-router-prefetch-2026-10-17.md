@@ -37,7 +37,7 @@ G1 三套已跑完並於 2026-10-17 裁定 PASS（可預取層 target≥4 口徑
 - **arm 1（可複製）**：`prod-new:LLAMA_MOE_LOOKAHEAD_PREFETCH=1;LLAMA_MOE_PREFETCH_READ=0`
 - **arm 2（可複製）**：`prod-new:LLAMA_MOE_LOOKAHEAD_PREFETCH=1;LLAMA_MOE_PREFETCH_READ=8;LLAMA_MOE_LOOKAHEAD_PREFETCH_DEPTH=8`
 - **arm 3（可複製）**：`G6: off/on × CGC_EXPERT_CACHE_BYTES={8589934592(8G),6442450944(6G),4294967296(4G)}（每池一格）`
-- **結案狀態**：剛立項（2026-10-17，含 G6 縮池轉正）：G1 待跑
+- **結案狀態**：G1 已 PASS（2026-10-17，純文檔 commit 79e5b24b0）；G2 落點已釘（圖內 ggml_argsort_top_k，Metal/CPU 均已實作，修正舊「無後端」判斷）；commit2（budget+只讀探針源碼 6 檔）已 stage、待乾淨窗口 replay gate。G3–G6 待 G2。
 - （同條另掛：`e-union-cache-shrink-2026-10-14（MTP 前瞻信號，正交可疊加）`）
 - **逐條處置**：整合進子目標　→ `L20-7`　—　SSD miss 串行等待的消除屬預取/資料搬運軸（S）。ρ 在該格判 NO_EFFECT（近似 gate 信號不夠）；LES 換用目標層 router 真實權重打分，是同一格上信號更強、且有上游同構開源實證（命中率>80%）的新探針，故重開而非復跑 ρ。
 - **測試 log**：無實跑 log（本條的證據是下面的「對應報告」，不是量測產物）
@@ -76,11 +76,12 @@ G1 三套已跑完並於 2026-10-17 裁定 PASS（可預取層 target≥4 口徑
 | 5 | MTP verify 多 token 段（ubatch>1）預測構圖失效 | 與上游一致顯式降級不預測；MTP on/off 各跑 G2/G3 |
 | 6 | SSD 讀頻寬/預取深度撐不起小池（池越小、即時補的量越大），後台 IO 反成瓶頸 | G6 全矩陣量 n_wait_ns 是否隨池縮小上升、n_hits 是否上升；懲罰不收斂即封閉縮池、保留 8G，僅 6G 過則上限登記 −25% |
 
-## 9. 子目標分解（持續更新；2/9 完成）
+## 9. 子目標分解（持續更新；2/10 完成）
 
 - [x] 跑前立項：charter（現狀/目標/假設/分階驗收） [證](../../../scripts/check/charters/e-les-router-prefetch-2026-10-17.yaml)
-- [x] G1 離線命中率：三套 prompt 各 ≥128 step，下一層 top-8 vs 真實路由，逐層分組（零引擎讀盤改動） [證](../../../2026-10-17 裁定 PASS（可預取層口徑 target≥4，豁免前3層由 prefill warm）：三套 target≥4 mean 0.8197/0.8205/0.8207、最低單層 target39 0.54–0.57 均過線，全層對照 0.790/0.791/0.791、同層基線 0.397。判詞 docs/LES_G1_HITRATE_VERDICT_2026-10-17.md；證據 Backup/les_g1_hitrate_20261017)
-- [ ] G2 圖內預測構圖移植（qwen35moe.cpp:455-466 同構 diff），READ=0 只預測，在線對齊離線、bit-exact、量構圖開銷
+- [x] G1 離線命中率：三套 prompt 各 ≥128 step，下一層 top-8 vs 真實路由，逐層分組（零引擎讀盤改動） [證](../../../2026-10-17 裁定 PASS（可預取層口徑 target≥4，豁免前3層由 prefill warm）：三套 target≥4 mean 0.8197/0.8205/0.8207、最低單層 target39 0.54–0.57 均過線，全層對照 0.790/0.791/0.791、同層基線 0.397。判詞 docs/LES_G1_HITRATE_VERDICT_2026-10-17.md；證據 Backup/les_g1_hitrate_20261017/；純文檔 commit 79e5b24b0（判詞/腳本/prompt/charter/mindmap）。)
+- [ ] G2 圖內預測（READ=0，只預測不讀盤）：照搬上游 qwen35moe.cpp:455-466 build_lora_mm(il+1.ffn_gate_inp, attn_post_norm)→ggml_argsort_top_k(8)→ggml_cont，cb(prefetch_topk) 抓 top8 在線對真實路由 n_hits/n_armed；本引擎無 moe_slots（不接 set_lookahead_pred，prefadv worker 屬 G3）；驗收在線對齊離線±1%、bit-exact、decode 退化<2% [證](../../../2026-10-17 落點核實並修正舊判斷：ggml_argsort_top_k 在本 fork Metal（ggml-metal-ops.cpp:7818 ggml_metal_op_argsort + argsort_merge kernel、device.m:1303）與 CPU（ggml-cpu/ops.cpp:8329 std::sort）均已實作，非「無後端會 UNIMPLEMENTED」⇒ 走圖內 argsort（GPU kernel、無 GPU→host 回讀同步），不必 host std::sort 回調。argsort_top_k=argsort DESC+view 取前 k，輸出 I32 索引（ggml.c:5382）。上游同構 docs/les/upstream/qwen35moe.cpp:455-466。只讀 cgc_les_h 探針（G1 抓下層 router 原始 logits）已隨 commit2 staged；G2 再加圖內 argsort top8 與在線對賬。無 llama-moe-slot.*（set_lookahead_pred 無對應設施，G3 用本引擎 preadv worker 取代）。)
+- [ ] commit2：budget 正確口徑（dense+pool，#37）+ 整組只讀診斷探針（A0/A1/B0/IO_SHAPE/BHEAD/LES）入庫，開關預設 OFF、byte-identical；刻意不含 affinity/metal/strata 功能碼與 dylib [證](../../../2026-10-17 已 stage 6 檔（659+/45-，跨檔功能關鍵字審計全 0）：budget_preflight.py/budget_gate.sh（實跑 8G dense555+pool8192=8747、4G=4651 均<16384 不超訂，舊雙重計 expert 口徑作廢）；run_server.sh（budget 段 + 探針 allowlist，已排 ncmoe/exact-cache-verify/mmid-dqhash/affinity 功能透傳，bash -n 通過）；llama-context.cpp（13 個純探針 hunk 501+/1-，7 個 affinity reorder 功能 hunk 留工作區）；qwen35moe.cpp/ggml-backend.cpp（純探針，複用 HEAD 已有的 cb/cgc_td_cb/cgc_rho_probe 路徑）。待乾淨 GPU 窗口（重啟 swap=0、thermal nominal、退 WorkBuddy/Chrome）下 git commit：ALLOW_ENV_GATED_BIN=1 跳檢查8 binary 同步、不帶 dylib，replay gate（3 profile×3 對 baseline）不可豁免、不能 --no-verify。commit1 純文檔=79e5b24b0。)
 - [ ] G3 後台 preadv worker + ping-pong，埋點 n_wait_ns/n_pred_read/n_pred_published，量本機讀算時序窗口
 - [ ] G4 生產口徑 ABBA（warm-skip64/seed1/prefill+decode 同測），≥+5% 且 swap/churn 不惡化
 - [ ] G5 MTP on/off 共存與 n_tokens>1 安全降級，兩檔 bit-exact
@@ -92,7 +93,7 @@ G1 三套已跑完並於 2026-10-17 裁定 PASS（可預取層 target≥4 口徑
 
 | 項目 | 內容 |
 |---|---|
-| 依據 | `判詞 docs/LES_G1_HITRATE_VERDICT_2026-10-17.md；原始證據 Backup/les_g1_hitrate_20261017/（三套 sidecar .bin / a1raw stderr / harness json / hitrate json / prompt / PROVENANCE_NOTE）；docs/les/README.md（上游鏡像 SHA 88bd37eb，MIT）；charter scripts/check/charters/e-les-router-prefetch-2026-10-17.yaml；探針頁 docs/les/les_router_prefetch_probe.html` |
+| 依據 | `判詞 docs/LES_G1_HITRATE_VERDICT_2026-10-17.md；原始證據 Backup/les_g1_hitrate_20261017/（三套 sidecar .bin / a1raw stderr / harness json / hitrate json / prompt / PROVENANCE_NOTE）；docs/les/README.md（上游鏡像 SHA 88bd37eb，MIT）；charter scripts/check/charters/e-les-router-prefetch-2026-10-17.yaml；探針頁 docs/les/les_router_prefetch_probe.html；commit1 純文檔 79e5b24b0（G1 判詞/腳本/prompt/charter/mindmap）；commit2 源碼已 stage 待乾淨窗口（見 st-commit2 log）` |
 | 備註 | 背景：S 線終判（S_LINE_FINAL_VERDICT_2026-10-07 §3，640 decode step）cold 專家 96.3% 是跨步全新 cold_new、僅 3.7% cold_in_prev ⇒ 跨步歷史預取（prebind）結構上救不了；池大小線已死（8GiB 143 slots/層、每步只補 1.8 個、10GiB Metal OOM）。LES 信號源是當前 token 對下一層 router 的真實打分，與跨步歷史無關、對 cold_new 同樣有效，不屬已判死的啟發式預取。縮池視角（G6）：8GiB 缺 113 槽但每步只補 1.8 個（寬鬆 63 倍）⇒ 池沒被填滿、瓶頸是預取品質而非容量；若 LES 命中率達標，小池只放跨步熱專家＋ping-pong 緩衝、冷專家被提前讀入，常駐需求可降級為及時預取（8→6G＝−25%、8→4G＝−50%）。線索（未落盤、須重測）：4G miss 增 1.91× 而 t/s 10.28→10.60 反略升。上游實測 iPad Pro M4：2.97→9.81 t/s（僅 LES 3.3×）、命中率 >80%、讀 1 專家≈1.00ms/算 1 層≈1.15ms；該 3.3× 不可直接搬（我們已有 8GiB pool+SpAc+fence 到 13.7–20.8，上游基線極冷）。口徑：prod-new 唯一入口、G4 用 warm-skip 64 熱穩態、seed 1、prefill/decode 同測；所有開關預設 OFF。 |
 | 軸性質 | 活躍攻關軸：41 段提交的同步／資料搬運，主項可被工程手段消掉 |
 | 對應報告 | 0 份 |
