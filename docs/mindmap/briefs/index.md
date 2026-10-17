@@ -61,7 +61,7 @@
 | 3a | [**儀器對帳：m 的兩台儀器定標** m（每 draft token…](exp-m-instrument-recon-2026-10-06.html) | M MTP on 加速 | 0 | [exp-m-instrument-recon-2026-10-06.md](exp-m-instrument-recon-2026-10-06.md) | 實驗進行中（尚無讀數） |
 | 3a | [**拉 a：chain 路徑開 rejection sampling…](exp-a-lever-rejection-2026-10-06.html) | M MTP on 加速 | 0 | [exp-a-lever-rejection-2026-10-06.md](exp-a-lever-rejection-2026-10-06.md) | 尚無可引用讀數：1 個 run 全部非乾淨（attribution.verdict=swap（swap_growth=3872.5 MiB, |
 | 3a | [兩份權威檔對同一個里程碑的「是否已判死」講了相反的話，而沒有閘門會發…](exp-targets-board-recon-2026-10-07.html) | 不適用 | 0 | [exp-targets-board-recon-2026-10-07.md](exp-targets-board-recon-2026-10-07.md) | 實驗進行中（尚無讀數） |
-| 3a | [LES 目標-router 預取移植（qwen35moe 同構 · G1–G5）](e-les-router-prefetch-2026-10-17.html) | S 序列化消減 | 0 | [e-les-router-prefetch-2026-10-17.md](e-les-router-prefetch-2026-10-17.md) | 尚無讀數（G1 離線命中率待跑，一次 GPU 約 10 分鐘）。本節點不主張吞吐。 |
+| 3a | [LES 目標-router 預取移植（qwen35moe 同構 · G1–G6）](e-les-router-prefetch-2026-10-17.html) | S 序列化消減 | 0 | [e-les-router-prefetch-2026-10-17.md](e-les-router-prefetch-2026-10-17.md) | G1 三套已跑完並於 2026-10-17 裁定 PASS（可預取層 target≥4 口徑，豁免前3層由 prefill warm）：wa |
 
 ## 已結案（廢棄／不適用）（18）
 

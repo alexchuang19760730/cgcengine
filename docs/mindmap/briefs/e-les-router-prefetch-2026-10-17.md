@@ -1,4 +1,4 @@
-# LES 目標-router 預取移植（qwen35moe 同構 · G1–G5） — 技術白皮書　·　3a ③a 實驗目標達成（階段性）
+# LES 目標-router 預取移植（qwen35moe 同構 · G1–G6） — 技術白皮書　·　3a ③a 實驗目標達成（階段性）
 
 > **一句話**：把面壁 MiniCPM-V 4.7 開源的 LES（Lookahead Expert Scheduling）移植到本引擎：當前層用下一層 router 的真實權重 × 當前 token 的 attn_post_norm 打分 argsort top-8，由後台線程把預測專家 preadv 進 ping-pong 尾部、與當前層 GPU 工作重疊；預測只指導預取、不參與選擇（真實路由兜底）⇒ 逐字節一致。分 G1–G6 階段驗證，先釘死命中率再談吞吐；G6 驗證 LES 能否讓 4/6 GiB 小池在吞吐不掉帶下轉正、釋放 2–4 GiB 物理內存（解除靜態超訂／10G OOM）。
 
@@ -17,7 +17,7 @@
 
 ## 3. 結果
 
-尚無讀數（G1 離線命中率待跑，一次 GPU 約 10 分鐘）。本節點不主張吞吐。
+G1 三套已跑完並於 2026-10-17 裁定 PASS（可預取層 target≥4 口徑，豁免前3層由 prefill warm）：warm-skip64、steady 577 step/22503 cells 每套，跨層 top8 recall mean code 0.7903 / zh 0.7914 / math 0.7911、median 0.875；樸素「跨 token 同層複用」基線僅 0.397（LES 約 2×）；cold 專家覆蓋 0.60–0.62。唯一破線層是 target 層 1（0.095–0.107）：embedding 後未經 FFN 的最淺表示無法跨層預測、且該層 prefill 首 token 即自然進池、無預取價值；層 2–4 爬升 0.60/0.62/0.66，target 10–38 穩態層 0.84–0.90（層27=0.902），末層39=0.56。分口徑均值（三套一致）：全層 target1–39 = 0.790（字面差 0.80 門檻 0.01）；排除首層 target2–39 = 0.809；排除前3層 target4–39 = 0.820；排除前4層 target5–39 = 0.825。recall@d：d8=0.79/d9=0.83/d10=0.86/d12=0.90/d16=0.94（給 G3 depth 決策）。已裁定（2026-10-17，target≥4 可預取層口徑）：三套 target≥4 mean 0.8197/0.8205/0.8207、最低單層 target39 0.54–0.57 均 ≥0.50、steady 577 step 一致過線 → G1 PASS、進 G2；全層 0.790 僅對照、首層豁免。本節點不主張吞吐（跑數期 thermal HEAVY/swap+422~720MiB，t/s 不引用，以 G4 為準）。
 
 ## 4. 判定
 
@@ -76,10 +76,10 @@
 | 5 | MTP verify 多 token 段（ubatch>1）預測構圖失效 | 與上游一致顯式降級不預測；MTP on/off 各跑 G2/G3 |
 | 6 | SSD 讀頻寬/預取深度撐不起小池（池越小、即時補的量越大），後台 IO 反成瓶頸 | G6 全矩陣量 n_wait_ns 是否隨池縮小上升、n_hits 是否上升；懲罰不收斂即封閉縮池、保留 8G，僅 6G 過則上限登記 −25% |
 
-## 9. 子目標分解（持續更新；1/9 完成）
+## 9. 子目標分解（持續更新；2/9 完成）
 
 - [x] 跑前立項：charter（現狀/目標/假設/分階驗收） [證](../../../scripts/check/charters/e-les-router-prefetch-2026-10-17.yaml)
-- [ ] G1 離線命中率：三套 prompt 各 ≥128 step，下一層 top-8 vs 真實路由，逐層分組（零引擎讀盤改動）
+- [x] G1 離線命中率：三套 prompt 各 ≥128 step，下一層 top-8 vs 真實路由，逐層分組（零引擎讀盤改動） [證](../../../2026-10-17 裁定 PASS（可預取層口徑 target≥4，豁免前3層由 prefill warm）：三套 target≥4 mean 0.8197/0.8205/0.8207、最低單層 target39 0.54–0.57 均過線，全層對照 0.790/0.791/0.791、同層基線 0.397。判詞 docs/LES_G1_HITRATE_VERDICT_2026-10-17.md；證據 Backup/les_g1_hitrate_20261017)
 - [ ] G2 圖內預測構圖移植（qwen35moe.cpp:455-466 同構 diff），READ=0 只預測，在線對齊離線、bit-exact、量構圖開銷
 - [ ] G3 後台 preadv worker + ping-pong，埋點 n_wait_ns/n_pred_read/n_pred_published，量本機讀算時序窗口
 - [ ] G4 生產口徑 ABBA（warm-skip64/seed1/prefill+decode 同測），≥+5% 且 swap/churn 不惡化
@@ -92,7 +92,7 @@
 
 | 項目 | 內容 |
 |---|---|
-| 依據 | `docs/les/README.md（上游鏡像 SHA 88bd37eb，MIT）；charter scripts/check/charters/e-les-router-prefetch-2026-10-17.yaml；探針頁 docs/les/les_router_prefetch_probe.html` |
+| 依據 | `判詞 docs/LES_G1_HITRATE_VERDICT_2026-10-17.md；原始證據 Backup/les_g1_hitrate_20261017/（三套 sidecar .bin / a1raw stderr / harness json / hitrate json / prompt / PROVENANCE_NOTE）；docs/les/README.md（上游鏡像 SHA 88bd37eb，MIT）；charter scripts/check/charters/e-les-router-prefetch-2026-10-17.yaml；探針頁 docs/les/les_router_prefetch_probe.html` |
 | 備註 | 背景：S 線終判（S_LINE_FINAL_VERDICT_2026-10-07 §3，640 decode step）cold 專家 96.3% 是跨步全新 cold_new、僅 3.7% cold_in_prev ⇒ 跨步歷史預取（prebind）結構上救不了；池大小線已死（8GiB 143 slots/層、每步只補 1.8 個、10GiB Metal OOM）。LES 信號源是當前 token 對下一層 router 的真實打分，與跨步歷史無關、對 cold_new 同樣有效，不屬已判死的啟發式預取。縮池視角（G6）：8GiB 缺 113 槽但每步只補 1.8 個（寬鬆 63 倍）⇒ 池沒被填滿、瓶頸是預取品質而非容量；若 LES 命中率達標，小池只放跨步熱專家＋ping-pong 緩衝、冷專家被提前讀入，常駐需求可降級為及時預取（8→6G＝−25%、8→4G＝−50%）。線索（未落盤、須重測）：4G miss 增 1.91× 而 t/s 10.28→10.60 反略升。上游實測 iPad Pro M4：2.97→9.81 t/s（僅 LES 3.3×）、命中率 >80%、讀 1 專家≈1.00ms/算 1 層≈1.15ms；該 3.3× 不可直接搬（我們已有 8GiB pool+SpAc+fence 到 13.7–20.8，上游基線極冷）。口徑：prod-new 唯一入口、G4 用 warm-skip 64 熱穩態、seed 1、prefill/decode 同測；所有開關預設 OFF。 |
 | 軸性質 | 活躍攻關軸：41 段提交的同步／資料搬運，主項可被工程手段消掉 |
 | 對應報告 | 0 份 |

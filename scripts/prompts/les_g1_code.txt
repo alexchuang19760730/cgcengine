@@ -1,0 +1,16 @@
+You are a senior systems engineer. Below is a C++ fragment for a fixed-size LRU cache used to stage MoE expert tensors on a memory-constrained device. It has a concurrency bug: an evicted expert buffer can be handed back to a still-running compute kernel, and the resident-set accounting does not drop immediately after eviction because freed private anonymous pages are not returned to the OS.
+
+Explain the root cause step by step, then write a corrected implementation that: (1) takes a lock so no buffer is evicted while any kernel still references it, (2) calls madvise(MADV_DONTNEED) on the private anonymous region only after it is removed from the pool and no longer referenced, and (3) frees the allocation afterward. Include comments explaining why the order of madvise and free matters, and why this must not be applied to mmap-backed memory. Also describe two additional metrics you would log to verify that eviction actually lowers physical memory usage.
+
+```cpp
+struct ExpertTensor { void* ptr; size_t bytes; };
+class ExpertCache {
+    std::unordered_map<int, ExpertTensor> slots;
+public:
+    void on_lru_evict(int id) {
+        ExpertTensor et = slots[id];
+        free(et.ptr);
+        slots.erase(id);
+    }
+};
+```

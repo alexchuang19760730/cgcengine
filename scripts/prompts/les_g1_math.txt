@@ -1,0 +1,11 @@
+You are given a memory-bandwidth and latency accounting problem for an on-device language model. Solve it carefully, showing every step and the units.
+
+A device has 108.8 GB/s of achievable unified-memory bandwidth. A model layer must read, per generated token, a total of 610 MB of expert weight bytes on the cold path, of which a fraction h is already resident in cache and the rest (1 - h) is read from SSD. An SSD read of one expert takes 1.00 ms, and one layer of GPU compute takes 1.15 ms and overlaps with background reads. Without prefetching, expert reads are serial with compute.
+
+Questions:
+1. If h = 0.0 (everything cold) and all 8 activated experts are read serially before any compute, what is the time per layer in milliseconds?
+2. If a lookahead predictor guesses the next layer's experts with top-8 hit rate r, and a correctly predicted expert read is fully hidden behind the previous layer's 1.15 ms compute while a missed expert still incurs a serial 1.00 ms read, derive the effective time per layer as a function of r for r in {0.0, 0.6, 0.8, 1.0}.
+3. At what hit rate r does the effective per-layer time first fall below 2.00 ms?
+4. Suppose each layer has 256 experts but only 8 are used. If a prefetch buffer can hold depth d predicted experts and the hit rate grows with depth as r(d) = 0.45 + 0.05*d up to a cap of 0.95, which depth is the smallest that satisfies the 2.00 ms target, and how many wasted SSD reads per layer does that depth imply when the predictor is wrong?
+
+State your assumptions explicitly, present each substitution with its numeric result, and finish with a short recommendation for the depth to choose and why.

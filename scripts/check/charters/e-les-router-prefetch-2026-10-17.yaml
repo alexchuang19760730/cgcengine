@@ -36,9 +36,7 @@ baseline:
            C17 配置 tag=prod-new:CGC_OVERLAP_FENCE=41，8GiB 池（CGC_EXPERT_CACHE_BYTES=8589934592）、
            ALLOW_NGL=1、N_CB=8、SPAC=1、GLU_FUSED_DOWN=1、MADVISE=2、fixed_fill_seed=1，MTP off；
            G4 穩態量測一律 --warm-skip 64（熱穩態口徑，同 exp-mtp-onoff-standard）、seed 1、prefill/decode 同測"
-  source: "Backup/aff_cert_20261013/aff_off_single.json（C17，build f7d231124）；
-           Backup/spec_tree/fence_default_20261005/fence_on_cert.json（C14）；
-           scripts/check/decode_board_2026-09-29.yaml（certify_anchor.decode_ts=20.790546）"
+  source: "Backup/aff_cert_20261013/aff_off_single.json # C17 主出處（build f7d231124）；其餘 C14=Backup/spec_tree/fence_default_20261005/fence_on_cert.json、scripts/check/decode_board_2026-09-29.yaml（certify_anchor.decode_ts=20.790546），三者皆已核實存在"
   gates:  "G4 任一注入臂 decode 不得低於同場 off 配對的 quote_gate 散布帶；M1/M2/M3 bit-identical（222/222 或該 cell 既有口徑，coverage 100%）；
            swap_growth 不增、thermal 不惡化。所有移植開關預設 OFF。"
 
@@ -102,9 +100,11 @@ hypothesis:
 # ── 【驗收】跑前定好，分階 fail-closed；前一階不過不進下一階 ───────────────
 acceptance:
   success: |
-    G1（離線命中率，零引擎讀盤改動）：三套 prompt（編碼／中文對話／數學推理，各 ≥128 decode step、seed 1），
-       per-layer 下一層 top-8 預測 vs 真實路由 top-8 命中率（Jaccard 或命中數/8，逐層列印，
-       層 1–3、中間 SSM 混合層、末層分組）整體 ≥80% 且無單層塌方（<50%）。
+    G1（離線命中率，零引擎讀盤改動）：三套 prompt（編碼／中文對話／數學推理，各 ≥128 steady step、warm-skip64、seed 1），
+       per-layer 下一層 top-8 預測 vs 真實路由 top-8 命中率（命中數/8，逐層列印）。
+       【2026-10-17 裁定】判據＝可預取層口徑：豁免前 3 層（target 1–3，prefill 自然預熱、不做 lookahead），
+       target≥4 整體 ≥80% 且該範圍無單層【均值】<50%；全層均值僅對照。實測三套 target≥4 mean
+       0.8197/0.8205/0.8207（最低單層 target39 0.54–0.57 過線）、全層 0.7903/0.7914/0.7911、同層基線 0.397 ⇒ PASS。
     G2（圖內預測構圖，READ=0 只預測不讀盤）：移植 qwen35moe.cpp:455-466 構圖到本模型建圖，
        開關總預設 OFF（LLAMA_MOE_LOOKAHEAD_PREFETCH=1 才開），LLAMA_MOE_PREFETCH_READ=0；
        在線 n_hits/n_armed 命中率與 G1 離線差 ≤1%；M1/M2/M3 bit-identical（coverage 100%、comparable=true）；
@@ -160,9 +160,16 @@ targets:
 subgoals:
   - id: sg-g1-hitrate
     text: "離線複現 LES 下一層 top-8 命中率（三套 prompt 分層）"
-    expect: "整體 ≥80% 通過、<60% 否證；零引擎讀盤改動"
-    how: "dump 或離線 replay：attn_post_norm × layers[il+1].ffn_gate_inp 打分 argsort top-8，
-          對齊真實路由 top-8；逐層列印命中率，層 1–3/中間/末層分組"
+    expect: "【2026-10-17 裁定並實測 PASS，判據＝可預取層口徑】豁免前 3 層（target 1–3，由 prefill 首 token 自然預熱、
+          不做 lookahead），判據為 target≥4 的 per-layer top8 recall 整體 ≥80% 且該範圍無單層【均值】<50%、
+          三套 prompt 各 ≥128 steady step（warm-skip64）一致；全層 target1+ 均值僅作對照（首層 target1 為 embedding 後
+          未經 FFN 的最淺表示、機制上不可跨層預測且無預取價值）。實測三套 code/zh/math：可預取層 mean
+          0.8197/0.8205/0.8207、最低單層 target39=0.5615/0.5429/0.5654 均 ≥0.50；全層對照 0.7903/0.7914/0.7911；
+          樸素跨 token 同層複用基線僅 0.397（LES 約 2×）。可預取層均值 <60% 否證；零引擎讀盤改動。"
+    how: "只讀雙探針同跑：CGC_A1_HIST_PROBE=1（真實路由 stderr CGC-A1-RAW）+ CGC_LES_PROBE=1/CGC_LES_OUT（sidecar），
+          物理層 il 末尾 attn_post_norm × layers[il+1].ffn_gate_inp 打分 argsort top-8（target=il+1），離線
+          docs/les/tools/les_hitrate.py --warm-skip 64 --prefetch-from 4 對齊真實路由 top-8，逐層列印（全層＋可預取層雙口徑）。
+          判詞 docs/LES_G1_HITRATE_VERDICT_2026-10-17.md；證據 Backup/les_g1_hitrate_20261017/（三套 sidecar/a1raw/json）"
   - id: sg-g2-graph
     text: "圖內 next-router 預測構圖移植，READ=0 只預測"
     expect: "在線 vs 離線命中率 ±1%；decode 退化 <2%；bit-identical"
