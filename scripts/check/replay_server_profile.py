@@ -347,7 +347,13 @@ def build_payload(profile, model, max_tokens, seed=0, prompt=None, prompt_index=
             "chat_template_kwargs": {
                 "assistant_prefill": _coding_anchor(p),
             },
-            "stop": ["```", "<|end|>", "<|output|>", "<|user|>"] + CHATML_STOPS,
+            # 2026-10-19 FIX: 裸 "```" 會在「開 fence」即命中 stop —— assistant_prefill 開頭就是
+            # "```python"（或無 prefill 時模型首 token 即開 fence），於是第一個 token 就 finish=stop、
+            # content 空（completion_tokens=1），coding 質量門徹底失效（A/B/C + HEAD 二進制對照見
+            # docs/REPLAY_CODING_STOP_FENCE_2026-10-19.md；HEAD 58abe27ad 已復現，與 commit2/工作區 dylib 無關）。
+            # 改用閉 fence "\n```"（行首獨佔三反引號、前有換行）：開 fence "```python" 不命中，模型寫完整段
+            # 代碼後在閉 fence 停止（實測 87 token 完整 fibonacci，與 baseline dbe5f8eb1 一致）。
+            "stop": ["\n```", "<|end|>", "<|output|>", "<|user|>"] + CHATML_STOPS,
             # 2026-09-09 FIX: presence_penalty 套用到 coding prompts (與 longform/math/reasoning 一致)。
             # 量測: IQ3_XXS 在 pp=0 下 prefill 後即進入交替循環 ("fibonacci(n):" / "def fibonacci(n):")，
             # pp=1.5 抑制重複 → 正常生成函數體。白皮書 §0.2 明確: 長輸出 profile (longform/coding) 的 pp=1.5 是必要修正。

@@ -1,0 +1,142 @@
+{
+  "_compare_thresholds": {
+    "decode_tps_regression_pct": 30.0,
+    "prefill_tps_regression_pct": 30.0,
+    "peak_rss_mb_regression_pct": 25.0,
+    "quality_score_regression_abs": 0.1,
+    "_doc": "precommit hook 比較上次 commit 跟這次 commit 的指標。品質是硬閘門 (quality regression → FAIL)；速度/內存門檻 2026-09-06 校準到本機實測雜訊下限：MTP+expert-cache pool 的 decode/prefill 跨 run 抖動可達 ±12-180%（pool 暖機狀態不同），RSS 隨 server 重啟漂移 ±24%。因此 decode/prefill regression 門檻 30%、peak_rss 25%，品質 (0.1) 才是實際約束。品質有改善時速度退化可容許至 6；品質沒變時非品質退化 >1 個才 FAIL。抖動大的指標標 unstable 不計入。",
+    "improvement_required_min_count": 0,
+    "regression_tolerance_max_count": 1,
+    "quality_variance_unstable_threshold": 0.2,
+    "speed_variance_unstable_cv_pct": 30.0,
+    "speed_regression_tolerance_when_quality_improved": 6
+  },
+  "qa-zh": {
+    "length_min": 4,
+    "length_max": 80,
+    "required_any": [
+      "巴黎",
+      "法國",
+      "水星",
+      "金星",
+      "地球",
+      "火星",
+      "木星",
+      "土星",
+      "天王星",
+      "海王星",
+      "行星",
+      "八大行星",
+      "八顆",
+      "八個",
+      "8 顆",
+      "8顆",
+      "42",
+      "四十二"
+    ],
+    "forbidden": [
+      "<|",
+      "0000",
+      "<think>",
+      "Answer directly",
+      "system prompt"
+    ],
+    "ok_finish_reasons": [
+      "stop",
+      "length"
+    ],
+    "loop_max_run": 8,
+    "prompts": [
+      "巴黎是哪個國家的首都？請只用一句中文回答。",
+      "太陽系有幾個行星？請列出名稱。",
+      "請問 15 + 27 等於多少？"
+    ]
+  },
+  "longform-zh": {
+    "length_min": 80,
+    "length_max": 800,
+    "required_any": [
+      "巴黎",
+      "法國",
+      "文化",
+      "政治",
+      "盧浮宮",
+      "艾菲爾",
+      "塞納",
+      "首都",
+      "歷史",
+      "12世紀",
+      "王國"
+    ],
+    "forbidden": [
+      "Answer directly, after thinking",
+      "system prompt",
+      "<think>",
+      "<|im_start|>user",
+      "<|im_start|>system"
+    ],
+    "ok_finish_reasons": [
+      "stop",
+      "length"
+    ],
+    "loop_max_run": 12,
+    "prompts": [
+      "為什麼巴黎會成為法國的政治與文化中心？請用一段中文說明。",
+      "請說明人工智慧的發展歷史、現狀和未來趨勢。",
+      "請介紹台灣的地理、文化和經濟特色。"
+    ]
+  },
+  "coding": {
+    "length_min": 50,
+    "length_max": 2000,
+    "required_any": [
+      "def ",
+      "fibonacci",
+      "return"
+    ],
+    "forbidden": [
+      "0000",
+      "<think>",
+      "答:",
+      "因為因為因為"
+    ],
+    "ok_finish_reasons": [
+      "stop",
+      "length"
+    ],
+    "loop_max_run": 12,
+    "prompts": [
+      "用 Python 寫一個函數計算斐波那契數列的第 n 項。",
+      "用 Python 寫一個冒泡排序函數。",
+      "用 Python 寫一個函數判斷一個字符串是否是回文。"
+    ]
+  },
+  "math": {
+    "prompts": [
+      "請計算 123 × 456 等於多少？請顯示計算過程。",
+      "請問一個圓的半徑是 5，面積是多少？（π 取 3.14）",
+      "請解方程式 2x + 5 = 15，x 等於多少？"
+    ]
+  },
+  "reasoning": {
+    "prompts": [
+      "如果所有的貓都是動物，所有的動物都需要水，那麼貓需要水嗎？請解釋推理過程。",
+      "一個農場有雞和兔子，總共 30 隻頭，80 隻腳。請問雞和兔子各有多少隻？",
+      "請問「所有的程式設計師都喜歡咖啡」和「小明不喜歡咖啡」，可以得出什麼結論？"
+    ]
+  },
+  "writing": {
+    "prompts": [
+      "請寫一首關於春天的短詩（4-8 行）。",
+      "請寫一段關於日落的散文描寫（100-200 字）。",
+      "請寫一封感謝信，感謝老師的教導。"
+    ]
+  },
+  "translation": {
+    "prompts": [
+      "請將「Hello, how are you?」翻譯成中文。",
+      "請將「人工智慧正在改變世界」翻譯成英文。",
+      "請將「Thank you for your help」翻譯成中文。"
+    ]
+  }
+}
