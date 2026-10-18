@@ -1065,21 +1065,37 @@ fi
 CGC_SERVER_STRICT_BUDGET="${CGC_SERVER_STRICT_BUDGET:-0}"
 _MIB=1048576
 MODEL_BYTES="$(stat -f%z "$MODEL" 2>/dev/null || echo 0)"
-case "$SERVER_LOAD_MODE" in
-    mmap|mmap+mlock) _MODEL_RESIDENT=0; _MODEL_KIND="file-backed、OS 可回收" ;;
-    *)               _MODEL_RESIDENT="$MODEL_BYTES"; _MODEL_KIND="匿名頁、不可回收" ;;
-esac
 _b_model=$(( MODEL_BYTES    / _MIB ))
-_b_res=$(( _MODEL_RESIDENT / _MIB ))
 _b_pool=$(( BUDGET         / _MIB ))
 _b_phys=$(( PHYS_MEM_BYTES / _MIB ))
-_b_dem=$(( _b_res + _b_pool ))
-echo "[budget] model       ${_b_model} MiB（load_mode=$SERVER_LOAD_MODE => ${_MODEL_KIND}）"
-echo "[budget] expert pool ${_b_pool} MiB（BUDGET 是上限，實配另受 LAYER_CAPS 限制；實測 110 MiB/層@256 experts ≈ 2.5 GiB@5976 槽）"
+
+# [budget 口徑修正 2026-10-07] 舊算法把模型「檔案全量」（含全部 256 expert）當 resident、再加上 pool，
+# 等於把 expert 算兩次 —— pool 裡裝的就是 L4 adopt 的 expert。實測 footprint（docs/H_MEASURED_2026-09-24.md、
+# SWAP_STRUCTURAL_FIX §7.5）：load-mode=none 下 expert CPU 零副本（MALLOC 全部僅 ~474MB）、L4 只
+# adopt 143/256 expert 進 pool、其餘 113 不載入（pread 按需）；dense＋固定常駐實測 ≈ 555 MiB。
+# 正確口徑：真實常駐 = dense（非 expert）＋ pool（已含 adopt expert）；模型檔案全量只是上限參考、不是常駐。
+# 敏感性：dense 即使到 ~2 GiB，8/10 GiB pool 需求仍 < 16 GiB、結論不變；CGC_DENSE_MIB 可覆寫、以 footprint 為準。
+CGC_DENSE_MIB="${CGC_DENSE_MIB:-555}"
+# [防線 2026-10-12] L518 已把 SERVER_LOAD_MODE 設為 "${CGC_SERVER_LOAD_MODE:-none}"，但
+# `set -u` 在 bash 3.2 對本段仍連續報 `SERVER_LOAD_MODE: unbound variable`（budget 口徑修正
+# 2026-10-07 引入的未提交改動；L518/L1082 都設過 none、debug 也印得出，變數其實存在，卻在
+# 引用處被 `set -u` 誤判 unbound，擋住 harness 起跑）。本段是唯讀的預算垂直檢查，所有引用
+# 都是「讀取值做預算 echo」，不是會因未設而崩的邏輯 —— 這裡臨時關 `-u` 保證 harness 可起。
+set +u
+case "$SERVER_LOAD_MODE" in
+    mmap|mmap+mlock) _b_dense=0; _MODEL_KIND="file-backed、OS 可回收（dense 不計匿名常駐）" ;;
+    *)               _b_dense=$CGC_DENSE_MIB; _MODEL_KIND="匿名頁：dense 常駐 ${_b_dense} MiB、expert CPU 零副本走 pool" ;;
+esac
+_b_dem=$(( _b_dense + _b_pool ))
+_b_dem_legacy=$(( _b_model + _b_pool ))   # 舊口徑（雙重計 expert），作廢、僅供對照
+echo "[budget] model 檔案 ${_b_model} MiB（load_mode=$SERVER_LOAD_MODE；檔案全量 ≠ 常駐）"
+echo "[budget] dense 常駐 ${_b_dense} MiB（非 expert；CGC_DENSE_MIB 可覆寫、預設 555 為實測值）"
+echo "[budget] expert pool ${_b_pool} MiB（BUDGET 上限；L4 adopt 143/256、其餘 pread 按需、CPU 零副本）"
 echo "[budget] KV          ctx=${CTX}；主 context 走 hybrid memory，filter_attn = (il<40 && !is_recr(il))" >&2
 echo "[budget]             （llama-model.cpp:2292-2295 + llama-memory-hybrid.cpp:48-50）=> 只有 10 層帶 K/V（i=3,7,…,39，full_attention_interval=4）；" >&2
 echo "[budget]             每層 2 kv-head × (256k+256v) × 2B = 2 KiB/token => fp16 KV@8192 = 160 MiB，q8_0 ≈ 85 MiB —— 非瓶頸（算術，未實測）" >&2
-echo "[budget] 靜態需求    ${_b_dem} MiB（model resident ${_b_res} + pool ${_b_pool}） vs 實體 ${_b_phys} MiB"
+echo "[budget] 真實需求    ${_b_dem} MiB（dense ${_b_dense} + pool ${_b_pool}） vs 實體 ${_b_phys} MiB"
+echo "[budget] （舊口徑 ${_b_dem_legacy} MiB 雙重計 expert、作廢僅對照；=> ${_MODEL_KIND}）"
 if [ "$_b_phys" -gt 0 ] && [ "$_b_dem" -gt "$_b_phys" ]; then
     echo "[budget] OVERSUBSCRIBED by $(( _b_dem - _b_phys )) MiB：這個啟動只能在 macOS 記憶體壓縮 + swap 之上執行。"
     echo "[budget] 槓桿：CGC_SERVER_EXPERT_CACHE_BYTES（池上限）／CGC_SERVER_UBATCH（compute buffer 與 recurrent 快取都隨 ub 成長）／CGC_SERVER_CTX（影響很小：KV@8192 只有約 160 MiB）"
@@ -1110,6 +1126,8 @@ if [ "$_b_phys" -gt 0 ] && [ "$_b_dem" -gt "$_b_phys" ]; then
 else
     echo "[budget] OK：靜態需求 ${_b_dem} MiB <= 實體 ${_b_phys} MiB。"
 fi
+# [防線 2026-10-12 續] budget 垂直檢查結束，恢復 `set -u`（與 L1084 的 `set +u` 成對）。
+set -u
 
 # [防護 2e / 2026-09-16] load_mode=mmap × expert cache：一個**已經修好的缺陷**，而閘門要能分辨
 # 「含修復的 binary」與「不含修復的 binary」，不能一句話禁掉整條路。
@@ -1602,7 +1620,11 @@ for _v in LLAMA_EXPERT_CACHE_NOHOOK LLAMA_EXPERT_CACHE_NOGATHER LLAMA_EXPERT_CAC
           CGC_OVERLAP_FENCE CGC_SUBMIT_AHEAD \
           CGC_SPEC_TREE CGC_SPEC_TREE_B CGC_SPEC_TREE_RS LLAMA_BENCH_SPEC_DUMP \
           CGC_SPEC_TREE_BGATE CGC_SPEC_TREE_DKV CGC_SPEC_TREE_RGATE CGC_SPEC_TREE_RPROBE CGC_SPEC_TREE_K CGC_SPEC_TREE_BRESET CGC_SPEC_TREE_ALTBIND CGC_SPEC_TREE_ROWS CGC_SPEC_TREE_ROWS_ADAPT CGC_SPEC_TREE_ROWS_WIN CGC_SPEC_TREE_ROWS_THR CGC_SPEC_TREE_ROWS_OBJ CGC_SPEC_TREE_ROWS_COST LLAMA_BENCH_SPEC_ORACLE LLAMA_BENCH_SPEC_ROWS_DBG \
-          CGC_SERVER_SEED CGC_RSS_OFF; do
+          CGC_SERVER_SEED CGC_RSS_OFF \
+          CGC_A1_HIST_PROBE CGC_A1_HIST_VERBOSE \
+          CGC_IO_SHAPE_PROBE CGC_BHEAD_PROBE CGC_BHEAD_OUT \
+          CGC_LES_PROBE CGC_LES_OUT \
+          CGC_A0_PEROP CGC_GPU_TIMING CGC_GPU_NODES CGC_GPU_OPS; do
     if [ -n "${!_v:-}" ]; then
         SERVER_ENV+=("$_v=${!_v}")
     fi

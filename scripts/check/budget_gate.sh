@@ -2,10 +2,18 @@
 # [CGC 2026-09-24] 量測腳本的「超訂拒跑」閘門 —— 立即可做項（docs/SWAP_MISS_LINK_2026-09-24.md §7）
 #
 # 為什麼要有這個東西：
-#   prod-new + pool 8 GiB 在 16 GB 機器上是**靜態超訂**的（model 13030 + pool 8192 = 21222
-#   > 16384，超訂 4838 MiB，與實測 resident 21222 MiB 對上）。這種配置跑出來的數字活在
-#   macOS 記憶體壓縮 + swap 之上，不可引用 —— MTP on + ρ 影子節點那一輪就是這樣白跑
-#   50 分鐘、B 臂全 0.00 t/s（commit 3f0e97140 的實證）。
+#   真實超訂（dense 常駐 + pool > 實體）跑出來的數字活在 macOS 記憶體壓縮 + swap 之上，
+#   不可引用 —— MTP on + ρ 影子節點那一輪就是這樣白跑 50 分鐘、B 臂全 0.00 t/s
+#   （commit 3f0e97140 的實證）。
+#   [口徑 v3 2026-10-18，依 docs/L4_POOL_ANON_NONRECLAIMABLE_VERDICT_2026-10-18.md]
+#   早期 v1 用「模型檔案全量 13030 + pool 8192 = 21222」（雙重計 expert，作廢）；v2（2026-10-17）
+#   改 dense 555 + pool 8192 = 8747 對比 hw.memsize 16384，仍誤判 OK，且誤把 pool 當檔案 mmap
+#   可回收。v3 修正四道：① 上限改引擎自報 recommendedMaxWorkingSetSize（本機 11453 MiB，
+#   Backup/metal_working_set.json），不是 hw.memsize；② L4 pool 是 **Metal shared 匿名 dirty 頁**
+#   （vm_allocate + newBufferWithBytesNoCopy），pread 寫入即不可回收、evict 後 madvise 只覆蓋 L3
+#   不覆蓋 L4，pool 全額按不可回收計；③ 補 KV(85)+gather(356)+compute(400) 固定開銷；④ 分窄/寬
+#   工作集：narrow（harness 單 prompt）靜態門放行；wide（常駐多 profile）池被 churn 全滿、冷頁
+#   只在 swap（8G 實測獨佔髒足跡 ≈12.9G、swap 4.55G），須過更嚴的寬集門。
 #   `scripts/check/budget_preflight.py` 提供了口徑，但**它只是一支工具**：量測腳本不會自己
 #   去叫它。這支 gate 就是把「launch 前先預檢」變成一行 source 的共用面。
 #
@@ -17,7 +25,11 @@
 #   POOL_BYTES | CGC_SERVER_EXPERT_CACHE_BYTES   pool 上限 bytes（預設 8 GiB = prod-new）
 #   MODEL      | CGC_SERVER_MODEL                模型檔（預設 prod-new Nail checkpoint）
 #   LOAD_MODE  | CGC_SERVER_LOAD_MODE            none|mmap|mmap+mlock（預設 none；
-#                                                mmap 系 model resident=0，OS 可回收）
+#                                                mmap 系 dense 常駐=0，OS 可回收）
+#   DENSE_MIB  | CGC_DENSE_MIB                   非 expert 固定常駐 MiB（預設 preflight 內 555＝
+#                                                denseIQ4X 實測；空值用預設，與 run_server 同口徑）
+#   WORKLOAD   | CGC_BUDGET_WORKLOAD             narrow（預設，harness 單 prompt，靜態門）|
+#                                                wide（常駐 server 連跑多 profile，加寬集冷頁門）
 #   BUDGET_GATE  strict（預設）| warn | off
 #   PY                                           直譯器（預設 python3）
 #
@@ -27,9 +39,14 @@
 #   warn  ：超訂 → 印警告 + export CGC_BUDGET_OVERSUBSCRIBED=1（讓下游 log 帶標記）+ 繼續
 #   off   ：不檢查（相容既有流程）
 #
-# ⚠ 給 16 GB 這台機器的現實：pool 8 GiB 一定超訂 ⇒ strict 會拒跑。要跑請 BUDGET_GATE=warn
-#   （樣本會帶 OVERSUBSCRIBED 標記，將來不會被誤當乾淨樣本引用），或把 pool 降到 ≤ 3 GiB
-#   （16384 − 13030 = 3354 MiB，與 commit 3f0e97140 的結論一致）。
+# 16 GB 這台機器的現實（v3 口徑，Metal ceiling 11453、可用門檻 11453×0.9=10308）：
+#   固定非池常駐≈1396（dense555+kv85+gather356+compute400）。
+#   靜態容量門（narrow）：8G 需求 9588（餘 720，緊但過）/ 6G 7540（餘 2768）/ 4G 5492（餘 4816）。
+#   寬工作集門（wide，+2048 寬集餘量）：8G 需求 11636 > 10308 **拒跑**（常駐多主題實測必然
+#   swap、tier D，見 L4 判詞）/ 6G 9588（過，餘 720）/ 4G 7540（過，餘 2768）。
+#   ⇒ 常駐 replay 多 profile 請用 6G（寬集最小可行）或 4G，或等 L4 冷頁歸還（C 項）；
+#     穩態速度權威仍用 harness 單 prompt（narrow）的 C17 口徑。10G 擴池撞 Metal working set OOM
+#     （見 POOL10G_OOM_VERDICT）。若 dense 實測比預設大，用 DENSE_MIB 覆寫。
 
 # shellcheck shell=bash
 _BG_SRC="${BASH_SOURCE[0]:-$0}"
@@ -59,12 +76,19 @@ budget_gate() {
     local pool="${POOL_BYTES:-${CGC_SERVER_EXPERT_CACHE_BYTES:-${CGC_EXPERT_CACHE_BYTES:-8589934592}}}"
     local model="${MODEL:-${CGC_SERVER_MODEL:-${repo}/models/gguf/Nail-Qwen3.6-35B-A3B-MTP-UD-IQ3_XXS-denseIQ4X.gguf}}"
     local load_mode="${LOAD_MODE:-${CGC_SERVER_LOAD_MODE:-none}}"
+    # [口徑對齊 2026-10-17] dense（非 expert）常駐 MiB，預設在 preflight 內（555，denseIQ4X 實測），
+    # 與 run_server.sh CGC_DENSE_MIB 同口徑；外部可覆寫。空值＝用 preflight 預設。
+    local dense="${DENSE_MIB:-${CGC_DENSE_MIB:-}}"
+    # [v3 2026-10-18] 窄/寬工作集：narrow（預設，harness 單 prompt 靜態門）/ wide（常駐多 profile
+    # 加寬集冷頁門）。量測腳本常駐 replay 應傳 WORKLOAD=wide 或 CGC_BUDGET_WORKLOAD=wide。
+    local workload="${WORKLOAD:-${CGC_BUDGET_WORKLOAD:-narrow}}"
 
     # --warn-only 讓 preflight 同時印數字與判定；rc=2 才是 OVERSUBSCRIBED（見 budget_preflight.py）。
     # 注意：不能直接依賴 preflight 的預設拒跑，因為 warn 模式下我們仍要拿到它的判定繼續跑。
-    local out rc
+    local out rc dense_arg=""
+    [ -n "${dense}" ] && dense_arg="--dense-mib ${dense}"
     out="$("${py}" "${gate_py}" --pool-bytes "${pool}" --model "${model}" \
-                   --load-mode "${load_mode}" 2>&1)"
+                   --load-mode "${load_mode}" --workload "${workload}" ${dense_arg} 2>&1)"
     rc=$?
     printf '%s\n' "${out}"
 
@@ -83,19 +107,21 @@ budget_gate() {
         echo "[budget-gate]   這一趟的樣本帶 OVERSUBSCRIBED 標記，不可當乾淨基線引用。" >&2
         return 0
     fi
-    echo "[budget-gate] 拒跑（exit 2）。要硬跑：BUDGET_GATE=warn（帶標記）或減 pool 到 ≤ 3 GiB。" >&2
+    echo "[budget-gate] 拒跑（exit 2）。要硬跑：BUDGET_GATE=warn（帶標記）；常駐多主題請減 pool 到 6G/4G（WORKLOAD=wide），或改用 harness 單 prompt（WORKLOAD=narrow）。" >&2
     return 2
 }
 
-# ── self-test：用真實的 hw.memsize（16 GB）＋ 假的小模型檔，四個分支各驗一次 ──
+# ── self-test：用真實 Metal ceiling（11453，可用門檻 10308）＋ 假小模型檔，各分支驗證 ──
 budget_gate_self_test() {
     local py="${PY:-python3}" tmp rc pass=0 fail=0
     tmp="$(mktemp -d)"
     local small="${tmp}/small.gguf"
     "${py}" -c "import sys; open(sys.argv[1],'wb').truncate(100*1048576)" "${small}"
-    local big_pool=20971520000     # 20000 MiB：100 + 20000 > 16384 ⇒ 必然超訂
-    local tiny_pool=104857600      # 100 MiB：100 + 100 < 16384 ⇒ 不超訂
-    local mmap_pool=17091788800    # 16300 MiB：none => 100+16300 > 16384 超訂；mmap => 0+16300 放行
+    local big_pool=20971520000     # 20000 MiB：fixed 1396 + 20000 > 10308 ⇒ 必然超訂
+    local tiny_pool=104857600      # 100 MiB：fixed 1396 + 0.1 ≈ 1396 < 10308 ⇒ 不超訂
+    local mmap_pool=9437184000     # 9000 MiB：none => fixed1396+9000=10396 > 10308 超訂；mmap => 841+9000=9841 放行
+    local p8g=8589934592           # 8 GiB：narrow 9588 放行；wide 11636 > 10308 拒
+    local p6g=6442450944           # 6 GiB：wide 9588 ≤ 10308 放行
 
     check() { # name expected_rc
         if [ "$2" = "$3" ]; then pass=$((pass+1)); echo "  ok   $1 (rc=$2)";
@@ -128,11 +154,19 @@ budget_gate_self_test() {
         fail=$((fail+1)); echo "  FAIL warn 分支沒帶標記"
     fi
 
-    # mmap：model resident=0 ⇒ 同一個 pool 不再超訂（口徑與 run_server.sh:1050 一致）
+    # mmap：model resident=0 ⇒ 同一個 pool 不再超訂（dense 不計匿名）
     ( BUDGET_GATE=strict POOL_BYTES="${mmap_pool}" MODEL="${small}" LOAD_MODE=none . "${_BG_SRC}" ) >/dev/null 2>&1
     check "同一 pool 在 load_mode=none 下超訂" "$?" 2
     ( BUDGET_GATE=strict POOL_BYTES="${mmap_pool}" MODEL="${small}" LOAD_MODE=mmap . "${_BG_SRC}" ) >/dev/null 2>&1
-    check "同一 pool 在 mmap（resident=0）下放行" "$?" 0
+    check "同一 pool 在 mmap（dense=0）下放行" "$?" 0
+
+    # v3 窄/寬工作集：8G narrow 放行（C17 單 prompt 健康）、wide 拒（常駐多主題實測 swap 4.55G）；6G wide 放行
+    ( BUDGET_GATE=strict WORKLOAD=narrow POOL_BYTES="${p8g}" MODEL="${small}" . "${_BG_SRC}" ) >/dev/null 2>&1
+    check "8G narrow（harness 單 prompt）=> 放行" "$?" 0
+    ( BUDGET_GATE=strict WORKLOAD=wide   POOL_BYTES="${p8g}" MODEL="${small}" . "${_BG_SRC}" ) >/dev/null 2>&1
+    check "8G wide（常駐多主題）=> 拒跑" "$?" 2
+    ( BUDGET_GATE=strict WORKLOAD=wide   POOL_BYTES="${p6g}" MODEL="${small}" . "${_BG_SRC}" ) >/dev/null 2>&1
+    check "6G wide => 放行" "$?" 0
 
     rm -rf "${tmp}"
     echo "[budget-gate] self-test ${pass} passed / ${fail} failed"

@@ -26,6 +26,7 @@
 #include "llama-cgc-phase.h"
 
 #include <algorithm>
+#include <set>
 #include <cinttypes>
 #include <cmath>
 #include <cstdlib>
@@ -3598,6 +3599,11 @@ static bool cgc_is_i32_n(const ggml_tensor * t, int64_t n) {
 // [CGC 2026-09-30 · S2-c] 影子 capture 的前置宣告。定義在檔案下方的 ρ 區（`:4738`），而 S2-c 的
 // 投遞點在 `graph_compute`（下面）⇒ 同一個 TU 內「先用就要先宣告」。
 static void cgc_rho_capture(ggml_tensor * t);
+// [CGC B0] forward decl: the s2c direct-walk capture call (~line 5443) precedes the definition
+// (~line 5905) in this TU.
+static void cgc_bhead_capture(ggml_tensor * t);
+// [CGC LES 2026-10-17] forward decl: cross-layer router probe capture (defined near cgc_bhead_capture).
+static void cgc_les_capture(ggml_tensor * t);
 
 // [CGC 2026-10-02 S1 single-submit] How many tokens does THIS graph carry? The S1 capture maps are
 // never cleared (see the §EN-307 note above), so an entry may be the previous DECODE build's tensor
@@ -3627,6 +3633,244 @@ static int64_t cgc_graph_n_tokens(ggml_cgraph * gf) {
     }
     return -1;
 }
+
+// ════════════════════════════════════════════════════════════════════════════════
+// [CGC A0 · 2026-10-15] MTP verify(n>1) batch 增量 per-op 只读归因探针
+// Charter: scripts/check/charters/e-a0-verify-perop-2026-10-15.yaml
+//
+// 目标：把 s11.6 实测的 verify batch 总账（149.5 ms/轮 ≈ 3.11×单 token，overdraw +2.11）
+// 按 ggml op 拆到 GDN / CONV / MOE / ROLLBK / DENSE / OTHER / MIXED 七桶，比较 n=1 decode
+// 与 n>1 verify 图的「每位置 GPU busy」，据此在「写 chunkwise verify kernel / 翻案做
+// verify-batch 专家 union / 盖棺 20.79」三选一。
+//
+// 严格只读：默认 OFF（CGC_A0_PEROP 未设 ⇒ 本函数一次 getenv 后即返回，调用点不向图插任何
+// 节点、不改调度、不改 mul_mat_id 真实 ids）。ON 时也只：synchronize 一次（诊断臂允许，同
+// CGC_MISS_MASK 的 extra drain，报价臂勿开）→ 读 Metal backend 已存在的 per-command-buffer
+// GPU 时间戳（CGC 2026-09-18 node-level GPU time）→ 按 op 归类打印。不写任何张量。
+//
+// 依赖三个 Metal 采样 env（缺一 banner 报错、不出数）：
+//   CGC_GPU_TIMING=1  completion handler 采 GPUStart/GPUEnd
+//   CGC_GPU_NODES=1   graph_compute 快照每 node 的 name/op 表
+//   CGC_GPU_OPS=1     op 表（ggml_op 枚举）
+// 提分辨率：调大 CGC_N_CB 使每 command buffer 近似一个 node（MIXED 桶才会 <10%）。
+// ════════════════════════════════════════════════════════════════════════════════
+#if defined(__APPLE__)
+namespace {
+
+// 归因桶索引（与 parser、charter 一一对应，勿重排）
+enum cgc_a0_class_t : int {
+    CGC_A0_GDN    = 0,  // GGML_OP_GATED_DELTA_NET
+    CGC_A0_CONV   = 1,  // GGML_OP_SSM_CONV
+    CGC_A0_MOE    = 2,  // GGML_OP_MUL_MAT_ID / _DOWN_COMBINE
+    CGC_A0_ROLLBK = 3,  // GGML_OP_CPY 且 name 命中 recurrent state / gdn snapshot 槽
+    CGC_A0_DENSE  = 4,  // 普通 GGML_OP_MUL_MAT（attention/dense 投影）
+    CGC_A0_OTHER  = 5,  // 其余
+    CGC_A0_MIXED  = 6,  // 一个 command buffer 的 node 区间跨多类（不强行摊派）
+    CGC_A0_NCLASS = 7,
+};
+
+const char * cgc_a0_class_name(int c) {
+    static const char * nm[CGC_A0_NCLASS] = { "gdn", "conv", "moe", "rollbk", "dense", "other", "mixed" };
+    return (c >= 0 && c < CGC_A0_NCLASS) ? nm[c] : "?";
+}
+
+// CPY 中属于 recurrent state 更新 / spec rollback 快照的节点名（delta-net-base.cpp 的 cb 名）。
+// 注意：n=1 AR 路径也有一份 new_state cpy（每步必需的 recurrent state 更新），它与 verify
+// keep 路径多出的 K 份 snapshot cpy 都计入此桶；两桶相减（scale）时常数基线自然抵消。
+bool cgc_a0_is_rollback_name(const char * n) {
+    if (n == nullptr || n[0] == '\0') {
+        return false;
+    }
+    static const char * keys[] = { "conv_state", "gdn_out", "gdn_state", "new_state" };
+    for (const char * k : keys) {
+        if (strstr(n, k) != nullptr) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int cgc_a0_classify_op(int op, const char * nm) {
+    switch (op) {
+        case GGML_OP_GATED_DELTA_NET:        return CGC_A0_GDN;
+        case GGML_OP_SSM_CONV:               return CGC_A0_CONV;
+        case GGML_OP_MUL_MAT_ID:
+        case GGML_OP_MUL_MAT_ID_DOWN_COMBINE:return CGC_A0_MOE;
+        case GGML_OP_MUL_MAT:                return CGC_A0_DENSE;
+        case GGML_OP_CPY:
+            return cgc_a0_is_rollback_name(nm) ? CGC_A0_ROLLBK : CGC_A0_OTHER;
+        default:                             return CGC_A0_OTHER;
+    }
+}
+
+struct cgc_a0_proc_t {
+    int         (*take_cb)(ggml_backend_t, int64_t *, int) = nullptr;
+    int         (*node_op)(ggml_backend_t, int)            = nullptr;
+    const char *(*node_name)(ggml_backend_t, int)         = nullptr;
+    ggml_backend_t be = nullptr;
+    bool            tried = false;
+};
+
+} // namespace
+
+static bool cgc_a0_perop_enabled() {
+    return getenv("CGC_A0_PEROP") != nullptr;
+}
+
+// 每个被提交的图（gf）调用一次；backends 为该 context 的 backend 列表（graph_compute 作用域内）。
+static void cgc_a0_perop_on_step(ggml_cgraph * gf,
+                                 const std::vector<ggml_backend_ptr> & backends) {
+    // 三个 Metal 采样 env 必须齐备；只在（本进程）首次检查一次并 banner。
+    static bool env_checked = false;
+    static bool env_ok      = false;
+    if (!env_checked) {
+        env_checked = true;
+        env_ok = getenv("CGC_GPU_TIMING") != nullptr &&
+                 getenv("CGC_GPU_NODES")  != nullptr &&
+                 getenv("CGC_GPU_OPS")    != nullptr;
+        LLAMA_LOG_INFO("%s: CGC-A0 probe ON (take_cb/node_op); required env CGC_GPU_TIMING/NODES/OPS = %s\n",
+                       __func__, env_ok ? "yes" : "MISSING -> no attribution rows");
+    }
+    if (!env_ok) {
+        return;
+    }
+
+    // 只分两类图：n=1 decode；2..maxver verify（MTP n_max=3 ⇒ 1+3=4）。更大 ntok 是 prefill，丢弃。
+    const int64_t ntok = cgc_graph_n_tokens(gf);
+    if (ntok <= 0) {
+        return;
+    }
+    const char * bucket;
+    if (ntok == 1) {
+        bucket = "dec";
+    } else if (ntok >= 2 && ntok <= 8) {
+        bucket = "ver";
+    } else {
+        return; // prefill / 其它大 batch，不进 decode/verify 归因
+    }
+
+    // 懒解析 Metal backend 与三个 proc（经 backend registry 按名握手，跨 dylib）。
+    static cgc_a0_proc_t P;
+    if (!P.tried) {
+        P.tried = true;
+        for (const auto & bp : backends) {
+            ggml_backend_t be = bp.get();
+            ggml_backend_dev_t dev = (be != nullptr) ? ggml_backend_get_device(be) : nullptr;
+            ggml_backend_reg_t reg = (dev != nullptr) ? ggml_backend_dev_backend_reg(dev) : nullptr;
+            if (reg == nullptr) {
+                continue;
+            }
+            void * p_cb   = ggml_backend_reg_get_proc_address(reg, "ggml_metal_get_cgc_gpu_take_cb");
+            void * p_op   = ggml_backend_reg_get_proc_address(reg, "ggml_metal_cgc_node_op");
+            void * p_name = ggml_backend_reg_get_proc_address(reg, "ggml_metal_cgc_node_name");
+            if (p_cb == nullptr || p_op == nullptr) {
+                continue; // 非 Metal / 未编入 node-level 计时
+            }
+            P.take_cb   = (int (*)(ggml_backend_t, int64_t *, int)) p_cb;
+            P.node_op   = (int (*)(ggml_backend_t, int)) p_op;
+            P.node_name = (const char *(*)(ggml_backend_t, int)) p_name;
+            P.be        = be;
+            break;
+        }
+        if (P.be == nullptr) {
+            LLAMA_LOG_INFO("%s: CGC-A0 no Metal backend with node-level GPU timer; nothing to do\n", __func__);
+        }
+    }
+    if (P.be == nullptr) {
+        return;
+    }
+
+    // 诊断臂：强制等待本图全部 command buffer Completed，时间戳才可读。报价臂勿开 A0。
+    ggml_backend_synchronize(P.be);
+
+    constexpr int MAX_CB = 256;
+    int64_t rec[5 * MAX_CB];
+    const int nrec = P.take_cb(P.be, rec, MAX_CB);
+
+    int64_t busy[CGC_A0_NCLASS] = {0,0,0,0,0,0,0};
+    // 次级归因：cb 跨类时按区间内 node 数均摊其时长（Metal 注释建议的 kind-by-count 法）。
+    // wbusy 不含 MIXED；与严格桶并列输出，parser 在严格 MIXED≥10% 时降级用它并标低置信。
+    double  wbusy[CGC_A0_NCLASS-1] = {0,0,0,0,0,0};
+    int64_t ncnt[CGC_A0_NCLASS-1] = {0,0,0,0,0,0};
+    int64_t busy_total = 0;
+    int     n_ok = 0, n_mixed_cb = 0;
+
+    for (int r = 0; r < nrec; ++r) {
+        const int64_t * x = rec + 5*r;
+        const int64_t s = x[0], e = x[1];
+        const int64_t f = x[2], l = x[3], ok = x[4];
+        if (ok != 1 || e <= s) {
+            continue;
+        }
+        n_ok++;
+        const int64_t dur = e - s;
+        busy_total += dur;
+
+        // 区间内各 node 归类；只含单一类则整段归该类，跨类则严格计 MIXED。
+        int  cls  = -1;
+        bool mixed = false;
+        int  hist[CGC_A0_NCLASS-1] = {0,0,0,0,0,0};
+        int  hist_tot = 0;
+        for (int64_t idx = f; idx <= l && idx >= f; ++idx) {
+            const int op = P.node_op(P.be, (int) idx);
+            if (op < 0) {
+                continue;
+            }
+            const char * nm = nullptr;
+            if (op == GGML_OP_CPY && P.node_name != nullptr) {
+                nm = P.node_name(P.be, (int) idx);
+            }
+            const int c = cgc_a0_classify_op(op, nm);
+            if (c >= 0 && c < CGC_A0_NCLASS-1) {
+                hist[c]++;
+                hist_tot++;
+                ncnt[c]++;
+            }
+            if (cls < 0) {
+                cls = c;
+            } else if (cls != c) {
+                mixed = true;
+            }
+        }
+        // 次级：按 node 数把该 cb 时长均摊到各实际类（无论是否 mixed）。
+        if (hist_tot > 0) {
+            for (int c = 0; c < CGC_A0_NCLASS-1; ++c) {
+                if (hist[c] > 0) {
+                    wbusy[c] += (double) dur * ((double) hist[c] / (double) hist_tot);
+                }
+            }
+        }
+        if (mixed) {
+            busy[CGC_A0_MIXED] += dur;
+            n_mixed_cb++;
+        } else if (cls >= 0 && cls < CGC_A0_NCLASS-1) {
+            busy[cls] += dur;
+        } else {
+            busy[CGC_A0_OTHER] += dur;
+        }
+    }
+
+    if (n_ok == 0) {
+        return;
+    }
+
+    LLAMA_LOG_INFO(
+        "CGC-A0 bucket=%s ntok=%lld nrec=%d nok=%d nmixed=%d busy=%lld "
+        "gdn=%lld conv=%lld moe=%lld rollbk=%lld dense=%lld other=%lld mixed=%lld "
+        "wgdn=%.0f wconv=%.0f wmoe=%.0f wrollbk=%.0f wdense=%.0f wother=%.0f "
+        "ngdn=%lld nconv=%lld nmoe=%lld nrollbk=%lld ndense=%lld nother=%lld\n",
+        bucket, (long long) ntok, nrec, n_ok, n_mixed_cb, (long long) busy_total,
+        (long long) busy[CGC_A0_GDN], (long long) busy[CGC_A0_CONV],
+        (long long) busy[CGC_A0_MOE], (long long) busy[CGC_A0_ROLLBK],
+        (long long) busy[CGC_A0_DENSE], (long long) busy[CGC_A0_OTHER],
+        (long long) busy[CGC_A0_MIXED],
+        wbusy[CGC_A0_GDN], wbusy[CGC_A0_CONV], wbusy[CGC_A0_MOE],
+        wbusy[CGC_A0_ROLLBK], wbusy[CGC_A0_DENSE], wbusy[CGC_A0_OTHER],
+        (long long) ncnt[CGC_A0_GDN], (long long) ncnt[CGC_A0_CONV],
+        (long long) ncnt[CGC_A0_MOE], (long long) ncnt[CGC_A0_ROLLBK],
+        (long long) ncnt[CGC_A0_DENSE], (long long) ncnt[CGC_A0_OTHER]);
+}
+#endif // __APPLE__
 
 ggml_status llama_context::graph_compute(
             ggml_cgraph * gf,
@@ -4445,6 +4689,13 @@ ggml_status llama_context::graph_compute(
         LLAMA_LOG_ERROR("%s: ggml_backend_sched_graph_compute_async failed with error %d\n", __func__, status);
     }
 
+#if defined(__APPLE__)
+    // [CGC A0] 只读 per-op 归因；未设 CGC_A0_PEROP 时仅一次 getenv、不向图插任何节点。
+    if (cgc_a0_perop_enabled()) {
+        cgc_a0_perop_on_step(gf, backends);
+    }
+#endif
+
     // [CGC 2026-09-26 miss mask · step 2 REBUILD] DIAGNOSTIC ONLY. One extra synchronize per step to
     // read the mask -- and the index vector that gives the mask its identity -- back on the host and
     // print it in the two formats scripts/check/miss_mask_check.py parses:
@@ -5123,6 +5374,13 @@ ggml_status llama_context::graph_compute(
         ggml_backend_sched_synchronize(sched.get());
         if (cgc_fast_cost) s1_sync_us = ggml_time_us() - s1_t_sync0;
         uint64_t s1_step_layers = 0, s1_step_sel = 0, s1_step_cold = 0;
+        // [CGC 2026-10-07 cold-origin probe] classify each cold expert:
+        //  in_prev = same layer routed it last step too -> fill merely late, one-step-ahead fill fixes;
+        //  new     = not routed in that layer last step -> cross-step new expert, ahead-fill cannot know.
+        std::map<int, std::set<uint32_t>> s1_this_routed;
+        static std::map<int, std::set<uint32_t>> s1_prev_routed;
+        static uint64_t s1_cold_in_prev_all = 0, s1_cold_new_all = 0;
+        uint64_t s1_step_cold_in_prev = 0, s1_step_cold_new = 0;
         for (const auto & kv : cgc_s1_ss_placeholder) {
             const int il = kv.first;
             const std::vector<uint8_t> & ph = kv.second;
@@ -5143,11 +5401,21 @@ ggml_status llama_context::graph_compute(
             ggml_backend_tensor_get(idc, ibuf.data(), 0, (size_t) ntot * sizeof(int32_t));
             if (cgc_fast_cost) s1_read_us += ggml_time_us() - s1_t_r0;
             int64_t nsel = 0, ncold = 0;
+            auto & tr_il = s1_this_routed[il];
             for (int64_t i = 0; i < ntot; ++i) {
                 const int32_t e = ibuf[(size_t) i];
                 if (e < 0 || (size_t) e >= ph.size()) { continue; }
                 nsel += 1;
-                if (ph[(size_t) e]) { ncold += 1; }
+                tr_il.insert((uint32_t) e);
+                if (ph[(size_t) e]) {
+                    ncold += 1;
+                    auto itp = s1_prev_routed.find(il);
+                    if (itp != s1_prev_routed.end() && itp->second.count((uint32_t) e)) {
+                        s1_step_cold_in_prev += 1;
+                    } else {
+                        s1_step_cold_new += 1;
+                    }
+                }
             }
             // [CGC 2026-10-02 S1 single-submit · DELIVERY PROBE] Three questions, three numbers:
             //   table_diff  -- the table's buffer no longer holds what the publish wrote. The write
@@ -5210,14 +5478,23 @@ ggml_status llama_context::graph_compute(
             cgc_s1_ss_steps += 1;
             cgc_s1_ss_sel   += s1_step_sel;
             cgc_s1_ss_cold  += s1_step_cold;
+            s1_cold_in_prev_all += s1_step_cold_in_prev;
+            s1_cold_new_all     += s1_step_cold_new;
             if (cgc_s1_ss_vsteps < 12 || cgc_s1_ss_steps % 200 == 0) {
                 fprintf(stderr, "CGC-S1-SS: vstep=%llu layers=%llu nsel=%llu cold=%llu "
                                 "(cold = consumed ids with NO real slot at publish time; a cold "
                                 "position reads the ZERO slot -> its contribution is lost)\n",
                         (unsigned long long) cgc_s1_ss_vsteps, (unsigned long long) s1_step_layers,
                         (unsigned long long) s1_step_sel, (unsigned long long) s1_step_cold);
+                fprintf(stderr, "CGC-S1-SS-ORIGIN: vstep=%llu cold_in_prev=%llu cold_new=%llu "
+                                "| cum in_prev=%llu new=%llu (in_prev=late fill, one-step-ahead fixes; "
+                                "new=cross-step new expert, ahead-fill cannot know)\n",
+                        (unsigned long long) cgc_s1_ss_vsteps,
+                        (unsigned long long) s1_step_cold_in_prev, (unsigned long long) s1_step_cold_new,
+                        (unsigned long long) s1_cold_in_prev_all, (unsigned long long) s1_cold_new_all);
             }
         }
+        s1_prev_routed.swap(s1_this_routed);
         cgc_s1_ss_vsteps += 1;
     }
 
@@ -5837,6 +6114,135 @@ static void cgc_rho_capture(ggml_tensor * t) {
     g_rho_shadow_stamp[ul] += 1;
 }
 
+// [CGC B0 2026-10-14] READ-ONLY capture of the per-step post-output-norm hidden for the
+// cross-token routing-head feasibility probe (charter e-b0c0-forecast-and-iocost-2026-10-14).
+//
+// Why this is cheap where rho was expensive: rho pulled [256,2048] gate logits ONCE PER LAYER
+// (~40 implicit graph syncs/step, measured 4.76 ms/step). B0 pulls the single result/output-norm
+// vector h_nextn exactly ONCE per decode step (ne=[2048,1], 8 KiB) — ~40x fewer sync points and
+// ~2500x fewer bytes. The hidden h(p) is paired offline with the NEXT token's real per-layer
+// top8 routing emitted by the CGC-A1-RAW probe at pass=p+1 (that probe also flags cold= whether
+// the expert is resident, which is the exact 6G capacity-miss target population).
+//
+// Strictly read-only: appends hidden vectors to a binary sidecar, one stderr line per step;
+// writes no engine state, prefetches nothing, never touches mul_mat_id. Gate CGC_BHEAD_PROBE=1,
+// default OFF => not even the getenv runs in the hot path beyond the ask branch (byte-identical).
+// The get_ms field measures ONLY the ggml_backend_tensor_get fence/copy — the make-or-break
+// device cost for B (must be hideable inside one ~whole-step window, i.e. well under the ~2.7 ms
+// per-miss stall); measured here BEFORE committing to a device-side head.
+static std::atomic<int> g_cgc_bhead_pass{-1}; // published from the A1-RAW pass counter
+static void cgc_bhead_capture(ggml_tensor * t) {
+    static int s_bhead_note = 0;
+    if (t->ne[0] <= 0 || t->ne[1] != 1 ||
+        (t->type != GGML_TYPE_F32 && t->type != GGML_TYPE_F16)) {
+        // decode hidden is [hidden,1]; prefill norm is [hidden,n>1] (excluded). Only F32/F16
+        // norm outputs are supported. Emit a one-time note instead of silently no-op'ing.
+        if (s_bhead_note++ < 4 && t->ne[1] == 1) {
+            fprintf(stderr, "CGC-BHEAD-SKIP: name=%s type=%d ne=[%lld,%lld]\n",
+                    t->name, (int) t->type, (long long) t->ne[0], (long long) t->ne[1]);
+        }
+        return;
+    }
+    struct BHeadHdr { int32_t magic; int32_t pass; int32_t il; int32_t dim; int32_t get_us; };
+    static FILE * bf = nullptr;
+    static bool   tried = false;
+    if (!tried) {
+        tried = true;
+        const char * path = getenv("CGC_BHEAD_OUT");
+        if (path == nullptr || path[0] == '\0') {
+            path = "/tmp/cgc_bhead_hidden.bin";
+        }
+        bf = fopen(path, "wb");
+        if (bf != nullptr) {
+            setvbuf(bf, nullptr, _IOFBF, 1 << 20);
+        }
+    }
+    const int  dim  = (int) t->ne[0];
+    const char * bhead_dash = strrchr(t->name, '-');
+    const int  il   = bhead_dash ? atoi(bhead_dash + 1) : -1;
+    const bool f16  = (t->type == GGML_TYPE_F16);
+    std::vector<float> h((size_t) dim);
+    const auto ta = std::chrono::steady_clock::now();
+    if (f16) {
+        std::vector<ggml_fp16_t> raw((size_t) dim);
+        ggml_backend_tensor_get(t, raw.data(), 0, (size_t) dim * sizeof(ggml_fp16_t));
+        for (int i = 0; i < dim; ++i) {
+            h[i] = ggml_fp16_to_fp32(raw[i]);
+        }
+    } else {
+        ggml_backend_tensor_get(t, h.data(), 0, (size_t) dim * sizeof(float));
+    }
+    const auto tb = std::chrono::steady_clock::now();
+    const int get_us = (int) std::chrono::duration_cast<std::chrono::microseconds>(tb - ta).count();
+    const int pass   = g_cgc_bhead_pass.load();
+    if (bf != nullptr) {
+        BHeadHdr hdr{0x31444842 /*'BHD1' little-endian*/, pass, il, dim, get_us};
+        fwrite(&hdr, sizeof(hdr), 1, bf);
+        fwrite(h.data(), sizeof(float), (size_t) dim, bf);
+    }
+    if (s_bhead_note++ < 8) {
+        fprintf(stderr, "CGC-BHEAD: pass=%d il=%d dim=%d type=%s get_us=%d\n",
+                pass, il, dim, f16 ? "f16" : "f32", get_us);
+    }
+}
+
+// [CGC LES 2026-10-17] READ-ONLY capture of the cross-layer router lookahead logits injected in
+// qwen35moe.cpp: cgc_les_h-<il> = W_gate[il+1] @ attn_post_norm(p, il) — the LES prediction for
+// TARGET layer il+1 (the name carries the PHYSICAL layer il where the node runs). The sidecar holds
+// the full 256-d router logits per decode step per layer so the offline script can sweep any depth
+// and reproduce top-k; it prefetches nothing, reads no SSD, writes no slot. The pass counter is
+// published by the CGC-A1-RAW block (g_cgc_bhead_pass), so this MUST run together with
+// CGC_A1_HIST_PROBE=1 or pass stays -1. Gate CGC_LES_PROBE=1, default OFF => byte-identical.
+// Binary sidecar record: LesHdr{magic 'LES1',pass,il,dim,get_us} then dim*float32 (dim=256).
+static void cgc_les_capture(ggml_tensor * t) {
+    static int s_les_note = 0;
+    if (t->ne[0] <= 0 || t->ne[1] != 1 ||
+        (t->type != GGML_TYPE_F32 && t->type != GGML_TYPE_F16)) {
+        return;  // decode router logits are [256,1]; prefill [256,n>1] excluded
+    }
+    struct LesHdr { int32_t magic; int32_t pass; int32_t il; int32_t dim; int32_t get_us; };
+    static FILE * lf = nullptr;
+    static bool   tried = false;
+    if (!tried) {
+        tried = true;
+        const char * path = getenv("CGC_LES_OUT");
+        if (path == nullptr || path[0] == '\0') {
+            path = "/tmp/cgc_les_logits.bin";
+        }
+        lf = fopen(path, "wb");
+        if (lf != nullptr) {
+            setvbuf(lf, nullptr, _IOFBF, 1 << 20);
+        }
+    }
+    const int    dim   = (int) t->ne[0];
+    const char * dash  = strrchr(t->name, '-');
+    const int    il    = dash ? atoi(dash + 1) : -1;  // physical layer; target layer = il+1
+    const bool   f16   = (t->type == GGML_TYPE_F16);
+    std::vector<float> h((size_t) dim);
+    const auto ta = std::chrono::steady_clock::now();
+    if (f16) {
+        std::vector<ggml_fp16_t> raw((size_t) dim);
+        ggml_backend_tensor_get(t, raw.data(), 0, (size_t) dim * sizeof(ggml_fp16_t));
+        for (int i = 0; i < dim; ++i) {
+            h[i] = ggml_fp16_to_fp32(raw[i]);
+        }
+    } else {
+        ggml_backend_tensor_get(t, h.data(), 0, (size_t) dim * sizeof(float));
+    }
+    const auto tb = std::chrono::steady_clock::now();
+    const int get_us = (int) std::chrono::duration_cast<std::chrono::microseconds>(tb - ta).count();
+    const int pass   = g_cgc_bhead_pass.load();
+    if (lf != nullptr) {
+        LesHdr hdr{0x3153454c /*'LES1' little-endian*/, pass, il, dim, get_us};
+        fwrite(&hdr, sizeof(hdr), 1, lf);
+        fwrite(h.data(), sizeof(float), (size_t) dim, lf);
+    }
+    if (s_les_note++ < 8) {
+        fprintf(stderr, "CGC-LES: pass=%d il=%d(target=%d) dim=%d type=%s get_us=%d\n",
+                pass, il, il + 1, dim, f16 ? "f16" : "f32", get_us);
+    }
+}
+
 // [CGC ρ-fill 2026-09-23] 見 llama-context.h 的宣告：把 ρ 從「量測」變成「真的提前發起 IO」。
 //
 // 這裡做的每一件事都必須是**非阻塞**的。任何等待都會把「提前發起」換成「原地等 IO」——
@@ -5940,6 +6346,35 @@ void llama_context::cgc_rho_prefetch(int il) {
 
 bool llama_context::expert_cache_eval_cb(ggml_tensor * t, bool ask, void * user_data) {
     llama_context * ctx = static_cast<llama_context *>(user_data);
+    // [CGC B0] read-only per-STEP per-LAYER hidden capture for the cross-token routing-head probe.
+    // Matches the in-segment "cgc_bhead_h-<il>" ggml_cont node injected in qwen35moe.cpp (the
+    // post-attn-norm state this layer's router consumes). It is force-forwarded ask=false through
+    // the async split graph via the ggml-backend.cpp whitelist (same proven path as cgc_rho_logits;
+    // a graph-tail node like result_norm never crosses the per-segment loop, and a scale(1.0) node
+    // is constant-folded). Trunk ctx only; capture enforces decode ne[1]==1. OFF = byte-identical.
+    static const bool cgc_bhead_on = getenv("CGC_BHEAD_PROBE") != nullptr
+                                  && getenv("CGC_BHEAD_PROBE")[0] != '0';
+    if (cgc_bhead_on && strstr(t->name, "cgc_bhead_h") != nullptr) {
+        static int s_bhead_cb_note = 0;
+        if (s_bhead_cb_note++ < 12) {
+            fprintf(stderr, "CGC-BHEAD-CB: ask=%d name=%s ne=[%lld,%lld] type=%d\n",
+                    ask ? 1 : 0, t->name, (long long) t->ne[0], (long long) t->ne[1], (int) t->type);
+        }
+    }
+    if (cgc_bhead_on && !ask &&
+        ctx->cparams.ctx_type == LLAMA_CONTEXT_TYPE_DEFAULT &&
+        strncmp(t->name, "cgc_bhead_h", 11) == 0) {
+        cgc_bhead_capture(t);
+    }
+    // [CGC LES 2026-10-17] in-segment cb capture for the cross-layer router probe node
+    // (split-graph path; the direct-walk path above handles the single-submit prod-new graph).
+    static const bool cgc_les_cb_on = getenv("CGC_LES_PROBE") != nullptr
+                                   && getenv("CGC_LES_PROBE")[0] != '0';
+    if (cgc_les_cb_on && !ask &&
+        ctx->cparams.ctx_type == LLAMA_CONTEXT_TYPE_DEFAULT &&
+        strncmp(t->name, "cgc_les_h", 9) == 0) {
+        cgc_les_capture(t);
+    }
     static const bool cgc_rho_probe = getenv("CGC_RHO_PROBE") != nullptr;
     // [CGC 2026-09-30 rho split] 機制的閘＝交付旗標或量具（量具向後相容地帶著機制）。
     // 量具那一支只管「印不印帳」（cgc_rho_meter），不管機制跑不跑。
@@ -7910,6 +8345,53 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
         }
     }
 
+    // [CGC A1-hist 2026-10-14] RAW TRACE ONLY (offline q8/q16/q24). Append-only log; NO engine state
+    // machine. Read-only: never writes slot_table/slot_owner/remap, never touches mul_mat_id ids,
+    // never calls ensure/prefetch/touch. Gate CGC_A1_HIST_PROBE=1 (default OFF = byte-identical).
+    // On the FULL prod-new decode cell (fence=41, CGC_SPAC on; DRAFT/PREV_TOKEN/LAYER_AHEAD prefetch
+    // default OFF) emits one line per routed layer per token, e.g.
+    //   CGC-A1-RAW: pass=12 il=7 j=0 k=8 ids=3,19,.. cold=0,1,..
+    // pass = monotonic decode-pass counter (increments on il wrap). Offline parser groups by il in
+    // pass order, unions the previous 1/2/3 confirmed token rows, and scores coverage of this row plus
+    // the coverable share of the still-cold ids. Self-skips CGC_CANON_ORDER (token order changes rows).
+    {
+        static const bool a1_on = getenv("CGC_A1_HIST_PROBE") != nullptr &&
+                                  getenv("CGC_A1_HIST_PROBE")[0] != '0';
+        if (a1_on &&
+            getenv("CGC_CANON_ORDER") == nullptr &&
+            cparams.ctx_type == LLAMA_CONTEXT_TYPE_DEFAULT &&
+            cgc_is_decode_graph((int64_t) n_tokens, cgc_decode_max_tokens) &&
+            il >= 0 && (size_t) cache->n_expert > 0 &&
+            (size_t) il < cache->slot_table.size() / (size_t) cache->n_expert &&
+            n_tokens >= 1 && n_tokens <= 8 && n_expert_used > 0) {
+            static int s_a1_prev_il = -1;
+            static int s_a1_pass    = 0;
+            if (il <= s_a1_prev_il) { ++s_a1_pass; }
+            s_a1_prev_il = il;
+            // [CGC B0] publish the authoritative decode-pass so the h_nextn hidden capture
+            // (fired later in the same graph after output_norm) can tag h(p) for offline join
+            // with this step's routing. Harmless when B0 probe is off.
+            g_cgc_bhead_pass.store(s_a1_pass);
+            const int32_t * a1_st = cache->slot_table.data()
+                                  + (size_t) il * (size_t) cache->n_expert;
+            for (int64_t j = 0; j < n_tokens; ++j) {
+                fprintf(stderr, "CGC-A1-RAW: pass=%d il=%d j=%lld k=%lld ids=",
+                        s_a1_pass, il, (long long) j, (long long) n_expert_used);
+                for (int64_t i = 0; i < n_expert_used; ++i) {
+                    const uint32_t e = (uint32_t) ids[i + j * n_expert_used];
+                    fprintf(stderr, "%s%u", i ? "," : "", e);
+                }
+                fprintf(stderr, " cold=");
+                for (int64_t i = 0; i < n_expert_used; ++i) {
+                    const uint32_t e = (uint32_t) ids[i + j * n_expert_used];
+                    const int cold = (e < (uint32_t) cache->n_expert && a1_st[e] < 0) ? 1 : 0;
+                    fprintf(stderr, "%s%d", i ? "," : "", cold);
+                }
+                fprintf(stderr, "\n");
+            }
+        }
+    }
+
     const bool cgc_probe_is_decode = cgc_is_decode_graph((int64_t) n_tokens, cgc_decode_max_tokens);
 
     // [CGC rho probe 2026-09-23] ★★ ρ =「提前一層」發起 fill 時，預測能蓋住多少真實 union。
@@ -8715,6 +9197,12 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
             // CGC_SYNCFILL_COLD=0 as ON.
             return e[0] != '0';
         }();
+        // [CGC hit-rate caliber fix 2026-10-07] Number of this layer's union members that were
+        // cold at step start (filled by the verify-strict ensure_batch below). The fast-path-hit
+        // branch uses it to count only the WARM members as headline hits, without double-counting
+        // the cold ones the ensure_batch already counted. measured=false when verify-strict is off.
+        size_t cgc_step_cold_before = 0;
+        bool   cgc_step_cold_measured = false;
         if ((verify_fast || draft_fast) && cgc_fast_eligible) {
             const char * vs_env = getenv("CGC_VERIFY_STRICT");
             const bool cgc_verify_strict = vs_env ? atoi(vs_env) != 0 : true;
@@ -8727,6 +9215,8 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
                         cgc_cold_before++;
                     }
                 }
+                cgc_step_cold_before   = cgc_cold_before;
+                cgc_step_cold_measured = true;
                 if (cgc_cold_before > 0 && cgc_syncfill_cold) {
                     // [CGC 2026-09-15] This used to be a serial `for` over the cold experts, one
                     // blocking llama_expert_cache_ensure_slot per expert. Measured on prod25+MTP
@@ -8901,6 +9391,16 @@ void llama_context::expert_cache_on_topk(ggml_tensor * t) {
             llama_expert_cache_touch(cache, (uint32_t) il, uni.data(), uni.size(),
                                      cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP);
             fs_mark(fs_touch);
+            // [CGC hit-rate caliber fix 2026-10-07] Count the fast-path WARM members (resident at
+            // step start) as headline requests+hits so MTP-on shares MTP-off's denominator.
+            // warm = union minus the cold-at-step-start members; the verify-strict ensure_batch
+            // already counted those cold ones as requests+misses, so they are excluded here.
+            // When verify-strict was off (not measured), skip rather than mislabel cold as hits.
+            if (cgc_step_cold_measured) {
+                const size_t cgc_fast_warm =
+                    uni.size() > cgc_step_cold_before ? uni.size() - cgc_step_cold_before : 0;
+                llama_expert_cache_count_fast_warm(cache, cgc_fast_warm);
+            }
             // [CGC Fast-Path Wait 2026-09-06] verify ctx only (ground-truth route; draft is a
             // prediction — waiting there would slow MTP draft without proportional quality gain).
             // For cold experts whose DBUF step-ahead fill is already in flight, wait up to

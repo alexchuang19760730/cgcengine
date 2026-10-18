@@ -2743,7 +2743,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                     // （沒開 probe 時圖裡根本沒有這些節點，多出來的只是幾百次字串比較）。
                     static const bool cgc_td_cb     = getenv("CGC_TD_CB")     != nullptr;
                     static const bool cgc_rho_probe = getenv("CGC_RHO_PROBE") != nullptr;
-                    if (cgc_td_cb || cgc_rho_probe) {
+                    static const bool cgc_les_probe = getenv("CGC_LES_PROBE") != nullptr;
+                    if (cgc_td_cb || cgc_rho_probe || cgc_les_probe) {
                         const int a0 = (i == 0) ? 0 : (as_idx[i-1] + 1);
                         for (int k = a0; k <= as_idx[i]; k++) {
                             struct ggml_tensor * tn = split->graph.nodes[k];
@@ -2755,7 +2756,12 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                             }
                             if (cgc_td_cb) {
                                 sched->callback_eval(tn, false, sched->callback_eval_user_data);
-                            } else if (strncmp(tn->name, "cgc_rho_logits", 14) == 0) {
+                            } else if (strncmp(tn->name, "cgc_rho_logits", 14) == 0 ||
+                                       strncmp(tn->name, "cgc_bhead_h",   11) == 0 ||
+                                       strncmp(tn->name, "cgc_les_h",      9) == 0) {
+                                // [CGC B0] force-forward the per-layer hidden probe node exactly
+                                // like the rho shadow node; the split loop otherwise skips it.
+                                // [CGC LES] cgc_les_h-<il> cross-layer router probe rides the same path.
                                 sched->callback_eval(tn, false, sched->callback_eval_user_data);
                             }
                         }

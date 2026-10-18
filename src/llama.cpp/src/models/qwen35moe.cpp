@@ -229,6 +229,46 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
             }
         }
 
+        // [CGC B0] read-only per-step per-layer hidden probe for the cross-token routing-head
+        // feasibility test. Captures h(p,il) = post-attn-norm state that THIS layer's gate router
+        // actually consumes (identical input to the ffn_gate_inp matmul). We materialise it with
+        // ggml_cont (NOT ggml_cont on a scale(1.0), which graph opt folds) and forward_expand so it
+        // survives; the async split graph only force-forwards named nodes inside a topk segment
+        // (ggml-backend.cpp cgc_rho_logits whitelist), so this node MUST live here in-layer and be
+        // added to that whitelist. Single layer by default (CGC_BHEAD_IL, else 20) to bound the
+        // per-step tensor_get cost for the feasibility run. Gate off => node absent => byte-identical.
+        {
+            static const bool cgc_bhead_on = getenv("CGC_BHEAD_PROBE") != nullptr
+                                          && getenv("CGC_BHEAD_PROBE")[0] != '0';
+            static const int  cgc_bhead_il = getenv("CGC_BHEAD_IL") != nullptr
+                                                ? atoi(getenv("CGC_BHEAD_IL")) : 20;
+            if (cgc_bhead_on && il == cgc_bhead_il) {
+                static int s_bhead_build_note = 0;
+                if (s_bhead_build_note++ < 4) {
+                    fprintf(stderr, "CGC-BHEAD-BUILD: il=%d target_il=%d ffn_gate_inp=%p\n",
+                            il, cgc_bhead_il, (void *) model.layers[il].ffn_gate_inp);
+                }
+            }
+            if (cgc_bhead_on && il == cgc_bhead_il &&
+                model.layers[il].ffn_gate_inp != nullptr) {
+                // ROOT CAUSE (measured across 4 attempts): only an OP OUTPUT tensor survives as a
+                // callback-visible node in the Metal split graph. The post-attn-norm hidden (and a
+                // ggml_cont of it, even as the gate matmul's direct input) is fused/absorbed into
+                // the downstream matmul -> BUILD prints but the eval cb never sees it (0 CGC-BHEAD-CB).
+                // rho works precisely because it names the matmul OUTPUT. So replicate rho verbatim,
+                // single layer: read the 256-d gate router LOGITS l(p,il) (MUL_MAT output, a real
+                // independent node). For the cross-token B0 question this is a stronger feature than
+                // raw hidden anyway — it is the router's own projection; the offline head learns
+                // l(p,il) -> top8(p+1,il). Same residual-based early position as rho (feasibility
+                // signal only; refine position after the go/no-go). Gate off => absent => identical.
+                ggml_tensor * bhead_pre = build_norm(inpSA, model.layers[il].attn_post_norm, nullptr,
+                                                     LLM_NORM_RMS, il);
+                ggml_tensor * bhead_logits = build_lora_mm(model.layers[il].ffn_gate_inp, bhead_pre);
+                cb(bhead_logits, "cgc_bhead_h", il);   // keep name so backend whitelist + capture match
+                ggml_build_forward_expand(gf, bhead_logits);
+            }
+        }
+
         cur = build_norm(inpL, model.layers[il].attn_norm, nullptr, LLM_NORM_RMS, il);
         cb(cur, "attn_norm", il);
 
@@ -258,6 +298,26 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
         // Post-attention norm
         ggml_tensor * attn_post_norm = build_norm(cur, model.layers[il].attn_post_norm, nullptr, LLM_NORM_RMS, il);
         cb(attn_post_norm, "attn_post_norm", il);
+
+        // [CGC LES probe 2026-10-17] 只讀【跨層】router 預探針（MiniCPM-V 4.7 LES 同構；
+        // 見 docs/les/ 與 charter e-les-router-prefetch-2026-10-17 的 G1）。在本層
+        // post-attn-norm（＝本層 FFN 真實輸入）上，對【下一層】gate 打分：
+        //   les_logits(p, il) = W_gate[il+1] @ attn_post_norm(p, il)
+        // 只 capture 256 維 router logits（不 argsort、不預取、不讀盤、不寫 slot_table），
+        // 供離線與 CGC-A1-RAW 的真實 top8 對齊，算「跨整層」命中率。僅 decode 單 token 注入
+        // （prefill 不建節點，零污染）。Gate CGC_LES_PROBE=1，預設 OFF => 節點不存在 =>
+        // byte-identical。節點命名帶【物理層 il】；離線側目標層 = il+1。
+        {
+            static const bool cgc_les_on = getenv("CGC_LES_PROBE") != nullptr
+                                         && getenv("CGC_LES_PROBE")[0] != '0';
+            if (cgc_les_on && ubatch.n_tokens == 1 &&
+                il + 1 < n_layer &&
+                model.layers[il + 1].ffn_gate_inp != nullptr) {
+                ggml_tensor * les_logits = build_lora_mm(model.layers[il + 1].ffn_gate_inp, attn_post_norm);
+                cb(les_logits, "cgc_les_h", il);
+                ggml_build_forward_expand(gf, les_logits);
+            }
+        }
 
         // [CGC rho probe] **舊位置**（CGC_RHO_PROBE_LATE=1）。
         // ⚠ 它排在 attn(L) 全部計算之後 ⇒ 提前量 ≈ 0 ⇒ **只能量準度，量不到窗口**。
