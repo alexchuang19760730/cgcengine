@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Union 聚合预取与 Verifier-Side 集合裁剪 · CGC MoE Engine 技术方案白皮书</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230F766E'/%3E%3Cpath d='M8 10h16M8 16h16M8 22h10' stroke='%23E6F2F0' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="https://miaoda.feishu.cn/fonts/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&display=swap">
+<style>
+:root{
+  --bg:#F4F7F7; --panel:#FFFFFF; --ink:#17242B; --muted:#5C6A72;
+  --teal:#0F766E; --teal-deep:#0B3B38; --teal-soft:#E4F1EF; --teal-line:#BBD9D5;
+  --amber:#B45309; --amber-soft:#FBF1E3; --red:#B42318; --red-soft:#FCEBE9;
+  --line:#E2E9EA; --code-bg:#0F1E24;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:"Noto Sans SC",-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{font-family:var(--sans);background:var(--bg);color:var(--ink);line-height:1.75;font-size:16px;-webkit-font-smoothing:antialiased}
+a{color:var(--teal);text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* ===== 顶栏进度与目录 ===== */
+#tocbar{position:sticky;top:0;z-index:50;background:rgba(244,247,247,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.toc-inner{max-width:1080px;margin:0 auto;padding:10px 20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.toc-inner .brand{font-weight:900;font-size:14px;color:var(--teal-deep);white-space:nowrap;letter-spacing:.02em}
+.toc-inner .brand em{font-style:normal;color:var(--teal)}
+.toc-links{display:flex;gap:4px;flex-wrap:wrap;flex:1;min-width:0}
+.toc-links a{font-size:12.5px;color:var(--muted);padding:4px 9px;border-radius:999px;white-space:nowrap}
+.toc-links a:hover{background:var(--teal-soft);color:var(--teal-deep);text-decoration:none}
+.toc-links a.on{background:var(--teal);color:#fff}
+
+main{max-width:1080px;margin:0 auto;padding:0 20px 80px}
+
+/* ===== Hero ===== */
+header.hero{margin:0 -20px 40px;padding:56px 20px 44px;background:
+  radial-gradient(900px 320px at 85% -10%, rgba(15,118,110,.28), transparent 60%),
+  linear-gradient(160deg,#0B2A28 0%,#0E3A36 55%,#123F3B 100%);
+  color:#EAF5F3}
+.hero .kicker{font-size:13px;letter-spacing:.14em;color:#8FD0C9;margin-bottom:14px}
+.hero h1{font-size:clamp(26px,4vw,40px);line-height:1.3;font-weight:900;max-width:820px}
+.hero .sub{margin-top:14px;font-size:15.5px;color:#B9D6D1;max-width:760px;font-weight:300}
+.hero .meta{margin-top:20px;display:flex;gap:18px;flex-wrap:wrap;font-size:13px;color:#8FD0C9}
+.hero .meta b{color:#EAF5F3;font-weight:500}
+.hero .nums{margin-top:28px;display:grid;grid-template-columns:repeat(4,1fr);gap:12px;max-width:860px}
+.num{background:rgba(255,255,255,.07);border:1px solid rgba(234,245,243,.16);border-radius:12px;padding:14px 16px}
+.num .v{font-family:var(--mono);font-size:26px;font-weight:700;color:#6FE3D4}
+.num .k{font-size:12.5px;color:#9CC9C2;margin-top:2px;line-height:1.5}
+.hero .formula{margin-top:26px;background:rgba(6,18,20,.55);border:1px solid rgba(234,245,243,.14);border-radius:12px;padding:16px 20px;font-family:var(--mono);font-size:14px;color:#B9D6D1;overflow-x:auto;white-space:nowrap}
+.hero .formula b{color:#6FE3D4;font-weight:600}
+
+/* ===== 章节通用 ===== */
+section{margin-top:56px;scroll-margin-top:70px}
+.sec-head{display:flex;align-items:baseline;gap:14px;margin-bottom:20px;border-bottom:2px solid var(--teal-deep);padding-bottom:10px}
+.sec-head .no{font-family:var(--mono);font-size:15px;color:var(--teal);font-weight:700}
+.sec-head h2{font-size:24px;font-weight:900;color:var(--ink)}
+h3{font-size:18px;font-weight:700;margin:30px 0 12px;color:var(--teal-deep)}
+h4{font-size:15.5px;font-weight:700;margin:20px 0 8px}
+p{margin:10px 0}
+p,li,h3,h4{overflow-wrap:break-word}
+.lead{font-size:16.5px;color:#3A4750}
+.small{font-size:13px;color:var(--muted)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px 24px;margin:18px 0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:860px){.grid2{grid-template-columns:1fr}}
+
+/* ===== 公式与代码 ===== */
+code,.mono{font-family:var(--mono)}
+.eq{background:var(--teal-soft);border-left:3px solid var(--teal);padding:14px 18px;border-radius:0 10px 10px 0;font-family:var(--mono);font-size:14.5px;margin:14px 0;overflow-x:auto;white-space:nowrap}
+.eq .c{color:var(--muted)}
+pre.pseudo{background:var(--code-bg);color:#D7E7E4;border-radius:12px;padding:18px 20px;font-family:var(--mono);font-size:13.5px;line-height:1.7;overflow-x:auto;margin:14px 0}
+pre.pseudo .cm{color:#7FA8A1}
+pre.pseudo .kw{color:#6FE3D4}
+pre.pseudo .fn{color:#F2C879}
+
+/* ===== 表格 ===== */
+.tbl-wrap{overflow-x:auto;margin:16px 0;border:1px solid var(--line);border-radius:12px;background:var(--panel)}
+table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:14px;min-width:640px}
+colgroup col{width:auto}
+th{background:var(--teal-deep);color:#EAF5F3;font-weight:600;text-align:left;padding:10px 12px;font-size:13px;line-height:1.5}
+td{padding:9px 12px;border-top:1px solid var(--line);vertical-align:top;line-height:1.6}
+tbody tr:nth-child(even){background:#F8FAFA}
+td .mono{font-size:12.5px}
+.tag{display:inline-block;font-size:11.5px;padding:2px 8px;border-radius:999px;font-weight:600}
+.tag.ok{background:var(--teal-soft);color:var(--teal-deep)}
+.tag.warn{background:var(--amber-soft);color:var(--amber)}
+.tag.no{background:var(--red-soft);color:var(--red)}
+.tag.gray{background:#EEF1F2;color:#4A5560}
+
+/* ===== 时间轴 ===== */
+.timeline{margin:22px 0;position:relative;display:flex;flex-direction:column;gap:0}
+.timeline::before{content:"";position:absolute;top:20px;bottom:20px;left:129px;width:2px;background:var(--teal-line)}
+.tl{display:grid;grid-template-columns:110px 40px 1fr;gap:0;position:relative}
+.tl .when{font-family:var(--mono);font-size:13px;color:var(--teal);font-weight:700;text-align:right;padding:14px 0}
+.tl .axis{display:flex;justify-content:center;position:relative}
+.tl .dot{width:12px;height:12px;border-radius:50%;background:var(--teal);border:3px solid var(--teal-soft);margin-top:18px;z-index:1}
+.tl .body{padding:10px 0 22px 6px}
+.tl .body h4{margin:0 0 4px;color:var(--ink)}
+.tl .body p{font-size:13.5px;color:var(--muted);margin:0}
+.tl .body .out{font-size:12.5px;color:var(--teal);font-weight:600;margin-top:4px}
+@media(max-width:640px){.timeline{display:block}.timeline::before{left:90px}.tl{grid-template-columns:78px 26px 1fr}.tl .when{font-size:12px}}
+
+/* ===== 架构图（SVG） ===== */
+.figwrap{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px;margin:18px 0;overflow-x:auto}
+.figwrap svg{display:block;margin:0 auto;min-width:720px}
+.figcap{font-size:12.5px;color:var(--muted);text-align:center;margin-top:10px}
+
+/* ===== 风险卡 ===== */
+.risk{border-left:3px solid var(--amber);background:var(--amber-soft);border-radius:0 10px 10px 0;padding:14px 18px;margin:12px 0}
+.risk b{color:var(--amber)}
+.risk.red{border-left-color:var(--red);background:var(--red-soft)}
+.risk.red b{color:var(--red)}
+
+/* ===== 附录 ===== */
+.refs li{margin:8px 0;font-size:14px;overflow-wrap:anywhere;word-break:break-word}
+.refs .tag{vertical-align:1px;margin-left:6px}
+.refs code{overflow-wrap:anywhere}
+
+footer{border-top:1px solid var(--line);margin-top:70px;padding:24px 20px 40px;text-align:center;color:var(--muted);font-size:13px}
+
+@media(max-width:720px){
+  .hero .nums{grid-template-columns:repeat(2,1fr)}
+  .toc-links{display:none}
+}
+</style>
+</head>
+<body>
+
+<!-- ===== 顶栏目录 ===== -->
+<nav id="tocbar"><div class="toc-inner">
+  <span class="brand">CGC<em>·</em>MoE Engine</span>
+  <div class="toc-links" id="toc">
+    <a href="#s1">01 背景</a><a href="#s2">02 方案总览</a><a href="#s3">03 核心算法</a>
+    <a href="#s4">04 集成适配</a><a href="#s5">05 指标</a><a href="#s6">06 基线消融</a>
+    <a href="#s7">07 POC 流程</a><a href="#s8">08 风险边界</a><a href="#s9">09 路线图</a><a href="#s10">附录</a>
+  </div>
+</div></nav>
+
+<main>
+
+<!-- ===== Hero ===== -->
+<header class="hero">
+  <div class="kicker">TECHNICAL DESIGN WHITE PAPER · v0.1 · 2026-10-14</div>
+  <h1>Union 聚合预取 + Verifier-Side 集合裁剪<br>保持 20 tok/s 的前提下收缩 Expert Cache 的技术方案</h1>
+  <p class="sub">面向 CGC MoE Engine 的端侧 MoE 推理优化：将「MTP 多 token 批量验证」与「层内专家 Union 聚合预取」深度耦合，并引入 AcceptMoE 式验证端集合裁剪，把每输出 token 的权重读取从串行 ~1.2 GB 压缩到 ~0.23 GB，使专家驻留需求从 83% 以上降至 3%~33%。</p>
+  <div class="meta"><span>文档状态：<b>评审稿</b></span><span>目标硬件：<b>M4 Max / Air M4（16GB）</b></span><span>目标模型：<b>Qwen3.6-35B-A3B IQ3_XXS</b></span><span>基线：<b>串行 AR 20 tok/s</b></span></div>
+  <div class="nums">
+    <div class="num"><div class="v">5.3×</div><div class="k">每输出 token 权重读取下降<br>（1.2 GB → 0.23 GB）</div></div>
+    <div class="num"><div class="v">83%→3%</div><div class="k">维持 20 tok/s 所需专家驻留比例<br>（M4 Max，MTP 理想参数）</div></div>
+    <div class="num"><div class="v">21–26</div><div class="k">目标 decode 吞吐 tok/s<br>（驻留 10%~30% 时）</div></div>
+    <div class="num"><div class="v">U≤12</div><div class="k">每层验证专家 Union 上限<br>（防专家散射吃掉带宽收益）</div></div>
+  </div>
+  <div class="formula">t_token = W_eff·(1−h)/B_ssd + W_eff·h/B_ram + t_compute &nbsp;≤&nbsp; <b>50 ms</b> &nbsp;（= 20 tok/s）&nbsp;&nbsp;<span style="color:#7FA8A1">// 预取只隐藏延迟，带宽方程是硬约束</span></div>
+</header>
+
+<!-- ===== 01 背景与问题 ===== -->
+<section id="s1">
+  <div class="sec-head"><span class="no">01</span><h2>背景与问题定义</h2></div>
+  <p class="lead">CGC MoE Engine 当前在端侧已达到 <b>20 tok/s decode</b>。本方案的唯一目标：<b>在不掉速的前提下，把专家缓存（expert cache）显著缩小</b>，为 16GB 统一内存设备腾出 KV、系统与多模型共驻空间，并降低整机内存压力。</p>
+
+  <h3>1.1 现状基线：为什么现在的缓存缩不动</h3>
+  <p>串行 decode（无 MTP 批量验证）下，每输出 token 需要读取的权重字节由「每层激活专家 × 层数」决定：</p>
+  <div class="eq">W_serial = 48层 × (8 top + 1 shared) 专家 × 1.7 MB + attention ≈ <b>1.2 GB / token</b> <span class="c">（Qwen3.6-35B-A3B，IQ3_XXS ≈ 3.06 bit/param）</span></div>
+  <p>在带宽方程约束下，串行保持 20 tok/s 需要命中率 h ≥ 0.83（M4 Max）~0.88（Air M4），即专家几乎全驻留——<b>缓存缩小空间 ≈ 0</b>。这不是实现问题，是物理带宽问题：SSD 带宽（~5 GB/s）比内存带宽（105~430 GB/s）低一个数量级，只要每 token 需要从 SSD 读的字节超过约 0.2 GB，20 tok/s 在数学上就不可能成立。</p>
+
+  <h3>1.2 问题陈述</h3>
+  <div class="card">
+    <p><b>在满足以下三约束的前提下，将专家驻留比例从 ≥83% 降至 ≤30%：</b></p>
+    <p>C1 · <b>速度保持</b>：decode 吞吐 ≥ 20 tok/s（TPOT ≤ 50 ms），且不被 SSD 读延迟拖慢。<br>
+    C2 · <b>内存收缩</b>：专家常驻内存（hot set）≤ 30% 权重字节，其余专家按需从 SSD 流式读入。<br>
+    C3 · <b>质量不降</b>：GSM8K / HumanEval / MBPP 相对自然路由的精度损失 ≤ 0.5 pp。</p>
+  </div>
+
+  <h3>1.3 关键洞察：预取隐藏延迟，Union 摊薄带宽</h3>
+  <p>业界常把「预取」当作万能药，但预取只解决<b>延迟隐藏</b>（把 miss 的 SSD 读变成后台 IO 与计算重叠），<b>不减少总读取字节</b>。真正能把缓存缩小的物理杠杆只有一个：<b>MTP 批量验证的层内 Union 摊薄</b>——N 个 draft token 一次性验证，每层 router 只跑一次、按专家集合 Union 读取，摊到 N×接受率 个输出 token：</p>
+  <div class="eq">W_eff = ( Σ_层 U_l × E_expert + attention ) / (N × α) &nbsp;≈&nbsp; <b>0.23 GB/token</b> <span class="c">（N=8, U=12, α=0.75）</span></div>
+  <p>这是本方案与"单纯加预取"的本质区别：<b>Union 摊薄把每输出 token 的读取需求降 5 倍</b>，等价地把"保持 20 tok/s 所需命中率"从 0.83+ 拉低到 0.03~0.33——缓存缩小空间由此打开。</p>
+
+  <div class="risk"><b>风险预告：</b>Union 摊薄的收益有两个前提——每层 Union 不膨胀（U 控制在 12 左右）且接受率 α 不塌（≥0.75）。draft 质量差时 U 会涨到 20+、W_eff 反超串行，这正是本方案引入 Verifier-Side 集合裁剪的原因（见 §3.2），也对应 S²-MoE 与 AcceptMoE 论文中观察到的同一问题。</div>
+</section>
+
+<!-- ===== 02 方案总览 ===== -->
+<section id="s2">
+  <div class="sec-head"><span class="no">02</span><h2>方案总览：三层联动架构</h2></div>
+  <p class="lead">三个模块各自解决一个约束，缺一不可：<b>Union 聚合预取</b>保 C1（延迟隐藏 + 带宽摊薄），<b>Verifier-Side 集合裁剪</b>保 C1+C3（压住 Union 膨胀、控制精度），<b>Per-Layer Hot Cache</b> 保 C2（按层独立预算，只驻留高频专家）。</p>
+
+  <div class="figwrap">
+  <svg viewBox="0 0 760 330" xmlns="http://www.w3.org/2000/svg" font-family="Noto Sans SC,sans-serif">
+    <defs>
+      <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#0F766E"/></marker>
+    </defs>
+    <!-- Draft -->
+    <rect x="20" y="40" width="150" height="70" rx="10" fill="#E4F1EF" stroke="#0F766E"/>
+    <text x="95" y="70" text-anchor="middle" font-size="13" font-weight="700" fill="#0B3B38">Draft 模型 / MTP</text>
+    <text x="95" y="90" text-anchor="middle" font-size="11" fill="#5C6A72">一次性生成 N=8 候选 token</text>
+    <!-- Union per layer -->
+    <rect x="20" y="170" width="150" height="96" rx="10" fill="#E4F1EF" stroke="#0F766E"/>
+    <text x="95" y="195" text-anchor="middle" font-size="13" font-weight="700" fill="#0B3B38">层内 Union 聚合</text>
+    <text x="95" y="215" text-anchor="middle" font-size="11" fill="#5C6A72">每层批量 router × N token</text>
+    <text x="95" y="233" text-anchor="middle" font-size="11" fill="#5C6A72">→ 本层候选专家集合 U</text>
+    <text x="95" y="251" text-anchor="middle" font-size="11" fill="#0F766E" font-weight="700">目标 U ≤ 12</text>
+    <line x1="95" y1="110" x2="95" y2="168" stroke="#0F766E" stroke-width="2" marker-end="url(#arr)"/>
+    <!-- Verifier select -->
+    <rect x="20" y="240" width="150" height="70" rx="10" fill="#FBF1E3" stroke="#B45309"/>
+    <text x="95" y="266" text-anchor="middle" font-size="13" font-weight="700" fill="#7A3D08">Verifier 集合裁剪</text>
+    <text x="95" y="288" text-anchor="middle" font-size="11" fill="#8A5A1F">commitment 加权 · self-sizing</text>
+    <line x1="95" y1="266" x2="95" y2="242" stroke="#0F766E" stroke-width="2" marker-end="url(#arr)"/>
+    <!-- Hot cache -->
+    <rect x="250" y="40" width="180" height="120" rx="10" fill="#FFFFFF" stroke="#0F766E" stroke-width="1.5"/>
+    <text x="340" y="70" text-anchor="middle" font-size="13" font-weight="700" fill="#0B3B38">Per-Layer Hot Cache</text>
+    <text x="340" y="92" text-anchor="middle" font-size="11" fill="#5C6A72">每层独立 LRU + 独立预算</text>
+    <text x="340" y="110" text-anchor="middle" font-size="11" fill="#5C6A72">hot set 离线识别（top 30%）</text>
+    <text x="340" y="128" text-anchor="middle" font-size="11" fill="#5C6A72">命中 → B_ram 读</text>
+    <text x="340" y="146" text-anchor="middle" font-size="11" fill="#5C6A72">miss → 后台异步 SSD 读</text>
+    <!-- SSD -->
+    <rect x="250" y="220" width="180" height="80" rx="10" fill="#0F1E24"/>
+    <text x="340" y="252" text-anchor="middle" font-size="13" font-weight="700" fill="#6FE3D4">专家 SSD / UFS 流式池</text>
+    <text x="340" y="274" text-anchor="middle" font-size="11" fill="#8FA8A2">1.7 MB 粒度 · pread / 命令队列</text>
+    <line x1="340" y1="160" x2="340" y2="218" stroke="#0F766E" stroke-width="2" marker-end="url(#arr)"/>
+    <line x1="340" y1="220" x2="340" y2="164" stroke="#B45309" stroke-width="2" marker-end="url(#arr)"/>
+    <!-- Verify -->
+    <rect x="500" y="40" width="220" height="120" rx="10" fill="#FFFFFF" stroke="#0B3B38" stroke-width="1.5"/>
+    <text x="610" y="70" text-anchor="middle" font-size="13" font-weight="700" fill="#0B3B38">Target MoE 批量验证</text>
+    <text x="610" y="92" text-anchor="middle" font-size="11" fill="#5C6A72">对 N 个候选 token 逐层验证</text>
+    <text x="610" y="110" text-anchor="middle" font-size="11" fill="#5C6A72">每层只读裁剪后集合 U_c</text>
+    <text x="610" y="128" text-anchor="middle" font-size="11" fill="#5C6A72">共享已确认 KV Cache</text>
+    <text x="610" y="146" text-anchor="middle" font-size="11" fill="#0F766E" font-weight="700">接受率 α 目标 ≥ 0.75</text>
+    <line x1="430" y1="100" x2="498" y2="100" stroke="#0B3B38" stroke-width="2" marker-end="url(#arr)"/>
+    <line x1="170" y1="275" x2="248" y2="262" stroke="#0F766E" stroke-width="2" marker-end="url(#arr)"/>
+    <!-- output -->
+    <rect x="500" y="220" width="220" height="60" rx="10" fill="#0B3B38"/>
+    <text x="610" y="246" text-anchor="middle" font-size="13" font-weight="700" fill="#EAF5F3">输出 token（接受/拒绝采样）</text>
+    <text x="610" y="266" text-anchor="middle" font-size="11" fill="#8FD0C9">回写每层 LRU 统计 · 更新 hot set</text>
+    <line x1="610" y1="160" x2="610" y2="218" stroke="#0B3B38" stroke-width="2" marker-end="url(#arr)"/>
+  </svg>
+  <div class="figcap">示意：MTP 批量验证 → 层内 Union 聚合 → Verifier 集合裁剪 → 按层预取与验证的完整流水线（非真实工程图）</div>
+  </div>
+
+  <h3>2.1 与 CGC 现有 prefetch + MTP 机制的关系</h3>
+  <p>CGC 已有「prefetch + MTP」骨架。本方案不是推翻重来，而是把预取从<b>单 token 粒度</b>升级为<b>MTP Union 粒度</b>，并新增一个验证端裁剪模块：</p>
+  <div class="tbl-wrap"><table>
+    <colgroup><col style="width:26%"><col style="width:37%"><col style="width:37%"></colgroup>
+    <thead><tr><th>能力项</th><th>CGC 现有（单 token 预取）</th><th>本方案（Union 聚合预取）</th></tr></thead>
+    <tbody>
+      <tr><td>预取触发时机</td><td>当前 token router 结果到达后</td><td>MTP 一次取得 N 个候选后，逐层批量 router</td></tr>
+      <tr><td>预取对象</td><td>单 token 的 top-k 专家</td><td>N 个 token 的专家集合 Union U</td></tr>
+      <tr><td>带宽摊薄</td><td>无（每 token 独立读 8 专家）</td><td>union/N 摊薄，每输出 token 读取降 5×</td></tr>
+      <tr><td>专家集合选择</td><td>自然路由 top-k（会散射）</td><td>commitment 加权 + self-sizing 裁剪（§3.2）</td></tr>
+      <tr><td>缓存管理</td><td>全局共享缓存</td><td>per-layer 独立预算 + hot set（§3.3）</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ===== 03 核心算法 ===== -->
+<section id="s3">
+  <div class="sec-head"><span class="no">03</span><h2>核心算法设计</h2></div>
+
+  <h3>3.1 层内 Union 聚合预取</h3>
+  <p>每个验证轮：draft 一次产出 N 个候选 token → 对每一层执行批量 router（N 个 token 的 hidden state 一次前向）→ 取本层被激活专家集合的 <b>Union</b> → 与当前 resident 集求差得到待预取集合 → 后台异步读入。预取读入与「上层验证计算」重叠，miss 不再阻塞流水线。</p>
+  <pre class="pseudo"><span class="cm"># 每验证轮（伪代码，对接 CGC Engine 调度层）</span>
+draft = draft_model.generate(prompt, N=<span class="fn">8</span>)          <span class="cm"># MTP 一次 N 个候选</span>
+<span class="kw">for</span> layer <span class="kw">in</span> <span class="fn">1..L</span>:
+    logits = router(layer, draft.hidden)      <span class="cm"># 批量 router：N 个 token 一次</span>
+    U  = union_topk(logits, k=<span class="fn">8</span>)           <span class="cm"># 本层候选专家集合（目标 |U|≤12）</span>
+    <span class="kw">if</span> offload_enabled:
+        U = prune_nonresident(layer, U)        <span class="cm"># residency-aware 移除（§3.2.4）</span>
+    to_fetch = U - resident(layer)
+    async_prefetch(to_fetch)                   <span class="cm"># 后台 pread → per-layer cache</span>
+    U_c = verifier_select(layer, U, P_commit)  <span class="cm"># 集合裁剪（§3.2）</span>
+    verify_batch(layer, draft, U_c)            <span class="cm"># 只读 U_c，批量验证 N 个 token</span>
+update_lru_stats(draft.accepted)               <span class="cm"># 回写每层命中统计</span></pre>
+  <p><b>为什么按层聚合而不是按模型全局</b>：MoE 的专家局部性只存在于层内——同一层内 token 间专家重叠高，跨层无重叠。逐层独立 Union + 独立缓存预算，避免跨层专家互相抢占缓存（MoE-Infinity 已验证的分层缓存结论）。</p>
+
+  <h3>3.2 Verifier-Side 集合裁剪（AcceptMoE 式）</h3>
+  <p>Union 摊薄的前提是 U 不膨胀。若 draft 质量差，N 个 token 的专家集合会散射到 20+ 个/层，W_eff 反超串行。裁剪模块在验证前把每层可读专家集合 U_c 收敛到「对输出贡献最大」的子集：</p>
+  <h4>3.2.1 Commitment 概率加权</h4>
+  <p>对每个 draft 位置 t，离线统计它被最终输出接受的边际概率 P_commit(pos_t)（按 draft 深度单调递减，浅层高、深层低）。专家 e 的验证需求分 = 各 token 的 router 分数 × 该 token 被接受的边际概率：</p>
+  <div class="eq">score(e) = Σ_t router_t(e) × P_commit(pos_t) &nbsp;&nbsp;<span class="c">// 越靠近根的 token 权重越高</span></div>
+  <h4>3.2.2 Root Anchor</h4>
+  <p>根 token（已验证、必然进入输出的位置）的自然 top-k 专家<b>恒保留</b>——它们是本轮验证正确性的锚点，不可裁剪。</p>
+  <h4>3.2.3 Self-Sizing 集合大小</h4>
+  <p>按 score 降序保留非锚专家，保留数量由需求集中度自适应：需求集中（少数专家拿到大部分分）→ 集合小；需求分散 → 集合大。公式化为带 <b>重路由预算约束</b> 的集合选择（取自 AcceptMoE 的 m⋆ 规则）：</p>
+  <div class="eq">m⋆ = max{ m : Σ_{j≤m} v_π(j) ≤ a(S), |S| − m ≥ k } &nbsp;&nbsp;<span class="c">// 裁剪不越过自然 top-k 下界与重路由代价上界</span></div>
+  <h4>3.2.4 Residency-Aware 移除（offload 场景）</h4>
+  <p>非驻留专家按 LRU 命中历史从集合中移除，被移除 token 重路由到保留专家；代价受「集合形成时的自然分配位移 a(S)」约束，避免裁剪引发不可控的重路由漂移。</p>
+  <pre class="pseudo"><span class="cm"># verifier_select：commitment 加权 + self-sizing（伪代码）</span>
+<span class="kw">def</span> <span class="fn">verifier_select</span>(layer, U, P_commit):
+    anchor = root_token.natural_topk            <span class="cm"># 3.2.2 根锚点恒保留</span>
+    demand = {e: Σ_t router_t(e)·P_commit[t] <span class="kw">for</span> e <span class="kw">in</span> U - anchor}   <span class="cm"># 3.2.1</span>
+    ranked = sort(demand, desc)
+    k_self = <span class="fn">size_by_concentration</span>(demand)   <span class="cm"># 3.2.3 自适应集合大小</span>
+    U_c = anchor ∪ ranked[:k_self]
+    <span class="kw">if</span> offload: U_c = <span class="fn">residency_prune</span>(U_c)   <span class="cm"># 3.2.4 LRU resident 约束</span>
+    <span class="kw">return</span> U_c</pre>
+  <p><b>与 S²-MoE 的关系</b>：S²-MoE 的 routing-aware pruning 在 draft 侧裁剪扩展树（只保留预期收益大于验证成本的候选），本模块在验证端裁剪专家集合——两者正交，可叠加。预期组合收益：draft 树更紧凑（U 更小）+ 验证集合更收敛（命中率更高）。</p>
+
+  <h3>3.3 Per-Layer Hot Cache</h3>
+  <h4>3.3.1 离线 Hot-Set 识别</h4>
+  <p>用代表性语料（代码 + 数学 + 通用混合）跑 N_tok = 5 万 token 采样，统计每层每个专家的激活频率，按层排序取 <b>top 30%</b> 为 hot set（常驻 RAM），其余 70% 专家放 SSD。驻留比例是 POC 扫描变量（10%/30%/50%/80%），hot set 随比例截断。</p>
+  <h4>3.3.2 在线 LRU 与预算</h4>
+  <p>每层独立 LRU 缓存对象，独立字节预算 B_l = per_layer_expert_bytes × 驻留比例。命中不换位（仅读）、miss 读入放 MRU 端、超出预算从 LRU 端驱逐。驱逐策略提供 LFU / LFRU 两个可插拔后端（对标 llama.cpp moe-hot-cache 的分层命中统计）。</p>
+  <div class="tbl-wrap"><table>
+    <colgroup><col style="width:20%"><col style="width:40%"><col style="width:40%"></colgroup>
+    <thead><tr><th>模块</th><th>输入</th><th>输出 / 状态</th></tr></thead>
+    <tbody>
+      <tr><td>Union 聚合器</td><td>N 个 draft hidden、router</td><td>每层 U 集合（≤12）</td></tr>
+      <tr><td>集合裁剪器</td><td>U、P_commit 表、resident 集</td><td>U_c（每层 ≤10）</td></tr>
+      <tr><td>预取调度器</td><td>U_c − resident、SSD 队列</td><td>后台读任务（1.7MB 粒度）</td></tr>
+      <tr><td>Per-layer LRU</td><td>专家读请求、预算 B_l</td><td>命中率统计 / hot set 动态调整</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ===== 04 集成适配 ===== -->
+<section id="s4">
+  <div class="sec-head"><span class="no">04</span><h2>集成点与全栈模块插件化适配</h2></div>
+  <p>方案按「算法层 / 调度层 / 后端抽象层」分层，算法层（裁剪、union、hot-set）与后端无关；调度层负责流水线重叠；后端抽象层以插件形式适配各硬件。下表为全栈模块 × 后端适配性总表：</p>
+  <div class="tbl-wrap"><table>
+    <colgroup><col style="width:20%"><col style="width:20%"><col style="width:20%"><col style="width:20%"><col style="width:20%"></colgroup>
+    <thead><tr><th>模块</th><th>Metal（M4 Max/Air）</th><th>CUDA（4090/5090）</th><th>昇腾 NPU</th><th>Hexagon NPU + UFS</th></tr></thead>
+    <tbody>
+      <tr><td>Per-Layer LRU 缓存</td><td><span class="tag ok">原生</span> mlx 数组 + 分层字典</td><td><span class="tag ok">原生</span> 页式显存驻留</td><td><span class="tag warn">适配</span> 权重页管理</td><td><span class="tag warn">适配</span> 页粒度驻留</td></tr>
+      <tr><td>Union 聚合 + 批量 router</td><td><span class="tag ok">原生</span> mlx batch 前向</td><td><span class="tag ok">原生</span> CUDA 批量 GEMM</td><td><span class="tag warn">适配</span> aclrt 异步</td><td><span class="tag warn">适配</span> QNN 批量张量</td></tr>
+      <tr><td>异步预取调度</td><td><span class="tag ok">原生</span> 后台 pread + Metal 队列</td><td><span class="tag ok">原生</span> CUDA Streams 重叠</td><td><span class="tag warn">适配</span> aclrt 流</td><td><span class="tag warn">适配</span> UFS 命令队列</td></tr>
+      <tr><td>Verifier 集合裁剪</td><td colspan="4"><span class="tag ok" style="display:block;text-align:center">纯算法层 · 后端无关（commitment 表 + 排序）</span></td></tr>
+      <tr><td>Hot-Set 离线识别</td><td colspan="4"><span class="tag ok" style="display:block;text-align:center">离线工具链 · 与后端无关（采样统计）</span></td></tr>
+      <tr><td>量化感知</td><td colspan="4"><span class="tag gray" style="display:block;text-align:center">字节口径按 IQ3_XXS / MXFP4 计算，裁剪权重以字节计</span></td></tr>
+    </tbody>
+  </table></div>
+  <p class="small">适配性结论：算法与调度层可 100% 复用，各后端只需实现 4 个抽象接口——<code>load_expert(layer,id)</code>、<code>batch_router(layer,hidden)</code>、<code>verify_batch(layer,draft,U_c)</code>、<code>async_prefetch(list)</code>。Mac 端（Metal）与 CUDA 端可先行落地，NPU 端为插件化第二期。</p>
+</section>
+
+<!-- ===== 05 量化指标 ===== -->
+<section id="s5">
+  <div class="sec-head"><span class="no">05</span><h2>量化指标定义（KPI）</h2></div>
+  <p class="lead">所有指标必须可自动采集、口径唯一，作为消融实验与验收的共同语言。</p>
+  <div class="tbl-wrap"><table>
+    <colgroup><col style="width:22%"><col style="width:46%"><col style="width:16%"><col style="width:16%"></colgroup>
+    <thead><tr><th>指标</th><th>定义（口径）</th><th>当前基线</th><th>目标</th></tr></thead>
+    <tbody>
+      <tr><td>TPOT</td><td>decode 阶段单输出 token 平均耗时（不含 prefill / 加载）</td><td>≈50 ms</td><td>≤48 ms</td></tr>
+      <tr><td>Decode 吞吐</td><td>1000 / TPOT，单位 tok/s</td><td>20</td><td>≥20（驻留 30% 时）</td></tr>
+      <tr><td>TTFT</td><td>首个输出 token 延迟</td><td>实测</td><td>不劣化</td></tr>
+      <tr><td>W_eff</td><td>每输出 token 专家权重读取字节（含 attention 分摊），GB/token</td><td>≈1.2（串行）</td><td>≤0.3</td></tr>
+      <tr><td>Cache Hit Rate</td><td>按权重字节计，每层独立统计：命中字节 / 总读取字节</td><td>—</td><td>≥0.70（驻留 30%）</td></tr>
+      <tr><td>U_avg</td><td>每层验证 Union 平均专家数（跨层平均）</td><td>—</td><td>≤12</td></tr>
+      <tr><td>接受率 α</td><td>MTP 候选 token 被接受比例（含根 token 计入）</td><td>实测</td><td>≥0.75</td></tr>
+      <tr><td>SSD 流量</td><td>每输出 token 从 SSD 读取的专家字节（MB/token）</td><td>—</td><td>≤200</td></tr>
+      <tr><td>带宽利用率</td><td>有效读取字节 / (峰值带宽 × 耗时)，SSD 与 RAM 分别统计</td><td>—</td><td>SSD ≥60%</td></tr>
+      <tr><td>精度漂移</td><td>GSM8K / HumanEval / MBPP 相对自然路由的 pp 差</td><td>0</td><td>≥ −0.5 pp</td></tr>
+    </tbody>
+  </table></div>
+  <div class="risk red"><b>采集纪律：</b>全部采用 Per-op Profiling 分离「计算 / RAM 读 / SSD 读 / 序列化」四段时间；同一配置至少 3 次重复，固定 <code>seed=42</code>、固定 prompt 集与 warmup，交替执行顺序消除热机偏差；bit-identity 校验保证裁剪后逐 token 输出可复现。</div>
+</section>
+
+<!-- ===== 06 基线消融 ===== -->
+<section id="s6">
+  <div class="sec-head"><span class="no">06</span><h2>对比基线与消融实验设计</h2></div>
+
+  <h3>6.1 对比基线</h3>
+  <div class="tbl-wrap"><table>
+    <colgroup><col style="width:24%"><col style="width:40%"><col style="width:36%"></colgroup>
+    <thead><tr><th>基线</th><th>配置</th><th>用途</th></tr></thead>
+    <tbody>
+      <tr><td>AR（target-only）</td><td>无投机解码，自然路由，全驻留 / 指定驻留比例</td><td>绝对基准：验证带宽模型预测</td></tr>
+      <tr><td>Standard SD</td><td>EAGLE-3 draft + 自然路由验证（不做集合裁剪）</td><td>隔离「Union 摊薄」本身的收益</td></tr>
+      <tr><td>S²-MoE 风格</td><td>routing-aware draft 裁剪，验证端自然路由</td><td>对照「draft 侧裁剪」与「验证端裁剪」分工</td></tr>
+      <tr><td>全局缓存</td><td>单池 LRU（非 per-layer）</td><td>验证分层预算的必要性</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>6.2 消融矩阵（A/B）</h3>
+  <div class="tbl-wrap"><table>
+    <colgroup><col style="width:22%"><col style="width:20%"><col style="width:20%"><col style="width:38%"></colgroup>
+    <thead><tr><th>因子</th><th>关闭（对照组）</th><th>开启（实验组）</th><th>观测口径</th></tr></thead>
+    <tbody>
+      <tr><td>Union 聚合预取</td><td>单 token 预取</td><td>MTP Union 聚合预取</td><td>W_eff、吞吐、SSD 流量</td></tr>
+      <tr><td>Verifier 集合裁剪</td><td>自然路由全集合</td><td>commitment 加权 + self-sizing</td><td>U_avg、命中率、精度漂移</td></tr>
+      <tr><td>缓存组织</td><td>全局单池 LRU</td><td>Per-layer 独立预算</td><td>每层命中率方差、吞吐</td></tr>
+      <tr><td>驻留比例</td><td colspan="2">扫描 {10%, 30%, 50%, 80%}</td><td>命中率—吞吐曲线（下图）</td></tr>
+      <tr><td>MTP 深度 N</td><td colspan="2">扫描 {4, 8, 16}</td><td>U_avg 与接受率 α 的权衡</td></tr>
+      <tr><td>模型 / 硬件</td><td colspan="2">Qwen3.6-35B-A3B × {M4 Max, Air M4}；GPT-OSS-120B × M4 Max（稳健性）</td><td>结论跨模型/硬件泛化性</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>6.3 带宽模型预测曲线（理论预期）</h3>
+  <p>以下曲线由 §附录 带宽模型生成，是消融实验的验收预期：<b>串行路径在驻留比例 &lt;80% 时即跌破 20 tok/s；MTP + Union 路径在驻留 0%~30% 区间仍保持 20+ tok/s</b>。</p>
+  <div class="figwrap" style="min-width:0">
+    <div id="bwchart" style="width:100%;height:400px"></div>
+    <div class="figcap">示例性参数曲线（口径见附录 A）：B_ssd=5 GB/s；M4 Max 有效 430 GB/s、Air M4 有效 105 GB/s；串行 W=1.2 GB/token；MTP W_eff=0.226 GB（N=8, U=12, α=0.75）；保守 W_eff=0.291 GB（U=14, α=0.65）。实跑需以阶段 0 profile 结果替换。</div>
+  </div>
+
+  <h3>6.4 验收判据（Go/No-Go）</h3>
+  <div class="card">
+    <p><b>POC 通过 = 以下全部满足（M4 Max，Qwen3.6-35B-A3B）：</b><br>
+    G1 · 驻留 30% 时 decode 吞吐 ≥ 20 tok/s，且 TPOT 无长尾（P99 ≤ 60 ms）<br>
+    G2 · U_avg ≤ 12，接受率 α ≥ 0.75<br>
+    G3 · 精度漂移 ≥ −0.5 pp（三个 benchmark）<br>
+    G4 · 带宽模型预测误差 ≤ 15%（证明物理模型有效，可外推其他硬件）<br>
+    G5 · 相对串行 AR 同驻留比例的吞吐提升 ≥ 1.8×</p>
+  </div>
+</section>
+
+<!-- ===== 07 POC ===== -->
+<section id="s7">
+  <div class="sec-head"><span class="no">07</span><h2>POC 验证流程</h2></div>
+  <p class="lead">五个阶段，每阶段有明确输入 / 输出 / 出口判据；控制变量贯穿全程（seed=42、固定负载、交替执行、3 次重复取中位数）。</p>
+  <div class="timeline">
+    <div class="tl">
+      <div class="when">W1</div><div class="axis"><span class="dot"></span></div>
+      <div class="body"><h4>阶段 0 · 基线 Profile</h4><p>Per-op Profiling 分解四段时间；实测 B_ssd（1.7MB 粒度 pread 顺序/随机）、B_ram 有效带宽、draft 接受率 α 与 U 分布基线、KV 占用。</p><div class="out">输出：profile 报告 + 带宽模型参数表（替换本白皮书全部示例值）</div></div>
+    </div>
+    <div class="tl">
+      <div class="when">W2</div><div class="axis"><span class="dot"></span></div>
+      <div class="body"><h4>阶段 1 · Hot-Set + Per-Layer LRU</h4><p>离线 5 万 token 采样定 hot set；实现分层 LRU 与预算；跑驻留 {10,30,50,80}% × {AR, Standard SD}。</p><div class="out">出口：命中率—吞吐曲线与 §6.3 预测对齐</div></div>
+    </div>
+    <div class="tl">
+      <div class="when">W3</div><div class="axis"><span class="dot"></span></div>
+      <div class="body"><h4>阶段 2 · Union 聚合预取</h4><p>对接 CGC 已有 MTP：批量 router → 层内 Union → 异步预取 → 批量验证；N 扫描 {4,8,16}。</p><div class="out">出口：W_eff 实测 ≤0.3 GB/token；预取重叠率（SSD 读被计算掩盖比例）≥60%</div></div>
+    </div>
+    <div class="tl">
+      <div class="when">W4</div><div class="axis"><span class="dot"></span></div>
+      <div class="body"><h4>阶段 3 · Verifier 集合裁剪</h4><p>实现 commitment 加权 + self-sizing + residency-aware 移除；离线标定 P_commit 表。</p><div class="out">出口：U_avg ≤12；精度漂移 ≥ −0.5 pp</div></div>
+    </div>
+    <div class="tl">
+      <div class="when">W5–6</div><div class="axis"><span class="dot"></span></div>
+      <div class="body"><h4>阶段 4 · 端到端整合 + 消融</h4><p>全链路跑 §6.2 矩阵；GPT-OSS-120B 稳健性验证；P99 长尾与内存峰值（16GB 约束）检查。</p><div class="out">出口：§6.4 五项 Go/No-Go 判据</div></div>
+    </div>
+    <div class="tl">
+      <div class="when">W7–8</div><div class="axis"><span class="dot"></span></div>
+      <div class="body"><h4>阶段 5 · 回归与交付</h4><p>多轮 bit-identity 复现；热 set 在线自更新；文档（本白皮书 + 移植指南 + NPU 插件接口）。</p><div class="out">出口：可复现 benchmark 报告 + 插件化适配包</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== 08 风险边界 ===== -->
+<section id="s8">
+  <div class="sec-head"><span class="no">08</span><h2>风险与边界</h2></div>
+
+  <div class="risk"><b>R1 · Union 膨胀（高优先）：</b>draft 质量差 → U 涨到 20+/层 → W_eff 反超串行。缓解：Verifier 集合裁剪（§3.2）+ draft 侧 routing-aware 裁剪（S²-MoE）叠加；阶段 0 必须先测 U 分布，U 基线 &gt;16 时本方案收益上限收缩。</div>
+  <div class="risk"><b>R2 · 接受率塌陷：</b>α &lt; 0.5 时摊薄失效。缓解：Context-aligned self-speculation（draft 与 target 共享已确认 KV，降低上下文偏差）；α 作为阶段 0 关键出口指标，不达标先调 draft 对齐再谈缓存。</div>
+  <div class="risk"><b>R3 · SSD 带宽被高估：</b>Mac 内置 NVMe 顺序读 5~6 GB/s，但 1.7MB 粒度小块随机读实测可能 2~4 GB/s。带宽模型对 B_ssd 高度敏感（每差 1 GB/s ≈ ±4 ms/token），阶段 0 必须实测，禁止用厂商标称。</div>
+  <div class="risk"><b>R4 · 裁剪引入精度漂移：</b>约束验证集合 = 改变模型分布。缓解：root anchor 恒保留 + 精度漂移 ≤0.5 pp 硬门槛；若超限，优先放宽集合大小（self-sizing 上限）而非放弃裁剪。</div>
+  <div class="risk red"><b>R5 · 16GB 统一内存的整机约束：</b>系统 + KV + hot set + 双模型（draft 与 target）共驻。hot set 30% ≈ 4 GB 级（IQ3_XXS 13.4GB × 30%），加 draft 与 KV 后需实测内存峰值；若超限，驻留比例降档至 20% 并重跑 Go/No-Go。</div>
+  <div class="risk"><b>R6 · 正确性边界：</b>本方案只允许改变「验证阶段读取的专家集合」，不允许改变已接受 token 的输出分布。所有消融必须跑 bit-identity 校验：同一 seed 下，裁剪方案的已接受前缀与自然路由逐 token 一致。</div>
+</section>
+
+<!-- ===== 09 落地清单 ===== -->
+<section id="s9">
+  <div class="sec-head"><span class="no">09</span><h2>工程落地清单与决策点</h2></div>
+  <div class="tbl-wrap"><table>
+    <colgroup><col style="width:30%"><col style="width:46%"><col style="width:24%"></colgroup>
+    <thead><tr><th>落地项</th><th>内容</th><th>依赖 / 前置</th></tr></thead>
+    <tbody>
+      <tr><td>P1 · 带宽 profile 工具</td><td>per-op profiling 脚本：分解 compute / RAM / SSD / serial 四段；1.7MB pread 带宽实测</td><td>阶段 0 入口</td></tr>
+      <tr><td>P2 · Hot-set 离线工具链</td><td>5 万 token 采样 → 每层专家频率表 → hot set 截断 + 导出 JSON</td><td>P1 后</td></tr>
+      <tr><td>P3 · Per-layer LRU 模块</td><td>独立预算、命中统计、LFU/LFRU 可插拔后端</td><td>P2</td></tr>
+      <tr><td>P4 · Union 预取调度器</td><td>MTP 批量 router → Union → 异步 pread → 与计算重叠</td><td>CGC 现有 MTP 接口</td></tr>
+      <tr><td>P5 · Verifier 集合裁剪器</td><td>commitment 表 + self-sizing + residency-aware 移除</td><td>P1 的 α / U 基线</td></tr>
+      <tr><td>P6 · 消融 Harness</td><td>§6.2 矩阵自动化：固定 seed、交替执行、3 次重复、指标采集</td><td>P3–P5 全部</td></tr>
+      <tr><td>P7 · 后端抽象接口</td><td>load_expert / batch_router / verify_batch / async_prefetch 四个接口 + Metal/CUDA 实现</td><td>P4</td></tr>
+    </tbody>
+  </table></div>
+  <div class="card">
+    <p><b>关键决策点（需评审会拍板）：</b></p>
+    <p>D1 · 驻留比例目标定为 30% 还是更激进 20%？——由阶段 0 的 B_ssd 实测与 R5 内存峰值决定。<br>
+    D2 · MTP 深度 N 定 8 还是 16？——由「U_avg 增速 vs α 收益」权衡曲线决定（N 大则摊薄多但 U 膨胀快）。<br>
+    D3 · 裁剪是否叠加 S²-MoE draft 侧裁剪？——若阶段 0 显示 U 基线 ≤14，先只上验证端裁剪，保持 draft 侧简单。</p>
+  </div>
+</section>
+
+<!-- ===== 10 附录 ===== -->
+<section id="s10">
+  <div class="sec-head"><span class="no">10</span><h2>附录</h2>
+
+  <h3>A · 带宽模型（推导口径）</h3>
+  <div class="eq">t_token = W_eff·(1−h)/B_ssd + W_eff·h/B_ram + t_compute <span class="c">（预取理想 → 带宽受限；单位 GB, GB/s, ms）</span></div>
+  <div class="eq">W_serial = 48 × 9 × 1.7/1024 + 0.4 ≈ <b>1.2 GB</b><span class="c">； W_eff = (48·U·1.7/1024 + 0.4)/(N·α)</span></div>
+  <p class="small">示例值：E_expert=1.7MB（4.4M params × 0.383 B，IQ3_XXS）；attention+常驻 0.4GB；N=8，U=12，α=0.75 → W_eff≈0.226GB；U=14，α=0.65 → W_eff≈0.291GB。保持 20 tok/s 所需命中率：串行 h≥0.83（Max）/0.88（Air）；MTP 理想 h≥0.03/0.12；MTP 保守 h≥0.25/0.33。所有数值为建模口径，阶段 0 实测后替换。</p>
+
+  <h3>B · 参考论文与开源工程</h3>
+  <ul class="refs">
+    <li>S²-MoE: Enabling Efficient Self-Speculative Decoding for MoE on Edge Devices — arXiv 2608.15018 · 开源：github.com/angerybob/S2-MoE（routing-aware expansion + reuse-aware gating + shared KV）<span class="tag gray">已开源 MIT</span></li>
+    <li>AcceptMoE: Commitment-Weighted Self-Sizing Verifier Expert Sets — arXiv 2608.02989（本方案 §3.2 的直接来源；未开源，按论文公式自行实现）<span class="tag no">未开源</span></li>
+    <li>MoE-Infinity: Sparsity-Aware Expert Cache — github.com/EfficientMoE/MoE-Infinity（per-layer 分层缓存工程基准）<span class="tag ok">已开源</span></li>
+    <li>SpecPrefetch: Parameter-Efficient Expert Prefetching for Sparse MoE — github.com/wei390/SpecPrefetch（骁龙端侧层内预取评估）<span class="tag ok">已开源</span></li>
+    <li>llama.cpp moe-hot-cache — 分层专家缓存 / LFRU / SSD 流式（C/C++，适合 NPU 移植参考）<span class="tag ok">已开源</span></li>
+    <li>FlashMLX / Slotstream / FlashMoE(arXiv 2601.17063) — 端侧 MoE SSD 流式同赛道参照</li>
+  </ul>
+
+  <h3>C · 术语表</h3>
+  <div class="tbl-wrap"><table>
+    <colgroup><col style="width:24%"><col style="width:76%"></colgroup>
+    <thead><tr><th>术语</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td>MTP</td><td>Multi-Token Prediction：一次预测 N 个候选 token 的投机解码（DeepSeek 系训练头）</td></tr>
+      <tr><td>Union 摊薄</td><td>N 个 token 共享一次专家集合读取，每输出 token 读取 = Union/Nα</td></tr>
+      <tr><td>Verifier-Side 集合裁剪</td><td>验证阶段按 commitment 概率收敛可读专家集合，控制 Union 膨胀</td></tr>
+      <tr><td>Hot Set</td><td>离线识别的高频激活专家集合，常驻 RAM</td></tr>
+      <tr><td>W_eff</td><td>每输出 token 的平均权重读取字节（带宽模型的输入）</td></tr>
+    </tbody>
+  </table></div>
+</section>
+</main>
+<footer>CGC MoE Engine · Union 聚合预取与 Verifier-Side 集合裁剪技术方案白皮书 · 评审稿 v0.1</footer>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<script>
+/* ===== 带宽模型预测曲线 ===== */
+(function(){
+  var el=document.getElementById('bwchart');
+  if(!el||typeof echarts==='undefined')return;
+  var chart=echarts.init(el);
+  var x=['0','5','10','15','20','25','30','35','40','45','50','55','60','65','70','75','80','85','90','95','100'];
+  var opt={
+    color:['#8A98A0','#C3CBCF','#0F766E','#5FA8A0','#B45309'],
+    tooltip:{trigger:'axis',triggerOn:'mousemove|click',renderMode:'richText',confine:true,
+      formatter:function(ps){var s=ps[0].axisValue+'% 驻留：'+String.fromCharCode(10);for(var i=0;i<ps.length;i++){s+=ps[i].marker+ps[i].seriesName+'　'+ps[i].value.toFixed(1)+' tok/s'+String.fromCharCode(10);}return s;}},
+    legend:{type:'scroll',top:6,textStyle:{fontSize:11}},
+    grid:{left:52,right:18,top:52,bottom:34,containLabel:true},
+    xAxis:{type:'category',name:'专家驻留比例（权重字节 %）',nameLocation:'middle',nameGap:30,
+      data:x,interval:2,axisLabel:{fontSize:11}},
+    yAxis:{type:'value',name:'Decode 吞吐 (tok/s)',min:0,max:160,axisLabel:{fontSize:11}},
+    series:[
+      {name:'串行解码 · M4 Max',type:'line',smooth:true,symbolSize:5,lineStyle:{width:2},
+       data:[4.1,4.3,4.5,4.8,5.0,5.4,5.7,6.1,6.6,7.2,7.8,8.7,9.6,10.9,12.5,14.7,17.8,22.5,30.8,48.4,113.8]},
+      {name:'串行解码 · Air M4',type:'line',smooth:true,symbolSize:5,lineStyle:{width:2},
+       data:[4.0,4.2,4.4,4.6,4.9,5.2,5.5,5.9,6.3,6.8,7.4,8.0,8.9,9.9,11.1,12.7,14.9,17.9,22.6,30.4,46.7]},
+      {name:'MTP+Union 理想 · M4 Max',type:'line',smooth:true,symbolSize:5,lineStyle:{width:2.5},
+       data:[19.5,20.4,21.4,22.5,23.7,25.0,26.5,28.1,30.0,32.2,34.6,37.5,41.0,45.1,50.2,56.5,64.7,75.6,91.0,114.2,153.2]},
+      {name:'MTP+Union 理想 · Air M4',type:'line',smooth:true,symbolSize:5,lineStyle:{width:2},
+       data:[18.1,18.8,19.6,20.5,21.5,22.5,23.6,24.9,26.3,27.9,29.7,31.7,34.0,36.7,39.9,43.6,48.2,53.7,60.8,69.9,82.3]},
+      {name:'MTP 保守(U=14,α=0.65) · M4 Max',type:'line',smooth:true,symbolSize:5,lineStyle:{width:2},
+       data:[15.6,16.3,17.1,18.0,19.0,20.0,21.3,22.7,24.2,26.1,28.2,30.7,33.6,37.3,41.7,47.4,54.9,65.3,80.4,104.6,149.7]},
+      {type:'line',silent:true,symbol:'none',
+       markLine:{symbol:'none',silent:true,lineStyle:{type:'dashed',width:1.5,color:'#B42318'},
+         label:{formatter:'20 tok/s 目标',position:'insideEndTop',fontSize:11,color:'#B42318'},
+         data:[{yAxis:20}]}}
+    ]
+  };
+  chart.setOption(opt);
+  window.addEventListener('resize',function(){chart.resize();});
+})();
+
+/* ===== TOC 滚动高亮 ===== */
+(function(){
+  var links=[].slice.call(document.querySelectorAll('#toc a'));
+  var map={};links.forEach(function(a){map[a.getAttribute('href').slice(1)]=a;});
+  var ids=Object.keys(map);
+  function onScroll(){
+    var y=window.scrollY+90,cur=ids[0];
+    ids.forEach(function(id){var el=document.getElementById(id);if(el&&el.offsetTop<=y)cur=id;});
+    links.forEach(function(a){a.classList.toggle('on',a.getAttribute('href')==='#'+cur);});
+  }
+  window.addEventListener('scroll',onScroll,{passive:true});onScroll();
+})();
+</script>
+</body>
+</html>

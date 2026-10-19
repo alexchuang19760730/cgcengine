@@ -1,0 +1,78 @@
+diff --git a/src/llama.cpp/src/llama-expert-cache.cpp b/src/llama.cpp/src/llama-expert-cache.cpp
+--- a/src/llama.cpp/src/llama-expert-cache.cpp	2026-10-18 22:08:09
++++ b/src/llama.cpp/src/llama-expert-cache.cpp	2026-10-18 22:08:09
+@@ -991,6 +991,38 @@
+ }
+ 
+ static void cgc_discard_pool_slot(llama_expert_cache * cache, uint32_t layer, int32_t slot) {
++    // [CGC C-stage1 READ-ONLY] CGC_L4_EVICT_TRACE: record WHICH thread evicts a pool slot.
++    // Stage-2 cold-page return (MADV_FREE_REUSABLE on Metal pool_ext) is safe only when the
++    // victim is not on a GPU command buffer still in flight. Static reading shows pool_ext
++    // eviction happens only via pick_slot on the build thread (ensure_slot/ensure_batch, before
++    // graph_compute); the bg loop's evict_lru touches only the legacy malloc map, not pool_ext.
++    // This probe confirms it at runtime. Read-only, rate-limited, default OFF; it never changes
++    // the discard decision below.
++    if (getenv("CGC_L4_EVICT_TRACE") != nullptr) {
++        static std::mutex              cgc_tr_m;
++        static unsigned long long      cgc_tr_tid[16] = {0};
++        static unsigned long long      cgc_tr_cnt[16] = {0};
++        const unsigned long long cgc_tid = (unsigned long long)(uintptr_t) pthread_self();
++        unsigned long long cgc_n = 0;
++        bool cgc_new = false;
++        {
++            std::lock_guard<std::mutex> cgc_lk(cgc_tr_m);
++            int cgc_free = -1;
++            for (int cgc_i = 0; cgc_i < 16; ++cgc_i) {
++                if (cgc_tr_tid[cgc_i] == cgc_tid) { cgc_n = ++cgc_tr_cnt[cgc_i]; break; }
++                if (cgc_tr_tid[cgc_i] == 0 && cgc_free < 0) { cgc_free = cgc_i; }
++            }
++            if (cgc_n == 0 && cgc_free >= 0) {
++                cgc_tr_tid[cgc_free] = cgc_tid;
++                cgc_n = ++cgc_tr_cnt[cgc_free];
++                cgc_new = true;
++            }
++        }
++        if (cgc_new || cgc_n <= 3 || (cgc_n % 2048 == 0)) {
++            fprintf(stderr, "CGC-L4-EVICT-TRACE: tid=%llu layer=%u slot=%d evict_no=%llu %s\n",
++                    cgc_tid, layer, slot, cgc_n, cgc_new ? "[NEW THREAD]" : "");
++        }
++    }
+     if (slot < 0 || layer >= cache->pool.size()) {
+         return;
+     }
+@@ -2342,10 +2374,21 @@
+     }
+     const bool ok = llama_expert_cache_adopt_pool_region(cache, layer, kind, base, (int64_t) slots, stride);
+     if (getenv("CGC_POOL_SPLIT_DBG") != nullptr) {
++        const size_t cgc_pg = (size_t) sysconf(_SC_PAGESIZE);
++        const size_t cgc_slice = (size_t) slots * stride;
+         fprintf(stderr, "CGC-POOL-SPLIT-ADOPT: layer=%u kind=%d slots=%u stride=%zu base=%p buf=%p "
+                 "pool_ext.size=%zu pool_ext_buf.size=%zu ok=%d\n",
+                 layer, kind, slots, stride, (const void *) base, (void *) buf,
+                 cache->pool_ext.size(), cache->pool_ext_buf.size(), (int) ok);
++        // [CGC C-stage1 READ-ONLY] page/slot alignment for the cold-page-reclaim (FREEREUS) slab
++        // decision; parsed by docs/les/tools/l4_slab_geometry.py. No behavior change.
++        fprintf(stderr, "CGC-POOL-SPLIT-GEOM: layer=%u kind=%d page=%zu base_mod_pg=%zu "
++                "stride_mod_pg=%zu slice_mod_pg=%zu stride_pg=%.4f\n",
++                layer, kind, cgc_pg,
++                (size_t)((uintptr_t) base % cgc_pg),
++                stride % cgc_pg,
++                cgc_slice % cgc_pg,
++                cgc_pg ? (double) stride / (double) cgc_pg : 0.0);
+     }
+     if (!ok) {
+         return false;
+diff --git a/scripts/run_server.sh b/scripts/run_server.sh
+--- a/scripts/run_server.sh
++++ b/scripts/run_server.sh
+@@ -2077,5 +2077,10 @@
+ if [ -n "${CGC_POOL_SPLIT_DBG:-}" ]; then
+     SERVER_ENV+=(CGC_POOL_SPLIT_DBG="$CGC_POOL_SPLIT_DBG")
+ fi
++# [CGC C-stage1 READ-ONLY] G7 L4 evict trace: which thread evicts a pool_ext slot
++# (fence-safe-window confirmation for the FREEREUS cold-page return). Read-only, default off.
++if [ -n "${CGC_L4_EVICT_TRACE:-}" ]; then
++    SERVER_ENV+=(CGC_L4_EVICT_TRACE="$CGC_L4_EVICT_TRACE")
++fi
+ # CGC prev-token prefetch (default off)
+ # [CGC M0 decode profile 2026-09-13] Per-layer wait/cb/submit attribution of a decode step.
