@@ -1,11 +1,21 @@
 # G7（C 線階段 1）：L4 冷頁歸還的只讀插樁 — fence 安全窗口 + 頁/slot 幾何
 
-> 狀態：**只讀、env-gated、預設 OFF，不碰任何決策路徑**。補丁已可乾淨 apply（`git apply --check` rc=0），
-> 已用 `compile_commands.json` 真實編譯旗標對臨時副本做 `-fsyntax-only`：**rc=0、零新增 warning**
-> （基線 4 個舊 warning，補丁後仍 4 個，新增行 0 warning）。
-> 前置：**commit2 落地 → 撤 affinity 之後**才 apply（見末尾「apply 順序」）。
-> 補丁檔：`docs/les/G7_STAGE1_READONLY_PROBE.patch`（只改 `llama-expert-cache.cpp` 一個檔）。
-> 離線分析：`docs/les/tools/l4_slab_geometry.py`。
+> **✅ 階段 1 已閉環（2026-10-19，運行時實證）**：結果判詞見
+> **`docs/les/G7_STAGE1_RESULT_VERDICT_2026-10-19.md`**。
+> Q1 fence 安全窗口 **PASS**（8192 次 pool_ext evict 全在單一 build 執行緒，distinct tid=1）；
+> Q2 生產路徑真實幾何已取得（120 tensor 在一連續 Metal 分配；絕對 16KiB 頁 84.7% 覆蓋單 slot、
+> 3.8% 跨 2 相鄰 slot、11.5% 為 gap/dense；stride gate/up 20.5 頁、down 27.5 頁，半頁殘差）。
+> **重要更正**：舊文檔「1.0703 MiB / 68.5 頁」是估算、已被實測推翻（真實為 20.5/27.5 頁）。
+> 階段 2（真實 L4 pool 上 FREEREUS 落地 + GPU 安全/重填 bit-exact）尚未做、待乾淨窗口，不許諾收益。
+
+> 狀態：**只讀、env-gated、預設 OFF，不碰任何決策路徑**。補丁已可乾淨 apply（`git apply --check` rc=0，
+> 已在臨時乾淨 HEAD 驗證 5 個 hunk 全部 apply）。
+> 補丁檔：`docs/les/G7_STAGE1_READONLY_PROBE.patch`（改 `llama-expert-cache.cpp` + `scripts/run_server.sh`）。
+> 離線分析：`docs/les/tools/l4_slab_geometry.py`（含全區域分析）。
+
+---
+
+> 以下為階段 1 的計畫與靜態論證（保留作依據；實測結果以上方判詞為準）。
 
 ---
 

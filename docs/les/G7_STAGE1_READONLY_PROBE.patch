@@ -1,7 +1,20 @@
 diff --git a/src/llama.cpp/src/llama-expert-cache.cpp b/src/llama.cpp/src/llama-expert-cache.cpp
---- a/src/llama.cpp/src/llama-expert-cache.cpp	2026-10-18 22:08:09
-+++ b/src/llama.cpp/src/llama-expert-cache.cpp	2026-10-18 22:08:09
-@@ -991,6 +991,38 @@
+index 88d137350..35a1f43a0 100644
+--- a/src/llama.cpp/src/llama-expert-cache.cpp
++++ b/src/llama.cpp/src/llama-expert-cache.cpp
+@@ -843,7 +885,10 @@ static inline const uint8_t * pool_region(const llama_expert_cache * cache, uint
+ //
+ // ⚠ TWO hazards this helper exists for — both corrupt a NEIGHBOUR slot silently:
+ //   (1) madvise() needs a PAGE-ALIGNED address (EINVAL otherwise);
+-//   (2) an expert stride is 1.0703 MiB = 68.5 pages of 16 KiB, i.e. NOT a page multiple.
++//   (2) [CORRECTED 2026-10-19 G7] the measured per-expert stride is NOT a page multiple:
++//       gate/up = 335872 B = 20.5 pages, down = 450560 B = 27.5 pages (both mod 8192 =
++//       half a page; the three IQ4_XS layers' down is 34 pages exactly). (Earlier docs said
++//       1.0703 MiB / 68.5 pages — that was an estimate, disproven by the production dump.)
+ //       Rounding the range OUTWARD would zero the tail of the previous slot and the head
+ //       of the next one. So: round the start UP, the end DOWN, and drop only the pages
+ //       FULLY INSIDE the range. (If the range holds no whole page, drop nothing.)
+@@ -895,6 +940,38 @@ static int cgc_pool_madvise_mode() {
  }
  
  static void cgc_discard_pool_slot(llama_expert_cache * cache, uint32_t layer, int32_t slot) {
@@ -40,7 +53,31 @@ diff --git a/src/llama.cpp/src/llama-expert-cache.cpp b/src/llama.cpp/src/llama-
      if (slot < 0 || layer >= cache->pool.size()) {
          return;
      }
-@@ -2342,10 +2374,21 @@
+@@ -2149,6 +2288,23 @@ bool llama_expert_cache_adopt_pool_region(llama_expert_cache * cache, uint32_t l
+     cache->pool_ext[layer][kind]       = base;
+     cache->pool_ext_stride[layer][kind] = stride;
+     cache->pool_ext_slots[layer][kind]  = (uint32_t) n_slots;
++    // [CGC C-stage1 READ-ONLY] geometry on the PRODUCTION path (CGC_POOL_SPLIT=0, direct call).
++    // pool_split_adopt also calls this function; no decision is changed. Parsed by
++    // docs/les/tools/l4_slab_geometry.py.
++    if (getenv("CGC_POOL_SPLIT_DBG") != nullptr) {
++        const size_t cgc_pg = (size_t) sysconf(_SC_PAGESIZE);
++        fprintf(stderr, "CGC-POOL-SPLIT-ADOPT: layer=%u kind=%d slots=%lld stride=%zu base=%p "
++                "pool_ext.size=%zu ok=1\n",
++                layer, kind, (long long) n_slots, stride, (const void *) base,
++                cache->pool_ext.size());
++        fprintf(stderr, "CGC-POOL-SPLIT-GEOM: layer=%u kind=%d page=%zu base_mod_pg=%zu "
++                "stride_mod_pg=%zu slice_mod_pg=%zu stride_pg=%.4f\n",
++                layer, kind, cgc_pg,
++                (size_t)((uintptr_t) base % cgc_pg),
++                stride % cgc_pg,
++                ((size_t) n_slots * stride) % cgc_pg,
++                cgc_pg ? (double) stride / (double) cgc_pg : 0.0);
++    }
+     return true;
+ }
+ 
+@@ -2184,10 +2340,21 @@ bool llama_expert_cache_pool_split_adopt(llama_expert_cache * cache, uint32_t la
      }
      const bool ok = llama_expert_cache_adopt_pool_region(cache, layer, kind, base, (int64_t) slots, stride);
      if (getenv("CGC_POOL_SPLIT_DBG") != nullptr) {
@@ -63,9 +100,10 @@ diff --git a/src/llama.cpp/src/llama-expert-cache.cpp b/src/llama.cpp/src/llama-
      if (!ok) {
          return false;
 diff --git a/scripts/run_server.sh b/scripts/run_server.sh
+index af1da500e..43d1cba6b 100755
 --- a/scripts/run_server.sh
 +++ b/scripts/run_server.sh
-@@ -2077,5 +2077,10 @@
+@@ -2062,6 +2076,11 @@ fi
  if [ -n "${CGC_POOL_SPLIT_DBG:-}" ]; then
      SERVER_ENV+=(CGC_POOL_SPLIT_DBG="$CGC_POOL_SPLIT_DBG")
  fi
@@ -76,3 +114,4 @@ diff --git a/scripts/run_server.sh b/scripts/run_server.sh
 +fi
  # CGC prev-token prefetch (default off)
  # [CGC M0 decode profile 2026-09-13] Per-layer wait/cb/submit attribution of a decode step.
+ # Only produces output under CGC_OA_ASYNC=1 (see CGC_SERVER_OA_ASYNC): without the segmented

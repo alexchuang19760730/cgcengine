@@ -173,6 +173,62 @@ def analyze_kind(kind, recs, page=PAGE):
             print("    同层内 stride 与页在 256 slot 内无公倍数（以运行时逐页 owner 集合为准）。")
 
 
+def analyze_whole(data, page=PAGE):
+    """全区域：三个 kind 交织在同一连续 Metal 分配里，合并所有 tensor 按绝对页算覆盖。
+    这是生产模式（CGC_POOL_SPLIT=0）的真实结构；按 kind 隔离会把其他 kind/gap 误算成空页。"""
+    import bisect
+    recs = []
+    for kind, rs in data.items():
+        for r in rs:
+            if "stride" in r and "slots" in r and "base" in r:
+                recs.append((r["layer"], kind, r["slots"], r["stride"], r["base"]))
+    if not recs:
+        print("\n（全区域分析：ADOPT 行缺失，无法重建）")
+        return
+    spans = []
+    for (l, k, sl, st, b) in recs:
+        for s in range(sl):
+            spans.append((b + s * st, b + (s + 1) * st, l, k, s))
+    spans.sort()
+    base0 = spans[0][0]
+    end = spans[-1][1]
+    npg = (end - base0 + page - 1) // page
+    begins = [x[0] for x in spans]
+    from collections import Counter
+    cov = Counter()
+    cross = 0
+    example = None
+    for p in range(npg):
+        lo, hi = base0 + p * page, base0 + (p + 1) * page
+        i = bisect.bisect_left(begins, hi) - 1
+        owners = []
+        j = i
+        while j >= 0:
+            b, e, l, k, s = spans[j]
+            if e <= lo:
+                break
+            if b < hi and e > lo:
+                owners.append((l, k, s))
+            j -= 1
+        cov[len(owners)] += 1
+        if len(owners) >= 2 and len({(o[0], o[1]) for o in owners}) > 1:
+            cross += 1
+        if len(owners) >= 2 and example is None:
+            example = (p, owners)
+    print("=" * 78)
+    print(f" 全区域（3 kind 交织）连续 pool = {(end-base0)/1024/1024:.0f} MiB, {npg} 页, "
+          f"{len(spans)} 个 (slot×kind)")
+    print(f" pool base0 = 0x{base0:x}  (base0 mod page = {base0 % page})")
+    print("=" * 78)
+    for c in sorted(cov):
+        print(f"   覆盖 {c} slot 的页 : {cov[c]:>7} ({100*cov[c]/max(1,npg):5.1f}%)")
+    print(f"  跨 tensor(layer/kind) 共享页 = {cross}")
+    if example:
+        print(f"  共享页示例 第 {example[0]} 页: {example[1][:4]}")
+    print("\n  回收口径：覆盖 1 slot 的页可在该 slot 冷时独立回收；覆盖 2 slot 的页需相邻 slot")
+    print("  同时冷；覆盖 0 slot 的页是 gap/dense，不属于 pool、不可动。")
+
+
 def self_test():
     print("="*78)
     print(" 自测：合成几何（模拟 IQ2_S gate/up stride≈68.5 页、143 slot/层、40 层）")
@@ -226,6 +282,8 @@ def main():
               "请确认启动 server 时设了 CGC_POOL_SPLIT_DBG=1 并已应用阶段1几何补丁。",
               file=sys.stderr)
         sys.exit(2)
+    # 生产模式：先全区域（真实结构），再按 kind 看 stride 对齐
+    analyze_whole(data)
     for kind in sorted(data):
         analyze_kind(kind, data[kind])
 
